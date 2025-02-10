@@ -1090,9 +1090,29 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     dy = zero_tangent(y)
     dq = pointer(dy)
 
+    # Pointer to pointer.
+    c_1 = [5.0]
+    c_2 = [3.0, 4.0]
+    c = [pointer(c_1), pointer(c_2)]
+    c_ptr = pointer(c)
+
+    c_new_val = [6.0, 5.0, 4.0]
+    c_new_val_ptr = pointer(c_new_val)
+    cs = (c_1, c_2, c, c_new_val)
+
+    # Tangents of pointers to pointers.
+    dc_1 = copy(c_1)
+    dc_2 = copy(c_2)
+    dc = [pointer(dc_1), pointer(dc_2)]
+    dc_ptr = pointer(dc)
+    dc_new_val = randn(3)
+    dc_new_val_ptr = pointer(dc_new_val)
+    dcs = (dc_1, dc_2, dc, dc_new_val)
+
+
     # Slightly wider range for builtins whose performance is known not to be great.
     _range = (lb=1e-3, ub=200.0)
-    memory = Any[_x, _dx, _a, x, p, dx, dp, y, q, dy, dq]
+    memory = Any[_x, _dx, _a, x, p, dx, dp, y, q, dy, dq, cs..., dcs...]
 
     test_cases = Any[
 
@@ -1117,15 +1137,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         # atomic_pointermodify -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointerref -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointerreplace -- NEEDS IMPLEMENTING AND TESTING
-        # (
-        #     true,
-        #     :none,
-        #     nothing,
-        #     IntrinsicsWrappers.atomic_pointerset,
-        #     CoDual(p, dp),
-        #     1.0,
-        #     :monotonic,
-        # ),
+        (
+            true,
+            :none,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerset,
+            CoDual(p, dp),
+            1.0,
+            :monotonic,
+        ),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerset,
+            CoDual(c_ptr, dc_ptr),
+            CoDual(c_new_val_ptr, dc_new_val_ptr),
+            :monotonic,
+        ),
         # atomic_pointerswap -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, IntrinsicsWrappers.bitcast, Int64, 5.0),
         (false, :stability, nothing, IntrinsicsWrappers.bswap_int, 5),
@@ -1230,6 +1259,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             1,
         ),
         (true, :stability, nothing, IntrinsicsWrappers.pointerset, CoDual(q, dq), 1, 2, 1),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.pointerset,
+            CoDual(c_ptr, dc_ptr),
+            CoDual(c_new_val_ptr, dc_new_val_ptr),
+            1,
+            1,
+        ),
         # rem_float -- untested and unimplemented because seemingly unused on master
         # rem_float_fast -- untested and unimplemented because seemingly unused on master
         (false, :stability, nothing, IntrinsicsWrappers.rint_llvm, 5.0),
