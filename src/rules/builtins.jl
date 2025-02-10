@@ -227,7 +227,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDua
         return NoRData(), NoRData(), rdata(dx_r), NoRData()
     end
     atomic_pointerset(_p, primal(x), _order)
-    atomic_pointerset(dp, zero_tangent(primal(x)), _order)
+    atomic_pointerset(dp, zero_tangent(x.x, x.dx), _order)
     return p, atomic_pointerset_pullback!!
 end
 
@@ -636,7 +636,7 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
         return NoRData(), NoRData(), rdata(dx_r), NoRData(), NoRData()
     end
     pointerset(_p, primal(x), _idx, _z)
-    pointerset(dp, zero_tangent(primal(x)), _idx, _z)
+    pointerset(dp, zero_tangent(x.x, x.dx), _idx, _z)
     return p, pointerset_pullback!!
 end
 
