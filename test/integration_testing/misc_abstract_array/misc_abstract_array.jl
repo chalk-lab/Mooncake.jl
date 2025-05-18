@@ -109,6 +109,9 @@ using Mooncake.TestUtils: test_rule
         ),
     )
         @info "$(typeof((f, x...)))"
+        test_rule(
+            StableRNG(123456), f, x...; interface_only, is_primitive=false, forward=true
+        )
         test_rule(StableRNG(123456), f, x...; interface_only, is_primitive=false)
     end
 end

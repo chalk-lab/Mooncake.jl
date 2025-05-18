@@ -76,6 +76,7 @@ const TEST_CASES = vcat(
         vcat(TEST_CASES[1:66], TEST_CASES[68:89], TEST_CASES[91:end])
     )
         @info "$n: $(typeof((f, x...)))"
+        test_rule(StableRNG(123456), f, x...; is_primitive=false, forward=true)
         test_rule(StableRNG(123456), f, x...; is_primitive=false)
     end
 end

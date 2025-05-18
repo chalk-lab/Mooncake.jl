@@ -49,6 +49,7 @@ using Mooncake.TestUtils: test_rule
         end...,
         (:stability_and_allocs, logfactorial, 3),
     )
+        test_rule(StableRNG(123456), f, x...; perf_flag, forward=true)
         test_rule(StableRNG(123456), f, x...; perf_flag)
     end
     @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
@@ -72,6 +73,7 @@ using Mooncake.TestUtils: test_rule
         (:allocs, SpecialFunctions.loggamma1p, -0.3),
         (:none, SpecialFunctions.lambdaeta, 5.0),
     )
+        test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false, forward=true)
         test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
     end
 end

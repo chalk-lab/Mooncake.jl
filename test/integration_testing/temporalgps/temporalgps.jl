@@ -23,6 +23,7 @@ temporalgps_logpdf_tester(k, x, y, s) = logpdf(build_gp(k)(x, s), y)
         f = temporalgps_logpdf_tester
         sig = typeof((temporalgps_logpdf_tester, k, x, y, s))
         @info "$sig"
+        test_rule(StableRNG(123456), f, k, x, y, s; is_primitive=false, forward=true)
         test_rule(StableRNG(123456), f, k, x, y, s; is_primitive=false)
     end
 end

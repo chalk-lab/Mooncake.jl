@@ -118,6 +118,9 @@ end
         @info name
         f, x = build_turing_problem(StableRNG(123), model, ex)
         rng = StableRNG(123456)
+        test_rule(
+            rng, f, x; interface_only, is_primitive=false, unsafe_perturb=true, forward=true
+        )
         test_rule(rng, f, x; interface_only, is_primitive=false, unsafe_perturb=true)
     end
 end

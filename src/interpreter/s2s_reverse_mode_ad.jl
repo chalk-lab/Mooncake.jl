@@ -361,19 +361,20 @@ Used in `make_ad_stmts!`.
 """
 inc_args(x::Expr) = Expr(x.head, map(__inc, x.args)...)
 inc_args(x::ReturnNode) = isdefined(x, :val) ? ReturnNode(__inc(x.val)) : x
-inc_args(x::IDGotoIfNot) = IDGotoIfNot(__inc(x.cond), x.dest)
-inc_args(x::IDGotoNode) = x
-function inc_args(x::IDPhiNode)
+inc_args(x::Union{GotoIfNot,IDGotoIfNot}) = typeof(x)(__inc(x.cond), x.dest)
+inc_args(x::Union{GotoNode,IDGotoNode}) = x
+function inc_args(x::T) where {T<:Union{IDPhiNode,PhiNode}}
     new_values = Vector{Any}(undef, length(x.values))
     for n in eachindex(x.values)
         if isassigned(x.values, n)
             new_values[n] = __inc(x.values[n])
         end
     end
-    return IDPhiNode(x.edges, new_values)
+    return T(x.edges, new_values)
 end
 inc_args(::Nothing) = nothing
 inc_args(x::GlobalRef) = x
+inc_args(x::PiNode) = PiNode(__inc(x.val), x.typ)
 
 __inc(x::Argument) = Argument(x.n + 1)
 __inc(x) = x
@@ -618,6 +619,7 @@ function get_const_primal_value(x::GlobalRef)
     return getglobal(x.mod, x.name)
 end
 get_const_primal_value(x::QuoteNode) = x.value
+get_const_primal_value(x::Expr) = eval(x)
 get_const_primal_value(x) = x
 
 # Mooncake does not yet handle `PhiCNode`s. Throw an error if one is encountered.
@@ -1106,7 +1108,7 @@ function build_rrule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode))
+        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :reverse))
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
         else

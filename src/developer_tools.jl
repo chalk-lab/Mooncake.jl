@@ -101,3 +101,15 @@ function rvs_ir(
 )::IRCode
     return generate_ir(interp, sig; debug_mode, do_inline).rvs_ir
 end
+
+"""
+
+"""
+function dual_ir(
+    sig::Type{<:Tuple};
+    interp=get_interpreter(),
+    debug_mode::Bool=false,
+    do_inline::Bool=true,
+)
+    return generate_dual_ir(interp, sig; debug_mode, do_inline)
+end

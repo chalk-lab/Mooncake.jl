@@ -2,17 +2,20 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
+function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
+    return Dual(primal(x) + primal(y), tangent(x) + primal(y))
+end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
 end
 
-@zero_adjoint MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
-@zero_adjoint MinimalCtx Tuple{typeof(string),Vararg}
-@zero_adjoint MinimalCtx Tuple{Type{Symbol},Vararg}
-@zero_adjoint MinimalCtx Tuple{Type{Float64},Any,RoundingMode}
-@zero_adjoint MinimalCtx Tuple{Type{Float32},Any,RoundingMode}
-@zero_adjoint MinimalCtx Tuple{Type{Float16},Any,RoundingMode}
-@zero_adjoint MinimalCtx Tuple{typeof(==),Type,Type}
+@zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(string),Vararg}
+@zero_derivative MinimalCtx Tuple{Type{Symbol},Vararg}
+@zero_derivative MinimalCtx Tuple{Type{Float64},Any,RoundingMode}
+@zero_derivative MinimalCtx Tuple{Type{Float32},Any,RoundingMode}
+@zero_derivative MinimalCtx Tuple{Type{Float16},Any,RoundingMode}
+@zero_derivative MinimalCtx Tuple{typeof(==),Type,Type}
 
 function generate_hand_written_rrule!!_test_cases(
     rng_ctor, ::Val{:avoiding_non_differentiable_code}

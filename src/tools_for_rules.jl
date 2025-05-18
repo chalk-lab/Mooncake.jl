@@ -18,8 +18,15 @@ function parse_signature_expr(sig::Expr)
     return arg_type_symbols, where_params
 end
 
-function construct_def(arg_names, arg_types, where_params, body)
-    name = :(Mooncake.rrule!!)
+function construct_rrule_def(arg_names, arg_types, where_params, body)
+    return construct_rule_def(:(Mooncake.rrule!!), arg_names, arg_types, where_params, body)
+end
+
+function construct_frule_def(arg_names, arg_types, where_params, body)
+    return construct_rule_def(:(Mooncake.frule!!), arg_names, arg_types, where_params, body)
+end
+
+function construct_rule_def(name, arg_names, arg_types, where_params, body)
     arg_exprs = map((n, t) -> :($n::$t), arg_names, arg_types)
     def = Dict(:head => :function, :name => name, :args => arg_exprs, :body => body)
     where_params !== nothing && setindex!(def, where_params, :whereparams)
@@ -142,6 +149,10 @@ may be required if it is not.
     return zero_fcodual(primal(f)(map(primal, x)...)), NoPullback(f, x...)
 end
 
+@inline function zero_derivative(f::Dual, x::Vararg{Dual,N}) where {N}
+    return zero_dual(primal(f)(map(primal, x)...))
+end
+
 """
     @zero_adjoint ctx sig
 
@@ -220,7 +231,43 @@ macro zero_adjoint(ctx, sig)
     # Return code to create a method of is_primitive and a rule.
     ex = quote
         Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{<:$(esc(sig))}) = true
-        $(construct_def(arg_names, arg_types, where_params, body))
+        $(construct_rrule_def(arg_names, arg_types, where_params, body))
+    end
+    return ex
+end
+
+macro zero_derivative(ctx, sig)
+
+    # Parse the signature, and construct the rule definition. If it is a vararg definition,
+    # then the last argument requires special treatment.
+    arg_type_symbols, where_params = parse_signature_expr(sig)
+    arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
+    is_vararg = arg_type_symbols[end] == Expr(:escape, :Vararg)
+    if is_vararg
+        arg_types_deriv = vcat(
+            map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
+            :(Vararg{Mooncake.Dual}),
+        )
+        arg_types_adjoint = vcat(
+            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
+            :(Vararg{Mooncake.CoDual}),
+        )
+        splat_symbol = Expr(Symbol("..."), arg_names[end])
+        tmp = arg_names[1:(end - 1)]
+        body_deriv = Expr(:call, Mooncake.zero_derivative, tmp..., splat_symbol)
+        body_adjoint = Expr(:call, Mooncake.zero_adjoint, tmp..., splat_symbol)
+    else
+        arg_types_deriv = map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols)
+        arg_types_adjoint = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols)
+        body_deriv = Expr(:call, Mooncake.zero_derivative, arg_names...)
+        body_adjoint = Expr(:call, Mooncake.zero_adjoint, arg_names...)
+    end
+
+    # Return code to create a method of is_primitive and a rule.
+    ex = quote
+        Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{<:$(esc(sig))}) = true
+        $(construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv))
+        $(construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint))
     end
     return ex
 end
@@ -243,6 +290,25 @@ to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.field
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 
 """
+    mooncake_tangent(p, cr_tangent)
+
+For primal `p` and a tangent used by ChainRules `cr_tangent`, returns the tangent of type
+`tangent_type(typeof(p))`. Useful for converting the result of a `ChainRules.frule` into
+something that Mooncake can use.
+"""
+mooncake_tangent(p, ::CRC.NoTangent) = NoTangent()
+mooncake_tangent(p, t::IEEEFloat) = t
+mooncake_tangent(p::Array, t::Array{<:IEEEFloat}) = t
+mooncake_tangent(p::Array, t::Array) = map(mooncake_tangent, p, t)
+mooncake_tangent(p, t::CRC.ZeroTangent) = zero_tangent(p)
+function mooncake_tangent(p::P, t::T) where {P,T<:Tuple}
+    return tangent_type(P) == NoTangent ? NoTangent() : map(mooncake_tangent, p, t)
+end
+function mooncake_tangent(p::P, t::T) where {P<:Tuple,T<:CRC.Tangent}
+    return tangent_type(P) == NoTangent ? NoTangent() : map(mooncake_tangent, p, t.backing)
+end
+
+"""
     increment_and_get_rdata!(fdata, zero_rdata, cr_tangent)
 
 Increment `fdata` by the fdata component of the ChainRules.jl-style tangent, `cr_tangent`,
@@ -256,6 +322,29 @@ end
 increment_and_get_rdata!(::Any, r, ::CRC.NoTangent) = r
 function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
+end
+
+"""
+    frule_wrapper(f::Dual, args::Dual...)
+
+Implements an `frule!!` for `f` applied to `args` by calling `ChainRulesCore.frule`.
+"""
+function frule_wrapper(fargs::Vararg{Dual,N}) where {N}
+    tangents = tuple_map(to_cr_tangent ∘ tangent, fargs)
+    Ω, dΩ = CRC.frule(tangents, tuple_map(primal, fargs)...)
+    return Dual(Ω, mooncake_tangent(Ω, dΩ))
+end
+
+function frule_wrapper(::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}) where {N}
+    primals = map(primal, fargs)
+    tangents = map(to_cr_tangent ∘ tangent, fargs[2:end])
+    Ω, dΩ = Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
+    return Dual(Ω, mooncake_tangent(Ω, dΩ))
+end
+
+function construct_frule_wrapper_def(arg_names, arg_types, where_params)
+    body = Expr(:call, frule_wrapper, arg_names...)
+    return construct_frule_def(arg_names, arg_types, where_params, body)
 end
 
 """
@@ -334,7 +423,7 @@ end
 
 function construct_rrule_wrapper_def(arg_names, arg_types, where_params)
     body = Expr(:call, rrule_wrapper, arg_names...)
-    return construct_def(arg_names, arg_types, where_params, body)
+    return construct_rrule_def(arg_names, arg_types, where_params, body)
 end
 
 """
@@ -477,6 +566,171 @@ macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false)
         $rule_expr
         $kw_is_primitive
         $kwargs_rule_expr
+    end
+    return ex
+end
+
+"""
+    @from_chain_rule ctx sig [has_kwargs=false frule=true rrule=true]
+
+Convenience functionality to assist in using `ChainRuleCore.frule`s and
+`ChainRulesCore.rrule`s to write `frule!!`s and `rrule!!`s.
+
+# Arguments
+
+- `ctx`: A Mooncake context type
+- `sig`: the signature which you wish to assert should be a primitive in `Mooncake.jl`, and
+    use an existing `ChainRulesCore.rrule` to implement this functionality.
+- `has_kwargs=true`: a `Bool` stating whether or not the function has keyword arguments.
+    This feature has the same limitations as `ChainRulesCore.rrule` -- the derivative w.r.t.
+    all kwargs must be zero.
+- `frule=true`: if `true` then defines an `frule!!`.
+- `rrule=true`: if `true` then defines an `rrule!!`.
+
+# Example Usage
+
+## A Basic Example
+
+```jldoctest
+julia> using Mooncake: @from_chain_rule, DefaultCtx, rrule!!, zero_fcodual, TestUtils
+
+julia> import ChainRulesCore
+
+julia> foo(x::Real) = 5x;
+
+julia> function ChainRulesCore.rrule(::typeof(foo), x::Real)
+           foo_pb(Ω::Real) = ChainRulesCore.NoTangent(), 5Ω
+           return foo(x), foo_pb
+       end;
+
+julia> @from_rrule DefaultCtx Tuple{typeof(foo), Base.IEEEFloat}
+
+julia> rrule!!(zero_fcodual(foo), zero_fcodual(5.0))[2](1.0)
+(NoRData(), 5.0)
+
+julia> # Check that the rule works as intended.
+       TestUtils.test_rule(Xoshiro(123), foo, 5.0; is_primitive=true)
+Test Passed
+```
+
+## An Example with Keyword Arguments
+
+```jldoctest
+julia> using Mooncake: @from_rrule, DefaultCtx, rrule!!, zero_fcodual, TestUtils
+
+julia> import ChainRulesCore
+
+julia> foo(x::Real; cond::Bool) = cond ? 5x : 4x;
+
+julia> function ChainRulesCore.rrule(::typeof(foo), x::Real; cond::Bool)
+           foo_pb(Ω::Real) = ChainRulesCore.NoTangent(), cond ? 5Ω : 4Ω
+           return foo(x; cond), foo_pb
+       end;
+
+julia> @from_rrule DefaultCtx Tuple{typeof(foo), Base.IEEEFloat} true
+
+julia> _, pb = rrule!!(
+           zero_fcodual(Core.kwcall),
+           zero_fcodual((cond=false, )),
+           zero_fcodual(foo),
+           zero_fcodual(5.0),
+       );
+
+julia> pb(3.0)
+(NoRData(), NoRData(), NoRData(), 12.0)
+
+julia> # Check that the rule works as intended.
+       TestUtils.test_rule(
+           Xoshiro(123), Core.kwcall, (cond=false, ), foo, 5.0; is_primitive=true
+       )
+Test Passed
+```
+Notice that, in order to access the kwarg method we must call the method of `Core.kwcall`,
+as Mooncake's `rrule!!` does not itself permit the use of kwargs.
+
+# Limitations
+
+It is your responsibility to ensure that
+1. calls with signature `sig` do not mutate their arguments,
+2. the output of calls with signature `sig` does not alias any of the inputs.
+
+As with all hand-written rules, you should definitely make use of
+[`TestUtils.test_rule`](@ref) to verify correctness on some test cases.
+
+# Argument Type Constraints
+
+Many methods of `ChainRuleCore.rrule` are implemented with very loose type constraints.
+For example, it would not be surprising to see a method of rrule with the signature
+```julia
+Tuple{typeof(rrule), typeof(foo), Real, AbstractVector{<:Real}}
+```
+There are a variety of reasons for this way of doing things, and whether it is a good idea
+to write rules for such generic objects has been debated at length.
+
+Suffice it to say, you should not write rules for _this_ package which are so generically
+typed.
+Rather, you should create rules for the subset of types for which you believe that the
+`ChainRulesCore.rrule` will work correctly, and leave this package to derive rules for the
+rest.
+For example, it is quite common to be confident that a given rule will work correctly for
+any `Base.IEEEFloat` argument, i.e. `Union{Float16, Float32, Float64}`, but it is usually
+not possible to know that the rule is correct for all possible subtypes of `Real` that
+someone might define.
+
+# Conversions Between Different Tangent Type Systems
+
+Under the hood, this functionality relies on two functions: `Mooncake.to_cr_tangent`, and
+`Mooncake.increment_and_get_rdata!`. These two functions handle conversion to / from
+`Mooncake` tangent types and `ChainRulesCore` tangent types. This functionality is known to
+work well for simple types, but has not been tested to a great extent on complicated
+composite types. If `@from_rrule` does not work in your case because the required method of
+either of these functions does not exist, please open an issue.
+"""
+macro from_chain_rule(
+    ctx, sig::Expr, has_kwargs::Bool=false, frule::Bool=true, rrule::Bool=true
+)
+    arg_type_syms, where_params = parse_signature_expr(sig)
+    arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
+    dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
+    codual_arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_syms)
+    frule_expr = construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
+    rrule_expr = construct_rrule_wrapper_def(arg_names, codual_arg_types, where_params)
+
+    if has_kwargs
+        kw_sig = Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, arg_type_syms...)
+        kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
+        kw_is_primitive = :(Mooncake.is_primitive(::Type{$ctx}, ::Type{<:$kw_sig}) = true)
+        kwargs_frule_expr = construct_frule_wrapper_def(
+            vcat(:_kwcall, :kwargs, arg_names),
+            vcat(
+                :(Mooncake.Dual{typeof(Core.kwcall)}),
+                :(Mooncake.Dual{<:NamedTuple}),
+                dual_arg_types,
+            ),
+            where_params,
+        )
+        kwargs_rrule_expr = construct_rrule_wrapper_def(
+            vcat(:_kwcall, :kwargs, arg_names),
+            vcat(
+                :(Mooncake.CoDual{typeof(Core.kwcall)}),
+                :(Mooncake.CoDual{<:NamedTuple}),
+                codual_arg_types,
+            ),
+            where_params,
+        )
+    else
+        kw_is_primitive = nothing
+        kwargs_frule_expr = nothing
+        kwargs_rrule_expr = nothing
+    end
+
+    ex = quote
+        Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{<:($(esc(sig)))}) = true
+        $frule_expr
+        $rrule_expr
+        $kw_is_primitive
+        $kwargs_frule_expr
+        $kwargs_rrule_expr
     end
     return ex
 end

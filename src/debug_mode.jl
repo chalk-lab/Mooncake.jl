@@ -1,3 +1,4 @@
+DebugFRule(rule) = rule  # TODO: make it non-trivial
 
 """
     DebugPullback(pb, y, x)

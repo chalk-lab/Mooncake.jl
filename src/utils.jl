@@ -357,3 +357,56 @@ function misty_closure(
 )
     return MistyClosure(opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir))
 end
+
+"""
+    _copytrito!(B::AbstractMatrix, A::AbstractMatrix, uplo::AbstractChar)
+
+Literally just copied over from Julia's LinearAlgebra std lib, in order to produce a method
+which works on 1.10.
+"""
+function _copytrito!(B::AbstractMatrix, A::AbstractMatrix, uplo::AbstractChar)
+    @static if VERSION >= v"1.11"
+        return copytrito!(B, A, uplo)
+    end
+    Base.require_one_based_indexing(A, B)
+    BLAS.chkuplo(uplo)
+    m, n = size(A)
+    m1, n1 = size(B)
+    A = Base.unalias(B, A)
+    if uplo == 'U'
+        if n < m
+            (m1 < n || n1 < n) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($n,$n)"
+                ),
+            )
+        else
+            (m1 < m || n1 < n) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($m,$n)"
+                ),
+            )
+        end
+        for j in 1:n, i in 1:min(j, m)
+            @inbounds B[i, j] = A[i, j]
+        end
+    else # uplo == 'L'
+        if m < n
+            (m1 < m || n1 < m) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($m,$m)"
+                ),
+            )
+        else
+            (m1 < m || n1 < n) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($m,$n)"
+                ),
+            )
+        end
+        for j in 1:n, i in j:m
+            @inbounds B[i, j] = A[i, j]
+        end
+    end
+    return B
+end

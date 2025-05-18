@@ -19,6 +19,7 @@ using Base:
     twiceprecision
 using Base.Experimental: @opaque
 using Base.Iterators: product
+using Base.Meta: isexpr
 using Core:
     Intrinsics,
     bitcast,
@@ -41,6 +42,13 @@ using FunctionWrappers: FunctionWrapper
 
 # Needs to be defined before various other things.
 function _foreigncall_ end
+
+"""
+    frule!!(f::Dual, x::Dual...)
+
+Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`.
+"""
+function frule!! end
 
 """
     rrule!!(f::CoDual, x::CoDual...)
@@ -92,6 +100,7 @@ build_primitive_rrule(::Type{<:Tuple}) = rrule!!
 
 include("utils.jl")
 include("tangents.jl")
+include("dual.jl")
 include("fwds_rvs_data.jl")
 include("codual.jl")
 include("debug_mode.jl")
@@ -106,6 +115,7 @@ include(joinpath("interpreter", "patch_for_319.jl"))
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))
+include(joinpath("interpreter", "s2s_forward_mode_ad.jl"))
 include(joinpath("interpreter", "s2s_reverse_mode_ad.jl"))
 
 include("tools_for_rules.jl")

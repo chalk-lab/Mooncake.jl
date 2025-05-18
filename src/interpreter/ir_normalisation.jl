@@ -63,6 +63,7 @@ function _interpolate_boundschecks!(statements::Vector{Any})
         if stmt isa Expr && stmt.head == :boundscheck && length(stmt.args) == 1
             def = SSAValue(n)
             val = only(stmt.args)
+            # TODO: this could just be `statements[n] = val` (Valentin C says)
             for (m, stmt) in enumerate(statements)
                 statements[m] = replace_uses_with!(stmt, def, val)
             end
@@ -349,6 +350,7 @@ until the pullback that it returns is run.
 
 @is_primitive MinimalCtx Tuple{typeof(gc_preserve),Vararg{Any,N}} where {N}
 
+frule!!(::Dual{typeof(gc_preserve)}, ::Vararg{Dual,N}) where {N} = zero_dual(nothing)
 function rrule!!(f::CoDual{typeof(gc_preserve)}, xs::CoDual...)
     pb = NoPullback(f, xs...)
     gc_preserve_pb!!(::NoRData) = GC.@preserve xs pb(NoRData())

@@ -50,6 +50,7 @@ using Mooncake.TestUtils: test_rule
             (logpdf, fx, rand(rng, fx)),
         ]
             @info typeof(args)
+            test_rule(rng, args...; is_primitive=false, unsafe_perturb=true, forward=true)
             test_rule(rng, args...; is_primitive=false, unsafe_perturb=true)
         end
     end

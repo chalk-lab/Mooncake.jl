@@ -1,4 +1,8 @@
 @is_primitive MinimalCtx Tuple{typeof(Base.FastMath.exp_fast),IEEEFloat}
+function frule!!(::Dual{typeof(Base.FastMath.exp_fast)}, x::Dual{P}) where {P<:IEEEFloat}
+    y = Base.FastMath.exp_fast(primal(x))
+    return Dual(y, y * tangent(x))
+end
 function rrule!!(
     ::CoDual{typeof(Base.FastMath.exp_fast)}, x::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -8,6 +12,10 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base.FastMath.exp2_fast),IEEEFloat}
+function frule!!(::Dual{typeof(Base.FastMath.exp2_fast)}, x::Dual{P}) where {P<:IEEEFloat}
+    y = Base.FastMath.exp2_fast(primal(x))
+    return Dual(y, y * tangent(x) * P(log(2)))
+end
 function rrule!!(
     ::CoDual{typeof(Base.FastMath.exp2_fast)}, x::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -17,6 +25,10 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base.FastMath.exp10_fast),IEEEFloat}
+function frule!!(::Dual{typeof(Base.FastMath.exp10_fast)}, x::Dual{P}) where {P<:IEEEFloat}
+    y = Base.FastMath.exp10_fast(primal(x))
+    return Dual(y, y * tangent(x) * P(log(10)))
+end
 function rrule!!(
     ::CoDual{typeof(Base.FastMath.exp10_fast)}, x::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -26,6 +38,11 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base.FastMath.sincos),IEEEFloat}
+function frule!!(::Dual{typeof(Base.FastMath.sincos)}, x::Dual{P}) where {P<:IEEEFloat}
+    y = Base.FastMath.sincos(primal(x))
+    dx = tangent(x)
+    return Dual(y, (y[2] * dx, -y[1] * dx))
+end
 function rrule!!(::CoDual{typeof(Base.FastMath.sincos)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = Base.FastMath.sincos(primal(x))
     sincos_fast_adj!!(dy::Tuple{P,P}) = NoRData(), dy[1] * y[2] - dy[2] * y[1]
@@ -33,7 +50,7 @@ function rrule!!(::CoDual{typeof(Base.FastMath.sincos)}, x::CoDual{P}) where {P<
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base.log),Union{IEEEFloat,Int}}
-@zero_adjoint MinimalCtx Tuple{typeof(log),Int}
+@zero_derivative MinimalCtx Tuple{typeof(log),Int}
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:fastmath})
     test_cases = reduce(

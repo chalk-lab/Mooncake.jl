@@ -1,5 +1,5 @@
 @testset "low_level_maths" begin
-    TestUtils.run_rrule!!_test_cases(StableRNG, Val(:low_level_maths))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:low_level_maths))
 
     # These are all examples of signatures which we do _not_ want to make primitives,
     # because they are very shallow wrappers around lower-level primitives for which we
