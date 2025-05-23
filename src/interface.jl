@@ -16,7 +16,11 @@ function __value_and_pullback!!(
     out, pb!! = rule(fx_fwds...)
     @assert _typeof(tangent(out)) == fdata_type(T)
     increment!!(tangent(out), fdata(ȳ))
-    v = y_cache === nothing ? _copy_output(primal(out)) : _copy!!(y_cache, primal(out))
+    v = if y_cache === nothing
+        _copy_output(primal(out))
+    else
+        _copy_to_output!(y_cache, primal(out))
+    end
     return v, tuple_map((f, r) -> tangent(fdata(tangent(f)), r), fx, pb!!(rdata(ȳ)))
 end
 
@@ -166,9 +170,6 @@ function value_and_gradient!!(rule::R, fx::Vararg{Any,N}) where {R,N}
     return __value_and_gradient!!(rule, __create_coduals(fx)...)
 end
 
-_copy!!(dst, src) = copy!(dst, src)
-_copy!!(::Number, src::Number) = src
-
 function __create_coduals(args)
     try
         return tuple_map(zero_codual, args)
@@ -238,10 +239,84 @@ end
 
 const _BuiltinArrays = @static VERSION >= v"1.11" ? Union{Array,Memory} : Array
 
-# explicit for svec
+"""
+    _copy_to_output!(dst::T, src::T)
+
+Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of `dst` and `src` must be the same.
+Required as Base.copy!() does not work for all supported primal types. For example, `Base.copy!` does not work for `Core.svec`.
+"""
+_copy_to_output!(dst::Number, src::Number) = src
+
+# explicit copy for Core.svec
+function _copy_to_output!(dst::SimpleVector, src::SimpleVector)
+    return Core.svec(map(_copy_to_output!, dst, src)...)
+end
+
+# copy for Array, Memory
+function _copy_to_output!(dst::P, src::P) where {P<:_BuiltinArrays}
+    @inbounds for i in eachindex(src)
+        if isassigned(src, i)
+            dst[i] = _copy_to_output!(dst[i], src[i])
+        end
+    end
+    return dst
+end
+
+# Tuple, NamedTuple
+function _copy_to_output!(dst::P, src::P) where {P<:Union{Tuple,NamedTuple}}
+    isbitstype(P) && return src
+    return map(_copy_to_output!, dst, src)
+end
+
+# Handling structs
+function _copy_to_output!(dst::P, src::P) where {P}
+    isbitstype(P) && return src
+    nf = nfields(P)
+
+    if ismutable(src)
+        for src_sub in 1:nf
+            if isdefined(src, src_sub)
+                # using ccall as setfield! fails for const fields of a mutable struct.
+                ccall(
+                    :jl_set_nth_field,
+                    Cvoid,
+                    (Any, Csize_t, Any),
+                    dst,
+                    src_sub - 1,
+                    _copy_to_output!(getfield(dst, src_sub), getfield(src, src_sub)),
+                )
+            end
+        end
+
+        return dst
+    else
+        # this allocation is needed for handling undef fields in immutable structs.
+        flds = Vector{Any}(undef, nf)
+        for src_sub in 1:nf
+            if isdefined(src, src_sub)
+                flds[src_sub] = _copy_to_output!(
+                    getfield(dst, src_sub), getfield(src, src_sub)
+                )
+            else
+                nf = src_sub - 1  # Assumes if a undefined field is found, all subsequent fields are undefined.
+                break
+            end
+        end
+
+        # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
+        !isassigned(flds, 1) && return src
+        return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)
+    end
+end
+
+"""
+    _copy_output(x::T)
+
+Returns a copy of `x`, of the same type `T`. Allocates new memory for the copy.
+Required as Base.copy() does not work for all supported primal types. For example, `Base.copy` does not work for `Core.svec`.
+"""
 _copy_output(x::SimpleVector) = Core.svec([map(_copy_output, x_sub) for x_sub in x]...)
 
-# Array, Memory
 function _copy_output(x::P) where {P<:_BuiltinArrays}
     temp = P(undef, size(x)...)
     @inbounds for i in eachindex(temp)
@@ -250,10 +325,8 @@ function _copy_output(x::P) where {P<:_BuiltinArrays}
     return temp
 end
 
-# Tuple, NamedTuple
 _copy_output(x::Union{Tuple,NamedTuple}) = map(_copy_output, x)
 
-# mutable composite types, bitstype
 function _copy_output(x::P) where {P}
     isbitstype(P) && return x
     nf = nfields(P)
@@ -343,9 +416,9 @@ function prepare_pullback_cache(fx...; kwargs...)
     # Run reverse-pass in order to reset stacks + state.
     rvs!!(zero_rdata(primal(y)))
 
-    # Construct cache for output. Check that `copy!`ing appears to work.
+    # Construct cache for output. Check that `_copy_to_output!`ing appears to work.
     y_cache = _copy_output(primal(y))
-    return Cache(rule, _copy!!(y_cache, primal(y)), tangents)
+    return Cache(rule, _copy_to_output!(y_cache, primal(y)), tangents)
 end
 
 """
