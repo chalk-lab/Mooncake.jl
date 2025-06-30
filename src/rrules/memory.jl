@@ -95,19 +95,6 @@ function _diff_internal(c::MaybeCache, p::Memory{P}, q::Memory{P}) where {P}
     return _map_if_assigned!((p, q) -> _diff_internal(c, p, q), t, p, q)
 end
 
-function _dot_internal(c::MaybeCache, t::Memory{T}, s::Memory{T}) where {T}
-    key = (t, s)
-    haskey(c, key) && return c[key]::Float64
-    c[key] = 0.0
-    isbitstype(T) && return sum(_map((t, s) -> _dot_internal(c, t, s), t, s))
-    return sum(
-        _map(eachindex(t)) do n
-            (isassigned(t, n) && isassigned(s, n)) ? _dot_internal(c, t[n], s[n]) : 0.0
-        end;
-        init=0.0,
-    )
-end
-
 function _scale_internal(c::MaybeCache, a::Float64, t::Memory{T}) where {T}
     haskey(c, t) && return c[t]::Memory{T}
     t′ = Memory{T}(undef, length(t))
@@ -198,17 +185,20 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
 
-function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Array}
-    key = (t, s)
-    haskey(c, key) && return c[key]::Float64
-    c[key] = 0.0
-    isbitstype(T) && return sum(_map((t, s) -> _dot_internal(c, t, s), t, s))
-    return sum(
-        _map(eachindex(t)) do n
-            (isassigned(t, n) && isassigned(s, n)) ? _dot_internal(c, t[n], s[n]) : 0.0
-        end;
-        init=0.0,
-    )
+for A in (Array, Memory)
+    @eval function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:$A}
+        key = (t, s)
+        haskey(c, key) && return c[key]::Float64
+        c[key] = 0.0
+        bitstype = Val(isbitstype(eltype(T)))
+        return sum(eachindex(t, s); init=0.0) do i
+            if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
+                _dot_internal(c, t[i], s[i])::Float64
+            else
+                0.0
+            end
+        end
+    end
 end
 
 function _add_to_primal_internal(
@@ -336,7 +326,7 @@ end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:MemoryRef}
     @assert Core.memoryrefoffset(t) == Core.memoryrefoffset(s)
-    return _dot_internal(c, t.mem, s.mem)
+    return _dot_internal(c, t.mem, s.mem)::Float64
 end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::MemoryRef)

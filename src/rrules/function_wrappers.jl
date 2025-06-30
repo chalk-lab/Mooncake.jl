@@ -120,7 +120,7 @@ function _diff_internal(c::MaybeCache, p::P, q::P) where {R,A,P<:FunctionWrapper
 end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:FunctionWrapperTangent}
-    return _dot_internal(c, t.dobj_ref[], s.dobj_ref[])
+    return _dot_internal(c, t.dobj_ref[], s.dobj_ref[])::Float64
 end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:FunctionWrapperTangent}

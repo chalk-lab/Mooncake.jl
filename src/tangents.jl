@@ -776,7 +776,7 @@ Should be defined for all standard tangent types.
 Inner product between tangents `t` and `s`. Must return a `Float64`.
 Always available because all tangent types correspond to finite-dimensional vector spaces.
 """
-_dot(t::T, s::T) where {T} = _dot_internal(IdDict{Any,Any}(), t, s)
+_dot(t::T, s::T) where {T} = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
 
 """
     _dot_internal(c::MaybeCache, t::T, s::T) where {T}
@@ -788,17 +788,19 @@ or aliasing.
 _dot_internal(::MaybeCache, ::NoTangent, ::NoTangent) = 0.0
 _dot_internal(::MaybeCache, t::T, s::T) where {T<:IEEEFloat} = Float64(t * s)
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tuple,NamedTuple}}
-    return sum(map((t, s) -> _dot_internal(c, t, s), t, s); init=0.0)
+    return sum(map((t, s) -> _dot_internal(c, t, s)::Float64, t, s); init=0.0)::Float64
 end
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:PossiblyUninitTangent}
-    is_init(t) && is_init(s) && return _dot_internal(c, val(t), val(s))
+    is_init(t) && is_init(s) && return _dot_internal(c, val(t), val(s))::Float64
     return 0.0
 end
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tangent,MutableTangent}}
     key = (t, s)
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
-    return sum(_map((t, s) -> _dot_internal(c, t, s), t.fields, s.fields); init=0.0)
+    return sum(
+        _map((t, s) -> _dot_internal(c, t, s)::Float64, t.fields, s.fields); init=0.0
+    )::Float64
 end
 
 """

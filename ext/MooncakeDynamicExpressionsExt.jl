@@ -241,7 +241,7 @@ Mooncake._dot_internal(c::Mooncake.MaybeCache, t::TangentNode, s::NoTangent) = 0
         deg = t.degree
         res = if deg == 0
             if t.constant && s.constant
-                Mooncake._dot_internal(c, t.val, s.val)
+                Mooncake._dot_internal(c, t.val, s.val)::Float64
             else
                 0.0
             end
@@ -252,7 +252,9 @@ Mooncake._dot_internal(c::Mooncake.MaybeCache, t::TangentNode, s::NoTangent) = 0
                 i -> Base.Cartesian.@ncall(
                     i,
                     +,
-                    j -> Mooncake._dot_internal(c, get_child(t, j), get_child(s, j))
+                    j -> Mooncake._dot_internal(
+                        c, get_child(t, j), get_child(s, j)
+                    )::Float64
                 )
             )
         end
