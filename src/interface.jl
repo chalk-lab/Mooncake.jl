@@ -320,14 +320,17 @@ _copy_output(x::SimpleVector) = Core.svec([map(_copy_output, x_sub) for x_sub in
 # Array, Memory
 function _copy_output(x::P) where {P<:_BuiltinArrays}
     temp = P(undef, size(x)...)
+    Tx = eltype(P)
     @inbounds for i in eachindex(temp)
-        isassigned(x, i) && (temp[i] = _copy_output(x[i]))
+        if isassigned(x, i)
+            temp[i] = _copy_output(x[i])::Tx
+        end
     end
-    return temp
+    return temp::P
 end
 
 # Tuple, NamedTuple
-_copy_output(x::Union{Tuple,NamedTuple}) = map(_copy_output, x)
+_copy_output(x::Union{Tuple,NamedTuple}) = map(_copy_output, x)::typeof(x)
 
 # mutable composite types, bitstype
 function _copy_output(x::P) where {P}
@@ -335,35 +338,48 @@ function _copy_output(x::P) where {P}
     nf = nfields(P)
 
     if ismutable(x)
-        temp = ccall(:jl_new_struct_uninit, Any, (Any,), P)
-        for x_sub in 1:nf
-            if isdefined(x, x_sub)
+        _copy_output_mutable_cartesian(x, Val(nf))
+    else
+        _copy_output_immutable_cartesian(x, Val(nf))
+    end
+end
+
+@generated function _copy_output_mutable_cartesian(x::P, ::Val{nf}) where {P,nf}
+    quote
+        temp = ccall(:jl_new_struct_uninit, Any, (Any,), P)::P
+        Base.Cartesian.@nexprs(
+            $nf,
+            i -> if isdefined(x, i)
                 ccall(
                     :jl_set_nth_field,
                     Cvoid,
                     (Any, Csize_t, Any),
                     temp,
-                    x_sub - 1,
-                    _copy_output(getfield(x, x_sub)),
+                    i - 1,
+                    _copy_output(getfield(x, i)),
                 )
             end
-        end
+        )
+        return temp::P
+    end
+end
 
-        return temp
-    else
-        flds = Vector{Any}(undef, nf)
-        for x_sub in 1:nf
-            if isdefined(x, x_sub)
-                flds[x_sub] = _copy_output(getfield(x, x_sub))
-            else
-                nf = x_sub - 1  # Assumes if a undefined field is found, all subsequent fields are undefined.
-                break
-            end
-        end
-
+@generated function _copy_output_immutable_cartesian(x::P, ::Val{nf}) where {P,nf}
+    quote
+        Base.Cartesian.@nif(
+            $(nf + 1),
+            # Assumes if a undefined field is found, all subsequent fields are undefined.
+            i -> !isdefined(x, i),
+            i -> _copy_output_immutable_cartesian_upto(x, Val(i - 1)),
+        )
+    end
+end
+@generated function _copy_output_immutable_cartesian_upto(x::P, ::Val{idx}) where {P,idx}
+    idx == 0 && return :(x)
+    return quote
+        flds = collect(Any, Base.Cartesian.@ntuple($idx, i -> _copy_output(getfield(x, i))))
         # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
-        !isassigned(flds, 1) && return x
-        return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)
+        return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, $idx)::P
     end
 end
 
