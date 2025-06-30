@@ -38,7 +38,9 @@ function rrule!!(
     return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
+@unstable @unstable function generate_hand_written_rrule!!_test_cases(
+    rng_ctor, ::Val{:performance_patches}
+)
     rng = rng_ctor(123)
     sizes = [(11,), (11, 3)]
     precisions = [Float64, Float32, Float16]
@@ -60,4 +62,8 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
     return test_cases, memory
 end
 
-generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches}) = Any[], Any[]
+@unstable @unstable function generate_derived_rrule!!_test_cases(
+    rng_ctor, ::Val{:performance_patches}
+)
+    return Any[], Any[]
+end

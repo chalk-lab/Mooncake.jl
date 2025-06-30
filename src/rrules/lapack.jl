@@ -315,7 +315,7 @@ function rrule!!(
     return _B, potrs_pb!!
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
+@unstable function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
     bools = [false, true]
@@ -389,7 +389,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
+@unstable function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     getrf_wrapper!(x, check) = getrf!(x; check)
     test_cases = vcat(map_prod([false, true], [Float64, Float32]) do (check, P)

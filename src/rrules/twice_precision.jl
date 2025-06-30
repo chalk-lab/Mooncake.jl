@@ -266,7 +266,9 @@ end
     end
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:twice_precision})
+@unstable function generate_hand_written_rrule!!_test_cases(
+    rng_ctor, ::Val{:twice_precision}
+)
     test_cases = Any[
         (
             false,
@@ -363,7 +365,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:twice_precisi
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:twice_precision})
+@unstable function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:twice_precision})
     test_cases = Any[
 
         # Functionality in base/twiceprecision.jl

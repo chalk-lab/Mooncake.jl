@@ -19,7 +19,7 @@ permissions:
   
 jobs:
   test:
-    name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}
+    name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}${{ matrix.preferences }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     strategy:
@@ -51,13 +51,21 @@ jobs:
           - '1'
         arch:
           - x64
+        preferences:
+          - ''
         include:
           - test_group: 'basic'
             version: 'lts'
             arch: x86
+            preferences: ''
+          - test_group: 'basic'
+            version: '1'
+            arch: x64
+            preferences: 'dispatch_doctor_mode="warn"'
           - test_group: 'rrules/array_legacy'
             version: 'lts'
             arch: x64
+            preferences: ''
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
@@ -67,6 +75,13 @@ jobs:
           include-all-prereleases: false
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
+      - name: Set Preferences
+        if: matrix.preferences != ''
+        run: |
+          cat <<EOF >> Project.toml
+          [preferences.Mooncake]
+          ${{ matrix.preferences }}
+          EOF
       - uses: julia-actions/julia-runtest@v1
         env:
           TEST_GROUP: ${{ matrix.test_group }}

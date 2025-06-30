@@ -160,13 +160,20 @@ using Mooncake:
     NoRData,
     rdata_type,
     rdata
+using Preferences: load_preference, get_uuid
 
 struct Shim end
 
-test_opt(x...) = test_opt_internal(Shim(), x...)
+const DD_ENABLED = let uuid = get_uuid(@__MODULE__)
+    mode = load_preference(uuid, "dispatch_doctor_mode")
+
+    mode ∉ (nothing, "disable")
+end
+
+test_opt(x...) = DD_ENABLED ? nothing : test_opt_internal(Shim(), x...)
 test_opt_internal(::Any, x...) = throw(error("Load JET to use this function."))
 
-report_opt(tt) = report_opt_internal(Shim(), tt)
+report_opt(tt) = DD_ENABLED ? nothing : report_opt_internal(Shim(), tt)
 report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
 
 """
@@ -974,7 +981,7 @@ function test_set_tangent_field!_correctness(t1::T, t2::T) where {T<:MutableTang
     end
 end
 
-check_allocs(f, x...) = check_allocs_internal(Shim(), f, x...)
+check_allocs(f, x...) = DD_ENABLED ? f(x...) : check_allocs_internal(Shim(), f, x...)
 function check_allocs_internal(::Any, f::F, x::Vararg{Any,N}) where {F,N}
     throw(error("Load AllocCheck.jl to use this functionality."))
 end
@@ -1087,7 +1094,13 @@ end
 
 # Function barrier to ensure inference in value types.
 function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-    @allocations f(x...)
+    @static if DD_ENABLED
+        # If DispatchDoctor is enabled on this package, the allocations are meaningless,
+        # so we return 0 instead.
+        (f(x...); 0)
+    else
+        @allocations f(x...)
+    end
 end
 
 # Returns true if both `zero_tangent` and `randn_tangent` should allocate when run on

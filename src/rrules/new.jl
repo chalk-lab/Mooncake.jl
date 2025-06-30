@@ -57,7 +57,7 @@ end
 end
 
 # Helper for build_fdata
-@inline function __get_data(::Type{P}, x, f, n) where {P}
+@unstable @inline function __get_data(::Type{P}, x, f, n) where {P}
     tmp = getfield(f, n)
     return ismutabletype(P) ? zero_tangent(getfield(x, n), tmp) : tmp
 end
@@ -73,7 +73,7 @@ Function which replaces instances of `:splatnew`.
 """
 _splat_new_(::Type{P}, x::Tuple) where {P} = _new_(P, x...)
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:new})
+@unstable function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:new})
 
     # Specialised test cases for _new_.
     specific_test_cases = Any[
@@ -181,7 +181,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:new})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:new})
+@unstable function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:new})
     test_cases = Any[]
     memory = Any[]
     return test_cases, memory

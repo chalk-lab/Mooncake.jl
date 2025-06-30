@@ -41,13 +41,14 @@ function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Array}
     key = (t, s)
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
-    isbitstype(T) && return sum(_map((t, s) -> _dot_internal(c, t, s), t, s))
-    return sum(
-        _map(eachindex(t)) do n
-            (isassigned(t, n) && isassigned(s, n)) ? _dot_internal(c, t[n], s[n]) : 0.0
-        end;
-        init=0.0,
-    )
+    bitstype = Val(isbitstype(eltype(T)))
+    return sum(eachindex(t, s); init=0.0) do i
+        if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
+            _dot_internal(c, t[i], s[i])::Float64
+        else
+            0.0
+        end
+    end
 end
 
 function _add_to_primal_internal(
@@ -409,7 +410,7 @@ function rrule!!(
     return a, fill!_pullback!!
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:array_legacy})
+@unstable function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:array_legacy})
     _x = Ref(5.0)
     _dx = randn_tangent(Xoshiro(123456), _x)
 
@@ -555,7 +556,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:array_legacy}
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:array_legacy})
+@unstable function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:array_legacy})
     test_cases = Any[(
         false,
         :none,

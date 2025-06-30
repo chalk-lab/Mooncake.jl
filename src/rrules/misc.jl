@@ -78,10 +78,12 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     return y, pb!!
 end
 
-@inline _get_fdata_field(_, t::Union{Tuple,NamedTuple}, f) = getfield(t, f)
-@inline _get_fdata_field(_, data::FData, f) = val(getfield(data.data, f))
-@inline _get_fdata_field(primal, ::NoFData, f) = uninit_fdata(getfield(primal, f))
-@inline _get_fdata_field(_, t::MutableTangent, f) = fdata(val(getfield(t.fields, f)))
+@unstable begin
+    @inline _get_fdata_field(_, t::Union{Tuple,NamedTuple}, f) = getfield(t, f)
+    @inline _get_fdata_field(_, data::FData, f) = val(getfield(data.data, f))
+    @inline _get_fdata_field(primal, ::NoFData, f) = uninit_fdata(getfield(primal, f))
+    @inline _get_fdata_field(_, t::MutableTangent, f) = fdata(val(getfield(t.fields, f)))
+end
 
 increment_field_rdata!(dx::MutableTangent, ::NoRData, ::Val) = dx
 increment_field_rdata!(dx::NoFData, ::NoRData, ::Val) = dx
@@ -158,7 +160,7 @@ function lsetfield_rrule(
     return y, pb!!
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:misc})
+@unstable function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:misc})
 
     # Data which needs to not be GC'd.
     _x = Ref(5.0)

@@ -83,7 +83,9 @@ rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(acosd), _) = (2 * 0.9 * rand(rng
 rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(acos), _) = (2 * 0.9 * rand(rng) - 0.9,)
 rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(sqrt), _) = (rand(rng) + 1e-3,)
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:low_level_maths})
+@unstable function generate_hand_written_rrule!!_test_cases(
+    rng_ctor, ::Val{:low_level_maths}
+)
     rng = Xoshiro(123)
     test_cases = Any[]
     foreach(DiffRules.diffrules(; filter_modules=nothing)) do (M, f, arity)

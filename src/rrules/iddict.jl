@@ -52,7 +52,9 @@ function _dot_internal(c::MaybeCache, p::T, q::T) where {T<:IdDict}
     key = (p, q)
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
-    return sum([_dot_internal(c, p[k], q[k]) for k in keys(p)]; init=0.0)
+    return sum(keys(p); init=0.0) do k
+        _dot_internal(c, p[k], q[k])::Float64
+    end
 end
 function _add_to_primal_internal(
     c::MaybeCache, p::IdDict{K,V}, t::IdDict{K}, unsafe::Bool
@@ -202,7 +204,7 @@ function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:iddict})
+@unstable function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:iddict})
     test_cases = Any[
         (false, :stability, nothing, Base.rehash!, IdDict(true => 5.0, false => 4.0), 10),
         (false, :none, nothing, setindex!, IdDict(true => 5.0, false => 4.0), 3.0, false),
