@@ -28,15 +28,11 @@ function skip_instability_check(::Type{NT}) where {K,V,NT<:NamedTuple{K,V}}
 end
 
 
-function TestUtils.test_hook(_, ::typeof(TestUtils.test_tangent_interface), rng, p; kws...)
-    allow_unstable_given_unstable_type(typeof(p)) do
-        TestUtils._test_tangent_interface(rng, p; kws...)
-    end
+function TestUtils.test_hook(f, ::typeof(TestUtils.test_tangent_interface), _, p; kws...)
+    allow_unstable_given_unstable_type(f, typeof(p))
 end
-function TestUtils.test_hook(_, ::typeof(TestUtils.test_tangent_splitting), rng, p; kws...)
-    allow_unstable_given_unstable_type(typeof(p)) do
-        TestUtils._test_tangent_splitting(rng, p; kws...)
-    end
+function TestUtils.test_hook(f, ::typeof(TestUtils.test_tangent_splitting), _, p; kws...)
+    allow_unstable_given_unstable_type(f, typeof(p))
 end
 
 
