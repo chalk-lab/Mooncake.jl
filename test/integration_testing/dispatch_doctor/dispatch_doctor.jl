@@ -38,7 +38,6 @@ end
 function TestUtils.test_hook(::Any, ::typeof(TestUtils.check_allocs), f, x...)
     allow_unstable_given_unstable_type(typeof(x)) do
         f(x...)
-        nothing
     end
 end
 function TestUtils.test_hook(::Any, ::typeof(TestUtils.count_allocs), f, x...)
