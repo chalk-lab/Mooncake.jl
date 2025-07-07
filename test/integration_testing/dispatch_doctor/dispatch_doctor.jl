@@ -27,14 +27,12 @@ function skip_instability_check(::Type{NT}) where {K,V,NT<:NamedTuple{K,V}}
     skip_instability_check(V)
 end
 
-
 function TestUtils.test_hook(f, ::typeof(TestUtils.test_tangent_interface), _, p; kws...)
     allow_unstable_given_unstable_type(f, typeof(p))
 end
 function TestUtils.test_hook(f, ::typeof(TestUtils.test_tangent_splitting), _, p; kws...)
     allow_unstable_given_unstable_type(f, typeof(p))
 end
-
 
 include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
 

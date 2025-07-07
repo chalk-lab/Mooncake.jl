@@ -177,10 +177,18 @@ defining custom behavior.
 """
 test_hook(f, caller, args...; kws...) = f()
 
-test_opt(x...) = test_hook(test_opt, x...) do; test_opt_internal(Shim(), x...); end
+function test_opt(x...)
+    test_hook(test_opt, x...) do
+        test_opt_internal(Shim(), x...)
+    end
+end
 test_opt_internal(::Any, x...) = throw(error("Load JET to use this function."))
 
-report_opt(tt) = test_hook(report_opt, tt) do; report_opt_internal(Shim(), tt); end
+function report_opt(tt)
+    test_hook(report_opt, tt) do
+        report_opt_internal(Shim(), tt)
+    end
+end
 report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
 
 """
@@ -770,7 +778,6 @@ function run_rrule!!_test_cases(rng_ctor, v::Val)
     run_hand_written_rrule!!_test_cases(rng_ctor, v)
     return run_derived_rrule!!_test_cases(rng_ctor, v)
 end
-
 
 """
     test_tangent(rng::AbstractRNG, p, T; interface_only=false, perf=true)
