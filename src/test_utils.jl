@@ -1031,14 +1031,19 @@ details.
 To verify that this is the case, ensure that all tests in `test_tangent_interface` pass.
 """
 function test_tangent_performance(rng::AbstractRNG, p::P) where {P}
+    return test_hook(test_tangent_performance, rng, p) do
+        _test_tangent_performance(rng, p)
+    end
+end
 
+function _test_tangent_performance(rng::AbstractRNG, p::P) where {P}
     # Should definitely infer, because tangent type must be known statically from primal.
     z = @inferred zero_tangent(p)
     t = @inferred randn_tangent(rng, p)
 
     # Computing the tangent type must always be type stable and allocation-free.
     @inferred tangent_type(P)
-    @test (@allocations tangent_type(P)) == 0
+    @test count_allocs(tangent_type, P) == 0
 
     # Check there are no allocations when there ought not to be.
     if !__tangent_generation_should_allocate(P)
