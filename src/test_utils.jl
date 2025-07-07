@@ -160,8 +160,6 @@ using Mooncake:
     NoRData,
     rdata_type,
     rdata
-using Preferences: load_preference, get_uuid
-using DispatchDoctor: type_instability, allow_unstable as _allow_unstable
 
 struct Shim end
 
