@@ -6,7 +6,7 @@ using Mooncake: Mooncake, TestUtils, Tangent
 using DispatchDoctor: allow_unstable, type_instability
 
 TestUtils.test_hook(::Any, ::typeof(TestUtils.test_opt), ::Any...) = nothing
-TestUtils.test_hook(::Any, ::typeof(TestUtils.report_opt), ::Any...) = nothing
+TestUtils.test_hook(::Any, ::typeof(TestUtils.report_opt), tt) = nothing
 function TestUtils.test_hook(
     f, ::typeof(Mooncake.generate_hand_written_rrule!!_test_cases), ::Any...
 )
@@ -18,7 +18,8 @@ function TestUtils.test_hook(
     allow_unstable(f)
 end
 
-# Automatically skip instability checks for types which are themselves unstable.
+# Automatically skip instability checks for types which are themselves unstable,
+# or which are unreasonably hard to infer.
 function allow_unstable_given_unstable_type(f::F, ::Type{T}) where {F,T}
     skip_instability_check(T) ? allow_unstable(f) : f()
 end
@@ -56,6 +57,11 @@ function TestUtils.test_hook(
 end
 function TestUtils.test_hook(
     f, ::typeof(TestUtils.test_tangent_splitting), ::Any, p; kws...
+)
+    allow_unstable_given_unstable_type(f, typeof(p))
+end
+function TestUtils.test_hook(
+    f, ::typeof(TestUtils.test_tangent_performance), ::Any, p; kws...
 )
     allow_unstable_given_unstable_type(f, typeof(p))
 end
