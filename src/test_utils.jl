@@ -165,21 +165,22 @@ using DispatchDoctor: type_instability, allow_unstable as _allow_unstable
 
 struct Shim end
 
-const DD_ENABLED = let uuid = get_uuid(@__MODULE__)
-    mode = load_preference(uuid, "dispatch_doctor_mode")
+"""
+    test_hook(f, caller, ::Any...; kws...)
 
-    mode ∉ (nothing, "disable")
-end
+A function which can alter the behavior of a given test. `f` is the function
+that is normally executed, `caller` is the function this is being called from,
+and `args` and `kws` are the arguments that were passed to `caller`.
 
-allow_unstable(f) = @static DD_ENABLED ? _allow_unstable(f) : f()
+Normally, `f()` is executed. However, this can be overridden by an integration test
+defining custom behavior.
+"""
+test_hook(f, caller, args...; kws...) = f()
 
-# Note: When you run JET on code that actively has DispatchDoctor checking for type
-# instabilities, there are a lot of "errors" that get raised but which aren't real errors.
-# Therefore, we disable the JET tests when DispatchDoctor is enabled.
-test_opt(x...) = @static DD_ENABLED ? nothing : test_opt_internal(Shim(), x...)
+test_opt(x...) = test_hook(test_opt, x...) do; test_opt_internal(Shim(), x...); end
 test_opt_internal(::Any, x...) = throw(error("Load JET to use this function."))
 
-report_opt(tt) = @static DD_ENABLED ? nothing : report_opt_internal(Shim(), tt)
+report_opt(tt) = test_hook(report_opt, tt) do; report_opt_internal(Shim(), tt); end
 report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
 
 """
@@ -770,37 +771,6 @@ function run_rrule!!_test_cases(rng_ctor, v::Val)
     return run_derived_rrule!!_test_cases(rng_ctor, v)
 end
 
-"""
-    allow_unstable_given_unstable_type(f::F, ::Type{T}) where {F,T}
-
-Automatically skip instability checks for types which are themselves unstable.
-Only relevant if `DD_ENABLED` is `true`.
-"""
-function allow_unstable_given_unstable_type(f::F, ::Type{T}) where {F,T}
-    @static if !DD_ENABLED
-        return f()
-    else
-        if skip_instability_check(T)
-            return allow_unstable(f)
-        else
-            return f()
-        end
-    end
-end
-function skip_instability_check(::Type{T}) where {T}
-    return type_instability(T) ||
-           (isstructtype(T) && any(skip_instability_check, fieldtypes(T)))
-end
-
-function skip_instability_check(::Type{<:Tangent{Tfields}}) where {Tfields}
-    return skip_instability_check(Tfields)
-end
-function skip_instability_check(::Type{NT}) where {NT<:NamedTuple}
-    return true  # UnionAll
-end
-function skip_instability_check(::Type{NT}) where {K,V,NT<:NamedTuple{K,V}}
-    return skip_instability_check(V)
-end
 
 """
     test_tangent(rng::AbstractRNG, p, T; interface_only=false, perf=true)
@@ -888,7 +858,7 @@ simply to run this function, and see whether it errors / produces a failing test
 """
 function test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) where {P}
     @nospecialize rng p
-    return allow_unstable_given_unstable_type(P) do
+    return test_hook(test_tangent_interface, rng, p; interface_only) do
         _test_tangent_interface(rng, p; interface_only)
     end
 end
@@ -1031,14 +1001,7 @@ function test_set_tangent_field!_correctness(t1::T, t2::T) where {T<:MutableTang
 end
 
 function check_allocs(f, x...)
-    # Note: When you are running DispatchDoctor checking for type instabilities, there can
-    # be extra allocations which are not "real". So when DD is enabled,
-    # we skip the allocation checks.
-    if DD_ENABLED
-        allow_unstable_given_unstable_type(typeof(x)) do
-            f(x...)
-        end
-    else
+    test_hook(check_allocs, f, x...) do
         check_allocs_internal(Shim(), f, x...)
     end
 end
@@ -1154,13 +1117,7 @@ end
 
 # Function barrier to ensure inference in value types.
 function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-    @static if DD_ENABLED
-        # If DispatchDoctor is enabled on this package, the allocations are meaningless,
-        # so we return 0 instead.
-        allow_unstable_given_unstable_type(typeof(x)) do
-            (f(x...); 0)
-        end
-    else
+    test_hook(count_allocs, f, x...) do
         @allocations f(x...)
     end
 end
@@ -1223,7 +1180,7 @@ Ensure that [`test_tangent_interface`](@ref) runs for `p` before running these t
 - [`Mooncake.tangent`](@ref) (binary method)
 """
 function test_tangent_splitting(rng::AbstractRNG, p::P; test_opt_flag=true) where {P}
-    return allow_unstable_given_unstable_type(P) do
+    return test_hook(test_tangent_splitting, rng, p; test_opt_flag) do
         _test_tangent_splitting_internal(rng, p; test_opt_flag)
     end
 end
