@@ -2,7 +2,7 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using Mooncake: Mooncake, TestUtils
+using Mooncake: Mooncake, TestUtils, Tangent
 using DispatchDoctor: allow_unstable, type_instability
 
 TestUtils.test_hook(_, ::typeof(TestUtils.test_opt), ::Any...) = nothing
