@@ -7,8 +7,6 @@ using DispatchDoctor: allow_unstable, type_instability
 
 TestUtils.test_hook(_, ::typeof(TestUtils.test_opt), ::Any...) = nothing
 TestUtils.test_hook(_, ::typeof(TestUtils.report_opt), ::Any...) = nothing
-TestUtils.test_hook(_, ::typeof(TestUtils.check_allocs), f, x...) = (f(x...); nothing)
-TestUtils.test_hook(_, ::typeof(TestUtils.count_allocs), f, x...) = (f(x...); 0)
 function TestUtils.test_hook(
     f, ::typeof(Mooncake.generate_hand_written_rrule!!_test_cases), ::Any...
 )
@@ -37,6 +35,18 @@ function skip_instability_check(::Type{NT}) where {K,V,NT<:NamedTuple{K,V}}
     skip_instability_check(V)
 end
 
+function TestUtils.test_hook(_, ::typeof(TestUtils.check_allocs), f, x...)
+    allow_unstable_given_unstable_type(typeof(x)) do
+        f(x...)
+        nothing
+    end
+end
+function TestUtils.test_hook(_, ::typeof(TestUtils.count_allocs), f, x...)
+    allow_unstable_given_unstable_type(typeof(x)) do
+        f(x...)
+        0
+    end
+end
 function TestUtils.test_hook(f, ::typeof(TestUtils.test_tangent_interface), _, p; kws...)
     allow_unstable_given_unstable_type(f, typeof(p))
 end
