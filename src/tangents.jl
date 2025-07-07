@@ -1008,6 +1008,7 @@ aliasing. If `c` is a `NoCache` then assume no circular references or aliasing i
 `p` or `q`.
 """
 function _diff_internal(c::MaybeCache, p::P, q::P) where {P}
+    @assert typeof(p) == typeof(q) # this function implicitly assumes p and q have identical type
     TP = tangent_type(P)
     TP === NoTangent && return NoTangent()
     T = Tangent{NamedTuple{(),Tuple{}}}
