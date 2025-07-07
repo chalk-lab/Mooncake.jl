@@ -52,21 +52,13 @@ jobs:
           - '1'
         arch:
           - x64
-        preferences:
-          - ''
         include:
           - test_group: 'basic'
             version: 'lts'
             arch: x86
-            preferences: ''
-          - test_group: 'basic-dd'
-            version: '1'
-            arch: x64
-            preferences: 'dispatch_doctor_mode="error"'
           - test_group: 'rrules/array_legacy'
             version: 'lts'
             arch: x64
-            preferences: ''
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
@@ -76,13 +68,6 @@ jobs:
           include-all-prereleases: false
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
-      - name: Set Preferences
-        if: matrix.preferences != ''
-        run: |
-          cat <<EOF >> Project.toml
-          [preferences.Mooncake]
-          ${{ matrix.preferences }}
-          EOF
       - uses: julia-actions/julia-runtest@v1
         env:
           TEST_GROUP: ${{ matrix.test_group }}
@@ -109,6 +94,7 @@ jobs:
           {test_type: 'integration_testing', label: 'array'},
           {test_type: 'integration_testing', label: 'bijectors'},
           {test_type: 'integration_testing', label: 'diff_tests'},
+          {test_type: 'integration_testing', label: 'dispatch_doctor'},
           {test_type: 'integration_testing', label: 'distributions'},
           {test_type: 'integration_testing', label: 'gp'},
           {test_type: 'integration_testing', label: 'logexpfunctions'},
