@@ -2,13 +2,23 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using Mooncake: TestUtils
+using Mooncake: Mooncake, TestUtils
 using DispatchDoctor: allow_unstable, type_instability
 
 TestUtils.test_hook(_, ::typeof(TestUtils.test_opt), ::Any...) = nothing
 TestUtils.test_hook(_, ::typeof(TestUtils.report_opt), ::Any...) = nothing
 TestUtils.test_hook(_, ::typeof(TestUtils.check_allocs), f, x...) = (f(x...); nothing)
 TestUtils.test_hook(_, ::typeof(TestUtils.count_allocs), f, x...) = (f(x...); 0)
+function TestUtils.test_hook(
+    f, ::typeof(Mooncake.generate_hand_written_rrule!!_test_cases), ::Any...
+)
+    allow_unstable(f)
+end
+function TestUtils.test_hook(
+    f, ::typeof(Mooncake.generate_derived_rrule!!_test_cases), ::Any...
+)
+    allow_unstable(f)
+end
 
 # Automatically skip instability checks for types which are themselves unstable.
 function allow_unstable_given_unstable_type(f::F, ::Type{T}) where {F,T}
