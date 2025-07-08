@@ -17,21 +17,8 @@ function is_dppl_ldf_tangent(x)
     fields = x.fields
     propertynames(fields) == (:model, :varinfo, :context, :adtype, :prep) || return false
 
-    # Check that model and varinfo are tangents with expected structure
-    fields.model isa Tangent || return false
-    fields.varinfo isa Tangent || return false
-
-    # Verify model tangent structure
-    if hasfield(typeof(fields.model), :fields)
-        model_fields = propertynames(fields.model.fields)
-        all(f in model_fields for f in (:f, :args, :defaults, :context)) || return false
-    end
-
-    # Verify varinfo tangent structure  
-    if hasfield(typeof(fields.varinfo), :fields)
-        varinfo_fields = propertynames(fields.varinfo.fields)
-        all(f in varinfo_fields for f in (:metadata, :logp, :num_produce)) || return false
-    end
+    is_dppl_varinfo_tangent(fields.varinfo) || return false
+    is_dppl_model_tangent(fields.model) || return false
 
     return true
 end
