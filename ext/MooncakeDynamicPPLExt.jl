@@ -67,7 +67,7 @@ function is_dppl_metadata_tangent(x)
 end
 
 function Mooncake.set_to_zero!!(x)
-    if x isa Tangent && is_dppl_ldf_tangent(x)
+    if is_dppl_ldf_tangent(x)
         model_f_tangent = x.fields.model.fields.f
         is_closure = false
         if model_f_tangent isa MutableTangent
