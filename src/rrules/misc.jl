@@ -78,10 +78,12 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     return y, pb!!
 end
 
-@inline _get_fdata_field(_, t::Union{Tuple,NamedTuple}, f) = getfield(t, f)
-@inline _get_fdata_field(_, data::FData, f) = val(getfield(data.data, f))
-@inline _get_fdata_field(primal, ::NoFData, f) = uninit_fdata(getfield(primal, f))
-@inline _get_fdata_field(_, t::MutableTangent, f) = fdata(val(getfield(t.fields, f)))
+@unstable @inline _get_fdata_field(_, t::Union{Tuple,NamedTuple}, f) = getfield(t, f)
+@unstable @inline _get_fdata_field(_, data::FData, f) = val(getfield(data.data, f))
+@unstable @inline _get_fdata_field(primal, ::NoFData, f) = uninit_fdata(getfield(primal, f))
+@unstable @inline _get_fdata_field(_, t::MutableTangent, f) = fdata(
+    val(getfield(t.fields, f))
+)
 
 increment_field_rdata!(dx::MutableTangent, ::NoRData, ::Val) = dx
 increment_field_rdata!(dx::NoFData, ::NoRData, ::Val) = dx

@@ -57,7 +57,7 @@ end
 end
 
 # Helper for build_fdata
-@inline function __get_data(::Type{P}, x, f, n) where {P}
+@unstable @inline function __get_data(::Type{P}, x, f, n) where {P}
     tmp = getfield(f, n)
     return ismutabletype(P) ? zero_tangent(getfield(x, n), tmp) : tmp
 end

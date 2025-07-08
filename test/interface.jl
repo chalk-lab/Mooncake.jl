@@ -1,8 +1,4 @@
-function count_allocs(fargs::P) where {P<:Tuple}
-    f, args... = fargs
-    f(args...) # warmup
-    return @allocations f(args...)
-end
+using Mooncake.TestUtils: count_allocs
 
 @testset "interface" begin
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
@@ -56,7 +52,7 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs((value_and_gradient!!, cache, fargs...))
+            alloc_count = count_allocs(value_and_gradient!!, cache, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
@@ -100,7 +96,7 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs((value_and_pullback!!, cache, ȳ, fargs...))
+            alloc_count = count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
@@ -143,38 +139,46 @@ end
         # Test when function outputs an invalid type. 
         test_to_fail_cases = []
 
-        # ---- Aliasing Cases ----
-        alias_vector = [[1, 2], [3, 4]]
+        # Aliasing Cases
+        alias_vector = [rand(Int64, 2), rand(Int64, 2)]
         alias_vector[2] = alias_vector[1]
-        push!(test_to_fail_cases, alias_vector)
+        push!(test_to_fail_cases, (identity, alias_vector))
 
-        alias_tuple = ((1.0, 2.0), (3.0, 4.0))
+        alias_tuple = (rand(2), rand(2))
         alias_tuple = (alias_tuple[1], alias_tuple[1])
-        push!(test_to_fail_cases, alias_tuple)
+        push!(test_to_fail_cases, (identity, alias_tuple))
 
-        # ---- Circular Referencing Cases ----
-        circular_vector = Any[[1.0, 2.0]]
+        # Circular Referencing Cases
+        circular_vector = Any[rand(2)]
         push!(circular_vector, circular_vector)
-        push!(test_to_fail_cases, circular_vector)
+        push!(test_to_fail_cases, (identity, circular_vector))
 
         mutable struct CircularStruct
             data::Any
             numeric::Int64
         end
 
-        circ_obj = CircularStruct(nothing, 1)
+        circ_obj = CircularStruct(nothing, rand(Int64, 1)[1])
         circ_obj.data = circ_obj  # Self-referential struct
-        push!(test_to_fail_cases, circ_obj)
+        push!(test_to_fail_cases, (identity, circ_obj))
 
-        # ---- Unsupported Types ----
-        push!(test_to_fail_cases, Ptr{Float64}(12345))
-        push!(test_to_fail_cases, (1, Ptr{Float64}(12345)))
-        push!(test_to_fail_cases, [Ptr{Float64}(12345)])
-
-        @test_throws(
-            Mooncake.ValueAndPullbackReturnTypeError,
-            Mooncake.__exclude_unsupported_output.(test_to_fail_cases)
+        # Exclude `Ptr` typed input arguments and returned values
+        push!(test_to_fail_cases, ((x) -> Ptr{Float64}(x[1]), rand(UInt, 1)))
+        push!(
+            test_to_fail_cases,
+            ((x) -> (rand(UInt, 1), [Ptr{Float64}(x_i) for x_i in x]), rand(UInt, 5)),
         )
+
+        @testset "prepare_pullback_cache checks" for (f, test_case) in test_to_fail_cases
+            @test_throws(
+                Mooncake.ValueAndPullbackReturnTypeError,
+                Mooncake.__exclude_unsupported_output(f(test_case))
+            )
+            @test_throws(
+                Mooncake.ValueAndPullbackReturnTypeError,
+                Mooncake.prepare_pullback_cache(f, test_case)
+            )
+        end
 
         additional_test_set = Mooncake.tangent_test_cases()
 
