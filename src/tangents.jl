@@ -340,7 +340,7 @@ tangent_type(::Type{Core.TypeofVararg}) = NoTangent
 
 tangent_type(::Type{P}) where {P<:Union{UInt8,UInt16,UInt32,UInt64,UInt128}} = NoTangent
 
-tangent_type(::Type{P}) where {P<:Union{Int8,Int16,Int32,Int64,Int128}} = NoTangent
+tangent_type(::Type{P}) where {P<:Union{Int8,Int16,Int32,Int64,Int128,BigInt}} = NoTangent
 
 tangent_type(::Type{<:Core.Builtin}) = NoTangent
 
@@ -1194,6 +1194,7 @@ tangents, but they're unable to check that `increment!!` is correct in an absolu
         (UnitRange{Int}(5, 7), NoTangent),
         (Array, NoTangent),
         (Float64, NoTangent),
+        (BigInt, NoTangent),
         (Union{Float64,Float32}, NoTangent),
         (Union, NoTangent),
         (UnionAll, NoTangent),
