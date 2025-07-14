@@ -13,13 +13,13 @@ sr(x) = StableRNG(x)
         (false, Dense(2, 4), randn(sr(1), P, 2, 3)),
         # tests for https://github.com/chalk-lab/Mooncake.jl/issues/563
         (
-            false,
+            true,
             MultiHeadAttention(4; attention_dropout_probability=0.1f0),
             randn(sr(1), P, 4, 4),
         ),
         # tests for https://github.com/chalk-lab/Mooncake.jl/issues/622
         (
-            false,
+            true,
             Chain(Dense(1, 10, relu), Dense(10, 10, relu), Dense(10, 1)),
             randn(sr(2), P, 1, 1_000),
         ),
