@@ -116,8 +116,8 @@ sr(x) = StableRNG(x)
             rng, f, x, ps, st; is_primitive=false, interface_only, unsafe_perturb=true
         )
     end
-    
-    @testset "Lux dropout #563"
+
+    @testset "Lux dropout #563" begin
         rng = sr(123546)
         x = randn(rng, Float32, 4, 4)
         fn = sum ∘ sum ∘ first ∘ Lux.apply
