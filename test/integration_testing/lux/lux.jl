@@ -123,7 +123,7 @@ sr(x) = StableRNG(x)
         fn = sum ∘ sum ∘ first ∘ Lux.apply
 
         model = MultiHeadAttention(4; attention_dropout_probability=0.1f0)
-        ps, st = Lux.setup(Random.MersenneTwister(123), model)
+        ps, st = Lux.setup(rng, model)
 
         cache = Mooncake.build_rrule(fn, model, x, ps, st)
         value_and_gradient!!(cache, fn, model, x, ps, st)
