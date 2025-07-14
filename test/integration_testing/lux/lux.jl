@@ -116,4 +116,16 @@ sr(x) = StableRNG(x)
             rng, f, x, ps, st; is_primitive=false, interface_only, unsafe_perturb=true
         )
     end
+    
+    @testset "Lux dropout #563"
+        rng = sr(123546)
+        x = randn(rng, Float32, 4, 4)
+        fn = sum ∘ sum ∘ first ∘ Lux.apply
+
+        model = MultiHeadAttention(4; attention_dropout_probability=0.1f0)
+        ps, st = Lux.setup(Random.MersenneTwister(123), model)
+
+        cache = Mooncake.build_rrule(fn, model, x, ps, st)
+        value_and_gradient!!(cache, fn, model, x, ps, st)
+    end
 end
