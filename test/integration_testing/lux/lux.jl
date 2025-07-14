@@ -11,6 +11,7 @@ sr(x) = StableRNG(x)
     P = Float32
     @testset "$(typeof(f))" for (interface_only, f, x_f32) in Any[
         (false, Dense(2, 4), randn(sr(1), P, 2, 3)),
+        (false, MultiHeadAttention(4; attention_dropout_probability=0.1f0), randn(sr(1), P, 4, 4)),
         (false, Dense(2, 4, gelu), randn(sr(2), P, 2, 3)),
         (false, Dense(2, 4, gelu; use_bias=false), randn(sr(3), P, 2, 3)),
         (false, Chain(Dense(2, 4, relu), Dense(4, 3)), randn(sr(4), P, 2, 3)),
@@ -115,17 +116,5 @@ sr(x) = StableRNG(x)
         test_rule(
             rng, f, x, ps, st; is_primitive=false, interface_only, unsafe_perturb=true
         )
-    end
-
-    @testset "Lux dropout #563" begin
-        rng = sr(123546)
-        x = randn(rng, Float32, 4, 4)
-        fn = sum ∘ sum ∘ first ∘ Lux.apply
-
-        model = MultiHeadAttention(4; attention_dropout_probability=0.1f0)
-        ps, st = Lux.setup(rng, model)
-
-        cache = Mooncake.build_rrule(fn, model, x, ps, st)
-        value_and_gradient!!(cache, fn, model, x, ps, st)
     end
 end
