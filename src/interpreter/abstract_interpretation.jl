@@ -75,7 +75,7 @@ function _show_interp(io::IO, ::MIME"text/plain", ::MooncakeInterpreter)
     return print(io, "MooncakeInterpreter()")
 end
 
-MooncakeInterpreter() = MooncakeInterpreter(DefaultCtx)
+MooncakeInterpreter(; world=Base.get_world_counter()) = MooncakeInterpreter(DefaultCtx; world)
 
 context_type(::MooncakeInterpreter{C}) where {C} = C
 
@@ -203,16 +203,16 @@ Globally cached interpreter. Should only be accessed via `get_interpreter`.
 const GLOBAL_INTERPRETER = Ref(MooncakeInterpreter())
 
 """
-    get_interpreter()
+    get_interpreter(; world=Base.get_world_counter)
 
 Returns a `MooncakeInterpreter` appropriate for the current world age. Will use a cached
 interpreter if one already exists for the current world age, otherwise creates a new one.
 
 This should be prefered over constructing a `MooncakeInterpreter` directly.
 """
-function get_interpreter()
-    if GLOBAL_INTERPRETER[].world != Base.get_world_counter()
-        GLOBAL_INTERPRETER[] = MooncakeInterpreter()
+function get_interpreter(; world=Base.get_world_counter())
+    if GLOBAL_INTERPRETER[].world != world
+        GLOBAL_INTERPRETER[] = MooncakeInterpreter(; world)
     end
     return GLOBAL_INTERPRETER[]
 end
