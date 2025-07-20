@@ -1535,7 +1535,7 @@ function test_rule_and_type_interactions(rng::AbstractRNG, p::P) where {P}
                 interface_only=true,
                 is_primitive=true,
                 perf_flag=:none,
-                interp=Mooncake.get_interpreter(ReverseMode),
+                mode=ReverseMode,
             )
         end
     end
