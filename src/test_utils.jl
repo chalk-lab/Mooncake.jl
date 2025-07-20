@@ -936,12 +936,12 @@ function test_rule(
             # Test the interface again, in order to verify that caching is working correctly.
             @testset "Interface (2)" begin
                 if test_fwd
-                    interp = get_interpreter(ForwardMode)
-                    test_frule_interface(x_ẋ...; frule=build_frule(interp, sig; debug_mode))
+                    frule = build_frule(get_interpreter(ForwardMode), sig; debug_mode)
+                    test_frule_interface(x_ẋ...; frule)
                 end
                 if test_rvs
-                    interp = get_interpreter(ReverseMode)
-                    test_rrule_interface(x_x̄...; rrule=build_rrule(interp, sig; debug_mode))
+                    rrule = build_rrule(get_interpreter(ReverseMode), sig; debug_mode)
+                    test_rrule_interface(x_x̄...; rrule)
                 end
             end
         end
@@ -972,6 +972,7 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     GC.@preserve memory @testset "$f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
+
         test_rule(
             rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
         )
