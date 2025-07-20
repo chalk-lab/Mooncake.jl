@@ -3,7 +3,6 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using Distributions, DynamicPPL, Mooncake, StableRNGs, Test
-using Mooncake: ForwardMode, ReverseMode
 using Mooncake.TestUtils: test_rule
 
 @model function simple_model()
@@ -119,9 +118,6 @@ end
         @info name
         f, x = build_turing_problem(StableRNG(123), model, ex)
         rng = StableRNG(123456)
-        is_primitive = false
-        unsafe_perturb = true
-        test_rule(rng, f, x; interface_only, is_primitive, unsafe_perturb, mode=ForwardMode)
-        test_rule(rng, f, x; interface_only, is_primitive, unsafe_perturb, mode=ReverseMode)
+        test_rule(rng, f, x; interface_only, is_primitive=false, unsafe_perturb=true)
     end
 end

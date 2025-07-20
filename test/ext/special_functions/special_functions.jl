@@ -50,8 +50,7 @@ using Mooncake.TestUtils: test_rule
         end...,
         (:stability_and_allocs, logfactorial, 3),
     )
-        test_rule(StableRNG(123456), f, x...; perf_flag, mode=ForwardMode)
-        test_rule(StableRNG(123456), f, x...; perf_flag, mode=ReverseMode)
+        test_rule(StableRNG(123456), f, x...; perf_flag)
     end
     @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
         map([Float64, Float32]) do P
@@ -74,8 +73,6 @@ using Mooncake.TestUtils: test_rule
         (:allocs, SpecialFunctions.loggamma1p, -0.3),
         (:none, SpecialFunctions.lambdaeta, 5.0),
     )
-        is_primitive = false
-        test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive, mode=ForwardMode)
-        test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive, mode=ReverseMode)
+        test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
     end
 end

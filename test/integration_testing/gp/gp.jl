@@ -3,7 +3,6 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AbstractGPs, KernelFunctions, LinearAlgebra, Mooncake, StableRNGs, Test
-using Mooncake: ForwardMode, ReverseMode
 using Mooncake.TestUtils: test_rule
 
 @testset "gp" begin
@@ -51,8 +50,7 @@ using Mooncake.TestUtils: test_rule
             (logpdf, fx, rand(rng, fx)),
         ]
             @info typeof(x)
-            test_rule(rng, x...; is_primitive=false, unsafe_perturb=true, mode=ForwardMode)
-            test_rule(rng, x...; is_primitive=false, unsafe_perturb=true, mode=ReverseMode)
+            test_rule(rng, x...; is_primitive=false, unsafe_perturb=true)
         end
     end
 end

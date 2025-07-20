@@ -290,8 +290,9 @@ end
     )
         sig = _typeof((f, x...))
         @info "$n: $sig"
+        mode = ReverseMode
         TestUtils.test_rule(
-            Xoshiro(123456), f, x...; perf_flag, interface_only, is_primitive=false
+            Xoshiro(123456), f, x...; perf_flag, interface_only, is_primitive=false, mode
         )
         # TestUtils.test_rule(
         #     Xoshiro(123456),
@@ -344,6 +345,7 @@ end
             ones(3);
             interface_only=false,
             is_primitive=false,
+            mode=Mooncake.ReverseMode,
         )
 
         # BenchmarkTools not working due to world age problems. Provided that this code

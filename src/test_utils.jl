@@ -155,7 +155,11 @@ using Mooncake:
     Dual,
     Mode,
     ForwardMode,
-    ReverseMode
+    ReverseMode,
+    DebugRRule,
+    build_frule,
+    build_rrule,
+    get_interpreter
 
 struct Shim end
 
@@ -807,14 +811,15 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
 
 """
     test_rule(
-        rng, x...;
-        interface_only=false,
+        rng::AbstractRNG,
+        x...;
+        interface_only::Bool=false,
         is_primitive::Bool=true,
         perf_flag::Symbol=:none,
-        interp::Mooncake.MooncakeInterpreter=Mooncake.get_interpreter(),
+        mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
         debug_mode::Bool=false,
         unsafe_perturb::Bool=false,
-        forward::Bool=false,
+        print_results=true,
     )
 
 Run standardised tests on the `rule` for `x`.
@@ -826,8 +831,8 @@ though, in partcular `Ptr`s. In this case, the argument for which `randn_tangent
 readily defined should be a `CoDual` containing the primal, and a _manually_ constructed
 tangent field.
 
-This function uses [`Mooncake.build_rrule`](@ref) to construct a rule. This will use an
-`rrule!!` if one exists, and derive a rule otherwise.
+This function is intended for use with both hand-written rules and derived rules. If the
+signature associated to `x` corresponds to a primitive, a hand-written rule will be used.
 
 # Arguments
 - `rng::AbstractRNG`: a random number generator
@@ -855,9 +860,8 @@ This function uses [`Mooncake.build_rrule`](@ref) to construct a rule. This will
     this to `:stability` (at present we cannot verify whether a derived rule is type stable
     for technical reasons). If you believe that a hand-written rule should be _both_
     allocation-free and type-stable, set this to `:stability_and_allocs`.
-- `mode::Type{<:Mode}=ReverseMode`: the mode of AD to test.
-- `interp::Mooncake.MooncakeInterpreter=Mooncake.get_interpreter(mode)`: the abstract
-    interpreter to be used when testing this rule. The default should generally be used.
+- `mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing`: the mode of AD to
+    test. If `mode===nothing` (default), then both forward and reverse mode are tested.
 - `debug_mode::Bool=false`: whether or not the rule should be tested in debug mode.
     Typically this should be left at its default `false` value, but if you are finding that
     the tests are failing for a given rule, you may wish to temporarily set it to `true` in
@@ -872,34 +876,26 @@ function test_rule(
     interface_only::Bool=false,
     is_primitive::Bool=true,
     perf_flag::Symbol=:none,
-    mode::Type{<:Mode}=ReverseMode,
-    interp::Mooncake.MooncakeInterpreter=Mooncake.get_interpreter(mode),
+    mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
     debug_mode::Bool=false,
     unsafe_perturb::Bool=false,
     print_results=true,
 )
-    # Check we have a mode that we know how to handle.
-    mode <: Union{ForwardMode,ReverseMode} || error("Unhandled mode $mode")
-
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
 
     # Construct the rule.
     sig = _typeof(__get_primals(x))
-    if mode == ForwardMode
-        frule = Mooncake.build_frule(interp, sig; debug_mode)
-        rrule = missing
-    else
-        frule = missing
-        rrule = Mooncake.build_rrule(interp, sig; debug_mode)
-    end
+    test_fwd = mode in [nothing, ForwardMode]
+    test_rvs = mode in [nothing, ReverseMode]
+    fwd_interp = test_fwd ? get_interpreter(ForwardMode) : missing
+    rvs_interp = test_rvs ? get_interpreter(ReverseMode) : missing
+    frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
+    rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
 
     # If something is primitive, then the rule should be `rrule!!`.
-    if mode == ForwardMode
-        is_primitive && @test frule == frule!!
-    else
-        is_primitive && @test rrule == (debug_mode ? Mooncake.DebugRRule(rrule!!) : rrule!!)
-    end
+    test_fwd && is_primitive && @test frule == frule!!
+    test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
     x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
@@ -917,41 +913,35 @@ function test_rule(
         @testset "$(typeof(x))" begin
             # Test that the interface is basically satisfied (checks types / memory addresses).
             @testset "Interface (1)" begin
-                if mode == ForwardMode
-                    test_frule_interface(x_ẋ...; frule)
-                else
-                    test_rrule_interface(x_x̄...; rrule)
-                end
+                test_fwd && test_frule_interface(x_ẋ...; frule)
+                test_rvs && test_rrule_interface(x_x̄...; rrule)
             end
 
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
-                if mode == ForwardMode
-                    interface_only ||
-                        test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb)
-                else
-                    interface_only ||
-                        test_rrule_correctness(rng, x_x̄...; rrule, unsafe_perturb)
+                if test_fwd && !interface_only
+                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb)
+                end
+                if test_rvs && !interface_only
+                    test_rrule_correctness(rng, x_x̄...; rrule, unsafe_perturb)
                 end
             end
 
             # Test the performance of the rule.
             @testset "Performance" begin
-                if mode == ForwardMode
-                    test_frule_performance(perf_flag, frule, x_ẋ...)
-                else
-                    test_rrule_performance(perf_flag, rrule, x_x̄...)
-                end
+                test_fwd && test_frule_performance(perf_flag, frule, x_ẋ...)
+                test_rvs && test_rrule_performance(perf_flag, rrule, x_x̄...)
             end
 
             # Test the interface again, in order to verify that caching is working correctly.
             @testset "Interface (2)" begin
-                if mode == ForwardMode
-                    frule = Mooncake.build_frule(interp, sig; debug_mode)
-                    test_frule_interface(x_ẋ...; frule)
-                else
-                    rrule = Mooncake.build_rrule(interp, sig; debug_mode)
-                    test_rrule_interface(x_x̄...; rrule)
+                if test_fwd
+                    interp = get_interpreter(ForwardMode)
+                    test_frule_interface(x_ẋ...; frule=build_frule(interp, sig; debug_mode))
+                end
+                if test_rvs
+                    interp = get_interpreter(ReverseMode)
+                    test_rrule_interface(x_x̄...; rrule=build_rrule(interp, sig; debug_mode))
                 end
             end
         end

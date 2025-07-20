@@ -3,7 +3,6 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using LinearAlgebra, Mooncake, Random, StableRNGs, Test
-using Mooncake: ForwardMode, ReverseMode
 using Mooncake.TestUtils: test_rule
 
 @testset "misc_abstract_array" begin
@@ -110,8 +109,6 @@ using Mooncake.TestUtils: test_rule
         ),
     )
         @info "$(typeof((f, x...)))"
-        rng = StableRNG(123456)
-        test_rule(rng, f, x...; interface_only, is_primitive=false, mode=ForwardMode)
-        test_rule(rng, f, x...; interface_only, is_primitive=false, mode=ReverseMode)
+        test_rule(StableRNG(123456), f, x...; interface_only, is_primitive=false)
     end
 end

@@ -3,7 +3,6 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using Bijectors, LinearAlgebra, Mooncake, StableRNGs, Test
-using Mooncake: ForwardMode, ReverseMode
 using Mooncake.TestUtils: test_rule
 
 """
@@ -119,14 +118,7 @@ end
                 true
             end
         else
-            rng = StableRNG(123456)
-            is_primitive = false
-            test_rule(
-                rng, c.func, c.arg; is_primitive, unsafe_perturb=true, mode=ForwardMode
-            )
-            test_rule(
-                rng, c.func, c.arg; is_primitive, unsafe_perturb=true, mode=ReverseMode
-            )
+            test_rule(sr(123456), c.func, c.arg; is_primitive=false, unsafe_perturb=true)
         end
     end
 end
