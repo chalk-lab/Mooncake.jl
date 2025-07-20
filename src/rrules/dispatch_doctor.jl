@@ -4,7 +4,7 @@ module DispatchDoctorRules
 # the logic here is the same as other DispatchDoctor extensions
 # for, e.g., Enzyme and ChainRulesCore.
 
-import ..@zero_adjoint
+import ..@zero_derivative
 import ..DefaultCtx
 
 import DispatchDoctor._RuntimeChecks: is_precompiling, checking_enabled
