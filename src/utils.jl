@@ -3,9 +3,9 @@
 
 Central definition of typeof, which is specific to the use-required in this package.
 """
-_typeof(x) = Base._stable_typeof(x)
-_typeof(x::Tuple) = Tuple{tuple_map(_typeof, x)...}
-_typeof(x::NamedTuple{names}) where {names} = NamedTuple{names,_typeof(Tuple(x))}
+@unstable _typeof(x) = Base._stable_typeof(x)
+@unstable _typeof(x::Tuple) = Tuple{tuple_map(_typeof, x)...}
+@unstable _typeof(x::NamedTuple{names}) where {names} = NamedTuple{names,_typeof(Tuple(x))}
 
 """
     tuple_map(f::F, x::Tuple) where {F}
@@ -148,7 +148,7 @@ end
 Same as `map` but requires all elements of `x` to have equal length.
 The usual function `map` doesn't enforce this for `Array`s.
 """
-@inline function _map(f::F, x::Vararg{Any,N}) where {F,N}
+@unstable @inline function _map(f::F, x::Vararg{Any,N}) where {F,N}
     @assert allequal(map(length, x))
     return map(f, x...)
 end

@@ -453,6 +453,12 @@ function _control_flow_graph(blks::Vector{BBlock})::Core.Compiler.CFG
     preds = map(id -> sort(map(p -> id_to_num[p], preds_ids[id])), block_ids)
     succs = map(id -> sort(map(s -> id_to_num[s], succs_ids[id])), block_ids)
 
+    # Predecessor of entry block is `0`. This needs to be added in manually.
+    @static if VERSION >= v"1.11"
+        push!(preds[1], 0)
+    end
+
+    # Compute the statement numbers associated to each basic block.
     index = vcat(0, cumsum(map(length, blks))) .+ 1
     basic_blocks = map(eachindex(blks)) do n
         stmt_range = Core.Compiler.StmtRange(index[n], index[n + 1] - 1)

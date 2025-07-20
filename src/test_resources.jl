@@ -176,6 +176,14 @@ function make_P_union_array(T=Float32)
     return P_union_nothing_array{T}(T(1.0), nothing)
 end
 
+# https://github.com/chalk-lab/Mooncake.jl/issues/631
+struct P_adam_like
+    alphas::Vector{Float64}
+    values::Vector{Float64}
+    slopes::Vector{Float64}
+end
+const P_adam_like_union = Union{Nothing,P_adam_like}
+
 function build_big_isbits_struct()
     return FourFields(
         FiveFields(

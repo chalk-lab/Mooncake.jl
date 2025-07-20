@@ -2,7 +2,7 @@
 # General utilities
 #
 
-function parse_signature_expr(sig::Expr)
+@unstable function parse_signature_expr(sig::Expr)
     # Different parsing is required for `Tuple{...}` vs `Tuple{...} where ...`.
     if sig.head == :curly
         @assert sig.args[1] == :Tuple

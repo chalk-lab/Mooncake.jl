@@ -40,6 +40,9 @@ end
 end
 
 Mooncake.@zero_adjoint DefaultCtx Tuple{typeof(static_training_mode_check),Vararg}
+Mooncake.@zero_adjoint DefaultCtx Tuple{
+    typeof(LuxLib.Impl.generate_dropout_mask),AbstractRNG,Any,Any,Any,Any
+}
 
 # This is a really horrible hack that we need to do until Mooncake is able to support the
 # call-back-into-ad interface that ChainRules exposes.

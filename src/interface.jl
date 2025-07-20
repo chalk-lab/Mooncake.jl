@@ -196,9 +196,10 @@ end
 
 """
     __exclude_unsupported_output(y)
+    __exclude_func_with_unsupported_output(fx)
 
 Required for the robust design of [`value_and_pullback`](@ref), [`prepare_pullback_cache`](@ref).  
-Ensures that `y` contains no aliasing, circular references, `Ptr`s or non differentiable datatypes. 
+Ensures that `y` or returned value of `fx::Tuple{Tf, Targs...}` contains no aliasing, circular references, `Ptr`s or non differentiable datatypes. 
 In the forward pass f(args...) output can only return a "Tree" like datastructure with leaf nodes as primitive types.  
 Refer https://github.com/chalk-lab/Mooncake.jl/issues/517#issuecomment-2715202789 and related issue for details.  
 Internally calls [`__exclude_unsupported_output_internal!`](@ref).
@@ -207,6 +208,13 @@ The design is modelled after `zero_tangent`.
 function __exclude_unsupported_output(y::T) where {T}
     __exclude_unsupported_output_internal!(y, Set{UInt}())
     return nothing
+end
+
+function __exclude_func_with_unsupported_output(fx)
+    _fx = deepcopy(fx)
+    _func, _args = _fx[1], _fx[2:end]
+    _y = _func(_args...)
+    __exclude_unsupported_output(_y)
 end
 
 """
@@ -305,7 +313,7 @@ function _copy_to_output!!(dst::P, src::P) where {P}
 
         # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
         !isassigned(flds, 1) && return src
-        return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)
+        return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)::P
     end
 end
 
@@ -420,7 +428,10 @@ end
 
 Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info.
 """
-function prepare_pullback_cache(fx...; kwargs...)
+@unstable function prepare_pullback_cache(fx...; kwargs...)
+
+    # Check that the output of `fx` is supported.
+    __exclude_func_with_unsupported_output(fx)
 
     # Construct rule and tangents.
     interp = get_interpreter(ReverseMode)
@@ -429,9 +440,6 @@ function prepare_pullback_cache(fx...; kwargs...)
 
     # Run the rule forwards -- this should do a decent chunk of pre-allocation.
     y, rvs!! = rule(map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents)...)
-
-    # Handle forward pass's primal exceptions
-    __exclude_unsupported_output(y)
 
     # Run reverse-pass in order to reset stacks + state.
     rvs!!(zero_rdata(primal(y)))
@@ -496,7 +504,7 @@ end
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info.
 """
-function prepare_gradient_cache(fx...; kwargs...)
+@unstable function prepare_gradient_cache(fx...; kwargs...)
     rule = build_rrule(fx...; kwargs...)
     tangents = map(zero_tangent, fx)
     y, rvs!! = rule(map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents)...)

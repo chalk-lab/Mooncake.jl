@@ -159,10 +159,30 @@ using Mooncake:
 
 struct Shim end
 
-test_opt(x...) = test_opt_internal(Shim(), x...)
+"""
+    test_hook(f, caller, ::Any...; kws...)
+
+A function which can alter the behavior of a given test. `f` is the function
+that is normally executed, `caller` is the function this is being called from,
+and `args` and `kws` are the arguments that were passed to `caller`.
+
+Normally, `f()` is executed. However, this can be overridden by an integration test
+defining custom behavior.
+"""
+test_hook(f, caller, args...; kws...) = f()
+
+function test_opt(x...)
+    test_hook(test_opt, x...) do
+        test_opt_internal(Shim(), x...)
+    end
+end
 test_opt_internal(::Any, x...) = throw(error("Load JET to use this function."))
 
-report_opt(tt) = report_opt_internal(Shim(), tt)
+function report_opt(tt)
+    test_hook(report_opt, tt) do
+        report_opt_internal(Shim(), tt)
+    end
+end
 report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
 
 """
@@ -941,7 +961,10 @@ function test_rule(
 end
 
 function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
-    test_cases, memory = Mooncake.generate_hand_written_rrule!!_test_cases(rng_ctor, v)
+    test_cases, memory =
+        test_hook(Mooncake.generate_hand_written_rrule!!_test_cases, rng_ctor, v) do
+            Mooncake.generate_hand_written_rrule!!_test_cases(rng_ctor, v)
+        end
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
@@ -952,11 +975,13 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
 end
 
 function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
-    test_cases, memory = Mooncake.generate_derived_rrule!!_test_cases(rng_ctor, v)
+    test_cases, memory =
+        test_hook(Mooncake.generate_derived_rrule!!_test_cases, rng_ctor, v, mode) do
+            Mooncake.generate_derived_rrule!!_test_cases(rng_ctor, v)
+        end
     GC.@preserve memory @testset "$f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
-
         test_rule(
             rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
         )
@@ -1056,6 +1081,13 @@ at any given point in time, but the best way to verify that you've implemented e
 simply to run this function, and see whether it errors / produces a failing test.
 """
 function test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) where {P}
+    @nospecialize rng p
+    return test_hook(test_tangent_interface, rng, p; interface_only) do
+        _test_tangent_interface(rng, p; interface_only)
+    end
+end
+
+function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) where {P}
     @nospecialize rng p
 
     # Define helpers which call internal methods directly. Doing this ensures that we know
@@ -1192,7 +1224,11 @@ function test_set_tangent_field!_correctness(t1::T, t2::T) where {T<:MutableTang
     end
 end
 
-check_allocs(f, x...) = check_allocs_internal(Shim(), f, x...)
+function check_allocs(f, x...)
+    test_hook(check_allocs, f, x...) do
+        check_allocs_internal(Shim(), f, x...)
+    end
+end
 function check_allocs_internal(::Any, f::F, x::Vararg{Any,N}) where {F,N}
     throw(error("Load AllocCheck.jl to use this functionality."))
 end
@@ -1212,14 +1248,19 @@ details.
 To verify that this is the case, ensure that all tests in `test_tangent_interface` pass.
 """
 function test_tangent_performance(rng::AbstractRNG, p::P) where {P}
+    return test_hook(test_tangent_performance, rng, p) do
+        _test_tangent_performance(rng, p)
+    end
+end
 
+function _test_tangent_performance(rng::AbstractRNG, p::P) where {P}
     # Should definitely infer, because tangent type must be known statically from primal.
     z = @inferred zero_tangent(p)
     t = @inferred randn_tangent(rng, p)
 
     # Computing the tangent type must always be type stable and allocation-free.
     @inferred tangent_type(P)
-    @test (@allocations tangent_type(P)) == 0
+    @test count_allocs(tangent_type, P) == 0
 
     # Check there are no allocations when there ought not to be.
     if !__tangent_generation_should_allocate(P)
@@ -1305,7 +1346,9 @@ end
 
 # Function barrier to ensure inference in value types.
 function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-    @allocations f(x...)
+    test_hook(count_allocs, f, x...) do
+        @allocations f(x...)
+    end
 end
 
 # Returns true if both `zero_tangent` and `randn_tangent` should allocate when run on
@@ -1366,7 +1409,14 @@ Ensure that [`test_tangent_interface`](@ref) runs for `p` before running these t
 - [`Mooncake.tangent`](@ref) (binary method)
 """
 function test_tangent_splitting(rng::AbstractRNG, p::P; test_opt_flag=true) where {P}
+    return test_hook(test_tangent_splitting, rng, p; test_opt_flag) do
+        _test_tangent_splitting_internal(rng, p; test_opt_flag)
+    end
+end
 
+function _test_tangent_splitting_internal(
+    rng::AbstractRNG, p::P; test_opt_flag=true
+) where {P}
     # Check that fdata_type and rdata_type run and produce types.
     T = tangent_type(P)
     F = Mooncake.fdata_type(T)

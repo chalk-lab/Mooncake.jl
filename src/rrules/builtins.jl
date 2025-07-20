@@ -267,6 +267,14 @@ function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
         dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
+    elseif T <: Ptr && _x isa Union{Int,UInt}
+        int2ptr_err_msg =
+            "It is not permissible to bitcast to an Int/UInt type to a Ptr type during AD, as " *
+            "this risks giving the wrong answer, or causing Julia to segfault. " *
+            "If this call to bitcast appears as part of the implementation of a " *
+            "differentiable function, you should write a rule for this function, or modify " *
+            "its implementation to avoid the bitcast."
+        throw(ArgumentError(int2ptr_err_msg))
     else
         dv = NoFData()
     end
