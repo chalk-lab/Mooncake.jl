@@ -453,7 +453,7 @@ Convenience functionality to assist in using `ChainRulesCore.rrule`s to write `r
 ## A Basic Example
 
 ```jldoctest
-julia> using Mooncake: @from_rrule, DefaultCtx, rrule!!, zero_fcodual, TestUtils
+julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils
 
 julia> import ChainRulesCore
 
@@ -464,19 +464,22 @@ julia> function ChainRulesCore.rrule(::typeof(foo), x::Real)
            return foo(x), foo_pb
        end;
 
-julia> @from_rrule DefaultCtx Tuple{typeof(foo), Base.IEEEFloat}
+julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat}
 
 julia> rrule!!(zero_fcodual(foo), zero_fcodual(5.0))[2](1.0)
 (NoRData(), 5.0)
 
 julia> # Check that the rule works as intended.
-       TestUtils.test_rule(Xoshiro(123), foo, 5.0; is_primitive=true, print_results=false);
+       TestUtils.test_rule(
+           Xoshiro(123), foo, 5.0;
+           is_primitive=true, print_results=false, mode=Mooncake.ReverseMode,
+       );
 ```
 
 ## An Example with Keyword Arguments
 
 ```jldoctest
-julia> using Mooncake: @from_rrule, DefaultCtx, rrule!!, zero_fcodual, TestUtils
+julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils
 
 julia> import ChainRulesCore
 
@@ -487,7 +490,7 @@ julia> function ChainRulesCore.rrule(::typeof(foo), x::Real; cond::Bool)
            return foo(x; cond), foo_pb
        end;
 
-julia> @from_rrule DefaultCtx Tuple{typeof(foo), Base.IEEEFloat} true
+julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat} true
 
 julia> _, pb = rrule!!(
            zero_fcodual(Core.kwcall),
@@ -502,7 +505,7 @@ julia> pb(3.0)
 julia> # Check that the rule works as intended.
        TestUtils.test_rule(
            Xoshiro(123), Core.kwcall, (cond=false, ), foo, 5.0;
-           is_primitive=true, print_results=false,
+           is_primitive=true, print_results=false, mode=Mooncake.ReverseMode,
        );
 ```
 Notice that, in order to access the kwarg method we must call the method of `Core.kwcall`,
@@ -626,7 +629,10 @@ julia> rrule!!(zero_fcodual(foo), zero_fcodual(5.0))[2](1.0)
 (NoRData(), 5.0)
 
 julia> # Check that the rule works as intended.
-       TestUtils.test_rule(Xoshiro(123), foo, 5.0; is_primitive=true, print_results=false);
+       TestUtils.test_rule(
+           Xoshiro(123), foo, 5.0;
+           is_primitive=true, print_results=false, mode=Mooncake.ReverseMode,
+       );
 ```
 
 ## An Example with Keyword Arguments
@@ -658,7 +664,7 @@ julia> pb(3.0)
 julia> # Check that the rule works as intended.
        TestUtils.test_rule(
            Xoshiro(123), Core.kwcall, (cond=false, ), foo, 5.0;
-           is_primitive=true, print_results=false,
+           is_primitive=true, print_results=false, mode=Mooncake.ReverseMode,
        );
 ```
 Notice that, in order to access the kwarg method we must call the method of `Core.kwcall`,
