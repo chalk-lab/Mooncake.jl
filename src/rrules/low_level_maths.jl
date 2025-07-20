@@ -78,7 +78,7 @@ function rrule!!(::CoDual{typeof(exp)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), exp_pb!!
 end
 
-@from_chain_rule MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
 function frule!!(::Dual{typeof(^)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFloat}
     t = (ChainRules.NoTangent(), tangent(x), tangent(y))
     z, dz = ChainRules.frule(t, ^, primal(x), primal(y))

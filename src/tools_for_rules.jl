@@ -588,7 +588,7 @@ macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false)
 end
 
 """
-    @from_chain_rule ctx sig [has_kwargs=false frule=true rrule=true]
+    @from_chainrules ctx sig [has_kwargs=false frule=true rrule=true]
 
 Convenience functionality to assist in using `ChainRuleCore.frule`s and
 `ChainRulesCore.rrule`s to write `frule!!`s and `rrule!!`s.
@@ -609,7 +609,7 @@ Convenience functionality to assist in using `ChainRuleCore.frule`s and
 ## A Basic Example
 
 ```jldoctest
-julia> using Mooncake: @from_chain_rule, DefaultCtx, rrule!!, zero_fcodual, TestUtils
+julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils
 
 julia> import ChainRulesCore
 
@@ -620,7 +620,7 @@ julia> function ChainRulesCore.rrule(::typeof(foo), x::Real)
            return foo(x), foo_pb
        end;
 
-julia> @from_chain_rule DefaultCtx Tuple{typeof(foo), Base.IEEEFloat}
+julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat}
 
 julia> rrule!!(zero_fcodual(foo), zero_fcodual(5.0))[2](1.0)
 (NoRData(), 5.0)
@@ -702,7 +702,7 @@ work well for simple types, but has not been tested to a great extent on complic
 composite types. If `@from_rrule` does not work in your case because the required method of
 either of these functions does not exist, please open an issue.
 """
-macro from_chain_rule(ctx, sig::Expr, has_kwargs::Bool=false)
+macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false)
     arg_type_syms, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)

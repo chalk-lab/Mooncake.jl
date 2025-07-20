@@ -5,7 +5,7 @@ module ToolsForRulesResources
 using ChainRulesCore, LinearAlgebra
 using Base: IEEEFloat
 using Mooncake:
-    @mooncake_overlay, @zero_adjoint, @from_rrule, MinimalCtx, DefaultCtx, @from_chain_rule
+    @mooncake_overlay, @zero_adjoint, @from_rrule, MinimalCtx, DefaultCtx, @from_chainrules
 
 const CRC = ChainRulesCore
 
@@ -29,7 +29,7 @@ function CRC.rrule(::typeof(bleh), x::Float64, y::Int)
     return x * y, dz -> (CRC.NoTangent(), dz * y, CRC.NoTangent())
 end
 
-@from_chain_rule DefaultCtx Tuple{typeof(bleh),Float64,Int} false
+@from_chainrules DefaultCtx Tuple{typeof(bleh),Float64,Int} false
 
 # Test case with heap-allocated input.
 
@@ -42,7 +42,7 @@ function CRC.rrule(::typeof(test_sum), x::AbstractArray{<:Real})
     return test_sum(x), test_sum_pb
 end
 
-@from_chain_rule DefaultCtx Tuple{typeof(test_sum),Array{<:Base.IEEEFloat}} false
+@from_chainrules DefaultCtx Tuple{typeof(test_sum),Array{<:Base.IEEEFloat}} false
 
 # Test case with heap-allocated output.
 
@@ -57,7 +57,7 @@ function CRC.rrule(::typeof(test_scale), x::Real, y::AbstractVector{<:Real})
     return x * y, test_scale_pb
 end
 
-@from_chain_rule(
+@from_chainrules(
     DefaultCtx, Tuple{typeof(test_scale),Base.IEEEFloat,Vector{<:Base.IEEEFloat}}, false
 )
 
@@ -72,7 +72,7 @@ function CRC.rrule(::typeof(test_nothing))
     return nothing, test_nothing_pb
 end
 
-@from_chain_rule DefaultCtx Tuple{typeof(test_nothing)} false
+@from_chainrules DefaultCtx Tuple{typeof(test_nothing)} false
 
 # Test case in which ChainRulesCore returns a tangent which is of the "wrong" type from the
 # perspective of Mooncake.jl. In this instance, some kind of error should be thrown, rather
@@ -107,7 +107,7 @@ function CRC.rrule(::typeof(test_kwargs), x::Float64; y::Bool=false)
     return y ? x : 2x, test_kwargs_pb
 end
 
-@from_chain_rule(DefaultCtx, Tuple{typeof(test_kwargs),Float64}, true)
+@from_chainrules(DefaultCtx, Tuple{typeof(test_kwargs),Float64}, true)
 
 # Test case for rule with differentiable types used in a non-differentiable way.
 test_kwargs_conditional(x; y::Float64=1.0) = y > 0 ? x : 2x
@@ -121,7 +121,7 @@ function CRC.rrule(::typeof(test_kwargs_conditional), x::Float64; y::Float64=1.0
     return y > 0 ? x : 2x, test_kwargs_cond_pb
 end
 
-@from_chain_rule(DefaultCtx, Tuple{typeof(test_kwargs_conditional),Float64}, true)
+@from_chainrules(DefaultCtx, Tuple{typeof(test_kwargs_conditional),Float64}, true)
 
 end
 
