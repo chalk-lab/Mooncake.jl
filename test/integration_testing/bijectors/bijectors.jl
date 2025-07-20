@@ -118,7 +118,8 @@ end
                 true
             end
         else
-            test_rule(sr(123456), c.func, c.arg; is_primitive=false, unsafe_perturb=true)
+            rng = StableRNG(123456)
+            test_rule(rng, c.func, c.arg; is_primitive=false, unsafe_perturb=true)
         end
     end
 end
