@@ -197,18 +197,14 @@ else # 1.11 and up.
 end
 
 """
-    const GLOBAL_FORWARD_INTERPRETER
+    const GLOBAL_INTERPRETERS
 
-Globally cached interpreter. Should only be accessed via `get_interpreter`.
+Cached interpreters. Should only be accessed via `get_interpreter`.
 """
-const GLOBAL_FORWARD_INTERPRETER = Ref(MooncakeInterpreter(DefaultCtx, ForwardMode))
-
-"""
-    const GLOBAL_REVERSE_INTERPRETER
-
-Globalled cached interpreter. Should only be accessed via `get_interpreter`.
-"""
-const GLOBAL_REVERSE_INTERPRETER = Ref(MooncakeInterpreter(DefaultCtx, ReverseMode))
+const GLOBAL_INTERPRETERS = Dict(
+    ForwardMode => MooncakeInterpreter(DefaultCtx, ForwardMode),
+    ReverseMode => MooncakeInterpreter(DefaultCtx, ReverseMode),
+)
 
 """
     get_interpreter(mode::Type{<:Mode})
@@ -218,15 +214,9 @@ interpreter if one already exists for the current world age, otherwise creates a
 
 This should be prefered over constructing a `MooncakeInterpreter` directly.
 """
-function get_interpreter(::Type{ForwardMode})
-    if GLOBAL_FORWARD_INTERPRETER[].world != Base.get_world_counter()
-        GLOBAL_FORWARD_INTERPRETER[] = MooncakeInterpreter(ForwardMode)
+function get_interpreter(mode::Type{<:Mode})
+    if GLOBAL_INTERPRETERS[mode].world != Base.get_world_counter()
+        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode)
     end
-    return GLOBAL_FORWARD_INTERPRETER[]
-end
-function get_interpreter(::Type{ReverseMode})
-    if GLOBAL_REVERSE_INTERPRETER[].world != Base.get_world_counter()
-        GLOBAL_REVERSE_INTERPRETER[] = MooncakeInterpreter(ReverseMode)
-    end
-    return GLOBAL_REVERSE_INTERPRETER[]
+    return GLOBAL_INTERPRETERS[mode]
 end
