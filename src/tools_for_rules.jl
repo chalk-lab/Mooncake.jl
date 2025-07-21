@@ -456,7 +456,7 @@ we must specify the respective macro call, `rrule` definition as follows:
     @from_rrule DefaultCtx Tuple{Any,CalculationOptions,typeof(get_NSSS_and_parameters),ℳ,Vector{S}} where S<:Real true
 
     function ChainRulesCore.rrule(
-        Any,
+        func_ir_name::Any,
         opts::CalculationOptions,
         ::typeof(MacroModelling.get_NSSS_and_parameters),
         m::ℳ,
@@ -473,7 +473,7 @@ we must specify the respective macro call, `rrule` definition as follows:
     rule = Mooncake.build_rrule(a, m.parameter_values)
     rule(zero_fcodual(a), zero_fcodual(m.parameter_values))
 
-Here in `@from_rrule` and `ChainRulesCore.rrule`, `Any` is the argument+type information for the lowered IR name of the function call of interest.
+Here in `@from_rrule` and `ChainRulesCore.rrule`, `Any` is the type information for the lowered IR name of the function call of interest.
 You can also use the actual lowered IR name eg. MacroModelling.var"##get_NSSS_and_parameters#1215" (got via `@code_lowered`) for the function call, which is unique for each dispatch of this function.
 We can safely pass `Any`, due to the fact that each dispatch has unique type information for its arguments respectively - This is implicitly satisfied in the `@from_rrule` and `ChainRulesCore.rrule` calls by design.
 This also works when using loose type constraints on arguments as long as the specified function's type information is a subtree of the specific function's dispatch type tree.
