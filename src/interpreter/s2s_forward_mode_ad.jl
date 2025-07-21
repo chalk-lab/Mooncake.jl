@@ -355,6 +355,8 @@ function modify_fwd_ad_stmts!(
         replace_call!(dual_ir, ssa, primal_cond)
         new_undef_inst = new_inst(Expr(:throw_undef_if_not, stmt.args[1], ssa))
         CC.insert_node!(dual_ir, ssa, new_undef_inst, true)
+    elseif isexpr(stmt, :enter)
+        # Leave this node alone
     elseif isexpr(stmt, :leave)
         # Leave this node alone
     elseif isexpr(stmt, :pop_exception)
