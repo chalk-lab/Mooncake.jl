@@ -441,6 +441,43 @@ any `Base.IEEEFloat` argument, i.e. `Union{Float16, Float32, Float64}`, but it i
 not possible to know that the rule is correct for all possible subtypes of `Real` that
 someone might define.
 
+note!!!
+
+For Anonymous functions, Julia performs code optimizations such as inlining. Normally, this causes Mooncake to be unable to see the exact inner function calls, and thus it cannot differentiate the function correctly.
+When differentiating anonymous functions that contain functions that are to be differentiated using Mooncake's `rule` system via `@from_rrule` and corresponding custom `ChainRuleCore.rrule`'s,
+we must specify the respective macro call, `rrule` definition as follows:
+
+    using MacroModelling
+    import MacroModelling: get_NSSS_and_parameters, ℳ, CalculationOptions, merge_calculation_options
+    using DifferentiationInterface
+    using Mooncake: @from_rrule, DefaultCtx, MinimalCtx, rrule!!, zero_fcodual, TestUtils
+    import ChainRulesCore: rrule
+
+    @from_rrule DefaultCtx Tuple{Any,CalculationOptions,typeof(get_NSSS_and_parameters),ℳ,Vector{S}} where S<:Real true
+
+    function ChainRulesCore.rrule(
+        Any,
+        opts::CalculationOptions,
+        ::typeof(MacroModelling.get_NSSS_and_parameters),
+        m::ℳ,
+        x::Vector{S}
+    ) where S<:Real
+        foo1_pb(Ω) = ChainRulesCore.NoTangent(), [5Ω]
+        return MacroModelling.get_NSSS_and_parameters(
+            m,x ; opts=opts
+        ), foo1_pb
+    end
+
+    # Note the anonymous function must be consistent across rule creation and while calling the rule on inputs.
+    a = x -> get_NSSS_and_parameters(m, x)
+    rule = Mooncake.build_rrule(a, m.parameter_values)
+    rule(zero_fcodual(a), zero_fcodual(m.parameter_values))
+
+Here in `@from_rrule` and `ChainRulesCore.rrule`, `Any` is the argument+type information for the lowered IR name of the function call of interest.
+You can also use the actual lowered IR name eg. MacroModelling.var"##get_NSSS_and_parameters#1215" (got via `@code_lowered`) for the function call, which is unique for each dispatch of this function.
+We can safely pass `Any`, due to the fact that each dispatch has unique type information for its arguments respectively - This is implicitly satisfied in the `@from_rrule` and `ChainRulesCore.rrule` calls by design.
+This also works when using loose type constraints on arguments as long as the specified function's type information is a subtree of the specific function's dispatch type tree.
+
 # Conversions Between Different Tangent Type Systems
 
 Under the hood, this functionality relies on two functions: `Mooncake.to_cr_tangent`, and
