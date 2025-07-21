@@ -969,7 +969,7 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
         test_hook(Mooncake.generate_derived_rrule!!_test_cases, rng_ctor, v, mode) do
             Mooncake.generate_derived_rrule!!_test_cases(rng_ctor, v)
         end
-    GC.@preserve memory @testset "$f, $(typeof(x))" for (
+    GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
 
