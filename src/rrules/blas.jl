@@ -16,6 +16,11 @@ end
 const BlasRealFloat = Union{Float32,Float64}
 const BlasComplexFloat = Union{ComplexF32,ComplexF64}
 
+_fields(x::Tangent) = x.fields
+_fields(x::FData) = x.data
+
+const TangentOrFData = Union{Tangent,FData}
+
 """
     arrayify(x::CoDual{<:AbstractArray{<:BlasFloat}})
 
@@ -30,24 +35,16 @@ arrayify(x::Array{P}, dx::Array{P}) where {P<:BlasRealFloat} = (x, dx)
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
     return x, reinterpret(P, dx)
 end
-function arrayify(x::A, dx::FData) where {A<:SubArray{<:BlasRealFloat}}
-    _, _dx = arrayify(x.parent, dx.data.parent)
+function arrayify(x::A, dx::TangentOrFData) where {A<:SubArray{<:BlasRealFloat}}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, A(_dx, x.indices, x.offset1, x.stride1)
 end
-function arrayify(x::A, dx::Tangent) where {A<:SubArray{<:BlasRealFloat}}
-    _, _dx = arrayify(x.parent, dx.fields.parent)
-    return x, A(_dx, x.indices, x.offset1, x.stride1)
-end
-function arrayify(x::A, dx::FData) where {A<:Base.ReshapedArray{<:BlasRealFloat}}
-    _, _dx = arrayify(x.parent, dx.data.parent)
+function arrayify(x::A, dx::TangentOrFData) where {A<:Base.ReshapedArray{<:BlasRealFloat}}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, A(_dx, x.dims, x.mi)
 end
-function arrayify(x::A, dx::Tangent) where {A<:Base.ReshapedArray{<:BlasRealFloat}}
-    _, _dx = arrayify(x.parent, dx.fields.parent)
-    return x, A(_dx, x.dims, x.mi)
-end
-function arrayify(x::Base.ReinterpretArray{T}, dx::FData) where {T<:BlasFloat}
-    _, _dx = arrayify(x.parent, dx.data.parent)
+function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:BlasFloat}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, reinterpret(T, _dx)
 end
 
@@ -1312,6 +1309,12 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:blas})
                 (false, :none, nothing, aliased_gemm!, tA, tB, a, b, A, B)
             end
         end...,
+
+        #
+        # Misc extra tests
+        #
+
+        (false, :none, nothing, x -> sum(complex(x) * x), rand(rng, 5, 5)),
     )
     memory = Any[]
     return test_cases, memory
