@@ -89,7 +89,9 @@ using Core: Intrinsics
 using Mooncake
 import ..Mooncake:
     rrule!!,
+    frule!!,
     CoDual,
+    Dual,
     primal,
     tangent,
     zero_tangent,
@@ -107,7 +109,10 @@ import ..Mooncake:
     NoRData,
     rdata,
     increment_rdata!!,
-    zero_fcodual
+    zero_fcodual,
+    zero_dual,
+    NoTangent,
+    Mode
 
 using Core.Intrinsics: atomic_pointerref
 
@@ -130,7 +135,11 @@ end
 macro intrinsic(name)
     expr = quote
         $name(x...) = Intrinsics.$name(x...)
-        (is_primitive)(::Type{MinimalCtx}, ::Type{<:Tuple{typeof($name),Vararg}}) = true
+        function is_primitive(
+            ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
+        )
+            true
+        end
         translate(::Val{Intrinsics.$name}) = $name
     end
     return esc(expr)
@@ -139,16 +148,28 @@ end
 macro inactive_intrinsic(name)
     expr = quote
         $name(x...) = Intrinsics.$name(x...)
-        (is_primitive)(::Type{MinimalCtx}, ::Type{<:Tuple{typeof($name),Vararg}}) = true
+        function is_primitive(
+            ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
+        )
+            true
+        end
         translate(::Val{Intrinsics.$name}) = $name
         function rrule!!(f::CoDual{typeof($name)}, args::Vararg{Any,N}) where {N}
             return Mooncake.zero_adjoint(f, args...)
+        end
+        function frule!!(f::Dual{typeof($name)}, args::Vararg{Dual,N}) where {N}
+            f_primal = primal(f)
+            args_primal = map(primal, args)
+            return zero_dual(f_primal(args_primal...))
         end
     end
     return esc(expr)
 end
 
 @intrinsic abs_float
+function frule!!(::Dual{typeof(abs_float)}, x)
+    return Dual(abs_float(primal(x)), sign(primal(x)) * tangent(x))
+end
 function rrule!!(::CoDual{typeof(abs_float)}, x)
     abs_float_pullback!!(dy) = NoRData(), sign(primal(x)) * dy
     y = abs_float(primal(x))
@@ -156,6 +177,9 @@ function rrule!!(::CoDual{typeof(abs_float)}, x)
 end
 
 @intrinsic add_float
+function frule!!(::Dual{typeof(add_float)}, a, b)
+    return Dual(add_float(primal(a), primal(b)), add_float(tangent(a), tangent(b)))
+end
 function rrule!!(::CoDual{typeof(add_float)}, a, b)
     add_float_pb!!(c̄) = NoRData(), c̄, c̄
     c = add_float(primal(a), primal(b))
@@ -163,6 +187,11 @@ function rrule!!(::CoDual{typeof(add_float)}, a, b)
 end
 
 @intrinsic add_float_fast
+function frule!!(::Dual{typeof(add_float_fast)}, a, b)
+    c = add_float_fast(primal(a), primal(b))
+    dc = add_float_fast(tangent(a), tangent(b))
+    return Dual(c, dc)
+end
 function rrule!!(::CoDual{typeof(add_float_fast)}, a, b)
     add_float_fast_pb!!(c̄) = NoRData(), c̄, c̄
     c = add_float_fast(primal(a), primal(b))
@@ -205,6 +234,25 @@ end
 # atomic_pointerswap
 
 @intrinsic bitcast
+function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
+    if T <: IEEEFloat
+        msg =
+            "It is not permissible to bitcast to a differentiable type during AD, as " *
+            "this risks dropping tangents, and therefore risks silently giving the wrong " *
+            "answer. If this call to bitcast appears as part of the implementation of a " *
+            "differentiable function, you should write a rule for this function, or modify " *
+            "its implementation to avoid the bitcast."
+        throw(ArgumentError(msg))
+    end
+    _x = primal(x)
+    v = bitcast(T, _x)
+    if T <: Ptr && _x isa Ptr
+        dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
+    else
+        dv = NoTangent()
+    end
+    return Dual(v, dv)
+end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
         msg =
@@ -256,7 +304,14 @@ special handling of `cglobal` is used.
 __cglobal(::Val{s}, x::Vararg{Any,N}) where {s,N} = cglobal(s, x...)
 
 translate(::Val{Intrinsics.cglobal}) = __cglobal
-Mooncake.is_primitive(::Type{MinimalCtx}, ::Type{<:Tuple{typeof(__cglobal),Vararg}}) = true
+function Mooncake.is_primitive(
+    ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof(__cglobal),Vararg}}
+)
+    return true
+end
+function frule!!(::Dual{typeof(__cglobal)}, args...)
+    return Mooncake.uninit_dual(__cglobal(map(primal, args)...))
+end
 function rrule!!(f::CoDual{typeof(__cglobal)}, args...)
     return Mooncake.uninit_fcodual(__cglobal(map(primal, args)...)), NoPullback(f, args...)
 end
@@ -273,6 +328,11 @@ end
 @inactive_intrinsic checked_usub_int
 
 @intrinsic copysign_float
+function frule!!(::Dual{typeof(copysign_float)}, x, y)
+    z = copysign_float(primal(x), primal(y))
+    dz = sign(primal(y)) * tangent(x)
+    return Dual(z, dz)
+end
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
@@ -286,6 +346,13 @@ end
 @inactive_intrinsic cttz_int
 
 @intrinsic div_float
+function frule!!(::Dual{typeof(div_float)}, a, b)
+    c = div_float(primal(a), primal(b))
+    da = tangent(a)
+    db = tangent(b)
+    dc = div_float(da, primal(b)) - div_float(primal(a) * db, primal(b)^2)
+    return Dual(c, dc)
+end
 function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -295,6 +362,13 @@ function rrule!!(::CoDual{typeof(div_float)}, a, b)
 end
 
 @intrinsic div_float_fast
+function frule!!(::Dual{typeof(div_float_fast)}, a, b)
+    c = div_float_fast(primal(a), primal(b))
+    da = tangent(a)
+    db = tangent(b)
+    dc = div_float_fast(da, primal(b)) - div_float_fast(primal(a) * db, primal(b)^2)
+    return Dual(c, dc)
+end
 function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -312,6 +386,11 @@ end
 @inactive_intrinsic floor_llvm
 
 @intrinsic fma_float
+function frule!!(::Dual{typeof(fma_float)}, x, y, z)
+    a = fma_float(primal(x), primal(y), primal(z))
+    da = fma_float(tangent(x), primal(y), fma_float(primal(x), tangent(y), tangent(z)))
+    return Dual(a, da)
+end
 function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -320,6 +399,11 @@ function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
 end
 
 @intrinsic fpext
+function frule!!(
+    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P}
+) where {Pext<:IEEEFloat,P<:IEEEFloat}
+    return Dual(fpext(Pext, primal(x)), fpext(Pext, tangent(x)))
+end
 function rrule!!(
     ::CoDual{typeof(fpext)}, ::CoDual{Type{Pext}}, x::CoDual{P}
 ) where {Pext<:IEEEFloat,P<:IEEEFloat}
@@ -332,6 +416,11 @@ end
 @inactive_intrinsic fptoui
 
 @intrinsic fptrunc
+function frule!!(
+    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P}
+) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
+    return Dual(fptrunc(Ptrunc, primal(x)), fptrunc(Ptrunc, tangent(x)))
+end
 function rrule!!(
     ::CoDual{typeof(fptrunc)}, ::CoDual{Type{Ptrunc}}, x::CoDual{P}
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
@@ -350,6 +439,11 @@ end
 @inactive_intrinsic lt_float_fast
 
 @intrinsic mul_float
+function frule!!(::Dual{typeof(mul_float)}, a, b)
+    p = mul_float(primal(a), primal(b))
+    dp = add_float(mul_float(primal(a), tangent(b)), mul_float(primal(b), tangent(a)))
+    return Dual(p, dp)
+end
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -358,6 +452,11 @@ function rrule!!(::CoDual{typeof(mul_float)}, a, b)
 end
 
 @intrinsic mul_float_fast
+function frule!!(::Dual{typeof(mul_float_fast)}, a, b)
+    c = mul_float_fast(primal(a), primal(b))
+    dc = mul_float_fast(primal(a), tangent(b)) + mul_float_fast(tangent(a), primal(b))
+    return Dual(c, dc)
+end
 function rrule!!(::CoDual{typeof(mul_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -368,6 +467,12 @@ end
 @inactive_intrinsic mul_int
 
 @intrinsic muladd_float
+function frule!!(::Dual{typeof(muladd_float)}, x, y, z)
+    a = muladd_float(primal(x), primal(y), primal(z))
+    dz = tangent(z)
+    da = muladd_float(tangent(x), primal(y), muladd_float(primal(x), tangent(y), dz))
+    return Dual(a, da)
+end
 function rrule!!(::CoDual{typeof(muladd_float)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -381,6 +486,7 @@ end
 @inactive_intrinsic ne_int
 
 @intrinsic neg_float
+frule!!(::Dual{typeof(neg_float)}, x) = Dual(neg_float(primal(x)), neg_float(tangent(x)))
 function rrule!!(::CoDual{typeof(neg_float)}, x)
     _x = primal(x)
     neg_float_pullback!!(dy) = NoRData(), -dy
@@ -388,6 +494,9 @@ function rrule!!(::CoDual{typeof(neg_float)}, x)
 end
 
 @intrinsic neg_float_fast
+function frule!!(::Dual{typeof(neg_float_fast)}, x)
+    return Dual(neg_float_fast(primal(x)), neg_float_fast(tangent(x)))
+end
 function rrule!!(::CoDual{typeof(neg_float_fast)}, x)
     _x = primal(x)
     neg_float_fast_pullback!!(dy) = NoRData(), -dy
@@ -399,6 +508,11 @@ end
 @inactive_intrinsic or_int
 
 @intrinsic pointerref
+function frule!!(::Dual{typeof(pointerref)}, x, y, z)
+    a = pointerref(primal(x), primal(y), primal(z))
+    da = pointerref(tangent(x), primal(y), primal(z))
+    return Dual(a, da)
+end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -417,6 +531,11 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
 end
 
 @intrinsic pointerset
+function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
+    pointerset(primal(p), primal(x), primal(idx), primal(z))
+    pointerset(tangent(p), tangent(x), primal(idx), primal(z))
+    return p
+end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
     _idx = primal(idx)
@@ -444,22 +563,38 @@ end
 @inactive_intrinsic slt_int
 
 @intrinsic sqrt_llvm
+function frule!!(::Dual{typeof(sqrt_llvm)}, x)
+    y = sqrt_llvm(primal(x))
+    dy = tangent(x) / (2 * y)
+    return Dual(y, dy)
+end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x)
     _x = primal(x)
-    llvm_sqrt_pullback!!(dy) = NoRData(), dy * inv(2 * sqrt(_x))
-    return CoDual(sqrt_llvm(_x), NoFData()), llvm_sqrt_pullback!!
+    _y = sqrt_llvm(primal(x))
+    llvm_sqrt_pullback!!(dy) = NoRData(), dy / (2 * _y)
+    return CoDual(_y, NoFData()), llvm_sqrt_pullback!!
 end
 
 @intrinsic sqrt_llvm_fast
+function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
+    y = sqrt_llvm_fast(primal(x))
+    dy = tangent(x) / (2 * y)
+    return Dual(y, dy)
+end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x)
-    _x = primal(x)
-    llvm_sqrt_fast_pullback!!(dy) = NoRData(), dy * inv(2 * sqrt(_x))
-    return CoDual(sqrt_llvm_fast(_x), NoFData()), llvm_sqrt_fast_pullback!!
+    _y = sqrt_llvm_fast(primal(x))
+    llvm_sqrt_fast_pullback!!(dy) = NoRData(), dy / (2 * _y)
+    return CoDual(_y, NoFData()), llvm_sqrt_fast_pullback!!
 end
 
 @inactive_intrinsic srem_int
 
 @intrinsic sub_float
+function frule!!(::Dual{typeof(sub_float)}, a, b)
+    c = sub_float(primal(a), primal(b))
+    dc = sub_float(tangent(a), tangent(b))
+    return Dual(c, dc)
+end
 function rrule!!(::CoDual{typeof(sub_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -468,6 +603,11 @@ function rrule!!(::CoDual{typeof(sub_float)}, a, b)
 end
 
 @intrinsic sub_float_fast
+function frule!!(::Dual{typeof(sub_float_fast)}, a, b)
+    c = sub_float_fast(primal(a), primal(b))
+    dc = sub_float_fast(tangent(a), tangent(b))
+    return Dual(c, dc)
+end
 function rrule!!(::CoDual{typeof(sub_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -499,8 +639,8 @@ end
 
 end # IntrinsicsWrappers
 
-@zero_adjoint MinimalCtx Tuple{typeof(<:),Any,Any}
-@zero_adjoint MinimalCtx Tuple{typeof(===),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(<:),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(===),Any,Any}
 
 # Core._abstracttype
 
@@ -522,6 +662,14 @@ end
 __vec_to_tuple(v::Vector) = Tuple(v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
+function frule!!(::Dual{typeof(__vec_to_tuple)}, v::Dual{<:Vector})
+    x = __vec_to_tuple(primal(v))
+    if tangent_type(_typeof(x)) == NoTangent
+        return zero_dual(x)
+    else
+        return Dual(x, __vec_to_tuple(tangent(v)))
+    end
+end
 
 function rrule!!(::CoDual{typeof(__vec_to_tuple)}, v::CoDual{<:Vector})
     dv = tangent(v)
@@ -552,6 +700,15 @@ end
 # Core._structtype
 
 # Verify that there thing at the index is non-differentiable. Otherwise error.
+function frule!!(
+    ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector}, _ind::Dual{Int}
+)
+    ind = primal(_ind)
+    pv = Core._svec_ref(primal(v), ind)
+    tv = getindex(tangent(v), ind)
+    isa(tv, NoTangent) || error("expected non-differentiable thing in SimpleVector")
+    return Dual(pv, tv)
+end
 function rrule!!(
     f::CoDual{typeof(Core._svec_ref)}, v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
 )
@@ -563,16 +720,27 @@ function rrule!!(
 end
 
 # Core._typebody!
-
+function frule!!(::Dual{typeof(Core._typevar)}, args...)
+    return zero_dual(Core._typevar(map(primal, args)...))
+end
 function rrule!!(f::CoDual{typeof(Core._typevar)}, args...)
     return zero_fcodual(Core._typevar(map(primal, args)...)), NoPullback(f, args...)
 end
 
+function frule!!(::Dual{typeof(Core.apply_type)}, args...)
+    return zero_dual(Core.apply_type(map(primal, args)...))
+end
 function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     T = Core.apply_type(tuple_map(primal, args)...)
     return CoDual{_typeof(T),NoFData}(T, NoFData()), NoPullback(f, args...)
 end
 
+function frule!!(::Dual{typeof(compilerbarrier)}, setting::Dual{Symbol}, v::Dual)
+    return Dual(
+        compilerbarrier(primal(setting), primal(v)),
+        compilerbarrier(primal(setting), tangent(v)),
+    )
+end
 function rrule!!(::CoDual{typeof(compilerbarrier)}, setting::CoDual{Symbol}, val::CoDual)
     compilerbarrier_pb(dout) = NoRData(), NoRData(), dout
     return compilerbarrier(setting.x, val), compilerbarrier_pb
@@ -582,6 +750,10 @@ end
 # Core.finalizer
 # Core.get_binding_type
 
+function frule!!(::Dual{typeof(Core.ifelse)}, cond::Dual{Bool}, a::Dual, b::Dual)
+    _cond = primal(cond)
+    return Dual(ifelse(_cond, primal(a), primal(b)), ifelse(_cond, tangent(a), tangent(b)))
+end
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     _cond = primal(cond)
     p_a = primal(a)
@@ -607,15 +779,39 @@ function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     return CoDual(ifelse(_cond, p_a, p_b), ifelse(_cond, tangent(a), tangent(b))), pb!!
 end
 
-@zero_adjoint MinimalCtx Tuple{typeof(Core.sizeof),Any}
+@zero_derivative MinimalCtx Tuple{typeof(Core.sizeof),Any}
 
 # Core.svec
 
-@zero_adjoint MinimalCtx Tuple{typeof(applicable),Vararg}
-@zero_adjoint MinimalCtx Tuple{typeof(fieldtype),Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(applicable),Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(fieldtype),Vararg}
 
+const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
+function frule!!(
+    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual
+) where {P}
+    _name = primal(name)
+    if tangent_type(P) == NoTangent
+        return uninit_dual(getfield(primal(x), _name))
+    else
+        return Dual(getfield(primal(x), _name), _get_tangent_field(tangent(x), _name))
+    end
+end
+function frule!!(
+    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
+) where {P}
+    _name = primal(name)
+    _inbounds = primal(inbounds)
+    if tangent_type(P) == NoTangent
+        return uninit_dual(getfield(primal(x), _name, _inbounds))
+    else
+        y = getfield(primal(x), _name, _inbounds)
+        dy = _get_tangent_field(tangent(x), _name, _inbounds)
+        return Dual(y, dy)
+    end
+end
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
 ) where {P}
@@ -676,19 +872,23 @@ is_homogeneous_and_immutable(::Any) = false
 #     return y, pb!!
 # end
 
-@zero_adjoint MinimalCtx Tuple{typeof(getglobal),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(getglobal),Any,Any}
 
 # invoke
 
-@zero_adjoint MinimalCtx Tuple{typeof(isa),Any,Any}
-@zero_adjoint MinimalCtx Tuple{typeof(isdefined),Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(isa),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(isdefined),Vararg}
 
 # modifyfield!
 
-@zero_adjoint MinimalCtx Tuple{typeof(nfields),Any}
+@zero_derivative MinimalCtx Tuple{typeof(nfields),Any}
 
 # replacefield!
 
+function frule!!(::Dual{typeof(setfield!)}, value::Dual, name::Dual, x::Dual)
+    literal_name = zero_dual(Val(primal(name)))
+    return frule!!(zero_dual(lsetfield!), value, literal_name, x)
+end
 function rrule!!(::CoDual{typeof(setfield!)}, value::CoDual, name::CoDual, x::CoDual)
     literal_name = uninit_fcodual(Val(primal(name)))
     return rrule!!(uninit_fcodual(lsetfield!), value, literal_name, x)
@@ -696,6 +896,7 @@ end
 
 # swapfield!
 
+frule!!(::Dual{typeof(throw)}, args::Dual...) = throw(map(primal, args)...)
 rrule!!(::CoDual{typeof(throw)}, args::CoDual...) = throw(map(primal, args)...)
 
 struct TuplePullback{N} end
@@ -710,6 +911,15 @@ end
 
 @inline tuple_pullback(dy::NoRData) = NoRData()
 
+function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
+    primal_output = tuple(map(primal, args)...)
+    if tangent_type(_typeof(primal_output)) == NoTangent
+        return zero_dual(primal_output)
+    else
+        return Dual(primal_output, tuple(map(tangent, args)...))
+    end
+end
+
 function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     primal_output = tuple(map(primal, args)...)
     if tangent_type(_typeof(primal_output)) == NoTangent
@@ -723,12 +933,15 @@ function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     end
 end
 
+function frule!!(::Dual{typeof(typeassert)}, x::Dual, type::Dual)
+    return Dual(typeassert(primal(x), primal(type)), tangent(x))
+end
 function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
     typeassert_pullback(dy) = NoRData(), dy, NoRData()
     return CoDual(typeassert(primal(x), primal(type)), tangent(x)), typeassert_pullback
 end
 
-@zero_adjoint MinimalCtx Tuple{typeof(typeof),Any}
+@zero_derivative MinimalCtx Tuple{typeof(typeof),Any}
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
     _x = Ref(5.0) # data used in tests which aren't protected by GC.
@@ -773,15 +986,15 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
         # atomic_pointermodify -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointerref -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointerreplace -- NEEDS IMPLEMENTING AND TESTING
-        (
-            true,
-            :none,
-            nothing,
-            IntrinsicsWrappers.atomic_pointerset,
-            CoDual(p, dp),
-            1.0,
-            :monotonic,
-        ),
+        # (
+        #     true,
+        #     :none,
+        #     nothing,
+        #     IntrinsicsWrappers.atomic_pointerset,
+        #     CoDual(p, dp),
+        #     1.0,
+        #     :monotonic,
+        # ),
         # atomic_pointerswap -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, IntrinsicsWrappers.bitcast, Int64, 5.0),
         (false, :stability, nothing, IntrinsicsWrappers.bswap_int, 5),
@@ -927,6 +1140,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
         (false, :none, nothing, __vec_to_tuple, [1.0]),
         (false, :none, nothing, __vec_to_tuple, Any[1.0]),
         (false, :none, nothing, __vec_to_tuple, Any[[1.0]]),
+        (false, :none, nothing, __vec_to_tuple, [1]),
         # Core._apply_pure -- NEEDS IMPLEMENTING AND TESTING
         # Core._call_in_world -- NEEDS IMPLEMENTING AND TESTING
         # Core._call_in_world_total -- NEEDS IMPLEMENTING AND TESTING

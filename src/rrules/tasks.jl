@@ -49,13 +49,21 @@ rdata_type(::Type{TaskTangent}) = NoRData
 
 tangent(t::TaskTangent, ::NoRData) = t
 
+@inline function _get_tangent_field(t::TaskTangent, f)
+    f === :rngState0 && return NoTangent()
+    f === :rngState1 && return NoTangent()
+    f === :rngState2 && return NoTangent()
+    f === :rngState3 && return NoTangent()
+    f === :rngState4 && return NoTangent()
+    return error("Unhandled field $f")
+end
 @inline function _get_fdata_field(_, t::TaskTangent, f)
     f === :rngState0 && return NoFData()
     f === :rngState1 && return NoFData()
     f === :rngState2 && return NoFData()
     f === :rngState3 && return NoFData()
     f === :rngState4 && return NoFData()
-    throw(error("Unhandled field $f"))
+    return error("Unhandled field $f")
 end
 
 @inline increment_field_rdata!(::TaskTangent, ::NoRData, ::Val) = nothing
@@ -69,8 +77,12 @@ function get_tangent_field(t::TaskTangent, f)
     throw(error("Unhandled field $f"))
 end
 
+const TaskDual = Dual{Task,TaskTangent}
 const TaskCoDual = CoDual{Task,TaskTangent}
 
+function frule!!(::Dual{typeof(lgetfield)}, x::TaskDual, ::Dual{Val{f}}) where {f}
+    return Dual(getfield(primal(x), f), _get_tangent_field(tangent(x), f))
+end
 function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) where {f}
     dx = x.dx
     function mutable_lgetfield_pb!!(dy)
@@ -81,17 +93,23 @@ function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) w
     return y, mutable_lgetfield_pb!!
 end
 
+function frule!!(::Dual{typeof(getfield)}, x::TaskDual, f::Dual)
+    return Dual(getfield(primal(x), primal(f)), _get_tangent_field(tangent(x), primal(f)))
+end
 function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
 
+function frule!!(::Dual{typeof(lsetfield!)}, task::TaskDual, name::Dual, val::Dual)
+    return lsetfield_frule(task, name, val)
+end
 function rrule!!(::CoDual{typeof(lsetfield!)}, task::TaskCoDual, name::CoDual, val::CoDual)
     return lsetfield_rrule(task, name, val)
 end
 
 set_tangent_field!(t::TaskTangent, f, ::NoTangent) = NoTangent()
 
-@zero_adjoint MinimalCtx Tuple{typeof(current_task)}
+@zero_derivative MinimalCtx Tuple{typeof(current_task)}
 
 __verify_fdata_value(::IdDict{Any,Nothing}, ::Task, ::TaskTangent) = nothing
 

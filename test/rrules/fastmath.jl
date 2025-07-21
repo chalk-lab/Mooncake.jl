@@ -1,3 +1,3 @@
 @testset "fastmath" begin
-    TestUtils.run_rrule!!_test_cases(StableRNG, Val(:fastmath))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:fastmath))
 end

@@ -2,7 +2,7 @@ include("front_matter.jl")
 
 @testset "Mooncake.jl" begin
     if test_group == "quality"
-        Aqua.test_all(Mooncake)
+        Aqua.test_all(Mooncake; piracies=false)  # TODO: toggle once Diffractor code is removed
         @test JuliaFormatter.format(Mooncake; verbose=false, overwrite=false)
     elseif test_group == "basic"
         include("utils.jl")
@@ -18,6 +18,7 @@ include("front_matter.jl")
             include(joinpath("interpreter", "bbcode.jl"))
             include(joinpath("interpreter", "ir_normalisation.jl"))
             include(joinpath("interpreter", "zero_like_rdata.jl"))
+            include(joinpath("interpreter", "s2s_forward_mode_ad.jl"))
             include(joinpath("interpreter", "s2s_reverse_mode_ad.jl"))
         end
         include("tools_for_rules.jl")
@@ -49,6 +50,8 @@ include("front_matter.jl")
         include(joinpath("rrules", "low_level_maths.jl"))
     elseif test_group == "rrules/misc"
         include(joinpath("rrules", "misc.jl"))
+    elseif test_group == "rrules/misty_closures"
+        include(joinpath("rrules", "misty_closures.jl"))
     elseif test_group == "rrules/new"
         include(joinpath("rrules", "new.jl"))
     elseif test_group == "rrules/random"

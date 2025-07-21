@@ -361,19 +361,30 @@ Used in `make_ad_stmts!`.
 """
 inc_args(x::Expr) = Expr(x.head, map(__inc, x.args)...)
 inc_args(x::ReturnNode) = isdefined(x, :val) ? ReturnNode(__inc(x.val)) : x
-inc_args(x::IDGotoIfNot) = IDGotoIfNot(__inc(x.cond), x.dest)
-inc_args(x::IDGotoNode) = x
-function inc_args(x::IDPhiNode)
+inc_args(x::Union{GotoIfNot,IDGotoIfNot}) = typeof(x)(__inc(x.cond), x.dest)
+inc_args(x::Union{GotoNode,IDGotoNode}) = x
+function inc_args(x::T) where {T<:Union{IDPhiNode,PhiNode}}
     new_values = Vector{Any}(undef, length(x.values))
     for n in eachindex(x.values)
         if isassigned(x.values, n)
             new_values[n] = __inc(x.values[n])
         end
     end
-    return IDPhiNode(x.edges, new_values)
+    return T(x.edges, new_values)
 end
 inc_args(::Nothing) = nothing
 inc_args(x::GlobalRef) = x
+inc_args(x::PiNode) = PiNode(__inc(x.val), x.typ)
+function inc_args(x::PhiCNode)
+    new_values = Vector{Any}(undef, length(x.values))
+    for n in eachindex(x.values)
+        if isassigned(x.values, n)
+            new_values[n] = __inc(x.values[n])
+        end
+    end
+    return PhiCNode(new_values)
+end
+inc_args(x::UpsilonNode) = UpsilonNode(__inc(x.val))
 
 __inc(x::Argument) = Argument(x.n + 1)
 __inc(x) = x
@@ -618,6 +629,7 @@ function get_const_primal_value(x::GlobalRef)
     return getglobal(x.mod, x.name)
 end
 get_const_primal_value(x::QuoteNode) = x.value
+get_const_primal_value(x::Expr) = eval(x)
 get_const_primal_value(x) = x
 
 # Mooncake does not yet handle `PhiCNode`s. Throw an error if one is encountered.
@@ -665,7 +677,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Construct signature, and determine how the rrule is to be computed.
         sig = Tuple{arg_types...}
-        raw_rule = if is_primitive(context_type(info.interp), sig)
+        raw_rule = if is_primitive(context_type(info.interp), ReverseMode, sig)
             rrule!! # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
             mi = stmt.args[1]::Core.MethodInstance
@@ -916,7 +928,7 @@ function nvargs(pb::Pullback{sig}) where {sig}
     return Val{_isva(pb) ? _nargs(pb) - length(sig.parameters) + 1 : 0}
 end
 
-@inline (pb::Pullback)(dy) = __flatten_varargs(_isva(pb), pb.pb_oc[].oc(dy), nvargs(pb)())
+@inline (pb::Pullback)(dy) = __flatten_varargs(_isva(pb), pb.pb_oc[](dy), nvargs(pb)())
 
 struct DerivedRule{Tprimal,Tfwd_args,Tfwd_ret,Tpb_args,Tpb_ret,isva,Tnargs<:Val}
     fwds_oc::RuleMC{Tfwd_args,Tfwd_ret}
@@ -963,7 +975,7 @@ _copy(x) = copy(x)
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
-    return fwds.fwds_oc.oc(uf_args...)::CoDual, pb
+    return fwds.fwds_oc(uf_args...)::CoDual, pb
 end
 
 """
@@ -1000,6 +1012,7 @@ end
 
 _get_sig(sig::Type) = sig
 _get_sig(mi::Core.MethodInstance) = mi.specTypes
+_get_sig(mc::MistyClosure) = Tuple{map(CC.widenconst, mc.ir[].argtypes)...}
 
 function forwards_ret_type(primal_ir::IRCode)
     return fcodual_type(Base.Experimental.compute_ir_rettype(primal_ir))
@@ -1042,16 +1055,19 @@ Helper method: equivalent to extracting the signature from `args` and calling
 `build_rrule(sig; kwargs...)`.
 """
 function build_rrule(args...; kwargs...)
-    interp = get_interpreter()
+    interp = get_interpreter(ReverseMode)
     return build_rrule(interp, _typeof(TestUtils.__get_primals(args)); kwargs...)
 end
 
 """
     build_rrule(sig::Type{<:Tuple}; kwargs...)
 
-Helper method: Equivalent to `build_rrule(Mooncake.get_interpreter(), sig; kwargs...)`.
+Helper method: Equivalent to
+`build_rrule(Mooncake.get_interpreter(ReverseMode), sig; kwargs...)`.
 """
-build_rrule(sig::Type{<:Tuple}; kwargs...) = build_rrule(get_interpreter(), sig; kwargs...)
+function build_rrule(sig::Type{<:Tuple}; kwargs...)
+    return build_rrule(get_interpreter(ReverseMode), sig; kwargs...)
+end
 
 const MOONCAKE_INFERENCE_LOCK = ReentrantLock()
 
@@ -1096,7 +1112,7 @@ function build_rrule(
 
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
-    if is_primitive(C, sig)
+    if is_primitive(C, ReverseMode, sig)
         rule = build_primitive_rrule(sig)
         return (debug_mode ? DebugRRule(rule) : rule)
     end
@@ -1106,7 +1122,7 @@ function build_rrule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode))
+        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :reverse))
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
         else
@@ -1733,7 +1749,8 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
     sig = Tuple{map(_typeof ∘ primal, args)...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
-        rule = build_rrule(get_interpreter(), sig; debug_mode=dynamic_rule.debug_mode)
+        interp = get_interpreter(ReverseMode)
+        rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
         dynamic_rule.cache[sig] = rule
     end
     return rule(args...)
@@ -1806,7 +1823,7 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
     mi::Core.MethodInstance
     rule::Trule
     function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
-        interp = get_interpreter()
+        interp = get_interpreter(ReverseMode)
         return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi)
     end
     function LazyDerivedRule{Tprimal_sig,Trule}(
@@ -1823,7 +1840,8 @@ _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
 end
 
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
-    rule.rule = build_rrule(get_interpreter(), rule.mi; debug_mode=rule.debug_mode)
+    interp = get_interpreter(ReverseMode)
+    rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
     return rule.rule(args...)
 end
 
@@ -1835,7 +1853,7 @@ important for performance in dynamic dispatch, and to ensure that recursion work
 properly.
 """
 function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where {C}
-    if is_primitive(C, _get_sig(sig_or_mi))
+    if is_primitive(C, ReverseMode, _get_sig(sig_or_mi))
         rule = build_primitive_rrule(_get_sig(sig_or_mi))
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)
     end

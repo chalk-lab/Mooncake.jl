@@ -12,5 +12,5 @@
         t = zero_tangent(p)
         @test Mooncake.to_cr_tangent(t) === t
     end
-    TestUtils.run_rrule!!_test_cases(StableRNG, Val(:function_wrappers))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:function_wrappers), ReverseMode)
 end

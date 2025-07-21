@@ -1,4 +1,11 @@
+# See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasRealFloat}})
+function frule!!(
+    ::Dual{typeof(LAPACK.getrf!)}, A_dA::Dual{<:AbstractMatrix{P}}
+) where {P<:BlasRealFloat}
+    _, ipiv, info = LAPACK.getrf!(primal(A_dA))
+    return _getrf_fwd(A_dA, ipiv, info)
+end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
 ) where {P<:BlasRealFloat}
@@ -25,6 +32,16 @@ end
         typeof(Core.kwcall),NamedTuple,typeof(LAPACK.getrf!),AbstractMatrix{<:BlasRealFloat}
     },
 )
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    _kwargs::Dual{<:NamedTuple},
+    ::Dual{typeof(getrf!)},
+    A_dA::Dual{<:AbstractMatrix{P}},
+) where {P<:BlasRealFloat}
+    check = primal(_kwargs).check
+    _, ipiv, info = LAPACK.getrf!(primal(A_dA); check)
+    return _getrf_fwd(A_dA, ipiv, info)
+end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     _kwargs::CoDual{<:NamedTuple},
@@ -49,6 +66,19 @@ function rrule!!(
     return CoDual((_A.x, ipiv, code), (_A.dx, dipiv, NoFData())), getrf_pb!!
 end
 
+function _getrf_fwd(A_dA, ipiv, info)
+    A, dA = arrayify(A_dA)
+
+    # Compute Frechet derivative.
+    L = UnitLowerTriangular(A)
+    U = UpperTriangular(A)
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
+    F = rdiv!(ldiv!(L, dA[p, :]), U)
+    dA .= L * tril(F, -1) + triu(F) * U
+
+    return Dual((A, ipiv, info), (tangent(A_dA), zero_tangent(ipiv), NoTangent()))
+end
+
 function _getrf_pb!(A, dA, ipiv, A_copy)
 
     # Run reverse-pass.
@@ -65,7 +95,6 @@ function _getrf_pb!(A, dA, ipiv, A_copy)
     dA .= (inv(L') * _dF * inv(U'))[invperm(p), :]
 
     # Restore initial state.
-    # ipiv .= ipiv_copy
     A .= A_copy
 
     return nothing
@@ -77,6 +106,43 @@ end
         typeof(trtrs!),Char,Char,Char,AbstractMatrix{P},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat},
 )
+function frule!!(
+    ::Dual{typeof(trtrs!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::Dual{<:AbstractMatrix{P}},
+    B_dB::Dual{<:AbstractVecOrMat{P}},
+) where {P<:BlasRealFloat}
+
+    # Extract data.
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A, dA = arrayify(A_dA)
+    B, dB = arrayify(B_dB)
+
+    # Compute Frechet derivative.
+    LAPACK.trtrs!(uplo, trans, diag, A, dB)
+    tmp = copy(B)
+    LAPACK.trtrs!(uplo, trans, diag, A, tmp) # tmp now contains inv(A) B.
+
+    tmp2 = copy(tmp)
+    if diag == 'N'
+        a = uplo == 'L' ? LowerTriangular(dA) : UpperTriangular(dA)
+        lmul!(trans == 'N' ? a : a', tmp)
+    else
+        a = uplo == 'L' ? UnitLowerTriangular(dA) : UnitUpperTriangular(dA)
+        lmul!(trans == 'N' ? a : a', tmp)
+        tmp .-= tmp2
+    end
+    LAPACK.trtrs!(uplo, trans, diag, A, tmp) # tmp is now α inv(A) dA inv(A) B.
+    dB .-= tmp
+
+    # Run primal computation.
+    LAPACK.trtrs!(uplo, trans, diag, A, B)
+    return B_dB
+end
 function rrule!!(
     ::CoDual{typeof(trtrs!)},
     _uplo::CoDual{Char},
@@ -120,6 +186,41 @@ end
         typeof(getrs!),Char,AbstractMatrix{P},AbstractVector{Int},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat}
 )
+function frule!!(
+    ::Dual{typeof(getrs!)},
+    _trans::Dual{Char},
+    A_dA::Dual{<:AbstractMatrix{P}},
+    _ipiv::Dual{<:AbstractVector{Int}},
+    B_dB::Dual{<:AbstractVecOrMat{P}},
+) where {P<:BlasRealFloat}
+
+    # Extract data.
+    trans = primal(_trans)
+    A, dA = arrayify(A_dA)
+    ipiv = primal(_ipiv)
+    B, dB = arrayify(B_dB)
+
+    # Run primal computation.
+    LAPACK.getrs!(trans, A, ipiv, B)
+
+    # Compute Frechet derivative.
+    L = UnitLowerTriangular(A)
+    dL_plus_I = UnitLowerTriangular(dA)
+    U = UpperTriangular(A)
+    dU = UpperTriangular(dA)
+    p = LinearAlgebra.ipiv2perm(ipiv, size(dB, 1))
+    tmp = dL_plus_I * U
+    tmp .-= U
+    tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
+    if trans == 'N'
+        mul!(dB, tmp2, B, -one(P), one(P))
+    else
+        mul!(dB, tmp2', B, -one(P), one(P))
+    end
+    LAPACK.getrs!(trans, A, ipiv, dB)
+
+    return B_dB
+end
 function rrule!!(
     ::CoDual{typeof(getrs!)},
     _trans::CoDual{Char},
@@ -162,7 +263,7 @@ function rrule!!(
         B2 .= B2[invperm(p), :]
     end
 
-    function trtrs_pb!!(::NoRData)
+    function getrs_pb!!(::NoRData)
         if trans == 'N'
 
             # Run pullback for inv(U) * B.
@@ -194,12 +295,39 @@ function rrule!!(
         B .= B0
         return tuple_fill(NoRData(), Val(5))
     end
-    return _B, trtrs_pb!!
+    return _B, getrs_pb!!
 end
 
 @is_primitive(
     MinimalCtx, Tuple{typeof(getri!),AbstractMatrix{<:BlasRealFloat},AbstractVector{Int}},
 )
+function frule!!(
+    ::Dual{typeof(getri!)},
+    A_dA::Dual{<:AbstractMatrix{P}},
+    _ipiv::Dual{<:AbstractVector{Int}},
+) where {P<:BlasRealFloat}
+    # Extract args.
+    A, dA = arrayify(A_dA)
+    ipiv = primal(_ipiv)
+
+    # Compute part of Frechet derivative.
+    L = UnitLowerTriangular(A)
+    dL_plus_I = UnitLowerTriangular(dA)
+    U = UpperTriangular(A)
+    dU = UpperTriangular(dA)
+    p = LinearAlgebra.ipiv2perm(ipiv, size(dA, 1))
+    tmp = dL_plus_I * U
+    tmp .-= U
+    tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
+
+    # Perform primal computation.
+    LAPACK.getri!(A, ipiv)
+
+    # Compute Frechet derivative.
+    dA .= (-A * tmp2 * A)
+
+    return A_dA
+end
 function rrule!!(
     ::CoDual{typeof(getri!)},
     _A::CoDual{<:AbstractMatrix{<:BlasRealFloat}},
@@ -234,6 +362,35 @@ end
 __sym(X) = (X + X') / 2
 
 @is_primitive(MinimalCtx, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasRealFloat}})
+function frule!!(
+    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::Dual{<:AbstractMatrix{<:BlasRealFloat}}
+)
+    # Extract args and take a copy of A.
+    uplo = primal(_uplo)
+    A, dA = arrayify(A_dA)
+
+    # Run primal computation.
+    _, info = LAPACK.potrf!(uplo, A)
+
+    # Compute Frechet derivative.
+    if uplo == 'L'
+        L = LowerTriangular(A)
+        tmp = LowerTriangular(ldiv!(L, Symmetric(dA, :L) / L'))
+        @inbounds for n in 1:size(A, 1)
+            tmp[n, n] = tmp[n, n] / 2
+        end
+        _copytrito!(dA, lmul!(L, tmp), 'L')
+    else
+        U = UpperTriangular(A)
+        tmp = UpperTriangular(rdiv!(U' \ Symmetric(dA, :U), U))
+        @inbounds for n in 1:size(A, 1)
+            tmp[n, n] = tmp[n, n] / 2
+        end
+        _copytrito!(dA, rmul!(tmp, U), 'U')
+    end
+
+    return Dual((A, info), (tangent(A_dA), NoTangent()))
+end
 function rrule!!(
     ::CoDual{typeof(potrf!)},
     _uplo::CoDual{Char},
@@ -278,6 +435,36 @@ end
         typeof(potrs!),Char,AbstractMatrix{P},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat},
 )
+function frule!!(
+    ::Dual{typeof(potrs!)},
+    _uplo::Dual{Char},
+    A_dA::Dual{<:AbstractMatrix{P}},
+    B_dB::Dual{<:AbstractVecOrMat{P}},
+) where {P<:BlasRealFloat}
+
+    # Extract args and take a copy of B.
+    uplo = primal(_uplo)
+    A, dA = arrayify(A_dA)
+    B, dB = arrayify(B_dB)
+
+    # Run primal computation.
+    LAPACK.potrs!(uplo, A, B)
+
+    # Compute Frechet derivative.
+    if uplo == 'L'
+        L = LowerTriangular(A)
+        dL = LowerTriangular(dA)
+        mul!(dB, Symmetric(dL * L' + L * dL'), B, -one(P), one(P))
+        LAPACK.potrs!(uplo, A, dB)
+    else
+        U = UpperTriangular(A)
+        dU = UpperTriangular(dA)
+        mul!(dB, Symmetric(U'dU + dU'U), B, -one(P), one(P))
+        LAPACK.potrs!(uplo, A, dB)
+    end
+
+    return B_dB
+end
 function rrule!!(
     ::CoDual{typeof(potrs!)},
     _uplo::CoDual{Char},
@@ -322,44 +509,48 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     test_cases = vcat(
 
         # getrf!
+        map_prod(Ps) do (P,)
+            As = blas_matrices(rng, P, 5, 5)
+            ipiv = Vector{Int}(undef, 5)
+            return map(As) do A
+                (false, :stability, nothing, getrf!, A)
+            end
+        end...,
         map_prod(bools, Ps) do (check, P)
             As = blas_matrices(rng, P, 5, 5)
             ipiv = Vector{Int}(undef, 5)
             return map(As) do A
-                (false, :none, nothing, getrf!, A)
+                (false, :stability, nothing, Core.kwcall, (; check), getrf!, A)
             end
         end...,
 
-        # trtrs
+        # trtrs!
         map_prod(
-            ['U', 'L'], ['N', 'T', 'C'], ['N', 'U'], [1, 3], [1, 2], Ps
+            ['U', 'L'], ['N', 'T', 'C'], ['N', 'U'], [1, 3], [-1, 1, 2], Ps
         ) do (ul, tA, diag, N, Nrhs, P)
-            As = blas_matrices(rng, P, N, N)
-            Bs = blas_matrices(rng, P, N, Nrhs)
-            return map(As, Bs) do A, B
+            As = invertible_blas_matrices(rng, P, N)
+            Bs = Nrhs == -1 ? blas_vectors(rng, P, N) : blas_matrices(rng, P, N, Nrhs)
+            Bs = filter(B -> stride(B, 1) == 1, Bs)
+            return map_prod(As, Bs) do (A, B)
                 (false, :none, nothing, trtrs!, ul, tA, diag, A, B)
             end
         end...,
 
         # getrs
-        map_prod(['N', 'T'], [1, 9], [1, 2], Ps) do (trans, N, Nrhs, P)
-            As = map(blas_matrices(rng, P, N, N)) do A
-                A[diagind(A)] .+= 5
-                return getrf!(A)
-            end
-            Bs = blas_matrices(rng, P, N, Nrhs)
-            return map(As, Bs) do (A, ipiv), B
+        map_prod(['N', 'T', 'C'], [1, 5], [-1, 1, 2], Ps) do (trans, N, Nrhs, P)
+            As = map(LAPACK.getrf!, invertible_blas_matrices(rng, P, N))
+            Bs = Nrhs == -1 ? [randn(rng, P, N)] : blas_matrices(rng, P, N, Nrhs)
+            return map_prod(As, Bs) do ((A, _), B)
+                ipiv = fill(N, N)
                 (false, :none, nothing, getrs!, trans, A, ipiv, B)
             end
         end...,
 
         # getri
         map_prod([1, 9], Ps) do (N, P)
-            As = map(blas_matrices(rng, P, N, N)) do A
-                A[diagind(A)] .+= 5
-                return getrf!(A)
-            end
-            return map(As) do (A, ipiv)
+            As = map(LAPACK.getrf!, invertible_blas_matrices(rng, P, N))
+            return map(As) do (A, _)
+                ipiv = fill(N, N)
                 (false, :none, nothing, getri!, A, ipiv)
             end
         end...,
@@ -370,18 +561,19 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
                 A .= A * A' + I
                 return A
             end
-            return map(['L', 'U'], As) do uplo, A
-                return (false, :none, nothing, potrf!, uplo, A)
+            return map_prod(['L', 'U'], As) do (uplo, A)
+                return (false, :stability, nothing, potrf!, uplo, A)
             end
         end...,
 
         # potrs
-        map_prod([1, 3, 9], [1, 2], Ps) do (N, Nrhs, P)
+        map_prod([1, 3, 9], [-1, 1, 2], Ps) do (N, Nrhs, P)
             X = randn(rng, P, N, N)
             A = X * X' + I
-            Bs = blas_matrices(rng, P, N, Nrhs)
-            return map(['L', 'U'], Bs) do uplo, B
-                (false, :none, nothing, potrs!, uplo, potrf!(uplo, copy(A))[1], copy(B))
+            Bs = Nrhs == -1 ? blas_vectors(rng, P, N) : blas_matrices(rng, P, N, Nrhs)
+            return map_prod(['L', 'U'], Bs) do (uplo, B)
+                tmp = potrf!(uplo, copy(A))[1]
+                (false, :none, nothing, potrs!, uplo, tmp, copy(B))
             end
         end...,
     )
@@ -394,7 +586,6 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     getrf_wrapper!(x, check) = getrf!(x; check)
     test_cases = vcat(map_prod([false, true], [Float64, Float32]) do (check, P)
         As = blas_matrices(rng, P, 5, 5)
-        # ipiv = Vector{Int}(undef, 5)
         return map(As) do A
             (false, :none, nothing, getrf_wrapper!, A, check)
         end

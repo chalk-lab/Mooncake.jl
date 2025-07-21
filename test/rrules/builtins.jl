@@ -29,7 +29,7 @@ foo_throws(e) = throw(e)
         @test (@allocations Mooncake.is_homogeneous_and_immutable(x)) == 0
     end
 
-    TestUtils.run_rrule!!_test_cases(StableRNG, Val(:builtins))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:builtins))
 
     # Unhandled built-in throws an intelligible error.
     @test_throws(
