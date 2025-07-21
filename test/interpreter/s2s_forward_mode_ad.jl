@@ -1,3 +1,16 @@
+function foo(x)
+    y = 0.0
+    try
+        if x > 0
+            error("")
+        end
+        y = x
+    catch
+        y = 2x
+    end
+    return y
+end
+
 @testset "s2s_forward_mode_ad" begin
     test_cases = collect(enumerate(TestResources.generate_test_functions()))
     @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, _, fx...)) in test_cases
@@ -8,4 +21,8 @@
             rng, fx...; perf_flag=pf, interface_only=int_only, is_primitive=false, mode
         )
     end
+    TestUtils.test_rule(
+        StableRNG(123), foo, 5.0;
+        perf_flag=:none, interface_only=false, is_primitive=false, mode=ForwardMode
+    )
 end;

@@ -375,6 +375,16 @@ end
 inc_args(::Nothing) = nothing
 inc_args(x::GlobalRef) = x
 inc_args(x::PiNode) = PiNode(__inc(x.val), x.typ)
+function inc_args(x::PhiCNode)
+    new_values = Vector{Any}(undef, length(x.values))
+    for n in eachindex(x.values)
+        if isassigned(x.values, n)
+            new_values[n] = __inc(x.values[n])
+        end
+    end
+    return PhiCNode(new_values)
+end
+inc_args(x::UpsilonNode) = UpsilonNode(__inc(x.val))
 
 __inc(x::Argument) = Argument(x.n + 1)
 __inc(x) = x

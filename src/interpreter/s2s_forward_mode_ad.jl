@@ -255,6 +255,36 @@ function modify_fwd_ad_stmts!(
     return nothing
 end
 
+function modify_fwd_ad_stmts!(
+    stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+)
+    if !(stmt.val isa Union{Argument,SSAValue})
+        stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
+    end
+    set_stmt!(dual_ir, ssa, inc_args(stmt))
+    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    return nothing
+end
+
+function modify_fwd_ad_stmts!(
+    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+)
+    for n in eachindex(stmt.values)
+        isassigned(stmt.values, n) || continue
+        stmt.values[n] isa Union{Argument,SSAValue} && continue
+        stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
+    end
+    set_stmt!(dual_ir, ssa, inc_args(stmt))
+    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    return nothing
+end
+
+function modify_fwd_ad_stmts!(
+    stmt::Core.EnterNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+)
+    return nothing
+end
+
 ## Modification of IR nodes - expressions
 
 __get_primal(x::Dual) = primal(x)
@@ -321,6 +351,10 @@ function modify_fwd_ad_stmts!(
         replace_call!(dual_ir, ssa, primal_cond)
         new_undef_inst = new_inst(Expr(:throw_undef_if_not, stmt.args[1], ssa))
         CC.insert_node!(dual_ir, ssa, new_undef_inst, true)
+    elseif isexpr(stmt, :leave)
+        # Leave this node alone
+    elseif isexpr(stmt, :pop_exception)
+        # Leave this node alone
     else
         msg = "Expressions of type `:$(stmt.head)` are not yet supported in forward mode"
         throw(ArgumentError(msg))

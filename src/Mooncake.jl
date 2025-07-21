@@ -30,6 +30,8 @@ using Core:
     GotoIfNot,
     PhiNode,
     PiNode,
+    PhiCNode,
+    UpsilonNode,
     SSAValue,
     Argument,
     OpaqueClosure,
