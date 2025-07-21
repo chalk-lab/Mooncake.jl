@@ -280,13 +280,11 @@ function modify_fwd_ad_stmts!(
 end
 
 @static if isdefined(Core, :EnterNode)
-
-function modify_fwd_ad_stmts!(
-    stmt::Core.EnterNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
-)
-    return nothing
-end
-
+    function modify_fwd_ad_stmts!(
+        ::Core.EnterNode, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo
+    )
+        return nothing
+    end
 end
 
 ## Modification of IR nodes - expressions

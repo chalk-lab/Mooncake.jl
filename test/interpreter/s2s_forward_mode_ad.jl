@@ -21,8 +21,12 @@ end
             rng, fx...; perf_flag=pf, interface_only=int_only, is_primitive=false, mode
         )
     end
-    TestUtils.test_rule(
-        StableRNG(123), foo, 5.0;
-        perf_flag=:none, interface_only=false, is_primitive=false, mode=ForwardMode
-    )
+
+    # Try try-catch statements.
+    rng = StableRNG(123)
+    perf_flag = :none
+    interface_only = false
+    is_primitive = false
+    mode = ForwardMode
+    TestUtils.test_rule(rng, foo, 5.0; perf_flag, interface_only, is_primitive, mode)
 end;
