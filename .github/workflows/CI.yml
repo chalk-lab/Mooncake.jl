@@ -34,7 +34,7 @@ jobs:
           'rrules/dispatch_doctor',
           'rrules/fastmath',
           'rrules/foreigncall',
-          # 'rrules/functionwrappers',
+          'rrules/functionwrappers',
           'rrules/iddict',
           'rrules/lapack',
           'rrules/linear_algebra',
