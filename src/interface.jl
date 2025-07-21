@@ -561,7 +561,7 @@ end
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info.
 """
-prepare_derivative_cache(fx...; kwargs...) = build_frule(fx...; kwargs...)
+@unstable prepare_derivative_cache(fx...; kwargs...) = build_frule(fx...; kwargs...)
 
 """
     value_and_derivative!!(rule::R, fx::Vararg{Dual,N})
