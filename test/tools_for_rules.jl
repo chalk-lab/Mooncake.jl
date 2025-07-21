@@ -5,7 +5,12 @@ module ToolsForRulesResources
 using ChainRulesCore, LinearAlgebra
 using Base: IEEEFloat
 using Mooncake:
-    @mooncake_overlay, @zero_adjoint, @from_rrule, MinimalCtx, DefaultCtx, @from_chainrules
+    @mooncake_overlay,
+    @zero_derivative,
+    @from_rrule,
+    MinimalCtx,
+    DefaultCtx,
+    @from_chainrules
 
 const CRC = ChainRulesCore
 
@@ -14,10 +19,10 @@ overlay_tester(x) = 2x
 @mooncake_overlay overlay_tester(x) = local_function(x)
 
 zero_tester(x) = 0
-@zero_adjoint MinimalCtx Tuple{typeof(zero_tester),Float64}
+@zero_derivative MinimalCtx Tuple{typeof(zero_tester),Float64}
 
 vararg_zero_tester(x...) = 0
-@zero_adjoint MinimalCtx Tuple{typeof(vararg_zero_tester),Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(vararg_zero_tester),Vararg}
 
 # Test case with isbits data.
 
