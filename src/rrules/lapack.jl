@@ -317,7 +317,7 @@ end
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
-    Ps = [Float64, Float32]
+    Ps = [Float64, Float32, ComplexF64, ComplexF32]
     bools = [false, true]
     test_cases = vcat(
 
@@ -392,7 +392,7 @@ end
 function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     getrf_wrapper!(x, check) = getrf!(x; check)
-    test_cases = vcat(map_prod([false, true], [Float64, Float32]) do (check, P)
+    test_cases = vcat(map_prod([false, true], [Float64, Float32, ComplexF64, ComplexF32]) do (check, P)
         As = blas_matrices(rng, P, 5, 5)
         # ipiv = Vector{Int}(undef, 5)
         return map(As) do A

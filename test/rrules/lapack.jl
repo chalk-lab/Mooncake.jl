@@ -1,7 +1,7 @@
 @testset "lapack" begin
     TestUtils.run_rrule!!_test_cases(StableRNG, Val(:lapack))
 
-    @testset "real/complex getrf!" begin
+    @testset "real/complex logdet" begin
         d = 3
         logdet_realmat(x) = logdet(reshape(x, d, d))
         x0 = vec(randn(d, d)^2)
