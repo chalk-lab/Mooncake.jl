@@ -40,11 +40,11 @@ arrayify(x::Array{P}, dx::Array{P}) where {P<:BlasRealFloat} = (x, dx)
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
     return x, reinterpret(P, dx)
 end
-function arrayify(x::A, dx::FData) where {A<:SubArray{<:BlasRealFloat}}
+function arrayify(x::A, dx::FData) where {A<:SubArray{<:BlasFloat}}
     _, _dx = arrayify(x.parent, dx.data.parent)
     return x, A(_dx, x.indices, x.offset1, x.stride1)
 end
-function arrayify(x::A, dx::FData) where {A<:Base.ReshapedArray{<:BlasRealFloat}}
+function arrayify(x::A, dx::FData) where {A<:Base.ReshapedArray{<:BlasFloat}}
     _, _dx = arrayify(x.parent, dx.data.parent)
     return x, A(_dx, x.dims, x.mi)
 end

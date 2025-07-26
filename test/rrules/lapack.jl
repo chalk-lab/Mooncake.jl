@@ -7,7 +7,9 @@
         x0 = vec(randn(d, d)^2)
         TestUtils.test_rule(StableRNG(1), logdet_realmat, x0; is_primitive=false)
         logdet_complexmat(x) = real(
-            logdet(reshape(x[1:(d^2)], d, d) + im * reshape(x[(d^2 + 1):(2d^2)], d, d))
+            logdet(
+                reshape(x[1:(d ^ 2)], d, d) + im * reshape(x[(d ^ 2 + 1):(2d ^ 2)], d, d)
+            ),
         )
         z0 = randn(ComplexF64, d, d)
         y0 = z0'z0
