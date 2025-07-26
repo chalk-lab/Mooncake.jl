@@ -41,7 +41,7 @@ function loss(ps, st, x, mask)
     t_net = st(ps)
     x₁, x₂, x₃ = Bijectors.partition(mask, x)
     y₁ = x₁ .+ t_net(x₂)
-    y =Bijectors.combine(mask, y₁, x₂, x₃)
+    y = Bijectors.combine(mask, y₁, x₂, x₃)
     return sum(abs2, y)
 end
 
