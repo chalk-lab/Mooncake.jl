@@ -3,11 +3,12 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using Random, Distributions, LinearAlgebra, Test
-using Bijectors
-using Bijectors: partition, combine, PartitionMask
-using Mooncake, ADTypes
+using Bijectors, Flux, Mooncake, ADTypes
 import DifferentiationInterface as DI
-using Flux
+
+#
+# This example below tests a bug found at https://github.com/chalk-lab/Mooncake.jl/issues/661 
+#
 
 # just define a MLP 
 function mlp3(
@@ -28,7 +29,7 @@ end
 inputdim = 4
 mask_idx = 1:2:inputdim
 # creat a masking layer
-mask = PartitionMask(inputdim, mask_idx)
+mask = Bijectors.PartitionMask(inputdim, mask_idx)
 cdim = length(mask_idx)
 
 x = randn(inputdim)
@@ -38,14 +39,13 @@ ps, st = Optimisers.destructure(t_net)
 
 function loss(ps, st, x, mask)
     t_net = st(ps)
-    x₁, x₂, x₃ = partition(mask, x)
+    x₁, x₂, x₃ = Bijectors.partition(mask, x)
     y₁ = x₁ .+ t_net(x₂)
-    y = combine(mask, y₁, x₂, x₃)
-    # println("y = ", y)
+    y =Bijectors.combine(mask, y₁, x₂, x₃)
     return sum(abs2, y)
 end
 
-loss(ps, st, x, mask)  # return 3.0167880799441793
+loss(ps, st, x, mask)
 
 DI.value_and_gradient(
     loss,
@@ -69,12 +69,12 @@ function loss_acl(ps, st, x)
     acl = st(ps)
     t_net = acl.t
     mask = acl.mask
-    x₁, x₂, x₃ = partition(mask, x)
+    x₁, x₂, x₃ = Bijectors.partition(mask, x)
     y₁ = x₁ .+ t_net(x₂)
-    y = combine(mask, y₁, x₂, x₃)
+    y = Bijectors.combine(mask, y₁, x₂, x₃)
     return sum(abs2, y)
 end
-loss_acl(psacl, stacl, x) # return 3.0167880799441793
+loss_acl(psacl, stacl, x)
 
 DI.value_and_gradient(
     loss_acl,
