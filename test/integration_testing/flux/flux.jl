@@ -3,8 +3,8 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using Random, Distributions, LinearAlgebra, Test
-using Bijectors, Flux, Mooncake, ADTypes
-import DifferentiationInterface as DI
+using Bijectors, Flux, Mooncake, StableRNGs
+using Mooncake.TestUtils: test_rule
 
 #
 # This example below tests a bug found at https://github.com/chalk-lab/Mooncake.jl/issues/661 
@@ -47,13 +47,16 @@ end
 
 loss(ps, st, x, mask)
 
-DI.value_and_gradient(
+test_rule(
+    StableRNG(1),
     loss,
-    ADTypes.AutoMooncake(; config=Mooncake.Config()),
     ps,
-    DI.Cache(st),
-    DI.Constant(x),
-    DI.Constant(mask),
+    st,
+    x,
+    mask;
+    is_primitive=false,
+    interface_only=true,
+    unsafe_perturb=true,
 )
 
 struct ACL
@@ -76,10 +79,13 @@ function loss_acl(ps, st, x)
 end
 loss_acl(psacl, stacl, x)
 
-DI.value_and_gradient(
+test_rule(
+    StableRNG(1),
     loss_acl,
-    ADTypes.AutoMooncake(; config=Mooncake.Config()),
     psacl,
-    DI.Cache(stacl),
-    DI.Constant(x),
+    stacl,
+    x;
+    is_primitive=false,
+    interface_only=true,
+    unsafe_perturb=true,
 )
