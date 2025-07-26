@@ -1,7 +1,7 @@
-@is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasRealFloat}})
+@is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     A, dA = arrayify(_A)
     A_copy = copy(A)
 
@@ -22,7 +22,7 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(Core.kwcall),NamedTuple,typeof(LAPACK.getrf!),AbstractMatrix{<:BlasRealFloat}
+        typeof(Core.kwcall),NamedTuple,typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}
     },
 )
 function rrule!!(
@@ -30,7 +30,7 @@ function rrule!!(
     _kwargs::CoDual{<:NamedTuple},
     ::CoDual{typeof(getrf!)},
     _A::CoDual{<:AbstractMatrix{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     check = _kwargs.x.check
     A, dA = arrayify(_A)
     A_copy = copy(A)
