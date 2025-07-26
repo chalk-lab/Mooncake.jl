@@ -37,8 +37,9 @@ end
     return _build_fdata_cartesian(P, x, fdata, Val(fieldcount(P)), Val(fieldnames(P)))
 end
 @generated function _build_fdata_cartesian(
-    ::Type{P}, x::Tuple, fdata::Tuple{Vararg{Any,N}}, ::Val{nfield}, ::Val{names}
-) where {P,N,nfield,names}
+    ::Type{P}, x::Tuple, fdata::Tfdata, ::Val{nfield}, ::Val{names}
+) where {P,nfield,names,Tfdata<:Tuple}
+    N = length(Tfdata.parameters)
     quote
         processed_fdata = Base.Cartesian.@ntuple(
             $nfield, n -> let
