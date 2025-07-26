@@ -2,9 +2,8 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using Random, Distributions, LinearAlgebra, Test
+using Random, LinearAlgebra, Test
 using Bijectors, Flux, Mooncake, StableRNGs
-using Mooncake.TestUtils: test_rule
 
 #
 # This example below tests a bug found at https://github.com/chalk-lab/Mooncake.jl/issues/661 
@@ -47,7 +46,7 @@ end
 
 loss(ps, st, x, mask)
 
-test_rule(
+Mooncake.TestUtils.test_rule(
     StableRNG(1),
     loss,
     ps,
@@ -79,7 +78,7 @@ function loss_acl(ps, st, x)
 end
 loss_acl(psacl, stacl, x)
 
-test_rule(
+Mooncake.TestUtils.test_rule(
     StableRNG(1),
     loss_acl,
     psacl,
