@@ -149,9 +149,9 @@ end
 Equivalent to `value_and_pullback!!(rule, 1.0, f, x...)`, and assumes `f` returns a
 `Union{Float16,Float32,Float64}`.
 
-*Note:* There are lots of subtle ways to mis-use `value_and_pullback!!`, so we generally
+*Note:* There are lots of subtle ways to mis-use [`value_and_pullback!!`](@ref), so we generally
 recommend using `Mooncake.value_and_gradient!!` (this function) where possible. The
-docstring for `value_and_pullback!!` is useful for understanding this function though.
+docstring for [`value_and_pullback!!`](@ref) is useful for understanding this function though.
 
 An example:
 ```jldoctest
@@ -198,7 +198,7 @@ end
     __exclude_unsupported_output(y)
     __exclude_func_with_unsupported_output(fx)
 
-Required for the robust design of [`value_and_pullback`](@ref), [`prepare_pullback_cache`](@ref).  
+Required for the robust design of [`value_and_pullback!!`](@ref), [`prepare_pullback_cache`](@ref).  
 Ensures that `y` or returned value of `fx::Tuple{Tf, Targs...}` contains no aliasing, circular references, `Ptr`s or non differentiable datatypes. 
 In the forward pass f(args...) output can only return a "Tree" like datastructure with leaf nodes as primitive types.  
 Refer https://github.com/chalk-lab/Mooncake.jl/issues/517#issuecomment-2715202789 and related issue for details.  

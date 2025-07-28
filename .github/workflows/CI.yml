@@ -103,6 +103,7 @@ jobs:
           {test_type: 'integration_testing', label: 'misc_abstract_array'},
           {test_type: 'integration_testing', label: 'temporalgps'},
           {test_type: 'integration_testing', label: 'turing'},
+          {test_type: 'integration_testing', label: 'flux'},
         ]
         version:
           - '1'
