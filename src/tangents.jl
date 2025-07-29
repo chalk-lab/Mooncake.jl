@@ -678,7 +678,7 @@ end
 end
 
 """
-    requires_cache(x)
+    require_tangent_cache(x)
 
 Returns `Val{true}()` if the tangent type of `x` might contain circular references or 
 aliasing that requires a cache to track during operations like `set_to_zero!!`, 
@@ -732,8 +732,8 @@ tangent types contain no circular references or aliasing.
     **Recommendation**: Unless you can write comprehensive tests proving your tangent types
     are free of these patterns under all possible use cases, accept the default caching behavior.
 """
-requires_cache(x) = requires_cache(typeof(x))
-requires_cache(::Type{T}) where {T} = Val{!isbitstype(T)}()
+require_tangent_cache(x) = require_tangent_cache(typeof(x))
+require_tangent_cache(::Type{T}) where {T} = Val{!isbitstype(T)}()
 
 """
     prepare_cache(primal)
@@ -741,7 +741,7 @@ requires_cache(::Type{T}) where {T} = Val{!isbitstype(T)}()
 Prepare a cache for tangent operations based on whether the primal requires one.
 Returns either an `IdDict{Any,Bool}()` or `NoCache()`.
 """
-prepare_cache(primal) = prepare_cache(requires_cache(primal))
+prepare_cache(primal) = prepare_cache(require_tangent_cache(primal))
 prepare_cache(::Val{true}) = IdDict{Any,Bool}()
 prepare_cache(::Val{false}) = NoCache()
 
