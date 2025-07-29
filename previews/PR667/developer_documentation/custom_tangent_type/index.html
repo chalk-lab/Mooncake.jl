@@ -981,24 +981,24 @@ function Mooncake.TestUtils.has_equal_data_internal(t::TangentForA{Tx}, s::Tange
 end</code></pre><p>Now we can run it again and successfully check if all the tangent / fdata / rdata and other required functionality works correctly for the self-referential type A.</p><pre><code class="language-julia hljs">Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Test Summary: | Pass  Total  Time
 ===           |   42     42  0.8s
 Test Summary: | Pass  Total  Time
-ifelse        |   92     92  0.7s
+ifelse        |   92     92  0.8s
 Test Summary: | Pass  Total  Time
 sizeof        |   19     19  0.3s
 Test Summary: | Pass  Total  Time
-isa           |   63     63  0.5s
+isa           |   63     63  0.6s
 Test Summary: | Pass  Total  Time
 tuple         |   63     63  0.6s
 Test Summary: | Pass  Total  Time
 typeassert    |   21     21  0.1s
 Test Summary: | Pass  Total  Time
-typeof        |   19     19  0.3s
+typeof        |   19     19  0.4s
 Test Summary: | Pass  Total  Time
 getfield      |  176    176  1.6s
 Test Summary: | Pass  Total  Time
-lgetfield     |  176    176  2.1s
+lgetfield     |  176    176  2.2s
 Test Summary: | Pass  Total  Time
 _new_         |   23     23  0.3s
 Test Summary: | Pass  Total  Time
 setfield!     |   92     92  1.1s
 Test Summary: | Pass  Total  Time
-lsetfield!    |   92     92  0.9s</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../tangents/">« Tangents</a><a class="docs-footer-nextpage" href="../ir_representation/">IR Representation »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.14.1 on <span class="colophon-date" title="Tuesday 29 July 2025 10:49">Tuesday 29 July 2025</span>. Using Julia version 1.11.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+lsetfield!    |   92     92  0.9s</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../tangents/">« Tangents</a><a class="docs-footer-nextpage" href="../ir_representation/">IR Representation »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.14.1 on <span class="colophon-date" title="Tuesday 29 July 2025 13:17">Tuesday 29 July 2025</span>. Using Julia version 1.11.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
