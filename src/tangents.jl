@@ -677,6 +677,74 @@ end
     end
 end
 
+"""
+    requires_cache(x)
+
+Returns `Val{true}()` if the tangent type of `x` might contain circular references or 
+aliasing that requires a cache to track during operations like `set_to_zero!!`, 
+`increment!!`, etc. Returns `Val{false}()` otherwise.
+
+Note that this function takes a primal value but makes a decision about properties of
+its corresponding tangent type. The question is not whether the primal has circular
+references, but whether its tangent might.
+
+The default implementation returns `Val{true}()` for non-bits types to be conservative.
+Package extensions can overload this for their specific types to assert that their
+tangent types contain no circular references or aliasing.
+
+!!! warning "Advanced Performance Optimization - Use With Extreme Caution"
+    This is an advanced optimization. The default behavior (using a cache) is always correct
+    but may be slower. Only override if you have measured a significant performance impact
+    AND can prove your tangent types are safe.
+    
+    **When is it safe to return `Val{false}()`?**
+    Only when the tangent type is guaranteed to have:
+    - No circular references between tangent objects
+    - No uninitialized fields that might later create cycles
+    
+    **Common scenarios requiring `Val{true}()` (the default):**
+    
+    1. **Function/Closure fields**: Closures capture variables, creating `PossiblyUninitTangent{Any}`
+       in their tangents, which often indicates potential circular references
+    
+    2. **Reference types**: `Ref`, `RefValue`, or custom reference types typically produce
+       `MutableTangent` structures that need caching
+    
+    3. **Self-referential patterns**: 
+       - Linked lists, trees, graphs where nodes reference other nodes
+       - Parent-child relationships (e.g., AST nodes with parent pointers)
+       - Objects storing callbacks that might capture the object itself
+    
+    4. **Complex shared structures**: When dealing with intricate data structures where
+       tracking visited nodes is necessary to avoid infinite loops
+    
+    5. **Recursive type definitions**: Types defined recursively often produce tangent
+       structures with circular references
+    
+    6. **Generic/Parametric types**: Even if your type seems simple, its type parameters
+       might have complex tangent structures
+    
+    **Consequences of mistakes**: Returning `Val{false}()` incorrectly will cause:
+    - Infinite loops during tangent operations
+    - Incorrect gradient computations
+    - Hard-to-debug errors that may only appear with specific input patterns
+    
+    **Recommendation**: Unless you can write comprehensive tests proving your tangent types
+    are free of these patterns under all possible use cases, accept the default caching behavior.
+"""
+requires_cache(x) = requires_cache(typeof(x))
+requires_cache(::Type{T}) where {T} = Val{!isbitstype(T)}()
+
+"""
+    prepare_cache(primal)
+
+Prepare a cache for tangent operations based on whether the primal requires one.
+Returns either an `IdDict{Any,Bool}()` or `NoCache()`.
+"""
+prepare_cache(primal) = prepare_cache(requires_cache(primal))
+prepare_cache(::Val{true}) = IdDict{Any,Bool}()
+prepare_cache(::Val{false}) = NoCache()
+
 const IncCache = Union{NoCache,IdDict{Any,Bool}}
 
 """
@@ -726,11 +794,15 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {T<:MutableTangent}
 end
 
 """
-    set_to_zero!!(x)
+    set_to_zero!!(x; cache=IdDict{Any,Bool}())
 
 Set `x` to its zero element (`x` should be a tangent, so the zero must exist).
+
+The `cache` keyword argument is used for tracking circular references. 
+By default it uses an `IdDict`, but can be set to `NoCache()` for types that
+are known to not have circular references.
 """
-set_to_zero!!(x) = set_to_zero_internal!!(IdDict{Any,Bool}(), x)
+set_to_zero!!(x; cache=IdDict{Any,Bool}()) = set_to_zero_internal!!(cache, x)
 
 """
     set_to_zero_internal!!(c::IncCache, x)

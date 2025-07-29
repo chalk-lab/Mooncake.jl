@@ -149,7 +149,7 @@ include("public.jl")
 end
 #! format: on
 
-@public Config, value_and_pullback!!, prepare_pullback_cache
+@public Config, value_and_pullback!!, prepare_pullback_cache, requires_cache
 
 # Public, exported
 export value_and_gradient!!, prepare_gradient_cache
