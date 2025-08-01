@@ -86,36 +86,85 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{
-    typeof(Core._call_latest),typeof(handle_message),Any,Vararg{Any}
+    typeof(Core._call_latest),
+    typeof(handle_message),
+    Any,
+    Base.CoreLogging.LogLevel,
+    String,
+    Module,
+    Symbol,
+    Symbol,
+    String,
+    Int64,
 }
 function rrule!!(
     ::CoDual{typeof(Core._call_latest)},
     ::CoDual{typeof(CoreLogging.handle_message)},
     logger::CoDual,
-    args::Vararg{CoDual},
+    loglevel::CoDual{Base.CoreLogging.LogLevel},
+    message::CoDual{String},
+    _module::CoDual{Module},
+    group::CoDual{Symbol},
+    id::CoDual{Symbol},
+    file::CoDual{String},
+    line::CoDual{Int64},
 )
-    prim_args = map(primal, args)
-    result = Core._call_latest(CoreLogging.handle_message, logger.x, prim_args...)
+    result = Core._call_latest(
+        CoreLogging.handle_message,
+        logger.x,
+        loglevel.x,
+        message.x,
+        _module.x,
+        group.x,
+        id.x,
+        file.x,
+        line.x,
+    )
     return zero_fcodual(result), NoPullback()
 end
 
 @is_primitive MinimalCtx Tuple{
+    typeof(Core._call_latest),
     typeof(Core.kwcall),
-    NamedTuple,
-    typeof(CoreLogging.invokelatest),
+    <:NamedTuple,
     typeof(CoreLogging.handle_message),
-    Vararg{Any},
+    Any,
+    Base.CoreLogging.LogLevel,
+    String,
+    Module,
+    Symbol,
+    Symbol,
+    String,
+    Int64,
 }
 function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    kwargs::CoDual,
     ::CoDual{typeof(Core._call_latest)},
+    ::CoDual{typeof(Core.kwcall)},
+    kwargs::CoDual{<:NamedTuple},
     ::CoDual{typeof(CoreLogging.handle_message)},
-    args::Vararg{CoDual},
+    logger::CoDual,
+    loglevel::CoDual{Base.CoreLogging.LogLevel},
+    message::CoDual{String},
+    _module::CoDual{Module},
+    group::CoDual{Symbol},
+    id::CoDual{Symbol},
+    file::CoDual{String},
+    line::CoDual{Int64},
 )
-    prim_args = map(primal, args)
-    Core._call_latest(CoreLogging.handle_message, logger.x, prim_args...; kwargs...)
-    return zero_fcodual(nothing), NoPullback()
+    result = Core._call_latest(
+        Core.kwcall,
+        kwargs.x,
+        CoreLogging.handle_message,
+        logger.x,
+        loglevel.x,
+        message.x,
+        _module.x,
+        group.x,
+        id.x,
+        file.x,
+        line.x;
+    )
+    return zero_fcodual(result), NoPullback()
 end
 
 function generate_hand_written_rrule!!_test_cases(
@@ -208,6 +257,11 @@ function generate_derived_rrule!!_test_cases(
         @debug "Testing @debug macro"
     end
 
+    x = rand(1:100)
+    function testloggingmacro5(x)
+        @info "Testing @info macro with kwargs" x
+    end
+
     test_cases = vcat(
         Any[
             # Tests for Base.CoreLogging @logmsg macros
@@ -215,6 +269,7 @@ function generate_derived_rrule!!_test_cases(
             (false, :none, nothing, testloggingmacro2, rand(1:100)),
             (false, :none, nothing, testloggingmacro3, rand(1:100)),
             (false, :none, nothing, testloggingmacro4, rand(1:100)),
+            (false, :none, nothing, testloggingmacro5, rand(1:100)),
         ],
     )
     return test_cases, Any[]
