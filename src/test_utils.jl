@@ -434,7 +434,7 @@ end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_perturb::Bool)
-    @nospecialize rng x_ẋ frule
+    @nospecialize rng x_ẋ
 
     x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
 
@@ -508,7 +508,7 @@ end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_perturb::Bool)
-    @nospecialize rng x_x̄ rrule
+    @nospecialize rng x_x̄
 
     x_x̄ = map(_deepcopy, x_x̄) # defensive copy
 
@@ -607,7 +607,7 @@ _deepcopy(x::Module) = x
 rrule_output_type(::Type{Ty}) where {Ty} = Tuple{Mooncake.fcodual_type(Ty),Any}
 
 function test_frule_interface(x_ẋ...; frule)
-    @nospecialize x_ẋ frule
+    @nospecialize x_ẋ
 
     # Pull out primals and run primal computation.
     x_ẋ = map(_deepcopy, x_ẋ)
@@ -639,7 +639,7 @@ function test_frule_interface(x_ẋ...; frule)
 end
 
 function test_rrule_interface(f_f̄, x_x̄...; rrule)
-    @nospecialize f_f̄ x_x̄ rrule
+    @nospecialize f_f̄ x_x̄
 
     # Pull out primals and run primal computation.
     f = primal(f_f̄)
@@ -933,15 +933,15 @@ function test_rule(
                 test_rvs && test_rrule_performance(perf_flag, rrule, x_x̄...)
             end
 
-            # Test the interface again, in order to verify that caching is working correctly.
-            @testset "Interface (2)" begin
-                if test_fwd
-                    frule = build_frule(get_interpreter(ForwardMode), sig; debug_mode)
-                    test_frule_interface(x_ẋ...; frule)
+            # Verify that rules have been cached.
+            @testset "Caching" begin
+                if test_fwd && !is_primitive
+                    k = Mooncake.ClosureCacheKey(fwd_interp.world, (sig, false, :forward))
+                    @test haskey(fwd_interp.oc_cache, k)
                 end
-                if test_rvs
-                    rrule = build_rrule(get_interpreter(ReverseMode), sig; debug_mode)
-                    test_rrule_interface(x_x̄...; rrule)
+                if test_rvs && !is_primitive
+                    k = Mooncake.ClosureCacheKey(rvs_interp.world, (sig, false, :reverse))
+                    @test haskey(rvs_interp.oc_cache, k)
                 end
             end
         end
