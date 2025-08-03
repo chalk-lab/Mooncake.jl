@@ -63,7 +63,6 @@ function _interpolate_boundschecks!(statements::Vector{Any})
         if stmt isa Expr && stmt.head == :boundscheck && length(stmt.args) == 1
             def = SSAValue(n)
             val = only(stmt.args)
-            # TODO: this could just be `statements[n] = val` (Valentin C says)
             for (m, stmt) in enumerate(statements)
                 statements[m] = replace_uses_with!(stmt, def, val)
             end
