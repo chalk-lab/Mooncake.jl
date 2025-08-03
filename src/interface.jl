@@ -564,9 +564,10 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
 @unstable prepare_derivative_cache(fx...; kwargs...) = build_frule(fx...; kwargs...)
 
 """
-    value_and_derivative!!(rule::R, fx::Vararg{Dual,N})
+    value_and_derivative!!(rule::R, f::Dual, x::Vararg{Dual,N})
 
 Returns a `Dual` containing the result of applying forward-mode AD to compute the derivative
-of the primal in `fx` in the direction of the tangent in `fx`.
+of `primal(f)` at the primal values in `x` in the direction of the tangent values in `f` and
+`x`.
 """
 value_and_derivative!!(rule::R, fx::Vararg{Dual,N}) where {R,N} = rule(fx...)
