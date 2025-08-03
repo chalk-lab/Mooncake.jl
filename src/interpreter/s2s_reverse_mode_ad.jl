@@ -514,7 +514,7 @@ function make_ad_stmts!(stmt::PiNode, line::ID, info::ADInfo)
         P = get_primal_type(info, line)
         val_rdata_ref_id = get_rev_data_id(info, stmt.val)
         output_rdata_ref_id = get_rev_data_id(info, line)
-        fwds = PiNode(__inc(stmt.val), fcodual_type(CC.widenconst(stmt.typ)))
+        fwds = inc_args(PiNode(stmt.val, fcodual_type(CC.widenconst(stmt.typ))))
 
         # Get the rdata from the output_rdata_ref, and set its new value to zero, and
         # increment the output ref.
