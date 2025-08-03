@@ -600,9 +600,9 @@ Convenience functionality to assist in using `ChainRuleCore.frule`s and
 
 - `ctx`: A Mooncake context type
 - `sig`: the signature which you wish to assert should be a primitive in `Mooncake.jl`, and
-    use an existing `ChainRulesCore.rrule` to implement this functionality.
+    use an existing `ChainRulesCore.rrule` or `ChainRulesCore.frule` to implement this functionality.
 - `has_kwargs=true`: a `Bool` stating whether or not the function has keyword arguments.
-    This feature has the same limitations as `ChainRulesCore.rrule` -- the derivative w.r.t.
+    This feature has the same limitations as `ChainRulesCore.rrule` and `ChainRulesCore.frule` -- the derivative w.r.t.
     all kwargs must be zero.
 - `frule=true`: if `true` then defines an `frule!!`.
 - `rrule=true`: if `true` then defines an `rrule!!`.
@@ -701,7 +701,7 @@ someone might define.
 
 # Conversions Between Different Tangent Type Systems
 
-Under the hood, this functionality relies on two functions: `Mooncake.to_cr_tangent`, and
+Under the hood, this functionality relies on three functions: `Mooncake.mooncake_tangent`, `Mooncake.to_cr_tangent`, and
 `Mooncake.increment_and_get_rdata!`. These two functions handle conversion to / from
 `Mooncake` tangent types and `ChainRulesCore` tangent types. This functionality is known to
 work well for simple types, but has not been tested to a great extent on complicated

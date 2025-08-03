@@ -2,7 +2,7 @@ include("front_matter.jl")
 
 @testset "Mooncake.jl" begin
     if test_group == "quality"
-        Aqua.test_all(Mooncake; piracies=false)  # TODO: toggle once Diffractor code is removed
+        Aqua.test_all(Mooncake)
         @test JuliaFormatter.format(Mooncake; verbose=false, overwrite=false)
     elseif test_group == "basic"
         include("utils.jl")
