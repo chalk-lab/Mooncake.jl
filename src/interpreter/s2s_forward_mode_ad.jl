@@ -178,6 +178,9 @@ end
 
 ## Modification of IR nodes
 
+const ATTACH_AFTER = true
+const ATTACH_BEFORE = false
+
 modify_fwd_ad_stmts!(::Nothing, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo) = nothing
 
 modify_fwd_ad_stmts!(::GotoNode, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo) = nothing
@@ -190,7 +193,7 @@ function modify_fwd_ad_stmts!(
 
     # reinsert the GotoIfNot right after the call to primal
     new_gotoifnot_inst = new_inst(Core.GotoIfNot(ssa, stmt.dest))
-    CC.insert_node!(dual_ir, ssa, new_gotoifnot_inst, true)
+    CC.insert_node!(dual_ir, ssa, new_gotoifnot_inst, ATTACH_AFTER)
     return nothing
 end
 
@@ -205,7 +208,7 @@ function modify_fwd_ad_stmts!(
             Mooncake.replace_call!(dual_ir, ssa, Expr(:call, identity, d))
         end
     else
-        new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), false)
+        new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
         zero_dual_call = Expr(:call, Mooncake.zero_dual, new_ssa)
         Mooncake.replace_call!(dual_ir, ssa, zero_dual_call)
     end
@@ -332,19 +335,19 @@ function modify_fwd_ad_stmts!(
             dm = info.debug_mode
             push!(captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm))
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
-            rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule))
+            rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
         end
     elseif isexpr(stmt, :boundscheck)
         # Keep the boundscheck, but put it in a Dual.
         inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
-        bc_ssa = CC.insert_node!(dual_ir, ssa, inst, false)
+        bc_ssa = CC.insert_node!(dual_ir, ssa, inst, ATTACH_BEFORE)
         replace_call!(dual_ir, ssa, Expr(:call, zero_dual, bc_ssa))
     elseif isexpr(stmt, :code_coverage_effect)
         replace_call!(dual_ir, ssa, nothing)
     elseif Meta.isexpr(stmt, :copyast)
         new_copyast_inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
-        new_copyast_ssa = CC.insert_node!(dual_ir, ssa, new_copyast_inst)
+        new_copyast_ssa = CC.insert_node!(dual_ir, ssa, new_copyast_inst, ATTACH_BEFORE)
         replace_call!(dual_ir, ssa, Expr(:call, zero_dual, new_copyast_ssa))
     elseif Meta.isexpr(stmt, :loopinfo)
         # Leave this node alone.
@@ -353,7 +356,7 @@ function modify_fwd_ad_stmts!(
         primal_cond = Expr(:call, _primal, inc_args(stmt).args[2])
         replace_call!(dual_ir, ssa, primal_cond)
         new_undef_inst = new_inst(Expr(:throw_undef_if_not, stmt.args[1], ssa))
-        CC.insert_node!(dual_ir, ssa, new_undef_inst, true)
+        CC.insert_node!(dual_ir, ssa, new_undef_inst, ATTACH_AFTER)
     elseif isexpr(stmt, :enter)
         # Leave this node alone
     elseif isexpr(stmt, :leave)
