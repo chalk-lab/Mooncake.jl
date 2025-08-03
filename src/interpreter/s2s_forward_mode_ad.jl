@@ -20,7 +20,7 @@ function build_frule(
         throw(
             ArgumentError(
                 "World age associated to interp is behind current world age. Please " *
-                "a new interpreter for the current world age.",
+                "create a new interpreter for the current world age.",
             ),
         )
     end
