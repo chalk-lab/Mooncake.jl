@@ -607,7 +607,7 @@ _deepcopy(x::Module) = x
 rrule_output_type(::Type{Ty}) where {Ty} = Tuple{Mooncake.fcodual_type(Ty),Any}
 
 function test_frule_interface(x_ẋ...; frule)
-    @nospecialize x_ẋ
+    @nospecialize x_ẋ frule
 
     # Pull out primals and run primal computation.
     x_ẋ = map(_deepcopy, x_ẋ)
@@ -639,7 +639,7 @@ function test_frule_interface(x_ẋ...; frule)
 end
 
 function test_rrule_interface(f_f̄, x_x̄...; rrule)
-    @nospecialize f_f̄ x_x̄
+    @nospecialize f_f̄ x_x̄ rrule
 
     # Pull out primals and run primal computation.
     f = primal(f_f̄)
