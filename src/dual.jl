@@ -18,7 +18,7 @@ Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangent(x)))
 _copy(x::P) where {P<:Dual} = x
 
 """
-    extract(x::CoDual)
+    extract(x::Dual)
 
 Helper function. Returns the 2-tuple `x.x, x.dx`.
 """

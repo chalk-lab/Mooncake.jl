@@ -1,8 +1,8 @@
 """
     MistyClosureTangent(captures_tangent::Any, dual_callable::Any)
 
-The tangent type for `MistyClosure`. `captures_tangent` contains the tangent to the captures
-varibles, and `dual_callable` contains a callable object which performs forwards-mode AD.
+The tangent type for `MistyClosure`. `captures_tangent` contains the tangent to the captured
+variables, and `dual_callable` contains a callable object which performs forwards-mode AD.
 
 That the field type of `captures_tangent` is `Any` is unavoidable since the `captures`
 field of an `OpaqueClosure` has field type `Any`.

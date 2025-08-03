@@ -27,14 +27,14 @@ function build_frule(
 
     # If we're compiling in debug mode, let the user know by default.
     if !silence_debug_messages && debug_mode
-        @info "Compiling rule for $sig_or_mi in debug mode. Disable for best performance."
+        @info "Compiling frule for $sig_or_mi in debug mode. Disable for best performance."
     end
 
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     is_primitive(C, ForwardMode, sig) && return (debug_mode ? DebugFRule(frule!!) : frule!!)
 
-    # We don't have a hand-coded rule, so derived one.
+    # We don't have a hand-coded rule, so derive one.
     lock(MOONCAKE_INFERENCE_LOCK)
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
@@ -158,7 +158,7 @@ end
 """
     const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
 
-Build a `Dual` from `stmt`, with zero / uninitialised fdata. If the resulting `Dual` is
+Build a `Dual` from `stmt`, with zero / uninitialised tangent. If the resulting `Dual` is
 a bits type, then it is returned. If it is not, then the `Dual` is put into captures,
 and its location in `captures` returned.
 

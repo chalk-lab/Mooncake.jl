@@ -40,10 +40,10 @@ function is a primitive in reverse-mode AD.
 struct ReverseMode <: Mode end
 
 """
-    is_primitive(::Type{Ctx}, ::Type{Mode}, sig) where {Ctx,Mode}
+    is_primitive(::Type{Ctx}, ::Type{M}, sig) where {Ctx,M}
 
 Returns a `Bool` specifying whether the methods specified by `sig` are considered primitives
-in the context of contexts of type `Ctx` in `Mode`.
+in the context of contexts of type `Ctx` in mode `M`.
 
 ```julia
 is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64})
@@ -56,7 +56,7 @@ particular context depends only on static information, not any run-time informat
 might live in a particular instance of `Ctx`.
 """
 is_primitive(::Type{MinimalCtx}, ::Type{<:Mode}, sig::Type{<:Tuple}) = false
-is_primitive(::Type{DefaultCtx}, M::Type{<:Mode}, sig) = is_primitive(MinimalCtx, M, sig)
+is_primitive(::Type{DefaultCtx}, ::Type{M}, sig) where {M<:Mode} = is_primitive(MinimalCtx, M, sig)
 
 """
     @is_primitive context_type [mode_type] signature
@@ -79,7 +79,7 @@ true
 ```
 Observe that this means that a rule is a primitive in all AD modes.
 
-You should implemented more complicated methods of [`is_primitive`](@ref) in the usual way.
+You should implement more complicated methods of [`is_primitive`](@ref) in the usual way.
 
 Optionally, you can specify that a rule is only a primitive in a particular mode, eg.
 ```jldoctest
