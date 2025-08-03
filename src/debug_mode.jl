@@ -1,4 +1,5 @@
-DebugFRule(rule) = rule  # TODO: make it non-trivial
+# TODO: make it non-trivial. See https://github.com/chalk-lab/Mooncake.jl/issues/672
+DebugFRule(rule) = rule  
 
 """
     DebugPullback(pb, y, x)
