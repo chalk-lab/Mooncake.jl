@@ -559,7 +559,7 @@ end
 """
     prepare_derivative_cache(f, x...)
 
-Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info.
+Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 """
 @unstable prepare_derivative_cache(fx...; kwargs...) = build_frule(fx...; kwargs...)
 
