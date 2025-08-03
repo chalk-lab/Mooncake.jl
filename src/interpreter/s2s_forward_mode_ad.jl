@@ -156,7 +156,7 @@ end
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
 
 """
-    const_dual(captures::Vector{Any}, stmt)::Union{Dual,Int}
+    const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
 
 Build a `Dual` from `stmt`, with zero / uninitialised fdata. If the resulting `Dual` is
 a bits type, then it is returned. If it is not, then the `Dual` is put into captures,
@@ -165,7 +165,7 @@ and its location in `captures` returned.
 Whether or not the value is a literal, or an index into the captures, can be determined from
 the return type.
 """
-function const_dual(captures::Vector{Any}, stmt)::Union{Dual,Int}
+function const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
     v = get_const_primal_value(stmt)
     x = uninit_dual(v)
     if safe_for_literal(v)
@@ -198,7 +198,7 @@ function modify_fwd_ad_stmts!(
     stmt::GlobalRef, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
 )
     if isconst(stmt)
-        d = const_dual(captures, stmt)
+        d = const_dual!(captures, stmt)
         if d isa Int
             Mooncake.replace_call!(dual_ir, ssa, Expr(:call, get_capture, Argument(1), d))
         else
@@ -226,7 +226,7 @@ function modify_fwd_ad_stmts!(
     end
 
     # stmt is a const, so we have to turn it into a dual.
-    dual_stmt = ReturnNode(const_dual(captures, stmt.val))
+    dual_stmt = ReturnNode(const_dual!(captures, stmt.val))
     Mooncake.replace_call!(dual_ir, ssa, dual_stmt)
     return nothing
 end
