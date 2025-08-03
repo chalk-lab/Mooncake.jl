@@ -117,7 +117,7 @@ function generate_dual_ir(
     dual_ir = CC.copy(primal_ir)
 
     # Modify dual argument types:
-    # - add one for the rule in front
+    # - add one for the captures in the first position, with placeholder type for now
     # - convert the rest to dual types
     for (a, P) in enumerate(primal_ir.argtypes)
         dual_ir.argtypes[a] = dual_type(CC.widenconst(P))
@@ -143,7 +143,8 @@ function generate_dual_ir(
 
     CC.verify_ir(dual_ir)
 
-    # Update first argument type to reflect the data stored in the captures.
+    # Now that the captured values are known, replace the placeholder value given for the
+    # first argument type with the actual type.
     captures_tuple = (captures...,)
     dual_ir.argtypes[1] = _typeof(captures_tuple)
 
