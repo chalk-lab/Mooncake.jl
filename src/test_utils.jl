@@ -434,7 +434,7 @@ end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_perturb::Bool)
-    @nospecialize rng x_ẋ
+    @nospecialize rng x_ẋ frule
 
     x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
 
@@ -508,7 +508,7 @@ end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_perturb::Bool)
-    @nospecialize rng x_x̄
+    @nospecialize rng x_x̄ rrule
 
     x_x̄ = map(_deepcopy, x_x̄) # defensive copy
 
@@ -757,7 +757,7 @@ function test_frule_performance(
 
         # Test allocations in forwards-mode.
         __forwards(rule, f_ḟ, x_ẋ...)
-        @test (@allocations __forwards(rule, f_ḟ, x_ẋ...)) == 0 # TODO: compile rule first?
+        @test (@allocations __forwards(rule, f_ḟ, x_ẋ...)) == 0
     end
 end
 
