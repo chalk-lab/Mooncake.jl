@@ -27,6 +27,7 @@ import Base.CoreLogging as CoreLogging
 
 # Some Base String related rrules :
 @zero_adjoint MinimalCtx Tuple{typeof(print),Vararg}
+@zero_adjoint MinimalCtx Tuple{typeof(println),Vararg}
 @zero_adjoint MinimalCtx Tuple{typeof(show),Vararg}
 @zero_adjoint MinimalCtx Tuple{typeof(normpath),String}
 
@@ -184,6 +185,7 @@ function generate_hand_written_rrule!!_test_cases(
             1,
         ),
         (false, :none, nothing, print, "Testing print"),
+        (false, :none, nothing, println, "Testing println"),
         (false, :none, nothing, show, "Testing show"),
 
         # non-kwargs sprint rule test
@@ -255,7 +257,6 @@ function generate_derived_rrule!!_test_cases(
             (false, :none, nothing, testloggingmacro7, rand(1:100)),
             (false, :none, nothing, testloggingmacro8, rand(1:100)),
             (false, :none, nothing, testloggingmacro9, rand(1:100)),
-            (false, :none, nothing, println, "Testing println"),
         ],
     )
     return test_cases, Any[]
