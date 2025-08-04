@@ -23,45 +23,38 @@ import Base.CoreLogging as CoreLogging
 
 # Rule for accessing an Atomic{T} wrapped Integer with Base.getindex as deriving a rule results
 # in encountering a Atomic->Int address bitcast followed by a llvm atomic load call 
-@is_primitive MinimalCtx Tuple{typeof(getindex),Atomic{T}} where {T<:Integer}
-function rrule!!(::CoDual{typeof(getindex)}, x::CoDual{Atomic{T}}) where {T<:Integer}
-    pb!!(ȳ::NoRData) = NoRData(), NoRData()
-    return zero_fcodual(getindex(x.x)), pb!!
+@zero_adjoint MinimalCtx Tuple{typeof(getindex),Atomic{I}} where {I<:Integer}
+
+# Some Base String related rrules :
+@zero_adjoint MinimalCtx Tuple{typeof(println),Vararg}
+@zero_adjoint MinimalCtx Tuple{typeof(print),Vararg}
+@zero_adjoint MinimalCtx Tuple{typeof(show),Vararg}
+@zero_adjoint MinimalCtx Tuple{typeof(normpath),String}
+
+# seperate kwargs, non-kwargs Base.sprint rules are required. Julia compilation only gives a common lowered IR for any Base.sprint calls.
+# refer issue #558 and PR https://github.com/chalk-lab/Mooncake.jl/pull/659 for another sneaky appearance of this problem + fix.
+@zero_adjoint MinimalCtx Tuple{typeof(sprint),Vararg}
+@is_primitive MinimalCtx Tuple{typeof(Core.kwcall),<:NamedTuple,typeof(sprint),Vararg}
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kwargs::CoDual{<:NamedTuple},
+    ::CoDual{typeof(sprint)},
+    args::Vararg{CoDual},
+)
+    primal_args = map(x -> x.x, args)
+    result = Core.kwcall(kwargs.x, sprint, primal_args...)
+    return zero_fcodual(result),
+    NoPullback(zero_fcodual(Core.kwcall), kwargs, zero_fcodual(sprint), args...)
 end
 
-@is_primitive MinimalCtx Tuple{typeof(Base.normpath),String}
-function rrule!!(::CoDual{typeof(Base.normpath)}, path::CoDual{String})
-    pb!!(ȳ::NoRData) = NoRData(), NoRData()
-    return zero_fcodual(Base.normpath(path.x)), pb!!
-end
-
-@is_primitive MinimalCtx Tuple{
+# Base.CoreLogging @logmsg related primitives.
+@zero_adjoint MinimalCtx Tuple{
     typeof(Base._replace_init),String,Tuple{Pair{String,String}},Int64
 }
-function rrule!!(
-    ::CoDual{typeof(Base._replace_init)},
-    str::CoDual{String},
-    replacements::CoDual{Tuple{Pair{String,String}}},
-    count::CoDual{Int64},
-)
-    pb!!(ȳ::NoRData) = NoRData(), NoRData(), NoRData(), NoRData()
-    return zero_fcodual(Base._replace_init(str.x, replacements.x, count.x)), pb!!
-end
-
-@is_primitive MinimalCtx Tuple{
+@zero_adjoint MinimalCtx Tuple{
     typeof(CoreLogging.current_logger_for_env),LogLevel,Symbol,Module
 }
-function rrule!!(
-    ::CoDual{typeof(CoreLogging.current_logger_for_env)},
-    level::CoDual{LogLevel},
-    group::CoDual{Symbol},
-    _module::CoDual{Module},
-)
-    logger = CoreLogging.current_logger_for_env(level.x, group.x, _module.x)
-    return zero_fcodual(logger), NoPullback()
-end
-
-@is_primitive MinimalCtx Tuple{
+@zero_adjoint MinimalCtx Tuple{
     typeof(Core._call_latest),
     typeof(Base.CoreLogging.shouldlog),
     Any,
@@ -70,24 +63,9 @@ end
     Symbol,
     Symbol,
 }
-function rrule!!(
-    ::CoDual{typeof(Core._call_latest)},
-    ::CoDual{typeof(Base.CoreLogging.shouldlog)},
-    logger::CoDual,
-    level::CoDual{LogLevel},
-    _module::CoDual{Module},
-    group::CoDual{Symbol},
-    id::CoDual{Symbol},
-)
-    result = Core._call_latest(
-        Base.CoreLogging.shouldlog, logger.x, level.x, _module.x, group.x, id.x
-    )
-    return zero_fcodual(result), NoPullback()
-end
-
-@is_primitive MinimalCtx Tuple{
+@zero_adjoint MinimalCtx Tuple{
     typeof(Core._call_latest),
-    typeof(handle_message),
+    typeof(CoreLogging.handle_message),
     Any,
     Base.CoreLogging.LogLevel,
     String,
@@ -97,32 +75,7 @@ end
     String,
     Int64,
 }
-function rrule!!(
-    ::CoDual{typeof(Core._call_latest)},
-    ::CoDual{typeof(CoreLogging.handle_message)},
-    logger::CoDual,
-    loglevel::CoDual{Base.CoreLogging.LogLevel},
-    message::CoDual{String},
-    _module::CoDual{Module},
-    group::CoDual{Symbol},
-    id::CoDual{Symbol},
-    file::CoDual{String},
-    line::CoDual{Int64},
-)
-    result = Core._call_latest(
-        CoreLogging.handle_message,
-        logger.x,
-        loglevel.x,
-        message.x,
-        _module.x,
-        group.x,
-        id.x,
-        file.x,
-        line.x,
-    )
-    return zero_fcodual(result), NoPullback()
-end
-
+# specialized case for Builtin primitive Core._call_latest rrule for CoreLogging.handle_message kwargs call. 
 @is_primitive MinimalCtx Tuple{
     typeof(Core._call_latest),
     typeof(Core.kwcall),
@@ -164,7 +117,21 @@ function rrule!!(
         file.x,
         line.x;
     )
-    return zero_fcodual(result), NoPullback()
+    return zero_fcodual(result),
+    NoPullback(
+        zero_fcodual(Core._call_latest),
+        zero_fcodual(Core.kwcall),
+        kwargs,
+        zero_fcodual(CoreLogging.handle_message),
+        logger,
+        loglevel,
+        message,
+        _module,
+        group,
+        id,
+        file,
+        line,
+    )
 end
 
 function generate_hand_written_rrule!!_test_cases(
@@ -188,13 +155,7 @@ function generate_hand_written_rrule!!_test_cases(
             ),
 
             # Rules for handling Atomic read operations.
-            (
-                false,
-                :stability_and_allocs,
-                nothing,
-                Base.getindex,
-                Atomic{Int64}(rand(1:100)),
-            ),
+            (false, :stability_and_allocs, nothing, getindex, Atomic{Int64}(rand(1:100))),
             (false, :stability_and_allocs, nothing, getindex, Atomic{Int32}(rand(1:100))),
             (false, :stability_and_allocs, nothing, getindex, Atomic{Int16}(rand(1:100))),
         ],
@@ -223,6 +184,12 @@ function generate_hand_written_rrule!!_test_cases(
             ("hello" => "hi",),
             1,
         ),
+        (false, :stability, nothing, print, "Hello"),
+        (false, :stability, nothing, println, "Hello"),
+        (false, :stability, nothing, show, "Hello"),
+
+        # non-kwargs sprint rule test
+        (false, :stability, nothing, sprint, show, "Hello"),
 
         # Rules to make Symbol-related functionality work properly.
         (false, :stability_and_allocs, nothing, Symbol, "hello"),
@@ -257,19 +224,39 @@ function generate_derived_rrule!!_test_cases(
         @debug "Testing @debug macro"
     end
 
-    x = rand(1:100)
-    function testloggingmacro5(x)
-        @info "Testing @info macro with kwargs" x
+    function testloggingmacro5(x; kw1=rand(1:100))
+        @info "Testing @info macro with kwargs" x kw1
+    end
+
+    # Base.sprint kwargs rule test
+    function testloggingmacro6(x)
+        return sprint(show, x; context=nothing)
+    end
+
+    function testloggingmacro7(x)
+        return repr(x; context=nothing)
+    end
+
+    function testloggingmacro8(x)
+        return repr(x)
+    end
+
+    function testloggingmacro9(x)
+        @show x
     end
 
     test_cases = vcat(
         Any[
-            # Tests for Base.CoreLogging @logmsg macros
+            # Tests for Base.CoreLogging, @show macros and string related functions.
             (false, :none, nothing, testloggingmacro1, rand(1:100)),
             (false, :none, nothing, testloggingmacro2, rand(1:100)),
             (false, :none, nothing, testloggingmacro3, rand(1:100)),
             (false, :none, nothing, testloggingmacro4, rand(1:100)),
             (false, :none, nothing, testloggingmacro5, rand(1:100)),
+            (false, :none, nothing, testloggingmacro6, rand(1:100)),
+            (false, :none, nothing, testloggingmacro7, rand(1:100)),
+            (false, :none, nothing, testloggingmacro8, rand(1:100)),
+            (false, :none, nothing, testloggingmacro9, rand(1:100)),
         ],
     )
     return test_cases, Any[]
