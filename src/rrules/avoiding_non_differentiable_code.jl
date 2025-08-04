@@ -184,12 +184,12 @@ function generate_hand_written_rrule!!_test_cases(
             ("hello" => "hi",),
             1,
         ),
-        (false, :stability, nothing, print, "Hello"),
-        (false, :stability, nothing, println, "Hello"),
-        (false, :stability, nothing, show, "Hello"),
+        (false, :none, nothing, print, "Testing print"),
+        (false, :none, nothing, println, "Testing println"),
+        (false, :none, nothing, show, "Testing show"),
 
         # non-kwargs sprint rule test
-        (false, :stability, nothing, sprint, show, "Hello"),
+        (false, :stability, nothing, sprint, show, "Testing sprint"),
 
         # Rules to make Symbol-related functionality work properly.
         (false, :stability_and_allocs, nothing, Symbol, "hello"),
