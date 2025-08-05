@@ -856,16 +856,6 @@ risk of infinite loops in user code. When in doubt, use the default `Val{true}()
 require_tangent_cache(x) = require_tangent_cache(typeof(x))
 require_tangent_cache(::Type{T}) where {T} = Val{!isbitstype(T)}()
 
-"""
-    prepare_cache(primal)
-
-Prepare a cache for tangent operations based on whether the primal requires one.
-Returns either an `IdDict{Any,Bool}()` or `NoCache()`.
-"""
-prepare_cache(primal) = prepare_cache(require_tangent_cache(primal))
-prepare_cache(::Val{true}) = IdDict{Any,Bool}()
-prepare_cache(::Val{false}) = NoCache()
-
 const IncCache = Union{NoCache,IdDict{Any,Bool}}
 
 """
@@ -915,15 +905,13 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {T<:MutableTangent}
 end
 
 """
-    set_to_zero!!(x; cache=IdDict{Any,Bool}())
+    set_to_zero!!(x)
 
 Set `x` to its zero element (`x` should be a tangent, so the zero must exist).
-
-The `cache` keyword argument is used for tracking circular references. 
-By default it uses an `IdDict`, but can be set to `NoCache()` for types that
-are known to not have circular references.
 """
-set_to_zero!!(x; cache=IdDict{Any,Bool}()) = set_to_zero_internal!!(cache, x)
+set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(x))
+set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(IdDict{Any,Bool}(), x)
+set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
 """
     set_to_zero_internal!!(c::IncCache, x)
