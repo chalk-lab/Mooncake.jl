@@ -792,7 +792,7 @@ julia> n2.next = n1;  # Creates cycle: n1 → n2 → n1
 
 julia> # The tangent type has abstract field that can hold circular refs
        tangent_type(Node)
-Mooncake.MutableTangent{@NamedTuple{value::Float64, next}}
+MutableTangent{@NamedTuple{value::Float64, next}}
 
 julia> # Create zero tangent - this would hang without caching!
        zt = zero_tangent(n1);
