@@ -688,8 +688,8 @@ Note that this function takes a primal value but makes a decision about properti
 its corresponding tangent type. The question is not whether the primal has circular
 references, but whether its tangent might.
 
-Package extensions can overload this for their specific types to assert that their
-tangent types contain no circular references or aliasing.
+Package extensions can overload this for their specific data structures to assert that their
+tangents do not require caches.
 
 !!! warning "Advanced Performance Optimization - Use With Extreme Caution"
     This is an advanced optimization. The default behavior (using a cache) is always correct
