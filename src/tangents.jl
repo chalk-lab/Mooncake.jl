@@ -688,7 +688,6 @@ Note that this function takes a primal value but makes a decision about properti
 its corresponding tangent type. The question is not whether the primal has circular
 references, but whether its tangent might.
 
-The default implementation returns `Val{true}()` for non-bits types to be conservative.
 Package extensions can overload this for their specific types to assert that their
 tangent types contain no circular references or aliasing.
 
