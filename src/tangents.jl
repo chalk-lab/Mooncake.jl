@@ -833,7 +833,7 @@ julia> # Let's trace what happens with zero_tangent
 
 julia> # The Ref field's tangent is a MutableTangent
        typeof(zt.fields.r)
-MutableTangent{@NamedTuple{x::PossiblyUninitTangent{Any}}}
+MutableTangent{@NamedTuple{x::Mooncake.PossiblyUninitTangent{Any}}}
 
 julia> # And it contains a circular reference to zt itself!
        zt.fields.r.fields.x.tangent === zt
