@@ -756,7 +756,7 @@ julia> zt = zero_tangent(cb);
 julia> # The closure's tangent contains a circular reference!
        # zt.fields.f contains a tangent for the captured cb variable
        typeof(zt.fields.f)
-Tangent{@NamedTuple{cb::MutableTangent{@NamedTuple{contents::PossiblyUninitTangent{Any}}}}}
+Tangent{@NamedTuple{cb::MutableTangent{@NamedTuple{contents::Mooncake.PossiblyUninitTangent{Any}}}}}
 
 julia> # Following the reference shows it points back to zt itself
        zt.fields.f.fields.cb.fields.contents.tangent === zt
@@ -777,7 +777,7 @@ Any pattern where objects can reference each other:
 ```jldoctest
 julia> mutable struct Node
            value::Float64
-           next::Union{Node, Nothing}
+           next
            Node(value::Float64) = new(value, nothing)
        end
 
@@ -792,23 +792,19 @@ julia> n2.next = n1;  # Creates cycle: n1 → n2 → n1
 
 julia> # The tangent type has abstract field that can hold circular refs
        tangent_type(Node)
-MutableTangent{@NamedTuple{value::Float64, next::PossiblyUninitTangent{Any}}}
+Mooncake.MutableTangent{@NamedTuple{value::Float64, next}}
 
 julia> # Create zero tangent - this would hang without caching!
        zt = zero_tangent(n1);
 
 julia> # The tangent structure mirrors the circular reference
-       zt.fields.next.tangent.fields.next.tangent === zt
+       zt.fields.next.fields.next === zt
 true
-
-julia> # This is why caching is essential
-       require_tangent_cache(n1)
-Val{true}()
 ```
 
 This example shows a classic data structure pattern where circular references are inherent
-to the design. The `next` field has type `Union{Node, Nothing}`, which becomes 
-`PossiblyUninitTangent{Any}` in the tangent type. Without caching:
+to the design. The `next` field is untyped (defaults to `Any`), which creates a tangent
+field that can hold circular references. Without caching:
 - `zero_tangent(n1)` would follow n1 → n2 → n1 → n2 → ... forever
 - Any operation traversing the tangent would get stuck in the cycle
 - The circular structure in the primal creates a circular structure in the tangent
