@@ -706,7 +706,7 @@ by avoiding cache overhead, but is only safe when the tangent structure is prova
 This function makes decisions about tangent types, not primal values. The key question is:
 "Could the tangent of this primal value contain circular references or shared mutable state?"
 
-The cache prevents infinite loops when traversing tangent structures that might contain:
+The cache prevents infinite loops and incorrect results when traversing tangent structures that might contain:
 - Circular references (A references B, B references A)
 - Aliasing (multiple references to the same mutable object)
 - Uninitialized fields that might later create cycles
