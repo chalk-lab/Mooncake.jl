@@ -683,7 +683,7 @@ end
 Determines whether operations on the tangent of `x` require a cache to handle potential 
 circular references or aliasing. Returns `Val{true}()` if caching is required (the default),
 or `Val{false}()` if the tangent type is guaranteed to be free of circular references,
-aliasing, and uninitialized fields that could create cycles.
+uninitialized fields that could create circular references, and aliasing.
 
 This function is used internally by operations like `set_to_zero!!` and `increment!!` to
 decide whether to track visited objects. Returning `Val{false}()` can improve performance
