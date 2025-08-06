@@ -678,16 +678,16 @@ end
 end
 
 """
-    require_tangent_cache(x)
+    require_tangent_cache(::Type{T}) where {T}
 
-Determines whether operations on the tangent of `x` require a cache to handle potential 
+Determines whether operations on tangents of type `T` require a cache to handle potential 
 circular references or aliasing. Returns `Val{true}()` if caching is required (the default),
-or `Val{false}()` if the tangent type is guaranteed to be free of circular references,
+or `Val{false}()` if tangents of type `T` are guaranteed to be free of circular references,
 uninitialized fields that could create circular references, and aliasing.
 
-This function is used internally by operations like `set_to_zero!!` and `increment!!` to
-decide whether to track visited objects. Returning `Val{false}()` can improve performance
-by avoiding cache overhead, but is only safe when the tangent structure is provably acyclic.
+This function is used internally by operations like `set_to_zero!!`. Returning `Val{false}()` 
+can improve performance by avoiding cache overhead, but is only safe when the tangent structure 
+is provably tree-like (no back edges). 
 
 !!! warning "Advanced Performance Optimization"
     This is an advanced optimization hook. The default behavior (returning `Val{true}()`)
@@ -703,32 +703,51 @@ by avoiding cache overhead, but is only safe when the tangent structure is prova
 
 ### Understanding Tangent Caching
 
-This function makes decisions about tangent types, not primal values. The key question is:
-"Could the tangent of this primal value contain circular references or shared mutable state?"
+This function makes decisions based on the primal type `T` by answering the key question:
+"Could tangents of type `tangent_type(T)` contain circular references?"
 
 The cache prevents infinite loops and incorrect results when traversing tangent structures that might contain:
 - Circular references (A references B, B references A)
-- Aliasing (multiple references to the same mutable object)
-- Uninitialized fields that might later create cycles
+- Aliasing (multiple references to the same object)
 
 ### Safety Requirements for `Val{false}()`
 
-It's only guaranteed to be safe to return `Val{false}()` when ALL of the following are guaranteed:
+Returning `Val{false}()` is only safe when the tangent structure is guaranteed to be tree-like,
+with no possibility of circular references or aliasing.
 
-1. **No MutableTangent**: The tangent type never contains `MutableTangent` at any depth
-2. **No PossiblyUninitTangent**: The tangent type never contains `PossiblyUninitTangent{Any}` 
-   or similar types that could hold arbitrary references
-3. **Statically Known Structure**: The tangent structure is fully determined by the type,
-   with no runtime variation that could introduce cycles
-4. **No Shared Mutable State**: No possibility of multiple tangent fields referencing the
-   same mutable object
+#### Safe Cases (can return `Val{false}()`):
+
+1. **Pure immutable structures**: Structures with only `Tangent` types (no `MutableTangent`)
+   cannot create cycles because immutable objects cannot reference themselves after construction
+   
+2. **Concrete-only mutable structs**: `MutableTangent` types where ALL fields have concrete types
+   that cannot hold references (e.g., `mutable struct Foo; x::Float64; end`)
+   
+3. **Concrete `PossiblyUninitTangent`**: When parameterized by concrete non-reference types
+   like `PossiblyUninitTangent{Float64}`. For example, `mutable struct Bar; x::Ref{Float64}; end` 
+   produces this safe tangent type because `Ref{Float64}` is concrete
+
+#### Unsafe Cases (must return `Val{true}()`): 
+
+1. **Abstract typed fields**: Any field typed as `Any` or other abstract types can hold
+   arbitrary values at runtime, including circular references
+   
+2. **Potentially self-referential types**: Types where fields could reference the containing object,
+   either directly or through a chain of references
+   
+3. **Shared mutable state**: Multiple fields that might reference the same mutable object,
+   creating aliasing issues
 
 ### Common Patterns Requiring Caching
 
+The following examples demonstrate why certain patterns create circular references in tangents,
+requiring caching to avoid infinite loops.
+
 #### 1. Types with Function/Closure Fields
 
-Functions and closures capture variables, producing tangents containing 
-`PossiblyUninitTangent{Any}` which may create circular references:
+Functions and closures can capture variables, including the struct containing them. Since
+captured variables have abstract types in the tangent, this creates `PossiblyUninitTangent{Any}`
+which can hold circular references:
 
 ```jldoctest
 julia> struct MyCallback
@@ -763,16 +782,12 @@ julia> # Following the reference shows it points back to zt itself
 true
 ```
 
-This example demonstrates why `Val{false}()` would be unsafe: the tangent contains
-a circular reference (zt.fields.f.fields.cb.fields.contents.tangent === zt). Without
-caching to track visited objects:
-- `increment!!(zt, zt2)` would visit zt infinitely many times
-- `set_to_zero!!(zt)` would loop forever trying to zero all fields
-- Any traversal of the tangent structure would never terminate
+This circular reference (zt.fields.f.fields.cb.fields.contents.tangent === zt) means that
+without caching, any traversal would loop forever: zt → zt.fields.f → ... → zt → ...
 
 #### 2. Self-Referential Data Structures
 
-Any pattern where objects can reference each other:
+Types with `Any`-typed fields can lead to circular references. Here we use a linked list as an example:
 
 ```jldoctest
 julia> mutable struct Node
@@ -802,20 +817,17 @@ julia> # The tangent structure mirrors the circular reference
 true
 ```
 
-This example shows a classic data structure pattern where circular references are inherent
-to the design. The `next` field is untyped (defaults to `Any`), which creates a tangent
-field that can hold circular references. Without caching:
-- `zero_tangent(n1)` would follow n1 → n2 → n1 → n2 → ... forever
-- Any operation traversing the tangent would get stuck in the cycle
-- The circular structure in the primal creates a circular structure in the tangent
+Because the `next` field is untyped (defaults to `Any`), its tangent can hold any value,
+including circular references back to the containing node. Thus, it is unsafe to skip
+caching during tangent operations.
 
-#### 3. Reference Types
+#### 3. Abstract-Typed Reference Fields
 
-Types like `Ref`, `RefValue`, or custom reference types produce `MutableTangent`:
+Similarly, `Ref` with abstract types can lead to circular references:
 
 ```jldoctest
-julia> # Ref{Any} is dangerous - it can hold circular references
-       mutable struct Evil
+julia> # Ref{Any} is dangerous because Any can hold circular references
+       struct Evil
            r::Ref{Any}
            data::Float64
        end
@@ -826,7 +838,7 @@ julia> e.r[] = e;  # Store the struct in its own field!
 
 julia> # The tangent type has PossiblyUninitTangent{Any}
        tangent_type(Evil)
-MutableTangent{@NamedTuple{r, data::Float64}}
+Tangent{@NamedTuple{r, data::Float64}}
 
 julia> # Let's trace what happens with zero_tangent
        zt = zero_tangent(e);
@@ -840,20 +852,7 @@ julia> # And it contains a circular reference to zt itself!
 true
 ```
 
-The key danger with `PossiblyUninitTangent` is that when parameterized by `Any` (or other
-abstract types), it can hold arbitrary values at runtime, including circular references.
-In the example above:
-- `Evil` has a `Ref{Any}` field that creates `PossiblyUninitTangent{Any}` in the tangent
-- We can store the struct itself in the ref, creating a cycle: e → e.r → e.r[] → e
-- Without caching, `zero_tangent(e)` or `increment!!(zt1, zt2)` would follow this cycle forever
-
-Even seemingly innocent types can have this issue if they contain abstract-typed fields
-that could hold arbitrary values at runtime.
-
-**Remember:** The performance gain from avoiding caching is typically small compared to the 
-risk of infinite loops in user code. When in doubt, use the default `Val{true}()`.
 """
-require_tangent_cache(x) = require_tangent_cache(typeof(x))
 require_tangent_cache(::Type{T}) where {T} = Val{!isbitstype(T)}()
 
 const IncCache = Union{NoCache,IdDict{Any,Bool}}
@@ -909,7 +908,7 @@ end
 
 Set `x` to its zero element (`x` should be a tangent, so the zero must exist).
 """
-set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(x))
+set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(typeof(x)))
 set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(IdDict{Any,Bool}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
