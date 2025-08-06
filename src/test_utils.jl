@@ -104,7 +104,6 @@ using Mooncake:
     is_init,
     zero_codual,
     DefaultCtx,
-    @is_primitive,
     val,
     is_always_fully_initialised,
     get_tangent_field,
@@ -140,7 +139,6 @@ using Mooncake:
     CC,
     set_to_zero!!,
     increment!!,
-    is_primitive,
     randn_tangent,
     _scale,
     _add_to_primal,
@@ -941,13 +939,21 @@ function test_rule(
 
             # Verify that rules have been cached.
             @testset "Caching" begin
-                if test_fwd && !is_primitive
-                    k = Mooncake.ClosureCacheKey(fwd_interp.world, (sig, false, :forward))
-                    @test haskey(fwd_interp.oc_cache, k)
+                if test_fwd
+                    C_fwd = Mooncake.context_type(fwd_interp)
+                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig)
+                        cache_key = (sig, false, :forward)
+                        k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
+                        @test haskey(fwd_interp.oc_cache, k)
+                    end
                 end
-                if test_rvs && !is_primitive
-                    k = Mooncake.ClosureCacheKey(rvs_interp.world, (sig, false, :reverse))
-                    @test haskey(rvs_interp.oc_cache, k)
+                if test_rvs
+                    C_rvs = Mooncake.context_type(rvs_interp)
+                    if !Mooncake.is_primitive(C_rvs, ReverseMode, sig)
+                        cache_key = (sig, false, :reverse)
+                        k = Mooncake.ClosureCacheKey(rvs_interp.world, cache_key)
+                        @test haskey(rvs_interp.oc_cache, k)
+                    end
                 end
             end
         end
