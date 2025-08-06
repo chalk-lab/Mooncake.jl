@@ -615,6 +615,9 @@ function test_frule_interface(x_ẋ...; frule)
 
     # Run the primal programme. Bail out early if this doesn't work.
     y = try
+        # Note: the function itself occassionally contains a `module`. Since `module`s
+        # cannot be `deepcopy`-ed, we do not do so. This will cause some trouble if the
+        # function mutates itself during execution.
         x[1](deepcopy(x[2:end])...)
     catch
         throw(ArgumentError("Primal does not run, signature is $(_typeof(x_ẋ))."))
@@ -650,6 +653,9 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
 
     # Run the primal programme. Bail out early if this doesn't work.
     y = try
+        # Note: the function itself occassionally contains a `module`. Since `module`s
+        # cannot be `deepcopy`-ed, we do not do so. This will cause some trouble if the
+        # function mutates itself during execution.
         f(deepcopy(x)...)
     catch e
         display(e)
