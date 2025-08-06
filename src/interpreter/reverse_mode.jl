@@ -22,7 +22,7 @@ Puts `data` into `p`, and returns the `id` associated to it. This `id` should be
 be available during the forwards- and reverse-passes of AD, and it should further be assumed
 that the value associated to this `id` is always `data`.
 """
-function add_data!(p::SharedDataPairs, data)::ID
+function add_data!(p::SharedDataPairs, data::Any)::ID
     id = ID()
     push!(p.pairs, (id, data))
     return id
@@ -68,7 +68,7 @@ function shared_data_stmts(p::SharedDataPairs)::Vector{IDInstPair}
         return (p[1], new_inst(Expr(:call, get_shared_data_field, Argument(1), n)))
     end
 end
-
+# maybe manually inline this
 @inline get_shared_data_field(shared_data, n) = getfield(shared_data, n)
 
 """
@@ -203,7 +203,7 @@ end
 
 Equivalent to `add_data!(info.shared_data_pairs, data)`.
 """
-add_data!(info::ADInfo, data)::ID = add_data!(info.shared_data_pairs, data)
+add_data!(info::ADInfo, @nospecialize(data))::ID = add_data!(info.shared_data_pairs, data)
 
 """
     add_data_if_not_singleton!(p::Union{ADInfo, SharedDataPairs}, x)
@@ -212,7 +212,7 @@ Returns `x` if it is a singleton, or the `ID` of the ssa which will contain it o
 forwards- and reverse-passes. The reason for this is that if something is a singleton, it
 can be inserted directly into the IR.
 """
-function add_data_if_not_singleton!(p::Union{ADInfo,SharedDataPairs}, x)
+function add_data_if_not_singleton!(p::Union{ADInfo,SharedDataPairs}, @nospecialize(x))
     return Base.issingletontype(_typeof(x)) ? x : add_data!(p, x)
 end
 
@@ -231,7 +231,7 @@ Returns the static / inferred type associated to `x`.
 get_primal_type(info::ADInfo, x::Argument) = info.arg_types[x]
 get_primal_type(info::ADInfo, x::ID) = CC.widenconst(info.ssa_insts[x].type)
 get_primal_type(::ADInfo, x::QuoteNode) = _typeof(x.value)
-get_primal_type(::ADInfo, x) = _typeof(x)
+get_primal_type(::ADInfo, @nospecialize(x)) = _typeof(x)
 function get_primal_type(::ADInfo, x::GlobalRef)
     return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.binding.ty
 end
@@ -257,7 +257,7 @@ Create the `:new` statements which initialise the reverse-data `Ref`s. Interpola
 initial rdata directly into the statement, which is safe because it is always a bits type.
 """
 function reverse_data_ref_stmts(info::ADInfo)
-    function make_ref_stmt(id, P)
+    function make_ref_stmt(id::ID, P::Type)
         ref_type = Base.RefValue{P<:Type ? NoRData : zero_like_rdata_type(P)}
         init_ref_val = P <: Type ? NoRData() : Mooncake.zero_like_rdata_from_type(P)
         return (id, new_inst(Expr(:new, ref_type, QuoteNode(init_ref_val))))
