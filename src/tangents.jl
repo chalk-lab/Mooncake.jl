@@ -686,8 +686,8 @@ or `Val{false}()` if tangents of type `T` are guaranteed to be free of circular 
 uninitialized fields that could create circular references, and aliasing.
 
 This function is used internally by operations like `set_to_zero!!`. Returning `Val{false}()` 
-can improve performance by avoiding cache overhead, but is only safe when the tangent structure 
-is provably tree-like (no back edges). 
+can improve performance by avoiding cache overhead, but is only safe when the memory layout
+of the tangent type is provably tree-like (no back edges). 
 
 !!! warning "Advanced Performance Optimization"
     This is an advanced optimization hook. The default behavior (returning `Val{true}()`)
@@ -706,13 +706,13 @@ is provably tree-like (no back edges).
 This function makes decisions based on the primal type `T` by answering the key question:
 "Could tangents of type `tangent_type(T)` contain circular references?"
 
-The cache prevents infinite loops and incorrect results when traversing tangent structures that might contain:
+The cache prevents infinite loops and incorrect results when traversing tangents that might contain:
 - Circular references (A references B, B references A)
 - Aliasing (multiple references to the same object)
 
 ### Safety Requirements for `Val{false}()`
 
-Returning `Val{false}()` is only safe when the tangent structure is guaranteed to be tree-like,
+Returning `Val{false}()` is only safe when the tangent type meomry layout is guaranteed to be tree-like,
 with no possibility of circular references or aliasing.
 
 #### Safe Cases (can return `Val{false}()`):
@@ -812,7 +812,7 @@ MutableTangent{@NamedTuple{value::Float64, next}}
 julia> # Create zero tangent - this would hang without caching!
        zt = zero_tangent(n1);
 
-julia> # The tangent structure mirrors the circular reference
+julia> # The tangent type memory layout mirrors the circular reference
        zt.fields.next.fields.next === zt
 true
 ```
