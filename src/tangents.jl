@@ -677,6 +677,142 @@ end
     end
 end
 
+"""
+    require_tangent_cache(::Type{P}) where {P}
+
+Determines whether operations on tangents of primal type `P` require a cache to handle potential 
+circular references or aliasing. Returns `Val{true}()` if caching is required (the default),
+or `Val{false}()` if tangents of type `tangent_type(P)` are guaranteed to be free of circular references,
+uninitialized fields that could create circular references, and aliasing.
+
+This function is used internally by operations like `set_to_zero!!`. Returning `Val{false}()` 
+can improve performance by avoiding cache overhead, but is only safe when the memory layout
+of the tangent type is provably tree-like. 
+
+!!! warning "Advanced Performance Optimization"
+    This is an advanced optimization hook. The default behavior (returning `Val{true}()`)
+    is always correct but may have performance overhead. Only implement custom methods
+    if you have:
+    1. Measured a significant performance impact from caching
+    2. Proven your tangent types cannot contain circular references or aliasing
+    3. Thoroughly tested your implementation
+    
+    See the Extended Help section for detailed safety requirements and examples.
+
+# Extended help
+
+### Understanding Tangent Caching
+
+This function makes decisions based on the primal type `P` by answering the key question:
+"Could tangents of type `tangent_type(P)` contain circular references or aliasing?"
+
+The cache prevents infinite loops and incorrect results when traversing tangents that might contain:
+- Circular references (A references B, B references A)
+- Aliasing (multiple references to the same object)
+
+### Safety Requirements for `Val{false}()`
+
+Returning `Val{false}()` is only safe when the tangent type memory layout is guaranteed to be tree-like,
+with no possibility of circular references or aliasing.
+
+#### Safe Cases (non-exhaustive, can return `Val{false}()`):
+
+1. **Pure immutable structures**: Structures with only `Tangent` types (no `MutableTangent`)
+   cannot create cycles because immutable objects cannot reference themselves after construction
+   
+2. **Concrete-only mutable structs**: `MutableTangent` types where ALL fields have concrete types
+   that cannot hold references (e.g., `mutable struct Foo; x::Float64; end`)
+   
+3. **Concrete `PossiblyUninitTangent`**: When parameterized by concrete non-reference types
+   like `PossiblyUninitTangent{Float64}`. For example, `mutable struct Bar; x::Ref{Float64}; end` 
+   produces this safe tangent type because `Ref{Float64}` is concrete
+
+#### Unsafe Cases (non-exhaustive, must return `Val{true}()`): 
+
+1. **Abstract typed fields**: Any field typed as `Any` or other abstract types can hold
+   arbitrary values at runtime, including circular references
+   
+2. **Potentially self-referential types**: Types where fields could reference the containing object,
+   either directly or through a chain of references
+   
+3. **Shared mutable state**: Multiple fields that might reference the same mutable object,
+   creating aliasing issues
+
+### Common Patterns Requiring Caching
+
+The following examples demonstrate why certain patterns create circular references or aliasing in tangents,
+requiring caching to avoid infinite loops or incorrect results.
+
+#### Example 1: Circular References with Abstract-Typed Fields
+
+`Ref` with abstract types can lead to circular references:
+
+```jldoctest
+julia> # Ref{Any} is dangerous because Any can hold circular references
+       struct Evil
+           r::Ref{Any}
+           data::Float64
+       end
+
+julia> e = Evil(Ref{Any}(nothing), 1.0);
+
+julia> e.r[] = e;  # Store the struct in its own field!
+
+julia> # The tangent type has PossiblyUninitTangent{Any}
+       tangent_type(Evil)
+Tangent{@NamedTuple{r, data::Float64}}
+
+julia> # Let's trace what happens with zero_tangent
+       zt = zero_tangent(e);
+
+julia> # The Ref field's tangent is a MutableTangent
+       typeof(zt.fields.r)
+MutableTangent{@NamedTuple{x::Mooncake.PossiblyUninitTangent{Any}}}
+
+julia> # And it contains a circular reference to zt itself!
+       zt.fields.r.fields.x.tangent === zt
+true
+```
+
+#### Example 2: Aliasing in Tangent Structures
+
+When a primal contains aliased references, the tangent must preserve this aliasing for correctness.
+Without caching, operations would incorrectly process aliased tangents multiple times:
+
+```jldoctest
+julia> # Create a mutable primal with aliased references
+       mutable struct Container
+           data::Vector{Float64}
+       end
+
+julia> x = Container([1.0, 2.0, 3.0]);
+
+julia> # Create aliasing: both fields reference the same Container
+       primal_object = (x, x);
+
+julia> # The tangent preserves the aliasing structure
+       zt = zero_tangent(primal_object);
+
+julia> # Verify the tangent type: tuple of two MutableTangents
+       typeof(zt)
+Tuple{MutableTangent{@NamedTuple{data::Vector{Float64}}}, MutableTangent{@NamedTuple{data::Vector{Float64}}}}
+
+julia> # Crucially, both elements are the SAME tangent object (aliased)
+       zt[1] === zt[2]
+true
+```
+
+This aliasing is essential for correctness! If `zt[1]` and `zt[2]` were different objects, 
+the tangent wouldn't correctly represent derivatives w.r.t. the shared primal `x`.
+
+The aliasing in tangents mirrors the aliasing in primals. Without caching to track visited 
+objects, operations like [`increment!!`](@ref) would visit `zt[1]` and `zt[2]` separately, not 
+realizing they're the same object. This would lead to double-counting, incrementing the 
+same tangent twice and producing incorrect results.
+
+"""
+require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
+
 const IncCache = Union{NoCache,IdDict{Any,Bool}}
 
 """
@@ -730,7 +866,9 @@ end
 
 Set `x` to its zero element (`x` should be a tangent, so the zero must exist).
 """
-set_to_zero!!(x) = set_to_zero_internal!!(IdDict{Any,Bool}(), x)
+set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(typeof(x)))
+set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(IdDict{Any,Bool}(), x)
+set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
 """
     set_to_zero_internal!!(c::IncCache, x)
