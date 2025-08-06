@@ -179,58 +179,8 @@ end
 """
     @zero_adjoint ctx sig
 
-Defines `is_primitive(context_type, sig) = true`, and defines a method of
-`Mooncake.rrule!!` which returns zero for all inputs.
-Users of ChainRules.jl should be familiar with this functionality -- it is morally the same
-as `ChainRulesCore.@non_differentiable`.
-
-For example:
-```jldoctest
-julia> using Mooncake: @zero_adjoint, DefaultCtx, zero_fcodual, rrule!!, is_primitive, ReverseMode
-
-julia> foo(x) = 5
-foo (generic function with 1 method)
-
-julia> @zero_adjoint DefaultCtx Tuple{typeof(foo), Any}
-
-julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo), Any})
-true
-
-julia> rrule!!(zero_fcodual(foo), zero_fcodual(3.0))[2](NoRData())
-(NoRData(), 0.0)
-```
-
-Limited support for `Vararg`s is also available. For example
-```jldoctest
-julia> using Mooncake: @zero_adjoint, DefaultCtx, zero_fcodual, rrule!!, is_primitive, ReverseMode
-
-julia> foo_varargs(x...) = 5
-foo_varargs (generic function with 1 method)
-
-julia> @zero_adjoint DefaultCtx Tuple{typeof(foo_varargs), Vararg}
-
-julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo_varargs), Any, Float64, Int})
-true
-
-julia> rrule!!(zero_fcodual(foo_varargs), zero_fcodual(3.0), zero_fcodual(5))[2](NoRData())
-(NoRData(), 0.0, NoRData())
-```
-Be aware that it is not currently possible to specify any of the type parameters of the
-`Vararg`. For example, the signature `Tuple{typeof(foo), Vararg{Float64, 5}}` will not work
-with this macro.
-
-WARNING: this is only correct if the output of the function does not alias any fields of the
-function, or any of its arguments. For example, applying this macro to the function `x -> x`
-will yield incorrect results.
-
-As always, you should use [`TestUtils.test_rule`](@ref) to ensure that you've not
-made a mistake.
-
-# Signatures Unsupported By This Macro
-
-If the signature you wish to apply `@zero_adjoint` to is not supported, for example because
-it uses a `Vararg` with a type parameter, you can still make use of
-[`zero_adjoint`](@ref).
+Equivalent to `@zero_derivative ctx sig ReverseMode`. Consult the docstring for
+[`@zero_derivative`](@ref) for more information.
 """
 macro zero_adjoint(ctx, sig)
     return _zero_derivative_impl(ctx, sig, :ReverseMode)

@@ -160,6 +160,8 @@ include("developer_tools.jl")
 
 # Public, not exported
 include("public.jl")
+
+include("deprecated.jl")
 end
 #! format: on
 
