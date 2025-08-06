@@ -678,16 +678,16 @@ end
 end
 
 """
-    require_tangent_cache(::Type{T}) where {T}
+    require_tangent_cache(::Type{P}) where {P}
 
-Determines whether operations on tangents of type `T` require a cache to handle potential 
+Determines whether operations on tangents of primal type `P` require a cache to handle potential 
 circular references or aliasing. Returns `Val{true}()` if caching is required (the default),
-or `Val{false}()` if tangents of type `T` are guaranteed to be free of circular references,
+or `Val{false}()` if tangents of type `tangent_type(P)` are guaranteed to be free of circular references,
 uninitialized fields that could create circular references, and aliasing.
 
 This function is used internally by operations like `set_to_zero!!`. Returning `Val{false}()` 
 can improve performance by avoiding cache overhead, but is only safe when the memory layout
-of the tangent type is provably tree-like (no back edges). 
+of the tangent type is provably tree-like. 
 
 !!! warning "Advanced Performance Optimization"
     This is an advanced optimization hook. The default behavior (returning `Val{true}()`)
@@ -703,8 +703,8 @@ of the tangent type is provably tree-like (no back edges).
 
 ### Understanding Tangent Caching
 
-This function makes decisions based on the primal type `T` by answering the key question:
-"Could tangents of type `tangent_type(T)` contain circular references?"
+This function makes decisions based on the primal type `P` by answering the key question:
+"Could tangents of type `tangent_type(P)` contain circular references or aliasing?"
 
 The cache prevents infinite loops and incorrect results when traversing tangents that might contain:
 - Circular references (A references B, B references A)
@@ -712,10 +712,10 @@ The cache prevents infinite loops and incorrect results when traversing tangents
 
 ### Safety Requirements for `Val{false}()`
 
-Returning `Val{false}()` is only safe when the tangent type meomry layout is guaranteed to be tree-like,
+Returning `Val{false}()` is only safe when the tangent type memory layout is guaranteed to be tree-like,
 with no possibility of circular references or aliasing.
 
-#### Safe Cases (can return `Val{false}()`):
+#### Safe Cases (non-exhaustive, can return `Val{false}()`):
 
 1. **Pure immutable structures**: Structures with only `Tangent` types (no `MutableTangent`)
    cannot create cycles because immutable objects cannot reference themselves after construction
@@ -727,7 +727,7 @@ with no possibility of circular references or aliasing.
    like `PossiblyUninitTangent{Float64}`. For example, `mutable struct Bar; x::Ref{Float64}; end` 
    produces this safe tangent type because `Ref{Float64}` is concrete
 
-#### Unsafe Cases (must return `Val{true}()`): 
+#### Unsafe Cases (non-exhaustive, must return `Val{true}()`): 
 
 1. **Abstract typed fields**: Any field typed as `Any` or other abstract types can hold
    arbitrary values at runtime, including circular references
@@ -740,90 +740,12 @@ with no possibility of circular references or aliasing.
 
 ### Common Patterns Requiring Caching
 
-The following examples demonstrate why certain patterns create circular references in tangents,
-requiring caching to avoid infinite loops.
+The following examples demonstrate why certain patterns create circular references or aliasing in tangents,
+requiring caching to avoid infinite loops or incorrect results.
 
-#### 1. Types with Function/Closure Fields
+#### Example 1: Circular References with Abstract-Typed Fields
 
-Functions and closures can capture variables, including the struct containing them. Since
-captured variables have abstract types in the tangent, this creates `PossiblyUninitTangent{Any}`
-which can hold circular references:
-
-```jldoctest
-julia> struct MyCallback
-           f::Function
-           data::Vector{Float64}
-       end
-
-julia> # Closures can capture the struct itself:
-       function make_circular_callback()
-           cb = MyCallback(
-               x -> cb.data[1] + x,  # Closure captures cb!
-               [1.0, 2.0]
-           )
-           return cb
-       end
-make_circular_callback (generic function with 1 method)
-
-julia> cb = make_circular_callback();
-
-julia> cb.f(10)  # The closure works, accessing cb.data
-11.0
-
-julia> zt = zero_tangent(cb);
-
-julia> # The closure's tangent contains a circular reference!
-       # zt.fields.f contains a tangent for the captured cb variable
-       typeof(zt.fields.f)
-Tangent{@NamedTuple{cb::MutableTangent{@NamedTuple{contents::Mooncake.PossiblyUninitTangent{Any}}}}}
-
-julia> # Following the reference shows it points back to zt itself
-       zt.fields.f.fields.cb.fields.contents.tangent === zt
-true
-```
-
-This circular reference (zt.fields.f.fields.cb.fields.contents.tangent === zt) means that
-without caching, any traversal would loop forever: zt → zt.fields.f → ... → zt → ...
-
-#### 2. Self-Referential Data Structures
-
-Types with `Any`-typed fields can lead to circular references. Here we use a linked list as an example:
-
-```jldoctest
-julia> mutable struct Node
-           value::Float64
-           next
-           Node(value::Float64) = new(value, nothing)
-       end
-
-julia> # Create a circular linked list
-       n1 = Node(1.0);
-
-julia> n2 = Node(2.0);
-
-julia> n1.next = n2;
-
-julia> n2.next = n1;  # Creates cycle: n1 → n2 → n1
-
-julia> # The tangent type has abstract field that can hold circular refs
-       tangent_type(Node)
-MutableTangent{@NamedTuple{value::Float64, next}}
-
-julia> # Create zero tangent - this would hang without caching!
-       zt = zero_tangent(n1);
-
-julia> # The tangent type memory layout mirrors the circular reference
-       zt.fields.next.fields.next === zt
-true
-```
-
-Because the `next` field is untyped (defaults to `Any`), its tangent can hold any value,
-including circular references back to the containing node. Thus, it is unsafe to skip
-caching during tangent operations.
-
-#### 3. Abstract-Typed Reference Fields
-
-Similarly, `Ref` with abstract types can lead to circular references:
+`Ref` with abstract types can lead to circular references:
 
 ```jldoctest
 julia> # Ref{Any} is dangerous because Any can hold circular references
@@ -852,8 +774,44 @@ julia> # And it contains a circular reference to zt itself!
 true
 ```
 
+#### Example 2: Aliasing in Tangent Structures
+
+When a primal contains aliased references, the tangent must preserve this aliasing for correctness.
+Without caching, operations would incorrectly process aliased tangents multiple times:
+
+```jldoctest
+julia> # Create a mutable primal with aliased references
+       mutable struct Container
+           data::Vector{Float64}
+       end
+
+julia> x = Container([1.0, 2.0, 3.0]);
+
+julia> # Create aliasing: both fields reference the same Container
+       primal_object = (x, x);
+
+julia> # The tangent preserves the aliasing structure
+       zt = zero_tangent(primal_object);
+
+julia> # Verify the tangent type: tuple of two MutableTangents
+       typeof(zt)
+Tuple{MutableTangent{@NamedTuple{data::Vector{Float64}}}, MutableTangent{@NamedTuple{data::Vector{Float64}}}}
+
+julia> # Crucially, both elements are the SAME tangent object (aliased)
+       zt[1] === zt[2]
+true
+```
+
+This aliasing is essential for correctness! If `zt[1]` and `zt[2]` were different objects, 
+the tangent wouldn't correctly represent derivatives w.r.t. the shared primal `x`.
+
+The aliasing in tangents mirrors the aliasing in primals. Without caching to track visited 
+objects, operations like [`increment!!`](@ref) would visit `zt[1]` and `zt[2]` separately, not 
+realizing they're the same object. This would lead to double-counting, incrementing the 
+same tangent twice and producing incorrect results.
+
 """
-require_tangent_cache(::Type{T}) where {T} = Val{!isbitstype(T)}()
+require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 
 const IncCache = Union{NoCache,IdDict{Any,Bool}}
 
