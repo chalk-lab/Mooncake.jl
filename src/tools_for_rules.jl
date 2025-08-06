@@ -118,8 +118,8 @@ end
 """
     zero_adjoint(f::CoDual, x::Vararg{CoDual, N}) where {N}
 
-Utility functionality for constructing `rrule!!`s for functions which produce adjoints which
-always return zero.
+Utility functionality for constructing `rrule!!`s for functions whose adjoints always return
+zero.
 
 NOTE: you should only make use of this function if you cannot make use of the
 [`@zero_adjoint`](@ref) macro.
@@ -149,6 +149,29 @@ may be required if it is not.
     return zero_fcodual(primal(f)(map(primal, x)...)), NoPullback(f, x...)
 end
 
+"""
+    zero_derivative(f::Dual, x::Vararg{Dual,N}) where {N}
+
+Utility functionality for constructing `frule!!`s for functions whose derivatives always
+return zero.
+
+NOTE: you should only make use of this function if you cannot make use of the
+[`@zero_derivative`](@ref) macro.
+
+You make use of this functionality by writing a method of `Mooncake.frule!!`, and
+passing all of its arguments (including the function itself) to this function. For example:
+```jldoctest
+julia> import Mooncake: zero_derivative, DefaultCtx, zero_dual, frule!!, Dual
+
+julia> foo(x::Vararg{Int}) = 5
+foo (generic function with 1 method)
+
+julia> frule!!(f::Dual{typeof(foo)}, x::Vararg{Dual{Int}}) = zero_derivative(f, x...);
+
+julia> frule!!(zero_dual(foo), zero_dual(3), zero_dual(2))
+Dual{Int64, NoTangent}(5, NoTangent())
+```
+"""
 @inline function zero_derivative(f::Dual, x::Vararg{Dual,N}) where {N}
     return zero_dual(primal(f)(map(primal, x)...))
 end
@@ -210,37 +233,88 @@ it uses a `Vararg` with a type parameter, you can still make use of
 [`zero_adjoint`](@ref).
 """
 macro zero_adjoint(ctx, sig)
-
-    # Parse the signature, and construct the rule definition. If it is a vararg definition,
-    # then the last argument requires special treatment.
-    arg_type_symbols, where_params = parse_signature_expr(sig)
-    arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
-    is_vararg = arg_type_symbols[end] == Expr(:escape, :Vararg)
-    if is_vararg
-        arg_types = vcat(
-            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
-            :(Vararg{Mooncake.CoDual}),
-        )
-        splat_symbol = Expr(Symbol("..."), arg_names[end])
-        body = Expr(:call, Mooncake.zero_adjoint, arg_names[1:(end - 1)]..., splat_symbol)
-    else
-        arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols)
-        body = Expr(:call, Mooncake.zero_adjoint, arg_names...)
-    end
-
-    # Return code to create a method of is_primitive and a rule.
-    ex = quote
-        function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{ReverseMode}, ::Type{<:$(esc(sig))}
-        )
-            true
-        end
-        $(construct_rrule_def(arg_names, arg_types, where_params, body))
-    end
-    return ex
+    return _zero_derivative_impl(ctx, sig, :ReverseMode)
 end
 
-macro zero_derivative(ctx, sig)
+"""
+    zero_derivative(ctx, sig, [mode=nothing])
+
+Declares that the derivative of the mode for `sig` is always zero, for all arguments. This
+also implies that the adjoint of the derivative is always zero for all arguments.
+
+Accordingly, if `mode===nothing` (the default) this macro creates a method of
+[`is_primitive`](@ref) which returns `true` for `ctx`, `sig`, and both [`ForwardMode`](@ref)
+and [`ReverseMode`](@ref). It additionally creates methods of [`frule!!`](@ref) and
+[`rrule!!`](@ref) which always return zero / do not increment tangents and fdata.
+
+Users of ChainRules.jl should be familiar with this functionality -- it is morally the same
+as `ChainRulesCore.@non_differentiable`.
+
+For example:
+```jldoctest
+julia> using Mooncake: @zero_derivative, DefaultCtx, zero_dual, zero_fcodual, frule!!, rrule!!, is_primitive, ForwardMode, ReverseMode
+
+julia> foo(x) = 5
+foo (generic function with 1 method)
+
+julia> @zero_derivative DefaultCtx Tuple{typeof(foo), Any}
+
+julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(foo), Any})
+true
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo), Any})
+true
+
+julia> frule!!(zero_dual(foo), zero_dual(3.0))
+Mooncake.Dual{Int64, NoTangent}(5, NoTangent())
+
+julia> rrule!!(zero_fcodual(foo), zero_fcodual(3.0))[2](NoRData())
+(NoRData(), 0.0)
+```
+
+Limited support for `Vararg`s is also available. For example
+```jldoctest
+julia> using Mooncake: @zero_derivative, DefaultCtx, zero_fcodual, rrule!!, is_primitive, ReverseMode
+
+julia> foo_varargs(x...) = 5
+foo_varargs (generic function with 1 method)
+
+julia> @zero_derivative DefaultCtx Tuple{typeof(foo_varargs), Vararg}
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo_varargs), Any, Float64, Int})
+true
+
+julia> rrule!!(zero_fcodual(foo_varargs), zero_fcodual(3.0), zero_fcodual(5))[2](NoRData())
+(NoRData(), 0.0, NoRData())
+```
+Be aware that it is not currently possible to specify any of the type parameters of the
+`Vararg`. For example, the signature `Tuple{typeof(foo), Vararg{Float64, 5}}` will not work
+with this macro.
+
+WARNING: this is only correct if the output of the function does not alias any fields of the
+function, or any of its arguments. For example, applying this macro to the function `x -> x`
+will yield incorrect results.
+
+As always, you should use [`TestUtils.test_rule`](@ref) to ensure that you've not
+made a mistake.
+
+# Signatures Unsupported By This Macro
+
+If the signature you wish to apply `@zero_derivative` to is not supported, for example because
+it uses a `Vararg` with a type parameter, you can still make use of
+[`zero_derivative`](@ref).
+
+"""
+macro zero_derivative(ctx, sig, mode=nothing)
+    return _zero_derivative_impl(ctx, sig, mode)
+end
+
+function _zero_derivative_impl(ctx, sig, mode)
+
+    # Validate mode.
+    if !in(mode, [nothing, :ForwardMode, :ReverseMode])
+        throw(ArgumentError("Expected mode to be nothing, ForwardMode, or ReverseMode."))
+    end
 
     # Parse the signature, and construct the rule definition. If it is a vararg definition,
     # then the last argument requires special treatment.
@@ -267,17 +341,28 @@ macro zero_derivative(ctx, sig)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, arg_names...)
     end
 
-    # Return code to create a method of is_primitive and a rule.
-    ex = quote
-        function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{<:Mode}, ::Type{<:$(esc(sig))}
-        )
-            true
-        end
-        $(construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv))
-        $(construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint))
+    # Construct is_primitive statement. If no mode is provided, then construct a statement
+    # which does not escape the mode argument. This will work even if the names `Mooncake`
+    # or `Mooncake.Mode` are not available in the scope which calls this macro.
+    mode_type = mode === nothing ? :(::Type{<:Mode}) : :(::Type{<:$(esc(mode))})
+    is_primitive_ex = :(Mooncake.is_primitive(::Type{$(esc(ctx))}, $mode_type, ::Type{<:$(esc(sig))}) = true)
+
+    # Construct frule!! expression. If forward mode not requested, do not define anything.
+    frule_ex = if mode === nothing || mode == :ForwardMode
+        construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
+    else
+        nothing
     end
-    return ex
+
+    # Construct rrule!! expression. If reverse mode not requested, do not define anything.
+    rrule_ex = if mode === nothing || mode == :ReverseMode
+        (construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint))
+    else
+        nothing
+    end
+
+    # Return code to create a method of is_primitive and a rule.
+    return Expr(:block, is_primitive_ex, frule_ex, rrule_ex)
 end
 
 #

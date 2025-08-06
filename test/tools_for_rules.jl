@@ -10,7 +10,9 @@ using Mooncake:
     @from_rrule,
     MinimalCtx,
     DefaultCtx,
-    @from_chainrules
+    @from_chainrules,
+    ForwardMode,
+    ReverseMode
 
 const CRC = ChainRulesCore
 
@@ -23,6 +25,12 @@ zero_tester(x) = 0
 
 vararg_zero_tester(x...) = 0
 @zero_derivative MinimalCtx Tuple{typeof(vararg_zero_tester),Vararg}
+
+zero_tester_forward_only(x) = 0
+@zero_derivative MinimalCtx Tuple{typeof(zero_tester_forward_only),Float64} ForwardMode
+
+zero_tester_reverse_only(x) = 0
+@zero_derivative MinimalCtx Tuple{typeof(zero_tester_reverse_only),Float64} ReverseMode
 
 # Test case with isbits data.
 
@@ -136,7 +144,7 @@ end
         rule = Mooncake.build_rrule(Tuple{typeof(f),Float64})
         @test value_and_gradient!!(rule, f, 5.0) == (15.0, (NoTangent(), 3.0))
     end
-    @testset "zero_adjoint" begin
+    @testset "zero_derivative" begin
         f_zero = ToolsForRulesResources
         test_rule(
             sr(123),
@@ -153,6 +161,23 @@ end
             is_primitive=true,
             perf_flag=:stability_and_allocs,
         )
+
+        perf_flag = :stability_and_allocs
+        @testset "forward mode only" begin
+            sig = Tuple{typeof(ToolsForRulesResources.zero_tester_forward_only),Float64}
+            @test is_primitive(MinimalCtx, ForwardMode, sig)
+            @test !is_primitive(MinimalCtx, ReverseMode, sig)
+            args = (ToolsForRulesResources.zero_tester_forward_only, 5.0)
+            test_rule(sr(123), args...; is_primitive=true, perf_flag, mode=ForwardMode)
+        end
+        @testset "reverse mode only" begin
+            sig = Tuple{typeof(ToolsForRulesResources.zero_tester_reverse_only),Float64}
+            @test !is_primitive(MinimalCtx, ForwardMode, sig)
+            @test is_primitive(MinimalCtx, ReverseMode, sig)
+            args = (ToolsForRulesResources.zero_tester_reverse_only, 5.0)
+            test_rule(sr(123), args...; is_primitive=true, perf_flag, mode=ReverseMode)
+        end
+
     end
     @testset "chain_rules_macro" begin
         @testset "to_cr_tangent" for (t, t_cr) in Any[
