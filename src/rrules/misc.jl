@@ -389,7 +389,7 @@ end
 
 function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:misc})
     test_cases = Any[
-        (false, :none, nothing, copy, Dict("A" => 5.0, "B" => 5.0)),
+        (false, :none, nothing, x -> copy(Dict("A" => x[1], "B" => x[2]))["A"], (5.0, 5.0)),
         (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
         (false, :none, nothing, () -> copy(Set())),
     ]
