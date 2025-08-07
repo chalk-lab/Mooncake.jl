@@ -1,5 +1,4 @@
 using Mooncake.TestUtils: count_allocs
-using DifferentiationInterface
 using Mooncake:
     Mooncake, MutableTangent, NoTangent, PossiblyUninitTangent, Tangent, tangent_type
 
@@ -229,26 +228,60 @@ using Mooncake:
             MyStruct2(x::Float64) = new(x)
         end
 
-        f = Returns(1.0)
-        backend = AutoMooncake(; config=nothing)
-
         test_cases = [
-            (Core.svec(1.0, 1.0), [0.0, 0.0])
-            (SVector(1.0), (data=(0.0,),))
-            (SA[1.0, 2.0, 3.0], (data=(0.0, 0.0, 0.0),))
-            (SA[1.0 2.0; 1.0 2.0], (data=(0.0, 0.0, 0.0, 0.0),))
-            (MyStruct{Int64,Float64}(1, 1.0), (a=nothing, b=0.0))
-            (MyStruct1{Int64,Float64}(1, 1.0), (a=nothing, b=0.0))
-            (MyStruct2(6.9518144222347e-310), (x=0.0,))
-            (MyStruct2(1.0), (x=0.0,))
-            (1.0, 0.0)
-            ([1.0], [0.0])
-            ((1.0, [1.0]), (0.0, [0.0]))
-            ((1, ["hello"]), (nothing, [nothing]))
+            (Core.svec(1.0, 1.0), [0.0, 0.0], [0.0, 0.0]),
+            (
+                SVector(1.0),
+                (data=(0.0,),),
+                Tangent{@NamedTuple{data::Tuple{Float64}}}((data=(0.0,),)),
+            ),
+            (
+                SA[1.0, 2.0, 3.0],
+                (data=(0.0, 0.0, 0.0),),
+                Tangent{@NamedTuple{data::Tuple{Float64,Float64,Float64}}}((
+                    data=(0.0, 0.0, 0.0),
+                )),
+            ),
+            (
+                SA[1.0 2.0; 1.0 2.0],
+                (data=(0.0, 0.0, 0.0, 0.0),),
+                Tangent{@NamedTuple{data::NTuple{4,Float64}}}((data=(0.0, 0.0, 0.0, 0.0),)),
+            ),
+            (
+                MyStruct{Int64,Float64}(1, 1.0),
+                (a=nothing, b=0.0),
+                Tangent{@NamedTuple{a::NoTangent, b::Float64}}((a=NoTangent(), b=0.0)),
+            ),
+            (
+                MyStruct1{Int64,Float64}(1, 1.0),
+                (a=nothing, b=0.0),
+                MutableTangent{@NamedTuple{a::NoTangent, b::Float64}}((
+                    a=NoTangent(), b=0.0
+                )),
+            ),
+            (
+                MyStruct2(6.9518144222347e-310),
+                (x=0.0,),
+                MutableTangent{@NamedTuple{x::PossiblyUninitTangent{Float64}}}((
+                    x=PossiblyUninitTangent{Float64}(0.0),
+                )),
+            ),
+            (
+                MyStruct2(1.0),
+                (x=0.0,),
+                MutableTangent{@NamedTuple{x::PossiblyUninitTangent{Float64}}}((
+                    x=PossiblyUninitTangent{Float64}(0.0),
+                )),
+            ),
+            (1.0, 0.0, 0.0),
+            ([1.0], [0.0], [0.0]),
+            ((1.0, [1.0]), (0.0, [0.0]), (0.0, [0.0])),
+            ((1, ["hello"]), (nothing, [nothing]), (NoTangent(), [NoTangent()])),
         ]
 
-        for (primal, resolved_tangents) in test_cases
-            @test strip_tangents(gradient(f, backend, primal)) == resolved_tangents
+        for (primal, resolved_tangents, tangent_data) in test_cases
+            Mooncake.__exclude_unsupported_output(primal)
+            @test strip_tangents(tangent_data) == resolved_tangents
         end
 
         @test strip_tangents(Ptr{Int64}(1)) == fdata(Ptr{Int64}(1))
