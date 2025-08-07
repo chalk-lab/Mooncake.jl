@@ -32,8 +32,18 @@ function increment_internal!!(c::IncCache, p::T, q::T) where {T<:IdDict}
     return p
 end
 function set_to_zero_internal!!(c::IncCache, t::IdDict)
-    haskey(c, t) && return t
-    c[t] = false
+    if c isa Set{UInt}
+        oid = objectid(t)
+        oid in c && return t
+        push!(c, oid)
+    elseif c isa Vector{UInt}
+        oid = objectid(t)
+        oid in c && return t
+        push!(c, oid)
+    else
+        haskey(c, t) && return t
+        c[t] = false
+    end
     foreach(keys(t)) do k
         t[k] = set_to_zero_internal!!(c, t[k])
     end

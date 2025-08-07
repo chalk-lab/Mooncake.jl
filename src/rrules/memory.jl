@@ -72,8 +72,18 @@ function increment_internal!!(c::IncCache, x::Memory{P}, y::Memory{P}) where {P}
 end
 
 function set_to_zero_internal!!(c::IncCache, x::Memory)
-    haskey(c, x) && return x
-    c[x] = false
+    if c isa Set{UInt}
+        oid = objectid(x)
+        oid in c && return x
+        push!(c, oid)
+    elseif c isa Vector{UInt}
+        oid = objectid(x)
+        oid in c && return x
+        push!(c, oid)
+    else
+        haskey(c, x) && return x
+        c[x] = false
+    end
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end
 
@@ -173,8 +183,18 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
 end
 
 function set_to_zero_internal!!(c::IncCache, x::Array)
-    haskey(c, x) && return x
-    c[x] = false
+    if c isa Set{UInt}
+        oid = objectid(x)
+        oid in c && return x
+        push!(c, oid)
+    elseif c isa Vector{UInt}
+        oid = objectid(x)
+        oid in c && return x
+        push!(c, oid)
+    else
+        haskey(c, x) && return x
+        c[x] = false
+    end
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end
 

@@ -813,7 +813,7 @@ same tangent twice and producing incorrect results.
 """
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 
-const IncCache = Union{NoCache,IdDict{Any,Bool}}
+const IncCache = Union{NoCache,IdDict{Any,Bool},Set{UInt},Vector{UInt}}
 
 """
     increment!!(x::T, y::T) where {T}
@@ -867,7 +867,7 @@ end
 Set `x` to its zero element (`x` should be a tangent, so the zero must exist).
 """
 set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(typeof(x)))
-set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(IdDict{Any,Bool}(), x)
+set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Set{UInt}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
 """
@@ -888,8 +888,18 @@ function set_to_zero_internal!!(c::IncCache, x::T) where {T<:Tangent}
     return T(set_to_zero_internal!!(c, x.fields))
 end
 function set_to_zero_internal!!(c::IncCache, x::MutableTangent)
-    haskey(c, x) && return x
-    setindex!(c, false, x)
+    if c isa Set{UInt}
+        oid = objectid(x)
+        oid in c && return x
+        push!(c, oid)
+    elseif c isa Vector{UInt}
+        oid = objectid(x)
+        oid in c && return x
+        push!(c, oid)
+    else
+        haskey(c, x) && return x
+        setindex!(c, false, x)
+    end
     x.fields = set_to_zero_internal!!(c, x.fields)
     return x
 end
