@@ -77,6 +77,8 @@ struct MistyClosureRData{Tr}
     captures_rdata::Tr
 end
 
+_copy(r::MistyClosureRData) = MistyClosureRData(deepcopy(r.captures_rdata))
+
 fdata_type(::Type{<:MistyClosureTangent}) = MistyClosureFData
 function fdata(t::MistyClosureTangent)
     return MistyClosureFData(fdata(t.captures_tangent), t.dual_callable)
@@ -148,4 +150,10 @@ end
 function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
     dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
     return tangent(f).dual_callable(dual_captures, x...)
+end
+function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
+    msg = "Attempted to compute the adjoint associated to a `MistyClosure`. " *
+        "This is not currently supported. Please open an issue if you need " *
+        "this functionality."
+    throw(ArgumentError(msg))
 end

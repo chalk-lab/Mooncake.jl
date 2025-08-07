@@ -84,6 +84,11 @@ end
         mode=ForwardMode,
     )
 
+    # Check that the rrule for evaluating `MistyClosure`s errors appropriately.
+    args = (low_level_gradient, rule, quadratic, 5.0)
+    higher_rule = Mooncake.build_rrule(args...)
+    @test_throws(ArgumentError, higher_rule(map(zero_fcodual, args)...))
+
     # Manually test that this correctly computes the second derivative.
     frule = Mooncake.build_frule(
         Mooncake.get_interpreter(Mooncake.ForwardMode),
