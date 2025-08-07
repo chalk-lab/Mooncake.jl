@@ -5,7 +5,7 @@ using Base: IEEEFloat
 using NNlib: dropout
 
 using NNlib: conv, depthwiseconv
-import Mooncake: @from_rrule, DefaultCtx, MinimalCtx
+import Mooncake: @from_rrule, DefaultCtx, MinimalCtx, ReverseMode
 
 # Array types which we test rules against, so are confident work.
 const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
