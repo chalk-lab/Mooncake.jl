@@ -9,7 +9,7 @@ end
 (f::Foo)(x) = getfield(f, 1) + x
 
 # Test cases for second derivative computation.
-quadratic(x) = x^2
+quadratic(x) = x^3
 function low_level_gradient(rrule, f, x::Float64)
     _, pb!! = rrule(zero_fcodual(f), zero_fcodual(x))
     return pb!!(1.0)[2]
@@ -78,14 +78,14 @@ end
         rule,
         quadratic,
         5.0;
-        interface_only=false,
+        interface_only=true,
         is_primitive=false,
         perf_flag=:none,
         unsafe_perturb=true,
         mode=ForwardMode,
     )
 
-    # Manually test that this correectly computes the second derivative.
+    # Manually test that this correctly computes the second derivative.
     frule = Mooncake.build_frule(
         Mooncake.get_interpreter(Mooncake.ForwardMode),
         Tuple{typeof(low_level_gradient),typeof(rule),typeof(quadratic),Float64},
@@ -96,5 +96,5 @@ end
         zero_dual(quadratic),
         Mooncake.Dual(5.0, 1.0),
     )
-    @test tangent(result) == 2.0
+    @test tangent(result) == 6 * 5.0
 end
