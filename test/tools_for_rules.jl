@@ -177,7 +177,6 @@ end
             args = (ToolsForRulesResources.zero_tester_reverse_only, 5.0)
             test_rule(sr(123), args...; is_primitive=true, perf_flag, mode=ReverseMode)
         end
-
     end
     @testset "chain_rules_macro" begin
         @testset "to_cr_tangent" for (t, t_cr) in Any[

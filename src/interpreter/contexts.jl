@@ -56,7 +56,9 @@ particular context depends only on static information, not any run-time informat
 might live in a particular instance of `Ctx`.
 """
 is_primitive(::Type{MinimalCtx}, ::Type{<:Mode}, sig::Type{<:Tuple}) = false
-is_primitive(::Type{DefaultCtx}, ::Type{M}, sig) where {M<:Mode} = is_primitive(MinimalCtx, M, sig)
+function is_primitive(::Type{DefaultCtx}, ::Type{M}, sig) where {M<:Mode}
+    return is_primitive(MinimalCtx, M, sig)
+end
 
 """
     @is_primitive context_type [mode_type] signature

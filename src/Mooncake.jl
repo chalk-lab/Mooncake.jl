@@ -161,17 +161,14 @@ include("developer_tools.jl")
 # Public, not exported
 include("public.jl")
 
-include("deprecated.jl")
 end
 #! format: on
 
-@public Config, value_and_pullback!!, prepare_pullback_cache, value_and_derivative!!, prepare_derivative_cache, Dual
+@public Config, value_and_pullback!!, prepare_pullback_cache, value_and_derivative!!
+@public prepare_derivative_cache, Dual
 
 # Public, exported
-export
-    value_and_gradient!!,
-    prepare_gradient_cache,
-    value_and_derivative!!,
-    prepare_derivative_cache
+export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
+export prepare_derivative_cache
 
 end

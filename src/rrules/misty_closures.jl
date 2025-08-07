@@ -152,7 +152,8 @@ function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
     return tangent(f).dual_callable(dual_captures, x...)
 end
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
-    msg = "Attempted to compute the adjoint associated to a `MistyClosure`. " *
+    msg =
+        "Attempted to compute the adjoint associated to a `MistyClosure`. " *
         "This is not currently supported. Please open an issue if you need " *
         "this functionality."
     throw(ArgumentError(msg))

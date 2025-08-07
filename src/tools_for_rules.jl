@@ -285,7 +285,13 @@ function _zero_derivative_impl(ctx, sig, mode)
     # which does not escape the mode argument. This will work even if the names `Mooncake`
     # or `Mooncake.Mode` are not available in the scope which calls this macro.
     mode_type = mode === nothing ? :(::Type{<:Mode}) : :(::Type{<:$(esc(mode))})
-    is_primitive_ex = :(Mooncake.is_primitive(::Type{$(esc(ctx))}, $mode_type, ::Type{<:$(esc(sig))}) = true)
+    is_primitive_ex = :(
+        function Mooncake.is_primitive(
+            ::Type{$(esc(ctx))}, $mode_type, ::Type{<:$(esc(sig))}
+        )
+            true
+        end
+    )
 
     # Construct frule!! expression. If forward mode not requested, do not define anything.
     frule_ex = if mode === nothing || mode == :ForwardMode
