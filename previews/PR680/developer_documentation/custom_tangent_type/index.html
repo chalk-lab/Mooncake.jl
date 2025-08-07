@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Writing Custom Tangent Types · Mooncake.jl</title><meta name="title" content="Writing Custom Tangent Types · Mooncake.jl"/><meta property="og:title" content="Writing Custom Tangent Types · Mooncake.jl"/><meta property="twitter:title" content="Writing Custom Tangent Types · Mooncake.jl"/><meta name="description" content="Documentation for Mooncake.jl."/><meta property="og:description" content="Documentation for Mooncake.jl."/><meta property="twitter:description" content="Documentation for Mooncake.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body>
+<!-- NAVBAR START -->
+<style>
+    html {
+        scroll-padding-top: calc(55px + 1rem);
+    }
+
+    /* Documenter css tweaks */
+    .docs-sidebar {
+        margin-top: 3.75rem;
+    }
+
+    #documenter {
+        margin-top: 3.75rem;
+    }
+
+    .docs-version-selector {
+        margin-bottom: 60px !important;
+    }
+
+    @media screen and (max-width: 1056px) {
+        .docs-version-selector {
+            margin-bottom: 60px !important;
+        }
+
+        .docs-sidebar {
+            margin-top: 0 !important;
+        }
+    }
+    /* Documenter css tweaks ends here */
+
+    :root {
+        --heading-color: white;
+        --item-color: rgb(165, 165, 165);
+        --primary-bg: #073c44;
+        --hover-color: #8faad2;
+        --deprecated-bg: #ff4d4d;
+        --deprecated-text: white;
+    }
+
+    .ext-navigation {
+        position: fixed;
+        height: 3.75rem;
+        top: 0;
+        width: 100%;
+        background-color: var(--primary-bg);
+        z-index: 1000;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        display: flex;
+        align-items: center;
+        padding: 0 1.0625rem;
+        transition: transform 0.3s;
+    }
+
+    .ext-navbar-logo {
+        margin-left: 0.625rem;
+    }
+
+    .ext-nav-links {
+        display: flex;
+        align-items: center;
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+        flex-grow: 1;
+    }
+
+    .ext-nav-links li {
+        margin-left: 1rem !important;
+    }
+
+    .ext-nav-link {
+        color: white !important;
+        text-decoration: none;
+        font-size: 1.0625rem !important;
+        transition: color 0.2s ease;
+        cursor: pointer;
+    }
+
+    .ext-nav-link:hover,
+    .ext-navbar-item-single a:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-navbar-item-single a {
+        color: #fff !important;
+    }
+
+    .ext-menu-toggle {
+        display: none;
+        font-size: 1.5rem;
+        color: white;
+        cursor: pointer;
+    }
+
+    .ext-dropdown {
+        display: none;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        grid-template-rows: auto auto auto;
+        padding: 1.875rem;
+        position: absolute;
+        width: 100%;
+        left: 0;
+        background-color: #083c44;
+        line-height: 1.875rem;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out;
+        transform: translateY(-0.625rem);
+    }
+
+    #library-handler::after {
+        content: "▼";
+        font-size: 0.6875rem;
+        margin-left: 0.3125rem;
+        transition: transform 0.3s ease-in-out;
+    }
+
+    #library-handler.open::after {
+        content: "▲";
+    }
+
+    .ext-dropdown.show {
+        display: grid;
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .ext-dropdown ul {
+        height: auto;
+        width: 12.5rem;
+        margin-bottom: 1.25rem;
+    }
+
+    .ext-dropdown ul li {
+        text-align: left;
+        display: flex;
+        align-items: center;
+    }
+
+    .navbar-sub-item {
+        list-style: none;
+    }
+
+    .ext-dropdown ul a li {
+        color: var(--item-color);
+        width: 15.625rem;
+        border-radius: 3px;
+        padding: 0.125rem 0.625rem;
+        transition: background-color 0.2s ease;
+    }
+
+    .ext-dropdown ul a li:hover {
+        background-color: rgba(107, 107, 107, 0.5);
+    }
+
+    .ext-dropdown-item-heading {
+        color: var(--heading-color);
+        text-align: center;
+    }
+
+    .deprecated-badge {
+        background-color: var(--deprecated-bg);
+        color: var(--deprecated-text);
+        font-size: 0.75rem;
+        padding: 0.125rem 0.375rem;
+        border-radius: 3px;
+        margin-left: 0.5rem;
+        line-height: 1;
+    }
+
+    /* Responsive styling */
+    @media (max-width: 966px) {
+        .ext-dropdown {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .ext-nav-links {
+            display: none;
+            flex-direction: column;
+            width: 100%;
+            background-color: var(--primary-bg);
+            position: absolute;
+            top: 3.75rem;
+            left: 0;
+            padding: 0.625rem 0;
+            height: auto;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgb(141, 141, 141) grey;
+        }
+
+        .ext-nav-links.show {
+            display: flex;
+        }
+
+        .ext-nav-links li {
+            margin: 0.625rem 0;
+            text-align: center;
+        }
+
+        .ext-menu-toggle {
+            display: block;
+            margin-left: auto;
+        }
+
+        .ext-navigation.hide {
+            transform: translateY(-3.75rem);
+        }
+
+        .ext-dropdown {
+            place-content: center;
+            text-align: center;
+            grid-template-columns: 1fr;
+            line-height: 1.25rem;
+            padding: 0.625rem;
+        }
+
+        .ext-dropdown ul {
+            width: 100%;
+            text-align: center;
+            margin-bottom: 0.3125rem;
+        }
+
+        .ext-dropdown ul li {
+            text-align: center;
+            /* justify-content: center; */
+        }
+
+        .ext-dropdown ul a li {
+            width: 100%;
+        }
+
+        .ext-dropdown ul a li:hover {
+            background-color: var(--primary-bg);
+            color: #fff;
+        }
+
+        /* Modified scroll bar */
+        .ext-nav-links::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        .ext-nav-links::-webkit-scrollbar-track {
+            box-shadow: inset 0 0 5px grey;
+        }
+
+        .ext-nav-links::-webkit-scrollbar-thumb {
+            background: rgb(141, 141, 141);
+            border-radius: 3px;
+        }
+
+        .ext-nav-links::-webkit-scrollbar-thumb:hover {
+            background: #9b9b9b;
+        }
+    }
+</style>
+<nav class="ext-navigation">
+    <a href="https://turinglang.org/">
+        <img src="https://turinglang.org/assets/images/turing-logo.svg" alt="Turing Logo" class="ext-navbar-logo" height="24px" width="40px">
+    </a>
+    <a style="color: white !important; font-size: 21.25px !important; margin-left: 10px;" href="https://turinglang.org/">Turing.jl</a>
+    <ul class="ext-nav-links">
+        <li>
+            <a class="ext-nav-link" href="https://turinglang.org/docs/tutorials/docs-00-getting-started/">Get Started</a>
+        </li>
+        <li>
+            <a class="ext-nav-link" href="https://turinglang.org/docs/tutorials/00-introduction/">Tutorials</a>
+        </li>
+        <li>
+            <p class="ext-nav-link" id="library-handler">Libraries</p>
+            <div class="ext-dropdown" id="ext-dropdown-items">
+                <ul>
+                    <li class="ext-dropdown-item-heading">Modelling Languages</li>
+                    <a href="https://turinglang.org/DynamicPPL.jl/">
+                        <li>DynamicPPL</li>
+                    </a>
+                    <a href="https://turinglang.org/JuliaBUGS.jl/">
+                        <li>JuliaBUGS</li>
+                    </a>
+                    <a href="https://turinglang.org/TuringGLM.jl/">
+                        <li>TuringGLM</li>
+                    </a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">MCMC</li>
+                    <a href="https://turinglang.org/AdvancedHMC.jl/">
+                        <li>AdvancedHMC</li>
+                    </a>
+                    <a href="https://turinglang.org/AbstractMCMC.jl/">
+                        <li>AbstractMCMC</li>
+                    </a>
+                    <a href="https://github.com/theogf/ThermodynamicIntegration.jl">
+                        <li>ThermodynamicIntegration</li>
+                    </a>
+                    <a href="https://turinglang.org/AdvancedPS.jl/">
+                        <li>AdvancedPS</li>
+                    </a>
+                    <a href="https://turinglang.org/SliceSampling.jl/">
+                        <li>SliceSampling</li>
+                    </a>
+                    <a href="https://turinglang.org/EllipticalSliceSampling.jl/">
+                        <li>EllipticalSliceSampling</li>
+                    </a>
+                    <a href="https://turinglang.org/NestedSamplers.jl/">
+                        <li>NestedSamplers</li>
+                    </a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Diagnostics</li>
+                    <a href="https://turinglang.org/MCMCChains.jl/">
+                        <li>MCMCChains</li>
+                    </a>
+                    <a href="https://turinglang.org/MCMCDiagnosticTools.jl/">
+                        <li>MCMCDiagnosticTools</li>
+                    </a>
+                    <a href="https://turinglang.org/ParetoSmooth.jl/">
+                        <li>ParetoSmooth</li>
+                    </a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Gaussian Processes</li>
+                    <a href="https://juliagaussianprocesses.github.io/AbstractGPs.jl/">
+                        <li>AbstractGPs</li>
+                    </a>
+                    <a href="https://juliagaussianprocesses.github.io/KernelFunctions.jl/">
+                        <li>KernelFunctions</li>
+                    </a>
+                    <a href="https://juliagaussianprocesses.github.io/ApproximateGPs.jl/">
+                        <li>ApproximateGPs</li>
+                    </a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading ext-navbar-item-single">
+                        <a href="https://turinglang.org/Bijectors.jl/">Bijectors</a>
+                    </li>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading ext-navbar-item-single">
+                        <a href="https://turinglang.org/TuringCallbacks.jl/">TuringCallbacks</a>
+                    </li>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading ext-navbar-item-single">
+                        <a href="https://turinglang.org/Deprecated/TuringBenchmarking/">TuringBenchmarking</a>
+                        <span class="deprecated-badge">Deprecated</span>
+                    </li>
+                </ul>
+            </div>
+        </li>
+        <li>
+            <a class="ext-nav-link" href="https://turinglang.org/news/">News</a>
+        </li>
+        <li>
+            <a class="ext-nav-link" href="https://turinglang.org/team/">Team</a>
+        </li>
+    </ul>
+    <a href="https://x.com/TuringLang" style="margin-left: 15px; padding-top: 2px">
+        <svg fill="#ffffff" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="32px" height="32px" viewBox="-209.92 -209.92 931.84 931.84" xml:space="preserve" stroke="#ffffff">
+            <g id="SVGRepo_bgCarrier" stroke-width="0"></g>
+            <g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round"></g>
+            <g id="SVGRepo_iconCarrier">
+                <g id="7935ec95c421cee6d86eb22ecd12f847">
+                    <path style="display: inline"
+                        d="M459.186,151.787c0.203,4.501,0.305,9.023,0.305,13.565 c0,138.542-105.461,298.285-298.274,298.285c-59.209,0-114.322-17.357-160.716-47.104c8.212,0.973,16.546,1.47,25.012,1.47 c49.121,0,94.318-16.759,130.209-44.884c-45.887-0.841-84.596-31.154-97.938-72.804c6.408,1.227,12.968,1.886,19.73,1.886 c9.55,0,18.816-1.287,27.617-3.68c-47.955-9.633-84.1-52.001-84.1-102.795c0-0.446,0-0.882,0.011-1.318 c14.133,7.847,30.294,12.562,47.488,13.109c-28.134-18.796-46.637-50.885-46.637-87.262c0-19.212,5.16-37.218,14.193-52.7 c51.707,63.426,128.941,105.156,216.072,109.536c-1.784-7.675-2.718-15.674-2.718-23.896c0-57.891,46.941-104.832,104.832-104.832 c30.173,0,57.404,12.734,76.525,33.102c23.887-4.694,46.313-13.423,66.569-25.438c-7.827,24.485-24.434,45.025-46.089,58.002 c21.209-2.535,41.426-8.171,60.222-16.505C497.448,118.542,479.666,137.004,459.186,151.787z">
+                    </path>
+                </g>
+            </g>
+        </svg>
+    </a>
+    <a href="https://github.com/TuringLang/Turing.jl">
+        <svg width="32px" height="32px" viewBox="-8.2 -8.2 36.40 36.40" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="#000000">
+            <g id="SVGRepo_bgCarrier" stroke-width="0"></g>
+            <g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round"></g>
+            <g id="SVGRepo_iconCarrier">
+                <title>github [#142]</title>
+                <desc>Created with Sketch.</desc>
+                <defs></defs>
+                <g id="Page-1" stroke-width="0.0002" fill="none" fill-rule="evenodd">
+                    <g id="Dribbble-Light-Preview" transform="translate(-140.000000, -7559.000000)" fill="#ffffff">
+                        <g id="icons" transform="translate(56.000000, 160.000000)">
+                            <path
+                                d="M94,7399 C99.523,7399 104,7403.59 104,7409.253 C104,7413.782 101.138,7417.624 97.167,7418.981 C96.66,7419.082 96.48,7418.762 96.48,7418.489 C96.48,7418.151 96.492,7417.047 96.492,7415.675 C96.492,7414.719 96.172,7414.095 95.813,7413.777 C98.04,7413.523 100.38,7412.656 100.38,7408.718 C100.38,7407.598 99.992,7406.684 99.35,7405.966 C99.454,7405.707 99.797,7404.664 99.252,7403.252 C99.252,7403.252 98.414,7402.977 96.505,7404.303 C95.706,7404.076 94.85,7403.962 94,7403.958 C93.15,7403.962 92.295,7404.076 91.497,7404.303 C89.586,7402.977 88.746,7403.252 88.746,7403.252 C88.203,7404.664 88.546,7405.707 88.649,7405.966 C88.01,7406.684 87.619,7407.598 87.619,7408.718 C87.619,7412.646 89.954,7413.526 92.175,7413.785 C91.889,7414.041 91.63,7414.493 91.54,7415.156 C90.97,7415.418 89.522,7415.871 88.63,7414.304 C88.63,7414.304 88.101,7413.319 87.097,7413.247 C87.097,7413.247 86.122,7413.234 87.029,7413.87 C87.029,7413.87 87.684,7414.185 88.139,7415.37 C88.139,7415.37 88.726,7417.2 91.508,7416.58 C91.513,7417.437 91.522,7418.245 91.522,7418.489 C91.522,7418.76 91.338,7419.077 90.839,7418.982 C86.865,7417.627 84,7413.783 84,7409.253 C84,7403.59 88.478,7399 94,7399"
+                                id="github-[#142]">
+                            </path>
+                        </g>
+                    </g>
+                </g>
+            </g>
+        </svg>
+    </a>
+    <span class="ext-menu-toggle">&#9776;</span>
+</nav>
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const menuToggle = document.querySelector(".ext-menu-toggle");
+        const navLinks = document.querySelector(".ext-nav-links");
+        const nav = document.querySelector(".ext-navigation");
+        const navigationHandler = document.getElementById("library-handler");
+        const navigationItemsContainer =
+            document.getElementById("ext-dropdown-items");
+        let lastScrollY = window.scrollY;
+
+        function setAppropriateHeight() {
+            if (window.innerWidth <= 768) {
+                const viewportHeight = window.innerHeight;
+                const navHeight = nav.offsetHeight;
+                navLinks.style.maxHeight = `${viewportHeight - navHeight}px`;
+                navLinks.style.overflowY = "auto";
+            } else {
+                navLinks.style.maxHeight = "";
+                navLinks.style.overflowY = "";
+            }
+        }
+
+        // Toggle main menu for mobile
+        menuToggle.addEventListener("click", () => {
+            navLinks.classList.toggle("show");
+            if (navLinks.classList.contains("show")) {
+                setAppropriateHeight();
+                // Ensure the dropdown is hidden when menu is first opened
+                navigationItemsContainer.style.display = "none";
+                navigationItemsContainer.classList.remove("show");
+            }
+        });
+
+        // Close menus if clicked outside
+        document.addEventListener("click", (event) => {
+            if (
+                !navLinks.contains(event.target) &&
+                !menuToggle.contains(event.target)
+            ) {
+                navLinks.classList.remove("show");
+                navigationItemsContainer.classList.remove("show");
+                navigationHandler.classList.remove("open");
+            }
+        });
+
+        // Hide navigation bar on scroll down in mobile view
+        window.addEventListener("scroll", () => {
+            if (window.innerWidth <= 768) {
+                nav.classList.toggle("hide", window.scrollY > lastScrollY);
+                lastScrollY = window.scrollY;
+            }
+        });
+
+        // Library API script
+        navigationHandler.addEventListener("click", (event) => {
+            event.preventDefault(); // Prevent default action of the link
+            if (navigationItemsContainer.classList.contains("show")) {
+                navigationItemsContainer.classList.remove("show");
+                navigationHandler.classList.remove("open");
+                setTimeout(() => {
+                    navigationItemsContainer.style.display = "none";
+                }, 500); // Match the timeout to the CSS transition duration
+            } else {
+                navigationItemsContainer.style.display = "grid";
+                navigationHandler.classList.add("open");
+                setTimeout(() => {
+                    navigationItemsContainer.classList.add("show");
+                }, 10); // Delay to ensure the display change takes effect before adding class
+            }
+            setAppropriateHeight(); // Recalculate height when dropdown changes
+        });
+
+        // Handle window resize
+        window.addEventListener("resize", setAppropriateHeight);
+
+        // Initial setup
+        setAppropriateHeight();
+    });
+</script>
+<!-- NAVBAR END -->
+
+<div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.svg" alt="Mooncake.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">Mooncake.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Mooncake.jl</a></li><li><a class="tocitem" href="../../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../../interface/">Interface</a></li><li><span class="tocitem">Understanding Mooncake.jl</span><ul><li><a class="tocitem" href="../../understanding_mooncake/introduction/">Introduction</a></li><li><a class="tocitem" href="../../understanding_mooncake/algorithmic_differentiation/">Algorithmic Differentiation</a></li><li><a class="tocitem" href="../../understanding_mooncake/rule_system/">Mooncake.jl&#39;s Rule System</a></li></ul></li><li><span class="tocitem">Utilities</span><ul><li><a class="tocitem" href="../../utilities/defining_rules/">Defining Rules</a></li><li><a class="tocitem" href="../../utilities/debug_mode/">Debug Mode</a></li><li><a class="tocitem" href="../../utilities/debugging_and_mwes/">Debugging and MWEs</a></li></ul></li><li><span class="tocitem">Developer Documentation</span><ul><li><a class="tocitem" href="../running_tests_locally/">Running Tests Locally</a></li><li><a class="tocitem" href="../developer_tools/">Developer Tools</a></li><li><a class="tocitem" href="../tangents/">Tangents</a></li><li class="is-active"><a class="tocitem" href>Writing Custom Tangent Types</a><ul class="internal"><li><a class="tocitem" href="#1.-Tangent-Types-and-the-FData/RData-Split"><span>1. Tangent Types and the FData/RData Split</span></a></li><li><a class="tocitem" href="#2.-Why-Recursive-Types-Are-Challenging"><span>2. Why Recursive Types Are Challenging</span></a></li><li><a class="tocitem" href="#3.-Defining-a-Custom-Tangent-Type-for-Recursion"><span>3. Defining a Custom Tangent Type for Recursion</span></a></li><li><a class="tocitem" href="#4.-Registering-Your-Tangent-Type-with-Mooncake"><span>4. Registering Your Tangent Type with Mooncake</span></a></li><li><a class="tocitem" href="#5.-Bottom-Up-Integration:-Implement-Only-What-You-Need"><span>5. Bottom-Up Integration: Implement Only What You Need</span></a></li><li><a class="tocitem" href="#6.-From-&quot;It-Works!&quot;-to-Passing-[TestUtils.test_data](@ref)"><span>6. From &quot;It Works!&quot; to Passing <code>TestUtils.test_data</code></span></a></li><li><a class="tocitem" href="#Appendix:-Full-Implementations"><span>Appendix: Full Implementations</span></a></li></ul></li><li><a class="tocitem" href="../ir_representation/">IR Representation</a></li><li><a class="tocitem" href="../forwards_mode_design/">Forwards-Mode Design</a></li><li><a class="tocitem" href="../reverse_mode_design/">Reverse-Mode Design</a></li><li><a class="tocitem" href="../misc_internals_notes/">Misc. Internals Notes</a></li><li><a class="tocitem" href="../internal_docstrings/">Internal Docstrings</a></li></ul></li><li><a class="tocitem" href="../../known_limitations/">Known Limitations</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Developer Documentation</a></li><li class="is-active"><a href>Writing Custom Tangent Types</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Writing Custom Tangent Types</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl/blob/main/docs/src/developer_documentation/custom_tangent_type.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Writing-Custom-Tangent-Types"><a class="docs-heading-anchor" href="#Writing-Custom-Tangent-Types">Writing Custom Tangent Types</a><a id="Writing-Custom-Tangent-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Writing-Custom-Tangent-Types" title="Permalink"></a></h1><p>Mooncake.jl associates each <strong>primal type</strong> (the original data structure) with a unique <strong>tangent type</strong> (the type that stores its derivative information). By default, Mooncake can automatically derive tangent types for most Julia structs. However, for <em>recursive types</em>—that is, types that reference themselves (directly or indirectly)—the default mechanism can fail, often resulting in a stack overflow. In such cases, you must manually define a custom tangent type and implement the required interface.</p><p>This guide walks you through the process, from understanding Mooncake’s tangent design to testing your custom tangent type.</p><h2 id="1.-Tangent-Types-and-the-FData/RData-Split"><a class="docs-heading-anchor" href="#1.-Tangent-Types-and-the-FData/RData-Split">1. Tangent Types and the FData/RData Split</a><a id="1.-Tangent-Types-and-the-FData/RData-Split-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Tangent-Types-and-the-FData/RData-Split" title="Permalink"></a></h2><p>Before diving in, let&#39;s review how Mooncake represents tangents (gradients) and why it splits them into <strong>forward data</strong> (<code>fdata</code>) and <strong>reverse data</strong> (<code>rdata</code>). For more details, see the <a href="https://chalk-lab.github.io/Mooncake.jl/stable/understanding_mooncake/rule_system/">Mooncake.jl Rule System documentation</a>.</p><h3 id="Tangent-Types"><a class="docs-heading-anchor" href="#Tangent-Types">Tangent Types</a><a id="Tangent-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Tangent-Types" title="Permalink"></a></h3><p>For a given primal type <code>P</code>, <code>Mooncake.tangent_type(P)</code> returns the tangent type associated with <code>P</code>. By default, Mooncake uses generic <code>Tangent{...}</code> structs to hold fieldwise derivatives. For example, a simple struct’s tangent might be <code>Tangent{NamedTuple}</code> with the same field names as the primal. Mutable structs get a <code>MutableTangent</code> type. Each field’s tangent is itself of type <code>tangent_type(field_type)</code>.</p><h3 id="Forward-Data-vs.-Reverse-Data"><a class="docs-heading-anchor" href="#Forward-Data-vs.-Reverse-Data">Forward Data vs. Reverse Data</a><a id="Forward-Data-vs.-Reverse-Data-1"></a><a class="docs-heading-anchor-permalink" href="#Forward-Data-vs.-Reverse-Data" title="Permalink"></a></h3><p>Mooncake splits a tangent object into two parts:</p><ul><li><strong>fdata</strong>: Forward-pass data, typically components identified by address (e.g., arrays or mutable fields), which are carried along and updated in-place.</li><li><strong>rdata</strong>: Reverse-pass data, typically value-identified components (e.g., plain numbers), only needed for the reverse pass.</li></ul><p>This design improves performance by minimizing what needs to be propagated during the forward pass.</p><p><strong>Example:</strong>   Consider <code>Tuple{Float64, Vector{Float64}, Int}</code>. Its tangent type is <code>Tuple{Float64, Vector{Float64}, NoTangent}</code> (since <code>Int</code> is non-differentiable). The <code>fdata</code> type is <code>Tuple{NoFData, Vector{Float64}, NoFData}</code>—only the vector is forwarded. The <code>rdata</code> type is <code>Tuple{Float64, NoRData, NoRData}</code>—only the float’s derivative is carried in reverse. Mooncake ensures that for any tangent <code>t</code>, if <code>f = Mooncake.fdata(t)</code> and <code>r = Mooncake.rdata(t)</code>, then <code>Mooncake.tangent(f, r)</code> reconstructs the original <code>t</code>.</p><h2 id="2.-Why-Recursive-Types-Are-Challenging"><a class="docs-heading-anchor" href="#2.-Why-Recursive-Types-Are-Challenging">2. Why Recursive Types Are Challenging</a><a id="2.-Why-Recursive-Types-Are-Challenging-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Why-Recursive-Types-Are-Challenging" title="Permalink"></a></h2><p>A <em>recursive type</em> is a struct that contains itself (directly or indirectly) as a field. For example:</p><pre><code class="language-julia hljs">mutable struct A{T}
+    x::T
+    a::Union{A{T},Nothing}
+
+    A(x::T) where {T} = new{T}(x, nothing)
+    A(x::T, child::A{T}) where {T} = new{T}(x, child)
+end</code></pre><p>Here, <code>A</code> has a self-referential field <code>a</code>. If you ask Mooncake for the tangent type of <code>A{Float64}</code>, it tries to construct something like <code>Tangent{Tuple{Float64, tangent_type(A)}}</code>, which leads to infinite recursion. Calling <code>tangent_type(A)</code> in this scenario will overflow the stack.</p><p>To solve this, you must manually define a custom tangent type that breaks this circular dependency.</p><h2 id="3.-Defining-a-Custom-Tangent-Type-for-Recursion"><a class="docs-heading-anchor" href="#3.-Defining-a-Custom-Tangent-Type-for-Recursion">3. Defining a Custom Tangent Type for Recursion</a><a id="3.-Defining-a-Custom-Tangent-Type-for-Recursion-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Defining-a-Custom-Tangent-Type-for-Recursion" title="Permalink"></a></h2><p>The first step is to define a new type to represent the tangent of <code>A</code>. This custom tangent should mimic the structure of <code>A</code>, but in a way that resolves the recursion:</p><pre><code class="language-julia hljs">mutable struct TangentForA{Tx}
+    x::Tx
+    a::Union{TangentForA{Tx}, Mooncake.NoTangent}
+
+    function TangentForA{Tx}(x_tangent::Tx) where {Tx}
+        new{Tx}(x_tangent, Mooncake.NoTangent())
+    end
+
+    function TangentForA{Tx}(x_tangent::Tx, a_tangent::Union{TangentForA{Tx}, Mooncake.NoTangent}) where {Tx}
+        new{Tx}(x_tangent, a_tangent)
+    end
+
+    # This constructor is required by Mooncake&#39;s internal machinery for constructing tangents from named tuples
+    function TangentForA{Tx}(nt::@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}}) where {Tx}
+        return new{Tx}(nt.x, nt.a)
+    end
+end</code></pre><p>This <code>TangentForA</code> type mirrors <code>A</code>&#39;s fields. Its <code>a</code> field is either another <code>TangentForA</code> (for nested or cyclic primal structures) or <a href="../internal_docstrings/#Mooncake.NoTangent"><code>Mooncake.NoTangent</code></a> (if the primal <code>A.a</code> is <code>nothing</code>). This explicit definition breaks the infinite type recursion that would occur with naive tangent derivation.</p><h2 id="4.-Registering-Your-Tangent-Type-with-Mooncake"><a class="docs-heading-anchor" href="#4.-Registering-Your-Tangent-Type-with-Mooncake">4. Registering Your Tangent Type with Mooncake</a><a id="4.-Registering-Your-Tangent-Type-with-Mooncake-1"></a><a class="docs-heading-anchor-permalink" href="#4.-Registering-Your-Tangent-Type-with-Mooncake" title="Permalink"></a></h2><p>Defining the tangent type is not enough—you must <strong>register it with Mooncake’s interface</strong> so Mooncake knows to use it and how to split it into <a href="../internal_docstrings/#Mooncake.fdata-Tuple{T} where T"><code>fdata</code></a>/<a href="../internal_docstrings/#Mooncake.rdata-Tuple{T} where T"><code>rdata</code></a>. Implement these methods:</p><h3 id="4.1.-tangent_type"><a class="docs-heading-anchor" href="#4.1.-tangent_type">4.1. <code>tangent_type</code></a><a id="4.1.-tangent_type-1"></a><a class="docs-heading-anchor-permalink" href="#4.1.-tangent_type" title="Permalink"></a></h3><p>Tell Mooncake that the tangent of <code>A</code> is <code>TangentForA</code>:</p><pre><code class="language-julia hljs">function Mooncake.tangent_type(::Type{A{T}}) where {T}
+    Tx = Mooncake.tangent_type(T)
+    return Tx == Mooncake.NoTangent ? Mooncake.NoTangent : TangentForA{Tx}
+end</code></pre><p>This overrides the default mechanism and associates <code>A</code> with your custom tangent type.</p><h3 id="4.2.-fdata_type-and-rdata_type"><a class="docs-heading-anchor" href="#4.2.-fdata_type-and-rdata_type">4.2. <code>fdata_type</code> and <code>rdata_type</code></a><a id="4.2.-fdata_type-and-rdata_type-1"></a><a class="docs-heading-anchor-permalink" href="#4.2.-fdata_type-and-rdata_type" title="Permalink"></a></h3><p>Define the types of forward and reverse data for <code>TangentForA</code>. In this example, since both <code>A</code> and <code>TangentForA</code> are mutable, all updates can be done in-place, so the <code>fdata</code> is the tangent itself and <code>rdata</code> is <a href="../internal_docstrings/#Mooncake.NoRData"><code>NoRData</code></a>. We shouldn&#39;t need to specifically define <code>fdata_type</code> and <code>rdata_type</code> because Mooncake can infer them in this case. In other cases, you may need to split these more carefully and define them explicitly.</p><h3 id="4.3.-tangent-(Combining-Function)"><a class="docs-heading-anchor" href="#4.3.-tangent-(Combining-Function)">4.3. <code>tangent</code> (Combining Function)</a><a id="4.3.-tangent-(Combining-Function)-1"></a><a class="docs-heading-anchor-permalink" href="#4.3.-tangent-(Combining-Function)" title="Permalink"></a></h3><p>Mooncake provides <a href="../internal_docstrings/#Mooncake.tangent-Tuple{Mooncake.NoFData, Mooncake.NoRData}"><code>Mooncake.tangent</code></a> to reassemble a tangent from <code>fdata</code> and <code>rdata</code>. For your type:</p><pre><code class="language-julia hljs">Mooncake.tangent(t::TangentForA{Tx}, ::Mooncake.NoRData) where {Tx} = t</code></pre><p>This ensures that <code>Mooncake.tangent(Mooncake.fdata(t), Mooncake.rdata(t)) === t</code>, which is a core requirement of Mooncake&#39;s tangent interface (see <a href="../internal_docstrings/#Mooncake.fdata_type-Tuple{Any}"><code>fdata_type</code></a>). Mooncake’s tests will check that the reassembled tangent is the exact same object as the original.</p><p>With these methods, your custom type is now connected to Mooncake’s AD system.</p><h2 id="5.-Bottom-Up-Integration:-Implement-Only-What-You-Need"><a class="docs-heading-anchor" href="#5.-Bottom-Up-Integration:-Implement-Only-What-You-Need">5. Bottom-Up Integration: Implement Only What You Need</a><a id="5.-Bottom-Up-Integration:-Implement-Only-What-You-Need-1"></a><a class="docs-heading-anchor-permalink" href="#5.-Bottom-Up-Integration:-Implement-Only-What-You-Need" title="Permalink"></a></h2><p>Mooncake provides extensive coverage and thorough testing. To get started, you can implement just enough to differentiate simple functions and add more as needed. For example, consider:</p><pre><code class="language-julia hljs">f1(a::A) = 2.0 * a.x</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">f1 (generic function with 1 method)</code></pre><p>When you try to differentiate this, Mooncake will complain it lacks an <code>rrule!!</code> for <a href="../internal_docstrings/#Mooncake.lgetfield-Union{Tuple{f}, Tuple{Any, Val{f}}} where f"><code>lgetfield</code></a>. The <code>lgetfield</code> function is Mooncake&#39;s internal version of <code>getfield</code> that accepts a <code>Val</code> type for the field name, enabling better type stability. You need to implement it:</p><h3 id="5.1.-Field-Access-(lgetfield)-Rule"><a class="docs-heading-anchor" href="#5.1.-Field-Access-(lgetfield)-Rule">5.1. Field Access (<code>lgetfield</code>) Rule</a><a id="5.1.-Field-Access-(lgetfield)-Rule-1"></a><a class="docs-heading-anchor-permalink" href="#5.1.-Field-Access-(lgetfield)-Rule" title="Permalink"></a></h3><pre><code class="language-julia hljs">Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(Mooncake.lgetfield),A{T},Val} where {T}
+
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(Mooncake.lgetfield)},
+    obj_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+    field_name_cd::Mooncake.CoDual{Val{FieldName}},
+) where {T,Tx,FieldName}
+    a = Mooncake.primal(obj_cd)
+    a_tangent = Mooncake.tangent(obj_cd)
+
+    value_primal = getfield(a, FieldName)
+    actual_field_tangent_value = FieldName === :x ? a_tangent.x :
+                                FieldName === :a ? a_tangent.a :
+                                throw(ArgumentError(&quot;lgetfield: Unknown field &#39;$FieldName&#39; for type A.&quot;))
+
+    value_output_fdata = Mooncake.fdata(actual_field_tangent_value)
+    y_cd = Mooncake.CoDual(value_primal, value_output_fdata)
+
+    function lgetfield_A_pullback(Δy_rdata)
+        if FieldName === :x
+            if !(Δy_rdata isa Mooncake.NoRData)
+                a_tangent.x = Mooncake.increment_rdata!!(a_tangent.x, Δy_rdata)
+            end
+        elseif FieldName === :a
+            @assert Δy_rdata isa Mooncake.NoRData  # for mutable TangentForA, rdata is not used
+        end
+        return (Mooncake.NoRData(), Mooncake.NoRData(), Mooncake.NoRData())
+    end
+    return y_cd, lgetfield_A_pullback
+end</code></pre><h3 id="5.2.-Zeroing-Out-the-Tangent"><a class="docs-heading-anchor" href="#5.2.-Zeroing-Out-the-Tangent">5.2. Zeroing Out the Tangent</a><a id="5.2.-Zeroing-Out-the-Tangent-1"></a><a class="docs-heading-anchor-permalink" href="#5.2.-Zeroing-Out-the-Tangent" title="Permalink"></a></h3><p>Mooncake will next require <a href="../internal_docstrings/#Mooncake.set_to_zero!!-Tuple{Any}"><code>set_to_zero!!</code></a>:</p><pre><code class="language-julia hljs">function Mooncake.set_to_zero!!(t::TangentForA{Tx}) where Tx
+    t.x = Mooncake.set_to_zero!!(t.x)
+    if !(t.a isa Mooncake.NoTangent)
+        Mooncake.set_to_zero!!(t.a)
+    end
+    return t
+end</code></pre><p>With these, you can now differentiate simple functions:</p><pre><code class="language-julia hljs">a = A(1.0)
+val, grad = DifferentiationInterface.value_and_gradient(f1, AutoMooncake(; config=nothing), a)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(2.0, Main.TangentForA{Float64}(2.0, Mooncake.NoTangent()))</code></pre><p>Another example:</p><pre><code class="language-julia hljs">function prod_x(a::A{T}) where {T}
+    a_val = a.x
+    return a.a === nothing ? a_val : a_val * prod_x(a.a)
+end
+sum_a = A(1.0, A(2.0, A(3.0)))
+val_f5, grad_f5 = DifferentiationInterface.value_and_gradient(prod_x, AutoMooncake(; config=nothing), sum_a)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(6.0, Main.TangentForA{Float64}(6.0, Main.TangentForA{Float64}(3.0, Main.TangentForA{Float64}(2.0, Mooncake.NoTangent()))))</code></pre><p>Depending on your use case, this may be sufficient.</p><h2 id="6.-From-&quot;It-Works!&quot;-to-Passing-[TestUtils.test_data](@ref)"><a class="docs-heading-anchor" href="#6.-From-&quot;It-Works!&quot;-to-Passing-[TestUtils.test_data](@ref)">6. From &quot;It Works!&quot; to Passing <a href="../tangents/#Mooncake.TestUtils.test_data"><code>TestUtils.test_data</code></a></a><a id="6.-From-&quot;It-Works!&quot;-to-Passing-[TestUtils.test_data](@ref)-1"></a><a class="docs-heading-anchor-permalink" href="#6.-From-&quot;It-Works!&quot;-to-Passing-[TestUtils.test_data](@ref)" title="Permalink"></a></h2><p>To fully integrate with Mooncake, you must implement additional operations on your tangent type so Mooncake’s algorithms can manipulate it robustly. At minimum, Mooncake expects the following functions for any custom tangent type:</p><h3 id="Checklist:-Functions-Needed-for-Recursive-Struct-Support"><a class="docs-heading-anchor" href="#Checklist:-Functions-Needed-for-Recursive-Struct-Support">Checklist: Functions Needed for Recursive Struct Support</a><a id="Checklist:-Functions-Needed-for-Recursive-Struct-Support-1"></a><a class="docs-heading-anchor-permalink" href="#Checklist:-Functions-Needed-for-Recursive-Struct-Support" title="Permalink"></a></h3><p>Below is a checklist of most functions you need to make <a href="../tangents/#Mooncake.TestUtils.test_data"><code>Mooncake.TestUtils.test_data</code></a> pass for the recursive struct <code>A</code> and its tangent <code>TangentForA</code>. They are grouped by their role in Mooncake’s test suite.</p><h4 id="Primitive-rrules-(Mandatory-Differentiation-Hooks)"><a class="docs-heading-anchor" href="#Primitive-rrules-(Mandatory-Differentiation-Hooks)">Primitive rrules (Mandatory Differentiation Hooks)</a><a id="Primitive-rrules-(Mandatory-Differentiation-Hooks)-1"></a><a class="docs-heading-anchor-permalink" href="#Primitive-rrules-(Mandatory-Differentiation-Hooks)" title="Permalink"></a></h4><p>You must provide adjoints for every <code>getfield</code>/<code>lgetfield</code> variant that appears in tests.</p><table><tr><th style="text-align: right">Primitive</th><th style="text-align: right">Variants to implement</th></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake.lgetfield-Union{Tuple{f}, Tuple{Any, Val{f}}} where f"><code>lgetfield</code></a></td><td style="text-align: right"><code>(A, Val{:x})</code>, <code>(A, Val{:a})</code>, plus Symbol, Int, and (Val, Val) fallbacks</td></tr><tr><td style="text-align: right"><code>Base.getfield</code></td><td style="text-align: right">Same coverage as <code>lgetfield</code></td></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake._new_-Union{Tuple{N}, Tuple{T}, Tuple{Type{T}, Vararg{Any, N}}} where {T, N}"><code>_new_</code></a></td><td style="text-align: right"><code>A(x)</code>, <code>A(x, a::A)</code>, <code>A(x, nothing)</code>—three separate <code>rrule!!</code> methods</td></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake.lsetfield!-Union{Tuple{name}, Tuple{Any, Val{name}, Any}} where name"><code>lsetfield!</code></a></td><td style="text-align: right"><code>(A, Val{:field}, new_value)</code> including both Symbol &amp; Int field IDs</td></tr></table><h4 id="Core-Tangent-Operations"><a class="docs-heading-anchor" href="#Core-Tangent-Operations">Core Tangent Operations</a><a id="Core-Tangent-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#Core-Tangent-Operations" title="Permalink"></a></h4><table><tr><th style="text-align: right">Function</th><th style="text-align: right">Purpose/feature tested</th></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake.zero_tangent_internal-Tuple{Union{Int128, Int16, Int32, Int64, Int8}, Union{Mooncake.NoCache, IdDict{Any, Any}}}"><code>zero_tangent_internal</code></a></td><td style="text-align: right">Structure-preserving zero generation with cycle cache</td></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake.randn_tangent_internal-Union{Tuple{P}, Tuple{Random.AbstractRNG, P, Union{Mooncake.NoCache, IdDict{Any, Any}}}} where P&lt;:Union{Float16, Float32, Float64}"><code>randn_tangent_internal</code></a></td><td style="text-align: right">Random tangent generator (for stochastic interface tests)</td></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake.set_to_zero_internal!!-Tuple{Union{Mooncake.NoCache, IdDict{Any, Bool}, Set{UInt64}, Vector{UInt64}}, Mooncake.NoTangent}"><code>set_to_zero_internal!!</code></a></td><td style="text-align: right">Recursive in-place reset with cycle protection</td></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake.increment_internal!!-Tuple{Union{Mooncake.NoCache, IdDict{Any, Bool}, Set{UInt64}, Vector{UInt64}}, Mooncake.NoTangent, Mooncake.NoTangent}"><code>increment_internal!!</code></a></td><td style="text-align: right">In-place accumulation used in reverse pass</td></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake._add_to_primal_internal-Tuple{Union{Mooncake.NoCache, IdDict{Any, Any}}, Any, Mooncake.NoTangent, Bool}"><code>_add_to_primal_internal</code></a></td><td style="text-align: right">Adds a tangent to a primal (needed for finite-difference checks)</td></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake._diff_internal-Union{Tuple{P}, Tuple{Union{Mooncake.NoCache, IdDict{Any, Any}}, P, P}} where P"><code>_diff_internal</code></a></td><td style="text-align: right">Structural diff between two primals → tangent</td></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake._dot_internal-Tuple{Union{Mooncake.NoCache, IdDict{Any, Any}}, Mooncake.NoTangent, Mooncake.NoTangent}"><code>_dot_internal</code></a></td><td style="text-align: right">Inner-product between tangents (dual-number consistency)</td></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake._scale_internal-Tuple{Union{Mooncake.NoCache, IdDict{Any, Any}}, Float64, Mooncake.NoTangent}"><code>_scale_internal</code></a></td><td style="text-align: right">Scalar × tangent scaling</td></tr></table><h4 id="Test-Utilities"><a class="docs-heading-anchor" href="#Test-Utilities">Test Utilities</a><a id="Test-Utilities-1"></a><a class="docs-heading-anchor-permalink" href="#Test-Utilities" title="Permalink"></a></h4><table><tr><th style="text-align: right">Override</th><th style="text-align: right">What it proves</th></tr><tr><td style="text-align: right"><a href="../internal_docstrings/#Mooncake.TestUtils.populate_address_map_internal-Union{Tuple{T}, Tuple{P}, Tuple{Dict{Ptr{Nothing}, Ptr{Nothing}}, P, T}} where {P, T}"><code>TestUtils.populate_address_map_internal</code></a></td><td style="text-align: right">Tangent-to-primal pointer correspondence (cycle safety)</td></tr><tr><td style="text-align: right"><code>TestUtils.has_equal_data_internal</code> (internal version of <a href="../internal_docstrings/#Mooncake.TestUtils.has_equal_data-Tuple{Any, Any}"><code>TestUtils.has_equal_data</code></a> (primal &amp; tangent)</td><td style="text-align: right">Deep equality ignoring pointer identity; handles recursion</td></tr></table><p>By following this process—starting with a minimal set of methods and expanding as Mooncake requests more—you can support recursive types robustly in Mooncake.jl.</p><h2 id="Appendix:-Full-Implementations"><a class="docs-heading-anchor" href="#Appendix:-Full-Implementations">Appendix: Full Implementations</a><a id="Appendix:-Full-Implementations-1"></a><a class="docs-heading-anchor-permalink" href="#Appendix:-Full-Implementations" title="Permalink"></a></h2><p>Before defining the full implementation, <a href="../tangents/#Mooncake.TestUtils.test_data"><code>TestUtils.test_data</code></a> will fail.</p><pre><code class="language-julia hljs">try
+    Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))
+catch e
+    @show e
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Test.FallbackTestSetException(&quot;There was an error during testing&quot;)</code></pre><h3 id="Basic-tangent-interface-methods"><a class="docs-heading-anchor" href="#Basic-tangent-interface-methods">Basic tangent interface methods</a><a id="Basic-tangent-interface-methods-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-tangent-interface-methods" title="Permalink"></a></h3><p>First, implement the core tangent interface methods:</p><pre><code class="language-julia hljs">Mooncake.rdata(::TangentForA{Tx}) where {Tx} = Mooncake.NoRData()
+Mooncake.tangent(t::TangentForA{Tx}, ::Mooncake.NoRData) where {Tx} = t
+
+function Mooncake.tangent_type(::Type{TangentForA{Tx}}) where {Tx}
+    return TangentForA{Tx}
+end
+Mooncake.tangent_type(::Type{TangentForA{Tx}}, ::Type{Mooncake.NoRData}) where {Tx} = TangentForA{Tx}</code></pre><h3 id="Field-access-helper-functions"><a class="docs-heading-anchor" href="#Field-access-helper-functions">Field access helper functions</a><a id="Field-access-helper-functions-1"></a><a class="docs-heading-anchor-permalink" href="#Field-access-helper-functions" title="Permalink"></a></h3><p>Define utility functions for field access:</p><pre><code class="language-julia hljs">_field_symbol(f::Symbol) = f
+_field_symbol(i::Int) = i == 1 ? :x : i == 2 ? :a :
+    throw(ArgumentError(&quot;Invalid field index &#39;$i&#39; for type A.&quot;))
+_field_symbol(::Type{Val{F}}) where F = _field_symbol(F)
+_field_symbol(::Val{F}) where F = _field_symbol(F)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">_field_symbol (generic function with 4 methods)</code></pre><h3 id="Common-getfield-rule-implementation"><a class="docs-heading-anchor" href="#Common-getfield-rule-implementation">Common getfield rule implementation</a><a id="Common-getfield-rule-implementation-1"></a><a class="docs-heading-anchor-permalink" href="#Common-getfield-rule-implementation" title="Permalink"></a></h3><p>Define a shared helper for getfield rules:</p><pre><code class="language-julia hljs">function _rrule_getfield_common(obj_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+                                field_sym::Symbol,
+                                n_args::Int) where {T,Tx}
+    a = Mooncake.primal(obj_cd)
+    a_t = Mooncake.tangent(obj_cd)
+
+    value_primal = getfield(a, field_sym)
+
+    field_tan = field_sym === :x ? a_t.x : field_sym === :a ? a_t.a :
+        throw(ArgumentError(&quot;Unknown field &#39;$field_sym&#39; for type A.&quot;))
+
+    y_cd = Mooncake.CoDual(value_primal, Mooncake.fdata(field_tan))
+
+    function pb(Δy_rdata)
+        if field_sym === :x
+            if !(Δy_rdata isa Mooncake.NoRData)
+                a_t.x = Mooncake.increment_rdata!!(a_t.x, Δy_rdata)
+            end
+        else
+            @assert Δy_rdata isa Mooncake.NoRData
+        end
+        return ntuple(_ -&gt; Mooncake.NoRData(), n_args)
+    end
+
+    return y_cd, pb
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">_rrule_getfield_common (generic function with 1 method)</code></pre><h3 id="lgetfield-and-getfield-rules"><a class="docs-heading-anchor" href="#lgetfield-and-getfield-rules">lgetfield and getfield rules</a><a id="lgetfield-and-getfield-rules-1"></a><a class="docs-heading-anchor-permalink" href="#lgetfield-and-getfield-rules" title="Permalink"></a></h3><p>Implement the various field access rules:</p><pre><code class="language-julia hljs">Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(Mooncake.lgetfield),A{T},Val{S}} where {T,S&lt;:Symbol}
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(Mooncake.lgetfield),Mooncake.NoFData},
+    obj_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+    ::Mooncake.CoDual{Val{FieldName},Mooncake.NoFData},
+) where {T,Tx,FieldName}
+    field_symbol = _field_symbol(FieldName)
+    return _rrule_getfield_common(obj_cd, field_symbol, 3)
+end
+
+# Rule for lgetfield(A, Val{Field}, Val{Order})
+Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(Mooncake.lgetfield),A{T},Val,Val} where {T}
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(Mooncake.lgetfield),F},
+    obj_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+    ::Mooncake.CoDual{Val{VFieldName},Mooncake.NoFData},
+    ::Mooncake.CoDual{Val{VOrderName},Mooncake.NoFData}
+) where {F,T,Tx,VFieldName,VOrderName}
+    field_symbol = _field_symbol(VFieldName)
+    return _rrule_getfield_common(obj_cd, field_symbol, 4)
+end
+
+# Rule for getfield(A, ::Symbol)
+Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(getfield),A{T},Symbol} where {T}
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(getfield)},
+    obj_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+    field_name_symbol_cd::Mooncake.CoDual{Symbol,Mooncake.NoFData},
+) where {T,Tx}
+    field_sym = Mooncake.primal(field_name_symbol_cd)
+    return _rrule_getfield_common(obj_cd, field_sym, 3)
+end
+
+# Rule for getfield(A, ::Int)
+Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(getfield),A{T},Int} where {T}
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(getfield)},
+    obj_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+    field_idx_cd::Mooncake.CoDual{Int,Mooncake.NoFData},
+) where {T,Tx}
+    field_sym = _field_symbol(Mooncake.primal(field_idx_cd))
+    return _rrule_getfield_common(obj_cd, field_sym, 3)
+end
+
+# Rule for getfield(A, ::Symbol, ::Symbol) e.g. getfield(obj, :field, :not_atomic)
+Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(getfield),A{T},Symbol,Symbol} where {T}
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(getfield)},
+    obj_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+    field_name_symbol_cd::Mooncake.CoDual{Symbol,Mooncake.NoFData},
+    ::Mooncake.CoDual{Symbol,Mooncake.NoFData}
+) where {T,Tx}
+    field_sym = Mooncake.primal(field_name_symbol_cd)
+    return _rrule_getfield_common(obj_cd, field_sym, 4)
+end
+
+# Rule for getfield(A, ::Int, ::Symbol) e.g. getfield(obj, 1, :not_atomic)
+Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(getfield),A{T},Int,Symbol} where {T}
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(getfield)},
+    obj_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+    field_idx_cd::Mooncake.CoDual{Int,Mooncake.NoFData},
+    ::Mooncake.CoDual{Symbol,Mooncake.NoFData}
+) where {T,Tx}
+    field_sym = _field_symbol(Mooncake.primal(field_idx_cd))
+    return _rrule_getfield_common(obj_cd, field_sym, 4)
+end</code></pre><h3 id="Core-tangent-operations"><a class="docs-heading-anchor" href="#Core-tangent-operations">Core tangent operations</a><a id="Core-tangent-operations-1"></a><a class="docs-heading-anchor-permalink" href="#Core-tangent-operations" title="Permalink"></a></h3><p>Implement the essential tangent manipulation functions:</p><pre><code class="language-julia hljs">function Mooncake.zero_tangent_internal(p::A{T}, dict::Mooncake.MaybeCache) where {T}
+    Tx = Mooncake.tangent_type(T)
+    Tx == Mooncake.NoTangent &amp;&amp; return Mooncake.NoTangent()
+    if haskey(dict, p)
+        return dict[p]::TangentForA{Tx}
+    end
+    x_t = Mooncake.zero_tangent_internal(p.x, dict)::Tx
+    t = TangentForA{Tx}(x_t)
+    dict[p] = t
+    if p.a === nothing
+        t.a = Mooncake.NoTangent()
+    else
+        t.a = Mooncake.zero_tangent_internal(p.a, dict)::Union{TangentForA{Tx},Mooncake.NoTangent}
+    end
+    return t
+end
+
+function Mooncake.randn_tangent_internal(rng::AbstractRNG, p::A{T}, dict::Mooncake.MaybeCache) where {T}
+    Tx = Mooncake.tangent_type(T)
+    Tx == Mooncake.NoTangent &amp;&amp; return Mooncake.NoTangent()
+    if haskey(dict, p)
+        return dict[p]::TangentForA{Tx}
+    end
+    x_t = Mooncake.randn_tangent_internal(rng, p.x, dict)::Tx
+    t = TangentForA{Tx}(x_t)
+    dict[p] = t
+    if p.a === nothing
+        t.a = Mooncake.NoTangent()
+    else
+        t.a = Mooncake.randn_tangent_internal(rng, p.a, dict)::Union{TangentForA{Tx},Mooncake.NoTangent}
+    end
+    return t
+end
+
+function Mooncake.increment_internal!!(c::Mooncake.IncCache, t::TangentForA{Tx}, s::TangentForA{Tx}) where {Tx}
+    (haskey(c, t) || t === s) &amp;&amp; return t
+    c[t] = true
+    t.x = Mooncake.increment_internal!!(c, t.x, s.x)
+    if !(t.a isa Mooncake.NoTangent)
+        t.a = Mooncake.increment_internal!!(c, t.a, s.a)
+    end
+    return t
+end
+
+function Mooncake.set_to_zero_internal!!(c::Mooncake.IncCache, t::TangentForA{Tx}) where {Tx}
+    haskey(c, t) &amp;&amp; return t
+    c[t] = false
+    t.x = Mooncake.set_to_zero_internal!!(c, t.x)
+    if !(t.a isa Mooncake.NoTangent)
+        t.a = Mooncake.set_to_zero_internal!!(c, t.a)
+    end
+    return t
+end
+
+function Mooncake._add_to_primal_internal(c::Mooncake.MaybeCache, p::A{T}, t::TangentForA{Tx}, unsafe::Bool) where {T,Tx}
+    key = (p, t, unsafe)
+    haskey(c, key) &amp;&amp; return c[key]::A{T}
+    x_new = Mooncake._add_to_primal_internal(c, p.x, t.x, unsafe)
+    a_new = p.a === nothing ? nothing : Mooncake._add_to_primal_internal(c, p.a, t.a, unsafe)
+    p_new = a_new === nothing ? A(x_new) : A(x_new, a_new)
+    c[key] = p_new
+    return p_new
+end
+
+function Mooncake._diff_internal(c::Mooncake.MaybeCache, p::A{T}, q::A{T}) where {T}
+    key = (p, q)
+    haskey(c, key) &amp;&amp; return c[key]::Union{TangentForA{Mooncake.tangent_type(T)},Mooncake.NoTangent}
+    Tx = Mooncake.tangent_type(T)
+    if Tx == Mooncake.NoTangent
+        t = Mooncake.NoTangent()
+        c[key] = t
+        return t
+    end
+    x_t = Mooncake._diff_internal(c, p.x, q.x)
+    a_t = if p.a === nothing
+        Mooncake.NoTangent()
+    else
+        Mooncake._diff_internal(c, p.a, q.a)
+    end
+    t = TangentForA{Tx}(x_t, a_t)
+    c[key] = t
+    return t
+end
+
+function Mooncake._dot_internal(c::Mooncake.MaybeCache, t::TangentForA{Tx}, s::TangentForA{Tx}) where {Tx}
+    key = (t, s)
+    haskey(c, key) &amp;&amp; return c[key]::Float64
+    c[key] = 0.0
+    res = Mooncake._dot_internal(c, t.x, s.x)
+    if !(t.a isa Mooncake.NoTangent)
+        res += Mooncake._dot_internal(c, t.a, s.a)
+    end
+    c[key] = res
+    return res
+end
+
+function Mooncake._scale_internal(c::Mooncake.MaybeCache, a::Float64, t::TangentForA{Tx}) where {Tx}
+    haskey(c, t) &amp;&amp; return c[t]::TangentForA{Tx}
+    x_new = Mooncake._scale_internal(c, a, t.x)
+    a_new = t.a isa Mooncake.NoTangent ? Mooncake.NoTangent() : Mooncake._scale_internal(c, a, t.a)
+    t_new = TangentForA{Tx}(x_new, a_new)
+    c[t] = t_new
+    return t_new
+end
+
+@inline function Mooncake.get_tangent_field(t::TangentForA, f)
+    if f === :x
+        return t.x
+    elseif f === :a
+        return t.a
+    else
+        throw(error(&quot;Unhandled field $f&quot;))
+    end
+end
+
+Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::A{T}, ::TangentForA{Tx}) where {T,Tx} = nothing</code></pre><h3 id="Constructor-rules"><a class="docs-heading-anchor" href="#Constructor-rules">Constructor rules</a><a id="Constructor-rules-1"></a><a class="docs-heading-anchor-permalink" href="#Constructor-rules" title="Permalink"></a></h3><p>Implement rrules for the A constructors:</p><pre><code class="language-julia hljs"># rrule for A(x::T)
+Mooncake.@is_primitive Mooncake.DefaultCtx Tuple{typeof(Mooncake._new_),Type{A{T}},T} where {T}
+
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(Mooncake._new_)},
+    ::Mooncake.CoDual{Type{A{T}}},
+    x_cd::Mooncake.CoDual{T},
+) where {T}
+    primal_x = Mooncake.primal(x_cd)
+    y_primal = A(primal_x)
+
+    Tx_for_field = Mooncake.tangent_type(T)
+
+    y_fdata = if Tx_for_field == Mooncake.NoTangent
+        Mooncake.NoTangent()
+    else
+        raw_x_tan = Mooncake.tangent(x_cd)
+        processed_x_tan = if (raw_x_tan isa Mooncake.NoTangent) || (raw_x_tan isa Mooncake.NoFData)
+            Mooncake.zero_tangent(primal_x)::Tx_for_field
+        else
+            raw_x_tan
+        end
+        TangentForA{Tx_for_field}(processed_x_tan)
+    end
+
+    y_cd = Mooncake.CoDual(y_primal, y_fdata)
+
+    function _new_A_x_pullback(Δy_rdata)
+        # For scalar types, return the appropriate zero value
+        if T &lt;: AbstractFloat || T &lt;: Integer
+            return (Mooncake.NoRData(), Mooncake.NoRData(), zero(T))
+        else
+            x_tangent_val = Mooncake.tangent(x_cd)
+            rdata_for_x = (x_tangent_val isa Mooncake.NoTangent) || (x_tangent_val isa Mooncake.NoFData) ? Mooncake.NoRData() : zero(Mooncake.rdata(x_tangent_val))
+            return (Mooncake.NoRData(), Mooncake.NoRData(), rdata_for_x)
+        end
+    end
+    return y_cd, _new_A_x_pullback
+end
+
+# A(x::T, a::A{T})
+Mooncake.@is_primitive Mooncake.DefaultCtx Tuple{typeof(Mooncake._new_),Type{A{T}},T,A{T}} where {T}
+
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(Mooncake._new_)},
+    ::Mooncake.CoDual{Type{A{T}}},
+    x_cd::Mooncake.CoDual{T},
+    a_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+) where {T,Tx}
+    primal_x = Mooncake.primal(x_cd)
+
+    raw_tangent_x = Mooncake.tangent(x_cd)
+
+    final_tangent_for_x_field = if (raw_tangent_x isa Mooncake.NoTangent) || (raw_tangent_x isa Mooncake.NoFData)
+        Mooncake.zero_tangent(primal_x)::Tx
+    else
+        raw_tangent_x
+    end
+
+    primal_a = Mooncake.primal(a_cd)
+    tangent_a = Mooncake.tangent(a_cd)
+
+    y_primal = A(primal_x, primal_a)
+
+    y_fdata = TangentForA{Tx}(final_tangent_for_x_field, tangent_a)
+
+    y_cd = Mooncake.CoDual(y_primal, y_fdata)
+
+    function _new_A_x_a_pullback(Δy_rdata)
+        # For scalar types, return the appropriate zero value
+        if T &lt;: AbstractFloat || T &lt;: Integer
+            rdata_for_x = zero(T)
+        else
+            x_tangent_val = Mooncake.tangent(x_cd)
+            rdata_for_x = (x_tangent_val isa Mooncake.NoTangent) || (x_tangent_val isa Mooncake.NoFData) ? Mooncake.NoRData() : zero(Mooncake.rdata(x_tangent_val))
+        end
+
+        rdata_for_a = Mooncake.NoRData()
+
+        return (Mooncake.NoRData(), Mooncake.NoRData(), rdata_for_x, rdata_for_a)
+    end
+    return y_cd, _new_A_x_a_pullback
+end
+
+# A(x::T, a::Nothing)
+Mooncake.@is_primitive Mooncake.DefaultCtx Tuple{typeof(Mooncake._new_),Type{A{T}},T,Nothing} where {T}
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(Mooncake._new_)},
+    ::Mooncake.CoDual{Type{A{T}}},
+    x_cd::Mooncake.CoDual{T},
+    a_nothing_cd::Mooncake.CoDual{Nothing,Mooncake.NoFData},
+) where {T}
+    primal_x = Mooncake.primal(x_cd)
+
+    y_primal = A(primal_x)
+
+    Tx = Mooncake.tangent_type(T)
+
+    y_fdata = if Tx == Mooncake.NoTangent
+        Mooncake.NoTangent()
+    else
+        raw_tangent_x = Mooncake.tangent(x_cd)
+        processed_tx = (raw_tangent_x isa Mooncake.NoTangent) || (raw_tangent_x isa Mooncake.NoFData) ? Mooncake.zero_tangent(primal_x) : raw_tangent_x
+        TangentForA{Tx}(processed_tx)
+    end
+
+    y_cd = Mooncake.CoDual(y_primal, y_fdata)
+
+    function _new_A_x_nothing_pullback(Δy_rdata)
+        # For Float64 inputs, we need to return Float64 rdata, not NoRData
+        if T &lt;: AbstractFloat
+            return (Mooncake.NoRData(), Mooncake.NoRData(), zero(T), Mooncake.NoRData())
+        else
+            x_tangent_val = Mooncake.tangent(x_cd)
+            rdata_for_x = (x_tangent_val isa Mooncake.NoTangent) || (x_tangent_val isa Mooncake.NoFData) ? Mooncake.NoRData() : zero(Mooncake.rdata(x_tangent_val))
+            return (Mooncake.NoRData(), Mooncake.NoRData(), rdata_for_x, Mooncake.NoRData())
+        end
+    end
+    return y_cd, _new_A_x_nothing_pullback
+end
+
+# rrule for lsetfield!(A)
+Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(Mooncake.lsetfield!),A{T},Val{F},Any} where {T,F}
+function Mooncake.rrule!!(
+    ::Mooncake.CoDual{typeof(Mooncake.lsetfield!)},
+    obj_cd::Mooncake.CoDual{A{T},TangentForA{Tx}},
+    field_val_cd::Mooncake.CoDual{Val{FieldName}},
+    new_val_cd::Mooncake.CoDual{V}
+) where {T,Tx,FieldName,V}
+    a = Mooncake.primal(obj_cd)
+    a_t = Mooncake.tangent(obj_cd)
+    new_val_primal = Mooncake.primal(new_val_cd)
+    new_val_tangent = Mooncake.tangent(new_val_cd)
+
+    field_sym = if FieldName isa Symbol
+        FieldName
+    elseif FieldName isa Int
+        FieldName == 1 ? :x : FieldName == 2 ? :a : throw(ArgumentError(&quot;lsetfield!: Invalid integer field &#39;$FieldName&#39; for type A.&quot;))
+    else
+        throw(ArgumentError(&quot;lsetfield!: Unsupported field type for lsetfield!&quot;))
+    end
+
+    old_val = getfield(a, field_sym)
+    old_tangent = if field_sym === :x
+        a_t.x
+    elseif field_sym === :a
+        a_t.a
+    else
+        throw(ArgumentError(&quot;lsetfield!: Unknown field &#39;$field_sym&#39; for type A.&quot;))
+    end
+
+    Mooncake.lsetfield!(a, Val(field_sym), new_val_primal)
+    new_field_tangent = if (new_val_tangent isa Mooncake.NoTangent) || (new_val_tangent isa Mooncake.NoFData)
+        Mooncake.zero_tangent(new_val_primal)
+    else
+        new_val_tangent
+    end
+    if field_sym === :x
+        a_t.x = new_field_tangent
+    elseif field_sym === :a
+        a_t.a = new_field_tangent
+    end
+
+    y_fdata = Mooncake.fdata(new_field_tangent)
+    y_cd = Mooncake.CoDual(new_val_primal, y_fdata)
+
+    function lsetfield_A_pullback(dy_rdata)
+        Mooncake.lsetfield!(a, Val(field_sym), old_val)
+        if field_sym === :x
+            a_t.x = old_tangent
+        elseif field_sym === :a
+            a_t.a = old_tangent
+        end
+        return (Mooncake.NoRData(), Mooncake.NoRData(), Mooncake.NoRData(), dy_rdata)
+    end
+
+    return y_cd, lsetfield_A_pullback
+end</code></pre><h3 id="Test-utilities"><a class="docs-heading-anchor" href="#Test-utilities">Test utilities</a><a id="Test-utilities-1"></a><a class="docs-heading-anchor-permalink" href="#Test-utilities" title="Permalink"></a></h3><p>Implement the test utility functions:</p><pre><code class="language-julia hljs">function Mooncake.TestUtils.populate_address_map_internal(m::Mooncake.TestUtils.AddressMap, p::A{T}, t::TangentForA{Tx}) where {T,Tx}
+    k = Base.pointer_from_objref(p)
+    v = Base.pointer_from_objref(t)
+    if haskey(m, k)
+        @assert m[k] == v
+        return m
+    end
+    m[k] = v
+    Mooncake.TestUtils.populate_address_map_internal(m, p.x, t.x)
+    if !(t.a isa Mooncake.NoTangent)
+        Mooncake.TestUtils.populate_address_map_internal(m, p.a, t.a)
+    end
+    return m
+end
+
+function Mooncake.TestUtils.has_equal_data_internal(x::A{T}, y::A{T}, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}) where {T}
+    id_pair = (objectid(x), objectid(y))
+    haskey(d, id_pair) &amp;&amp; return d[id_pair]
+    d[id_pair] = true
+    eq = Mooncake.TestUtils.has_equal_data_internal(x.x, y.x, equal_undefs, d)
+    if (x.a === nothing) != (y.a === nothing)
+        return false
+    elseif x.a === nothing
+        return eq
+    else
+        return eq &amp;&amp; Mooncake.TestUtils.has_equal_data_internal(x.a, y.a, equal_undefs, d)
+    end
+end
+
+function Mooncake.TestUtils.has_equal_data_internal(t::TangentForA{Tx}, s::TangentForA{Tx}, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}) where {Tx}
+    id_pair = (objectid(t), objectid(s))
+    haskey(d, id_pair) &amp;&amp; return d[id_pair]
+    d[id_pair] = true
+    eq = Mooncake.TestUtils.has_equal_data_internal(t.x, s.x, equal_undefs, d)
+    if (t.a isa Mooncake.NoTangent) != (s.a isa Mooncake.NoTangent)
+        return false
+    elseif t.a isa Mooncake.NoTangent
+        return eq
+    else
+        return eq &amp;&amp; Mooncake.TestUtils.has_equal_data_internal(t.a, s.a, equal_undefs, d)
+    end
+end</code></pre><p>Now we can run it again and successfully check if all the tangent / fdata / rdata and other required functionality works correctly for the self-referential type A.</p><pre><code class="language-julia hljs">Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Test Summary: | Pass  Total  Time
+===           |   42     42  0.7s
+Test Summary: | Pass  Total  Time
+ifelse        |   92     92  0.7s
+Test Summary: | Pass  Total  Time
+sizeof        |   19     19  0.3s
+Test Summary: | Pass  Total  Time
+isa           |   63     63  0.5s
+Test Summary: | Pass  Total  Time
+tuple         |   63     63  0.6s
+Test Summary: | Pass  Total  Time
+typeassert    |   21     21  0.1s
+Test Summary: | Pass  Total  Time
+typeof        |   19     19  0.3s
+Test Summary: | Pass  Total  Time
+getfield      |  176    176  1.4s
+Test Summary: | Pass  Total  Time
+lgetfield     |  176    176  2.0s
+Test Summary: | Pass  Total  Time
+_new_         |   23     23  0.2s
+Test Summary: | Pass  Total  Time
+setfield!     |   92     92  1.0s
+Test Summary: | Pass  Total  Time
+lsetfield!    |   92     92  0.8s</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../tangents/">« Tangents</a><a class="docs-footer-nextpage" href="../ir_representation/">IR Representation »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.14.1 on <span class="colophon-date" title="Thursday 7 August 2025 14:13">Thursday 7 August 2025</span>. Using Julia version 1.11.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
