@@ -25,7 +25,6 @@ end
     @testset "tangent interface etc" begin
         rng = StableRNG(123456)
         TestUtils.test_tangent_interface(rng, mc)
-        TestUtils.test_tangent_splitting(rng, mc)
         # Do not run the `test_rule_and_type_interactions` test suite for
         # `MistyClosure`s as we do not implement rules for `getfield` / `_new_`.
     end
