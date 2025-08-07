@@ -1,6 +1,7 @@
-function build_frule(args...; debug_mode=false)
+function build_frule(args...; debug_mode=false, silence_debug_messages=true)
     sig = _typeof(TestUtils.__get_primals(args))
-    return build_frule(get_interpreter(ForwardMode), sig; debug_mode)
+    interp = get_interpreter(ForwardMode)
+    return build_frule(interp, sig; debug_mode, silence_debug_messages)
 end
 
 struct DualRuleInfo
