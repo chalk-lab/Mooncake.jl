@@ -1,6 +1,7 @@
 # 0.4.143
 
 ## Public Interface
+- Mooncake offers forward mode AD.
 - Two new functions added to the public interface: `prepare_derivative_cache` and `value_and_derivative!!`.
 - One new type added to the public interface: `Dual`.
 
