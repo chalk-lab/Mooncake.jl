@@ -177,16 +177,6 @@ Dual{Int64, NoTangent}(5, NoTangent())
 end
 
 """
-    @zero_adjoint ctx sig
-
-Equivalent to `@zero_derivative ctx sig ReverseMode`. Consult the docstring for
-[`@zero_derivative`](@ref) for more information.
-"""
-macro zero_adjoint(ctx, sig)
-    return _zero_derivative_impl(ctx, sig, :ReverseMode)
-end
-
-"""
     zero_derivative(ctx, sig, [mode=nothing])
 
 Declares that the derivative of the mode for `sig` is always zero, for all arguments. This
@@ -313,6 +303,16 @@ function _zero_derivative_impl(ctx, sig, mode)
 
     # Return code to create a method of is_primitive and a rule.
     return Expr(:block, is_primitive_ex, frule_ex, rrule_ex)
+end
+
+"""
+    @zero_adjoint ctx sig
+
+Equivalent to `@zero_derivative ctx sig ReverseMode`. Consult the docstring for
+[`@zero_derivative`](@ref) for more information.
+"""
+macro zero_adjoint(ctx, sig)
+    return _zero_derivative_impl(ctx, sig, :ReverseMode)
 end
 
 #
@@ -470,163 +470,7 @@ function construct_rrule_wrapper_def(arg_names, arg_types, where_params)
 end
 
 """
-    @from_rrule ctx sig [has_kwargs=false]
-
-Convenience functionality to assist in using `ChainRulesCore.rrule`s to write `rrule!!`s.
-
-# Arguments
-
-- `ctx`: A Mooncake context type
-- `sig`: the signature which you wish to assert should be a primitive in `Mooncake.jl`, and
-    use an existing `ChainRulesCore.rrule` to implement this functionality.
-- `has_kwargs`: a `Bool` state whether or not the function has keyword arguments. This
-    feature has the same limitations as `ChainRulesCore.rrule` -- the derivative w.r.t. all
-    kwargs must be zero.
-
-# Example Usage
-
-## A Basic Example
-
-```jldoctest
-julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils
-
-julia> import ChainRulesCore
-
-julia> foo(x::Real) = 5x;
-
-julia> function ChainRulesCore.rrule(::typeof(foo), x::Real)
-           foo_pb(Ω::Real) = ChainRulesCore.NoTangent(), 5Ω
-           return foo(x), foo_pb
-       end;
-
-julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat}
-
-julia> rrule!!(zero_fcodual(foo), zero_fcodual(5.0))[2](1.0)
-(NoRData(), 5.0)
-
-julia> # Check that the rule works as intended.
-       TestUtils.test_rule(
-           Xoshiro(123), foo, 5.0;
-           is_primitive=true, print_results=false, mode=Mooncake.ReverseMode,
-       );
-```
-
-## An Example with Keyword Arguments
-
-```jldoctest
-julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils
-
-julia> import ChainRulesCore
-
-julia> foo(x::Real; cond::Bool) = cond ? 5x : 4x;
-
-julia> function ChainRulesCore.rrule(::typeof(foo), x::Real; cond::Bool)
-           foo_pb(Ω::Real) = ChainRulesCore.NoTangent(), cond ? 5Ω : 4Ω
-           return foo(x; cond), foo_pb
-       end;
-
-julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat} true
-
-julia> _, pb = rrule!!(
-           zero_fcodual(Core.kwcall),
-           zero_fcodual((cond=false, )),
-           zero_fcodual(foo),
-           zero_fcodual(5.0),
-       );
-
-julia> pb(3.0)
-(NoRData(), NoRData(), NoRData(), 12.0)
-
-julia> # Check that the rule works as intended.
-       TestUtils.test_rule(
-           Xoshiro(123), Core.kwcall, (cond=false, ), foo, 5.0;
-           is_primitive=true, print_results=false, mode=Mooncake.ReverseMode,
-       );
-```
-Notice that, in order to access the kwarg method we must call the method of `Core.kwcall`,
-as Mooncake's `rrule!!` does not itself permit the use of kwargs.
-
-# Limitations
-
-It is your responsibility to ensure that
-1. calls with signature `sig` do not mutate their arguments,
-2. the output of calls with signature `sig` does not alias any of the inputs.
-
-As with all hand-written rules, you should definitely make use of
-[`TestUtils.test_rule`](@ref) to verify correctness on some test cases.
-
-# Argument Type Constraints
-
-Many methods of `ChainRuleCore.rrule` are implemented with very loose type constraints.
-For example, it would not be surprising to see a method of rrule with the signature
-```julia
-Tuple{typeof(rrule), typeof(foo), Real, AbstractVector{<:Real}}
-```
-There are a variety of reasons for this way of doing things, and whether it is a good idea
-to write rules for such generic objects has been debated at length.
-
-Suffice it to say, you should not write rules for _this_ package which are so generically
-typed.
-Rather, you should create rules for the subset of types for which you believe that the
-`ChainRulesCore.rrule` will work correctly, and leave this package to derive rules for the
-rest.
-For example, it is quite common to be confident that a given rule will work correctly for
-any `Base.IEEEFloat` argument, i.e. `Union{Float16, Float32, Float64}`, but it is usually
-not possible to know that the rule is correct for all possible subtypes of `Real` that
-someone might define.
-
-# Conversions Between Different Tangent Type Systems
-
-Under the hood, this functionality relies on two functions: `Mooncake.to_cr_tangent`, and
-`Mooncake.increment_and_get_rdata!`. These two functions handle conversion to / from
-`Mooncake` tangent types and `ChainRulesCore` tangent types. This functionality is known to
-work well for simple types, but has not been tested to a great extent on complicated
-composite types. If `@from_rrule` does not work in your case because the required method of
-either of these functions does not exist, please open an issue.
-"""
-macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false)
-    arg_type_syms, where_params = parse_signature_expr(sig)
-    arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
-    arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_syms)
-    rule_expr = construct_rrule_wrapper_def(arg_names, arg_types, where_params)
-
-    if has_kwargs
-        kw_sig = Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, arg_type_syms...)
-        kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
-        kw_is_primitive = :(
-            function Mooncake.is_primitive(
-                ::Type{$ctx}, ::Type{Mooncake.ReverseMode}, ::Type{<:$kw_sig}
-            )
-                true
-            end
-        )
-        kwcall_type = :(Mooncake.CoDual{typeof(Core.kwcall)})
-        nt_type = :(Mooncake.CoDual{<:NamedTuple})
-        kwargs_rule_expr = construct_rrule_wrapper_def(
-            vcat(:_kwcall, :kwargs, arg_names),
-            vcat(kwcall_type, nt_type, arg_types),
-            where_params,
-        )
-    else
-        kw_is_primitive = nothing
-        kwargs_rule_expr = nothing
-    end
-
-    ex = quote
-        function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{Mooncake.ReverseMode}, ::Type{<:($(esc(sig)))}
-        )
-            true
-        end
-        $rule_expr
-        $kw_is_primitive
-        $kwargs_rule_expr
-    end
-    return ex
-end
-
-"""
-    @from_chainrules ctx sig [has_kwargs=false frule=true rrule=true]
+    @from_chainrules ctx sig [has_kwargs=false mode=nothing]
 
 Convenience functionality to assist in using `ChainRuleCore.frule`s and
 `ChainRulesCore.rrule`s to write `frule!!`s and `rrule!!`s.
@@ -637,21 +481,24 @@ Convenience functionality to assist in using `ChainRuleCore.frule`s and
 - `sig`: the signature which you wish to assert should be a primitive in `Mooncake.jl`, and
     use an existing `ChainRulesCore.rrule` or `ChainRulesCore.frule` to implement this functionality.
 - `has_kwargs=true`: a `Bool` stating whether or not the function has keyword arguments.
-    This feature has the same limitations as `ChainRulesCore.rrule` and `ChainRulesCore.frule` -- the derivative w.r.t.
-    all kwargs must be zero.
-- `frule=true`: if `true` then defines an `frule!!`.
-- `rrule=true`: if `true` then defines an `rrule!!`.
+    This feature has the same limitations as `ChainRulesCore.frule` and
+    `ChainRulesCore.rrule` and  -- the derivative w.r.t. all kwargs must be zero.
+- `mode=nothing`: the mode to produce rules for. By default, produces rules for both forward
+    and reverse mode. If `mode=ForwardMode` only rules for forward mode are produced. If
+    `mode=ReverseMode` only rules for reverse mode are produced.
 
 # Example Usage
 
 ## A Basic Example
 
 ```jldoctest
-julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils
+julia> using Mooncake: @from_chainrules, DefaultCtx, frule!!, rrule!!, Dual, zero_dual, zero_fcodual, TestUtils
 
 julia> import ChainRulesCore
 
 julia> foo(x::Real) = 5x;
+
+julia> ChainRulesCore.frule((df, dx), ::typeof(foo), x::Real) = 5x, 5dx;
 
 julia> function ChainRulesCore.rrule(::typeof(foo), x::Real)
            foo_pb(Ω::Real) = ChainRulesCore.NoTangent(), 5Ω
@@ -660,20 +507,20 @@ julia> function ChainRulesCore.rrule(::typeof(foo), x::Real)
 
 julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat}
 
+julia> frule!!(zero_dual(foo), Dual(5.0, 2.0))
+Dual{Float64, Float64}(25.0, 10.0)
+
 julia> rrule!!(zero_fcodual(foo), zero_fcodual(5.0))[2](1.0)
 (NoRData(), 5.0)
 
-julia> # Check that the rule works as intended.
-       TestUtils.test_rule(
-           Xoshiro(123), foo, 5.0;
-           is_primitive=true, print_results=false, mode=Mooncake.ReverseMode,
-       );
+julia> # Check that the rule works as intended. Put this in your test suite.
+       TestUtils.test_rule(Xoshiro(123), foo, 5.0; is_primitive=true, print_results=false);
 ```
 
-## An Example with Keyword Arguments
+## An Example with Keyword Arguments and ReverseMode
 
 ```jldoctest
-julia> using Mooncake: @from_rrule, DefaultCtx, rrule!!, zero_fcodual, TestUtils
+julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils, ReverseMode
 
 julia> import ChainRulesCore
 
@@ -684,7 +531,7 @@ julia> function ChainRulesCore.rrule(::typeof(foo), x::Real; cond::Bool)
            return foo(x; cond), foo_pb
        end;
 
-julia> @from_rrule DefaultCtx Tuple{typeof(foo), Base.IEEEFloat} true
+julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat} true ReverseMode
 
 julia> _, pb = rrule!!(
            zero_fcodual(Core.kwcall),
@@ -696,7 +543,7 @@ julia> _, pb = rrule!!(
 julia> pb(3.0)
 (NoRData(), NoRData(), NoRData(), 12.0)
 
-julia> # Check that the rule works as intended.
+julia> # Check that the rule works as intended. Put this in your test suite.
        TestUtils.test_rule(
            Xoshiro(123), Core.kwcall, (cond=false, ), foo, 5.0;
            is_primitive=true, print_results=false, mode=Mooncake.ReverseMode,
@@ -724,7 +571,7 @@ Tuple{typeof(rrule), typeof(foo), Real, AbstractVector{<:Real}}
 There are a variety of reasons for this way of doing things, and whether it is a good idea
 to write rules for such generic objects has been debated at length.
 
-Suffice it to say, you should not write rules for _this_ package which are so generically
+Suffice it to say, you should not write rules for Mooncake which are so generically
 typed.
 Rather, you should create rules for the subset of types for which you believe that the
 `ChainRulesCore.rrule` will work correctly, and leave this package to derive rules for the
@@ -736,14 +583,27 @@ someone might define.
 
 # Conversions Between Different Tangent Type Systems
 
-Under the hood, this functionality relies on three functions: `Mooncake.mooncake_tangent`, `Mooncake.to_cr_tangent`, and
-`Mooncake.increment_and_get_rdata!`. These two functions handle conversion to / from
-`Mooncake` tangent types and `ChainRulesCore` tangent types. This functionality is known to
-work well for simple types, but has not been tested to a great extent on complicated
-composite types. If `@from_rrule` does not work in your case because the required method of
-either of these functions does not exist, please open an issue.
+Under the hood, this functionality relies on three functions: `Mooncake.mooncake_tangent`,
+`Mooncake.to_cr_tangent`, and `Mooncake.increment_and_get_rdata!`. These two functions
+handle conversion to / from `Mooncake` tangent types and `ChainRulesCore` tangent types.
+This functionality is known to work well for simple types, but has not been tested to a
+great extent on complicated composite types. If `@from_chainrules` does not work in your
+case because the required method of either of these functions does not exist, please open an
+issue.
 """
-macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false)
+macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=nothing)
+    return _from_chainrules_impl(ctx, sig, has_kwargs, mode)
+end
+
+function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
+    # Validate mode argument + figure which modes to add code for.
+    if !in(mode, [nothing, :ForwardMode, :ReverseMode])
+        throw(ArgumentError("Mode must be nothing, ForwardMode, or ReverseMode"))
+    end
+    inc_fwd_mode = mode === nothing || mode == :ForwardMode
+    inc_rvs_mode = mode === nothing || mode == :ReverseMode
+    mode_type_expr = :(::Type{<:$(mode === nothing ? Mooncake.Mode : esc(mode))})
+
     arg_type_syms, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
@@ -756,7 +616,7 @@ macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false)
         kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
         kw_is_primitive = :(
             function Mooncake.is_primitive(
-                ::Type{$ctx}, ::Type{<:$Mooncake.Mode}, ::Type{<:$kw_sig}
+                ::Type{$ctx}, $mode_type_expr, ::Type{<:$kw_sig}
             )
                 true
             end
@@ -787,15 +647,25 @@ macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false)
 
     ex = quote
         function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{<:$Mooncake.Mode}, ::Type{<:($(esc(sig)))}
+            ::Type{$(esc(ctx))}, $mode_type_expr, ::Type{<:($(esc(sig)))}
         )
             true
         end
-        $frule_expr
-        $rrule_expr
+        $(inc_fwd_mode ? frule_expr : nothing)
+        $(inc_rvs_mode ? rrule_expr : nothing)
         $kw_is_primitive
-        $kwargs_frule_expr
-        $kwargs_rrule_expr
+        $(inc_fwd_mode ? kwargs_frule_expr : nothing)
+        $(inc_rvs_mode ? kwargs_rrule_expr : nothing)
     end
     return ex
+end
+
+"""
+    @from_rrule ctx sig [has_kwargs=false]
+
+Equivalent to `@from_chainrules ctx sig has_kwargs ReverseMode`. See
+[`@from_chainrules`](@ref) for more information.
+"""
+macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false)
+    return _from_chainrules_impl(ctx, sig, has_kwargs, :ReverseMode)
 end
