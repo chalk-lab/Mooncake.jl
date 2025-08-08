@@ -177,12 +177,12 @@ Dual{Int64, NoTangent}(5, NoTangent())
 end
 
 """
-    zero_derivative(ctx, sig, [mode=nothing])
+    zero_derivative(ctx, sig, [mode=Mode])
 
 Declares that the derivative of the mode for `sig` is always zero, for all arguments. This
 also implies that the adjoint of the derivative is always zero for all arguments.
 
-Accordingly, if `mode===nothing` (the default) this macro creates a method of
+Accordingly, if `mode===Mode` (the default) this macro creates a method of
 [`is_primitive`](@ref) which returns `true` for `ctx`, `sig`, and both [`ForwardMode`](@ref)
 and [`ReverseMode`](@ref). It additionally creates methods of [`frule!!`](@ref) and
 [`rrule!!`](@ref) which always return zero / do not increment tangents and fdata.
@@ -245,16 +245,11 @@ it uses a `Vararg` with a type parameter, you can still make use of
 [`zero_derivative`](@ref).
 
 """
-macro zero_derivative(ctx, sig, mode=nothing)
+macro zero_derivative(ctx, sig, mode=Mode)
     return _zero_derivative_impl(ctx, sig, mode)
 end
 
 function _zero_derivative_impl(ctx, sig, mode)
-
-    # Validate mode.
-    if !in(mode, [nothing, :ForwardMode, :ReverseMode])
-        throw(ArgumentError("Expected mode to be nothing, ForwardMode, or ReverseMode."))
-    end
 
     # Parse the signature, and construct the rule definition. If it is a vararg definition,
     # then the last argument requires special treatment.
@@ -284,30 +279,20 @@ function _zero_derivative_impl(ctx, sig, mode)
     # Construct is_primitive statement. If no mode is provided, then construct a statement
     # which does not escape the mode argument. This will work even if the names `Mooncake`
     # or `Mooncake.Mode` are not available in the scope which calls this macro.
-    mode_type = mode === nothing ? :(::Type{<:Mode}) : :(::Type{<:$(esc(mode))})
-    is_primitive_ex = :(
-        function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, $mode_type, ::Type{<:$(esc(sig))}
-        )
-            true
-        end
-    )
-
-    # Construct frule!! expression. If forward mode not requested, do not define anything.
-    frule_ex = if mode === nothing || mode == :ForwardMode
-        construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
-    else
-        nothing
+    is_primitive_ex = quote
+        const M = $mode
+        Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{M}, ::Type{<:$(esc(sig))}) = true
     end
 
-    # Construct rrule!! expression. If reverse mode not requested, do not define anything.
-    rrule_ex = if mode === nothing || mode == :ReverseMode
-        (construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint))
-    else
-        nothing
-    end
+    # Figuring out which mode argument was actually provided is going to be very hard in
+    # general, and rather error prone, because the mode might appear as a `Type`, one of
+    # several `Symbol`s, or possibly something else not considered. As a result, we always
+    # define both the frule and rrule, and rely on the method of `is_primitive` defined
+    # above to determine whether or not they do anything. This might inflate the method
+    # table a bit for `frule!!` and `rrule!!` unnecessarily, but it will be robust.
+    frule_ex = construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
+    rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
-    # Return code to create a method of is_primitive and a rule.
     return Expr(:block, is_primitive_ex, frule_ex, rrule_ex)
 end
 
@@ -597,18 +582,11 @@ great extent on complicated composite types. If `@from_chainrules` does not work
 case because the required method of either of these functions does not exist, please open an
 issue.
 """
-macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=nothing)
+macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode)
     return _from_chainrules_impl(ctx, sig, has_kwargs, mode)
 end
 
 function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
-    # Validate mode argument + figure which modes to add code for.
-    if !in(mode, [nothing, :ForwardMode, :ReverseMode])
-        throw(ArgumentError("Mode must be nothing, ForwardMode, or ReverseMode"))
-    end
-    inc_fwd_mode = mode === nothing || mode == :ForwardMode
-    inc_rvs_mode = mode === nothing || mode == :ReverseMode
-    mode_type_expr = :(::Type{<:$(mode === nothing ? Mooncake.Mode : esc(mode))})
 
     arg_type_syms, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
@@ -620,12 +598,9 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     if has_kwargs
         kw_sig = Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, arg_type_syms...)
         kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
+        # Type M will be available later on, and will be the mode type.
         kw_is_primitive = :(
-            function Mooncake.is_primitive(
-                ::Type{$ctx}, $mode_type_expr, ::Type{<:$kw_sig}
-            )
-                true
-            end
+            Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{M}, ::Type{<:$kw_sig}) = true
         )
         kwargs_frule_expr = construct_frule_wrapper_def(
             vcat(:_kwcall, :kwargs, arg_names),
@@ -651,19 +626,19 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         kwargs_rrule_expr = nothing
     end
 
-    ex = quote
+    return quote
+        const M = $mode
         function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, $mode_type_expr, ::Type{<:($(esc(sig)))}
+            ::Type{$(esc(ctx))}, ::Type{M}, ::Type{<:($(esc(sig)))}
         )
-            true
+            return true
         end
-        $(inc_fwd_mode ? frule_expr : nothing)
-        $(inc_rvs_mode ? rrule_expr : nothing)
+        $frule_expr
+        $rrule_expr
         $kw_is_primitive
-        $(inc_fwd_mode ? kwargs_frule_expr : nothing)
-        $(inc_rvs_mode ? kwargs_rrule_expr : nothing)
+        $kwargs_frule_expr
+        $kwargs_rrule_expr
     end
-    return ex
 end
 
 """
@@ -673,5 +648,5 @@ Equivalent to `@from_chainrules ctx sig has_kwargs ReverseMode`. See
 [`@from_chainrules`](@ref) for more information.
 """
 macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false)
-    return _from_chainrules_impl(ctx, sig, has_kwargs, :ReverseMode)
+    return _from_chainrules_impl(ctx, sig, has_kwargs, ReverseMode)
 end
