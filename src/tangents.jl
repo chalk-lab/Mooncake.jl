@@ -870,6 +870,12 @@ set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(typeof(x)))
 set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Set{UInt}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
+# Custom contains function for Vector{UInt} cache  
+@inline function _vector_contains(vec::Vector{UInt}, x::UInt)
+    # Will's suggestion: use prod to avoid branches - provides best performance
+    return prod(y -> x == y, vec; init=false)
+end
+
 """
     set_to_zero_internal!!(c::IncCache, x)
 
@@ -894,7 +900,7 @@ function set_to_zero_internal!!(c::IncCache, x::MutableTangent)
         push!(c, oid)
     elseif c isa Vector{UInt}
         oid = objectid(x)
-        oid in c && return x
+        _vector_contains(c, oid) && return x
         push!(c, oid)
     else
         haskey(c, x) && return x

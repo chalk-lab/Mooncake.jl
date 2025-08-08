@@ -38,7 +38,7 @@ function set_to_zero_internal!!(c::IncCache, t::IdDict)
         push!(c, oid)
     elseif c isa Vector{UInt}
         oid = objectid(t)
-        oid in c && return t
+        Mooncake._vector_contains(c, oid) && return t
         push!(c, oid)
     else
         haskey(c, t) && return t
