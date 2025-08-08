@@ -1,6 +1,6 @@
 using Mooncake.TestUtils: count_allocs
 using Mooncake:
-    Mooncake, MutableTangent, NoTangent, PossiblyUninitTangent, Tangent, tangent_type
+    Mooncake, MutableTangent, NoTangent, PossiblyUninitTangent, Tangent, tangent_type, strip_tangents
 using StaticArrays
 
 @testset "interface" begin
