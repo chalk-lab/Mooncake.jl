@@ -24,9 +24,8 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {P,N,T<:Array{P,N}}
     return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
 end
 
-function set_to_zero_internal!!(c::IncCache, x::Array)
-    haskey(c, x) && return x
-    c[x] = false
+function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
+    _already_tracked!(c, x) && return x
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end
 

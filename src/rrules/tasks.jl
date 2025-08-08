@@ -31,7 +31,7 @@ end
 
 increment_internal!!(::IncCache, t::TaskTangent, s::TaskTangent) = t
 
-set_to_zero_internal!!(::IncCache, t::TaskTangent) = t
+set_to_zero_internal!!(::SetToZeroCache, t::TaskTangent) = t
 
 _add_to_primal_internal(::MaybeCache, p::Task, t::TaskTangent, ::Bool) = p
 

@@ -71,9 +71,8 @@ function increment_internal!!(c::IncCache, x::Memory{P}, y::Memory{P}) where {P}
     return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
 end
 
-function set_to_zero_internal!!(c::IncCache, x::Memory)
-    haskey(c, x) && return x
-    c[x] = false
+function set_to_zero_internal!!(c::SetToZeroCache, x::Memory)
+    _already_tracked!(c, x) && return x
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end
 
@@ -172,9 +171,8 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
     return x
 end
 
-function set_to_zero_internal!!(c::IncCache, x::Array)
-    haskey(c, x) && return x
-    c[x] = false
+function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
+    _already_tracked!(c, x) && return x
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end
 
@@ -320,7 +318,7 @@ function increment_internal!!(c::IncCache, x::P, y::P) where {P<:MemoryRef}
     return construct_ref(x, increment_internal!!(c, x.mem, y.mem))
 end
 
-function set_to_zero_internal!!(c::IncCache, x::MemoryRef)
+function set_to_zero_internal!!(c::SetToZeroCache, x::MemoryRef)
     set_to_zero_internal!!(c, x.mem)
     return x
 end

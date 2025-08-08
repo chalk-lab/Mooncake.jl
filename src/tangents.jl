@@ -814,6 +814,23 @@ same tangent twice and producing incorrect results.
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 
 const IncCache = Union{NoCache,IdDict{Any,Bool}}
+const SetToZeroCache = Union{NoCache,Vector{UInt}}
+
+"""
+    _already_tracked!(c::SetToZeroCache, x)
+
+Check if an object has already been tracked and add it to the cache if not.
+Returns `true` if the object was already tracked, `false` otherwise.
+Mutates the cache by adding untracked objects.
+"""
+@inline function _already_tracked!(c::Vector{UInt}, x)
+    oid = objectid(x)
+    oid in c && return true
+    push!(c, oid)
+    return false
+end
+
+@inline _already_tracked!(::NoCache, x) = false
 
 """
     increment!!(x::T, y::T) where {T}
@@ -867,29 +884,28 @@ end
 Set `x` to its zero element (`x` should be a tangent, so the zero must exist).
 """
 set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(typeof(x)))
-set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(IdDict{Any,Bool}(), x)
+set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Vector{UInt}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
 """
-    set_to_zero_internal!!(c::IncCache, x)
+    set_to_zero_internal!!(c::SetToZeroCache, x)
 
 Implementation for [`Mooncake.set_to_zero!!`](@ref). Use `c` to ensure that circular
 references are correctly handled. If `c` is a `NoCache`, assume no circular references.
 """
-set_to_zero_internal!!(::IncCache, ::NoTangent) = NoTangent()
-set_to_zero_internal!!(::IncCache, x::Base.IEEEFloat) = zero(x)
-function set_to_zero_internal!!(c::IncCache, x::Union{Tuple,NamedTuple})
+set_to_zero_internal!!(::SetToZeroCache, ::NoTangent) = NoTangent()
+set_to_zero_internal!!(::SetToZeroCache, x::Base.IEEEFloat) = zero(x)
+function set_to_zero_internal!!(c::SetToZeroCache, x::Union{Tuple,NamedTuple})
     return tuple_map(Base.Fix1(set_to_zero_internal!!, c), x)
 end
-function set_to_zero_internal!!(c::IncCache, x::T) where {T<:PossiblyUninitTangent}
+function set_to_zero_internal!!(c::SetToZeroCache, x::T) where {T<:PossiblyUninitTangent}
     return is_init(x) ? T(set_to_zero_internal!!(c, val(x))) : x
 end
-function set_to_zero_internal!!(c::IncCache, x::T) where {T<:Tangent}
+function set_to_zero_internal!!(c::SetToZeroCache, x::T) where {T<:Tangent}
     return T(set_to_zero_internal!!(c, x.fields))
 end
-function set_to_zero_internal!!(c::IncCache, x::MutableTangent)
-    haskey(c, x) && return x
-    setindex!(c, false, x)
+function set_to_zero_internal!!(c::SetToZeroCache, x::MutableTangent)
+    _already_tracked!(c, x) && return x
     x.fields = set_to_zero_internal!!(c, x.fields)
     return x
 end

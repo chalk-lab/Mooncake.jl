@@ -31,9 +31,8 @@ function increment_internal!!(c::IncCache, p::T, q::T) where {T<:IdDict}
     end
     return p
 end
-function set_to_zero_internal!!(c::IncCache, t::IdDict)
-    haskey(c, t) && return t
-    c[t] = false
+function set_to_zero_internal!!(c::SetToZeroCache, t::IdDict)
+    _already_tracked!(c, t) && return t
     foreach(keys(t)) do k
         t[k] = set_to_zero_internal!!(c, t[k])
     end
