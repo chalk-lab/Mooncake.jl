@@ -871,7 +871,6 @@ set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(typeof(x)))
 set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Vector{UInt}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
-
 """
     set_to_zero_internal!!(c::SetToZeroCache, x)
 
