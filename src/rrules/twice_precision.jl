@@ -29,7 +29,7 @@ end
 
 increment_internal!!(::IncCache, t::T, s::T) where {T<:TWP} = t + s
 
-set_to_zero_internal!!(::IncCache, t::TWP) = zero_tangent_internal(t, NoCache())
+set_to_zero_internal!!(::SetToZeroCache, t::TWP) = zero_tangent_internal(t, NoCache())
 
 _add_to_primal_internal(::MaybeCache, p::P, t::P, ::Bool) where {P<:TWP} = p + t
 

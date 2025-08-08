@@ -316,7 +316,7 @@ function increment_internal!!(c::IncCache, x::P, y::P) where {P<:MemoryRef}
     return construct_ref(x, increment_internal!!(c, x.mem, y.mem))
 end
 
-function set_to_zero_internal!!(c::IncCache, x::MemoryRef)
+function set_to_zero_internal!!(c::SetToZeroCache, x::MemoryRef)
     set_to_zero_internal!!(c, x.mem)
     return x
 end

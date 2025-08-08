@@ -880,7 +880,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     _zero_tangent(p) = Mooncake.zero_tangent_internal(p, IdDict())
     _randn_tangent(rng, p) = Mooncake.randn_tangent_internal(rng, p, IdDict())
     _increment!!(x, y) = Mooncake.increment_internal!!(IdDict{Any,Bool}(), x, y)
-    _set_to_zero!!(t) = Mooncake.set_to_zero_internal!!(IdDict{Any,Bool}(), t)
+    _set_to_zero!!(t) = Mooncake.set_to_zero_internal!!(Vector{UInt}(), t)
     function __add_to_primal(p, t, unsafe::Bool)
         return Mooncake._add_to_primal_internal(IdDict{Any,Any}(), p, t, unsafe)
     end
