@@ -593,7 +593,6 @@ macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode)
 end
 
 function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
-
     arg_type_syms, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
@@ -606,9 +605,7 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
         # Type M will be available later on, and will be the mode type.
         kw_is_primitive = quote
-            function Mooncake.is_primitive(
-                ::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:$kw_sig}
-            )
+            function Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:$kw_sig})
                 return true
             end
         end
