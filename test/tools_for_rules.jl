@@ -145,7 +145,6 @@ end
         @test value_and_gradient!!(rule, f, 5.0) == (15.0, (NoTangent(), 3.0))
     end
     @testset "zero_derivative" begin
-        f_zero = ToolsForRulesResources
         test_rule(
             sr(123),
             ToolsForRulesResources.zero_tester,

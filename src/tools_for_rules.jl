@@ -246,6 +246,8 @@ it uses a `Vararg` with a type parameter, you can still make use of
 
 """
 macro zero_derivative(ctx, sig, mode=Mode)
+    mode = mode == :ForwardMode ? ForwardMode : mode
+    mode = mode == :ReverseMode ? ReverseMode : mode
     return _zero_derivative_impl(ctx, sig, mode)
 end
 
@@ -281,7 +283,11 @@ function _zero_derivative_impl(ctx, sig, mode)
     # or `Mooncake.Mode` are not available in the scope which calls this macro.
     is_primitive_ex = quote
         const M = $mode
-        Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{M}, ::Type{<:$(esc(sig))}) = true
+        function Mooncake.is_primitive(
+            ::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:$(esc(sig))}
+        )
+            return true
+        end
     end
 
     # Figuring out which mode argument was actually provided is going to be very hard in
@@ -303,7 +309,7 @@ Equivalent to `@zero_derivative ctx sig ReverseMode`. Consult the docstring for
 [`@zero_derivative`](@ref) for more information.
 """
 macro zero_adjoint(ctx, sig)
-    return _zero_derivative_impl(ctx, sig, :ReverseMode)
+    return _zero_derivative_impl(ctx, sig, ReverseMode)
 end
 
 #
@@ -599,9 +605,13 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         kw_sig = Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, arg_type_syms...)
         kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
         # Type M will be available later on, and will be the mode type.
-        kw_is_primitive = :(
-            Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{M}, ::Type{<:$kw_sig}) = true
-        )
+        kw_is_primitive = quote
+            function Mooncake.is_primitive(
+                ::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:$kw_sig}
+            )
+                return true
+            end
+        end
         kwargs_frule_expr = construct_frule_wrapper_def(
             vcat(:_kwcall, :kwargs, arg_names),
             vcat(
@@ -629,7 +639,7 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     return quote
         const M = $mode
         function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{M}, ::Type{<:($(esc(sig)))}
+            ::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:($(esc(sig)))}
         )
             return true
         end
