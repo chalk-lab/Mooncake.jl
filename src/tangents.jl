@@ -867,12 +867,12 @@ end
 Set `x` to its zero element (`x` should be a tangent, so the zero must exist).
 """
 set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(typeof(x)))
-set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Set{UInt}(), x)
+set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Vector{UInt}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
-# Custom contains function for Vector{UInt} cache  
+# Custom contains function for Vector{UInt} cache
 @inline function _vector_contains(vec::Vector{UInt}, x::UInt)
-    # Will's suggestion: use prod to avoid branches - provides best performance
+    # Use prod to avoid branches - it gives better performance than `any` for small vectors
     return prod(y -> x == y, vec; init=false)
 end
 
