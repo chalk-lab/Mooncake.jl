@@ -198,10 +198,11 @@ end
             oid = objectid(t)
             Mooncake._vector_contains(helper.cache, oid) && return t
             push!(helper.cache, oid)
-        elseif !(helper.cache isa Mooncake.NoCache)
+        elseif helper.cache isa IdDict
             haskey(helper.cache, t) && return t
             helper.cache[t] = true
         end
+        # NoCache case: no tracking needed
         ts = (t, s...)
         deg = t.degree
         if deg == 0
