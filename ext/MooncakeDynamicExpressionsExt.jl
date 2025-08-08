@@ -190,10 +190,22 @@ struct IncrementHelper{F,C<:Mooncake.IncCache}
 end
 @generated function (helper::IncrementHelper)(t::TangentNode{Tv,D}, s...) where {Tv,D}
     quote
-        if haskey(helper.cache, t) || (!isempty(s) && t === first(s))
-            return t
+        # Handle self-reference case
+        (!isempty(s) && t === first(s)) && return t
+        
+        # Check if t has already been processed, handling different cache types
+        if helper.cache isa Set{UInt}
+            oid = objectid(t)
+            oid in helper.cache && return t
+            push!(helper.cache, oid)
+        elseif helper.cache isa Vector{UInt}
+            oid = objectid(t)
+            Mooncake._vector_contains(helper.cache, oid) && return t
+            push!(helper.cache, oid)
+        else
+            haskey(helper.cache, t) && return t
+            helper.cache[t] = true
         end
-        helper.cache[t] = true
         ts = (t, s...)
         deg = t.degree
         if deg == 0
