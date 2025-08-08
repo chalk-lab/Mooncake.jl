@@ -423,6 +423,12 @@ function __exclude_unsupported_output_internal!(y::Ptr, ::Set{UInt})
     return throw_forward_ret_type_error(y)
 end
 
+strip_tangents(t::NoTangent) = nothing
+strip_tangents(t::Union{Tangent,MutableTangent}) = strip_tangents(t.fields)
+strip_tangents(t::PossiblyUninitTangent) = strip_tangents(t.tangent)
+strip_tangents(t::Union{Tuple,NamedTuple,AbstractArray}) = map(strip_tangents, t)
+strip_tangents(t::Union{Base.IEEEFloat,Ptr}) = t
+
 """
     prepare_pullback_cache(f, x...)
 
