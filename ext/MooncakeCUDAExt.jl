@@ -62,7 +62,7 @@ function increment_internal!!(c::IncCache, x::P, y::P) where {P<:CuFloatArray}
     return x
 end
 __increment_should_allocate(::Type{<:CuFloatArray}) = true
-set_to_zero_internal!!(::Mooncake.IncCache, x::CuFloatArray) = x .= 0
+set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuFloatArray) = x .= 0
 function _add_to_primal_internal(
     c::MaybeCache, x::P, y::P, unsafe::Bool
 ) where {P<:CuFloatArray}
