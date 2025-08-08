@@ -1,6 +1,7 @@
 using Mooncake.TestUtils: count_allocs
 using Mooncake:
     Mooncake, MutableTangent, NoTangent, PossiblyUninitTangent, Tangent, tangent_type
+using StaticArrays
 
 @testset "interface" begin
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
