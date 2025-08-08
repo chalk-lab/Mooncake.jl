@@ -34,7 +34,7 @@ end
 function set_to_zero_internal!!(c::SetToZeroCache, t::IdDict)
     if c isa Vector{UInt}
         oid = objectid(t)
-        Mooncake._vector_contains(c, oid) && return t
+        _vector_contains(c, oid) && return t
         push!(c, oid)
     end
     foreach(keys(t)) do k

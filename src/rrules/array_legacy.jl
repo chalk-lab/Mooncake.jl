@@ -27,7 +27,7 @@ end
 function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
     if c isa Vector{UInt}
         oid = objectid(x)
-        Mooncake._vector_contains(c, oid) && return x
+        _vector_contains(c, oid) && return x
         push!(c, oid)
     end
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
