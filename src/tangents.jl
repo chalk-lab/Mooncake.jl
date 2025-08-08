@@ -871,10 +871,28 @@ set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(typeof(x)))
 set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Vector{UInt}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
-# Custom contains function for Vector{UInt} cache
+"""
+    _vector_contains(vec::Vector{UInt}, x::UInt)
+
+Check if element `x` exists in vector `vec`.
+
+# Examples
+```jldoctest
+julia> vec = UInt[1, 2, 3];
+
+julia> Mooncake._vector_contains(vec, UInt(2))
+true
+
+julia> Mooncake._vector_contains(vec, UInt(4))
+false
+
+julia> Mooncake._vector_contains(UInt[], UInt(1))
+false
+```
+"""
 @inline function _vector_contains(vec::Vector{UInt}, x::UInt)
-    # Use prod to avoid branches - it gives better performance than `any` for small vectors
-    return prod(y -> x == y, vec; init=false)
+    # Check if element exists in vector
+    return any(y -> x == y, vec)
 end
 
 """
