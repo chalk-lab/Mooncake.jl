@@ -813,7 +813,7 @@ same tangent twice and producing incorrect results.
 """
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 
-const IncCache = Union{NoCache,IdDict{Any,Bool},Vector{UInt}}
+const IncCache = Union{NoCache,IdDict{Any,Bool}}
 const SetToZeroCache = Union{NoCache,Vector{UInt}}
 
 """
