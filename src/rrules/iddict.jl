@@ -32,11 +32,7 @@ function increment_internal!!(c::IncCache, p::T, q::T) where {T<:IdDict}
     return p
 end
 function set_to_zero_internal!!(c::SetToZeroCache, t::IdDict)
-    if c isa Vector{UInt}
-        oid = objectid(t)
-        oid in c && return t
-        push!(c, oid)
-    end
+    _already_tracked!(c, t) && return t
     foreach(keys(t)) do k
         t[k] = set_to_zero_internal!!(c, t[k])
     end

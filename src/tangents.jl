@@ -817,6 +817,22 @@ const IncCache = Union{NoCache,IdDict{Any,Bool}}
 const SetToZeroCache = Union{NoCache,Vector{UInt}}
 
 """
+    _already_tracked!(c::SetToZeroCache, x)
+
+Check if an object has already been tracked and add it to the cache if not.
+Returns `true` if the object was already tracked, `false` otherwise.
+Mutates the cache by adding untracked objects.
+"""
+@inline function _already_tracked!(c::Vector{UInt}, x)
+    oid = objectid(x)
+    oid in c && return true
+    push!(c, oid)
+    return false
+end
+
+@inline _already_tracked!(::NoCache, x) = false
+
+"""
     increment!!(x::T, y::T) where {T}
 
 Add `x` to `y`. If `ismutabletype(T)`, then `increment!!(x, y) === x` must hold.
@@ -889,11 +905,7 @@ function set_to_zero_internal!!(c::SetToZeroCache, x::T) where {T<:Tangent}
     return T(set_to_zero_internal!!(c, x.fields))
 end
 function set_to_zero_internal!!(c::SetToZeroCache, x::MutableTangent)
-    if c isa Vector{UInt}
-        oid = objectid(x)
-        oid in c && return x
-        push!(c, oid)
-    end
+    _already_tracked!(c, x) && return x
     x.fields = set_to_zero_internal!!(c, x.fields)
     return x
 end

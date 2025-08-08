@@ -430,11 +430,7 @@ function Mooncake.increment_internal!!(c::Mooncake.IncCache, t::TangentForA{Tx},
 end
 
 function Mooncake.set_to_zero_internal!!(c::Mooncake.SetToZeroCache, t::TangentForA{Tx}) where {Tx}
-    if c isa Vector{UInt}
-        oid = objectid(t)
-        oid in c && return t
-        push!(c, oid)
-    end
+    Mooncake._already_tracked!(c, t) && return t
     t.x = Mooncake.set_to_zero_internal!!(c, t.x)
     if !(t.a isa Mooncake.NoTangent)
         t.a = Mooncake.set_to_zero_internal!!(c, t.a)
