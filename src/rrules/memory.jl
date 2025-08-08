@@ -71,18 +71,11 @@ function increment_internal!!(c::IncCache, x::Memory{P}, y::Memory{P}) where {P}
     return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
 end
 
-function set_to_zero_internal!!(c::IncCache, x::Memory)
-    if c isa Set{UInt}
-        oid = objectid(x)
-        oid in c && return x
-        push!(c, oid)
-    elseif c isa Vector{UInt}
+function set_to_zero_internal!!(c::SetToZeroCache, x::Memory)
+    if c isa Vector{UInt}
         oid = objectid(x)
         Mooncake._vector_contains(c, oid) && return x
         push!(c, oid)
-    else
-        haskey(c, x) && return x
-        c[x] = false
     end
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end
@@ -182,18 +175,11 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
     return x
 end
 
-function set_to_zero_internal!!(c::IncCache, x::Array)
-    if c isa Set{UInt}
-        oid = objectid(x)
-        oid in c && return x
-        push!(c, oid)
-    elseif c isa Vector{UInt}
+function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
+    if c isa Vector{UInt}
         oid = objectid(x)
         Mooncake._vector_contains(c, oid) && return x
         push!(c, oid)
-    else
-        haskey(c, x) && return x
-        c[x] = false
     end
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end

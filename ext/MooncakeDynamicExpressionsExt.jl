@@ -184,7 +184,7 @@ end
 # In‑place mutation helpers
 ################################################################################
 
-struct IncrementHelper{F,C<:Mooncake.IncCache}
+struct IncrementHelper{F,C<:Union{Mooncake.IncCache,Mooncake.SetToZeroCache}}
     f::F
     cache::C
 end
@@ -194,15 +194,11 @@ end
         (!isempty(s) && t === first(s)) && return t
 
         # Check if t has already been processed, handling different cache types
-        if helper.cache isa Set{UInt}
-            oid = objectid(t)
-            oid in helper.cache && return t
-            push!(helper.cache, oid)
-        elseif helper.cache isa Vector{UInt}
+        if helper.cache isa Vector{UInt}
             oid = objectid(t)
             Mooncake._vector_contains(helper.cache, oid) && return t
             push!(helper.cache, oid)
-        else
+        elseif !(helper.cache isa Mooncake.NoCache)
             haskey(helper.cache, t) && return t
             helper.cache[t] = true
         end
@@ -233,7 +229,7 @@ end
 function Mooncake.increment_internal!!(c::Mooncake.IncCache, t::TangentNode, s::TangentNode)
     return IncrementHelper(Mooncake.increment_internal!!, c)(t, s)
 end
-function Mooncake.set_to_zero_internal!!(c::Mooncake.IncCache, t::TangentNode)
+function Mooncake.set_to_zero_internal!!(c::Mooncake.SetToZeroCache, t::TangentNode)
     return IncrementHelper(Mooncake.set_to_zero_internal!!, c)(t)
 end
 

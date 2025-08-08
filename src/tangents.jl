@@ -813,7 +813,8 @@ same tangent twice and producing incorrect results.
 """
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 
-const IncCache = Union{NoCache,IdDict{Any,Bool},Set{UInt},Vector{UInt}}
+const IncCache = Union{NoCache,IdDict{Any,Bool},Vector{UInt}}
+const SetToZeroCache = Union{NoCache,Vector{UInt}}
 
 """
     increment!!(x::T, y::T) where {T}
@@ -877,34 +878,27 @@ set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 end
 
 """
-    set_to_zero_internal!!(c::IncCache, x)
+    set_to_zero_internal!!(c::SetToZeroCache, x)
 
 Implementation for [`Mooncake.set_to_zero!!`](@ref). Use `c` to ensure that circular
 references are correctly handled. If `c` is a `NoCache`, assume no circular references.
 """
-set_to_zero_internal!!(::IncCache, ::NoTangent) = NoTangent()
-set_to_zero_internal!!(::IncCache, x::Base.IEEEFloat) = zero(x)
-function set_to_zero_internal!!(c::IncCache, x::Union{Tuple,NamedTuple})
+set_to_zero_internal!!(::SetToZeroCache, ::NoTangent) = NoTangent()
+set_to_zero_internal!!(::SetToZeroCache, x::Base.IEEEFloat) = zero(x)
+function set_to_zero_internal!!(c::SetToZeroCache, x::Union{Tuple,NamedTuple})
     return tuple_map(Base.Fix1(set_to_zero_internal!!, c), x)
 end
-function set_to_zero_internal!!(c::IncCache, x::T) where {T<:PossiblyUninitTangent}
+function set_to_zero_internal!!(c::SetToZeroCache, x::T) where {T<:PossiblyUninitTangent}
     return is_init(x) ? T(set_to_zero_internal!!(c, val(x))) : x
 end
-function set_to_zero_internal!!(c::IncCache, x::T) where {T<:Tangent}
+function set_to_zero_internal!!(c::SetToZeroCache, x::T) where {T<:Tangent}
     return T(set_to_zero_internal!!(c, x.fields))
 end
-function set_to_zero_internal!!(c::IncCache, x::MutableTangent)
-    if c isa Set{UInt}
-        oid = objectid(x)
-        oid in c && return x
-        push!(c, oid)
-    elseif c isa Vector{UInt}
+function set_to_zero_internal!!(c::SetToZeroCache, x::MutableTangent)
+    if c isa Vector{UInt}
         oid = objectid(x)
         _vector_contains(c, oid) && return x
         push!(c, oid)
-    else
-        haskey(c, x) && return x
-        setindex!(c, false, x)
     end
     x.fields = set_to_zero_internal!!(c, x.fields)
     return x
