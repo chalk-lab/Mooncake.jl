@@ -83,7 +83,8 @@ JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 JuliaFormatter = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 StableRNGs = "860ef19b-820b-49d6-a774-d7a799459cd3"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["AllocCheck", "Aqua", "BenchmarkTools", "DiffTests", "JET", "JuliaFormatter", "Pkg", "StableRNGs", "Test"]
+test = ["AllocCheck", "Aqua", "BenchmarkTools", "DiffTests", "JET", "JuliaFormatter", "Pkg", "StableRNGs", "StaticArrays", "Test"]
