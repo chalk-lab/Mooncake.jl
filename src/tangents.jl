@@ -871,29 +871,6 @@ set_to_zero!!(x) = set_to_zero!!(x, require_tangent_cache(typeof(x)))
 set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Vector{UInt}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
-"""
-    _vector_contains(vec::Vector{UInt}, x::UInt)
-
-Check if element `x` exists in vector `vec`.
-
-# Examples
-```jldoctest
-julia> vec = UInt[1, 2, 3];
-
-julia> Mooncake._vector_contains(vec, UInt(2))
-true
-
-julia> Mooncake._vector_contains(vec, UInt(4))
-false
-
-julia> Mooncake._vector_contains(UInt[], UInt(1))
-false
-```
-"""
-@inline function _vector_contains(vec::Vector{UInt}, x::UInt)
-    # Check if element exists in vector
-    return any(y -> x == y, vec)
-end
 
 """
     set_to_zero_internal!!(c::SetToZeroCache, x)
@@ -915,7 +892,7 @@ end
 function set_to_zero_internal!!(c::SetToZeroCache, x::MutableTangent)
     if c isa Vector{UInt}
         oid = objectid(x)
-        _vector_contains(c, oid) && return x
+        oid in c && return x
         push!(c, oid)
     end
     x.fields = set_to_zero_internal!!(c, x.fields)

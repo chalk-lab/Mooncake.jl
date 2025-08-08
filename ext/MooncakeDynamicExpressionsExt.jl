@@ -196,7 +196,7 @@ end
         # Check if t has already been processed, handling different cache types
         if helper.cache isa Vector{UInt}
             oid = objectid(t)
-            Mooncake._vector_contains(helper.cache, oid) && return t
+            oid in helper.cache && return t
             push!(helper.cache, oid)
         elseif helper.cache isa IdDict
             haskey(helper.cache, t) && return t

@@ -74,7 +74,7 @@ end
 function set_to_zero_internal!!(c::SetToZeroCache, x::Memory)
     if c isa Vector{UInt}
         oid = objectid(x)
-        _vector_contains(c, oid) && return x
+        oid in c && return x
         push!(c, oid)
     end
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
@@ -178,7 +178,7 @@ end
 function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
     if c isa Vector{UInt}
         oid = objectid(x)
-        _vector_contains(c, oid) && return x
+        oid in c && return x
         push!(c, oid)
     end
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
