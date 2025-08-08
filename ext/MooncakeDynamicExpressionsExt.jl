@@ -19,7 +19,7 @@ mutable struct TangentNode{Tv,D}
     degree::UInt8
     constant::Bool
     val::Tv
-    children::NTuple{D,Union{@NamedTuple{null::NoTangent,x::TangentNode{Tv,D}},NoTangent}}
+    children::NTuple{D,Union{@NamedTuple{null::NoTangent, x::TangentNode{Tv,D}},NoTangent}}
 
     TangentNode{Tv,D}() where {Tv,D} = new{Tv,D}()
 end
@@ -58,7 +58,7 @@ _wrap_nullable(c::NoTangent) = c
 _wrap_nullable(::Mooncake.NoFData) = NoTangent()
 _wrap_nullable(c::TangentNode) = (; null=NoTangent(), x=c)
 function _wrap_nullable(
-    fd::Mooncake.FData{@NamedTuple{null::Mooncake.NoFData,x::TangentNode{Tv,D}}}
+    fd::Mooncake.FData{@NamedTuple{null::Mooncake.NoFData, x::TangentNode{Tv,D}}}
 ) where {Tv,D}
     return (; null=NoTangent(), x=fd.data.x)
 end
@@ -84,7 +84,7 @@ function set_children!(t::TangentNode{Tv,D}, fdata::Tuple{Vararg{Any,deg}}) wher
 end
 
 function DE.extract_gradient(
-    gradient::Mooncake.Tangent{@NamedTuple{tree::TN,metadata::Mooncake.NoTangent}},
+    gradient::Mooncake.Tangent{@NamedTuple{tree::TN, metadata::Mooncake.NoTangent}},
     tree::Expression{T},
 ) where {Tv,TN<:TangentNode{Tv},T}
     return DE.extract_gradient(gradient.fields.tree, DE.get_tree(tree))
@@ -192,7 +192,7 @@ end
     quote
         # Handle self-reference case
         (!isempty(s) && t === first(s)) && return t
-        
+
         # Check if t has already been processed, handling different cache types
         if helper.cache isa Set{UInt}
             oid = objectid(t)
@@ -805,7 +805,7 @@ function _has_equal_data_internal_helper(
     return deg == s.degree && if t.degree == 0
         if t.constant
             s.constant &&
-            Mooncake.TestUtils.has_equal_data_internal(t.val, s.val, equndef, d)
+                Mooncake.TestUtils.has_equal_data_internal(t.val, s.val, equndef, d)
         else
             !s.constant
         end
