@@ -68,11 +68,16 @@ function _diff_internal(c::MaybeCache, p::P, q::P) where {V,N,P<:Array{V,N}}
     return _map_if_assigned!((p, q) -> _diff_internal(c, p, q), t, p, q)
 end
 
-@zero_adjoint MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Vararg} where {T,N}
-@zero_adjoint MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Tuple{}} where {T,N}
-@zero_adjoint MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
+@zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Vararg} where {T,N}
+@zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Tuple{}} where {T,N}
+@zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
+function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+    Base._deletebeg!(primal(a), primal(d))
+    Base._deletebeg!(tangent(a), primal(d))
+    return zero_dual(nothing)
+end
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
@@ -95,6 +100,11 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
+function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+    Base._deleteend!(primal(a), primal(d))
+    Base._deleteend!(tangent(a), primal(d))
+    return zero_dual(nothing)
+end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
@@ -124,6 +134,16 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
+function frule!!(
+    ::Dual{typeof(Base._deleteat!)},
+    a::Dual{<:Vector},
+    i::Dual{<:Integer},
+    delta::Dual{<:Integer},
+)
+    Base._deleteat!(primal(a), primal(i), primal(delta))
+    Base._deleteat!(tangent(a), primal(i), primal(delta))
+    return zero_dual(nothing)
+end
 function rrule!!(
     ::CoDual{typeof(Base._deleteat!)},
     _a::CoDual{<:Vector},
@@ -152,6 +172,13 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
+function frule!!(
+    ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
+) where {T}
+    Base._growbeg!(primal(a), primal(d))
+    Base._growbeg!(tangent(a), primal(d))
+    return zero_dual(nothing)
+end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
 ) where {T}
@@ -169,6 +196,11 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
+function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+    Base._growend!(primal(a), primal(d))
+    Base._growend!(tangent(a), primal(d))
+    return zero_dual(nothing)
+end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
@@ -186,6 +218,13 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
+function frule!!(
+    ::Dual{typeof(Base._growat!)}, a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
+)
+    Base._growat!(primal(a), primal(i), primal(d))
+    Base._growat!(tangent(a), primal(i), primal(d))
+    return zero_dual(nothing)
+end
 function rrule!!(
     ::CoDual{typeof(Base._growat!)},
     _a::CoDual{<:Vector},
@@ -209,12 +248,30 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
+function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
+    sizehint!(primal(x), primal(sz))
+    sizehint!(tangent(x), primal(sz))
+    return x
+end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
     return x, NoPullback(f, x, sz)
 end
 
+function frule!!(
+    ::Dual{typeof(_foreigncall_)},
+    ::Dual{Val{:jl_array_ptr}},
+    ::Dual{Val{Ptr{T}}},
+    ::Dual{Tuple{Val{Any}}},
+    ::Dual, # nreq
+    ::Dual, # calling convention
+    a::Dual{<:Array{T},<:Array{V}},
+) where {T,V}
+    y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
+    dy = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
+    return Dual(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_array_ptr}},
@@ -234,6 +291,19 @@ end
 @is_primitive MinimalCtx Tuple{
     typeof(unsafe_copyto!),Array{T},Any,Array{T},Any,Any
 } where {T}
+function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::Dual{<:Array{T}},
+    doffs::Dual,
+    src::Dual{<:Array{T}},
+    soffs::Dual,
+    n::Dual,
+) where {T}
+    _n = primal(n)
+    Base.unsafe_copyto!(primal(dest), primal(doffs), primal(src), primal(soffs), _n)
+    Base.unsafe_copyto!(tangent(dest), primal(doffs), tangent(src), primal(soffs), _n)
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{<:Array{T}},
@@ -281,6 +351,17 @@ function rrule!!(
     return dest, unsafe_copyto_pb!!
 end
 
+Base.@propagate_inbounds function frule!!(
+    ::Dual{typeof(Core.arrayref)},
+    inbounds::Dual{Bool},
+    x::Dual{<:Array},
+    inds::Vararg{Dual{Int},N},
+) where {N}
+    _inds = tuple_map(primal, inds)
+    y = arrayref(primal(inbounds), primal(x), _inds...)
+    dy = arrayref(primal(inbounds), tangent(x), _inds...)
+    return Dual(y, dy)
+end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
     checkbounds::CoDual{Bool},
@@ -304,6 +385,18 @@ Base.@propagate_inbounds function rrule!!(
     return CoDual(_y, dy), arrayref_pullback!!
 end
 
+function frule!!(
+    ::Dual{typeof(Core.arrayset)},
+    inbounds::Dual{Bool},
+    A::Dual{<:Array},
+    v::Dual,
+    inds::Dual{Int}...,
+)
+    _inds = tuple_map(primal, inds)
+    Core.arrayset(primal(inbounds), primal(A), primal(v), _inds...)
+    Core.arrayset(primal(inbounds), tangent(A), tangent(v), _inds...)
+    return A
+end
 function rrule!!(
     ::CoDual{typeof(Core.arrayset)},
     inbounds::CoDual{Bool},
@@ -364,11 +457,15 @@ function isbits_arrayset_rrule(
     return A, isbits_arrayset_pullback!!
 end
 
+function frule!!(::Dual{typeof(Core.arraysize)}, X, dim)
+    return zero_dual(Core.arraysize(primal(X), primal(dim)))
+end
 function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
     return zero_fcodual(Core.arraysize(primal(X), primal(dim))), NoPullback(f, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
+frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
@@ -380,7 +477,21 @@ function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     return y, copy_pullback!!
 end
 
+function _copy_dict_tangent(mt::MutableTangent)
+    t = mt.fields
+    new_fields = typeof(t)((
+        copy(t.slots), copy(t.keys), copy(t.vals), tuple_fill(NoTangent(), Val(5))...
+    ))
+    return MutableTangent(new_fields)
+end
+
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
+function frule!!(
+    ::Dual{typeof(fill!)}, a::Dual{<:Array{<:Union{UInt8,Int8}}}, x::Dual{<:Integer}
+)
+    fill!(primal(a), primal(x))
+    return a
+end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}
 ) where {V<:Union{UInt8,Int8},T<:Array{V}}

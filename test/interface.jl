@@ -210,4 +210,17 @@ using Mooncake.TestUtils: count_allocs
             end
         end
     end
+    @testset "forwards mode ($kwargs)" for kwargs in [
+        (;),
+        (; debug_mode=true),
+        (; debug_mode=false),
+        (; debug_mode=true, silence_debug_messages=true),
+    ]
+        f = (x, y) -> x * y + cos(x)
+        fx = (f, 5.0, 4.0)
+        rule = Mooncake.prepare_derivative_cache(fx...; kwargs...)
+        z = Mooncake.value_and_derivative!!(rule, map(zero_dual, fx)...)
+        @test z isa Mooncake.Dual
+        @test primal(z) == f(5.0, 4.0)
+    end
 end

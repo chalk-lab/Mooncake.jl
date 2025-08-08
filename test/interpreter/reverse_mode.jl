@@ -35,7 +35,7 @@ end
         is_used_dict = Dict{ID,Bool}(id_ssa_1 => true, id_ssa_2 => true)
         rdata_ref = Ref{Tuple{map(Mooncake.lazy_zero_rdata_type, (Float64, Int))...}}()
         info = ADInfo(
-            get_interpreter(),
+            get_interpreter(ReverseMode),
             arg_types,
             ssa_insts,
             is_used_dict,
@@ -90,7 +90,7 @@ end
         id_line_1 = ID()
         id_line_2 = ID()
         info = ADInfo(
-            get_interpreter(),
+            get_interpreter(ReverseMode),
             Dict{Argument,Any}(Argument(1) => typeof(sin), Argument(2) => Float64),
             Dict{ID,CC.NewInstruction}(
                 id_line_1 => new_inst(Expr(:invoke, nothing, cos, Argument(2)), Float64),
@@ -277,7 +277,7 @@ end
         ],
         debug_mode in [true, false]
 
-        interp = get_interpreter()
+        interp = get_interpreter(ReverseMode)
         rule = Mooncake.build_rrule(interp, sig; debug_mode)
         @test rule isa Mooncake.rule_type(interp, sig; debug_mode)
     end
@@ -290,8 +290,9 @@ end
     )
         sig = _typeof((f, x...))
         @info "$n: $sig"
+        mode = ReverseMode
         TestUtils.test_rule(
-            Xoshiro(123456), f, x...; perf_flag, interface_only, is_primitive=false
+            Xoshiro(123456), f, x...; perf_flag, interface_only, is_primitive=false, mode
         )
         # TestUtils.test_rule(
         #     Xoshiro(123456),
@@ -303,7 +304,7 @@ end
         #     debug_mode=true,
         # )
 
-        # interp = Mooncake.get_interpreter()
+        # interp = Mooncake.get_interpreter(ReverseMode)
         # codual_args = map(zero_codual, (f, x...))
         # fwds_args = map(Mooncake.to_fwds, codual_args)
         # rule = Mooncake.build_rrule(interp, sig)
@@ -344,6 +345,7 @@ end
             ones(3);
             interface_only=false,
             is_primitive=false,
+            mode=Mooncake.ReverseMode,
         )
 
         # BenchmarkTools not working due to world age problems. Provided that this code

@@ -11,18 +11,7 @@ module TestTypes
 using Base.Iterators: product
 using Core: svec
 using ExprTools: combinedef
-using ..Mooncake:
-    NoTangent,
-    tangent_type,
-    _typeof,
-    set_to_zero!!,
-    increment!!,
-    is_primitive,
-    randn_tangent,
-    _scale,
-    _add_to_primal,
-    _diff,
-    _dot
+using ..Mooncake: NoTangent
 
 const PRIMALS = Tuple{Bool,Any,Tuple}[]
 
@@ -105,6 +94,7 @@ using Mooncake:
     PossiblyUninitTangent,
     Tangent,
     MutableTangent,
+    frule!!,
     rrule!!,
     build_rrule,
     tangent_type,
@@ -114,7 +104,6 @@ using Mooncake:
     is_init,
     zero_codual,
     DefaultCtx,
-    @is_primitive,
     val,
     is_always_fully_initialised,
     get_tangent_field,
@@ -133,6 +122,8 @@ using Mooncake:
     instantiate,
     can_produce_zero_rdata_from_type,
     increment_rdata!!,
+    dual_type,
+    randn_dual,
     fcodual_type,
     verify_fdata_type,
     verify_rdata_type,
@@ -148,7 +139,6 @@ using Mooncake:
     CC,
     set_to_zero!!,
     increment!!,
-    is_primitive,
     randn_tangent,
     _scale,
     _add_to_primal,
@@ -159,7 +149,15 @@ using Mooncake:
     fdata,
     NoRData,
     rdata_type,
-    rdata
+    rdata,
+    Dual,
+    Mode,
+    ForwardMode,
+    ReverseMode,
+    DebugRRule,
+    build_frule,
+    build_rrule,
+    get_interpreter
 
 struct Shim end
 
@@ -433,7 +431,81 @@ function address_maps_are_consistent(x::AddressMap, y::AddressMap)
 end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
-function test_rule_correctness(rng::AbstractRNG, x_x̄...; rule, unsafe_perturb::Bool)
+function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_perturb::Bool)
+    @nospecialize rng x_ẋ
+
+    x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
+
+    # Run original function on deep-copies of inputs.
+    x = map(primal, x_ẋ)
+    ẋ = map(tangent, x_ẋ)
+    x_primal = _deepcopy(x)
+    y_primal = x_primal[1](x_primal[2:end]...)
+
+    # Use finite differences to estimate Frechet derivative. Compute the estimate at a range
+    # of different step sizes. We'll just require that one of them ends up being close to
+    # what AD gives.
+    ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+    fd_results = Vector{Any}(undef, length(ε_list))
+    for (n, ε) in enumerate(ε_list)
+        x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
+        y′_l = x′_l[1](x′_l[2:end]...)
+        x′_r = _add_to_primal(x, _scale(-ε, ẋ), unsafe_perturb)
+        y′_r = x′_r[1](x′_r[2:end]...)
+        fd_results[n] = (
+            ẏ=_scale(1 / 2ε, _diff(y′_l, y′_r)),
+            ẋ=map((_x′, _x_p) -> _scale(1 / 2ε, _diff(_x′, _x_p)), x′_l, x′_r),
+        )
+    end
+
+    # Use AD to compute Frechet derivative at ẋ.
+    x_ẋ_rule = map((x, ẋ) -> dual_type(_typeof(x))(_deepcopy(x), ẋ), x, ẋ)
+    inputs_address_map = populate_address_map(
+        map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
+    )
+    y_ẏ_rule = frule(x_ẋ_rule...)
+    ẋ_ad = map(tangent, x_ẋ_rule)
+    ẏ_ad = tangent(y_ẏ_rule)
+
+    # Verify that inputs / outputs are the same under `f` and its rrule.
+    @test has_equal_data(x_primal, map(primal, x_ẋ_rule))
+    @test has_equal_data(y_primal, primal(y_ẏ_rule))
+
+    # Query both `x_ẋ` and `y`, because `x_ẋ` may have been mutated by `f`.
+    outputs_address_map = populate_address_map(
+        (map(primal, x_ẋ_rule)..., primal(y_ẏ_rule)),
+        (map(tangent, x_ẋ_rule)..., tangent(y_ẏ_rule)),
+    )
+
+    # Check that all aliasing structure is correct.
+    @test address_maps_are_consistent(inputs_address_map, outputs_address_map)
+
+    # Any linear projection of the outputs ought to do. Require only one
+    # precision to be close to the answer AD gives. i.e. prove that there exists a step size
+    # such that AD and central differences agree on the answer.
+    x̄ = map(Base.Fix1(randn_tangent, rng), x_primal)
+    ȳ = randn_tangent(rng, y_primal)
+    isapprox_results = map(fd_results) do result
+        ẏ_fd, ẋ_fd = result
+        return isapprox(
+            _dot(ȳ, ẏ_fd) + _dot(x̄, ẋ_fd),
+            _dot(ȳ, ẏ_ad) + _dot(x̄, ẋ_ad);
+            rtol=1e-3,
+            atol=1e-3,
+        )
+    end
+    if !any(isapprox_results)
+        vals = map(fd_results) do result
+            ẏ_fd, ẋ_fd = result
+            (_dot(ȳ, ẏ_fd) + _dot(x̄, ẋ_fd), _dot(ȳ, ẏ_ad) + _dot(x̄, ẋ_ad))
+        end
+        display(vals)
+    end
+    @test any(isapprox_results)
+end
+
+# Assumes that the interface has been tested, and we can simply check for numerical issues.
+function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_perturb::Bool)
     @nospecialize rng x_x̄
 
     x_x̄ = map(_deepcopy, x_x̄) # defensive copy
@@ -446,9 +518,13 @@ function test_rule_correctness(rng::AbstractRNG, x_x̄...; rule, unsafe_perturb:
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
+    # Construct tangent to inputs, and normalise to be of unit length.
+    ẋ_unnormalised = map(_x -> randn_tangent(rng, _x), x)
+    nrm = sqrt(sum(x -> _dot(x, x), ẋ_unnormalised))
+    ẋ = map(_x -> _scale(1 / nrm, _x), ẋ_unnormalised)
+
     # Use finite differences to estimate vjps. Compute the estimate at a range of different
     # step sizes. We'll just require that one of them ends up being close to what AD gives.
-    ẋ = map(_x -> randn_tangent(rng, _x), x)
     ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
@@ -470,7 +546,7 @@ function test_rule_correctness(rng::AbstractRNG, x_x̄...; rule, unsafe_perturb:
     inputs_address_map = populate_address_map(
         map(primal, x_x̄_rule), map(tangent, x_x̄_rule)
     )
-    y_ȳ_rule, pb!! = rule(x_x̄_rule...)
+    y_ȳ_rule, pb!! = rrule(x_x̄_rule...)
 
     # Verify that inputs / outputs are the same under `f` and its rrule.
     @test has_equal_data(x_primal, map(primal, x_x̄_rule))
@@ -510,6 +586,14 @@ function test_rule_correctness(rng::AbstractRNG, x_x̄...; rule, unsafe_perturb:
             atol=1e-3,
         )
     end
+    if !any(isapprox_results)
+        vals = map(fd_results) do result
+            ẏ, ẋ_post = result
+            (_dot(ȳ_delta, ẏ) + _dot(x̄_delta, ẋ_post), _dot(x̄, ẋ))
+        end
+        display(vals)
+        println()
+    end
     @test any(isapprox_results)
 end
 
@@ -520,7 +604,42 @@ _deepcopy(x::Module) = x
 
 rrule_output_type(::Type{Ty}) where {Ty} = Tuple{Mooncake.fcodual_type(Ty),Any}
 
-function test_rrule_interface(f_f̄, x_x̄...; rule)
+function test_frule_interface(x_ẋ...; frule)
+    @nospecialize x_ẋ
+
+    # Pull out primals and run primal computation.
+    x_ẋ = map(_deepcopy, x_ẋ)
+    x = map(primal, x_ẋ)
+
+    # Run the primal programme. Bail out early if this doesn't work.
+    y = try
+        # Note: the function itself occassionally contains a `module`. Since `module`s
+        # cannot be `deepcopy`-ed, we do not do so. This will cause some trouble if the
+        # function mutates itself during execution.
+        x[1](deepcopy(x[2:end])...)
+    catch
+        throw(ArgumentError("Primal does not run, signature is $(_typeof(x_ẋ))."))
+    end
+
+    # Check that input types are valid.
+    for x_ẋ_component in x_ẋ
+        @test Mooncake.verify_dual_type(x_ẋ_component)
+    end
+
+    # Run the frule, check it has output a thing of the correct type, and extract results.
+    # Throw a meaningful exception if the frule doesn't run at all.
+    y_ẏ = try
+        frule(x_ẋ...)
+    catch
+        throw(ArgumentError("rule does not run, signature is $(_typeof(x_ẋ))."))
+    end
+
+    # Check that returned fdata type is correct.
+    @test y_ẏ isa Dual
+    @test Mooncake.verify_dual_type(y_ẏ)
+end
+
+function test_rrule_interface(f_f̄, x_x̄...; rrule)
     @nospecialize f_f̄ x_x̄
 
     # Pull out primals and run primal computation.
@@ -532,6 +651,9 @@ function test_rrule_interface(f_f̄, x_x̄...; rule)
 
     # Run the primal programme. Bail out early if this doesn't work.
     y = try
+        # Note: the function itself occassionally contains a `module`. Since `module`s
+        # cannot be `deepcopy`-ed, we do not do so. This will cause some trouble if the
+        # function mutates itself during execution.
         f(deepcopy(x)...)
     catch e
         display(e)
@@ -553,7 +675,7 @@ function test_rrule_interface(f_f̄, x_x̄...; rule)
     # Throw a meaningful exception if the rrule doesn't run at all.
     x_addresses = map(get_address, x)
     rrule_ret = try
-        rule(f_fwds, x_fwds...)
+        rrule(f_fwds, x_fwds...)
     catch e
         display(e)
         println()
@@ -597,9 +719,50 @@ function test_rrule_interface(f_f̄, x_x̄...; rule)
     @test all(map((a, b) -> _typeof(a) == _typeof(rdata(b)), x̄_new, x̄))
 end
 
+__forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N} = frule(x_ẋ...)
+
 @noinline function __forwards_and_backwards(rule::R, x_x̄::Vararg{Any,N}) where {R,N}
     out, pb!! = rule(x_x̄...)
     return pb!!(Mooncake.zero_rdata(primal(out)))
+end
+
+function test_frule_performance(
+    performance_checks_flag::Symbol, rule::R, f_ḟ::F, x_ẋ::Vararg{Any,N}
+) where {R,F,N}
+    x_ẋ = _deepcopy(x_ẋ)
+
+    # Verify that a valid performance flag has been passed.
+    valid_flags = (:none, :stability, :allocs, :stability_and_allocs)
+    if !in(performance_checks_flag, valid_flags)
+        throw(
+            ArgumentError(
+                "performance_checks=$performance_checks_flag. Must be one of $valid_flags"
+            ),
+        )
+    end
+    performance_checks_flag == :none && return nothing
+
+    if performance_checks_flag in (:stability, :stability_and_allocs)
+
+        # Test primal stability.
+        test_opt(primal(f_ḟ), map(_typeof ∘ primal, x_ẋ))
+
+        # Test forwards-mode stability.
+        test_opt(rule, (_typeof(f_ḟ), map(_typeof, x_ẋ)...))
+    end
+
+    if performance_checks_flag in (:allocs, :stability_and_allocs)
+        f = primal(f_ḟ)
+        x = map(primal, x_ẋ)
+
+        # Test allocations in primal.
+        f(x...)
+        @test (@allocations f(x...)) == 0
+
+        # Test allocations in forwards-mode.
+        __forwards(rule, f_ḟ, x_ẋ...)
+        @test (@allocations __forwards(rule, f_ḟ, x_ẋ...)) == 0
+    end
 end
 
 function test_rrule_performance(
@@ -648,17 +811,19 @@ function test_rrule_performance(
     end
 end
 
-__get_primals(xs) = map(x -> x isa CoDual ? primal(x) : x, xs)
+__get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
 
 """
     test_rule(
-        rng, x...;
-        interface_only=false,
+        rng::AbstractRNG,
+        x...;
+        interface_only::Bool=false,
         is_primitive::Bool=true,
         perf_flag::Symbol=:none,
-        interp::Mooncake.MooncakeInterpreter=Mooncake.get_interpreter(),
+        mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
         debug_mode::Bool=false,
         unsafe_perturb::Bool=false,
+        print_results=true,
     )
 
 Run standardised tests on the `rule` for `x`.
@@ -670,8 +835,8 @@ though, in partcular `Ptr`s. In this case, the argument for which `randn_tangent
 readily defined should be a `CoDual` containing the primal, and a _manually_ constructed
 tangent field.
 
-This function uses [`Mooncake.build_rrule`](@ref) to construct a rule. This will use an
-`rrule!!` if one exists, and derive a rule otherwise.
+This function is intended for use with both hand-written rules and derived rules. If the
+signature associated to `x` corresponds to a primitive, a hand-written rule will be used.
 
 # Arguments
 - `rng::AbstractRNG`: a random number generator
@@ -699,8 +864,8 @@ This function uses [`Mooncake.build_rrule`](@ref) to construct a rule. This will
     this to `:stability` (at present we cannot verify whether a derived rule is type stable
     for technical reasons). If you believe that a hand-written rule should be _both_
     allocation-free and type-stable, set this to `:stability_and_allocs`.
-- `interp::Mooncake.MooncakeInterpreter=Mooncake.get_interpreter()`: the abstract
-    interpreter to be used when testing this rule. The default should generally be used.
+- `mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing`: the mode of AD to
+    test. If `mode===nothing` (default), then both forward and reverse mode are tested.
 - `debug_mode::Bool=false`: whether or not the rule should be tested in debug mode.
     Typically this should be left at its default `false` value, but if you are finding that
     the tests are failing for a given rule, you may wish to temporarily set it to `true` in
@@ -715,18 +880,30 @@ function test_rule(
     interface_only::Bool=false,
     is_primitive::Bool=true,
     perf_flag::Symbol=:none,
-    interp::Mooncake.MooncakeInterpreter=Mooncake.get_interpreter(),
+    mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
     debug_mode::Bool=false,
     unsafe_perturb::Bool=false,
+    print_results=true,
 )
+    # Take a copy of `x` to ensure that we do not mutate the original.
+    x = deepcopy(x)
+
     # Construct the rule.
     sig = _typeof(__get_primals(x))
-    rule = Mooncake.build_rrule(interp, sig; debug_mode)
+    test_fwd = mode in [nothing, ForwardMode]
+    test_rvs = mode in [nothing, ReverseMode]
+    fwd_interp = test_fwd ? get_interpreter(ForwardMode) : missing
+    rvs_interp = test_rvs ? get_interpreter(ReverseMode) : missing
+    frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
+    rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
 
     # If something is primitive, then the rule should be `rrule!!`.
-    is_primitive && @test rule == (debug_mode ? Mooncake.DebugRRule(rrule!!) : rrule!!)
+    test_fwd && is_primitive && @test frule == frule!!
+    test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
+    x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
+
     x_x̄ = map(x -> if x isa CoDual
         x
     elseif interface_only
@@ -735,20 +912,57 @@ function test_rule(
         zero_codual(x)
     end, x)
 
-    # Test that the interface is basically satisfied (checks types / memory addresses).
-    test_rrule_interface(x_x̄...; rule)
+    redirector = print_results ? ((f, x) -> f()) : redirect_stdout
+    ts = redirector(devnull) do
+        @testset "$(typeof(x))" begin
+            # Test that the interface is basically satisfied (checks types / memory addresses).
+            @testset "Interface (1)" begin
+                test_fwd && test_frule_interface(x_ẋ...; frule)
+                test_rvs && test_rrule_interface(x_x̄...; rrule)
+            end
 
-    # Test that answers are numerically correct / consistent.
-    interface_only || test_rule_correctness(rng, x_x̄...; rule, unsafe_perturb)
+            # Test that answers are numerically correct / consistent.
+            @testset "Correctness" begin
+                if test_fwd && !interface_only
+                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb)
+                end
+                if test_rvs && !interface_only
+                    test_rrule_correctness(rng, x_x̄...; rrule, unsafe_perturb)
+                end
+            end
 
-    # Test the performance of the rule.
-    test_rrule_performance(perf_flag, rule, x_x̄...)
+            # Test the performance of the rule.
+            @testset "Performance" begin
+                test_fwd && test_frule_performance(perf_flag, frule, x_ẋ...)
+                test_rvs && test_rrule_performance(perf_flag, rrule, x_x̄...)
+            end
 
-    # Test the interface again, in order to verify that caching is working correctly.
-    return test_rrule_interface(x_x̄...; rule=Mooncake.build_rrule(interp, sig; debug_mode))
+            # Verify that rules have been cached.
+            @testset "Caching" begin
+                if test_fwd
+                    C_fwd = Mooncake.context_type(fwd_interp)
+                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig)
+                        cache_key = (sig, false, :forward)
+                        k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
+                        @test haskey(fwd_interp.oc_cache, k)
+                    end
+                end
+                if test_rvs
+                    C_rvs = Mooncake.context_type(rvs_interp)
+                    if !Mooncake.is_primitive(C_rvs, ReverseMode, sig)
+                        cache_key = (sig, false, :reverse)
+                        k = Mooncake.ClosureCacheKey(rvs_interp.world, cache_key)
+                        @test haskey(rvs_interp.oc_cache, k)
+                    end
+                end
+            end
+        end
+    end
+
+    return ts
 end
 
-function run_hand_written_rrule!!_test_cases(rng_ctor, v::Val)
+function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory =
         test_hook(Mooncake.generate_hand_written_rrule!!_test_cases, rng_ctor, v) do
             Mooncake.generate_hand_written_rrule!!_test_cases(rng_ctor, v)
@@ -757,26 +971,36 @@ function run_hand_written_rrule!!_test_cases(rng_ctor, v::Val)
         interface_only, perf_flag, _, f, x...
     ) in test_cases
 
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag)
+        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
+        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
     end
 end
 
-function run_derived_rrule!!_test_cases(rng_ctor, v::Val)
+function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory =
-        test_hook(Mooncake.generate_derived_rrule!!_test_cases, rng_ctor, v) do
+        test_hook(Mooncake.generate_derived_rrule!!_test_cases, rng_ctor, v, mode) do
             Mooncake.generate_derived_rrule!!_test_cases(rng_ctor, v)
         end
-    GC.@preserve memory @testset "$f, $(typeof(x))" for (
+    GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
 
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false)
+        test_rule(
+            rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
+        )
     end
 end
 
-function run_rrule!!_test_cases(rng_ctor, v::Val)
-    run_hand_written_rrule!!_test_cases(rng_ctor, v)
-    return run_derived_rrule!!_test_cases(rng_ctor, v)
+function run_rule_test_cases(rng_ctor, v::Val, mode=nothing)
+    if mode in [nothing, ForwardMode]
+        run_hand_written_rule_test_cases(rng_ctor, v, ForwardMode)
+        run_derived_rule_test_cases(rng_ctor, v, ForwardMode)
+    end
+    if mode in [nothing, ReverseMode]
+        run_hand_written_rule_test_cases(rng_ctor, v, ReverseMode)
+        run_derived_rule_test_cases(rng_ctor, v, ReverseMode)
+    end
+    return nothing
 end
 
 """
@@ -1269,7 +1493,7 @@ function _test_tangent_splitting_internal(
     lazy_rzero = @inferred lazy_zero_rdata(p)
     @test instantiate(lazy_rzero) isa R
 
-    # Check incrementing the fdata component of a tangnet yields the correct type.
+    # Check incrementing the fdata component of a tangent yields the correct type.
     @test increment!!(f, f) isa F
 
     # Check incrementing the rdata component of a tangent yields the correct type.
@@ -1328,7 +1552,7 @@ function test_rule_and_type_interactions(rng::AbstractRNG, p::P) where {P}
                 interface_only=true,
                 is_primitive=true,
                 perf_flag=:none,
-                interp=Mooncake.get_interpreter(),
+                mode=ReverseMode,
             )
         end
     end

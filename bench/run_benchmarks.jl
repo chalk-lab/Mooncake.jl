@@ -19,6 +19,7 @@ using AbstractGPs,
     Zygote
 
 using Mooncake:
+    Dual,
     CoDual,
     generate_hand_written_rrule!!_test_cases,
     generate_derived_rrule!!_test_cases,
@@ -26,9 +27,12 @@ using Mooncake:
     _typeof,
     primal,
     tangent,
+    zero_dual,
     zero_codual
 
 using Mooncake.TestUtils: _deepcopy
+
+to_benchmark(__frule!!::R, dx::Vararg{Dual,N}) where {R,N} = __frule!!(dx...)
 
 function to_benchmark(__rrule!!::R, dx::Vararg{CoDual,N}) where {R,N}
     dx_f = Mooncake.tuple_map(x -> CoDual(primal(x), Mooncake.fdata(tangent(x))), dx)
@@ -207,6 +211,20 @@ function benchmark_rules!!(test_case_data, default_ratios, include_other_framewo
                 evals=1,
             )
 
+            # Benchmark AD via Mooncake.
+            @info "Mooncake (Forward)"
+            rule = Mooncake.build_frule(args...)
+            duals = map(x -> x isa CoDual ? Dual(x.x, x.dx) : zero_dual(x), args)
+            to_benchmark(rule, duals...)
+            include_other_frameworks && GC.gc(true)
+            suite["mooncake_fwd"] = Chairmarks.benchmark(
+                () -> (rule, duals),
+                identity,
+                a -> to_benchmark(a[1], a[2]...),
+                _ -> true;
+                evals=1,
+            )
+
             if include_other_frameworks
                 if should_run_benchmark(Val(:zygote), args...)
                     @info "Zygote"
@@ -259,6 +277,7 @@ function combine_results(result, tag, _range, default_range)
     d = result[2]
     primal_time = minimum(d["primal"]).time
     mooncake_time = minimum(d["mooncake"]).time
+    mooncake_fwd_time = minimum(d["mooncake_fwd"]).time
     zygote_time = in("zygote", keys(d)) ? minimum(d["zygote"]).time : missing
     rd_time = in("rd", keys(d)) ? minimum(d["rd"]).time : missing
     ez_time = in("enzyme", keys(d)) ? minimum(d["enzyme"]).time : missing
@@ -268,6 +287,8 @@ function combine_results(result, tag, _range, default_range)
         primal_time=primal_time,
         mooncake_time=mooncake_time,
         Mooncake=mooncake_time / primal_time,
+        mooncake_fwd_time=mooncake_fwd_time,
+        MooncakeFwd=mooncake_fwd_time / primal_time,
         zygote_time=zygote_time,
         Zygote=zygote_time / primal_time,
         rd_time=rd_time,
@@ -349,7 +370,7 @@ end
 
 function create_inter_ad_benchmarks()
     results = benchmark_inter_framework_rules()
-    tools = [:Mooncake, :Zygote, :ReverseDiff, :Enzyme]
+    tools = [:Mooncake, :MooncakeFwd, :Zygote, :ReverseDiff, :Enzyme]
     df = DataFrame(results)[:, [:tag, :primal_time, tools...]]
 
     # Plot graph of results.

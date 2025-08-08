@@ -21,6 +21,7 @@ using Mooncake.TestUtils: test_tangent_interface, test_tangent_splitting, test_r
             interface_only=true,
             is_primitive=true,
             debug_mode=true,
+            mode=Mooncake.ReverseMode,
         )
     else
         println("Tests are skipped since no CUDA device was found. ")

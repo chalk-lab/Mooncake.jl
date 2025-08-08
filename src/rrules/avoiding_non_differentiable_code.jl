@@ -2,17 +2,20 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
+function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
+    return Dual(primal(x) + primal(y), tangent(x) + primal(y))
+end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
 end
 
-@zero_adjoint MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
-@zero_adjoint MinimalCtx Tuple{typeof(string),Vararg}
-@zero_adjoint MinimalCtx Tuple{Type{Symbol},Vararg}
-@zero_adjoint MinimalCtx Tuple{Type{Float64},Any,RoundingMode}
-@zero_adjoint MinimalCtx Tuple{Type{Float32},Any,RoundingMode}
-@zero_adjoint MinimalCtx Tuple{Type{Float16},Any,RoundingMode}
-@zero_adjoint MinimalCtx Tuple{typeof(==),Type,Type}
+@zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(string),Vararg}
+@zero_derivative MinimalCtx Tuple{Type{Symbol},Vararg}
+@zero_derivative MinimalCtx Tuple{Type{Float64},Any,RoundingMode}
+@zero_derivative MinimalCtx Tuple{Type{Float32},Any,RoundingMode}
+@zero_derivative MinimalCtx Tuple{Type{Float16},Any,RoundingMode}
+@zero_derivative MinimalCtx Tuple{typeof(==),Type,Type}
 
 # logging, String related primitive rules
 using Base: getindex, getproperty
@@ -21,40 +24,31 @@ using Mooncake: zero_fcodual, MinimalCtx, @is_primitive, NoPullback, CoDual
 using Base.CoreLogging: LogLevel, handle_message, invokelatest
 import Base.CoreLogging as CoreLogging
 
-# Rule for accessing an Atomic{T} wrapped Integer with Base.getindex as deriving a rule results
-# in encountering a Atomic->Int address bitcast followed by a llvm atomic load call 
-@zero_adjoint MinimalCtx Tuple{typeof(getindex),Atomic{I}} where {I<:Integer}
+# Rule for accessing an Atomic{T} wrapped Integer with Base.getindex as deriving a rule
+# results in encountering a Atomic->Int address bitcast followed by a llvm atomic load call.
+@zero_derivative MinimalCtx Tuple{typeof(getindex),Atomic{I}} where {I<:Integer}
 
 # Some Base String related rrules :
-@zero_adjoint MinimalCtx Tuple{typeof(print),Vararg}
-@zero_adjoint MinimalCtx Tuple{typeof(println),Vararg}
-@zero_adjoint MinimalCtx Tuple{typeof(show),Vararg}
-@zero_adjoint MinimalCtx Tuple{typeof(normpath),String}
+@zero_derivative MinimalCtx Tuple{typeof(print),Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(println),Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(show),Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(normpath),String}
 
-# seperate kwargs, non-kwargs Base.sprint rules are required. Julia compilation only gives a common lowered IR for any Base.sprint calls.
-# refer issue #558 and PR https://github.com/chalk-lab/Mooncake.jl/pull/659 for another sneaky appearance of this problem + fix.
-@zero_adjoint MinimalCtx Tuple{typeof(sprint),Vararg}
-@is_primitive MinimalCtx Tuple{typeof(Core.kwcall),<:NamedTuple,typeof(sprint),Vararg}
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    kwargs::CoDual{<:NamedTuple},
-    ::CoDual{typeof(sprint)},
-    args::Vararg{CoDual},
-)
-    primal_args = map(x -> x.x, args)
-    result = Core.kwcall(kwargs.x, sprint, primal_args...)
-    return zero_fcodual(result),
-    NoPullback(zero_fcodual(Core.kwcall), kwargs, zero_fcodual(sprint), args...)
-end
+# seperate kwargs, non-kwargs Base.sprint rules are required. Julia compilation only gives a
+# common lowered IR for any Base.sprint calls. Refer to issue #558 and PR
+# https://github.com/chalk-lab/Mooncake.jl/pull/659 for another sneaky appearance of this
+# problem + fix.
+@zero_derivative MinimalCtx Tuple{typeof(sprint),Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(sprint),Vararg}
 
 # Base.CoreLogging @logmsg related primitives.
-@zero_adjoint MinimalCtx Tuple{
+@zero_derivative MinimalCtx Tuple{
     typeof(Base._replace_init),String,Tuple{Pair{String,String}},Int64
 }
-@zero_adjoint MinimalCtx Tuple{
+@zero_derivative MinimalCtx Tuple{
     typeof(CoreLogging.current_logger_for_env),LogLevel,Symbol,Module
 }
-@zero_adjoint MinimalCtx Tuple{
+@zero_derivative MinimalCtx Tuple{
     typeof(Core._call_latest),
     typeof(Base.CoreLogging.shouldlog),
     Any,
@@ -63,7 +57,7 @@ end
     Symbol,
     Symbol,
 }
-@zero_adjoint MinimalCtx Tuple{
+@zero_derivative MinimalCtx Tuple{
     typeof(Core._call_latest),
     typeof(CoreLogging.handle_message),
     Any,
@@ -75,64 +69,24 @@ end
     String,
     Int64,
 }
-# specialized case for Builtin primitive Core._call_latest rrule for CoreLogging.handle_message kwargs call. 
-@is_primitive MinimalCtx Tuple{
-    typeof(Core._call_latest),
-    typeof(Core.kwcall),
-    <:NamedTuple,
-    typeof(CoreLogging.handle_message),
-    Any,
-    Base.CoreLogging.LogLevel,
-    String,
-    Module,
-    Symbol,
-    Symbol,
-    String,
-    Int64,
-}
-function rrule!!(
-    ::CoDual{typeof(Core._call_latest)},
-    ::CoDual{typeof(Core.kwcall)},
-    kwargs::CoDual{<:NamedTuple},
-    ::CoDual{typeof(CoreLogging.handle_message)},
-    logger::CoDual,
-    loglevel::CoDual{Base.CoreLogging.LogLevel},
-    message::CoDual{String},
-    _module::CoDual{Module},
-    group::CoDual{Symbol},
-    id::CoDual{Symbol},
-    file::CoDual{String},
-    line::CoDual{Int64},
+# specialized case for Builtin primitive Core._call_latest rrule for CoreLogging.handle_message kwargs call.
+@zero_derivative(
+    MinimalCtx,
+    Tuple{
+        typeof(Core._call_latest),
+        typeof(Core.kwcall),
+        NamedTuple,
+        typeof(CoreLogging.handle_message),
+        Any,
+        Base.CoreLogging.LogLevel,
+        String,
+        Module,
+        Symbol,
+        Symbol,
+        String,
+        Int64,
+    }
 )
-    result = Core._call_latest(
-        Core.kwcall,
-        kwargs.x,
-        CoreLogging.handle_message,
-        logger.x,
-        loglevel.x,
-        message.x,
-        _module.x,
-        group.x,
-        id.x,
-        file.x,
-        line.x;
-    )
-    return zero_fcodual(result),
-    NoPullback(
-        zero_fcodual(Core._call_latest),
-        zero_fcodual(Core.kwcall),
-        kwargs,
-        zero_fcodual(CoreLogging.handle_message),
-        logger,
-        loglevel,
-        message,
-        _module,
-        group,
-        id,
-        file,
-        line,
-    )
-end
 
 function generate_hand_written_rrule!!_test_cases(
     rng_ctor, ::Val{:avoiding_non_differentiable_code}

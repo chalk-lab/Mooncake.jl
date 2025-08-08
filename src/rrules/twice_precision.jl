@@ -62,6 +62,13 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 #
 
 @is_primitive MinimalCtx Tuple{typeof(_new_),<:TWP,IEEEFloat,IEEEFloat}
+function frule!!(
+    ::Dual{typeof(_new_)}, ::Dual{Type{TWP{P}}}, hi::Dual{P}, lo::Dual{P}
+) where {P<:IEEEFloat}
+    x = _new_(TWP{P}, primal(hi), primal(lo))
+    dx = _new_(TWP{P}, tangent(hi), tangent(lo))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(_new_)}, ::CoDual{Type{TWP{P}}}, hi::CoDual{P}, lo::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -70,6 +77,13 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(twiceprecision),IEEEFloat,Integer}
+function frule!!(
+    ::Dual{typeof(twiceprecision)}, val::Dual{P}, nb::Dual{<:Integer}
+) where {P<:IEEEFloat}
+    x = twiceprecision(primal(val), primal(nb))
+    dx = twiceprecision(tangent(val), primal(nb))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
 ) where {P<:IEEEFloat}
@@ -78,6 +92,13 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(twiceprecision),TWP,Integer}
+function frule!!(
+    ::Dual{typeof(twiceprecision)}, val::Dual{P}, nb::Dual{<:Integer}
+) where {P<:TWP}
+    x = twiceprecision(primal(val), primal(nb))
+    dx = twiceprecision(tangent(val), primal(nb))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
 ) where {P<:TWP}
@@ -86,18 +107,25 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{Type{<:IEEEFloat},TWP}
+function frule!!(::Dual{Type{P}}, x::Dual{S}) where {P<:IEEEFloat,S<:TWP}
+    return Dual(P(primal(x)), P(tangent(x)))
+end
 function rrule!!(::CoDual{Type{P}}, x::CoDual{S}) where {P<:IEEEFloat,S<:TWP}
     float_from_twice_precision_pb(dy::P) = NoRData(), S(dy)
     return zero_fcodual(P(x.x)), float_from_twice_precision_pb
 end
 
 @is_primitive MinimalCtx Tuple{typeof(-),TWP}
+frule!!(::Dual{typeof(-)}, x::Dual{P}) where {P<:TWP} = Dual(-primal(x), -tangent(x))
 function rrule!!(::CoDual{typeof(-)}, x::CoDual{P}) where {P<:TWP}
     negate_twice_precision_pb(dy::P) = NoRData(), -dy
     return zero_fcodual(-(x.x)), negate_twice_precision_pb
 end
 
 @is_primitive MinimalCtx Tuple{typeof(+),TWP,IEEEFloat}
+function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
+    return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
+end
 function rrule!!(
     ::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{S}
 ) where {P<:TWP,S<:IEEEFloat}
@@ -106,12 +134,20 @@ function rrule!!(
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(+),P,P} where {P<:TWP})
+function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{P}) where {P<:TWP}
+    return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
+end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{P}) where {P<:TWP}
     plus_pullback(dz::P) = NoRData(), dz, dz
     return zero_fcodual(x.x + y.x), plus_pullback
 end
 
 @is_primitive MinimalCtx Tuple{typeof(*),TWP,IEEEFloat}
+function frule!!(::Dual{typeof(*)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
+    z = primal(x) * primal(y)
+    dz = primal(x) * tangent(y) + tangent(x) * primal(y)
+    return Dual(z, dz)
+end
 function rrule!!(
     ::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{S}
 ) where {P<:TWP,S<:IEEEFloat}
@@ -121,6 +157,9 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(*),TWP,Integer}
+function frule!!(::Dual{typeof(*)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TWP}
+    return Dual(primal(x) * primal(y), tangent(x) * primal(y))
+end
 function rrule!!(::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
     mul_twice_precision_and_int_pb(dz::P) = NoRData(), dz * _y, NoRData()
@@ -128,6 +167,11 @@ function rrule!!(::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{<:Integer}) where 
 end
 
 @is_primitive MinimalCtx Tuple{typeof(/),TWP,IEEEFloat}
+function frule!!(::Dual{typeof(/)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
+    z = primal(x) / primal(y)
+    dz = tangent(x) / primal(y) - tangent(y) * primal(x) / primal(y)^2
+    return Dual(z, dz)
+end
 function rrule!!(
     ::CoDual{typeof(/)}, x::CoDual{P}, y::CoDual{S}
 ) where {P<:TWP,S<:IEEEFloat}
@@ -137,6 +181,9 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(/),TWP,Integer}
+function frule!!(::Dual{typeof(/)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TWP}
+    return Dual(primal(x) / primal(y), tangent(x) / primal(y))
+end
 function rrule!!(::CoDual{typeof(/)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
     div_twice_precision_and_int_pb(dz::P) = NoRData(), dz / _y, NoRData()
@@ -145,13 +192,13 @@ end
 
 # Primitives
 
-@zero_adjoint MinimalCtx Tuple{Type{<:TwicePrecision},Tuple{Integer,Integer},Integer}
-@zero_adjoint MinimalCtx Tuple{typeof(Base.splitprec),Type,Integer}
-@zero_adjoint(
+@zero_derivative MinimalCtx Tuple{Type{<:TwicePrecision},Tuple{Integer,Integer},Integer}
+@zero_derivative MinimalCtx Tuple{typeof(Base.splitprec),Type,Integer}
+@zero_derivative(
     MinimalCtx,
     Tuple{typeof(Base.floatrange),Type{<:IEEEFloat},Integer,Integer,Integer,Integer},
 )
-@zero_adjoint(
+@zero_derivative(
     MinimalCtx,
     Tuple{typeof(Base._linspace),Type{<:IEEEFloat},Integer,Integer,Integer,Integer},
 )
@@ -160,6 +207,14 @@ using Base: range_start_step_length
 @is_primitive(
     MinimalCtx, Tuple{typeof(range_start_step_length),T,T,Integer} where {T<:IEEEFloat}
 )
+function frule!!(
+    ::Dual{typeof(range_start_step_length)}, a::Dual{T}, st::Dual{T}, len::Dual{<:Integer}
+) where {T<:IEEEFloat}
+    x = range_start_step_length(primal(a), primal(st), primal(len))
+    Tx = tangent_type(typeof(x))
+    dx = Tx((ref=tangent(a), step=tangent(st), len=NoTangent(), offset=NoTangent()))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(range_start_step_length)},
     a::CoDual{T},
@@ -173,6 +228,15 @@ end
 using Base: unsafe_getindex
 const TWPStepRangeLen = StepRangeLen{<:Any,<:TWP,<:TWP}
 @is_primitive(MinimalCtx, Tuple{typeof(unsafe_getindex),TWPStepRangeLen,Integer})
+function frule!!(
+    ::Dual{typeof(unsafe_getindex)}, r::Dual{P}, i::Dual{<:Integer}
+) where {P<:TWPStepRangeLen}
+    x = unsafe_getindex(primal(r), primal(i))
+    dref = _get_tangent_field(tangent(r), :ref)
+    dstep = _get_tangent_field(tangent(r), :step)
+    dx = eltype(P)(dref + dstep * (primal(i) - primal(r).offset))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_getindex)}, r::CoDual{P}, i::CoDual{<:Integer}
 ) where {P<:TWPStepRangeLen}
@@ -190,6 +254,16 @@ end
 
 using Base: _getindex_hiprec
 @is_primitive(MinimalCtx, Tuple{typeof(_getindex_hiprec),TWPStepRangeLen,Integer})
+function frule!!(
+    ::Dual{typeof(_getindex_hiprec)}, r::Dual{P}, i::Dual{<:Integer}
+) where {P<:TWPStepRangeLen}
+    x = _getindex_hiprec(primal(r), primal(i))
+    offset = primal(r).offset
+    dstep = _get_tangent_field(tangent(r), :step)
+    dref = _get_tangent_field(tangent(r), :ref)
+    dx = (primal(i) - offset) * dstep + dref
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(_getindex_hiprec)}, r::CoDual{P}, i::CoDual{<:Integer}
 ) where {P<:TWPStepRangeLen}
@@ -205,6 +279,14 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(:),P,P,P} where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(:)}, start::Dual{P}, step::Dual{P}, stop::Dual{P}
+) where {P<:IEEEFloat}
+    x = (:)(primal(start), primal(step), primal(stop))
+    T = tangent_type(typeof(x))
+    dx = T((ref=tangent(start), step=tangent(step), len=NoTangent(), offset=NoTangent()))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(:)}, start::CoDual{P}, step::CoDual{P}, stop::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -213,6 +295,15 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(sum),TWPStepRangeLen}
+function frule!!(::Dual{typeof(sum)}, x::Dual{P}) where {P<:TWPStepRangeLen}
+    y = sum(primal(x))
+    l = primal(x).len
+    offset = primal(x).offset
+    dref = _get_tangent_field(tangent(x), :ref)
+    dstep = _get_tangent_field(tangent(x), :step)
+    dy = dref * l + dstep * (0.5 * l * (l + 1) - l * offset)
+    return Dual(y, typeof(y)(dy))
+end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{P}) where {P<:TWPStepRangeLen}
     l = x.x.len
     offset = x.x.offset
@@ -230,6 +321,20 @@ end
     MinimalCtx,
     Tuple{typeof(Base.range_start_stop_length),P,P,Integer} where {P<:IEEEFloat},
 )
+function frule!!(
+    ::Dual{typeof(Base.range_start_stop_length)},
+    start::Dual{P},
+    stop::Dual{P},
+    length::Dual{<:Integer},
+) where {P<:IEEEFloat}
+    l = primal(length) - 1
+    y = Base.range_start_stop_length(primal(start), primal(stop), primal(length))
+    T = tangent_type(typeof(y))
+    dref = tangent(start)
+    dstep = (tangent(stop) - tangent(start)) / l
+    dy = T((ref=dref, step=dstep, len=NoTangent(), offset=NoTangent()))
+    return Dual(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(Base.range_start_stop_length)},
     start::CoDual{P},
@@ -250,6 +355,12 @@ end
     @is_primitive MinimalCtx Tuple{
         typeof(Base._exp_allowing_twice64),TwicePrecision{Float64}
     }
+    function frule!!(
+        ::Dual{typeof(Base._exp_allowing_twice64)}, x::Dual{TwicePrecision{Float64}}
+    )
+        y = Base._exp_allowing_twice64(primal(x))
+        return Dual(y, typeof(y)(y * tangent(x)))
+    end
     function rrule!!(
         ::CoDual{typeof(Base._exp_allowing_twice64)}, x::CoDual{TwicePrecision{Float64}}
     )
@@ -259,6 +370,10 @@ end
     end
 
     @is_primitive(MinimalCtx, Tuple{typeof(Base._log_twice64_unchecked),Float64})
+    function frule!!(::Dual{typeof(Base._log_twice64_unchecked)}, x::Dual{Float64})
+        y = Base._log_twice64_unchecked(primal(x))
+        return Dual(y, typeof(y)(tangent(x) / primal(x)))
+    end
     function rrule!!(::CoDual{typeof(Base._log_twice64_unchecked)}, x::CoDual{Float64})
         _x = x.x
         _log_twice64_pb(dy::TwicePrecision{Float64}) = NoRData(), Float64(dy) / _x
@@ -299,16 +414,8 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:twice_precisi
         (false, :stability_and_allocs, nothing, Base.splitprec, Float16, 5),
         (false, :stability_and_allocs, nothing, Base.floatrange, Float64, 5, 6, 7, 8),
         (false, :stability_and_allocs, nothing, Base._linspace, Float64, 5, 6, 7, 8),
-        (false, :stability_and_allocs, nothing, Base.range_start_step_length, 5.0, 6.0, 10),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
-            Base.range_start_step_length,
-            5.0,
-            Float64(π),
-            10,
-        ),
+        (false, :allocs, nothing, Base.range_start_step_length, 5.0, 6.0, 10),
+        (false, :allocs, nothing, Base.range_start_step_length, 5.0, Float64(π), 10),
         (
             false,
             :stability_and_allocs,
@@ -325,26 +432,10 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:twice_precisi
             StepRangeLen(TwicePrecision(-0.45), TwicePrecision(0.98), 10, 3),
             5,
         ),
-        (false, :stability_and_allocs, nothing, (:), -0.1, 0.99, 5.1),
+        (false, :allocs, nothing, (:), -0.1, 0.99, 5.1),
         (false, :stability_and_allocs, nothing, sum, range(-0.1, 9.9; length=51)),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
-            Base.range_start_stop_length,
-            -0.5,
-            11.7,
-            7,
-        ),
-        (
-            false,
-            :stability_and_allocs,
-            nothing,
-            Base.range_start_stop_length,
-            -0.5,
-            -11.7,
-            11,
-        ),
+        (false, :allocs, nothing, Base.range_start_stop_length, -0.5, 11.7, 7),
+        (false, :allocs, nothing, Base.range_start_stop_length, -0.5, -11.7, 11),
     ]
     @static if VERSION >= v"1.11"
         extra_test_cases = Any[

@@ -41,6 +41,7 @@ jobs:
           'rrules/low_level_maths',
           'rrules/memory',
           'rrules/misc',
+          'rrules/misty_closures',
           'rrules/new',
           'rrules/random',
           'rrules/tasks',

@@ -9,7 +9,7 @@ using Bijectors, Flux, Mooncake, StableRNGs
 # This example below tests a bug found at https://github.com/chalk-lab/Mooncake.jl/issues/661 
 #
 
-# just define a MLP 
+# just define an MLP
 function mlp3(
     input_dim::Int,
     hidden_dims::Int,
@@ -27,7 +27,7 @@ end
 
 inputdim = 4
 mask_idx = 1:2:inputdim
-# creat a masking layer
+# create a masking layer
 mask = Bijectors.PartitionMask(inputdim, mask_idx)
 cdim = length(mask_idx)
 
@@ -56,6 +56,7 @@ Mooncake.TestUtils.test_rule(
     is_primitive=false,
     interface_only=true,
     unsafe_perturb=true,
+    mode=Mooncake.ReverseMode,
 )
 
 struct ACL
@@ -87,4 +88,5 @@ Mooncake.TestUtils.test_rule(
     is_primitive=false,
     interface_only=true,
     unsafe_perturb=true,
+    mode=Mooncake.ReverseMode,
 )
