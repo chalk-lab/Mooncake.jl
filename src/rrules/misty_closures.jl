@@ -34,7 +34,7 @@ function increment_internal!!(c::IncCache, t::T, s::T) where {T<:MistyClosureTan
     return MistyClosureTangent(new_captures_tangent, t.dual_callable)
 end
 
-function set_to_zero_internal!!(c::IncCache, t::MistyClosureTangent)
+function set_to_zero_internal!!(c::SetToZeroCache, t::MistyClosureTangent)
     new_captures_tangent = set_to_zero_internal!!(c, t.captures_tangent)
     return MistyClosureTangent(new_captures_tangent, t.dual_callable)
 end
