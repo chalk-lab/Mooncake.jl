@@ -198,7 +198,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDua
         return NoRData(), NoRData(), rdata(dx_r), NoRData()
     end
     atomic_pointerset(_p, primal(x), _order)
-    atomic_pointerset(dp, zero_tangent(primal(x)), _order)
+    atomic_pointerset(dp, zero_tangent(x.x, x.dx), _order)
     return p, atomic_pointerset_pullback!!
 end
 
@@ -431,7 +431,7 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
         return NoRData(), NoRData(), rdata(dx_r), NoRData(), NoRData()
     end
     pointerset(_p, primal(x), _idx, _z)
-    pointerset(dp, zero_tangent(primal(x)), _idx, _z)
+    pointerset(dp, zero_tangent(x.x, x.dx), _idx, _z)
     return p, pointerset_pullback!!
 end
 
@@ -730,6 +730,24 @@ end
 
 @zero_adjoint MinimalCtx Tuple{typeof(typeof),Any}
 
+function __pointers_to_pointers()
+    # Pointer to pointer.
+    c_1 = [5.0]
+    c_2 = [3.0, 4.0]
+    c = [pointer(c_1), pointer(c_2)]
+
+    c_new_val = [6.0, 5.0, 4.0]
+    cs = (c_1, c_2, c, c_new_val)
+
+    # Tangents of pointers to pointers.
+    dc_1 = copy(c_1)
+    dc_2 = copy(c_2)
+    dc = [pointer(dc_1), pointer(dc_2)]
+    dc_new_val = randn(3)
+    dcs = (dc_1, dc_2, dc, dc_new_val)
+    return cs, dcs
+end
+
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
     _x = Ref(5.0) # data used in tests which aren't protected by GC.
     _dx = Ref(4.0)
@@ -746,9 +764,13 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
     dy = zero_tangent(y)
     dq = pointer(dy)
 
+    cs, dcs = __pointers_to_pointers()
+    (c_1, c_2, c, c_new_val) = cs
+    (dc_1, dc_2, dc, dc_new_val) = dcs
+
     # Slightly wider range for builtins whose performance is known not to be great.
     _range = (lb=1e-3, ub=200.0)
-    memory = Any[_x, _dx, _a, x, p, dx, dp, y, q, dy, dq]
+    memory = Any[_x, _dx, _a, x, p, dx, dp, y, q, dy, dq, cs..., dcs...]
 
     test_cases = Any[
 
@@ -780,6 +802,15 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
             IntrinsicsWrappers.atomic_pointerset,
             CoDual(p, dp),
             1.0,
+            :monotonic,
+        ),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerset,
+            CoDual(pointer(c), pointer(dc)),
+            CoDual(pointer(c_new_val), pointer(dc_new_val)),
             :monotonic,
         ),
         # atomic_pointerswap -- NEEDS IMPLEMENTING AND TESTING
@@ -886,6 +917,16 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
             1,
         ),
         (true, :stability, nothing, IntrinsicsWrappers.pointerset, CoDual(q, dq), 1, 2, 1),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.pointerset,
+            CoDual(pointer(c), pointer(dc)),
+            CoDual(pointer(c_new_val), pointer(dc_new_val)),
+            1,
+            1,
+        ),
         # rem_float -- untested and unimplemented because seemingly unused on master
         # rem_float_fast -- untested and unimplemented because seemingly unused on master
         (false, :stability, nothing, IntrinsicsWrappers.rint_llvm, 5),
@@ -1035,6 +1076,9 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
 end
 
 function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
+    cs, dcs = __pointers_to_pointers()
+    (c_1, c_2, c, c_new_val) = cs
+    (dc_1, dc_2, dc, dc_new_val) = dcs
     test_cases = Any[
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
@@ -1085,6 +1129,30 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
             nothing,
             x -> (pointerset(pointer(x), UInt8(3), 2, 1); x),
             rand(UInt8, 5),
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (x, v) -> unsafe_wrap(
+                Array,
+                pointerset(pointer(x), pointer(v), 1, 1),
+                length(x),
+            ),
+            CoDual(c, dc),
+            CoDual(c_new_val, dc_new_val),
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            (x, v) -> unsafe_wrap(
+                Array,
+                Core.Intrinsics.atomic_pointerset(pointer(x), pointer(v), :monotonic),
+                length(x),
+            ),
+            CoDual(c, dc),
+            CoDual(c_new_val, dc_new_val),
         ),
         (false, :none, nothing, getindex, randn(5), [1, 1]),
         (false, :none, nothing, getindex, randn(5), [1, 2, 2]),
