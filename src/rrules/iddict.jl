@@ -217,7 +217,7 @@ for name in
         return unexepcted_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
-        return unexepcted_foreigncall_error($name)
+        return unexpected_foreigncall_error($name)
     end
 end
 
