@@ -102,7 +102,7 @@ function increment_internal!!(c::IncCache, t::T, s::T) where {T<:FunctionWrapper
     return t
 end
 
-function set_to_zero_internal!!(c::IncCache, t::FunctionWrapperTangent)
+function set_to_zero_internal!!(c::SetToZeroCache, t::FunctionWrapperTangent)
     t.dobj_ref[] = set_to_zero_internal!!(c, t.dobj_ref[])
     return t
 end

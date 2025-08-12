@@ -1,9 +1,13 @@
 a_primitive(x) = sin(x)
 non_primitive(x) = sin(x)
 
-Mooncake.is_primitive(::Type{DefaultCtx}, ::Type{<:Tuple{typeof(a_primitive),Any}}) = true
 function Mooncake.is_primitive(
-    ::Type{DefaultCtx}, ::Type{<:Tuple{typeof(non_primitive),Any}}
+    ::Type{DefaultCtx}, ::Type{ReverseMode}, ::Type{<:Tuple{typeof(a_primitive),Any}}
+)
+    return true
+end
+function Mooncake.is_primitive(
+    ::Type{DefaultCtx}, ::Type{ReverseMode}, ::Type{<:Tuple{typeof(non_primitive),Any}}
 )
     return false
 end
@@ -28,7 +32,7 @@ contains_primitive_behind_call(x) = @inline contains_primitive(x)
             @assert stmt(usual_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :sin)
 
             # Should continue to inline away under AD compilation.
-            interp = Mooncake.MooncakeInterpreter(DefaultCtx)
+            interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
             ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
             @test stmt(ad_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :sin)
@@ -45,7 +49,7 @@ contains_primitive_behind_call(x) = @inline contains_primitive(x)
             @assert stmt(usual_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :sin)
 
             # Should not inline away under AD compilation.
-            interp = Mooncake.MooncakeInterpreter(DefaultCtx)
+            interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
             ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
             @test stmt(ad_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :a_primitive)
@@ -64,7 +68,7 @@ contains_primitive_behind_call(x) = @inline contains_primitive(x)
             @assert stmt(usual_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :sin)
 
             # Should not inline away under AD compilation.
-            interp = Mooncake.MooncakeInterpreter(DefaultCtx)
+            interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
             ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
             @test stmt(ad_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :a_primitive)

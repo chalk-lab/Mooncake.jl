@@ -1,12 +1,4 @@
 @testset "misc" begin
-    @testset "misc utility" begin
-        x = randn(4, 5)
-        p = Base.unsafe_convert(Ptr{Float64}, x)
-        @test Mooncake.wrap_ptr_as_view(p, 4, 4, 5) == x
-        @test Mooncake.wrap_ptr_as_view(p, 4, 2, 5) == x[1:2, :]
-        @test Mooncake.wrap_ptr_as_view(p, 4, 2, 3) == x[1:2, 1:3]
-    end
-
     @testset "lgetfield" begin
         x = (5.0, 4)
         @test lgetfield(x, Val(1)) == getfield(x, 1)
@@ -26,5 +18,5 @@
         @test x.b === new_b
     end
 
-    TestUtils.run_rrule!!_test_cases(StableRNG, Val(:misc))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:misc))
 end

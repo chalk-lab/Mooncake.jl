@@ -187,6 +187,7 @@ end
                 perf_flag=:none,
                 is_primitive=false,
                 unsafe_perturb=true,
+                mode=Mooncake.ReverseMode,
             )
         end
 
@@ -201,6 +202,7 @@ end
                 perf_flag=:none,
                 is_primitive=false,
                 unsafe_perturb=true,
+                mode=Mooncake.ReverseMode,
             )
         end
 

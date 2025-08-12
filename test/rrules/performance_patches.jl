@@ -1,3 +1,3 @@
 @testset "performance_patches" begin
-    TestUtils.run_rrule!!_test_cases(StableRNG, Val(:performance_patches))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:performance_patches))
 end

@@ -159,7 +159,7 @@ end
 Returns a 2-tuple. The first element is true if `m` is a vararg method, and false if not.
 The second element contains the names of the static parameters associated to `m`.
 """
-is_vararg_and_sparam_names(m::Method) = m.isva, sparam_names(m)
+is_vararg_and_sparam_names(m::Method)::Tuple{Bool,Vector{Symbol}} = m.isva, sparam_names(m)
 
 """
     is_vararg_and_sparam_names(sig)::Tuple{Bool, Vector{Symbol}}
@@ -184,6 +184,14 @@ Calls `is_vararg_and_sparam_names` on `mi.def::Method`.
 function is_vararg_and_sparam_names(mi::Core.MethodInstance)::Tuple{Bool,Vector{Symbol}}
     return is_vararg_and_sparam_names(mi.def)
 end
+
+"""
+    is_vararg_and_sparam_names(mc::MistyClosure)::Tuple{Bool,Vector{Symbol}}
+
+Basic implementation for MistyClosure. Assumes is not a varargs function, and has no static
+parameter names appearing in the source.
+"""
+is_vararg_and_sparam_names(::MistyClosure)::Tuple{Bool,Vector{Symbol}} = false, Symbol[]
 
 """
     sparam_names(m::Core.Method)::Vector{Symbol}
@@ -356,4 +364,57 @@ function misty_closure(
     do_compile::Bool=true,
 )
     return MistyClosure(opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir))
+end
+
+"""
+    _copytrito!(B::AbstractMatrix, A::AbstractMatrix, uplo::AbstractChar)
+
+Literally just copied over from Julia's LinearAlgebra std lib, in order to produce a method
+which works on 1.10.
+"""
+function _copytrito!(B::AbstractMatrix, A::AbstractMatrix, uplo::AbstractChar)
+    @static if VERSION >= v"1.11"
+        return copytrito!(B, A, uplo)
+    end
+    Base.require_one_based_indexing(A, B)
+    BLAS.chkuplo(uplo)
+    m, n = size(A)
+    m1, n1 = size(B)
+    A = Base.unalias(B, A)
+    if uplo == 'U'
+        if n < m
+            (m1 < n || n1 < n) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($n,$n)"
+                ),
+            )
+        else
+            (m1 < m || n1 < n) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($m,$n)"
+                ),
+            )
+        end
+        for j in 1:n, i in 1:min(j, m)
+            @inbounds B[i, j] = A[i, j]
+        end
+    else # uplo == 'L'
+        if m < n
+            (m1 < m || n1 < m) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($m,$m)"
+                ),
+            )
+        else
+            (m1 < m || n1 < n) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($m,$n)"
+                ),
+            )
+        end
+        for j in 1:n, i in j:m
+            @inbounds B[i, j] = A[i, j]
+        end
+    end
+    return B
 end

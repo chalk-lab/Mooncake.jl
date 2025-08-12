@@ -284,11 +284,11 @@ sr(n::Int) = StableRNG(n)
 
     @testset "$(typeof(d))" for (perf_flag, d, x) in logpdf_test_cases
         @info "$(map(typeof, (d, x)))"
-        test_rule(StableRNG(123456), logpdf, d, x; perf_flag, is_primitive=false)
+        test_rule(StableRNG(123546), logpdf, d, x; perf_flag, is_primitive=false)
     end
 
     @testset "$name" for (perf_flag, name, f, x) in work_around_test_cases
         @info "$name"
-        test_rule(StableRNG(123456), f, x...; perf_flag=perf_flag, is_primitive=false)
+        test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
     end
 end

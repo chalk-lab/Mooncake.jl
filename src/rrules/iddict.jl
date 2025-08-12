@@ -31,9 +31,8 @@ function increment_internal!!(c::IncCache, p::T, q::T) where {T<:IdDict}
     end
     return p
 end
-function set_to_zero_internal!!(c::IncCache, t::IdDict)
-    haskey(c, t) && return t
-    c[t] = false
+function set_to_zero_internal!!(c::SetToZeroCache, t::IdDict)
+    _already_tracked!(c, t) && return t
     foreach(keys(t)) do k
         t[k] = set_to_zero_internal!!(c, t[k])
     end
@@ -115,6 +114,11 @@ tangent(f::IdDict, ::NoRData) = f
 # standard built-in functionality on `IdDict`s.
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
+function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
+    Base.rehash!(primal(d), primal(newsz))
+    Base.rehash!(tangent(d), primal(newsz))
+    return d
+end
 function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoDual)
     Base.rehash!(primal(d), primal(newsz))
     Base.rehash!(tangent(d), primal(newsz))
@@ -122,6 +126,11 @@ function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoD
 end
 
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
+function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
+    setindex!(primal(d), primal(val), primal(key))
+    setindex!(tangent(d), tangent(val), primal(key))
+    return d
+end
 function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) where {K,V}
     k = primal(key)
     restore_state = in(k, keys(primal(d)))
@@ -155,6 +164,13 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
 end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
+function frule!!(
+    ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Dual
+) where {K,V}
+    x = get(primal(d), primal(key), primal(default))
+    dx = get(tangent(d), primal(key), tangent(default))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{IdDict{K,V}}, key::CoDual, default::CoDual
 ) where {K,V}
@@ -178,6 +194,9 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
+function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
+    return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
+end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{IdDict{K,V}}, key::CoDual
 ) where {K,V}
@@ -194,12 +213,18 @@ end
 
 for name in
     [:(:jl_idtable_rehash), :(:jl_eqtable_put), :(:jl_eqtable_get), :(:jl_eqtable_nextind)]
+    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
+        return unexpected_foreigncall_error($name)
+    end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
-        return unexepcted_foreigncall_error($name)
+        return unexpected_foreigncall_error($name)
     end
 end
 
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
+function frule!!(::Dual{Type{IdDict{K,V}}}) where {K,V}
+    return Dual(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
+end
 function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
 end

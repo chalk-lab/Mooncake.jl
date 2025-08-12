@@ -19,6 +19,7 @@ using Base:
     twiceprecision
 using Base.Experimental: @opaque
 using Base.Iterators: product
+using Base.Meta: isexpr
 using Core:
     Intrinsics,
     bitcast,
@@ -29,6 +30,8 @@ using Core:
     GotoIfNot,
     PhiNode,
     PiNode,
+    PhiCNode,
+    UpsilonNode,
     SSAValue,
     Argument,
     OpaqueClosure,
@@ -42,6 +45,13 @@ using DispatchDoctor: @stable, @unstable
 
 # Needs to be defined before various other things.
 function _foreigncall_ end
+
+"""
+    frule!!(f::Dual, x::Dual...)
+
+Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`.
+"""
+function frule!! end
 
 """
     rrule!!(f::CoDual, x::CoDual...)
@@ -72,10 +82,11 @@ function rrule!! end
     build_primitive_rrule(sig::Type{<:Tuple})
 
 Construct an rrule for signature `sig`. For this function to be called in `build_rrule`, you
-must also ensure that `is_primitive(context_type, sig)` is `true`. The callable returned by
-this must obey the rrule interface, but there are no restrictions on the type of callable
-itself. For example, you might return a callable `struct`. By default, this function returns
-`rrule!!` so, most of the time, you should just implement a method of `rrule!!`.
+must also ensure that `is_primitive(context_type, ReverseMode, sig)` is `true`. The callable
+returned by this must obey the rrule interface, but there are no restrictions on the type of
+callable itself. For example, you might return a callable `struct`. By default, this
+function returns `rrule!!` so, most of the time, you should just implement a method of
+`rrule!!`.
 
 # Extended Help
 
@@ -95,6 +106,7 @@ build_primitive_rrule(::Type{<:Tuple}) = rrule!!
 @stable default_mode = "disable" default_union_limit = 2 begin
 include("utils.jl")
 include("tangents.jl")
+include("dual.jl")
 include("fwds_rvs_data.jl")
 include("codual.jl")
 include("debug_mode.jl")
@@ -110,7 +122,8 @@ include(joinpath("interpreter", "patch_for_319.jl"))
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))
-include(joinpath("interpreter", "s2s_reverse_mode_ad.jl"))
+include(joinpath("interpreter", "forward_mode.jl"))
+include(joinpath("interpreter", "reverse_mode.jl"))
 end
 
 include("tools_for_rules.jl")
@@ -129,6 +142,7 @@ include(joinpath("rrules", "lapack.jl"))
 include(joinpath("rrules", "linear_algebra.jl"))
 include(joinpath("rrules", "low_level_maths.jl"))
 include(joinpath("rrules", "misc.jl"))
+include(joinpath("rrules", "misty_closures.jl"))
 include(joinpath("rrules", "new.jl"))
 include(joinpath("rrules", "random.jl"))
 include(joinpath("rrules", "tasks.jl"))
@@ -146,12 +160,15 @@ include("developer_tools.jl")
 
 # Public, not exported
 include("public.jl")
+
 end
 #! format: on
 
-@public Config, value_and_pullback!!, prepare_pullback_cache
+@public Config, value_and_pullback!!, prepare_pullback_cache, value_and_derivative!!
+@public prepare_derivative_cache, Dual
 
 # Public, exported
-export value_and_gradient!!, prepare_gradient_cache
+export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
+export prepare_derivative_cache
 
 end

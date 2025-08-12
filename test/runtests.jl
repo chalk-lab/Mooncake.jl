@@ -18,7 +18,8 @@ include("front_matter.jl")
             include(joinpath("interpreter", "bbcode.jl"))
             include(joinpath("interpreter", "ir_normalisation.jl"))
             include(joinpath("interpreter", "zero_like_rdata.jl"))
-            include(joinpath("interpreter", "s2s_reverse_mode_ad.jl"))
+            include(joinpath("interpreter", "forward_mode.jl"))
+            include(joinpath("interpreter", "reverse_mode.jl"))
         end
         include("tools_for_rules.jl")
         include("interface.jl")
@@ -49,6 +50,8 @@ include("front_matter.jl")
         include(joinpath("rrules", "low_level_maths.jl"))
     elseif test_group == "rrules/misc"
         include(joinpath("rrules", "misc.jl"))
+    elseif test_group == "rrules/misty_closures"
+        include(joinpath("rrules", "misty_closures.jl"))
     elseif test_group == "rrules/new"
         include(joinpath("rrules", "new.jl"))
     elseif test_group == "rrules/random"
