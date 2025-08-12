@@ -1,4 +1,7 @@
 using Mooncake.TestUtils: count_allocs
+using Mooncake:
+    Mooncake, MutableTangent, NoTangent, PossiblyUninitTangent, Tangent, tangent_type, strip_tangents
+using StaticArrays
 
 @testset "interface" begin
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
@@ -184,7 +187,6 @@ using Mooncake.TestUtils: count_allocs
 
         @testset "__exclude_unsupported_output , $(test_set)" for test_set in
                                                                   additional_test_set
-
             try
                 Mooncake.__exclude_unsupported_output(test_set[2])
             catch err
@@ -194,7 +196,6 @@ using Mooncake.TestUtils: count_allocs
 
         @testset "_copy_output & _copy_to_output!!, $(test_set)" for test_set in
                                                                      additional_test_set
-
             original = test_set[2]
             try
                 if isnothing(Mooncake.__exclude_unsupported_output(original))
@@ -209,5 +210,82 @@ using Mooncake.TestUtils: count_allocs
                 @test isa(err, Mooncake.ValueAndPullbackReturnTypeError)
             end
         end
+    end
+
+    @testset "Testing strip_tangents" begin
+        struct MyStruct{A,B}
+            a::A
+            b::B
+        end
+
+        mutable struct MyStruct1{A,B}
+            a::A
+            b::B
+        end
+
+        mutable struct MyStruct2
+            x::Float64
+            MyStruct2() = new()
+            MyStruct2(x::Float64) = new(x)
+        end
+
+        test_cases = [
+            (Core.svec(1.0, 1.0), [0.0, 0.0], [0.0, 0.0]),
+            (
+                SVector(1.0),
+                (data=(0.0,),),
+                Tangent{@NamedTuple{data::Tuple{Float64}}}((data=(0.0,),)),
+            ),
+            (
+                SA[1.0, 2.0, 3.0],
+                (data=(0.0, 0.0, 0.0),),
+                Tangent{@NamedTuple{data::Tuple{Float64,Float64,Float64}}}((
+                    data=(0.0, 0.0, 0.0),
+                )),
+            ),
+            (
+                SA[1.0 2.0; 1.0 2.0],
+                (data=(0.0, 0.0, 0.0, 0.0),),
+                Tangent{@NamedTuple{data::NTuple{4,Float64}}}((data=(0.0, 0.0, 0.0, 0.0),)),
+            ),
+            (
+                MyStruct{Int64,Float64}(1, 1.0),
+                (a=nothing, b=0.0),
+                Tangent{@NamedTuple{a::NoTangent, b::Float64}}((a=NoTangent(), b=0.0)),
+            ),
+            (
+                MyStruct1{Int64,Float64}(1, 1.0),
+                (a=nothing, b=0.0),
+                MutableTangent{@NamedTuple{a::NoTangent, b::Float64}}((
+                    a=NoTangent(), b=0.0
+                )),
+            ),
+            (
+                MyStruct2(6.9518144222347e-310),
+                (x=0.0,),
+                MutableTangent{@NamedTuple{x::PossiblyUninitTangent{Float64}}}((
+                    x=PossiblyUninitTangent{Float64}(0.0),
+                )),
+            ),
+            (
+                MyStruct2(1.0),
+                (x=0.0,),
+                MutableTangent{@NamedTuple{x::PossiblyUninitTangent{Float64}}}((
+                    x=PossiblyUninitTangent{Float64}(0.0),
+                )),
+            ),
+            (1.0, 0.0, 0.0),
+            ([1.0], [0.0], [0.0]),
+            ((1.0, [1.0]), (0.0, [0.0]), (0.0, [0.0])),
+            ((1, ["hello"]), (nothing, [nothing]), (NoTangent(), [NoTangent()])),
+        ]
+
+        for (primal, resolved_tangents, tangent_data) in test_cases
+            Mooncake.__exclude_unsupported_output(primal)
+            @test strip_tangents(tangent_data) == resolved_tangents
+        end
+
+        @test strip_tangents(Ptr{Int64}(1)) == fdata(Ptr{Int64}(1))
+        @test strip_tangents(Ptr{Float64}(1)) == fdata(Ptr{Float64}(1))
     end
 end
