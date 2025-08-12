@@ -13,7 +13,7 @@
 
 </div>
 
-The goal of the `Mooncake.jl` project is to produce a reverse-mode AD package which is written entirely in Julia, which improves over both `ReverseDiff.jl` and `Zygote.jl` in several ways, and is competitive with `Enzyme.jl`.
+The goal of the `Mooncake.jl` project is to produce an AD package which is written entirely in Julia, which improves over `ForwardDiff.jl`, `ReverseDiff.jl` and `Zygote.jl` in several ways, and is competitive with `Enzyme.jl`.
 Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more info.
 
 ## Getting Started
@@ -22,7 +22,7 @@ Check that you're running a version of Julia that Mooncake.jl supports.
 See the `SUPPORT_POLICY.md` file for more info.
 
 There are several ways to interact with `Mooncake.jl`.
-The way that we recommend people to interact with `Mooncake.jl` is via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
+We recommend that people interact with `Mooncake.jl` via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
 For example, use it as follows to compute the gradient of a function mapping a `Vector{Float64}` to `Float64`.
 ```julia
 using DifferentiationInterface
@@ -37,5 +37,5 @@ gradient(f, prep, backend, x)
 You should expect that `prepare_gradient` takes a little bit of time to run, but that `gradient` is fast.
 
 We are committed to ensuring support for DifferentiationInterface, which is why we recommend using that.
-If you are interested in interacting in a more direct fashion with `Mooncake.jl`, you should consider `Mooncake.value_and_gradient!!`.
+If you are interested in interacting more directly with `Mooncake.jl`, you should consider `Mooncake.value_and_gradient!!`.
 See its docstring for more info.
