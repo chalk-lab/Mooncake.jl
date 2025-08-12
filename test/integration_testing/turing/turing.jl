@@ -81,10 +81,9 @@ end
 make_large_model()
 
 function build_turing_problem(rng, model, example=nothing)
-    ctx = DynamicPPL.DefaultContext()
     vi = DynamicPPL.SimpleVarInfo(example === nothing ? model : example)
     vi_linked = DynamicPPL.link(vi, model)
-    ldp = DynamicPPL.LogDensityFunction(model, vi_linked, ctx)
+    ldp = DynamicPPL.LogDensityFunction(model, DynamicPPL.getlogjoint_internal, vi_linked)
     test_function = Base.Fix1(DynamicPPL.LogDensityProblems.logdensity, ldp)
     d = DynamicPPL.LogDensityProblems.dimension(ldp)
     return test_function, randn(rng, d)
