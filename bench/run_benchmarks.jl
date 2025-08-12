@@ -111,19 +111,18 @@ end
     x .~ LogNormal(μ, σ)
 end
 
-function build_turing_problem()
+function build_dynamicppl_problem()
     rng = Xoshiro(123)
     model = broadcast_demo(rand(LogNormal(1.5, 0.5), 100_000))
-    ctx = DynamicPPL.DefaultContext()
     vi = DynamicPPL.SimpleVarInfo(model)
     vi_linked = DynamicPPL.link(vi, model)
-    ldp = DynamicPPL.LogDensityFunction(model, vi_linked, ctx)
+    ldp = DynamicPPL.LogDensityFunction(model, DynamicPPL.getlogjoint_internal, vi_linked)
     test_function = Base.Fix1(DynamicPPL.LogDensityProblems.logdensity, ldp)
     d = DynamicPPL.LogDensityProblems.dimension(ldp)
     return test_function, randn(rng, d)
 end
 
-run_turing_problem(f::F, x::X) where {F,X} = f(x)
+run_dynamicppl_problem(f::F, x::X) where {F,X} = f(x)
 
 function should_run_benchmark(
     ::Val{:zygote}, ::Base.Fix1{<:typeof(DynamicPPL.LogDensityProblems.logdensity)}, x...
@@ -166,7 +165,7 @@ function generate_inter_framework_tests()
             (_simple_mlp, randn(128, 256), randn(256, 128), randn(128, 70), randn(128, 70)),
         ),
         ("gp_lml", (_gp_lml, _generate_gp_inputs()...)),
-        ("turing_broadcast_benchmark", build_turing_problem()),
+        ("turing_broadcast_benchmark", build_dynamicppl_problem()),
         ("large_single_block", (large_single_block, [0.9, 0.99])),
     ]
 end

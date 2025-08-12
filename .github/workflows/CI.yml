@@ -96,13 +96,13 @@ jobs:
           {test_type: 'integration_testing', label: 'diff_tests'},
           {test_type: 'integration_testing', label: 'dispatch_doctor'},
           {test_type: 'integration_testing', label: 'distributions'},
+          {test_type: 'integration_testing', label: 'dynamicppl'},
           {test_type: 'integration_testing', label: 'gp'},
           {test_type: 'integration_testing', label: 'logexpfunctions'},
           {test_type: 'integration_testing', label: 'lux'},
           {test_type: 'integration_testing', label: 'battery_tests'},
           {test_type: 'integration_testing', label: 'misc_abstract_array'},
           {test_type: 'integration_testing', label: 'temporalgps'},
-          {test_type: 'integration_testing', label: 'turing'},
           {test_type: 'integration_testing', label: 'flux'},
         ]
         version:

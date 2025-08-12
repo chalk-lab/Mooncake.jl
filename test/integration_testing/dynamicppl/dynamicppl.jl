@@ -80,7 +80,7 @@ end
 # Run this once in order to avoid world age problems in testset.
 make_large_model()
 
-function build_turing_problem(rng, model, example=nothing)
+function build_dynamicppl_problem(rng, model, example=nothing)
     vi = DynamicPPL.SimpleVarInfo(example === nothing ? model : example)
     vi_linked = DynamicPPL.link(vi, model)
     ldp = DynamicPPL.LogDensityFunction(model, DynamicPPL.getlogjoint_internal, vi_linked)
@@ -89,7 +89,7 @@ function build_turing_problem(rng, model, example=nothing)
     return test_function, randn(rng, d)
 end
 
-@testset "turing" begin
+@testset "dynamicppl" begin
     @testset "$(typeof(model))" for (interface_only, name, model, ex) in vcat(
         Any[
             (false, "simple_model", simple_model(), nothing),
@@ -115,7 +115,7 @@ end
         ],
     )
         @info name
-        f, x = build_turing_problem(StableRNG(123), model, ex)
+        f, x = build_dynamicppl_problem(StableRNG(123), model, ex)
         rng = StableRNG(123456)
         test_rule(rng, f, x; interface_only, is_primitive=false, unsafe_perturb=true)
     end
