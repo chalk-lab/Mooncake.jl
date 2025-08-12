@@ -195,7 +195,7 @@ end
 for name in
     [:(:jl_idtable_rehash), :(:jl_eqtable_put), :(:jl_eqtable_get), :(:jl_eqtable_nextind)]
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
-        return unexepcted_foreigncall_error($name)
+        return unexpected_foreigncall_error($name)
     end
 end
 

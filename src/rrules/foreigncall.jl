@@ -213,7 +213,7 @@ function rrule!!(
     return uninit_fcodual(_foreigncall_(Val(:jl_string_ptr), x...)), pb!!
 end
 
-function unexepcted_foreigncall_error(name)
+function unexpected_foreigncall_error(name)
     throw(
         error(
             "AD has hit a :($name) ccall. This should not happen. " *
@@ -255,10 +255,10 @@ for name in [
     @eval function _foreigncall_(
         ::Val{$name}, ::Val{RT}, AT::Tuple, ::Val{nreq}, ::Val{calling_convention}, x...
     ) where {RT,nreq,calling_convention}
-        return unexepcted_foreigncall_error($name)
+        return unexpected_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
-        return unexepcted_foreigncall_error($name)
+        return unexpected_foreigncall_error($name)
     end
 end
 
