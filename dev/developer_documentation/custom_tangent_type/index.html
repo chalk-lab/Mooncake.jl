@@ -980,7 +980,7 @@ function Mooncake.TestUtils.has_equal_data_internal(t::TangentForA{Tx}, s::Tange
 end</code></pre><p>Now we can run it again and successfully check if all the tangent / fdata / rdata and other required functionality works correctly for the self-referential type A.</p><pre><code class="language-julia hljs">Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Test Summary: | Pass  Total  Time
 ===           |   22     22  2.0s
 Test Summary: | Pass  Total  Time
-ifelse        |   48     48  1.9s
+ifelse        |   48     48  2.0s
 Test Summary: | Pass  Total  Time
 sizeof        |   10     10  0.9s
 Test Summary: | Pass  Total  Time
@@ -992,7 +992,7 @@ typeassert    |   11     11  0.7s
 Test Summary: | Pass  Total  Time
 typeof        |   10     10  0.9s
 Test Summary: | Pass  Total  Time
-getfield      |   92     92  4.0s
+getfield      |   92     92  3.9s
 Test Summary: | Pass  Total  Time
 lgetfield     |   92     92  7.4s
 Test Summary: | Pass  Total  Time
