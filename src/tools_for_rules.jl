@@ -283,7 +283,7 @@ function _zero_derivative_impl(ctx, sig, mode)
     # or `Mooncake.Mode` are not available in the scope which calls this macro.
     is_primitive_ex = quote
         function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{<:$(esc(mode))}, ::Type{<:$(esc(sig))}
+            ::Type{$(esc(ctx))}, ::Type{<:($(esc(mode)))}, ::Type{<:($(esc(sig)))}
         )
             return true
         end
@@ -633,9 +633,8 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     end
 
     return quote
-        const M = $mode
         function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:($(esc(sig)))}
+            ::Type{$(esc(ctx))}, ::Type{<:($(esc(mode)))}, ::Type{<:($(esc(sig)))}
         )
             return true
         end
