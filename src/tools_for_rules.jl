@@ -282,9 +282,8 @@ function _zero_derivative_impl(ctx, sig, mode)
     # which does not escape the mode argument. This will work even if the names `Mooncake`
     # or `Mooncake.Mode` are not available in the scope which calls this macro.
     is_primitive_ex = quote
-        const M = $mode
         function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:$(esc(sig))}
+            ::Type{$(esc(ctx))}, ::Type{<:$(esc(mode))}, ::Type{<:$(esc(sig))}
         )
             return true
         end
