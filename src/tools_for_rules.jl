@@ -604,7 +604,7 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
         # Type M will be available later on, and will be the mode type.
         kw_is_primitive = quote
-            function Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:$kw_sig})
+            function Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{<:($(esc(mode)))}, ::Type{<:$kw_sig})
                 return true
             end
         end
