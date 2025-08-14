@@ -29,7 +29,7 @@ using DifferentiationInterface
 import Mooncake
 
 f(x) = sum(cos, x)
-backend = AutoMooncake()
+backend = AutoMooncake() # Reverse-mode AD. For forward-mode AD, use `AutoMooncakeForward()`. 
 x = ones(1_000)
 prep = prepare_gradient(f, backend, x)
 gradient(f, prep, backend, x)
