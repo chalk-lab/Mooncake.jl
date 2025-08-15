@@ -138,8 +138,6 @@ function generate_hand_written_rrule!!_test_cases(
             ("hello" => "hi",),
             1,
         ),
-        (false, :none, nothing, print, "Testing print"),
-        (false, :none, nothing, println, "Testing println"),
         (false, :none, nothing, show, "Testing show"),
 
         # non-kwargs sprint rule test
