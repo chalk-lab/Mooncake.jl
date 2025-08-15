@@ -202,6 +202,8 @@ function generate_derived_rrule!!_test_cases(
     test_cases = vcat(
         Any[
             # Tests for Base.CoreLogging, @show macros and string related functions.
+            (false, :none, nothing, (x) -> print(), 1),
+            (false, :none, nothing, (x) -> println(), 1),
             (false, :none, nothing, testloggingmacro1, rand(1:100)),
             (false, :none, nothing, testloggingmacro2, rand(1:100)),
             (false, :none, nothing, testloggingmacro3, rand(1:100)),
