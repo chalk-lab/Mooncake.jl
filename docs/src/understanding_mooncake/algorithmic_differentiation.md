@@ -5,7 +5,7 @@ Even if you have worked with AD before, we recommend reading in order to acclima
 
 # Derivatives
 
-The foundation of automatic differentiation is the directional derivative.
+The foundation of automatic differentiation is the derivative.
 Here we build up to a general definition.
 
 _**Scalar-to-Scalar Functions**_
