@@ -370,6 +370,8 @@ tangent_type(::Type{<:Base.TTY}) = NoTangent
 
 tangent_type(::Type{<:IOStream}) = NoTangent
 
+tangent_type(::Type{Base.CoreLogging.ConsoleLogger}) = NoTangent
+
 function split_union_tuple_type(tangent_types)
 
     # Create first split.
@@ -1350,6 +1352,7 @@ tangents, but they're unable to check that `increment!!` is correct in an absolu
         (Float64, NoTangent),
         (BigInt, NoTangent),
         (Union{Float64,Float32}, NoTangent),
+        (Base.CoreLogging.ConsoleLogger, NoTangent),
         (Union, NoTangent),
         (UnionAll, NoTangent),
         (typeof(<:), NoTangent),
