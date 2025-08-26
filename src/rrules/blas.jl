@@ -37,11 +37,11 @@ function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
 end
 function arrayify(x::SubArray{P,B,C,D,E}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
-    return x, SubArray{P, B, typeof(_dx), D, E}(_dx, x.indices, x.offset1, x.stride1)
+    return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
-function arrayify(x::Base.ReshapedArray{P,B,C,D}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D}
+function arrayify(x::ReshapedArray{P,B,C,D}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
-    return x, Base.ReshapedArray{P,B,typeof(_dx),D}(_dx, x.dims, x.mi)
+    return x, ReshapedArray{P,B,typeof(_dx),D}(_dx, x.dims, x.mi)
 end
 function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:BlasFloat}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
