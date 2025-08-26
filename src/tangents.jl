@@ -370,6 +370,8 @@ tangent_type(::Type{<:Base.TTY}) = NoTangent
 
 tangent_type(::Type{<:IOStream}) = NoTangent
 
+tangent_type(::Type{Base.CoreLogging.ConsoleLogger}) = NoTangent
+
 function split_union_tuple_type(tangent_types)
 
     # Create first split.
