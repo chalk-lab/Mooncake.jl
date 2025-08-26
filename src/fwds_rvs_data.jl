@@ -258,6 +258,14 @@ function fdata(t::T) where {T}
     return F(fdata(t.fields))
 end
 
+function fdata(::Type{T}) where {T}
+    throw(
+        error(
+            "$T is a type. Perhaps you meant fdata_type($T) or fdata(instance_of_tangent)?"
+        ),
+    )
+end
+
 function fdata(t::T) where {T<:PossiblyUninitTangent}
     F = fdata_type(T)
     return is_init(t) ? F(fdata(val(t))) : F()
@@ -528,6 +536,14 @@ function rdata(t::T) where {T}
     # T must be a `Tangent` by now. If it's not, something has gone wrong.
     T <: Tangent || error("Unhandled type $T")
     return R(rdata(t.fields))
+end
+
+function rdata(::Type{T}) where {T}
+    throw(
+        error(
+            "$T is a type. Perhaps you meant rdata_type($T) or rdata(instance_of_tangent)?"
+        ),
+    )
 end
 
 function rdata(t::T) where {T<:PossiblyUninitTangent}
