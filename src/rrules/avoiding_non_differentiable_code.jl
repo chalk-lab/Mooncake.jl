@@ -88,6 +88,9 @@ import Base.CoreLogging as CoreLogging
     }
 )
 
+# Rule for Base.invokelatest used in logging macros
+@zero_derivative MinimalCtx Tuple{typeof(Base.invokelatest),Vararg}
+
 function generate_hand_written_rrule!!_test_cases(
     rng_ctor, ::Val{:avoiding_non_differentiable_code}
 )
