@@ -92,12 +92,6 @@ import Base.CoreLogging as CoreLogging
 @zero_derivative MinimalCtx Tuple{
     typeof(Base.invokelatest),Vararg
 }
-@zero_derivative MinimalCtx Tuple{
-    typeof(Base.CoreLogging.logging_error),Vararg
-}
-
-# Fix for Base.fixup_stdlib_path used in logging macro expansion
-@zero_derivative MinimalCtx Tuple{typeof(Base.fixup_stdlib_path),String}
 
 function generate_hand_written_rrule!!_test_cases(
     rng_ctor, ::Val{:avoiding_non_differentiable_code}
