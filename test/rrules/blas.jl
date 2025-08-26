@@ -28,5 +28,5 @@
             end
         end
     end
-    # TestUtils.run_rule_test_cases(StableRNG, Val(:blas))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:blas))
 end
