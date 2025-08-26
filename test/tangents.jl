@@ -4,7 +4,7 @@
         ## Misc. Specific Types
         (Cstring, NoTangent),
         (Cwstring, NoTangent),
-        (Base.CoreLogging.ConsoleLogger, NoTangent),
+        (Base.CoreLogging.SimpleLogger, NoTangent),
         (Union{}, Union{}),
 
         ## Tuples
