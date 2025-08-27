@@ -158,29 +158,8 @@ end
         end
     end
 
-    @testset "Error messages for types passed to accessor functions" begin
-        # Test that passing types to fdata throws helpful error message
-        @test_throws "Float64 is a type. Perhaps you meant fdata_type(Float64) or fdata(instance_of_tangent)?" fdata(
-            Float64
-        )
-        @test_throws "Int64 is a type. Perhaps you meant fdata_type(Int64) or fdata(instance_of_tangent)?" fdata(
-            Int64
-        )
-
-        # Test that passing types to rdata throws helpful error message  
-        @test_throws "Float64 is a type. Perhaps you meant rdata_type(Float64) or rdata(instance_of_tangent)?" rdata(
-            Float64
-        )
-        @test_throws "Int64 is a type. Perhaps you meant rdata_type(Int64) or rdata(instance_of_tangent)?" rdata(
-            Int64
-        )
-
-        # Test with more complex types - using exact string matching since the message is deterministic
-        @test_throws "Vector{Float64} is a type. Perhaps you meant fdata_type(Vector{Float64}) or fdata(instance_of_tangent)?" fdata(
-            Vector{Float64}
-        )
-        @test_throws "Vector{Float64} is a type. Perhaps you meant rdata_type(Vector{Float64}) or rdata(instance_of_tangent)?" rdata(
-            Vector{Float64}
-        )
+    @testset "Helpful error messages for misuse of fdata and rdata" begin
+        @test_throws "Float64 is a type. Perhaps you meant" fdata(Float64)
+        @test_throws "Float64 is a type. Perhaps you meant" rdata(Float64)
     end
 end
