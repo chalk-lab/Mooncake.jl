@@ -115,7 +115,7 @@ function generate_hand_written_rrule!!_test_cases(
             (false, :stability_and_allocs, nothing, getindex, Atomic{Int64}(rand(1:100))),
             (false, :stability_and_allocs, nothing, getindex, Atomic{Int32}(rand(1:100))),
             (false, :stability_and_allocs, nothing, getindex, Atomic{Int16}(rand(1:100))),
-    ],
+        ],
 
         # Rules in order to avoid introducing determinism.
         reduce(
@@ -199,20 +199,22 @@ function generate_derived_rrule!!_test_cases(
         @show x
     end
 
-    test_cases = vcat(Any[
-    Tests for Base.CoreLogging, @show macros and string related functions.
-    (false, :none, nothing, (x) -> print(x), "Testing print"),
-    (false, :none, nothing, (x) -> println(x), "Testing println"),
-    (false, :none, nothing, (x) -> show(x), "Testing show"),
-    (false, :none, nothing, testloggingmacro1, rand(1:100)),
-    (false, :none, nothing, testloggingmacro2, rand(1:100)),
-    (false, :none, nothing, testloggingmacro3, rand(1:100)),
-    (false, :none, nothing, testloggingmacro4, rand(1:100)),
-    (false, :none, nothing, testloggingmacro5, rand(1:100)),
-    (false, :none, nothing, testloggingmacro6, rand(1:100)),
-    (false, :none, nothing, testloggingmacro7, rand(1:100)),
-    (false, :none, nothing, testloggingmacro8, rand(1:100)),
-    (false, :none, nothing, testloggingmacro9, rand(1:100)),
-])
+    test_cases = vcat(
+        Any[
+            # Tests for Base.CoreLogging, @show macros and string related functions.
+            (false, :none, nothing, (x) -> print(x), "Testing print"),
+            (false, :none, nothing, (x) -> println(x), "Testing println"),
+            (false, :none, nothing, (x) -> show(x), "Testing show"),
+            (false, :none, nothing, testloggingmacro1, rand(1:100)),
+            (false, :none, nothing, testloggingmacro2, rand(1:100)),
+            (false, :none, nothing, testloggingmacro3, rand(1:100)),
+            (false, :none, nothing, testloggingmacro4, rand(1:100)),
+            (false, :none, nothing, testloggingmacro5, rand(1:100)),
+            (false, :none, nothing, testloggingmacro6, rand(1:100)),
+            (false, :none, nothing, testloggingmacro7, rand(1:100)),
+            (false, :none, nothing, testloggingmacro8, rand(1:100)),
+            (false, :none, nothing, testloggingmacro9, rand(1:100)),
+        ],
+    )
     return test_cases, Any[]
 end
