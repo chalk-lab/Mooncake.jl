@@ -1746,7 +1746,14 @@ DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug
 _copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
 
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
-    sig = Tuple{map(_typeof ∘ primal, args)...}
+
+    # `Base._stable_typeof` is used here, rather than `typeof` or `Mooncake._typeof`. Its
+    # precise behaviour (equivalent to `typeof` for everything except `Type`s, for which it
+    # returns `Type{P}` rather than `typeof(P)`) is needed to ensure that this signature
+    # matches the types that `rule` sees when `rule(args...)` is called below. If you get
+    # this wrong, an assertion is violated, causing a hard-to-debug error (see issue 660).
+    sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
+
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ReverseMode)
