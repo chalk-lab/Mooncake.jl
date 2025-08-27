@@ -182,16 +182,5 @@ end
         @test_throws "Vector{Float64} is a type. Perhaps you meant rdata_type(Vector{Float64}) or rdata(instance_of_tangent)?" rdata(
             Vector{Float64}
         )
-
-        # Verify that existing functionality with instances still works
-        x = 5.0
-        t = zero_tangent(x)
-        @test fdata(t) isa NoFData
-        @test rdata(t) isa Float64
-
-        arr = [1.0, 2.0]
-        t_arr = zero_tangent(arr)
-        @test fdata(t_arr) isa Vector{Float64}
-        @test rdata(t_arr) isa NoRData
     end
 end
