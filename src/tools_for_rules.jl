@@ -363,46 +363,37 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
-# Fallback methods for SubArray types that provide helpful error messages
-function to_cr_tangent(t::SubArray)
+# Generic fallback methods that provide helpful error messages for unsupported types
+function to_cr_tangent(t)
     throw(ArgumentError(
-        "SubArray types are not supported with @from_chainrules or @from_rrule. " *
+        "The type $(typeof(t)) is not supported with @from_chainrules or @from_rrule. " *
         "This is because Mooncake.jl does not currently have the necessary " *
-        "tangent conversion methods to handle SubArray types. " *
+        "tangent conversion methods to handle this type. " *
         "Consider writing a custom rrule!! for your function instead, " *
-        "or use the parent array directly. " *
-        "See https://github.com/chalk-lab/Mooncake.jl/issues/677 for more details."
+        "or ensure your types are supported by the tangent conversion system."
     ))
 end
 
-function mooncake_tangent(p::SubArray, cr_tangent)
+function mooncake_tangent(p, cr_tangent)
     throw(ArgumentError(
-        "SubArray types are not supported with @from_chainrules or @from_rrule. " *
+        "The primal type $(typeof(p)) with ChainRules tangent type $(typeof(cr_tangent)) " *
+        "is not supported with @from_chainrules or @from_rrule. " *
         "This is because Mooncake.jl does not currently have the necessary " *
-        "tangent conversion methods to handle SubArray types. " *
+        "tangent conversion methods to handle this type combination. " *
         "Consider writing a custom rrule!! for your function instead, " *
-        "or use the parent array directly. " *
-        "See https://github.com/chalk-lab/Mooncake.jl/issues/677 for more details."
+        "or ensure your types are supported by the tangent conversion system."
     ))
 end
 
-# This catches the case where fdata is related to SubArray but tangent from ChainRules is a Vector
-# The issue occurs specifically when we have SubArray FData but Vector tangent from ChainRules
-function increment_and_get_rdata!(f, r, t::Vector{<:IEEEFloat})
-    # If f is not a Vector or Array type but t is a Vector, this suggests a type mismatch
-    # that commonly occurs with SubArrays where ChainRules returns Vector tangents
-    if !(f isa Vector || f isa Array) 
-        throw(ArgumentError(
-            "SubArray types are not supported with @from_chainrules or @from_rrule. " *
-            "This is because Mooncake.jl does not currently have the necessary " *
-            "`increment_and_get_rdata!` methods to handle SubArray tangent types. " *
-            "Consider writing a custom rrule!! for your function instead, " *
-            "or use the parent array directly. " *
-            "See https://github.com/chalk-lab/Mooncake.jl/issues/677 for more details."
-        ))
-    end
-    # If this doesn't catch the SubArray case, fall back to normal MethodError
-    throw(MethodError(increment_and_get_rdata!, (f, r, t)))
+function increment_and_get_rdata!(f, r, t)
+    throw(ArgumentError(
+        "The fdata type $(typeof(f)), rdata type $(typeof(r)), and tangent type $(typeof(t)) " *
+        "combination is not supported with @from_chainrules or @from_rrule. " *
+        "This is because Mooncake.jl does not currently have the necessary " *
+        "`increment_and_get_rdata!` methods to handle this type combination. " *
+        "Consider writing a custom rrule!! for your function instead, " *
+        "or ensure your types are supported by the tangent system."
+    ))
 end
 
 """
