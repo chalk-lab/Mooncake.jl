@@ -1109,6 +1109,13 @@ function invertible_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int
     end
 end
 
+function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+    return map(blas_matrices(rng, P, p, p)) do A
+        A .= A'A + I
+        return A
+    end
+end
+
 function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
     xs = Any[
         randn(rng, P, p),

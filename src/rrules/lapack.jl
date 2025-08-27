@@ -593,10 +593,20 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
             end
         end...,
 
-        # logdet
+        # real logdet
+        map([Float64, Float32]) do P
+            As = positive_definite_blas_matrices(rng, P, 3)
+            return map(As) do A
+                (false, :none, nothing, logdet, A)
+            end
+        end...,
+
+        # complex logdet
         map(complexPs) do P
-            A = randn(rng, P, 3, 3)
-            return  (false, :none, nothing, real ∘ logdet, A'A + I)
+            As = blas_matrices(rng, P, 3, 3)
+            return map(As) do A
+                (false, :none, nothing, real ∘ logdet ∘ complex, A)
+            end
         end...
     )
     memory = Any[]
