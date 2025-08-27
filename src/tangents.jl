@@ -370,6 +370,8 @@ tangent_type(::Type{<:Base.TTY}) = NoTangent
 
 tangent_type(::Type{<:IOStream}) = NoTangent
 
+tangent_type(::Type{<:Base.CoreLogging.AbstractLogger}) = NoTangent
+
 function split_union_tuple_type(tangent_types)
 
     # Create first split.
@@ -1353,6 +1355,7 @@ tangents, but they're unable to check that `increment!!` is correct in an absolu
         (Union, NoTangent),
         (UnionAll, NoTangent),
         (typeof(<:), NoTangent),
+        (Base.CoreLogging.SimpleLogger, NoTangent),
         (IOStream(""), NoTangent),
     ]
     # Construct test cases containing circular references. These typically require multiple
