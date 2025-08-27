@@ -353,7 +353,7 @@ end
 Increment `fdata` by the fdata component of the ChainRules.jl-style tangent, `cr_tangent`,
 and return the rdata component of `cr_tangent` by adding it to `zero_rdata`.
 """
-increment_and_get_rdata!(::NoFData, r::T, t::T) where {T<:IEEEFloat} = r + t
+increment_and_get_rdata!(::NoFData, r::Tr, t::Tt) where {Tr<:IEEEFloat, Tt<:IEEEFloat} = r + t
 function increment_and_get_rdata!(f::Array{P}, ::NoRData, t::Array{P}) where {P<:IEEEFloat}
     increment!!(f, t)
     return NoRData()
