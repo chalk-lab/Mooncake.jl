@@ -917,7 +917,7 @@ function test_rule(
         @testset "$(typeof(x))" begin
             # Test that the interface is basically satisfied (checks types / memory addresses).
             @testset "Interface (1)" begin
-                # test_fwd && test_frule_interface(x_ẋ...; frule)
+                test_fwd && test_frule_interface(x_ẋ...; frule)
                 test_rvs && test_rrule_interface(x_x̄...; rrule)
             end
 
