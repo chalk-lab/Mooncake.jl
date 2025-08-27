@@ -18,51 +18,6 @@
     return arg_type_symbols, where_params
 end
 
-function _check_for_unsupported_array_types(arg_type_symbols)
-    for arg_type in arg_type_symbols
-        # Check if the argument type contains SubArray
-        if _contains_subarray_type(arg_type)
-            error(
-                "SubArray types are not supported with @from_chainrules or @from_rrule. " *
-                "This is because Mooncake.jl does not currently have the necessary " *
-                "`increment_and_get_rdata!` methods to handle SubArray tangent types. " *
-                "Consider writing a custom rrule!! for your function instead, " *
-                "or use the parent array directly. " *
-                "See https://github.com/chalk-lab/Mooncake.jl/issues/677 for more details.",
-            )
-        end
-    end
-end
-
-function _contains_subarray_type(expr)
-    # Handle escaped expressions
-    if expr isa Expr && expr.head == :escape
-        return _contains_subarray_type(expr.args[1])
-    end
-
-    # Check if expression directly mentions SubArray
-    if expr == :SubArray
-        return true
-    end
-
-    # For parametric types like SubArray{T} or SubArray{<:SomeType}
-    if expr isa Expr && expr.head == :curly && length(expr.args) >= 1
-        return expr.args[1] == :SubArray || any(_contains_subarray_type, expr.args[2:end])
-    end
-
-    # For <: expressions like <:SubArray{T}
-    if expr isa Expr && expr.head == :<: && length(expr.args) >= 1
-        return any(_contains_subarray_type, expr.args)
-    end
-
-    # For other expression types, recursively check all arguments
-    if expr isa Expr
-        return any(_contains_subarray_type, expr.args)
-    end
-
-    return false
-end
-
 function construct_rrule_def(arg_names, arg_types, where_params, body)
     return construct_rule_def(:(Mooncake.rrule!!), arg_names, arg_types, where_params, body)
 end
@@ -408,6 +363,48 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
+# Fallback methods for SubArray types that provide helpful error messages
+function to_cr_tangent(t::SubArray)
+    throw(ArgumentError(
+        "SubArray types are not supported with @from_chainrules or @from_rrule. " *
+        "This is because Mooncake.jl does not currently have the necessary " *
+        "tangent conversion methods to handle SubArray types. " *
+        "Consider writing a custom rrule!! for your function instead, " *
+        "or use the parent array directly. " *
+        "See https://github.com/chalk-lab/Mooncake.jl/issues/677 for more details."
+    ))
+end
+
+function mooncake_tangent(p::SubArray, cr_tangent)
+    throw(ArgumentError(
+        "SubArray types are not supported with @from_chainrules or @from_rrule. " *
+        "This is because Mooncake.jl does not currently have the necessary " *
+        "tangent conversion methods to handle SubArray types. " *
+        "Consider writing a custom rrule!! for your function instead, " *
+        "or use the parent array directly. " *
+        "See https://github.com/chalk-lab/Mooncake.jl/issues/677 for more details."
+    ))
+end
+
+# This catches the case where fdata is related to SubArray but tangent from ChainRules is a Vector
+# The issue occurs specifically when we have SubArray FData but Vector tangent from ChainRules
+function increment_and_get_rdata!(f, r, t::Vector{<:IEEEFloat})
+    # If f is not a Vector or Array type but t is a Vector, this suggests a type mismatch
+    # that commonly occurs with SubArrays where ChainRules returns Vector tangents
+    if !(f isa Vector || f isa Array) 
+        throw(ArgumentError(
+            "SubArray types are not supported with @from_chainrules or @from_rrule. " *
+            "This is because Mooncake.jl does not currently have the necessary " *
+            "`increment_and_get_rdata!` methods to handle SubArray tangent types. " *
+            "Consider writing a custom rrule!! for your function instead, " *
+            "or use the parent array directly. " *
+            "See https://github.com/chalk-lab/Mooncake.jl/issues/677 for more details."
+        ))
+    end
+    # If this doesn't catch the SubArray case, fall back to normal MethodError
+    throw(MethodError(increment_and_get_rdata!, (f, r, t)))
+end
+
 """
     frule_wrapper(f::Dual, args::Dual...)
 
@@ -638,10 +635,6 @@ end
 
 function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     arg_type_syms, where_params = parse_signature_expr(sig)
-
-    # Check for unsupported array types like SubArray
-    _check_for_unsupported_array_types(arg_type_syms)
-
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
     codual_arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_syms)
