@@ -1355,6 +1355,7 @@ tangents, but they're unable to check that `increment!!` is correct in an absolu
         (Union, NoTangent),
         (UnionAll, NoTangent),
         (typeof(<:), NoTangent),
+        (Base.CoreLogging.SimpleLogger, NoTangent),
         (IOStream(""), NoTangent),
     ]
     # Construct test cases containing circular references. These typically require multiple
