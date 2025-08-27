@@ -259,11 +259,7 @@ function fdata(t::T) where {T}
 end
 
 function fdata(::Type{T}) where {T}
-    throw(
-        error(
-            "$T is a type. Perhaps you meant fdata_type($T) or fdata(instance_of_tangent)?"
-        ),
-    )
+    error("$T is a type. Perhaps you meant fdata_type($T) or fdata(instance_of_tangent)?")
 end
 
 function fdata(t::T) where {T<:PossiblyUninitTangent}
@@ -539,11 +535,7 @@ function rdata(t::T) where {T}
 end
 
 function rdata(::Type{T}) where {T}
-    throw(
-        error(
-            "$T is a type. Perhaps you meant rdata_type($T) or rdata(instance_of_tangent)?"
-        ),
-    )
+    error("$T is a type. Perhaps you meant rdata_type($T) or rdata(instance_of_tangent)?")
 end
 
 function rdata(t::T) where {T<:PossiblyUninitTangent}
