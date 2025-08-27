@@ -582,13 +582,21 @@ end
 
 function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
+    complexPs = [Float64, Float32, ComplexF64, ComplexF32]
     getrf_wrapper!(x, check) = getrf!(x; check)
     test_cases = vcat(
-        map_prod([false, true], [Float64, Float32, ComplexF64, ComplexF32]) do (check, P)
+        # getrf
+        map_prod([false, true], complexPs) do (check, P)
             As = blas_matrices(rng, P, 5, 5)
             return map(As) do A
                 (false, :none, nothing, getrf_wrapper!, A, check)
             end
+        end...,
+
+        # logdet
+        map(complexPs) do P
+            A = randn(rng, P, 3, 3)
+            return  (false, :none, nothing, real ∘ logdet, A'A + I)
         end...
     )
     memory = Any[]
