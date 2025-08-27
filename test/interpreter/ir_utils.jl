@@ -57,4 +57,13 @@ end
         Mooncake.replace_uses_with!(stmt, SSAValue(1), 5.0)
         @test stmt.args[end] == 5.0
     end
+    @testset "characeterise_used_ssas" begin
+        stmts = Any[
+            Expr(:call, sin, Argument(1)),
+            Expr(:call, sin, SSAValue(1)),
+            Expr(:call, sin, SSAValue(1)),
+            ReturnNode(SSAValue(3)),
+        ]
+        @test Mooncake.characterised_used_ssas(stmts) == [true, false, true, false]
+    end
 end

@@ -6,37 +6,37 @@
 # deduce that these bits of code are inactive though.
 #
 
-@zero_adjoint DefaultCtx Tuple{typeof(in),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(iszero),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(isempty),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(isbitstype),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(sizeof),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(promote_type),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.elsize),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Core.Compiler.sizeof_nothrow),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.datatype_haspadding),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.datatype_nfields),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.datatype_pointerfree),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.datatype_alignment),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.datatype_fielddesc_type),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(LinearAlgebra.chkstride1),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Threads.nthreads),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.depwarn),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.reduced_indices),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.check_reducedims),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.throw_boundserror),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.Broadcast.eltypes),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(Base.eltype),Vararg}
-@zero_adjoint MinimalCtx Tuple{typeof(Base.padding),DataType}
-@zero_adjoint MinimalCtx Tuple{typeof(Base.padding),DataType,Int}
-@zero_adjoint MinimalCtx Tuple{Type,TypeVar,Type}
+@zero_derivative DefaultCtx Tuple{typeof(in),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(iszero),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(isempty),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(isbitstype),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(sizeof),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(promote_type),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.elsize),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Core.Compiler.sizeof_nothrow),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.datatype_haspadding),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.datatype_nfields),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.datatype_pointerfree),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.datatype_alignment),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.datatype_fielddesc_type),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(LinearAlgebra.chkstride1),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Threads.nthreads),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.depwarn),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.reduced_indices),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.check_reducedims),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.throw_boundserror),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.Broadcast.eltypes),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.eltype),Vararg}
+@zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType}
+@zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType,Int}
+@zero_derivative MinimalCtx Tuple{Type,TypeVar,Type}
 
 # Required to avoid an ambiguity.
-@zero_adjoint MinimalCtx Tuple{Type{Symbol},TypeVar,Type}
+@zero_derivative MinimalCtx Tuple{Type{Symbol},TypeVar,Type}
 
 @static if VERSION >= v"1.11-"
-    @zero_adjoint MinimalCtx Tuple{typeof(Random.hash_seed),Vararg}
-    @zero_adjoint MinimalCtx Tuple{typeof(Base.dataids),Memory}
+    @zero_derivative MinimalCtx Tuple{typeof(Random.hash_seed),Vararg}
+    @zero_derivative MinimalCtx Tuple{typeof(Base.dataids),Memory}
 end
 
 """
@@ -58,6 +58,24 @@ This approach is identical to the one taken by `Zygote.jl` to circumvent the sam
 lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}
+) where {P,T<:StandardTangentType,f}
+    primal_field = getfield(primal(x), f)
+    if tangent_type(P) === NoTangent
+        return uninit_dual(primal_field)
+    else
+        Dual(primal_field, _get_tangent_field(tangent(x), f))
+    end
+end
+
+_get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
+_get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
+_get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fields, name))
+function _get_tangent_field(f::Union{Tangent,MutableTangent}, name, inbounds)
+    return val(getfield(f.fields, name, inbounds))
+end
+
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
 ) where {P,F<:StandardFDataType,f}
@@ -100,6 +118,19 @@ end
 # code duplication, but it wound up not being any cleaner than this copy + pasted version.
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::Dual{P,<:StandardTangentType},
+    ::Dual{Val{f}},
+    ::Dual{Val{order}},
+) where {P,f,order}
+    primal_field = getfield(primal(x), f, order)
+    if tangent_type(P) === NoTangent
+        return uninit_dual(primal_field)
+    else
+        return Dual(primal_field, _get_tangent_field(tangent(x), f))
+    end
+end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P,F<:StandardFDataType,f,order}
@@ -121,10 +152,21 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lsetfield!),Any,Any,Any}
+@inline function frule!!(
+    ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Dual
+) where {P,T<:StandardTangentType}
+    return lsetfield_frule(value, name, x)
+end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual
 ) where {P,F<:StandardFDataType}
     return lsetfield_rrule(value, name, x)
+end
+
+function lsetfield_frule(value::Dual{P,T}, ::Dual{Val{name}}, x::Dual) where {P,T,name}
+    setfield!(primal(value), name, primal(x))
+    T !== NoTangent && set_tangent_field!(tangent(value), name, tangent(x))
+    return x
 end
 
 function lsetfield_rrule(
@@ -162,6 +204,9 @@ end
 
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
+    function frule!!(::Dual{typeof(copy)}, a::Dual{<:Dict})
+        return Dual(copy(primal(a)), _copy_dict_tangent(tangent(a)))
+    end
     function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Dict})
         dx = tangent(a)
         t = dx.fields
@@ -344,7 +389,7 @@ end
 
 function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:misc})
     test_cases = Any[
-        (false, :none, nothing, copy, Dict("A" => 5.0, "B" => 5.0)),
+        (false, :none, nothing, x -> copy(Dict("A" => x[1], "B" => x[2]))["A"], (5.0, 5.0)),
         (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
         (false, :none, nothing, () -> copy(Set())),
     ]

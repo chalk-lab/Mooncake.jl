@@ -9,6 +9,9 @@ foo(x) = x
 end
 
 @testset "contexts" begin
-    @test Mooncake.is_primitive(DefaultCtx, Tuple{typeof(ContextsTestModule.foo),Float64})
-    @test !Mooncake.is_primitive(DefaultCtx, Tuple{typeof(ContextsTestModule.foo),Real})
+    @testset "$mode" for mode in [Mooncake.ForwardMode, Mooncake.ReverseMode]
+        Tf = typeof(ContextsTestModule.foo)
+        @test Mooncake.is_primitive(DefaultCtx, mode, Tuple{Tf,Float64})
+        @test !Mooncake.is_primitive(DefaultCtx, mode, Tuple{Tf,Real})
+    end
 end

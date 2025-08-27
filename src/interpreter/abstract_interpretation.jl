@@ -24,7 +24,7 @@ MooncakeCache() = MooncakeCache(IdDict{Core.MethodInstance,Core.CodeInstance}())
 # The method table used by `Mooncake.@mooncake_overlay`.
 Base.Experimental.@MethodTable mooncake_method_table
 
-struct MooncakeInterpreter{C} <: CC.AbstractInterpreter
+struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
     meta # additional information
     world::UInt
     inf_params::CC.InferenceParams
@@ -33,7 +33,8 @@ struct MooncakeInterpreter{C} <: CC.AbstractInterpreter
     code_cache::MooncakeCache
     oc_cache::Dict{ClosureCacheKey,Any}
     function MooncakeInterpreter(
-        ::Type{C};
+        ::Type{C},
+        ::Type{M};
         meta=nothing,
         world::UInt=Base.get_world_counter(),
         inf_params::CC.InferenceParams=CC.InferenceParams(),
@@ -41,8 +42,8 @@ struct MooncakeInterpreter{C} <: CC.AbstractInterpreter
         inf_cache::Vector{CC.InferenceResult}=CC.InferenceResult[],
         code_cache::MooncakeCache=MooncakeCache(),
         oc_cache::Dict{ClosureCacheKey,Any}=Dict{ClosureCacheKey,Any}(),
-    ) where {C}
-        ip = new{C}(meta, world, inf_params, opt_params, inf_cache, code_cache, oc_cache)
+    ) where {C,M<:Mode}
+        ip = new{C,M}(meta, world, inf_params, opt_params, inf_cache, code_cache, oc_cache)
         tts = Any[
             Tuple{typeof(sum),Tuple{Int}},
             Tuple{typeof(sum),Tuple{Int,Int}},
@@ -75,7 +76,7 @@ function _show_interp(io::IO, ::MIME"text/plain", ::MooncakeInterpreter)
     return print(io, "MooncakeInterpreter()")
 end
 
-MooncakeInterpreter() = MooncakeInterpreter(DefaultCtx)
+MooncakeInterpreter(M::Type{<:Mode}) = MooncakeInterpreter(DefaultCtx, M)
 
 context_type(::MooncakeInterpreter{C}) where {C} = C
 
@@ -122,14 +123,14 @@ CC.getsplit_impl(info::NoInlineCallInfo, idx::Int) = CC.getsplit(info.info, idx)
 CC.getresult_impl(info::NoInlineCallInfo, idx::Int) = CC.getresult(info.info, idx)
 
 function Core.Compiler.abstract_call_gf_by_type(
-    interp::MooncakeInterpreter{C},
+    interp::MooncakeInterpreter{C,M},
     @nospecialize(f),
     arginfo::CC.ArgInfo,
     si::CC.StmtInfo,
     @nospecialize(atype),
     sv::CC.AbsIntState,
     max_methods::Int,
-) where {C}
+) where {C,M}
 
     # invoke the default abstract call to get the default CC.CallMeta.
     cm = @invoke CC.abstract_call_gf_by_type(
@@ -144,7 +145,7 @@ function Core.Compiler.abstract_call_gf_by_type(
 
     # Check to see whether the call in question is a Mooncake primitive. If it is, set its
     # call info such that in the `CC.inlining_policy` it is not inlined away.
-    callinfo = is_primitive(C, atype) ? NoInlineCallInfo(cm.info, atype) : cm.info
+    callinfo = is_primitive(C, M, atype) ? NoInlineCallInfo(cm.info, atype) : cm.info
 
     # Construct a CallMeta correctly depending on the version of Julia.
     @static if VERSION ≥ v"1.11-"
@@ -196,23 +197,26 @@ else # 1.11 and up.
 end
 
 """
-    const GLOBAL_INTERPRETER
+    const GLOBAL_INTERPRETERS
 
-Globally cached interpreter. Should only be accessed via `get_interpreter`.
+Cached interpreters. Should only be accessed via `get_interpreter`.
 """
-const GLOBAL_INTERPRETER = Ref(MooncakeInterpreter())
+const GLOBAL_INTERPRETERS = Dict(
+    ForwardMode => MooncakeInterpreter(DefaultCtx, ForwardMode),
+    ReverseMode => MooncakeInterpreter(DefaultCtx, ReverseMode),
+)
 
 """
-    get_interpreter()
+    get_interpreter(mode::Type{<:Mode})
 
 Returns a `MooncakeInterpreter` appropriate for the current world age. Will use a cached
 interpreter if one already exists for the current world age, otherwise creates a new one.
 
 This should be prefered over constructing a `MooncakeInterpreter` directly.
 """
-function get_interpreter()
-    if GLOBAL_INTERPRETER[].world != Base.get_world_counter()
-        GLOBAL_INTERPRETER[] = MooncakeInterpreter()
+function get_interpreter(mode::Type{<:Mode})
+    if GLOBAL_INTERPRETERS[mode].world != Base.get_world_counter()
+        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode)
     end
-    return GLOBAL_INTERPRETER[]
+    return GLOBAL_INTERPRETERS[mode]
 end

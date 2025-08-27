@@ -3,9 +3,11 @@ module MooncakeLuxLibExt
 using LuxLib, Random, Mooncake
 using Base: IEEEFloat
 
-import LuxLib: Impl
+import LuxLib: Impl, Utils
 import LuxLib.Utils: static_training_mode_check
+using MLDataDevices: get_device_type
 import Mooncake: @from_rrule, DefaultCtx, @mooncake_overlay, CoDual
+using Static: True
 
 @from_rrule(DefaultCtx, Tuple{typeof(Impl.matmul),Array{P},Array{P}} where {P<:IEEEFloat})
 @from_rrule(
@@ -16,6 +18,14 @@ import Mooncake: @from_rrule, DefaultCtx, @mooncake_overlay, CoDual
     DefaultCtx,
     Tuple{typeof(Impl.batched_matmul),Array{P,3},Array{P,3}} where {P<:IEEEFloat},
 )
+
+## For mooncake we are missing some rules. For now use the basic versions of the kernels
+@mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) = LuxLib.GenericBroadcastOp{
+    get_device_type(xs)
+}()
+
+# Utils extensions
+@mooncake_overlay Utils.within_autodiff(x) = True()
 
 # Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
 @mooncake_overlay function LuxLib.Impl.fused_dense(

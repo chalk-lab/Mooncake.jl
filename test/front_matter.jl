@@ -38,6 +38,7 @@ using Mooncake:
     _add_to_primal,
     _diff,
     _dot,
+    zero_dual,
     zero_codual,
     codual_type,
     rrule!!,
@@ -50,7 +51,10 @@ using Mooncake:
     rdata_type,
     fdata,
     rdata,
-    get_interpreter
+    get_interpreter,
+    Mode,
+    ForwardMode,
+    ReverseMode
 
 using Mooncake:
     CC,

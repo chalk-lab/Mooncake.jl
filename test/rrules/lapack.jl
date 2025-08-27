@@ -1,5 +1,5 @@
 @testset "lapack" begin
-    TestUtils.run_rrule!!_test_cases(StableRNG, Val(:lapack))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:lapack))
 
     @testset "real/complex logdet" begin
         d = 3

@@ -18,6 +18,13 @@ Base.copy(x::CoDual) = CoDual(copy(primal(x)), copy(tangent(x)))
 _copy(x::P) where {P<:CoDual} = x
 
 """
+    extract(x::CoDual)
+
+Helper function. Returns the 2-tuple `x.x, x.dx`.
+"""
+extract(x::CoDual) = primal(x), tangent(x)
+
+"""
     zero_codual(x)
 
 Equivalent to `CoDual(x, zero_tangent(x))`.

@@ -123,9 +123,10 @@ sr(x) = StableRNG(x)
         @info "$(typeof((f, x_f32...)))"
         rng = sr(123546)
         ps, st = f32(Lux.setup(rng, f))
-        x = f32(x_f32)
+        mode = Mooncake.ReverseMode
+        fargs = (f, f32(x_f32), ps, st)
         test_rule(
-            rng, f, x, ps, st; is_primitive=false, interface_only, unsafe_perturb=true
+            rng, fargs...; is_primitive=false, interface_only, unsafe_perturb=true, mode
         )
     end
 end
