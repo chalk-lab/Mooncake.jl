@@ -10,6 +10,7 @@ import ChainRulesCore as CRC
 
 using Base:
     IEEEFloat,
+    ReshapedArray,
     unsafe_convert,
     unsafe_pointer_to_objref,
     pointer_from_objref,
