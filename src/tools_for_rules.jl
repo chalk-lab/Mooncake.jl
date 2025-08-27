@@ -28,7 +28,7 @@ function _check_for_unsupported_array_types(arg_type_symbols)
                 "`increment_and_get_rdata!` methods to handle SubArray tangent types. " *
                 "Consider writing a custom rrule!! for your function instead, " *
                 "or use the parent array directly. " *
-                "See https://github.com/chalk-lab/Mooncake.jl/issues/677 for more details."
+                "See https://github.com/chalk-lab/Mooncake.jl/issues/677 for more details.",
             )
         end
     end
@@ -39,27 +39,27 @@ function _contains_subarray_type(expr)
     if expr isa Expr && expr.head == :escape
         return _contains_subarray_type(expr.args[1])
     end
-    
+
     # Check if expression directly mentions SubArray
     if expr == :SubArray
         return true
     end
-    
+
     # For parametric types like SubArray{T} or SubArray{<:SomeType}
     if expr isa Expr && expr.head == :curly && length(expr.args) >= 1
         return expr.args[1] == :SubArray || any(_contains_subarray_type, expr.args[2:end])
     end
-    
+
     # For <: expressions like <:SubArray{T}
     if expr isa Expr && expr.head == :<: && length(expr.args) >= 1
         return any(_contains_subarray_type, expr.args)
     end
-    
+
     # For other expression types, recursively check all arguments
     if expr isa Expr
         return any(_contains_subarray_type, expr.args)
     end
-    
+
     return false
 end
 
@@ -638,10 +638,10 @@ end
 
 function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     arg_type_syms, where_params = parse_signature_expr(sig)
-    
+
     # Check for unsupported array types like SubArray
     _check_for_unsupported_array_types(arg_type_syms)
-    
+
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
     codual_arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_syms)
