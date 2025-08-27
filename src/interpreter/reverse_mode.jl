@@ -1367,9 +1367,18 @@ function forwards_pass_ir(
     new_ir = BBCode(ir, vcat(entry_block, blocks))
     new_ir = BBCode(new_ir, new_ir.blocks)  # Update arg_types
     @static if VERSION >= v"1.12-"
-        new_ir = BBCode(new_ir.blocks, arg_types, new_ir.sptypes, new_ir.debuginfo, new_ir.meta, new_ir.valid_worlds)
+        new_ir = BBCode(
+            new_ir.blocks,
+            arg_types,
+            new_ir.sptypes,
+            new_ir.debuginfo,
+            new_ir.meta,
+            new_ir.valid_worlds,
+        )
     else
-        new_ir = BBCode(new_ir.blocks, arg_types, new_ir.sptypes, new_ir.linetable, new_ir.meta)
+        new_ir = BBCode(
+            new_ir.blocks, arg_types, new_ir.sptypes, new_ir.linetable, new_ir.meta
+        )
     end
     return remove_unreachable_blocks!(new_ir)
 end
@@ -1412,7 +1421,9 @@ function pullback_ir(
     if isempty(primal_exit_blocks_inds)
         blocks = [BBlock(ID(), [(ID(), new_inst(ReturnNode(nothing)))])]
         @static if VERSION >= v"1.12-"
-            return BBCode(blocks, Any[Any], ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds)
+            return BBCode(
+                blocks, Any[Any], ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds
+            )
         else
             return BBCode(blocks, Any[Any], ir.sptypes, ir.linetable, ir.meta)
         end
