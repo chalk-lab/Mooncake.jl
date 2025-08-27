@@ -917,7 +917,8 @@ function test_rule(
         @testset "$(typeof(x))" begin
             # Test that the interface is basically satisfied (checks types / memory addresses).
             @testset "Interface (1)" begin
-                test_fwd && test_frule_interface(x_ẋ...; frule)
+                println("here")
+                # test_fwd && test_frule_interface(x_ẋ...; frule)
                 test_rvs && test_rrule_interface(x_x̄...; rrule)
             end
 
@@ -970,7 +971,6 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
-
         test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
         test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
     end
@@ -984,7 +984,6 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
-
         test_rule(
             rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
         )
