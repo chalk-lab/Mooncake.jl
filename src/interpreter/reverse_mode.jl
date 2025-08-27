@@ -1364,8 +1364,14 @@ function forwards_pass_ir(
 
     # Create and return the `BBCode` for the forwards-pass.
     arg_types = vcat(Tshared_data, map(fcodual_type ∘ CC.widenconst, ir.argtypes))
-    ir = BBCode(vcat(entry_block, blocks), arg_types, ir.sptypes, ir.linetable, ir.meta)
-    return remove_unreachable_blocks!(ir)
+    new_ir = BBCode(ir, vcat(entry_block, blocks))
+    new_ir = BBCode(new_ir, new_ir.blocks)  # Update arg_types
+    @static if VERSION >= v"1.12-"
+        new_ir = BBCode(new_ir.blocks, arg_types, new_ir.sptypes, new_ir.debuginfo, new_ir.meta, new_ir.valid_worlds)
+    else
+        new_ir = BBCode(new_ir.blocks, arg_types, new_ir.sptypes, new_ir.linetable, new_ir.meta)
+    end
+    return remove_unreachable_blocks!(new_ir)
 end
 
 """
@@ -1405,7 +1411,11 @@ function pullback_ir(
     # won't succeed on the forwards-pass. As such, the reverse-pass can just be a no-op.
     if isempty(primal_exit_blocks_inds)
         blocks = [BBlock(ID(), [(ID(), new_inst(ReturnNode(nothing)))])]
-        return BBCode(blocks, Any[Any], ir.sptypes, ir.linetable, ir.meta)
+        @static if VERSION >= v"1.12-"
+            return BBCode(blocks, Any[Any], ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds)
+        else
+            return BBCode(blocks, Any[Any], ir.sptypes, ir.linetable, ir.meta)
+        end
     end
 
     #
@@ -1531,7 +1541,11 @@ function pullback_ir(
     # block). This ought not to be necessary, but _appears_ to be necessary in order to
     # avoid annoying the Julia compiler.
     blks = vcat(entry_block, main_blocks, exit_block)
-    pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.linetable, ir.meta)
+    @static if VERSION >= v"1.12-"
+        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds)
+    else
+        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.linetable, ir.meta)
+    end
     return remove_unreachable_blocks!(sort_blocks!(pb_ir))
 end
 
