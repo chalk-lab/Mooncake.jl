@@ -98,62 +98,62 @@ function generate_hand_written_rrule!!_test_cases(
     _dx = Ref(4.0)
     test_cases = vcat(
         Any[
-        #     # Rules to avoid pointer type conversions.
-        #     (
-        #         true,
-        #         :stability_and_allocs,
-        #         nothing,
-        #         +,
-        #         CoDual(
-        #             bitcast(Ptr{Float64}, pointer_from_objref(_x)),
-        #             bitcast(Ptr{Float64}, pointer_from_objref(_dx)),
-        #         ),
-        #         2,
-        #     ),
+            # Rules to avoid pointer type conversions.
+            (
+                true,
+                :stability_and_allocs,
+                nothing,
+                +,
+                CoDual(
+                    bitcast(Ptr{Float64}, pointer_from_objref(_x)),
+                    bitcast(Ptr{Float64}, pointer_from_objref(_dx)),
+                ),
+                2,
+            ),
 
-        #     # Rules for handling Atomic read operations.
-        #     (false, :stability_and_allocs, nothing, getindex, Atomic{Int64}(rand(1:100))),
-        #     (false, :stability_and_allocs, nothing, getindex, Atomic{Int32}(rand(1:100))),
-        #     (false, :stability_and_allocs, nothing, getindex, Atomic{Int16}(rand(1:100))),
+            # Rules for handling Atomic read operations.
+            (false, :stability_and_allocs, nothing, getindex, Atomic{Int64}(rand(1:100))),
+            (false, :stability_and_allocs, nothing, getindex, Atomic{Int32}(rand(1:100))),
+            (false, :stability_and_allocs, nothing, getindex, Atomic{Int16}(rand(1:100))),
     ],
 
-        # # Rules in order to avoid introducing determinism.
-        # reduce(
-        #     vcat,
-        #     map([Xoshiro(1), TaskLocalRNG()]) do rng
-        #         return Any[
-        #             (true, :stability_and_allocs, nothing, randn, rng),
-        #             (true, :stability, nothing, randn, rng, 2),
-        #             (true, :stability, nothing, randn, rng, 3, 2),
-        #         ]
-        #     end,
-        # ),
+        # Rules in order to avoid introducing determinism.
+        reduce(
+            vcat,
+            map([Xoshiro(1), TaskLocalRNG()]) do rng
+                return Any[
+                    (true, :stability_and_allocs, nothing, randn, rng),
+                    (true, :stability, nothing, randn, rng, 2),
+                    (true, :stability, nothing, randn, rng, 3, 2),
+                ]
+            end,
+        ),
 
-        # # Rules to make string-related functionality work properly.
-        # (false, :stability, nothing, string, 'H'),
-        # (false, :stability, nothing, Base.normpath, "/home/user/../folder/./file.txt"),
-        # (
-        #     false,
-        #     :stability,
-        #     nothing,
-        #     Base._replace_init,
-        #     "hello world",
-        #     ("hello" => "hi",),
-        #     1,
-        # ),
+        # Rules to make string-related functionality work properly.
+        (false, :stability, nothing, string, 'H'),
+        (false, :stability, nothing, Base.normpath, "/home/user/../folder/./file.txt"),
+        (
+            false,
+            :stability,
+            nothing,
+            Base._replace_init,
+            "hello world",
+            ("hello" => "hi",),
+            1,
+        ),
 
-        # # non-kwargs sprint rule test
-        # (false, :stability, nothing, sprint, show, "Testing sprint"),
+        # non-kwargs sprint rule test
+        (false, :stability, nothing, sprint, show, "Testing sprint"),
 
-        # # Rules to make Symbol-related functionality work properly.
-        # (false, :stability_and_allocs, nothing, Symbol, "hello"),
-        # (false, :stability_and_allocs, nothing, Symbol, UInt8[1, 2]),
-        # (false, :stability_and_allocs, nothing, Float64, π, RoundDown),
-        # (false, :stability_and_allocs, nothing, Float64, π, RoundUp),
-        # (true, :stability_and_allocs, nothing, Float32, π, RoundDown),
-        # (true, :stability_and_allocs, nothing, Float32, π, RoundUp),
-        # (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
-        # (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
+        # Rules to make Symbol-related functionality work properly.
+        (false, :stability_and_allocs, nothing, Symbol, "hello"),
+        (false, :stability_and_allocs, nothing, Symbol, UInt8[1, 2]),
+        (false, :stability_and_allocs, nothing, Float64, π, RoundDown),
+        (false, :stability_and_allocs, nothing, Float64, π, RoundUp),
+        (true, :stability_and_allocs, nothing, Float32, π, RoundDown),
+        (true, :stability_and_allocs, nothing, Float32, π, RoundUp),
+        (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
+        (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
     )
     memory = Any[_x, _dx]
     return test_cases, memory
@@ -200,19 +200,19 @@ function generate_derived_rrule!!_test_cases(
     end
 
     test_cases = vcat(Any[
-    # Tests for Base.CoreLogging, @show macros and string related functions.
-    # (false, :none, nothing, (x) -> print(x), "Testing print"),
-    # (false, :none, nothing, (x) -> println(x), "Testing println"),
-    # (false, :none, nothing, (x) -> show(x), "Testing show"),
+    Tests for Base.CoreLogging, @show macros and string related functions.
+    (false, :none, nothing, (x) -> print(x), "Testing print"),
+    (false, :none, nothing, (x) -> println(x), "Testing println"),
+    (false, :none, nothing, (x) -> show(x), "Testing show"),
     (false, :none, nothing, testloggingmacro1, rand(1:100)),
-    # (false, :none, nothing, testloggingmacro2, rand(1:100)),
-    # (false, :none, nothing, testloggingmacro3, rand(1:100)),
-    # (false, :none, nothing, testloggingmacro4, rand(1:100)),
-    # (false, :none, nothing, testloggingmacro5, rand(1:100)),
-    # (false, :none, nothing, testloggingmacro6, rand(1:100)),
-    # (false, :none, nothing, testloggingmacro7, rand(1:100)),
-    # (false, :none, nothing, testloggingmacro8, rand(1:100)),
-    # (false, :none, nothing, testloggingmacro9, rand(1:100)),
+    (false, :none, nothing, testloggingmacro2, rand(1:100)),
+    (false, :none, nothing, testloggingmacro3, rand(1:100)),
+    (false, :none, nothing, testloggingmacro4, rand(1:100)),
+    (false, :none, nothing, testloggingmacro5, rand(1:100)),
+    (false, :none, nothing, testloggingmacro6, rand(1:100)),
+    (false, :none, nothing, testloggingmacro7, rand(1:100)),
+    (false, :none, nothing, testloggingmacro8, rand(1:100)),
+    (false, :none, nothing, testloggingmacro9, rand(1:100)),
 ])
     return test_cases, Any[]
 end

@@ -301,15 +301,15 @@ end
 function benchmark_hand_written_rrules!!(rng_ctor)
     test_case_data = map([
         :avoiding_non_differentiable_code,
-        # :blas,
-        # :builtins,
-        # :fastmath,
-        # :foreigncall,
-        # :iddict,
-        # :lapack,
-        # :low_level_maths,
-        # :misc,
-        # :new,
+        :blas,
+        :builtins,
+        :fastmath,
+        :foreigncall,
+        :iddict,
+        :lapack,
+        :low_level_maths,
+        :misc,
+        :new,
     ]) do s
         test_cases, memory = generate_hand_written_rrule!!_test_cases(rng_ctor, Val(s))
         ranges = map(x -> x[3], test_cases)
