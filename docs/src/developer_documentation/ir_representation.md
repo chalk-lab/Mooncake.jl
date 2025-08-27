@@ -1,4 +1,4 @@
-# Mooncake's IR Representation and Code Transformations
+# IR Representations and Code Transformations
 
 Mooncake.jl works by transforming Julia's SSA-form (static single assignment) Intermediate Representation (IR), so a good understanding of Julia's IR is needed to understand Mooncake.
 Furthermore, Mooncake holds Julia's IR in a different data structure than the one usually used when producing code for reverse-mode AD.
@@ -557,9 +557,7 @@ Ideally these efforts will succeed, then we can do away with `BBCode`.
 
 ### Comparison with Alternative Approaches
 
-It's worth noting that other automatic differentiation systems have taken different approaches to IR manipulation. For example, [Diffractor.jl](https://github.com/JuliaDiff/Diffractor.jl) uses an "Optics" approach for IR transformations ([see their reading list](https://github.com/JuliaDiff/Diffractor.jl/blob/41fcdf2b6291a628886709f21734b73275c4c0cb/docs/src/reading_list.md?plain=1#L15)). The Optics approach provides a functional lens-based method for composable transformations of nested data structures.
-
-While Mooncake's `BBCode` was designed specifically to make control flow graph transformations easier for reverse-mode AD, exploring whether Optics could provide a more principled and composable approach to IR transformations could be an interesting direction for future development. Such an approach might potentially unify the IR transformation needs of both forward and reverse mode AD under a single framework.
+It's worth noting that other automatic differentiation systems have taken different approaches to IR manipulation. For example, [Diffractor.jl](https://github.com/JuliaDiff/Diffractor.jl) uses an "Optics" approach for IR transformations.
 
 For readers interested in learning more about Julia's IR representation beyond what's covered here, the [Scientific Programming in Julia course materials](https://github.com/JuliaTeachingCTU/Scientific-Programming-in-Julia/blob/2023W/docs/src/lecture_09/ircode.md) provide additional valuable context.
 
