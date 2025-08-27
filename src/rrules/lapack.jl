@@ -607,7 +607,7 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
             return map(As) do A
                 (false, :none, nothing, real ∘ logdet ∘ complex, A)
             end
-        end...
+        end...,
     )
     memory = Any[]
     return test_cases, memory
