@@ -52,25 +52,9 @@ Beyond the [`interpreter`](https://github.com/chalk-lab/Mooncake.jl/blob/main/sr
 For testing, all the tests got via the `generate_test_functions` method (defined in [`test_resources.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/1894b2f23916091d5022134db0af61a75c1035ee/src/test_resources.jl#L655)) must pass.
 Recycle the functionality from reverse mode test utils.
 
-To manipulate `IRCode`, check out the fields:
-
-- `ir.argtypes` is the signature. Some are annotated with `Core.Const` to facilitate constant propagation for instance. Other annotations are `PartialStruct`, `Conditional`, `PartialTypeVar`. `Core.Compiler.widenconst` is used to extract types from these.
-- `ir.stmts` is a `Core.Compiler.InstructionStream`. This represents a sequence of instructions via 5 vectors of the same length:
-  - `stmts.stmt` is a vector of expressions (or other IR node types), see [AST docs](https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form)
-  - `stmts.type` is a vector of types for the left-hand side of the assignment
-  - three others
-- `ir.cfg` is the Control Flow Graph of type `Core.Compiler.CFG`
-- `ir.meta` is metadata, not important
-- `ir.new_nodes` is an optimization buffer, not important
-- `ir.sptypes` is for type parameters of the called function
-
-We must maintain coherence between the various components of `IRCode` (especially `ir.stmts` and `ir.cfg`). That is the reason behind `BBCode`, to make coherence easier.
-We can deduce the CFG from the statements but not the other way around: it's only composed of blocks of statement indices.
-In forward mode we shouldn't have to modify anything but `ir.stmts`.
-Do line by line transformation of the statements and then possibly refresh the CFG.
+For detailed information about manipulating `IRCode` and `BBCode` data structures, including their fields, structure, and how to transform them, see [Mooncake's IR Representation and Code Transformations](@ref).
 
 Examples of how line-by-line transformations can be done, are defined in [`Mooncake.make_ad_stmts!`](@ref).
-The `IRCode` nodes are not explicitly documented in <https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form> or <https://docs.julialang.org/en/v1/devdocs/ssair/#Main-SSA-data-structure>. Might need completion of official docs, but Mooncake docs in the meantime.
 
 Inlining pass can prevent us from using high-level rules by inlining the function (e.g. unrolling a loop).
 The contexts in [`interpreter/contexts.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/src/interpreter/contexts.jl) are `MinimalCtx` (necessary for AD to work) and `DefaultCtx` (ensure that we hit all of the rules).
