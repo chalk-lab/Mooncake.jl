@@ -680,7 +680,12 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         raw_rule = if is_primitive(context_type(info.interp), ReverseMode, sig)
             rrule!! # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
-            mi = stmt.args[1]::Core.MethodInstance
+            @static if VERSION ≥ v"1.12-"
+                invoked = stmt.args[1]
+                mi = isa(invoked, Core.MethodInstance) ? invoked : CC.get_ci_mi(invoked)
+            else
+                mi = stmt.args[1]::Core.MethodInstance
+            end
             LazyDerivedRule(mi, info.debug_mode) # Static dispatch
         else
             DynamicDerivedRule(info.debug_mode)  # Dynamic dispatch
