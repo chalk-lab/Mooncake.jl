@@ -148,6 +148,14 @@ end
 @test_throws ErrorType function_call(invalid_args...)
 ```
 
+### Running Tests
+- Run specific test groups using:
+```bash
+cd Mooncake.jl/test && TEST_GROUP="basic" && julia --project -e 'using Pkg; Pkg.instantiate(); include("runtests.jl")'
+```
+- Available test groups include: `basic`, `quality`, and various `rrules/*` groups (e.g., `rrules/blas`, `rrules/linear_algebra`)
+- The `basic` group covers core functionality and fundamental tests
+
 ### Integration with CI
 - Tests run in multiple groups for parallelization
 - Quality checks include formatting and static analysis
