@@ -1,14 +1,14 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
-@is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasRealFloat}})
+@is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 function frule!!(
     ::Dual{typeof(LAPACK.getrf!)}, A_dA::Dual{<:AbstractMatrix{P}}
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     _, ipiv, info = LAPACK.getrf!(primal(A_dA))
     return _getrf_fwd(A_dA, ipiv, info)
 end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     A, dA = arrayify(_A)
     A_copy = copy(A)
 
@@ -28,16 +28,14 @@ end
 
 @is_primitive(
     MinimalCtx,
-    Tuple{
-        typeof(Core.kwcall),NamedTuple,typeof(LAPACK.getrf!),AbstractMatrix{<:BlasRealFloat}
-    },
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}},
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     _kwargs::Dual{<:NamedTuple},
     ::Dual{typeof(getrf!)},
     A_dA::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     check = primal(_kwargs).check
     _, ipiv, info = LAPACK.getrf!(primal(A_dA); check)
     return _getrf_fwd(A_dA, ipiv, info)
@@ -47,7 +45,7 @@ function rrule!!(
     _kwargs::CoDual{<:NamedTuple},
     ::CoDual{typeof(getrf!)},
     _A::CoDual{<:AbstractMatrix{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     check = _kwargs.x.check
     A, dA = arrayify(_A)
     A_copy = copy(A)
@@ -505,6 +503,7 @@ end
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
+    complexPs = [Float64, Float32, ComplexF64, ComplexF32]
     bools = [false, true]
     test_cases = vcat(
 
@@ -516,7 +515,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
                 (false, :stability, nothing, getrf!, A)
             end
         end...,
-        map_prod(bools, Ps) do (check, P)
+        map_prod(bools, complexPs) do (check, P)
             As = blas_matrices(rng, P, 5, 5)
             ipiv = Vector{Int}(undef, 5)
             return map(As) do A
@@ -583,13 +582,33 @@ end
 
 function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
+    complexPs = [Float64, Float32, ComplexF64, ComplexF32]
     getrf_wrapper!(x, check) = getrf!(x; check)
-    test_cases = vcat(map_prod([false, true], [Float64, Float32]) do (check, P)
-        As = blas_matrices(rng, P, 5, 5)
-        return map(As) do A
-            (false, :none, nothing, getrf_wrapper!, A, check)
-        end
-    end...)
+    test_cases = vcat(
+        # getrf
+        map_prod([false, true], complexPs) do (check, P)
+            As = blas_matrices(rng, P, 5, 5)
+            return map(As) do A
+                (false, :none, nothing, getrf_wrapper!, A, check)
+            end
+        end...,
+
+        # real logdet
+        map([Float64, Float32]) do P
+            As = positive_definite_blas_matrices(rng, P, 3)
+            return map(As) do A
+                (false, :none, nothing, logdet, A)
+            end
+        end...,
+
+        # complex logdet
+        map(complexPs) do P
+            As = blas_matrices(rng, P, 3, 3)
+            return map(As) do A
+                (false, :none, nothing, real ∘ logdet ∘ complex, A)
+            end
+        end...,
+    )
     memory = Any[]
     return test_cases, memory
 end

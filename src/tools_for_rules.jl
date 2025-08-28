@@ -282,9 +282,8 @@ function _zero_derivative_impl(ctx, sig, mode)
     # which does not escape the mode argument. This will work even if the names `Mooncake`
     # or `Mooncake.Mode` are not available in the scope which calls this macro.
     is_primitive_ex = quote
-        const M = $mode
         function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:$(esc(sig))}
+            ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$(esc(sig))}
         )
             return true
         end
@@ -605,7 +604,9 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
         # Type M will be available later on, and will be the mode type.
         kw_is_primitive = quote
-            function Mooncake.is_primitive(::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:$kw_sig})
+            function Mooncake.is_primitive(
+                ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$kw_sig}
+            )
                 return true
             end
         end
@@ -634,9 +635,8 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     end
 
     return quote
-        const M = $mode
         function Mooncake.is_primitive(
-            ::Type{$(esc(ctx))}, ::Type{<:M}, ::Type{<:($(esc(sig)))}
+            ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:($(esc(sig)))}
         )
             return true
         end

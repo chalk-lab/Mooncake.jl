@@ -14,6 +14,9 @@ f(a, x) = dot(a.data, x)
 
 unstable_tester(x::Ref{Any}) = sin(x[])
 
+# used for regression test for issue 660
+struct MakeAUnionAll{T} end
+
 end
 
 @testset "s2s_reverse_mode_ad" begin
@@ -353,6 +356,11 @@ end
         f(x) = sin(cos(x))
         rule = Mooncake.build_rrule(f, 0.0)
         @benchmark Mooncake.value_and_gradient!!($rule, $f, $(Ref(0.0))[])
+
+        # 660 -- ensure that the correct signature is used to construct DynamicDerivedRules
+        rule = Mooncake.DynamicDerivedRule(false)
+        args = (zero_fcodual(identity), zero_fcodual((v=S2SGlobals.MakeAUnionAll,)))
+        @test rule(args...) isa Tuple{CoDual,Any}
     end
     @testset "literal Strings do not appear in shared data" begin
         f() = "hello"
