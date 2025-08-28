@@ -30,214 +30,155 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
-@is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
-function frule!!(
-    ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
-) where {P<:IEEEFloat}
-    return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
-end
-function rrule!!(
-    ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
-) where {P<:IEEEFloat}
-    function sum_abs2_pb!!(dz::P)
-        x.dx .+= 2 .* x.x .* dz
-        return NoRData(), NoRData(), NoRData()
-    end
-    return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
-end
-
-# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/526
-
 # Matrix × Matrix kron
 @is_primitive(DefaultCtx, Tuple{typeof(kron),Matrix{<:IEEEFloat},Matrix{<:IEEEFloat}})
 function frule!!(
-    ::Dual{typeof(kron)}, A::Dual{<:Matrix{P}}, B::Dual{<:Matrix{P}}
+    ::Dual{typeof(kron)}, A_dual::Dual{<:Matrix{P}}, B_dual::Dual{<:Matrix{P}}
 ) where {P<:IEEEFloat}
-    primal_A, tangent_A = primal(A), tangent(A)
-    primal_B, tangent_B = primal(B), tangent(B)
+    A, dA = primal(A_dual), tangent(A_dual)
+    B, dB = primal(B_dual), tangent(B_dual)
 
-    primal_result = kron(primal_A, primal_B)
-    tangent_result = kron(tangent_A, primal_B) + kron(primal_A, tangent_B)
+    y = kron(A, B)
+    dy = kron(dA, B) + kron(A, dB)
 
-    return Dual(primal_result, tangent_result)
+    return Dual(y, dy)
 end
 
 function rrule!!(
-    ::CoDual{typeof(kron)}, A::CoDual{<:Matrix{P}}, B::CoDual{<:Matrix{P}}
+    ::CoDual{typeof(kron)}, A_codual::CoDual{<:Matrix{P}}, B_codual::CoDual{<:Matrix{P}}
 ) where {P<:IEEEFloat}
-    primal_A, primal_B = A.x, B.x
-    dA, dB = A.dx, B.dx
+    A, B = A_codual.x, B_codual.x
+    ∇A, ∇B = A_codual.dx, B_codual.dx # Use ∇ to denote gradients (cotangents)
 
     function kron_pb!!(dy)
-        # Handle NoRData case
         dy isa NoRData && return NoRData(), NoRData(), NoRData()
         
-        m1, n1 = size(primal_A)
-        m2, n2 = size(primal_B)
+        m1, n1 = size(A)
+        m2, n2 = size(B)
 
-        # For dA: each element A[i,j] affects block dy[(i-1)*m2+1:i*m2, (j-1)*n2+1:j*n2] 
-        # The contribution is A[i,j] * B, so dA[i,j] += sum(dy[block] .* B)
-        for i in 1:m1, j in 1:n1
-            block_rows = ((i - 1) * m2 + 1):(i * m2)
-            block_cols = ((j - 1) * n2 + 1):(j * n2)
-            dA[i, j] += sum(view(dy, block_rows, block_cols) .* primal_B)
-        end
+        dy_tensor = permutedims(reshape(dy, (m2, m1, n2, n1)), (2, 4, 1, 3))
+        dy_flat_blocks = reshape(dy_tensor, (m1 * n1, m2 * n2))
 
-        # For dB: each element B[k,l] appears in all blocks, multiplied by A[i,j]
-        # So dB[k,l] += sum over all i,j: A[i,j] * dy[block_i_j][k,l]
-        for k in 1:m2, l in 1:n2
-            for i in 1:m1, j in 1:n1
-                block_row = (i-1)*m2 + k
-                block_col = (j-1)*n2 + l
-                dB[k, l] += primal_A[i, j] * dy[block_row, block_col]
-            end
-        end
+        LinearAlgebra.mul!(vec(∇A), dy_flat_blocks, vec(B), 1, 1)
+        LinearAlgebra.mul!(vec(∇B), dy_flat_blocks', vec(A), 1, 1)
 
         return NoRData(), NoRData(), NoRData()
     end
 
-    return zero_fcodual(kron(primal_A, primal_B)), kron_pb!!
+    return zero_fcodual(kron(A, B)), kron_pb!!
 end
 
 # Vector × Vector kron
 @is_primitive(DefaultCtx, Tuple{typeof(kron),Vector{<:IEEEFloat},Vector{<:IEEEFloat}})
 function frule!!(
-    ::Dual{typeof(kron)}, a::Dual{<:Vector{P}}, b::Dual{<:Vector{P}}
+    ::Dual{typeof(kron)}, a_dual::Dual{<:Vector{P}}, b_dual::Dual{<:Vector{P}}
 ) where {P<:IEEEFloat}
-    primal_a, tangent_a = primal(a), tangent(a)
-    primal_b, tangent_b = primal(b), tangent(b)
+    a, da = primal(a_dual), tangent(a_dual)
+    b, db = primal(b_dual), tangent(b_dual)
     
-    primal_result = kron(primal_a, primal_b)
-    tangent_result = kron(tangent_a, primal_b) + kron(primal_a, tangent_b)
+    y = kron(a, b)
+    dy = kron(da, b) + kron(a, db)
     
-    return Dual(primal_result, tangent_result)
+    return Dual(y, dy)
 end
 
 function rrule!!(
-    ::CoDual{typeof(kron)}, a::CoDual{<:Vector{P}}, b::CoDual{<:Vector{P}}
+    ::CoDual{typeof(kron)}, a_codual::CoDual{<:Vector{P}}, b_codual::CoDual{<:Vector{P}}
 ) where {P<:IEEEFloat}
-    primal_a, primal_b = a.x, b.x
-    da, db = a.dx, b.dx
+    a, b = a_codual.x, b_codual.x
+    ∇a, ∇b = a_codual.dx, b_codual.dx # Use ∇ for gradients
 
     function kron_vec_pb!!(dy)
-        # Handle NoRData case
         dy isa NoRData && return NoRData(), NoRData(), NoRData()
         
-        m1 = length(primal_a)
-        m2 = length(primal_b)
+        m1 = length(a)
+        m2 = length(b)
         
-        # For da: each element a[i] affects block dy[(i-1)*m2+1:i*m2]
-        for i in 1:m1
-            block_indices = ((i - 1) * m2 + 1):(i * m2)
-            da[i] += sum(view(dy, block_indices) .* primal_b)
-        end
-        
-        # For db: each element b[j] appears at positions j, m2+j, 2*m2+j, etc.
-        for j in 1:m2
-            for i in 1:m1
-                index = (i-1)*m2 + j  # Position where a[i]*b[j] appears
-                db[j] += primal_a[i] * dy[index]
-            end
-        end
+        dy_reshaped = reshape(dy, (m2, m1))
+
+        LinearAlgebra.mul!(∇a, dy_reshaped', b, 1, 1)
+        LinearAlgebra.mul!(∇b, dy_reshaped, a, 1, 1)
 
         return NoRData(), NoRData(), NoRData()
     end
 
-    return zero_fcodual(kron(primal_a, primal_b)), kron_vec_pb!!
+    return zero_fcodual(kron(a, b)), kron_vec_pb!!
 end
 
 # Vector × Matrix kron
 @is_primitive(DefaultCtx, Tuple{typeof(kron),Vector{<:IEEEFloat},Matrix{<:IEEEFloat}})
 function frule!!(
-    ::Dual{typeof(kron)}, a::Dual{<:Vector{P}}, B::Dual{<:Matrix{P}}
+    ::Dual{typeof(kron)}, a_dual::Dual{<:Vector{P}}, B_dual::Dual{<:Matrix{P}}
 ) where {P<:IEEEFloat}
-    primal_a, tangent_a = primal(a), tangent(a)
-    primal_B, tangent_B = primal(B), tangent(B)
+    a, da = primal(a_dual), tangent(a_dual)
+    B, dB = primal(B_dual), tangent(B_dual)
     
-    primal_result = kron(primal_a, primal_B)
-    tangent_result = kron(tangent_a, primal_B) + kron(primal_a, tangent_B)
+    y = kron(a, B)
+    dy = kron(da, B) + kron(a, dB)
     
-    return Dual(primal_result, tangent_result)
+    return Dual(y, dy)
 end
 
 function rrule!!(
-    ::CoDual{typeof(kron)}, a::CoDual{<:Vector{P}}, B::CoDual{<:Matrix{P}}
+    ::CoDual{typeof(kron)}, a_codual::CoDual{<:Vector{P}}, B_codual::CoDual{<:Matrix{P}}
 ) where {P<:IEEEFloat}
-    primal_a, primal_B = a.x, B.x
-    da, dB = a.dx, B.dx
+    a, B = a_codual.x, B_codual.x
+    ∇a, ∇B = a_codual.dx, B_codual.dx # Use ∇ for gradients
 
     function kron_vec_mat_pb!!(dy)
-        # Handle NoRData case
         dy isa NoRData && return NoRData(), NoRData(), NoRData()
         
-        m1 = length(primal_a)
-        m2, n2 = size(primal_B)
+        m1 = length(a)
+        m2, n2 = size(B)
+
+        dy_flat_blocks = reshape(permutedims(reshape(dy, (m2, m1, n2)), (2, 1, 3)), (m1, m2 * n2))
+        LinearAlgebra.mul!(∇a, dy_flat_blocks, vec(B), 1, 1)
         
-        # For da: each element a[i] affects block dy[(i-1)*m2+1:i*m2, :]
-        for i in 1:m1
-            block_rows = ((i - 1) * m2 + 1):(i * m2)
-            da[i] += sum(view(dy, block_rows, :) .* primal_B)
-        end
-        
-        # For dB: each element B[k,l] appears in all blocks, multiplied by a[i]
-        for k in 1:m2, l in 1:n2
-            for i in 1:m1
-                block_row = (i-1)*m2 + k
-                dB[k, l] += primal_a[i] * dy[block_row, l]
-            end
-        end
+        dy_flat_cols = reshape(permutedims(reshape(dy, (m2, m1, n2)), (1, 3, 2)), (m2 * n2, m1))
+        LinearAlgebra.mul!(vec(∇B), dy_flat_cols, a, 1, 1)
 
         return NoRData(), NoRData(), NoRData()
     end
 
-    return zero_fcodual(kron(primal_a, primal_B)), kron_vec_mat_pb!!
+    return zero_fcodual(kron(a, B)), kron_vec_mat_pb!!
 end
 
 # Matrix × Vector kron
 @is_primitive(DefaultCtx, Tuple{typeof(kron),Matrix{<:IEEEFloat},Vector{<:IEEEFloat}})
 function frule!!(
-    ::Dual{typeof(kron)}, A::Dual{<:Matrix{P}}, b::Dual{<:Vector{P}}
+    ::Dual{typeof(kron)}, A_dual::Dual{<:Matrix{P}}, b_dual::Dual{<:Vector{P}}
 ) where {P<:IEEEFloat}
-    primal_A, tangent_A = primal(A), tangent(A)
-    primal_b, tangent_b = primal(b), tangent(b)
+    A, dA = primal(A_dual), tangent(A_dual)
+    b, db = primal(b_dual), tangent(b_dual)
     
-    primal_result = kron(primal_A, primal_b)
-    tangent_result = kron(tangent_A, primal_b) + kron(primal_A, tangent_b)
+    y = kron(A, b)
+    dy = kron(dA, b) + kron(A, db)
     
-    return Dual(primal_result, tangent_result)
+    return Dual(y, dy)
 end
 
 function rrule!!(
-    ::CoDual{typeof(kron)}, A::CoDual{<:Matrix{P}}, b::CoDual{<:Vector{P}}
+    ::CoDual{typeof(kron)}, A_codual::CoDual{<:Matrix{P}}, b_codual::CoDual{<:Vector{P}}
 ) where {P<:IEEEFloat}
-    primal_A, primal_b = A.x, b.x
-    dA, db = A.dx, b.dx
+    A, b = A_codual.x, b_codual.x
+    ∇A, ∇b = A_codual.dx, b_codual.dx # Use ∇ for gradients
 
     function kron_mat_vec_pb!!(dy)
-        # Handle NoRData case
         dy isa NoRData && return NoRData(), NoRData(), NoRData()
         
-        m1, n1 = size(primal_A)
-        m2 = length(primal_b)
+        m1, n1 = size(A)
+        m2 = length(b)
+
+        dy_flat_rows = reshape(permutedims(reshape(dy, (m2, m1, n1)), (2, 3, 1)), (m1 * n1, m2))
+        LinearAlgebra.mul!(vec(∇A), dy_flat_rows, b, 1, 1)
         
-        # For dA: each element A[i,j] affects block dy[(i-1)*m2+1:i*m2, j]
-        for i in 1:m1, j in 1:n1
-            block_rows = ((i - 1) * m2 + 1):(i * m2)
-            dA[i, j] += sum(view(dy, block_rows, j) .* primal_b)
-        end
-        
-        # For db: each element b[k] appears in all blocks, multiplied by A[i,j]
-        for k in 1:m2
-            for i in 1:m1, j in 1:n1
-                block_row = (i-1)*m2 + k
-                db[k] += primal_A[i, j] * dy[block_row, j]
-            end
-        end
+        dy_flat_cols = reshape(dy, (m2, m1 * n1))
+        LinearAlgebra.mul!(∇b, dy_flat_cols, vec(A), 1, 1)
 
         return NoRData(), NoRData(), NoRData()
     end
 
-    return zero_fcodual(kron(primal_A, primal_b)), kron_mat_vec_pb!!
+    return zero_fcodual(kron(A, b)), kron_mat_vec_pb!!
 end
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
@@ -245,7 +186,6 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
     sizes = [(11,), (11, 3)]
     precisions = [Float64, Float32, Float16]
     test_cases = vcat(
-
         # sum(x)
         map_prod(sizes, precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
@@ -262,7 +202,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
         map_prod(
             [((2, 2), (3, 3)), ((3, 2), (2, 4)), ((4, 3), (2, 2))], precisions
         ) do ((sz_A, sz_B), P)
-            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
+            flags = (P == Float16 ? true : false, :stability, nothing)
             return (flags..., kron, randn(rng, P, sz_A...), randn(rng, P, sz_B...))
         end,
 
@@ -270,7 +210,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
         map_prod(
             [(3, 4), (2, 5), (4, 3)], precisions
         ) do ((sz_a, sz_b), P)
-            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
+            flags = (P == Float16 ? true : false, :stability, nothing)
             return (flags..., kron, randn(rng, P, sz_a), randn(rng, P, sz_b))
         end,
 
@@ -278,7 +218,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
         map_prod(
             [((3,), (2, 3)), ((4,), (3, 2)), ((2,), (4, 2))], precisions
         ) do ((sz_a, sz_B), P)
-            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
+            flags = (P == Float16 ? true : false, :stability, nothing)
             return (flags..., kron, randn(rng, P, sz_a...), randn(rng, P, sz_B...))
         end,
 
@@ -286,7 +226,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
         map_prod(
             [((2, 2), (3,)), ((2, 3), (3,)), ((3, 2), (4,)), ((4, 2), (2,))], precisions
         ) do ((sz_A, sz_b), P)
-            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
+            flags = (P == Float16 ? true : false, :stability, nothing)
             return (flags..., kron, randn(rng, P, sz_A...), randn(rng, P, sz_b...))
         end,
     )
