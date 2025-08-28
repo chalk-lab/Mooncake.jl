@@ -4,6 +4,7 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using OrdinaryDiffEq, SciMLSensitivity, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
+using Mooncake: ReverseMode
 
 # Helper function for Mooncake gradient computation  
 function mooncake_gradient(f, x)
@@ -49,7 +50,14 @@ end
 
         # Test with Mooncake's test_rule
         @testset "test_rule evaluation" begin
-            test_rule(rng, sense_func, u0p; is_primitive=false, unsafe_perturb=true)
+            test_rule(
+                rng,
+                sense_func,
+                u0p;
+                is_primitive=false,
+                unsafe_perturb=true,
+                mode=ReverseMode,
+            )
         end
     end
 end
