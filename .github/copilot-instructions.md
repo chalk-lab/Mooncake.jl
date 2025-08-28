@@ -151,7 +151,7 @@ end
 ### Running Tests
 - Run specific test groups using:
 ```bash
-TEST_GROUP="rrules/performance_patches" && julia --project -e 'using Pkg; Pkg.test("Mooncake")'
+TEST_GROUP="rrules/performance_patches" julia --project -e 'using Pkg; Pkg.test("Mooncake")'
 ```
 - Available test groups include: `basic`, `quality`, and various `rrules/*` groups (e.g., `rrules/blas`, `rrules/linear_algebra`)
 - The `basic` group covers core functionality and fundamental tests
