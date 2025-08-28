@@ -69,6 +69,27 @@ jobs:
           arch: ${{ matrix.arch }}
           include-all-prereleases: false
       - uses: julia-actions/cache@v2
+      - name: Adjust JET version based on Julia version
+        run: |
+          julia_version=$(julia --version | grep -oE '[0-9]+\.[0-9]+')
+          echo "Detected Julia version: $julia_version"
+          
+          # Remove any existing JET constraint from [compat] section
+          sed -i '/^JET = "[0-9]\.[0-9]/d' Project.toml
+          
+          # Compare version using version sort
+          if printf '%s\n' "1.12" "$julia_version" | sort -V | head -n1 | grep -q "1.12"; then
+            echo "Julia version >= 1.12, using latest JET version (no constraint)"
+          else
+            echo "Julia version < 1.12, setting JET = \"0.9\""
+            # Add JET = "0.9" constraint in the [compat] section
+            sed -i '/^\[compat\]/a JET = "0.9"' Project.toml
+          fi
+          
+          # Show the current JET constraint (if any)
+          echo "Current JET constraint in Project.toml:"
+          grep -A 20 "^\[compat\]" Project.toml | grep "JET = " || echo "No JET constraint found"
+        shell: bash
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         env:
@@ -96,6 +117,7 @@ jobs:
           {test_type: 'integration_testing', label: 'array'},
           {test_type: 'integration_testing', label: 'bijectors'},
           {test_type: 'integration_testing', label: 'diff_tests'},
+          {test_type: 'integration_testing', label: 'diffeq'},
           {test_type: 'integration_testing', label: 'dispatch_doctor'},
           {test_type: 'integration_testing', label: 'distributions'},
           {test_type: 'integration_testing', label: 'dynamicppl'},
@@ -120,6 +142,27 @@ jobs:
           arch: ${{ matrix.arch }}
           include-all-prereleases: false
       - uses: julia-actions/cache@v2
+      - name: Adjust JET version based on Julia version
+        run: |
+          julia_version=$(julia --version | grep -oE '[0-9]+\.[0-9]+')
+          echo "Detected Julia version: $julia_version"
+          
+          # Remove any existing JET constraint from [compat] section
+          sed -i '/^JET = "[0-9]\.[0-9]/d' Project.toml
+          
+          # Compare version using version sort
+          if printf '%s\n' "1.12" "$julia_version" | sort -V | head -n1 | grep -q "1.12"; then
+            echo "Julia version >= 1.12, using latest JET version (no constraint)"
+          else
+            echo "Julia version < 1.12, setting JET = \"0.9\""
+            # Add JET = "0.9" constraint in the [compat] section
+            sed -i '/^\[compat\]/a JET = "0.9"' Project.toml
+          fi
+          
+          # Show the current JET constraint (if any)
+          echo "Current JET constraint in Project.toml:"
+          grep -A 20 "^\[compat\]" Project.toml | grep "JET = " || echo "No JET constraint found"
+        shell: bash
       - uses: julia-actions/julia-buildpkg@v1
       - run: |
           if [ ${{ matrix.test_group.test_type }} == 'ext' ]; then

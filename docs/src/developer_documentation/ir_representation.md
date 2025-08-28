@@ -1,4 +1,4 @@
-# IR Representation
+# IR Representations and Code Transformations
 
 Mooncake.jl works by transforming Julia's SSA-form (static single assignment) Intermediate Representation (IR), so a good understanding of Julia's IR is needed to understand Mooncake.
 Furthermore, Mooncake holds Julia's IR in a different data structure than the one usually used when producing code for reverse-mode AD.
@@ -554,6 +554,12 @@ Reverse-mode AD makes extensive use of such transformations, so `BBCode` is curr
 
 There are efforts such as [this PR](https://github.com/JuliaLang/julia/pull/45305) to augment `IRCode` with the capability to manipulate the CFG structure in a convenient manner.
 Ideally these efforts will succeed, then we can do away with `BBCode`.
+
+### Comparison with Alternative Approaches
+
+It's worth noting that other automatic differentiation systems have taken different approaches to IR manipulation. For example, [Diffractor.jl](https://github.com/JuliaDiff/Diffractor.jl) uses an "Optics" approach for IR transformations.
+
+For readers interested in learning more about Julia's IR representation beyond what's covered here, the [Scientific Programming in Julia course materials](https://github.com/JuliaTeachingCTU/Scientific-Programming-in-Julia/blob/2023W/docs/src/lecture_09/ircode.md) provide additional valuable context.
 
 ## Docstrings
 

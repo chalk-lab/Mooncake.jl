@@ -157,4 +157,9 @@ end
             @test verify_rdata_value(Ptr{Float64}(), NoRData()) === nothing
         end
     end
+
+    @testset "Helpful error messages for misuse of fdata and rdata" begin
+        @test_throws "Float64 is a type. Perhaps you meant" fdata(Float64)
+        @test_throws "Float64 is a type. Perhaps you meant" rdata(Float64)
+    end
 end
