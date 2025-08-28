@@ -224,7 +224,7 @@ end
         @testset "bad rdata" begin
             f = ToolsForRulesResources.test_bad_rdata
             out, pb!! = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(3.0))
-            @test_throws MethodError pb!!(5.0)
+            @test_throws ArgumentError pb!!(5.0)
         end
     end
 end
