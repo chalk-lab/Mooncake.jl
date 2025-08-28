@@ -328,6 +328,18 @@ to_cr_tangent(t::Tangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 
+function to_cr_tangent(t)
+    throw(
+        ArgumentError(
+            "The type $(typeof(t)) is not supported with @from_chainrules or @from_rrule. " *
+            "This is because Mooncake.jl does not currently have a method of " *
+            "`to_cr_tangent` to handle this type. " *
+            "Consider writing a custom rrule!! for your function instead, " *
+            "or implement a method of `to_cr_tangent` for this type.",
+        ),
+    )
+end
+
 """
     mooncake_tangent(p, cr_tangent)
 
@@ -347,6 +359,19 @@ function mooncake_tangent(p::P, t::T) where {P<:Tuple,T<:CRC.Tangent}
     return tangent_type(P) == NoTangent ? NoTangent() : map(mooncake_tangent, p, t.backing)
 end
 
+function mooncake_tangent(p, cr_tangent)
+    throw(
+        ArgumentError(
+            "The primal type $(typeof(p)) with ChainRules tangent type $(typeof(cr_tangent)) " *
+            "is not supported with @from_chainrules or @from_rrule. " *
+            "This is because Mooncake.jl does not currently have a method of " *
+            "`mooncake_tangent` to handle this type combination. " *
+            "Consider writing a custom rrule!! for your function instead, " *
+            "or implement a method of `mooncake_tangent` for this type combination.",
+        ),
+    )
+end
+
 """
     increment_and_get_rdata!(fdata, zero_rdata, cr_tangent)
 
@@ -363,44 +388,19 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
-# Generic fallback methods that provide helpful error messages for unsupported types
-function to_cr_tangent(t)
-    throw(
-        ArgumentError(
-            "The type $(typeof(t)) is not supported with @from_chainrules or @from_rrule. " *
-            "This is because Mooncake.jl does not currently have the necessary " *
-            "tangent conversion methods to handle this type. " *
-            "Consider writing a custom rrule!! for your function instead, " *
-            "or ensure your types are supported by the tangent conversion system.",
-        ),
-    )
-end
-
-function mooncake_tangent(p, cr_tangent)
-    throw(
-        ArgumentError(
-            "The primal type $(typeof(p)) with ChainRules tangent type $(typeof(cr_tangent)) " *
-            "is not supported with @from_chainrules or @from_rrule. " *
-            "This is because Mooncake.jl does not currently have the necessary " *
-            "tangent conversion methods to handle this type combination. " *
-            "Consider writing a custom rrule!! for your function instead, " *
-            "or ensure your types are supported by the tangent conversion system.",
-        ),
-    )
-end
-
 function increment_and_get_rdata!(f, r, t)
     throw(
         ArgumentError(
             "The fdata type $(typeof(f)), rdata type $(typeof(r)), and tangent type $(typeof(t)) " *
             "combination is not supported with @from_chainrules or @from_rrule. " *
-            "This is because Mooncake.jl does not currently have the necessary " *
-            "`increment_and_get_rdata!` methods to handle this type combination. " *
+            "This is because Mooncake.jl does not currently have a method of " *
+            "`increment_and_get_rdata!` to handle this type combination. " *
             "Consider writing a custom rrule!! for your function instead, " *
-            "or ensure your types are supported by the tangent system.",
+            "or implement a method of `increment_and_get_rdata!` for this type combination.",
         ),
     )
 end
+
 
 """
     frule_wrapper(f::Dual, args::Dual...)
