@@ -448,7 +448,7 @@ end
     # This method can only handle struct types. Tell user to implement their own method.
     if isprimitivetype(T)
         msg = "$T is a primitive type. Implement a method of `rdata_type` for it."
-        return :(error(msg))
+        return :(error($msg))
     end
 
     # If the type is a Union, then take the union type of its arguments.
