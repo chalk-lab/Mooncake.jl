@@ -50,7 +50,7 @@ end
             1 0 0
             0 0 1
         ]), (3, 3)),
-        # b_binv_test_case(Bijectors.PlanarLayer(3), (3, 3)),
+        b_binv_test_case(Bijectors.PlanarLayer(3), (3, 3)),
         b_binv_test_case(Bijectors.RadialLayer(3), 3),
         b_binv_test_case(Bijectors.Reshape((2, 3), (3, 2)), (2, 3)),
         b_binv_test_case(Bijectors.Scale(0.2), 3),
