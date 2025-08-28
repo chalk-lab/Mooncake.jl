@@ -74,7 +74,7 @@ jobs:
           echo "Detected Julia version: $julia_version"
           
           # Remove any existing JET constraint from [compat] section
-          sed -i '/^JET = "0\. /d' Project.toml
+          sed -i '/^JET = "[0-9]\.[0-9]/d' Project.toml
           
           # Compare version using version sort
           if printf '%s\n' "1.12" "$julia_version" | sort -V | head -n1 | grep -q "1.12"; then
@@ -147,7 +147,7 @@ jobs:
           echo "Detected Julia version: $julia_version"
           
           # Remove any existing JET constraint from [compat] section
-          sed -i '/^JET = "0\. /d' Project.toml
+          sed -i '/^JET = "[0-9]\.[0-9]/d' Project.toml
           
           # Compare version using version sort
           if printf '%s\n' "1.12" "$julia_version" | sort -V | head -n1 | grep -q "1.12"; then
