@@ -81,7 +81,7 @@ end
     end
 
     # Calls populate_def_use_map! -- see above.
-    function CC._ir_abstract_constant_propagation(
+    function ir_abstract_constant_propagation(
         interp::BugPatchInterpreter,
         irsv::CC.IRInterpretationState;
         externally_refined::Union{Nothing,BitSet}=nothing,
@@ -241,6 +241,20 @@ end
         return Pair{Any,Tuple{Bool,Bool}}(
             CC.maybe_singleton_const(ultimate_rt), (nothrow, noub)
         )
+    end
+
+    @static if VERSION ≥ v"1.12-"
+        CC.ir_abstract_constant_propagation(
+            interp::BugPatchInterpreter,
+            irsv::CC.IRInterpretationState;
+            externally_refined::Union{Nothing,BitSet}=nothing,
+        ) = ir_abstract_constant_propagation(interp, irsv; externally_refined)
+    else
+        CC._ir_abstract_constant_propagation(
+            interp::BugPatchInterpreter,
+            irsv::CC.IRInterpretationState;
+            externally_refined::Union{Nothing,BitSet}=nothing,
+        ) = ir_abstract_constant_propagation(interp, irsv; externally_refined)
     end
 
     struct ScanStmtPatch
