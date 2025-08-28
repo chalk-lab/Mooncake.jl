@@ -411,7 +411,7 @@ end
 end
 
 function dual_ret_type(primal_ir::IRCode)
-    return dual_type(Base.Experimental.compute_ir_rettype(primal_ir))
+    return dual_type(compute_ir_rettype(primal_ir))
 end
 
 function frule_type(

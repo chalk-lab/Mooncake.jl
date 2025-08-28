@@ -332,7 +332,7 @@ function opaque_closure(
     # This implementation is copied over directly from `Core.OpaqueClosure`.
     ir = CC.copy(ir)
     nargs = length(ir.argtypes) - 1
-    sig = Base.Experimental.compute_oc_signature(ir, nargs, isva)
+    sig = compute_oc_signature(ir, nargs, isva)
     src = ccall(:jl_new_code_info_uninit, Ref{CC.CodeInfo}, ())
     src.slotnames = fill(:none, nargs + 1)
     src.slotflags = fill(zero(UInt8), length(ir.argtypes))
@@ -364,6 +364,14 @@ function misty_closure(
     do_compile::Bool=true,
 )
     return MistyClosure(opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir))
+end
+
+@static if VERSION ≥ v"1.12-"
+    compute_ir_rettype(ir) = CC.compute_ir_rettype(ir)
+    compute_oc_signature(ir, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
+else
+    compute_ir_rettype(ir) = Base.Experimental.compute_ir_rettype(ir)
+    compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(ir, nargs, isva)
 end
 
 """

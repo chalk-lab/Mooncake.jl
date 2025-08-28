@@ -1015,7 +1015,7 @@ _get_sig(mi::Core.MethodInstance) = mi.specTypes
 _get_sig(mc::MistyClosure) = Tuple{map(CC.widenconst, mc.ir[].argtypes)...}
 
 function forwards_ret_type(primal_ir::IRCode)
-    return fcodual_type(Base.Experimental.compute_ir_rettype(primal_ir))
+    return fcodual_type(compute_ir_rettype(primal_ir))
 end
 
 function pullback_ret_type(primal_ir::IRCode)
@@ -1171,7 +1171,7 @@ function generate_ir(
 
     # Grab code associated to the primal.
     ir, _ = lookup_ir(interp, sig_or_mi)
-    Treturn = Base.Experimental.compute_ir_rettype(ir)
+    Treturn = compute_ir_rettype(ir)
     fwd_ret_type = forwards_ret_type(ir)
     rvs_ret_type = pullback_ret_type(ir)
 
@@ -1891,7 +1891,7 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     end
 
     ir, _ = lookup_ir(interp, sig_or_mi)
-    Treturn = Base.Experimental.compute_ir_rettype(ir)
+    Treturn = compute_ir_rettype(ir)
     isva, _ = is_vararg_and_sparam_names(sig_or_mi)
 
     arg_types = map(CC.widenconst, ir.argtypes)
