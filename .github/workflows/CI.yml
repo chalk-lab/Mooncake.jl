@@ -73,16 +73,21 @@ jobs:
           julia_version=$(julia --version | grep -oE '[0-9]+\.[0-9]+')
           echo "Detected Julia version: $julia_version"
           
+          # Remove any existing JET constraint from [compat] section
+          sed -i '/^JET = /d' Project.toml
+          
           # Compare version using version sort
           if printf '%s\n' "1.12" "$julia_version" | sort -V | head -n1 | grep -q "1.12"; then
-            echo "Julia version >= 1.12, setting JET = \"0.10\""
-            sed -i 's/JET = "0\.9"/JET = "0.10"/' Project.toml
+            echo "Julia version >= 1.12, using latest JET version (no constraint)"
           else
-            echo "Julia version < 1.12, keeping JET = \"0.9\""
+            echo "Julia version < 1.12, setting JET = \"0.9\""
+            # Add JET = "0.9" constraint in the [compat] section
+            sed -i '/^\[compat\]/a JET = "0.9"' Project.toml
           fi
           
-          # Show the current JET constraint
-          grep "JET = " Project.toml
+          # Show the current JET constraint (if any)
+          echo "Current JET constraint in Project.toml:"
+          grep -A 20 "^\[compat\]" Project.toml | grep "JET = " || echo "No JET constraint found"
         shell: bash
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
@@ -141,16 +146,21 @@ jobs:
           julia_version=$(julia --version | grep -oE '[0-9]+\.[0-9]+')
           echo "Detected Julia version: $julia_version"
           
+          # Remove any existing JET constraint from [compat] section
+          sed -i '/^JET = /d' Project.toml
+          
           # Compare version using version sort
           if printf '%s\n' "1.12" "$julia_version" | sort -V | head -n1 | grep -q "1.12"; then
-            echo "Julia version >= 1.12, setting JET = \"0.10\""
-            sed -i 's/JET = "0\.9"/JET = "0.10"/' Project.toml
+            echo "Julia version >= 1.12, using latest JET version (no constraint)"
           else
-            echo "Julia version < 1.12, keeping JET = \"0.9\""
+            echo "Julia version < 1.12, setting JET = \"0.9\""
+            # Add JET = "0.9" constraint in the [compat] section
+            sed -i '/^\[compat\]/a JET = "0.9"' Project.toml
           fi
           
-          # Show the current JET constraint
-          grep "JET = " Project.toml
+          # Show the current JET constraint (if any)
+          echo "Current JET constraint in Project.toml:"
+          grep -A 20 "^\[compat\]" Project.toml | grep "JET = " || echo "No JET constraint found"
         shell: bash
       - uses: julia-actions/julia-buildpkg@v1
       - run: |
