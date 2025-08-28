@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.4.154"
+version = "0.4.155"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -66,15 +66,15 @@ JuliaFormatter = "1.0, 2.1"
 JuliaInterpreter = "0.9"
 LinearAlgebra = "1"
 LuxLib = "1"
-MistyClosures = "2"
 MLDataDevices = "1.10.0"
+MistyClosures = "2"
 NNlib = "0.9"
 Pkg = "1"
 Random = "1"
 SLEEFPirates = "0.6.43"
 SpecialFunctions = "2"
-Static = "1.1.1"
 StableRNGs = "1"
+Static = "1.1.1"
 Test = "1"
 julia = "~1.10.8, 1.11.6"
 
