@@ -151,7 +151,7 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
 
-    return zero_fcodual(vec(kron(reshape(primal_a, :, 1), reshape(primal_b, :, 1)))), kron_vec_pb!!
+    return zero_fcodual(kron(primal_a, primal_b)), kron_vec_pb!!
 end
 
 # Vector × Matrix kron
@@ -202,7 +202,7 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
 
-    return zero_fcodual(kron(reshape(primal_a, :, 1), primal_B)), kron_vec_mat_pb!!
+    return zero_fcodual(kron(primal_a, primal_B)), kron_vec_mat_pb!!
 end
 
 # Matrix × Vector kron
