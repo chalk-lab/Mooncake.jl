@@ -144,8 +144,10 @@ function rrule!!(
         
         # For db: each element b[j] appears at positions j, m2+j, 2*m2+j, etc.
         for j in 1:m2
-            indices = j:m2:(m1*m2)
-            db[j] += sum(primal_a[i] * dy[indices[i]] for i in 1:m1)
+            for i in 1:m1
+                index = (i-1)*m2 + j  # Position where a[i]*b[j] appears
+                db[j] += primal_a[i] * dy[index]
+            end
         end
 
         return NoRData(), NoRData(), NoRData()
