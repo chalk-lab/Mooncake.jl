@@ -401,7 +401,6 @@ function increment_and_get_rdata!(f, r, t)
     )
 end
 
-
 """
     frule_wrapper(f::Dual, args::Dual...)
 
