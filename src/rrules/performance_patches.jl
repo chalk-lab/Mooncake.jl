@@ -47,27 +47,52 @@ function rrule!!(
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/526
-# Use @mooncake_overlay to provide an efficient implementation of kron that Mooncake can differentiate
-@mooncake_overlay function kron(mat1::Matrix{T}, mat2::Matrix{T}) where {T<:IEEEFloat}
-    m1, n1 = size(mat1)
-    mat1_rsh = reshape(mat1, (1, m1, 1, n1))
+@is_primitive(DefaultCtx, Tuple{typeof(kron),Matrix{<:IEEEFloat},Matrix{<:IEEEFloat}})
+function frule!!(
+    ::Dual{typeof(kron)}, A::Dual{<:Matrix{P}}, B::Dual{<:Matrix{P}}
+) where {P<:IEEEFloat}
+    # Forward rule: d(kron(A, B)) = kron(dA, B) + kron(A, dB)
+    primal_A, tangent_A = primal(A), tangent(A)
+    primal_B, tangent_B = primal(B), tangent(B)
 
-    m2, n2 = size(mat2)
-    mat2_rsh = reshape(mat2, (m2, 1, n2, 1))
+    primal_result = kron(primal_A, primal_B)
+    tangent_result = kron(tangent_A, primal_B) + kron(primal_A, tangent_B)
 
-    return reshape(mat1_rsh .* mat2_rsh, (m1 * m2, n1 * n2))
+    return Dual(primal_result, tangent_result)
 end
 
-@mooncake_overlay function kron(a::Vector{T}, b::Vector{T}) where {T<:IEEEFloat}
-    return vec(kron(reshape(a, :, 1), reshape(b, :, 1)))
-end
+function rrule!!(
+    ::CoDual{typeof(kron)}, A::CoDual{<:Matrix{P}}, B::CoDual{<:Matrix{P}}
+) where {P<:IEEEFloat}
+    primal_A, primal_B = A.x, B.x
+    dA, dB = A.dx, B.dx
 
-@mooncake_overlay function kron(a::Vector{T}, b::Matrix{T}) where {T<:IEEEFloat}
-    return kron(reshape(a, :, 1), b)
-end
+    function kron_pb!!(dy::Matrix{P})
+        m1, n1 = size(primal_A)
+        m2, n2 = size(primal_B)
 
-@mooncake_overlay function kron(a::Matrix{T}, b::Vector{T}) where {T<:IEEEFloat}
-    return kron(a, reshape(b, :, 1))
+        # For dA: each element A[i,j] affects block dy[(i-1)*m2+1:i*m2, (j-1)*n2+1:j*n2] 
+        # The contribution is A[i,j] * B, so dA[i,j] += sum(dy[block] .* B)
+        for i in 1:m1, j in 1:n1
+            block_rows = ((i - 1) * m2 + 1):(i * m2)
+            block_cols = ((j - 1) * n2 + 1):(j * n2)
+            dA[i, j] += sum(view(dy, block_rows, block_cols) .* primal_B)
+        end
+
+        # For dB: each element B[k,l] appears in all blocks, multiplied by A[i,j]
+        # So dB[k,l] += sum over all i,j: A[i,j] * dy[block_i_j][k,l]
+        for k in 1:m2, l in 1:n2
+            for i in 1:m1, j in 1:n1
+                block_row = (i-1)*m2 + k
+                block_col = (j-1)*n2 + l
+                dB[k, l] += primal_A[i, j] * dy[block_row, block_col]
+            end
+        end
+
+        return NoRData(), NoRData(), NoRData()
+    end
+
+    return zero_fcodual(kron(primal_A, primal_B)), kron_pb!!
 end
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
