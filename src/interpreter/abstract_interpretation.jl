@@ -136,7 +136,7 @@ function Core.Compiler.abstract_call_gf_by_type(
 ) where {C,M}
 
     # invoke the default abstract call to get the default CC.CallMeta.
-    cm = @invoke CC.abstract_call_gf_by_type(
+    ret = @invoke CC.abstract_call_gf_by_type(
         interp::CC.AbstractInterpreter,
         f::Any,
         arginfo::CC.ArgInfo,
@@ -145,16 +145,25 @@ function Core.Compiler.abstract_call_gf_by_type(
         sv::CC.AbsIntState,
         max_methods::Int,
     )
-
-    # Check to see whether the call in question is a Mooncake primitive. If it is, set its
-    # call info such that in the `CC.inlining_policy` (or `CC.src_inlining_policy` in v1.12+) it is not inlined away.
-    callinfo = is_primitive(C, M, atype) ? NoInlineCallInfo(cm.info, atype) : cm.info
-
-    # Construct a CallMeta correctly depending on the version of Julia.
-    @static if VERSION ≥ v"1.11-"
-        return CC.CallMeta(cm.rt, cm.exct, cm.effects, callinfo)
+    is_primitive(C, M, atype) || return ret
+    # Insert a `NoInlineCallInfo` to prevent any potential inlining.
+    @static if VERSION < v"1.12-"
+        call = ret::CC.CallMeta
+        info = NoInlineCallInfo(call.info, atype)
+        return rewrap_callmeta(call, info)
     else
-        return CC.CallMeta(cm.rt, cm.effects, callinfo)
+        return CC.Future{CC.CallMeta}(ret::CC.Future, interp, sv) do call, interp, sv
+            info = NoInlineCallInfo(call.info, atype)
+            return rewrap_callmeta(call, info)
+        end
+    end
+end
+
+function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo)
+    @static if VERSION ≥ v"1.11-"
+        return CC.CallMeta(call.rt, call.exct, call.effects, info)
+    else
+        return CC.CallMeta(call.rt, call.effects, info)
     end
 end
 
