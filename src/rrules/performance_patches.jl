@@ -131,15 +131,13 @@ function rrule!!(
         # Handle NoRData case
         dy isa NoRData && return NoRData(), NoRData(), NoRData()
         
-        # Convert vectors to column matrices
         m1, m2 = length(primal_a), length(primal_b)
-        # dy is a vector of length m1*m2, reshape to matrix form
-        dy_mat = reshape(dy, m1 * m2, 1)
+        # dy is a vector of length m1*m2
         
         # For da: each element a[i] contributes to dy[(i-1)*m2+1:i*m2]
         for i in 1:m1
-            block_rows = ((i - 1) * m2 + 1):(i * m2)
-            da[i] += sum(dy_mat[block_rows, 1] .* primal_b)
+            block_indices = ((i - 1) * m2 + 1):(i * m2)
+            da[i] += sum(view(dy, block_indices) .* primal_b)
         end
         
         # For db: each element b[j] appears at positions j, m2+j, 2*m2+j, etc.
@@ -212,15 +210,12 @@ end
 function frule!!(
     ::Dual{typeof(kron)}, A::Dual{<:Matrix{P}}, b::Dual{<:Vector{P}}
 ) where {P<:IEEEFloat}
-    # kron(A, b) = kron(A, reshape(b, :, 1))
+    # Use standard kron semantics for Matrix × Vector
     primal_A, tangent_A = primal(A), tangent(A)
     primal_b, tangent_b = primal(b), tangent(b)
     
-    b_mat = reshape(primal_b, :, 1)
-    db_mat = reshape(tangent_b, :, 1)
-    
-    primal_result = kron(primal_A, b_mat)
-    tangent_result = kron(tangent_A, b_mat) + kron(primal_A, db_mat)
+    primal_result = kron(primal_A, primal_b)
+    tangent_result = kron(tangent_A, primal_b) + kron(primal_A, tangent_b)
     
     return Dual(primal_result, tangent_result)
 end
@@ -255,7 +250,7 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
 
-    return zero_fcodual(kron(primal_A, reshape(primal_b, :, 1))), kron_mat_vec_pb!!
+    return zero_fcodual(kron(primal_A, primal_b)), kron_mat_vec_pb!!
 end
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
@@ -302,7 +297,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
 
         # kron(A, b) - Matrix × Vector  
         map_prod(
-            [((2, 3), (3,)), ((3, 2), (4,)), ((4, 2), (2,))], precisions
+            [((2, 2), (3,)), ((2, 3), (3,)), ((3, 2), (4,)), ((4, 2), (2,))], precisions
         ) do ((sz_A, sz_b), P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
             return (flags..., kron, randn(rng, P, sz_A...), randn(rng, P, sz_b...))
