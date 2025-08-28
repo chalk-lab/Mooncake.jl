@@ -88,7 +88,8 @@ import Base.CoreLogging as CoreLogging
     }
 )
 
-# zero_rdata_from_type must handle new object types.
+# Mooncake.zero_rdata_from_type() must handle new object types.
+# Normally it should not be defined for AbstractTypes as subtypes may have different rdata, but for Logging all Logger subtypes have rdata as NoRData().
 zero_rdata_from_type(::Type{T}) where {T<:Base.CoreLogging.AbstractLogger} = NoRData()
 
 function generate_hand_written_rrule!!_test_cases(
