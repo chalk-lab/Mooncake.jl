@@ -50,7 +50,14 @@ end
 
         # Test with Mooncake's test_rule
         @testset "test_rule evaluation" begin
-            test_rule(rng, sense_func, u0p; is_primitive=false, unsafe_perturb=true, mode=ReverseMode)
+            test_rule(
+                rng,
+                sense_func,
+                u0p;
+                is_primitive=false,
+                unsafe_perturb=true,
+                mode=ReverseMode,
+            )
         end
     end
 end
