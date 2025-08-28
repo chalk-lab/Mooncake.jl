@@ -37,6 +37,7 @@ Mooncake.jl is a Julia automatic differentiation (AD) library that provides both
 
 ### Julia Style
 - Follow the Blue style guidelines (configured in `.JuliaFormatter.toml`)
+- Code can be formatted automatically by running `julia -e 'using JuliaFormatter; format(".")'` from the root of the repo
 - Use meaningful variable names, especially for mathematical concepts
 - Prefer explicit type annotations for public APIs
 - Use `@stable` and `@unstable` annotations from DispatchDoctor
