@@ -272,45 +272,90 @@ These should be assumed to be ordered.
 """
 collect_stmts(bb::BBlock)::Vector{IDInstPair} = collect(zip(bb.inst_ids, bb.insts))
 
-"""
-    BBCode(
+@static if VERSION >= v"1.12-"
+    """
+        BBCode(
+            blocks::Vector{BBlock}
+            argtypes::Vector{Any}
+            sptypes::Vector{CC.VarState}
+            debuginfo::CC.DebugInfoStream (v1.12+)
+            meta::Vector{Expr}
+            valid_worlds::CC.WorldRange (v1.12+)
+        )
+
+    A `BBCode` is a data structure which is similar to `IRCode`, but adds additional structure.
+
+    In particular, a `BBCode` comprises a sequence of basic blocks (`BBlock`s), each of which
+    comprise a sequence of statements. Moreover, each `BBlock` has its own unique `ID`, as does
+    each statment.
+
+    The consequence of this is that new basic blocks can be inserted into a `BBCode`. This is
+    distinct from `IRCode`, in which to create a new basic block, one must insert additional
+    statments which you know will create a new basic block -- this is generally quite an
+    unreliable process, while inserting a new `BBlock` into `BBCode` is entirely predictable.
+    Furthermore, inserting a new `BBlock` does not change the `ID` associated to the other
+    blocks, meaning that you can safely assume that references from existing basic block
+    terminators / phi nodes to other blocks will not be modified by inserting a new basic block.
+
+    Additionally, since each statment in each basic block has its own unique `ID`, new
+    statments can be inserted without changing references between other blocks. `IRCode` also
+    has some support for this via its `new_nodes` field, but eventually all statements will be
+    renamed upon `compact!`ing the `IRCode`, meaning that the name of any given statement will
+    eventually change.
+
+    Finally, note that the basic blocks in a `BBCode` support the custom `Switch` statement.
+    This statement is not valid in `IRCode`, and is therefore lowered into a collection of
+    `GotoIfNot`s and `GotoNode`s when a `BBCode` is converted back into an `IRCode`.
+    """
+    struct BBCode
+        blocks::Vector{BBlock}
+        argtypes::Vector{Any}
+        sptypes::Vector{CC.VarState}
+        debuginfo::CC.DebugInfoStream
+        meta::Vector{Expr}
+        valid_worlds::CC.WorldRange
+    end
+else
+    """
+        BBCode(
+            blocks::Vector{BBlock}
+            argtypes::Vector{Any}
+            sptypes::Vector{CC.VarState}
+            linetable::Vector{Core.LineInfoNode} (v1.11 and earlier)
+            meta::Vector{Expr}
+        )
+
+    A `BBCode` is a data structure which is similar to `IRCode`, but adds additional structure.
+
+    In particular, a `BBCode` comprises a sequence of basic blocks (`BBlock`s), each of which
+    comprise a sequence of statements. Moreover, each `BBlock` has its own unique `ID`, as does
+    each statment.
+
+    The consequence of this is that new basic blocks can be inserted into a `BBCode`. This is
+    distinct from `IRCode`, in which to create a new basic block, one must insert additional
+    statments which you know will create a new basic block -- this is generally quite an
+    unreliable process, while inserting a new `BBlock` into `BBCode` is entirely predictable.
+    Furthermore, inserting a new `BBlock` does not change the `ID` associated to the other
+    blocks, meaning that you can safely assume that references from existing basic block
+    terminators / phi nodes to other blocks will not be modified by inserting a new basic block.
+
+    Additionally, since each statment in each basic block has its own unique `ID`, new
+    statments can be inserted without changing references between other blocks. `IRCode` also
+    has some support for this via its `new_nodes` field, but eventually all statements will be
+    renamed upon `compact!`ing the `IRCode`, meaning that the name of any given statement will
+    eventually change.
+
+    Finally, note that the basic blocks in a `BBCode` support the custom `Switch` statement.
+    This statement is not valid in `IRCode`, and is therefore lowered into a collection of
+    `GotoIfNot`s and `GotoNode`s when a `BBCode` is converted back into an `IRCode`.
+    """
+    struct BBCode
         blocks::Vector{BBlock}
         argtypes::Vector{Any}
         sptypes::Vector{CC.VarState}
         linetable::Vector{Core.LineInfoNode}
         meta::Vector{Expr}
-    )
-
-A `BBCode` is a data structure which is similar to `IRCode`, but adds additional structure.
-
-In particular, a `BBCode` comprises a sequence of basic blocks (`BBlock`s), each of which
-comprise a sequence of statements. Moreover, each `BBlock` has its own unique `ID`, as does
-each statment.
-
-The consequence of this is that new basic blocks can be inserted into a `BBCode`. This is
-distinct from `IRCode`, in which to create a new basic block, one must insert additional
-statments which you know will create a new basic block -- this is generally quite an
-unreliable process, while inserting a new `BBlock` into `BBCode` is entirely predictable.
-Furthermore, inserting a new `BBlock` does not change the `ID` associated to the other
-blocks, meaning that you can safely assume that references from existing basic block
-terminators / phi nodes to other blocks will not be modified by inserting a new basic block.
-
-Additionally, since each statment in each basic block has its own unique `ID`, new
-statments can be inserted without changing references between other blocks. `IRCode` also
-has some support for this via its `new_nodes` field, but eventually all statements will be
-renamed upon `compact!`ing the `IRCode`, meaning that the name of any given statement will
-eventually change.
-
-Finally, note that the basic blocks in a `BBCode` support the custom `Switch` statement.
-This statement is not valid in `IRCode`, and is therefore lowered into a collection of
-`GotoIfNot`s and `GotoNode`s when a `BBCode` is converted back into an `IRCode`.
-"""
-struct BBCode
-    blocks::Vector{BBlock}
-    argtypes::Vector{Any}
-    sptypes::Vector{CC.VarState}
-    linetable::Vector{Core.LineInfoNode}
-    meta::Vector{Expr}
+    end
 end
 
 """
@@ -319,14 +364,27 @@ end
 Make a new `BBCode` whose `blocks` is given by `new_blocks`, and fresh copies are made of
 all other fields from `ir`.
 """
-function BBCode(ir::Union{IRCode,BBCode}, new_blocks::Vector{BBlock})
-    return BBCode(
-        new_blocks,
-        CC.copy(ir.argtypes),
-        CC.copy(ir.sptypes),
-        CC.copy(ir.linetable),
-        CC.copy(ir.meta),
-    )
+@static if VERSION >= v"1.12-"
+    function BBCode(ir::Union{IRCode,BBCode}, new_blocks::Vector{BBlock})
+        return BBCode(
+            new_blocks,
+            CC.copy(ir.argtypes),
+            CC.copy(ir.sptypes),
+            CC.copy(ir.debuginfo),
+            CC.copy(ir.meta),
+            ir.valid_worlds,
+        )
+    end
+else
+    function BBCode(ir::Union{IRCode,BBCode}, new_blocks::Vector{BBlock})
+        return BBCode(
+            new_blocks,
+            CC.copy(ir.argtypes),
+            CC.copy(ir.sptypes),
+            CC.copy(ir.linetable),
+            CC.copy(ir.meta),
+        )
+    end
 end
 
 # Makes use of the above outer constructor for `BBCode`.
@@ -640,20 +698,42 @@ function CC.IRCode(bb_code::BBCode)
     insts = _ids_to_line_numbers(bb_code)
     cfg = control_flow_graph(bb_code)
     insts = _lines_to_blocks(insts, cfg)
-    return IRCode(
-        CC.InstructionStream(
-            map(x -> x.stmt, insts),
-            map(x -> x.type, insts),
-            map(x -> x.info, insts),
-            map(x -> x.line, insts),
-            map(x -> x.flag, insts),
-        ),
-        cfg,
-        CC.copy(bb_code.linetable),
-        CC.copy(bb_code.argtypes),
-        CC.copy(bb_code.meta),
-        CC.copy(bb_code.sptypes),
-    )
+    @static if VERSION >= v"1.12-"
+        # See e.g. here for how the NTuple{3,Int}s get flattened for InstructionStream:
+        # https://github.com/JuliaLang/julia/blob/16a2bf0a3b106b03dda23b8c9478aab90ffda5e1/Compiler/src/ssair/ir.jl#L299
+        lines = map(x -> x.line, insts)
+        lines = collect(Iterators.flatten(lines))
+        return IRCode(
+            CC.InstructionStream(
+                map(x -> x.stmt, insts),
+                collect(Any, map(x -> x.type, insts)),
+                collect(CC.CallInfo, map(x -> x.info, insts)),
+                lines,
+                map(x -> x.flag, insts),
+            ),
+            cfg,
+            CC.copy(bb_code.debuginfo),
+            CC.copy(bb_code.argtypes),
+            CC.copy(bb_code.meta),
+            CC.copy(bb_code.sptypes),
+            bb_code.valid_worlds,
+        )
+    else
+        return IRCode(
+            CC.InstructionStream(
+                map(x -> x.stmt, insts),
+                map(x -> x.type, insts),
+                map(x -> x.info, insts),
+                map(x -> x.line, insts),
+                map(x -> x.flag, insts),
+            ),
+            cfg,
+            CC.copy(bb_code.linetable),
+            CC.copy(bb_code.argtypes),
+            CC.copy(bb_code.meta),
+            CC.copy(bb_code.sptypes),
+        )
+    end
 end
 
 """
