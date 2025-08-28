@@ -1,7 +1,7 @@
 module FwdsRvsDataTestResources
 
-using Logging: Logging
-using Test: Test
+using Test: TestLogger
+using Logging: ConsoleLogger
 
 struct Foo{A} end
 struct Bar{A,B,C}
@@ -70,10 +70,10 @@ end
         @test zero_rdata_from_type(Union{Float64,Int}) == CannotProduceZeroRDataFromType()
         @test zero_rdata_from_type(
             Union{
-                Logging.ConsoleLogger,
+                ConsoleLogger,
                 Base.CoreLogging.NullLogger,
                 Base.CoreLogging.SimpleLogger,
-                Test.TestLogger,
+                TestLogger,
             },
         ) == NoRData()
 
