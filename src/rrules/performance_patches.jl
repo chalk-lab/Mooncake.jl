@@ -91,7 +91,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
         # kron(A, B)
         map_prod(
             [((2, 2), (3, 3)), ((3, 2), (2, 4)), ((4, 3), (2, 2))], precisions
-        ) do (sz_A, sz_B), P
+        ) do ((sz_A, sz_B), P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
             return (flags..., kron, randn(rng, P, sz_A...), randn(rng, P, sz_B...))
         end,
