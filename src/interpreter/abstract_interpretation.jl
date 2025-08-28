@@ -121,6 +121,9 @@ end
 CC.nsplit_impl(info::NoInlineCallInfo) = CC.nsplit(info.info)
 CC.getsplit_impl(info::NoInlineCallInfo, idx::Int) = CC.getsplit(info.info, idx)
 CC.getresult_impl(info::NoInlineCallInfo, idx::Int) = CC.getresult(info.info, idx)
+@static if VERSION > v"1.12-"
+    CC.add_edges_impl(edges::Vector{Any}, info::NoInlineCallInfo) = CC.add_edges!(edges, info.info)
+end
 
 function Core.Compiler.abstract_call_gf_by_type(
     interp::MooncakeInterpreter{C,M},
