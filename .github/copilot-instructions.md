@@ -197,6 +197,7 @@ TEST_GROUP="rrules/performance_patches" julia --project -e 'using Pkg; Pkg.test(
 - Don't forget to handle edge cases (empty arrays, special values)
 - Avoid breaking mathematical conventions without clear justification
 - Don't add rules without proper testing coverage
+- Never modify `src/Project.toml` or `test/Project.toml` on your own
 
 ## Integration Points
 
