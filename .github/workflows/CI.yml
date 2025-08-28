@@ -68,6 +68,22 @@ jobs:
           arch: ${{ matrix.arch }}
           include-all-prereleases: false
       - uses: julia-actions/cache@v2
+      - name: Adjust JET version based on Julia version
+        run: |
+          julia_version=$(julia --version | grep -oE '[0-9]+\.[0-9]+')
+          echo "Detected Julia version: $julia_version"
+          
+          # Compare version using version sort
+          if printf '%s\n' "1.12" "$julia_version" | sort -V | head -n1 | grep -q "1.12"; then
+            echo "Julia version >= 1.12, setting JET = \"0.10\""
+            sed -i 's/JET = "0\.9"/JET = "0.10"/' Project.toml
+          else
+            echo "Julia version < 1.12, keeping JET = \"0.9\""
+          fi
+          
+          # Show the current JET constraint
+          grep "JET = " Project.toml
+        shell: bash
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         env:
@@ -120,6 +136,22 @@ jobs:
           arch: ${{ matrix.arch }}
           include-all-prereleases: false
       - uses: julia-actions/cache@v2
+      - name: Adjust JET version based on Julia version
+        run: |
+          julia_version=$(julia --version | grep -oE '[0-9]+\.[0-9]+')
+          echo "Detected Julia version: $julia_version"
+          
+          # Compare version using version sort
+          if printf '%s\n' "1.12" "$julia_version" | sort -V | head -n1 | grep -q "1.12"; then
+            echo "Julia version >= 1.12, setting JET = \"0.10\""
+            sed -i 's/JET = "0\.9"/JET = "0.10"/' Project.toml
+          else
+            echo "Julia version < 1.12, keeping JET = \"0.9\""
+          fi
+          
+          # Show the current JET constraint
+          grep "JET = " Project.toml
+        shell: bash
       - uses: julia-actions/julia-buildpkg@v1
       - run: |
           if [ ${{ matrix.test_group.test_type }} == 'ext' ]; then
