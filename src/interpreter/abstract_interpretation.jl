@@ -215,7 +215,7 @@ else # 1.12 and up.
         stmt_flag::UInt32,
     )
         # Do not inline away primitives.
-        info isa NoInlineCallInfo && return nothing
+        info isa NoInlineCallInfo && return false
 
         # If not a primitive, AD doesn't care about it. Use the usual inlining strategy.
         return @invoke CC.src_inlining_policy(
