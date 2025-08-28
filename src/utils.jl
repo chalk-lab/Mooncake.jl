@@ -334,7 +334,7 @@ function opaque_closure(
     nargs = length(ir.argtypes) - 1
     sig = compute_oc_signature(ir, nargs, isva)
     src = ccall(:jl_new_code_info_uninit, Ref{CC.CodeInfo}, ())
-    src.slotnames = fill(:none, nargs + 1)
+    src.slotnames = [Symbol(:_, i) for i in 1:(nargs + 1)]
     src.slotflags = fill(zero(UInt8), length(ir.argtypes))
     src.slottypes = copy(ir.argtypes)
     src.rettype = ret_type
