@@ -1,6 +1,7 @@
 module FwdsRvsDataTestResources
 
-using Logging, Test
+using Logging: Logging
+using Test: Test
 
 struct Foo{A} end
 struct Bar{A,B,C}
