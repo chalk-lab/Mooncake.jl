@@ -53,7 +53,6 @@ end
 function frule!!(
     ::Dual{typeof(kron)}, A::Dual{<:Matrix{P}}, B::Dual{<:Matrix{P}}
 ) where {P<:IEEEFloat}
-    # Forward rule: d(kron(A, B)) = kron(dA, B) + kron(A, dB)
     primal_A, tangent_A = primal(A), tangent(A)
     primal_B, tangent_B = primal(B), tangent(B)
 
@@ -105,18 +104,11 @@ end
 function frule!!(
     ::Dual{typeof(kron)}, a::Dual{<:Vector{P}}, b::Dual{<:Vector{P}}
 ) where {P<:IEEEFloat}
-    # Convert to matrices and use matrix kron, then vectorize
     primal_a, tangent_a = primal(a), tangent(a)
     primal_b, tangent_b = primal(b), tangent(b)
     
-    # kron(a, b) = vec(kron(reshape(a, :, 1), reshape(b, :, 1)))
-    a_mat = reshape(primal_a, :, 1)
-    b_mat = reshape(primal_b, :, 1)
-    da_mat = reshape(tangent_a, :, 1)
-    db_mat = reshape(tangent_b, :, 1)
-    
-    primal_result = vec(kron(a_mat, b_mat))
-    tangent_result = vec(kron(da_mat, b_mat) + kron(a_mat, db_mat))
+    primal_result = kron(primal_a, primal_b)
+    tangent_result = kron(tangent_a, primal_b) + kron(primal_a, tangent_b)
     
     return Dual(primal_result, tangent_result)
 end
@@ -131,10 +123,10 @@ function rrule!!(
         # Handle NoRData case
         dy isa NoRData && return NoRData(), NoRData(), NoRData()
         
-        m1, m2 = length(primal_a), length(primal_b)
-        # dy is a vector of length m1*m2
+        m1 = length(primal_a)
+        m2 = length(primal_b)
         
-        # For da: each element a[i] contributes to dy[(i-1)*m2+1:i*m2]
+        # For da: each element a[i] affects block dy[(i-1)*m2+1:i*m2]
         for i in 1:m1
             block_indices = ((i - 1) * m2 + 1):(i * m2)
             da[i] += sum(view(dy, block_indices) .* primal_b)
@@ -159,15 +151,11 @@ end
 function frule!!(
     ::Dual{typeof(kron)}, a::Dual{<:Vector{P}}, B::Dual{<:Matrix{P}}
 ) where {P<:IEEEFloat}
-    # kron(a, B) = kron(reshape(a, :, 1), B)
     primal_a, tangent_a = primal(a), tangent(a)
     primal_B, tangent_B = primal(B), tangent(B)
     
-    a_mat = reshape(primal_a, :, 1)
-    da_mat = reshape(tangent_a, :, 1)
-    
-    primal_result = kron(a_mat, primal_B)
-    tangent_result = kron(da_mat, primal_B) + kron(a_mat, tangent_B)
+    primal_result = kron(primal_a, primal_B)
+    tangent_result = kron(tangent_a, primal_B) + kron(primal_a, tangent_B)
     
     return Dual(primal_result, tangent_result)
 end
@@ -210,7 +198,6 @@ end
 function frule!!(
     ::Dual{typeof(kron)}, A::Dual{<:Matrix{P}}, b::Dual{<:Vector{P}}
 ) where {P<:IEEEFloat}
-    # Use standard kron semantics for Matrix × Vector
     primal_A, tangent_A = primal(A), tangent(A)
     primal_b, tangent_b = primal(b), tangent(b)
     
