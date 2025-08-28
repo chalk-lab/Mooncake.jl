@@ -205,7 +205,7 @@ function rrule!!(
     return zero_fcodual(kron(reshape(primal_a, :, 1), primal_B)), kron_vec_mat_pb!!
 end
 
-# Matrix × Vector kron  
+# Matrix × Vector kron
 @is_primitive(DefaultCtx, Tuple{typeof(kron),Matrix{<:IEEEFloat},Vector{<:IEEEFloat}})
 function frule!!(
     ::Dual{typeof(kron)}, A::Dual{<:Matrix{P}}, b::Dual{<:Vector{P}}
