@@ -121,5 +121,35 @@ DI.jacobian(h, prep, backend, x)
 
 ## Mooncake.jl API
 
+### Terminology Comparison with DifferentiationInterface
+
+Mooncake.jl uses terminology rooted in mathematical analysis, specifically Frechet derivatives and their adjoints, as described in detail in [Algorithmic Differentiation](@ref). This differs somewhat from the conventions used by [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) and other AD packages.
+
+The following table shows the correspondence between terminology:
+
+| **Mode** | **General Case** | **Special Case** | **Mooncake Function** |
+|----------|------------------|------------------|----------------------|
+| **Forward mode** | **Frechet derivative** | **directional derivative** | N/A |
+| | *(DI: pushforward)* | *(DI: derivative)* | |
+| **Reverse mode** | **adjoint of derivative** | **gradient** | [`Mooncake.value_and_gradient!!`](@ref) |
+| | *(DI: pullback)* | *(DI: gradient)* | [`Mooncake.value_and_pullback!!`](@ref) |
+
+**Key points:**
+
+- **Frechet derivative**: In forward mode, Mooncake computes the Frechet derivative `D f[x]`, which maps tangent vectors to tangent vectors. The directional derivative `D f[x](v)` is the special case when `v` is a unit vector.
+
+- **Adjoint of derivative**: In reverse mode, Mooncake computes the adjoint `D f[x]*` of the Frechet derivative. This maps cotangent vectors (gradients) backwards through the computation.
+
+- **Gradient**: When the output is scalar, the adjoint of the derivative applied to `1` gives the gradient `∇f`. This is implemented in [`Mooncake.value_and_gradient!!`](@ref).
+
+- **Pullback**: The more general case where the adjoint is applied to an arbitrary cotangent vector `ȳ` is available through [`Mooncake.value_and_pullback!!`](@ref).
+
+This mathematical foundation ensures that Mooncake's differentiation is mathematically rigorous while providing the same functionality as other AD systems.
+
+!!! info
+    For a detailed mathematical treatment of these concepts, see [Algorithmic Differentiation](@ref), particularly the sections on [Derivatives](@ref) and [Directional Derivatives and Gradients](@ref).
+
+### Native API Functions
+
 !!! warning
     Work in progress.
