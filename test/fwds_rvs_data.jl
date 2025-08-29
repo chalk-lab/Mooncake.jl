@@ -1,8 +1,5 @@
 module FwdsRvsDataTestResources
 
-using Test: TestLogger
-using Logging: ConsoleLogger
-
 struct Foo{A} end
 struct Bar{A,B,C}
     a::A

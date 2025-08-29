@@ -1,5 +1,8 @@
 include("front_matter.jl")
 
+using Test: TestLogger
+using Logging: ConsoleLogger
+
 @testset "Mooncake.jl" begin
     if test_group == "quality"
         Aqua.test_all(Mooncake)
