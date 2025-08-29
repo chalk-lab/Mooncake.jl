@@ -48,7 +48,9 @@ end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/526
 # Use @mooncake_overlay to provide an efficient implementation of kron that Mooncake can differentiate
-@mooncake_overlay function kron(mat1::AbstractMatrix{T}, mat2::AbstractMatrix{T}) where {T<:IEEEFloat}
+@mooncake_overlay function kron(
+    mat1::AbstractMatrix{T}, mat2::AbstractMatrix{T}
+) where {T<:IEEEFloat}
     m1, n1 = size(mat1)
     mat1_rsh = reshape(mat1, (1, m1, 1, n1))
 
@@ -58,15 +60,21 @@ end
     return reshape(mat1_rsh .* mat2_rsh, (m1 * m2, n1 * n2))::Matrix{T}
 end
 
-@mooncake_overlay function kron(a::AbstractVector{T}, b::AbstractVector{T}) where {T<:IEEEFloat}
+@mooncake_overlay function kron(
+    a::AbstractVector{T}, b::AbstractVector{T}
+) where {T<:IEEEFloat}
     return vec(kron(reshape(a, :, 1), reshape(b, :, 1)))::Vector{T}
 end
 
-@mooncake_overlay function kron(a::AbstractVector{T}, b::AbstractMatrix{T}) where {T<:IEEEFloat}
+@mooncake_overlay function kron(
+    a::AbstractVector{T}, b::AbstractMatrix{T}
+) where {T<:IEEEFloat}
     return kron(reshape(a, :, 1), b)::Matrix{T}
 end
 
-@mooncake_overlay function kron(a::AbstractMatrix{T}, b::AbstractVector{T}) where {T<:IEEEFloat}
+@mooncake_overlay function kron(
+    a::AbstractMatrix{T}, b::AbstractVector{T}
+) where {T<:IEEEFloat}
     return kron(a, reshape(b, :, 1))::Matrix{T}
 end
 
