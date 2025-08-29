@@ -289,14 +289,18 @@ function _zero_derivative_impl(ctx, sig, mode)
         end
     end
 
-    # Generate fallback is_primitive method for type-unstable cases
+    # Generate fallback maybe_primitive method for type-unstable cases
     # Only generate if we have multiple arguments and it's not already a vararg
-    fallback_is_primitive_ex = if length(arg_type_symbols) > 1 && !is_vararg
-        # For signatures like Tuple{typeof(f), T1, T2, ...}, create Tuple{typeof(f), Vararg{Any}}
+    fallback_maybe_primitive_ex = if length(arg_type_symbols) > 1 && !is_vararg
+        # For signatures like Tuple{typeof(f), T1, T2, ...}, create Tuple{typeof(f), Any, Any, ...}
         first_arg = arg_type_symbols[1]
-        fallback_sig = Expr(:curly, :Tuple, first_arg, :(Vararg{Any}))
+        fallback_args = Any[first_arg]
+        for i in 2:length(arg_type_symbols)
+            push!(fallback_args, :Any)
+        end
+        fallback_sig = Expr(:curly, :Tuple, fallback_args...)
         quote
-            function Mooncake.is_primitive(
+            function Mooncake.maybe_primitive(
                 ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$fallback_sig}
             )
                 return true
@@ -316,7 +320,7 @@ function _zero_derivative_impl(ctx, sig, mode)
     frule_ex = construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
-    return Expr(:block, is_primitive_ex, fallback_is_primitive_ex, frule_ex, rrule_ex)
+    return Expr(:block, is_primitive_ex, fallback_maybe_primitive_ex, frule_ex, rrule_ex)
 end
 
 """
@@ -655,16 +659,7 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     frule_expr = construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
     rrule_expr = construct_rrule_wrapper_def(arg_names, codual_arg_types, where_params)
 
-    # Generate a fallback signature for type-unstable cases
-    # Keep the function type (first argument) but widen other arguments to Any
-    fallback_sig = if length(arg_type_syms) > 1
-        # For signatures like Tuple{typeof(f), T1, T2, ...}, create Tuple{typeof(f), Vararg{Any}}
-        first_arg = arg_type_syms[1]
-        Expr(:curly, :Tuple, first_arg, :(Vararg{Any}))
-    else
-        # For single-argument signatures, the fallback is the same as the exact signature
-        nothing
-    end
+    # Generate fallback signature for maybe_primitive to use
 
     if has_kwargs
         kw_sig = Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, arg_type_syms...)
@@ -679,17 +674,21 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
             end
         end
         
-        # Generate fallback for keyword version too
+        # Generate fallback maybe_primitive for keyword version too
         kw_fallback_sig = if length(arg_type_syms) > 1
             first_arg = arg_type_syms[1]
-            Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, first_arg, :(Vararg{Any}))
+            fallback_args = Any[:(typeof(Core.kwcall)), :NamedTuple, first_arg]
+            for i in 2:length(arg_type_syms)
+                push!(fallback_args, :Any)
+            end
+            Expr(:curly, :Tuple, fallback_args...)
         else
             nothing
         end
         
-        kw_fallback_is_primitive = if kw_fallback_sig !== nothing
+        kw_fallback_maybe_primitive = if kw_fallback_sig !== nothing
             quote
-                function Mooncake.is_primitive(
+                function Mooncake.maybe_primitive(
                     ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$kw_fallback_sig}
                 )
                     return true
@@ -719,15 +718,22 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         )
     else
         kw_is_primitive = nothing
-        kw_fallback_is_primitive = nothing
+        kw_fallback_maybe_primitive = nothing
         kwargs_frule_expr = nothing
         kwargs_rrule_expr = nothing
     end
 
-    # Generate fallback is_primitive method for type-unstable cases
-    fallback_is_primitive = if fallback_sig !== nothing
+    # Generate fallback maybe_primitive method for type-unstable cases
+    fallback_maybe_primitive = if length(arg_type_syms) > 1
+        # For signatures like Tuple{typeof(f), T1, T2, ...}, create Tuple{typeof(f), Any, Any, ...}
+        first_arg = arg_type_syms[1]
+        fallback_args = Any[first_arg]
+        for i in 2:length(arg_type_syms)
+            push!(fallback_args, :Any)
+        end
+        fallback_sig = Expr(:curly, :Tuple, fallback_args...)
         quote
-            function Mooncake.is_primitive(
+            function Mooncake.maybe_primitive(
                 ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$fallback_sig}
             )
                 return true
@@ -746,12 +752,12 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         end
         
         # Fallback method for type-unstable cases
-        $fallback_is_primitive
+        $fallback_maybe_primitive
         
         $frule_expr
         $rrule_expr
         $kw_is_primitive
-        $kw_fallback_is_primitive
+        $kw_fallback_maybe_primitive
         $kwargs_frule_expr
         $kwargs_rrule_expr
     end
