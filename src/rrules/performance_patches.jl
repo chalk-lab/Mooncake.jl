@@ -29,156 +29,28 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
 end
 
-# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
-# Matrix × Matrix kron
-@is_primitive(DefaultCtx, Tuple{typeof(kron),Matrix{<:IEEEFloat},Matrix{<:IEEEFloat}})
-function frule!!(
-    ::Dual{typeof(kron)}, A_dual::Dual{<:Matrix{P}}, B_dual::Dual{<:Matrix{P}}
-) where {P<:IEEEFloat}
-    A, dA = primal(A_dual), tangent(A_dual)
-    B, dB = primal(B_dual), tangent(B_dual)
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/526
+# Use @mooncake_overlay to provide an efficient implementation of kron that Mooncake can differentiate
+@mooncake_overlay function kron(mat1::Matrix{T}, mat2::Matrix{T}) where {T<:IEEEFloat}
+    m1, n1 = size(mat1)
+    mat1_rsh = reshape(mat1, (1, m1, 1, n1))
 
-    y = kron(A, B)
-    dy = kron(dA, B) + kron(A, dB)
+    m2, n2 = size(mat2)
+    mat2_rsh = reshape(mat2, (m2, 1, n2, 1))
 
-    return Dual(y, dy)
+    return reshape(mat1_rsh .* mat2_rsh, (m1 * m2, n1 * n2))::Matrix{T}
 end
 
-function rrule!!(
-    ::CoDual{typeof(kron)}, A_codual::CoDual{<:Matrix{P}}, B_codual::CoDual{<:Matrix{P}}
-) where {P<:IEEEFloat}
-    A, B = A_codual.x, B_codual.x
-    ∇A, ∇B = A_codual.dx, B_codual.dx # Use ∇ to denote gradients (cotangents)
-
-    function kron_pb!!(dy)
-        dy isa NoRData && return NoRData(), NoRData(), NoRData()
-        
-        m1, n1 = size(A)
-        m2, n2 = size(B)
-
-        dy_tensor = permutedims(reshape(dy, (m2, m1, n2, n1)), (2, 4, 1, 3))
-        dy_flat_blocks = reshape(dy_tensor, (m1 * n1, m2 * n2))
-
-        LinearAlgebra.mul!(vec(∇A), dy_flat_blocks, vec(B), 1, 1)
-        LinearAlgebra.mul!(vec(∇B), dy_flat_blocks', vec(A), 1, 1)
-
-        return NoRData(), NoRData(), NoRData()
-    end
-
-    return zero_fcodual(kron(A, B)), kron_pb!!
+@mooncake_overlay function kron(a::Vector{T}, b::Vector{T}) where {T<:IEEEFloat}
+    return vec(kron(reshape(a, :, 1), reshape(b, :, 1)))::Vector{T}
 end
 
-# Vector × Vector kron
-@is_primitive(DefaultCtx, Tuple{typeof(kron),Vector{<:IEEEFloat},Vector{<:IEEEFloat}})
-function frule!!(
-    ::Dual{typeof(kron)}, a_dual::Dual{<:Vector{P}}, b_dual::Dual{<:Vector{P}}
-) where {P<:IEEEFloat}
-    a, da = primal(a_dual), tangent(a_dual)
-    b, db = primal(b_dual), tangent(b_dual)
-    
-    y = kron(a, b)
-    dy = kron(da, b) + kron(a, db)
-    
-    return Dual(y, dy)
+@mooncake_overlay function kron(a::Vector{T}, b::Matrix{T}) where {T<:IEEEFloat}
+    return kron(reshape(a, :, 1), b)::Matrix{T}
 end
 
-function rrule!!(
-    ::CoDual{typeof(kron)}, a_codual::CoDual{<:Vector{P}}, b_codual::CoDual{<:Vector{P}}
-) where {P<:IEEEFloat}
-    a, b = a_codual.x, b_codual.x
-    ∇a, ∇b = a_codual.dx, b_codual.dx # Use ∇ for gradients
-
-    function kron_vec_pb!!(dy)
-        dy isa NoRData && return NoRData(), NoRData(), NoRData()
-        
-        m1 = length(a)
-        m2 = length(b)
-        
-        dy_reshaped = reshape(dy, (m2, m1))
-
-        LinearAlgebra.mul!(∇a, dy_reshaped', b, 1, 1)
-        LinearAlgebra.mul!(∇b, dy_reshaped, a, 1, 1)
-
-        return NoRData(), NoRData(), NoRData()
-    end
-
-    return zero_fcodual(kron(a, b)), kron_vec_pb!!
-end
-
-# Vector × Matrix kron
-@is_primitive(DefaultCtx, Tuple{typeof(kron),Vector{<:IEEEFloat},Matrix{<:IEEEFloat}})
-function frule!!(
-    ::Dual{typeof(kron)}, a_dual::Dual{<:Vector{P}}, B_dual::Dual{<:Matrix{P}}
-) where {P<:IEEEFloat}
-    a, da = primal(a_dual), tangent(a_dual)
-    B, dB = primal(B_dual), tangent(B_dual)
-    
-    y = kron(a, B)
-    dy = kron(da, B) + kron(a, dB)
-    
-    return Dual(y, dy)
-end
-
-function rrule!!(
-    ::CoDual{typeof(kron)}, a_codual::CoDual{<:Vector{P}}, B_codual::CoDual{<:Matrix{P}}
-) where {P<:IEEEFloat}
-    a, B = a_codual.x, B_codual.x
-    ∇a, ∇B = a_codual.dx, B_codual.dx # Use ∇ for gradients
-
-    function kron_vec_mat_pb!!(dy)
-        dy isa NoRData && return NoRData(), NoRData(), NoRData()
-        
-        m1 = length(a)
-        m2, n2 = size(B)
-
-        dy_flat_blocks = reshape(permutedims(reshape(dy, (m2, m1, n2)), (2, 1, 3)), (m1, m2 * n2))
-        LinearAlgebra.mul!(∇a, dy_flat_blocks, vec(B), 1, 1)
-        
-        dy_flat_cols = reshape(permutedims(reshape(dy, (m2, m1, n2)), (1, 3, 2)), (m2 * n2, m1))
-        LinearAlgebra.mul!(vec(∇B), dy_flat_cols, a, 1, 1)
-
-        return NoRData(), NoRData(), NoRData()
-    end
-
-    return zero_fcodual(kron(a, B)), kron_vec_mat_pb!!
-end
-
-# Matrix × Vector kron
-@is_primitive(DefaultCtx, Tuple{typeof(kron),Matrix{<:IEEEFloat},Vector{<:IEEEFloat}})
-function frule!!(
-    ::Dual{typeof(kron)}, A_dual::Dual{<:Matrix{P}}, b_dual::Dual{<:Vector{P}}
-) where {P<:IEEEFloat}
-    A, dA = primal(A_dual), tangent(A_dual)
-    b, db = primal(b_dual), tangent(b_dual)
-    
-    y = kron(A, b)
-    dy = kron(dA, b) + kron(A, db)
-    
-    return Dual(y, dy)
-end
-
-function rrule!!(
-    ::CoDual{typeof(kron)}, A_codual::CoDual{<:Matrix{P}}, b_codual::CoDual{<:Vector{P}}
-) where {P<:IEEEFloat}
-    A, b = A_codual.x, b_codual.x
-    ∇A, ∇b = A_codual.dx, b_codual.dx # Use ∇ for gradients
-
-    function kron_mat_vec_pb!!(dy)
-        dy isa NoRData && return NoRData(), NoRData(), NoRData()
-        
-        m1, n1 = size(A)
-        m2 = length(b)
-
-        dy_flat_rows = reshape(permutedims(reshape(dy, (m2, m1, n1)), (2, 3, 1)), (m1 * n1, m2))
-        LinearAlgebra.mul!(vec(∇A), dy_flat_rows, b, 1, 1)
-        
-        dy_flat_cols = reshape(dy, (m2, m1 * n1))
-        LinearAlgebra.mul!(∇b, dy_flat_cols, vec(A), 1, 1)
-
-        return NoRData(), NoRData(), NoRData()
-    end
-
-    return zero_fcodual(kron(A, b)), kron_mat_vec_pb!!
+@mooncake_overlay function kron(a::Matrix{T}, b::Vector{T}) where {T<:IEEEFloat}
+    return kron(a, reshape(b, :, 1))::Matrix{T}
 end
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
@@ -197,12 +69,21 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
             return (flags..., sum, abs2, randn(rng, P, sz...))
         end,
+    )
+    memory = Any[]
+    return test_cases, memory
+end
 
+function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
+        rng = rng_ctor(123)
+    sizes = [(11,), (11, 3)]
+    precisions = [Float64, Float32, Float16]
+    test_cases = vcat(
         # kron(A, B) - Matrix × Matrix
         map_prod(
             [((2, 2), (3, 3)), ((3, 2), (2, 4)), ((4, 3), (2, 2))], precisions
         ) do ((sz_A, sz_B), P)
-            flags = (P == Float16 ? true : false, :stability, nothing)
+            flags = (P == Float16 ? true : false, :none, nothing)
             return (flags..., kron, randn(rng, P, sz_A...), randn(rng, P, sz_B...))
         end,
 
@@ -210,7 +91,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
         map_prod(
             [(3, 4), (2, 5), (4, 3)], precisions
         ) do ((sz_a, sz_b), P)
-            flags = (P == Float16 ? true : false, :stability, nothing)
+            flags = (P == Float16 ? true : false, :none, nothing)
             return (flags..., kron, randn(rng, P, sz_a), randn(rng, P, sz_b))
         end,
 
@@ -218,7 +99,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
         map_prod(
             [((3,), (2, 3)), ((4,), (3, 2)), ((2,), (4, 2))], precisions
         ) do ((sz_a, sz_B), P)
-            flags = (P == Float16 ? true : false, :stability, nothing)
+            flags = (P == Float16 ? true : false, :none, nothing)
             return (flags..., kron, randn(rng, P, sz_a...), randn(rng, P, sz_B...))
         end,
 
@@ -226,12 +107,10 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
         map_prod(
             [((2, 2), (3,)), ((2, 3), (3,)), ((3, 2), (4,)), ((4, 2), (2,))], precisions
         ) do ((sz_A, sz_b), P)
-            flags = (P == Float16 ? true : false, :stability, nothing)
+            flags = (P == Float16 ? true : false, :none, nothing)
             return (flags..., kron, randn(rng, P, sz_A...), randn(rng, P, sz_b...))
         end,
     )
     memory = Any[]
     return test_cases, memory
 end
-
-generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches}) = Any[], Any[]
