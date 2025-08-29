@@ -29,6 +29,23 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
 end
 
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
+@is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
+function frule!!(
+    ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
+) where {P<:IEEEFloat}
+    return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
+end
+function rrule!!(
+    ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
+) where {P<:IEEEFloat}
+    function sum_abs2_pb!!(dz::P)
+        x.dx .+= 2 .* x.x .* dz
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
+end
+
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/526
 # Use @mooncake_overlay to provide an efficient implementation of kron that Mooncake can differentiate
 @mooncake_overlay function kron(mat1::Matrix{T}, mat2::Matrix{T}) where {T<:IEEEFloat}
@@ -75,7 +92,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
 end
 
 function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
-        rng = rng_ctor(123)
+    rng = rng_ctor(123)
     sizes = [(11,), (11, 3)]
     precisions = [Float64, Float32, Float16]
     test_cases = vcat(
@@ -88,9 +105,7 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:performance_patche
         end,
 
         # kron(a, b) - Vector × Vector
-        map_prod(
-            [(3, 4), (2, 5), (4, 3)], precisions
-        ) do ((sz_a, sz_b), P)
+        map_prod([(3, 4), (2, 5), (4, 3)], precisions) do ((sz_a, sz_b), P)
             flags = (P == Float16 ? true : false, :none, nothing)
             return (flags..., kron, randn(rng, P, sz_a), randn(rng, P, sz_b))
         end,
