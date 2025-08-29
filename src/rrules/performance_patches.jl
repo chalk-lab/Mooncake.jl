@@ -46,12 +46,43 @@ function rrule!!(
     return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
 end
 
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/526
+# Use @mooncake_overlay to provide an efficient implementation of kron that Mooncake can differentiate
+@mooncake_overlay function kron(
+    mat1::AbstractMatrix{T}, mat2::AbstractMatrix{T}
+) where {T<:IEEEFloat}
+    m1, n1 = size(mat1)
+    mat1_rsh = reshape(mat1, (1, m1, 1, n1))
+
+    m2, n2 = size(mat2)
+    mat2_rsh = reshape(mat2, (m2, 1, n2, 1))
+
+    return reshape(mat1_rsh .* mat2_rsh, (m1 * m2, n1 * n2))::Matrix{T}
+end
+
+@mooncake_overlay function kron(
+    a::AbstractVector{T}, b::AbstractVector{T}
+) where {T<:IEEEFloat}
+    return vec(kron(reshape(a, :, 1), reshape(b, :, 1)))::Vector{T}
+end
+
+@mooncake_overlay function kron(
+    a::AbstractVector{T}, b::AbstractMatrix{T}
+) where {T<:IEEEFloat}
+    return kron(reshape(a, :, 1), b)::Matrix{T}
+end
+
+@mooncake_overlay function kron(
+    a::AbstractMatrix{T}, b::AbstractVector{T}
+) where {T<:IEEEFloat}
+    return kron(a, reshape(b, :, 1))::Matrix{T}
+end
+
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     sizes = [(11,), (11, 3)]
     precisions = [Float64, Float32, Float16]
     test_cases = vcat(
-
         # sum(x)
         map_prod(sizes, precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
@@ -68,4 +99,41 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
     return test_cases, memory
 end
 
-generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches}) = Any[], Any[]
+function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
+    rng = rng_ctor(123)
+    sizes = [(11,), (11, 3)]
+    precisions = [Float64, Float32, Float16]
+    test_cases = vcat(
+        # kron(A, B) - Matrix × Matrix
+        map_prod(
+            [((2, 2), (3, 3)), ((3, 2), (2, 4)), ((4, 3), (2, 2))], precisions
+        ) do ((sz_A, sz_B), P)
+            flags = (P == Float16 ? true : false, :none, nothing)
+            return (flags..., kron, randn(rng, P, sz_A...), randn(rng, P, sz_B...))
+        end,
+
+        # kron(a, b) - Vector × Vector
+        map_prod([(3, 4), (2, 5), (4, 3)], precisions) do ((sz_a, sz_b), P)
+            flags = (P == Float16 ? true : false, :none, nothing)
+            return (flags..., kron, randn(rng, P, sz_a), randn(rng, P, sz_b))
+        end,
+
+        # kron(a, B) - Vector × Matrix
+        map_prod(
+            [((3,), (2, 3)), ((4,), (3, 2)), ((2,), (4, 2))], precisions
+        ) do ((sz_a, sz_B), P)
+            flags = (P == Float16 ? true : false, :none, nothing)
+            return (flags..., kron, randn(rng, P, sz_a...), randn(rng, P, sz_B...))
+        end,
+
+        # kron(A, b) - Matrix × Vector  
+        map_prod(
+            [((2, 2), (3,)), ((2, 3), (3,)), ((3, 2), (4,)), ((4, 2), (2,))], precisions
+        ) do ((sz_A, sz_b), P)
+            flags = (P == Float16 ? true : false, :none, nothing)
+            return (flags..., kron, randn(rng, P, sz_A...), randn(rng, P, sz_b...))
+        end,
+    )
+    memory = Any[]
+    return test_cases, memory
+end
