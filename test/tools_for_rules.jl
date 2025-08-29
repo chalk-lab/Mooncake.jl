@@ -227,4 +227,55 @@ end
             @test_throws ArgumentError pb!!(5.0)
         end
     end
+
+    # Test case for issue #558: Mooncake's is_primitive is too rigid sometimes leading to false negatives
+    @testset "is_primitive fallback for type instability (issue #558)" begin
+        # Define test functions
+        test_add(x::Float64, y::Float64) = x + y
+        test_const(x::Float64, y::Float64) = 42.0
+        test_manual(x::Float64, y::Float64) = x * y
+        
+        # Test @from_rrule macro with fallback behavior
+        function ChainRulesCore.rrule(::typeof(test_add), x::Float64, y::Float64)
+            result = test_add(x, y)
+            function test_add_pullback(dy)
+                return ChainRulesCore.NoTangent(), dy, dy
+            end
+            return result, test_add_pullback
+        end
+        
+        Mooncake.@from_rrule Mooncake.DefaultCtx Tuple{typeof(test_add), Float64, Float64}
+        
+        # Exact type should work (existing behavior)
+        @test Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(test_add), Float64, Float64})
+        
+        # Widened types should work (new behavior - fixes false negatives)
+        @test Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(test_add), Any, Any})
+        @test Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(test_add), Vararg{Any}})
+        
+        # Test @zero_derivative macro with fallback behavior
+        Mooncake.@zero_derivative Mooncake.DefaultCtx Tuple{typeof(test_const), Float64, Float64}
+        
+        # Exact type should work
+        @test Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(test_const), Float64, Float64})
+        
+        # Widened types should work (new behavior)
+        @test Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(test_const), Any, Any})
+        @test Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(test_const), Vararg{Any}})
+        
+        # Test @is_primitive macro with fallback behavior
+        Mooncake.@is_primitive Mooncake.DefaultCtx Tuple{typeof(test_manual), Float64, Float64}
+        
+        # Exact type should work
+        @test Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(test_manual), Float64, Float64})
+        
+        # Widened types should work (new behavior)
+        @test Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(test_manual), Any, Any})
+        @test Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(test_manual), Vararg{Any}})
+        
+        # Ensure no false positives for unrelated functions
+        unrelated_func(x, y) = x - y
+        @test !Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(unrelated_func), Float64, Float64})
+        @test !Mooncake.is_primitive(Mooncake.DefaultCtx, Mooncake.ReverseMode, Tuple{typeof(unrelated_func), Any, Any})
+    end
 end
