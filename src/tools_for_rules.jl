@@ -289,6 +289,24 @@ function _zero_derivative_impl(ctx, sig, mode)
         end
     end
 
+    # Generate fallback is_primitive method for type-unstable cases
+    # Only generate if we have multiple arguments and it's not already a vararg
+    fallback_is_primitive_ex = if length(arg_type_symbols) > 1 && !is_vararg
+        # For signatures like Tuple{typeof(f), T1, T2, ...}, create Tuple{typeof(f), Vararg{Any}}
+        first_arg = arg_type_symbols[1]
+        fallback_sig = Expr(:curly, :Tuple, first_arg, :(Vararg{Any}))
+        quote
+            function Mooncake.is_primitive(
+                ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$fallback_sig}
+            )
+                return true
+            end
+        end
+    else
+        # For single-argument or vararg signatures, no fallback needed
+        nothing
+    end
+
     # Figuring out which mode argument was actually provided is going to be very hard in
     # general, and rather error prone, because the mode might appear as a `Type`, one of
     # several `Symbol`s, or possibly something else not considered. As a result, we always
@@ -298,7 +316,7 @@ function _zero_derivative_impl(ctx, sig, mode)
     frule_ex = construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
-    return Expr(:block, is_primitive_ex, frule_ex, rrule_ex)
+    return Expr(:block, is_primitive_ex, fallback_is_primitive_ex, frule_ex, rrule_ex)
 end
 
 """
@@ -637,9 +655,21 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     frule_expr = construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
     rrule_expr = construct_rrule_wrapper_def(arg_names, codual_arg_types, where_params)
 
+    # Generate a fallback signature for type-unstable cases
+    # Keep the function type (first argument) but widen other arguments to Any
+    fallback_sig = if length(arg_type_syms) > 1
+        # For signatures like Tuple{typeof(f), T1, T2, ...}, create Tuple{typeof(f), Vararg{Any}}
+        first_arg = arg_type_syms[1]
+        Expr(:curly, :Tuple, first_arg, :(Vararg{Any}))
+    else
+        # For single-argument signatures, the fallback is the same as the exact signature
+        nothing
+    end
+
     if has_kwargs
         kw_sig = Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, arg_type_syms...)
         kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
+        
         # Type M will be available later on, and will be the mode type.
         kw_is_primitive = quote
             function Mooncake.is_primitive(
@@ -648,6 +678,27 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
                 return true
             end
         end
+        
+        # Generate fallback for keyword version too
+        kw_fallback_sig = if length(arg_type_syms) > 1
+            first_arg = arg_type_syms[1]
+            Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, first_arg, :(Vararg{Any}))
+        else
+            nothing
+        end
+        
+        kw_fallback_is_primitive = if kw_fallback_sig !== nothing
+            quote
+                function Mooncake.is_primitive(
+                    ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$kw_fallback_sig}
+                )
+                    return true
+                end
+            end
+        else
+            nothing
+        end
+        
         kwargs_frule_expr = construct_frule_wrapper_def(
             vcat(:_kwcall, :kwargs, arg_names),
             vcat(
@@ -668,19 +719,39 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         )
     else
         kw_is_primitive = nothing
+        kw_fallback_is_primitive = nothing
         kwargs_frule_expr = nothing
         kwargs_rrule_expr = nothing
     end
 
+    # Generate fallback is_primitive method for type-unstable cases
+    fallback_is_primitive = if fallback_sig !== nothing
+        quote
+            function Mooncake.is_primitive(
+                ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$fallback_sig}
+            )
+                return true
+            end
+        end
+    else
+        nothing
+    end
+
     return quote
+        # Exact type method (for performance when types are stable)
         function Mooncake.is_primitive(
             ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:($(esc(sig)))}
         )
             return true
         end
+        
+        # Fallback method for type-unstable cases
+        $fallback_is_primitive
+        
         $frule_expr
         $rrule_expr
         $kw_is_primitive
+        $kw_fallback_is_primitive
         $kwargs_frule_expr
         $kwargs_rrule_expr
     end

@@ -108,11 +108,38 @@ macro is_primitive(Tctx, Tmode, sig)
 end
 
 function _is_primitive_expression(Tctx, Tmode, sig)
+    # Parse the signature to understand its structure
+    sig_parsed = try
+        if isa(sig, Expr) && sig.head == :curly && sig.args[1] == :Tuple
+            sig.args[2:end]
+        else
+            nothing
+        end
+    catch
+        nothing
+    end
+    
+    # Generate fallback for multi-argument signatures
+    fallback_method = if sig_parsed !== nothing && length(sig_parsed) > 1
+        first_arg = sig_parsed[1]
+        fallback_sig = Expr(:curly, :Tuple, first_arg, :(Vararg{Any}))
+        quote
+            function Mooncake.is_primitive(
+                ::Type{$(esc(Tctx))}, ::Type{<:$(Tmode)}, ::Type{<:$(esc(fallback_sig))}
+            )
+                return true
+            end
+        end
+    else
+        nothing
+    end
+    
     return quote
         function Mooncake.is_primitive(
             ::Type{$(esc(Tctx))}, ::Type{<:$(Tmode)}, ::Type{<:$(esc(sig))}
         )
             return true
         end
+        $fallback_method
     end
 end
