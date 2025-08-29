@@ -1022,6 +1022,81 @@ function pullback_ret_type(primal_ir::IRCode)
     return Tuple{map(rdata_type ∘ tangent_type ∘ CC.widenconst, primal_ir.argtypes)...}
 end
 
+"""
+    _extract_method_info(sig)
+
+Attempts to extract method information from a signature for display in error messages.
+Returns a string with method source location information, or nothing if extraction fails.
+"""
+function _extract_method_info(sig)
+    try
+        # Handle different signature formats
+        if sig isa Type{<:Tuple} && length(sig.parameters) >= 1
+            # Get the function type (first parameter) and argument types
+            func_type = sig.parameters[1]
+            
+            # Use the existing method lookup functionality from utils.jl
+            world = Base.get_world_counter()
+            min = Base.RefValue{UInt}(typemin(UInt))
+            max = Base.RefValue{UInt}(typemax(UInt))
+            
+            # Find methods for this signature
+            ms = Base._methods_by_ftype(
+                sig, nothing, -1, world, true, min, max, Ptr{Int32}(C_NULL)
+            )::Vector
+            
+            if !isempty(ms)
+                # Get the first method (most specific)
+                method = ms[1].method
+                
+                # Format method information similar to `which()` output
+                method_sig = method.sig
+                file_info = if method.file != Symbol("") && method.line > 0
+                    "     @ $(method.module) $(method.file):$(method.line)"
+                else
+                    "     @ $(method.module) <unknown location>"
+                end
+                
+                return "$method_sig\n$file_info"
+            elseif length(sig.parameters) == 1
+                # Special case: if we have just a function type with no arguments,
+                # show general information about the function's methods
+                func_type = sig.parameters[1]
+                if hasmethod(func_type, ())
+                    # Function does accept zero arguments, but no method was found
+                    # This shouldn't happen, but handle gracefully
+                    return "Function: $func_type\nNote: Function accepts zero arguments but method lookup failed."
+                else
+                    # Function doesn't accept zero arguments, show some available methods
+                    try
+                        all_methods = methods(func_type.instance)
+                        if !isempty(all_methods)
+                            # Show the first few methods as examples
+                            example_method = first(all_methods)
+                            file_info = if example_method.file != Symbol("") && example_method.line > 0
+                                "     @ $(example_method.module) $(example_method.file):$(example_method.line)"
+                            else
+                                "     @ $(example_method.module) <unknown location>"
+                            end
+                            
+                            method_count = length(all_methods)
+                            return "Function: $func_type\n" *
+                                   "Note: Function requires arguments. Example method (1 of $method_count):\n" *
+                                   "$(example_method.sig)\n$file_info"
+                        end
+                    catch
+                        # If anything fails, just show basic function info
+                        return "Function: $func_type\nNote: Function requires arguments."
+                    end
+                end
+            end
+        end
+    catch e
+        # If anything goes wrong, just silently fail to avoid masking the original error
+    end
+    return nothing
+end
+
 struct MooncakeRuleCompilationError <: Exception
     interp::MooncakeInterpreter
     sig
@@ -1034,8 +1109,15 @@ function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
         "rule to differentiate something. If the `caused by` error " *
         "message below does not make it clear to you how the problem can be fixed, " *
         "please open an issue at github.com/chalk-lab/Mooncake.jl describing your " *
-        "problem.\n" *
-        "To replicate this error run the following:\n"
+        "problem.\n"
+    
+    # Try to extract and display method source location information
+    method_info = _extract_method_info(err.sig)
+    if method_info !== nothing
+        msg *= "The missing rule is for the following method:\n$method_info\n"
+    end
+    
+    msg *= "To replicate this error run the following:\n"
     println(io, msg)
     println(
         io,
