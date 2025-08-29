@@ -689,7 +689,7 @@ with.
 @generated function zero_rdata_from_type(::Type{P}) where {P}
 
     # Prepare expressions for manually-unrolled loop to construct zero rdata elements.
-    if P isa DataType
+    if P isa DataType && isconcretetype(P)
         names = fieldnames(P)
         types = fieldtypes(P)
         wrapped_field_zeros = map(enumerate(always_initialised(P))) do (n, init)
