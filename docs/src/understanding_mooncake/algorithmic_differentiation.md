@@ -253,12 +253,12 @@ D f [x]^\ast (\bar{f}) = \cos(x) \bar{f}.
 Before moving to more complex examples involving tuples and mutable data, let's consider a simple bivariate function ``f : \RR^2 \to \RR``.
 Consider the Julia function
 ```julia
-f(x::Float64, y::Float64) = x / y
+f(x::Float64, y::Float64) = sin(x + y)
 ```
-This represents division, a fundamental binary operation.
+This extends the `sin` function from our previous univariate example to a bivariate setting.
 If you've worked with AD before, you might quickly arrive at the adjoint:
 ```julia
-g -> (g / y, -g * x / y^2)
+g -> (g * cos(x + y), g * cos(x + y))
 ```
 
 Let's work through this systematically using our three-step approach.
@@ -267,12 +267,12 @@ _**Step 1: Differentiable Mathematical Model**_
 
 We model the Julia `function` `f` as the function ``f : \RR^2 \to \RR`` where
 ```math
-f(x, y) := \frac{x}{y}
+f(x, y) := \sin(x + y)
 ```
 Here we're making the standard assumptions:
 1. `Float64` values are modeled as real numbers,
-2. the Julia division operation is modeled as mathematical division,
-3. we assume ``y \neq 0`` to ensure the function is well-defined.
+2. the Julia `sin` function is modeled as the mathematical sine function,
+3. the Julia addition operation is modeled as mathematical addition.
 
 Note that while we've written this as a two-argument function, we can think of it as a single-argument function taking a 2-tuple from ``\RR^2``.
 
@@ -280,9 +280,9 @@ _**Step 2: Compute Derivative**_
 
 The derivative of ``f`` at ``(x, y)`` is the linear operator ``D f [x, y] : \RR^2 \to \RR`` given by
 ```math
-D f [x, y](\dot{x}, \dot{y}) = \frac{\dot{x}}{y} - \frac{x \dot{y}}{y^2}
+D f [x, y](\dot{x}, \dot{y}) = \cos(x + y) (\dot{x} + \dot{y})
 ```
-This comes from applying the quotient rule: if ``f(x, y) = x/y``, then ``\frac{\partial f}{\partial x} = \frac{1}{y}`` and ``\frac{\partial f}{\partial y} = -\frac{x}{y^2}``.
+This comes from applying the chain rule: if ``f(x, y) = \sin(x + y)``, then ``\frac{\partial f}{\partial x} = \cos(x + y)`` and ``\frac{\partial f}{\partial y} = \cos(x + y)``.
 
 _**Step 3: Compute Adjoint of Derivative**_
 
@@ -294,17 +294,17 @@ for all ``(\dot{x}, \dot{y}) \in \RR^2`` and ``\bar{f} \in \RR``.
 
 Starting with the left-hand side:
 ```math
-\langle \bar{f}, D f [x, y](\dot{x}, \dot{y}) \rangle = \bar{f} \left( \frac{\dot{x}}{y} - \frac{x \dot{y}}{y^2} \right)
+\langle \bar{f}, D f [x, y](\dot{x}, \dot{y}) \rangle = \bar{f} \cos(x + y) (\dot{x} + \dot{y})
 ```
 
 We can rewrite this as:
 ```math
-\bar{f} \frac{\dot{x}}{y} - \bar{f} \frac{x \dot{y}}{y^2} = \left\langle \left( \frac{\bar{f}}{y}, -\frac{\bar{f} x}{y^2} \right), (\dot{x}, \dot{y}) \right\rangle
+\bar{f} \cos(x + y) \dot{x} + \bar{f} \cos(x + y) \dot{y} = \langle (\bar{f} \cos(x + y), \bar{f} \cos(x + y)), (\dot{x}, \dot{y}) \rangle
 ```
 
 Therefore, the adjoint is:
 ```math
-D f [x, y]^\ast (\bar{f}) = \left( \frac{\bar{f}}{y}, -\frac{\bar{f} x}{y^2} \right)
+D f [x, y]^\ast (\bar{f}) = (\bar{f} \cos(x + y), \bar{f} \cos(x + y))
 ```
 
 #### AD of a Julia function: a slightly less trivial example
