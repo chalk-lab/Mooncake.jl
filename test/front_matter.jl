@@ -138,6 +138,11 @@ function determine_test_group()
     env_test_group = get(ENV, "TEST_GROUP", nothing)
     args_test_group = length(ARGS) > 0 ? ARGS[1] : nothing
     
+    # Show informational message if extra arguments are provided
+    if length(ARGS) > 1
+        @info "Extra arguments detected. Only the first argument '$(ARGS[1])' will be used for test group selection. Extra arguments will be ignored: $(ARGS[2:end])"
+    end
+    
     # If both are specified, check for conflicts and warn
     if env_test_group !== nothing && args_test_group !== nothing
         if env_test_group != args_test_group
