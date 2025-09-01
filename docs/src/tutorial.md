@@ -2,7 +2,7 @@
 
 There are two ways to compute gradients with Mooncake.jl:
 
-- through the standardized [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) API
+- through the standardised [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) API
 - through the native Mooncake.jl API
 
 We recommend the former to start with, especially if you want to experiment with other automatic differentiation packages.
@@ -129,7 +129,7 @@ Mooncake.jl provides the following core differentiation functions:
 - **Reverse mode**: `Mooncake.value_and_gradient!!` - computes function value and gradient (when output is scalar)  
 - **Reverse mode**: `Mooncake.value_and_pullback!!` - computes function value and pullback (general case)
 
-### Terminology Comparison with DifferentiationInterface
+### Terminology Comparison with DifferentiationInterface.jl
 
 Mooncake.jl uses terminology rooted in mathematical analysis, specifically Frechet derivatives and their adjoints, as described in detail in [Algorithmic Differentiation](@ref). This differs somewhat from the conventions used by [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) and other AD packages.
 
@@ -148,7 +148,3 @@ Mooncake.jl uses terminology rooted in mathematical analysis, specifically Frech
 !!! info
     For a detailed mathematical treatment of these concepts, see [Algorithmic Differentiation](@ref), particularly the sections on [Derivatives](@ref) and [Directional Derivatives and Gradients](@ref).
 
-### Native API Functions
-
-!!! warning
-    Work in progress.
