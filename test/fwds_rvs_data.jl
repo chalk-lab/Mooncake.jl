@@ -72,6 +72,7 @@ end
         @test can_produce_zero_rdata_from_type(Union{Tuple{Int},Tuple{Int,Int}})
         @test zero_rdata_from_type(Union{Tuple{Int},Tuple{Int,Int}}) == NoRData()
         @test zero_rdata_from_type(Union{Float64,Int}) == CannotProduceZeroRDataFromType()
+         # Regression tests for https://github.com/chalk-lab/Mooncake.jl/issues/704
         @test zero_rdata_from_type(
             Union{
                 ConsoleLogger,
