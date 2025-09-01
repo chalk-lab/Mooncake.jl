@@ -136,7 +136,7 @@ The following table shows the correspondence between terminology:
 
 **Key points:**
 
-- **Frechet derivative**: In forward mode, Mooncake computes the Frechet derivative `D f[x]`, which maps tangent vectors to tangent vectors. The derivative `D f[x](v)` is the special case when the input is scalar.
+- **Frechet derivative**: In forward mode, Mooncake computes the Frechet derivative `D f[x]`, which maps tangent vectors to tangent vectors. The derivative `f'(x) = D f[x](v)` is the special case when the input is scalar and `v = 1`
 
 - **Adjoint of derivative**: In reverse mode, Mooncake computes the adjoint `D f[x]*` of the Frechet derivative. This maps cotangent vectors (gradients) backwards through the computation.
 
