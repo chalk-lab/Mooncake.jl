@@ -78,10 +78,11 @@ As such, if you wish to ensure that your `IRCode` prints nicely, you should ensu
 linetable field has at least one element.
 """
 function __insts_to_instruction_stream(insts::Vector{Any})
+    n = length(insts)
     return CC.InstructionStream(
         insts,
-        fill(Any, length(insts)),
-        fill(CC.NoCallInfo(), length(insts)),
+        Any[Any for _ in 1:n],
+        CC.CallInfo[CC.NoCallInfo() for _ in 1:n],
         fill(Int32(1), length(insts)),
         fill(CC.IR_FLAG_REFINED, length(insts)),
     )
