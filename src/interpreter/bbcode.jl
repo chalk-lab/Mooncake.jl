@@ -698,17 +698,13 @@ function CC.IRCode(bb_code::BBCode)
     insts = _ids_to_line_numbers(bb_code)
     cfg = control_flow_graph(bb_code)
     insts = _lines_to_blocks(insts, cfg)
-    @static if VERSION >= v"1.12-"
-        # See e.g. here for how the NTuple{3,Int}s get flattened for InstructionStream:
-        # https://github.com/JuliaLang/julia/blob/16a2bf0a3b106b03dda23b8c9478aab90ffda5e1/Compiler/src/ssair/ir.jl#L299
-        lines = map(x -> x.line, insts)
-        lines = collect(Iterators.flatten(lines))
+    @static if VERSION > v"1.12-"
         return IRCode(
             CC.InstructionStream(
                 map(x -> x.stmt, insts),
-                collect(Any, map(x -> x.type, insts)),
-                collect(CC.CallInfo, map(x -> x.info, insts)),
-                lines,
+                Any[x.type for x in insts],
+                CC.CallInfo[x.info for x in insts],
+                map(x -> x.line[1], insts),
                 map(x -> x.flag, insts),
             ),
             cfg,
