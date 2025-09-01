@@ -135,15 +135,15 @@ Mooncake.jl uses terminology rooted in mathematical analysis, specifically Frech
 
 **General cases:**
 
-- **Frechet derivative**: In forward mode, Mooncake computes the Frechet derivative `D f[x]`, which maps tangent vectors to tangent vectors. The derivative `f'(x) = D f[x](v)` is the special case when the input is scalar and `v = 1`
+- **Frechet derivative**: In forward mode, Mooncake computes the Frechet derivative `D f[x]`, which maps tangent vectors to tangent vectors.
 
-- **Pushforward**: DifferentiationInterface refers to the forward-mode computation as a "pushforward", which corresponds to Mooncake's Frechet derivative computation.
+- **Pushforward**: DifferentiationInterface refers to the forward-mode computation as a "pushforward", which corresponds to Mooncake's Frechet derivative computation. The `DI.derivative` of `f` is the special case when the input is scalar and `v = 1`: `f'(x) = D f[x](1)`.
 
 - **Adjoint of derivative and pullback**: In reverse mode, Mooncake computes the adjoint `D f[x]*` of the Frechet derivative, which maps cotangent vectors backwards through the computation. This corresponds to what DifferentiationInterface calls a "pullback" and is implemented in `Mooncake.value_and_pullback!!`.
 
 **Special cases (scalar input/output):**
 
-- **Derivative**: When the input is scalar, the Frechet derivative `f'(x) = D f[x](v)` with `v = 1` gives the ordinary derivative. This corresponds to `DI.derivative` and is implemented in `Mooncake.value_and_derivative!!`.
+- **Derivative**: When the input is scalar, the Frechet derivative `f'(x) = D f[x](v)` with `v = 1` gives the ordinary derivative. This corresponds to `DI.derivative`, while Mooncake lacks an equivalent API and handles this as a special case of `Mooncake.value_and_derivative!!`. 
 
 - **Gradient**: When the output is scalar, the adjoint of the derivative applied to `1` gives the gradient `∇f`. This corresponds to `DI.gradient` and is implemented in `Mooncake.value_and_gradient!!`.
 
