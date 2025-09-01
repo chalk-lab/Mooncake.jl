@@ -24,6 +24,7 @@ include("front_matter.jl")
         include("tools_for_rules.jl")
         include("interface.jl")
         include("config.jl")
+        include("test_group_selection.jl")
         include("developer_tools.jl")
         include("test_utils.jl")
     elseif test_group == "rrules/array_legacy"
