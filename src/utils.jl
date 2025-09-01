@@ -331,10 +331,14 @@ function opaque_closure(
 )
     # This implementation is copied over directly from `Core.OpaqueClosure`.
     ir = CC.copy(ir)
-    nargs = length(ir.argtypes) - 1
+    ir.argtypes[1] = Tuple
+    nargtypes = length(ir.argtypes)
+    nargs = nargtypes - 1
     sig = compute_oc_signature(ir, nargs, isva)
     src = ccall(:jl_new_code_info_uninit, Ref{CC.CodeInfo}, ())
-    src.slotnames = [Symbol(:_, i) for i in 1:(nargs + 1)]
+    src.slotnames = [Symbol(:_, i) for i in 1:nargtypes]
+    src.nargs = nargtypes
+    src.isva = isva
     src.slotflags = fill(zero(UInt8), length(ir.argtypes))
     src.slottypes = copy(ir.argtypes)
     src.rettype = ret_type
