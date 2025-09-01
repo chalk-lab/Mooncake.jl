@@ -65,6 +65,7 @@ JET = "0.9"
 JuliaFormatter = "1.0, 2.1"
 JuliaInterpreter = "0.9"
 LinearAlgebra = "1"
+Logging = "1"
 LuxLib = "1"
 MLDataDevices = "1.10.0"
 MistyClosures = "2"
@@ -85,6 +86,7 @@ BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 DiffTests = "de460e47-3fe3-5279-bb4a-814414816d5d"
 DynamicExpressions = "a40a106e-89c9-4ca8-8020-a735e8728b6b"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 JuliaFormatter = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
 JuliaInterpreter = "aa1ae85d-cabe-5617-a682-6adf51b2e16a"
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
@@ -92,4 +94,4 @@ StableRNGs = "860ef19b-820b-49d6-a774-d7a799459cd3"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["AllocCheck", "Aqua", "BenchmarkTools", "DiffTests", "JET", "JuliaFormatter", "JuliaInterpreter", "Pkg", "StableRNGs", "Test"]
+test = ["AllocCheck", "Aqua", "BenchmarkTools", "DiffTests", "JET", "Logging", "JuliaFormatter", "JuliaInterpreter", "Pkg", "StableRNGs", "Test"]

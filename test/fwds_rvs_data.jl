@@ -1,4 +1,5 @@
 module FwdsRvsDataTestResources
+
 struct Foo{A} end
 struct Bar{A,B,C}
     a::A
@@ -71,6 +72,14 @@ end
         @test can_produce_zero_rdata_from_type(Union{Tuple{Int},Tuple{Int,Int}})
         @test zero_rdata_from_type(Union{Tuple{Int},Tuple{Int,Int}}) == NoRData()
         @test zero_rdata_from_type(Union{Float64,Int}) == CannotProduceZeroRDataFromType()
+        @test zero_rdata_from_type(
+            Union{
+                ConsoleLogger,
+                Base.CoreLogging.NullLogger,
+                Base.CoreLogging.SimpleLogger,
+                TestLogger,
+            },
+        ) == NoRData()
 
         # Edge case: Types with unbound type parameters.
         P = (Type{T} where {T}).body
