@@ -60,7 +60,7 @@ mysquare (generic function with 1 method)
 
 julia> cache = Mooncake.prepare_derivative_cache(mysquare, 3.0);
 
-julia> Mooncake.value_and_derivative!!(cache, zero_dual(mysquare), Dual(3.0, 1.0))
+julia> Mooncake.value_and_derivative!!(cache, Mooncake.zero_dual(mysquare), Mooncake.Dual(3.0, 1.0))
 Dual{Float64, Float64}(9.0, 0.0)
 ```
 As you can see, the tangent is `0.0` rather than `6.0`.
