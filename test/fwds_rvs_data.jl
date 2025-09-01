@@ -23,6 +23,13 @@ end
         @test fdata_type(tangent_type(P)) == F
         @test rdata_type(tangent_type(P)) == R
     end
+    @test_throws ErrorException(
+        "Int64 is a primitive type. Implement a method of `rdata_type` for it."
+    ) rdata_type(Int64)
+    @test_throws ErrorException(
+        "Int64 is a primitive type. Implement a method of `fdata_type` for it."
+    ) fdata_type(Int64)
+
     @testset "$(typeof(p))" for (_, p, _...) in Mooncake.tangent_test_cases()
         TestUtils.test_tangent_splitting(Xoshiro(123456), p)
     end

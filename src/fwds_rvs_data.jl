@@ -448,7 +448,7 @@ end
     # This method can only handle struct types. Tell user to implement their own method.
     if isprimitivetype(T)
         msg = "$T is a primitive type. Implement a method of `rdata_type` for it."
-        return :(error(msg))
+        return :(error($msg))
     end
 
     # If the type is a Union, then take the union type of its arguments.
@@ -689,7 +689,7 @@ with.
 @generated function zero_rdata_from_type(::Type{P}) where {P}
 
     # Prepare expressions for manually-unrolled loop to construct zero rdata elements.
-    if P isa DataType
+    if P isa DataType && isconcretetype(P)
         names = fieldnames(P)
         types = fieldtypes(P)
         wrapped_field_zeros = map(enumerate(always_initialised(P))) do (n, init)

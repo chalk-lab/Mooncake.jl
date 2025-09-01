@@ -95,6 +95,7 @@ jobs:
           {test_type: 'integration_testing', label: 'array'},
           {test_type: 'integration_testing', label: 'bijectors'},
           {test_type: 'integration_testing', label: 'diff_tests'},
+          {test_type: 'integration_testing', label: 'diffeq'},
           {test_type: 'integration_testing', label: 'dispatch_doctor'},
           {test_type: 'integration_testing', label: 'distributions'},
           {test_type: 'integration_testing', label: 'dynamicppl'},
