@@ -4,6 +4,7 @@ using Aqua,
     JET,
     JuliaFormatter,
     LinearAlgebra,
+    Logging,
     Random,
     StableRNGs,
     Mooncake,
@@ -111,6 +112,9 @@ using .TestUtils:
     populate_address_map,
     test_tangent,
     check_allocs
+
+using Test: TestLogger
+using Logging: ConsoleLogger
 
 using .TestResources:
     TypeStableMutableStruct,
