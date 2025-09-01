@@ -5,6 +5,8 @@
         (Cstring, NoTangent),
         (Cwstring, NoTangent),
         (Union{}, Union{}),
+        (Core.CodeInstance, NoTangent),
+        (Core.MethodInstance, NoTangent),
 
         ## Tuples
 
