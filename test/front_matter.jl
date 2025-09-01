@@ -113,9 +113,6 @@ using .TestUtils:
     test_tangent,
     check_allocs
 
-using Test: TestLogger
-using Logging: ConsoleLogger
-
 using .TestResources:
     TypeStableMutableStruct,
     StructFoo,
