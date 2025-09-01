@@ -131,7 +131,7 @@ Mooncake.jl provides the following core differentiation functions:
 
 ### Terminology Comparison with DifferentiationInterface.jl
 
-Mooncake.jl uses terminology rooted in mathematical analysis, specifically Frechet derivatives and their adjoints, as described in detail in [Algorithmic Differentiation](@ref). This differs somewhat from the conventions used by [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) and other AD packages.
+Mooncake.jl uses discusses Frechet derivatives and their adjoints, as described in detail in [Algorithmic Differentiation](@ref). This differs from the conventions used by [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) and some other AD packages.
 
 **General cases:**
 
@@ -146,5 +146,5 @@ Mooncake.jl uses terminology rooted in mathematical analysis, specifically Frech
 - **Gradient**: When the output is scalar, the adjoint of the derivative applied to `1` gives the gradient `∇f`. This corresponds to `DI.gradient` and is implemented in `Mooncake.value_and_gradient!!`.
 
 !!! info
-    For a detailed mathematical treatment of these concepts, see [Algorithmic Differentiation](@ref), particularly the sections on [Derivatives](@ref) and [Directional Derivatives and Gradients](@ref).
+    For a detailed mathematical treatment of these concepts, see [Algorithmic Differentiation](@ref), particularly the sections on [Derivatives](@ref).
 
