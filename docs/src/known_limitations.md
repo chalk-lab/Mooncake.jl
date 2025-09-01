@@ -44,7 +44,7 @@ Observe that while it has correctly computed the identity function, the gradient
 The takehome: do not attempt to differentiate functions which modify global state. Uses of globals which does not involve mutating them is fine though.
 
 
-## Passing Differetiable Data as a Type
+## Passing Differentiable Data as a Type
 
 Credit goes to Guillaume Dalle for noticing this limitation.
 
