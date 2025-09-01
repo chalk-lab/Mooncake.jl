@@ -43,6 +43,32 @@ Observe that while it has correctly computed the identity function, the gradient
 
 The takehome: do not attempt to differentiate functions which modify global state. Uses of globals which does not involve mutating them is fine though.
 
+
+## Passing Differetiable Data as a Type
+
+Credit goes to Guillaume Dalle for noticing this limitation.
+
+This is an example of a known silent correctness issue.
+```jldoctest
+julia> struct T{x} end
+
+julia> @noinline getparam(::T{x}) where {x} = x
+getparam (generic function with 1 method)
+
+julia> mysquare(x) = getparam(T{x}())^2
+mysquare (generic function with 1 method)
+
+julia> cache = Mooncake.prepare_derivative_cache(mysquare, 3.0);
+
+julia> Mooncake.value_and_derivative!!(cache, zero_dual(mysquare), Dual(3.0, 1.0))
+Dual{Float64, Float64}(9.0, 0.0)
+```
+As you can see, the tangent is `0.0` rather than `6.0`.
+
+However, we view this as a pathological use of Julia's language features, and believe it is unlikely to cause trouble in practice.
+If you encounter a practical situation in which it is very important that this example work correctly, please open an issue.
+
+
 ## Circular References in Type Declarations
 
 Mooncake.jl's default `tangent_type` implementation cannot support types which refer to themselves either directly or indirectly in their definition.
@@ -131,4 +157,3 @@ Honestly, your best bet is just to avoid differentiating functions whose argumen
 ```@meta
 DocTestSetup = nothing
 ```
-
