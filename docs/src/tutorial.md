@@ -125,7 +125,7 @@ DI.jacobian(h, prep, backend, x)
 
 Mooncake.jl provides the following core differentiation functions:
 
-- **Forward mode**: `Mooncake.value_and_derivative!!` - computes function value and derivative
+- **Forward mode**: `Mooncake.value_and_derivative!!` - computes function value and the Frechet derivative
 - **Reverse mode**: `Mooncake.value_and_gradient!!` - computes function value and gradient (when output is scalar)  
 - **Reverse mode**: `Mooncake.value_and_pullback!!` - computes function value and pullback (general case)
 
@@ -137,7 +137,7 @@ Mooncake.jl uses terminology rooted in mathematical analysis, specifically Frech
 
 - **Frechet derivative**: In forward mode, Mooncake computes the Frechet derivative `D f[x]`, which maps tangent vectors to tangent vectors.
 
-- **Pushforward**: DifferentiationInterface refers to the forward-mode computation as a "pushforward", which corresponds to Mooncake's Frechet derivative computation. The `DI.derivative` of `f` is the special case when the input is scalar and `v = 1`: `f'(x) = D f[x](1)`.
+- **Pushforward**: DifferentiationInterface refers to the forward-mode computation as a "pushforward", which corresponds to Mooncake's Frechet derivative computation.
 
 - **Adjoint of derivative and pullback**: In reverse mode, Mooncake computes the adjoint `D f[x]*` of the Frechet derivative, which maps cotangent vectors backwards through the computation. This corresponds to what DifferentiationInterface calls a "pullback" and is implemented in `Mooncake.value_and_pullback!!`.
 
