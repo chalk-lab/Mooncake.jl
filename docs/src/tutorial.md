@@ -135,7 +135,9 @@ Mooncake.jl uses terminology rooted in mathematical analysis, specifically Frech
 
 **General cases:**
 
-- **Frechet derivative and pushforward**: In forward mode, Mooncake computes the Frechet derivative `D f[x]`, which maps tangent vectors to tangent vectors. This corresponds to what DifferentiationInterface calls a "pushforward".
+- **Frechet derivative**: In forward mode, Mooncake computes the Frechet derivative `D f[x]`, which maps tangent vectors to tangent vectors. The derivative `f'(x) = D f[x](v)` is the special case when the input is scalar and `v = 1`
+
+- **Pushforward**: DifferentiationInterface refers to the forward-mode computation as a "pushforward", which corresponds to Mooncake's Frechet derivative computation.
 
 - **Adjoint of derivative and pullback**: In reverse mode, Mooncake computes the adjoint `D f[x]*` of the Frechet derivative, which maps cotangent vectors backwards through the computation. This corresponds to what DifferentiationInterface calls a "pullback" and is implemented in `Mooncake.value_and_pullback!!`.
 
