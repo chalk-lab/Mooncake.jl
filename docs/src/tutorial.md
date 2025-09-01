@@ -131,7 +131,7 @@ Mooncake.jl provides the following core differentiation functions:
 
 ### Terminology Comparison with DifferentiationInterface.jl
 
-Mooncake.jl uses discusses Frechet derivatives and their adjoints, as described in detail in [Algorithmic Differentiation](@ref). This differs from the conventions used by [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) and some other AD packages.
+Mooncake.jl discusses Frechet derivatives and their adjoints, as described in detail in [Algorithmic Differentiation](@ref). This differs from the conventions used by [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) and some other AD packages.
 
 **General cases:**
 
