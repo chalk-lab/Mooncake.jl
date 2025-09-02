@@ -1,20 +1,12 @@
 a_primitive(x) = sin(x)
 non_primitive(x) = sin(x)
 
-function Mooncake.is_primitive(
-    ::Type{DefaultCtx}, ::Type{ReverseMode}, ::Type{<:Tuple{typeof(a_primitive),Any}}
-)
-    return true
-end
-function Mooncake.is_primitive(
-    ::Type{DefaultCtx}, ::Type{ReverseMode}, ::Type{<:Tuple{typeof(non_primitive),Any}}
-)
-    return false
-end
+Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(a_primitive),Float64}
 
 contains_primitive(x) = @inline a_primitive(x)
 contains_non_primitive(x) = @inline non_primitive(x)
 contains_primitive_behind_call(x) = @inline contains_primitive(x)
+union_split_primitive_call(x::Ref{Union{Float64,Float32}}) = @inline a_primitive(x[])
 
 @testset "abstract_interpretation" begin
     # Check that inlining doesn't / does happen as expected.
@@ -72,6 +64,35 @@ contains_primitive_behind_call(x) = @inline contains_primitive(x)
             ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
             invoke_line = findfirst(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
             @test stmt(ad_ir.stmts)[invoke_line].args[2] == GlobalRef(Main, :a_primitive)
+        end
+        @testset "no inline away union splitting" begin
+
+            # In the IR for this signature generated using the standard interpreter, calls
+            # to `a_primitive` are inlined away to calls to `sin`. One call site is
+            # generated for `Float32`, and another for `Float64` (you should take a look at
+            # the IR to see this). However, since `a_primitive` called with a `Float64` is
+            # a Mooncake primitive, this should not happen in the IR with a Mooncake
+            # interpreter. This case is different from those above in that the type being
+            # passed into `a_primitive` is abstract (Union{Float32,Float64}) rather than
+            # concrete. In early versions of Mooncake, the implementation of `is_primitive`
+            # would incorrect permit this call site to be inlined away.
+            Tx = Base.RefValue{Union{Float32,Float64}}
+            sig = Tuple{typeof(union_split_primitive_call),Tx}
+
+            # Pre-condition: a invoke sites inline away to reveal calls to `sin`.
+            usual_ir = Base.code_ircode_by_type(sig)[1][1]
+            invoke_lines = findall(x -> Meta.isexpr(x, :invoke), stmt(usual_ir.stmts))
+            for line in invoke_lines
+                @assert stmt(usual_ir.stmts)[line].args[2] == GlobalRef(Main, :sin)
+            end
+
+            # Should not inline away under AD compilation.
+            interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
+            ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
+            invoke_lines = findall(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
+            for line in invoke_lines
+                @test stmt(ad_ir.stmts)[line].args[2] == SSAValue(2)
+            end
         end
 
         # Regression test for https://github.com/chalk-lab/Mooncake.jl/issues/238
