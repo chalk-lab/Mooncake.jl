@@ -46,6 +46,14 @@ function rrule!!(
     return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
 end
 
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/521
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/249
+# Import ChainRules broadcast rules for Array{<:IEEEFloat} to improve performance when f is
+# computationally lightweight. broadcast(f, args...) = copy(broadcasted(f, args...)), so we need
+# rules for both copy(::Broadcasted) and broadcasted.
+@from_rrule DefaultCtx Tuple{typeof(copy),Base.Broadcast.Broadcasted}
+@from_rrule DefaultCtx Tuple{typeof(Base.Broadcast.broadcasted),Function,Array{P}} where {P<:IEEEFloat}
+
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     sizes = [(11,), (11, 3)]
@@ -62,6 +70,20 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
         map_prod(sizes, precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
             return (flags..., sum, abs2, randn(rng, P, sz...))
+        end,
+
+        # broadcast(f, x) for Array{<:IEEEFloat} - tests copy(::Broadcasted) and broadcasted rules
+        map_prod(sizes, precisions) do (sz, P)
+            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
+            f_simple(x) = 2 * x
+            bc = Base.Broadcast.broadcasted(f_simple, randn(rng, P, sz...))
+            return (flags..., copy, bc)
+        end,
+        
+        map_prod(sizes, precisions) do (sz, P)
+            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
+            f_simple(x) = 2 * x
+            return (flags..., Base.Broadcast.broadcasted, f_simple, randn(rng, P, sz...))
         end,
     )
     memory = Any[]
