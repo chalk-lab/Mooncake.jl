@@ -4,6 +4,7 @@ using Aqua,
     JET,
     JuliaFormatter,
     LinearAlgebra,
+    Logging,
     Random,
     StableRNGs,
     Mooncake,
@@ -131,7 +132,38 @@ using .TestResources:
 # that has been missed in the "basic" group. As a rule, if the "basic" group passes, but the
 # "extended" group fails, there are clearly new tests that need to be added to the "basic"
 # group.
-const test_group = get(ENV, "TEST_GROUP", "basic")
+
+# Enhanced test selection: Check both ARGS and TEST_GROUP environment variable
+# Support for Copilot-style test patterns like `julia --project=. -e 'using Pkg; Pkg.test("Mooncake"; test_args=[basic])'`
+function determine_test_group()
+    env_test_group = get(ENV, "TEST_GROUP", nothing)
+    args_test_group = length(ARGS) > 0 ? ARGS[1] : nothing
+
+    # Show informational message if extra arguments are provided
+    if length(ARGS) > 1
+        @info "Extra arguments detected. Only the first argument '$(ARGS[1])' will be used for test group selection. Extra arguments will be ignored: $(ARGS[2:end])"
+    end
+
+    # If both are specified, check for conflicts and warn
+    if env_test_group !== nothing && args_test_group !== nothing
+        if env_test_group != args_test_group
+            @warn "Conflict detected: TEST_GROUP environment variable is set to '$env_test_group' " *
+                "but ARGS specifies '$args_test_group'. Using ARGS value: '$args_test_group'"
+        end
+        return args_test_group
+    end
+
+    # Use ARGS if available, otherwise fall back to TEST_GROUP or default
+    if args_test_group !== nothing
+        return args_test_group
+    elseif env_test_group !== nothing
+        return env_test_group
+    else
+        return "basic"
+    end
+end
+
+const test_group = determine_test_group()
 
 sr(n::Int) = StableRNG(n)
 
