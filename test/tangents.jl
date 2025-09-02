@@ -183,6 +183,16 @@
         @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(p, t)
         @test Mooncake._add_to_primal(p, t, true) isa typeof(p)
     end
+    @testset "require_tangent_cache($P)" for (P, expected_result) in [
+        (Float64, false),
+        (Int32, false),
+        (Vector{Float64}, false),
+        (Vector{Vector{Float64}}, true),
+        (Matrix{Int}, false),
+        (Tuple{Matrix{Float64},Matrix{Float64}}, true),
+    ]
+        @test Mooncake.require_tangent_cache(P) == Val(expected_result)
+    end
 end
 
 # The goal of these tests is to check that we can indeed generate tangent types for anything
