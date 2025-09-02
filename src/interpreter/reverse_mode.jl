@@ -289,6 +289,7 @@ struct RRuleZeroWrapper{Trule}
     rule::Trule
 end
 
+# Recursively copy the wrapped rule
 _copy(x::P) where {P<:RRuleZeroWrapper} = P(_copy(x.rule))
 
 struct RRuleWrapperPb{Tpb!!,Tl}
@@ -951,6 +952,47 @@ function verify_args(r::DerivedRule{sig}, x) where {sig}
     throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
 end
 
+"""
+    _copy(x)
+
+*Note:* this is not part of the public Mooncake.jl interface, and may change without warning.
+
+Internal protocol for creating copies of AD-related data structures. This function is used 
+throughout the automatic differentiation system to create appropriate copies of rules, 
+caches, and other internal data structures when building new AD contexts.
+
+# Semantics
+
+The `_copy` protocol defines how different types should be copied within the AD system:
+
+- For immutable AD types (like `CoDual`, `Dual`), typically returns the same object
+- For mutable containers, creates new instances with copied contents
+- For composite types, recursively applies `_copy` to fields
+- Falls back to `Base.copy` for general types
+
+# Implementation Requirements
+
+When implementing `_copy` for a new type, consider:
+- Whether the type represents mutable state that needs actual copying
+- Whether fields should be recursively copied or can be shared
+- Performance implications of copying vs. sharing immutable data
+
+# Examples
+
+```julia
+# For immutable AD types - no copying needed
+_copy(x::CoDual) = x
+
+# For mutable containers - create new empty instance
+_copy(::Stack{T}) where {T} = Stack{T}()
+
+# For composite types - recursive copying
+_copy(x::Tuple) = map(_copy, x)
+
+# Fallback to Base.copy
+_copy(x) = copy(x)
+```
+"""
 _copy(::Nothing) = nothing
 
 function _copy(x::P) where {P<:DerivedRule}
@@ -1743,6 +1785,7 @@ end
 
 DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug_mode)
 
+# Create new dynamic rule with empty cache and same debug mode
 _copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
 
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
@@ -1840,6 +1883,7 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
     end
 end
 
+# Create new lazy rule with same method instance and debug mode
 _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
 
 @inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}

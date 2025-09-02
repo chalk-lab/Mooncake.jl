@@ -71,6 +71,7 @@ end
     return fwd.fwd_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
 end
 
+# Copy forward rule with recursively copied captures
 function _copy(x::P) where {P<:DerivedFRule}
     return P(replace_captures(x.fwd_oc, _copy(x.fwd_oc.oc.captures)))
 end
@@ -398,6 +399,7 @@ mutable struct LazyFRule{primal_sig,Trule}
     end
 end
 
+# Create new lazy rule with same method instance and debug mode
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode)
 
 @inline function (rule::LazyFRule)(args::Vararg{Any,N}) where {N}
@@ -438,6 +440,7 @@ end
 
 DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
 
+# Create new dynamic rule with empty cache and same debug mode  
 _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}

@@ -77,6 +77,7 @@ struct MistyClosureRData{Tr}
     captures_rdata::Tr
 end
 
+# Deep copy the captures data for misty closures
 _copy(r::MistyClosureRData) = MistyClosureRData(deepcopy(r.captures_rdata))
 
 fdata_type(::Type{<:MistyClosureTangent}) = MistyClosureFData
