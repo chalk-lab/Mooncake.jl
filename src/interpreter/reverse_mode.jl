@@ -983,9 +983,8 @@ When implementing `_copy` for a new type, consider:
 # For immutable AD types - no copying needed
 _copy(x::CoDual) = x
 
-# For mutable containers - delegate to Base.copy 
-# (Stack defines: Base.copy(::Stack{T}) = Stack{T}())
-_copy(x::SomeMutableType) = copy(x)
+# For mutable containers - create new empty instance
+_copy(::Stack{T}) where {T} = Stack{T}()
 
 # For composite types - recursive copying
 _copy(x::Tuple) = map(_copy, x)
