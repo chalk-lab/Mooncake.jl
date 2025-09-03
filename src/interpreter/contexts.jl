@@ -54,7 +54,9 @@ Returns a `Bool` specifying whether the methods specified by `sig` are considere
 in the context of contexts of type `ctx` in mode `mode` at world age `world`.
 
 ```jldoctest
-is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64}, Base.get_world_counter())
+julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64}, Base.get_world_counter())
 true
 ```
 will return if calling `sin(5.0)` should be treated as primitive when the context is a
