@@ -43,12 +43,36 @@ Observe that while it has correctly computed the identity function, the gradient
 
 The takehome: do not attempt to differentiate functions which modify global state. Uses of globals which does not involve mutating them is fine though.
 
-## Circular References
 
-To a large extent, Mooncake.jl does not presently support circular references in an automatic fashion.
-It is generally possible to hand-write solutions, so we explain some of the problems here, and the general approach to resolving them.
+## Passing Differentiable Data as a Type
 
-### Tangent Types
+Credit goes to Guillaume Dalle for noticing this limitation.
+
+This is an example of a known silent correctness issue.
+```jldoctest
+julia> struct T{x} end
+
+julia> @noinline getparam(::T{x}) where {x} = x
+getparam (generic function with 1 method)
+
+julia> mysquare(x) = getparam(T{x}())^2
+mysquare (generic function with 1 method)
+
+julia> cache = Mooncake.prepare_derivative_cache(mysquare, 3.0);
+
+julia> Mooncake.value_and_derivative!!(cache, Mooncake.zero_dual(mysquare), Mooncake.Dual(3.0, 1.0))
+Mooncake.Dual{Float64, Float64}(9.0, 0.0)
+```
+As you can see, the tangent is `0.0` rather than `6.0`.
+
+However, we view this as a pathological use of Julia's language features, and believe it is unlikely to cause trouble in practice.
+If you encounter a practical situation in which it is very important that this example work correctly, please open an issue.
+
+
+## Circular References in Type Declarations
+
+Mooncake.jl's default `tangent_type` implementation cannot support types which refer to themselves either directly or indirectly in their definition.
+Below is an example in which a type refers to iself directly in its definition.
 
 _**The Problem**_
 
@@ -88,35 +112,6 @@ end
 The point here is that you can manually resolve the circular dependency using a data structure which mimics the primal type.
 You will, however, need to implement similar methods for `zero_tangent`, `randn_tangent`, etc, and presumably need to implement additional `getfield` and `setfield` rules which are specific to this type.
 An example implementation of this is provided [here](developer_documentation/custom_tangent_type.md).
-
-### Circular References in General
-
-_**The Problem**_
-
-Consider a type of the form
-```julia
-mutable struct Foo
-    x
-    Foo() = new()
-end
-```
-In this instance, `tangent_type` will work fine because `Foo` does not directly reference itself in its definition.
-Moreover, general uses of `Foo` will be fine.
-
-However, it's possible to construct an instance of `Foo` with a circular reference:
-```julia
-f = Foo()
-f.x = f
-```
-This is actually fine provided we never attempt to call `zero_tangent` / `randn_tangent` / similar functionality on `f` once we've set its `x` field to itself.
-If we attempt to call such a function, we'll find ourselves with a stack overflow.
-
-_**The Solution**_
-This is a little tricker to handle.
-You could specialise `zero_tangent` etc for `Foo`, but this is something of a pain.
-Fortunately, it seems to be incredibly rare that this is ever a problem in practice.
-If we gain evidence that this _is_ often a problem in practice, we'll look into supporting `zero_tangent` etc automatically for this case.
-
 
 ## Tangent Generation and Pointers
 
@@ -162,4 +157,3 @@ Honestly, your best bet is just to avoid differentiating functions whose argumen
 ```@meta
 DocTestSetup = nothing
 ```
-
