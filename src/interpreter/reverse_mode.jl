@@ -997,6 +997,17 @@ function _copy(x::DerivedRule)
     return typeof(x)(new_fwds_oc, new_pb_oc_ref, x.nargs)
 end
 
+# For misty closure reverse data - deep copy the captures data
+_copy(r::MistyClosureRData) = MistyClosureRData(deepcopy(r.captures_rdata))
+
+# For tangent types - copy conditionally based on initialization state
+_copy(x::PossiblyUninitTangent) = is_init(x) ? typeof(x)(_copy(x.tangent)) : typeof(x)()
+
+# For forwards/reverse data types - recursively copy wrapped data
+_copy(x::FData) = typeof(x)(_copy(x.data))
+_copy(x::RData) = typeof(x)(_copy(x.data))
+_copy(x::LazyZeroRData) = typeof(x)(_copy(x.data))
+
 # Fallback to Base.copy
 _copy(x) = copy(x)
 ```
