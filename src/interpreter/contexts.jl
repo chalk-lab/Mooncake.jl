@@ -67,7 +67,7 @@ might live in a particular instance of `Ctx`.
 function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
     @nospecialize sig
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-    tt = Tuple{typeof(_is_primitive), Type{<:ctx}, Type{mode}, Type{sig}}
+    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{sig}}
     return get!(_IS_PRIMITIVE_CACHE, (world, tt)) do
         return !isempty(Base._methods_by_ftype(tt, -1, world))
     end
@@ -84,7 +84,7 @@ const _MAYBE_PRIMITIVE_CACHE = IdDict{Any,Bool}()
 function maybe_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
     @nospecialize sig
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-    tt = Tuple{typeof(_is_primitive), Type{<:ctx}, Type{mode}, Type{<:sig}}
+    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{<:sig}}
     return get!(_MAYBE_PRIMITIVE_CACHE, (world, tt)) do
         return !isempty(Base._methods_by_ftype(tt, -1, world))
     end
