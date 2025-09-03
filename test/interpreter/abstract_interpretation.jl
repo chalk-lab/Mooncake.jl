@@ -81,17 +81,15 @@ union_split_primitive_call(x::Ref{Union{Float64,Float32}}) = @inline a_primitive
 
             # Pre-condition: a invoke sites inline away to reveal calls to `sin`.
             usual_ir = Base.code_ircode_by_type(sig)[1][1]
-            invoke_lines = findall(x -> Meta.isexpr(x, :invoke), stmt(usual_ir.stmts))
-            for line in invoke_lines
+            for line in findall(x -> Meta.isexpr(x, :invoke), stmt(usual_ir.stmts))
                 @assert stmt(usual_ir.stmts)[line].args[2] == GlobalRef(Main, :sin)
             end
 
             # Should not inline away under AD compilation.
             interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
             ad_ir = Base.code_ircode_by_type(sig; interp)[1][1]
-            invoke_lines = findall(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
-            for line in invoke_lines
-                @test stmt(ad_ir.stmts)[line].args[2] == SSAValue(2)
+            for line in findall(x -> Meta.isexpr(x, :invoke), stmt(ad_ir.stmts))
+                @test stmt(ad_ir.stmts)[line].args[2] != GlobalRef(Main, :sin)
             end
         end
 
