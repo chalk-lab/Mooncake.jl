@@ -983,7 +983,7 @@ When implementing `_copy` for a new type, consider:
 # For immutable AD types - no copying needed
 _copy(x::CoDual) = x
 
-# For mutable containers - create new empty instance
+# For  `Stack` type - create new empty instance
 _copy(::Stack{T}) where {T} = Stack{T}()
 
 # For composite types - recursive copying
