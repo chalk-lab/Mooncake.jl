@@ -983,11 +983,19 @@ When implementing `_copy` for a new type, consider:
 # For immutable AD types - no copying needed
 _copy(x::CoDual) = x
 
-# For  `Stack` type - create new empty instance
+# For `Stack` type - create new empty instance
 _copy(::Stack{T}) where {T} = Stack{T}()
 
 # For composite types - recursive copying
 _copy(x::Tuple) = map(_copy, x)
+
+# For rule types - create new instances with appropriately copied captures/caches
+function _copy(x::DerivedRule)
+    new_captures = _copy(x.fwds_oc.oc.captures)
+    new_fwds_oc = replace_captures(x.fwds_oc, new_captures)
+    new_pb_oc_ref = Ref(replace_captures(x.pb_oc_ref[], new_captures))
+    return typeof(x)(new_fwds_oc, new_pb_oc_ref, x.nargs)
+end
 
 # Fallback to Base.copy
 _copy(x) = copy(x)
