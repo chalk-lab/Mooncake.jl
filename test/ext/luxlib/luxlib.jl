@@ -16,7 +16,7 @@ using Mooncake.TestUtils: test_rule
                 false,
                 :none,
                 true,
-                LuxLib.Impl.batched_matmul,
+                LuxLib.Impl.batched_matmul_fallback,
                 randn(5, 4, 3),
                 randn(4, 3, 3),
             ),
