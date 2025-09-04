@@ -22,7 +22,6 @@ struct FData{T<:NamedTuple}
     data::T
 end
 
-# Recursively copy the wrapped data
 _copy(x::P) where {P<:FData} = P(_copy(x.data))
 
 fields_type(::Type{FData{T}}) where {T<:NamedTuple} = T
@@ -406,7 +405,6 @@ struct RData{T<:NamedTuple}
     data::T
 end
 
-# Recursively copy the wrapped data
 _copy(x::P) where {P<:RData} = P(_copy(x.data))
 
 fields_type(::Type{RData{T}}) where {T<:NamedTuple} = T
@@ -833,7 +831,6 @@ struct LazyZeroRData{P,Tdata}
     data::Tdata
 end
 
-# Recursively copy the wrapped data
 _copy(x::P) where {P<:LazyZeroRData} = P(_copy(x.data))
 
 # Returns the type which must be output by LazyZeroRData whenever it is passed a `P`.
