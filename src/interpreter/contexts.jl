@@ -69,9 +69,50 @@ might live in a particular instance of `Ctx`.
 function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
     @nospecialize sig
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-    tt = Tuple{typeof(_is_primitive),Type{ctx},Type{mode},Type{sig}}
+    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{sig}}
     return get!(_IS_PRIMITIVE_CACHE, (world, tt)) do
         return !isempty(Base._methods_by_ftype(tt, -1, world))
+    end
+end
+
+"""
+    subtypes_are_provably_bottom_and_self(x::Type{<:Tuple})::Bool
+
+`true` if we can prove that the only subtypes of `x` are `Union{}` (the "bottom" element of
+the type lattice) and `x` itself. `false` otherwise, either because we have been unable to
+prove it, or because there are provably more subtypes than `Union{}` and `x`.
+
+For example:
+```jldoctest
+julia> # Only subtypes are `Union{}` and argument.
+       Mooncake.subtypes_are_provably_bottom_and_self(Tuple{typeof(sin),Float64})
+true
+
+julia> # `Tuple{typeof(sin),Float64}` is a subtype.
+       Mooncake.subtypes_are_provably_bottom_and_self(Tuple{typeof(sin),Real})
+false
+
+julia> # Only subtypes are `Union{}` and itself, but not sophisticated-enough implementation
+       # to prove it.
+       Mooncake.subtypes_are_provably_bottom_and_self(Tuple{Type{Float64},Float64})
+false
+```
+"""
+function subtypes_are_provably_bottom_and_self(x::Type{<:Tuple})::Bool
+    @nospecialize x
+
+    # Exclude `UnionAll`s, `Union`s, and `Core.TypeofBottom`.
+    x isa DataType || return false
+
+    try
+        # Exclude eg. `Tuple{DataType}` because `DataType` is concrete, but `Type{F} <: DataType`.
+        any(T -> T <: Type, fieldtypes(x)) && return false
+
+        # It's now enough to know that everything is concrete?
+        return isconcretetype(x)
+    catch
+        # If contains a `Vararg`, the fieldcount will not be defined, and an `ArgumentError` thrown.
+        return false
     end
 end
 
@@ -121,8 +162,14 @@ Per the definition at the top of this docstring, this function returns `true` be
 """
 function maybe_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
     @nospecialize sig
+
+    # Fast path: if `sig` has no subtypes other than Union{}, then it is safe to call
+    # `is_primitive` rather than `maybe_primitive`, which is _much_ faster.
+    subtypes_are_provably_bottom_and_self(sig) && return is_primitive(ctx, mode, sig, world)
+
+    # Slow path: consider all possible subtypes of `sig`.
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-    tt = Tuple{typeof(_is_primitive),Type{ctx},Type{mode},Type{sig}}
+    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{<:sig}}
     return get!(_MAYBE_PRIMITIVE_CACHE, (world, tt)) do
         return !isempty(Base._methods_by_ftype(tt, -1, world))
     end
