@@ -1,20 +1,20 @@
 """
-    struct MinimalCtx end
-
-Functions should only be primitives in this context if not making them so would cause AD to
-fail. In particular, do not add primitives to this context if you are writing them for
-performance only -- instead, make these primitives in the DefaultCtx.
-"""
-struct MinimalCtx end
-
-"""
     struct DefaultCtx end
 
 Context for all usually used AD primitives. Anything which is a primitive in a MinimalCtx is
 a primitive in the DefaultCtx automatically. If you are adding a rule for the sake of
 performance, it should be a primitive in the DefaultCtx, but not the MinimalCtx.
 """
-struct DefaultCtx end
+abstract type DefaultCtx end
+
+"""
+    struct MinimalCtx end
+
+Functions should only be primitives in this context if not making them so would cause AD to
+fail. In particular, do not add primitives to this context if you are writing them for
+performance only -- instead, make these primitives in the DefaultCtx.
+"""
+abstract type MinimalCtx <: DefaultCtx end
 
 """
     abstract type Mode end
@@ -39,14 +39,25 @@ function is a primitive in reverse-mode AD.
 """
 struct ReverseMode <: Mode end
 
+function _is_primitive end
+
+struct PrimitiveCacheKey{tt}
+    world::UInt
+end
+
+const _IS_PRIMITIVE_CACHE = IdDict{Any,Bool}()
+
 """
-    is_primitive(::Type{Ctx}, ::Type{M}, sig) where {Ctx,M}
+    is_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
 
 Returns a `Bool` specifying whether the methods specified by `sig` are considered primitives
-in the context of contexts of type `Ctx` in mode `M`.
+in the context of contexts of type `ctx` in mode `mode` at world age `world`.
 
-```julia
-is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64})
+```jldoctest
+julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64}, Base.get_world_counter())
+true
 ```
 will return if calling `sin(5.0)` should be treated as primitive when the context is a
 `DefaultCtx`.
@@ -55,16 +66,120 @@ Observe that this information means that whether or not something is a primitive
 particular context depends only on static information, not any run-time information that
 might live in a particular instance of `Ctx`.
 """
-is_primitive(::Type{MinimalCtx}, ::Type{<:Mode}, sig::Type{<:Tuple}) = false
-function is_primitive(::Type{DefaultCtx}, ::Type{M}, sig) where {M<:Mode}
-    return is_primitive(MinimalCtx, M, sig)
+function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
+    @nospecialize sig
+    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
+    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{sig}}
+    return get!(_IS_PRIMITIVE_CACHE, (world, tt)) do
+        return !isempty(Base._methods_by_ftype(tt, -1, world))
+    end
+end
+
+"""
+    subtypes_are_provably_bottom_and_self(x::Type{<:Tuple})::Bool
+
+`true` if we can prove that the only subtypes of `x` are `Union{}` (the "bottom" element of
+the type lattice) and `x` itself. `false` otherwise, either because we have been unable to
+prove it, or because there are provably more subtypes than `Union{}` and `x`.
+
+For example:
+```jldoctest
+julia> # Only subtypes are `Union{}` and argument.
+       Mooncake.subtypes_are_provably_bottom_and_self(Tuple{typeof(sin),Float64})
+true
+
+julia> # `Tuple{typeof(sin),Float64}` is a subtype.
+       Mooncake.subtypes_are_provably_bottom_and_self(Tuple{typeof(sin),Real})
+false
+
+julia> # Only subtypes are `Union{}` and itself, but not sophisticated-enough implementation
+       # to prove it.
+       Mooncake.subtypes_are_provably_bottom_and_self(Tuple{Type{Float64},Float64})
+false
+```
+"""
+function subtypes_are_provably_bottom_and_self(x::Type{<:Tuple})::Bool
+    @nospecialize x
+
+    # Exclude `UnionAll`s, `Union`s, and `Core.TypeofBottom`.
+    x isa DataType || return false
+
+    try
+        # Exclude eg. `Tuple{DataType}` because `DataType` is concrete, but `Type{F} <: DataType`.
+        any(T -> T <: Type, fieldtypes(x)) && return false
+
+        # It's now enough to know that everything is concrete?
+        return isconcretetype(x)
+    catch
+        # If contains a `Vararg`, the fieldcount will not be defined, and an `ArgumentError` thrown.
+        return false
+    end
+end
+
+const _MAYBE_PRIMITIVE_CACHE = IdDict{Any,Bool}()
+
+"""
+    maybe_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
+
+`true` if there exists `C<:ctx`, `M<:mode`, and `S<:sig` such that
+`is_primitive(C, M, S, world)` returns `true`.
+
+This functionality is used to determine whether or not it is safe to inline away a call
+site when performing abstract interpretation using [`MooncakeInterpreter`](@ref), which is
+only safe to do if the inferred argument types at the call site preclude the call being to
+a primitive.
+
+For example, consider the following:
+```jldoctest is_prim_example
+julia> using Mooncake: Mooncake, @is_primitive, DefaultCtx, ReverseMode
+
+julia> foo(x) = 5x
+
+julia> @is_primitive DefaultCtx ReverseMode Tuple{typof(foo),Float64}
+
+```
+This function agrees with [`is_primitive`](@ref) for fully inferred call sites:
+```jldoctest is_prim_example
+julia> world = Base.get_world_counter();
+
+julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, world)
+true
+
+julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Int}, world)
+false
+```
+However, it differs for call sites containing arguments whose types are not fully inferred.
+For example:
+```jldoctest is_prim_example
+julia> Mooncake.is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Real}, world)
+false
+
+julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Real}, world)
+true
+```
+Per the definition at the top of this docstring, this function returns `true` because
+`Tuple{typeof(foo),Float64} <: Tuple{typeof(foo),Real}`.
+"""
+function maybe_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
+    @nospecialize sig
+
+    # Fast path: if `sig` has no subtypes other than Union{}, then it is safe to call
+    # `is_primitive` rather than `maybe_primitive`, which is _much_ faster.
+    subtypes_are_provably_bottom_and_self(sig) && return is_primitive(ctx, mode, sig, world)
+
+    # Slow path: consider all possible subtypes of `sig`.
+    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
+    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{<:sig}}
+    return get!(_MAYBE_PRIMITIVE_CACHE, (world, tt)) do
+        return !isempty(Base._methods_by_ftype(tt, -1, world))
+    end
 end
 
 """
     @is_primitive context_type [mode_type] signature
 
-Creates a method of [`is_primitive`](@ref) which always returns `true` for the
-`context_type`, and `signature` provided. For example
+Declares that calls with signature `signature` are primitives in `context_type` and
+`mode_type`. For example
 ```jldoctest
 julia> using Mooncake: DefaultCtx, @is_primitive, is_primitive, ForwardMode, ReverseMode
 
@@ -73,15 +188,13 @@ foo (generic function with 1 method)
 
 julia> @is_primitive DefaultCtx Tuple{typeof(foo),Float64}
 
-julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(foo),Float64})
+julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(foo),Float64}, Base.get_world_counter())
 true
 
-julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64})
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, Base.get_world_counter())
 true
 ```
 Observe that this means that a rule is a primitive in all AD modes.
-
-You should implement more complicated methods of [`is_primitive`](@ref) in the usual way.
 
 Optionally, you can specify that a rule is only a primitive in a particular mode, eg.
 ```jldoctest
@@ -92,10 +205,10 @@ bar (generic function with 1 method)
 
 julia> @is_primitive DefaultCtx ForwardMode Tuple{typeof(bar),Float64}
 
-julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(bar),Float64})
+julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(bar),Float64}, Base.get_world_counter())
 true
 
-julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(bar),Float64})
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(bar),Float64}, Base.get_world_counter())
 false
 ```
 """
@@ -109,7 +222,7 @@ end
 
 function _is_primitive_expression(Tctx, Tmode, sig)
     return quote
-        function Mooncake.is_primitive(
+        function Mooncake._is_primitive(
             ::Type{$(esc(Tctx))}, ::Type{<:$(Tmode)}, ::Type{<:$(esc(sig))}
         )
             return true

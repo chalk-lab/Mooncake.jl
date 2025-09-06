@@ -44,23 +44,23 @@ struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
         oc_cache::Dict{ClosureCacheKey,Any}=Dict{ClosureCacheKey,Any}(),
     ) where {C,M<:Mode}
         ip = new{C,M}(meta, world, inf_params, opt_params, inf_cache, code_cache, oc_cache)
-        tts = Any[
-            Tuple{typeof(sum),Tuple{Int}},
-            Tuple{typeof(sum),Tuple{Int,Int}},
-            Tuple{typeof(sum),Tuple{Int,Int,Int}},
-            Tuple{typeof(sum),Tuple{Int,Int,Int,Int}},
-            Tuple{typeof(sum),Tuple{Int,Int,Int,Int,Int}},
-        ]
-        for tt in tts
-            for m in CC._methods_by_ftype(tt, 10, ip.world)::Vector
-                m = m::CC.MethodMatch
-                typ = Any[m.spec_types.parameters...]
-                for i in 1:length(typ)
-                    typ[i] = CC.unwraptv(typ[i])
-                end
-                CC.typeinf_type(ip, m.method, Tuple{typ...}, m.sparams)
-            end
-        end
+        # tts = Any[
+        #     Tuple{typeof(sum),Tuple{Int}},
+        #     Tuple{typeof(sum),Tuple{Int,Int}},
+        #     Tuple{typeof(sum),Tuple{Int,Int,Int}},
+        #     Tuple{typeof(sum),Tuple{Int,Int,Int,Int}},
+        #     Tuple{typeof(sum),Tuple{Int,Int,Int,Int,Int}},
+        # ]
+        # for tt in tts
+        #     for m in CC._methods_by_ftype(tt, 10, ip.world)::Vector
+        #         m = m::CC.MethodMatch
+        #         typ = Any[m.spec_types.parameters...]
+        #         for i in 1:length(typ)
+        #             typ[i] = CC.unwraptv(typ[i])
+        #         end
+        #         CC.typeinf_type(ip, m.method, Tuple{typ...}, m.sparams)
+        #     end
+        # end
         return ip
     end
 end
@@ -145,7 +145,8 @@ function Core.Compiler.abstract_call_gf_by_type(
 
     # Check to see whether the call in question is a Mooncake primitive. If it is, set its
     # call info such that in the `CC.inlining_policy` it is not inlined away.
-    callinfo = is_primitive(C, M, atype) ? NoInlineCallInfo(cm.info, atype) : cm.info
+    maybe_prim = maybe_primitive(C, M, atype, interp.world)
+    callinfo = maybe_prim ? NoInlineCallInfo(cm.info, atype) : cm.info
 
     # Construct a CallMeta correctly depending on the version of Julia.
     @static if VERSION ≥ v"1.11-"
