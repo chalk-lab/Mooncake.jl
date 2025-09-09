@@ -1243,6 +1243,51 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
                 (false, :stability, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
             end
         end...,
+        let generate_gemm_test_cases(rng, P, α, β, dα, dβ) =
+                let
+                    gemm_test_cases = [
+                        # Matrix-vector cases
+                        ('N', 'N', (3, 4), (4,), (3,)),
+                        ('T', 'N', (4, 3), (4,), (3,)),
+                        ('C', 'N', (4, 3), (4,), (3,)),
+                        # Vector-matrix cases
+                        ('T', 'N', (3,), (3, 5), (1, 5)),  # row vector × matrix
+                        ('C', 'N', (3,), (3, 5), (1, 5)),  # row vector × matrix
+                        # Vector-vector cases
+                        ('T', 'N', (4,), (4,), (1,)),      # dot product style
+                        ('C', 'N', (4,), (4,), (1,)),      # dot product style
+                        ('N', 'T', (4,), (5,), (4, 5)),      # outer product style
+                        ('N', 'C', (4,), (5,), (4, 5)),      # outer product style
+                    ]
+                    mapreduce(vcat, gemm_test_cases) do (tA, tB, A_dims, B_dims, C_dims)
+                        As = blas_vectors_or_matrices(rng, P, A_dims)
+                        Bs = blas_vectors_or_matrices(rng, P, B_dims)
+                        Cs = blas_vectors_or_matrices(rng, P, C_dims)
+
+                        map(As, Bs, Cs) do A, B, C
+                            a_da = CoDual(P(α), P(dα))
+                            b_db = CoDual(P(β), P(dβ))
+                            (
+                                false,
+                                :stability,
+                                nothing,
+                                BLAS.gemm!,
+                                tA,
+                                tB,
+                                a_da,
+                                A,
+                                B,
+                                b_db,
+                                C,
+                            )
+                        end
+                    end
+                end
+            map_prod(αs, βs, Ps, dαs, dβs) do args
+                α, β, P, dα, dβ = args # Destructure the tuple from map_prod
+                return generate_gemm_test_cases(rng, P, α, β, dα, dβ)
+            end
+        end...,
 
         # symm!
         map_prod(['L', 'R'], ['L', 'U'], αs, βs, Ps) do (side, ul, α, β, P)
