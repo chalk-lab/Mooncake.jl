@@ -656,53 +656,57 @@ function rrule!!(
     # corresponds to simply multiplying A and B together, and writing the result to C.
     # This is an extremely common edge case, so it's important to do well for it.
     p_C_copy = copy(p_C)
-    let AB_product_storage  # this is type stable, since the type of AB_product storage can be inferred looking inside the block below
+    let AB_product_storage
         if a == 1 && b == 0
-            # --- PATH 1: Optimized case ---
-            # No temporary matrix is needed. The final =p_C= will hold A*B.
             AB_product_storage = p_C
-
-            # Run the single-call forward pass.
             BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
         else
-            # --- PATH 2: General case ---
-            # A temporary matrix is required.
             tmp = similar(p_C)
             AB_product_storage = tmp
-
-            # Run the two-call forward pass.
-            BLAS.gemm!(tA, tB, one(T), p_A, p_B, zero(T), tmp)
-            BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
+            BLAS.gemm!(tA, tB, one(T), p_A, p_B, zero(T), tmp) # tmp = A*B
+            # Finish forward pass
+            p_C .= a .* tmp .+ b .* p_C
         end
 
         function gemm!_pb!!(::NoRData)
-
-            # Compute pullback w.r.t. alpha.
-            da = dot(dC, AB_product_storage)
-
-            # Restore previous state.
-            BLAS.copyto!(p_C, p_C_copy)
-
-            # Compute pullback w.r.t. beta.
-            db = dot(dC, p_C)
-
-            # Increment cotangents.
-            if tA == 'N'
-                BLAS.gemm!('N', tB == 'N' ? 'T' : 'N', a, dC, p_B, one(T), dA)
-            else
-                BLAS.gemm!(tB == 'N' ? 'N' : 'T', 'T', a, p_B, dC, one(T), dA)
-            end
-            if tB == 'N'
-                BLAS.gemm!(tA == 'N' ? 'T' : 'N', 'N', a, p_A, dC, one(T), dB)
-            else
-                BLAS.gemm!('T', tA == 'N' ? 'N' : 'T', a, dC, p_A, one(T), dB)
-            end
-            dC .*= b
-
+            # The closure now just calls the type-stable barrier function.
+            da, db = _gemm_pullback!(
+                tA, tB, a, b, p_A, p_B, p_C, p_C_copy, dA, dB, dC, AB_product_storage
+            )
             return NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData()
         end
         return C, gemm!_pb!!
     end
+end
+
+function _gemm_pullback!(
+    tA, tB, a, b, p_A, p_B, p_C, p_C_copy, dA, dB, dC, AB_product_storage
+)
+    # Pullback for alpha
+    da = dot(dC, AB_product_storage)
+
+    # Restore C to its state before the forward pass
+    BLAS.copyto!(p_C, p_C_copy)
+
+    # Pullback for beta
+    db = dot(dC, p_C)
+
+    # Pullbacks for A and B
+    if tA == 'N'
+        BLAS.gemm!('N', tB == 'N' ? 'T' : 'N', a, dC, p_B, one(b), dA)
+    else # tA is 'T' or 'C'
+        BLAS.gemm!(tB == 'N' ? 'N' : 'T', 'T', a, p_B, dC, one(b), dA)
+    end
+    if tB == 'N'
+        BLAS.gemm!(tA == 'N' ? 'T' : 'N', 'N', a, p_A, dC, one(b), dB)
+    else # tB is 'T' or 'C'
+        BLAS.gemm!('T', tA == 'N' ? 'N' : 'T', a, dC, p_A, one(b), dB)
+    end
+
+    # Pullback for C
+    dC .*= b
+
+    return da, db
 end
 
 @is_primitive(
