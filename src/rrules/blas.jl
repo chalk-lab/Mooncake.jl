@@ -1177,6 +1177,15 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
                 (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
             end
         end...,
+        map_prod(t_flags, [1, 3], [1, 2], Ps, αs, βs) do (tA, M, N, P, α, β)
+            As = blas_vectors(rng, P, M)
+            xs = blas_vectors(rng, P, tA == 'N' ? 1 : M)
+            ys = blas_vectors(rng, P, tA == 'N' ? M : 1)
+            flags = (false, :stability, (lb=1e-3, ub=10.0))
+            return map(As, xs, ys) do A, x, y
+                (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
+            end
+        end...,
 
         # symv!
         map_prod(['L', 'U'], αs, βs, Ps) do (uplo, α, β, P)
