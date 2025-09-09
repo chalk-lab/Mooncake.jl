@@ -1310,6 +1310,15 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
                 (false, :stability, nothing, BLAS.syrk!, uplo, t, α_dα, A, β_dβ, C)
             end
         end...,
+        map_prod(uplos, 'N', Ps, dαs, dβs) do (uplo, t, P, dα, dβ)
+            As = blas_vectors(rng, P, 3; only_continuous=true)
+            return map(As) do A
+                α_dα = CoDual(randn(rng, P), P(dα))
+                β_dβ = CoDual(randn(rng, P), P(dβ))
+                C = randn(rng, P, 3, 3)
+                (false, :stability, nothing, BLAS.syrk!, uplo, t, α_dα, A, β_dβ, C)
+            end
+        end...,
 
         # trmm!
         map_prod(
