@@ -345,11 +345,13 @@ end
 
         # Increment fdata.
         if trans == 'N'
-            dalpha = dot(dy, A, x)
+            A_ = (A isa AbstractMatrix ? A : reshape(A, :, 1))
+            dalpha = dot(dy, A_, x)
             dA .+= alpha .* dy .* x'
             BLAS.gemv!('T', alpha, A, dy, one(eltype(A)), dx)
         else
-            dalpha = dot(dy, A', x)
+            A_ = (A isa AbstractMatrix ? A : reshape(A, :, 1))
+            dalpha = dot(dy, A_', x)
             dA .+= alpha .* x .* dy'
             BLAS.gemv!('N', alpha, A, dy, one(eltype(A)), dx)
         end
