@@ -429,14 +429,17 @@ end
 
 Utility for copying AD-related data structures (e.g. rules, caches, and other internals).
 
-# Semantics
+# Examples of current behaviour
 
-`_copy` specifies how different types are duplicated within the AD system:
+Currently, `_copy` has the following behaviours for specific types:
 
-- Immutable AD types (e.g. `CoDual`, `Dual`) → usually return the same object
-- Mutable containers → new instances with copied contents
-- Composite types → recursively applies `_copy` to fields
-- Other types → falls back to `Base.copy`
+- `CoDual`, `Dual` types → no copying needed  
+- `Stack` types → create a new empty instance  
+- Composite types (e.g. `Tuple`) → recursively copy elements  
+- Rule types (e.g. `DerivedRule`) → construct new instances with copied captures and caches  
+- Misty closure reverse data → construct a new Misty closure with deep copy of captured data  
+- Tangent types (`PossiblyUninitTangent`) → copy conditionally based on initialisation state  
+- Forward/reverse data types (i.e., `FData`, `RData`) → recursively copy wrapped data  
 """
 
 # Generic fallback that works with any type
