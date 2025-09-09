@@ -1118,11 +1118,11 @@ function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat},
     end
 end
 
-function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_continuous=false)
     xs = Any[
         randn(rng, P, p),
         view(randn(rng, P, p + 5), 3:(p + 2)),
-        view(randn(rng, P, 3p, 3), 1:2:(2p), 2),
+        (only_continuous ? copy : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
         reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
     ]
     @assert all(x -> length(x) == p, xs)
@@ -1181,9 +1181,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
             end
         end...,
         map_prod(t_flags, [1, 3], Ps, αs, βs) do (tA, M, P, α, β)
-            As = map(blas_vectors(rng, P, M)) do v
-                LinearAlgebra.stride1(v) == 1 ? v : copy(v)
-            end
+            As = blas_vectors(rng, P, M; only_continuous=true)
             xs = blas_vectors(rng, P, tA == 'N' ? 1 : M)
             ys = blas_vectors(rng, P, tA == 'N' ? M : 1)
             flags = (false, :stability, (lb=1e-3, ub=10.0))
