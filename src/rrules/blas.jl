@@ -1174,11 +1174,14 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
             ys = blas_vectors(rng, P, M)
             flags = (false, :stability, (lb=1e-3, ub=10.0))
             return map(As, xs, ys) do A, x, y
+                # BLAS.gemv! requires stride==1 when A is vector
                 (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
             end
         end...,
-        map_prod(t_flags, [1, 3], [1, 2], Ps, αs, βs) do (tA, M, N, P, α, β)
-            As = blas_vectors(rng, P, M)
+        map_prod(t_flags, [1, 3], Ps, αs, βs) do (tA, M, P, α, β)
+            As = map(blas_vectors(rng, P, M)) do v
+                LinearAlgebra.stride1(v) == 1 ? v : copy(v)
+            end
             xs = blas_vectors(rng, P, tA == 'N' ? 1 : M)
             ys = blas_vectors(rng, P, tA == 'N' ? M : 1)
             flags = (false, :stability, (lb=1e-3, ub=10.0))
