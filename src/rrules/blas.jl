@@ -656,42 +656,53 @@ function rrule!!(
     # corresponds to simply multiplying A and B together, and writing the result to C.
     # This is an extremely common edge case, so it's important to do well for it.
     p_C_copy = copy(p_C)
-    tmp_ref = Ref{Matrix{T}}()
-    if (a == 1 && b == 0)
-        BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
-    else
-        tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
-        tmp_ref[] = tmp
-        p_C .= a .* tmp .+ b .* p_C
-    end
+    let AB_product_storage  # this is type stable, since the type of AB_product storage can be inferred looking inside the block below
+        if a == 1 && b == 0
+            # --- PATH 1: Optimized case ---
+            # No temporary matrix is needed. The final =p_C= will hold A*B.
+            AB_product_storage = p_C
 
-    function gemm!_pb!!(::NoRData)
-
-        # Compute pullback w.r.t. alpha.
-        da = (a == 1 && b == 0) ? dot(dC, p_C) : dot(dC, tmp_ref[])
-
-        # Restore previous state.
-        BLAS.copyto!(p_C, p_C_copy)
-
-        # Compute pullback w.r.t. beta.
-        db = dot(dC, p_C)
-
-        # Increment cotangents.
-        if tA == 'N'
-            BLAS.gemm!('N', tB == 'N' ? 'T' : 'N', a, dC, p_B, one(T), dA)
+            # Run the single-call forward pass.
+            BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
         else
-            BLAS.gemm!(tB == 'N' ? 'N' : 'T', 'T', a, p_B, dC, one(T), dA)
-        end
-        if tB == 'N'
-            BLAS.gemm!(tA == 'N' ? 'T' : 'N', 'N', a, p_A, dC, one(T), dB)
-        else
-            BLAS.gemm!('T', tA == 'N' ? 'N' : 'T', a, dC, p_A, one(T), dB)
-        end
-        dC .*= b
+            # --- PATH 2: General case ---
+            # A temporary matrix is required.
+            tmp = similar(p_C)
+            AB_product_storage = tmp
 
-        return NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData()
+            # Run the two-call forward pass.
+            BLAS.gemm!(tA, tB, one(T), p_A, p_B, zero(T), tmp)
+            BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
+        end
+
+        function gemm!_pb!!(::NoRData)
+
+            # Compute pullback w.r.t. alpha.
+            da = dot(dC, AB_product_storage)
+
+            # Restore previous state.
+            BLAS.copyto!(p_C, p_C_copy)
+
+            # Compute pullback w.r.t. beta.
+            db = dot(dC, p_C)
+
+            # Increment cotangents.
+            if tA == 'N'
+                BLAS.gemm!('N', tB == 'N' ? 'T' : 'N', a, dC, p_B, one(T), dA)
+            else
+                BLAS.gemm!(tB == 'N' ? 'N' : 'T', 'T', a, p_B, dC, one(T), dA)
+            end
+            if tB == 'N'
+                BLAS.gemm!(tA == 'N' ? 'T' : 'N', 'N', a, p_A, dC, one(T), dB)
+            else
+                BLAS.gemm!('T', tA == 'N' ? 'N' : 'T', a, dC, p_A, one(T), dB)
+            end
+            dC .*= b
+
+            return NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData()
+        end
+        return C, gemm!_pb!!
     end
-    return C, gemm!_pb!!
 end
 
 @is_primitive(
