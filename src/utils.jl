@@ -439,7 +439,10 @@ Currently, `_copy` has the following behaviours for specific types:
 - Rule types (e.g. `DerivedRule`) → construct new instances with copied captures and caches  
 - Misty closure reverse data → construct a new Misty closure with deep copy of captured data  
 - Tangent types (`PossiblyUninitTangent`) → copy conditionally based on initialisation state  
-- Forward/reverse data types (i.e., `FData`, `RData`) → recursively copy wrapped data  
+- Forward/reverse data types (e.g. `FData`, `RData`, `LazyZeroRData`) → recursively copy wrapped data  
+- `RRuleZeroWrapper` → recursively copy the wrapped rule into a new instance  
+- `LazyFRule`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode  
+- `DynamicFRule`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
 """
 
 # Generic fallback that works with any type
