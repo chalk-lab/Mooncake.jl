@@ -1141,6 +1141,13 @@ function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_conti
     return xs
 end
 
+function blas_vectors_or_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Tuple{Int})
+    return blas_vectors(rng, P, p[1]; only_continuous=true)
+end
+function blas_vectors_or_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Tuple{Int,Int})
+    return blas_matrices(rng, P, p[1], p[2])
+end
+
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
     t_flags = ['N', 'T', 'C']
     αs = [1.0, -0.25]
