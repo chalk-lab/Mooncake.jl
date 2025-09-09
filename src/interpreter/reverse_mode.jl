@@ -289,6 +289,7 @@ struct RRuleZeroWrapper{Trule}
     rule::Trule
 end
 
+# Recursively copy the wrapped rule
 _copy(x::P) where {P<:RRuleZeroWrapper} = P(_copy(x.rule))
 
 struct RRuleWrapperPb{Tpb!!,Tl}
@@ -951,26 +952,12 @@ function verify_args(r::DerivedRule{sig}, x) where {sig}
     throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
 end
 
-_copy(::Nothing) = nothing
-
 function _copy(x::P) where {P<:DerivedRule}
     new_captures = _copy(x.fwds_oc.oc.captures)
     new_fwds_oc = replace_captures(x.fwds_oc, new_captures)
     new_pb_oc_ref = Ref(replace_captures(x.pb_oc_ref[], new_captures))
     return P(new_fwds_oc, new_pb_oc_ref, x.nargs)
 end
-
-_copy(x::Symbol) = x
-
-_copy(x::Tuple) = map(_copy, x)
-
-_copy(x::NamedTuple) = map(_copy, x)
-
-_copy(x::Ref{T}) where {T} = isassigned(x) ? Ref{T}(_copy(x[])) : Ref{T}()
-
-_copy(x::Type) = x
-
-_copy(x) = copy(x)
 
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
@@ -1743,6 +1730,7 @@ end
 
 DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug_mode)
 
+# Create new dynamic rule with empty cache and same debug mode
 _copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
 
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
@@ -1840,6 +1828,7 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
     end
 end
 
+# Create new lazy rule with same method instance and debug mode
 _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
 
 @inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}

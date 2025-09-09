@@ -11,6 +11,7 @@ mutable struct Stack{T}
     Stack{T}() where {T} = new{T}(Vector{T}(undef, 0), 0)
 end
 
+# Create a new empty stack of the same type
 _copy(::Stack{T}) where {T} = Stack{T}()
 
 @inline function Base.push!(x::Stack{T}, val::T) where {T}

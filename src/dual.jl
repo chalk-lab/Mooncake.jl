@@ -15,6 +15,7 @@ end
 primal(x::Dual) = x.primal
 tangent(x::Dual) = x.tangent
 Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangent(x)))
+# Dual is immutable and can be safely shared without copying
 _copy(x::P) where {P<:Dual} = x
 
 """
