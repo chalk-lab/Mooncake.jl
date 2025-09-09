@@ -436,11 +436,11 @@ Currently, `_copy` has the following behaviours for specific types:
 - `CoDual`, `Dual` types → no copying needed  
 - `Stack` types → create a new empty instance  
 - Composite types (e.g. `Tuple`) → recursively copy elements  
-- Rule types (e.g. `DerivedRule`) → construct new instances with copied captures and caches  
 - Misty closure reverse data → construct a new Misty closure with deep copy of captured data  
 - Tangent types (`PossiblyUninitTangent`) → copy conditionally based on initialisation state  
 - Forward/reverse data types (e.g. `FData`, `RData`, `LazyZeroRData`) → recursively copy wrapped data  
-- `RRuleZeroWrapper` → recursively copy the wrapped rule into a new instance  
+- `RRuleZeroWrapper` → recursively copy the wrapped rule into a new instance
+- `DerivedRule` → construct new instances with copied captures and caches  
 - `LazyFRule`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode  
 - `DynamicFRule`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
 """
