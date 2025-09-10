@@ -39,94 +39,15 @@ function is a primitive in reverse-mode AD.
 """
 struct ReverseMode <: Mode end
 
+"""
+    _is_primitive(context::Type, mode::Type{<:Mode}, sig::Type{<:Tuple})
+
+This function is an internal implementation detail. It is used only by
+[`is_primitive`](@ref) and [`maybe_primitive`](@ref), and is used by these two functions in
+a very non-standard way. Generally speaking, you ought not to add methods to this function
+yourself, but make use of [`@is_primitive`](@ref).
+"""
 function _is_primitive end
-
-struct PrimitiveCacheKey{tt}
-    world::UInt
-end
-
-const _IS_PRIMITIVE_CACHE = IdDict{Any,Bool}()
-
-"""
-    is_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
-
-Returns a `Bool` specifying whether the methods specified by `sig` are considered primitives
-in the context of contexts of type `ctx` in mode `mode` at world age `world`.
-
-```jldoctest
-julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode
-
-julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64}, Base.get_world_counter())
-true
-```
-will return if calling `sin(5.0)` should be treated as primitive when the context is a
-`DefaultCtx`.
-
-Observe that this information means that whether or not something is a primitive in a
-particular context depends only on static information, not any run-time information that
-might live in a particular instance of `Ctx`.
-"""
-function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
-    @nospecialize sig
-    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{sig}}
-    return get!(_IS_PRIMITIVE_CACHE, (world, tt)) do
-        return !isempty(Base._methods_by_ftype(tt, -1, world))
-    end
-end
-
-const _MAYBE_PRIMITIVE_CACHE = IdDict{Any,Bool}()
-
-"""
-    maybe_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
-
-`true` if there exists `C<:ctx`, `M<:mode`, and `S<:sig` such that
-`is_primitive(C, M, S, world)` returns `true`.
-
-This functionality is used to determine whether or not it is safe to inline away a call
-site when performing abstract interpretation using [`MooncakeInterpreter`](@ref), which is
-only safe to do if the inferred argument types at the call site preclude the call being to
-a primitive.
-
-For example, consider the following:
-```jldoctest is_prim_example
-julia> using Mooncake: Mooncake, @is_primitive, DefaultCtx, ReverseMode
-
-julia> foo(x) = 5x;
-
-julia> @is_primitive DefaultCtx ReverseMode Tuple{typeof(foo),Float64}
-
-```
-This function agrees with [`is_primitive`](@ref) for fully inferred call sites:
-```jldoctest is_prim_example
-julia> world = Base.get_world_counter();
-
-julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, world)
-true
-
-julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Int}, world)
-false
-```
-However, it differs for call sites containing arguments whose types are not fully inferred.
-For example:
-```jldoctest is_prim_example
-julia> Mooncake.is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Real}, world)
-false
-
-julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Real}, world)
-true
-```
-Per the definition at the top of this docstring, this function returns `true` because
-`Tuple{typeof(foo),Float64} <: Tuple{typeof(foo),Real}`.
-"""
-function maybe_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
-    @nospecialize sig
-    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{<:sig}}
-    return get!(_MAYBE_PRIMITIVE_CACHE, (world, tt)) do
-        return !isempty(Base._methods_by_ftype(tt, -1, world))
-    end
-end
 
 """
     @is_primitive context_type [mode_type] signature
@@ -180,5 +101,93 @@ function _is_primitive_expression(Tctx, Tmode, sig)
         )
             return true
         end
+    end
+end
+
+
+struct PrimitiveCacheKey{tt}
+    world::UInt
+end
+
+const _IS_PRIMITIVE_CACHE = IdDict{Any,Bool}()
+
+"""
+    is_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
+
+Returns a `Bool` specifying whether the methods specified by `sig` are considered primitives
+in the context of contexts of type `ctx` in mode `mode` at world age `world`.
+
+```jldoctest
+julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64}, Base.get_world_counter())
+true
+```
+will return if calling `sin(5.0)` should be treated as primitive when the context is a
+`DefaultCtx`.
+
+Observe that this information means that whether or not something is a primitive in a
+particular context depends only on static information, not any run-time information that
+might live in a particular instance of `Ctx`.
+"""
+function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
+    @nospecialize sig
+    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
+    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{sig}}
+    return get!(_IS_PRIMITIVE_CACHE, (world, tt)) do
+        return !isempty(Base._methods_by_ftype(tt, -1, world))
+    end
+end
+
+const _MAYBE_PRIMITIVE_CACHE = IdDict{Any,Bool}()
+
+"""
+    maybe_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
+
+`true` if there exists `C<:ctx`, `M<:mode`, and `S<:sig` such that
+`is_primitive(C, M, S, world)` returns `true`.
+
+This functionality is used to determine whether or not it is safe to inline away a call
+site when performing abstract interpretation using a `MooncakeInterpreter`, which is only
+safe to do if the inferred argument types at the call site preclude the call being to a
+primitive.
+
+For example, consider the following:
+```jldoctest is_prim_example
+julia> using Mooncake: Mooncake, @is_primitive, DefaultCtx, ReverseMode
+
+julia> foo(x) = 5x;
+
+julia> @is_primitive DefaultCtx ReverseMode Tuple{typeof(foo),Float64}
+
+```
+This function agrees with [`is_primitive`](@ref) for fully inferred call sites:
+```jldoctest is_prim_example
+julia> world = Base.get_world_counter();
+
+julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, world)
+true
+
+julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Int}, world)
+false
+```
+However, it differs for call sites containing arguments whose types are not fully inferred.
+For example:
+```jldoctest is_prim_example
+julia> Mooncake.is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Real}, world)
+false
+
+julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Real}, world)
+true
+```
+Per the definition at the top of this docstring, this function returns `true` because
+`Tuple{typeof(foo),Float64} <: Tuple{typeof(foo),Real}`.
+"""
+function maybe_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
+    @nospecialize sig
+    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
+    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{<:sig}}
+    return get!(_MAYBE_PRIMITIVE_CACHE, (world, tt)) do
+        return !isempty(Base._methods_by_ftype(tt, -1, world))
     end
 end
