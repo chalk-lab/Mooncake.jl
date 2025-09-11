@@ -104,7 +104,6 @@ function _is_primitive_expression(Tctx, Tmode, sig)
     end
 end
 
-
 struct PrimitiveCacheKey{tt}
     world::UInt
 end
