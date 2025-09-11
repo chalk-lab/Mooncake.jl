@@ -44,7 +44,10 @@ struct ReverseMode <: Mode end
 
 This function is an internal implementation detail. It is used only by
 [`is_primitive`](@ref) and [`maybe_primitive`](@ref), and is used by these two functions in
-a very non-standard way. Generally speaking, you ought not to add methods to this function
+a very non-standard way. In particular, the value these functions return depends on the
+signatures of methods of this function, not what the methods do when invoked.
+
+Generally speaking, you ought not to add methods to this function
 yourself, but make use of [`@is_primitive`](@ref).
 """
 function _is_primitive end
@@ -131,7 +134,14 @@ might live in a particular instance of `Ctx`.
 """
 function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
     @nospecialize sig
+
+    # We don't ever need to evaluate this function for abstract `mode`s, and there is a
+    # performance penalty associated with doing so, so exclude the possiblity.
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
+
+    # Check to see whether any methods of `_is_primitive` exist which apply to this
+    # ctx-mode-signature triple in world age `world`. If we have looked this up before,
+    # return the answer from the cache.
     tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{sig}}
     return get!(_IS_PRIMITIVE_CACHE, (world, tt)) do
         return !isempty(Base._methods_by_ftype(tt, -1, world))
@@ -184,7 +194,14 @@ Per the definition at the top of this docstring, this function returns `true` be
 """
 function maybe_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
     @nospecialize sig
+
+    # We don't ever need to evaluate this function for abstract `mode`s, and there is a
+    # performance penalty associated with doing so, so exclude the possiblity.
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
+
+    # Check to see whether any methods of `_is_primitive` exist which apply to any subtypes
+    # of this ctx-mode-signature triple in world age `world`. If we have looked this up
+    # before, return the answer from the cache.
     tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{<:sig}}
     return get!(_MAYBE_PRIMITIVE_CACHE, (world, tt)) do
         return !isempty(Base._methods_by_ftype(tt, -1, world))
