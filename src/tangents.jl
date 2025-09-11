@@ -20,6 +20,7 @@ struct PossiblyUninitTangent{T}
     PossiblyUninitTangent{T}() where {T} = new{T}()
 end
 
+# Copy only if initialized, otherwise create new uninitialized instance
 _copy(x::P) where {P<:PossiblyUninitTangent} = is_init(x) ? P(_copy(x.tangent)) : P()
 
 @inline PossiblyUninitTangent(tangent::T) where {T} = PossiblyUninitTangent{T}(tangent)

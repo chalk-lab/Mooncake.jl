@@ -418,3 +418,75 @@ function _copytrito!(B::AbstractMatrix, A::AbstractMatrix, uplo::AbstractChar)
     end
     return B
 end
+
+"""
+    _copy(x)
+
+*Note:* this is not part of the public Mooncake.jl interface, and may change without warning.
+
+Internal protocol for creating copies of AD-related data structures. This function is used 
+throughout the automatic differentiation system to create appropriate copies of rules, 
+caches, and other internal data structures when building new AD contexts.
+
+# Semantics
+
+The `_copy` protocol defines how different types should be copied within the AD system:
+
+- For immutable AD types (like `CoDual`, `Dual`), typically returns the same object
+- For mutable containers, creates new instances with copied contents
+- For composite types, recursively applies `_copy` to fields
+- Falls back to `Base.copy` for general types
+
+# Implementation Requirements
+
+When implementing `_copy` for a new type, consider:
+- Whether the type represents mutable state that needs actual copying
+- Whether fields should be recursively copied or can be shared
+- Performance implications of copying vs. sharing immutable data
+
+# Examples
+
+```julia
+# For immutable AD types - no copying needed
+_copy(x::CoDual) = x
+
+# For `Stack` type - create new empty instance
+_copy(::Stack{T}) where {T} = Stack{T}()
+
+# For composite types - recursive copying
+_copy(x::Tuple) = map(_copy, x)
+
+# For rule types - create new instances with appropriately copied captures/caches
+function _copy(x::DerivedRule)
+    new_captures = _copy(x.fwds_oc.oc.captures)
+    new_fwds_oc = replace_captures(x.fwds_oc, new_captures)
+    new_pb_oc_ref = Ref(replace_captures(x.pb_oc_ref[], new_captures))
+    return typeof(x)(new_fwds_oc, new_pb_oc_ref, x.nargs)
+end
+
+# For misty closure reverse data - deep copy the captures data
+_copy(r::MistyClosureRData) = MistyClosureRData(deepcopy(r.captures_rdata))
+
+# For tangent types - copy conditionally based on initialization state
+_copy(x::PossiblyUninitTangent) = is_init(x) ? typeof(x)(_copy(x.tangent)) : typeof(x)()
+
+# For forwards/reverse data types - recursively copy wrapped data
+_copy(x::FData) = typeof(x)(_copy(x.data))
+_copy(x::RData) = typeof(x)(_copy(x.data))
+_copy(x::LazyZeroRData) = typeof(x)(_copy(x.data))
+
+# Fallback to Base.copy
+_copy(x) = copy(x)
+```
+"""
+
+# Generic implementations that work with any type
+_copy(::Nothing) = nothing
+_copy(x::Symbol) = x
+_copy(x::Tuple) = map(_copy, x)
+_copy(x::NamedTuple) = map(_copy, x)
+_copy(x::Ref{T}) where {T} = isassigned(x) ? Ref{T}(_copy(x[])) : Ref{T}()
+_copy(x::Type) = x
+
+# Fallback to Base.copy for all other types
+_copy(x) = copy(x)
