@@ -143,8 +143,8 @@ function Core.Compiler.abstract_call_gf_by_type(
         max_methods::Int,
     )
 
-    # Check to see whether the call in question is a Mooncake primitive. If it is, set its
-    # call info such that in the `CC.inlining_policy` it is not inlined away.
+    # Check to see whether the call in question could possibly be a Mooncake primitive. If
+    # it could be, set its call info such that it will not be inlined away.
     maybe_prim = maybe_primitive(C, M, atype, interp.world)
     callinfo = maybe_prim ? NoInlineCallInfo(cm.info, atype) : cm.info
 
