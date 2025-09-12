@@ -125,12 +125,6 @@ julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode
 julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64}, Base.get_world_counter())
 true
 ```
-will return if calling `sin(5.0)` should be treated as primitive when the context is a
-`DefaultCtx`.
-
-Observe that this information means that whether or not something is a primitive in a
-particular context depends only on static information, not any run-time information that
-might live in a particular instance of `Ctx`.
 """
 function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
     @nospecialize sig
