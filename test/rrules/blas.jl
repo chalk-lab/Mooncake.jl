@@ -10,7 +10,10 @@
 
         # Verify all test cases can be array-ified.
         @testset "$P" for P in [Float32, Float64, ComplexF32, ComplexF64]
-            xs = Mooncake.blas_matrices(StableRNG(123), P, 2, 3)
+            xs = vcat(
+                Mooncake.blas_matrices(StableRNG(123), P, 2, 3),
+                Mooncake.special_matrices(StableRNG(123), P, 2, 3),
+            )
             @testset "$(typeof(x)), $f" for x in xs, f in [identity, fdata]
                 t = f(Mooncake.randn_tangent(StableRNG(123), x))
                 _x, _t = Mooncake.arrayify(Mooncake.CoDual(x, t))

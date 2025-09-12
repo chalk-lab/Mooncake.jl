@@ -1101,7 +1101,13 @@ function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
         view(randn(rng, P, 3p, 3, 2q), (p + 1):(2p), 2, 1:2:(2q)),
         reshape(view(randn(rng, P, p * q + 5), 1:(p * q)), p, q),
     ]
-    append!(Xs, map(Diagonal, blas_vectors(rng, P, p)))
+    @assert all(X -> size(X) == (p, q), Xs)
+    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
+    return Xs
+end
+
+function special_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
+    Xs = map(Diagonal, blas_vectors(rng, P, p))
     @assert all(X -> size(X) == (isa(X, Diagonal) ? (p, p) : (p, q)), Xs)
     @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
     return Xs
