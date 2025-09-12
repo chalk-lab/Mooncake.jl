@@ -35,7 +35,9 @@ arrayify(x::Array{P}, dx::Array{P}) where {P<:BlasRealFloat} = (x, dx)
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
     return x, reinterpret(P, dx)
 end
-function arrayify(x::Diagonal{P, <:AbstractVector{P}}, dx::TangentOrFData) where {P<:BlasFloat}
+function arrayify(
+    x::Diagonal{P,<:AbstractVector{P}}, dx::TangentOrFData
+) where {P<:BlasFloat}
     _, _dx = arrayify(x.diag, _fields(dx).diag)
     return x, Diagonal(_dx)
 end
