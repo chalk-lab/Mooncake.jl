@@ -83,7 +83,7 @@ function rrule!! end
     build_primitive_rrule(sig::Type{<:Tuple})
 
 Construct an rrule for signature `sig`. For this function to be called in `build_rrule`, you
-must also ensure that a method of `is_primitive(context_type, ReverseMode, sig)` exists,
+must also ensure that a method of `_is_primitive(context_type, ReverseMode, sig)` exists,
 preferably by using the [@is_primitive](@ref) macro.
 The callable returned by this must obey the rrule interface, but there are no restrictions
 on the type of callable itself. For example, you might return a callable `struct`. By
