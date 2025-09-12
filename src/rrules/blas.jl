@@ -35,6 +35,10 @@ arrayify(x::Array{P}, dx::Array{P}) where {P<:BlasRealFloat} = (x, dx)
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
     return x, reinterpret(P, dx)
 end
+function arrayify(x::Diagonal{P, <:AbstractVector{P}}, dx::TangentOrFData) where {P<:BlasFloat}
+    _, _dx = arrayify(x.diag, _fields(dx).diag)
+    return x, Diagonal(_dx)
+end
 function arrayify(x::SubArray{P,B,C,D,E}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
