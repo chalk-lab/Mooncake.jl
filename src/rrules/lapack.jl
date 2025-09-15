@@ -435,14 +435,14 @@ function rrule!!(
 end
 
 function __sym_lower!(X::Matrix)
-    @inbounds for q in 1:size(X, 2), p in (q+1):size(X,1)
+    @inbounds for q in 1:size(X, 2), p in (q + 1):size(X, 1)
         X[p, q] = (X[p, q] + X[q, p]) / 2
     end
     return X
 end
 
 function __sym_upper!(X::Matrix)
-    @inbounds for q in 1:size(X, 2), p in 1:(q-1)
+    @inbounds for q in 1:size(X, 2), p in 1:(q - 1)
         X[p, q] = (X[p, q] + X[q, p]) / 2
     end
     return X
