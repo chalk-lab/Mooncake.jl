@@ -35,6 +35,12 @@ arrayify(x::Array{P}, dx::Array{P}) where {P<:BlasRealFloat} = (x, dx)
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
     return x, reinterpret(P, dx)
 end
+function arrayify(
+    x::Diagonal{P,<:AbstractVector{P}}, dx::TangentOrFData
+) where {P<:BlasFloat}
+    _, _dx = arrayify(x.diag, _fields(dx).diag)
+    return x, Diagonal(_dx)
+end
 function arrayify(x::SubArray{P,B,C,D,E}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
@@ -1096,6 +1102,13 @@ function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
         reshape(view(randn(rng, P, p * q + 5), 1:(p * q)), p, q),
     ]
     @assert all(X -> size(X) == (p, q), Xs)
+    @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
+    return Xs
+end
+
+function special_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
+    Xs = map(Diagonal, blas_vectors(rng, P, p))
+    @assert all(X -> size(X) == (isa(X, Diagonal) ? (p, p) : (p, q)), Xs)
     @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
     return Xs
 end
