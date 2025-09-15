@@ -445,7 +445,7 @@ Currently, `_copy` has the following behaviours for specific types:
 - `DynamicFRule`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
 """
 
-# Generic fallback that works with any type
+# Generic fallback to Base.copy
 _copy(x) = copy(x)
 
 _copy(::Nothing) = nothing
