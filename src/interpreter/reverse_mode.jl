@@ -232,9 +232,28 @@ get_primal_type(info::ADInfo, x::Argument) = info.arg_types[x]
 get_primal_type(info::ADInfo, x::ID) = CC.widenconst(info.ssa_insts[x].type)
 get_primal_type(::ADInfo, x::QuoteNode) = _typeof(x.value)
 get_primal_type(::ADInfo, @nospecialize(x)) = _typeof(x)
+@static if VERSION > v"1.12-"
 function get_primal_type(::ADInfo, x::GlobalRef)
-    return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.binding.ty
+    world = Base.tls_world_age()
+    partition = x.binding.partitions
+    # partitions are sorted in decreasing world order
+    while world < partition.min_world
+        !isdefined(partition, :next) && return Any # binding is not defined
+        partition = partition.next
+    end
+    if isdefined(partition, :restriction)
+        type = partition.restriction
+        isa(type, Type) && return type
+        return _typeof(type)
+    end
+    isconst(x) && return _typeof(getglobal(x.mod, x.name))
+    return Any
 end
+else
+function get_primal_type(::ADInfo, x::GlobalRef)
+    return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : _typeof(x.binding.value)
+end
+end # @static
 function get_primal_type(::ADInfo, x::Expr)
     x.head === :boundscheck && return Bool
     return error("Unrecognised expression $x found in argument slot.")
