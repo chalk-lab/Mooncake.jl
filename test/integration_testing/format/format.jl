@@ -1,7 +1,8 @@
 using Pkg
 Pkg.activate(@__DIR__)
+Pkg.instantiate()
 
-using JuliaFormatter, Test
+using JuliaFormatter
 
 @testset "quality" begin
     path = joinpath(@__DIR__, "..", "..")
