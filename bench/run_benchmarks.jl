@@ -161,15 +161,15 @@ function generate_inter_framework_tests()
         ("_sum_sin_1000", (x -> _sum(sin, x), randn(1_000))),
         ("kron_sum", (_kron_sum, randn(20, 20), randn(40, 40))),
         ("kron_view_sum", (_kron_view_sum, randn(40, 30), randn(40, 40))),
-        ("naive_map", (_naive_map_sin_cos_exp, randn(10, 10))),
-        ("map", (_map_sin_cos_exp, randn(10, 10))),
-        ("broadcast", (_broadcast_sin_cos_exp, randn(10, 10))),
+        ("naive_map_sin_cos_exp", (_naive_map_sin_cos_exp, randn(10, 10))),
+        ("map_sin_cos_exp", (_map_sin_cos_exp, randn(10, 10))),
+        ("broadcast_sin_cos_exp", (_broadcast_sin_cos_exp, randn(10, 10))),
         (
             "simple_mlp",
             (_simple_mlp, randn(128, 256), randn(256, 128), randn(128, 70), randn(128, 70)),
         ),
         ("gp_lml", (_gp_lml, _generate_gp_inputs()...)),
-        ("dppl_broadcast", build_dynamicppl_problem()),
+        ("turing_broadcast_benchmark", build_dynamicppl_problem()),
         ("large_single_block", (large_single_block, [0.9, 0.99])),
     ]
 end
