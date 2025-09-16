@@ -22,6 +22,7 @@ struct FData{T<:NamedTuple}
     data::T
 end
 
+# Recursively copy the wrapped data
 _copy(x::P) where {P<:FData} = P(_copy(x.data))
 
 fields_type(::Type{FData{T}}) where {T<:NamedTuple} = T
@@ -405,6 +406,7 @@ struct RData{T<:NamedTuple}
     data::T
 end
 
+# Recursively copy the wrapped data
 _copy(x::P) where {P<:RData} = P(_copy(x.data))
 
 fields_type(::Type{RData{T}}) where {T<:NamedTuple} = T
@@ -448,7 +450,7 @@ end
     # This method can only handle struct types. Tell user to implement their own method.
     if isprimitivetype(T)
         msg = "$T is a primitive type. Implement a method of `rdata_type` for it."
-        return :(error(msg))
+        return :(error($msg))
     end
 
     # If the type is a Union, then take the union type of its arguments.
@@ -689,7 +691,7 @@ with.
 @generated function zero_rdata_from_type(::Type{P}) where {P}
 
     # Prepare expressions for manually-unrolled loop to construct zero rdata elements.
-    if P isa DataType
+    if P isa DataType && isconcretetype(P)
         names = fieldnames(P)
         types = fieldtypes(P)
         wrapped_field_zeros = map(enumerate(always_initialised(P))) do (n, init)
@@ -831,6 +833,7 @@ struct LazyZeroRData{P,Tdata}
     data::Tdata
 end
 
+# Recursively copy the wrapped data
 _copy(x::P) where {P<:LazyZeroRData} = P(_copy(x.data))
 
 # Returns the type which must be output by LazyZeroRData whenever it is passed a `P`.

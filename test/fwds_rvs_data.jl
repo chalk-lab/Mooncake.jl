@@ -1,4 +1,5 @@
 module FwdsRvsDataTestResources
+
 struct Foo{A} end
 struct Bar{A,B,C}
     a::A
@@ -23,6 +24,13 @@ end
         @test fdata_type(tangent_type(P)) == F
         @test rdata_type(tangent_type(P)) == R
     end
+    @test_throws ErrorException(
+        "Int64 is a primitive type. Implement a method of `rdata_type` for it."
+    ) rdata_type(Int64)
+    @test_throws ErrorException(
+        "Int64 is a primitive type. Implement a method of `fdata_type` for it."
+    ) fdata_type(Int64)
+
     @testset "$(typeof(p))" for (_, p, _...) in Mooncake.tangent_test_cases()
         TestUtils.test_tangent_splitting(Xoshiro(123456), p)
     end
@@ -64,6 +72,15 @@ end
         @test can_produce_zero_rdata_from_type(Union{Tuple{Int},Tuple{Int,Int}})
         @test zero_rdata_from_type(Union{Tuple{Int},Tuple{Int,Int}}) == NoRData()
         @test zero_rdata_from_type(Union{Float64,Int}) == CannotProduceZeroRDataFromType()
+        # Regression tests for https://github.com/chalk-lab/Mooncake.jl/issues/704
+        @test zero_rdata_from_type(
+            Union{
+                ConsoleLogger,
+                Base.CoreLogging.NullLogger,
+                Base.CoreLogging.SimpleLogger,
+                TestLogger,
+            },
+        ) == NoRData()
 
         # Edge case: Types with unbound type parameters.
         P = (Type{T} where {T}).body
