@@ -36,8 +36,6 @@ include("front_matter.jl")
         include(joinpath("rrules", "fastmath.jl"))
     elseif test_group == "rrules/foreigncall"
         include(joinpath("rrules", "foreigncall.jl"))
-    elseif test_group == "rrules/functionwrappers"
-        include(joinpath("rrules", "function_wrappers.jl"))
     elseif test_group == "rrules/iddict"
         include(joinpath("rrules", "iddict.jl"))
     elseif test_group == "rrules/lapack"
