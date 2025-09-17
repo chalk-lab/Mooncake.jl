@@ -384,7 +384,9 @@ function create_inter_ad_benchmarks()
     formatted_cols = map(t -> t => fix_sig_fig.(df[:, t]), tools)
     df_formatted = DataFrame(:Label => df.tag, :Primal => formatted_ts, formatted_cols...)
     return open(
-        io -> pretty_table(io, df_formatted), "bench/benchmark_results.txt"; write=true
+        io -> pretty_table(io, df_formatted; display_size=(-1, 500)),
+        "bench/benchmark_results.txt";
+        write=true,
     )
 end
 
