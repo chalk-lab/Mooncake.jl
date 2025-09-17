@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Known Limitations · Mooncake.jl</title><meta name="title" content="Known Limitations · Mooncake.jl"/><meta property="og:title" content="Known Limitations · Mooncake.jl"/><meta property="twitter:title" content="Known Limitations · Mooncake.jl"/><meta name="description" content="Documentation for Mooncake.jl."/><meta property="og:description" content="Documentation for Mooncake.jl."/><meta property="twitter:description" content="Documentation for Mooncake.jl."/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body>
+<!-- NAVBAR START -->
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro&display=swap');
+
+    /* Documenter.jl CSS Overrides */
+    html {
+        scroll-padding-top: calc(var(--navbar-height) + 1rem);
+    }
+    .docs-sidebar, #documenter {
+        margin-top: var(--navbar-height);
+    }
+    .docs-version-selector {
+        margin-bottom: 60px !important;
+    }
+    @media screen and (max-width: 1056px) {
+        .docs-version-selector {
+            margin-bottom: 60px !important;
+        }
+        .docs-sidebar {
+            margin-top: 0 !important;
+        }
+    }
+    /* End of Documenter.jl Tweaks */
+
+    /* Color and Font Variables */
+    :root {
+        --heading-color: #6c757d;
+        --item-color: rgb(165, 165, 165);
+        --primary-bg: white;
+        --hover-color: #8faad2;
+        --deprecated-bg: #ff4d4d;
+        --deprecated-text: white;
+        --icon-color: #6c757d;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e9ecef;
+        
+        /* Typography */
+        --font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        --nav-link-font-size: 1.0625rem;
+        --turing-title-font-size: 21.25px;
+        --icon-font-size: 1.25rem;
+        --dropdown-arrow-font-size: 0.6875rem;
+        --badge-font-size: 0.75rem;
+
+        /* Sizing and Spacing */
+        --navbar-height: 3.75rem;
+        --logo-height: 31.18px;
+        --logo-width: 52.47px;
+        --logo-padding-top: 7px;
+        --logo-margin-left: 0.3rem;
+        --title-margin-left: 0.4px;
+        --title-nav-spacing: 1.7rem;
+        --nav-item-margin-left: 1.3rem;
+        --icon-margin-left: 1rem;
+        --dropdown-padding: 1.875rem;
+        --dropdown-item-width: 12.5rem;
+        --dropdown-subitem-width: 15.625rem;
+        --dropdown-subitem-padding: 0.125rem 0.625rem;
+    }
+
+    /* Dark Theme Variable Overrides */
+    html.theme--documenter-dark {
+        --heading-color: #e0e0e0;
+        --item-color: #bdbdbd;
+        --primary-bg: #1f2424;
+        --hover-color: #ffffff;
+        --icon-color: #e0e0e0;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #424242;
+    }
+
+    /* Catppuccin Theme Overrides */
+    html.theme--catppuccin-latte {
+        --heading-color: #4c4f69;
+        --primary-bg: #eff1f5;
+        --icon-color: #4c4f69;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e6e9ef;
+    }
+    html.theme--catppuccin-frappe {
+        --heading-color: #c6d0f5;
+        --primary-bg: #303446;
+        --icon-color: #c6d0f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #51576d;
+    }
+    html.theme--catppuccin-macchiato {
+        --heading-color: #cad3f5;
+        --primary-bg: #24273a;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #494d64;
+    }
+    html.theme--catppuccin-mocha {
+        --heading-color: #cad3f5;
+        --primary-bg: #1e1e2e;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #45475a;
+    }
+
+
+    /* Main Navigation Bar */
+    .ext-navigation {
+        font-family: var(--font-family);
+        position: fixed;
+        height: var(--navbar-height);
+        top: 0;
+        width: 100%;
+        background-color: var(--primary-bg);
+        z-index: 1000;
+        box-shadow: 0 2px 4px var(--shadow-color);
+        display: flex;
+        align-items: center;
+        padding: 0 1.0625rem;
+        transition: transform 0.3s, background-color 0.3s;
+    }
+
+    nav.ext-navigation .ext-navbar-logo {
+        margin-left: var(--logo-margin-left);
+        height: var(--logo-height);
+        width: var(--logo-width);
+        padding-top: var(--logo-padding-top);
+    }
+    
+    .ext-navbar-title {
+        color: var(--heading-color) !important;
+        font-size: var(--turing-title-font-size) !important;
+        margin-left: var(--title-margin-left);
+        text-decoration: none;
+        transition: color 0.2s ease;
+    }
+    
+    .ext-navbar-title:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-nav-links {
+        display: flex;
+        align-items: center;
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+        flex-grow: 1;
+        margin-left: var(--title-nav-spacing);
+    }
+
+    .ext-nav-links li:first-child {
+        margin-left: 0 !important;
+    }
+
+    .ext-nav-links li {
+        margin-left: var(--nav-item-margin-left) !important;
+    }
+
+    .ext-nav-link {
+        color: var(--heading-color) !important;
+        text-decoration: none;
+        font-size: var(--nav-link-font-size) !important;
+        transition: color 0.2s ease;
+        cursor: pointer;
+    }
+
+    .ext-nav-link:hover,
+    .ext-navbar-item-single a:hover,
+    .ext-navbar-icons a:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-navbar-item-single a {
+        color: var(--heading-color) !important;
+    }
+    
+    .ext-navbar-icons {
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-navbar-icons a {
+        color: var(--icon-color) !important;
+        font-size: var(--icon-font-size) !important;
+        transition: color 0.2s ease;
+        margin-left: var(--icon-margin-left);
+    }
+
+    .ext-menu-toggle {
+        display: none;
+        font-size: 1.5rem;
+        color: var(--heading-color);
+        cursor: pointer;
+    }
+
+    .ext-dropdown {
+        display: none;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        padding: var(--dropdown-padding);
+        position: absolute;
+        top: var(--navbar-height);
+        width: 100%;
+        left: 0;
+        background-color: var(--primary-bg);
+        line-height: 1.875rem;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out, background-color 0.3s;
+        transform: translateY(-0.625rem);
+        box-shadow: 0 4px 6px var(--shadow-color);
+    }
+
+    #library-handler::after {
+        content: "▼";
+        font-size: var(--dropdown-arrow-font-size);
+        margin-left: 0.3125rem;
+        transition: transform 0.3s ease-in-out;
+    }
+
+    #library-handler.open::after {
+        content: "▲";
+    }
+
+    .ext-dropdown.show {
+        display: grid;
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .ext-dropdown ul {
+        width: var(--dropdown-item-width);
+        margin-bottom: 1.25rem;
+    }
+
+    .ext-dropdown ul li {
+        text-align: left;
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-dropdown ul a li {
+        color: var(--item-color);
+        width: var(--dropdown-subitem-width);
+        border-radius: 3px;
+        padding: var(--dropdown-subitem-padding);
+        transition: background-color 0.2s ease;
+    }
+
+    .ext-dropdown ul a li:hover {
+        background-color: var(--dropdown-hover-bg);
+    }
+
+    .ext-dropdown-item-heading {
+        color: var(--heading-color);
+        text-align: center;
+    }
+
+    .deprecated-badge {
+        background-color: var(--deprecated-bg);
+        color: var(--deprecated-text);
+        font-size: var(--badge-font-size);
+        padding: .1rem;
+        border-radius: 3px;
+        margin-left: 0.5rem;
+        line-height: 1;
+    }
+
+    @media (max-width: 966px) {
+        .ext-dropdown {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .ext-nav-links {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            background-color: var(--primary-bg);
+            position: absolute;
+            top: var(--navbar-height);
+            left: 0;
+            padding: 0.625rem 0;
+            height: auto;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px var(--shadow-color);
+            margin-left: 0;
+        }
+
+        .ext-nav-links.show {
+            display: flex;
+        }
+
+        .ext-nav-links li {
+            margin: 0.625rem 0 !important;
+            text-align: center;
+        }
+        
+        .ext-menu-toggle {
+            display: block;
+            margin-left: auto;
+        }
+
+        .ext-navigation.hide {
+            transform: translateY(calc(-1 * var(--navbar-height)));
+        }
+
+        .ext-dropdown {
+            position: static;
+            display: block;
+            opacity: 1;
+            transform: none;
+            box-shadow: none;
+            grid-template-columns: 1fr;
+            padding: 0.625rem;
+            text-align: center;
+        }
+
+        .ext-dropdown ul {
+            width: auto;
+            display: inline-block;
+            margin: 0 auto 0.3125rem;
+            text-align: left;
+        }
+    }
+</style>
+<nav class="ext-navigation">
+    <a href="https://turinglang.org/">
+        <img src="https://turinglang.org/assets/images/turing-logo.svg" alt="Turing Logo" class="ext-navbar-logo">
+    </a>
+    <a class="ext-navbar-title" href="https://turinglang.org/">Turing.jl</a>
+    
+    <ul class="ext-nav-links">
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/getting-started/">Get Started</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/tutorials/">Tutorials</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/faq/">FAQ</a></li>
+        <li>
+            <p class="ext-nav-link" id="library-handler">Libraries</p>
+            <div class="ext-dropdown" id="ext-dropdown-items">
+                <ul>
+                    <li class="ext-dropdown-item-heading">Modelling Languages</li>
+                    <a href="https://turinglang.org/DynamicPPL.jl/"><li>DynamicPPL</li></a>
+                    <a href="https://turinglang.org/JuliaBUGS.jl/"><li>JuliaBUGS</li></a>
+                    <a href="https://turinglang.org/TuringGLM.jl/"><li>TuringGLM</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">MCMC</li>
+                    <a href="https://turinglang.org/AdvancedHMC.jl/"><li>AdvancedHMC</li></a>
+                    <a href="https://turinglang.org/AbstractMCMC.jl/"><li>AbstractMCMC</li></a>
+                    <a href="https://github.com/theogf/ThermodynamicIntegration.jl"><li>ThermodynamicIntegration</li></a>
+                    <a href="https://turinglang.org/AdvancedPS.jl/"><li>AdvancedPS</li></a>
+                    <a href="https://turinglang.org/SliceSampling.jl/"><li>SliceSampling</li></a>
+                    <a href="https://turinglang.org/EllipticalSliceSampling.jl/"><li>EllipticalSliceSampling</li></a>
+                    <a href="https://turinglang.org/NestedSamplers.jl/"><li>NestedSamplers</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Diagnostics</li>
+                    <a href="https://turinglang.org/MCMCChains.jl/"><li>MCMCChains</li></a>
+                    <a href="https://turinglang.org/MCMCDiagnosticTools.jl/"><li>MCMCDiagnosticTools</li></a>
+                    <a href="https://turinglang.org/ParetoSmooth.jl/"><li>ParetoSmooth</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Gaussian Processes</li>
+                    <a href="https://juliagaussianprocesses.github.io/AbstractGPs.jl/"><li>AbstractGPs</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/KernelFunctions.jl/"><li>KernelFunctions</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/ApproximateGPs.jl/"><li>ApproximateGPs</li></a>
+                </ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Bijectors.jl/">Bijectors</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/TuringCallbacks.jl/">TuringCallbacks</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Deprecated/TuringBenchmarking/">TuringBenchmarking</a><span class="deprecated-badge">Deprecated</span></li></ul>
+            </div>
+        </li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/news/">News</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/team/">Team</a></li>
+    </ul>
+
+    <div class="ext-navbar-icons">
+        <a href="https://x.com/TuringLang" aria-label="Turing on X"><i class="fa-brands fa-x-twitter"></i></a>
+        <a href="https://discourse.julialang.org/c/domain/probprog/48" aria-label="Turing on Discourse"><i class="fa-brands fa-discourse"></i></a>
+        <a href="https://julialang.slack.com/archives/CCYDC34A0" aria-label="Turing on Slack"><i class="fa-brands fa-slack"></i></a>
+        <a href="https://github.com/TuringLang/" aria-label="Turing.jl on GitHub"><i class="fa-brands fa-github"></i></a>
+    </div>
+
+    <span class="ext-menu-toggle"><i class="fa-solid fa-bars"></i></span>
+</nav>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const menuToggle = document.querySelector(".ext-menu-toggle");
+        const navLinks = document.querySelector(".ext-nav-links");
+        const nav = document.querySelector(".ext-navigation");
+        const libraryHandler = document.getElementById("library-handler");
+        const dropdownContainer = document.getElementById("ext-dropdown-items");
+        let lastScrollY = window.scrollY;
+
+        function closeDropdown() {
+            if (dropdownContainer.classList.contains("show")) {
+                libraryHandler.classList.remove("open");
+                dropdownContainer.classList.remove("show");
+                setTimeout(() => {
+                    if (!dropdownContainer.classList.contains("show")) {
+                        dropdownContainer.style.display = "none";
+                    }
+                }, 300);
+            }
+        }
+
+        function openDropdown() {
+            dropdownContainer.style.display = "grid";
+            libraryHandler.classList.add("open");
+            setTimeout(() => {
+                dropdownContainer.classList.add("show");
+            }, 10);
+        }
+
+        function setAppropriateHeight() {
+            if (window.innerWidth <= 768) {
+                const viewportHeight = window.innerHeight;
+                const navHeight = nav.offsetHeight;
+                navLinks.style.maxHeight = `${viewportHeight - navHeight}px`;
+                navLinks.style.overflowY = "auto";
+            } else {
+                navLinks.style.maxHeight = "";
+                navLinks.style.overflowY = "";
+            }
+        }
+
+        menuToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            navLinks.classList.toggle("show");
+            if (navLinks.classList.contains("show")) {
+                setAppropriateHeight();
+                closeDropdown();
+                dropdownContainer.style.display = "none";
+            }
+        });
+
+        libraryHandler.addEventListener("click", (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            if (dropdownContainer.classList.contains("show")) {
+                closeDropdown();
+            } else {
+                openDropdown();
+            }
+            setAppropriateHeight();
+        });
+
+        // Close all menus if a click is registered outside the navigation bar.
+        document.addEventListener("click", (event) => {
+            if (!nav.contains(event.target)) {
+                navLinks.classList.remove("show");
+                closeDropdown();
+            }
+        });
+
+        // Hide navigation bar on scroll down in mobile view.
+        window.addEventListener("scroll", () => {
+            if (window.innerWidth <= 768) {
+                if (window.scrollY > lastScrollY && window.scrollY > nav.offsetHeight){
+                    nav.classList.add("hide");
+                } else {
+                    nav.classList.remove("hide");
+                }
+                lastScrollY = window.scrollY;
+            }
+        });
+
+        window.addEventListener("resize", setAppropriateHeight);
+    });
+</script>
+<!-- NAVBAR END -->
+
+<div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../"><img src="../assets/logo.svg" alt="Mooncake.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../">Mooncake.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Mooncake.jl</a></li><li><a class="tocitem" href="../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../interface/">Interface</a></li><li><span class="tocitem">Understanding Mooncake.jl</span><ul><li><a class="tocitem" href="../understanding_mooncake/introduction/">Introduction</a></li><li><a class="tocitem" href="../understanding_mooncake/algorithmic_differentiation/">Algorithmic Differentiation</a></li><li><a class="tocitem" href="../understanding_mooncake/rule_system/">Mooncake.jl&#39;s Rule System</a></li></ul></li><li><span class="tocitem">Utilities</span><ul><li><a class="tocitem" href="../utilities/defining_rules/">Defining Rules</a></li><li><a class="tocitem" href="../utilities/debug_mode/">Debug Mode</a></li><li><a class="tocitem" href="../utilities/debugging_and_mwes/">Debugging and MWEs</a></li></ul></li><li><span class="tocitem">Developer Documentation</span><ul><li><a class="tocitem" href="../developer_documentation/running_tests_locally/">Running Tests Locally</a></li><li><a class="tocitem" href="../developer_documentation/developer_tools/">Developer Tools</a></li><li><a class="tocitem" href="../developer_documentation/tangents/">Tangents</a></li><li><a class="tocitem" href="../developer_documentation/custom_tangent_type/">Writing Custom Tangent Types</a></li><li><a class="tocitem" href="../developer_documentation/ir_representation/">IR Representations and Code Transformations</a></li><li><a class="tocitem" href="../developer_documentation/forwards_mode_design/">Forwards-Mode Design</a></li><li><a class="tocitem" href="../developer_documentation/reverse_mode_design/">Reverse-Mode Design</a></li><li><a class="tocitem" href="../developer_documentation/misc_internals_notes/">Misc. Internals Notes</a></li><li><a class="tocitem" href="../developer_documentation/internal_docstrings/">Internal Docstrings</a></li></ul></li><li class="is-active"><a class="tocitem" href>Known Limitations</a><ul class="internal"><li><a class="tocitem" href="#Coverage-of-Julia-Syntax-and-Standard-Library"><span>Coverage of Julia Syntax and Standard Library</span></a></li><li><a class="tocitem" href="#Mutation-of-Global-Variables"><span>Mutation of Global Variables</span></a></li><li><a class="tocitem" href="#Circular-References"><span>Circular References</span></a></li><li><a class="tocitem" href="#Tangent-Generation-and-Pointers"><span>Tangent Generation and Pointers</span></a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Known Limitations</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Known Limitations</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl/blob/main/docs/src/known_limitations.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Known-Limitations"><a class="docs-heading-anchor" href="#Known-Limitations">Known Limitations</a><a id="Known-Limitations-1"></a><a class="docs-heading-anchor-permalink" href="#Known-Limitations" title="Permalink"></a></h1><p>Mooncake.jl has a number of known qualitative limitations, which we document here.</p><h2 id="Coverage-of-Julia-Syntax-and-Standard-Library"><a class="docs-heading-anchor" href="#Coverage-of-Julia-Syntax-and-Standard-Library">Coverage of Julia Syntax and Standard Library</a><a id="Coverage-of-Julia-Syntax-and-Standard-Library-1"></a><a class="docs-heading-anchor-permalink" href="#Coverage-of-Julia-Syntax-and-Standard-Library" title="Permalink"></a></h2><p>While <code>Mooncake.jl</code> should now work on a very large subset of the language, there remain things that you should expect not to work. A non-exhaustive list of things to bear in mind includes:</p><ol><li>It is always necessary to produce hand-written rules for <code>ccall</code>s (and, more generally, foreigncall nodes). We have rules for many <code>ccall</code>s, but not all. If you encounter a foreigncall without a hand-written rule, you should get an informative error message which tells you what is going on and how to deal with it.</li><li>Builtins which require rules. The vast majority of them have rules now, but some don&#39;t. You should get a sensible error if you encounter a primitive without a rule.</li><li>Anything involving tasks / threading – we have no thread safety guarantees and, at the time of writing, I&#39;m not entirely sure what error you will find if you attempt to AD through code which uses Julia&#39;s task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.</li></ol><h2 id="Mutation-of-Global-Variables"><a class="docs-heading-anchor" href="#Mutation-of-Global-Variables">Mutation of Global Variables</a><a id="Mutation-of-Global-Variables-1"></a><a class="docs-heading-anchor-permalink" href="#Mutation-of-Global-Variables" title="Permalink"></a></h2><p>While great care is taken in this package to prevent silent errors, this is one edge case that we have yet to provide a satisfactory solution for. Consider a function of the form:</p><pre><code class="language-julia-repl hljs">julia&gt; const x = Ref(1.0);
+
+julia&gt; function foo(y::Float64)
+           x[] = y
+           return x[]
+       end
+foo (generic function with 1 method)</code></pre><p><code>x</code> is a global variable (if you refer to it in your code, it appears as a <code>GlobalRef</code> in the AST or lowered code). For some technical reasons that are beyond the scope of this section, this package cannot propagate gradient information through <code>x</code>. <code>foo</code> is the identity function, so it should have gradient <code>1.0</code>. However, if you differentiate this example, you&#39;ll see:</p><pre><code class="language-julia-repl hljs">julia&gt; rule = Mooncake.build_rrule(foo, 2.0);
+
+julia&gt; Mooncake.value_and_gradient!!(rule, foo, 2.0)
+(2.0, (NoTangent(), 0.0))</code></pre><p>Observe that while it has correctly computed the identity function, the gradient is zero.</p><p>The takehome: do not attempt to differentiate functions which modify global state. Uses of globals which does not involve mutating them is fine though.</p><h2 id="Circular-References"><a class="docs-heading-anchor" href="#Circular-References">Circular References</a><a id="Circular-References-1"></a><a class="docs-heading-anchor-permalink" href="#Circular-References" title="Permalink"></a></h2><p>To a large extent, Mooncake.jl does not presently support circular references in an automatic fashion. It is generally possible to hand-write solutions, so we explain some of the problems here, and the general approach to resolving them.</p><h3 id="Tangent-Types"><a class="docs-heading-anchor" href="#Tangent-Types">Tangent Types</a><a id="Tangent-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Tangent-Types" title="Permalink"></a></h3><p><em><strong>The Problem</strong></em></p><p>Suppose that you have a type such as:</p><pre><code class="language-julia hljs">mutable struct A
+    x::Float64
+    a::A
+    function A(x::Float64)
+        a = new(x)
+        a.a = a
+        return a
+    end
+end</code></pre><p>This is a fairly canonical example of a self-referential type. There are a couple of things which will not work with it out-of-the-box. <code>tangent_type(A)</code> will produce a stack overflow error. To see this, note that it will in effect try to produce a tangent of type <code>Tangent{Tuple{tangent_type(A)}}</code> – the circular dependency on the <code>tangent_type</code> function causes real problems here.</p><p><em><strong>The Solution</strong></em></p><p>In order to resolve this, you need to produce a tangent type by hand. You might go with something like</p><pre><code class="language-julia hljs">mutable struct TangentForA
+    x::Float64 # tangent type for Float64 is Float64
+    a::TangentForA
+    function TangentForA(x::Float64)
+        a = new(x)
+        a.a = a
+        return a
+    end
+end</code></pre><p>The point here is that you can manually resolve the circular dependency using a data structure which mimics the primal type. You will, however, need to implement similar methods for <code>zero_tangent</code>, <code>randn_tangent</code>, etc, and presumably need to implement additional <code>getfield</code> and <code>setfield</code> rules which are specific to this type. An example implementation of this is provided <a href="../developer_documentation/custom_tangent_type/">here</a>.</p><h3 id="Circular-References-in-General"><a class="docs-heading-anchor" href="#Circular-References-in-General">Circular References in General</a><a id="Circular-References-in-General-1"></a><a class="docs-heading-anchor-permalink" href="#Circular-References-in-General" title="Permalink"></a></h3><p><em><strong>The Problem</strong></em></p><p>Consider a type of the form</p><pre><code class="language-julia hljs">mutable struct Foo
+    x
+    Foo() = new()
+end</code></pre><p>In this instance, <code>tangent_type</code> will work fine because <code>Foo</code> does not directly reference itself in its definition. Moreover, general uses of <code>Foo</code> will be fine.</p><p>However, it&#39;s possible to construct an instance of <code>Foo</code> with a circular reference:</p><pre><code class="language-julia hljs">f = Foo()
+f.x = f</code></pre><p>This is actually fine provided we never attempt to call <code>zero_tangent</code> / <code>randn_tangent</code> / similar functionality on <code>f</code> once we&#39;ve set its <code>x</code> field to itself. If we attempt to call such a function, we&#39;ll find ourselves with a stack overflow.</p><p><em><strong>The Solution</strong></em> This is a little tricker to handle. You could specialise <code>zero_tangent</code> etc for <code>Foo</code>, but this is something of a pain. Fortunately, it seems to be incredibly rare that this is ever a problem in practice. If we gain evidence that this <em>is</em> often a problem in practice, we&#39;ll look into supporting <code>zero_tangent</code> etc automatically for this case.</p><h2 id="Tangent-Generation-and-Pointers"><a class="docs-heading-anchor" href="#Tangent-Generation-and-Pointers">Tangent Generation and Pointers</a><a id="Tangent-Generation-and-Pointers-1"></a><a class="docs-heading-anchor-permalink" href="#Tangent-Generation-and-Pointers" title="Permalink"></a></h2><p><em><strong>The Problem</strong></em></p><p>In many use cases, a pointer provides the address of the start of a block of memory which has been allocated to e.g. store an array. However, we cannot get any of this context from the pointer itself – by just looking at a pointer, I cannot know whether its purpose is to refer to the start of a large block of memory, some proportion of the way through a block of memory, or even to keep track of a single address.</p><p>Recall that the tangent to a pointer is another pointer:</p><pre><code class="language-julia-repl hljs">julia&gt; Mooncake.tangent_type(Ptr{Float64})
+Ptr{Float64}</code></pre><p>Plainly I cannot implement a method of <code>zero_tangent</code> for <code>Ptr{Float64}</code> because I don&#39;t know how much memory to allocate.</p><p>This is, however, fine if a pointer appears half way through a function, having been derived from another data structure. e.g.</p><pre><code class="language-julia hljs">function foo(x::Vector{Float64})
+    p = pointer(x, 2)
+    return unsafe_load(p)
+end
+
+rule = build_rrule(Tuple{typeof(foo), Vector{Float64}})
+Mooncake.value_and_gradient!!(rule, foo, [5.0, 4.0])
+
+# output
+(4.0, (NoTangent(), [0.0, 1.0]))</code></pre><p><em><strong>The Solution</strong></em></p><p>This is only really a problem for tangent / fdata / rdata generation functionality, such as <code>zero_tangent</code>. As a work-around, AD testing functionality permits users to pass in <code>CoDual</code>s. So if you are testing something involving a pointer, you will need to construct its tangent yourself, and pass a <code>CoDual</code> to e.g. <code>Mooncake.TestUtils.test_rule</code>.</p><p>While pointers tend to be a low-level implementation detail in Julia code, you could in principle actually be interested in differentiating a function of a pointer. In this case, you will not be able to use <code>Mooncake.value_and_gradient!!</code> as this requires the use of <code>zero_tangent</code>. Instead, you will need to use lower-level (internal) functionality, such as <code>Mooncake.__value_and_gradient!!</code>, or use the rule interface directly.</p><p>Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../developer_documentation/internal_docstrings/">« Internal Docstrings</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.14.1 on <span class="colophon-date" title="Wednesday 17 September 2025 08:29">Wednesday 17 September 2025</span>. Using Julia version 1.11.7.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
