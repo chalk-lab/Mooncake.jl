@@ -14,9 +14,9 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
     cuda = CUDA.functional()
 
     _rand = if cuda
-        (rng, size...,) -> cu(randn(rng, size...))
+        (rng, size...) -> cu(randn(rng, size...))
     else
-        (rng, size...,) -> randn(rng, size...)
+        (rng, size...) -> randn(rng, size...)
     end
     float = cuda ? x -> Float32(x) : identity
     Trng = cuda ? CUDA.RNG : StableRNG
@@ -59,7 +59,15 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         (false, :stability, true, Core.kwcall, (dims=1,), softmax, _rand(rng, 3, 3)),
         (false, :stability, true, Core.kwcall, (dims=2,), softmax, _rand(rng, 3, 3)),
         (false, :stability, true, Core.kwcall, (dims=(1, 2),), softmax, _rand(rng, 3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), softmax, _rand(rng, 3, 3, 2)),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=(1, 2),),
+            softmax,
+            _rand(rng, 3, 3, 2),
+        ),
         (false, :none, false, x -> softmax(x; dims=1), _rand(rng, 3, 2)),
         (false, :none, false, x -> softmax(x; dims=2), _rand(rng, 3, 2)),
         (false, :none, false, x -> softmax(x; dims=(1, 2)), _rand(rng, 3, 2)),
@@ -71,8 +79,24 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(rng, 2)),
         (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(rng, 3, 3)),
         (false, :stability, true, Core.kwcall, (dims=2,), logsoftmax, _rand(rng, 3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsoftmax, _rand(rng, 3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsoftmax, _rand(rng, 3, 3, 2)),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=(1, 2),),
+            logsoftmax,
+            _rand(rng, 3, 3),
+        ),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=(1, 2),),
+            logsoftmax,
+            _rand(rng, 3, 3, 2),
+        ),
 
         # logsumexp
         (false, :stability, true, logsumexp, _rand(rng, 2)),
@@ -82,7 +106,15 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)),
         (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)),
         (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(rng, 3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(rng, 3, 3, 2)),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=(1, 2),),
+            logsumexp,
+            _rand(rng, 3, 3, 2),
+        ),
 
         # upsample_nearest
         (false, :stability, true, upsample_nearest, _rand(rng, 3), (2,)),
