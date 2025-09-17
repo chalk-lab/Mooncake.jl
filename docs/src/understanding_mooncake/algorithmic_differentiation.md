@@ -519,7 +519,111 @@ we have that ``\nabla F(x) = D f[x]^\ast (\bar{y})``.
 
 The consequence is that we can always view the computation performed by reverse-mode AD as computing the gradient of the composition of the function in question and an inner product with the argument to the adjoint.
 
+# Complex Numbers
+There exists an analogue to differentiable functions for complex numbers: holomorphic functions.
+Many functions that we might want to differentiate through, such as norms of complex vectors,
+do however not satisfy the requirements of holomorphic functions.
+Additionally, functions with real inputs and real outputs might manipulate complex numbers internally (e.g. because of fast Fourier transforms), and should be supported by the AD framework if they are real-differentiable.
+We thus use different treatment of complex numbers in AD, compared to complex analysis.
+In this section, we discuss this treatment in more details, and will talk about holomorphic functions further below.
+See also [this detailed tutorial on AD with complex numbers by Nicholas Krämer](https://arxiv.org/pdf/2409.06752), from which the contents of this section were inspired.
 
+From the point of view of AD, a complex number $z$ is seen as a pair of real numbers $x$ and $y$ such that $z = x+iy$.
+A function $f : \mathbb{C} \to \mathbb{C}$ is viewed as a real function $g: \mathbb{R}^2 \to \mathbb{R}^2$:
+```math
+g(x, y) = (\mathrm{Re}(f(x+iy)), \mathrm{Im}(f(x+iy))).
+```
+
+The differential for forward-mode AD follows directly, first for $g$:
+```math
+Dg[x, y]\begin{pmatrix}\dot{x}\\\dot{y}\end{pmatrix}
+= \begin{pmatrix} \partial_1 g_1(x,y) & \partial_2 g_1(x,y)
+\\ \partial_1 g_2(x,y) & \partial_2 g_2(x,y) \end{pmatrix}
+\begin{pmatrix}\dot{x}\\\dot{y}\end{pmatrix};
+```
+and then for $f$:
+```math
+Df[z](\dot{z})
+= \begin{pmatrix}1 & i\end{pmatrix} \begin{pmatrix} \partial_1 g_1 & \partial_2 g_1
+\\ \partial_1 g_2 & \partial_2 g_2 \end{pmatrix}_{x=\mathrm{Re}(z), y=\mathrm{Im}(z)}
+\begin{pmatrix}\mathrm{Re}(\dot{z})\\\mathrm{Im}(\dot{z})\end{pmatrix}.
+```
+
+A similar reasoning gives the following expression for the adjoint of the differential, as used in reverse-mode AD:
+```math
+Df[z]^*(\bar{z})
+= \begin{pmatrix}1 & i\end{pmatrix} \begin{pmatrix} \partial_1 g_1 & \partial_1 g_2
+\\ \partial_2 g_1 & \partial_2 g_2 \end{pmatrix}_{x=\mathrm{Re}(z), y=\mathrm{Im}(z)}
+\begin{pmatrix}\mathrm{Re}(\dot{z})\\\mathrm{Im}(\dot{z})\end{pmatrix}.
+```
+Notice that $\partial_1 g_2$ and $\partial_2 g_1$ are **exchanged** compared to the expression above.
+
+## A worked example
+Consider the function $f(z) = cz$ for some complex constant $c = a + ib$.
+Complex arithmetic gives $cz = (a + ib)(x + iy) = (ax - by) + i(ay + bx)$.
+
+The corresponding $g: \mathbb{R}^2 \to \mathbb{R}^2$ function is thus:
+```math
+g(x, y) = (ax - by, ay + bx).
+```
+Its differential is:
+```math
+Df[z](\dot{z}) = \begin{pmatrix} 1 & i \end{pmatrix}
+\begin{pmatrix} a & -b \\ b & a \end{pmatrix}
+\begin{pmatrix} \dot{x} \\ \dot{y} \end{pmatrix}
+= (a\dot{x} - b\dot{y}) + i (b\dot{x} + a\dot{y}) = c\dot{z}.
+```
+The adjoint of the differential is:
+```math
+Df[z]^*(\bar{z}) = \begin{pmatrix} 1 & i \end{pmatrix}
+\begin{pmatrix} a & b \\ -b & a \end{pmatrix}
+\begin{pmatrix} \bar{x} \\ \bar{y} \end{pmatrix}
+= (a\bar{x} + b\bar{y}) + i (-b\bar{x} + a\bar{y}) = c^*\bar{z}.
+```
+
+This matches what we would have expected by computing the adjoint from the usual inner product over complex numbers:
+```math
+\langle\bar{z},Df[z](\dot{z})\rangle
+= \langle\bar{z},c\dot{z}\rangle
+= \langle c^*\bar{z},\dot{z}\rangle.
+```
+
+## Link with Wirtinger derivatives
+Complex functions typically do not directly reference the real and imaginary parts $x$ and $y$ of their argument $z=x+iy$, but rather $z$ and its complex conjugate $z^*$.
+In that case, [Wirtinger derivatives](https://en.wikipedia.org/wiki/Wirtinger_derivatives) can be used to simplify derivative computations. They are defined as follows:
+```math
+\begin{align*}
+\frac{\partial f}{\partial z} &= \frac12 \left(\frac{\partial f}{\partial x} - i\frac{\partial f}{\partial y}\right) \\
+\frac{\partial f}{\partial z^*} &= \frac12 \left(\frac{\partial f}{\partial x} + i\frac{\partial f}{\partial y}\right) \\
+\end{align*}
+```
+Loosely speaking, Wirtinger derivatives allow $z$ and $z^*$ to be treated as independent variables.
+
+The combination of the two Wirtinger derivatives is equivalent to the Jacobian of the corresponding $g: \mathbb{R}^2 \to \mathbb{R}^2$ function, but written in a different basis.
+
+The differential and its adjoint are expressed as follows using Wirtinger derivatives:
+```math
+\begin{align*}
+Df[z](\dot{z}) &= \frac{\partial f}{\partial z} \dot{z} + \frac{\partial f}{\partial z^*} \dot{z}^* \\
+Df[z]^*(\bar{z}) &= \left(\frac{\partial f}{\partial z}\right)^* \bar{z} + \frac{\partial f}{\partial z^*} \bar{z}^*
+\end{align*}
+```
+
+For our example of $f(z) = cz$ above, the Wirtinger derivatives are $\frac{\partial f}{\partial z} = c$ and $\frac{\partial f}{\partial z^*} = 0$.
+The differential and its adjoint follow directly.
+Using Wirtinger derivatives can thus greatly simplify the computations to derive custom AD rules.
+
+## Link with holomorphic functions
+The Cauchy-Riemann equations for a real-differentiable function $f$ to be holomorphic, are equivalent to $\frac{\partial f}{\partial z^*} = 0$. In that case, the other Wirtinger derivative $\frac{\partial f}{\partial z}$ is equal to the complex derivative $f'(z)$, and the differential and its adjoint simplify to:
+```math
+\begin{align*}
+Df[z](\dot{z}) &= f'(z) \dot{z} \\
+Df[z]^*(\bar{z}) &= \left(f'(z)\right)^* \bar{z}
+\end{align*}
+```
+
+The derivative of a holomorphic function can thus be computed with a forward-mode AD computation with $\dot{z} = 1$.
+However, note that DifferentiationInterface currently does not provide a stable API for complex numbers.
 
 # Summary
 
