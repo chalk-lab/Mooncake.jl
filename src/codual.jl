@@ -15,7 +15,7 @@ end
 primal(x::CoDual) = x.x
 tangent(x::CoDual) = x.dx
 Base.copy(x::CoDual) = CoDual(copy(primal(x)), copy(tangent(x)))
-# CoDual is immutable and can be safely shared without copying
+# CoDual can be safely shared without copying
 _copy(x::P) where {P<:CoDual} = x
 
 """
