@@ -395,8 +395,9 @@ end
 function rrule!!(
     ::CoDual{typeof(potrf!)},
     _uplo::CoDual{Char},
-    _A::CoDual{<:AbstractMatrix{<:BlasRealFloat}},
-)
+    _A::CoDual{<:AbstractMatrix{P}},
+) where {P<:BlasRealFloat}
+
     # Extract args and take a copy of A.
     uplo = _uplo.x
     A, dA = arrayify(_A)
@@ -411,14 +412,14 @@ function rrule!!(
         # Compute cotangents.
         N = size(A, 1)
         if Char(uplo) == 'L'
-            E = LowerTriangular(__E(N))
+            E = LowerTriangular(__E(P, N))
             L = LowerTriangular(A)
             tmp = dA2'L
             tmp .*= E'
             B = rdiv!(ldiv!(L', tmp), L)
             dA .= __sym_lower!(B) .* E ./ 2 .+ triu!(dA2, 1)
         else
-            E = UpperTriangular(__E(N))
+            E = UpperTriangular(__E(P, N))
             U = UpperTriangular(A)
             tmp = U * dA2'
             tmp .*= E'
@@ -448,10 +449,10 @@ function __sym_upper!(X::Matrix)
     return X
 end
 
-@inline function __E(N::Int)
-    E = fill(2.0, (N, N))
+@inline function __E(P::Type, N::Int)
+    E = fill(P(2), (N, N))
     for n in diagind(E)
-        E[n] -= 1.0
+        E[n] -= P(1)
     end
     return E
 end
