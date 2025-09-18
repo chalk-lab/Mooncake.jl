@@ -103,13 +103,11 @@ function frule!!(::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFl
 end
 function rrule!!(::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P}) where {P<:IEEEFloat}
     h = hypot(primal(x), primal(y))
-    function hypot_pb!!(dh::P)
-        return NoRData(), dh * (primal(x) / h), dh * (primal(y) / h)
-    end
+    hypot_pb!!(dh::P) = NoRData(), dh * (primal(x) / h), dh * (primal(y) / h)
     return CoDual(h, NoFData()), hypot_pb!!
 end
 
-@is_primitive MinimalCtx Tuple{typeof(hypot),P,P,Vararg} where {P<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(hypot),P,P,Vararg{P}} where {P<:IEEEFloat}
 function frule!!(::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P}, xs::Vararg{Dual{P}, N}) where {P<:IEEEFloat, N}
     h = hypot(primal(x), primal(y), map(primal, xs)...)
     dh = sum(primal(a) * tangent(a) for a in (x, y, xs...)) / h
