@@ -107,9 +107,6 @@ function _is_primitive_expression(Tctx, Tmode, sig)
     end
 end
 
-struct PrimitiveCacheKey{tt}
-    world::UInt
-end
 
 const _IS_PRIMITIVE_CACHE = IdDict{Any,Bool}()
 
