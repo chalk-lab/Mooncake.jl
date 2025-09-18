@@ -5,7 +5,7 @@ for (M, f, arity) in DiffRules.diffrules(; filter_modules=nothing)
         continue  # Skip rules for methods not defined in the current scope
     end
     (f == :rem2pi || f == :ldexp) && continue # not designed for Float64s
-    (f in [:+, :*, :sin, :cos, :exp, :-, :abs2, :inv, :abs, :/, :\, :^]) && continue # use other functionality to implement these
+    (f in [:+, :*, :sin, :cos, :exp, :-, :abs2, :inv, :abs, :/, :\, :^, :hypot]) && continue # use other functionality to implement these
     if arity == 1
         dx = DiffRules.diffrule(M, f, :x)
         pb_name = Symbol("$(M).$(f)_pb!!")
