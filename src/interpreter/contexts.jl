@@ -107,7 +107,6 @@ function _is_primitive_expression(Tctx, Tmode, sig)
     end
 end
 
-
 const _IS_PRIMITIVE_CACHE = IdDict{Any,Bool}()
 
 """
