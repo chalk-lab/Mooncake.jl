@@ -113,7 +113,7 @@ const _IS_PRIMITIVE_CACHE = IdDict{Any,Bool}()
     is_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
 
 Returns a `Bool` specifying whether the methods specified by `sig` are considered primitives
-in the context of contexts of type `ctx` in mode `mode` at world age `world`.
+in the context of context `ctx` in mode `mode` at world age `world`.
 
 ```jldoctest
 julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode
