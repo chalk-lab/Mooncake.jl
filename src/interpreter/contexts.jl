@@ -121,6 +121,31 @@ julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode
 julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64}, Base.get_world_counter())
 true
 ```
+
+`world` is needed as rules which Mooncake derives are associated to a particular Julia world
+age. As a result, anything declared a primitive after the construction of a rule ought not
+to be considered a primitive by that rule. To see how this works, consider the following:
+```jldoctest
+julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode, @is_primitive
+
+julia> foo(x::Float64) = 5x
+foo (generic function with 1 method)
+
+julia> old_world_age = Base.get_world_counter();
+
+julia> @is_primitive DefaultCtx ReverseMode Tuple{typeof(foo),Float64}
+
+julia> new_world_age = Base.get_world_counter();
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, old_world_age)
+false
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, new_world_age)
+true
+```
+Observe that `is_primitive` returns `false` for the world age prior to declaring `foo` a
+primitive, but `true` afterwards. For more information on Julia's world age mechanism, see
+https://docs.julialang.org/en/v1/manual/methods/#Redefining-Methods .
 """
 function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
     @nospecialize sig
