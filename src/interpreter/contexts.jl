@@ -124,7 +124,12 @@ true
 
 `world` is needed as rules which Mooncake derives are associated to a particular Julia world
 age. As a result, anything declared a primitive after the construction of a rule ought not
-to be considered a primitive by that rule. To see how this works, consider the following:
+to be considered a primitive by that rule. One can explicitly derive a new rule (eg. via
+[`build_frule`](@ref), [`build_rrule`](@ref), or a function from the higher-level interface
+such as [`Mooncake.prepare_derivative_cache`](@ref),
+[`Mooncake.prepare_pullback_cache`](@ref) or [`Mooncake.prepare_gradient_cache`](@ref))
+after new `@is_primitive` declarations, should it be needed in cases where a rule has been
+previously derived. To see how this works, consider the following:
 ```jldoctest
 julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode, @is_primitive
 
