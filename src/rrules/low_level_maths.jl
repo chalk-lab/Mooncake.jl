@@ -108,12 +108,16 @@ function rrule!!(::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P}) where {P<:
 end
 
 @is_primitive MinimalCtx Tuple{typeof(hypot),P,P,Vararg{P}} where {P<:IEEEFloat}
-function frule!!(::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P}, xs::Vararg{Dual{P}, N}) where {P<:IEEEFloat, N}
+function frule!!(
+    ::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P}, xs::Vararg{Dual{P},N}
+) where {P<:IEEEFloat,N}
     h = hypot(primal(x), primal(y), map(primal, xs)...)
     dh = sum(primal(a) * tangent(a) for a in (x, y, xs...)) / h
     return Dual(h, dh)
 end
-function rrule!!(::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P}, xs::Vararg{CoDual{P}, N}) where {P<:IEEEFloat, N}
+function rrule!!(
+    ::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P}, xs::Vararg{CoDual{P},N}
+) where {P<:IEEEFloat,N}
     h = hypot(primal(x), primal(y), map(primal, xs)...)
     function hypot_pb!!(dh::P)
         grads = map(a -> dh * (primal(a) / h), (x, y, xs...))
