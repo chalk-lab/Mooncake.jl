@@ -505,7 +505,9 @@ function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_pertur
 end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
-function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_perturb::Bool, output_tangent=nothing)
+function test_rrule_correctness(
+    rng::AbstractRNG, x_x̄...; rrule, unsafe_perturb::Bool, output_tangent=nothing
+)
     @nospecialize rng x_x̄
 
     x_x̄ = map(_deepcopy, x_x̄) # defensive copy
@@ -560,7 +562,8 @@ function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_pertur
     @test address_maps_are_consistent(inputs_address_map, outputs_address_map)
 
     # Run reverse-pass.
-    ȳ_delta = isnothing(output_tangent) ? randn_tangent(rng, primal(y_ȳ_rule)) : output_tangent
+    ȳ_delta =
+        isnothing(output_tangent) ? randn_tangent(rng, primal(y_ȳ_rule)) : output_tangent
     x̄_delta = map(Base.Fix1(randn_tangent, rng) ∘ primal, x_x̄_rule)
 
     ȳ_init = set_to_zero!!(zero_tangent(primal(y_ȳ_rule), tangent(y_ȳ_rule)))
