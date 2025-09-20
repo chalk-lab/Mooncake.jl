@@ -13,12 +13,17 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 @testset "nnlib" begin
     cuda = CUDA.functional()
 
-    _rand = cuda ? (size...,) -> cu(randn(size...)) : (size...,) -> randn(size...)
+    _rand = if cuda
+        (rng, size...) -> cu(randn(rng, size...))
+    else
+        (rng, size...) -> randn(rng, size...)
+    end
     float = cuda ? x -> Float32(x) : identity
     Trng = cuda ? CUDA.RNG : StableRNG
 
-    x = randn(5, 4, 3, 2)
-    w = randn(2, 2, 3, 3)
+    rng = StableRNG(123)
+    x = randn(rng, 5, 4, 3, 2)
+    w = randn(rng, 2, 2, 3, 3)
     dense_cdims = DenseConvDims(x, w)
     sep_cd = DepthwiseConvDims(x, w)
     y = conv(x, w, dense_cdims)
@@ -40,59 +45,91 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
     test_cases = Any[
 
         # batched_mul
-        (false, :none, true, batched_mul, _rand(3, 2, 3), _rand(2, 5, 3)),
+        (false, :none, true, batched_mul, _rand(rng, 3, 2, 3), _rand(rng, 2, 5, 3)),
 
         # dropout
-        (true, :none, false, dropout_tester_1, Trng, _rand(2, 2), float(0.5)),
-        (true, :none, false, dropout_tester_2, Trng, _rand(2, 2), float(0.1)),
-        (true, :none, false, dropout_tester_3, Trng, _rand(2, 2), float(0.4)),
+        (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2), float(0.5)),
+        (true, :none, false, dropout_tester_2, Trng, _rand(rng, 2, 2), float(0.1)),
+        (true, :none, false, dropout_tester_3, Trng, _rand(rng, 2, 2), float(0.4)),
 
         # softmax
-        (false, :stability, true, softmax, _rand(2)),
-        (false, :stability, true, softmax, _rand(2, 2)),
-        (false, :stability, true, Core.kwcall, (dims=1,), softmax, _rand(2)),
-        (false, :stability, true, Core.kwcall, (dims=1,), softmax, _rand(3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=2,), softmax, _rand(3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), softmax, _rand(3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), softmax, _rand(3, 3, 2)),
-        (false, :none, false, x -> softmax(x; dims=1), _rand(3, 2)),
-        (false, :none, false, x -> softmax(x; dims=2), _rand(3, 2)),
-        (false, :none, false, x -> softmax(x; dims=(1, 2)), _rand(3, 2)),
+        (false, :stability, true, softmax, _rand(rng, 2)),
+        (false, :stability, true, softmax, _rand(rng, 2, 2)),
+        (false, :stability, true, Core.kwcall, (dims=1,), softmax, _rand(rng, 2)),
+        (false, :stability, true, Core.kwcall, (dims=1,), softmax, _rand(rng, 3, 3)),
+        (false, :stability, true, Core.kwcall, (dims=2,), softmax, _rand(rng, 3, 3)),
+        (false, :stability, true, Core.kwcall, (dims=(1, 2),), softmax, _rand(rng, 3, 3)),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=(1, 2),),
+            softmax,
+            _rand(rng, 3, 3, 2),
+        ),
+        (false, :none, false, x -> softmax(x; dims=1), _rand(rng, 3, 2)),
+        (false, :none, false, x -> softmax(x; dims=2), _rand(rng, 3, 2)),
+        (false, :none, false, x -> softmax(x; dims=(1, 2)), _rand(rng, 3, 2)),
 
         # logsoftmax
-        (false, :stability, true, logsoftmax, _rand(2)),
-        (false, :stability, true, logsoftmax, _rand(2, 3)),
-        (false, :stability, true, logsoftmax, _rand(2, 3, 2)),
-        (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(2)),
-        (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=2,), logsoftmax, _rand(3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsoftmax, _rand(3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsoftmax, _rand(3, 3, 2)),
+        (false, :stability, true, logsoftmax, _rand(rng, 2)),
+        (false, :stability, true, logsoftmax, _rand(rng, 2, 3)),
+        (false, :stability, true, logsoftmax, _rand(rng, 2, 3, 2)),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(rng, 2)),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(rng, 3, 3)),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsoftmax, _rand(rng, 3, 3)),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=(1, 2),),
+            logsoftmax,
+            _rand(rng, 3, 3),
+        ),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=(1, 2),),
+            logsoftmax,
+            _rand(rng, 3, 3, 2),
+        ),
 
         # logsumexp
-        (false, :stability, true, logsumexp, _rand(2)),
-        (false, :stability, true, logsumexp, _rand(3, 3)),
-        (false, :stability, true, logsumexp, _rand(3, 3, 2)),
-        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(2)),
-        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(3, 3, 2)),
+        (false, :stability, true, logsumexp, _rand(rng, 2)),
+        (false, :stability, true, logsumexp, _rand(rng, 3, 3)),
+        (false, :stability, true, logsumexp, _rand(rng, 3, 3, 2)),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 2)),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)),
+        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(rng, 3, 3)),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=(1, 2),),
+            logsumexp,
+            _rand(rng, 3, 3, 2),
+        ),
 
         # upsample_nearest
-        (false, :stability, true, upsample_nearest, _rand(3), (2,)),
-        (false, :stability, true, upsample_nearest, _rand(3, 2), (2, 2)),
-        (false, :stability, true, upsample_nearest, _rand(3, 2, 3), (2, 2, 5)),
+        (false, :stability, true, upsample_nearest, _rand(rng, 3), (2,)),
+        (false, :stability, true, upsample_nearest, _rand(rng, 3, 2), (2, 2)),
+        (false, :stability, true, upsample_nearest, _rand(rng, 3, 2, 3), (2, 2, 5)),
 
         # fold
-        (false, :none, true, NNlib.fold, _rand(12, 12, 2), size(x), dense_cdims),
+        (false, :none, true, NNlib.fold, _rand(rng, 12, 12, 2), size(x), dense_cdims),
 
         # unfold
         (false, :none, true, NNlib.unfold, x, dense_cdims),
 
         # scatter
-        (false, :none, true, NNlib.scatter, +, _rand(2), [1, 3]),
-        (false, :none, true, Core.kwcall, (;), NNlib.scatter, +, _rand(2), [1, 3]),
+        (false, :none, true, NNlib.scatter, +, _rand(rng, 2), [1, 3]),
+        (false, :none, true, Core.kwcall, (;), NNlib.scatter, +, _rand(rng, 2), [1, 3]),
 
         # conv
         (false, :none, true, Core.kwcall, (;), conv, x, w, dense_cdims),
@@ -121,7 +158,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         # Tests here fail on CUDA.
         cpu_only_test_cases = Any[
             # softmax
-            (false, :none, false, x -> softmax(5x), _rand(3, 2)),
+            (false, :none, false, x -> softmax(5x), _rand(rng, 3, 2)),
 
             # conv
             (false, :none, true, Core.kwcall, (;), depthwiseconv, x, w, sep_cd),

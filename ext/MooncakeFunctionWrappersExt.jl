@@ -1,3 +1,42 @@
+module MooncakeFunctionWrappersExt
+
+using Random
+using FunctionWrappers: FunctionWrapper
+import Mooncake:
+    TestUtils,
+    _add_to_primal_internal,
+    _diff_internal,
+    _dot_internal,
+    _scale_internal,
+    __verify_fdata_value,
+    fdata,
+    has_equal_data_internal,
+    increment_internal!!,
+    randn_tangent_internal,
+    set_to_zero_internal!!,
+    zero_tangent_internal,
+    build_rrule,
+    fcodual_type,
+    fdata_type,
+    increment_rdata!!,
+    pullback_type,
+    rdata_type,
+    tangent,
+    tangent_type,
+    to_cr_tangent,
+    rdata,
+    rrule!!,
+    zero_tangent,
+    @foldable,
+    @is_primitive,
+    CoDual,
+    IncCache,
+    MaybeCache,
+    MinimalCtx,
+    NoRData,
+    SetToZeroCache,
+    Stack
+
 # Type used to represent tangents of `FunctionWrapper`s. Also used to represent its fdata
 # because `FunctionWrapper`s are mutable types.
 mutable struct FunctionWrapperTangent{Tfwds_oc}
@@ -127,9 +166,8 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:FunctionWrap
     return T(t.fwds_wrapper, Ref(_scale_internal(c, a, t.dobj_ref[])))
 end
 
-import .TestUtils: populate_address_map_internal, AddressMap
-function populate_address_map_internal(
-    m::AddressMap, p::FunctionWrapper, t::FunctionWrapperTangent
+function TestUtils.populate_address_map_internal(
+    m::TestUtils.AddressMap, p::FunctionWrapper, t::FunctionWrapperTangent
 )
     k = pointer_from_objref(p)
     v = pointer_from_objref(t)
@@ -169,47 +207,4 @@ function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
     return y, function_wrapper_eval_pb
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:function_wrappers})
-    test_cases = Any[
-        (false, :none, nothing, FunctionWrapper{Float64,Tuple{Float64}}, sin),
-        (false, :none, nothing, FunctionWrapper{Float64,Tuple{Float64}}(sin), 5.0),
-    ]
-    memory = Any[]
-    return test_cases, memory
-end
-
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:function_wrappers})
-    test_cases = Any[
-        (
-            false,
-            :none,
-            nothing,
-            function (x, y)
-                p = FunctionWrapper{Float64,Tuple{Float64}}(x -> x * y)
-                out = 0.0
-                for _ in 1:1_000
-                    out += p(x)
-                end
-                return out
-            end,
-            5.0,
-            4.0,
-        ),
-        (
-            false,
-            :none,
-            nothing,
-            function (x::Vector{Float64}, y::Float64)
-                p = FunctionWrapper{Float64,Tuple{Float64}}(x -> x * y)
-                out = 0.0
-                for _x in x
-                    out += p(_x)
-                end
-                return out
-            end,
-            randn(100),
-            randn(),
-        ),
-    ]
-    return test_cases, Any[]
 end

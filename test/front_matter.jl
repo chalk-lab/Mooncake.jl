@@ -18,7 +18,6 @@ using Base.Iterators: product
 using Core:
     bitcast, svec, ReturnNode, PhiNode, PiNode, GotoIfNot, GotoNode, SSAValue, Argument
 using Core.Intrinsics: pointerref, pointerset
-using FunctionWrappers: FunctionWrapper
 
 using Mooncake
 

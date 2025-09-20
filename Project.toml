@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.4.161"
+version = "0.4.162"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -10,7 +10,6 @@ ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
 DiffRules = "b552c78f-8df3-52c6-915a-8e097449b14b"
 DispatchDoctor = "8d63f2c5-f18a-4cf2-ba9d-b3f60fc568c8"
 ExprTools = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
-FunctionWrappers = "069b7b12-0de2-55c6-9aab-29f3d0a68a2e"
 GPUArraysCore = "46192b85-c4d5-4398-a991-12ede77f4527"
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
@@ -24,6 +23,7 @@ AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 DynamicExpressions = "a40a106e-89c9-4ca8-8020-a735e8728b6b"
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+FunctionWrappers = "069b7b12-0de2-55c6-9aab-29f3d0a68a2e"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 LuxLib = "82251201-b29d-42c6-8e01-566dec8acb11"
 MLDataDevices = "7e8f7934-dd98-4c1a-8fe8-92b47a384d40"
@@ -37,6 +37,7 @@ MooncakeAllocCheckExt = "AllocCheck"
 MooncakeCUDAExt = "CUDA"
 MooncakeDynamicExpressionsExt = "DynamicExpressions"
 MooncakeFluxExt = "Flux"
+MooncakeFunctionWrappersExt = "FunctionWrappers"
 MooncakeJETExt = "JET"
 MooncakeLuxLibExt = ["LuxLib", "MLDataDevices", "Static"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
