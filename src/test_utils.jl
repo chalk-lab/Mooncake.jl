@@ -505,7 +505,7 @@ function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_pertur
 end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
-function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_perturb::Bool)
+function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_perturb::Bool, output_tangent=nothing)
     @nospecialize rng x_x̄
 
     x_x̄ = map(_deepcopy, x_x̄) # defensive copy
@@ -560,7 +560,7 @@ function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_pertur
     @test address_maps_are_consistent(inputs_address_map, outputs_address_map)
 
     # Run reverse-pass.
-    ȳ_delta = randn_tangent(rng, primal(y_ȳ_rule))
+    ȳ_delta = isnothing(output_tangent) ? randn_tangent(rng, primal(y_ȳ_rule)) : output_tangent
     x̄_delta = map(Base.Fix1(randn_tangent, rng) ∘ primal, x_x̄_rule)
 
     ȳ_init = set_to_zero!!(zero_tangent(primal(y_ȳ_rule), tangent(y_ȳ_rule)))
@@ -873,6 +873,8 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
 - `unsafe_perturb::Bool=false`: value passed as the third argument to `_add_to_primal`.
     Should usually be left `false` -- consult the docstring for `_add_to_primal` for more
     info on when you might wish to set it to `true`.
+- `output_tangent=nothing`: final output tangent to initialize reverse mode with for testing
+    the correctnes of reverse rules.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -884,6 +886,7 @@ function test_rule(
     debug_mode::Bool=false,
     unsafe_perturb::Bool=false,
     print_results=true,
+    output_tangent=nothing,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -927,7 +930,7 @@ function test_rule(
                     test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb)
                 end
                 if test_rvs && !interface_only
-                    test_rrule_correctness(rng, x_x̄...; rrule, unsafe_perturb)
+                    test_rrule_correctness(rng, x_x̄...; rrule, unsafe_perturb, output_tangent)
                 end
             end
 

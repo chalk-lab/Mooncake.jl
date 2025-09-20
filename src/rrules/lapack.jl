@@ -357,7 +357,10 @@ function rrule!!(
     return _A, getri_pb!!
 end
 
-__sym(X) = (X + X') / 2
+function __sym!(X::Matrix)
+    X .= (X .+ X') ./ 2
+    return X
+end
 
 @is_primitive(MinimalCtx, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasRealFloat}})
 function frule!!(
@@ -392,8 +395,9 @@ end
 function rrule!!(
     ::CoDual{typeof(potrf!)},
     _uplo::CoDual{Char},
-    _A::CoDual{<:AbstractMatrix{<:BlasRealFloat}},
-)
+    _A::CoDual{<:AbstractMatrix{P}},
+) where {P<:BlasRealFloat}
+
     # Extract args and take a copy of A.
     uplo = _uplo.x
     A, dA = arrayify(_A)
@@ -408,15 +412,19 @@ function rrule!!(
         # Compute cotangents.
         N = size(A, 1)
         if Char(uplo) == 'L'
-            E = LowerTriangular(2 * ones(N, N)) - Diagonal(ones(N))
+            E = LowerTriangular(__E(P, N))
             L = LowerTriangular(A)
-            B = L' \ (E' .* (dA2'L)) / L
-            dA .= 0.5 * __sym(B) .* E .+ triu!(dA2, 1)
+            tmp = dA2'L
+            tmp .*= E'
+            B = rdiv!(ldiv!(L', tmp), L)
+            dA .= __sym_lower!(B) .* E ./ 2 .+ triu!(dA2, 1)
         else
-            E = UpperTriangular(2 * ones(N, N) - Diagonal(ones(N)))
+            E = UpperTriangular(__E(P, N))
             U = UpperTriangular(A)
-            B = U \ ((U * dA2') .* E') / U'
-            dA .= 0.5 * __sym(B) .* E .+ tril!(dA2, -1)
+            tmp = U * dA2'
+            tmp .*= E'
+            B = rdiv!(ldiv!(U, tmp), U')
+            dA .= __sym_upper!(B) .* E ./ 2 .+ tril!(dA2, -1)
         end
 
         # Restore initial state.
@@ -425,6 +433,28 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual((_A.x, info), (_A.dx, NoFData())), potrf_pb!!
+end
+
+function __sym_lower!(X::Matrix)
+    @inbounds for q in 1:size(X, 2), p in (q + 1):size(X, 1)
+        X[p, q] = (X[p, q] + X[q, p]) / 2
+    end
+    return X
+end
+
+function __sym_upper!(X::Matrix)
+    @inbounds for q in 1:size(X, 2), p in 1:(q - 1)
+        X[p, q] = (X[p, q] + X[q, p]) / 2
+    end
+    return X
+end
+
+@inline function __E(P::Type, N::Int)
+    E = fill(P(2), (N, N))
+    for n in diagind(E)
+        E[n] -= P(1)
+    end
+    return E
 end
 
 @is_primitive(
@@ -483,11 +513,11 @@ function rrule!!(
 
         # Compute cotangents.
         if uplo == 'L'
-            tmp = __sym(B_copy * dB') / LowerTriangular(A)'
+            tmp = __sym!(B_copy * dB') / LowerTriangular(A)'
             dA .-= 2 .* tril!(LinearAlgebra.LAPACK.potrs!('L', A, tmp))
             LinearAlgebra.LAPACK.potrs!('L', A, dB)
         else
-            tmp = UpperTriangular(A)' \ __sym(B_copy * dB')
+            tmp = UpperTriangular(A)' \ __sym!(B_copy * dB')
             dA .-= 2 .* triu!((tmp / UpperTriangular(A)) / UpperTriangular(A)')
             LinearAlgebra.LAPACK.potrs!('U', A, dB)
         end

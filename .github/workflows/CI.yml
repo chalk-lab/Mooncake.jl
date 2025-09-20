@@ -26,7 +26,6 @@ jobs:
       fail-fast: false
       matrix:
         test_group: [
-          'quality',
           'basic',
           'rrules/avoiding_non_differentiable_code',
           'rrules/blas',
@@ -34,7 +33,6 @@ jobs:
           'rrules/dispatch_doctor',
           'rrules/fastmath',
           'rrules/foreigncall',
-          'rrules/functionwrappers',
           'rrules/iddict',
           'rrules/lapack',
           'rrules/linear_algebra',
@@ -89,9 +87,11 @@ jobs:
           {test_type: 'ext', label: 'differentiation_interface'},
           {test_type: 'ext', label: 'dynamic_expressions'},
           {test_type: 'ext', label: 'flux'},
+          {test_type: 'ext', label: 'function_wrappers'},
           {test_type: 'ext', label: 'luxlib'},
           {test_type: 'ext', label: 'nnlib'},
           {test_type: 'ext', label: 'special_functions'},
+          {test_type: 'integration_testing', label: 'format'},
           {test_type: 'integration_testing', label: 'array'},
           {test_type: 'integration_testing', label: 'bijectors'},
           {test_type: 'integration_testing', label: 'diff_tests'},
