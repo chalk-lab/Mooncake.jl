@@ -557,7 +557,7 @@ function value_and_gradient!!(cache::Cache, f::F, x::Vararg{Any,N}) where {F,N}
 end
 
 """
-    prepare_derivative_cache(f, x...)
+    prepare_derivative_cache(fx...; kwargs...)
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 """

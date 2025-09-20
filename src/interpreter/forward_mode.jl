@@ -10,6 +10,17 @@ struct DualRuleInfo
     dual_ret_type::Type
 end
 
+"""
+    build_frule(
+        interp::MooncakeInterpreter{C},
+        sig_or_mi;
+        debug_mode=false,
+        silence_debug_messages=true,
+    ) where {C}
+
+Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
+`sig_or_mi` is not a primitive.
+"""
 function build_frule(
     interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, silence_debug_messages=true
 ) where {C}
