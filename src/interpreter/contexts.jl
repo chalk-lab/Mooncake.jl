@@ -1,5 +1,5 @@
 """
-    struct DefaultCtx end
+    abstract type DefaultCtx end
 
 Context for all usually used AD primitives. Anything which is a primitive in a MinimalCtx is
 a primitive in the DefaultCtx automatically. If you are adding a rule for the sake of
@@ -8,11 +8,17 @@ performance, it should be a primitive in the DefaultCtx, but not the MinimalCtx.
 abstract type DefaultCtx end
 
 """
-    struct MinimalCtx end
+    abstract type MinimalCtx <: DefaultCtx end
 
 Functions should only be primitives in this context if not making them so would cause AD to
 fail. In particular, do not add primitives to this context if you are writing them for
 performance only -- instead, make these primitives in the DefaultCtx.
+
+Note: that this type subtypes [`DefaultCtx`](@ref) is an (unintuitive) implementation
+detail. This subtyping relationship is used by [`is_primitive`](@ref) to ensure that
+something which is declared primitive in `MinimalCtx` is also a primitive in
+[`DefaultCtx`](@ref). Consult the implementation of [`is_primitive`](@ref) to see how this
+is achieved.
 """
 abstract type MinimalCtx <: DefaultCtx end
 
@@ -162,6 +168,12 @@ function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
     # Check to see whether any methods of `_is_primitive` exist which apply to this
     # ctx-mode-signature triple in world age `world`. If we have looked this up before,
     # return the answer from the cache.
+    #
+    # Implementation detail: observe that `tt` is the `UnionAll` containing all subtypes of
+    # `ctx`. This ensures that eg. if `ctx == DefaultCtx`, this function returns `true` if
+    # the method is a primitive in either `DefaultCtx` _or_ `MinimalCtx`, since
+    # `MinimalCtx <: DefaultCtx`. Conversely, if `ctx == MinimalCtx`, and a rule is declared
+    # a primitive only in `DefaultCtx`, this function will (correctly) return `false`.
     tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{sig}}
     return get!(_IS_PRIMITIVE_CACHE, (world, tt)) do
         return !isempty(Base._methods_by_ftype(tt, -1, world))
