@@ -544,9 +544,9 @@ function rrule!!(::CoDual{typeof(rad2deg)}, x::CoDual{P}) where {P<:IEEEFloat}
 end
 
 @from_chainrules MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
-function frule!!(::Dual{typeof(^)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFloat}
-    t = (ChainRules.NoTangent(), tangent(x), tangent(y))
-    z, dz = ChainRules.frule(t, ^, primal(x), primal(y))
+function frule!!(::Dual{typeof(^)}, x::Dual{P}, p::Dual{P}) where {P<:IEEEFloat}
+    t = (ChainRules.NoTangent(), tangent(x), tangent(p))
+    z, dz = ChainRules.frule(t, ^, primal(x), primal(p))
     return Dual(z, dz)
 end
 
