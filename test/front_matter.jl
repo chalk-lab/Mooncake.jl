@@ -1,6 +1,5 @@
 using Aqua,
     BenchmarkTools,
-    DiffRules,
     JET,
     LinearAlgebra,
     Logging,
