@@ -340,6 +340,8 @@ function opaque_closure(
     @static if VERSION > v"1.12-"
         src.nargs = nargtypes
         src.isva = isva
+        src.min_world = ir.valid_worlds.min_world
+        src.max_world = ir.valid_worlds.max_world
     end
     src.slotflags = fill(zero(UInt8), length(ir.argtypes))
     src.slottypes = copy(ir.argtypes)
