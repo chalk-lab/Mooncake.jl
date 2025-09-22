@@ -393,9 +393,7 @@ function frule!!(
     return Dual((A, info), (tangent(A_dA), NoTangent()))
 end
 function rrule!!(
-    ::CoDual{typeof(potrf!)},
-    _uplo::CoDual{Char},
-    _A::CoDual{<:AbstractMatrix{P}},
+    ::CoDual{typeof(potrf!)}, _uplo::CoDual{Char}, _A::CoDual{<:AbstractMatrix{P}}
 ) where {P<:BlasRealFloat}
 
     # Extract args and take a copy of A.
