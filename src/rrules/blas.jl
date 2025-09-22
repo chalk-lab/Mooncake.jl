@@ -285,7 +285,7 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(BLAS.gemv!),Char,P,AbstractMatrix{P},AbstractVector{P},P,AbstractVector{P}
+        typeof(BLAS.gemv!),Char,P,AbstractVecOrMat{P},AbstractVector{P},P,AbstractVector{P}
     } where {P<:BlasRealFloat},
 )
 
@@ -293,7 +293,7 @@ end
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
     alpha::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
+    A_dA::Dual{<:AbstractVecOrMat{P}},
     x_dx::Dual{<:AbstractVector{P}},
     beta::Dual{P},
     y_dy::Dual{<:AbstractVector{P}},
@@ -327,7 +327,7 @@ end
     ::CoDual{typeof(BLAS.gemv!)},
     _tA::CoDual{Char},
     _alpha::CoDual{P},
-    _A::CoDual{<:AbstractMatrix{P}},
+    _A::CoDual{<:AbstractVecOrMat{P}},
     _x::CoDual{<:AbstractVector{P}},
     _beta::CoDual{P},
     _y::CoDual{<:AbstractVector{P}},
@@ -351,11 +351,13 @@ end
 
         # Increment fdata.
         if trans == 'N'
-            dalpha = dot(dy, A, x)
+            A_ = (A isa AbstractMatrix ? A : reshape(A, :, 1))
+            dalpha = dot(dy, A_, x)
             dA .+= alpha .* dy .* x'
             BLAS.gemv!('T', alpha, A, dy, one(eltype(A)), dx)
         else
-            dalpha = dot(dy, A', x)
+            A_ = (A isa AbstractMatrix ? A : reshape(A, :, 1))
+            dalpha = dot(dy, A_', x)
             dA .+= alpha .* x .* dy'
             BLAS.gemv!('N', alpha, A, dy, one(eltype(A)), dx)
         end
@@ -591,10 +593,10 @@ end
         Char,
         Char,
         T,
-        AbstractMatrix{T},
-        AbstractMatrix{T},
+        AbstractVecOrMat{T},
+        AbstractVecOrMat{T},
         T,
-        AbstractMatrix{T},
+        AbstractVecOrMat{T},
     } where {T<:BlasRealFloat},
 )
 
@@ -603,10 +605,10 @@ function frule!!(
     transA::Dual{Char},
     transB::Dual{Char},
     alpha::Dual{T},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    B_dB::Dual{<:AbstractMatrix{T}},
+    A_dA::Dual{<:AbstractVecOrMat{T}},
+    B_dB::Dual{<:AbstractVecOrMat{T}},
     beta::Dual{T},
-    C_dC::Dual{<:AbstractMatrix{T}},
+    C_dC::Dual{<:AbstractVecOrMat{T}},
 ) where {T<:BlasRealFloat}
     tA = primal(transA)
     tB = primal(transB)
@@ -643,10 +645,10 @@ function rrule!!(
     transA::CoDual{Char},
     transB::CoDual{Char},
     alpha::CoDual{T},
-    A::CoDual{<:AbstractMatrix{T}},
-    B::CoDual{<:AbstractMatrix{T}},
+    A::CoDual{<:AbstractVecOrMat{T}},
+    B::CoDual{<:AbstractVecOrMat{T}},
     beta::CoDual{T},
-    C::CoDual{<:AbstractMatrix{T}},
+    C::CoDual{<:AbstractVecOrMat{T}},
 ) where {T<:BlasRealFloat}
     tA = primal(transA)
     tB = primal(transB)
@@ -660,42 +662,57 @@ function rrule!!(
     # corresponds to simply multiplying A and B together, and writing the result to C.
     # This is an extremely common edge case, so it's important to do well for it.
     p_C_copy = copy(p_C)
-    tmp_ref = Ref{Matrix{T}}()
-    if (a == 1 && b == 0)
-        BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
-    else
-        tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
-        tmp_ref[] = tmp
-        p_C .= a .* tmp .+ b .* p_C
+    let AB_product_storage
+        if a == 1 && b == 0
+            AB_product_storage = p_C
+            BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
+        else
+            tmp = similar(p_C)
+            AB_product_storage = tmp
+            BLAS.gemm!(tA, tB, one(T), p_A, p_B, zero(T), tmp) # tmp = A*B
+            # Finish forward pass
+            p_C .= a .* tmp .+ b .* p_C
+        end
+
+        function gemm!_pb!!(::NoRData)
+            # The closure now just calls the type-stable barrier function.
+            da, db = _gemm_pullback!(
+                tA, tB, a, b, p_A, p_B, p_C, p_C_copy, dA, dB, dC, AB_product_storage
+            )
+            return NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData()
+        end
+        return C, gemm!_pb!!
+    end
+end
+
+function _gemm_pullback!(
+    tA, tB, a, b, p_A, p_B, p_C, p_C_copy, dA, dB, dC, AB_product_storage
+)
+    # Pullback for alpha
+    da = dot(dC, AB_product_storage)
+
+    # Restore C to its state before the forward pass
+    BLAS.copyto!(p_C, p_C_copy)
+
+    # Pullback for beta
+    db = dot(dC, p_C)
+
+    # Pullbacks for A and B
+    if tA == 'N'
+        BLAS.gemm!('N', tB == 'N' ? 'T' : 'N', a, dC, p_B, one(b), dA)
+    else # tA is 'T' or 'C'
+        BLAS.gemm!(tB == 'N' ? 'N' : 'T', 'T', a, p_B, dC, one(b), dA)
+    end
+    if tB == 'N'
+        BLAS.gemm!(tA == 'N' ? 'T' : 'N', 'N', a, p_A, dC, one(b), dB)
+    else # tB is 'T' or 'C'
+        BLAS.gemm!('T', tA == 'N' ? 'N' : 'T', a, dC, p_A, one(b), dB)
     end
 
-    function gemm!_pb!!(::NoRData)
+    # Pullback for C
+    dC .*= b
 
-        # Compute pullback w.r.t. alpha.
-        da = (a == 1 && b == 0) ? dot(dC, p_C) : dot(dC, tmp_ref[])
-
-        # Restore previous state.
-        BLAS.copyto!(p_C, p_C_copy)
-
-        # Compute pullback w.r.t. beta.
-        db = dot(dC, p_C)
-
-        # Increment cotangents.
-        if tA == 'N'
-            BLAS.gemm!('N', tB == 'N' ? 'T' : 'N', a, dC, p_B, one(T), dA)
-        else
-            BLAS.gemm!(tB == 'N' ? 'N' : 'T', 'T', a, p_B, dC, one(T), dA)
-        end
-        if tB == 'N'
-            BLAS.gemm!(tA == 'N' ? 'T' : 'N', 'N', a, p_A, dC, one(T), dB)
-        else
-            BLAS.gemm!('T', tA == 'N' ? 'N' : 'T', a, dC, p_A, one(T), dB)
-        end
-        dC .*= b
-
-        return NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData()
-    end
-    return C, gemm!_pb!!
+    return da, db
 end
 
 @is_primitive(
@@ -823,7 +840,7 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(BLAS.syrk!),Char,Char,P,AbstractMatrix{P},P,AbstractMatrix{P}
+        typeof(BLAS.syrk!),Char,Char,P,AbstractVecOrMat{P},P,AbstractMatrix{P}
     } where {P<:BlasRealFloat}
 )
 function frule!!(
@@ -831,7 +848,7 @@ function frule!!(
     _uplo::Dual{Char},
     _t::Dual{Char},
     α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
+    A_dA::Dual{<:AbstractVecOrMat{P}},
     β_dβ::Dual{P},
     C_dC::Dual{<:AbstractMatrix{P}},
 ) where {P<:BlasRealFloat}
@@ -861,7 +878,7 @@ function rrule!!(
     _uplo::CoDual{Char},
     _t::CoDual{Char},
     α_dα::CoDual{P},
-    A_dA::CoDual{<:AbstractMatrix{P}},
+    A_dA::CoDual{<:AbstractVecOrMat{P}},
     β_dβ::CoDual{P},
     C_dC::CoDual{<:AbstractMatrix{P}},
 ) where {P<:BlasRealFloat}
@@ -1129,16 +1146,23 @@ function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat},
     end
 end
 
-function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_continuous=false)
     xs = Any[
         randn(rng, P, p),
         view(randn(rng, P, p + 5), 3:(p + 2)),
-        view(randn(rng, P, 3p, 3), 1:2:(2p), 2),
+        (only_continuous ? copy : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
         reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
     ]
     @assert all(x -> length(x) == p, xs)
     @assert all(Base.Fix2(isa, AbstractVector{P}), xs)
     return xs
+end
+
+function blas_vectors_or_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Tuple{Int})
+    return blas_vectors(rng, P, p[1]; only_continuous=true)
+end
+function blas_vectors_or_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Tuple{Int,Int})
+    return blas_matrices(rng, P, p[1], p[2])
 end
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
@@ -1187,6 +1211,16 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
             ys = blas_vectors(rng, P, M)
             flags = (false, :stability, (lb=1e-3, ub=10.0))
             return map(As, xs, ys) do A, x, y
+                # BLAS.gemv! requires stride==1 when A is vector
+                (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
+            end
+        end...,
+        map_prod(t_flags, [1, 3], Ps, αs, βs) do (tA, M, P, α, β)
+            As = blas_vectors(rng, P, M; only_continuous=true)
+            xs = blas_vectors(rng, P, tA == 'N' ? 1 : M)
+            ys = blas_vectors(rng, P, tA == 'N' ? M : 1)
+            flags = (false, :stability, (lb=1e-3, ub=10.0))
+            return map(As, xs, ys) do A, x, y
                 (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
             end
         end...,
@@ -1226,6 +1260,51 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
                 (false, :stability, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
             end
         end...,
+        let generate_gemm_test_cases(rng, P, α, β, dα, dβ) =
+                let
+                    gemm_test_cases = [
+                        # Matrix-vector cases
+                        ('N', 'N', (3, 4), (4,), (3,)),
+                        ('T', 'N', (4, 3), (4,), (3,)),
+                        ('C', 'N', (4, 3), (4,), (3,)),
+                        # Vector-matrix cases
+                        ('T', 'N', (3,), (3, 5), (1, 5)),  # row vector × matrix
+                        ('C', 'N', (3,), (3, 5), (1, 5)),  # row vector × matrix
+                        # Vector-vector cases
+                        ('T', 'N', (4,), (4,), (1,)),      # dot product style
+                        ('C', 'N', (4,), (4,), (1,)),      # dot product style
+                        ('N', 'T', (4,), (5,), (4, 5)),      # outer product style
+                        ('N', 'C', (4,), (5,), (4, 5)),      # outer product style
+                    ]
+                    mapreduce(vcat, gemm_test_cases) do (tA, tB, A_dims, B_dims, C_dims)
+                        As = blas_vectors_or_matrices(rng, P, A_dims)
+                        Bs = blas_vectors_or_matrices(rng, P, B_dims)
+                        Cs = blas_vectors_or_matrices(rng, P, C_dims)
+
+                        map(As, Bs, Cs) do A, B, C
+                            a_da = CoDual(P(α), P(dα))
+                            b_db = CoDual(P(β), P(dβ))
+                            (
+                                false,
+                                :stability,
+                                nothing,
+                                BLAS.gemm!,
+                                tA,
+                                tB,
+                                a_da,
+                                A,
+                                B,
+                                b_db,
+                                C,
+                            )
+                        end
+                    end
+                end
+            map_prod(αs, βs, Ps, dαs, dβs) do args
+                α, β, P, dα, dβ = args # Destructure the tuple from map_prod
+                return generate_gemm_test_cases(rng, P, α, β, dα, dβ)
+            end
+        end...,
 
         # symm!
         map_prod(['L', 'R'], ['L', 'U'], αs, βs, Ps) do (side, ul, α, β, P)
@@ -1241,6 +1320,15 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
         # syrk!
         map_prod(uplos, t_flags, Ps, dαs, dβs) do (uplo, t, P, dα, dβ)
             As = blas_matrices(rng, P, t == 'N' ? 3 : 4, t == 'N' ? 4 : 3)
+            return map(As) do A
+                α_dα = CoDual(randn(rng, P), P(dα))
+                β_dβ = CoDual(randn(rng, P), P(dβ))
+                C = randn(rng, P, 3, 3)
+                (false, :stability, nothing, BLAS.syrk!, uplo, t, α_dα, A, β_dβ, C)
+            end
+        end...,
+        map_prod(uplos, 'N', Ps, dαs, dβs) do (uplo, t, P, dα, dβ)
+            As = blas_vectors(rng, P, 3; only_continuous=true)
             return map(As) do A
                 α_dα = CoDual(randn(rng, P), P(dα))
                 β_dβ = CoDual(randn(rng, P), P(dβ))
