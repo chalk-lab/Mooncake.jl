@@ -67,7 +67,9 @@ function arrayify(x::A, dx::DA) where {A,DA}
 end
 
 numberify(x::BlasRealFloat) = x
-numberify(x::Tangent{@NamedTuple{re::P, im::P}}) where {P<:BlasRealFloat} = complex(x.fields.re, x.fields.im)
+function numberify(x::Tangent{@NamedTuple{re::P,im::P}}) where {P<:BlasRealFloat}
+    complex(x.fields.re, x.fields.im)
+end
 numberify(x::Dual) = primal(x), numberify(tangent(x))
 _rdata(x::BlasRealFloat) = x
 _rdata(x::BlasComplexFloat) = RData((; re=real(x), im=imag(x)))
@@ -380,7 +382,15 @@ end
         copyto!(y, y_copy)
 
         # Return rdata.
-        return NoRData(), NoRData(), _rdata(dalpha), NoRData(), NoRData(), _rdata(dbeta), NoRData()
+        return (
+            NoRData(),
+            NoRData(),
+            _rdata(dalpha),
+            NoRData(),
+            NoRData(),
+            _rdata(dbeta),
+            NoRData(),
+        )
     end
 
     return _y, gemv!_pb!!
@@ -1197,12 +1207,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
 
         # gemv!
         map_prod(
-            t_flags,
-            [1, 3],
-            [1, 2],
-            allPs,
-            [αs..., 0.46 + 0.32im],
-            [βs..., 0.39 + 0.27im],
+            t_flags, [1, 3], [1, 2], allPs, [αs..., 0.46 + 0.32im], [βs..., 0.39 + 0.27im]
         ) do (tA, M, N, P, α, β)
             P <: BlasRealFloat && (imag(α) > 0 || imag(β) > 0) && return []
 
