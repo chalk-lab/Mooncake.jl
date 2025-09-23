@@ -1196,7 +1196,14 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
         #
 
         # gemv!
-        map_prod(t_flags, [1, 3], [1, 2], allPs, [αs..., 0.46+0.32im], [βs..., 0.39+0.27im]) do (tA, M, N, P, α, β)
+        map_prod(
+            t_flags,
+            [1, 3],
+            [1, 2],
+            allPs,
+            [αs..., 0.46 + 0.32im],
+            [βs..., 0.39 + 0.27im],
+        ) do (tA, M, N, P, α, β)
             P <: BlasRealFloat && (imag(α) > 0 || imag(β) > 0) && return []
 
             As = blas_matrices(rng, P, tA == 'N' ? M : N, tA == 'N' ? N : M)
