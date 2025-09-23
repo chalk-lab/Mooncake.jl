@@ -2,7 +2,6 @@ using Aqua,
     BenchmarkTools,
     DiffRules,
     JET,
-    JuliaFormatter,
     LinearAlgebra,
     Logging,
     Random,
@@ -19,7 +18,6 @@ using Base.Iterators: product
 using Core:
     bitcast, svec, ReturnNode, PhiNode, PiNode, GotoIfNot, GotoNode, SSAValue, Argument
 using Core.Intrinsics: pointerref, pointerset
-using FunctionWrappers: FunctionWrapper
 
 using Mooncake
 

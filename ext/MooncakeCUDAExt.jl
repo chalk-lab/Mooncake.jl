@@ -27,8 +27,7 @@ import Mooncake:
     increment_and_get_rdata!,
     MaybeCache,
     IncCache,
-    NoRData,
-    Maybe
+    NoRData
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
