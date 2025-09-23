@@ -66,9 +66,9 @@ function arrayify(x::A, dx::DA) where {A,DA}
     return error(msg)
 end
 
-_complex(x::BlasRealFloat) = x
-_complex(x::Tangent{@NamedTuple{re::P, im::P}}) where {P<:BlasRealFloat} = complex(x.fields.re, x.fields.im)
-_cextract(x::Dual) = primal(x), _complex(tangent(x))
+numberify(x::BlasRealFloat) = x
+numberify(x::Tangent{@NamedTuple{re::P, im::P}}) where {P<:BlasRealFloat} = complex(x.fields.re, x.fields.im)
+numberify(x::Dual) = primal(x), numberify(tangent(x))
 _rdata(x::BlasRealFloat) = x
 _rdata(x::BlasComplexFloat) = RData((; re=real(x), im=imag(x)))
 
@@ -307,8 +307,8 @@ end
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
-    α, dα = _cextract(alpha)
-    β, dβ = _cextract(beta)
+    α, dα = numberify(alpha)
+    β, dβ = numberify(beta)
 
     # Derivative computation.
     BLAS.gemv!(primal(tA), dα, A, x, β, dy)
