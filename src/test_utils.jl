@@ -835,6 +835,7 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         debug_mode::Bool=false,
         unsafe_perturb::Bool=false,
         print_results=true,
+        output_tangent=nothing,
         atol=1e-3,
         rtol=1e-3
     )
