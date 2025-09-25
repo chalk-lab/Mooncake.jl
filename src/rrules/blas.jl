@@ -66,6 +66,14 @@ function arrayify(x::A, dx::DA) where {A,DA}
     return error(msg)
 end
 
+numberify(x::BlasRealFloat) = x
+function numberify(x::Tangent{@NamedTuple{re::P,im::P}}) where {P<:BlasRealFloat}
+    complex(x.fields.re, x.fields.im)
+end
+numberify(x::Dual) = primal(x), numberify(tangent(x))
+_rdata(x::BlasRealFloat) = x
+_rdata(x::BlasComplexFloat) = RData((; re=real(x), im=imag(x)))
+
 #
 # Utility
 #
@@ -286,7 +294,7 @@ end
     MinimalCtx,
     Tuple{
         typeof(BLAS.gemv!),Char,P,AbstractMatrix{P},AbstractVector{P},P,AbstractVector{P}
-    } where {P<:BlasRealFloat},
+    } where {P<:BlasFloat},
 )
 
 @inline function frule!!(
@@ -297,12 +305,12 @@ end
     x_dx::Dual{<:AbstractVector{P}},
     beta::Dual{P},
     y_dy::Dual{<:AbstractVector{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
+    α, dα = numberify(alpha)
+    β, dβ = numberify(beta)
 
     # Derivative computation.
     BLAS.gemv!(primal(tA), dα, A, x, β, dy)
@@ -331,7 +339,7 @@ end
     _x::CoDual{<:AbstractVector{P}},
     _beta::CoDual{P},
     _y::CoDual{<:AbstractVector{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Pull out primals and tangents (the latter only where necessary).
     trans = _tA.x
@@ -351,22 +359,38 @@ end
 
         # Increment fdata.
         if trans == 'N'
-            dalpha = dot(dy, A, x)
-            dA .+= alpha .* dy .* x'
-            BLAS.gemv!('T', alpha, A, dy, one(eltype(A)), dx)
-        else
-            dalpha = dot(dy, A', x)
+            dalpha = dot(dy, A, x)'
+            dA .+= alpha' .* dy .* x'
+            BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
+        elseif trans == 'C' || P <: BlasRealFloat
+            dalpha = dot(dy, A', x)'
             dA .+= alpha .* x .* dy'
-            BLAS.gemv!('N', alpha, A, dy, one(eltype(A)), dx)
+            BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
+        else
+            dalpha = dot(dy, transpose(A), x)'
+            dA .+= alpha' .* conj.(x) .* transpose(dy)
+            # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
+            # but BLAS has no "conjugate only" gemv
+            conj!(dx)
+            BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
+            conj!(dx)
         end
         dbeta = dot(y_copy, dy)
-        dy .*= beta
+        dy .*= beta'
 
         # Restore primal.
         copyto!(y, y_copy)
 
         # Return rdata.
-        return NoRData(), NoRData(), dalpha, NoRData(), NoRData(), dbeta, NoRData()
+        return (
+            NoRData(),
+            NoRData(),
+            _rdata(dalpha),
+            NoRData(),
+            NoRData(),
+            _rdata(dbeta),
+            NoRData(),
+        )
     end
 
     return _y, gemv!_pb!!
@@ -1150,6 +1174,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
     uplos = ['L', 'U']
     dAs = ['N', 'U']
     Ps = [Float64, Float32]
+    allPs = [Ps..., ComplexF64, ComplexF32]
     rng = rng_ctor(123456)
 
     test_cases = vcat(
@@ -1159,14 +1184,14 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
         #
 
         # nrm2(x)
-        map_prod([Ps..., ComplexF64, ComplexF32]) do (P,)
+        map_prod(allPs) do (P,)
             return map([randn(rng, P, 105)]) do x
                 (false, :stability, nothing, BLAS.nrm2, x)
             end
         end...,
 
         # nrm2(n, x, incx)
-        map_prod([Ps..., ComplexF64, ComplexF32], [5, 3], [1, 2]) do (P, n, incx)
+        map_prod(allPs, [5, 3], [1, 2]) do (P, n, incx)
             return map([randn(rng, P, 105)]) do x
                 (false, :stability, nothing, BLAS.nrm2, n, x, incx)
             end
@@ -1181,7 +1206,11 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
         #
 
         # gemv!
-        map_prod(t_flags, [1, 3], [1, 2], Ps, αs, βs) do (tA, M, N, P, α, β)
+        map_prod(
+            t_flags, [1, 3], [1, 2], allPs, [αs..., 0.46 + 0.32im], [βs..., 0.39 + 0.27im]
+        ) do (tA, M, N, P, α, β)
+            P <: BlasRealFloat && (imag(α) > 0 || imag(β) > 0) && return []
+
             As = blas_matrices(rng, P, tA == 'N' ? M : N, tA == 'N' ? N : M)
             xs = blas_vectors(rng, P, N)
             ys = blas_vectors(rng, P, M)
