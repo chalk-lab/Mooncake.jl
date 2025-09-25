@@ -152,7 +152,7 @@ end
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:low_level_maths})
     test_cases = vcat(
-        map([Float32,Float64]) do P
+        map([Float32, Float64]) do P
             cases = [
                 (sqrt, P(0.5)),
                 (cbrt, P(0.4)),

@@ -1,12 +1,4 @@
-using Aqua,
-    BenchmarkTools,
-    JET,
-    LinearAlgebra,
-    Logging,
-    Random,
-    StableRNGs,
-    Mooncake,
-    Test
+using Aqua, BenchmarkTools, JET, LinearAlgebra, Logging, Random, StableRNGs, Mooncake, Test
 
 using AllocCheck: AllocCheck # load to enable testing functionality
 
