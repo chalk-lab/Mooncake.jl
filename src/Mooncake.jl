@@ -17,7 +17,6 @@ using Base:
     arrayset,
     TwicePrecision,
     twiceprecision
-using Base.Experimental: @opaque
 using Base.Iterators: product
 using Base.Meta: isexpr
 using Core:
