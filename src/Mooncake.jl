@@ -2,7 +2,7 @@ module Mooncake
 
 const CC = Core.Compiler
 
-using ADTypes, ChainRules, ExprTools, InteractiveUtils, LinearAlgebra, MistyClosures, Random
+using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, Random
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
@@ -17,7 +17,6 @@ using Base:
     arrayset,
     TwicePrecision,
     twiceprecision
-using Base.Experimental: @opaque
 using Base.Iterators: product
 using Base.Meta: isexpr
 using Core:
