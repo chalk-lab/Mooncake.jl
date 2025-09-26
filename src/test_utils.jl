@@ -87,7 +87,7 @@ interfaces that this package defines have been implemented correctly.
 """
 module TestUtils
 
-using Random, Mooncake, Test, InteractiveUtils
+using Random, Mooncake, Test
 using Mooncake:
     CoDual,
     NoTangent,
