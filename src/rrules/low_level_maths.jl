@@ -204,6 +204,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:low_level_mat
                 (acoth, P(1.05)),
                 (sinc, P(0.36)),
                 (deg2rad, P(185.4)),
+                (rad2deg, P(0.45)),
                 (mod2pi, P(0.1)),
                 (^, P(4.0), P(5.0)),
                 (atan, P(4.3), P(0.23)),
