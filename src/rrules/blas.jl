@@ -28,10 +28,14 @@ Return the primal field of `x`, and convert its fdata into an array of the same 
 primal. This operation is not guaranteed to be possible for all array types, but seems to be
 possible for all array types of interest so far.
 """
-function arrayify(x::Union{Dual{A},CoDual{A}}) where {A<:Union{AbstractArray{<:BlasFloat},Ptr{<:BlasFloat}}}
-    return arrayify(primal(x), tangent(x))  # NOTE: for complex number, the tangent is a reinterpreted version of the primal
+function arrayify(
+    x::Union{Dual{A},CoDual{A}}
+) where {A<:Union{AbstractArray{<:BlasFloat},Ptr{<:BlasFloat}}}
+    return arrayify(primal(x), tangent(x))  # NOTE: for complex numbers, tangents are reinterpreted to Complex
 end
-arrayify(x::A, dx::A) where {A<:Union{Array{<:BlasRealFloat},Ptr{<:BlasRealFloat}}} = (x, dx)
+function arrayify(x::A, dx::A) where {A<:Union{Array{<:BlasRealFloat},Ptr{<:BlasRealFloat}}}
+    (x, dx)
+end
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
     return x, reinterpret(P, dx)
 end
@@ -108,12 +112,14 @@ _rdata(x::BlasComplexFloat) = RData((; re=real(x), im=imag(x)))
 # LEVEL 1
 #
 
-for (fname, jlfname, elty) in ((:cblas_ddot,      :dot,  :Float64),
-                               (:cblas_sdot,      :dot,  :Float32),
-                               (:cblas_zdotc_sub, :dotc, :ComplexF64),
-                               (:cblas_cdotc_sub, :dotc, :ComplexF32),
-                               (:cblas_zdotu_sub, :dotu, :ComplexF64),
-                               (:cblas_cdotu_sub, :dotu, :ComplexF32),)
+for (fname, jlfname, elty) in (
+    (:cblas_ddot, :dot, :Float64),
+    (:cblas_sdot, :dot, :Float32),
+    (:cblas_zdotc_sub, :dotc, :ComplexF64),
+    (:cblas_cdotc_sub, :dotc, :ComplexF32),
+    (:cblas_zdotu_sub, :dotu, :ComplexF64),
+    (:cblas_cdotu_sub, :dotu, :ComplexF32),
+)
     isreal = jlfname == :dot
 
     @eval @inline function frule!!(
@@ -129,7 +135,7 @@ for (fname, jlfname, elty) in ((:cblas_ddot,      :dot,  :Float64),
         _DY::Dual{Ptr{$elty}},
         _incy::Dual{BLAS.BlasInt},
         # For complex numbers the result is stored in an extra pointer
-        $((isreal ? () : ( :(_presult::Dual{Ptr{$elty}}), ))...),
+        $((isreal ? () : (:(_presult::Dual{Ptr{$elty}}),))...),
         # TODO: what is the purpose of the vararg? avoid function specialization?
         args::Vararg{Any,N},
     ) where {N}
@@ -140,19 +146,24 @@ for (fname, jlfname, elty) in ((:cblas_ddot,      :dot,  :Float64),
             DY, _dDY = arrayify(_DY)
 
             result = BLAS.$jlfname(n, DX, incx, DY, incy)
-            _dresult = BLAS.$jlfname(n, _dDX, incx, DY, incy) + BLAS.$jlfname(n, DX, incx, _dDY, incy)
+            _dresult =
+                BLAS.$jlfname(n, _dDX, incx, DY, incy) +
+                BLAS.$jlfname(n, DX, incx, _dDY, incy)
 
             # For complex numbers the result must be stored in the pointer
-            $(isreal ?
-                quote
-                    Dual(result, _dresult)
-                end :
-                quote
-                    presult, _dpresult = arrayify(_presult)
-                    Base.unsafe_store!(presult, result)
-                    Base.unsafe_store!(_dpresult, _dresult)
+            $(
+                if isreal
+                    quote
+                        Dual(result, _dresult)
+                    end
+                else
+                    quote
+                        presult, _dpresult = arrayify(_presult)
+                        Base.unsafe_store!(presult, result)
+                        Base.unsafe_store!(_dpresult, _dresult)
 
-                    nothing # TODO: what should we return?
+                        nothing # TODO: what should we return?
+                    end
                 end
             )
         end
@@ -169,7 +180,7 @@ for (fname, jlfname, elty) in ((:cblas_ddot,      :dot,  :Float64),
         _incx::CoDual{BLAS.BlasInt},
         _DY::CoDual{Ptr{$elty}},
         _incy::CoDual{BLAS.BlasInt},
-        $((isreal ? () : ( :(_presult::CoDual{Ptr{$elty}}), ))...),
+        $((isreal ? () : (:(_presult::CoDual{Ptr{$elty}}),))...),
         args::Vararg{Any,N},
     ) where {N}
         GC.@preserve args begin
@@ -182,16 +193,13 @@ for (fname, jlfname, elty) in ((:cblas_ddot,      :dot,  :Float64),
             result = BLAS.$jlfname(DX, DY)
 
             # For complex numbers the primal result must be stored in the pointer, and the dual must be zeroed
-            $(isreal ?
-                :() :
-                quote
-                    presult, _dpresult = arrayify(_presult)
-                    Base.unsafe_store!(presult, result)
-                    Base.unsafe_store!(_dpresult, zero($elty))
+            $(isreal ? :() : quote
+                presult, _dpresult = arrayify(_presult)
+                Base.unsafe_store!(presult, result)
+                Base.unsafe_store!(_dpresult, zero($elty))
 
-                    result = nothing
-                end
-            )
+                result = nothing
+            end)
         end
 
         $(
