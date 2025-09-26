@@ -15,6 +15,7 @@ using AbstractGPs,
     Random,
     ReverseDiff,
     Mooncake,
+    StableRNGs,
     Test,
     Zygote
 
@@ -200,11 +201,12 @@ function benchmark_rules!!(test_case_data, default_ratios, include_other_framewo
             @info "Mooncake"
             rule = Mooncake.build_rrule(args...)
             coduals = map(x -> x isa CoDual ? x : zero_codual(x), args)
-            to_benchmark(rule, coduals...)
+            copy_coduals(x, xs...) = (x, _deepcopy(xs)...)
+            to_benchmark(rule, copy_coduals(coduals...)...)
             include_other_frameworks && GC.gc(true)
             suite["mooncake"] = Chairmarks.benchmark(
                 () -> (rule, coduals),
-                identity,
+                ((rule, coduals),) -> (rule, copy_coduals(coduals...)),
                 a -> to_benchmark(a[1], a[2]...),
                 _ -> true;
                 evals=1,
@@ -214,11 +216,11 @@ function benchmark_rules!!(test_case_data, default_ratios, include_other_framewo
             @info "Mooncake (Forward)"
             rule = Mooncake.build_frule(args...)
             duals = map(x -> x isa CoDual ? Dual(x.x, x.dx) : zero_dual(x), args)
-            to_benchmark(rule, duals...)
+            to_benchmark(rule, copy_coduals(duals...)...)
             include_other_frameworks && GC.gc(true)
             suite["mooncake_fwd"] = Chairmarks.benchmark(
                 () -> (rule, duals),
-                identity,
+                ((rule, duals), ) -> (rule, copy_coduals(duals...)),
                 a -> to_benchmark(a[1], a[2]...),
                 _ -> true;
                 evals=1,
@@ -395,9 +397,9 @@ function main()
     @info perf_group
     println(perf_group)
     if perf_group == "hand_written"
-        flag_concerning_performance(benchmark_hand_written_rrules!!(Xoshiro))
+        flag_concerning_performance(benchmark_hand_written_rrules!!(StableRNG))
     elseif perf_group == "derived"
-        flag_concerning_performance(benchmark_derived_rrules!!(Xoshiro))
+        flag_concerning_performance(benchmark_derived_rrules!!(StableRNG))
     elseif perf_group == "comparison"
         create_inter_ad_benchmarks()
     else
