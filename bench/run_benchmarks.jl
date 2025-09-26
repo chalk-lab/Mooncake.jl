@@ -175,7 +175,9 @@ function generate_inter_framework_tests()
     ]
 end
 
-function benchmark_rules!!(test_case_data, default_ratios, include_other_frameworks::Bool)
+function benchmark_rules!!(
+    test_case_data, default_ratios, include_other_frameworks::Bool, seconds=nothing,
+)
     test_cases = reduce(vcat, map(first, test_case_data))
     memory = map(x -> x[2], test_case_data)
     ranges = reduce(vcat, map(x -> x[3], test_case_data))
@@ -195,6 +197,7 @@ function benchmark_rules!!(test_case_data, default_ratios, include_other_framewo
                 (a -> a[1]((a[2]...))),
                 _ -> true;
                 evals=1,
+                seconds=seconds,
             )
 
             # Benchmark AD via Mooncake.
@@ -210,6 +213,7 @@ function benchmark_rules!!(test_case_data, default_ratios, include_other_framewo
                 a -> to_benchmark(a[1], a[2]...),
                 _ -> true;
                 evals=1,
+                seconds=seconds,
             )
 
             # Benchmark AD via Mooncake.
@@ -224,6 +228,7 @@ function benchmark_rules!!(test_case_data, default_ratios, include_other_framewo
                 a -> to_benchmark(a[1], a[2]...),
                 _ -> true;
                 evals=1,
+                seconds=seconds,
             )
 
             if include_other_frameworks
@@ -318,7 +323,7 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
     end
-    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false)
+    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false, 0.02)
 end
 
 function benchmark_derived_rrules!!(rng_ctor)
@@ -328,7 +333,7 @@ function benchmark_derived_rrules!!(rng_ctor)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
     end
-    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false)
+    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.05)
 end
 
 function benchmark_inter_framework_rules()
@@ -337,7 +342,7 @@ function benchmark_inter_framework_rules()
     test_cases = map(last, test_case_data)
     memory = []
     ranges = fill(nothing, length(test_cases))
-    return benchmark_rules!!([(test_cases, memory, ranges, tags)], (lb=0.1, ub=200), true)
+    return benchmark_rules!!([(test_cases, memory, ranges, tags)], (lb=0.1, ub=200), true, 1.0)
 end
 
 function flag_concerning_performance(ratios)
