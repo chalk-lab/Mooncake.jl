@@ -271,20 +271,22 @@ end
 
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(BLAS.scal!),Integer,P,AbstractArray{P},Integer} where {P<:BlasRealFloat}
+    Tuple{
+        typeof(BLAS.scal!),Integer,P,X,Integer
+    } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
 function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
     a_da::Dual{P},
-    X_dX::Dual{<:AbstractArray{P}},
+    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
     _incx::Dual{<:Integer},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Extract params.
     n = primal(_n)
     incx = primal(_incx)
-    a, da = extract(a_da)
+    a, da = numberify(a_da)
     X, dX = arrayify(X_dX)
 
     # Compute Frechet derivative.
@@ -299,22 +301,21 @@ function rrule!!(
     ::CoDual{typeof(BLAS.scal!)},
     _n::CoDual{<:Integer},
     a_da::CoDual{P},
-    X_dX::CoDual{<:AbstractArray{P}},
+    X_dX::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
     _incx::CoDual{<:Integer},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Extract params.
     n = primal(_n)
     incx = primal(_incx)
     a = primal(a_da)
-    X, dX = arrayify(X_dX)
+    X, dX = viewify(n, X_dX, incx)
 
     # Take a copy of previous state in order to recover it on the reverse pass.
     X_copy = copy(X)
-    dX_copy = copy(dX)
 
     # Run primal computation.
-    BLAS.scal!(n, a, X, incx)
+    BLAS.scal!(n, a, primal(X_dX), incx)
 
     function scal_adjoint(::NoRData)
 
@@ -322,13 +323,12 @@ function rrule!!(
         X .= X_copy
 
         # Compute gradient w.r.t. scaling.
-        ∇a = BLAS.dot(n, X, incx, dX, incx)
+        ∇a = dot(X, dX)
 
         # Compute gradient w.r.t. DX.
-        BLAS.scal!(n, a, dX, incx)
-        BLAS.axpy!(n, one(P), dX, incx, dX_copy, incx)
+        BLAS.scal!(a', dX)
 
-        return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
+        return NoRData(), NoRData(), _rdata(∇a), NoRData(), NoRData()
     end
     return X_dX, scal_adjoint
 end
@@ -1236,7 +1236,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
                 (false, :stability, nothing, BLAS.nrm2, n, x, incx)
             end
         end...,
-        map_prod(Ps, [1, 3, 11], [1, 2, 11]) do (P, n, incx)
+        map_prod(allPs, [1, 3, 11], [1, 2, 11]) do (P, n, incx)
             flags = (false, :stability, nothing)
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
         end,
