@@ -28,12 +28,15 @@ Return the primal field of `x`, and convert its fdata into an array of the same 
 primal. This operation is not guaranteed to be possible for all array types, but seems to be
 possible for all array types of interest so far.
 """
-function arrayify(x::Union{Dual{A},CoDual{A}}) where {A<:AbstractArray{<:BlasFloat}}
+function arrayify(x::Union{Dual{A},CoDual{A}}) where {A<:Union{AbstractArray{<:BlasFloat},Ptr{<:BlasFloat}}}
     return arrayify(primal(x), tangent(x))  # NOTE: for complex number, the tangent is a reinterpreted version of the primal
 end
-arrayify(x::Array{P}, dx::Array{P}) where {P<:BlasRealFloat} = (x, dx)
+arrayify(x::A, dx::A) where {A<:Union{Array{<:BlasRealFloat},Ptr{<:BlasRealFloat}}} = (x, dx)
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
     return x, reinterpret(P, dx)
+end
+function arrayify(x::Ptr{P}, dx::Ptr{<:Tangent}) where {P<:BlasComplexFloat}
+    return x, convert(Ptr{P}, dx)
 end
 function arrayify(
     x::Diagonal{P,<:AbstractVector{P}}, dx::TangentOrFData
@@ -87,7 +90,14 @@ _rdata(x::BlasComplexFloat) = RData((; re=real(x), im=imag(x)))
 # LEVEL 1
 #
 
-for (fname, elty) in ((:cblas_ddot, :Float64), (:cblas_sdot, :Float32))
+for (fname, jlfname, elty) in ((:cblas_ddot,      :dot,  :Float64),
+                               (:cblas_sdot,      :dot,  :Float32),
+                               (:cblas_zdotc_sub, :dotc, :ComplexF64),
+                               (:cblas_cdotc_sub, :dotc, :ComplexF32),
+                               (:cblas_zdotu_sub, :dotu, :ComplexF64),
+                               (:cblas_cdotu_sub, :dotu, :ComplexF32),)
+    isreal = jlfname == :dot
+
     @eval @inline function frule!!(
         ::Dual{typeof(_foreigncall_)},
         ::Dual{Val{$(blas_name(fname))}},
@@ -100,20 +110,33 @@ for (fname, elty) in ((:cblas_ddot, :Float64), (:cblas_sdot, :Float32))
         _incx::Dual{BLAS.BlasInt},
         _DY::Dual{Ptr{$elty}},
         _incy::Dual{BLAS.BlasInt},
+        # For complex numbers the result is stored in an extra pointer
+        $((isreal ? () : ( :(_presult::Dual{Ptr{$elty}}), ))...),
+        # TODO: what is the purpose of the vararg? avoid function specialization?
         args::Vararg{Any,N},
     ) where {N}
         GC.@preserve args begin
             # Load in values from pointers.
             n, incx, incy = map(primal, (_n, _incx, _incy))
-            xinds = 1:incx:(incx * n)
-            yinds = 1:incy:(incy * n)
-            DX = view(unsafe_wrap(Vector{$elty}, primal(_DX), n * incx), xinds)
-            DY = view(unsafe_wrap(Vector{$elty}, primal(_DY), n * incy), yinds)
+            DX, _dDX = arrayify(_DX)
+            DY, _dDY = arrayify(_DY)
 
-            _dDX = view(unsafe_wrap(Vector{$elty}, tangent(_DX), n * incx), xinds)
-            _dDY = view(unsafe_wrap(Vector{$elty}, tangent(_DY), n * incy), yinds)
+            result = BLAS.$jlfname(n, DX, incx, DY, incy)
+            _dresult = BLAS.$jlfname(n, _dDX, incx, DY, incy) + BLAS.$jlfname(n, DX, incx, _dDY, incy)
 
-            return Dual(dot(DX, DY), dot(DX, _dDY) + dot(_dDX, DY))
+            # For complex numbers the result must be stored in the pointer
+            $(isreal ?
+                quote
+                    Dual(result, _dresult)
+                end :
+                quote
+                    presult, _dpresult = arrayify(_presult)
+                    Base.unsafe_store!(presult, result)
+                    Base.unsafe_store!(_dpresult, _dresult)
+
+                    nothing # TODO: what should we return?
+                end
+            )
         end
     end
     @eval @inline function rrule!!(
@@ -128,32 +151,76 @@ for (fname, elty) in ((:cblas_ddot, :Float64), (:cblas_sdot, :Float32))
         _incx::CoDual{BLAS.BlasInt},
         _DY::CoDual{Ptr{$elty}},
         _incy::CoDual{BLAS.BlasInt},
+        $((isreal ? () : ( :(_presult::CoDual{Ptr{$elty}}), ))...),
         args::Vararg{Any,N},
     ) where {N}
         GC.@preserve args begin
             # Load in values from pointers.
             n, incx, incy = map(primal, (_n, _incx, _incy))
+            DX, _dDX = arrayify(_DX)
+            DY, _dDY = arrayify(_DY)
+
             xinds = 1:incx:(incx * n)
             yinds = 1:incy:(incy * n)
-            DX = view(unsafe_wrap(Vector{$elty}, primal(_DX), n * incx), xinds)
-            DY = view(unsafe_wrap(Vector{$elty}, primal(_DY), n * incy), yinds)
+            DXview = view(unsafe_wrap(Vector{$elty}, DX, n * incx), xinds)
+            DYview = view(unsafe_wrap(Vector{$elty}, DY, n * incy), yinds)
 
-            _dDX = view(unsafe_wrap(Vector{$elty}, tangent(_DX), n * incx), xinds)
-            _dDY = view(unsafe_wrap(Vector{$elty}, tangent(_DY), n * incy), yinds)
+            _dDXview = view(unsafe_wrap(Vector{$elty}, _dDX, n * incx), xinds)
+            _dDYview = view(unsafe_wrap(Vector{$elty}, _dDY, n * incy), yinds)
 
-            out = dot(DX, DY)
+            # Run primal computation.
+            result = BLAS.$jlfname(DXview, DYview)
+
+            # For complex numbers the primal result must be stored in the pointer, and the dual must be zeroed
+            $(isreal ?
+                :() :
+                quote
+                    presult, _dpresult = arrayify(_presult)
+                    Base.unsafe_store!(presult, result)
+                    Base.unsafe_store!(_dpresult, zero($elty))
+
+                    result = nothing
+                end
+            )
         end
 
-        function ddot_pb!!(dv)
-            GC.@preserve args begin
-                _dDX .+= DY .* dv
-                _dDY .+= DX .* dv
+        $(
+            if jlfname == :dot
+                quote
+                    function dot_pb!!(dv)
+                        GC.@preserve args begin
+                            _dDXview .+= DYview .* dv
+                            _dDYview .+= DXview .* dv
+                        end
+                        return tuple_fill(NoRData(), Val(N + 11))
+                    end
+                end
+            elseif jlfname == :dotc
+                quote
+                    function dot_pb!!(::NoRData)
+                        GC.@preserve args begin
+                            dv = Base.unsafe_load(_dpresult)
+                            _dDXview .+= DYview .* dv'
+                            _dDYview .+= DXview .* dv
+                        end
+                        return tuple_fill(NoRData(), Val(N + 12))
+                    end
+                end
+            else
+                quote
+                    function dot_pb!!(::NoRData)
+                        GC.@preserve args begin
+                            dv = Base.unsafe_load(_dpresult)
+                            _dDXview .+= conj.(DYview) .* dv
+                            _dDYview .+= conj.(DXview) .* dv
+                        end
+                        return tuple_fill(NoRData(), Val(N + 12))
+                    end
+                end
             end
-            return tuple_fill(NoRData(), Val(N + 11))
-        end
+        )
 
-        # Run primal computation.
-        return zero_fcodual(out), ddot_pb!!
+        return CoDual(result, NoFData()), dot_pb!!
     end
 end
 
@@ -1341,6 +1408,15 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:blas})
                 (flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
                 (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
                 (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+            ]
+        end...,
+        map_prod([ComplexF32, ComplexF64], [BLAS.dotc, BLAS.dotu]) do (P, f)
+            flags = (false, :none, nothing)
+            Any[
+                (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
             ]
         end...,
 
