@@ -347,9 +347,24 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(BLAS.gemv!),Char,P,AbstractMatrix{P},AbstractVector{P},P,AbstractVector{P}
+        typeof(BLAS.gemv!),Char,P,AbstractVecOrMat{P},AbstractVector{P},P,AbstractVector{P}
     } where {P<:BlasFloat},
 )
+
+@inline function frule!!(
+    d::Dual{typeof(BLAS.gemv!)},
+    tA::Dual{Char},
+    alpha::Dual{P},
+    A_dA::Dual{<:AbstractVector{P}},
+    x_dx::Dual{<:AbstractVector{P}},
+    beta::Dual{P},
+    y_dy::Dual{<:AbstractVector{P}},
+) where {P<:BlasFloat}
+    Avec, dAvec = arrayify(A_dA)
+    return frule!!(
+        d, tA, alpha, Dual(reshape(Avec, :, 1), reshape(dAvec, :, 1)), x_dx, beta, y_dy
+    )
+end
 
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
@@ -383,6 +398,21 @@ end
     BLAS.gemv!(primal(tA), α, A, x, β, y)
 
     return y_dy
+end
+
+@inline function rrule!!(
+    _d::CoDual{typeof(BLAS.gemv!)},
+    _tA::CoDual{Char},
+    _alpha::CoDual{P},
+    _A::CoDual{<:AbstractVector{P}},
+    _x::CoDual{<:AbstractVector{P}},
+    _beta::CoDual{P},
+    _y::CoDual{<:AbstractVector{P}},
+) where {P<:BlasFloat}
+    Avec, dAvec = arrayify(_A)
+    return rrule!!(
+        _d, _tA, _alpha, CoDual(reshape(Avec, :, 1), reshape(dAvec, :, 1)), _x, _beta, _y
+    )
 end
 
 @inline function rrule!!(
