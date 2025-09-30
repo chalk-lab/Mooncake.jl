@@ -252,11 +252,13 @@ function benchmark_rules!!(test_case_data, default_ratios, include_other_framewo
                     _rand_similar(x) = x isa Real ? randn() : randn(size(x))
                     dup_args = map(x -> Duplicated(x, _rand_similar(x)), primals[2:end])
                     GC.gc(true)
-                    prim = if primals[1] isa Base.Fix1 && primals[1].x isa DynamicPPL.LogDensityFunction
-                        Const(primals[1])
-                    else
-                        primals[1]
-                    end
+                    prim =
+                        if primals[1] isa Base.Fix1 &&
+                            primals[1].x isa DynamicPPL.LogDensityFunction
+                            Const(primals[1])
+                        else
+                            primals[1]
+                        end
                     suite["enzyme"] = @be(
                         _,
                         _,
