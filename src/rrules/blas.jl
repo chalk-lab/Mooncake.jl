@@ -136,7 +136,6 @@ for (fname, jlfname, elty) in (
         _incy::Dual{BLAS.BlasInt},
         # For complex numbers the result is stored in an extra pointer
         $((isreal ? () : (:(_presult::Dual{Ptr{$elty}}),))...),
-        # TODO: what is the purpose of the vararg? avoid function specialization?
         args::Vararg{Any,N},
     ) where {N}
         GC.@preserve args begin
@@ -162,7 +161,7 @@ for (fname, jlfname, elty) in (
                         Base.unsafe_store!(presult, result)
                         Base.unsafe_store!(_dpresult, _dresult)
 
-                        nothing # TODO: what should we return?
+                        Dual(nothing, NoTangent())
                     end
                 end
             )
