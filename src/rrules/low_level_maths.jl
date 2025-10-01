@@ -1,110 +1,124 @@
-for (M, f, arity) in DiffRules.diffrules(; filter_modules=nothing)
-    if !(isdefined(@__MODULE__, M) && isdefined(getfield(@__MODULE__, M), f)) ||
-        M == :SpecialFunctions
-        # @warn "$M.$f is not available and hence rule for it can not be defined"
-        continue  # Skip rules for methods not defined in the current scope
-    end
-    (f == :rem2pi || f == :ldexp) && continue # not designed for Float64s
-    (f in [:+, :*, :sin, :cos, :exp, :-, :abs2, :inv, :abs, :/, :\, :^, :hypot]) && continue # use other functionality to implement these
-    if arity == 1
-        dx = DiffRules.diffrule(M, f, :x)
-        pb_name = Symbol("$(M).$(f)_pb!!")
-        @eval begin
-            @is_primitive MinimalCtx Tuple{typeof($M.$f),P} where {P<:IEEEFloat}
-            function frule!!(::Dual{typeof($M.$f)}, _x::Dual{P}) where {P<:IEEEFloat}
-                x = primal(_x)
-                return Dual(($M.$f)(x), tangent(_x) * $dx)
-            end
-            function rrule!!(::CoDual{typeof($M.$f)}, _x::CoDual{P}) where {P<:IEEEFloat}
-                x = primal(_x) # needed for dx expression
-                $pb_name(ȳ::P) = NoRData(), ȳ * $dx
-                return CoDual(($M.$f)(x), NoFData()), $pb_name
-            end
-        end
-    elseif arity == 2
-        da, db = DiffRules.diffrule(M, f, :a, :b)
-        pb_name = Symbol("$(M).$(f)_pb!!")
-        @eval begin
-            @is_primitive MinimalCtx Tuple{typeof($M.$f),P,P} where {P<:IEEEFloat}
-            function frule!!(
-                ::Dual{typeof($M.$f)}, _a::Dual{P}, _b::Dual{P}
-            ) where {P<:IEEEFloat}
-                a = primal(_a)
-                b = primal(_b)
-                return Dual(($M.$f)(a, b), tangent(_a) * $da + tangent(_b) * $db)
-            end
-            function rrule!!(
-                ::CoDual{typeof($M.$f)}, _a::CoDual{P}, _b::CoDual{P}
-            ) where {P<:IEEEFloat}
-                a = primal(_a)
-                b = primal(_b)
-                $pb_name(ȳ::P) = NoRData(), ȳ * $da, ȳ * $db
-                return CoDual(($M.$f)(a, b), NoFData()), $pb_name
-            end
-        end
-    end
-end
+# Historical Note:
+#
+# This file adds rules for all functions which DiffRules.jl defines rules for, and which
+# reside in Base. Originally, this file imported rules directly from DiffRules.jl.
+# Unfortunately, there were a number of issues with this:
+# 1. Package extensions: DiffRules.jl was written long before package extensions were added
+#   to Julia. As a result, a couple of packages are direct dependencies of DiffRules,
+#   notably SpecialFunctions.jl, which we do not wish to make indirect dependencies of
+#   Mooncake.jl. All in all, by removing DiffRules as a dependency, we also remove:
+#   DocStringExtensions, JLLWrappers, LogExpFunctions, NaNMath, OpenSpecFun_jll,
+#   OpenLibm_jll.
+# 2. Interaction with Revise.jl: most modern development workflows involve using Revise.jl.
+#   Unfortunately, putting `@eval` statements in a loop does not seem to play nicely with
+#   it, meaning that every time you want to tweak something in the loop, you have to restart
+#   your session. Such an `@eval` loop was needed for DiffRules.jl rules.
+# 3. Errors in the eval loop can cause spooky action-at-a-distance errors, which are hard to
+#   debug.
+# 4. Some of the rules in DiffRules are not implemented in an optimal manner, and it is
+#   unclear that they _could_ be implemented in an optimal manner. For example, the rules
+#   for `sin` and `cos` are unable to make use of the `sincos` function (which computes both
+#   `sin` and `cos` at the same time at negligible additional cost to computing either `sin`
+#   or `cos` by itself), and are therefore unable to provide optimal performance.
+# 5. Readability: while the @eval-loop code was concise, it was rather non-standard, and
+#   quite hard to parse.
+#
+# There were essentially no remaining advantages to using an @eval-loop to import rules
+# from DiffRules, so this file now imports them from ChainRules.jl.
 
-@is_primitive MinimalCtx Mode Tuple{typeof(sin),<:IEEEFloat}
-function frule!!(::Dual{typeof(sin)}, x::Dual{<:IEEEFloat})
-    s, c = sincos(primal(x))
-    return Dual(s, c * tangent(x))
-end
-function rrule!!(::CoDual{typeof(sin),NoFData}, x::CoDual{P,NoFData}) where {P<:IEEEFloat}
-    s, c = sincos(primal(x))
-    sin_pullback!!(dy::P) = NoRData(), dy * c
-    return CoDual(s, NoFData()), sin_pullback!!
-end
-
-@is_primitive MinimalCtx Mode Tuple{typeof(cos),<:IEEEFloat}
-function frule!!(::Dual{typeof(cos)}, x::Dual{<:IEEEFloat})
-    s, c = sincos(primal(x))
-    return Dual(c, -s * tangent(x))
-end
-function rrule!!(::CoDual{typeof(cos),NoFData}, x::CoDual{P,NoFData}) where {P<:IEEEFloat}
-    s, c = sincos(primal(x))
-    cos_pullback!!(dy::P) = NoRData(), -dy * s
-    return CoDual(c, NoFData()), cos_pullback!!
-end
-
-@is_primitive MinimalCtx Mode Tuple{typeof(exp),<:IEEEFloat}
-function frule!!(::Dual{typeof(exp)}, x::Dual{P}) where {P<:IEEEFloat}
-    y = exp(primal(x))
-    return Dual(y, y * tangent(x))
-end
-function rrule!!(::CoDual{typeof(exp)}, x::CoDual{P}) where {P<:IEEEFloat}
-    y = exp(primal(x))
-    exp_pb!!(dy::P) = NoRData(), dy * y
-    return zero_fcodual(y), exp_pb!!
-end
-
+@from_chainrules MinimalCtx Tuple{typeof(sqrt),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(cbrt),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(log),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(log10),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(log2),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(log1p),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(exp),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(exp2),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(exp10),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(expm1),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(sin),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(cos),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(tan),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(sec),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(csc),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(cot),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(sind),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(cosd),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(tand),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(secd),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(cscd),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(cotd),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(sinpi),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(asin),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(acos),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(atan),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(asec),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(acsc),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(acot),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(asind),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(acosd),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(atand),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(asecd),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(acscd),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(acotd),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(sinh),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(cosh),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(tanh),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(sech),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(csch),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(coth),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(asinh),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(acosh),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(atanh),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(asech),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(acsch),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(acoth),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(sinc),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(deg2rad),IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(rad2deg),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
-function frule!!(::Dual{typeof(^)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFloat}
-    t = (ChainRules.NoTangent(), tangent(x), tangent(y))
-    z, dz = ChainRules.frule(t, ^, primal(x), primal(y))
-    return Dual(z, dz)
+@from_chainrules MinimalCtx Tuple{typeof(atan),P,P} where {P<:IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(max),P,P} where {P<:IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(min),P,P} where {P<:IEEEFloat}
+
+@is_primitive MinimalCtx Tuple{typeof(mod2pi),IEEEFloat}
+function frule!!(::Dual{typeof(mod2pi)}, x::Dual{P}) where {P<:IEEEFloat}
+    t = ifelse(isinteger(primal(x) / P(2π)), P(NaN), one(P))
+    return Dual(mod2pi(primal(x)), tangent(x) * t)
+end
+function rrule!!(::CoDual{typeof(mod2pi)}, x::CoDual{P}) where {P<:IEEEFloat}
+    function mod2pi_adjoint(dy::P)
+        return NoRData(), dy * ifelse(isinteger(primal(x) / P(2π)), P(NaN), one(P))
+    end
+    return zero_fcodual(mod2pi(primal(x))), mod2pi_adjoint
 end
 
-@is_primitive MinimalCtx Tuple{typeof(Base.eps),<:IEEEFloat}
-function frule!!(::Dual{typeof(Base.eps)}, x::Dual{<:IEEEFloat})
-    return Dual(eps(primal(x)), zero(primal(x)))
+@is_primitive MinimalCtx Tuple{typeof(log),P,P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(log)}, b::Dual{P}, x::Dual{P}) where {P<:IEEEFloat}
+    _b, db = extract(b)
+    _x, dx = extract(x)
+    y = log(_b, _x)
+    log_b = log(_b)
+    return Dual(y, -db * y / (log_b * _b) + dx * (inv(_x) / log_b))
 end
-function rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P}) where {P<:IEEEFloat}
-    y = Base.eps(primal(x))
-    eps_pb!!(dy::P) = NoRData(), zero(y)
-    return zero_fcodual(y), eps_pb!!
+function rrule!!(::CoDual{typeof(log)}, b::CoDual{P}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = log(primal(b), primal(x))
+    function log_adjoint(dy::P)
+        log_b = log(primal(b))
+        return NoRData(), -dy * y / (log_b * primal(b)), dy / (primal(x) * log_b)
+    end
+    return zero_fcodual(y), log_adjoint
 end
 
-@is_primitive MinimalCtx Tuple{typeof(hypot),P,P} where {P<:IEEEFloat}
-function frule!!(::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFloat}
-    h = hypot(primal(x), primal(y))
-    dh = (primal(x) * tangent(x) + primal(y) * tangent(y)) / h
-    return Dual(h, dh)
+@is_primitive MinimalCtx Tuple{typeof(cospi),IEEEFloat}
+function frule!!(::Dual{typeof(cospi)}, x::Dual{P}) where {P<:IEEEFloat}
+    s, c = sincospi(primal(x))
+    return Dual(c, -tangent(x) * P(π) * s)
 end
-function rrule!!(::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P}) where {P<:IEEEFloat}
-    h = hypot(primal(x), primal(y))
-    hypot_pb!!(dh::P) = NoRData(), dh * (primal(x) / h), dh * (primal(y) / h)
-    return CoDual(h, NoFData()), hypot_pb!!
+function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
+    s, c = sincospi(primal(x))
+    cospi_adjoint(dy::P) = NoRData(), -dy * P(π) * s
+    return zero_fcodual(c), cospi_adjoint
 end
 
 @is_primitive MinimalCtx Tuple{typeof(hypot),P,P,Vararg{P}} where {P<:IEEEFloat}
@@ -123,65 +137,89 @@ function rrule!!(
         grads = map(a -> dh * (primal(a) / h), (x, y, xs...))
         return NoRData(), grads...
     end
-    return CoDual(h, NoFData()), hypot_pb!!
+    return zero_fcodual(h), hypot_pb!!
 end
 
-rand_inputs(rng, P::Type{<:IEEEFloat}, f, arity) = randn(rng, P, arity)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(acosh), _) = (rand(rng) + 1 + 1e-3,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(asech), _) = (rand(rng) * 0.9,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(log), _) = (rand(rng) + 1e-3,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(asin), _) = (rand(rng) * 0.9,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(asecd), _) = (rand(rng) + 1,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(log2), _) = (rand(rng) + 1e-3,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(log10), _) = (rand(rng) + 1e-3,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(acscd), _) = (rand(rng) + 1 + 1e-3,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(log1p), _) = (rand(rng) + 1e-3,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(acsc), _) = (rand(rng) + 1 + 1e-3,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(atanh), _) = (2 * 0.9 * rand(rng) - 0.9,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(acoth), _) = (rand(rng) + 1 + 1e-3,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(asind), _) = (0.9 * rand(rng),)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(asec), _) = (rand(rng) + 1.001,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(acosd), _) = (2 * 0.9 * rand(rng) - 0.9,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(acos), _) = (2 * 0.9 * rand(rng) - 0.9,)
-rand_inputs(rng, P::Type{<:IEEEFloat}, ::typeof(sqrt), _) = (rand(rng) + 1e-3,)
+@is_primitive MinimalCtx Tuple{typeof(Base.eps),<:IEEEFloat}
+function frule!!(::Dual{typeof(Base.eps)}, x::Dual{<:IEEEFloat})
+    return Dual(eps(primal(x)), zero(primal(x)))
+end
+function rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = Base.eps(primal(x))
+    eps_pb!!(dy::P) = NoRData(), zero(y)
+    return zero_fcodual(y), eps_pb!!
+end
 
 function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:low_level_maths})
-    rng = Xoshiro(123)
-    test_cases = Any[]
-    foreach(DiffRules.diffrules(; filter_modules=nothing)) do (M, f, arity)
-        if !(isdefined(@__MODULE__, M) && isdefined(getfield(@__MODULE__, M), f)) ||
-            M == :SpecialFunctions
-            return nothing  # Skip rules for methods not defined in the current scope
-        end
-        arity > 2 && return nothing
-        (f == :rem2pi || f == :ldexp || f == :(^)) && return nothing
-        (f in [:+, :*, :sin, :cos, :exp, :-, :abs2, :inv, :abs, :/, :\]) && return nothing # use other functionality to implement these
-        f = @eval $M.$f
-        push!(
-            test_cases,
-            (false, :stability, nothing, f, rand_inputs(rng, Float64, f, arity)...),
-        )
-        push!(
-            test_cases,
-            (false, :stability, nothing, f, rand_inputs(rng, Float32, f, arity)...),
-        )
-    end
-
-    # test cases for additional rules written in this file.
-    push!(test_cases, (false, :stability_and_allocs, nothing, sin, 1.1))
-    push!(test_cases, (false, :stability_and_allocs, nothing, sin, 1.0f1))
-    push!(test_cases, (false, :stability_and_allocs, nothing, cos, 1.1))
-    push!(test_cases, (false, :stability_and_allocs, nothing, cos, 1.0f1))
-    push!(test_cases, (false, :stability_and_allocs, nothing, exp, 1.1))
-    push!(test_cases, (false, :stability_and_allocs, nothing, exp, 1.0f1))
-    push!(test_cases, (false, :stability_and_allocs, nothing, ^, 4.0, 5.0))
-    push!(test_cases, (false, :stability_and_allocs, nothing, ^, 4.0f0, 5.0f0))
-    # push!(test_cases, (false, :stability_and_allocs, nothing, Base.eps, 4.0f0)) correctness tests fail as we compare against FDM, run manually to verify
-    push!(test_cases, (false, :stability_and_allocs, nothing, Base.eps, 5.0f0))
-    push!(test_cases, (false, :stability_and_allocs, nothing, hypot, 4.0, 5.0))
-    push!(test_cases, (false, :stability_and_allocs, nothing, hypot, 4.0f0, 5.0f0))
-    push!(test_cases, (false, :stability_and_allocs, nothing, hypot, 4.0, 5.0, 6.0))
-    push!(test_cases, (false, :stability_and_allocs, nothing, hypot, 4.0f0, 5.0f0, 6.0f0))
+    test_cases = vcat(
+        map([Float32, Float64]) do P
+            cases = [
+                (sqrt, P(0.5)),
+                (cbrt, P(0.4)),
+                (log, P(0.1)),
+                (log10, P(0.1)),
+                (log2, P(0.15)),
+                (log1p, P(0.95)),
+                (exp, P(1.1)),
+                (exp2, P(1.12)),
+                (exp10, P(0.55)),
+                (expm1, P(-0.3)),
+                (sin, P(1.1)),
+                (cos, P(1.1)),
+                (tan, P(0.5)),
+                (sec, P(-0.4)),
+                (csc, P(0.3)),
+                (cot, P(0.1)),
+                (sind, P(181.1)),
+                (cosd, P(-181.3)),
+                (tand, P(93.5)),
+                (secd, P(33.5)),
+                (cscd, P(-0.5)),
+                (cotd, P(5.1)),
+                (sinpi, P(13.2)),
+                (cospi, P(-33.2)),
+                (asin, P(0.77)),
+                (acos, P(0.53)),
+                (atan, P(0.77)),
+                (asec, P(2.55)),
+                (acsc, P(1.03)),
+                (acot, P(101.5)),
+                (asind, P(0.23)),
+                (acosd, P(0.55)),
+                (atand, P(1.45)),
+                (asecd, P(1.1)),
+                (acscd, P(1.33)),
+                (acotd, P(0.99)),
+                (sinh, P(-3.56)),
+                (cosh, P(3.4)),
+                (tanh, P(0.25)),
+                (sech, P(0.11)),
+                (csch, P(-0.77)),
+                (coth, P(0.22)),
+                (asinh, P(1.45)),
+                (acosh, P(1.56)),
+                (atanh, P(-0.44)),
+                (asech, P(0.75)),
+                (acsch, P(0.32)),
+                (acoth, P(1.05)),
+                (sinc, P(0.36)),
+                (deg2rad, P(185.4)),
+                (rad2deg, P(0.45)),
+                (mod2pi, P(0.1)),
+                (^, P(4.0), P(5.0)),
+                (atan, P(4.3), P(0.23)),
+                (hypot, P(4.0), P(5.0)),
+                (hypot, P(4.0), P(5.0), P(6.0)),
+                (log, P(2.3), P(3.76)),
+                (max, P(1.5), P(0.5)),
+                (max, P(0.45), P(1.1)),
+                (min, P(1.5), P(0.5)),
+                (min, P(0.45), P(1.1)),
+                (Base.eps, P(5.0)),
+            ]
+            return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
+        end...,
+    )
     memory = Any[]
     return test_cases, memory
 end

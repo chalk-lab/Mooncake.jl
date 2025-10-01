@@ -418,12 +418,10 @@ _**Reminder**_: the first element of the tuple returned by `dfoo_adjoint` is the
 
 # Testing
 
-Mooncake.jl has an almost entirely automated system for testing rules -- `Mooncake.TestUtils.test_rule`.
-You should absolutely make use of these when writing rules.
-
-TODO: improve docstring for testing functionality.
-
-
+Mooncake.jl has an almost entirely automated system for testing rules -- [`Mooncake.TestUtils.test_rule`](@ref).
+You should absolutely make use of these when writing rules. This function can test both forward and backward modes,
+or you can specify a single mode to test. `test_rule` will also optionally test the performance of your rules.
+See the docstring for `test_rule` for more information.
 
 # Summary
 
