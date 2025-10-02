@@ -26,12 +26,6 @@
 # There were essentially no remaining advantages to using an @eval-loop to import rules
 # from DiffRules, so this file now imports them from ChainRules.jl.
 
-@from_chainrules MinimalCtx Tuple{typeof(sqrt),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(cbrt),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(log),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(log10),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(log2),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(log1p),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(exp),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(exp2),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(exp10),IEEEFloat}
@@ -105,9 +99,91 @@ function rrule!!(::CoDual{typeof(log)}, b::CoDual{P}, x::CoDual{P}) where {P<:IE
     y = log(primal(b), primal(x))
     function log_adjoint(dy::P)
         log_b = log(primal(b))
-        return NoRData(), -dy * y / (log_b * primal(b)), dy / (primal(x) * log_b)
+        return NoRData(),
+        ifelse(iszero(primal(b)) || isnan(log_b), 0.0, -dy * y / (log_b * primal(b))),
+        ifelse(iszero(primal(x)) || isnan(log_b), 0.0, dy / (primal(x) * log_b))
     end
     return zero_fcodual(y), log_adjoint
+end
+
+@is_primitive MinimalCtx Tuple{typeof(log),P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(log)}, x::Dual{P}) where {P<:IEEEFloat}
+    _x, dx = extract(x)
+    y = log(_x)
+    return Dual(y, dx / _x)
+end
+function rrule!!(::CoDual{typeof(log)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = log(primal(x))
+    function log_adjoint(dy::P)
+        return NoRData(), ifelse(iszero(primal(x)), 0.0, dy / primal(x))
+    end
+    return zero_fcodual(y), log_adjoint
+end
+
+@is_primitive MinimalCtx Tuple{typeof(sqrt),IEEEFloat}
+function frule!!(::Dual{typeof(sqrt)}, x::Dual{P}) where {P<:IEEEFloat}
+    _x, dx = extract(x)
+    return Dual(sqrt(_x), dx / (2 * sqrt(_x)))
+end
+function rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = sqrt(primal(x))
+    function sqrt_adjoint(dy::P)
+        return NoRData(), ifelse(iszero(primal(x)), 0.0, dy / (2 * y))
+    end
+    return zero_fcodual(y), sqrt_adjoint
+end
+
+@is_primitive MinimalCtx Tuple{typeof(cbrt),IEEEFloat}
+function frule!!(::Dual{typeof(cbrt)}, x::Dual{P}) where {P<:IEEEFloat}
+    _x, dx = extract(x)
+    y = cbrt(_x)
+    return Dual(y, dx / (3 * y^2))
+end
+function rrule!!(::CoDual{typeof(cbrt)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = cbrt(primal(x))
+    function cbrt_adjoint(dy::P)
+        return NoRData(), ifelse(iszero(y), 0.0, dy / (3 * y^2))
+    end
+    return zero_fcodual(y), cbrt_adjoint
+end
+
+@is_primitive MinimalCtx Tuple{typeof(log10),P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(log10)}, x::Dual{P}) where {P<:IEEEFloat}
+    _x, dx = extract(x)
+    return Dual(log10(_x), dx / (_x * log(10)))
+end
+function rrule!!(::CoDual{typeof(log10)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = log10(primal(x))
+    function log10_adjoint(dy::P)
+        return NoRData(), ifelse(iszero(primal(x)), 0.0, dy / (primal(x) * log(10)))
+    end
+    return zero_fcodual(y), log10_adjoint
+end
+
+@is_primitive MinimalCtx Tuple{typeof(log2),P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(log2)}, x::Dual{P}) where {P<:IEEEFloat}
+    _x, dx = extract(x)
+    return Dual(log2(_x), dx / (_x * log(2)))
+end
+function rrule!!(::CoDual{typeof(log2)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = log2(primal(x))
+    function log2_adjoint(dy::P)
+        return NoRData(), ifelse(iszero(primal(x)), 0.0, dy / (primal(x) * log(2)))
+    end
+    return zero_fcodual(y), log2_adjoint
+end
+
+@is_primitive MinimalCtx Tuple{typeof(log1p),P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(log1p)}, x::Dual{P}) where {P<:IEEEFloat}
+    _x, dx = extract(x)
+    return Dual(log1p(_x), dx / (1 + _x))
+end
+function rrule!!(::CoDual{typeof(log1p)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = log1p(primal(x))
+    function log1p_adjoint(dy::P)
+        return NoRData(), ifelse(iszero(1 + primal(x)), 0.0, dy / (1 + primal(x)))
+    end
+    return zero_fcodual(y), log1p_adjoint
 end
 
 @is_primitive MinimalCtx Tuple{typeof(cospi),IEEEFloat}
@@ -134,7 +210,7 @@ function rrule!!(
 ) where {P<:IEEEFloat,N}
     h = hypot(primal(x), primal(y), map(primal, xs)...)
     function hypot_pb!!(dh::P)
-        grads = map(a -> dh * (primal(a) / h), (x, y, xs...))
+        grads = map(a -> ifelse(iszero(h), 0.0, dh * (primal(a) / h)), (x, y, xs...))
         return NoRData(), grads...
     end
     return zero_fcodual(h), hypot_pb!!
