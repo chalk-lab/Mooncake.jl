@@ -571,7 +571,7 @@ end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x)
     _x = primal(x)
     _y = sqrt_llvm(primal(x))
-    llvm_sqrt_pullback!!(dy) = NoRData(), dy / (2 * _y)
+    llvm_sqrt_pullback!!(dy) = NoRData(), ifelse(iszero(_y), 0.0, dy / (2 * _y))
     return CoDual(_y, NoFData()), llvm_sqrt_pullback!!
 end
 
@@ -583,7 +583,7 @@ function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x)
     _y = sqrt_llvm_fast(primal(x))
-    llvm_sqrt_fast_pullback!!(dy) = NoRData(), dy / (2 * _y)
+    llvm_sqrt_fast_pullback!!(dy) = NoRData(), ifelse(iszero(_y), 0.0, dy / (2 * _y))
     return CoDual(_y, NoFData()), llvm_sqrt_fast_pullback!!
 end
 
@@ -1250,6 +1250,7 @@ end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     test_cases = Any[
+        (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, [5.0, 4.0]),
