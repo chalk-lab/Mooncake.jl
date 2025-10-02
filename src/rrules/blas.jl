@@ -352,7 +352,7 @@ end
 )
 
 @inline function frule!!(
-    d::Dual{typeof(BLAS.gemv!)},
+    ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
     alpha::Dual{P},
     A_dA::Dual{<:AbstractVector{P}},
@@ -360,10 +360,17 @@ end
     beta::Dual{P},
     y_dy::Dual{<:AbstractVector{P}},
 ) where {P<:BlasFloat}
-    Avec, dAvec = arrayify(A_dA)
-    return frule!!(
-        d, tA, alpha, Dual(reshape(Avec, :, 1), reshape(dAvec, :, 1)), x_dx, beta, y_dy
+    A, dA = arrayify(A_dA)
+    x, dx = arrayify(x_dx)
+    y, dy = arrayify(y_dy)
+    α, dα = numberify(alpha)
+    β, dβ = numberify(beta)
+
+    _gemv!_frule_core!(
+        primal(tA), α, dα, reshape(A, :, 1), reshape(dA, :, 1), x, dx, β, dβ, y, dy
     )
+
+    return y_dy
 end
 
 @inline function frule!!(
@@ -381,10 +388,28 @@ end
     α, dα = numberify(alpha)
     β, dβ = numberify(beta)
 
+    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
+
+    return y_dy
+end
+
+@inline function _gemv!_frule_core!(
+    tA::Char,
+    α::P,
+    dα::P,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    x::AbstractVector{P},
+    dx::AbstractVector{P},
+    β::P,
+    dβ::P,
+    y::AbstractVector{P},
+    dy::AbstractVector{P},
+) where {P<:BlasFloat}
     # Derivative computation.
-    BLAS.gemv!(primal(tA), dα, A, x, β, dy)
-    BLAS.gemv!(primal(tA), α, dA, x, one(P), dy)
-    BLAS.gemv!(primal(tA), α, A, dx, one(P), dy)
+    BLAS.gemv!(tA, dα, A, x, β, dy)
+    BLAS.gemv!(tA, α, dA, x, one(P), dy)
+    BLAS.gemv!(tA, α, A, dx, one(P), dy)
 
     # Strong zero is essential here, in case `y` has undefined element values.
     if !iszero(dβ)
@@ -395,13 +420,12 @@ end
     end
 
     # Primal computation.
-    BLAS.gemv!(primal(tA), α, A, x, β, y)
-
-    return y_dy
+    BLAS.gemv!(tA, α, A, x, β, y)
+    return nothing
 end
 
 @inline function rrule!!(
-    _d::CoDual{typeof(BLAS.gemv!)},
+    ::CoDual{typeof(BLAS.gemv!)},
     _tA::CoDual{Char},
     _alpha::CoDual{P},
     _A::CoDual{<:AbstractVector{P}},
@@ -409,10 +433,20 @@ end
     _beta::CoDual{P},
     _y::CoDual{<:AbstractVector{P}},
 ) where {P<:BlasFloat}
-    Avec, dAvec = arrayify(_A)
-    return rrule!!(
-        _d, _tA, _alpha, CoDual(reshape(Avec, :, 1), reshape(dAvec, :, 1)), _x, _beta, _y
+
+    # Pull out primals and tangents (the latter only where necessary).
+    trans = _tA.x
+    alpha = _alpha.x
+    A, dA = arrayify(_A)
+    x, dx = arrayify(_x)
+    beta = _beta.x
+    y, dy = arrayify(_y)
+
+    pb = _gemv!_rrule_core!(
+        trans, alpha, reshape(A, :, 1), reshape(dA, :, 1), x, dx, beta, y, dy
     )
+
+    return _y, pb
 end
 
 @inline function rrule!!(
@@ -432,6 +466,23 @@ end
     x, dx = arrayify(_x)
     beta = _beta.x
     y, dy = arrayify(_y)
+
+    pb = _gemv!_rrule_core!(trans, alpha, A, dA, x, dx, beta, y, dy)
+
+    return _y, pb
+end
+
+@inline function _gemv!_rrule_core!(
+    trans::Char,
+    alpha::P,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    x::AbstractVector{P},
+    dx::AbstractVector{P},
+    beta::P,
+    y::AbstractVector{P},
+    dy::AbstractVector{P},
+) where {P<:BlasFloat}
 
     # Take copies before adding.
     y_copy = copy(y)
@@ -477,7 +528,7 @@ end
         )
     end
 
-    return _y, gemv!_pb!!
+    return gemv!_pb!!
 end
 
 @is_primitive(
