@@ -1251,7 +1251,6 @@ end
 function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     test_cases = Any[
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
-        (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, [5.0, 4.0]),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, [5.0], (4.0,)),
