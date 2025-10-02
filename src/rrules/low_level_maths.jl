@@ -123,7 +123,8 @@ end
 @is_primitive MinimalCtx Tuple{typeof(sqrt),IEEEFloat}
 function frule!!(::Dual{typeof(sqrt)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
-    return Dual(sqrt(_x), dx / (2 * sqrt(_x)))
+    y = sqrt(_x)
+    return Dual(y, dx / (2 * y))
 end
 function rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = sqrt(primal(x))
