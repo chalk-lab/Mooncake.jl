@@ -1,7 +1,6 @@
 foo_throws(e) = throw(e)
 
 @testset "builtins" begin
-
     @test_throws(
         ErrorException,
         Mooncake.rrule!!(CoDual(IntrinsicsWrappers.add_ptr, NoTangent()), 5.0, 4.0),
