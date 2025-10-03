@@ -100,7 +100,7 @@ Function which replaces instances of `:splatnew`.
 """
 _splat_new_(::Type{P}, x::Tuple) where {P} = _new_(P, x...)
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:new})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
 
     # Specialised test cases for _new_.
     specific_test_cases = Any[
@@ -208,8 +208,4 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:new})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:new})
-    test_cases = Any[]
-    memory = Any[]
-    return test_cases, memory
-end
+derived_rule_test_cases(rng_ctor, ::Val{:new}) = Any[], Any[]
