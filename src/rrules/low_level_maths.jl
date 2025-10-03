@@ -198,16 +198,18 @@ function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(c), cospi_adjoint
 end
 
-@is_primitive MinimalCtx Tuple{typeof(hypot),P,P} where {P<:IEEEFloat}
-function frule!!(::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFloat}
-    h = hypot(primal(x), primal(y))
-    dh = sum(primal(a) * tangent(a) for a in (x, y)) / h
+@is_primitive MinimalCtx Tuple{typeof(hypot),Vararg{P}} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(hypot)}, xs::Vararg{Dual{P},N}) where {P<:IEEEFloat,N}
+    ps = map(primal, xs)
+    h = hypot(ps...)
+    dh = sum(primal(a) * tangent(a) for a in xs) / h
     return Dual(h, dh)
 end
-function rrule!!(::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P}) where {P<:IEEEFloat}
-    h = hypot(primal(x), primal(y))
+function rrule!!(::CoDual{typeof(hypot)}, xs::Vararg{CoDual{P},N}) where {P<:IEEEFloat,N}
+    ps = map(primal, xs)
+    h = hypot(ps...)
     function hypot_pb!!(dh::P)
-        grads = map(a -> ifelse(iszero(h), P(0), dh * (primal(a) / h)), (x, y))
+        grads = map(a -> ifelse(iszero(h), P(0), dh * (primal(a) / h)), xs)
         return NoRData(), grads...
     end
     return zero_fcodual(h), hypot_pb!!
