@@ -151,12 +151,12 @@ end
 @is_primitive MinimalCtx Tuple{typeof(log10),P} where {P<:IEEEFloat}
 function frule!!(::Dual{typeof(log10)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
-    return Dual(log10(_x), dx / (_x * log(10)))
+    return Dual(log10(_x), dx / (_x * log(P(10))))
 end
 function rrule!!(::CoDual{typeof(log10)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log10(primal(x))
     function log10_adjoint(dy::P)
-        return NoRData(), ifelse(iszero(primal(x)), P(0), dy / (primal(x) * log(10)))
+        return NoRData(), ifelse(iszero(primal(x)), P(0), dy / (primal(x) * log(P(10))))
     end
     return zero_fcodual(y), log10_adjoint
 end
@@ -164,12 +164,12 @@ end
 @is_primitive MinimalCtx Tuple{typeof(log2),P} where {P<:IEEEFloat}
 function frule!!(::Dual{typeof(log2)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
-    return Dual(log2(_x), dx / (_x * log(2)))
+    return Dual(log2(_x), dx / (_x * log(P(2))))
 end
 function rrule!!(::CoDual{typeof(log2)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log2(primal(x))
     function log2_adjoint(dy::P)
-        return NoRData(), ifelse(iszero(primal(x)), P(0), dy / (primal(x) * log(2)))
+        return NoRData(), ifelse(iszero(primal(x)), P(0), dy / (primal(x) * log(P(2))))
     end
     return zero_fcodual(y), log2_adjoint
 end
@@ -198,20 +198,16 @@ function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(c), cospi_adjoint
 end
 
-@is_primitive MinimalCtx Tuple{typeof(hypot),P,P,Vararg{P}} where {P<:IEEEFloat}
-function frule!!(
-    ::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P}, xs::Vararg{Dual{P},N}
-) where {P<:IEEEFloat,N}
-    h = hypot(primal(x), primal(y), map(primal, xs)...)
-    dh = sum(primal(a) * tangent(a) for a in (x, y, xs...)) / h
+@is_primitive MinimalCtx Tuple{typeof(hypot),P,P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFloat}
+    h = hypot(primal(x), primal(y))
+    dh = sum(primal(a) * tangent(a) for a in (x, y)) / h
     return Dual(h, dh)
 end
-function rrule!!(
-    ::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P}, xs::Vararg{CoDual{P},N}
-) where {P<:IEEEFloat,N}
-    h = hypot(primal(x), primal(y), map(primal, xs)...)
+function rrule!!(::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P}) where {P<:IEEEFloat}
+    h = hypot(primal(x), primal(y))
     function hypot_pb!!(dh::P)
-        grads = map(a -> ifelse(iszero(h), 0.0, dh * (primal(a) / h)), (x, y, xs...))
+        grads = map(a -> ifelse(iszero(h), P(0), dh * (primal(a) / h)), (x, y))
         return NoRData(), grads...
     end
     return zero_fcodual(h), hypot_pb!!
