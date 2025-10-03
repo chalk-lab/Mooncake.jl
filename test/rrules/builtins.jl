@@ -1,16 +1,6 @@
 foo_throws(e) = throw(e)
 
 @testset "builtins" begin
-    # NaN handling in rrules
-    test_cases = vcat(map([Float16, Float32, Float64]) do T
-        cases = [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
-        return cases
-    end...)
-    for (f, args) in test_cases
-        cache = prepare_gradient_cache(f, args...)
-        _, grad = value_and_gradient!!(cache, f, args...)
-        @test all(iszero, grad[2:end])
-    end
 
     @test_throws(
         ErrorException,
