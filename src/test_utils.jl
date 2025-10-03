@@ -608,6 +608,83 @@ function test_rrule_correctness(
     @test any(isapprox_results)
 end
 
+# Test the reverse rule using FD, then, if that succeeds
+# test the forwrad rule using the reverse result, *not*
+# finite differences -- this protects against errors from
+# generating FD results in a random, incorrect gauge for
+# matrix factorizations, for example
+function test_both_rrule_frule_correctness(
+    rng::AbstractRNG,
+    x_x̄...;
+    rrule,
+    frule,
+    unsafe_perturb::Bool,
+    output_tangent=nothing,
+    rtol=1e-3,
+    atol=1e-3,
+)
+    # test reverse rule first, we will recapitulate some work this way
+    # but it's much less duplicated code
+    test_rrule_correctness(rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol)
+
+    # now we are certain the reverse rule works -- use it to compute
+    # the tangents to compare with, rather than finite differences
+    @nospecialize rng x_x̄
+
+    x_x̄ = map(_deepcopy, x_x̄) # defensive copy
+
+    # Run original function on deep-copies of inputs.
+    x = map(primal, x_x̄)
+    x̄ = map(tangent, x_x̄)
+
+    # Run primal, and ensure that we still have access to mutated inputs afterwards.
+    x_primal = _deepcopy(x)
+    y_primal = x_primal[1](x_primal[2:end]...)
+
+    # Construct tangent to inputs, and normalise to be of unit length.
+    ẋ_unnormalised = map(_x -> randn_tangent(rng, _x), x)
+    nrm = sqrt(sum(x -> _dot(x, x), ẋ_unnormalised))
+    ẋ = map(_x -> _scale(1 / nrm, _x), ẋ_unnormalised)
+
+    # Run rule on copies of `f` and `x`. We use randomly generated tangents so that we
+    # can later verify that non-zero values do not get propagated by the rule.
+    x̄_zero = map(zero_tangent, x)
+    x̄_fwds = map(Mooncake.fdata, x̄_zero)
+    x_x̄_rule = map((x, x̄_f) -> fcodual_type(_typeof(x))(_deepcopy(x), x̄_f), x, x̄_fwds)
+    inputs_address_map = populate_address_map(
+        map(primal, x_x̄_rule), map(tangent, x_x̄_rule)
+    )
+    y_ȳ_rule, pb!! = rrule(x_x̄_rule...)
+
+    # Run reverse-pass.
+    ȳ_delta =
+        isnothing(output_tangent) ? randn_tangent(rng, primal(y_ȳ_rule)) : output_tangent
+    x̄_delta = map(Base.Fix1(randn_tangent, rng) ∘ primal, x_x̄_rule)
+
+    ȳ_init = set_to_zero!!(zero_tangent(primal(y_ȳ_rule), tangent(y_ȳ_rule)))
+    x̄_init = map(set_to_zero!!, x̄_zero)
+    ȳ = increment!!(ȳ_init, ȳ_delta)
+    map(increment!!, x̄_init, x̄_delta)
+    x̄_rvs_inc = pb!!(Mooncake.rdata(ȳ))
+    x̄_rvs = increment!!(map(rdata, x̄_delta), x̄_rvs_inc)
+    x̄ = map(tangent, x̄_fwds, x̄_rvs)
+
+    # Now run the forwards-pass
+    x_ẋ_rule = map((x, x̄) -> dual_type(_typeof(x))(_deepcopy(x), x̄), x, x̄)
+    y_ẏ_rule = frule(x_ẋ_rule...)
+    ẋ_ad_fwd = map(tangent, x_ẋ_rule)
+
+    ẋ_orig   = map(tangent, x_x̄_rule)
+    ẋ_orig   = map(xt -> isa(xt, Mooncake.NoFData) ? Mooncake.NoTangent() : xt, ẋ_orig)
+    ẏ_orig   = ȳ_delta
+
+    x_ad_dot   = _dot(x̄, ẋ_ad_fwd)
+    x_orig_dot = _dot(x̄, ẋ_orig)
+    ẏ_ad_fwd   = tangent(y_ẏ_rule)
+    @test isapprox(x_ad_dot, x_orig_dot; rtol=rtol, atol=atol)
+    @test isapprox(_dot(ȳ_delta, ẏ_ad_fwd), _dot(ȳ_delta, ȳ_delta); rtol=rtol, atol=atol)
+end
+
 get_address(x) = ismutable(x) ? pointer_from_objref(x) : nothing
 
 _deepcopy(x) = deepcopy(x)
@@ -834,6 +911,7 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
         debug_mode::Bool=false,
         unsafe_perturb::Bool=false,
+        test_fwd_from_rvs=false,
         print_results=true,
         output_tangent=nothing,
         atol=1e-3,
@@ -887,6 +965,9 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
 - `unsafe_perturb::Bool=false`: value passed as the third argument to `_add_to_primal`.
     Should usually be left `false` -- consult the docstring for `_add_to_primal` for more
     info on when you might wish to set it to `true`.
+- `test_fwd_from_rvs=false`: rather than testing the forwards rule using finite differences,
+    test the reverse rule first, then run the forwards rule on the output. This protects
+    against a forwards pass mapping to some arbitrary gauge for matrix transformations.
 - `output_tangent=nothing`: final output tangent to initialize reverse mode with for testing
     the correctnes of reverse rules.
 - `atol=1e-3`: absolute tolerance for correctness check of the Frechet derivatives.
@@ -901,6 +982,7 @@ function test_rule(
     mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
     debug_mode::Bool=false,
     unsafe_perturb::Bool=false,
+    test_fwd_from_rvs=false,
     print_results=true,
     output_tangent=nothing,
     atol=1e-3,
@@ -944,12 +1026,38 @@ function test_rule(
 
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
-                if test_fwd && !interface_only
-                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
-                end
-                if test_rvs && !interface_only
-                    test_rrule_correctness(
-                        rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
+                if !test_fwd_from_rvs
+                    if test_fwd && !interface_only
+                        test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
+                    end
+                    if test_rvs && !interface_only
+                        test_rrule_correctness(
+                            rng,
+                            x_x̄...;
+                            rrule,
+                            unsafe_perturb,
+                            output_tangent,
+                            atol,
+                            rtol,
+                        )
+                    end
+                elseif test_fwd_from_rvs && test_rvs && test_fwd && !interface_only
+                    test_both_rrule_frule_correctness(
+                        rng,
+                        x_x̄...;
+                        rrule,
+                        frule,
+                        unsafe_perturb,
+                        output_tangent,
+                        atol,
+                        rtol,
+                    )
+
+                else
+                    throw(
+                        ArgumentError(
+                            "test_fwd_from_rvs is only valid if testing both forward and reverse modes",
+                        ),
                     )
                 end
             end
