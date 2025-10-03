@@ -943,7 +943,7 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(typeof),Any}
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     _x = Ref(5.0) # data used in tests which aren't protected by GC.
     _dx = Ref(4.0)
     _a = Vector{Vector{Float64}}(undef, 3)
@@ -1248,7 +1248,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
+function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     test_cases = Any[
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),

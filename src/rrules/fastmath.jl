@@ -52,7 +52,7 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base.log),Union{IEEEFloat,Int}}
 @zero_derivative MinimalCtx Tuple{typeof(log),Int}
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:fastmath})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:fastmath})
     test_cases = reduce(
         vcat,
         map([Float64, Float32]) do P
@@ -70,7 +70,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:fastmath})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:fastmath})
+function derived_rule_test_cases(rng_ctor, ::Val{:fastmath})
     test_cases = reduce(
         vcat,
         map([Float64, Float32]) do P
