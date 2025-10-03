@@ -199,13 +199,13 @@ function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
 end
 
 @is_primitive MinimalCtx Tuple{typeof(hypot),Vararg{P}} where {P<:IEEEFloat}
-function frule!!(::Dual{typeof(hypot)}, xs::Vararg{Dual{P},N}) where {P<:IEEEFloat,N}
+function frule!!(::Dual{typeof(hypot)}, xs::Vararg{Dual{P}}) where {P<:IEEEFloat}
     ps = map(primal, xs)
     h = hypot(ps...)
     dh = sum(primal(a) * tangent(a) for a in xs) / h
     return Dual(h, dh)
 end
-function rrule!!(::CoDual{typeof(hypot)}, xs::Vararg{CoDual{P},N}) where {P<:IEEEFloat,N}
+function rrule!!(::CoDual{typeof(hypot)}, xs::Vararg{CoDual{P}}) where {P<:IEEEFloat}
     ps = map(primal, xs)
     h = hypot(ps...)
     function hypot_pb!!(dh::P)
