@@ -87,7 +87,7 @@ interfaces that this package defines have been implemented correctly.
 """
 module TestUtils
 
-using Random, Mooncake, Test, InteractiveUtils
+using Random, Mooncake, Test
 using Mooncake:
     CoDual,
     NoTangent,
@@ -431,7 +431,9 @@ function address_maps_are_consistent(x::AddressMap, y::AddressMap)
 end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
-function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_perturb::Bool)
+function test_frule_correctness(
+    rng::AbstractRNG, x_ẋ...; frule, unsafe_perturb::Bool, rtol=1e-3, atol=1e-3
+)
     @nospecialize rng x_ẋ
 
     x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
@@ -490,8 +492,8 @@ function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_pertur
         return isapprox(
             _dot(ȳ, ẏ_fd) + _dot(x̄, ẋ_fd),
             _dot(ȳ, ẏ_ad) + _dot(x̄, ẋ_ad);
-            rtol=1e-3,
-            atol=1e-3,
+            rtol=rtol,
+            atol=atol,
         )
     end
     if !any(isapprox_results)
@@ -506,7 +508,13 @@ end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_rrule_correctness(
-    rng::AbstractRNG, x_x̄...; rrule, unsafe_perturb::Bool, output_tangent=nothing
+    rng::AbstractRNG,
+    x_x̄...;
+    rrule,
+    unsafe_perturb::Bool,
+    output_tangent=nothing,
+    rtol=1e-3,
+    atol=1e-3,
 )
     @nospecialize rng x_x̄
 
@@ -585,8 +593,8 @@ function test_rrule_correctness(
         return isapprox(
             _dot(ȳ_delta, ẏ) + _dot(x̄_delta, ẋ_post),
             _dot(x̄, ẋ);
-            rtol=1e-3,
-            atol=1e-3,
+            rtol=rtol,
+            atol=atol,
         )
     end
     if !any(isapprox_results)
@@ -827,6 +835,9 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         debug_mode::Bool=false,
         unsafe_perturb::Bool=false,
         print_results=true,
+        output_tangent=nothing,
+        atol=1e-3,
+        rtol=1e-3
     )
 
 Run standardised tests on the `rule` for `x`.
@@ -878,6 +889,8 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     info on when you might wish to set it to `true`.
 - `output_tangent=nothing`: final output tangent to initialize reverse mode with for testing
     the correctnes of reverse rules.
+- `atol=1e-3`: absolute tolerance for correctness check of the Frechet derivatives.
+- `rtol=1e-3`: relative tolerance for correctness check of the Frechet derivatives.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -890,6 +903,8 @@ function test_rule(
     unsafe_perturb::Bool=false,
     print_results=true,
     output_tangent=nothing,
+    atol=1e-3,
+    rtol=1e-3,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -930,10 +945,12 @@ function test_rule(
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
                 if test_fwd && !interface_only
-                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb)
+                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
                 end
                 if test_rvs && !interface_only
-                    test_rrule_correctness(rng, x_x̄...; rrule, unsafe_perturb, output_tangent)
+                    test_rrule_correctness(
+                        rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
+                    )
                 end
             end
 
