@@ -568,7 +568,7 @@ function frule!!(::Dual{typeof(sqrt_llvm)}, x)
     dy = tangent(x) / (2 * y)
     return Dual(y, dy)
 end
-function rrule!!(::CoDual{typeof(sqrt_llvm)}, x)
+function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _x = primal(x)
     _y = sqrt_llvm(primal(x))
     llvm_sqrt_pullback!!(dy) = NoRData(), ifelse(iszero(_y), P(0), dy / (2 * _y))
@@ -581,7 +581,7 @@ function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
     dy = tangent(x) / (2 * y)
     return Dual(y, dy)
 end
-function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x)
+function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
     llvm_sqrt_fast_pullback!!(dy) = NoRData(), ifelse(iszero(_y), P(0), dy / (2 * _y))
     return CoDual(_y, NoFData()), llvm_sqrt_fast_pullback!!
