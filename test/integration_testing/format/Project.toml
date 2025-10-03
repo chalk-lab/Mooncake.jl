@@ -1,0 +1,7 @@
+[deps]
+JuliaFormatter = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+JuliaFormatter = "2"
+Test = "1"

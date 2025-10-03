@@ -15,7 +15,7 @@ sr(x) = StableRNG(x)
         (
             true,
             MultiHeadAttention(4; attention_dropout_probability=0.1f0),
-            randn(sr(1), P, 4, 4),
+            randn(sr(1), P, 4, 4, 1),
         ),
         # tests for https://github.com/chalk-lab/Mooncake.jl/issues/622
         (

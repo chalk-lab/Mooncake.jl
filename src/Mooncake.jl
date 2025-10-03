@@ -2,8 +2,7 @@ module Mooncake
 
 const CC = Core.Compiler
 
-using ADTypes,
-    ChainRules, DiffRules, ExprTools, InteractiveUtils, LinearAlgebra, MistyClosures, Random
+using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, Random
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
@@ -18,7 +17,6 @@ using Base:
     arrayset,
     TwicePrecision,
     twiceprecision
-using Base.Experimental: @opaque
 using Base.Iterators: product
 using Base.Meta: isexpr
 using Core:
@@ -41,7 +39,6 @@ using Core.Compiler: IRCode, NewInstruction
 using Core.Intrinsics: pointerref, pointerset
 using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
-using FunctionWrappers: FunctionWrapper
 using DispatchDoctor: @stable, @unstable
 
 # Needs to be defined before various other things.
@@ -137,7 +134,6 @@ include(joinpath("rrules", "builtins.jl"))
 include(joinpath("rrules", "dispatch_doctor.jl"))
 include(joinpath("rrules", "fastmath.jl"))
 include(joinpath("rrules", "foreigncall.jl"))
-include(joinpath("rrules", "function_wrappers.jl"))
 include(joinpath("rrules", "iddict.jl"))
 include(joinpath("rrules", "lapack.jl"))
 include(joinpath("rrules", "linear_algebra.jl"))

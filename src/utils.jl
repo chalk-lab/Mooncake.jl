@@ -418,3 +418,39 @@ function _copytrito!(B::AbstractMatrix, A::AbstractMatrix, uplo::AbstractChar)
     end
     return B
 end
+
+"""
+    _copy(x)
+
+!!! warning
+    This is an internal utility, not part of the public `Mooncake.jl` API, and may change
+    without notice. Its behaviour can vary across data types, so the description below
+    should be treated as guidance, not a strict contract.
+
+Utility for copying AD-related data structures (e.g. rules, caches, and other internals).
+
+# Examples of current behaviour
+
+Currently, `_copy` has the following behaviours for specific types:
+
+- `CoDual`, `Dual` types → no copying needed  
+- `Stack` types → create a new empty instance  
+- Composite types (e.g. `Tuple`, `NamedTuple`) → recursively copy elements  
+- Misty closure → construct a new Misty closure with deep copy of captured data  
+- Tangent types (`PossiblyUninitTangent`) → copy conditionally based on initialisation state  
+- Forward/reverse data types (e.g. `FData`, `RData`, `LazyZeroRData`) → recursively copy wrapped data  
+- `RRuleZeroWrapper` → recursively copy the wrapped rule into a new instance
+- `DerivedRule` → construct new instances with copied captures and caches  
+- `LazyFRule`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode  
+- `DynamicFRule`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
+"""
+
+# Generic fallback to Base.copy
+_copy(x) = copy(x)
+
+_copy(::Nothing) = nothing
+_copy(x::Symbol) = x
+_copy(x::Tuple) = map(_copy, x)
+_copy(x::NamedTuple) = map(_copy, x)
+_copy(x::Ref{T}) where {T} = isassigned(x) ? Ref{T}(_copy(x[])) : Ref{T}()
+_copy(x::Type) = x

@@ -16,7 +16,7 @@ using Static: True
 )
 @from_rrule(
     DefaultCtx,
-    Tuple{typeof(Impl.batched_matmul),Array{P,3},Array{P,3}} where {P<:IEEEFloat},
+    Tuple{typeof(Impl.batched_matmul_fallback),Array{P,3},Array{P,3}} where {P<:IEEEFloat},
 )
 
 ## For mooncake we are missing some rules. For now use the basic versions of the kernels

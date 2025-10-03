@@ -20,6 +20,7 @@ struct PossiblyUninitTangent{T}
     PossiblyUninitTangent{T}() where {T} = new{T}()
 end
 
+# Copy only if initialized, otherwise create new uninitialized instance
 _copy(x::P) where {P<:PossiblyUninitTangent} = is_init(x) ? P(_copy(x.tangent)) : P()
 
 @inline PossiblyUninitTangent(tangent::T) where {T} = PossiblyUninitTangent{T}(tangent)
@@ -371,6 +372,22 @@ tangent_type(::Type{<:Base.TTY}) = NoTangent
 tangent_type(::Type{<:IOStream}) = NoTangent
 
 tangent_type(::Type{<:Base.CoreLogging.AbstractLogger}) = NoTangent
+
+tangent_type(::Type{Core.CodeInstance}) = NoTangent
+
+tangent_type(::Type{Core.MethodInstance}) = NoTangent
+
+tangent_type(::Type{Core.Binding}) = NoTangent
+
+tangent_type(::Type{Core.Compiler.InferenceState}) = NoTangent
+
+tangent_type(::Type{Core.Compiler.Timings.Timing}) = NoTangent
+
+tangent_type(::Type{Core.Compiler.InferenceResult}) = NoTangent
+
+@static if VERSION >= v"1.11"
+    tangent_type(::Type{Core.Compiler.AnalysisResults}) = NoTangent
+end
 
 function split_union_tuple_type(tangent_types)
 
@@ -814,6 +831,7 @@ same tangent twice and producing incorrect results.
 
 """
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
+require_tangent_cache(::Type{<:Array{P}}) where {P} = Val{!isbitstype(P)}()
 
 const IncCache = Union{NoCache,IdDict{Any,Bool}}
 const SetToZeroCache = Union{NoCache,Vector{UInt}}

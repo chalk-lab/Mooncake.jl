@@ -5,6 +5,12 @@
         (Cstring, NoTangent),
         (Cwstring, NoTangent),
         (Union{}, Union{}),
+        (Core.CodeInstance, NoTangent),
+        (Core.MethodInstance, NoTangent),
+        (Core.Binding, NoTangent),
+        (Core.Compiler.InferenceState, NoTangent),
+        (Core.Compiler.Timings.Timing, NoTangent),
+        (Core.Compiler.InferenceResult, NoTangent),
 
         ## Tuples
 
@@ -95,6 +101,11 @@
         TestUtils.test_tangent_type(primal_type, expected_tangent_type)
     end
 
+    # v1.11-only tests.
+    if VERSION >= v"1.11"
+        TestUtils.test_tangent_type(Core.Compiler.AnalysisResults, NoTangent)
+    end
+
     @testset "$(typeof(p))" for (interface_only, p, t...) in Mooncake.tangent_test_cases()
         test_tangent(Xoshiro(123456), p, t...; interface_only)
     end
@@ -182,6 +193,16 @@
         t = Mooncake.Tangent((x=5.0,))
         @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(p, t)
         @test Mooncake._add_to_primal(p, t, true) isa typeof(p)
+    end
+    @testset "require_tangent_cache($P)" for (P, expected_result) in [
+        (Float64, false),
+        (Int32, false),
+        (Vector{Float64}, false),
+        (Vector{Vector{Float64}}, true),
+        (Matrix{Int}, false),
+        (Tuple{Matrix{Float64},Matrix{Float64}}, true),
+    ]
+        @test Mooncake.require_tangent_cache(P) == Val(expected_result)
     end
 end
 

@@ -78,6 +78,7 @@ struct DebugRRule{Trule}
     rule::Trule
 end
 
+# Recursively copy the wrapped rule
 _copy(x::P) where {P<:DebugRRule} = P(_copy(x.rule))
 
 """
