@@ -1292,7 +1292,7 @@ function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_conti
     xs = Any[
         randn(rng, P, p),
         view(randn(rng, P, p + 5), 3:(p + 2)),
-        (only_contiguous ? copy : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
+        (only_contiguous ? collect : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
         reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
     ]
     @assert all(x -> length(x) == p, xs)
