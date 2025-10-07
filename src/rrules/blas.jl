@@ -61,6 +61,13 @@ function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:Bla
     return x, reinterpret(T, _dx)
 end
 
+@static if VERSION >= v"1.11"
+    arrayify(x::A, dx::A) where {A<:Memory{<:BlasRealFloat}} = (x, dx)
+    function arrayify(x::Memory{P}, dx::Memory{<:Tangent}) where {P<:BlasComplexFloat}
+        return x, reinterpret(P, dx)
+    end
+end
+
 function arrayify(x::A, dx::DA) where {A,DA}
     msg =
         "Encountered unexpected array type in `Mooncake.arrayify`. This error is likely " *
@@ -1214,6 +1221,9 @@ function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
         view(randn(rng, P, 3p, 3), 1:2:(2p), 2),
         reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
     ]
+    @static if VERSION >= v"1.11"
+        push!(xs, Memory{P}(randn(rng, P, p)))
+    end
     @assert all(x -> length(x) == p, xs)
     @assert all(Base.Fix2(isa, AbstractVector{P}), xs)
     return xs
