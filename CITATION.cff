@@ -5,6 +5,6 @@ authors:
   given-names: "Will"
 - family-names: "Ge"
   given-names: "Hong"
-title: "Differentiable learning and simulation with Mooncake"
+title: "Mooncake: General-Purpose Programming—Now Differentiable"
 date-released: 2024
 url: "https://github.com/chalk-lab/Mooncake.jl"

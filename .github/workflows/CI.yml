@@ -48,7 +48,7 @@ jobs:
         ]
         version:
           - 'lts'
-          - '1'
+          - '1.11'
         arch:
           - x64
         include:
@@ -108,7 +108,7 @@ jobs:
           {test_type: 'integration_testing', label: 'flux'},
         ]
         version:
-          - '1'
+          - '1.11'
           - 'lts'
         arch:
           - x64
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: julia-actions/setup-julia@v2
         with:
-          version: '1'
+          version: '1.11'
           arch: x64
           include-all-prereleases: false
       - uses: julia-actions/cache@v2
@@ -168,7 +168,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: julia-actions/setup-julia@v2
         with:
-          version: '1'
+          version: '1.11'
           arch: x64
           include-all-prereleases: false
       - uses: julia-actions/cache@v2

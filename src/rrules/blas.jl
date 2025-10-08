@@ -28,12 +28,19 @@ Return the primal field of `x`, and convert its fdata into an array of the same 
 primal. This operation is not guaranteed to be possible for all array types, but seems to be
 possible for all array types of interest so far.
 """
-function arrayify(x::Union{Dual{A},CoDual{A}}) where {A<:AbstractArray{<:BlasFloat}}
-    return arrayify(primal(x), tangent(x))  # NOTE: for complex number, the tangent is a reinterpreted version of the primal
+function arrayify(
+    x::Union{Dual{A},CoDual{A}}
+) where {A<:Union{AbstractArray{<:BlasFloat},Ptr{<:BlasFloat}}}
+    return arrayify(primal(x), tangent(x))  # NOTE: for complex numbers, tangents are reinterpreted to Complex
 end
-arrayify(x::Array{P}, dx::Array{P}) where {P<:BlasRealFloat} = (x, dx)
+function arrayify(x::A, dx::A) where {A<:Union{Array{<:BlasRealFloat},Ptr{<:BlasRealFloat}}}
+    (x, dx)
+end
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
     return x, reinterpret(P, dx)
+end
+function arrayify(x::Ptr{P}, dx::Ptr{<:Tangent}) where {P<:BlasComplexFloat}
+    return x, convert(Ptr{P}, dx)
 end
 function arrayify(
     x::Diagonal{P,<:AbstractVector{P}}, dx::TangentOrFData
@@ -66,6 +73,32 @@ function arrayify(x::A, dx::DA) where {A,DA}
     return error(msg)
 end
 
+function viewify(
+    n::BLAS.BlasInt, x_dx::Union{Dual{Ptr{P}},CoDual{Ptr{P}}}, incx::BLAS.BlasInt
+) where {P<:BlasFloat}
+    x, dx = arrayify(x_dx)
+    xinds = 1:incx:(incx * n)
+    return (
+        view(unsafe_wrap(Vector{P}, x, n * incx), xinds),
+        view(unsafe_wrap(Vector{P}, dx, n * incx), xinds),
+    )
+end
+function viewify(
+    n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
+) where {A<:AbstractArray{<:BlasFloat}}
+    x, dx = arrayify(x_dx)
+    xinds = 1:incx:(incx * n)
+    return view(x, xinds), view(dx, xinds)
+end
+
+numberify(x::BlasRealFloat) = x
+function numberify(x::Tangent{@NamedTuple{re::P,im::P}}) where {P<:BlasRealFloat}
+    complex(x.fields.re, x.fields.im)
+end
+numberify(x::Dual) = primal(x), numberify(tangent(x))
+_rdata(x::BlasRealFloat) = x
+_rdata(x::BlasComplexFloat) = RData((; re=real(x), im=imag(x)))
+
 #
 # Utility
 #
@@ -79,7 +112,16 @@ end
 # LEVEL 1
 #
 
-for (fname, elty) in ((:cblas_ddot, :Float64), (:cblas_sdot, :Float32))
+for (fname, jlfname, elty) in (
+    (:cblas_ddot, :dot, :Float64),
+    (:cblas_sdot, :dot, :Float32),
+    (:cblas_zdotc_sub, :dotc, :ComplexF64),
+    (:cblas_cdotc_sub, :dotc, :ComplexF32),
+    (:cblas_zdotu_sub, :dotu, :ComplexF64),
+    (:cblas_cdotu_sub, :dotu, :ComplexF32),
+)
+    isreal = jlfname == :dot
+
     @eval @inline function frule!!(
         ::Dual{typeof(_foreigncall_)},
         ::Dual{Val{$(blas_name(fname))}},
@@ -92,20 +134,37 @@ for (fname, elty) in ((:cblas_ddot, :Float64), (:cblas_sdot, :Float32))
         _incx::Dual{BLAS.BlasInt},
         _DY::Dual{Ptr{$elty}},
         _incy::Dual{BLAS.BlasInt},
+        # For complex numbers the result is stored in an extra pointer
+        $((isreal ? () : (:(_presult::Dual{Ptr{$elty}}),))...),
         args::Vararg{Any,N},
     ) where {N}
         GC.@preserve args begin
             # Load in values from pointers.
             n, incx, incy = map(primal, (_n, _incx, _incy))
-            xinds = 1:incx:(incx * n)
-            yinds = 1:incy:(incy * n)
-            DX = view(unsafe_wrap(Vector{$elty}, primal(_DX), n * incx), xinds)
-            DY = view(unsafe_wrap(Vector{$elty}, primal(_DY), n * incy), yinds)
+            DX, _dDX = arrayify(_DX)
+            DY, _dDY = arrayify(_DY)
 
-            _dDX = view(unsafe_wrap(Vector{$elty}, tangent(_DX), n * incx), xinds)
-            _dDY = view(unsafe_wrap(Vector{$elty}, tangent(_DY), n * incy), yinds)
+            result = BLAS.$jlfname(n, DX, incx, DY, incy)
+            _dresult =
+                BLAS.$jlfname(n, _dDX, incx, DY, incy) +
+                BLAS.$jlfname(n, DX, incx, _dDY, incy)
 
-            return Dual(dot(DX, DY), dot(DX, _dDY) + dot(_dDX, DY))
+            # For complex numbers the result must be stored in the pointer
+            $(
+                if isreal
+                    quote
+                        Dual(result, _dresult)
+                    end
+                else
+                    quote
+                        presult, _dpresult = arrayify(_presult)
+                        Base.unsafe_store!(presult, result)
+                        Base.unsafe_store!(_dpresult, _dresult)
+
+                        Dual(nothing, NoTangent())
+                    end
+                end
+            )
         end
     end
     @eval @inline function rrule!!(
@@ -120,32 +179,65 @@ for (fname, elty) in ((:cblas_ddot, :Float64), (:cblas_sdot, :Float32))
         _incx::CoDual{BLAS.BlasInt},
         _DY::CoDual{Ptr{$elty}},
         _incy::CoDual{BLAS.BlasInt},
+        $((isreal ? () : (:(_presult::CoDual{Ptr{$elty}}),))...),
         args::Vararg{Any,N},
     ) where {N}
         GC.@preserve args begin
             # Load in values from pointers.
             n, incx, incy = map(primal, (_n, _incx, _incy))
-            xinds = 1:incx:(incx * n)
-            yinds = 1:incy:(incy * n)
-            DX = view(unsafe_wrap(Vector{$elty}, primal(_DX), n * incx), xinds)
-            DY = view(unsafe_wrap(Vector{$elty}, primal(_DY), n * incy), yinds)
+            DX, _dDX = viewify(n, _DX, incx)
+            DY, _dDY = viewify(n, _DY, incy)
 
-            _dDX = view(unsafe_wrap(Vector{$elty}, tangent(_DX), n * incx), xinds)
-            _dDY = view(unsafe_wrap(Vector{$elty}, tangent(_DY), n * incy), yinds)
+            # Run primal computation.
+            result = BLAS.$jlfname(DX, DY)
 
-            out = dot(DX, DY)
+            # For complex numbers the primal result must be stored in the pointer, and the dual must be zeroed
+            $(isreal ? :() : quote
+                presult, _dpresult = arrayify(_presult)
+                Base.unsafe_store!(presult, result)
+                Base.unsafe_store!(_dpresult, zero($elty))
+
+                result = nothing
+            end)
         end
 
-        function ddot_pb!!(dv)
-            GC.@preserve args begin
-                _dDX .+= DY .* dv
-                _dDY .+= DX .* dv
+        $(
+            if jlfname == :dot
+                quote
+                    function dot_pb!!(dv)
+                        GC.@preserve args begin
+                            _dDX .+= DY .* dv
+                            _dDY .+= DX .* dv
+                        end
+                        return tuple_fill(NoRData(), Val(N + 11))
+                    end
+                end
+            elseif jlfname == :dotc
+                quote
+                    function dot_pb!!(::NoRData)
+                        GC.@preserve args begin
+                            dv = Base.unsafe_load(_dpresult)
+                            _dDX .+= DY .* dv'
+                            _dDY .+= DX .* dv
+                        end
+                        return tuple_fill(NoRData(), Val(N + 12))
+                    end
+                end
+            else
+                quote
+                    function dot_pb!!(::NoRData)
+                        GC.@preserve args begin
+                            dv = Base.unsafe_load(_dpresult)
+                            _dDX .+= conj.(DY) .* dv
+                            _dDY .+= conj.(DX) .* dv
+                        end
+                        return tuple_fill(NoRData(), Val(N + 12))
+                    end
+                end
             end
-            return tuple_fill(NoRData(), Val(N + 11))
-        end
+        )
 
-        # Run primal computation.
-        return zero_fcodual(out), ddot_pb!!
+        return CoDual(result, NoFData()), dot_pb!!
     end
 end
 
@@ -161,10 +253,10 @@ function frule!!(
     X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
     incx::Dual{<:Integer},
 ) where {T<:BlasFloat}
-    X, dX = arrayify(X_dX)
-    y = BLAS.nrm2(primal(n), X, primal(incx))
+    y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
+    X, dX = viewify(primal(n), X_dX, primal(incx))
     dy = zero(y)
-    @inbounds for i in 1:primal(incx):(primal(n) * primal(incx))
+    @inbounds for i in eachindex(X)
         dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
     end
     return Dual(y, dy / 2y)
@@ -175,11 +267,10 @@ function rrule!!(
     X_dX::CoDual{<:Union{Ptr{T},AbstractArray{T}} where {T<:BlasFloat}},
     incx::CoDual{<:Integer},
 )
-    X, dX = arrayify(X_dX)
-    y = BLAS.nrm2(n.x, X, incx.x)
+    y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
+    X, dX = viewify(primal(n), X_dX, primal(incx))
     function nrm2_pb!!(dy)
-        view(dX, 1:(incx.x):(incx.x * n.x)) .+=
-            view(X, 1:(incx.x):(incx.x * n.x)) .* (dy / y)
+        dX .+= X .* (dy / y)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, NoFData()), nrm2_pb!!
@@ -187,49 +278,22 @@ end
 
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(BLAS.nrm2),X} where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
-)
-function frule!!(
-    ::Dual{typeof(BLAS.nrm2)},
-    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}} where {T<:BlasFloat}},
-)
-    X, dX = arrayify(X_dX)
-    y = BLAS.nrm2(X)
-    dy = zero(y)
-    @inbounds for i in eachindex(X)
-        dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
-    end
-    return Dual(y, dy / (2y))
-end
-function rrule!!(
-    ::CoDual{typeof(BLAS.nrm2)},
-    X_dX::CoDual{<:Union{Ptr{T},AbstractArray{T}} where {T<:BlasFloat}},
-)
-    X, dX = arrayify(X_dX)
-    y = BLAS.nrm2(X)
-    function nrm2_pb!!(dy)
-        dX .+= X .* (dy / y)
-        return NoRData(), NoRData()
-    end
-    return CoDual(y, NoFData()), nrm2_pb!!
-end
-
-@is_primitive(
-    MinimalCtx,
-    Tuple{typeof(BLAS.scal!),Integer,P,AbstractArray{P},Integer} where {P<:BlasRealFloat}
+    Tuple{
+        typeof(BLAS.scal!),Integer,P,X,Integer
+    } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
 function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
     a_da::Dual{P},
-    X_dX::Dual{<:AbstractArray{P}},
+    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
     _incx::Dual{<:Integer},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Extract params.
     n = primal(_n)
     incx = primal(_incx)
-    a, da = extract(a_da)
+    a, da = numberify(a_da)
     X, dX = arrayify(X_dX)
 
     # Compute Frechet derivative.
@@ -244,22 +308,21 @@ function rrule!!(
     ::CoDual{typeof(BLAS.scal!)},
     _n::CoDual{<:Integer},
     a_da::CoDual{P},
-    X_dX::CoDual{<:AbstractArray{P}},
+    X_dX::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
     _incx::CoDual{<:Integer},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Extract params.
     n = primal(_n)
     incx = primal(_incx)
     a = primal(a_da)
-    X, dX = arrayify(X_dX)
+    X, dX = viewify(n, X_dX, incx)
 
     # Take a copy of previous state in order to recover it on the reverse pass.
     X_copy = copy(X)
-    dX_copy = copy(dX)
 
     # Run primal computation.
-    BLAS.scal!(n, a, X, incx)
+    BLAS.scal!(n, a, primal(X_dX), incx)
 
     function scal_adjoint(::NoRData)
 
@@ -267,13 +330,12 @@ function rrule!!(
         X .= X_copy
 
         # Compute gradient w.r.t. scaling.
-        ∇a = BLAS.dot(n, X, incx, dX, incx)
+        ∇a = dot(X, dX)
 
         # Compute gradient w.r.t. DX.
-        BLAS.scal!(n, a, dX, incx)
-        BLAS.axpy!(n, one(P), dX, incx, dX_copy, incx)
+        BLAS.scal!(a', dX)
 
-        return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
+        return NoRData(), NoRData(), _rdata(∇a), NoRData(), NoRData()
     end
     return X_dX, scal_adjoint
 end
@@ -285,9 +347,31 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(BLAS.gemv!),Char,P,AbstractMatrix{P},AbstractVector{P},P,AbstractVector{P}
-    } where {P<:BlasRealFloat},
+        typeof(BLAS.gemv!),Char,P,AbstractVecOrMat{P},AbstractVector{P},P,AbstractVector{P}
+    } where {P<:BlasFloat},
 )
+
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemv!)},
+    tA::Dual{Char},
+    alpha::Dual{P},
+    A_dA::Dual{<:AbstractVector{P}},
+    x_dx::Dual{<:AbstractVector{P}},
+    beta::Dual{P},
+    y_dy::Dual{<:AbstractVector{P}},
+) where {P<:BlasFloat}
+    A, dA = arrayify(A_dA)
+    x, dx = arrayify(x_dx)
+    y, dy = arrayify(y_dy)
+    α, dα = numberify(alpha)
+    β, dβ = numberify(beta)
+
+    _gemv!_frule_core!(
+        primal(tA), α, dα, reshape(A, :, 1), reshape(dA, :, 1), x, dx, β, dβ, y, dy
+    )
+
+    return y_dy
+end
 
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
@@ -297,17 +381,35 @@ end
     x_dx::Dual{<:AbstractVector{P}},
     beta::Dual{P},
     y_dy::Dual{<:AbstractVector{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
+    α, dα = numberify(alpha)
+    β, dβ = numberify(beta)
 
+    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
+
+    return y_dy
+end
+
+@inline function _gemv!_frule_core!(
+    tA::Char,
+    α::P,
+    dα::P,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    x::AbstractVector{P},
+    dx::AbstractVector{P},
+    β::P,
+    dβ::P,
+    y::AbstractVector{P},
+    dy::AbstractVector{P},
+) where {P<:BlasFloat}
     # Derivative computation.
-    BLAS.gemv!(primal(tA), dα, A, x, β, dy)
-    BLAS.gemv!(primal(tA), α, dA, x, one(P), dy)
-    BLAS.gemv!(primal(tA), α, A, dx, one(P), dy)
+    BLAS.gemv!(tA, dα, A, x, β, dy)
+    BLAS.gemv!(tA, α, dA, x, one(P), dy)
+    BLAS.gemv!(tA, α, A, dx, one(P), dy)
 
     # Strong zero is essential here, in case `y` has undefined element values.
     if !iszero(dβ)
@@ -318,9 +420,33 @@ end
     end
 
     # Primal computation.
-    BLAS.gemv!(primal(tA), α, A, x, β, y)
+    BLAS.gemv!(tA, α, A, x, β, y)
+    return nothing
+end
 
-    return y_dy
+@inline function rrule!!(
+    ::CoDual{typeof(BLAS.gemv!)},
+    _tA::CoDual{Char},
+    _alpha::CoDual{P},
+    _A::CoDual{<:AbstractVector{P}},
+    _x::CoDual{<:AbstractVector{P}},
+    _beta::CoDual{P},
+    _y::CoDual{<:AbstractVector{P}},
+) where {P<:BlasFloat}
+
+    # Pull out primals and tangents (the latter only where necessary).
+    trans = _tA.x
+    alpha = _alpha.x
+    A, dA = arrayify(_A)
+    x, dx = arrayify(_x)
+    beta = _beta.x
+    y, dy = arrayify(_y)
+
+    pb = _gemv!_rrule_core!(
+        trans, alpha, reshape(A, :, 1), reshape(dA, :, 1), x, dx, beta, y, dy
+    )
+
+    return _y, pb
 end
 
 @inline function rrule!!(
@@ -331,7 +457,7 @@ end
     _x::CoDual{<:AbstractVector{P}},
     _beta::CoDual{P},
     _y::CoDual{<:AbstractVector{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Pull out primals and tangents (the latter only where necessary).
     trans = _tA.x
@@ -340,6 +466,23 @@ end
     x, dx = arrayify(_x)
     beta = _beta.x
     y, dy = arrayify(_y)
+
+    pb = _gemv!_rrule_core!(trans, alpha, A, dA, x, dx, beta, y, dy)
+
+    return _y, pb
+end
+
+@inline function _gemv!_rrule_core!(
+    trans::Char,
+    alpha::P,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    x::AbstractVector{P},
+    dx::AbstractVector{P},
+    beta::P,
+    y::AbstractVector{P},
+    dy::AbstractVector{P},
+) where {P<:BlasFloat}
 
     # Take copies before adding.
     y_copy = copy(y)
@@ -351,25 +494,41 @@ end
 
         # Increment fdata.
         if trans == 'N'
-            dalpha = dot(dy, A, x)
-            dA .+= alpha .* dy .* x'
-            BLAS.gemv!('T', alpha, A, dy, one(eltype(A)), dx)
-        else
-            dalpha = dot(dy, A', x)
+            dalpha = dot(dy, A, x)'
+            dA .+= alpha' .* dy .* x'
+            BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
+        elseif trans == 'C' || P <: BlasRealFloat
+            dalpha = dot(dy, A', x)'
             dA .+= alpha .* x .* dy'
-            BLAS.gemv!('N', alpha, A, dy, one(eltype(A)), dx)
+            BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
+        else
+            dalpha = dot(dy, transpose(A), x)'
+            dA .+= alpha' .* conj.(x) .* transpose(dy)
+            # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
+            # but BLAS has no "conjugate only" gemv
+            conj!(dx)
+            BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
+            conj!(dx)
         end
         dbeta = dot(y_copy, dy)
-        dy .*= beta
+        dy .*= beta'
 
         # Restore primal.
         copyto!(y, y_copy)
 
         # Return rdata.
-        return NoRData(), NoRData(), dalpha, NoRData(), NoRData(), dbeta, NoRData()
+        return (
+            NoRData(),
+            NoRData(),
+            _rdata(dalpha),
+            NoRData(),
+            NoRData(),
+            _rdata(dbeta),
+            NoRData(),
+        )
     end
 
-    return _y, gemv!_pb!!
+    return gemv!_pb!!
 end
 
 @is_primitive(
@@ -1129,11 +1288,11 @@ function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat},
     end
 end
 
-function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_contiguous=false)
     xs = Any[
         randn(rng, P, p),
         view(randn(rng, P, p + 5), 3:(p + 2)),
-        view(randn(rng, P, 3p, 3), 1:2:(2p), 2),
+        (only_contiguous ? collect : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
         reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
     ]
     @assert all(x -> length(x) == p, xs)
@@ -1150,6 +1309,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
     uplos = ['L', 'U']
     dAs = ['N', 'U']
     Ps = [Float64, Float32]
+    allPs = [Ps..., ComplexF64, ComplexF32]
     rng = rng_ctor(123456)
 
     test_cases = vcat(
@@ -1158,20 +1318,13 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
         # BLAS LEVEL 1
         #
 
-        # nrm2(x)
-        map_prod([Ps..., ComplexF64, ComplexF32]) do (P,)
-            return map([randn(rng, P, 105)]) do x
-                (false, :stability, nothing, BLAS.nrm2, x)
-            end
-        end...,
-
         # nrm2(n, x, incx)
-        map_prod([Ps..., ComplexF64, ComplexF32], [5, 3], [1, 2]) do (P, n, incx)
+        map_prod(allPs, [5, 3], [1, 2]) do (P, n, incx)
             return map([randn(rng, P, 105)]) do x
                 (false, :stability, nothing, BLAS.nrm2, n, x, incx)
             end
         end...,
-        map_prod(Ps, [1, 3, 11], [1, 2, 11]) do (P, n, incx)
+        map_prod(allPs, [1, 3, 11], [1, 2, 11]) do (P, n, incx)
             flags = (false, :stability, nothing)
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
         end,
@@ -1181,10 +1334,17 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
         #
 
         # gemv!
-        map_prod(t_flags, [1, 3], [1, 2], Ps, αs, βs) do (tA, M, N, P, α, β)
-            As = blas_matrices(rng, P, tA == 'N' ? M : N, tA == 'N' ? N : M)
-            xs = blas_vectors(rng, P, N)
-            ys = blas_vectors(rng, P, M)
+        map_prod(
+            t_flags, [1, 3], [1, 2], allPs, [αs..., 0.46 + 0.32im], [βs..., 0.39 + 0.27im]
+        ) do (tA, M, N, P, α, β)
+            P <: BlasRealFloat && (imag(α) > 0 || imag(β) > 0) && return []
+
+            As = [
+                blas_matrices(rng, P, tA == 'N' ? M : N, tA == 'N' ? N : M)
+                blas_vectors(rng, P, M; only_contiguous=true)
+            ]
+            xs = [blas_vectors(rng, P, N); blas_vectors(rng, P, tA == 'N' ? 1 : M)]
+            ys = [blas_vectors(rng, P, M); blas_vectors(rng, P, tA == 'N' ? M : 1)]
             flags = (false, :stability, (lb=1e-3, ub=10.0))
             return map(As, xs, ys) do A, x, y
                 (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
@@ -1289,6 +1449,7 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:blas})
     t_flags = ['N', 'T', 'C']
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
     Ps = [Float32, Float64]
+    allPs = [Ps..., ComplexF64, ComplexF32]
     uplos = ['L', 'U']
     dAs = ['N', 'U']
     rng = rng_ctor(123)
@@ -1305,6 +1466,7 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:blas})
         # BLAS LEVEL 1
         #
 
+        # dot, dotc, dotu
         map(Ps) do P
             flags = (false, :none, nothing)
             Any[
@@ -1313,6 +1475,22 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:blas})
                 (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
                 (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
             ]
+        end...,
+        map_prod([ComplexF32, ComplexF64], [BLAS.dotc, BLAS.dotu]) do (P, f)
+            flags = (false, :none, nothing)
+            Any[
+                (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+            ]
+        end...,
+
+        # nrm2
+        map_prod(allPs) do (P,)
+            return map([randn(rng, P, 105)]) do x
+                (false, :none, nothing, BLAS.nrm2, x)
+            end
         end...,
 
         #

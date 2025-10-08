@@ -5,6 +5,12 @@
         (Cstring, NoTangent),
         (Cwstring, NoTangent),
         (Union{}, Union{}),
+        (Core.CodeInstance, NoTangent),
+        (Core.MethodInstance, NoTangent),
+        (Core.Binding, NoTangent),
+        (Core.Compiler.InferenceState, NoTangent),
+        (Core.Compiler.Timings.Timing, NoTangent),
+        (Core.Compiler.InferenceResult, NoTangent),
 
         ## Tuples
 
@@ -93,6 +99,11 @@
         ),
     ]
         TestUtils.test_tangent_type(primal_type, expected_tangent_type)
+    end
+
+    # v1.11-only tests.
+    if VERSION >= v"1.11"
+        TestUtils.test_tangent_type(Core.Compiler.AnalysisResults, NoTangent)
     end
 
     @testset "$(typeof(p))" for (interface_only, p, t...) in Mooncake.tangent_test_cases()
