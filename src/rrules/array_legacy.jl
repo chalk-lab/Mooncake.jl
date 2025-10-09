@@ -505,7 +505,7 @@ function rrule!!(
     return a, fill!_pullback!!
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:array_legacy})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
     _x = Ref(5.0)
     _dx = randn_tangent(Xoshiro(123456), _x)
 
@@ -649,7 +649,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:array_legacy}
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:array_legacy})
+function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
     test_cases = Any[(
         false,
         :none,

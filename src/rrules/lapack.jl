@@ -528,7 +528,7 @@ function rrule!!(
     return _B, potrs_pb!!
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
     complexPs = [Float64, Float32, ComplexF64, ComplexF32]
@@ -608,7 +608,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
+function derived_rule_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     complexPs = [Float64, Float32, ComplexF64, ComplexF32]
     getrf_wrapper!(x, check) = getrf!(x; check)

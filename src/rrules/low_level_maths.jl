@@ -150,7 +150,7 @@ function rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), eps_pb!!
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:low_level_maths})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
     test_cases = vcat(
         map([Float32, Float64]) do P
             cases = [
@@ -224,4 +224,4 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:low_level_mat
     return test_cases, memory
 end
 
-generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:low_level_maths}) = Any[], Any[]
+derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths}) = Any[], Any[]

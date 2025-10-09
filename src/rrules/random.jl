@@ -33,7 +33,7 @@ for f in [randn!, randexp!]
     end
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:random})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
     rngs = [MersenneTwister(123), TaskLocalRNG(), Xoshiro(123)]
     all_rngs = vcat(rngs, RandomDevice())
     test_cases = vcat(
@@ -56,7 +56,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:random})
     return test_cases, Any[]
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:random})
+function derived_rule_test_cases(rng_ctor, ::Val{:random})
     test_cases = Any[
 
         # Random number generation.
