@@ -61,7 +61,7 @@ function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:Bla
     return x, reinterpret(T, _dx)
 end
 
-@static if VERSION >= v"1.11"
+@static if VERSION >= v"1.11-rc4"
     arrayify(x::A, dx::A) where {A<:Memory{<:BlasRealFloat}} = (x, dx)
     function arrayify(x::Memory{P}, dx::Memory{<:Tangent}) where {P<:BlasComplexFloat}
         return x, reinterpret(P, dx)
