@@ -608,6 +608,48 @@ function test_rrule_correctness(
     @test any(isapprox_results)
 end
 
+# Test the reverse rule using FD, then, if that succeeds
+# test the forwrad rule using the reverse result, *not*
+# finite differences -- this protects against errors from
+# generating FD results in a random, incorrect gauge for
+# matrix factorizations, for example
+function test_rewind_correctness(
+    rng::AbstractRNG,
+    x...;
+    rrule,
+    frule,
+    unsafe_perturb::Bool,
+    output_tangent=nothing,
+    rtol=1e-3,
+    atol=1e-3,
+)
+    # Generate random tangents for anything that is not already a CoDual.
+    x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
+    # test reverse rule first, we will recapitulate some work this way
+    # but it's much less duplicated code
+    test_rrule_correctness(rng, x_ẋ...; rrule, unsafe_perturb, output_tangent, atol, rtol)
+
+    # now we are certain the reverse rule works -- use it to compute
+    # the tangents to compare with, rather than finite differences
+    @nospecialize rng x_x̄
+
+    x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
+
+    # Run original function on deep-copies of inputs.
+    x = map(primal, x_ẋ)
+    ẋ = map(tangent, x_ẋ)
+    x_primal = _deepcopy(x)
+    y_primal = x_primal[1](x_primal[2:end]...)
+    # Use AD to compute Frechet derivative at ẋ.
+    x_ẋ_rule = map((x, ẋ) -> dual_type(_typeof(x))(_deepcopy(x), ẋ), x, ẋ)
+    y_ẏ_rule = frule(x_ẋ_rule...)
+    ẋ_ad = map(tangent, x_ẋ_rule)
+    ẏ_ad = tangent(y_ẏ_rule)
+
+    # now use ẏ_ad as output_tangent for rrule again
+    test_rrule_correctness(rng, x_ẋ...; rrule, unsafe_perturb, output_tangent=ẏ_ad, atol, rtol)
+end
+
 get_address(x) = ismutable(x) ? pointer_from_objref(x) : nothing
 
 _deepcopy(x) = deepcopy(x)
@@ -834,6 +876,7 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
         debug_mode::Bool=false,
         unsafe_perturb::Bool=false,
+        test_rewind=false,
         print_results=true,
         output_tangent=nothing,
         atol=1e-3,
@@ -887,6 +930,10 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
 - `unsafe_perturb::Bool=false`: value passed as the third argument to `_add_to_primal`.
     Should usually be left `false` -- consult the docstring for `_add_to_primal` for more
     info on when you might wish to set it to `true`.
+- `test_rewind=false`: rather than testing the forwards rule using finite differences,
+    test the reverse rule first, then run the forwards rule to generate new output tangents
+    and use these to test the reverse rule. This protects against a forwards pass mapping
+    to some arbitrary gauge for matrix transformations.
 - `output_tangent=nothing`: final output tangent to initialize reverse mode with for testing
     the correctnes of reverse rules.
 - `atol=1e-3`: absolute tolerance for correctness check of the Frechet derivatives.
@@ -901,6 +948,7 @@ function test_rule(
     mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
     debug_mode::Bool=false,
     unsafe_perturb::Bool=false,
+    test_rewind=false,
     print_results=true,
     output_tangent=nothing,
     atol=1e-3,
@@ -944,12 +992,38 @@ function test_rule(
 
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
-                if test_fwd && !interface_only
-                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
-                end
-                if test_rvs && !interface_only
-                    test_rrule_correctness(
-                        rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
+                if !test_rewind
+                    if test_fwd && !interface_only
+                        test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
+                    end
+                    if test_rvs && !interface_only
+                        test_rrule_correctness(
+                            rng,
+                            x_x̄...;
+                            rrule,
+                            unsafe_perturb,
+                            output_tangent,
+                            atol,
+                            rtol,
+                        )
+                    end
+                elseif test_rewind && test_rvs && test_fwd && !interface_only
+                    test_rewind_correctness(
+                        rng,
+                        x_x̄...;
+                        rrule,
+                        frule,
+                        unsafe_perturb,
+                        output_tangent,
+                        atol,
+                        rtol,
+                    )
+
+                else
+                    throw(
+                        ArgumentError(
+                            "test_fwd_from_rvs is only valid if testing both forward and reverse modes",
+                        ),
                     )
                 end
             end
