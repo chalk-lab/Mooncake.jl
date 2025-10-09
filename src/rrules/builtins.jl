@@ -100,7 +100,7 @@ import ..Mooncake:
     increment!!,
     @is_primitive,
     MinimalCtx,
-    is_primitive,
+    _is_primitive,
     NoFData,
     zero_rdata,
     NoRData,
@@ -135,10 +135,10 @@ end
 macro intrinsic(name)
     expr = quote
         $name(x...) = Intrinsics.$name(x...)
-        function is_primitive(
+        function _is_primitive(
             ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
         )
-            true
+            return true
         end
         translate(::Val{Intrinsics.$name}) = $name
     end
@@ -148,7 +148,7 @@ end
 macro inactive_intrinsic(name)
     expr = quote
         $name(x...) = Intrinsics.$name(x...)
-        function is_primitive(
+        function _is_primitive(
             ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
         )
             true
@@ -304,7 +304,7 @@ special handling of `cglobal` is used.
 __cglobal(::Val{s}, x::Vararg{Any,N}) where {s,N} = cglobal(s, x...)
 
 translate(::Val{Intrinsics.cglobal}) = __cglobal
-function Mooncake.is_primitive(
+function Mooncake._is_primitive(
     ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof(__cglobal),Vararg}}
 )
     return true
