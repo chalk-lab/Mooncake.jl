@@ -20,5 +20,5 @@ jobs:
         env:
           GKSwstype: nul # turn off GR's interactive plotting for notebooks
         uses: TuringLang/actions/DocsDocumenter@main
-
-
+        with:
+          julia-version: '1.11'

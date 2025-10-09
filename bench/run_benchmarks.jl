@@ -325,7 +325,7 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
     end
-    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false, 0.02)
+    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false, 0.03)
 end
 
 function benchmark_derived_rrules!!(rng_ctor)
@@ -335,7 +335,7 @@ function benchmark_derived_rrules!!(rng_ctor)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
     end
-    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.05)
+    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.1)
 end
 
 function benchmark_inter_framework_rules()
