@@ -347,9 +347,31 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(BLAS.gemv!),Char,P,AbstractMatrix{P},AbstractVector{P},P,AbstractVector{P}
+        typeof(BLAS.gemv!),Char,P,AbstractVecOrMat{P},AbstractVector{P},P,AbstractVector{P}
     } where {P<:BlasFloat},
 )
+
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemv!)},
+    tA::Dual{Char},
+    alpha::Dual{P},
+    A_dA::Dual{<:AbstractVector{P}},
+    x_dx::Dual{<:AbstractVector{P}},
+    beta::Dual{P},
+    y_dy::Dual{<:AbstractVector{P}},
+) where {P<:BlasFloat}
+    A, dA = arrayify(A_dA)
+    x, dx = arrayify(x_dx)
+    y, dy = arrayify(y_dy)
+    α, dα = numberify(alpha)
+    β, dβ = numberify(beta)
+
+    _gemv!_frule_core!(
+        primal(tA), α, dα, reshape(A, :, 1), reshape(dA, :, 1), x, dx, β, dβ, y, dy
+    )
+
+    return y_dy
+end
 
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
@@ -366,10 +388,28 @@ end
     α, dα = numberify(alpha)
     β, dβ = numberify(beta)
 
+    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
+
+    return y_dy
+end
+
+@inline function _gemv!_frule_core!(
+    tA::Char,
+    α::P,
+    dα::P,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    x::AbstractVector{P},
+    dx::AbstractVector{P},
+    β::P,
+    dβ::P,
+    y::AbstractVector{P},
+    dy::AbstractVector{P},
+) where {P<:BlasFloat}
     # Derivative computation.
-    BLAS.gemv!(primal(tA), dα, A, x, β, dy)
-    BLAS.gemv!(primal(tA), α, dA, x, one(P), dy)
-    BLAS.gemv!(primal(tA), α, A, dx, one(P), dy)
+    BLAS.gemv!(tA, dα, A, x, β, dy)
+    BLAS.gemv!(tA, α, dA, x, one(P), dy)
+    BLAS.gemv!(tA, α, A, dx, one(P), dy)
 
     # Strong zero is essential here, in case `y` has undefined element values.
     if !iszero(dβ)
@@ -380,9 +420,33 @@ end
     end
 
     # Primal computation.
-    BLAS.gemv!(primal(tA), α, A, x, β, y)
+    BLAS.gemv!(tA, α, A, x, β, y)
+    return nothing
+end
 
-    return y_dy
+@inline function rrule!!(
+    ::CoDual{typeof(BLAS.gemv!)},
+    _tA::CoDual{Char},
+    _alpha::CoDual{P},
+    _A::CoDual{<:AbstractVector{P}},
+    _x::CoDual{<:AbstractVector{P}},
+    _beta::CoDual{P},
+    _y::CoDual{<:AbstractVector{P}},
+) where {P<:BlasFloat}
+
+    # Pull out primals and tangents (the latter only where necessary).
+    trans = _tA.x
+    alpha = _alpha.x
+    A, dA = arrayify(_A)
+    x, dx = arrayify(_x)
+    beta = _beta.x
+    y, dy = arrayify(_y)
+
+    pb = _gemv!_rrule_core!(
+        trans, alpha, reshape(A, :, 1), reshape(dA, :, 1), x, dx, beta, y, dy
+    )
+
+    return _y, pb
 end
 
 @inline function rrule!!(
@@ -402,6 +466,23 @@ end
     x, dx = arrayify(_x)
     beta = _beta.x
     y, dy = arrayify(_y)
+
+    pb = _gemv!_rrule_core!(trans, alpha, A, dA, x, dx, beta, y, dy)
+
+    return _y, pb
+end
+
+@inline function _gemv!_rrule_core!(
+    trans::Char,
+    alpha::P,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    x::AbstractVector{P},
+    dx::AbstractVector{P},
+    beta::P,
+    y::AbstractVector{P},
+    dy::AbstractVector{P},
+) where {P<:BlasFloat}
 
     # Take copies before adding.
     y_copy = copy(y)
@@ -447,7 +528,7 @@ end
         )
     end
 
-    return _y, gemv!_pb!!
+    return gemv!_pb!!
 end
 
 @is_primitive(
@@ -1207,11 +1288,11 @@ function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat},
     end
 end
 
-function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int)
+function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_contiguous=false)
     xs = Any[
         randn(rng, P, p),
         view(randn(rng, P, p + 5), 3:(p + 2)),
-        view(randn(rng, P, 3p, 3), 1:2:(2p), 2),
+        (only_contiguous ? collect : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
         reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
     ]
     @assert all(x -> length(x) == p, xs)
@@ -1258,9 +1339,12 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
         ) do (tA, M, N, P, α, β)
             P <: BlasRealFloat && (imag(α) > 0 || imag(β) > 0) && return []
 
-            As = blas_matrices(rng, P, tA == 'N' ? M : N, tA == 'N' ? N : M)
-            xs = blas_vectors(rng, P, N)
-            ys = blas_vectors(rng, P, M)
+            As = [
+                blas_matrices(rng, P, tA == 'N' ? M : N, tA == 'N' ? N : M)
+                blas_vectors(rng, P, M; only_contiguous=true)
+            ]
+            xs = [blas_vectors(rng, P, N); blas_vectors(rng, P, tA == 'N' ? 1 : M)]
+            ys = [blas_vectors(rng, P, M); blas_vectors(rng, P, tA == 'N' ? M : 1)]
             flags = (false, :stability, (lb=1e-3, ub=10.0))
             return map(As, xs, ys) do A, x, y
                 (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
