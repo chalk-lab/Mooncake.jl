@@ -353,12 +353,6 @@ function opaque_closure(
     )::Core.OpaqueClosure{sig,ret_type}
 end
 
-@static if isdefined(CC, :get_ci_mi)
-    get_mi(x) = CC.get_ci_mi(x)
-else
-    get_mi(x) = x.def
-end
-
 function optimized_opaque_closure(rtype, ir::IRCode, env...; kwargs...)
     oc = opaque_closure(rtype, ir, env...; kwargs...)
     world = UInt(oc.world)
@@ -386,7 +380,7 @@ end
 
 function reinfer_and_inline(ci::Core.CodeInstance, world::UInt)
     interp = CC.NativeInterpreter(world)
-    mi = CC.get_ci_mi(ci)
+    mi = get_mi(ci)
     argtypes = collect(Any, mi.specTypes.parameters)
     irsv = CC.IRInterpretationState(interp, ci, mi, argtypes, world)
     @assert irsv !== nothing

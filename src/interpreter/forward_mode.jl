@@ -306,7 +306,7 @@ function modify_fwd_ad_stmts!(
             return CC.widenconst(get_forward_primal_type(info.primal_ir, x))
         end
         sig = Tuple{sig_types...}
-        mi = isexpr(stmt, :invoke) ? stmt.args[1] : missing
+        mi = isexpr(stmt, :invoke) ? get_mi(stmt.args[1]) : missing
         args = map(__inc, raw_args)
 
         # Special case: if the result of a call to getfield is un-used, then leave the

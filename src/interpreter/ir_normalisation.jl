@@ -126,7 +126,7 @@ function fix_up_invoke_inference!(ir::IRCode)::IRCode
     end
     return ir
 end
-get_mi(ci::Core.CodeInstance) = CC.get_ci_mi(ci)
+get_mi(ci::Core.CodeInstance) = @static isdefined(CC, :get_ci_mi) ? CC.get_ci_mi(ci) : ci.def
 get_mi(mi::Core.MethodInstance) = mi
 
 """
