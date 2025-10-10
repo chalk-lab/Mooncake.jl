@@ -100,8 +100,8 @@ function rrule!!(::CoDual{typeof(log)}, b::CoDual{P}, x::CoDual{P}) where {P<:IE
     function log_adjoint(dy::P)
         log_b = log(primal(b))
         return NoRData(),
-        ifelse(iszero(primal(b)) || isnan(log_b), P(0), -dy * y / (log_b * primal(b))),
-        ifelse(iszero(primal(x)) || isnan(log_b), P(0), dy / (primal(x) * log_b))
+        ifelse(iszero(primal(b)) || iszero(log_b), P(0), -dy * y / (log_b * primal(b))),
+        ifelse(iszero(primal(x)) || iszero(log_b), P(0), dy / (primal(x) * log_b))
     end
     return zero_fcodual(y), log_adjoint
 end
