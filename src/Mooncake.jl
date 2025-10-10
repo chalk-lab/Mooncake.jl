@@ -161,8 +161,8 @@ include("public.jl")
 end
 #! format: on
 
-@public Config, value_and_pullback!!, prepare_pullback_cache, value_and_derivative!!
-@public prepare_derivative_cache, Dual
+@public Config, value_and_pullback!!, prepare_pullback_cache
+@public Dual
 
 # Public, exported
 export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
