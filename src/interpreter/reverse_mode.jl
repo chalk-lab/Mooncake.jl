@@ -1134,8 +1134,8 @@ function build_rrule(
         else
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
             dri = generate_ir(interp, sig_or_mi; debug_mode)
-            fwd_oc = misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
-            rvs_oc = misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)
+            fwd_oc = optimized_misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
+            rvs_oc = optimized_misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)
 
             # Compute the signature. Needs careful handling with varargs.
             nargs = num_args(dri.info)

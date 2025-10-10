@@ -46,7 +46,7 @@ function build_frule(
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
             dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
-            dual_oc = misty_closure(
+            dual_oc = optimized_misty_closure(
                 info.dual_ret_type, dual_ir, captures...; do_compile=true
             )
             raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(dual_oc)

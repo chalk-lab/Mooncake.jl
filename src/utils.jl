@@ -332,24 +332,70 @@ function opaque_closure(
     # This implementation is copied over directly from `Core.OpaqueClosure`.
     ir = CC.copy(ir)
     ir.argtypes[1] = Tuple
+    ir.debuginfo.def === nothing && (ir.debuginfo.def = :var"generated IR for OpaqueClosure")
     nargtypes = length(ir.argtypes)
     nargs = nargtypes - 1
     sig = compute_oc_signature(ir, nargs, isva)
     src = ccall(:jl_new_code_info_uninit, Ref{CC.CodeInfo}, ())
     src.slotnames = [Symbol(:_, i) for i in 1:nargtypes]
-    @static if VERSION > v"1.12-"
-        src.nargs = nargtypes
-        src.isva = isva
-        src.min_world = ir.valid_worlds.min_world
-        src.max_world = ir.valid_worlds.max_world
-    end
     src.slotflags = fill(zero(UInt8), length(ir.argtypes))
     src.slottypes = copy(ir.argtypes)
-    src.rettype = ret_type
+    @static if VERSION > v"1.12-"
+        src.min_world = ir.valid_worlds.min_world
+        src.max_world = ir.valid_worlds.max_world
+        src.isva = isva
+        src.nargs = nargtypes
+    end
     src = CC.ir_to_codeinf!(src, ir)
-    return Base.Experimental.generate_opaque_closure(
+    src.rettype = ret_type
+    oc = Base.Experimental.generate_opaque_closure(
         sig, Union{}, ret_type, src, nargs, isva, env...; do_compile
     )::Core.OpaqueClosure{sig,ret_type}
+end
+
+@static if isdefined(CC, :get_ci_mi)
+    get_mi(x) = CC.get_ci_mi(x)
+else
+    get_mi(x) = x.def
+end
+
+function optimized_opaque_closure(rtype, ir::IRCode, env...; kwargs...)
+    oc = opaque_closure(rtype, ir, env...; kwargs...)
+    world = UInt(oc.world)
+    set_world_bounds_for_optimization!(oc)
+    optimized_oc = optimize_opaque_closure(oc, rtype, env...; kwargs...)
+    return optimized_oc
+end
+
+function optimize_opaque_closure(oc::Core.OpaqueClosure, rtype, env...; kwargs...)
+    method = oc.source
+    ci = method.specializations.cache
+    world = UInt(oc.world)
+    ir = reinfer_and_inline(ci, world)
+    return opaque_closure(rtype, ir, env...; kwargs...)
+end
+
+# Allows optimization to make assumptions about binding access,
+# enabling inlining and other optimizations.
+function set_world_bounds_for_optimization!(oc::Core.OpaqueClosure)
+    ci = oc.source.specializations.cache
+    ci.inferred.min_world = oc.world
+    ci.inferred.max_world = oc.world
+end
+
+function reinfer_and_inline(ci::Core.CodeInstance, world::UInt)
+    interp = CC.NativeInterpreter(world)
+    mi = CC.get_ci_mi(ci)
+    argtypes = collect(Any, mi.specTypes.parameters)
+    irsv = CC.IRInterpretationState(interp, ci, mi, argtypes, world)
+    @assert irsv !== nothing
+    for stmt in irsv.ir.stmts
+        stmt[:flag] |= CC.IR_FLAG_REFINED
+    end
+    CC.ir_abstract_constant_propagation(interp, irsv)
+    state = CC.InliningState(interp)
+    ir = CC.ssa_inlining_pass!(irsv.ir, state, CC.propagate_inbounds(irsv))
+    return ir
 end
 
 """
@@ -372,6 +418,16 @@ function misty_closure(
     do_compile::Bool=true,
 )
     return MistyClosure(opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir))
+end
+
+function optimized_misty_closure(
+    ret_type::Type,
+    ir::IRCode,
+    @nospecialize env...;
+    isva::Bool=false,
+    do_compile::Bool=true,
+)
+    return MistyClosure(optimized_opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir))
 end
 
 @static if VERSION ≥ v"1.12-"
