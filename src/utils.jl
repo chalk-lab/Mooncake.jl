@@ -332,7 +332,6 @@ function opaque_closure(
     # This implementation is copied over directly from `Core.OpaqueClosure`.
     ir = CC.copy(ir)
     ir.argtypes[1] = Tuple
-    ir.debuginfo.def === nothing && (ir.debuginfo.def = :var"generated IR for OpaqueClosure")
     nargtypes = length(ir.argtypes)
     nargs = nargtypes - 1
     sig = compute_oc_signature(ir, nargs, isva)
@@ -341,6 +340,7 @@ function opaque_closure(
     src.slotflags = fill(zero(UInt8), length(ir.argtypes))
     src.slottypes = copy(ir.argtypes)
     @static if VERSION > v"1.12-"
+        ir.debuginfo.def === nothing && (ir.debuginfo.def = :var"generated IR for OpaqueClosure")
         src.min_world = ir.valid_worlds.min_world
         src.max_world = ir.valid_worlds.max_world
         src.isva = isva
