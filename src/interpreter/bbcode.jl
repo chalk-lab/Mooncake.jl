@@ -704,7 +704,7 @@ function CC.IRCode(bb_code::BBCode)
                 map(x -> x.stmt, insts),
                 Any[x.type for x in insts],
                 CC.CallInfo[x.info for x in insts],
-                map(x -> x.line[1], insts),
+                foldl((x, y) -> append!(x, y.line), insts; init = Int32[]),
                 map(x -> x.flag, insts),
             ),
             cfg,

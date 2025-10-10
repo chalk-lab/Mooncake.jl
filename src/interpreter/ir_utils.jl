@@ -59,7 +59,11 @@ function ircode(
     cfg = CC.compute_basic_blocks(insts)
     insts = __line_numbers_to_block_numbers!(insts, cfg)
     stmts = __insts_to_instruction_stream(insts)
-    linetable = [CC.LineInfoNode(Mooncake, :ircode, :ir_utils, Int32(1), Int32(0))]
+    @static if VERSION > v"1.12-"
+        linetable = CC.DebugInfoStream(nothing, CC.DebugInfo(:Mooncake), length(insts))
+    else
+        linetable = [CC.LineInfoNode(Mooncake, :ircode, :ir_utils, Int32(1), Int32(0))]
+    end
     meta = Expr[]
     return CC.IRCode(stmts, cfg, linetable, argtypes, meta, CC.VarState[])
 end
@@ -79,12 +83,18 @@ linetable field has at least one element.
 """
 function __insts_to_instruction_stream(insts::Vector{Any})
     n = length(insts)
+    if VERSION > v"1-12-"
+        lineinfo = Int32[]
+        for _ in 1:n push!(lineinfo, 1, 0, 0) end
+    else
+        lineinfo = fill(Int32(1), n)
+    end
     return CC.InstructionStream(
         insts,
         Any[Any for _ in 1:n],
         CC.CallInfo[CC.NoCallInfo() for _ in 1:n],
-        fill(Int32(1), length(insts)),
-        fill(CC.IR_FLAG_REFINED, length(insts)),
+        lineinfo,
+        fill(CC.IR_FLAG_REFINED, n),
     )
 end
 
