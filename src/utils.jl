@@ -366,6 +366,7 @@ function optimize_opaque_closure(oc::Core.OpaqueClosure, rtype, env...; kwargs..
     ci = method.specializations.cache
     world = UInt(oc.world)
     ir = reinfer_and_inline(ci, world)
+    ir === nothing && return oc # nothing to optimize
     return opaque_closure(rtype, ir, env...; kwargs...)
 end
 
@@ -383,7 +384,7 @@ function reinfer_and_inline(ci::Core.CodeInstance, world::UInt)
     mi = get_mi(ci)
     argtypes = collect(Any, mi.specTypes.parameters)
     irsv = CC.IRInterpretationState(interp, ci, mi, argtypes, world)
-    @assert irsv !== nothing
+    irsv === nothing && return nothing
     for stmt in irsv.ir.stmts
         stmt[:flag] |= CC.IR_FLAG_REFINED
     end
