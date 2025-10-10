@@ -379,6 +379,7 @@ end
 # enabling inlining and other optimizations.
 function set_world_bounds_for_optimization!(oc::Core.OpaqueClosure)
     ci = oc.source.specializations.cache
+    ci.inferred === nothing && return
     ci.inferred.min_world = oc.world
     ci.inferred.max_world = oc.world
 end
