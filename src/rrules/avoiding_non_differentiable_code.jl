@@ -88,9 +88,7 @@ import Base.CoreLogging as CoreLogging
     }
 )
 
-function generate_hand_written_rrule!!_test_cases(
-    rng_ctor, ::Val{:avoiding_non_differentiable_code}
-)
+function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_code})
     _x = Ref(5.0)
     _dx = Ref(4.0)
     test_cases = vcat(
@@ -156,9 +154,7 @@ function generate_hand_written_rrule!!_test_cases(
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(
-    rng_ctor, ::Val{:avoiding_non_differentiable_code}
-)
+function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_code})
     function testloggingmacro1(x)
         @warn "Testing @warn macro"
     end

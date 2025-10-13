@@ -1300,7 +1300,7 @@ function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_conti
     return xs
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
     t_flags = ['N', 'T', 'C']
     αs = [1.0, -0.25]
     dαs = [0.0, 0.44]
@@ -1445,7 +1445,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:blas})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:blas})
+function derived_rule_test_cases(rng_ctor, ::Val{:blas})
     t_flags = ['N', 'T', 'C']
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
     Ps = [Float32, Float64]
