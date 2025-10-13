@@ -647,7 +647,9 @@ function test_rewind_correctness(
     ẏ_ad = tangent(y_ẏ_rule)
 
     # now use ẏ_ad as output_tangent for rrule again
-    test_rrule_correctness(rng, x_ẋ...; rrule, unsafe_perturb, output_tangent=ẏ_ad, atol, rtol)
+    test_rrule_correctness(
+        rng, x_ẋ...; rrule, unsafe_perturb, output_tangent=ẏ_ad, atol, rtol
+    )
 end
 
 get_address(x) = ismutable(x) ? pointer_from_objref(x) : nothing
