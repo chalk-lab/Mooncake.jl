@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Tutorial · Mooncake.jl</title><meta name="title" content="Tutorial · Mooncake.jl"/><meta property="og:title" content="Tutorial · Mooncake.jl"/><meta property="twitter:title" content="Tutorial · Mooncake.jl"/><meta name="description" content="Documentation for Mooncake.jl."/><meta property="og:description" content="Documentation for Mooncake.jl."/><meta property="twitter:description" content="Documentation for Mooncake.jl."/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body>
+<!-- NAVBAR START -->
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro&display=swap');
+
+    /* Documenter.jl CSS Overrides */
+    html {
+        scroll-padding-top: calc(var(--navbar-height) + 1rem);
+    }
+    .docs-sidebar, #documenter {
+        margin-top: var(--navbar-height);
+    }
+    .docs-version-selector {
+        margin-bottom: 60px !important;
+    }
+    @media screen and (max-width: 1056px) {
+        .docs-version-selector {
+            margin-bottom: 60px !important;
+        }
+        .docs-sidebar {
+            margin-top: 0 !important;
+        }
+    }
+    /* End of Documenter.jl Tweaks */
+
+    /* Color and Font Variables */
+    :root {
+        --heading-color: #6c757d;
+        --item-color: rgb(165, 165, 165);
+        --primary-bg: white;
+        --hover-color: #8faad2;
+        --deprecated-bg: #ff4d4d;
+        --deprecated-text: white;
+        --icon-color: #6c757d;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e9ecef;
+        
+        /* Typography */
+        --font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        --nav-link-font-size: 1.0625rem;
+        --turing-title-font-size: 21.25px;
+        --icon-font-size: 1.25rem;
+        --dropdown-arrow-font-size: 0.6875rem;
+        --badge-font-size: 0.75rem;
+
+        /* Sizing and Spacing */
+        --navbar-height: 3.75rem;
+        --logo-height: 31.18px;
+        --logo-width: 52.47px;
+        --logo-padding-top: 7px;
+        --logo-margin-left: 0.3rem;
+        --title-margin-left: 0.4px;
+        --title-nav-spacing: 1.7rem;
+        --nav-item-margin-left: 1.3rem;
+        --icon-margin-left: 1rem;
+        --dropdown-padding: 1.875rem;
+        --dropdown-item-width: 12.5rem;
+        --dropdown-subitem-width: 15.625rem;
+        --dropdown-subitem-padding: 0.125rem 0.625rem;
+    }
+
+    /* Dark Theme Variable Overrides */
+    html.theme--documenter-dark {
+        --heading-color: #e0e0e0;
+        --item-color: #bdbdbd;
+        --primary-bg: #1f2424;
+        --hover-color: #ffffff;
+        --icon-color: #e0e0e0;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #424242;
+    }
+
+    /* Catppuccin Theme Overrides */
+    html.theme--catppuccin-latte {
+        --heading-color: #4c4f69;
+        --primary-bg: #eff1f5;
+        --icon-color: #4c4f69;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e6e9ef;
+    }
+    html.theme--catppuccin-frappe {
+        --heading-color: #c6d0f5;
+        --primary-bg: #303446;
+        --icon-color: #c6d0f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #51576d;
+    }
+    html.theme--catppuccin-macchiato {
+        --heading-color: #cad3f5;
+        --primary-bg: #24273a;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #494d64;
+    }
+    html.theme--catppuccin-mocha {
+        --heading-color: #cad3f5;
+        --primary-bg: #1e1e2e;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #45475a;
+    }
+
+
+    /* Main Navigation Bar */
+    .ext-navigation {
+        font-family: var(--font-family);
+        position: fixed;
+        height: var(--navbar-height);
+        top: 0;
+        width: 100%;
+        background-color: var(--primary-bg);
+        z-index: 1000;
+        box-shadow: 0 2px 4px var(--shadow-color);
+        display: flex;
+        align-items: center;
+        padding: 0 1.0625rem;
+        transition: transform 0.3s, background-color 0.3s;
+    }
+
+    nav.ext-navigation .ext-navbar-logo {
+        margin-left: var(--logo-margin-left);
+        height: var(--logo-height);
+        width: var(--logo-width);
+        padding-top: var(--logo-padding-top);
+    }
+    
+    .ext-navbar-title {
+        color: var(--heading-color) !important;
+        font-size: var(--turing-title-font-size) !important;
+        margin-left: var(--title-margin-left);
+        text-decoration: none;
+        transition: color 0.2s ease;
+    }
+    
+    .ext-navbar-title:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-nav-links {
+        display: flex;
+        align-items: center;
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+        flex-grow: 1;
+        margin-left: var(--title-nav-spacing);
+    }
+
+    .ext-nav-links li:first-child {
+        margin-left: 0 !important;
+    }
+
+    .ext-nav-links li {
+        margin-left: var(--nav-item-margin-left) !important;
+    }
+
+    .ext-nav-link {
+        color: var(--heading-color) !important;
+        text-decoration: none;
+        font-size: var(--nav-link-font-size) !important;
+        transition: color 0.2s ease;
+        cursor: pointer;
+    }
+
+    .ext-nav-link:hover,
+    .ext-navbar-item-single a:hover,
+    .ext-navbar-icons a:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-navbar-item-single a {
+        color: var(--heading-color) !important;
+    }
+    
+    .ext-navbar-icons {
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-navbar-icons a {
+        color: var(--icon-color) !important;
+        font-size: var(--icon-font-size) !important;
+        transition: color 0.2s ease;
+        margin-left: var(--icon-margin-left);
+    }
+
+    .ext-menu-toggle {
+        display: none;
+        font-size: 1.5rem;
+        color: var(--heading-color);
+        cursor: pointer;
+    }
+
+    .ext-dropdown {
+        display: none;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        padding: var(--dropdown-padding);
+        position: absolute;
+        top: var(--navbar-height);
+        width: 100%;
+        left: 0;
+        background-color: var(--primary-bg);
+        line-height: 1.875rem;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out, background-color 0.3s;
+        transform: translateY(-0.625rem);
+        box-shadow: 0 4px 6px var(--shadow-color);
+    }
+
+    #library-handler::after {
+        content: "▼";
+        font-size: var(--dropdown-arrow-font-size);
+        margin-left: 0.3125rem;
+        transition: transform 0.3s ease-in-out;
+    }
+
+    #library-handler.open::after {
+        content: "▲";
+    }
+
+    .ext-dropdown.show {
+        display: grid;
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .ext-dropdown ul {
+        width: var(--dropdown-item-width);
+        margin-bottom: 1.25rem;
+    }
+
+    .ext-dropdown ul li {
+        text-align: left;
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-dropdown ul a li {
+        color: var(--item-color);
+        width: var(--dropdown-subitem-width);
+        border-radius: 3px;
+        padding: var(--dropdown-subitem-padding);
+        transition: background-color 0.2s ease;
+    }
+
+    .ext-dropdown ul a li:hover {
+        background-color: var(--dropdown-hover-bg);
+    }
+
+    .ext-dropdown-item-heading {
+        color: var(--heading-color);
+        text-align: center;
+    }
+
+    .deprecated-badge {
+        background-color: var(--deprecated-bg);
+        color: var(--deprecated-text);
+        font-size: var(--badge-font-size);
+        padding: .1rem;
+        border-radius: 3px;
+        margin-left: 0.5rem;
+        line-height: 1;
+    }
+
+    @media (max-width: 966px) {
+        .ext-dropdown {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .ext-nav-links {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            background-color: var(--primary-bg);
+            position: absolute;
+            top: var(--navbar-height);
+            left: 0;
+            padding: 0.625rem 0;
+            height: auto;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px var(--shadow-color);
+            margin-left: 0;
+        }
+
+        .ext-nav-links.show {
+            display: flex;
+        }
+
+        .ext-nav-links li {
+            margin: 0.625rem 0 !important;
+            text-align: center;
+        }
+        
+        .ext-menu-toggle {
+            display: block;
+            margin-left: auto;
+        }
+
+        .ext-navigation.hide {
+            transform: translateY(calc(-1 * var(--navbar-height)));
+        }
+
+        .ext-dropdown {
+            position: static;
+            display: block;
+            opacity: 1;
+            transform: none;
+            box-shadow: none;
+            grid-template-columns: 1fr;
+            padding: 0.625rem;
+            text-align: center;
+        }
+
+        .ext-dropdown ul {
+            width: auto;
+            display: inline-block;
+            margin: 0 auto 0.3125rem;
+            text-align: left;
+        }
+    }
+</style>
+<nav class="ext-navigation">
+    <a href="https://turinglang.org/">
+        <img src="https://turinglang.org/assets/images/turing-logo.svg" alt="Turing Logo" class="ext-navbar-logo">
+    </a>
+    <a class="ext-navbar-title" href="https://turinglang.org/">Turing.jl</a>
+    
+    <ul class="ext-nav-links">
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/getting-started/">Get Started</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/tutorials/">Tutorials</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/faq/">FAQ</a></li>
+        <li>
+            <p class="ext-nav-link" id="library-handler">Libraries</p>
+            <div class="ext-dropdown" id="ext-dropdown-items">
+                <ul>
+                    <li class="ext-dropdown-item-heading">Modelling Languages</li>
+                    <a href="https://turinglang.org/DynamicPPL.jl/"><li>DynamicPPL</li></a>
+                    <a href="https://turinglang.org/JuliaBUGS.jl/"><li>JuliaBUGS</li></a>
+                    <a href="https://turinglang.org/TuringGLM.jl/"><li>TuringGLM</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">MCMC</li>
+                    <a href="https://turinglang.org/AdvancedHMC.jl/"><li>AdvancedHMC</li></a>
+                    <a href="https://turinglang.org/AbstractMCMC.jl/"><li>AbstractMCMC</li></a>
+                    <a href="https://github.com/theogf/ThermodynamicIntegration.jl"><li>ThermodynamicIntegration</li></a>
+                    <a href="https://turinglang.org/AdvancedPS.jl/"><li>AdvancedPS</li></a>
+                    <a href="https://turinglang.org/SliceSampling.jl/"><li>SliceSampling</li></a>
+                    <a href="https://turinglang.org/EllipticalSliceSampling.jl/"><li>EllipticalSliceSampling</li></a>
+                    <a href="https://turinglang.org/NestedSamplers.jl/"><li>NestedSamplers</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Diagnostics</li>
+                    <a href="https://turinglang.org/MCMCChains.jl/"><li>MCMCChains</li></a>
+                    <a href="https://turinglang.org/MCMCDiagnosticTools.jl/"><li>MCMCDiagnosticTools</li></a>
+                    <a href="https://turinglang.org/ParetoSmooth.jl/"><li>ParetoSmooth</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Gaussian Processes</li>
+                    <a href="https://juliagaussianprocesses.github.io/AbstractGPs.jl/"><li>AbstractGPs</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/KernelFunctions.jl/"><li>KernelFunctions</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/ApproximateGPs.jl/"><li>ApproximateGPs</li></a>
+                </ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Bijectors.jl/">Bijectors</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/TuringCallbacks.jl/">TuringCallbacks</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Deprecated/TuringBenchmarking/">TuringBenchmarking</a><span class="deprecated-badge">Deprecated</span></li></ul>
+            </div>
+        </li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/news/">News</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/team/">Team</a></li>
+    </ul>
+
+    <div class="ext-navbar-icons">
+        <a href="https://x.com/TuringLang" aria-label="Turing on X"><i class="fa-brands fa-x-twitter"></i></a>
+        <a href="https://discourse.julialang.org/c/domain/probprog/48" aria-label="Turing on Discourse"><i class="fa-brands fa-discourse"></i></a>
+        <a href="https://julialang.slack.com/archives/CCYDC34A0" aria-label="Turing on Slack"><i class="fa-brands fa-slack"></i></a>
+        <a href="https://github.com/TuringLang/" aria-label="Turing.jl on GitHub"><i class="fa-brands fa-github"></i></a>
+    </div>
+
+    <span class="ext-menu-toggle"><i class="fa-solid fa-bars"></i></span>
+</nav>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const menuToggle = document.querySelector(".ext-menu-toggle");
+        const navLinks = document.querySelector(".ext-nav-links");
+        const nav = document.querySelector(".ext-navigation");
+        const libraryHandler = document.getElementById("library-handler");
+        const dropdownContainer = document.getElementById("ext-dropdown-items");
+        let lastScrollY = window.scrollY;
+
+        function closeDropdown() {
+            if (dropdownContainer.classList.contains("show")) {
+                libraryHandler.classList.remove("open");
+                dropdownContainer.classList.remove("show");
+                setTimeout(() => {
+                    if (!dropdownContainer.classList.contains("show")) {
+                        dropdownContainer.style.display = "none";
+                    }
+                }, 300);
+            }
+        }
+
+        function openDropdown() {
+            dropdownContainer.style.display = "grid";
+            libraryHandler.classList.add("open");
+            setTimeout(() => {
+                dropdownContainer.classList.add("show");
+            }, 10);
+        }
+
+        function setAppropriateHeight() {
+            if (window.innerWidth <= 768) {
+                const viewportHeight = window.innerHeight;
+                const navHeight = nav.offsetHeight;
+                navLinks.style.maxHeight = `${viewportHeight - navHeight}px`;
+                navLinks.style.overflowY = "auto";
+            } else {
+                navLinks.style.maxHeight = "";
+                navLinks.style.overflowY = "";
+            }
+        }
+
+        menuToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            navLinks.classList.toggle("show");
+            if (navLinks.classList.contains("show")) {
+                setAppropriateHeight();
+                closeDropdown();
+                dropdownContainer.style.display = "none";
+            }
+        });
+
+        libraryHandler.addEventListener("click", (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            if (dropdownContainer.classList.contains("show")) {
+                closeDropdown();
+            } else {
+                openDropdown();
+            }
+            setAppropriateHeight();
+        });
+
+        // Close all menus if a click is registered outside the navigation bar.
+        document.addEventListener("click", (event) => {
+            if (!nav.contains(event.target)) {
+                navLinks.classList.remove("show");
+                closeDropdown();
+            }
+        });
+
+        // Hide navigation bar on scroll down in mobile view.
+        window.addEventListener("scroll", () => {
+            if (window.innerWidth <= 768) {
+                if (window.scrollY > lastScrollY && window.scrollY > nav.offsetHeight){
+                    nav.classList.add("hide");
+                } else {
+                    nav.classList.remove("hide");
+                }
+                lastScrollY = window.scrollY;
+            }
+        });
+
+        window.addEventListener("resize", setAppropriateHeight);
+    });
+</script>
+<!-- NAVBAR END -->
+
+<div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../"><img src="../assets/logo.svg" alt="Mooncake.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../">Mooncake.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Mooncake.jl</a></li><li class="is-active"><a class="tocitem" href>Tutorial</a><ul class="internal"><li><a class="tocitem" href="#DifferentiationInterface.jl-API"><span>DifferentiationInterface.jl API</span></a></li><li><a class="tocitem" href="#Mooncake.jl-API"><span>Mooncake.jl API</span></a></li></ul></li><li><a class="tocitem" href="../interface/">Interface</a></li><li><span class="tocitem">Understanding Mooncake.jl</span><ul><li><a class="tocitem" href="../understanding_mooncake/introduction/">Introduction</a></li><li><a class="tocitem" href="../understanding_mooncake/algorithmic_differentiation/">Algorithmic Differentiation</a></li><li><a class="tocitem" href="../understanding_mooncake/rule_system/">Mooncake.jl&#39;s Rule System</a></li></ul></li><li><span class="tocitem">Utilities</span><ul><li><a class="tocitem" href="../utilities/defining_rules/">Defining Rules</a></li><li><a class="tocitem" href="../utilities/debug_mode/">Debug Mode</a></li><li><a class="tocitem" href="../utilities/debugging_and_mwes/">Debugging and MWEs</a></li></ul></li><li><span class="tocitem">Developer Documentation</span><ul><li><a class="tocitem" href="../developer_documentation/running_tests_locally/">Running Tests Locally</a></li><li><a class="tocitem" href="../developer_documentation/developer_tools/">Developer Tools</a></li><li><a class="tocitem" href="../developer_documentation/tangents/">Tangents</a></li><li><a class="tocitem" href="../developer_documentation/custom_tangent_type/">Writing Custom Tangent Types</a></li><li><a class="tocitem" href="../developer_documentation/ir_representation/">IR Representations and Code Transformations</a></li><li><a class="tocitem" href="../developer_documentation/forwards_mode_design/">Forwards-Mode Design</a></li><li><a class="tocitem" href="../developer_documentation/reverse_mode_design/">Reverse-Mode Design</a></li><li><a class="tocitem" href="../developer_documentation/misc_internals_notes/">Misc. Internals Notes</a></li><li><a class="tocitem" href="../developer_documentation/internal_docstrings/">Internal Docstrings</a></li></ul></li><li><a class="tocitem" href="../known_limitations/">Known Limitations</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Tutorial</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Tutorial</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl/blob/main/docs/src/tutorial.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Tutorial"><a class="docs-heading-anchor" href="#Tutorial">Tutorial</a><a id="Tutorial-1"></a><a class="docs-heading-anchor-permalink" href="#Tutorial" title="Permalink"></a></h1><p>There are two ways to compute gradients with Mooncake.jl:</p><ul><li>through the standardised <a href="https://github.com/JuliaDiff/DifferentiationInterface.jl">DifferentiationInterface.jl</a> API</li><li>through the native Mooncake.jl API</li></ul><p>We recommend the former to start with, especially if you want to experiment with other automatic differentiation packages.</p><pre><code class="language-julia hljs">import DifferentiationInterface as DI
+import Mooncake</code></pre><h2 id="DifferentiationInterface.jl-API"><a class="docs-heading-anchor" href="#DifferentiationInterface.jl-API">DifferentiationInterface.jl API</a><a id="DifferentiationInterface.jl-API-1"></a><a class="docs-heading-anchor-permalink" href="#DifferentiationInterface.jl-API" title="Permalink"></a></h2><p>DifferentiationInterface.jl (or DI for short) provides a common entry point for every automatic differentiation package in Julia. To specify that you want to use Mooncake.jl, just create the right &quot;backend&quot; object (with an optional <a href="../interface/#Mooncake.Config"><code>Mooncake.Config</code></a>):</p><pre><code class="language-julia hljs">backend = DI.AutoMooncake(; config=nothing)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">ADTypes.AutoMooncake()</code></pre><p>This object is actually defined by a third package called <a href="https://github.com/SciML/ADTypes.jl">ADTypes.jl</a>, but re-exported by DI.</p><h3 id="Single-argument"><a class="docs-heading-anchor" href="#Single-argument">Single argument</a><a id="Single-argument-1"></a><a class="docs-heading-anchor-permalink" href="#Single-argument" title="Permalink"></a></h3><p>Suppose you want to differentiate the following function</p><pre><code class="language-julia hljs">f(x) = sum(abs2, x)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">f (generic function with 1 method)</code></pre><p>on the following input</p><pre><code class="language-julia hljs">x = float.(1:3)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">3-element Vector{Float64}:
+ 1.0
+ 2.0
+ 3.0</code></pre><p>The naive way is to simply call <a href="https://juliadiff.org/DifferentiationInterface.jl/DifferentiationInterface/stable/api/#DifferentiationInterface.gradient"><code>DI.gradient</code></a>:</p><pre><code class="language-julia hljs">DI.gradient(f, backend, x)  # slow, do not do this</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">3-element Vector{Float64}:
+ 2.0
+ 4.0
+ 6.0</code></pre><p>This returns the correct gradient, but it is very slow because it includes the time taken by Mooncake.jl to compute a differentiation rule for <code>f</code> (see <a href="../understanding_mooncake/rule_system/#Mooncake.jl&#39;s-Rule-System">Mooncake.jl&#39;s Rule System</a>). If you anticipate you will need more than one gradient, it is better to call <a href="https://juliadiff.org/DifferentiationInterface.jl/DifferentiationInterface/stable/api/#DifferentiationInterface.prepare_gradient"><code>DI.prepare_gradient</code></a> on a typical (e.g. random) input first:</p><pre><code class="language-julia hljs">typical_x = rand(3)
+prep = DI.prepare_gradient(f, backend, typical_x)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">DifferentiationInterfaceMooncakeExt.MooncakeGradientPrep{Nothing, Mooncake.Cache{Mooncake.DerivedRule{Tuple{typeof(Main.f), Vector{Float64}}, Tuple{Mooncake.CoDual{typeof(Main.f), Mooncake.NoFData}, Mooncake.CoDual{Vector{Float64}, Vector{Float64}}}, Mooncake.CoDual{Float64, Mooncake.NoFData}, Tuple{Float64}, Tuple{Mooncake.NoRData, Mooncake.NoRData}, false, Val{2}}, Nothing, Tuple{Mooncake.NoTangent, Vector{Float64}}}}(Val{Nothing}(), Mooncake.Cache{Mooncake.DerivedRule{Tuple{typeof(Main.f), Vector{Float64}}, Tuple{Mooncake.CoDual{typeof(Main.f), Mooncake.NoFData}, Mooncake.CoDual{Vector{Float64}, Vector{Float64}}}, Mooncake.CoDual{Float64, Mooncake.NoFData}, Tuple{Float64}, Tuple{Mooncake.NoRData, Mooncake.NoRData}, false, Val{2}}, Nothing, Tuple{Mooncake.NoTangent, Vector{Float64}}}(Mooncake.DerivedRule{Tuple{typeof(Main.f), Vector{Float64}}, Tuple{Mooncake.CoDual{typeof(Main.f), Mooncake.NoFData}, Mooncake.CoDual{Vector{Float64}, Vector{Float64}}}, Mooncake.CoDual{Float64, Mooncake.NoFData}, Tuple{Float64}, Tuple{Mooncake.NoRData, Mooncake.NoRData}, false, Val{2}}(MistyClosure (::Mooncake.CoDual{typeof(Main.f), Mooncake.NoFData}, ::Mooncake.CoDual{Vector{Float64}, Vector{Float64}})::Mooncake.CoDual{Float64, Mooncake.NoFData}-&gt;◌, Base.RefValue{MistyClosures.MistyClosure{Core.OpaqueClosure{Tuple{Float64}, Tuple{Mooncake.NoRData, Mooncake.NoRData}}}}(MistyClosure (::Float64)::Tuple{Mooncake.NoRData, Mooncake.NoRData}-&gt;◌), Val{2}()), nothing, (Mooncake.NoTangent(), [0.0, 0.0, 0.0])))</code></pre><p>The typical input should have the same size and type as the actual inputs we will provide later on. As for the contents of the preparation result, they do not matter. What matters is that it captures everything you need for <code>DI.gradient</code> to be fast:</p><pre><code class="language-julia hljs">DI.gradient(f, prep, backend, x)  # fast</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">3-element Vector{Float64}:
+ 2.0
+ 4.0
+ 6.0</code></pre><p>For optimal speed, you can provide storage space for the gradient and call <a href="https://juliadiff.org/DifferentiationInterface.jl/DifferentiationInterface/stable/api/#DifferentiationInterface.gradient%21"><code>DI.gradient!</code></a> instead:</p><pre><code class="language-julia hljs">grad = similar(x)
+DI.gradient!(f, grad, prep, backend, x)  # very fast</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">3-element Vector{Float64}:
+ 2.0
+ 4.0
+ 6.0</code></pre><p>If you also need the value of the function, check out <a href="https://juliadiff.org/DifferentiationInterface.jl/DifferentiationInterface/stable/api/#DifferentiationInterface.value_and_gradient"><code>DI.value_and_gradient</code></a> or <a href="https://juliadiff.org/DifferentiationInterface.jl/DifferentiationInterface/stable/api/#DifferentiationInterface.value_and_gradient%21"><code>DI.value_and_gradient!</code></a>:</p><pre><code class="language-julia hljs">DI.value_and_gradient(f, prep, backend, x)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(14.0, [2.0, 4.0, 6.0])</code></pre><h3 id="Multiple-arguments"><a class="docs-heading-anchor" href="#Multiple-arguments">Multiple arguments</a><a id="Multiple-arguments-1"></a><a class="docs-heading-anchor-permalink" href="#Multiple-arguments" title="Permalink"></a></h3><p>What should you do if your function takes more than one input argument? Well, DI can still handle it, <em>assuming that you only want the derivative with respect to one of them</em> (the first one, by convention). For instance, consider the function</p><pre><code class="language-julia hljs">g(x, a, b) = a * f(x) + b</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">g (generic function with 1 method)</code></pre><p>You can easily compute the gradient with respect to <code>x</code>, while keeping <code>a</code> and <code>b</code> fixed. To do that, just wrap these two arguments inside <a href="https://juliadiff.org/DifferentiationInterface.jl/DifferentiationInterface/stable/api/#DifferentiationInterface.Constant"><code>DI.Constant</code></a>, like so:</p><pre><code class="language-julia hljs">typical_a, typical_b = 1.0, 1.0
+prep = DI.prepare_gradient(g, backend, typical_x, DI.Constant(typical_a), DI.Constant(typical_b))
+
+a, b = 42.0, 3.14
+DI.value_and_gradient(g, prep, backend, x, DI.Constant(a), DI.Constant(b))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(591.14, [84.0, 168.0, 252.0])</code></pre><p>Note that this works even when you change the value of <code>a</code> or <code>b</code> (those are not baked into the preparation result).</p><p>If one of your additional arguments behaves like a scratch space in memory (instead of a meaningful constant), you can use <a href="https://juliadiff.org/DifferentiationInterface.jl/DifferentiationInterface/stable/api/#DifferentiationInterface.Cache"><code>DI.Cache</code></a> instead.</p><p>Now what if you care about the derivatives with respect to every argument? You can always go back to the single-argument case by putting everything inside a tuple:</p><pre><code class="language-julia hljs">g_tup(xab) = xab[2] * f(xab[1]) + xab[3]
+prep = DI.prepare_gradient(g_tup, backend, (typical_x, typical_a, typical_b))
+DI.value_and_gradient(g_tup, prep, backend, (x, a, b))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(591.14, ([84.0, 168.0, 252.0], 14.0, 1.0))</code></pre><p>You can also use the native API of Mooncake.jl, discussed below.</p><h3 id="Beyond-gradients"><a class="docs-heading-anchor" href="#Beyond-gradients">Beyond gradients</a><a id="Beyond-gradients-1"></a><a class="docs-heading-anchor-permalink" href="#Beyond-gradients" title="Permalink"></a></h3><p>Going through DI allows you to compute other kinds of derivatives, like (reverse-mode) Jacobian matrices. The syntax is very similar:</p><pre><code class="language-julia hljs">h(x) = cos.(x) .* sin.(reverse(x))
+prep = DI.prepare_jacobian(h, backend, x)
+DI.jacobian(h, prep, backend, x)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">3×3 Matrix{Float64}:
+ -0.118748   0.0       -0.534895
+  0.0       -0.653644   0.0
+ -0.534895   0.0       -0.118748</code></pre><h2 id="Mooncake.jl-API"><a class="docs-heading-anchor" href="#Mooncake.jl-API">Mooncake.jl API</a><a id="Mooncake.jl-API-1"></a><a class="docs-heading-anchor-permalink" href="#Mooncake.jl-API" title="Permalink"></a></h2><h3 id="Mooncake.jl-Functions"><a class="docs-heading-anchor" href="#Mooncake.jl-Functions">Mooncake.jl Functions</a><a id="Mooncake.jl-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Mooncake.jl-Functions" title="Permalink"></a></h3><p>Mooncake.jl provides the following core differentiation functions:</p><ul><li><strong>Forward mode</strong>: <code>Mooncake.value_and_derivative!!</code> - computes function value and the Frechet derivative</li><li><strong>Reverse mode</strong>: <code>Mooncake.value_and_gradient!!</code> - computes function value and gradient (when output is scalar)  </li><li><strong>Reverse mode</strong>: <code>Mooncake.value_and_pullback!!</code> - computes function value and pullback (general case)</li></ul><h3 id="Terminology-Comparison-with-DifferentiationInterface.jl"><a class="docs-heading-anchor" href="#Terminology-Comparison-with-DifferentiationInterface.jl">Terminology Comparison with DifferentiationInterface.jl</a><a id="Terminology-Comparison-with-DifferentiationInterface.jl-1"></a><a class="docs-heading-anchor-permalink" href="#Terminology-Comparison-with-DifferentiationInterface.jl" title="Permalink"></a></h3><p>Mooncake.jl discusses Frechet derivatives and their adjoints, as described in detail in <a href="../understanding_mooncake/algorithmic_differentiation/#Algorithmic-Differentiation">Algorithmic Differentiation</a>. This differs from the conventions used by <a href="https://github.com/JuliaDiff/DifferentiationInterface.jl">DifferentiationInterface.jl</a> and some other AD packages.</p><p><strong>General cases:</strong></p><ul><li><p><strong>Frechet derivative</strong>: In forward mode, Mooncake computes the Frechet derivative <code>D f[x]</code>, which maps tangent vectors to tangent vectors. This corresponds to what DifferentiationInterface refers to as a &quot;pushforward&quot;, and is implemented in <code>Mooncake.value_and_derivative!!</code>. </p></li><li><p><strong>Adjoint of derivative and pullback</strong>: In reverse mode, Mooncake computes the adjoint <code>D f[x]*</code> of the Frechet derivative, which maps cotangent vectors backwards through the computation. This corresponds to what DifferentiationInterface calls a &quot;pullback&quot; and is implemented in <code>Mooncake.value_and_pullback!!</code>.</p></li></ul><p><strong>Special cases (scalar input/output):</strong></p><ul><li><p><strong>Derivative</strong>: When the input is scalar, the Frechet derivative <code>f&#39;(x) = D f[x](v)</code> with <code>v = 1</code> gives the ordinary derivative. This corresponds to <code>DI.derivative</code>, while Mooncake lacks an equivalent API and handles this as a special case of <code>Mooncake.value_and_derivative!!</code>. </p></li><li><p><strong>Gradient</strong>: When the output is scalar, the adjoint of the derivative applied to <code>1</code> gives the gradient <code>∇f</code>. This corresponds to <code>DI.gradient</code> and is implemented in <code>Mooncake.value_and_gradient!!</code>.</p></li></ul><div class="admonition is-info" id="Info-b299f36632fecfe5"><header class="admonition-header">Info<a class="admonition-anchor" href="#Info-b299f36632fecfe5" title="Permalink"></a></header><div class="admonition-body"><p>For a detailed mathematical treatment of these concepts, see <a href="../understanding_mooncake/algorithmic_differentiation/#Algorithmic-Differentiation">Algorithmic Differentiation</a>, particularly the sections on <a href="../understanding_mooncake/algorithmic_differentiation/#Derivatives">Derivatives</a>.</p></div></div></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Mooncake.jl</a><a class="docs-footer-nextpage" href="../interface/">Interface »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.14.1 on <span class="colophon-date" title="Monday 13 October 2025 14:23">Monday 13 October 2025</span>. Using Julia version 1.11.7.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
