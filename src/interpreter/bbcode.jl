@@ -272,7 +272,7 @@ These should be assumed to be ordered.
 """
 collect_stmts(bb::BBlock)::Vector{IDInstPair} = collect(zip(bb.inst_ids, bb.insts))
 
-@static if VERSION >= v"1.12-"
+@static if VERSION > v"1.12-"
     """
         BBCode(
             blocks::Vector{BBlock}
@@ -364,7 +364,7 @@ end
 Make a new `BBCode` whose `blocks` is given by `new_blocks`, and fresh copies are made of
 all other fields from `ir`.
 """
-@static if VERSION >= v"1.12-"
+@static if VERSION > v"1.12-"
     function BBCode(ir::Union{IRCode,BBCode}, new_blocks::Vector{BBlock})
         return BBCode(
             new_blocks,
@@ -704,7 +704,7 @@ function CC.IRCode(bb_code::BBCode)
                 map(x -> x.stmt, insts),
                 Any[x.type for x in insts],
                 CC.CallInfo[x.info for x in insts],
-                foldl((x, y) -> append!(x, y.line), insts; init = Int32[]),
+                CC.copy(bb_code.debuginfo.codelocs),
                 map(x -> x.flag, insts),
             ),
             cfg,
