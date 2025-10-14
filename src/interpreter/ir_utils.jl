@@ -205,7 +205,7 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     ir = CC.compact!(ir)
     # CC.verify_ir(ir, true, false, CC.optimizer_lattice(local_interp))
     @static if VERSION >= v"1.12-"
-        CC.verify_linetable(ir.debuginfo, div(length(ir.debuginfo.codelocs), 3), true)
+        CC.verify_linetable(ir.debuginfo, length(ir.stmts), true)
     else
         CC.verify_linetable(ir.linetable, true)
     end

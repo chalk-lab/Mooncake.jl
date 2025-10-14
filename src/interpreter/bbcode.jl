@@ -699,12 +699,21 @@ function CC.IRCode(bb_code::BBCode)
     cfg = control_flow_graph(bb_code)
     insts = _lines_to_blocks(insts, cfg)
     @static if VERSION > v"1.12-"
+        lines = CC.copy(bb_code.debuginfo.codelocs)
+        n = length(insts)
+        if length(lines) > 3n
+            resize!(lines, 3n)
+        elseif length(lines) < 3n
+            for _ in (length(lines) + 1):3n
+                push!(lines, 0)
+            end
+        end
         return IRCode(
             CC.InstructionStream(
                 map(x -> x.stmt, insts),
                 Any[x.type for x in insts],
                 CC.CallInfo[x.info for x in insts],
-                CC.copy(bb_code.debuginfo.codelocs),
+                lines,
                 map(x -> x.flag, insts),
             ),
             cfg,

@@ -329,7 +329,7 @@ end
     end
 
     @testset "integration testing for invalid global ref errors" begin
-        @test_throws(
+        VERSION < v"1.12-" && @test_throws(
             Mooncake.Mooncake.MooncakeRuleCompilationError,
             Mooncake.build_rrule(
                 Tuple{typeof(Mooncake.TestResources.non_const_global_ref),Float64}

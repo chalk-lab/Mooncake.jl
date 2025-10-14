@@ -1372,7 +1372,7 @@ function forwards_pass_ir(
     arg_types = vcat(Tshared_data, map(fcodual_type ∘ CC.widenconst, ir.argtypes))
     new_ir = BBCode(ir, vcat(entry_block, blocks))
     new_ir = BBCode(new_ir, new_ir.blocks)  # Update arg_types
-    @static if VERSION >= v"1.12-"
+    @static if VERSION > v"1.12-"
         new_ir = BBCode(
             new_ir.blocks,
             arg_types,
