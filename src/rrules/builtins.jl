@@ -827,11 +827,13 @@ function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     end
 end
 
-function frule!!(f::Dual{typeof(Core._svec_len)}, v)
-    return zero_dual(Core._svec_len(primal(v)))
-end
-function rrule!!(f::CoDual{typeof(Core._svec_len)}, v)
-    return zero_fcodual(Core._svec_len(primal(v))), NoPullback(f, v)
+@static if VERSION > v"1.12-"
+    function frule!!(f::Dual{typeof(Core._svec_len)}, v)
+        return zero_dual(Core._svec_len(primal(v)))
+    end
+    function rrule!!(f::CoDual{typeof(Core._svec_len)}, v)
+        return zero_fcodual(Core._svec_len(primal(v))), NoPullback(f, v)
+    end
 end
 
 # Core._typebody!
