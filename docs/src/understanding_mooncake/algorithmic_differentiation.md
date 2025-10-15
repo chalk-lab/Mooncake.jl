@@ -581,12 +581,29 @@ Df[z]^*(\bar{z}) = \begin{pmatrix} 1 & i \end{pmatrix}
 = (a\bar{x} + b\bar{y}) + i (-b\bar{x} + a\bar{y}) = c^*\bar{z}.
 ```
 
-This matches what we would have expected by computing the adjoint from the usual inner product over complex numbers:
+## Link with inner products
+Take two complex numbers $u = a+bi$ and $v = c+di$.
+Since we identify complex numbers as vectors in $\mathbb{R}^2$,
+the inner product is
 ```math
-\langle\bar{z},Df[z](\dot{z})\rangle
-= \langle\bar{z},c\dot{z}\rangle
-= \langle c^*\bar{z},\dot{z}\rangle.
+\langle u,v \rangle = \langle (a, b), (c, d) \rangle = ac + bd.
 ```
+Equivalently, it can be written as follows:
+```math
+\langle u,v \rangle = \mathrm{Re}(u^* v).
+```
+
+Given $Df[z](\dot{z}) = c\dot{z}$ from the previous example,
+we can thus find its adjoint from the inner product:
+```math
+\begin{align*}
+\langle\bar{z},Df[z](\dot{z})\rangle & =\langle\bar{z},c\dot{z}\rangle\\
+ & =\mathrm{Re}(\bar{z}^*c\dot{z})\\
+ & =\mathrm{Re}(\bar{c^*z}^*\dot{z})\\
+ & =\langle c^*\bar{z},\dot{z}\rangle.
+\end{align*}
+```
+By identification, $Df[z]^* = c^*\bar{z}$.
 
 ## Link with Wirtinger derivatives
 Complex functions typically do not directly reference the real and imaginary parts $x$ and $y$ of their argument $z=x+iy$, but rather $z$ and its complex conjugate $z^*$.
