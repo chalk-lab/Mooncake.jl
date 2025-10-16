@@ -241,12 +241,12 @@ function get_primal_type(::ADInfo, x::GlobalRef)
         !isdefined(partition, :next) && return Any # binding is not defined
         partition = partition.next
     end
+    isconst(x) && return _typeof(getglobal(x.mod, x.name))
     if isdefined(partition, :restriction)
         type = partition.restriction
         isa(type, Type) && return type
         return _typeof(type)
     end
-    isconst(x) && return _typeof(getglobal(x.mod, x.name))
     return Any
 end
 else

@@ -60,6 +60,7 @@ end
         @test Mooncake.get_primal_type(info, GlobalRef(Base, :sin)) == typeof(sin)
         @test Mooncake.get_primal_type(info, GlobalRef(Main, :___x)) == Any
         @test Mooncake.get_primal_type(info, GlobalRef(Main, :___y)) == Float64
+        @test Mooncake.get_primal_type(info, GlobalRef(Main, :Float64)) == Type{Float64}
         @test Mooncake.get_primal_type(info, 5) == Int
         @test Mooncake.get_primal_type(info, QuoteNode(:hello)) == Symbol
         @test Mooncake.get_primal_type(info, Expr(:boundscheck)) == Bool
