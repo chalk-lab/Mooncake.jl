@@ -271,6 +271,13 @@ function has_equal_data_internal(
 ) where {T<:Core.SimpleVector}
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
 end
+
+for T in (:(Core.Method), :(Core.CodeInstance), :(Core.MethodInstance))
+    @eval function has_equal_data_internal(x::$T, y::$T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool})
+        x == y
+    end
+end
+
 function has_equal_data_internal(
     x::T, y::T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
 ) where {T}
