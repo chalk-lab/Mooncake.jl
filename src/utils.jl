@@ -331,7 +331,7 @@ function opaque_closure(
 )
     # This implementation is copied over directly from `Core.OpaqueClosure`.
     ir = CC.copy(ir)
-    ir.argtypes[1] = Tuple
+    ir.argtypes[1] = Tuple{Core.Typeof.(env)...}
     nargtypes = length(ir.argtypes)
     nargs = nargtypes - 1
     sig = compute_oc_signature(ir, nargs, isva)
@@ -431,7 +431,7 @@ function optimized_misty_closure(
     return MistyClosure(optimized_opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir))
 end
 
-@static if VERSION ≥ v"1.12-"
+@static if VERSION > v"1.12-"
     compute_ir_rettype(ir) = CC.compute_ir_rettype(ir)
     compute_oc_signature(ir, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
 else
