@@ -531,11 +531,12 @@ end
     return gemv!_pb!!
 end
 
+# Note that the complex symv are not BLAS but auxiliary functions in LAPACK
 @is_primitive(
     MinimalCtx,
     Tuple{
         typeof(BLAS.symv!),Char,T,AbstractMatrix{T},AbstractVector{T},T,AbstractVector{T}
-    } where {T<:BlasRealFloat},
+    } where {T<:BlasFloat},
 )
 
 function frule!!(
@@ -546,17 +547,17 @@ function frule!!(
     x_dx::Dual{<:AbstractVector{T}},
     beta::Dual{T},
     y_dy::Dual{<:AbstractVector{T}},
-) where {T<:BlasRealFloat}
+) where {T<:BlasFloat}
     # Extract primals.
     ul = primal(uplo)
-    α = primal(alpha)
-    β, dβ = extract(beta)
+    α, dα = numberify(alpha)
+    β, dβ = numberify(beta)
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
 
     # Compute Frechet derivative.
-    BLAS.symv!(ul, tangent(alpha), A, x, β, dy)
+    BLAS.symv!(ul, dα, A, x, β, dy)
     BLAS.symv!(ul, α, dA, x, one(T), dy)
     BLAS.symv!(ul, α, A, dx, one(T), dy)
     if !iszero(dβ)
@@ -580,7 +581,7 @@ function rrule!!(
     x_dx::CoDual{<:AbstractVector{T}},
     beta::CoDual{T},
     y_dy::CoDual{<:AbstractVector{T}},
-) where {T<:BlasRealFloat}
+) where {T<:BlasFloat}
 
     # Extract primals.
     ul = primal(uplo)
@@ -590,55 +591,65 @@ function rrule!!(
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
 
-    # In this rule we optimise carefully for the special case a == 1 && b == 0, which
-    # corresponds to simply multiplying symm(A) and x together, and writing the result to y.
-    # This is an extremely common edge case, so it's important to do well for it.
     y_copy = copy(y)
-    tmp_ref = Ref{Vector{T}}()
-    if (α == 1 && β == 0)
-        BLAS.symv!(ul, α, A, x, β, y)
-    else
-        tmp = BLAS.symv(ul, one(T), A, x)
-        tmp_ref[] = tmp
-        BLAS.axpby!(α, tmp, β, y)
-    end
+
+    BLAS.symv!(ul, α, A, x, β, y)
 
     function symv!_adjoint(::NoRData)
+        # dα = <dy, Ax>'
         if (α == 1 && β == 0)
-            dα = dot(dy, y)
+            # Don't recompute Ax, it's already in y.
+            dα = dot(dy, y)'
             BLAS.copyto!(y, y_copy)
         else
             # Reset y.
             BLAS.copyto!(y, y_copy)
 
-            # gradient w.r.t. α. Safe to write into memory for copy of y.
+            # First compute Ax with symv!: safe to write into memory for copy of y.
             BLAS.symv!(ul, one(T), A, x, zero(T), y_copy)
-            dα = dot(dy, y_copy)
+            dα = dot(dy, y_copy)'
         end
 
         # gradient w.r.t. A.
         dA_tmp = dy * x'
         if ul == 'L'
-            dA .+= α .* LowerTriangular(dA_tmp)
-            dA .+= α .* UpperTriangular(dA_tmp)'
+            dA .+= α' .* LowerTriangular(dA_tmp)
+            dA .+= α' .* transpose(UpperTriangular(dA_tmp))
         else
-            dA .+= α .* LowerTriangular(dA_tmp)'
-            dA .+= α .* UpperTriangular(dA_tmp)
+            dA .+= α' .* transpose(LowerTriangular(dA_tmp))
+            dA .+= α' .* UpperTriangular(dA_tmp)
         end
         @inbounds for n in diagind(dA)
-            dA[n] -= α * dA_tmp[n]
+            dA[n] -= α' * dA_tmp[n]
         end
 
-        # gradient w.r.t. x.
-        BLAS.symv!(ul, α, A, dy, one(T), dx)
+        # gradient w.r.t. x: dx += alpha' A' dy
+        if T <: BlasRealFloat
+            # A' = A for real numbers
+            BLAS.symv!(ul, α, A, dy, one(T), dx)
+        else
+            # A is symmetric but complex so A' = conj(A)
+            # Instead we compute conj(dx) += alpha A conj(dy)
+            conj!(dx)
+            BLAS.symv!(ul, α, A, conj.(dy), one(T), dx)
+            conj!(dx)
+        end
 
         # gradient w.r.t. beta.
-        dβ = dot(dy, y)
+        dβ = dot(y, dy)
 
         # gradient w.r.t. y.
-        BLAS.scal!(β, dy)
+        BLAS.scal!(β', dy)
 
-        return NoRData(), NoRData(), dα, NoRData(), NoRData(), dβ, NoRData()
+        return (
+            NoRData(),
+            NoRData(),
+            _rdata(dα),
+            NoRData(),
+            NoRData(),
+            _rdata(dβ),
+            NoRData(),
+        )
     end
     return y_dy, symv!_adjoint
 end
