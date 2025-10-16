@@ -386,7 +386,11 @@ function reinfer_and_inline(ci::Core.CodeInstance, world::UInt)
     irsv = CC.IRInterpretationState(interp, ci, mi, argtypes, world)
     irsv === nothing && return nothing
     for stmt in irsv.ir.stmts
-        Meta.isexpr(stmt[:inst], :loopinfo) && continue # not supported for IR interp
+        inst = stmt[:inst]
+        if Meta.isexpr(inst, :loopinfo) || Meta.isexpr(inst, :pop_exception) ||
+                isa(inst, CC.GotoIfNot) || isa(inst, CC.GotoNode)
+            continue
+        end
         stmt[:flag] |= CC.IR_FLAG_REFINED
     end
     CC.ir_abstract_constant_propagation(interp, irsv)
