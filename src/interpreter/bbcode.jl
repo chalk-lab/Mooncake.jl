@@ -710,11 +710,11 @@ function CC.IRCode(bb_code::BBCode)
         end
         return IRCode(
             CC.InstructionStream(
-                map(x -> x.stmt, insts),
+                Any[x.stmt for x in insts],
                 Any[x.type for x in insts],
                 CC.CallInfo[x.info for x in insts],
                 lines,
-                map(x -> x.flag, insts),
+                UInt32[x.flag for x in insts],
             ),
             cfg,
             CC.copy(bb_code.debuginfo),
@@ -726,11 +726,11 @@ function CC.IRCode(bb_code::BBCode)
     else
         return IRCode(
             CC.InstructionStream(
-                map(x -> x.stmt, insts),
-                map(x -> x.type, insts),
-                map(x -> x.info, insts),
-                map(x -> x.line, insts),
-                map(x -> x.flag, insts),
+                Any[x.stmt for x in insts],
+                Any[x.type for x in insts],
+                CC.CallInfo[x.info for x in insts],
+                Int32[x.line for x in insts],
+                UInt32[x.flag for x in insts],
             ),
             cfg,
             CC.copy(bb_code.linetable),

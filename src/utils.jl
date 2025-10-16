@@ -387,8 +387,9 @@ function reinfer_and_inline(ci::Core.CodeInstance, world::UInt)
     irsv === nothing && return nothing
     for stmt in irsv.ir.stmts
         inst = stmt[:inst]
-        if Meta.isexpr(inst, :loopinfo) || Meta.isexpr(inst, :pop_exception) ||
-                isa(inst, CC.GotoIfNot) || isa(inst, CC.GotoNode)
+        if isexpr(inst, :loopinfo) || isexpr(inst, :pop_exception) ||
+                isa(inst, CC.GotoIfNot) || isa(inst, CC.GotoNode) ||
+                isexpr(inst, :copyast)
             continue
         end
         stmt[:flag] |= CC.IR_FLAG_REFINED

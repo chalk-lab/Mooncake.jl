@@ -1363,7 +1363,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, typeof, randn(5)),
     ]
 
-    if VERSION >= v"1.12.0-rc"
+    if VERSION > v"1.12-"
         fs = [
             IntrinsicsWrappers.min_float,
             IntrinsicsWrappers.min_float_fast,
