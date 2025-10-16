@@ -331,7 +331,11 @@ function opaque_closure(
 )
     # This implementation is copied over directly from `Core.OpaqueClosure`.
     ir = CC.copy(ir)
-    ir.argtypes[1] = Tuple{Core.Typeof.(env)...}
+    @static if VERSION > v"1.12-"
+        ir.argtypes[1] = Tuple{Core.Typeof.(env)...}
+    else
+        ir.argtypes[1] = Tuple
+    end
     nargtypes = length(ir.argtypes)
     nargs = nargtypes - 1
     sig = compute_oc_signature(ir, nargs, isva)
