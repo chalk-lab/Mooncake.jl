@@ -654,10 +654,10 @@ function frule!!(::Dual{typeof(sqrt_llvm)}, x)
     dy = tangent(x) / (2 * y)
     return Dual(y, dy)
 end
-function rrule!!(::CoDual{typeof(sqrt_llvm)}, x)
+function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _x = primal(x)
     _y = sqrt_llvm(primal(x))
-    llvm_sqrt_pullback!!(dy) = NoRData(), dy / (2 * _y)
+    llvm_sqrt_pullback!!(dy) = NoRData(), ifelse(iszero(_y), P(0), dy / (2 * _y))
     return CoDual(_y, NoFData()), llvm_sqrt_pullback!!
 end
 
@@ -667,9 +667,9 @@ function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
     dy = tangent(x) / (2 * y)
     return Dual(y, dy)
 end
-function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x)
+function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
-    llvm_sqrt_fast_pullback!!(dy) = NoRData(), dy / (2 * _y)
+    llvm_sqrt_fast_pullback!!(dy) = NoRData(), ifelse(iszero(_y), P(0), dy / (2 * _y))
     return CoDual(_y, NoFData()), llvm_sqrt_fast_pullback!!
 end
 
@@ -1060,7 +1060,7 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(typeof),Any}
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     _x = Ref(5.0) # data used in tests which aren't protected by GC.
     _dx = Ref(4.0)
     _a = Vector{Vector{Float64}}(undef, 3)
@@ -1378,7 +1378,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
+function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     test_cases = Any[
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),

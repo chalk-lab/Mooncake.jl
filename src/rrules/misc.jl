@@ -223,7 +223,7 @@ end
     end
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:misc})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
 
     # Data which needs to not be GC'd.
     _x = Ref(5.0)
@@ -387,7 +387,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:misc})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:misc})
+function derived_rule_test_cases(rng_ctor, ::Val{:misc})
     test_cases = Any[
         (false, :none, nothing, x -> copy(Dict("A" => x[1], "B" => x[2]))["A"], (5.0, 5.0)),
         (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
