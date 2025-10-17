@@ -631,7 +631,7 @@ function test_rewind_correctness(
 
     # now we are certain the reverse rule works -- use it to compute
     # the tangents to compare with, rather than finite differences
-    @nospecialize rng x_x̄
+    @nospecialize rng x_ẋ
 
     x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
 
