@@ -37,18 +37,20 @@ In any case, the point here is that `Mooncake.TestUtils.test_rule` provides a co
 
 If you want to run the test suite on a single collection of arguments, you can do something like:
 ```julia
-julia> using LinearAlgebra, Mooncake, Random
+julia> using LinearAlgebra, Mooncake, StableRNGs
 
-julia> fargs = (BLAS.gemm!, 'N', 'N', 1.1, randn(3, 2), randn(2, 1), 0.5, randn(3, 1));
+julia> rng = StableRNG(123);
 
-julia> Mooncake.TestUtils.test_rule(Xoshiro(123), fargs...);
+julia> fargs = (BLAS.gemm!, 'N', 'N', 1.1, randn(rng, 3, 2), randn(rng, 2, 1), 0.5, randn(rng, 3, 1));
+
+julia> Mooncake.TestUtils.test_rule(StableRNG(123), fargs...);
 Test Summary:                                                                                                            | Pass  Total  Time
 Tuple{typeof(LinearAlgebra.BLAS.gemm!), Char, Char, Float64, Matrix{Float64}, Matrix{Float64}, Float64, Matrix{Float64}} |   34     34  0.0s
 ```
 
 When debugging, it might be helpful to set the `interface_only` kwarg to `test_rule` equal to `true`, in order to avoid running correctness tests:
 ```julia
-julia> Mooncake.TestUtils.test_rule(Xoshiro(123), fargs...; interface_only=true);
+julia> Mooncake.TestUtils.test_rule(StableRNG(123), fargs...; interface_only=true);
 ```
 
 ## Manually Running a Rule
@@ -56,11 +58,13 @@ julia> Mooncake.TestUtils.test_rule(Xoshiro(123), fargs...; interface_only=true)
 To run a rule manually at the command line, you might do something like the following. Note that `rrule!!` returns a `CoDual` (the output `y`) and a pullback function (`rvs`, short for reverse):
 
 ```julia
-julia> using LinearAlgebra, Mooncake, Random
+julia> using LinearAlgebra, Mooncake, StableRNGs
 
 julia> using Mooncake: rrule!!, zero_rdata, zero_fcodual, primal
 
-julia> fargs = (BLAS.gemm!, 'N', 'N', 1.1, randn(3, 2), randn(2, 1), 0.5, randn(3, 1));
+julia> rng = StableRNG(123);
+
+julia> fargs = (BLAS.gemm!, 'N', 'N', 1.1, randn(rng, 3, 2), randn(rng, 2, 1), 0.5, randn(rng, 3, 1));
 
 julia> fargs[1](fargs[2:end]...)
 3×1 Matrix{Float64}:
