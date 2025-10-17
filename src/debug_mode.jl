@@ -1,5 +1,89 @@
-# TODO: make it non-trivial. See https://github.com/chalk-lab/Mooncake.jl/issues/672
-DebugFRule(rule) = rule
+"""
+    DebugFRule(rule)
+
+Construct a callable equivalent to `rule` but with additional type checking for forward-mode
+AD. Checks:
+- Each `Dual` argument has tangent type matching `tangent_type(typeof(primal))`
+- The returned `Dual` has a correctly-typed tangent
+- Deep structural validation (array sizes, field types, etc.)
+
+Forward-mode counterpart to [`DebugRRule`](@ref).
+
+*Note:* Debug mode significantly slows execution (10-100x) and should only be used for
+diagnosing problems, not production runs.
+
+# Example
+```julia
+using Mooncake
+
+f(x) = sum(x)
+rule = build_frule(zero_dual(f), randn(10); debug_mode=true)
+
+# Valid input - passes
+result = rule(zero_dual(f), Dual(randn(10), randn(10)))
+
+# Invalid input - throws ErrorException wrapping the underlying validation error
+rule(zero_dual(f), Dual(randn(10), randn(11)))  # Size mismatch
+```
+"""
+struct DebugFRule{Trule}
+    rule::Trule
+end
+
+# Recursively copy the wrapped rule
+_copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
+
+"""
+    (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+
+Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
+"""
+@noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+    verify_dual_inputs(rule.rule, x)
+    y = rule.rule(x...)
+    verify_dual_output(x, y)
+    return y::Dual
+end
+
+@noinline function verify_dual_inputs(rule, @nospecialize(x::Tuple))
+    try
+        for _x in x
+            _x isa Dual || error("Expected Dual, got $(typeof(_x))")
+            verify_dual_value(_x)
+        end
+    catch e
+        error("error in inputs to rule with input types $(_typeof(x))")
+    end
+end
+
+@noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
+    try
+        y isa Dual || error("frule!! must return a Dual, got $(typeof(y))")
+        verify_dual_value(y)
+    catch e
+        error("error in outputs of rule with input types $(_typeof(x))")
+    end
+end
+
+@noinline function verify_dual_value(d::Dual)
+    p, t = primal(d), tangent(d)
+
+    # Fast path: type-level check
+    T_expected = tangent_type(typeof(p))
+    T_actual = typeof(t)
+    if !(T_actual <: T_expected)
+        throw(InvalidFDataException(
+            "Dual tangent type mismatch: primal $(typeof(p)) requires tangent type " *
+            "$T_expected, but got $T_actual"
+        ))
+    end
+
+    # Slow path: deep structural validation
+    verify_fdata_value(p, fdata(t))
+    verify_rdata_value(p, rdata(t))
+
+    return nothing
+end
 
 """
     DebugPullback(pb, y, x)
