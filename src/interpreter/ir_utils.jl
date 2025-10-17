@@ -59,7 +59,11 @@ function ircode(
     cfg = CC.compute_basic_blocks(insts)
     insts = __line_numbers_to_block_numbers!(insts, cfg)
     stmts = __insts_to_instruction_stream(insts)
-    linetable = [CC.LineInfoNode(Mooncake, :ircode, :ir_utils, Int32(1), Int32(0))]
+    @static if VERSION > v"1.12-"
+        linetable = CC.DebugInfoStream(nothing, CC.DebugInfo(:Mooncake), length(insts))
+    else
+        linetable = [CC.LineInfoNode(Mooncake, :ircode, :ir_utils, Int32(1), Int32(0))]
+    end
     meta = Expr[]
     return CC.IRCode(stmts, cfg, linetable, argtypes, meta, CC.VarState[])
 end
@@ -78,12 +82,19 @@ As such, if you wish to ensure that your `IRCode` prints nicely, you should ensu
 linetable field has at least one element.
 """
 function __insts_to_instruction_stream(insts::Vector{Any})
+    n = length(insts)
+    if VERSION > v"1-12-"
+        lineinfo = Int32[]
+        for _ in 1:n push!(lineinfo, 1, 0, 0) end
+    else
+        lineinfo = fill(Int32(1), n)
+    end
     return CC.InstructionStream(
         insts,
-        fill(Any, length(insts)),
-        fill(CC.NoCallInfo(), length(insts)),
-        fill(Int32(1), length(insts)),
-        fill(CC.IR_FLAG_REFINED, length(insts)),
+        Any[Any for _ in 1:n],
+        CC.CallInfo[CC.NoCallInfo() for _ in 1:n],
+        lineinfo,
+        fill(CC.IR_FLAG_REFINED, n),
     )
 end
 
@@ -115,13 +126,28 @@ end
 # Run type inference and constant propagation on the ir. Credit to @oxinabox:
 # https://gist.github.com/oxinabox/cdcffc1392f91a2f6d80b2524726d802#file-example-jl-L54
 function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
-    method_info = CC.MethodInfo(true, nothing)#=propagate_inbounds=#
-    min_world = world = get_inference_world(interp)
-    max_world = Base.get_world_counter()
-    irsv = CC.IRInterpretationState(
-        interp, method_info, ir, mi, ir.argtypes, world, min_world, max_world
-    )
-    rt = CC._ir_abstract_constant_propagation(interp, irsv)
+    @static if VERSION >= v"1.12-"
+        nargs = length(ir.argtypes) - 1
+        # TODO(mhauru) How do we figure out isva? I don't think it's in ir or mi, see above
+        # prints.
+        isva = false
+        propagate_inbounds = true
+        spec_info = CC.SpecInfo(nargs, isva, propagate_inbounds, nothing)
+        min_world = world = get_inference_world(interp)
+        max_world = Base.get_world_counter()
+        irsv = CC.IRInterpretationState(
+            interp, spec_info, ir, mi, ir.argtypes, world, min_world, max_world
+        )
+        rt = CC.ir_abstract_constant_propagation(interp, irsv)
+    else
+        method_info = CC.MethodInfo(true, nothing)#=propagate_inbounds=#
+        min_world = world = get_inference_world(interp)
+        max_world = Base.get_world_counter()
+        irsv = CC.IRInterpretationState(
+            interp, method_info, ir, mi, ir.argtypes, world, min_world, max_world
+        )
+        rt = CC._ir_abstract_constant_propagation(interp, irsv)
+    end
     return ir
 end
 
@@ -178,7 +204,11 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
 
     ir = CC.compact!(ir)
     # CC.verify_ir(ir, true, false, CC.optimizer_lattice(local_interp))
-    CC.verify_linetable(ir.linetable, true)
+    @static if VERSION > v"1.12-"
+        CC.verify_linetable(ir.debuginfo, length(ir.stmts), true)
+    else
+        CC.verify_linetable(ir.linetable, true)
+    end
     if show_ir
         println("Post-optimization")
         display(ir)

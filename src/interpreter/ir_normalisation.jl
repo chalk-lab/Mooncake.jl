@@ -28,6 +28,9 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
         inst = foreigncall_to_call(inst, sp_map)
         inst = new_to_call(inst)
         inst = splatnew_to_call(inst)
+        @static if VERSION > v"1.12-"
+            inst = resolve_unbound_globalrefs(ir, inst)
+        end
         inst = intrinsic_to_function(inst)
         inst = lift_getfield_and_others(inst)
         inst = lift_memoryrefget_and_memoryrefset_builtins(inst)
@@ -119,13 +122,15 @@ function fix_up_invoke_inference!(ir::IRCode)::IRCode
     stmts = ir.stmts
     for n in 1:length(stmts)
         if Meta.isexpr(stmt(stmts)[n], :invoke) && CC.widenconst(stmts.type[n]) == Any
-            mi = stmt(stmts)[n].args[1]::Core.MethodInstance
+            mi = get_mi(stmt(stmts)[n].args[1])
             R = isdefined(mi, :cache) ? mi.cache.rettype : CC.return_type(mi.specTypes)
             stmts.type[n] = R
         end
     end
     return ir
 end
+get_mi(ci::Core.CodeInstance) = @static isdefined(CC, :get_ci_mi) ? CC.get_ci_mi(ci) : ci.def
+get_mi(mi::Core.MethodInstance) = mi
 
 """
     foreigncall_to_call(inst, sp_map::Dict{Symbol, CC.VarState})
@@ -227,6 +232,38 @@ The purpose of this transformation is to make it possible to differentiate `:spl
 expressions in the same way as a primitive `:call` expression, i.e. via an `rrule!!`.
 """
 splatnew_to_call(x) = Meta.isexpr(x, :splatnew) ? Expr(:call, _splat_new_, x.args...) : x
+
+# XXX: this is probably unsound, but the best workaround so far
+function resolve_unbound_globalrefs(ir, @nospecialize ex)
+    isa(ex, Expr) || return ex
+    args = nothing
+    for i in eachindex(ex.args)
+        arg = ex.args[i]
+        # extracted from `Compiler.check_op` (called by `Compiler.verify_ir`)
+        if isa(arg, GlobalRef) && arg.mod !== Core && arg.mod !== Base
+            (valid_worlds, alldef) = CC.scan_leaf_partitions(nothing, arg, CC.WorldWithRange(CC.min_world(ir.valid_worlds), ir.valid_worlds)) do _, _, bpart
+                CC.is_defined_const_binding(CC.binding_kind(bpart))
+            end
+            if !alldef || CC.max_world(valid_worlds) < CC.max_world(ir.valid_worlds) || CC.min_world(valid_worlds) > CC.min_world(ir.valid_worlds)
+                # this is the potentially unsound bit, because we
+                # resolve a binding that was otherwise thought to be
+                # unbound during type inference.
+                if isdefined(arg.mod, arg.name)
+                    arg = getglobal(arg.mod, arg.name)
+                end
+            end
+            if args === nothing
+                args = ex.args[1:(i - 1)]
+            end
+        end
+        args === nothing && continue
+        push!(args, arg)
+    end
+    args === nothing && return ex
+    resolved = Expr(ex.head)
+    resolved.args = args
+    return resolved
+end
 
 """
     intrinsic_to_function(inst)
