@@ -53,7 +53,8 @@ julia> Mooncake.TestUtils.test_rule(Xoshiro(123), fargs...; interface_only=true)
 
 ## Manually Running a Rule
 
-To run a rule manually at the command line, you might do something like the following:
+To run a rule manually at the command line, you might do something like the following. Note that `rrule!!` returns a `CoDual` (the output `y`) and a pullback function (`rvs`, short for reverse):
+
 ```julia
 julia> using LinearAlgebra, Mooncake, Random
 
