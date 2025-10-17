@@ -609,7 +609,7 @@ function test_rrule_correctness(
 end
 
 # Test the reverse rule using FD, then, if that succeeds
-# test the forwrad rule using the reverse result, *not*
+# test the forward rule using the reverse result, *not*
 # finite differences -- this protects against errors from
 # generating FD results in a random, incorrect gauge for
 # matrix factorizations, for example
