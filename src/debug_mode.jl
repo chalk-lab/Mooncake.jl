@@ -72,10 +72,12 @@ end
     T_expected = tangent_type(typeof(p))
     T_actual = typeof(t)
     if !(T_actual <: T_expected)
-        throw(InvalidFDataException(
-            "Dual tangent type mismatch: primal $(typeof(p)) requires tangent type " *
-            "$T_expected, but got $T_actual"
-        ))
+        throw(
+            InvalidFDataException(
+                "Dual tangent type mismatch: primal $(typeof(p)) requires tangent type " *
+                "$T_expected, but got $T_actual",
+            ),
+        )
     end
 
     # Slow path: deep structural validation

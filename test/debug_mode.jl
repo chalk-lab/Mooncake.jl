@@ -44,7 +44,6 @@
 
     # Forward mode debug tests
     @testset "forward debug mode" begin
-
         @testset "valid inputs pass" begin
             # Single argument - use Float64, not π which has NoTangent
             rule = Mooncake.build_frule(zero_dual(sin), 0.0; debug_mode=true)
@@ -53,7 +52,9 @@
             # Multiple arguments
             f_mul(x, y) = x * y
             rule = Mooncake.build_frule(zero_dual(f_mul), 2.0, 3.0; debug_mode=true)
-            @test rule(zero_dual(f_mul), Mooncake.Dual(2.0, 1.0), Mooncake.Dual(3.0, 0.5)) isa Mooncake.Dual
+            @test rule(
+                zero_dual(f_mul), Mooncake.Dual(2.0, 1.0), Mooncake.Dual(3.0, 0.5)
+            ) isa Mooncake.Dual
 
             # Arrays
             h(x) = sum(x)
@@ -67,22 +68,30 @@
 
         @testset "size mismatch detected" begin
             rule = Mooncake.build_frule(zero_dual(size), randn(10); debug_mode=true)
-            @test_throws ErrorException rule(zero_dual(size), Mooncake.Dual(randn(11), randn(10)))
+            @test_throws ErrorException rule(
+                zero_dual(size), Mooncake.Dual(randn(11), randn(10))
+            )
         end
 
         @testset "element type mismatch detected" begin
             rule = Mooncake.build_frule(zero_dual(identity), Any[1.0]; debug_mode=true)
-            @test_throws ErrorException rule(zero_dual(identity), Mooncake.Dual(Any[1.0], Any[Float16(1.0)]))
+            @test_throws ErrorException rule(
+                zero_dual(identity), Mooncake.Dual(Any[1.0], Any[Float16(1.0)])
+            )
         end
 
         @testset "scalar type mismatch detected" begin
             rule = Mooncake.build_frule(zero_dual(identity), 1.0; debug_mode=true)
-            @test_throws ErrorException rule(zero_dual(identity), Mooncake.Dual(1.0, Float32(1.0)))
+            @test_throws ErrorException rule(
+                zero_dual(identity), Mooncake.Dual(1.0, Float32(1.0))
+            )
         end
 
         @testset "container type mismatch detected" begin
             rule = Mooncake.build_frule(zero_dual(identity), (1.0, 2.0); debug_mode=true)
-            @test_throws ErrorException rule(zero_dual(identity), Mooncake.Dual((1.0, 2.0), [1.0, 2.0]))
+            @test_throws ErrorException rule(
+                zero_dual(identity), Mooncake.Dual((1.0, 2.0), [1.0, 2.0])
+            )
         end
 
         @testset "error messages include type info" begin
@@ -101,15 +110,14 @@
         @testset "integration with test_rule" begin
             # Test basic case - test_rule expects primal functions, not Duals
             Mooncake.TestUtils.test_rule(
-                sr(123456), sin, 1.0;
-                mode=ForwardMode,
-                debug_mode=true,
-                perf_flag=:none,
+                sr(123456), sin, 1.0; mode=ForwardMode, debug_mode=true, perf_flag=:none
             )
 
             # Test with array
             Mooncake.TestUtils.test_rule(
-                sr(123456), sum, randn(5);
+                sr(123456),
+                sum,
+                randn(5);
                 mode=ForwardMode,
                 debug_mode=true,
                 perf_flag=:none,
