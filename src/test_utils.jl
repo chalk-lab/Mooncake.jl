@@ -937,7 +937,7 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     and use these to test the reverse rule. This protects against a forwards pass mapping
     to some arbitrary gauge for matrix transformations.
 - `output_tangent=nothing`: final output tangent to initialize reverse mode with for testing
-    the correctnes of reverse rules.
+    the correctness of reverse rules.
 - `atol=1e-3`: absolute tolerance for correctness check of the Frechet derivatives.
 - `rtol=1e-3`: relative tolerance for correctness check of the Frechet derivatives.
 """
