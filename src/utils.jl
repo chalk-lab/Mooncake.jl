@@ -3,9 +3,9 @@
 
 Central definition of typeof, which is specific to the use-required in this package.
 """
-_typeof(x) = Base._stable_typeof(x)
-_typeof(x::Tuple) = Tuple{tuple_map(_typeof, x)...}
-_typeof(x::NamedTuple{names}) where {names} = NamedTuple{names,_typeof(Tuple(x))}
+@unstable _typeof(x) = Base._stable_typeof(x)
+@unstable _typeof(x::Tuple) = Tuple{tuple_map(_typeof, x)...}
+@unstable _typeof(x::NamedTuple{names}) where {names} = NamedTuple{names,_typeof(Tuple(x))}
 
 """
     tuple_map(f::F, x::Tuple) where {F}
@@ -148,7 +148,7 @@ end
 Same as `map` but requires all elements of `x` to have equal length.
 The usual function `map` doesn't enforce this for `Array`s.
 """
-@inline function _map(f::F, x::Vararg{Any,N}) where {F,N}
+@unstable @inline function _map(f::F, x::Vararg{Any,N}) where {F,N}
     @assert allequal(map(length, x))
     return map(f, x...)
 end
@@ -159,7 +159,7 @@ end
 Returns a 2-tuple. The first element is true if `m` is a vararg method, and false if not.
 The second element contains the names of the static parameters associated to `m`.
 """
-is_vararg_and_sparam_names(m::Method) = m.isva, sparam_names(m)
+is_vararg_and_sparam_names(m::Method)::Tuple{Bool,Vector{Symbol}} = m.isva, sparam_names(m)
 
 """
     is_vararg_and_sparam_names(sig)::Tuple{Bool, Vector{Symbol}}
@@ -184,6 +184,14 @@ Calls `is_vararg_and_sparam_names` on `mi.def::Method`.
 function is_vararg_and_sparam_names(mi::Core.MethodInstance)::Tuple{Bool,Vector{Symbol}}
     return is_vararg_and_sparam_names(mi.def)
 end
+
+"""
+    is_vararg_and_sparam_names(mc::MistyClosure)::Tuple{Bool,Vector{Symbol}}
+
+Basic implementation for MistyClosure. Assumes is not a varargs function, and has no static
+parameter names appearing in the source.
+"""
+is_vararg_and_sparam_names(::MistyClosure)::Tuple{Bool,Vector{Symbol}} = false, Symbol[]
 
 """
     sparam_names(m::Core.Method)::Vector{Symbol}
@@ -357,3 +365,92 @@ function misty_closure(
 )
     return MistyClosure(opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir))
 end
+
+"""
+    _copytrito!(B::AbstractMatrix, A::AbstractMatrix, uplo::AbstractChar)
+
+Literally just copied over from Julia's LinearAlgebra std lib, in order to produce a method
+which works on 1.10.
+"""
+function _copytrito!(B::AbstractMatrix, A::AbstractMatrix, uplo::AbstractChar)
+    @static if VERSION >= v"1.11"
+        return copytrito!(B, A, uplo)
+    end
+    Base.require_one_based_indexing(A, B)
+    BLAS.chkuplo(uplo)
+    m, n = size(A)
+    m1, n1 = size(B)
+    A = Base.unalias(B, A)
+    if uplo == 'U'
+        if n < m
+            (m1 < n || n1 < n) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($n,$n)"
+                ),
+            )
+        else
+            (m1 < m || n1 < n) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($m,$n)"
+                ),
+            )
+        end
+        for j in 1:n, i in 1:min(j, m)
+            @inbounds B[i, j] = A[i, j]
+        end
+    else # uplo == 'L'
+        if m < n
+            (m1 < m || n1 < m) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($m,$m)"
+                ),
+            )
+        else
+            (m1 < m || n1 < n) && throw(
+                DimensionMismatch(
+                    lazy"B of size ($m1,$n1) should have at least size ($m,$n)"
+                ),
+            )
+        end
+        for j in 1:n, i in j:m
+            @inbounds B[i, j] = A[i, j]
+        end
+    end
+    return B
+end
+
+"""
+    _copy(x)
+
+!!! warning
+    This is an internal utility, not part of the public `Mooncake.jl` API, and may change
+    without notice. Its behaviour can vary across data types, so the description below
+    should be treated as guidance, not a strict contract.
+
+Utility for copying AD-related data structures (e.g. rules, caches, and other internals).
+
+# Examples of current behaviour
+
+Currently, `_copy` has the following behaviours for specific types:
+
+- `CoDual`, `Dual` types → no copying needed  
+- `Stack` types → create a new empty instance  
+- Composite types (e.g. `Tuple`, `NamedTuple`) → recursively copy elements  
+- Misty closure → construct a new Misty closure with deep copy of captured data  
+- Tangent types (`PossiblyUninitTangent`) → copy conditionally based on initialisation state  
+- Forward/reverse data types (e.g. `FData`, `RData`, `LazyZeroRData`) → recursively copy wrapped data  
+- `RRuleZeroWrapper` → recursively copy the wrapped rule into a new instance
+- `DerivedRule` → construct new instances with copied captures and caches  
+- `LazyFRule`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode  
+- `DynamicFRule`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
+"""
+
+# Generic fallback to Base.copy
+_copy(x) = copy(x)
+
+_copy(::Nothing) = nothing
+_copy(x::Symbol) = x
+_copy(x::Tuple) = map(_copy, x)
+_copy(x::NamedTuple) = map(_copy, x)
+_copy(x::Ref{T}) where {T} = isassigned(x) ? Ref{T}(_copy(x[])) : Ref{T}()
+_copy(x::Type) = x

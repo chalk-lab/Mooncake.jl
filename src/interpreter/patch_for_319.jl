@@ -1,5 +1,5 @@
 # The purpose of the code in this file is to provide a work-around for the Julia compiler
-# bug discussed in https://github.com/compintell/Mooncake.jl/issues/319 . You do not need to
+# bug discussed in https://github.com/chalk-lab/Mooncake.jl/issues/319 . You do not need to
 # understand it in order to understand Mooncake. I (Will) would recommend against spending
 # any time at all reading / understanding this file unless you are actively working on this
 # issue, and find it useful.

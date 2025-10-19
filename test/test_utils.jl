@@ -45,20 +45,20 @@
             make_indirect_circular_reference_array(),
         )
         @test !has_equal_data(
-            (s = make_circular_reference_struct(); s.a = 1.0; s),
-            (t = make_circular_reference_struct(); t.a = 2.0; t),
+            (s=make_circular_reference_struct(); s.a=1.0; s),
+            (t=make_circular_reference_struct(); t.a=2.0; t),
         )
         @test !has_equal_data(
-            (a = make_indirect_circular_reference_array(); a[1][1] = 1.0; a),
-            (b = make_indirect_circular_reference_array(); b[1][1] = 2.0; b),
+            (a=make_indirect_circular_reference_array(); a[1][1]=1.0; a),
+            (b=make_indirect_circular_reference_array(); b[1][1]=2.0; b),
         )
         @test !has_equal_data(
-            (s = make_indirect_circular_reference_struct(); s.b.a = 1.0; s),
-            (t = make_indirect_circular_reference_struct(); t.b.a = 2.0; t),
+            (s=make_indirect_circular_reference_struct(); s.b.a=1.0; s),
+            (t=make_indirect_circular_reference_struct(); t.b.a=2.0; t),
         )
         @test !has_equal_data(
-            (a = make_indirect_circular_reference_array(); a[1][1] = 1.0; a),
-            (b = make_indirect_circular_reference_array(); b[1][1] = 2.0; b),
+            (a=make_indirect_circular_reference_array(); a[1][1]=1.0; a),
+            (b=make_indirect_circular_reference_array(); b[1][1]=2.0; b),
         )
     end
     @testset "populate_address_map" begin

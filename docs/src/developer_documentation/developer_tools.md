@@ -8,6 +8,7 @@ Since these provide access to internals, they do not follow the usual rules of s
 may change without notice!
 ```@docs; canonical=false
 Mooncake.primal_ir
+Mooncake.dual_ir
 Mooncake.fwd_ir
 Mooncake.rvs_ir
 ```

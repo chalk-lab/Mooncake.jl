@@ -22,6 +22,7 @@ struct FData{T<:NamedTuple}
     data::T
 end
 
+# Recursively copy the wrapped data
 _copy(x::P) where {P<:FData} = P(_copy(x.data))
 
 fields_type(::Type{FData{T}}) where {T<:NamedTuple} = T
@@ -155,6 +156,8 @@ fdata_type(T)
 
 fdata_type(x) = throw(error("$x is not a type. Perhaps you meant typeof(x)?"))
 
+@foldable fdata_type(::Type{Union{}}) = Union{}
+
 fdata_type(::Type{T}) where {T<:IEEEFloat} = NoFData
 
 function fdata_type(::Type{PossiblyUninitTangent{T}}) where {T}
@@ -229,7 +232,7 @@ end
 Returns the type of to the nth field of the fdata type associated to `P`. Will be a
 `PossiblyUninitTangent` if said field can be undefined.
 """
-function fdata_field_type(::Type{P}, n::Int) where {P}
+@unstable @inline function fdata_field_type(::Type{P}, n::Int) where {P}
     Tf = tangent_type(fieldtype(P, n))
     f = ismutabletype(P) ? Tf : fdata_type(Tf)
     return is_always_initialised(P, n) ? f : PossiblyUninitTangent{f}
@@ -256,6 +259,10 @@ function fdata(t::T) where {T}
     return F(fdata(t.fields))
 end
 
+function fdata(::Type{T}) where {T}
+    error("$T is a type. Perhaps you meant fdata_type($T) or fdata(instance_of_tangent)?")
+end
+
 function fdata(t::T) where {T<:PossiblyUninitTangent}
     F = fdata_type(T)
     return is_init(t) ? F(fdata(val(t))) : F()
@@ -265,6 +272,11 @@ function fdata(t::T) where {T<:Union{Tuple,NamedTuple}}
     return fdata_type(T) == NoFData ? NoFData() : tuple_map(fdata, t)
 end
 
+"""
+    uninit_fdata(p)
+
+Equivalent to `fdata(uninit_tangent(p))`.
+"""
 uninit_fdata(p) = fdata(uninit_tangent(p))
 
 """
@@ -340,10 +352,12 @@ function __verify_fdata_value(c::IdDict{Any,Nothing}, p::Array, f::Array)
 end
 
 # (mutable) structs, Tuples, and NamedTuples all have slightly different storage.
-_get_fdata_field(f::NamedTuple, name) = getfield(f, name)
-_get_fdata_field(f::Tuple, name) = getfield(f, name)
-_get_fdata_field(f::FData, name) = val(getfield(f.data, name))
-_get_fdata_field(f::MutableTangent, name) = fdata(val(getfield(f.fields, name)))
+@unstable @inline _get_fdata_field(f::NamedTuple, name) = getfield(f, name)
+@unstable @inline _get_fdata_field(f::Tuple, name) = getfield(f, name)
+@unstable @inline _get_fdata_field(f::FData, name) = val(getfield(f.data, name))
+@unstable @inline _get_fdata_field(f::MutableTangent, name) = fdata(
+    val(getfield(f.fields, name))
+)
 
 function __verify_fdata_value(c::IdDict{Any,Nothing}, p, f)
 
@@ -392,6 +406,7 @@ struct RData{T<:NamedTuple}
     data::T
 end
 
+# Recursively copy the wrapped data
 _copy(x::P) where {P<:RData} = P(_copy(x.data))
 
 fields_type(::Type{RData{T}}) where {T<:NamedTuple} = T
@@ -419,6 +434,8 @@ rdata_type(T)
 
 rdata_type(x) = throw(error("$x is not a type. Perhaps you meant typeof(x)?"))
 
+@foldable rdata_type(::Type{Union{}}) = Union{}
+
 rdata_type(::Type{T}) where {T<:IEEEFloat} = T
 
 function rdata_type(::Type{PossiblyUninitTangent{T}}) where {T}
@@ -433,7 +450,7 @@ end
     # This method can only handle struct types. Tell user to implement their own method.
     if isprimitivetype(T)
         msg = "$T is a primitive type. Implement a method of `rdata_type` for it."
-        return :(error(msg))
+        return :(error($msg))
     end
 
     # If the type is a Union, then take the union type of its arguments.
@@ -517,6 +534,10 @@ function rdata(t::T) where {T}
     # T must be a `Tangent` by now. If it's not, something has gone wrong.
     T <: Tangent || error("Unhandled type $T")
     return R(rdata(t.fields))
+end
+
+function rdata(::Type{T}) where {T}
+    error("$T is a type. Perhaps you meant rdata_type($T) or rdata(instance_of_tangent)?")
 end
 
 function rdata(t::T) where {T<:PossiblyUninitTangent}
@@ -670,7 +691,7 @@ with.
 @generated function zero_rdata_from_type(::Type{P}) where {P}
 
     # Prepare expressions for manually-unrolled loop to construct zero rdata elements.
-    if P isa DataType
+    if P isa DataType && isconcretetype(P)
         names = fieldnames(P)
         types = fieldtypes(P)
         wrapped_field_zeros = map(enumerate(always_initialised(P))) do (n, init)
@@ -812,6 +833,7 @@ struct LazyZeroRData{P,Tdata}
     data::Tdata
 end
 
+# Recursively copy the wrapped data
 _copy(x::P) where {P<:LazyZeroRData} = P(_copy(x.data))
 
 # Returns the type which must be output by LazyZeroRData whenever it is passed a `P`.
@@ -850,6 +872,28 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 @foldable tangent_type(::Type{NoFData}, ::Type{NoRData}) = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
+
+# Union types. NOTE: Only `Union{Nothing, Array{<:Any,N}, Base.IEEEFloat}` are supported.
+@foldable function tangent_type(
+    ::Type{NoFData}, ::Type{R}
+) where {R<:Union{NoRData,T} where {T<:Base.IEEEFloat}}
+    return tangent_type(R)
+end
+@foldable function tangent_type(
+    ::Type{F}, ::Type{NoRData}
+) where {F<:Union{NoFData,T} where {T}}
+    _validate_union(F)
+    return tangent_type(F)
+end
+function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
+    _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F
+    if rdata_type(tangent_type(_T)) != NoRData
+        throw(
+            InvalidFDataException("Something went wrong: called tangent_type($F, NoRData)")
+        )
+    end
+    return nothing
+end
 
 # Tuples
 @foldable @generated function tangent_type(::Type{F}, ::Type{R}) where {F<:Tuple,R<:Tuple}

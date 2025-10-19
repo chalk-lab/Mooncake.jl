@@ -1,15 +1,22 @@
 # Contains a ccall, which must be avoided.
-@zero_adjoint MinimalCtx Tuple{Type{MersenneTwister},Any}
+@zero_derivative MinimalCtx Tuple{Type{MersenneTwister},Any}
 
 const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
-@zero_adjoint MinimalCtx Tuple{typeof(randn),KnownRNGs}
-@zero_adjoint MinimalCtx Tuple{typeof(randexp),KnownRNGs}
-@zero_adjoint MinimalCtx Tuple{typeof(randn),KnownRNGs,Type{<:IEEEFloat}}
-@zero_adjoint MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
+@zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs}
+@zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs}
+@zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs,Type{<:IEEEFloat}}
+@zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
 
 const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
 for f in [randn!, randexp!]
     @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
+    @eval function frule!!(
+        ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
+    )
+        $f(primal(rng), primal(x))
+        tangent(x) .= 0
+        return x
+    end
     @eval function rrule!!(
         ::CoDual{typeof($f)}, rng::CoDual{<:SpecialisedRNGs}, x::CoDual{<:Array{Float64}}
     )
@@ -26,7 +33,7 @@ for f in [randn!, randexp!]
     end
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:random})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
     rngs = [MersenneTwister(123), TaskLocalRNG(), Xoshiro(123)]
     all_rngs = vcat(rngs, RandomDevice())
     test_cases = vcat(
@@ -49,7 +56,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:random})
     return test_cases, Any[]
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:random})
+function derived_rule_test_cases(rng_ctor, ::Val{:random})
     test_cases = Any[
 
         # Random number generation.

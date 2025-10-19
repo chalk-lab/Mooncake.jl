@@ -2,24 +2,24 @@
 
 @foldable tangent_type(::Type{<:IdDict{K,V}}) where {K,V} = IdDict{K,tangent_type(V)}
 
-function zero_tangent_internal(d::P, stackdict::StackDict) where {P<:IdDict}
+function zero_tangent_internal(d::P, dict::MaybeCache) where {P<:IdDict}
     T = tangent_type(P)
-    if haskey(stackdict, d)
-        return stackdict[d]::T
+    if haskey(dict, d)
+        return dict[d]::T
     else
-        t = T([k => zero_tangent_internal(v, stackdict) for (k, v) in d])
-        stackdict[d] = t
+        t = T([k => zero_tangent_internal(v, dict) for (k, v) in d])
+        dict[d] = t
         return t
     end
 end
 
-function randn_tangent_internal(rng::AbstractRNG, d::P, stackdict::Any) where {P<:IdDict}
+function randn_tangent_internal(rng::AbstractRNG, d::P, dict::MaybeCache) where {P<:IdDict}
     T = tangent_type(P)
-    if haskey(stackdict, d)
-        return stackdict[d]::T
+    if haskey(dict, d)
+        return dict[d]::T
     else
-        t = T([k => randn_tangent_internal(rng, v, stackdict) for (k, v) in d])
-        stackdict[d] = t
+        t = T([k => randn_tangent_internal(rng, v, dict) for (k, v) in d])
+        dict[d] = t
         return t
     end
 end
@@ -31,9 +31,8 @@ function increment_internal!!(c::IncCache, p::T, q::T) where {T<:IdDict}
     end
     return p
 end
-function set_to_zero_internal!!(c::IncCache, t::IdDict)
-    haskey(c, t) && return t
-    c[t] = false
+function set_to_zero_internal!!(c::SetToZeroCache, t::IdDict)
+    _already_tracked!(c, t) && return t
     foreach(keys(t)) do k
         t[k] = set_to_zero_internal!!(c, t[k])
     end
@@ -52,7 +51,9 @@ function _dot_internal(c::MaybeCache, p::T, q::T) where {T<:IdDict}
     key = (p, q)
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
-    return sum([_dot_internal(c, p[k], q[k]) for k in keys(p)]; init=0.0)
+    return sum(keys(p); init=0.0) do k
+        _dot_internal(c, p[k], q[k])::Float64
+    end
 end
 function _add_to_primal_internal(
     c::MaybeCache, p::IdDict{K,V}, t::IdDict{K}, unsafe::Bool
@@ -113,6 +114,11 @@ tangent(f::IdDict, ::NoRData) = f
 # standard built-in functionality on `IdDict`s.
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
+function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
+    Base.rehash!(primal(d), primal(newsz))
+    Base.rehash!(tangent(d), primal(newsz))
+    return d
+end
 function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoDual)
     Base.rehash!(primal(d), primal(newsz))
     Base.rehash!(tangent(d), primal(newsz))
@@ -120,6 +126,11 @@ function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoD
 end
 
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
+function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
+    setindex!(primal(d), primal(val), primal(key))
+    setindex!(tangent(d), tangent(val), primal(key))
+    return d
+end
 function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) where {K,V}
     k = primal(key)
     restore_state = in(k, keys(primal(d)))
@@ -153,6 +164,13 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
 end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
+function frule!!(
+    ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Dual
+) where {K,V}
+    x = get(primal(d), primal(key), primal(default))
+    dx = get(tangent(d), primal(key), tangent(default))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{IdDict{K,V}}, key::CoDual, default::CoDual
 ) where {K,V}
@@ -176,6 +194,9 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
+function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
+    return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
+end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{IdDict{K,V}}, key::CoDual
 ) where {K,V}
@@ -192,17 +213,23 @@ end
 
 for name in
     [:(:jl_idtable_rehash), :(:jl_eqtable_put), :(:jl_eqtable_get), :(:jl_eqtable_nextind)]
+    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
+        return unexpected_foreigncall_error($name)
+    end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
-        return unexepcted_foreigncall_error($name)
+        return unexpected_foreigncall_error($name)
     end
 end
 
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
+function frule!!(::Dual{Type{IdDict{K,V}}}) where {K,V}
+    return Dual(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
+end
 function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:iddict})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
     test_cases = Any[
         (false, :stability, nothing, Base.rehash!, IdDict(true => 5.0, false => 4.0), 10),
         (false, :none, nothing, setindex!, IdDict(true => 5.0, false => 4.0), 3.0, false),
@@ -216,4 +243,4 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:iddict})
     return test_cases, memory
 end
 
-generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:iddict}) = Any[], Any[]
+derived_rule_test_cases(rng_ctor, ::Val{:iddict}) = Any[], Any[]

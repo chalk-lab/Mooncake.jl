@@ -16,7 +16,7 @@ using Mooncake.TestUtils: test_rule
                 false,
                 :none,
                 true,
-                LuxLib.Impl.batched_matmul,
+                LuxLib.Impl.batched_matmul_fallback,
                 randn(5, 4, 3),
                 randn(4, 3, 3),
             ),
@@ -66,7 +66,7 @@ using Mooncake.TestUtils: test_rule
         vec(
             map(
                 Iterators.product(
-                    [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp()],
+                    [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
                     [randn(5), nothing],
                     [Lux.relu, tanh, NNlib.gelu],
                 ),
@@ -85,6 +85,7 @@ using Mooncake.TestUtils: test_rule
             end,
         ),
     )
-        test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only)
+        mode = Mooncake.ReverseMode
+        test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode)
     end
 end

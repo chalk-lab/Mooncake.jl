@@ -9,29 +9,29 @@ mutable struct TaskTangent end
 
 tangent_type(::Type{Task}) = TaskTangent
 
-function zero_tangent_internal(p::Task, stackdict::StackDict)
-    if haskey(stackdict, p)
-        return stackdict[p]::TaskTangent
+function zero_tangent_internal(p::Task, dict::MaybeCache)
+    if haskey(dict, p)
+        return dict[p]::TaskTangent
     else
         t = TaskTangent()
-        stackdict[p] = t
+        dict[p] = t
         return t
     end
 end
 
-function randn_tangent_internal(rng::AbstractRNG, p::Task, stackdict::Any)
-    if haskey(stackdict, p)
-        return stackdict[p]::TaskTangent
+function randn_tangent_internal(rng::AbstractRNG, p::Task, dict::MaybeCache)
+    if haskey(dict, p)
+        return dict[p]::TaskTangent
     else
         t = TaskTangent()
-        stackdict[p] = t
+        dict[p] = t
         return t
     end
 end
 
 increment_internal!!(::IncCache, t::TaskTangent, s::TaskTangent) = t
 
-set_to_zero_internal!!(::IncCache, t::TaskTangent) = t
+set_to_zero_internal!!(::SetToZeroCache, t::TaskTangent) = t
 
 _add_to_primal_internal(::MaybeCache, p::Task, t::TaskTangent, ::Bool) = p
 
@@ -49,13 +49,21 @@ rdata_type(::Type{TaskTangent}) = NoRData
 
 tangent(t::TaskTangent, ::NoRData) = t
 
+@inline function _get_tangent_field(t::TaskTangent, f)
+    f === :rngState0 && return NoTangent()
+    f === :rngState1 && return NoTangent()
+    f === :rngState2 && return NoTangent()
+    f === :rngState3 && return NoTangent()
+    f === :rngState4 && return NoTangent()
+    return error("Unhandled field $f")
+end
 @inline function _get_fdata_field(_, t::TaskTangent, f)
     f === :rngState0 && return NoFData()
     f === :rngState1 && return NoFData()
     f === :rngState2 && return NoFData()
     f === :rngState3 && return NoFData()
     f === :rngState4 && return NoFData()
-    throw(error("Unhandled field $f"))
+    return error("Unhandled field $f")
 end
 
 @inline increment_field_rdata!(::TaskTangent, ::NoRData, ::Val) = nothing
@@ -69,8 +77,12 @@ function get_tangent_field(t::TaskTangent, f)
     throw(error("Unhandled field $f"))
 end
 
+const TaskDual = Dual{Task,TaskTangent}
 const TaskCoDual = CoDual{Task,TaskTangent}
 
+function frule!!(::Dual{typeof(lgetfield)}, x::TaskDual, ::Dual{Val{f}}) where {f}
+    return Dual(getfield(primal(x), f), _get_tangent_field(tangent(x), f))
+end
 function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) where {f}
     dx = x.dx
     function mutable_lgetfield_pb!!(dy)
@@ -81,21 +93,27 @@ function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) w
     return y, mutable_lgetfield_pb!!
 end
 
+function frule!!(::Dual{typeof(getfield)}, x::TaskDual, f::Dual)
+    return Dual(getfield(primal(x), primal(f)), _get_tangent_field(tangent(x), primal(f)))
+end
 function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
 
+function frule!!(::Dual{typeof(lsetfield!)}, task::TaskDual, name::Dual, val::Dual)
+    return lsetfield_frule(task, name, val)
+end
 function rrule!!(::CoDual{typeof(lsetfield!)}, task::TaskCoDual, name::CoDual, val::CoDual)
     return lsetfield_rrule(task, name, val)
 end
 
 set_tangent_field!(t::TaskTangent, f, ::NoTangent) = NoTangent()
 
-@zero_adjoint MinimalCtx Tuple{typeof(current_task)}
+@zero_derivative MinimalCtx Tuple{typeof(current_task)}
 
 __verify_fdata_value(::IdDict{Any,Nothing}, ::Task, ::TaskTangent) = nothing
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:tasks})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:tasks})
     test_cases = Any[
         (false, :none, nothing, lgetfield, Task(() -> nothing), Val(:rngState1)),
         (false, :none, nothing, getfield, Task(() -> nothing), :rngState1),
@@ -114,7 +132,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:tasks})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:tasks})
+function derived_rule_test_cases(rng_ctor, ::Val{:tasks})
     test_cases = Any[(
         false,
         :none,

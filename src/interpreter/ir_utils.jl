@@ -1,10 +1,39 @@
+stmt_field_name() = @static VERSION < v"1.11" ? :inst : :stmt
+
 """
     stmt(ir::CC.InstructionStream)
 
 Get the field containing the instructions in `ir`. This changed name in 1.11 from `inst` to
 `stmt`.
 """
-stmt(ir::CC.InstructionStream) = @static VERSION < v"1.11.0-rc4" ? ir.inst : ir.stmt
+stmt(ir::CC.InstructionStream) = CC.getfield(ir, stmt_field_name())
+
+"""
+    stmt(x::CC.Instruction)
+
+Get the statement from `x`. This field changed name in 1.11 from `inst` to `stmt`.
+"""
+stmt(x::CC.Instruction) = CC.getindex(x, stmt_field_name())
+
+set_stmt!(ir::IRCode, ssa::SSAValue, a) = set_ir!(ir, ssa, stmt_field_name(), a)
+
+get_ir(ir::IRCode, idx::SSAValue) = CC.getindex(ir, idx)
+get_ir(ir::IRCode, idx::SSAValue, name::Symbol) = CC.getindex(get_ir(ir, idx), name)
+
+"""
+
+"""
+function set_ir!(ir::IRCode, idx::SSAValue, name::Symbol, value)
+    return CC.setindex!(CC.getindex(ir, idx), value, name)
+end
+
+function replace_call!(ir, idx::SSAValue, new_call)
+    set_ir!(ir, idx, :inst, new_call)
+    set_ir!(ir, idx, :type, Any)
+    set_ir!(ir, idx, :info, CC.NoCallInfo())
+    set_ir!(ir, idx, :flag, CC.IR_FLAG_REFINED)
+    return nothing
+end
 
 """
     ircode(
@@ -86,7 +115,7 @@ end
 # Run type inference and constant propagation on the ir. Credit to @oxinabox:
 # https://gist.github.com/oxinabox/cdcffc1392f91a2f6d80b2524726d802#file-example-jl-L54
 function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
-    method_info = CC.MethodInfo(true, nothing) #=propagate_inbounds=#
+    method_info = CC.MethodInfo(true, nothing)#=propagate_inbounds=#
     min_world = world = get_inference_world(interp)
     max_world = Base.get_world_counter()
     irsv = CC.IRInterpretationState(
@@ -135,7 +164,7 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     inline_state = CC.InliningState(local_interp)
     CC.verify_ir(ir)
     if do_inline
-        ir = CC.ssa_inlining_pass!(ir, inline_state, true) #=propagate_inbounds=#
+        ir = CC.ssa_inlining_pass!(ir, inline_state, true)#=propagate_inbounds=#
         ir = CC.compact!(ir)
     end
     ir = __strip_coverage!(ir)
@@ -220,6 +249,12 @@ function lookup_ir(
     return CC.typeinf_ircode(interp, mi.def, mi.specTypes, mi.sparam_vals, optimize_until)
 end
 
+function lookup_ir(::CC.AbstractInterpreter, mc::MistyClosure; optimize_until=nothing)
+    return mc.ir[], return_type(mc.oc)
+end
+
+return_type(::Core.OpaqueClosure{A,B}) where {A,B} = B
+
 """
     is_unreachable_return_node(x::ReturnNode)
 
@@ -267,4 +302,32 @@ function replace_uses_with!(stmt, def::Union{Argument,SSAValue}, val)
     else
         return stmt
     end
+end
+
+"""
+    characterised_used_ssas(stmts::Vector{Any})::Vector{Bool}
+
+For each statement in `stmts`, determine whether the SSAValue that it corresponds to has
+any uses in the other statements. In particular, if `SSAValue(n)` has any uses in `stmts`,
+the `n`th element of the returned `Vector{Bool}` will be `true`, and `false` otherwise.
+
+This function will usually be applied to the `stmts` field of an `CC.InstructionStream`.
+"""
+function characterised_used_ssas(stmts::Vector{Any})::Vector{Bool}
+    is_used = fill(false, length(stmts))
+    for stmt in stmts
+
+        # Manually written-out iteration to avoid Core.Compiler type piracy.
+        urs = CC.userefs(stmt)
+        v = CC.iterate(urs)
+        while v !== nothing
+            (use_ref, state) = v
+            use = CC.getindex(use_ref)
+            if use isa SSAValue
+                is_used[use.id] = true
+            end
+            v = CC.iterate(urs, state)
+        end
+    end
+    return is_used
 end

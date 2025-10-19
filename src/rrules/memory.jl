@@ -16,33 +16,33 @@ const Maybe{T} = Union{Nothing,T}
 
 @foldable tangent_type(::Type{<:Memory{P}}) where {P} = Memory{tangent_type(P)}
 
-function zero_tangent_internal(x::Memory{P}, stackdict::StackDict) where {P}
+function zero_tangent_internal(x::Memory{P}, dict::MaybeCache) where {P}
     T = tangent_type(typeof(x))
 
-    # If no stackdict is provided, then the caller promises that there is no need for it.
-    if stackdict === nothing
+    # If no dict is provided, then the caller promises that there is no need for it.
+    if dict === nothing
         t = T(undef, length(x))
-        return _map_if_assigned!(Base.Fix2(zero_tangent_internal, stackdict), t, x)::T
+        return _map_if_assigned!(Base.Fix2(zero_tangent_internal, dict), t, x)::T
     end
 
     # If we've seen this primal before, then we have a circular reference, and must return
     # the tangent which has already been allocated for it.
-    haskey(stackdict, x) && return stackdict[x]::T
+    haskey(dict, x) && return dict[x]::T
 
     # We have not seen this primal before, so allocate + store the tangent for it, and zero
     # out the elements.
     t = T(undef, length(x))
-    stackdict[x] = t
-    return _map_if_assigned!(Base.Fix2(zero_tangent_internal, stackdict), t, x)::T
+    dict[x] = t
+    return _map_if_assigned!(Base.Fix2(zero_tangent_internal, dict), t, x)::T
 end
 
-function randn_tangent_internal(rng::AbstractRNG, x::Memory, stackdict::Maybe{IdDict})
+function randn_tangent_internal(rng::AbstractRNG, x::Memory, dict::MaybeCache)
     T = tangent_type(typeof(x))
-    haskey(stackdict, x) && return stackdict[x]::T
+    haskey(dict, x) && return dict[x]::T
 
     t = T(undef, length(x))
-    stackdict[x] = t
-    return _map_if_assigned!(x -> randn_tangent_internal(rng, x, stackdict), t, x)::T
+    dict[x] = t
+    return _map_if_assigned!(x -> randn_tangent_internal(rng, x, dict), t, x)::T
 end
 
 function TestUtils.has_equal_data_internal(
@@ -71,9 +71,8 @@ function increment_internal!!(c::IncCache, x::Memory{P}, y::Memory{P}) where {P}
     return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
 end
 
-function set_to_zero_internal!!(c::IncCache, x::Memory)
-    haskey(c, x) && return x
-    c[x] = false
+function set_to_zero_internal!!(c::SetToZeroCache, x::Memory)
+    _already_tracked!(c, x) && return x
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end
 
@@ -93,19 +92,6 @@ function _diff_internal(c::MaybeCache, p::Memory{P}, q::Memory{P}) where {P}
     t = Memory{tangent_type(P)}(undef, length(p))
     c[key] = t
     return _map_if_assigned!((p, q) -> _diff_internal(c, p, q), t, p, q)
-end
-
-function _dot_internal(c::MaybeCache, t::Memory{T}, s::Memory{T}) where {T}
-    key = (t, s)
-    haskey(c, key) && return c[key]::Float64
-    c[key] = 0.0
-    isbitstype(T) && return sum(_map((t, s) -> _dot_internal(c, t, s), t, s))
-    return sum(
-        _map(eachindex(t)) do n
-            (isassigned(t, n) && isassigned(s, n)) ? _dot_internal(c, t[n], s[n]) : 0.0
-        end;
-        init=0.0,
-    )
 end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::Memory{T}) where {T}
@@ -150,31 +136,31 @@ end
 # Array -- tangent interface implementation
 #
 
-@inline function zero_tangent_internal(x::Array, stackdict::StackDict)
+@inline function zero_tangent_internal(x::Array, dict::MaybeCache)
     T = tangent_type(typeof(x))
 
     # If we already have a tangent for this, just return that.
-    haskey(stackdict, x) && return stackdict[x]::T
+    haskey(dict, x) && return dict[x]::T
 
-    # Construct a new tangent, log it in the `stackdict`, and return it.
+    # Construct a new tangent, log it in the `dict`, and return it.
     dx = _new_(T)
     Base.setfield!(dx, :size, x.size)
-    stackdict[x] = dx
-    Base.setfield!(dx, :ref, zero_tangent_internal(x.ref, stackdict))
+    dict[x] = dx
+    Base.setfield!(dx, :ref, zero_tangent_internal(x.ref, dict))
     return dx::T
 end
 
-function randn_tangent_internal(rng::AbstractRNG, x::Array, stackdict::Maybe{IdDict})
+function randn_tangent_internal(rng::AbstractRNG, x::Array, dict::MaybeCache)
     T = tangent_type(typeof(x))
 
     # If we already have a tangent for this, just return that.
-    haskey(stackdict, x) && return stackdict[x]::T
+    haskey(dict, x) && return dict[x]::T
 
-    # Construct a new tangent, log it in the `stackdict`, and return it.
+    # Construct a new tangent, log it in the `dict`, and return it.
     dx = _new_(T)
     Base.setfield!(dx, :size, x.size)
-    stackdict[x] = dx
-    Base.setfield!(dx, :ref, randn_tangent_internal(rng, x.ref, stackdict))
+    dict[x] = dx
+    Base.setfield!(dx, :ref, randn_tangent_internal(rng, x.ref, dict))
     return dx::T
 end
 
@@ -185,9 +171,8 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
     return x
 end
 
-function set_to_zero_internal!!(c::IncCache, x::Array)
-    haskey(c, x) && return x
-    c[x] = false
+function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
+    _already_tracked!(c, x) && return x
     return _map_if_assigned!(Base.Fix1(set_to_zero_internal!!, c), x, x)
 end
 
@@ -198,17 +183,20 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
 
-function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Array}
-    key = (t, s)
-    haskey(c, key) && return c[key]::Float64
-    c[key] = 0.0
-    isbitstype(T) && return sum(_map((t, s) -> _dot_internal(c, t, s), t, s))
-    return sum(
-        _map(eachindex(t)) do n
-            (isassigned(t, n) && isassigned(s, n)) ? _dot_internal(c, t[n], s[n]) : 0.0
-        end;
-        init=0.0,
-    )
+for A in (Array, Memory)
+    @eval function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:$A}
+        key = (t, s)
+        haskey(c, key) && return c[key]::Float64
+        c[key] = 0.0
+        bitstype = Val(isbitstype(eltype(T)))
+        return sum(eachindex(t, s); init=0.0) do i
+            if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
+                _dot_internal(c, t[i], s[i])::Float64
+            else
+                0.0
+            end
+        end
+    end
 end
 
 function _add_to_primal_internal(
@@ -234,6 +222,16 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
+function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::Dual{MemoryRef{P}},
+    src::Dual{MemoryRef{P}},
+    n::Dual{Int},
+) where {P}
+    unsafe_copyto!(primal(dest), primal(src), primal(n))
+    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{MemoryRef{P}},
@@ -300,12 +298,12 @@ function construct_ref(x::MemoryRef, m::Memory)
     return isempty(m) ? memoryref(m) : memoryref(m, Core.memoryrefoffset(x))
 end
 
-function zero_tangent_internal(x::MemoryRef, stackdict::StackDict)
-    return construct_ref(x, zero_tangent_internal(x.mem, stackdict))
+function zero_tangent_internal(x::MemoryRef, dict::MaybeCache)
+    return construct_ref(x, zero_tangent_internal(x.mem, dict))
 end
 
-function randn_tangent_internal(rng::AbstractRNG, x::MemoryRef, stackdict::Maybe{IdDict})
-    return construct_ref(x, randn_tangent_internal(rng, x.mem, stackdict))
+function randn_tangent_internal(rng::AbstractRNG, x::MemoryRef, dict::MaybeCache)
+    return construct_ref(x, randn_tangent_internal(rng, x.mem, dict))
 end
 
 function TestUtils.has_equal_data_internal(
@@ -320,7 +318,7 @@ function increment_internal!!(c::IncCache, x::P, y::P) where {P<:MemoryRef}
     return construct_ref(x, increment_internal!!(c, x.mem, y.mem))
 end
 
-function set_to_zero_internal!!(c::IncCache, x::MemoryRef)
+function set_to_zero_internal!!(c::SetToZeroCache, x::MemoryRef)
     set_to_zero_internal!!(c, x.mem)
     return x
 end
@@ -336,7 +334,7 @@ end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:MemoryRef}
     @assert Core.memoryrefoffset(t) == Core.memoryrefoffset(s)
-    return _dot_internal(c, t.mem, s.mem)
+    return _dot_internal(c, t.mem, s.mem)::Float64
 end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::MemoryRef)
@@ -371,7 +369,9 @@ _val(::Val{c}) where {c} = c
 
 using Core: memoryref_isassigned, memoryrefget, memoryrefset!, memoryrefnew, memoryrefoffset
 
-@zero_adjoint(MinimalCtx, Tuple{typeof(memoryref_isassigned),GenericMemoryRef,Symbol,Bool})
+@zero_derivative(
+    MinimalCtx, Tuple{typeof(memoryref_isassigned),GenericMemoryRef,Symbol,Bool}
+)
 
 @inline function lmemoryrefget(
     x::MemoryRef, ::Val{ordering}, ::Val{boundscheck}
@@ -380,6 +380,18 @@ using Core: memoryref_isassigned, memoryrefget, memoryrefset!, memoryrefnew, mem
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefget),MemoryRef,Val,Val}
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefget)},
+    x::Dual{<:MemoryRef},
+    _ordering::Dual{<:Val},
+    _boundscheck::Dual{<:Val},
+)
+    ordering = primal(_ordering)
+    bc = primal(_boundscheck)
+    y = memoryrefget(primal(x), _val(ordering), _val(bc))
+    dy = memoryrefget(tangent(x), _val(ordering), _val(bc))
+    return Dual(y, dy)
+end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
     x::CoDual{<:MemoryRef},
@@ -399,6 +411,18 @@ end
     return CoDual(y, dy), lmemoryrefget_adjoint
 end
 
+@inline Base.@propagate_inbounds function frule!!(
+    ::Dual{typeof(memoryrefget)},
+    x::Dual{<:MemoryRef},
+    _ordering::Dual{Symbol},
+    _boundscheck::Dual{Bool},
+)
+    ordering = primal(_ordering)
+    boundscheck = primal(_boundscheck)
+    y = memoryrefget(primal(x), ordering, boundscheck)
+    dy = memoryrefget(tangent(x), ordering, boundscheck)
+    return Dual(y, dy)
+end
 @inline Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(memoryrefget)},
     x::CoDual{<:MemoryRef},
@@ -417,16 +441,32 @@ end
 
 # Core.memoryrefmodify!
 
+@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
+    return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
+end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
+@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef}, ii::Dual{Int})
+    return Dual(memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii)))
+end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
 )
     return CoDual(memoryrefnew(x.x, ii.x), memoryrefnew(x.dx, ii.x)), NoPullback(f, x, ii)
 end
 
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)},
+    x::Dual{<:MemoryRef},
+    ii::Dual{Int},
+    boundscheck::Dual{Bool},
+)
+    y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
+    dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
+    return Dual(y, dy)
+end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
     x::CoDual{<:MemoryRef},
@@ -438,7 +478,7 @@ end
     return CoDual(y, dy), NoPullback(f, x, ii, boundscheck)
 end
 
-@zero_adjoint MinimalCtx Tuple{typeof(memoryrefoffset),GenericMemoryRef}
+@zero_derivative MinimalCtx Tuple{typeof(memoryrefoffset),GenericMemoryRef}
 
 # Core.memoryrefreplace!
 
@@ -450,6 +490,17 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefset!),MemoryRef,Any,Val,Val}
 
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
+    value::Dual,
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {P,V,ordering,boundscheck}
+    memoryrefset!(primal(x), primal(value), ordering, boundscheck)
+    memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
+    return value
+end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefset!)},
     x::CoDual{<:MemoryRef{P},<:MemoryRef{V}},
@@ -502,6 +553,21 @@ function isbits_lmemoryrefset!_rule(x::CoDual, value::CoDual, ordering::Val, bc:
     return value, isbits_lmemoryrefset!_adjoint
 end
 
+@inline function frule!!(
+    ::Dual{typeof(memoryrefset!)},
+    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
+    value::Dual,
+    ordering::Dual{Symbol},
+    boundscheck::Dual{Bool},
+) where {P,V}
+    return frule!!(
+        zero_dual(lmemoryrefset!),
+        x,
+        value,
+        zero_dual(Val(primal(ordering))),
+        zero_dual(Val(primal(boundscheck))),
+    )
+end
 @inline function rrule!!(
     ::CoDual{typeof(memoryrefset!)},
     x::CoDual{<:MemoryRef{P},<:MemoryRef{V}},
@@ -527,6 +593,10 @@ end
 # _new_ and _new_-adjacent rules for Memory, MemoryRef, and Array.
 
 @is_primitive MinimalCtx Tuple{Type{<:Memory},UndefInitializer,Int}
+function frule!!(::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}) where {P}
+    x = Memory{P}(undef, primal(n))
+    return Dual(x, zero_tangent_internal(x, NoCache()))
+end
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
@@ -546,6 +616,16 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
+function frule!!(
+    ::Dual{typeof(_new_)},
+    ::Dual{Type{Array{P,N}}},
+    ref::Dual{MemoryRef{P}},
+    size::Dual{<:NTuple{N,Int}},
+) where {P,N}
+    y = _new_(Array{P,N}, primal(ref), primal(size))
+    dy = _new_(Array{tangent_type(P),N}, tangent(ref), primal(size))
+    return Dual(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{Array{P,N}}},
@@ -557,8 +637,49 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
+function frule!!(
+    ::Dual{typeof(_foreigncall_)},
+    ::Dual{Val{:jl_genericmemory_copy}},
+    ::Dual,
+    ::Dual{Tuple{Val{Any}}},
+    ::Dual{Val{0}},
+    ::Dual{Val{:ccall}},
+    x::Dual{<:Memory},
+)
+    return Dual(primal(copy(x)), tangent(copy(x)))
+end
+function rrule!!(
+    ::CoDual{typeof(_foreigncall_)},
+    ::CoDual{Val{:jl_genericmemory_copy}},
+    ::CoDual,
+    ::CoDual{Tuple{Val{Any}}},
+    ::CoDual{Val{0}},
+    ::CoDual{Val{:ccall}},
+    x::CoDual{<:Memory},
+)
+    dx = x.dx
+    dx_copy = copy(dx)
+    y = CoDual(copy(x.x), dx_copy)
+    function jl_genericmemory_copy_pullback(::NoRData)
+        _map_if_assigned!(increment!!, dx, dx, dx_copy)
+        return tuple_fill(NoRData(), Val(7))
+    end
+    return y, jl_genericmemory_copy_pullback
+end
+
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
+function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::Dual{<:Memory,<:Memory},
+    ::Dual{Val{name}},
+    ::Dual{Val{order}},
+) where {name,order}
+    y = getfield(primal(x), name, order)
+    wants_length = name === 1 || name === :length
+    dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
+    return Dual(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Memory,<:Memory},
@@ -571,6 +692,17 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
+function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::Dual{<:MemoryRef,<:MemoryRef},
+    ::Dual{Val{name}},
+    ::Dual{Val{order}},
+) where {name,order}
+    y = getfield(primal(x), name, order)
+    wants_offset = name === 1 || name === :ptr_or_offset
+    dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
+    return Dual(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:MemoryRef,<:MemoryRef},
@@ -583,6 +715,17 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
+function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::Dual{<:Array,<:Array},
+    ::Dual{Val{name}},
+    ::Dual{Val{order}},
+) where {name,order}
+    y = getfield(primal(x), name, order)
+    wants_size = name === 2 || name === :size
+    dy = wants_size ? NoTangent() : tangent(x).ref
+    return Dual(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Array,<:Array},
@@ -597,6 +740,11 @@ end
 
 const _MemTypes = Union{Memory,MemoryRef,Array}
 
+function frule!!(
+    f::Dual{typeof(lgetfield)}, x::Dual{<:_MemTypes,<:_MemTypes}, name::Dual{<:Val}
+)
+    return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
+end
 function rrule!!(
     f::CoDual{typeof(lgetfield)}, x::CoDual{<:_MemTypes,<:_MemTypes}, name::CoDual{<:Val}
 )
@@ -605,6 +753,16 @@ function rrule!!(
     return y, ternary_lgetfield_adjoint
 end
 
+function frule!!(
+    ::Dual{typeof(getfield)},
+    x::Dual{<:_MemTypes,<:_MemTypes},
+    name::Dual{<:Union{Int,Symbol}},
+    order::Dual{Symbol},
+)
+    return frule!!(
+        zero_dual(lgetfield), x, zero_dual(Val(primal(name))), zero_dual(Val(primal(order)))
+    )
+end
 function rrule!!(
     ::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -621,6 +779,13 @@ function rrule!!(
     return y, getfield_adjoint
 end
 
+function frule!!(
+    ::Dual{typeof(getfield)},
+    x::Dual{<:_MemTypes,<:_MemTypes},
+    name::Dual{<:Union{Int,Symbol}},
+)
+    return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
+end
 function rrule!!(
     f::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -631,6 +796,13 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
+@inline function frule!!(
+    ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Dual
+) where {name}
+    setfield!(primal(value), name, primal(x))
+    setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
+    return x
+end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)},
     value::CoDual{<:Array,<:Array},
@@ -652,6 +824,7 @@ end
 # Misc. other rules which are required for correctness.
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
+frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
@@ -665,6 +838,11 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
 @is_primitive MinimalCtx Tuple{typeof(fill!),Memory{<:Union{UInt8,Int8}},Integer}
+function frule!!(
+    ::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
+) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
+    return Dual(fill!(primal(a), primal(x)), tangent(a))
+end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}
 ) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
@@ -720,7 +898,7 @@ function generate_data_test_cases(rng_ctor, ::Val{:memory})
     return vcat(_mems()[1], _mem_refs()[1], [randn(2), Any[]])
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:memory})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
     rng = rng_ctor(123)
     mems, _ = _mems()
     mem_refs, sample_mem_ref_values = _mem_refs()
@@ -872,12 +1050,15 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:memory})
         (false, :none, nothing, setfield!, randn(rng, 10), 1, randn(rng, 10).ref),
         (false, :none, nothing, setfield!, randn(rng, 10), :size, (10,)),
         (false, :none, nothing, setfield!, randn(rng, 10), 2, (10,)),
+        (false, :stability, nothing, copy, randn(10)),
+        (false, :stability, nothing, fill!, fill!(Memory{Int8}(undef, 5), 0), Int8(1)),
+        (false, :stability, nothing, fill!, fill!(Memory{UInt8}(undef, 5), 0), UInt8(1)),
     )
     memory = Any[]
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:memory})
+function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     rng = rng_ctor(123)
     x = Memory{Float64}(randn(rng, 10))
     test_cases = Any[
@@ -890,6 +1071,8 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:memory})
         (true, :none, nothing, Array{Float64,0}, undef, ()),
         (true, :none, nothing, Array{Float64,4}, undef, (2, 3, 4, 5)),
         (true, :none, nothing, Array{Float64,5}, undef, (2, 3, 4, 5, 6)),
+        (false, :none, nothing, copy, Memory{Float64}(randn(5))),
+        (false, :none, nothing, copy, Memory{Any}([randn(5), 5.0])),
         (false, :none, nothing, copy, randn(5, 4)),
         (false, :none, nothing, Base._deletebeg!, randn(5), 0),
         (false, :none, nothing, Base._deletebeg!, randn(5), 2),

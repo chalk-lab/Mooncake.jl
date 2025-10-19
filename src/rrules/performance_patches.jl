@@ -15,8 +15,11 @@
 #   improvement over what we currently have, and helps to prevent the addition of flakey
 #   rules which cause robustness or correctness problems.
 
-# Performance issue: https://github.com/compintell/Mooncake.jl/issues/156
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
+function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
+    return Dual(sum(primal(x)), sum(tangent(x)))
+end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
     function sum_pb!!(dz::P)
@@ -26,8 +29,13 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
 end
 
-# Performance issue: https://github.com/compintell/Mooncake.jl/issues/156
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
+function frule!!(
+    ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
+) where {P<:IEEEFloat}
+    return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
+end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
 ) where {P<:IEEEFloat}
@@ -38,7 +46,7 @@ function rrule!!(
     return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     sizes = [(11,), (11, 3)]
     precisions = [Float64, Float32, Float16]
@@ -60,4 +68,4 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:performance_p
     return test_cases, memory
 end
 
-generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:performance_patches}) = Any[], Any[]
+derived_rule_test_cases(rng_ctor, ::Val{:performance_patches}) = Any[], Any[]

@@ -5,7 +5,7 @@ Even if you have worked with AD before, we recommend reading in order to acclima
 
 # Derivatives
 
-The foundation of automatic differentiation is the directional derivative.
+The foundation of automatic differentiation is the derivative.
 Here we build up to a general definition.
 
 _**Scalar-to-Scalar Functions**_
@@ -86,7 +86,7 @@ This definition of the derivative has a name: the Frechet derivative.
 It is a generalisation of the Total Derivative.
 Formally, we say that a function ``f : \mathcal{X} \to \mathcal{Y}`` is differentiable at a point ``x \in \mathcal{X}`` if there exists a linear operator ``D f [x] : \mathcal{X} \to \mathcal{Y}`` (the derivative) satisfying
 ```math
-\lim_{\text{d} h \to 0} \frac{\| f(x + \text{d} h) - f(x) + D f [x] (\text{d} h)  \|_\mathcal{Y}}{\| \text{d}h \|_\mathcal{X}} = 0,
+\lim_{\text{d} h \to 0} \frac{\| f(x + \text{d} h) - f(x) - D f [x] (\text{d} h)  \|_\mathcal{Y}}{\| \text{d}h \|_\mathcal{X}} = 0,
 ```
 where ``\| \cdot \|_\mathcal{X}`` and ``\| \cdot \|_\mathcal{Y}`` are the norms associated to Hilbert spaces ``\mathcal{X}`` and ``\mathcal{Y}`` respectively.
 (The Frechet derivative does not depend on the choice of norms. All norms are _equivalent_ in finite dimensions, meaning they define the same topology and notion of convergence: if this equation is satisfied for one norm, it holds for all.)

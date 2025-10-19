@@ -335,7 +335,7 @@ Base.copy(ir::BBCode) = BBCode(ir, copy(ir.blocks))
 """
     compute_all_successors(ir::BBCode)::Dict{ID, Vector{ID}}
 
-Compute a map from the `ID of each `BBlock` in `ir` to its possible successors.
+Compute a map from the `ID` of each `BBlock` in `ir` to its possible successors.
 """
 compute_all_successors(ir::BBCode)::Dict{ID,Vector{ID}} = _compute_all_successors(ir.blocks)
 
@@ -370,7 +370,7 @@ end
 """
     compute_all_predecessors(ir::BBCode)::Dict{ID, Vector{ID}}
 
-Compute a map from the `ID of each `BBlock` in `ir` to its possible predecessors.
+Compute a map from the `ID` of each `BBlock` in `ir` to its possible predecessors.
 """
 function compute_all_predecessors(ir::BBCode)::Dict{ID,Vector{ID}}
     return _compute_all_predecessors(ir.blocks)
@@ -453,6 +453,12 @@ function _control_flow_graph(blks::Vector{BBlock})::Core.Compiler.CFG
     preds = map(id -> sort(map(p -> id_to_num[p], preds_ids[id])), block_ids)
     succs = map(id -> sort(map(s -> id_to_num[s], succs_ids[id])), block_ids)
 
+    # Predecessor of entry block is `0`. This needs to be added in manually.
+    @static if VERSION >= v"1.11"
+        push!(preds[1], 0)
+    end
+
+    # Compute the statement numbers associated to each basic block.
     index = vcat(0, cumsum(map(length, blks))) .+ 1
     basic_blocks = map(eachindex(blks)) do n
         stmt_range = Core.Compiler.StmtRange(index[n], index[n + 1] - 1)

@@ -1,5 +1,16 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
+function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) where {P,N}
+    y = _new_(P, tuple_map(primal, x)...)
+    T = tangent_type(P)
+    dy = if T == NoTangent
+        NoTangent()
+    else
+        build_output_tangent(P, tuple_map(primal, x), tuple_map(tangent, x))
+    end
+    return Dual(y, dy)
+end
+
 function rrule!!(
     f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}
 ) where {P,N}
@@ -33,23 +44,47 @@ function rrule!!(
     return CoDual(y, dy), pb!!
 end
 
-@generated function build_fdata(::Type{P}, x::Tuple, fdata::Tuple) where {P}
+@generated function build_output_tangent(::Type{P}, x::Tuple, t::Tuple) where {P}
     names = fieldnames(P)
-    fdata_exprs = map(eachindex(names)) do n
-        F = fdata_field_type(P, n)
-        if n <= length(fdata.parameters)
-            data_expr = Expr(:call, __get_data, P, :x, :fdata, n)
+    tangent_exprs = map(eachindex(names)) do n
+        F = tangent_field_types(P)[n]
+        if n <= length(t.parameters)
+            data_expr = Expr(:call, __get_data, P, :x, :t, n)
             return F <: PossiblyUninitTangent ? Expr(:call, F, data_expr) : data_expr
         else
             return :($F())
         end
     end
-    F_out = fdata_type(tangent_type(P))
-    return :($F_out(NamedTuple{$names}($(Expr(:call, tuple, fdata_exprs...)))))
+    T_out = tangent_type(P)
+    return :($T_out(NamedTuple{$names}($(Expr(:call, tuple, tangent_exprs...)))))
+end
+
+@inline function build_fdata(::Type{P}, x::Tuple, fdata::Tuple) where {P}
+    return _build_fdata_cartesian(P, x, fdata, Val(fieldcount(P)), Val(fieldnames(P)))
+end
+@generated function _build_fdata_cartesian(
+    ::Type{P}, x::Tuple, fdata::Tfdata, ::Val{nfield}, ::Val{names}
+) where {P,nfield,names,Tfdata<:Tuple}
+    N = length(Tfdata.parameters)
+    quote
+        processed_fdata = Base.Cartesian.@ntuple(
+            $nfield, n -> let
+                F = fdata_field_type(P, n)
+                if n <= $N
+                    data = __get_data(P, x, fdata, n)
+                    F <: PossiblyUninitTangent ? F(data) : data
+                else
+                    F()
+                end
+            end
+        )
+        F_out = fdata_type(tangent_type(P))
+        return F_out(NamedTuple{$names}(processed_fdata))
+    end
 end
 
 # Helper for build_fdata
-@inline function __get_data(::Type{P}, x, f, n) where {P}
+@unstable @inline function __get_data(::Type{P}, x, f, n) where {P}
     tmp = getfield(f, n)
     return ismutabletype(P) ? zero_tangent(getfield(x, n), tmp) : tmp
 end
@@ -65,7 +100,7 @@ Function which replaces instances of `:splatnew`.
 """
 _splat_new_(::Type{P}, x::Tuple) where {P} = _new_(P, x...)
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:new})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
 
     # Specialised test cases for _new_.
     specific_test_cases = Any[
@@ -173,8 +208,4 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:new})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:new})
-    test_cases = Any[]
-    memory = Any[]
-    return test_cases, memory
-end
+derived_rule_test_cases(rng_ctor, ::Val{:new}) = Any[], Any[]

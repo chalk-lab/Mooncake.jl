@@ -20,6 +20,8 @@ using Mooncake.TestUtils: test_rule
             )
         end,
     )
-        test_rule(StableRNG(123), f, fargs...; interface_only, perf_flag, is_primitive)
+        rng = StableRNG(123)
+        mode = Mooncake.ReverseMode
+        test_rule(rng, f, fargs...; interface_only, perf_flag, is_primitive, mode)
     end
 end

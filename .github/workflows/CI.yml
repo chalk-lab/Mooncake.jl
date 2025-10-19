@@ -12,6 +12,11 @@ concurrency:
   # Cancel intermediate builds: only if it is a pull request build.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+  
+permissions:
+  contents: write
+  pull-requests: write
+  
 jobs:
   test:
     name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}
@@ -21,20 +26,20 @@ jobs:
       fail-fast: false
       matrix:
         test_group: [
-          'quality',
           'basic',
           'rrules/avoiding_non_differentiable_code',
           'rrules/blas',
           'rrules/builtins',
+          'rrules/dispatch_doctor',
           'rrules/fastmath',
           'rrules/foreigncall',
-          'rrules/functionwrappers',
           'rrules/iddict',
           'rrules/lapack',
           'rrules/linear_algebra',
           'rrules/low_level_maths',
           'rrules/memory',
           'rrules/misc',
+          'rrules/misty_closures',
           'rrules/new',
           'rrules/random',
           'rrules/tasks',
@@ -43,7 +48,7 @@ jobs:
         ]
         version:
           - 'lts'
-          - '1'
+          - '1.11'
         arch:
           - x64
         include:
@@ -54,7 +59,7 @@ jobs:
             version: 'lts'
             arch: x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
@@ -80,29 +85,35 @@ jobs:
       matrix:
         test_group: [
           {test_type: 'ext', label: 'differentiation_interface'},
+          {test_type: 'ext', label: 'dynamic_expressions'},
           {test_type: 'ext', label: 'flux'},
+          {test_type: 'ext', label: 'function_wrappers'},
           {test_type: 'ext', label: 'luxlib'},
           {test_type: 'ext', label: 'nnlib'},
           {test_type: 'ext', label: 'special_functions'},
+          {test_type: 'integration_testing', label: 'format'},
           {test_type: 'integration_testing', label: 'array'},
           {test_type: 'integration_testing', label: 'bijectors'},
           {test_type: 'integration_testing', label: 'diff_tests'},
+          {test_type: 'integration_testing', label: 'diffeq'},
+          {test_type: 'integration_testing', label: 'dispatch_doctor'},
           {test_type: 'integration_testing', label: 'distributions'},
+          {test_type: 'integration_testing', label: 'dynamicppl'},
           {test_type: 'integration_testing', label: 'gp'},
           {test_type: 'integration_testing', label: 'logexpfunctions'},
           {test_type: 'integration_testing', label: 'lux'},
           {test_type: 'integration_testing', label: 'battery_tests'},
           {test_type: 'integration_testing', label: 'misc_abstract_array'},
           {test_type: 'integration_testing', label: 'temporalgps'},
-          {test_type: 'integration_testing', label: 'turing'},
+          {test_type: 'integration_testing', label: 'flux'},
         ]
         version:
-          - '1'
+          - '1.11'
           - 'lts'
         arch:
           - x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
@@ -135,10 +146,10 @@ jobs:
           - 'hand_written'
           - 'derived'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: julia-actions/setup-julia@v2
         with:
-          version: '1'
+          version: '1.11'
           arch: x64
           include-all-prereleases: false
       - uses: julia-actions/cache@v2
@@ -154,10 +165,10 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: julia-actions/setup-julia@v2
         with:
-          version: '1'
+          version: '1.11'
           arch: x64
           include-all-prereleases: false
       - uses: julia-actions/cache@v2
@@ -186,17 +197,27 @@ jobs:
             cat bench/benchmark_results.txt
             echo "EOF"
           } >> $GITHUB_OUTPUT
+          
       - name: Find Comment
         uses: peter-evans/find-comment@v3
         id: fc
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-author: github-actions[bot]
+          body-includes: "perf-results"
+
       - id: post-report-as-pr-comment
         name: Post Report as Pull Request Comment
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
-          body: "Performance Ratio:\nRatio of time to compute gradient and time to compute function.\nWarning: results are very approximate! See [here](https://github.com/compintell/Mooncake.jl/tree/main/bench#inter-framework-benchmarking) for more context.\n```\n${{ steps.read-file.outputs.table }}\n```"
+          body: |
+            <!-- perf-results -->
+            Performance Ratio:
+            Ratio of time to compute gradient and time to compute function.
+            Warning: results are very approximate! See [here](https://github.com/chalk-lab/Mooncake.jl/tree/main/bench#inter-framework-benchmarking) for more context.
+            ```
+            ${{ steps.read-file.outputs.table }}
+            ```
           comment-id: ${{ steps.fc.outputs.comment-id }}
           edit-mode: replace

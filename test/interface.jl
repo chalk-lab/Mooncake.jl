@@ -1,8 +1,4 @@
-function count_allocs(fargs::P) where {P<:Tuple}
-    f, args... = fargs
-    f(args...) # warmup
-    return @allocations f(args...)
-end
+using Mooncake.TestUtils: count_allocs
 
 @testset "interface" begin
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
@@ -35,23 +31,28 @@ end
             ((x, y) -> x + sin(y), randn(Float32), randn(Float32)),
             ((x...) -> x[1] + x[2], randn(Float64), randn(Float64)),
             (sum, randn(10)),
+            (x -> (x .*= 2; sum(x)), randn(10)),
         ]
             kwargs = (debug_mode=false, silence_debug_messages=true)
             rule = build_rrule(fargs...; kwargs...)
-            f, args... = fargs
-            v, dfargs = value_and_gradient!!(rule, fargs...)
+            v, dfargs = value_and_gradient!!(rule, deepcopy(fargs)...)
+            f, args... = deepcopy(fargs)
             @test v == f(args...)
             for (arg, darg) in zip(fargs, dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
 
+            # Create cache and verify that mutation is undone.
+            original_fargs = deepcopy(fargs)
             cache = Mooncake.prepare_gradient_cache(fargs...; kwargs...)
+            @test fargs == original_fargs
+
             _v, _dfargs = value_and_gradient!!(cache, fargs...)
             @test _v == v
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs((value_and_gradient!!, cache, fargs...))
+            alloc_count = count_allocs(value_and_gradient!!, cache, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
@@ -72,25 +73,30 @@ end
     @testset "value_and_pullback!!" begin
         @testset "($(typeof(fargs))" for (ȳ, fargs...) in Any[
             (randn(10), identity, randn(10)),
+            (randn(10), x -> (x .*= 2; x), randn(10)),
             (randn(), sin, randn(Float64)),
             (randn(), sum, randn(Float64)),
         ]
             kwargs = (debug_mode=false, silence_debug_messages=true)
             rule = build_rrule(fargs...; kwargs...)
             f, args... = fargs
-            v, dfargs = value_and_pullback!!(rule, ȳ, fargs...)
-            @test v == f(args...)
+            v, dfargs = value_and_pullback!!(rule, ȳ, deepcopy(fargs)...)
+            @test v == f(deepcopy(args)...)
             for (arg, darg) in zip(fargs, dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
 
+            # Create cache and verify fargs is unchanged afterwards.
+            original_args = deepcopy(fargs)
             cache = Mooncake.prepare_pullback_cache(fargs...; kwargs...)
+            @test original_args == fargs
+
             _v, _dfargs = value_and_pullback!!(cache, ȳ, fargs...)
             @test _v == v
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs((value_and_pullback!!, cache, ȳ, fargs...))
+            alloc_count = count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
@@ -133,47 +139,88 @@ end
         # Test when function outputs an invalid type. 
         test_to_fail_cases = []
 
-        # ---- Aliasing Cases ----
-        alias_vector = [[1, 2], [3, 4]]
+        # Aliasing Cases
+        alias_vector = [rand(Int64, 2), rand(Int64, 2)]
         alias_vector[2] = alias_vector[1]
-        push!(test_to_fail_cases, alias_vector)
+        push!(test_to_fail_cases, (identity, alias_vector))
 
-        alias_tuple = ((1.0, 2.0), (3.0, 4.0))
+        alias_tuple = (rand(2), rand(2))
         alias_tuple = (alias_tuple[1], alias_tuple[1])
-        push!(test_to_fail_cases, alias_tuple)
+        push!(test_to_fail_cases, (identity, alias_tuple))
 
-        # ---- Circular Referencing Cases ----
-        circular_vector = Any[[1.0, 2.0]]
+        # Circular Referencing Cases
+        circular_vector = Any[rand(2)]
         push!(circular_vector, circular_vector)
-        push!(test_to_fail_cases, circular_vector)
+        push!(test_to_fail_cases, (identity, circular_vector))
 
         mutable struct CircularStruct
             data::Any
             numeric::Int64
         end
 
-        circ_obj = CircularStruct(nothing, 1)
+        circ_obj = CircularStruct(nothing, rand(Int64, 1)[1])
         circ_obj.data = circ_obj  # Self-referential struct
-        push!(test_to_fail_cases, circ_obj)
+        push!(test_to_fail_cases, (identity, circ_obj))
 
-        # ---- Unsupported Types ----
-        push!(test_to_fail_cases, Ptr{Float64}(12345))
-        push!(test_to_fail_cases, (1, Ptr{Float64}(12345)))
-        push!(test_to_fail_cases, [Ptr{Float64}(12345)])
-
-        @test_throws(
-            Mooncake.ValueAndPullbackReturnTypeError,
-            Mooncake.__exclude_unsupported_output.(test_to_fail_cases)
+        # Exclude `Ptr` typed input arguments and returned values
+        push!(test_to_fail_cases, ((x) -> Ptr{Float64}(x[1]), rand(UInt, 1)))
+        push!(
+            test_to_fail_cases,
+            ((x) -> (rand(UInt, 1), [Ptr{Float64}(x_i) for x_i in x]), rand(UInt, 5)),
         )
+
+        @testset "prepare_pullback_cache checks" for (f, test_case) in test_to_fail_cases
+            @test_throws(
+                Mooncake.ValueAndPullbackReturnTypeError,
+                Mooncake.__exclude_unsupported_output(f(test_case))
+            )
+            @test_throws(
+                Mooncake.ValueAndPullbackReturnTypeError,
+                Mooncake.prepare_pullback_cache(f, test_case)
+            )
+        end
 
         additional_test_set = Mooncake.tangent_test_cases()
 
-        @testset for i in eachindex(additional_test_set)
+        @testset "__exclude_unsupported_output , $(test_set)" for test_set in
+                                                                  additional_test_set
+
             try
-                Mooncake.__exclude_unsupported_output(additional_test_set[i][2])
+                Mooncake.__exclude_unsupported_output(test_set[2])
             catch err
                 @test isa(err, Mooncake.ValueAndPullbackReturnTypeError)
             end
         end
+
+        @testset "_copy_output & _copy_to_output!!, $(test_set)" for test_set in
+                                                                     additional_test_set
+
+            original = test_set[2]
+            try
+                if isnothing(Mooncake.__exclude_unsupported_output(original))
+                    test_copy = Mooncake._copy_output(original)
+                    test_inplace_copy = Mooncake._copy_to_output!!(test_copy, original)
+
+                    @test Mooncake.TestUtils.has_equal_data(original, test_copy)
+                    @test Mooncake.TestUtils.has_equal_data(original, test_inplace_copy)
+                    @test typeof(test_copy) == typeof(original)
+                end
+            catch err
+                @test isa(err, Mooncake.ValueAndPullbackReturnTypeError)
+            end
+        end
+    end
+    @testset "forwards mode ($kwargs)" for kwargs in [
+        (;),
+        (; debug_mode=true),
+        (; debug_mode=false),
+        (; debug_mode=true, silence_debug_messages=true),
+    ]
+        f = (x, y) -> x * y + cos(x)
+        fx = (f, 5.0, 4.0)
+        rule = Mooncake.prepare_derivative_cache(fx...; kwargs...)
+        z = Mooncake.value_and_derivative!!(rule, map(zero_dual, fx)...)
+        @test z isa Mooncake.Dual
+        @test primal(z) == f(5.0, 4.0)
     end
 end

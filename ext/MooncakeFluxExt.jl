@@ -8,7 +8,7 @@ import Mooncake: DefaultCtx, rrule!!, @is_primitive, CoDual, zero_fcodual, NoRDa
     typeof(Flux.Losses.mse),Array{P},Array{P}
 } where {P<:IEEEFloat}
 
-# This is a performance-specific rule motivated by https://github.com/compintell/Mooncake.jl/issues/466
+# This is a performance-specific rule motivated by https://github.com/chalk-lab/Mooncake.jl/issues/466
 function rrule!!(
     ::CoDual{typeof(Flux.Losses.mse)}, X::CoDual{<:Array{P}}, Y::CoDual{<:Array{P}}
 ) where {P<:IEEEFloat}

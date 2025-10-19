@@ -15,7 +15,15 @@ end
 primal(x::CoDual) = x.x
 tangent(x::CoDual) = x.dx
 Base.copy(x::CoDual) = CoDual(copy(primal(x)), copy(tangent(x)))
+# CoDual can be safely shared without copying
 _copy(x::P) where {P<:CoDual} = x
+
+"""
+    extract(x::CoDual)
+
+Helper function. Returns the 2-tuple `x.x, x.dx`.
+"""
+extract(x::CoDual) = primal(x), tangent(x)
 
 """
     zero_codual(x)
@@ -32,7 +40,7 @@ Equivalent to `CoDual(x, uninit_tangent(x))`.
 uninit_codual(x) = CoDual(x, uninit_tangent(x))
 
 function _codual_internal(::Type{P}, f::F, extractor::E) where {P,F,E}
-    P == Union{} && return CoDual
+    P == Union{} && return Union{}
     P == DataType && return CoDual
     P isa Union && return Union{f(P.a),f(P.b)}
 
@@ -57,7 +65,7 @@ The type of the `CoDual` which contains instances of `P` and associated tangents
 """
 codual_type(::Type{P}) where {P} = _codual_internal(P, codual_type, tangent_type)
 
-function codual_type(p::Type{Type{P}}) where {P}
+@unstable function codual_type(p::Type{Type{P}}) where {P}
     return @isdefined(P) ? CoDual{Type{P},NoTangent} : CoDual{_typeof(p),NoTangent}
 end
 
@@ -70,7 +78,7 @@ function fcodual_type(::Type{P}) where {P}
     return _codual_internal(P, fcodual_type, P -> fdata_type(tangent_type(P)))
 end
 
-function fcodual_type(p::Type{Type{P}}) where {P}
+@unstable function fcodual_type(p::Type{Type{P}}) where {P}
     return @isdefined(P) ? CoDual{Type{P},NoFData} : CoDual{_typeof(p),NoFData}
 end
 
@@ -92,6 +100,7 @@ struct NoPullback{R<:Tuple}
     r::R
 end
 
+# Recursively copy the contained reverse data
 _copy(x::P) where {P<:NoPullback} = P(_copy(x.r))
 
 """

@@ -5,12 +5,12 @@ Documentation for Mooncake.jl is on its way!
 !!! details "Documentation Updates"
     Note (03/10/2024): Various bits of utility functionality are now carefully documented. This
     includes how to change the code which Mooncake sees, declare that the derivative of a
-    function is zero, make use of existing `ChainRules.rrule`s to quicky create new rules in
+    function is zero, make use of existing `ChainRules.rrule`s to quickly create new rules in
     Mooncake, and more.
 
     Note (02/07/2024): The first round of documentation has arrived.
-    This is largely targetted at those who are interested in contributing to Mooncake.jl -- you can find this work in the "Understanding Mooncake.jl" section of the docs.
-    There is more to to do, but it should be sufficient to understand how AD works in principle, and the core abstractions underlying Mooncake.jl.
+    This is largely targeted at those who are interested in contributing to Mooncake.jl -- you can find this work in the "Understanding Mooncake.jl" section of the docs.
+    There is more to do, but it should be sufficient to understand how AD works in principle, and the core abstractions underlying Mooncake.jl.
 
     Note (29/05/2024): I (Will) am currently actively working on the documentation.
     It will be merged in chunks over the next month or so as good first drafts of sections are completed.
@@ -19,7 +19,7 @@ Documentation for Mooncake.jl is on its way!
 ## Getting Started
 
 Check that you're running a version of Julia that Mooncake.jl supports.
-See the [`SUPPORT_POLICY.md`](https://github.com/compintell/Mooncake.jl/blob/main/SUPPORT_POLICY.md) for more info.
+See the [`SUPPORT_POLICY.md`](https://github.com/chalk-lab/Mooncake.jl/blob/main/SUPPORT_POLICY.md) for more info.
 
 There are several ways to interact with `Mooncake.jl`.
 The way that we recommend people to interact with `Mooncake.jl` is via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
@@ -151,7 +151,4 @@ Please be aware that by "performant" we mean similar or better performance than 
 
 ### What won't work
 
-While `Mooncake.jl` should now work on a very large subset of the language, there remain things that you should expect not to work. A non-exhaustive list of things to bear in mind includes:
-1. It is always necessary to produce hand-written rules for `ccall`s (and, more generally, foreigncall nodes). We have rules for many `ccall`s, but not all. If you encounter a foreigncall without a hand-written rule, you should get an informative error message which tells you what is going on and how to deal with it.
-1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
-1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
+See [known limitations](known_limitations.md). 

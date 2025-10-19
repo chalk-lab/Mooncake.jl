@@ -587,7 +587,7 @@ _getter() = 5.0
             (false, :none, reshape, randn(sr(0), 3, 2), 2, 3),
             (false, :none, reshape, randn(sr(1), 3, 2), :, 3),
             (false, :none, reshape, randn(sr(2), 3, 2), (6,)),
-            (false, :none, x -> (resize!(x, 10); x[6:end] .= x[1:5]), randn(sr(3), 5)),
+            (false, :none, x -> (resize!(x, 10); x[6:end].=x[1:5]), randn(sr(3), 5)),
             (false, :none, reverse, randn(sr(4), 3)),
             (false, :none, reverse!, randn(sr(5), 3)),
             (false, :none, reverseind, randn(sr(6), 5), 3),
@@ -662,14 +662,6 @@ _getter() = 5.0
     )
     @testset for (interface_only, perf_flag, f, x...) in test_cases
         @info Mooncake._typeof((f, x...))
-        test_rule(
-            sr(123456),
-            f,
-            x...;
-            interface_only,
-            is_primitive=false,
-            debug_mode=false,
-            perf_flag,
-        )
+        test_rule(sr(123456), f, x...; interface_only, is_primitive=false, perf_flag)
     end
 end

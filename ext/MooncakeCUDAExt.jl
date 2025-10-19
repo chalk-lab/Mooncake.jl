@@ -27,8 +27,7 @@ import Mooncake:
     increment_and_get_rdata!,
     MaybeCache,
     IncCache,
-    NoRData,
-    StackDict
+    NoRData
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
@@ -38,16 +37,16 @@ const CuFloatArray = CuArray{<:IEEEFloat}
 # Tell Mooncake.jl how to handle CuArrays.
 
 Mooncake.@foldable tangent_type(::Type{P}) where {P<:CuFloatArray} = P
-function zero_tangent_internal(x::CuFloatArray, stackdict::StackDict)
-    haskey(stackdict, x) && return stackdict[x]::tangent_type(typeof(x))
+function zero_tangent_internal(x::CuFloatArray, dict::MaybeCache)
+    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     t = zero(x)
-    stackdict[x] = t
+    dict[x] = t
     return t
 end
-function randn_tangent_internal(rng::AbstractRNG, x::CuFloatArray, stackdict::Any)
-    haskey(stackdict, x) && return stackdict[x]::tangent_type(typeof(x))
+function randn_tangent_internal(rng::AbstractRNG, x::CuFloatArray, dict::MaybeCache)
+    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     t = cu(randn(rng, Float32, size(x)...))
-    stackdict[x] = t
+    dict[x] = t
     return t
 end
 function TestUtils.has_equal_data_internal(
@@ -62,7 +61,7 @@ function increment_internal!!(c::IncCache, x::P, y::P) where {P<:CuFloatArray}
     return x
 end
 __increment_should_allocate(::Type{<:CuFloatArray}) = true
-set_to_zero_internal!!(::Mooncake.IncCache, x::CuFloatArray) = x .= 0
+set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuFloatArray) = x .= 0
 function _add_to_primal_internal(
     c::MaybeCache, x::P, y::P, unsafe::Bool
 ) where {P<:CuFloatArray}

@@ -1,10 +1,8 @@
 include("front_matter.jl")
 
 @testset "Mooncake.jl" begin
-    if test_group == "quality"
+    if test_group == "basic"
         Aqua.test_all(Mooncake)
-        @test JuliaFormatter.format(Mooncake; verbose=false, overwrite=false)
-    elseif test_group == "basic"
         include("utils.jl")
         include("tangents.jl")
         include("fwds_rvs_data.jl")
@@ -18,7 +16,8 @@ include("front_matter.jl")
             include(joinpath("interpreter", "bbcode.jl"))
             include(joinpath("interpreter", "ir_normalisation.jl"))
             include(joinpath("interpreter", "zero_like_rdata.jl"))
-            include(joinpath("interpreter", "s2s_reverse_mode_ad.jl"))
+            include(joinpath("interpreter", "forward_mode.jl"))
+            include(joinpath("interpreter", "reverse_mode.jl"))
         end
         include("tools_for_rules.jl")
         include("interface.jl")
@@ -37,8 +36,6 @@ include("front_matter.jl")
         include(joinpath("rrules", "fastmath.jl"))
     elseif test_group == "rrules/foreigncall"
         include(joinpath("rrules", "foreigncall.jl"))
-    elseif test_group == "rrules/functionwrappers"
-        include(joinpath("rrules", "function_wrappers.jl"))
     elseif test_group == "rrules/iddict"
         include(joinpath("rrules", "iddict.jl"))
     elseif test_group == "rrules/lapack"
@@ -49,6 +46,8 @@ include("front_matter.jl")
         include(joinpath("rrules", "low_level_maths.jl"))
     elseif test_group == "rrules/misc"
         include(joinpath("rrules", "misc.jl"))
+    elseif test_group == "rrules/misty_closures"
+        include(joinpath("rrules", "misty_closures.jl"))
     elseif test_group == "rrules/new"
         include(joinpath("rrules", "new.jl"))
     elseif test_group == "rrules/random"
@@ -63,6 +62,8 @@ include("front_matter.jl")
         end
     elseif test_group == "rrules/performance_patches"
         include(joinpath("rrules", "performance_patches.jl"))
+    elseif test_group == "rrules/dispatch_doctor"
+        include(joinpath("rrules", "dispatch_doctor.jl"))
     else
         throw(error("test_group=$(test_group) is not recognised"))
     end

@@ -1,3 +1,5 @@
+# TODO: make it non-trivial. See https://github.com/chalk-lab/Mooncake.jl/issues/672
+DebugFRule(rule) = rule
 
 """
     DebugPullback(pb, y, x)
@@ -76,6 +78,7 @@ struct DebugRRule{Trule}
     rule::Trule
 end
 
+# Recursively copy the wrapped rule
 _copy(x::P) where {P<:DebugRRule} = P(_copy(x.rule))
 
 """

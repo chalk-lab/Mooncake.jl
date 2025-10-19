@@ -7,26 +7,18 @@ on:
     tags: '*'
   pull_request:
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
-  build:
-    permissions:
-      contents: write
-      pull-requests: read
-      statuses: write
-      actions: write
+  docs:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
-        with:
-          version: '1'
-          arch: x64
-          include-all-prereleases: false
-      - name: Install dependencies
-        run: julia --project=docs/ -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.update(); Pkg.instantiate()'
-      - name: Build and deploy
+      - name: Build and deploy Documenter.jl docs
         env:
           GKSwstype: nul # turn off GR's interactive plotting for notebooks
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # If authenticating with GitHub Actions token
-          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }} # For authentication with SSH deploy key
-        run: julia --project=docs/ docs/make.jl
+        uses: TuringLang/actions/DocsDocumenter@main
+        with:
+          julia-version: '1.11'

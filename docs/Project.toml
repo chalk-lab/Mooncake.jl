@@ -1,14 +1,18 @@
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
+AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
 ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
 DifferentiationInterface = "a0c0ee7d-e4b9-4e03-894e-1c5f64a51d63"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 DocumenterCitations = "daee34ce-89f3-4625-b898-19384cb65244"
 DocumenterInterLinks = "d12716ef-a0f6-4df4-a9f1-a5a34e75c656"
+JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 
 [compat]
+AllocCheck = "0.2.0"
 ChainRulesCore = "1"
 DifferentiationInterface = "0.6.40"
 Documenter = "1"
+JET = "0.9"
 Mooncake = "0.4.0"

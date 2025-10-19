@@ -3,6 +3,7 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, JET, Mooncake, SpecialFunctions, StableRNGs, Test
+using Mooncake: ForwardMode, ReverseMode
 using Mooncake.TestUtils: test_rule
 
 # Rules in this file are only lightly tester, because they are all just @from_rrule rules.

@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Tebbutt"
+  given-names: "Will"
+- family-names: "Ge"
+  given-names: "Hong"
+title: "Mooncake: Towards a Differentiable General-Purpose Language"
+date-released: 2024
+url: "https://github.com/chalk-lab/Mooncake.jl"

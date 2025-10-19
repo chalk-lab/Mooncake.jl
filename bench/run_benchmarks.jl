@@ -15,20 +15,25 @@ using AbstractGPs,
     Random,
     ReverseDiff,
     Mooncake,
+    StableRNGs,
     Test,
     Zygote
 
 using Mooncake:
+    Dual,
     CoDual,
-    generate_hand_written_rrule!!_test_cases,
-    generate_derived_rrule!!_test_cases,
+    hand_written_rule_test_cases,
+    derived_rule_test_cases,
     TestUtils,
     _typeof,
     primal,
     tangent,
+    zero_dual,
     zero_codual
 
 using Mooncake.TestUtils: _deepcopy
+
+to_benchmark(__frule!!::R, dx::Vararg{Dual,N}) where {R,N} = __frule!!(dx...)
 
 function to_benchmark(__rrule!!::R, dx::Vararg{CoDual,N}) where {R,N}
     dx_f = Mooncake.tuple_map(x -> CoDual(primal(x), Mooncake.fdata(tangent(x))), dx)
@@ -111,27 +116,21 @@ end
     x .~ LogNormal(μ, σ)
 end
 
-function build_turing_problem()
+function build_dynamicppl_problem()
     rng = Xoshiro(123)
-    model = broadcast_demo(rand(LogNormal(1.5, 0.5), 100_000))
-    ctx = DynamicPPL.DefaultContext()
+    model = broadcast_demo(rand(rng, LogNormal(1.5, 0.5), 100_000))
     vi = DynamicPPL.SimpleVarInfo(model)
     vi_linked = DynamicPPL.link(vi, model)
-    ldp = DynamicPPL.LogDensityFunction(model, vi_linked, ctx)
+    ldp = DynamicPPL.LogDensityFunction(model, DynamicPPL.getlogjoint_internal, vi_linked)
     test_function = Base.Fix1(DynamicPPL.LogDensityProblems.logdensity, ldp)
     d = DynamicPPL.LogDensityProblems.dimension(ldp)
     return test_function, randn(rng, d)
 end
 
-run_turing_problem(f::F, x::X) where {F,X} = f(x)
+run_dynamicppl_problem(f::F, x::X) where {F,X} = f(x)
 
 function should_run_benchmark(
     ::Val{:zygote}, ::Base.Fix1{<:typeof(DynamicPPL.LogDensityProblems.logdensity)}, x...
-)
-    return false
-end
-function should_run_benchmark(
-    ::Val{:enzyme}, ::Base.Fix1{<:typeof(DynamicPPL.LogDensityProblems.logdensity)}, x...
 )
     return false
 end
@@ -166,12 +165,14 @@ function generate_inter_framework_tests()
             (_simple_mlp, randn(128, 256), randn(256, 128), randn(128, 70), randn(128, 70)),
         ),
         ("gp_lml", (_gp_lml, _generate_gp_inputs()...)),
-        ("turing_broadcast_benchmark", build_turing_problem()),
+        ("turing_broadcast_benchmark", build_dynamicppl_problem()),
         ("large_single_block", (large_single_block, [0.9, 0.99])),
     ]
 end
 
-function benchmark_rules!!(test_case_data, default_ratios, include_other_frameworks::Bool)
+function benchmark_rules!!(
+    test_case_data, default_ratios, include_other_frameworks::Bool, seconds=nothing
+)
     test_cases = reduce(vcat, map(first, test_case_data))
     memory = map(x -> x[2], test_case_data)
     ranges = reduce(vcat, map(x -> x[3], test_case_data))
@@ -191,20 +192,38 @@ function benchmark_rules!!(test_case_data, default_ratios, include_other_framewo
                 (a -> a[1]((a[2]...))),
                 _ -> true;
                 evals=1,
+                seconds=seconds,
             )
 
             # Benchmark AD via Mooncake.
             @info "Mooncake"
             rule = Mooncake.build_rrule(args...)
             coduals = map(x -> x isa CoDual ? x : zero_codual(x), args)
-            to_benchmark(rule, coduals...)
+            copy_coduals(x, xs...) = (x, _deepcopy(xs)...)
+            to_benchmark(rule, copy_coduals(coduals...)...)
             include_other_frameworks && GC.gc(true)
             suite["mooncake"] = Chairmarks.benchmark(
                 () -> (rule, coduals),
-                identity,
+                ((rule, coduals),) -> (rule, copy_coduals(coduals...)),
                 a -> to_benchmark(a[1], a[2]...),
                 _ -> true;
                 evals=1,
+                seconds=seconds,
+            )
+
+            # Benchmark AD via Mooncake.
+            @info "Mooncake (Forward)"
+            rule = Mooncake.build_frule(args...)
+            duals = map(x -> x isa CoDual ? Dual(x.x, x.dx) : zero_dual(x), args)
+            to_benchmark(rule, copy_coduals(duals...)...)
+            include_other_frameworks && GC.gc(true)
+            suite["mooncake_fwd"] = Chairmarks.benchmark(
+                () -> (rule, duals),
+                ((rule, duals),) -> (rule, copy_coduals(duals...)),
+                a -> to_benchmark(a[1], a[2]...),
+                _ -> true;
+                evals=1,
+                seconds=seconds,
             )
 
             if include_other_frameworks
@@ -237,13 +256,20 @@ function benchmark_rules!!(test_case_data, default_ratios, include_other_framewo
 
                 if should_run_benchmark(Val(:enzyme), args...)
                     @info "Enzyme"
-                    _rand_similiar(x) = x isa Real ? randn() : randn(size(x))
-                    dup_args = map(x -> Duplicated(x, _rand_similiar(x)), primals[2:end])
+                    _rand_similar(x) = x isa Real ? randn() : randn(size(x))
+                    dup_args = map(x -> Duplicated(x, _rand_similar(x)), primals[2:end])
                     GC.gc(true)
+                    prim =
+                        if primals[1] isa Base.Fix1 &&
+                            primals[1].x isa DynamicPPL.LogDensityFunction
+                            Const(primals[1])
+                        else
+                            primals[1]
+                        end
                     suite["enzyme"] = @be(
                         _,
                         _,
-                        autodiff(ReverseWithPrimal, $primals[1], Active, $dup_args...),
+                        autodiff(ReverseWithPrimal, $prim, Active, $dup_args...),
                         _,
                         evals = 1,
                     )
@@ -259,6 +285,7 @@ function combine_results(result, tag, _range, default_range)
     d = result[2]
     primal_time = minimum(d["primal"]).time
     mooncake_time = minimum(d["mooncake"]).time
+    mooncake_fwd_time = minimum(d["mooncake_fwd"]).time
     zygote_time = in("zygote", keys(d)) ? minimum(d["zygote"]).time : missing
     rd_time = in("rd", keys(d)) ? minimum(d["rd"]).time : missing
     ez_time = in("enzyme", keys(d)) ? minimum(d["enzyme"]).time : missing
@@ -268,6 +295,8 @@ function combine_results(result, tag, _range, default_range)
         primal_time=primal_time,
         mooncake_time=mooncake_time,
         Mooncake=mooncake_time / primal_time,
+        mooncake_fwd_time=mooncake_fwd_time,
+        MooncakeFwd=mooncake_fwd_time / primal_time,
         zygote_time=zygote_time,
         Zygote=zygote_time / primal_time,
         rd_time=rd_time,
@@ -291,22 +320,22 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         :misc,
         :new,
     ]) do s
-        test_cases, memory = generate_hand_written_rrule!!_test_cases(rng_ctor, Val(s))
+        test_cases, memory = hand_written_rule_test_cases(rng_ctor, Val(s))
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
     end
-    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false)
+    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false, 0.03)
 end
 
 function benchmark_derived_rrules!!(rng_ctor)
     test_case_data = map([:test_resources]) do s
-        test_cases, memory = generate_derived_rrule!!_test_cases(rng_ctor, Val(s))
+        test_cases, memory = derived_rule_test_cases(rng_ctor, Val(s))
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
     end
-    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false)
+    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.1)
 end
 
 function benchmark_inter_framework_rules()
@@ -315,7 +344,9 @@ function benchmark_inter_framework_rules()
     test_cases = map(last, test_case_data)
     memory = []
     ranges = fill(nothing, length(test_cases))
-    return benchmark_rules!!([(test_cases, memory, ranges, tags)], (lb=0.1, ub=200), true)
+    return benchmark_rules!!(
+        [(test_cases, memory, ranges, tags)], (lb=0.1, ub=200), true, 1.0
+    )
 end
 
 function flag_concerning_performance(ratios)
@@ -349,7 +380,7 @@ end
 
 function create_inter_ad_benchmarks()
     results = benchmark_inter_framework_rules()
-    tools = [:Mooncake, :Zygote, :ReverseDiff, :Enzyme]
+    tools = [:Mooncake, :MooncakeFwd, :Zygote, :ReverseDiff, :Enzyme]
     df = DataFrame(results)[:, [:tag, :primal_time, tools...]]
 
     # Plot graph of results.
@@ -364,7 +395,9 @@ function create_inter_ad_benchmarks()
     formatted_cols = map(t -> t => fix_sig_fig.(df[:, t]), tools)
     df_formatted = DataFrame(:Label => df.tag, :Primal => formatted_ts, formatted_cols...)
     return open(
-        io -> pretty_table(io, df_formatted), "bench/benchmark_results.txt"; write=true
+        io -> pretty_table(io, df_formatted; display_size=(-1, 500)),
+        "bench/benchmark_results.txt";
+        write=true,
     )
 end
 
@@ -373,9 +406,9 @@ function main()
     @info perf_group
     println(perf_group)
     if perf_group == "hand_written"
-        flag_concerning_performance(benchmark_hand_written_rrules!!(Xoshiro))
+        flag_concerning_performance(benchmark_hand_written_rrules!!(StableRNG))
     elseif perf_group == "derived"
-        flag_concerning_performance(benchmark_derived_rrules!!(Xoshiro))
+        flag_concerning_performance(benchmark_derived_rrules!!(StableRNG))
     elseif perf_group == "comparison"
         create_inter_ad_benchmarks()
     else

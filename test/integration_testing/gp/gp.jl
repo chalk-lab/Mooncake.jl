@@ -41,7 +41,7 @@ using Mooncake.TestUtils: test_rule
         ],
     )
         fx = GP(k)(x1, 1.1)
-        @testset "$(typeof(args))" for args in Any[
+        @testset "$(typeof(x))" for x in Any[
             (kernelmatrix, k, x1, x2),
             (kernelmatrix_diag, k, x1, x2),
             (kernelmatrix, k, x1),
@@ -49,8 +49,8 @@ using Mooncake.TestUtils: test_rule
             (fx -> rand(StableRNG(123456), fx), fx),
             (logpdf, fx, rand(rng, fx)),
         ]
-            @info typeof(args)
-            test_rule(rng, args...; is_primitive=false, unsafe_perturb=true)
+            @info typeof(x)
+            test_rule(rng, x...; is_primitive=false, unsafe_perturb=true)
         end
     end
 end

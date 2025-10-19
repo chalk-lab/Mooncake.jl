@@ -28,7 +28,7 @@
     @testset "_findall" begin
         @test @inferred Mooncake._findall(identity, (false, true, false)) == (2,)
         @test @inferred Mooncake._findall(identity, (true, false, true)) == (3, 1)
-        # regression test for https://github.com/compintell/Mooncake.jl/issues/473
+        # regression test for https://github.com/chalk-lab/Mooncake.jl/issues/473
         @test @inferred Mooncake._findall(Base.Fix2(isa, Union), Tuple(zeros(1000))) == ()
     end
     @testset "stable_all" begin
@@ -39,7 +39,7 @@
         @test Mooncake.stable_all((true, false)) == false
         @test Mooncake.stable_all((true, true)) == true
 
-        # regression test for https://github.com/compintell/Mooncake.jl/issues/473
+        # regression test for https://github.com/chalk-lab/Mooncake.jl/issues/473
         @test Mooncake.stable_all(Tuple(fill(false, 1000))) == false
         @test Mooncake.stable_all(Tuple(fill(true, 1000))) == true
     end
