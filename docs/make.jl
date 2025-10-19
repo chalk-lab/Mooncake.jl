@@ -55,7 +55,6 @@ makedocs(;
         ],
         "known_limitations.md",
     ],
-    doctest=false, # DO NOT MERGE THIS!!!!!! JUST HELPFUL FOR DEVELOPING THE DOCS!!!!
 )
 
 deploydocs(; repo="github.com/compintell/Mooncake.jl.git", push_preview=true)
