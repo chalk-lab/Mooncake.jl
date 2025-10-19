@@ -229,7 +229,7 @@ function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:iddict})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
     test_cases = Any[
         (false, :stability, nothing, Base.rehash!, IdDict(true => 5.0, false => 4.0), 10),
         (false, :none, nothing, setindex!, IdDict(true => 5.0, false => 4.0), 3.0, false),
@@ -243,4 +243,4 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:iddict})
     return test_cases, memory
 end
 
-generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:iddict}) = Any[], Any[]
+derived_rule_test_cases(rng_ctor, ::Val{:iddict}) = Any[], Any[]

@@ -898,7 +898,7 @@ function generate_data_test_cases(rng_ctor, ::Val{:memory})
     return vcat(_mems()[1], _mem_refs()[1], [randn(2), Any[]])
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:memory})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
     rng = rng_ctor(123)
     mems, _ = _mems()
     mem_refs, sample_mem_ref_values = _mem_refs()
@@ -1058,7 +1058,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:memory})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:memory})
+function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     rng = rng_ctor(123)
     x = Memory{Float64}(randn(rng, 10))
     test_cases = Any[

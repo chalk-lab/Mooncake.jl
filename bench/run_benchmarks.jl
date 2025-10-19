@@ -22,8 +22,8 @@ using AbstractGPs,
 using Mooncake:
     Dual,
     CoDual,
-    generate_hand_written_rrule!!_test_cases,
-    generate_derived_rrule!!_test_cases,
+    hand_written_rule_test_cases,
+    derived_rule_test_cases,
     TestUtils,
     _typeof,
     primal,
@@ -320,7 +320,7 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         :misc,
         :new,
     ]) do s
-        test_cases, memory = generate_hand_written_rrule!!_test_cases(rng_ctor, Val(s))
+        test_cases, memory = hand_written_rule_test_cases(rng_ctor, Val(s))
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
@@ -330,7 +330,7 @@ end
 
 function benchmark_derived_rrules!!(rng_ctor)
     test_case_data = map([:test_resources]) do s
-        test_cases, memory = generate_derived_rrule!!_test_cases(rng_ctor, Val(s))
+        test_cases, memory = derived_rule_test_cases(rng_ctor, Val(s))
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
