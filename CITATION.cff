@@ -5,6 +5,6 @@ authors:
   given-names: "Will"
 - family-names: "Ge"
   given-names: "Hong"
-title: "Mooncake: General-Purpose Programming—Now Differentiable"
+title: "Mooncake: Towards a Differentiable General-Purpose Language"
 date-released: 2024
 url: "https://github.com/chalk-lab/Mooncake.jl"
