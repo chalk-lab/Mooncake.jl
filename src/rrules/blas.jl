@@ -532,126 +532,134 @@ end
 end
 
 # Note that the complex symv are not BLAS but auxiliary functions in LAPACK
-@is_primitive(
-    MinimalCtx,
-    Tuple{
-        typeof(BLAS.symv!),Char,T,AbstractMatrix{T},AbstractVector{T},T,AbstractVector{T}
-    } where {T<:BlasFloat},
+for (fname, elty) in (
+    (:(symv!), BlasFloat),
+    (:(hemv!), BlasComplexFloat),
 )
+    isherm = fname == :(hemv!)
 
-function frule!!(
-    ::Dual{typeof(BLAS.symv!)},
-    uplo::Dual{Char},
-    alpha::Dual{T},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
-    beta::Dual{T},
-    y_dy::Dual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
-    # Extract primals.
-    ul = primal(uplo)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-    y, dy = arrayify(y_dy)
+    @eval @is_primitive(
+        MinimalCtx,
+        Tuple{
+            typeof(BLAS.$fname),Char,T,AbstractMatrix{T},AbstractVector{T},T,AbstractVector{T}
+        } where {T<:$elty},
+    )
 
-    # Compute Frechet derivative.
-    BLAS.symv!(ul, dα, A, x, β, dy)
-    BLAS.symv!(ul, α, dA, x, one(T), dy)
-    BLAS.symv!(ul, α, A, dx, one(T), dy)
-    if !iszero(dβ)
-        @inbounds for n in eachindex(y)
-            tmp = dβ * y[n]
-            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+    @eval function frule!!(
+        ::Dual{typeof(BLAS.$fname)},
+        uplo::Dual{Char},
+        alpha::Dual{T},
+        A_dA::Dual{<:AbstractMatrix{T}},
+        x_dx::Dual{<:AbstractVector{T}},
+        beta::Dual{T},
+        y_dy::Dual{<:AbstractVector{T}},
+    ) where {T<:$elty}
+        # Extract primals.
+        ul = primal(uplo)
+        α, dα = numberify(alpha)
+        β, dβ = numberify(beta)
+        A, dA = arrayify(A_dA)
+        x, dx = arrayify(x_dx)
+        y, dy = arrayify(y_dy)
+
+        # Compute Frechet derivative.
+        BLAS.$fname(ul, dα, A, x, β, dy)
+        BLAS.$fname(ul, α, dA, x, one(T), dy)
+        BLAS.$fname(ul, α, A, dx, one(T), dy)
+        if !iszero(dβ)
+            @inbounds for n in eachindex(y)
+                tmp = dβ * y[n]
+                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+            end
         end
+
+        # Run primal computation.
+        BLAS.$fname(ul, α, A, x, β, y)
+
+        return y_dy
     end
 
-    # Run primal computation.
-    BLAS.symv!(ul, α, A, x, β, y)
+    @eval function rrule!!(
+        ::CoDual{typeof(BLAS.$fname)},
+        uplo::CoDual{Char},
+        alpha::CoDual{T},
+        A_dA::CoDual{<:AbstractMatrix{T}},
+        x_dx::CoDual{<:AbstractVector{T}},
+        beta::CoDual{T},
+        y_dy::CoDual{<:AbstractVector{T}},
+    ) where {T<:$elty}
 
-    return y_dy
-end
+        # Extract primals.
+        ul = primal(uplo)
+        α = primal(alpha)
+        β = primal(beta)
+        A, dA = arrayify(A_dA)
+        x, dx = arrayify(x_dx)
+        y, dy = arrayify(y_dy)
 
-function rrule!!(
-    ::CoDual{typeof(BLAS.symv!)},
-    uplo::CoDual{Char},
-    alpha::CoDual{T},
-    A_dA::CoDual{<:AbstractMatrix{T}},
-    x_dx::CoDual{<:AbstractVector{T}},
-    beta::CoDual{T},
-    y_dy::CoDual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
+        y_copy = copy(y)
 
-    # Extract primals.
-    ul = primal(uplo)
-    α = primal(alpha)
-    β = primal(beta)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-    y, dy = arrayify(y_dy)
+        BLAS.$fname(ul, α, A, x, β, y)
 
-    y_copy = copy(y)
+        function symv!_or_hemv!_adjoint(::NoRData)
+            # dα = <dy, Ax>'
+            if (α == 1 && β == 0)
+                # Don't recompute Ax, it's already in y.
+                dα = dot(dy, y)'
+                BLAS.copyto!(y, y_copy)
+            else
+                # Reset y.
+                BLAS.copyto!(y, y_copy)
 
-    BLAS.symv!(ul, α, A, x, β, y)
+                # First compute Ax with {sy,he}mv!: safe to write into memory for copy of y.
+                BLAS.$fname(ul, one(T), A, x, zero(T), y_copy)
+                dα = dot(dy, y_copy)'
+            end
 
-    function symv!_adjoint(::NoRData)
-        # dα = <dy, Ax>'
-        if (α == 1 && β == 0)
-            # Don't recompute Ax, it's already in y.
-            dα = dot(dy, y)'
-            BLAS.copyto!(y, y_copy)
-        else
-            # Reset y.
-            BLAS.copyto!(y, y_copy)
+            # gradient w.r.t. A.
+            # TODO: could be switched to BLAS.{sy,he}r2! should Julia ever provide it
+            dA_tmp = (α' * dy) * x'
+            if ul == 'L'
+                dA .+= LowerTriangular(dA_tmp)
+                dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
+            else
+                dA .+= $(isherm ? adjoint : transpose)(LowerTriangular(dA_tmp))
+                dA .+= UpperTriangular(dA_tmp)
+            end
+            @inbounds for n in diagind(dA)
+                dA[n] -= $(isherm ? :(real(dA_tmp[n])) : :(dA_tmp[n]))
+            end
 
-            # First compute Ax with symv!: safe to write into memory for copy of y.
-            BLAS.symv!(ul, one(T), A, x, zero(T), y_copy)
-            dα = dot(dy, y_copy)'
+            # gradient w.r.t. x: dx += alpha' A' dy
+            if T <: BlasRealFloat || $isherm
+                # A' = A for real numbers or for hermitian matrices
+                BLAS.$fname(ul, α', A, dy, one(T), dx)
+            else
+                # A is symmetric but complex so A' = conj(A)
+                # Instead we compute conj(dx) += alpha A conj(dy)
+                conj!(dx)
+                BLAS.$fname(ul, α, A, conj.(dy), one(T), dx)
+                conj!(dx)
+            end
+
+            # gradient w.r.t. beta.
+            dβ = dot(y, dy)
+
+            # gradient w.r.t. y.
+            BLAS.scal!(β', dy)
+
+            return (
+                NoRData(),
+                NoRData(),
+                _rdata(dα),
+                NoRData(),
+                NoRData(),
+                _rdata(dβ),
+                NoRData(),
+            )
         end
-
-        # gradient w.r.t. A.
-        dA_tmp = dy * x'
-        if ul == 'L'
-            dA .+= α' .* LowerTriangular(dA_tmp)
-            dA .+= α' .* transpose(UpperTriangular(dA_tmp))
-        else
-            dA .+= α' .* transpose(LowerTriangular(dA_tmp))
-            dA .+= α' .* UpperTriangular(dA_tmp)
-        end
-        @inbounds for n in diagind(dA)
-            dA[n] -= α' * dA_tmp[n]
-        end
-
-        # gradient w.r.t. x: dx += alpha' A' dy
-        if T <: BlasRealFloat
-            # A' = A for real numbers
-            BLAS.symv!(ul, α, A, dy, one(T), dx)
-        else
-            # A is symmetric but complex so A' = conj(A)
-            # Instead we compute conj(dx) += alpha A conj(dy)
-            conj!(dx)
-            BLAS.symv!(ul, α, A, conj.(dy), one(T), dx)
-            conj!(dx)
-        end
-
-        # gradient w.r.t. beta.
-        dβ = dot(y, dy)
-
-        # gradient w.r.t. y.
-        BLAS.scal!(β', dy)
-
-        return (
-            NoRData(),
-            NoRData(),
-            _rdata(dα),
-            NoRData(),
-            NoRData(),
-            _rdata(dβ),
-            NoRData(),
-        )
+        return y_dy, symv!_or_hemv!_adjoint
     end
-    return y_dy, symv!_adjoint
 end
 
 @is_primitive(
