@@ -392,6 +392,20 @@ end
     dy = memoryrefget(tangent(x), _val(ordering), _val(bc))
     return Dual(y, dy)
 end
+struct LMemoryRefGetPB{O,B,D}
+    ordering::O
+    boundscheck::B
+    dx::D
+end
+
+@inline function (pb::LMemoryRefGetPB)(dy)
+    ord = _val(pb.ordering)
+    bc = _val(pb.boundscheck)
+    new_tangent = increment_rdata!!(memoryrefget(pb.dx, ord, bc), dy)
+    memoryrefset!(pb.dx, new_tangent, ord, bc)
+    return NoRData(), NoRData(), NoRData(), NoRData()
+end
+
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
     x::CoDual{<:MemoryRef},
@@ -400,15 +414,9 @@ end
 )
     ordering = primal(_ordering)
     bc = primal(_boundscheck)
-    dx = x.dx
-    function lmemoryrefget_adjoint(dy)
-        new_tangent = increment_rdata!!(memoryrefget(dx, _val(ordering), _val(bc)), dy)
-        memoryrefset!(dx, new_tangent, _val(ordering), _val(bc))
-        return NoRData(), NoRData(), NoRData(), NoRData()
-    end
     y = memoryrefget(x.x, _val(ordering), _val(bc))
     dy = fdata(memoryrefget(x.dx, _val(ordering), _val(bc)))
-    return CoDual(y, dy), lmemoryrefget_adjoint
+    return CoDual(y, dy), LMemoryRefGetPB(ordering, bc, x.dx)
 end
 
 @inline Base.@propagate_inbounds function frule!!(
