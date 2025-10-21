@@ -666,7 +666,7 @@ end
     MinimalCtx,
     Tuple{
         typeof(BLAS.trmv!),Char,Char,Char,AbstractMatrix{T},AbstractVector{T}
-    } where {T<:BlasRealFloat},
+    } where {T<:BlasFloat},
 )
 
 function frule!!(
@@ -676,7 +676,7 @@ function frule!!(
     _diag::Dual{Char},
     A_dA::Dual{<:AbstractMatrix{T}},
     x_dx::Dual{<:AbstractVector{T}},
-) where {T<:BlasRealFloat}
+) where {T<:BlasFloat}
     # Extract primals.
     uplo = primal(_uplo)
     trans = primal(_trans)
@@ -706,7 +706,7 @@ function rrule!!(
     _diag::CoDual{Char},
     A_dA::CoDual{<:AbstractMatrix{T}},
     x_dx::CoDual{<:AbstractVector{T}},
-) where {T<:BlasRealFloat}
+) where {T<:BlasFloat}
 
     # Extract primals.
     uplo = primal(_uplo)
@@ -728,8 +728,23 @@ function rrule!!(
         x .= x_copy
 
         # Increment the tangents.
-        trans == 'N' ? inc_tri!(dA, dx, x, uplo, diag) : inc_tri!(dA, x, dx, uplo, diag)
-        BLAS.trmv!(uplo, trans == 'N' ? 'T' : 'N', diag, A, dx)
+        if trans == 'N'
+            inc_tri!(dA, dx, x, uplo, diag)
+            BLAS.trmv!(uplo, 'C', diag, A, dx)
+        elseif trans == 'C' || T <: BlasRealFloat
+            inc_tri!(dA, x, dx, uplo, diag)
+            BLAS.trmv!(uplo, 'N', diag, A, dx)
+        else
+            # Equivalent to these two calls:
+            # inc_tri!(dA, conj.(x), conj.(dx), uplo, diag)
+            # BLAS.trmv!(uplo, "conjugate only", diag, A, dx)
+
+            conj!(x_copy) # Reuse the memory, we don't need it anymore
+            conj!(dx)
+            inc_tri!(dA, x_copy, dx, uplo, diag)
+            BLAS.trmv!(uplo, 'N', diag, A, dx)
+            conj!(dx)
+        end
 
         return tuple_fill(NoRData(), Val(6))
     end
@@ -739,19 +754,19 @@ end
 function inc_tri!(A, x, y, uplo, diag)
     if uplo == 'L' && diag == 'U'
         @inbounds for q in 1:size(A, 2), p in (q + 1):size(A, 1)
-            A[p, q] = fma(x[p], y[q], A[p, q])
+            A[p, q] += x[p] * y[q]'
         end
     elseif uplo == 'L' && diag == 'N'
         @inbounds for q in 1:size(A, 2), p in q:size(A, 1)
-            A[p, q] = fma(x[p], y[q], A[p, q])
+            A[p, q] += x[p] * y[q]'
         end
     elseif uplo == 'U' && diag == 'U'
         @inbounds for q in 1:size(A, 2), p in 1:(q - 1)
-            A[p, q] = fma(x[p], y[q], A[p, q])
+            A[p, q] += x[p] * y[q]'
         end
     elseif uplo == 'U' && diag == 'N'
         @inbounds for q in 1:size(A, 2), p in 1:q
-            A[p, q] = fma(x[p], y[q], A[p, q])
+            A[p, q] += x[p] * y[q]'
         end
     else
         error("Unexpected uplo $uplo or diag $diag")
