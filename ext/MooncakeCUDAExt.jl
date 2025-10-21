@@ -43,9 +43,9 @@ function zero_tangent_internal(x::CuFloatArray, dict::MaybeCache)
     dict[x] = t
     return t
 end
-function randn_tangent_internal(rng::AbstractRNG, x::CuFloatArray, dict::MaybeCache)
+function randn_tangent_internal(rng::AbstractRNG, x::CuArray{T}, dict::MaybeCache) where {T<:IEEEFloat}
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = cu(randn(rng, Float32, size(x)...))
+    t = CuArray(randn(rng, T, size(x)...))
     dict[x] = t
     return t
 end
