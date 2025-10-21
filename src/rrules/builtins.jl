@@ -812,6 +812,25 @@ function frule!!(
         return Dual(y, dy)
     end
 end
+struct GetfieldImmutablePB{Dx,Name}
+    dx_r::Dx
+    name::Name
+end
+
+@inline function (pb::GetfieldImmutablePB)(dy)
+    return NoRData(), increment_field!!(instantiate(pb.dx_r), dy, pb.name), NoRData()
+end
+
+struct GetfieldImmutableOrderPB{Dx,Name}
+    dx_r::Dx
+    name::Name
+end
+
+@inline function (pb::GetfieldImmutableOrderPB)(dy)
+    tmp = increment_field!!(instantiate(pb.dx_r), dy, pb.name)
+    return NoRData(), tmp, NoRData(), NoRData()
+end
+
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
 ) where {P}
@@ -821,12 +840,9 @@ function rrule!!(
     elseif is_homogeneous_and_immutable(primal(x))
         dx_r = lazy_zero_rdata(primal(x))
         _name = primal(name)
-        function immutable_lgetfield_pb!!(dy)
-            return NoRData(), increment_field!!(instantiate(dx_r), dy, _name), NoRData()
-        end
         yp = getfield(primal(x), _name)
         y = CoDual(yp, _get_fdata_field(primal(x), tangent(x), _name))
-        return y, immutable_lgetfield_pb!!
+        return y, GetfieldImmutablePB(dx_r, _name)
     else
         return rrule!!(uninit_fcodual(lgetfield), x, uninit_fcodual(Val(primal(name))))
     end
@@ -841,13 +857,9 @@ function rrule!!(
     elseif is_homogeneous_and_immutable(primal(x))
         dx_r = lazy_zero_rdata(primal(x))
         _name = primal(name)
-        function immutable_lgetfield_pb!!(dy)
-            tmp = increment_field!!(instantiate(dx_r), dy, _name)
-            return NoRData(), tmp, NoRData(), NoRData()
-        end
         yp = getfield(primal(x), _name, primal(order))
         y = CoDual(yp, _get_fdata_field(primal(x), tangent(x), _name))
-        return y, immutable_lgetfield_pb!!
+        return y, GetfieldImmutableOrderPB(dx_r, _name)
     else
         literal_name = uninit_fcodual(Val(primal(name)))
         literal_order = uninit_fcodual(Val(primal(order)))

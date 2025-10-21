@@ -7,7 +7,7 @@
 ## High-Priority Conversions
 - ✅ `src/rrules/misc.jl`: `lgetfield` mutable + ordered mutable variants (via `call_pb`)
 - ✅ `src/rrules/array_legacy.jl`: `arrayset_pullback!!`, `isbits_arrayset_pullback!!`, `copy_pullback!!`
-- `src/rrules/builtins.jl`: immutable `getfield` fast paths
+- ✅ `src/rrules/builtins.jl`: immutable `getfield` fast paths
 - `src/rrules/memory.jl`: `lgetfield` / `getfield` for `Memory` / `MemoryRef`
 
 ## Baseline Snapshot (2025-10-21 11:12:17 UTC−07)
