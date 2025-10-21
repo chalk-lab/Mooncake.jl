@@ -720,6 +720,38 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             return id
         end
 
+        is_arrayref_call =
+            !is_invoke &&
+            (args[1] === Core.arrayref ||
+             (args[1] isa GlobalRef &&
+              args[1].mod === Core &&
+              args[1].name === :arrayref))
+
+        arrayref_stack_id = nothing
+        arrayref_forward_extra = IDInstPair[]
+
+        if is_arrayref_call
+            n_inds = length(args) - 3
+            arrayref_stack_id = add_data!(info, Stack{NTuple{n_inds,Int}}())
+
+            idx_primal_ids = ID[]
+            for codual_id in codual_arg_ids[4:end]
+                idx_id = ID()
+                push!(arrayref_forward_extra, (idx_id, new_inst(Expr(:call, primal, codual_id))))
+                push!(idx_primal_ids, idx_id)
+            end
+
+            inds_tuple_id = ID()
+            push!(
+                arrayref_forward_extra,
+                (inds_tuple_id, new_inst(Expr(:call, tuple, idx_primal_ids...))),
+            )
+            push!(
+                arrayref_forward_extra,
+                (ID(), new_inst(Expr(:call, push!, arrayref_stack_id, inds_tuple_id))),
+            )
+        end
+
         # Make call to rule.
         rule_call_id = ID()
         rule_call = Expr(:call, rule_ref, codual_arg_ids...)
@@ -758,6 +790,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
                 pb_stmt,
                 (output_id, new_inst(output)),
             ],
+            arrayref_forward_extra,
         )
 
         # Make statement associated to reverse-pass. If the reverse-pass is provably a
@@ -779,8 +812,38 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             zero_rdata_ref = (ID(), new_inst(zero_rdata_expr))
 
             # Run the pullback. The result is a tuple comprising `length(args)` elements.
+            call_pre_insts = IDInstPair[]
             call_pullback_id = ID()
-            call_pullback = (call_pullback_id, new_inst(Expr(:call, pb, rdata_output_id)))
+            call_expr = Expr(:call, pb, rdata_output_id)
+
+            if is_arrayref_call
+                dx_ref_id = get_rev_data_id(info, args[3])
+                dx_ref_id === nothing && error("Missing rdata ref for array argument in arrayref")
+
+                dx_val_id = ID()
+                push!(
+                    call_pre_insts,
+                    (dx_val_id, new_inst(Expr(:call, getfield, dx_ref_id, QuoteNode(:x)))),
+                )
+
+                inds_tuple_rev_id = ID()
+                push!(
+                    call_pre_insts,
+                    (inds_tuple_rev_id, new_inst(Expr(:call, pop!, arrayref_stack_id))),
+                )
+
+                call_expr = Expr(
+                    :call,
+                    call_pb,
+                    pb,
+                    rdata_output_id,
+                    dx_val_id,
+                    inds_tuple_rev_id,
+                    Expr(:call, Val, false),
+                )
+            end
+
+            call_pullback = (call_pullback_id, new_inst(call_expr))
 
             # For each element of the tuple returned by call_pullback, if the corresponding
             # value in the primal IR is an Argument / SSA (if `get_rev_data_id` does not
@@ -807,7 +870,9 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
             # Concatenate all statements, and return them.
             vcat(
-                IDInstPair[rdata_output, zero_rdata_ref, call_pullback],
+                IDInstPair[rdata_output, zero_rdata_ref],
+                call_pre_insts,
+                IDInstPair[call_pullback],
                 reduce(vcat, filter(x -> !(x === nothing), tmp); init=IDInstPair[]),
             )
         end
@@ -930,6 +995,21 @@ function nvargs(pb::Pullback{sig}) where {sig}
 end
 
 @inline (pb::Pullback)(dy) = __flatten_varargs(_isva(pb), pb.pb_oc[](dy), nvargs(pb)())
+
+"""
+    call_pb(pb, dy, args...)
+
+Dispatcher for calling pullbacks on the reverse pass. Default fallback calls `pb(dy)` for
+backward compatibility. Singleton pullback types (ArrayRefPB, GetfieldPB, etc.) specialize
+this to receive tangent containers and dynamic primals directly, avoiding per-iteration
+closure captures.
+
+Positional arguments after `dy` typically include:
+- `dx`: tangent/rdata container (from `arg_rdata_ref_ids`)
+- Dynamic values: indices, field names, etc.
+- Constants: Val-wrapped boundscheck flags, etc.
+"""
+@inline call_pb(pb, dy, args...) = pb(dy)
 
 struct DerivedRule{Tprimal,Tfwd_args,Tfwd_ret,Tpb_args,Tpb_ret,isva,Tnargs<:Val}
     fwds_oc::RuleMC{Tfwd_args,Tfwd_ret}
