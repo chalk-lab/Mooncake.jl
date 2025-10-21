@@ -1,14 +1,13 @@
 # Loop Optimisation Plan (Oct 2025)
 
 ## Current Focus
-- Standardise hot pullbacks on the `call_pb` singleton interface (no per-iteration closures).
-- Keep loop-specialisation experiments parked until explicitly requested.
+- Singleton `call_pb` pullbacks in place; shift attention to designing a general loop/invariant analysis so we can cut bookkeeping without per-pattern hacks.
 
-## High-Priority Conversions
-- ✅ `src/rrules/misc.jl`: `lgetfield` mutable + ordered mutable variants (via `call_pb`)
-- ✅ `src/rrules/array_legacy.jl`: `arrayset_pullback!!`, `isbits_arrayset_pullback!!`, `copy_pullback!!`
-- ✅ `src/rrules/builtins.jl`: immutable `getfield` fast paths
-- ✅ `src/rrules/memory.jl`: `lgetfield` / `getfield` for `Memory` / `MemoryRef`
+## Completed Pullback Refactors
+- `src/rrules/misc.jl`: mutable `lgetfield`
+- `src/rrules/array_legacy.jl`: `arrayref`, `arrayset`, `isbits_arrayset`, `copy`
+- `src/rrules/builtins.jl`: immutable `getfield`
+- `src/rrules/memory.jl`: `lmemoryrefget` / `memoryrefget`
 
 ## Baseline Snapshot (2025-10-21 11:12:17 UTC−07)
 - `sum_1000`: 130.096 ns  
@@ -22,5 +21,5 @@
 4. Return `NoRData()` placeholders for unused adjoints to match interpreter expectations.
 
 ## Working Notes
-- Run `loop_optimization_profiling/smoke_test.jl` after each conversion (gradient + benchmark).
-- Update the “High-Priority Conversions” list as items land or new hotspots appear.
+- Keep running `loop_optimization_profiling/smoke_test.jl` while iterating on loop-analysis experiments.
+- Next steps: sketch loop detection, invariant propagation, and specialised reverse-loop emission before diving into code.
