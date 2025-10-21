@@ -57,6 +57,22 @@ This approach is identical to the one taken by `Zygote.jl` to circumvent the sam
 """
 lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 
+#
+# Singleton pullbacks for lgetfield
+#
+
+struct LGetfieldMutablePB{F} end
+struct LGetfieldOrderMutablePB{F} end
+
+@inline function call_pb(::LGetfieldMutablePB{F}, dy, dx) where {F}
+    increment_field_rdata!(dx, dy, Val{F}())
+    return NoRData(), NoRData(), NoRData()
+end
+@inline function call_pb(::LGetfieldOrderMutablePB{F}, dy, dx) where {F}
+    increment_field_rdata!(dx, dy, Val{F}())
+    return NoRData(), NoRData(), NoRData(), NoRData()
+end
+
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
 @inline function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}
@@ -79,20 +95,17 @@ end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
 ) where {P,F<:StandardFDataType,f}
-    pb!! = if ismutabletype(P)
-        dx = tangent(x)
-        function mutable_lgetfield_pb!!(dy)
-            increment_field_rdata!(dx, dy, Val{f}())
-            return NoRData(), NoRData(), NoRData()
-        end
-    else
+    y = CoDual(getfield(primal(x), f), _get_fdata_field(primal(x), tangent(x), f))
+    if ismutabletype(P)
+        return y, LGetfieldMutablePB{f}()
+    end
+    pb!! = begin
         dx_r = lazy_zero_rdata(primal(x))
         field = Val{f}()
         function immutable_lgetfield_pb!!(dy)
             return NoRData(), increment_field!!(instantiate(dx_r), dy, field), NoRData()
         end
     end
-    y = CoDual(getfield(primal(x), f), _get_fdata_field(primal(x), tangent(x), f))
     return y, pb!!
 end
 
@@ -134,20 +147,17 @@ end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P,F<:StandardFDataType,f,order}
-    pb!! = if ismutabletype(P)
-        dx = tangent(x)
-        function mutable_lgetfield_pb!!(dy)
-            increment_field_rdata!(dx, dy, Val{f}())
-            return NoRData(), NoRData(), NoRData(), NoRData()
-        end
-    else
+    y = CoDual(getfield(primal(x), f, order), _get_fdata_field(primal(x), tangent(x), f))
+    if ismutabletype(P)
+        return y, LGetfieldOrderMutablePB{f}()
+    end
+    pb!! = begin
         dx_r = lazy_zero_rdata(primal(x))
         function immutable_lgetfield_pb!!(dy)
             tmp = increment_field!!(instantiate(dx_r), dy, Val{f}())
             return NoRData(), tmp, NoRData(), NoRData()
         end
     end
-    y = CoDual(getfield(primal(x), f, order), _get_fdata_field(primal(x), tangent(x), f))
     return y, pb!!
 end
 

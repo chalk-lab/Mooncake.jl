@@ -5,8 +5,8 @@
 - Keep loop-specialisation experiments parked until explicitly requested.
 
 ## High-Priority Conversions
-- `src/rrules/array_legacy.jl`: `arrayset_pullback!!`, `isbits_arrayset_pullback!!`, `copy_pullback!!`
-- `src/rrules/misc.jl`: `lgetfield` (mutable + immutable variants)
+- ✅ `src/rrules/misc.jl`: `lgetfield` mutable + ordered mutable variants (via `call_pb`)
+- ✅ `src/rrules/array_legacy.jl`: `arrayset_pullback!!`, `isbits_arrayset_pullback!!`, `copy_pullback!!`
 - `src/rrules/builtins.jl`: immutable `getfield` fast paths
 - `src/rrules/memory.jl`: `lgetfield` / `getfield` for `Memory` / `MemoryRef`
 

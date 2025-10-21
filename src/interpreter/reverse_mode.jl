@@ -727,6 +727,14 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
               args[1].mod === Core &&
               args[1].name === :arrayref))
 
+        is_lgetfield_call =
+            !is_invoke &&
+            (args[1] === lgetfield ||
+             (args[1] isa GlobalRef && args[1].name === :lgetfield))
+
+        lgetfield_is_mutable = is_lgetfield_call &&
+            ismutabletype(get_primal_type(info, args[2]))
+
         arrayref_stack_id = nothing
         arrayref_forward_extra = IDInstPair[]
 
@@ -814,7 +822,10 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             # Run the pullback. The result is a tuple comprising `length(args)` elements.
             call_pre_insts = IDInstPair[]
             call_pullback_id = ID()
-            call_expr = Expr(:call, pb, rdata_output_id)
+            call_expr =
+                is_arrayref_call || lgetfield_is_mutable ?
+                Expr(:call, call_pb, pb, rdata_output_id) :
+                Expr(:call, pb, rdata_output_id)
 
             if is_arrayref_call
                 dx_ref_id = get_rev_data_id(info, args[3])
@@ -841,6 +852,18 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
                     inds_tuple_rev_id,
                     Expr(:call, Val, false),
                 )
+            elseif lgetfield_is_mutable
+                dx_ref_id = get_rev_data_id(info, args[2])
+                dx_ref_id === nothing &&
+                    error("Missing rdata ref for receiver in lgetfield call")
+
+                dx_val_id = ID()
+                push!(
+                    call_pre_insts,
+                    (dx_val_id, new_inst(Expr(:call, getfield, dx_ref_id, QuoteNode(:x)))),
+                )
+
+                call_expr = Expr(:call, call_pb, pb, rdata_output_id, dx_val_id)
             end
 
             call_pullback = (call_pullback_id, new_inst(call_expr))

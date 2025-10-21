@@ -385,6 +385,45 @@ Base.@propagate_inbounds function rrule!!(
     return CoDual(_y, dy), arrayref_pullback!!
 end
 
+struct ArraySetPB{B,A,T,P,V,NI}
+    boundscheck::B
+    to_save::Bool
+    primal_A::A
+    tangent_A::T
+    old_primal::P
+    old_tangent::V
+    cart_indices::NI
+end
+
+struct IsbitsArraySetPB{A,T,P,V,NI}
+    primal_A::A
+    tangent_A::T
+    old_primal::P
+    old_tangent::V
+    lin_index::Int
+    cart_indices::NI
+end
+
+@inline function (pb::ArraySetPB)(dy)
+    dv = rdata(arrayref(pb.boundscheck, pb.tangent_A, pb.cart_indices...))
+    if pb.to_save
+        arrayset(pb.boundscheck, pb.primal_A, pb.old_primal, pb.cart_indices...)
+        arrayset(pb.boundscheck, pb.tangent_A, pb.old_tangent, pb.cart_indices...)
+    end
+    return NoRData(), NoRData(), NoRData(), dv, ntuple(_ -> NoRData(), length(pb.cart_indices))...
+end
+
+@inline call_pb(pb::ArraySetPB, dy) = pb(dy)
+
+@inline function (pb::IsbitsArraySetPB)(::NoRData)
+    dv = rdata(arrayref(false, pb.tangent_A, pb.lin_index))
+    arrayset(false, pb.primal_A, pb.old_primal, pb.lin_index)
+    arrayset(false, pb.tangent_A, pb.old_tangent, pb.lin_index)
+    return NoRData(), NoRData(), NoRData(), dv, ntuple(_ -> NoRData(), length(pb.cart_indices))...
+end
+
+@inline call_pb(pb::IsbitsArraySetPB, dy) = pb(dy)
+
 function frule!!(
     ::Dual{typeof(Core.arrayset)},
     inbounds::Dual{Bool},
@@ -408,53 +447,49 @@ function rrule!!(
     _inds = map(primal, inds)
 
     if isbitstype(P)
-        return isbits_arrayset_rrule(_inbounds, _inds, A, v)
+        lin_index = LinearIndices(size(primal(A)))[_inds...]
+        return isbits_arrayset_rrule(_inds, lin_index, A, v)
     end
 
     to_save = isassigned(primal(A), _inds...)
-    old_A = Ref{Tuple{P,V}}()
-    if to_save
-        old_A[] = (
-            arrayref(_inbounds, primal(A), _inds...),
-            arrayref(_inbounds, tangent(A), _inds...),
-        )
-    end
+    old_primal = to_save ? arrayref(_inbounds, primal(A), _inds...) : nothing
+    old_tangent = to_save ? arrayref(_inbounds, tangent(A), _inds...) : nothing
 
     arrayset(_inbounds, primal(A), primal(v), _inds...)
     dA = tangent(A)
     arrayset(_inbounds, dA, tangent(tangent(v), zero_rdata(primal(v))), _inds...)
-    function arrayset_pullback!!(::NoRData)
-        dv = rdata(arrayref(_inbounds, dA, _inds...))
-        if to_save
-            arrayset(_inbounds, primal(A), old_A[][1], _inds...)
-            arrayset(_inbounds, dA, old_A[][2], _inds...)
-        end
-        return NoRData(), NoRData(), NoRData(), dv, tuple_map(_ -> NoRData(), _inds)...
-    end
-    return A, arrayset_pullback!!
+
+    pb = ArraySetPB(
+        _inbounds,
+        to_save,
+        primal(A),
+        dA,
+        old_primal,
+        old_tangent,
+        tuple(_inds...),
+    )
+    return A, pb
 end
 
 function isbits_arrayset_rrule(
-    boundscheck, _inds, A::CoDual{<:Array{P},TdA}, v::CoDual{P}
+    _inds, lin_index, A::CoDual{<:Array{P},TdA}, v::CoDual{P}
 ) where {P,V,TdA<:Array{V}}
+    old_val = arrayref(false, primal(A), lin_index)
+    old_tangent = arrayref(false, tangent(A), lin_index)
+    arrayset(false, primal(A), primal(v), lin_index)
 
-    # Convert to linear indices
-    lin_inds = LinearIndices(size(primal(A)))[_inds...]
-
-    old_A = (arrayref(false, primal(A), lin_inds), arrayref(false, tangent(A), lin_inds))
-    arrayset(false, primal(A), primal(v), lin_inds)
-
-    _A = primal(A)
     dA = tangent(A)
-    arrayset(false, dA, zero_tangent(primal(v)), lin_inds)
-    ninds = Val(length(_inds))
-    function isbits_arrayset_pullback!!(::NoRData)
-        dv = rdata(arrayref(false, dA, lin_inds))
-        arrayset(false, _A, old_A[1], lin_inds)
-        arrayset(false, dA, old_A[2], lin_inds)
-        return NoRData(), NoRData(), NoRData(), dv, tuple_fill(NoRData(), ninds)...
-    end
-    return A, isbits_arrayset_pullback!!
+    arrayset(false, dA, zero_tangent(primal(v)), lin_index)
+
+    pb = IsbitsArraySetPB(
+        primal(A),
+        dA,
+        old_val,
+        old_tangent,
+        lin_index,
+        tuple(_inds...),
+    )
+    return A, pb
 end
 
 function frule!!(::Dual{typeof(Core.arraysize)}, X, dim)
@@ -466,15 +501,22 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
 frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+
+struct CopyPB{Dx,Dy}
+    dx::Dx
+    dy::Dy
+end
+
+@inline function call_pb(pb::CopyPB, ::NoRData)
+    increment!!(pb.dx, pb.dy)
+    return NoRData(), NoRData()
+end
+
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
     y = CoDual(copy(primal(a)), dy)
-    function copy_pullback!!(::NoRData)
-        increment!!(dx, dy)
-        return NoRData(), NoRData()
-    end
-    return y, copy_pullback!!
+    return y, CopyPB(dx, dy)
 end
 
 function _copy_dict_tangent(mt::MutableTangent)
