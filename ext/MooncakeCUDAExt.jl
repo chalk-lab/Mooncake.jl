@@ -3,7 +3,7 @@ module MooncakeCUDAExt
 using LinearAlgebra, Random, Mooncake
 
 using Base: IEEEFloat
-using CUDA: CuArray, cu
+using CUDA: CuPtr, CuArray, cu, DeviceMemory, CuStream
 
 import Mooncake:
     MinimalCtx,
@@ -33,8 +33,18 @@ import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
 
 const CuFloatArray = CuArray{<:IEEEFloat}
+const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 
 # Tell Mooncake.jl how to handle CuArrays.
+
+Mooncake.tangent_type(::Type{<:CuPtr}) = Mooncake.NoTangent
+Mooncake.tangent_type(::Type{<:CuStream}) = Mooncake.NoTangent
+Mooncake.tangent_type(::Type{<:DeviceMemory}) = Mooncake.NoTangent
+Mooncake.@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P,N,M} = CuArray{
+    tangent_type(P),N,M
+}
+
+#Mooncake.@unstable tangent_type(::Type{<:CuArray{P,N} where {P}}) where {N} = CuArray
 
 Mooncake.@foldable tangent_type(::Type{P}) where {P<:CuFloatArray} = P
 function zero_tangent_internal(x::CuFloatArray, dict::MaybeCache)
@@ -43,9 +53,29 @@ function zero_tangent_internal(x::CuFloatArray, dict::MaybeCache)
     dict[x] = t
     return t
 end
-function randn_tangent_internal(rng::AbstractRNG, x::CuArray{T}, dict::MaybeCache) where {T<:IEEEFloat}
+function randn_tangent_internal(
+    rng::AbstractRNG, x::CuArray{T}, dict::MaybeCache
+) where {T<:IEEEFloat}
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     t = CuArray(randn(rng, T, size(x)...))
+    dict[x] = t
+    return t
+end
+function zero_tangent_internal(x::CuArray{T}, dict::MaybeCache) where {T<:Complex}
+    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
+    tr = zeros(real(T), size(x)...)
+    ti = zeros(real(T), size(x)...)
+    t = CuArray([Mooncake.Tangent((re=tr_, im=ti_)) for (tr_, ti_) in zip(tr, ti)])
+    dict[x] = t
+    return t
+end
+function randn_tangent_internal(
+    rng::AbstractRNG, x::CuArray{T}, dict::MaybeCache
+) where {T<:Complex}
+    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
+    tr = randn(rng, real(T), size(x)...)
+    ti = randn(rng, real(T), size(x)...)
+    t = CuArray([Mooncake.Tangent((re=tr_, im=ti_)) for (tr_, ti_) in zip(tr, ti)])
     dict[x] = t
     return t
 end
