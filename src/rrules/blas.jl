@@ -1371,7 +1371,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         map_prod(
             t_flags, [1, 3], [1, 2], allPs, [αs..., 0.46 + 0.32im], [βs..., 0.39 + 0.27im]
         ) do (tA, M, N, P, α, β)
-            P <: BlasRealFloat && (imag(α) > 0 || imag(β) > 0) && return []
+            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
 
             As = [
                 blas_matrices(rng, P, tA == 'N' ? M : N, tA == 'N' ? N : M)
@@ -1385,18 +1385,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
             end
         end...,
 
-        # symv!
-        map_prod(['L', 'U'], αs, βs, Ps) do (uplo, α, β, P)
+        # symv!, hemv!
+        map_prod([BLAS.symv!, BLAS.hemv!], ['L', 'U'], [αs..., 0.46 + 0.32im], [βs..., 0.39 + 0.27im], allPs) do (f, uplo, α, β, P)
+            P <: BlasRealFloat && f == BLAS.hemv! && return []
+            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+
             As = blas_matrices(rng, P, 5, 5)
             ys = blas_vectors(rng, P, 5)
             xs = blas_vectors(rng, P, 5)
             return map(As, xs, ys) do A, x, y
-                (false, :stability, nothing, BLAS.symv!, uplo, P(α), A, x, P(β), y)
+                (false, :stability, nothing, f, uplo, P(α), A, x, P(β), y)
             end
         end...,
 
         # trmv!
-        map_prod(uplos, t_flags, dAs, [1, 3], Ps) do (ul, tA, dA, N, P)
+        map_prod(uplos, t_flags, dAs, [1, 3], allPs) do (ul, tA, dA, N, P)
             As = blas_matrices(rng, P, N, N)
             bs = blas_vectors(rng, P, N)
             return map(As, bs) do A, b
