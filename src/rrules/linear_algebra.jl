@@ -12,6 +12,42 @@ function (pb::ExpPullback)(::NoRData)
     return NoRData(), NoRData()
 end
 
+function frule!!(::Dual{typeof(LinearAlgebra.det)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
+    X = copy(primal(X_dX))
+    dX = copy(tangent(X_dX))
+    C = det(X)
+    return Dual(C, C * sum(diag(inv(X)*dX)))
+end
+function rrule!!(::CoDual{typeof(LinearAlgebra.det)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloat}
+    X = copy(primal(X_dX))
+    dX = copy(tangent(X_dX))
+    Y = det(X)
+    function det_pb(dY)
+        dX .= dY * Y .* inv(adjoint(X))
+        return NoRData(), NoRData()
+    end
+    Ȳ = zero(Y)
+    return CoDual(Y, Ȳ), det_pb
+end
+
+function frule!!(::Dual{typeof(inv)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
+    X = copy(primal(X_dX))
+    dX = copy(tangent(X_dX))
+    Xi = inv(X)
+    return Dual(Xi, -Xi * dX * Xi)
+end
+function rrule!!(::CoDual{typeof(inv)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloat}
+    X = copy(primal(X_dX))
+    dX = copy(tangent(X_dX))
+    Y = inv(X)
+    function inv_pb(::NoRData)
+        dX .= -adjoint(Y) * dX * adjoint(Y)
+        return NoRData(), NoRData()
+    end
+    Ȳ = zero(Y)
+    return CoDual(Y, Ȳ), inv_pb
+end
+
 function frule!!(::Dual{typeof(exp)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
     X = copy(primal(X_dX))
     dX = copy(tangent(X_dX))
