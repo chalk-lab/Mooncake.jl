@@ -3,7 +3,7 @@ module MooncakeCUDAExt
 using LinearAlgebra, Random, Mooncake
 
 using Base: IEEEFloat
-using CUDA: CuPtr, CuArray, cu, DeviceMemory, CuStream
+using CUDA: CuArray, cu
 
 import Mooncake:
     MinimalCtx,
