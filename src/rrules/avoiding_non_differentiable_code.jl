@@ -69,6 +69,9 @@ import Base.CoreLogging as CoreLogging
     String,
     Int64,
 }
+@zero_derivative MinimalCtx Tuple{typeof(Base.fixup_stdlib_path), String}
+@zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(Base.CoreLogging.handle_message_nothrow),Vararg}
+
 # specialized case for Builtin primitive Core._call_latest rrule for CoreLogging.handle_message kwargs call.
 @zero_derivative(
     MinimalCtx,
