@@ -37,9 +37,6 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 
 # Tell Mooncake.jl how to handle CuArrays.
 
-Mooncake.tangent_type(::Type{<:CuPtr}) = Mooncake.NoTangent
-Mooncake.tangent_type(::Type{<:CuStream}) = Mooncake.NoTangent
-Mooncake.tangent_type(::Type{<:DeviceMemory}) = Mooncake.NoTangent
 Mooncake.@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P,N,M} = CuArray{
     tangent_type(P),N,M
 }
