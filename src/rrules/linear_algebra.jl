@@ -1,4 +1,6 @@
 @is_primitive MinimalCtx Tuple{typeof(exp),Matrix{<:IEEEFloat}}
+@is_primitive MinimalCtx Tuple{typeof(inv),Matrix{<:IEEEFloat}}
+@is_primitive MinimalCtx Tuple{typeof(det),Matrix{<:IEEEFloat}}
 
 struct ExpPullback{P}
     pb
