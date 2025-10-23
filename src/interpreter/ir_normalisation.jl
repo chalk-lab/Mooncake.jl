@@ -129,7 +129,9 @@ function fix_up_invoke_inference!(ir::IRCode)::IRCode
     end
     return ir
 end
-get_mi(ci::Core.CodeInstance) = @static isdefined(CC, :get_ci_mi) ? CC.get_ci_mi(ci) : ci.def
+function get_mi(ci::Core.CodeInstance)
+    @static isdefined(CC, :get_ci_mi) ? CC.get_ci_mi(ci) : ci.def
+end
 get_mi(mi::Core.MethodInstance) = mi
 
 """
@@ -241,10 +243,16 @@ function resolve_unbound_globalrefs(ir, @nospecialize ex)
         arg = ex.args[i]
         # extracted from `Compiler.check_op` (called by `Compiler.verify_ir`)
         if isa(arg, GlobalRef) && arg.mod !== Core && arg.mod !== Base
-            (valid_worlds, alldef) = CC.scan_leaf_partitions(nothing, arg, CC.WorldWithRange(CC.min_world(ir.valid_worlds), ir.valid_worlds)) do _, _, bpart
+            (valid_worlds, alldef) = CC.scan_leaf_partitions(
+                nothing,
+                arg,
+                CC.WorldWithRange(CC.min_world(ir.valid_worlds), ir.valid_worlds),
+            ) do _, _, bpart
                 CC.is_defined_const_binding(CC.binding_kind(bpart))
             end
-            if !alldef || CC.max_world(valid_worlds) < CC.max_world(ir.valid_worlds) || CC.min_world(valid_worlds) > CC.min_world(ir.valid_worlds)
+            if !alldef ||
+                CC.max_world(valid_worlds) < CC.max_world(ir.valid_worlds) ||
+                CC.min_world(valid_worlds) > CC.min_world(ir.valid_worlds)
                 # this is the potentially unsound bit, because we
                 # resolve a binding that was otherwise thought to be
                 # unbound during type inference.

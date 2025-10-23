@@ -71,8 +71,13 @@ import Base.CoreLogging as CoreLogging
 }
 
 @static if VERSION ≥ v"1.12-"
-    @zero_derivative MinimalCtx Tuple{typeof(Base.fixup_stdlib_path), String}
-    @zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(Base.CoreLogging.handle_message_nothrow),Vararg}
+    @zero_derivative MinimalCtx Tuple{typeof(Base.fixup_stdlib_path),String}
+    @zero_derivative MinimalCtx Tuple{
+        typeof(Core.kwcall),
+        NamedTuple,
+        typeof(Base.CoreLogging.handle_message_nothrow),
+        Vararg,
+    }
 end
 
 # specialized case for Builtin primitive Core._call_latest rrule for CoreLogging.handle_message kwargs call.

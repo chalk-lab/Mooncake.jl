@@ -233,26 +233,26 @@ get_primal_type(info::ADInfo, x::ID) = CC.widenconst(info.ssa_insts[x].type)
 get_primal_type(::ADInfo, x::QuoteNode) = _typeof(x.value)
 get_primal_type(::ADInfo, @nospecialize(x)) = _typeof(x)
 @static if VERSION > v"1.12-"
-function get_primal_type(::ADInfo, x::GlobalRef)
-    world = Base.tls_world_age()
-    partition = x.binding.partitions
-    # partitions are sorted in decreasing world order
-    while world < partition.min_world
-        !isdefined(partition, :next) && return Any # binding is not defined
-        partition = partition.next
+    function get_primal_type(::ADInfo, x::GlobalRef)
+        world = Base.tls_world_age()
+        partition = x.binding.partitions
+        # partitions are sorted in decreasing world order
+        while world < partition.min_world
+            !isdefined(partition, :next) && return Any # binding is not defined
+            partition = partition.next
+        end
+        isconst(x) && return _typeof(getglobal(x.mod, x.name))
+        if isdefined(partition, :restriction)
+            type = partition.restriction
+            isa(type, Type) && return type
+            return _typeof(type)
+        end
+        return Any
     end
-    isconst(x) && return _typeof(getglobal(x.mod, x.name))
-    if isdefined(partition, :restriction)
-        type = partition.restriction
-        isa(type, Type) && return type
-        return _typeof(type)
-    end
-    return Any
-end
 else
-function get_primal_type(::ADInfo, x::GlobalRef)
-    return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.binding.ty
-end
+    function get_primal_type(::ADInfo, x::GlobalRef)
+        return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.binding.ty
+    end
 end # @static
 function get_primal_type(::ADInfo, x::Expr)
     x.head === :boundscheck && return Bool
@@ -1134,8 +1134,12 @@ function build_rrule(
         else
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
             dri = generate_ir(interp, sig_or_mi; debug_mode)
-            fwd_oc = optimized_misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
-            rvs_oc = optimized_misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)
+            fwd_oc = optimized_misty_closure(
+                dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...
+            )
+            rvs_oc = optimized_misty_closure(
+                dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...
+            )
 
             # Compute the signature. Needs careful handling with varargs.
             nargs = num_args(dri.info)

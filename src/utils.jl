@@ -340,7 +340,8 @@ function opaque_closure(
     src.slotflags = fill(zero(UInt8), length(ir.argtypes))
     src.slottypes = copy(ir.argtypes)
     @static if VERSION > v"1.12-"
-        ir.debuginfo.def === nothing && (ir.debuginfo.def = :var"generated IR for OpaqueClosure")
+        ir.debuginfo.def === nothing &&
+            (ir.debuginfo.def = :var"generated IR for OpaqueClosure")
         src.min_world = ir.valid_worlds.min_world
         src.max_world = ir.valid_worlds.max_world
         src.isva = isva
@@ -374,7 +375,7 @@ end
 # enabling inlining and other optimizations.
 function set_world_bounds_for_optimization!(oc::Core.OpaqueClosure)
     ci = oc.source.specializations.cache
-    ci.inferred === nothing && return
+    ci.inferred === nothing && return nothing
     ci.inferred.min_world = oc.world
     ci.inferred.max_world = oc.world
 end
@@ -387,9 +388,11 @@ function reinfer_and_inline(ci::Core.CodeInstance, world::UInt)
     irsv === nothing && return nothing
     for stmt in irsv.ir.stmts
         inst = stmt[:inst]
-        if isexpr(inst, :loopinfo) || isexpr(inst, :pop_exception) ||
-                isa(inst, CC.GotoIfNot) || isa(inst, CC.GotoNode) ||
-                isexpr(inst, :copyast)
+        if isexpr(inst, :loopinfo) ||
+            isexpr(inst, :pop_exception) ||
+            isa(inst, CC.GotoIfNot) ||
+            isa(inst, CC.GotoNode) ||
+            isexpr(inst, :copyast)
             continue
         end
         stmt[:flag] |= CC.IR_FLAG_REFINED
@@ -429,7 +432,9 @@ function optimized_misty_closure(
     isva::Bool=false,
     do_compile::Bool=true,
 )
-    return MistyClosure(optimized_opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir))
+    return MistyClosure(
+        optimized_opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir)
+    )
 end
 
 @static if VERSION > v"1.12-"
@@ -437,7 +442,9 @@ end
     compute_oc_signature(ir, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
 else
     compute_ir_rettype(ir) = Base.Experimental.compute_ir_rettype(ir)
-    compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(ir, nargs, isva)
+    compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(
+        ir, nargs, isva
+    )
 end
 
 """

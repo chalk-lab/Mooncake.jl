@@ -273,7 +273,9 @@ function has_equal_data_internal(
 end
 
 for T in (:(Core.Method), :(Core.CodeInstance), :(Core.MethodInstance))
-    @eval function has_equal_data_internal(x::$T, y::$T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool})
+    @eval function has_equal_data_internal(
+        x::$T, y::$T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    )
         x == y
     end
 end
