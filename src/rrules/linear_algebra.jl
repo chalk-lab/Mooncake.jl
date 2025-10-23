@@ -12,13 +12,17 @@ function (pb::ExpPullback)(::NoRData)
     return NoRData(), NoRData()
 end
 
-function frule!!(::Dual{typeof(LinearAlgebra.det)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(LinearAlgebra.det)}, X_dX::Dual{Matrix{P}}
+) where {P<:IEEEFloat}
     X = copy(primal(X_dX))
     dX = copy(tangent(X_dX))
     C = det(X)
     return Dual(C, C * sum(diag(inv(X)*dX)))
 end
-function rrule!!(::CoDual{typeof(LinearAlgebra.det)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloat}
+function rrule!!(
+    ::CoDual{typeof(LinearAlgebra.det)}, X::CoDual{Matrix{P}}
+) where {P<:IEEEFloat}
     X = copy(primal(X_dX))
     dX = copy(tangent(X_dX))
     Y = det(X)
