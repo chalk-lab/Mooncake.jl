@@ -69,6 +69,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     test_cases = vcat(
         map_prod([3, 7], Ps) do (N, P)
             return (false, :none, nothing, exp, randn(rng, P, N, N))
+            return (false, :none, nothing, inv, randn(rng, P, N, N))
+            return (false, :none, nothing, det, randn(rng, P, N, N))
         end,
     )
     memory = Any[]
