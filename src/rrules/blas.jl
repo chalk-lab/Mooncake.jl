@@ -788,7 +788,7 @@ end
         AbstractMatrix{T},
         T,
         AbstractMatrix{T},
-    } where {T<:BlasRealFloat},
+    } where {T<:BlasFloat},
 )
 
 function frule!!(
@@ -800,11 +800,11 @@ function frule!!(
     B_dB::Dual{<:AbstractMatrix{T}},
     beta::Dual{T},
     C_dC::Dual{<:AbstractMatrix{T}},
-) where {T<:BlasRealFloat}
+) where {T<:BlasFloat}
     tA = primal(transA)
     tB = primal(transB)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
+    α, dα = numberify(alpha)
+    β, dβ = numberify(beta)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
     C, dC = arrayify(C_dC)
@@ -827,7 +827,7 @@ function frule!!(
     return C_dC
 end
 
-function ifelse_nan(cond, left::P, right::P) where {P<:BlasRealFloat}
+function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
 end
 
@@ -840,7 +840,7 @@ function rrule!!(
     B::CoDual{<:AbstractMatrix{T}},
     beta::CoDual{T},
     C::CoDual{<:AbstractMatrix{T}},
-) where {T<:BlasRealFloat}
+) where {T<:BlasFloat}
     tA = primal(transA)
     tB = primal(transB)
     a = primal(alpha)
@@ -865,28 +865,44 @@ function rrule!!(
     function gemm!_pb!!(::NoRData)
 
         # Compute pullback w.r.t. alpha.
-        da = (a == 1 && b == 0) ? dot(dC, p_C) : dot(dC, tmp_ref[])
+        da = (a == 1 && b == 0) ? dot(p_C, dC) : dot(tmp_ref[], dC)
 
         # Restore previous state.
         BLAS.copyto!(p_C, p_C_copy)
 
         # Compute pullback w.r.t. beta.
-        db = dot(dC, p_C)
+        db = dot(p_C, dC)
 
         # Increment cotangents.
         if tA == 'N'
-            BLAS.gemm!('N', tB == 'N' ? 'T' : 'N', a, dC, p_B, one(T), dA)
+            Bherm = tB == 'T' && T <: BlasComplexFloat ? conj.(p_B) : p_B
+            BLAS.gemm!('N', tB == 'N' ? 'C' : 'N', a', dC, Bherm, one(T), dA)
+        elseif tA == 'C'
+            BLAS.gemm!(tB, 'C', a, p_B, dC, one(T), dA)
         else
-            BLAS.gemm!(tB == 'N' ? 'N' : 'T', 'T', a, p_B, dC, one(T), dA)
+            # Equivalent to BLAS.gemm!(tB + "conjugate only", 'T', a', p_B, dC, one(T), dA)
+            if tB == 'N'
+                BLAS.gemm!('N', 'T', a', T <: BlasRealFloat ? p_B : conj.(p_B), dC, one(T), dA)
+            else
+                BLAS.gemm!(tB == 'T' ? 'C' : 'T', 'T', a', p_B, dC, one(T), dA)
+            end
         end
         if tB == 'N'
-            BLAS.gemm!(tA == 'N' ? 'T' : 'N', 'N', a, p_A, dC, one(T), dB)
+            Aherm = tA == 'T' && T <: BlasComplexFloat ? conj.(p_A) : p_A
+            BLAS.gemm!(tA == 'N' ? 'C' : 'N', 'N', a', Aherm, dC, one(T), dB)
+        elseif tB == 'C'
+            BLAS.gemm!('C', tA, a, dC, p_A, one(T), dB)
         else
-            BLAS.gemm!('T', tA == 'N' ? 'N' : 'T', a, dC, p_A, one(T), dB)
+            # Equivalent to BLAS.gemm!('T', tA + "conjugate only", a', dC, p_A, one(T), dB)
+            if tA == 'N'
+                BLAS.gemm!('T', 'N', a', dC, T <: BlasRealFloat ? p_A : conj.(p_A), one(T), dB)
+            else
+                BLAS.gemm!('T', tA == 'T' ? 'C' : 'T', a', dC, p_A, one(T), dB)
+            end
         end
-        dC .*= b
+        dC .*= b'
 
-        return NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData()
+        return NoRData(), NoRData(), NoRData(), _rdata(da), NoRData(), NoRData(), _rdata(db), NoRData()
     end
     return C, gemm!_pb!!
 end
