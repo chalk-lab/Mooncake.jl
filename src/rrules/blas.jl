@@ -618,7 +618,7 @@ for (fname, elty) in (
 
             # gradient w.r.t. A.
             # TODO: could be switched to BLAS.{sy,he}r2! should Julia ever provide it
-            dA_tmp = (α' * dy) * x'
+            dA_tmp = α' * dy * x'
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
                 dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
@@ -630,13 +630,13 @@ for (fname, elty) in (
                 dA[n] -= $(isherm ? :(real(dA_tmp[n])) : :(dA_tmp[n]))
             end
 
-            # gradient w.r.t. x: dx += alpha' A' dy
+            # gradient w.r.t. x: dx += α' A' dy
             if T <: BlasRealFloat || $isherm
                 # A' = A for real numbers or for hermitian matrices
                 BLAS.$fname(ul, α', A, dy, one(T), dx)
             else
                 # A is symmetric but complex so A' = conj(A)
-                # Instead we compute conj(dx) += alpha A conj(dy)
+                # Instead we compute conj(dx) += α A conj(dy)
                 conj!(dx)
                 BLAS.$fname(ul, α, A, conj.(dy), one(T), dx)
                 conj!(dx)
@@ -907,126 +907,135 @@ function rrule!!(
     return C, gemm!_pb!!
 end
 
-@is_primitive(
-    MinimalCtx,
-    Tuple{
-        typeof(BLAS.symm!),
-        Char,
-        Char,
-        T,
-        AbstractMatrix{T},
-        AbstractMatrix{T},
-        T,
-        AbstractMatrix{T},
-    } where {T<:BlasRealFloat},
+for (fname, elty) in (
+    (:(symm!), BlasFloat),
+    (:(hemm!), BlasComplexFloat),
 )
-function frule!!(
-    ::Dual{typeof(BLAS.symm!)},
-    side::Dual{Char},
-    uplo::Dual{Char},
-    alpha::Dual{T},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    B_dB::Dual{<:AbstractMatrix{T}},
-    beta::Dual{T},
-    C_dC::Dual{<:AbstractMatrix{T}},
-) where {T<:BlasRealFloat}
+    isherm = fname == :(hemm!)
 
-    # Extract primals.
-    s = primal(side)
-    ul = primal(uplo)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-    C, dC = arrayify(C_dC)
+    @eval @is_primitive(
+        MinimalCtx,
+        Tuple{
+            typeof(BLAS.$fname),
+            Char,
+            Char,
+            T,
+            AbstractMatrix{T},
+            AbstractMatrix{T},
+            T,
+            AbstractMatrix{T},
+        } where {T<:$elty},
+    )
+    @eval function frule!!(
+        ::Dual{typeof(BLAS.$fname)},
+        side::Dual{Char},
+        uplo::Dual{Char},
+        alpha::Dual{T},
+        A_dA::Dual{<:AbstractMatrix{T}},
+        B_dB::Dual{<:AbstractMatrix{T}},
+        beta::Dual{T},
+        C_dC::Dual{<:AbstractMatrix{T}},
+    ) where {T<:$elty}
 
-    # Compute Frechet derivative.
-    BLAS.symm!(s, ul, α, A, dB, β, dC)
-    BLAS.symm!(s, ul, α, dA, B, one(T), dC)
-    if !iszero(dα)
-        BLAS.symm!(s, ul, dα, A, B, one(T), dC)
-    end
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        # Extract primals.
+        s = primal(side)
+        ul = primal(uplo)
+        α, dα = numberify(alpha)
+        β, dβ = numberify(beta)
+        A, dA = arrayify(A_dA)
+        B, dB = arrayify(B_dB)
+        C, dC = arrayify(C_dC)
+
+        # Compute Frechet derivative.
+        BLAS.$fname(s, ul, α, A, dB, β, dC)
+        BLAS.$fname(s, ul, α, dA, B, one(T), dC)
+        if !iszero(dα)
+            BLAS.$fname(s, ul, dα, A, B, one(T), dC)
         end
+        if !iszero(dβ)
+            @inbounds for n in eachindex(C)
+                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+            end
+        end
+
+        # Run primal computation.
+        BLAS.$fname(s, ul, α, A, B, β, C)
+        return C_dC
     end
+    @eval function rrule!!(
+        ::CoDual{typeof(BLAS.$fname)},
+        side::CoDual{Char},
+        uplo::CoDual{Char},
+        alpha::CoDual{T},
+        A_dA::CoDual{<:AbstractMatrix{T}},
+        B_dB::CoDual{<:AbstractMatrix{T}},
+        beta::CoDual{T},
+        C_dC::CoDual{<:AbstractMatrix{T}},
+    ) where {T<:$elty}
 
-    # Run primal computation.
-    BLAS.symm!(s, ul, α, A, B, β, C)
-    return C_dC
-end
-function rrule!!(
-    ::CoDual{typeof(BLAS.symm!)},
-    side::CoDual{Char},
-    uplo::CoDual{Char},
-    alpha::CoDual{T},
-    A_dA::CoDual{<:AbstractMatrix{T}},
-    B_dB::CoDual{<:AbstractMatrix{T}},
-    beta::CoDual{T},
-    C_dC::CoDual{<:AbstractMatrix{T}},
-) where {T<:BlasRealFloat}
+        # Extract primals.
+        s = primal(side)
+        ul = primal(uplo)
+        α = primal(alpha)
+        β = primal(beta)
+        A, dA = arrayify(A_dA)
+        B, dB = arrayify(B_dB)
+        C, dC = arrayify(C_dC)
 
-    # Extract primals.
-    s = primal(side)
-    ul = primal(uplo)
-    α = primal(alpha)
-    β = primal(beta)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-    C, dC = arrayify(C_dC)
-
-    # In this rule we optimise carefully for the special case a == 1 && b == 0, which
-    # corresponds to simply multiplying symm(A) and B together, and writing the result to C.
-    # This is an extremely common edge case, so it's important to do well for it.
-    C_copy = copy(C)
-    tmp_ref = Ref{Matrix{T}}()
-    if (α == 1 && β == 0)
-        BLAS.symm!(s, ul, α, A, B, β, C)
-    else
-        tmp = BLAS.symm(s, ul, one(T), A, B)
-        tmp_ref[] = tmp
-        C .= α .* tmp .+ β .* C
-    end
-
-    function symm!_adjoint(::NoRData)
+        # In this rule we optimise carefully for the special case a == 1 && b == 0, which
+        # corresponds to simply multiplying symm(A) and B together, and writing the result to C.
+        # This is an extremely common edge case, so it's important to do well for it.
+        C_copy = copy(C)
+        tmp_ref = Ref{Matrix{T}}()
         if (α == 1 && β == 0)
-            dα = dot(dC, C)
-            BLAS.copyto!(C, C_copy)
+            BLAS.$fname(s, ul, α, A, B, β, C)
         else
-            # Reset C.
+            tmp = $(isherm ? BLAS.hemm : BLAS.symm)(s, ul, one(T), A, B)
+            tmp_ref[] = tmp
+            C .= α .* tmp .+ β .* C
+        end
+
+        function symm!_or_hemm!_adjoint(::NoRData)
+            dα = (α == 1 && β == 0) ? dot(C, dC) : dot(tmp_ref[], dC)
+
             BLAS.copyto!(C, C_copy)
 
-            # gradient w.r.t. α. Safe to write into memory for copy of C.
-            BLAS.symm!(s, ul, one(T), A, B, zero(T), C_copy)
-            dα = dot(dC, C_copy)
+            # gradient w.r.t. A.
+            # TODO: could be switched to BLAS.{sy,he}r2k!
+            dA_tmp = s == 'L' ? α' * dC * B' : α' * B' * dC
+            if ul == 'L'
+                dA .+= LowerTriangular(dA_tmp)
+                dA .+= $(isherm ? adjoint : transpose)(UpperTriangular(dA_tmp))
+            else
+                dA .+= $(isherm ? adjoint : transpose)(LowerTriangular(dA_tmp))
+                dA .+= UpperTriangular(dA_tmp)
+            end
+            @inbounds for n in diagind(dA)
+                dA[n] -= $(isherm ? :(real(dA_tmp[n])) : :(dA_tmp[n]))
+            end
+
+            # gradient w.r.t. B: dB += α' A' dC  (or α' dC A' if right)
+            if T <: BlasRealFloat || $isherm
+                # A' = A for real numbers or hermitian matrices
+                BLAS.$fname(s, ul, α', A, dC, one(T), dB)
+            else
+                # A is symmetric but complex so A' = conj(A)
+                # Instead we compute conj(dB) += α A conj(dC)
+                conj!(dB)
+                BLAS.$fname(s, ul, α, A, conj.(dC), one(T), dB)
+                conj!(dB)
+            end
+
+            # gradient w.r.t. beta.
+            dβ = dot(C, dC)
+
+            # gradient w.r.t. C.
+            dC .*= β'
+
+            return NoRData(), NoRData(), NoRData(), _rdata(dα), NoRData(), NoRData(), _rdata(dβ), NoRData()
         end
-
-        # gradient w.r.t. A.
-        dA_tmp = s == 'L' ? dC * B' : B' * dC
-        if ul == 'L'
-            dA .+= α .* LowerTriangular(dA_tmp)
-            dA .+= α .* UpperTriangular(dA_tmp)'
-        else
-            dA .+= α .* LowerTriangular(dA_tmp)'
-            dA .+= α .* UpperTriangular(dA_tmp)
-        end
-        @inbounds for n in diagind(dA)
-            dA[n] -= α * dA_tmp[n]
-        end
-
-        # gradient w.r.t. B.
-        BLAS.symm!(s, ul, α, A, dC, one(T), dB)
-
-        # gradient w.r.t. beta.
-        dβ = dot(dC, C)
-
-        # gradient w.r.t. C.
-        dC .*= β
-
-        return NoRData(), NoRData(), NoRData(), dα, NoRData(), NoRData(), dβ, NoRData()
+        return C_dC, symm!_or_hemm!_adjoint
     end
-    return C_dC, symm!_adjoint
 end
 
 @is_primitive(
