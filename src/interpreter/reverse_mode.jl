@@ -984,6 +984,54 @@ end
     return fwds.fwds_oc(uf_args...)::CoDual, pb
 end
 
+# Handle nested varargs where some args might be Tuple{CoDual...} instead of CoDual
+@inline function (fwds::DerivedRule{sig})(args::Vararg{Any,N}) where {sig,N}
+    # Only apply if this is actually a vararg rule
+    if _isva(fwds)
+        # Flatten any Tuple{CoDual...} arguments (happens with nested vararg calls)
+        flat_args = _flatten_tuple_coduals(args)
+        uf_args = __unflatten_codual_varargs(true, flat_args, fwds.nargs)
+        pb = Pullback(sig, fwds.pb_oc_ref, true, length(flat_args))
+        return fwds.fwds_oc(uf_args...)::CoDual, pb
+    else
+        # Non-vararg, all args must be CoDual - let it error naturally
+        uf_args = __unflatten_codual_varargs(false, args, fwds.nargs)
+        pb = Pullback(sig, fwds.pb_oc_ref, false, N)
+        return fwds.fwds_oc(uf_args...)::CoDual, pb
+    end
+end
+
+# Type-stable flattening for CoDuals
+@inline function _flatten_tuple_coduals(args::Tuple)
+    _flatten_tuple_coduals_impl(args, ())
+end
+
+@inline _flatten_tuple_coduals_impl(remaining::Tuple{}, acc::Tuple) = acc
+
+@inline function _flatten_tuple_coduals_impl(remaining::Tuple, acc::Tuple)
+    first_arg = remaining[1]
+    rest = Base.tail(remaining)
+
+    # Case 1: Tuple containing only CoDuals - unwrap all elements
+    if first_arg isa Tuple && !isa(first_arg, CoDual) && length(first_arg) > 0 &&
+        all(x -> x isa CoDual, first_arg)
+        return _flatten_tuple_coduals_impl((first_arg..., rest...), acc)
+    # Case 2: CoDual{Tuple{...}} with tuple tangent - expand into individual CoDuals
+    elseif first_arg isa CoDual{P,T} where {P<:Tuple, T<:Tuple}
+        p_tuple = primal(first_arg)
+        t_tuple = tangent(first_arg)
+        expanded = ntuple(i -> CoDual(p_tuple[i], t_tuple[i]), length(p_tuple))
+        return _flatten_tuple_coduals_impl(rest, (acc..., expanded...))
+    # Case 3: CoDual{Tuple, NoFData} - expand with zero tangents
+    elseif first_arg isa CoDual{P,NoFData} where {P<:Tuple}
+        p_tuple = primal(first_arg)
+        expanded = ntuple(i -> zero_fcodual(p_tuple[i]), length(p_tuple))
+        return _flatten_tuple_coduals_impl(rest, (acc..., expanded...))
+    else
+        return _flatten_tuple_coduals_impl(rest, (acc..., first_arg))
+    end
+end
+
 """
     __flatten_varargs(isva::Bool, args, ::Val{nvargs}) where {nvargs}
 
@@ -1135,10 +1183,11 @@ function build_rrule(
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
             dri = generate_ir(interp, sig_or_mi; debug_mode)
             fwd_oc = optimized_misty_closure(
-                dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...
+                dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...; isva=dri.isva
             )
+            # Pullback is never vararg - it always takes (shared_data, output_rdata)
             rvs_oc = optimized_misty_closure(
-                dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...
+                dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...; isva=false
             )
 
             # Compute the signature. Needs careful handling with varargs.
@@ -1206,7 +1255,7 @@ function generate_ir(
     shared_data = shared_data_tuple(info.shared_data_pairs)
 
     fwd_ir = forwards_pass_ir(
-        primal_ir, ad_stmts_blocks, fwds_comms_insts, info, _typeof(shared_data)
+        primal_ir, ad_stmts_blocks, fwds_comms_insts, info, _typeof(shared_data), isva
     )
     rvs_ir = pullback_ir(
         primal_ir, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
@@ -1310,12 +1359,12 @@ function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
 end
 
 """
-    forwards_pass_ir(ir::BBCode, ad_stmts_blocks::ADStmts, info::ADInfo, Tshared_data)
+    forwards_pass_ir(ir::BBCode, ad_stmts_blocks::ADStmts, info::ADInfo, Tshared_data, isva::Bool)
 
 Produce the IR associated to the `OpaqueClosure` which runs most of the forwards-pass.
 """
 function forwards_pass_ir(
-    ir::BBCode, ad_stmts_blocks::ADStmts, fwds_comms_insts, info::ADInfo, Tshared_data
+    ir::BBCode, ad_stmts_blocks::ADStmts, fwds_comms_insts, info::ADInfo, Tshared_data, isva::Bool
 )
     is_unique_pred, pred_is_unique_pred = characterise_unique_predecessor_blocks(ir.blocks)
 
@@ -1335,7 +1384,7 @@ function forwards_pass_ir(
     end
     lazy_zero_rdata_stmt = Expr(
         :call,
-        __assemble_lazy_zero_rdata,
+        isva ? __assemble_lazy_zero_rdata_vararg : __assemble_lazy_zero_rdata,
         info.lazy_zero_rdata_ref_id,
         map(n -> Argument(n + 1), 1:num_args(info))...,
     )
@@ -1408,6 +1457,28 @@ __lazy_zero_rdata_primal(T, x) = lazy_zero_rdata(T, primal(x))
     r::Ref{T}, args::Vararg{CoDual,N}
 ) where {T<:Tuple,N}
     return :(r[] = tuple_map(__lazy_zero_rdata_primal, $(fieldtypes(T)), args))
+end
+
+# Vararg version: last argument is a Tuple{CoDual...} that needs unpacking
+@inline @generated function __assemble_lazy_zero_rdata_vararg(
+    r::Ref{T}, args::Vararg{Any,N}
+) where {T<:Tuple,N}
+    # Last arg is a tuple of CoDuals from varargs - unpack it
+    return quote
+        # All but last are CoDuals, last is Tuple{CoDual...}
+        fixed = args[1:end-1]
+        vararg_tuple = args[end]
+        # Unpack the tuple: if it's a CoDual{Tuple}, extract its elements
+        if vararg_tuple isa CoDual
+            varargs = primal(vararg_tuple)
+        elseif vararg_tuple isa Tuple
+            varargs = vararg_tuple
+        else
+            varargs = (vararg_tuple,)
+        end
+        all_args = (fixed..., varargs...)
+        r[] = tuple_map(__lazy_zero_rdata_primal, $(fieldtypes(T)), all_args)
+    end
 end
 
 """
@@ -1906,14 +1977,29 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     Treturn = compute_ir_rettype(ir)
     isva, _ = is_vararg_and_sparam_names(sig_or_mi)
 
+    # Get signature and apply vararg transformation, matching build_rrule logic
+    sig = _get_sig(sig_or_mi)
+    nargs_int = length(ir.argtypes)
+    if isva
+        sig = Tuple{
+            sig.parameters[1:(nargs_int - 1)]...,Tuple{sig.parameters[nargs_int:end]...}
+        }
+    end
+
     arg_types = map(CC.widenconst, ir.argtypes)
-    sig = Tuple{arg_types...}
-    fwd_args_type = Tuple{map(fcodual_type, arg_types)...}
+    fwd_arg_types = map(fcodual_type, arg_types)
+    # For varargs, the OC uses Vararg{Any} for the vararg parameter
+    if isva
+        fwd_args_type = Tuple{fwd_arg_types[1:(end-1)]..., Vararg{Any}}
+    else
+        fwd_args_type = Tuple{fwd_arg_types...}
+    end
     fwd_return_type = forwards_ret_type(ir)
     Trdata_return = rdata_type(tangent_type(Treturn))
-    pb_args_type = Trdata_return === Union{} ? Union{} : Tuple{Trdata_return}
+    # Pullback always takes one argument: either Tuple{rdata} or Tuple (empty) when no gradient
+    pb_args_type = Trdata_return === Union{} ? Tuple : Tuple{Trdata_return}
     pb_return_type = pullback_ret_type(ir)
-    nargs = Val{length(ir.argtypes)}
+    nargs = Val{nargs_int}
 
     Tderived_rule = DerivedRule{
         sig,fwd_args_type,fwd_return_type,pb_args_type,pb_return_type,isva,nargs

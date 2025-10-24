@@ -738,10 +738,47 @@ end # IntrinsicsWrappers
 # a pre-processing step.
 
 # A function with the same semantics as `Core._apply_iterate`, but which is differentiable.
+@inline function _flatten_for_apply(arg)
+    return collect(arg)
+end
+
+@inline function _flatten_for_apply(arg::Dual)
+    primals = collect(primal(arg))
+    tang = tangent(arg)
+    if tang isa NoTangent
+        return [zero_dual(p) for p in primals]
+    else
+        tangents = collect(tang)
+        @assert length(primals) == length(tangents)
+        return [Dual(primals[i], tangents[i]) for i in eachindex(primals)]
+    end
+end
+
+@inline function _flatten_for_apply(arg::CoDual)
+    primals = collect(primal(arg))
+    tang = tangent(arg)
+    if tang isa NoFData
+        return [zero_fcodual(p) for p in primals]
+    else
+        tangents = collect(tang)
+        @assert length(primals) == length(tangents)
+        return [CoDual(primals[i], tangents[i]) for i in eachindex(primals)]
+    end
+end
+
 function _apply_iterate_equivalent(itr, f::F, args::Vararg{Any,N}) where {F,N}
-    vec_args = reduce(vcat, map(collect, args))
-    tuple_args = __vec_to_tuple(vec_args)
-    return tuple_splat(f, tuple_args)
+    if f isa Dual || f isa CoDual || any(arg -> arg isa Dual || arg isa CoDual, args)
+        flat_args = Any[]
+        for arg in args
+            append!(flat_args, _flatten_for_apply(arg))
+        end
+        tuple_args = __vec_to_tuple(flat_args)
+        return tuple_splat(f, tuple_args)
+    else
+        vec_args = reduce(vcat, map(collect, args))
+        tuple_args = __vec_to_tuple(vec_args)
+        return tuple_splat(f, tuple_args)
+    end
 end
 
 # A primitive used to avoid exposing `_apply_iterate_equivalent` to `Core._apply_iterate`.

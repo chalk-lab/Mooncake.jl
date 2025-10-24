@@ -47,7 +47,7 @@ function build_frule(
             # Derive forward-pass IR, and shove in a `MistyClosure`.
             dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
             dual_oc = optimized_misty_closure(
-                info.dual_ret_type, dual_ir, captures...; do_compile=true
+                info.dual_ret_type, dual_ir, captures...; isva=info.isva, do_compile=true
             )
             raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(dual_oc)
             rule = debug_mode ? DebugFRule(raw_rule) : raw_rule
@@ -69,6 +69,53 @@ end
     args::Vararg{Dual,N}
 ) where {P,sig,N,isva,nargs}
     return fwd.fwd_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
+end
+
+# Resolve ambiguity for vararg functions with all Dual arguments
+@inline function (fwd::DerivedFRule{P,sig,true,nargs})(
+    args::Vararg{Dual,N}
+) where {P,sig,nargs,N}
+    return fwd.fwd_oc(__unflatten_dual_varargs(true, args, Val(nargs))...)
+end
+
+# Handle nested varargs where some args might be Tuple{Dual...} instead of Dual
+@inline function (fwd::DerivedFRule{P,sig,true,nargs})(
+    args::Vararg{Any,N}
+) where {P,sig,nargs,N}
+    # Flatten Tuple{Dual} wrappers from nested vararg calls
+    flat_args = _flatten_tuple_duals(args)
+    # Regroup varargs for OC using __unflatten
+    return fwd.fwd_oc(__unflatten_dual_varargs(true, flat_args, Val(nargs))...)
+end
+
+# Type-stable flattening: expand Tuple{Dual...} to individual Duals
+@inline function _flatten_tuple_duals(args::Tuple)
+    _flatten_tuple_duals_impl(args, ())
+end
+
+@inline _flatten_tuple_duals_impl(remaining::Tuple{}, acc::Tuple) = acc
+
+@inline function _flatten_tuple_duals_impl(remaining::Tuple, acc::Tuple)
+    first_arg = remaining[1]
+    rest = Base.tail(remaining)
+
+    # Unwrap Tuple containers that only hold Duals (length 1 or more)
+    if first_arg isa Tuple && !isa(first_arg, Dual) && length(first_arg) > 0 &&
+        all(x -> x isa Dual, first_arg)
+        return _flatten_tuple_duals_impl((first_arg..., rest...), acc)
+    # Expand Duals whose primal is a Tuple so downstream sees element-wise Duals
+    elseif first_arg isa Dual{P,T} where {P<:Tuple, T<:Tuple}
+        p_tuple = primal(first_arg)
+        t_tuple = tangent(first_arg)
+        expanded = ntuple(i -> Dual(p_tuple[i], t_tuple[i]), length(p_tuple))
+        return _flatten_tuple_duals_impl(rest, (acc..., expanded...))
+    elseif first_arg isa Dual{P,NoTangent} where {P<:Tuple}
+        p_tuple = primal(first_arg)
+        expanded = ntuple(i -> zero_dual(p_tuple[i]), length(p_tuple))
+        return _flatten_tuple_duals_impl(rest, (acc..., expanded...))
+    else
+        return _flatten_tuple_duals_impl(rest, (acc..., first_arg))
+    end
 end
 
 # Copy forward rule with recursively copied captures
@@ -427,7 +474,15 @@ function frule_type(
     nargs = length(ir.argtypes)
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
-    dual_args_type = Tuple{map(dual_type, arg_types)...}
+
+    # For varargs, the OpaqueClosure uses Vararg{Any} for the last parameter
+    dual_arg_types = map(dual_type, arg_types)
+    if isva
+        dual_args_type = Tuple{dual_arg_types[1:(end-1)]..., Vararg{Any}}
+    else
+        dual_args_type = Tuple{dual_arg_types...}
+    end
+
     closure_type = RuleMC{dual_args_type,dual_ret_type(ir)}
     Tderived_rule = DerivedFRule{primal_sig,closure_type,isva,nargs}
     return debug_mode ? DebugFRule{Tderived_rule} : Tderived_rule
@@ -445,6 +500,28 @@ _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     sig = Tuple{map(_typeof ∘ primal, args)...}
+    rule = get(dynamic_rule.cache, sig, nothing)
+    if rule === nothing
+        interp = get_interpreter(ForwardMode)
+        rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        dynamic_rule.cache[sig] = rule
+    end
+    return rule(args...)
+end
+
+# More general method to handle mixed Dual/Tuple arguments (for nested varargs)
+function (dynamic_rule::DynamicFRule)(args::Vararg{Any,N}) where {N}
+    # Convert all args to signature types, handling both Dual and Tuple{Dual}
+    sig_parts = map(args) do arg
+        if arg isa Dual
+            _typeof(primal(arg))
+        elseif arg isa Tuple && all(x -> x isa Dual, arg)
+            Tuple{map(x -> _typeof(primal(x)), arg)...}
+        else
+            _typeof(arg)
+        end
+    end
+    sig = Tuple{sig_parts...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ForwardMode)

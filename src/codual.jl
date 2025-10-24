@@ -12,6 +12,14 @@ function CoDual(x::Type{P}, dx::NoTangent) where {P}
     return CoDual{@isdefined(P) ? Type{P} : typeof(x),NoTangent}(P, dx)
 end
 
+# Accept Core.SimpleVector tangents and canonicalize to Vector{Any} for consistency
+# Julia 1.12.1's improved constprop can produce Core.SimpleVector tangents in some paths
+@inline function CoDual(x::Core.SimpleVector, dx::Core.SimpleVector)
+    # Convert svec to Vector{Any} - handles mixed types like NoFData
+    dx_vec = Any[dx[i] for i in 1:length(dx)]
+    return CoDual{Core.SimpleVector,Vector{Any}}(x, dx_vec)
+end
+
 primal(x::CoDual) = x.x
 tangent(x::CoDual) = x.dx
 Base.copy(x::CoDual) = CoDual(copy(primal(x)), copy(tangent(x)))
