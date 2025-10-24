@@ -42,8 +42,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
         map_prod([3, 7], Ps) do (N, P)
             flags = (false, :none, nothing)
             Any[
-                (flags..., inv, randn(rng, P, N, N)),
-                (flags..., det, randn(rng, P, N, N)),
+                (flags..., inv, randn(rng, P, N, N)), (flags..., det, randn(rng, P, N, N))
             ]
         end...,
     )
