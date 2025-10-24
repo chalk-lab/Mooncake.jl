@@ -100,11 +100,13 @@ end
     rest = Base.tail(remaining)
 
     # Unwrap Tuple containers that only hold Duals (length 1 or more)
-    if first_arg isa Tuple && !isa(first_arg, Dual) && length(first_arg) > 0 &&
+    if first_arg isa Tuple &&
+        !isa(first_arg, Dual) &&
+        length(first_arg) > 0 &&
         all(x -> x isa Dual, first_arg)
         return _flatten_tuple_duals_impl((first_arg..., rest...), acc)
-    # Expand Duals whose primal is a Tuple so downstream sees element-wise Duals
-    elseif first_arg isa Dual{P,T} where {P<:Tuple, T<:Tuple}
+        # Expand Duals whose primal is a Tuple so downstream sees element-wise Duals
+    elseif first_arg isa Dual{P,T} where {P<:Tuple,T<:Tuple}
         p_tuple = primal(first_arg)
         t_tuple = tangent(first_arg)
         expanded = ntuple(i -> Dual(p_tuple[i], t_tuple[i]), length(p_tuple))
@@ -478,7 +480,7 @@ function frule_type(
     # For varargs, the OpaqueClosure uses Vararg{Any} for the last parameter
     dual_arg_types = map(dual_type, arg_types)
     if isva
-        dual_args_type = Tuple{dual_arg_types[1:(end-1)]..., Vararg{Any}}
+        dual_args_type = Tuple{dual_arg_types[1:(end - 1)]...,Vararg{Any}}
     else
         dual_args_type = Tuple{dual_arg_types...}
     end

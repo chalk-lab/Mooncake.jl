@@ -1013,16 +1013,18 @@ end
     rest = Base.tail(remaining)
 
     # Case 1: Tuple containing only CoDuals - unwrap all elements
-    if first_arg isa Tuple && !isa(first_arg, CoDual) && length(first_arg) > 0 &&
+    if first_arg isa Tuple &&
+        !isa(first_arg, CoDual) &&
+        length(first_arg) > 0 &&
         all(x -> x isa CoDual, first_arg)
         return _flatten_tuple_coduals_impl((first_arg..., rest...), acc)
-    # Case 2: CoDual{Tuple{...}} with tuple tangent - expand into individual CoDuals
-    elseif first_arg isa CoDual{P,T} where {P<:Tuple, T<:Tuple}
+        # Case 2: CoDual{Tuple{...}} with tuple tangent - expand into individual CoDuals
+    elseif first_arg isa CoDual{P,T} where {P<:Tuple,T<:Tuple}
         p_tuple = primal(first_arg)
         t_tuple = tangent(first_arg)
         expanded = ntuple(i -> CoDual(p_tuple[i], t_tuple[i]), length(p_tuple))
         return _flatten_tuple_coduals_impl(rest, (acc..., expanded...))
-    # Case 3: CoDual{Tuple, NoFData} - expand with zero tangents
+        # Case 3: CoDual{Tuple, NoFData} - expand with zero tangents
     elseif first_arg isa CoDual{P,NoFData} where {P<:Tuple}
         p_tuple = primal(first_arg)
         expanded = ntuple(i -> zero_fcodual(p_tuple[i]), length(p_tuple))
@@ -1364,7 +1366,12 @@ end
 Produce the IR associated to the `OpaqueClosure` which runs most of the forwards-pass.
 """
 function forwards_pass_ir(
-    ir::BBCode, ad_stmts_blocks::ADStmts, fwds_comms_insts, info::ADInfo, Tshared_data, isva::Bool
+    ir::BBCode,
+    ad_stmts_blocks::ADStmts,
+    fwds_comms_insts,
+    info::ADInfo,
+    Tshared_data,
+    isva::Bool,
 )
     is_unique_pred, pred_is_unique_pred = characterise_unique_predecessor_blocks(ir.blocks)
 
@@ -1466,7 +1473,7 @@ end
     # Last arg is a tuple of CoDuals from varargs - unpack it
     return quote
         # All but last are CoDuals, last is Tuple{CoDual...}
-        fixed = args[1:end-1]
+        fixed = args[1:(end - 1)]
         vararg_tuple = args[end]
         # Unpack the tuple: if it's a CoDual{Tuple}, extract its elements
         if vararg_tuple isa CoDual
@@ -1990,7 +1997,7 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     fwd_arg_types = map(fcodual_type, arg_types)
     # For varargs, the OC uses Vararg{Any} for the vararg parameter
     if isva
-        fwd_args_type = Tuple{fwd_arg_types[1:(end-1)]..., Vararg{Any}}
+        fwd_args_type = Tuple{fwd_arg_types[1:(end - 1)]...,Vararg{Any}}
     else
         fwd_args_type = Tuple{fwd_arg_types...}
     end

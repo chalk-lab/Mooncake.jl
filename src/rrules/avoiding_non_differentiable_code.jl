@@ -84,10 +84,7 @@ import Base.CoreLogging as CoreLogging
         Int64,
     }
     @zero_derivative MinimalCtx Tuple{
-        typeof(Core.kwcall),
-        NamedTuple,
-        typeof(CoreLogging.handle_message_nothrow),
-        Vararg,
+        typeof(Core.kwcall),NamedTuple,typeof(CoreLogging.handle_message_nothrow),Vararg
     }
 end
 
