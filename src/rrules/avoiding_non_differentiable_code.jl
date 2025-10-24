@@ -73,9 +73,20 @@ import Base.CoreLogging as CoreLogging
 @static if VERSION ≥ v"1.12-"
     @zero_derivative MinimalCtx Tuple{typeof(Base.fixup_stdlib_path),String}
     @zero_derivative MinimalCtx Tuple{
+        typeof(CoreLogging.handle_message_nothrow),
+        Any,
+        CoreLogging.LogLevel,
+        String,
+        Module,
+        Symbol,
+        Symbol,
+        String,
+        Int64,
+    }
+    @zero_derivative MinimalCtx Tuple{
         typeof(Core.kwcall),
         NamedTuple,
-        typeof(Base.CoreLogging.handle_message_nothrow),
+        typeof(CoreLogging.handle_message_nothrow),
         Vararg,
     }
 end
