@@ -46,7 +46,7 @@ function build_frule(
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
             dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
-            dual_oc = misty_closure(
+            dual_oc = optimized_misty_closure(
                 info.dual_ret_type, dual_ir, captures...; do_compile=true
             )
             raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(dual_oc)
@@ -306,7 +306,7 @@ function modify_fwd_ad_stmts!(
             return CC.widenconst(get_forward_primal_type(info.primal_ir, x))
         end
         sig = Tuple{sig_types...}
-        mi = isexpr(stmt, :invoke) ? stmt.args[1] : missing
+        mi = isexpr(stmt, :invoke) ? get_mi(stmt.args[1]) : missing
         args = map(__inc, raw_args)
 
         # Special case: if the result of a call to getfield is un-used, then leave the
@@ -413,7 +413,7 @@ end
 end
 
 function dual_ret_type(primal_ir::IRCode)
-    return dual_type(Base.Experimental.compute_ir_rettype(primal_ir))
+    return dual_type(compute_ir_rettype(primal_ir))
 end
 
 function frule_type(

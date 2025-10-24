@@ -247,6 +247,7 @@ end
             ],
             Any[Any for _ in 1:4],
         )
+        CC.verify_ir(ir)
         bb_ir = BBCode(ir)
         new_bb_ir = Mooncake.remove_unreachable_blocks!(bb_ir)
 

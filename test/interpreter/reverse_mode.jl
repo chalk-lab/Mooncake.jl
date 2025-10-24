@@ -60,6 +60,7 @@ end
         @test Mooncake.get_primal_type(info, GlobalRef(Base, :sin)) == typeof(sin)
         @test Mooncake.get_primal_type(info, GlobalRef(Main, :___x)) == Any
         @test Mooncake.get_primal_type(info, GlobalRef(Main, :___y)) == Float64
+        @test Mooncake.get_primal_type(info, GlobalRef(Main, :Float64)) == Type{Float64}
         @test Mooncake.get_primal_type(info, 5) == Int
         @test Mooncake.get_primal_type(info, QuoteNode(:hello)) == Symbol
         @test Mooncake.get_primal_type(info, Expr(:boundscheck)) == Bool
@@ -329,7 +330,7 @@ end
     end
 
     @testset "integration testing for invalid global ref errors" begin
-        @test_throws(
+        VERSION < v"1.12-" && @test_throws(
             Mooncake.Mooncake.MooncakeRuleCompilationError,
             Mooncake.build_rrule(
                 Tuple{typeof(Mooncake.TestResources.non_const_global_ref),Float64}
