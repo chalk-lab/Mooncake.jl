@@ -1038,84 +1038,107 @@ for (fname, elty) in (
     end
 end
 
-@is_primitive(
-    MinimalCtx,
-    Tuple{
-        typeof(BLAS.syrk!),Char,Char,P,AbstractMatrix{P},P,AbstractMatrix{P}
-    } where {P<:BlasRealFloat}
+for (fname, elty, relty) in (
+    (:(syrk!), Float32, Float32),
+    (:(syrk!), Float64, Float64),
+    (:(syrk!), ComplexF32, ComplexF32),
+    (:(syrk!), ComplexF64, ComplexF64),
+    # note that α and β are real for herk
+    (:(herk!), ComplexF32, Float32),
+    (:(herk!), ComplexF64, Float64),
 )
-function frule!!(
-    ::Dual{typeof(BLAS.syrk!)},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    β_dβ::Dual{P},
-    C_dC::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasRealFloat}
+    isherm = fname == :(herk!)
 
-    # Extract values from pairs.
-    uplo = primal(_uplo)
-    t = primal(_t)
-    α, dα = extract(α_dα)
-    A, dA = arrayify(A_dA)
-    β, dβ = extract(β_dβ)
-    C, dC = arrayify(C_dC)
+    @eval @is_primitive(
+        MinimalCtx,
+        Tuple{
+            typeof(BLAS.$fname),Char,Char,$relty,AbstractMatrix{$elty},$relty,AbstractMatrix{$elty}
+        }
+    )
+    @eval function frule!!(
+        ::Dual{typeof(BLAS.$fname)},
+        _uplo::Dual{Char},
+        _t::Dual{Char},
+        α_dα::Dual{$relty},
+        A_dA::Dual{<:AbstractMatrix{$elty}},
+        β_dβ::Dual{$relty},
+        C_dC::Dual{<:AbstractMatrix{$elty}},
+    )
 
-    # Compute Frechet derivative.
-    BLAS.syr2k!(uplo, t, α, A, dA, β, dC)
-    iszero(dα) || BLAS.syrk!(uplo, t, dα, A, one(P), dC)
-    if !iszero(dβ)
-        dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+        # Extract values from pairs.
+        uplo = primal(_uplo)
+        t = primal(_t)
+        α, dα = numberify(α_dα)
+        A, dA = arrayify(A_dA)
+        β, dβ = numberify(β_dβ)
+        C, dC = arrayify(C_dC)
+
+        # Compute Frechet derivative.
+        BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
+        iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
+        if !iszero(dβ)
+            dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+        end
+        # BLAS will zero out the imaginary parts on the diagonal of C,
+        # do the same on the tangent
+        $(isherm ? :(real_diag!(dC)) : :())
+
+        # Run primal computation.
+        BLAS.$fname(uplo, t, α, A, β, C)
+
+        return C_dC
     end
+    @eval function rrule!!(
+        ::CoDual{typeof(BLAS.$fname)},
+        _uplo::CoDual{Char},
+        _t::CoDual{Char},
+        α_dα::CoDual{$relty},
+        A_dA::CoDual{<:AbstractMatrix{$elty}},
+        β_dβ::CoDual{$relty},
+        C_dC::CoDual{<:AbstractMatrix{$elty}},
+    )
 
-    # Run primal computation.
-    BLAS.syrk!(uplo, t, α, A, β, C)
+        # Extract values from pairs.
+        uplo = primal(_uplo)
+        trans = primal(_t)
+        α = primal(α_dα)
+        A, dA = arrayify(A_dA)
+        β = primal(β_dβ)
+        C, dC = arrayify(C_dC)
 
-    return C_dC
+        # Run forwards pass, and remember previous value of `C` for the reverse-pass.
+        C_copy = collect(C)
+        BLAS.$fname(uplo, trans, α, A, β, C)
+
+        function syrk!_or_herk!_adjoint(::NoRData)
+            # Restore previous state.
+            C .= C_copy
+
+            # Increment gradients.
+            $(isherm ? :(real_diag!(dC)) : :())
+
+            B = uplo == 'U' ? triu(dC) : tril(dC)
+            ∇β = dot(C, B)
+            $(isherm ? :(∇β = real(∇β)) : :())
+            ∇α = dot(trans == 'N' ? A * $(isherm ? adjoint : transpose)(A) : $(isherm ? adjoint : transpose)(A) * A, B)
+            $(isherm ? :(∇α = real(∇α)) : :())
+
+            M1 = B + $(isherm ? adjoint : transpose)(B)
+            M2 = $(isherm ? :A : :(conj(A)))
+            dA .+= α' .* (trans == 'N' ? M1 * M2 : M2 * M1)
+            dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ β' .* B
+
+            return NoRData(), NoRData(), NoRData(), _rdata(∇α), NoRData(), _rdata(∇β), NoRData()
+        end
+
+        return C_dC, syrk!_or_herk!_adjoint
+    end
 end
-function rrule!!(
-    ::CoDual{typeof(BLAS.syrk!)},
-    _uplo::CoDual{Char},
-    _t::CoDual{Char},
-    α_dα::CoDual{P},
-    A_dA::CoDual{<:AbstractMatrix{P}},
-    β_dβ::CoDual{P},
-    C_dC::CoDual{<:AbstractMatrix{P}},
-) where {P<:BlasRealFloat}
 
-    # Extract values from pairs.
-    uplo = primal(_uplo)
-    trans = primal(_t)
-    α = primal(α_dα)
-    A, dA = arrayify(A_dA)
-    β = primal(β_dβ)
-    C, dC = arrayify(C_dC)
-
-    # Run forwards pass, and remember previous value of `C` for the reverse-pass.
-    C_copy = collect(C)
-    BLAS.syrk!(uplo, trans, α, A, β, C)
-
-    function syrk_adjoint(::NoRData)
-        # Restore previous state.
-        C .= C_copy
-
-        # C_copy no longer required, so its memory can be used to store other intermediate
-        # results. Renaming for clarity.
-        tmp = C_copy
-
-        # Increment gradients.
-        B = uplo == 'U' ? triu(dC) : tril(dC)
-        ∇β = sum(B .* C)
-        ∇α = tr(B' * _trans(trans, A) * _trans(trans, A)')
-        # @show _t, size(A), size(B)
-        dA .+= α * (trans == 'N' ? (B + B') * A : A * (B + B'))
-        dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ β .* B
-
-        return NoRData(), NoRData(), NoRData(), ∇α, NoRData(), ∇β, NoRData()
+function real_diag!(dA::AbstractMatrix{<:Complex{<:BlasFloat}})
+    @inbounds for n in diagind(dA)
+        dA[n] = real(dA[n])
     end
-
-    return C_dC, syrk_adjoint
 end
 
 @is_primitive(
