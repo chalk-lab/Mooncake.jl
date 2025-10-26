@@ -1145,7 +1145,7 @@ end
     MinimalCtx,
     Tuple{
         typeof(BLAS.trmm!),Char,Char,Char,Char,P,AbstractMatrix{P},AbstractMatrix{P}
-    } where {P<:BlasRealFloat}
+    } where {P<:BlasFloat}
 )
 function frule!!(
     ::Dual{typeof(BLAS.trmm!)},
@@ -1156,14 +1156,14 @@ function frule!!(
     α_dα::Dual{P},
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Extract data.
     side = primal(_side)
     uplo = primal(_uplo)
     ta = primal(_ta)
     diag = primal(_diag)
-    α, dα = extract(α_dα)
+    α, dα = numberify(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
@@ -1190,7 +1190,7 @@ function rrule!!(
     α_dα::CoDual{P},
     A_dA::CoDual{<:AbstractMatrix{P}},
     B_dB::CoDual{<:AbstractMatrix{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Extract values.
     side = primal(_side)
@@ -1208,22 +1208,39 @@ function rrule!!(
     function trmm_adjoint(::NoRData)
 
         # Compute α gradient.
-        ∇α = tr(dB'B) / α
+        ∇α = dot(B, dB) / α'
 
         # Restore initial state.
         B .= B_copy
 
         # Increment gradients.
         if side == 'L'
-            dA .+= α .* tri!(tA == 'N' ? dB * B' : B * dB', uplo, diag)
+            if tA == 'T' && P <: BlasComplexFloat
+                dA .+= α' .* tri!(conj(B) * transpose(dB), uplo, diag)
+            elseif tA == 'N'
+                dA .+= α' .* tri!(dB * B', uplo, diag)
+            else
+                dA .+= α .* tri!(B * dB', uplo, diag)
+            end
         else
-            dA .+= α .* tri!(tA == 'N' ? B'dB : dB'B, uplo, diag)
+            if tA == 'T' && P <: BlasComplexFloat
+                dA .+= α' .* tri!(transpose(dB) * conj(B), uplo, diag)
+            elseif tA == 'N'
+                dA .+= α' .* tri!(B' * dB, uplo, diag)
+            else
+                dA .+= α .* tri!(dB' * B, uplo, diag)
+            end
         end
 
         # Compute dB tangent.
-        BLAS.trmm!(side, uplo, tA == 'N' ? 'T' : 'N', diag, α, A, dB)
+        if tA == 'T' && P <: BlasComplexFloat
+            # conjugate-only of A
+            BLAS.trmm!(side, uplo, 'N', diag, α', conj(A), dB)
+        else
+            BLAS.trmm!(side, uplo, tA == 'N' ? 'C' : 'N', diag, α', A, dB)
+        end
 
-        return tuple_fill(NoRData(), Val(5))..., ∇α, NoRData(), NoRData()
+        return tuple_fill(NoRData(), Val(5))..., _rdata(∇α), NoRData(), NoRData()
     end
 
     return B_dB, trmm_adjoint
