@@ -371,6 +371,8 @@ tangent_type(::Type{<:Base.TTY}) = NoTangent
 
 tangent_type(::Type{<:IOStream}) = NoTangent
 
+tangent_type(::Type{<:Base.LibuvStream}) = NoTangent
+
 tangent_type(::Type{<:Base.CoreLogging.AbstractLogger}) = NoTangent
 
 tangent_type(::Type{Core.CodeInstance}) = NoTangent
