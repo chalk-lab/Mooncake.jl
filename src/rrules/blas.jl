@@ -532,16 +532,19 @@ end
 end
 
 # Note that the complex symv are not BLAS but auxiliary functions in LAPACK
-for (fname, elty) in (
-    (:(symv!), BlasFloat),
-    (:(hemv!), BlasComplexFloat),
-)
+for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
     isherm = fname == :(hemv!)
 
     @eval @is_primitive(
         MinimalCtx,
         Tuple{
-            typeof(BLAS.$fname),Char,T,AbstractMatrix{T},AbstractVector{T},T,AbstractVector{T}
+            typeof(BLAS.$fname),
+            Char,
+            T,
+            AbstractMatrix{T},
+            AbstractVector{T},
+            T,
+            AbstractVector{T},
         } where {T<:$elty},
     )
 
@@ -882,7 +885,9 @@ function rrule!!(
         else
             # Equivalent to BLAS.gemm!(tB + "conjugate only", 'T', a', p_B, dC, one(T), dA)
             if tB == 'N'
-                BLAS.gemm!('N', 'T', a', T <: BlasRealFloat ? p_B : conj.(p_B), dC, one(T), dA)
+                BLAS.gemm!(
+                    'N', 'T', a', T <: BlasRealFloat ? p_B : conj.(p_B), dC, one(T), dA
+                )
             else
                 BLAS.gemm!(tB == 'T' ? 'C' : 'T', 'T', a', p_B, dC, one(T), dA)
             end
@@ -895,22 +900,30 @@ function rrule!!(
         else
             # Equivalent to BLAS.gemm!('T', tA + "conjugate only", a', dC, p_A, one(T), dB)
             if tA == 'N'
-                BLAS.gemm!('T', 'N', a', dC, T <: BlasRealFloat ? p_A : conj.(p_A), one(T), dB)
+                BLAS.gemm!(
+                    'T', 'N', a', dC, T <: BlasRealFloat ? p_A : conj.(p_A), one(T), dB
+                )
             else
                 BLAS.gemm!('T', tA == 'T' ? 'C' : 'T', a', dC, p_A, one(T), dB)
             end
         end
         dC .*= b'
 
-        return NoRData(), NoRData(), NoRData(), _rdata(da), NoRData(), NoRData(), _rdata(db), NoRData()
+        return (
+            NoRData(),
+            NoRData(),
+            NoRData(),
+            _rdata(da),
+            NoRData(),
+            NoRData(),
+            _rdata(db),
+            NoRData(),
+        )
     end
     return C, gemm!_pb!!
 end
 
-for (fname, elty) in (
-    (:(symm!), BlasFloat),
-    (:(hemm!), BlasComplexFloat),
-)
+for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     isherm = fname == :(hemm!)
 
     @eval @is_primitive(
@@ -1032,7 +1045,16 @@ for (fname, elty) in (
             # gradient w.r.t. C.
             dC .*= β'
 
-            return NoRData(), NoRData(), NoRData(), _rdata(dα), NoRData(), NoRData(), _rdata(dβ), NoRData()
+            return (
+                NoRData(),
+                NoRData(),
+                NoRData(),
+                _rdata(dα),
+                NoRData(),
+                NoRData(),
+                _rdata(dβ),
+                NoRData(),
+            )
         end
         return C_dC, symm!_or_hemm!_adjoint
     end
@@ -1052,7 +1074,13 @@ for (fname, elty, relty) in (
     @eval @is_primitive(
         MinimalCtx,
         Tuple{
-            typeof(BLAS.$fname),Char,Char,$relty,AbstractMatrix{$elty},$relty,AbstractMatrix{$elty}
+            typeof(BLAS.$fname),
+            Char,
+            Char,
+            $relty,
+            AbstractMatrix{$elty},
+            $relty,
+            AbstractMatrix{$elty},
         }
     )
     @eval function frule!!(
@@ -1120,7 +1148,14 @@ for (fname, elty, relty) in (
             B = uplo == 'U' ? triu(dC) : tril(dC)
             ∇β = dot(C, B)
             $(isherm ? :(∇β = real(∇β)) : :())
-            ∇α = dot(trans == 'N' ? A * $(isherm ? adjoint : transpose)(A) : $(isherm ? adjoint : transpose)(A) * A, B)
+            ∇α = dot(
+                if trans == 'N'
+                    A * $(isherm ? adjoint : transpose)(A)
+                else
+                    $(isherm ? adjoint : transpose)(A) * A
+                end,
+                B,
+            )
             $(isherm ? :(∇α = real(∇α)) : :())
 
             M1 = B + $(isherm ? adjoint : transpose)(B)
@@ -1128,7 +1163,15 @@ for (fname, elty, relty) in (
             dA .+= α' .* (trans == 'N' ? M1 * M2 : M2 * M1)
             dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ β' .* B
 
-            return NoRData(), NoRData(), NoRData(), _rdata(∇α), NoRData(), _rdata(∇β), NoRData()
+            return (
+                NoRData(),
+                NoRData(),
+                NoRData(),
+                _rdata(∇α),
+                NoRData(),
+                _rdata(∇β),
+                NoRData(),
+            )
         end
 
         return C_dC, syrk!_or_herk!_adjoint
@@ -1443,9 +1486,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         #
 
         # gemv!
-        map_prod(
-            t_flags, [1, 3], [1, 2], Ps, αs, βs
-        ) do (tA, M, N, P, α, β)
+        map_prod(t_flags, [1, 3], [1, 2], Ps, αs, βs) do (tA, M, N, P, α, β)
             P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
 
             As = [
@@ -1503,7 +1544,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         end...,
 
         # symm!, hemm!
-        map_prod([BLAS.symm!, BLAS.hemm!], ['L', 'R'], ['L', 'U'], αs, βs, Ps) do (f, side, ul, α, β, P)
+        map_prod(
+            [BLAS.symm!, BLAS.hemm!], ['L', 'R'], ['L', 'U'], αs, βs, Ps
+        ) do (f, side, ul, α, β, P)
             P <: BlasRealFloat && f == BLAS.hemm! && return []
             P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
 
