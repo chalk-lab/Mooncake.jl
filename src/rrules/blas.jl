@@ -1408,15 +1408,18 @@ end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
     t_flags = ['N', 'T', 'C']
-    αs = [1.0, -0.25]
-    dαs = [0.0, 0.44]
-    βs = [0.0, 0.33]
-    dβs = [0.0, -0.11]
+    αs = [1.0, -0.25, 0.46 + 0.32im]
+    dαs = [0.0, 0.44, -0.20 + 0.38im]
+    βs = [0.0, 0.33, 0.39 + 0.27im]
+    dβs = [0.0, -0.11, 0.86 + 0.44im]
     uplos = ['L', 'U']
     dAs = ['N', 'U']
-    Ps = [Float64, Float32]
-    allPs = [Ps..., ComplexF64, ComplexF32]
+    realPs = [Float64, Float32]
+    Ps = [realPs..., complex.(realPs)...]
     rng = rng_ctor(123456)
+
+    _make_codual(x, dx) = CoDual(x, dx)
+    _make_codual(x::Complex, dx) = CoDual(x, Tangent((; re=real(dx), im=imag(dx))))
 
     test_cases = vcat(
 
@@ -1425,12 +1428,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         #
 
         # nrm2(n, x, incx)
-        map_prod(allPs, [5, 3], [1, 2]) do (P, n, incx)
+        map_prod(Ps, [5, 3], [1, 2]) do (P, n, incx)
             return map([randn(rng, P, 105)]) do x
                 (false, :stability, nothing, BLAS.nrm2, n, x, incx)
             end
         end...,
-        map_prod(allPs, [1, 3, 11], [1, 2, 11]) do (P, n, incx)
+        map_prod(Ps, [1, 3, 11], [1, 2, 11]) do (P, n, incx)
             flags = (false, :stability, nothing)
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
         end,
@@ -1441,7 +1444,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
 
         # gemv!
         map_prod(
-            t_flags, [1, 3], [1, 2], allPs, [αs..., 0.46 + 0.32im], [βs..., 0.39 + 0.27im]
+            t_flags, [1, 3], [1, 2], Ps, αs, βs
         ) do (tA, M, N, P, α, β)
             P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
 
@@ -1458,7 +1461,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         end...,
 
         # symv!, hemv!
-        map_prod([BLAS.symv!, BLAS.hemv!], ['L', 'U'], [αs..., 0.46 + 0.32im], [βs..., 0.39 + 0.27im], allPs) do (f, uplo, α, β, P)
+        map_prod([BLAS.symv!, BLAS.hemv!], ['L', 'U'], αs, βs, Ps) do (f, uplo, α, β, P)
             P <: BlasRealFloat && f == BLAS.hemv! && return []
             P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
 
@@ -1471,7 +1474,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         end...,
 
         # trmv!
-        map_prod(uplos, t_flags, dAs, [1, 3], allPs) do (ul, tA, dA, N, P)
+        map_prod(uplos, t_flags, dAs, [1, 3], Ps) do (ul, tA, dA, N, P)
             As = blas_matrices(rng, P, N, N)
             bs = blas_vectors(rng, P, N)
             return map(As, bs) do A, b
@@ -1479,42 +1482,66 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
             end
         end...,
 
-        # #
-        # # BLAS LEVEL 3
-        # #
+        #
+        # BLAS LEVEL 3
+        #
 
         # gemm!
         map_prod(t_flags, t_flags, αs, βs, Ps, dαs, dβs) do (tA, tB, α, β, P, dα, dβ)
+            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+            P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+
             As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
             Bs = blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4)
             Cs = blas_matrices(rng, P, 3, 5)
 
             return map(As, Bs, Cs) do A, B, C
-                a_da = CoDual(P(α), P(dα))
-                b_db = CoDual(P(β), P(dβ))
+                a_da = _make_codual(P(α), P(dα))
+                b_db = _make_codual(P(β), P(dβ))
                 (false, :stability, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
             end
         end...,
 
-        # symm!
-        map_prod(['L', 'R'], ['L', 'U'], αs, βs, Ps) do (side, ul, α, β, P)
+        # symm!, hemm!
+        map_prod([BLAS.symm!, BLAS.hemm!], ['L', 'R'], ['L', 'U'], αs, βs, Ps) do (f, side, ul, α, β, P)
+            P <: BlasRealFloat && f == BLAS.hemm! && return []
+            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+
             nA = side == 'L' ? 5 : 7
             As = blas_matrices(rng, P, nA, nA)
             Bs = blas_matrices(rng, P, 5, 7)
             Cs = blas_matrices(rng, P, 5, 7)
             return map(As, Bs, Cs) do A, B, C
-                (false, :stability, nothing, BLAS.symm!, side, ul, P(α), A, B, P(β), C)
+                (false, :stability, nothing, f, side, ul, P(α), A, B, P(β), C)
             end
         end...,
 
         # syrk!
         map_prod(uplos, t_flags, Ps, dαs, dβs) do (uplo, t, P, dα, dβ)
+            P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            # 'C' is not allowed for complex syrk!
+            P <: BlasComplexFloat && t == 'C' && return []
+
             As = blas_matrices(rng, P, t == 'N' ? 3 : 4, t == 'N' ? 4 : 3)
+            return map(As) do A
+                α_dα = _make_codual(randn(rng, P), P(dα))
+                β_dβ = _make_codual(randn(rng, P), P(dβ))
+                C = randn(rng, P, 3, 3)
+                (false, :stability, nothing, BLAS.syrk!, uplo, t, α_dα, A, β_dβ, C)
+            end
+        end...,
+        # herk!
+        map_prod(uplos, t_flags, realPs, dαs, dβs) do (uplo, t, P, dα, dβ)
+            (imag(dα) != 0 || imag(dβ) != 0) && return []
+            # 'T' is not allowed for herk!
+            t == 'T' && return []
+
+            As = blas_matrices(rng, Complex{P}, t == 'N' ? 3 : 4, t == 'N' ? 4 : 3)
             return map(As) do A
                 α_dα = CoDual(randn(rng, P), P(dα))
                 β_dβ = CoDual(randn(rng, P), P(dβ))
-                C = randn(rng, P, 3, 3)
-                (false, :stability, nothing, BLAS.syrk!, uplo, t, α_dα, A, β_dβ, C)
+                C = randn(rng, Complex{P}, 3, 3)
+                (false, :stability, nothing, BLAS.herk!, uplo, t, α_dα, A, β_dβ, C)
             end
         end...,
 
@@ -1522,12 +1549,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         map_prod(
             ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps, dαs
         ) do (side, ul, tA, dA, M, N, P, dα)
+            P <: BlasRealFloat && imag(dα) != 0 && return []
+
             t = tA == 'N'
             R = side == 'L' ? M : N
             As = blas_matrices(rng, P, R, R)
             Bs = blas_matrices(rng, P, M, N)
             return map(As, Bs) do A, B
-                α_dα = CoDual(randn(rng, P), P(dα))
+                α_dα = _make_codual(randn(rng, P), P(dα))
                 (false, :stability, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B)
             end
         end...,
@@ -1557,8 +1586,8 @@ end
 function derived_rule_test_cases(rng_ctor, ::Val{:blas})
     t_flags = ['N', 'T', 'C']
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
-    Ps = [Float32, Float64]
-    allPs = [Ps..., ComplexF64, ComplexF32]
+    realPs = [Float32, Float64]
+    Ps = [realPs..., complex.(realPs)...]
     uplos = ['L', 'U']
     dAs = ['N', 'U']
     rng = rng_ctor(123)
@@ -1576,7 +1605,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas})
         #
 
         # dot, dotc, dotu
-        map(Ps) do P
+        map(realPs) do P
             flags = (false, :none, nothing)
             Any[
                 (flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
@@ -1585,7 +1614,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas})
                 (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
             ]
         end...,
-        map_prod([ComplexF32, ComplexF64], [BLAS.dotc, BLAS.dotu]) do (P, f)
+        map_prod(complex.(realPs), [BLAS.dotc, BLAS.dotu]) do (P, f)
             flags = (false, :none, nothing)
             Any[
                 (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
@@ -1596,7 +1625,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas})
         end...,
 
         # nrm2
-        map_prod(allPs) do (P,)
+        map_prod(Ps) do (P,)
             return map([randn(rng, P, 105)]) do x
                 (false, :none, nothing, BLAS.nrm2, x)
             end
