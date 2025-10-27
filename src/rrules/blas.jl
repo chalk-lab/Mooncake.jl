@@ -1250,7 +1250,7 @@ end
     MinimalCtx,
     Tuple{
         typeof(BLAS.trsm!),Char,Char,Char,Char,P,AbstractMatrix{P},AbstractMatrix{P}
-    } where {P<:BlasRealFloat},
+    } where {P<:BlasFloat},
 )
 
 function frule!!(
@@ -1262,14 +1262,14 @@ function frule!!(
     α_dα::Dual{P},
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Extract parameters.
     side = primal(_side)
     uplo = primal(_uplo)
     trans = primal(_t)
     diag = primal(_diag)
-    α, dα = extract(α_dα)
+    α, dα = numberify(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
@@ -1301,7 +1301,7 @@ function rrule!!(
     α_dα::CoDual{P},
     A_dA::CoDual{<:AbstractMatrix{P}},
     B_dB::CoDual{<:AbstractMatrix{P}},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
 
     # Extract parameters.
     side = primal(_side)
@@ -1320,33 +1320,40 @@ function rrule!!(
 
     function trsm_adjoint(::NoRData)
         # Compute α gradient.
-        ∇α = tr(dB'B) / α
+        ∇α = dot(B, dB) / α'
 
         # Increment cotangents.
         if side == 'L'
             if trans == 'N'
-                tmp = trsm!('L', uplo, 'T', diag, -one(P), A, dB * B')
-                dA .+= tri!(tmp, uplo, diag)
+                tmp = trsm!('L', uplo, 'C', diag, -one(P), A, dB * B')
+            elseif trans == 'C'
+                tmp = trsm!('R', uplo, 'C', diag, -one(P), A, B * dB')
             else
-                tmp = trsm!('R', uplo, 'T', diag, -one(P), A, B * dB')
-                dA .+= tri!(tmp, uplo, diag)
+                tmp = trsm!('R', uplo, 'C', diag, -one(P), A, conj(B * dB'))
             end
+            dA .+= tri!(tmp, uplo, diag)
         else
             if trans == 'N'
-                tmp = trsm!('R', uplo, 'T', diag, -one(P), A, B'dB)
-                dA .+= tri!(tmp, uplo, diag)
+                tmp = trsm!('R', uplo, 'C', diag, -one(P), A, B'dB)
+            elseif trans == 'C'
+                tmp = trsm!('L', uplo, 'C', diag, -one(P), A, dB'B)
             else
-                tmp = trsm!('L', uplo, 'T', diag, -one(P), A, dB'B)
-                dA .+= tri!(tmp, uplo, diag)
+                tmp = trsm!('L', uplo, 'C', diag, -one(P), A, conj(dB'B))
             end
+            dA .+= tri!(tmp, uplo, diag)
         end
 
         # Restore initial state.
         B .= B_copy
 
         # Compute dB tangent.
-        BLAS.trsm!(side, uplo, trans == 'N' ? 'T' : 'N', diag, α, A, dB)
-        return tuple_fill(NoRData(), Val(5))..., ∇α, NoRData(), NoRData()
+        if trans == 'T'
+            # conjugate-only of A
+            BLAS.trsm!(side, uplo, 'N', diag, α', conj(A), dB)
+        else
+            BLAS.trsm!(side, uplo, trans == 'N' ? 'C' : 'N', diag, α', A, dB)
+        end
+        return tuple_fill(NoRData(), Val(5))..., _rdata(∇α), NoRData(), NoRData()
     end
 
     return B_dB, trsm_adjoint
