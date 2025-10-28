@@ -785,24 +785,31 @@ end
 # Core._setsuper!
 # Core._structtype
 
-# Verify that there thing at the index is non-differentiable. Otherwise error.
 function frule!!(
     ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector}, _ind::Dual{Int}
 )
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
     tv = getindex(tangent(v), ind)
-    isa(tv, NoTangent) || error("expected non-differentiable thing in SimpleVector")
     return Dual(pv, tv)
 end
 function rrule!!(
-    f::CoDual{typeof(Core._svec_ref)}, v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
+    f::CoDual{typeof(Core._svec_ref)}, _v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
 )
     ind = primal(_ind)
-    pv = Core._svec_ref(primal(v), ind)
-    tv = getindex(tangent(v), ind)
-    isa(tv, NoTangent) || error("expected non-differentiable thing in SimpleVector")
-    return zero_fcodual(pv), NoPullback(f, v, _ind)
+    v, dv = extract(_v)
+    pv = Core._svec_ref(v, ind)
+    tv = getindex(dv, ind)
+    a = CoDual(pv, tv)
+    if rdata_type(tangent_type(_typeof(pv))) == NoRData
+        return a, NoPullback(f, _v, _ind)
+    else
+        function _svec_ref_pullback!!(da)
+            setindex!(dv, increment_rdata!!(Core._svec_ref(dv, ind), da), ind)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return a, _svec_ref_pullback!!
+    end
 end
 
 function frule!!(f::Dual{typeof(svec)}, args::Vararg{Any,N}) where {N}
@@ -822,7 +829,7 @@ function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
         if fdata_type(tangent_type(_typeof(primal_output))) == NoFData
             return zero_fcodual(primal_output), TuplePullback{N}()
         else
-            return CoDual(primal_output, svec(map(tangent, args)...)), TuplePullback{N}()
+            return CoDual(primal_output, collect(Any, map(tangent, args))), TuplePullback{N}()
         end
     end
 end
