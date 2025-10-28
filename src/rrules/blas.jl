@@ -878,31 +878,27 @@ function rrule!!(
 
         # Increment cotangents.
         if tA == 'N'
-            Bherm = tB == 'T' && T <: BlasComplexFloat ? conj.(p_B) : p_B
+            Bherm = tB == 'T' ? conj(p_B) : p_B
             BLAS.gemm!('N', tB == 'N' ? 'C' : 'N', a', dC, Bherm, one(T), dA)
         elseif tA == 'C'
             BLAS.gemm!(tB, 'C', a, p_B, dC, one(T), dA)
         else
             # Equivalent to BLAS.gemm!(tB + "conjugate only", 'T', a', p_B, dC, one(T), dA)
             if tB == 'N'
-                BLAS.gemm!(
-                    'N', 'T', a', T <: BlasRealFloat ? p_B : conj.(p_B), dC, one(T), dA
-                )
+                BLAS.gemm!('N', 'T', a', conj(p_B), dC, one(T), dA)
             else
                 BLAS.gemm!(tB == 'T' ? 'C' : 'T', 'T', a', p_B, dC, one(T), dA)
             end
         end
         if tB == 'N'
-            Aherm = tA == 'T' && T <: BlasComplexFloat ? conj.(p_A) : p_A
+            Aherm = tA == 'T' ? conj(p_A) : p_A
             BLAS.gemm!(tA == 'N' ? 'C' : 'N', 'N', a', Aherm, dC, one(T), dB)
         elseif tB == 'C'
             BLAS.gemm!('C', tA, a, dC, p_A, one(T), dB)
         else
             # Equivalent to BLAS.gemm!('T', tA + "conjugate only", a', dC, p_A, one(T), dB)
             if tA == 'N'
-                BLAS.gemm!(
-                    'T', 'N', a', dC, T <: BlasRealFloat ? p_A : conj.(p_A), one(T), dB
-                )
+                BLAS.gemm!('T', 'N', a', dC, conj(p_A), one(T), dB)
             else
                 BLAS.gemm!('T', tA == 'T' ? 'C' : 'T', a', dC, p_A, one(T), dB)
             end
@@ -1028,16 +1024,8 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             end
 
             # gradient w.r.t. B: dB += α' A' dC  (or α' dC A' if right)
-            if T <: BlasRealFloat || $isherm
-                # A' = A for real numbers or hermitian matrices
-                BLAS.$fname(s, ul, α', A, dC, one(T), dB)
-            else
-                # A is symmetric but complex so A' = conj(A)
-                # Instead we compute conj(dB) += α A conj(dC)
-                conj!(dB)
-                BLAS.$fname(s, ul, α, A, conj.(dC), one(T), dB)
-                conj!(dB)
-            end
+            # if A is hermitian or real then A' = A, else A' = conj(A)
+            BLAS.$fname(s, ul, α', $(isherm ? :A : :(conj(A))), dC, one(T), dB)
 
             # gradient w.r.t. beta.
             dβ = dot(C, dC)
