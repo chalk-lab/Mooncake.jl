@@ -1459,9 +1459,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
     Ps = [realPs..., complex.(realPs)...]
     rng = rng_ctor(123456)
 
-    _make_codual(x, dx) = CoDual(x, dx)
-    _make_codual(x::Complex, dx) = CoDual(x, Tangent((; re=real(dx), im=imag(dx))))
-
     test_cases = vcat(
 
         #
@@ -1594,6 +1591,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     realPs = [Float64, Float32]
     Ps = [realPs..., complex.(realPs)...]
     rng = rng_ctor(123456)
+
+    _make_codual(x, dx) = CoDual(x, dx)
+    _make_codual(x::Complex, dx) = CoDual(x, Tangent((; re=real(dx), im=imag(dx))))
 
     test_cases = vcat(
         #
