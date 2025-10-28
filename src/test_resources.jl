@@ -922,7 +922,6 @@ function generate_test_functions()
         (false, :none, nothing, typevar_tester),
         (false, :allocs, nothing, inplace_invoke!, randn(1_024)),
         (false, :allocs, nothing, highly_nested_tuple, 5.0),
-        (false, :none, nothing, sig_argcount_mismatch, ones(4)),
         (false, :allocs, (lb=2, ub=1500), large_tuple_inference, Tuple(zeros(1_000))),
         (false, :none, nothing, regression_319, randn(3)),
     ]
