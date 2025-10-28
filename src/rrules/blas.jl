@@ -1452,9 +1452,7 @@ end
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
     t_flags = ['N', 'T', 'C']
     αs = [1.0, -0.25, 0.46 + 0.32im]
-    dαs = [0.0, 0.44, -0.20 + 0.38im]
     βs = [0.0, 0.33, 0.39 + 0.27im]
-    dβs = [0.0, -0.11, 0.86 + 0.44im]
     uplos = ['L', 'U']
     dAs = ['N', 'U']
     realPs = [Float64, Float32]
@@ -1522,7 +1520,82 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
                 (false, :stability, nothing, BLAS.trmv!, ul, tA, dA, A, b)
             end
         end...,
+    )
 
+    memory = Any[]
+    return test_cases, memory
+end
+
+function derived_rule_test_cases(rng_ctor, ::Val{:blas})
+    realPs = [Float32, Float64]
+    Ps = [realPs..., complex.(realPs)...]
+    rng = rng_ctor(123)
+
+    test_cases = vcat(
+
+        # Utility
+        (false, :stability, nothing, BLAS.get_num_threads),
+        (false, :stability, nothing, BLAS.lbt_get_num_threads),
+        (false, :stability, nothing, BLAS.set_num_threads, 1),
+        (false, :stability, nothing, BLAS.lbt_set_num_threads, 1),
+
+        #
+        # BLAS LEVEL 1
+        #
+
+        # dot, dotc, dotu
+        map(realPs) do P
+            flags = (false, :none, nothing)
+            Any[
+                (flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                (flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+            ]
+        end...,
+        map_prod(complex.(realPs), [BLAS.dotc, BLAS.dotu]) do (P, f)
+            flags = (false, :none, nothing)
+            Any[
+                (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+            ]
+        end...,
+
+        # nrm2
+        map_prod(Ps) do (P,)
+            return map([randn(rng, P, 105)]) do x
+                (false, :none, nothing, BLAS.nrm2, x)
+            end
+        end...,
+
+        #
+        # Misc extra tests
+        #
+
+        (false, :none, nothing, x -> sum(complex(x) * x), rand(rng, 5, 5)),
+    )
+    memory = Any[]
+    return test_cases, memory
+end
+
+# The level 3 tests below are split from the others,
+# such that they can run in parallel on CI.
+
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
+    t_flags = ['N', 'T', 'C']
+    αs = [1.0, -0.25, 0.46 + 0.32im]
+    dαs = [0.0, 0.44, -0.20 + 0.38im]
+    βs = [0.0, 0.33, 0.39 + 0.27im]
+    dβs = [0.0, -0.11, 0.86 + 0.44im]
+    uplos = ['L', 'U']
+    dAs = ['N', 'U']
+    realPs = [Float64, Float32]
+    Ps = [realPs..., complex.(realPs)...]
+    rng = rng_ctor(123456)
+
+    test_cases = vcat(
         #
         # BLAS LEVEL 3
         #
@@ -1630,53 +1703,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
     return test_cases, memory
 end
 
-function derived_rule_test_cases(rng_ctor, ::Val{:blas})
+function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     t_flags = ['N', 'T', 'C']
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
     realPs = [Float32, Float64]
     Ps = [realPs..., complex.(realPs)...]
-    uplos = ['L', 'U']
-    dAs = ['N', 'U']
     rng = rng_ctor(123)
 
     test_cases = vcat(
-
-        # Utility
-        (false, :stability, nothing, BLAS.get_num_threads),
-        (false, :stability, nothing, BLAS.lbt_get_num_threads),
-        (false, :stability, nothing, BLAS.set_num_threads, 1),
-        (false, :stability, nothing, BLAS.lbt_set_num_threads, 1),
-
-        #
-        # BLAS LEVEL 1
-        #
-
-        # dot, dotc, dotu
-        map(realPs) do P
-            flags = (false, :none, nothing)
-            Any[
-                (flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-                (flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-                (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-                (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
-            ]
-        end...,
-        map_prod(complex.(realPs), [BLAS.dotc, BLAS.dotu]) do (P, f)
-            flags = (false, :none, nothing)
-            Any[
-                (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-                (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-                (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-                (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
-            ]
-        end...,
-
-        # nrm2
-        map_prod(Ps) do (P,)
-            return map([randn(rng, P, 105)]) do x
-                (false, :none, nothing, BLAS.nrm2, x)
-            end
-        end...,
 
         #
         # BLAS LEVEL 3
@@ -1692,12 +1726,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas})
                 (false, :none, nothing, aliased_gemm!, tA, tB, a, b, A, B)
             end
         end...,
-
-        #
-        # Misc extra tests
-        #
-
-        (false, :none, nothing, x -> sum(complex(x) * x), rand(rng, 5, 5)),
     )
     memory = Any[]
     return test_cases, memory
