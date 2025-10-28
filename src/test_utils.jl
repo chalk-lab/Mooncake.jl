@@ -220,7 +220,8 @@ end
 function has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
 ) where {P<:Base.IEEEFloat}
-    return (isapprox(x, y) && !isnan(x)) || (isnan(x) && isnan(y))
+    # Pass an atol such that we can compare approximately against 0 values.
+    return isapprox(x, y; atol=√eps(P), nans=true)
 end
 function has_equal_data_internal(
     x::Module, y::Module, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
