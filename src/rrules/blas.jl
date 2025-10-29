@@ -1619,10 +1619,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
             P <: BlasRealFloat && f == BLAS.hemm! && return []
             P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
 
-            nA = side == 'L' ? 5 : 7
+            nA = side == 'L' ? 3 : 5
             As = blas_matrices(rng, P, nA, nA)
-            Bs = blas_matrices(rng, P, 5, 7)
-            Cs = blas_matrices(rng, P, 5, 7)
+            Bs = blas_matrices(rng, P, 3, 5)
+            Cs = blas_matrices(rng, P, 3, 5)
             return map(As, Bs, Cs) do A, B, C
                 (false, :stability, nothing, f, side, ul, P(α), A, B, P(β), C)
             end
