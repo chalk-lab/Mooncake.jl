@@ -1578,7 +1578,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     dAs = ['N', 'U']
     realPs = [Float64, Float32]
     Ps = [realPs..., complex.(realPs)...]
-    rng = rng_ctor(123456)
 
     _make_codual(x, dx) = CoDual(x, dx)
     _make_codual(x::Complex, dx) = CoDual(x, Tangent((; re=real(dx), im=imag(dx))))
@@ -1587,10 +1586,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         #
         # BLAS LEVEL 3
         #
+        # The tests are quite sensitive to the random inputs,
+        # so each tested function gets its own rng.
 
         # gemm!
         let
-            # Use another RNG for gemm! to avoid an "unlucky" random case
             rng = rng_ctor(123456)
             map_prod(
                 t_flags, t_flags, αs, βs, Ps, dαs, dβs
@@ -1614,7 +1614,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
 
         # symm!, hemm!
         let
-            # Use another RNG for hemm! to avoid an "unlucky" random case
             rng = rng_ctor(123456)
             map_prod(
                 [BLAS.symm!, BLAS.hemm!], ['L', 'R'], ['L', 'U'], αs, βs, Ps
@@ -1633,53 +1632,61 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         end...,
 
         # syrk!
-        map_prod(uplos, t_flags, Ps, dαs, dβs) do (uplo, t, P, dα, dβ)
-            P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-            # 'C' is not allowed for complex syrk!
-            P <: BlasComplexFloat && t == 'C' && return []
+        let
+            rng = rng_ctor(123456)
+            map_prod(uplos, t_flags, Ps, dαs, dβs) do (uplo, t, P, dα, dβ)
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                # 'C' is not allowed for complex syrk!
+                P <: BlasComplexFloat && t == 'C' && return []
 
-            As = blas_matrices(rng, P, t == 'N' ? 3 : 4, t == 'N' ? 4 : 3)
-            return map(As) do A
-                α_dα = _make_codual(randn(rng, P), P(dα))
-                β_dβ = _make_codual(randn(rng, P), P(dβ))
-                C = randn(rng, P, 3, 3)
-                (false, :stability, nothing, BLAS.syrk!, uplo, t, α_dα, A, β_dβ, C)
+                As = blas_matrices(rng, P, t == 'N' ? 3 : 4, t == 'N' ? 4 : 3)
+                return map(As) do A
+                    α_dα = _make_codual(randn(rng, P), P(dα))
+                    β_dβ = _make_codual(randn(rng, P), P(dβ))
+                    C = randn(rng, P, 3, 3)
+                    (false, :stability, nothing, BLAS.syrk!, uplo, t, α_dα, A, β_dβ, C)
+                end
             end
         end...,
         # herk!
-        map_prod(uplos, t_flags, realPs, dαs, dβs) do (uplo, t, P, dα, dβ)
-            (imag(dα) != 0 || imag(dβ) != 0) && return []
-            # 'T' is not allowed for herk!
-            t == 'T' && return []
+        let
+            rng = rng_ctor(123456)
+            map_prod(uplos, t_flags, realPs, dαs, dβs) do (uplo, t, P, dα, dβ)
+                (imag(dα) != 0 || imag(dβ) != 0) && return []
+                # 'T' is not allowed for herk!
+                t == 'T' && return []
 
-            As = blas_matrices(rng, Complex{P}, t == 'N' ? 3 : 4, t == 'N' ? 4 : 3)
-            return map(As) do A
-                α_dα = CoDual(randn(rng, P), P(dα))
-                β_dβ = CoDual(randn(rng, P), P(dβ))
-                C = randn(rng, Complex{P}, 3, 3)
-                (false, :stability, nothing, BLAS.herk!, uplo, t, α_dα, A, β_dβ, C)
+                As = blas_matrices(rng, Complex{P}, t == 'N' ? 3 : 4, t == 'N' ? 4 : 3)
+                return map(As) do A
+                    α_dα = CoDual(randn(rng, P), P(dα))
+                    β_dβ = CoDual(randn(rng, P), P(dβ))
+                    C = randn(rng, Complex{P}, 3, 3)
+                    (false, :stability, nothing, BLAS.herk!, uplo, t, α_dα, A, β_dβ, C)
+                end
             end
         end...,
 
         # trmm!
-        map_prod(
-            ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps, dαs
-        ) do (side, ul, tA, dA, M, N, P, dα)
-            P <: BlasRealFloat && imag(dα) != 0 && return []
+        let
+            rng = rng_ctor(123456)
+            map_prod(
+                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps, dαs
+            ) do (side, ul, tA, dA, M, N, P, dα)
+                P <: BlasRealFloat && imag(dα) != 0 && return []
 
-            t = tA == 'N'
-            R = side == 'L' ? M : N
-            As = blas_matrices(rng, P, R, R)
-            Bs = blas_matrices(rng, P, M, N)
-            return map(As, Bs) do A, B
-                α_dα = _make_codual(randn(rng, P), P(dα))
-                (false, :stability, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B)
+                t = tA == 'N'
+                R = side == 'L' ? M : N
+                As = blas_matrices(rng, P, R, R)
+                Bs = blas_matrices(rng, P, M, N)
+                return map(As, Bs) do A, B
+                    α_dα = _make_codual(randn(rng, P), P(dα))
+                    (false, :stability, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B)
+                end
             end
         end...,
 
         # trsm!
         let
-            # Use another RNG for trsm to avoid an "unlucky" random case
             rng = rng_ctor(123456)
             map_prod(
                 ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps
