@@ -743,9 +743,12 @@ end
 function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     primal_output = svec(map(primal, args)...)
     # Tangent type for `SimpleVector` is `Vector{Any}`
-    tangent_output = collect(Any, map(args) do x
-        return tangent(x.dx, zero_rdata(x.x))
-    end)
+    tangent_output = collect(
+        Any,
+        map(args) do x
+            return tangent(x.dx, zero_rdata(x.x))
+        end,
+    )
     function svec_pullback!!(::NoRData)
         return NoRData(), map(rdata, tangent_output)...
     end
