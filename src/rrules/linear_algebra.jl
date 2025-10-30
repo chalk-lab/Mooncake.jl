@@ -40,9 +40,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     Ps = [Float64, Float32]
     test_cases = vcat(
         map_prod([3, 7], Ps) do (N, P)
-            return (false, :none, nothing, inv, randn(rng, P, N, N))
-            return (false, :none, nothing, det, randn(rng, P, N, N))
-        end,
+            flags = (false, :none, nothing)
+            Any[
+                (flags..., inv, randn(rng, P, N, N)), (flags..., det, randn(rng, P, N, N))
+            ]
+        end...,
     )
     memory = Any[]
     return test_cases, memory

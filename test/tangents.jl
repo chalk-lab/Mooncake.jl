@@ -11,6 +11,7 @@
         (Core.Compiler.InferenceState, NoTangent),
         (Core.Compiler.Timings.Timing, NoTangent),
         (Core.Compiler.InferenceResult, NoTangent),
+        (Base.LibuvStream, NoTangent),
 
         ## Tuples
 
