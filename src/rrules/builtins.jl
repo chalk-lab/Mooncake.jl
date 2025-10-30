@@ -719,13 +719,14 @@ end
 
 # Function barrier to limit runtime dispatch
 function _svec_ref_rrule(f, _v, _ind, pv, tv)
+    ind = primal(_ind)
     a = CoDual(pv, fdata(tv))
     if rdata_type(tangent_type(_typeof(pv))) == NoRData
         return a, NoPullback(f, _v, _ind)
     else
         function _svec_ref_pullback!!(da)
             dv = tangent(_v)
-            setindex!(dv, increment_rdata!!(getindex(dv, ind.x), da), ind.x)
+            setindex!(dv, increment_rdata!!(getindex(dv, ind), da), ind)
             return NoRData(), NoRData(), NoRData()
         end
         return a, _svec_ref_pullback!!
