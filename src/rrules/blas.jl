@@ -1613,18 +1613,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         end...,
 
         # symm!, hemm!
-        map_prod(
-            [BLAS.symm!, BLAS.hemm!], ['L', 'R'], ['L', 'U'], αs, βs, Ps
-        ) do (f, side, ul, α, β, P)
-            P <: BlasRealFloat && f == BLAS.hemm! && return []
-            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+        let
+            # Use another RNG for hemm! to avoid an "unlucky" random case
+            rng = rng_ctor(123456)
+            map_prod(
+                [BLAS.symm!, BLAS.hemm!], ['L', 'R'], ['L', 'U'], αs, βs, Ps
+            ) do (f, side, ul, α, β, P)
+                P <: BlasRealFloat && f == BLAS.hemm! && return []
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
 
-            nA = side == 'L' ? 3 : 5
-            As = blas_matrices(rng, P, nA, nA)
-            Bs = blas_matrices(rng, P, 3, 5)
-            Cs = blas_matrices(rng, P, 3, 5)
-            return map(As, Bs, Cs) do A, B, C
-                (false, :stability, nothing, f, side, ul, P(α), A, B, P(β), C)
+                nA = side == 'L' ? 3 : 5
+                As = blas_matrices(rng, P, nA, nA)
+                Bs = blas_matrices(rng, P, 3, 5)
+                Cs = blas_matrices(rng, P, 3, 5)
+                return map(As, Bs, Cs) do A, B, C
+                    (false, :stability, nothing, f, side, ul, P(α), A, B, P(β), C)
+                end
             end
         end...,
 
@@ -1674,19 +1678,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         end...,
 
         # trsm!
-        map_prod(
-            ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps
-        ) do (side, ul, tA, dA, M, N, P)
-            t = tA == 'N'
-            R = side == 'L' ? M : N
-            a = randn(rng, P)
-            As = map(blas_matrices(rng, P, R, R)) do A
-                A[diagind(A)] .+= 1
-                return A
-            end
-            Bs = blas_matrices(rng, P, M, N)
-            return map(As, Bs) do A, B
-                (false, :stability, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
+        let
+            # Use another RNG for trsm to avoid an "unlucky" random case
+            rng = rng_ctor(123456)
+            map_prod(
+                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps
+            ) do (side, ul, tA, dA, M, N, P)
+                t = tA == 'N'
+                R = side == 'L' ? M : N
+                a = randn(rng, P)
+                As = map(blas_matrices(rng, P, R, R)) do A
+                    A[diagind(A)] .+= 1
+                    return A
+                end
+                Bs = blas_matrices(rng, P, M, N)
+                return map(As, Bs) do A, B
+                    (false, :stability, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
+                end
             end
         end...,
     )
