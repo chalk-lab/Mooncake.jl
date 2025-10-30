@@ -841,28 +841,6 @@ function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     return CoDual(primal_output, tangent_output), svec_pullback!!
 end
 
-function frule!!(f::Dual{typeof(svec)}, args::Vararg{Any,N}) where {N}
-    primal_output = svec(map(primal, args)...)
-    if tangent_type(_typeof(primal_output)) == NoTangent
-        return zero_dual(primal_output)
-    else
-        return Dual(primal_output, Any[NoTangent() for _ in 1:length(args)])
-    end
-end
-
-function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
-    primal_output = svec(map(primal, args)...)
-    if tangent_type(_typeof(primal_output)) == NoTangent
-        return zero_fcodual(primal_output), NoPullback(f, args...)
-    else
-        if fdata_type(tangent_type(_typeof(primal_output))) == NoFData
-            return zero_fcodual(primal_output), TuplePullback{N}()
-        else
-            return CoDual(primal_output, svec(map(tangent, args)...)), TuplePullback{N}()
-        end
-    end
-end
-
 @static if VERSION > v"1.12-"
     function frule!!(f::Dual{typeof(Core._svec_len)}, v)
         return zero_dual(Core._svec_len(primal(v)))
