@@ -83,7 +83,7 @@ linetable field has at least one element.
 """
 function __insts_to_instruction_stream(insts::Vector{Any})
     n = length(insts)
-    @static if VERSION > v"1-12-"
+    @static if VERSION > v"1.12-"
         lineinfo = Int32[]
         for _ in 1:n
             push!(lineinfo, 1, 0, 0)
