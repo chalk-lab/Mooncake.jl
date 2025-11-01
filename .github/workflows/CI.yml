@@ -179,7 +179,7 @@ jobs:
           PERF_GROUP: 'comparison'
           GKSwstype: '100'
         shell: bash
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: benchmarking-results
           path: bench_results/
