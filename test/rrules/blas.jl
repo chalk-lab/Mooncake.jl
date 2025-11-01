@@ -1,4 +1,4 @@
-@testset "blas" begin
+@testset "blas (misc, level 1, level 2)" begin
 
     # Problems with arrayify tend to get picked up by tests for rules which use arrayify.
     # However, such problems can be quite tricky to diagnose from these failures alone, so
