@@ -2,7 +2,7 @@
 # in conjunction with the contexts above to decide what should be inlined and what should
 # not be inlined. Similar strategies are employed by Enzyme and Diffractor.
 
-# The most important bit of this code is `inlining_policy` -- the rest is copy + pasted
+# The most important bit of this code is `inlining_policy` (renamed to `src_inlining_policy` in Julia v1.12+) -- the rest is copy + pasted
 # boiler plate, largely taken from https://github.com/JuliaLang/julia/blob/2fe4190b3d26b4eee52b2b1b1054ddd6e38a941e/test/compiler/newinterp.jl#L11
 #
 # Credit: much of the code in here is copied over from the main Julia repo, and from
@@ -121,6 +121,11 @@ end
 CC.nsplit_impl(info::NoInlineCallInfo) = CC.nsplit(info.info)
 CC.getsplit_impl(info::NoInlineCallInfo, idx::Int) = CC.getsplit(info.info, idx)
 CC.getresult_impl(info::NoInlineCallInfo, idx::Int) = CC.getresult(info.info, idx)
+@static if VERSION > v"1.12-"
+    CC.add_edges_impl(edges::Vector{Any}, info::NoInlineCallInfo) = CC.add_edges!(
+        edges, info.info
+    )
+end
 
 function Core.Compiler.abstract_call_gf_by_type(
     interp::MooncakeInterpreter{C,M},
@@ -133,7 +138,7 @@ function Core.Compiler.abstract_call_gf_by_type(
 ) where {C,M}
 
     # invoke the default abstract call to get the default CC.CallMeta.
-    cm = @invoke CC.abstract_call_gf_by_type(
+    ret = @invoke CC.abstract_call_gf_by_type(
         interp::CC.AbstractInterpreter,
         f::Any,
         arginfo::CC.ArgInfo,
@@ -142,16 +147,25 @@ function Core.Compiler.abstract_call_gf_by_type(
         sv::CC.AbsIntState,
         max_methods::Int,
     )
-
-    # Check to see whether the call in question is a Mooncake primitive. If it is, set its
-    # call info such that in the `CC.inlining_policy` it is not inlined away.
-    callinfo = is_primitive(C, M, atype) ? NoInlineCallInfo(cm.info, atype) : cm.info
-
-    # Construct a CallMeta correctly depending on the version of Julia.
-    @static if VERSION ≥ v"1.11-"
-        return CC.CallMeta(cm.rt, cm.exct, cm.effects, callinfo)
+    is_primitive(C, M, atype) || return ret
+    # Insert a `NoInlineCallInfo` to prevent any potential inlining.
+    @static if VERSION < v"1.12-"
+        call = ret::CC.CallMeta
+        info = NoInlineCallInfo(call.info, atype)
+        return rewrap_callmeta(call, info)
     else
-        return CC.CallMeta(cm.rt, cm.effects, callinfo)
+        return CC.Future{CC.CallMeta}(ret::CC.Future, interp, sv) do call, interp, sv
+            info = NoInlineCallInfo(call.info, atype)
+            return rewrap_callmeta(call, info)
+        end
+    end
+end
+
+function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo)
+    @static if VERSION ≥ v"1.11-"
+        return CC.CallMeta(call.rt, call.exct, call.effects, info)
+    else
+        return CC.CallMeta(call.rt, call.effects, info)
     end
 end
 
@@ -179,7 +193,7 @@ end
         )
     end
 
-else # 1.11 and up.
+elseif VERSION < v"1.12-" # 1.11
     function CC.inlining_policy(
         interp::MooncakeInterpreter,
         @nospecialize(src),
@@ -191,6 +205,22 @@ else # 1.11 and up.
 
         # If not a primitive, AD doesn't care about it. Use the usual inlining strategy.
         return @invoke CC.inlining_policy(
+            interp::CC.AbstractInterpreter, src::Any, info::CC.CallInfo, stmt_flag::UInt32
+        )
+    end
+
+else # 1.12 and up.
+    function CC.src_inlining_policy(
+        interp::MooncakeInterpreter,
+        @nospecialize(src),
+        @nospecialize(info::CC.CallInfo),
+        stmt_flag::UInt32,
+    )
+        # Do not inline away primitives.
+        info isa NoInlineCallInfo && return false
+
+        # If not a primitive, AD doesn't care about it. Use the usual inlining strategy.
+        return @invoke CC.src_inlining_policy(
             interp::CC.AbstractInterpreter, src::Any, info::CC.CallInfo, stmt_flag::UInt32
         )
     end

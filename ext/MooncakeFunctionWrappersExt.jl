@@ -80,7 +80,9 @@ end
 function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
 
     # Analyse types.
-    _, _, fwd_sig, rvs_sig = _construct_types(R, A)
+    fwd_oc_type, rvs_oc_type, _, _ = _construct_types(R, A)
+    (fwd_sig, fwd_ret) = fwd_oc_type.parameters
+    (rvs_sig, rvs_ret) = rvs_oc_type.parameters
 
     # Construct reference to obj_tangent that we can read / write-to.
     obj_tangent_ref = Ref{tangent_type(Tobj)}(obj_tangent)
@@ -93,17 +95,33 @@ function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
     pb_stack = Stack{pullback_type(typeof(rule), (Tobj, A.parameters...))}()
 
     # Construct reverse-pass. Note: this closes over `pb_stack`.
-    run_rvs_pass = Base.Experimental.@opaque rvs_sig dy -> begin
-        obj_rdata, dx... = pop!(pb_stack)(dy)
-        obj_tangent_ref[] = increment_rdata!!(obj_tangent_ref[], obj_rdata)
-        return NoRData(), dx...
+    @static if VERSION ≥ v"1.12-"
+        run_rvs_pass = Base.Experimental.@opaque rvs_sig -> rvs_ret dy -> begin
+            obj_rdata, dx... = pop!(pb_stack)(dy)
+            obj_tangent_ref[] = increment_rdata!!(obj_tangent_ref[], obj_rdata)
+            return NoRData(), dx...
+        end
+    else
+        run_rvs_pass = Base.Experimental.@opaque rvs_sig dy -> begin
+            obj_rdata, dx... = pop!(pb_stack)(dy)
+            obj_tangent_ref[] = increment_rdata!!(obj_tangent_ref[], obj_rdata)
+            return NoRData(), dx...
+        end
     end
 
     # Construct fowards-pass. Note: this closes over the reverse-pass and `pb_stack`.
-    run_fwds_pass = Base.Experimental.@opaque fwd_sig (x...) -> begin
-        y, pb = rule(CoDual(obj, fdata(obj_tangent_ref[])), x...)
-        push!(pb_stack, pb)
-        return y, run_rvs_pass
+    @static if VERSION ≥ v"1.12-"
+        run_fwds_pass = Base.Experimental.@opaque fwd_sig -> fwd_ret (x...) -> begin
+            y, pb = rule(CoDual(obj, fdata(obj_tangent_ref[])), x...)
+            push!(pb_stack, pb)
+            return y, run_rvs_pass
+        end
+    else
+        run_fwds_pass = Base.Experimental.@opaque fwd_sig (x...) -> begin
+            y, pb = rule(CoDual(obj, fdata(obj_tangent_ref[])), x...)
+            push!(pb_stack, pb)
+            return y, run_rvs_pass
+        end
     end
 
     t = FunctionWrapperTangent(run_fwds_pass, obj_tangent_ref)

@@ -49,6 +49,7 @@ jobs:
         version:
           - 'lts'
           - '1.11'
+          - '1'
         arch:
           - x64
         include:
