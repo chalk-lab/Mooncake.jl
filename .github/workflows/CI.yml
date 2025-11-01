@@ -208,7 +208,7 @@ jobs:
 
       - id: post-report-as-pr-comment
         name: Post Report as Pull Request Comment
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@v5
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body: |
