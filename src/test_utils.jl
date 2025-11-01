@@ -96,6 +96,7 @@ using Mooncake:
     MutableTangent,
     frule!!,
     rrule!!,
+    DebugFRule,
     build_rrule,
     tangent_type,
     zero_tangent,
@@ -918,8 +919,8 @@ function test_rule(
     frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
     rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
 
-    # If something is primitive, then the rule should be `rrule!!`.
-    test_fwd && is_primitive && @test frule == frule!!
+    # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
+    test_fwd && is_primitive && @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
     test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
