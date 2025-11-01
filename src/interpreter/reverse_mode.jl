@@ -1134,10 +1134,10 @@ function build_rrule(
         else
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
             dri = generate_ir(interp, sig_or_mi; debug_mode)
-            fwd_oc = optimized_misty_closure(
+            fwd_oc = misty_closure(
                 dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...
             )
-            rvs_oc = optimized_misty_closure(
+            rvs_oc = misty_closure(
                 dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...
             )
 
@@ -1181,6 +1181,9 @@ function generate_ir(
 
     # Grab code associated to the primal.
     ir, _ = lookup_ir(interp, sig_or_mi)
+    @static if VERSION > v"1.12-"
+        ir = set_valid_world!(ir, interp.world)
+    end
     Treturn = compute_ir_rettype(ir)
     fwd_ret_type = forwards_ret_type(ir)
     rvs_ret_type = pullback_ret_type(ir)

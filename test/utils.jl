@@ -116,14 +116,9 @@
         oc2 = Mooncake.opaque_closure(Any, ir)
         @test oc2 isa Core.OpaqueClosure{Tuple{Float64},Any}
         @test oc2(5.0) == sin(5.0)
-        oc2 = Mooncake.optimized_opaque_closure(Any, ir)
-        @test oc2 isa Core.OpaqueClosure{Tuple{Float64},Any}
-        @test oc2(5.0) == sin(5.0)
 
         # Check that we can get a MistyClosure also.
         mc = Mooncake.misty_closure(Float64, ir)
-        @test mc(5.0) == sin(5.0)
-        mc = Mooncake.optimized_misty_closure(Float64, ir)
         @test mc(5.0) == sin(5.0)
     end
 end

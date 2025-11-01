@@ -20,8 +20,6 @@ end
         @test length(stmt(ir.stmts)) == length(src.code)
         oc = Mooncake.opaque_closure(rettype, ir)
         @test oc(args...) == f(args...)
-        oc = Mooncake.optimized_opaque_closure(rettype, ir)
-        @test oc(args...) == f(args...)
     end
     @testset "infer_ir!" begin
 
@@ -43,8 +41,6 @@ end
         # Check that the ir is runable.
         ir.argtypes[1] = Tuple
         oc = Mooncake.opaque_closure(Float64, ir)
-        @test oc(5.0) == cos(sin(5.0))
-        oc = Mooncake.optimized_opaque_closure(Float64, ir)
         @test oc(5.0) == cos(sin(5.0))
     end
     @testset "lookup_ir" begin
