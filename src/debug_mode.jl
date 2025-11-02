@@ -11,19 +11,6 @@ Forward-mode counterpart to [`DebugRRule`](@ref).
 
 *Note:* Debug mode significantly slows execution (10-100x) and should only be used for
 diagnosing problems, not production runs.
-
-# Example
-```julia
-using Mooncake
-
-f(x) = sum(x)
-rule = build_frule(zero_dual(f), randn(10); debug_mode=true)
-
-# Valid input - passes
-result = rule(zero_dual(f), Dual(randn(10), randn(10)))
-
-# Invalid input - throws ErrorException wrapping the underlying validation error
-rule(zero_dual(f), Dual(randn(10), randn(11)))  # Size mismatch
 ```
 """
 struct DebugFRule{Trule}
