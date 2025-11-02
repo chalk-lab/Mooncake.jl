@@ -699,24 +699,60 @@ end
 # Core._setsuper!
 # Core._structtype
 
-# Verify that there thing at the index is non-differentiable. Otherwise error.
 function frule!!(
     ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector}, _ind::Dual{Int}
 )
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
     tv = getindex(tangent(v), ind)
-    isa(tv, NoTangent) || error("expected non-differentiable thing in SimpleVector")
     return Dual(pv, tv)
 end
 function rrule!!(
-    f::CoDual{typeof(Core._svec_ref)}, v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
+    f::CoDual{typeof(Core._svec_ref)}, _v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
 )
     ind = primal(_ind)
-    pv = Core._svec_ref(primal(v), ind)
-    tv = getindex(tangent(v), ind)
-    isa(tv, NoTangent) || error("expected non-differentiable thing in SimpleVector")
-    return zero_fcodual(pv), NoPullback(f, v, _ind)
+    v, dv = extract(_v)
+    pv = Core._svec_ref(v, ind)
+    tv = getindex(dv, ind)
+    return _svec_ref_rrule(f, _v, _ind, pv, tv)
+end
+
+# Function barrier to limit runtime dispatch
+function _svec_ref_rrule(f, _v, _ind, pv, tv)
+    ind = primal(_ind)
+    a = CoDual(pv, fdata(tv))
+    if rdata_type(tangent_type(_typeof(pv))) == NoRData
+        return a, NoPullback(f, _v, _ind)
+    else
+        function _svec_ref_pullback!!(da)
+            dv = tangent(_v)
+            setindex!(dv, increment_rdata!!(getindex(dv, ind), da), ind)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return a, _svec_ref_pullback!!
+    end
+end
+
+function frule!!(f::Dual{typeof(svec)}, args::Vararg{Any,N}) where {N}
+    primal_output = svec(map(primal, args)...)
+    # Tangent type for `SimpleVector` is `Vector{Any}`
+    dual_output = collect(Any, map(tangent, args))
+    return Dual(primal_output, dual_output)
+end
+
+function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
+    primal_output = svec(map(primal, args)...)
+    # Tangent type for `SimpleVector` is `Vector{Any}`
+    tangent_output = collect(
+        Any,
+        map(args) do x
+            return tangent(x.dx, zero_rdata(x.x))
+        end,
+    )
+    function svec_pullback!!(::NoRData)
+        return NoRData(), map(rdata, tangent_output)...
+    end
+    return CoDual(primal_output, tangent_output), svec_pullback!!
 end
 
 # Core._typebody!
@@ -1152,6 +1188,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         # Core._setsuper! -- NEEDS IMPLEMENTING AND TESTING
         # Core._structtype -- NEEDS IMPLEMENTING AND TESTING
         (false, :none, _range, Core._svec_ref, svec(5, 4), 2),
+        (false, :none, _range, Core._svec_ref, svec(5, 4.0), 2),
+        (false, :none, _range, Core._svec_ref, svec(5, randn(rng_ctor(1234), 2, 3)), 2),
+        (false, :none, _range, Core.svec, 5, 4.0, randn(rng_ctor(1234), 2, 3)),
+        # check svec with no arguments
+        (false, :none, _range, Core.svec),
+        # check svec with an argument that has both fdata and rdata
+        (false, :none, _range, Core.svec, (5, 4.0, randn(rng_ctor(1234), 2, 3))),
         # Core._typebody! -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, <:, Float64, Int),
         (false, :stability, nothing, <:, Any, Float64),
@@ -1179,7 +1222,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         # Core.set_binding_type! -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, Core.sizeof, Float64),
         (false, :stability, nothing, Core.sizeof, randn(5)),
-        # Core.svec -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, applicable, sin, Float64),
         (false, :stability, nothing, applicable, sin, Type),
         (false, :stability, nothing, applicable, +, Type, Float64),
