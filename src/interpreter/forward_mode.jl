@@ -183,6 +183,38 @@ end
 const ATTACH_AFTER = true
 const ATTACH_BEFORE = false
 
+@inline contains_bottom_type(T) = _contains_bottom_type(T, Base.IdSet{Any}())
+
+function _contains_bottom_type(T, seen::Base.IdSet{Any})
+    T === Union{} && return true
+    if T isa Union
+        return _contains_bottom_type(T.a, seen) || _contains_bottom_type(T.b, seen)
+    elseif T isa TypeVar
+        if T in seen
+            return false
+        end
+        push!(seen, T)
+        return _contains_bottom_type(T.ub, seen)
+    elseif T isa UnionAll
+        if T in seen
+            return false
+        end
+        push!(seen, T)
+        return _contains_bottom_type(T.body, seen)
+    elseif T isa DataType
+        if T in seen
+            return false
+        end
+        push!(seen, T)
+        for p in T.parameters
+            _contains_bottom_type(p, seen) && return true
+        end
+        return false
+    else
+        return false
+    end
+end
+
 modify_fwd_ad_stmts!(::Nothing, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo) = nothing
 
 modify_fwd_ad_stmts!(::GotoNode, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo) = nothing
@@ -264,6 +296,8 @@ end
 function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
 )
+    # In some compiler-generated UpsilonNodes the `val` field can be undefined; skip safely.
+    isdefined(stmt, :val) || return nothing
     if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
     end
@@ -287,8 +321,10 @@ end
 
 @static if isdefined(Core, :EnterNode)
     function modify_fwd_ad_stmts!(
-        ::Core.EnterNode, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo
+        ::Core.EnterNode, dual_ir::IRCode, ssa::SSAValue, ::Vector{Any}, ::DualInfo
     )
+        # Drop typed exception-enter nodes from dual IR to avoid optimiser assertions
+        replace_call!(dual_ir, ssa, nothing)
         return nothing
     end
 end
@@ -304,6 +340,15 @@ function modify_fwd_ad_stmts!(
         raw_args = isexpr(stmt, :invoke) ? stmt.args[2:end] : stmt.args
         sig_types = map(raw_args) do x
             return CC.widenconst(get_forward_primal_type(info.primal_ir, x))
+        end
+        if any(contains_bottom_type, sig_types)
+            sig_strings = join(map(x -> sprint(show, x), sig_types), ", ")
+            raw_strings = join(map(x -> sprint(show, x), raw_args), ", ")
+            @debug "forward-mode bottom argument" sig_types = sig_strings raw_args =
+                raw_strings stmt
+            filtered = [pair for pair in zip(sig_types, raw_args) if pair[1] !== Union{}]
+            sig_types = map(first, filtered)
+            raw_args = map(last, filtered)
         end
         sig = Tuple{sig_types...}
         mi = isexpr(stmt, :invoke) ? stmt.args[1] : missing
@@ -360,11 +405,17 @@ function modify_fwd_ad_stmts!(
         new_undef_inst = new_inst(Expr(:throw_undef_if_not, stmt.args[1], ssa))
         CC.insert_node!(dual_ir, ssa, new_undef_inst, ATTACH_AFTER)
     elseif isexpr(stmt, :enter)
-        # Leave this node alone
+        # Drop exception-handling scaffolding from the dual IR.
+        replace_call!(dual_ir, ssa, nothing)
     elseif isexpr(stmt, :leave)
-        # Leave this node alone
+        replace_call!(dual_ir, ssa, nothing)
     elseif isexpr(stmt, :pop_exception)
-        # Leave this node alone
+        replace_call!(dual_ir, ssa, nothing)
+    elseif isexpr(stmt, :the_exception)
+        # Preserve the primal exception object but give it a zero tangent.
+        inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
+        ex_ssa = CC.insert_node!(dual_ir, ssa, inst, ATTACH_BEFORE)
+        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, ex_ssa))
     else
         msg = "Expressions of type `:$(stmt.head)` are not yet supported in forward mode"
         throw(ArgumentError(msg))

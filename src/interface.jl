@@ -194,6 +194,14 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple}
     tangents::Ttangents
 end
 
+tangent_type(::Type{<:Cache}) = NoTangent
+
+@inline zero_tangent(x::Cache) = NoTangent()
+
+@inline zero_tangent_internal(::Cache, ::MaybeCache) = NoTangent()
+
+@inline randn_tangent_internal(::AbstractRNG, ::Cache, ::MaybeCache) = NoTangent()
+
 """
     __exclude_unsupported_output(y)
     __exclude_func_with_unsupported_output(fx)
@@ -571,3 +579,9 @@ derivative of `primal(f)` at the primal values in `x` in the direction of the ta
 in `f` and `x`.
 """
 value_and_derivative!!(rule::R, fx::Vararg{Dual,N}) where {R,N} = rule(fx...)
+
+# Avoid differentiating cache constructors in forward mode to prevent
+# forward-over-reverse from descending into interpreter/caches.
+@zero_derivative MinimalCtx Tuple{typeof(prepare_pullback_cache),Vararg} ForwardMode
+@zero_derivative MinimalCtx Tuple{typeof(prepare_gradient_cache),Vararg} ForwardMode
+@zero_derivative MinimalCtx Tuple{typeof(prepare_derivative_cache),Vararg} ForwardMode
