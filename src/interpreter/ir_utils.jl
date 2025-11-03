@@ -293,6 +293,11 @@ end
     Create a shallow copy of the given IR code, with its `valid_worlds` field updated
     to a single valid world. This allows the compiler to perform more inlining.
 
+    In particular, if the IR comes from a function, say `f`, which makes a call to a
+    function `g` which only got defined after `f`, then at the min_world when `f` was
+    defined, `g` was not available yet. If we restrict the IR to a world where `g` is
+    available then `g` can be inlined.
+
     Will error if `world` is not in the existing `valid_worlds` of `ir`.
     """
     function set_valid_world!(ir::IRCode, world::UInt)
