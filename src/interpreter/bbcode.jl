@@ -272,12 +272,13 @@ These should be assumed to be ordered.
 """
 collect_stmts(bb::BBlock)::Vector{IDInstPair} = collect(zip(bb.inst_ids, bb.insts))
 
-@static if VERSION > v"1.12-"
+@eval begin
     """
         BBCode(
             blocks::Vector{BBlock}
             argtypes::Vector{Any}
             sptypes::Vector{CC.VarState}
+            linetable::Vector{Core.LineInfoNode} (v1.11 and lower)
             debuginfo::CC.DebugInfoStream (v1.12+)
             meta::Vector{Expr}
             valid_worlds::CC.WorldRange (v1.12+)
@@ -311,51 +312,11 @@ collect_stmts(bb::BBlock)::Vector{IDInstPair} = collect(zip(bb.inst_ids, bb.inst
         blocks::Vector{BBlock}
         argtypes::Vector{Any}
         sptypes::Vector{CC.VarState}
-        debuginfo::CC.DebugInfoStream
+        $(VERSION > v"1.12-" ? :(debuginfo::CC.DebugInfoStream) : :(linetable::Vector{Core.LineInfoNode}))
         meta::Vector{Expr}
-        valid_worlds::CC.WorldRange
+        $(VERSION > v"1.12-" ? :(valid_worlds::CC.WorldRange) : nothing)
     end
-else
-    """
-        BBCode(
-            blocks::Vector{BBlock}
-            argtypes::Vector{Any}
-            sptypes::Vector{CC.VarState}
-            linetable::Vector{Core.LineInfoNode} (v1.11 and earlier)
-            meta::Vector{Expr}
-        )
-
-    A `BBCode` is a data structure which is similar to `IRCode`, but adds additional structure.
-
-    In particular, a `BBCode` comprises a sequence of basic blocks (`BBlock`s), each of which
-    comprise a sequence of statements. Moreover, each `BBlock` has its own unique `ID`, as does
-    each statment.
-
-    The consequence of this is that new basic blocks can be inserted into a `BBCode`. This is
-    distinct from `IRCode`, in which to create a new basic block, one must insert additional
-    statments which you know will create a new basic block -- this is generally quite an
-    unreliable process, while inserting a new `BBlock` into `BBCode` is entirely predictable.
-    Furthermore, inserting a new `BBlock` does not change the `ID` associated to the other
-    blocks, meaning that you can safely assume that references from existing basic block
-    terminators / phi nodes to other blocks will not be modified by inserting a new basic block.
-
-    Additionally, since each statment in each basic block has its own unique `ID`, new
-    statments can be inserted without changing references between other blocks. `IRCode` also
-    has some support for this via its `new_nodes` field, but eventually all statements will be
-    renamed upon `compact!`ing the `IRCode`, meaning that the name of any given statement will
-    eventually change.
-
-    Finally, note that the basic blocks in a `BBCode` support the custom `Switch` statement.
-    This statement is not valid in `IRCode`, and is therefore lowered into a collection of
-    `GotoIfNot`s and `GotoNode`s when a `BBCode` is converted back into an `IRCode`.
-    """
-    struct BBCode
-        blocks::Vector{BBlock}
-        argtypes::Vector{Any}
-        sptypes::Vector{CC.VarState}
-        linetable::Vector{Core.LineInfoNode}
-        meta::Vector{Expr}
-    end
+    export BBCode
 end
 
 """
