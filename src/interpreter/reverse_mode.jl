@@ -233,21 +233,30 @@ get_primal_type(info::ADInfo, x::ID) = CC.widenconst(info.ssa_insts[x].type)
 get_primal_type(::ADInfo, x::QuoteNode) = _typeof(x.value)
 get_primal_type(::ADInfo, @nospecialize(x)) = _typeof(x)
 @static if VERSION > v"1.12-"
-    function get_primal_type(::ADInfo, x::GlobalRef)
-        world = Base.tls_world_age()
-        partition = x.binding.partitions
+    function get_primal_type(info::ADInfo, x::GlobalRef)
+        return get_primal_type(info.interp.world, x.binding)
+    end
+    # The comments for the `jl_partition_kind` enum are a good reference
+    function get_primal_type(world::UInt, x::Core.Binding)
+        partition = x.partitions
         # partitions are sorted in decreasing world order
         while world < partition.min_world
             !isdefined(partition, :next) && return Any # binding is not defined
             partition = partition.next
         end
-        isconst(x) && return _typeof(getglobal(x.mod, x.name))
-        if isdefined(partition, :restriction)
-            type = partition.restriction
-            isa(type, Type) && return type
-            return _typeof(type)
+        # no restriction available
+        isdefined(partition, :restriction) || return Any
+        kind = Base.binding_kind(partition)
+        # for a constant, the restriction is the value, return its type
+        if Base.is_defined_const_binding(kind)
+            return _typeof(partition.restriction)
         end
-        return Any
+        # otherwise for an imported global the restriction is the imported binding
+        if Base.is_some_imported(kind)
+            return get_primal_type(world, partition.restriction::Core.Binding)
+        end
+        # otherwise we have a mutable global, the restriction is the type
+        return partition.restriction::Type
     end
 else
     function get_primal_type(::ADInfo, x::GlobalRef)
