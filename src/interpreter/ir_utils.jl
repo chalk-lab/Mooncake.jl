@@ -130,8 +130,9 @@ end
 function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
     @static if VERSION >= v"1.12-"
         nargs = length(ir.argtypes) - 1
-        # TODO(mhauru) How do we figure out isva? I don't think it's in ir or mi. Maybe it
-        # doesn't matter given the way we use SpecInfo here?
+        # For now, we always set isva to false, as it doesn't seem to be used
+        # by inference. In the future we could pass it from the callsites of
+        # optimise_ir! down to here if needed.
         isva = false
         propagate_inbounds = true
         spec_info = CC.SpecInfo(nargs, isva, propagate_inbounds, nothing)
