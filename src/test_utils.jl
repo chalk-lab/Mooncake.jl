@@ -820,7 +820,7 @@ function test_rrule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test (@allocations f(x...)) == 0
+        @test count_allocs(f, x...) == 0
 
         # Test allocations in round-trip.
         f_f̄_fwds = to_fwds(f_f̄)
