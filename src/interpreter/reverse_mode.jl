@@ -260,7 +260,8 @@ get_primal_type(::ADInfo, @nospecialize(x)) = _typeof(x)
     end
 else
     function get_primal_type(::ADInfo, x::GlobalRef)
-        return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.binding.ty
+        isconst(x) && return _typeof(getglobal(x.mod, x.name))
+        return isdefined(x.binding, :ty) ? x.binding.ty : x.binding.owner.ty
     end
 end # @static
 function get_primal_type(::ADInfo, x::Expr)
