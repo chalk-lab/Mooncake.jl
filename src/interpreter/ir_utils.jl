@@ -137,7 +137,7 @@ function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
         propagate_inbounds = true
         spec_info = CC.SpecInfo(nargs, isva, propagate_inbounds, nothing)
         min_world = world = get_inference_world(interp)
-        max_world = Base.get_world_counter()
+        max_world = Base.get_world_counter() # TODO: why do we allow other worlds?
         irsv = CC.IRInterpretationState(
             interp, spec_info, ir, mi, ir.argtypes, world, min_world, max_world
         )
@@ -284,6 +284,37 @@ end
 
 function lookup_ir(::CC.AbstractInterpreter, mc::MistyClosure; optimize_until=nothing)
     return mc.ir[], return_type(mc.oc)
+end
+
+@static if VERSION > v"1.12-"
+    """
+        set_valid_world!(ir::IRCode, world::UInt)::IRCode
+
+    (1.12+ only)
+    Create a shallow copy of the given IR code, with its `valid_worlds` field updated
+    to a single valid world. This allows the compiler to perform more inlining.
+
+    In particular, if the IR comes from say a function `f` which makes a call to another
+    function `g` which only got defined after `f`, then at the min_world when `f` was
+    defined, `g` was not available yet. If we restrict the IR to a world where `g` is
+    available then `g` can be inlined.
+
+    Will error if `world` is not in the existing `valid_worlds` of `ir`.
+    """
+    function set_valid_world!(ir::IRCode, world::UInt)
+        if world ∉ ir.valid_worlds
+            error("World $world is not valid for this IRCode: $(ir.valid_worlds).")
+        end
+        return CC.IRCode(
+            ir.stmts,
+            ir.cfg,
+            ir.debuginfo,
+            ir.argtypes,
+            ir.meta,
+            ir.sptypes,
+            CC.WorldRange(world, world),
+        )
+    end
 end
 
 return_type(::Core.OpaqueClosure{A,B}) where {A,B} = B
