@@ -1,4 +1,4 @@
-using DispatchDoctor: @stable, @unstable, allow_unstable, TypeInstabilityError
+using DispatchDoctor: @stable, @unstable, allow_unstable, TypeInstabilityError, _Utils
 using Test
 using StableRNGs: StableRNG
 
@@ -21,7 +21,7 @@ using StableRNGs: StableRNG
         @test result_neg ≈ 0.0
 
         # Skip this test on unsupported Julia versions to avoid misleading test failures.
-        if DispatchDoctor._Utils.JULIA_OK
+        if _Utils.JULIA_OK
             @test_throws TypeInstabilityError type_unstable_square(2.0)
         end
         
