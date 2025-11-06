@@ -136,8 +136,7 @@ function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
         isva = false
         propagate_inbounds = true
         spec_info = CC.SpecInfo(nargs, isva, propagate_inbounds, nothing)
-        min_world = world = get_inference_world(interp)
-        max_world = Base.get_world_counter() # TODO: why do we allow other worlds?
+        max_world = min_world = world = get_inference_world(interp)
         irsv = CC.IRInterpretationState(
             interp, spec_info, ir, mi, ir.argtypes, world, min_world, max_world
         )
