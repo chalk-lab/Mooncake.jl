@@ -528,56 +528,58 @@ function rrule!!(
     return _B, potrs_pb!!
 end
 
-@is_primitive(
-    MinimalCtx,
-    Tuple{
-        typeof(LAPACK.lacpy!),AbstractMatrix{P},AbstractMatrix{P},Char
-    } where {P<:BlasFloat},
-)
-function frule!!(
-    ::Dual{typeof(LAPACK.lacpy!)},
-    B_dB::Dual{<:AbstractMatrix{P}},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    _uplo::Dual{Char},
-) where {P<:BlasFloat}
-    B, dB = arrayify(B_dB)
-    A, dA = arrayify(A_dA)
+@static if VERSION > v"1.11-"
+    @is_primitive(
+        MinimalCtx,
+        Tuple{
+            typeof(LAPACK.lacpy!),AbstractMatrix{P},AbstractMatrix{P},Char
+        } where {P<:BlasFloat},
+    )
+    function frule!!(
+        ::Dual{typeof(LAPACK.lacpy!)},
+        B_dB::Dual{<:AbstractMatrix{P}},
+        A_dA::Dual{<:AbstractMatrix{P}},
+        _uplo::Dual{Char},
+    ) where {P<:BlasFloat}
+        B, dB = arrayify(B_dB)
+        A, dA = arrayify(A_dA)
 
-    LAPACK.lacpy!(B, A, primal(_uplo))
-    LAPACK.lacpy!(dB, dA, primal(_uplo))
-    return B_dB
-end
-function rrule!!(
-    ::CoDual{typeof(LAPACK.lacpy!)},
-    B_dB::CoDual{<:AbstractMatrix{P}},
-    A_dA::CoDual{<:AbstractMatrix{P}},
-    _uplo::CoDual{Char},
-) where {P<:BlasFloat}
-    B, dB = arrayify(B_dB)
-    A, dA = arrayify(A_dA)
-    uplo = primal(_uplo)
+        LAPACK.lacpy!(B, A, primal(_uplo))
+        LAPACK.lacpy!(dB, dA, primal(_uplo))
+        return B_dB
+    end
+    function rrule!!(
+        ::CoDual{typeof(LAPACK.lacpy!)},
+        B_dB::CoDual{<:AbstractMatrix{P}},
+        A_dA::CoDual{<:AbstractMatrix{P}},
+        _uplo::CoDual{Char},
+    ) where {P<:BlasFloat}
+        B, dB = arrayify(B_dB)
+        A, dA = arrayify(A_dA)
+        uplo = primal(_uplo)
 
-    B_copy = copy(B)
-    LAPACK.lacpy!(B, A, uplo)
-    # fill dB with zeros in the copied region
-    zero_tri!(dB, uplo)
-
-    function lacpy_pb!!(::NoRData)
-        if uplo == 'U'
-            dA .+= UpperTriangular(dB)
-        elseif uplo == 'L'
-            dA .+= LowerTriangular(dB)
-        else
-            dA .+= dB
-        end
+        B_copy = copy(B)
+        LAPACK.lacpy!(B, A, uplo)
+        # fill dB with zeros in the copied region
         zero_tri!(dB, uplo)
 
-        # undo the primal change
-        LAPACK.lacpy!(B, B_copy, uplo)
+        function lacpy_pb!!(::NoRData)
+            if uplo == 'U'
+                dA .+= UpperTriangular(dB)
+            elseif uplo == 'L'
+                dA .+= LowerTriangular(dB)
+            else
+                dA .+= dB
+            end
+            zero_tri!(dB, uplo)
 
-        return NoRData(), NoRData(), NoRData(), NoRData()
+            # undo the primal change
+            LAPACK.lacpy!(B, B_copy, uplo)
+
+            return NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return B_dB, lacpy_pb!!
     end
-    return B_dB, lacpy_pb!!
 end
 
 function zero_tri!(A, uplo::Char)
@@ -669,13 +671,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
         end...,
 
         # lacpy!
-        map_prod(complexPs, uplos) do (P, uplo)
-            As = blas_matrices(rng, P, 5, 5)
-            Bs = blas_matrices(rng, P, 5, 5)
-            return map_prod(As, Bs) do (A, B)
-                (false, :none, nothing, LAPACK.lacpy!, B, A, uplo)
+        (@static if VERSION > v"1.11-"
+            map_prod(complexPs, uplos) do (P, uplo)
+                As = blas_matrices(rng, P, 5, 5)
+                Bs = blas_matrices(rng, P, 5, 5)
+                return map_prod(As, Bs) do (A, B)
+                    (false, :none, nothing, LAPACK.lacpy!, B, A, uplo)
+                end
             end
-        end...,
+        else
+            []
+        end)...,
     )
     memory = Any[]
     return test_cases, memory
