@@ -238,12 +238,7 @@ get_primal_type(::ADInfo, @nospecialize(x)) = _typeof(x)
     end
     # The comments for the `jl_partition_kind` enum are a good reference
     function get_primal_type(world::UInt, x::Core.Binding)
-        partition = x.partitions
-        # partitions are sorted in decreasing world order
-        while world < partition.min_world
-            !isdefined(partition, :next) && return Any # binding is not defined
-            partition = partition.next
-        end
+        partition = Base.lookup_binding_partition(world, x)
         # no restriction available
         isdefined(partition, :restriction) || return Any
         kind = Base.binding_kind(partition)
