@@ -312,7 +312,13 @@ collect_stmts(bb::BBlock)::Vector{IDInstPair} = collect(zip(bb.inst_ids, bb.inst
         blocks::Vector{BBlock}
         argtypes::Vector{Any}
         sptypes::Vector{CC.VarState}
-        $(VERSION > v"1.12-" ? :(debuginfo::CC.DebugInfoStream) : :(linetable::Vector{Core.LineInfoNode}))
+        $(
+            if VERSION > v"1.12-"
+                :(debuginfo::CC.DebugInfoStream)
+            else
+                :(linetable::Vector{Core.LineInfoNode})
+            end
+        )
         meta::Vector{Expr}
         $(VERSION > v"1.12-" ? :(valid_worlds::CC.WorldRange) : nothing)
     end

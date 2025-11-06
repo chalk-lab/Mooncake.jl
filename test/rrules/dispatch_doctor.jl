@@ -24,7 +24,7 @@ using StableRNGs: StableRNG
         if _Utils.JULIA_OK
             @test_throws TypeInstabilityError type_unstable_square(2.0)
         end
-        
+
         # No allow_unstable needed
         result = type_unstable_square2(2.0)
         @test result ≈ 4.0

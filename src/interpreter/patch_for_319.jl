@@ -130,7 +130,9 @@ end
                 end
                 check_ret!(stmt, idx)
                 @static if VERSION > v"1.12-"
-                    is_terminator_or_phi = (isa(stmt, PhiNode) || stmt === nothing || CC.isterminator(stmt))
+                    is_terminator_or_phi = (
+                        isa(stmt, PhiNode) || stmt === nothing || CC.isterminator(stmt)
+                    )
                 else
                     is_terminator_or_phi = (isa(stmt, PhiNode) || CC.isterminator(stmt))
                 end

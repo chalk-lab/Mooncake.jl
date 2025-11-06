@@ -75,8 +75,10 @@ end
         # PARTITION_KIND_IMPLICIT_GLOBAL
         @test Mooncake.get_primal_type(info, GlobalRef(Main, :stdin)) == IO
         @static if VERSION > v"1.12-"
-            @test Mooncake.get_primal_type(info, GlobalRef(GlobalsTest, :___constx)) == Float64
-            @test Mooncake.get_primal_type(info, GlobalRef(GlobalsTest, :___consty)) == Float64
+            @test Mooncake.get_primal_type(info, GlobalRef(GlobalsTest, :___constx)) ==
+                Float64
+            @test Mooncake.get_primal_type(info, GlobalRef(GlobalsTest, :___consty)) ==
+                Float64
 
             # Rebind globals using different types, this will increase the world age
             Core.eval(GlobalsTest, quote
@@ -88,9 +90,15 @@ end
 
             # In the info's world age, this should not affect the types
             # We have to use invokelatest otherwise the call to get_primal_type will run in the old world age
-            @test invokelatest(Mooncake.get_primal_type, info, GlobalRef(GlobalsTest, :___x)) == Any
-            @test invokelatest(Mooncake.get_primal_type, info, GlobalRef(GlobalsTest, :___constx)) == Float64
-            @test invokelatest(Mooncake.get_primal_type, info, GlobalRef(GlobalsTest, :___consty)) == Float64
+            @test invokelatest(
+                Mooncake.get_primal_type, info, GlobalRef(GlobalsTest, :___x)
+            ) == Any
+            @test invokelatest(
+                Mooncake.get_primal_type, info, GlobalRef(GlobalsTest, :___constx)
+            ) == Float64
+            @test invokelatest(
+                Mooncake.get_primal_type, info, GlobalRef(GlobalsTest, :___consty)
+            ) == Float64
 
             # But now we can create a new info in the new world age,
             # where these updated bindings should be visible
@@ -104,9 +112,15 @@ end
                 Any,
                 Any,
             )
-            @test invokelatest(Mooncake.get_primal_type, info2, GlobalRef(GlobalsTest, :___x)) == Any
-            @test invokelatest(Mooncake.get_primal_type, info2, GlobalRef(GlobalsTest, :___constx)) == Float32
-            @test invokelatest(Mooncake.get_primal_type, info2, GlobalRef(GlobalsTest, :___consty)) == Float32
+            @test invokelatest(
+                Mooncake.get_primal_type, info2, GlobalRef(GlobalsTest, :___x)
+            ) == Any
+            @test invokelatest(
+                Mooncake.get_primal_type, info2, GlobalRef(GlobalsTest, :___constx)
+            ) == Float32
+            @test invokelatest(
+                Mooncake.get_primal_type, info2, GlobalRef(GlobalsTest, :___consty)
+            ) == Float32
         end
         @test Mooncake.get_primal_type(info, 5) == Int
         @test Mooncake.get_primal_type(info, QuoteNode(:hello)) == Symbol
