@@ -377,15 +377,15 @@ function misty_closure(
 end
 
 @unstable begin
-@static if VERSION > v"1.12-"
-    compute_ir_rettype(ir) = CC.compute_ir_rettype(ir)
-    compute_oc_signature(ir, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
-else
-    compute_ir_rettype(ir) = Base.Experimental.compute_ir_rettype(ir)
-    compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(
-        ir, nargs, isva
-    )
-end
+    @static if VERSION > v"1.12-"
+        compute_ir_rettype(ir) = CC.compute_ir_rettype(ir)
+        compute_oc_signature(ir, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
+    else
+        compute_ir_rettype(ir) = Base.Experimental.compute_ir_rettype(ir)
+        compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(
+            ir, nargs, isva
+        )
+    end
 end
 
 """

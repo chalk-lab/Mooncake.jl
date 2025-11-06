@@ -820,7 +820,12 @@ function test_rrule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test (@allocations f(x...)) == 0
+
+        @static if VERSION >= v"1.12-"
+            @test Base.allocations(f, x...) == 0
+        else
+            @test (@allocations f(x...)) == 0
+        end
 
         # Test allocations in round-trip.
         f_f̄_fwds = to_fwds(f_f̄)
