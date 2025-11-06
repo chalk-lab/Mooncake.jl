@@ -129,7 +129,11 @@ end
                     CC.delete!(ssa_refined, idx)
                 end
                 check_ret!(stmt, idx)
-                is_terminator_or_phi = (isa(stmt, PhiNode) || CC.isterminator(stmt))
+                @static if VERSION > v"1.12-"
+                    is_terminator_or_phi = (isa(stmt, PhiNode) || stmt === nothing || CC.isterminator(stmt))
+                else
+                    is_terminator_or_phi = (isa(stmt, PhiNode) || CC.isterminator(stmt))
+                end
                 if typ === CC.Bottom && !(idx == lstmt && is_terminator_or_phi)
                     return true
                 end
