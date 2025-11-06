@@ -20,8 +20,11 @@ using StableRNGs: StableRNG
         result_neg = allow_unstable(() -> type_unstable_square(-1.0))
         @test result_neg ≈ 0.0
 
-        @test_throws TypeInstabilityError type_unstable_square(2.0)
-
+        # Skip this test on unsupported Julia versions to avoid misleading test failures.
+        if DispatchDoctor._Utils.JULIA_OK
+            @test_throws TypeInstabilityError type_unstable_square(2.0)
+        end
+        
         # No allow_unstable needed
         result = type_unstable_square2(2.0)
         @test result ≈ 4.0
