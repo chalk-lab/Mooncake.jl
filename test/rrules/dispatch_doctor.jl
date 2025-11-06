@@ -1,4 +1,5 @@
-using DispatchDoctor: @stable, @unstable, allow_unstable, TypeInstabilityError, _Utils.JULIA_OK
+using DispatchDoctor:
+    @stable, @unstable, allow_unstable, TypeInstabilityError, _Utils.JULIA_OK
 using Test
 using StableRNGs: StableRNG
 
