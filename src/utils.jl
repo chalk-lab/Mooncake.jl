@@ -381,7 +381,7 @@ end
     compute_oc_signature(ir, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
 else
     compute_ir_rettype(ir) = Base.Experimental.compute_ir_rettype(ir)
-    compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(
+    @unstable compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(
         ir, nargs, isva
     )
 end
