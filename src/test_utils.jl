@@ -777,11 +777,15 @@ function test_frule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test (@allocations f(x...)) == 0
+        @static if VERSION >= v"1.12-"
+            @test Base.allocations(f, x...) == 0
+        else
+            @test (@allocations f(x...)) == 0
+        end
 
         # Test allocations in forwards-mode.
         __forwards(rule, f_ḟ, x_ẋ...)
-        @test (@allocations __forwards(rule, f_ḟ, x_ẋ...)) == 0
+        @test (count_allocs(__forwards, rule, f_ḟ, x_ẋ...)) == 0
     end
 end
 
