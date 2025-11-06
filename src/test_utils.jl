@@ -777,11 +777,7 @@ function test_frule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @static if VERSION >= v"1.12-"
-            @test Base.allocations(f, x...) == 0
-        else
-            @test (@allocations f(x...)) == 0
-        end
+        @test (count_allocs(f, x...)) == 0
 
         # Test allocations in forwards-mode.
         __forwards(rule, f_ḟ, x_ẋ...)
@@ -825,11 +821,7 @@ function test_rrule_performance(
         # Test allocations in primal.
         f(x...)
 
-        @static if VERSION >= v"1.12-"
-            @test Base.allocations(f, x...) == 0
-        else
-            @test (@allocations f(x...)) == 0
-        end
+        @test count_allocs(f, x...) == 0
 
         # Test allocations in round-trip.
         f_f̄_fwds = to_fwds(f_f̄)
@@ -1393,7 +1385,11 @@ end
 # Function barrier to ensure inference in value types.
 function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
     test_hook(count_allocs, f, x...) do
-        @allocations f(x...)
+        @static if VERSION >= v"1.12-"
+            Base.allocations(f, x...)
+        else
+            @allocations f(x...)
+        end
     end
 end
 
