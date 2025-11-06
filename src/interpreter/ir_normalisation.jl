@@ -29,7 +29,7 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
         inst = new_to_call(inst)
         inst = splatnew_to_call(inst)
         @static if VERSION > v"1.12-"
-            inst = resolve_unbound_globalrefs(ir, inst)
+            # inst = resolve_unbound_globalrefs(ir, inst)
         end
         inst = intrinsic_to_function(inst)
         inst = lift_getfield_and_others(inst)
