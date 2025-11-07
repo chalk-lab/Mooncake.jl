@@ -1525,19 +1525,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         end...,
 
         # trsm!
-        map_prod(
-            ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps
-        ) do (side, ul, tA, dA, M, N, P)
-            t = tA == 'N'
-            R = side == 'L' ? M : N
-            a = randn(rng, P)
-            As = map(blas_matrices(rng, P, R, R)) do A
-                A[diagind(A)] .+= 1
-                return A
-            end
-            Bs = blas_matrices(rng, P, M, N)
-            return map(As, Bs) do A, B
-                (false, :stability, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
+        let
+            # This test is sensitive to the random seed
+            rng = rng_ctor(123456)
+            map_prod(
+                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps
+            ) do (side, ul, tA, dA, M, N, P)
+                t = tA == 'N'
+                R = side == 'L' ? M : N
+                a = randn(rng, P)
+                As = map(blas_matrices(rng, P, R, R)) do A
+                    A[diagind(A)] .+= 1
+                    return A
+                end
+                Bs = blas_matrices(rng, P, M, N)
+                return map(As, Bs) do A, B
+                    (false, :stability, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
+                end
             end
         end...,
     )
