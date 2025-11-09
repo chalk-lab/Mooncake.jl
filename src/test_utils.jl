@@ -777,7 +777,13 @@ function test_frule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test (count_allocs(f, x...)) == 0
+        @static if VERSION >= v"1.12-"
+            @test count_allocs(f, x...) == 0
+        else
+            # On < v1.11, can't use count_allocs(f, x...) as that creates spurious
+            # allocations when any of `x` isa DataType.
+            @test (@allocations f(x...)) == 0
+        end
 
         # Test allocations in forwards-mode.
         __forwards(rule, f_ḟ, x_ẋ...)
@@ -820,8 +826,13 @@ function test_rrule_performance(
 
         # Test allocations in primal.
         f(x...)
-
-        @test count_allocs(f, x...) == 0
+        @static if VERSION >= v"1.12-"
+            @test count_allocs(f, x...) == 0
+        else
+            # On < v1.11, can't use count_allocs(f, x...) as that creates spurious
+            # allocations when any of `x` isa DataType.
+            @test (@allocations f(x...)) == 0
+        end
 
         # Test allocations in round-trip.
         f_f̄_fwds = to_fwds(f_f̄)
@@ -1385,7 +1396,9 @@ end
 function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
     test_hook(count_allocs, f, x...) do
         @static if VERSION >= v"1.12-"
-            Base.allocations(f, x...)
+            # Creating a closure avoids false positive allocations.
+            closure = () -> f(x...)
+            Base.allocations(closure)
         else
             @allocations f(x...)
         end
