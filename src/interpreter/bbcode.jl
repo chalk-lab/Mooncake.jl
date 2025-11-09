@@ -668,13 +668,14 @@ function CC.IRCode(bb_code::BBCode)
     @static if VERSION > v"1.12-"
         lines = CC.copy(bb_code.debuginfo.codelocs)
         n = length(insts)
-        if length(lines) > 3n
-            resize!(lines, 3n)
-        elseif length(lines) < 3n
-            for _ in (length(lines) + 1):3n
-                push!(lines, 0)
-            end
-        end
+        @assert length(lines) == 3n "Debug info has wrong entries: $(length(lines)) != $(3n)"
+        # if length(lines) > 3n
+        #     resize!(lines, 3n)
+        # elseif length(lines) < 3n
+        #     for _ in (length(lines) + 1):3n
+        #         push!(lines, 0)
+        #     end
+        # end
         return IRCode(
             CC.InstructionStream(
                 Any[x.stmt for x in insts],
