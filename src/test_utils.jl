@@ -777,13 +777,7 @@ function test_frule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @static if VERSION >= v"1.12-"
-            @test count_allocs(f, x...) == 0
-        else
-            # On < v1.11, can't use count_allocs(f, x...) as that creates spurious
-            # allocations when any of `x` isa DataType.
-            @test (@allocations f(x...)) == 0
-        end
+        @test count_allocs(f, x...) == 0
 
         # Test allocations in forwards-mode.
         __forwards(rule, f_ḟ, x_ẋ...)
@@ -826,13 +820,7 @@ function test_rrule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @static if VERSION >= v"1.12-"
-            @test count_allocs(f, x...) == 0
-        else
-            # On < v1.11, can't use count_allocs(f, x...) as that creates spurious
-            # allocations when any of `x` isa DataType.
-            @test (@allocations f(x...)) == 0
-        end
+        @test count_allocs(f, x...) == 0
 
         # Test allocations in round-trip.
         f_f̄_fwds = to_fwds(f_f̄)
@@ -1392,16 +1380,42 @@ function test_get_tangent_field_performance(t::Union{MutableTangent,Tangent})
     end
 end
 
+# This faff is needed to work around the fact that `Base.allocations(() -> f(x...))` reports
+# spurious allocations when any of `x` is a DataType (which necessitates a manual expansion
+# of the splat), and `Base.allocations(f, x...)` also reports spurious allocations sometimes
+# when the arguments `x` aren't interpolated (which necessitates a closure). The only way to
+# make it work is to generate the code `Base.allocations(() -> f(x1, x2))`, etc., for each
+# arity of `f` (up to a reasonable limit). It would be nicer to use a generated function for
+# this, but generated functions can't contain closures.
+function __allocs end
+for nargs in 0:10
+    args = [Symbol("x", i) for i in 1:nargs]
+    types = [Symbol("X", i) for i in 1:nargs]
+    sigs = [:($(args[i])::$(types[i])) for i in 1:nargs]
+    fexpr = quote
+        function __allocs(f::F, $(sigs...)) where {F,$(types...)}
+            GC.gc()
+            @static if VERSION >= v"1.12-"
+                closure = () -> f($(args...))
+                closure()
+                return Base.allocations(closure)
+            else
+                f($(args...))
+                return @allocations f($(args...))
+            end
+        end
+    end
+    eval(fexpr)
+end
 # Function barrier to ensure inference in value types.
 function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
+    N > 10 && throw(
+        ArgumentError(
+            "count_allocs only supports up to 10 arguments; you can increase this in the implementation if needed.",
+        ),
+    )
     test_hook(count_allocs, f, x...) do
-        @static if VERSION >= v"1.12-"
-            # Creating a closure avoids false positive allocations.
-            closure = () -> f(x...)
-            Base.allocations(closure)
-        else
-            @allocations f(x...)
-        end
+        __allocs(f, x...)
     end
 end
 
