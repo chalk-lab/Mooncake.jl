@@ -994,7 +994,6 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     ) in test_cases
 
         test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
     end
 end
 
