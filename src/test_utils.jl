@@ -1414,6 +1414,7 @@ end
 # https://discourse.julialang.org/t/specialization-on-vararg-of-types/108251.
 function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
     test_hook(count_allocs, f, x...) do
+        @warn "using varargs method for `count_allocs` since there were $N arguments; this may lead to spurious allocations being reported if any arguments are `DataType`s"
         @static if VERSION >= v"1.12-"
             closure = () -> f(x...)
             closure()
