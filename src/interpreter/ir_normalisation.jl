@@ -6,10 +6,11 @@ unchanged, but makes AD more straightforward. In particular, replace
 1. `:foreigncall` `Expr`s with `:call`s to `Mooncake._foreigncall_`,
 2. `:new` `Expr`s with `:call`s to `Mooncake._new_`,
 3. `:splatnew` Expr`s with `:call`s to `Mooncake._splat_new_`,
-4. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
-5. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
-6. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
-7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
+4. resolve unbound GlobalRefs (Julia 1.12+ only) to their actual values,
+5. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
+6. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
+7. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
+8. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
 
 `spnames` are the names associated to the static parameters of `ir`. These are needed when
 handling `:foreigncall` expressions, in which it is not necessarily the case that all
@@ -235,6 +236,23 @@ expressions in the same way as a primitive `:call` expression, i.e. via an `rrul
 """
 splatnew_to_call(x) = Meta.isexpr(x, :splatnew) ? Expr(:call, _splat_new_, x.args...) : x
 
+"""
+    resolve_unbound_globalrefs(ir, ex)
+
+Resolve GlobalRefs that are considered unbound in the given world range but are actually
+defined. This is necessary in Julia 1.12+ due to partitioned bindings where a GlobalRef may
+appear unbound during type inference but is actually defined when the IR is executed.
+
+This function scans all GlobalRef arguments in an expression and resolves them to their
+actual values if they are defined, even if they appear unbound in the IR's valid_worlds
+range. This allows CC.verify_ir to pass.
+
+**Note**: This transformation is potentially unsound because it resolves bindings that were
+considered unbound during type inference. This is only applied on Julia 1.12+ and is the
+best workaround available for handling partitioned bindings.
+
+Only available on Julia 1.12+.
+"""
 # XXX: this is probably unsound, but the best workaround so far
 function resolve_unbound_globalrefs(ir, @nospecialize ex)
     isa(ex, Expr) || return ex
