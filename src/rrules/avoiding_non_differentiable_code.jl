@@ -169,16 +169,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiab
             (false, :none, nothing, Float64, π, RoundUp),
             (true, :none, nothing, Float32, π, RoundDown),
             (true, :none, nothing, Float32, π, RoundUp),
-            (true, :none, nothing, Float16, π, RoundDown),
-            (true, :none, nothing, Float16, π, RoundUp),
         else
             (false, :stability_and_allocs, nothing, Float64, π, RoundDown),
             (false, :stability_and_allocs, nothing, Float64, π, RoundUp),
             (true, :stability_and_allocs, nothing, Float32, π, RoundDown),
             (true, :stability_and_allocs, nothing, Float32, π, RoundUp),
-            (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
-            (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
         end
+        (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
+        (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
     )
     memory = Any[_x, _dx]
     return test_cases, memory
