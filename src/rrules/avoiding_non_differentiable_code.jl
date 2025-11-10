@@ -108,7 +108,7 @@ end
 )
 
 # Julia Base functions have type stability issues in version 1.12
-const PERF_FLAG = @static if VERSION >= v"1.12-" 
+const PERF_FLAG = @static if VERSION >= v"1.12-"
     :none
 else
     :stability_and_allocs
