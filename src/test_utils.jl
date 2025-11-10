@@ -841,7 +841,8 @@ function test_rrule_performance(
         @static if VERSION >= v"1.12"
             @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
         else
-            @test (@allocations __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)) == 0
+            @test (@allocations __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)) ==
+                0
         end
     end
 end
