@@ -79,6 +79,7 @@ AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 DiffTests = "de460e47-3fe3-5279-bb4a-814414816d5d"
+FiniteDifferences = "26cc04aa-876d-5657-8c51-4c34ba976000"
 DynamicExpressions = "a40a106e-89c9-4ca8-8020-a735e8728b6b"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
@@ -87,4 +88,15 @@ StableRNGs = "860ef19b-820b-49d6-a774-d7a799459cd3"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["AllocCheck", "Aqua", "BenchmarkTools", "DiffTests", "JET", "Logging", "Pkg", "StableRNGs", "Test"]
+test = [
+    "AllocCheck",
+    "Aqua",
+    "BenchmarkTools",
+    "DiffTests",
+    "FiniteDifferences",
+    "JET",
+    "Logging",
+    "Pkg",
+    "StableRNGs",
+    "Test",
+]
