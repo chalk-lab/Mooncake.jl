@@ -1421,6 +1421,16 @@ const __MAX_ARGS_ALLOCS = 10
                     return Base.gc_alloc_count(diff)
                 end
             end
+            # Needs a special case when `f` itself is a type constructor
+            function count_allocs(::Type{F}, $(sigs...)) where {F,$(types...)}
+                test_hook(count_allocs, F, $(args...)) do
+                    stats = Base.gc_num()
+                    @noinline clos = () -> F($(args...))
+                    clos()
+                    diff = Base.GC_Diff(Base.gc_num(), stats)
+                    return Base.gc_alloc_count(diff)
+                end
+            end
         end
         eval(fexpr)
     end
