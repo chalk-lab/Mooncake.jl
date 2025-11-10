@@ -162,12 +162,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiab
         # Rules to make Symbol-related functionality work properly.
         (false, :stability_and_allocs, nothing, Symbol, "hello"),
         (false, :stability_and_allocs, nothing, Symbol, UInt8[1, 2]),
-        (false, :stability_and_allocs, nothing, Float64, π, RoundDown),
-        (false, :stability_and_allocs, nothing, Float64, π, RoundUp),
-        (true, :stability_and_allocs, nothing, Float32, π, RoundDown),
-        (true, :stability_and_allocs, nothing, Float32, π, RoundUp),
-        (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
-        (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
+
+        # Julia Base functions have type stability issues in version 1.12
+        @static if VERSION >= v"1.12-"
+            (false, :none, nothing, Float64, π, RoundDown),
+            (false, :none, nothing, Float64, π, RoundUp),
+            (true, :none, nothing, Float32, π, RoundDown),
+            (true, :none, nothing, Float32, π, RoundUp),
+            (true, :none, nothing, Float16, π, RoundDown),
+            (true, :none, nothing, Float16, π, RoundUp),
+        else
+            (false, :stability_and_allocs, nothing, Float64, π, RoundDown),
+            (false, :stability_and_allocs, nothing, Float64, π, RoundUp),
+            (true, :stability_and_allocs, nothing, Float32, π, RoundDown),
+            (true, :stability_and_allocs, nothing, Float32, π, RoundUp),
+            (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
+            (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
+        end
     )
     memory = Any[_x, _dx]
     return test_cases, memory
