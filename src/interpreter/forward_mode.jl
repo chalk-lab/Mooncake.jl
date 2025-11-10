@@ -321,10 +321,8 @@ end
 
 @static if isdefined(Core, :EnterNode)
     function modify_fwd_ad_stmts!(
-        ::Core.EnterNode, dual_ir::IRCode, ssa::SSAValue, ::Vector{Any}, ::DualInfo
+        ::Core.EnterNode, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo
     )
-        # Drop typed exception-enter nodes from dual IR to avoid optimiser assertions
-        replace_call!(dual_ir, ssa, nothing)
         return nothing
     end
 end
@@ -405,12 +403,11 @@ function modify_fwd_ad_stmts!(
         new_undef_inst = new_inst(Expr(:throw_undef_if_not, stmt.args[1], ssa))
         CC.insert_node!(dual_ir, ssa, new_undef_inst, ATTACH_AFTER)
     elseif isexpr(stmt, :enter)
-        # Drop exception-handling scaffolding from the dual IR.
-        replace_call!(dual_ir, ssa, nothing)
+        # Leave this node alone
     elseif isexpr(stmt, :leave)
-        replace_call!(dual_ir, ssa, nothing)
+        # Leave this node alone
     elseif isexpr(stmt, :pop_exception)
-        replace_call!(dual_ir, ssa, nothing)
+        # Leave this node alone
     elseif isexpr(stmt, :the_exception)
         # Preserve the primal exception object but give it a zero tangent.
         inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
