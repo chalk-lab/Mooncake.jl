@@ -1387,40 +1387,41 @@ end
 # make it work is to generate the code `Base.allocations(() -> f(x1, x2))`, etc., for each
 # arity of `f` (up to a reasonable limit). It would be nicer to use a generated function for
 # this, but generated functions can't contain closures.
-function __allocs end
+function count_allocs end
 for nargs in 0:10
     args = [Symbol("x", i) for i in 1:nargs]
     types = [Symbol("X", i) for i in 1:nargs]
     sigs = [:($(args[i])::$(types[i])) for i in 1:nargs]
     fexpr = quote
-        function __allocs(f::F, $(sigs...)) where {F,$(types...)}
-            GC.gc()
-            @static if VERSION >= v"1.12-"
-                if any(x -> x <: DataType, ($(types...),))
-                    f($(args...))
-                    return Base.allocations(f, $(args...))
-                else
+        function count_allocs(f::F, $(sigs...)) where {F,$(types...)}
+            test_hook(count_allocs, f, $(args...)) do
+                @static if VERSION >= v"1.12-"
                     closure = () -> f($(args...))
                     closure()
                     return Base.allocations(closure)
+                else
+                    f($(args...))
+                    return @allocations f($(args...))
                 end
-            else
-                f($(args...))
-                return @allocations f($(args...))
             end
         end
     end
     eval(fexpr)
 end
-# Function barrier to ensure inference in value types.
+# Catch-all method for when there are more than 10 arguments. The risk of using Vararg here
+# is that it leads to incomplete specialisation when any of the arguments are DataTypes,
+# which can cause spurious allocations. See e.g.
+# https://discourse.julialang.org/t/specialization-on-vararg-of-types/108251.
 function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-    N > 10 && throw(
-        ArgumentError(
-            "count_allocs only supports up to 10 arguments; you can increase this in the implementation if needed.",
-        ),
-    )
     test_hook(count_allocs, f, x...) do
-        __allocs(f, x...)
+        @static if VERSION >= v"1.12-"
+            closure = () -> f(x...)
+            closure()
+            return Base.allocations(closure)
+        else
+            f(x...)
+            return @allocations f(x...)
+        end
     end
 end
 
