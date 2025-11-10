@@ -1396,9 +1396,14 @@ for nargs in 0:10
         function __allocs(f::F, $(sigs...)) where {F,$(types...)}
             GC.gc()
             @static if VERSION >= v"1.12-"
-                closure = () -> f($(args...))
-                closure()
-                return Base.allocations(closure)
+                if any(x -> x <: DataType, ($(types...),))
+                    f($(args...))
+                    return Base.allocations(f, $(args...))
+                else
+                    closure = () -> f($(args...))
+                    closure()
+                    return Base.allocations(closure)
+                end
             else
                 f($(args...))
                 return @allocations f($(args...))
