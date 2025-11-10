@@ -1387,41 +1387,65 @@ end
 # make it work is to generate the code `Base.allocations(() -> f(x1, x2))`, etc., for each
 # arity of `f` (up to a reasonable limit). It would be nicer to use a generated function for
 # this, but generated functions can't contain closures.
+function __allocs end
 function count_allocs end
-for nargs in 0:10
+const __MAX_ARGS_ALLOCS = 10
+for nargs in 0:__MAX_ARGS_ALLOCS
     args = [Symbol("x", i) for i in 1:nargs]
     types = [Symbol("X", i) for i in 1:nargs]
     sigs = [:($(args[i])::$(types[i])) for i in 1:nargs]
-    fexpr = quote
-        function count_allocs(f::F, $(sigs...)) where {F,$(types...)}
-            test_hook(count_allocs, f, $(args...)) do
-                @static if VERSION >= v"1.12-"
-                    closure = () -> f($(args...))
-                    closure()
-                    return Base.allocations(closure)
-                else
-                    f($(args...))
-                    return @allocations f($(args...))
+    fexpr = @static if VERSION >= v"1.12-"
+        quote
+            function __allocs(f::F, $(sigs...)) where {F,$(types...)}
+                closure = () -> f($(args...))
+                closure()
+                return Base.allocations(closure)
+            end
+            function count_allocs(f::F, $(sigs...)) where {F,$(types...)}
+                test_hook(count_allocs, f, $(args...)) do
+                    return __allocs(f, $(args...))
                 end
+            end
+        end
+    else
+        quote
+            function __allocs(f::F, $(sigs...)) where {F,$(types...)}
+                f($(args...))
+                return @allocations f($(args...))
             end
         end
     end
     eval(fexpr)
 end
-# Catch-all method for when there are more than 10 arguments. The risk of using Vararg here
-# is that it leads to incomplete specialisation when any of the arguments are DataTypes,
-# which can cause spurious allocations. See e.g.
-# https://discourse.julialang.org/t/specialization-on-vararg-of-types/108251.
-function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-    test_hook(count_allocs, f, x...) do
-        @warn "using varargs method for `count_allocs` since there were $N arguments; this may lead to spurious allocations being reported if any arguments are `DataType`s"
-        @static if VERSION >= v"1.12-"
-            closure = () -> f(x...)
-            closure()
-            return Base.allocations(closure)
-        else
-            f(x...)
-            return @allocations f(x...)
+@static if VERSION >= v"1.12-"
+    # Catch-all method for when there are more than 10 arguments. The risk of using Vararg here
+    # on Julia 1.12 is that it leads to incomplete specialisation when any of the arguments
+    # are DataTypes, which can cause spurious allocations. See e.g.
+    # https://discourse.julialang.org/t/specialization-on-vararg-of-types/108251.
+    function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
+        test_hook(count_allocs, f, x...) do
+            # This method is only hit if N > __MAX_ARGS_ALLOCS
+            @warn "using varargs method for `count_allocs` since there were $N arguments; this may lead to spurious allocations being reported if any arguments are `DataType`s"
+            @static if VERSION >= v"1.12-"
+                closure = () -> f(x...)
+                closure()
+                return Base.allocations(closure)
+            else
+                f(x...)
+                return @allocations f(x...)
+            end
+        end
+    end
+else
+    # Apparently, for Julia <= 1.11 the Vararg form works fine (and indeed is needed because
+    # directly calling `__allocs` will sometimes give spurious allocations!) BUT it only
+    # works correctly only if `__allocs` is defined without Varargs. Yeah, weird.
+    function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
+        # This method will always be hit, so we only want to warn if N > __MAX_ARGS_ALLOCS
+        N > __MAX_ARGS_ALLOCS &&
+            @warn "using varargs method for `count_allocs` since there were $N arguments; this may lead to spurious allocations being reported if any arguments are `DataType`s"
+        test_hook(count_allocs, f, x...) do
+            __allocs(f, x...)
         end
     end
 end
