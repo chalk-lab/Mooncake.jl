@@ -1,49 +1,29 @@
 using StableRNGs: StableRNG
 using Base: IEEEFloat
-using FiniteDifferences
-using Mooncake: ForwardMode, _typeof
+using Mooncake: ForwardMode, _typeof, _add_to_primal, _scale, _diff
 
-const HESSIAN_CASE_IDS = Set([3, 4, 13, 34])
-const HESSIAN_RTOL = 1e-6
-const HESSIAN_ATOL = 1e-8
-const HESSIAN_FDM = FiniteDifferences.central_fdm(5, 1)
+function finite_diff_jvp(func, x, dx, unsafe_perturb::Bool=false)
+    ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+
+    results = map(ε_list) do ε
+        x_plus = _add_to_primal(x, _scale(ε, dx), unsafe_perturb)
+        x_minus = _add_to_primal(x, _scale(-ε, dx), unsafe_perturb)
+        y_plus = func(x_plus...)
+        y_minus = func(x_minus...)
+        return _scale(1 / (2ε), _diff(y_plus, y_minus))
+    end
+
+    return results
+end
 
 function low_level_gradient(rule, f, args...)
     return Base.tail(Mooncake.value_and_gradient!!(rule, f, args...)[2])
 end
 
-function _scalar_output(f, args...)
-    copied = map(TestUtils._deepcopy, args)
-    return f(copied...) isa IEEEFloat
-end
-
-function _hessian_supported_arg(x)
-    x isa Number && return true
-    x isa AbstractArray && return eltype(typeof(x)) <: Number
-    x isa Tuple && return all(_hessian_supported_arg, x)
-    x isa NamedTuple && return all(_hessian_supported_arg, x)
-    return false
-end
-
-function _select_hessian_cases()
-    selected = Vector{Tuple{Int,Tuple}}()
-    for (n, case) in enumerate(TestResources.generate_test_functions())
-        n in HESSIAN_CASE_IDS || continue
-        interface_only, _, _, fx... = case
-        interface_only && continue
-        f = fx[1]
-        args = fx[2:end]
-        _scalar_output(f, args...) || continue
-        any(!_hessian_supported_arg(arg) for arg in args) && continue
-        push!(selected, (n, case))
-    end
-    return selected
-end
-
 _as_tuple(x::Tuple) = x
 _as_tuple(x) = (x,)
 
-function _isapprox_nested(a, b; atol, rtol)
+function _isapprox_nested(a, b; atol=1e-8, rtol=1e-6)
     if a isa Number && b isa Number
         return isapprox(a, b; atol, rtol)
     elseif a isa AbstractArray && b isa AbstractArray
@@ -57,14 +37,18 @@ function _isapprox_nested(a, b; atol, rtol)
 end
 
 @testset "forward-over-reverse Hessian AD" begin
-    cases = _select_hessian_cases()
-    @info "forward-over-reverse Hessian cases" total = length(cases)
-    @test !isempty(cases)
-    for (n, (interface_only, perf_flag, _, fx...)) in cases
+    @testset "$(_typeof((f, x...)))" for (n, (interface_only, perf_flag, bnds, f, x...)) in
+                                         collect(
+        enumerate(TestResources.generate_test_functions())
+    )
+        # Skip interface-only tests as they don't have implementations
+        interface_only && continue
+
+        @info "$n: $(_typeof((f, x...)))"
+
         interp = Mooncake.get_interpreter(ForwardMode)
-        f = fx[1]
-        args = map(TestUtils._deepcopy, fx[2:end])
-        rule = Mooncake.build_rrule(fx...)
+        args = map(TestUtils._deepcopy, x)
+        rule = Mooncake.build_rrule(f, x...)
         sig = Tuple{
             typeof(low_level_gradient),typeof(rule),_typeof(f),map(_typeof, args)...
         }
@@ -72,9 +56,7 @@ end
         rng = StableRNG(0xF0 + n)
         dirs = map(arg -> Mooncake.randn_tangent(rng, arg), args)
         if any(dir -> dir isa Mooncake.NoTangent, dirs)
-            @testset "$n - $(_typeof((fx)))" begin
-                @test_broken true
-            end
+            @test_broken true
             continue
         end
 
@@ -87,18 +69,29 @@ end
         dual_result = grad_rule(dual_inputs...)
         pushforward = _as_tuple(Mooncake.tangent(dual_result))
 
-        fd_ref = FiniteDifferences.jvp(
-            HESSIAN_FDM,
-            x -> _as_tuple(low_level_gradient(rule, f, x...)),
-            (Tuple(args), Tuple(dirs)),
-        )
-        reference = _as_tuple(fd_ref)
+        # Use our own finite difference JVP implementation
+        grad_func = x -> _as_tuple(low_level_gradient(rule, f, x...))
+        fd_results_all = finite_diff_jvp(grad_func, args, dirs)
 
-        @testset "$n - $(_typeof((fx)))" begin
-            @test length(pushforward) == length(reference)
-            for (pf, fd) in zip(pushforward, reference)
-                @test _isapprox_nested(pf, fd; atol=HESSIAN_ATOL, rtol=HESSIAN_RTOL)
+        # Check if any epsilon value gives a close match (following test_utils.jl pattern)
+        # Convert each result to tuple form for comparison
+        fd_results_tuples = map(res -> _as_tuple(res), fd_results_all)
+
+        # Check which epsilon values give close results
+        isapprox_results = map(fd_results_tuples) do fd_ref
+            return all(_isapprox_nested(pf, fd)  # uses default atol=1e-8, rtol=1e-6
+                for (pf, fd) in zip(pushforward, fd_ref))
+        end
+
+        @test length(pushforward) == length(first(fd_results_tuples))
+        # At least one epsilon value should give a close result
+        if !any(isapprox_results)
+            # If none match, display values for debugging (like test_utils.jl does)
+            println("No epsilon gave close result. AD vs FD for each epsilon:")
+            for (i, fd_ref) in enumerate(fd_results_tuples)
+                println("  ε[$(i)]: AD=$pushforward, FD=$fd_ref")
             end
         end
+        @test any(isapprox_results)
     end
 end
