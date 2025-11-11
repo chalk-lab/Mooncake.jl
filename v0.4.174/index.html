@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Mooncake.jl · Mooncake.jl</title><meta name="title" content="Mooncake.jl · Mooncake.jl"/><meta property="og:title" content="Mooncake.jl · Mooncake.jl"/><meta property="twitter:title" content="Mooncake.jl · Mooncake.jl"/><meta name="description" content="Documentation for Mooncake.jl."/><meta property="og:description" content="Documentation for Mooncake.jl."/><meta property="twitter:description" content="Documentation for Mooncake.jl."/><script data-outdated-warner src="assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="assets/documenter.js"></script><script src="search_index.js"></script><script src="siteinfo.js"></script><script src="../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="assets/themeswap.js"></script></head><body>
+<!-- NAVBAR START -->
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro&display=swap');
+
+    /* Documenter.jl CSS Overrides */
+    html {
+        scroll-padding-top: calc(var(--navbar-height) + 1rem);
+    }
+    .docs-sidebar, #documenter {
+        margin-top: var(--navbar-height);
+    }
+    .docs-version-selector {
+        margin-bottom: 60px !important;
+    }
+    @media screen and (max-width: 1056px) {
+        .docs-version-selector {
+            margin-bottom: 60px !important;
+        }
+        .docs-sidebar {
+            margin-top: 0 !important;
+        }
+    }
+    /* End of Documenter.jl Tweaks */
+
+    /* Color and Font Variables */
+    :root {
+        --heading-color: #6c757d;
+        --item-color: rgb(165, 165, 165);
+        --primary-bg: white;
+        --hover-color: #8faad2;
+        --deprecated-bg: #ff4d4d;
+        --deprecated-text: white;
+        --icon-color: #6c757d;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e9ecef;
+        
+        /* Typography */
+        --font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        --nav-link-font-size: 1.0625rem;
+        --turing-title-font-size: 21.25px;
+        --icon-font-size: 1.25rem;
+        --dropdown-arrow-font-size: 0.6875rem;
+        --badge-font-size: 0.75rem;
+
+        /* Sizing and Spacing */
+        --navbar-height: 3.75rem;
+        --logo-height: 31.18px;
+        --logo-width: 52.47px;
+        --logo-padding-top: 7px;
+        --logo-margin-left: 0.3rem;
+        --title-margin-left: 0.4px;
+        --title-nav-spacing: 1.7rem;
+        --nav-item-margin-left: 1.3rem;
+        --icon-margin-left: 1rem;
+        --dropdown-padding: 1.875rem;
+        --dropdown-item-width: 12.5rem;
+        --dropdown-subitem-width: 15.625rem;
+        --dropdown-subitem-padding: 0.125rem 0.625rem;
+    }
+
+    /* Dark Theme Variable Overrides */
+    html.theme--documenter-dark {
+        --heading-color: #e0e0e0;
+        --item-color: #bdbdbd;
+        --primary-bg: #1f2424;
+        --hover-color: #ffffff;
+        --icon-color: #e0e0e0;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #424242;
+    }
+
+    /* Catppuccin Theme Overrides */
+    html.theme--catppuccin-latte {
+        --heading-color: #4c4f69;
+        --primary-bg: #eff1f5;
+        --icon-color: #4c4f69;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e6e9ef;
+    }
+    html.theme--catppuccin-frappe {
+        --heading-color: #c6d0f5;
+        --primary-bg: #303446;
+        --icon-color: #c6d0f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #51576d;
+    }
+    html.theme--catppuccin-macchiato {
+        --heading-color: #cad3f5;
+        --primary-bg: #24273a;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #494d64;
+    }
+    html.theme--catppuccin-mocha {
+        --heading-color: #cad3f5;
+        --primary-bg: #1e1e2e;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #45475a;
+    }
+
+
+    /* Main Navigation Bar */
+    .ext-navigation {
+        font-family: var(--font-family);
+        position: fixed;
+        height: var(--navbar-height);
+        top: 0;
+        width: 100%;
+        background-color: var(--primary-bg);
+        z-index: 1000;
+        box-shadow: 0 2px 4px var(--shadow-color);
+        display: flex;
+        align-items: center;
+        padding: 0 1.0625rem;
+        transition: transform 0.3s, background-color 0.3s;
+    }
+
+    nav.ext-navigation .ext-navbar-logo {
+        margin-left: var(--logo-margin-left);
+        height: var(--logo-height);
+        width: var(--logo-width);
+        padding-top: var(--logo-padding-top);
+    }
+    
+    .ext-navbar-title {
+        color: var(--heading-color) !important;
+        font-size: var(--turing-title-font-size) !important;
+        margin-left: var(--title-margin-left);
+        text-decoration: none;
+        transition: color 0.2s ease;
+    }
+    
+    .ext-navbar-title:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-nav-links {
+        display: flex;
+        align-items: center;
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+        flex-grow: 1;
+        margin-left: var(--title-nav-spacing);
+    }
+
+    .ext-nav-links li:first-child {
+        margin-left: 0 !important;
+    }
+
+    .ext-nav-links li {
+        margin-left: var(--nav-item-margin-left) !important;
+    }
+
+    .ext-nav-link {
+        color: var(--heading-color) !important;
+        text-decoration: none;
+        font-size: var(--nav-link-font-size) !important;
+        transition: color 0.2s ease;
+        cursor: pointer;
+    }
+
+    .ext-nav-link:hover,
+    .ext-navbar-item-single a:hover,
+    .ext-navbar-icons a:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-navbar-item-single a {
+        color: var(--heading-color) !important;
+    }
+    
+    .ext-navbar-icons {
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-navbar-icons a {
+        color: var(--icon-color) !important;
+        font-size: var(--icon-font-size) !important;
+        transition: color 0.2s ease;
+        margin-left: var(--icon-margin-left);
+    }
+
+    .ext-menu-toggle {
+        display: none;
+        font-size: 1.5rem;
+        color: var(--heading-color);
+        cursor: pointer;
+    }
+
+    .ext-dropdown {
+        display: none;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        padding: var(--dropdown-padding);
+        position: absolute;
+        top: var(--navbar-height);
+        width: 100%;
+        left: 0;
+        background-color: var(--primary-bg);
+        line-height: 1.875rem;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out, background-color 0.3s;
+        transform: translateY(-0.625rem);
+        box-shadow: 0 4px 6px var(--shadow-color);
+    }
+
+    #library-handler::after {
+        content: "▼";
+        font-size: var(--dropdown-arrow-font-size);
+        margin-left: 0.3125rem;
+        transition: transform 0.3s ease-in-out;
+    }
+
+    #library-handler.open::after {
+        content: "▲";
+    }
+
+    .ext-dropdown.show {
+        display: grid;
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .ext-dropdown ul {
+        width: var(--dropdown-item-width);
+        margin-bottom: 1.25rem;
+    }
+
+    .ext-dropdown ul li {
+        text-align: left;
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-dropdown ul a li {
+        color: var(--item-color);
+        width: var(--dropdown-subitem-width);
+        border-radius: 3px;
+        padding: var(--dropdown-subitem-padding);
+        transition: background-color 0.2s ease;
+    }
+
+    .ext-dropdown ul a li:hover {
+        background-color: var(--dropdown-hover-bg);
+    }
+
+    .ext-dropdown-item-heading {
+        color: var(--heading-color);
+        text-align: center;
+    }
+
+    .deprecated-badge {
+        background-color: var(--deprecated-bg);
+        color: var(--deprecated-text);
+        font-size: var(--badge-font-size);
+        padding: .1rem;
+        border-radius: 3px;
+        margin-left: 0.5rem;
+        line-height: 1;
+    }
+
+    @media (max-width: 966px) {
+        .ext-dropdown {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .ext-nav-links {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            background-color: var(--primary-bg);
+            position: absolute;
+            top: var(--navbar-height);
+            left: 0;
+            padding: 0.625rem 0;
+            height: auto;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px var(--shadow-color);
+            margin-left: 0;
+        }
+
+        .ext-nav-links.show {
+            display: flex;
+        }
+
+        .ext-nav-links li {
+            margin: 0.625rem 0 !important;
+            text-align: center;
+        }
+        
+        .ext-menu-toggle {
+            display: block;
+            margin-left: auto;
+        }
+
+        .ext-navigation.hide {
+            transform: translateY(calc(-1 * var(--navbar-height)));
+        }
+
+        .ext-dropdown {
+            position: static;
+            display: block;
+            opacity: 1;
+            transform: none;
+            box-shadow: none;
+            grid-template-columns: 1fr;
+            padding: 0.625rem;
+            text-align: center;
+        }
+
+        .ext-dropdown ul {
+            width: auto;
+            display: inline-block;
+            margin: 0 auto 0.3125rem;
+            text-align: left;
+        }
+    }
+</style>
+<nav class="ext-navigation">
+    <a href="https://turinglang.org/">
+        <img src="https://turinglang.org/assets/images/turing-logo.svg" alt="Turing Logo" class="ext-navbar-logo">
+    </a>
+    <a class="ext-navbar-title" href="https://turinglang.org/">Turing.jl</a>
+    
+    <ul class="ext-nav-links">
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/getting-started/">Get Started</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/tutorials/">Tutorials</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/faq/">FAQ</a></li>
+        <li>
+            <p class="ext-nav-link" id="library-handler">Libraries</p>
+            <div class="ext-dropdown" id="ext-dropdown-items">
+                <ul>
+                    <li class="ext-dropdown-item-heading">Modelling Languages</li>
+                    <a href="https://turinglang.org/DynamicPPL.jl/"><li>DynamicPPL</li></a>
+                    <a href="https://turinglang.org/JuliaBUGS.jl/"><li>JuliaBUGS</li></a>
+                    <a href="https://turinglang.org/TuringGLM.jl/"><li>TuringGLM</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">MCMC</li>
+                    <a href="https://turinglang.org/AdvancedHMC.jl/"><li>AdvancedHMC</li></a>
+                    <a href="https://turinglang.org/AbstractMCMC.jl/"><li>AbstractMCMC</li></a>
+                    <a href="https://github.com/theogf/ThermodynamicIntegration.jl"><li>ThermodynamicIntegration</li></a>
+                    <a href="https://turinglang.org/AdvancedPS.jl/"><li>AdvancedPS</li></a>
+                    <a href="https://turinglang.org/SliceSampling.jl/"><li>SliceSampling</li></a>
+                    <a href="https://turinglang.org/EllipticalSliceSampling.jl/"><li>EllipticalSliceSampling</li></a>
+                    <a href="https://turinglang.org/NestedSamplers.jl/"><li>NestedSamplers</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Diagnostics</li>
+                    <a href="https://turinglang.org/MCMCChains.jl/"><li>MCMCChains</li></a>
+                    <a href="https://turinglang.org/MCMCDiagnosticTools.jl/"><li>MCMCDiagnosticTools</li></a>
+                    <a href="https://turinglang.org/ParetoSmooth.jl/"><li>ParetoSmooth</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Gaussian Processes</li>
+                    <a href="https://juliagaussianprocesses.github.io/AbstractGPs.jl/"><li>AbstractGPs</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/KernelFunctions.jl/"><li>KernelFunctions</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/ApproximateGPs.jl/"><li>ApproximateGPs</li></a>
+                </ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Bijectors.jl/">Bijectors</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/TuringCallbacks.jl/">TuringCallbacks</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Deprecated/TuringBenchmarking/">TuringBenchmarking</a><span class="deprecated-badge">Deprecated</span></li></ul>
+            </div>
+        </li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/news/">News</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/team/">Team</a></li>
+    </ul>
+
+    <div class="ext-navbar-icons">
+        <a href="https://x.com/TuringLang" aria-label="Turing on X"><i class="fa-brands fa-x-twitter"></i></a>
+        <a href="https://discourse.julialang.org/c/domain/probprog/48" aria-label="Turing on Discourse"><i class="fa-brands fa-discourse"></i></a>
+        <a href="https://julialang.slack.com/archives/CCYDC34A0" aria-label="Turing on Slack"><i class="fa-brands fa-slack"></i></a>
+        <a href="https://github.com/TuringLang/" aria-label="Turing.jl on GitHub"><i class="fa-brands fa-github"></i></a>
+    </div>
+
+    <span class="ext-menu-toggle"><i class="fa-solid fa-bars"></i></span>
+</nav>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const menuToggle = document.querySelector(".ext-menu-toggle");
+        const navLinks = document.querySelector(".ext-nav-links");
+        const nav = document.querySelector(".ext-navigation");
+        const libraryHandler = document.getElementById("library-handler");
+        const dropdownContainer = document.getElementById("ext-dropdown-items");
+        let lastScrollY = window.scrollY;
+
+        function closeDropdown() {
+            if (dropdownContainer.classList.contains("show")) {
+                libraryHandler.classList.remove("open");
+                dropdownContainer.classList.remove("show");
+                setTimeout(() => {
+                    if (!dropdownContainer.classList.contains("show")) {
+                        dropdownContainer.style.display = "none";
+                    }
+                }, 300);
+            }
+        }
+
+        function openDropdown() {
+            dropdownContainer.style.display = "grid";
+            libraryHandler.classList.add("open");
+            setTimeout(() => {
+                dropdownContainer.classList.add("show");
+            }, 10);
+        }
+
+        function setAppropriateHeight() {
+            if (window.innerWidth <= 768) {
+                const viewportHeight = window.innerHeight;
+                const navHeight = nav.offsetHeight;
+                navLinks.style.maxHeight = `${viewportHeight - navHeight}px`;
+                navLinks.style.overflowY = "auto";
+            } else {
+                navLinks.style.maxHeight = "";
+                navLinks.style.overflowY = "";
+            }
+        }
+
+        menuToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            navLinks.classList.toggle("show");
+            if (navLinks.classList.contains("show")) {
+                setAppropriateHeight();
+                closeDropdown();
+                dropdownContainer.style.display = "none";
+            }
+        });
+
+        libraryHandler.addEventListener("click", (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            if (dropdownContainer.classList.contains("show")) {
+                closeDropdown();
+            } else {
+                openDropdown();
+            }
+            setAppropriateHeight();
+        });
+
+        // Close all menus if a click is registered outside the navigation bar.
+        document.addEventListener("click", (event) => {
+            if (!nav.contains(event.target)) {
+                navLinks.classList.remove("show");
+                closeDropdown();
+            }
+        });
+
+        // Hide navigation bar on scroll down in mobile view.
+        window.addEventListener("scroll", () => {
+            if (window.innerWidth <= 768) {
+                if (window.scrollY > lastScrollY && window.scrollY > nav.offsetHeight){
+                    nav.classList.add("hide");
+                } else {
+                    nav.classList.remove("hide");
+                }
+                lastScrollY = window.scrollY;
+            }
+        });
+
+        window.addEventListener("resize", setAppropriateHeight);
+    });
+</script>
+<!-- NAVBAR END -->
+
+<div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href><img src="assets/logo.svg" alt="Mooncake.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href>Mooncake.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li class="is-active"><a class="tocitem" href>Mooncake.jl</a><ul class="internal"><li><a class="tocitem" href="#Getting-Started"><span>Getting Started</span></a></li><li><a class="tocitem" href="#Project-Goals"><span>Project Goals</span></a></li><li><a class="tocitem" href="#Project-Name"><span>Project Name</span></a></li><li><a class="tocitem" href="#Project-Status"><span>Project Status</span></a></li></ul></li><li><a class="tocitem" href="tutorial/">Tutorial</a></li><li><a class="tocitem" href="interface/">Interface</a></li><li><span class="tocitem">Understanding Mooncake.jl</span><ul><li><a class="tocitem" href="understanding_mooncake/introduction/">Introduction</a></li><li><a class="tocitem" href="understanding_mooncake/algorithmic_differentiation/">Algorithmic Differentiation</a></li><li><a class="tocitem" href="understanding_mooncake/rule_system/">Mooncake.jl&#39;s Rule System</a></li></ul></li><li><span class="tocitem">Utilities</span><ul><li><a class="tocitem" href="utilities/defining_rules/">Defining Rules</a></li><li><a class="tocitem" href="utilities/debug_mode/">Debug Mode</a></li><li><a class="tocitem" href="utilities/debugging_and_mwes/">Debugging and MWEs</a></li></ul></li><li><span class="tocitem">Developer Documentation</span><ul><li><a class="tocitem" href="developer_documentation/running_tests_locally/">Running Tests Locally</a></li><li><a class="tocitem" href="developer_documentation/developer_tools/">Developer Tools</a></li><li><a class="tocitem" href="developer_documentation/tangents/">Tangents</a></li><li><a class="tocitem" href="developer_documentation/custom_tangent_type/">Writing Custom Tangent Types</a></li><li><a class="tocitem" href="developer_documentation/ir_representation/">IR Representations and Code Transformations</a></li><li><a class="tocitem" href="developer_documentation/forwards_mode_design/">Forwards-Mode Design</a></li><li><a class="tocitem" href="developer_documentation/reverse_mode_design/">Reverse-Mode Design</a></li><li><a class="tocitem" href="developer_documentation/misc_internals_notes/">Misc. Internals Notes</a></li><li><a class="tocitem" href="developer_documentation/internal_docstrings/">Internal Docstrings</a></li></ul></li><li><a class="tocitem" href="known_limitations/">Known Limitations</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Mooncake.jl</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Mooncake.jl</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl/blob/main/docs/src/index.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Mooncake.jl"><a class="docs-heading-anchor" href="#Mooncake.jl">Mooncake.jl</a><a id="Mooncake.jl-1"></a><a class="docs-heading-anchor-permalink" href="#Mooncake.jl" title="Permalink"></a></h1><p>Documentation for Mooncake.jl is on its way!</p><details class="admonition is-details" id="Documentation-Updates-78bd95bff67452a1"><summary class="admonition-header">Documentation Updates<a class="admonition-anchor" href="#Documentation-Updates-78bd95bff67452a1" title="Permalink"></a></summary><div class="admonition-body"><p>Note (03/10/2024): Various bits of utility functionality are now carefully documented. This includes how to change the code which Mooncake sees, declare that the derivative of a function is zero, make use of existing <code>ChainRules.rrule</code>s to quickly create new rules in Mooncake, and more.</p><p>Note (02/07/2024): The first round of documentation has arrived. This is largely targeted at those who are interested in contributing to Mooncake.jl – you can find this work in the &quot;Understanding Mooncake.jl&quot; section of the docs. There is more to do, but it should be sufficient to understand how AD works in principle, and the core abstractions underlying Mooncake.jl.</p><p>Note (29/05/2024): I (Will) am currently actively working on the documentation. It will be merged in chunks over the next month or so as good first drafts of sections are completed. Please don&#39;t be alarmed that not all of it is here!</p></div></details><h2 id="Getting-Started"><a class="docs-heading-anchor" href="#Getting-Started">Getting Started</a><a id="Getting-Started-1"></a><a class="docs-heading-anchor-permalink" href="#Getting-Started" title="Permalink"></a></h2><p>Check that you&#39;re running a version of Julia that Mooncake.jl supports. See the <a href="https://github.com/chalk-lab/Mooncake.jl/blob/main/SUPPORT_POLICY.md"><code>SUPPORT_POLICY.md</code></a> for more info.</p><p>There are several ways to interact with <code>Mooncake.jl</code>. The way that we recommend people to interact with <code>Mooncake.jl</code> is via  <a href="https://github.com/gdalle/DifferentiationInterface.jl/"><code>DifferentiationInterface.jl</code></a>. For example, use it as follows to compute the gradient of a function mapping a <code>Vector{Float64}</code> to <code>Float64</code>.</p><pre><code class="language-julia hljs">using DifferentiationInterface
+import Mooncake
+
+f(x) = sum(cos, x)
+backend = AutoMooncake(; config=nothing)
+x = ones(1_000)
+prep = prepare_gradient(f, backend, x)
+gradient(f, prep, backend, x)</code></pre><p>You should expect that <code>prepare_gradient</code> takes a little bit of time to run, but that <code>gradient</code> is fast.</p><p>We are committed to ensuring support for DifferentiationInterface, which is why we recommend using that. If you are interested in interacting in a more direct fashion with <code>Mooncake.jl</code>, you should consider <code>Mooncake.value_and_gradient!!</code>. See its docstring for more info.</p><h2 id="Project-Goals"><a class="docs-heading-anchor" href="#Project-Goals">Project Goals</a><a id="Project-Goals-1"></a><a class="docs-heading-anchor-permalink" href="#Project-Goals" title="Permalink"></a></h2><p>Below the four central objectives of this project are outlined, and the approaches that we take to achieve them.</p><h3 id="Coverage-of-more-of-the-Language"><a class="docs-heading-anchor" href="#Coverage-of-more-of-the-Language">Coverage of more of the Language</a><a id="Coverage-of-more-of-the-Language-1"></a><a class="docs-heading-anchor-permalink" href="#Coverage-of-more-of-the-Language" title="Permalink"></a></h3><p>The need for first-class support for mutation has been well understood in the Julia AD community for a number of years now. Its primary benefit is the ability to differentiate through the truly vast quantity of mutating code on which users depend in <code>Base</code> / <code>Core</code>, the standard libraries, and packages in the general registry – empowering users to AD through code which <em>they</em> write in a mutating way is often of secondary importance. Thus you should equate <code>rrule!!</code>&#39;s support for mutation with good support for existing code. Conversely, you should equate <code>Zygote.jl</code>&#39;s / <code>ReverseDiff.jl</code>&#39;s patchy support for mutation with patchy support for existing code.</p><p><code>rrule!!</code>s impose no constraints on the types which can be operated on, as with <code>ChainRules</code>&#39;s <code>rrule</code> and <code>Zygote</code>&#39;s <code>_pullback</code>. Consequently, there is in principle nothing to prevent <code>Mooncake.jl</code> from operating on any type, for example, structured arrays, GPU arrays, and complicated <code>struct</code>s / <code>mutable struct</code>s.</p><h3 id="Correctness-and-Testing"><a class="docs-heading-anchor" href="#Correctness-and-Testing">Correctness and Testing</a><a id="Correctness-and-Testing-1"></a><a class="docs-heading-anchor-permalink" href="#Correctness-and-Testing" title="Permalink"></a></h3><p>Mutation support enables writing <code>rrule!!</code>s at a low-level (<code>Core.InstrincFunction</code>s, <code>built-in function</code>s, <code>ccall</code>s to e.g. <code>BLAS</code> and <code>LAPACK</code> and the bits of Base Julia which are implemented in C). The simplicity of this low-level functionality makes implementing correct <code>rrule!!</code>s for it a simple task. In conjunction with being strict about the types used internally to represent (co)tangents, we have found this leads to <code>rrule!!</code>s composing very well, and AD being correct in practice as a consequence.</p><p>Furthermore, the interfaces for <code>rrule!!</code> and the (co)tangent type system have been designed to make a reliable <code>test_rule</code> function possible to create. All of our testing is implemented via this (or via another function which calls this) which makes adding test-cases trivial, and has meant that we have produced a lot of test cases.</p><p>This contrasts with <code>Zygote.jl</code> / <code>ChainRules.jl</code>, where the permissive (co)tangent type system complicates both composition of <code>rrule</code>s and testing.</p><p>Additionally, our approach to AD naturally handles control flow which differs between multiple calls to the same function. This contrasts with e.g. <code>ReverseDiff.jl</code>&#39;s compiled tape, which can give silent numerical errors if control flow ought to differ between gradient evaluations at different arguments.</p><h3 id="Performance"><a class="docs-heading-anchor" href="#Performance">Performance</a><a id="Performance-1"></a><a class="docs-heading-anchor-permalink" href="#Performance" title="Permalink"></a></h3><p>Hand-written <code>rrule!!</code>s have excellent performance, provided that they have been written well (most of the hand-written rules in <code>Mooncake.jl</code> have excellent performance, but some require optimisation. Doing this just requires investing some time). Consequently, whether or not the overall AD system has good performance is largely a question of how much overhead is associated to the mechanism by which hand-written <code>rrules!!</code>s are algorithmically composed.</p><p>At present (03/2024), we do this in a <em>reasonably</em> performant way (but better than the previous way!) See <a href="#Project-Status">Project Status</a> below for more info.</p><p>Additionally, the strategy of immediately incrementing (co)tangents resolves long-standing performance issues associated with indexing arrays.</p><h3 id="Written-entirely-in-Julia"><a class="docs-heading-anchor" href="#Written-entirely-in-Julia">Written entirely in Julia</a><a id="Written-entirely-in-Julia-1"></a><a class="docs-heading-anchor-permalink" href="#Written-entirely-in-Julia" title="Permalink"></a></h3><p><code>Mooncake.jl</code> is written entirely in Julia. This sits in contrast to <code>Enzyme.jl</code>, which targets LLVM and is primarily written in C++. These two approaches entail different tradeoffs.</p><h2 id="Project-Name"><a class="docs-heading-anchor" href="#Project-Name">Project Name</a><a id="Project-Name-1"></a><a class="docs-heading-anchor-permalink" href="#Project-Name" title="Permalink"></a></h2><p>Before an initial release, this package was called <code>Taped.jl</code>, but that name ceased to be helpful when we stopped using a classic &quot;Wengert list&quot;-style type to implement AD. For about 48 hours is was called <code>Phi.jl</code>, but the community guidelines state that the name of packages in the general registry should generally be at least 5 characters in length.</p><p>We then chose <code>Tapir.jl</code>, and didn&#39;t initially feel that other work <a href="https://github.com/wsmoses/Tapir-LLVM">of the same name</a> presented a serious name clash, as it isn&#39;t AD-specific or a Julia project. As it turns out, there has been significant work attempting to integrate the ideas from this work into the <a href="https://github.com/JuliaLang/julia/pull/39773">Julia compiler</a>, so the clash is something of a problem.</p><p>On 18/09/2024 this package was renamed from <code>Tapir.jl</code> to <code>Mooncake.jl</code>. The last version while the package was called <code>Tapir.jl</code> was 0.2.51. Upon renaming, the version was bumped to 0.3.0. We finally settled on <code>Mooncake.jl</code>. Hopefully this name will stick.</p><h2 id="Project-Status"><a class="docs-heading-anchor" href="#Project-Status">Project Status</a><a id="Project-Status-1"></a><a class="docs-heading-anchor-permalink" href="#Project-Status" title="Permalink"></a></h2><p>The plan is to proceed in three phases:</p><ol><li>design, correctness and testing</li><li>performance optimisation</li><li>maintenance</li></ol><p>You should take this with a pinch of salt, as it seems highly likely that we will have to revisit some design choices when optimising performance – we do not, however, anticipate requiring major re-writes to the design as part of performance optimisation. We aim to reach the maintenance phase of the project before 01/06/2024.</p><details class="admonition is-details" id="Updates-4c3dd6527092cee3"><summary class="admonition-header">Updates<a class="admonition-anchor" href="#Updates-4c3dd6527092cee3" title="Permalink"></a></summary><div class="admonition-body"><p><em>Update: (07/02/2025)</em> We&#39;re largely in phase 3 now. We&#39;re largely working on documentation, and resolving existing issues. There are several ways that we <em>could</em> improve the performance of Mooncake.jl on e.g. low-level loops, but our feeling is that the performance is generally good <em>enough</em> to mean that it&#39;s more important to ensure that Mooncake is very stable.</p><p><em>Update: (30/04/2024)</em> Phase 2 continues! We are now finding that <code>Mooncake.jl</code> comfortably outperforms compiled <code>ReverseDiff.jl</code> on type-stable code in all of the situations we have tested. Optimising to get similar performance to <code>Enzyme.jl</code> is an on-going process.</p><p><em>Update: (22/03/2024)</em> Phase 2 is now further along. <code>Mooncake.jl</code> now uses something which could reasonably be described as a source-to-source system to perform AD. At present the performance of this system is not as good as that of Enzyme, but often beats compiled ReverseDiff, and comfortably beats Zygote in any situations involving dynamic control flow. The present focus is on dealing with some remaining performance limitations that should make <code>Mooncake.jl</code>&#39;s performance much closer to that of Enzyme, and consistently beat ReverseDiff on a range of benchmarks. Fortunately, dealing with these performance limitations necessitates simplifying the internals substantially.</p><p><em>Update: (16/01/2024)</em> Phase 2 is now well underway. We now make use of a much faster approach to interpreting / executing Julia code, which yields performance that is comparable with ReverseDiff (when things go well). The current focus is on ironing out performance issues, and simplifying the implementation.</p><p><em>Update: (06/11/2023)</em> We are mostly through the first phase. Correctness testing is proceeding well, and we are ironing out known issues. Notably, our broad experience at present is that as we continue to increase the amount of Julia code on which the package is tested, things fail for known, predictable, straightforwardly-fixable reasons (largely missing rrules for <code>ccall</code>s), rather than unanticipated problems. Please note that, since we have yet to enter phase 2 of the project, we have spent <em>no</em> time whatsoever optimising for performance. We strongly believe that there is nothing in principle preventing us from achieving excellent performance. However, currently, you should expect to experience <em>amazingly</em> poor performance.</p></div></details><h3 id="What-things-should-work-well"><a class="docs-heading-anchor" href="#What-things-should-work-well">What things should work well</a><a id="What-things-should-work-well-1"></a><a class="docs-heading-anchor-permalink" href="#What-things-should-work-well" title="Permalink"></a></h3><p>Noteworthy things which should work and be performant include:</p><ol><li>code containing control flow</li><li>value-dependent control flow</li><li>mutation of arrays and mutable structs</li></ol><p>These are noteworthy in the sense that they are different from ReverseDiff / Zygote. Enzyme is also able to do these things.</p><p>Please be aware that by &quot;performant&quot; we mean similar or better performance than ReverseDiff with a compiled tape, but not as good performance as Enzyme.</p><h3 id="What-won&#39;t-work"><a class="docs-heading-anchor" href="#What-won&#39;t-work">What won&#39;t work</a><a id="What-won&#39;t-work-1"></a><a class="docs-heading-anchor-permalink" href="#What-won&#39;t-work" title="Permalink"></a></h3><p>See <a href="known_limitations/">known limitations</a>. </p></article><nav class="docs-footer"><a class="docs-footer-nextpage" href="tutorial/">Tutorial »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.15.0 on <span class="colophon-date" title="Tuesday 11 November 2025 17:26">Tuesday 11 November 2025</span>. Using Julia version 1.11.7.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
