@@ -43,13 +43,9 @@ Mooncake.@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Comple
     tangent_type(P),N,M
 }
 
-Mooncake.@foldable fdata_type(::Type{<:CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = CuArray{
-    fdata_type(P),N,M
-}
+Mooncake.@foldable fdata_type(::Type{CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = CuArray{P,N,M}
 
-Mooncake.@foldable rdata_type(::Type{<:CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = CuArray{
-    rdata_type(P),N,M
-}
+Mooncake.@foldable rdata_type(::Type{<:CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = Mooncake.NoRData
 
 
 
