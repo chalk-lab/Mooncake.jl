@@ -3,7 +3,7 @@ module MooncakeCUDAExt
 using LinearAlgebra, Random, Mooncake
 
 using Base: IEEEFloat
-using CUDA: CuArray, cu, CuDeviceArray, @cuda, threadIdx, blockIdx, blockDim, i32
+using CUDA: CuArray
 
 import Mooncake:
     MinimalCtx,
@@ -43,9 +43,6 @@ Mooncake.@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Comple
     tangent_type(P),N,M
 }
 
-Mooncake.@foldable fdata_type(::Type{CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Complex{T},N,M} = CuArray{
-    fdata_type(P),N,M
-}
 Mooncake.@foldable fdata_type(::Type{CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = CuArray{
     P,N,M
 }
@@ -128,20 +125,20 @@ function set_to_zero_internal!!(
 end
 
 function _add_to_primal_internal(
-    c::MaybeCache, x::P, y::TP, unsafe::Bool
-) where {P<:CuComplexArray,TP}
-    key = (x, y, unsafe)
-    haskey(c, key) && return c[key]::P
-    x′ = x + reinterpret(eltype(x), y)
-    c[(x, y, unsafe)] = x′
-    return x′
-end
-function _add_to_primal_internal(
     c::MaybeCache, x::P, y::P, unsafe::Bool
 ) where {P<:CuFloatArray}
     key = (x, y, unsafe)
     haskey(c, key) && return c[key]::P
     x′ = x + y
+    c[(x, y, unsafe)] = x′
+    return x′
+end
+function _add_to_primal_internal(
+    c::MaybeCache, x::P, y::TP, unsafe::Bool
+) where {P<:CuComplexArray,TP}
+    key = (x, y, unsafe)
+    haskey(c, key) && return c[key]::P
+    x′ = x + reinterpret(eltype(x), y)
     c[(x, y, unsafe)] = x′
     return x′
 end
@@ -214,7 +211,6 @@ function tangent(
 ) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
     p
 end
-tangent(p::CuArray{P,N,M}, ::NoRData) where {T<:IEEEFloat,P<:Complex{T},N,M} = tangent.(p)
 
 to_cr_tangent(x::CuFloatArray) = x
 function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuFloatArray}
@@ -235,8 +231,8 @@ function rrule!!(
     p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
 ) where {P<:CuComplexArray}
     _dims = map(primal, dims)
-    return CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)),
-    NoPullback(p, init, dims...)
+    return (CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)),
+            NoPullback(p, init, dims...))
 end
 
 end
