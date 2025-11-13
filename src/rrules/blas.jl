@@ -776,6 +776,94 @@ function inc_tri!(A, x, y, uplo, diag)
     end
 end
 
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.trsv!),Char,Char,Char,AbstractMatrix{T},AbstractVector{T}
+    } where {T<:BlasFloat},
+)
+function frule!!(
+    ::Dual{typeof(BLAS.trsv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::Dual{<:AbstractMatrix{T}},
+    x_dx::Dual{<:AbstractVector{T}},
+) where {T<:BlasFloat}
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A, dA = arrayify(A_dA)
+    x, dx = arrayify(x_dx)
+
+    # Primal
+    BLAS.trsv!(uplo, trans, diag, A, x)
+
+    BLAS.trsv!(uplo, trans, diag, A, dx)
+    tmp = BLAS.trmv(uplo, trans, diag, dA, x)
+    if diag == 'U'
+        tmp .-= x
+    end
+    BLAS.trsv!(uplo, trans, diag, A, tmp)
+    dx .-= tmp
+
+    return x_dx
+end
+function rrule!!(
+    ::CoDual{typeof(BLAS.trsv!)},
+    _uplo::CoDual{Char},
+    _trans::CoDual{Char},
+    _diag::CoDual{Char},
+    A_dA::CoDual{<:AbstractMatrix{T}},
+    x_dx::CoDual{<:AbstractVector{T}},
+) where {T<:BlasFloat}
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A, dA = arrayify(A_dA)
+    x, dx = arrayify(x_dx)
+
+    x_copy = copy(x)
+
+    # Primal
+    BLAS.trsv!(uplo, trans, diag, A, x)
+
+    function trsv_pb!!(::NoRData)
+
+        # Increment dA
+        if trans == 'N'
+            temp = BLAS.trsv(uplo, 'C', diag, A, dx)
+            temp .*= -1
+            inc_tri!(dA, temp, x, uplo, diag)
+        elseif trans == 'C'
+            temp = BLAS.trsv(uplo, 'N', diag, A, dx)
+            temp .*= -1
+            inc_tri!(dA, x, temp, uplo, diag)
+        else
+            temp = BLAS.trsv(uplo, 'N', diag, A, conj(dx))
+            temp .*= -1
+            inc_tri!(dA, conj!(x), temp, uplo, diag)
+        end
+
+        # Restore initial state
+        x .= x_copy
+
+        # Compute dx
+        if trans == 'T'
+            # Equivalent to trsv!(uplo, "conjugate only", diag, A, dx)
+            conj!(dx)
+            BLAS.trsv!(uplo, 'N', diag, A, dx)
+            conj!(dx)
+        else
+            BLAS.trsv!(uplo, trans == 'N' ? 'C' : 'N', diag, A, dx)
+        end
+
+        return tuple_fill(NoRData(), Val(6))
+    end
+
+    return x_dx, trsv_pb!!
+end
+
 #
 # LEVEL 3
 #
@@ -1505,6 +1593,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
                 (false, :stability, nothing, BLAS.trmv!, ul, tA, dA, A, b)
             end
         end...,
+
+        # trsv!
+        let
+            # This test is sensitive to the random seed
+            rng = rng_ctor(123457)
+            map_prod(uplos, t_flags, dAs, [1, 3], Ps) do (ul, tA, dA, N, P)
+                As = blas_matrices(rng, P, N, N)
+                bs = blas_vectors(rng, P, N)
+                return map(As, bs) do A, b
+                    (false, :stability, nothing, BLAS.trsv!, ul, tA, dA, A, b)
+                end
+            end
+        end...,
     )
 
     memory = Any[]
@@ -1687,6 +1788,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
 
         # trsm!
         let
+            # This test is sensitive to the random seed
             rng = rng_ctor(123456)
             map_prod(
                 ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps
