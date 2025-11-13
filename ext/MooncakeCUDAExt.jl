@@ -195,7 +195,7 @@ function populate_address_map_internal(m::AddressMap, p::CuArray, t::CuArray)
     m[k] = v
     return m
 end
-function Mooncake._verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuArray)
+function Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuArray)
     if size(p) != size(f)
         throw(InvalidFDataException("p has size $(size(p)) but f has size $(size(f))"))
     end
@@ -231,8 +231,9 @@ function rrule!!(
     p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
 ) where {P<:CuComplexArray}
     _dims = map(primal, dims)
-    return (CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)),
-            NoPullback(p, init, dims...))
+    return (
+        CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims...)
+    )
 end
 
 end
