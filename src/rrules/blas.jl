@@ -1715,7 +1715,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
 
         # symm!, hemm!
         let
-            rng = rng_ctor(123456)
+            rng = rng_ctor(123457)
             map_prod(
                 [BLAS.symm!, BLAS.hemm!], ['L', 'R'], ['L', 'U'], αs, βs, Ps
             ) do (f, side, ul, α, β, P)
@@ -1790,7 +1790,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
 
         # trsm!
         let
-            # This test is sensitive to the random seed
             rng = rng_ctor(123456)
             map_prod(
                 ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps
