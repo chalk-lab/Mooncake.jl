@@ -43,6 +43,7 @@ Mooncake.@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Comple
     tangent_type(P),N,M
 }
 
+Mooncake.@foldable fdata_type(::Type{CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Complex{T},N,M} = CuArray{fdata_type(P),N,M}
 Mooncake.@foldable fdata_type(::Type{CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = CuArray{P,N,M}
 
 Mooncake.@foldable rdata_type(::Type{<:CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = Mooncake.NoRData
@@ -55,19 +56,19 @@ function zero_tangent_internal(x::CuFloatArray, dict::MaybeCache)
     dict[x] = t
     return t
 end
-function randn_tangent_internal(
-    rng::AbstractRNG, x::CuArray{T}, dict::MaybeCache
-) where {T<:IEEEFloat}
-    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = CuArray(randn(rng, T, size(x)...))
-    dict[x] = t
-    return t
-end
 function zero_tangent_internal(x::CuArray{T}, dict::MaybeCache) where {T<:Complex}
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     t = tangent_type(typeof(x))(undef, size(x))
     t_ = reinterpret(T, t)
     t_ .= zero(T)
+    dict[x] = t
+    return t
+end
+function randn_tangent_internal(
+    rng::AbstractRNG, x::CuArray{T}, dict::MaybeCache
+) where {T<:IEEEFloat}
+    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
+    t = CuArray(randn(rng, T, size(x)...))
     dict[x] = t
     return t
 end
@@ -189,8 +190,11 @@ function Mooncake._verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuAr
     end
     return nothing
 end
-Mooncake.@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuArray} = P
-tangent(p::CuArray, ::NoRData) = p
+Mooncake.@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuFloatArray} = P
+Mooncake.@foldable tangent_type(::Type{CuArray{P,N,M}}, ::Type{NoRData}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = CuArray{P,N,M}
+tangent(p::CuFloatArray, ::NoRData) = p
+tangent(p::CuArray{P,N,M}, ::NoRData) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = p
+tangent(p::CuArray{P,N,M}, ::NoRData) where {T<:IEEEFloat,P<:Complex{T},N,M} = tangent.(p)
 
 to_cr_tangent(x::CuFloatArray) = x
 function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuFloatArray}
@@ -203,9 +207,15 @@ end
 @is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
 function rrule!!(
     p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
-   ) where {P<:Union{CuFloatArray,CuComplexArray}}
+   ) where {P<:CuFloatArray}
     _dims = map(primal, dims)
     return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims...)
+end
+function rrule!!(
+    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
+   ) where {P<:CuComplexArray}
+    _dims = map(primal, dims)
+    return CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims...)
 end
 
 end
