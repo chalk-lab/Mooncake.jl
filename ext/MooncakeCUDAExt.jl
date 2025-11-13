@@ -10,6 +10,8 @@ import Mooncake:
     rrule!!,
     @is_primitive,
     tangent_type,
+    fdata_type,
+    rdata_type,
     primal,
     tangent,
     zero_tangent_internal,
@@ -40,6 +42,16 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 Mooncake.@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Complex{<:IEEEFloat},IEEEFloat},N,M} = CuArray{
     tangent_type(P),N,M
 }
+
+Mooncake.@foldable fdata_type(::Type{<:CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = CuArray{
+    fdata_type(P),N,M
+}
+
+Mooncake.@foldable rdata_type(::Type{<:CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T, im::T}},N,M} = CuArray{
+    rdata_type(P),N,M
+}
+
+
 
 function zero_tangent_internal(x::CuFloatArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
@@ -175,7 +187,7 @@ function populate_address_map_internal(m::AddressMap, p::CuArray, t::CuArray)
     m[k] = v
     return m
 end
-function Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuArray)
+function Mooncake._verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuArray)
     if size(p) != size(f)
         throw(InvalidFDataException("p has size $(size(p)) but f has size $(size(f))"))
     end
