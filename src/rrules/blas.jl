@@ -1783,8 +1783,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
                     α_dα = _make_codual(randn(rng, P), P(dα))
+                    # 1.10 fails to infer part of a matmat product in the pullback
+                    perf_flag = VERSION < v"1.11-" ? :none : :stability
                     (
-                        false, :stability, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B
+                        false, perf_flag, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B
                     )
                 end
             end
