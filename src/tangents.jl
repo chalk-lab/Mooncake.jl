@@ -910,6 +910,19 @@ set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Vector{UInt}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
 """
+    set_to_zero_maybe!!(x, doit::Bool)
+
+If `doit` is `true`, return `set_to_zero!!(x)`, otherwise return `x`.
+"""
+function set_to_zero_maybe!!(x, doit::Bool)
+    if doit
+        return set_to_zero!!(x)
+    else
+        return x
+    end
+end
+
+"""
     set_to_zero_internal!!(c::SetToZeroCache, x)
 
 Implementation for [`Mooncake.set_to_zero!!`](@ref). Use `c` to ensure that circular
