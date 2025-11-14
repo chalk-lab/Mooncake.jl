@@ -48,6 +48,12 @@ end
 
         interp = Mooncake.get_interpreter(ForwardMode)
         args = map(TestUtils._deepcopy, x)
+        primal_args = map(TestUtils._deepcopy, x)
+        primal_value = f(primal_args...)
+        if !(primal_value isa IEEEFloat)
+            @test_broken false
+            continue
+        end
         rule = Mooncake.build_rrule(f, x...)
         sig = Tuple{
             typeof(low_level_gradient),typeof(rule),_typeof(f),map(_typeof, args)...
@@ -56,21 +62,21 @@ end
         rng = StableRNG(0xF0 + n)
         dirs = map(arg -> Mooncake.randn_tangent(rng, arg), args)
         if any(dir -> dir isa Mooncake.NoTangent, dirs)
-            @test_broken true
+            @test_broken false
             continue
         end
 
         dual_inputs = (
-            Mooncake.Dual(low_level_gradient, Mooncake.zero_tangent(low_level_gradient)),
-            Mooncake.Dual(rule, Mooncake.zero_tangent(rule)),
-            Mooncake.Dual(f, Mooncake.zero_tangent(f)),
+            Mooncake.Dual(low_level_gradient, Mooncake.NoTangent()),
+            Mooncake.Dual(rule, Mooncake.NoTangent()),
+            Mooncake.Dual(f, Mooncake.NoTangent()),
             map((arg, dir) -> Mooncake.Dual(arg, dir), args, dirs)...,
         )
         dual_result = grad_rule(dual_inputs...)
         pushforward = _as_tuple(Mooncake.tangent(dual_result))
 
         # Use our own finite difference JVP implementation
-        grad_func = x -> _as_tuple(low_level_gradient(rule, f, x...))
+        grad_func = (xs...) -> _as_tuple(low_level_gradient(rule, f, xs...))
         fd_results_all = finite_diff_jvp(grad_func, args, dirs)
 
         # Check if any epsilon value gives a close match (following test_utils.jl pattern)
