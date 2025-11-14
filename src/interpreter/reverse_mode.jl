@@ -232,9 +232,33 @@ get_primal_type(info::ADInfo, x::Argument) = info.arg_types[x]
 get_primal_type(info::ADInfo, x::ID) = CC.widenconst(info.ssa_insts[x].type)
 get_primal_type(::ADInfo, x::QuoteNode) = _typeof(x.value)
 get_primal_type(::ADInfo, @nospecialize(x)) = _typeof(x)
-function get_primal_type(::ADInfo, x::GlobalRef)
-    return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.binding.ty
-end
+@static if VERSION > v"1.12-"
+    function get_primal_type(info::ADInfo, x::GlobalRef)
+        return get_primal_type(info.interp.world, x.binding)
+    end
+    # The comments for the `jl_partition_kind` enum are a good reference
+    function get_primal_type(world::UInt, x::Core.Binding)
+        partition = Base.lookup_binding_partition(world, x)
+        # no restriction available
+        isdefined(partition, :restriction) || return Any
+        kind = Base.binding_kind(partition)
+        # for a constant, the restriction is the value, return its type
+        if Base.is_defined_const_binding(kind)
+            return _typeof(partition.restriction)
+        end
+        # otherwise for an imported global the restriction is the imported binding
+        if Base.is_some_imported(kind)
+            return get_primal_type(world, partition.restriction::Core.Binding)
+        end
+        # otherwise we have a mutable global, the restriction is the type
+        return partition.restriction::Type
+    end
+else
+    function get_primal_type(::ADInfo, x::GlobalRef)
+        isconst(x) && return _typeof(getglobal(x.mod, x.name))
+        return isdefined(x.binding, :ty) ? x.binding.ty : x.binding.owner.ty
+    end
+end # @static
 function get_primal_type(::ADInfo, x::Expr)
     x.head === :boundscheck && return Bool
     return error("Unrecognised expression $x found in argument slot.")
@@ -681,7 +705,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         raw_rule = if is_primitive(context_type(info.interp), ReverseMode, sig)
             rrule!! # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
-            mi = stmt.args[1]::Core.MethodInstance
+            mi = get_mi(stmt.args[1])
             LazyDerivedRule(mi, info.debug_mode) # Static dispatch
         else
             DynamicDerivedRule(info.debug_mode)  # Dynamic dispatch
@@ -1002,7 +1026,7 @@ _get_sig(mi::Core.MethodInstance) = mi.specTypes
 _get_sig(mc::MistyClosure) = Tuple{map(CC.widenconst, mc.ir[].argtypes)...}
 
 function forwards_ret_type(primal_ir::IRCode)
-    return fcodual_type(Base.Experimental.compute_ir_rettype(primal_ir))
+    return fcodual_type(compute_ir_rettype(primal_ir))
 end
 
 function pullback_ret_type(primal_ir::IRCode)
@@ -1158,7 +1182,10 @@ function generate_ir(
 
     # Grab code associated to the primal.
     ir, _ = lookup_ir(interp, sig_or_mi)
-    Treturn = Base.Experimental.compute_ir_rettype(ir)
+    @static if VERSION > v"1.12-"
+        ir = set_valid_world!(ir, interp.world)
+    end
+    Treturn = compute_ir_rettype(ir)
     fwd_ret_type = forwards_ret_type(ir)
     rvs_ret_type = pullback_ret_type(ir)
 
@@ -1351,8 +1378,22 @@ function forwards_pass_ir(
 
     # Create and return the `BBCode` for the forwards-pass.
     arg_types = vcat(Tshared_data, map(fcodual_type ∘ CC.widenconst, ir.argtypes))
-    ir = BBCode(vcat(entry_block, blocks), arg_types, ir.sptypes, ir.linetable, ir.meta)
-    return remove_unreachable_blocks!(ir)
+    new_ir = BBCode(ir, vcat(entry_block, blocks))
+    @static if VERSION > v"1.12-"
+        new_ir = BBCode(
+            new_ir.blocks,
+            arg_types,
+            new_ir.sptypes,
+            new_ir.debuginfo,
+            new_ir.meta,
+            new_ir.valid_worlds,
+        )
+    else
+        new_ir = BBCode(
+            new_ir.blocks, arg_types, new_ir.sptypes, new_ir.linetable, new_ir.meta
+        )
+    end
+    return remove_unreachable_blocks!(new_ir)
 end
 
 """
@@ -1392,7 +1433,13 @@ function pullback_ir(
     # won't succeed on the forwards-pass. As such, the reverse-pass can just be a no-op.
     if isempty(primal_exit_blocks_inds)
         blocks = [BBlock(ID(), [(ID(), new_inst(ReturnNode(nothing)))])]
-        return BBCode(blocks, Any[Any], ir.sptypes, ir.linetable, ir.meta)
+        @static if VERSION >= v"1.12-"
+            return BBCode(
+                blocks, Any[Any], ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds
+            )
+        else
+            return BBCode(blocks, Any[Any], ir.sptypes, ir.linetable, ir.meta)
+        end
     end
 
     #
@@ -1518,7 +1565,11 @@ function pullback_ir(
     # block). This ought not to be necessary, but _appears_ to be necessary in order to
     # avoid annoying the Julia compiler.
     blks = vcat(entry_block, main_blocks, exit_block)
-    pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.linetable, ir.meta)
+    @static if VERSION >= v"1.12-"
+        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds)
+    else
+        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.linetable, ir.meta)
+    end
     return remove_unreachable_blocks!(sort_blocks!(pb_ir))
 end
 
@@ -1855,7 +1906,7 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     end
 
     ir, _ = lookup_ir(interp, sig_or_mi)
-    Treturn = Base.Experimental.compute_ir_rettype(ir)
+    Treturn = compute_ir_rettype(ir)
     isva, _ = is_vararg_and_sparam_names(sig_or_mi)
 
     arg_types = map(CC.widenconst, ir.argtypes)

@@ -222,7 +222,7 @@ function __exclude_func_with_unsupported_output(fx)
     _fx = deepcopy(fx)
     _func, _args = _fx[1], _fx[2:end]
     _y = _func(_args...)
-    __exclude_unsupported_output(_y)
+    return __exclude_unsupported_output(_y)
 end
 
 """
@@ -435,6 +435,8 @@ end
     prepare_pullback_cache(f, x...)
 
 Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info.
+
+The API guarantees that tangents are initialized at zero before the first autodiff pass.
 """
 @unstable function prepare_pullback_cache(fx...; kwargs...)
 
@@ -458,7 +460,7 @@ Returns a cache used with [`value_and_pullback!!`](@ref). See that function for 
 end
 
 """
-    value_and_pullback!!(cache::Cache, ȳ, f, x...)
+    value_and_pullback!!(cache::Cache, ȳ, f, x...; args_to_zero=(true, ...))
 
 !!! info
     If `f(x...)` returns a scalar, you should use [`value_and_gradient!!`](@ref), not this
@@ -488,6 +490,10 @@ will return both to their original state as part of the process of computing the
     around over multiple calls to this function with the same `cache`, you should take a
     copy (using `copy` or `deepcopy`) of them before calling again.
 
+The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents should be reset to zero before differentiation.
+It contains one boolean for each element of `(f, x...)`.
+It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
+
 # Example Usage
 ```jldoctest
 f(x, y) = sum(x .* y)
@@ -501,8 +507,14 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-function value_and_pullback!!(cache::Cache, ȳ, f::F, x::Vararg{Any,N}) where {F,N}
-    tangents = tuple_map(set_to_zero!!, cache.tangents)
+function value_and_pullback!!(
+    cache::Cache,
+    ȳ,
+    f::F,
+    x::Vararg{Any,N};
+    args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
+) where {F,N}
+    tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
     return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
 end
@@ -511,6 +523,8 @@ end
     prepare_gradient_cache(f, x...)
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info.
+
+The API guarantees that tangents are initialized at zero before the first autodiff pass.
 """
 @unstable function prepare_gradient_cache(fx...; kwargs...)
     rule = build_rrule(fx...; kwargs...)
@@ -522,7 +536,7 @@ Returns a cache used with [`value_and_gradient!!`](@ref). See that function for 
 end
 
 """
-    value_and_gradient!!(cache::Cache, f, x...)
+    value_and_gradient!!(cache::Cache, f, x...; args_to_zero=(true, ...))
 
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 gradient of `f` w.r.t. each argument. The first element is the gradient w.r.t any
@@ -546,6 +560,10 @@ will return both to their original state as part of the process of computing the
     around over multiple calls to this function with the same `cache`, you should take a
     copy (using `copy` or `deepcopy`) of them before calling again.
 
+The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents should be reset to zero before differentiation.
+It contains one boolean for each element of `(f, x...)`.
+It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
+
 # Example Usage
 ```jldoctest
 f(x, y) = sum(x .* y)
@@ -559,8 +577,14 @@ value_and_gradient!!(cache, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-function value_and_gradient!!(cache::Cache, f::F, x::Vararg{Any,N}) where {F,N}
-    coduals = tuple_map(CoDual, (f, x...), tuple_map(set_to_zero!!, cache.tangents))
+function value_and_gradient!!(
+    cache::Cache,
+    f::F,
+    x::Vararg{Any,N};
+    args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
+) where {F,N}
+    tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
+    coduals = tuple_map(CoDual, (f, x...), tangents)
     return __value_and_gradient!!(cache.rule, coduals...)
 end
 
