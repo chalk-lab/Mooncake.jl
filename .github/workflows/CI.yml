@@ -29,6 +29,7 @@ jobs:
           'basic',
           'rrules/avoiding_non_differentiable_code',
           'rrules/blas',
+          'rrules/blas_level_3',
           'rrules/builtins',
           'rrules/dispatch_doctor',
           'rrules/fastmath',
