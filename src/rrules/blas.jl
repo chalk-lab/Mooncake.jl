@@ -1807,7 +1807,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 end
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
-                    (false, :stability, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
+                    # 1.10 fails to infer part of a matmat product in the pullback
+                    perf_flag = VERSION < v"1.11-" ? :none : :stability
+                    (false, perf_flag, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
                 end
             end
         end...,
