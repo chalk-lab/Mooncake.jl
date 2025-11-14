@@ -28,3 +28,29 @@ steps:
         label:
           - "cuda"
           - "nnlib"
+  - label: "Julia v{{matrix.version}}, {{matrix.label}}"
+    plugins:
+      - JuliaCI/julia#v1:
+          version: "{{matrix.version}}"
+      - JuliaCI/julia-coverage#v1:
+          dirs:
+            - src
+            - ext
+    command: julia --code-coverage=user --eval='include("test/run_extra.jl")'
+    agents:
+      queue: "juliagpu"
+      rocm: "*"
+      rocmgpu: "*"
+    if: build.message !~ /\[skip tests\]/
+    timeout_in_minutes: 60
+    env:
+      LABEL: "{{matrix.label}}"
+      TEST_TYPE: ext
+    matrix:
+      setup:
+        version:
+          - "1.10"
+          - "1.11"
+          - "1.12"
+        label:
+          - "amdgpu"
