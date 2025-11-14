@@ -504,7 +504,7 @@ function value_and_pullback!!(
     ȳ,
     f::F,
     x::Vararg{Any,N};
-    args_to_zero::NTuple=ntuple(_ -> true, Val(length(x) + 1)),
+    args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
@@ -573,7 +573,7 @@ function value_and_gradient!!(
     cache::Cache,
     f::F,
     x::Vararg{Any,N};
-    args_to_zero::NTuple=ntuple(_ -> true, Val(length(x) + 1)),
+    args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
