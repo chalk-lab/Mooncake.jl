@@ -48,8 +48,8 @@ jobs:
         ]
         version:
           - 'lts'
-          - '1.11'
           - '1.12'
+          - 'nightly'
         arch:
           - x64
         include:
