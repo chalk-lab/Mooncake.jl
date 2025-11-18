@@ -317,6 +317,13 @@ function _copy_to_output!!(dst::P, src::P) where {P}
     end
 end
 
+function _copy_to_output!!(dst, src)
+    throw(
+        "When calling _copy_to_output!!, the types of dst and src must be the same. " *
+        "dst passed is of type $(typeof(dst)), while src is a $(typeof(src)).",
+    )
+end
+
 """
     _copy_output(x::T)
 
