@@ -18,7 +18,6 @@ include("front_matter.jl")
             include(joinpath("interpreter", "zero_like_rdata.jl"))
             include(joinpath("interpreter", "forward_mode.jl"))
             include(joinpath("interpreter", "reverse_mode.jl"))
-            include(joinpath("interpreter", "forward_over_reverse.jl"))
         end
         include("tools_for_rules.jl")
         include("interface.jl")
