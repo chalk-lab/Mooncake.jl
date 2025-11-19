@@ -1334,6 +1334,61 @@ for T in [Symbol, Int, Val]
     @eval increment_field!!(::NoTangent, ::NoTangent, f::Union{$T}) = NoTangent()
 end
 
+# TODO: x instead of primal?
+# TODO: a primal shouldn't be modified in-place? e.g. a vector should not be overwritten?
+"""
+    translate_to_primal!!(primal::P, tangent)::P where {P}
+
+Translate a tangent back to a primal type, by updating differentiable fields.
+
+The returned object may alias fields from the input `primal` and/or the input `tangent`.
+"""
+function translate_to_primal!!(primal::P, tangent) where {P}
+    @assert typeof(tangent) <: tangent_type(P)
+    return translate_to_primal_internal!!(primal, tangent, isbitstype(P) ? NoCache() : IdDict())
+end
+
+# TODO: write some docs here
+function translate_to_primal_internal!! end
+
+translate_to_primal_internal!!(x::Union{Int8,Int16,Int32,Int64,Int128}, tx, dict::MaybeCache) = x
+translate_to_primal_internal!!(x::IEEEFloat, tx, dict::MaybeCache) = tx
+@generated function translate_to_primal_internal!!(x::Tuple, tx, dict::MaybeCache)
+    ttp_exprs = map(n -> :(translate_to_primal_internal!!(x[$n], tx[$n], dict)), 1:fieldcount(x))
+    return quote
+        tangent_type($x) == NoTangent && return $x
+        return $(Expr(:call, :tuple, ttp_exprs...))
+    end
+end
+function translate_to_primal_internal!!(x::NamedTuple, tx, dict::MaybeCache)
+    tangent_type(x) == NoTangent && return x
+    return tuple_map(Base.Fix3(translate_to_primal_internal!!, dict), x, tx)
+end
+# TODO: Ptr
+# TODO: SimpleVector
+@generated function translate_to_primal_internal!!(x::P, tx, dict::MaybeCache) where {P}
+    # TODO: does an uninitialized PossiblyUninitTangent field correspond to an unmodified primal field?
+
+    # Loop over fields, constructing expressions to translate to primal depending on the
+    # field type and initialisation status.
+    inits = always_initialised(P)
+    ttp_exprs = map(1:fieldcount(P)) do n
+        if inits[n]
+            return :(translate_to_primal_internal!!(getfield(x, $n), tx.fields[$n], dict))
+        else
+            # TODO: implement
+            return :(error("TODO: not yet implemented"))
+        end
+    end
+
+    return quote
+        tangent_type(P) == NoTangent && return x
+
+        # TODO: mutable, uninit, caching
+        return $(Expr(:new, P, ttp_exprs...))
+    end
+end
+
 """
     tangent_test_cases()
 
