@@ -1,4 +1,9 @@
 using Mooncake.TestUtils: count_allocs
+using Mooncake:
+    prepare_gradient_cache,
+    prepare_pullback_cache,
+    value_and_gradient!!,
+    value_and_pullback!!
 
 @testset "interface" begin
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
@@ -222,5 +227,43 @@ using Mooncake.TestUtils: count_allocs
         z = Mooncake.value_and_derivative!!(rule, map(zero_dual, fx)...)
         @test z isa Mooncake.Dual
         @test primal(z) == f(5.0, 4.0)
+    end
+
+    @testset "selective zeroing of cotangents" begin
+        f = (x, y) -> sum(abs2, x) - sum(abs2, y)
+        x = [1.0, 2.0]
+        y = [3.0, 4.0]
+
+        @testset "Pullback cache" begin
+            cache_pb = prepare_pullback_cache(f, x, y)
+            value_and_pullback!!(cache_pb, 1.0, f, x, y)
+            @test cache_pb.tangents[2] == 2x
+            @test cache_pb.tangents[3] == -2y
+            value_and_pullback!!(cache_pb, 1.0, f, x, y)
+            @test cache_pb.tangents[2] == 2x
+            @test cache_pb.tangents[3] == -2y
+            value_and_pullback!!(cache_pb, 1.0, f, x, y; args_to_zero=(true, false, true))
+            @test cache_pb.tangents[2] == 4x
+            @test cache_pb.tangents[3] == -2y
+            value_and_pullback!!(cache_pb, 1.0, f, x, y; args_to_zero=(true, true, false))
+            @test cache_pb.tangents[2] == 2x
+            @test cache_pb.tangents[3] == -4y
+        end
+
+        @testset "Gradient cache" begin
+            cache_grad = prepare_gradient_cache(f, x, y)
+            value_and_gradient!!(cache_grad, f, x, y)
+            @test cache_grad.tangents[2] == 2x
+            @test cache_grad.tangents[3] == -2y
+            value_and_gradient!!(cache_grad, f, x, y)
+            @test cache_grad.tangents[2] == 2x
+            @test cache_grad.tangents[3] == -2y
+            value_and_gradient!!(cache_grad, f, x, y; args_to_zero=(true, false, true))
+            @test cache_grad.tangents[2] == 4x
+            @test cache_grad.tangents[3] == -2y
+            value_and_gradient!!(cache_grad, f, x, y; args_to_zero=(true, true, false))
+            @test cache_grad.tangents[2] == 2x
+            @test cache_grad.tangents[3] == -4y
+        end
     end
 end

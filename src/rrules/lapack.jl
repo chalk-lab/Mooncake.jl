@@ -528,11 +528,77 @@ function rrule!!(
     return _B, potrs_pb!!
 end
 
+@static if VERSION > v"1.11-"
+    @is_primitive(
+        MinimalCtx,
+        Tuple{
+            typeof(LAPACK.lacpy!),AbstractMatrix{P},AbstractMatrix{P},Char
+        } where {P<:BlasFloat},
+    )
+    function frule!!(
+        ::Dual{typeof(LAPACK.lacpy!)},
+        B_dB::Dual{<:AbstractMatrix{P}},
+        A_dA::Dual{<:AbstractMatrix{P}},
+        _uplo::Dual{Char},
+    ) where {P<:BlasFloat}
+        B, dB = arrayify(B_dB)
+        A, dA = arrayify(A_dA)
+
+        LAPACK.lacpy!(B, A, primal(_uplo))
+        LAPACK.lacpy!(dB, dA, primal(_uplo))
+        return B_dB
+    end
+    function rrule!!(
+        ::CoDual{typeof(LAPACK.lacpy!)},
+        B_dB::CoDual{<:AbstractMatrix{P}},
+        A_dA::CoDual{<:AbstractMatrix{P}},
+        _uplo::CoDual{Char},
+    ) where {P<:BlasFloat}
+        B, dB = arrayify(B_dB)
+        A, dA = arrayify(A_dA)
+        uplo = primal(_uplo)
+
+        B_copy = copy(B)
+        LAPACK.lacpy!(B, A, uplo)
+        # fill dB with zeros in the copied region
+        zero_tri!(dB, uplo)
+
+        function lacpy_pb!!(::NoRData)
+            if uplo == 'U'
+                dA .+= UpperTriangular(dB)
+            elseif uplo == 'L'
+                dA .+= LowerTriangular(dB)
+            else
+                dA .+= dB
+            end
+            zero_tri!(dB, uplo)
+
+            # undo the primal change
+            LAPACK.lacpy!(B, B_copy, uplo)
+
+            return NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return B_dB, lacpy_pb!!
+    end
+end
+
+function zero_tri!(A, uplo::Char)
+    if uplo == 'U'
+        tril!(A, -1)
+    elseif uplo == 'L'
+        triu!(A, 1)
+    else
+        A .= zero(eltype(A))
+    end
+    return nothing
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
     complexPs = [Float64, Float32, ComplexF64, ComplexF32]
     bools = [false, true]
+    uplos = ['U', 'L', 'N']
     test_cases = vcat(
 
         # getrf!
@@ -603,6 +669,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
                 (false, :none, nothing, potrs!, uplo, tmp, copy(B))
             end
         end...,
+
+        # lacpy!
+        (@static if VERSION > v"1.11-"
+            map_prod(complexPs, uplos) do (P, uplo)
+                As = blas_matrices(rng, P, 5, 5)
+                Bs = blas_matrices(rng, P, 5, 5)
+                return map_prod(As, Bs) do (A, B)
+                    (false, :none, nothing, LAPACK.lacpy!, B, A, uplo)
+                end
+            end
+        else
+            []
+        end)...,
     )
     memory = Any[]
     return test_cases, memory

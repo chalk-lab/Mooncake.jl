@@ -61,6 +61,9 @@ function TestUtils.test_hook(
 )
     allow_unstable_given_unstable_type(f, typeof(p))
 end
+function TestUtils.test_hook(f, ::typeof(Mooncake.compute_oc_signature), x...)
+    allow_unstable(f)
+end
 
 include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
 
