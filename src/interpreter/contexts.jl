@@ -1,26 +1,20 @@
 """
-    abstract type DefaultCtx end
+    struct MinimalCtx end
+
+Functions should only be primitives in this context if not making them so would cause AD to
+fail. In particular, do not add primitives to this context if you are writing them for
+performance only -- instead, make these primitives in the DefaultCtx.
+"""
+struct MinimalCtx end
+
+"""
+    struct DefaultCtx end
 
 Context for all usually used AD primitives. Anything which is a primitive in a MinimalCtx is
 a primitive in the DefaultCtx automatically. If you are adding a rule for the sake of
 performance, it should be a primitive in the DefaultCtx, but not the MinimalCtx.
 """
-abstract type DefaultCtx end
-
-"""
-    abstract type MinimalCtx <: DefaultCtx end
-
-Functions should only be primitives in this context if not making them so would cause AD to
-fail. In particular, do not add primitives to this context if you are writing them for
-performance only -- instead, make these primitives in the DefaultCtx.
-
-Note: that this type subtypes [`DefaultCtx`](@ref) is an (unintuitive) implementation
-detail. This subtyping relationship is used by [`is_primitive`](@ref) to ensure that
-something which is declared primitive in `MinimalCtx` is also a primitive in
-[`DefaultCtx`](@ref). Consult the implementation of [`is_primitive`](@ref) to see how this
-is achieved.
-"""
-abstract type MinimalCtx <: DefaultCtx end
+struct DefaultCtx end
 
 """
     abstract type Mode end
@@ -113,7 +107,8 @@ function _is_primitive_expression(Tctx, Tmode, sig)
     end
 end
 
-const _IS_PRIMITIVE_CACHE = IdDict{Any,Bool}()
+const _IS_PRIMITIVE_CACHE_DefaultCtx = IdDict{Any,Bool}()
+const _IS_PRIMITIVE_CACHE_MinimalCtx = IdDict{Any,Bool}()
 
 """
     is_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
@@ -158,7 +153,9 @@ Observe that `is_primitive` returns `false` for the world age prior to declaring
 primitive, but `true` afterwards. For more information on Julia's world age mechanism, see
 https://docs.julialang.org/en/v1/manual/methods/#Redefining-Methods .
 """
-function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
+function is_primitive(
+    ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt
+)
     @nospecialize sig
 
     # We don't ever need to evaluate this function for abstract `mode`s, and there is a
@@ -168,25 +165,37 @@ function is_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
     # Check to see whether any methods of `_is_primitive` exist which apply to this
     # ctx-mode-signature triple in world age `world`. If we have looked this up before,
     # return the answer from the cache.
-    #
-    # Implementation detail: observe that `tt` is the `UnionAll` containing all subtypes of
-    # `ctx`. This ensures that eg. if `ctx == DefaultCtx`, this function returns `true` if
-    # the method is a primitive in either `DefaultCtx` _or_ `MinimalCtx`, since
-    # `MinimalCtx <: DefaultCtx`. Conversely, if `ctx == MinimalCtx`, and a rule is declared
-    # a primitive only in `DefaultCtx`, this function will (correctly) return `false`.
-    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{sig}}
-    return get!(_IS_PRIMITIVE_CACHE, (world, tt)) do
+
+    tt = Tuple{typeof(_is_primitive),Type{ctx},Type{mode},Type{sig}}
+    return get!(_IS_PRIMITIVE_CACHE_MinimalCtx, (world, tt)) do
         return !isempty(Base._methods_by_ftype(tt, -1, world))
     end
 end
 
-const _MAYBE_PRIMITIVE_CACHE = IdDict{Any,Bool}()
+function is_primitive(
+    ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt
+)
+    @nospecialize sig
+
+    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
+
+    # This function returns `true` if the method is a primitive in either 
+    # `DefaultCtx` _or_ `MinimalCtx`. 
+    tt = Tuple{typeof(_is_primitive),Type{DefaultCtx},Type{mode},Type{sig}}
+    return get!(_IS_PRIMITIVE_CACHE_DefaultCtx, (world, tt)) do
+        return is_primitive(MinimalCtx, mode, sig, world) ||
+               !isempty(Base._methods_by_ftype(tt, -1, world))
+    end
+end
+
+const _MAYBE_PRIMITIVE_CACHE_MinimalCtx = IdDict{Any,Bool}()
+const _MAYBE_PRIMITIVE_CACHE_DefaultCtx = IdDict{Any,Bool}()
 
 """
     maybe_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
 
-`true` if there exists `C<:ctx`, `M<:mode`, and `S<:sig` such that
-`is_primitive(C, M, S, world)` returns `true`.
+`true` if there exists `M<:mode`, and `S<:sig` such that
+`is_primitive(ctx, M, S, world)` returns `true`.
 
 This functionality is used to determine whether or not it is safe to inline away a call
 site when performing abstract interpretation using a `MooncakeInterpreter`, which is only
@@ -224,7 +233,9 @@ true
 Per the definition at the top of this docstring, this function returns `true` because
 `Tuple{typeof(foo),Float64} <: Tuple{typeof(foo),Real}`.
 """
-function maybe_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
+function maybe_primitive(
+    ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt
+)
     @nospecialize sig
 
     # We don't ever need to evaluate this function for abstract `mode`s, and there is a
@@ -234,8 +245,27 @@ function maybe_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, worl
     # Check to see whether any methods of `_is_primitive` exist which apply to any subtypes
     # of this ctx-mode-signature triple in world age `world`. If we have looked this up
     # before, return the answer from the cache.
-    tt = Tuple{typeof(_is_primitive),Type{<:ctx},Type{mode},Type{<:sig}}
-    return get!(_MAYBE_PRIMITIVE_CACHE, (world, tt)) do
+    tt = Tuple{typeof(_is_primitive),Type{ctx},Type{mode},Type{<:sig}}
+    return get!(_MAYBE_PRIMITIVE_CACHE_MinimalCtx, (world, tt)) do
         return !isempty(Base._methods_by_ftype(tt, -1, world))
+    end
+end
+
+function maybe_primitive(
+    ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt
+)
+    @nospecialize sig
+
+    # We don't ever need to evaluate this function for abstract `mode`s, and there is a
+    # performance penalty associated with doing so, so exclude the possiblity.
+    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
+
+    # Check to see whether any methods of `_is_primitive` exist which apply to any subtypes
+    # of this ctx-mode-signature triple in world age `world`. If we have looked this up
+    # before, return the answer from the cache.
+    tt = Tuple{typeof(_is_primitive),Type{ctx},Type{mode},Type{<:sig}}
+    return get!(_MAYBE_PRIMITIVE_CACHE_DefaultCtx, (world, tt)) do
+        return maybe_primitive(MinimalCtx, mode, sig, world) ||
+               !isempty(Base._methods_by_ftype(tt, -1, world))
     end
 end
