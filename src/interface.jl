@@ -317,10 +317,11 @@ function _copy_to_output!!(dst::P, src::P) where {P}
     end
 end
 
-function _copy_to_output!!(dst, src)
+# fallback for invalid type combinations
+function _copy_to_output!!(dst::T, src::P) where {T,P}
     throw(
         "When calling _copy_to_output!!, the types of dst and src must be the same. " *
-        "dst passed is of type $(typeof(dst)), while src is a $(typeof(src)).",
+        "dst passed is of type $T, while src is a $P.",
     )
 end
 
