@@ -159,7 +159,7 @@ function is_primitive(
     @nospecialize sig
 
     # We don't ever need to evaluate this function for abstract `mode`s, and there is a
-    # performance penalty associated with doing so, so exclude the possiblity.
+    # performance penalty associated with doing so, so exclude the possibility.
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
 
     # Check to see whether any methods of `_is_primitive` exist which apply to this
@@ -239,7 +239,7 @@ function maybe_primitive(
     @nospecialize sig
 
     # We don't ever need to evaluate this function for abstract `mode`s, and there is a
-    # performance penalty associated with doing so, so exclude the possiblity.
+    # performance penalty associated with doing so, so exclude the possibility.
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
 
     # Check to see whether any methods of `_is_primitive` exist which apply to any subtypes
@@ -257,7 +257,7 @@ function maybe_primitive(
     @nospecialize sig
 
     # We don't ever need to evaluate this function for abstract `mode`s, and there is a
-    # performance penalty associated with doing so, so exclude the possiblity.
+    # performance penalty associated with doing so, so exclude the possibility.
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
 
     # Check to see whether any methods of `_is_primitive` exist which apply to any subtypes
