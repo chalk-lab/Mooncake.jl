@@ -109,6 +109,9 @@ function generate_dual_ir(
 
     # Grab code associated to the primal.
     primal_ir, _ = lookup_ir(interp, sig_or_mi)
+    @static if VERSION > v"1.12-"
+        primal_ir = set_valid_world!(primal_ir, interp.world)
+    end
     nargs = length(primal_ir.argtypes)
 
     # Normalise the IR.
@@ -306,7 +309,7 @@ function modify_fwd_ad_stmts!(
             return CC.widenconst(get_forward_primal_type(info.primal_ir, x))
         end
         sig = Tuple{sig_types...}
-        mi = isexpr(stmt, :invoke) ? stmt.args[1] : missing
+        mi = isexpr(stmt, :invoke) ? get_mi(stmt.args[1]) : missing
         args = map(__inc, raw_args)
 
         # Special case: if the result of a call to getfield is un-used, then leave the
@@ -413,7 +416,7 @@ end
 end
 
 function dual_ret_type(primal_ir::IRCode)
-    return dual_type(Base.Experimental.compute_ir_rettype(primal_ir))
+    return dual_type(compute_ir_rettype(primal_ir))
 end
 
 function frule_type(

@@ -331,15 +331,25 @@ function opaque_closure(
 )
     # This implementation is copied over directly from `Core.OpaqueClosure`.
     ir = CC.copy(ir)
-    nargs = length(ir.argtypes) - 1
-    sig = Base.Experimental.compute_oc_signature(ir, nargs, isva)
+    ir.argtypes[1] = _typeof(env)
+    nargtypes = length(ir.argtypes)
+    nargs = nargtypes - 1
+    sig = compute_oc_signature(ir, nargs, isva)
     src = ccall(:jl_new_code_info_uninit, Ref{CC.CodeInfo}, ())
-    src.slotnames = fill(:none, nargs + 1)
+    src.slotnames = [Symbol(:_, i) for i in 1:nargtypes]
     src.slotflags = fill(zero(UInt8), length(ir.argtypes))
     src.slottypes = copy(ir.argtypes)
-    src.rettype = ret_type
+    @static if VERSION > v"1.12-"
+        ir.debuginfo.def === nothing &&
+            (ir.debuginfo.def = :var"generated IR for OpaqueClosure")
+        src.min_world = ir.valid_worlds.min_world
+        src.max_world = ir.valid_worlds.max_world
+        src.isva = isva
+        src.nargs = nargtypes
+    end
     src = CC.ir_to_codeinf!(src, ir)
-    return Base.Experimental.generate_opaque_closure(
+    src.rettype = ret_type
+    oc = Base.Experimental.generate_opaque_closure(
         sig, Union{}, ret_type, src, nargs, isva, env...; do_compile
     )::Core.OpaqueClosure{sig,ret_type}
 end
@@ -364,6 +374,18 @@ function misty_closure(
     do_compile::Bool=true,
 )
     return MistyClosure(opaque_closure(ret_type, ir, env...; isva, do_compile), Ref(ir))
+end
+
+@unstable begin
+    @static if VERSION > v"1.12-"
+        compute_ir_rettype(ir) = CC.compute_ir_rettype(ir)
+        compute_oc_signature(ir, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
+    else
+        compute_ir_rettype(ir) = Base.Experimental.compute_ir_rettype(ir)
+        compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(
+            ir, nargs, isva
+        )
+    end
 end
 
 """

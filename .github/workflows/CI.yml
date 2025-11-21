@@ -29,6 +29,7 @@ jobs:
           'basic',
           'rrules/avoiding_non_differentiable_code',
           'rrules/blas',
+          'rrules/blas_level_3',
           'rrules/builtins',
           'rrules/dispatch_doctor',
           'rrules/fastmath',
@@ -49,6 +50,7 @@ jobs:
         version:
           - 'lts'
           - '1.11'
+          - '1.12'
         arch:
           - x64
         include:
@@ -108,8 +110,9 @@ jobs:
           {test_type: 'integration_testing', label: 'flux'},
         ]
         version:
-          - '1.11'
           - 'lts'
+          - '1.11'
+          - '1.12'
         arch:
           - x64
     steps:

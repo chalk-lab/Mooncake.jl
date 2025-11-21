@@ -9,16 +9,17 @@ end
     @testset "ircode $(typeof(fargs))" for fargs in Any[(sin, 5.0), (cos, 1.0)]
         # Construct a vector of instructions from known function.
         f, args... = fargs
-        insts = only(code_typed(f, _typeof(args)))[1].code
+        src, rettype = only(code_typed(f, _typeof(args)))
 
         # Use Mooncake.ircode to build an `IRCode`.
         argtypes = Any[map(_typeof, fargs)...]
-        ir = Mooncake.ircode(insts, argtypes)
+        ir = Mooncake.ircode(src.code, argtypes)
 
         # Check the validity of the `IRCode`, and that an OpaqueClosure constructed using it
         # gives the same answer as the original function.
-        @test length(stmt(ir.stmts)) == length(insts)
-        @test Core.OpaqueClosure(ir; do_compile=true)(args...) == f(args...)
+        @test length(stmt(ir.stmts)) == length(src.code)
+        oc = Mooncake.opaque_closure(rettype, ir)
+        @test oc(args...) == f(args...)
     end
     @testset "infer_ir!" begin
 
@@ -38,7 +39,9 @@ end
         @test ir.stmts.type[2] == Float64
 
         # Check that the ir is runable.
-        @test Core.OpaqueClosure(ir)(5.0) == cos(sin(5.0))
+        ir.argtypes[1] = Tuple
+        oc = Mooncake.opaque_closure(Float64, ir)
+        @test oc(5.0) == cos(sin(5.0))
     end
     @testset "lookup_ir" begin
         tt = Tuple{typeof(sin),Float64}
