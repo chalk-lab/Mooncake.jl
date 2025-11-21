@@ -320,8 +320,13 @@ end
 # fallback for invalid type combinations
 function _copy_to_output!!(dst::T, src::P) where {T,P}
     throw(
-        "When calling _copy_to_output!!, the types of dst and src must be the same. " *
-        "dst passed is of type $T, while src is a $P.",
+        ArgumentError(
+            "The types of dst and src do not match: " *
+            "dst passed is of type $T, while src is a $P.",
+            "This is because Mooncake.jl does not currently have a method of " *
+            "`_copy_to_output!!` to handle this type combination. " *
+            "This typically happens when differentiating a non-differentiable function."
+        ),
     )
 end
 
