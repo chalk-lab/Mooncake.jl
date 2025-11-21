@@ -1343,7 +1343,9 @@ The tangent is not modified, and the returned primal will not alias it.
 """
 function translate_to_primal!!(primal::P, tangent) where {P}
     @assert typeof(tangent) <: tangent_type(P)
-    return translate_to_primal_internal!!(primal, tangent, isbitstype(P) ? NoCache() : IdDict())
+    return translate_to_primal_internal!!(
+        primal, tangent, isbitstype(P) ? NoCache() : IdDict()
+    )
 end
 
 """
@@ -1355,10 +1357,16 @@ the same way that other Mooncake internal functions do, see for example
 """
 function translate_to_primal_internal!! end
 
-translate_to_primal_internal!!(x::Union{Int8,Int16,Int32,Int64,Int128}, tx, c::MaybeCache) = x
+function translate_to_primal_internal!!(
+    x::Union{Int8,Int16,Int32,Int64,Int128}, tx, c::MaybeCache
+)
+    x
+end
 translate_to_primal_internal!!(x::IEEEFloat, tx, c::MaybeCache) = tx
 @generated function translate_to_primal_internal!!(x::Tuple, tx, c::MaybeCache)
-    ttp_exprs = map(n -> :(translate_to_primal_internal!!(x[$n], tx[$n], c)), 1:fieldcount(x))
+    ttp_exprs = map(
+        n -> :(translate_to_primal_internal!!(x[$n], tx[$n], c)), 1:fieldcount(x)
+    )
     return quote
         tx isa NoTangent && return x
         return $(Expr(:call, :tuple, ttp_exprs...))
@@ -1388,14 +1396,18 @@ end
             return quote
                 if is_init(tx.fields[$n])
                     isdefined(x, $n) || error(
-                        "The field #$($n) of a tangent of type $(typeof(tx)) is initialized "
-                        * "but the corresponding primal field is not."
+                        "The field #$($n) of a tangent of type $(typeof(tx)) is initialized " *
+                        "but the corresponding primal field is not.",
                     )
                     ccall(
                         :jl_set_nth_field,
-                        Cvoid, (Any, Csize_t, Any),
-                        x, $(n-1),
-                        translate_to_primal_internal!!(getfield(x, $n), val(tx.fields[$n]), c),
+                        Cvoid,
+                        (Any, Csize_t, Any),
+                        x,
+                        $(n-1),
+                        translate_to_primal_internal!!(
+                            getfield(x, $n), val(tx.fields[$n]), c
+                        ),
                     )
                 end
                 # If the tangent is not initialized, we leave the primal field as-is.
@@ -1405,11 +1417,12 @@ end
         return quote
             tx isa NoTangent && return x
             tx isa MutableTangent || error(
-                "Generic translate_to_primal_internal!! implementation expected "
-                * "a MutableTangent but received a $(typeof(tx)) tangent type for "
-                * "a primal of type $P.\n"
-                * "This likely means that a specialized implementation of "
-                * "Mooncake.translate_to_primal_internal!! is missing.")
+                "Generic translate_to_primal_internal!! implementation expected " *
+                "a MutableTangent but received a $(typeof(tx)) tangent type for " *
+                "a primal of type $P.\n" *
+                "This likely means that a specialized implementation of " *
+                "Mooncake.translate_to_primal_internal!! is missing.",
+            )
             haskey(c, x) && return c[x]::P
             c[x] = x
             $(ttp_exprs...)
@@ -1422,7 +1435,7 @@ end
         # Generate a chain of if statements to handle partially-initialized structs
         ninit = CC.datatype_min_ninitialized(P)
         ex = :(return $(Expr(:new, P, ttp_exprs[1:ninit]...)))
-        for n in ninit+1:fieldcount(P)
+        for n in (ninit + 1):fieldcount(P)
             cond = :(is_init(tx.fields[$n]))
             expr = :(return $(Expr(:new, P, ttp_exprs[1:n]...)))
             ex = Expr(:if, cond, expr, ex)
@@ -1430,11 +1443,12 @@ end
         return quote
             tx isa NoTangent && return x
             tx isa Tangent || error(
-                "Generic translate_to_primal_internal!! implementation expected "
-                * "a Tangent but received a $(typeof(tx)) tangent type for "
-                * "a primal of type $P.\n"
-                * "This likely means that a specialized implementation of "
-                * "Mooncake.translate_to_primal_internal!! is missing.")
+                "Generic translate_to_primal_internal!! implementation expected " *
+                "a Tangent but received a $(typeof(tx)) tangent type for " *
+                "a primal of type $P.\n" *
+                "This likely means that a specialized implementation of " *
+                "Mooncake.translate_to_primal_internal!! is missing.",
+            )
             $ex
         end
     end

@@ -1159,7 +1159,9 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     __dot(t, s) = Mooncake._dot_internal(IdDict{Any,Any}(), t, s)
     __scale(a::Float64, t) = Mooncake._scale_internal(IdDict{Any,Any}(), a, t)
     _populate_address_map(p, t) = populate_address_map_internal(AddressMap(), p, t)
-    _translate_to_primal!!(p, t) = Mooncake.translate_to_primal_internal!!(p, t, IdDict{Any,Any}())
+    _translate_to_primal!!(p, t) = Mooncake.translate_to_primal_internal!!(
+        p, t, IdDict{Any,Any}()
+    )
 
     # Check that tangent_type returns a `Type`.
     T = tangent_type(P)
