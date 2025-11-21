@@ -322,10 +322,11 @@ function _copy_to_output!!(dst::T, src::P) where {T,P}
     throw(
         ArgumentError(
             "The types of dst and src do not match: " *
-            "dst passed is of type $T, while src is a $P.",
-            "This is because Mooncake.jl does not currently have a method of " *
+            "dst passed is of type $T, while src is a $P. " *
+            "Mooncake.jl does not currently have a method " *
             "`_copy_to_output!!` to handle this type combination. " *
-            "This typically happens when differentiating a non-differentiable function.",
+            "This often happens when differentiating over " * 
+            "non-differentiable types (e.g. integers or booleans).",
         ),
     )
 end
