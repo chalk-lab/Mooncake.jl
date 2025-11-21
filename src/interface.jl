@@ -325,7 +325,7 @@ function _copy_to_output!!(dst::T, src::P) where {T,P}
             "dst passed is of type $T, while src is a $P.",
             "This is because Mooncake.jl does not currently have a method of " *
             "`_copy_to_output!!` to handle this type combination. " *
-            "This typically happens when differentiating a non-differentiable function."
+            "This typically happens when differentiating a non-differentiable function.",
         ),
     )
 end
