@@ -1126,6 +1126,7 @@ Verifies that the following functions are implemented correctly (as far as possi
 - [`Mooncake._dot_internal`](@ref)
 - [`Mooncake._scale_internal`](@ref)
 - [`Mooncake.TestUtils.populate_address_map_internal`](@ref)
+- [`Mooncake.translate_to_primal_internal!!`](@ref)
 
 In conjunction with the functions tested by [`test_tangent_splitting`](@ref), these functions
 constitute a complete set of functions which must be applicable to `p` in order to ensure
@@ -1154,10 +1155,11 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     function __add_to_primal(p, t, unsafe::Bool)
         return Mooncake._add_to_primal_internal(IdDict{Any,Any}(), p, t, unsafe)
     end
-    __diff(p, t) = Mooncake._diff_internal(IdDict{Any,Any}(), p, t)
+    __diff(p, q) = Mooncake._diff_internal(IdDict{Any,Any}(), p, q)
     __dot(t, s) = Mooncake._dot_internal(IdDict{Any,Any}(), t, s)
     __scale(a::Float64, t) = Mooncake._scale_internal(IdDict{Any,Any}(), a, t)
     _populate_address_map(p, t) = populate_address_map_internal(AddressMap(), p, t)
+    _translate_to_primal!!(p, t) = Mooncake.translate_to_primal_internal!!(p, t, IdDict{Any,Any}())
 
     # Check that tangent_type returns a `Type`.
     T = tangent_type(P)
@@ -1255,6 +1257,19 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     @test __dot(t, _increment!!(deepcopy(t), t)) ≈ 2 * __dot(t, t)
     @test has_equal_data(__scale(1.0, t), t)
     @test has_equal_data(__scale(2.0, t), _increment!!(deepcopy(t), t))
+
+    # Test for translate_to_primal!!
+    p1 = deepcopy([p])[1]
+    t1 = _randn_tangent(rng, p1)
+    p1 = _translate_to_primal!!(p1, t1)
+    @test p1 isa P
+    p2 = deepcopy([p])[1]
+    p2 = _translate_to_primal!!(p2, _zero_tangent(p2))
+    # Difference should be equal to the original randn tangent.
+    t2 = __diff(p1, p2)
+    t_diff = _increment!!(__scale(-1.0, t2), t1)
+    @show p
+    @test __dot(t_diff, t_diff) ≤ sqrt(eps(Float64))
 end
 
 # Helper used in `test_tangent_interface`.

@@ -68,6 +68,14 @@ function _diff_internal(c::MaybeCache, p::P, q::P) where {V,N,P<:Array{V,N}}
     return _map_if_assigned!((p, q) -> _diff_internal(c, p, q), t, p, q)
 end
 
+function translate_to_primal_internal!!(x::Array{P,N}, t::Array{<:Any,N}, c::MaybeCache) where {P,N}
+    haskey(c, x) && return c[x]::Array{P,N}
+    c[x] = x
+    return _map_if_assigned!(x, x, t) do (xn, tn)
+        return translate_to_primal_internal!!(xn, tn, c)
+    end
+end
+
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Vararg} where {T,N}
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Tuple{}} where {T,N}
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}

@@ -1334,58 +1334,109 @@ for T in [Symbol, Int, Val]
     @eval increment_field!!(::NoTangent, ::NoTangent, f::Union{$T}) = NoTangent()
 end
 
-# TODO: x instead of primal?
-# TODO: a primal shouldn't be modified in-place? e.g. a vector should not be overwritten?
 """
     translate_to_primal!!(primal::P, tangent)::P where {P}
 
-Translate a tangent back to a primal type, by updating differentiable fields.
-
-The returned object may alias fields from the input `primal` and/or the input `tangent`.
+Translate a tangent back to a primal type, modifying the differentiable fields
+of the primal in place as much as possible to minimize allocations.
+The tangent is not modified, and the returned primal will not alias it.
 """
 function translate_to_primal!!(primal::P, tangent) where {P}
     @assert typeof(tangent) <: tangent_type(P)
     return translate_to_primal_internal!!(primal, tangent, isbitstype(P) ? NoCache() : IdDict())
 end
 
-# TODO: write some docs here
+"""
+    translate_to_primal_internal!!(x, tx, c::MaybeCache)
+
+Implementation of [`translate_to_primal!!`](@ref). Makes use of a cache in
+the same way that other Mooncake internal functions do, see for example
+[`zero_tangent_internal`](@ref).
+"""
 function translate_to_primal_internal!! end
 
-translate_to_primal_internal!!(x::Union{Int8,Int16,Int32,Int64,Int128}, tx, dict::MaybeCache) = x
-translate_to_primal_internal!!(x::IEEEFloat, tx, dict::MaybeCache) = tx
-@generated function translate_to_primal_internal!!(x::Tuple, tx, dict::MaybeCache)
-    ttp_exprs = map(n -> :(translate_to_primal_internal!!(x[$n], tx[$n], dict)), 1:fieldcount(x))
+translate_to_primal_internal!!(x::Union{Int8,Int16,Int32,Int64,Int128}, tx, c::MaybeCache) = x
+translate_to_primal_internal!!(x::IEEEFloat, tx, c::MaybeCache) = tx
+@generated function translate_to_primal_internal!!(x::Tuple, tx, c::MaybeCache)
+    ttp_exprs = map(n -> :(translate_to_primal_internal!!(x[$n], tx[$n], c)), 1:fieldcount(x))
     return quote
-        tangent_type($x) == NoTangent && return $x
+        tx isa NoTangent && return x
         return $(Expr(:call, :tuple, ttp_exprs...))
     end
 end
-function translate_to_primal_internal!!(x::NamedTuple, tx, dict::MaybeCache)
-    tangent_type(x) == NoTangent && return x
-    return tuple_map(Base.Fix3(translate_to_primal_internal!!, dict), x, tx)
+function translate_to_primal_internal!!(x::NamedTuple, tx, c::MaybeCache)
+    tx isa NoTangent && return x
+    return tuple_map(Base.Fix{3}(translate_to_primal_internal!!, c), x, tx)
 end
-# TODO: Ptr
-# TODO: SimpleVector
-@generated function translate_to_primal_internal!!(x::P, tx, dict::MaybeCache) where {P}
-    # TODO: does an uninitialized PossiblyUninitTangent field correspond to an unmodified primal field?
-
-    # Loop over fields, constructing expressions to translate to primal depending on the
-    # field type and initialisation status.
-    inits = always_initialised(P)
-    ttp_exprs = map(1:fieldcount(P)) do n
-        if inits[n]
-            return :(translate_to_primal_internal!!(getfield(x, $n), tx.fields[$n], dict))
-        else
-            # TODO: implement
-            return :(error("TODO: not yet implemented"))
+function translate_to_primal_internal!!(x::Ptr{T}, tx, c::MaybeCache) where {T}
+    tangent_type(T) == NoTangent && return x
+    return throw(ArgumentError("translate_to_primal!! not available for pointers."))
+end
+function translate_to_primal_internal!!(x::SimpleVector, tx, c::MaybeCache)
+    # There doesn't seem to be a nice way to modify a SimpleVector in-place,
+    # so we just create a new one.
+    # For this reason we also do not attempt to cache the simple vector here,
+    # since we'd have to first create one and then mutate it in-place.
+    return svec(map(x, tx) do xn, txn
+        translate_to_primal_internal!!(xn, txn, c)
+    end...)
+end
+@generated function translate_to_primal_internal!!(x::P, tx, c::MaybeCache) where {P}
+    if ismutabletype(P)
+        # Mutable type: set fields one by one if initialized
+        ttp_exprs = map(1:fieldcount(P)) do n
+            return quote
+                if is_init(tx.fields[$n])
+                    isdefined(x, $n) || error(
+                        "The field #$($n) of a tangent of type $(typeof(tx)) is initialized "
+                        * "but the corresponding primal field is not."
+                    )
+                    ccall(
+                        :jl_set_nth_field,
+                        Cvoid, (Any, Csize_t, Any),
+                        x, $(n-1),
+                        translate_to_primal_internal!!(getfield(x, $n), val(tx.fields[$n]), c),
+                    )
+                end
+                # If the tangent is not initialized, we leave the primal field as-is.
+                # It might make sense to unset the field instead.
+            end
         end
-    end
-
-    return quote
-        tangent_type(P) == NoTangent && return x
-
-        # TODO: mutable, uninit, caching
-        return $(Expr(:new, P, ttp_exprs...))
+        return quote
+            tx isa NoTangent && return x
+            tx isa MutableTangent || error(
+                "Generic translate_to_primal_internal!! implementation expected "
+                * "a MutableTangent but received a $(typeof(tx)) tangent type for "
+                * "a primal of type $P.\n"
+                * "This likely means that a specialized implementation of "
+                * "Mooncake.translate_to_primal_internal!! is missing.")
+            haskey(c, x) && return c[x]::P
+            c[x] = x
+            $(ttp_exprs...)
+            return x
+        end
+    else
+        ttp_exprs = map(1:fieldcount(P)) do n
+            return :(translate_to_primal_internal!!(getfield(x, $n), val(tx.fields[$n]), c))
+        end
+        # Generate a chain of if statements to handle partially-initialized structs
+        ninit = CC.datatype_min_ninitialized(P)
+        ex = :(return $(Expr(:new, P, ttp_exprs[1:ninit]...)))
+        for n in ninit+1:fieldcount(P)
+            cond = :(is_init(tx.fields[$n]))
+            expr = :(return $(Expr(:new, P, ttp_exprs[1:n]...)))
+            ex = Expr(:if, cond, expr, ex)
+        end
+        return quote
+            tx isa NoTangent && return x
+            tx isa Tangent || error(
+                "Generic translate_to_primal_internal!! implementation expected "
+                * "a Tangent but received a $(typeof(tx)) tangent type for "
+                * "a primal of type $P.\n"
+                * "This likely means that a specialized implementation of "
+                * "Mooncake.translate_to_primal_internal!! is missing.")
+            $ex
+        end
     end
 end
 
