@@ -26,20 +26,20 @@ _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
 @noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
-    verify_dual_inputs(rule.rule, x)
+    verify_dual_inputs(x)
     y = rule.rule(x...)
     verify_dual_output(x, y)
     return y::Dual
 end
 
-@noinline function verify_dual_inputs(rule, @nospecialize(x::Tuple))
+@noinline function verify_dual_inputs(@nospecialize(x::Tuple))
     try
         for _x in x
             _x isa Dual || error("Expected Dual, got $(typeof(_x))")
             verify_dual_value(_x)
         end
     catch e
-        error("error in inputs to rule with input types $(_typeof(x))")
+        error("Error in inputs to rule with input types $(_typeof(x))")
     end
 end
 
@@ -48,26 +48,25 @@ end
         y isa Dual || error("frule!! must return a Dual, got $(typeof(y))")
         verify_dual_value(y)
     catch e
-        error("error in outputs of rule with input types $(_typeof(x))")
+        error("Error in outputs of rule with input types $(_typeof(x))")
     end
 end
 
-@noinline function verify_dual_value(d::Dual)
-    p, t = primal(d), tangent(d)
-
-    # Fast path: type-level check
-    T_expected = tangent_type(typeof(p))
-    T_actual = typeof(t)
-    if !(T_actual <: T_expected)
+@noinline function verify_dual_value(d::Dual{P,T}) where {P,T}
+    # Fast path: type-level check using the Dual type parameters to enforce T == tangent_type(P)
+    T_expected = tangent_type(P)
+    if T !== T_expected
         throw(
             InvalidFDataException(
-                "Dual tangent type mismatch: primal $(typeof(p)) requires tangent type " *
-                "$T_expected, but got $T_actual",
+                "Dual tangent type mismatch: primal $P requires tangent type " *
+                "$T_expected, but got $T",
             ),
         )
     end
 
     # Slow path: deep structural validation
+    p, t = primal(d), tangent(d)
+    # We validate fdata and rdata separately so these helpers stay in sync with reverse-mode checks.
     verify_fdata_value(p, fdata(t))
     verify_rdata_value(p, rdata(t))
 
