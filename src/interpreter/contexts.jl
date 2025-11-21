@@ -154,8 +154,8 @@ primitive, but `true` afterwards. For more information on Julia's world age mech
 https://docs.julialang.org/en/v1/manual/methods/#Redefining-Methods .
 """
 function is_primitive(
-    ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt
-)
+    ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
+) where {Tsig<:Tuple}
     @nospecialize sig
 
     # We don't ever need to evaluate this function for abstract `mode`s, and there is a
@@ -173,8 +173,8 @@ function is_primitive(
 end
 
 function is_primitive(
-    ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt
-)
+    ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
+) where {Tsig<:Tuple}
     @nospecialize sig
 
     isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
@@ -234,8 +234,8 @@ Per the definition at the top of this docstring, this function returns `true` be
 `Tuple{typeof(foo),Float64} <: Tuple{typeof(foo),Real}`.
 """
 function maybe_primitive(
-    ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt
-)
+    ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
+) where {Tsig<:Tuple}
     @nospecialize sig
 
     # We don't ever need to evaluate this function for abstract `mode`s, and there is a
@@ -252,8 +252,8 @@ function maybe_primitive(
 end
 
 function maybe_primitive(
-    ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt
-)
+    ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
+) where {Tsig<:Tuple}
     @nospecialize sig
 
     # We don't ever need to evaluate this function for abstract `mode`s, and there is a
