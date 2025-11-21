@@ -100,7 +100,7 @@
 
             try
                 rule(zero_dual(identity), Mooncake.Dual([1.0], [Float32(1.0)]))
-                @test false "Expected ErrorException but none was thrown"
+                @test false  # Expected ErrorException but none was thrown
             catch e
                 msg = sprint(showerror, e)
                 @test occursin("input types", msg)
