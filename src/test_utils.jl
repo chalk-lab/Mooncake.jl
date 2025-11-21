@@ -928,7 +928,6 @@ function test_rule(
     debug_mode::Bool=false,
     unsafe_perturb::Bool=false,
     print_results=true,
-    world::UInt=Base.get_world_counter(),
     output_tangent=nothing,
     atol=1e-3,
     rtol=1e-3,
@@ -991,7 +990,7 @@ function test_rule(
             @testset "Caching" begin
                 if test_fwd
                     C_fwd = Mooncake.context_type(fwd_interp)
-                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, world)
+                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
                         cache_key = (sig, false, :forward)
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
@@ -999,7 +998,7 @@ function test_rule(
                 end
                 if test_rvs
                     C_rvs = Mooncake.context_type(rvs_interp)
-                    if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, world)
+                    if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
                         cache_key = (sig, false, :reverse)
                         k = Mooncake.ClosureCacheKey(rvs_interp.world, cache_key)
                         @test haskey(rvs_interp.oc_cache, k)
