@@ -702,7 +702,8 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Construct signature, and determine how the rrule is to be computed.
         sig = Tuple{arg_types...}
-        raw_rule = if is_primitive(context_type(info.interp), ReverseMode, sig)
+        interp = info.interp
+        raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
             rrule!! # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
             mi = get_mi(stmt.args[1])
@@ -1123,7 +1124,7 @@ function build_rrule(
 
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
-    if is_primitive(C, ReverseMode, sig)
+    if is_primitive(C, ReverseMode, sig, interp.world)
         rule = build_primitive_rrule(sig)
         return (debug_mode ? DebugRRule(rule) : rule)
     end
@@ -1900,7 +1901,7 @@ important for performance in dynamic dispatch, and to ensure that recursion work
 properly.
 """
 function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where {C}
-    if is_primitive(C, ReverseMode, _get_sig(sig_or_mi))
+    if is_primitive(C, ReverseMode, _get_sig(sig_or_mi), interp.world)
         rule = build_primitive_rrule(_get_sig(sig_or_mi))
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)
     end
