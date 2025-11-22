@@ -72,8 +72,8 @@ function Base.show(io::IO, mime::MIME"text/plain", mc::MooncakeInterpreter)
 end
 Base.show(io::IO, mc::MooncakeInterpreter) = _show_interp(io, MIME"text/plain"(), mc)
 
-function _show_interp(io::IO, ::MIME"text/plain", ::MooncakeInterpreter)
-    return print(io, "MooncakeInterpreter()")
+function _show_interp(io::IO, ::MIME"text/plain", ::MooncakeInterpreter{C,M}) where {C,M}
+    return print(io, "MooncakeInterpreter($M)")
 end
 
 MooncakeInterpreter(M::Type{<:Mode}) = MooncakeInterpreter(DefaultCtx, M)

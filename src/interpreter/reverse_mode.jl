@@ -1042,7 +1042,7 @@ end
 
 function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
     msg =
-        "MooncakeRuleCompilationError: an error occured while Mooncake was compiling a " *
+        "MooncakeRuleCompilationError: an error occurred while Mooncake was compiling a " *
         "rule to differentiate something. If the `caused by` error " *
         "message below does not make it clear to you how the problem can be fixed, " *
         "please open an issue at github.com/chalk-lab/Mooncake.jl describing your " *
