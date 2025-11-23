@@ -70,9 +70,9 @@ If you encounter a practical situation in which it is very important that this e
 
 ## Differentiating CUDA Kernels
 
-Mooncake.jl does not support differentiating custom CUDA kernels, such as those generated via KernelAbstractions.jl; c.f. https://github.com/chalk-lab/Mooncake.jl/issues/648) https://github.com/chalk-lab/Mooncake.jl/issues/835
-Support for custom CUDA kernels is outside the scope of the project and is considered a non-goal.
-Users may work around such code paths by providing a custom rule, potentially generated via another auto-differentiation tool; cf. https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288.
+Mooncake.jl supports differentiation of CUDA kernels in general, provided a suitable rule exists. However, it does not support kernels that surface as foreign calls, such as those generated via KernelAbstractions.jl (see [issue #648](https://github.com/chalk-lab/Mooncake.jl/issues/648) and [issue #835](https://github.com/chalk-lab/Mooncake.jl/issues/835)). Support for these foreign-call kernels is outside the scope of the project and is considered a non-goal.
+
+Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
 
 ## Circular References in Type Declarations
 
