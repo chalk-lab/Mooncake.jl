@@ -101,13 +101,13 @@ function _scale_internal(c::MaybeCache, a::Float64, t::Memory{T}) where {T}
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
 
-function translate_to_primal_internal!!(
+function tangent_to_primal_internal!!(
     x::Memory{P}, t::Memory{<:Any}, c::MaybeCache
 ) where {P}
     haskey(c, x) && return c[x]::Memory{P}
     c[x] = x
     return _map_if_assigned!(x, x, t) do xn, tn
-        return translate_to_primal_internal!!(xn, tn, c)
+        return tangent_to_primal_internal!!(xn, tn, c)
     end
 end
 
@@ -227,13 +227,13 @@ function _diff_internal(c::MaybeCache, p::P, q::P) where {P<:Array}
     return _map_if_assigned!((p, q) -> _diff_internal(c, p, q), t, p, q)
 end
 
-function translate_to_primal_internal!!(
+function tangent_to_primal_internal!!(
     x::Array{P,N}, t::Array{<:Any,N}, c::MaybeCache
 ) where {P,N}
     haskey(c, x) && return c[x]::Array{P,N}
     c[x] = x
     return _map_if_assigned!(x, x, t) do xn, tn
-        return translate_to_primal_internal!!(xn, tn, c)
+        return tangent_to_primal_internal!!(xn, tn, c)
     end
 end
 

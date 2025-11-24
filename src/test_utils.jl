@@ -1126,7 +1126,7 @@ Verifies that the following functions are implemented correctly (as far as possi
 - [`Mooncake._dot_internal`](@ref)
 - [`Mooncake._scale_internal`](@ref)
 - [`Mooncake.TestUtils.populate_address_map_internal`](@ref)
-- [`Mooncake.translate_to_primal_internal!!`](@ref)
+- [`Mooncake.tangent_to_primal_internal!!`](@ref)
 
 In conjunction with the functions tested by [`test_tangent_splitting`](@ref), these functions
 constitute a complete set of functions which must be applicable to `p` in order to ensure
@@ -1159,7 +1159,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     __dot(t, s) = Mooncake._dot_internal(IdDict{Any,Any}(), t, s)
     __scale(a::Float64, t) = Mooncake._scale_internal(IdDict{Any,Any}(), a, t)
     _populate_address_map(p, t) = populate_address_map_internal(AddressMap(), p, t)
-    _translate_to_primal!!(p, t) = Mooncake.translate_to_primal_internal!!(
+    _tangent_to_primal!!(p, t) = Mooncake.tangent_to_primal_internal!!(
         p, t, IdDict{Any,Any}()
     )
 
@@ -1260,13 +1260,13 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     @test has_equal_data(__scale(1.0, t), t)
     @test has_equal_data(__scale(2.0, t), _increment!!(deepcopy(t), t))
 
-    # Test for translate_to_primal!!
+    # Test for tangent_to_primal!!
     p1 = deepcopy([p])[1]
     t1 = _randn_tangent(rng, p1)
-    p1 = _translate_to_primal!!(p1, t1)
+    p1 = _tangent_to_primal!!(p1, t1)
     @test p1 isa P
     p2 = deepcopy([p])[1]
-    p2 = _translate_to_primal!!(p2, _zero_tangent(p2))
+    p2 = _tangent_to_primal!!(p2, _zero_tangent(p2))
     # Difference should be equal to the original randn tangent.
     t2 = __diff(p1, p2)
     t_diff = _increment!!(__scale(-1.0, t2), t1)
