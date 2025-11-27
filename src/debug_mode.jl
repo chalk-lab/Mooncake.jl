@@ -54,7 +54,7 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 
             # Handle varargs unflattening
             if isva
-                regular_types = primal_types[1:nargs_val-1]
+                regular_types = primal_types[1:(nargs_val - 1)]
                 vararg_types = primal_types[nargs_val:end]
                 grouped_type = Tuple{vararg_types...}
                 final_types = [regular_types..., grouped_type]

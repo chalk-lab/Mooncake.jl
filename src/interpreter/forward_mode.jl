@@ -94,7 +94,9 @@ _nargs(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
 
 # Extends functionality defined in debug_mode.jl.
 function verify_args(r::DerivedFRule{sig}, x) where {sig}
-    Tx = Tuple{map(_typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r))))...}
+    Tx = Tuple{
+        map(_typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r))))...
+    }
     Tx <: sig && return nothing
     throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
 end
@@ -417,7 +419,7 @@ mutable struct LazyFRule{primal_sig,Trule}
     rule::Trule
     function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
         interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,frule_type(interp, mi; debug_mode)}(debug_mode, mi)
     end
     function LazyFRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool
