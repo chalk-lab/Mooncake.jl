@@ -25,17 +25,65 @@ _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
-@noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
-    verify_dual_inputs(x)
-    # On Julia 1.10, calling an OpaqueClosure with mismatched types causes a segfault
-    # during codegen (JuliaLang/julia#51016). Use inferencebarrier to prevent specializing.
-    @static if VERSION < v"1.11-"
-        y = Base.inferencebarrier(rule.rule)(x...)
-    else
-        y = rule.rule(x...)
+@static if VERSION < v"1.11-"
+    # On Julia 1.10, use @generated to check types at compile time, preventing the
+    # compiler from ever seeing rule.rule(x...) with mismatched types, which would
+    # cause a segfault (JuliaLang/julia#51016).
+    @generated function (rule::DebugFRule{Trule})(x::Vararg{Dual,N}) where {Trule,N}
+        # First, check tangent type consistency for all Dual inputs at compile time.
+        # This prevents the compiler from generating code for rule.rule(x...) with
+        # mismatched Dual types (e.g., Dual{Float64,Float32} instead of Dual{Float64,Float64}).
+        for dt in x
+            P = dt.parameters[1]  # primal type
+            T = dt.parameters[2]  # tangent type
+            T_expected = tangent_type(P)
+            if T !== T_expected
+                msg = "Error in inputs to rule with input types $(Tuple{x...})"
+                return :(error($msg))
+            end
+        end
+
+        # Check primal types match rule signature
+        if Trule <: DerivedFRule && isconcretetype(Trule)
+            sig = Trule.parameters[1]      # primal_sig
+            isva = Trule.parameters[3]
+            nargs_val = Trule.parameters[4]
+
+            # Extract primal types
+            primal_types = [dt.parameters[1] for dt in x]
+
+            # Handle varargs unflattening
+            if isva
+                regular_types = primal_types[1:nargs_val-1]
+                vararg_types = primal_types[nargs_val:end]
+                grouped_type = Tuple{vararg_types...}
+                final_types = [regular_types..., grouped_type]
+            else
+                final_types = primal_types
+            end
+
+            Tx = Tuple{final_types...}
+            if !(Tx <: sig)
+                msg = "Arguments with sig $Tx do not subtype rule signature, $sig"
+                return :(throw(ArgumentError($msg)))
+            end
+        end
+
+        return quote
+            verify_dual_inputs(x)
+            y = rule.rule(x...)
+            verify_dual_output(x, y)
+            return y
+        end
     end
-    verify_dual_output(x, y)
-    return y::Dual
+else
+    @noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+        verify_args(rule.rule, x)
+        verify_dual_inputs(x)
+        y = rule.rule(x...)
+        verify_dual_output(x, y)
+        return y::Dual
+    end
 end
 
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
