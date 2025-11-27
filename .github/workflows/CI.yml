@@ -115,6 +115,7 @@ jobs:
         version:
           - 'lts'
           - '1.12'
+          - 'pre'
         arch:
           - x64
         include:
