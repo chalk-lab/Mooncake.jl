@@ -64,8 +64,8 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 
             Tx = Tuple{final_types...}
             if !(Tx <: sig)
-                msg = "Arguments with sig $Tx do not subtype rule signature, $sig"
-                return :(throw(ArgumentError($msg)))
+                msg = "Error in inputs to rule with input types $(Tuple{x...})"
+                return :(error($msg))
             end
         end
 
@@ -78,7 +78,11 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
     end
 else
     @noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
-        verify_args(rule.rule, x)
+        try
+            verify_args(rule.rule, x)
+        catch
+            error("Error in inputs to rule with input types $(_typeof(x))")
+        end
         verify_dual_inputs(x)
         y = rule.rule(x...)
         verify_dual_output(x, y)
