@@ -27,7 +27,13 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
 @noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
     verify_dual_inputs(x)
-    y = rule.rule(x...)
+    # On Julia 1.10, calling an OpaqueClosure with mismatched types causes a segfault
+    # during codegen (JuliaLang/julia#51016). Use inferencebarrier to prevent specializing.
+    @static if VERSION < v"1.11-"
+        y = Base.inferencebarrier(rule.rule)(x...)
+    else
+        y = rule.rule(x...)
+    end
     verify_dual_output(x, y)
     return y::Dual
 end
