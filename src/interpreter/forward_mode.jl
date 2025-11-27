@@ -419,7 +419,7 @@ mutable struct LazyFRule{primal_sig,Trule}
     rule::Trule
     function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
         interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,frule_type(interp, mi; debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
     end
     function LazyFRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool
