@@ -79,6 +79,28 @@ function _diff_internal(c::MaybeCache, p::P, q::P) where {K,V,P<:IdDict{K,V}}
     end
     return t
 end
+function tangent_to_primal_internal!!(
+    x::P, t, c::MaybeCache
+) where {P<:IdDict}
+    haskey(c, x) && return c[x]::P
+    @assert union(keys(x), keys(t)) == keys(x)
+    c[x] = x
+    for k in keys(x)
+        x[k] = tangent_to_primal_internal!!(x[k], t[k], c)
+    end
+    return x
+end
+function primal_to_tangent_internal!!(
+    t, x::P, c::MaybeCache
+) where {P<:IdDict}
+    haskey(c, x) && return c[x]::tangent_type(P)
+    @assert union(keys(t), keys(x)) == keys(t)
+    c[x] = t
+    for k in keys(t)
+        t[k] = primal_to_tangent_internal!!(t[k], x[k], c)
+    end
+    return t
+end
 function TestUtils.populate_address_map_internal(
     m::TestUtils.AddressMap, p::IdDict, t::IdDict
 )
