@@ -13,12 +13,17 @@ test_differentiation(
     logging=true,
 )
 
-# Test Hessian computation using forward-over-reverse (it hangs)
-# test_differentiation(
-#     [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))];
-#     excluded=vcat(FIRST_ORDER, [:hvp, :second_derivative]),  # Only test hessian
-#     logging=true,
-# )
+# Test Hessian computation using forward-over-reverse with DITest scenarios.
+# Using linalg=false to select loop-based test functions instead of the default
+# versions that use broadcasting and linear algebra ops (vec, transpose).
+# Broadcasting in forward-over-reverse mode causes compilation hangs due to
+# complex nested types that overwhelm Julia's type inference.
+test_differentiation(
+    [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))];
+    scenarios=default_scenarios(; linalg=false),
+    excluded=vcat(FIRST_ORDER, [:hvp, :second_derivative]),
+    logging=true,
+)
 
 @testset "Mooncake Hessian tests" begin
     backend = SecondOrder(
@@ -35,5 +40,11 @@ test_differentiation(
         rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
         H = DI.hessian(rosen, backend, [1.2, 1.2])
         @test isapprox(H, [1250.0 -480.0; -480.0 200.0]; rtol=1e-10, atol=1e-12)
+    end
+
+    # Test higher integer powers (fixed by adding frule for ^(Float, Int))
+    @testset "higher powers" begin
+        @test DI.hessian(x -> x[1]^4, backend, [2.0]) ≈ [48.0]
+        @test DI.hessian(x -> x[1]^6, backend, [2.0]) ≈ [480.0]
     end
 end

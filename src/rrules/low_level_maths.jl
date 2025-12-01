@@ -71,6 +71,23 @@
 @from_chainrules MinimalCtx Tuple{typeof(deg2rad),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(rad2deg),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
+
+# ^(Float, Int) for literal integer powers like x^4. Forward and reverse modes
+# individually derive rules fine, but forward-over-reverse (Hessian) compilation
+# hangs without this as it tries to differentiate through Julia's power implementation.
+@is_primitive MinimalCtx Tuple{typeof(^),P,Integer} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(^)}, x::Dual{P}, p::Dual{<:Integer}) where {P<:IEEEFloat}
+    _x, _p = primal(x), primal(p)
+    return Dual(_x^_p, _p * _x^(_p - 1) * tangent(x))
+end
+function rrule!!(
+    ::CoDual{typeof(^)}, x::CoDual{P}, p::CoDual{<:Integer}
+) where {P<:IEEEFloat}
+    _x, _p = primal(x), primal(p)
+    pow_int_pb(dy::P) = NoRData(), dy * _p * _x^(_p - 1), NoRData()
+    return zero_fcodual(_x^_p), pow_int_pb
+end
+
 @from_chainrules MinimalCtx Tuple{typeof(atan),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(max),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(min),P,P} where {P<:IEEEFloat}
