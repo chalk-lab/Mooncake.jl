@@ -1345,7 +1345,7 @@ function tangent_to_primal!!(primal::P, tangent) where {P}
     @assert typeof(tangent) <: tangent_type(P)
     return tangent_to_primal_internal!!(
         primal, tangent, isbitstype(P) ? NoCache() : IdDict()
-    )
+    )::P
 end
 
 """
@@ -1359,23 +1359,27 @@ function primal_to_tangent!!(tangent, primal::P) where {P}
     @assert typeof(tangent) <: tangent_type(P)
     return primal_to_tangent_internal!!(
         tangent, primal, isbitstype(P) ? NoCache() : IdDict()
-    )
+    )::tangent_type(P)
 end
 
 """
     tangent_to_primal_internal!!(x, tx, c::MaybeCache)
 
-Implementation of [`tangent_to_primal!!`](@ref). Makes use of a cache in
-the same way that other Mooncake internal functions do, see for example
-[`zero_tangent_internal`](@ref).
+Implementation of [`tangent_to_primal!!`](@ref).
+
+For mutable types, the cache should be used to avoid infinite recursion.
+For every mutable `x`, if there is an entry `c[x]`, then it can be returned directly.
+Otherwise, the corresponding updated primal should be stored in the cache.
 """
 function tangent_to_primal_internal!! end
 """
     primal_to_tangent_internal!!(tx, x, c::MaybeCache)
 
-Implementation of [`primal_to_tangent!!`](@ref). Makes use of a cache in
-the same way that other Mooncake internal functions do, see for example
-[`zero_tangent_internal`](@ref).
+Implementation of [`primal_to_tangent!!`](@ref).
+
+For mutable types, the cache should be used to avoid infinite recursion.
+For every mutable `x`, if there is an entry `c[x]`, then it can be returned directly.
+Otherwise, the corresponding updated tangent should be stored in the cache.
 """
 function primal_to_tangent_internal!! end
 
@@ -1426,7 +1430,7 @@ function primal_to_tangent_internal!!(tx, x::Ptr{T}, c::MaybeCache) where {T}
     return throw(ArgumentError("primal_to_tangent!! not available for pointers."))
 end
 function tangent_to_primal_internal!!(x::SimpleVector, tx, c::MaybeCache)
-    haskey(c, x) & return c[x]::SimpleVector
+    haskey(c, x) && return c[x]::SimpleVector
     # There doesn't seem to be a nice way to modify a SimpleVector in-place,
     # so we just create a new one.
     x′ = svec(map(x, tx) do xn, txn
@@ -1439,8 +1443,8 @@ function primal_to_tangent_internal!!(tx, x::SimpleVector, c::MaybeCache)
     haskey(c, x) && c[x]::Vector{Any}
     @assert length(tx) == length(x)
     c[x] = tx
-    map!(tx, tx, x) do txn, xn
-        primal_to_tangent_internal!!(txn, xn, c)
+    for i in eachindex(x)
+        tx[i] = primal_to_tangent_internal!!(tx[i], x[i], c)
     end
     return tx
 end

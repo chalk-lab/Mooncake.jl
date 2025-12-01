@@ -110,6 +110,15 @@ function tangent_to_primal_internal!!(
         return tangent_to_primal_internal!!(xn, tn, c)
     end
 end
+function primal_to_tangent_internal!!(
+    t::Memory{T}, x::Memory{<:Any}, c::MaybeCache
+) where {T}
+    haskey(c, x) && return c[x]::Memory{T}
+    c[x] = t
+    return _map_if_assigned!(t, t, x) do tn, xn
+        return primal_to_tangent_internal!!(tn, xn, c)
+    end
+end
 
 import .TestUtils: populate_address_map_internal
 function populate_address_map_internal(m::TestUtils.AddressMap, p::Memory, t::Memory)
@@ -236,6 +245,15 @@ function tangent_to_primal_internal!!(
         return tangent_to_primal_internal!!(xn, tn, c)
     end
 end
+function primal_to_tangent_internal!!(
+    t::Array{T,N}, x::Array{<:Any,N}, c::MaybeCache
+) where {T,N}
+    haskey(c, x) && return c[x]::Array{T,N}
+    c[x] = t
+    return _map_if_assigned!(t, t, x) do tn, xn
+        return primal_to_tangent_internal!!(tn, xn, c)
+    end
+end
 
 # Rules
 
@@ -350,6 +368,13 @@ end
 function _diff_internal(c::MaybeCache, p::P, q::P) where {P<:MemoryRef}
     @assert Core.memoryrefoffset(p) == Core.memoryrefoffset(q)
     return construct_ref(p, _diff_internal(c, p.mem, q.mem))
+end
+
+function tangent_to_primal_internal!!(x::MemoryRef, tx, c::MaybeCache)
+    return construct_ref(x, tangent_to_primal_internal!!(x.mem, tx.mem, c))
+end
+function primal_to_tangent_internal!!(tx, x::MemoryRef, c::MaybeCache)
+    return construct_ref(x, primal_to_tangent_internal!!(tx.mem, x.mem, c))
 end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:MemoryRef}

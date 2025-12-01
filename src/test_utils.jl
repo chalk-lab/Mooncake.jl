@@ -1271,6 +1271,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     @test t2 isa T
     @test has_equal_data(t1, t2)
     # TODO: remove once _diff is removed
+    # TODO: we could test the consistency with add_to_primal instead?
     p2 = deepcopy([p])[1]
     p2 = _tangent_to_primal!!(p2, _zero_tangent(p2))
     # Difference should be equal to the original randn tangent.
