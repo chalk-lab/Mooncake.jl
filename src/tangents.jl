@@ -1349,6 +1349,20 @@ function tangent_to_primal!!(primal::P, tangent) where {P}
 end
 
 """
+    primal_to_tangent!!(tangent::T, primal)::T where {T}
+
+Extract the differentiable data from a primal into a tangent type,
+modifying the tangent in place as much as possible to minimize allocations.
+The primal is not modified, and the returned tangent will not alias it.
+"""
+function primal_to_tangent!!(tangent, primal::P) where {P}
+    @assert typeof(tangent) <: tangent_type(P)
+    return primal_to_tangent_internal!!(
+        tangent, primal, isbitstype(P) ? NoCache() : IdDict()
+    )
+end
+
+"""
     tangent_to_primal_internal!!(x, tx, c::MaybeCache)
 
 Implementation of [`tangent_to_primal!!`](@ref). Makes use of a cache in
@@ -1356,13 +1370,27 @@ the same way that other Mooncake internal functions do, see for example
 [`zero_tangent_internal`](@ref).
 """
 function tangent_to_primal_internal!! end
+"""
+    primal_to_tangent_internal!!(tx, x, c::MaybeCache)
+
+Implementation of [`primal_to_tangent!!`](@ref). Makes use of a cache in
+the same way that other Mooncake internal functions do, see for example
+[`zero_tangent_internal`](@ref).
+"""
+function primal_to_tangent_internal!! end
 
 function tangent_to_primal_internal!!(
     x::Union{Int8,Int16,Int32,Int64,Int128}, tx, c::MaybeCache
 )
     x
 end
+function primal_to_tangent_internal!!(
+    tx, x::Union{Int8,Int16,Int32,Int64,Int128}, c::MaybeCache
+)
+    NoTangent()
+end
 tangent_to_primal_internal!!(x::IEEEFloat, tx, c::MaybeCache) = tx
+primal_to_tangent_internal!!(tx, x::IEEEFloat, c::MaybeCache) = x
 @generated function tangent_to_primal_internal!!(x::Tuple, tx, c::MaybeCache)
     ttp_exprs = map(
         n -> :(tangent_to_primal_internal!!(x[$n], tx[$n], c)), 1:fieldcount(x)
@@ -1372,22 +1400,49 @@ tangent_to_primal_internal!!(x::IEEEFloat, tx, c::MaybeCache) = tx
         return $(Expr(:call, :tuple, ttp_exprs...))
     end
 end
+@generated function primal_to_tangent_internal!!(tx, x::Tuple, c::MaybeCache)
+    ptt_exprs = map(
+        n -> :(primal_to_tangent_internal!!(tx[$n], x[$n], c)), 1:fieldcount(x)
+    )
+    return quote
+        tx isa NoTangent && return NoTangent()
+        return $(Expr(:call, :tuple, ptt_exprs...))
+    end
+end
 function tangent_to_primal_internal!!(x::NamedTuple, tx, c::MaybeCache)
     tx isa NoTangent && return x
     return tuple_map(Base.Fix{3}(tangent_to_primal_internal!!, c), x, tx)
+end
+function primal_to_tangent_internal!!(tx, x::NamedTuple, c::MaybeCache)
+    tx isa NoTangent && return NoTangent()
+    return tuple_map(Base.Fix{3}(primal_to_tangent_internal!!, c), tx, x)
 end
 function tangent_to_primal_internal!!(x::Ptr{T}, tx, c::MaybeCache) where {T}
     tangent_type(T) == NoTangent && return x
     return throw(ArgumentError("tangent_to_primal!! not available for pointers."))
 end
+function primal_to_tangent_internal!!(tx, x::Ptr{T}, c::MaybeCache) where {T}
+    tangent_type(T) == NoTangent && return NoTangent()
+    return throw(ArgumentError("primal_to_tangent!! not available for pointers."))
+end
 function tangent_to_primal_internal!!(x::SimpleVector, tx, c::MaybeCache)
+    haskey(c, x) & return c[x]::SimpleVector
     # There doesn't seem to be a nice way to modify a SimpleVector in-place,
     # so we just create a new one.
-    # For this reason we also do not attempt to cache the simple vector here,
-    # since we'd have to first create one and then mutate it in-place.
-    return svec(map(x, tx) do xn, txn
+    x′ = svec(map(x, tx) do xn, txn
         tangent_to_primal_internal!!(xn, txn, c)
     end...)
+    c[x] = x′
+    return x′
+end
+function primal_to_tangent_internal!!(tx, x::SimpleVector, c::MaybeCache)
+    haskey(c, x) && c[x]::Vector{Any}
+    @assert length(tx) == length(x)
+    c[x] = tx
+    map!(tx, tx, x) do txn, xn
+        primal_to_tangent_internal!!(txn, xn, c)
+    end
+    return tx
 end
 @generated function tangent_to_primal_internal!!(x::P, tx, c::MaybeCache) where {P}
     if ismutabletype(P)
@@ -1450,6 +1505,66 @@ end
                 "Mooncake.tangent_to_primal_internal!! is missing.",
             )
             $ex
+        end
+    end
+end
+@generated function primal_to_tangent_internal!!(tx, x::P, c::MaybeCache) where {P}
+    inits = always_initialised(P)
+    ptt_exprs = map(1:fieldcount(P)) do n
+        if inits[n]
+            return :(primal_to_tangent_internal!!(tx.fields[$n], getfield(x, $n), c))
+        else
+            P_field = fieldtype(P, n)
+            T_field_expr = :(PossiblyUninitTangent{tangent_type($P_field)})
+            return quote
+                if isdefined(x, $n)
+                    is_init(tx.fields[$n]) || error(
+                        "The field #$($n) of an object of type $(typeof(x)) is " *
+                        "initialized but the corresponding tangent field is not."
+                    )
+                    $T_field_expr(primal_to_tangent_internal!!(
+                        val(tx.fields[$n]),
+                        getfield(x, $n),
+                        c,
+                    ))
+                else
+                    is_init(tx.fields[$n]) && error(
+                        "The field #$($n) of an object of type $(typeof(x)) is " *
+                        "not initialized but the corresponding tangent field is."
+                    )
+                    $T_field_expr()
+                end
+            end
+        end
+    end
+    if ismutabletype(P)
+        return quote
+            tx isa NoTangent && return NoTangent()
+            tx isa MutableTangent || error(
+                "Generic primal_to_tangent_internal!! implementation expected " *
+                "a MutableTangent but received a $(typeof(tx)) tangent type for " *
+                "a primal of type $P.\n" *
+                "This likely means that a specialized implementation of " *
+                "Mooncake.primal_to_tangent_internal!! is missing.",
+            )
+            haskey(c, x) && return c[x]::tangent_type(P)
+            c[x] = tx
+            Tfields = typeof(tx).parameters[1]
+            tx.fields = Tfields(($(ptt_exprs...),))
+            return tx
+        end
+    else
+        return quote
+            tx isa NoTangent && return NoTangent()
+            tx isa Tangent || error(
+                "Generic primal_to_tangent_internal!! implementation expected " *
+                "a Tangent but received a $(typeof(tx)) tangent type for " *
+                "a primal of type $P.\n" *
+                "This likely means that a specialized implementation of " *
+                "Mooncake.primal_to_tangent_internal!! is missing.",
+            )
+            Tfields = typeof(tx).parameters[1]
+            return Tangent(Tfields(($(ptt_exprs...),)))
         end
     end
 end

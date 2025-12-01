@@ -1162,6 +1162,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     _tangent_to_primal!!(p, t) = Mooncake.tangent_to_primal_internal!!(
         p, t, IdDict{Any,Any}()
     )
+    _primal_to_tangent!!(t, p) = Mooncake.primal_to_tangent_internal!!(t, p, IdDict{Any,Any}())
 
     # Check that tangent_type returns a `Type`.
     T = tangent_type(P)
@@ -1260,17 +1261,23 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     @test has_equal_data(__scale(1.0, t), t)
     @test has_equal_data(__scale(2.0, t), _increment!!(deepcopy(t), t))
 
-    # Test for tangent_to_primal!!
+    # Test for tangent_to_primal!! / primal_to_tangent!!
     p1 = deepcopy([p])[1]
     t1 = _randn_tangent(rng, p1)
     p1 = _tangent_to_primal!!(p1, t1)
     @test p1 isa P
+    t2 = _zero_tangent(p1)
+    t2 = _primal_to_tangent!!(t2, p1)
+    @test t2 isa T
+    @test has_equal_data(t1, t2)
+    # TODO: remove once _diff is removed
     p2 = deepcopy([p])[1]
     p2 = _tangent_to_primal!!(p2, _zero_tangent(p2))
     # Difference should be equal to the original randn tangent.
-    t2 = __diff(p1, p2)
-    t_diff = _increment!!(__scale(-1.0, t2), t1)
-    @show p
+    p3 = deepcopy([p])[1]
+    p3 = _tangent_to_primal!!(p3, t1)
+    t3 = __diff(p3, p2)
+    t_diff = _increment!!(__scale(-1.0, t3), t1)
     @test __dot(t_diff, t_diff) ≤ sqrt(eps(Float64))
 end
 
