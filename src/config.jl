@@ -10,8 +10,14 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
 - `silence_debug_messages::Bool=false`: if `false` and `debug_mode` is `true`, Mooncake will
     display some warnings that debug mode is enabled, in order to help prevent accidentally
     leaving debug mode on. If you wish to disable these messages, set this to `true`.
+- `friendly_tangents::Bool=false`: if `true`, DifferentiationInterface will represent
+    tangents using the primal type (e.g. the tangent of a custom struct will be of the
+    same type as the struct instead of Mooncake's `Tangent` type). The tangent is converted
+    from/to the friendly representation at the interface level, so all Mooncake internal
+    computations and rule implementations always use the [`tangent_type`](@ref) representation.
 """
 @kwdef struct Config
     debug_mode::Bool = false
     silence_debug_messages::Bool = false
+    friendly_tangents::Bool = false
 end
