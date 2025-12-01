@@ -10,6 +10,17 @@ struct DualRuleInfo
     dual_ret_type::Type
 end
 
+"""
+    build_frule(
+        interp::MooncakeInterpreter{C},
+        sig_or_mi;
+        debug_mode=false,
+        silence_debug_messages=true,
+    ) where {C}
+
+Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
+`sig_or_mi` is not a primitive.
+"""
 function build_frule(
     interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, silence_debug_messages=true
 ) where {C}
@@ -33,7 +44,9 @@ function build_frule(
 
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
-    is_primitive(C, ForwardMode, sig) && return (debug_mode ? DebugFRule(frule!!) : frule!!)
+    if is_primitive(C, ForwardMode, sig, interp.world)
+        return (debug_mode ? DebugFRule(frule!!) : frule!!)
+    end
 
     # We don't have a hand-coded rule, so derive one.
     lock(MOONCAKE_INFERENCE_LOCK)
@@ -377,7 +390,8 @@ function modify_fwd_ad_stmts!(
             return uninit_dual(get_const_primal_value(arg))
         end
 
-        if is_primitive(context_type(info.interp), ForwardMode, sig)
+        interp = info.interp
+        if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
             replace_call!(dual_ir, ssa, Expr(:call, frule!!, dual_args...))
         else
             dm = info.debug_mode
@@ -471,7 +485,7 @@ function frule_type(
     interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
 ) where {C}
     primal_sig = _get_sig(mi)
-    if is_primitive(C, ForwardMode, primal_sig)
+    if is_primitive(C, ForwardMode, primal_sig, interp.world)
         return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
     end
     ir, _ = lookup_ir(interp, mi)
