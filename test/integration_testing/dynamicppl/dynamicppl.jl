@@ -94,23 +94,18 @@ end
         Any[
             (false, "simple_model", simple_model()),
             (false, "demo", demo()),
-            (
-                false,
-                "broadcast_demo",
-                broadcast_demo(rand(LogNormal(1.5, 0.5), 1_000)),
-            ),
+            (false, "broadcast_demo", broadcast_demo(rand(LogNormal(1.5, 0.5), 1_000))),
             (false, "large model", make_large_model()),
             (
                 false,
                 "CollapsedLDA",
                 LatentDirichletAllocationVectorizedCollapsedManual(
-                    data.D, data.K, data.V, data.α, data.η, data.w, data.doc,
+                    data.D, data.K, data.V, data.α, data.η, data.w, data.doc
                 ),
-            )
+            ),
         ],
         Any[
-            (false, "demo_$n", m) for
-            (n, m) in enumerate(DynamicPPL.TestUtils.DEMO_MODELS)
+            (false, "demo_$n", m) for (n, m) in enumerate(DynamicPPL.TestUtils.DEMO_MODELS)
         ],
     )
         @info name
