@@ -80,8 +80,8 @@ end
 # Run this once in order to avoid world age problems in testset.
 make_large_model()
 
-function build_dynamicppl_problem(rng, model, example=nothing)
-    vi = DynamicPPL.VarInfo(example === nothing ? model : example)
+function build_dynamicppl_problem(rng, model)
+    vi = DynamicPPL.VarInfo(model)
     vi_linked = DynamicPPL.link!!(vi, model)
     ldp = DynamicPPL.LogDensityFunction(model, DynamicPPL.getlogjoint_internal, vi_linked)
     test_function = Base.Fix1(DynamicPPL.LogDensityProblems.logdensity, ldp)
@@ -90,32 +90,31 @@ function build_dynamicppl_problem(rng, model, example=nothing)
 end
 
 @testset "dynamicppl" begin
-    @testset "$(typeof(model))" for (interface_only, name, model, ex) in vcat(
+    @testset "$(typeof(model))" for (interface_only, name, model) in vcat(
         Any[
-            (false, "simple_model", simple_model(), nothing),
-            (false, "demo", demo(), nothing),
+            (false, "simple_model", simple_model()),
+            (false, "demo", demo()),
             (
                 false,
                 "broadcast_demo",
                 broadcast_demo(rand(LogNormal(1.5, 0.5), 1_000)),
-                nothing,
             ),
-            (false, "large model", make_large_model(), nothing),
-            # (
-            #     false,
-            #     "CollapsedLDA",
-            #     LatentDirichletAllocationVectorizedCollapsedMannual(
-            #         data.D, data.K, data.V, data.α, data.η, data.w, data.doc,
-            #     ),
-            # ), doesn't currently work with SimpleVarInfo
+            (false, "large model", make_large_model()),
+            (
+                false,
+                "CollapsedLDA",
+                LatentDirichletAllocationVectorizedCollapsedMannual(
+                    data.D, data.K, data.V, data.α, data.η, data.w, data.doc,
+                ),
+            )
         ],
         Any[
-            (false, "demo_$n", m, DynamicPPL.TestUtils.rand_prior_true(m)) for
+            (false, "demo_$n", m) for
             (n, m) in enumerate(DynamicPPL.TestUtils.DEMO_MODELS)
         ],
     )
         @info name
-        f, x = build_dynamicppl_problem(StableRNG(123), model, ex)
+        f, x = build_dynamicppl_problem(StableRNG(123), model)
         rng = StableRNG(123456)
         test_rule(rng, f, x; interface_only, is_primitive=false, unsafe_perturb=true)
     end
