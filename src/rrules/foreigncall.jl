@@ -254,6 +254,30 @@ function rrule!!(
     return zero_fcodual(y), NoPullback(ntuple(_ -> NoRData(), 8))
 end
 
+function frule!!(
+    ::Dual{typeof(_foreigncall_)},
+    ::Dual{Val{:jl_has_free_typevars}},
+    ::Dual{Val{Int32}}, # return type
+    ::Dual{Tuple{Val{Any}}}, # arg types
+    ::Dual{Val{0}}, # number of required args
+    ::Dual{Val{:ccall}},
+    t::Dual,
+)
+    return zero_dual(ccall(:jl_has_free_typevars, Int32, (Any,), primal(t)))
+end
+function rrule!!(
+    ::CoDual{typeof(_foreigncall_)},
+    ::CoDual{Val{:jl_has_free_typevars}},
+    ::CoDual{Val{Int32}}, # return type
+    ::CoDual{Tuple{Val{Any}}}, # arg types
+    ::CoDual{Val{0}}, # number of required args
+    ::CoDual{Val{:ccall}},
+    t::CoDual,
+)
+    y = ccall(:jl_has_free_typevars, Int32, (Any,), primal(t))
+    return zero_fcodual(y), NoPullback(ntuple(_ -> NoRData(), 7))
+end
+
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
 frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
@@ -448,6 +472,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             (t, v) -> ccall(:jl_type_unionall, Any, (Any, Any), t, v),
             TypeVar(:a),
             Real,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            t -> ccall(:jl_has_free_typevars, Int32, (Any,), t),
+            Float64,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            t -> ccall(:jl_has_free_typevars, Int32, (Any,), t),
+            Vector{Float64},
         ),
         (
             true,
