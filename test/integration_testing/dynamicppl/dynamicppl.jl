@@ -56,9 +56,9 @@ data = let D = 2, K = 2, V = 160, N = 290
 end
 
 # LDA with vectorization and manual log-density accumulation
-@model function LatentDirichletAllocationVectorizedCollapsedMannual(D, K, V, α, η, w, doc)
-    β ~ filldist(Dirichlet(η), K)
-    θ ~ filldist(Dirichlet(α), D)
+@model function LatentDirichletAllocationVectorizedCollapsedManual(D, K, V, α, η, w, doc)
+    β ~ product_distribution(fill(Dirichlet(η), K))
+    θ ~ product_distribution(fill(Dirichlet(α), D))
 
     log_product = log.(β * θ)
     DynamicPPL.@addlogprob! sum(log_product[CartesianIndex.(w, doc)])
@@ -103,7 +103,7 @@ end
             (
                 false,
                 "CollapsedLDA",
-                LatentDirichletAllocationVectorizedCollapsedMannual(
+                LatentDirichletAllocationVectorizedCollapsedManual(
                     data.D, data.K, data.V, data.α, data.η, data.w, data.doc,
                 ),
             )
