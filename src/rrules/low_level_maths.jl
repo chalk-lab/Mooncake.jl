@@ -74,6 +74,7 @@
 @from_chainrules MinimalCtx Tuple{typeof(atan),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(max),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(min),P,P} where {P<:IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(mod),P,P} where {P<:IEEEFloat}
 
 @is_primitive MinimalCtx Tuple{typeof(mod2pi),IEEEFloat}
 function frule!!(::Dual{typeof(mod2pi)}, x::Dual{P}) where {P<:IEEEFloat}
@@ -283,6 +284,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (deg2rad, P(185.4)),
                 (rad2deg, P(0.45)),
                 (mod2pi, P(0.1)),
+                (mod, P(7.5), P(2.3)),
+                (mod, P(10.2), P(3.1)),
                 (^, P(4.0), P(5.0)),
                 (atan, P(4.3), P(0.23)),
                 (hypot, P(4.0), P(5.0)),

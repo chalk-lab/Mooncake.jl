@@ -96,6 +96,7 @@ using Mooncake:
     MutableTangent,
     frule!!,
     rrule!!,
+    DebugFRule,
     build_rrule,
     tangent_type,
     zero_tangent,
@@ -220,7 +221,8 @@ end
 function has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
 ) where {P<:Base.IEEEFloat}
-    return (isapprox(x, y) && !isnan(x)) || (isnan(x) && isnan(y))
+    # Pass an atol such that we can compare approximately against 0 values.
+    return isapprox(x, y; atol=(√eps(P)), nans=true)
 end
 function has_equal_data_internal(
     x::Module, y::Module, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
@@ -889,11 +891,11 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     therefore, be generated for it automatically.
 - `is_primitive::Bool=true`: check whether the thing that you are testing has a hand-written
     `rrule!!`. This option is helpful if you are testing a new `rrule!!`, as it enables you
-    to verify that your method of `is_primitive` has returned the correct value, and that
-    you are actually testing a method of the `rrule!!` function -- a common mistake when
-    authoring a new `rrule!!` is to implement `is_primitive` incorrectly and to accidentally
-    wind up testing a rule which Mooncake has derived, as opposed to the one that you have
-    written. If you are testing something for which you have not
+    to verify that a method of `is_primitive` exists whose signature matches these
+    arguments, and that you are actually testing a method of the `rrule!!` function -- a
+    common mistake when authoring a new `rrule!!` is to implement `is_primitive` incorrectly
+    and to accidentally wind up testing a rule which Mooncake has derived, as opposed to the
+    one that you have written. If you are testing something for which you have not
     hand-written an `rrule!!`, or which you do not care whether it has a hand-written
     `rrule!!` or not, you should set it to `false`.
 - `perf_flag::Symbol=:none`: the value of this symbol determines what kind of performance
@@ -943,8 +945,8 @@ function test_rule(
     frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
     rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
 
-    # If something is primitive, then the rule should be `rrule!!`.
-    test_fwd && is_primitive && @test frule == frule!!
+    # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
+    test_fwd && is_primitive && @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
     test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
@@ -989,7 +991,7 @@ function test_rule(
             @testset "Caching" begin
                 if test_fwd
                     C_fwd = Mooncake.context_type(fwd_interp)
-                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig)
+                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
                         cache_key = (sig, false, :forward)
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
@@ -997,7 +999,7 @@ function test_rule(
                 end
                 if test_rvs
                     C_rvs = Mooncake.context_type(rvs_interp)
-                    if !Mooncake.is_primitive(C_rvs, ReverseMode, sig)
+                    if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
                         cache_key = (sig, false, :reverse)
                         k = Mooncake.ClosureCacheKey(rvs_interp.world, cache_key)
                         @test haskey(rvs_interp.oc_cache, k)

@@ -29,6 +29,7 @@ jobs:
           'basic',
           'rrules/avoiding_non_differentiable_code',
           'rrules/blas',
+          'rrules/blas_level_3',
           'rrules/builtins',
           'rrules/dispatch_doctor',
           'rrules/fastmath',
@@ -60,7 +61,7 @@ jobs:
             version: 'lts'
             arch: x64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
@@ -115,7 +116,7 @@ jobs:
         arch:
           - x64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
@@ -148,7 +149,7 @@ jobs:
           - 'hand_written'
           - 'derived'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.11'
@@ -167,7 +168,7 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.11'
