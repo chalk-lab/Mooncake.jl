@@ -81,7 +81,7 @@ end
 make_large_model()
 
 function build_dynamicppl_problem(rng, model, example=nothing)
-    vi = DynamicPPL.SimpleVarInfo(example === nothing ? model : example)
+    vi = DynamicPPL.VarInfo(example === nothing ? model : example)
     vi_linked = DynamicPPL.link(vi, model)
     ldp = DynamicPPL.LogDensityFunction(model, DynamicPPL.getlogjoint_internal, vi_linked)
     test_function = Base.Fix1(DynamicPPL.LogDensityProblems.logdensity, ldp)
