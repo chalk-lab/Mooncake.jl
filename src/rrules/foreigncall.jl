@@ -254,6 +254,8 @@ function rrule!!(
     return zero_fcodual(y), NoPullback(ntuple(_ -> NoRData(), 8))
 end
 
+@zero_derivative MinimalCtx Tuple{typeof(Base.has_free_typevars),Any}
+
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
 frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
@@ -449,6 +451,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             TypeVar(:a),
             Real,
         ),
+        (false, :none, nothing, Base.has_free_typevars, Float64),
+        (false, :none, nothing, Base.has_free_typevars, Vector{Float64}),
         (
             true,
             :none,
