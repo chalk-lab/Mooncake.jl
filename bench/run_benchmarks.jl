@@ -119,7 +119,7 @@ end
 function build_dynamicppl_problem()
     rng = Xoshiro(123)
     model = broadcast_demo(rand(rng, LogNormal(1.5, 0.5), 100_000))
-    vi = DynamicPPL.SimpleVarInfo(model)
+    vi = DynamicPPL.VarInfo(model)
     vi_linked = DynamicPPL.link(vi, model)
     ldp = DynamicPPL.LogDensityFunction(model, DynamicPPL.getlogjoint_internal, vi_linked)
     test_function = Base.Fix1(DynamicPPL.LogDensityProblems.logdensity, ldp)
