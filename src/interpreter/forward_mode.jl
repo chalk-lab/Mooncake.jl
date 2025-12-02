@@ -89,6 +89,18 @@ function _copy(x::P) where {P<:DerivedFRule}
     return P(replace_captures(x.fwd_oc, _copy(x.fwd_oc.oc.captures)))
 end
 
+_isva(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = isva
+_nargs(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
+
+# Extends functionality defined in debug_mode.jl.
+function verify_args(r::DerivedFRule{sig}, x) where {sig}
+    Tx = Tuple{
+        map(_typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r))))...
+    }
+    Tx <: sig && return nothing
+    throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
+end
+
 """
     __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
 
