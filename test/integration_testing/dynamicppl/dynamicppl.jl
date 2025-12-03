@@ -97,7 +97,7 @@ end
             (false, "broadcast_demo", broadcast_demo(rand(LogNormal(1.5, 0.5), 1_000))),
             (false, "large model", make_large_model()),
             (
-                false,
+                true,
                 "CollapsedLDA",
                 LatentDirichletAllocationVectorizedCollapsedManual(
                     data.D, data.K, data.V, data.α, data.η, data.w, data.doc
