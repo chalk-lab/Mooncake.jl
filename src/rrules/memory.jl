@@ -605,16 +605,6 @@ function rrule!!(
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
 end
 
-# Core.memorynew is called inside rrule!! for Memory allocation. Forward-over-reverse
-# (Hessian) needs this frule when forward mode differentiates through reverse mode code.
-@inline function frule!!(
-    ::Dual{typeof(Core.memorynew)}, ::Dual{Type{Memory{P}}}, n::Dual{Int}
-) where {P}
-    x = Core.memorynew(Memory{P}, primal(n))
-    dx = zero_tangent_internal(x, NoCache())
-    return Dual(x, dx)
-end
-
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{MemoryRef{P}}},

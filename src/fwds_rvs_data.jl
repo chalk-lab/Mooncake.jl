@@ -159,6 +159,7 @@ fdata_type(x) = throw(error("$x is not a type. Perhaps you meant typeof(x)?"))
 @foldable fdata_type(::Type{Union{}}) = Union{}
 
 fdata_type(::Type{T}) where {T<:IEEEFloat} = NoFData
+fdata_type(::Type{Dual{P,T}}) where {P<:IEEEFloat,T<:IEEEFloat} = NoFData
 
 function fdata_type(::Type{PossiblyUninitTangent{T}}) where {T}
     Tfields = fdata_type(T)
@@ -437,6 +438,7 @@ rdata_type(x) = throw(error("$x is not a type. Perhaps you meant typeof(x)?"))
 @foldable rdata_type(::Type{Union{}}) = Union{}
 
 rdata_type(::Type{T}) where {T<:IEEEFloat} = T
+rdata_type(::Type{Dual{P,T}}) where {P<:IEEEFloat,T<:IEEEFloat} = Dual{P,T}
 
 function rdata_type(::Type{PossiblyUninitTangent{T}}) where {T}
     return PossiblyUninitTangent{rdata_type(T)}
@@ -587,6 +589,7 @@ Given value `p`, return the zero element associated to its reverse data type.
 zero_rdata(p)
 
 zero_rdata(p::IEEEFloat) = zero(p)
+zero_rdata(p::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = Dual(zero(P), zero(T))
 
 @generated function zero_rdata(p::P) where {P}
     Rs = rdata_field_types_exprs(P)
@@ -654,6 +657,9 @@ obtained from `P` alone.
 end
 
 @foldable can_produce_zero_rdata_from_type(::Type{<:IEEEFloat}) = true
+@foldable can_produce_zero_rdata_from_type(
+    ::Type{Dual{P,T}}
+) where {P<:IEEEFloat,T<:IEEEFloat} = true
 
 @foldable can_produce_zero_rdata_from_type(::Type{<:Type}) = true
 
@@ -737,6 +743,9 @@ function zero_rdata_from_type(::Type{P}) where {P<:NamedTuple}
 end
 
 zero_rdata_from_type(::Type{P}) where {P<:IEEEFloat} = zero(P)
+function zero_rdata_from_type(::Type{Dual{P,T}}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(zero(P), zero(T))
+end
 
 zero_rdata_from_type(::Type{<:Type}) = NoRData()
 
@@ -951,6 +960,7 @@ Reconstruct the tangent `t` for which `fdata(t) == f` and `rdata(t) == r`.
 """
 tangent(::NoFData, ::NoRData) = NoTangent()
 tangent(::NoFData, r::IEEEFloat) = r
+tangent(::NoFData, r::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = r
 tangent(f::Array, ::NoRData) = f
 
 # Tuples

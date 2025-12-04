@@ -107,10 +107,8 @@ end
     }
 )
 
-#
 # Avoid differentiating Mooncake's rule construction in forward mode
 # This prevents forward-over-reverse from descending into kw-wrapper exceptions and caches.
-#
 @zero_derivative MinimalCtx Tuple{typeof(build_rrule),Vararg} ForwardMode
 @zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(build_rrule),Vararg} ForwardMode
 

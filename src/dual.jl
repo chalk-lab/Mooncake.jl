@@ -55,3 +55,128 @@ verify_dual_type(x::Dual) = tangent_type(typeof(primal(x))) == typeof(tangent(x)
 function Dual(x::Type{P}, dx::NoTangent) where {P}
     return Dual{@isdefined(P) ? Type{P} : typeof(x),NoTangent}(x, dx)
 end
+
+# Dual of numeric types is self-tangent
+@inline tangent_type(::Type{Dual{P,T}}) where {P<:IEEEFloat,T<:IEEEFloat} = Dual{P,T}
+
+@inline zero_tangent_internal(
+    x::Dual{P,T}, ::MaybeCache
+) where {P<:IEEEFloat,T<:IEEEFloat} = Dual(zero(P), zero(T))
+
+@inline function randn_tangent_internal(
+    rng::AbstractRNG, x::Dual{P,T}, ::MaybeCache
+) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(randn(rng, P), randn(rng, T))
+end
+
+@inline function increment!!(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
+end
+
+@inline set_to_zero_internal!!(
+    ::SetToZeroCache, x::Dual{P,T}
+) where {P<:IEEEFloat,T<:IEEEFloat} = Dual(zero(P), zero(T))
+
+@inline function increment_internal!!(
+    ::IncCache, x::Dual{P,T}, y::Dual{P,T}
+) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
+end
+
+Base.one(::Type{Dual{P,T}}) where {P<:IEEEFloat,T<:IEEEFloat} = Dual(one(P), zero(T))
+function Base.one(x::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(one(primal(x)), zero(tangent(x)))
+end
+
+# Arithmetic operations
+function Base.:+(x::Dual{P,T}, y::P) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) + y, tangent(x))
+end
+function Base.:+(x::P, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(x + primal(y), tangent(y))
+end
+function Base.:+(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
+end
+
+# Subtraction
+Base.:-(x::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = Dual(-primal(x), -tangent(x))
+function Base.:-(x::Dual{P,T}, y::P) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) - y, tangent(x))
+end
+function Base.:-(x::P, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(x - primal(y), -tangent(y))
+end
+function Base.:-(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) - primal(y), tangent(x) - tangent(y))
+end
+
+# Multiplication (product rule)
+function Base.:*(x::Dual{P,T}, y::P) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) * y, tangent(x) * y)
+end
+function Base.:*(x::P, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(x * primal(y), x * tangent(y))
+end
+function Base.:*(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) * primal(y), primal(x) * tangent(y) + tangent(x) * primal(y))
+end
+function Base.:*(x::Dual{P,T}, y::Integer) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) * y, tangent(x) * y)
+end
+function Base.:*(x::Integer, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(x * primal(y), x * tangent(y))
+end
+
+# Division (quotient rule)
+function Base.:/(x::Dual{P,T}, y::P) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) / y, tangent(x) / y)
+end
+function Base.:/(x::P, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(x / primal(y), -x * tangent(y) / primal(y)^2)
+end
+function Base.:/(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(
+        primal(x) / primal(y),
+        (tangent(x) * primal(y) - primal(x) * tangent(y)) / primal(y)^2,
+    )
+end
+
+# Power (chain rule)
+function Base.:^(x::Dual{P,T}, n::Integer) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x)^n, n * primal(x)^(n - 1) * tangent(x))
+end
+function Base.:^(x::Dual{P,T}, y::P) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x)^y, y * primal(x)^(y - 1) * tangent(x))
+end
+
+# Comparison (use primal for comparisons)
+Base.:<(x::Dual{P,T}, y::P) where {P<:IEEEFloat,T<:IEEEFloat} = primal(x) < y
+Base.:<(x::P, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = x < primal(y)
+function Base.:<(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return primal(x) < primal(y)
+end
+Base.:>(x::Dual{P,T}, y::P) where {P<:IEEEFloat,T<:IEEEFloat} = primal(x) > y
+Base.:>(x::P, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = x > primal(y)
+function Base.:>(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return primal(x) > primal(y)
+end
+Base.:<=(x::Dual{P,T}, y::P) where {P<:IEEEFloat,T<:IEEEFloat} = primal(x) <= y
+Base.:<=(x::P, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = x <= primal(y)
+function Base.:<=(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return primal(x) <= primal(y)
+end
+Base.:>=(x::Dual{P,T}, y::P) where {P<:IEEEFloat,T<:IEEEFloat} = primal(x) >= y
+Base.:>=(x::P, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = x >= primal(y)
+function Base.:>=(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return primal(x) >= primal(y)
+end
+
+# Conversion and promotion
+Base.convert(::Type{Dual{P,T}}, x::P) where {P<:IEEEFloat,T<:IEEEFloat} = Dual(x, zero(T))
+function Base.promote_rule(::Type{Dual{P,T}}, ::Type{P}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual{P,T}
+end
+
+LinearAlgebra.transpose(x::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = x
+LinearAlgebra.adjoint(x::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = x

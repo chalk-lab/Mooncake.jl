@@ -324,8 +324,6 @@ end
 function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
 )
-    # In some compiler-generated UpsilonNodes the `val` field can be undefined; skip safely.
-    isdefined(stmt, :val) || return nothing
     if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
     end
@@ -437,11 +435,6 @@ function modify_fwd_ad_stmts!(
         # Leave this node alone
     elseif isexpr(stmt, :pop_exception)
         # Leave this node alone
-    elseif isexpr(stmt, :the_exception)
-        # Preserve the primal exception object but give it a zero tangent.
-        inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
-        ex_ssa = CC.insert_node!(dual_ir, ssa, inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, ex_ssa))
     else
         msg = "Expressions of type `:$(stmt.head)` are not yet supported in forward mode"
         throw(ArgumentError(msg))

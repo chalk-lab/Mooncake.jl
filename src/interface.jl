@@ -106,7 +106,8 @@ function __value_and_gradient!!(rule::R, fx::Vararg{CoDual,N}) where {R,N}
     __verify_sig(rule, fx_fwds)
     out, pb!! = rule(fx_fwds...)
     y = primal(out)
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    (y isa IEEEFloat || y isa Dual{<:IEEEFloat,<:IEEEFloat}) ||
+        throw_val_and_grad_ret_type_error(y)
     return y, tuple_map((f, r) -> tangent(fdata(tangent(f)), r), fx, pb!!(one(y)))
 end
 
@@ -543,7 +544,9 @@ The API guarantees that tangents are initialized at zero before the first autodi
     rule = build_rrule(fx...; kwargs...)
     tangents = map(zero_tangent, fx)
     y, rvs!! = rule(map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents)...)
-    primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
+    _y = primal(y)
+    (_y isa IEEEFloat || _y isa Dual{<:IEEEFloat,<:IEEEFloat}) ||
+        throw_val_and_grad_ret_type_error(_y)
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
     return Cache(rule, nothing, tangents)
 end
@@ -617,8 +620,33 @@ in `f` and `x`.
 """
 value_and_derivative!!(rule::R, fx::Vararg{Dual,N}) where {R,N} = rule(fx...)
 
-# Avoid differentiating cache constructors in forward mode to prevent
-# forward-over-reverse from descending into interpreter/caches.
 @zero_derivative MinimalCtx Tuple{typeof(prepare_pullback_cache),Vararg} ForwardMode
 @zero_derivative MinimalCtx Tuple{typeof(prepare_gradient_cache),Vararg} ForwardMode
 @zero_derivative MinimalCtx Tuple{typeof(prepare_derivative_cache),Vararg} ForwardMode
+
+@is_primitive MinimalCtx Tuple{typeof(value_and_gradient!!),Cache,Vararg} ForwardMode
+
+function frule!!(
+    ::Dual{typeof(value_and_gradient!!)},
+    cache_dual::Dual{<:Cache},
+    f_dual::Dual,
+    x_duals::Vararg{Dual},
+)
+    # Extract primals and tangents
+    cache = primal(cache_dual)
+    f = primal(f_dual)
+    xs = map(primal, x_duals)
+    dxs = map(tangent, x_duals)
+
+    y, grads = value_and_gradient!!(cache, f, xs...)
+
+    df = tangent(f_dual)
+    dy = df
+    for (g, dx) in zip(grads, dxs)
+        dy = dy + g * dx
+    end
+
+    dgrads = map(zero_tangent, grads)
+
+    return Dual(y, dy), Dual(grads, dgrads)
+end

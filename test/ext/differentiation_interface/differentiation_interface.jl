@@ -14,13 +14,8 @@ test_differentiation(
 )
 
 # Test Hessian computation using forward-over-reverse with DITest scenarios.
-# Using linalg=false to select loop-based test functions instead of the default
-# versions that use broadcasting and linear algebra ops (vec, transpose).
-# Broadcasting in forward-over-reverse mode causes compilation hangs due to
-# complex nested types that overwhelm Julia's type inference.
 test_differentiation(
     [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))];
-    scenarios=default_scenarios(; linalg=false),
     excluded=vcat(FIRST_ORDER, [:hvp, :second_derivative]),
     logging=true,
 )
