@@ -142,7 +142,6 @@ using Mooncake:
     randn_tangent,
     _scale,
     _add_to_primal,
-    _diff,
     _dot,
     NoFData,
     fdata_type,
@@ -438,6 +437,21 @@ both `x` and `y`, and the corresponding value is not the same in both `x` and `y
 """
 function address_maps_are_consistent(x::AddressMap, y::AddressMap)
     return all(map(k -> x[k] == y[k], collect(intersect(keys(x), keys(y)))))
+end
+
+"""
+    _diff(p::P, q::P) where {P}
+
+Computes the difference between `p` and `q`, which _must_ be of the same type, `P`.
+Returns a tangent of type `tangent_type(P)`.
+"""
+function _diff(p::P, q::P) where {P}
+    t1 = zero_tangent(p)
+    t1 = primal_to_tangent!!(t1, p)
+    t2 = zero_tangent(q)
+    t2 = primal_to_tangent!!(t2, q)
+
+    return increment!!(_scale(-1.0, t2), t1)
 end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
@@ -1155,7 +1169,6 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     function __add_to_primal(p, t, unsafe::Bool)
         return Mooncake._add_to_primal_internal(IdDict{Any,Any}(), p, t, unsafe)
     end
-    __diff(p, q) = Mooncake._diff_internal(IdDict{Any,Any}(), p, q)
     __dot(t, s) = Mooncake._dot_internal(IdDict{Any,Any}(), t, s)
     __scale(a::Float64, t) = Mooncake._scale_internal(IdDict{Any,Any}(), a, t)
     _populate_address_map(p, t) = populate_address_map_internal(AddressMap(), p, t)
@@ -1241,7 +1254,6 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     # Verify that operations required for finite difference testing to run, and produce the
     # correct output type.
     @test __add_to_primal(p, t, true) isa P
-    @test __diff(p, p) isa T
     @test __dot(t, t) isa Float64
     @test __scale(11.0, t) isa T
     @test _populate_address_map(p, t) isa AddressMap
@@ -1253,7 +1265,6 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
         if !has_equal_data(z, r)
             @test !has_equal_data(__add_to_primal(p, r, true), p)
         end
-        @test has_equal_data(__diff(p, p), _zero_tangent(p))
     end
     @test __dot(t, t) >= 0.0
     @test __dot(t, _zero_tangent(p)) == 0.0
@@ -1269,17 +1280,15 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     t2 = _zero_tangent(p1)
     t2 = _primal_to_tangent!!(t2, p1)
     @test t2 isa T
-    @test has_equal_data(t1, t2)
-    # TODO: remove once _diff is removed
-    # TODO: we could test the consistency with add_to_primal instead?
-    p2 = deepcopy([p])[1]
-    p2 = _tangent_to_primal!!(p2, _zero_tangent(p2))
-    # Difference should be equal to the original randn tangent.
-    p3 = deepcopy([p])[1]
-    p3 = _tangent_to_primal!!(p3, t1)
-    t3 = __diff(p3, p2)
-    t_diff = _increment!!(__scale(-1.0, t3), t1)
-    @test __dot(t_diff, t_diff) ≤ sqrt(eps(Float64))
+    if !interface_only
+        @test has_equal_data(t1, t2)
+        # Test consistency with add_to_primal
+        t3 = _randn_tangent(rng, p1)
+        p2 = _add_to_primal(p1, t3, true)
+        t2 = _primal_to_tangent!!(t2, p2)
+        t3 = _increment!!(t3, t1)
+        @test has_equal_data(t2, t3)
+    end
 end
 
 # Helper used in `test_tangent_interface`.

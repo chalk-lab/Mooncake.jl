@@ -1180,107 +1180,6 @@ function _add_to_primal_internal(
 end
 
 """
-    _diff(p::P, q::P) where {P}
-
-Required for testing.
-
-Computes the difference between `p` and `q`, which _must_ be of the same type, `P`.
-Returns a tangent of type `tangent_type(P)`.
-"""
-_diff(p::P, q::P) where {P} = _diff_internal(IdDict{Any,Any}(), p, q)::tangent_type(P)
-
-"""
-    _diff_internal(c::MaybeCache, p::P, q::P) where {P}
-
-Implmentation for [`_diff`](@ref). Use `c` to correctly handle circular references and
-aliasing. If `c` is a `NoCache` then assume no circular references or aliasing in either
-`p` or `q`.
-"""
-function _diff_internal(c::MaybeCache, p::P, q::P) where {P}
-    @assert typeof(p) == typeof(q) # this function implicitly assumes p and q have identical type
-    TP = tangent_type(P)
-    TP === NoTangent && return NoTangent()
-    T = Tangent{NamedTuple{(),Tuple{}}}
-    TP === T && return T((;))
-    key = (p, q)
-    haskey(c, key) && return c[key]::TP
-    return _containerlike_diff(c, p, q)::TP
-end
-_diff_internal(::MaybeCache, p::P, q::P) where {P<:IEEEFloat} = p - q
-function _diff_internal(c::MaybeCache, p::P, q::P) where {P<:SimpleVector}
-    key = (p, q)
-    haskey(c, key) && return c[key]::tangent_type(P)
-    t = Any[_diff_internal(c, a, b) for (a, b) in zip(p, q)]
-    c[key] = t
-    return t
-end
-function _diff_internal(c::MaybeCache, p::P, q::P) where {P<:Union{Tuple,NamedTuple}}
-    TP = tangent_type(P)
-    TP == NoTangent && return NoTangent()
-    return _map((p, q) -> _diff_internal(c, p, q), p, q)::TP
-end
-
-function _containerlike_diff(c::MaybeCache, p::P, q::P) where {P}
-    return _containerlike_diff_cartesian(c, p, q, Val(ismutabletype(P)), Val(fieldcount(P)))
-end
-@generated function _containerlike_diff_cartesian(
-    c::MaybeCache, p::P, q::P, ::Val{mutable}, ::Val{nfield}
-) where {P,mutable,nfield}
-    quote
-        t = if mutable
-            _t = tangent_type(P)()
-            c[(p, q)] = _t
-            _t
-        else
-            nothing
-        end
-        Base.Cartesian.@nif(
-            $(nfield + 1),
-            n -> let
-                defined_p = isdefined(p, n)
-                defined_q = isdefined(q, n)
-                defined_p != defined_q && throw(error("Unhandleable undefinedness"))
-
-                !defined_p
-            end,
-            # We have found the first undefined field, or,
-            # if n == $(nfield + 1), then we have found the last field,
-            # and all fields are defined.
-            n -> _containerlike_diff_cartesian_internal(
-                Val(n), c, p, q, t, Val(mutable), Val(nfield)
-            )
-        )
-    end
-end
-@generated function _containerlike_diff_cartesian_internal(
-    ::Val{n}, c::MaybeCache, p::P, q::P, t, ::Val{mutable}, ::Val{nfield}
-) where {P,n,mutable,nfield}
-    quote
-        diffed_fields = Base.Cartesian.@ntuple(
-            $(n - 1),
-            m -> _diff_internal(
-                c, getfield(p, m), getfield(q, m)
-            )::tangent_type(fieldtype(P, m))
-        )
-        if mutable
-            return _build_tangent(P, t, diffed_fields...)
-        else
-            return build_tangent(P, diffed_fields...)
-        end
-    end
-end
-
-# For mutable types.
-@generated function _build_tangent(::Type{P}, t::T, fields::Vararg{Any,N}) where {P,T,N}
-    tangent_values_exprs = map(enumerate(tangent_field_types(P))) do (n, tt)
-        tt <: PossiblyUninitTangent && return n <= N ? :($tt(fields[$n])) : :($tt())
-        return :(fields[$n])
-    end
-    nt_expr = Expr(:call, backing_type(P), Expr(:tuple, tangent_values_exprs...))
-    return Expr(:block, Expr(:call, :setfield!, :t, :(:fields), nt_expr), :(return t))
-end
-
-"""
     increment_field!!(x::T, y::V, f) where {T, V}
 
 `increment!!` the field `f` of `x` by `y`, and return the updated `x`.
@@ -1493,11 +1392,11 @@ end
         end
         # Generate a chain of if statements to handle partially-initialized structs
         ninit = CC.datatype_min_ninitialized(P)
-        ex = :(return $(Expr(:new, P, ttp_exprs[1:ninit]...)))
-        for n in (ninit + 1):fieldcount(P)
-            cond = :(is_init(tx.fields[$n]))
+        ex = :(return $(Expr(:new, P, ttp_exprs[1:fieldcount(P)]...)))
+        for n in (fieldcount(P)-1):-1:ninit
+            cond = :(is_init(tx.fields[$(n+1)]))
             expr = :(return $(Expr(:new, P, ttp_exprs[1:n]...)))
-            ex = Expr(:if, cond, expr, ex)
+            ex = Expr(:if, cond, ex, expr)
         end
         return quote
             tx isa NoTangent && return x
