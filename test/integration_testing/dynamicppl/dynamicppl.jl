@@ -56,9 +56,9 @@ data = let D = 2, K = 2, V = 160, N = 290
 end
 
 # LDA with vectorization and manual log-density accumulation
-@model function LatentDirichletAllocationVectorizedCollapsedMannual(D, K, V, α, η, w, doc)
-    β ~ filldist(Dirichlet(η), K)
-    θ ~ filldist(Dirichlet(α), D)
+@model function LatentDirichletAllocationVectorizedCollapsedManual(D, K, V, α, η, w, doc)
+    β ~ product_distribution(fill(Dirichlet(η), K))
+    θ ~ product_distribution(fill(Dirichlet(α), D))
 
     log_product = log.(β * θ)
     DynamicPPL.@addlogprob! sum(log_product[CartesianIndex.(w, doc)])
@@ -80,9 +80,9 @@ end
 # Run this once in order to avoid world age problems in testset.
 make_large_model()
 
-function build_dynamicppl_problem(rng, model, example=nothing)
-    vi = DynamicPPL.SimpleVarInfo(example === nothing ? model : example)
-    vi_linked = DynamicPPL.link(vi, model)
+function build_dynamicppl_problem(rng, model)
+    vi = DynamicPPL.VarInfo(model)
+    vi_linked = DynamicPPL.link!!(vi, model)
     ldp = DynamicPPL.LogDensityFunction(model, DynamicPPL.getlogjoint_internal, vi_linked)
     test_function = Base.Fix1(DynamicPPL.LogDensityProblems.logdensity, ldp)
     d = DynamicPPL.LogDensityProblems.dimension(ldp)
@@ -90,32 +90,26 @@ function build_dynamicppl_problem(rng, model, example=nothing)
 end
 
 @testset "dynamicppl" begin
-    @testset "$(typeof(model))" for (interface_only, name, model, ex) in vcat(
+    @testset "$(typeof(model))" for (interface_only, name, model) in vcat(
         Any[
-            (false, "simple_model", simple_model(), nothing),
-            (false, "demo", demo(), nothing),
+            (false, "simple_model", simple_model()),
+            (false, "demo", demo()),
+            (false, "broadcast_demo", broadcast_demo(rand(LogNormal(1.5, 0.5), 1_000))),
+            (false, "large model", make_large_model()),
             (
-                false,
-                "broadcast_demo",
-                broadcast_demo(rand(LogNormal(1.5, 0.5), 1_000)),
-                nothing,
+                true,
+                "CollapsedLDA",
+                LatentDirichletAllocationVectorizedCollapsedManual(
+                    data.D, data.K, data.V, data.α, data.η, data.w, data.doc
+                ),
             ),
-            (false, "large model", make_large_model(), nothing),
-            # (
-            #     false,
-            #     "CollapsedLDA",
-            #     LatentDirichletAllocationVectorizedCollapsedMannual(
-            #         data.D, data.K, data.V, data.α, data.η, data.w, data.doc,
-            #     ),
-            # ), doesn't currently work with SimpleVarInfo
         ],
         Any[
-            (false, "demo_$n", m, DynamicPPL.TestUtils.rand_prior_true(m)) for
-            (n, m) in enumerate(DynamicPPL.TestUtils.DEMO_MODELS)
+            (false, "demo_$n", m) for (n, m) in enumerate(DynamicPPL.TestUtils.DEMO_MODELS)
         ],
     )
         @info name
-        f, x = build_dynamicppl_problem(StableRNG(123), model, ex)
+        f, x = build_dynamicppl_problem(StableRNG(123), model)
         rng = StableRNG(123456)
         test_rule(rng, f, x; interface_only, is_primitive=false, unsafe_perturb=true)
     end
