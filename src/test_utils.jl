@@ -142,6 +142,8 @@ using Mooncake:
     randn_tangent,
     _scale,
     _add_to_primal,
+    primal_to_tangent!!,
+    tangent_to_primal!!,
     _dot,
     NoFData,
     fdata_type,
