@@ -37,6 +37,9 @@ _add_to_primal_internal(::MaybeCache, p::Task, t::TaskTangent, ::Bool) = p
 
 _diff_internal(::MaybeCache, ::Task, ::Task) = TaskTangent()
 
+tangent_to_primal_internal!!(x::Task, t, ::MaybeCache) = x
+primal_to_tangent_internal!!(t, x::Task, ::MaybeCache) = t
+
 _dot_internal(::MaybeCache, ::TaskTangent, ::TaskTangent) = 0.0
 
 _scale_internal(::MaybeCache, ::Float64, t::TaskTangent) = t
