@@ -43,9 +43,7 @@ struct ReverseMode <: Mode end
     _is_primitive(context::Type, mode::Type{<:Mode}, sig::Type{<:Tuple})
 
 This function is an internal implementation detail. It is used only by
-[`is_primitive`](@ref) and [`maybe_primitive`](@ref), and is used by these two functions in
-a very non-standard way. In particular, the value these functions return depends on the
-signatures of methods of this function, not what the methods do when invoked.
+[`is_primitive`](@ref).
 
 Generally speaking, you ought not to add methods to this function
 yourself, but make use of [`@is_primitive`](@ref).
@@ -107,9 +105,6 @@ function _is_primitive_expression(Tctx, Tmode, sig)
     end
 end
 
-const _IS_PRIMITIVE_CACHE_DefaultCtx = IdDict{Any,Bool}()
-const _IS_PRIMITIVE_CACHE_MinimalCtx = IdDict{Any,Bool}()
-
 """
     is_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
 
@@ -157,115 +152,17 @@ function is_primitive(
     ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
 ) where {Tsig<:Tuple}
     @nospecialize sig
-
-    # We don't ever need to evaluate this function for abstract `mode`s, and there is a
-    # performance penalty associated with doing so, so exclude the possibility.
-    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-
-    # Check to see whether any methods of `_is_primitive` exist which apply to this
-    # ctx-mode-signature triple in world age `world`. If we have looked this up before,
-    # return the answer from the cache.
-
-    tt = Tuple{typeof(_is_primitive),Type{ctx},Type{mode},Type{sig}}
-    return get!(_IS_PRIMITIVE_CACHE_MinimalCtx, (world, tt)) do
-        return !isempty(Base._methods_by_ftype(tt, -1, world))
-    end
+    Base.invoke_in_world(world, _is_primitive, ctx, mode, sig)::Bool
 end
 
 function is_primitive(
     ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
 ) where {Tsig<:Tuple}
     @nospecialize sig
-
-    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-
     # This function returns `true` if the method is a primitive in either 
-    # `DefaultCtx` _or_ `MinimalCtx`. 
-    tt = Tuple{typeof(_is_primitive),Type{DefaultCtx},Type{mode},Type{sig}}
-    return get!(_IS_PRIMITIVE_CACHE_DefaultCtx, (world, tt)) do
-        return is_primitive(MinimalCtx, mode, sig, world) ||
-               !isempty(Base._methods_by_ftype(tt, -1, world))
-    end
+    # `DefaultCtx` _or_ `MinimalCtx`.
+    Base.invoke_in_world(world, _is_primitive, ctx, mode, sig)::Bool
 end
 
-const _MAYBE_PRIMITIVE_CACHE_MinimalCtx = IdDict{Any,Bool}()
-const _MAYBE_PRIMITIVE_CACHE_DefaultCtx = IdDict{Any,Bool}()
-
-"""
-    maybe_primitive(ctx::Type, mode::Type, sig::Type{<:Tuple}, world::UInt)
-
-`true` if there exists `M<:mode`, and `S<:sig` such that
-`is_primitive(ctx, M, S, world)` returns `true`.
-
-This functionality is used to determine whether or not it is safe to inline away a call
-site when performing abstract interpretation using a `MooncakeInterpreter`, which is only
-safe to do if the inferred argument types at the call site preclude the call being to a
-primitive.
-
-For example, consider the following:
-```jldoctest is_prim_example
-julia> using Mooncake: Mooncake, @is_primitive, DefaultCtx, ReverseMode
-
-julia> foo(x) = 5x;
-
-julia> @is_primitive DefaultCtx ReverseMode Tuple{typeof(foo),Float64}
-
-```
-This function agrees with [`is_primitive`](@ref) for fully inferred call sites:
-```jldoctest is_prim_example
-julia> world = Base.get_world_counter();
-
-julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, world)
-true
-
-julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Int}, world)
-false
-```
-However, it differs for call sites containing arguments whose types are not fully inferred.
-For example:
-```jldoctest is_prim_example
-julia> Mooncake.is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Real}, world)
-false
-
-julia> Mooncake.maybe_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Real}, world)
-true
-```
-Per the definition at the top of this docstring, this function returns `true` because
-`Tuple{typeof(foo),Float64} <: Tuple{typeof(foo),Real}`.
-"""
-function maybe_primitive(
-    ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
-) where {Tsig<:Tuple}
-    @nospecialize sig
-
-    # We don't ever need to evaluate this function for abstract `mode`s, and there is a
-    # performance penalty associated with doing so, so exclude the possibility.
-    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-
-    # Check to see whether any methods of `_is_primitive` exist which apply to any subtypes
-    # of this ctx-mode-signature triple in world age `world`. If we have looked this up
-    # before, return the answer from the cache.
-    tt = Tuple{typeof(_is_primitive),Type{ctx},Type{mode},Type{<:sig}}
-    return get!(_MAYBE_PRIMITIVE_CACHE_MinimalCtx, (world, tt)) do
-        return !isempty(Base._methods_by_ftype(tt, -1, world))
-    end
-end
-
-function maybe_primitive(
-    ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
-) where {Tsig<:Tuple}
-    @nospecialize sig
-
-    # We don't ever need to evaluate this function for abstract `mode`s, and there is a
-    # performance penalty associated with doing so, so exclude the possibility.
-    isconcretetype(mode) || throw(ArgumentError("mode $mode is not a concrete type."))
-
-    # Check to see whether any methods of `_is_primitive` exist which apply to any subtypes
-    # of this ctx-mode-signature triple in world age `world`. If we have looked this up
-    # before, return the answer from the cache.
-    tt = Tuple{typeof(_is_primitive),Type{ctx},Type{mode},Type{<:sig}}
-    return get!(_MAYBE_PRIMITIVE_CACHE_DefaultCtx, (world, tt)) do
-        return maybe_primitive(MinimalCtx, mode, sig, world) ||
-               !isempty(Base._methods_by_ftype(tt, -1, world))
-    end
-end
+_is_primitive(::Type{MinimalCtx}, args...) = false
+_is_primitive(::Type{DefaultCtx}, args...) = _is_primitive(MinimalCtx, args...)
