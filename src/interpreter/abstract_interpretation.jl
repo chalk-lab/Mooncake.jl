@@ -148,7 +148,14 @@ function Core.Compiler.abstract_call_gf_by_type(
         max_methods::Int,
     )
     argtypes = arginfo.argtypes
-    matches = Core.Compiler.find_method_matches(interp, argtypes, atype; max_methods)
+    if VERSION < v"1.12-"
+        𝕃ᵢ = Core.Compiler.typeinf_lattice(interp)
+        matches = Core.Compiler.find_matching_methods(𝕃ᵢ, argtypes, atype, Core.Compiler.method_table(interp),
+                                                      Core.Compiler.InferenceParams(interp).max_union_splitting,
+                                                      max_methods)
+    else
+        matches = Core.Compiler.find_method_matches(interp, argtypes, atype; max_methods)
+    end
     if !isa(matches, Core.Compiler.FailedMethodMatch)
         (; valid_worlds, applicable) = matches
         # For all applicable method matches, we need to check if any of them could hit a primitive
@@ -171,7 +178,11 @@ end
 
 function any_matches_primitive(applicable, C, M, world)
     for app ∈ applicable
-        sig = app.match.spec_types
+        if VERSION < v"1.12-"
+            sig = app.spec_types
+        else
+            sig = app.match.spec_types
+        end
         if is_primitive(C, M, sig, world)
             return true
         end
