@@ -150,9 +150,14 @@ function Core.Compiler.abstract_call_gf_by_type(
     argtypes = arginfo.argtypes
     if VERSION < v"1.12-"
         𝕃ᵢ = Core.Compiler.typeinf_lattice(interp)
-        matches = Core.Compiler.find_matching_methods(𝕃ᵢ, argtypes, atype, Core.Compiler.method_table(interp),
-                                                      Core.Compiler.InferenceParams(interp).max_union_splitting,
-                                                      max_methods)
+        matches = Core.Compiler.find_matching_methods(
+            𝕃ᵢ,
+            argtypes,
+            atype,
+            Core.Compiler.method_table(interp),
+            Core.Compiler.InferenceParams(interp).max_union_splitting,
+            max_methods,
+        )
     else
         matches = Core.Compiler.find_method_matches(interp, argtypes, atype; max_methods)
     end
@@ -166,7 +171,9 @@ function Core.Compiler.abstract_call_gf_by_type(
                 info = NoInlineCallInfo(call.info, atype)
                 return rewrap_callmeta(call, info)
             else
-                return CC.Future{CC.CallMeta}(ret::CC.Future, interp, sv) do call, interp, sv
+                return CC.Future{CC.CallMeta}(
+                    ret::CC.Future, interp, sv
+                ) do call, interp, sv
                     info = NoInlineCallInfo(call.info, atype)
                     return rewrap_callmeta(call, info)
                 end
@@ -177,7 +184,7 @@ function Core.Compiler.abstract_call_gf_by_type(
 end
 
 function any_matches_primitive(applicable, C, M, world)
-    for app ∈ applicable
+    for app in applicable
         if VERSION < v"1.12-"
             sig = app.spec_types
         else
