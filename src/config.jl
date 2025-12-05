@@ -1,5 +1,5 @@
 """
-    Config(; debug_mode::Bool=false, silence_debug_messages::Bool=false)
+    Config(; debug_mode::Bool=false, silence_debug_messages::Bool=false, friendly_tangents::Bool=false)
 
 Configuration struct for use with `ADTypes.AutoMooncake`.
 

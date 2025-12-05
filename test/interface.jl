@@ -74,6 +74,15 @@ using Mooncake:
             Mooncake.ValueAndGradientReturnTypeError,
             Mooncake.prepare_gradient_cache(identity, (5.0, 4.0)),
         )
+
+        @testset "friendly tangents" begin
+            f = x -> sum(2 * x)
+            x = Symmetric([1.0 2.0; 3.0 4.0])
+            cache = Mooncake.prepare_gradient_cache(f, x; friendly_tangents=true)
+            v, dx = Mooncake.value_and_gradient!!(cache, f, x)
+            @test dx[2] isa Symmetric{Float64,Matrix{Float64}}
+            @test dx[2] == Symmetric([2.0 4.0; 0.0 2.0])
+        end
     end
     @testset "value_and_pullback!!" begin
         @testset "($(typeof(fargs))" for (ȳ, fargs...) in Any[

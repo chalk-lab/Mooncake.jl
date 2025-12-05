@@ -188,10 +188,11 @@ function __create_coduals(args)
     end
 end
 
-struct Cache{Trule,Ty_cache,Ttangents<:Tuple}
+struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tprimals}
     rule::Trule
     y_cache::Ty_cache
     tangents::Ttangents
+    primal_tangents::Tprimals
 end
 
 """
@@ -518,13 +519,17 @@ Returns a cache used with [`value_and_gradient!!`](@ref). See that function for 
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 """
-@unstable function prepare_gradient_cache(fx...; kwargs...)
+@unstable function prepare_gradient_cache(fx...; friendly_tangents=false, kwargs...)
     rule = build_rrule(fx...; kwargs...)
     tangents = map(zero_tangent, fx)
     y, rvs!! = rule(map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents)...)
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
-    return Cache(rule, nothing, tangents)
+    if friendly_tangents
+        return Cache(rule, nothing, tangents, tuple(_copy_output.(fx)...))
+    else
+        return Cache(rule, nothing, tangents, nothing)
+    end
 end
 
 """
@@ -575,9 +580,19 @@ function value_and_gradient!!(
     x::Vararg{Any,N};
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
+    friendly_tangents = !isnothing(cache.primal_tangents)
+
     tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
-    return __value_and_gradient!!(cache.rule, coduals...)
+    if friendly_tangents
+        value, gradient = __value_and_gradient!!(cache.rule, coduals...)
+        # TODO: probably incorrect in case of aliasing, should likely do it on the whole tuple
+        friendly_gradient = tuple_map(_copy_to_output!!, cache.primal_tangents, (f, x...))
+        friendly_gradient = tuple_map(tangent_to_primal!!, friendly_gradient, gradient)
+        return value, friendly_gradient
+    else
+        return __value_and_gradient!!(cache.rule, coduals...)
+    end
 end
 
 """
