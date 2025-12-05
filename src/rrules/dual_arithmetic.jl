@@ -38,6 +38,28 @@ function rrule!!(
     return CoDual(z, NoFData()), pb!!
 end
 
+@is_primitive MinimalCtx Tuple{
+    typeof(+),Dual{P,T},Integer
+} where {P<:IEEEFloat,T<:IEEEFloat}
+function rrule!!(
+    ::CoDual{typeof(+)}, x::CoDual{Dual{P,T}}, y::CoDual{<:Integer}
+) where {P<:IEEEFloat,T<:IEEEFloat}
+    z = primal(x) + primal(y)
+    pb!! = dy -> (NoRData(), dy, NoRData())
+    return CoDual(z, NoFData()), pb!!
+end
+
+@is_primitive MinimalCtx Tuple{
+    typeof(+),Integer,Dual{P,T}
+} where {P<:IEEEFloat,T<:IEEEFloat}
+function rrule!!(
+    ::CoDual{typeof(+)}, x::CoDual{<:Integer}, y::CoDual{Dual{P,T}}
+) where {P<:IEEEFloat,T<:IEEEFloat}
+    z = primal(x) + primal(y)
+    pb!! = dy -> (NoRData(), NoRData(), dy)
+    return CoDual(z, NoFData()), pb!!
+end
+
 @is_primitive MinimalCtx Tuple{typeof(-),Dual{P,T}} where {P<:IEEEFloat,T<:IEEEFloat}
 function rrule!!(
     ::CoDual{typeof(-)}, x::CoDual{Dual{P,T}}
@@ -68,6 +90,28 @@ end
 @is_primitive MinimalCtx Tuple{typeof(-),P,Dual{P,T}} where {P<:IEEEFloat,T<:IEEEFloat}
 function rrule!!(
     ::CoDual{typeof(-)}, x::CoDual{P}, y::CoDual{Dual{P,T}}
+) where {P<:IEEEFloat,T<:IEEEFloat}
+    z = primal(x) - primal(y)
+    pb!! = dy -> (NoRData(), NoRData(), Dual(-primal(dy), -tangent(dy)))
+    return CoDual(z, NoFData()), pb!!
+end
+
+@is_primitive MinimalCtx Tuple{
+    typeof(-),Dual{P,T},Integer
+} where {P<:IEEEFloat,T<:IEEEFloat}
+function rrule!!(
+    ::CoDual{typeof(-)}, x::CoDual{Dual{P,T}}, y::CoDual{<:Integer}
+) where {P<:IEEEFloat,T<:IEEEFloat}
+    z = primal(x) - primal(y)
+    pb!! = dy -> (NoRData(), dy, NoRData())
+    return CoDual(z, NoFData()), pb!!
+end
+
+@is_primitive MinimalCtx Tuple{
+    typeof(-),Integer,Dual{P,T}
+} where {P<:IEEEFloat,T<:IEEEFloat}
+function rrule!!(
+    ::CoDual{typeof(-)}, x::CoDual{<:Integer}, y::CoDual{Dual{P,T}}
 ) where {P<:IEEEFloat,T<:IEEEFloat}
     z = primal(x) - primal(y)
     pb!! = dy -> (NoRData(), NoRData(), Dual(-primal(dy), -tangent(dy)))

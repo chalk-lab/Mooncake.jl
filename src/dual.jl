@@ -98,6 +98,12 @@ end
 function Base.:+(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
     return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
 end
+function Base.:+(x::Dual{P,T}, y::Integer) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) + y, tangent(x))
+end
+function Base.:+(x::Integer, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(x + primal(y), tangent(y))
+end
 
 # Subtraction
 Base.:-(x::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat} = Dual(-primal(x), -tangent(x))
@@ -109,6 +115,12 @@ function Base.:-(x::P, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
 end
 function Base.:-(x::Dual{P,T}, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
     return Dual(primal(x) - primal(y), tangent(x) - tangent(y))
+end
+function Base.:-(x::Dual{P,T}, y::Integer) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(primal(x) - y, tangent(x))
+end
+function Base.:-(x::Integer, y::Dual{P,T}) where {P<:IEEEFloat,T<:IEEEFloat}
+    return Dual(x - primal(y), -tangent(y))
 end
 
 # Multiplication (product rule)
