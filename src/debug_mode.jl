@@ -1,5 +1,135 @@
-# TODO: make it non-trivial. See https://github.com/chalk-lab/Mooncake.jl/issues/672
-DebugFRule(rule) = rule
+"""
+    DebugFRule(rule)
+
+Construct a callable equivalent to `rule` but with additional type checking for forward-mode
+AD. Checks:
+- Each `Dual` argument has tangent type matching `tangent_type(typeof(primal))`
+- The returned `Dual` has a correctly-typed tangent
+- Deep structural validation (array sizes, field types, etc.)
+
+Forward-mode counterpart to [`DebugRRule`](@ref).
+
+*Note:* Debug mode significantly slows execution (10-100x) and should only be used for
+diagnosing problems, not production runs.
+```
+"""
+struct DebugFRule{Trule}
+    rule::Trule
+end
+
+# Recursively copy the wrapped rule
+_copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
+
+"""
+    (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+
+Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
+"""
+@static if VERSION < v"1.11-"
+    # On Julia 1.10, use @generated to check types at compile time, preventing the
+    # compiler from ever seeing rule.rule(x...) with mismatched types, which would
+    # cause a segfault (JuliaLang/julia#51016).
+    @generated function (rule::DebugFRule{Trule})(x::Vararg{Dual,N}) where {Trule,N}
+        # First, check tangent type consistency for all Dual inputs at compile time.
+        # This prevents the compiler from generating code for rule.rule(x...) with
+        # mismatched Dual types (e.g., Dual{Float64,Float32} instead of Dual{Float64,Float64}).
+        for dt in x
+            P = dt.parameters[1]  # primal type
+            T = dt.parameters[2]  # tangent type
+            T_expected = tangent_type(P)
+            if T !== T_expected
+                msg = "Error in inputs to rule with input types $(Tuple{x...})"
+                return :(error($msg))
+            end
+        end
+
+        # Check primal types match rule signature
+        if Trule <: DerivedFRule && isconcretetype(Trule)
+            sig = Trule.parameters[1]      # primal_sig
+            isva = Trule.parameters[3]
+            nargs_val = Trule.parameters[4]
+
+            # Extract primal types
+            primal_types = [dt.parameters[1] for dt in x]
+
+            # Handle varargs unflattening
+            if isva
+                regular_types = primal_types[1:(nargs_val - 1)]
+                vararg_types = primal_types[nargs_val:end]
+                grouped_type = Tuple{vararg_types...}
+                final_types = [regular_types..., grouped_type]
+            else
+                final_types = primal_types
+            end
+
+            Tx = Tuple{final_types...}
+            if !(Tx <: sig)
+                msg = "Error in inputs to rule with input types $(Tuple{x...})"
+                return :(error($msg))
+            end
+        end
+
+        return quote
+            verify_dual_inputs(x)
+            y = rule.rule(x...)
+            verify_dual_output(x, y)
+            return y
+        end
+    end
+else
+    @noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+        try
+            verify_args(rule.rule, x)
+        catch
+            error("Error in inputs to rule with input types $(_typeof(x))")
+        end
+        verify_dual_inputs(x)
+        y = rule.rule(x...)
+        verify_dual_output(x, y)
+        return y::Dual
+    end
+end
+
+@noinline function verify_dual_inputs(@nospecialize(x::Tuple))
+    try
+        for _x in x
+            _x isa Dual || error("Expected Dual, got $(typeof(_x))")
+            verify_dual_value(_x)
+        end
+    catch e
+        error("Error in inputs to rule with input types $(_typeof(x))")
+    end
+end
+
+@noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
+    try
+        y isa Dual || error("frule!! must return a Dual, got $(typeof(y))")
+        verify_dual_value(y)
+    catch e
+        error("Error in outputs of rule with input types $(_typeof(x))")
+    end
+end
+
+@noinline function verify_dual_value(d::Dual{P,T}) where {P,T}
+    # Fast path: type-level check using the Dual type parameters to enforce T == tangent_type(P)
+    T_expected = tangent_type(P)
+    if T !== T_expected
+        throw(
+            InvalidFDataException(
+                "Dual tangent type mismatch: primal $P requires tangent type " *
+                "$T_expected, but got $T",
+            ),
+        )
+    end
+
+    # Slow path: deep structural validation
+    p, t = primal(d), tangent(d)
+    # We validate fdata and rdata separately so these helpers stay in sync with reverse-mode checks.
+    verify_fdata_value(p, fdata(t))
+    verify_rdata_value(p, rdata(t))
+
+    return nothing
+end
 
 """
     DebugPullback(pb, y, x)
