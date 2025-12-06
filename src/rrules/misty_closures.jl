@@ -17,7 +17,12 @@ struct MistyClosureTangent
     dual_callable::Any
 end
 
-_dual_mc(p::MistyClosure) = build_frule(get_interpreter(ForwardMode), p)
+function _dual_mc(p::MistyClosure)
+    ir = p.ir[]
+    mc_world = ir.valid_worlds.min_world
+    interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
+    return build_frule(interp, p)
+end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
 

@@ -27,8 +27,8 @@ function build_frule(
     @nospecialize sig_or_mi
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
-    # than the current world age.
-    if Base.get_world_counter() > interp.world
+    # than the current world age. Exception: MistyClosure uses its own world age.
+    if Base.get_world_counter() > interp.world && !(sig_or_mi isa MistyClosure)
         throw(
             ArgumentError(
                 "World age associated to interp is behind current world age. Please " *
@@ -135,7 +135,10 @@ function generate_dual_ir(
     # Grab code associated to the primal.
     primal_ir, _ = lookup_ir(interp, sig_or_mi)
     @static if VERSION > v"1.12-"
-        primal_ir = set_valid_world!(primal_ir, interp.world)
+        # Skip set_valid_world! for MistyClosure - its IR is already at the correct world
+        if !(sig_or_mi isa MistyClosure)
+            primal_ir = set_valid_world!(primal_ir, interp.world)
+        end
     end
     nargs = length(primal_ir.argtypes)
 

@@ -592,6 +592,22 @@ end
 
 # _new_ and _new_-adjacent rules for Memory, MemoryRef, and Array.
 
+@is_primitive MinimalCtx Tuple{typeof(Core.memorynew),Type{<:Memory},Int}
+function frule!!(
+    ::Dual{typeof(Core.memorynew)}, ::Dual{Type{Memory{P}}}, n::Dual{Int}
+) where {P}
+    x = Core.memorynew(Memory{P}, primal(n))
+    dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
+    return Dual(x, dx)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
+) where {P}
+    x = Core.memorynew(Memory{P}, primal(n))
+    dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
+    return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
+end
+
 @is_primitive MinimalCtx Tuple{Type{<:Memory},UndefInitializer,Int}
 function frule!!(::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}) where {P}
     x = Memory{P}(undef, primal(n))
@@ -908,6 +924,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
         zip(mem_refs, sample_mem_ref_values),
     )
     test_cases = vcat(
+
+        # Rules for `Core.memorynew`
+        (true, :stability, nothing, Core.memorynew, Memory{Float64}, 5),
+        (true, :stability, nothing, Core.memorynew, Memory{Float64}, 10),
+        (true, :stability, nothing, Core.memorynew, Memory{Int}, 5),
 
         # Rules for `Memory`
         (true, :stability, nothing, Memory{Float64}, undef, 5),
