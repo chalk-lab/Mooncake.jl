@@ -147,22 +147,54 @@ function Core.Compiler.abstract_call_gf_by_type(
         sv::CC.AbsIntState,
         max_methods::Int,
     )
-
-    # Check to see whether the call in question could possibly be a Mooncake primitive. If
-    # it could be, set its call info such that it will not be inlined away.
-    maybe_primitive(C, M, atype, interp.world) || return ret
-
-    # Insert a `NoInlineCallInfo` to prevent any potential inlining.
-    @static if VERSION < v"1.12-"
-        call = ret::CC.CallMeta
-        info = NoInlineCallInfo(call.info, atype)
-        return rewrap_callmeta(call, info)
+    argtypes = arginfo.argtypes
+    if VERSION < v"1.12-"
+        𝕃ᵢ = Core.Compiler.typeinf_lattice(interp)
+        matches = Core.Compiler.find_matching_methods(
+            𝕃ᵢ,
+            argtypes,
+            atype,
+            Core.Compiler.method_table(interp),
+            Core.Compiler.InferenceParams(interp).max_union_splitting,
+            max_methods,
+        )
     else
-        return CC.Future{CC.CallMeta}(ret::CC.Future, interp, sv) do call, interp, sv
-            info = NoInlineCallInfo(call.info, atype)
-            return rewrap_callmeta(call, info)
+        matches = Core.Compiler.find_method_matches(interp, argtypes, atype; max_methods)
+    end
+    if !isa(matches, Core.Compiler.FailedMethodMatch)
+        (; valid_worlds, applicable) = matches
+        # For all applicable method matches, we need to check if any of them could hit a primitive
+        any_prim = any_matches_primitive(applicable, C, M, interp.world)
+        if any_prim
+            @static if VERSION < v"1.12-"
+                call = ret::CC.CallMeta
+                info = NoInlineCallInfo(call.info, atype)
+                return rewrap_callmeta(call, info)
+            else
+                return CC.Future{CC.CallMeta}(
+                    ret::CC.Future, interp, sv
+                ) do call, interp, sv
+                    info = NoInlineCallInfo(call.info, atype)
+                    return rewrap_callmeta(call, info)
+                end
+            end
         end
     end
+    ret
+end
+
+function any_matches_primitive(applicable, C, M, world)
+    for app in applicable
+        if VERSION < v"1.12-"
+            sig = app.spec_types
+        else
+            sig = app.match.spec_types
+        end
+        if is_primitive(C, M, sig, world)
+            return true
+        end
+    end
+    false
 end
 
 function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo)
