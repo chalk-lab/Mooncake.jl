@@ -455,7 +455,11 @@ function frule_type(
     if is_primitive(C, ForwardMode, primal_sig, interp.world)
         return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
     end
-    ir, _ = lookup_ir(interp, mi)
+    # Use native interpreter to avoid recursion through maybe_primitive.
+    # MooncakeInterpreter's abstract_call_gf_by_type calls maybe_primitive which
+    # can trigger more type inference, causing infinite recursion for complex code.
+    native_interp = CC.NativeInterpreter(interp.world)
+    ir, _ = lookup_ir(native_interp, mi)
     nargs = length(ir.argtypes)
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
