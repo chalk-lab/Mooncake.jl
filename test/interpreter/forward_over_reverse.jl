@@ -84,6 +84,15 @@ end
         @test hess_col ≈ [2.0, 0.0] rtol = 1e-10
     end
 
+    @testset "broadcast sum of squares" begin
+        # Tests broadcast operations: x .* x uses broadcasting
+        f(x) = sum(x .* x)
+        x = [2.0, 3.0]
+        H = _compute_hessian(f, x)
+        # f(x) = x₁² + x₂², so ∇f = [2x₁, 2x₂] and H = 2I
+        @test H ≈ [2.0 0.0; 0.0 2.0] rtol = 1e-10
+    end
+
     @testset "GAMS objective" begin
         function gams_objective(x)
             return (

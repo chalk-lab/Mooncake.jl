@@ -133,7 +133,12 @@ function generate_dual_ir(
     seed_id!()
 
     # Grab code associated to the primal.
-    primal_ir, _ = lookup_ir(interp, sig_or_mi)
+    # Use NativeInterpreter for lookup_ir to avoid recursion through maybe_primitive.
+    # MooncakeInterpreter's abstract_call_gf_by_type calls maybe_primitive which can
+    # trigger more type inference, causing infinite recursion for complex code.
+    # For MistyClosure, lookup_ir just returns the stored IR so the interpreter doesn't matter.
+    native_interp = CC.NativeInterpreter(interp.world)
+    primal_ir, _ = lookup_ir(native_interp, sig_or_mi)
     @static if VERSION > v"1.12-"
         # Skip set_valid_world! for MistyClosure - its IR is already at the correct world
         if !(sig_or_mi isa MistyClosure)
