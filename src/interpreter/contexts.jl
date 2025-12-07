@@ -155,8 +155,7 @@ function is_primitive(
     try
         Base.invoke_in_world(world, _is_primitive, ctx, mode, sig)::Bool
     catch e
-        ;
-        # Sometimes there are ambiguous `_is_pimitive` declarations, especially ones where
+        # Sometimes there are ambiguous `_is_primitive` declarations, especially ones where
         # `f` is a type such as some rules for `Array` and `CuArray`. In these cases we'll
         # just assume that a `MethodError` in `_is_primitive` meant that the method was
         # ambiguous, so we'll assume that the call was meant to be a primitive, and thus
@@ -174,8 +173,7 @@ function is_primitive(
     try
         Base.invoke_in_world(world, _is_primitive, ctx, mode, sig)::Bool
     catch e
-        ;
-        # Sometimes there are ambiguous `_is_pimitive` declarations, especially ones where
+        # Sometimes there are ambiguous `_is_primitive` declarations, especially ones where
         # `f` is a type such as some rules for `Array` and `CuArray`. In these cases we'll
         # just assume that a `MethodError` in `_is_primitive` meant that the method was
         # ambiguous, so we'll assume that the call was meant to be a primitive, and thus
