@@ -18,8 +18,7 @@ struct MistyClosureTangent
 end
 
 function _dual_mc(p::MistyClosure)
-    ir = p.ir[]
-    mc_world = ir.valid_worlds.min_world
+    mc_world = UInt64(p.oc.world)
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
     return build_frule(interp, p)
 end
