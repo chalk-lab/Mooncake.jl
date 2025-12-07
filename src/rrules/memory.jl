@@ -926,16 +926,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
         zip(mem_refs, sample_mem_ref_values),
     )
     test_cases = vcat(
-
-        @static(if VERSION >= v"1.12-"
-            [
-                (true, :stability, nothing, Core.memorynew, Memory{Float64}, 5),
-                (true, :stability, nothing, Core.memorynew, Memory{Float64}, 10),
-                (true, :stability, nothing, Core.memorynew, Memory{Int}, 5),
-            ]
-        else
-            []
-        end),
+        @static(
+            if VERSION >= v"1.12-"
+                [
+                    (true, :stability, nothing, Core.memorynew, Memory{Float64}, 5),
+                    (true, :stability, nothing, Core.memorynew, Memory{Float64}, 10),
+                    (true, :stability, nothing, Core.memorynew, Memory{Int}, 5),
+                ]
+            else
+                []
+            end
+        ),
 
         # Rules for `Memory`
         (true, :stability, nothing, Memory{Float64}, undef, 5),

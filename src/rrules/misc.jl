@@ -42,11 +42,7 @@ end
 # Forward rule for push! - needed for forward-over-reverse on code that accumulates pullbacks
 # Only primitive in ForwardMode - reverse mode uses derived rule
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(push!),Vector,Any}
-function frule!!(
-    ::Dual{typeof(push!)},
-    v::Dual{<:Vector},
-    x::Dual,
-)
+function frule!!(::Dual{typeof(push!)}, v::Dual{<:Vector}, x::Dual)
     # Push primal element into primal vector
     primal_v = primal(v)
     primal_x = primal(x)
