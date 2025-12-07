@@ -65,11 +65,25 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MistyClosure
     return T(captures_tangent, t.dual_callable)
 end
 
-import .TestUtils: populate_address_map_internal, AddressMap
+import .TestUtils: populate_address_map_internal, AddressMap, has_equal_data_internal
 function populate_address_map_internal(
     m::AddressMap, p::MistyClosure, t::MistyClosureTangent
 )
     return populate_address_map_internal(m, p.oc.captures, t.captures_tangent)
+end
+
+function has_equal_data_internal(
+    x::MistyClosureTangent,
+    y::MistyClosureTangent,
+    equal_undefs::Bool,
+    d::Dict{Tuple{UInt,UInt},Bool},
+)
+    # Only compare captures_tangent. The dual_callable field is a forward-mode rule
+    # built on-demand by _dual_mc, which creates a new interpreter each time. Different
+    # interpreter instances produce different rule objects, even for the same MistyClosure.
+    # Since dual_callable is just a computational tool (not part of the tangent's value),
+    # two tangents with identical captures_tangent are mathematically equal.
+    return has_equal_data_internal(x.captures_tangent, y.captures_tangent, equal_undefs, d)
 end
 
 struct MistyClosureFData
