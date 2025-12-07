@@ -40,7 +40,8 @@
 end
 
 # Forward rule for push! - needed for forward-over-reverse on code that accumulates pullbacks
-@is_primitive MinimalCtx Tuple{typeof(push!),Vector,Any}
+# Only primitive in ForwardMode - reverse mode uses derived rule
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(push!),Vector,Any}
 function frule!!(
     ::Dual{typeof(push!)},
     v::Dual{<:Vector},

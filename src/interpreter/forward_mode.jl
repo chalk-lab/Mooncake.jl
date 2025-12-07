@@ -133,17 +133,9 @@ function generate_dual_ir(
     seed_id!()
 
     # Grab code associated to the primal.
-    # Use NativeInterpreter for lookup_ir to avoid recursion through maybe_primitive.
-    # MooncakeInterpreter's abstract_call_gf_by_type calls maybe_primitive which can
-    # trigger more type inference, causing infinite recursion for complex code.
-    # For MistyClosure, lookup_ir just returns the stored IR so the interpreter doesn't matter.
-    native_interp = CC.NativeInterpreter(interp.world)
-    primal_ir, _ = lookup_ir(native_interp, sig_or_mi)
+    primal_ir, _ = lookup_ir(interp, sig_or_mi)
     @static if VERSION > v"1.12-"
-        # Skip set_valid_world! for MistyClosure - its IR is already at the correct world
-        if !(sig_or_mi isa MistyClosure)
-            primal_ir = set_valid_world!(primal_ir, interp.world)
-        end
+        primal_ir = set_valid_world!(primal_ir, interp.world)
     end
     nargs = length(primal_ir.argtypes)
 
@@ -460,11 +452,7 @@ function frule_type(
     if is_primitive(C, ForwardMode, primal_sig, interp.world)
         return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
     end
-    # Use native interpreter to avoid recursion through maybe_primitive.
-    # MooncakeInterpreter's abstract_call_gf_by_type calls maybe_primitive which
-    # can trigger more type inference, causing infinite recursion for complex code.
-    native_interp = CC.NativeInterpreter(interp.world)
-    ir, _ = lookup_ir(native_interp, mi)
+    ir, _ = lookup_ir(interp, mi)
     nargs = length(ir.argtypes)
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)

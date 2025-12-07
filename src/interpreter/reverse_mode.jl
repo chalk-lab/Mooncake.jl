@@ -1896,7 +1896,8 @@ end
 # Forward-mode primitive for _build_rule! on LazyDerivedRule.
 # This avoids differentiating through get_interpreter which has a ccall to jl_get_world_counter.
 # The tangent propagation happens through the fwds_oc MistyClosure call, not the rule building.
-@is_primitive MinimalCtx Tuple{typeof(_build_rule!),LazyDerivedRule,Tuple}
+# Only primitive in ForwardMode - reverse mode uses derived rule.
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(_build_rule!),LazyDerivedRule,Tuple}
 
 function frule!!(
     ::Dual{typeof(_build_rule!)},
