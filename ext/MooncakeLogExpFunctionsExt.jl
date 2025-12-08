@@ -38,9 +38,10 @@ import Mooncake:
 @from_chainrules DefaultCtx Tuple{typeof(cloglog),IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(cexpexp),IEEEFloat}
 
-# logsumexp needs a custom rule to avoid incorrect derivatives due to branching in the
-# primal implementation. In principle, the forward-mode rules could be imported from
-# ChainRulesCore but that leads to extra allocations, so we reimplement them.
+# logsumexp and logsumexp! need a custom rule to avoid incorrect derivatives due to
+# branching in the primal implementation. (In principle, the forward-mode rule for logsumexp
+# could be imported from ChainRulesCore, but that leads to extra allocations, so we
+# reimplement them.)
 @is_primitive DefaultCtx Tuple{typeof(logsumexp),AbstractArray{<:IEEEFloat}}
 @is_primitive DefaultCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),AbstractArray{<:IEEEFloat}
@@ -107,6 +108,33 @@ function rrule!!(
         return NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
+end
+
+@is_primitive DefaultCtx Tuple{typeof(logsumexp!),AbstractArray{<:P},AbstractArray{<:P}} where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(logsumexp!)},
+    out::Dual{<:AbstractArray{P}},
+    x::Dual{<:AbstractArray{P}},
+) where {P<:IEEEFloat}
+    logsumexp!(primal(out), primal(x))
+    sum!(tangent(out), tangent(x) .* exp.(primal(x) .- primal(out)))
+    return out
+end
+function rrule!!(
+    ::CoDual{typeof(logsumexp!)},
+    out::CoDual{<:AbstractArray{P}},
+    x::CoDual{<:AbstractArray{P}},
+) where {P<:IEEEFloat}
+    old_out = copy(primal(out))
+    logsumexp!(primal(out), primal(x))
+    y, dy = extract(out)
+    dx = tangent(x)
+    function logsumexp!_pb!!(::NoRData)
+        dx .+= dy .* exp.(primal(x) .- y)
+        copyto!(y, old_out)
+        return NoRData(), NoRData(), NoRData()
+    end
+    return out, logsumexp!_pb!!
 end
 
 end
