@@ -81,12 +81,14 @@ julia> (fdata_type(Vector{Float64}), rdata_type(Vector{Float64}))
 (Vector{Float64}, NoRData)
 ```
 
+`Vector{Float64}` does not need rdata because it is the fdata that is incremented in-place during the reverse pass.
+
 #### Tuple{Float64, Vector{Float64}, Int}
 
 This is an example of a type which has both fdata and rdata.
 The tangent type for `Tuple{Float64, Vector{Float64}, Int}` is
 `Tuple{Float64, Vector{Float64}, NoTangent}`.
-`Tuple`s have no fixed memory address, so we interogate each field on its own.
+`Tuple`s have no fixed memory address, so we interrogate each field on its own.
 We have already established the fdata and rdata types for each element, so we recurse to obtain:
 ```jldoctest
 julia> T = tangent_type(Tuple{Float64, Vector{Float64}, Int})
