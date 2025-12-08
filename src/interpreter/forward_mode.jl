@@ -1,3 +1,31 @@
+# Check if a type contains Union{} (bottom type) anywhere in its structure.
+# This can happen with unreachable code or failed type inference.
+@inline contains_bottom_type(T) = _contains_bottom_type(T, Base.IdSet{Any}())
+
+function _contains_bottom_type(T, seen::Base.IdSet{Any})
+    T === Union{} && return true
+    if T isa Union
+        return _contains_bottom_type(T.a, seen) || _contains_bottom_type(T.b, seen)
+    elseif T isa TypeVar
+        T in seen && return false
+        push!(seen, T)
+        return _contains_bottom_type(T.ub, seen)
+    elseif T isa UnionAll
+        T in seen && return false
+        push!(seen, T)
+        return _contains_bottom_type(T.body, seen)
+    elseif T isa DataType
+        T in seen && return false
+        push!(seen, T)
+        for p in T.parameters
+            _contains_bottom_type(p, seen) && return true
+        end
+        return false
+    else
+        return false
+    end
+end
+
 function build_frule(args...; debug_mode=false, silence_debug_messages=true)
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
@@ -331,7 +359,11 @@ function modify_fwd_ad_stmts!(
     if isexpr(stmt, :invoke) || isexpr(stmt, :call)
         raw_args = isexpr(stmt, :invoke) ? stmt.args[2:end] : stmt.args
         sig_types = map(raw_args) do x
-            return CC.widenconst(get_forward_primal_type(info.primal_ir, x))
+            t = CC.widenconst(get_forward_primal_type(info.primal_ir, x))
+            # Replace types containing Union{} (unreachable code/failed inference)
+            # with Any. This allows the code to proceed; is_primitive will return
+            # false and we'll use dynamic rules that resolve types at runtime.
+            return contains_bottom_type(t) ? Any : t
         end
         sig = Tuple{sig_types...}
         mi = isexpr(stmt, :invoke) ? get_mi(stmt.args[1]) : missing
@@ -419,7 +451,14 @@ mutable struct LazyFRule{primal_sig,Trule}
     rule::Trule
     function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
         interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        @static if VERSION < v"1.11-"
+            # On Julia 1.10, frule_type can trigger infinite type inference
+            # for complex operations like broadcasts. Use Any to avoid this,
+            # sacrificing some type stability for correctness.
+            return new{mi.specTypes,Any}(debug_mode, mi)
+        else
+            return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        end
     end
     function LazyFRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool
