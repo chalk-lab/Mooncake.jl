@@ -451,14 +451,7 @@ mutable struct LazyFRule{primal_sig,Trule}
     rule::Trule
     function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
         interp = get_interpreter(ForwardMode)
-        @static if VERSION < v"1.11-"
-            # On Julia 1.10, frule_type can trigger infinite type inference
-            # for complex operations like broadcasts. Use Any to avoid this,
-            # sacrificing some type stability for correctness.
-            return new{mi.specTypes,Any}(debug_mode, mi)
-        else
-            return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
-        end
+        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
     end
     function LazyFRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool
