@@ -110,11 +110,11 @@ function rrule!!(
     return zero_fcodual(y), logsumexp_pb!!
 end
 
-@is_primitive DefaultCtx Tuple{typeof(logsumexp!),AbstractArray{<:P},AbstractArray{<:P}} where {P<:IEEEFloat}
+@is_primitive DefaultCtx Tuple{
+    typeof(logsumexp!),AbstractArray{P},AbstractArray{P}
+} where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(logsumexp!)},
-    out::Dual{<:AbstractArray{P}},
-    x::Dual{<:AbstractArray{P}},
+    ::Dual{typeof(logsumexp!)}, out::Dual{<:AbstractArray{P}}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
     logsumexp!(primal(out), primal(x))
     sum!(tangent(out), tangent(x) .* exp.(primal(x) .- primal(out)))
