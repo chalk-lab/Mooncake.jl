@@ -51,6 +51,8 @@ sr(n::Int) = StableRNG(n)
             ]
         end...,
     )
-        test_rule(sr(123456), f, x...; perf_flag, is_primitive)
+        # Finite differences struggles with this case (but handles Float64 fine)
+        interface_only = f == logaddexp && first(x) == Float32(1000.0)
+        test_rule(sr(123456), f, x...; perf_flag, is_primitive, interface_only)
     end
 end
