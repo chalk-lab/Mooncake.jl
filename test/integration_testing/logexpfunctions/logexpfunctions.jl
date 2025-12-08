@@ -29,7 +29,7 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, true, log1pmx, -P(0.95)),
                 (:allocs, true, logmxp1, P(0.02)),
                 (:allocs, true, logaddexp, -P(0.5), P(0.4)),
-                (:allocs, true, logaddexp, P(1000.0), P(1000.0),
+                (:allocs, true, logaddexp, P(1000.0), P(1000.0)),
                 (:allocs, true, logsubexp, -P(0.5), -P(5.0)),
                 (:allocs, false, logsumexp, randn(sr(1), P, 5)),
                 (:allocs, false, logsumexp, randn(sr(2), P, 5, 4)),
