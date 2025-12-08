@@ -44,7 +44,14 @@ sr(n::Int) = StableRNG(n)
                 (:none, 100, true, logsumexp!, [P(1.0)], [P(2.0), P(2.0)]),
                 # not a primitive because the two inputs have different eltypes, but we can
                 # still check that it runs correctly
-                (:none, nothing, false, logsumexp!, rand(sr(6), Float64, 5), randn(sr(7), Float32, 5, 4)),
+                (
+                    :none,
+                    nothing,
+                    false,
+                    logsumexp!,
+                    rand(sr(6), Float64, 5),
+                    randn(sr(7), Float32, 5, 4),
+                ),
                 (:none, nothing, false, softmax, randn(sr(7), P, 10)),
                 (:allocs, nothing, true, cloglog, P(0.5)),
                 (:allocs, nothing, true, cexpexp, -P(0.3)),
