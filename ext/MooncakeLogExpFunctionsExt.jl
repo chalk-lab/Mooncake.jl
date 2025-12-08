@@ -17,6 +17,8 @@ import Mooncake:
     NoRData,
     extract
 
+# Mooncake can differentiate through most of these, but having explicit rules improves
+# numerical stability, especially for `logistic` and `logaddexp`.
 @from_chainrules DefaultCtx Tuple{typeof(xlogx),IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(xlogy),IEEEFloat,IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(xlog1py),IEEEFloat,IEEEFloat}
