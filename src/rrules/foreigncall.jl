@@ -322,11 +322,11 @@ end
         ::Dual{typeof(_foreigncall_)},
         ::Dual{Val{:jl_alloc_array_1d}},
         ::Dual{Val{Vector{P}}},
-        ::Dual{Tuple{Val{Any},Val{Int64}}},
+        ::Dual{Tuple{Val{Any},Val{Int}}},
         ::Dual{Val{0}},
         ::Dual{Val{:ccall}},
         ::Dual{Type{Vector{P}}},
-        n::Dual{Int64},
+        n::Dual{Int},
         args::Vararg{Dual},
     ) where {P}
         T = tangent_type(P)
@@ -341,12 +341,12 @@ end
         ::Dual{typeof(_foreigncall_)},
         ::Dual{Val{:jl_alloc_array_2d}},
         ::Dual{Val{Matrix{P}}},
-        ::Dual{Tuple{Val{Any},Val{Int64},Val{Int64}}},
+        ::Dual{Tuple{Val{Any},Val{Int},Val{Int}}},
         ::Dual{Val{0}},
         ::Dual{Val{:ccall}},
         ::Dual{Type{Matrix{P}}},
-        m::Dual{Int64},
-        n::Dual{Int64},
+        m::Dual{Int},
+        n::Dual{Int},
         args::Vararg{Dual},
     ) where {P}
         T = tangent_type(P)
@@ -361,13 +361,13 @@ end
         ::Dual{typeof(_foreigncall_)},
         ::Dual{Val{:jl_alloc_array_3d}},
         ::Dual{Val{Array{P,3}}},
-        ::Dual{Tuple{Val{Any},Val{Int64},Val{Int64},Val{Int64}}},
+        ::Dual{Tuple{Val{Any},Val{Int},Val{Int},Val{Int}}},
         ::Dual{Val{0}},
         ::Dual{Val{:ccall}},
         ::Dual{Type{Array{P,3}}},
-        l::Dual{Int64},
-        m::Dual{Int64},
-        n::Dual{Int64},
+        l::Dual{Int},
+        m::Dual{Int},
+        n::Dual{Int},
         args::Vararg{Dual},
     ) where {P}
         T = tangent_type(P)
