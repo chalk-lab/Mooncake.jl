@@ -1314,11 +1314,11 @@ end
 end
 function tangent_to_primal_internal!!(x::NamedTuple, tx, c::MaybeCache)
     tx isa NoTangent && return x
-    return tuple_map(Base.Fix{3}(tangent_to_primal_internal!!, c), x, tx)
+    return tuple_map((xn, txn) -> tangent_to_primal_internal!!(xn, txn, c), x, tx)
 end
 function primal_to_tangent_internal!!(tx, x::NamedTuple, c::MaybeCache)
     tx isa NoTangent && return NoTangent()
-    return tuple_map(Base.Fix{3}(primal_to_tangent_internal!!, c), tx, x)
+    return tuple_map((txn, xn) -> primal_to_tangent_internal!!(txn, xn, c), tx, x)
 end
 function tangent_to_primal_internal!!(x::Ptr{T}, tx, c::MaybeCache) where {T}
     tangent_type(T) == NoTangent && return x
