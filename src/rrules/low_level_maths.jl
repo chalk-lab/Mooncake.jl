@@ -72,29 +72,6 @@
 @from_chainrules MinimalCtx Tuple{typeof(rad2deg),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
 
-@is_primitive MinimalCtx Tuple{
-    typeof(Base.literal_pow),typeof(^),P,Val{n}
-} where {P<:IEEEFloat,n}
-function frule!!(
-    ::Dual{typeof(Base.literal_pow)}, ::Dual{typeof(^)}, x::Dual{P}, ::Dual{Val{n}}
-) where {P<:IEEEFloat,n}
-    px = primal(x)
-    y = Base.literal_pow(^, px, Val(n))
-    dy = n * Base.literal_pow(^, px, Val(n - 1)) * tangent(x)
-    return Dual(y, dy)
-end
-function rrule!!(
-    ::CoDual{typeof(Base.literal_pow)}, ::CoDual{typeof(^)}, x::CoDual{P}, ::CoDual{Val{n}}
-) where {P<:IEEEFloat,n}
-    px = primal(x)
-    y = Base.literal_pow(^, px, Val(n))
-    function literal_pow_pb!!(dy::P)
-        dx = n * Base.literal_pow(^, px, Val(n - 1)) * dy
-        return NoRData(), NoRData(), dx, NoRData()
-    end
-    return zero_fcodual(y), literal_pow_pb!!
-end
-
 @from_chainrules MinimalCtx Tuple{typeof(atan),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(max),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(min),P,P} where {P<:IEEEFloat}
@@ -311,10 +288,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (mod, P(7.5), P(2.3)),
                 (mod, P(10.2), P(3.1)),
                 (^, P(4.0), P(5.0)),
-                (Base.literal_pow, ^, P(2.5), Val(2)),
-                (Base.literal_pow, ^, P(3.1), Val(3)),
-                (Base.literal_pow, ^, P(1.5), Val(4)),
-                (Base.literal_pow, ^, P(2.0), Val(5)),
                 (atan, P(4.3), P(0.23)),
                 (hypot, P(4.0), P(5.0)),
                 (hypot, P(4.0), P(5.0), P(6.0)),

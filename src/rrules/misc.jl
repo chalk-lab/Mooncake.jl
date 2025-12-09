@@ -39,26 +39,6 @@
     @zero_derivative MinimalCtx Tuple{typeof(Base.dataids),Memory}
 end
 
-# Forward rule for push! - needed for forward-over-reverse on code that accumulates pullbacks
-# Only primitive in ForwardMode - reverse mode uses derived rule
-@is_primitive MinimalCtx ForwardMode Tuple{typeof(push!),Vector,Any}
-function frule!!(::Dual{typeof(push!)}, v::Dual{<:Vector}, x::Dual)
-    # Push primal element into primal vector
-    primal_v = primal(v)
-    primal_x = primal(x)
-    push!(primal_v, primal_x)
-
-    # Push tangent element into tangent vector
-    tangent_v = tangent(v)
-    tangent_x = tangent(x)
-    if tangent_v isa Vector
-        push!(tangent_v, tangent_x)
-    end
-    # else tangent_v is NoTangent, nothing to push
-
-    return Dual(primal_v, tangent_v)
-end
-
 """
     lgetfield(x, f::Val)
 
