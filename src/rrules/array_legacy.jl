@@ -65,7 +65,7 @@ function tangent_to_primal_internal!!(
 ) where {P,N}
     haskey(c, x) && return c[x]::Array{P,N}
     c[x] = x
-    return _map_if_assigned!(x, x, t) do (xn, tn)
+    return _map_if_assigned!(x, x, t) do xn, tn
         return tangent_to_primal_internal!!(xn, tn, c)
     end
 end
@@ -74,7 +74,7 @@ function primal_to_tangent_internal!!(
 ) where {P,N}
     haskey(c, x) && return c[x]::Array{tangent_type(P),N}
     c[x] = t
-    return _map_if_assigned!(t, t, x) do (txn, xn)
+    return _map_if_assigned!(t, t, x) do txn, xn
         return primal_to_tangent_internal!!(txn, xn, c)
     end
 end
