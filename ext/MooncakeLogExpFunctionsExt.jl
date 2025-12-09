@@ -63,7 +63,7 @@ function rrule!!(
     y = logsumexp(primal(x); primal(kwargs)...)
     dx = tangent(x)
     function logsumexp_pb!!(dy::P)
-        dx .+= dy * exp.(primal(x) .- y)
+        dx .+= dy .* exp.(primal(x) .- y)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
@@ -118,6 +118,7 @@ function rrule!!(
     function logsumexp!_pb!!(::NoRData)
         dx .+= dy .* exp.(primal(x) .- y)
         copyto!(y, old_out)
+        fill!(dy, zero(P))
         return NoRData(), NoRData(), NoRData()
     end
     return out, logsumexp!_pb!!
