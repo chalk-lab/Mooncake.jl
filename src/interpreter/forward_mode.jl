@@ -44,19 +44,27 @@ end
         sig_or_mi;
         debug_mode=false,
         silence_debug_messages=true,
+        skip_world_age_check=false,
     ) where {C}
 
 Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
 `sig_or_mi` is not a primitive.
+
+Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
+than the current world (e.g., when building rules for MistyClosure which uses its own world).
 """
 function build_frule(
-    interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, silence_debug_messages=true
+    interp::MooncakeInterpreter{C},
+    sig_or_mi;
+    debug_mode=false,
+    silence_debug_messages=true,
+    skip_world_age_check=false,
 ) where {C}
     @nospecialize sig_or_mi
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
-    # than the current world age. Exception: MistyClosure uses its own world age.
-    if Base.get_world_counter() > interp.world && !(sig_or_mi isa MistyClosure)
+    # than the current world age.
+    if !skip_world_age_check && Base.get_world_counter() > interp.world
         throw(
             ArgumentError(
                 "World age associated to interp is behind current world age. Please " *

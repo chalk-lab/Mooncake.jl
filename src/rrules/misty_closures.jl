@@ -17,10 +17,17 @@ struct MistyClosureTangent
     dual_callable::Any
 end
 
+# Build a forward-mode rule for a MistyClosure using its original world age.
+# We skip the world age check because:
+# 1. MistyClosure captures its own IR at creation time (see lookup_ir in ir_utils.jl)
+# 2. build_frule -> generate_dual_ir -> lookup_ir(interp, mc) returns mc.ir[] directly,
+#    bypassing method table lookups that would require a current-world interpreter
+# 3. Any nested non-primitive calls use LazyFRule/DynamicFRule which obtain a current-world
+#    interpreter via get_interpreter() at runtime
 function _dual_mc(p::MistyClosure)
     mc_world = UInt(p.oc.world)
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
-    return build_frule(interp, p)
+    return build_frule(interp, p; skip_world_age_check=true)
 end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
