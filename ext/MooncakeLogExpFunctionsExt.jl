@@ -17,28 +17,12 @@ import Mooncake:
     NoRData,
     extract
 
-# Mooncake can differentiate through most of these, but having explicit rules improves
-# numerical stability, especially for `logistic` and `logaddexp`.
-@from_chainrules DefaultCtx Tuple{typeof(xlogx),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(xlogy),IEEEFloat,IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(xlog1py),IEEEFloat,IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(xexpx),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(xexpy),IEEEFloat,IEEEFloat}
+# Importing these rules provides improved numerical stability for large inputs. The other
+# chain rules for LogExpFunctions were investigated and found to be no better than
+# Mooncake's derived rules in terms of performance or numerical stability, so are not
+# imported here.
 @from_chainrules DefaultCtx Tuple{typeof(logistic),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(logit),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(logcosh),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(logabssinh),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(log1psq),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(log1pexp),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(log1mexp),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(log2mexp),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(logexpm1),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(log1pmx),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(logmxp1),IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(logaddexp),IEEEFloat,IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(logsubexp),IEEEFloat,IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(cloglog),IEEEFloat}
-@from_chainrules DefaultCtx Tuple{typeof(cexpexp),IEEEFloat}
 
 # logsumexp and logsumexp! need a custom rule to avoid incorrect derivatives due to
 # branching in the primal implementation. (In principle, the forward-mode rule for logsumexp
