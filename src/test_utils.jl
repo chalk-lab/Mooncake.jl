@@ -1138,11 +1138,11 @@ Verifies that the following functions are implemented correctly (as far as possi
 - [`Mooncake.increment_internal!!`](@ref)
 - [`Mooncake.set_to_zero_internal!!`](@ref)
 - [`Mooncake._add_to_primal_internal`](@ref)
-- [`Mooncake._diff_internal`](@ref)
 - [`Mooncake._dot_internal`](@ref)
 - [`Mooncake._scale_internal`](@ref)
 - [`Mooncake.TestUtils.populate_address_map_internal`](@ref)
 - [`Mooncake.tangent_to_primal_internal!!`](@ref)
+- [`Mooncake.primal_to_tangent_internal!!`](@ref)
 
 In conjunction with the functions tested by [`test_tangent_splitting`](@ref), these functions
 constitute a complete set of functions which must be applicable to `p` in order to ensure

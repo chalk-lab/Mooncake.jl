@@ -68,17 +68,6 @@ function _add_to_primal_internal(
     end
     return p′
 end
-function _diff_internal(c::MaybeCache, p::P, q::P) where {K,V,P<:IdDict{K,V}}
-    @assert union(keys(p), keys(q)) == keys(p)
-    key = (p, q)
-    haskey(c, key) && return c[key]::tangent_type(P)
-    t = IdDict{K,tangent_type(V)}()
-    c[key] = t
-    for k in keys(p)
-        t[k] = _diff_internal(c, p[k], q[k])
-    end
-    return t
-end
 function tangent_to_primal_internal!!(
     x::P, t, c::MaybeCache
 ) where {P<:IdDict}

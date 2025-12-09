@@ -35,8 +35,6 @@ set_to_zero_internal!!(::SetToZeroCache, t::TaskTangent) = t
 
 _add_to_primal_internal(::MaybeCache, p::Task, t::TaskTangent, ::Bool) = p
 
-_diff_internal(::MaybeCache, ::Task, ::Task) = TaskTangent()
-
 tangent_to_primal_internal!!(x::Task, t, ::MaybeCache) = x
 primal_to_tangent_internal!!(t, x::Task, ::MaybeCache) = t
 
