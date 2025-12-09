@@ -1896,8 +1896,8 @@ end
 # Forward-mode primitive for _build_rule! on LazyDerivedRule.
 # This avoids differentiating through get_interpreter which has a ccall to jl_get_world_counter.
 # The tangent propagation happens through the fwds_oc MistyClosure call, not the rule building.
-# Only primitive in ForwardMode - reverse mode uses derived rule.
-@is_primitive MinimalCtx ForwardMode Tuple{typeof(_build_rule!),LazyDerivedRule,Tuple}
+# Reverse-over-reverse is not supported; an rrule!! that throws is provided below.
+@is_primitive MinimalCtx Tuple{typeof(_build_rule!),LazyDerivedRule,Tuple}
 
 function frule!!(
     ::Dual{typeof(_build_rule!)},
@@ -1961,6 +1961,18 @@ function __unflatten_tangent_varargs(isva::Bool, tangent_args, ::Val{nargs}) whe
     isva || return tangent_args
     group_tangent = tangent_args[nargs:end]
     return (tangent_args[1:(nargs - 1)]..., group_tangent)
+end
+
+# Reverse-over-reverse is not supported. Throw an informative error.
+function rrule!!(
+    ::CoDual{typeof(_build_rule!)}, ::CoDual{<:LazyDerivedRule}, ::CoDual{<:Tuple}
+)
+    throw(
+        ArgumentError(
+            "Reverse-over-reverse differentiation is not supported. " *
+            "Encountered attempt to differentiate _build_rule! in reverse mode.",
+        ),
+    )
 end
 
 """
