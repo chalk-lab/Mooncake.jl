@@ -17,10 +17,11 @@ import Mooncake:
     NoRData,
     extract
 
-# Importing these rules provides improved numerical stability for large inputs. The other
-# chain rules for LogExpFunctions were investigated and found to be no better than
-# Mooncake's derived rules in terms of performance or numerical stability, so are not
-# imported here.
+# Importing these rules provides improved numerical stability for `logistic`, and avoids
+# incorrect derivatives arising from a 'fast branch' in `logaddexp(x1, x2)` where x1 == x2
+# (similar to that for `logsumexp` below). The other chain rules for LogExpFunctions were
+# investigated and found to be no better than Mooncake's derived rules in terms of
+# performance or numerical stability, so are not imported here.
 @from_chainrules DefaultCtx Tuple{typeof(logistic),IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(logaddexp),IEEEFloat,IEEEFloat}
 
@@ -49,9 +50,10 @@ function frule!!(
     dy = zero(P)
     xp, dx = extract(x)
     # same as dy = dot(dx, exp.(xp .- y)) but unrolled to avoid allocations
-    for i in eachindex(dx)
-        @inbounds dy += dx[i] * exp(xp[i] - y)
-    end
+    dy = reduce(+, Iterators.map(t -> t[1] * exp(t[2] - y), zip(dx, xp)))
+    # for i in eachindex(dx)
+    #     @inbounds dy += dx[i] * exp(xp[i] - y)
+    # end
     return Dual(y, dy)
 end
 function rrule!!(
