@@ -228,6 +228,27 @@ function rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), eps_pb!!
 end
 
+@is_primitive MinimalCtx Tuple{typeof(nextfloat),<:IEEEFloat}
+function frule!!(::Dual{typeof(nextfloat)}, x::Dual{<:IEEEFloat})
+    return Dual(nextfloat(primal(x)), tangent(x))
+end
+function rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = nextfloat(primal(x))
+    nextfloat_pb!!(dy::P) = (NoRData(), dy)
+    return zero_fcodual(y), nextfloat_pb!!
+end
+
+@is_primitive MinimalCtx Tuple{typeof(prevfloat),<:IEEEFloat}
+function frule!!(::Dual{typeof(prevfloat)}, x::Dual{<:IEEEFloat})
+    return Dual(prevfloat(primal(x)), tangent(x))
+end
+function rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = prevfloat(primal(x))
+    prevfloat_pb!!(dy::P) = (NoRData(), dy)
+    return zero_fcodual(y), prevfloat_pb!!
+end
+
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
     test_cases = vcat(
         map([Float32, Float64]) do P
@@ -296,6 +317,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (min, P(1.5), P(0.5)),
                 (min, P(0.45), P(1.1)),
                 (Base.eps, P(5.0)),
+                (nextfloat, P(0.25)),
+                (prevfloat, P(1.1))
             ]
             return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
         end...,
