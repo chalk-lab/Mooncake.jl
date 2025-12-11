@@ -50,10 +50,9 @@ function frule!!(
     dy = zero(P)
     xp, dx = extract(x)
     # same as dy = dot(dx, exp.(xp .- y)) but unrolled to avoid allocations
-    dy = reduce(+, Iterators.map(t -> t[1] * exp(t[2] - y), zip(dx, xp)))
-    # for i in eachindex(dx)
-    #     @inbounds dy += dx[i] * exp(xp[i] - y)
-    # end
+    for i in eachindex(dx)
+        @inbounds dy += dx[i] * exp(xp[i] - y)
+    end
     return Dual(y, dy)
 end
 function rrule!!(
