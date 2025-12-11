@@ -228,7 +228,22 @@ function rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), eps_pb!!
 end
 
+#=
+## nextfloat / prevfloat
+
+The idea is that `nextfloat(x) = x + ϵ`, where `ϵ` is the smallest possible number such that
+`x + ϵ` is not equal to `x`.
+
+Conceptually, this should just be considered as you adding a (tiny) constant to `x`, so
+the derivative is just `1`.  Technically, the size of  `ϵ` does depend on `x`, but more or
+less by construction, the derivative should be too small to represent using whatever floating
+point system you are using.
+
+Therefore, we take `nextfloat` and `prevfloat` to just be the identity function so far as
+derivatives are concerned
+=#
 @is_primitive MinimalCtx Tuple{typeof(nextfloat),<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(prevfloat),<:IEEEFloat}
 function frule!!(::Dual{typeof(nextfloat)}, x::Dual{<:IEEEFloat})
     return Dual(nextfloat(primal(x)), tangent(x))
 end
@@ -237,8 +252,6 @@ function rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
     nextfloat_pb!!(dy::P) = (NoRData(), dy)
     return zero_fcodual(y), nextfloat_pb!!
 end
-
-@is_primitive MinimalCtx Tuple{typeof(prevfloat),<:IEEEFloat}
 function frule!!(::Dual{typeof(prevfloat)}, x::Dual{<:IEEEFloat})
     return Dual(prevfloat(primal(x)), tangent(x))
 end
