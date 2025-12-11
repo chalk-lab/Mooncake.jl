@@ -248,7 +248,6 @@ function rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), prevfloat_pb!!
 end
 
-
 function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
     test_cases = vcat(
         map([Float32, Float64]) do P
@@ -318,7 +317,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (min, P(0.45), P(1.1)),
                 (Base.eps, P(5.0)),
                 (nextfloat, P(0.25)),
-                (prevfloat, P(1.1))
+                (prevfloat, P(1.1)),
             ]
             return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
         end...,
