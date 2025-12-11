@@ -55,7 +55,7 @@ Mooncake.@foldable rdata_type(
 function arrayify(x::A, dx::A) where {A<:CuFloatArray}
     (x, dx)
 end
-function arrayify(x::CuComplexArray, dx::CuArray{<:Tangent})
+function arrayify(x::CuComplexArray, dx::CuArray{<:Mooncake.Tangent})
     return x, reinterpret(P, dx)
 end
 
