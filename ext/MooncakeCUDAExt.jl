@@ -52,10 +52,10 @@ Mooncake.@foldable rdata_type(
     ::Type{<:CuArray{P,N,M}}
 ) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = Mooncake.NoRData
 
-function arrayify(x::A, dx::A) where {A<:Union{CuArray{<:BlasRealFloat}}}
+function arrayify(x::A, dx::A) where {A<:CuFloatArray}
     (x, dx)
 end
-function arrayify(x::CuArray{P}, dx::CuArray{<:Tangent}) where {P<:BlasComplexFloat}
+function arrayify(x::CuComplexArray, dx::CuArray{<:Tangent})
     return x, reinterpret(P, dx)
 end
 
