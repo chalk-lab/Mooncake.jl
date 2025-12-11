@@ -49,7 +49,7 @@ function frule!!(
     y = logsumexp(primal(x))
     dy = zero(P)
     xp, dx = extract(x)
-    # same as dy = dot(dx, exp.(xp .- y)) but unrolled to avoid allocations
+    # same as dy = dot(dx, exp.(xp .- y)) but manually looped over to avoid allocations
     for i in eachindex(dx)
         @inbounds dy += dx[i] * exp(xp[i] - y)
     end
