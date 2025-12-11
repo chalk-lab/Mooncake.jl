@@ -42,6 +42,31 @@
         rule_with_bad_pb_length(x::CoDual{Float64}) = x, dy -> (5, 5.0) # returns the wrong type
         y, pb!! = Mooncake.DebugRRule(rule_with_bad_pb_length)(zero_fcodual(5.0))
         @test_throws ErrorException pb!!(1.0)
+
+        # Test that aliased fdata between input and output is detected.
+        # This can cause silent incorrect gradients.
+        @testset "fdata aliasing detection" begin
+            # Rule that incorrectly returns the same fdata as input
+            rule_with_aliased_fdata(x::CoDual{Vector{Float64}}) = CoDual(
+                primal(x), tangent(x)
+            ),
+            Returns(NoRData())
+            x = zero_fcodual([1.0, 2.0, 3.0])
+            @test_throws ErrorException Mooncake.DebugRRule(rule_with_aliased_fdata)(x)
+
+            # Correct rule that creates fresh fdata
+            rule_with_fresh_fdata(x::CoDual{Vector{Float64}}) = CoDual(
+                copy(primal(x)), zero(tangent(x))
+            ),
+            Returns(NoRData())
+            @test Mooncake.DebugRRule(rule_with_fresh_fdata)(x) isa Tuple
+
+            # Immutable fdata should not trigger aliasing error (aliasing is harmless)
+            rule_with_immutable_fdata(x::CoDual{Float64}) = CoDual(primal(x), tangent(x)),
+            Returns(NoRData())
+            @test Mooncake.DebugRRule(rule_with_immutable_fdata)(zero_fcodual(5.0)) isa
+                Tuple
+        end
     end
 
     @testset "forward debug mode" begin
@@ -107,6 +132,29 @@
             # Rule that returns wrong tangent type in output
             bad_rule = Mooncake.DebugFRule((x...,) -> Mooncake.Dual(1.0, Float32(0.0)))
             @test_throws ErrorException bad_rule(Mooncake.Dual(5.0, 1.0))
+        end
+
+        @testset "tangent aliasing detection" begin
+            # Rule that incorrectly returns the same tangent as input
+            rule_with_aliased_tangent(x::Mooncake.Dual{Vector{Float64}}) = Mooncake.Dual(
+                primal(x), tangent(x)
+            )
+            x = Mooncake.Dual([1.0, 2.0], [0.0, 0.0])
+            @test_throws ErrorException Mooncake.DebugFRule(rule_with_aliased_tangent)(x)
+
+            # Correct rule that creates fresh tangent
+            rule_with_fresh_tangent(x::Mooncake.Dual{Vector{Float64}}) = Mooncake.Dual(
+                copy(primal(x)), zero(tangent(x))
+            )
+            @test Mooncake.DebugFRule(rule_with_fresh_tangent)(x) isa Mooncake.Dual
+
+            # Immutable tangent should not trigger aliasing error
+            rule_with_immutable_tangent(x::Mooncake.Dual{Float64}) = Mooncake.Dual(
+                primal(x), tangent(x)
+            )
+            @test Mooncake.DebugFRule(rule_with_immutable_tangent)(
+                Mooncake.Dual(5.0, 1.0)
+            ) isa Mooncake.Dual
         end
 
         @testset "error messages include type info" begin

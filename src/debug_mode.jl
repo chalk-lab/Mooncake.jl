@@ -105,6 +105,7 @@ end
     try
         y isa Dual || error("frule!! must return a Dual, got $(typeof(y))")
         verify_dual_value(y)
+        verify_tangent_not_aliased(x, y)
     catch e
         error("Error in outputs of rule with input types $(_typeof(x))")
     end
@@ -245,9 +246,50 @@ end
 @noinline function verify_fwds_output(@nospecialize(x), @nospecialize(y))
     try
         verify_fwds(y)
+        verify_tangent_not_aliased(x, y)
     catch e
         error("error in outputs of rule with input types $(_typeof(x))")
     end
 end
 
 @noinline verify_fwds(x::CoDual) = verify_fdata_value(primal(x), tangent(x))
+
+"""
+    verify_tangent_not_aliased(inputs::Tuple, output)::Nothing
+
+Check that the tangent of the output is not aliased (i.e., not `===`) with the tangent of
+any input. This applies to both forward mode (`Dual`) and reverse mode (`CoDual`).
+
+Aliasing is problematic because mutable tangents (fdata) are identified by their address
+and incremented in-place during the reverse pass (see [`fdata_type`](@ref) for details).
+If the output tangent is the same object as an input tangent, in-place modifications
+would incorrectly affect the input, leading to silent incorrect gradients.
+
+Only mutable tangents (e.g., `Array`, `MutableTangent`) are checked, since immutable
+values cannot be mutated and thus aliasing is harmless for them.
+
+Note: This check only verifies top-level aliasing. It does not detect nested aliasing
+(e.g., when output tangent contains an array that is also contained in an input tangent).
+Nested aliasing is more nuanced and context-dependent, so it is not checked here.
+"""
+@noinline function verify_tangent_not_aliased(
+    @nospecialize(inputs::Tuple), @nospecialize(output)
+)::Nothing
+    output_tangent = tangent(output)
+    # Only check mutable tangents - immutable values can't be mutated so aliasing is fine
+    ismutable(output_tangent) || return nothing
+
+    for input in inputs
+        input_tangent = tangent(input)
+        if input_tangent === output_tangent
+            throw(
+                InvalidFDataException(
+                    "Output tangent is aliased with input tangent. " *
+                    "The output tangent must not be the same object as any input tangent, " *
+                    "as this can cause incorrect gradients when tangents are mutated.",
+                ),
+            )
+        end
+    end
+    return nothing
+end
