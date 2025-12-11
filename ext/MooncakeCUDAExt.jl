@@ -29,7 +29,8 @@ import Mooncake:
     increment_and_get_rdata!,
     MaybeCache,
     IncCache,
-    NoRData
+    NoRData,
+    arrayify
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
@@ -50,6 +51,13 @@ Mooncake.@foldable fdata_type(::Type{CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Moo
 Mooncake.@foldable rdata_type(
     ::Type{<:CuArray{P,N,M}}
 ) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = Mooncake.NoRData
+
+function arrayify(x::A, dx::A) where {A<:Union{CuArray{<:BlasRealFloat}}}
+    (x, dx)
+end
+function arrayify(x::CuArray{P}, dx::CuArray{<:Tangent}) where {P<:BlasComplexFloat}
+    return x, reinterpret(P, dx)
+end
 
 function zero_tangent_internal(x::CuFloatArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
