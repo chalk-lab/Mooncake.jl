@@ -24,6 +24,8 @@ using Mooncake.TestUtils: test_tangent_interface, test_tangent_splitting, test_r
                 debug_mode=true,
                 mode=Mooncake.ReverseMode,
             )
+            dp = Mooncake.zero_codual(p)
+            @test Mooncake.arrayify(dp) == dp
         end
     else
         println("Tests are skipped since no CUDA device was found. ")
