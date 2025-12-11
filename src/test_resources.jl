@@ -881,7 +881,7 @@ function generate_test_functions()
         ),
         (
             false,
-            :allocs,
+            :none,
             nothing,
             LinearAlgebra._kron!,
             randn(25, 25),
