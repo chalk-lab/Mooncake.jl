@@ -329,6 +329,7 @@ to_cr_tangent(::NoTangent) = CRC.NoTangent()
 to_cr_tangent(t::Tangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
+to_cr_tangent(nt::NamedTuple{names}) where {names} = CRC.Tangent{Any}(; NamedTuple{names}(map(to_cr_tangent, Tuple(nt)))...)
 
 function to_cr_tangent(t)
     throw(
