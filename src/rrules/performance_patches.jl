@@ -48,13 +48,13 @@ end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
 @is_primitive DefaultCtx Tuple{
-    typeof(LinearAlgebra._kron!),Matrix{T},Matrix{T},Matrix{T}
+    typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
 function Mooncake.frule!!(
     ::Dual{typeof(LinearAlgebra._kron!)},
-    out::Dual{<:Matrix{<:T}},
-    x1::Dual{<:Matrix{<:T}},
-    x2::Dual{<:Matrix{<:T}},
+    out::Dual{<:AbstractMatrix{<:T}},
+    x1::Dual{<:AbstractMatrix{<:T}},
+    x2::Dual{<:AbstractMatrix{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = extract(out)
     px1, dx1 = extract(x1)
@@ -75,9 +75,9 @@ function Mooncake.frule!!(
 end
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
-    out::CoDual{<:Matrix{<:T}},
-    x1::CoDual{<:Matrix{<:T}},
-    x2::CoDual{<:Matrix{<:T}},
+    out::CoDual{<:AbstractMatrix{<:T}},
+    x1::CoDual{<:AbstractMatrix{<:T}},
+    x2::CoDual{<:AbstractMatrix{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = extract(out)
     px1, dx1 = extract(x1)
@@ -101,24 +101,24 @@ function Mooncake.rrule!!(
     return out, _kron!_pb!!
 end
 @mooncake_overlay function LinearAlgebra._kron!(
-    out::Matrix{T}, a::Vector{T}, b::Matrix{T}
+    out::AbstractMatrix{T}, a::AbstractVector{T}, b::AbstractMatrix{T}
 ) where {T<:IEEEFloat}
-    return LinearAlgebra._kron!(out, reshape(a, :, 1), b)::Matrix{T}
+    return LinearAlgebra._kron!(out, reshape(a, :, 1), b)::typeof(out)
 end
 @mooncake_overlay function LinearAlgebra._kron!(
-    out::Matrix{T}, a::Matrix{T}, b::Vector{T}
+    out::AbstractMatrix{T}, a::AbstractMatrix{T}, b::AbstractVector{T}
 ) where {T<:IEEEFloat}
-    return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::Matrix{T}
+    return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::typeof(out)
 end
 
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
 @is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),Matrix{T},Matrix{T}
+    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
 function Mooncake.rrule!!(
-    ::CoDual{typeof(kron)}, x1::CoDual{<:Matrix{<:T}}, x2::CoDual{<:Matrix{<:T}}
+    ::CoDual{typeof(kron)}, x1::CoDual{<:AbstractMatrix{<:T}}, x2::CoDual{<:AbstractMatrix{<:T}}
 ) where {T<:Base.IEEEFloat}
     px1, dx1 = extract(x1)
     px2, dx2 = extract(x2)
