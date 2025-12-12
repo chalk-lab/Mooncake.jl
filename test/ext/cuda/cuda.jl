@@ -24,9 +24,14 @@ using Mooncake.TestUtils: test_tangent_interface, test_tangent_splitting, test_r
                 debug_mode=true,
                 mode=Mooncake.ReverseMode,
             )
+            dp = Mooncake.zero_codual(p)
             if ET <: Real
-                dp = Mooncake.zero_codual(p)
                 @test Mooncake.arrayify(dp) == (p, Mooncake.zero_tangent(p))
+            elseif ET <: Complex
+                primal_p, tangent_ p = Mooncake.arrayify(dp)
+                @test (primal_p, tangent_p) isa Tuple{CuArray{ET, 2, CUDA.DeviceMemory}, CuArray{ET, 2, CUDA.DeviceMemory}}
+                @test all(iszero, primal_p)
+                @test all(iszero, tangent_p)
             end
         end
     else
