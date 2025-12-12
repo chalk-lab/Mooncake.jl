@@ -10,6 +10,17 @@ struct DualRuleInfo
     dual_ret_type::Type
 end
 
+"""
+    build_frule(
+        interp::MooncakeInterpreter{C},
+        sig_or_mi;
+        debug_mode=false,
+        silence_debug_messages=true,
+    ) where {C}
+
+Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
+`sig_or_mi` is not a primitive.
+"""
 function build_frule(
     interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, silence_debug_messages=true
 ) where {C}
@@ -33,7 +44,9 @@ function build_frule(
 
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
-    is_primitive(C, ForwardMode, sig) && return (debug_mode ? DebugFRule(frule!!) : frule!!)
+    if is_primitive(C, ForwardMode, sig, interp.world)
+        return (debug_mode ? DebugFRule(frule!!) : frule!!)
+    end
 
     # We don't have a hand-coded rule, so derive one.
     lock(MOONCAKE_INFERENCE_LOCK)
@@ -76,6 +89,18 @@ function _copy(x::P) where {P<:DerivedFRule}
     return P(replace_captures(x.fwd_oc, _copy(x.fwd_oc.oc.captures)))
 end
 
+_isva(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = isva
+_nargs(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
+
+# Extends functionality defined in debug_mode.jl.
+function verify_args(r::DerivedFRule{sig}, x) where {sig}
+    Tx = Tuple{
+        map(_typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r))))...
+    }
+    Tx <: sig && return nothing
+    throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
+end
+
 """
     __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
 
@@ -109,6 +134,9 @@ function generate_dual_ir(
 
     # Grab code associated to the primal.
     primal_ir, _ = lookup_ir(interp, sig_or_mi)
+    @static if VERSION > v"1.12-"
+        primal_ir = set_valid_world!(primal_ir, interp.world)
+    end
     nargs = length(primal_ir.argtypes)
 
     # Normalise the IR.
@@ -306,7 +334,7 @@ function modify_fwd_ad_stmts!(
             return CC.widenconst(get_forward_primal_type(info.primal_ir, x))
         end
         sig = Tuple{sig_types...}
-        mi = isexpr(stmt, :invoke) ? stmt.args[1] : missing
+        mi = isexpr(stmt, :invoke) ? get_mi(stmt.args[1]) : missing
         args = map(__inc, raw_args)
 
         # Special case: if the result of a call to getfield is un-used, then leave the
@@ -331,7 +359,8 @@ function modify_fwd_ad_stmts!(
             return uninit_dual(get_const_primal_value(arg))
         end
 
-        if is_primitive(context_type(info.interp), ForwardMode, sig)
+        interp = info.interp
+        if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
             replace_call!(dual_ir, ssa, Expr(:call, frule!!, dual_args...))
         else
             dm = info.debug_mode
@@ -413,14 +442,14 @@ end
 end
 
 function dual_ret_type(primal_ir::IRCode)
-    return dual_type(Base.Experimental.compute_ir_rettype(primal_ir))
+    return dual_type(compute_ir_rettype(primal_ir))
 end
 
 function frule_type(
     interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
 ) where {C}
     primal_sig = _get_sig(mi)
-    if is_primitive(C, ForwardMode, primal_sig)
+    if is_primitive(C, ForwardMode, primal_sig, interp.world)
         return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
     end
     ir, _ = lookup_ir(interp, mi)

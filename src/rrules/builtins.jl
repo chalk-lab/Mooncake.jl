@@ -100,7 +100,7 @@ import ..Mooncake:
     increment!!,
     @is_primitive,
     MinimalCtx,
-    is_primitive,
+    _is_primitive,
     NoFData,
     zero_rdata,
     NoRData,
@@ -135,10 +135,10 @@ end
 macro intrinsic(name)
     expr = quote
         $name(x...) = Intrinsics.$name(x...)
-        function is_primitive(
+        function _is_primitive(
             ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
         )
-            true
+            return true
         end
         translate(::Val{Intrinsics.$name}) = $name
     end
@@ -148,7 +148,7 @@ end
 macro inactive_intrinsic(name)
     expr = quote
         $name(x...) = Intrinsics.$name(x...)
-        function is_primitive(
+        function _is_primitive(
             ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
         )
             true
@@ -304,7 +304,7 @@ special handling of `cglobal` is used.
 __cglobal(::Val{s}, x::Vararg{Any,N}) where {s,N} = cglobal(s, x...)
 
 translate(::Val{Intrinsics.cglobal}) = __cglobal
-function Mooncake.is_primitive(
+function Mooncake._is_primitive(
     ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof(__cglobal),Vararg}}
 )
     return true
@@ -437,6 +437,92 @@ end
 @inactive_intrinsic lshr_int
 @inactive_intrinsic lt_float
 @inactive_intrinsic lt_float_fast
+
+@static if VERSION >= v"1.12.0-rc2"
+    @intrinsic max_float
+    function frule!!(::Dual{typeof(max_float)}, a::Dual, b::Dual)
+        p = max_float(primal(a), primal(b))
+        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
+        return Dual(p, t)
+    end
+    function rrule!!(
+        ::CoDual{typeof(max_float)}, a::CoDual{P}, b::CoDual{P}
+    ) where {P<:Base.IEEEFloat}
+        _a = primal(a)
+        _b = primal(b)
+        tmp = _a > _b
+        x = max_float(_a, _b)
+        function max_float_adjoint(dx)
+            da = ifelse(tmp, dx, zero(P))
+            db = ifelse(tmp, zero(P), dx)
+            return NoRData(), da, db
+        end
+        return zero_fcodual(x), max_float_adjoint
+    end
+
+    @intrinsic max_float_fast
+    function frule!!(::Dual{typeof(max_float_fast)}, a::Dual, b::Dual)
+        p = max_float_fast(primal(a), primal(b))
+        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
+        return Dual(p, t)
+    end
+    function rrule!!(
+        ::CoDual{typeof(max_float_fast)}, a::CoDual{P}, b::CoDual{P}
+    ) where {P<:Base.IEEEFloat}
+        _a = primal(a)
+        _b = primal(b)
+        tmp = _a > _b
+        x = max_float_fast(_a, _b)
+        function max_float_fast_adjoint(dx)
+            da = ifelse(tmp, dx, zero(P))
+            db = ifelse(tmp, zero(P), dx)
+            return NoRData(), da, db
+        end
+        return zero_fcodual(x), max_float_fast_adjoint
+    end
+
+    @intrinsic min_float
+    function frule!!(::Dual{typeof(min_float)}, a::Dual, b::Dual)
+        p = min_float(primal(a), primal(b))
+        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
+        return Dual(p, t)
+    end
+    function rrule!!(
+        ::CoDual{typeof(min_float)}, a::CoDual{P}, b::CoDual{P}
+    ) where {P<:Base.IEEEFloat}
+        _a = primal(a)
+        _b = primal(b)
+        tmp = _a < _b
+        x = min_float(_a, _b)
+        function min_float_adjoint(dx)
+            da = ifelse(tmp, dx, zero(P))
+            db = ifelse(tmp, zero(P), dx)
+            return NoRData(), da, db
+        end
+        return zero_fcodual(x), min_float_adjoint
+    end
+
+    @intrinsic min_float_fast
+    function frule!!(::Dual{typeof(min_float_fast)}, a::Dual, b::Dual)
+        p = min_float_fast(primal(a), primal(b))
+        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
+        return Dual(p, t)
+    end
+    function rrule!!(
+        ::CoDual{typeof(min_float_fast)}, a::CoDual{P}, b::CoDual{P}
+    ) where {P<:Base.IEEEFloat}
+        _a = primal(a)
+        _b = primal(b)
+        tmp = _a < _b
+        x = min_float_fast(_a, _b)
+        function min_float_fast_adjoint(dx)
+            da = ifelse(tmp, dx, zero(P))
+            db = ifelse(tmp, zero(P), dx)
+            return NoRData(), da, db
+        end
+        return zero_fcodual(x), min_float_fast_adjoint
+    end
+end
 
 @intrinsic mul_float
 function frule!!(::Dual{typeof(mul_float)}, a, b)
@@ -753,6 +839,15 @@ function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
         return NoRData(), map(rdata, tangent_output)...
     end
     return CoDual(primal_output, tangent_output), svec_pullback!!
+end
+
+@static if VERSION > v"1.12-"
+    function frule!!(f::Dual{typeof(Core._svec_len)}, v)
+        return zero_dual(Core._svec_len(primal(v)))
+    end
+    function rrule!!(f::CoDual{typeof(Core._svec_len)}, v)
+        return zero_fcodual(Core._svec_len(primal(v))), NoPullback(f, v)
+    end
 end
 
 # Core._typebody!
@@ -1137,7 +1232,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (true, :stability, nothing, IntrinsicsWrappers.pointerset, CoDual(q, dq), 1, 2, 1),
         # rem_float -- untested and unimplemented because seemingly unused on master
         # rem_float_fast -- untested and unimplemented because seemingly unused on master
-        (false, :stability, nothing, IntrinsicsWrappers.rint_llvm, 5),
+        (false, :stability, nothing, IntrinsicsWrappers.rint_llvm, 5.0),
         (false, :stability, nothing, IntrinsicsWrappers.sdiv_int, 5, 4),
         (false, :stability, nothing, IntrinsicsWrappers.sext_int, Int64, Int32(1308622848)),
         (
@@ -1287,6 +1382,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, typeof, 5.0),
         (false, :stability, nothing, typeof, randn(5)),
     ]
+
+    if VERSION > v"1.12-"
+        fs = [
+            IntrinsicsWrappers.min_float,
+            IntrinsicsWrappers.min_float_fast,
+            IntrinsicsWrappers.max_float,
+            IntrinsicsWrappers.max_float_fast,
+        ]
+        for P in [Float32, Float64], f in fs
+            push!(test_cases, (false, :stability_and_allocs, nothing, f, P(5.0), P(4.0)))
+            push!(test_cases, (false, :stability_and_allocs, nothing, f, P(2.0), P(3.1)))
+        end
+    end
     return test_cases, memory
 end
 
