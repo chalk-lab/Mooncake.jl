@@ -125,8 +125,8 @@ function Mooncake.rrule!!(
     y = kron(px1, px2)
     dy = zero(y)
     function kron_pb!!(::NoRData)
-        M, N = size(dx1)
-        P, Q = size(dx2)
+        M, N = size(px1)
+        P, Q = size(px2)
         for m in 1:M, n in 1:N
             dx1[m, n] += dot(
                 (@view dy[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
