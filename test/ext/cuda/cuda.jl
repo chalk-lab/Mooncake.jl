@@ -29,7 +29,8 @@ using Mooncake.TestUtils: test_tangent_interface, test_tangent_splitting, test_r
                 @test Mooncake.arrayify(dp) == (p, Mooncake.zero_tangent(p))
             elseif ET <: Complex
                 primal_p, tangent_p = Mooncake.arrayify(dp)
-                @test (primal_p, tangent_p) isa Tuple{CuArray{ET, 2, CUDA.DeviceMemory}, CuArray{ET, 2, CUDA.DeviceMemory}}
+                @test (primal_p, tangent_p) isa
+                    Tuple{CuArray{ET,2,CUDA.DeviceMemory},CuArray{ET,2,CUDA.DeviceMemory}}
                 @test all(iszero, tangent_p)
             end
         end
