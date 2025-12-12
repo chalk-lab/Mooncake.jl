@@ -71,6 +71,7 @@
 @from_chainrules MinimalCtx Tuple{typeof(deg2rad),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(rad2deg),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
+
 @from_chainrules MinimalCtx Tuple{typeof(atan),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(max),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(min),P,P} where {P<:IEEEFloat}
