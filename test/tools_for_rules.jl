@@ -184,6 +184,7 @@ end
             (ones(5), ones(5)),
             (NoTangent(), ChainRulesCore.NoTangent()),
             ((5.0, 4.0), ChainRulesCore.Tangent{Any}(5.0, 4.0)),
+            ((a=5.0, b=4.0), ChainRulesCore.Tangent{Any}(; a=5.0, b=4.0)),
             ([ones(5), NoTangent()], [ones(5), ChainRulesCore.NoTangent()]),
             (
                 Tangent((a=5.0, b=NoTangent())),
