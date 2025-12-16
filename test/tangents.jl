@@ -1,3 +1,4 @@
+using DispatchDoctor: allow_unstable
 @testset "tangents" begin
     @testset "$(tangent_type(primal_type))" for (primal_type, expected_tangent_type) in Any[
 
@@ -228,7 +229,9 @@
                 },
             }
         }
-        @test tangent_type(F, Mooncake.NoRData) == T
+        allow_unstable() do
+            @test tangent_type(F, Mooncake.NoRData) == T
+        end
     end
 end
 
