@@ -205,6 +205,17 @@
     ]
         @test Mooncake.require_tangent_cache(P) == Val(expected_result)
     end
+
+    @testset "Union handling of possibly uninitialised structs" begin
+        F = FData{@NamedTuple{
+                x::Union{NoFData, MutableTangent{@NamedTuple{
+                    x::PossiblyUninitTangent{NoTangent}}}}}}
+
+        T = Tangent{@NamedTuple{
+            x::Union{NoTangent, MutableTangent{@NamedTuple{
+                x::PossiblyUninitTangent{NoTangent}}}}}}
+        @test tangent_type(F, NoRData) == T
+    end
 end
 
 # The goal of these tests is to check that we can indeed generate tangent types for anything
