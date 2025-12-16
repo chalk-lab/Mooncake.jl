@@ -879,7 +879,11 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 @foldable function tangent_type(
     ::Type{NoFData}, ::Type{R}
 ) where {R<:Union{NoRData,T} where {T<:Base.IEEEFloat}}
-    return tangent_type(R)
+    # This should only ever be hit when R is a proper union, since Any
+    # does not meet the constraint on T, an R==NoRData already has a more
+    # specific dispatch defined
+    @assert R isa Union
+    Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
