@@ -207,23 +207,28 @@
     end
 
     @testset "Union handling of possibly uninitialised structs" begin
-        F = FData{
+        F = Mooncake.FData{
             @NamedTuple{
                 x::Union{
-                    NoFData,MutableTangent{@NamedTuple{x::PossiblyUninitTangent{NoTangent}}}
+                    Mooncake.NoFData,
+                    Mooncake.MutableTangent{
+                        @NamedTuple{x::Mooncake.PossiblyUninitTangent{Mooncake.NoTangent}}
+                    },
                 },
             }
         }
 
-        T = Tangent{
+        T = Mooncake.Tangent{
             @NamedTuple{
                 x::Union{
-                    NoTangent,
-                    MutableTangent{@NamedTuple{x::PossiblyUninitTangent{NoTangent}}},
+                    Mooncake.NoTangent,
+                    Mooncake.MutableTangent{
+                        @NamedTuple{x::Mooncake.PossiblyUninitTangent{Mooncake.NoTangent}}
+                    },
                 },
             }
         }
-        @test tangent_type(F, NoRData) == T
+        @test tangent_type(F, Mooncake.NoRData) == T
     end
 end
 
