@@ -29,6 +29,7 @@ jobs:
           'basic',
           'rrules/avoiding_non_differentiable_code',
           'rrules/blas',
+          'rrules/blas_level_3',
           'rrules/builtins',
           'rrules/dispatch_doctor',
           'rrules/fastmath',
@@ -49,6 +50,7 @@ jobs:
         version:
           - 'lts'
           - '1.11'
+          - '1.12'
         arch:
           - x64
         include:
@@ -59,7 +61,7 @@ jobs:
             version: 'lts'
             arch: x64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
@@ -108,12 +110,13 @@ jobs:
           {test_type: 'integration_testing', label: 'flux'},
         ]
         version:
-          - '1.11'
           - 'lts'
+          - '1.11'
+          - '1.12'
         arch:
           - x64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
@@ -146,7 +149,7 @@ jobs:
           - 'hand_written'
           - 'derived'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.11'
@@ -165,7 +168,7 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.11'
@@ -179,7 +182,7 @@ jobs:
           PERF_GROUP: 'comparison'
           GKSwstype: '100'
         shell: bash
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: benchmarking-results
           path: bench_results/
@@ -199,7 +202,7 @@ jobs:
           } >> $GITHUB_OUTPUT
           
       - name: Find Comment
-        uses: peter-evans/find-comment@v3
+        uses: peter-evans/find-comment@v4
         id: fc
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -208,7 +211,7 @@ jobs:
 
       - id: post-report-as-pr-comment
         name: Post Report as Pull Request Comment
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@v5
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body: |

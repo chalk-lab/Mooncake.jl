@@ -74,6 +74,7 @@
 @from_chainrules MinimalCtx Tuple{typeof(atan),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(max),P,P} where {P<:IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(min),P,P} where {P<:IEEEFloat}
+@from_chainrules MinimalCtx Tuple{typeof(mod),P,P} where {P<:IEEEFloat}
 
 @is_primitive MinimalCtx Tuple{typeof(mod2pi),IEEEFloat}
 function frule!!(::Dual{typeof(mod2pi)}, x::Dual{P}) where {P<:IEEEFloat}
@@ -227,6 +228,39 @@ function rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), eps_pb!!
 end
 
+#=
+## nextfloat / prevfloat
+
+The idea is that `nextfloat(x) = x + ϵ`, where `ϵ` is the smallest possible number such that
+`x + ϵ` is not equal to `x`.
+
+Conceptually, this should just be considered as you adding a (tiny) constant to `x`, so
+the derivative is just `1`.  Technically, the size of  `ϵ` does depend on `x`, but more or
+less by construction, the derivative should be too small to represent using whatever floating
+point system you are using.
+
+Therefore, we take `nextfloat` and `prevfloat` to just be the identity function so far as
+derivatives are concerned
+=#
+@is_primitive MinimalCtx Tuple{typeof(nextfloat),<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(prevfloat),<:IEEEFloat}
+function frule!!(::Dual{typeof(nextfloat)}, x::Dual{<:IEEEFloat})
+    return Dual(nextfloat(primal(x)), tangent(x))
+end
+function rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = nextfloat(primal(x))
+    nextfloat_pb!!(dy::P) = (NoRData(), dy)
+    return zero_fcodual(y), nextfloat_pb!!
+end
+function frule!!(::Dual{typeof(prevfloat)}, x::Dual{<:IEEEFloat})
+    return Dual(prevfloat(primal(x)), tangent(x))
+end
+function rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = prevfloat(primal(x))
+    prevfloat_pb!!(dy::P) = (NoRData(), dy)
+    return zero_fcodual(y), prevfloat_pb!!
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
     test_cases = vcat(
         map([Float32, Float64]) do P
@@ -283,6 +317,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (deg2rad, P(185.4)),
                 (rad2deg, P(0.45)),
                 (mod2pi, P(0.1)),
+                (mod, P(7.5), P(2.3)),
+                (mod, P(10.2), P(3.1)),
                 (^, P(4.0), P(5.0)),
                 (atan, P(4.3), P(0.23)),
                 (hypot, P(4.0), P(5.0)),
@@ -293,6 +329,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (min, P(1.5), P(0.5)),
                 (min, P(0.45), P(1.1)),
                 (Base.eps, P(5.0)),
+                (nextfloat, P(0.25)),
+                (prevfloat, P(1.1)),
             ]
             return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
         end...,

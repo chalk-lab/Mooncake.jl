@@ -68,6 +68,11 @@ As you can see, the tangent is `0.0` rather than `6.0`.
 However, we view this as a pathological use of Julia's language features, and believe it is unlikely to cause trouble in practice.
 If you encounter a practical situation in which it is very important that this example work correctly, please open an issue.
 
+## Differentiating CUDA Kernels
+
+Mooncake.jl supports differentiation of CUDA kernels in general, provided a suitable rule exists. However, it does not support kernels that surface as foreign calls, such as those generated via KernelAbstractions.jl (see [issue #648](https://github.com/chalk-lab/Mooncake.jl/issues/648) and [issue #835](https://github.com/chalk-lab/Mooncake.jl/issues/835)). Support for these foreign-call kernels is outside the scope of the project and is considered a non-goal.
+
+Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
 
 ## Circular References in Type Declarations
 
