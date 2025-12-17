@@ -1216,8 +1216,8 @@ function generate_ir(
     rvs_ir = pullback_ir(
         primal_ir, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
     )
-    opt_fwd_ir = optimise_ir!(IRCode(fwd_ir); do_inline)
-    opt_rvs_ir = optimise_ir!(IRCode(rvs_ir); do_inline)
+    opt_fwd_ir = optimise_ir!(IRCode(fwd_ir); mode=ReverseMode, do_inline)
+    opt_rvs_ir = optimise_ir!(IRCode(rvs_ir); mode=ReverseMode, do_inline)
     return DerivedRuleInfo(
         ir, opt_fwd_ir, fwd_ret_type, opt_rvs_ir, rvs_ret_type, shared_data, info, isva
     )

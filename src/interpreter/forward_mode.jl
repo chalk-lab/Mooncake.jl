@@ -215,7 +215,7 @@ function generate_dual_ir(
     dual_ir.argtypes[1] = _typeof(captures_tuple)
 
     # Optimize dual IR
-    dual_ir_opt = optimise_ir!(dual_ir; do_inline)
+    dual_ir_opt = optimise_ir!(dual_ir; mode=ForwardMode, do_inline)
     return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
 end
 
