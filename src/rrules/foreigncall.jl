@@ -256,34 +256,6 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(Base.has_free_typevars),Any}
 
-# jl_genericmemory_owner is used by Base.dataids to determine memory aliasing.
-# The result is just a pointer for aliasing detection, so it has zero derivative.
-@static if VERSION >= v"1.11-"
-    function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_genericmemory_owner}},
-        ::Dual{Val{Any}},
-        ::Dual{Tuple{Val{Any}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        a::Dual{<:Memory},
-    )
-        return zero_dual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
-    end
-    function rrule!!(
-        ::CoDual{typeof(_foreigncall_)},
-        ::CoDual{Val{:jl_genericmemory_owner}},
-        ::CoDual{Val{Any}},
-        ::CoDual{Tuple{Val{Any}}},
-        ::CoDual{Val{0}},
-        ::CoDual{Val{:ccall}},
-        a::CoDual{<:Memory},
-    )
-        y = zero_fcodual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
-        return y, NoPullback(ntuple(_ -> NoRData(), 7))
-    end
-end
-
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
 frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
