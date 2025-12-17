@@ -931,12 +931,14 @@ function frule!!(
     end
 end
 
-# Handle case where tangent type equals primal type (e.g., arrays where tangent_type(Vector) = Vector)
+# Handle case where tangent type equals primal type for arrays (tangent_type(Vector) = Vector).
 # This is needed for forward-over-reverse when differentiating through code that accesses
-# internal array fields like .ref and .mem
-# Note: The 4-arg version (with inbounds) is not needed here as memory.jl has specialized
-# methods for Array/Memory/MemoryRef types which cover the main use cases.
-function frule!!(::Dual{typeof(getfield)}, x::Dual{P,P}, name::Dual) where {P}
+# internal array fields like .ref and .mem.
+# Note: AbstractArray is NOT in StandardTangentType, so this doesn't conflict with the
+# Dual{P, <:StandardTangentType} method above.
+function frule!!(
+    ::Dual{typeof(getfield)}, x::Dual{P,P}, name::Dual
+) where {P<:AbstractArray}
     _name = primal(name)
     return Dual(getfield(primal(x), _name), getfield(tangent(x), _name))
 end
