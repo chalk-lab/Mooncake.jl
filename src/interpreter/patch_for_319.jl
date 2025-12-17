@@ -13,25 +13,33 @@
 # variable with the `AbstractInterpreter`.
 #
 # The work around:
-# We define a new `AbstractInterpreter` which wraps around another AbstractInterpreter.
+# We define a new `AbstractInterpreter` which wraps around the `Compiler.NativeInterpreter`.
 # This makes it possible to add methods to various functions in `Compiler`, thereby enabling
-# us to insert the bug fixes while preserving the behavior of the wrapped interpreter
-# (e.g., MooncakeInterpreter's inlining policy).
+# us to insert the bug fixes.
 
-struct BugPatchInterpreter{I<:CC.AbstractInterpreter} <: CC.AbstractInterpreter
-    interp::I
+struct BugPatchInterpreter <: CC.AbstractInterpreter
+    interp::CC.NativeInterpreter
+    BugPatchInterpreter() = new(CC.NativeInterpreter())
 end
-
-# Default constructor wraps NativeInterpreter (backwards compatible)
-BugPatchInterpreter() = BugPatchInterpreter(CC.NativeInterpreter())
-
-# Constructor that wraps a MooncakeInterpreter for the given mode
-BugPatchInterpreter(mode::Type{<:Mode}) = BugPatchInterpreter(get_interpreter(mode))
 
 CC.InferenceParams(ip::BugPatchInterpreter) = CC.InferenceParams(ip.interp)
 CC.OptimizationParams(ip::BugPatchInterpreter) = CC.OptimizationParams(ip.interp)
 CC.get_inference_cache(ip::BugPatchInterpreter) = CC.get_inference_cache(ip.interp)
 CC.code_cache(ip::BugPatchInterpreter) = CC.code_cache(ip.interp)
+function CC.get(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance, default)
+    return get(wvc.cache.dict, mi, default)
+end
+function CC.getindex(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance)
+    return getindex(wvc.cache.dict, mi)
+end
+function CC.haskey(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance)
+    return haskey(wvc.cache.dict, mi)
+end
+function CC.setindex!(
+    wvc::CC.WorldView{BugPatchInterpreter}, ci::Core.CodeInstance, mi::Core.MethodInstance
+)
+    return setindex!(wvc.cache.dict, ci, mi)
+end
 CC.method_table(ip::BugPatchInterpreter) = CC.method_table(ip.interp)
 
 @static if VERSION < v"1.11.0"
@@ -39,72 +47,6 @@ CC.method_table(ip::BugPatchInterpreter) = CC.method_table(ip.interp)
 else
     CC.get_inference_world(ip::BugPatchInterpreter) = CC.get_inference_world(ip.interp)
     CC.cache_owner(ip::BugPatchInterpreter) = CC.cache_owner(ip.interp)
-end
-
-# Forward abstract_call_gf_by_type to the wrapped interpreter to preserve NoInlineCallInfo
-# creation for primitives. This is critical: the wrapped MooncakeInterpreter's
-# abstract_call_gf_by_type creates NoInlineCallInfo for primitives, which inlining_policy
-# then uses to prevent inlining.
-@static if VERSION < v"1.12-"
-    function CC.abstract_call_gf_by_type(
-        interp::BugPatchInterpreter,
-        @nospecialize(f),
-        arginfo::CC.ArgInfo,
-        si::CC.StmtInfo,
-        @nospecialize(atype),
-        sv::CC.AbsIntState,
-        max_methods::Int,
-    )
-        return CC.abstract_call_gf_by_type(
-            interp.interp, f, arginfo, si, atype, sv, max_methods
-        )
-    end
-else
-    function CC.abstract_call_gf_by_type(
-        interp::BugPatchInterpreter,
-        @nospecialize(f),
-        arginfo::CC.ArgInfo,
-        si::CC.StmtInfo,
-        @nospecialize(atype),
-        sv::CC.AbsIntState,
-        max_methods::Int,
-    )
-        return CC.abstract_call_gf_by_type(
-            interp.interp, f, arginfo, si, atype, sv, max_methods
-        )
-    end
-end
-
-# Forward inlining_policy to the wrapped interpreter to preserve primitive protection
-@static if VERSION < v"1.11-"
-    function CC.inlining_policy(
-        interp::BugPatchInterpreter,
-        @nospecialize(src),
-        @nospecialize(info::CC.CallInfo),
-        stmt_flag::UInt8,
-        mi::Core.MethodInstance,
-        argtypes::Vector{Any},
-    )
-        return CC.inlining_policy(interp.interp, src, info, stmt_flag, mi, argtypes)
-    end
-elseif VERSION < v"1.12-"
-    function CC.inlining_policy(
-        interp::BugPatchInterpreter,
-        @nospecialize(src),
-        @nospecialize(info::CC.CallInfo),
-        stmt_flag::UInt32,
-    )
-        return CC.inlining_policy(interp.interp, src, info, stmt_flag)
-    end
-else
-    function CC.src_inlining_policy(
-        interp::BugPatchInterpreter,
-        @nospecialize(src),
-        @nospecialize(info::CC.CallInfo),
-        stmt_flag::UInt32,
-    )
-        return CC.src_inlining_policy(interp.interp, src, info, stmt_flag)
-    end
 end
 
 # You can't write for n in thing_from_compiler unless `Base.iterate(thing_from_compiler)`

@@ -166,18 +166,12 @@ function __strip_coverage!(ir::IRCode)
 end
 
 """
-    optimise_ir!(ir::IRCode; mode=nothing, show_ir=false, do_inline=true)
+    optimise_ir!(ir::IRCode, show_ir=false)
 
 Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
 to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
-
-If `mode` is provided (e.g., `ForwardMode` or `ReverseMode`), the optimization will use
-a `MooncakeInterpreter` that respects primitive inlining rules, preventing AD primitives
-from being inlined away.
 """
-function optimise_ir!(
-    ir::IRCode; mode::Union{Nothing,Type{<:Mode}}=nothing, show_ir=false, do_inline=true
-)
+function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     if show_ir
         println("Pre-optimization")
         display(ir)
@@ -186,10 +180,8 @@ function optimise_ir!(
     CC.verify_ir(ir)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
-    # Use BugPatchInterpreter wrapping MooncakeInterpreter if mode is provided,
-    # otherwise wrap NativeInterpreter (backwards compatible).
-    # See patch_for_319.jl for context on the bug patches.
-    local_interp = mode === nothing ? BugPatchInterpreter() : BugPatchInterpreter(mode)
+    # local_interp = CC.NativeInterpreter()
+    local_interp = BugPatchInterpreter() # 319 -- see patch_for_319.jl for context
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, local_interp, mi)
     if show_ir

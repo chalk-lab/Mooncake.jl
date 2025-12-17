@@ -171,9 +171,8 @@ function Core.Compiler.abstract_call_gf_by_type(
                 info = NoInlineCallInfo(call.info, atype)
                 return rewrap_callmeta(call, info)
             else
-                outer_interp = sv isa CC.InferenceState ? sv.interp : interp
                 return CC.Future{CC.CallMeta}(
-                    ret::CC.Future, outer_interp, sv
+                    ret::CC.Future, interp, sv
                 ) do call, interp, sv
                     info = NoInlineCallInfo(call.info, atype)
                     return rewrap_callmeta(call, info)

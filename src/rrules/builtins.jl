@@ -930,19 +930,6 @@ function frule!!(
         return Dual(getfield(primal(x), _name), _get_tangent_field(tangent(x), _name))
     end
 end
-
-# Handle case where tangent type equals primal type for arrays (tangent_type(Vector) = Vector).
-# This is needed for forward-over-reverse when differentiating through code that accesses
-# internal array fields like .ref and .mem.
-# Note: AbstractArray is NOT in StandardTangentType, so this doesn't conflict with the
-# Dual{P, <:StandardTangentType} method above.
-function frule!!(
-    ::Dual{typeof(getfield)}, x::Dual{P,P}, name::Dual
-) where {P<:AbstractArray}
-    _name = primal(name)
-    return Dual(getfield(primal(x), _name), getfield(tangent(x), _name))
-end
-
 function frule!!(
     ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
 ) where {P}
