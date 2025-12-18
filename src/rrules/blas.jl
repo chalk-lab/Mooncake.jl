@@ -65,7 +65,8 @@ end
 function arrayify(
     x::Tx, dx::TangentOrFData
 ) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
-    arrayify(x.data, _fields(dx).data)
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Tx(_dx)
 end
 
 function arrayify(x::A, dx::DA) where {A,DA}
@@ -76,7 +77,7 @@ function arrayify(x::A, dx::DA) where {A,DA}
         " Please open an issue at " *
         "https://github.com/chalk-lab/Mooncake.jl/issues . " *
         "It should contain this error message and the associated stack trace.\n\n" *
-        "Array type: $A\n\nFData type: $DA."
+        "Array type: $A\n\nTangent/FData type: $DA."
     return error(msg)
 end
 

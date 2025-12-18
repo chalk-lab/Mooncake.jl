@@ -178,4 +178,61 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     return test_cases, memory
 end
 
-derived_rule_test_cases(rng_ctor, ::Val{:performance_patches}) = Any[], Any[]
+function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
+    rng = rng_ctor(123)
+    precisions = [Float64, Float32]
+    test_cases = vcat(
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                randn(rng, P, 5, 5),
+                UpperTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                randn(rng, P, 5, 5),
+                LowerTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                UpperTriangular(randn(rng, P, 5, 5)),
+                LowerTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                view(randn(rng, P, 5, 5), 1:5, 1:5),
+                LowerTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                view(randn(rng, P, 5, 5), 1:5, 1:5),
+                UpperTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+    )
+    memory = Any[]
+    return test_cases, memory
+end
