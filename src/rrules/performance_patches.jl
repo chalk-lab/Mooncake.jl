@@ -48,17 +48,17 @@ end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
 @is_primitive DefaultCtx Tuple{
-    typeof(LinearAlgebra._kron!),Matrix{T},Matrix{T},Matrix{T}
+    typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
 function Mooncake.frule!!(
     ::Dual{typeof(LinearAlgebra._kron!)},
-    out::Dual{<:Matrix{<:T}},
-    x1::Dual{<:Matrix{<:T}},
-    x2::Dual{<:Matrix{<:T}},
+    out::Dual{<:AbstractMatrix{<:T}},
+    x1::Dual{<:AbstractMatrix{<:T}},
+    x2::Dual{<:AbstractMatrix{<:T}},
 ) where {T<:Base.IEEEFloat}
-    pout, dout = extract(out)
-    px1, dx1 = extract(x1)
-    px2, dx2 = extract(x2)
+    pout, dout = arrayify(out)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     LinearAlgebra._kron!(pout, px1, px2)
     # manually compute dout .= kron(dx1, px2) .+ kron(px1, dx2), otherwise performance
     # suffers
@@ -75,13 +75,13 @@ function Mooncake.frule!!(
 end
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
-    out::CoDual{<:Matrix{<:T}},
-    x1::CoDual{<:Matrix{<:T}},
-    x2::CoDual{<:Matrix{<:T}},
+    out::CoDual{<:AbstractMatrix{<:T}},
+    x1::CoDual{<:AbstractMatrix{<:T}},
+    x2::CoDual{<:AbstractMatrix{<:T}},
 ) where {T<:Base.IEEEFloat}
-    pout, dout = extract(out)
-    px1, dx1 = extract(x1)
-    px2, dx2 = extract(x2)
+    pout, dout = arrayify(out)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     old_pout = copy(pout)
     LinearAlgebra._kron!(pout, px1, px2)
     function _kron!_pb!!(::NoRData)
@@ -100,28 +100,31 @@ function Mooncake.rrule!!(
     end
     return out, _kron!_pb!!
 end
+
 @mooncake_overlay function LinearAlgebra._kron!(
-    out::Matrix{T}, a::Vector{T}, b::Matrix{T}
-) where {T<:IEEEFloat}
-    return LinearAlgebra._kron!(out, reshape(a, :, 1), b)::Matrix{T}
+    out::Tm, a::Tv, b::Tm
+) where {T<:IEEEFloat,Tm<:AbstractMatrix{T},Tv<:AbstractVector{T}}
+    return LinearAlgebra._kron!(out, reshape(a, :, 1), b)::Tm
 end
 @mooncake_overlay function LinearAlgebra._kron!(
-    out::Matrix{T}, a::Matrix{T}, b::Vector{T}
-) where {T<:IEEEFloat}
-    return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::Matrix{T}
+    out::Tm, a::Tm, b::Tv
+) where {T<:IEEEFloat,Tm<:AbstractMatrix{T},Tv<:AbstractVector{T}}
+    return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::Tm
 end
 
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
 @is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),Matrix{T},Matrix{T}
+    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
 function Mooncake.rrule!!(
-    ::CoDual{typeof(kron)}, x1::CoDual{<:Matrix{<:T}}, x2::CoDual{<:Matrix{<:T}}
+    ::CoDual{typeof(kron)},
+    x1::CoDual{<:AbstractMatrix{<:T}},
+    x2::CoDual{<:AbstractMatrix{<:T}},
 ) where {T<:Base.IEEEFloat}
-    px1, dx1 = extract(x1)
-    px2, dx2 = extract(x2)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     y = kron(px1, px2)
     dy = zero(y)
     function kron_pb!!(::NoRData)
@@ -175,4 +178,61 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     return test_cases, memory
 end
 
-derived_rule_test_cases(rng_ctor, ::Val{:performance_patches}) = Any[], Any[]
+function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
+    rng = rng_ctor(123)
+    precisions = [Float64, Float32]
+    test_cases = vcat(
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                randn(rng, P, 5, 5),
+                UpperTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                randn(rng, P, 5, 5),
+                LowerTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                UpperTriangular(randn(rng, P, 5, 5)),
+                LowerTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                view(randn(rng, P, 5, 5), 1:5, 1:5),
+                LowerTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                view(randn(rng, P, 5, 5), 1:5, 1:5),
+                UpperTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+    )
+    memory = Any[]
+    return test_cases, memory
+end
