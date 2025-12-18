@@ -56,9 +56,9 @@ function Mooncake.frule!!(
     x1::Dual{<:AbstractMatrix{<:T}},
     x2::Dual{<:AbstractMatrix{<:T}},
 ) where {T<:Base.IEEEFloat}
-    pout, dout = extract(out)
-    px1, dx1 = extract(x1)
-    px2, dx2 = extract(x2)
+    pout, dout = arrayify(out)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     LinearAlgebra._kron!(pout, px1, px2)
     # manually compute dout .= kron(dx1, px2) .+ kron(px1, dx2), otherwise performance
     # suffers
@@ -79,9 +79,9 @@ function Mooncake.rrule!!(
     x1::CoDual{<:AbstractMatrix{<:T}},
     x2::CoDual{<:AbstractMatrix{<:T}},
 ) where {T<:Base.IEEEFloat}
-    pout, dout = extract(out)
-    px1, dx1 = extract(x1)
-    px2, dx2 = extract(x2)
+    pout, dout = arrayify(out)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     old_pout = copy(pout)
     LinearAlgebra._kron!(pout, px1, px2)
     function _kron!_pb!!(::NoRData)
@@ -111,6 +111,9 @@ end
     return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::typeof(out)
 end
 
+# TODO: move to blas.jl
+arrayify(x::UpperTriangular{<:IEEEFloat, <:Matrix{<:IEEEFloat}}, dx::TangentOrFData) = arrayify(x.data, _fields(dx).data)
+
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
@@ -120,8 +123,8 @@ end
 function Mooncake.rrule!!(
     ::CoDual{typeof(kron)}, x1::CoDual{<:AbstractMatrix{<:T}}, x2::CoDual{<:AbstractMatrix{<:T}}
 ) where {T<:Base.IEEEFloat}
-    px1, dx1 = extract(x1)
-    px2, dx2 = extract(x2)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     y = kron(px1, px2)
     dy = zero(y)
     function kron_pb!!(::NoRData)
