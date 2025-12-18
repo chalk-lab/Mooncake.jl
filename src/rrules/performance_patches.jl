@@ -100,6 +100,7 @@ function Mooncake.rrule!!(
     end
     return out, _kron!_pb!!
 end
+
 @mooncake_overlay function LinearAlgebra._kron!(
     out::To, a::Ta, b::Tb
 ) where {T<:IEEEFloat,To<:AbstractMatrix{T},Ta<:AbstractVector{T},Tb<:AbstractMatrix{T}}

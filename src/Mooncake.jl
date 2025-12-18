@@ -150,7 +150,13 @@ include(joinpath("rrules", "twice_precision.jl"))
 else
     include(joinpath("rrules", "array_legacy.jl"))
 end
+
+end # DispatchDoctor block
+
+# Including this in DispatchDoctor causes precompilation error. 
 include(joinpath("rrules", "performance_patches.jl"))
+
+@stable default_mode = "disable" default_union_limit = 2 begin
 
 include("interface.jl")
 include("config.jl")
