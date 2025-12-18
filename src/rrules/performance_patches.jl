@@ -101,18 +101,21 @@ function Mooncake.rrule!!(
     return out, _kron!_pb!!
 end
 @mooncake_overlay function LinearAlgebra._kron!(
-    out::AbstractMatrix{T}, a::AbstractVector{T}, b::AbstractMatrix{T}
-) where {T<:IEEEFloat}
-    return LinearAlgebra._kron!(out, reshape(a, :, 1), b)::typeof(out)
+    out::To, a::Ta, b::Tb
+) where {T<:IEEEFloat,To<:AbstractMatrix{T},Ta<:AbstractVector{T},Tb<:AbstractMatrix{T}}
+    return LinearAlgebra._kron!(out, reshape(a, :, 1), b)::To
 end
 @mooncake_overlay function LinearAlgebra._kron!(
-    out::AbstractMatrix{T}, a::AbstractMatrix{T}, b::AbstractVector{T}
-) where {T<:IEEEFloat}
-    return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::typeof(out)
+    out::To, a::Ta, b::Tb
+) where {T<:IEEEFloat,To<:AbstractMatrix{T},Tb<:AbstractVector{T},Ta<:AbstractMatrix{T}}
+    return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::To
 end
 
-# TODO: move to blas.jl
-arrayify(x::UpperTriangular{<:IEEEFloat, <:Matrix{<:IEEEFloat}}, dx::TangentOrFData) = arrayify(x.data, _fields(dx).data)
+function arrayify(
+    x::UpperTriangular{T,Matrix{<:T}}, dx::TangentOrFData
+) where {T<:IEEEFloat}
+    arrayify(x.data, _fields(dx).data)
+end
 
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
@@ -121,7 +124,9 @@ arrayify(x::UpperTriangular{<:IEEEFloat, <:Matrix{<:IEEEFloat}}, dx::TangentOrFD
     typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
 function Mooncake.rrule!!(
-    ::CoDual{typeof(kron)}, x1::CoDual{<:AbstractMatrix{<:T}}, x2::CoDual{<:AbstractMatrix{<:T}}
+    ::CoDual{typeof(kron)},
+    x1::CoDual{<:AbstractMatrix{<:T}},
+    x2::CoDual{<:AbstractMatrix{<:T}},
 ) where {T<:Base.IEEEFloat}
     px1, dx1 = arrayify(x1)
     px2, dx2 = arrayify(x2)
