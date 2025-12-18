@@ -102,19 +102,19 @@ function Mooncake.rrule!!(
 end
 
 @mooncake_overlay function LinearAlgebra._kron!(
-    out::To, a::Ta, b::Tb
-) where {T<:IEEEFloat,To<:AbstractMatrix{T},Ta<:AbstractVector{T},Tb<:AbstractMatrix{T}}
-    return LinearAlgebra._kron!(out, reshape(a, :, 1), b)::To
+    out::Tm, a::Tv, b::Tm
+) where {T<:IEEEFloat,Tm<:AbstractMatrix{T},Tv<:AbstractVector{T}}
+    return LinearAlgebra._kron!(out, reshape(a, :, 1), b)::Tm
 end
 @mooncake_overlay function LinearAlgebra._kron!(
-    out::To, a::Ta, b::Tb
-) where {T<:IEEEFloat,To<:AbstractMatrix{T},Tb<:AbstractVector{T},Ta<:AbstractMatrix{T}}
-    return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::To
+    out::Tm, a::Tm, b::Tv
+) where {T<:IEEEFloat,Tm<:AbstractMatrix{T},Tv<:AbstractVector{T}}
+    return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::Tm
 end
 
 function arrayify(
-    x::UpperTriangular{T,Matrix{<:T}}, dx::TangentOrFData
-) where {T<:IEEEFloat}
+    x::Tx, dx::TangentOrFData
+) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
     arrayify(x.data, _fields(dx).data)
 end
 
@@ -134,8 +134,8 @@ function Mooncake.rrule!!(
     y = kron(px1, px2)
     dy = zero(y)
     function kron_pb!!(::NoRData)
-        M, N = size(px1)
-        P, Q = size(px2)
+        M, N = size(dx1)
+        P, Q = size(dx2)
         for m in 1:M, n in 1:N
             dx1[m, n] += dot(
                 (@view dy[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
@@ -168,8 +168,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
 
         # _kron!(x, y)
-        # blas rules doesn't support Float16, so we skip that case here.
-        map(intersect(precisions, subtypes(BlasRealFloat))) do (P)
+        map(precisions) do (P)
             return (
                 true,
                 :none,

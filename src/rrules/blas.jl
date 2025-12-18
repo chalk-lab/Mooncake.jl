@@ -30,10 +30,12 @@ possible for all array types of interest so far.
 """
 function arrayify(
     x::Union{Dual{A},CoDual{A}}
-) where {A<:Union{AbstractArray{<:BlasFloat},Ptr{<:BlasFloat}}}
+) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
     return arrayify(primal(x), tangent(x))  # NOTE: for complex numbers, tangents are reinterpreted to Complex
 end
-function arrayify(x::A, dx::A) where {A<:Union{Array{<:BlasRealFloat},Ptr{<:BlasRealFloat}}}
+function arrayify(
+    x::A, dx::A
+) where {T<:Union{IEEEFloat,BlasRealFloat},A<:Union{Array{<:T},Ptr{<:T}}}
     (x, dx)
 end
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
