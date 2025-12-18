@@ -1,7 +1,5 @@
 # Forwards-Mode Design
 
-**Disclaimer**: this document refers to an as-yet-unimplemented forwards-mode AD. This will disclaimer will be removed once it has been implemented.
-
 The purpose of this document is to explain how forwards-mode AD in Mooncake.jl is implemented.
 It should do so to a sufficient level of depth to enable the interested reader to read to the forwards-mode AD code in Mooncake.jl and understand what is going on.
 
@@ -70,8 +68,8 @@ Hand-written rules are implemented by writing methods of two functions: `is_prim
 
 ### `is_primitive`
 
-`is_primitive(::Type{<:Union{MinimalForwardsCtx, DefaultForwardsCtx}}, signature::Type{<:Tuple})` should return `true` if AD must attempt to differentiate a call by passing the arguments to `frule!!`, and `false` otherwise.
-The [`Mooncake.@is_primitive`](@ref) macro helps makes implementing this very easy.
+`is_primitive(::Type{<:Union{MinimalForwardsCtx, DefaultForwardsCtx}}, signature::Type{<:Tuple}, world)` must return `true` if AD must attempt to differentiate a call by passing the arguments to `frule!!`, and `false` otherwise.
+The [`Mooncake.@is_primitive`](@ref) macro must be used to extend to create new primitives.
 
 ### `frule!!`
 
