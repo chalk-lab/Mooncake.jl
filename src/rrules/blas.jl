@@ -62,6 +62,11 @@ function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:Bla
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, reinterpret(T, _dx)
 end
+function arrayify(
+    x::Tx, dx::TangentOrFData
+) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
+    arrayify(x.data, _fields(dx).data)
+end
 
 function arrayify(x::A, dx::DA) where {A,DA}
     msg =

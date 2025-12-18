@@ -112,12 +112,6 @@ end
     return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::Tm
 end
 
-function arrayify(
-    x::Tx, dx::TangentOrFData
-) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
-    arrayify(x.data, _fields(dx).data)
-end
-
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
