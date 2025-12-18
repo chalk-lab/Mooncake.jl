@@ -1177,7 +1177,9 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     _tangent_to_primal!!(p, t) = Mooncake.tangent_to_primal_internal!!(
         p, t, IdDict{Any,Any}()
     )
-    _primal_to_tangent!!(t, p) = Mooncake.primal_to_tangent_internal!!(t, p, IdDict{Any,Any}())
+    _primal_to_tangent!!(t, p) = Mooncake.primal_to_tangent_internal!!(
+        t, p, IdDict{Any,Any}()
+    )
 
     # Check that tangent_type returns a `Type`.
     T = tangent_type(P)

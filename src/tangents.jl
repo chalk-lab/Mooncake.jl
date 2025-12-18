@@ -1295,18 +1295,14 @@ end
 tangent_to_primal_internal!!(x::IEEEFloat, tx, c::MaybeCache) = tx
 primal_to_tangent_internal!!(tx, x::IEEEFloat, c::MaybeCache) = x
 @generated function tangent_to_primal_internal!!(x::Tuple, tx, c::MaybeCache)
-    ttp_exprs = map(
-        n -> :(tangent_to_primal_internal!!(x[$n], tx[$n], c)), 1:fieldcount(x)
-    )
+    ttp_exprs = map(n -> :(tangent_to_primal_internal!!(x[$n], tx[$n], c)), 1:fieldcount(x))
     return quote
         tx isa NoTangent && return x
         return $(Expr(:call, :tuple, ttp_exprs...))
     end
 end
 @generated function primal_to_tangent_internal!!(tx, x::Tuple, c::MaybeCache)
-    ptt_exprs = map(
-        n -> :(primal_to_tangent_internal!!(tx[$n], x[$n], c)), 1:fieldcount(x)
-    )
+    ptt_exprs = map(n -> :(primal_to_tangent_internal!!(tx[$n], x[$n], c)), 1:fieldcount(x))
     return quote
         tx isa NoTangent && return NoTangent()
         return $(Expr(:call, :tuple, ptt_exprs...))
@@ -1393,8 +1389,8 @@ end
         # Generate a chain of if statements to handle partially-initialized structs
         ninit = CC.datatype_min_ninitialized(P)
         ex = :(return $(Expr(:new, P, ttp_exprs[1:fieldcount(P)]...)))
-        for n in (fieldcount(P)-1):-1:ninit
-            cond = :(is_init(tx.fields[$(n+1)]))
+        for n in (fieldcount(P) - 1):-1:ninit
+            cond = :(is_init(tx.fields[$(n + 1)]))
             expr = :(return $(Expr(:new, P, ttp_exprs[1:n]...)))
             ex = Expr(:if, cond, ex, expr)
         end
@@ -1423,17 +1419,17 @@ end
                 if isdefined(x, $n)
                     is_init(tx.fields[$n]) || error(
                         "The field #$($n) of an object of type $(typeof(x)) is " *
-                        "initialized but the corresponding tangent field is not."
+                        "initialized but the corresponding tangent field is not.",
                     )
-                    $T_field_expr(primal_to_tangent_internal!!(
-                        val(tx.fields[$n]),
-                        getfield(x, $n),
-                        c,
-                    ))
+                    $T_field_expr(
+                        primal_to_tangent_internal!!(
+                            val(tx.fields[$n]), getfield(x, $n), c
+                        ),
+                    )
                 else
                     is_init(tx.fields[$n]) && error(
                         "The field #$($n) of an object of type $(typeof(x)) is " *
-                        "not initialized but the corresponding tangent field is."
+                        "not initialized but the corresponding tangent field is.",
                     )
                     $T_field_expr()
                 end

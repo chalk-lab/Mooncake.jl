@@ -140,7 +140,9 @@ use-case, consider pre-allocating the `CoDual`s and calling the other method of 
 function. The `CoDual`s should be primal-tangent pairs (as opposed to primal-fdata pairs).
 There are lots of ways to get this wrong though, so we generally advise against doing this.
 """
-function value_and_pullback!!(rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=false) where {R,N}
+function value_and_pullback!!(
+    rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=false
+) where {R,N}
     if friendly_tangents
         ȳ = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
         value, pb = __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
@@ -175,7 +177,9 @@ value_and_gradient!!(rule, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-function value_and_gradient!!(rule::R, fx::Vararg{Any,N}; friendly_tangents=false) where {R,N}
+function value_and_gradient!!(
+    rule::R, fx::Vararg{Any,N}; friendly_tangents=false
+) where {R,N}
     if friendly_tangents
         value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
         friendly_gradient = _copy_output((fx...,))
@@ -542,7 +546,9 @@ function value_and_pullback!!(
     coduals = tuple_map(CoDual, (f, x...), tangents)
     if !isnothing(cache.friendly_tangents)
         ȳ = primal_to_tangent!!(cache.ȳ_cache, ȳ)
-        value, pb = __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
+        value, pb = __value_and_pullback!!(
+            cache.rule, ȳ, coduals...; y_cache=cache.y_cache
+        )
         # Make sure that the non-differentiable parts are up-to-date. Whether this is needed is debatable.
         friendly_pb = _copy_to_output!!(cache.friendly_tangents, (f, x...))
         friendly_pb = tangent_to_primal!!(friendly_pb, pb)

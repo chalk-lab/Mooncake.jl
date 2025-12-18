@@ -171,13 +171,17 @@ function _add_to_primal_internal(
     return typeof(p)(_add_to_primal_internal(c, p.obj[], t.dobj_ref[], unsafe))
 end
 
-function tangent_to_primal_internal!!(p::FunctionWrapper, t::FunctionWrapperTangent, c::MaybeCache)
+function tangent_to_primal_internal!!(
+    p::FunctionWrapper, t::FunctionWrapperTangent, c::MaybeCache
+)
     haskey(c, p) && return c[p]::typeof(p)
     c[p] = p
     p.obj[] = tangent_to_primal_internal!!(p.obj[], t.dobj_ref[], c)
     return p
 end
-function primal_to_tangent_internal!!(t::FunctionWrapperTangent, p::FunctionWrapper, c::MaybeCache)
+function primal_to_tangent_internal!!(
+    t::FunctionWrapperTangent, p::FunctionWrapper, c::MaybeCache
+)
     haskey(c, p) && return c[p]::typeof(t)
     c[p] = t
     t.dobj_ref[] = primal_to_tangent_internal!!(t.dobj_ref[], p.obj[], c)

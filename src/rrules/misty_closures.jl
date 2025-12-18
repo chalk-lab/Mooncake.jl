@@ -46,12 +46,18 @@ function _add_to_primal_internal(
     return replace_captures(p, new_captures)
 end
 
-function tangent_to_primal_internal!!(p::MistyClosure, t::MistyClosureTangent, c::MaybeCache)
+function tangent_to_primal_internal!!(
+    p::MistyClosure, t::MistyClosureTangent, c::MaybeCache
+)
     new_captures = tangent_to_primal_internal!!(p.oc.captures, t.captures_tangent, c)
     return replace_captures(p, new_captures)
 end
-function primal_to_tangent_internal!!(t::MistyClosureTangent, p::MistyClosure, c::MaybeCache)
-    new_captures_tangent = primal_to_tangent_internal!!(t.captures_tangent, p.oc.captures, c)
+function primal_to_tangent_internal!!(
+    t::MistyClosureTangent, p::MistyClosure, c::MaybeCache
+)
+    new_captures_tangent = primal_to_tangent_internal!!(
+        t.captures_tangent, p.oc.captures, c
+    )
     return MistyClosureTangent(new_captures_tangent, t.dual_callable)
 end
 

@@ -68,9 +68,7 @@ function _add_to_primal_internal(
     end
     return p′
 end
-function tangent_to_primal_internal!!(
-    x::P, t, c::MaybeCache
-) where {P<:IdDict}
+function tangent_to_primal_internal!!(x::P, t, c::MaybeCache) where {P<:IdDict}
     haskey(c, x) && return c[x]::P
     @assert union(keys(x), keys(t)) == keys(x)
     c[x] = x
@@ -79,9 +77,7 @@ function tangent_to_primal_internal!!(
     end
     return x
 end
-function primal_to_tangent_internal!!(
-    t, x::P, c::MaybeCache
-) where {P<:IdDict}
+function primal_to_tangent_internal!!(t, x::P, c::MaybeCache) where {P<:IdDict}
     haskey(c, x) && return c[x]::tangent_type(P)
     @assert union(keys(t), keys(x)) == keys(t)
     c[x] = t

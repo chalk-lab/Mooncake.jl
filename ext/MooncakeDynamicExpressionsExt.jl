@@ -380,9 +380,7 @@ end
         deg = p.degree
         if deg == 0
             if p.constant
-                TangentNode{Tv,D}(
-                    Mooncake.primal_to_tangent_internal!!(t.val, p.val, c)
-                )
+                TangentNode{Tv,D}(Mooncake.primal_to_tangent_internal!!(t.val, p.val, c))
             else
                 TangentNode{Tv,D}(nothing)
             end
