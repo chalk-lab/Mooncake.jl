@@ -168,7 +168,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
 
         # _kron!(x, y)
-        map(precisions) do (P)
+        # blas rules doesn't support Float16, so we skip that case here.
+        map(intersect(precisions, subtypes(BlasRealFloat))) do (P)
             return (
                 true,
                 :none,
