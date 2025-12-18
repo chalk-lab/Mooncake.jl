@@ -215,16 +215,17 @@ You must provide adjoints for every `getfield`/`lgetfield` variant that appears 
 
 #### Core Tangent Operations
 
-| Function                          | Purpose/feature tested                                           |
-| --------------------------------- | ---------------------------------------------------------------- |
-| [`zero_tangent_internal`](@ref)   | Structure-preserving zero generation with cycle cache            |
-| [`randn_tangent_internal`](@ref)  | Random tangent generator (for stochastic interface tests)        |
-| [`set_to_zero_internal!!`](@ref)  | Recursive in-place reset with cycle protection                   |
-| [`increment_internal!!`](@ref)    | In-place accumulation used in reverse pass                       |
-| [`_add_to_primal_internal`](@ref) | Adds a tangent to a primal (needed for finite-difference checks) |
-| [`_diff_internal`](@ref)          | Structural diff between two primals → tangent                    |
-| [`_dot_internal`](@ref)           | Inner-product between tangents (dual-number consistency)         |
-| [`_scale_internal`](@ref)         | Scalar × tangent scaling                                         |
+| Function                               | Purpose/feature tested                                           |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| [`zero_tangent_internal`](@ref)        | Structure-preserving zero generation with cycle cache            |
+| [`randn_tangent_internal`](@ref)       | Random tangent generator (for stochastic interface tests)        |
+| [`set_to_zero_internal!!`](@ref)       | Recursive in-place reset with cycle protection                   |
+| [`increment_internal!!`](@ref)         | In-place accumulation used in reverse pass                       |
+| [`_add_to_primal_internal`](@ref)      | Adds a tangent to a primal (needed for finite-difference checks) |
+| [`tangent_to_primal_internal!!`](@ref) | Copying differentiable data back into a primal                   |
+| [`primal_to_tangent_internal!!`](@ref) | Copying differentiable from a primal to a tangent type           |
+| [`_dot_internal`](@ref)                | Inner-product between tangents (dual-number consistency)         |
+| [`_scale_internal`](@ref)              | Scalar × tangent scaling                                         |
 
 #### Test Utilities
 
@@ -449,23 +450,21 @@ function Mooncake._add_to_primal_internal(c::Mooncake.MaybeCache, p::A{T}, t::Ta
     return p_new
 end
 
-function Mooncake._diff_internal(c::Mooncake.MaybeCache, p::A{T}, q::A{T}) where {T}
-    key = (p, q)
-    haskey(c, key) && return c[key]::Union{TangentForA{Mooncake.tangent_type(T)},Mooncake.NoTangent}
-    Tx = Mooncake.tangent_type(T)
-    if Tx == Mooncake.NoTangent
-        t = Mooncake.NoTangent()
-        c[key] = t
-        return t
-    end
-    x_t = Mooncake._diff_internal(c, p.x, q.x)
-    a_t = if p.a === nothing
-        Mooncake.NoTangent()
-    else
-        Mooncake._diff_internal(c, p.a, q.a)
-    end
-    t = TangentForA{Tx}(x_t, a_t)
-    c[key] = t
+function Mooncake.tangent_to_primal_internal!!(p::A{T}, t, c::Mooncake.MaybeCache) where {T}
+    t isa NoTangent && return p
+    haskey(c, p) && return c[p]::A{T}
+    c[p] = p
+    p.x = Mooncake.tangent_to_primal_internal!!(p.x, t.x, c)
+    p.a = Mooncake.tangent_to_primal_internal!!(p.a, t.a, c)
+    return p
+end
+
+function Mooncake.primal_to_tangent_internal!!(t, p::A{T}, c::Mooncake.MaybeCache) where {T}
+    t isa NoTangent && return NoTangent()
+    haskey(c, p) && return c[p]::TangentForA{Tx}
+    c[p] = t
+    t.x = Mooncake.primal_to_tangent_internal!!(t.x, p.x, c)
+    t.a = Mooncake.primal_to_tangent_internal!!(t.a, p.a, c)
     return t
 end
 
