@@ -498,11 +498,18 @@ function test_frule_correctness(
     # such that AD and central differences agree on the answer.
     x̄ = map(Base.Fix1(randn_tangent, rng), x_primal)
     ȳ = randn_tangent(rng, y_primal)
+    
+    # normalize the random probe vectors for the JVP AD & FD results.
+    # so that errors accumulated due to rng drift are minimised -
+    # while testing with isapprox()'s reltol and abstol = 1e-3.
+    total_norm_1, total_norm_2 = sqrt(_dot(x̄, x̄)), sqrt(_dot(ȳ, ȳ))
+    x̄new, ȳnew = _scale(1 / total_norm_1, x̄), _scale(1 / total_norm_2, ȳ)
+
     isapprox_results = map(fd_results) do result
         ẏ_fd, ẋ_fd = result
         return isapprox(
-            _dot(ȳ, ẏ_fd) + _dot(x̄, ẋ_fd),
-            _dot(ȳ, ẏ_ad) + _dot(x̄, ẋ_ad);
+            _dot(ȳnew, ẏ_fd) + _dot(x̄new, ẋ_fd),
+            _dot(ȳnew, ẏ_ad) + _dot(x̄new, ẋ_ad);
             rtol=rtol,
             atol=atol,
         )
@@ -510,7 +517,7 @@ function test_frule_correctness(
     if !any(isapprox_results)
         vals = map(fd_results) do result
             ẏ_fd, ẋ_fd = result
-            (_dot(ȳ, ẏ_fd) + _dot(x̄, ẋ_fd), _dot(ȳ, ẏ_ad) + _dot(x̄, ẋ_ad))
+            (_dot(ȳnew, ẏ_fd) + _dot(x̄new, ẋ_fd), _dot(ȳnew, ẏ_ad) + _dot(x̄new, ẋ_ad))
         end
         display(vals)
     end
