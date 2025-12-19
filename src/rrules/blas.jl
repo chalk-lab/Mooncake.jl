@@ -30,10 +30,12 @@ possible for all array types of interest so far.
 """
 function arrayify(
     x::Union{Dual{A},CoDual{A}}
-) where {A<:Union{AbstractArray{<:BlasFloat},Ptr{<:BlasFloat}}}
+) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
     return arrayify(primal(x), tangent(x))  # NOTE: for complex numbers, tangents are reinterpreted to Complex
 end
-function arrayify(x::A, dx::A) where {A<:Union{Array{<:BlasRealFloat},Ptr{<:BlasRealFloat}}}
+function arrayify(
+    x::A, dx::A
+) where {T<:Union{IEEEFloat,BlasRealFloat},A<:Union{Array{<:T},Ptr{<:T}}}
     (x, dx)
 end
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
@@ -60,6 +62,12 @@ function arrayify(x::Base.ReinterpretArray{T}, dx::TangentOrFData) where {T<:Bla
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, reinterpret(T, _dx)
 end
+function arrayify(
+    x::Tx, dx::TangentOrFData
+) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Tx(_dx)
+end
 
 function arrayify(x::A, dx::DA) where {A,DA}
     msg =
@@ -69,7 +77,7 @@ function arrayify(x::A, dx::DA) where {A,DA}
         " Please open an issue at " *
         "https://github.com/chalk-lab/Mooncake.jl/issues . " *
         "It should contain this error message and the associated stack trace.\n\n" *
-        "Array type: $A\n\nFData type: $DA."
+        "Array type: $A\n\nTangent/FData type: $DA."
     return error(msg)
 end
 
