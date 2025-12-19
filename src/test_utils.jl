@@ -498,7 +498,6 @@ function test_frule_correctness(
     # such that AD and central differences agree on the answer.
     x̄ = map(Base.Fix1(randn_tangent, rng), x_primal)
     ȳ = randn_tangent(rng, y_primal)
-    
     # normalize the random probe vectors for the JVP AD & FD results.
     # so that errors accumulated due to rng drift are minimised -
     # while testing with isapprox()'s reltol and abstol = 1e-3.
@@ -775,6 +774,7 @@ function test_frule_performance(
             ),
         )
     end
+    
     performance_checks_flag == :none && return nothing
 
     if performance_checks_flag in (:stability, :stability_and_allocs)
@@ -1032,7 +1032,6 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
-
         test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
     end
 end
@@ -1044,7 +1043,6 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
-
         test_rule(
             rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
         )
