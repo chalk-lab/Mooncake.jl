@@ -503,13 +503,16 @@ function test_frule_correctness(
     # so that errors accumulated due to rng drift are minimised -
     # while testing with isapprox()'s reltol and abstol = 1e-3.
     total_norm_1, total_norm_2 = sqrt(_dot(x̄, x̄)), sqrt(_dot(ȳ, ȳ))
-    x̄new, ȳnew = _scale(1 / total_norm_1, x̄), _scale(1 / total_norm_2, ȳ)
+
+    # scaled probe vectors handling div by zero case.
+    x̄_normdir, ȳ_normdir = _scale(iszero(total_norm_1) ? 1.0 : 1 / total_norm_1, x̄),
+    _scale(iszero(total_norm_2) ? 1.0 : 1 / total_norm_2, ȳ)
 
     isapprox_results = map(fd_results) do result
         ẏ_fd, ẋ_fd = result
         return isapprox(
-            _dot(ȳnew, ẏ_fd) + _dot(x̄new, ẋ_fd),
-            _dot(ȳnew, ẏ_ad) + _dot(x̄new, ẋ_ad);
+            _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
+            _dot(ȳ_normdir, ẏ_ad) + _dot(x̄_normdir, ẋ_ad);
             rtol=rtol,
             atol=atol,
         )
@@ -517,7 +520,10 @@ function test_frule_correctness(
     if !any(isapprox_results)
         vals = map(fd_results) do result
             ẏ_fd, ẋ_fd = result
-            (_dot(ȳnew, ẏ_fd) + _dot(x̄new, ẋ_fd), _dot(ȳnew, ẏ_ad) + _dot(x̄new, ẋ_ad))
+            (
+                _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
+                _dot(ȳ_normdir, ẏ_ad) + _dot(x̄_normdir, ẋ_ad),
+            )
         end
         display(vals)
     end
