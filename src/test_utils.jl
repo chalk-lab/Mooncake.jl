@@ -1019,7 +1019,6 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
-
         test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
     end
 end
@@ -1031,7 +1030,6 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
-
         test_rule(
             rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
         )
@@ -1247,6 +1245,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     if !interface_only
         @test has_equal_data(__add_to_primal(p, z, true), p)
         if !has_equal_data(z, r)
+            println(" p & add_to_primal : ", p, " ", __add_to_primal(p, r, true))
             @test !has_equal_data(__add_to_primal(p, r, true), p)
         end
         @test has_equal_data(__diff(p, p), _zero_tangent(p))
