@@ -1,7 +1,5 @@
 # Forwards-Mode Design
 
-**Disclaimer**: this document refers to an as-yet-unimplemented forwards-mode AD. This will disclaimer will be removed once it has been implemented.
-
 The purpose of this document is to explain how forwards-mode AD in Mooncake.jl is implemented.
 It should do so to a sufficient level of depth to enable the interested reader to read to the forwards-mode AD code in Mooncake.jl and understand what is going on.
 

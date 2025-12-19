@@ -52,6 +52,10 @@ end
 
 should_run_benchmark(args...) = true
 
+@static if VERSION ≥ v"1.12-"
+    should_run_benchmark(::Val{:enzyme}, args...) = false
+end
+
 # Test out the performance of a hand-written sum function, so we can be confident that there
 # is no rule. Note that ReverseDiff has a (seemingly not fantastic) hand-written rule for
 # sum.
