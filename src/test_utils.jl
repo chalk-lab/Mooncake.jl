@@ -498,14 +498,9 @@ function test_frule_correctness(
     # such that AD and central differences agree on the answer.
     x̄ = map(Base.Fix1(randn_tangent, rng), x_primal)
     ȳ = randn_tangent(rng, y_primal)
-    # normalize the random probe vectors for the JVP AD & FD results.
-    # so that errors accumulated due to rng drift are minimised -
-    # while testing with isapprox()'s reltol and abstol = 1e-3.
-    total_norm_1, total_norm_2 = sqrt(_dot(x̄, x̄)), sqrt(_dot(ȳ, ȳ))
 
-    # scaled probe vectors handling div by zero case.
-    x̄_normdir, ȳ_normdir = _scale(iszero(total_norm_1) ? 1.0 : 1 / total_norm_1, x̄),
-    _scale(iszero(total_norm_2) ? 1.0 : 1 / total_norm_2, ȳ)
+    # normalize the JVP's probe vectors to avoid random scaling of AD, FD errors.
+    x̄_normdir, ȳ_normdir = normalize_tangent(x̄), normalize_tangent(ȳ)
 
     isapprox_results = map(fd_results) do result
         ẏ_fd, ẋ_fd = result
@@ -551,10 +546,9 @@ function test_rrule_correctness(
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
-    # Construct tangent to inputs, and normalise to be of unit length.
+    # Construct random tangent to inputs, and normalise to be of unit length.
     ẋ_unnormalised = map(_x -> randn_tangent(rng, _x), x)
-    nrm = sqrt(sum(x -> _dot(x, x), ẋ_unnormalised))
-    ẋ = map(_x -> _scale(1 / nrm, _x), ẋ_unnormalised)
+    ẋ = map(_x -> normalize_tangent(_x), ẋ_unnormalised)
 
     # Use finite differences to estimate vjps. Compute the estimate at a range of different
     # step sizes. We'll just require that one of them ends up being close to what AD gives.
