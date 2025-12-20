@@ -52,24 +52,23 @@ For more fine-grained debugging, you can manually run `rrule!!` to inspect inter
 Here's an example that differentiates a simple function:
 
 ```julia
-using Mooncake: rrule!!, zero_fcodual, tangent, set_to_zero!!, increment!!
+using Mooncake: rrule!!, zero_rdata, increment!!
 
 # A simple function to differentiate
 x = 5.0
 dx = 0.0  # tangent/gradient will accumulate here
 
 # Run the forward pass - returns output CoDual and pullback
+# `zero_fcodual(x)` is equivalent to `CoDual(x, fdata(zero_tangent(x)))`.
 y, pb = rrule!!(zero_fcodual(sin), zero_fcodual(x))
 
 # Set gradient of output to 1.0 (for dy/dx)
-dy = tangent(y)
-set_to_zero!!(dy)
-increment!!(dy, 1.0)
+dy = zero_rdata(5.)
+dy = increment!!(dy, 1.0)
 
 # Run reverse pass - returns gradients for all inputs
-_, dx_inc = pb(dy)
-
 # The gradient dx should be cos(5.0) ≈ 0.28366
+_, dx_inc = pb(dy)
 ```
 
 This approach lets you:
