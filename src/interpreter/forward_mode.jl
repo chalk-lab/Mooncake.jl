@@ -1,34 +1,21 @@
-function build_frule(args...; debug_mode=false, silence_debug_messages=true)
-    sig = _typeof(TestUtils.__get_primals(args))
-    interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages)
-end
-
 struct DualRuleInfo
     isva::Bool
     nargs::Int
     dual_ret_type::Type
 end
-
-"""
-    build_frule(
-        interp::MooncakeInterpreter{C},
-        sig_or_mi;
-        debug_mode=false,
-        silence_debug_messages=true,
-    ) where {C}
-
-Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
-`sig_or_mi` is not a primitive.
-"""
-function build_frule(
-    interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, silence_debug_messages=true
+function build_forward_data(
+    interp::MooncakeInterpreter{C},
+    sig_or_mi;
+    debug_mode=false,
+    silence_debug_messages=true,
+    world=Base.get_world_counter(),
 ) where {C}
     @nospecialize sig_or_mi
+        @nospecialize sig_or_mi
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
     # than the current world age.
-    if Base.get_world_counter() > interp.world
+    if world > interp.world
         throw(
             ArgumentError(
                 "World age associated to interp is behind current world age. Please " *
@@ -45,27 +32,21 @@ function build_frule(
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
-        return (debug_mode ? DebugFRule(frule!!) : frule!!)
+        return (; primitive=true, dual_ir=nothing, captures=nothing, info=nothing)
     end
 
     # We don't have a hand-coded rule, so derive one.
     lock(MOONCAKE_INFERENCE_LOCK)
     try
-        # If we've already derived the OpaqueClosures and info, do not re-derive, just
+        # If we've already derived the IR and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward))
+        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward, :data))
         if haskey(interp.oc_cache, oc_cache_key)
             return interp.oc_cache[oc_cache_key]
         else
-            # Derive forward-pass IR, and shove in a `MistyClosure`.
-            dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
-            dual_oc = misty_closure(
-                info.dual_ret_type, dual_ir, captures...; do_compile=true
-            )
-            raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(dual_oc)
-            rule = debug_mode ? DebugFRule(raw_rule) : raw_rule
-            interp.oc_cache[oc_cache_key] = rule
-            return rule
+            dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode, world)
+            interp.oc_cache[oc_cache_key] = (dual_ir, captures, info)
+            return (; primitive=false, dual_ir, captures, info)
         end
     catch e
         rethrow(e)
@@ -74,32 +55,197 @@ function build_frule(
     end
 end
 
-struct DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}
-    fwd_oc::Tfwd_oc
+function generate_dual_ir(
+    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true, world
+)
+    # Reset id count. This ensures that the IDs generated are the same each time this
+    # function runs.
+    seed_id!()
+
+    # Grab code associated to the primal.
+    primal_ir, _ = lookup_ir(interp, sig_or_mi)
+    @static if VERSION > v"1.12-"
+        primal_ir = set_valid_world!(primal_ir, interp.world)
+    end
+    nargs = length(primal_ir.argtypes)
+
+    # Normalise the IR.
+    isva, spnames = is_vararg_and_sparam_names(sig_or_mi; world)
+    primal_ir = normalise!(primal_ir, spnames)
+
+    # Keep a copy of the primal IR with the insertions
+    dual_ir = CC.copy(primal_ir)
+
+    # Modify dual argument types:
+    # - add one for the captures in the first position, with placeholder type for now
+    # - convert the rest to dual types
+    for (a, P) in enumerate(primal_ir.argtypes)
+        dual_ir.argtypes[a] = dual_type(CC.widenconst(P))
+    end
+    pushfirst!(dual_ir.argtypes, Any)
+
+    # Data structure into which we can push any data which is to live in the captures field
+    # of the OpaqueClosure used to implement this rule. The index at which a piece of data
+    # lives in this data structure is equal to the index of the captures field of the
+    # OpaqueClosure in which it will live. To write code which retrieves items from the
+    # captures data structure, make use of `get_capture`.
+    captures = Any[]
+
+    is_used = characterised_used_ssas(stmt(primal_ir.stmts))
+    info = DualInfo(primal_ir, interp, is_used, debug_mode)
+    for (n, inst) in enumerate(dual_ir.stmts)
+        ssa = SSAValue(n)
+        modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info; world)
+    end
+
+    # Process new nodes etc.
+    dual_ir = CC.compact!(dual_ir)
+
+    CC.verify_ir(dual_ir)
+
+    # Now that the captured values are known, replace the placeholder value given for the
+    # first argument type with the actual type.
+    captures_tuple = (captures...,)
+    dual_ir.argtypes[1] = _typeof(captures_tuple)
+    # Optimize dual IR
+    dual_ir_opt = optimise_ir!(dual_ir; do_inline)
+    return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
 end
 
-@inline function (fwd::DerivedFRule{P,sig,isva,nargs})(
-    args::Vararg{Dual,N}
-) where {P,sig,N,isva,nargs}
-    return fwd.fwd_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
+_primal_type(::Type{Dual{p,d}}) where {p,d} = p
+
+function generated_frule_body end
+function GeneratedFRule_body end
+
+struct GeneratedFRule{Captures <: Tuple}
+    captures::Captures
 end
 
-# Copy forward rule with recursively copied captures
-function _copy(x::P) where {P<:DerivedFRule}
-    return P(replace_captures(x.fwd_oc, _copy(x.fwd_oc.oc.captures)))
+function refresh_generated_frule()
+    @eval begin
+        function generated_frule!!(args...)
+            $(Expr(:meta, :generated_only))
+            $(Expr(:meta, :generated, generated_frule_body))
+        end
+        function (::GeneratedFRule)(args...)
+            $(Expr(:meta, :generated_only))
+            $(Expr(:meta, :generated, GeneratedFRule_body))
+        end
+    end
+end
+#handy util for when you're changing the insides of the generated functions
+refresh_generated_frule()
+
+# # Copy forward rule with recursively copied captures
+function _copy(x::GeneratedFRule)
+    return GeneratedFRule(_copy(x.captures))
 end
 
-_isva(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = isva
-_nargs(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
-
-# Extends functionality defined in debug_mode.jl.
-function verify_args(r::DerivedFRule{sig}, x) where {sig}
-    Tx = Tuple{
-        map(_typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r))))...
-    }
-    Tx <: sig && return nothing
-    throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
+# This is the generated function body of generated_frule!!(args...)
+function generated_frule_body(world::UInt, lnn, this, args)
+    sig = Tuple{_primal_type.(args)...}
+    interp = MooncakeInterpreter(ForwardMode; world)
+    (; primitive, captures) = build_forward_data(interp, sig; world)
+    if primitive
+        ex = :(frule!!(args...))
+    else
+        ex = :(GeneratedFRule($captures)(args...))
+    end
+    ci = expr_to_codeinfo(@__MODULE__(), [Symbol("#self#"), :args], [], (), ex, true)
+    # Attached edges from MethodInstrances of `f` to to this CodeInfo.
+    # This should make it so that adding methods to `f` will
+    # triggers recompilation, fixing the #265 equivalent for generated functions.
+    matches = Base._methods_by_ftype(sig, -1, world)
+    if !isnothing(matches)
+        ci.edges = Core.MethodInstance[]
+        for match in Base._methods_by_ftype(sig, -1, world)
+            mi = Base.specialize_method(match)
+            push!(ci.edges, mi)
+        end
+    end
+    return ci
 end
+
+# This is the generated function body of (::GeneratedFRule)(args...)
+function GeneratedFRule_body(world::UInt, lnn, this, args)
+    sig = Tuple{_primal_type.(args)...}
+    interp = MooncakeInterpreter(ForwardMode; world)
+    (; primitive, dual_ir) = build_forward_data(interp, sig; world)
+
+    ci = irc_to_codeinfo(dual_ir)
+    # Remove the type info so that it can be returned from the generated function
+    ci.ssavaluetypes = length(ci.ssavaluetypes)
+
+    # Attached edges from MethodInstrances of `f` to to this CodeInfo.
+    # This should make it so that adding methods to `f` will
+    # triggers recompilation of this generated function.
+    matches = Base._methods_by_ftype(sig, -1, world)
+    if !isnothing(matches)
+        ci.edges = Core.MethodInstance[]
+        for match in Base._methods_by_ftype(sig, -1, world)
+            mi = Base.specialize_method(match)
+            push!(ci.edges, mi)
+        end
+    end
+    return ci
+end
+
+function expr_to_codeinfo(m::Module, argnames, spnames, sp, e::Expr, isva)
+    # This trick comes from https://github.com/NHDaly/StagedFunctions.jl/commit/22fc72740093892baa442850a1fd61d9cd61b4cd (but has been since modified)
+    lam = Expr(:lambda, argnames,
+               Expr(Symbol("scope-block"),
+                    Expr(:block,
+                         Expr(:return,
+                              Expr(:block,
+                                   e,
+                                   )))))
+    ex = if spnames === nothing || isempty(spnames)
+        lam
+    else
+        Expr(Symbol("with-static-parameters"), lam, spnames...)
+    end
+    
+    # Get the code-info for the generator body in order to use it for generating a dummy
+    # code info object.
+    ci = if VERSION < v"1.12-"
+        ccall(:jl_expand_and_resolve, Any, (Any, Any, Core.SimpleVector), ex, m, Core.svec(sp...))
+    else
+        Base.generated_body_to_codeinfo(ex, @__MODULE__(), isva)
+    end
+    @assert ci isa Core.CodeInfo "Failed to create a CodeInfo from the given expression. This might mean it contains a closure or comprehension?\n Offending expression: $e"
+    ci
+end
+
+function irc_to_codeinfo(
+    ir::IRCode,
+    @nospecialize env...;
+    isva::Bool=false,
+    slotnames::Union{Nothing,Vector{Symbol}}=nothing,
+    kwargs...,
+)
+    CC = Core.Compiler
+    # NOTE: we need ir.argtypes[1] == typeof(env)
+    ir = copy(ir)
+    nargtypes = length(ir.argtypes)
+    nargs = nargtypes-1
+    sig = CC.compute_oc_signature(ir, nargs, isva)
+    rt = CC.compute_ir_rettype(ir)
+    src = ccall(:jl_new_code_info_uninit, Ref{CodeInfo}, ())
+    if slotnames === nothing
+        src.slotnames = fill(:none, nargtypes)
+    else
+        length(slotnames) == nargtypes || error("mismatched `argtypes` and `slotnames`")
+        src.slotnames = slotnames
+    end
+    src.slotflags = fill(zero(UInt8), nargtypes)
+    src.slottypes = copy(ir.argtypes)
+    src.isva = isva
+    src.nargs = UInt(nargtypes)
+    src = CC.ir_to_codeinf!(src, ir)
+    src.rettype = rt
+    src
+end
+
 
 """
     __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
@@ -125,65 +271,8 @@ struct DualInfo
     debug_mode::Bool
 end
 
-function generate_dual_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
-)
-    # Reset id count. This ensures that the IDs generated are the same each time this
-    # function runs.
-    seed_id!()
-
-    # Grab code associated to the primal.
-    primal_ir, _ = lookup_ir(interp, sig_or_mi)
-    @static if VERSION > v"1.12-"
-        primal_ir = set_valid_world!(primal_ir, interp.world)
-    end
-    nargs = length(primal_ir.argtypes)
-
-    # Normalise the IR.
-    isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
-    primal_ir = normalise!(primal_ir, spnames)
-
-    # Keep a copy of the primal IR with the insertions
-    dual_ir = CC.copy(primal_ir)
-
-    # Modify dual argument types:
-    # - add one for the captures in the first position, with placeholder type for now
-    # - convert the rest to dual types
-    for (a, P) in enumerate(primal_ir.argtypes)
-        dual_ir.argtypes[a] = dual_type(CC.widenconst(P))
-    end
-    pushfirst!(dual_ir.argtypes, Any)
-
-    # Data structure into which we can push any data which is to live in the captures field
-    # of the OpaqueClosure used to implement this rule. The index at which a piece of data
-    # lives in this data structure is equal to the index of the captures field of the
-    # OpaqueClosure in which it will live. To write code which retrieves items from the
-    # captures data structure, make use of `get_capture`.
-    captures = Any[]
-
-    is_used = characterised_used_ssas(stmt(primal_ir.stmts))
-    info = DualInfo(primal_ir, interp, is_used, debug_mode)
-    for (n, inst) in enumerate(dual_ir.stmts)
-        ssa = SSAValue(n)
-        modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info)
-    end
-
-    # Process new nodes etc.
-    dual_ir = CC.compact!(dual_ir)
-
-    CC.verify_ir(dual_ir)
-
-    # Now that the captured values are known, replace the placeholder value given for the
-    # first argument type with the actual type.
-    captures_tuple = (captures...,)
-    dual_ir.argtypes[1] = _typeof(captures_tuple)
-
-    # Optimize dual IR
-    dual_ir_opt = optimise_ir!(dual_ir; do_inline)
-    return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
-end
-
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
+@inline get_capture(fr::GeneratedFRule{T}, n::Int) where {T} = get_capture(fr.captures, n)
 
 """
     const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
@@ -211,12 +300,25 @@ end
 const ATTACH_AFTER = true
 const ATTACH_BEFORE = false
 
-modify_fwd_ad_stmts!(::Nothing, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo) = nothing
-
-modify_fwd_ad_stmts!(::GotoNode, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo) = nothing
+function modify_fwd_ad_stmts!(
+    ::Nothing, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo; world
+)
+    nothing
+end
 
 function modify_fwd_ad_stmts!(
-    stmt::GotoIfNot, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
+    ::GotoNode, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo; world
+)
+    nothing
+end
+
+function modify_fwd_ad_stmts!(
+    stmt::GotoIfNot,
+    dual_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    info::DualInfo;
+    world,
 )
     # replace GotoIfNot with the call to primal
     Mooncake.replace_call!(dual_ir, ssa, Expr(:call, _primal, inc_args(stmt).cond))
@@ -228,7 +330,12 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::GlobalRef, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::GlobalRef,
+    dual_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    ::DualInfo;
+    world,
 )
     if isconst(stmt)
         d = const_dual!(captures, stmt)
@@ -242,12 +349,16 @@ function modify_fwd_ad_stmts!(
         zero_dual_call = Expr(:call, Mooncake.zero_dual, new_ssa)
         Mooncake.replace_call!(dual_ir, ssa, zero_dual_call)
     end
-
     return nothing
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::ReturnNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::ReturnNode,
+    dual_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    ::DualInfo;
+    world,
 )
     # undefined `val` field means that stmt is unreachable.
     isdefined(stmt, :val) || return nothing
@@ -265,7 +376,7 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PhiNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::PhiNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo; world
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
@@ -278,7 +389,7 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PiNode, dual_ir::IRCode, ssa::SSAValue, ::Vector{Any}, ::DualInfo
+    stmt::PiNode, dual_ir::IRCode, ssa::SSAValue, ::Vector{Any}, ::DualInfo; world
 )
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
@@ -290,7 +401,12 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::UpsilonNode,
+    dual_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    ::DualInfo;
+    world,
 )
     if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
@@ -301,7 +417,7 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo; world
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
@@ -326,7 +442,7 @@ end
 __get_primal(x::Dual) = primal(x)
 
 function modify_fwd_ad_stmts!(
-    stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
+    stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo; world
 )
     if isexpr(stmt, :invoke) || isexpr(stmt, :call)
         raw_args = isexpr(stmt, :invoke) ? stmt.args[2:end] : stmt.args
@@ -355,8 +471,19 @@ function modify_fwd_ad_stmts!(
 
         # Dual-ise arguments.
         dual_args = map(args) do arg
-            arg isa Union{Argument,SSAValue} && return arg
-            return uninit_dual(get_const_primal_value(arg))
+            if arg isa Union{Argument,SSAValue}
+                return arg
+            elseif arg isa GlobalRef && !isconst(arg)
+                arg_ssa = CC.insert_node!(
+                    dual_ir,
+                    ssa,
+                    new_inst(Expr(:call, uninit_dual, arg)),
+                    ATTACH_BEFORE
+                )
+                return arg_ssa
+            else
+                return uninit_dual(get_const_primal_value(arg))
+            end
         end
 
         interp = info.interp
@@ -364,10 +491,8 @@ function modify_fwd_ad_stmts!(
             replace_call!(dual_ir, ssa, Expr(:call, frule!!, dual_args...))
         else
             dm = info.debug_mode
-            push!(captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm))
-            get_rule = Expr(:call, get_capture, Argument(1), length(captures))
-            rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
-            replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
+            # TODO debug mode?
+            replace_call!(dual_ir, ssa, Expr(:call, generated_frule!!, dual_args...))
         end
     elseif isexpr(stmt, :boundscheck)
         # Keep the boundscheck, but put it in a Dual.
@@ -401,84 +526,24 @@ function modify_fwd_ad_stmts!(
     return nothing
 end
 
+@noinline invokelatest_generated_frule!!(args...) = invokelatest(generated_frule!!, args...)
+
 get_forward_primal_type(ir::CC.IRCode, a::Argument) = ir.argtypes[a.n]
 get_forward_primal_type(ir::CC.IRCode, ssa::SSAValue) = get_ir(ir, ssa, :type)
 get_forward_primal_type(::CC.IRCode, x::QuoteNode) = _typeof(x.value)
 get_forward_primal_type(::CC.IRCode, x) = _typeof(x)
 function get_forward_primal_type(::CC.IRCode, x::GlobalRef)
-    return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.binding.ty
+    @static if VERSION > v"1.12-"
+        return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.binding.partitions.restriction
+    else
+        return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.ty
+    end
 end
 function get_forward_primal_type(::CC.IRCode, x::Expr)
     x.head === :boundscheck && return Bool
     return error("Unrecognised expression $x found in argument slot.")
 end
 
-mutable struct LazyFRule{primal_sig,Trule}
-    debug_mode::Bool
-    mi::Core.MethodInstance
-    rule::Trule
-    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
-        interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
-    end
-    function LazyFRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool
-    ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi)
-    end
-end
-
-# Create new lazy rule with same method instance and debug mode
-_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode)
-
-@inline function (rule::LazyFRule)(args::Vararg{Any,N}) where {N}
-    return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
-end
-
-@noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
-    interp = get_interpreter(ForwardMode)
-    rule.rule = build_frule(interp, rule.mi; debug_mode=rule.debug_mode)
-    return rule.rule(args...)
-end
-
 function dual_ret_type(primal_ir::IRCode)
     return dual_type(compute_ir_rettype(primal_ir))
-end
-
-function frule_type(
-    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
-) where {C}
-    primal_sig = _get_sig(mi)
-    if is_primitive(C, ForwardMode, primal_sig, interp.world)
-        return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
-    end
-    ir, _ = lookup_ir(interp, mi)
-    nargs = length(ir.argtypes)
-    isva, _ = is_vararg_and_sparam_names(mi)
-    arg_types = map(CC.widenconst, ir.argtypes)
-    dual_args_type = Tuple{map(dual_type, arg_types)...}
-    closure_type = RuleMC{dual_args_type,dual_ret_type(ir)}
-    Tderived_rule = DerivedFRule{primal_sig,closure_type,isva,nargs}
-    return debug_mode ? DebugFRule{Tderived_rule} : Tderived_rule
-end
-
-struct DynamicFRule{V}
-    cache::V
-    debug_mode::Bool
-end
-
-DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
-
-# Create new dynamic rule with empty cache and same debug mode  
-_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
-
-function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
-    sig = Tuple{map(_typeof ∘ primal, args)...}
-    rule = get(dynamic_rule.cache, sig, nothing)
-    if rule === nothing
-        interp = get_interpreter(ForwardMode)
-        rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
-        dynamic_rule.cache[sig] = rule
-    end
-    return rule(args...)
 end
