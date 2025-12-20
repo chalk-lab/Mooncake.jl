@@ -35,13 +35,12 @@ In any case, the point here is that `Mooncake.TestUtils.test_rule` provides a co
 
 If you have a specific set of arguments that are causing issues, you can test them directly:
 ```julia
-# Example with specific arguments
 using Random
 rng = Xoshiro(123)
 Mooncake.TestUtils.test_rule(rng, sin, 5.0)
 ```
 
-When debugging, it might be helpful to set the `interface_only` kwarg to `true` in order to skip the correctness tests and just check that the rule runs without error:
+When debugging, it might be helpful to set the `interface_only=true` to skip the correctness tests and just check that the rule runs without error:
 ```julia
 Mooncake.TestUtils.test_rule(rng, sin, 5.0; interface_only=true)
 ```
@@ -54,7 +53,6 @@ Here's an example that differentiates a simple function:
 ```julia
 using Mooncake: rrule!!, zero_fcodual, primal
 
-# A simple function to differentiate
 x = 5.0
 
 # Run the forward pass - returns output CoDual and pullback
