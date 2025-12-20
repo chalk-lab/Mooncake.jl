@@ -140,6 +140,7 @@ using Mooncake:
     CC,
     set_to_zero!!,
     increment!!,
+    normalize_tangent,
     randn_tangent,
     _scale,
     _add_to_primal,
