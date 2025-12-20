@@ -56,25 +56,26 @@ using Mooncake: rrule!!, zero_rdata, increment!!
 
 # A simple function to differentiate
 x = 5.0
-dx = 0.0  # tangent/gradient will accumulate here
 
 # Run the forward pass - returns output CoDual and pullback
 # `zero_fcodual(x)` is equivalent to `CoDual(x, fdata(zero_tangent(x)))`.
-y, pb = rrule!!(zero_fcodual(sin), zero_fcodual(x))
+y, pb!! = rrule!!(zero_fcodual(sin), zero_fcodual(x))
 
-# Set gradient of output to 1.0 (for dy/dx)
-dy = zero_rdata(5.)
+# Set seed gradient (output adjoint) to 1.0
+dy = zero_rdata(y)
 dy = increment!!(dy, 1.0)
 
-# Run reverse pass - returns gradients for all inputs
-# The gradient dx should be cos(5.0) ≈ 0.28366
-_, dx_inc = pb(dy)
+# Run reverse pass - returns input cotangent/adjoint dx
+_, dx = pb!!(dy)
+
+# The gradient should be cos(5.0) ≈ 0.28366
+isapprox(dx, cos(5.0))
 ```
 
 This approach lets you:
-- Inspect the output of the forward pass before running the reverse pass
-- Set custom gradients for the output
-- Examine the computed gradients in detail
+- Inspect the output of the forward pass `y` and `pb!!` before running the reverse pass
+- Set custom gradients for the output `dy`
+- Examine the computed gradients `dx` in detail
 
 ## Segfaults
 
