@@ -79,7 +79,7 @@ This approach lets you:
 
 ### Multiple-argument example (vector inputs)
 
-```
+```julia
 using LinearAlgebra
 using Mooncake: build_rrule, zero_fcodual
 
