@@ -1248,7 +1248,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
         println("r : ", r)
         if !has_equal_data(z, r)
             println("p : ", p)
-            println("& add_to_primal : ", __add_to_primal(p, r, true))
+            println("add_to_primal : ", __add_to_primal(p, r, true))
             @test !has_equal_data(__add_to_primal(p, r, true), p)
         end
         @test has_equal_data(__diff(p, p), _zero_tangent(p))
