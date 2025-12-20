@@ -80,6 +80,10 @@ This approach lets you:
 
 ### Multiple-argument example (vector inputs)
 
+> **Note:** This example uses `build_rrule` because `dot` is not a Mooncake primitive.
+> Calling `build_rrule` materializes a specialized reverse rule for this function and
+> argument types, which is then invoked directly.
+
 ```julia
 using LinearAlgebra
 using Mooncake: build_rrule, zero_fcodual
