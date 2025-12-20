@@ -52,7 +52,7 @@ For more fine-grained debugging, you can manually run `rrule!!` to inspect inter
 Here's an example that differentiates a simple function:
 
 ```julia
-using Mooncake: rrule!!, zero_rdata, increment!!
+using Mooncake: rrule!!, zero_fcodual, primal
 
 # A simple function to differentiate
 x = 5.0
@@ -61,11 +61,12 @@ x = 5.0
 # `zero_fcodual(x)` is equivalent to `CoDual(x, fdata(zero_tangent(x)))`.
 y, pb!! = rrule!!(zero_fcodual(sin), zero_fcodual(x))
 
-# Set seed gradient (output adjoint) to 1.0
-dy = zero_rdata(y)
-dy = increment!!(dy, 1.0)
+# Seed gradient for scalar output
+dy = 1.0
 
 # Run reverse pass - returns input cotangent/adjoint dx
+# Note: for scalar outputs, the adjoint is a plain scalar and `pb!!(1.0)` is sufficient.
+# More general patterns involving zero_rdata / increment!! apply to non-scalar outputs.
 _, dx = pb!!(dy)
 
 # The gradient should be cos(5.0) ≈ 0.28366
@@ -92,18 +93,26 @@ x2 = [4.0, 5.0, 6.0]
 # Build and capture the rrule
 rule = build_rrule(f, x1, x2)
 
+# Save CoDual inputs so we can inspect their tangent fields later
+cx1 = zero_fcodual(x1)
+cx2 = zero_fcodual(x2)
+
 # Forward pass via the built rule
 y, pb!! = rule(
     zero_fcodual(f),
-    zero_fcodual(x1),
-    zero_fcodual(x2),
+    cx1,
+    cx2,
 )
 
 # Scalar output ⇒ seed gradient directly
 dy = 1.0
 
-# Reverse pass: propagate adjoints
-_, dx1, dx2 = pb!!(dy)
+# Reverse pass (mutates tangent fields of cx1 and cx2)
+pb!!(dy)
+
+# Gradients are accumulated in the tangent fields
+dx1 = cx1.dx
+dx2 = cx2.dx
 
 # Expected gradients:
 # ∂y/∂x1 = x2
