@@ -1244,8 +1244,11 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     # difference testing. These are necessary but insufficient conditions.
     if !interface_only
         @test has_equal_data(__add_to_primal(p, z, true), p)
+        println("Z : ", z)
+        println("r : ", r)
         if !has_equal_data(z, r)
-            println("p & add_to_primal : ", p, " ", __add_to_primal(p, r, true))
+            println("p : ", p)
+            println("& add_to_primal : ", __add_to_primal(p, r, true))
             @test !has_equal_data(__add_to_primal(p, r, true), p)
         end
         @test has_equal_data(__diff(p, p), _zero_tangent(p))
