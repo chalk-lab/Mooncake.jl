@@ -74,8 +74,8 @@ isapprox(dx, cos(5.0))
 
 This approach lets you:
 - Inspect the output of the forward pass `y` and `pb!!` before running the reverse pass
-- Set custom gradients for the output `dy`
-- Examine the computed gradients `dx` in detail
+- Set custom seed gradients for the output `dy`
+- Examine the computed gradient `dx` in detail
 
 ## Segfaults
 
