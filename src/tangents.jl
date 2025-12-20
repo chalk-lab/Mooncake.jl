@@ -607,9 +607,9 @@ end
 """
     normalize_tangent(x)
 
-A helper function that returns a normalized copy of Mooncake Tangent input x.
-Used within [`TestUtils.test_frule_correctness`](@ref) and [`TestUtils.test_rrule_correctness`](@ref)
-to normalize randomly generated tangents. Returns x with all the numerical fields promoted to the Float64 type.
+A helper function that returns a normalized copy of Mooncake Tangent input `x`.
+Used to normalize randomly generated tangents got from [`randn_tangent`](@ref).
+Returns a normalized copy of `x` with all the numerical fields promoted to the Float64 type.
 """
 function normalize_tangent(x)
     total_norm = sqrt(_dot(x, x))
