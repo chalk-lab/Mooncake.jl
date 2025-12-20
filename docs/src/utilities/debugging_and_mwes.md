@@ -51,7 +51,7 @@ For more fine-grained debugging, you can manually run `rrule!!` to inspect inter
 Here's an example that differentiates a simple function:
 
 ```julia
-using Mooncake: rrule!!, zero_fcodual, primal
+using Mooncake: rrule!!, zero_fcodual
 
 x = 5.0
 
