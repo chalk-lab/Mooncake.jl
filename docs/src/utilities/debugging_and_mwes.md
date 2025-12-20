@@ -77,6 +77,41 @@ This approach lets you:
 - Set custom seed gradients for the output `dy`
 - Examine the computed gradient `dx` in detail
 
+### Multiple-argument example (vector inputs)
+
+```
+using LinearAlgebra
+using Mooncake: build_rrule, zero_fcodual
+
+# Function of two vector arguments
+f(x1, x2) = dot(x1, x2)
+
+x1 = [1.0, 2.0, 3.0]
+x2 = [4.0, 5.0, 6.0]
+
+# Build and capture the rrule
+rule = build_rrule(f, x1, x2)
+
+# Forward pass via the built rule
+y, pb!! = rule(
+    zero_fcodual(f),
+    zero_fcodual(x1),
+    zero_fcodual(x2),
+)
+
+# Scalar output ⇒ seed gradient directly
+dy = 1.0
+
+# Reverse pass: propagate adjoints
+_, dx1, dx2 = pb!!(dy)
+
+# Expected gradients:
+# ∂y/∂x1 = x2
+# ∂y/∂x2 = x1
+dx1 == x2
+dx2 == x1
+```
+
 ## Segfaults
 
 These are everyone's least favourite kind of problem, and they should be _extremely_ rare in Mooncake.jl.
