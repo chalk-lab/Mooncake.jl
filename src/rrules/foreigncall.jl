@@ -254,6 +254,8 @@ function rrule!!(
     return zero_fcodual(y), NoPullback(ntuple(_ -> NoRData(), 8))
 end
 
+@zero_derivative MinimalCtx Tuple{typeof(Base.has_free_typevars),Any}
+
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
 frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
@@ -339,7 +341,7 @@ for name in [
     end
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:foreigncall})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     _x = Ref(5.0)
     _dx = randn_tangent(Xoshiro(123456), _x)
 
@@ -400,7 +402,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:foreigncall})
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:foreigncall})
+function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     _x = Ref(5.0)
 
     function unsafe_copyto_tester(x::Vector{T}, y::Vector{T}, n::Int) where {T}
@@ -449,6 +451,8 @@ function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:foreigncall})
             TypeVar(:a),
             Real,
         ),
+        (false, :none, nothing, Base.has_free_typevars, Float64),
+        (false, :none, nothing, Base.has_free_typevars, Vector{Float64}),
         (
             true,
             :none,

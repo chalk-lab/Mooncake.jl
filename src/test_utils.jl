@@ -87,7 +87,7 @@ interfaces that this package defines have been implemented correctly.
 """
 module TestUtils
 
-using Random, Mooncake, Test, InteractiveUtils
+using Random, Mooncake, Test
 using Mooncake:
     CoDual,
     NoTangent,
@@ -96,6 +96,7 @@ using Mooncake:
     MutableTangent,
     frule!!,
     rrule!!,
+    DebugFRule,
     build_rrule,
     tangent_type,
     zero_tangent,
@@ -139,6 +140,7 @@ using Mooncake:
     CC,
     set_to_zero!!,
     increment!!,
+    normalize_tangent,
     randn_tangent,
     _scale,
     _add_to_primal,
@@ -220,7 +222,8 @@ end
 function has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
 ) where {P<:Base.IEEEFloat}
-    return (isapprox(x, y) && !isnan(x)) || (isnan(x) && isnan(y))
+    # Pass an atol such that we can compare approximately against 0 values.
+    return isapprox(x, y; atol=(√eps(P)), nans=true)
 end
 function has_equal_data_internal(
     x::Module, y::Module, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
@@ -271,6 +274,15 @@ function has_equal_data_internal(
 ) where {T<:Core.SimpleVector}
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
 end
+
+for T in (:(Core.Method), :(Core.CodeInstance), :(Core.MethodInstance))
+    @eval function has_equal_data_internal(
+        x::$T, y::$T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    )
+        return x == y
+    end
+end
+
 function has_equal_data_internal(
     x::T, y::T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
 ) where {T}
@@ -431,7 +443,9 @@ function address_maps_are_consistent(x::AddressMap, y::AddressMap)
 end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
-function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_perturb::Bool)
+function test_frule_correctness(
+    rng::AbstractRNG, x_ẋ...; frule, unsafe_perturb::Bool, rtol=1e-3, atol=1e-3
+)
     @nospecialize rng x_ẋ
 
     x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
@@ -485,19 +499,26 @@ function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_pertur
     # such that AD and central differences agree on the answer.
     x̄ = map(Base.Fix1(randn_tangent, rng), x_primal)
     ȳ = randn_tangent(rng, y_primal)
+
+    # normalize the JVP's probe vectors to avoid random scaling of AD, FD errors.
+    x̄_normdir, ȳ_normdir = normalize_tangent(x̄), normalize_tangent(ȳ)
+
     isapprox_results = map(fd_results) do result
         ẏ_fd, ẋ_fd = result
         return isapprox(
-            _dot(ȳ, ẏ_fd) + _dot(x̄, ẋ_fd),
-            _dot(ȳ, ẏ_ad) + _dot(x̄, ẋ_ad);
-            rtol=1e-3,
-            atol=1e-3,
+            _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
+            _dot(ȳ_normdir, ẏ_ad) + _dot(x̄_normdir, ẋ_ad);
+            rtol=rtol,
+            atol=atol,
         )
     end
     if !any(isapprox_results)
         vals = map(fd_results) do result
             ẏ_fd, ẋ_fd = result
-            (_dot(ȳ, ẏ_fd) + _dot(x̄, ẋ_fd), _dot(ȳ, ẏ_ad) + _dot(x̄, ẋ_ad))
+            (
+                _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
+                _dot(ȳ_normdir, ẏ_ad) + _dot(x̄_normdir, ẋ_ad),
+            )
         end
         display(vals)
     end
@@ -505,7 +526,15 @@ function test_frule_correctness(rng::AbstractRNG, x_ẋ...; frule, unsafe_pertur
 end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
-function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_perturb::Bool)
+function test_rrule_correctness(
+    rng::AbstractRNG,
+    x_x̄...;
+    rrule,
+    unsafe_perturb::Bool,
+    output_tangent=nothing,
+    rtol=1e-3,
+    atol=1e-3,
+)
     @nospecialize rng x_x̄
 
     x_x̄ = map(_deepcopy, x_x̄) # defensive copy
@@ -518,10 +547,9 @@ function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_pertur
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
-    # Construct tangent to inputs, and normalise to be of unit length.
+    # Construct random tangent to inputs, and normalise to be of unit length.
     ẋ_unnormalised = map(_x -> randn_tangent(rng, _x), x)
-    nrm = sqrt(sum(x -> _dot(x, x), ẋ_unnormalised))
-    ẋ = map(_x -> _scale(1 / nrm, _x), ẋ_unnormalised)
+    ẋ = map(_x -> normalize_tangent(_x), ẋ_unnormalised)
 
     # Use finite differences to estimate vjps. Compute the estimate at a range of different
     # step sizes. We'll just require that one of them ends up being close to what AD gives.
@@ -560,7 +588,8 @@ function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_pertur
     @test address_maps_are_consistent(inputs_address_map, outputs_address_map)
 
     # Run reverse-pass.
-    ȳ_delta = randn_tangent(rng, primal(y_ȳ_rule))
+    ȳ_delta =
+        isnothing(output_tangent) ? randn_tangent(rng, primal(y_ȳ_rule)) : output_tangent
     x̄_delta = map(Base.Fix1(randn_tangent, rng) ∘ primal, x_x̄_rule)
 
     ȳ_init = set_to_zero!!(zero_tangent(primal(y_ȳ_rule), tangent(y_ȳ_rule)))
@@ -582,8 +611,8 @@ function test_rrule_correctness(rng::AbstractRNG, x_x̄...; rrule, unsafe_pertur
         return isapprox(
             _dot(ȳ_delta, ẏ) + _dot(x̄_delta, ẋ_post),
             _dot(x̄, ẋ);
-            rtol=1e-3,
-            atol=1e-3,
+            rtol=rtol,
+            atol=atol,
         )
     end
     if !any(isapprox_results)
@@ -740,6 +769,7 @@ function test_frule_performance(
             ),
         )
     end
+
     performance_checks_flag == :none && return nothing
 
     if performance_checks_flag in (:stability, :stability_and_allocs)
@@ -757,11 +787,19 @@ function test_frule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test (@allocations f(x...)) == 0
+        @static if VERSION >= v"1.12"
+            @test count_allocs(f, x...) == 0
+        else
+            @test (@allocations f(x...)) == 0
+        end
 
         # Test allocations in forwards-mode.
         __forwards(rule, f_ḟ, x_ẋ...)
-        @test (@allocations __forwards(rule, f_ḟ, x_ẋ...)) == 0
+        @static if VERSION >= v"1.12"
+            @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
+        else
+            @test (@allocations __forwards(rule, f_ḟ, x_ẋ...)) == 0
+        end
     end
 end
 
@@ -800,14 +838,22 @@ function test_rrule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test (@allocations f(x...)) == 0
+        @static if VERSION >= v"1.12"
+            @test count_allocs(f, x...) == 0
+        else
+            @test (@allocations f(x...)) == 0
+        end
 
         # Test allocations in round-trip.
         f_f̄_fwds = to_fwds(f_f̄)
         x_x̄_fwds = map(to_fwds, x_x̄)
         __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
-        count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...)
-        @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
+        @static if VERSION >= v"1.12"
+            @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
+        else
+            @test (@allocations __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)) ==
+                0
+        end
     end
 end
 
@@ -824,6 +870,9 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         debug_mode::Bool=false,
         unsafe_perturb::Bool=false,
         print_results=true,
+        output_tangent=nothing,
+        atol=1e-3,
+        rtol=1e-3
     )
 
 Run standardised tests on the `rule` for `x`.
@@ -850,11 +899,11 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     therefore, be generated for it automatically.
 - `is_primitive::Bool=true`: check whether the thing that you are testing has a hand-written
     `rrule!!`. This option is helpful if you are testing a new `rrule!!`, as it enables you
-    to verify that your method of `is_primitive` has returned the correct value, and that
-    you are actually testing a method of the `rrule!!` function -- a common mistake when
-    authoring a new `rrule!!` is to implement `is_primitive` incorrectly and to accidentally
-    wind up testing a rule which Mooncake has derived, as opposed to the one that you have
-    written. If you are testing something for which you have not
+    to verify that a method of `is_primitive` exists whose signature matches these
+    arguments, and that you are actually testing a method of the `rrule!!` function -- a
+    common mistake when authoring a new `rrule!!` is to implement `is_primitive` incorrectly
+    and to accidentally wind up testing a rule which Mooncake has derived, as opposed to the
+    one that you have written. If you are testing something for which you have not
     hand-written an `rrule!!`, or which you do not care whether it has a hand-written
     `rrule!!` or not, you should set it to `false`.
 - `perf_flag::Symbol=:none`: the value of this symbol determines what kind of performance
@@ -873,6 +922,10 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
 - `unsafe_perturb::Bool=false`: value passed as the third argument to `_add_to_primal`.
     Should usually be left `false` -- consult the docstring for `_add_to_primal` for more
     info on when you might wish to set it to `true`.
+- `output_tangent=nothing`: final output tangent to initialize reverse mode with for testing
+    the correctnes of reverse rules.
+- `atol=1e-3`: absolute tolerance for correctness check of the Frechet derivatives.
+- `rtol=1e-3`: relative tolerance for correctness check of the Frechet derivatives.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -884,6 +937,9 @@ function test_rule(
     debug_mode::Bool=false,
     unsafe_perturb::Bool=false,
     print_results=true,
+    output_tangent=nothing,
+    atol=1e-3,
+    rtol=1e-3,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -897,8 +953,8 @@ function test_rule(
     frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
     rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
 
-    # If something is primitive, then the rule should be `rrule!!`.
-    test_fwd && is_primitive && @test frule == frule!!
+    # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
+    test_fwd && is_primitive && @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
     test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
@@ -924,10 +980,12 @@ function test_rule(
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
                 if test_fwd && !interface_only
-                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb)
+                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
                 end
                 if test_rvs && !interface_only
-                    test_rrule_correctness(rng, x_x̄...; rrule, unsafe_perturb)
+                    test_rrule_correctness(
+                        rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
+                    )
                 end
             end
 
@@ -941,7 +999,7 @@ function test_rule(
             @testset "Caching" begin
                 if test_fwd
                     C_fwd = Mooncake.context_type(fwd_interp)
-                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig)
+                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
                         cache_key = (sig, false, :forward)
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
@@ -949,7 +1007,7 @@ function test_rule(
                 end
                 if test_rvs
                     C_rvs = Mooncake.context_type(rvs_interp)
-                    if !Mooncake.is_primitive(C_rvs, ReverseMode, sig)
+                    if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
                         cache_key = (sig, false, :reverse)
                         k = Mooncake.ClosureCacheKey(rvs_interp.world, cache_key)
                         @test haskey(rvs_interp.oc_cache, k)
@@ -963,24 +1021,21 @@ function test_rule(
 end
 
 function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
-    test_cases, memory =
-        test_hook(Mooncake.generate_hand_written_rrule!!_test_cases, rng_ctor, v) do
-            Mooncake.generate_hand_written_rrule!!_test_cases(rng_ctor, v)
-        end
+    test_cases, memory = test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
+        Mooncake.hand_written_rule_test_cases(rng_ctor, v)
+    end
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
 
         test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
     end
 end
 
 function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
-    test_cases, memory =
-        test_hook(Mooncake.generate_derived_rrule!!_test_cases, rng_ctor, v, mode) do
-            Mooncake.generate_derived_rrule!!_test_cases(rng_ctor, v)
-        end
+    test_cases, memory = test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
+        Mooncake.derived_rule_test_cases(rng_ctor, v)
+    end
     GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
@@ -1351,10 +1406,69 @@ function test_get_tangent_field_performance(t::Union{MutableTangent,Tangent})
     end
 end
 
-# Function barrier to ensure inference in value types.
-function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-    test_hook(count_allocs, f, x...) do
-        @allocations f(x...)
+# This faff is needed to work around the fact that `Base.allocations(() -> f(x...))` reports
+# spurious allocations when any of `x` is a DataType (which necessitates a manual expansion
+# of the splat), and `Base.allocations(f, x...)` also reports spurious allocations sometimes
+# when the arguments `x` aren't interpolated (which necessitates a closure). The only way to
+# make it work is to generate the code `Base.allocations(() -> f(x1, x2))`, etc., for each
+# arity of `f` (up to a reasonable limit). It would be nicer to use a generated function for
+# this, but generated functions can't contain closures.
+function __allocs end
+function count_allocs end
+const __MAX_ARGS_ALLOCS = 10
+@static if VERSION >= v"1.12-"
+    for nargs in 0:__MAX_ARGS_ALLOCS
+        args = [Symbol("x", i) for i in 1:nargs]
+        types = [Symbol("X", i) for i in 1:nargs]
+        sigs = [:($(args[i])::$(types[i])) for i in 1:nargs]
+        fexpr = quote
+            function count_allocs(f::F, $(sigs...)) where {F,$(types...)}
+                test_hook(count_allocs, f, $(args...)) do
+                    stats = Base.gc_num()
+                    @noinline clos = () -> f($(args...))
+                    clos()
+                    diff = Base.GC_Diff(Base.gc_num(), stats)
+                    return Base.gc_alloc_count(diff)
+                end
+            end
+            # Needs a special case when `f` itself is a type constructor
+            function count_allocs(::Type{F}, $(sigs...)) where {F,$(types...)}
+                test_hook(count_allocs, F, $(args...)) do
+                    stats = Base.gc_num()
+                    @noinline clos = () -> F($(args...))
+                    clos()
+                    diff = Base.GC_Diff(Base.gc_num(), stats)
+                    return Base.gc_alloc_count(diff)
+                end
+            end
+        end
+        eval(fexpr)
+    end
+    # Catch-all method for when there are more than __MAX_ARGS_ALLOCS arguments. The risk of
+    # using Vararg here on Julia 1.12 is that it leads to incomplete specialisation when any
+    # of the arguments are DataTypes, which can cause spurious allocations. See e.g.
+    # https://discourse.julialang.org/t/specialization-on-vararg-of-types/108251.
+    function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
+        test_hook(count_allocs, f, x...) do
+            # This method should only be hit if N > __MAX_ARGS_ALLOCS, but we can check
+            # nonetheless
+            N > __MAX_ARGS_ALLOCS &&
+                @warn "using varargs method for `count_allocs` since there were $N arguments; this may lead to spurious allocations being reported if any arguments are `DataType`s"
+            stats = Base.gc_num()
+            @noinline clos = () -> f(x...)
+            clos()
+            diff = Base.GC_Diff(Base.gc_num(), stats)
+            return Base.gc_alloc_count(diff)
+        end
+    end
+else
+    # Fallback for Julia <= 1.11. Note that this will report spurious allocations if any of
+    # `x` are `DataType`s so it is best to just call `@allocations f(x...)` directly instead
+    # of `count_allocs(f, x...)`.
+    function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
+        test_hook(count_allocs, f, x...) do
+            @allocations f(x...)
+        end
     end
 end
 

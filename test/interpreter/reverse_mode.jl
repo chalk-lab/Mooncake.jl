@@ -28,6 +28,16 @@ end
         @test m.pairs[1][2] == 5.0
     end
     @testset "ADInfo" begin
+        GlobalsTest = Module(:GlobalsTest, true)
+        Core.eval(GlobalsTest, quote
+            ___x = 5.0
+            ___y::Float64 = 5.0
+            @static if VERSION > v"1.12-"
+                const ___constx = 5.0
+                const ___consty::Float64 = 5.0
+            end
+        end)
+
         arg_types = Dict{Argument,Any}(Argument(1) => Float64, Argument(2) => Int)
         id_ssa_1 = ID()
         id_ssa_2 = ID()
@@ -52,14 +62,66 @@ end
         @test info.interp isa Mooncake.MooncakeInterpreter
 
         # Verify that we can get the type associated to Arguments, IDs, and others.
-        global ___x = 5.0
-        global ___y::Float64 = 5.0
         @test Mooncake.get_primal_type(info, Argument(1)) == Float64
         @test Mooncake.get_primal_type(info, Argument(2)) == Int
         @test Mooncake.get_primal_type(info, id_ssa_1) == Float64
         @test Mooncake.get_primal_type(info, GlobalRef(Base, :sin)) == typeof(sin)
-        @test Mooncake.get_primal_type(info, GlobalRef(Main, :___x)) == Any
-        @test Mooncake.get_primal_type(info, GlobalRef(Main, :___y)) == Float64
+        @test Mooncake.get_primal_type(info, GlobalRef(GlobalsTest, :___x)) == Any
+        @test Mooncake.get_primal_type(info, GlobalRef(GlobalsTest, :___y)) == Float64
+        @test Mooncake.get_primal_type(info, GlobalRef(Base, :Float64)) == Type{Float64}
+        # PARTITION_KIND_IMPLICIT_CONST
+        @test Mooncake.get_primal_type(info, GlobalRef(Main, :Float64)) == Type{Float64}
+        @test Mooncake.get_primal_type(info, GlobalRef(Base, :stdin)) == IO
+        # PARTITION_KIND_IMPLICIT_GLOBAL
+        @test Mooncake.get_primal_type(info, GlobalRef(Main, :stdin)) == IO
+        @static if VERSION > v"1.12-"
+            @test Mooncake.get_primal_type(info, GlobalRef(GlobalsTest, :___constx)) ==
+                Float64
+            @test Mooncake.get_primal_type(info, GlobalRef(GlobalsTest, :___consty)) ==
+                Float64
+
+            # Rebind globals using different types, this will increase the world age
+            Core.eval(GlobalsTest, quote
+                ___x = 5.0f0
+                # Note that we cannot change the type of ___y nor make it constant
+                const ___constx = 5.0f0
+                const ___consty::Float32 = 5.0f0
+            end)
+
+            # In the info's world age, this should not affect the types
+            # We have to use invokelatest otherwise the call to get_primal_type will run in the old world age
+            @test invokelatest(
+                Mooncake.get_primal_type, info, GlobalRef(GlobalsTest, :___x)
+            ) == Any
+            @test invokelatest(
+                Mooncake.get_primal_type, info, GlobalRef(GlobalsTest, :___constx)
+            ) == Float64
+            @test invokelatest(
+                Mooncake.get_primal_type, info, GlobalRef(GlobalsTest, :___consty)
+            ) == Float64
+
+            # But now we can create a new info in the new world age,
+            # where these updated bindings should be visible
+            info2 = ADInfo(
+                get_interpreter(ReverseMode),
+                arg_types,
+                ssa_insts,
+                is_used_dict,
+                false,
+                rdata_ref,
+                Any,
+                Any,
+            )
+            @test invokelatest(
+                Mooncake.get_primal_type, info2, GlobalRef(GlobalsTest, :___x)
+            ) == Any
+            @test invokelatest(
+                Mooncake.get_primal_type, info2, GlobalRef(GlobalsTest, :___constx)
+            ) == Float32
+            @test invokelatest(
+                Mooncake.get_primal_type, info2, GlobalRef(GlobalsTest, :___consty)
+            ) == Float32
+        end
         @test Mooncake.get_primal_type(info, 5) == Int
         @test Mooncake.get_primal_type(info, QuoteNode(:hello)) == Symbol
         @test Mooncake.get_primal_type(info, Expr(:boundscheck)) == Bool
@@ -329,7 +391,7 @@ end
     end
 
     @testset "integration testing for invalid global ref errors" begin
-        @test_throws(
+        VERSION < v"1.12-" && @test_throws(
             Mooncake.Mooncake.MooncakeRuleCompilationError,
             Mooncake.build_rrule(
                 Tuple{typeof(Mooncake.TestResources.non_const_global_ref),Float64}

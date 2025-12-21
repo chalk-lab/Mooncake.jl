@@ -1,10 +1,8 @@
 include("front_matter.jl")
 
 @testset "Mooncake.jl" begin
-    if test_group == "quality"
+    if test_group == "basic"
         Aqua.test_all(Mooncake)
-        @test JuliaFormatter.format(Mooncake; verbose=false, overwrite=false)
-    elseif test_group == "basic"
         include("utils.jl")
         include("tangents.jl")
         include("fwds_rvs_data.jl")
@@ -32,14 +30,14 @@ include("front_matter.jl")
         include(joinpath("rrules", "avoiding_non_differentiable_code.jl"))
     elseif test_group == "rrules/blas"
         include(joinpath("rrules", "blas.jl"))
+    elseif test_group == "rrules/blas_level_3"
+        include(joinpath("rrules", "blas_level_3.jl"))
     elseif test_group == "rrules/builtins"
         include(joinpath("rrules", "builtins.jl"))
     elseif test_group == "rrules/fastmath"
         include(joinpath("rrules", "fastmath.jl"))
     elseif test_group == "rrules/foreigncall"
         include(joinpath("rrules", "foreigncall.jl"))
-    elseif test_group == "rrules/functionwrappers"
-        include(joinpath("rrules", "function_wrappers.jl"))
     elseif test_group == "rrules/iddict"
         include(joinpath("rrules", "iddict.jl"))
     elseif test_group == "rrules/lapack"

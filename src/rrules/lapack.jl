@@ -357,7 +357,10 @@ function rrule!!(
     return _A, getri_pb!!
 end
 
-__sym(X) = (X + X') / 2
+function __sym!(X::Matrix)
+    X .= (X .+ X') ./ 2
+    return X
+end
 
 @is_primitive(MinimalCtx, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasRealFloat}})
 function frule!!(
@@ -390,10 +393,9 @@ function frule!!(
     return Dual((A, info), (tangent(A_dA), NoTangent()))
 end
 function rrule!!(
-    ::CoDual{typeof(potrf!)},
-    _uplo::CoDual{Char},
-    _A::CoDual{<:AbstractMatrix{<:BlasRealFloat}},
-)
+    ::CoDual{typeof(potrf!)}, _uplo::CoDual{Char}, _A::CoDual{<:AbstractMatrix{P}}
+) where {P<:BlasRealFloat}
+
     # Extract args and take a copy of A.
     uplo = _uplo.x
     A, dA = arrayify(_A)
@@ -408,15 +410,19 @@ function rrule!!(
         # Compute cotangents.
         N = size(A, 1)
         if Char(uplo) == 'L'
-            E = LowerTriangular(2 * ones(N, N)) - Diagonal(ones(N))
+            E = LowerTriangular(__E(P, N))
             L = LowerTriangular(A)
-            B = L' \ (E' .* (dA2'L)) / L
-            dA .= 0.5 * __sym(B) .* E .+ triu!(dA2, 1)
+            tmp = dA2'L
+            tmp .*= E'
+            B = rdiv!(ldiv!(L', tmp), L)
+            dA .= __sym_lower!(B) .* E ./ 2 .+ triu!(dA2, 1)
         else
-            E = UpperTriangular(2 * ones(N, N) - Diagonal(ones(N)))
+            E = UpperTriangular(__E(P, N))
             U = UpperTriangular(A)
-            B = U \ ((U * dA2') .* E') / U'
-            dA .= 0.5 * __sym(B) .* E .+ tril!(dA2, -1)
+            tmp = U * dA2'
+            tmp .*= E'
+            B = rdiv!(ldiv!(U, tmp), U')
+            dA .= __sym_upper!(B) .* E ./ 2 .+ tril!(dA2, -1)
         end
 
         # Restore initial state.
@@ -425,6 +431,28 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual((_A.x, info), (_A.dx, NoFData())), potrf_pb!!
+end
+
+function __sym_lower!(X::Matrix)
+    @inbounds for q in 1:size(X, 2), p in (q + 1):size(X, 1)
+        X[p, q] = (X[p, q] + X[q, p]) / 2
+    end
+    return X
+end
+
+function __sym_upper!(X::Matrix)
+    @inbounds for q in 1:size(X, 2), p in 1:(q - 1)
+        X[p, q] = (X[p, q] + X[q, p]) / 2
+    end
+    return X
+end
+
+@inline function __E(P::Type, N::Int)
+    E = fill(P(2), (N, N))
+    for n in diagind(E)
+        E[n] -= P(1)
+    end
+    return E
 end
 
 @is_primitive(
@@ -483,11 +511,11 @@ function rrule!!(
 
         # Compute cotangents.
         if uplo == 'L'
-            tmp = __sym(B_copy * dB') / LowerTriangular(A)'
+            tmp = __sym!(B_copy * dB') / LowerTriangular(A)'
             dA .-= 2 .* tril!(LinearAlgebra.LAPACK.potrs!('L', A, tmp))
             LinearAlgebra.LAPACK.potrs!('L', A, dB)
         else
-            tmp = UpperTriangular(A)' \ __sym(B_copy * dB')
+            tmp = UpperTriangular(A)' \ __sym!(B_copy * dB')
             dA .-= 2 .* triu!((tmp / UpperTriangular(A)) / UpperTriangular(A)')
             LinearAlgebra.LAPACK.potrs!('U', A, dB)
         end
@@ -500,11 +528,77 @@ function rrule!!(
     return _B, potrs_pb!!
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
+@static if VERSION > v"1.11-"
+    @is_primitive(
+        MinimalCtx,
+        Tuple{
+            typeof(LAPACK.lacpy!),AbstractMatrix{P},AbstractMatrix{P},Char
+        } where {P<:BlasFloat},
+    )
+    function frule!!(
+        ::Dual{typeof(LAPACK.lacpy!)},
+        B_dB::Dual{<:AbstractMatrix{P}},
+        A_dA::Dual{<:AbstractMatrix{P}},
+        _uplo::Dual{Char},
+    ) where {P<:BlasFloat}
+        B, dB = arrayify(B_dB)
+        A, dA = arrayify(A_dA)
+
+        LAPACK.lacpy!(B, A, primal(_uplo))
+        LAPACK.lacpy!(dB, dA, primal(_uplo))
+        return B_dB
+    end
+    function rrule!!(
+        ::CoDual{typeof(LAPACK.lacpy!)},
+        B_dB::CoDual{<:AbstractMatrix{P}},
+        A_dA::CoDual{<:AbstractMatrix{P}},
+        _uplo::CoDual{Char},
+    ) where {P<:BlasFloat}
+        B, dB = arrayify(B_dB)
+        A, dA = arrayify(A_dA)
+        uplo = primal(_uplo)
+
+        B_copy = copy(B)
+        LAPACK.lacpy!(B, A, uplo)
+        # fill dB with zeros in the copied region
+        zero_tri!(dB, uplo)
+
+        function lacpy_pb!!(::NoRData)
+            if uplo == 'U'
+                dA .+= UpperTriangular(dB)
+            elseif uplo == 'L'
+                dA .+= LowerTriangular(dB)
+            else
+                dA .+= dB
+            end
+            zero_tri!(dB, uplo)
+
+            # undo the primal change
+            LAPACK.lacpy!(B, B_copy, uplo)
+
+            return NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return B_dB, lacpy_pb!!
+    end
+end
+
+function zero_tri!(A, uplo::Char)
+    if uplo == 'U'
+        tril!(A, -1)
+    elseif uplo == 'L'
+        triu!(A, 1)
+    else
+        A .= zero(eltype(A))
+    end
+    return nothing
+end
+
+function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
     complexPs = [Float64, Float32, ComplexF64, ComplexF32]
     bools = [false, true]
+    uplos = ['U', 'L', 'N']
     test_cases = vcat(
 
         # getrf!
@@ -575,12 +669,25 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
                 (false, :none, nothing, potrs!, uplo, tmp, copy(B))
             end
         end...,
+
+        # lacpy!
+        (@static if VERSION > v"1.11-"
+            map_prod(complexPs, uplos) do (P, uplo)
+                As = blas_matrices(rng, P, 5, 5)
+                Bs = blas_matrices(rng, P, 5, 5)
+                return map_prod(As, Bs) do (A, B)
+                    (false, :none, nothing, LAPACK.lacpy!, B, A, uplo)
+                end
+            end
+        else
+            []
+        end)...,
     )
     memory = Any[]
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:lapack})
+function derived_rule_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     complexPs = [Float64, Float32, ComplexF64, ComplexF32]
     getrf_wrapper!(x, check) = getrf!(x; check)

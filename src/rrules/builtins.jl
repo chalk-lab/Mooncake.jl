@@ -100,7 +100,7 @@ import ..Mooncake:
     increment!!,
     @is_primitive,
     MinimalCtx,
-    is_primitive,
+    _is_primitive,
     NoFData,
     zero_rdata,
     NoRData,
@@ -135,10 +135,10 @@ end
 macro intrinsic(name)
     expr = quote
         $name(x...) = Intrinsics.$name(x...)
-        function is_primitive(
+        function _is_primitive(
             ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
         )
-            true
+            return true
         end
         translate(::Val{Intrinsics.$name}) = $name
     end
@@ -148,7 +148,7 @@ end
 macro inactive_intrinsic(name)
     expr = quote
         $name(x...) = Intrinsics.$name(x...)
-        function is_primitive(
+        function _is_primitive(
             ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
         )
             true
@@ -304,7 +304,7 @@ special handling of `cglobal` is used.
 __cglobal(::Val{s}, x::Vararg{Any,N}) where {s,N} = cglobal(s, x...)
 
 translate(::Val{Intrinsics.cglobal}) = __cglobal
-function Mooncake.is_primitive(
+function Mooncake._is_primitive(
     ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof(__cglobal),Vararg}}
 )
     return true
@@ -438,6 +438,92 @@ end
 @inactive_intrinsic lt_float
 @inactive_intrinsic lt_float_fast
 
+@static if VERSION >= v"1.12.0-rc2"
+    @intrinsic max_float
+    function frule!!(::Dual{typeof(max_float)}, a::Dual, b::Dual)
+        p = max_float(primal(a), primal(b))
+        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
+        return Dual(p, t)
+    end
+    function rrule!!(
+        ::CoDual{typeof(max_float)}, a::CoDual{P}, b::CoDual{P}
+    ) where {P<:Base.IEEEFloat}
+        _a = primal(a)
+        _b = primal(b)
+        tmp = _a > _b
+        x = max_float(_a, _b)
+        function max_float_adjoint(dx)
+            da = ifelse(tmp, dx, zero(P))
+            db = ifelse(tmp, zero(P), dx)
+            return NoRData(), da, db
+        end
+        return zero_fcodual(x), max_float_adjoint
+    end
+
+    @intrinsic max_float_fast
+    function frule!!(::Dual{typeof(max_float_fast)}, a::Dual, b::Dual)
+        p = max_float_fast(primal(a), primal(b))
+        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
+        return Dual(p, t)
+    end
+    function rrule!!(
+        ::CoDual{typeof(max_float_fast)}, a::CoDual{P}, b::CoDual{P}
+    ) where {P<:Base.IEEEFloat}
+        _a = primal(a)
+        _b = primal(b)
+        tmp = _a > _b
+        x = max_float_fast(_a, _b)
+        function max_float_fast_adjoint(dx)
+            da = ifelse(tmp, dx, zero(P))
+            db = ifelse(tmp, zero(P), dx)
+            return NoRData(), da, db
+        end
+        return zero_fcodual(x), max_float_fast_adjoint
+    end
+
+    @intrinsic min_float
+    function frule!!(::Dual{typeof(min_float)}, a::Dual, b::Dual)
+        p = min_float(primal(a), primal(b))
+        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
+        return Dual(p, t)
+    end
+    function rrule!!(
+        ::CoDual{typeof(min_float)}, a::CoDual{P}, b::CoDual{P}
+    ) where {P<:Base.IEEEFloat}
+        _a = primal(a)
+        _b = primal(b)
+        tmp = _a < _b
+        x = min_float(_a, _b)
+        function min_float_adjoint(dx)
+            da = ifelse(tmp, dx, zero(P))
+            db = ifelse(tmp, zero(P), dx)
+            return NoRData(), da, db
+        end
+        return zero_fcodual(x), min_float_adjoint
+    end
+
+    @intrinsic min_float_fast
+    function frule!!(::Dual{typeof(min_float_fast)}, a::Dual, b::Dual)
+        p = min_float_fast(primal(a), primal(b))
+        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
+        return Dual(p, t)
+    end
+    function rrule!!(
+        ::CoDual{typeof(min_float_fast)}, a::CoDual{P}, b::CoDual{P}
+    ) where {P<:Base.IEEEFloat}
+        _a = primal(a)
+        _b = primal(b)
+        tmp = _a < _b
+        x = min_float_fast(_a, _b)
+        function min_float_fast_adjoint(dx)
+            da = ifelse(tmp, dx, zero(P))
+            db = ifelse(tmp, zero(P), dx)
+            return NoRData(), da, db
+        end
+        return zero_fcodual(x), min_float_fast_adjoint
+    end
+end
+
 @intrinsic mul_float
 function frule!!(::Dual{typeof(mul_float)}, a, b)
     p = mul_float(primal(a), primal(b))
@@ -568,10 +654,10 @@ function frule!!(::Dual{typeof(sqrt_llvm)}, x)
     dy = tangent(x) / (2 * y)
     return Dual(y, dy)
 end
-function rrule!!(::CoDual{typeof(sqrt_llvm)}, x)
+function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _x = primal(x)
     _y = sqrt_llvm(primal(x))
-    llvm_sqrt_pullback!!(dy) = NoRData(), dy / (2 * _y)
+    llvm_sqrt_pullback!!(dy) = NoRData(), ifelse(iszero(_y), P(0), dy / (2 * _y))
     return CoDual(_y, NoFData()), llvm_sqrt_pullback!!
 end
 
@@ -581,9 +667,9 @@ function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
     dy = tangent(x) / (2 * y)
     return Dual(y, dy)
 end
-function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x)
+function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
-    llvm_sqrt_fast_pullback!!(dy) = NoRData(), dy / (2 * _y)
+    llvm_sqrt_fast_pullback!!(dy) = NoRData(), ifelse(iszero(_y), P(0), dy / (2 * _y))
     return CoDual(_y, NoFData()), llvm_sqrt_fast_pullback!!
 end
 
@@ -699,24 +785,69 @@ end
 # Core._setsuper!
 # Core._structtype
 
-# Verify that there thing at the index is non-differentiable. Otherwise error.
 function frule!!(
     ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector}, _ind::Dual{Int}
 )
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
     tv = getindex(tangent(v), ind)
-    isa(tv, NoTangent) || error("expected non-differentiable thing in SimpleVector")
     return Dual(pv, tv)
 end
 function rrule!!(
-    f::CoDual{typeof(Core._svec_ref)}, v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
+    f::CoDual{typeof(Core._svec_ref)}, _v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
 )
     ind = primal(_ind)
-    pv = Core._svec_ref(primal(v), ind)
-    tv = getindex(tangent(v), ind)
-    isa(tv, NoTangent) || error("expected non-differentiable thing in SimpleVector")
-    return zero_fcodual(pv), NoPullback(f, v, _ind)
+    v, dv = extract(_v)
+    pv = Core._svec_ref(v, ind)
+    tv = getindex(dv, ind)
+    return _svec_ref_rrule(f, _v, _ind, pv, tv)
+end
+
+# Function barrier to limit runtime dispatch
+function _svec_ref_rrule(f, _v, _ind, pv, tv)
+    ind = primal(_ind)
+    a = CoDual(pv, fdata(tv))
+    if rdata_type(tangent_type(_typeof(pv))) == NoRData
+        return a, NoPullback(f, _v, _ind)
+    else
+        function _svec_ref_pullback!!(da)
+            dv = tangent(_v)
+            setindex!(dv, increment_rdata!!(getindex(dv, ind), da), ind)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return a, _svec_ref_pullback!!
+    end
+end
+
+function frule!!(f::Dual{typeof(svec)}, args::Vararg{Any,N}) where {N}
+    primal_output = svec(map(primal, args)...)
+    # Tangent type for `SimpleVector` is `Vector{Any}`
+    dual_output = collect(Any, map(tangent, args))
+    return Dual(primal_output, dual_output)
+end
+
+function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
+    primal_output = svec(map(primal, args)...)
+    # Tangent type for `SimpleVector` is `Vector{Any}`
+    tangent_output = collect(
+        Any,
+        map(args) do x
+            return tangent(x.dx, zero_rdata(x.x))
+        end,
+    )
+    function svec_pullback!!(::NoRData)
+        return NoRData(), map(rdata, tangent_output)...
+    end
+    return CoDual(primal_output, tangent_output), svec_pullback!!
+end
+
+@static if VERSION > v"1.12-"
+    function frule!!(f::Dual{typeof(Core._svec_len)}, v)
+        return zero_dual(Core._svec_len(primal(v)))
+    end
+    function rrule!!(f::CoDual{typeof(Core._svec_len)}, v)
+        return zero_fcodual(Core._svec_len(primal(v))), NoPullback(f, v)
+    end
 end
 
 # Core._typebody!
@@ -943,7 +1074,7 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(typeof),Any}
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     _x = Ref(5.0) # data used in tests which aren't protected by GC.
     _dx = Ref(4.0)
     _a = Vector{Vector{Float64}}(undef, 3)
@@ -1101,7 +1232,7 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
         (true, :stability, nothing, IntrinsicsWrappers.pointerset, CoDual(q, dq), 1, 2, 1),
         # rem_float -- untested and unimplemented because seemingly unused on master
         # rem_float_fast -- untested and unimplemented because seemingly unused on master
-        (false, :stability, nothing, IntrinsicsWrappers.rint_llvm, 5),
+        (false, :stability, nothing, IntrinsicsWrappers.rint_llvm, 5.0),
         (false, :stability, nothing, IntrinsicsWrappers.sdiv_int, 5, 4),
         (false, :stability, nothing, IntrinsicsWrappers.sext_int, Int64, Int32(1308622848)),
         (
@@ -1152,6 +1283,13 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
         # Core._setsuper! -- NEEDS IMPLEMENTING AND TESTING
         # Core._structtype -- NEEDS IMPLEMENTING AND TESTING
         (false, :none, _range, Core._svec_ref, svec(5, 4), 2),
+        (false, :none, _range, Core._svec_ref, svec(5, 4.0), 2),
+        (false, :none, _range, Core._svec_ref, svec(5, randn(rng_ctor(1234), 2, 3)), 2),
+        (false, :none, _range, Core.svec, 5, 4.0, randn(rng_ctor(1234), 2, 3)),
+        # check svec with no arguments
+        (false, :none, _range, Core.svec),
+        # check svec with an argument that has both fdata and rdata
+        (false, :none, _range, Core.svec, (5, 4.0, randn(rng_ctor(1234), 2, 3))),
         # Core._typebody! -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, <:, Float64, Int),
         (false, :stability, nothing, <:, Any, Float64),
@@ -1179,7 +1317,6 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
         # Core.set_binding_type! -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, Core.sizeof, Float64),
         (false, :stability, nothing, Core.sizeof, randn(5)),
-        # Core.svec -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, applicable, sin, Float64),
         (false, :stability, nothing, applicable, sin, Type),
         (false, :stability, nothing, applicable, +, Type, Float64),
@@ -1245,10 +1382,23 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, typeof, 5.0),
         (false, :stability, nothing, typeof, randn(5)),
     ]
+
+    if VERSION > v"1.12-"
+        fs = [
+            IntrinsicsWrappers.min_float,
+            IntrinsicsWrappers.min_float_fast,
+            IntrinsicsWrappers.max_float,
+            IntrinsicsWrappers.max_float_fast,
+        ]
+        for P in [Float32, Float64], f in fs
+            push!(test_cases, (false, :stability_and_allocs, nothing, f, P(5.0), P(4.0)))
+            push!(test_cases, (false, :stability_and_allocs, nothing, f, P(2.0), P(3.1)))
+        end
+    end
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:builtins})
+function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     test_cases = Any[
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),

@@ -15,6 +15,7 @@ end
 primal(x::CoDual) = x.x
 tangent(x::CoDual) = x.dx
 Base.copy(x::CoDual) = CoDual(copy(primal(x)), copy(tangent(x)))
+# CoDual can be safely shared without copying
 _copy(x::P) where {P<:CoDual} = x
 
 """
@@ -85,6 +86,11 @@ to_fwds(x::CoDual) = CoDual(primal(x), fdata(tangent(x)))
 
 to_fwds(x::CoDual{Type{P}}) where {P} = CoDual{Type{P},NoFData}(primal(x), NoFData())
 
+"""
+    zero_fcodual(x)
+
+Equivalent to `CoDual(x, fdata(zero_tangent(x)))`.
+"""
 zero_fcodual(p) = to_fwds(zero_codual(p))
 
 """
@@ -99,6 +105,7 @@ struct NoPullback{R<:Tuple}
     r::R
 end
 
+# Recursively copy the contained reverse data
 _copy(x::P) where {P<:NoPullback} = P(_copy(x.r))
 
 """

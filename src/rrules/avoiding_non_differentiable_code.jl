@@ -69,6 +69,25 @@ import Base.CoreLogging as CoreLogging
     String,
     Int64,
 }
+
+@static if VERSION ≥ v"1.12-"
+    @zero_derivative MinimalCtx Tuple{typeof(Base.fixup_stdlib_path),String}
+    @zero_derivative MinimalCtx Tuple{
+        typeof(CoreLogging.handle_message_nothrow),
+        Any,
+        CoreLogging.LogLevel,
+        String,
+        Module,
+        Symbol,
+        Symbol,
+        String,
+        Int64,
+    }
+    @zero_derivative MinimalCtx Tuple{
+        typeof(Core.kwcall),NamedTuple,typeof(CoreLogging.handle_message_nothrow),Vararg
+    }
+end
+
 # specialized case for Builtin primitive Core._call_latest rrule for CoreLogging.handle_message kwargs call.
 @zero_derivative(
     MinimalCtx,
@@ -88,9 +107,7 @@ import Base.CoreLogging as CoreLogging
     }
 )
 
-function generate_hand_written_rrule!!_test_cases(
-    rng_ctor, ::Val{:avoiding_non_differentiable_code}
-)
+function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_code})
     _x = Ref(5.0)
     _dx = Ref(4.0)
     test_cases = vcat(
@@ -145,10 +162,42 @@ function generate_hand_written_rrule!!_test_cases(
         # Rules to make Symbol-related functionality work properly.
         (false, :stability_and_allocs, nothing, Symbol, "hello"),
         (false, :stability_and_allocs, nothing, Symbol, UInt8[1, 2]),
-        (false, :stability_and_allocs, nothing, Float64, π, RoundDown),
-        (false, :stability_and_allocs, nothing, Float64, π, RoundUp),
-        (true, :stability_and_allocs, nothing, Float32, π, RoundDown),
-        (true, :stability_and_allocs, nothing, Float32, π, RoundUp),
+
+        # Julia Base functions have type stability issues in version 1.12
+        (
+            false,
+            VERSION >= v"1.12-" ? :none : :stability_and_allocs,
+            nothing,
+            Float64,
+            π,
+            RoundDown,
+        ),
+        (
+            false,
+            VERSION >= v"1.12-" ? :none : :stability_and_allocs,
+            nothing,
+            Float64,
+            π,
+            RoundUp,
+        ),
+        (
+            true,
+            VERSION >= v"1.12-" ? :none : :stability_and_allocs,
+            nothing,
+            Float32,
+            π,
+            RoundDown,
+        ),
+        (
+            true,
+            VERSION >= v"1.12-" ? :none : :stability_and_allocs,
+            nothing,
+            Float32,
+            π,
+            RoundUp,
+        ),
+
+        # F16 works fine even in 1.12
         (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
         (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
     )
@@ -156,9 +205,7 @@ function generate_hand_written_rrule!!_test_cases(
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(
-    rng_ctor, ::Val{:avoiding_non_differentiable_code}
-)
+function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_code})
     function testloggingmacro1(x)
         @warn "Testing @warn macro"
     end

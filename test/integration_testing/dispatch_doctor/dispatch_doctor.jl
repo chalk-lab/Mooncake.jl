@@ -7,15 +7,11 @@ using DispatchDoctor: allow_unstable, type_instability
 
 TestUtils.test_hook(::Any, ::typeof(TestUtils.test_opt), ::Any...) = nothing
 TestUtils.test_hook(::Any, ::typeof(TestUtils.report_opt), tt) = nothing
-function TestUtils.test_hook(
-    f, ::typeof(Mooncake.generate_hand_written_rrule!!_test_cases), ::Any...
-)
-    allow_unstable(f)
+function TestUtils.test_hook(f, ::typeof(Mooncake.hand_written_rule_test_cases), ::Any...)
+    return allow_unstable(f)
 end
-function TestUtils.test_hook(
-    f, ::typeof(Mooncake.generate_derived_rrule!!_test_cases), ::Any...
-)
-    allow_unstable(f)
+function TestUtils.test_hook(f, ::typeof(Mooncake.derived_rule_test_cases), ::Any...)
+    return allow_unstable(f)
 end
 
 # Automatically skip instability checks for types which are themselves unstable,
@@ -64,6 +60,9 @@ function TestUtils.test_hook(
     f, ::typeof(TestUtils.test_tangent_performance), ::Any, p; kws...
 )
     allow_unstable_given_unstable_type(f, typeof(p))
+end
+function TestUtils.test_hook(f, ::typeof(Mooncake.compute_oc_signature), x...)
+    allow_unstable(f)
 end
 
 include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))

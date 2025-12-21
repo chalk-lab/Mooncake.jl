@@ -23,7 +23,7 @@ function rrule!!(::CoDual{typeof(exp)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloa
     return CoDual(Y, Ȳ), ExpPullback{P}(pb, Ȳ, X.dx)
 end
 
-function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:linear_algebra})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
     test_cases = vcat(
@@ -35,6 +35,17 @@ function generate_hand_written_rrule!!_test_cases(rng_ctor, ::Val{:linear_algebr
     return test_cases, memory
 end
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:linear_algebra})
-    return Any[], Any[]
+function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
+    rng = rng_ctor(123)
+    Ps = [Float64, Float32]
+    test_cases = vcat(
+        map_prod([3, 7], Ps) do (N, P)
+            flags = (false, :none, nothing)
+            Any[
+                (flags..., inv, randn(rng, P, N, N)), (flags..., det, randn(rng, P, N, N))
+            ]
+        end...,
+    )
+    memory = Any[]
+    return test_cases, memory
 end

@@ -161,18 +161,19 @@ end
             perf_flag=:stability_and_allocs,
         )
 
+        world = Base.get_world_counter()
         perf_flag = :stability_and_allocs
         @testset "forward mode only" begin
             sig = Tuple{typeof(ToolsForRulesResources.zero_tester_forward_only),Float64}
-            @test is_primitive(MinimalCtx, ForwardMode, sig)
-            @test !is_primitive(MinimalCtx, ReverseMode, sig)
+            @test is_primitive(MinimalCtx, ForwardMode, sig, world)
+            @test !is_primitive(MinimalCtx, ReverseMode, sig, world)
             args = (ToolsForRulesResources.zero_tester_forward_only, 5.0)
             test_rule(sr(123), args...; is_primitive=true, perf_flag, mode=ForwardMode)
         end
         @testset "reverse mode only" begin
             sig = Tuple{typeof(ToolsForRulesResources.zero_tester_reverse_only),Float64}
-            @test !is_primitive(MinimalCtx, ForwardMode, sig)
-            @test is_primitive(MinimalCtx, ReverseMode, sig)
+            @test !is_primitive(MinimalCtx, ForwardMode, sig, world)
+            @test is_primitive(MinimalCtx, ReverseMode, sig, world)
             args = (ToolsForRulesResources.zero_tester_reverse_only, 5.0)
             test_rule(sr(123), args...; is_primitive=true, perf_flag, mode=ReverseMode)
         end
@@ -183,6 +184,7 @@ end
             (ones(5), ones(5)),
             (NoTangent(), ChainRulesCore.NoTangent()),
             ((5.0, 4.0), ChainRulesCore.Tangent{Any}(5.0, 4.0)),
+            ((a=5.0, b=4.0), ChainRulesCore.Tangent{Any}(; a=5.0, b=4.0)),
             ([ones(5), NoTangent()], [ones(5), ChainRulesCore.NoTangent()]),
             (
                 Tangent((a=5.0, b=NoTangent())),
@@ -224,7 +226,7 @@ end
         @testset "bad rdata" begin
             f = ToolsForRulesResources.test_bad_rdata
             out, pb!! = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(3.0))
-            @test_throws MethodError pb!!(5.0)
+            @test_throws ArgumentError pb!!(5.0)
         end
     end
 end

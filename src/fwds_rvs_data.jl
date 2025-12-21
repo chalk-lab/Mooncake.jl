@@ -22,6 +22,7 @@ struct FData{T<:NamedTuple}
     data::T
 end
 
+# Recursively copy the wrapped data
 _copy(x::P) where {P<:FData} = P(_copy(x.data))
 
 fields_type(::Type{FData{T}}) where {T<:NamedTuple} = T
@@ -80,12 +81,14 @@ julia> (fdata_type(Vector{Float64}), rdata_type(Vector{Float64}))
 (Vector{Float64}, NoRData)
 ```
 
+`Vector{Float64}` does not need rdata because it is the fdata that is incremented in-place during the reverse pass.
+
 #### Tuple{Float64, Vector{Float64}, Int}
 
 This is an example of a type which has both fdata and rdata.
 The tangent type for `Tuple{Float64, Vector{Float64}, Int}` is
 `Tuple{Float64, Vector{Float64}, NoTangent}`.
-`Tuple`s have no fixed memory address, so we interogate each field on its own.
+`Tuple`s have no fixed memory address, so we interrogate each field on its own.
 We have already established the fdata and rdata types for each element, so we recurse to obtain:
 ```jldoctest
 julia> T = tangent_type(Tuple{Float64, Vector{Float64}, Int})
@@ -405,6 +408,7 @@ struct RData{T<:NamedTuple}
     data::T
 end
 
+# Recursively copy the wrapped data
 _copy(x::P) where {P<:RData} = P(_copy(x.data))
 
 fields_type(::Type{RData{T}}) where {T<:NamedTuple} = T
@@ -448,7 +452,7 @@ end
     # This method can only handle struct types. Tell user to implement their own method.
     if isprimitivetype(T)
         msg = "$T is a primitive type. Implement a method of `rdata_type` for it."
-        return :(error(msg))
+        return :(error($msg))
     end
 
     # If the type is a Union, then take the union type of its arguments.
@@ -689,7 +693,7 @@ with.
 @generated function zero_rdata_from_type(::Type{P}) where {P}
 
     # Prepare expressions for manually-unrolled loop to construct zero rdata elements.
-    if P isa DataType
+    if P isa DataType && isconcretetype(P)
         names = fieldnames(P)
         types = fieldtypes(P)
         wrapped_field_zeros = map(enumerate(always_initialised(P))) do (n, init)
@@ -831,6 +835,7 @@ struct LazyZeroRData{P,Tdata}
     data::Tdata
 end
 
+# Recursively copy the wrapped data
 _copy(x::P) where {P<:LazyZeroRData} = P(_copy(x.data))
 
 # Returns the type which must be output by LazyZeroRData whenever it is passed a `P`.
@@ -874,13 +879,21 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 @foldable function tangent_type(
     ::Type{NoFData}, ::Type{R}
 ) where {R<:Union{NoRData,T} where {T<:Base.IEEEFloat}}
-    return tangent_type(R)
+    # This should only ever be hit when R is a proper union, since Any
+    # does not meet the constraint on T, an R==NoRData already has a more
+    # specific dispatch defined
+    @assert R isa Union
+    Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}
     _validate_union(F)
-    return tangent_type(F)
+    # The only case where this dispatch can be hit where F is
+    # not a union would be if F==Any, but _validate_union causes
+    # that case to error
+    @assert F isa Union
+    Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
 function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F

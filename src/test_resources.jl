@@ -881,7 +881,7 @@ function generate_test_functions()
         ),
         (
             false,
-            :allocs,
+            :none,
             nothing,
             LinearAlgebra._kron!,
             randn(25, 25),
@@ -989,6 +989,6 @@ end
 
 using .TestResources
 
-function generate_derived_rrule!!_test_cases(rng_ctor, ::Val{:test_resources})
+function derived_rule_test_cases(rng_ctor, ::Val{:test_resources})
     return TestResources.generate_test_functions(), Any[]
 end

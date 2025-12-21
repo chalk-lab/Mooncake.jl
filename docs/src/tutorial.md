@@ -2,7 +2,7 @@
 
 There are two ways to compute gradients with Mooncake.jl:
 
-- through the standardized [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) API
+- through the standardised [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) API
 - through the native Mooncake.jl API
 
 We recommend the former to start with, especially if you want to experiment with other automatic differentiation packages.
@@ -121,5 +121,30 @@ DI.jacobian(h, prep, backend, x)
 
 ## Mooncake.jl API
 
-!!! warning
-    Work in progress.
+### Mooncake.jl Functions
+
+Mooncake.jl provides the following core differentiation functions:
+
+- **Forward mode**: `Mooncake.value_and_derivative!!` - computes function value and the Frechet derivative
+- **Reverse mode**: `Mooncake.value_and_gradient!!` - computes function value and gradient (when output is scalar)  
+- **Reverse mode**: `Mooncake.value_and_pullback!!` - computes function value and pullback (general case)
+
+### Terminology Comparison with DifferentiationInterface.jl
+
+Mooncake.jl discusses Frechet derivatives and their adjoints, as described in detail in [Algorithmic Differentiation](@ref). This differs from the conventions used by [DifferentiationInterface.jl](https://github.com/JuliaDiff/DifferentiationInterface.jl) and some other AD packages.
+
+**General cases:**
+
+- **Frechet derivative**: In forward mode, Mooncake computes the Frechet derivative `D f[x]`, which maps tangent vectors to tangent vectors. This corresponds to what DifferentiationInterface refers to as a "pushforward", and is implemented in `Mooncake.value_and_derivative!!`. 
+
+- **Adjoint of derivative and pullback**: In reverse mode, Mooncake computes the adjoint `D f[x]*` of the Frechet derivative, which maps cotangent vectors backwards through the computation. This corresponds to what DifferentiationInterface calls a "pullback" and is implemented in `Mooncake.value_and_pullback!!`.
+
+**Special cases (scalar input/output):**
+
+- **Derivative**: When the input is scalar, the Frechet derivative `f'(x) = D f[x](v)` with `v = 1` gives the ordinary derivative. This corresponds to `DI.derivative`, while Mooncake lacks an equivalent API and handles this as a special case of `Mooncake.value_and_derivative!!`. 
+
+- **Gradient**: When the output is scalar, the adjoint of the derivative applied to `1` gives the gradient `∇f`. This corresponds to `DI.gradient` and is implemented in `Mooncake.value_and_gradient!!`.
+
+!!! info
+    For a detailed mathematical treatment of these concepts, see [Algorithmic Differentiation](@ref), particularly the sections on [Derivatives](@ref).
+

@@ -478,16 +478,16 @@ The _gradient_ of ``f : \mathcal{X} \to \mathbb{R}`` at ``x`` is defined to be t
 \langle \nabla f (x), \dot{x} \rangle = D f[x](\dot{x})
 ```
 for any direction ``\dot{x}``.
-In other words, the vector ``\nabla f`` encodes all the information about the directional derivatives of ``f``, and we use the inner product to retrieve that information.
+In other words, the vector ``\nabla f (x)`` encodes all the information about the directional derivatives of ``f`` at ``x``, and we use the inner product to retrieve that information.
 
 An alternative characterisation is that ``\nabla f(x)`` is the vector pointing in the direction of steepest ascent whose magnitude is given by the slope in that direction.
-In other words, if ``\hat{n} \coloneqq \argmax_{\|u\|=1} D f[x](u)`` is the unit vector in the direction of steepest ascent, then ``\nabla f = \|\nabla f\| \, \hat{n}`` and ``D f[x](\hat{n}) = \|\nabla f(x)\|``.
+In other words, if ``\hat{n} \coloneqq \argmax_{\|u\|=1} D f[x](u)`` is the unit vector in the direction of steepest ascent, then ``\nabla f (x) = \|\nabla f (x)\| \, \hat{n}`` and ``D f[x](\hat{n}) = \|\nabla f(x)\|``.
 (That this follows from the implicit definition above is a good exercise.)
 
 _**Aside: The choice of inner product**_
 
 Notice that the value of the gradient depends on how the inner product on ``\mathcal{X}`` is defined.
-Indeed, different choices of inner product result in different values of ``\nabla f``.
+Indeed, different choices of inner product result in different values of ``\nabla f (x)``.
 Adjoints such as ``D f[x]^*`` are also inner product dependent.
 However, the actual derivative ``D f[x]`` is of course invariant -- it does not depend on the inner product or norm.
 
@@ -509,7 +509,7 @@ Hence, the gradient is given by
 where the second equality follows from the gradient's definition.
 
 [^reciprocal_bases]:
-	For any basis ``\{\mathbf{e}_i\}`` there exists a reciprocal reciprocal basis ``\{\mathbf{e}^i\}`` such that ``\langle \mathbf{e}_i, \mathbf{e}^j \rangle = \delta_i^j``.
+	For any basis ``\{\mathbf{e}_i\}`` there exists a reciprocal basis ``\{\mathbf{e}^i\}`` such that ``\langle \mathbf{e}_i, \mathbf{e}^j \rangle = \delta_i^j``.
 	If the basis is orthonormal with respect to the inner product, then the original basis and its reciprocal are equal and ``\mathbf{e}_i = \mathbf{e}^i``.
 	We will always implicitly use orthonormal bases in Mooncake, so the position of indices can usually be ignored safely.
 
@@ -610,4 +610,4 @@ When each function ``f_n`` maps between Euclidean spaces, the applications of de
 ```@bibliography
 ```
 
-[^note_for_geometers]: in AD we only really need to discuss differentiatiable functions between vector spaces that are isomorphic to Euclidean space. Consequently, a variety of considerations which are usually required in differential geometry are not required here. Notably, the tangent space is assumed to be the same everywhere, and to be the same as the domain of the function. Avoiding these additional considerations helps keep the mathematics as simple as possible.
+[^note_for_geometers]: in AD we only really need to discuss differentiable functions between vector spaces that are isomorphic to Euclidean space. Consequently, a variety of considerations which are usually required in differential geometry are not required here. Notably, the tangent space is assumed to be the same everywhere, and to be the same as the domain of the function. Avoiding these additional considerations helps keep the mathematics as simple as possible.

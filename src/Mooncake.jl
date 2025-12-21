@@ -2,8 +2,7 @@ module Mooncake
 
 const CC = Core.Compiler
 
-using ADTypes,
-    ChainRules, DiffRules, ExprTools, InteractiveUtils, LinearAlgebra, MistyClosures, Random
+using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, Random
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
@@ -18,7 +17,6 @@ using Base:
     arrayset,
     TwicePrecision,
     twiceprecision
-using Base.Experimental: @opaque
 using Base.Iterators: product
 using Base.Meta: isexpr
 using Core:
@@ -41,7 +39,6 @@ using Core.Compiler: IRCode, NewInstruction
 using Core.Intrinsics: pointerref, pointerset
 using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
-using FunctionWrappers: FunctionWrapper
 using DispatchDoctor: @stable, @unstable
 
 # Needs to be defined before various other things.
@@ -83,11 +80,12 @@ function rrule!! end
     build_primitive_rrule(sig::Type{<:Tuple})
 
 Construct an rrule for signature `sig`. For this function to be called in `build_rrule`, you
-must also ensure that `is_primitive(context_type, ReverseMode, sig)` is `true`. The callable
-returned by this must obey the rrule interface, but there are no restrictions on the type of
-callable itself. For example, you might return a callable `struct`. By default, this
-function returns `rrule!!` so, most of the time, you should just implement a method of
-`rrule!!`.
+must also ensure that a method of `_is_primitive(context_type, ReverseMode, sig)` exists,
+preferably by using the [@is_primitive](@ref) macro.
+The callable returned by this must obey the rrule interface, but there are no restrictions
+on the type of callable itself. For example, you might return a callable `struct`. By
+default, this function returns `rrule!!` so, most of the time, you should just implement a
+method of `rrule!!`.
 
 # Extended Help
 
@@ -137,7 +135,6 @@ include(joinpath("rrules", "builtins.jl"))
 include(joinpath("rrules", "dispatch_doctor.jl"))
 include(joinpath("rrules", "fastmath.jl"))
 include(joinpath("rrules", "foreigncall.jl"))
-include(joinpath("rrules", "function_wrappers.jl"))
 include(joinpath("rrules", "iddict.jl"))
 include(joinpath("rrules", "lapack.jl"))
 include(joinpath("rrules", "linear_algebra.jl"))
@@ -153,7 +150,9 @@ include(joinpath("rrules", "twice_precision.jl"))
 else
     include(joinpath("rrules", "array_legacy.jl"))
 end
-include(joinpath("rrules", "performance_patches.jl"))
+
+# Including this in DispatchDoctor causes precompilation error. 
+@unstable include(joinpath("rrules", "performance_patches.jl"))
 
 include("interface.jl")
 include("config.jl")
@@ -165,8 +164,8 @@ include("public.jl")
 end
 #! format: on
 
-@public Config, value_and_pullback!!, prepare_pullback_cache, value_and_derivative!!
-@public prepare_derivative_cache, Dual
+@public Config, value_and_pullback!!, prepare_pullback_cache
+@public Dual
 
 # Public, exported
 export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
