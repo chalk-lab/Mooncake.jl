@@ -31,7 +31,13 @@ function build_forward_data(
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
-        return (; primitive=true, dual_ir=nothing, captures=nothing, info=nothing)
+        return (;
+            primitive=true,
+            dual_ir=nothing,
+            captures=nothing,
+            info=nothing,
+            primal_edges=nothing,
+        )
     end
 
     # We don't have a hand-coded rule, so derive one.
@@ -45,9 +51,13 @@ function build_forward_data(
         if haskey(interp.oc_cache, oc_cache_key)
             return interp.oc_cache[oc_cache_key]
         else
-            dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode, world)
-            interp.oc_cache[oc_cache_key] = (dual_ir, captures, info)
-            return (; primitive=false, dual_ir, captures, info)
+            dual_ir, captures, info, primal_edges = generate_dual_ir(
+                interp, sig_or_mi; debug_mode, world
+            )
+            interp.oc_cache[oc_cache_key] = (;
+                dual_ir, primal_ir, captures, info, primal_edges
+            )
+            return (; primitive=false, dual_ir, captures, info, primal_edges)
         end
     catch e
         rethrow(e)
@@ -64,7 +74,7 @@ function generate_dual_ir(
     seed_id!()
 
     # Grab code associated to the primal.
-    primal_ir, _ = lookup_ir(interp, sig_or_mi)
+    primal_ir, _, primal_edges = lookup_ir(interp, sig_or_mi)
     @static if VERSION > v"1.12-"
         primal_ir = set_valid_world!(primal_ir, interp.world)
     end
@@ -110,31 +120,30 @@ function generate_dual_ir(
     dual_ir.argtypes[1] = _typeof(captures_tuple)
     # Optimize dual IR
     dual_ir_opt = optimise_ir!(dual_ir; do_inline)
-    return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
+    return dual_ir_opt,
+    captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir)),
+    primal_edges
 end
 
 _primal_type(::Type{Dual{p,d}}) where {p,d} = p
 
 function generated_frule_body end
 function GeneratedFRule_body end
-
 struct GeneratedFRule{Captures<:Tuple}
     captures::Captures
 end
 
-function refresh_generated_frule()
-    @eval begin
-        function generated_frule!!(args...)
-            $(Expr(:meta, :generated_only))
-            $(Expr(:meta, :generated, generated_frule_body))
-        end
-        function (::GeneratedFRule)(f::F, args...) where {F}
-            $(Expr(:meta, :generated_only))
-            $(Expr(:meta, :generated, GeneratedFRule_body))
-        end
+#handy util for when you're changing the insides of the generated functions
+refresh_generated_frule() = @eval begin
+    function generated_frule!!(args...)
+        $(Expr(:meta, :generated_only))
+        $(Expr(:meta, :generated, generated_frule_body))
+    end
+    function (::GeneratedFRule)(f::F, args...) where {F}
+        $(Expr(:meta, :generated_only))
+        $(Expr(:meta, :generated, GeneratedFRule_body))
     end
 end
-#handy util for when you're changing the insides of the generated functions
 refresh_generated_frule()
 
 # # Copy forward rule with recursively copied captures
@@ -146,18 +155,23 @@ end
 function generated_frule_body(world::UInt, lnn, this, args)
     sig = Tuple{_primal_type.(args)...}
     interp = MooncakeInterpreter(ForwardMode; world)
-    (; primitive, captures) = build_forward_data(interp, sig; world)
+    (; primitive, captures, primal_edges) = build_forward_data(interp, sig; world)
     if primitive
         ex = :(frule!!(args...))
     else
         ex = :(GeneratedFRule($captures)(args...))
     end
     ci = expr_to_codeinfo(@__MODULE__(), [Symbol("#self#"), :args], [], (), ex, true)
-    # Attached edges from MethodInstrances of `f` to to this CodeInfo.
-    # This should make it so that adding methods to `f` will
-    # triggers recompilation, fixing the #265 equivalent for generated functions.
-    matches = Base._methods_by_ftype(sig, -1, world)
-    ci.edges = Core.svec(Base.specialize_method(only(matches)))
+    # Attach edges from MethodInstances of `f` to to this CodeInfo. This should make it so
+    # that adding methods to `f` triggers recompilation of this generated function.
+    add_edges_from_sigs!(
+        ci,
+        sig,
+        Tuple{typeof(frule!!),args...},
+        Tuple{_is_primitive,get_ctx_and_mode(interp)...,sig};
+        world,
+    )
+    add_edges_from_primal!(ci, primal_edges)
     return ci
 end
 
@@ -165,79 +179,34 @@ end
 function GeneratedFRule_body(world::UInt, lnn, F, this, f, args)
     sig = Tuple{_primal_type(f),_primal_type.(args)...}
     interp = MooncakeInterpreter(ForwardMode; world)
-    (; primitive, dual_ir) = build_forward_data(interp, sig; world)
-
+    (; primitive, dual_ir, primal_edges) = build_forward_data(interp, sig; world)
     ci = irc_to_codeinfo(dual_ir)
-    # Remove the type info so that it can be returned from the generated function
-    ci.ssavaluetypes = length(ci.ssavaluetypes)
-
-    # Attached edges from MethodInstrances of `f` to to this CodeInfo.
-    # This should make it so that adding methods to `f` will
-    # triggers recompilation of this generated function.
-    matches = Base._methods_by_ftype(sig, -1, world)
-    ci.edges = Core.svec(Base.specialize_method(only(matches)))
+    # Remove the type info so that it can be returned from the generated funcion
+    # (generated functions only accept untyped IR)
+    strip_type_information!(ci)
+    # Attach edges from MethodInstances of `f` to to this CodeInfo. This should make it so
+    # that adding methods to `f` triggers recompilation of this generated function.
+    add_edges_from_sigs!(
+        ci,
+        sig,
+        Tuple{typeof(dummy_frule!!),f,args...},
+        Tuple{_is_primitive,get_ctx_and_mode(interp)...,sig};
+        world,
+    )
+    add_edges_from_primal!(ci, primal_edges)
     return ci
 end
 
-function expr_to_codeinfo(m::Module, argnames, spnames, sp, e::Expr, isva)
-    # This trick comes from https://github.com/NHDaly/StagedFunctions.jl/commit/22fc72740093892baa442850a1fd61d9cd61b4cd (but has been since modified)
-    lam = Expr(
-        :lambda,
-        argnames,
-        Expr(Symbol("scope-block"), Expr(:block, Expr(:return, Expr(:block, e)))),
-    )
-    ex = if spnames === nothing || isempty(spnames)
-        lam
+function add_edges_from_primal!(ci::CodeInfo, primal_edges)
+    if isdefined(ci, :edges) && !isnothing(ci.edges)
+        ci.edges = Core.svec(ci.edges..., primal_edges...)
     else
-        Expr(Symbol("with-static-parameters"), lam, spnames...)
+        ci.edges = Core.svec(primal_edges...)
     end
-
-    # Get the code-info for the generator body in order to use it for generating a dummy
-    # code info object.
-    ci = if VERSION < v"1.12-"
-        ccall(
-            :jl_expand_and_resolve,
-            Any,
-            (Any, Any, Core.SimpleVector),
-            ex,
-            m,
-            Core.svec(sp...),
-        )
-    else
-        Base.generated_body_to_codeinfo(ex, @__MODULE__(), isva)
-    end
-    @assert ci isa Core.CodeInfo "Failed to create a CodeInfo from the given expression. This might mean it contains a closure or comprehension?\n Offending expression: $e"
-    ci
 end
 
-function irc_to_codeinfo(
-    ir::IRCode,
-    @nospecialize env...;
-    isva::Bool=false,
-    slotnames::Union{Nothing,Vector{Symbol}}=nothing,
-    kwargs...,
-)
-    CC = Core.Compiler
-    # NOTE: we need ir.argtypes[1] == typeof(env)
-    ir = copy(ir)
-    nargtypes = length(ir.argtypes)
-    nargs = nargtypes-1
-    sig = CC.compute_oc_signature(ir, nargs, isva)
-    rt = CC.compute_ir_rettype(ir)
-    src = ccall(:jl_new_code_info_uninit, Ref{CodeInfo}, ())
-    if slotnames === nothing
-        src.slotnames = fill(:none, nargtypes)
-    else
-        length(slotnames) == nargtypes || error("mismatched `argtypes` and `slotnames`")
-        src.slotnames = slotnames
-    end
-    src.slotflags = fill(zero(UInt8), nargtypes)
-    src.slottypes = copy(ir.argtypes)
-    src.isva = isva
-    src.nargs = UInt(nargtypes)
-    src = CC.ir_to_codeinf!(src, ir)
-    src.rettype = rt
-    src
+function dummy_frule!!(args...)
+    frule!!(args...)
 end
 
 """
