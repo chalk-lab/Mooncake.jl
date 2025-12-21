@@ -11,7 +11,6 @@ function build_forward_data(
     world=Base.get_world_counter(),
 ) where {C}
     @nospecialize sig_or_mi
-        @nospecialize sig_or_mi
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
     # than the current world age.
@@ -40,7 +39,9 @@ function build_forward_data(
     try
         # If we've already derived the IR and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward, :data))
+        oc_cache_key = ClosureCacheKey(
+            interp.world, (sig_or_mi, debug_mode, :forward, :data)
+        )
         if haskey(interp.oc_cache, oc_cache_key)
             return interp.oc_cache[oc_cache_key]
         else
@@ -117,7 +118,7 @@ _primal_type(::Type{Dual{p,d}}) where {p,d} = p
 function generated_frule_body end
 function GeneratedFRule_body end
 
-struct GeneratedFRule{Captures <: Tuple}
+struct GeneratedFRule{Captures<:Tuple}
     captures::Captures
 end
 
@@ -127,7 +128,7 @@ function refresh_generated_frule()
             $(Expr(:meta, :generated_only))
             $(Expr(:meta, :generated, generated_frule_body))
         end
-        function (::GeneratedFRule)(args...)
+        function (::GeneratedFRule)(f::F, args...) where {F}
             $(Expr(:meta, :generated_only))
             $(Expr(:meta, :generated, GeneratedFRule_body))
         end
@@ -156,19 +157,13 @@ function generated_frule_body(world::UInt, lnn, this, args)
     # This should make it so that adding methods to `f` will
     # triggers recompilation, fixing the #265 equivalent for generated functions.
     matches = Base._methods_by_ftype(sig, -1, world)
-    if !isnothing(matches)
-        ci.edges = Core.MethodInstance[]
-        for match in Base._methods_by_ftype(sig, -1, world)
-            mi = Base.specialize_method(match)
-            push!(ci.edges, mi)
-        end
-    end
+    ci.edges = Core.svec(Base.specialize_method(only(matches)))
     return ci
 end
 
 # This is the generated function body of (::GeneratedFRule)(args...)
-function GeneratedFRule_body(world::UInt, lnn, this, args)
-    sig = Tuple{_primal_type.(args)...}
+function GeneratedFRule_body(world::UInt, lnn, F, this, f, args)
+    sig = Tuple{_primal_type(f),_primal_type.(args)...}
     interp = MooncakeInterpreter(ForwardMode; world)
     (; primitive, dual_ir) = build_forward_data(interp, sig; world)
 
@@ -180,35 +175,34 @@ function GeneratedFRule_body(world::UInt, lnn, this, args)
     # This should make it so that adding methods to `f` will
     # triggers recompilation of this generated function.
     matches = Base._methods_by_ftype(sig, -1, world)
-    if !isnothing(matches)
-        ci.edges = Core.MethodInstance[]
-        for match in Base._methods_by_ftype(sig, -1, world)
-            mi = Base.specialize_method(match)
-            push!(ci.edges, mi)
-        end
-    end
+    ci.edges = Core.svec(Base.specialize_method(only(matches)))
     return ci
 end
 
 function expr_to_codeinfo(m::Module, argnames, spnames, sp, e::Expr, isva)
     # This trick comes from https://github.com/NHDaly/StagedFunctions.jl/commit/22fc72740093892baa442850a1fd61d9cd61b4cd (but has been since modified)
-    lam = Expr(:lambda, argnames,
-               Expr(Symbol("scope-block"),
-                    Expr(:block,
-                         Expr(:return,
-                              Expr(:block,
-                                   e,
-                                   )))))
+    lam = Expr(
+        :lambda,
+        argnames,
+        Expr(Symbol("scope-block"), Expr(:block, Expr(:return, Expr(:block, e)))),
+    )
     ex = if spnames === nothing || isempty(spnames)
         lam
     else
         Expr(Symbol("with-static-parameters"), lam, spnames...)
     end
-    
+
     # Get the code-info for the generator body in order to use it for generating a dummy
     # code info object.
     ci = if VERSION < v"1.12-"
-        ccall(:jl_expand_and_resolve, Any, (Any, Any, Core.SimpleVector), ex, m, Core.svec(sp...))
+        ccall(
+            :jl_expand_and_resolve,
+            Any,
+            (Any, Any, Core.SimpleVector),
+            ex,
+            m,
+            Core.svec(sp...),
+        )
     else
         Base.generated_body_to_codeinfo(ex, @__MODULE__(), isva)
     end
@@ -245,7 +239,6 @@ function irc_to_codeinfo(
     src.rettype = rt
     src
 end
-
 
 """
     __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
@@ -475,10 +468,7 @@ function modify_fwd_ad_stmts!(
                 return arg
             elseif arg isa GlobalRef && !isconst(arg)
                 arg_ssa = CC.insert_node!(
-                    dual_ir,
-                    ssa,
-                    new_inst(Expr(:call, uninit_dual, arg)),
-                    ATTACH_BEFORE
+                    dual_ir, ssa, new_inst(Expr(:call, uninit_dual, arg)), ATTACH_BEFORE
                 )
                 return arg_ssa
             else
@@ -534,7 +524,11 @@ get_forward_primal_type(::CC.IRCode, x::QuoteNode) = _typeof(x.value)
 get_forward_primal_type(::CC.IRCode, x) = _typeof(x)
 function get_forward_primal_type(::CC.IRCode, x::GlobalRef)
     @static if VERSION > v"1.12-"
-        return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.binding.partitions.restriction
+        return if isconst(x)
+            _typeof(getglobal(x.mod, x.name))
+        else
+            x.binding.partitions.restriction
+        end
     else
         return isconst(x) ? _typeof(getglobal(x.mod, x.name)) : x.ty
     end
