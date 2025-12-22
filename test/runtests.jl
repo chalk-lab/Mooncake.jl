@@ -4,9 +4,9 @@ include("front_matter.jl")
     if test_group == "basic"
         Aqua.test_all(Mooncake)
         include("utils.jl")
-        include("tangents.jl")
-        include("fwds_rvs_data.jl")
-        include("codual.jl")
+        include(joinpath("tangent_and_cotangent_types", "tangents.jl"))
+        include(joinpath("tangent_and_cotangent_types", "fwds_rvs_data.jl"))
+        include(joinpath("tangent_and_cotangent_types", "codual.jl"))
         include("debug_mode.jl")
         include("stack.jl")
         @testset "interpreter" begin

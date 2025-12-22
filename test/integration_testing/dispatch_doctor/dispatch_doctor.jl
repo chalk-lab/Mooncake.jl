@@ -68,7 +68,11 @@ end
 include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
 
 include(joinpath(@__DIR__, "..", "..", "utils.jl"))
-include(joinpath(@__DIR__, "..", "..", "tangents.jl"))
-include(joinpath(@__DIR__, "..", "..", "codual.jl"))
+include(
+    joinpath(@__DIR__, "..", "..", joinpath("tangent_and_cotangent_types", "tangents.jl"))
+)
+include(
+    joinpath(@__DIR__, "..", "..", joinpath("tangent_and_cotangent_types", "codual.jl"))
+)
 include(joinpath(@__DIR__, "..", "..", "stack.jl"))
 include(joinpath(@__DIR__, "..", "..", "interface.jl"))
