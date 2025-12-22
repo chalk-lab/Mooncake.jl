@@ -76,17 +76,17 @@ using Mooncake:
         )
 
         @testset "friendly tangents" begin
-            f = x -> sum(2 * x)
-            x = Symmetric([1.0 2.0; 3.0 4.0])
+            f = x -> sum(abs2, x)
+            x = [1.0 + 2.0im, 3.0 + 4.0im]
             cache = Mooncake.prepare_gradient_cache(f, x; friendly_tangents=true)
             v, dx = Mooncake.value_and_gradient!!(cache, f, x)
-            @test dx[2] isa Symmetric{Float64,Matrix{Float64}}
-            @test dx[2] == Symmetric([2.0 4.0; 0.0 2.0])
+            @test dx[2] isa Vector{ComplexF64}
+            @test dx[2] == [2.0 + 4.0im, 6.0 + 8.0im]
 
             rule = build_rrule(f, x)
             v, dx = Mooncake.value_and_gradient!!(rule, f, x; friendly_tangents=true)
-            @test dx[2] isa Symmetric{Float64,Matrix{Float64}}
-            @test dx[2] == Symmetric([2.0 4.0; 0.0 2.0])
+            @test dx[2] isa Vector{ComplexF64}
+            @test dx[2] == [2.0 + 4.0im, 6.0 + 8.0im]
         end
     end
     @testset "value_and_pullback!!" begin

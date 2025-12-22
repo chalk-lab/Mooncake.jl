@@ -19,7 +19,8 @@ import Mooncake:
     increment_internal!!,
     set_to_zero_internal!!,
     _add_to_primal_internal,
-    _diff_internal,
+    tangent_to_primal_internal!!,
+    primal_to_tangent_internal!!,
     _dot_internal,
     _scale_internal,
     TestUtils,
@@ -149,6 +150,30 @@ function _add_to_primal_internal(
     x′ = x + reinterpret(eltype(x), y)
     c[(x, y, unsafe)] = x′
     return x′
+end
+function primal_to_tangent_internal!!(t, x::CuFloatArray, c::MaybeCache)
+    haskey(c, x) && return c[x]::typeof(t)
+    c[x] = t
+    t .= x
+    return t
+end
+function primal_to_tangent_internal!!(t, x::CuComplexArray, c::MaybeCache)
+    haskey(c, x) && return c[x]::typeof(t)
+    c[x] = t
+    t .= reinterpret(eltype(t), x)
+    return t
+end
+function tangent_to_primal_internal!!(x::CuFloatArray, t, c::MaybeCache)
+    haskey(c, x) && return c[x]::typeof(x)
+    c[x] = x
+    x .= t
+    return x
+end
+function tangent_to_primal_internal!!(x::CuComplexArray, t, c::MaybeCache)
+    haskey(c, x) && return c[x]::typeof(x)
+    c[x] = x
+    x .= reinterpret(eltype(x), t)
+    return x
 end
 function _diff_internal(c::MaybeCache, x::P, y::P) where {P<:CuFloatArray}
     key = (x, y)

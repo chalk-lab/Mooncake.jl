@@ -451,7 +451,7 @@ function Mooncake._add_to_primal_internal(c::Mooncake.MaybeCache, p::A{T}, t::Ta
 end
 
 function Mooncake.tangent_to_primal_internal!!(p::A{T}, t, c::Mooncake.MaybeCache) where {T}
-    t isa NoTangent && return p
+    t isa Mooncake.NoTangent && return p
     haskey(c, p) && return c[p]::A{T}
     c[p] = p
     p.x = Mooncake.tangent_to_primal_internal!!(p.x, t.x, c)
@@ -460,7 +460,7 @@ function Mooncake.tangent_to_primal_internal!!(p::A{T}, t, c::Mooncake.MaybeCach
 end
 
 function Mooncake.primal_to_tangent_internal!!(t, p::A{T}, c::Mooncake.MaybeCache) where {T}
-    t isa NoTangent && return NoTangent()
+    t isa Mooncake.NoTangent && return Mooncake.NoTangent()
     haskey(c, p) && return c[p]::TangentForA{Tx}
     c[p] = t
     t.x = Mooncake.primal_to_tangent_internal!!(t.x, p.x, c)
