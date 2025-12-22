@@ -1259,7 +1259,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
             temp = __add_to_primal(p, r, true)
             println("add_to_primal : ", temp)
             println(
-                "tests 2&1 : ",
+                "tests 2 & 1 : ",
                 !has_equal_data(temp, p),
                 " ",
                 !has_equal_data(__add_to_primal(p, r, true), p),
