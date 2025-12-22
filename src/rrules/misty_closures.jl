@@ -17,7 +17,18 @@ struct MistyClosureTangent
     dual_callable::Any
 end
 
-_dual_mc(p::MistyClosure) = build_frule(get_interpreter(ForwardMode), p)
+# Build a forward-mode rule for a MistyClosure using its original world age.
+# We skip the world age check because:
+# 1. MistyClosure captures its own IR at creation time (see lookup_ir in ir_utils.jl)
+# 2. build_frule -> generate_dual_ir -> lookup_ir(interp, mc) returns mc.ir[] directly,
+#    bypassing method table lookups that would require a current-world interpreter
+# 3. Any nested non-primitive calls use LazyFRule/DynamicFRule which obtain a current-world
+#    interpreter via get_interpreter() at runtime
+function _dual_mc(p::MistyClosure)
+    mc_world = UInt(p.oc.world)
+    interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
+    return build_frule(interp, p; skip_world_age_check=true)
+end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
 
@@ -61,11 +72,25 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MistyClosure
     return T(captures_tangent, t.dual_callable)
 end
 
-import .TestUtils: populate_address_map_internal, AddressMap
+import .TestUtils: populate_address_map_internal, AddressMap, has_equal_data_internal
 function populate_address_map_internal(
     m::AddressMap, p::MistyClosure, t::MistyClosureTangent
 )
     return populate_address_map_internal(m, p.oc.captures, t.captures_tangent)
+end
+
+function has_equal_data_internal(
+    x::MistyClosureTangent,
+    y::MistyClosureTangent,
+    equal_undefs::Bool,
+    d::Dict{Tuple{UInt,UInt},Bool},
+)
+    # Only compare captures_tangent. The dual_callable field is a forward-mode rule
+    # built on-demand by _dual_mc, which creates a new interpreter each time. Different
+    # interpreter instances produce different rule objects, even for the same MistyClosure.
+    # Since dual_callable is just a computational tool (not part of the tangent's value),
+    # two tangents with identical captures_tangent are mathematically equal.
+    return has_equal_data_internal(x.captures_tangent, y.captures_tangent, equal_undefs, d)
 end
 
 struct MistyClosureFData
