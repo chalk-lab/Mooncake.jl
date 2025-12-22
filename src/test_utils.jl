@@ -549,7 +549,7 @@ function test_rrule_correctness(
 
     # Construct random tangent to inputs, and normalise to be of unit length.
     ẋ_unnormalised = map(_x -> randn_tangent(rng, _x), x)
-    ẋ = map(_x -> normalize_tangent(_x), ẋ_unnormalised)
+    ẋ = map(normalize_tangent, ẋ_unnormalised)
 
     # Use finite differences to estimate vjps. Compute the estimate at a range of different
     # step sizes. We'll just require that one of them ends up being close to what AD gives.
