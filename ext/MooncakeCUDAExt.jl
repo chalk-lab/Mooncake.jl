@@ -3,17 +3,22 @@ module MooncakeCUDAExt
 using LinearAlgebra, Random, Mooncake
 
 using Base: IEEEFloat
-using CUDA: CuArray
+using CUDA: CuArray, CuPtr, CuContext, CUmemPoolHandle_st
 
 import Mooncake:
     MinimalCtx,
+    frule!!,
     rrule!!,
     @is_primitive,
+    @unstable,
+    @foldable,
     tangent_type,
     fdata_type,
     rdata_type,
     primal,
     tangent,
+    lgetfield,
+    zero_fcodual,
     zero_tangent_internal,
     randn_tangent_internal,
     increment_internal!!,
@@ -23,8 +28,11 @@ import Mooncake:
     _dot_internal,
     _scale_internal,
     TestUtils,
+    Dual,
     CoDual,
+    NoTangent,
     NoPullback,
+    NoFData,
     to_cr_tangent,
     increment_and_get_rdata!,
     MaybeCache,
@@ -40,17 +48,24 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 
 # Tell Mooncake.jl how to handle CuArrays.
 
-Mooncake.@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Complex{<:IEEEFloat},IEEEFloat},N,M} = CuArray{
+@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Complex{<:IEEEFloat},IEEEFloat},N,M} = CuArray{
     tangent_type(P),N,M
 }
 
-Mooncake.@foldable fdata_type(::Type{CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = CuArray{
+@foldable fdata_type(::Type{CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = CuArray{
     P,N,M
 }
 
-Mooncake.@foldable rdata_type(
+@foldable rdata_type(
     ::Type{<:CuArray{P,N,M}}
 ) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = Mooncake.NoRData
+
+fdata_type(::Type{T}) where {T<:CuPtr} = T
+rdata_type(::Type{<:CuPtr}) = NoRData
+@unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
+tangent_type(::Type{<:CuPtr}) = NoTangent
+tangent_type(::Type{CuContext}) = NoTangent
+tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
 
 function arrayify(x::A, dx::A) where {A<:CuFloatArray}
     (x, dx)
@@ -244,6 +259,61 @@ function rrule!!(
     return (
         CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims...)
     )
+end
+
+@is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N},)
+function rrule!!(
+    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{NTuple{N, Int}}
+) where {P<:CuFloatArray, N}
+    _dims = primal(dims)
+    return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims)
+end
+function rrule!!(
+     p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{NTuple{N, Int}}
+) where {P<:CuComplexArray, N}
+    _dims = primal(dims)
+    return (
+        CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims)
+    )
+end
+
+# getfield / lgetfield rules for CuArray.
+function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::Dual{<:CuArray,<:CuArray},
+    ::Dual{Val{name}},
+    ::Dual{Val{order}},
+) where {name,order}
+    y = getfield(primal(x), name, order)
+    wants_size = name === 2 || name === :size
+    #dy = wants_size ? NoTangent() : tangent(x)
+    dy = wants_size ? NoTangent() : tangent(x).data
+    return Dual(y, dy)
+end
+function rrule!!(
+    ::CoDual{typeof(lgetfield)},
+    x::CoDual{<:CuArray,<:CuArray},
+    ::CoDual{Val{name}},
+    ::CoDual{Val{order}},
+) where {name,order}
+    y = getfield(primal(x), name, order)
+    wants_size = name === 2 || name === :dims
+    #dy = wants_size ? NoFData() : x.dx.data
+    dy = wants_size ? NoFData() : x.dx
+    return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
+end
+
+@is_primitive(MinimalCtx, Tuple{typeof(sum), CuFloatArray})
+function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuFloatArray})
+    return Dual(sum(primal(x)), sum(tangent(x)))
+end
+function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuFloatArray})
+    dx = x.dx
+    function sum_pb!!(dz)
+        dx .+= dz
+        return NoRData(), NoRData()
+    end
+    return zero_fcodual(sum(identity, x.x)), sum_pb!!
 end
 
 end
