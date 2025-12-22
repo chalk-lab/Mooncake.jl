@@ -1256,13 +1256,14 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
         # println("r : ", r)
         # println("p : ", p)
         if !has_equal_data(z, r)
+            println(!has_equal_data(__add_to_primal(p, r, true), p))
             temp = __add_to_primal(p, r, true)
             # println("add_to_primal : ", temp)
             println(
                 "tests 2 & 1 : ",
-                !has_equal_data(temp, p),
-                " ",
-                !has_equal_data(__add_to_primal(p, r, true), p),
+                !has_equal_data(temp, p)
+                # ," ",
+                # !has_equal_data(__add_to_primal(p, r, true), p),
             )
             @test !has_equal_data(temp, p)
             @test !has_equal_data(__add_to_primal(p, r, true), p)
