@@ -287,12 +287,12 @@ end
 
 function combine_results(result, tag, _range, default_range)
     d = result[2]
-    primal_time = minimum(d["primal"]).time
-    mooncake_time = minimum(d["mooncake"]).time
-    mooncake_fwd_time = minimum(d["mooncake_fwd"]).time
-    zygote_time = in("zygote", keys(d)) ? minimum(d["zygote"]).time : missing
-    rd_time = in("rd", keys(d)) ? minimum(d["rd"]).time : missing
-    ez_time = in("enzyme", keys(d)) ? minimum(d["enzyme"]).time : missing
+    primal_time = median(d["primal"]).time
+    mooncake_time = median(d["mooncake"]).time
+    mooncake_fwd_time = median(d["mooncake_fwd"]).time
+    zygote_time = in("zygote", keys(d)) ? median(d["zygote"]).time : missing
+    rd_time = in("rd", keys(d)) ? median(d["rd"]).time : missing
+    ez_time = in("enzyme", keys(d)) ? median(d["enzyme"]).time : missing
     fallback_tag = string((result[1][1], map(Mooncake._typeof, result[1][2:end])...))
     return (
         tag=tag === nothing ? fallback_tag : tag,
