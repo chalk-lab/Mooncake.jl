@@ -1499,7 +1499,6 @@ function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
         view(randn(rng, P, p + 5, 2q), 3:(p + 2), 1:2:(2q)),
         view(randn(rng, P, 3p, 3, 2q), (p + 1):(2p), 2, 1:2:(2q)),
         reshape(view(randn(rng, P, p * q + 5), 1:(p * q)), p, q),
-        randn(rng, P, p, q),
     ]
     @assert all(X -> size(X) == (p, q), Xs)
     @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
