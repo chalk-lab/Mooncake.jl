@@ -1,3 +1,4 @@
+using DispatchDoctor: allow_unstable
 @testset "tangents" begin
     @testset "$(tangent_type(primal_type))" for (primal_type, expected_tangent_type) in Any[
 
@@ -11,6 +12,7 @@
         (Core.Compiler.InferenceState, NoTangent),
         (Core.Compiler.Timings.Timing, NoTangent),
         (Core.Compiler.InferenceResult, NoTangent),
+        (Base.LibuvStream, NoTangent),
 
         ## Tuples
 
@@ -203,6 +205,33 @@
         (Tuple{Matrix{Float64},Matrix{Float64}}, true),
     ]
         @test Mooncake.require_tangent_cache(P) == Val(expected_result)
+    end
+
+    @testset "Union handling of possibly uninitialised structs" begin
+        F = Mooncake.FData{
+            @NamedTuple{
+                x::Union{
+                    Mooncake.NoFData,
+                    Mooncake.MutableTangent{
+                        @NamedTuple{x::Mooncake.PossiblyUninitTangent{Mooncake.NoTangent}}
+                    },
+                },
+            }
+        }
+
+        T = Mooncake.Tangent{
+            @NamedTuple{
+                x::Union{
+                    Mooncake.NoTangent,
+                    Mooncake.MutableTangent{
+                        @NamedTuple{x::Mooncake.PossiblyUninitTangent{Mooncake.NoTangent}}
+                    },
+                },
+            }
+        }
+        allow_unstable() do
+            @test tangent_type(F, Mooncake.NoRData) == T
+        end
     end
 end
 

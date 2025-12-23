@@ -156,7 +156,7 @@ function f!(x::Vector{Float64})
     return sum(x)
 end
 ```
-Our framework is able to accomodate this function, and has essentially the same solution as the last time we saw this example:
+Our framework is able to accommodate this function, and has essentially the same solution as the last time we saw this example:
 ```math
 f(x) = (x \odot x, \sum_{n=1}^N x_n^2)
 ```
@@ -354,7 +354,7 @@ Now, following our usual steps, the derivative is
 ```math
 D f [x](\dot{x}) = (\dot{x}, \dot{x}_1 + \sum_{n=1}^N (\dot{x}_2)_n)
 ```
-A gradient for this is a tuple ``(\bar{y}_x, \bar{y}_a)`` where ``\bar{y}_a \in \RR`` and ``\bar{y}_x \in \RR \times \RR^N``.
+A gradient for this is a tuple ``\bar{y} = (\bar{y}_x, \bar{y}_a)`` where ``\bar{y}_a \in \RR`` and ``\bar{y}_x \in \RR \times \RR^N``.
 A quick derivation will show that the adjoint is
 ```math
 D f [x]^\ast(\bar{y}) = ((\bar{y}_x)_1 + \bar{y}_a, (\bar{y}_x)_2 + \bar{y}_a \mathbf{1})
@@ -382,13 +382,25 @@ julia> function rrule!!(::CoDual{typeof(foo)}, x::CoDual{Tuple{Float64, Vector{F
 where `dy` is the rdata for the output to `foo`.
 The `rrule!!` can be called with the appropriate `CoDual`s:
 ```jldoctest foo-doctest
-julia> out, pb!! = rrule!!(CoDual(foo, NoFData()), CoDual((5.0, [1.0, 2.0]), (NoFData(), [0.0, 0.0])))
+julia> codual_foo = CoDual(foo, NoFData());
+
+julia> codual_x = CoDual((5.0, [1.0, 2.0]), (NoFData(), [0.0, 0.0]));
+
+julia> out, pb!! = rrule!!(codual_foo, codual_x)
 (CoDual{Float64, NoFData}(8.0, NoFData()), var"#dfoo_adjoint#1"{Tuple{NoFData, Vector{Float64}}}((NoFData(), [0.0, 0.0])))
 ```
+
 and the pullback with appropriate rdata:
 ```jldoctest foo-doctest
 julia> pb!!(1.0)
 (NoRData(), (1.0, NoRData()))
+```
+
+which will update the fdata for the `Vector{Float64}` component in-place:
+
+```jldoctest foo-doctest
+julia> codual_x
+CoDual{Tuple{Float64, Vector{Float64}}, Tuple{NoFData, Vector{Float64}}}((5.0, [1.0, 2.0]), (NoFData(), [1.0, 1.0]))
 ```
 
 ```@meta
@@ -404,13 +416,13 @@ It's just book-keeping and running the primal computation.
 
 The reverse pass:
 1. increments each element of `dx_fdata[2]` by `dy` -- this corresponds to ``(\bar{y}_x)_2 + \bar{y}_a \mathbf{1}`` in the adjoint,
-2. sets `dx_1_rdata` to `dy` -- this corresponds ``(\bar{y}_x)_1 + \bar{y}_a`` subject to the constraint that ``(\bar{y}_x)_1 = 0``,
+2. sets `dx_1_rdata` to `dy` -- this corresponds to ``(\bar{y}_x)_1 + \bar{y}_a`` subject to the constraint that ``(\bar{y}_x)_1 = 0``,
 3. constructs the rdata for `x` -- this is essentially just book-keeping.
 
 Each of these items serve to demonstrate more general points.
-The first that, upon entry into the reverse pass, all fdata values correspond to gradients for the arguments / output of `f` "upon exit" (for the components of these which are identified by their address), and once the reverse-pass finishes running, they must contain the gradients w.r.t. the arguments of `f` "upon entry".
+The first is that, upon entry into the reverse pass, all fdata values correspond to gradients for the arguments / output of `f` "upon exit" (for the components of these which are identified by their address), and once the reverse-pass finishes running, they must contain the gradients w.r.t. the arguments of `f` "upon entry".
 
-The second that we always assume that the components of ``\bar{y}_x`` which are identified by their value have zero-rdata.
+The second is that we always assume that the components of ``\bar{y}_x`` which are identified by their value have zero-rdata.
 
 The third is that the components of the arguments of `f` which are identified by their value must have rdata passed back explicitly by a rule, while the components of the arguments to `f` which are identified by their address get their gradients propagated back implicitly (i.e. via the in-place modification of fdata).
 

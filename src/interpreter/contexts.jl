@@ -40,31 +40,21 @@ function is a primitive in reverse-mode AD.
 struct ReverseMode <: Mode end
 
 """
-    is_primitive(::Type{Ctx}, ::Type{M}, sig) where {Ctx,M}
+    _is_primitive(context::Type, mode::Type{<:Mode}, sig::Type{<:Tuple})
 
-Returns a `Bool` specifying whether the methods specified by `sig` are considered primitives
-in the context of contexts of type `Ctx` in mode `M`.
+This function is an internal implementation detail. It is used only by
+[`is_primitive`](@ref).
 
-```julia
-is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64})
-```
-will return if calling `sin(5.0)` should be treated as primitive when the context is a
-`DefaultCtx`.
-
-Observe that this information means that whether or not something is a primitive in a
-particular context depends only on static information, not any run-time information that
-might live in a particular instance of `Ctx`.
+Generally speaking, you ought not to add methods to this function
+yourself, but make use of [`@is_primitive`](@ref).
 """
-is_primitive(::Type{MinimalCtx}, ::Type{<:Mode}, sig::Type{<:Tuple}) = false
-function is_primitive(::Type{DefaultCtx}, ::Type{M}, sig) where {M<:Mode}
-    return is_primitive(MinimalCtx, M, sig)
-end
+function _is_primitive end
 
 """
     @is_primitive context_type [mode_type] signature
 
-Creates a method of [`is_primitive`](@ref) which always returns `true` for the
-`context_type`, and `signature` provided. For example
+Declares that calls with signature `signature` are primitives in `context_type` and
+`mode_type`. For example
 ```jldoctest
 julia> using Mooncake: DefaultCtx, @is_primitive, is_primitive, ForwardMode, ReverseMode
 
@@ -73,15 +63,13 @@ foo (generic function with 1 method)
 
 julia> @is_primitive DefaultCtx Tuple{typeof(foo),Float64}
 
-julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(foo),Float64})
+julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(foo),Float64}, Base.get_world_counter())
 true
 
-julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64})
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, Base.get_world_counter())
 true
 ```
 Observe that this means that a rule is a primitive in all AD modes.
-
-You should implement more complicated methods of [`is_primitive`](@ref) in the usual way.
 
 Optionally, you can specify that a rule is only a primitive in a particular mode, eg.
 ```jldoctest
@@ -92,10 +80,10 @@ bar (generic function with 1 method)
 
 julia> @is_primitive DefaultCtx ForwardMode Tuple{typeof(bar),Float64}
 
-julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(bar),Float64})
+julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(bar),Float64}, Base.get_world_counter())
 true
 
-julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(bar),Float64})
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(bar),Float64}, Base.get_world_counter())
 false
 ```
 """
@@ -109,10 +97,90 @@ end
 
 function _is_primitive_expression(Tctx, Tmode, sig)
     return quote
-        function Mooncake.is_primitive(
+        function Mooncake._is_primitive(
             ::Type{$(esc(Tctx))}, ::Type{<:$(Tmode)}, ::Type{<:$(esc(sig))}
         )
             return true
         end
     end
 end
+
+"""
+    is_primitive(ctx::Type, mode::Type{<:Mode}, sig::Type{<:Tuple}, world::UInt)
+
+Returns a `Bool` specifying whether the methods specified by `sig` are considered primitives
+in the context of context `ctx` in mode `mode` at world age `world`.
+
+```jldoctest
+julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(sin), Float64}, Base.get_world_counter())
+true
+```
+
+`world` is needed as rules which Mooncake derives are associated to a particular Julia world
+age. As a result, anything declared a primitive after the construction of a rule ought not
+to be considered a primitive by that rule. One can explicitly derive a new rule (eg. via
+[`build_frule`](@ref), [`build_rrule`](@ref), or a function from the higher-level interface
+such as [`prepare_derivative_cache`](@ref), [`prepare_pullback_cache`](@ref) or
+[`prepare_gradient_cache`](@ref)) after new `@is_primitive` declarations, should it be
+needed in cases where a rule has been previously derived. To see how this works, consider
+the following:
+```jldoctest
+julia> using Mooncake: is_primitive, DefaultCtx, ReverseMode, @is_primitive
+
+julia> foo(x::Float64) = 5x
+foo (generic function with 1 method)
+
+julia> old_world_age = Base.get_world_counter();
+
+julia> @is_primitive DefaultCtx ReverseMode Tuple{typeof(foo),Float64}
+
+julia> new_world_age = Base.get_world_counter();
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, old_world_age)
+false
+
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo),Float64}, new_world_age)
+true
+```
+Observe that `is_primitive` returns `false` for the world age prior to declaring `foo` a
+primitive, but `true` afterwards. For more information on Julia's world age mechanism, see
+https://docs.julialang.org/en/v1/manual/methods/#Redefining-Methods .
+"""
+function is_primitive(
+    ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
+) where {Tsig<:Tuple}
+    @nospecialize sig
+    try
+        Base.invoke_in_world(world, _is_primitive, ctx, mode, sig)::Bool
+    catch e
+        # Sometimes there are ambiguous `_is_primitive` declarations, especially ones where
+        # `f` is a type such as some rules for `Array` and `CuArray`. In these cases we'll
+        # just assume that a `MethodError` in `_is_primitive` meant that the method was
+        # ambiguous, so we'll assume that the call was meant to be a primitive, and thus
+        # should not be inlined.
+        e isa MethodError ? true : rethrow(e)
+    end
+end
+
+function is_primitive(
+    ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
+) where {Tsig<:Tuple}
+    @nospecialize sig
+    # This function returns `true` if the method is a primitive in either 
+    # `DefaultCtx` _or_ `MinimalCtx`.
+    try
+        Base.invoke_in_world(world, _is_primitive, ctx, mode, sig)::Bool
+    catch e
+        # Sometimes there are ambiguous `_is_primitive` declarations, especially ones where
+        # `f` is a type such as some rules for `Array` and `CuArray`. In these cases we'll
+        # just assume that a `MethodError` in `_is_primitive` meant that the method was
+        # ambiguous, so we'll assume that the call was meant to be a primitive, and thus
+        # should not be inlined.
+        e isa MethodError ? true : rethrow(e)
+    end
+end
+
+_is_primitive(::Type{MinimalCtx}, args...) = false
+_is_primitive(::Type{DefaultCtx}, args...) = _is_primitive(MinimalCtx, args...)

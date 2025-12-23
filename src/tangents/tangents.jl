@@ -77,7 +77,7 @@ Gets the `i`th field of data in `t`.
 
 Has the same semantics that `getfield!` would have if the data in the `fields` field of `t`
 were actually fields of `t`. This is the moral equivalent of `getfield` for
-`MutableTangent`.
+[`MutableTangent`](@ref).
 """
 @unstable @inline get_tangent_field(t::PossiblyMutableTangent, i::Int) = val(
     getfield(t.fields, i)
@@ -96,7 +96,7 @@ Sets the value of the `i`th field of the data in `t` to value `x`.
 
 Has the same semantics that `setfield!` would have if the data in the `fields` field of `t`
 were actually fields of `t`. This is the moral equivalent of `setfield!` for
-`MutableTangent`.
+[`MutableTangent`](@ref).
 """
 @inline function set_tangent_field!(t::MutableTangent{Tfields}, i::Int, x) where {Tfields}
     fields = t.fields
@@ -208,7 +208,7 @@ Consider some more worked examples.
 
 #### Int
 
-`Int` is not a differentiable type, so its tangent type is `NoTangent`:
+`Int` is not a differentiable type, so its tangent type is [`NoTangent`](@ref):
 ```jldoctest
 julia> tangent_type(Int)
 NoTangent
@@ -232,7 +232,7 @@ NoTangent
 #### Structs
 
 As with `Tuple`s, the tangent type of a struct is, by default, given recursively.
-In particular, the tangent type of a `struct` type is `Tangent`.
+In particular, the tangent type of a `struct` type is [`Tangent`](@ref).
 This type contains a `NamedTuple` containing the tangent to each field in the primal `struct`.
 
 As with `Tuple`s, if all field types are non-differentiable, the tangent type of the entire
@@ -269,7 +269,7 @@ field of `Foo`s tangent must be `Any`.
 
 The tangent type for `mutable struct`s have the same set of considerations as `struct`s.
 The only difference is that they must themselves be mutable.
-Consequently, we use a type called `MutableTangent` to represent their tangents.
+Consequently, we use a type called [`MutableTangent`](@ref) to represent their tangents.
 It is a `mutable struct` with the same structure as `Tangent`.
 
 For example, if you ask for the `tangent_type` of
@@ -370,6 +370,8 @@ tangent_type(::Type{<:Enum}) = NoTangent
 tangent_type(::Type{<:Base.TTY}) = NoTangent
 
 tangent_type(::Type{<:IOStream}) = NoTangent
+
+tangent_type(::Type{<:Base.LibuvStream}) = NoTangent
 
 tangent_type(::Type{<:Base.CoreLogging.AbstractLogger}) = NoTangent
 
@@ -528,7 +530,7 @@ You may want to consult the method of `zero_tangent_internal` for `struct` and
 `mutable struct` types for inspiration if implementing this for your own type.
 
 Similarly, if `x` contains a one or more circular, its tangent will probably need to contain
-similar circular references (unless it is something trivial like `NoTangent`). Again,
+similar circular references (unless it is something trivial like [`NoTangent`](@ref)). Again,
 consult existing implementations for inspiration.
 
 If `d` is a `NoCache` assume that `x` contains neither aliasing nor circular references.
@@ -603,9 +605,24 @@ end
 end
 
 """
+    normalize_tangent(x)
+
+A helper function that returns a normalized copy of Mooncake Tangent input `x`.
+Used to normalize randomly generated tangents got from [`randn_tangent`](@ref).
+Returns a normalized copy of `x` with all the numerical fields promoted to the Float64 type.
+"""
+function normalize_tangent(x)
+    total_norm = sqrt(_dot(x, x))
+    # Handle div by zero edge case.
+    scaling_factor = iszero(total_norm) ? 1.0 : 1 / total_norm
+    # return normalized Mooncake tangent.
+    return _scale(scaling_factor, x)
+end
+
+"""
     uninit_tangent(x)
 
-Related to `zero_tangent`, but a bit different. Check current implementation for
+Related to [`zero_tangent`](@ref), but a bit different. Check current implementation for
 details -- this docstring is intentionally non-specific in order to avoid becoming outdated.
 """
 @inline uninit_tangent(x) = zero_tangent(x)
@@ -615,7 +632,7 @@ details -- this docstring is intentionally non-specific in order to avoid becomi
     randn_tangent(rng::AbstractRNG, x::P) where {P}
 
 Required for testing. Generate a randomly-chosen tangent to `x`. Very similar to
-[`Mooncake.zero_tangent`](@ref), except that the elements are randomly chosen, rather than
+[`zero_tangent`](@ref), except that the elements are randomly chosen, rather than
 being equal to zero.
 """
 function randn_tangent(rng::AbstractRNG, x::P) where {P}
@@ -625,7 +642,7 @@ end
 """
     randn_tangent_internal(rng::AbstractRNG, x, dict::MaybeCache)
 
-Implementation for [`Mooncake.randn_tangent`](@ref). Please consult the docstring for
+Implementation for [`randn_tangent`](@ref). Please consult the docstring for
 [`zero_tangent_internal`](@ref) for more information on how this implementation works, As
 the same implementation strategy is adopted for both this function and that one.
 """
@@ -701,7 +718,7 @@ end
 
 Determines whether operations on tangents of primal type `P` require a cache to handle potential 
 circular references or aliasing. Returns `Val{true}()` if caching is required (the default),
-or `Val{false}()` if tangents of type `tangent_type(P)` are guaranteed to be free of circular references,
+or `Val{false}()` if tangents of type [`tangent_type(P)`](@ref) are guaranteed to be free of circular references,
 uninitialized fields that could create circular references, and aliasing.
 
 This function is used internally by operations like `set_to_zero!!`. Returning `Val{false}()` 
@@ -736,7 +753,7 @@ with no possibility of circular references or aliasing.
 
 #### Safe Cases (non-exhaustive, can return `Val{false}()`):
 
-1. **Pure immutable structures**: Structures with only `Tangent` types (no `MutableTangent`)
+1. **Pure immutable structures**: Structures with only [`Tangent`](@ref) types (no [`MutableTangent`](@ref))
    cannot create cycles because immutable objects cannot reference themselves after construction
    
 2. **Concrete-only mutable structs**: `MutableTangent` types where ALL fields have concrete types
@@ -908,6 +925,19 @@ set_to_zero!!(x, ::Val{true}) = set_to_zero_internal!!(Vector{UInt}(), x)
 set_to_zero!!(x, ::Val{false}) = set_to_zero_internal!!(NoCache(), x)
 
 """
+    set_to_zero_maybe!!(x, doit::Bool)
+
+If `doit` is `true`, return `set_to_zero!!(x)`, otherwise return `x`.
+"""
+function set_to_zero_maybe!!(x, doit::Bool)
+    if doit
+        return set_to_zero!!(x)
+    else
+        return x
+    end
+end
+
+"""
     set_to_zero_internal!!(c::SetToZeroCache, x)
 
 Implementation for [`Mooncake.set_to_zero!!`](@ref). Use `c` to ensure that circular
@@ -987,7 +1017,7 @@ If `c` is a `NoCache`, assume that neither `t` nor `s` contain either circular r
 or aliasing.
 """
 _dot_internal(::MaybeCache, ::NoTangent, ::NoTangent) = 0.0
-_dot_internal(::MaybeCache, t::T, s::T) where {T<:IEEEFloat} = Float64(t * s)
+_dot_internal(::MaybeCache, t::T, s::T) where {T<:Union{IEEEFloat,Integer}} = Float64(t * s)
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tuple,NamedTuple}}
     return sum(map((t, s) -> _dot_internal(c, t, s)::Float64, t, s); init=0.0)::Float64
 end
@@ -1325,18 +1355,18 @@ end
 Constructs a `Vector` of `Tuple`s containing test cases for the tangent infrastructure.
 
 If the returned tuple has 2 elements, the elements should be interpreted as follows:
-1 - interface_only
-2 - primal value
+1 - `interface_only`
+2 - `primal value`
 
-interface_only is a Bool which will be used to determine which subset of tests to run.
+`interface_only` is a `Bool` which will be used to determine which subset of tests to run.
 
 If the returned tuple has 5 elements, then the elements are interpreted as follows:
-1 - interface_only
-2 - primal value
-3, 4, 5 - tangents, where <5> == increment!!(<3>, <4>).
+1 - `interface_only`
+2 - `primal value`
+3, 4, 5 - tangents, where `<5> == increment!!(<3>, <4>)`.
 
-Test cases in the first format make use of `zero_tangent` / `randn_tangent` etc to generate
-tangents, but they're unable to check that `increment!!` is correct in an absolute sense.
+Test cases in the first format make use of [`zero_tangent`](@ref) / [`randn_tangent`](@ref) etc to generate
+tangents, but they're unable to check that [`increment!!`](@ref) is correct in an absolute sense.
 """
 @unstable function tangent_test_cases()
     N_large = 33

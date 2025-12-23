@@ -132,7 +132,9 @@ julia> import Mooncake: zero_adjoint, DefaultCtx, zero_fcodual, rrule!!, is_prim
 julia> foo(x::Vararg{Int}) = 5
 foo (generic function with 1 method)
 
-julia> is_primitive(::Type{DefaultCtx}, ::Type{<:Tuple{typeof(foo), Vararg{Int}}}) = true;
+julia> world = Base.get_world_counter();
+
+julia> is_primitive(::Type{DefaultCtx}, ::Type{<:Tuple{typeof(foo), Vararg{Int}}}, world) = true;
 
 julia> rrule!!(f::CoDual{typeof(foo)}, x::Vararg{CoDual{Int}}) = zero_adjoint(f, x...);
 
@@ -199,10 +201,10 @@ foo (generic function with 1 method)
 
 julia> @zero_derivative DefaultCtx Tuple{typeof(foo), Any}
 
-julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(foo), Any})
+julia> is_primitive(DefaultCtx, ForwardMode, Tuple{typeof(foo), Any}, Base.get_world_counter())
 true
 
-julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo), Any})
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo), Any}, Base.get_world_counter())
 true
 
 julia> frule!!(zero_dual(foo), zero_dual(3.0))
@@ -221,7 +223,7 @@ foo_varargs (generic function with 1 method)
 
 julia> @zero_derivative DefaultCtx Tuple{typeof(foo_varargs), Vararg}
 
-julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo_varargs), Any, Float64, Int})
+julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo_varargs), Any, Float64, Int}, Base.get_world_counter())
 true
 
 julia> rrule!!(zero_fcodual(foo_varargs), zero_fcodual(3.0), zero_fcodual(5))[2](NoRData())
@@ -282,7 +284,7 @@ function _zero_derivative_impl(ctx, sig, mode)
     # which does not escape the mode argument. This will work even if the names `Mooncake`
     # or `Mooncake.Mode` are not available in the scope which calls this macro.
     is_primitive_ex = quote
-        function Mooncake.is_primitive(
+        function Mooncake._is_primitive(
             ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$(esc(sig))}
         )
             return true
@@ -327,6 +329,7 @@ to_cr_tangent(::NoTangent) = CRC.NoTangent()
 to_cr_tangent(t::Tangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
+to_cr_tangent(nt::NamedTuple) = CRC.Tangent{Any}(; map(to_cr_tangent, nt)...)
 
 function to_cr_tangent(t)
     throw(
@@ -642,7 +645,7 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         kw_sig = where_params === nothing ? kw_sig : Expr(:where, kw_sig, where_params...)
         # Type M will be available later on, and will be the mode type.
         kw_is_primitive = quote
-            function Mooncake.is_primitive(
+            function Mooncake._is_primitive(
                 ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:$kw_sig}
             )
                 return true
@@ -673,7 +676,7 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     end
 
     return quote
-        function Mooncake.is_primitive(
+        function Mooncake._is_primitive(
             ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:($(esc(sig)))}
         )
             return true
