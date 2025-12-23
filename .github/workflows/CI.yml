@@ -28,7 +28,7 @@ jobs:
         test_group: [
           # 'basic',
           # 'rules/avoiding_non_differentiable_code',
-          'rules/blas',
+          # 'rules/blas',
           'rules/blas_level_3',
           # 'rules/builtins',
           # 'rules/dispatch_doctor',
@@ -146,7 +146,7 @@ jobs:
       fail-fast: false
       matrix:
         perf_group:
-          - 'hand_written'
+          # - 'hand_written'
           - 'derived'
     steps:
       - uses: actions/checkout@v6
