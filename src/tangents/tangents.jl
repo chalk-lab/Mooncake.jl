@@ -605,6 +605,21 @@ end
 end
 
 """
+    normalize_tangent(x)
+
+A helper function that returns a normalized copy of Mooncake Tangent input `x`.
+Used to normalize randomly generated tangents got from [`randn_tangent`](@ref).
+Returns a normalized copy of `x` with all the numerical fields promoted to the Float64 type.
+"""
+function normalize_tangent(x)
+    total_norm = sqrt(_dot(x, x))
+    # Handle div by zero edge case.
+    scaling_factor = iszero(total_norm) ? 1.0 : 1 / total_norm
+    # return normalized Mooncake tangent.
+    return _scale(scaling_factor, x)
+end
+
+"""
     uninit_tangent(x)
 
 Related to [`zero_tangent`](@ref), but a bit different. Check current implementation for
@@ -1002,7 +1017,7 @@ If `c` is a `NoCache`, assume that neither `t` nor `s` contain either circular r
 or aliasing.
 """
 _dot_internal(::MaybeCache, ::NoTangent, ::NoTangent) = 0.0
-_dot_internal(::MaybeCache, t::T, s::T) where {T<:IEEEFloat} = Float64(t * s)
+_dot_internal(::MaybeCache, t::T, s::T) where {T<:Union{IEEEFloat,Integer}} = Float64(t * s)
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tuple,NamedTuple}}
     return sum(map((t, s) -> _dot_internal(c, t, s)::Float64, t, s); init=0.0)::Float64
 end

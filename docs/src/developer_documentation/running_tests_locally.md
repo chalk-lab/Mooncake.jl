@@ -8,7 +8,7 @@ There are two workflows for running tests, discussed below.
 
 For all code in `src`, Mooncake's tests are organised as follows:
 1. Things that are required for most / all test suites are loaded up in `test/front_matter.jl`.
-1. The tests for something in `src` are located in an identically-named file in `test`. e.g. the unit tests for `src/rrules/new.jl` are located in `test/rrules/new.jl`.
+1. The tests for something in `src` are located in an identically-named file in `test`. e.g. the unit tests for `src/rules/new.jl` are located in `test/rules/new.jl`.
 
 Thus, a workflow that I (Will) find works very well is the following:
 1. Ensure that you have Revise.jl and TestEnv.jl installed in your default environment.
