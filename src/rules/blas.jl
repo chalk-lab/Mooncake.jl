@@ -1494,7 +1494,7 @@ function rrule!!(
 end
 
 function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
-    # Must be as long as the number of blas_vectors
+    # blas_matrices must return `Xs` with the same length as blas_vectors.
     Xs = Any[
         randn(rng, P, p, q),
         view(randn(rng, P, p + 5, 2q), 3:(p + 2), 1:2:(2q)),
@@ -1534,7 +1534,6 @@ function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat},
 end
 
 function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_contiguous=false)
-    # Must be as long as the number of blas_matrices
     xs = Any[
         randn(rng, P, p),
         view(randn(rng, P, p + 5), 3:(p + 2)),
