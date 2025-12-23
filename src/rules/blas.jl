@@ -1494,12 +1494,17 @@ function rrule!!(
 end
 
 function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
+    # Must be as long as the number of blas_vectors
     Xs = Any[
         randn(rng, P, p, q),
         view(randn(rng, P, p + 5, 2q), 3:(p + 2), 1:2:(2q)),
         view(randn(rng, P, 3p, 3, 2q), (p + 1):(2p), 2, 1:2:(2q)),
         reshape(view(randn(rng, P, p * q + 5), 1:(p * q)), p, q),
     ]
+    @static if VERSION >= v"1.11"
+        # To match Memory in blas_vectors
+        push!(Xs, randn(rng, P, p, q))
+    end
     @assert all(X -> size(X) == (p, q), Xs)
     @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
     return Xs
@@ -1529,6 +1534,7 @@ function positive_definite_blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat},
 end
 
 function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_contiguous=false)
+    # Must be as long as the number of blas_matrices
     xs = Any[
         randn(rng, P, p),
         view(randn(rng, P, p + 5), 3:(p + 2)),
