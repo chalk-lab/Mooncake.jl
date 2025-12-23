@@ -27,25 +27,25 @@ jobs:
       matrix:
         test_group: [
           'basic',
-          'rrules/avoiding_non_differentiable_code',
-          'rrules/blas',
-          'rrules/blas_level_3',
-          'rrules/builtins',
-          'rrules/dispatch_doctor',
-          'rrules/fastmath',
-          'rrules/foreigncall',
-          'rrules/iddict',
-          'rrules/lapack',
-          'rrules/linear_algebra',
-          'rrules/low_level_maths',
-          'rrules/memory',
-          'rrules/misc',
-          'rrules/misty_closures',
-          'rrules/new',
-          'rrules/random',
-          'rrules/tasks',
-          'rrules/twice_precision',
-          'rrules/performance_patches',
+          'rules/avoiding_non_differentiable_code',
+          'rules/blas',
+          'rules/blas_level_3',
+          'rules/builtins',
+          'rules/dispatch_doctor',
+          'rules/fastmath',
+          'rules/foreigncall',
+          'rules/iddict',
+          'rules/lapack',
+          'rules/linear_algebra',
+          'rules/low_level_maths',
+          'rules/memory',
+          'rules/misc',
+          'rules/misty_closures',
+          'rules/new',
+          'rules/random',
+          'rules/tasks',
+          'rules/twice_precision',
+          'rules/performance_patches',
         ]
         version:
           - 'lts'
@@ -57,7 +57,7 @@ jobs:
           - test_group: 'basic'
             version: 'lts'
             arch: x86
-          - test_group: 'rrules/array_legacy'
+          - test_group: 'rules/array_legacy'
             version: 'lts'
             arch: x64
     steps:
