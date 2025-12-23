@@ -1,5 +1,4 @@
 # Writing Custom Tangent Types
-# TODO: needs amending
 
 ```@meta
 CurrentModule = Mooncake
