@@ -140,6 +140,7 @@ using Mooncake:
     CC,
     set_to_zero!!,
     increment!!,
+    normalize_tangent,
     randn_tangent,
     _scale,
     _add_to_primal,
@@ -497,11 +498,15 @@ function test_frule_correctness(
     # such that AD and central differences agree on the answer.
     x̄ = map(Base.Fix1(randn_tangent, rng), x_primal)
     ȳ = randn_tangent(rng, y_primal)
+
+    # normalize the JVP's probe vectors to avoid random scaling of AD, FD errors.
+    x̄_normdir, ȳ_normdir = normalize_tangent(x̄), normalize_tangent(ȳ)
+
     isapprox_results = map(fd_results) do result
         ẏ_fd, ẋ_fd = result
         return isapprox(
-            _dot(ȳ, ẏ_fd) + _dot(x̄, ẋ_fd),
-            _dot(ȳ, ẏ_ad) + _dot(x̄, ẋ_ad);
+            _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
+            _dot(ȳ_normdir, ẏ_ad) + _dot(x̄_normdir, ẋ_ad);
             rtol=rtol,
             atol=atol,
         )
@@ -509,7 +514,10 @@ function test_frule_correctness(
     if !any(isapprox_results)
         vals = map(fd_results) do result
             ẏ_fd, ẋ_fd = result
-            (_dot(ȳ, ẏ_fd) + _dot(x̄, ẋ_fd), _dot(ȳ, ẏ_ad) + _dot(x̄, ẋ_ad))
+            (
+                _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
+                _dot(ȳ_normdir, ẏ_ad) + _dot(x̄_normdir, ẋ_ad),
+            )
         end
         display(vals)
     end
@@ -538,10 +546,9 @@ function test_rrule_correctness(
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
-    # Construct tangent to inputs, and normalise to be of unit length.
+    # Construct random tangent to inputs, and normalise to be of unit length.
     ẋ_unnormalised = map(_x -> randn_tangent(rng, _x), x)
-    nrm = sqrt(sum(x -> _dot(x, x), ẋ_unnormalised))
-    ẋ = map(_x -> _scale(1 / nrm, _x), ẋ_unnormalised)
+    ẋ = map(normalize_tangent, ẋ_unnormalised)
 
     # Use finite differences to estimate vjps. Compute the estimate at a range of different
     # step sizes. We'll just require that one of them ends up being close to what AD gives.
@@ -761,6 +768,7 @@ function test_frule_performance(
             ),
         )
     end
+
     performance_checks_flag == :none && return nothing
 
     if performance_checks_flag in (:stability, :stability_and_allocs)
