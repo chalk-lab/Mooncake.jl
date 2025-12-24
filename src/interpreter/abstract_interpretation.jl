@@ -24,6 +24,8 @@ MooncakeCache() = MooncakeCache(IdDict{Core.MethodInstance,Core.CodeInstance}())
 # The method table used by `Mooncake.@mooncake_overlay`.
 Base.Experimental.@MethodTable mooncake_method_table
 
+using Core: MethodInstance, Compiler, CodeInstance, CodeInfo
+
 struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
     meta # additional information
     world::UInt
@@ -76,7 +78,9 @@ function _show_interp(io::IO, ::MIME"text/plain", ::MooncakeInterpreter{C,M}) wh
     return print(io, "MooncakeInterpreter($M)")
 end
 
-MooncakeInterpreter(M::Type{<:Mode}) = MooncakeInterpreter(DefaultCtx, M)
+function MooncakeInterpreter(M::Type{<:Mode}; world=Base.get_world_counter())
+    MooncakeInterpreter(DefaultCtx, M; world)
+end
 
 context_type(::MooncakeInterpreter{C}) where {C} = C
 
@@ -280,9 +284,9 @@ interpreter if one already exists for the current world age, otherwise creates a
 
 This should be prefered over constructing a `MooncakeInterpreter` directly.
 """
-function get_interpreter(mode::Type{<:Mode})
-    if GLOBAL_INTERPRETERS[mode].world != Base.get_world_counter()
-        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode)
+function get_interpreter(mode::Type{<:Mode}; world=Base.get_world_counter())
+    if GLOBAL_INTERPRETERS[mode].world != world
+        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode; world)
     end
     return GLOBAL_INTERPRETERS[mode]
 end
