@@ -9,6 +9,7 @@ using Mooncake.TestUtils: test_tangent_interface, test_tangent_splitting, test_r
     if CUDA.functional()
         # Check we can operate on CuArrays of various element types.
         @testset for ET in (Float32, Float64, ComplexF32, ComplexF64)
+            # Use undef to ensure robustness against "garbage" memory (NaNs, Infs, subnormals etc).
             p = CuArray{ET,2,CUDA.DeviceMemory}(undef, 8, 8)
             test_tangent_interface(StableRNG(123456), p; interface_only=false)
             test_tangent_splitting(StableRNG(123456), p)
