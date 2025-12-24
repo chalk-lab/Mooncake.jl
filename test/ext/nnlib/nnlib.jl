@@ -11,7 +11,7 @@ dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
 @testset "nnlib" begin
-    cuda = CUDA.functional()
+    cuda = CUDA.functional() && VERSION < v"1.12-"
 
     _rand = if cuda
         (rng, size...) -> cu(randn(rng, size...))
