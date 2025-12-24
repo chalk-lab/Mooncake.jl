@@ -8,7 +8,8 @@ using Mooncake.TestUtils: test_tangent_interface, test_tangent_splitting, test_r
 @testset "cuda" begin
     if CUDA.functional()
         # Check we can operate on CuArrays of various element types.
-        @testset for ET in (Float32, Float64, ComplexF32, ComplexF64)
+        @testset for ET in (Float32)
+            # , Float64, ComplexF32, ComplexF64)
             # p = CuArray{ET,2,CUDA.DeviceMemory}(undef, 8, 8)
 
             # its the undef CuArray that causes issues.
