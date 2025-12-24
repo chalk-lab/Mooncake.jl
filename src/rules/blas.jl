@@ -69,6 +69,13 @@ function arrayify(
     return x, Tx(_dx)
 end
 
+@static if VERSION >= v"1.11-rc4"
+    arrayify(x::A, dx::A) where {A<:Memory{<:BlasRealFloat}} = (x, dx)
+    function arrayify(x::Memory{P}, dx::Memory{<:Tangent}) where {P<:BlasComplexFloat}
+        return x, reinterpret(P, dx)
+    end
+end
+
 function arrayify(x::A, dx::DA) where {A,DA}
     msg =
         "Encountered unexpected array type in `Mooncake.arrayify`. This error is likely " *
@@ -1487,12 +1494,17 @@ function rrule!!(
 end
 
 function blas_matrices(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int, q::Int)
+    # blas_matrices must return `Xs` with the same length as blas_vectors.
     Xs = Any[
         randn(rng, P, p, q),
         view(randn(rng, P, p + 5, 2q), 3:(p + 2), 1:2:(2q)),
         view(randn(rng, P, 3p, 3, 2q), (p + 1):(2p), 2, 1:2:(2q)),
         reshape(view(randn(rng, P, p * q + 5), 1:(p * q)), p, q),
     ]
+    @static if VERSION >= v"1.11"
+        # To match Memory in blas_vectors
+        push!(Xs, randn(rng, P, p, q))
+    end
     @assert all(X -> size(X) == (p, q), Xs)
     @assert all(Base.Fix2(isa, AbstractMatrix{P}), Xs)
     return Xs
@@ -1528,6 +1540,9 @@ function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_conti
         (only_contiguous ? collect : identity)(view(randn(rng, P, 3p, 3), 1:2:(2p), 2)),
         reshape(view(randn(rng, P, 1, p + 5), 1:1, 1:p), p),
     ]
+    @static if VERSION >= v"1.11"
+        push!(xs, Memory{P}(randn(rng, P, p)))
+    end
     @assert all(x -> length(x) == p, xs)
     @assert all(Base.Fix2(isa, AbstractVector{P}), xs)
     return xs
