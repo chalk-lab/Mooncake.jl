@@ -26,26 +26,26 @@ jobs:
       fail-fast: false
       matrix:
         test_group: [
-          # 'basic',
-          # 'rules/avoiding_non_differentiable_code',
-          # 'rules/blas',
+          'basic',
+          'rules/avoiding_non_differentiable_code',
+          'rules/blas',
           'rules/blas_level_3',
-          # 'rules/builtins',
-          # 'rules/dispatch_doctor',
-          # 'rules/fastmath',
-          # 'rules/foreigncall',
-          # 'rules/iddict',
-          # 'rules/lapack',
-          # 'rules/linear_algebra',
-          # 'rules/low_level_maths',
-          # 'rules/memory',
-          # 'rules/misc',
-          # 'rules/misty_closures',
-          # 'rules/new',
-          # 'rules/random',
-          # 'rules/tasks',
-          # 'rules/twice_precision',
-          # 'rules/performance_patches',
+          'rules/builtins',
+          'rules/dispatch_doctor',
+          'rules/fastmath',
+          'rules/foreigncall',
+          'rules/iddict',
+          'rules/lapack',
+          'rules/linear_algebra',
+          'rules/low_level_maths',
+          'rules/memory',
+          'rules/misc',
+          'rules/misty_closures',
+          'rules/new',
+          'rules/random',
+          'rules/tasks',
+          'rules/twice_precision',
+          'rules/performance_patches',
         ]
         version:
           - 'lts'
@@ -87,27 +87,27 @@ jobs:
       matrix:
         test_group: [
           {test_type: 'ext', label: 'differentiation_interface'},
-          # {test_type: 'ext', label: 'dynamic_expressions'},
-          # {test_type: 'ext', label: 'flux'},
-          # {test_type: 'ext', label: 'function_wrappers'},
-          # {test_type: 'ext', label: 'luxlib'},
-          # {test_type: 'ext', label: 'nnlib'},
-          # {test_type: 'ext', label: 'special_functions'},
-          # {test_type: 'integration_testing', label: 'format'},
-          # {test_type: 'integration_testing', label: 'array'},
-          # {test_type: 'integration_testing', label: 'bijectors'},
-          # {test_type: 'integration_testing', label: 'diff_tests'},
-          # {test_type: 'integration_testing', label: 'diffeq'},
-          # {test_type: 'integration_testing', label: 'dispatch_doctor'},
-          # {test_type: 'integration_testing', label: 'distributions'},
-          # {test_type: 'integration_testing', label: 'dynamicppl'},
-          # {test_type: 'integration_testing', label: 'gp'},
-          # {test_type: 'integration_testing', label: 'logexpfunctions'},
-          # {test_type: 'integration_testing', label: 'lux'},
-          # {test_type: 'integration_testing', label: 'battery_tests'},
-          # {test_type: 'integration_testing', label: 'misc_abstract_array'},
-          # {test_type: 'integration_testing', label: 'temporalgps'},
-          # {test_type: 'integration_testing', label: 'flux'},
+          {test_type: 'ext', label: 'dynamic_expressions'},
+          {test_type: 'ext', label: 'flux'},
+          {test_type: 'ext', label: 'function_wrappers'},
+          {test_type: 'ext', label: 'luxlib'},
+          {test_type: 'ext', label: 'nnlib'},
+          {test_type: 'ext', label: 'special_functions'},
+          {test_type: 'integration_testing', label: 'format'},
+          {test_type: 'integration_testing', label: 'array'},
+          {test_type: 'integration_testing', label: 'bijectors'},
+          {test_type: 'integration_testing', label: 'diff_tests'},
+          {test_type: 'integration_testing', label: 'diffeq'},
+          {test_type: 'integration_testing', label: 'dispatch_doctor'},
+          {test_type: 'integration_testing', label: 'distributions'},
+          {test_type: 'integration_testing', label: 'dynamicppl'},
+          {test_type: 'integration_testing', label: 'gp'},
+          {test_type: 'integration_testing', label: 'logexpfunctions'},
+          {test_type: 'integration_testing', label: 'lux'},
+          {test_type: 'integration_testing', label: 'battery_tests'},
+          {test_type: 'integration_testing', label: 'misc_abstract_array'},
+          {test_type: 'integration_testing', label: 'temporalgps'},
+          {test_type: 'integration_testing', label: 'flux'},
         ]
         version:
           - 'lts'
@@ -146,7 +146,7 @@ jobs:
       fail-fast: false
       matrix:
         perf_group:
-          # - 'hand_written'
+          - 'hand_written'
           - 'derived'
     steps:
       - uses: actions/checkout@v6
