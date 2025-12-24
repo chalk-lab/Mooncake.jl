@@ -41,7 +41,7 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 # Overload Base.eps for Complex types. (Although type piracy, its needed to set atol in isapprox calls)
 # undef CuArray have trashy values in mem block, so sometimes we can end up with too large a number.
 # here default rtol fails, therefore must explicitly set a safe atol wrt true eltype.
-Base.eps(::Type{T{M}}) where {M<:IEEEFloat,T<:Complex{M}} = eps(eltype(M))
+Base.eps(::Type{T}) where {M<:IEEEFloat,T<:Complex{M}} = eps(eltype(M))
 
 # Tell Mooncake.jl how to handle CuArrays.
 
