@@ -95,14 +95,16 @@ end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
 ) where {P<:Union{CuFloatArray,CuComplexArray}}
-    return isapprox(x, y)
+    # allow nan comparisons to return true, real() to cover complex case
+    return isapprox(x, y; atol=(√eps(real(eltype(P)))), nans=true)
 end
 function TestUtils.has_equal_data_internal(
     x::CuArray{P,N,M}, y::CuArray{P,N,M}, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
 ) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
     x_ = reinterpret(Complex{T}, x)
     y_ = reinterpret(Complex{T}, y)
-    return isapprox(x_, y_)
+    # allow nan comparisons to return true
+    return isapprox(x_, y_; atol=(√eps(T)), nans=true)
 end
 function increment_internal!!(
     c::IncCache, x::CuArray{P,N,M}, y::CuArray{P,N,M}
