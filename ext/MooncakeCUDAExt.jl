@@ -38,6 +38,11 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 
+# Overload Base.eps for Complex types. (Although type piracy, its needed to set atol in isapprox calls)
+# undef CuArray have trashy values in mem block, so sometimes we can end up with too large a number.
+# here default rtol fails, therefore must explicitly set a safe atol wrt true eltype.
+Base.eps(::Type{T{M}}) where {M<:IEEEFloat,T<:Complex{M}} = eps(eltype(M))
+
 # Tell Mooncake.jl how to handle CuArrays.
 
 Mooncake.@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Complex{<:IEEEFloat},IEEEFloat},N,M} = CuArray{
@@ -95,6 +100,8 @@ end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
 ) where {P<:Union{CuFloatArray,CuComplexArray}}
+    # allow nan comparisons to return true
+    # return isapprox(x, y, atol=(√eps(eltype(P))), nans=true)
     return isapprox(x, y)
 end
 function TestUtils.has_equal_data_internal(
@@ -102,6 +109,8 @@ function TestUtils.has_equal_data_internal(
 ) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
     x_ = reinterpret(Complex{T}, x)
     y_ = reinterpret(Complex{T}, y)
+    # allow nan comparisons to return true
+    # return isapprox(x_, y_ , atol=(√eps(T)), nans=true)
     return isapprox(x_, y_)
 end
 function increment_internal!!(
