@@ -476,16 +476,3 @@ _copy(x::Tuple) = map(_copy, x)
 _copy(x::NamedTuple) = map(_copy, x)
 _copy(x::Ref{T}) where {T} = isassigned(x) ? Ref{T}(_copy(x[])) : Ref{T}()
 _copy(x::Type) = x
-
-"""
-    _eps(x)
-
-Outputs the machine epsilon `ϵ` for the Type `x` is parameterised on.
-Avoids type piracy by defining a package helper function for `Base.eps`.
-Handles types like `Complex{<:Base.IEEEFloat}` etc. which do not have an overload for `Base.eps`.
-For example, this is used to set the `atol` parameter in `isapprox` calls while :
-- comparing two Arrays of Complex Numbers in `src/ext/MooncakeCUDAExt.jl`.
-
-"""
-_eps(::Type{T}) where {M<:IEEEFloat,T<:Complex{M}} = Base.eps(eltype(M))
-_eps(::Type{T}) where {T} = Base.eps(eltype(T))
