@@ -3,15 +3,18 @@ module MooncakeCUDAExt
 using LinearAlgebra, Random, Mooncake
 
 using Base: IEEEFloat
-using CUDA: CuArray, CuPtr, CuContext, CUmemPoolHandle_st
+using CUDA: CuArray, CuRefValue, CuPtr, CuContext, CUmemPoolHandle_st
+using CUDA: CUBLAS
 
 import Mooncake:
     MinimalCtx,
+    ChainRulesCore,
     frule!!,
     rrule!!,
     @is_primitive,
     @unstable,
     @foldable,
+    @from_rrule,
     tangent_type,
     fdata_type,
     rdata_type,
@@ -63,9 +66,13 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 fdata_type(::Type{T}) where {T<:CuPtr} = T
 rdata_type(::Type{<:CuPtr}) = NoRData
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
+@unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{tangent_type(P)}
 tangent_type(::Type{<:CuPtr}) = NoTangent
 tangent_type(::Type{CuContext}) = NoTangent
 tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
+tangent_type(::Type{CUBLAS.cublasOperation_t}) = NoTangent
+
+#@from_rrule MinimalCtx Tuple{typeof(broadcast), Base.BroadcastStyle, Vararg{Any, N}} where {N}
 
 function arrayify(x::A, dx::A) where {A<:CuFloatArray}
     (x, dx)
