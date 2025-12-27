@@ -58,6 +58,10 @@ using LinearAlgebra
             (false, :none, false, x->sum(log, x; dims=1), _rand(rng, 64, 32)),
             # similar 
             (true, :none, false, similar, _rand(rng, 64, 32)),
+            # adjoint
+            (false, :none, false, adjoint, _rand(rng, ComplexF64, 64, 32)),
+            # +
+            (false, :none, false, +, _rand(rng, 32, 32), _rand(rng, 32, 32)),
             # zeros 
             (false, :none, false, CUDA.zeros, Float64, 64, 32),
             # broadcast
