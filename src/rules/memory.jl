@@ -738,7 +738,7 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-const _MemTypes = Union{Memory,MemoryRef,Array}
+const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 
 function frule!!(
     f::Dual{typeof(lgetfield)}, x::Dual{<:_MemTypes,<:_MemTypes}, name::Dual{<:Val}
