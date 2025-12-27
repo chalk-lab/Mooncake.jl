@@ -13,6 +13,7 @@
             xs = vcat(
                 Mooncake.blas_matrices(StableRNG(123), P, 2, 3),
                 Mooncake.special_matrices(StableRNG(123), P, 2, 3),
+                Mooncake.blas_vectors(StableRNG(123), P, 2),
             )
             @testset "$(typeof(x)), $f" for x in xs, f in [identity, fdata]
                 t = f(Mooncake.randn_tangent(StableRNG(123), x))
