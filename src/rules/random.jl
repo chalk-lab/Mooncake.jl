@@ -6,6 +6,7 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs}
 @zero_derivative MinimalCtx Tuple{typeof(rand),KnownRNGs,Type{<:IEEEFloat}}
+@zero_derivative MinimalCtx Tuple{typeof(rand),KnownRNGs,Union{Type{UInt32},Type{UInt64},Type{UInt128}}}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs,Type{<:IEEEFloat}}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
 
