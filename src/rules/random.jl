@@ -46,13 +46,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
         (true, :none, nothing, MersenneTwister, 123),
 
         # Random number generation.
-        map_prod([randn, randexp], all_rngs) do (f, rng)
+        map_prod([rand, randn, randexp], all_rngs) do (f, rng)
             (true, :stability_and_allocs, nothing, f, rng)
         end...,
-        map_prod([Float64, Float32], [randn, randexp], all_rngs) do (P, f, rng)
+        map_prod([Float64, Float32], [rand, randn, randexp], all_rngs) do (P, f, rng)
             (true, :stability_and_allocs, nothing, f, rng, P)
         end...,
-        map_prod([randn!, randexp!], rngs) do (f, rng)
+        map_prod([rand!, randn!, randexp!], rngs) do (f, rng)
             (true, :stability, nothing, f, rng, randn(5))
         end...,
     )
@@ -63,12 +63,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:random})
     test_cases = Any[
 
         # Random number generation.
+        (false, :none, nothing, x -> x * rand(Xoshiro(123)), 3.0),
         (false, :none, nothing, x -> x * randn(Xoshiro(123)), 3.0),
         (false, :none, nothing, x -> x * randexp(Xoshiro(123)), 3.0),
+        (false, :none, nothing, x -> x * rand(Xoshiro(123), Float32), 3.0),
         (false, :none, nothing, x -> x * randn(Xoshiro(123), Float32), 3.0),
         (false, :none, nothing, x -> x * randexp(Xoshiro(123), Float32), 3.0),
+        (false, :none, nothing, x -> x * rand!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randn!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randexp!(Xoshiro(123), x), randn(9)),
+        (false, :none, nothing, x -> x * rand(Xoshiro(123), size(x)...), randn(9)),
         (false, :none, nothing, x -> x .* randn(Xoshiro(123), size(x)...), randn(9)),
         (false, :none, nothing, x -> x .* randexp(Xoshiro(123), size(x)...), randn(9)),
 
