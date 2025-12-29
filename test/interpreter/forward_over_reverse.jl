@@ -1,35 +1,3 @@
-using Mooncake: _foreigncall_, frule!!
-
-# Forward-over-reverse needs this rule: `dataids` is a primitive in reverse mode, but when
-# building the forward rule over the reverse rule, it gets inlined and exposes this foreigncall.
-# A more proper fix is the interpreter route (see https://github.com/chalk-lab/Mooncake.jl/pull/878/commits/ed10d3887c529dd1a7e6cef362288377a7ec8473
-# for a working but incomplete attempt).
-@static if VERSION >= v"1.11-"
-    function Mooncake.frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_genericmemory_owner}},
-        ::Dual{Val{Any}},
-        ::Dual{Tuple{Val{Any}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        a::Dual{<:Memory},
-    )
-        return zero_dual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
-    end
-    function Mooncake.rrule!!(
-        ::CoDual{typeof(_foreigncall_)},
-        ::CoDual{Val{:jl_genericmemory_owner}},
-        ::CoDual{Val{Any}},
-        ::CoDual{Tuple{Val{Any}}},
-        ::CoDual{Val{0}},
-        ::CoDual{Val{:ccall}},
-        a::CoDual{<:Memory},
-    )
-        y = zero_fcodual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
-        return y, NoPullback(ntuple(_ -> NoRData(), 7))
-    end
-end
-
 function _compute_grad(rule, f, x::Vector{Float64}, x_fdata::Vector{Float64})
     fill!(x_fdata, 0.0)
     _, pb!! = rule(zero_fcodual(f), CoDual(x, x_fdata))
