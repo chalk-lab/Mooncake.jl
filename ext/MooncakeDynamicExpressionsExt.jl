@@ -235,7 +235,7 @@ function Mooncake.set_to_zero_internal!!(c::Mooncake.SetToZeroCache, t::TangentN
 end
 
 ################################################################################
-# Algebraic helpers (_dot / _scale / _add_to_primal / _diff)
+# Algebraic helpers (_dot / _scale / _add_to_primal / primal <-> tangent)
 ################################################################################
 
 Mooncake._dot_internal(c::Mooncake.MaybeCache, t::NoTangent, s::TangentNode) = 0.0

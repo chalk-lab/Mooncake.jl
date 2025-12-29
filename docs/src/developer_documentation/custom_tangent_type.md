@@ -64,17 +64,12 @@ mutable struct TangentForA{Tx}
     x::Tx
     a::Union{TangentForA{Tx}, Mooncake.NoTangent}
 
-    function TangentForA{Tx}(x_tangent::Tx) where {Tx}
-        new{Tx}(x_tangent, Mooncake.NoTangent())
+    function TangentForA{Tx}() where {Tx}
+        new{Tx}()
     end
 
     function TangentForA{Tx}(x_tangent::Tx, a_tangent::Union{TangentForA{Tx}, Mooncake.NoTangent}) where {Tx}
         new{Tx}(x_tangent, a_tangent)
-    end
-
-    # This constructor is required by Mooncake's internal machinery for constructing tangents from named tuples
-    function TangentForA{Tx}(nt::@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}}) where {Tx}
-        return new{Tx}(nt.x, nt.a)
     end
 end
 ```
@@ -124,7 +119,17 @@ f1(a::A) = 2.0 * a.x
 
 When you try to differentiate this, Mooncake will complain it lacks an `rrule!!` for [`lgetfield`](@ref). The `lgetfield` function is Mooncake's internal version of `getfield` that accepts a `Val` type for the field name, enabling better type stability. You need to implement it:
 
-### 5.1. Field Access (`lgetfield`) Rule
+### 5.1. Zero Tangent Creation
+Mooncake will require a way to create a new zero tangent.
+A simple way is to add a constructor that takes a named tuple:
+```@example custom_tangent_type
+# Will be called directly by Mooncake's default implementation of zero_tangent_internal
+function TangentForA{Tx}(nt::@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}}) where {Tx}
+    return TangentForA{Tx}(nt.x, nt.a)
+end
+```
+
+### 5.2. Field Access (`lgetfield`) Rule
 
 ```@example custom_tangent_type
 Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(Mooncake.lgetfield),A{T},Val} where {T}
@@ -159,15 +164,16 @@ function Mooncake.rrule!!(
 end
 ```
 
-### 5.2. Zeroing Out the Tangent
+### 5.3. Zeroing Out the Tangent
 
 Mooncake will next require [`set_to_zero!!`](@ref):
 
 ```@example custom_tangent_type
-function Mooncake.set_to_zero!!(t::TangentForA{Tx}) where Tx
-    t.x = Mooncake.set_to_zero!!(t.x)
+function Mooncake.set_to_zero_internal!!(c::Mooncake.SetToZeroCache, t::TangentForA{Tx}) where {Tx}
+    Mooncake._already_tracked!(c, t) && return t
+    t.x = Mooncake.set_to_zero_internal!!(c, t.x)
     if !(t.a isa Mooncake.NoTangent)
-        Mooncake.set_to_zero!!(t.a)
+        t.a = Mooncake.set_to_zero_internal!!(c, t.a)
     end
     return t
 end
@@ -386,15 +392,20 @@ end
 Implement the essential tangent manipulation functions:
 
 ```@example custom_tangent_type
+# Once we add this method, the TangentForA constructor that takes a NamedTuple can be removed
+Base.delete_method(
+    only(methods(TangentForA{Float64}, Tuple{@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}} where Tx}))
+)
+
 function Mooncake.zero_tangent_internal(p::A{T}, dict::Mooncake.MaybeCache) where {T}
     Tx = Mooncake.tangent_type(T)
     Tx == Mooncake.NoTangent && return Mooncake.NoTangent()
     if haskey(dict, p)
         return dict[p]::TangentForA{Tx}
     end
-    x_t = Mooncake.zero_tangent_internal(p.x, dict)::Tx
-    t = TangentForA{Tx}(x_t)
+    t = TangentForA{Tx}()
     dict[p] = t
+    t.x = Mooncake.zero_tangent_internal(p.x, dict)::Tx
     if p.a === nothing
         t.a = Mooncake.NoTangent()
     else
@@ -409,9 +420,9 @@ function Mooncake.randn_tangent_internal(rng::AbstractRNG, p::A{T}, dict::Moonca
     if haskey(dict, p)
         return dict[p]::TangentForA{Tx}
     end
-    x_t = Mooncake.randn_tangent_internal(rng, p.x, dict)::Tx
-    t = TangentForA{Tx}(x_t)
+    t = TangentForA{Tx}()
     dict[p] = t
+    t.x = Mooncake.randn_tangent_internal(rng, p.x, dict)::Tx
     if p.a === nothing
         t.a = Mooncake.NoTangent()
     else
@@ -430,22 +441,13 @@ function Mooncake.increment_internal!!(c::Mooncake.IncCache, t::TangentForA{Tx},
     return t
 end
 
-function Mooncake.set_to_zero_internal!!(c::Mooncake.SetToZeroCache, t::TangentForA{Tx}) where {Tx}
-    Mooncake._already_tracked!(c, t) && return t
-    t.x = Mooncake.set_to_zero_internal!!(c, t.x)
-    if !(t.a isa Mooncake.NoTangent)
-        t.a = Mooncake.set_to_zero_internal!!(c, t.a)
-    end
-    return t
-end
-
 function Mooncake._add_to_primal_internal(c::Mooncake.MaybeCache, p::A{T}, t::TangentForA{Tx}, unsafe::Bool) where {T,Tx}
     key = (p, t, unsafe)
     haskey(c, key) && return c[key]::A{T}
-    x_new = Mooncake._add_to_primal_internal(c, p.x, t.x, unsafe)
-    a_new = p.a === nothing ? nothing : Mooncake._add_to_primal_internal(c, p.a, t.a, unsafe)
-    p_new = a_new === nothing ? A(x_new) : A(x_new, a_new)
+    p_new = Mooncake._new_(A{T})
     c[key] = p_new
+    p_new.x = Mooncake._add_to_primal_internal(c, p.x, t.x, unsafe)
+    p_new.a = p.a === nothing ? nothing : Mooncake._add_to_primal_internal(c, p.a, t.a, unsafe)
     return p_new
 end
 
@@ -460,7 +462,7 @@ end
 
 function Mooncake.primal_to_tangent_internal!!(t, p::A{T}, c::Mooncake.MaybeCache) where {T}
     t isa Mooncake.NoTangent && return Mooncake.NoTangent()
-    haskey(c, p) && return c[p]::TangentForA{Tx}
+    haskey(c, p) && return c[p]::TangentForA{Mooncake.tangent_type(T)}
     c[p] = t
     t.x = Mooncake.primal_to_tangent_internal!!(t.x, p.x, c)
     t.a = Mooncake.primal_to_tangent_internal!!(t.a, p.a, c)
@@ -481,10 +483,10 @@ end
 
 function Mooncake._scale_internal(c::Mooncake.MaybeCache, a::Float64, t::TangentForA{Tx}) where {Tx}
     haskey(c, t) && return c[t]::TangentForA{Tx}
-    x_new = Mooncake._scale_internal(c, a, t.x)
-    a_new = t.a isa Mooncake.NoTangent ? Mooncake.NoTangent() : Mooncake._scale_internal(c, a, t.a)
-    t_new = TangentForA{Tx}(x_new, a_new)
+    t_new = TangentForA{Tx}()
     c[t] = t_new
+    t_new.x = Mooncake._scale_internal(c, a, t.x)
+    t_new.a = t.a isa Mooncake.NoTangent ? Mooncake.NoTangent() : Mooncake._scale_internal(c, a, t.a)
     return t_new
 end
 
@@ -736,7 +738,14 @@ end
 ```
 
 Now we can run it again and successfully check if all the tangent / fdata / rdata and other required functionality works correctly for the self-referential type A.
+We run the check for both a non-cyclic case to check our method implementations,
+as well as a cyclic case to make sure that our interactions with the caches are correct.
 
 ```@example custom_tangent_type
+# Non-cyclic A
 Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))
+# Cyclic A
+cyclic_a = A(1.0, A(2.0))
+cyclic_a.a.a = cyclic_a
+Mooncake.TestUtils.test_data(Random.default_rng(), cyclic_a)
 ```

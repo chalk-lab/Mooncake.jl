@@ -1350,7 +1350,7 @@ function tangent_to_primal_internal!!(x::SimpleVector, tx, c::MaybeCache)
     return x′
 end
 function primal_to_tangent_internal!!(tx, x::SimpleVector, c::MaybeCache)
-    haskey(c, x) && c[x]::Vector{Any}
+    haskey(c, x) && return c[x]::Vector{Any}
     @assert length(tx) == length(x)
     c[x] = tx
     for i in eachindex(x)

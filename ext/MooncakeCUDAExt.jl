@@ -175,22 +175,6 @@ function tangent_to_primal_internal!!(x::CuComplexArray, t, c::MaybeCache)
     x .= reinterpret(eltype(x), t)
     return x
 end
-function _diff_internal(c::MaybeCache, x::P, y::P) where {P<:CuFloatArray}
-    key = (x, y)
-    haskey(c, key) && return c[key]::tangent_type(P)
-    t = x - y
-    c[key] = t
-    return t
-end
-function _diff_internal(c::MaybeCache, x::P, y::P) where {P<:CuComplexArray}
-    key = (x, y)
-    haskey(c, key) && return c[key]::tangent_type(P)
-    t = tangent_type(P)(undef, size(x))
-    t_ = reinterpret(eltype(x), t)
-    @. t_ = x - y
-    c[key] = t
-    return t
-end
 function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuFloatArray}
     key = (x, y)
     haskey(c, key) && return c[key]::Float64
