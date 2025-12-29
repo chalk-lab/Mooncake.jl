@@ -9,18 +9,6 @@ function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Int
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
 end
 
-# Avoid differentiating through AD infrastructure during second-order differentiation.
-@zero_derivative MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(prepare_gradient_cache),Vararg
-}
-@zero_derivative MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(prepare_derivative_cache),Vararg
-}
-@zero_derivative MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(prepare_pullback_cache),Vararg
-}
-@zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
-
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(string),Vararg}
 @zero_derivative MinimalCtx Tuple{Type{Symbol},Vararg}
