@@ -4,9 +4,9 @@ include("front_matter.jl")
     if test_group == "basic"
         Aqua.test_all(Mooncake)
         include("utils.jl")
-        include("tangents.jl")
-        include("fwds_rvs_data.jl")
-        include("codual.jl")
+        include(joinpath("tangents", "tangents.jl"))
+        include(joinpath("tangents", "fwds_rvs_data.jl"))
+        include(joinpath("tangents", "codual.jl"))
         include("debug_mode.jl")
         include("stack.jl")
         @testset "interpreter" begin
@@ -25,48 +25,48 @@ include("front_matter.jl")
         include("config.jl")
         include("developer_tools.jl")
         include("test_utils.jl")
-    elseif test_group == "rrules/array_legacy"
-        include(joinpath("rrules", "array_legacy.jl"))
-    elseif test_group == "rrules/avoiding_non_differentiable_code"
-        include(joinpath("rrules", "avoiding_non_differentiable_code.jl"))
-    elseif test_group == "rrules/blas"
-        include(joinpath("rrules", "blas.jl"))
-    elseif test_group == "rrules/blas_level_3"
-        include(joinpath("rrules", "blas_level_3.jl"))
-    elseif test_group == "rrules/builtins"
-        include(joinpath("rrules", "builtins.jl"))
-    elseif test_group == "rrules/fastmath"
-        include(joinpath("rrules", "fastmath.jl"))
-    elseif test_group == "rrules/foreigncall"
-        include(joinpath("rrules", "foreigncall.jl"))
-    elseif test_group == "rrules/iddict"
-        include(joinpath("rrules", "iddict.jl"))
-    elseif test_group == "rrules/lapack"
-        include(joinpath("rrules", "lapack.jl"))
-    elseif test_group == "rrules/linear_algebra"
-        include(joinpath("rrules", "linear_algebra.jl"))
-    elseif test_group == "rrules/low_level_maths"
-        include(joinpath("rrules", "low_level_maths.jl"))
-    elseif test_group == "rrules/misc"
-        include(joinpath("rrules", "misc.jl"))
-    elseif test_group == "rrules/misty_closures"
-        include(joinpath("rrules", "misty_closures.jl"))
-    elseif test_group == "rrules/new"
-        include(joinpath("rrules", "new.jl"))
-    elseif test_group == "rrules/random"
-        include(joinpath("rrules", "random.jl"))
-    elseif test_group == "rrules/tasks"
-        include(joinpath("rrules", "tasks.jl"))
-    elseif test_group == "rrules/twice_precision"
-        include(joinpath("rrules", "twice_precision.jl"))
-    elseif test_group == "rrules/memory"
+    elseif test_group == "rules/array_legacy"
+        include(joinpath("rules", "array_legacy.jl"))
+    elseif test_group == "rules/avoiding_non_differentiable_code"
+        include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
+    elseif test_group == "rules/blas"
+        include(joinpath("rules", "blas.jl"))
+    elseif test_group == "rules/blas_level_3"
+        include(joinpath("rules", "blas_level_3.jl"))
+    elseif test_group == "rules/builtins"
+        include(joinpath("rules", "builtins.jl"))
+    elseif test_group == "rules/fastmath"
+        include(joinpath("rules", "fastmath.jl"))
+    elseif test_group == "rules/foreigncall"
+        include(joinpath("rules", "foreigncall.jl"))
+    elseif test_group == "rules/iddict"
+        include(joinpath("rules", "iddict.jl"))
+    elseif test_group == "rules/lapack"
+        include(joinpath("rules", "lapack.jl"))
+    elseif test_group == "rules/linear_algebra"
+        include(joinpath("rules", "linear_algebra.jl"))
+    elseif test_group == "rules/low_level_maths"
+        include(joinpath("rules", "low_level_maths.jl"))
+    elseif test_group == "rules/misc"
+        include(joinpath("rules", "misc.jl"))
+    elseif test_group == "rules/misty_closures"
+        include(joinpath("rules", "misty_closures.jl"))
+    elseif test_group == "rules/new"
+        include(joinpath("rules", "new.jl"))
+    elseif test_group == "rules/random"
+        include(joinpath("rules", "random.jl"))
+    elseif test_group == "rules/tasks"
+        include(joinpath("rules", "tasks.jl"))
+    elseif test_group == "rules/twice_precision"
+        include(joinpath("rules", "twice_precision.jl"))
+    elseif test_group == "rules/memory"
         @static if VERSION >= v"1.11.0-rc4"
-            include(joinpath("rrules", "memory.jl"))
+            include(joinpath("rules", "memory.jl"))
         end
-    elseif test_group == "rrules/performance_patches"
-        include(joinpath("rrules", "performance_patches.jl"))
-    elseif test_group == "rrules/dispatch_doctor"
-        include(joinpath("rrules", "dispatch_doctor.jl"))
+    elseif test_group == "rules/performance_patches"
+        include(joinpath("rules", "performance_patches.jl"))
+    elseif test_group == "rules/dispatch_doctor"
+        include(joinpath("rules", "dispatch_doctor.jl"))
     else
         throw(error("test_group=$(test_group) is not recognised"))
     end
