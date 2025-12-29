@@ -7,7 +7,5 @@ using Mooncake: Mooncake
 
 # Test first-order differentiation (reverse mode)
 test_differentiation(
-    [AutoMooncake(; config=nothing), AutoMooncake(; config=Mooncake.Config())];
-    excluded=SECOND_ORDER,
-    logging=true,
+    [AutoMooncake(; config=nothing), AutoMooncake(; config=Mooncake.Config())]; logging=true
 )

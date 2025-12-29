@@ -155,6 +155,7 @@ end
 @unstable include(joinpath("rrules", "performance_patches.jl"))
 
 include("interface.jl")
+include(joinpath("rrules", "interface.jl"))
 include("config.jl")
 include("developer_tools.jl")
 
