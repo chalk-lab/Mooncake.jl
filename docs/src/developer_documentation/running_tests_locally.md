@@ -12,7 +12,7 @@ In case it is helpful, a command like
 julia --project=. -e 'import Pkg; Pkg.test(; test_args=ARGS)' -- rules/random
 ```
 
-allows you to run a specific group of tests (i.e. `rules/random`). The complete list of test groups can be found [here](https://github.com/chalk-lab/Mooncake.jl/blob/main/test/runtests.jl#L4-L71).
+allows you to run a specific group of tests (i.e. `rules/random`). The complete list of test groups can be found [here](https://github.com/chalk-lab/Mooncake.jl/blob/main/test/runtests.jl).
 
 For all code in `src`, Mooncake's tests are organised as follows:
 1. Things that are required for most / all test suites are loaded up in `test/front_matter.jl`.
