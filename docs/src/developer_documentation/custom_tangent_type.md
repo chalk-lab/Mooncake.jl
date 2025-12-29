@@ -173,7 +173,7 @@ function Mooncake.set_to_zero_internal!!(c::Mooncake.SetToZeroCache, t::TangentF
     Mooncake._already_tracked!(c, t) && return t
     t.x = Mooncake.set_to_zero_internal!!(c, t.x)
     if !(t.a isa Mooncake.NoTangent)
-        t.a = Mooncake.set_to_zero_internal!!(c, t.a)
+        Mooncake.set_to_zero_internal!!(c, t.a)
     end
     return t
 end
@@ -394,6 +394,7 @@ Implement the essential tangent manipulation functions:
 ```@example custom_tangent_type
 # Once we add this method, the TangentForA constructor that takes a NamedTuple can be removed
 Base.delete_method(
+    # (we need a concrete type to find the method hence Float64)
     only(methods(TangentForA{Float64}, Tuple{@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}} where Tx}))
 )
 
