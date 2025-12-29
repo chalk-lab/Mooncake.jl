@@ -6,19 +6,21 @@ There are two workflows for running tests, discussed below.
 
 ## Main Testing Functionality
 
-From the Mooncake.jl repository directory, you can run a specific test group with
+For all code in `src`, Mooncake's tests are organised as follows:
+1. Things that are required for most / all test suites are loaded up in `test/front_matter.jl`.
+1. The tests for something in `src` are located in an identically-named file in `test`. e.g. the unit tests for `src/rules/new.jl` are located in `test/rules/new.jl`.
+
+From the Mooncake.jl repository root, you can run a specific test group with
 
 ```bash
 julia --project=. -e 'import Pkg; Pkg.test(; test_args=ARGS)' -- rules/random
 ```
 
-where `--project=.` refers to the current folder. This example targets the `rules/random` test group defined in `test/runtests.jl`. The complete list of test groups can be found [here](https://github.com/chalk-lab/Mooncake.jl/blob/main/test/runtests.jl).
+This example targets the `rules/random` test group defined in `test/runtests.jl`. The complete list of test groups can be found [here](https://github.com/chalk-lab/Mooncake.jl/blob/main/test/runtests.jl).
 
-For all code in `src`, Mooncake's tests are organised as follows:
-1. Things that are required for most / all test suites are loaded up in `test/front_matter.jl`.
-1. The tests for something in `src` are located in an identically-named file in `test`. e.g. the unit tests for `src/rules/new.jl` are located in `test/rules/new.jl`.
+### Recommended Development Workflow
 
-Thus, a workflow that I (Will) find works very well is the following:
+A workflow that I (Will) find works very well is the following:
 1. Ensure that you have Revise.jl and TestEnv.jl installed in your default environment.
 1. start the REPL, `dev` Mooncake.jl, and navigate to the top level of the Mooncake.jl directory.
 1. `using TestEnv, Revise`. Better still, load both of these in your `.julia/config/startup.jl` file so that you don't ever forget to load them.
