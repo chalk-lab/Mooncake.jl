@@ -2,13 +2,15 @@
 @zero_derivative MinimalCtx Tuple{Type{MersenneTwister},Any}
 
 const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
+@zero_derivative MinimalCtx Tuple{typeof(rand),KnownRNGs}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs}
+@zero_derivative MinimalCtx Tuple{typeof(rand),KnownRNGs,Type{<:IEEEFloat}}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs,Type{<:IEEEFloat}}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
 
 const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
-for f in [randn!, randexp!]
+for f in [rand!, randn!, randexp!]
     @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
     @eval function frule!!(
         ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
