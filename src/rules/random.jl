@@ -71,7 +71,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:random})
         (false, :none, nothing, x -> x * rand(Xoshiro(123), Float32), 3.0),
         (false, :none, nothing, x -> x * randn(Xoshiro(123), Float32), 3.0),
         (false, :none, nothing, x -> x * randexp(Xoshiro(123), Float32), 3.0),
-        (false, :none, nothing, x -> x * rand!(Xoshiro(123), x), randn(9)),
+        (false, :none, nothing, x -> x .* rand!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randn!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randexp!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* rand(Xoshiro(123), size(x)...), randn(9)),
