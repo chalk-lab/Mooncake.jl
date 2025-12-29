@@ -16,7 +16,7 @@ From the Mooncake.jl repository root, you can run a specific test group with
 julia --project=. -e 'import Pkg; Pkg.test(; test_args=ARGS)' -- rules/random
 ```
 
-This example targets the `rules/random` test group defined in `test/runtests.jl`. The complete list of test groups can be found [here](https://github.com/chalk-lab/Mooncake.jl/blob/main/test/runtests.jl).
+This example targets the `rules/random` test group defined in `test/runtests.jl`. The complete list of test groups can be found [here](https://github.com/chalk-lab/Mooncake.jl/blob/main/test/runtests.jl). For debugging or checking the correctness of a specific rule, see [Debugging and MWEs](https://chalk-lab.github.io/Mooncake.jl/stable/utilities/debugging_and_mwes/#Debugging-and-MWEs).
 
 ### Recommended Development Workflow
 
