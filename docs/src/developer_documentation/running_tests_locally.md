@@ -6,6 +6,14 @@ There are two workflows for running tests, discussed below.
 
 ## Main Testing Functionality
 
+In case it is helpful, a command like
+
+```bash
+julia --project=. -e 'import Pkg; Pkg.test(; test_args=ARGS)' -- rules/random
+```
+
+allows you to run a specific group of tests (i.e. `rules/random`). The complete list of test groups can be found [here](https://github.com/chalk-lab/Mooncake.jl/blob/0b55297d1418502eac42b69a6b3a252264288e5b/test/runtests.jl#L4-L71).
+
 For all code in `src`, Mooncake's tests are organised as follows:
 1. Things that are required for most / all test suites are loaded up in `test/front_matter.jl`.
 1. The tests for something in `src` are located in an identically-named file in `test`. e.g. the unit tests for `src/rules/new.jl` are located in `test/rules/new.jl`.
