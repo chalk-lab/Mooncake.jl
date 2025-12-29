@@ -6,7 +6,9 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs}
 @zero_derivative MinimalCtx Tuple{typeof(rand),KnownRNGs,Type{<:IEEEFloat}}
-@zero_derivative MinimalCtx Tuple{typeof(rand),KnownRNGs,Union{Type{UInt32},Type{UInt64},Type{UInt128}}}
+@zero_derivative MinimalCtx Tuple{
+    typeof(rand),KnownRNGs,Union{Type{UInt32},Type{UInt64},Type{UInt128}}
+}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs,Type{<:IEEEFloat}}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
 
@@ -72,7 +74,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:random})
         (false, :none, nothing, x -> x * rand!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randn!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randexp!(Xoshiro(123), x), randn(9)),
-        (false, :none, nothing, x -> x * rand(Xoshiro(123), size(x)...), randn(9)),
+        (false, :none, nothing, x -> x .* rand(Xoshiro(123), size(x)...), randn(9)),
         (false, :none, nothing, x -> x .* randn(Xoshiro(123), size(x)...), randn(9)),
         (false, :none, nothing, x -> x .* randexp(Xoshiro(123), size(x)...), randn(9)),
 
