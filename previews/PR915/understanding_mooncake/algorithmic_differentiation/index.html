@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Algorithmic Differentiation · Mooncake.jl</title><meta name="title" content="Algorithmic Differentiation · Mooncake.jl"/><meta property="og:title" content="Algorithmic Differentiation · Mooncake.jl"/><meta property="twitter:title" content="Algorithmic Differentiation · Mooncake.jl"/><meta name="description" content="Documentation for Mooncake.jl."/><meta property="og:description" content="Documentation for Mooncake.jl."/><meta property="twitter:description" content="Documentation for Mooncake.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body>
+<!-- NAVBAR START -->
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro&display=swap');
+
+    /* Documenter.jl CSS Overrides */
+    html {
+        scroll-padding-top: calc(var(--navbar-height) + 1rem);
+    }
+    .docs-sidebar, #documenter {
+        margin-top: var(--navbar-height);
+    }
+    .docs-version-selector {
+        margin-bottom: 60px !important;
+    }
+    @media screen and (max-width: 1056px) {
+        .docs-version-selector {
+            margin-bottom: 60px !important;
+        }
+        .docs-sidebar {
+            margin-top: 0 !important;
+        }
+    }
+    /* End of Documenter.jl Tweaks */
+
+    /* Color and Font Variables */
+    :root {
+        --heading-color: #6c757d;
+        --item-color: rgb(165, 165, 165);
+        --primary-bg: white;
+        --hover-color: #8faad2;
+        --deprecated-bg: #ff4d4d;
+        --deprecated-text: white;
+        --icon-color: #6c757d;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e9ecef;
+        
+        /* Typography */
+        --font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        --nav-link-font-size: 1.0625rem;
+        --turing-title-font-size: 21.25px;
+        --icon-font-size: 1.25rem;
+        --dropdown-arrow-font-size: 0.6875rem;
+        --badge-font-size: 0.75rem;
+
+        /* Sizing and Spacing */
+        --navbar-height: 3.75rem;
+        --logo-height: 31px;
+        --logo-width: auto;
+        --logo-padding-top: 7px;
+        --logo-margin-left: 0.8rem;
+        --title-margin-left: 0.4px;
+        --title-nav-spacing: 1.1rem;
+        --nav-item-margin-left: 1.3rem;
+        --icon-margin-left: 1rem;
+        --dropdown-padding: 1.875rem;
+        --dropdown-item-width: 12.5rem;
+        --dropdown-subitem-width: 15.625rem;
+        --dropdown-subitem-padding: 0.125rem 0.625rem;
+    }
+
+    /* Dark Theme Variable Overrides */
+    html.theme--documenter-dark {
+        --heading-color: #e0e0e0;
+        --item-color: #bdbdbd;
+        --primary-bg: #1f2424;
+        --hover-color: #ffffff;
+        --icon-color: #e0e0e0;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #424242;
+    }
+
+    /* Catppuccin Theme Overrides */
+    html.theme--catppuccin-latte {
+        --heading-color: #4c4f69;
+        --primary-bg: #eff1f5;
+        --icon-color: #4c4f69;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e6e9ef;
+    }
+    html.theme--catppuccin-frappe {
+        --heading-color: #c6d0f5;
+        --primary-bg: #303446;
+        --icon-color: #c6d0f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #51576d;
+    }
+    html.theme--catppuccin-macchiato {
+        --heading-color: #cad3f5;
+        --primary-bg: #24273a;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #494d64;
+    }
+    html.theme--catppuccin-mocha {
+        --heading-color: #cad3f5;
+        --primary-bg: #1e1e2e;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #45475a;
+    }
+
+
+    /* Main Navigation Bar */
+    .ext-navigation {
+        font-family: var(--font-family);
+        position: fixed;
+        height: var(--navbar-height);
+        top: 0;
+        width: 100%;
+        background-color: var(--primary-bg);
+        z-index: 1000;
+        box-shadow: 0 2px 4px var(--shadow-color);
+        display: flex;
+        align-items: center;
+        padding: 0 1.0625rem;
+        transition: transform 0.3s, background-color 0.3s;
+    }
+
+    nav.ext-navigation .ext-navbar-logo {
+        margin-left: var(--logo-margin-left);
+        height: auto;
+        max-height: var(--logo-height);
+        width: auto;
+        padding-top: var(--logo-padding-top);
+    }
+    
+    /* Theme-aware logo text color */
+    .ext-navbar-logo .logo-text {
+        fill: var(--heading-color);
+    }
+    
+    .ext-navbar-title {
+        color: var(--heading-color) !important;
+        font-size: var(--turing-title-font-size) !important;
+        margin-left: var(--title-margin-left);
+        text-decoration: none;
+        transition: color 0.2s ease;
+    }
+    
+    .ext-navbar-title:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-nav-links {
+        display: flex;
+        align-items: center;
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+        flex-grow: 1;
+        margin-left: var(--title-nav-spacing);
+    }
+
+    .ext-nav-links li:first-child {
+        margin-left: 0 !important;
+    }
+
+    .ext-nav-links li {
+        margin-left: var(--nav-item-margin-left) !important;
+    }
+
+    .ext-nav-link {
+        color: var(--heading-color) !important;
+        text-decoration: none;
+        font-size: var(--nav-link-font-size) !important;
+        transition: color 0.2s ease;
+        cursor: pointer;
+    }
+
+    .ext-nav-link:hover,
+    .ext-navbar-item-single a:hover,
+    .ext-navbar-icons a:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-navbar-item-single a {
+        color: var(--heading-color) !important;
+    }
+    
+    .ext-navbar-icons {
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-navbar-icons a {
+        color: var(--icon-color) !important;
+        font-size: var(--icon-font-size) !important;
+        transition: color 0.2s ease;
+        margin-left: var(--icon-margin-left);
+    }
+
+    .ext-menu-toggle {
+        display: none;
+        font-size: 1.5rem;
+        color: var(--heading-color);
+        cursor: pointer;
+    }
+
+    .ext-dropdown {
+        display: none;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        padding: var(--dropdown-padding);
+        position: absolute;
+        top: var(--navbar-height);
+        width: 100%;
+        left: 0;
+        background-color: var(--primary-bg);
+        line-height: 1.875rem;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out, background-color 0.3s;
+        transform: translateY(-0.625rem);
+        box-shadow: 0 4px 6px var(--shadow-color);
+    }
+
+    #library-handler::after {
+        content: "▼";
+        font-size: var(--dropdown-arrow-font-size);
+        margin-left: 0.3125rem;
+        transition: transform 0.3s ease-in-out;
+    }
+
+    #library-handler.open::after {
+        content: "▲";
+    }
+
+    .ext-dropdown.show {
+        display: grid;
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .ext-dropdown ul {
+        width: var(--dropdown-item-width);
+        margin-bottom: 1.25rem;
+    }
+
+    .ext-dropdown ul li {
+        text-align: left;
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-dropdown ul a li {
+        color: var(--item-color);
+        width: var(--dropdown-subitem-width);
+        border-radius: 3px;
+        padding: var(--dropdown-subitem-padding);
+        transition: background-color 0.2s ease;
+    }
+
+    .ext-dropdown ul a li:hover {
+        background-color: var(--dropdown-hover-bg);
+    }
+
+    .ext-dropdown-item-heading {
+        color: var(--heading-color);
+        text-align: center;
+    }
+
+    .deprecated-badge {
+        background-color: var(--deprecated-bg);
+        color: var(--deprecated-text);
+        font-size: var(--badge-font-size);
+        padding: .1rem;
+        border-radius: 3px;
+        margin-left: 0.5rem;
+        line-height: 1;
+    }
+
+    @media (max-width: 966px) {
+        .ext-dropdown {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .ext-nav-links {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            background-color: var(--primary-bg);
+            position: absolute;
+            top: var(--navbar-height);
+            left: 0;
+            padding: 0.625rem 0;
+            height: auto;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px var(--shadow-color);
+            margin-left: 0;
+        }
+
+        .ext-nav-links.show {
+            display: flex;
+        }
+
+        .ext-nav-links li {
+            margin: 0.625rem 0 !important;
+            text-align: center;
+        }
+        
+        .ext-menu-toggle {
+            display: block;
+            margin-left: auto;
+        }
+
+        .ext-navigation.hide {
+            transform: translateY(calc(-1 * var(--navbar-height)));
+        }
+
+        .ext-dropdown {
+            position: static;
+            display: block;
+            opacity: 1;
+            transform: none;
+            box-shadow: none;
+            grid-template-columns: 1fr;
+            padding: 0.625rem;
+            text-align: center;
+        }
+
+        .ext-dropdown ul {
+            width: auto;
+            display: inline-block;
+            margin: 0 auto 0.3125rem;
+            text-align: left;
+        }
+    }
+</style>
+<nav class="ext-navigation">
+    <a href="https://turinglang.org/">
+        <svg width="4333" height="1145" viewBox="0 0 4333 1145" fill="none" xmlns="http://www.w3.org/2000/svg" class="ext-navbar-logo">
+            <path class="logo-text" d="M0.44603 193.181V66.9868H663.471V193.181H406.62V898H257.297V193.181H0.44603ZM1097.24 635.874V274.74H1244.13V898H1101.7V787.225H1095.21C1081.14 822.121 1058.01 850.66 1025.82 872.842C993.902 895.024 954.542 906.115 907.744 906.115C866.896 906.115 830.783 897.053 799.403 878.929C768.295 860.534 743.948 833.889 726.365 798.993C708.782 763.826 699.99 721.356 699.99 671.581V274.74H846.878V648.858C846.878 688.353 857.699 719.733 879.34 742.997C900.981 766.261 929.385 777.893 964.551 777.893C986.192 777.893 1007.16 772.618 1027.45 762.068C1047.73 751.518 1064.37 735.828 1077.35 714.999C1090.61 693.899 1097.24 667.524 1097.24 635.874ZM1395.17 898V274.74H1537.6V378.617H1544.09C1555.45 342.639 1574.93 314.911 1602.52 295.434C1630.38 275.687 1662.17 265.813 1697.88 265.813C1705.99 265.813 1715.05 266.219 1725.06 267.031C1735.34 267.572 1743.86 268.518 1750.63 269.871V404.992C1744.4 402.828 1734.53 400.934 1721 399.311C1707.75 397.417 1694.9 396.471 1682.46 396.471C1655.68 396.471 1631.6 402.287 1610.23 413.919C1589.13 425.28 1572.49 441.105 1560.32 461.393C1548.15 481.682 1542.06 505.081 1542.06 531.591V898H1395.17ZM1848.21 898V274.74H1995.1V898H1848.21ZM1922.06 186.283C1898.8 186.283 1878.78 178.573 1862.01 163.154C1845.24 147.464 1836.85 128.664 1836.85 106.752C1836.85 84.5701 1845.24 65.7695 1862.01 50.3503C1878.78 34.6606 1898.8 26.8158 1922.06 26.8158C1945.6 26.8158 1965.61 34.6606 1982.12 50.3503C1998.89 65.7695 2007.27 84.5701 2007.27 106.752C2007.27 128.664 1998.89 147.464 1982.12 163.154C1965.61 178.573 1945.6 186.283 1922.06 186.283ZM2293.04 532.809V898H2146.15V274.74H2286.54V380.646H2293.85C2308.18 345.75 2331.04 318.022 2362.42 297.463C2394.07 276.904 2433.16 266.625 2479.69 266.625C2522.7 266.625 2560.17 275.822 2592.09 294.217C2624.28 312.612 2649.17 339.257 2666.75 374.153C2684.6 409.049 2693.39 451.385 2693.12 501.159V898H2546.24V523.882C2546.24 482.223 2535.41 449.626 2513.77 426.092C2492.4 402.557 2462.78 390.79 2424.91 390.79C2399.21 390.79 2376.35 396.471 2356.34 407.832C2336.59 418.923 2321.03 435.019 2309.67 456.119C2298.58 477.218 2293.04 502.782 2293.04 532.809ZM3113.5 1144.71C3060.75 1144.71 3015.44 1137.54 2977.57 1123.2C2939.7 1109.13 2909.26 1090.2 2886.27 1066.39C2863.28 1042.59 2847.32 1016.21 2838.39 987.269L2970.67 955.213C2976.62 967.386 2985.28 979.424 2996.64 991.327C3008 1003.5 3023.28 1013.51 3042.49 1021.35C3061.97 1029.47 3086.45 1033.53 3115.93 1033.53C3157.59 1033.53 3192.08 1023.38 3219.4 1003.09C3246.73 983.076 3260.39 950.074 3260.39 904.087V786.008H3253.08C3245.51 801.157 3234.42 816.711 3219.81 832.671C3205.47 848.632 3186.4 862.022 3162.6 872.842C3139.06 883.663 3109.44 889.073 3073.73 889.073C3025.85 889.073 2982.44 877.847 2943.48 855.394C2904.8 832.671 2873.96 798.857 2850.97 753.952C2828.24 708.777 2816.88 652.24 2816.88 584.341C2816.88 515.902 2828.24 458.147 2850.97 411.078C2873.96 363.739 2904.93 327.896 2943.89 303.55C2982.84 278.933 3026.26 266.625 3074.14 266.625C3110.66 266.625 3140.69 272.847 3164.22 285.29C3188.03 297.463 3206.96 312.206 3221.03 329.519C3235.09 346.561 3245.78 362.657 3253.08 377.805H3261.2V274.74H3406.06V908.144C3406.06 961.435 3393.34 1005.53 3367.92 1040.42C3342.49 1075.32 3307.73 1101.43 3263.63 1118.74C3219.54 1136.05 3169.5 1144.71 3113.5 1144.71ZM3114.72 773.835C3145.83 773.835 3172.34 766.261 3194.25 751.112C3216.16 735.963 3232.79 714.187 3244.16 685.783C3255.52 657.379 3261.2 623.295 3261.2 583.53C3261.2 544.305 3255.52 509.95 3244.16 480.465C3233.07 450.979 3216.56 428.12 3194.65 411.89C3173.01 395.389 3146.37 387.138 3114.72 387.138C3081.98 387.138 3054.66 395.659 3032.75 412.701C3010.84 429.744 2994.34 453.143 2983.25 482.899C2972.16 512.385 2966.61 545.929 2966.61 583.53C2966.61 621.672 2972.16 655.08 2983.25 683.754C2994.61 712.158 3011.25 734.34 3033.16 750.3C3055.34 765.99 3082.53 773.835 3114.72 773.835ZM3647.08 906.927C3622.47 906.927 3601.37 898.271 3583.78 880.958C3566.2 863.645 3557.54 842.545 3557.82 817.658C3557.54 793.312 3566.2 772.482 3583.78 755.17C3601.37 737.857 3622.47 729.2 3647.08 729.2C3670.89 729.2 3691.58 737.857 3709.17 755.17C3727.02 772.482 3736.08 793.312 3736.35 817.658C3736.08 834.159 3731.75 849.173 3723.37 862.698C3715.25 876.224 3704.43 887.044 3690.91 895.16C3677.65 903.004 3663.04 906.927 3647.08 906.927ZM3888.01 274.74H4034.9V933.708C4034.9 978.613 4026.38 1015.67 4009.33 1044.89C3992.29 1074.1 3967.67 1095.88 3935.48 1110.22C3903.29 1124.55 3864.2 1131.72 3818.22 1131.72C3812.81 1131.72 3807.8 1131.59 3803.2 1131.32C3798.6 1131.32 3793.6 1131.18 3788.19 1130.91V1011.21C3792.25 1011.48 3795.9 1011.62 3799.15 1011.62C3802.39 1011.89 3805.77 1012.02 3809.29 1012.02C3837.42 1012.02 3857.58 1005.12 3869.75 991.327C3881.92 977.801 3888.01 957.918 3888.01 931.679V274.74ZM3961.05 186.283C3937.51 186.283 3917.36 178.573 3900.59 163.154C3884.09 147.464 3875.84 128.664 3875.84 106.752C3875.84 84.5701 3884.09 65.7695 3900.59 50.3503C3917.36 34.6606 3937.51 26.8158 3961.05 26.8158C3984.31 26.8158 4004.19 34.6606 4020.7 50.3503C4037.47 65.7695 4045.85 84.5701 4045.85 106.752C4045.85 128.664 4037.47 147.464 4020.7 163.154C4004.19 178.573 3984.31 186.283 3961.05 186.283ZM4332.83 66.9868V898H4185.94V66.9868H4332.83Z" fill="currentColor"/>
+            <path d="M4076 108.5C4076 168.424 4027.42 217 3967.5 217C3907.58 217 3859 168.424 3859 108.5C3859 48.5762 3907.58 0 3967.5 0C4027.42 0 4076 48.5762 4076 108.5Z" fill="#389725"/>
+            <path d="M3755 814.5C3755 874.424 3706.42 923 3646.5 923C3586.58 923 3538 874.424 3538 814.5C3538 754.576 3586.58 706 3646.5 706C3706.42 706 3755 754.576 3755 814.5Z" fill="#9457B1"/>
+            <path d="M2030 108.5C2030 168.424 1981.42 217 1921.5 217C1861.58 217 1813 168.424 1813 108.5C1813 48.5762 1861.58 0 1921.5 0C1981.42 0 2030 48.5762 2030 108.5Z" fill="#CA3B33"/>
+        </svg>
+    </a>
+    <!-- <a class="ext-navbar-title" href="https://turinglang.org/">Turing.jl</a> -->
+    
+    <ul class="ext-nav-links">
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/getting-started/">Get Started</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/tutorials/">Tutorials</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/faq/">FAQ</a></li>
+        <li>
+            <p class="ext-nav-link" id="library-handler">Libraries</p>
+            <div class="ext-dropdown" id="ext-dropdown-items">
+                <ul>
+                    <li class="ext-dropdown-item-heading">Modelling Languages</li>
+                    <a href="https://turinglang.org/DynamicPPL.jl/"><li>DynamicPPL</li></a>
+                    <a href="https://turinglang.org/JuliaBUGS.jl/"><li>JuliaBUGS</li></a>
+                    <a href="https://turinglang.org/TuringGLM.jl/"><li>TuringGLM</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">MCMC</li>
+                    <a href="https://turinglang.org/AdvancedHMC.jl/"><li>AdvancedHMC</li></a>
+                    <a href="https://turinglang.org/AbstractMCMC.jl/"><li>AbstractMCMC</li></a>
+                    <a href="https://github.com/theogf/ThermodynamicIntegration.jl"><li>ThermodynamicIntegration</li></a>
+                    <a href="https://turinglang.org/AdvancedPS.jl/"><li>AdvancedPS</li></a>
+                    <a href="https://turinglang.org/SliceSampling.jl/"><li>SliceSampling</li></a>
+                    <a href="https://turinglang.org/EllipticalSliceSampling.jl/"><li>EllipticalSliceSampling</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Diagnostics</li>
+                    <a href="https://turinglang.org/MCMCChains.jl/"><li>MCMCChains</li></a>
+                    <a href="https://turinglang.org/MCMCDiagnosticTools.jl/"><li>MCMCDiagnosticTools</li></a>
+                    <a href="https://turinglang.org/ParetoSmooth.jl/"><li>ParetoSmooth</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Gaussian Processes</li>
+                    <a href="https://juliagaussianprocesses.github.io/AbstractGPs.jl/"><li>AbstractGPs</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/KernelFunctions.jl/"><li>KernelFunctions</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/ApproximateGPs.jl/"><li>ApproximateGPs</li></a>
+                </ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Bijectors.jl/">Bijectors</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/TuringCallbacks.jl/">TuringCallbacks</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Deprecated/TuringBenchmarking/">TuringBenchmarking</a><span class="deprecated-badge">Deprecated</span></li></ul>
+            </div>
+        </li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/news/">News</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/team/">Team</a></li>
+    </ul>
+
+    <div class="ext-navbar-icons">
+        <a href="https://x.com/TuringLang" aria-label="Turing on X"><i class="fa-brands fa-x-twitter"></i></a>
+        <a href="https://discourse.julialang.org/c/domain/probprog/48" aria-label="Turing on Discourse"><i class="fa-brands fa-discourse"></i></a>
+        <a href="https://julialang.slack.com/archives/CCYDC34A0" aria-label="Turing on Slack"><i class="fa-brands fa-slack"></i></a>
+        <a href="https://github.com/TuringLang/" aria-label="Turing.jl on GitHub"><i class="fa-brands fa-github"></i></a>
+    </div>
+
+    <span class="ext-menu-toggle"><i class="fa-solid fa-bars"></i></span>
+</nav>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const menuToggle = document.querySelector(".ext-menu-toggle");
+        const navLinks = document.querySelector(".ext-nav-links");
+        const nav = document.querySelector(".ext-navigation");
+        const libraryHandler = document.getElementById("library-handler");
+        const dropdownContainer = document.getElementById("ext-dropdown-items");
+        let lastScrollY = window.scrollY;
+
+        function closeDropdown() {
+            if (dropdownContainer.classList.contains("show")) {
+                libraryHandler.classList.remove("open");
+                dropdownContainer.classList.remove("show");
+                setTimeout(() => {
+                    if (!dropdownContainer.classList.contains("show")) {
+                        dropdownContainer.style.display = "none";
+                    }
+                }, 300);
+            }
+        }
+
+        function openDropdown() {
+            dropdownContainer.style.display = "grid";
+            libraryHandler.classList.add("open");
+            setTimeout(() => {
+                dropdownContainer.classList.add("show");
+            }, 10);
+        }
+
+        function setAppropriateHeight() {
+            if (window.innerWidth <= 768) {
+                const viewportHeight = window.innerHeight;
+                const navHeight = nav.offsetHeight;
+                navLinks.style.maxHeight = `${viewportHeight - navHeight}px`;
+                navLinks.style.overflowY = "auto";
+            } else {
+                navLinks.style.maxHeight = "";
+                navLinks.style.overflowY = "";
+            }
+        }
+
+        menuToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            navLinks.classList.toggle("show");
+            if (navLinks.classList.contains("show")) {
+                setAppropriateHeight();
+                closeDropdown();
+                dropdownContainer.style.display = "none";
+            }
+        });
+
+        libraryHandler.addEventListener("click", (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            if (dropdownContainer.classList.contains("show")) {
+                closeDropdown();
+            } else {
+                openDropdown();
+            }
+            setAppropriateHeight();
+        });
+
+        // Close all menus if a click is registered outside the navigation bar.
+        document.addEventListener("click", (event) => {
+            if (!nav.contains(event.target)) {
+                navLinks.classList.remove("show");
+                closeDropdown();
+            }
+        });
+
+        // Hide navigation bar on scroll down in mobile view.
+        window.addEventListener("scroll", () => {
+            if (window.innerWidth <= 768) {
+                if (window.scrollY > lastScrollY && window.scrollY > nav.offsetHeight){
+                    nav.classList.add("hide");
+                } else {
+                    nav.classList.remove("hide");
+                }
+                lastScrollY = window.scrollY;
+            }
+        });
+
+        window.addEventListener("resize", setAppropriateHeight);
+    });
+</script>
+<!-- NAVBAR END -->
+
+
+<div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.svg" alt="Mooncake.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">Mooncake.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Mooncake.jl</a></li><li><a class="tocitem" href="../../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../../interface/">Interface</a></li><li><span class="tocitem">Understanding Mooncake.jl</span><ul><li><a class="tocitem" href="../introduction/">Introduction</a></li><li class="is-active"><a class="tocitem" href>Algorithmic Differentiation</a><ul class="internal"><li class="toplevel"><a class="tocitem" href="#Derivatives"><span>Derivatives</span></a></li><li class="toplevel"><a class="tocitem" href="#Reverse-Mode-AD:-*what*-does-it-do?"><span>Reverse-Mode AD: <em>what</em> does it do?</span></a></li><li class="toplevel"><a class="tocitem" href="#Reverse-Mode-AD:-*how*-does-it-do-it?"><span>Reverse-Mode AD: <em>how</em> does it do it?</span></a></li><li class="toplevel"><a class="tocitem" href="#Directional-Derivatives-and-Gradients"><span>Directional Derivatives and Gradients</span></a></li><li class="toplevel"><a class="tocitem" href="#Summary"><span>Summary</span></a></li><li class="toplevel"><a class="tocitem" href="#Asides"><span>Asides</span></a></li></ul></li><li><a class="tocitem" href="../rule_system/">Mooncake.jl&#39;s Rule System</a></li></ul></li><li><span class="tocitem">Utilities</span><ul><li><a class="tocitem" href="../../utilities/defining_rules/">Defining Rules</a></li><li><a class="tocitem" href="../../utilities/debug_mode/">Debug Mode</a></li><li><a class="tocitem" href="../../utilities/debugging_and_mwes/">Debugging and MWEs</a></li></ul></li><li><span class="tocitem">Developer Documentation</span><ul><li><a class="tocitem" href="../../developer_documentation/running_tests_locally/">Running Tests Locally</a></li><li><a class="tocitem" href="../../developer_documentation/developer_tools/">Developer Tools</a></li><li><a class="tocitem" href="../../developer_documentation/tangents/">Tangents</a></li><li><a class="tocitem" href="../../developer_documentation/custom_tangent_type/">Writing Custom Tangent Types</a></li><li><a class="tocitem" href="../../developer_documentation/ir_representation/">IR Representations and Code Transformations</a></li><li><a class="tocitem" href="../../developer_documentation/forwards_mode_design/">Forwards-Mode Design</a></li><li><a class="tocitem" href="../../developer_documentation/reverse_mode_design/">Reverse-Mode Design</a></li><li><a class="tocitem" href="../../developer_documentation/misc_internals_notes/">Misc. Internals Notes</a></li><li><a class="tocitem" href="../../developer_documentation/internal_docstrings/">Internal Docstrings</a></li></ul></li><li><a class="tocitem" href="../../known_limitations/">Known Limitations</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Understanding Mooncake.jl</a></li><li class="is-active"><a href>Algorithmic Differentiation</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Algorithmic Differentiation</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl/blob/main/docs/src/understanding_mooncake/algorithmic_differentiation.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Algorithmic-Differentiation"><a class="docs-heading-anchor" href="#Algorithmic-Differentiation">Algorithmic Differentiation</a><a id="Algorithmic-Differentiation-1"></a><a class="docs-heading-anchor-permalink" href="#Algorithmic-Differentiation" title="Permalink"></a></h1><p>This section introduces the mathematics behind AD. Even if you have worked with AD before, we recommend reading in order to acclimatise yourself to the perspective that Mooncake.jl takes on the subject.</p><h1 id="Derivatives"><a class="docs-heading-anchor" href="#Derivatives">Derivatives</a><a id="Derivatives-1"></a><a class="docs-heading-anchor-permalink" href="#Derivatives" title="Permalink"></a></h1><p>The foundation of automatic differentiation is the derivative. Here we build up to a general definition.</p><p><em><strong>Scalar-to-Scalar Functions</strong></em></p><p>Consider first <span>$f : \RR \to \RR$</span>, which we require to be differentiable at <span>$x \in \RR$</span>. Its derivative at <span>$x$</span> is usually thought of as the scalar <span>$\alpha \in \RR$</span> such that</p><p class="math-container">\[\text{d}f = \alpha \, \text{d}x .\]</p><p>Loosely speaking, by this notation we mean <span>$f(x + \text{d} x) \approx f(x) + \text{d} f$</span>, or in other words, that an arbitrarily small change <span>$\text{d} x$</span> to the input <span>$x$</span> results in a change <span>$\text{d} f = \alpha \, \text{d}x$</span> in the output. We refer readers to the first few minutes of the <a href="https://ocw.mit.edu/courses/18-s096-matrix-calculus-for-machine-learning-and-beyond-january-iap-2023/resources/ocw_18s096_lecture01-part2_2023jan18_mp4/">first lecture mentioned before</a> for a more careful explanation.</p><p><em><strong>Vector-to-Vector Functions</strong></em></p><p>The generalisation of this to Euclidean space should be familiar: if <span>$f : \RR^P \to \RR^Q$</span> is differentiable at a point <span>$x \in \RR^P$</span>, then the derivative of <span>$f$</span> at <span>$x$</span> is given by the Jacobian matrix at <span>$x$</span>, denoted <span>$J[x] \in \RR^{Q \times P}$</span>, such that</p><p class="math-container">\[\text{d}f = J[x] \, \text{d}x .\]</p><p>It is possible to stop here, as all the functions we shall need to consider can in principle be written as functions on some subset <span>$\RR^P$</span>.</p><p>However, to differentiate computer programmes, we must deal with complicated nested data structures, e.g. <code>struct</code>s inside <code>Tuple</code>s inside <code>Vector</code>s etc. While all of these data structures <em>can</em> be mapped onto a flat vector in order to make sense of the Jacobian, this quickly becomes very inconvenient. To see the problem, consider the Julia function whose input is of type <code>Tuple{Tuple{Float64, Vector{Float64}}, Vector{Float64}, Float64}</code> and whose output is of type <code>Tuple{Vector{Float64}, Float64}</code>. What kind of object might be use to represent the derivative of a function mapping between these two spaces? We certainly <em>can</em> treat these as structured &quot;view&quot; into a &quot;flat&quot; <code>Vector{Float64}</code>s, and then define a Jacobian, but actually <em>finding</em> this mapping is a tedious exercise, even if it quite obviously exists.</p><p>In fact, a more general formulation of the derivative is used all the time in the context of AD – the matrix calculus discussed by [<a href="#giles2008extended">1</a>] and [<a href="#minka2000old">2</a>] (to name a couple) make use of a generalised form of the derivative in order to work with functions which map to and from matrices (albeit there are slight differences in naming conventions from text to text), without needing to &quot;flatten&quot; them into vectors in order to make sense of them.</p><p>In general, it will be much easier to avoid &quot;flattening&quot; operations wherever possible. In order to do so, we now introduce a generalised notion of the derivative.</p><p><em><strong>Functions Between More General Spaces</strong></em></p><p>In order to avoid the difficulties described above, we consider functions <span>$f : \mathcal{X} \to \mathcal{Y}$</span>, where <span>$\mathcal{X}$</span> and <span>$\mathcal{Y}$</span> are <em>finite</em> dimensional real Hilbert spaces (read: finite-dimensional vector space with an inner product, and real-valued scalars). This definition includes functions to and from <span>$\RR$</span>, <span>$\RR^D$</span>, real-valued matrices, and any other &quot;container&quot; for collections of real numbers. Furthermore, we shall see later how we can model all sorts of structured representations of data directly as such spaces.</p><p>For such spaces, the derivative of <span>$f$</span> at <span>$x \in \mathcal{X}$</span> is the linear operator (read: linear function) <span>$D f [x] : \mathcal{X} \to \mathcal{Y}$</span> satisfying</p><p class="math-container">\[\text{d}f = D f [x] \, (\text{d} x)\]</p><p>The purpose of this linear operator is to provide a linear approximation to <span>$f$</span> which is accurate for arguments which are very close to <span>$x$</span>.</p><p>Please note that <span>$D f [x]$</span> is a single mathematical object, despite being three separate symbols: <span>$D f [x] (\dot{x})$</span> denotes the application of the function <span>$D f [x]$</span> to argument <span>$\dot{x}$</span>. Furthermore, the dot-notation (<span>$\dot{x}$</span>) does not have anything to do with time-derivatives, it is simply common notation used in the AD literature to denote the arguments of derivatives.</p><p>So, instead of thinking of the derivative as a number or a matrix, we think about it as a <em>function</em>. We can express the previous notions of the derivative in this language.</p><p>In the scalar case, rather than thinking of the derivative as <em>being</em> <span>$\alpha$</span>, we think of it is a the linear operator <span>$D f [x] (\dot{x}) := \alpha \dot{x}$</span>. Put differently, rather than thinking of the derivative as the slope of the tangent to <span>$f$</span> at <span>$x$</span>, think of it as the function decribing the tangent itself. Observe that up until now we had only considered inputs to <span>$D f [x]$</span> which were small (<span>$\text{d} x$</span>) – here we extend it to the entire space <span>$\mathcal{X}$</span> and denote inputs in this space <span>$\dot{x}$</span>. Inputs <span>$\dot{x}$</span> should be thoughts of as &quot;directions&quot;, in the directional derivative sense (why this is true will be discussed later).</p><p>Similarly, if <span>$\mathcal{X} = \RR^P$</span> and <span>$\mathcal{Y} = \RR^Q$</span> then this operator can be specified in terms of the Jacobian matrix: <span>$D f [x] (\dot{x}) := J[x] \dot{x}$</span> – brackets are used to emphasise that <span>$D f [x]$</span> is a function, and is being applied to <span>$\dot{x}$</span>.<sup class="footnote-reference"><a id="citeref-note_for_geometers" href="#footnote-note_for_geometers" class="footnote-ref">[note_for_geometers]</a><span class="footnote-preview" id="fn-note_for_geometers"></span></sup></p><p>To reiterate, for the rest of this document, we define the derivative to be &quot;multiply by <span>$\alpha$</span>&quot; or &quot;multiply by <span>$J[x]$</span>&quot;, rather than to <em>be</em> <span>$\alpha$</span> or <span>$J[x]$</span>. So whenever you see the word &quot;derivative&quot;, you should think &quot;linear function&quot;.</p><p><em><strong>The Chain Rule</strong></em></p><p>The chain rule is <em>the</em> result which makes AD work. Fortunately, it applies to this version of the derivative:</p><p class="math-container">\[f = g \circ h \implies D f [x] = (D g [h(x)]) \circ (D h [x])\]</p><p>By induction, this extends to a collection of <span>$N$</span> functions <span>$f_1, \dots, f_N$</span>:</p><p class="math-container">\[f := f_N \circ \dots \circ f_1 \implies D f [x] = (D f_N [x_N]) \circ \dots \circ (D f_1 [x_1]),\]</p><p>where <span>$x_{n+1} := f(x_n)$</span>, and <span>$x_1 := x$</span>.</p><p><em><strong>An aside: the definition of the Frechet Derivative</strong></em></p><p>This definition of the derivative has a name: the Frechet derivative. It is a generalisation of the Total Derivative. Formally, we say that a function <span>$f : \mathcal{X} \to \mathcal{Y}$</span> is differentiable at a point <span>$x \in \mathcal{X}$</span> if there exists a linear operator <span>$D f [x] : \mathcal{X} \to \mathcal{Y}$</span> (the derivative) satisfying</p><p class="math-container">\[\lim_{\text{d} h \to 0} \frac{\| f(x + \text{d} h) - f(x) - D f [x] (\text{d} h)  \|_\mathcal{Y}}{\| \text{d}h \|_\mathcal{X}} = 0,\]</p><p>where <span>$\| \cdot \|_\mathcal{X}$</span> and <span>$\| \cdot \|_\mathcal{Y}$</span> are the norms associated to Hilbert spaces <span>$\mathcal{X}$</span> and <span>$\mathcal{Y}$</span> respectively. (The Frechet derivative does not depend on the choice of norms. All norms are <em>equivalent</em> in finite dimensions, meaning they define the same topology and notion of convergence: if this equation is satisfied for one norm, it holds for all.)</p><p>It is a good idea to consider what this looks like when <span>$\mathcal{X} = \mathcal{Y} = \RR$</span> and when <span>$\mathcal{X} = \mathcal{Y} = \RR^D$</span>. It is sometimes helpful to refer to this definition to e.g. verify the correctness of the derivative of a function – as with single-variable calculus, however, this is rare.</p><p><em><strong>Another aside: what does Forwards-Mode AD compute?</strong></em></p><p>At this point we have enough machinery to discuss forwards-mode AD. Expressed in the language of linear operators and Hilbert spaces, the goal of forwards-mode AD is the following: given a function <span>$f$</span> which is differentiable at a point <span>$x$</span>, compute <span>$D f [x] (\dot{x})$</span> for a given vector <span>$\dot{x}$</span>. If <span>$f : \RR^P \to \RR^Q$</span>, this is equivalent to computing <span>$J[x] \dot{x}$</span>, where <span>$J[x]$</span> is the Jacobian of <span>$f$</span> at <span>$x$</span>. For the interested reader we provide a high-level explanation of <em>how</em> forwards-mode AD does this in <a href="#*How*-does-Forwards-Mode-AD-work?"><em>How</em> does Forwards-Mode AD work?</a>.</p><p><em><strong>Another aside: notation</strong></em></p><p>You may have noticed that we typically denote the argument to a derivative with a &quot;dot&quot; over it, e.g. <span>$\dot{x}$</span>. This is something that we will do consistently, and we will use the same notation for the outputs of derivatives. Wherever you see a symbol with a &quot;dot&quot; over it, expect it to be an input or output of a derivative / forwards-mode AD.</p><h1 id="Reverse-Mode-AD:-*what*-does-it-do?"><a class="docs-heading-anchor" href="#Reverse-Mode-AD:-*what*-does-it-do?">Reverse-Mode AD: <em>what</em> does it do?</a><a id="Reverse-Mode-AD:-*what*-does-it-do?-1"></a><a class="docs-heading-anchor-permalink" href="#Reverse-Mode-AD:-*what*-does-it-do?" title="Permalink"></a></h1><p>In order to explain what reverse-mode AD does, we first consider the &quot;vector-Jacobian product&quot; definition in Euclidean space which will be familiar to many readers. We then generalise.</p><p><em><strong>Reverse-Mode AD: what does it do in Euclidean space?</strong></em></p><p>In this setting, the goal of reverse-mode AD is the following: given a function <span>$f : \RR^P \to \RR^Q$</span> which is differentiable at <span>$x \in \RR^P$</span> with Jacobian <span>$J[x]$</span> at <span>$x$</span>, compute <span>$J[x]^\top \bar{y}$</span> for any <span>$\bar{y} \in \RR^Q$</span>. This is useful because we can obtain the gradient from this when <span>$Q = 1$</span> by letting <span>$\bar{y} = 1$</span>.</p><p><em><strong>Adjoint Operators</strong></em></p><p>In order to generalise this algorithm to work with linear operators, we must first generalise the idea of multiplying a vector by the transpose of the Jacobian. The relevant concept here is the <em>adjoint</em> of a linear operator. Specifically, the adjoint <span>$A^\ast$</span> of linear operator <span>$A$</span> is the linear operator satisfying</p><p class="math-container">\[\langle A^\ast \bar{y}, \dot{x} \rangle = \langle \bar{y}, A \dot{x} \rangle.\]</p><p>for any <span>$\dot{x}, \bar{y}$</span>, where <span>$\langle \cdot, \cdot \rangle$</span> denotes the inner-product. The relationship between the adjoint and matrix transpose is: if <span>$A (x) := J x$</span> for some matrix <span>$J$</span>, then <span>$A^\ast (y) := J^\top y$</span>.</p><p>Moreover, just as <span>$(A B)^\top = B^\top A^\top$</span> when <span>$A$</span> and <span>$B$</span> are matrices, <span>$(A B)^\ast = B^\ast A^\ast$</span> when <span>$A$</span> and <span>$B$</span> are linear operators. This result follows in short order from the definition of the adjoint operator – (and is a good exercise!)</p><p><em><strong>Reverse-Mode AD: what does it do in general?</strong></em></p><p>Equipped with adjoints, we can express reverse-mode AD only in terms of linear operators, dispensing with the need to express everything in terms of Jacobians. The goal of reverse-mode AD is as follows: given a differentiable function <span>$f : \mathcal{X} \to \mathcal{Y}$</span>, compute <span>$D f [x]^\ast (\bar{y})$</span> for some <span>$\bar{y}$</span>.</p><p>Notation: <span>$D f [x]^\ast$</span> denotes the single mathematical object which is the adjoint of <span>$D f [x]$</span>. It is a linear function from <span>$\mathcal{Y}$</span> to <span>$\mathcal{X}$</span>. We may occassionally write it as <span>$(D f [x])^\ast$</span> if there is some risk of confusion.</p><p>We will explain <em>how</em> reverse-mode AD goes about computing this after some worked examples.</p><p><em><strong>Aside: Notation</strong></em></p><p>You will have noticed that arguments to adjoints have thus far always had a &quot;bar&quot; over them, e.g. <span>$\bar{y}$</span>. This notation is common in the AD literature and will be used throughout. Additionally, this &quot;bar&quot; notation will be used for the outputs of adjoints of derivatives. So wherever you see a symbol with a &quot;bar&quot; over it, think &quot;input or output of adjoint of derivative&quot;.</p><h3 id="Some-Worked-Examples"><a class="docs-heading-anchor" href="#Some-Worked-Examples">Some Worked Examples</a><a id="Some-Worked-Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Some-Worked-Examples" title="Permalink"></a></h3><p>We now present some worked examples in order to prime intuition, and to introduce the important classes of problems that will be encountered when doing AD in the Julia language. We will put all of these problems in a single general framework later on.</p><h4 id="An-Example-with-Matrix-Calculus"><a class="docs-heading-anchor" href="#An-Example-with-Matrix-Calculus">An Example with Matrix Calculus</a><a id="An-Example-with-Matrix-Calculus-1"></a><a class="docs-heading-anchor-permalink" href="#An-Example-with-Matrix-Calculus" title="Permalink"></a></h4><p>We have introduced some mathematical abstraction in order to simplify the calculations involved in AD. To this end, we consider differentiating <span>$f(X) := X^\top X$</span>. Results for this and similar operations are given by [<a href="#giles2008extended">1</a>]. A similar operation, but which maps from matrices to <span>$\RR$</span> is discussed in Lecture 4 part 2 of the MIT course mentioned previouly. Both [<a href="#giles2008extended">1</a>] and <a href="https://ocw.mit.edu/courses/18-s096-matrix-calculus-for-machine-learning-and-beyond-january-iap-2023/resources/ocw_18s096_lecture04-part2_2023jan26_mp4/">Lecture 4 part 2</a> provide approaches to obtaining the derivative of this function.</p><p>Following either resource will yield the derivative:</p><p class="math-container">\[D f [X] (\dot{X}) = \dot{X}^\top X + X^\top \dot{X}\]</p><p>Observe that this is indeed a linear operator (i.e. it is linear in its argument, <span>$\dot{X}$</span>). (You can always plug it in to the definition of the Frechet derivative to confirm that it is indeed the derivative.)</p><p>In order to perform reverse-mode AD, we need to find the adjoint operator. Using the usual definition of the inner product between matrices,</p><p class="math-container">\[\langle X, Y \rangle := \textrm{tr} (X^\top Y)\]</p><p>we can rearrange the inner product as follows:</p><p class="math-container">\[\begin{align*}
+\langle\bar{Y},Df[X](\dot{X})\rangle &amp; =\langle\bar{Y},\dot{X}^{\top}X+X^{\top}\dot{X}\rangle\\
+ &amp; =\textrm{tr}(\bar{Y}^{\top}\left(\dot{X}^{\top}X+X^{\top}\dot{X}\right))\\
+ &amp; =\textrm{tr}(\dot{X}^{\top}X\bar{Y}^{\top})+\textrm{tr}(\bar{Y}^{\top}X^{\top}\dot{X})\\
+ &amp; =\langle\dot{X},X\bar{Y}^{\top}\rangle+\langle X\bar{Y},\dot{X}\rangle\\
+ &amp; =\langle X\bar{Y}^{\top}+X\bar{Y},\dot{X}\rangle.
+\end{align*}\]</p><p>The linearity of inner products and trace, and the <a href="https://en.wikipedia.org/wiki/Trace_(linear_algebra)#Cyclic_property">cyclic property of trace</a> was used in the above. We can read off the adjoint operator from the first argument to the inner product:</p><p class="math-container">\[\begin{align*}
+Df\left[X\right]^{*}\left(\bar{Y}\right) &amp; =X\bar{Y}^{\top}+X\bar{Y}\\
+ &amp; =X\left(\bar{Y}^{\top}+\bar{Y}\right).
+\end{align*}\]</p><h4 id="AD-of-a-Julia-function:-a-trivial-example"><a class="docs-heading-anchor" href="#AD-of-a-Julia-function:-a-trivial-example">AD of a Julia function: a trivial example</a><a id="AD-of-a-Julia-function:-a-trivial-example-1"></a><a class="docs-heading-anchor-permalink" href="#AD-of-a-Julia-function:-a-trivial-example" title="Permalink"></a></h4><p>We now turn to differentiating Julia <code>function</code>s (we use <code>function</code> to refer to the programming language construct, and function to refer to a more general mathematical concept). The way that Mooncake.jl handles immutable data is very similar to how Zygote / ChainRules do. For example, consider the Julia function</p><pre><code class="language-julia hljs">f(x::Float64) = sin(x)</code></pre><p>If you&#39;ve previously worked with ChainRules / Zygote, without thinking too hard about the formalisms we introduced previously (perhaps by considering a variety of partial derivatives) you can probably arrive at the following adjoint for the derivative of <code>f</code>:</p><pre><code class="language-julia hljs">g -&gt; g * cos(x)</code></pre><p>Implicitly, you have performed three steps:</p><ol><li>model <code>f</code> as a differentiable function,</li><li>compute its derivative, and</li><li>compute the adjoint of the derivative.</li></ol><p>It is helpful to work through this simple example in detail, as the steps involved apply more generally. The goal is to spell out the steps involved in detail, as this detail becomes helpful in more complicated examples. If at any point this exercise feels pedantic, we ask you to stick with it.</p><p><em><strong>Step 1: Differentiable Mathematical Model</strong></em></p><p>Obviously, we model the Julia <code>function</code> <code>f</code> as the function <span>$f : \RR \to \RR$</span> where</p><p class="math-container">\[f(x) := \sin(x)\]</p><p>Observe that, we&#39;ve made (at least) two modelling assumptions here:</p><ol><li>a <code>Float64</code> is modelled as a real number,</li><li>the Julia <code>function</code> <code>sin</code> is modelled as the usual mathematical function <span>$\sin$</span>.</li></ol><p>As promised we&#39;re being quite pedantic. While the first assumption is obvious and will remain true, we will shortly see examples where we have to work a bit harder to obtain a correspondence between a Julia <code>function</code> and a mathematical object.</p><p><em><strong>Step 2: Compute Derivative</strong></em></p><p>Now that we have a mathematical model, we can differentiate it:</p><p class="math-container">\[D f [x] (\dot{x}) = \cos(x) \dot{x}\]</p><p><em><strong>Step 3: Compute Adjoint of Derivative</strong></em></p><p>Given the derivative, we can find its adjoint:</p><p class="math-container">\[\langle \bar{f}, D f [x](\dot{x}) \rangle = \langle \bar{f}, \cos(x) \dot{x} \rangle = \langle \cos(x) \bar{f}, \dot{x} \rangle.\]</p><p>From here the adjoint can be read off from the first argument to the inner product:</p><p class="math-container">\[D f [x]^\ast (\bar{f}) = \cos(x) \bar{f}.\]</p><h4 id="AD-of-a-Julia-function:-a-slightly-less-trivial-example"><a class="docs-heading-anchor" href="#AD-of-a-Julia-function:-a-slightly-less-trivial-example">AD of a Julia function: a slightly less trivial example</a><a id="AD-of-a-Julia-function:-a-slightly-less-trivial-example-1"></a><a class="docs-heading-anchor-permalink" href="#AD-of-a-Julia-function:-a-slightly-less-trivial-example" title="Permalink"></a></h4><p>Now consider the Julia <code>function</code></p><pre><code class="language-julia hljs">f(x::Float64, y::Tuple{Float64, Float64}) = x + y[1] * y[2]</code></pre><p>Its adjoint is going to be something along the lines of</p><pre><code class="language-julia hljs">g -&gt; (g, (y[2] * g, y[1] * g))</code></pre><p>As before, we work through in detail.</p><p><em><strong>Step 1: Differentiable Mathematical Model</strong></em></p><p>There are a couple of aspects of <code>f</code> which require thought:</p><ol><li>it has two arguments – we&#39;ve only handled single argument functions previously, and</li><li>the second argument is a <code>Tuple</code> – we&#39;ve not yet decided how to model this.</li></ol><p>To this end, we define a mathematical notion of a tuple. A tuple is a collection of <span>$N$</span> elements, each of which is drawn from some set <span>$\mathcal{X}_n$</span>. We denote by <span>$\mathcal{X} := \{ \mathcal{X}_1 \times \dots \times \mathcal{X}_N \}$</span> the set of all <span>$N$</span>-tuples whose <span>$n$</span>th element is drawn from <span>$\mathcal{X}_n$</span>. Provided that each <span>$\mathcal{X}_n$</span> forms a finite Hilbert space, <span>$\mathcal{X}$</span> forms a Hilbert space with</p><ol><li><span>$\alpha x := (\alpha x_1, \dots, \alpha x_N)$</span>,</li><li><span>$x + y := (x_1 + y_1, \dots, x_N + y_N)$</span>, and</li><li><span>$\langle x, y \rangle := \sum_{n=1}^N \langle x_n, y_n \rangle$</span>.</li></ol><p>We can think of multi-argument functions as single-argument functions of a tuple, so a reasonable mathematical model for <code>f</code> might be a function <span>$f : \{ \RR \times \{ \RR \times \RR \} \} \to \RR$</span>, where</p><p class="math-container">\[f(x, y) := x + y_1 y_2\]</p><p>Note that while the function is written with two arguments, you should treat them as a single tuple, where we&#39;ve assigned the name <span>$x$</span> to the first element, and <span>$y$</span> to the second.</p><p><em><strong>Step 2: Compute Derivative</strong></em></p><p>Now that we have a mathematical object, we can differentiate it:</p><p class="math-container">\[D f [x, y](\dot{x}, \dot{y}) = \dot{x} + \dot{y}_1 y_2 + y_1 \dot{y}_2\]</p><p><em><strong>Step 3: Compute Adjoint of Derivative</strong></em></p><p><span>$D f[x, y]$</span> maps <span>$\{ \RR \times \{ \RR \times \RR \}\}$</span> to <span>$\RR$</span>, so <span>$D f [x, y]^\ast$</span> must map the other way. You should verify that the following follows quickly from the definition of the adjoint:</p><p class="math-container">\[D f [x, y]^\ast (\bar{f}) =  (\bar{f}, (\bar{f} y_2, \bar{f} y_1))\]</p><h4 id="AD-with-mutable-data"><a class="docs-heading-anchor" href="#AD-with-mutable-data">AD with mutable data</a><a id="AD-with-mutable-data-1"></a><a class="docs-heading-anchor-permalink" href="#AD-with-mutable-data" title="Permalink"></a></h4><p>In the previous two examples there was an obvious mathematical model for the Julia <code>function</code>. Indeed this model was sufficiently obvious that it required little explanation. This is not always the case though, in particular, Julia <code>function</code>s which modify / mutate their inputs require a little more thought.</p><p>Consider the following Julia <code>function</code>:</p><pre><code class="language-julia hljs">function f!(x::Vector{Float64})
+    x .*= x
+    return sum(x)
+end</code></pre><p>This <code>function</code> squares each element of its input in-place, and returns the sum of the result. So what is an appropriate mathematical model for this <code>function</code>?</p><p><em><strong>Step 1: Differentiable Mathematical Model</strong></em></p><p>The trick is to distinguish between the state of <code>x</code> upon <em>entry</em> to / <em>exit</em> from <code>f!</code>. In particular, let <span>$\phi_{\text{f!}} : \RR^N \to \{ \RR^N \times \RR \}$</span> be given by</p><p class="math-container">\[\phi_{\text{f!}}(x) = (x \odot x, \sum_{n=1}^N x_n^2)\]</p><p>where <span>$\odot$</span> denotes the Hadamard / element-wise product (corresponds to line <code>x .*= x</code> in the above code). The point here is that the inputs to <span>$\phi_{\text{f!}}$</span> are the inputs to <code>x</code> upon entry to <code>f!</code>, and the value returned from <span>$\phi_{\text{f!}}$</span> is a tuple containing the both the inputs upon exit from <code>f!</code> and the value returned by <code>f!</code>.</p><p>The remaining steps are straightforward now that we have the model.</p><p><em><strong>Step 2: Compute Derivative</strong></em></p><p>The derivative of <span>$\phi_{\text{f!}}$</span> is</p><p class="math-container">\[D \phi_{\text{f!}} [x](\dot{x}) = (2 x \odot \dot{x}, 2 \sum_{n=1}^N x_n \dot{x}_n).\]</p><p><em><strong>Step 3: Compute Adjoint of Derivative</strong></em></p><p>The argument to the adjoint of the derivative must be a 2-tuple whose elements are drawn from <span>$\{\RR^N \times \RR \}$</span>. Denote such a tuple as <span>$(\bar{y}_1, \bar{y}_2)$</span>. Plugging this into an inner product with the derivative and rearranging yields</p><p class="math-container">\[\begin{align}
+    \langle (\bar{y}_1, \bar{y}_2), D \phi_{\text{f!}} [x] (\dot{x}) \rangle &amp;= \langle (\bar{y}_1, \bar{y}_2), (2 x \odot \dot{x}, 2 \sum_{n=1}^N x_n \dot{x}_n) \rangle \nonumber \\
+        &amp;= \langle \bar{y}_1, 2 x \odot \dot{x} \rangle + \langle \bar{y}_2, 2 \sum_{n=1}^N x_n \dot{x}_n \rangle \nonumber \\
+        &amp;= \langle 2x \odot \bar{y}_1, \dot{x} \rangle + \langle 2 \bar{y}_2 x, \dot{x} \rangle \nonumber \\
+        &amp;= \langle 2 (x \odot \bar{y}_1 + \bar{y}_2 x), \dot{x} \rangle. \nonumber
+\end{align}\]</p><p>So we can read off the adjoint to be</p><p class="math-container">\[D \phi_{\text{f!}} [x]^\ast (\bar{y}) = 2 (x \odot \bar{y}_1 + \bar{y}_2 x).\]</p><h1 id="Reverse-Mode-AD:-*how*-does-it-do-it?"><a class="docs-heading-anchor" href="#Reverse-Mode-AD:-*how*-does-it-do-it?">Reverse-Mode AD: <em>how</em> does it do it?</a><a id="Reverse-Mode-AD:-*how*-does-it-do-it?-1"></a><a class="docs-heading-anchor-permalink" href="#Reverse-Mode-AD:-*how*-does-it-do-it?" title="Permalink"></a></h1><p>Now that we know <em>what</em> it is that AD computes, we need a rough understanding of <em>how</em> it computes it.</p><p>In short: reverse-mode AD breaks down a &quot;complicated&quot; function <span>$f$</span> into the composition of a collection of &quot;simple&quot; functions <span>$f_1, \dots, f_N$</span>, applies the chain rule, and takes the adjoint.</p><p>Specifically, we assume that we can express any function <span>$f$</span> as <span>$f = f_N \circ \dots \circ f_1$</span>, and that we can compute the adjoint of the derivative for each <span>$f_n$</span>. From this, we can obtain the adjoint of <span>$f$</span> by applying the chain rule to the derivatives and taking the adjoint:</p><p class="math-container">\[\begin{align}
+D f [x]^\ast &amp;= (D f_N [x_N] \circ \dots \circ D f_1 [x_1])^\ast \nonumber \\
+    &amp;= D f_1 [x_1]^\ast \circ \dots \circ D f_N [x_N]^\ast \nonumber
+\end{align}\]</p><p>For example, suppose that <span>$f(x) := \sin(\cos(\text{tr}(X^\top X)))$</span>. One option to compute its adjoint is to figure it out by hand directly (probably using the chain rule somewhere). Instead, we could notice that <span>$f = f_4 \circ f_3 \circ f_2 \circ f_1$</span> where <span>$f_4 := \sin$</span>, <span>$f_3 := \cos$</span>, <span>$f_2 := \text{tr}$</span> and <span>$f_1(X) = X^\top X$</span>. We could derive the adjoint for each of these functions (a fairly straightforward task), and then compute</p><p class="math-container">\[D f [x]^\ast (\bar{y}) = (D f_1 [x_1]^\ast \circ D f_2 [x_2]^\ast \circ D f_3 [x_3]^\ast \circ D f_4 [x_4]^\ast)(1)\]</p><p>in order to obtain the gradient of <span>$f$</span>. Reverse-mode AD essentially just does this. Modern systems have hand-written adjoints for (hopefully!) all of the &quot;simple&quot; functions you may wish to build a function such as <span>$f$</span> from (often there are hundreds of these), and composes them to compute the adjoint of <span>$f$</span>. A sketch of a more generic algorithm is as follows.</p><p>Forwards-Pass:</p><ol><li><span>$x_1 = x$</span>, <span>$n = 1$</span></li><li>construct <span>$D f_n [x_n]^\ast$</span></li><li>let <span>$x_{n+1} = f_n (x_n)$</span></li><li>let <span>$n = n + 1$</span></li><li>if <span>$n &lt; N + 1$</span> then go to step 2.</li></ol><p>Reverse-Pass:</p><ol><li>let <span>$\bar{x}_{N+1} = \bar{y}$</span></li><li>let <span>$n = n - 1$</span></li><li>let <span>$\bar{x}_{n} = D f_n [x_n]^\ast (\bar{x}_{n+1})$</span></li><li>if <span>$n = 1$</span> return <span>$\bar{x}_1$</span> else go to step 2.</li></ol><p><em><strong>How does this relate to vector-Jacobian products?</strong></em></p><p>In Euclidean space, each derivative <span>$D f_n [x_n](\dot{x}_n) = J_n[x_n] \dot{x}_n$</span>. Applying the chain rule to <span>$D f [x]$</span> and substituting this in yields</p><p class="math-container">\[J[x] = J_N[x_N] \dots J_1[x_1] .\]</p><p>Taking the transpose and multiplying from the left by <span>$\bar{y}$</span> yields</p><p class="math-container">\[J[x]^\top \bar{y} = J[x_1]^\top_1 \dots J[x_N]^\top_N \bar{y} .\]</p><p>Comparing this with the expression in terms of adjoints and operators, we see that composition of adjoints of derivatives has been replaced with multiplying by transposed Jacobian matrices. This &quot;vector-Jacobian product&quot; expression is commonly used to explain AD, and is likely familiar to many readers.</p><h1 id="Directional-Derivatives-and-Gradients"><a class="docs-heading-anchor" href="#Directional-Derivatives-and-Gradients">Directional Derivatives and Gradients</a><a id="Directional-Derivatives-and-Gradients-1"></a><a class="docs-heading-anchor-permalink" href="#Directional-Derivatives-and-Gradients" title="Permalink"></a></h1><p>Now we turn to using forwards- and reverse-mode AD to compute the gradient of a function.</p><p>Recall that if <span>$D f[x] : \mathcal{X} \to \mathbb{R}$</span> is the Frechet derivative discussed here then <span>$D f[x](\dot{x})$</span> is the <em>directional derivative</em> in the <span>$\dot{x}$</span> direction.</p><p>The <em>gradient</em> of <span>$f : \mathcal{X} \to \mathbb{R}$</span> at <span>$x$</span> is defined to be the vector <span>$\nabla f (x) \in \mathcal{X}$</span> such that</p><p class="math-container">\[\langle \nabla f (x), \dot{x} \rangle = D f[x](\dot{x})\]</p><p>for any direction <span>$\dot{x}$</span>. In other words, the vector <span>$\nabla f (x)$</span> encodes all the information about the directional derivatives of <span>$f$</span> at <span>$x$</span>, and we use the inner product to retrieve that information.</p><p>An alternative characterisation is that <span>$\nabla f(x)$</span> is the vector pointing in the direction of steepest ascent whose magnitude is given by the slope in that direction. In other words, if <span>$\hat{n} \coloneqq \argmax_{\|u\|=1} D f[x](u)$</span> is the unit vector in the direction of steepest ascent, then <span>$\nabla f (x) = \|\nabla f (x)\| \, \hat{n}$</span> and <span>$D f[x](\hat{n}) = \|\nabla f(x)\|$</span>. (That this follows from the implicit definition above is a good exercise.)</p><p><em><strong>Aside: The choice of inner product</strong></em></p><p>Notice that the value of the gradient depends on how the inner product on <span>$\mathcal{X}$</span> is defined. Indeed, different choices of inner product result in different values of <span>$\nabla f (x)$</span>. Adjoints such as <span>$D f[x]^*$</span> are also inner product dependent. However, the actual derivative <span>$D f[x]$</span> is of course invariant – it does not depend on the inner product or norm.</p><p>In practice, Mooncake uses the Euclidean inner product, extended in the &quot;obvious way&quot; to other composite data types (that is, as if everything is flattened and embedded in <span>$\mathbb{R}^N$</span>), but we endeavour to keep the discussion general in order to make the role of the inner product explicit.</p><h4 id="Computing-the-gradient-from-forwards-mode"><a class="docs-heading-anchor" href="#Computing-the-gradient-from-forwards-mode">Computing the gradient from forwards-mode</a><a id="Computing-the-gradient-from-forwards-mode-1"></a><a class="docs-heading-anchor-permalink" href="#Computing-the-gradient-from-forwards-mode" title="Permalink"></a></h4><p>To compute the gradient in forwards-mode, we need to evaluate the forwards pass <span>$\dim \mathcal{X}$</span> times. We also need to refer to a basis <span>$\{\mathbf{e}_i\}$</span> of <span>$\mathcal{X}$</span> and its reciprocal basis<sup class="footnote-reference"><a id="citeref-reciprocal_bases" href="#footnote-reciprocal_bases" class="footnote-ref">[reciprocal_bases]</a><span class="footnote-preview" id="fn-reciprocal_bases"></span></sup> <span>$\{\mathbf{e}^i\}$</span>. Equipped with such a pair of bases, we can always decompose a vector <span>$x = \sum_i x^i \mathbf{e}_i$</span> into its components <span>$x^i = \langle x, \mathbf{e}^i \rangle$</span>. Hence, the gradient is given by</p><p class="math-container">\[\nabla f(x)
+	= \sum_i \langle \nabla f(x), \mathbf{e}^i \rangle \mathbf{e}_i
+	= \sum_i D f[x](\mathbf{e}^i) \, \mathbf{e}_i\]</p><p>where the second equality follows from the gradient&#39;s definition.</p><p>If the inner product is Euclidean, then <span>$\mathbf{e}^i = \mathbf{e}_i$</span> and we can interpret the <span>$i$</span>th component of <span>$\nabla f$</span> as the directional derivative when moving in the <span>$i$</span>th direction.</p><p><em><strong>Example</strong></em></p><p>Consider again the Julia <code>function</code></p><pre><code class="language-julia hljs">f(x::Float64, y::Tuple{Float64, Float64}) = x + y[1] * y[2]</code></pre><p>corresponding to <span>$f(x, y) = x + y_1 y_2$</span>. An orthonormal basis for the function&#39;s domain <span>$\mathbb{R} \times \mathbb{R}^2$</span> is</p><p class="math-container">\[\mathbf{e}_1 = \mathbf{e}^1 = (1, (0, 0)), \quad
+\mathbf{e}_2 = \mathbf{e}^2 = (0, (1, 0)), \quad
+\mathbf{e}_3 = \mathbf{e}^3 = (0, (0, 1)), \quad\]</p><p>so the gradient is</p><p class="math-container">\[\begin{align*}
+\nabla f(x, y)
+	&amp;= \sum_i D f[x, y](\mathbf{e}^i) \mathbf{e}_i \\
+	&amp;= \Big(D f[x, y](1, (0, 0)), \big(D f[x, y](0, (1, 0)), D f[x, y](0, (0, 1))\big)\Big) \\
+	&amp;= (1, (y_2, y_1))
+\end{align*}\]</p><p>referring back to <a href="#AD-of-a-Julia-function:-a-slightly-less-trivial-example">Step 2 above</a> for the values of <span>$D f[x, y](\dot{x}, \dot{y})$</span>.</p><h4 id="Computing-the-gradient-from-reverse-mode"><a class="docs-heading-anchor" href="#Computing-the-gradient-from-reverse-mode">Computing the gradient from reverse-mode</a><a id="Computing-the-gradient-from-reverse-mode-1"></a><a class="docs-heading-anchor-permalink" href="#Computing-the-gradient-from-reverse-mode" title="Permalink"></a></h4><p>If we perform a single reverse-pass on a function <span>$f : \mathcal{X} \to \RR$</span> to obtain <span>$D f[x]^\ast$</span>, then the gradient is simply</p><p class="math-container">\[\nabla f (x) = D f[x]^\ast (1) .\]</p><p>To show this, note that <span>$D f [x] (\dot{x}) = \langle 1, D f[x] (\dot{x}) \rangle = \langle D f[x]^\ast (1), \dot{x} \rangle$</span> using the definition of the adjoint. Then, the definition of the gradient gives</p><p class="math-container">\[\langle \nabla f (x), \dot{x} \rangle = \langle D f[x]^\ast (1), \dot{x} \rangle\]</p><p>which implies <span>$\nabla f (x) = D f[x]^\ast (1)$</span> since <span>$\dot{x}$</span> is arbitrary.</p><p><em><strong>Example</strong></em></p><p>The adjoint of the derivative of <span>$f(x, y) = x + y_1 y_2$</span> (see <a href="#AD-of-a-Julia-function:-a-slightly-less-trivial-example">above</a>) immediately gives</p><p class="math-container">\[\nabla f(x, y) = D f[x, y]^\ast (1) = (1, (y_2, y_1)) .\]</p><p><em><strong>Aside: Adjoints of Derivatives as Gradients</strong></em></p><p>It is interesting to note that value of <span>$D f[x]^\ast (\bar{y})$</span> returned by performing reverse-mode on a function <span>$f : \mathcal{X} \to \mathcal{Y}$</span> can always be viewed as the gradient of another function <span>$F : \mathcal{X} \to \mathbb{R}$</span>.</p><p>Let <span>$F \coloneqq h_{\bar{y}} \circ f$</span> where <span>$h_{\bar{y}}(y) = \langle y, \bar{y}\rangle$</span>. One can show <span>$D h_{\bar{y}}[y]^\ast (1) = \bar{y}$</span>. Then, since</p><p class="math-container">\[\begin{align*}
+\langle \nabla F(x), \dot{x} \rangle
+	&amp;= \langle D F[x]^\ast (1), \dot{x} \rangle \\
+	&amp;= \langle D f[x]^\ast (D h_{\bar{y}}[f(x)]^\ast (1)), \dot{x} \rangle \\
+	&amp;= \langle D f[x]^\ast (\bar{y}), \dot{x} \rangle \\
+\end{align*}\]</p><p>we have that <span>$\nabla F(x) = D f[x]^\ast (\bar{y})$</span>.</p><p>The consequence is that we can always view the computation performed by reverse-mode AD as computing the gradient of the composition of the function in question and an inner product with the argument to the adjoint.</p><h1 id="Summary"><a class="docs-heading-anchor" href="#Summary">Summary</a><a id="Summary-1"></a><a class="docs-heading-anchor-permalink" href="#Summary" title="Permalink"></a></h1><p>This document explains the core mathematical foundations of AD. It explains separately <em>what</em> is does, and <em>how</em> it goes about it. Some basic examples are given which show how these mathematical foundations can be applied to differentiate functions of matrices, and Julia <code>function</code>s.</p><p>Subsequent sections will build on these foundations, to provide a more general explanation of what AD looks like for a Julia programme.</p><h1 id="Asides"><a class="docs-heading-anchor" href="#Asides">Asides</a><a id="Asides-1"></a><a class="docs-heading-anchor-permalink" href="#Asides" title="Permalink"></a></h1><h3 id="*How*-does-Forwards-Mode-AD-work?"><a class="docs-heading-anchor" href="#*How*-does-Forwards-Mode-AD-work?"><em>How</em> does Forwards-Mode AD work?</a><a id="*How*-does-Forwards-Mode-AD-work?-1"></a><a class="docs-heading-anchor-permalink" href="#*How*-does-Forwards-Mode-AD-work?" title="Permalink"></a></h3><p>Forwards-mode AD achieves this by breaking down <span>$f$</span> into the composition <span>$f = f_N \circ \dots \circ f_1$</span>, where each <span>$f_n$</span> is a simple function whose derivative (function) <span>$D f_n [x_n]$</span> we know for any given <span>$x_n$</span>. By the chain rule, we have that</p><p class="math-container">\[D f [x] (\dot{x}) = D f_N [x_N] \circ \dots \circ D f_1 [x_1] (\dot{x})\]</p><p>which suggests the following algorithm:</p><ol><li>let <span>$x_1 = x$</span>, <span>$\dot{x}_1 = \dot{x}$</span>, and <span>$n = 1$</span></li><li>let <span>$\dot{x}_{n+1} = D f_n [x_n] (\dot{x}_n)$</span></li><li>let <span>$x_{n+1} = f(x_n)$</span></li><li>let <span>$n = n + 1$</span></li><li>if <span>$n = N+1$</span> then return <span>$\dot{x}_{N+1}$</span>, otherwise go to 2.</li></ol><p>When each function <span>$f_n$</span> maps between Euclidean spaces, the applications of derivatives <span>$D f_n [x_n] (\dot{x}_n)$</span> are given by <span>$J_n \dot{x}_n$</span> where <span>$J_n$</span> is the Jacobian of <span>$f_n$</span> at <span>$x_n$</span>.</p><div class="citation canonical"><dl><dt>[1]</dt><dd><div id="giles2008extended">M. Giles. <em>An extended collection of matrix derivative results for forward and reverse mode automatic differentiation</em>. Unpublished (2008).</div></dd><dt>[2]</dt><dd><div id="minka2000old">T. P. Minka. <em>Old and new matrix algebra useful for statistics</em>. See www. stat. cmu. edu/minka/papers/matrix. html <strong>4</strong> (2000).</div></dd></dl></div><section class="footnotes is-size-7"><ul><li class="footnote" id="footnote-reciprocal_bases"><a class="tag is-link" href="#citeref-reciprocal_bases">reciprocal_bases</a>For any basis <span>$\{\mathbf{e}_i\}$</span> there exists a reciprocal basis <span>$\{\mathbf{e}^i\}$</span> such that <span>$\langle \mathbf{e}_i, \mathbf{e}^j \rangle = \delta_i^j$</span>. If the basis is orthonormal with respect to the inner product, then the original basis and its reciprocal are equal and <span>$\mathbf{e}_i = \mathbf{e}^i$</span>. We will always implicitly use orthonormal bases in Mooncake, so the position of indices can usually be ignored safely.</li><li class="footnote" id="footnote-note_for_geometers"><a class="tag is-link" href="#citeref-note_for_geometers">note_for_geometers</a>in AD we only really need to discuss differentiable functions between vector spaces that are isomorphic to Euclidean space. Consequently, a variety of considerations which are usually required in differential geometry are not required here. Notably, the tangent space is assumed to be the same everywhere, and to be the same as the domain of the function. Avoiding these additional considerations helps keep the mathematics as simple as possible.</li></ul></section></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../introduction/">« Introduction</a><a class="docs-footer-nextpage" href="../rule_system/">Mooncake.jl&#39;s Rule System »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Tuesday 30 December 2025 23:04">Tuesday 30 December 2025</span>. Using Julia version 1.11.8.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
