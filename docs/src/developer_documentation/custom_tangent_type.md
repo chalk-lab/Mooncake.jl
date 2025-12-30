@@ -392,12 +392,6 @@ end
 Implement the essential tangent manipulation functions:
 
 ```@example custom_tangent_type
-# Once we add this method, the TangentForA constructor that takes a NamedTuple can be removed
-Base.delete_method(
-    # (we need a concrete type to find the method hence Float64)
-    only(methods(TangentForA{Float64}, Tuple{@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}} where Tx}))
-)
-
 function Mooncake.zero_tangent_internal(p::A{T}, dict::Mooncake.MaybeCache) where {T}
     Tx = Mooncake.tangent_type(T)
     Tx == Mooncake.NoTangent && return Mooncake.NoTangent()
@@ -414,6 +408,15 @@ function Mooncake.zero_tangent_internal(p::A{T}, dict::Mooncake.MaybeCache) wher
     end
     return t
 end
+
+# Once we add a zero_tangent_internal method,
+# the TangentForA constructor that takes a NamedTuple can be removed.
+# NOTE: We use delete_method on this docs page because we defined the method above.
+# NOTE: In your package, you should instead remove the original method definition.
+Base.delete_method(
+    # (we need a concrete type to find the method hence Float64)
+    only(methods(TangentForA{Float64}, Tuple{@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}} where Tx}))
+)
 
 function Mooncake.randn_tangent_internal(rng::AbstractRNG, p::A{T}, dict::Mooncake.MaybeCache) where {T}
     Tx = Mooncake.tangent_type(T)
@@ -745,6 +748,9 @@ as well as a cyclic case to make sure that our interactions with the caches are 
 ```@example custom_tangent_type
 # Non-cyclic A
 Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))
+```
+
+```@example custom_tangent_type
 # Cyclic A
 cyclic_a = A(1.0, A(2.0))
 cyclic_a.a.a = cyclic_a
