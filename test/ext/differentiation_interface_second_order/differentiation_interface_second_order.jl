@@ -5,9 +5,9 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 using DifferentiationInterface, DifferentiationInterfaceTest
 using Mooncake: Mooncake
 
-# Test first-order differentiation (reverse mode)
+# Test second-order differentiation (forward-over-reverse)
 test_differentiation(
-    [AutoMooncake(; config=nothing), AutoMooncake(; config=Mooncake.Config())];
-    excluded=SECOND_ORDER,
+    [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))];
+    excluded=FIRST_ORDER,
     logging=true,
 )

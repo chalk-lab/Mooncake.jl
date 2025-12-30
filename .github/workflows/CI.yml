@@ -87,6 +87,7 @@ jobs:
       matrix:
         test_group: [
           {test_type: 'ext', label: 'differentiation_interface'},
+          {test_type: 'ext', label: 'differentiation_interface_second_order'},
           {test_type: 'ext', label: 'dynamic_expressions'},
           {test_type: 'ext', label: 'flux'},
           {test_type: 'ext', label: 'function_wrappers'},
