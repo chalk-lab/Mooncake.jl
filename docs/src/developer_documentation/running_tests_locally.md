@@ -1,16 +1,31 @@
 # Running Tests Locally
 
-Mooncake.jl's test suite is fairly extensive. While you can use `Pkg.test` to run the test suite in the standard manner, this is not usually optimal in Mooncake.jl, and will not run all of the tests. When editing some code, you typically only want to run the tests associated with it, not the entire test suite.
+Mooncake.jl’s test suite is extensive. While you *can* run it with `Pkg.test`, this is usually suboptimal and will not run all tests. During development, you typically want to run only the tests relevant to the code you’re editing, not the entire suite.
 
-There are two workflows for running tests, discussed below.
+Two workflows for running tests are described below.
 
-## Main Testing Functionality
+## Core Test Structure
 
-For all code in `src`, Mooncake's tests are organised as follows:
-1. Things that are required for most / all test suites are loaded up in `test/front_matter.jl`.
-1. The tests for something in `src` are located in an identically-named file in `test`. e.g. the unit tests for `src/rules/new.jl` are located in `test/rules/new.jl`.
+Tests for code in `src` are organized as follows:
 
-Thus, a workflow that I (Will) find works very well is the following:
+1. Shared setup code for most test suites lives in `test/front_matter.jl`.
+2. Tests for a file in `src` are located in a file with the same relative path under `test`.  
+   For example, tests for `src/rules/new.jl` are in `test/rules/new.jl`.
+
+From the repository root, you can run a specific test group with:
+
+```bash
+julia --project=. -e 'import Pkg; Pkg.test(; test_args=ARGS)' -- rules/random
+```
+
+This command runs the `rules/random` test group defined in `test/runtests.jl`.  
+A complete list of test groups is available [here](https://github.com/chalk-lab/Mooncake.jl/blob/main/test/runtests.jl).
+
+For debugging or verifying a specific rule, see [Debugging and MWEs](@ref Debugging-and-MWEs).
+
+## Recommended Development Workflow
+
+A workflow that I (Will) find works very well is the following:
 1. Ensure that you have Revise.jl and TestEnv.jl installed in your default environment.
 1. start the REPL, `dev` Mooncake.jl, and navigate to the top level of the Mooncake.jl directory.
 1. `using TestEnv, Revise`. Better still, load both of these in your `.julia/config/startup.jl` file so that you don't ever forget to load them.
