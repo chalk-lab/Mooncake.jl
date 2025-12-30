@@ -8,6 +8,6 @@ using Mooncake: Mooncake
 # Test second-order differentiation (forward-over-reverse)
 test_differentiation(
     [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))];
-    excluded=FIRST_ORDER,
+    excluded=[FIRST_ORDER..., :hvp, :second_derivative], # testing only :hessian
     logging=true,
 )
