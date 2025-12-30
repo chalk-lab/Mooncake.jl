@@ -46,6 +46,7 @@ jobs:
           'rules/tasks',
           'rules/twice_precision',
           'rules/performance_patches',
+          'rules/high_order_derivative_patches',
         ]
         version:
           - 'lts'

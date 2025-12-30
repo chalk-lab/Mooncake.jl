@@ -18,12 +18,19 @@ struct MistyClosureTangent
 end
 
 # Build a forward-mode rule for a MistyClosure using its original world age.
-# We skip the world age check because:
-# 1. MistyClosure captures its own IR at creation time (see lookup_ir in ir_utils.jl)
-# 2. build_frule -> generate_dual_ir -> lookup_ir(interp, mc) returns mc.ir[] directly,
-#    bypassing method table lookups that would require a current-world interpreter
-# 3. Any nested non-primitive calls use LazyFRule/DynamicFRule which obtain a current-world
-#    interpreter via get_interpreter() at runtime
+#
+# We cannot use the current world age because the MistyClosure's IR (p.ir[]) has a
+# valid_worlds range set at creation time. On Julia 1.12+, generate_dual_ir calls
+# set_valid_world!(ir, interp.world), which throws if the world is outside this range.
+# If methods were defined after the MistyClosure was created, the current world would
+# fall outside valid_worlds and cause an error.
+#
+# Using the original world age is safe because lookup_ir for MistyClosure returns mc.ir[]
+# directly, bypassing method table lookups. Nested non-primitive calls use LazyFRule or
+# DynamicFRule, which obtain a current-world interpreter via get_interpreter() at runtime.
+# We pass skip_world_age_check=true since build_frule's safety check would incorrectly
+# reject our intentionally-older interpreter.
+#
 function _dual_mc(p::MistyClosure)
     mc_world = UInt(p.oc.world)
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)

@@ -18,7 +18,6 @@ include("front_matter.jl")
             include(joinpath("interpreter", "zero_like_rdata.jl"))
             include(joinpath("interpreter", "forward_mode.jl"))
             include(joinpath("interpreter", "reverse_mode.jl"))
-            include(joinpath("interpreter", "forward_over_reverse.jl"))
         end
         include("tools_for_rules.jl")
         include("interface.jl")
@@ -67,6 +66,8 @@ include("front_matter.jl")
         include(joinpath("rules", "performance_patches.jl"))
     elseif test_group == "rules/dispatch_doctor"
         include(joinpath("rules", "dispatch_doctor.jl"))
+    elseif test_group == "rules/high_order_derivative_patches"
+        include(joinpath("rules", "high_order_derivative_patches.jl"))
     else
         throw(error("test_group=$(test_group) is not recognised"))
     end
