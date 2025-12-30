@@ -409,10 +409,12 @@ function Mooncake.zero_tangent_internal(p::A{T}, dict::Mooncake.MaybeCache) wher
     return t
 end
 
-# Once we add a zero_tangent_internal method,
-# the TangentForA constructor that takes a NamedTuple can be removed.
-# NOTE: We use delete_method on this docs page because we defined the method above.
-# NOTE: In your package, you should instead remove the original method definition.
+# Once `zero_tangent_internal` is added, the NamedTuple-based `TangentForA`
+# constructor is obsolete; we use `Base.delete_method` here to undo
+# a method defined earlier in this documentation.
+# 
+# NOTE: In a real package, do not call `delete_method`; remove the method
+# definition from the source instead.
 Base.delete_method(
     # (we need a concrete type to find the method hence Float64)
     only(methods(TangentForA{Float64}, Tuple{@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}} where Tx}))
