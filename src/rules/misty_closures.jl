@@ -32,9 +32,13 @@ end
 # reject our intentionally-older interpreter.
 #
 function _dual_mc(p::MistyClosure)
-    mc_world = UInt(p.oc.world)
-    interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
-    return build_frule(interp, p; skip_world_age_check=true)
+    return @static if VERSION ≤ v"1.12-"
+        build_frule(get_interpreter(ForwardMode), p)
+    else
+        mc_world = UInt(p.oc.world)
+        interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
+        build_frule(interp, p; skip_world_age_check=true)
+    end
 end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
