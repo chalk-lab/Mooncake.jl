@@ -5,7 +5,8 @@ using FunctionWrappers: FunctionWrapper
 import Mooncake:
     TestUtils,
     _add_to_primal_internal,
-    _diff_internal,
+    tangent_to_primal_internal!!,
+    primal_to_tangent_internal!!,
     _dot_internal,
     _scale_internal,
     __verify_fdata_value,
@@ -170,10 +171,21 @@ function _add_to_primal_internal(
     return typeof(p)(_add_to_primal_internal(c, p.obj[], t.dobj_ref[], unsafe))
 end
 
-function _diff_internal(c::MaybeCache, p::P, q::P) where {R,A,P<:FunctionWrapper{R,A}}
-    return first(
-        _function_wrapper_tangent(R, p.obj[], A, _diff_internal(c, p.obj[], q.obj[]))
-    )
+function tangent_to_primal_internal!!(
+    p::FunctionWrapper, t::FunctionWrapperTangent, c::MaybeCache
+)
+    haskey(c, p) && return c[p]::typeof(p)
+    c[p] = p
+    p.obj[] = tangent_to_primal_internal!!(p.obj[], t.dobj_ref[], c)
+    return p
+end
+function primal_to_tangent_internal!!(
+    t::FunctionWrapperTangent, p::FunctionWrapper, c::MaybeCache
+)
+    haskey(c, p) && return c[p]::typeof(t)
+    c[p] = t
+    t.dobj_ref[] = primal_to_tangent_internal!!(t.dobj_ref[], p.obj[], c)
+    return t
 end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:FunctionWrapperTangent}

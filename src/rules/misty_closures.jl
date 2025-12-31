@@ -17,7 +17,25 @@ struct MistyClosureTangent
     dual_callable::Any
 end
 
-_dual_mc(p::MistyClosure) = build_frule(get_interpreter(ForwardMode), p)
+# Build a forward-mode rule for a MistyClosure using its original world age.
+#
+# We cannot use the current world age because the MistyClosure's IR (p.ir[]) has a
+# valid_worlds range set at creation time. On Julia 1.12+, generate_dual_ir calls
+# set_valid_world!(ir, interp.world), which throws if the world is outside this range.
+# If methods were defined after the MistyClosure was created, the current world would
+# fall outside valid_worlds and cause an error.
+#
+# Using the original world age is safe because lookup_ir for MistyClosure returns mc.ir[]
+# directly, bypassing method table lookups. Nested non-primitive calls use LazyFRule or
+# DynamicFRule, which obtain a current-world interpreter via get_interpreter() at runtime.
+# We pass skip_world_age_check=true since build_frule's safety check would incorrectly
+# reject our intentionally-older interpreter.
+#
+function _dual_mc(p::MistyClosure)
+    mc_world = UInt(p.oc.world)
+    interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
+    return build_frule(interp, p; skip_world_age_check=true)
+end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
 
@@ -46,10 +64,19 @@ function _add_to_primal_internal(
     return replace_captures(p, new_captures)
 end
 
-function _diff_internal(c::MaybeCache, p::P, q::P) where {P<:MistyClosure}
-    # Just assumes that the code associated to `p` is the same as that of `q`.
-    captures_tangent = _diff_internal(c, p.oc.captures, q.oc.captures)
-    return MistyClosureTangent(captures_tangent, _dual_mc(p))
+function tangent_to_primal_internal!!(
+    p::MistyClosure, t::MistyClosureTangent, c::MaybeCache
+)
+    new_captures = tangent_to_primal_internal!!(p.oc.captures, t.captures_tangent, c)
+    return replace_captures(p, new_captures)
+end
+function primal_to_tangent_internal!!(
+    t::MistyClosureTangent, p::MistyClosure, c::MaybeCache
+)
+    new_captures_tangent = primal_to_tangent_internal!!(
+        t.captures_tangent, p.oc.captures, c
+    )
+    return MistyClosureTangent(new_captures_tangent, t.dual_callable)
 end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:MistyClosureTangent}
@@ -61,11 +88,25 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MistyClosure
     return T(captures_tangent, t.dual_callable)
 end
 
-import .TestUtils: populate_address_map_internal, AddressMap
+import .TestUtils: populate_address_map_internal, AddressMap, has_equal_data_internal
 function populate_address_map_internal(
     m::AddressMap, p::MistyClosure, t::MistyClosureTangent
 )
     return populate_address_map_internal(m, p.oc.captures, t.captures_tangent)
+end
+
+function has_equal_data_internal(
+    x::MistyClosureTangent,
+    y::MistyClosureTangent,
+    equal_undefs::Bool,
+    d::Dict{Tuple{UInt,UInt},Bool},
+)
+    # Only compare captures_tangent. The dual_callable field is a forward-mode rule
+    # built on-demand by _dual_mc, which creates a new interpreter each time. Different
+    # interpreter instances produce different rule objects, even for the same MistyClosure.
+    # Since dual_callable is just a computational tool (not part of the tangent's value),
+    # two tangents with identical captures_tangent are mathematically equal.
+    return has_equal_data_internal(x.captures_tangent, y.captures_tangent, equal_undefs, d)
 end
 
 struct MistyClosureFData
