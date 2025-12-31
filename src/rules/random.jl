@@ -2,13 +2,18 @@
 @zero_derivative MinimalCtx Tuple{Type{MersenneTwister},Any}
 
 const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
+@zero_derivative MinimalCtx Tuple{typeof(rand),KnownRNGs}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs}
+@zero_derivative MinimalCtx Tuple{typeof(rand),KnownRNGs,Type{<:IEEEFloat}}
+@zero_derivative MinimalCtx Tuple{
+    typeof(rand),KnownRNGs,Union{Type{UInt32},Type{UInt64},Type{UInt128}}
+}
 @zero_derivative MinimalCtx Tuple{typeof(randn),KnownRNGs,Type{<:IEEEFloat}}
 @zero_derivative MinimalCtx Tuple{typeof(randexp),KnownRNGs,Type{<:IEEEFloat}}
 
 const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
-for f in [randn!, randexp!]
+for f in [rand!, randn!, randexp!]
     @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
     @eval function frule!!(
         ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
@@ -43,13 +48,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:random})
         (true, :none, nothing, MersenneTwister, 123),
 
         # Random number generation.
-        map_prod([randn, randexp], all_rngs) do (f, rng)
+        map_prod([rand, randn, randexp], all_rngs) do (f, rng)
             (true, :stability_and_allocs, nothing, f, rng)
         end...,
-        map_prod([Float64, Float32], [randn, randexp], all_rngs) do (P, f, rng)
+        map_prod([Float64, Float32], [rand, randn, randexp], all_rngs) do (P, f, rng)
             (true, :stability_and_allocs, nothing, f, rng, P)
         end...,
-        map_prod([randn!, randexp!], rngs) do (f, rng)
+        map_prod([rand!, randn!, randexp!], rngs) do (f, rng)
             (true, :stability, nothing, f, rng, randn(5))
         end...,
     )
@@ -60,12 +65,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:random})
     test_cases = Any[
 
         # Random number generation.
+        (false, :none, nothing, x -> x * rand(Xoshiro(123)), 3.0),
         (false, :none, nothing, x -> x * randn(Xoshiro(123)), 3.0),
         (false, :none, nothing, x -> x * randexp(Xoshiro(123)), 3.0),
+        (false, :none, nothing, x -> x * rand(Xoshiro(123), Float32), 3.0),
         (false, :none, nothing, x -> x * randn(Xoshiro(123), Float32), 3.0),
         (false, :none, nothing, x -> x * randexp(Xoshiro(123), Float32), 3.0),
+        (false, :none, nothing, x -> x .* rand!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randn!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randexp!(Xoshiro(123), x), randn(9)),
+        (false, :none, nothing, x -> x .* rand(Xoshiro(123), size(x)...), randn(9)),
         (false, :none, nothing, x -> x .* randn(Xoshiro(123), size(x)...), randn(9)),
         (false, :none, nothing, x -> x .* randexp(Xoshiro(123), size(x)...), randn(9)),
 
