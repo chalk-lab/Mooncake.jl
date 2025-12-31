@@ -27,11 +27,13 @@ using Mooncake:
     _scale,
     _add_to_primal,
     _dot,
+    Dual,
     zero_dual,
     zero_codual,
     codual_type,
     rrule!!,
     build_rrule,
+    build_frule,
     value_and_gradient!!,
     value_and_pullback!!,
     NoFData,
@@ -43,7 +45,8 @@ using Mooncake:
     get_interpreter,
     Mode,
     ForwardMode,
-    ReverseMode
+    ReverseMode,
+    MistyClosureTangent
 
 using Mooncake:
     CC,
