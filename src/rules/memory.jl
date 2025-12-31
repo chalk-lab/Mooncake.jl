@@ -86,19 +86,30 @@ function _add_to_primal_internal(
     return _map_if_assigned!((p, t) -> _add_to_primal_internal(c, p, t, unsafe), p′, p, t)
 end
 
-function _diff_internal(c::MaybeCache, p::Memory{P}, q::Memory{P}) where {P}
-    key = (p, q)
-    haskey(c, key) && return c[key]::tangent_type(P)
-    t = Memory{tangent_type(P)}(undef, length(p))
-    c[key] = t
-    return _map_if_assigned!((p, q) -> _diff_internal(c, p, q), t, p, q)
-end
-
 function _scale_internal(c::MaybeCache, a::Float64, t::Memory{T}) where {T}
     haskey(c, t) && return c[t]::Memory{T}
     t′ = Memory{T}(undef, length(t))
     c[t] = t′
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
+end
+
+function tangent_to_primal_internal!!(
+    x::Memory{P}, t::Memory{<:Any}, c::MaybeCache
+) where {P}
+    haskey(c, x) && return c[x]::Memory{P}
+    c[x] = x
+    return _map_if_assigned!(x, x, t) do xn, tn
+        return tangent_to_primal_internal!!(xn, tn, c)
+    end
+end
+function primal_to_tangent_internal!!(
+    t::Memory{T}, x::Memory{<:Any}, c::MaybeCache
+) where {T}
+    haskey(c, x) && return c[x]::Memory{T}
+    c[x] = t
+    return _map_if_assigned!(t, t, x) do tn, xn
+        return primal_to_tangent_internal!!(tn, xn, c)
+    end
 end
 
 import .TestUtils: populate_address_map_internal
@@ -209,12 +220,23 @@ function _add_to_primal_internal(
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
 end
 
-function _diff_internal(c::MaybeCache, p::P, q::P) where {P<:Array}
-    key = (p, q)
-    haskey(c, key) && return c[key]::tangent_type(P)
-    t = tangent_type(P)(undef, size(p))
-    c[key] = t
-    return _map_if_assigned!((p, q) -> _diff_internal(c, p, q), t, p, q)
+function tangent_to_primal_internal!!(
+    x::Array{P,N}, t::Array{<:Any,N}, c::MaybeCache
+) where {P,N}
+    haskey(c, x) && return c[x]::Array{P,N}
+    c[x] = x
+    return _map_if_assigned!(x, x, t) do xn, tn
+        return tangent_to_primal_internal!!(xn, tn, c)
+    end
+end
+function primal_to_tangent_internal!!(
+    t::Array{T,N}, x::Array{<:Any,N}, c::MaybeCache
+) where {T,N}
+    haskey(c, x) && return c[x]::Array{T,N}
+    c[x] = t
+    return _map_if_assigned!(t, t, x) do tn, xn
+        return primal_to_tangent_internal!!(tn, xn, c)
+    end
 end
 
 # Rules
@@ -327,9 +349,11 @@ function _add_to_primal_internal(c::MaybeCache, p::MemoryRef, t::MemoryRef, unsa
     return construct_ref(p, _add_to_primal_internal(c, p.mem, t.mem, unsafe))
 end
 
-function _diff_internal(c::MaybeCache, p::P, q::P) where {P<:MemoryRef}
-    @assert Core.memoryrefoffset(p) == Core.memoryrefoffset(q)
-    return construct_ref(p, _diff_internal(c, p.mem, q.mem))
+function tangent_to_primal_internal!!(x::MemoryRef, tx, c::MaybeCache)
+    return construct_ref(x, tangent_to_primal_internal!!(x.mem, tx.mem, c))
+end
+function primal_to_tangent_internal!!(tx, x::MemoryRef, c::MaybeCache)
+    return construct_ref(x, primal_to_tangent_internal!!(tx.mem, x.mem, c))
 end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:MemoryRef}

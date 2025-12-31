@@ -33,7 +33,8 @@ set_to_zero_internal!!(::SetToZeroCache, t::TWP) = zero_tangent_internal(t, NoCa
 
 _add_to_primal_internal(::MaybeCache, p::P, t::P, ::Bool) where {P<:TWP} = p + t
 
-_diff_internal(::MaybeCache, p::P, q::P) where {P<:TWP} = p - q
+tangent_to_primal_internal!!(x::P, t::P, ::MaybeCache) where {P<:TWP} = t
+primal_to_tangent_internal!!(t::P, x::P, ::MaybeCache) where {P<:TWP} = x
 
 _dot_internal(::MaybeCache, t::P, s::P) where {P<:TWP} = Float64(t) * Float64(s)
 

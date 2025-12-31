@@ -26,7 +26,6 @@ using Mooncake:
     zero_tangent,
     _scale,
     _add_to_primal,
-    _diff,
     _dot,
     Dual,
     zero_dual,
