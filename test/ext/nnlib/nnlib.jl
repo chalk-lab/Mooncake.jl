@@ -15,7 +15,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
     #  https://github.com/JuliaGPU/CUDA.jl/issues/2886 is fixed
     cuda = CUDA.functional() && VERSION < v"1.12-"
 
-   _rand = if cuda
+    _rand = if cuda
         (rng, size...) -> cu(randn(rng, size...))
     else
         (rng, size...) -> randn(rng, size...)
