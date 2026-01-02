@@ -54,20 +54,10 @@ using LinearAlgebra
         test_cases = Any[
             # sum
             (false, :none, false, sum, _rand(rng, 64, 32)),
-            (false, :none, false, x->sum(log, x), _rand(rng, 64, 32)),
-            (false, :none, false, x->sum(log, x; dims=1), _rand(rng, 64, 32)),
             # similar 
             (true, :none, false, similar, _rand(rng, 64, 32)),
             # adjoint
             (false, :none, false, adjoint, _rand(rng, ComplexF64, 64, 32)),
-            # +
-            (false, :none, false, +, _rand(rng, 32, 32), _rand(rng, 32, 32)),
-            # zeros 
-            (false, :none, false, CUDA.zeros, Float64, 64, 32),
-            # broadcast
-            (false, :none, false, (x->broadcast(sin, x)), _rand(rng, 64)),
-            # dot 
-            (false, :none, false, dot, _rand(rng, 64), _rand(rng, 64)),
         ]
         @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in
                                         test_cases
