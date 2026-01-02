@@ -8,7 +8,6 @@ using CUDA: CUBLAS
 
 import Mooncake:
     MinimalCtx,
-    ChainRulesCore,
     frule!!,
     rrule!!,
     @is_primitive,
@@ -299,8 +298,17 @@ function frule!!(
     ::Dual{Val{order}},
 ) where {name,order}
     y = getfield(primal(x), name, order)
-    wants_size = name === 2 || name === :size
-    #dy = wants_size ? NoTangent() : tangent(x)
+    wants_size = name === 2 || name === :dims
+    dy = wants_size ? NoTangent() : tangent(x).data
+    return Dual(y, dy)
+end
+function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::Dual{<:CuArray,<:CuArray},
+    ::Dual{Val{name}},
+) where {name}
+    y = getfield(primal(x), name)
+    wants_size = name === 2 || name === :dims
     dy = wants_size ? NoTangent() : tangent(x).data
     return Dual(y, dy)
 end
@@ -312,7 +320,17 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_size = name === 2 || name === :dims
-    #dy = wants_size ? NoFData() : x.dx.data
+    dy = wants_size ? NoFData() : x.dx
+    return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
+end
+
+function rrule!!(
+    ::CoDual{typeof(lgetfield)},
+    x::CoDual{<:CuArray,<:CuArray},
+    ::CoDual{Val{name}},
+) where {name}
+    y = getfield(primal(x), name)
+    wants_size = name === 2 || name === :dims
     dy = wants_size ? NoFData() : x.dx
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
