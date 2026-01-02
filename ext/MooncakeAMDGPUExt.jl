@@ -19,6 +19,7 @@ import Mooncake:
     increment_internal!!,
     set_to_zero_internal!!,
     tangent_to_primal_internal!!,
+    primal_to_tangent_internal!!,
     _add_to_primal_internal,
     _diff_internal,
     _dot_internal,
@@ -168,6 +169,18 @@ function _diff_internal(c::MaybeCache, x::P, y::P) where {P<:ROCComplexArray}
     t_ = reinterpret(eltype(x), t)
     @. t_ = x - y
     c[key] = t
+    return t
+end
+function primal_to_tangent_internal!!(t, x::ROCFloatArray, c::MaybeCache)
+    haskey(c, x) && return c[x]::typeof(t)
+    c[x] = t
+    t .= x
+    return t
+end
+function primal_to_tangent_internal!!(t, x::ROCComplexArray, c::MaybeCache)
+    haskey(c, x) && return c[x]::typeof(t)
+    c[x] = t
+    t .= reinterpret(eltype(t), x)
     return t
 end
 function tangent_to_primal_internal!!(x::ROCFloatArray, t, c::MaybeCache)
