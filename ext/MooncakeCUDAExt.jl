@@ -73,8 +73,6 @@ tangent_type(::Type{CuContext}) = NoTangent
 tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
 tangent_type(::Type{CUBLAS.cublasOperation_t}) = NoTangent
 
-#@from_rrule MinimalCtx Tuple{typeof(broadcast), Base.BroadcastStyle, Vararg{Any, N}} where {N}
-
 function arrayify(x::A, dx::A) where {A<:CuFloatArray}
     (x, dx)
 end
