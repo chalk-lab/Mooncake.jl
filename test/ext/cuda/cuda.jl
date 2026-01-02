@@ -8,7 +8,7 @@ using LinearAlgebra
 
 @testset "cuda" begin
     cuda = CUDA.functional()
-    if cuda 
+    if cuda
         # Check we can operate on CuArrays of various element types.
         @testset for ET in (Float32, Float64, ComplexF32, ComplexF64)
             # Use `undef` to test against garbage memory (NaNs, Infs, subnormals).
@@ -49,7 +49,7 @@ using LinearAlgebra
             end
         end
         Trng = CUDA.RNG
-        rng  = StableRNG(123)
+        rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
         test_cases = Any[
             # sum
@@ -59,13 +59,16 @@ using LinearAlgebra
             # adjoint
             (false, :none, false, adjoint, _rand(rng, ComplexF64, 64, 32)),
         ]
-        @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in
-                                        test_cases
+        @testset "$(typeof(fargs))" for (
+            interface_only, perf_flag, is_primitive, fargs...
+        ) in test_cases
 
             @info "$(typeof(fargs))"
             perf_flag = cuda ? :none : perf_flag
             mode = Mooncake.ReverseMode
-            test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode)
+            test_rule(
+                StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode
+            )
         end
     else
         println("Tests are skipped since no CUDA device was found. ")

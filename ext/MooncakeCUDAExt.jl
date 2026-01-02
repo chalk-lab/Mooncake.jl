@@ -66,7 +66,9 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 fdata_type(::Type{T}) where {T<:CuPtr} = T
 rdata_type(::Type{<:CuPtr}) = NoRData
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
-@unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{tangent_type(P)}
+@unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
+    tangent_type(P)
+}
 tangent_type(::Type{<:CuPtr}) = NoTangent
 tangent_type(::Type{CuContext}) = NoTangent
 tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
@@ -276,14 +278,14 @@ end
 
 @is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N},)
 function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{NTuple{N, Int}}
-) where {P<:CuFloatArray, N}
+    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{NTuple{N,Int}}
+) where {P<:CuFloatArray,N}
     _dims = primal(dims)
     return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims)
 end
 function rrule!!(
-     p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{NTuple{N, Int}}
-) where {P<:CuComplexArray, N}
+    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{NTuple{N,Int}}
+) where {P<:CuComplexArray,N}
     _dims = primal(dims)
     return (
         CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims)
@@ -303,9 +305,7 @@ function frule!!(
     return Dual(y, dy)
 end
 function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:CuArray,<:CuArray},
-    ::Dual{Val{name}},
+    ::Dual{typeof(lgetfield)}, x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
 ) where {name}
     y = getfield(primal(x), name)
     wants_size = name === 2 || name === :dims
@@ -325,9 +325,7 @@ function rrule!!(
 end
 
 function rrule!!(
-    ::CoDual{typeof(lgetfield)},
-    x::CoDual{<:CuArray,<:CuArray},
-    ::CoDual{Val{name}},
+    ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuArray,<:CuArray}, ::CoDual{Val{name}}
 ) where {name}
     y = getfield(primal(x), name)
     wants_size = name === 2 || name === :dims
@@ -335,7 +333,7 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-@is_primitive(MinimalCtx, Tuple{typeof(sum), CuFloatArray})
+@is_primitive(MinimalCtx, Tuple{typeof(sum),CuFloatArray})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuFloatArray})
     return Dual(sum(primal(x)), sum(tangent(x)))
 end
