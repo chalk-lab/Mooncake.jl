@@ -62,8 +62,7 @@ end
 
 function zero_tangent_internal(x::ROCFloatArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = similar(x)
-    t .= zero(eltype(x))
+    t = zero(x)
     dict[x] = t
     return t
 end
