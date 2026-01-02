@@ -21,7 +21,6 @@ import Mooncake:
     tangent_to_primal_internal!!,
     primal_to_tangent_internal!!,
     _add_to_primal_internal,
-    _diff_internal,
     _dot_internal,
     _scale_internal,
     TestUtils,
@@ -154,22 +153,6 @@ function _add_to_primal_internal(
     x′ = x + reinterpret(eltype(x), y)
     c[(x, y, unsafe)] = x′
     return x′
-end
-function _diff_internal(c::MaybeCache, x::P, y::P) where {P<:ROCFloatArray}
-    key = (x, y)
-    haskey(c, key) && return c[key]::tangent_type(P)
-    t = x - y
-    c[key] = t
-    return t
-end
-function _diff_internal(c::MaybeCache, x::P, y::P) where {P<:ROCComplexArray}
-    key = (x, y)
-    haskey(c, key) && return c[key]::tangent_type(P)
-    t = tangent_type(P)(undef, size(x))
-    t_ = reinterpret(eltype(x), t)
-    @. t_ = x - y
-    c[key] = t
-    return t
 end
 function primal_to_tangent_internal!!(t, x::ROCFloatArray, c::MaybeCache)
     haskey(c, x) && return c[x]::typeof(t)
