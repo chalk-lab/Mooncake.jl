@@ -59,9 +59,6 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
     P,N,M
 }
 
-@foldable rdata_type(
-    ::Type{<:CuArray{P,N,M}}
-) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = Mooncake.NoRData
 
 fdata_type(::Type{T}) where {T<:CuPtr} = T
 rdata_type(::Type{<:CuPtr}) = NoRData
