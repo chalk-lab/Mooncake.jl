@@ -55,9 +55,6 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
     tangent_type(P),N,M
 }
 
-@foldable fdata_type(::Type{CuArray{P,N,M}}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = CuArray{
-    P,N,M
-}
 
 
 fdata_type(::Type{T}) where {T<:CuPtr} = T
