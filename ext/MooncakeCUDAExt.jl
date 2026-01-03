@@ -61,7 +61,6 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
 }
-tangent_type(::Type{<:CuPtr}) = NoTangent
 tangent_type(::Type{CuContext}) = NoTangent
 tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
 tangent_type(::Type{CUBLAS.cublasOperation_t}) = NoTangent
