@@ -57,8 +57,6 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 
 
 
-fdata_type(::Type{T}) where {T<:CuPtr} = T
-rdata_type(::Type{<:CuPtr}) = NoRData
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
