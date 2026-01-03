@@ -333,7 +333,10 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-@is_primitive(MinimalCtx, Tuple{typeof(sum),CuFloatArray})
+# Rule for `sum` is defined as a performance rule. 
+# TODO: These rules can be merged with the `sum` rules in `rules/performance_patches`. 
+# This would be done by defining `arrayify` for `CuFloatArray`.
+@is_primitive(DefaultCtx, Tuple{typeof(sum),CuFloatArray})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuFloatArray})
     return Dual(sum(primal(x)), sum(tangent(x)))
 end
