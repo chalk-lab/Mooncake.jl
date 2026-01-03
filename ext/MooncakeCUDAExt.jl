@@ -276,21 +276,7 @@ function rrule!!(
     )
 end
 
-@is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N},)
-function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{NTuple{N,Int}}
-) where {P<:CuFloatArray,N}
-    _dims = primal(dims)
-    return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims)
-end
-function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{NTuple{N,Int}}
-) where {P<:CuComplexArray,N}
-    _dims = primal(dims)
-    return (
-        CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims)
-    )
-end
+@zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
 
 # getfield / lgetfield rules for CuArray.
 function frule!!(
