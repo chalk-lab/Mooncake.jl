@@ -68,6 +68,13 @@ tangent_type(::Type{CuContext}) = NoTangent
 tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
 tangent_type(::Type{CUBLAS.cublasOperation_t}) = NoTangent
 
+tangent(p::CuFloatArray, ::NoRData) = p
+function tangent(
+    p::CuArray{P,N,M}, ::NoRData
+) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
+    p
+end
+
 function arrayify(x::A, dx::A) where {A<:CuFloatArray}
     (x, dx)
 end
@@ -149,6 +156,9 @@ function set_to_zero_internal!!(
     x_ .= zero(Complex{T})
     return x
 end
+
+# @import_chainrules tools
+to_cr_tangent(x::CuFloatArray) = x
 function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuFloatArray}
     f .+= t
     return NoRData()
