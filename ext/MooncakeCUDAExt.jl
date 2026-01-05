@@ -55,8 +55,8 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 @foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Complex{<:IEEEFloat},IEEEFloat},N,M} = CuArray{
     tangent_type(P),N,M
 }
-Mooncake.@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuFloatArray} = P
-Mooncake.@foldable tangent_type(::Type{CuArray{P,N,M}}, ::Type{NoRData}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = CuArray{
+@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuFloatArray} = P
+@foldable tangent_type(::Type{CuArray{P,N,M}}, ::Type{NoRData}) where {P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = CuArray{
     P,N,M
 }
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
