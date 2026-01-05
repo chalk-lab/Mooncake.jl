@@ -14,6 +14,7 @@ import Mooncake:
     @unstable,
     @foldable,
     @from_rrule,
+    @zero_derivative,
     tangent_type,
     fdata_type,
     rdata_type,
@@ -54,8 +55,6 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 @foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Complex{<:IEEEFloat},IEEEFloat},N,M} = CuArray{
     tangent_type(P),N,M
 }
-
-
 
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
