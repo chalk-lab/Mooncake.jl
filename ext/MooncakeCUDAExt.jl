@@ -255,28 +255,30 @@ end
 
 @zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
 
+# TODO: Mooncake defines rules for `_new_` instead of below. See
+# https://chalk-lab.github.io/Mooncake.jl/stable/developer_documentation/custom_tangent_type/#Checklist:-Functions-Needed-for-Recursive-Struct-Support
 @is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
 function frule!!(
     p::Dual{Type{P}}, init::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
-) where {P<:CuFloatArray, N}
+) where {P<:CuFloatArray,N}
     _dims = map(primal, dims)
     return Dual(P(undef, _dims), P(undef, _dims))
 end
 function rrule!!(
     p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::Vararg{CoDual{Int},N}
-) where {P<:CuFloatArray, N}
+) where {P<:CuFloatArray,N}
     _dims = map(primal, dims)
     return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims...)
 end
 function frule!!(
     p::Dual{Type{P}}, init::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
-) where {P<:CuComplexArray, N}
+) where {P<:CuComplexArray,N}
     _dims = map(primal, dims)
     return Dual(P(undef, _dims), tangent_type(P)(undef, _dims))
 end
 function rrule!!(
     p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::Vararg{CoDual{Int},N}
-) where {P<:CuComplexArray, N}
+) where {P<:CuComplexArray,N}
     _dims = map(primal, dims)
     return (
         CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims...)
