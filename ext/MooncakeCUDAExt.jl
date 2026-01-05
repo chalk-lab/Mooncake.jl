@@ -55,7 +55,10 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 @foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Complex{<:IEEEFloat},IEEEFloat},N,M} = CuArray{
     tangent_type(P),N,M
 }
-
+Mooncake.@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuFloatArray} = P
+Mooncake.@foldable tangent_type(::Type{CuArray{P,N,M}}, ::Type{NoRData}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = CuArray{
+    P,N,M
+}
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
@@ -145,6 +148,10 @@ function set_to_zero_internal!!(
     x_ .= zero(Complex{T})
     return x
 end
+function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuFloatArray}
+    f .+= t
+    return NoRData()
+end
 
 function _add_to_primal_internal(
     c::MaybeCache, x::P, y::P, unsafe::Bool
@@ -230,23 +237,7 @@ function Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuA
         throw(InvalidFDataException("p has size $(size(p)) but f has size $(size(f))"))
     end
     return nothing
-end
-Mooncake.@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuFloatArray} = P
-Mooncake.@foldable tangent_type(::Type{CuArray{P,N,M}}, ::Type{NoRData}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = CuArray{
-    P,N,M
-}
-tangent(p::CuFloatArray, ::NoRData) = p
-function tangent(
-    p::CuArray{P,N,M}, ::NoRData
-) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
-    p
-end
-
-to_cr_tangent(x::CuFloatArray) = x
-function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuFloatArray}
-    f .+= t
-    return NoRData()
-end
+endƒ
 
 # Basic rules for operating on CuArrays.
 
