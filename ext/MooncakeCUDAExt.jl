@@ -238,7 +238,7 @@ function Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuA
         throw(InvalidFDataException("p has size $(size(p)) but f has size $(size(f))"))
     end
     return nothing
-endƒ
+end
 
 # Basic rules for operating on CuArrays.
 
