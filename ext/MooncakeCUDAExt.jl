@@ -246,6 +246,7 @@ function Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuA
 end
 
 # @from_chainrules tools
+# TODO: missing `mooncake_tangent` implementation.
 to_cr_tangent(x::CuFloatArray) = x
 function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuFloatArray}
     f .+= t
@@ -256,20 +257,17 @@ end
 
 @zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
 
+# macro `@zero_derivative` doesn't support `Vararg` so use `zero_derivative(...)`
 @is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
-function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
+function frule!!(
+    p::Dual{Type{P}}, init::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
 ) where {P<:CuFloatArray}
-    _dims = map(primal, dims)
-    return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims...)
+    zero_derivative(p, init, dims...)
 end
 function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
+    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::Vararg{CoDual{Int},N}
 ) where {P<:CuComplexArray}
-    _dims = map(primal, dims)
-    return (
-        CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims...)
-    )
+    zero_derivative(p, init, dims...)
 end
 
 # getfield / lgetfield rules for CuArray.
