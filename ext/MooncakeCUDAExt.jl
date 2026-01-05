@@ -159,13 +159,6 @@ function set_to_zero_internal!!(
     return x
 end
 
-# @import_chainrules tools
-to_cr_tangent(x::CuFloatArray) = x
-function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuFloatArray}
-    f .+= t
-    return NoRData()
-end
-
 function _add_to_primal_internal(
     c::MaybeCache, x::P, y::P, unsafe::Bool
 ) where {P<:CuFloatArray}
@@ -250,6 +243,13 @@ function Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuA
         throw(InvalidFDataException("p has size $(size(p)) but f has size $(size(f))"))
     end
     return nothing
+end
+
+# @from_chainrules tools
+to_cr_tangent(x::CuFloatArray) = x
+function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuFloatArray}
+    f .+= t
+    return NoRData()
 end
 
 # Basic rules for operating on CuArrays.
