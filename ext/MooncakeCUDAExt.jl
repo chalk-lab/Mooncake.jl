@@ -254,8 +254,23 @@ end
 
 # Basic rules for operating on CuArrays.
 
-@zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,Vararg{N,Int}} where {N}
 @zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
+
+@is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
+function rrule!!(
+    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
+) where {P<:CuFloatArray}
+    _dims = map(primal, dims)
+    return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims...)
+end
+function rrule!!(
+    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
+) where {P<:CuComplexArray}
+    _dims = map(primal, dims)
+    return (
+        CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims...)
+    )
+end
 
 # getfield / lgetfield rules for CuArray.
 function frule!!(
