@@ -9,6 +9,9 @@ using LinearAlgebra
 @testset "cuda" begin
     cuda = CUDA.functional()
     if cuda
+        # TODO: move test cases definitions to `src/ext/MooncakeCUDAExt.jl` in line 
+        # with other rules.
+        #
         # Check we can operate on CuArrays of various element types.
         @testset for ET in (Float32, Float64, ComplexF32, ComplexF64)
             # Use `undef` to test against garbage memory (NaNs, Infs, subnormals).
@@ -25,8 +28,6 @@ using LinearAlgebra
                 256;
                 interface_only=true,
                 is_primitive=true,
-                debug_mode=true,
-                mode=Mooncake.ReverseMode,
             )
             test_rule(
                 StableRNG(123456),
@@ -35,8 +36,6 @@ using LinearAlgebra
                 (16, 32);
                 interface_only=true,
                 is_primitive=true,
-                debug_mode=true,
-                mode=Mooncake.ReverseMode,
             )
             dp = Mooncake.zero_codual(p)
             if ET <: Real
@@ -65,7 +64,6 @@ using LinearAlgebra
 
             @info "$(typeof(fargs))"
             perf_flag = cuda ? :none : perf_flag
-            mode = Mooncake.ReverseMode
             test_rule(
                 StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode
             )
