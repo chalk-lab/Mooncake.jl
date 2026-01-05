@@ -67,8 +67,6 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 tangent_type(::Type{CuContext}) = NoTangent
 tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
 tangent_type(::Type{CUBLAS.cublasOperation_t}) = NoTangent
-tangent_type(::Type{CuPtr{Nothing}}) = NoTangent
-tangent_type(::Type{CuRefValue{Nothing}}) = NoTangent
 
 tangent(p::CuFloatArray, ::NoRData) = p
 function tangent(
