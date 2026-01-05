@@ -8,6 +8,7 @@ using CUDA: CUBLAS
 
 import Mooncake:
     MinimalCtx,
+    DefaultCtx,
     frule!!,
     rrule!!,
     @is_primitive,
@@ -241,22 +242,7 @@ endƒ
 
 # Basic rules for operating on CuArrays.
 
-@is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
-function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
-) where {P<:CuFloatArray}
-    _dims = map(primal, dims)
-    return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims...)
-end
-function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::CoDual{Int}...
-) where {P<:CuComplexArray}
-    _dims = map(primal, dims)
-    return (
-        CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims...)
-    )
-end
-
+@zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,Vararg{N,Int}} where {N}
 @zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
 
 # getfield / lgetfield rules for CuArray.
@@ -267,14 +253,6 @@ function frule!!(
     ::Dual{Val{order}},
 ) where {name,order}
     y = getfield(primal(x), name, order)
-    wants_size = name === 2 || name === :dims
-    dy = wants_size ? NoTangent() : tangent(x).data
-    return Dual(y, dy)
-end
-function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
-) where {name}
-    y = getfield(primal(x), name)
     wants_size = name === 2 || name === :dims
     dy = wants_size ? NoTangent() : tangent(x).data
     return Dual(y, dy)
@@ -291,6 +269,14 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
+function frule!!(
+    ::Dual{typeof(lgetfield)}, x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
+) where {name}
+    y = getfield(primal(x), name)
+    wants_size = name === 2 || name === :dims
+    dy = wants_size ? NoTangent() : tangent(x).data
+    return Dual(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuArray,<:CuArray}, ::CoDual{Val{name}}
 ) where {name}
@@ -303,7 +289,7 @@ end
 # Rule for `sum` is defined as a performance rule. 
 # TODO: These rules can be merged with the `sum` rules in `rules/performance_patches`. 
 # This would be done by defining `arrayify` for `CuFloatArray`.
-@is_primitive(MinimalCtx, Tuple{typeof(sum),CuFloatArray})
+@is_primitive(DefaultCtx, Tuple{typeof(sum),CuFloatArray})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuFloatArray})
     return Dual(sum(primal(x)), sum(tangent(x)))
 end
