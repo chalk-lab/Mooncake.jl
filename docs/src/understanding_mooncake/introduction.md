@@ -2,7 +2,7 @@
 
 The point of Mooncake.jl is to perform reverse-mode algorithmic differentiation (AD).
 The purpose of this section is to explain _what_ precisely is meant by this, and _how_ it can be interpreted mathematically.
-1. we recap what AD is, and introduce the mathematics necessary to understand is,
+1. we recap what AD is, and introduce the mathematics necessary to understand it,
 1. explain how this mathematics relates to functions and data structures in Julia, and
 1. how this is handled in Mooncake.jl.
 
@@ -12,7 +12,7 @@ Consequently, while there is a great deal of overlap with these existing systems
 # Who Are These Docs For?
 
 These are primarily designed for anyone who is interested in contributing to Mooncake.jl.
-They are also hopefully of interest to anyone how is interested in understanding AD more broadly.
+They are also hopefully of interest to anyone who is interested in understanding AD more broadly.
 If you aren't interested in understanding how Mooncake.jl and AD work, you don't need to have read them in order to make use of this package.
 
 # Prerequisites and Resources
