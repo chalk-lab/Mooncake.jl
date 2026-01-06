@@ -1,7 +1,7 @@
 # Algorithmic Differentiation
 
 This section introduces the mathematics behind AD.
-Even if you have worked with AD before, we recommend reading in order to acclimatise yourself to the perspective that Mooncake.jl takes on the subject.
+Even if you have worked with AD before, we recommend reading this to acclimatise yourself to the perspective that Mooncake.jl takes on the subject.
 
 # Derivatives
 
@@ -30,8 +30,8 @@ It is possible to stop here, as all the functions we shall need to consider can 
 However, to differentiate computer programmes, we must deal with complicated nested data structures, e.g. `struct`s inside `Tuple`s inside `Vector`s etc.
 While all of these data structures _can_ be mapped onto a flat vector in order to make sense of the Jacobian, this quickly becomes very inconvenient.
 To see the problem, consider the Julia function whose input is of type `Tuple{Tuple{Float64, Vector{Float64}}, Vector{Float64}, Float64}` and whose output is of type `Tuple{Vector{Float64}, Float64}`.
-What kind of object might be use to represent the derivative of a function mapping between these two spaces?
-We certainly _can_ treat these as structured "view" into a "flat" `Vector{Float64}`s, and then define a Jacobian, but actually _finding_ this mapping is a tedious exercise, even if it quite obviously exists.
+What kind of object might be used to represent the derivative of a function mapping between these two spaces?
+We certainly _can_ treat these as structured "views" into a "flat" `Vector{Float64}`, and then define a Jacobian, but actually _finding_ this mapping is a tedious exercise, even if it quite obviously exists.
 
 In fact, a more general formulation of the derivative is used all the time in the context of AD -- the matrix calculus discussed by [giles2008extended](@cite) and [minka2000old](@cite) (to name a couple) make use of a generalised form of the derivative in order to work with functions which map to and from matrices (albeit there are slight differences in naming conventions from text to text), without needing to "flatten" them into vectors in order to make sense of them.
 
@@ -56,10 +56,10 @@ Furthermore, the dot-notation (``\dot{x}``) does not have anything to do with ti
 So, instead of thinking of the derivative as a number or a matrix, we think about it as a _function_.
 We can express the previous notions of the derivative in this language.
 
-In the scalar case, rather than thinking of the derivative as _being_ ``\alpha``, we think of it is a the linear operator ``D f [x] (\dot{x}) := \alpha \dot{x}``.
-Put differently, rather than thinking of the derivative as the slope of the tangent to ``f`` at ``x``, think of it as the function decribing the tangent itself.
+In the scalar case, rather than thinking of the derivative as _being_ ``\alpha``, we think of it as the linear operator ``D f [x] (\dot{x}) := \alpha \dot{x}``.
+Put differently, rather than thinking of the derivative as the slope of the tangent to ``f`` at ``x``, think of it as the function describing the tangent itself.
 Observe that up until now we had only considered inputs to ``D f [x]`` which were small (``\text{d} x``) -- here we extend it to the entire space ``\mathcal{X}`` and denote inputs in this space ``\dot{x}``.
-Inputs ``\dot{x}`` should be thoughts of as "directions", in the directional derivative sense (why this is true will be discussed later).
+Inputs ``\dot{x}`` should be thought of as "directions", in the directional derivative sense (why this is true will be discussed later).
 
 Similarly, if ``\mathcal{X} = \RR^P`` and ``\mathcal{Y} = \RR^Q`` then this operator can be specified in terms of the Jacobian matrix: ``D f [x] (\dot{x}) := J[x] \dot{x}`` -- brackets are used to emphasise that ``D f [x]`` is a function, and is being applied to ``\dot{x}``.[^note_for_geometers]
 
@@ -139,7 +139,7 @@ The goal of reverse-mode AD is as follows: given a differentiable function ``f :
 
 Notation: ``D f [x]^\ast`` denotes the single mathematical object which is the adjoint of ``D f [x]``.
 It is a linear function from ``\mathcal{Y}`` to ``\mathcal{X}``.
-We may occassionally write it as ``(D f [x])^\ast`` if there is some risk of confusion.
+We may occasionally write it as ``(D f [x])^\ast`` if there is some risk of confusion.
 
 We will explain _how_ reverse-mode AD goes about computing this after some worked examples.
 
@@ -162,7 +162,7 @@ We will put all of these problems in a single general framework later on.
 We have introduced some mathematical abstraction in order to simplify the calculations involved in AD.
 To this end, we consider differentiating ``f(X) := X^\top X``.
 Results for this and similar operations are given by [giles2008extended](@cite).
-A similar operation, but which maps from matrices to ``\RR`` is discussed in Lecture 4 part 2 of the MIT course mentioned previouly.
+A similar operation, but which maps from matrices to ``\RR`` is discussed in Lecture 4 part 2 of the MIT course mentioned previously.
 Both [giles2008extended](@cite) and [Lecture 4 part 2](https://ocw.mit.edu/courses/18-s096-matrix-calculus-for-machine-learning-and-beyond-january-iap-2023/resources/ocw_18s096_lecture04-part2_2023jan26_mp4/) provide approaches to obtaining the derivative of this function.
 
 Following either resource will yield the derivative:
