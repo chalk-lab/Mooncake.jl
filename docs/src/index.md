@@ -106,7 +106,7 @@ The plan is to proceed in three phases:
 1. maintenance
 
 You should take this with a pinch of salt, as it seems highly likely that we will have to revisit some design choices when optimising performance -- we do not, however, anticipate requiring major re-writes to the design as part of performance optimisation.
-We aim to reach the maintenance phase of the project before 01/06/2024 (now completed).
+We aimed to enter the maintenance phase of the project by 01/06/2024. As of 6 January 2025, both forward- and reverse-mode differentiation are complete, with remaining work focused on chunk-mode forward differentiation and GPU support.
 
 !!! details "Updates"
     *Update: (07/02/2025)*
