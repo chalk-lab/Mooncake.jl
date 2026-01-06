@@ -37,6 +37,16 @@ using LinearAlgebra
                 interface_only=true,
                 is_primitive=true,
             )
+            test_rule(
+                StableRNG(123456),
+                CuArray{ET,2,CUDA.DeviceMemory},
+                undef,
+                (16, 32);
+                interface_only=true,
+                is_primitive=true,
+                debug_mode=true,
+                mode=Mooncake.ReverseMode,
+            )
             dp = Mooncake.zero_codual(p)
             if ET <: Real
                 @test Mooncake.arrayify(dp) == (p, Mooncake.zero_tangent(p))
