@@ -25,11 +25,11 @@ cache_friendly = MC.prepare_gradient_cache(g, x_complex; friendly_tangents=true)
 val, grad = MC.value_and_gradient!!(cache_friendly, g, x_complex)
 ```
 
-```julia
+```@example interface
 # `args_to_zero` is optional; when provided, it specifies a true/false value
-# for each argument (e.g., loss, model), allowing tangent zeroing to be skipped
+# for each argument (e.g., g, x_complex), allowing tangent zeroing to be skipped
 # per argument when the value is constant.
-val, grad = MC.value_and_gradient!!(cache_friendly, loss, model, args_to_zero=(false, true))
+val, grad = MC.value_and_gradient!!(cache_friendly, g, x_complex, args_to_zero=(false, true))
 ```
 
 ## API Reference
