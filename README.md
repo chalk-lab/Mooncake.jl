@@ -21,28 +21,31 @@ Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more
 Check that you're running a version of Julia that Mooncake.jl supports.
 See the `SUPPORT_POLICY.md` file for more info.
 
-There are several ways to interact with `Mooncake.jl`.
-We recommend that people interact with `Mooncake.jl` via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
-For example, use it as follows to compute the gradient of a function mapping a `Vector{Float64}` to `Float64`.
+There are several ways to interact with `Mooncake.jl`. To interact directly with `Mooncake.jl`, use `Mooncake.value_and_gradient!!`, which exposes the native API and allows reuse of a prepared gradient cache. For example, it can be used to compute the gradient of a function mapping a `Vector{ComplexF64}` to a `Float64`.
+
 ```julia
-import DifferentiationInterface as DI
 import Mooncake as MC
 
 f(x) = sum(abs2, x)
 x = [1.0 + 2.0im, 3.0 + 4.0im]
+
+# Using native Mooncake API
+cache_friendly = MC.prepare_gradient_cache(f, x; friendly_tangents=true)
+val, grad = MC.value_and_gradient!!(cache_friendly, f, x)
+```
+
+You should expect that `MC.prepare_gradient_cache` takes a little bit of time to run, but that `value_and_gradient!!` is fast. For additional details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/).
+
+You can also interact with `Mooncake.jl` via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
+
+```julia
+import DifferentiationInterface as DI
 
 # Using DifferentiationInterface API
 # Reverse-mode AD. For forward-mode AD, use `AutoMooncakeForward()`
 backend = DI.AutoMooncake()
 prep = DI.prepare_gradient(f, backend, x)
 DI.gradient(f, prep, backend, x)
-
-# Using native Mooncake API
-cache_friendly = MC.prepare_gradient_cache(f, x; friendly_tangents=true)
-val, grad = MC.value_and_gradient!!(cache_friendly, f, x)
 ```
-You should expect that `prepare_gradient` takes a little bit of time to run, but that `gradient` is fast.
 
-We are committed to ensuring support for DifferentiationInterface, which is why we recommend using that.
-If you are interested in interacting more directly with `Mooncake.jl`, you should consider `Mooncake.value_and_gradient!!`.
-See its docstring for more info.
+We generally recommend interacting with `Mooncake.jl` through `DifferentiationInterface.jl`, although this interface may lag behind Mooncake in supporting newly introduced features.
