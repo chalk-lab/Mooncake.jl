@@ -1484,6 +1484,199 @@ end
 end
 
 """
+Type Stable NaN wrapper
+
+TODO : Write custom Mooncake tangent for `MooncakeNaN` -> should be MooncakeNaN itself.
+As of now is treated like a string when Mooncake's AD diffs on it - NoTangent(). 
+
+NOTE: THIS MUST ONLY BE USED WITHIN RULES RIGHT NOW.
+Once TODO is addressed, then can also use freely in User/autodiffed code.
+"""
+struct MooncakeNaN
+    msg::String
+end
+
+# Arithmetic with itself
+import Base: +, -, *, /, ^
+
++(N::MooncakeNaN, ::MooncakeNaN) = N
+-(N::MooncakeNaN, ::MooncakeNaN) = N
+*(N::MooncakeNaN, ::MooncakeNaN) = N
+/(N::MooncakeNaN, ::MooncakeNaN) = N
+^(N::MooncakeNaN, ::MooncakeNaN) = N
+
+# Arithmetic with numbers (not order invariant)
++(x::Number, ::MooncakeNaN) = x
++(::MooncakeNaN, x::Number) = x
+-(x::Number, ::MooncakeNaN) = x
+-(::MooncakeNaN, x::Number) = -x
+*(x::Number, N::MooncakeNaN) = N
+*(N::MooncakeNaN, x::Number) = N
+/(x::Number, ::MooncakeNaN) = Inf   # optional
+/(N::MooncakeNaN, x::Number) = N
+^(x::Number, ::MooncakeNaN) = 1
+^(N::MooncakeNaN, x::Number) = N
+
+# (usefull for logging within rules/functions etc.)
+import Base: show, string, iterate
+show(io::IO, N::MooncakeNaN) = print(io, "MooncakeNaN(", N.msg, ")")
+
+# Array stuff
+iterate(N::MooncakeNaN, a::Any) = nothing
+iterate(N::MooncakeNaN) = (N, nothing)
+
+# Handle Implicit type conversions or promotions
+import Base: convert, zero
+convert(::Type{T}, N::MooncakeNaN) where {T<:Number} = N
+
+# linearAlgebra
+LinearAlgebra.dot(N::MooncakeNaN, x::Number) = N
+LinearAlgebra.dot(x::Number, N::MooncakeNaN) = N
+LinearAlgebra.dot(N::MooncakeNaN, x::MooncakeNaN) = N
+
+"""
+
+A wrapper for Masking any active/dead code branches with `MooncakeNaNs`.
+Usefull to highlight code branches/outputs in RULES ONLY with internal evaluations which may possibly return NaNs.
+
+NOTE :
+Can be used in regular functions ONLY WHEN `MooncakeNaN` has valid custom `MooncakeNaN` tangent.
+Refer above `MooncakeNaN` struct's TODO
+
+USAGE : 
+
+CASE - 1 (completely Handled right now)
+------------------------------------------
+To handle something like (Handles all numerically continous programs.) :
+
+function f(x::Float64)
+    a = x
+    b = abs(x-1)^(0.5)
+    a = a + b
+    return a
+end
+DifferentiationInterface.derivative(f, AutoMooncake(), 1.0) -> returns NaN (Not NaN safe)
+
+We now have to write a rule for this (due to NaNs): 
+
+using Mooncake: CoDual, rrule!!, primal, @is_primitive, DefaultCtx, NoRData, zero_fcodual
+@is_primitive DefaultCtx Tuple{typeof(f), Float64}
+function Mooncake.rrule!!(::CoDual{typeof(f)}, x::CoDual{Float64})
+    x_val = primal(x)
+    val = f(x_val)
+
+    function pb!!(::Float64)
+        a_tangent = 1.0
+        b_tangent = @MooncakeNaN_coverage(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at stationary input point 1.0")
+        return NoRData(), a_tangent + b_tangent
+    end
+    return zero_fcodual(val), pb!!
+end
+
+DifferentiationInterface.derivative(f, AutoMooncake(), 1.0) -> returns 1.0 (totally NaN safe)
+
+
+CASE - 2 (Handles all programs with stationary points in domain !!)
+(WIP - Handle Tangent type for MooncakeNaN !)
+-------------------------------------------
+In case we directly work with the tangent of b (expected gradients are NaNs)
+
+function ftest(x::Float64)
+    a = x
+    b = abs(x-1)^(0.5)
+    return b
+end
+DifferentiationInterface.derivative(ftest, AutoMooncake(), 1.0) -> returns NaN
+
+Write have to write a rule for this:
+
+using Mooncake: CoDual, rrule!!, primal, @is_primitive, DefaultCtx, NoRData, zero_fcodual
+@is_primitive DefaultCtx Tuple{typeof(ftest), Float64}
+function Mooncake.rrule!!(::CoDual{typeof(ftest)}, x::CoDual{Float64})
+    x_val = primal(x)
+    val = ftest(x_val)
+
+    function pb!!(::Float64)
+        a_tangent = 1.0
+        b_tangent = @MooncakeNaN_coverage(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at stationary input point 1.0")
+        return NoRData(), b_tangent
+    end
+    return zero_fcodual(val), pb!!
+end
+
+DifferentiationInterface.derivative(ftest, AutoMooncake(), 1.0) -> returns MooncakeNaN("filler") (mathematically correct)
+# Must error out if @MooncakeNaN_coverage macro used incorrectly within rrule
+
+"""
+
+macro MooncakeNaN_coverage(expr, msg::String)
+    quote
+        possiblyNaN = $(esc(expr))
+        if isnan(possiblyNaN)
+            @info "NaN output detected from branch, using MooncakeNaN coverage."
+            MooncakeNaN($(QuoteNode(msg)))
+        else
+            throw(
+                "Expected a NaN output value from branch, but got a valid $(possiblyNaN) instead.",
+            )
+        end
+    end
+end
+
+"""
+Analog to ChainRulesCore.@not_implemented.
+
+1> This makes sure we truthfully tell the user that the tangent they are trying to work with has not been implemented yet.
+2> The AD CFG ALWAYS TREATS the Variable WHOSE tangent is annotated with NotImplementedTangent as a DISJOINT NODE.
+3> If the program tries to use it explicitly or implicitly during tangent propagation, Mooncake must error Loudly.
+
+NOTE : This is also a tool for RULES ONLY.
+
+"""
+
+struct NotImplementedTangent
+    msg::String
+end
+
+# Throw helper
+_notimpl_error(msg) = throw(NotImplementedError(msg))
+
+# Arithmetic with itself
+function +(::NotImplementedTangent, ::NotImplementedTangent)
+    return _notimpl_error("Operation not implemented")
+end
+function -(::NotImplementedTangent, ::NotImplementedTangent)
+    return _notimpl_error("Operation not implemented")
+end
+function *(::NotImplementedTangent, ::NotImplementedTangent)
+    return _notimpl_error("Operation not implemented")
+end
+function /(::NotImplementedTangent, ::NotImplementedTangent)
+    return _notimpl_error("Operation not implemented")
+end
+function ^(::NotImplementedTangent, ::NotImplementedTangent)
+    return _notimpl_error("Operation not implemented")
+end
+
+# Arithmetic with numbers
++(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
++(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
+-(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
+-(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
+*(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
+*(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
+/(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
+/(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
+^(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
+^(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
+
+# Display nicely
+import Base: show
+function show(io::IO, obj::NotImplementedTangent)
+    return print(io, "NotImplementedTangent(\"", obj.msg, "\")")
+end
+
+"""
     tangent_test_cases()
 
 Constructs a `Vector` of `Tuple`s containing test cases for the tangent infrastructure.

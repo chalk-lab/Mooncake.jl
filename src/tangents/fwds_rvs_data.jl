@@ -963,6 +963,9 @@ tangent(::NoFData, ::NoRData) = NoTangent()
 tangent(::NoFData, r::IEEEFloat) = r
 tangent(f::Array, ::NoRData) = f
 
+# WIP - MooncakeNaN's tangent is itself !
+tangent(::NoFData, N::MooncakeNaN) = N
+
 # Tuples
 tangent(f::Tuple, r::Tuple) = tuple_map(tangent, f, r)
 tangent(::NoFData, r::Tuple) = tuple_map(_r -> tangent(NoFData(), _r), r)
