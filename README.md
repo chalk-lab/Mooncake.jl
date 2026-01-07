@@ -25,14 +25,21 @@ There are several ways to interact with `Mooncake.jl`.
 We recommend that people interact with `Mooncake.jl` via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
 For example, use it as follows to compute the gradient of a function mapping a `Vector{Float64}` to `Float64`.
 ```julia
-using DifferentiationInterface
-import Mooncake
+import DifferentiationInterface as DI
+import Mooncake as MC
 
-f(x) = sum(cos, x)
-backend = AutoMooncake() # Reverse-mode AD. For forward-mode AD, use `AutoMooncakeForward()`. 
-x = ones(1_000)
-prep = prepare_gradient(f, backend, x)
-gradient(f, prep, backend, x)
+f(x) = sum(abs2, x)
+x = [1.0 + 2.0im, 3.0 + 4.0im]
+
+# Using DifferentiationInterface API
+# Reverse-mode AD. For forward-mode AD, use `AutoMooncakeForward()`
+backend = DI.AutoMooncake()
+prep = DI.prepare_gradient(f, backend, x)
+DI.gradient(f, prep, backend, x)
+
+# Using native Mooncake API
+cache_friendly = MC.prepare_gradient_cache(f, x; friendly_tangents=true)
+val, grad = MC.value_and_gradient!!(cache_friendly, f, x)
 ```
 You should expect that `prepare_gradient` takes a little bit of time to run, but that `gradient` is fast.
 
