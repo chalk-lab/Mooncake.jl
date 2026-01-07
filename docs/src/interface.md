@@ -42,7 +42,7 @@ cache = MC.prepare_gradient_cache(g, x_complex; friendly_tangents = true)
 val, grad = MC.value_and_gradient!!(
     cache,
     g,
-    x_complex,
+    x_complex;
     args_to_zero = (false, true),
 )
 ```
