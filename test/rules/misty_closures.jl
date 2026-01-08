@@ -106,6 +106,7 @@ end
     # See: https://github.com/chalk-lab/Mooncake.jl/issues/916
     # When methods are defined between IR creation and MistyClosure creation,
     # oc.world exceeds ir.valid_worlds.max_world. The fix uses max_world.
+    # See also: test/ext/differentiation_interface_second_order for an integration test.
     @static if VERSION > v"1.12-"
         @testset "world age mismatch fix (#916)" begin
             ir_test = Base.code_ircode_by_type(Tuple{typeof(mc_foo),Float64})[1][1]
