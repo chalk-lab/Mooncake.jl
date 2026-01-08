@@ -41,7 +41,7 @@ julia> Mooncake.value_and_gradient!!(rule, foo, 2.0)
 ```
 Observe that while it has correctly computed the identity function, the gradient is zero.
 
-The takehome: do not attempt to differentiate functions which modify global state. Uses of globals which does not involve mutating them is fine though.
+The takeaway: do not attempt to differentiate functions which modify global state. Reading globals is fine; mutating globals is not.
 
 
 ## Passing Differentiable Data as a Type
@@ -77,7 +77,7 @@ Users who need to differentiate through these code paths may do so by providing 
 ## Circular References in Type Declarations
 
 Mooncake.jl's default `tangent_type` implementation cannot support types which refer to themselves either directly or indirectly in their definition.
-Below is an example in which a type refers to iself directly in its definition.
+Below is an example in which a type refers to itself directly in its definition.
 
 _**The Problem**_
 
