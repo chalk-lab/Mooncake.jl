@@ -1486,48 +1486,49 @@ end
 """
 Type Stable NaN wrapper
 
-TODO : Write custom Mooncake tangent for `MooncakeNaN` -> should be MooncakeNaN itself.
+**TODO** : Write custom Mooncake tangent for `MooncakeNaN` -> should be MooncakeNaN itself.
 As of now is treated like a string when Mooncake's AD diffs on it - NoTangent(). 
+Once **TODO** is addressed, then can also use freely in *Primal Space* User/autodiffed code.
 
-NOTE: THIS MUST ONLY BE USED WITHIN RULES RIGHT NOW.
-Once TODO is addressed, then can also use freely in User/autodiffed code.
+In Primal space : NaN behaves as is for correctness.
+In tangent space : NaN must behave like 0 in dead branches (to avoid NaN poisoning).
+In tangent space : NaN behaves as is, in active branches (for correctness).
+So because the current MooncakeNaN is only limited to the Tangent world and currently I only handle all dead branches cases, it must be treated as a 0, therefore the above evalution must return Inf.
+
+**Note** : **This must only be used within *Tangent Space*/Mooncake rules right now**.
 """
 struct MooncakeNaN
     msg::String
 end
 
 # Arithmetic with itself
-import Base: +, -, *, /, ^
-
-+(N::MooncakeNaN, ::MooncakeNaN) = N
--(N::MooncakeNaN, ::MooncakeNaN) = N
-*(N::MooncakeNaN, ::MooncakeNaN) = N
-/(N::MooncakeNaN, ::MooncakeNaN) = N
-^(N::MooncakeNaN, ::MooncakeNaN) = N
+Base.:+(N::MooncakeNaN, ::MooncakeNaN) = N
+Base.:-(N::MooncakeNaN, ::MooncakeNaN) = N
+Base.:*(N::MooncakeNaN, ::MooncakeNaN) = N
+Base.:/(N::MooncakeNaN, ::MooncakeNaN) = N
+Base.:^(N::MooncakeNaN, ::MooncakeNaN) = N
 
 # Arithmetic with numbers (not order invariant)
-+(x::Number, ::MooncakeNaN) = x
-+(::MooncakeNaN, x::Number) = x
--(x::Number, ::MooncakeNaN) = x
--(::MooncakeNaN, x::Number) = -x
-*(x::Number, N::MooncakeNaN) = N
-*(N::MooncakeNaN, x::Number) = N
-/(x::Number, ::MooncakeNaN) = Inf   # optional
-/(N::MooncakeNaN, x::Number) = N
-^(x::Number, ::MooncakeNaN) = 1
-^(N::MooncakeNaN, x::Number) = N
+Base.:+(x::Number, ::MooncakeNaN) = x
+Base.:+(::MooncakeNaN, x::Number) = x
+Base.:-(x::Number, ::MooncakeNaN) = x
+Base.:-(::MooncakeNaN, x::Number) = -x
+Base.:*(x::Number, N::MooncakeNaN) = N
+Base.:*(N::MooncakeNaN, x::Number) = N
+Base.:/(x::Number, ::MooncakeNaN) = Inf
+Base.:/(N::MooncakeNaN, x::Number) = N
+Base.:^(x::Number, ::MooncakeNaN) = 1
+Base.:^(N::MooncakeNaN, x::Number) = N
 
 # (usefull for logging within rules/functions etc.)
-import Base: show, string, iterate
-show(io::IO, N::MooncakeNaN) = print(io, "MooncakeNaN(", N.msg, ")")
+Base.show(io::IO, N::MooncakeNaN) = print(io, "MooncakeNaN(", N.msg, ")")
 
 # Array stuff
-iterate(N::MooncakeNaN, a::Any) = nothing
-iterate(N::MooncakeNaN) = (N, nothing)
+Base.iterate(N::MooncakeNaN, a::Any) = nothing
+Base.iterate(N::MooncakeNaN) = (N, nothing)
 
 # Handle Implicit type conversions or promotions
-import Base: convert, zero
-convert(::Type{T}, N::MooncakeNaN) where {T<:Number} = N
+Base.convert(::Type{T}, N::MooncakeNaN) where {T<:Number} = N
 
 # linearAlgebra
 LinearAlgebra.dot(N::MooncakeNaN, x::Number) = N
@@ -1535,29 +1536,30 @@ LinearAlgebra.dot(x::Number, N::MooncakeNaN) = N
 LinearAlgebra.dot(N::MooncakeNaN, x::MooncakeNaN) = N
 
 """
+    A macro wrapper for Masking any active/dead code branches with `MooncakeNaNs`.
+    Useful to highlight code branches/outputs in Tangent Space/**rules only** with internal evaluations which may possibly return NaNs.
+    
+    **TODO**: Make this macro a typestable way of handling in Tangent world CASE 2 - branches/functions with stationary points.
+    **TODO idea**: Write a similar macro for primal world that generates Mooncake rules for branch/function with stationary points.
 
-A wrapper for Masking any active/dead code branches with `MooncakeNaNs`.
-Usefull to highlight code branches/outputs in RULES ONLY with internal evaluations which may possibly return NaNs.
+    **Note** : **This must only be used within *Tangent Space*/Mooncake rules right now**.
 
-NOTE :
-Can be used in regular functions ONLY WHEN `MooncakeNaN` has valid custom `MooncakeNaN` tangent.
-Refer above `MooncakeNaN` struct's TODO
+    **Usage** : (Tangent world has only 2 possities : **CASE** - 1 and 2 )
 
-USAGE : 
+    **CASE - 1** - Handling **All** dead branches in numerically continuous programs :
+    (In the example below, the macro currently makes sure that the annotated branch errors out if no NaN is seen.)
+"""
 
-CASE - 1 (completely Handled right now)
-------------------------------------------
-To handle something like (Handles all numerically continous programs.) :
-
+```julia
 function f(x::Float64)
     a = x
     b = abs(x-1)^(0.5)
     a = a + b
     return a
 end
-DifferentiationInterface.derivative(f, AutoMooncake(), 1.0) -> returns NaN (Not NaN safe)
+DifferentiationInterface.derivative(f, AutoMooncake(), 1.0) # -> returns NaN (Not NaN safe)
 
-We now have to write a rule for this (due to NaNs): 
+# We now have to write a rule for this (due to NaNs): 
 
 using Mooncake: CoDual, rrule!!, primal, @is_primitive, DefaultCtx, NoRData, zero_fcodual
 @is_primitive DefaultCtx Tuple{typeof(f), Float64}
@@ -1567,28 +1569,31 @@ function Mooncake.rrule!!(::CoDual{typeof(f)}, x::CoDual{Float64})
 
     function pb!!(::Float64)
         a_tangent = 1.0
-        b_tangent = @MooncakeNaN_coverage(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at stationary input point 1.0")
+        b_tangent = @guard_nan(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at stationary input point 1.0")
         return NoRData(), a_tangent + b_tangent
     end
     return zero_fcodual(val), pb!!
 end
 
-DifferentiationInterface.derivative(f, AutoMooncake(), 1.0) -> returns 1.0 (totally NaN safe)
+DifferentiationInterface.derivative(f, AutoMooncake(), 1.0) # returns 1.0 (totally NaN safe)
+```
 
+"""
+    **CASE - 2** - Handles **All** programs with stationary points in domain
+    (**WIP** - Handle Tangent type for MooncakeNaN !)
 
-CASE - 2 (Handles all programs with stationary points in domain !!)
-(WIP - Handle Tangent type for MooncakeNaN !)
--------------------------------------------
-In case we directly work with the tangent of b (expected gradients are NaNs)
+    In case we directly work with the tangent of b (expected gradients are NaNs)
+"""
 
+```julia
 function ftest(x::Float64)
     a = x
     b = abs(x-1)^(0.5)
     return b
 end
-DifferentiationInterface.derivative(ftest, AutoMooncake(), 1.0) -> returns NaN
+DifferentiationInterface.derivative(ftest, AutoMooncake(), 1.0) # returns NaN
 
-Write have to write a rule for this:
+# We have to write a rule for this:
 
 using Mooncake: CoDual, rrule!!, primal, @is_primitive, DefaultCtx, NoRData, zero_fcodual
 @is_primitive DefaultCtx Tuple{typeof(ftest), Float64}
@@ -1598,40 +1603,38 @@ function Mooncake.rrule!!(::CoDual{typeof(ftest)}, x::CoDual{Float64})
 
     function pb!!(::Float64)
         a_tangent = 1.0
-        b_tangent = @MooncakeNaN_coverage(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at stationary input point 1.0")
+        b_tangent = @guard_nan(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at stationary input point 1.0")
         return NoRData(), b_tangent
     end
     return zero_fcodual(val), pb!!
 end
 
-DifferentiationInterface.derivative(ftest, AutoMooncake(), 1.0) -> returns MooncakeNaN("filler") (mathematically correct)
-# Must error out if @MooncakeNaN_coverage macro used incorrectly within rrule
-
-"""
-
-macro MooncakeNaN_coverage(expr, msg::String)
+DifferentiationInterface.derivative(ftest, AutoMooncake(), 1.0) # returns MooncakeNaN("filler") (mathematically correct)
+# Must error out if @guard_nan macro used incorrectly within rrule.
+```
+macro guard_nan(expr, msg::String)
     quote
         possiblyNaN = $(esc(expr))
         if isnan(possiblyNaN)
-            @info "NaN output detected from branch, using MooncakeNaN coverage."
             MooncakeNaN($(QuoteNode(msg)))
         else
             throw(
-                "Expected a NaN output value from branch, but got a valid $(possiblyNaN) instead.",
+                ArgumentError(
+                    "Expected a NaN output value from branch, but got a valid $(possiblyNaN) instead.",
+                ),
             )
         end
     end
 end
 
 """
-Analog to ChainRulesCore.@not_implemented.
+    Analog to ChainRulesCore.@not_implemented.
 
-1> This makes sure we truthfully tell the user that the tangent they are trying to work with has not been implemented yet.
-2> The AD CFG ALWAYS TREATS the Variable WHOSE tangent is annotated with NotImplementedTangent as a DISJOINT NODE.
-3> If the program tries to use it explicitly or implicitly during tangent propagation, Mooncake must error Loudly.
+    1> This makes sure we truthfully tell the user that the tangent they are trying to work with has not been implemented yet.
+    2> The **AD CFG** *always treats* the Variable whose tangent is annotated with NotImplementedTangent as a **Disjoint Node**.
+    3> If the program tries to use it explicitly or implicitly during tangent propagation, Mooncake must error Loudly.
 
-NOTE : This is also a tool for RULES ONLY.
-
+    **Note** : **This must only be used within *Tangent Space*/Mooncake rules right now**.
 """
 
 struct NotImplementedTangent
@@ -1641,38 +1644,67 @@ end
 # Throw helper
 _notimpl_error(msg) = throw(NotImplementedError(msg))
 
+function Base.showerror(io, ::UnimplementedTangent)
+    return println(
+        io, "UnimplementedTangentException: tangent not implemented for operation"
+    )
+end
+
 # Arithmetic with itself
-function +(::NotImplementedTangent, ::NotImplementedTangent)
+function Base.:+(::NotImplementedTangent, ::NotImplementedTangent)
     return _notimpl_error("Operation not implemented")
 end
-function -(::NotImplementedTangent, ::NotImplementedTangent)
+
+function Base.:-(::NotImplementedTangent, ::NotImplementedTangent)
     return _notimpl_error("Operation not implemented")
 end
-function *(::NotImplementedTangent, ::NotImplementedTangent)
+
+function Base.:*(::NotImplementedTangent, ::NotImplementedTangent)
     return _notimpl_error("Operation not implemented")
 end
-function /(::NotImplementedTangent, ::NotImplementedTangent)
+
+function Base.:/(::NotImplementedTangent, ::NotImplementedTangent)
     return _notimpl_error("Operation not implemented")
 end
-function ^(::NotImplementedTangent, ::NotImplementedTangent)
+
+function Base.:^(::NotImplementedTangent, ::NotImplementedTangent)
     return _notimpl_error("Operation not implemented")
 end
 
 # Arithmetic with numbers
-+(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
-+(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
--(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
--(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
-*(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
-*(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
-/(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
-/(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
-^(x::Number, n::NotImplementedTangent) = _notimpl_error(n.msg)
-^(n::NotImplementedTangent, x::Number) = _notimpl_error(n.msg)
+function Base.:+(x::Number, n::NotImplementedTangent)
+    return _notimpl_error(" cannot use NotImplementedTangent for + : " + n.msg)
+end
+function Base.:+(n::NotImplementedTangent, x::Number)
+    return _notimpl_error(" cannot use NotImplementedTangent for + : " + n.msg)
+end
+function Base.:-(x::Number, n::NotImplementedTangent)
+    return _notimpl_error(" cannot use NotImplementedTangent for - : " + n.msg)
+end
+function Base.:-(n::NotImplementedTangent, x::Number)
+    return _notimpl_error(" cannot use NotImplementedTangent for - : " + n.msg)
+end
+function Base.:*(x::Number, n::NotImplementedTangent)
+    return _notimpl_error(" cannot use NotImplementedTangent for * : " + n.msg)
+end
+function Base.:*(n::NotImplementedTangent, x::Number)
+    return _notimpl_error(" cannot use NotImplementedTangent for * : " + n.msg)
+end
+function Base.:/(x::Number, n::NotImplementedTangent)
+    return _notimpl_error(" cannot use NotImplementedTangent for / : " + n.msg)
+end
+function Base.:/(n::NotImplementedTangent, x::Number)
+    return _notimpl_error(" cannot use NotImplementedTangent for / : " + n.msg)
+end
+function Base.:^(x::Number, n::NotImplementedTangent)
+    return _notimpl_error(" cannot use NotImplementedTangent for ^ : " + n.msg)
+end
+function Base.:^(n::NotImplementedTangent, x::Number)
+    return _notimpl_error(" cannot use NotImplementedTangent for ^ : " + n.msg)
+end
 
 # Display nicely
-import Base: show
-function show(io::IO, obj::NotImplementedTangent)
+function Base.show(io::IO, obj::NotImplementedTangent)
     return print(io, "NotImplementedTangent(\"", obj.msg, "\")")
 end
 
