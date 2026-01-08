@@ -1536,19 +1536,16 @@ LinearAlgebra.dot(x::Number, N::MooncakeNaN) = N
 LinearAlgebra.dot(N::MooncakeNaN, x::MooncakeNaN) = N
 
 """
-    A macro wrapper for Masking any active/dead code branches with `MooncakeNaNs`.
-    Useful to highlight code branches/outputs in Tangent Space/**rules only** with internal evaluations which may possibly return NaNs.
-    
-    **TODO**: Make this macro a typestable way of handling in Tangent world CASE 2 - branches/functions with stationary points.
-    **TODO idea**: Write a similar macro for primal world that generates Mooncake rules for branch/function with stationary points.
 
-    **Note** : **This must only be used within *Tangent Space*/Mooncake rules right now**.
+    `@guard_nan(expr, msg::String)`
+
+    A macro wrapper for Masking any active/dead code branch (`expr`) with `MooncakeNaNs`, with a custom `msg` that is filled into the `MooncakeNaN`.
+    Useful to highlight code branches/outputs in Tangent Space/**rules only** with internal evaluations which may possibly return NaNs.
 
     **Usage** : (Tangent world has only 2 possities : **CASE** - 1 and 2 )
 
     **CASE - 1** - Handling **All** dead branches in numerically continuous programs :
     (In the example below, the macro currently makes sure that the annotated branch errors out if no NaN is seen.)
-"""
 
 ```julia
 function f(x::Float64)
@@ -1578,12 +1575,10 @@ end
 DifferentiationInterface.derivative(f, AutoMooncake(), 1.0) # returns 1.0 (totally NaN safe)
 ```
 
-"""
     **CASE - 2** - Handles **All** programs with stationary points in domain
     (**WIP** - Handle Tangent type for MooncakeNaN !)
 
     In case we directly work with the tangent of b (expected gradients are NaNs)
-"""
 
 ```julia
 function ftest(x::Float64)
@@ -1612,6 +1607,13 @@ end
 DifferentiationInterface.derivative(ftest, AutoMooncake(), 1.0) # returns MooncakeNaN("filler") (mathematically correct)
 # Must error out if @guard_nan macro used incorrectly within rrule.
 ```
+
+    **TODO**: Make this macro a typestable way of handling in Tangent world CASE 2 - branches/functions with stationary points.
+    **TODO idea**: Write a similar macro for primal world that generates Mooncake rules for branch/function with stationary points.
+
+    **Note** : **This must only be used within *Tangent Space*/Mooncake rules right now**.
+
+"""
 macro guard_nan(expr, msg::String)
     quote
         possiblyNaN = $(esc(expr))
