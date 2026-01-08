@@ -1643,67 +1643,60 @@ struct NotImplementedTangent
     msg::String
 end
 
-# Throw helper
-_notimpl_error(msg) = throw(NotImplementedError(msg))
+struct NotimplementedTangentException <: Exception
+    msg::String
+end
 
-function Base.showerror(io, ::UnimplementedTangent)
-    return println(
-        io, "UnimplementedTangentException: tangent not implemented for operation"
+function Base.showerror(io, e::NotimplementedTangentException)
+    return print(io, "Notimplemented tangent : ", e.msg)
+end
+
+function _throw_op_error(n::NotImplementedTangent, op::Symbol)
+    throw(
+        NotimplementedTangentException(
+            "operation `$op` used on NotImplementedTangent : " * n.msg
+        ),
+    )
+end
+
+function _throw_op_doubleerror(
+    n1::NotImplementedTangent, n2::NotImplementedTangent, op::Symbol
+)
+    throw(
+        NotimplementedTangentException(
+            "operation `$op` used on NotImplementedTangents : " * n1.msg * " and " * n2.msg
+        ),
     )
 end
 
 # Arithmetic with itself
-function Base.:+(::NotImplementedTangent, ::NotImplementedTangent)
-    return _notimpl_error("Operation not implemented")
+function Base.:+(n1::NotImplementedTangent, n2::NotImplementedTangent)
+    return _throw_op_doubleerror(n1, n2, :+)
 end
-
-function Base.:-(::NotImplementedTangent, ::NotImplementedTangent)
-    return _notimpl_error("Operation not implemented")
+function Base.:-(n1::NotImplementedTangent, n2::NotImplementedTangent)
+    return _throw_op_doubleerror(n1, n2, :-)
 end
-
-function Base.:*(::NotImplementedTangent, ::NotImplementedTangent)
-    return _notimpl_error("Operation not implemented")
+function Base.:*(n1::NotImplementedTangent, n2::NotImplementedTangent)
+    return _throw_op_doubleerror(n1, n2, :*)
 end
-
-function Base.:/(::NotImplementedTangent, ::NotImplementedTangent)
-    return _notimpl_error("Operation not implemented")
+function Base.:/(n1::NotImplementedTangent, n2::NotImplementedTangent)
+    return _throw_op_doubleerror(n1, n2, :/)
 end
-
-function Base.:^(::NotImplementedTangent, ::NotImplementedTangent)
-    return _notimpl_error("Operation not implemented")
+function Base.:^(n1::NotImplementedTangent, n2::NotImplementedTangent)
+    return _throw_op_doubleerror(n1, n2, :^)
 end
 
 # Arithmetic with numbers
-function Base.:+(x::Number, n::NotImplementedTangent)
-    return _notimpl_error(" cannot use NotImplementedTangent for + : " + n.msg)
-end
-function Base.:+(n::NotImplementedTangent, x::Number)
-    return _notimpl_error(" cannot use NotImplementedTangent for + : " + n.msg)
-end
-function Base.:-(x::Number, n::NotImplementedTangent)
-    return _notimpl_error(" cannot use NotImplementedTangent for - : " + n.msg)
-end
-function Base.:-(n::NotImplementedTangent, x::Number)
-    return _notimpl_error(" cannot use NotImplementedTangent for - : " + n.msg)
-end
-function Base.:*(x::Number, n::NotImplementedTangent)
-    return _notimpl_error(" cannot use NotImplementedTangent for * : " + n.msg)
-end
-function Base.:*(n::NotImplementedTangent, x::Number)
-    return _notimpl_error(" cannot use NotImplementedTangent for * : " + n.msg)
-end
-function Base.:/(x::Number, n::NotImplementedTangent)
-    return _notimpl_error(" cannot use NotImplementedTangent for / : " + n.msg)
-end
-function Base.:/(n::NotImplementedTangent, x::Number)
-    return _notimpl_error(" cannot use NotImplementedTangent for / : " + n.msg)
-end
-function Base.:^(x::Number, n::NotImplementedTangent)
-    return _notimpl_error(" cannot use NotImplementedTangent for ^ : " + n.msg)
-end
-function Base.:^(n::NotImplementedTangent, x::Number)
-    return _notimpl_error(" cannot use NotImplementedTangent for ^ : " + n.msg)
-end
+Base.:+(x::Number, n::NotImplementedTangent) = _throw_op_error(n, :+)
+Base.:+(n::NotImplementedTangent, x::Number) = _throw_op_error(n, :+)
+Base.:-(x::Number, n::NotImplementedTangent) = _throw_op_error(n, :-)
+Base.:-(n::NotImplementedTangent, x::Number) = _throw_op_error(n, :-)
+Base.:*(x::Number, n::NotImplementedTangent) = _throw_op_error(n, :*)
+Base.:*(n::NotImplementedTangent, x::Number) = _throw_op_error(n, :*)
+Base.:/(x::Number, n::NotImplementedTangent) = _throw_op_error(n, :/)
+Base.:/(n::NotImplementedTangent, x::Number) = _throw_op_error(n, :/)
+Base.:^(x::Number, n::NotImplementedTangent) = _throw_op_error(n, :^)
+Base.:^(n::NotImplementedTangent, x::Number) = _throw_op_error(n, :^)
 
 # Display nicely
 function Base.show(io::IO, obj::NotImplementedTangent)
