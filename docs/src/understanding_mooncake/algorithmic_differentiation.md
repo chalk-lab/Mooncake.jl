@@ -77,18 +77,19 @@ By induction, this extends to a collection of ``N`` functions ``f_1, \dots, f_N`
 ```math
 f := f_N \circ \dots \circ f_1 \implies D f [x] = (D f_N [x_N]) \circ \dots \circ (D f_1 [x_1]),
 ```
-where ``x_{n+1} := f(x_n)``, and ``x_1 := x``.
+where ``x_{n+1} := f_n(x_n)``, and ``x_1 := x``.
 
 
 _**An aside: the definition of the Frechet Derivative**_
 
-This definition of the derivative has a name: the Frechet derivative.
-It is a generalisation of the Total Derivative.
-Formally, we say that a function ``f : \mathcal{X} \to \mathcal{Y}`` is differentiable at a point ``x \in \mathcal{X}`` if there exists a linear operator ``D f [x] : \mathcal{X} \to \mathcal{Y}`` (the derivative) satisfying
+The definition of the derivative we have been using is a generalisation of the Total Derivative.
+Formally, we say that a function ``f : \mathcal{X} \to \mathcal{Y}`` is differentiable at a point ``x \in \mathcal{X}`` if there exists a linear operator ``A : \mathcal{X} \to \mathcal{Y}`` satisfying
 ```math
-\lim_{\text{d} h \to 0} \frac{\| f(x + \text{d} h) - f(x) - D f [x] (\text{d} h)  \|_\mathcal{Y}}{\| \text{d}h \|_\mathcal{X}} = 0,
+\lim_{\text{d} h \to 0} \frac{\| f(x + \text{d} h) - f(x) - A (\text{d} h)  \|_\mathcal{Y}}{\| \text{d}h \|_\mathcal{X}} = 0,
 ```
 where ``\| \cdot \|_\mathcal{X}`` and ``\| \cdot \|_\mathcal{Y}`` are the norms associated to Hilbert spaces ``\mathcal{X}`` and ``\mathcal{Y}`` respectively.
+This linear operator ``A`` is known as the _Frechet derivative_ of ``f`` at ``x``, denoted ``D f [x]``.
+Note that the Frechet derivative is a _linear operator_, not a vector: when people casually refer to "the derivative" they often mean the gradient (a vector), but here we are working with the more general notion of a derivative as a linear map.
 (The Frechet derivative does not depend on the choice of norms. All norms are _equivalent_ in finite dimensions, meaning they define the same topology and notion of convergence: if this equation is satisfied for one norm, it holds for all.)
 
 It is a good idea to consider what this looks like when ``\mathcal{X} = \mathcal{Y} = \RR`` and when ``\mathcal{X} = \mathcal{Y} = \RR^D``.
