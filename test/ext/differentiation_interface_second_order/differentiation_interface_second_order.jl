@@ -38,6 +38,8 @@ end
 end
 
 @static if VERSION > v"1.12-"
+    const DI = DifferentiationInterface
+    DI.inner_preparation_behavior(::AutoMooncakeForward) = DI.DontPrepareInner()
     @testset "world age fix with closure (#916)" begin
         x0 = [0.0; fill(1.0, 9)]
         f = TestWorldAge.gams_objective
