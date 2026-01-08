@@ -1566,7 +1566,7 @@ function Mooncake.rrule!!(::CoDual{typeof(f)}, x::CoDual{Float64})
 
     function pb!!(::Float64)
         a_tangent = 1.0
-        b_tangent = @guard_nan(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at stationary input point 1.0")
+        b_tangent = @guard_nan(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at singular input point 1.0")
         return NoRData(), a_tangent + b_tangent
     end
     return zero_fcodual(val), pb!!
@@ -1575,7 +1575,7 @@ end
 DifferentiationInterface.derivative(f, AutoMooncake(), 1.0) # returns 1.0 (totally NaN safe)
 ```
 
-    **CASE - 2** - Handles **All** programs with stationary points in domain
+    **CASE - 2** - Handles **All** programs with singular points in domain
     (**WIP** - Handle Tangent type for MooncakeNaN !)
 
     In case we directly work with the tangent of b (expected gradients are NaNs)
@@ -1598,7 +1598,7 @@ function Mooncake.rrule!!(::CoDual{typeof(ftest)}, x::CoDual{Float64})
 
     function pb!!(::Float64)
         a_tangent = 1.0
-        b_tangent = @guard_nan(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at stationary input point 1.0")
+        b_tangent = @guard_nan(abs(x_val-1)^(-0.5) * sign(x_val-1), "NaN seen at singular input point 1.0")
         return NoRData(), b_tangent
     end
     return zero_fcodual(val), pb!!
@@ -1608,8 +1608,8 @@ DifferentiationInterface.derivative(ftest, AutoMooncake(), 1.0) # returns Moonca
 # Must error out if @guard_nan macro used incorrectly within rrule.
 ```
 
-    **TODO**: Make this macro a typestable way of handling in Tangent world CASE 2 - branches/functions with stationary points.
-    **TODO idea**: Write a similar macro for primal world that generates Mooncake rules for branch/function with stationary points.
+    **TODO**: Make this macro a typestable way of handling in Tangent world CASE 2 - branches/functions with singular points.
+    **TODO idea**: Write a similar macro for primal world that generates Mooncake rules for branch/function with singular points.
 
     **Note** : **This must only be used within *Tangent Space*/Mooncake rules right now**.
 
