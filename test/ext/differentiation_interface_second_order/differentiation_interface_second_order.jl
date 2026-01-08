@@ -39,6 +39,7 @@ end
 
 @static if VERSION > v"1.12-"
     const DI = DifferentiationInterface
+    # Ensure MistyClosures are created at execution time to trigger the world-age issue.
     DI.inner_preparation_behavior(::AutoMooncakeForward) = DI.DontPrepareInner()
     @testset "world age fix with closure (#916)" begin
         x0 = [0.0; fill(1.0, 9)]
