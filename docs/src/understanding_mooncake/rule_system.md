@@ -38,7 +38,7 @@ function foo(x)
     return z
 end
 ```
-The communication between the two invocations of `bar` happen via the value it `return`s.
+The communication between the two invocations of `bar` happens via the value it `return`s.
 
 
 _**Modification of arguments**_
@@ -131,7 +131,7 @@ For our example, the exact form of ``f`` is
 ```math
 f((x, y, z, s)) = ((x, y, x \odot y, s), (2 x \odot y, \sum_{d=1}^D x \odot y))
 ```
-Observe that ``f`` behaves a little like a transition operator, in the that the first element of the tuple returned is the updated state of the arguments.
+Observe that ``f`` behaves a little like a transition operator, in that the first element of the tuple returned is the updated state of the arguments.
 
 This model is good enough for the vast majority of functions.
 Unfortunately it isn't sufficient to describe a `function` when arguments alias each other (e.g. consider the way in which this particular model is wrong if `y` aliases `z`).
