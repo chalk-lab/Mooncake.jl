@@ -14,6 +14,7 @@ using Mooncake.TestUtils: test_rule
                 (:stability, airyai, P(0.1)),
                 (:stability, airyaix, P(0.1)),
                 (:stability, airyaiprime, P(0.1)),
+                (:stability, airyaiprimex, P(0.1)),
                 (:stability, airybi, P(0.1)),
                 (:stability, airybiprime, P(0.1)),
                 (:stability_and_allocs, besselj0, P(0.1)),
@@ -52,6 +53,7 @@ using Mooncake.TestUtils: test_rule
     )
         test_rule(StableRNG(123456), f, x...; perf_flag)
     end
+
     @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
         map([Float64, Float32]) do P
             return Any[
@@ -74,5 +76,46 @@ using Mooncake.TestUtils: test_rule
         (:none, SpecialFunctions.lambdaeta, 5.0),
     )
         test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
+    end
+
+    @testset "Primitive SpecialFunctions with Intractable Gradients" begin
+        @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
+            map([Float64, Float32]) do P
+                return Any[
+                    # 2 arg Standard Bessel & Hankel (1st arg gradient Intractable)
+                    (:stability, x -> besselj(P(0.5), x), P(1.5)),
+                    (:stability, x -> besseli(P(0.5), x), P(1.5)),
+                    (:stability, x -> bessely(P(0.5), x), P(1.5)),
+                    (:stability, x -> besselk(P(0.5), x), P(1.5)),
+                    (:stability, x -> hankelh1(P(0.5), x), P(1.5)),
+                    (:stability, x -> hankelh2(P(0.5), x), P(1.5)),
+
+                    # 2 arg scaled bessel-i,j,k,y & hankelh1, hankelh2 (1st arg gradient Intractable)
+                    # (last arg gradient Intractable)
+                    # (:none, x -> besselix(P(0.5), x), P(1.5)),
+                    # (:none, x -> besseljx(P(0.5), x), P(1.5)),
+                    # (:none, x -> besselkx(P(0.5), x), P(1.5)),
+                    # (:none, x -> besselyx(P(0.5), x), P(1.5)),
+                    # (:none, x -> hankelh1x(P(0.5), x), P(1.5)),
+                    # (:none, x -> hankelh2x(P(0.5), x), P(1.5)),
+
+                    # 2 arg Gamma & Exponential Integrals (1st arg gradient Intractable)
+                    (:stability, x -> gamma(P(2.0), x), P(1.5)),
+                    (:stability, x -> loggamma(P(2.0), x), P(1.5)),
+                    (:stability, x -> expint(P(1.0), x), P(0.5)),
+                    (:stability, x -> expintx(P(1.0), x), P(0.5)),
+
+                    # 3 arg gamma_inc (IND is 0/1, tangent a is 0 for AD but an approximation for testing FD)
+                    (:stability, x -> gamma_inc(P(2), x, 0), P(2)),
+                    (:stability, x -> gamma_inc(P(2), x, 1), P(2)),
+                ]
+            end...,
+        )
+            # flag is_primitive = false to test closures over SpecialFunctions.
+            # This excludes gradient caclulations for `NotImplemented` fields.
+            Mooncake.TestUtils.test_rule(
+                StableRNG(123456), f, x...; perf_flag, is_primitive=false
+            )
+        end
     end
 end
