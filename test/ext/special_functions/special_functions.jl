@@ -106,8 +106,10 @@ using Mooncake.TestUtils: test_rule
                     (:none, x -> expintx(P(1.0), x), P(0.5)),
 
                     # 3 arg gamma_inc (IND is 0/1, tangent a is 0 for AD but an approximation for testing FD)
-                    (:none, x -> gamma_inc(P(2), x, 0), P(2)),
-                    (:none, x -> gamma_inc(P(2), x, 1), P(2)),
+                    (:none, x -> gamma_inc(Float32(2), x, 0), P(2)),
+                    (:none, x -> gamma_inc(Float32(2), x, 1), P(2)),
+                    (:none, x -> gamma_inc(Float64(2), x, 0), P(2)),
+                    (:none, x -> gamma_inc(Float64(2), x, 1), P(2)),
                 ]
             end...,
         )
