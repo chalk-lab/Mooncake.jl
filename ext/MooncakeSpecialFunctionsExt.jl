@@ -127,7 +127,7 @@ function frule!!(
 ) where {T<:IEEEFloat,P<:IEEEFloat,I<:Integer}
     ap, xp, indp = primal(a), primal(x), primal(IND)
     # use log-space for z to maintain numerical stability
-    z = exp((ap - 1) * log(xp) - xp - loggamma(ap))
+    z = exp((ap - T(1)) * log(xp) - xp - loggamma(ap))
 
     # dot_p = dp/da * da + dp/dx * dx
     # dot_q = dq/da * da + dq/dx * dx
@@ -148,17 +148,17 @@ for func in [:gamma, :loggamma, :expint, :expintx]
 
             # use log-space for z to maintain numerical stability
             ∂x = if $(QuoteNode(func)) == :gamma
-                -exp((ap - 1) * log(xp) - xp)
+                -exp((ap - T(1)) * log(xp) - xp)
             elseif $(QuoteNode(func)) == :loggamma
                 # Derivative of log(Γ(a,x)) is originally -(x^(a-1) * e^-x) / Γ(a,x)
-                -exp((ap - 1) * log(xp) - xp - loggamma(ap, xp))
+                -exp((ap - T(1)) * log(xp) - xp - loggamma(ap, xp))
             elseif $(QuoteNode(func)) == :expint
                 # Derivative of E_n(x) = -E_{n-1}(x)
-                -expint(ap - 1, xp)
+                -expint(ap - T(1), xp)
             else # :expintx
                 # expintx(a, x) = exp(x) * expint(a, x)
                 # Derivative of  e^x * E_a(x) is originally e^x * E_a(x) - e^x * E_{a-1}(x) 
-                y - expintx(ap - 1, xp)
+                y - expintx(ap - T(1), xp)
             end
 
             # tangent(a) = 0 - Intractable Gradient
