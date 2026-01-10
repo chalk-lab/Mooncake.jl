@@ -123,7 +123,7 @@ Therefore, we must write only *Mooncake* frules. (ChainRules frule is implicit z
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
 function frule!!(
-    ::Dual{typeof(gamma_inc),NoTangent}, a::Dual{T,T}, x::Dual{P,P}, IND::Dual{I,NoTangent}
+    ::Dual{typeof(gamma_inc)}, a::Dual{T}, x::Dual{P}, IND::Dual{I,NoTangent}
 ) where {T<:IEEEFloat,P<:IEEEFloat,I<:Integer}
     ap, xp, indp = primal(a), primal(x), primal(IND)
     # use log-space for z to maintain numerical stability
@@ -140,7 +140,9 @@ for func in [:gamma, :loggamma, :expint, :expintx]
     @eval begin
         @is_primitive DefaultCtx ForwardMode Tuple{typeof($func),IEEEFloat,IEEEFloat}
 
-        function frule!!(::Dual{typeof($func)}, a::Dual{P}, x::Dual{P}) where {P<:IEEEFloat}
+        function frule!!(
+            ::Dual{typeof($func)}, a::Dual{T}, x::Dual{P}
+        ) where {T<:IEEEFloat,P<:IEEEFloat}
             ap, xp = primal(a), primal(x)
             y = $func(ap, xp)
 

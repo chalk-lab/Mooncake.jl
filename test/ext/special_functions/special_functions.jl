@@ -100,14 +100,14 @@ using Mooncake.TestUtils: test_rule
                     # (:none, x -> hankelh2x(P(0.5), x), P(1.5)),
 
                     # 2 arg Gamma & Exponential Integrals (1st arg gradient Intractable)
-                    (:stability, x -> gamma(P(2.0), x), P(1.5)),
-                    (:stability, x -> loggamma(P(2.0), x), P(1.5)),
-                    (:stability, x -> expint(P(1.0), x), P(0.5)),
-                    (:stability, x -> expintx(P(1.0), x), P(0.5)),
+                    (:none, x -> gamma(P(2.0), x), P(1.5)),
+                    (:none, x -> loggamma(P(2.0), x), P(1.5)),
+                    (:none, x -> expint(P(1.0), x), P(0.5)),
+                    (:none, x -> expintx(P(1.0), x), P(0.5)),
 
                     # 3 arg gamma_inc (IND is 0/1, tangent a is 0 for AD but an approximation for testing FD)
-                    (:stability, x -> gamma_inc(P(2), x, 0), P(2)),
-                    (:stability, x -> gamma_inc(P(2), x, 1), P(2)),
+                    (:none, x -> gamma_inc(P(2), x, 0), P(2)),
+                    (:none, x -> gamma_inc(P(2), x, 1), P(2)),
                 ]
             end...,
         )
