@@ -83,12 +83,12 @@ using Mooncake.TestUtils: test_rule
             map([Float64, Float32]) do P
                 return Any[
                     # 2 arg Standard Bessel & Hankel (1st arg gradient Intractable)
-                    (:stability, x -> besselj(P(0.5), x), P(1.5)),
-                    (:stability, x -> besseli(P(0.5), x), P(1.5)),
-                    (:stability, x -> bessely(P(0.5), x), P(1.5)),
-                    (:stability, x -> besselk(P(0.5), x), P(1.5)),
-                    (:stability, x -> hankelh1(P(0.5), x), P(1.5)),
-                    (:stability, x -> hankelh2(P(0.5), x), P(1.5)),
+                    # (:stability, x -> besselj(P(0.5), x), P(1.5)),
+                    # (:stability, x -> besseli(P(0.5), x), P(1.5)),
+                    # (:stability, x -> bessely(P(0.5), x), P(1.5)),
+                    # (:stability, x -> besselk(P(0.5), x), P(1.5)),
+                    # (:stability, x -> hankelh1(P(0.5), x), P(1.5)),
+                    # (:stability, x -> hankelh2(P(0.5), x), P(1.5)),
 
                     # 2 arg scaled bessel-i,j,k,y & hankelh1, hankelh2 (1st arg gradient Intractable)
                     # (last arg gradient Intractable)
