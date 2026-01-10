@@ -120,7 +120,7 @@ Therefore, we must write only *Mooncake* frules. (ChainRules frule is implicit z
 
 """
 # 3 arg gamma_inc (1st arg gradient Intractable)
-@is_primitive DefaultCtx ForwardMode Tuple{typeo,f(gamma_inc),IEEEFloat,IEEEFloat,Integer}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
 function frule!!(
     ::Dual{typeof(gamma_inc),NoTangent}, a::Dual{T,T}, x::Dual{P,P}, IND::Dual{I,NoTangent}
