@@ -180,7 +180,7 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     CC.verify_ir(ir)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
-    local_interp = @static if VERSION ≥ v"1.12-"
+    local_interp = @static if VERSION ≥ v"1.13-"
         CC.NativeInterpreter()
     else
         BugPatchInterpreter() # 319 -- see patch_for_319.jl for context
