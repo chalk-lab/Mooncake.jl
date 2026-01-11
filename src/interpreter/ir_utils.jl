@@ -180,10 +180,10 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     CC.verify_ir(ir)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
-    @static if VERSION ≥ v"1.12-"
-        local_interp = CC.NativeInterpreter()
+    local_interp = @static if VERSION ≥ v"1.12-"
+        CC.NativeInterpreter()
     else
-        local_interp = BugPatchInterpreter() # 319 -- see patch_for_319.jl for context
+        BugPatchInterpreter() # 319 -- see patch_for_319.jl for context
     end
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, local_interp, mi)
