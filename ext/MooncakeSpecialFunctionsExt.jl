@@ -146,12 +146,12 @@ function Mooncake.mooncake_tangent(p::T, cr_tangent::T) where {P<:IEEEFloat,T<:C
     return Mooncake.Tangent((re=real(cr_tangent), im=imag(cr_tangent)))
 end
 
-function Mooncake.to_cr_tangent(c::Tangent{@NamedTuple{re::T, im::T}}) where {T<:IEEEFloat}
+function Mooncake.to_cr_tangent(c::Tangent{@NamedTuple{re::T,im::T}}) where {T<:IEEEFloat}
     return Complex(c.fields.re, c.fields.im)
 end
 
 function Mooncake.increment_and_get_rdata!(
-    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T, im::T}}, t::Complex{T}
+    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T,im::T}}, t::Complex{T}
 ) where {T<:IEEEFloat}
     return Mooncake.RData((re=real(t) + r.data.re, im=imag(t) + r.data.im))
 end
