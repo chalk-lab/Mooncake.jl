@@ -131,7 +131,8 @@ include("tools_for_rules.jl")
 include("interface.jl")
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
-include(joinpath("rules", "blas.jl"))
+# `DispatchDoctor` is not compatible with `@mooncake_overlay`
+@unstable include(joinpath("rules", "blas.jl"))
 include(joinpath("rules", "builtins.jl"))
 include(joinpath("rules", "dispatch_doctor.jl"))
 include(joinpath("rules", "fastmath.jl"))
@@ -152,7 +153,7 @@ else
     include(joinpath("rules", "array_legacy.jl"))
 end
 
-# Including this in DispatchDoctor causes precompilation error.
+# `DispatchDoctor` is not compatible with `@mooncake_overlay`
 @unstable include(joinpath("rules", "performance_patches.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
