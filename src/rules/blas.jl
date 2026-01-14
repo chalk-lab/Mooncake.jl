@@ -1022,6 +1022,35 @@ function rrule!!(
     return C, gemm!_pb!!
 end
 
+@mooncake_overlay function BLAS.gemm!(
+    transA::Char,
+    transB::Char,
+    alpha::T,
+    A_dA::AbstractMatrix{T},
+    B_dB::AbstractVector{T},
+    beta::T,
+    C_dC::AbstractMatrix{T},
+) where {T<:BlasFloat}
+    # A (m×n) * B (n) → C (m)
+    return BLAS.gemm!(transA, transB, alpha, A_dA, reshape(B_dB, :, 1), beta, C_dC)
+end
+
+@mooncake_overlay function BLAS.gemm!(
+    transA::Char,
+    transB::Char,
+    alpha::T,
+    A_dA::AbstractVector{T},
+    B_dB::AbstractMatrix{T},
+    beta::T,
+    C_dC::AbstractMatrix{T},
+) where {T<:BlasFloat}
+
+    # x * B ≡ (B' * x)'
+    return BLAS.gemm!(
+        transB == 'N' ? 'T' : 'N', 'N', alpha, B_dB, reshape(A_dA, :, 1), beta, C_dC
+    )
+end
+
 for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     isherm = fname == :(hemm!)
 
