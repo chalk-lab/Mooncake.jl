@@ -1765,7 +1765,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         # so each tested function gets its own rng.
 
         # gemm!
-        let # gemm: Matrix × Matrix → Matrix
+        let
             rng = rng_ctor(123456)
             map_prod(
                 t_flags, t_flags, αs, βs, Ps, dαs, dβs
@@ -1773,72 +1773,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
 
-                As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
-                Bs = blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4)
-                Cs = blas_matrices(rng, P, 3, 5)
-
-                return map(As, Bs, Cs) do A, B, C
-                    a_da = _make_codual(P(α), P(dα))
-                    b_db = _make_codual(P(β), P(dβ))
-                    (
-                        false, :stability, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C
-                    )
-                end
-            end
-        end...,
-        let # gemm: Vector × Matrix → Matrix
-            rng = rng_ctor(123456)
-            map_prod(
-                t_flags, t_flags, αs, βs, Ps, dαs, dβs
-            ) do (tA, tB, α, β, P, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-
-                As = blas_vectors(rng, P, 3)
-                Bs = blas_matrices(rng, P, 3, 5)
-                Cs = blas_matrices(rng, P, 5, 1)
-
-                return map(As, Bs, Cs) do A, B, C
-                    a_da = _make_codual(P(α), P(dα))
-                    b_db = _make_codual(P(β), P(dβ))
-                    (
-                        false, :stability, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C
-                    )
-                end
-            end
-        end...,
-        let # gemm: Matrix × Vector → Matrix
-            rng = rng_ctor(123456)
-            map_prod(
-                t_flags, t_flags, αs, βs, Ps, dαs, dβs
-            ) do (tA, tB, α, β, P, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-
-                As = blas_matrices(rng, P, 4, 3)
-                Bs = blas_vectors(rng, P, 3)
-                Cs = blas_matrices(rng, P, 4, 1)
-
-                return map(As, Bs, Cs) do A, B, C
-                    a_da = _make_codual(P(α), P(dα))
-                    b_db = _make_codual(P(β), P(dβ))
-                    (
-                        false, :stability, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C
-                    )
-                end
-            end
-        end...,
-        let # gemm: Vector × Vector → Matrix
-            rng = rng_ctor(123456)
-            map_prod(
-                t_flags, t_flags, αs, βs, Ps, dαs, dβs
-            ) do (tA, tB, α, β, P, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-
-                As = blas_vectors(rng, P, 4)
-                Bs = blas_vectors(rng, P, 5)
-                Cs = blas_matrices(rng, P, 4, 5)
+                As = [
+                    blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3),
+                    blas_vectors(rng, P, 3),
+                    blas_matrices(rng, P, 4, 3),
+                    blas_vectors(rng, P, 4),
+                ]
+                Bs = [
+                    blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4),
+                    blas_matrices(rng, P, 3, 5),
+                    blas_vectors(rng, P, 3),
+                    blas_vectors(rng, P, 5),
+                ]
+                Cs = [
+                    blas_matrices(rng, P, 3, 5),
+                    blas_matrices(rng, P, 5, 1),
+                    blas_matrices(rng, P, 4, 1),
+                    blas_matrices(rng, P, 4, 5),
+                ]
 
                 return map(As, Bs, Cs) do A, B, C
                     a_da = _make_codual(P(α), P(dα))
