@@ -1026,12 +1026,34 @@ end
     transA::Char,
     transB::Char,
     alpha::T,
+    A_dA::AbstractVector{T},
+    B_dB::AbstractVector{T},
+    beta::T,
+    C_dC::AbstractMatrix{T},
+) where {T<:BlasFloat}
+
+    # a (m) * b (n) → a * b' (m×n)
+    return BLAS.gemm!(
+        'N',
+        'T',
+        alpha,
+        reshape(A_dA, :, 1),   # (m×1)
+        reshape(B_dB, :, 1),   # (n×1) → transposed to (1×n)
+        beta,
+        C_dC,
+    )
+end
+
+@mooncake_overlay function BLAS.gemm!(
+    transA::Char,
+    transB::Char,
+    alpha::T,
     A_dA::AbstractMatrix{T},
     B_dB::AbstractVector{T},
     beta::T,
     C_dC::AbstractMatrix{T},
 ) where {T<:BlasFloat}
-    # A (m×n) * B (n) → C (m)
+    # A (m×n) * b (n) → C (m)
     return BLAS.gemm!(transA, transB, alpha, A_dA, reshape(B_dB, :, 1), beta, C_dC)
 end
 
@@ -1045,7 +1067,7 @@ end
     C_dC::AbstractMatrix{T},
 ) where {T<:BlasFloat}
 
-    # x * B ≡ (B' * x)'
+    # a * B ≡ (B' * a)'
     return BLAS.gemm!(
         transB == 'N' ? 'T' : 'N', 'N', alpha, B_dB, reshape(A_dA, :, 1), beta, C_dC
     )
