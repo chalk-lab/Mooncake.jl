@@ -1026,28 +1026,6 @@ end
     transA::Char,
     transB::Char,
     alpha::T,
-    A_dA::AbstractVector{T},
-    B_dB::AbstractVector{T},
-    beta::T,
-    C_dC::AbstractMatrix{T},
-) where {T<:BlasFloat}
-
-    # a (m) * b (n) → a * b' (m×n)
-    return BLAS.gemm!(
-        'N',
-        'T',
-        alpha,
-        reshape(A_dA, :, 1),   # (m×1)
-        reshape(B_dB, :, 1),   # (n×1) → transposed to (1×n)
-        beta,
-        C_dC,
-    )
-end
-
-@mooncake_overlay function BLAS.gemm!(
-    transA::Char,
-    transB::Char,
-    alpha::T,
     A_dA::AbstractMatrix{T},
     B_dB::AbstractVector{T},
     beta::T,
@@ -1777,19 +1755,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                     blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3),
                     blas_vectors(rng, P, 3),
                     blas_matrices(rng, P, 4, 3),
-                    blas_vectors(rng, P, 4),
                 ]
                 Bs = [
                     blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4),
                     blas_matrices(rng, P, 3, 5),
                     blas_vectors(rng, P, 3),
-                    blas_vectors(rng, P, 5),
                 ]
                 Cs = [
                     blas_matrices(rng, P, 3, 5),
                     blas_matrices(rng, P, 5, 1),
                     blas_matrices(rng, P, 4, 1),
-                    blas_matrices(rng, P, 4, 5),
                 ]
 
                 return map(As, Bs, Cs) do A, B, C
