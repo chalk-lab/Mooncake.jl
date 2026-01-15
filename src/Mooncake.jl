@@ -128,6 +128,7 @@ end
 include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
+include("interface.jl")
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))
@@ -151,10 +152,10 @@ else
     include(joinpath("rules", "array_legacy.jl"))
 end
 
-# Including this in DispatchDoctor causes precompilation error. 
+# Including this in DispatchDoctor causes precompilation error.
 @unstable include(joinpath("rules", "performance_patches.jl"))
+include(joinpath("rules", "high_order_derivative_patches.jl"))
 
-include("interface.jl")
 include("config.jl")
 include("developer_tools.jl")
 

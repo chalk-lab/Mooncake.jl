@@ -1,8 +1,37 @@
+# Check if a type contains Union{} (bottom type) anywhere in its structure.
+# This can happen with unreachable code or failed type inference.
+@inline contains_bottom_type(T) = _contains_bottom_type(T, Base.IdSet{Any}())
+
+function _contains_bottom_type(T, seen::Base.IdSet{Any})
+    T === Union{} && return true
+    if T isa Union
+        return _contains_bottom_type(T.a, seen) || _contains_bottom_type(T.b, seen)
+    elseif T isa TypeVar
+        T in seen && return false
+        push!(seen, T)
+        return _contains_bottom_type(T.ub, seen)
+    elseif T isa UnionAll
+        T in seen && return false
+        push!(seen, T)
+        return _contains_bottom_type(T.body, seen)
+    elseif T isa DataType
+        T in seen && return false
+        push!(seen, T)
+        for p in T.parameters
+            _contains_bottom_type(p, seen) && return true
+        end
+        return false
+    else
+        return false
+    end
+end
+
 struct DualRuleInfo
     isva::Bool
     nargs::Int
     dual_ret_type::Type
 end
+
 function build_forward_data(
     interp::MooncakeInterpreter{C},
     sig_or_mi;
@@ -409,7 +438,11 @@ function modify_fwd_ad_stmts!(
     if isexpr(stmt, :invoke) || isexpr(stmt, :call)
         raw_args = isexpr(stmt, :invoke) ? stmt.args[2:end] : stmt.args
         sig_types = map(raw_args) do x
-            return CC.widenconst(get_forward_primal_type(info.primal_ir, x))
+            t = CC.widenconst(get_forward_primal_type(info.primal_ir, x))
+            # Replace types containing Union{} (unreachable code/failed inference)
+            # with Any. This allows the code to proceed; is_primitive will return
+            # false and we'll use dynamic rules that resolve types at runtime.
+            return contains_bottom_type(t) ? Any : t
         end
         sig = Tuple{sig_types...}
         mi = isexpr(stmt, :invoke) ? get_mi(stmt.args[1]) : missing

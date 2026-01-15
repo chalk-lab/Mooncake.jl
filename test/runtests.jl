@@ -66,6 +66,8 @@ include("front_matter.jl")
         include(joinpath("rules", "performance_patches.jl"))
     elseif test_group == "rules/dispatch_doctor"
         include(joinpath("rules", "dispatch_doctor.jl"))
+    elseif test_group == "rules/high_order_derivative_patches"
+        include(joinpath("rules", "high_order_derivative_patches.jl"))
     else
         throw(error("test_group=$(test_group) is not recognised"))
     end

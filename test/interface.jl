@@ -74,6 +74,20 @@ using Mooncake:
             Mooncake.ValueAndGradientReturnTypeError,
             Mooncake.prepare_gradient_cache(identity, (5.0, 4.0)),
         )
+
+        @testset "friendly tangents" begin
+            f = x -> sum(abs2, x)
+            x = [1.0 + 2.0im, 3.0 + 4.0im]
+            cache = Mooncake.prepare_gradient_cache(f, x; friendly_tangents=true)
+            v, dx = Mooncake.value_and_gradient!!(cache, f, x)
+            @test dx[2] isa Vector{ComplexF64}
+            @test dx[2] == [2.0 + 4.0im, 6.0 + 8.0im]
+
+            rule = build_rrule(f, x)
+            v, dx = Mooncake.value_and_gradient!!(rule, f, x; friendly_tangents=true)
+            @test dx[2] isa Vector{ComplexF64}
+            @test dx[2] == [2.0 + 4.0im, 6.0 + 8.0im]
+        end
     end
     @testset "value_and_pullback!!" begin
         @testset "($(typeof(fargs))" for (ȳ, fargs...) in Any[
@@ -107,6 +121,31 @@ using Mooncake:
             else
                 @test alloc_count == 0
             end
+        end
+
+        @testset "friendly tangents" begin
+            testf(z) = z^3
+            z = 0.2 + 0.5im
+            z̄ = 0.3 + 0.7im
+
+            cache = Mooncake.prepare_pullback_cache(testf, z)
+            v, pb = Mooncake.value_and_pullback!!(
+                cache, Tangent((; re=real(z̄), im=imag(z̄))), testf, z
+            )
+            @test v ≈ z^3
+            @test complex(pb[2].fields.re, pb[2].fields.im) ≈ conj(3z^2) * z̄
+
+            cache = Mooncake.prepare_pullback_cache(testf, z; friendly_tangents=true)
+            v, pb = Mooncake.value_and_pullback!!(cache, z̄, testf, z)
+            @test v ≈ z^3
+            @test pb[2] ≈ conj(3z^2) * z̄
+
+            rrule = build_rrule(testf, z)
+            v, pb = Mooncake.value_and_pullback!!(
+                rrule, z̄, testf, z; friendly_tangents=true
+            )
+            @test v ≈ z^3
+            @test pb[2] ≈ conj(3z^2) * z̄
         end
     end
 
