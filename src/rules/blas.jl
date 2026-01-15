@@ -1735,14 +1735,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     _make_codual(x, dx) = CoDual(x, dx)
     _make_codual(x::Complex, dx) = CoDual(x, Tangent((; re=real(dx), im=imag(dx))))
 
-    test_cases = vcat(
-        #
-        # BLAS LEVEL 3
-        #
-        # The tests are quite sensitive to the random inputs,
-        # so each tested function gets its own rng.
+    test_cases = Any[]
 
-        # gemm!
+    #
+    # BLAS LEVEL 3
+    #
+    # The tests are quite sensitive to the random inputs,
+    # so each tested function gets its own rng.
+
+    # gemm!
+    test_cases = append!(
+        test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(
@@ -1751,21 +1754,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
 
-                As = [
-                    blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3),
-                    blas_vectors(rng, P, 3),
-                    blas_matrices(rng, P, 4, 3),
-                ]
-                Bs = [
-                    blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4),
-                    blas_matrices(rng, P, 3, 5),
-                    blas_vectors(rng, P, 3),
-                ]
-                Cs = [
-                    blas_matrices(rng, P, 3, 5),
-                    blas_matrices(rng, P, 5, 1),
-                    blas_matrices(rng, P, 4, 1),
-                ]
+                As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
+                Bs = blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4)
+                Cs = blas_matrices(rng, P, 3, 5)
 
                 return map(As, Bs, Cs) do A, B, C
                     a_da = _make_codual(P(α), P(dα))
@@ -1776,8 +1767,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 end
             end
         end...,
+    )
 
-        # symm!, hemm!
+    # symm!, hemm!
+    test_cases = append!(
+        test_cases,
         let
             rng = rng_ctor(123457)
             map_prod(
@@ -1797,8 +1791,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 end
             end
         end...,
+    )
 
-        # syrk!
+    # syrk!
+    test_cases = append!(
+        test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(uplos, t_flags, Ps, dαs, dβs) do (uplo, t, P, dα, dβ)
@@ -1815,7 +1812,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 end
             end
         end...,
-        # herk!
+    )
+    # herk!
+    test_cases = append!(
+        test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(uplos, t_flags, realPs, dαs, dβs) do (uplo, t, P, dα, dβ)
@@ -1832,8 +1832,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 end
             end
         end...,
+    )
 
-        # trmm!
+    # trmm!
+    test_cases = append!(
+        test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(
@@ -1855,8 +1858,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 end
             end
         end...,
+    )
 
-        # trsm!
+    # trsm!
+    test_cases = append!(
+        test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(
@@ -1888,15 +1894,55 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
     realPs = [Float32, Float64]
     Ps = [realPs..., complex.(realPs)...]
+    αs = [1.0, -0.25, 0.46 + 0.32im]
+    dαs = [0.0, 0.44, -0.20 + 0.38im]
+    βs = [0.0, 0.33, 0.39 + 0.27im]
+    dβs = [0.0, -0.11, 0.86 + 0.44im]
+
     rng = rng_ctor(123)
 
-    test_cases = vcat(
+    _make_codual(x, dx) = CoDual(x, dx)
+    _make_codual(x::Complex, dx) = CoDual(x, Tangent((; re=real(dx), im=imag(dx))))
 
-        #
-        # BLAS LEVEL 3
-        #
+    test_cases = Any[]
 
-        # aliased gemm!
+    #
+    # BLAS LEVEL 3
+    #
+
+    # Overlayed gemm! for vect-mat, mat-vec, vec-vec cases.
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123456)
+            map_prod(
+                t_flags, t_flags, αs, βs, Ps, dαs, dβs
+            ) do (tA, tB, α, β, P, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+
+                As = vcat(
+                    blas_vectors(rng, P, 3; only_contiguous=true),
+                    blas_matrices(rng, P, 4, 3),
+                )
+                Bs = vcat(
+                    blas_matrices(rng, P, 3, 5),
+                    blas_vectors(rng, P, 3; only_contiguous=true),
+                )
+                Cs = vcat(blas_matrices(rng, P, 5, 1), blas_matrices(rng, P, 1, 4))
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = _make_codual(P(α), P(dα))
+                    b_db = _make_codual(P(β), P(dβ))
+                    (false, :none, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+                end
+            end
+        end...,
+    )
+
+    # aliased gemm!
+    test_cases = append!(
+        test_cases,
         map_prod(t_flags, t_flags, Ps) do (tA, tB, P)
             As = blas_matrices(rng, P, 5, 5)
             Bs = blas_matrices(rng, P, 5, 5)
