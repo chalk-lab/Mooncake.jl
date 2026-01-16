@@ -84,19 +84,19 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
         test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
     end
 
-    @testset "Primitive SpecialFunctions with NotImplemented Gradients" begin
+    @testset "Primitive SpecialFunctions with `NotImplemented` gradients" begin
         first_arg_types = [Float64, Float32]
         second_arg_types = [Float64, Float32]
 
-        # Gradient calculations for fields excluding those with `NotImplemented` gradients
+        # Check gradients while excluding those marked as `NotImplemented`.
         @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
             map_prod(first_arg_types, second_arg_types) do (T, P)
                 return Any[
-                    # 3 arg gamma_inc (IND is 0/1, tangent a is 0 for AD but an approximation for testing FD)
+                    # 3-arg gamma_inc (IND is 0/1; tangent(a) is 0 in AD, but approximated in FD)
                     (:none, x -> gamma_inc(T(3), x, 0), P(2)),
                     (:none, x -> gamma_inc(T(3), x, 1), P(2)),
 
-                    # 2 arg Standard Bessel & Hankel (1st arg gradient NotImplemented)
+                    # 2-arg standard Bessel/Hankel (1st arg gradient is `NotImplemented`)
                     (:none, x -> besselj(T(3), x), P(1.5)),
                     (:none, x -> besseli(T(3), x), P(1.5)),
                     (:none, x -> bessely(T(3), x), P(1.5)),
@@ -104,7 +104,7 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                     (:none, x -> hankelh1(T(3), x), P(1.5)),
                     (:none, x -> hankelh2(T(3), x), P(1.5)),
 
-                    # 2 arg scaled Bessel & Hankel (1st arg gradient NotImplemented)
+                    # 2-arg scaled Bessel/Hankel (1st arg gradient is `NotImplemented`)
                     (:none, x -> besselix(P(0.5), x), P(1.5)),
                     (:none, x -> besseljx(P(0.5), x), P(1.5)),
                     (:none, x -> besselkx(P(0.5), x), P(1.5)),
@@ -112,13 +112,13 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                     (:none, x -> hankelh1x(T(2), x), P(1.5)),
                     (:none, x -> hankelh2x(T(2), x), P(1.5)),
 
-                    # 2 arg Gamma & Exponential Integrals (1st arg gradient NotImplemented)
+                    # 2-arg Gamma & exponential integrals (1st arg gradient is `NotImplemented`)
                     (:none, x -> gamma(T(3), x), P(1.5)),
                     (:none, x -> loggamma(T(3), x), P(1.5)),
                     (:none, x -> expintx(T(3), x), P(0.5)),
                     (:none, x -> expint(T(3), x), P(0.5)),
 
-                    # Complex number args
+                    # Complex arguments
                     (:none, x -> besselj(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> besseli(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> bessely(T(3), Complex(x, x)), P(1.5)),
@@ -132,7 +132,7 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                     (:none, x -> hankelh1x(T(0.5), Complex(x, x)), P(1.5)),
                     (:none, x -> hankelh2x(T(0.5), Complex(x, x)), P(1.5)),
 
-                    # Both args of the functions below can be complex
+                    # Both arguments for the functions below can be complex
                     (:none, x -> gamma(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> loggamma(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> expintx(T(3), Complex(x, x)), P(0.5)),
@@ -144,7 +144,6 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                 ]
             end...,
         )
-
             # Use `is_primitive = false` when testing closures over `SpecialFunctions`
             Mooncake.TestUtils.test_rule(
                 StableRNG(123456), f, x...; perf_flag, is_primitive=false

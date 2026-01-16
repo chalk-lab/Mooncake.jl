@@ -130,7 +130,7 @@ an unimplemented partial is mathematically required.
 @from_rrule DefaultCtx Tuple{typeof(hankelh1x),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,<:Complex}}
 
-# Gamma & exponential integrals rrules
+# Gamma and exponential integral rrules
 @from_rrule DefaultCtx Tuple{
     typeof(gamma),Union{IEEEFloat,<:Complex},Union{IEEEFloat,<:Complex}
 }
@@ -146,7 +146,7 @@ an unimplemented partial is mathematically required.
 
 @from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
-# Handle frule return type according to primal type. 
+# Ensure the frule return type matches the primal type.
 function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:IEEEFloat}
     return Dual(y, primal_eltype(dy_val))
 end
@@ -171,7 +171,7 @@ function frule!!(
     y = gamma_inc(a, x, IND) # primal is always Real for gamma_inc
     primal_eltype = eltype(y) # to ensure final Dual Tangent is valid type
 
-    ∂a = Mooncake.notimplemented_tangent_guard(da, :gamma_inc)     # ∂p/∂a - NotImplemented
+    ∂a = Mooncake.notimplemented_tangent_guard(da)     # ∂p/∂a - NotImplemented
     z = exp((a - 1) * log(x) - x - loggamma(a))    # ∂p/∂x
 
     # dot_p = ∂p/∂a * da + ∂p/∂x * dx
@@ -194,7 +194,7 @@ function frule!!(
     y = gamma(a, x) # primal is always complex for complex inputs.
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
-    ∂a = Mooncake.notimplemented_tangent_guard(da, :gamma)  # ∂f/∂a - NotImplemented Gradient
+    ∂a = Mooncake.notimplemented_tangent_guard(da)  # ∂f/∂a - NotImplemented Gradient
     ∂x = -exp((a - 1) * log(x) - x)    # ∂f/∂x
 
     # Ignore tangent(a) - NotImplemented Gradient
@@ -217,7 +217,7 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂a - NotImplemented Gradient
-    ∂a = Mooncake.notimplemented_tangent_guard(da, :loggamma)
+    ∂a = Mooncake.notimplemented_tangent_guard(da)
     # ∂f/∂x - Derivative of log(Γ(a,x)) is originally -(x^(a-1) * e^-x) / Γ(a,x)
     ∂x = -exp((a - 1) * log(x) - x - loggamma(a, x))
 
@@ -241,7 +241,7 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂a - NotImplemented Gradient
-    ∂a = Mooncake.notimplemented_tangent_guard(da, :expint)
+    ∂a = Mooncake.notimplemented_tangent_guard(da)
     # ∂f/∂x - Derivative of E_n(x) = -E_{n-1}(x)
     ∂x = -expint(a - 1, x)
 
@@ -265,7 +265,7 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂a - NotImplemented Gradient
-    ∂a = Mooncake.notimplemented_tangent_guard(da, :expintx)
+    ∂a = Mooncake.notimplemented_tangent_guard(da)
     # ∂f/∂x -  Derivative of e^x * E_a(x) is originally e^x * E_a(x) - e^x * E_{a-1}(x)
     ∂x = y - expintx(a - 1, x)
 
@@ -288,12 +288,12 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :besselj)
-    # ∂f/∂x - Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (besselj(v - 1, x) - besselj(v + 1, x)) / 2
 
     dy_val = ∂v + ∂x * numberify(dx)
-    # All Bessel return Complex Numbers only for Complex inputs
+    # All Bessel functions return complex values only for complex inputs.
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -310,8 +310,8 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :bessely)
-    # ∂f/∂x - Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (bessely(v - 1, x) - bessely(v + 1, x)) / 2
 
     dy_val = ∂v + ∂x * numberify(dx)
@@ -331,8 +331,8 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :besseli)
-    # ∂f/∂x - Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (besseli(v - 1, x) + besseli(v + 1, x)) / 2
 
     dy_val = ∂v + ∂x * numberify(dx)
@@ -352,8 +352,8 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :besselk)
-    # ∂f/∂x - Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = -(besselk(v - 1, x) + besselk(v + 1, x)) / 2
 
     dy_val = ∂v + ∂x * numberify(dx)
@@ -373,8 +373,8 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :hankelh1)
-    # ∂f/∂x - Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (hankelh1(v - 1, x) - hankelh1(v + 1, x)) / 2
 
     dy_val = ∂v + ∂x * numberify(dx)
@@ -394,8 +394,8 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :hankelh2)
-    # ∂f/∂x - Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (hankelh2(v - 1, x) - hankelh2(v + 1, x)) / 2
 
     dy_val = ∂v + ∂x * numberify(dx)
@@ -420,8 +420,8 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)     # to ensure final Dual Tangent type is valid
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :besselix)
-    # ∂f/∂x - Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x_1 = (besselix(v - 1, x) + besselix(v + 1, x)) / 2
     ∂x_2 = -sign(real(x)) * y
 
@@ -446,8 +446,8 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :besselkx)
-    # ∂f/∂x - Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = -(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y
 
     dy_val = ∂v + ∂x * numberify(dx)
@@ -467,8 +467,8 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :besseljx)
-    # Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # Recurrence relations for derivatives w.r.t. x.
     ∂x_1 = (besseljx(v - 1, x) - besseljx(v + 1, x)) / 2
     ∂x_2 = ∂x_2 = -sign(imag(x)) * y
 
@@ -492,8 +492,8 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :besselyx)
-    # ∂f/∂x - Recurrence relations for derivatives wrt x.
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x_1 = (besselyx(v - 1, x) - besselyx(v + 1, x)) / 2
     ∂x_2 = ∂x_2 = -sign(imag(x)) * y
 
@@ -518,7 +518,7 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :hankelh1x)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     # ∂f/∂x - Recurrence relations
     ∂x = (hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y
 
@@ -542,7 +542,7 @@ function frule!!(
     primal_eltype = eltype(y isa Complex ? y.re : y)
 
     # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv, :hankelh2x)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     # ∂f/∂x - Recurrence relations
     ∂x = (hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y
 
