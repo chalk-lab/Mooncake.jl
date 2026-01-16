@@ -668,27 +668,27 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         end
         kwargs_frule_expr = if include_frule
             construct_frule_wrapper_def(
-            vcat(:_kwcall, :kwargs, arg_names),
-            vcat(
-                :(Mooncake.Dual{typeof(Core.kwcall)}),
-                :(Mooncake.Dual{<:NamedTuple}),
-                dual_arg_types,
-            ),
-            where_params,
-        )
+                vcat(:_kwcall, :kwargs, arg_names),
+                vcat(
+                    :(Mooncake.Dual{typeof(Core.kwcall)}),
+                    :(Mooncake.Dual{<:NamedTuple}),
+                    dual_arg_types,
+                ),
+                where_params,
+            )
         else
             nothing
         end
         kwargs_rrule_expr = if include_rrule
             construct_rrule_wrapper_def(
-            vcat(:_kwcall, :kwargs, arg_names),
-            vcat(
-                :(Mooncake.CoDual{typeof(Core.kwcall)}),
-                :(Mooncake.CoDual{<:NamedTuple}),
-                codual_arg_types,
-            ),
-            where_params,
-        )
+                vcat(:_kwcall, :kwargs, arg_names),
+                vcat(
+                    :(Mooncake.CoDual{typeof(Core.kwcall)}),
+                    :(Mooncake.CoDual{<:NamedTuple}),
+                    codual_arg_types,
+                ),
+                where_params,
+            )
         else
             nothing
         end
