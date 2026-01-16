@@ -61,7 +61,7 @@ import Mooncake:
 ## Handling `ChainRulesCore.NotImplemented` Tangents in Imported Rules
 
 Mooncake uses a *masking* trick to handle
-`ChainRulesCore.NotImplemented` tangents and partial derivatives.
+`ChainRulesCore.NotImplemented` partial derivatives.
 
 **NOTE:**
 A missing partial derivative is irrelevant if it is multiplied by the zero
