@@ -79,10 +79,10 @@ end
 df = (∂f/∂x)*dx + (∂f/∂y)*dy
 
 if user/program inputs dx != 0 :
-    ∂f = NaN     # @info used + upstream derivatives are simply `NaN` (we dint know the derivative anyways)
+    ∂f = NaN     # @info used + upstream derivatives are simply `NaN` (we don't know the derivative anyways)
 
 if user/program inputs dx == 0 :
-    ∂f = (∂f/∂y)*dy    # upstream derivatives are correct as they dint depend on the "NotImplemented" derivative.
+    ∂f = (∂f/∂y)*dy    # upstream derivatives are correct as they don't depend on the "NotImplemented" derivative.
 
 **Bottomline** : we always get correct derivatives or a `NaN` and information if we try to calculate at a singular/NotImplemented Point.
 
@@ -135,7 +135,6 @@ pullback for f simply returns `NaN`, dy
     typeof(expintx),Union{IEEEFloat,<:Complex},Union{IEEEFloat,<:Complex}
 }
 
-# 3 arg gamma_inc
 @from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
 # handle frule return type according to primal type. 

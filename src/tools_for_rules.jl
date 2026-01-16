@@ -452,8 +452,9 @@ end
 If da is nonzero and participates in AD, the method returns a `NaN` filled data structure for whatever tangent da is given.
 In case da is a zero tangent return zero-ed da but in a compatible way for immediate complex algebra within Mooncake rules.
 
+NOTE: This cannot have a method for `Int`s as `NaN` is only defined for `AbstractFloat`s.
+
 """
-# This cannot have a method for Ints as NaN is only defined for Floats.
 function notimplemented_tangent_guard(da::L, f_sym::Symbol) where {L<:Base.IEEEFloat}
     return if _dot(da, da) != L(0)
         @info "Please use Finite Differences. Derivative Not NotImplemented for $f_sym wrt to argument of type $L - setting ∂f/∂arg to NaN."
