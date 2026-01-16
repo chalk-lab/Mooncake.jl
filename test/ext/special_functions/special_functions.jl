@@ -132,10 +132,10 @@ using Mooncake.TestUtils: test_rule
                     (:none, x -> loggamma(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> expintx(T(3), Complex(x, x)), P(0.5)),
                     (:none, x -> expint(T(3), Complex(x, x)), P(0.5)),
-                    (:none, x -> gamma(Complex(T(3), T(3)), T(x)), P(1.5)),
-                    (:none, x -> loggamma(Complex(T(3), T(3)), T(x)), P(1.5)),
-                    (:none, x -> expintx(Complex(T(3), T(3)), T(x)), P(0.5)),
-                    (:none, x -> expint(Complex(T(3), T(3)), T(x)), P(0.5)),
+                    (:none, x -> gamma(Complex(T(3), T(3)), x), P(1.5)),
+                    (:none, x -> loggamma(Complex(T(3), T(3)), x), P(1.5)),
+                    (:none, x -> expintx(Complex(T(3), T(3)), x), P(0.5)),
+                    (:none, x -> expint(Complex(T(3), T(3)), x), P(0.5)),
                 ]
             end...,
         )
