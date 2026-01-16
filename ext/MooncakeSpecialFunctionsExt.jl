@@ -58,54 +58,63 @@ import Mooncake:
 @zero_derivative DefaultCtx Tuple{typeof(logfactorial),Integer}
 
 """
-    Mooncake handling for `ChainRuleCore.NotImplemented` Tangents in imported rules.
+## Handling `ChainRulesCore.NotImplemented` Tangents in Imported Rules
 
-In the AD graph, derivative/gradient calculations follow the Forward Mode / Reverse Mode AD directions.
-Assume inputs `x`, `y` to a node for function `f`, with `df/dx` being NotImplemented.
-Now, 
+Mooncake uses a *masking* trick to handle
+`ChainRulesCore.NotImplemented` tangents and partial derivatives.
 
-1. Forward Mode AD calculates df using dx, dy.
+**NOTE:**
+A missing partial derivative is irrelevant if it is multiplied by the zero
+element of the corresponding tangent or cotangent space.
 
-Therefore, for Forward Mode rules : dx = 0 (dead) OR dx != 0 (active) -> We make this the conditional criteria.
-if dx == 0
-    # x does not contribute to df, so just set derivative as 0. 
-    ∂f/∂x = 0
-else 
-    # x is expected to contribute to df.
-    ∂f/∂x = NaN
-    @info "Please use Finite Differences. NotImplemented Derivative for f wrt to a - setting ∂f/∂a to NaN."
-end
+The result is therefore either correct or explicitly marked as unknown
+(`NaN`).
 
-df = (∂f/∂x)*dx + (∂f/∂y)*dy
+### Forward mode (pushforward)
 
-if user/program inputs dx != 0 :
-    ∂f = NaN     # @info used + upstream derivatives are simply `NaN` (we don't know the derivative anyways)
+For `f(x, y)` with unimplemented `∂f/∂x`:
 
-if user/program inputs dx == 0 :
-    ∂f = (∂f/∂y)*dy    # upstream derivatives are correct as they don't depend on the "NotImplemented" derivative.
+    ḟ = (∂f/∂x)·ẋ + (∂f/∂y)·ẏ
 
-**Bottomline** : we always get correct derivatives or a `NaN` and information if we try to calculate at a singular/NotImplemented Point.
+- If `ẋ == 0`, the contribution from `x` vanishes:
+  
+      ḟ = (∂f/∂y)·ẏ
 
+- If `ẋ != 0`, the missing derivative is required ⇒ `ḟ = NaN`
+  and an informational message is emitted.
 
-2. Reverse Mode AD calculates dx and dy using df (pullback).
-For Reverse Mode rules : just set final dx = `NaN` directly and use with dy.
+### Reverse mode (pullback)
 
-dx = (∂f/∂x)' * df     # Just set directly to `NaN`.
-dy = (∂f/∂y)' * df     # calculate gradient as is.
-@info "Currently NotImplemented gradients for f wrt to x - setting ∂f/∂x to NaN. Please use Finite Differences."
+Given upstream cotangent `f̄`:
 
-pullback for f simply returns `NaN`, dy
+    x̄ = (∂f/∂x)'·f̄
+    ȳ = (∂f/∂y)'·f̄
 
-**Bottomline** : All downstream branches get correct gradients to work, In case they actively use dx they are set to `NaN` + Information given (unknown gradient).
+- If `f̄ == 0`, then `x̄ = 0` even if `∂f/∂x` is not implemented.
+- If `f̄ != 0`, then `x̄ = NaN`, while `ȳ` is computed normally,
+  and an informational message is emitted.
 
+### Notes
 
-**Note** - This will only work for Float point values & it's compositions (Complex etc) due to NaN, NaN32 & NaN16 living only AbstractFloat's Space.
+- “Zero” refers to the additive identity of the tangent/cotangent space.
+- This trick relies on `NaN` and therefore applies only to
+  floating-point tangent spaces and their compositions
+  (e.g. arrays of floats).
+  This restriction exists because `NaN`, `NaN32`, and `NaN16`
+  live exclusively in `AbstractFloat` spaces.
+- `NotImplemented` indicates a missing AD rule, not a non-differentiable
+  function. Any resulting `NaN`s are handled using the same masking
+  principle: they affect the result only when multiplied by a nonzero
+  tangent or cotangent, and are otherwise safely ignored.
 
-**Final Note** - NaN issues is also solved in a similar manner.
+### Outcome
 
+Correct derivatives when possible, and explicit `NaN` only when
+an unimplemented partial is mathematically required.
 """
-# SpecialFunctions.jl Rules for functions with ChainRuleCore.`NotImplemented` gradients.
-# Standard Bessel & Hankel rrules
+#
+# Standard Bessel & Hankel functions
+#
 @from_rrule DefaultCtx Tuple{typeof(besseli),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(besselj),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(besselk),IEEEFloat,Union{IEEEFloat,<:Complex}}
@@ -113,7 +122,7 @@ pullback for f simply returns `NaN`, dy
 @from_rrule DefaultCtx Tuple{typeof(hankelh1),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(hankelh2),IEEEFloat,Union{IEEEFloat,<:Complex}}
 
-# scaled bessel-i,j,k,y & hankelh1, hankelh2 rrules
+# Scaled bessel-i,j,k,y & hankelh1, hankelh2 rrules
 @from_rrule DefaultCtx Tuple{typeof(besselix),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(besseljx),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(besselkx),IEEEFloat,Union{IEEEFloat,<:Complex}}
@@ -121,7 +130,7 @@ pullback for f simply returns `NaN`, dy
 @from_rrule DefaultCtx Tuple{typeof(hankelh1x),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,<:Complex}}
 
-# Gamma & Exponential Integrals rrules
+# Gamma & exponential integrals rrules
 @from_rrule DefaultCtx Tuple{
     typeof(gamma),Union{IEEEFloat,<:Complex},Union{IEEEFloat,<:Complex}
 }
@@ -137,7 +146,7 @@ pullback for f simply returns `NaN`, dy
 
 @from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
-# handle frule return type according to primal type. 
+# Handle frule return type according to primal type. 
 function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:IEEEFloat}
     return Dual(y, primal_eltype(dy_val))
 end
@@ -149,7 +158,7 @@ function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:Complex}
     )
 end
 
-# 3 arg gamma_inc (1st arg gradient Not Implemented)
+# 3-arg `gamma_inc` (first-argument gradient is `NotImplemented`)
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
 function frule!!(
@@ -162,7 +171,7 @@ function frule!!(
     y = gamma_inc(a, x, IND) # primal is always Real for gamma_inc
     primal_eltype = eltype(y) # to ensure final Dual Tangent is valid type
 
-    ∂a = Mooncake.notimplemented_tangent_guard(da, :gamma_inc)     # ∂p/∂a - NotImplemented Gradient
+    ∂a = Mooncake.notimplemented_tangent_guard(da, :gamma_inc)     # ∂p/∂a - NotImplemented
     z = exp((a - 1) * log(x) - x - loggamma(a))    # ∂p/∂x
 
     # dot_p = ∂p/∂a * da + ∂p/∂x * dx
@@ -170,7 +179,7 @@ function frule!!(
     return Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
 end
 
-# 2 arg Gamma and Exponential Integrals (1st arg gradients Not Implemented)
+# 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`)
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(gamma),
     Union{IEEEFloat,Complex{<:IEEEFloat}},
@@ -265,7 +274,7 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-# 2 arg Standard Bessel and Hankel Functions
+# 2-arg standard Bessel and Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselj),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
@@ -393,8 +402,11 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-## Non - Holomorphic functions
-# 2-arg Scaled Bessel Functions
+#
+# Non Holomorphic functions
+#
+
+# 2-arg scaled Bessel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselix),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
@@ -492,7 +504,7 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-# Scaled Hankel Functions
+# Scaled Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh1x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
