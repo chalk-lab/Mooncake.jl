@@ -367,19 +367,17 @@ function mooncake_tangent(p::P, t::T) where {P<:Tuple,T<:CRC.Tangent}
     return tangent_type(P) == NoTangent ? NoTangent() : map(mooncake_tangent, p, t.backing)
 end
 
-# Mooncake style tangent from CRC Complex Tangents.
 function mooncake_tangent(p::T, cr_tangent::T) where {P<:IEEEFloat,T<:Complex{P}}
     return Tangent((re=real(cr_tangent), im=imag(cr_tangent)))
 end
 
-# Mooncake tangent from NotImplemented CRC Complex Tangent.
+# NotImplemented CRC tangents are converted to NaN.
 function mooncake_tangent(
     p::T, cr_tangent::CRC.NotImplemented
 ) where {P<:IEEEFloat,T<:Complex{P}}
     return mooncake_tangent(p, T(P(NaN), P(NaN)))
 end
 
-# Mooncake tangent from NotImplemented CRC Tangent.
 function mooncake_tangent(p::T, cr_tangent::CRC.NotImplemented) where {T<:IEEEFloat}
     return T(NaN)
 end
@@ -427,12 +425,10 @@ function increment_and_get_rdata!(
     return RData((re=T(NaN), im=T(NaN)))
 end
 
-# return NaN filled tangents for when CRC Tangent is NotImplemented.
 function increment_and_get_rdata!(f, r::T, t::CRC.NotImplemented) where {T<:IEEEFloat}
     return T(NaN)
 end
 
-# Integer handling.
 function increment_and_get_rdata!(f::NoFData, r::NoRData, t::CRC.NotImplemented)
     return NoTangent()
 end
@@ -459,8 +455,8 @@ In case da is a zero tangent return zero-ed da but in a compatible way for immed
 """
 # This cannot have a method for Ints as NaN is only defined for Floats.
 function notimplemented_tangent_guard(da::L, f_sym::Symbol) where {L<:Base.IEEEFloat}
-    return if da != zero_tangent(da)
-        @info "Please use Finite Differences. Derivative Not NotImplemented for $f_sym wrt to a - setting ∂f/∂a to NaN."
+    return if _dot(da, da) != L(0)
+        @info "Please use Finite Differences. Derivative Not NotImplemented for $f_sym wrt to argument of type $L - setting ∂f/∂arg to NaN."
         L(NaN)
     else
         L(0)
@@ -471,8 +467,8 @@ function notimplemented_tangent_guard(
     da::Mooncake.Tangent{@NamedTuple{re::L,im::L}}, f_sym::Symbol
 ) where {L<:Base.IEEEFloat}
     # re, im tangents
-    return if da.fields != zero_tangent(da).fields.fields
-        @info "Please use Finite Differences. Derivative Not NotImplemented for $f_sym wrt to a - setting ∂f/∂a to NaN."
+    return if _dot(da, da) != L(0)
+        @info "Please use Finite Differences. Derivative Not NotImplemented for $f_sym wrt to argument of type Complex{$L} - setting ∂f/∂arg to NaN."
         Complex(L(NaN), L(NaN))
     else
         Complex(L(0), L(0))

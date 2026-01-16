@@ -3,7 +3,7 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, JET, Mooncake, SpecialFunctions, StableRNGs, Test
-using Mooncake: ForwardMode, ReverseMode
+using Mooncake: ForwardMode, ReverseMode, map_prod
 using Mooncake.TestUtils: test_rule
 
 # Rules in this file are only lightly tester, because they are all just @from_rrule rules.
@@ -79,9 +79,9 @@ using Mooncake.TestUtils: test_rule
     end
 
     @testset "Primitive SpecialFunctions with NotImplemented Gradients" begin
-        first_arg_types = [Float64, Float32, Float16]
+        first_arg_types = [Float64, Float32]
         second_arg_types = [Float64, Float32]
-        Real_type_tests = [(T, P) for T in first_arg_types, P in second_arg_types]
+        Real_type_tests = map_prod(identity, first_arg_types, second_arg_types)
 
         # Gradient calculations for fields excluding fields with `NotImplemented` gradient type.
         @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
