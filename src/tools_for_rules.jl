@@ -331,6 +331,11 @@ to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.field
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 to_cr_tangent(nt::NamedTuple) = CRC.Tangent{Any}(; map(to_cr_tangent, nt)...)
 
+# Mooncake Complex Number Tangent to CRC style tangent.
+function to_cr_tangent(c::Tangent{@NamedTuple{re::T, im::T}}) where {T<:IEEEFloat}
+    return Complex(c.fields.re, c.fields.im)
+end
+
 function to_cr_tangent(t)
     throw(
         ArgumentError(
@@ -362,6 +367,23 @@ function mooncake_tangent(p::P, t::T) where {P<:Tuple,T<:CRC.Tangent}
     return tangent_type(P) == NoTangent ? NoTangent() : map(mooncake_tangent, p, t.backing)
 end
 
+# Mooncake style tangent from CRC Complex Tangents.
+function mooncake_tangent(p::T, cr_tangent::T) where {P<:IEEEFloat,T<:Complex{P}}
+    return Tangent((re=real(cr_tangent), im=imag(cr_tangent)))
+end
+
+# Mooncake tangent from NotImplemented CRC Complex Tangent.
+function mooncake_tangent(
+    p::T, cr_tangent::CRC.NotImplemented
+) where {P<:IEEEFloat,T<:Complex{P}}
+    return mooncake_tangent(p, T(P(NaN), P(NaN)))
+end
+
+# Mooncake tangent from NotImplemented CRC Tangent.
+function mooncake_tangent(p::T, cr_tangent::CRC.NotImplemented) where {T<:IEEEFloat}
+    return T(NaN)
+end
+
 function mooncake_tangent(p, cr_tangent)
     throw(
         ArgumentError(
@@ -391,6 +413,30 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
+# Mooncake Complex tangents using CRC Complex Tangents.
+function increment_and_get_rdata!(
+    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T, im::T}}, t::Complex{T}
+) where {T<:IEEEFloat}
+    return RData((re=real(t) + r.data.re, im=imag(t) + r.data.im))
+end
+
+# return NaN filled tangents for when CRC Complex Tangent is NotImplemented.
+function increment_and_get_rdata!(
+    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T, im::T}}, t::CRC.NotImplemented
+) where {T<:IEEEFloat}
+    return RData((re=T(NaN), im=T(NaN)))
+end
+
+# return NaN filled tangents for when CRC Tangent is NotImplemented.
+function increment_and_get_rdata!(f, r::T, t::CRC.NotImplemented) where {T<:IEEEFloat}
+    return T(NaN)
+end
+
+# Integer handling.
+function increment_and_get_rdata!(f::NoFData, r::NoRData, t::CRC.NotImplemented)
+    return NoTangent()
+end
+
 function increment_and_get_rdata!(f, r, t)
     throw(
         ArgumentError(
@@ -402,6 +448,35 @@ function increment_and_get_rdata!(f, r, t)
             "or implement a method of `increment_and_get_rdata!` for this type combination.",
         ),
     )
+end
+
+"""
+    notimplemented_tangent_guard(da::Mooncake.Tangent, f_sym::Symbol)
+
+If da is nonzero and participates in AD, the method returns a `NaN` filled data structure for whatever tangent da is given.
+In case da is a zero tangent return zero-ed da but in a compatible way for immediate complex algebra within Mooncake rules.
+
+"""
+# This cannot have a method for Ints as NaN is only defined for Floats.
+function notimplemented_tangent_guard(da::L, f_sym::Symbol) where {L<:Base.IEEEFloat}
+    return if da != zero_tangent(da)
+        @info "Please use Finite Differences. Derivative Not NotImplemented for $f_sym wrt to a - setting ∂f/∂a to NaN."
+        L(NaN)
+    else
+        L(0)
+    end
+end
+
+function notimplemented_tangent_guard(
+    da::Mooncake.Tangent{@NamedTuple{re::L, im::L}}, f_sym::Symbol
+) where {L<:Base.IEEEFloat}
+    # re, im tangents
+    return if da.fields != zero_tangent(da).fields.fields
+        @info "Please use Finite Differences. Derivative Not NotImplemented for $f_sym wrt to a - setting ∂f/∂a to NaN."
+        Complex(L(NaN), L(NaN))
+    else
+        Complex(L(0), L(0))
+    end
 end
 
 """

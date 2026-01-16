@@ -78,74 +78,69 @@ using Mooncake.TestUtils: test_rule
         test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
     end
 
-    @testset "Primitive SpecialFunctions with Intractable Gradients" begin
+    @testset "Primitive SpecialFunctions with NotImplemented Gradients" begin
         first_arg_types = [Float64, Float32, Float16]
         second_arg_types = [Float64, Float32]
-
         Real_type_tests = [(T, P) for T in first_arg_types, P in second_arg_types]
 
+        # Gradient calculations for fields excluding fields with `NotImplemented` gradient type.
         @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
             map(Real_type_tests) do (T, P)
                 return Any[
-                    # # 3 arg gamma_inc (IND is 0/1, tangent a is 0 for AD but an approximation for testing FD)
+                    # 3 arg gamma_inc (IND is 0/1, tangent a is 0 for AD but an approximation for testing FD)
                     (:none, x -> gamma_inc(T(3), x, 0), P(2)),
                     (:none, x -> gamma_inc(T(3), x, 1), P(2)),
 
-                    # 2 arg Standard Bessel & Hankel (1st arg gradient Intractable)
+                    # 2 arg Standard Bessel & Hankel (1st arg gradient NotImplemented)
                     (:none, x -> besselj(T(3), x), P(1.5)),
                     (:none, x -> besseli(T(3), x), P(1.5)),
                     (:none, x -> bessely(T(3), x), P(1.5)),
                     (:none, x -> besselk(T(3), x), P(1.5)),
-                    # (:none, x -> hankelh1(T(3), x), P(1.5)),     #FIX
-                    # (:none, x -> hankelh2(T(3), x), P(1.5)),         #FIX
+                    (:none, x -> hankelh1(T(3), x), P(1.5)),
+                    (:none, x -> hankelh2(T(3), x), P(1.5)),
 
-                    # 2 arg scaled Bessel & Hankel (1st arg gradient Intractable)
-                    # (:none, x -> besselix(P(0.5), x), P(1.5)),    #FIX
-                    # (:none, x -> besseljx(P(0.5), x), P(1.5)),    #FIX
-                    # (:none, x -> besselkx(P(0.5), x), P(1.5)),    #FIX
-                    # (:none, x -> besselyx(P(0.5), x), P(1.5)),    #FIX
+                    # 2 arg scaled Bessel & Hankel (1st arg gradient NotImplemented)
+                    (:none, x -> besselix(P(0.5), x), P(1.5)),
+                    (:none, x -> besseljx(P(0.5), x), P(1.5)),
+                    (:none, x -> besselkx(P(0.5), x), P(1.5)),
+                    (:none, x -> besselyx(P(0.5), x), P(1.5)),
                     (:none, x -> hankelh1x(T(2), x), P(1.5)),
                     (:none, x -> hankelh2x(T(2), x), P(1.5)),
 
-                    # # 2 arg Gamma & Exponential Integrals (1st arg gradient Intractable)
+                    # 2 arg Gamma & Exponential Integrals (1st arg gradient NotImplemented)
                     (:none, x -> gamma(T(3), x), P(1.5)),
                     (:none, x -> loggamma(T(3), x), P(1.5)),
                     (:none, x -> expintx(T(3), x), P(0.5)),
                     (:none, x -> expint(T(3), x), P(0.5)),
 
-                    # ## Complex Number args
+                    # Complex Number args
                     (:none, x -> besselj(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> besseli(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> bessely(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> besselk(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> hankelh1(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> hankelh2(T(3), Complex(x, x)), P(1.5)),
-                    # (:none, x -> besselix(P(0.5), Complex(x, x)), P(1.5)),    #FIX
-                    # (:none, x -> besseljx(P(0.5), Complex(x, x)), P(1.5)),    #FIX
+                    (:none, x -> besselix(P(0.5), Complex(x, x)), P(1.5)),
+                    (:none, x -> besseljx(P(0.5), Complex(x, x)), P(1.5)),
                     (:none, x -> besselkx(P(0.5), Complex(x, x)), P(1.5)),
-                    # (:none, x -> besselyx(P(0.5), Complex(x, x)), P(1.5)),    #FIX
+                    (:none, x -> besselyx(P(0.5), Complex(x, x)), P(1.5)),
                     (:none, x -> hankelh1x(T(0.5), Complex(x, x)), P(1.5)),
                     (:none, x -> hankelh2x(T(0.5), Complex(x, x)), P(1.5)),
 
-                    # # both args for below functions can be complex
+                    # both args for below functions can be complex
                     (:none, x -> gamma(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> loggamma(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> expintx(T(3), Complex(x, x)), P(0.5)),
                     (:none, x -> expint(T(3), Complex(x, x)), P(0.5)),
-
-                    # (:none, x -> gamma(Complex(3, 3), T(x)), P(1.5)),     #FIX   
-                    # (:none, x -> loggamma(Complex(3, 3), T(x)), P(1.5)),  # FIX
-                    # (:none, x -> expintx(Complex(3, 3), T(x)), P(0.5)),   # FIX
-                    # (:none, x -> expint(Complex(3, 3), T(x)), P(0.5)),    # FIX
+                    (:none, x -> gamma(Complex(T(3), T(3)), T(x)), P(1.5)),
+                    (:none, x -> loggamma(Complex(T(3), T(3)), T(x)), P(1.5)),
+                    (:none, x -> expintx(Complex(T(3), T(3)), T(x)), P(0.5)),
+                    (:none, x -> expint(Complex(T(3), T(3)), T(x)), P(0.5)),
                 ]
             end...,
         )
 
-            # Tests for all NaN throws
-            # (:none, gamma_inc, T(3), P(2), 1),
-
-            # flag is_primitive = false to test closures over SpecialFunctions.
-            # This excludes gradient calculations for `NotImplemented` fields.
+            # is_primitive = false to test closures over SpecialFunctions.
             Mooncake.TestUtils.test_rule(
                 StableRNG(123456), f, x...; perf_flag, is_primitive=false
             )
