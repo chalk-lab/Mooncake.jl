@@ -112,8 +112,9 @@ Given upstream cotangent `f̄`:
 Correct derivatives when possible, and explicit `NaN` only when
 an unimplemented partial is mathematically required.
 """
-# SpecialFunctions.jl Rules for functions with ChainRuleCore.`NotImplemented` gradients.
-# Standard Bessel & Hankel rrules
+#
+# Standard Bessel & Hankel functions
+#
 @from_rrule DefaultCtx Tuple{typeof(besseli),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(besselj),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(besselk),IEEEFloat,Union{IEEEFloat,<:Complex}}
@@ -121,7 +122,7 @@ an unimplemented partial is mathematically required.
 @from_rrule DefaultCtx Tuple{typeof(hankelh1),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(hankelh2),IEEEFloat,Union{IEEEFloat,<:Complex}}
 
-# scaled bessel-i,j,k,y & hankelh1, hankelh2 rrules
+# Scaled bessel-i,j,k,y & hankelh1, hankelh2 rrules
 @from_rrule DefaultCtx Tuple{typeof(besselix),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(besseljx),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(besselkx),IEEEFloat,Union{IEEEFloat,<:Complex}}
@@ -129,7 +130,7 @@ an unimplemented partial is mathematically required.
 @from_rrule DefaultCtx Tuple{typeof(hankelh1x),IEEEFloat,Union{IEEEFloat,<:Complex}}
 @from_rrule DefaultCtx Tuple{typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,<:Complex}}
 
-# Gamma & Exponential Integrals rrules
+# Gamma & exponential integrals rrules
 @from_rrule DefaultCtx Tuple{
     typeof(gamma),Union{IEEEFloat,<:Complex},Union{IEEEFloat,<:Complex}
 }
@@ -145,7 +146,7 @@ an unimplemented partial is mathematically required.
 
 @from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
-# handle frule return type according to primal type. 
+# Handle frule return type according to primal type. 
 function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:IEEEFloat}
     return Dual(y, primal_eltype(dy_val))
 end
@@ -157,7 +158,7 @@ function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:Complex}
     )
 end
 
-# 3 arg gamma_inc (1st arg gradient Not Implemented)
+# 3-arg `gamma_inc` (first-argument gradient is `NotImplemented`)
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
 function frule!!(
@@ -170,7 +171,7 @@ function frule!!(
     y = gamma_inc(a, x, IND) # primal is always Real for gamma_inc
     primal_eltype = eltype(y) # to ensure final Dual Tangent is valid type
 
-    ∂a = Mooncake.notimplemented_tangent_guard(da, :gamma_inc)     # ∂p/∂a - NotImplemented Gradient
+    ∂a = Mooncake.notimplemented_tangent_guard(da, :gamma_inc)     # ∂p/∂a - NotImplemented
     z = exp((a - 1) * log(x) - x - loggamma(a))    # ∂p/∂x
 
     # dot_p = ∂p/∂a * da + ∂p/∂x * dx
@@ -178,7 +179,7 @@ function frule!!(
     return Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
 end
 
-# 2 arg Gamma and Exponential Integrals (1st arg gradients Not Implemented)
+# 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`)
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(gamma),
     Union{IEEEFloat,Complex{<:IEEEFloat}},
@@ -273,7 +274,7 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-# 2 arg Standard Bessel and Hankel Functions
+# 2-arg standard Bessel and Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselj),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
@@ -401,8 +402,11 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-## Non - Holomorphic functions
-# 2-arg Scaled Bessel Functions
+#
+# Non Holomorphic functions
+#
+
+# 2-arg scaled Bessel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselix),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
@@ -500,7 +504,7 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
-# Scaled Hankel Functions
+# Scaled Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh1x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
