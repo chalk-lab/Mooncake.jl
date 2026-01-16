@@ -83,7 +83,7 @@ using Mooncake.TestUtils: test_rule
         second_arg_types = [Float64, Float32]
         Real_type_tests = map_prod(identity, first_arg_types, second_arg_types)
 
-        # Gradient calculations for fields excluding fields with `NotImplemented` gradient type.
+        # Gradient calculations for fields excluding those with `NotImplemented` gradients
         @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
             map(Real_type_tests) do (T, P)
                 return Any[
@@ -113,7 +113,7 @@ using Mooncake.TestUtils: test_rule
                     (:none, x -> expintx(T(3), x), P(0.5)),
                     (:none, x -> expint(T(3), x), P(0.5)),
 
-                    # Complex Number args
+                    # Complex number args
                     (:none, x -> besselj(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> besseli(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> bessely(T(3), Complex(x, x)), P(1.5)),
@@ -127,7 +127,7 @@ using Mooncake.TestUtils: test_rule
                     (:none, x -> hankelh1x(T(0.5), Complex(x, x)), P(1.5)),
                     (:none, x -> hankelh2x(T(0.5), Complex(x, x)), P(1.5)),
 
-                    # both args for below functions can be complex
+                    # Both args of the functions below can be complex
                     (:none, x -> gamma(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> loggamma(T(3), Complex(x, x)), P(1.5)),
                     (:none, x -> expintx(T(3), Complex(x, x)), P(0.5)),
@@ -140,7 +140,7 @@ using Mooncake.TestUtils: test_rule
             end...,
         )
 
-            # is_primitive = false to test closures over SpecialFunctions.
+            # Use `is_primitive = false` when testing closures over `SpecialFunctions`
             Mooncake.TestUtils.test_rule(
                 StableRNG(123456), f, x...; perf_flag, is_primitive=false
             )

@@ -331,7 +331,7 @@ to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.field
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 to_cr_tangent(nt::NamedTuple) = CRC.Tangent{Any}(; map(to_cr_tangent, nt)...)
 
-# Mooncake Complex Number Tangent to CRC style tangent.
+# Convert Mooncake complex-number tangents to `ChainRulesCore`-style tangents.
 function to_cr_tangent(c::Tangent{@NamedTuple{re::T,im::T}}) where {T<:IEEEFloat}
     return Complex(c.fields.re, c.fields.im)
 end
@@ -371,7 +371,7 @@ function mooncake_tangent(p::T, cr_tangent::T) where {P<:IEEEFloat,T<:Complex{P}
     return Tangent((re=real(cr_tangent), im=imag(cr_tangent)))
 end
 
-# NotImplemented CRC tangents are converted to NaN.
+# Convert `ChainRulesCore.NotImplemented` tangents to Mooncake-style `NaN`-valued tangents.
 function mooncake_tangent(
     p::T, cr_tangent::CRC.NotImplemented
 ) where {P<:IEEEFloat,T<:Complex{P}}
@@ -411,14 +411,14 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
-# Mooncake Complex tangents using CRC Complex Tangents.
+# Adding ChainRulesCore-style tangents to existing Mooncake-style tangents
 function increment_and_get_rdata!(
     f::NoFData, r::Mooncake.RData{@NamedTuple{re::T,im::T}}, t::Complex{T}
 ) where {T<:IEEEFloat}
     return RData((re=real(t) + r.data.re, im=imag(t) + r.data.im))
 end
 
-# return NaN filled tangents for when CRC Complex Tangent is NotImplemented.
+# Return `NaN`-filled Mooncake-style tangents when a ChainRulesCore complex tangent is `NotImplemented`.
 function increment_and_get_rdata!(
     f::NoFData, r::Mooncake.RData{@NamedTuple{re::T,im::T}}, t::CRC.NotImplemented
 ) where {T<:IEEEFloat}
@@ -457,7 +457,6 @@ NOTE: This cannot have a method for `Int`s as `NaN` is only defined for `Abstrac
 """
 function notimplemented_tangent_guard(da::L, f_sym::Symbol) where {L<:Base.IEEEFloat}
     return if _dot(da, da) != L(0)
-        @info "Please use Finite Differences. Derivative Not NotImplemented for $f_sym wrt to argument of type $L - setting ∂f/∂arg to NaN."
         L(NaN)
     else
         L(0)
@@ -467,9 +466,7 @@ end
 function notimplemented_tangent_guard(
     da::Mooncake.Tangent{@NamedTuple{re::L,im::L}}, f_sym::Symbol
 ) where {L<:Base.IEEEFloat}
-    # re, im tangents
     return if _dot(da, da) != L(0)
-        @info "Please use Finite Differences. Derivative Not NotImplemented for $f_sym wrt to argument of type Complex{$L} - setting ∂f/∂arg to NaN."
         Complex(L(NaN), L(NaN))
     else
         Complex(L(0), L(0))
