@@ -8,7 +8,7 @@ using Mooncake.TestUtils: test_rule
 
 # Helper methods to enable mixed Float32/Float64 operations. 
 # Required for compatibility with Julia 1.12+.
-Union{Float32, Float64}(x) = Float64(x)
+Union{Float32,Float64}(x) = Float64(x)
 Mooncake.increment!!(x::Float32, y::Float64) = Float32(x + y)
 Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
 

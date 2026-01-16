@@ -68,7 +68,7 @@ end
 # DispatchDoctor triggers a segfault on Julia 1.12.
 @static if VERSION < v"1.12-"
     include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
-    
+
     include(joinpath(@__DIR__, "..", "..", "utils.jl"))
     include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
     include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
