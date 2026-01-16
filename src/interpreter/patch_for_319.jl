@@ -49,6 +49,62 @@ else
     CC.cache_owner(ip::BugPatchInterpreter) = CC.cache_owner(ip.interp)
 end
 
+# Make BugPatchInterpreter respect NoInlineCallInfo markers.
+# This is needed for forward-over-reverse to prevent inlining of closure/rule calls.
+# See: https://github.com/chalk-lab/Mooncake.jl/issues/914
+@static if VERSION < v"1.11-"
+
+    # Julia 1.10: inlining_policy has 6 arguments, returns nothing to suppress
+    function CC.inlining_policy(
+        interp::BugPatchInterpreter,
+        @nospecialize(src),
+        @nospecialize(info::CC.CallInfo),
+        stmt_flag::UInt8,
+        mi::Core.MethodInstance,
+        argtypes::Vector{Any},
+    )
+        info isa NoInlineCallInfo && return nothing
+        return @invoke CC.inlining_policy(
+            interp::CC.AbstractInterpreter,
+            src::Any,
+            info::CC.CallInfo,
+            stmt_flag::UInt8,
+            mi::Core.MethodInstance,
+            argtypes::Vector{Any},
+        )
+    end
+
+elseif VERSION < v"1.12-"
+
+    # Julia 1.11: inlining_policy has 4 arguments, returns nothing to suppress
+    function CC.inlining_policy(
+        interp::BugPatchInterpreter,
+        @nospecialize(src),
+        @nospecialize(info::CC.CallInfo),
+        stmt_flag::UInt32,
+    )
+        info isa NoInlineCallInfo && return nothing
+        return @invoke CC.inlining_policy(
+            interp::CC.AbstractInterpreter, src::Any, info::CC.CallInfo, stmt_flag::UInt32
+        )
+    end
+
+else
+
+    # Julia 1.12+: renamed to src_inlining_policy, returns false to suppress
+    function CC.src_inlining_policy(
+        interp::BugPatchInterpreter,
+        @nospecialize(src),
+        @nospecialize(info::CC.CallInfo),
+        stmt_flag::UInt32,
+    )
+        info isa NoInlineCallInfo && return false
+        return @invoke CC.src_inlining_policy(
+            interp::CC.AbstractInterpreter, src::Any, info::CC.CallInfo, stmt_flag::UInt32
+        )
+    end
+end  # @static if VERSION
+
 # You can't write for n in thing_from_compiler unless `Base.iterate(thing_from_compiler)`
 # is implemented. Sadly, it's usually the case that `Compiler.iterate(thing_from_compiler)`
 # is implemented, but not the function from `Base.` This is convenience functionality to

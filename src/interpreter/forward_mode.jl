@@ -214,8 +214,9 @@ function generate_dual_ir(
     captures_tuple = (captures...,)
     dual_ir.argtypes[1] = _typeof(captures_tuple)
 
-    # Optimize dual IR
-    dual_ir_opt = optimise_ir!(dual_ir; do_inline)
+    # Optimize dual IR. Mark closure calls as noinline to prevent inlining of
+    # reverse-mode rules during forward-over-reverse differentiation. See #914.
+    dual_ir_opt = optimise_ir!(dual_ir; do_inline, mark_noinline_closures=true)
     return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
 end
 
