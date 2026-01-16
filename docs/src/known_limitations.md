@@ -74,6 +74,14 @@ Mooncake.jl supports differentiation of CUDA kernels in general, provided a suit
 
 Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
 
+## SIMD Optimization and Performance
+
+When the primal code admits SIMD (Single Instruction, Multiple Data) optimizations by the LLVM compiler, reverse-mode automatic differentiation in Mooncake can make it difficult for LLVM to perform these optimizations effectively. This is because the transformations applied during AD can obscure the patterns that LLVM relies on to vectorize code.
+
+As a consequence, if your primal code benefits significantly from SIMD optimizations, you may observe that the differentiated version performs substantially worse than expected. In such cases, writing custom rules (hand-written `rrule!!`s) for the performance-critical functions can help restore optimal performance by allowing you to control how the derivative computation is structured.
+
+If you encounter performance issues with code that you know benefits from SIMD in its primal form, consider implementing custom rules for the relevant operations.
+
 ## Circular References in Type Declarations
 
 Mooncake.jl's default `tangent_type` implementation cannot support types which refer to themselves either directly or indirectly in their definition.
