@@ -629,6 +629,8 @@ case because the required method of either of these functions does not exist, pl
 issue.
 """
 macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode)
+    mode = mode == :ForwardMode ? ForwardMode : mode
+    mode = mode == :ReverseMode ? ReverseMode : mode
     return _from_chainrules_impl(ctx, sig, has_kwargs, mode)
 end
 
@@ -637,8 +639,21 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
     codual_arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_syms)
-    frule_expr = construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
-    rrule_expr = construct_rrule_wrapper_def(arg_names, codual_arg_types, where_params)
+
+    # Determine which rules to generate based on mode
+    include_frule = (mode === Mode) || (mode === ForwardMode)
+    include_rrule = (mode === Mode) || (mode === ReverseMode)
+
+    frule_expr = if include_frule
+        construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
+    else
+        nothing
+    end
+    rrule_expr = if include_rrule
+        construct_rrule_wrapper_def(arg_names, codual_arg_types, where_params)
+    else
+        nothing
+    end
 
     if has_kwargs
         kw_sig = Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, arg_type_syms...)
@@ -651,7 +666,8 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
                 return true
             end
         end
-        kwargs_frule_expr = construct_frule_wrapper_def(
+        kwargs_frule_expr = if include_frule
+            construct_frule_wrapper_def(
             vcat(:_kwcall, :kwargs, arg_names),
             vcat(
                 :(Mooncake.Dual{typeof(Core.kwcall)}),
@@ -660,7 +676,11 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
             ),
             where_params,
         )
-        kwargs_rrule_expr = construct_rrule_wrapper_def(
+        else
+            nothing
+        end
+        kwargs_rrule_expr = if include_rrule
+            construct_rrule_wrapper_def(
             vcat(:_kwcall, :kwargs, arg_names),
             vcat(
                 :(Mooncake.CoDual{typeof(Core.kwcall)}),
@@ -669,24 +689,35 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
             ),
             where_params,
         )
+        else
+            nothing
+        end
     else
         kw_is_primitive = nothing
         kwargs_frule_expr = nothing
         kwargs_rrule_expr = nothing
     end
 
-    return quote
+    is_primitive_expr = quote
         function Mooncake._is_primitive(
             ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:($(esc(sig)))}
         )
             return true
         end
-        $frule_expr
-        $rrule_expr
-        $kw_is_primitive
-        $kwargs_frule_expr
-        $kwargs_rrule_expr
     end
+
+    exprs = filter(
+        !isnothing,
+        [
+            is_primitive_expr,
+            frule_expr,
+            rrule_expr,
+            kw_is_primitive,
+            kwargs_frule_expr,
+            kwargs_rrule_expr,
+        ],
+    )
+    return Expr(:block, exprs...)
 end
 
 """
