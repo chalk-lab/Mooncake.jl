@@ -76,25 +76,11 @@ Users who need to differentiate through these code paths may do so by providing 
 
 ## Differentiating SIMD Code
 
-When the primal code admits SIMD (Single Instruction, Multiple Data) optimisations by
-the LLVM compiler, reverse-mode automatic differentiation in Mooncake can inhibit
-LLVM’s ability to apply the same optimisations. This occurs because the
-transformations introduced during differentiation may obscure the structural
-patterns that LLVM relies on for vectorisation.
+When the primal code admits SIMD (Single Instruction, Multiple Data) optimisations by the LLVM compiler, reverse-mode automatic differentiation in Mooncake can inhibit LLVM's ability to apply the same optimisations. This occurs because the transformations introduced during differentiation may obscure the structural patterns that LLVM relies on for vectorisation.
 
-Consequently, code that performs well in its primal form may suffer substantial
-slowdowns after differentiation. In performance-critical regions, this can often be
-mitigated by providing hand-written derivative rules (`rrule!!`s). Such rules allow
-explicit control over the structure of the adjoint computation and can be used to
-preserve SIMD-friendly loop forms.
+Consequently, code that performs well in its primal form may suffer substantial slowdowns after differentiation. In performance-critical regions, this can often be mitigated by providing hand-written derivative rules (`rrule!!`s, see [Defining Rules](@ref)). Such rules allow explicit control over the structure of the adjoint computation and can be used to preserve SIMD-friendly loop forms.
 
-If you observe unexpected performance regressions in differentiated code that is
-known to vectorise effectively in its primal form, consider implementing custom rules
-for the relevant operations. For example, a customised performance-oriented rule is
-added for `kron` in Mooncake ([PR #886](https://github.com/chalk-lab/Mooncake.jl/pull/886))
-to address the loss of SIMD vectorisation that arises when differentiating the
-SIMD-friendly primal implementation of `kron` in Julia’s standard library
-([LinearAlgebra implementation](https://github.com/JuliaLang/LinearAlgebra.jl/blob/b1f48a442ba5f41479d4fb6f3e931b1ac2f21059/src/dense.jl#L499-L531)).
+If you observe unexpected performance regressions in differentiated code that is known to vectorise effectively in its primal form, consider implementing custom rules for the relevant operations. For example, a customised performance-oriented rule is added for `kron` in Mooncake ([PR #886](https://github.com/chalk-lab/Mooncake.jl/pull/886)) to address the loss of SIMD vectorisation that arises when differentiating the SIMD-friendly primal implementation of `kron` in Julia's standard library ([LinearAlgebra implementation](https://github.com/JuliaLang/LinearAlgebra.jl/blob/b1f48a442ba5f41479d4fb6f3e931b1ac2f21059/src/dense.jl#L499-L531)).
 
 ## Circular References in Type Declarations
 
