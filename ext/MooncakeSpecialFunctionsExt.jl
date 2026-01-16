@@ -58,51 +58,60 @@ import Mooncake:
 @zero_derivative DefaultCtx Tuple{typeof(logfactorial),Integer}
 
 """
-    Mooncake handling for `ChainRuleCore.NotImplemented` Tangents in imported rules.
+## Handling `ChainRulesCore.NotImplemented` Tangents in Imported Rules
 
-In the AD graph, derivative/gradient calculations follow the Forward Mode / Reverse Mode AD directions.
-Assume inputs `x`, `y` to a node for function `f`, with `df/dx` being NotImplemented.
-Now, 
+Mooncake uses a *masking* trick to handle
+`ChainRulesCore.NotImplemented` tangents and partial derivatives.
 
-1. Forward Mode AD calculates df using dx, dy.
+**NOTE:**
+A missing partial derivative is irrelevant if it is multiplied by the zero
+element of the corresponding tangent or cotangent space.
 
-Therefore, for Forward Mode rules : dx = 0 (dead) OR dx != 0 (active) -> We make this the conditional criteria.
-if dx == 0
-    # x does not contribute to df, so just set derivative as 0. 
-    ∂f/∂x = 0
-else 
-    # x is expected to contribute to df.
-    ∂f/∂x = NaN
-    @info "Please use Finite Differences. NotImplemented Derivative for f wrt to a - setting ∂f/∂a to NaN."
-end
+The result is therefore either correct or explicitly marked as unknown
+(`NaN`).
 
-df = (∂f/∂x)*dx + (∂f/∂y)*dy
+### Forward mode (pushforward)
 
-if user/program inputs dx != 0 :
-    ∂f = NaN     # @info used + upstream derivatives are simply `NaN` (we don't know the derivative anyways)
+For `f(x, y)` with unimplemented `∂f/∂x`:
 
-if user/program inputs dx == 0 :
-    ∂f = (∂f/∂y)*dy    # upstream derivatives are correct as they don't depend on the "NotImplemented" derivative.
+    ḟ = (∂f/∂x)·ẋ + (∂f/∂y)·ẏ
 
-**Bottomline** : we always get correct derivatives or a `NaN` and information if we try to calculate at a singular/NotImplemented Point.
+- If `ẋ == 0`, the contribution from `x` vanishes:
+  
+      ḟ = (∂f/∂y)·ẏ
 
+- If `ẋ != 0`, the missing derivative is required ⇒ `ḟ = NaN`
+  and an informational message is emitted.
 
-2. Reverse Mode AD calculates dx and dy using df (pullback).
-For Reverse Mode rules : just set final dx = `NaN` directly and use with dy.
+### Reverse mode (pullback)
 
-dx = (∂f/∂x)' * df     # Just set directly to `NaN`.
-dy = (∂f/∂y)' * df     # calculate gradient as is.
-@info "Currently NotImplemented gradients for f wrt to x - setting ∂f/∂x to NaN. Please use Finite Differences."
+Given upstream cotangent `f̄`:
 
-pullback for f simply returns `NaN`, dy
+    x̄ = (∂f/∂x)'·f̄
+    ȳ = (∂f/∂y)'·f̄
 
-**Bottomline** : All downstream branches get correct gradients to work, In case they actively use dx they are set to `NaN` + Information given (unknown gradient).
+- If `f̄ == 0`, then `x̄ = 0` even if `∂f/∂x` is not implemented.
+- If `f̄ != 0`, then `x̄ = NaN`, while `ȳ` is computed normally,
+  and an informational message is emitted.
 
+### Notes
 
-**Note** - This will only work for Float point values & it's compositions (Complex etc) due to NaN, NaN32 & NaN16 living only AbstractFloat's Space.
+- “Zero” refers to the additive identity of the tangent/cotangent space.
+- This policy relies on `NaN` and therefore applies only to
+  floating-point tangent spaces and their compositions
+  (e.g. arrays of floats).
+  This restriction exists because `NaN`, `NaN32`, and `NaN16`
+  live exclusively in `AbstractFloat` spaces.
+- `NotImplemented` indicates a missing AD rule, not a non-differentiable
+  function.
+- `NaN`s introduced by missing derivatives are masked in the same way as
+  `NotImplemented` derivatives: they only affect the result when multiplied
+  by a nonzero tangent or cotangent; otherwise they are safely ignored.
 
-**Final Note** - NaN issues is also solved in a similar manner.
+### Outcome
 
+Correct derivatives when possible, and explicit `NaN` only when
+an unimplemented partial is mathematically required.
 """
 # SpecialFunctions.jl Rules for functions with ChainRuleCore.`NotImplemented` gradients.
 # Standard Bessel & Hankel rrules
