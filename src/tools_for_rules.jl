@@ -449,11 +449,23 @@ end
 """
     notimplemented_tangent_guard(da::Mooncake.Tangent, f_sym::Symbol)
 
-If da is nonzero and participates in AD, the method returns a `NaN` filled data structure for whatever tangent da is given.
-In case da is a zero tangent return zero-ed da but in a compatible way for immediate complex algebra within Mooncake rules.
+Guards the use of a tangent associated with a
+`ChainRulesCore.NotImplemented` derivative.
 
-NOTE: This cannot have a method for `Int`s as `NaN` is only defined for `AbstractFloat`s.
+If `da` is nonzero and participates in automatic differentiation, this
+method returns a `NaN`-filled data structure matching the shape and type
+of `da`, signaling an unknown derivative.
 
+If `da` is a zero tangent, a zero-valued tangent is returned in a form
+compatible with immediate algebraic composition inside Mooncake rules.
+
+This masking ensures that missing derivatives only affect results when
+they are mathematically required.
+
+!!! note
+    This function is defined only for floating-point tangent spaces.
+    It cannot support `Int` tangents, since `NaN` is only defined for
+    `AbstractFloat` types.
 """
 function notimplemented_tangent_guard(da::L, f_sym::Symbol) where {L<:Base.IEEEFloat}
     return if _dot(da, da) != L(0)
