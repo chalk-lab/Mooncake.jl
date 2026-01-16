@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>IR Representations and Code Transformations · Mooncake.jl</title><meta name="title" content="IR Representations and Code Transformations · Mooncake.jl"/><meta property="og:title" content="IR Representations and Code Transformations · Mooncake.jl"/><meta property="twitter:title" content="IR Representations and Code Transformations · Mooncake.jl"/><meta name="description" content="Documentation for Mooncake.jl."/><meta property="og:description" content="Documentation for Mooncake.jl."/><meta property="twitter:description" content="Documentation for Mooncake.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body>
+<!-- NAVBAR START -->
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro&display=swap');
+
+    /* Documenter.jl CSS Overrides */
+    html {
+        scroll-padding-top: calc(var(--navbar-height) + 1rem);
+    }
+    .docs-sidebar, #documenter {
+        margin-top: var(--navbar-height);
+    }
+    .docs-version-selector {
+        margin-bottom: 60px !important;
+    }
+    @media screen and (max-width: 1056px) {
+        .docs-version-selector {
+            margin-bottom: 60px !important;
+        }
+        .docs-sidebar {
+            margin-top: 0 !important;
+        }
+    }
+    /* End of Documenter.jl Tweaks */
+
+    /* Color and Font Variables */
+    :root {
+        --heading-color: #6c757d;
+        --item-color: rgb(165, 165, 165);
+        --primary-bg: white;
+        --hover-color: #8faad2;
+        --deprecated-bg: #ff4d4d;
+        --deprecated-text: white;
+        --icon-color: #6c757d;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e9ecef;
+        
+        /* Typography */
+        --font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        --nav-link-font-size: 1.0625rem;
+        --turing-title-font-size: 21.25px;
+        --icon-font-size: 1.25rem;
+        --dropdown-arrow-font-size: 0.6875rem;
+        --badge-font-size: 0.75rem;
+
+        /* Sizing and Spacing */
+        --navbar-height: 3.75rem;
+        --logo-height: 31px;
+        --logo-width: auto;
+        --logo-padding-top: 7px;
+        --logo-margin-left: 0.8rem;
+        --title-margin-left: 0.4px;
+        --title-nav-spacing: 1.1rem;
+        --nav-item-margin-left: 1.3rem;
+        --icon-margin-left: 1rem;
+        --dropdown-padding: 1.875rem;
+        --dropdown-item-width: 12.5rem;
+        --dropdown-subitem-width: 15.625rem;
+        --dropdown-subitem-padding: 0.125rem 0.625rem;
+    }
+
+    /* Dark Theme Variable Overrides */
+    html.theme--documenter-dark {
+        --heading-color: #e0e0e0;
+        --item-color: #bdbdbd;
+        --primary-bg: #1f2424;
+        --hover-color: #ffffff;
+        --icon-color: #e0e0e0;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #424242;
+    }
+
+    /* Catppuccin Theme Overrides */
+    html.theme--catppuccin-latte {
+        --heading-color: #4c4f69;
+        --primary-bg: #eff1f5;
+        --icon-color: #4c4f69;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e6e9ef;
+    }
+    html.theme--catppuccin-frappe {
+        --heading-color: #c6d0f5;
+        --primary-bg: #303446;
+        --icon-color: #c6d0f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #51576d;
+    }
+    html.theme--catppuccin-macchiato {
+        --heading-color: #cad3f5;
+        --primary-bg: #24273a;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #494d64;
+    }
+    html.theme--catppuccin-mocha {
+        --heading-color: #cad3f5;
+        --primary-bg: #1e1e2e;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #45475a;
+    }
+
+
+    /* Main Navigation Bar */
+    .ext-navigation {
+        font-family: var(--font-family);
+        position: fixed;
+        height: var(--navbar-height);
+        top: 0;
+        width: 100%;
+        background-color: var(--primary-bg);
+        z-index: 1000;
+        box-shadow: 0 2px 4px var(--shadow-color);
+        display: flex;
+        align-items: center;
+        padding: 0 1.0625rem;
+        transition: transform 0.3s, background-color 0.3s;
+    }
+
+    nav.ext-navigation .ext-navbar-logo {
+        margin-left: var(--logo-margin-left);
+        height: auto;
+        max-height: var(--logo-height);
+        width: auto;
+        padding-top: var(--logo-padding-top);
+    }
+    
+    /* Theme-aware logo text color */
+    .ext-navbar-logo .logo-text {
+        fill: var(--heading-color);
+    }
+    
+    .ext-navbar-title {
+        color: var(--heading-color) !important;
+        font-size: var(--turing-title-font-size) !important;
+        margin-left: var(--title-margin-left);
+        text-decoration: none;
+        transition: color 0.2s ease;
+    }
+    
+    .ext-navbar-title:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-nav-links {
+        display: flex;
+        align-items: center;
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+        flex-grow: 1;
+        margin-left: var(--title-nav-spacing);
+    }
+
+    .ext-nav-links li:first-child {
+        margin-left: 0 !important;
+    }
+
+    .ext-nav-links li {
+        margin-left: var(--nav-item-margin-left) !important;
+    }
+
+    .ext-nav-link {
+        color: var(--heading-color) !important;
+        text-decoration: none;
+        font-size: var(--nav-link-font-size) !important;
+        transition: color 0.2s ease;
+        cursor: pointer;
+    }
+
+    .ext-nav-link:hover,
+    .ext-navbar-item-single a:hover,
+    .ext-navbar-icons a:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-navbar-item-single a {
+        color: var(--heading-color) !important;
+    }
+    
+    .ext-navbar-icons {
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-navbar-icons a {
+        color: var(--icon-color) !important;
+        font-size: var(--icon-font-size) !important;
+        transition: color 0.2s ease;
+        margin-left: var(--icon-margin-left);
+    }
+
+    .ext-menu-toggle {
+        display: none;
+        font-size: 1.5rem;
+        color: var(--heading-color);
+        cursor: pointer;
+    }
+
+    .ext-dropdown {
+        display: none;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        padding: var(--dropdown-padding);
+        position: absolute;
+        top: var(--navbar-height);
+        width: 100%;
+        left: 0;
+        background-color: var(--primary-bg);
+        line-height: 1.875rem;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out, background-color 0.3s;
+        transform: translateY(-0.625rem);
+        box-shadow: 0 4px 6px var(--shadow-color);
+    }
+
+    #library-handler::after {
+        content: "▼";
+        font-size: var(--dropdown-arrow-font-size);
+        margin-left: 0.3125rem;
+        transition: transform 0.3s ease-in-out;
+    }
+
+    #library-handler.open::after {
+        content: "▲";
+    }
+
+    .ext-dropdown.show {
+        display: grid;
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .ext-dropdown ul {
+        width: var(--dropdown-item-width);
+        margin-bottom: 1.25rem;
+    }
+
+    .ext-dropdown ul li {
+        text-align: left;
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-dropdown ul a li {
+        color: var(--item-color);
+        width: var(--dropdown-subitem-width);
+        border-radius: 3px;
+        padding: var(--dropdown-subitem-padding);
+        transition: background-color 0.2s ease;
+    }
+
+    .ext-dropdown ul a li:hover {
+        background-color: var(--dropdown-hover-bg);
+    }
+
+    .ext-dropdown-item-heading {
+        color: var(--heading-color);
+        text-align: center;
+    }
+
+    .deprecated-badge {
+        background-color: var(--deprecated-bg);
+        color: var(--deprecated-text);
+        font-size: var(--badge-font-size);
+        padding: .1rem;
+        border-radius: 3px;
+        margin-left: 0.5rem;
+        line-height: 1;
+    }
+
+    @media (max-width: 966px) {
+        .ext-dropdown {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .ext-nav-links {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            background-color: var(--primary-bg);
+            position: absolute;
+            top: var(--navbar-height);
+            left: 0;
+            padding: 0.625rem 0;
+            height: auto;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px var(--shadow-color);
+            margin-left: 0;
+        }
+
+        .ext-nav-links.show {
+            display: flex;
+        }
+
+        .ext-nav-links li {
+            margin: 0.625rem 0 !important;
+            text-align: center;
+        }
+        
+        .ext-menu-toggle {
+            display: block;
+            margin-left: auto;
+        }
+
+        .ext-navigation.hide {
+            transform: translateY(calc(-1 * var(--navbar-height)));
+        }
+
+        .ext-dropdown {
+            position: static;
+            display: block;
+            opacity: 1;
+            transform: none;
+            box-shadow: none;
+            grid-template-columns: 1fr;
+            padding: 0.625rem;
+            text-align: center;
+        }
+
+        .ext-dropdown ul {
+            width: auto;
+            display: inline-block;
+            margin: 0 auto 0.3125rem;
+            text-align: left;
+        }
+    }
+</style>
+<nav class="ext-navigation">
+    <a href="https://turinglang.org/">
+        <svg width="4333" height="1145" viewBox="0 0 4333 1145" fill="none" xmlns="http://www.w3.org/2000/svg" class="ext-navbar-logo">
+            <path class="logo-text" d="M0.44603 193.181V66.9868H663.471V193.181H406.62V898H257.297V193.181H0.44603ZM1097.24 635.874V274.74H1244.13V898H1101.7V787.225H1095.21C1081.14 822.121 1058.01 850.66 1025.82 872.842C993.902 895.024 954.542 906.115 907.744 906.115C866.896 906.115 830.783 897.053 799.403 878.929C768.295 860.534 743.948 833.889 726.365 798.993C708.782 763.826 699.99 721.356 699.99 671.581V274.74H846.878V648.858C846.878 688.353 857.699 719.733 879.34 742.997C900.981 766.261 929.385 777.893 964.551 777.893C986.192 777.893 1007.16 772.618 1027.45 762.068C1047.73 751.518 1064.37 735.828 1077.35 714.999C1090.61 693.899 1097.24 667.524 1097.24 635.874ZM1395.17 898V274.74H1537.6V378.617H1544.09C1555.45 342.639 1574.93 314.911 1602.52 295.434C1630.38 275.687 1662.17 265.813 1697.88 265.813C1705.99 265.813 1715.05 266.219 1725.06 267.031C1735.34 267.572 1743.86 268.518 1750.63 269.871V404.992C1744.4 402.828 1734.53 400.934 1721 399.311C1707.75 397.417 1694.9 396.471 1682.46 396.471C1655.68 396.471 1631.6 402.287 1610.23 413.919C1589.13 425.28 1572.49 441.105 1560.32 461.393C1548.15 481.682 1542.06 505.081 1542.06 531.591V898H1395.17ZM1848.21 898V274.74H1995.1V898H1848.21ZM1922.06 186.283C1898.8 186.283 1878.78 178.573 1862.01 163.154C1845.24 147.464 1836.85 128.664 1836.85 106.752C1836.85 84.5701 1845.24 65.7695 1862.01 50.3503C1878.78 34.6606 1898.8 26.8158 1922.06 26.8158C1945.6 26.8158 1965.61 34.6606 1982.12 50.3503C1998.89 65.7695 2007.27 84.5701 2007.27 106.752C2007.27 128.664 1998.89 147.464 1982.12 163.154C1965.61 178.573 1945.6 186.283 1922.06 186.283ZM2293.04 532.809V898H2146.15V274.74H2286.54V380.646H2293.85C2308.18 345.75 2331.04 318.022 2362.42 297.463C2394.07 276.904 2433.16 266.625 2479.69 266.625C2522.7 266.625 2560.17 275.822 2592.09 294.217C2624.28 312.612 2649.17 339.257 2666.75 374.153C2684.6 409.049 2693.39 451.385 2693.12 501.159V898H2546.24V523.882C2546.24 482.223 2535.41 449.626 2513.77 426.092C2492.4 402.557 2462.78 390.79 2424.91 390.79C2399.21 390.79 2376.35 396.471 2356.34 407.832C2336.59 418.923 2321.03 435.019 2309.67 456.119C2298.58 477.218 2293.04 502.782 2293.04 532.809ZM3113.5 1144.71C3060.75 1144.71 3015.44 1137.54 2977.57 1123.2C2939.7 1109.13 2909.26 1090.2 2886.27 1066.39C2863.28 1042.59 2847.32 1016.21 2838.39 987.269L2970.67 955.213C2976.62 967.386 2985.28 979.424 2996.64 991.327C3008 1003.5 3023.28 1013.51 3042.49 1021.35C3061.97 1029.47 3086.45 1033.53 3115.93 1033.53C3157.59 1033.53 3192.08 1023.38 3219.4 1003.09C3246.73 983.076 3260.39 950.074 3260.39 904.087V786.008H3253.08C3245.51 801.157 3234.42 816.711 3219.81 832.671C3205.47 848.632 3186.4 862.022 3162.6 872.842C3139.06 883.663 3109.44 889.073 3073.73 889.073C3025.85 889.073 2982.44 877.847 2943.48 855.394C2904.8 832.671 2873.96 798.857 2850.97 753.952C2828.24 708.777 2816.88 652.24 2816.88 584.341C2816.88 515.902 2828.24 458.147 2850.97 411.078C2873.96 363.739 2904.93 327.896 2943.89 303.55C2982.84 278.933 3026.26 266.625 3074.14 266.625C3110.66 266.625 3140.69 272.847 3164.22 285.29C3188.03 297.463 3206.96 312.206 3221.03 329.519C3235.09 346.561 3245.78 362.657 3253.08 377.805H3261.2V274.74H3406.06V908.144C3406.06 961.435 3393.34 1005.53 3367.92 1040.42C3342.49 1075.32 3307.73 1101.43 3263.63 1118.74C3219.54 1136.05 3169.5 1144.71 3113.5 1144.71ZM3114.72 773.835C3145.83 773.835 3172.34 766.261 3194.25 751.112C3216.16 735.963 3232.79 714.187 3244.16 685.783C3255.52 657.379 3261.2 623.295 3261.2 583.53C3261.2 544.305 3255.52 509.95 3244.16 480.465C3233.07 450.979 3216.56 428.12 3194.65 411.89C3173.01 395.389 3146.37 387.138 3114.72 387.138C3081.98 387.138 3054.66 395.659 3032.75 412.701C3010.84 429.744 2994.34 453.143 2983.25 482.899C2972.16 512.385 2966.61 545.929 2966.61 583.53C2966.61 621.672 2972.16 655.08 2983.25 683.754C2994.61 712.158 3011.25 734.34 3033.16 750.3C3055.34 765.99 3082.53 773.835 3114.72 773.835ZM3647.08 906.927C3622.47 906.927 3601.37 898.271 3583.78 880.958C3566.2 863.645 3557.54 842.545 3557.82 817.658C3557.54 793.312 3566.2 772.482 3583.78 755.17C3601.37 737.857 3622.47 729.2 3647.08 729.2C3670.89 729.2 3691.58 737.857 3709.17 755.17C3727.02 772.482 3736.08 793.312 3736.35 817.658C3736.08 834.159 3731.75 849.173 3723.37 862.698C3715.25 876.224 3704.43 887.044 3690.91 895.16C3677.65 903.004 3663.04 906.927 3647.08 906.927ZM3888.01 274.74H4034.9V933.708C4034.9 978.613 4026.38 1015.67 4009.33 1044.89C3992.29 1074.1 3967.67 1095.88 3935.48 1110.22C3903.29 1124.55 3864.2 1131.72 3818.22 1131.72C3812.81 1131.72 3807.8 1131.59 3803.2 1131.32C3798.6 1131.32 3793.6 1131.18 3788.19 1130.91V1011.21C3792.25 1011.48 3795.9 1011.62 3799.15 1011.62C3802.39 1011.89 3805.77 1012.02 3809.29 1012.02C3837.42 1012.02 3857.58 1005.12 3869.75 991.327C3881.92 977.801 3888.01 957.918 3888.01 931.679V274.74ZM3961.05 186.283C3937.51 186.283 3917.36 178.573 3900.59 163.154C3884.09 147.464 3875.84 128.664 3875.84 106.752C3875.84 84.5701 3884.09 65.7695 3900.59 50.3503C3917.36 34.6606 3937.51 26.8158 3961.05 26.8158C3984.31 26.8158 4004.19 34.6606 4020.7 50.3503C4037.47 65.7695 4045.85 84.5701 4045.85 106.752C4045.85 128.664 4037.47 147.464 4020.7 163.154C4004.19 178.573 3984.31 186.283 3961.05 186.283ZM4332.83 66.9868V898H4185.94V66.9868H4332.83Z" fill="currentColor"/>
+            <path d="M4076 108.5C4076 168.424 4027.42 217 3967.5 217C3907.58 217 3859 168.424 3859 108.5C3859 48.5762 3907.58 0 3967.5 0C4027.42 0 4076 48.5762 4076 108.5Z" fill="#389725"/>
+            <path d="M3755 814.5C3755 874.424 3706.42 923 3646.5 923C3586.58 923 3538 874.424 3538 814.5C3538 754.576 3586.58 706 3646.5 706C3706.42 706 3755 754.576 3755 814.5Z" fill="#9457B1"/>
+            <path d="M2030 108.5C2030 168.424 1981.42 217 1921.5 217C1861.58 217 1813 168.424 1813 108.5C1813 48.5762 1861.58 0 1921.5 0C1981.42 0 2030 48.5762 2030 108.5Z" fill="#CA3B33"/>
+        </svg>
+    </a>
+    <!-- <a class="ext-navbar-title" href="https://turinglang.org/">Turing.jl</a> -->
+    
+    <ul class="ext-nav-links">
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/getting-started/">Get Started</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/tutorials/">Tutorials</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/faq/">FAQ</a></li>
+        <li>
+            <p class="ext-nav-link" id="library-handler">Libraries</p>
+            <div class="ext-dropdown" id="ext-dropdown-items">
+                <ul>
+                    <li class="ext-dropdown-item-heading">Modelling Languages</li>
+                    <a href="https://turinglang.org/DynamicPPL.jl/"><li>DynamicPPL</li></a>
+                    <a href="https://turinglang.org/JuliaBUGS.jl/"><li>JuliaBUGS</li></a>
+                    <a href="https://turinglang.org/TuringGLM.jl/"><li>TuringGLM</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">MCMC</li>
+                    <a href="https://turinglang.org/AdvancedHMC.jl/"><li>AdvancedHMC</li></a>
+                    <a href="https://turinglang.org/AbstractMCMC.jl/"><li>AbstractMCMC</li></a>
+                    <a href="https://github.com/theogf/ThermodynamicIntegration.jl"><li>ThermodynamicIntegration</li></a>
+                    <a href="https://turinglang.org/AdvancedPS.jl/"><li>AdvancedPS</li></a>
+                    <a href="https://turinglang.org/SliceSampling.jl/"><li>SliceSampling</li></a>
+                    <a href="https://turinglang.org/EllipticalSliceSampling.jl/"><li>EllipticalSliceSampling</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Diagnostics</li>
+                    <a href="https://turinglang.org/MCMCChains.jl/"><li>MCMCChains</li></a>
+                    <a href="https://turinglang.org/MCMCDiagnosticTools.jl/"><li>MCMCDiagnosticTools</li></a>
+                    <a href="https://turinglang.org/ParetoSmooth.jl/"><li>ParetoSmooth</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Gaussian Processes</li>
+                    <a href="https://juliagaussianprocesses.github.io/AbstractGPs.jl/"><li>AbstractGPs</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/KernelFunctions.jl/"><li>KernelFunctions</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/ApproximateGPs.jl/"><li>ApproximateGPs</li></a>
+                </ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Bijectors.jl/">Bijectors</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/TuringCallbacks.jl/">TuringCallbacks</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Deprecated/TuringBenchmarking/">TuringBenchmarking</a><span class="deprecated-badge">Deprecated</span></li></ul>
+            </div>
+        </li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/news/">News</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/team/">Team</a></li>
+    </ul>
+
+    <div class="ext-navbar-icons">
+        <a href="https://x.com/TuringLang" aria-label="Turing on X"><i class="fa-brands fa-x-twitter"></i></a>
+        <a href="https://discourse.julialang.org/c/domain/probprog/48" aria-label="Turing on Discourse"><i class="fa-brands fa-discourse"></i></a>
+        <a href="https://julialang.slack.com/archives/CCYDC34A0" aria-label="Turing on Slack"><i class="fa-brands fa-slack"></i></a>
+        <a href="https://github.com/TuringLang/" aria-label="Turing.jl on GitHub"><i class="fa-brands fa-github"></i></a>
+    </div>
+
+    <span class="ext-menu-toggle"><i class="fa-solid fa-bars"></i></span>
+</nav>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const menuToggle = document.querySelector(".ext-menu-toggle");
+        const navLinks = document.querySelector(".ext-nav-links");
+        const nav = document.querySelector(".ext-navigation");
+        const libraryHandler = document.getElementById("library-handler");
+        const dropdownContainer = document.getElementById("ext-dropdown-items");
+        let lastScrollY = window.scrollY;
+
+        function closeDropdown() {
+            if (dropdownContainer.classList.contains("show")) {
+                libraryHandler.classList.remove("open");
+                dropdownContainer.classList.remove("show");
+                setTimeout(() => {
+                    if (!dropdownContainer.classList.contains("show")) {
+                        dropdownContainer.style.display = "none";
+                    }
+                }, 300);
+            }
+        }
+
+        function openDropdown() {
+            dropdownContainer.style.display = "grid";
+            libraryHandler.classList.add("open");
+            setTimeout(() => {
+                dropdownContainer.classList.add("show");
+            }, 10);
+        }
+
+        function setAppropriateHeight() {
+            if (window.innerWidth <= 768) {
+                const viewportHeight = window.innerHeight;
+                const navHeight = nav.offsetHeight;
+                navLinks.style.maxHeight = `${viewportHeight - navHeight}px`;
+                navLinks.style.overflowY = "auto";
+            } else {
+                navLinks.style.maxHeight = "";
+                navLinks.style.overflowY = "";
+            }
+        }
+
+        menuToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            navLinks.classList.toggle("show");
+            if (navLinks.classList.contains("show")) {
+                setAppropriateHeight();
+                closeDropdown();
+                dropdownContainer.style.display = "none";
+            }
+        });
+
+        libraryHandler.addEventListener("click", (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            if (dropdownContainer.classList.contains("show")) {
+                closeDropdown();
+            } else {
+                openDropdown();
+            }
+            setAppropriateHeight();
+        });
+
+        // Close all menus if a click is registered outside the navigation bar.
+        document.addEventListener("click", (event) => {
+            if (!nav.contains(event.target)) {
+                navLinks.classList.remove("show");
+                closeDropdown();
+            }
+        });
+
+        // Hide navigation bar on scroll down in mobile view.
+        window.addEventListener("scroll", () => {
+            if (window.innerWidth <= 768) {
+                if (window.scrollY > lastScrollY && window.scrollY > nav.offsetHeight){
+                    nav.classList.add("hide");
+                } else {
+                    nav.classList.remove("hide");
+                }
+                lastScrollY = window.scrollY;
+            }
+        });
+
+        window.addEventListener("resize", setAppropriateHeight);
+    });
+</script>
+<!-- NAVBAR END -->
+
+
+<div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.svg" alt="Mooncake.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">Mooncake.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Mooncake.jl</a></li><li><a class="tocitem" href="../../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../../interface/">Interface</a></li><li><span class="tocitem">Understanding Mooncake.jl</span><ul><li><a class="tocitem" href="../../understanding_mooncake/introduction/">Introduction</a></li><li><a class="tocitem" href="../../understanding_mooncake/algorithmic_differentiation/">Algorithmic Differentiation</a></li><li><a class="tocitem" href="../../understanding_mooncake/rule_system/">Mooncake.jl&#39;s Rule System</a></li></ul></li><li><span class="tocitem">Utilities</span><ul><li><a class="tocitem" href="../../utilities/defining_rules/">Defining Rules</a></li><li><a class="tocitem" href="../../utilities/debug_mode/">Debug Mode</a></li><li><a class="tocitem" href="../../utilities/debugging_and_mwes/">Debugging and MWEs</a></li></ul></li><li><span class="tocitem">Developer Documentation</span><ul><li><a class="tocitem" href="../running_tests_locally/">Running Tests Locally</a></li><li><a class="tocitem" href="../developer_tools/">Developer Tools</a></li><li><a class="tocitem" href="../tangents/">Tangents</a></li><li><a class="tocitem" href="../custom_tangent_type/">Writing Custom Tangent Types</a></li><li class="is-active"><a class="tocitem" href>IR Representations and Code Transformations</a><ul class="internal"><li><a class="tocitem" href="#Julia&#39;s-SSA-form-IR"><span>Julia&#39;s SSA-form IR</span></a></li><li><a class="tocitem" href="#Julia-Compiler&#39;s-IR-Datastructure"><span>Julia Compiler&#39;s IR Datastructure</span></a></li><li><a class="tocitem" href="#An-Alternative-IR-Datastructure"><span>An Alternative IR Datastructure</span></a></li><li><a class="tocitem" href="#Code-Transformations"><span>Code Transformations</span></a></li><li><a class="tocitem" href="#Summary-2"><span>Summary</span></a></li><li><a class="tocitem" href="#Docstrings"><span>Docstrings</span></a></li></ul></li><li><a class="tocitem" href="../forwards_mode_design/">Forwards-Mode Design</a></li><li><a class="tocitem" href="../reverse_mode_design/">Reverse-Mode Design</a></li><li><a class="tocitem" href="../misc_internals_notes/">Misc. Internals Notes</a></li><li><a class="tocitem" href="../internal_docstrings/">Internal Docstrings</a></li></ul></li><li><a class="tocitem" href="../../known_limitations/">Known Limitations</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Developer Documentation</a></li><li class="is-active"><a href>IR Representations and Code Transformations</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>IR Representations and Code Transformations</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl/blob/main/docs/src/developer_documentation/ir_representation.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="IR-Representations-and-Code-Transformations"><a class="docs-heading-anchor" href="#IR-Representations-and-Code-Transformations">IR Representations and Code Transformations</a><a id="IR-Representations-and-Code-Transformations-1"></a><a class="docs-heading-anchor-permalink" href="#IR-Representations-and-Code-Transformations" title="Permalink"></a></h1><p>Mooncake.jl works by transforming Julia&#39;s SSA-form (static single assignment) Intermediate Representation (IR), so a good understanding of Julia&#39;s IR is needed to understand Mooncake. Furthermore, Mooncake holds Julia&#39;s IR in a different data structure than the one usually used when producing code for reverse-mode AD. We discuss both data structures below, and provide examples of the kinds of transformations which must be applied to Julia&#39;s IR in order to implement AD, contrasting the two different data structures.</p><p>Please note that Julia&#39;s SSA-form IR typically changes representation slightly between minor versions of Julia, as it&#39;s not part of the public interface of the language. The information below is accurate on version 1.11.4, but you might well find that things are slightly different on different versions.</p><h2 id="Julia&#39;s-SSA-form-IR"><a class="docs-heading-anchor" href="#Julia&#39;s-SSA-form-IR">Julia&#39;s SSA-form IR</a><a id="Julia&#39;s-SSA-form-IR-1"></a><a class="docs-heading-anchor-permalink" href="#Julia&#39;s-SSA-form-IR" title="Permalink"></a></h2><h3 id="Straight-Line-Code"><a class="docs-heading-anchor" href="#Straight-Line-Code">Straight-Line Code</a><a id="Straight-Line-Code-1"></a><a class="docs-heading-anchor-permalink" href="#Straight-Line-Code" title="Permalink"></a></h3><p>You can find the IR associated to a given signature using <code>Base.code_ircode_by_type</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; function foo(x)
+           y = sin(x)
+           z = cos(y)
+           return z
+       end
+foo (generic function with 1 method)
+
+julia&gt; signature = Tuple{typeof(foo), Float64}
+Tuple{typeof(foo), Float64}
+
+julia&gt; Base.code_ircode_by_type(signature)[1][1]
+2 1 ─ %1 = invoke sin(_2::Float64)::Float64
+3 │   %2 = invoke cos(%1::Float64)::Float64
+4 └──      return %2</code></pre><p>What you can see here is that the calls to <code>sin</code> and <code>cos</code> in the original function are associated to a number, denoted <code>%1</code> and <code>%2</code>. We refers to these as the &quot;ssa&quot;s associated to each statement. Each statement is associated to a single ssa, and this association is determined by where it appears in the list of statements – the first statement is associated to <code>%1</code>, the second to <code>%2</code>, and so on. You will also notice that the argument <code>x</code> has been replaced with a <code>_2</code> in the first statement – in general, all uses of the <code>n</code>th argument are indicated by <code>_n</code> (the first argument is the function itself). The final statement requires no explanation.</p><p>Note that this IR is obtained after both type inference and various Julia-level optimisation passes. This means that the type information is available for each statement. For example, the <code>::Float64</code> at the end of the first and second statements indicates that the type of <code>%1</code> and <code>%2</code> is always <code>Float64</code>. The types are also displayed at uses – the call to <code>sin</code> involves <code>_2::Float64</code>, not just <code>_2</code>.</p><p>Additionally notice that the statements are <code>invoke</code> statements, rather than just call statements. In Julia&#39;s IR, an <code>invoke</code> statement represents static dispatch to a particular <code>MethodInstance</code> – i.e. running type inference + optimisation passes has determined enough about the argument types to make it possible to know exactly which <code>MethodInstance</code> of <code>sin</code> and <code>cos</code> to call. This is a very common occurrence in type-stable code.</p><h3 id="Control-Flow"><a class="docs-heading-anchor" href="#Control-Flow">Control Flow</a><a id="Control-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Control-Flow" title="Permalink"></a></h3><p>The above is straight-line code – it does not involve any control flow. Julia has several statements which are involved in handling control flow. For example</p><pre><code class="language-julia-repl hljs">julia&gt; function bar(x)
+           if x &gt; 0
+               return x
+           else
+               return 5x
+           end
+       end
+bar (generic function with 1 method)
+
+julia&gt; Base.code_ircode_by_type(Tuple{typeof(bar),Float64})[1][1]
+2 1 ─ %1 = Base.lt_float(0.0, _2)::Bool
+  │   %2 = Base.or_int(%1, false)::Bool
+  └──      goto #3 if not %2
+3 2 ─      return _2
+5 3 ─ %5 = Base.mul_float(5.0, _2)::Float64
+  └──      return %5</code></pre><p>In this example we see the statement <code>goto #3 if not %2</code>. This should be read as &quot;jump to basic block 3 if %2 is <code>false</code>&quot;. The second half of that statement should be clear, but to understand the first half requires knowing what a basic block is:</p><pre><code class="language-julia hljs">  1 ─
+  │  
+  └──
+  2 ─
+  3 ─
+  └──</code></pre><p>Here, everything is removed from the above example except for information about the basic block structure. To first approximation, each basic block is a sequence of statements which <em>must</em> always execute one after the other. Once all statements in a basic block have run, we typically either jump to another basic block, or hit a <code>return</code> statement. In this example, we have three basic blocks – you can see this from the numbers <code>1</code>, <code>2</code>, and <code>3</code>. The first basic block comprises three statements, the second only one statement, and the third two statements. Another way to investigate this structure is to look at the control-flow graph associated to the IR:</p><pre><code class="language-julia-repl hljs">julia&gt; Base.code_ircode_by_type(Tuple{typeof(bar),Float64})[1][1].cfg
+CFG with 3 blocks:
+  bb 1 (stmts 1:3) → bb 3, 2
+  bb 2 (stmt 4)
+  bb 3 (stmts 5:6)</code></pre><p>For example, the above states that &quot;bb&quot; (basic block) 1 comprises statements 1 to 3, and has successor blocks 2 and 3 (ie. once the statements in basic block 1 have executed, we know for certain that either those in block 2 or block 3 will run next). Blocks 2 and 3 have no successors, because they both end in a <code>return</code> statement. The predecessors of each basic block (the blocks which could possibly have run immediately prior to a given block) are also stored in the blocks of the <code>CFG</code>, even though this is not printed – you should have a play around with this data structure to see what is in there.</p><p>Additionally, note that <code>Base.lt_float</code> (used to check if one floating point number is less than another) and <code>Base.or_int</code> do not appear as <code>invoke</code> statements – this is because they are not generic Julia functions. Rather, they are Julia intrinsics:</p><pre><code class="language-julia-repl hljs">julia&gt; Base.lt_float
+lt_float (intrinsic function #31)</code></pre><p>These intrinsics have special handling in the compiler. Either way, the overall point is to be aware that these kinds of low-level intrinsics exist, and appear regularly in Julia IR.</p><h3 id="Simple-Loops-and-Phi-Nodes"><a class="docs-heading-anchor" href="#Simple-Loops-and-Phi-Nodes">Simple Loops and Phi-Nodes</a><a id="Simple-Loops-and-Phi-Nodes-1"></a><a class="docs-heading-anchor-permalink" href="#Simple-Loops-and-Phi-Nodes" title="Permalink"></a></h3><p>Finally, we shall consider a simple loop:</p><pre><code class="language-julia-repl hljs">julia&gt; function my_factorial(x::Int)
+           n = 0
+           s = 1
+           while n &lt; x
+               n += 1
+               s *= n
+           end
+           return s
+       end
+my_factorial (generic function with 1 method)
+
+julia&gt; ir = Base.code_ircode_by_type(Tuple{typeof(my_factorial), Int})[1][1]
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = Base.add_int(%3, 1)::Int64
+6 │   %7 = Base.mul_int(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>There are a few new intrinsics that we have not seen previously (<code>Base.slt_int</code> (used to check whether one int is strictly less than another), <code>Base.add_int</code>, and <code>Base.mul_int</code>). Additionally, there is the node <code>goto #2</code>, which simply states that control flow should jump to basic block 2 whenever it is hit.</p><p>The most interesting additional nodes, however, are the two <code>φ</code> (phi) nodes. These are a defining feature of SSA-form IR. Consider the first <code>φ</code> node:</p><pre><code class="language-julia hljs">%2 = φ (#1 =&gt; 1, #3 =&gt; %7)</code></pre><p>means ssa <code>%2</code> takes value <code>1</code> if the previous basic block was <code>#1</code>, and whatever value is currently associated to ssa <code>%7</code> if the previous basic block was <code>#3</code>. It is helpful to step through this code in your head: upon calling <code>my_factorial</code> we enter basic block <code>#1</code>, and proceed directly to basic block <code>#2</code>. Therefore, on the first iteration, <code>%2</code> takes value <code>1</code>. We never return to basic block <code>#1</code>, so all subsequent visits to this <code>φ</code> node will result in <code>%2</code> taking the value associated to <code>%7</code>. You should convince yourself that <code>%2</code> corresponds to the value of <code>s</code> at each iteration, and <code>%3</code> corresponds to the value of <code>n</code> at each iteration.</p><h3 id="Summary"><a class="docs-heading-anchor" href="#Summary">Summary</a><a id="Summary-1"></a><a class="docs-heading-anchor-permalink" href="#Summary" title="Permalink"></a></h3><p>Julia&#39;s SSA-form IR comprises a sequence of statements, which can be broken down into a collection of basic blocks. Each basic block begins with a (potentially empty) collection of phi nodes, followed by a sequence of statements, and potentially finished by a <em>terminator</em> (goto, goto-if-not, return). Control flow is dictated by the terminators at the end of basic blocks – if there is no terminator then we &quot;fall through&quot; to the next basic block.</p><h2 id="Julia-Compiler&#39;s-IR-Datastructure"><a class="docs-heading-anchor" href="#Julia-Compiler&#39;s-IR-Datastructure">Julia Compiler&#39;s IR Datastructure</a><a id="Julia-Compiler&#39;s-IR-Datastructure-1"></a><a class="docs-heading-anchor-permalink" href="#Julia-Compiler&#39;s-IR-Datastructure" title="Permalink"></a></h2><p>The Julia compiler represents the IR associated to a signature via a <code>struct</code> called <code>Core.Compiler.IRCode</code>. The statements are given by the <code>stmts</code> field, which is a <code>Core.Compiler.InstructionStream</code>. An <code>InstructionStream</code> is a collection of 5 <code>Vector</code>s, each of which have the same length. The properties of the <code>n</code>th statement in the <code>IR</code> are given by the <code>n</code>th element of each of these vectors. For example, the <code>stmt</code> field contains the statement itself, the <code>type</code> field contains the inferred type associated to the statement. We&#39;ll skip the rest for now. For example, the statements associated to the <code>my_factorial</code> function above can be retrieved as follows:</p><pre><code class="language-julia-repl hljs">julia&gt; ir.stmts.stmt
+9-element Vector{Any}:
+ nothing
+ :(φ (%1 =&gt; 1, %3 =&gt; %7))
+ :(φ (%1 =&gt; 0, %3 =&gt; %6))
+ :(Base.slt_int(%3, _2))
+ :(goto %4 if not %4)
+ :(Base.add_int(%3, 1))
+ :(Base.mul_int(%2, %6))
+ :(goto %2)
+ :(return %2)</code></pre><p>The types can be accessed in a similar way:</p><pre><code class="language-julia-repl hljs">julia&gt; ir.stmts.type
+9-element Vector{Any}:
+ Nothing
+ Int64
+ Int64
+ Bool
+ Any
+ Int64
+ Int64
+ Any
+ Any</code></pre><p>As seen in <a href="#Control-Flow">Control Flow</a>, the control flow graph (CFG) is represented as a separate data structure, stored in the <code>cfg</code> field of the <code>IRCode</code>. The argument types associated to the signature are stored in the <code>argtypes</code> field of the <code>IRCode</code>.</p><h2 id="An-Alternative-IR-Datastructure"><a class="docs-heading-anchor" href="#An-Alternative-IR-Datastructure">An Alternative IR Datastructure</a><a id="An-Alternative-IR-Datastructure-1"></a><a class="docs-heading-anchor-permalink" href="#An-Alternative-IR-Datastructure" title="Permalink"></a></h2><p><code>IRCode</code> is a perfectly good way to represent Julia&#39;s IR the vast majority of the time. For example, it suffices for the code transformations required for forwards-mode AD. However, IR transformations involving multiple changes to the control flow structure of a programme are needed in reverse-mode, and are prohibitively awkward to undertake using <code>IRCode</code>. Mooncake&#39;s implementation of reverse-mode AD instead makes use of a custom representation of Julia&#39;s IR, called <code>BBCode</code>. We emphasise that <code>BBCode</code> represents the <em>same</em> thing under the hood, it is just represented in memory in a slightly different way, such that certain kinds of transformations are straightforward to implement.</p><p>You can construct a <code>BBCode</code> from an <code>IRCode</code>, and vice versa:</p><pre><code class="language-julia-repl hljs">julia&gt; using Mooncake: BBCode
+
+julia&gt; bb_ir = BBCode(ir);
+
+julia&gt; bb_ir isa BBCode
+true
+
+julia&gt; Core.Compiler.IRCode(bb_ir)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = Base.add_int(%3, 1)::Int64
+6 │   %7 = Base.mul_int(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>At present, <code>BBCode</code> does not display itself nicely, so to look at it we must either inspect its fields, or convert it back to an <code>IRCode</code> (which <em>does</em> print nicely).</p><p>Instead of storing all of the statements in a single vector (and the types in their own vector, etc), <code>BBCode</code> stores all statements associated to a particular basic block in a <code>Mooncake.BBlock</code>, and stores these in a <code>Vector{Mooncake.BBlock}</code>.</p><pre><code class="language-julia-repl hljs">julia&gt; typeof(bb_ir.blocks)
+Vector{BBlock} (alias for Array{Mooncake.BasicBlockCode.BBlock, 1})</code></pre><p>Each <code>BBlock</code> has a field <code>insts</code>, containing the statements associated to that basic block. This is stored as a <code>Vector{Core.Compiler.NewInstruction}</code>, because <code>Core.Compiler.NewInstruction</code> contains the 5 fields that define an instruction in <code>IRCode</code> (you should compare the fields of a <code>Core.Compiler.NewInstruction</code> with those of <code>Core.Compiler.InstructionStream</code> to see the correspondence). For example, consider</p><pre><code class="language-julia-repl hljs">julia&gt; using Mooncake.BasicBlockCode: ID # to improve printing
+
+julia&gt; bb_ir.blocks[3].insts[1]
+Core.Compiler.NewInstruction(:(Base.add_int(ID(97), 1)), Int64, Core.Compiler.NoCallInfo(), 9, 0x000012e0)</code></pre><p>This is the first instruction of the third basic block. The first field is a call to <code>Base.add_int</code>, the second field is <code>Int64</code> (we promise that the other fields are just copies of the corresponding data from the <code>Core.Compiler.InstructionStream</code> in the original <code>IRCode</code> representation of this IR).</p><p>The other structural difference is that <code>BBCode</code> has no field containing the control-flow graph. Instead, the control-flow graph is represented implicitly as part of the <code>blocks</code> field. The upside of this is that any transformations of <code>blocks</code> which modify the CFG are automatically reflected in the <code>blocks</code> – there is no need to perform any book-keeping to ensure that the CFG is kept in sync with the instructions. This saves both time and memory when inserting new basic blocks – when basic block structure changes, a scan of the entire <code>IRCode</code> is required to modify any statements which refer to a given block, and yields code simplifications. The downside is that the CFG must be computed whenever we need to know about it. As a resut, neither <code>IRCode</code> nor <code>BBCode</code>&#39;s representation of the CFG is strictly better than the other. To extract CFG-related information from a <code>BBCode</code>, see <a href="#Mooncake.BasicBlockCode.compute_all_successors-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.compute_all_successors</code></a>, <a href="#Mooncake.BasicBlockCode.compute_all_predecessors-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.compute_all_predecessors</code></a>, and <a href="#Mooncake.BasicBlockCode.control_flow_graph-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.control_flow_graph</code></a>.</p><p>The final major difference between <code>IRCode</code> and <code>BBCode</code> is that all ssa values in an <code>IRCode</code> (<code>%1</code>, <code>%2</code>, <code>%n</code>, etc) are replaced with unique <code>ID</code>s. The <code>ID</code> associated to a statement is stored separately from the statement in the <code>inst_ids</code> field of a <code>BBlock</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; bb_ir.blocks[3].inst_ids
+3-element Vector{ID}:
+ ID(100)
+ ID(101)
+ ID(102)</code></pre><p>There is exactly one <code>ID</code> per instruction, and it is an error to have the same <code>ID</code> associated to multiple instructions. Similarly, while the number associated to a basic block in <code>IRCode</code> is a function of the number of basic blocks which preceed it, the <code>ID</code> of a basic block in <code>BBCode</code> is stored in its <code>id</code> field:</p><pre><code class="language-julia-repl hljs">julia&gt; bb_ir.blocks[3].id
+ID(106)</code></pre><p>As a result of this, all references to ssa values and basic block numbers in <code>IRCode</code> are replaced with <code>ID</code>s in <code>BBCode</code>. The purpose of this is to guarantee that the &quot;name&quot; of a basic block and an instruction does not change when you insert new basic blocks and new instructions. We shall see how this is useful in the examples below.</p><h2 id="Code-Transformations"><a class="docs-heading-anchor" href="#Code-Transformations">Code Transformations</a><a id="Code-Transformations-1"></a><a class="docs-heading-anchor-permalink" href="#Code-Transformations" title="Permalink"></a></h2><p>In what follows, we look at a few transformations of Julia&#39;s IR, and see how these can be undertaken using both <code>IRCode</code> and <code>BBCode</code>. The purpose is two-fold:</p><ol><li>to enable readers to understand the code used to implement Mooncake, and</li><li>to highlight the relative merits of <code>IRCode</code> vs <code>BBCode</code>.</li></ol><h3 id="Replacing-Instructions"><a class="docs-heading-anchor" href="#Replacing-Instructions">Replacing Instructions</a><a id="Replacing-Instructions-1"></a><a class="docs-heading-anchor-permalink" href="#Replacing-Instructions" title="Permalink"></a></h3><p>This is a very simple code transformation. It is used in both forwards-mode and reverse-mode in Mooncake to replace calls of the form</p><pre><code class="language-julia hljs">f(x, y, z)</code></pre><p>with calls of the form</p><pre><code class="language-julia hljs">frule!!(f, x, y, z)</code></pre><p>This kind of transformation is performed in basically the same way for both <code>IRCode</code> and <code>BBCode</code>. For example, the <code>mul_int</code> statement associated to ssa <code>%7</code> can be replaced with an <code>add_int</code> statement as follows:</p><pre><code class="language-julia-repl hljs">julia&gt; using Core: SSAValue
+
+julia&gt; const CC = Core.Compiler;
+
+julia&gt; new_ir = Core.Compiler.copy(ir);
+
+julia&gt; old_stmt = new_ir.stmts.stmt[7]
+:(Base.mul_int(%2, %6))
+
+julia&gt; new_stmt = Expr(:call, Base.add_int, old_stmt.args[2:end]...)
+:((Core.Intrinsics.add_int)(%2, %6))
+
+julia&gt; # new_ir[SSAValue(7)][:stmt] = new_stmt
+       CC.setindex!(CC.getindex(new_ir, SSAValue(7)), new_stmt, :stmt);
+
+julia&gt; new_ir
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = Base.add_int(%3, 1)::Int64
+6 │   %7 = (Core.Intrinsics.add_int)(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>Observe that ssa <code>7</code> has been replaced with the new <code>:call</code> to <code>add_int</code>. Unfortunately, in order to avoid committing type-piracy against <code>Core.Compiler</code>, we cannot currently write <code>new_ir[SSAValue(7)][:stmt]</code>. (<code>CC.getindex</code> is a different function from <code>Base.getindex</code> – the same is true for <code>CC.setindex!</code> vs <code>Base.setindex!</code>). In general, I would recommend defining helper functions to improve the DRYness of your code.</p><p>The same transformation can be performed on <code>BBCode</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; bb_ir_copy = copy(bb_ir);
+
+julia&gt; old_inst = bb_ir_copy.blocks[3].insts[2]
+Core.Compiler.NewInstruction(:(Base.mul_int(ID(96), ID(100))), Int64, Core.Compiler.NoCallInfo(), 10, 0x000012e0)
+
+julia&gt; new_stmt = Expr(:call, Base.add_int, old_inst.stmt.args[2:end]...)
+:((Core.Intrinsics.add_int)(ID(96), ID(100)))
+
+julia&gt; bb_ir_copy.blocks[3].insts[2] = CC.NewInstruction(old_inst; stmt=new_stmt);
+
+julia&gt; CC.IRCode(bb_ir_copy)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = Base.add_int(%3, 1)::Int64
+6 │   %7 = (Core.Intrinsics.add_int)(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>As you can see, in both cases we wind up with the same <code>IRCode</code> at the end.</p><h3 id="Inserting-New-Instructions"><a class="docs-heading-anchor" href="#Inserting-New-Instructions">Inserting New Instructions</a><a id="Inserting-New-Instructions-1"></a><a class="docs-heading-anchor-permalink" href="#Inserting-New-Instructions" title="Permalink"></a></h3><p>Inserting entirely new instructions into the IR requires a little more thought, but is ultimately very straightforward using either <code>IRCode</code> or <code>BBCode</code>.</p><p>First, <code>IRCode</code>. Suppose that we wish to insert another instruction immediately before the first <code>add_int</code> instruction which multiplies <code>%3</code> by 2 before adding <code>1</code> to it in <code>#3</code>. In <code>IRCode</code>, this kind of modification requires some care, because naively inserting an instruction between the 5th and 6th line changes the name of all instructions from the 6th onwards. Consequently, we need to replace all existing uses of e.g. <code>%6</code> with uses of <code>%7</code>, etc. Happily, <code>IRCode</code> has a mechanism to achieve just this.</p><pre><code class="language-julia-repl hljs">julia&gt; ni = CC.NewInstruction(Expr(:call, Base.mul_int, SSAValue(3), 2), Int)
+Core.Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Core.Compiler.NoCallInfo(), nothing, nothing)
+
+julia&gt; new_ssa = CC.insert_node!(new_ir, SSAValue(6), ni)
+:(%10)
+
+julia&gt; new_ir
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─      (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %6 = Base.add_int(%3, 1)::Int64
+6 │   %7 = (Core.Intrinsics.add_int)(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p><code>CC.insert_node!(ir, ssa, new_inst)</code> inserts <code>new_inst</code> into <code>ir</code> immediately before <code>ssa</code>, and attaches it to the same basic block as <code>ssa</code> resides. It returns an <code>SSAValue</code>, which is the &quot;name&quot; associated to the inserted instruction in the IR. Here, we see it has inserted the instruction to multiply <code>%3</code> by <code>2</code> immediately before <code>%6</code>. However, observe that the <code>IRCode</code> has not changed the name associated to the subsequent <code>add_int</code> instruction – it still assigns to <code>%6</code>, despite not being the 6th statement in the IR anymore. This is achieved via <code>IRCode</code>&#39;s <code>new_nodes</code> field – upon calling <code>CC.insert_node!</code>, rather than inserting the instruction directly into the <code>InstructionStream</code>, this list is appended to. We can do this as many times as we like, and then call <code>CC.compact!</code> at the end to handle all of the book-keeping involved in inserting all of the statements, updating all ssa uses where required, and updating the <code>cfg</code> field of the IR.</p><p>Also observe that the inserted statement is printed without a <code>%10 =</code> at the start of it – this is because there are not (yet) any uses of <code>%10</code>, so <code>IRCode</code> does not print it out (presumably in order to reduce visual noise).</p><p>To conclude this transformation, we replace the first argument of the <code>add_int</code> instruction with the new ssa returned by <code>insert_node!</code>, and then call <code>CC.compact!</code> to process all of the nodes currently in the <code>new_nodes</code> list, and produce a valid <code>IRCode</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; stmt = CC.getindex(CC.getindex(new_ir, SSAValue(6)), :stmt)
+:(Base.add_int(%3, 1))
+
+julia&gt; stmt.args[2] = new_ssa;
+
+julia&gt; new_ir
+  1 ─       nothing::Nothing
+4 2 ┄ %2  = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3  = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4  = Base.slt_int(%3, _2)::Bool
+  └──       goto #4 if not %4
+5 3 ─ %10 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %6  = Base.add_int(%10, 1)::Int64
+6 │   %7  = (Core.Intrinsics.add_int)(%2, %6)::Int64
+7 └──       goto #2
+8 4 ─       return %2
+
+julia&gt; new_ir = CC.compact!(new_ir)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %7 = Base.add_int(%6, 1)::Int64
+6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>Observe that, before <code>compact!</code>-ing, the first instruction in basic block <code>#3</code> is still labelled as being <code>%10</code>. After <code>compact!</code>-ing, we have standard sequentially-labelled IR again. Note that the above is exactly the kind of thing that we do in our implementation of forwards-mode AD – all insertions of nodes are performed in a single pass over the <code>IRCode</code>, and <code>CC.compact!</code> is called once at the end.</p><p>Performing this transformation using <code>BBCode</code> is similarly straightforward. Since the name associated to instructions does not change when you insert another instruction, you really just need to insert an instruction + its <code>ID</code>, update the next instruction (as before), and you&#39;re done:</p><pre><code class="language-julia-repl hljs">julia&gt; using Mooncake.BasicBlockCode: ID, new_inst
+
+julia&gt; new_id = ID() # this produces a new unique `ID`.
+ID(108)
+
+julia&gt; target_id = bb_ir_copy.blocks[3].insts[1].stmt.args[2] # find `ID` of argument to add_int.
+ID(97)
+
+julia&gt; ni = new_inst(Expr(:call, Base.mul_int, target_id, 2), Int);
+
+julia&gt; insert!(bb_ir_copy.blocks[3], 1, new_id, ni)
+
+julia&gt; bb_ir_copy.blocks[3].insts[2].stmt.args[2] = new_id
+ID(108)
+
+julia&gt; CC.IRCode(bb_ir_copy)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+2 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = Base.add_int(%6, 1)::Int64
+6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>We see here that <code>IRCode</code> and <code>BBCode</code> involve similar levels of complexity to insert an instruction.</p><h3 id="Inserting-New-Basic-Blocks"><a class="docs-heading-anchor" href="#Inserting-New-Basic-Blocks">Inserting New Basic Blocks</a><a id="Inserting-New-Basic-Blocks-1"></a><a class="docs-heading-anchor-permalink" href="#Inserting-New-Basic-Blocks" title="Permalink"></a></h3><p>This is the situation in which the design of <code>BBCode</code> shines vs <code>IRCode</code>. <code>IRCode</code> does not, at present, really have much to say about transformations which change control flow. It is, however, straightforward using <code>BBCode</code>. Suppose that we wish to modify the above to display the value of <code>%2</code> if it is even on any given iteration. Since this involves control flow, it necessarily requires at least one additional basic block.</p><p>We do this in two steps. We first insert an additional basic block between blocks <code>#3</code> and <code>#4</code> which always prints out the value of <code>%2</code>, and then goes to block <code>#2</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; using Mooncake.BasicBlockCode: BBlock, new_inst, IDGotoNode, IDGotoIfNot
+
+julia&gt; block_2_id = bb_ir_copy.blocks[2].id;
+
+julia&gt; new_bb_id = ID();
+
+julia&gt; new_bb = BBlock(
+           new_bb_id,
+           ID[ID(), ID()],
+           CC.NewInstruction[
+               new_inst(Expr(:call, println, CC.SSAValue(2))),
+               new_inst(IDGotoNode(block_2_id)),
+           ],
+       );
+
+julia&gt; insert!(bb_ir_copy.blocks, 4, new_bb);
+
+julia&gt; CC.IRCode(bb_ir_copy)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #5 if not %4
+2 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = Base.add_int(%6, 1)::Int64
+6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+2 4 ─      (println)(%2)::Any
+  └──      goto #2
+8 5 ─      return %2</code></pre><p>Observe that, in this case, rather than creating <code>new_bb</code> and then inserting instructions into it, we simply create the block <em>with</em> the instructions. This programming style is often more convenient. Additionally note that we create an <code>ID</code> for each statement in the new basic block. These <code>ID</code>s are never actually used anywhere, but <code>BBCode</code> requires that each instruction be associated to an <code>ID</code>, so we must create them.</p><p>Additionally, note the usage of an <a href="#Mooncake.BasicBlockCode.IDGotoNode"><code>Mooncake.BasicBlockCode.IDGotoNode</code></a>. This is exactly the same thing as a <code>Core.Compiler.GotoNode</code>, except it contains an <code>ID</code> stating which basic block to jump to, rather than an <code>Int</code>. Similarly, the <a href="#Mooncake.BasicBlockCode.IDGotoIfNot"><code>Mooncake.BasicBlockCode.IDGotoIfNot</code></a> is a direct translation of <code>Core.Compiler.GotoIfNot</code>, with the <code>dest</code> field being an <code>ID</code> rather than an <code>Int</code>.</p><p>Furthermore, note that the <code>goto if not</code> instruction at the end of basic block <code>#2</code> now (correctly) jumps to basic block <code>#5</code>, whereas before it jumped to block <code>#4</code>. That is, by virtue of the fact that the <code>ID</code> associated to each basic block remains unchanged in <code>BBCode</code>, all pre-existing control flow relationships have remained the same. Moreover, we did not have to write any book-keeping code to ensure that this update happened correctly.</p><p>Now that we&#39;ve created the new basic block, we modify block <code>#3</code> to fall-through to the new block if <code>%2</code> is even, and to jump straight back to block <code>#2</code> if not:</p><pre><code class="language-julia-repl hljs">julia&gt; bb = bb_ir_copy.blocks[3];
+
+julia&gt; cond_id = ID();
+
+julia&gt; target_id = bb_ir_copy.blocks[2].inst_ids[1];
+
+julia&gt; insert!(bb, 4, cond_id, new_inst(Expr(:call, iseven, target_id)));
+
+julia&gt; bb.insts[end] = new_inst(IDGotoIfNot(cond_id, block_2_id));
+
+julia&gt; new_ir = CC.IRCode(bb_ir_copy)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #5 if not %4
+2 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = Base.add_int(%6, 1)::Int64
+6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
+2 │   %9 = (iseven)(%2)::Any
+  └──      goto #2 if not %9
+  4 ─      (println)(%2)::Any
+  └──      goto #2
+8 5 ─      return %2</code></pre><p>Observe that in order to tie the conditional to the goto-if-not, we simply ensure that the <code>ID</code> associated to the instruction which computes the conditional appears in the <code>IDGotoIfNot</code> instruction.</p><h3 id="Run-the-new-code"><a class="docs-heading-anchor" href="#Run-the-new-code">Run the new code</a><a id="Run-the-new-code-1"></a><a class="docs-heading-anchor-permalink" href="#Run-the-new-code" title="Permalink"></a></h3><p>As ever, we can construct a <code>Core.OpaqueClosure</code> using <code>IRCode</code> in order to produce something runnable:</p><pre><code class="language-julia-repl hljs">julia&gt; oc = Core.OpaqueClosure(new_ir; do_compile=true)
+(::Int64)::Int64-&gt;◌
+
+julia&gt; oc(1000)
+2
+12
+58
+248
+1014
+2037</code></pre><p>Exactly what <code>oc</code> is computing is neither here nor there. The point is that we&#39;ve successfully inserted a new basic block into Julia&#39;s IR, and produced a callable from it.</p><h2 id="Summary-2"><a class="docs-heading-anchor" href="#Summary-2">Summary</a><a class="docs-heading-anchor-permalink" href="#Summary-2" title="Permalink"></a></h2><p>We have reviewed the two representations of Julia IR used in Mooncake. Where possible, we always use <code>IRCode</code> – as discussed, forwards-mode AD exclusively uses <code>IRCode</code>. <code>BBCode</code> is basically only needed when undertaking transformations which involve changes to basic block structure – the insertion of new basic blocks, and the modification of terminators in a way which changes the predecessors / successors of a given block being the primary sources of these kinds of changes. Reverse-mode AD makes extensive use of such transformations, so <code>BBCode</code> is currently important there.</p><p>There are efforts such as <a href="https://github.com/JuliaLang/julia/pull/45305">this PR</a> to augment <code>IRCode</code> with the capability to manipulate the CFG structure in a convenient manner. Ideally these efforts will succeed, then we can do away with <code>BBCode</code>.</p><h3 id="Comparison-with-Alternative-Approaches"><a class="docs-heading-anchor" href="#Comparison-with-Alternative-Approaches">Comparison with Alternative Approaches</a><a id="Comparison-with-Alternative-Approaches-1"></a><a class="docs-heading-anchor-permalink" href="#Comparison-with-Alternative-Approaches" title="Permalink"></a></h3><p>It&#39;s worth noting that other automatic differentiation systems have taken different approaches to IR manipulation. For example, <a href="https://github.com/JuliaDiff/Diffractor.jl">Diffractor.jl</a> uses an &quot;Optics&quot; approach for IR transformations.</p><p>For readers interested in learning more about Julia&#39;s IR representation beyond what&#39;s covered here, the <a href="https://github.com/JuliaTeachingCTU/Scientific-Programming-in-Julia/blob/2023W/docs/src/lecture_09/ircode.md">Scientific Programming in Julia course materials</a> provide additional valuable context.</p><h2 id="Docstrings"><a class="docs-heading-anchor" href="#Docstrings">Docstrings</a><a id="Docstrings-1"></a><a class="docs-heading-anchor-permalink" href="#Docstrings" title="Permalink"></a></h2><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode"><a class="docstring-binding" href="#Mooncake.BasicBlockCode"><code>Mooncake.BasicBlockCode</code></a> — <span class="docstring-category">Module</span></summary><section><div><pre><code class="language-julia hljs">module BasicBlockCode</code></pre><p>See the docstring for the <code>BBCode</code> <code>struct</code> for info on this file.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L1-L5">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.Terminator"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.Terminator"><code>Mooncake.BasicBlockCode.Terminator</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">Terminator = Union{Switch, IDGotoIfNot, IDGotoNode, ReturnNode}</code></pre><p>A Union of the possible types of a terminator node.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L170-L174">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Core.Compiler.IRCode-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Core.Compiler.IRCode-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Core.Compiler.IRCode</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">IRCode(bb_code::BBCode)</code></pre><p>Produce an <code>IRCode</code> instance which is equivalent to <code>bb_code</code>. The resulting <code>IRCode</code> shares no memory with <code>bb_code</code>, so can be safely mutated without modifying <code>bb_code</code>.</p><p>All <code>IDPhiNode</code>s, <code>IDGotoIfNot</code>s, and <code>IDGotoNode</code>s are converted into <code>PhiNode</code>s, <code>GotoIfNot</code>s, and <code>GotoNode</code>s respectively.</p><p>In the resulting <code>bb_code</code>, any <code>Switch</code> nodes are lowered into a semantically-equivalent collection of <code>GotoIfNot</code> nodes.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L650-L661">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.BBCode"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.BBCode"><code>Mooncake.BasicBlockCode.BBCode</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">BBCode(
+    blocks::Vector{BBlock}
+    argtypes::Vector{Any}
+    sptypes::Vector{CC.VarState}
+    linetable::Vector{Core.LineInfoNode} (v1.11 and lower)
+    debuginfo::CC.DebugInfoStream (v1.12+)
+    meta::Vector{Expr}
+    valid_worlds::CC.WorldRange (v1.12+)
+)</code></pre><p>A <code>BBCode</code> is a data structure which is similar to <code>IRCode</code>, but adds additional structure.</p><p>In particular, a <code>BBCode</code> comprises a sequence of basic blocks (<code>BBlock</code>s), each of which comprise a sequence of statements. Moreover, each <code>BBlock</code> has its own unique <code>ID</code>, as does each statment.</p><p>The consequence of this is that new basic blocks can be inserted into a <code>BBCode</code>. This is distinct from <code>IRCode</code>, in which to create a new basic block, one must insert additional statments which you know will create a new basic block – this is generally quite an unreliable process, while inserting a new <code>BBlock</code> into <code>BBCode</code> is entirely predictable. Furthermore, inserting a new <code>BBlock</code> does not change the <code>ID</code> associated to the other blocks, meaning that you can safely assume that references from existing basic block terminators / phi nodes to other blocks will not be modified by inserting a new basic block.</p><p>Additionally, since each statment in each basic block has its own unique <code>ID</code>, new statments can be inserted without changing references between other blocks. <code>IRCode</code> also has some support for this via its <code>new_nodes</code> field, but eventually all statements will be renamed upon <code>compact!</code>ing the <code>IRCode</code>, meaning that the name of any given statement will eventually change.</p><p>Finally, note that the basic blocks in a <code>BBCode</code> support the custom <code>Switch</code> statement. This statement is not valid in <code>IRCode</code>, and is therefore lowered into a collection of <code>GotoIfNot</code>s and <code>GotoNode</code>s when a <code>BBCode</code> is converted back into an <code>IRCode</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L276-L310">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.BBCode-Tuple{Core.Compiler.IRCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.BBCode-Tuple{Core.Compiler.IRCode}"><code>Mooncake.BasicBlockCode.BBCode</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">BBCode(ir::IRCode)</code></pre><p>Convert an <code>ir</code> into a <code>BBCode</code>. Creates a completely independent data structure, so mutating the <code>BBCode</code> returned will not mutate <code>ir</code>.</p><p>All <code>PhiNode</code>s, <code>GotoIfNot</code>s, and <code>GotoNode</code>s will be replaced with the <code>IDPhiNode</code>s, <code>IDGotoIfNot</code>s, and <code>IDGotoNode</code>s respectively.</p><p>See <code>IRCode</code> for conversion back to <code>IRCode</code>.</p><p>Note that <code>IRCode(BBCode(ir))</code> should be equal to the identity function.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L540-L552">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.BBCode-Tuple{Union{Mooncake.BasicBlockCode.BBCode, Core.Compiler.IRCode}, Vector{Mooncake.BasicBlockCode.BBlock}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.BBCode-Tuple{Union{Mooncake.BasicBlockCode.BBCode, Core.Compiler.IRCode}, Vector{Mooncake.BasicBlockCode.BBlock}}"><code>Mooncake.BasicBlockCode.BBCode</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">BBCode(ir::Union{IRCode, BBCode}, new_blocks::Vector{Block})</code></pre><p>Make a new <code>BBCode</code> whose <code>blocks</code> is given by <code>new_blocks</code>, and fresh copies are made of all other fields from <code>ir</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L328-L333">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.BBlock"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.BBlock"><code>Mooncake.BasicBlockCode.BBlock</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">BBlock(id::ID, stmt_ids::Vector{ID}, stmts::InstVector)</code></pre><p>A basic block data structure (not called <code>BasicBlock</code> to avoid accidental confusion with <code>CC.BasicBlock</code>). Forms a single basic block.</p><p>Each <code>BBlock</code> has an <code>ID</code> (a unique name). This makes it possible to refer to blocks in a way that does not change when additional <code>BBlocks</code> are inserted into a <code>BBCode</code>. This differs from the positional block numbering found in <code>IRCode</code>, in which the number associated to a basic block changes when new blocks are inserted.</p><p>The <code>n</code>th line of code in a <code>BBlock</code> is associated to <code>ID</code> <code>stmt_ids[n]</code>, and the <code>n</code>th instruction from <code>stmts</code>.</p><p>Note that <code>PhiNode</code>s, <code>GotoIfNot</code>s, and <code>GotoNode</code>s should not appear in a <code>BBlock</code> – instead an <code>IDPhiNode</code>, <code>IDGotoIfNot</code>, or <code>IDGotoNode</code> should be used.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L177-L193">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.BBlock-Tuple{Mooncake.BasicBlockCode.ID, Vector{Tuple{Mooncake.BasicBlockCode.ID, Core.Compiler.NewInstruction}}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.BBlock-Tuple{Mooncake.BasicBlockCode.ID, Vector{Tuple{Mooncake.BasicBlockCode.ID, Core.Compiler.NewInstruction}}}"><code>Mooncake.BasicBlockCode.BBlock</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">BBlock(id::ID, inst_pairs::Vector{IDInstPair})</code></pre><p>Convenience constructor – splits <code>inst_pairs</code> into a <code>Vector{ID}</code> and <code>InstVector</code> in order to build a <code>BBlock</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L209-L214">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.ID"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.ID"><code>Mooncake.BasicBlockCode.ID</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">ID()</code></pre><p>An <code>ID</code> (read: unique name) is just a wrapper around an <code>Int32</code>. Uniqueness is ensured via a global counter, which is incremented each time that an <code>ID</code> is created.</p><p>This counter can be reset using <code>seed_id!</code> if you need to ensure deterministic <code>ID</code>s are produced, in the same way that seed for random number generators can be set.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L70-L78">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.IDGotoIfNot"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.IDGotoIfNot"><code>Mooncake.BasicBlockCode.IDGotoIfNot</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">IDGotoIfNot(cond::Any, dest::ID)</code></pre><p>Like a <code>GotoIfNot</code>, but <code>dest</code> is an <code>ID</code> rather than an <code>Int64</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L128-L132">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.IDGotoNode"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.IDGotoNode"><code>Mooncake.BasicBlockCode.IDGotoNode</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">IDGotoNode(label::ID)</code></pre><p>Like a <code>GotoNode</code>, but <code>label</code> is an <code>ID</code> rather than an <code>Int64</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L117-L121">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.IDInstPair"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.IDInstPair"><code>Mooncake.BasicBlockCode.IDInstPair</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">const IDInstPair = Tuple{ID, NewInstruction}</code></pre></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L204-L206">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.IDPhiNode"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.IDPhiNode"><code>Mooncake.BasicBlockCode.IDPhiNode</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">IDPhiNode(edges::Vector{ID}, values::Vector{Any})</code></pre><p>Like a <code>PhiNode</code>, but <code>edges</code> are <code>ID</code>s rather than <code>Int32</code>s.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L103-L107">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.InstVector"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.InstVector"><code>Mooncake.BasicBlockCode.InstVector</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">const InstVector = Vector{NewInstruction}</code></pre><p>Note: the <code>CC.NewInstruction</code> type is used to represent instructions because it has the correct fields. While it is only used to represent new instrucdtions in <code>Core.Compiler</code>, it is used to represent all instructions in <code>BBCode</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L61-L67">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.Switch"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.Switch"><code>Mooncake.BasicBlockCode.Switch</code></a> — <span class="docstring-category">Type</span></summary><section><div><pre><code class="language-julia hljs">Switch(conds::Vector{Any}, dests::Vector{ID}, fallthrough_dest::ID)</code></pre><p>A switch-statement node. These can be inserted in the <code>BBCode</code> representation of Julia IR. <code>Switch</code> has the following semantics:</p><pre><code class="language-julia hljs">goto dests[1] if not conds[1]
+goto dests[2] if not conds[2]
+...
+goto dests[N] if not conds[N]
+goto fallthrough_dest</code></pre><p>where the value associated to each element of <code>conds</code> is a <code>Bool</code>, and <code>dests</code> indicate which block to jump to. If none of the conditions are met, then we go to whichever block is specified by <code>fallthrough_dest</code>.</p><p><code>Switch</code> statements are lowered into the above sequence of <code>GotoIfNot</code>s and <code>GotoNode</code>s when converting <code>BBCode</code> back into <code>IRCode</code>, because <code>Switch</code> statements are not valid nodes in regular Julia IR.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L140-L159">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Base.insert!-Tuple{Mooncake.BasicBlockCode.BBlock, Int64, Mooncake.BasicBlockCode.ID, Core.Compiler.NewInstruction}"><a class="docstring-binding" href="#Base.insert!-Tuple{Mooncake.BasicBlockCode.BBlock, Int64, Mooncake.BasicBlockCode.ID, Core.Compiler.NewInstruction}"><code>Base.insert!</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">Base.insert!(bb::BBlock, n::Int, id::ID, stmt::CC.NewInstruction)::Nothing</code></pre><p>Inserts <code>stmt</code> and <code>id</code> into <code>bb</code> immediately before the <code>n</code>th instruction.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L237-L241">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.__line_numbers_to_block_numbers!-Tuple{Vector{Any}, Core.Compiler.CFG}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.__line_numbers_to_block_numbers!-Tuple{Vector{Any}, Core.Compiler.CFG}"><code>Mooncake.BasicBlockCode.__line_numbers_to_block_numbers!</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">__line_numbers_to_block_numbers!(insts::Vector{Any}, cfg::CC.CFG)</code></pre><p>Converts any edges in <code>GotoNode</code>s, <code>GotoIfNot</code>s, <code>PhiNode</code>s, and <code>:enter</code> expressions which refer to line numbers into references to block numbers. The <code>cfg</code> provides the information required to perform this conversion.</p><p>For context, <code>CodeInfo</code> objects have references to line numbers, while <code>IRCode</code> uses block numbers.</p><p>This code is copied over directly from the body of <code>Core.Compiler.inflate_ir!</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L505-L516">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._block_nums_to_ids-Tuple{Vector{Core.Compiler.NewInstruction}, Core.Compiler.CFG}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._block_nums_to_ids-Tuple{Vector{Core.Compiler.NewInstruction}, Core.Compiler.CFG}"><code>Mooncake.BasicBlockCode._block_nums_to_ids</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_block_nums_to_ids(insts::InstVector, cfg::CC.CFG)::Tuple{Vector{ID}, InstVector}</code></pre><p>Assign to each basic block in <code>cfg</code> an <code>ID</code>. Replace all integers referencing block numbers in <code>insts</code> with the corresponding <code>ID</code>. Return the <code>ID</code>s and the updated instructions.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L624-L629">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._build_graph_of_cfg-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._build_graph_of_cfg-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><code>Mooncake.BasicBlockCode._build_graph_of_cfg</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_build_graph_of_cfg(blks::Vector{BBlock})::Tuple{SimpleDiGraph, Dict{ID, Int}}</code></pre><p>Builds a <code>SimpleDiGraph</code>, <code>g</code>, representing of the CFG associated to <code>blks</code>, where <code>blks</code> comprises the collection of basic blocks associated to a <code>BBCode</code>. This is a type from Graphs.jl, so constructing <code>g</code> makes it straightforward to analyse the control flow structure of <code>ir</code> using algorithms from Graphs.jl.</p><p>Returns a 2-tuple, whose first element is <code>g</code>, and whose second element is a map from the <code>ID</code> associated to each basic block in <code>ir</code>, to the <code>Int</code> corresponding to its node index in <code>g</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L808-L819">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._compute_all_predecessors-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._compute_all_predecessors-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><code>Mooncake.BasicBlockCode._compute_all_predecessors</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_compute_all_predecessors(blks::Vector{BBlock})::Dict{ID, Vector{ID}}</code></pre><p>Internal method implementing <a href="#Mooncake.BasicBlockCode.compute_all_predecessors-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>compute_all_predecessors</code></a>. This method is easier to construct test cases for because it only requires the collection of <code>BBlocks</code>, not all of the other stuff that goes into a <code>BBCode</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L404-L410">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._compute_all_successors-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._compute_all_successors-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><code>Mooncake.BasicBlockCode._compute_all_successors</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_compute_all_successors(blks::Vector{BBlock})::Dict{ID, Vector{ID}}</code></pre><p>Internal method implementing <a href="#Mooncake.BasicBlockCode.compute_all_successors-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>compute_all_successors</code></a>. This method is easier to construct test cases for because it only requires the collection of <code>BBlocks</code>, not all of the other stuff that goes into a <code>BBCode</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L367-L373">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._control_flow_graph-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._control_flow_graph-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><code>Mooncake.BasicBlockCode._control_flow_graph</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_control_flow_graph(blks::Vector{BBlock})::Core.Compiler.CFG</code></pre><p>Internal function, used to implement <a href="#Mooncake.BasicBlockCode.control_flow_graph-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>control_flow_graph</code></a>. Easier to write test cases for because there is no need to construct an ensure BBCode object, just the <code>BBlock</code>s.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L461-L466">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._distance_to_entry-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._distance_to_entry-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><code>Mooncake.BasicBlockCode._distance_to_entry</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_distance_to_entry(blks::Vector{BBlock})::Vector{Int}</code></pre><p>For each basic block in <code>blks</code>, compute the distance from it to the entry point (the first block. The distance is <code>typemax(Int)</code> if no path from the entry point to a given node.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L831-L836">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._find_id_uses!-Tuple{Dict{Mooncake.BasicBlockCode.ID, Bool}, Expr}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._find_id_uses!-Tuple{Dict{Mooncake.BasicBlockCode.ID, Bool}, Expr}"><code>Mooncake.BasicBlockCode._find_id_uses!</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_find_id_uses!(d::Dict{ID, Bool}, x)</code></pre><p>Helper function used in <a href="#Mooncake.BasicBlockCode.characterise_used_ids-Tuple{Vector{Tuple{Mooncake.BasicBlockCode.ID, Core.Compiler.NewInstruction}}}"><code>characterise_used_ids</code></a>. For all uses of <code>ID</code>s in <code>x</code>, set the corresponding value of <code>d</code> to <code>true</code>.</p><p>For example, if <code>x = ReturnNode(ID(5))</code>, then this function sets <code>d[ID(5)] = true</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L966-L973">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._ids_to_line_numbers-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._ids_to_line_numbers-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode._ids_to_line_numbers</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_ids_to_line_numbers(bb_code::BBCode)::InstVector</code></pre><p>For each statement in <code>bb_code</code>, returns a <code>NewInstruction</code> in which every <code>ID</code> is replaced by either an <code>SSAValue</code>, or an <code>Int64</code> / <code>Int32</code> which refers to an <code>SSAValue</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L743-L748">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._is_reachable-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._is_reachable-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><code>Mooncake.BasicBlockCode._is_reachable</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_is_reachable(blks::Vector{BBlock})::Vector{Bool}</code></pre><p>Computes a <code>Vector</code> whose length is <code>length(blks)</code>. The <code>n</code>th element is <code>true</code> iff it is possible for control flow to reach the <code>n</code>th block.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L998-L1003">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._lines_to_blocks-Tuple{Vector{Core.Compiler.NewInstruction}, Core.Compiler.CFG}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._lines_to_blocks-Tuple{Vector{Core.Compiler.NewInstruction}, Core.Compiler.CFG}"><code>Mooncake.BasicBlockCode._lines_to_blocks</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_instructions_to_blocks(insts::InstVector, cfg::CC.CFG)::InstVector</code></pre><p>Pulls out the instructions from <code>insts</code>, and calls <code>__line_numbers_to_block_numbers!</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L495-L499">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._lower_switch_statements-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._lower_switch_statements-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode._lower_switch_statements</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_lower_switch_statements(bb_code::BBCode)</code></pre><p>Converts all <code>Switch</code>s into a semantically-equivalent collection of <code>GotoIfNot</code>s. See the <code>Switch</code> docstring for an explanation of what is going on here.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L711-L716">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._remove_double_edges-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._remove_double_edges-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode._remove_double_edges</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_remove_double_edges(ir::BBCode)::BBCode</code></pre><p>If the <code>dest</code> field of an <code>IDGotoIfNot</code> node in block <code>n</code> of <code>ir</code> points towards the <code>n+1</code>th block then we have two edges from block <code>n</code> to block <code>n+1</code>. This transformation replaces all such <code>IDGotoIfNot</code> nodes with unconditional <code>IDGotoNode</code>s pointing towards the <code>n+1</code>th block in <code>ir</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L787-L794">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._ssa_to_ids-Tuple{Dict{Core.SSAValue, Mooncake.BasicBlockCode.ID}, Core.Compiler.NewInstruction}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._ssa_to_ids-Tuple{Dict{Core.SSAValue, Mooncake.BasicBlockCode.ID}, Core.Compiler.NewInstruction}"><code>Mooncake.BasicBlockCode._ssa_to_ids</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_ssa_to_ids(d::SSAToIdDict, inst::NewInstruction)</code></pre><p>Produce a new instance of <code>inst</code> in which all instances of <code>SSAValue</code>s are replaced with the <code>ID</code>s prescribed by <code>d</code>, all basic block numbers are replaced with the <code>ID</code>s prescribed by <code>d</code>, and <code>GotoIfNot</code>, <code>GotoNode</code>, and <code>PhiNode</code> instances are replaced with the corresponding <code>ID</code> versions.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L594-L601">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._ssas_to_ids-Tuple{Vector{Core.Compiler.NewInstruction}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._ssas_to_ids-Tuple{Vector{Core.Compiler.NewInstruction}}"><code>Mooncake.BasicBlockCode._ssas_to_ids</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_ssas_to_ids(insts::InstVector)::Tuple{Vector{ID}, InstVector}</code></pre><p>Assigns an ID to each line in <code>stmts</code>, and replaces each instance of an <code>SSAValue</code> in each line with the corresponding <code>ID</code>. For example, a call statement of the form <code>Expr(:call, :f, %4)</code> is be replaced with <code>Expr(:call, :f, id_assigned_to_%4)</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L581-L587">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode._to_ssas-Tuple{Dict, Core.Compiler.NewInstruction}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode._to_ssas-Tuple{Dict, Core.Compiler.NewInstruction}"><code>Mooncake.BasicBlockCode._to_ssas</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">_to_ssas(d::Dict, inst::NewInstruction)</code></pre><p>Like <code>_ssas_to_ids</code>, but in reverse. Converts IDs to SSAValues / (integers corresponding to ssas).</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L763-L768">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.characterise_unique_predecessor_blocks-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.characterise_unique_predecessor_blocks-Tuple{Vector{Mooncake.BasicBlockCode.BBlock}}"><code>Mooncake.BasicBlockCode.characterise_unique_predecessor_blocks</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">characterise_unique_predecessor_blocks(blks::Vector{BBlock}) -&gt;
+    Tuple{Dict{ID, Bool}, Dict{ID, Bool}}</code></pre><p>We call a block <code>b</code> a <em>unique</em> <em>predecessor</em> in the control flow graph associated to <code>blks</code> if it is the only predecessor to all of its successors. Put differently we call <code>b</code> a unique predecessor if, whenever control flow arrives in any of the successors of <code>b</code>, we know for certain that the previous block must have been <code>b</code>.</p><p>Returns two <code>Dict</code>s. A value in the first <code>Dict</code> is <code>true</code> if the block associated to its key is a unique precessor, and is <code>false</code> if not. A value in the second <code>Dict</code> is <code>true</code> if  it has a single predecessor, and that predecessor is a unique predecessor.</p><p><em>Context</em>:</p><p>This information is important for optimising AD because knowing that <code>b</code> is a unique predecessor means that</p><ol><li>on the forwards-pass, there is no need to push the ID of <code>b</code> to the block stack when  passing through it, and</li><li>on the reverse-pass, there is no need to pop the block stack when passing through one of  the successors to <code>b</code>.</li></ol><p>Utilising this reduces the overhead associated to doing AD. It is quite important when working with cheap loops – loops where the operations performed at each iteration are inexpensive – for which minimising memory pressure is critical to performance. It is also important for single-block functions, because it can be used to entirely avoid using a block stack at all.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L863-L890">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.characterise_used_ids-Tuple{Vector{Tuple{Mooncake.BasicBlockCode.ID, Core.Compiler.NewInstruction}}}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.characterise_used_ids-Tuple{Vector{Tuple{Mooncake.BasicBlockCode.ID, Core.Compiler.NewInstruction}}}"><code>Mooncake.BasicBlockCode.characterise_used_ids</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">characterise_used_ids(stmts::Vector{IDInstPair})::Dict{ID, Bool}</code></pre><p>For each line in <code>stmts</code>, determine whether it is referenced anywhere else in the code. Returns a dictionary containing the results. An element is <code>false</code> if the corresponding <code>ID</code> is unused, and <code>true</code> if is used.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L944-L950">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.collect_stmts-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.collect_stmts-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.collect_stmts</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">collect_stmts(ir::BBCode)::Vector{IDInstPair}</code></pre><p>Produce a <code>Vector</code> containing all of the statements in <code>ir</code>. These are returned in order, so it is safe to assume that element <code>n</code> refers to the <code>nth</code> element of the <code>IRCode</code> associated to <code>ir</code>. </p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L428-L434">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.collect_stmts-Tuple{Mooncake.BasicBlockCode.BBlock}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.collect_stmts-Tuple{Mooncake.BasicBlockCode.BBlock}"><code>Mooncake.BasicBlockCode.collect_stmts</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">collect_stmts(bb::BBlock)::Vector{IDInstPair}</code></pre><p>Returns a <code>Vector</code> containing the <code>ID</code>s and instructions associated to each line in <code>bb</code>. These should be assumed to be ordered.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L267-L272">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.compute_all_predecessors-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.compute_all_predecessors-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.compute_all_predecessors</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">compute_all_predecessors(ir::BBCode)::Dict{ID, Vector{ID}}</code></pre><p>Compute a map from the <code>ID</code> of each <code>BBlock</code> in <code>ir</code> to its possible predecessors.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L395-L399">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.compute_all_successors-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.compute_all_successors-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.compute_all_successors</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">compute_all_successors(ir::BBCode)::Dict{ID, Vector{ID}}</code></pre><p>Compute a map from the <code>ID</code> of each <code>BBlock</code> in <code>ir</code> to its possible successors.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L360-L364">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.control_flow_graph-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.control_flow_graph-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.control_flow_graph</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">control_flow_graph(bb_code::BBCode)::Core.Compiler.CFG</code></pre><p>Computes the <code>Core.Compiler.CFG</code> object associated to this <code>bb_code</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L454-L458">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.id_to_line_map-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.id_to_line_map-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.id_to_line_map</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">id_to_line_map(ir::BBCode)</code></pre><p>Produces a <code>Dict</code> mapping from each <code>ID</code> associated with a line in <code>ir</code> to its line number. This is isomorphic to mapping to its <code>SSAValue</code> in <code>IRCode</code>. Terminators do not have <code>ID</code>s associated to them, so not every line in the original <code>IRCode</code> is mapped to.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L437-L443">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.insert_before_terminator!-Tuple{Mooncake.BasicBlockCode.BBlock, Mooncake.BasicBlockCode.ID, Core.Compiler.NewInstruction}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.insert_before_terminator!-Tuple{Mooncake.BasicBlockCode.BBlock, Mooncake.BasicBlockCode.ID, Core.Compiler.NewInstruction}"><code>Mooncake.BasicBlockCode.insert_before_terminator!</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">insert_before_terminator!(bb::BBlock, id::ID, inst::NewInstruction)::Nothing</code></pre><p>If the final instruction in <code>bb</code> is a <code>Terminator</code>, insert <code>inst</code> immediately before it. Otherwise, insert <code>inst</code> at the end of the block.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L256-L261">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.is_reachable_return_node-Tuple{Core.ReturnNode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.is_reachable_return_node-Tuple{Core.ReturnNode}"><code>Mooncake.BasicBlockCode.is_reachable_return_node</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">is_reachable_return_node(x::ReturnNode)</code></pre><p>Determine whether <code>x</code> is a <code>ReturnNode</code>, and if it is, if it is also reachable. This is purely a function of whether or not its <code>val</code> field is defined or not.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L935-L940">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.new_inst"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.new_inst"><code>Mooncake.BasicBlockCode.new_inst</code></a> — <span class="docstring-category">Function</span></summary><section><div><pre><code class="language-julia hljs">new_inst(stmt, type=Any, flag=CC.IR_FLAG_REFINED)::NewInstruction</code></pre><p>Create a <code>NewInstruction</code> with fields:</p><ul><li><code>stmt</code> = <code>stmt</code></li><li><code>type</code> = <code>type</code></li><li><code>info</code> = <code>CC.NoCallInfo()</code></li><li><code>line</code> = <code>Int32(1)</code></li><li><code>flag</code> = <code>flag</code></li></ul></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L47-L56">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.new_inst_vec-Tuple{Core.Compiler.InstructionStream}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.new_inst_vec-Tuple{Core.Compiler.InstructionStream}"><code>Mooncake.BasicBlockCode.new_inst_vec</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">new_inst_vec(x::CC.InstructionStream)</code></pre><p>Convert an <code>Compiler.InstructionStream</code> into a list of <code>Compiler.NewInstruction</code>s.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L567-L571">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.phi_nodes-Tuple{Mooncake.BasicBlockCode.BBlock}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.phi_nodes-Tuple{Mooncake.BasicBlockCode.BBlock}"><code>Mooncake.BasicBlockCode.phi_nodes</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">phi_nodes(bb::BBlock)::Tuple{Vector{ID}, Vector{IDPhiNode}}</code></pre><p>Returns all of the <code>IDPhiNode</code>s at the start of <code>bb</code>, along with their <code>ID</code>s. If there are no <code>IDPhiNode</code>s at the start of <code>bb</code>, then both vectors will be empty.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L223-L228">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.remove_unreachable_blocks!-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.remove_unreachable_blocks!-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.remove_unreachable_blocks!</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">remove_unreachable_blocks!(ir::BBCode)::BBCode</code></pre><p>If a basic block in <code>ir</code> cannot possibly be reached during execution, then it can be safely removed from <code>ir</code> without changing its functionality. A block is unreachable if either:</p><ol><li>it has no predecessors <em>and</em> it is not the first block, or</li><li>all of its predecessors are themselves unreachable.</li></ol><p>For example, consider the following IR:</p><pre><code class="language-julia-repl hljs">julia&gt; ir = Mooncake.ircode(
+           Any[Core.ReturnNode(nothing), Expr(:call, sin, 5), Core.ReturnNode(Core.SSAValue(2))],
+           Any[Any, Any, Any],
+       );</code></pre><p>There is no possible way to reach the second basic block (lines 2 and 3). Applying this function will therefore remove it, yielding the following:</p><pre><code class="language-julia-repl hljs">julia&gt; Mooncake.IRCode(Mooncake.remove_unreachable_blocks!(Mooncake.BBCode(ir)))
+1 1 ─     return nothing</code></pre><p>In the blocks which have not been removed, there may be references to blocks which have been removed. For example, the <code>edge</code>s in a <code>PhiNode</code> may contain a reference to a removed block. These references are removed in-place from these remaining blocks, so this function will (in general) modify <code>ir</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L1006-L1033">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.seed_id!-Tuple{}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.seed_id!-Tuple{}"><code>Mooncake.BasicBlockCode.seed_id!</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">seed_id!()</code></pre><p>Set the global counter used to ensure ID uniqueness to 0. This is useful when you want to ensure determinism between two runs of the same function which makes use of <code>ID</code>s.</p><p>This is akin to setting the random seed associated to a random number generator globally.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L91-L98">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.sort_blocks!-Tuple{Mooncake.BasicBlockCode.BBCode}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.sort_blocks!-Tuple{Mooncake.BasicBlockCode.BBCode}"><code>Mooncake.BasicBlockCode.sort_blocks!</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">sort_blocks!(ir::BBCode)::BBCode</code></pre><p>Ensure that blocks appear in order of distance-from-entry-point, where distance the distance from block b to the entry point is defined to be the minimum number of basic blocks that must be passed through in order to reach b.</p><p>For reasons unknown (to me, Will), the compiler / optimiser needs this for inference to succeed. Since we do quite a lot of re-ordering on the reverse-pass of AD, this is a problem there.</p><p>WARNING: use with care. Only use if you are confident that arbitrary re-ordering of basic blocks in <code>ir</code> is valid. Notably, this does not hold if you have any <code>IDGotoIfNot</code> nodes in <code>ir</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L842-L856">source</a></section></details></article><article><details class="docstring" open="true"><summary id="Mooncake.BasicBlockCode.terminator-Tuple{Mooncake.BasicBlockCode.BBlock}"><a class="docstring-binding" href="#Mooncake.BasicBlockCode.terminator-Tuple{Mooncake.BasicBlockCode.BBlock}"><code>Mooncake.BasicBlockCode.terminator</code></a> — <span class="docstring-category">Method</span></summary><section><div><pre><code class="language-julia hljs">terminator(bb::BBlock)</code></pre><p>Returns the terminator associated to <code>bb</code>. If the last instruction in <code>bb</code> isa <code>Terminator</code> then that is returned, otherwise <code>nothing</code> is returned.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/chalk-lab/Mooncake.jl/blob/d925a779337a5493f2a2358fa5628fee6e08bc32/src/interpreter/bbcode.jl#L248-L253">source</a></section></details></article></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../custom_tangent_type/">« Writing Custom Tangent Types</a><a class="docs-footer-nextpage" href="../forwards_mode_design/">Forwards-Mode Design »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Friday 16 January 2026 23:58">Friday 16 January 2026</span>. Using Julia version 1.11.8.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
