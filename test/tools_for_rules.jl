@@ -284,5 +284,19 @@ end
             }
             @test !hasmethod(Mooncake.frule!!, frule_sig)
         end
+        @testset "invalid mode" begin
+            bad_mode_exprs = [
+                :(Mooncake.@from_chainrules DefaultCtx Tuple{
+                    typeof(ToolsForRulesResources.test_sum),Array{<:Base.IEEEFloat}
+                } false BadMode),
+                :(Mooncake.@from_chainrules DefaultCtx Tuple{
+                    typeof(ToolsForRulesResources.test_sum),Array{<:Base.IEEEFloat}
+                } false Mooncake.ForwardMode),
+            ]
+            for expr in bad_mode_exprs
+                err = @test_throws LoadError eval(expr)
+                @test err.value.error isa ArgumentError
+            end
+        end
     end
 end

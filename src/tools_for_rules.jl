@@ -631,6 +631,15 @@ issue.
 macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode)
     mode = mode == :ForwardMode ? ForwardMode : mode
     mode = mode == :ReverseMode ? ReverseMode : mode
+    mode = mode == :Mode ? Mode : mode
+    if !(mode === Mode || mode === ForwardMode || mode === ReverseMode)
+        throw(
+            ArgumentError(
+                "@from_chainrules mode must be Mode, ForwardMode, or ReverseMode " *
+                "(use unqualified names); got $(mode)",
+            ),
+        )
+    end
     return _from_chainrules_impl(ctx, sig, has_kwargs, mode)
 end
 
