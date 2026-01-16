@@ -12,6 +12,7 @@ import Mooncake:
     Dual,
     frule!!,
     Tangent,
+    primal,
     notimplemented_tangent_guard,
     ForwardMode,
     numberify,
