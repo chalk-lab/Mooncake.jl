@@ -74,7 +74,7 @@ Mooncake.jl supports differentiation of CUDA kernels in general, provided a suit
 
 Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
 
-## SIMD Performance in Reverse-Mode AD
+## Differentiating SIMD Code
 
 When the primal code admits SIMD (Single Instruction, Multiple Data) optimisations by the LLVM compiler, reverse-mode automatic differentiation in Mooncake can make it difficult for LLVM to perform these optimisations effectively. This is because the transformations applied during AD can obscure the patterns that LLVM relies on to vectorise code.
 
