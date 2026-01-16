@@ -6,7 +6,13 @@ using AllocCheck, JET, Mooncake, SpecialFunctions, StableRNGs, Test
 using Mooncake: ForwardMode, ReverseMode, map_prod
 using Mooncake.TestUtils: test_rule
 
-# Rules in this file are only lightly tester, because they are all just @from_rrule rules.
+# Helper methods to enable mixed Float32/Float64 operations. 
+# Required for compatibility with Julia 1.12+.
+Union{Float32, Float64}(x) = Float64(x)
+Mooncake.increment!!(x::Float32, y::Float64) = Float32(x + y)
+Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
+
+# Rules in this file are only lightly tested, because they are all just @from_rrule rules.
 @testset "special_functions" begin
     @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
         map([Float64, Float32]) do P
@@ -81,11 +87,10 @@ using Mooncake.TestUtils: test_rule
     @testset "Primitive SpecialFunctions with NotImplemented Gradients" begin
         first_arg_types = [Float64, Float32]
         second_arg_types = [Float64, Float32]
-        Real_type_tests = map_prod(identity, first_arg_types, second_arg_types)
 
         # Gradient calculations for fields excluding those with `NotImplemented` gradients
         @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
-            map(Real_type_tests) do (T, P)
+            map_prod(first_arg_types, second_arg_types) do (T, P)
                 return Any[
                     # 3 arg gamma_inc (IND is 0/1, tangent a is 0 for AD but an approximation for testing FD)
                     (:none, x -> gamma_inc(T(3), x, 0), P(2)),
