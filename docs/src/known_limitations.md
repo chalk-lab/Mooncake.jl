@@ -74,13 +74,13 @@ Mooncake.jl supports differentiation of CUDA kernels in general, provided a suit
 
 Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
 
-## SIMD Optimization and Performance
+## SIMD Performance in Reverse-Mode AD
 
-When the primal code admits SIMD (Single Instruction, Multiple Data) optimizations by the LLVM compiler, reverse-mode automatic differentiation in Mooncake can make it difficult for LLVM to perform these optimizations effectively. This is because the transformations applied during AD can obscure the patterns that LLVM relies on to vectorize code.
+When the primal code admits SIMD (Single Instruction, Multiple Data) optimisations by the LLVM compiler, reverse-mode automatic differentiation in Mooncake can make it difficult for LLVM to perform these optimisations effectively. This is because the transformations applied during AD can obscure the patterns that LLVM relies on to vectorise code.
 
-As a consequence, if your primal code benefits significantly from SIMD optimizations, you may observe that the differentiated version performs substantially worse than expected. In such cases, writing custom rules (hand-written `rrule!!`s) for the performance-critical functions can help restore optimal performance by allowing you to control how the derivative computation is structured.
+As a result, code that performs well in its primal form may experience significant slowdowns after differentiation. In performance-critical sections, this can often be mitigated by writing custom derivative rules (hand-written `rrule!!`s), which allow explicit control over the structure of the derivative computation and can help preserve vectorisation.
 
-If you encounter performance issues with code that you know benefits from SIMD in its primal form, consider implementing custom rules for the relevant operations.
+If you observe unexpected performance regressions in differentiated code that is known to vectorise well in its primal form, consider implementing custom rules for the relevant operations.
 
 ## Circular References in Type Declarations
 
