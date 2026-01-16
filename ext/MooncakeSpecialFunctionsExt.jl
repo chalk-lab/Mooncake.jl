@@ -97,16 +97,15 @@ Given upstream cotangent `f̄`:
 ### Notes
 
 - “Zero” refers to the additive identity of the tangent/cotangent space.
-- This policy relies on `NaN` and therefore applies only to
+- This trick relies on `NaN` and therefore applies only to
   floating-point tangent spaces and their compositions
   (e.g. arrays of floats).
   This restriction exists because `NaN`, `NaN32`, and `NaN16`
   live exclusively in `AbstractFloat` spaces.
 - `NotImplemented` indicates a missing AD rule, not a non-differentiable
-  function.
-- `NaN`s introduced by missing derivatives are masked in the same way as
-  `NotImplemented` derivatives: they only affect the result when multiplied
-  by a nonzero tangent or cotangent; otherwise they are safely ignored.
+  function. Any resulting `NaN`s are handled using the same masking
+  principle: they affect the result only when multiplied by a nonzero
+  tangent or cotangent, and are otherwise safely ignored.
 
 ### Outcome
 
