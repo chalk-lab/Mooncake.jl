@@ -332,7 +332,7 @@ to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 to_cr_tangent(nt::NamedTuple) = CRC.Tangent{Any}(; map(to_cr_tangent, nt)...)
 
 # Mooncake Complex Number Tangent to CRC style tangent.
-function to_cr_tangent(c::Tangent{@NamedTuple{re::T, im::T}}) where {T<:IEEEFloat}
+function to_cr_tangent(c::Tangent{@NamedTuple{re::T,im::T}}) where {T<:IEEEFloat}
     return Complex(c.fields.re, c.fields.im)
 end
 
@@ -415,14 +415,14 @@ end
 
 # Mooncake Complex tangents using CRC Complex Tangents.
 function increment_and_get_rdata!(
-    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T, im::T}}, t::Complex{T}
+    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T,im::T}}, t::Complex{T}
 ) where {T<:IEEEFloat}
     return RData((re=real(t) + r.data.re, im=imag(t) + r.data.im))
 end
 
 # return NaN filled tangents for when CRC Complex Tangent is NotImplemented.
 function increment_and_get_rdata!(
-    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T, im::T}}, t::CRC.NotImplemented
+    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T,im::T}}, t::CRC.NotImplemented
 ) where {T<:IEEEFloat}
     return RData((re=T(NaN), im=T(NaN)))
 end
@@ -468,7 +468,7 @@ function notimplemented_tangent_guard(da::L, f_sym::Symbol) where {L<:Base.IEEEF
 end
 
 function notimplemented_tangent_guard(
-    da::Mooncake.Tangent{@NamedTuple{re::L, im::L}}, f_sym::Symbol
+    da::Mooncake.Tangent{@NamedTuple{re::L,im::L}}, f_sym::Symbol
 ) where {L<:Base.IEEEFloat}
     # re, im tangents
     return if da.fields != zero_tangent(da).fields.fields
