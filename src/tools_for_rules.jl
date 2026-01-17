@@ -331,6 +331,11 @@ to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.field
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 to_cr_tangent(nt::NamedTuple) = CRC.Tangent{Any}(; map(to_cr_tangent, nt)...)
 
+# Convert Mooncake complex tangents to ChainRulesCore-style tangents.
+function to_cr_tangent(c::Tangent{@NamedTuple{re::T,im::T}}) where {T<:IEEEFloat}
+    return Complex(c.fields.re, c.fields.im)
+end
+
 function to_cr_tangent(t)
     throw(
         ArgumentError(
@@ -362,6 +367,21 @@ function mooncake_tangent(p::P, t::T) where {P<:Tuple,T<:CRC.Tangent}
     return tangent_type(P) == NoTangent ? NoTangent() : map(mooncake_tangent, p, t.backing)
 end
 
+function mooncake_tangent(p::T, cr_tangent::T) where {P<:IEEEFloat,T<:Complex{P}}
+    return Tangent((re=real(cr_tangent), im=imag(cr_tangent)))
+end
+
+# Convert `ChainRulesCore.NotImplemented` tangents to Mooncake-style `NaN` tangents.
+function mooncake_tangent(
+    p::T, cr_tangent::CRC.NotImplemented
+) where {P<:IEEEFloat,T<:Complex{P}}
+    return mooncake_tangent(p, T(P(NaN), P(NaN)))
+end
+
+function mooncake_tangent(p::T, cr_tangent::CRC.NotImplemented) where {T<:IEEEFloat}
+    return T(NaN)
+end
+
 function mooncake_tangent(p, cr_tangent)
     throw(
         ArgumentError(
@@ -391,6 +411,28 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
+# Add ChainRulesCore-style tangents to existing Mooncake-style tangents.
+function increment_and_get_rdata!(
+    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T,im::T}}, t::Complex{T}
+) where {T<:IEEEFloat}
+    return RData((re=real(t) + r.data.re, im=imag(t) + r.data.im))
+end
+
+# If a ChainRulesCore complex tangent is `NotImplemented`, return a `NaN`-filled Mooncake tangent.
+function increment_and_get_rdata!(
+    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T,im::T}}, t::CRC.NotImplemented
+) where {T<:IEEEFloat}
+    return RData((re=T(NaN), im=T(NaN)))
+end
+
+function increment_and_get_rdata!(f, r::T, t::CRC.NotImplemented) where {T<:IEEEFloat}
+    return T(NaN)
+end
+
+function increment_and_get_rdata!(f::NoFData, r::NoRData, t::CRC.NotImplemented)
+    return NoTangent()
+end
+
 function increment_and_get_rdata!(f, r, t)
     throw(
         ArgumentError(
@@ -400,6 +442,49 @@ function increment_and_get_rdata!(f, r, t)
             "`increment_and_get_rdata!` to handle this type combination. " *
             "Consider writing a custom rrule!! for your function instead, " *
             "or implement a method of `increment_and_get_rdata!` for this type combination.",
+        ),
+    )
+end
+
+"""
+    notimplemented_tangent_guard(da::Mooncake.Tangent)
+
+Guards the use of a tangent associated with a `ChainRulesCore.NotImplemented` derivative.
+
+If `da` is nonzero, return a `NaN`-filled value matching the shape and type of `da`, which signals an unknown derivative.
+
+If `da` is the zero tangent, return a zero-valued tangent in a form compatible with immediate algebraic composition inside Mooncake rules.
+
+This masking ensures that missing derivatives only affect results when they are mathematically required.
+
+!!! note
+    This function is defined only for floating-point tangent spaces.
+    It cannot support `Int` tangents, since `NaN` is only defined for
+    `AbstractFloat` types.
+"""
+function notimplemented_tangent_guard(da::L) where {L<:Base.IEEEFloat}
+    return if _dot(da, da) != L(0)
+        L(NaN)
+    else
+        L(0)
+    end
+end
+
+function notimplemented_tangent_guard(
+    da::Mooncake.Tangent{@NamedTuple{re::L,im::L}}
+) where {L<:Base.IEEEFloat}
+    return if _dot(da, da) != L(0)
+        Complex(L(NaN), L(NaN))
+    else
+        Complex(L(0), L(0))
+    end
+end
+function notimplemented_tangent_guard(da)
+    throw(
+        ArgumentError(
+            "Mooncake.jl does not currently have a method of " *
+            "`notimplemented_tangent_guard` to handle the tangent type $(typeof(da)). " *
+            "Please consider writing a custom notimplemented_tangent_guard or open an issue.",
         ),
     )
 end
