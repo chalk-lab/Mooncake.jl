@@ -248,11 +248,15 @@ function lookup_ir(
             )
         else
             (code, ty) = Core.Compiler.typeinf_ircode(interp, match, optimize_until)
+            code_inst = Core.Compiler.typeinf_ext(
+                interp, Base.specialize_method(match), CC.SOURCE_MODE_ABI
+            )
+            primal_edges = code_inst.edges
         end
         if code === nothing
-            push!(asts, match.method => Any)
+            push!(asts, (match.method, Any.Core.svec()))
         else
-            push!(asts, code => ty)
+            push!(asts, (code, ty, primal_edges))
         end
     end
     if isempty(asts)
@@ -394,3 +398,120 @@ function characterised_used_ssas(stmts::Vector{Any})::Vector{Bool}
     end
     return is_used
 end
+
+function strip_type_information!(ci::CodeInfo)
+    ci.ssavaluetypes = length(ci.ssavaluetypes)
+    for i in eachindex(ci.code)
+        # Don't PiNodes just attach type infromation obtained from union splitting, but
+        # the code info isn't supposed to know this yet. We can remove it, and the information
+        # will be re-discovered
+        if ci.code[i] isa Core.PiNode
+            ci.code[i] = ci.code[i].val
+        end
+
+        # If any `invoke` expressions are left over in the IR, we need to turn them back into
+        # :call expressions. These will then be turned back into :invoke-s by type inference
+        if isexpr(ci.code[i], :invoke)
+            # TODO: this is technically wrong if there's an invocation of a codeinstance that disagrees
+            # with regular dispatch. For example,
+            # f(x) = x + 1
+            # f(x::Int) = x - 1
+            # and then the IR had 
+            # Expr(invoke, CodeInstance(f(::Any)), x::Int)
+            ci.code[i] = Expr(:call, ci.code[i].args[2:end]...)
+        end
+    end
+end
+
+function expr_to_codeinfo(m::Module, argnames, spnames, sp, e::Expr, isva)
+    # This trick comes from https://github.com/NHDaly/StagedFunctions.jl/commit/22fc72740093892baa442850a1fd61d9cd61b4cd (but has been since modified)
+    lam = Expr(
+        :lambda,
+        argnames,
+        Expr(Symbol("scope-block"), Expr(:block, Expr(:return, Expr(:block, e)))),
+    )
+    ex = if spnames === nothing || isempty(spnames)
+        lam
+    else
+        Expr(Symbol("with-static-parameters"), lam, spnames...)
+    end
+    # Get the code-info for the generator body in order to use it for generating a dummy
+    # code info object.
+    ci = if VERSION < v"1.12-"
+        ccall(
+            :jl_expand_and_resolve,
+            Any,
+            (Any, Any, Core.SimpleVector),
+            ex,
+            m,
+            Core.svec(sp...),
+        )
+    else
+        Base.generated_body_to_codeinfo(ex, @__MODULE__(), isva)
+    end
+    @assert ci isa Core.CodeInfo "Failed to create a CodeInfo from the given expression. This might mean it contains a closure or comprehension?\n Offending expression: $e"
+    ci
+end
+
+function irc_to_codeinfo(
+    ir::IRCode,
+    @nospecialize env...;
+    isva::Bool=false,
+    slotnames::Union{Nothing,Vector{Symbol}}=nothing,
+    kwargs...,
+)
+    # NOTE: we need ir.argtypes[1] == typeof(env)
+    ir = copy(ir)
+    nargtypes = length(ir.argtypes)
+    nargs = nargtypes-1
+    sig = CC.compute_oc_signature(ir, nargs, isva)
+    rt = CC.compute_ir_rettype(ir)
+    src = ccall(:jl_new_code_info_uninit, Ref{CodeInfo}, ())
+    if slotnames === nothing
+        src.slotnames = fill(:none, nargtypes)
+    else
+        length(slotnames) == nargtypes || error("mismatched `argtypes` and `slotnames`")
+        src.slotnames = slotnames
+    end
+    src.slotflags = fill(zero(UInt8), nargtypes)
+    src.slottypes = copy(ir.argtypes)
+    src.isva = isva
+    src.nargs = UInt(nargtypes)
+    src = CC.ir_to_codeinf!(src, ir)
+    src.rettype = rt
+    src
+end
+
+function add_edges_from_sigs!(ci, @nospecialize(sigs...); world)
+    edges = []
+    for sig in sigs
+        add_edge!(edges, sig)
+    end
+    for sig in sigs
+        matches = Base._methods_by_ftype(sig, -1, world)
+        if !isnothing(matches)
+            for match in matches
+                push!(edges, Base.specialize_method(match))
+            end
+        end
+    end
+    ci.edges = Core.svec(edges...)
+end
+
+function add_edge!(edges::Vector{Any}, @nospecialize(invoke_sig::Type))
+    mt = ccall(:jl_method_table_for, Any, (Any,), invoke_sig)
+    if VERSION < v"1.12-"
+        push!(edges, mt)
+        push!(edges, invoke_sig)
+    else
+        push!(edges, invoke_sig)
+        push!(edges, mt)
+    end
+    return edges
+end
+
+function add_edge!(edges::Vector{Any}, mi::Core.MethodInstance)
+    push!(edges, mi)
+    return edges
+end
+get_ctx_and_mode(::MooncakeInterpreter{Ctx,Mode}) where {Ctx,Mode} = (Ctx, Mode)

@@ -166,8 +166,9 @@ is_vararg_and_sparam_names(m::Method)::Tuple{Bool,Vector{Symbol}} = m.isva, spar
 
 Finds the method associated to `sig`, and calls `is_vararg_and_sparam_names` on it.
 """
-function is_vararg_and_sparam_names(sig)::Tuple{Bool,Vector{Symbol}}
-    world = Base.get_world_counter()
+function is_vararg_and_sparam_names(
+    sig; world=Base.get_world_counter()
+)::Tuple{Bool,Vector{Symbol}}
     min = Base.RefValue{UInt}(typemin(UInt))
     max = Base.RefValue{UInt}(typemax(UInt))
     ms = Base._methods_by_ftype(

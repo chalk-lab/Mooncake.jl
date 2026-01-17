@@ -158,7 +158,6 @@ using Mooncake:
     ForwardMode,
     ReverseMode,
     DebugRRule,
-    build_frule,
     build_rrule,
     get_interpreter
 
@@ -966,7 +965,7 @@ function test_rule(
     test_rvs = mode in [nothing, ReverseMode]
     fwd_interp = test_fwd ? get_interpreter(ForwardMode) : missing
     rvs_interp = test_rvs ? get_interpreter(ReverseMode) : missing
-    frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
+    frule = test_fwd ? generated_frule!! : missing
     rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
 
     # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
