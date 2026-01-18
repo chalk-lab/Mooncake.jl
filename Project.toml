@@ -27,6 +27,7 @@ LogExpFunctions = "2ab3a3ac-af41-5b50-aa03-7779005ae688"
 LuxLib = "82251201-b29d-42c6-8e01-566dec8acb11"
 MLDataDevices = "7e8f7934-dd98-4c1a-8fe8-92b47a384d40"
 NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
+OrdinaryDiffEqCore = "bbf590c4-e513-4bbe-9b18-05decba2e5d8"
 SLEEFPirates = "476501e8-09a2-5ece-8869-fb82de89a1fa"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
@@ -42,6 +43,7 @@ MooncakeLogExpFunctionsExt = "LogExpFunctions"
 MooncakeLuxLibExt = ["LuxLib", "MLDataDevices", "Static"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
 MooncakeNNlibExt = ["NNlib", "GPUArraysCore"]
+MooncakeOrdinaryDiffEqCoreExt = "OrdinaryDiffEqCore"
 MooncakeSpecialFunctionsExt = "SpecialFunctions"
 
 [compat]
@@ -68,6 +70,7 @@ LuxLib = "1.11"
 MLDataDevices = "1.10.0"
 MistyClosures = "2"
 NNlib = "0.9"
+OrdinaryDiffEqCore = "3"
 Pkg = "1"
 Random = "1"
 Revise = "3.0 - 3.12"
