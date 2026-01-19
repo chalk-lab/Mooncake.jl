@@ -136,6 +136,26 @@ end
 
 @from_chainrules(DefaultCtx, Tuple{typeof(test_kwargs_conditional),Float64}, true)
 
+# Test case for mode-specific @from_chainrules.
+
+fwd_only_chainrules(x::Float64) = 3x
+rev_only_chainrules(x::Float64) = 4x
+
+CRC.frule((_, dx), ::typeof(fwd_only_chainrules), x::Float64) = (3x, 3dx)
+function CRC.rrule(::typeof(fwd_only_chainrules), x::Float64)
+    pb(dy::Float64) = (CRC.NoTangent(), 3dy)
+    return 3x, pb
+end
+
+CRC.frule((_, dx), ::typeof(rev_only_chainrules), x::Float64) = (4x, 4dx)
+function CRC.rrule(::typeof(rev_only_chainrules), x::Float64)
+    pb(dy::Float64) = (CRC.NoTangent(), 4dy)
+    return 4x, pb
+end
+
+@from_chainrules DefaultCtx Tuple{typeof(fwd_only_chainrules),Float64} false ForwardMode
+@from_chainrules DefaultCtx Tuple{typeof(rev_only_chainrules),Float64} false ReverseMode
+
 end
 
 @testset "tools_for_rules" begin
@@ -227,6 +247,56 @@ end
             f = ToolsForRulesResources.test_bad_rdata
             out, pb!! = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(3.0))
             @test_throws ArgumentError pb!!(5.0)
+        end
+        @testset "forward mode only" begin
+            world = Base.get_world_counter()
+            sig = Tuple{typeof(ToolsForRulesResources.fwd_only_chainrules),Float64}
+            @test is_primitive(DefaultCtx, ForwardMode, sig, world)
+            @test !is_primitive(DefaultCtx, ReverseMode, sig, world)
+            test_rule(
+                sr(1),
+                ToolsForRulesResources.fwd_only_chainrules,
+                5.0;
+                perf_flag=:none,
+                is_primitive=true,
+                mode=ForwardMode,
+            )
+            rrule_sig = Tuple{
+                CoDual{typeof(ToolsForRulesResources.fwd_only_chainrules)},CoDual{Float64}
+            }
+            @test !hasmethod(rrule!!, rrule_sig)
+        end
+        @testset "reverse mode only" begin
+            world = Base.get_world_counter()
+            sig = Tuple{typeof(ToolsForRulesResources.rev_only_chainrules),Float64}
+            @test !is_primitive(DefaultCtx, ForwardMode, sig, world)
+            @test is_primitive(DefaultCtx, ReverseMode, sig, world)
+            test_rule(
+                sr(1),
+                ToolsForRulesResources.rev_only_chainrules,
+                5.0;
+                perf_flag=:none,
+                is_primitive=true,
+                mode=ReverseMode,
+            )
+            frule_sig = Tuple{
+                Dual{typeof(ToolsForRulesResources.rev_only_chainrules)},Dual{Float64}
+            }
+            @test !hasmethod(Mooncake.frule!!, frule_sig)
+        end
+        @testset "invalid mode" begin
+            bad_mode_exprs = [
+                :(Mooncake.@from_chainrules DefaultCtx Tuple{
+                    typeof(ToolsForRulesResources.test_sum),Array{<:Base.IEEEFloat}
+                } false BadMode),
+                :(Mooncake.@from_chainrules DefaultCtx Tuple{
+                    typeof(ToolsForRulesResources.test_sum),Array{<:Base.IEEEFloat}
+                } false Mooncake.ForwardMode),
+            ]
+            for expr in bad_mode_exprs
+                err = @test_throws LoadError eval(expr)
+                @test err.value.error isa ArgumentError
+            end
         end
     end
 end
