@@ -166,12 +166,61 @@ function __strip_coverage!(ir::IRCode)
 end
 
 """
-    optimise_ir!(ir::IRCode, show_ir=false)
+    _callee_type(ir::IRCode, f)
+
+Get the widened type of the callee expression `f` in the context of `ir`.
+"""
+_callee_type(ir::IRCode, @nospecialize(f)) = CC.widenconst(CC.argextype(f, ir))
+
+_is_frule_callee_type(@nospecialize(T)) = T === typeof(frule!!)
+_is_rrule_callee_type(@nospecialize(T)) = T === typeof(rrule!!)
+
+"""
+    mark_noinline_calls!(ir::IRCode)
+
+Scan `ir` for `rrule!!` calls and wrap their `:info` field with `NoInlineCallInfo` to
+prevent inlining. Must be called AFTER inference (which populates call info) and BEFORE
+inlining.
+
+This is used during forward-over-reverse differentiation to prevent primitive rrule!!
+calls from being inlined, which would expose internal ccalls that forward mode cannot
+differentiate through.
+"""
+function mark_noinline_calls!(ir::IRCode)
+    for i in eachindex(stmt(ir.stmts))
+        st = stmt(ir.stmts)[i]
+        # Handle both :call and :invoke expressions
+        (Meta.isexpr(st, :call) || Meta.isexpr(st, :invoke)) || continue
+
+        # For :invoke, callee is arg 2 (arg 1 is MethodInstance)
+        # For :call, callee is arg 1
+        f = Meta.isexpr(st, :invoke) ? st.args[2] : st.args[1]
+        ft = _callee_type(ir, f)
+
+        # Protect ALL rrule!! calls - primitives can expose internal ccalls when inlined
+        if _is_rrule_callee_type(ft)
+            ssa = SSAValue(i)
+            info = get_ir(ir, ssa, :info)
+            info isa NoInlineCallInfo && continue
+            set_ir!(ir, ssa, :info, NoInlineCallInfo(info, ft))
+        end
+    end
+    return ir
+end
+
+"""
+    optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, mark_noinline_closures=false)
 
 Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
 to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
+
+If `mark_noinline_closures` is `true`, `rrule!!` calls are marked with `NoInlineCallInfo`
+to prevent inlining. This is used during forward-over-reverse differentiation to prevent
+exposing internal AD primitives.
 """
-function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
+function optimise_ir!(
+    ir::IRCode; show_ir=false, do_inline=true, mark_noinline_closures=false
+)
     if show_ir
         println("Pre-optimization")
         display(ir)
@@ -184,6 +233,9 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     local_interp = BugPatchInterpreter() # 319 -- see patch_for_319.jl for context
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, local_interp, mi)
+    if mark_noinline_closures
+        mark_noinline_calls!(ir)
+    end
     if show_ir
         println("Post-inference")
         display(ir)
