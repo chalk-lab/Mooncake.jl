@@ -8,7 +8,7 @@ end
 function _hessian_column(f, x::Vector{Float64}, i::Int)
     x_fdata = fdata(zero_tangent(x))
     rule = build_rrule(f, x; noinline_rules=true)
-    frule = build_frule(_compute_grad, rule, f, x, x_fdata)
+    frule = build_frule(_compute_grad, rule, f, x, x_fdata; noinline_rules=true)
 
     x_tangent = zeros(length(x))
     x_tangent[i] = 1.0

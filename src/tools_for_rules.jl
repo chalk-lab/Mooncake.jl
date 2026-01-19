@@ -300,7 +300,100 @@ function _zero_derivative_impl(ctx, sig, mode)
     frule_ex = construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
-    return Expr(:block, is_primitive_ex, frule_ex, rrule_ex)
+    # For forward-over-reverse: also make rrule!! calls on this primitive be forward-mode
+    # primitives. This prevents forward-differentiation through rrule!! bodies which would
+    # incorrectly call frule!! on the primal function.
+    # The rrule!! signature is Tuple{typeof(rrule!!), CoDual{<:F}, CoDual{<:X}...}
+    rrule_is_primitive_ex = _construct_rrule_is_primitive(
+        ctx, arg_type_symbols, where_params, is_vararg
+    )
+    rrule_frule_ex = _construct_rrule_frule(arg_type_symbols, where_params, is_vararg)
+
+    return Expr(
+        :block, is_primitive_ex, frule_ex, rrule_ex, rrule_is_primitive_ex, rrule_frule_ex
+    )
+end
+
+"""
+    _construct_rrule_is_primitive(ctx, arg_type_symbols, where_params, is_vararg)
+
+Construct an is_primitive method for rrule!! calls on zero_derivative primitives.
+This marks rrule!! calls as forward-mode primitives so that forward-over-reverse
+uses the frule!! instead of differentiating through the rrule!! body.
+"""
+function _construct_rrule_is_primitive(ctx, arg_type_symbols, where_params, is_vararg)
+    # Build the rrule!! signature: Tuple{typeof(rrule!!), CoDual{<:F}, CoDual{<:X}...}
+    if is_vararg
+        rrule_sig_types = vcat(
+            [:(typeof(Mooncake.rrule!!))],
+            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
+            [:(Vararg{Mooncake.CoDual})],
+        )
+    else
+        rrule_sig_types = vcat(
+            [:(typeof(Mooncake.rrule!!))],
+            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols),
+        )
+    end
+    rrule_sig = Expr(:curly, :Tuple, rrule_sig_types...)
+
+    # Wrap with where clause if there are type parameters
+    if where_params !== nothing
+        rrule_sig = Expr(:where, rrule_sig, where_params...)
+    end
+
+    return quote
+        function Mooncake._is_primitive(
+            ::Type{$(esc(ctx))}, ::Type{Mooncake.ForwardMode}, ::Type{<:$rrule_sig}
+        )
+            return true
+        end
+    end
+end
+
+"""
+    _construct_rrule_frule(arg_type_symbols, where_params, is_vararg)
+
+Construct an frule!! for rrule!! calls on zero_derivative primitives.
+This allows forward-over-reverse to work correctly by treating rrule!! calls
+as forward-mode primitives instead of differentiating through their bodies.
+"""
+function _construct_rrule_frule(arg_type_symbols, where_params, is_vararg)
+    # Build argument names for frule!! on rrule!!
+    # First arg is Dual{typeof(rrule!!)}, rest are Dual{<:CoDual{<:T}} or Dual for varargs
+    rrule_arg_names = [:_rrule_dual]
+    append!(rrule_arg_names, map(n -> Symbol("y_$n"), eachindex(arg_type_symbols)))
+
+    if is_vararg
+        # For vararg signatures, the last argument in forward mode may be either:
+        # - Vararg{Dual} if called with multiple args
+        # - Dual{Tuple{...}} if the vararg was captured as a tuple
+        # Use Vararg{Dual} to handle both cases
+        rrule_arg_types = vcat(
+            [:(Mooncake.Dual{typeof(Mooncake.rrule!!)})],
+            map(
+                t -> :(Mooncake.Dual{<:Mooncake.CoDual{<:$t}}),
+                arg_type_symbols[1:(end - 1)],
+            ),
+            [:(Vararg{Mooncake.Dual})],
+        )
+        # Build body: zero_dual(rrule!!(map(primal, (y_1, y_2, ...))...))
+        splat_symbol = Expr(Symbol("..."), rrule_arg_names[end])
+        primal_args = Expr(:tuple, rrule_arg_names[2:(end - 1)]..., splat_symbol)
+    else
+        rrule_arg_types = vcat(
+            [:(Mooncake.Dual{typeof(Mooncake.rrule!!)})],
+            map(t -> :(Mooncake.Dual{<:Mooncake.CoDual{<:$t}}), arg_type_symbols),
+        )
+        primal_args = Expr(:tuple, rrule_arg_names[2:end]...)
+    end
+
+    # Body: zero_dual(rrule!!(map(primal, args)...))
+    body = quote
+        Mooncake.zero_dual(Mooncake.rrule!!(map(Mooncake.primal, $primal_args)...))
+    end
+
+    return construct_frule_def(rrule_arg_names, rrule_arg_types, where_params, body)
 end
 
 """

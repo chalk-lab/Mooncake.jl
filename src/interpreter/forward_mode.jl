@@ -26,10 +26,12 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-function build_frule(args...; debug_mode=false, silence_debug_messages=true)
+function build_frule(
+    args...; debug_mode=false, silence_debug_messages=true, noinline_rules=false
+)
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages)
+    return build_frule(interp, sig; debug_mode, silence_debug_messages, noinline_rules)
 end
 
 struct DualRuleInfo
@@ -59,6 +61,7 @@ function build_frule(
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
+    noinline_rules=false,
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -89,12 +92,16 @@ function build_frule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward))
+        oc_cache_key = ClosureCacheKey(
+            interp.world, (sig_or_mi, debug_mode, noinline_rules, :forward)
+        )
         if haskey(interp.oc_cache, oc_cache_key)
             return interp.oc_cache[oc_cache_key]
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
-            dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
+            dual_ir, captures, info = generate_dual_ir(
+                interp, sig_or_mi; debug_mode, noinline_rules
+            )
             dual_oc = misty_closure(
                 info.dual_ret_type, dual_ir, captures...; do_compile=true
             )
@@ -159,10 +166,15 @@ struct DualInfo
     interp::MooncakeInterpreter
     is_used::Vector{Bool}
     debug_mode::Bool
+    noinline_rules::Bool
 end
 
 function generate_dual_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
+    interp::MooncakeInterpreter,
+    sig_or_mi;
+    debug_mode=false,
+    do_inline=true,
+    noinline_rules=false,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -198,7 +210,7 @@ function generate_dual_ir(
     captures = Any[]
 
     is_used = characterised_used_ssas(stmt(primal_ir.stmts))
-    info = DualInfo(primal_ir, interp, is_used, debug_mode)
+    info = DualInfo(primal_ir, interp, is_used, debug_mode, noinline_rules)
     for (n, inst) in enumerate(dual_ir.stmts)
         ssa = SSAValue(n)
         modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info)
@@ -215,7 +227,7 @@ function generate_dual_ir(
     dual_ir.argtypes[1] = _typeof(captures_tuple)
 
     # Optimize dual IR
-    dual_ir_opt = optimise_ir!(dual_ir; do_inline)
+    dual_ir_opt = optimise_ir!(dual_ir; do_inline, mark_noinline=noinline_rules)
     return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
 end
 
@@ -404,7 +416,11 @@ function modify_fwd_ad_stmts!(
             replace_call!(dual_ir, ssa, Expr(:call, frule!!, dual_args...))
         else
             dm = info.debug_mode
-            push!(captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm))
+            ni = info.noinline_rules
+            push!(
+                captures,
+                isexpr(stmt, :invoke) ? LazyFRule(mi, dm, ni) : DynamicFRule(dm, ni),
+            )
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
@@ -455,21 +471,24 @@ end
 
 mutable struct LazyFRule{primal_sig,Trule}
     debug_mode::Bool
+    noinline_rules::Bool
     mi::Core.MethodInstance
     rule::Trule
-    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
+    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool, noinline_rules::Bool)
         interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(
+            debug_mode, noinline_rules, mi
+        )
     end
     function LazyFRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool
+        mi::Core.MethodInstance, debug_mode::Bool, noinline_rules::Bool
     ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi)
+        return new{Tprimal_sig,Trule}(debug_mode, noinline_rules, mi)
     end
 end
 
-# Create new lazy rule with same method instance and debug mode
-_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode)
+# Create new lazy rule with same method instance, debug mode, and noinline_rules
+_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.noinline_rules)
 
 @inline function (rule::LazyFRule)(args::Vararg{Any,N}) where {N}
     return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
@@ -477,7 +496,9 @@ end
 
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode)
-    rule.rule = build_frule(interp, rule.mi; debug_mode=rule.debug_mode)
+    rule.rule = build_frule(
+        interp, rule.mi; debug_mode=rule.debug_mode, noinline_rules=rule.noinline_rules
+    )
     return rule.rule(args...)
 end
 
@@ -505,19 +526,27 @@ end
 struct DynamicFRule{V}
     cache::V
     debug_mode::Bool
+    noinline_rules::Bool
 end
 
-DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
+function DynamicFRule(debug_mode::Bool, noinline_rules::Bool)
+    DynamicFRule(Dict{Any,Any}(), debug_mode, noinline_rules)
+end
 
-# Create new dynamic rule with empty cache and same debug mode  
-_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
+# Create new dynamic rule with empty cache and same debug mode and noinline_rules
+_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.noinline_rules)
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     sig = Tuple{map(_typeof ∘ primal, args)...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ForwardMode)
-        rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        rule = build_frule(
+            interp,
+            sig;
+            debug_mode=dynamic_rule.debug_mode,
+            noinline_rules=dynamic_rule.noinline_rules,
+        )
         dynamic_rule.cache[sig] = rule
     end
     return rule(args...)

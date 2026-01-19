@@ -1016,7 +1016,7 @@ function test_rule(
                 if test_fwd
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
-                        cache_key = (sig, false, :forward)
+                        cache_key = (sig, false, false, :forward)
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
                     end
