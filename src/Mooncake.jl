@@ -136,8 +136,7 @@ include("tools_for_rules.jl")
 include("interface.jl")
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
-# `DispatchDoctor` is not compatible with `@mooncake_overlay`
-@unstable include(joinpath("rules", "blas.jl"))
+include(joinpath("rules", "blas.jl"))
 include(joinpath("rules", "builtins.jl"))
 include(joinpath("rules", "dispatch_doctor.jl"))
 include(joinpath("rules", "fastmath.jl"))
