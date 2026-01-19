@@ -131,6 +131,7 @@ struct ADInfo
     arg_rdata_ref_ids::Dict{Argument,ID}
     ssa_rdata_ref_ids::Dict{ID,ID}
     debug_mode::Bool
+    noinline_rules::Bool
     is_used_dict::Dict{ID,Bool}
     lazy_zero_rdata_ref_id::ID
     fwd_ret_type::Type
@@ -145,6 +146,7 @@ function ADInfo(
     ssa_insts::Dict{ID,NewInstruction},
     is_used_dict::Dict{ID,Bool},
     debug_mode::Bool,
+    noinline_rules::Bool,
     zero_lazy_rdata_ref::Ref{<:Tuple},
     fwd_ret_type::Type,
     rvs_ret_type::Type,
@@ -162,6 +164,7 @@ function ADInfo(
         Dict((k, ID()) for k in keys(arg_types)),
         Dict((k, ID()) for k in keys(ssa_insts)),
         debug_mode,
+        noinline_rules,
         is_used_dict,
         add_data!(shared_data_pairs, zero_lazy_rdata_ref),
         fwd_ret_type,
@@ -175,6 +178,7 @@ function ADInfo(
     interp::MooncakeInterpreter,
     ir::BBCode,
     debug_mode::Bool,
+    noinline_rules::Bool,
     fwd_ret_type::Type,
     rvs_ret_type::Type,
 )
@@ -192,6 +196,7 @@ function ADInfo(
         ssa_insts,
         is_used_dict,
         debug_mode,
+        noinline_rules,
         zero_lazy_rdata_ref,
         fwd_ret_type,
         rvs_ret_type,
@@ -707,9 +712,9 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             rrule!! # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
             mi = get_mi(stmt.args[1])
-            LazyDerivedRule(mi, info.debug_mode) # Static dispatch
+            LazyDerivedRule(mi, info.debug_mode, info.noinline_rules) # Static dispatch
         else
-            DynamicDerivedRule(info.debug_mode)  # Dynamic dispatch
+            DynamicDerivedRule(info.debug_mode, info.noinline_rules)  # Dynamic dispatch
         end
 
         # Wrap the raw rule in a struct which ensures that any `ZeroRData`s are stripped
@@ -1212,7 +1217,7 @@ function generate_ir(
     primal_ir = remove_unreachable_blocks!(BBCode(ir))
 
     # Compute global info.
-    info = ADInfo(interp, primal_ir, debug_mode, fwd_ret_type, rvs_ret_type)
+    info = ADInfo(interp, primal_ir, debug_mode, noinline_rules, fwd_ret_type, rvs_ret_type)
 
     # For each block in the fwds and pullback BBCode, translate all statements. Running this
     # will, in general, push items to `info.shared_data_pairs`.
@@ -1782,7 +1787,7 @@ Helper function emitted by `make_switch_stmts`.
 __switch_case(id::Int32, predecessor_id::Int32) = !(id === predecessor_id)
 
 """
-    DynamicDerivedRule(interp::MooncakeInterpreter, debug_mode::Bool)
+    DynamicDerivedRule(debug_mode::Bool, noinline_rules::Bool)
 
 For internal use only.
 
@@ -1794,12 +1799,17 @@ This is used to implement dynamic dispatch.
 struct DynamicDerivedRule{V}
     cache::V
     debug_mode::Bool
+    noinline_rules::Bool
 end
 
-DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug_mode)
+function DynamicDerivedRule(debug_mode::Bool, noinline_rules::Bool)
+    return DynamicDerivedRule(Dict{Any,Any}(), debug_mode, noinline_rules)
+end
 
 # Create new dynamic rule with empty cache and same debug mode
-_copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
+function _copy(x::P) where {P<:DynamicDerivedRule}
+    return P(Dict{Any,Any}(), x.debug_mode, x.noinline_rules)
+end
 
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 
@@ -1813,14 +1823,19 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ReverseMode)
-        rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        rule = build_rrule(
+            interp,
+            sig;
+            debug_mode=dynamic_rule.debug_mode,
+            noinline_rules=dynamic_rule.noinline_rules,
+        )
         dynamic_rule.cache[sig] = rule
     end
     return rule(args...)
 end
 
 """
-    LazyDerivedRule(interp, mi::Core.MethodInstance, debug_mode::Bool)
+    LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool, noinline_rules::Bool)
 
 For internal use only.
 
@@ -1883,21 +1898,28 @@ the rule for A, we would be unable to complete the derivation of the rule for A.
 """
 mutable struct LazyDerivedRule{primal_sig,Trule}
     debug_mode::Bool
+    noinline_rules::Bool
     mi::Core.MethodInstance
     rule::Trule
-    function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
+    function LazyDerivedRule(
+        mi::Core.MethodInstance, debug_mode::Bool, noinline_rules::Bool
+    )
         interp = get_interpreter(ReverseMode)
-        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(
+            debug_mode, noinline_rules, mi
+        )
     end
     function LazyDerivedRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool
+        mi::Core.MethodInstance, debug_mode::Bool, noinline_rules::Bool
     ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi)
+        return new{Tprimal_sig,Trule}(debug_mode, noinline_rules, mi)
     end
 end
 
 # Create new lazy rule with same method instance and debug mode
-_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
+function _copy(x::P) where {P<:LazyDerivedRule}
+    return P(x.mi, x.debug_mode, x.noinline_rules)
+end
 
 @inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
     return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
@@ -1905,7 +1927,9 @@ end
 
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ReverseMode)
-    rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
+    rule.rule = build_rrule(
+        interp, rule.mi; debug_mode=rule.debug_mode, noinline_rules=rule.noinline_rules
+    )
     return rule.rule(args...)
 end
 
