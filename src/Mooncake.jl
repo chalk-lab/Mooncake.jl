@@ -39,7 +39,12 @@ using Core.Compiler: IRCode, NewInstruction
 using Core.Intrinsics: pointerref, pointerset
 using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
-using DispatchDoctor: @stable, @unstable
+using DispatchDoctor: @stable, @unstable, DispatchDoctor
+
+DispatchDoctor.register_macro!(Symbol("@foldable"), DispatchDoctor.IncompatibleMacro)
+DispatchDoctor.register_macro!(
+    Symbol("@mooncake_overlay"), DispatchDoctor.IncompatibleMacro
+)
 
 # Needs to be defined before various other things.
 function _foreigncall_ end
@@ -152,8 +157,7 @@ else
     include(joinpath("rules", "array_legacy.jl"))
 end
 
-# Including this in DispatchDoctor causes precompilation error.
-@unstable include(joinpath("rules", "performance_patches.jl"))
+include(joinpath("rules", "performance_patches.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")
