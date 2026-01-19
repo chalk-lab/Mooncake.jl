@@ -39,7 +39,10 @@ using Core.Compiler: IRCode, NewInstruction
 using Core.Intrinsics: pointerref, pointerset
 using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
+import DispatchDoctor
 using DispatchDoctor: @stable, @unstable
+DispatchDoctor.register_macro!(Symbol("@foldable"), DispatchDoctor.IncompatibleMacro)
+DispatchDoctor.register_macro!(Symbol("@mooncake_overlay"), DispatchDoctor.IncompatibleMacro)
 
 # Needs to be defined before various other things.
 function _foreigncall_ end
