@@ -17,7 +17,12 @@ function frule!!(
     # Build rrule if not built (primal operation, no differentiation needed)
     if !isdefined(lazy_rule, :rule)
         interp = get_interpreter(ReverseMode)
-        lazy_rule.rule = build_rrule(interp, lazy_rule.mi; debug_mode=lazy_rule.debug_mode)
+        lazy_rule.rule = build_rrule(
+            interp,
+            lazy_rule.mi;
+            debug_mode=lazy_rule.debug_mode,
+            noinline_rules=lazy_rule.noinline_rules,
+        )
     end
     derived_rule = lazy_rule.rule
 
