@@ -209,18 +209,16 @@ function mark_noinline_calls!(ir::IRCode)
 end
 
 """
-    optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, mark_noinline_closures=false)
+    optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, mark_noinline=false)
 
 Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
 to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
 
-If `mark_noinline_closures` is `true`, `rrule!!` calls are marked with `NoInlineCallInfo`
+If `mark_noinline` is `true`, primitive rule calls are marked with `NoInlineCallInfo`
 to prevent inlining. This is used during forward-over-reverse differentiation to prevent
 exposing internal AD primitives.
 """
-function optimise_ir!(
-    ir::IRCode; show_ir=false, do_inline=true, mark_noinline_closures=false
-)
+function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, mark_noinline=false)
     if show_ir
         println("Pre-optimization")
         display(ir)
@@ -233,7 +231,7 @@ function optimise_ir!(
     local_interp = BugPatchInterpreter() # 319 -- see patch_for_319.jl for context
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, local_interp, mi)
-    if mark_noinline_closures
+    if mark_noinline
         mark_noinline_calls!(ir)
     end
     if show_ir

@@ -1024,7 +1024,7 @@ function test_rule(
                 if test_rvs
                     C_rvs = Mooncake.context_type(rvs_interp)
                     if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
-                        cache_key = (sig, false, :reverse)
+                        cache_key = (sig, false, false, :reverse)
                         k = Mooncake.ClosureCacheKey(rvs_interp.world, cache_key)
                         @test haskey(rvs_interp.oc_cache, k)
                     end

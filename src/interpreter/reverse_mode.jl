@@ -1095,14 +1095,14 @@ struct DerivedRuleInfo
 end
 
 """
-    build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, ad_safe=false) where {C}
+    build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, noinline_rules=false) where {C}
 
 Returns a `DerivedRule` which is an `rrule!!` for `sig_or_mi` in context `C`. See the
 docstring for `rrule!!` for more info.
 
 If `debug_mode` is `true`, then all calls to rules are replaced with calls to `DebugRRule`s.
 
-If `ad_safe` is `true`, the generated rule will not inline primitive `rrule!!` calls,
+If `noinline_rules` is `true`, the generated rule will not inline primitive rule calls,
 making it safe for forward-over-reverse differentiation (e.g., Hessian computation).
 """
 function build_rrule(
@@ -1110,7 +1110,7 @@ function build_rrule(
     sig_or_mi;
     debug_mode=false,
     silence_debug_messages=true,
-    ad_safe=false,
+    noinline_rules=false,
 ) where {C}
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
@@ -1142,13 +1142,13 @@ function build_rrule(
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
         oc_cache_key = ClosureCacheKey(
-            interp.world, (sig_or_mi, debug_mode, ad_safe, :reverse)
+            interp.world, (sig_or_mi, debug_mode, noinline_rules, :reverse)
         )
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
         else
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
-            dri = generate_ir(interp, sig_or_mi; debug_mode, ad_safe)
+            dri = generate_ir(interp, sig_or_mi; debug_mode, noinline_rules)
             fwd_oc = misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
             rvs_oc = misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)
 
@@ -1179,15 +1179,19 @@ end
 
 """
     generate_ir(
-        interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true, ad_safe=false
+        interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true, noinline_rules=false
     )
 Used by `build_rrule`, and the various debugging tools: primal_ir, fwds_ir, adjoint_ir.
 
-If `ad_safe` is `true`, primitive `rrule!!` calls will not be inlined, making the generated
+If `noinline_rules` is `true`, primitive rule calls will not be inlined, making the generated
 IR safe for forward-over-reverse differentiation.
 """
 function generate_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true, ad_safe=false
+    interp::MooncakeInterpreter,
+    sig_or_mi;
+    debug_mode=false,
+    do_inline=true,
+    noinline_rules=false,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -1228,8 +1232,8 @@ function generate_ir(
     rvs_ir = pullback_ir(
         primal_ir, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
     )
-    opt_fwd_ir = optimise_ir!(IRCode(fwd_ir); do_inline, mark_noinline_closures=ad_safe)
-    opt_rvs_ir = optimise_ir!(IRCode(rvs_ir); do_inline, mark_noinline_closures=ad_safe)
+    opt_fwd_ir = optimise_ir!(IRCode(fwd_ir); do_inline, mark_noinline=noinline_rules)
+    opt_rvs_ir = optimise_ir!(IRCode(rvs_ir); do_inline, mark_noinline=noinline_rules)
     return DerivedRuleInfo(
         ir, opt_fwd_ir, fwd_ret_type, opt_rvs_ir, rvs_ret_type, shared_data, info, isva
     )
