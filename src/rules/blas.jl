@@ -1028,12 +1028,6 @@ end
     c == 'C' ? 'C' :
     throw(ArgumentError("Invalid BLAS transpose flag: $c"))
 
-@inline _blas_transpose(c::Char) =
-    c == 'N' ? 'T' :
-    c == 'T' ? 'N' :
-    c == 'C' ? 'C' :
-    throw(ArgumentError("Invalid BLAS transpose flag: $c"))
-
 @mooncake_overlay function BLAS.gemm!(
     transA::Char,
     transB::Char,
