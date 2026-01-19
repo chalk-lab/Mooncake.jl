@@ -885,7 +885,7 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
     @assert R isa Union
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
-@unstable @foldable function tangent_type(
+@foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}
     _validate_union(F)
@@ -913,7 +913,7 @@ end
 @foldable function tangent_type(::Type{NoFData}, ::Type{R}) where {R<:Tuple}
     return tangent_type(Tuple{tuple_fill(NoFData, Val(length(R.parameters)))...}, R)
 end
-@unstable @foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Tuple}
+@foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Tuple}
     return tangent_type(F, Tuple{tuple_fill(NoRData, Val(length(F.parameters)))...})
 end
 
