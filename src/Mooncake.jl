@@ -151,6 +151,7 @@ include(joinpath("rules", "new.jl"))
 include(joinpath("rules", "random.jl"))
 include(joinpath("rules", "tasks.jl"))
 include(joinpath("rules", "twice_precision.jl"))
+include(joinpath("rules", "complex.jl"))
 @static if VERSION >= v"1.11-rc4"
     include(joinpath("rules", "memory.jl"))
 else

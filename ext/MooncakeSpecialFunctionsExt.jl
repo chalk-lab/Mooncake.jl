@@ -148,6 +148,9 @@ an unimplemented partial is mathematically required.
 function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:IEEEFloat}
     return Dual(y, primal_eltype(dy_val))
 end
+function real_or_complex_valued(y::Complex{L}, primal_eltype, dy_val) where {L<:IEEEFloat}
+    return Dual(y, Complex(primal_eltype(real(dy_val)), primal_eltype(imag(dy_val))))
+end
 
 function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:Complex}
     return Dual(
@@ -424,9 +427,7 @@ function frule!!(
     ∂x_2 = -sign(real(x)) * y
 
     # Non Holomorphic scaling
-    dy_val = (
-        ∂v + ∂x_1 * numberify(dx) + ∂x_2 * (P <: Complex ? dx.fields.re : numberify(dx))
-    )
+    dy_val = (∂v + ∂x_1 * numberify(dx) + ∂x_2 * real(numberify(dx)))
 
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
@@ -471,9 +472,7 @@ function frule!!(
     ∂x_2 = ∂x_2 = -sign(imag(x)) * y
 
     # ∂f/∂x - Non Holomorphic scaling
-    dy_val = (
-        ∂v + ∂x_1 * numberify(dx) + (P <: Complex ? ∂x_2 * dx.fields.im : primal_eltype(0))
-    )
+    dy_val = (∂v + ∂x_1 * numberify(dx) + ∂x_2 * imag(dx))
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -496,9 +495,7 @@ function frule!!(
     ∂x_2 = ∂x_2 = -sign(imag(x)) * y
 
     # Non Holomorphic scaling
-    dy_val = (
-        ∂v + ∂x_1 * numberify(dx) + (P <: Complex ? ∂x_2 * dx.fields.im : primal_eltype(0))
-    )
+    dy_val = ∂v + ∂x_1 * numberify(dx) + ∂x_2 * imag(numberify(dx))
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -521,10 +518,7 @@ function frule!!(
     ∂x = (hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y
 
     dy_val = ∂v + ∂x * numberify(dx)
-    return Dual(
-        y,
-        Mooncake.Tangent((re=primal_eltype(real(dy_val)), im=primal_eltype(imag(dy_val)))),
-    )
+    return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -545,10 +539,7 @@ function frule!!(
     ∂x = (hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y
 
     dy_val = ∂v + ∂x * numberify(dx)
-    return Dual(
-        y,
-        Mooncake.Tangent((re=primal_eltype(real(dy_val)), im=primal_eltype(imag(dy_val)))),
-    )
+    return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
 end

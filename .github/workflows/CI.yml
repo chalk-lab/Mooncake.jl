@@ -45,6 +45,7 @@ jobs:
           'rules/random',
           'rules/tasks',
           'rules/twice_precision',
+          'rules/complex',
           'rules/performance_patches',
           'rules/high_order_derivative_patches',
         ]
