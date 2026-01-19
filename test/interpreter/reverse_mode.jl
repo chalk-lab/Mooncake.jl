@@ -52,7 +52,8 @@ end
             arg_types,
             ssa_insts,
             is_used_dict,
-            false,
+            false,  # debug_mode
+            false,  # noinline_rules
             rdata_ref,
             Any,
             Any,
@@ -162,7 +163,8 @@ end
                 id_line_2 => new_inst(nothing, Any),
             ),
             Dict{ID,Bool}(id_line_1 => true, id_line_2 => true),
-            false,
+            false,  # debug_mode
+            false,  # noinline_rules
             Ref{Tuple{map(Mooncake.lazy_zero_rdata_type, (typeof(sin), Float64))...}}(),
             Any,
             Any,
