@@ -108,7 +108,8 @@ end
                 arg_types,
                 ssa_insts,
                 is_used_dict,
-                false,
+                false,  # debug_mode
+                false,  # noinline_rules
                 rdata_ref,
                 Any,
                 Any,
