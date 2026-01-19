@@ -1022,33 +1022,52 @@ function rrule!!(
     return C, gemm!_pb!!
 end
 
+@inline _blas_transpose(c::Char) =
+    c == 'N' ? 'T' :
+    c == 'T' ? 'N' :
+    c == 'C' ? 'C' :
+    throw(ArgumentError("Invalid BLAS transpose flag: $c"))
+
+@inline _blas_transpose(c::Char) =
+    c == 'N' ? 'T' :
+    c == 'T' ? 'N' :
+    c == 'C' ? 'C' :
+    throw(ArgumentError("Invalid BLAS transpose flag: $c"))
+
 @mooncake_overlay function BLAS.gemm!(
     transA::Char,
     transB::Char,
     alpha::T,
-    A_dA::AbstractMatrix{T},
-    B_dB::AbstractVector{T},
+    A::AbstractMatrix{T},
+    x::AbstractVector{T},
     beta::T,
-    C_dC::AbstractMatrix{T},
+    c::AbstractVector{T},
 ) where {T<:BlasFloat}
-    # A (m×n) * b (n) → C (m)
-    return BLAS.gemm!(transA, transB, alpha, A_dA, reshape(B_dB, :, 1), beta, C_dC)
+
+    # Vector is always treated as (n×1); transB must be 'N'
+    @assert transB == 'N'
+
+    _X = reshape(x, :, 1)
+    _C = reshape(c, :, 1)
+
+    BLAS.gemm!(transA, 'N', alpha, A, _X, beta, _C)
 end
 
 @mooncake_overlay function BLAS.gemm!(
     transA::Char,
     transB::Char,
     alpha::T,
-    A_dA::AbstractVector{T},
-    B_dB::AbstractMatrix{T},
+    x::AbstractVector{T},
+    B::AbstractMatrix{T},
     beta::T,
-    C_dC::AbstractMatrix{T},
+    c::AbstractVector{T},
 ) where {T<:BlasFloat}
 
+    _X = reshape(x, :, 1)
+    _C = reshape(c, :, 1)
+
     # a * B ≡ (B' * a)'
-    return BLAS.gemm!(
-        transB == 'N' ? 'T' : 'N', 'N', alpha, B_dB, reshape(A_dA, :, 1), beta, C_dC
-    )
+    return BLAS.gemm!(_blas_transpose(transB), _blas_transpose(transA), alpha, B, _X, beta, _C)
 end
 
 for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
