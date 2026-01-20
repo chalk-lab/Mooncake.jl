@@ -1107,8 +1107,9 @@ docstring for `rrule!!` for more info.
 
 If `debug_mode` is `true`, then all calls to rules are replaced with calls to `DebugRRule`s.
 
-If `noinline_rules` is `true`, the generated rule will not inline primitive rule calls,
-making it safe for forward-over-reverse differentiation (e.g., Hessian computation).
+If `noinline_rules` is `true`, primitive `rrule!!` calls in the generated IR are marked
+noinline. This prevents primitive implementations (often ccalls without rules) from being
+inlined, which is required for higher-order differentiation.
 """
 function build_rrule(
     interp::MooncakeInterpreter{C},
@@ -1188,8 +1189,8 @@ end
     )
 Used by `build_rrule`, and the various debugging tools: primal_ir, fwds_ir, adjoint_ir.
 
-If `noinline_rules` is `true`, primitive rule calls will not be inlined, making the generated
-IR safe for forward-over-reverse differentiation.
+If `noinline_rules` is `true`, primitive `rrule!!` calls are marked noinline to prevent
+inlining their implementations. Required for higher-order differentiation.
 """
 function generate_ir(
     interp::MooncakeInterpreter,

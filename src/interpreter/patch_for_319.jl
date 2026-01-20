@@ -49,9 +49,8 @@ else
     CC.cache_owner(ip::BugPatchInterpreter) = CC.cache_owner(ip.interp)
 end
 
-# Make BugPatchInterpreter respect NoInlineCallInfo markers.
-# This is needed for forward-over-reverse to prevent inlining of rrule!! calls.
-# See: https://github.com/chalk-lab/Mooncake.jl/issues/914
+# Make BugPatchInterpreter respect NoInlineCallInfo markers inserted by
+# `mark_noinline_calls!` during higher-order differentiation.
 @static if VERSION < v"1.11-"
     function CC.inlining_policy(
         interp::BugPatchInterpreter,

@@ -178,18 +178,14 @@ _is_rrule_callee_type(@nospecialize(T)) = T === typeof(rrule!!)
 """
     mark_noinline_calls!(ir::IRCode)
 
-Scan `ir` for `rrule!!` calls and wrap their `:info` field with `NoInlineCallInfo` to
-prevent inlining. Must be called AFTER inference (which populates call info) and BEFORE
-inlining.
-
-This is used during forward-over-reverse differentiation to prevent primitive rrule!!
-calls from being inlined, which would expose internal ccalls that forward mode cannot
-differentiate through.
+Mark primitive `rrule!!` calls in `ir` as noinline. Must be called after inference and
+before inlining. By construction, direct `rrule!!` calls only occur for primitives (derived
+rules use `LazyDerivedRule`/`DynamicDerivedRule`). This prevents inlining primitive
+implementations (e.g. ccalls) that have no rules, which is required for higher-order AD.
 """
 function mark_noinline_calls!(ir::IRCode)
     for i in eachindex(stmt(ir.stmts))
         st = stmt(ir.stmts)[i]
-        # Handle both :call and :invoke expressions
         (Meta.isexpr(st, :call) || Meta.isexpr(st, :invoke)) || continue
 
         # For :invoke, callee is arg 2 (arg 1 is MethodInstance)
@@ -197,7 +193,6 @@ function mark_noinline_calls!(ir::IRCode)
         f = Meta.isexpr(st, :invoke) ? st.args[2] : st.args[1]
         ft = _callee_type(ir, f)
 
-        # Protect ALL rrule!! calls - primitives can expose internal ccalls when inlined
         if _is_rrule_callee_type(ft)
             ssa = SSAValue(i)
             info = get_ir(ir, ssa, :info)
@@ -214,9 +209,8 @@ end
 Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
 to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
 
-If `mark_noinline` is `true`, primitive rule calls are marked with `NoInlineCallInfo`
-to prevent inlining. This is used during forward-over-reverse differentiation to prevent
-exposing internal AD primitives.
+If `mark_noinline` is `true`, primitive rule calls are marked noinline to prevent exposing
+their internals (e.g. ccalls without rules). Required for higher-order differentiation.
 """
 function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, mark_noinline=false)
     if show_ir

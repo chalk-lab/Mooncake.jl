@@ -300,10 +300,9 @@ function _zero_derivative_impl(ctx, sig, mode)
     frule_ex = construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
-    # For forward-over-reverse: also make rrule!! calls on this primitive be forward-mode
-    # primitives. This prevents forward-differentiation through rrule!! bodies which would
-    # incorrectly call frule!! on the primal function.
-    # The rrule!! signature is Tuple{typeof(rrule!!), CoDual{<:F}, CoDual{<:X}...}
+    # For forward-over-reverse (e.g., Hessians): register `rrule!!(f, ...)` as a forward-mode
+    # primitive. Without this, forward mode would differentiate through the `rrule!!` body,
+    # which calls `primal(f)(...)` - exactly what we declared non-differentiable.
     rrule_is_primitive_ex = _construct_rrule_is_primitive(
         ctx, arg_type_symbols, where_params, is_vararg
     )
@@ -317,9 +316,9 @@ end
 """
     _construct_rrule_is_primitive(ctx, arg_type_symbols, where_params, is_vararg)
 
-Construct an is_primitive method for rrule!! calls on zero_derivative primitives.
-This marks rrule!! calls as forward-mode primitives so that forward-over-reverse
-uses the frule!! instead of differentiating through the rrule!! body.
+Mark `rrule!!(f, ...)` as a forward-mode primitive for this zero_derivative function.
+This is needed for forward-over-reverse: without it, forward mode would try to
+differentiate through `rrule!!`'s body, which calls the primal we declared non-differentiable.
 """
 function _construct_rrule_is_primitive(ctx, arg_type_symbols, where_params, is_vararg)
     # Build the rrule!! signature: Tuple{typeof(rrule!!), CoDual{<:F}, CoDual{<:X}...}
@@ -354,9 +353,9 @@ end
 """
     _construct_rrule_frule(arg_type_symbols, where_params, is_vararg)
 
-Construct an frule!! for rrule!! calls on zero_derivative primitives.
-This allows forward-over-reverse to work correctly by treating rrule!! calls
-as forward-mode primitives instead of differentiating through their bodies.
+Provide an `frule!!` for `rrule!!(f, ...)` that returns `zero_dual(rrule!!(primals...))`.
+Paired with `_construct_rrule_is_primitive`, this enables forward-over-reverse by treating
+the `rrule!!` call as a primitive with zero tangent (consistent with zero_derivative semantics).
 """
 function _construct_rrule_frule(arg_type_symbols, where_params, is_vararg)
     # Build argument names for frule!! on rrule!!

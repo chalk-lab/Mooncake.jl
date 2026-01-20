@@ -47,6 +47,7 @@ end
         debug_mode=false,
         silence_debug_messages=true,
         skip_world_age_check=false,
+        noinline_rules=false,
     ) where {C}
 
 Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
@@ -54,6 +55,10 @@ Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a
 
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
 than the current world (e.g., when building rules for MistyClosure which uses its own world).
+
+If `noinline_rules` is `true`, primitive `frule!!` calls in the generated IR are marked
+noinline. This prevents primitive implementations (often ccalls without rules) from being
+inlined, which is required for higher-order differentiation.
 """
 function build_frule(
     interp::MooncakeInterpreter{C},
