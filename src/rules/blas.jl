@@ -891,28 +891,8 @@ end
     B, dB = matrixify(B_dB)
     C, dC = arrayify(C_dC)
 
-    _gemm!_frule_core!(tA, tB, α, dα, A, dA, B, dB, β, dβ, C, dC)
-
-    return C_dC
-end
-
-@inline function _gemm!_frule_core!(
-    tA::Char,
-    tB::Char,
-    α::T,
-    dα::T,
-    A::AbstractVecOrMat{T},
-    dA::AbstractVecOrMat{T},
-    B::AbstractVecOrMat{T},
-    dB::AbstractVecOrMat{T},
-    β::T,
-    dβ::T,
-    C::AbstractVecOrMat{T},
-    dC::AbstractVecOrMat{T},
-) where {T<:BlasFloat}
     # Tangents (product rule)
     # d(α*op(A)*op(B) + β*C) = dα*op(A)*op(B) + α*op(dA)*op(B) + α*op(A)*op(dB) + dβ*C + β*dC
-
     BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
     BLAS.gemm!(tA, tB, α, A, dB, one(T), dC) # α*op(A)*op(dB) + 1*dC
 
@@ -929,7 +909,7 @@ end
     # Primal
     BLAS.gemm!(tA, tB, α, A, B, β, C)
 
-    return nothing
+    return C_dC
 end
 
 @inline function rrule!!(
@@ -949,24 +929,6 @@ end
     p_A, dA = matrixify(A)
     p_B, dB = matrixify(B)
     p_C, dC = arrayify(C)
-
-    pb = _gemm!_rrule_core!(tA, tB, a, p_A, dA, p_B, dB, b, p_C, dC)
-
-    return C, pb
-end
-
-@inline function _gemm!_rrule_core!(
-    tA::Char,
-    tB::Char,
-    a::T,
-    p_A::AbstractVecOrMat{T},
-    dA::AbstractVecOrMat{T},
-    p_B::AbstractVecOrMat{T},
-    dB::AbstractVecOrMat{T},
-    b::T,
-    p_C::AbstractVecOrMat{T},
-    dC::AbstractVecOrMat{T},
-) where {T<:BlasFloat}
 
     # Save state and run primal
     p_C_copy = copy(p_C)
@@ -1044,7 +1006,8 @@ end
             NoRData(),
         )
     end
-    return gemm!_pb!!
+
+    return C, gemm!_pb!!
 end
 
 for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
@@ -1903,16 +1866,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
     realPs = [Float32, Float64]
     Ps = [realPs..., complex.(realPs)...]
-    αs = [1.0, -0.25, 0.46 + 0.32im]
-    dαs = [0.0, 0.44, -0.20 + 0.38im]
-    βs = [0.0, 0.33, 0.39 + 0.27im]
-    dβs = [0.0, -0.11, 0.86 + 0.44im]
-
     rng = rng_ctor(123)
-
-    _make_codual(x, dx) = CoDual(x, dx)
-    _make_codual(x::Complex, dx) = CoDual(x, Tangent((; re=real(dx), im=imag(dx))))
-
     test_cases = Any[]
 
     # aliased gemm!
