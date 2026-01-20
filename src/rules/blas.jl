@@ -125,7 +125,7 @@ function viewify(
 end
 
 numberify(x::BlasRealFloat) = x
-function numberify(x::Tangent{@NamedTuple{re::P, im::P}}) where {P<:BlasRealFloat}
+function numberify(x::Tangent{@NamedTuple{re::P,im::P}}) where {P<:BlasRealFloat}
     return complex(x.fields.re, x.fields.im)
 end
 numberify(x::Dual) = primal(x), numberify(tangent(x))
@@ -1737,8 +1737,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     # BLAS LEVEL 3
     #
 
+    # gemm! Tests
+    # 1.10 fails to infer part of a matmat product in the pullback
+    perf_flag = VERSION < v"1.11-" ? :none : :stability
+
     # The tests are quite sensitive to the random inputs,
-    # so each tested function gets its own rng.
+    # so each tested gemm! dispatch gets its own rng.
 
     # gemm! - matrix × matrix
     test_cases = append!(
@@ -1758,7 +1762,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 return map(As, Bs, Cs) do A, B, C
                     a_da = _make_codual(P(α), P(dα))
                     b_db = _make_codual(P(β), P(dβ))
-                    (false, :none, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+                    (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
                 end
             end
         end...,
@@ -1781,7 +1785,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 return map(As, Bs, Cs) do A, B, C
                     a_da = _make_codual(P(α), P(dα))
                     b_db = _make_codual(P(β), P(dβ))
-                    (false, :none, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C)
+                    (
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    )
                 end
             end
         end...,
@@ -1806,7 +1812,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 return map(As, Bs, Cs) do A, B, C
                     a_da = _make_codual(P(α), P(dα))
                     b_db = _make_codual(P(β), P(dβ))
-                    (false, :none, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+                    (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
                 end
             end
         end...,
@@ -1829,7 +1835,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 return map(As, Bs, Cs) do A, B, C
                     a_da = _make_codual(P(α), P(dα))
                     b_db = _make_codual(P(β), P(dβ))
-                    (false, :none, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C)
+                    (
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    )
                 end
             end
         end...,
