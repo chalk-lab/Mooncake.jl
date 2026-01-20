@@ -117,6 +117,11 @@ jobs:
           - '1.12'
         arch:
           - x64
+        exclude:
+          - test_group: { test_type: 'integration_testing', label: 'format' }
+            version: '1.11'
+          - test_group: { test_type: 'integration_testing', label: 'format' }
+            version: '1.12'
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
