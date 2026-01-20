@@ -7,14 +7,14 @@ is computed, and `tangent` the direction in which it is computed.
 
 Must satisfy `tangent_type(P) == T`.
 """
-struct Dual{P,T}
+struct Dual{P,T,N}
     primal::P
-    tangent::T
+    tangents::NTuple{N,T}
 end
 
 primal(x::Dual) = x.primal
-tangent(x::Dual) = x.tangent
-Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangent(x)))
+tangents(x::Dual) = x.tangents
+Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangents(x)))
 # Dual can be safely shared without copying
 _copy(x::P) where {P<:Dual} = x
 
@@ -25,7 +25,7 @@ Helper function. Returns the 2-tuple `x.x, x.dx`.
 """
 extract(x::Dual) = primal(x), tangent(x)
 
-zero_dual(x) = Dual(x, zero_tangent(x))
+zero_dual(x, N::Val) = Dual(x, ntuple(_ -> zero_tangent(x), N))
 randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 
 function dual_type(::Type{P}) where {P}
