@@ -1800,7 +1800,7 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
         rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
         dynamic_rule.cache[sig] = rule
     end
-    return rule(args...)
+    return @noinline rule(args...)
 end
 
 """
@@ -1884,13 +1884,13 @@ end
 _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
 
 @inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
-    return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
+    return isdefined(rule, :rule) ? @noinline rule.rule(args...) : _build_rule!(rule, args)
 end
 
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ReverseMode)
     rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
-    return rule.rule(args...)
+    return @noinline rule.rule(args...)
 end
 
 """
