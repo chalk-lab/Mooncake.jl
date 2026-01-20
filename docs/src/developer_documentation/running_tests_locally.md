@@ -55,7 +55,7 @@ You should run these tests by simply `include`ing the `.jl` file. Doing so will 
 To run GitHub Actions locally via Docker, you can use [`act`](https://github.com/nektos/act):
 
 ```bash
-act push -P ubuntu-18.04=nektos/act-environments-ubuntu:ubuntu-latest --container-architecture linux/amd64
+act -W .github/workflows/{workflow}.yml
 ```
 
 This allows you to test GitHub Actions workflows on your local machine before pushing changes to the repository.
