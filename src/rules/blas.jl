@@ -88,6 +88,24 @@ function arrayify(x::A, dx::DA) where {A,DA}
     return error(msg)
 end
 
+"""
+    matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
+                          CoDual{<:AbstractVecOrMat{<:BlasFloat}}})
+
+Normalize a vector or matrix primal–tangent pair into a BLAS-compatible matrix form.
+
+If the primal value is a vector, it is reshaped into a column matrix of size `(length(x), 1)`,
+and the associated tangent is reshaped in the same way. If the primal value is already a
+matrix, both the primal and tangent are returned unchanged.
+"""
+function matrixify(x_dx::Union{Dual{T},CoDual{T}}) where {P<:BlasFloat,T<:AbstractVector{P}}
+    x, dx = arrayify(x_dx)
+    return reshape(x, :, 1), reshape(dx, :, 1)
+end
+function matrixify(x_dx::Union{Dual{T},CoDual{T}}) where {P<:BlasFloat,T<:AbstractMatrix{P}}
+    return arrayify(x_dx)
+end
+
 function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{Ptr{P}},CoDual{Ptr{P}}}, incx::BLAS.BlasInt
 ) where {P<:BlasFloat}
@@ -370,34 +388,12 @@ end
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
     alpha::Dual{P},
-    A_dA::Dual{<:AbstractVector{P}},
+    A_dA::Dual{<:AbstractVecOrMat{P}},
     x_dx::Dual{<:AbstractVector{P}},
     beta::Dual{P},
     y_dy::Dual{<:AbstractVector{P}},
 ) where {P<:BlasFloat}
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-    y, dy = arrayify(y_dy)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
-
-    _gemv!_frule_core!(
-        primal(tA), α, dα, reshape(A, :, 1), reshape(dA, :, 1), x, dx, β, dβ, y, dy
-    )
-
-    return y_dy
-end
-
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    x_dx::Dual{<:AbstractVector{P}},
-    beta::Dual{P},
-    y_dy::Dual{<:AbstractVector{P}},
-) where {P<:BlasFloat}
-    A, dA = arrayify(A_dA)
+    A, dA = matrixify(A_dA)
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
     α, dα = numberify(alpha)
@@ -443,7 +439,7 @@ end
     ::CoDual{typeof(BLAS.gemv!)},
     _tA::CoDual{Char},
     _alpha::CoDual{P},
-    _A::CoDual{<:AbstractVector{P}},
+    _A::CoDual{<:AbstractVecOrMat{P}},
     _x::CoDual{<:AbstractVector{P}},
     _beta::CoDual{P},
     _y::CoDual{<:AbstractVector{P}},
@@ -452,32 +448,7 @@ end
     # Pull out primals and tangents (the latter only where necessary).
     trans = _tA.x
     alpha = _alpha.x
-    A, dA = arrayify(_A)
-    x, dx = arrayify(_x)
-    beta = _beta.x
-    y, dy = arrayify(_y)
-
-    pb = _gemv!_rrule_core!(
-        trans, alpha, reshape(A, :, 1), reshape(dA, :, 1), x, dx, beta, y, dy
-    )
-
-    return _y, pb
-end
-
-@inline function rrule!!(
-    ::CoDual{typeof(BLAS.gemv!)},
-    _tA::CoDual{Char},
-    _alpha::CoDual{P},
-    _A::CoDual{<:AbstractMatrix{P}},
-    _x::CoDual{<:AbstractVector{P}},
-    _beta::CoDual{P},
-    _y::CoDual{<:AbstractVector{P}},
-) where {P<:BlasFloat}
-
-    # Pull out primals and tangents (the latter only where necessary).
-    trans = _tA.x
-    alpha = _alpha.x
-    A, dA = arrayify(_A)
+    A, dA = matrixify(_A)
     x, dx = arrayify(_x)
     beta = _beta.x
     y, dy = arrayify(_y)
@@ -897,14 +868,18 @@ end
     } where {T<:BlasFloat},
 )
 
-# Matrix × Matrix
-function frule!!(
+# Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
+function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
+    return isnan(cond) * left + !isnan(cond) * right
+end
+
+@inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
     transB::Dual{Char},
     alpha::Dual{T},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    B_dB::Dual{<:AbstractMatrix{T}},
+    A_dA::Dual{<:AbstractVecOrMat{T}},
+    B_dB::Dual{<:AbstractVecOrMat{T}},
     beta::Dual{T},
     C_dC::Dual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
@@ -912,100 +887,11 @@ function frule!!(
     tB = primal(transB)
     α, dα = numberify(alpha)
     β, dβ = numberify(beta)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
+    A, dA = matrixify(A_dA)
+    B, dB = matrixify(B_dB)
     C, dC = arrayify(C_dC)
 
     _gemm!_frule_core!(tA, tB, α, dα, A, dA, B, dB, β, dβ, C, dC)
-
-    return C_dC
-end
-
-# Matrix × Vector
-function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Dual{T},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    B_dB::Dual{<:AbstractVector{T}},
-    beta::Dual{T},
-    C_dC::Dual{<:AbstractVecOrMat{T}},
-) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-    C, dC = arrayify(C_dC)
-
-    _gemm!_frule_core!(
-        tA, tB, α, dα, A, dA, reshape(B, :, 1), reshape(dB, :, 1), β, dβ, C, dC
-    )
-
-    return C_dC
-end
-
-# Vector × Matrix
-function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Dual{T},
-    A_dA::Dual{<:AbstractVector{T}},
-    B_dB::Dual{<:AbstractMatrix{T}},
-    beta::Dual{T},
-    C_dC::Dual{<:AbstractVecOrMat{T}},
-) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-    C, dC = arrayify(C_dC)
-
-    _gemm!_frule_core!(
-        tA, tB, α, dα, reshape(A, :, 1), reshape(dA, :, 1), B, dB, β, dβ, C, dC
-    )
-
-    return C_dC
-end
-
-# Vector × Vector
-function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Dual{T},
-    A_dA::Dual{<:AbstractVector{T}},
-    B_dB::Dual{<:AbstractVector{T}},
-    beta::Dual{T},
-    C_dC::Dual{<:AbstractVecOrMat{T}},
-) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-    C, dC = arrayify(C_dC)
-
-    _gemm!_frule_core!(
-        tA,
-        tB,
-        α,
-        dα,
-        reshape(A, :, 1),
-        reshape(dA, :, 1),
-        reshape(B, :, 1),
-        reshape(dB, :, 1),
-        β,
-        dβ,
-        C,
-        dC,
-    )
 
     return C_dC
 end
@@ -1046,14 +932,13 @@ end
     return nothing
 end
 
-# Matrix × Matrix
-function rrule!!(
+@inline function rrule!!(
     ::CoDual{typeof(BLAS.gemm!)},
     transA::CoDual{Char},
     transB::CoDual{Char},
     alpha::CoDual{T},
-    A::CoDual{<:AbstractMatrix{T}},
-    B::CoDual{<:AbstractMatrix{T}},
+    A::CoDual{<:AbstractVecOrMat{T}},
+    B::CoDual{<:AbstractVecOrMat{T}},
     beta::CoDual{T},
     C::CoDual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
@@ -1061,98 +946,11 @@ function rrule!!(
     tB = primal(transB)
     a = primal(alpha)
     b = primal(beta)
-    p_A, dA = arrayify(A)
-    p_B, dB = arrayify(B)
+    p_A, dA = matrixify(A)
+    p_B, dB = matrixify(B)
     p_C, dC = arrayify(C)
 
     pb = _gemm!_rrule_core!(tA, tB, a, p_A, dA, p_B, dB, b, p_C, dC)
-
-    return C, pb
-end
-
-# Matrix × Vector
-function rrule!!(
-    ::CoDual{typeof(BLAS.gemm!)},
-    transA::CoDual{Char},
-    transB::CoDual{Char},
-    alpha::CoDual{T},
-    A::CoDual{<:AbstractMatrix{T}},
-    B::CoDual{<:AbstractVector{T}},
-    beta::CoDual{T},
-    C::CoDual{<:AbstractVecOrMat{T}},
-) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
-    a = primal(alpha)
-    b = primal(beta)
-    p_A, dA = arrayify(A)
-    p_B, dB = arrayify(B)
-    p_C, dC = arrayify(C)
-
-    pb = _gemm!_rrule_core!(
-        tA, tB, a, p_A, dA, reshape(p_B, :, 1), reshape(dB, :, 1), b, p_C, dC
-    )
-
-    return C, pb
-end
-
-# Vector × Matrix
-function rrule!!(
-    ::CoDual{typeof(BLAS.gemm!)},
-    transA::CoDual{Char},
-    transB::CoDual{Char},
-    alpha::CoDual{T},
-    A::CoDual{<:AbstractVector{T}},
-    B::CoDual{<:AbstractMatrix{T}},
-    beta::CoDual{T},
-    C::CoDual{<:AbstractVecOrMat{T}},
-) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
-    a = primal(alpha)
-    b = primal(beta)
-    p_A, dA = arrayify(A)
-    p_B, dB = arrayify(B)
-    p_C, dC = arrayify(C)
-
-    pb = _gemm!_rrule_core!(
-        tA, tB, a, reshape(p_A, :, 1), reshape(dA, :, 1), p_B, dB, b, p_C, dC
-    )
-
-    return C, pb
-end
-
-# Vector × Vector
-function rrule!!(
-    ::CoDual{typeof(BLAS.gemm!)},
-    transA::CoDual{Char},
-    transB::CoDual{Char},
-    alpha::CoDual{T},
-    A::CoDual{<:AbstractVector{T}},
-    B::CoDual{<:AbstractVector{T}},
-    beta::CoDual{T},
-    C::CoDual{<:AbstractVecOrMat{T}},
-) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
-    a = primal(alpha)
-    b = primal(beta)
-    p_A, dA = arrayify(A)
-    p_B, dB = arrayify(B)
-    p_C, dC = arrayify(C)
-
-    pb = _gemm!_rrule_core!(
-        tA,
-        tB,
-        a,
-        reshape(p_A, :, 1),
-        reshape(dA, :, 1),
-        reshape(p_B, :, 1),
-        reshape(dB, :, 1),
-        b,
-        p_C,
-        dC,
-    )
 
     return C, pb
 end
@@ -1172,7 +970,7 @@ end
 
     # Save state and run primal
     p_C_copy = copy(p_C)
-    tmp_ref = Ref{typeof(p_C)}()
+    tmp_ref = Ref{Matrix{T}}()
 
     if (a == 1 && b == 0)
         BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
@@ -1247,11 +1045,6 @@ end
         )
     end
     return gemm!_pb!!
-end
-
-# Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
-function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
-    return isnan(cond) * left + !isnan(cond) * right
 end
 
 for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
@@ -1944,12 +1737,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     # BLAS LEVEL 3
     #
 
-    # Hongs comments
     # The tests are quite sensitive to the random inputs,
     # so each tested function gets its own rng.
 
-    # gemm!
-    # matrix × matrix
+    # gemm! - matrix × matrix
     test_cases = append!(
         test_cases,
         let
@@ -1973,7 +1764,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         end...,
     )
 
-    # matrix × vector
+    # gemm! - matrix × vector
     test_cases = append!(
         test_cases,
         let
@@ -1996,7 +1787,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         end...,
     )
 
-    # vector × matrix
+    # gemm! - vector × matrix
     test_cases = append!(
         test_cases,
         let
@@ -2021,7 +1812,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         end...,
     )
 
-    # vector × vector
+    # gemm! - vector × vector
     test_cases = append!(
         test_cases,
         let
