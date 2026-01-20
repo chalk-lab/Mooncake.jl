@@ -80,39 +80,6 @@ function rrule!!(
     )
 end
 
-# TODO: This is a workaround for forward-over-reverse. Primitives in reverse mode can get
-# inlined when building the forward rule, exposing internal ccalls that lack an frule!!.
-# For example, `dataids` is a reverse-mode primitive, but inlining it exposes
-# `jl_genericmemory_owner`. The proper fix is to prevent primitive inlining during
-# forward-over-reverse by forwarding `inlining_policy` through `BugPatchInterpreter` to
-# `MooncakeInterpreter` during `optimise_ir!`, but this causes allocation regressions.
-# See https://github.com/chalk-lab/Mooncake.jl/pull/878 for details.
-@static if VERSION >= v"1.11-"
-    function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_genericmemory_owner}},
-        ::Dual{Val{Any}},
-        ::Dual{Tuple{Val{Any}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        a::Dual{<:Memory},
-    )
-        return zero_dual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
-    end
-    function rrule!!(
-        ::CoDual{typeof(_foreigncall_)},
-        ::CoDual{Val{:jl_genericmemory_owner}},
-        ::CoDual{Val{Any}},
-        ::CoDual{Tuple{Val{Any}}},
-        ::CoDual{Val{0}},
-        ::CoDual{Val{:ccall}},
-        a::CoDual{<:Memory},
-    )
-        y = zero_fcodual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
-        return y, NoPullback(ntuple(_ -> NoRData(), 7))
-    end
-end
-
 # Avoid differentiating through AD infrastructure during second-order differentiation.
 @zero_derivative MinimalCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(prepare_gradient_cache),Vararg
