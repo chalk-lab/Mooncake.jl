@@ -36,7 +36,7 @@ end
 function arrayify(
     x::A, dx::A
 ) where {T<:Union{IEEEFloat,BlasRealFloat},A<:Union{Array{<:T},Ptr{<:T}}}
-    (x, dx)
+    return (x, dx)
 end
 function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
     return x, reinterpret(P, dx)
@@ -107,8 +107,8 @@ function viewify(
 end
 
 numberify(x::BlasRealFloat) = x
-function numberify(x::Tangent{@NamedTuple{re::P,im::P}}) where {P<:BlasRealFloat}
-    complex(x.fields.re, x.fields.im)
+function numberify(x::Tangent{@NamedTuple{re::P, im::P}}) where {P<:BlasRealFloat}
+    return complex(x.fields.re, x.fields.im)
 end
 numberify(x::Dual) = primal(x), numberify(tangent(x))
 _rdata(x::BlasRealFloat) = x
@@ -2130,6 +2130,5 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         end...,
     )
     memory = Any[]
-    # return test_cases, memory
-    return Any[], memory
+    return test_cases, memory
 end
