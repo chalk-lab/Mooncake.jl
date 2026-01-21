@@ -440,9 +440,7 @@ end
     beta = _beta.x
     y, dy = arrayify(_y)
 
-    pb = _gemv!_rrule_core!(
-        trans, alpha, reshape(A, :, 1), reshape(dA, :, 1), x, dx, beta, y, dy
-    )
+    pb = _gemv!_rrule_core!(trans, alpha, A, dA, x, dx, beta, y, dy)
 
     return _y, pb
 end
