@@ -95,7 +95,6 @@ jobs:
           {test_type: 'ext', label: 'luxlib'},
           {test_type: 'ext', label: 'nnlib'},
           {test_type: 'ext', label: 'special_functions'},
-          {test_type: 'integration_testing', label: 'format'},
           {test_type: 'integration_testing', label: 'array'},
           {test_type: 'integration_testing', label: 'bijectors'},
           {test_type: 'integration_testing', label: 'diff_tests'},
@@ -117,6 +116,10 @@ jobs:
           - '1.12'
         arch:
           - x64
+        include:
+          - test_group: { test_type: 'integration_testing', label: 'format' }
+            version: 'lts'
+            arch: x64
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
