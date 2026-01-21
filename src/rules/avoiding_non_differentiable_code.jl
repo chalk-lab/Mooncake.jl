@@ -17,24 +17,24 @@ end
 @zero_derivative MinimalCtx Tuple{Type{Float16},Any,RoundingMode}
 @zero_derivative MinimalCtx Tuple{typeof(==),Type,Type}
 
-# logging, String related primitive rules
+# Logging: String-related primitive rules
 using Base: getindex, getproperty
 using Base.Threads: Atomic
 using Mooncake: zero_fcodual, MinimalCtx, @is_primitive, NoPullback, CoDual
 using Base.CoreLogging: LogLevel, handle_message, invokelatest
 import Base.CoreLogging as CoreLogging
 
-# Rule for accessing an Atomic{T} wrapped Integer with Base.getindex as deriving a rule
-# results in encountering a Atomic->Int address bitcast followed by a llvm atomic load call.
+# Rule for accessing an Atomic{T}-wrapped Integer with Base.getindex, since deriving a rule
+# results in encountering an Atomic->Int address bitcast followed by an LLVM atomic load call.
 @zero_derivative MinimalCtx Tuple{typeof(getindex),Atomic{I}} where {I<:Integer}
 
-# Some Base String related rrules :
+# Some Base String-related rrules:
 @zero_derivative MinimalCtx Tuple{typeof(print),Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(println),Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(show),Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(normpath),String}
 
-# seperate kwargs, non-kwargs Base.sprint rules are required. Julia compilation only gives a
+# Separate kwargs and non-kwargs Base.sprint rules are required. Julia compilation only gives a
 # common lowered IR for any Base.sprint calls. Refer to issue #558 and PR
 # https://github.com/chalk-lab/Mooncake.jl/pull/659 for another sneaky appearance of this
 # problem + fix.

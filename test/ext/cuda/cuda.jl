@@ -9,7 +9,7 @@ using LinearAlgebra
 @testset "cuda" begin
     cuda = CUDA.functional()
     if cuda
-        # TODO: move test cases definitions to `src/ext/MooncakeCUDAExt.jl` in line 
+        # TODO: move test case definitions to `src/ext/MooncakeCUDAExt.jl`, in line
         # with other rules.
         #
         # Check we can operate on CuArrays of various element types.
@@ -53,7 +53,7 @@ using LinearAlgebra
         test_cases = Any[
             # sum
             (false, :none, false, sum, _rand(rng, 64, 32)),
-            # similar 
+            # similar
             (true, :none, false, similar, _rand(rng, 64, 32)),
             # adjoint
             # TODO: currently broken, likely caused by missing rules for `_new_`. 
@@ -68,6 +68,6 @@ using LinearAlgebra
             test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only)
         end
     else
-        println("Tests are skipped since no CUDA device was found. ")
+        println("Tests are skipped because no CUDA device was found.")
     end
 end

@@ -48,7 +48,7 @@ shared_data_tuple(p::SharedDataPairs)::Tuple = tuple(map(last, p.pairs)...)
 """
     shared_data_stmts(p::SharedDataPairs)::Vector{IDInstPair}
 
-Produce a sequence of id-statment pairs which will extract the data from
+Produce a sequence of id-statement pairs which will extract the data from
 `shared_data_tuple(p)` such that the correct value is associated to the correct `ID`.
 
 For example, if `p.pairs` is
@@ -686,7 +686,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         arg_types = map(arg -> get_primal_type(info, arg), args)
 
         # Special case: if the result of a call to getfield is un-used, then leave the
-        # primal statment alone (just increment arguments as usual). This was causing
+        # primal statement alone (just increment arguments as usual). This was causing
         # performance problems in a couple of situations where the field being requested is
         # not known at compile time. `getfield` cannot be dead-code eliminated, because it
         # can throw an error if the requested field does not exist. Everything _other_ than
