@@ -104,13 +104,17 @@ callable `struct` with type parameters which are the result of this computation.
 context, the motivation for using this function is the same as that of using staged
 programming (e.g. via `@generated` functions) more generally.
 """
-struct PrimitiveRRule{Sig} end
+struct PrimitiveRRule{Sig, Tmaybeinline} end
 
-@noinline function (rule::PrimitiveRRule{Sig})(args...) where {Sig}
-    return tuple_splat(rrule!!, args)
+function (rule::PrimitiveRRule{Sig, Tmaybeinline})(args...) where {Sig, Tmaybeinline < Bool}
+    return if Tmaybeinline
+              tuple_splat(rrule!!, args)
+         else
+              @noinline tuple_splat(rrule!!, args)
+         end 
 end
 
-build_primitive_rrule(sig::Type{<:Tuple}) = PrimitiveRRule{sig}()
+build_primitive_rrule(sig::Type{<:Tuple}, maybeinline_primitive::Bool) = PrimitiveRRule{sig, maybeinline_primitive}()
 
 #! format: off
 @stable default_mode = "disable" default_union_limit = 2 begin

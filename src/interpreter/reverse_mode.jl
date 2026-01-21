@@ -131,7 +131,7 @@ struct ADInfo
     arg_rdata_ref_ids::Dict{Argument,ID}
     ssa_rdata_ref_ids::Dict{ID,ID}
     debug_mode::Bool
-    noinline_primitives::Bool
+    maybeinline_primitive::Bool
     is_used_dict::Dict{ID,Bool}
     lazy_zero_rdata_ref_id::ID
     fwd_ret_type::Type
@@ -709,11 +709,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         sig = Tuple{arg_types...}
         interp = info.interp
         raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
-            if info.noinline_primitives
-                build_primitive_rrule(sig)
-            else
-                rrule!!
-            end # intrinsic / builtin / thing we provably have rule for
+            build_primitive_rrule(sig; maybeinline_primitive = info.maybeinline_primitive)
         elseif is_invoke
             mi = get_mi(stmt.args[1])
             LazyDerivedRule(mi, info.debug_mode, info.noinline_primitives) # Static dispatch
