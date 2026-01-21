@@ -20,12 +20,11 @@ using Static: True
 )
 
 ## For mooncake we are missing some rules. For now use the basic versions of the kernels
-@mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) = LuxLib.GenericBroadcastOp{
-    get_device_type(xs)
-}()
+# @mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) =
+# LuxLib.GenericBroadcastOp{get_device_type(xs)}()
 
 # Utils extensions
-@mooncake_overlay Utils.within_autodiff(x) = True()
+# @mooncake_overlay Utils.within_autodiff(x) = True()
 
 # Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
 @mooncake_overlay function LuxLib.Impl.fused_dense(

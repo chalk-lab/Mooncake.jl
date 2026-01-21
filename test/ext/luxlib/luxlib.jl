@@ -90,35 +90,32 @@ using Mooncake.TestUtils: test_rule
     end
 end
 
+# tests should pass for derived rules.
+# Lux kernel fusion stuff
+@testset "fused_dense backward pass" begin
+    using Mooncake, LuxLib, NNlib, Zygote, Random
+    using Test
+    # @testset for wT in (Float32, Float64),
+    wT = Float32
+    xT = Float32
+    # , Float64)
+    has_bias = true
+    #  false)
 
-# tests pass but only fro derived rule.
+    x = randn(xT, 3, 6)
+    weight = randn(wT, 2, 3)
+    bias = has_bias ? randn(wT, 2) : nothing
 
-# Lux kernel fusion
+    fn = sum ∘ fused_dense_bias_activation
 
-using Mooncake, LuxLib, NNlib, Zygote, Random
-using Test
-# @testset for wT in (Float32, Float64),
-wT = Float32
-xT = Float32
-# , Float64)
-has_bias = true
-#  false)
+    cache = Mooncake.build_rrule(fn, gelu, weight, x, bias)
+    _, (_, _, ∂weight, ∂x, ∂bias) = value_and_gradient!!(cache, fn, gelu, weight, x, bias)
 
-x = randn(xT, 3, 6)
-weight = randn(wT, 2, 3)
-bias = has_bias ? randn(wT, 2) : nothing
+    _, ∂weight_zyg, ∂x_zyg, ∂bias_zyg = Zygote.gradient(fn, gelu, weight, x, bias)
 
-fn = sum ∘ fused_dense_bias_activation
-
-cache = Mooncake.build_rrule(fn, gelu, weight, x, bias)
-_, (_, _, ∂weight, ∂x, ∂bias) = value_and_gradient!!(cache, fn, gelu, weight, x, bias)
-
-_, ∂weight_zyg, ∂x_zyg, ∂bias_zyg = Zygote.gradient(fn, gelu, weight, x, bias)
-
-@test ∂x ≈ ∂x_zyg atol = 1.0e-3 rtol = 1.0e-3
-@test ∂weight ≈ ∂weight_zyg atol = 1.0e-3 rtol = 1.0e-3
-if has_bias
-    @test ∂bias ≈ ∂bias_zyg atol = 1.0e-3 rtol = 1.0e-3
+    @test ∂x ≈ ∂x_zyg atol = 1.0e-3 rtol = 1.0e-3
+    @test ∂weight ≈ ∂weight_zyg atol = 1.0e-3 rtol = 1.0e-3
+    if has_bias
+        @test ∂bias ≈ ∂bias_zyg atol = 1.0e-3 rtol = 1.0e-3
+    end
 end
-# end
-
