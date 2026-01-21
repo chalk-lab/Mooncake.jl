@@ -402,7 +402,11 @@ end
 Increment `fdata` by the fdata component of the ChainRules.jl-style tangent, `cr_tangent`,
 and return the rdata component of `cr_tangent` by adding it to `zero_rdata`.
 """
-increment_and_get_rdata!(::NoFData, r::T, t::T) where {T<:IEEEFloat} = r + t
+function increment_and_get_rdata!(
+    ::NoFData, r::T, t::T
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    r + t
+end
 function increment_and_get_rdata!(f::Array{P}, ::NoRData, t::Array{P}) where {P<:IEEEFloat}
     increment!!(f, t)
     return NoRData()
@@ -410,13 +414,6 @@ end
 increment_and_get_rdata!(::Any, r, ::CRC.NoTangent) = r
 function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
-end
-
-# Add ChainRulesCore-style tangents to existing Mooncake-style tangents.
-function increment_and_get_rdata!(
-    f::NoFData, r::Complex{T}, t::Complex{T}
-) where {T<:IEEEFloat}
-    return _rdata(r + t)
 end
 
 # If a ChainRulesCore complex tangent is `NotImplemented`, return a `NaN`-filled Mooncake tangent.
