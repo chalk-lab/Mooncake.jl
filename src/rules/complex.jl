@@ -38,13 +38,13 @@ primal_to_tangent_internal!!(t::P, x::P, ::MaybeCache) where {P<:CF} = x
 
 _add_to_primal_internal(::MaybeCache, x::T, t::T, ::Bool) where {T<:CF} = x + t
 
-function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:CF}
+function _dot_internal(::MaybeCache, t::T, s::T) where {T<:CF}
     _dot(real(t), real(s)) + _dot(imag(t), imag(s))
 end
 
 _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
 
-populate_address_map_internal(m::AddressMap, ::P, ::P) where {P<:CF} = m
+TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),CF{T},Val} where {T}
 function frule!!(
