@@ -119,12 +119,6 @@ function viewify(
     return view(x, xinds), view(dx, xinds)
 end
 
-numberify(x::BlasRealFloat) = x
-function numberify(x::Tangent{@NamedTuple{re::P,im::P}}) where {P<:BlasRealFloat}
-    complex(x.fields.re, x.fields.im)
-end
-numberify(x::Dual) = primal(x), numberify(tangent(x))
-_rdata(x::BlasFloat) = x
 
 #
 # Utility
@@ -320,7 +314,7 @@ function frule!!(
     # Extract params.
     n = primal(_n)
     incx = primal(_incx)
-    a, da = numberify(a_da)
+    a, da = extract(a_da)
     X, dX = arrayify(X_dX)
 
     # Compute Frechet derivative.
@@ -362,7 +356,7 @@ function rrule!!(
         # Compute gradient w.r.t. DX.
         BLAS.scal!(a', dX)
 
-        return NoRData(), NoRData(), _rdata(∇a), NoRData(), NoRData()
+        return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
     end
     return X_dX, scal_adjoint
 end
@@ -390,8 +384,8 @@ end
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
+    α, dα = extract(alpha)
+    β, dβ = extract(beta)
 
     _gemv!_frule_core!(
         primal(tA), α, dα, reshape(A, :, 1), reshape(dA, :, 1), x, dx, β, dβ, y, dy
@@ -412,8 +406,8 @@ end
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
+    α, dα = extract(alpha)
+    β, dβ = extract(beta)
 
     _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
 
@@ -547,10 +541,10 @@ end
         return (
             NoRData(),
             NoRData(),
-            _rdata(dalpha),
+            dalpha,
             NoRData(),
             NoRData(),
-            _rdata(dbeta),
+            dbeta,
             NoRData(),
         )
     end
@@ -586,8 +580,8 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
     ) where {T<:$elty}
         # Extract primals.
         ul = primal(uplo)
-        α, dα = numberify(alpha)
-        β, dβ = numberify(beta)
+        α, dα = extract(alpha)
+        β, dβ = extract(beta)
         A, dA = arrayify(A_dA)
         x, dx = arrayify(x_dx)
         y, dy = arrayify(y_dy)
@@ -681,10 +675,10 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             return (
                 NoRData(),
                 NoRData(),
-                _rdata(dα),
+                dα,
                 NoRData(),
                 NoRData(),
-                _rdata(dβ),
+                dβ,
                 NoRData(),
             )
         end
@@ -921,8 +915,8 @@ function frule!!(
 ) where {T<:BlasFloat}
     tA = primal(transA)
     tB = primal(transB)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
+    α, dα = extract(alpha)
+    β, dβ = extract(beta)
     A, dA = matrixify(A_dA)
     B, dB = matrixify(B_dB)
     C, dC = arrayify(C_dC)
@@ -1039,10 +1033,10 @@ function rrule!!(
             NoRData(),
             NoRData(),
             NoRData(),
-            _rdata(da),
+            da,
             NoRData(),
             NoRData(),
-            _rdata(db),
+            db,
             NoRData(),
         )
     end
@@ -1080,8 +1074,8 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         # Extract primals.
         s = primal(side)
         ul = primal(uplo)
-        α, dα = numberify(alpha)
-        β, dβ = numberify(beta)
+        α, dα = extract(alpha)
+        β, dβ = extract(beta)
         A, dA = arrayify(A_dA)
         B, dB = arrayify(B_dB)
         C, dC = arrayify(C_dC)
@@ -1168,10 +1162,10 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
                 NoRData(),
                 NoRData(),
                 NoRData(),
-                _rdata(dα),
+                dα,
                 NoRData(),
                 NoRData(),
-                _rdata(dβ),
+                dβ,
                 NoRData(),
             )
         end
@@ -1215,9 +1209,9 @@ for (fname, elty, relty) in (
         # Extract values from pairs.
         uplo = primal(_uplo)
         t = primal(_t)
-        α, dα = numberify(α_dα)
+        α, dα = extract(α_dα)
         A, dA = arrayify(A_dA)
-        β, dβ = numberify(β_dβ)
+        β, dβ = extract(β_dβ)
         C, dC = arrayify(C_dC)
 
         # Compute Frechet derivative.
@@ -1286,9 +1280,9 @@ for (fname, elty, relty) in (
                 NoRData(),
                 NoRData(),
                 NoRData(),
-                _rdata(∇α),
+                ∇α,
                 NoRData(),
-                _rdata(∇β),
+                ∇β,
                 NoRData(),
             )
         end
@@ -1325,7 +1319,7 @@ function frule!!(
     uplo = primal(_uplo)
     ta = primal(_ta)
     diag = primal(_diag)
-    α, dα = numberify(α_dα)
+    α, dα = extract(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
@@ -1402,7 +1396,7 @@ function rrule!!(
             BLAS.trmm!(side, uplo, tA == 'N' ? 'C' : 'N', diag, α', A, dB)
         end
 
-        return tuple_fill(NoRData(), Val(5))..., _rdata(∇α), NoRData(), NoRData()
+        return tuple_fill(NoRData(), Val(5))..., ∇α, NoRData(), NoRData()
     end
 
     return B_dB, trmm_adjoint
@@ -1431,7 +1425,7 @@ function frule!!(
     uplo = primal(_uplo)
     trans = primal(_t)
     diag = primal(_diag)
-    α, dα = numberify(α_dα)
+    α, dα = extract(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
@@ -1515,7 +1509,7 @@ function rrule!!(
         else
             BLAS.trsm!(side, uplo, trans == 'N' ? 'C' : 'N', diag, α', A, dB)
         end
-        return tuple_fill(NoRData(), Val(5))..., _rdata(∇α), NoRData(), NoRData()
+        return tuple_fill(NoRData(), Val(5))..., ∇α, NoRData(), NoRData()
     end
 
     return B_dB, trsm_adjoint
