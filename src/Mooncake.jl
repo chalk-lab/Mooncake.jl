@@ -89,8 +89,8 @@ must also ensure that a method of `_is_primitive(context_type, ReverseMode, sig)
 preferably by using the [@is_primitive](@ref) macro.
 The callable returned by this must obey the rrule interface, but there are no restrictions
 on the type of callable itself. For example, you might return a callable `struct`. By
-default, this function returns `rrule!!` so, most of the time, you should just implement a
-method of `rrule!!`.
+default, this function returns a noinline wrapper around `rrule!!` so, most of the time,
+you should just implement a method of `rrule!!`.
 
 # Extended Help
 
@@ -104,7 +104,13 @@ callable `struct` with type parameters which are the result of this computation.
 context, the motivation for using this function is the same as that of using staged
 programming (e.g. via `@generated` functions) more generally.
 """
-build_primitive_rrule(::Type{<:Tuple}) = rrule!!
+struct PrimitiveRRule{Sig} end
+
+@noinline function (rule::PrimitiveRRule{Sig})(args...) where {Sig}
+    return rrule!!(args...)
+end
+
+build_primitive_rrule(sig::Type{<:Tuple}) = PrimitiveRRule{sig}()
 
 #! format: off
 @stable default_mode = "disable" default_union_limit = 2 begin

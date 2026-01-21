@@ -969,9 +969,13 @@ function test_rule(
     frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
     rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
 
-    # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
+    # If something is primitive, then the rule should be `frule!!` or `build_primitive_rrule`.
     test_fwd && is_primitive && @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
-    test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
+    test_rvs &&
+        is_primitive &&
+        @test rrule == (
+            debug_mode ? DebugRRule(build_primitive_rrule(sig)) : build_primitive_rrule(sig)
+        )
 
     # Generate random tangents for anything that is not already a CoDual.
     x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)

@@ -704,7 +704,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         sig = Tuple{arg_types...}
         interp = info.interp
         raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
-            rrule!! # intrinsic / builtin / thing we provably have rule for
+            build_primitive_rrule(sig) # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
             mi = get_mi(stmt.args[1])
             LazyDerivedRule(mi, info.debug_mode) # Static dispatch
@@ -723,7 +723,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # If debug mode has been requested, use a debug rule.
         rule = info.debug_mode ? DebugRRule(zero_wrapped_rule) : zero_wrapped_rule
 
-        # If the rule is `rrule!!` (i.e. `sig` is primitive), then don't bother putting
+        # If the rule is a singleton (i.e. `sig` is primitive), then don't bother putting
         # the rule into shared data, because it's safe to put it directly into the code.
         rule_ref = add_data_if_not_singleton!(info, rule)
 
