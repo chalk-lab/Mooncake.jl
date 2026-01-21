@@ -974,7 +974,8 @@ function test_rule(
     test_rvs &&
         is_primitive &&
         @test rrule == (
-            debug_mode ? DebugRRule(build_primitive_rrule(sig)) : build_primitive_rrule(sig)
+            debug_mode ? DebugRRule(Mooncake.build_primitive_rrule(sig)) :
+            Mooncake.build_primitive_rrule(sig)
         )
 
     # Generate random tangents for anything that is not already a CoDual.
