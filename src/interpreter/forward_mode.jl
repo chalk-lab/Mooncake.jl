@@ -26,10 +26,14 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-function build_frule(args...; debug_mode=false, silence_debug_messages=true)
+function build_frule(
+    args...; debug_mode=false, silence_debug_messages=true, maybeinline_primitive=true
+)
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages)
+    return build_frule(
+        interp, sig; debug_mode, silence_debug_messages, maybeinline_primitive
+    )
 end
 
 struct DualRuleInfo
@@ -45,6 +49,7 @@ end
         debug_mode=false,
         silence_debug_messages=true,
         skip_world_age_check=false,
+        maybeinline_primitive=true,
     ) where {C}
 
 Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
@@ -52,6 +57,9 @@ Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a
 
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
 than the current world (e.g., when building rules for MistyClosure which uses its own world).
+
+If `maybeinline_primitive` is `false`, primitive `frule!!` calls are wrapped in a noinline
+callable.
 """
 function build_frule(
     interp::MooncakeInterpreter{C},
@@ -59,6 +67,7 @@ function build_frule(
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
+    maybeinline_primitive=true,
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -81,7 +90,8 @@ function build_frule(
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
-        return (debug_mode ? DebugFRule(frule!!) : frule!!)
+        rule = build_primitive_frule(sig; maybeinline_primitive)
+        return (debug_mode ? DebugFRule(rule) : rule)
     end
 
     # We don't have a hand-coded rule, so derive one.

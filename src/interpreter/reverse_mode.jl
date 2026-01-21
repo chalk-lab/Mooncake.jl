@@ -146,7 +146,7 @@ function ADInfo(
     ssa_insts::Dict{ID,NewInstruction},
     is_used_dict::Dict{ID,Bool},
     debug_mode::Bool,
-    noinline_primitives::Bool,
+    maybeinline_primitive::Bool,
     zero_lazy_rdata_ref::Ref{<:Tuple},
     fwd_ret_type::Type,
     rvs_ret_type::Type,
@@ -164,7 +164,7 @@ function ADInfo(
         Dict((k, ID()) for k in keys(arg_types)),
         Dict((k, ID()) for k in keys(ssa_insts)),
         debug_mode,
-        noinline_primitives,
+        maybeinline_primitive,
         is_used_dict,
         add_data!(shared_data_pairs, zero_lazy_rdata_ref),
         fwd_ret_type,
@@ -178,7 +178,7 @@ function ADInfo(
     interp::MooncakeInterpreter,
     ir::BBCode,
     debug_mode::Bool,
-    noinline_primitives::Bool,
+    maybeinline_primitive::Bool,
     fwd_ret_type::Type,
     rvs_ret_type::Type,
 )
@@ -196,7 +196,7 @@ function ADInfo(
         ssa_insts,
         is_used_dict,
         debug_mode,
-        noinline_primitives,
+        maybeinline_primitive,
         zero_lazy_rdata_ref,
         fwd_ret_type,
         rvs_ret_type,
@@ -709,12 +709,12 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         sig = Tuple{arg_types...}
         interp = info.interp
         raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
-            build_primitive_rrule(sig; maybeinline_primitive = info.maybeinline_primitive)
+            build_primitive_rrule(sig; maybeinline_primitive=info.maybeinline_primitive)
         elseif is_invoke
             mi = get_mi(stmt.args[1])
-            LazyDerivedRule(mi, info.debug_mode, info.noinline_primitives) # Static dispatch
+            LazyDerivedRule(mi, info.debug_mode, info.maybeinline_primitive) # Static dispatch
         else
-            DynamicDerivedRule(info.debug_mode, info.noinline_primitives)  # Dynamic dispatch
+            DynamicDerivedRule(info.debug_mode, info.maybeinline_primitive)  # Dynamic dispatch
         end
 
         # Wrap the raw rule in a struct which ensures that any `ZeroRData`s are stripped
@@ -1043,7 +1043,7 @@ struct MooncakeRuleCompilationError <: Exception
     interp::MooncakeInterpreter
     sig
     debug_mode::Bool
-    noinline_primitives::Bool
+    maybeinline_primitive::Bool
 end
 
 function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
@@ -1057,7 +1057,7 @@ function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
     println(io, msg)
     println(
         io,
-        "Mooncake.build_rrule(Mooncake.$(err.interp), $(err.sig); debug_mode=$(err.debug_mode), noinline_primitives=$(err.noinline_primitives))",
+        "Mooncake.build_rrule(Mooncake.$(err.interp), $(err.sig); debug_mode=$(err.debug_mode), maybeinline_primitive=$(err.maybeinline_primitive))",
     )
     return println(
         io,
@@ -1101,23 +1101,23 @@ struct DerivedRuleInfo
 end
 
 """
-    build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, noinline_primitives=false) where {C}
+    build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, maybeinline_primitive=true) where {C}
 
 Returns a `DerivedRule` which is an `rrule!!` for `sig_or_mi` in context `C`. See the
 docstring for `rrule!!` for more info.
 
 If `debug_mode` is `true`, then all calls to rules are replaced with calls to `DebugRRule`s.
 
-If `noinline_primitives` is `true`, primitive `rrule!!` calls are wrapped in a noinline
-callable. This prevents primitive implementations (often ccalls without rules) from being
-inlined, which is required for higher-order differentiation.
+Primitive `rrule!!` calls are wrapped. If `maybeinline_primitive` is `false`, the wrapper is
+forced noinline. This prevents primitive implementations (often ccalls without rules) from
+being inlined, which is required for higher-order differentiation.
 """
 function build_rrule(
     interp::MooncakeInterpreter{C},
     sig_or_mi;
     debug_mode=false,
     silence_debug_messages=true,
-    noinline_primitives=false,
+    maybeinline_primitive=true,
 ) where {C}
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
@@ -1139,7 +1139,7 @@ function build_rrule(
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ReverseMode, sig, interp.world)
-        rule = noinline_primitives ? build_primitive_rrule(sig) : rrule!!
+        rule = build_primitive_rrule(sig; maybeinline_primitive)
         return (debug_mode ? DebugRRule(rule) : rule)
     end
 
@@ -1149,13 +1149,13 @@ function build_rrule(
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
         oc_cache_key = ClosureCacheKey(
-            interp.world, (sig_or_mi, debug_mode, noinline_primitives, :reverse)
+            interp.world, (sig_or_mi, debug_mode, maybeinline_primitive, :reverse)
         )
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
         else
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
-            dri = generate_ir(interp, sig_or_mi; debug_mode, noinline_primitives)
+            dri = generate_ir(interp, sig_or_mi; debug_mode, maybeinline_primitive)
             fwd_oc = misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
             rvs_oc = misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)
 
@@ -1178,7 +1178,7 @@ function build_rrule(
         else
             sig = sig_or_mi isa Core.MethodInstance ? sig_or_mi.specTypes : sig_or_mi
             throw(
-                MooncakeRuleCompilationError(interp, sig, debug_mode, noinline_primitives)
+                MooncakeRuleCompilationError(interp, sig, debug_mode, maybeinline_primitive)
             )
         end
     finally
@@ -1188,7 +1188,7 @@ end
 
 """
     generate_ir(
-        interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true, noinline_primitives=false
+        interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true, maybeinline_primitive=true
     )
 Used by `build_rrule`, and the various debugging tools: primal_ir, fwds_ir, adjoint_ir.
 """
@@ -1197,7 +1197,7 @@ function generate_ir(
     sig_or_mi;
     debug_mode=false,
     do_inline=true,
-    noinline_primitives=false,
+    maybeinline_primitive=true,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -1219,7 +1219,7 @@ function generate_ir(
 
     # Compute global info.
     info = ADInfo(
-        interp, primal_ir, debug_mode, noinline_primitives, fwd_ret_type, rvs_ret_type
+        interp, primal_ir, debug_mode, maybeinline_primitive, fwd_ret_type, rvs_ret_type
     )
 
     # For each block in the fwds and pullback BBCode, translate all statements. Running this
@@ -1790,7 +1790,7 @@ Helper function emitted by `make_switch_stmts`.
 __switch_case(id::Int32, predecessor_id::Int32) = !(id === predecessor_id)
 
 """
-    DynamicDerivedRule(debug_mode::Bool, noinline_primitives::Bool)
+    DynamicDerivedRule(debug_mode::Bool, maybeinline_primitive::Bool)
 
 For internal use only.
 
@@ -1802,16 +1802,16 @@ This is used to implement dynamic dispatch.
 struct DynamicDerivedRule{V}
     cache::V
     debug_mode::Bool
-    noinline_primitives::Bool
+    maybeinline_primitive::Bool
 end
 
-function DynamicDerivedRule(debug_mode::Bool, noinline_primitives::Bool)
-    return DynamicDerivedRule(Dict{Any,Any}(), debug_mode, noinline_primitives)
+function DynamicDerivedRule(debug_mode::Bool, maybeinline_primitive::Bool)
+    return DynamicDerivedRule(Dict{Any,Any}(), debug_mode, maybeinline_primitive)
 end
 
-# Create new dynamic rule with empty cache and same debug mode and noinline_primitives
+# Create new dynamic rule with empty cache and same debug mode and maybeinline_primitive
 function _copy(x::P) where {P<:DynamicDerivedRule}
-    return P(Dict{Any,Any}(), x.debug_mode, x.noinline_primitives)
+    return P(Dict{Any,Any}(), x.debug_mode, x.maybeinline_primitive)
 end
 
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
@@ -1830,7 +1830,7 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
             interp,
             sig;
             debug_mode=dynamic_rule.debug_mode,
-            noinline_primitives=dynamic_rule.noinline_primitives,
+            maybeinline_primitive=dynamic_rule.maybeinline_primitive,
         )
         dynamic_rule.cache[sig] = rule
     end
@@ -1838,7 +1838,7 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 end
 
 """
-    LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool, noinline_primitives::Bool)
+    LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool, maybeinline_primitive::Bool)
 
 For internal use only.
 
@@ -1901,26 +1901,26 @@ the rule for A, we would be unable to complete the derivation of the rule for A.
 """
 mutable struct LazyDerivedRule{primal_sig,Trule}
     debug_mode::Bool
-    noinline_primitives::Bool
+    maybeinline_primitive::Bool
     mi::Core.MethodInstance
     rule::Trule
     function LazyDerivedRule(
-        mi::Core.MethodInstance, debug_mode::Bool, noinline_primitives::Bool
+        mi::Core.MethodInstance, debug_mode::Bool, maybeinline_primitive::Bool
     )
         interp = get_interpreter(ReverseMode)
-        return new{mi.specTypes,rule_type(interp, mi;debug_mode,noinline_primitives)}(
-            debug_mode, noinline_primitives, mi
+        return new{mi.specTypes,rule_type(interp, mi;debug_mode,maybeinline_primitive)}(
+            debug_mode, maybeinline_primitive, mi
         )
     end
     function LazyDerivedRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool, noinline_primitives::Bool
+        mi::Core.MethodInstance, debug_mode::Bool, maybeinline_primitive::Bool
     ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, noinline_primitives, mi)
+        return new{Tprimal_sig,Trule}(debug_mode, maybeinline_primitive, mi)
     end
 end
 
-# Create new lazy rule with same method instance, debug mode, and noinline_primitives
-_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, x.noinline_primitives)
+# Create new lazy rule with same method instance, debug mode, and maybeinline_primitive
+_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, x.maybeinline_primitive)
 
 @inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
     return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
@@ -1932,23 +1932,23 @@ end
         interp,
         rule.mi;
         debug_mode=rule.debug_mode,
-        noinline_primitives=rule.noinline_primitives,
+        maybeinline_primitive=rule.maybeinline_primitive,
     )
     return rule.rule(args...)
 end
 
 """
-    rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode, noinline_primitives) where {C}
+    rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, maybeinline_primitive=true) where {C}
 
 Compute the concrete type of the rule that will be returned from `build_rrule`. This is
 important for performance in dynamic dispatch, and to ensure that recursion works
 properly.
 """
 function rule_type(
-    interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode, noinline_primitives
+    interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, maybeinline_primitive=true
 ) where {C}
     if is_primitive(C, ReverseMode, _get_sig(sig_or_mi), interp.world)
-        rule = noinline_primitives ? build_primitive_rrule(_get_sig(sig_or_mi)) : rrule!!
+        rule = build_primitive_rrule(_get_sig(sig_or_mi); maybeinline_primitive)
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)
     end
 

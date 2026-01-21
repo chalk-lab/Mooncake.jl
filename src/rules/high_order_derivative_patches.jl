@@ -21,7 +21,7 @@ function frule!!(
             interp,
             lazy_rule.mi;
             debug_mode=lazy_rule.debug_mode,
-            noinline_primitives=lazy_rule.noinline_primitives,
+            maybeinline_primitive=lazy_rule.maybeinline_primitive,
         )
     end
     derived_rule = lazy_rule.rule

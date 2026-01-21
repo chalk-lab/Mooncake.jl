@@ -82,15 +82,49 @@ pb!!(1.0)
 function rrule!! end
 
 """
-    build_primitive_rrule(sig::Type{<:Tuple})
+    PrimitiveRRule{Sig, Tmaybeinline}
+
+Callable wrapper used for primitive rrules. When `Tmaybeinline=false`, it forces a noinline
+call boundary around `rrule!!` while still dispatching through `tuple_splat` to avoid vararg
+lowering to `_apply_iterate`. Construct via `build_primitive_rrule`.
+"""
+struct PrimitiveRRule{Sig,Tmaybeinline} end
+
+@inline function (rule::PrimitiveRRule{Sig,true})(args...) where {Sig}
+    return tuple_splat(rrule!!, args)
+end
+
+@noinline function (rule::PrimitiveRRule{Sig,false})(args...) where {Sig}
+    return tuple_splat(rrule!!, args)
+end
+
+"""
+    PrimitiveFRule{Sig, Tmaybeinline}
+
+Callable wrapper used for primitive frules. When `Tmaybeinline=false`, it forces a noinline
+call boundary around `frule!!` while still dispatching through `tuple_splat` to avoid vararg
+lowering to `_apply_iterate`. Construct via `build_primitive_frule`.
+"""
+struct PrimitiveFRule{Sig,Tmaybeinline} end
+
+@inline function (rule::PrimitiveFRule{Sig,true})(args...) where {Sig}
+    return tuple_splat(frule!!, args)
+end
+
+@noinline function (rule::PrimitiveFRule{Sig,false})(args...) where {Sig}
+    return tuple_splat(frule!!, args)
+end
+
+"""
+    build_primitive_rrule(sig::Type{<:Tuple}; maybeinline_primitive=true)
 
 Construct an rrule for signature `sig`. For this function to be called in `build_rrule`, you
 must also ensure that a method of `_is_primitive(context_type, ReverseMode, sig)` exists,
 preferably by using the [@is_primitive](@ref) macro.
 The callable returned by this must obey the rrule interface, but there are no restrictions
 on the type of callable itself. For example, you might return a callable `struct`. By
-default, this function returns a noinline wrapper around `rrule!!` so, most of the time,
-you should just implement a method of `rrule!!`.
+default, this function returns a wrapper that may inline the primitive rule; set
+`maybeinline_primitive=false` to force a noinline boundary (useful for higher-order AD).
 
 # Extended Help
 
@@ -104,17 +138,27 @@ callable `struct` with type parameters which are the result of this computation.
 context, the motivation for using this function is the same as that of using staged
 programming (e.g. via `@generated` functions) more generally.
 """
-struct PrimitiveRRule{Sig, Tmaybeinline} end
-
-function (rule::PrimitiveRRule{Sig, Tmaybeinline})(args...) where {Sig, Tmaybeinline < Bool}
-    return if Tmaybeinline
-              tuple_splat(rrule!!, args)
-         else
-              @noinline tuple_splat(rrule!!, args)
-         end 
+function build_primitive_rrule(sig::Type{<:Tuple}; maybeinline_primitive::Bool=true)
+    PrimitiveRRule{sig,maybeinline_primitive}()
 end
 
-build_primitive_rrule(sig::Type{<:Tuple}, maybeinline_primitive::Bool) = PrimitiveRRule{sig, maybeinline_primitive}()
+function build_primitive_rrule(sig::Type{<:Tuple}, maybeinline_primitive::Bool)
+    PrimitiveRRule{sig,maybeinline_primitive}()
+end
+
+"""
+    build_primitive_frule(sig::Type{<:Tuple}; maybeinline_primitive=true)
+
+Construct a primitive frule wrapper. Set `maybeinline_primitive=false` to force a noinline
+boundary.
+"""
+function build_primitive_frule(sig::Type{<:Tuple}; maybeinline_primitive::Bool=true)
+    PrimitiveFRule{sig,maybeinline_primitive}()
+end
+
+function build_primitive_frule(sig::Type{<:Tuple}, maybeinline_primitive::Bool)
+    PrimitiveFRule{sig,maybeinline_primitive}()
+end
 
 #! format: off
 @stable default_mode = "disable" default_union_limit = 2 begin
