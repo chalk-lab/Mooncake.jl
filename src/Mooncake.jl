@@ -107,7 +107,7 @@ programming (e.g. via `@generated` functions) more generally.
 struct PrimitiveRRule{Sig} end
 
 @noinline function (rule::PrimitiveRRule{Sig})(args...) where {Sig}
-    return rrule!!(args...)
+    return tuple_splat(rrule!!, args)
 end
 
 build_primitive_rrule(sig::Type{<:Tuple}) = PrimitiveRRule{sig}()

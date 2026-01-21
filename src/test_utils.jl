@@ -942,6 +942,8 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     the correctnes of reverse rules.
 - `atol=1e-3`: absolute tolerance for correctness check of the Frechet derivatives.
 - `rtol=1e-3`: relative tolerance for correctness check of the Frechet derivatives.
+- `noinline_primitives::Bool=false`: if `true`, primitive reverse-mode rules are wrapped
+    with `build_primitive_rrule` (e.g. for higher-order differentiation).
 """
 function test_rule(
     rng::AbstractRNG,
@@ -952,6 +954,7 @@ function test_rule(
     mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
     debug_mode::Bool=false,
     unsafe_perturb::Bool=false,
+    noinline_primitives::Bool=false,
     print_results=true,
     output_tangent=nothing,
     atol=1e-3,
@@ -967,16 +970,16 @@ function test_rule(
     fwd_interp = test_fwd ? get_interpreter(ForwardMode) : missing
     rvs_interp = test_rvs ? get_interpreter(ReverseMode) : missing
     frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
-    rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
+    rrule =
+        test_rvs ? build_rrule(rvs_interp, sig; debug_mode, noinline_primitives) : missing
 
     # If something is primitive, then the rule should be `frule!!` or `build_primitive_rrule`.
     test_fwd && is_primitive && @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
-    test_rvs &&
-        is_primitive &&
-        @test rrule == (
-            debug_mode ? DebugRRule(Mooncake.build_primitive_rrule(sig)) :
-            Mooncake.build_primitive_rrule(sig)
-        )
+    if test_rvs && is_primitive
+        expected_rule = noinline_primitives ? Mooncake.build_primitive_rrule(sig) : rrule!!
+        expected_rule = debug_mode ? DebugRRule(expected_rule) : expected_rule
+        @test rrule == expected_rule
+    end
 
     # Generate random tangents for anything that is not already a CoDual.
     x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
@@ -1029,7 +1032,7 @@ function test_rule(
                 if test_rvs
                     C_rvs = Mooncake.context_type(rvs_interp)
                     if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
-                        cache_key = (sig, false, :reverse)
+                        cache_key = (sig, false, noinline_primitives, :reverse)
                         k = Mooncake.ClosureCacheKey(rvs_interp.world, cache_key)
                         @test haskey(rvs_interp.oc_cache, k)
                     end

@@ -53,6 +53,7 @@ end
             ssa_insts,
             is_used_dict,
             false,
+            false,
             rdata_ref,
             Any,
             Any,
@@ -108,6 +109,7 @@ end
                 ssa_insts,
                 is_used_dict,
                 false,
+                false,
                 rdata_ref,
                 Any,
                 Any,
@@ -162,6 +164,7 @@ end
                 id_line_2 => new_inst(nothing, Any),
             ),
             Dict{ID,Bool}(id_line_1 => true, id_line_2 => true),
+            false,
             false,
             Ref{Tuple{map(Mooncake.lazy_zero_rdata_type, (typeof(sin), Float64))...}}(),
             Any,
@@ -420,7 +423,7 @@ end
         @benchmark Mooncake.value_and_gradient!!($rule, $f, $(Ref(0.0))[])
 
         # 660 -- ensure that the correct signature is used to construct DynamicDerivedRules
-        rule = Mooncake.DynamicDerivedRule(false)
+        rule = Mooncake.DynamicDerivedRule(false, false)
         args = (zero_fcodual(identity), zero_fcodual((v=S2SGlobals.MakeAUnionAll,)))
         @test rule(args...) isa Tuple{CoDual,Any}
     end
@@ -441,9 +444,9 @@ end
         args = (sin, 5.0)
         sig = typeof(args)
         rule_sig = build_rrule(sig; debug_mode=false, silence_debug_messages=true)
-        @test rule_sig == build_primitive_rrule(sig)
+        @test rule_sig == rrule!!
         rule_args = build_rrule(args...; debug_mode=false, silence_debug_messages=true)
-        @test rule_args == build_primitive_rrule(sig)
+        @test rule_args == rrule!!
         rule_debug_sig = build_rrule(sig; debug_mode=true, silence_debug_messages=true)
         @test rule_debug_sig isa Mooncake.DebugRRule
         rule_debug_args = build_rrule(args...; debug_mode=true, silence_debug_messages=true)
