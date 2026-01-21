@@ -444,9 +444,9 @@ end
         args = (sin, 5.0)
         sig = typeof(args)
         rule_sig = build_rrule(sig; debug_mode=false, silence_debug_messages=true)
-        @test rule_sig == rrule!!
+        @test rule_sig isa Mooncake.PrimitiveRRule
         rule_args = build_rrule(args...; debug_mode=false, silence_debug_messages=true)
-        @test rule_args == rrule!!
+        @test rule_args == rule_sig
         rule_debug_sig = build_rrule(sig; debug_mode=true, silence_debug_messages=true)
         @test rule_debug_sig isa Mooncake.DebugRRule
         rule_debug_args = build_rrule(args...; debug_mode=true, silence_debug_messages=true)

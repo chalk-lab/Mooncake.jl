@@ -85,25 +85,33 @@ function rrule!! end
     PrimitiveRRule{Sig, Tmaybeinline}
 
 Callable wrapper used for primitive rrules. When `Tmaybeinline=false`, it forces a noinline
-call boundary around `rrule!!` while still dispatching through `tuple_splat` to avoid vararg
-lowering to `_apply_iterate`. Construct via `build_primitive_rrule`.
+call boundary around `rrule!!`. When `Tmaybeinline=true`, it routes through `tuple_splat`
+to avoid vararg lowering to `_apply_iterate`. Construct via `build_primitive_rrule`.
 """
 struct PrimitiveRRule{Sig,Tmaybeinline} end
+
+@inline function _primitive_rule_sig(sig::Type{<:Tuple})
+    if sig isa DataType && isconcretetype(sig)
+        return sig
+    end
+    nparams = length(Base.unwrap_unionall(sig).parameters)
+    return Tuple{Vararg{Any,nparams}}
+end
 
 @inline function (rule::PrimitiveRRule{Sig,true})(args...) where {Sig}
     return tuple_splat(rrule!!, args)
 end
 
 @noinline function (rule::PrimitiveRRule{Sig,false})(args...) where {Sig}
-    return tuple_splat(rrule!!, args)
+    return rrule!!(args...)
 end
 
 """
     PrimitiveFRule{Sig, Tmaybeinline}
 
 Callable wrapper used for primitive frules. When `Tmaybeinline=false`, it forces a noinline
-call boundary around `frule!!` while still dispatching through `tuple_splat` to avoid vararg
-lowering to `_apply_iterate`. Construct via `build_primitive_frule`.
+call boundary around `frule!!`. When `Tmaybeinline=true`, it routes through `tuple_splat`
+to avoid vararg lowering to `_apply_iterate`. Construct via `build_primitive_frule`.
 """
 struct PrimitiveFRule{Sig,Tmaybeinline} end
 
@@ -112,7 +120,7 @@ struct PrimitiveFRule{Sig,Tmaybeinline} end
 end
 
 @noinline function (rule::PrimitiveFRule{Sig,false})(args...) where {Sig}
-    return tuple_splat(frule!!, args)
+    return frule!!(args...)
 end
 
 """
@@ -139,11 +147,11 @@ context, the motivation for using this function is the same as that of using sta
 programming (e.g. via `@generated` functions) more generally.
 """
 function build_primitive_rrule(sig::Type{<:Tuple}; maybeinline_primitive::Bool=true)
-    PrimitiveRRule{sig,maybeinline_primitive}()
+    PrimitiveRRule{_primitive_rule_sig(sig),maybeinline_primitive}()
 end
 
 function build_primitive_rrule(sig::Type{<:Tuple}, maybeinline_primitive::Bool)
-    PrimitiveRRule{sig,maybeinline_primitive}()
+    PrimitiveRRule{_primitive_rule_sig(sig),maybeinline_primitive}()
 end
 
 """
@@ -153,11 +161,11 @@ Construct a primitive frule wrapper. Set `maybeinline_primitive=false` to force 
 boundary.
 """
 function build_primitive_frule(sig::Type{<:Tuple}; maybeinline_primitive::Bool=true)
-    PrimitiveFRule{sig,maybeinline_primitive}()
+    PrimitiveFRule{_primitive_rule_sig(sig),maybeinline_primitive}()
 end
 
 function build_primitive_frule(sig::Type{<:Tuple}, maybeinline_primitive::Bool)
-    PrimitiveFRule{sig,maybeinline_primitive}()
+    PrimitiveFRule{_primitive_rule_sig(sig),maybeinline_primitive}()
 end
 
 #! format: off
