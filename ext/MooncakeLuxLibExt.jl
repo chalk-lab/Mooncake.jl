@@ -6,7 +6,8 @@ using Base: IEEEFloat
 import LuxLib: Impl, Utils
 import LuxLib.Utils: static_training_mode_check
 using MLDataDevices: get_device_type
-import Mooncake: @from_rrule, DefaultCtx, @mooncake_overlay, CoDual
+import Mooncake:
+    @from_rrule, DefaultCtx, MinimalCtx, @mooncake_overlay, CoDual, @zero_adjoint
 using Static: True
 
 @from_rrule(DefaultCtx, Tuple{typeof(Impl.matmul),Array{P},Array{P}} where {P<:IEEEFloat})
@@ -19,7 +20,79 @@ using Static: True
     Tuple{typeof(Impl.batched_matmul_fallback),Array{P,3},Array{P,3}} where {P<:IEEEFloat},
 )
 
-## For mooncake we are missing some rules. For now use the basic versions of the kernels
+## Fix - For mooncake we are missing some rules. For now use the basic versions of the kernels
+@from_rrule(DefaultCtx, Tuple{typeof(LuxLib.internal_operation_mode),Any})
+
+@from_rrule(DefaultCtx, Tuple{typeof(matmul),AbstractMatrix,AbstractMatrix})
+@from_rrule(
+    MinimalCtx, Tuple{typeof(matmuladd),AbstractMatrix,AbstractMatrix,AbstractVector}
+)
+
+@from_rrule(DefaultCtx, Tuple{typeof(Lux.dropout_dot_mul),AbstractArray,AbstractArray})
+
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Lux.alpha_dropout),LoopedArrayOp,AbstractArray,Any,AbstractArray,Any,Any,Any
+    }
+)
+
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(alpha_dropout),
+        AbstractInternalArrayOpMode,
+        AbstractArray,
+        Any,
+        AbstractArray,
+        Any,
+        Any,
+        Any,
+    }
+)
+
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        RuleConfig{>:HasReverseMode},
+        typeof(fused_conv),
+        AbstractInternalArrayOpMode,
+        F,
+        AbstractArray{wT,N},
+        AbstractArray{xT,N},
+        Optional{<:AbstractVector},
+        ConvDims,
+    }
+) where {F,wT,xT,N}
+
+@from_rrule(DefaultCtx, Tuple{typeof(dropout_shape),Vararg{Any}...})
+@from_rrule(DefaultCtx, Tuple{typeof(generate_alpha_dropout_noise),Vararg{Any}...})
+@from_rrule(DefaultCtx, Tuple{typeof(check_dropout_mask_shape_mismatch),Vararg{Any}...})
+@from_rrule(DefaultCtx, Tuple{typeof(generate_dropout_mask),Vararg{Any}...})
+@from_rrule(DefaultCtx, Tuple{typeof(dropout_fptype),Vararg{Any}...})
+
+@from_rrule(DefaultCtx, Tuple{
+typeof(Impl.batchnorm_cudnn), Any, Any, Any, Any, Any, Any, Any, StaticBool
+})
+
+
+@from_rrule(DefaultCtx, Tuple{
+  typeof(batched_matmul_fallback), AbstractArray, AbstractArray
+})
+
+@from_rrule(DefaultCtx, Tuple{typeof(vec), AbstractArray})
+@from_rrule(DefaultCtx, Tuple{typeof(reshape_bias), AbstractArray, AbstractVector})
+@from_rrule(DefaultCtx, Tuple{typeof(mean_var), AbstractArray})
+
+@from_rrule(DefaultCtx, Tuple{typeof(expand_batchdim), AbstractMatrix})
+@from_rrule(DefaultCtx, Tuple{typeof(within_autodiff), Any})
+@from_rrule(DefaultCtx, Tuple{typeof(static_training_mode), Nothing, Vararg{Any}...})
+
+@from_rrule(typeof(static_training_mode),
+    Union{Bool,Val{true},Val{false},StaticBool},
+    Vararg...
+)
+
 # @mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) =
 # LuxLib.GenericBroadcastOp{get_device_type(xs)}()
 

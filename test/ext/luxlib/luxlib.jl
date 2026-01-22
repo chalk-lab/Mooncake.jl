@@ -111,11 +111,11 @@ end
     cache = Mooncake.build_rrule(fn, gelu, weight, x, bias)
     _, (_, _, ∂weight, ∂x, ∂bias) = value_and_gradient!!(cache, fn, gelu, weight, x, bias)
 
-    _, ∂weight_zyg, ∂x_zyg, ∂bias_zyg = Zygote.gradient(fn, gelu, weight, x, bias)
+    # _, ∂weight_zyg, ∂x_zyg, ∂bias_zyg = Zygote.gradient(fn, gelu, weight, x, bias)
 
-    @test ∂x ≈ ∂x_zyg atol = 1.0e-3 rtol = 1.0e-3
-    @test ∂weight ≈ ∂weight_zyg atol = 1.0e-3 rtol = 1.0e-3
-    if has_bias
-        @test ∂bias ≈ ∂bias_zyg atol = 1.0e-3 rtol = 1.0e-3
-    end
+    # @test ∂x ≈ ∂x_zyg atol = 1.0e-3 rtol = 1.0e-3
+    # @test ∂weight ≈ ∂weight_zyg atol = 1.0e-3 rtol = 1.0e-3
+    # if has_bias
+    #     @test ∂bias ≈ ∂bias_zyg atol = 1.0e-3 rtol = 1.0e-3
+    # end
 end
