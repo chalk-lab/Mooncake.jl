@@ -50,14 +50,18 @@ using LinearAlgebra
         Trng = CUDA.RNG
         rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
+        _sin_bcast(x) = sin.(x)
         test_cases = Any[
             # sum
             (false, :none, false, sum, _rand(rng, 64, 32)),
             # similar
             (true, :none, false, similar, _rand(rng, 64, 32)),
             # adjoint
-            # TODO: currently broken, likely caused by missing rules for `_new_`. 
-            # (false, :none, false, adjoint, _rand(rng, ComplexF64, 64, 32)),
+            (false, :none, false, adjoint, _rand(rng, 64, 32)),
+            (false, :none, false, adjoint, _rand(rng, ComplexF64, 64, 32)),
+            # transpose 
+            (false, :none, false, transpose, _rand(rng, 64, 32)),
+            (false, :none, false, transpose, _rand(rng, ComplexF64, 64, 32)),
         ]
         @testset "$(typeof(fargs))" for (
             interface_only, perf_flag, is_primitive, fargs...
