@@ -245,7 +245,6 @@ This approach is identical to the one taken by `Zygote.jl` to circumvent the sam
 
 **Why rules for both `lgetfield` and `Base.getfield`?** Mooncake's IR normalization transforms most `getfield` calls to `lgetfield` with `Val`-wrapped fields for type stability. However, `Base.getfield` rules are still needed for:
 - Dynamic field access where the field cannot be proven constant at compile time
-- Special optimized paths (e.g., homogeneous tuples)
 - Fallback handling when static information is unavailable
 
 The `Base.getfield` rule often delegates to `lgetfield` internally, making `lgetfield` the primary primitive for field access differentiation.
