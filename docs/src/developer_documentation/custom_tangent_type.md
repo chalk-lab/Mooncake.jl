@@ -222,7 +222,7 @@ You must provide adjoints for every `getfield`/`lgetfield` variant that appears 
 
 **`_new_`**: Mooncake implicitly lowers the constructors of all types to `_new_`. As a result, there is no need to write rules for individual constructors; instead, rules should be written for `_new_`. This provides a uniform interface for differentiating object construction.
 
-For example, the constructor call `A(1.0, A(2.0))` is lowered to:
+For example, the constructor call `A(1.0)` is lowered to:
 ```julia
 _new_(A{Float64}, 1.0)
 ```
