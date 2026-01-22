@@ -305,8 +305,17 @@ function modify_fwd_ad_stmts!(
     end
 
     # stmt is a const, so we have to turn it into a dual.
-    dual_stmt = ReturnNode(const_dual!(captures, stmt.val))
-    Mooncake.replace_call!(dual_ir, ssa, dual_stmt)
+    d = const_dual!(captures, stmt.val)
+    if d isa Int
+        # The dual is stored in captures, need to fetch it before returning.
+        get_capture_call = Expr(:call, get_capture, Argument(1), d)
+        get_capture_ssa = CC.insert_node!(
+            dual_ir, ssa, new_inst(get_capture_call), ATTACH_BEFORE
+        )
+        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(get_capture_ssa))
+    else
+        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(d))
+    end
     return nothing
 end
 
