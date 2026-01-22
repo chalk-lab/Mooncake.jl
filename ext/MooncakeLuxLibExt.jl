@@ -71,26 +71,22 @@ using Static: True
 @from_rrule(DefaultCtx, Tuple{typeof(generate_dropout_mask),Vararg{Any}...})
 @from_rrule(DefaultCtx, Tuple{typeof(dropout_fptype),Vararg{Any}...})
 
-@from_rrule(DefaultCtx, Tuple{
-typeof(Impl.batchnorm_cudnn), Any, Any, Any, Any, Any, Any, Any, StaticBool
-})
+@from_rrule(
+    DefaultCtx, Tuple{typeof(Impl.batchnorm_cudnn),Any,Any,Any,Any,Any,Any,Any,StaticBool}
+)
 
+@from_rrule(DefaultCtx, Tuple{typeof(batched_matmul_fallback),AbstractArray,AbstractArray})
 
-@from_rrule(DefaultCtx, Tuple{
-  typeof(batched_matmul_fallback), AbstractArray, AbstractArray
-})
+@from_rrule(DefaultCtx, Tuple{typeof(vec),AbstractArray})
+@from_rrule(DefaultCtx, Tuple{typeof(reshape_bias),AbstractArray,AbstractVector})
+@from_rrule(DefaultCtx, Tuple{typeof(mean_var),AbstractArray})
 
-@from_rrule(DefaultCtx, Tuple{typeof(vec), AbstractArray})
-@from_rrule(DefaultCtx, Tuple{typeof(reshape_bias), AbstractArray, AbstractVector})
-@from_rrule(DefaultCtx, Tuple{typeof(mean_var), AbstractArray})
+@from_rrule(DefaultCtx, Tuple{typeof(expand_batchdim),AbstractMatrix})
+@from_rrule(DefaultCtx, Tuple{typeof(within_autodiff),Any})
+@from_rrule(DefaultCtx, Tuple{typeof(static_training_mode),Nothing,Vararg{Any}...})
 
-@from_rrule(DefaultCtx, Tuple{typeof(expand_batchdim), AbstractMatrix})
-@from_rrule(DefaultCtx, Tuple{typeof(within_autodiff), Any})
-@from_rrule(DefaultCtx, Tuple{typeof(static_training_mode), Nothing, Vararg{Any}...})
-
-@from_rrule(typeof(static_training_mode),
-    Union{Bool,Val{true},Val{false},StaticBool},
-    Vararg...
+@from_rrule(
+    typeof(static_training_mode), Union{Bool,Val{true},Val{false},StaticBool}, Vararg...
 )
 
 # @mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) =
