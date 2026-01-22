@@ -224,15 +224,17 @@ You must provide adjoints for every `getfield`/`lgetfield` variant that appears 
 
 For example, the constructor call `A(1.0)` is lowered to:
 ```julia
-_new_(A{Float64}, 1.0)
+_new_(A{Float64}, 1.0, nothing)
 ```
-This means you only need to write rules for `_new_` to handle all constructor variants, rather than writing separate rules for `A(::T)`.
+This means `_new_` covers the `:new` portion across constructor variants, rather than writing separate rules just for `A(::T)`.
 
 **`lgetfield` and `lsetfield!`**: These functions are designed for type stability. The standard `getfield(x, :f)` with a symbol argument is not type-stable when the field cannot be constant-propagated. `lgetfield` addresses this by using `Val` to specify the field statically:
 
 ```julia
 lgetfield(x, f::Val)
 ```
+
+The analogous mutating form is `lsetfield!(x, Val(:f), v)`, which corresponds to `setfield!(x, :f, v)` when the field name is a compile-time constant. This only applies to mutable structs, since `setfield!` is invalid for immutable ones. Mooncake's IR normalization also rewrites literal-field `setfield!` calls to `lsetfield!` for the same reason.
 
 This enables both the implementation and its pullback to be type-stable. It will always be the case that:
 
