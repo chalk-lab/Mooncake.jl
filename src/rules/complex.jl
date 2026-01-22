@@ -20,16 +20,15 @@ randn_tangent_internal(rng::AbstractRNG, p::CF, ::MaybeCache) = randn(rng, typeo
 __verify_fdata_value(::IdDict{Any,Nothing}, ::P, ::P) where {P<:CF} = nothing
 _verify_rdata_value(::P, ::P) where {P<:CF} = nothing
 
-increment!!(t::T, s::T) where {T<:CF} = t + s
 increment_internal!!(::IncCache, t::T, s::T) where {T<:CF} = t + s
 
 function increment_field!!(x::CF{P}, re_or_im::P, ::Val{FieldName}) where {P,FieldName}
-    return if FieldName === :re
+    return if (FieldName === :re) || (FieldName == 1)
         complex(real(x) + re_or_im, imag(x))
-    elseif FieldName === :im
+    elseif (FieldName === :im) || (FieldName == 2)
         complex(real(x), re_or_im + imag(x))
     else
-        throw(ArgumentError(lazy"Unkown field `$Fieldname` for type `$(CF{P})`)"))
+        throw(ArgumentError(lazy"Unkown field `$FieldName` for type `$(CF{P})`)"))
     end
 end
 

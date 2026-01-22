@@ -839,11 +839,12 @@ end
     } where {T<:BlasFloat},
 )
 
+# Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
 function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
 end
 
-function frule!!(
+@inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
     transB::Dual{Char},
@@ -1637,9 +1638,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     realPs = [Float64, Float32]
     Ps = [realPs..., complex.(realPs)...]
 
-    _make_codual(x, dx) = CoDual(x, dx)
-    _make_codual(x::Complex{<:IEEEFloat}, dx) = CoDual(x, dx)
-
     test_cases = Any[]
 
     #
@@ -1669,11 +1667,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 Cs = blas_matrices(rng, P, 3, 5)
 
                 return map(As, Bs, Cs) do A, B, C
-                    a_da = _make_codual(P(α), P(dα))
-                    b_db = _make_codual(P(β), P(dβ))
-                    (
-                        false, :stability, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C
-                    )
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
                 end
             end
         end...,
@@ -1694,8 +1690,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 Cs = blas_matrices(rng, P, 3, 1)
 
                 return map(As, Bs, Cs) do A, B, C
-                    a_da = _make_codual(P(α), P(dα))
-                    b_db = _make_codual(P(β), P(dβ))
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
                     (
                         false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
                     )
@@ -1721,8 +1717,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 Cs = blas_matrices(rng, P, 1, 5)
 
                 return map(As, Bs, Cs) do A, B, C
-                    a_da = _make_codual(P(α), P(dα))
-                    b_db = _make_codual(P(β), P(dβ))
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
                     (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
                 end
             end
@@ -1744,8 +1740,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 Cs = blas_matrices(rng, P, 1, 1)
 
                 return map(As, Bs, Cs) do A, B, C
-                    a_da = _make_codual(P(α), P(dα))
-                    b_db = _make_codual(P(β), P(dβ))
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
                     (
                         false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
                     )
@@ -1769,7 +1765,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 As = blas_matrices(rng, P, R, R)
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
-                    α_dα = _make_codual(randn(rng, P), P(dα))
+                    α_dα = CoDual(randn(rng, P), P(dα))
                     # 1.10 fails to infer part of a matmat product in the pullback
                     perf_flag = VERSION < v"1.11-" ? :none : :stability
                     (

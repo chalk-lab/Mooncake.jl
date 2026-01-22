@@ -82,17 +82,6 @@ function randn_tangent_internal(rng::AbstractRNG, x::CuMaybeComplexArray, dict::
     dict[x] = t
     return t
 end
-# function randn_tangent_internal(
-#     rng::AbstractRNG, x::CuArray{T}, dict::MaybeCache
-# ) where {T<:Complex}
-#     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-#     t = tangent_type(typeof(x))(undef, size(x))
-#     t_ = reinterpret(T, t)
-#     th = randn(rng, T, size(x)...)
-#     t_ .= CuArray(th)
-#     dict[x] = t
-#     return t
-# end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
 ) where {P<:CuMaybeComplexArray}
