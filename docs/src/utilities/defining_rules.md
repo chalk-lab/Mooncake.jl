@@ -46,7 +46,7 @@ Mooncake.build_primitive_rrule
 
 ## Canonicalising Tangent Types
 
-For many chain rules, Mooncake performs an explicit normalisation step inside `rrule!!` that collapses heterogeneous array and tangent types into a small set of canonical representations. By normalising at the rule boundary, a single implementation can handle many argument- and tangent-type combinations without duplicating logic or relying on complex dispatch, allowing the remainder of the rule to assume a single, well-defined tangent representation.
+For many chain rules, Mooncake performs an explicit canonicalisation step inside `rrule!!` that collapses heterogeneous array and tangent types into a small set of canonical representations. By canonicalising at the rule boundary, a single implementation can handle many argument- and tangent-type combinations without duplicating logic or relying on complex dispatch, allowing the remainder of the rule to assume a single, well-defined tangent representation.
 
 ### Example: `rrule!!` with `CoDual` types
 
@@ -61,7 +61,7 @@ function Mooncake.rrule!!(
     x1::CoDual{<:AbstractVecOrMat{<:T}},
     x2::CoDual{<:AbstractVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
-    # Normalise inputs: convert tangents to canonical matrix representations.
+    # Canonicalise inputs: convert tangents to canonical matrix representations.
     # matrixify returns a tuple (primal, tangent_matrix).
     px1, dx1 = matrixify(x1)
     px2, dx2 = matrixify(x2)
@@ -70,7 +70,7 @@ function Mooncake.rrule!!(
     y = kron(px1, px2)
     dy = zero(y)
 
-    # Work with normalised tangent arrays.
+    # Work with canonicalised tangent arrays.
     function kron_pb!!(::NoRData)
         M, N = size(dx1)
         P, Q = size(dx2)
@@ -88,14 +88,14 @@ function Mooncake.rrule!!(
 end
 ```
 
-The key insight is that `arrayify`, `matrixify`, and `numberify` convert heterogeneous tangent representations—such as `Tangent{ComplexF64}` for complex numbers or tangents for `SubArray`, `ReshapedArray`, and other wrapped array types—into simple, uniform array representations that the rule can consume directly. Without this normalisation step, the rule would need separate methods or complex dispatch logic to handle every combination of input tangent types. 
+The key insight is that `arrayify`, `matrixify`, and `numberify` convert heterogeneous tangent representations—such as `Tangent{ComplexF64}` for complex numbers or tangents for `SubArray`, `ReshapedArray`, and other wrapped array types—into simple, uniform array representations that the rule can consume directly. Without this canonicalisation step, the rule would need separate methods or complex dispatch logic to handle every combination of input tangent types.
 
 ### Connection to Julia's Promotion System
 
-The tangent normalisation utilities (`arrayify`, `matrixify`, `numberify`) play a conceptual role similar to Julia's numeric promotion system:
+The tangent canonicalisation utilities (`arrayify`, `matrixify`, `numberify`) play a conceptual role similar to Julia's numeric promotion system:
 
 ```julia
 Base.promote_rule(::Type{Type1}, ::Type{Type2}) = CommonType
 ```
 
-Just as `promote_rule` reconciles heterogeneous numeric types into a common representation, these utilities reconcile heterogeneous tangent types into canonical forms. This pattern is particularly valuable for BLAS/LAPACK rules where performance-critical code must work with many array wrapper types (views, transposes, diagonals, etc.) while maintaining type stability and avoiding allocations.
+Just as `promote_rule` reconciles heterogeneous numeric types into a common representation, these utilities reconcile heterogeneous tangent types into canonical forms. This pattern is particularly valuable for BLAS/LAPACK rules where performance-critical code must work with many array wrapper types (views, transposes, diagonals, etc.) while maintaining type stability.
