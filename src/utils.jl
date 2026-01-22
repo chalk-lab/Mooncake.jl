@@ -63,6 +63,25 @@ end
     return Expr(:call, :f, :v, map(n -> :(x[$n]), 1:length(x.parameters))...)
 end
 
+for N in 1:256
+    @eval function tuple_splat_noinline(f, x::Tuple{Vararg{Any,$N}})
+        @noinline f($(map(n -> :(getfield(x, $n)), 1:N)...))
+    end
+end
+
+@generated function tuple_splat_noinline(f, x::Tuple)
+    call = Expr(:call, :f, map(n -> :(getfield(x, $n)), 1:length(x.parameters))...)
+    val = gensym(:val)
+    return Expr(
+        :block,
+        Expr(:noinline, true),
+        Expr(:local, val),
+        Expr(:(=), val, call),
+        Expr(:noinline, false),
+        val,
+    )
+end
+
 @inline @generated function tuple_fill(val, ::Val{N}) where {N}
     return Expr(:call, :tuple, map(_ -> :val, 1:N)...)
 end

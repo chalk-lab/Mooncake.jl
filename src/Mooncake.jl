@@ -102,8 +102,8 @@ end
     return tuple_splat(rrule!!, args)
 end
 
-@noinline function (rule::PrimitiveRRule{Sig,false})(args...) where {Sig}
-    return rrule!!(args...)
+@inline function (rule::PrimitiveRRule{Sig,false})(args...) where {Sig}
+    return tuple_splat_noinline(rrule!!, args)
 end
 
 """
