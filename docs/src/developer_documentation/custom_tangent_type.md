@@ -224,9 +224,9 @@ You must provide adjoints for every `getfield`/`lgetfield` variant that appears 
 
 For example, the constructor call `A(1.0, A(2.0))` is lowered to:
 ```julia
-_new_(A{Float64}, 1.0, A(2.0))
+_new_(A{Float64}, 1.0)
 ```
-This means you only need to write rules for `_new_` to handle all constructor variants, rather than writing separate rules for `A(::T)` and `A(::T, ::A{T})`.
+This means you only need to write rules for `_new_` to handle all constructor variants, rather than writing separate rules for `A(::T)`.
 
 **`lgetfield` and `lsetfield!`**: These functions are designed for type stability. The standard `getfield(x, :f)` with a symbol argument is not type-stable when the field cannot be constant-propagated. `lgetfield` addresses this by using `Val` to specify the field statically:
 
