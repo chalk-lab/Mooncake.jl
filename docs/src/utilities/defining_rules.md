@@ -90,12 +90,12 @@ end
 
 After normalisation, the remainder of the rule can assume a single, well-defined tangent representation, avoiding case splits on mixed tangent types.
 
-### Connection to Base.promote_rule
+### Connection to Julia's Promotion System
 
-Internal tangent utilities, such as `matrixify`, `arrayify` and `numberify` play the same conceptual role as
+The tangent normalisation utilities (`arrayify`, `matrixify`, `numberify`) play a conceptual role similar to Julia's numeric promotion system:
 
 ```julia
-Base.promote_rule(::Type{Type1}, ::Type{Type2}) = Type1
+Base.promote_rule(::Type{Type1}, ::Type{Type2}) = CommonType
 ```
 
-In Julia's numeric promotion system, reconciliation of heterogeneous inputs is made explicit, centralised, and testable. The same principle applies here: without an explicit normalisation step, `rrule!!` implementations can become harder to extend, often requiring additional methods or more brittle dispatch to cover new combinations. Framing tangent normalisation in this way provides a familiar mental model and suggests a path toward relaxing some of the current strict constraints on tangent types and rules. At the same time, it ensures that missing or incorrect normalisation paths fail loudly and can be tested explicitly.
+Just as `promote_rule` reconciles heterogeneous numeric types into a common representation, these utilities reconcile heterogeneous tangent types into canonical forms. This pattern is particularly valuable for BLAS/LAPACK rules where performance-critical code must work with many array wrapper types (views, transposes, diagonals, etc.) while maintaining type stability and avoiding allocations.
