@@ -46,41 +46,49 @@ Mooncake.build_primitive_rrule
 
 ## Canonicalising Tangent Types
 
-For several GEMM-like BLAS rules, Mooncake uses an explicit normalisation step inside `rrule!!` to collapse different array and tangent types into a smaller set of canonical representations. This allows a single rule to handle many argument-type combinations without duplicating logic.
+For many chain rules, Mooncake performs an explicit normalisation step inside `rrule!!` that collapses heterogeneous array and tangent types into a small set of canonical representations. By normalising at the rule boundary, a single implementation can handle many argument- and tangent-type combinations without duplicating logic or relying on complex dispatch, allowing the remainder of the rule to assume a single, well-defined tangent representation.
 
 ### Example: `rrule!!` with `CoDual` types
 
-In Mooncake, `rrule!!` methods receive `CoDual`-wrapped arguments, including the function itself. Each `CoDual` carries both a primal value and an associated tangent (or fdata). Consider a simplified BLAS-like function rule:
+In Mooncake, `rrule!!` methods receive `CoDual`-wrapped arguments, including the function itself. Each `CoDual` carries both a primal value and an associated tangent (or fdata). Consider a `kron` rule:
 
 ```julia
-function rrule!!(
-    ::CoDual{typeof(my_blas_op)},
-    A_dA::CoDual{<:AbstractMatrix{T}},
-    x_dx::CoDual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
-    # Normalise inputs: convert tangents to canonical array representations.
-    # arrayify returns a tuple (primal, tangent_array).
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
+} where {T<:IEEEFloat}
+function Mooncake.rrule!!(
+    ::CoDual{typeof(kron)},
+    x1::CoDual{<:AbstractVecOrMat{<:T}},
+    x2::CoDual{<:AbstractVecOrMat{<:T}},
+) where {T<:Base.IEEEFloat}
+    # Normalise inputs: convert tangents to canonical matrix representations.
+    # matrixify returns a tuple (primal, tangent_matrix).
+    px1, dx1 = matrixify(x1)
+    px2, dx2 = matrixify(x2)
 
     # Run the primal computation.
-    y = my_blas_op(A, x)
+    y = kron(px1, px2)
+    dy = zero(y)
 
-    function pullback!!(dy)
-        # Work with normalised tangent arrays.
-        # Increment dA and dx based on the reverse-mode computation.
-        dA .+= dy * x'
-        dx .+= A' * dy
+    # Work with normalised tangent arrays.
+    function kron_pb!!(::NoRData)
+        M, N = size(dx1)
+        P, Q = size(dx2)
+        for m in 1:M, n in 1:N
+            dx1[m, n] += dot(
+                (@view dy[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
+            )
+        end
+        for p in 1:P, q in 1:Q
+            dx2[p, q] += dot((@view dy[p:P:end, q:Q:end]), px1)
+        end
         return NoRData(), NoRData(), NoRData()
     end
-
-    return CoDual(y, zero_tangent(y)), pullback!!
+    return CoDual(y, dy), kron_pb!!
 end
 ```
 
-The key insight is that `arrayify`, `matrixify`, and `numberify` convert potentially heterogeneous tangent representations (e.g., `Tangent{ComplexF64}` for complex numbers, `SubArray` tangents, or wrapped array types) into simple, uniform array types that BLAS routines can consume directly.
-
-Without this normalisation step, the rule would need separate methods or complex dispatch logic to handle every combination of input tangent types (e.g., `Array` vs `SubArray` vs `ReshapedArray`, or real vs complex element tangents). By explicitly converting at the boundary, the remainder of the rule can assume a single, well-defined tangent representation.
+The key insight is that `arrayify`, `matrixify`, and `numberify` convert heterogeneous tangent representations—such as `Tangent{ComplexF64}` for complex numbers or tangents for `SubArray`, `ReshapedArray`, and other wrapped array types—into simple, uniform array representations that the rule can consume directly. Without this normalisation step, the rule would need separate methods or complex dispatch logic to handle every combination of input tangent types. 
 
 ### Connection to Julia's Promotion System
 
