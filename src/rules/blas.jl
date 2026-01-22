@@ -606,7 +606,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             end
 
             # gradient w.r.t. A.
-            # TODO: could be switched to BLAS.{sy,he}r2! should Julia ever provide it
+            # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
             dA_tmp = α' * dy * x'
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
@@ -1101,7 +1101,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             BLAS.copyto!(C, C_copy)
 
             # gradient w.r.t. A.
-            # TODO: could be switched to BLAS.{sy,he}r2k!
+            # TODO: could be switched to BLAS.{sy,he}r2k! if Julia ever provides it.
             dA_tmp = s == 'L' ? α' * dC * B' : α' * B' * dC
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
