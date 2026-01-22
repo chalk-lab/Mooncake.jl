@@ -43,3 +43,59 @@ Then implement a method of one of the following:
 Mooncake.rrule!!
 Mooncake.build_primitive_rrule
 ```
+
+## Canonicalising Tangent Types
+
+For several `gemm`-like BLAS rules, Mooncake uses an explicit normalisation step inside `rrule!!` to collapse different arrays and tangent types into a smaller set of canonical representations. This allows a single rule to handle many argument-type combinations without duplicating logic.
+
+### Example: `rrule!!` with `CoDual` types
+
+Consider an rrule!! invoked on CoDual inputs, each carrying a primal value and an associated tangent:
+
+```julia
+y, pullback!! = rrule!!(
+    CoDual(f, Δf),
+    CoDual(x₁, Δx₁),
+    CoDual(x₂, Δx₂),
+)
+```
+
+In Mooncake, `rrule!!` is called with `CoDual`-wrapped arguments, including the function itself, to carry both primal values and tangents. `Δf` is shown here for completeness, but is not essential to this example. Assume the incoming tangents use different concrete array representations (schematically shown as SparseArray and DenseArray).
+
+```julia
+Δx₁ :: SparseArray  
+Δx₂ :: DenseArray
+```
+
+Inside the rule, these can be normalised explicitly at the boundary:
+
+```julia
+# Tf is the primal type of f, and TΔf is its associated tangent type.
+function rrule!!(::CoDual(Tf, TΔf), x₁::CoDual, x₂::CoDual)
+    # arrayify defines the canonical representation expected by the rule.
+    Δx₁′ = arrayify(tangent(x₁))
+    Δx₂′ = arrayify(tangent(x₂))
+
+    y = f(primal(x₁), primal(x₂))
+
+    function pullback!!(Δy)
+        return NoTangent(),
+               Δx₁′ * Δy,
+               Δx₂′ * Δy
+    end
+
+    return y, pullback!!
+end
+```
+
+After normalisation, the remainder of the rule can assume a single, well-defined tangent representation, avoiding case splits on mixed tangent types.
+
+### Connection to Base.promote_rule
+
+Internal tangent utilities, such as `matrixify`, `arrayify` and `numberify` play the same conceptual role as
+
+```julia
+Base.promote_rule(::Type{Type1}, ::Type{Type2}) = Type1
+```
+
+In Julia's numeric promotion system, reconciliation of heterogeneous inputs is made explicit, centralised, and testable. The same principle applies here: without an explicit normalisation step, `rrule!!` implementations can become harder to extend, often requiring additional methods or more brittle dispatch to cover new combinations. Framing tangent normalisation in this way provides a familiar mental model and suggests a path toward relaxing some of the current strict constraints on tangent types and rules. At the same time, it ensures that missing or incorrect normalisation paths fail loudly and can be tested explicitly.
