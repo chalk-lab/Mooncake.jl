@@ -218,6 +218,38 @@ You must provide adjoints for every `getfield`/`lgetfield` variant that appears 
 | [`_new_`](@ref)      | `A(x)`, `A(x, a::A)`, `A(x, nothing)`—three separate `rrule!!` methods     |
 | [`lsetfield!`](@ref) | `(A, Val{:field}, new_value)` including both Symbol & Int field IDs        |
 
+##### Why These Primitives?
+
+**`_new_`**: Mooncake implicitly lowers the constructors of all types to `_new_`. As a result, there is no need to write rules for individual constructors; instead, rules should be written for `_new_`. This provides a uniform interface for differentiating object construction.
+
+For example, the constructor call `A(1.0, A(2.0))` is lowered to:
+```julia
+_new_(A{Float64}, 1.0, A(2.0))
+```
+This means you only need to write rules for `_new_` to handle all constructor variants, rather than writing separate rules for `A(::T)` and `A(::T, ::A{T})`.
+
+**`lgetfield` and `lsetfield!`**: These functions are designed for type stability. The standard `getfield(x, :f)` with a symbol argument is not type-stable when the field cannot be constant-propagated. `lgetfield` addresses this by using `Val` to specify the field statically:
+
+```julia
+lgetfield(x, f::Val)
+```
+
+This enables both the implementation and its pullback to be type-stable. It will always be the case that:
+
+```julia
+getfield(x, :f) === lgetfield(x, Val(:f))
+getfield(x, 2)  === lgetfield(x, Val(2))
+```
+
+This approach is identical to the one taken by `Zygote.jl` to circumvent the same problem. `Zygote.jl` calls the function `literal_getfield`, while Mooncake calls it `lgetfield`.
+
+**Why rules for both `lgetfield` and `Base.getfield`?** Mooncake's IR normalization transforms most `getfield` calls to `lgetfield` with `Val`-wrapped fields for type stability. However, `Base.getfield` rules are still needed for:
+- Dynamic field access where the field cannot be proven constant at compile time
+- Special optimized paths (e.g., homogeneous tuples)
+- Fallback handling when static information is unavailable
+
+The `Base.getfield` rule often delegates to `lgetfield` internally, making `lgetfield` the primary primitive for field access differentiation.
+
 #### Core Tangent Operations
 
 | Function                               | Purpose/feature tested                                           |
