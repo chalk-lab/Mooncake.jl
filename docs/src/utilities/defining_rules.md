@@ -90,11 +90,4 @@ The tangent normalisation utilities (`arrayify`, `matrixify`, `numberify`) play 
 Base.promote_rule(::Type{Type1}, ::Type{Type2}) = CommonType
 ```
 
-Just as `promote_rule` reconciles heterogeneous numeric types into a common representation, these utilities reconcile heterogeneous tangent types into canonical forms. This approach:
-
-- **Centralises** conversion logic in testable, well-defined functions
-- **Makes explicit** what would otherwise be implicit dispatch complexity
-- **Fails loudly** when unsupported type combinations are encountered (see the error message in `arrayify` for unhandled types)
-- **Simplifies maintenance**: adding support for a new array type requires only a new `arrayify` method, not modifications to every BLAS rule
-
-This pattern is particularly valuable for BLAS/LAPACK rules where performance-critical code must work with many array wrapper types (views, transposes, diagonals, etc.) while maintaining type stability and avoiding allocations.
+Just as `promote_rule` reconciles heterogeneous numeric types into a common representation, these utilities reconcile heterogeneous tangent types into canonical forms. This pattern is particularly valuable for BLAS/LAPACK rules where performance-critical code must work with many array wrapper types (views, transposes, diagonals, etc.) while maintaining type stability and avoiding allocations.
