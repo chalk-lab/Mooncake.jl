@@ -98,11 +98,15 @@ If the primal value is a vector, it is reshaped into a column matrix of size `(l
 and the associated tangent is reshaped in the same way. If the primal value is already a
 matrix, both the primal and tangent are returned unchanged.
 """
-function matrixify(x_dx::Union{Dual{T},CoDual{T}}) where {P<:BlasFloat,T<:AbstractVector{P}}
+function matrixify(
+    x_dx::Union{Dual{T},CoDual{T}}
+) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
     x, dx = arrayify(x_dx)
     return reshape(x, :, 1), reshape(dx, :, 1)
 end
-function matrixify(x_dx::Union{Dual{T},CoDual{T}}) where {P<:BlasFloat,T<:AbstractMatrix{P}}
+function matrixify(
+    x_dx::Union{Dual{T},CoDual{T}}
+) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
     return arrayify(x_dx)
 end
 
