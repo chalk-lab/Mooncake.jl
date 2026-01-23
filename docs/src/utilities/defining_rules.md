@@ -48,8 +48,6 @@ Mooncake.build_primitive_rrule
 
 For many chain rules, Mooncake performs an explicit canonicalisation step inside `rrule!!` that collapses heterogeneous array and tangent types into a small set of canonical representations. By canonicalising at the rule boundary, a single implementation can handle many argument- and tangent-type combinations without duplicating logic or relying on complex dispatch, allowing the remainder of the rule to assume a single, well-defined tangent representation.
 
-### Example: `rrule!!` with `CoDual` types
-
 In Mooncake, `rrule!!` methods receive `CoDual`-wrapped arguments, including the function itself. Each `CoDual` carries both a primal value and an associated tangent (or fdata). Consider a `kron` rule:
 
 ```julia
