@@ -30,14 +30,24 @@ With `friendly_tangents=true` (the default), gradients use the same types as the
 cache = MC.prepare_gradient_cache(g, x_eval)
 val, grad = MC.value_and_gradient!!(cache, g, x_eval)
 ```
+This produces a tuple containing the value of the function (here `0.5`) and the gradient
+(here `(g, SimplePair(2.0, 4.0))`).
+The first part of the gradient is the gradient wrt. `g` itself;
+it contains no data and thus gets returned as-is.
+The second part of the gradient is the gradient wrt. `x`: `SimplePair(2.0, 4.0)`.
 
 In case of issues with friendly tangents, gradients can be returned using the Mooncake-internal
-representation (by setting `friendly_tangents=false` in the config):
+representation by setting `friendly_tangents=false` in the config:
 
 ```@example interface
 cache = MC.prepare_gradient_cache(g, x_eval; config=MC.Config(friendly_tangents=false))
 val, grad = MC.value_and_gradient!!(cache, g, x_eval)
 ```
+The corresponding gradient is `(Mooncake.NoTangent(), Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}((x1 = 2.0, x2 = 4.0)))`.
+Indeed, `g` contains no differentiable data its gradient will be `NoTangent()`.
+And since `SimpePair` contains differentiable data, its gradient is represented using a `@NamedTuple{x1::Float64, x2::Float64}`
+wrapped in a `Tangent` object.
+For more information about tangent types, refer to [Mooncake.jl's Rule System](@ref).
 
 In addition, there is an optional tuple-typed argument `args_to_zero` that specifies
 a true/false value for each argument (e.g., `g`, `x_eval`), allowing tangent
