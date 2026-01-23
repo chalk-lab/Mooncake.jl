@@ -220,7 +220,9 @@ You must provide adjoints for every `getfield`/`lgetfield` variant that appears 
 
 ##### Why These Primitives?
 
-**`_new_`**: Mooncake implicitly lowers the constructors of all types to `_new_`. As a result, there is no need to write rules for individual constructors; instead, rules should be written for `_new_`. This provides a uniform interface for differentiating object construction.
+**`_new_`**: Mooncake’s IR normalisation rewrites `Expr(:new, ...)`—the lowered representation of composite type construction—into calls to [`_new_`](@ref). This establishes a uniform interface for differentiating object construction. In practice, Mooncake can differentiate through `_new_` calls directly, so rules typically only need to be defined for logic inside `_new_` that Mooncake cannot differentiate through, rather than for each individual constructor method.
+
+Splatted constructions are normalised analogously to [`_splat_new_`](@ref). The raw `:new` form can be inspected using `@code_lowered A(1.0)`. For details, see the [*standardisation*](@ref standardisation) section of forward differentiation and the implementation in `src/interpreter/ir_normalisation.jl`.
 
 For example, the constructor call `A(1.0)` is lowered to:
 ```julia
