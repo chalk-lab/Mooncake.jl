@@ -111,11 +111,11 @@ function __value_and_gradient!!(rule::R, fx::Vararg{CoDual,N}) where {R,N}
 end
 
 """
-    value_and_pullback!!(rule, ȳ, f, x...; config=Mooncake.Config())
+    value_and_pullback!!(rule, ȳ, f, x...; friendly_tangents=true)
 
-Compute the value and pullback of `f(x...)`. If `config.friendly_tangents=false`,
+Compute the value and pullback of `f(x...)`. If `friendly_tangents=false`,
 `ȳ` must be a valid tangent for the primal return by `f(x...)`.
-If `config.friendly_tangents=true`, `ȳ` must be of the same type as the primal returned by `f(x...)`.
+If `friendly_tangents=true`, `ȳ` must be of the same type as the primal returned by `f(x...)`.
 
 `rule` should be constructed using `build_rrule`.
 
@@ -141,9 +141,9 @@ function. The `CoDual`s should be primal-tangent pairs (as opposed to primal-fda
 There are lots of ways to get this wrong though, so we generally advise against doing this.
 """
 function value_and_pullback!!(
-    rule::R, ȳ, fx::Vararg{Any,N}; config=Config()
+    rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=true
 ) where {R,N}
-    if config.friendly_tangents
+    if friendly_tangents
         ȳ = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
         value, pb = __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
         friendly_pb = _copy_output((fx...,))
@@ -155,7 +155,7 @@ function value_and_pullback!!(
 end
 
 """
-    value_and_gradient!!(rule, f, x...; config=Mooncake.Config())
+    value_and_gradient!!(rule, f, x...; friendly_tangents=true)
 
 Equivalent to `value_and_pullback!!(rule, 1.0, f, x...)`, and assumes `f` returns a
 `Union{Float16,Float32,Float64}`.
@@ -178,9 +178,9 @@ value_and_gradient!!(rule, f, x, y)
 ```
 """
 function value_and_gradient!!(
-    rule::R, fx::Vararg{Any,N}; config=Config()
+    rule::R, fx::Vararg{Any,N}; friendly_tangents=true
 ) where {R,N}
-    if config.friendly_tangents
+    if friendly_tangents
         value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
         friendly_gradient = _copy_output((fx...,))
         friendly_gradient = tangent_to_primal!!(friendly_gradient, gradient)
