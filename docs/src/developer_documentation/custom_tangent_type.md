@@ -220,15 +220,16 @@ You must provide adjoints for every `getfield`/`lgetfield` variant that appears 
 
 ##### Why These Primitives?
 
-**`_new_`**: Mooncake’s IR normalisation rewrites `Expr(:new, ...)`—the lowered representation of composite type construction—into calls to [`_new_`](@ref). This establishes a uniform interface for differentiating object construction. In practice, Mooncake can differentiate through `_new_` calls directly, so rules typically only need to be defined for logic inside `_new_` that Mooncake cannot differentiate through, rather than for each individual constructor method.
-
-Splatted constructions are normalised analogously to [`_splat_new_`](@ref). The raw `:new` form can be inspected using `@code_lowered A(1.0)`. For details, see the [*standardisation*](@ref standardisation) section of forward differentiation and the implementation in `src/interpreter/ir_normalisation.jl`.
+**`_new_`**: Mooncake’s IR normalisation rewrites `Expr(:new, ...)`—the lowered representation of composite type construction—into calls to [`_new_`](@ref). Because many `_new_` calls can be differentiated directly, differentiation rules are only required for object-construction logic that cannot be handled automatically, and can be written against `_new_` rather than individual constructor methods.
 
 For example, the constructor call `A(1.0)` is lowered to:
 ```julia
 _new_(A{Float64}, 1.0, nothing)
 ```
-This means `_new_` covers the `:new` portion across constructor variants, rather than writing separate rules just for `A(::T)`.
+
+Here, [`_new_`](@ref) corresponds to the lowered object-construction operation itself (the `:new` IR node). In optimised Julia SSA IR, constructor syntax has been eliminated: object construction appears only as `:new` nodes rather than calls to user-defined constructor methods. The [`_new_`](@ref) primitive serves as a dispatchable, extensible wrapper around `:new`, allowing differentiation rules to target semantic object construction rather than surface-level constructor syntax.
+
+Splatted constructions are normalised analogously to [`_splat_new_`](@ref). The raw `:new` form can be inspected using `@code_lowered A(1.0)`. For details, see the [*standardisation*](@ref standardisation) section of forward differentiation and the implementation in `src/interpreter/ir_normalisation.jl`.
 
 **`lgetfield` and `lsetfield!`**: These functions are designed for type stability. The standard `getfield(x, :f)` with a symbol argument is not type-stable when the field cannot be constant-propagated. `lgetfield` addresses this by using `Val` to specify the field statically:
 
@@ -236,7 +237,7 @@ This means `_new_` covers the `:new` portion across constructor variants, rather
 lgetfield(x, f::Val)
 ```
 
-The analogous mutating form is `lsetfield!(x, Val(:f), v)`, which corresponds to `setfield!(x, :f, v)` when the field name is a compile-time constant. This only applies to mutable structs, since `setfield!` is invalid for immutable ones. Mooncake's IR normalization also rewrites literal-field `setfield!` calls to `lsetfield!` for the same reason.
+The analogous mutating form is `lsetfield!(x, Val(:f), v)`, which corresponds to `setfield!(x, :f, v)` when the field name is a compile-time constant. This only applies to mutable structs, since `setfield!` is invalid for immutable ones. Mooncake's IR normalisation also rewrites literal-field `setfield!` calls to `lsetfield!` for the same reason.
 
 This enables both the implementation and its pullback to be type-stable. It will always be the case that:
 
@@ -247,11 +248,9 @@ getfield(x, 2)  === lgetfield(x, Val(2))
 
 This approach is identical to the one taken by `Zygote.jl` to circumvent the same problem. `Zygote.jl` calls the function `literal_getfield`, while Mooncake calls it `lgetfield`.
 
-**Why rules for both `lgetfield` and `Base.getfield`?** Mooncake's IR normalization transforms most `getfield` calls to `lgetfield` with `Val`-wrapped fields for type stability. However, `Base.getfield` rules are still needed for:
-- Dynamic field access where the field cannot be proven constant at compile time
-- Fallback handling when static information is unavailable
+**Why rules for both `lgetfield` and `Base.getfield`, but not for `setfield!`?** Mooncake’s IR normalisation transforms most `getfield` calls to `lgetfield` with `Val`-wrapped fields for type stability. However, `Base.getfield` rules are still needed for dynamic field access when the field cannot be proven constant at compile time.
 
-The `Base.getfield` rule often delegates to `lgetfield` internally, making `lgetfield` the primary primitive for field access differentiation.
+By contrast, separate rules for `setfield!` are generally unnecessary. In Mooncake’s ruleset, `setfield!` [always delegates](https://github.com/chalk-lab/Mooncake.jl/blob/b224566835c829772dd7c008189c9957073f1ba8/src/rules/builtins.jl#L1019-L1026) to `lsetfield!`, making `lsetfield!` the sole primitive that requires differentiation rules. This is possible because, at the IR level, the field name for `setfield!` must always be a compile-time constant by Julia convention. By contrast, `getfield` [does not always delegate](https://github.com/chalk-lab/Mooncake.jl/blob/b224566835c829772dd7c008189c9957073f1ba8/src/rules/builtins.jl#L923-L987): `getfield` can accept dynamic field indices in some contexts. Consequently, normalisation to `lgetfield` is conditional, and rules are required for both `lgetfield` and `Base.getfield`.
 
 #### Core Tangent Operations
 
