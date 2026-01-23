@@ -45,7 +45,7 @@ Mooncake.build_rrule
 When using ADTypes.jl, you can choose whether or not to use it via the `debug_mode` kwarg:
 ```jldoctest
 julia> AutoMooncake(; config=Mooncake.Config(; debug_mode=true))
-AutoMooncake(config=Mooncake.Config(true, false, false))
+AutoMooncake(config=Mooncake.Config(true, false, true))
 ```
 
 ### When Should You Use Debug Mode?

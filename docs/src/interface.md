@@ -12,41 +12,46 @@ Here's a simple example demonstrating how to use Mooncake.jl's native API:
 ```@example interface
 import Mooncake as MC
 
-# Define a simple function
-g(x) = sum(abs2, x)
+struct SimplePair
+    x1::Float64
+    x2::Float64
+end
 
-# Function with complex numbers
-x_complex = [1.0 + 2.0im, 3.0 + 4.0im]
+# Define a simple function
+g(x::SimplePair) = x.x1^2 + x.x2^2
+
+# Where to evaluate the derivative
+x_eval = SimplePair(1.0, 2.0)
 ```
 
 With `friendly_tangents=true` (the default), gradients use the same types as the original function:
 
 ```@example interface
-cache = MC.prepare_gradient_cache(g, x_complex)
-val, grad = MC.value_and_gradient!!(cache, g, x_complex)
+cache = MC.prepare_gradient_cache(g, x_eval)
+val, grad = MC.value_and_gradient!!(cache, g, x_eval)
 ```
 
 In case of issues with friendly tangents, gradients can be returned using the Mooncake-internal
 representation (by setting `friendly_tangents=false` in the config):
 
 ```@example interface
-cache = MC.prepare_gradient_cache(g, x_complex; config=MC.Config(friendly_tangents=false))
-val, grad = MC.value_and_gradient!!(cache, g, x_complex)
+cache = MC.prepare_gradient_cache(g, x_eval; config=MC.Config(friendly_tangents=false))
+val, grad = MC.value_and_gradient!!(cache, g, x_eval)
 ```
 
 In addition, there is an optional tuple-typed argument `args_to_zero` that specifies
-a true/false value for each argument (e.g., `g`, `x_complex`), allowing tangent
+a true/false value for each argument (e.g., `g`, `x_eval`), allowing tangent
 zeroing to be skipped on a per-argument basis when the value is constant. 
 Note that the first true/false entry specifies whether to zero the tangent of `g`;
 zeroing `g`'s tangent is not always necessary, but is sometimes required for
 non-constant callable objects.
 
 ```@example interface
-cache = MC.prepare_gradient_cache(g, x_complex; friendly_tangents = true)
+cache = MC.prepare_gradient_cache(g, x_eval)
 val, grad = MC.value_and_gradient!!(
     cache,
     g,
-    x_complex;
+    x_eval;
     args_to_zero = (false, true),
 )
 ```

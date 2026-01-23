@@ -174,7 +174,7 @@ value_and_gradient!!(rule, f, x, y)
 
 # output
 
-(4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
+(4.0, (f, [1.0, 1.0], [2.0, 2.0]))
 ```
 """
 function value_and_gradient!!(
@@ -547,7 +547,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 
 # output
 
-(4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
+(4.0, (f, [1.0, 1.0], [2.0, 2.0]))
 ```
 """
 function value_and_pullback!!(
@@ -634,7 +634,7 @@ value_and_gradient!!(cache, f, x, y)
 
 # output
 
-(4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
+(4.0, (f, [1.0, 1.0], [2.0, 2.0]))
 ```
 """
 function value_and_gradient!!(
