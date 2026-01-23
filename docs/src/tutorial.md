@@ -23,19 +23,6 @@ backend = DI.AutoMooncake(; config=nothing)
 
 This object is actually defined by a third package called [ADTypes.jl](https://github.com/SciML/ADTypes.jl), but re-exported by DI.
 
-### Friendly tangents
-
-By default, Mooncake will use internal types such as `Mooncake.Tangent` to represent tangents
-(gradients or derivatives) of most Julia types (e.g. complex numbers, symmetric matrices).
-To represent tangents using the same types as the original function,
-such that the tangent of a `ComplexF64` is a `ComplexF64`,
-or the tangent of a `Symmetric` is a `Symmetric`,
-set `friendly_tangents=true` in the config:
-
-```@example tuto
-backend = DI.AutoMooncake(; config=Mooncake.Config(; friendly_tangents=true))
-```
-
 ### Single argument
 
 Suppose you want to differentiate the following function
