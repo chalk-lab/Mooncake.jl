@@ -201,7 +201,7 @@ This function has methods with will return the `IRCode` associated to:
 1. `Base.MethodInstances` (relevant for `:invoke` expressions -- see [Statement Transformation](@ref) below)
 1. `MistyClosures.MistyClosure` objects, which is essential when computing higher order derivatives and Hessians by applying Mooncake.jl to itself.
 
-#### Standardisation
+#### [Standardisation](@id standardisation)
 
 We apply the following transformations to the Julia IR.
 They can all be found in `ir_normalisation.jl`:
