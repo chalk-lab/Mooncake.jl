@@ -53,35 +53,28 @@ For many chain rules, Mooncake performs an explicit canonicalisation step inside
 In Mooncake, `rrule!!` methods receive `CoDual`-wrapped arguments, including the function itself. Each `CoDual` carries both a primal value and an associated tangent (or fdata). Consider a `kron` rule:
 
 ```julia
-@is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
-} where {T<:IEEEFloat}
 function Mooncake.rrule!!(
     ::CoDual{typeof(kron)},
     x1::CoDual{<:AbstractVecOrMat{<:T}},
     x2::CoDual{<:AbstractVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
-    # Canonicalise inputs: convert tangents to canonical matrix representations.
-    # matrixify returns a tuple (primal, tangent_matrix).
+    # Canonicalise inputs: although this method constrains `x1`/`x2` to `AbstractVecOrMat`,
+    # they may still be realised by many concrete array types (e.g. vectors, matrices, views,
+    # `Diagonal`, `Symmetric`, `PDMat`, and other wrappers). Canonicalising at the rule boundary
+    # avoids a proliferation of specialised methods and lets the pullback operate on a single,
+    # predictable dense matrix tangent representation.
+    # `matrixify` returns a tuple (primal, tangent_matrix).
     px1, dx1 = matrixify(x1)
     px2, dx2 = matrixify(x2)
 
-    # Run the primal computation.
+    # Run the primal computation
     y = kron(px1, px2)
     dy = zero(y)
 
     # Work with canonicalised tangent arrays.
     function kron_pb!!(::NoRData)
-        M, N = size(dx1)
-        P, Q = size(dx2)
-        for m in 1:M, n in 1:N
-            dx1[m, n] += dot(
-                (@view dy[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
-            )
-        end
-        for p in 1:P, q in 1:Q
-            dx2[p, q] += dot((@view dy[p:P:end, q:Q:end]), px1)
-        end
+        # Run the pullback computation
+        # Code omitted here for brevity
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy), kron_pb!!
@@ -89,6 +82,8 @@ end
 ```
 
 The key insight is that `arrayify`, `matrixify`, and `numberify` convert heterogeneous tangent representations—such as `Tangent{ComplexF64}` for complex numbers or tangents for `SubArray`, `ReshapedArray`, and other wrapped array types—into simple, uniform array representations that the rule can consume directly. Without this canonicalisation step, the rule would need separate methods or complex dispatch logic to handle every combination of input tangent types.
+
+Although this pattern is especially visible in BLAS- and LAPACK-backed rules—where performance-critical kernels must accommodate many array wrappers—it is not specific to linear algebra. Canonicalisation is a general rule-design technique: it isolates type heterogeneity at the boundary of the rule, simplifies the core logic, and improves maintainability across any domain where primitives admit many equivalent tangent representations (e.g. broadcasting, structured arrays, or custom numeric types).
 
 ### Connection to Julia's Promotion System
 
