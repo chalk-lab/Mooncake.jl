@@ -478,7 +478,9 @@ The API guarantees that tangents are initialized at zero before the first autodi
 
     # Construct rule and tangents.
     interp = get_interpreter(ReverseMode)
-    rule = build_rrule(interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages)
+    rule = build_rrule(
+        interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages
+    )
     tangents = map(zero_tangent, fx)
 
     # Run the rule forwards -- this should do a decent chunk of pre-allocation.

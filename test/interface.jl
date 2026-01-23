@@ -18,7 +18,9 @@ end
     ]
         @testset "debug_mode=$debug_mode" for debug_mode in Bool[false, true]
             rule = build_rrule(f, x...; debug_mode)
-            v, (df, dx...) = value_and_pullback!!(rule, ȳ, f, x...; friendly_tangents=false)
+            v, (df, dx...) = value_and_pullback!!(
+                rule, ȳ, f, x...; friendly_tangents=false
+            )
             @test v ≈ f(x...)
             @test df isa tangent_type(typeof(f))
             for (_dx, _x) in zip(dx, x)
@@ -45,7 +47,9 @@ end
         ]
             kwargs = (debug_mode=false, silence_debug_messages=true)
             rule = build_rrule(fargs...; kwargs...)
-            v, dfargs = value_and_gradient!!(rule, deepcopy(fargs)...; friendly_tangents=false)
+            v, dfargs = value_and_gradient!!(
+                rule, deepcopy(fargs)...; friendly_tangents=false
+            )
             f, args... = deepcopy(fargs)
             @test v == f(args...)
             for (arg, darg) in zip(fargs, dfargs)
@@ -54,7 +58,9 @@ end
 
             # Create cache and verify that mutation is undone.
             original_fargs = deepcopy(fargs)
-            cache = Mooncake.prepare_gradient_cache(fargs...; config=Mooncake.Config(; friendly_tangents=false, kwargs...))
+            cache = Mooncake.prepare_gradient_cache(
+                fargs...; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
             @test fargs == original_fargs
 
             _v, _dfargs = value_and_gradient!!(cache, fargs...)
@@ -89,9 +95,11 @@ end
             @test dx[2] isa SimplePair
             @test dx[2] == SimplePair(2*x.x1, cos(x.x2))
 
-            cache = Mooncake.prepare_gradient_cache(f, x; config=Mooncake.Config(friendly_tangents=false))
+            cache = Mooncake.prepare_gradient_cache(
+                f, x; config=Mooncake.Config(friendly_tangents=false)
+            )
             v, dx = Mooncake.value_and_gradient!!(cache, f, x)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
             @test dx[2].fields == (; x1=2*x.x1, x2=cos(x.x2))
 
             rule = build_rrule(f, x)
@@ -100,7 +108,7 @@ end
             @test dx[2] == SimplePair(2*x.x1, cos(x.x2))
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x; friendly_tangents=false)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
             @test dx[2].fields == (; x1=2*x.x1, x2=cos(x.x2))
         end
     end
@@ -114,7 +122,9 @@ end
             kwargs = (debug_mode=false, silence_debug_messages=true)
             rule = build_rrule(fargs...; kwargs...)
             f, args... = fargs
-            v, dfargs = value_and_pullback!!(rule, ȳ, deepcopy(fargs)...; friendly_tangents=false)
+            v, dfargs = value_and_pullback!!(
+                rule, ȳ, deepcopy(fargs)...; friendly_tangents=false
+            )
             @test v == f(deepcopy(args)...)
             for (arg, darg) in zip(fargs, dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
@@ -122,7 +132,9 @@ end
 
             # Create cache and verify fargs is unchanged afterwards.
             original_args = deepcopy(fargs)
-            cache = Mooncake.prepare_pullback_cache(fargs...; config=Mooncake.Config(; friendly_tangents=false, kwargs...))
+            cache = Mooncake.prepare_pullback_cache(
+                fargs...; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
             @test original_args == fargs
 
             _v, _dfargs = value_and_pullback!!(cache, ȳ, fargs...)
@@ -146,25 +158,42 @@ end
 
             cache = Mooncake.prepare_pullback_cache(testf, x)
             v, pb = Mooncake.value_and_pullback!!(cache, x̄, testf, x)
+            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
             @test has_equal_data(
-                v,
-                SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2),
+                pb[2],
+                SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
-            @test has_equal_data(pb[2], SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2))
 
-            cache = Mooncake.prepare_pullback_cache(testf, x; config=Mooncake.Config(friendly_tangents=false))
+            cache = Mooncake.prepare_pullback_cache(
+                testf, x; config=Mooncake.Config(friendly_tangents=false)
+            )
             v, pb = Mooncake.value_and_pullback!!(cache, x̄_unfriendly, testf, x)
             @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(pb[2], Mooncake.Tangent((; x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2)))
+            @test has_equal_data(
+                pb[2],
+                Mooncake.Tangent((;
+                    x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2
+                )),
+            )
 
             rrule = build_rrule(testf, x)
             v, pb = Mooncake.value_and_pullback!!(rrule, x̄, testf, x)
             @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(pb[2], SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2))
+            @test has_equal_data(
+                pb[2],
+                SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
+            )
 
-            v, pb = Mooncake.value_and_pullback!!(rrule, x̄_unfriendly, testf, x; friendly_tangents=false)
+            v, pb = Mooncake.value_and_pullback!!(
+                rrule, x̄_unfriendly, testf, x; friendly_tangents=false
+            )
             @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(pb[2], Mooncake.Tangent((; x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2)))
+            @test has_equal_data(
+                pb[2],
+                Mooncake.Tangent((;
+                    x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2
+                )),
+            )
         end
     end
 
