@@ -130,11 +130,9 @@ using Mooncake:
             z̄ = 0.3 + 0.7im
 
             cache = Mooncake.prepare_pullback_cache(testf, z; config=Config(friendly_tangents=false))
-            v, pb = Mooncake.value_and_pullback!!(
-                cache, Tangent((; re=real(z̄), im=imag(z̄))), testf, z
-            )
+            v, pb = Mooncake.value_and_pullback!!(cache, z̄, testf, z)
             @test v ≈ z^3
-            @test complex(pb[2].fields.re, pb[2].fields.im) ≈ conj(3z^2) * z̄
+            @test pb[2] ≈ conj(3z^2) * z̄
 
             cache = Mooncake.prepare_pullback_cache(testf, z)
             v, pb = Mooncake.value_and_pullback!!(cache, z̄, testf, z)

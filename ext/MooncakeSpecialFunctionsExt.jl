@@ -15,7 +15,6 @@ import Mooncake:
     primal,
     notimplemented_tangent_guard,
     ForwardMode,
-    numberify,
     extract
 
 @from_chainrules DefaultCtx Tuple{typeof(airyai),IEEEFloat}
@@ -148,6 +147,9 @@ an unimplemented partial is mathematically required.
 function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:IEEEFloat}
     return Dual(y, primal_eltype(dy_val))
 end
+function real_or_complex_valued(y::Complex{L}, primal_eltype, dy_val) where {L<:IEEEFloat}
+    return Dual(y, Complex(primal_eltype(real(dy_val)), primal_eltype(imag(dy_val))))
+end
 
 function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:Complex}
     return Dual(
@@ -196,7 +198,7 @@ function frule!!(
     ∂x = -exp((a - 1) * log(x) - x)    # ∂f/∂x
 
     # Ignore tangent(a) - NotImplemented Gradient
-    dy_val = ∂a + ∂x * numberify(dx)
+    dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val) # ensure dy and primal y are same types.
 end
 
@@ -220,7 +222,7 @@ function frule!!(
     ∂x = -exp((a - 1) * log(x) - x - loggamma(a, x))
 
     # Ignore tangent(a) - NotImplemented Gradient
-    dy_val = ∂a + ∂x * numberify(dx)
+    dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -244,7 +246,7 @@ function frule!!(
     ∂x = -expint(a - 1, x)
 
     # Ignore tangent(a) - NotImplemented Gradient
-    dy_val = ∂a + ∂x * numberify(dx)
+    dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -268,7 +270,7 @@ function frule!!(
     ∂x = y - expintx(a - 1, x)
 
     # Ignore tangent(a) - NotImplemented Gradient
-    dy_val = ∂a + ∂x * numberify(dx)
+    dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -290,7 +292,7 @@ function frule!!(
     # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (besselj(v - 1, x) - besselj(v + 1, x)) / 2
 
-    dy_val = ∂v + ∂x * numberify(dx)
+    dy_val = ∂v + ∂x * dx
     # All Bessel functions return complex values only for complex inputs.
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
@@ -312,7 +314,7 @@ function frule!!(
     # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (bessely(v - 1, x) - bessely(v + 1, x)) / 2
 
-    dy_val = ∂v + ∂x * numberify(dx)
+    dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -333,7 +335,7 @@ function frule!!(
     # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (besseli(v - 1, x) + besseli(v + 1, x)) / 2
 
-    dy_val = ∂v + ∂x * numberify(dx)
+    dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -354,7 +356,7 @@ function frule!!(
     # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = -(besselk(v - 1, x) + besselk(v + 1, x)) / 2
 
-    dy_val = ∂v + ∂x * numberify(dx)
+    dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -375,7 +377,7 @@ function frule!!(
     # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (hankelh1(v - 1, x) - hankelh1(v + 1, x)) / 2
 
-    dy_val = ∂v + ∂x * numberify(dx)
+    dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -396,7 +398,7 @@ function frule!!(
     # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = (hankelh2(v - 1, x) - hankelh2(v + 1, x)) / 2
 
-    dy_val = ∂v + ∂x * numberify(dx)
+    dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -424,9 +426,7 @@ function frule!!(
     ∂x_2 = -sign(real(x)) * y
 
     # Non Holomorphic scaling
-    dy_val = (
-        ∂v + ∂x_1 * numberify(dx) + ∂x_2 * (P <: Complex ? dx.fields.re : numberify(dx))
-    )
+    dy_val = ∂v + ∂x_1 * dx + ∂x_2 * real(dx)
 
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
@@ -448,7 +448,7 @@ function frule!!(
     # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
     ∂x = -(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y
 
-    dy_val = ∂v + ∂x * numberify(dx)
+    dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -471,9 +471,7 @@ function frule!!(
     ∂x_2 = ∂x_2 = -sign(imag(x)) * y
 
     # ∂f/∂x - Non Holomorphic scaling
-    dy_val = (
-        ∂v + ∂x_1 * numberify(dx) + (P <: Complex ? ∂x_2 * dx.fields.im : primal_eltype(0))
-    )
+    dy_val = (∂v + ∂x_1 * dx + ∂x_2 * imag(dx))
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -496,9 +494,7 @@ function frule!!(
     ∂x_2 = ∂x_2 = -sign(imag(x)) * y
 
     # Non Holomorphic scaling
-    dy_val = (
-        ∂v + ∂x_1 * numberify(dx) + (P <: Complex ? ∂x_2 * dx.fields.im : primal_eltype(0))
-    )
+    dy_val = ∂v + ∂x_1 * dx + ∂x_2 * imag(dx)
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
@@ -520,11 +516,8 @@ function frule!!(
     # ∂f/∂x - Recurrence relations
     ∂x = (hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y
 
-    dy_val = ∂v + ∂x * numberify(dx)
-    return Dual(
-        y,
-        Mooncake.Tangent((re=primal_eltype(real(dy_val)), im=primal_eltype(imag(dy_val)))),
-    )
+    dy_val = ∂v + ∂x * dx
+    return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -544,11 +537,8 @@ function frule!!(
     # ∂f/∂x - Recurrence relations
     ∂x = (hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y
 
-    dy_val = ∂v + ∂x * numberify(dx)
-    return Dual(
-        y,
-        Mooncake.Tangent((re=primal_eltype(real(dy_val)), im=primal_eltype(imag(dy_val)))),
-    )
+    dy_val = ∂v + ∂x * dx
+    return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
 end
