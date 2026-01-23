@@ -19,17 +19,18 @@ g(x) = sum(abs2, x)
 x_complex = [1.0 + 2.0im, 3.0 + 4.0im]
 ```
 
-With `friendly_tangents = false`, gradients use the same types as tangents.
+With `friendly_tangents=true` (the default), gradients use the same types as the original function:
 
 ```@example interface
-cache = MC.prepare_gradient_cache(g, x_complex; friendly_tangents=true)
+cache = MC.prepare_gradient_cache(g, x_complex)
 val, grad = MC.value_and_gradient!!(cache, g, x_complex)
 ```
 
-With `friendly_tangents=false`, gradients use the same types as tangents:
+In case of issues with friendly tangents, gradients can be returned using the Mooncake-internal
+representation (by setting `friendly_tangents=false` in the config):
 
 ```@example interface
-cache = MC.prepare_gradient_cache(g, x_complex; friendly_tangents=false)
+cache = MC.prepare_gradient_cache(g, x_complex; config=MC.Config(friendly_tangents=false))
 val, grad = MC.value_and_gradient!!(cache, g, x_complex)
 ```
 
