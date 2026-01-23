@@ -323,6 +323,7 @@ end
 Convert a Mooncake tangent into a type that ChainRules.jl `rrule`s expect to see.
 """
 to_cr_tangent(t::IEEEFloat) = t
+to_cr_tangent(t::Complex{<:IEEEFloat}) = t
 to_cr_tangent(t::Array{<:IEEEFloat}) = t
 to_cr_tangent(t::Array) = map(to_cr_tangent, t)
 to_cr_tangent(::NoTangent) = CRC.NoTangent()
@@ -368,7 +369,7 @@ function mooncake_tangent(p::P, t::T) where {P<:Tuple,T<:CRC.Tangent}
 end
 
 function mooncake_tangent(p::T, cr_tangent::T) where {P<:IEEEFloat,T<:Complex{P}}
-    return Tangent((re=real(cr_tangent), im=imag(cr_tangent)))
+    return cr_tangent
 end
 
 # Convert `ChainRulesCore.NotImplemented` tangents to Mooncake-style `NaN` tangents.
@@ -401,7 +402,11 @@ end
 Increment `fdata` by the fdata component of the ChainRules.jl-style tangent, `cr_tangent`,
 and return the rdata component of `cr_tangent` by adding it to `zero_rdata`.
 """
-increment_and_get_rdata!(::NoFData, r::T, t::T) where {T<:IEEEFloat} = r + t
+function increment_and_get_rdata!(
+    ::NoFData, r::T, t::T
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    r + t
+end
 function increment_and_get_rdata!(f::Array{P}, ::NoRData, t::Array{P}) where {P<:IEEEFloat}
     increment!!(f, t)
     return NoRData()
@@ -411,18 +416,11 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
-# Add ChainRulesCore-style tangents to existing Mooncake-style tangents.
-function increment_and_get_rdata!(
-    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T,im::T}}, t::Complex{T}
-) where {T<:IEEEFloat}
-    return RData((re=real(t) + r.data.re, im=imag(t) + r.data.im))
-end
-
 # If a ChainRulesCore complex tangent is `NotImplemented`, return a `NaN`-filled Mooncake tangent.
 function increment_and_get_rdata!(
-    f::NoFData, r::Mooncake.RData{@NamedTuple{re::T,im::T}}, t::CRC.NotImplemented
+    f::NoFData, r::Complex{T}, t::CRC.NotImplemented
 ) where {T<:IEEEFloat}
-    return RData((re=T(NaN), im=T(NaN)))
+    return Complex(T(NaN), T(NaN))
 end
 
 function increment_and_get_rdata!(f, r::T, t::CRC.NotImplemented) where {T<:IEEEFloat}
@@ -470,9 +468,7 @@ function notimplemented_tangent_guard(da::L) where {L<:Base.IEEEFloat}
     end
 end
 
-function notimplemented_tangent_guard(
-    da::Mooncake.Tangent{@NamedTuple{re::L,im::L}}
-) where {L<:Base.IEEEFloat}
+function notimplemented_tangent_guard(da::Complex{L}) where {L<:Base.IEEEFloat}
     return if _dot(da, da) != L(0)
         Complex(L(NaN), L(NaN))
     else
