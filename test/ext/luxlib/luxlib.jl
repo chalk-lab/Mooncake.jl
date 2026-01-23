@@ -67,7 +67,10 @@ using Mooncake.TestUtils: test_rule
             map(
                 Iterators.product(
                     [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
-                    [randn(5), nothing],
+                    [
+                        randn(5),
+                        # , nothing
+                    ],
                     [Lux.relu, tanh, NNlib.gelu],
                 ),
             ) do (opmode, bias, activation)
