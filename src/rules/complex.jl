@@ -1,8 +1,20 @@
-const ComplexFloat{P<:IEEEFloat} = Complex{P}
-const CF{P} = ComplexFloat{P}
+# NOTE: Type aliasing does not reliably preserve parameter constraints.
+# For example:
+#   const CF{P} = ComplexFloat{P}
+#
+# Methods like
+#   tangent_type(::Type{CF{P}}) where {P}
+#   tangent_type(::Type{NoFData}, ::Type{CF{P}}) where {P}
+#
+# and even uses of CF{P} itself will accept P = Int, even if
+# ComplexFloat{P} originally constrained P, because aliases do not
+# enforce the original type parameter bounds.
 
-@foldable tangent_type(::Type{CF{P}}) where {P} = Complex{tangent_type(P)}
-@foldable tangent_type(::Type{NoFData}, ::Type{CF{P}}) where {P} = Complex{P}
+const ComplexFloat{P<:IEEEFloat} = Complex{P}
+const CF{P<:IEEEFloat} = Complex{P}
+
+@foldable tangent_type(::Type{CF{P}}) where {P<:IEEEFloat} = Complex{tangent_type(P)}
+@foldable tangent_type(::Type{NoFData}, ::Type{CF{P}}) where {P<:IEEEFloat} = Complex{P}
 @foldable fdata_type(::Type{T}) where {T<:ComplexFloat} = NoFData
 @foldable rdata_type(::Type{T}) where {T<:ComplexFloat} = T
 
