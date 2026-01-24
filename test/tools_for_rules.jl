@@ -162,7 +162,7 @@ end
     @testset "mooncake_overlay" begin
         f = ToolsForRulesResources.overlay_tester
         rule = Mooncake.build_rrule(Tuple{typeof(f),Float64})
-        @test value_and_gradient!!(rule, f, 5.0) == (15.0, (NoTangent(), 3.0))
+        @test value_and_gradient!!(rule, f, 5.0) == (15.0, (f, 3.0))
     end
     @testset "zero_derivative" begin
         test_rule(

@@ -74,7 +74,7 @@ scale (generic function with 1 method)
 julia> rule = Mooncake.build_rrule(Tuple{typeof(scale), Float64});
 
 julia> Mooncake.value_and_gradient!!(rule, scale, 5.0)
-(10.0, (NoTangent(), 2.0))
+(10.0, (scale, 2.0))
 ```
 
 We can use `@mooncake_overlay` to change the definition which Mooncake.jl sees:
@@ -84,7 +84,7 @@ julia> Mooncake.@mooncake_overlay scale(x) = 3x
 julia> rule = Mooncake.build_rrule(Tuple{typeof(scale), Float64});
 
 julia> Mooncake.value_and_gradient!!(rule, scale, 5.0)
-(15.0, (NoTangent(), 3.0))
+(15.0, (scale, 3.0))
 ```
 As can be seen from the output, the result of differentiating using Mooncake.jl has changed
 to reflect the overlay-ed definition of the method.
@@ -98,7 +98,7 @@ julia> Mooncake.@mooncake_overlay function scale(x)
 julia> rule = Mooncake.build_rrule(Tuple{typeof(scale), Float64});
 
 julia> Mooncake.value_and_gradient!!(rule, scale, 5.0)
-(20.0, (NoTangent(), 4.0))
+(20.0, (scale, 4.0))
 ```
 """
 macro mooncake_overlay(method_expr)

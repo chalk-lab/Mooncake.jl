@@ -111,7 +111,7 @@ function __value_and_gradient!!(rule::R, fx::Vararg{CoDual,N}) where {R,N}
 end
 
 """
-    value_and_pullback!!(rule, ȳ, f, x...; friendly_tangents=false)
+    value_and_pullback!!(rule, ȳ, f, x...; friendly_tangents=true)
 
 Compute the value and pullback of `f(x...)`. If `friendly_tangents=false`,
 `ȳ` must be a valid tangent for the primal return by `f(x...)`.
@@ -141,7 +141,7 @@ function. The `CoDual`s should be primal-tangent pairs (as opposed to primal-fda
 There are lots of ways to get this wrong though, so we generally advise against doing this.
 """
 function value_and_pullback!!(
-    rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=false
+    rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=true
 ) where {R,N}
     if friendly_tangents
         ȳ = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
@@ -155,7 +155,7 @@ function value_and_pullback!!(
 end
 
 """
-    value_and_gradient!!(rule, f, x...; friendly_tangents=false)
+    value_and_gradient!!(rule, f, x...; friendly_tangents=true)
 
 Equivalent to `value_and_pullback!!(rule, 1.0, f, x...)`, and assumes `f` returns a
 `Union{Float16,Float32,Float64}`.
@@ -174,11 +174,11 @@ value_and_gradient!!(rule, f, x, y)
 
 # output
 
-(4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
+(4.0, (f, [1.0, 1.0], [2.0, 2.0]))
 ```
 """
 function value_and_gradient!!(
-    rule::R, fx::Vararg{Any,N}; friendly_tangents=false
+    rule::R, fx::Vararg{Any,N}; friendly_tangents=true
 ) where {R,N}
     if friendly_tangents
         value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
@@ -465,20 +465,22 @@ function __exclude_unsupported_output_internal!(y::Ptr, ::Set{UInt})
 end
 
 """
-    prepare_pullback_cache(f, x...; friendly_tangents=false)
+    prepare_pullback_cache(f, x...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 """
-@unstable function prepare_pullback_cache(fx...; friendly_tangents=false, kwargs...)
+@unstable function prepare_pullback_cache(fx...; config=Config())
 
     # Check that the output of `fx` is supported.
     __exclude_func_with_unsupported_output(fx)
 
     # Construct rule and tangents.
     interp = get_interpreter(ReverseMode)
-    rule = build_rrule(interp, Tuple{map(_typeof, fx)...}; kwargs...)
+    rule = build_rrule(
+        interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages
+    )
     tangents = map(zero_tangent, fx)
 
     # Run the rule forwards -- this should do a decent chunk of pre-allocation.
@@ -490,7 +492,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
-    if friendly_tangents
+    if config.friendly_tangents
         return Cache(rule, y_cache, tangents, _copy_output.(fx), zero_tangent(primal(y)))
     else
         return Cache(rule, y_cache, tangents, nothing, nothing)
@@ -507,13 +509,13 @@ end
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 pullback of `f` applied to `ȳ`. The first element is the component of the pullback
 associated to any fields of `f`, the second w.r.t the first element of `x`, etc.
-If the cache was prepared with `friendly_tangents=true`, the pullback uses the same types as
+If the cache was prepared with `config.friendly_tangents=true`, the pullback uses the same types as
 those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
 
 There are no restrictions on what `y = f(x...)` is permitted to return. However, `ȳ` must be
-an acceptable tangent for `y`. If the cache was prepared with `friendly_tangents=false`,
+an acceptable tangent for `y`. If the cache was prepared with `config.friendly_tangents=false`,
 this means that, for example, it must be true that `tangent_type(typeof(y)) == typeof(ȳ)`.
-If the cache was prepared with `friendly_tangents=true`, then `typeof(y) == typeof(ȳ)`.
+If the cache was prepared with `config.friendly_tangents=true`, then `typeof(y) == typeof(ȳ)`.
 
 As with all functionality in Mooncake, if `f` modifes itself or `x`, `value_and_gradient!!`
 will return both to their original state as part of the process of computing the gradient.
@@ -545,7 +547,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 
 # output
 
-(4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
+(4.0, (f, [1.0, 1.0], [2.0, 2.0]))
 ```
 """
 function value_and_pullback!!(
@@ -572,19 +574,19 @@ function value_and_pullback!!(
 end
 
 """
-    prepare_gradient_cache(f, x...; friendly_tangents=false)
+    prepare_gradient_cache(f, x...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 """
-@unstable function prepare_gradient_cache(fx...; friendly_tangents=false, kwargs...)
-    rule = build_rrule(fx...; kwargs...)
+@unstable function prepare_gradient_cache(fx...; config=Config())
+    rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = map(zero_tangent, fx)
     y, rvs!! = rule(map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents)...)
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
-    if friendly_tangents
+    if config.friendly_tangents
         return Cache(rule, nothing, tangents, tuple(_copy_output.(fx)...), nothing)
     else
         return Cache(rule, nothing, tangents, nothing, nothing)
@@ -597,7 +599,7 @@ end
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 gradient of `f` w.r.t. each argument. The first element is the gradient w.r.t any
 differentiable fields of `f`, the second w.r.t the first element of `x`, etc.
-If the cache was prepared with `friendly_tangents=true`, the pullback uses the same types as
+If the cache was prepared with `config.friendly_tangents=true`, the pullback uses the same types as
 those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
 
 Assumes that `f` returns a `Union{Float16, Float32, Float64}`.
@@ -632,7 +634,7 @@ value_and_gradient!!(cache, f, x, y)
 
 # output
 
-(4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
+(4.0, (f, [1.0, 1.0], [2.0, 2.0]))
 ```
 """
 function value_and_gradient!!(
@@ -657,11 +659,13 @@ function value_and_gradient!!(
 end
 
 """
-    prepare_derivative_cache(fx...; kwargs...)
+    prepare_derivative_cache(fx...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 """
-@unstable prepare_derivative_cache(fx...; kwargs...) = build_frule(fx...; kwargs...)
+@unstable function prepare_derivative_cache(fx...; config=Config())
+    return build_frule(fx...; config.debug_mode, config.silence_debug_messages)
+end
 
 """
     value_and_derivative!!(rule::R, f::Dual, x::Vararg{Dual,N})

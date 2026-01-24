@@ -37,7 +37,7 @@ However, if you differentiate this example, you'll see:
 julia> rule = Mooncake.build_rrule(foo, 2.0);
 
 julia> Mooncake.value_and_gradient!!(rule, foo, 2.0)
-(2.0, (NoTangent(), 0.0))
+(2.0, (foo, 0.0))
 ```
 Observe that while it has correctly computed the identity function, the gradient is zero.
 
@@ -152,7 +152,7 @@ rule = build_rrule(Tuple{typeof(foo), Vector{Float64}})
 Mooncake.value_and_gradient!!(rule, foo, [5.0, 4.0])
 
 # output
-(4.0, (NoTangent(), [0.0, 1.0]))
+(4.0, (foo, [0.0, 1.0]))
 ```
 
 _**The Solution**_
