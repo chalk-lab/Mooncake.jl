@@ -1,26 +1,31 @@
 # NOTE: Type aliasing does not reliably preserve parameter constraints.
 # For example:
+#   const ComplexFloat{P<:IEEEFloat} = Complex{P}
 #   const CF{P} = ComplexFloat{P}
 #
 # Methods like
 #   tangent_type(::Type{CF{P}}) where {P}
 #   tangent_type(::Type{NoFData}, ::Type{CF{P}}) where {P}
 #
-# and even uses of CF{P} itself will accept P = Int, even if
-# ComplexFloat{P} originally constrained P, because aliases do not
-# enforce the original type parameter bounds.
+# and even uses of `CF{P}` itself will accept `P = Int`, despite the original
+# `P<:IEEEFloat` constraint on `ComplexFloat{P}`. Aliases do not enforce the
+# bounds of the types they refer to.
+#
+# Therefore, we use forms like `Complex{<:IEEEFloat}` or a non-parametric alias
+# `const CF = Complex{<:IEEEFloat}`.
 
-const ComplexFloat{P<:IEEEFloat} = Complex{P}
-const CF{P<:IEEEFloat} = Complex{P}
+const CF = Complex{<:IEEEFloat}
 
-@foldable tangent_type(::Type{CF{P}}) where {P<:IEEEFloat} = Complex{tangent_type(P)}
-@foldable tangent_type(::Type{NoFData}, ::Type{CF{P}}) where {P<:IEEEFloat} = Complex{P}
-@foldable fdata_type(::Type{T}) where {T<:ComplexFloat} = NoFData
-@foldable rdata_type(::Type{T}) where {T<:ComplexFloat} = T
+@foldable tangent_type(::Type{Complex{P}}) where {P<:IEEEFloat} = Complex{tangent_type(P)}
+@foldable tangent_type(::Type{NoFData}, ::Type{Complex{P}}) where {P<:IEEEFloat} = Complex{
+    P
+}
+@foldable fdata_type(::Type{T}) where {T<:CF} = NoFData
+@foldable rdata_type(::Type{T}) where {T<:CF} = T
 
 tangent(::NoFData, t::CF) = t
 
-zero_tangent_internal(p::CF{P}, ::MaybeCache) where {P} = zero(p)
+zero_tangent_internal(p::Complex{P}, ::MaybeCache) where {P<:IEEEFloat} = zero(p)
 
 zero_rdata(p::CF) = zero_tangent(p)
 zero_rdata_from_type(P::Type{<:CF}) = zero(P)
@@ -34,13 +39,15 @@ _verify_rdata_value(::P, ::P) where {P<:CF} = nothing
 
 increment_internal!!(::IncCache, t::T, s::T) where {T<:CF} = t + s
 
-function increment_field!!(x::CF{P}, re_or_im::P, ::Val{FieldName}) where {P,FieldName}
+function increment_field!!(
+    x::Complex{P}, re_or_im::P, ::Val{FieldName}
+) where {P<:IEEEFloat,FieldName}
     return if (FieldName === :re) || (FieldName == 1)
         complex(real(x) + re_or_im, imag(x))
     elseif (FieldName === :im) || (FieldName == 2)
         complex(real(x), re_or_im + imag(x))
     else
-        throw(ArgumentError(lazy"Unkown field `$FieldName` for type `$(CF{P})`)"))
+        throw(ArgumentError(lazy"Unkown field `$FieldName` for type `$(Complex{P})`)"))
     end
 end
 
@@ -57,7 +64,7 @@ _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
 
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
-@is_primitive MinimalCtx Tuple{typeof(lgetfield),CF{T},Val} where {T}
+@is_primitive MinimalCtx Tuple{typeof(lgetfield),Complex{P},Val} where {P<:IEEEFloat}
 function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{<:CF,<:CF}, ::Dual{Val{FieldName}}
 ) where {FieldName}
@@ -96,17 +103,17 @@ function rrule!!(
     return y_cd, lgetfield_Complex_pullback
 end
 
-@is_primitive MinimalCtx Tuple{typeof(_new_),<:CF{T},T,T} where {T<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(_new_),<:Complex{P},P,P} where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(_new_)}, ::Dual{Type{CF{P}}}, re::Dual{P}, im::Dual{P}
+    ::Dual{typeof(_new_)}, ::Dual{Type{Complex{P}}}, re::Dual{P}, im::Dual{P}
 ) where {P<:IEEEFloat}
-    x = _new_(CF{P}, primal(re), primal(im))
-    dx = _new_(CF{P}, tangent(re), tangent(im))
+    x = _new_(Complex{P}, primal(re), primal(im))
+    dx = _new_(Complex{P}, tangent(re), tangent(im))
     return Dual(x, dx)
 end
 function rrule!!(
-    ::CoDual{typeof(_new_)}, ::CoDual{Type{CF{P}}}, re::CoDual{P}, im::CoDual{P}
+    ::CoDual{typeof(_new_)}, ::CoDual{Type{Complex{P}}}, re::CoDual{P}, im::CoDual{P}
 ) where {P<:IEEEFloat}
-    _new_complex_pb(dy::CF{P}) = NoRData(), NoRData(), real(dy), imag(dy)
-    return zero_fcodual(_new_(CF{P}, re.x, im.x)), _new_complex_pb
+    _new_complex_pb(dy::Complex{P}) = NoRData(), NoRData(), real(dy), imag(dy)
+    return zero_fcodual(_new_(Complex{P}, re.x, im.x)), _new_complex_pb
 end
