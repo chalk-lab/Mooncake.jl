@@ -411,7 +411,9 @@ function increment_and_get_rdata!(
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     return r + t
 end
-function increment_and_get_rdata!(f::Array{P}, ::NoRData, t::Array{P}) where {P<:IEEEFloat}
+function increment_and_get_rdata!(
+    f::Array{P}, ::NoRData, t::Array{P}
+) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     increment!!(f, t)
     return NoRData()
 end
