@@ -31,7 +31,7 @@ function _sf_nonprimitive_perf_flag(name::Symbol, default::Symbol)
     return default
 end
 
-# Helper methods to enable mixed Float32/Float64 operations. 
+# Helper methods to enable mixed Float32/Float64 operations.
 # Required for compatibility with Julia 1.12+.
 Union{Float32,Float64}(x) = Float64(x)
 Mooncake.increment!!(x::Float32, y::Float64) = Float32(x + y)
