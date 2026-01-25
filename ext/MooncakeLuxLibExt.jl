@@ -72,7 +72,9 @@ import Mooncake:
         F,
         AbstractArray{xT,N},
         AbstractVector,
-    } where {F,N,xT}
+    } where {F,N,xT},
+    false,
+    MooncakeRuleConfig()
 )
 
 @from_rrule(
@@ -84,7 +86,9 @@ import Mooncake:
         F,
         AbstractArray{xT,N},
         AbstractVector,
-    } where {F,N,xT}
+    } where {F,N,xT},
+    false,
+    MooncakeRuleConfig()
 )
 
 # common_ops
@@ -182,20 +186,7 @@ import Mooncake:
 # groupnorm
 @zero_derivative DefaultCtx Tuple{typeof(Impl.groupnorm_reduce_dims),Vararg}
 
-@from_rrule(
-    DefaultCtx,
-    Tuple{
-        typeof(Impl.groupnorm_affine_normalize_internal),
-        Impl.AbstractInternalArrayOpMode,
-        F,
-        AbstractArray{T,4},
-        AbstractArray{μT,4},
-        AbstractArray{σ²T,4},
-        Impl.Optional{<:AbstractArray{<:Any,4}},
-        Impl.Optional{<:AbstractArray{<:Any,4}},
-        Any,  # ϵ
-    } where {F,T,μT,σ²T}
-)
+# Let Mooncake derive rules for Impl.groupnorm_affine_normalize_internal 
 
 # layernorm
 @zero_derivative DefaultCtx Tuple{typeof(Impl.compute_layernorm_dims),Vararg}
