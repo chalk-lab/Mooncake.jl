@@ -661,7 +661,7 @@ end
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 """
-@unstable prepare_derivative_cache(fx...; kwargs...) = build_frule(fx...; kwargs...)
+prepare_derivative_cache(fx...; kwargs...) = generated_frule!! #TODO: maybe prepare the captures?
 
 """
     value_and_derivative!!(rule::R, f::Dual, x::Vararg{Dual,N})
