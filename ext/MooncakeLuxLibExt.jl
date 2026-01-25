@@ -15,31 +15,29 @@ import Mooncake:
     @mooncake_overlay,
     CoDual,
     @zero_adjoint,
-    @zero_derivative
+    @zero_derivative,
+    MooncakeRuleConfig
 
 ## Mooncake imports CRC rules for Lux kernels from Lux.LuxLib
 # activation
 @from_rrule(
     DefaultCtx,
     Tuple{
-        CRC.RuleConfig{>:CRC.HasReverseMode},
         typeof(Impl.activation!!),
         Impl.AbstractInternalArrayOpMode,
         Impl.True,
         F,
         AbstractArray{T},
-    } where {F,T}
+    } where {F,T},
+    false,
+    MooncakeRuleConfig()
 )
 
 @from_rrule(
     DefaultCtx,
-    Tuple{
-        CRC.RuleConfig{>:CRC.HasReverseMode},
-        typeof(Impl.activation),
-        Impl.LoopedArrayOp,
-        F,
-        AbstractArray{T},
-    } where {F,T}
+    Tuple{typeof(Impl.activation),Impl.LoopedArrayOp,F,AbstractArray{T}} where {F,T},
+    false,
+    MooncakeRuleConfig()
 )
 
 @zero_derivative DefaultCtx Tuple{typeof(Impl.select_fastest_activation),Vararg}
@@ -103,35 +101,37 @@ import Mooncake:
 
 # FIX CONV, DENSE Kernel rules for Mooncake
 # conv
-# @from_rrule(
-#     DefaultCtx,
-#     Tuple{
-#         CRC.RuleConfig{>:CRC.HasReverseMode},
-#         typeof(Impl.fused_conv),
-#         Impl.AbstractInternalArrayOpMode,
-#         F,
-#         AbstractArray{wT,N},
-#         AbstractArray{xT,N},
-#         Impl.Optional{AbstractVector},
-#         Impl.ConvDims,
-#     } where {F,wT,xT,N}
-# )
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.fused_conv),
+        Impl.AbstractInternalArrayOpMode,
+        F,
+        AbstractArray{wT,N},
+        AbstractArray{xT,N},
+        Impl.Optional{AbstractVector},
+        Impl.ConvDims,
+    } where {F,wT,xT,N},
+    false,
+    MooncakeRuleConfig()
+)
 
 # dense
-# @from_rrule(
-#     DefaultCtx,
-#     Tuple{
-#         # CRC.RuleConfig{>:CRC.HasReverseMode},
-#         typeof(Impl.fused_dense),
-#         Impl.AbstractInternalArrayOpMode,
-#         F,
-#         AbstractMatrix,
-#         AbstractMatrix,
-#         Impl.Optional{<:AbstractVector},
-#     } where {F}
-# )
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.fused_dense),
+        Impl.AbstractInternalArrayOpMode,
+        F,
+        AbstractMatrix,
+        AbstractMatrix,
+        Impl.Optional{<:AbstractVector},
+    } where {F},
+    false,
+    MooncakeRuleConfig()
+)
 
-# special CRC rule dispatch over gelu
+# special CRC rule dispatch over gelu with GPUBroadcastOp
 @from_rrule(
     DefaultCtx,
     Tuple{
@@ -215,28 +215,6 @@ import Mooncake:
 @zero_derivative DefaultCtx Tuple{typeof(Impl.get_norm_reshape_dims),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Impl.instancenorm_reduce_dims),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Utils.static_training_mode_check),Vararg}
-
-# Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
-@mooncake_overlay function LuxLib.Impl.fused_dense(
-    opmode,
-    act::F,
-    weight::AbstractMatrix,
-    x::AbstractMatrix,
-    b::LuxLib.Optional{<:AbstractVector},
-) where {F}
-    return bias_activation(act, Impl.matmul(weight, x), b)
-end
-
-@mooncake_overlay function LuxLib.Impl.fused_conv(
-    ::LuxLib.Impl.AbstractInternalArrayOpMode,
-    act::F,
-    weight::AbstractArray{wT,N},
-    x::AbstractArray{xT,N},
-    bias::LuxLib.Optional{<:AbstractVector},
-    cdims::LuxLib.Impl.ConvDims,
-) where {F,wT,xT,N}
-    return LuxLib.Impl.bias_activation(act, LuxLib.Impl.conv(x, weight, cdims), bias)
-end
 
 # This is a really horrible hack that we need to do until Mooncake is able to support the
 # call-back-into-ad interface that ChainRules exposes.
