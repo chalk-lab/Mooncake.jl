@@ -151,7 +151,7 @@ macro inactive_intrinsic(name)
         function _is_primitive(
             ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
         )
-            true
+            return true
         end
         translate(::Val{Intrinsics.$name}) = $name
         function rrule!!(f::CoDual{typeof($name)}, args::Vararg{Any,N}) where {N}
@@ -650,14 +650,15 @@ end
 
 @intrinsic sqrt_llvm
 function frule!!(::Dual{typeof(sqrt_llvm)}, x)
-    y = sqrt_llvm(primal(x))
-    dy = tangent(x) / (2 * y)
+    _x, dx = extract(x)
+    y = sqrt_llvm(_x)
+    dy = ifelse(iszero(dx), dx, dx / (2 * y))
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _x = primal(x)
     _y = sqrt_llvm(primal(x))
-    llvm_sqrt_pullback!!(dy) = NoRData(), ifelse(iszero(_y), P(0), dy / (2 * _y))
+    llvm_sqrt_pullback!!(dy) = NoRData(), ifelse(iszero(dy), P(0), dy / (2 * _y))
     return CoDual(_y, NoFData()), llvm_sqrt_pullback!!
 end
 

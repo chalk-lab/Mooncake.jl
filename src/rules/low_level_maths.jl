@@ -126,12 +126,12 @@ end
 function frule!!(::Dual{typeof(sqrt)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
     y = sqrt(_x)
-    return Dual(y, dx / (2 * y))
+    return Dual(y, ifelse(iszero(dx), dx, dx / (2 * y)))
 end
 function rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = sqrt(primal(x))
     function sqrt_adjoint(dy::P)
-        return NoRData(), ifelse(iszero(primal(x)), P(0), dy / (2 * y))
+        return NoRData(), ifelse(iszero(dy), P(0), dy / (2 * y))
     end
     return zero_fcodual(y), sqrt_adjoint
 end
@@ -341,3 +341,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
 end
 
 derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths}) = Any[], Any[]
+
+# using DifferentiationInterface
+# using ForwardDiff: ForwardDiff
+# using Enzyme: Enzyme
+# using Zygote: Zygote
+# using ReverseDiff: ReverseDiff
+
+# function f(x)
+#     a = x
+#     b = sqrt(abs(x - 1.0))
+#     return a
+# end
+
+# for backend in (AutoForwardDiff(), AutoEnzyme(), AutoZygote(), AutoReverseDiff())
+#     @info "$backend" pullback(sqrt, backend, 0.0, (1.0,)) pullback(
+#         sqrt, backend, 0.0, (0.0,)
+#     ) pullback(f, backend, 1.0, (1.0,)) pullback(f, backend, 1.0, (0.0,))
+# end
