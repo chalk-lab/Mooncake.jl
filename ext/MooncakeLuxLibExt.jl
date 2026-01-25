@@ -23,11 +23,7 @@ import Mooncake:
 @from_rrule(
     DefaultCtx,
     Tuple{
-        typeof(Impl.activation!!),
-        Impl.AbstractInternalArrayOpMode,
-        Impl.True,
-        F,
-        AbstractArray{T},
+        typeof(Impl.activation!!),Impl.AbstractInternalArrayOpMode,True,F,AbstractArray{T}
     } where {F,T},
     false,
     MooncakeRuleConfig()
@@ -84,7 +80,7 @@ import Mooncake:
     Tuple{
         typeof(Impl.bias_activation!!),
         Impl.AbstractInternalArrayOpMode,
-        Impl.True,
+        True,
         F,
         AbstractArray{xT,N},
         AbstractVector,
@@ -149,7 +145,9 @@ import Mooncake:
 @zero_derivative DefaultCtx Tuple{typeof(Impl.dropout_shape),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Impl.dropout_fptype),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Impl.generate_alpha_dropout_noise),Vararg}
-@zero_derivative DefaultCtx Tuple{typeof(Impl.generate_dropout_mask),Vararg}
+@zero_derivative DefaultCtx Tuple{
+    typeof(Impl.generate_dropout_mask),AbstractRNG,Any,Any,Any,Any
+}
 
 @from_rrule(
     DefaultCtx,
@@ -214,7 +212,7 @@ import Mooncake:
 @zero_derivative DefaultCtx Tuple{typeof(Impl.update_normalization_statistics),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Impl.get_norm_reshape_dims),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Impl.instancenorm_reduce_dims),Vararg}
-@zero_derivative DefaultCtx Tuple{typeof(Utils.static_training_mode_check),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(static_training_mode_check),Vararg}
 
 # This is a really horrible hack that we need to do until Mooncake is able to support the
 # call-back-into-ad interface that ChainRules exposes.
