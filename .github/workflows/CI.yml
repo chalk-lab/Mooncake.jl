@@ -31,6 +31,7 @@ jobs:
           'rules/blas',
           'rules/blas_level_3',
           'rules/builtins',
+          'rules/complex',
           'rules/dispatch_doctor',
           'rules/fastmath',
           'rules/foreigncall',
