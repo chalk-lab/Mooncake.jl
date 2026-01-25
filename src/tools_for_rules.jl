@@ -502,7 +502,7 @@ function frule_wrapper(fargs::Vararg{Dual,N}; cfg::MooncakeConfigType=nothing) w
     Ω, dΩ = if cfg isa MooncakeRuleConfig
         CRC.frule(cfg, tangents, tuple_map(primal, fargs)...)
     else
-        CRC.frule(tangents, tuple_map(primal, args)...)
+        CRC.frule(tangents, tuple_map(primal, fargs)...)
     end
     return Dual(Ω, mooncake_tangent(Ω, dΩ))
 end
