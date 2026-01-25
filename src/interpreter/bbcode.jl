@@ -287,8 +287,8 @@ collect_stmts(bb::BBlock)::Vector{IDInstPair} = collect(zip(bb.inst_ids, bb.inst
     A `BBCode` is a data structure which is similar to `IRCode`, but adds additional structure.
 
     In particular, a `BBCode` comprises a sequence of basic blocks (`BBlock`s), each of which
-    comprise a sequence of statements. Moreover, each `BBlock` has its own unique `ID`, as does
-    each statment.
+    comprises a sequence of statements. Moreover, each `BBlock` has its own unique `ID`, as does
+    each statement.
 
     The consequence of this is that new basic blocks can be inserted into a `BBCode`. This is
     distinct from `IRCode`, in which to create a new basic block, one must insert additional
@@ -298,8 +298,8 @@ collect_stmts(bb::BBlock)::Vector{IDInstPair} = collect(zip(bb.inst_ids, bb.inst
     blocks, meaning that you can safely assume that references from existing basic block
     terminators / phi nodes to other blocks will not be modified by inserting a new basic block.
 
-    Additionally, since each statment in each basic block has its own unique `ID`, new
-    statments can be inserted without changing references between other blocks. `IRCode` also
+    Additionally, since each statement in each basic block has its own unique `ID`, new
+    statements can be inserted without changing references between other blocks. `IRCode` also
     has some support for this via its `new_nodes` field, but eventually all statements will be
     renamed upon `compact!`ing the `IRCode`, meaning that the name of any given statement will
     eventually change.

@@ -50,16 +50,12 @@ import Mooncake.TestUtils:
 
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
+const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
 
 # Tell Mooncake.jl how to handle CuArrays.
 
-@foldable tangent_type(::Type{<:CuArray{P,N,M}}) where {P<:Union{Complex{<:IEEEFloat},IEEEFloat},N,M} = CuArray{
-    tangent_type(P),N,M
-}
-@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuFloatArray} = P
-@foldable tangent_type(::Type{CuArray{P,N,M}}, ::Type{NoRData}) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M} = CuArray{
-    P,N,M
-}
+@foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
+@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
@@ -68,164 +64,68 @@ tangent_type(::Type{CuContext}) = NoTangent
 tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
 tangent_type(::Type{CUBLAS.cublasOperation_t}) = NoTangent
 
-tangent(p::CuFloatArray, ::NoRData) = p
-function tangent(
-    p::CuArray{P,N,M}, ::NoRData
-) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
-    p
-end
+tangent(p::CuMaybeComplexArray, ::NoRData) = p
 
-function arrayify(x::A, dx::A) where {A<:CuFloatArray}
+function arrayify(x::A, dx::A) where {A<:CuMaybeComplexArray}
     (x, dx)
 end
-function arrayify(x::CuComplexArray, dx::CuArray{<:Mooncake.Tangent})
-    return x, reinterpret(eltype(x), dx)
-end
 
-function zero_tangent_internal(x::CuFloatArray, dict::MaybeCache)
+function zero_tangent_internal(x::CuMaybeComplexArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
     t = zero(x)
     dict[x] = t
     return t
 end
-function zero_tangent_internal(x::CuArray{T}, dict::MaybeCache) where {T<:Complex}
+function randn_tangent_internal(rng::AbstractRNG, x::CuMaybeComplexArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = tangent_type(typeof(x))(undef, size(x))
-    t_ = reinterpret(T, t)
-    t_ .= zero(T)
-    dict[x] = t
-    return t
-end
-function randn_tangent_internal(
-    rng::AbstractRNG, x::CuArray{T}, dict::MaybeCache
-) where {T<:IEEEFloat}
-    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = CuArray(randn(rng, T, size(x)...))
-    dict[x] = t
-    return t
-end
-function randn_tangent_internal(
-    rng::AbstractRNG, x::CuArray{T}, dict::MaybeCache
-) where {T<:Complex}
-    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = tangent_type(typeof(x))(undef, size(x))
-    t_ = reinterpret(T, t)
-    th = randn(rng, T, size(x)...)
-    t_ .= CuArray(th)
+    t = CuArray(randn(rng, eltype(x), size(x)...))
     dict[x] = t
     return t
 end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
-) where {P<:Union{CuFloatArray,CuComplexArray}}
+) where {P<:CuMaybeComplexArray}
     # allow nan comparisons to return true, real() to cover complex case
     return isapprox(x, y; atol=(√eps(real(eltype(P)))), nans=true)
 end
-function TestUtils.has_equal_data_internal(
-    x::CuArray{P,N,M}, y::CuArray{P,N,M}, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
-) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
-    x_ = reinterpret(Complex{T}, x)
-    y_ = reinterpret(Complex{T}, y)
-    # allow nan comparisons to return true
-    return isapprox(x_, y_; atol=(√eps(T)), nans=true)
-end
-function increment_internal!!(
-    c::IncCache, x::CuArray{P,N,M}, y::CuArray{P,N,M}
-) where {P<:IEEEFloat,N,M}
+function increment_internal!!(c::IncCache, x::A, y::A) where {A<:CuMaybeComplexArray}
     (x === y || haskey(c, x)) && return x
     c[x] = true
     x .+= y
     return x
 end
-function increment_internal!!(
-    c::IncCache, x::CuArray{P,N,M}, y::CuArray{P,N,M}
-) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
-    (x === y || haskey(c, x)) && return x
-    c[x] = true
-    x_ = reinterpret(Complex{T}, x)
-    y_ = reinterpret(Complex{T}, y)
-    x_ .+= y_
-    return x
-end
-__increment_should_allocate(::Type{<:CuFloatArray}) = true
-set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuFloatArray) = x .= 0
-function set_to_zero_internal!!(
-    ::Mooncake.SetToZeroCache, x::CuArray{Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
-) where {T<:IEEEFloat,N,M}
-    x_ = reinterpret(Complex{T}, x)
-    x_ .= zero(Complex{T})
-    return x
-end
+__increment_should_allocate(::Type{<:CuMaybeComplexArray}) = true
+set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuMaybeComplexArray) = x .= 0
 
 function _add_to_primal_internal(
     c::MaybeCache, x::P, y::P, unsafe::Bool
-) where {P<:CuFloatArray}
+) where {P<:CuMaybeComplexArray}
     key = (x, y, unsafe)
     haskey(c, key) && return c[key]::P
     x′ = x + y
     c[(x, y, unsafe)] = x′
     return x′
 end
-function _add_to_primal_internal(
-    c::MaybeCache, x::P, y::TP, unsafe::Bool
-) where {P<:CuComplexArray,TP}
-    key = (x, y, unsafe)
-    haskey(c, key) && return c[key]::P
-    x′ = x + reinterpret(eltype(x), y)
-    c[(x, y, unsafe)] = x′
-    return x′
-end
-function primal_to_tangent_internal!!(t, x::CuFloatArray, c::MaybeCache)
+function primal_to_tangent_internal!!(t, x::CuMaybeComplexArray, c::MaybeCache)
     haskey(c, x) && return c[x]::typeof(t)
     c[x] = t
     t .= x
     return t
 end
-function primal_to_tangent_internal!!(t, x::CuComplexArray, c::MaybeCache)
-    haskey(c, x) && return c[x]::typeof(t)
-    c[x] = t
-    t .= reinterpret(eltype(t), x)
-    return t
-end
-function tangent_to_primal_internal!!(x::CuFloatArray, t, c::MaybeCache)
+function tangent_to_primal_internal!!(x::CuMaybeComplexArray, t, c::MaybeCache)
     haskey(c, x) && return c[x]::typeof(x)
     c[x] = x
     x .= t
     return x
 end
-function tangent_to_primal_internal!!(x::CuComplexArray, t, c::MaybeCache)
-    haskey(c, x) && return c[x]::typeof(x)
-    c[x] = x
-    x .= reinterpret(eltype(x), t)
-    return x
-end
-function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuFloatArray}
+function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuMaybeComplexArray}
     key = (x, y)
     haskey(c, key) && return c[key]::Float64
-    return Float64(dot(x, y))
+    return Float64(real(dot(x, y)))
 end
-function _dot_internal(
-    c::MaybeCache, x::CuArray{P}, y::CuArray{P}
-) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}}}
-    key = (x, y)
-    haskey(c, key) && return c[key]::Float64
-    x_ = reinterpret(Complex{T}, x)
-    y_ = reinterpret(Complex{T}, y)
-    return Float64(real(dot(x_, y_)))
-end
-function _scale_internal(c::MaybeCache, x::Float64, y::P) where {T<:IEEEFloat,P<:CuArray{T}}
+function _scale_internal(c::MaybeCache, x::Float64, y::P) where {P<:CuMaybeComplexArray}
     haskey(c, y) && return c[y]::P
-    t′ = T(x) * y
-    c[y] = t′
-    return t′
-end
-function _scale_internal(
-    c::MaybeCache, x::Float64, y::CuArray{P,N,M}
-) where {T<:IEEEFloat,P<:Mooncake.Tangent{@NamedTuple{re::T,im::T}},N,M}
-    haskey(c, y) && return c[y]::CuArray{P,N,M}
-    t′ = copy(y)
-    t′_ = reinterpret(Complex{T}, t′)
-    t′_ .*= T(x)
+    t′ = eltype(P)(x) * y
     c[y] = t′
     return t′
 end
@@ -245,8 +145,8 @@ end
 
 # @from_chainrules tools
 # TODO: missing `mooncake_tangent` implementation.
-to_cr_tangent(x::CuFloatArray) = x
-function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuFloatArray}
+to_cr_tangent(x::CuMaybeComplexArray) = x
+function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuMaybeComplexArray}
     f .+= t
     return NoRData()
 end
@@ -260,29 +160,15 @@ end
 @is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
 function frule!!(
     p::Dual{Type{P}}, init::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
-) where {P<:CuFloatArray,N}
+) where {P<:CuMaybeComplexArray,N}
     _dims = map(primal, dims)
     return Dual(P(undef, _dims), P(undef, _dims))
 end
 function rrule!!(
     p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::Vararg{CoDual{Int},N}
-) where {P<:CuFloatArray,N}
+) where {P<:CuMaybeComplexArray,N}
     _dims = map(primal, dims)
     return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims...)
-end
-function frule!!(
-    p::Dual{Type{P}}, init::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
-) where {P<:CuComplexArray,N}
-    _dims = map(primal, dims)
-    return Dual(P(undef, _dims), tangent_type(P)(undef, _dims))
-end
-function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::Vararg{CoDual{Int},N}
-) where {P<:CuComplexArray,N}
-    _dims = map(primal, dims)
-    return (
-        CoDual(P(undef, _dims), tangent_type(P)(undef, _dims)), NoPullback(p, init, dims...)
-    )
 end
 
 # getfield / lgetfield rules for CuArray.

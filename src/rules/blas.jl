@@ -31,18 +31,12 @@ possible for all array types of interest so far.
 function arrayify(
     x::Union{Dual{A},CoDual{A}}
 ) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
-    return arrayify(primal(x), tangent(x))  # NOTE: for complex numbers, tangents are reinterpreted to Complex
+    return arrayify(primal(x), tangent(x))
 end
 function arrayify(
     x::A, dx::A
-) where {T<:Union{IEEEFloat,BlasRealFloat},A<:Union{Array{<:T},Ptr{<:T}}}
+) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{Array{<:T},Ptr{<:T}}}
     (x, dx)
-end
-function arrayify(x::Array{P}, dx::Array{<:Tangent}) where {P<:BlasComplexFloat}
-    return x, reinterpret(P, dx)
-end
-function arrayify(x::Ptr{P}, dx::Ptr{<:Tangent}) where {P<:BlasComplexFloat}
-    return x, convert(Ptr{P}, dx)
 end
 function arrayify(
     x::Diagonal{P,<:AbstractVector{P}}, dx::TangentOrFData
@@ -70,10 +64,7 @@ function arrayify(
 end
 
 @static if VERSION >= v"1.11-rc4"
-    arrayify(x::A, dx::A) where {A<:Memory{<:BlasRealFloat}} = (x, dx)
-    function arrayify(x::Memory{P}, dx::Memory{<:Tangent}) where {P<:BlasComplexFloat}
-        return x, reinterpret(P, dx)
-    end
+    arrayify(x::A, dx::A) where {A<:Memory{<:BlasFloat}} = (x, dx)
 end
 
 function arrayify(x::A, dx::DA) where {A,DA}
@@ -86,6 +77,28 @@ function arrayify(x::A, dx::DA) where {A,DA}
         "It should contain this error message and the associated stack trace.\n\n" *
         "Array type: $A\n\nTangent/FData type: $DA."
     return error(msg)
+end
+
+"""
+    matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
+                          CoDual{<:AbstractVecOrMat{<:BlasFloat}}})
+
+Normalize a vector or matrix primal–tangent pair into a BLAS-compatible matrix form.
+
+If the primal value is a vector, it is reshaped into a column matrix of size `(length(x), 1)`,
+and the associated tangent is reshaped in the same way. If the primal value is already a
+matrix, both the primal and tangent are returned unchanged.
+"""
+function matrixify(
+    x_dx::Union{Dual{T},CoDual{T}}
+) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
+    x, dx = arrayify(x_dx)
+    return reshape(x, :, 1), reshape(dx, :, 1)
+end
+function matrixify(
+    x_dx::Union{Dual{T},CoDual{T}}
+) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
+    return arrayify(x_dx)
 end
 
 function viewify(
@@ -105,14 +118,6 @@ function viewify(
     xinds = 1:incx:(incx * n)
     return view(x, xinds), view(dx, xinds)
 end
-
-numberify(x::BlasRealFloat) = x
-function numberify(x::Tangent{@NamedTuple{re::P,im::P}}) where {P<:BlasRealFloat}
-    complex(x.fields.re, x.fields.im)
-end
-numberify(x::Dual) = primal(x), numberify(tangent(x))
-_rdata(x::BlasRealFloat) = x
-_rdata(x::BlasComplexFloat) = RData((; re=real(x), im=imag(x)))
 
 #
 # Utility
@@ -308,7 +313,7 @@ function frule!!(
     # Extract params.
     n = primal(_n)
     incx = primal(_incx)
-    a, da = numberify(a_da)
+    a, da = extract(a_da)
     X, dX = arrayify(X_dX)
 
     # Compute Frechet derivative.
@@ -350,7 +355,7 @@ function rrule!!(
         # Compute gradient w.r.t. DX.
         BLAS.scal!(a', dX)
 
-        return NoRData(), NoRData(), _rdata(∇a), NoRData(), NoRData()
+        return NoRData(), NoRData(), ∇a, NoRData(), NoRData()
     end
     return X_dX, scal_adjoint
 end
@@ -370,38 +375,16 @@ end
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
     alpha::Dual{P},
-    A_dA::Dual{<:AbstractVector{P}},
+    A_dA::Dual{<:AbstractVecOrMat{P}},
     x_dx::Dual{<:AbstractVector{P}},
     beta::Dual{P},
     y_dy::Dual{<:AbstractVector{P}},
 ) where {P<:BlasFloat}
-    A, dA = arrayify(A_dA)
+    A, dA = matrixify(A_dA)
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
-
-    _gemv!_frule_core!(
-        primal(tA), α, dα, reshape(A, :, 1), reshape(dA, :, 1), x, dx, β, dβ, y, dy
-    )
-
-    return y_dy
-end
-
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    x_dx::Dual{<:AbstractVector{P}},
-    beta::Dual{P},
-    y_dy::Dual{<:AbstractVector{P}},
-) where {P<:BlasFloat}
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-    y, dy = arrayify(y_dy)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
+    α, dα = extract(alpha)
+    β, dβ = extract(beta)
 
     _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
 
@@ -443,7 +426,7 @@ end
     ::CoDual{typeof(BLAS.gemv!)},
     _tA::CoDual{Char},
     _alpha::CoDual{P},
-    _A::CoDual{<:AbstractVector{P}},
+    _A::CoDual{<:AbstractVecOrMat{P}},
     _x::CoDual{<:AbstractVector{P}},
     _beta::CoDual{P},
     _y::CoDual{<:AbstractVector{P}},
@@ -452,32 +435,7 @@ end
     # Pull out primals and tangents (the latter only where necessary).
     trans = _tA.x
     alpha = _alpha.x
-    A, dA = arrayify(_A)
-    x, dx = arrayify(_x)
-    beta = _beta.x
-    y, dy = arrayify(_y)
-
-    pb = _gemv!_rrule_core!(
-        trans, alpha, reshape(A, :, 1), reshape(dA, :, 1), x, dx, beta, y, dy
-    )
-
-    return _y, pb
-end
-
-@inline function rrule!!(
-    ::CoDual{typeof(BLAS.gemv!)},
-    _tA::CoDual{Char},
-    _alpha::CoDual{P},
-    _A::CoDual{<:AbstractMatrix{P}},
-    _x::CoDual{<:AbstractVector{P}},
-    _beta::CoDual{P},
-    _y::CoDual{<:AbstractVector{P}},
-) where {P<:BlasFloat}
-
-    # Pull out primals and tangents (the latter only where necessary).
-    trans = _tA.x
-    alpha = _alpha.x
-    A, dA = arrayify(_A)
+    A, dA = matrixify(_A)
     x, dx = arrayify(_x)
     beta = _beta.x
     y, dy = arrayify(_y)
@@ -532,15 +490,7 @@ end
         copyto!(y, y_copy)
 
         # Return rdata.
-        return (
-            NoRData(),
-            NoRData(),
-            _rdata(dalpha),
-            NoRData(),
-            NoRData(),
-            _rdata(dbeta),
-            NoRData(),
-        )
+        return (NoRData(), NoRData(), dalpha, NoRData(), NoRData(), dbeta, NoRData())
     end
 
     return gemv!_pb!!
@@ -574,8 +524,8 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
     ) where {T<:$elty}
         # Extract primals.
         ul = primal(uplo)
-        α, dα = numberify(alpha)
-        β, dβ = numberify(beta)
+        α, dα = extract(alpha)
+        β, dβ = extract(beta)
         A, dA = arrayify(A_dA)
         x, dx = arrayify(x_dx)
         y, dy = arrayify(y_dy)
@@ -635,7 +585,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             end
 
             # gradient w.r.t. A.
-            # TODO: could be switched to BLAS.{sy,he}r2! should Julia ever provide it
+            # TODO: could be switched to BLAS.{sy,he}r2! if Julia ever provides it.
             dA_tmp = α' * dy * x'
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
@@ -666,15 +616,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             # gradient w.r.t. y.
             BLAS.scal!(β', dy)
 
-            return (
-                NoRData(),
-                NoRData(),
-                _rdata(dα),
-                NoRData(),
-                NoRData(),
-                _rdata(dβ),
-                NoRData(),
-            )
+            return (NoRData(), NoRData(), dα, NoRData(), NoRData(), dβ, NoRData())
         end
         return y_dy, symv!_or_hemv!_adjoint
     end
@@ -890,60 +832,64 @@ end
         Char,
         Char,
         T,
-        AbstractMatrix{T},
-        AbstractMatrix{T},
+        AbstractVecOrMat{T},
+        AbstractVecOrMat{T},
         T,
-        AbstractMatrix{T},
+        AbstractVecOrMat{T},
     } where {T<:BlasFloat},
 )
 
-function frule!!(
+# Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
+function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
+    return isnan(cond) * left + !isnan(cond) * right
+end
+
+@inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
     transB::Dual{Char},
     alpha::Dual{T},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    B_dB::Dual{<:AbstractMatrix{T}},
+    A_dA::Dual{<:AbstractVecOrMat{T}},
+    B_dB::Dual{<:AbstractVecOrMat{T}},
     beta::Dual{T},
     C_dC::Dual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
     tA = primal(transA)
     tB = primal(transB)
-    α, dα = numberify(alpha)
-    β, dβ = numberify(beta)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
+    α, dα = extract(alpha)
+    β, dβ = extract(beta)
+    A, dA = matrixify(A_dA)
+    B, dB = matrixify(B_dB)
     C, dC = arrayify(C_dC)
 
-    # Tangent computation.
-    BLAS.gemm!(tA, tB, α, dA, B, β, dC)
-    BLAS.gemm!(tA, tB, α, A, dB, one(T), dC)
+    # Tangents (product rule)
+    # d(α*op(A)*op(B) + β*C) = dα*op(A)*op(B) + α*op(dA)*op(B) + α*op(A)*op(dB) + dβ*C + β*dC
+    BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
+    BLAS.gemm!(tA, tB, α, A, dB, one(T), dC) # α*op(A)*op(dB) + 1*dC
+
     if !iszero(dα)
-        BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)
+        BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)  # dα*op(A)*op(B) + 1*dC
     end
+
     if !iszero(dβ)
         @inbounds for n in eachindex(C)
             dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
         end
     end
 
-    # Primal computation.
+    # Primal
     BLAS.gemm!(tA, tB, α, A, B, β, C)
 
     return C_dC
 end
 
-function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
-    return isnan(cond) * left + !isnan(cond) * right
-end
-
-function rrule!!(
+@inline function rrule!!(
     ::CoDual{typeof(BLAS.gemm!)},
     transA::CoDual{Char},
     transB::CoDual{Char},
     alpha::CoDual{T},
-    A::CoDual{<:AbstractMatrix{T}},
-    B::CoDual{<:AbstractMatrix{T}},
+    A::CoDual{<:AbstractVecOrMat{T}},
+    B::CoDual{<:AbstractVecOrMat{T}},
     beta::CoDual{T},
     C::CoDual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
@@ -951,15 +897,14 @@ function rrule!!(
     tB = primal(transB)
     a = primal(alpha)
     b = primal(beta)
-    p_A, dA = arrayify(A)
-    p_B, dB = arrayify(B)
+    p_A, dA = matrixify(A)
+    p_B, dB = matrixify(B)
     p_C, dC = arrayify(C)
 
-    # In this rule we optimise carefully for the special case a == 1 && b == 0, which
-    # corresponds to simply multiplying A and B together, and writing the result to C.
-    # This is an extremely common edge case, so it's important to do well for it.
+    # Save state and run primal
     p_C_copy = copy(p_C)
     tmp_ref = Ref{Matrix{T}}()
+
     if (a == 1 && b == 0)
         BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
     else
@@ -969,56 +914,61 @@ function rrule!!(
     end
 
     function gemm!_pb!!(::NoRData)
-
-        # Compute pullback w.r.t. alpha.
+        # gradient wrt alpha
         da = (a == 1 && b == 0) ? dot(p_C, dC) : dot(tmp_ref[], dC)
 
-        # Restore previous state.
+        # Restore state
         BLAS.copyto!(p_C, p_C_copy)
 
-        # Compute pullback w.r.t. beta.
+        # gradient wrt beta
         db = dot(p_C, dC)
 
-        # Increment cotangents.
+        # gradients wrt A and B (depends on transpose flags tA and tB)
+        # C = a * op(A) * op(B) + b * C
         if tA == 'N'
+            # A not transposed: C = a*A*op(B) + b*C
+            # dA += a' * dC * op(B)'
             Bherm = tB == 'T' ? conj(p_B) : p_B
             BLAS.gemm!('N', tB == 'N' ? 'C' : 'N', a', dC, Bherm, one(T), dA)
         elseif tA == 'C'
+            # A conjugate transposed: C = a*A'*op(B) + b*C
+            # dA += a * op(B) * dC'
             BLAS.gemm!(tB, 'C', a, p_B, dC, one(T), dA)
-        else
-            # Equivalent to BLAS.gemm!(tB + "conjugate only", 'T', a', p_B, dC, one(T), dA)
+        else  # tA == 'T'
+            # A transposed (complex): C = a*A^T*op(B) + b*C
+            # dA += conj(a) * conj(op(B)) * transpose(dC)
             if tB == 'N'
                 BLAS.gemm!('N', 'T', a', conj(p_B), dC, one(T), dA)
             else
                 BLAS.gemm!(tB == 'T' ? 'C' : 'T', 'T', a', p_B, dC, one(T), dA)
             end
         end
+
         if tB == 'N'
+            # B not transposed: C = a*op(A)*B + b*C
+            # dB += a' * op(A)' * dC
             Aherm = tA == 'T' ? conj(p_A) : p_A
             BLAS.gemm!(tA == 'N' ? 'C' : 'N', 'N', a', Aherm, dC, one(T), dB)
         elseif tB == 'C'
+            # B conjugate transposed: C = a*op(A)*B' + b*C
+            # dB += a * dC' * op(A)
             BLAS.gemm!('C', tA, a, dC, p_A, one(T), dB)
-        else
-            # Equivalent to BLAS.gemm!('T', tA + "conjugate only", a', dC, p_A, one(T), dB)
+        else  # tB == 'T'
+            # B transposed (complex): C = a*op(A)*B^T + b*C
+            # dB += conj(a) * transpose(dC) * conj(op(A))
             if tA == 'N'
                 BLAS.gemm!('T', 'N', a', dC, conj(p_A), one(T), dB)
             else
                 BLAS.gemm!('T', tA == 'T' ? 'C' : 'T', a', dC, p_A, one(T), dB)
             end
         end
+
+        # Propagate gradient through beta
         dC .*= b'
 
-        return (
-            NoRData(),
-            NoRData(),
-            NoRData(),
-            _rdata(da),
-            NoRData(),
-            NoRData(),
-            _rdata(db),
-            NoRData(),
-        )
+        return (NoRData(), NoRData(), NoRData(), da, NoRData(), NoRData(), db, NoRData())
     end
+
     return C, gemm!_pb!!
 end
 
@@ -1052,8 +1002,8 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         # Extract primals.
         s = primal(side)
         ul = primal(uplo)
-        α, dα = numberify(alpha)
-        β, dβ = numberify(beta)
+        α, dα = extract(alpha)
+        β, dβ = extract(beta)
         A, dA = arrayify(A_dA)
         B, dB = arrayify(B_dB)
         C, dC = arrayify(C_dC)
@@ -1113,7 +1063,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             BLAS.copyto!(C, C_copy)
 
             # gradient w.r.t. A.
-            # TODO: could be switched to BLAS.{sy,he}r2k!
+            # TODO: could be switched to BLAS.{sy,he}r2k! if Julia ever provides it.
             dA_tmp = s == 'L' ? α' * dC * B' : α' * B' * dC
             if ul == 'L'
                 dA .+= LowerTriangular(dA_tmp)
@@ -1137,14 +1087,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             dC .*= β'
 
             return (
-                NoRData(),
-                NoRData(),
-                NoRData(),
-                _rdata(dα),
-                NoRData(),
-                NoRData(),
-                _rdata(dβ),
-                NoRData(),
+                NoRData(), NoRData(), NoRData(), dα, NoRData(), NoRData(), dβ, NoRData()
             )
         end
         return C_dC, symm!_or_hemm!_adjoint
@@ -1187,9 +1130,9 @@ for (fname, elty, relty) in (
         # Extract values from pairs.
         uplo = primal(_uplo)
         t = primal(_t)
-        α, dα = numberify(α_dα)
+        α, dα = extract(α_dα)
         A, dA = arrayify(A_dA)
-        β, dβ = numberify(β_dβ)
+        β, dβ = extract(β_dβ)
         C, dC = arrayify(C_dC)
 
         # Compute Frechet derivative.
@@ -1254,15 +1197,7 @@ for (fname, elty, relty) in (
             dA .+= α' .* (trans == 'N' ? M1 * M2 : M2 * M1)
             dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ β' .* B
 
-            return (
-                NoRData(),
-                NoRData(),
-                NoRData(),
-                _rdata(∇α),
-                NoRData(),
-                _rdata(∇β),
-                NoRData(),
-            )
+            return (NoRData(), NoRData(), NoRData(), ∇α, NoRData(), ∇β, NoRData())
         end
 
         return C_dC, syrk!_or_herk!_adjoint
@@ -1297,7 +1232,7 @@ function frule!!(
     uplo = primal(_uplo)
     ta = primal(_ta)
     diag = primal(_diag)
-    α, dα = numberify(α_dα)
+    α, dα = extract(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
@@ -1374,7 +1309,7 @@ function rrule!!(
             BLAS.trmm!(side, uplo, tA == 'N' ? 'C' : 'N', diag, α', A, dB)
         end
 
-        return tuple_fill(NoRData(), Val(5))..., _rdata(∇α), NoRData(), NoRData()
+        return tuple_fill(NoRData(), Val(5))..., ∇α, NoRData(), NoRData()
     end
 
     return B_dB, trmm_adjoint
@@ -1403,7 +1338,7 @@ function frule!!(
     uplo = primal(_uplo)
     trans = primal(_t)
     diag = primal(_diag)
-    α, dα = numberify(α_dα)
+    α, dα = extract(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
@@ -1487,7 +1422,7 @@ function rrule!!(
         else
             BLAS.trsm!(side, uplo, trans == 'N' ? 'C' : 'N', diag, α', A, dB)
         end
-        return tuple_fill(NoRData(), Val(5))..., _rdata(∇α), NoRData(), NoRData()
+        return tuple_fill(NoRData(), Val(5))..., ∇α, NoRData(), NoRData()
     end
 
     return B_dB, trsm_adjoint
@@ -1703,17 +1638,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     realPs = [Float64, Float32]
     Ps = [realPs..., complex.(realPs)...]
 
-    _make_codual(x, dx) = CoDual(x, dx)
-    _make_codual(x::Complex, dx) = CoDual(x, Tangent((; re=real(dx), im=imag(dx))))
+    test_cases = Any[]
 
-    test_cases = vcat(
-        #
-        # BLAS LEVEL 3
-        #
-        # The tests are quite sensitive to the random inputs,
-        # so each tested function gets its own rng.
+    #
+    # BLAS LEVEL 3
+    #
 
-        # gemm!
+    # gemm! Tests
+    # 1.10 fails to infer part of a matmat product in the pullback
+    perf_flag = VERSION < v"1.11-" ? :none : :stability
+
+    # The tests are quite sensitive to the random inputs,
+    # so each tested gemm! dispatch gets its own rng.
+
+    # gemm! - matrix × matrix
+    test_cases = append!(
+        test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(
@@ -1727,72 +1667,92 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 Cs = blas_matrices(rng, P, 3, 5)
 
                 return map(As, Bs, Cs) do A, B, C
-                    a_da = _make_codual(P(α), P(dα))
-                    b_db = _make_codual(P(β), P(dβ))
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+                end
+            end
+        end...,
+    )
+
+    # gemm! - matrix × vector
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123457)
+            map_prod(t_flags, αs, βs, Ps, dαs, dβs) do (tA, α, β, P, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                P <: BlasRealFloat && tA == 'C' && return []
+
+                As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
+                Bs = blas_vectors(rng, P, 4; only_contiguous=true)
+                Cs = blas_matrices(rng, P, 3, 1)
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
                     (
-                        false, :stability, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
                     )
                 end
             end
         end...,
+    )
 
-        # symm!, hemm!
+    # gemm! - vector × matrix
+    test_cases = append!(
+        test_cases,
         let
-            rng = rng_ctor(123457)
+            rng = rng_ctor(123458)
             map_prod(
-                [BLAS.symm!, BLAS.hemm!], ['L', 'R'], ['L', 'U'], αs, βs, Ps
-            ) do (f, side, ul, α, β, P)
-                P <: BlasRealFloat && f == BLAS.hemm! && return []
+                ['T', 'C'], t_flags, αs, βs, Ps, dαs, dβs
+            ) do (tA, tB, α, β, P, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-
-                nA = side == 'L' ? 3 : 5
-                As = blas_matrices(rng, P, nA, nA)
-                Bs = blas_matrices(rng, P, 3, 5)
-                Cs = blas_matrices(rng, P, 3, 5)
-                return map(As, Bs, Cs) do A, B, C
-                    # 1.10 fails to infer part of a matmat product in the pullback
-                    perf_flag = VERSION < v"1.11-" ? :none : :stability
-                    (false, perf_flag, nothing, f, side, ul, P(α), A, B, P(β), C)
-                end
-            end
-        end...,
-
-        # syrk!
-        let
-            rng = rng_ctor(123456)
-            map_prod(uplos, t_flags, Ps, dαs, dβs) do (uplo, t, P, dα, dβ)
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-                # 'C' is not allowed for complex syrk!
-                P <: BlasComplexFloat && t == 'C' && return []
+                P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
 
-                As = blas_matrices(rng, P, t == 'N' ? 3 : 4, t == 'N' ? 4 : 3)
-                return map(As) do A
-                    α_dα = _make_codual(randn(rng, P), P(dα))
-                    β_dβ = _make_codual(randn(rng, P), P(dβ))
-                    C = randn(rng, P, 3, 3)
-                    (false, :stability, nothing, BLAS.syrk!, uplo, t, α_dα, A, β_dβ, C)
+                As = blas_vectors(rng, P, 3; only_contiguous=true)
+                Bs = blas_matrices(rng, P, tB == 'N' ? 3 : 5, tB == 'N' ? 5 : 3)
+                Cs = blas_matrices(rng, P, 1, 5)
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
                 end
             end
         end...,
-        # herk!
+    )
+
+    # gemm! - vector × vector
+    test_cases = append!(
+        test_cases,
         let
-            rng = rng_ctor(123456)
-            map_prod(uplos, t_flags, realPs, dαs, dβs) do (uplo, t, P, dα, dβ)
-                (imag(dα) != 0 || imag(dβ) != 0) && return []
-                # 'T' is not allowed for herk!
-                t == 'T' && return []
+            rng = rng_ctor(123459)
+            map_prod(['T', 'C'], αs, βs, Ps, dαs, dβs) do (tA, α, β, P, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                P <: BlasRealFloat && tA == 'C' && return []
 
-                As = blas_matrices(rng, Complex{P}, t == 'N' ? 3 : 4, t == 'N' ? 4 : 3)
-                return map(As) do A
-                    α_dα = CoDual(randn(rng, P), P(dα))
-                    β_dβ = CoDual(randn(rng, P), P(dβ))
-                    C = randn(rng, Complex{P}, 3, 3)
-                    (false, :stability, nothing, BLAS.herk!, uplo, t, α_dα, A, β_dβ, C)
+                As = blas_vectors(rng, P, 3; only_contiguous=true)
+                Bs = blas_vectors(rng, P, 3; only_contiguous=true)
+                Cs = blas_matrices(rng, P, 1, 1)
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    )
                 end
             end
         end...,
+    )
 
-        # trmm!
+    # trmm!
+    test_cases = append!(
+        test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(
@@ -1805,7 +1765,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 As = blas_matrices(rng, P, R, R)
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
-                    α_dα = _make_codual(randn(rng, P), P(dα))
+                    α_dα = CoDual(randn(rng, P), P(dα))
                     # 1.10 fails to infer part of a matmat product in the pullback
                     perf_flag = VERSION < v"1.11-" ? :none : :stability
                     (
@@ -1814,8 +1774,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
                 end
             end
         end...,
+    )
 
-        # trsm!
+    # trsm!
+    test_cases = append!(
+        test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(
@@ -1848,14 +1811,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     realPs = [Float32, Float64]
     Ps = [realPs..., complex.(realPs)...]
     rng = rng_ctor(123)
+    test_cases = Any[]
 
-    test_cases = vcat(
-
-        #
-        # BLAS LEVEL 3
-        #
-
-        # aliased gemm!
+    # aliased gemm!
+    test_cases = append!(
+        test_cases,
         map_prod(t_flags, t_flags, Ps) do (tA, tB, P)
             As = blas_matrices(rng, P, 5, 5)
             Bs = blas_matrices(rng, P, 5, 5)
