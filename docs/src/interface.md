@@ -24,8 +24,7 @@ g(x::SimplePair) = x.x1^2 + x.x2^2
 x_eval = SimplePair(1.0, 2.0)
 ```
 
-With `friendly_tangents = false` (the default), gradients for custom structures
-use a representation based on `Mooncake.Tangent` types.
+With `friendly_tangents = false` (the default), gradients for custom structures use a representation based on `Mooncake.Tangent` types.
 See [Mooncake.jl's Rule System](@ref) for more information.
 
 ```@example interface
