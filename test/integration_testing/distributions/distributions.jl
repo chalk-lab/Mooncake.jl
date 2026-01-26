@@ -3,7 +3,7 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck,
-    JET, Distributions, FillArrays, Mooncake, LinearAlgebra, PDMats, StableRNGs, Test
+    Distributions, FillArrays, Mooncake, LinearAlgebra, PDMats, StableRNGs, Test
 
 using Mooncake.TestUtils: test_rule
 

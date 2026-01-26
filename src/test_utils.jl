@@ -181,14 +181,14 @@ function test_opt(x...)
         test_opt_internal(Shim(), x...)
     end
 end
-test_opt_internal(::Any, x...) = throw(error("Load JET to use this function."))
+test_opt_internal(::Any, x...) = @warn "Load JET to use this function."
 
 function report_opt(tt)
     test_hook(report_opt, tt) do
         report_opt_internal(Shim(), tt)
     end
 end
-report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
+report_opt_internal(::Any, tt) = @warn "Load JET to use this function."
 
 """
     has_equal_data(x, y; equal_undefs=true)

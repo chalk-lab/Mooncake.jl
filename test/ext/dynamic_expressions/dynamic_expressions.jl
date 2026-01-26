@@ -12,8 +12,6 @@ using DynamicExpressions: Nullable
 using StableRNGs: StableRNG
 using DifferentiationInterface: AutoMooncake, gradient, prepare_gradient
 
-# Needed for certain parts of TestUtils
-using JET: JET
 using AllocCheck: AllocCheck
 
 using Test
