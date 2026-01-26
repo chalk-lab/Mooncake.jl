@@ -127,7 +127,9 @@ end
 
             # Create cache and verify fargs is unchanged afterwards.
             original_args = deepcopy(fargs)
-            cache = Mooncake.prepare_pullback_cache(fargs...; config=Mooncake.Config(; kwargs...))
+            cache = Mooncake.prepare_pullback_cache(
+                fargs...; config=Mooncake.Config(; kwargs...)
+            )
             @test original_args == fargs
 
             _v, _dfargs = value_and_pullback!!(cache, ȳ, fargs...)
@@ -159,7 +161,9 @@ end
                 )),
             )
 
-            cache = Mooncake.prepare_pullback_cache(testf, x; config=Mooncake.Config(friendly_tangents=true))
+            cache = Mooncake.prepare_pullback_cache(
+                testf, x; config=Mooncake.Config(friendly_tangents=true)
+            )
             v, pb = Mooncake.value_and_pullback!!(cache, x̄, testf, x)
             @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
             @test has_equal_data(
@@ -177,7 +181,9 @@ end
                 )),
             )
 
-            v, pb = Mooncake.value_and_pullback!!(rrule, x̄, testf, x; friendly_tangents=true)
+            v, pb = Mooncake.value_and_pullback!!(
+                rrule, x̄, testf, x; friendly_tangents=true
+            )
             @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
             @test has_equal_data(
                 pb[2],
