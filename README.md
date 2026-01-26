@@ -29,8 +29,8 @@ import Mooncake as MC
 f(x) = sum(abs2, x)
 x = [1.0 + 2.0im, 3.0 + 4.0im]
 
-cache_friendly = MC.prepare_gradient_cache(f, x; friendly_tangents=true)
-val, grad = MC.value_and_gradient!!(cache_friendly, f, x)
+cache = MC.prepare_gradient_cache(f, x)
+val, grad = MC.value_and_gradient!!(cache, f, x)
 ```
 
 You should expect that `MC.prepare_gradient_cache` takes a little bit of time to run, but that `MC.value_and_gradient!!` is fast. For additional details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). You can also interact with `Mooncake.jl` via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
