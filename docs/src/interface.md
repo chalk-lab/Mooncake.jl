@@ -34,7 +34,7 @@ val, grad = MC.value_and_gradient!!(cache, g, x_eval)
 This produces a tuple containing the value of the function (here `5.0`) and the gradient.
 The first part of the gradient is the gradient wrt. `g` itself, here `NoTangent()` since `g` is not differentiable.
 The second part of the gradient is the gradient wrt. `x`;
-for the type `SimpePair`, its gradient is represented using
+for the type `SimplePair`, its gradient is represented using
 a `@NamedTuple{x1::Float64, x2::Float64}` wrapped in a `Tangent` object.
 The gradient wrt. `x1` can for example be retrieved with `grad[2].fields.x1`.
 
