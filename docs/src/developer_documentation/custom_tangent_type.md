@@ -220,7 +220,7 @@ You must provide adjoints for every `getfield`/`lgetfield` variant that appears 
 
 ##### Why These Primitives?
 
-**`_new_`**: Mooncake’s IR normalisation rewrites `Expr(:new, ...)`—the lowered representation of composite type construction—into calls to [`_new_`](@ref). Because many `_new_` calls can be differentiated using generic rules (see `src/rules/new.jl`), explicit differentiation rules are only required for object-construction logic that cannot be handled automatically. Such rules can therefore be written against `_new_` itself, rather than against individual constructor methods.
+**`_new_`**: Mooncake’s IR normalisation rewrites `Expr(:new, ...)`—the lowered representation of composite type construction—into calls to [`_new_`](@ref). Because many `_new_` calls can be differentiated using generic rules (see [`src/rules/new.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/rules/new.jl)), explicit differentiation rules are only required for object-construction logic that cannot be handled automatically. Such rules can therefore be written against `_new_` itself, rather than against individual constructor methods.
 
 For example, the constructor call `A(1.0)` is lowered to:
 ```julia
