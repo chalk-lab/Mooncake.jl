@@ -31,7 +31,7 @@ See [Mooncake.jl's Rule System](@ref) for more information.
 cache = MC.prepare_gradient_cache(g, x_eval)
 val, grad = MC.value_and_gradient!!(cache, g, x_eval)
 ```
-This produces a tuple containing the value of the function (here `0.5`) and the gradient.
+This produces a tuple containing the value of the function (here `5.0`) and the gradient.
 The first part of the gradient is the gradient wrt. `g` itself,
 here `NoTangent()` since `g` is not differentiable.
 The second part of the gradient is the gradient wrt. `x`;
