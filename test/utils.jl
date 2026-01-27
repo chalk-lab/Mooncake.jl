@@ -25,6 +25,35 @@
         @test_throws ArgumentError Mooncake.tuple_map(*, (5.0, 4.0), (4.0,))
         @test_throws ArgumentError Mooncake.tuple_map(*, (4.0,), (5.0, 4.0))
     end
+    @testset "tuple_splat and tuple_splat_noinline" begin
+        # Basic functionality - should produce same results
+        f = (a, b, c) -> a + b * c
+        args = (1.0, 2.0, 3.0)
+        @test Mooncake.tuple_splat(f, args) == f(args...)
+        @test Mooncake.tuple_splat_noinline(f, args) == f(args...)
+        @test Mooncake.tuple_splat(f, args) == Mooncake.tuple_splat_noinline(f, args)
+
+        # Test with different tuple sizes (uses _ -> 1.0 to create tuples of ones)
+        for n in [1, 5, 10, 50, 100, 256]
+            t = ntuple(_ -> 1.0, n)
+            @test Mooncake.tuple_splat(+, t) == Float64(n)
+            @test Mooncake.tuple_splat_noinline(+, t) == Float64(n)
+            @test Mooncake.tuple_splat(+, t) == Mooncake.tuple_splat_noinline(+, t)
+        end
+
+        # Test the @generated fallback (tuple > 256 elements)
+        large_tuple = ntuple(_ -> 1.0, 300)
+        @test Mooncake.tuple_splat(+, large_tuple) == 300.0
+        @test Mooncake.tuple_splat_noinline(+, large_tuple) == 300.0
+
+        # Test with rrule!! (the actual use case) - requires CoDual arguments
+        sin_codual = Mooncake.CoDual(sin, Mooncake.NoFData())
+        x_codual = Mooncake.CoDual(1.0, 0.0)
+        @test Mooncake.tuple_splat(Mooncake.rrule!!, (sin_codual, x_codual)) ==
+            Mooncake.rrule!!(sin_codual, x_codual)
+        @test Mooncake.tuple_splat_noinline(Mooncake.rrule!!, (sin_codual, x_codual)) ==
+            Mooncake.rrule!!(sin_codual, x_codual)
+    end
     @testset "_findall" begin
         @test @inferred Mooncake._findall(identity, (false, true, false)) == (2,)
         @test @inferred Mooncake._findall(identity, (true, false, true)) == (3, 1)

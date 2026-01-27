@@ -26,10 +26,14 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-function build_frule(args...; debug_mode=false, silence_debug_messages=true)
+function build_frule(
+    args...; debug_mode=false, silence_debug_messages=true, maybeinline_primitive=true
+)
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages)
+    return build_frule(
+        interp, sig; debug_mode, silence_debug_messages, maybeinline_primitive
+    )
 end
 
 struct DualRuleInfo
@@ -45,13 +49,21 @@ end
         debug_mode=false,
         silence_debug_messages=true,
         skip_world_age_check=false,
+        maybeinline_primitive=true,
     ) where {C}
 
 Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
 `sig_or_mi` is not a primitive.
 
+If `debug_mode` is `true`, the rule is wrapped in a `DebugFRule` for debugging purposes.
+Set `silence_debug_messages=false` to print an info message when compiling in debug mode.
+
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
 than the current world (e.g., when building rules for MistyClosure which uses its own world).
+
+If `maybeinline_primitive` is `false`, primitive `frule!!` calls are wrapped in a noinline
+callable. Note: this only affects top-level primitives; for derived rules, inner primitive
+calls use the default inlining behavior.
 """
 function build_frule(
     interp::MooncakeInterpreter{C},
@@ -59,6 +71,7 @@ function build_frule(
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
+    maybeinline_primitive=true,
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -81,7 +94,8 @@ function build_frule(
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
-        return (debug_mode ? DebugFRule(frule!!) : frule!!)
+        rule = build_primitive_frule(sig; maybeinline_primitive)
+        return (debug_mode ? DebugFRule(rule) : rule)
     end
 
     # We don't have a hand-coded rule, so derive one.
@@ -295,8 +309,17 @@ function modify_fwd_ad_stmts!(
     end
 
     # stmt is a const, so we have to turn it into a dual.
-    dual_stmt = ReturnNode(const_dual!(captures, stmt.val))
-    Mooncake.replace_call!(dual_ir, ssa, dual_stmt)
+    d = const_dual!(captures, stmt.val)
+    if d isa Int
+        # The dual is stored in captures, need to fetch it before returning.
+        get_capture_call = Expr(:call, get_capture, Argument(1), d)
+        get_capture_ssa = CC.insert_node!(
+            dual_ir, ssa, new_inst(get_capture_call), ATTACH_BEFORE
+        )
+        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(get_capture_ssa))
+    else
+        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(d))
+    end
     return nothing
 end
 
