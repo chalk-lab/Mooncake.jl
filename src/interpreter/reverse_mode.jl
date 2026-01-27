@@ -1101,16 +1101,30 @@ struct DerivedRuleInfo
 end
 
 """
-    build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, maybeinline_primitive=true) where {C}
+    build_rrule(
+        interp::MooncakeInterpreter{C},
+        sig_or_mi;
+        debug_mode=false,
+        silence_debug_messages=true,
+        maybeinline_primitive=true,
+    ) where {C}
 
 Returns a `DerivedRule` which is an `rrule!!` for `sig_or_mi` in context `C`. See the
 docstring for `rrule!!` for more info.
 
 If `debug_mode` is `true`, then all calls to rules are replaced with calls to `DebugRRule`s.
+Set `silence_debug_messages=false` to print an info message when compiling in debug mode.
 
 Primitive `rrule!!` calls are wrapped. If `maybeinline_primitive` is `false`, the wrapper is
 forced noinline. This prevents primitive implementations (often ccalls without rules) from
-being inlined, which is required for higher-order differentiation.
+being inlined, which is required for higher-order differentiation (e.g., forward-over-reverse
+for Hessians).
+
+# Caching
+
+Results are cached per interpreter. The cache key includes `sig_or_mi`, `debug_mode`, and
+`maybeinline_primitive`, so different values of these parameters produce separate cached
+rules.
 """
 function build_rrule(
     interp::MooncakeInterpreter{C},

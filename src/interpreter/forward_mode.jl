@@ -55,11 +55,15 @@ end
 Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
 `sig_or_mi` is not a primitive.
 
+If `debug_mode` is `true`, the rule is wrapped in a `DebugFRule` for debugging purposes.
+Set `silence_debug_messages=false` to print an info message when compiling in debug mode.
+
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
 than the current world (e.g., when building rules for MistyClosure which uses its own world).
 
 If `maybeinline_primitive` is `false`, primitive `frule!!` calls are wrapped in a noinline
-callable.
+callable. Note: this only affects top-level primitives; for derived rules, inner primitive
+calls use the default inlining behavior.
 """
 function build_frule(
     interp::MooncakeInterpreter{C},

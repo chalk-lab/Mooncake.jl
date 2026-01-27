@@ -452,4 +452,47 @@ end
         rule_debug_args = build_rrule(args...; debug_mode=true, silence_debug_messages=true)
         @test rule_debug_args == rule_debug_sig
     end
+    @testset "build_rrule maybeinline_primitive" begin
+        args = (sin, 5.0)
+        sig = typeof(args)
+
+        # Test default is maybeinline_primitive=true
+        rule_default = build_rrule(sig; silence_debug_messages=true)
+        @test rule_default isa Mooncake.PrimitiveRRule{<:Any,true}
+
+        # Test maybeinline_primitive=true (explicit) returns PrimitiveRRule{_, true}
+        rule_inline = build_rrule(
+            sig; maybeinline_primitive=true, silence_debug_messages=true
+        )
+        @test rule_inline isa Mooncake.PrimitiveRRule{<:Any,true}
+
+        # Test maybeinline_primitive=false returns PrimitiveRRule{_, false}
+        rule_noinline = build_rrule(
+            sig; maybeinline_primitive=false, silence_debug_messages=true
+        )
+        @test rule_noinline isa Mooncake.PrimitiveRRule{<:Any,false}
+
+        # Both should produce correct results when called
+        x = 5.0
+        result_inline = rule_inline(
+            Mooncake.CoDual(sin, Mooncake.NoFData()), Mooncake.CoDual(x, 0.0)
+        )
+        result_noinline = rule_noinline(
+            Mooncake.CoDual(sin, Mooncake.NoFData()), Mooncake.CoDual(x, 0.0)
+        )
+        @test Mooncake.primal(result_inline[1]) == Mooncake.primal(result_noinline[1])
+        @test Mooncake.primal(result_inline[1]) ≈ sin(5.0)  # Verify correctness
+
+        # Test with debug_mode=true wraps in DebugRRule
+        rule_debug_noinline = build_rrule(
+            sig; debug_mode=true, maybeinline_primitive=false, silence_debug_messages=true
+        )
+        @test rule_debug_noinline isa Mooncake.DebugRRule
+
+        # Test varargs form also accepts maybeinline_primitive
+        rule_args_noinline = build_rrule(
+            args...; maybeinline_primitive=false, silence_debug_messages=true
+        )
+        @test rule_args_noinline isa Mooncake.PrimitiveRRule{<:Any,false}
+    end
 end

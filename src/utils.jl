@@ -63,6 +63,25 @@ end
     return Expr(:call, :f, :v, map(n -> :(x[$n]), 1:length(x.parameters))...)
 end
 
+@doc """
+    tuple_splat(f, x::Tuple)
+    tuple_splat(f, v, x::Tuple)
+
+Call `f` with the elements of tuple `x` as separate arguments, equivalent to `f(x...)`.
+
+This function exists to avoid Julia's vararg lowering to `Core._apply_iterate`, which can
+cause issues for automatic differentiation (especially higher-order AD). By explicitly
+expanding tuple elements at compile time, `tuple_splat` avoids the vararg machinery entirely.
+
+The two-argument form calls `f(x[1], x[2], ..., x[N])`.
+The three-argument form calls `f(v, x[1], x[2], ..., x[N])`.
+
+This function is marked `@inline`, allowing the call to be inlined into the caller.
+
+See also: [`tuple_splat_noinline`](@ref)
+"""
+tuple_splat
+
 for N in 1:256
     @eval function tuple_splat_noinline(f, x::Tuple{Vararg{Any,$N}})
         @noinline f($(map(n -> :(getfield(x, $n)), 1:N)...))
@@ -70,18 +89,34 @@ for N in 1:256
 end
 
 @generated function tuple_splat_noinline(f, x::Tuple)
-    call = Expr(:call, :f, map(n -> :(getfield(x, $n)), 1:length(x.parameters))...)
-    val = gensym(:val)
-    return Expr(
-        :block,
-        Expr(:noinline, true),
-        Expr(:local, val),
-        Expr(:(=), val, call),
-        Expr(:noinline, false),
-        val,
-    )
+    N = length(x.parameters)
+    args = [:(getfield(x, $n)) for n in 1:N]
+    return :(@noinline f($(args...)))
 end
 
+@doc """
+    tuple_splat_noinline(f, x::Tuple)
+
+Call `f` with the elements of tuple `x` as separate arguments, equivalent to `f(x...)`,
+but with a `@noinline` annotation to prevent inlining.
+
+Like [`tuple_splat`](@ref), this avoids vararg lowering to `Core._apply_iterate`. The key
+difference is that `tuple_splat_noinline` forces a noinline boundary around the call.
+
+The noinline boundary is useful for higher-order AD (e.g., forward-over-reverse for
+Hessians). Without it, primitive rule implementations can be inlined during the outer
+differentiation pass, causing compilation issues or incorrect results.
+
+See also: [`tuple_splat`](@ref), [`PrimitiveRRule`](@ref), [`PrimitiveFRule`](@ref)
+"""
+tuple_splat_noinline
+
+"""
+    tuple_fill(val, ::Val{N}) where {N}
+
+Create a tuple of length `N` where every element is `val`. Type-stable and compile-time
+evaluated. Commonly used to construct return tuples of `NoRData()` values.
+"""
 @inline @generated function tuple_fill(val, ::Val{N}) where {N}
     return Expr(:call, :tuple, map(_ -> :val, 1:N)...)
 end

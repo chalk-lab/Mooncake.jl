@@ -84,9 +84,10 @@ function rrule!! end
 """
     PrimitiveRRule{Sig, Tmaybeinline}
 
-Callable wrapper used for primitive rrules. When `Tmaybeinline=false`, it forces a noinline
-call boundary around `rrule!!`. When `Tmaybeinline=true`, it routes through `tuple_splat`
-to avoid vararg lowering to `_apply_iterate`. Construct via `build_primitive_rrule`.
+Callable wrapper used for primitive rrules. Both variants route through `tuple_splat`
+helpers to avoid vararg lowering to `_apply_iterate`. When `Tmaybeinline=true`, inlining
+is permitted. When `Tmaybeinline=false`, a noinline boundary is forced around the
+`rrule!!` call (useful for higher-order AD). Construct via `build_primitive_rrule`.
 """
 struct PrimitiveRRule{Sig,Tmaybeinline} end
 
@@ -109,9 +110,10 @@ end
 """
     PrimitiveFRule{Sig, Tmaybeinline}
 
-Callable wrapper used for primitive frules. When `Tmaybeinline=false`, it forces a noinline
-call boundary around `frule!!`. When `Tmaybeinline=true`, it routes through `tuple_splat`
-to avoid vararg lowering to `_apply_iterate`. Construct via `build_primitive_frule`.
+Callable wrapper used for primitive frules. Both variants route through `tuple_splat`
+helpers to avoid vararg lowering to `_apply_iterate`. When `Tmaybeinline=true`, inlining
+is permitted. When `Tmaybeinline=false`, a noinline boundary is forced around the
+`frule!!` call (useful for higher-order AD). Construct via `build_primitive_frule`.
 """
 struct PrimitiveFRule{Sig,Tmaybeinline} end
 
@@ -119,8 +121,8 @@ struct PrimitiveFRule{Sig,Tmaybeinline} end
     return tuple_splat(frule!!, args)
 end
 
-@noinline function (rule::PrimitiveFRule{Sig,false})(args...) where {Sig}
-    return frule!!(args...)
+@inline function (rule::PrimitiveFRule{Sig,false})(args...) where {Sig}
+    return tuple_splat_noinline(frule!!, args)
 end
 
 """
@@ -157,8 +159,15 @@ end
 """
     build_primitive_frule(sig::Type{<:Tuple}; maybeinline_primitive=true)
 
-Construct a primitive frule wrapper. Set `maybeinline_primitive=false` to force a noinline
-boundary.
+Construct an frule for signature `sig`. For this function to be called in `build_frule`, you
+must also ensure that a method of `_is_primitive(context_type, ForwardMode, sig)` exists,
+preferably by using the [@is_primitive](@ref) macro.
+
+By default, this function returns a wrapper that may inline the primitive rule; set
+`maybeinline_primitive=false` to force a noinline boundary (useful for higher-order AD,
+e.g., forward-over-reverse for Hessians).
+
+See [`build_primitive_rrule`](@ref) for extended discussion of staged rule construction.
 """
 function build_primitive_frule(sig::Type{<:Tuple}; maybeinline_primitive::Bool=true)
     PrimitiveFRule{_primitive_rule_sig(sig),maybeinline_primitive}()
