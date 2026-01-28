@@ -671,18 +671,12 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
 """
 @unstable function prepare_derivative_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
     fx = (f, x...)
-    y = f(x...)
-
-    # Check that the output of `fx` is supported.
-    __exclude_func_with_unsupported_output(fx)
-
-    # Construct rule and tangents.
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
 
-    # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
-    input_tangents = map(zero_tangent, fx)
-    output_primal = _copy_output(y)
     if config.friendly_tangents
+        y = f(x...)
+        input_tangents = map(zero_tangent, fx)
+        output_primal = _copy_output(y)
         return ForwardCache(rule, input_tangents, output_primal)
     else
         return ForwardCache(rule, nothing, nothing)
