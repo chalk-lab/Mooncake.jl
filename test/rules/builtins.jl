@@ -110,9 +110,8 @@ end
     end
 
     for (f, args) in test_cases
-        _, grad = value_and_gradient!!(
-            prepare_gradient_cache(builtins_nantester, f, args), builtins_nantester, f, args
-        )
+        cache = prepare_gradient_cache(builtins_nantester, f, args)
+        _, grad = value_and_gradient!!(cache, builtins_nantester, f, args)
         @test all(map(isone, grad[3:end]...))
     end
 end
