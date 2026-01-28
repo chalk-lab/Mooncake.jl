@@ -101,6 +101,8 @@ end
         return cases
     end...)
 
+    # Test cases for avoiding `NaN` poisoning. 
+    #  See https://github.com/chalk-lab/Mooncake.jl/issues/807 
     function builtins_nantester(f, args)
         a = f(args)
         b = args
