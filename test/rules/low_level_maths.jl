@@ -29,12 +29,7 @@
 
         for (f, args) in test_cases
             cache = prepare_gradient_cache(low_level_maths_nantester, f, args)
-            _, grad = value_and_gradient!!(
-                cache,
-                low_level_maths_nantester,
-                f,
-                args,
-            )
+            _, grad = value_and_gradient!!(cache, low_level_maths_nantester, f, args)
             @test all(map(isone, grad[3:end]...))
         end
     end
