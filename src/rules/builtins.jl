@@ -112,7 +112,8 @@ import ..Mooncake:
     zero_fcodual,
     zero_dual,
     NoTangent,
-    Mode
+    Mode,
+    extract
 
 using Core.Intrinsics: atomic_pointerref
 
