@@ -14,17 +14,25 @@
                     (hypot, T(0)),
                     (hypot, (T(0), T(0))),
                     (hypot, (T(0), T(0), T(0))),
-                    # builtins
-                    (Base.sqrt_llvm, T(0)),
-                    (Base.sqrt_llvm_fast, T(0)),
                 ]
                 return cases
             end...,
         )
+
+        function low_level_maths_nantester(f, args)
+            a = f(args...)
+            b = args
+            return sum(b)
+        end
+
         for (f, args) in test_cases
-            cache = prepare_gradient_cache(f, args...)
-            _, grad = value_and_gradient!!(cache, f, args...)
-            @test all(iszero, grad[2:end])
+            _, grad = value_and_gradient!!(
+                prepare_gradient_cache(low_level_maths_nantester, f, args),
+                low_level_maths_nantester,
+                f,
+                args,
+            )
+            @test all(map(isone, grad[3:end]...))
         end
     end
 

@@ -93,4 +93,29 @@ foo_throws(e) = throw(e)
             rule_assert(zero_fcodual(foo_throws), zero_fcodual(AssertionError("hmmm")))
         )
     end
+
+    @testset "NaN handling in rrules" begin
+        test_cases = vcat(
+            map([Float16, Float32, Float64]) do T
+                cases = [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
+                return cases
+            end...
+        )
+
+        function builtins_nantester(f, args)
+            a = f(args)
+            b = args
+            return b
+        end
+
+        for (f, args) in test_cases
+            _, grad = value_and_gradient!!(
+                prepare_gradient_cache(builtins_nantester, f, args),
+                builtins_nantester,
+                f,
+                args,
+            )
+            @test all(map(isone, grad[3:end]...))
+        end
+    end
 end
