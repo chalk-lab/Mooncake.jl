@@ -26,8 +26,9 @@
         end
 
         for (f, args) in test_cases
+            cache = prepare_gradient_cache(low_level_maths_nantester, f, args)
             _, grad = value_and_gradient!!(
-                prepare_gradient_cache(low_level_maths_nantester, f, args),
+                cache,
                 low_level_maths_nantester,
                 f,
                 args,
