@@ -19,6 +19,8 @@
             end...,
         )
 
+        # Test cases for avoiding `NaN` poisoning. 
+        #  See https://github.com/chalk-lab/Mooncake.jl/issues/807
         function low_level_maths_nantester(f, args)
             a = f(args...)
             b = args
