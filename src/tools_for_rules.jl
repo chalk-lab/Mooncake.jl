@@ -6,6 +6,28 @@
 struct MooncakeRuleConfig <: CRC.RuleConfig{Union{CRC.HasReverseMode,CRC.HasForwardsMode}} end
 const MooncakeConfigType = Union{Nothing,MooncakeRuleConfig}
 
+function CRC.rrule_via_ad(config::MooncakeRuleConfig, f_args...; kwargs...)
+    rule = build_rrule(f_args...)
+    mooncake_rule_args = map(zero_fcodual, f_args) # necessary gradients are accumulated here.
+    y, pullback!! = rule(mooncake_rule_args...)
+    forwardpass_res = primal(y)
+
+    function mooncake_pullback(Δ)
+        mooncake_tangent = Mooncake.mooncake_tangent(forwardpass_res, Δ)
+        rdata_mooncake_tangent = Mooncake.rdata(mooncake_tangent)
+        # run Mooncake pullback on valid Δ
+        mooncake_gradients = pullback!!(rdata_mooncake_tangent)
+
+        # CRC sees gradients accumulated in mooncake_rule_args & also returned from pullback
+        raw_tangents = map(
+            Mooncake.tangent, Mooncake.tangent.(mooncake_rule_args), mooncake_gradients
+        )
+        return map(to_cr_tangent, raw_tangents)
+    end
+
+    return forwardpass_res, mooncake_pullback
+end
+
 @unstable function parse_signature_expr(sig::Expr)
     # Different parsing is required for `Tuple{...}` vs `Tuple{...} where ...`.
     if sig.head == :curly
@@ -337,7 +359,7 @@ to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 to_cr_tangent(nt::NamedTuple) = CRC.Tangent{Any}(; map(to_cr_tangent, nt)...)
 
 # Convert Mooncake complex tangents to ChainRulesCore-style tangents.
-function to_cr_tangent(c::Tangent{@NamedTuple{re::T,im::T}}) where {T<:IEEEFloat}
+function to_cr_tangent(c::Tangent{@NamedTuple{re::T, im::T}}) where {T<:IEEEFloat}
     return Complex(c.fields.re, c.fields.im)
 end
 

@@ -97,7 +97,7 @@ import Mooncake:
     Tuple{typeof(Impl.reshape_bias),AbstractArray{xT,N},AbstractVector{bT}} where {xT,bT,N}
 )
 
-@from_rrule(DefaultCtx, Tuple{typeof(Impl.mean_var),AbstractArray})
+@from_rrule(DefaultCtx, Tuple{typeof(Impl.mean_var),AbstractArray}, true)
 
 # FIX CONV, DENSE Kernel rules for Mooncake
 # conv
