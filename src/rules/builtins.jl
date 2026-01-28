@@ -652,7 +652,7 @@ end
 function frule!!(::Dual{typeof(sqrt_llvm)}, x)
     _x, dx = extract(x)
     y = sqrt_llvm(_x)
-    dy = ifelse(iszero(dx), dx, dx / (2 * y))
+    dy = dx / (2 * y)
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
