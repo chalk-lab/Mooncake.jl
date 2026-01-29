@@ -96,10 +96,9 @@ foo_throws(e) = throw(e)
 end
 
 @testset "NaN handling in builtins rrules" begin
-    test_cases = vcat(map([Float16, Float32, Float64]) do T
-        cases = [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
-        return cases
-    end...)
+    test_cases = mapreduce(vcat, [Float16, Float32, Float64]) do T
+        [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
+    end
 
     # Test cases for avoiding `NaN` poisoning. 
     #  See https://github.com/chalk-lab/Mooncake.jl/issues/807 
