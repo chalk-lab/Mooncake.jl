@@ -191,7 +191,17 @@ D f [x]^\ast (\bar{y}) =  \bar{y}_1 + D \varphi [x]^\ast (\bar{y}_2).
 We see the correct thing to do is to increment the gradient of the output -- ``\bar{y}_1`` -- by the result of applying the adjoint of the derivative of ``\varphi`` to ``\bar{y}_2``.
 In a `ChainRules.rrule` the ``\bar{y}_1`` term is always zero, but the ``D \varphi [x]^\ast (\bar{y}_2)`` term is essentially the same.
 
+# The Rule Interface (Round 0)
 
+For anyone having interacted with Julia's AD ecosystem before, writing custom rules (if they are ever needed) should be relatively straightforward. 
+For functions which could have previously been handled via `ChainRules.jl`'s `rrule` method (i.e. functions without mutation or keyword arguments), Mooncake's corresponding reverse mode rule will look very similar. Translating e.g. `ChainRules.jl`'s reverse mode rule for `sin(x)`, which [in the original](https://juliadiff.org/ChainRulesCore.jl/stable/#Reverse-mode-AD-rules-(rrules)) reads
+
+```julia
+function ChainRulesCore.rrule(::typeof(sin), x)
+    sin_pullback(Δy) = (NoTangent(), cos(x)' * Δy)
+    return sin(x), sin_pullback
+end
+``` 
 
 # The Rule Interface (Round 1)
 
