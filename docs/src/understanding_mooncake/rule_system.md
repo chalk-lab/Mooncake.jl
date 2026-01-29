@@ -194,14 +194,27 @@ In a `ChainRules.rrule` the ``\bar{y}_1`` term is always zero, but the ``D \varp
 # The Rule Interface (Round 0)
 
 For anyone having interacted with Julia's AD ecosystem before, writing custom rules (if they are ever needed) should be relatively straightforward. 
-For functions which could have previously been handled via `ChainRules.jl`'s `rrule` method (i.e. functions without mutation or keyword arguments), Mooncake's corresponding reverse mode rule will look very similar. Translating e.g. `ChainRules.jl`'s reverse mode rule for `sin(x)`, which [in the original](https://juliadiff.org/ChainRulesCore.jl/stable/#Reverse-mode-AD-rules-(rrules)) reads
+For functions which could have previously been handled via ChainRules.jl's `rrule` method (i.e. functions without mutation or keyword arguments), Mooncake's corresponding reverse mode rule will look very similar. 
+Translating one-to-one e.g. ChainRules.jl's reverse mode rule for `sin(x)`, which [in the original](https://juliadiff.org/ChainRulesCore.jl/stable/#Reverse-mode-AD-rules-(rrules)) reads like
 
 ```julia
-function ChainRulesCore.rrule(::typeof(sin), x)
-    sin_pullback(Δy) = (NoTangent(), cos(x)' * Δy)
+function ChainRules.rrule(::typeof(sin), x)
+    sin_pullback(dy) = (ChainRules.NoTangent(), cos(x)' * dy)
     return sin(x), sin_pullback
 end
-``` 
+```
+becomes (compare also [Mooncake's own, slightly more efficient and restrictive/correct implementation](https://github.com/chalk-lab/Mooncake.jl/blob/05bbf164f0cbb86dfc28cd5650251edce3d6b646/src/rrules/low_level_maths.jl#L37-L42))
+
+```julia
+Mooncake.@is_primitive Mooncake.DefaultCtx Tuple{typeof(sin),Any}
+function Mooncake.rrule!!(::Mooncake.CoDual{typeof(sin)}, x::Mooncake.CoDual)
+    sin_pullback!!(dy) = (Mooncake.NoRData(), cos(x)' * dy)
+    return Mooncake.CoDual(sin(x), Mooncake.NoFData()), sin_pullback
+end
+```
+
+where we have added `ChainRules.` and `Mooncake.` explicitly. 
+In the coming sections, we will explain every part of Mooncake's reverse mode rules in more detail.
 
 # The Rule Interface (Round 1)
 
