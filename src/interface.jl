@@ -707,8 +707,9 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
     `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
 """
 function value_and_derivative!!(
-    cache::ForwardCache, fx::Vararg{<:NTuple{2,Any},N}
+    cache::ForwardCache, f::NTuple{2,Any}, x::Vararg{<:NTuple{2,Any},N}
 ) where {N}
+    fx = (f, x...)  # to avoid method ambiguity
     friendly_tangents = !isnothing(cache.input_tangents)
 
     input_primals = map(first, fx)
