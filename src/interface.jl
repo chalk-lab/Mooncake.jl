@@ -690,8 +690,10 @@ Returns a `Dual` containing the result of applying forward-mode AD to compute th
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
 """
-value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N} =
-    cache.rule(fx...)  # TODO: handle friendly tangents for the output here?
+function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
+    # TODO: check Dual coherence here like we do below?
+    return cache.rule(fx...)
+end
 
 """
     value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
@@ -707,7 +709,7 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
     `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
 """
 function value_and_derivative!!(
-    cache::ForwardCache, f::NTuple{2,Any}, x::Vararg{<:NTuple{2,Any},N}
+    cache::ForwardCache, f::NTuple{2,Any}, x::Vararg{NTuple{2,Any},N}
 ) where {N}
     fx = (f, x...)  # to avoid method ambiguity
     friendly_tangents = !isnothing(cache.input_tangents)
@@ -725,6 +727,11 @@ function value_and_derivative!!(
     end
 
     input_duals = map(Dual, input_primals, input_tangents)
+
+    if !friendly_tangents  # in friendly mode, conversion should ensure tangent coherence
+        error_if_incorrect_dual_types(input_duals...)
+    end
+
     output = cache.rule(input_duals...)
     output_primal = primal(output)
     output_tangent = tangent(output)
