@@ -729,7 +729,7 @@ function value_and_derivative!!(
 
     input_duals = map(Dual, input_primals, input_tangents)
 
-    if !friendly_tangents  # in friendly mode, conversion should assure tangent coherence
+    if !friendly_tangents  # in friendly mode, conversion should ensure tangent coherence
         error_if_incorrect_dual_types(input_duals...)
     end
 
