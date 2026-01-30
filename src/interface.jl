@@ -691,8 +691,10 @@ derivative of `primal(f)` at the primal values in `x` in the direction of the ta
 in `f` and `x`.
 """
 function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
+    # TODO: check Dual coherence here like we do below?
     return cache.rule(fx...)
-end  # TODO: handle friendly tangents for the output here?
+    # TODO: handle friendly tangents for the output?
+end
 
 """
     value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
@@ -726,6 +728,11 @@ function value_and_derivative!!(
     end
 
     input_duals = map(Dual, input_primals, input_tangents)
+
+    if !friendly_tangents  # in friendly mode, conversion should assure tangent coherence
+        error_if_incorrect_dual_types(input_duals...)
+    end
+
     output = cache.rule(input_duals...)
     output_primal = primal(output)
     output_tangent = tangent(output)

@@ -353,15 +353,12 @@ end
             cache_sp_unfriendly = Mooncake.prepare_derivative_cache(
                 fx_sp...; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
             )
-            if get(kwargs, :debug_mode, false)
-                @test_throws ErrorException Mooncake.value_and_derivative!!(
-                    cache_sp_unfriendly, zip(fx_sp, dfx_sp)...
-                )
-            else
-                @test_throws TypeError Mooncake.value_and_derivative!!(
-                    cache_sp_unfriendly, zip(fx_sp, dfx_sp)...
-                )
-            end
+            @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                cache_sp_unfriendly, zip(fx_sp, dfx_sp)...
+            )
+            @test_throws "Tangent types do not match primal types:" Mooncake.value_and_derivative!!(
+                cache_sp_unfriendly, zip(fx_sp, dfx_sp)...
+            )
         end
     end
 
