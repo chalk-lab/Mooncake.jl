@@ -3,14 +3,13 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using Mooncake
-using Mooncake: Mooncake
+using Mooncake: Mooncake, prepare_gradient_cache, value_and_gradient!!
 using Mooncake.TestUtils
 using Mooncake.TestUtils: test_rule, test_data
 using Optim: Optim
 using DynamicExpressions
 using DynamicExpressions: Nullable
 using StableRNGs: StableRNG
-using DifferentiationInterface: AutoMooncake, gradient, prepare_gradient
 
 # Needed for certain parts of TestUtils
 using JET: JET
@@ -46,9 +45,9 @@ end
         eval_sum = let f = f
             X -> sum(f(X))
         end
-        backend = AutoMooncake(; config=nothing)
-        prep = prepare_gradient(eval_sum, backend, X)
-        dX = gradient(eval_sum, prep, backend, X)
+
+        cache = prepare_gradient_cache(eval_sum, X)
+        y, dX = value_and_gradient!!(cache, eval_sum, X)
 
         # analytic derivative: df/dx1 = 1, df/dx2 = -sin(x2 - 0.2), df/dx3 = 0
         dX_ref = zeros(size(X))
@@ -74,9 +73,8 @@ end
                 f -> sum(f(X))
             end
 
-            backend = AutoMooncake(; config=nothing)
-            prep = prepare_gradient(eval_sum, backend, expr)
-            dexpr = gradient(eval_sum, prep, backend, expr)
+            cache = prepare_gradient_cache(eval_sum, expr)
+            y, dexpr = value_and_gradient!!(cache, eval_sum, expr)
 
             const_tangent = dexpr.fields.tree.children[2].x.val
             @test const_tangent ≈ N
@@ -86,8 +84,10 @@ end
             eval_sum_copy = let X = X
                 f -> sum(copy(f)(X))
             end
-            backend = AutoMooncake(; config=nothing)
-            full_tangent = gradient(eval_sum_copy, backend, expr)
+
+            cache = prepare_gradient_cache(eval_sum_copy, expr)
+            y, full_tangent = value_and_gradient!!(cache, eval_sum_copy, expr)
+
             const_tangent = full_tangent.fields.tree.children[2].x.val
             @test const_tangent ≈ 100
         end
@@ -107,8 +107,9 @@ end
                 # Then, we sum the constants
                 return sum(n -> n.degree == 0 && n.constant ? n.val : 0.0, tree)
             end
-            backend = AutoMooncake(; config=nothing)
-            tangent_multi_op = gradient(multi_operations, backend, expr)
+
+            cache = prepare_gradient_cache(multi_operations, expr)
+            y, tangent_multi_op = value_and_gradient!!(cache, multi_operations, expr)
 
             # [x, y] -> [2x, 2y] -> 2x + 2y
             # Thus, the gradient is [2, 2]
@@ -130,7 +131,6 @@ end
 
         X = randn(StableRNG(0), 2, 128)
         y = target(X)
-        backend = AutoMooncake(; config=nothing)
 
         f = let X = X, y = y
             function (ex)
@@ -138,10 +138,11 @@ end
                 return sum(i -> abs2(pred[i] - y[i]), axes(X, 2))
             end
         end
-        prep = prepare_gradient(f, backend, init)
-        g! = let prep = prep, backend = backend, f = f
+
+        cache = prepare_gradient_cache(f, init)
+        g! = let cache = cache, f = f
             function (G, ex)
-                grad = gradient(f, prep, backend, ex)
+                y, grad = value_and_gradient!!(cache, f, ex)
                 G .= extract_gradient(grad, ex)
                 return nothing
             end
