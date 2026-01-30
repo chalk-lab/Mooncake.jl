@@ -693,7 +693,6 @@ in `f` and `x`.
 function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
     # TODO: check Dual coherence here like we do below?
     return cache.rule(fx...)
-    # TODO: handle friendly tangents for the output?
 end
 
 """
