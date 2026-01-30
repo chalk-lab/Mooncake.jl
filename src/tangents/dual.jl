@@ -49,6 +49,20 @@ Check that the type of `tangent(x)` is the tangent type of the type of `primal(x
 """
 verify_dual_type(x::Dual) = tangent_type(typeof(primal(x))) == typeof(tangent(x))
 
+function error_if_incorrect_dual_types(duals::Vararg{Dual,N}) where {N}
+    correct_types = map(verify_dual_type, duals)
+    if !all(correct_types)
+        primals = map(primal, duals)
+        tangents = map(tangent, duals)
+        throw(ArgumentError("""
+        Tangent types do not match primal types:
+          - primal types:           $(map(typeof, primals))
+          - provided tangent types: $(map(typeof, tangents))
+          - required tangent types: $(map(tangent_type, map(typeof, primals)))
+        """))
+    end
+end
+
 @inline uninit_dual(x::P) where {P} = Dual(x, uninit_tangent(x))
 
 # Always sharpen the first thing if it's a type so static dispatch remains possible.
