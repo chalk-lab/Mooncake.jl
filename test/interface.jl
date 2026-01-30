@@ -271,7 +271,6 @@ end
 
         @testset "__exclude_unsupported_output , $(test_set)" for test_set in
                                                                   additional_test_set
-
             try
                 Mooncake.__exclude_unsupported_output(test_set[2])
             catch err
@@ -281,7 +280,6 @@ end
 
         @testset "_copy_output & _copy_to_output!!, $(test_set)" for test_set in
                                                                      additional_test_set
-
             original = test_set[2]
             try
                 if isnothing(Mooncake.__exclude_unsupported_output(original))
