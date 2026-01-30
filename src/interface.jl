@@ -690,8 +690,9 @@ Returns a `Dual` containing the result of applying forward-mode AD to compute th
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
 """
-value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N} =
-    cache.rule(fx...)  # TODO: handle friendly tangents for the output here?
+function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
+    cache.rule(fx...)
+end  # TODO: handle friendly tangents for the output here?
 
 """
     value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)

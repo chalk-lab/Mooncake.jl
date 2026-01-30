@@ -88,7 +88,7 @@ end
 
             cache = Mooncake.prepare_gradient_cache(f, x)
             v, dx = Mooncake.value_and_gradient!!(cache, f, x)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
             @test dx[2].fields == (; x1=2 * x.x1, x2=cos(x.x2))
 
             cache = Mooncake.prepare_gradient_cache(
@@ -101,7 +101,7 @@ end
             rule = build_rrule(f, x)
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
             @test dx[2].fields == (; x1=2 * x.x1, x2=cos(x.x2))
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x; friendly_tangents=true)
@@ -271,6 +271,7 @@ end
 
         @testset "__exclude_unsupported_output , $(test_set)" for test_set in
                                                                   additional_test_set
+
             try
                 Mooncake.__exclude_unsupported_output(test_set[2])
             catch err
@@ -280,6 +281,7 @@ end
 
         @testset "_copy_output & _copy_to_output!!, $(test_set)" for test_set in
                                                                      additional_test_set
+
             original = test_set[2]
             try
                 if isnothing(Mooncake.__exclude_unsupported_output(original))
