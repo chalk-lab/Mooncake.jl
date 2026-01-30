@@ -8,17 +8,24 @@ const MooncakeConfigType = Union{Nothing,MooncakeRuleConfig}
 
 function CRC.rrule_via_ad(config::MooncakeRuleConfig, f_args...; kwargs...)
     rule = build_rrule(f_args...)
-    mooncake_rule_args = map(zero_fcodual, f_args) # necessary gradients are accumulated here.
+    mooncake_rule_args = map(zero_fcodual, f_args)
     y, pullback!! = rule(mooncake_rule_args...)
     forwardpass_res = primal(y)
 
-    function mooncake_pullback(Δ)
-        mooncake_tangent = Mooncake.mooncake_tangent(forwardpass_res, Δ)
-        rdata_mooncake_tangent = Mooncake.rdata(mooncake_tangent)
-        # run Mooncake pullback on valid Δ
-        mooncake_gradients = pullback!!(rdata_mooncake_tangent)
+    # for fdata tangent data use chainrules pulback to touch actualy tagnetn data and not just nORDAT?
+    function crc_pullback(Δ)
+        if fdata_type(typeof(forwardpass_res)) == NoFData()
+            increment_and_get_rdata!(tangent(y), NoRData(), Δ)
+        else
+            # get Mooncake tangent from cr tangent - Δ
+            mooncake_tangent = Mooncake.mooncake_tangent(forwardpass_res, Δ)
+            # RData of Δ
+            rdata_mooncake_tangent = Mooncake.rdata(mooncake_tangent)
+            # run Mooncake pullback
+            mooncake_gradients = pullback!!(rdata_mooncake_tangent)
+        end
 
-        # CRC sees gradients accumulated in mooncake_rule_args & also returned from pullback
+        # CRC must see all gradients accumulated : mooncake_rule_args FData & RData got from pullback
         raw_tangents = map(
             Mooncake.tangent, Mooncake.tangent.(mooncake_rule_args), mooncake_gradients
         )
