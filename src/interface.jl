@@ -37,6 +37,7 @@ __verify_sig(rule::DebugRRule, fx) = __verify_sig(rule.rule, fx)
 # rrule!! doesn't specify specific argument types which must be used, so there's nothing to
 # check here.
 __verify_sig(::typeof(rrule!!), fx::Tuple) = nothing
+__verify_sig(::PrimitiveRRule, fx::Tuple) = nothing
 
 struct ValueAndGradientReturnTypeError <: Exception
     msg::String

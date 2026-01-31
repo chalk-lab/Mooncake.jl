@@ -30,3 +30,47 @@ end
     mode = ForwardMode
     TestUtils.test_rule(rng, foo, 5.0; perf_flag, interface_only, is_primitive, mode)
 end;
+
+@testset "build_frule maybeinline_primitive" begin
+    # Test with a primitive function
+    args = (sin, 5.0)
+
+    # Test default is maybeinline_primitive=true
+    frule_default = Mooncake.build_frule(Mooncake.zero_dual(sin), 5.0)
+    @test frule_default isa Mooncake.PrimitiveFRule{<:Any,true}
+
+    # Test maybeinline_primitive=true (explicit) returns PrimitiveFRule{_, true}
+    frule_inline = Mooncake.build_frule(
+        Mooncake.zero_dual(sin), 5.0; maybeinline_primitive=true
+    )
+    @test frule_inline isa Mooncake.PrimitiveFRule{<:Any,true}
+
+    # Test maybeinline_primitive=false returns PrimitiveFRule{_, false}
+    frule_noinline = Mooncake.build_frule(
+        Mooncake.zero_dual(sin), 5.0; maybeinline_primitive=false
+    )
+    @test frule_noinline isa Mooncake.PrimitiveFRule{<:Any,false}
+
+    # Both should produce correct results when called
+    x_dual = Mooncake.Dual(5.0, 1.0)
+    result_inline = frule_inline(Mooncake.zero_dual(sin), x_dual)
+    result_noinline = frule_noinline(Mooncake.zero_dual(sin), x_dual)
+    @test Mooncake.primal(result_inline) == Mooncake.primal(result_noinline)
+    @test Mooncake.tangent(result_inline) ≈ Mooncake.tangent(result_noinline)
+
+    # Verify correctness of computed derivatives
+    @test Mooncake.primal(result_inline) ≈ sin(5.0)
+    @test Mooncake.tangent(result_inline) ≈ cos(5.0)  # d/dx sin(x) = cos(x)
+
+    # Test with debug_mode=true wraps in DebugFRule
+    frule_debug_noinline = Mooncake.build_frule(
+        Mooncake.zero_dual(sin), 5.0; debug_mode=true, maybeinline_primitive=false
+    )
+    @test frule_debug_noinline isa Mooncake.DebugFRule
+
+    # Test varargs form also accepts maybeinline_primitive
+    frule_args_noinline = Mooncake.build_frule(
+        Mooncake.zero_dual(sin), 5.0; maybeinline_primitive=false
+    )
+    @test frule_args_noinline isa Mooncake.PrimitiveFRule{<:Any,false}
+end;
