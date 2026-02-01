@@ -48,13 +48,14 @@ end
 
         cache = prepare_gradient_cache(eval_sum, X)
         y, dX = value_and_gradient!!(cache, eval_sum, X)
+        d_f, d_X = dX
 
         # analytic derivative: df/dx1 = 1, df/dx2 = -sin(x2 - 0.2), df/dx3 = 0
         dX_ref = zeros(size(X))
         dX_ref[1, :] .= 1
         dX_ref[2, :] .= -sin.(X[2, :] .- 0.2)
         # third row already zero
-        @test isapprox(dX[2], dX_ref; rtol=1e-10, atol=0)
+        @test isapprox(d_X, dX_ref; rtol=1e-10, atol=0)
     end
 end
 
@@ -73,10 +74,13 @@ end
                 f -> sum(f(X))
             end
 
-            cache = prepare_gradient_cache(eval_sum, expr)
-            y, dexpr = value_and_gradient!!(cache, eval_sum, expr)
+            cache = prepare_gradient_cache(
+                eval_sum, expr; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            y, dfexpr = value_and_gradient!!(cache, eval_sum, expr)
+            d_f, d_expr = dfexpr
 
-            const_tangent = dexpr[2].fields.tree.children[2].x.val
+            const_tangent = d_expr.tree.children[2].x.val
             @test const_tangent ≈ N
         end
 
@@ -85,10 +89,13 @@ end
                 f -> sum(copy(f)(X))
             end
 
-            cache = prepare_gradient_cache(eval_sum_copy, expr)
+            cache = prepare_gradient_cache(
+                eval_sum_copy, expr; config=Mooncake.Config(; friendly_tangents=true)
+            )
             y, full_tangent = value_and_gradient!!(cache, eval_sum_copy, expr)
+            d_f, d_expr = full_tangent
 
-            const_tangent = full_tangent[2].fields.tree.children[2].x.val
+            const_tangent = d_expr.tree.children[2].x.val
             @test const_tangent ≈ 100
         end
 
@@ -108,13 +115,16 @@ end
                 return sum(n -> n.degree == 0 && n.constant ? n.val : 0.0, tree)
             end
 
-            cache = prepare_gradient_cache(multi_operations, expr)
+            cache = prepare_gradient_cache(
+                multi_operations, expr; config=Mooncake.Config(; friendly_tangents=true)
+            )
             y, tangent_multi_op = value_and_gradient!!(cache, multi_operations, expr)
+            d_f, d_expr = tangent_multi_op
 
             # [x, y] -> [2x, 2y] -> 2x + 2y
             # Thus, the gradient is [2, 2]
-            grad_1 = tangent_multi_op[2].fields.tree.children[2].x.val  # The 2.0
-            grad_2 = tangent_multi_op[2].fields.tree.children[1].x.children[2].x.val
+            grad_1 = d_expr.tree.children[2].x.val  # The 2.0
+            grad_2 = d_expr.tree.children[1].x.children[2].x.val
             @test grad_1 ≈ 2.0
             @test grad_2 ≈ 2.0
         end
@@ -138,11 +148,14 @@ end
             end
         end
 
-        cache = prepare_gradient_cache(f, init)
+        cache = prepare_gradient_cache(
+            f, init; config=Mooncake.Config(; friendly_tangents=true)
+        )
         g! = let cache = cache, f = f
             function (G, ex)
                 y, grad = value_and_gradient!!(cache, f, ex)
-                G .= extract_gradient(grad[2], ex)
+                d_f, d_ex = grad
+                G .= extract_gradient(d_ex, ex)
                 return nothing
             end
         end
