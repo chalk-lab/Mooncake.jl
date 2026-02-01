@@ -659,7 +659,11 @@ end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _x = primal(x)
     _y = sqrt_llvm(primal(x))
-    llvm_sqrt_pullback!!(dy) = NoRData(), iszero(dy) ? dy : dy / (2 * _y)
+    function llvm_sqrt_pullback!!(dy)
+        grad_x = dy / (2 * _y)
+        grad_x = isnan(grad_x) ? P(Mooncake.get_nan_filler()) : grad_x
+        return NoRData(), iszero(dy) ? dy : grad_x
+    end
     return CoDual(_y, NoFData()), llvm_sqrt_pullback!!
 end
 
@@ -671,7 +675,11 @@ function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
-    llvm_sqrt_fast_pullback!!(dy) = NoRData(), iszero(dy) ? dy : dy / (2 * _y)
+    function llvm_sqrt_fast_pullback!!(dy)
+        grad_x = dy / (2 * _y)
+        grad_x = isnan(grad_x) ? P(Mooncake.get_nan_filler()) : grad_x
+        return NoRData(), iszero(dy) ? dy : grad_x
+    end
     return CoDual(_y, NoFData()), llvm_sqrt_fast_pullback!!
 end
 

@@ -1,4 +1,58 @@
 """
+    _nan_filler
+
+Internal storage for the NaN gradient sentinel value. 
+Use [`get_nan_filler`](@ref) and [`set_nan_filler!`](@ref) to access and modify.
+"""
+const _nan_filler = Ref{Any}(NaN)
+
+"""
+    get_nan_filler()
+
+Get the current sentinel value used to replace NaN gradients in reverse-mode AD rules.
+
+When differentiating non-differentiable functions (e.g., `sqrt` at 0, `log` at 0), 
+the mathematical gradient is undefined (NaN). This sentinel value is used instead 
+to allow the reverse pass to continue.
+
+Default value: `Float64(NaN)`
+
+See also: [`set_nan_filler!`](@ref)
+
+# Example
+```julia
+# Default behavior
+get_nan_filler()  # returns NaN
+
+# After changing the sentinel
+set_nan_filler!(Inf)
+get_nan_filler()  # returns Inf
+```
+"""
+get_nan_filler() = _nan_filler[]
+
+"""
+    set_nan_filler!(value)
+
+Set the sentinel value used to replace NaN gradients in reverse-mode AD rules.
+
+# Arguments
+- `value`: The sentinel value to use (typically `0.0`, `Inf`, or `NaN`)
+
+# Example
+```julia
+# Use Inf as the sentinel for NaN gradients
+set_nan_filler!(Inf)
+
+# Reset to default
+set_nan_filler!(0.0)
+```
+
+See also: [`get_nan_filler`](@ref)
+"""
+set_nan_filler!(val) = (_nan_filler[] = val)
+
+"""
     __value_and_pullback!!(rule, ȳ, f::CoDual, x::CoDual...; y_cache=nothing)
 
 *Note:* this is not part of the public Mooncake.jl interface, and may change without warning.
