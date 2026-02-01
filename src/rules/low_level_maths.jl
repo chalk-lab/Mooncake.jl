@@ -231,7 +231,7 @@ function rrule!!(
         grads_filled = map(
             grad_xi -> isnan(grad_xi) ? P(Mooncake.get_nan_filler()) : grad_xi, grads
         )
-        grad_args = map(a -> iszero(dh) ? dh : dh * (primal(a) / h), grads_filled)
+        grad_args = map(a -> iszero(dh) ? dh : a, grads_filled)
 
         return NoRData(), grad_args...
     end
