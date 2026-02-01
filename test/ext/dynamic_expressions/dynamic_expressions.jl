@@ -54,7 +54,7 @@ end
         dX_ref[1, :] .= 1
         dX_ref[2, :] .= -sin.(X[2, :] .- 0.2)
         # third row already zero
-        @test isapprox(dX, dX_ref; rtol=1e-10, atol=0)
+        @test isapprox(dX[2], dX_ref; rtol=1e-10, atol=0)
     end
 end
 
@@ -76,7 +76,7 @@ end
             cache = prepare_gradient_cache(eval_sum, expr)
             y, dexpr = value_and_gradient!!(cache, eval_sum, expr)
 
-            const_tangent = dexpr.fields.tree.children[2].x.val
+            const_tangent = dexpr[2].fields.tree.children[2].x.val
             @test const_tangent ≈ N
         end
 
@@ -88,7 +88,7 @@ end
             cache = prepare_gradient_cache(eval_sum_copy, expr)
             y, full_tangent = value_and_gradient!!(cache, eval_sum_copy, expr)
 
-            const_tangent = full_tangent.fields.tree.children[2].x.val
+            const_tangent = full_tangent[2].fields.tree.children[2].x.val
             @test const_tangent ≈ 100
         end
 
@@ -113,8 +113,8 @@ end
 
             # [x, y] -> [2x, 2y] -> 2x + 2y
             # Thus, the gradient is [2, 2]
-            grad_1 = tangent_multi_op.fields.tree.children[2].x.val  # The 2.0
-            grad_2 = tangent_multi_op.fields.tree.children[1].x.children[2].x.val
+            grad_1 = tangent_multi_op[2].fields.tree.children[2].x.val  # The 2.0
+            grad_2 = tangent_multi_op[2].fields.tree.children[1].x.children[2].x.val
             @test grad_1 ≈ 2.0
             @test grad_2 ≈ 2.0
         end
@@ -128,7 +128,6 @@ end
         x2 = Expression(Node{Float64}(; feature=2); operators)
         init = x1 * exp(0.7 + 0.5 * x1) + 0.9 * x2
         target = x1 * exp(0.3 + (-0.2) * x1) + 1.5 * x2
-
         X = randn(StableRNG(0), 2, 128)
         y = target(X)
 
@@ -143,7 +142,7 @@ end
         g! = let cache = cache, f = f
             function (G, ex)
                 y, grad = value_and_gradient!!(cache, f, ex)
-                G .= extract_gradient(grad, ex)
+                G .= extract_gradient(grad[2], ex)
                 return nothing
             end
         end
