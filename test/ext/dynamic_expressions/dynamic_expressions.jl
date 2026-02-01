@@ -148,9 +148,7 @@ end
             end
         end
 
-        cache = prepare_gradient_cache(
-            f, init; config=Mooncake.Config(; friendly_tangents=true)
-        )
+        cache = prepare_gradient_cache(f, init)
         g! = let cache = cache, f = f
             function (G, ex)
                 y, grad = value_and_gradient!!(cache, f, ex)
