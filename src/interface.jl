@@ -4,7 +4,7 @@
 Internal storage for the NaN gradient sentinel value. 
 Use [`get_nan_filler`](@ref) and [`set_nan_filler!`](@ref) to access and modify.
 """
-const _nan_filler = Ref{Any}(NaN)
+const _nan_filler = Ref(NaN)
 
 """
     get_nan_filler()
