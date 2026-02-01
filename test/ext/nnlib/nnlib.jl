@@ -11,7 +11,9 @@ dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
 @testset "nnlib" begin
-    cuda = CUDA.functional()
+    # TODO: CUDA version bound when 
+    #  https://github.com/JuliaGPU/CUDA.jl/issues/2886 is fixed and released
+    cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
 
     _rand = if cuda
         (rng, size...) -> cu(randn(rng, size...))
