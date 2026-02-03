@@ -41,9 +41,11 @@ using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
 using DispatchDoctor: @stable, @unstable, DispatchDoctor
 
-DispatchDoctor.register_macro!(Symbol("@foldable"), DispatchDoctor.IncompatibleMacro)
 DispatchDoctor.register_macro!(
-    Symbol("@mooncake_overlay"), DispatchDoctor.IncompatibleMacro
+    Symbol("@foldable"), DispatchDoctor.IncompatibleMacro, @__MODULE__
+)
+DispatchDoctor.register_macro!(
+    Symbol("@mooncake_overlay"), DispatchDoctor.IncompatibleMacro, @__MODULE__
 )
 
 # Needs to be defined before various other things.

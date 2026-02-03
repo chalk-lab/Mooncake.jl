@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.1"
+version = "0.5.2"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -53,7 +53,7 @@ CUDA = "5"
 ChainRules = "1.71.0"
 ChainRulesCore = "1"
 DiffTests = "0.1"
-DispatchDoctor = "0.4.26"
+DispatchDoctor = "0.4.28"
 DynamicExpressions = "2"
 ExprTools = "0.1"
 Flux = "0.16.3"
