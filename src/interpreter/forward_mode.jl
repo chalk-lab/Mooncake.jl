@@ -26,10 +26,10 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-function build_frule(args...; debug_mode=false, silence_debug_messages=true)
+function build_frule(args...; debug_mode=false, silence_debug_messages=true, chunksize)
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages)
+    return build_frule(interp, sig; debug_mode, silence_debug_messages, chunksize)
 end
 
 struct DualRuleInfo
@@ -59,6 +59,7 @@ function build_frule(
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
+    chunksize,
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -89,12 +90,12 @@ function build_frule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward))
+        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward, chunksize))
         if haskey(interp.oc_cache, oc_cache_key)
             return interp.oc_cache[oc_cache_key]
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
-            dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
+            dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode, chunksize)
             dual_oc = misty_closure(
                 info.dual_ret_type, dual_ir, captures...; do_compile=true
             )
@@ -159,10 +160,11 @@ struct DualInfo
     interp::MooncakeInterpreter
     is_used::Vector{Bool}
     debug_mode::Bool
+    chunksize::UInt
 end
 
 function generate_dual_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
+    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true, chunksize
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -186,7 +188,7 @@ function generate_dual_ir(
     # - add one for the captures in the first position, with placeholder type for now
     # - convert the rest to dual types
     for (a, P) in enumerate(primal_ir.argtypes)
-        dual_ir.argtypes[a] = dual_type(CC.widenconst(P))
+        dual_ir.argtypes[a] = dual_type(CC.widenconst(P), chunksize)
     end
     pushfirst!(dual_ir.argtypes, Any)
 
@@ -198,7 +200,7 @@ function generate_dual_ir(
     captures = Any[]
 
     is_used = characterised_used_ssas(stmt(primal_ir.stmts))
-    info = DualInfo(primal_ir, interp, is_used, debug_mode)
+    info = DualInfo(primal_ir, interp, is_used, debug_mode, chunksize)
     for (n, inst) in enumerate(dual_ir.stmts)
         ssa = SSAValue(n)
         modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info)
@@ -216,7 +218,7 @@ function generate_dual_ir(
 
     # Optimize dual IR
     dual_ir_opt = optimise_ir!(dual_ir; do_inline)
-    return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
+    return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir, chunksize))
 end
 
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
@@ -396,7 +398,7 @@ function modify_fwd_ad_stmts!(
         # Dual-ise arguments.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
-            return uninit_dual(get_const_primal_value(arg))
+            return uninit_dual(get_const_primal_value(arg), info.chunksize)
         end
 
         interp = info.interp
@@ -481,12 +483,12 @@ end
     return rule.rule(args...)
 end
 
-function dual_ret_type(primal_ir::IRCode)
-    return dual_type(compute_ir_rettype(primal_ir))
+function dual_ret_type(primal_ir::IRCode, chunksize)
+    return dual_type(compute_ir_rettype(primal_ir), chunksize)
 end
 
 function frule_type(
-    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
+    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode, chunksize
 ) where {C}
     primal_sig = _get_sig(mi)
     if is_primitive(C, ForwardMode, primal_sig, interp.world)
@@ -496,8 +498,8 @@ function frule_type(
     nargs = length(ir.argtypes)
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
-    dual_args_type = Tuple{map(dual_type, arg_types)...}
-    closure_type = RuleMC{dual_args_type,dual_ret_type(ir)}
+    dual_args_type = Tuple{[dual_type(arg, chunksize) for arg in arg_types]...}
+    closure_type = RuleMC{dual_args_type,dual_ret_type(ir, chunksize)}
     Tderived_rule = DerivedFRule{primal_sig,closure_type,isva,nargs}
     return debug_mode ? DebugFRule{Tderived_rule} : Tderived_rule
 end
