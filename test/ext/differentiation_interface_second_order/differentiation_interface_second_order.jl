@@ -17,7 +17,12 @@ end
 
 # Test second-order differentiation (forward-over-reverse)
 test_differentiation(
-    [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))];
+    [
+        SecondOrder(
+            AutoMooncakeForward(),
+            AutoMooncake(; config=Mooncake.Config(; maybeinline_primitive=false)),
+        ),
+    ];
     excluded=EXCLUDED,
     logging=true,
 )
@@ -45,7 +50,10 @@ end
         x0 = [0.0; fill(1.0, 9)]
         f = TestWorldAge.gams_objective
 
-        backend = SecondOrder(AutoMooncakeForward(), AutoMooncake())
+        backend = SecondOrder(
+            AutoMooncakeForward(),
+            AutoMooncake(; config=Mooncake.Config(; maybeinline_primitive=false)),
+        )
         preph = prepare_hessian(f, backend, x0)
 
         # Wrapping in a closure triggers the world-age bug without the fix
