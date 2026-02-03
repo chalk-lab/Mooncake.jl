@@ -30,7 +30,7 @@ import Mooncake as MC
 f(x) = sum(abs2, x)
 x = [1.0 + 2.0im, 3.0 + 4.0im]
 
-cache = MC.prepare_gradient_cache(f, x)
+cache = MC.prepare_gradient_cache(f, x);
 val, grad = MC.value_and_gradient!!(cache, f, x)
 ```
 
@@ -41,7 +41,7 @@ import DifferentiationInterface as DI
 
 # Gradient
 backend = DI.AutoMooncake()
-grad_cache = DI.prepare_gradient(f, backend, x)
+grad_cache = DI.prepare_gradient(f, backend, x);
 g = DI.gradient(f, grad_cache, backend, x)
 
 # Hessian (forward-over-reverse)
