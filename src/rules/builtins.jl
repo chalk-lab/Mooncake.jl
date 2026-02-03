@@ -94,6 +94,7 @@ import ..Mooncake:
     Dual,
     primal,
     tangent,
+    tangents,
     zero_tangent,
     NoPullback,
     tangent_type,
@@ -527,7 +528,9 @@ end
 @intrinsic mul_float
 function frule!!(::Dual{typeof(mul_float)}, a, b)
     p = mul_float(primal(a), primal(b))
-    dp = add_float(mul_float(primal(a), tangent(b)), mul_float(primal(b), tangent(a)))
+    dp = tuple_map(tangents(a), tangents(b)) do da, db
+        add_float(mul_float(primal(a), db), mul_float(primal(b), da))
+    end
     return Dual(p, dp)
 end
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
