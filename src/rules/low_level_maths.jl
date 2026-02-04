@@ -219,7 +219,7 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     h = hypot(primal(x), map(primal, xs)...)
     function hypot_pb!!(dh::P)
-        grads = map(a -> nan_cover(dh, dh * (primal(a) / h)), (x, xs...))
+        grads = map(a -> nan_guard(dh, dh * (primal(a) / h)), (x, xs...))
         return NoRData(), grads...
     end
     return zero_fcodual(h), hypot_pb!!
