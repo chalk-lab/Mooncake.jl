@@ -101,10 +101,8 @@ function rrule!!(::CoDual{typeof(log)}, b::CoDual{P}, x::CoDual{P}) where {P<:IE
     y = log(primal(b), primal(x))
     function log_adjoint(dy::P)
         log_b = log(primal(b))
-
         grad_args = (-dy * y / (log_b * primal(b))), (dy / (primal(x) * log_b))
-        grads_filled = map(x -> (isnan(x) ? P(Mooncake.get_nan_filler()) : x), grad_args)
-        grads = iszero(dy) ? (dy, dy) : grads_filled
+        grads = map(x -> nan_guard(dy, x), grad_args)
         return NoRData(), grads...
     end
     return zero_fcodual(y), log_adjoint
@@ -119,9 +117,8 @@ end
 function rrule!!(::CoDual{typeof(log)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log(primal(x))
     function log_adjoint(dy::P)
-        grad_x = dy / primal(x)
-        grad_x = isnan(grad_x) ? P(Mooncake.get_nan_filler()) : grad_x
-        return NoRData(), iszero(dy) ? dy : grad_x
+        grad_x = nan_guard(dy, dy / primal(x))
+        return NoRData(), grad_x
     end
     return zero_fcodual(y), log_adjoint
 end
@@ -135,9 +132,8 @@ end
 function rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = sqrt(primal(x))
     function sqrt_adjoint(dy::P)
-        grad_x = dy / (2 * y)
-        grad_x = isnan(grad_x) ? P(Mooncake.get_nan_filler()) : grad_x
-        return NoRData(), iszero(dy) ? dy : grad_x
+        grad_x = nan_guard(dy, dy / (2 * y))
+        return NoRData(), grad_x
     end
     return zero_fcodual(y), sqrt_adjoint
 end
@@ -151,9 +147,8 @@ end
 function rrule!!(::CoDual{typeof(cbrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = cbrt(primal(x))
     function cbrt_adjoint(dy::P)
-        grad_x = dy / (3 * y^2)
-        grad_x = isnan(grad_x) ? P(Mooncake.get_nan_filler()) : grad_x
-        return NoRData(), iszero(dy) ? dy : grad_x
+        grad_x = nan_guard(dy, dy / (3 * y^2))
+        return NoRData(), grad_x
     end
     return zero_fcodual(y), cbrt_adjoint
 end
@@ -166,9 +161,8 @@ end
 function rrule!!(::CoDual{typeof(log10)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log10(primal(x))
     function log10_adjoint(dy::P)
-        grad_x = dy / (primal(x) * log(P(10)))
-        grad_x = isnan(grad_x) ? P(Mooncake.get_nan_filler()) : grad_x
-        return NoRData(), iszero(dy) ? dy : grad_x
+        grad_x = nan_guard(dy, dy / (primal(x) * log(P(10))))
+        return NoRData(), grad_x
     end
     return zero_fcodual(y), log10_adjoint
 end
@@ -181,9 +175,8 @@ end
 function rrule!!(::CoDual{typeof(log2)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log2(primal(x))
     function log2_adjoint(dy::P)
-        grad_x = dy / (primal(x) * log(P(2)))
-        grad_x = isnan(grad_x) ? P(Mooncake.get_nan_filler()) : grad_x
-        return NoRData(), iszero(dy) ? dy : grad_x
+        grad_x = nan_guard(dy, dy / (primal(x) * log(P(2))))
+        return NoRData(), grad_x
     end
     return zero_fcodual(y), log2_adjoint
 end
@@ -196,9 +189,8 @@ end
 function rrule!!(::CoDual{typeof(log1p)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log1p(primal(x))
     function log1p_adjoint(dy::P)
-        grad_x = dy / (1 + primal(x))
-        grad_x = isnan(grad_x) ? P(Mooncake.get_nan_filler()) : grad_x
-        return NoRData(), iszero(dy) ? dy : grad_x
+        grad_x = nan_guard(dy, dy / (1 + primal(x)))
+        return NoRData(), grad_x
     end
     return zero_fcodual(y), log1p_adjoint
 end
@@ -227,13 +219,8 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     h = hypot(primal(x), map(primal, xs)...)
     function hypot_pb!!(dh::P)
-        grads = map(a -> dh * (primal(a) / h), (x, xs...))
-        grads_filled = map(
-            grad_xi -> isnan(grad_xi) ? P(Mooncake.get_nan_filler()) : grad_xi, grads
-        )
-        grad_args = map(a -> iszero(dh) ? dh : a, grads_filled)
-
-        return NoRData(), grad_args...
+        grads = map(a -> nan_cover(dh, dh * (primal(a) / h)), (x, xs...))
+        return NoRData(), grads...
     end
     return zero_fcodual(h), hypot_pb!!
 end

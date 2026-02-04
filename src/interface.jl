@@ -1,56 +1,67 @@
 """
-    _nan_filler
+    nan_gradient_sentinel(::Type{T}) where T
 
-Internal storage for the NaN gradient sentinel value. 
-Use [`get_nan_filler`](@ref) and [`set_nan_filler!`](@ref) to access and modify.
-"""
-const _nan_filler = Ref(NaN)
+Return the sentinel value used to replace NaN gradients in reverse-mode AD rules
+for gradients of type `T`.
 
-"""
-    get_nan_filler()
+When differentiating non-differentiable functions (e.g., `sqrt` at 0 or `log` at 0),
+the mathematical gradient is undefined (NaN). This function provides a fallback
+value so that the reverse pass can continue.
 
-Get the current sentinel value used to replace NaN gradients in reverse-mode AD rules.
-
-When differentiating non-differentiable functions (e.g., `sqrt` at 0, `log` at 0), 
-the mathematical gradient is undefined (NaN). This sentinel value is used instead 
-to allow the reverse pass to continue.
-
-Default value: `Float64(NaN)`
-
-See also: [`set_nan_filler!`](@ref)
+By default, the sentinel is `T(NaN)` for floating-point types. Users may overload
+this function for custom types or alternative NaN-handling policies.
 
 # Example
 ```julia
-# Default behavior
-get_nan_filler()  # returns NaN
+# Default behaviour
+nan_gradient_sentinel(Float64)  # returns NaN
 
-# After changing the sentinel
-set_nan_filler!(Inf)
-get_nan_filler()  # returns Inf
+# Custom behaviour for Float64
+nan_gradient_sentinel(::Type{Float64}) = Inf
 ```
 """
-get_nan_filler() = _nan_filler[]
+@inline nan_gradient_sentinel(::Type{T}) where {T} = T(NaN)
 
 """
-    set_nan_filler!(value)
+    nan_gradient_sentinel(x)
 
-Set the sentinel value used to replace NaN gradients in reverse-mode AD rules.
+Convenience method that returns the sentinel value based on the type of `x`.
+
+# Example
+```julia
+x = Float32(1.0)
+nan_gradient_sentinel(x)  # returns NaN32
+```
+"""
+@inline nan_gradient_sentinel(x) = nan_gradient_sentinel(typeof(x))
+
+"""
+    nan_guard(dy::L, grad::T) where {L,T}
+
+Safely handle gradients from non-differentiable points.
+
+If `dy` is zero, returns `dy` to prevent NaN poisoning. Otherwise, checks if
+`grad` is NaN and replaces it with the sentinel value from 
+[`nan_gradient_sentinel`](@ref).
 
 # Arguments
-- `value`: The sentinel value to use (typically `0.0`, `Inf`, or `NaN`)
+- `dy`: The incoming gradient from the chain rule
+- `grad`: The computed local gradient (may contain NaN)
+
+# Returns
+- `dy` if zero, otherwise `grad` with NaN replaced by sentinel
 
 # Example
 ```julia
-# Use Inf as the sentinel for NaN gradients
-set_nan_filler!(Inf)
-
-# Reset to default
-set_nan_filler!(0.0)
+nan_guard(0.0, NaN)  # returns 0.0
+nan_guard(1.0, NaN)  # returns nan_gradient_sentinel(Float64)
+nan_guard(2.0, 3.0)  # returns 3.0
 ```
-
-See also: [`get_nan_filler`](@ref)
 """
-set_nan_filler!(val) = (_nan_filler[] = val)
+@inline function nan_guard(dy::L, grad::T) where {L,T}
+    iszero(dy) && return dy
+    return isnan(grad) ? nan_gradient_sentinel(T) : grad
+end
 
 """
     __value_and_pullback!!(rule, ȳ, f::CoDual, x::CoDual...; y_cache=nothing)
