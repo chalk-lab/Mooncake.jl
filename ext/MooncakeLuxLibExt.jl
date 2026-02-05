@@ -1,58 +1,209 @@
 module MooncakeLuxLibExt
 
 using LuxLib, Random, Mooncake
+using NNlib: gelu
 using Base: IEEEFloat
-
+using Static: True
+import ChainRulesCore as CRC
 import LuxLib: Impl, Utils
 import LuxLib.Utils: static_training_mode_check
 using MLDataDevices: get_device_type
-import Mooncake: @from_rrule, DefaultCtx, @mooncake_overlay, CoDual
-using Static: True
+import Mooncake:
+    @from_rrule,
+    DefaultCtx,
+    MinimalCtx,
+    @mooncake_overlay,
+    CoDual,
+    @zero_adjoint,
+    @zero_derivative,
+    MooncakeRuleConfig
 
-@from_rrule(DefaultCtx, Tuple{typeof(Impl.matmul),Array{P},Array{P}} where {P<:IEEEFloat})
+## Mooncake imports CRC rules for Lux kernels from Lux.LuxLib
+# activation
 @from_rrule(
     DefaultCtx,
-    Tuple{typeof(Impl.matmuladd),Array{P},Array{P},Vector{P}} where {P<:IEEEFloat},
+    Tuple{
+        typeof(Impl.activation!!),Impl.AbstractInternalArrayOpMode,True,F,AbstractArray{T}
+    } where {F,T},
+    false,
+    MooncakeRuleConfig()
 )
+
 @from_rrule(
     DefaultCtx,
-    Tuple{typeof(Impl.batched_matmul_fallback),Array{P,3},Array{P,3}} where {P<:IEEEFloat},
+    Tuple{typeof(Impl.activation),Impl.LoopedArrayOp,F,AbstractArray{T}} where {F,T},
+    false,
+    MooncakeRuleConfig()
 )
 
-## For mooncake we are missing some rules. For now use the basic versions of the kernels
-@mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) = LuxLib.GenericBroadcastOp{
-    get_device_type(xs)
-}()
-
-# Utils extensions
-@mooncake_overlay Utils.within_autodiff(x) = True()
-
-# Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
-@mooncake_overlay function LuxLib.Impl.fused_dense(
-    opmode,
-    act::F,
-    weight::AbstractMatrix,
-    x::AbstractMatrix,
-    b::LuxLib.Optional{<:AbstractVector},
-) where {F}
-    return bias_activation(act, Impl.matmul(weight, x), b)
-end
-
-@mooncake_overlay function LuxLib.Impl.fused_conv(
-    ::LuxLib.Impl.AbstractInternalArrayOpMode,
-    act::F,
-    weight::AbstractArray{wT,N},
-    x::AbstractArray{xT,N},
-    bias::LuxLib.Optional{<:AbstractVector},
-    cdims::LuxLib.Impl.ConvDims,
-) where {F,wT,xT,N}
-    return LuxLib.Impl.bias_activation(act, LuxLib.Impl.conv(x, weight, cdims), bias)
-end
-
-Mooncake.@zero_adjoint DefaultCtx Tuple{typeof(static_training_mode_check),Vararg}
-Mooncake.@zero_adjoint DefaultCtx Tuple{
-    typeof(LuxLib.Impl.generate_dropout_mask),AbstractRNG,Any,Any,Any,Any
+@zero_derivative DefaultCtx Tuple{typeof(Impl.select_fastest_activation),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.sleefpirates_fast_act),Vararg}
+@zero_derivative DefaultCtx Tuple{
+    typeof(Impl.internal_operation_mode),Union{Tuple,AbstractArray}
 }
+
+# attention
+@zero_derivative DefaultCtx Tuple{typeof(Impl.get_non_heads_dim),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.make_causal_mask),Vararg}
+
+# batched mul
+@zero_derivative DefaultCtx Tuple{typeof(Impl.get_non_contracting_dim),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.get_batched_matmul_repeat_dims),Vararg}
+
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.batched_matmul_fallback),AbstractArray{xT,3},AbstractArray{yT,3}
+    } where {xT,yT}
+)
+
+# batchnorm
+@zero_derivative DefaultCtx Tuple{typeof(Impl.batchnorm_reduce_dims),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.get_batchnorm_statistics),Vararg}
+
+# bias_activation
+@zero_derivative DefaultCtx Tuple{typeof(Impl.flattened_bias_dims),Vararg}
+
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.bias_activation),
+        Impl.AbstractInternalArrayOpMode,
+        F,
+        AbstractArray{xT,N},
+        AbstractVector,
+    } where {F,N,xT},
+    false,
+    MooncakeRuleConfig()
+)
+
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.bias_activation!!),
+        Impl.AbstractInternalArrayOpMode,
+        True,
+        F,
+        AbstractArray{xT,N},
+        AbstractVector,
+    } where {F,N,xT},
+    false,
+    MooncakeRuleConfig()
+)
+
+# common_ops
+@from_rrule(
+    DefaultCtx,
+    Tuple{typeof(Impl.reshape_bias),AbstractArray{xT,N},AbstractVector{bT}} where {xT,bT,N}
+)
+
+@from_rrule(DefaultCtx, Tuple{typeof(Impl.mean_var),AbstractArray}, true)
+
+# FIX CONV, DENSE Kernel rules for Mooncake
+# conv
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.fused_conv),
+        Impl.AbstractInternalArrayOpMode,
+        F,
+        AbstractArray{wT,N},
+        AbstractArray{xT,N},
+        Impl.Optional{AbstractVector},
+        Impl.ConvDims,
+    } where {F,wT,xT,N},
+    false,
+    MooncakeRuleConfig()
+)
+
+# dense
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.fused_dense),
+        Impl.AbstractInternalArrayOpMode,
+        F,
+        AbstractMatrix,
+        AbstractMatrix,
+        Impl.Optional{<:AbstractVector},
+    } where {F},
+    false,
+    MooncakeRuleConfig()
+)
+
+# special CRC rule dispatch over gelu with GPUBroadcastOp
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.fused_dense),
+        Impl.GPUBroadcastOp,
+        typeof(gelu),
+        AbstractMatrix,
+        AbstractMatrix,
+        Impl.Optional{<:AbstractVector},
+    }
+)
+
+# dropout
+@zero_derivative DefaultCtx Tuple{typeof(Impl.check_dropout_mask_shape_mismatch),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.dropout_shape),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.dropout_fptype),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.generate_alpha_dropout_noise),Vararg}
+@zero_derivative DefaultCtx Tuple{
+    typeof(Impl.generate_dropout_mask),AbstractRNG,Any,Any,Any,Any
+}
+
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.alpha_dropout),
+        Impl.LoopedArrayOp,
+        AbstractArray,
+        Any,  # p
+        AbstractArray,
+        Any,  # α
+        Any,  # A
+        Any,   # B
+    }
+)
+
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.alpha_dropout),
+        Impl.AbstractInternalArrayOpMode,
+        AbstractArray,
+        Any,  # p
+        AbstractArray,
+        Any,  # α
+        Any,  # A
+        Any,   # B
+    }
+)
+
+@from_rrule(DefaultCtx, Tuple{typeof(Impl.dropout_dot_mul),AbstractArray,AbstractArray})
+
+# groupnorm
+@zero_derivative DefaultCtx Tuple{typeof(Impl.groupnorm_reduce_dims),Vararg}
+
+# Let Mooncake derive rules for Impl.groupnorm_affine_normalize_internal 
+
+# layernorm
+@zero_derivative DefaultCtx Tuple{typeof(Impl.compute_layernorm_dims),Vararg}
+
+# matmul
+@from_rrule(
+    DefaultCtx, Tuple{typeof(Impl.matmuladd),AbstractMatrix,AbstractMatrix,AbstractVector}
+)
+
+@from_rrule(DefaultCtx, Tuple{typeof(Impl.matmul),AbstractMatrix,AbstractMatrix})
+
+# normalization
+@zero_derivative DefaultCtx Tuple{typeof(Impl.update_running_statistics),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.update_normalization_statistics),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.get_norm_reshape_dims),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Impl.instancenorm_reduce_dims),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(static_training_mode_check),Vararg}
 
 # This is a really horrible hack that we need to do until Mooncake is able to support the
 # call-back-into-ad interface that ChainRules exposes.
@@ -63,8 +214,6 @@ import LuxLib.Impl:
     batchnorm_affine_normalize_internal!,
     ∇batchnorm_affine_normalize,
     AbstractInternalArrayOpMode
-
-import ChainRulesCore as CRC
 
 function CRC.rrule(
     ::typeof(batchnorm_affine_normalize_internal),
