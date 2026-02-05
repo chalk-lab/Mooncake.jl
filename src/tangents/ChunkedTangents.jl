@@ -1,0 +1,171 @@
+using Mooncake
+using Mooncake: tangent_type, frule!!, rrule!!
+
+# IMPLEMENTATION OPTION - 1 (works best for chunk sizes N <= 8-16)
+# cover all leaf node tangent types
+const PrimitiveTangents = Union{Base.IEEEFloat,Mooncake.NoTangent}  #TODO add Complex Tangent type when it is ready.
+
+# TODO : All frule/rrules must handle dispatch for ChunkedPrimitiveTangent !!
+# TODO : Document access violation cases.
+
+# Can use the current Mooncake accessors once they are overloaded for ChunkedPrimitiveTangent (NameTuple recursive still holds)
+struct ChunkedPrimitiveTangent{T<:PrimitiveTangents,N}
+    # Ntuple works well if chunk size N is small enough to work on registers (N<=8-16)
+    values::NTuple{N,T}  # each Mooncake Tangent field is orthogonal in direction (so each field can have diff chunk sizes)
+end
+
+# Dynamic switching to Array based ChunkedPrimitiveTangent->  IMPLEMENTATION OPTION - 2 (refer after below code) :
+# TODO: To handle codegen cost & excessive compile times (if N is large) ? solution : possibly switch to Array{T,N} based ChunkedPrimitiveTangent{T,N}.
+# TODO: Mixed Mode Forward AD / Forward over reverse -> across-tuple memory access is guaranteed -> switched to Array{T,N} based ChunkedPrimitiveTangent{T,N}.
+# TODO: write specialized Tangent, operations for Mixed Mode Forward AD case.
+
+# For below operations : loop unrolLing should work well for small N.
+function ChunkedPrimitiveTangent(
+    ::Type{T}, ::Val{N}; init=zero(T)
+) where {T<:PrimitiveTangents,N}
+    return ChunkedPrimitiveTangent(ntuple(_ -> init, N))
+end
+
+import Base: +, -, *, /, ^
+
+# Elementwise addition
+function +(
+    a::ChunkedPrimitiveTangent{T,N}, b::ChunkedPrimitiveTangent{T,N}
+) where {T<:PrimitiveTangents,N}
+    return ChunkedPrimitiveTangent(a.values .+ b.values)
+end
+
+# Elementwise subtraction
+function -(
+    a::ChunkedPrimitiveTangent{T,N}, b::ChunkedPrimitiveTangent{T,N}
+) where {T<:PrimitiveTangents,N}
+    return ChunkedPrimitiveTangent(a.values .- b.values)
+end
+
+# Multiply by scalar
+function *(a::ChunkedPrimitiveTangent{T,N}, b::T) where {T<:PrimitiveTangents,N}
+    return ChunkedPrimitiveTangent(a.values .* b)
+end
+
+function *(b::T, a::ChunkedPrimitiveTangent{T,N}) where {T<:PrimitiveTangents,N}
+    return ChunkedPrimitiveTangent(a.values .* b)
+end
+
+# Divide by scalar
+function /(a::ChunkedPrimitiveTangent{T,N}, b::T) where {T<:PrimitiveTangents,N}
+    return ChunkedPrimitiveTangent(a.values ./ b)
+end
+# Power (elementwise)
+function ^(a::ChunkedPrimitiveTangent{T,N}, n::Integer) where {T<:PrimitiveTangents,N}
+    return ChunkedPrimitiveTangent(a.values .^ n)
+end
+
+# Accessor
+getindex(a::ChunkedPrimitiveTangent, i::Int) = a.values[i]
+
+# Example usage
+cs = ChunkedPrimitiveTangent(Float64, Val(4); init=0.0)  # 4 directions
+cs2 = ChunkedPrimitiveTangent(Float64, Val(4); init=1.0)
+
+cs3 = cs + cs2
+
+# IMPLEMENTATION OPTION - 2 (Array based ChunkedTangents with accessors for large chunk sizes N > 32 - cache & SIMD efficient)
+# # Keeping mutable because:
+# # 1. For large multidim arrays in-place mutations are efficient.
+# # 2. Can default to accessor functions (set_element!) etc that control access.
+
+# mutable struct ChunkedPrimitiveTangents7{T, DataDim}
+#     ts::Array{T, DataDim}
+#     _chunk_size::Int
+
+#     # Directions to take for ChunkedTangents{T,N} for Complex,Int,Floats,Vectors or Matrices :
+#     # ts cannot be made private in Julia, so document and only access through accessors - The user can change ts length != N
+#     # or alLow chunksize as another parameter within ChunkedPrimitiveTangents - Probably better.
+#     # or use StaticArrays, MVectors? - Not Suitable for large N > 100.
+
+#     # enforce correct chunk size for all outer constructor calls.
+#     function ChunkedPrimitiveTangents7{T, DataDim}(ts::Array{T, DataDim}, _chunk_size::Int) where {T, DataDim}
+#         size(ts, DataDim) == _chunk_size || error("Size mismatch")
+#         new(ts, _chunk_size)
+#     end
+# end
+
+# # Scalar chunks - (Float64, Int, Complex, etc.)
+# function ChunkedPrimitiveTangents7(::Type{T}, ::Val{ChunkSize}; init=zero(T)) where {ChunkSize, T<:Union{Base.IEEEFloat, Integer, Complex}}
+#     ts = fill(init, ChunkSize)
+#     ChunkedPrimitiveTangents7{T, 1}(ts, ChunkSize)
+# end
+
+# # Vector chunks
+# function ChunkedPrimitiveTangents7(::Type{Vector{T}}, vec_length::Int, ::Val{ChunkSize}; init=zero(T)) where {ChunkSize, T<:Union{Base.IEEEFloat, Integer, Complex}}
+#     ts = fill(init, vec_length, ChunkSize)
+#     ChunkedPrimitiveTangents7{T, 2}(ts, ChunkSize)
+# end
+
+# # matrix chunks
+# function ChunkedPrimitiveTangents7(::Type{Matrix{T}}, rows::Int, cols::Int, ::Val{ChunkSize}; init=zero(T)) where {ChunkSize, T<:Union{Base.IEEEFloat, Integer, Complex}}
+#     ts = fill(init, rows, cols, ChunkSize)
+#     ChunkedPrimitiveTangents7{T, 3}(ts, ChunkSize)
+# end
+
+# # Accessor methods
+# function get_element(chunk::ChunkedPrimitiveTangents7, idx...)
+#     size(chunk.ts, ndims(chunk.ts)) == chunk._chunk_size || error("Corrupted chunk! Size mismatch")
+#     return chunk.ts[idx...]
+# end
+
+# function set_element!(chunk::ChunkedPrimitiveTangents7, val, idx...)
+#     size(chunk.ts, ndims(chunk.ts)) == chunk._chunk_size || error("Corrupted chunk! Size mismatch")
+#     chunk.ts[idx...] = val
+# end
+
+# # USAGE
+# # Scalar chunks
+# chunk1 = ChunkedPrimitiveTangents7(Float64, Val(100))
+# chunk2 = ChunkedPrimitiveTangents7(Float64, Val(100); init=2.0)
+
+# # using accessors
+# get_element(chunk2, 5)
+# set_element!(chunk2, 0.0, 5)
+# get_element(chunk2, 5)
+
+# # Invalid chunk size checking (when user modifies chunks without accessors)
+# chunk_temp = ChunkedPrimitiveTangents7(Float64, Val(10))
+# get_element(chunk_temp, 50)  # Out of bounds error
+# push!(chunk_temp.ts, 5.0)
+# get_element(chunk_temp, 1)  # Chunk corrupted
+
+# # Vector chunks
+# chunk3 = ChunkedPrimitiveTangents7(Vector{Float64}, 5, Val(100))
+# chunk4 = ChunkedPrimitiveTangents7(Vector{Float64}, 5, Val(100); init=2.0)
+
+# # using accessors
+# get_element(chunk4, 2, 3)
+# set_element!(chunk4, 0.0, 2, 3)
+# get_element(chunk4, 2, 3)
+
+# # Invalid chunk size checking (when user modifies chunks without accessors)
+# chunk_temp = ChunkedPrimitiveTangents7(Vector{Float64}, 5, Val(10))
+# get_element(chunk_temp, 2, 50)  # Out of bounds error
+# chunk_temp.ts = cat(chunk_vec.ts, zeros(5, 1); dims=2)  # Add one chunk
+# get_element(chunk_temp, 1, 1)  # Chunk corrupted
+
+# # Matrix chunks
+# chunk5 = ChunkedPrimitiveTangents7(Matrix{Float64}, 3, 4, Val(100))
+# chunk6 = ChunkedPrimitiveTangents7(Matrix{Float64}, 3, 4, Val(100); init=2.5)
+# chunk7 = ChunkedPrimitiveTangents7(Matrix{Int64}, 3, 4, Val(100);init=2)
+# chunk8 = ChunkedPrimitiveTangents7(Matrix{ComplexF64}, 3, 4, Val(100); init=2.0 + 2.0im)
+
+# # using accessors
+# get_element(chunk8, 1, 2, 5)
+# set_element!(chunk8, 0.0, 1, 2, 5)
+# get_element(chunk8, 1, 2, 5)
+
+# # Invalid chunk size checking (when user modifies chunks without accessors)
+# chunk_temp = ChunkedPrimitiveTangents7(Matrix{Float64}, 3, 4, Val(10))
+# get_element(chunk_temp, 2, 50,50)  # Out of bounds error
+# chunk_temp.ts = cat(chunk_temp.ts, zeros(3, 4, 1); dims=3)  # Add one chunk
+# get_element(chunk_temp, 1, 1, 1)  # Chunk corrupted
+
+# TODO : All frule/rrules must handle dispatch for ChunkedPrimitiveTangent !!
+# TODO : Define accessors for relevant operations & Document access violation cases.
