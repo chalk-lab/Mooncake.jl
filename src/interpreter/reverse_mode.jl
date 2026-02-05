@@ -1105,7 +1105,20 @@ If `debug_mode` is `true`, then all calls to rules are replaced with calls to `D
 function build_rrule(
     interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, silence_debug_messages=true
 ) where {C}
+    build_rrule_checks(interp, debug_mode, silence_debug_messages)
 
+    # If we have a hand-coded rule, just use that.
+    sig = _get_sig(sig_or_mi)
+    if is_primitive(C, ReverseMode, sig, interp.world)
+        rule = build_primitive_rrule(sig)
+        return (debug_mode ? DebugRRule(rule) : rule)
+    end
+
+    return build_derived_rrule(interp, sig_or_mi, sig, debug_mode)
+end
+
+# Separated out so we can make an frule!! for it, for forward-over-reverse.
+function build_rrule_checks(interp::MooncakeInterpreter, debug_mode::Bool, silence_debug_messages::Bool)
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
     # than the current world age.
     if Base.get_world_counter() > interp.world
@@ -1121,13 +1134,12 @@ function build_rrule(
     if !silence_debug_messages && debug_mode
         @info "Compiling rule for $sig_or_mi in debug mode. Disable for best performance."
     end
+end
 
-    # If we have a hand-coded rule, just use that.
-    sig = _get_sig(sig_or_mi)
-    if is_primitive(C, ReverseMode, sig, interp.world)
-        rule = build_primitive_rrule(sig)
-        return (debug_mode ? DebugRRule(rule) : rule)
-    end
+function build_derived_rrule(
+    interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool,
+) where {C}
+    @info "Entering build_derived_rrule"
 
     # We don't have a hand-coded rule, so derived one.
     lock(MOONCAKE_INFERENCE_LOCK)
@@ -1175,7 +1187,7 @@ end
 Used by `build_rrule`, and the various debugging tools: primal_ir, fwds_ir, adjoint_ir.
 """
 function generate_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
+    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true, do_optimize=true
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -1216,8 +1228,8 @@ function generate_ir(
     rvs_ir = pullback_ir(
         primal_ir, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
     )
-    opt_fwd_ir = optimise_ir!(IRCode(fwd_ir); do_inline)
-    opt_rvs_ir = optimise_ir!(IRCode(rvs_ir); do_inline)
+    opt_fwd_ir = do_optimize ? optimise_ir!(IRCode(fwd_ir); do_inline) : IRCode(fwd_ir)
+    opt_rvs_ir = do_optimize ? optimise_ir!(IRCode(rvs_ir); do_inline) : IRCode(rvs_ir)
     return DerivedRuleInfo(
         ir, opt_fwd_ir, fwd_ret_type, opt_rvs_ir, rvs_ret_type, shared_data, info, isva
     )
