@@ -84,15 +84,59 @@ pb!!(1.0)
 function rrule!! end
 
 """
-    build_primitive_rrule(sig::Type{<:Tuple})
+    PrimitiveRRule{Sig, Tmaybeinline}
+
+Callable wrapper used for primitive rrules. Both variants route through `tuple_splat`
+helpers to avoid vararg lowering to `_apply_iterate`. When `Tmaybeinline=true`, inlining
+is permitted. When `Tmaybeinline=false`, a noinline boundary is forced around the
+`rrule!!` call (useful for higher-order AD). Construct via `build_primitive_rrule`.
+"""
+struct PrimitiveRRule{Sig,Tmaybeinline} end
+
+@inline function _primitive_rule_sig(sig::Type{<:Tuple})
+    if sig isa DataType && isconcretetype(sig)
+        return sig
+    end
+    nparams = length(Base.unwrap_unionall(sig).parameters)
+    return Tuple{Vararg{Any,nparams}}
+end
+
+@inline function (rule::PrimitiveRRule{Sig,true})(args...) where {Sig}
+    return tuple_splat(rrule!!, args)
+end
+
+@inline function (rule::PrimitiveRRule{Sig,false})(args...) where {Sig}
+    return tuple_splat_noinline(rrule!!, args)
+end
+
+"""
+    PrimitiveFRule{Sig, Tmaybeinline}
+
+Callable wrapper used for primitive frules. Both variants route through `tuple_splat`
+helpers to avoid vararg lowering to `_apply_iterate`. When `Tmaybeinline=true`, inlining
+is permitted. When `Tmaybeinline=false`, a noinline boundary is forced around the
+`frule!!` call (useful for higher-order AD). Construct via `build_primitive_frule`.
+"""
+struct PrimitiveFRule{Sig,Tmaybeinline} end
+
+@inline function (rule::PrimitiveFRule{Sig,true})(args...) where {Sig}
+    return tuple_splat(frule!!, args)
+end
+
+@inline function (rule::PrimitiveFRule{Sig,false})(args...) where {Sig}
+    return tuple_splat_noinline(frule!!, args)
+end
+
+"""
+    build_primitive_rrule(sig::Type{<:Tuple}; maybeinline_primitive=true)
 
 Construct an rrule for signature `sig`. For this function to be called in `build_rrule`, you
 must also ensure that a method of `_is_primitive(context_type, ReverseMode, sig)` exists,
 preferably by using the [@is_primitive](@ref) macro.
 The callable returned by this must obey the rrule interface, but there are no restrictions
 on the type of callable itself. For example, you might return a callable `struct`. By
-default, this function returns `rrule!!` so, most of the time, you should just implement a
-method of `rrule!!`.
+default, this function returns a wrapper that may inline the primitive rule; set
+`maybeinline_primitive=false` to force a noinline boundary (useful for higher-order AD).
 
 # Extended Help
 
@@ -106,7 +150,34 @@ callable `struct` with type parameters which are the result of this computation.
 context, the motivation for using this function is the same as that of using staged
 programming (e.g. via `@generated` functions) more generally.
 """
-build_primitive_rrule(::Type{<:Tuple}) = rrule!!
+function build_primitive_rrule(sig::Type{<:Tuple}; maybeinline_primitive::Bool=true)
+    PrimitiveRRule{_primitive_rule_sig(sig),maybeinline_primitive}()
+end
+
+function build_primitive_rrule(sig::Type{<:Tuple}, maybeinline_primitive::Bool)
+    PrimitiveRRule{_primitive_rule_sig(sig),maybeinline_primitive}()
+end
+
+"""
+    build_primitive_frule(sig::Type{<:Tuple}; maybeinline_primitive=true)
+
+Construct an frule for signature `sig`. For this function to be called in `build_frule`, you
+must also ensure that a method of `_is_primitive(context_type, ForwardMode, sig)` exists,
+preferably by using the [@is_primitive](@ref) macro.
+
+By default, this function returns a wrapper that may inline the primitive rule; set
+`maybeinline_primitive=false` to force a noinline boundary (useful for higher-order AD,
+e.g., forward-over-reverse for Hessians).
+
+See [`build_primitive_rrule`](@ref) for extended discussion of staged rule construction.
+"""
+function build_primitive_frule(sig::Type{<:Tuple}; maybeinline_primitive::Bool=true)
+    PrimitiveFRule{_primitive_rule_sig(sig),maybeinline_primitive}()
+end
+
+function build_primitive_frule(sig::Type{<:Tuple}, maybeinline_primitive::Bool)
+    PrimitiveFRule{_primitive_rule_sig(sig),maybeinline_primitive}()
+end
 
 #! format: off
 @stable default_mode = "disable" default_union_limit = 2 begin

@@ -53,6 +53,7 @@ end
             ssa_insts,
             is_used_dict,
             false,
+            false,
             rdata_ref,
             Any,
             Any,
@@ -108,6 +109,7 @@ end
                 ssa_insts,
                 is_used_dict,
                 false,
+                false,
                 rdata_ref,
                 Any,
                 Any,
@@ -162,6 +164,7 @@ end
                 id_line_2 => new_inst(nothing, Any),
             ),
             Dict{ID,Bool}(id_line_1 => true, id_line_2 => true),
+            false,
             false,
             Ref{Tuple{map(Mooncake.lazy_zero_rdata_type, (typeof(sin), Float64))...}}(),
             Any,
@@ -420,7 +423,7 @@ end
         @benchmark Mooncake.value_and_gradient!!($rule, $f, $(Ref(0.0))[])
 
         # 660 -- ensure that the correct signature is used to construct DynamicDerivedRules
-        rule = Mooncake.DynamicDerivedRule(false)
+        rule = Mooncake.DynamicDerivedRule(false, false)
         args = (zero_fcodual(identity), zero_fcodual((v=S2SGlobals.MakeAUnionAll,)))
         @test rule(args...) isa Tuple{CoDual,Any}
     end
@@ -441,12 +444,55 @@ end
         args = (sin, 5.0)
         sig = typeof(args)
         rule_sig = build_rrule(sig; debug_mode=false, silence_debug_messages=true)
-        @test rule_sig == rrule!!
+        @test rule_sig isa Mooncake.PrimitiveRRule
         rule_args = build_rrule(args...; debug_mode=false, silence_debug_messages=true)
-        @test rule_args == rrule!!
+        @test rule_args == rule_sig
         rule_debug_sig = build_rrule(sig; debug_mode=true, silence_debug_messages=true)
         @test rule_debug_sig isa Mooncake.DebugRRule
         rule_debug_args = build_rrule(args...; debug_mode=true, silence_debug_messages=true)
         @test rule_debug_args == rule_debug_sig
+    end
+    @testset "build_rrule maybeinline_primitive" begin
+        args = (sin, 5.0)
+        sig = typeof(args)
+
+        # Test default is maybeinline_primitive=true
+        rule_default = build_rrule(sig; silence_debug_messages=true)
+        @test rule_default isa Mooncake.PrimitiveRRule{<:Any,true}
+
+        # Test maybeinline_primitive=true (explicit) returns PrimitiveRRule{_, true}
+        rule_inline = build_rrule(
+            sig; maybeinline_primitive=true, silence_debug_messages=true
+        )
+        @test rule_inline isa Mooncake.PrimitiveRRule{<:Any,true}
+
+        # Test maybeinline_primitive=false returns PrimitiveRRule{_, false}
+        rule_noinline = build_rrule(
+            sig; maybeinline_primitive=false, silence_debug_messages=true
+        )
+        @test rule_noinline isa Mooncake.PrimitiveRRule{<:Any,false}
+
+        # Both should produce correct results when called
+        x = 5.0
+        result_inline = rule_inline(
+            Mooncake.CoDual(sin, Mooncake.NoFData()), Mooncake.CoDual(x, 0.0)
+        )
+        result_noinline = rule_noinline(
+            Mooncake.CoDual(sin, Mooncake.NoFData()), Mooncake.CoDual(x, 0.0)
+        )
+        @test Mooncake.primal(result_inline[1]) == Mooncake.primal(result_noinline[1])
+        @test Mooncake.primal(result_inline[1]) ≈ sin(5.0)  # Verify correctness
+
+        # Test with debug_mode=true wraps in DebugRRule
+        rule_debug_noinline = build_rrule(
+            sig; debug_mode=true, maybeinline_primitive=false, silence_debug_messages=true
+        )
+        @test rule_debug_noinline isa Mooncake.DebugRRule
+
+        # Test varargs form also accepts maybeinline_primitive
+        rule_args_noinline = build_rrule(
+            args...; maybeinline_primitive=false, silence_debug_messages=true
+        )
+        @test rule_args_noinline isa Mooncake.PrimitiveRRule{<:Any,false}
     end
 end

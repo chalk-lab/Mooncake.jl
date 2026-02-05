@@ -1,5 +1,5 @@
 """
-    Config(; debug_mode::Bool=false, silence_debug_messages::Bool=false, friendly_tangents::Bool=false)
+    Config(; debug_mode::Bool=false, silence_debug_messages::Bool=false, friendly_tangents::Bool=false, maybeinline_primitive::Bool=true)
 
 Configuration struct for use with `ADTypes.AutoMooncake`.
 
@@ -17,9 +17,14 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     The tangent is converted from/to the friendly representation at the interface level,
     so all Mooncake internal computations and rule implementations always use the
     [`tangent_type`](@ref) representation.
+- `maybeinline_primitive::Bool=true`: if `false`, primitive rules are wrapped with a
+    `@noinline` call boundary, preventing the compiler from inlining rule implementations.
+    This is useful for higher-order AD (e.g., forward-over-reverse for Hessians) where
+    inlining can expose rule internals that have no rules defined.
 """
 @kwdef struct Config
     debug_mode::Bool = false
     silence_debug_messages::Bool = false
     friendly_tangents::Bool = false
+    maybeinline_primitive::Bool = true
 end

@@ -37,6 +37,7 @@ __verify_sig(rule::DebugRRule, fx) = __verify_sig(rule.rule, fx)
 # rrule!! doesn't specify specific argument types which must be used, so there's nothing to
 # check here.
 __verify_sig(::typeof(rrule!!), fx::Tuple) = nothing
+__verify_sig(::PrimitiveRRule, fx::Tuple) = nothing
 
 struct ValueAndGradientReturnTypeError <: Exception
     msg::String
@@ -479,7 +480,11 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # Construct rule and tangents.
     interp = get_interpreter(ReverseMode)
     rule = build_rrule(
-        interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages
+        interp,
+        Tuple{map(_typeof, fx)...};
+        config.debug_mode,
+        config.silence_debug_messages,
+        config.maybeinline_primitive,
     )
     tangents = map(zero_tangent, fx)
 
@@ -581,7 +586,12 @@ Returns a cache used with [`value_and_gradient!!`](@ref). See that function for 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 """
 @unstable function prepare_gradient_cache(fx...; config=Config())
-    rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
+    rule = build_rrule(
+        fx...;
+        config.debug_mode,
+        config.silence_debug_messages,
+        config.maybeinline_primitive,
+    )
     tangents = map(zero_tangent, fx)
     y, rvs!! = rule(map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents)...)
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
@@ -671,7 +681,12 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
 """
 @unstable function prepare_derivative_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
     fx = (f, x...)
-    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
+    rule = build_frule(
+        fx...;
+        config.debug_mode,
+        config.silence_debug_messages,
+        config.maybeinline_primitive,
+    )
 
     if config.friendly_tangents
         y = f(x...)
