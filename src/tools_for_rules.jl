@@ -365,11 +365,6 @@ to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.field
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 to_cr_tangent(nt::NamedTuple) = CRC.Tangent{Any}(; map(to_cr_tangent, nt)...)
 
-# Convert Mooncake complex tangents to ChainRulesCore-style tangents.
-function to_cr_tangent(c::Tangent{@NamedTuple{re::T, im::T}}) where {T<:IEEEFloat}
-    return Complex(c.fields.re, c.fields.im)
-end
-
 function to_cr_tangent(t)
     throw(
         ArgumentError(
