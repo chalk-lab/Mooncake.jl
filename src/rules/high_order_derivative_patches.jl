@@ -1,5 +1,6 @@
 @zero_derivative MinimalCtx Tuple{typeof(get_interpreter),Type{<:Mode}}
 @zero_derivative MinimalCtx Tuple{typeof(build_rrule_checks),MooncakeInterpreter,Bool,Bool}
+# TODO: is this still needed?
 @zero_derivative MinimalCtx Tuple{typeof(is_primitive),Type,Type{<:Mode},Type,UInt}
 
 @is_primitive MinimalCtx Tuple{
@@ -190,16 +191,7 @@ end
 #     end
 # end
 
-# Avoid differentiating through AD infrastructure during second-order differentiation.
-@zero_derivative MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(prepare_gradient_cache),Vararg
-}
-@zero_derivative MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(prepare_derivative_cache),Vararg
-}
-@zero_derivative MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(prepare_pullback_cache),Vararg
-}
+# TODO: is this still needed?
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
 
 @static if VERSION < v"1.11-"

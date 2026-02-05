@@ -1,9 +1,8 @@
 function _compute_val_grad(x::Float64)
     f(x) = x^4
-    rule = build_rrule(f, x)
-    val, pb!! = rule(zero_fcodual(f), zero_fcodual(x))
-    der = pb!!(1.0)
-    return val, der
+    cache = prepare_gradient_cache(f, x)
+    val, grad = value_and_gradient!!(cache, f, x)
+    return val, grad[2]
 end
 
 function _second_der(x::Float64)
