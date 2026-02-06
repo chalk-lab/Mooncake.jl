@@ -101,9 +101,9 @@ function rrule!!(::CoDual{typeof(log)}, b::CoDual{P}, x::CoDual{P}) where {P<:IE
     y = log(primal(b), primal(x))
     function log_adjoint(dy::P)
         log_b = log(primal(b))
-        grad_args = (-dy * y / (log_b * primal(b))), (dy / (primal(x) * log_b))
-        grads = map(x -> nan_tangent_guard(dy, x), grad_args)
-        return NoRData(), grads...
+        grad_b = nan_tangent_guard(dy, -dy * y / (log_b * primal(b)))
+        grad_x = nan_tangent_guard(dy, dy / (primal(x) * log_b))
+        return NoRData(), grad_b, grad_x
     end
     return zero_fcodual(y), log_adjoint
 end
