@@ -1,66 +1,22 @@
 """
-    nan_gradient_sentinel(::Type{T}) where T
+    nan_tangent_guard(dy::L, grad::T) where {L,T}
 
-Return the sentinel value used to replace NaN gradients in reverse-mode AD rules
-for gradients of type `T`.
-
-When differentiating non-differentiable functions (e.g., `sqrt` at 0 or `log` at 0),
-the mathematical gradient is undefined (NaN). This function provides a fallback
-value so that the reverse pass can continue.
-
-By default, the sentinel is `T(NaN)` for floating-point types. Users may overload
-this function for custom types or alternative NaN-handling policies.
-
-# Example
-```julia
-# Default behaviour
-nan_gradient_sentinel(Float64)  # returns NaN
-
-# Custom behaviour for Float64
-nan_gradient_sentinel(::Type{Float64}) = Inf
-```
+Guard against NaN gradients in automatic differentiation. Returns `dy` if `dy=0` signifying that the gradient is not involved in total
+gradient calculation, otherwise returns `grad` unless it's NaN (in which case returns correct type wrapped `T(NaN)`).
 """
-@inline nan_gradient_sentinel(::Type{T}) where {T} = T(NaN)
-
-"""
-    nan_gradient_sentinel(x)
-
-Convenience method that returns the sentinel value based on the type of `x`.
-
-# Example
-```julia
-x = Float32(1.0)
-nan_gradient_sentinel(x)  # returns NaN32
-```
-"""
-@inline nan_gradient_sentinel(x) = nan_gradient_sentinel(typeof(x))
-
-"""
-    nan_guard(dy::L, grad::T) where {L,T}
-
-Safely handle gradients from non-differentiable points.
-
-If `dy` is zero, returns `dy` to prevent NaN poisoning. Otherwise, checks if
-`grad` is NaN and replaces it with the sentinel value from 
-[`nan_gradient_sentinel`](@ref).
-
-# Arguments
-- `dy`: The incoming gradient from the chain rule
-- `grad`: The computed local gradient (may contain NaN)
-
-# Returns
-- `dy` if zero, otherwise `grad` with NaN replaced by sentinel
-
-# Example
-```julia
-nan_guard(0.0, NaN)  # returns 0.0
-nan_guard(1.0, NaN)  # returns nan_gradient_sentinel(Float64)
-nan_guard(2.0, 3.0)  # returns 3.0
-```
-"""
-@inline function nan_guard(dy::L, grad::T) where {L,T}
+@inline function nan_tangent_guard(dy::L, grad::T) where {L,T}
     iszero(dy) && return dy
-    return isnan(grad) ? nan_gradient_sentinel(T) : grad
+    return isnan(grad) ? T(NaN) : grad
+end
+
+"""
+    nondifferentiable_tangent_guard(dy::L, grad::T) where {L,T}
+
+Handle functions at non-differentiable domain points. Returns `dy` if `dy=0` signifying that the gradient is not involved in total
+gradient calculation, otherwise returns `T(NaN)` to signal the function is non differentiable. 
+"""
+@inline function nondifferentiable_tangent_guard(dy::L, grad::T) where {L,T}
+    return iszero(dy) ? dy : T(NaN)
 end
 
 """

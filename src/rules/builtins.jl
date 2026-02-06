@@ -114,7 +114,7 @@ import ..Mooncake:
     NoTangent,
     Mode,
     extract,
-    nan_guard
+    nan_tangent_guard
 
 using Core.Intrinsics: atomic_pointerref
 
@@ -661,7 +661,7 @@ function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _x = primal(x)
     _y = sqrt_llvm(primal(x))
     function llvm_sqrt_pullback!!(dy)
-        grad_x = nan_guard(dy, dy / (2 * _y))
+        grad_x = nan_tangent_guard(dy, dy / (2 * _y))
         return NoRData(), grad_x
     end
     return CoDual(_y, NoFData()), llvm_sqrt_pullback!!
@@ -676,7 +676,7 @@ end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
     function llvm_sqrt_fast_pullback!!(dy)
-        grad_x = nan_guard(dy, dy / (2 * _y))
+        grad_x = nan_tangent_guard(dy, dy / (2 * _y))
         return NoRData(), grad_x
     end
     return CoDual(_y, NoFData()), llvm_sqrt_fast_pullback!!
