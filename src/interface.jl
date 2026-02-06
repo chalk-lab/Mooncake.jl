@@ -2,11 +2,11 @@
     nan_tangent_guard(dy::L, grad::T) where {L,T}
 
 Guard against NaN gradients in automatic differentiation. Returns `dy` if `dy=0` signifying that the gradient is not involved in total
-gradient calculation, otherwise returns `grad` unless it's NaN (in which case returns correct type wrapped `T(NaN)`).
+gradient calculation, otherwise just returns `grad` if `dy!=0`.
 """
 @inline function nan_tangent_guard(dy::L, grad::T) where {L,T}
     iszero(dy) && return dy
-    return isnan(grad) ? T(NaN) : grad
+    return grad
 end
 
 """
