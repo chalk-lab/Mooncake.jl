@@ -1,40 +1,4 @@
 """
-    nan_tangent_guard(dy::L, grad::T) where {L,T}  
-
-Guard against NaN propagation in automatic differentiation.  
-
-When `dy = 0`, the corresponding gradient does not contribute to the total  
-gradient, so a zero tangent is returned to prevent NaN poisoning.  
-
-Otherwise, return `grad`.  
-
-Note that this does not fully eliminate gradient poisoning; it relies on  
-zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
-"""
-@inline function nan_tangent_guard(dy::L, grad::T) where {L,T}
-    iszero(dy) && return zero(T)
-    return grad
-end
-
-"""
-    nondifferentiable_tangent_guard(dy::L, grad::T) where {L,T}
-
-Handle functions at non-differentiable domain points.
-If `dy = 0`, the gradient does not contribute to the total gradient
-calculation, so a zero tangent is returned.
-Otherwise, return `T(NaN)` to signal that the function is
-non-differentiable at this point.
-This behaviour may be overloaded to return alternative values
-(e.g., a zero tangent) when required.
-See:
-https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html.
-"""
-@inline function nondifferentiable_tangent_guard(dy::L, grad::T) where {L,T}
-    #  `dy .* NaN` returns a NaN tangent with the same type as `dy`.
-    return iszero(dy) ? zero(T) : dy .* eltype(T)(NaN)
-end
-
-"""
     __value_and_pullback!!(rule, ȳ, f::CoDual, x::CoDual...; y_cache=nothing)
 
 *Note:* this is not part of the public Mooncake.jl interface, and may change without warning.
