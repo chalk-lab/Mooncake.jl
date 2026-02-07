@@ -455,7 +455,7 @@ Note that this does not fully eliminate gradient poisoning; it relies on
 zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
 """
 @inline function nan_tangent_guard(dy::L, grad::T) where {L,T}
-    iszero(dy) && return zeros(T)
+    iszero(dy) && return zero(T)
     return grad
 end
 
@@ -474,7 +474,7 @@ https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html.
 """
 @inline function nondifferentiable_tangent_guard(dy::L, grad::T) where {L,T}
     #  `dy .* NaN` returns a NaN tangent with the same type as `dy`.
-    return iszero(dy) ? zeros(T) : dy .* eltype(T)(NaN)
+    return iszero(dy) ? zero(T) : dy .* eltype(T)(NaN)
 end
 
 """
