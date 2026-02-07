@@ -400,7 +400,7 @@ and return the rdata component of `cr_tangent` by adding it to `zero_rdata`.
 function increment_and_get_rdata!(
     ::NoFData, r::T, t::T
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    r + t
+    return r + t
 end
 function increment_and_get_rdata!(
     f::Array{P}, ::NoRData, t::Array{P}
@@ -439,6 +439,45 @@ function increment_and_get_rdata!(f, r, t)
             "or implement a method of `increment_and_get_rdata!` for this type combination.",
         ),
     )
+end
+
+"""
+    nan_tangent_guard(dy::L, grad::T) where {L,T}  
+
+Guard against NaN propagation in automatic differentiation.  
+
+When `dy = 0`, the corresponding gradient does not contribute to the total  
+gradient, so a zero tangent is returned to prevent NaN poisoning.  
+
+Otherwise, return `grad`.  
+
+Note that this does not fully eliminate gradient poisoning; it relies on  
+zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
+"""
+@inline function nan_tangent_guard(dy::L, grad::T) where {L,T}
+    _T = eltype(T)
+    grad .= iszero(dy) ? _T(0) : _T(NaN)
+    return grad
+end
+
+"""
+    nondifferentiable_tangent_guard(dy::L, grad::T) where {L,T}
+
+Handle functions at non-differentiable domain points.
+If `dy = 0`, the gradient does not contribute to the total gradient
+calculation, so a zero tangent is returned.
+Otherwise, return `T(NaN)` to signal that the function is
+non-differentiable at this point.
+This behaviour may be overloaded to return alternative values
+(e.g., a zero tangent) when required.
+See:
+https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html.
+"""
+@inline function nondifferentiable_tangent_guard(dy::L, grad::T) where {L,T}
+    #  `dy .* NaN` returns a NaN tangent with the same type as `dy`.
+    _T = eltype(T)
+    grad .= iszero(dy) ? _T(0) : _T(NaN)
+    return grad
 end
 
 """
