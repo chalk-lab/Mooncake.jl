@@ -47,8 +47,8 @@ function frule!!(
         # TODO: which ctx to use here?
         interp_forward = MooncakeInterpreter(DefaultCtx, ForwardMode; world=interp.world)
 
-        optimized_fwd_ir = optimise_ir!(dri.fwd_ir)
-        optimized_rvs_ir = optimise_ir!(dri.rvs_ir)
+        optimized_fwd_ir = optimise_ir!(dri.fwd_ir; interp=interp_forward)
+        optimized_rvs_ir = optimise_ir!(dri.rvs_ir; interp=interp_forward)
         fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
         rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
 
