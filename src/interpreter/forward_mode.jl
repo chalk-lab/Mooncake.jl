@@ -134,6 +134,7 @@ function verify_args(r::DerivedFRule{sig}, x) where {sig}
         map(_typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r))))...
     }
     Tx <: sig && return nothing
+    @show map(_typeof ∘ primal, x)
     throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
 end
 
@@ -328,7 +329,12 @@ end
 function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
 )
-    if !(stmt.val isa Union{Argument,SSAValue})
+    # TODO: do we need this?
+    #=if !isdefined(stmt, :val)
+        # UpsilonNode with Union{} type and #undef val
+        @assert get_ir(dual_ir, ssa, :type) === Union{}
+        stmt = UpsilonNode(Mooncake.PossiblyUninitTangent{Union{}}())
+    else=#if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))

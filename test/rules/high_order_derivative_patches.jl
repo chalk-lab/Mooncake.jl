@@ -21,6 +21,7 @@ function _hessian_column(f, x::Vector{Float64}, i::Int)
         Dual(x, x_tangent),
         Dual(x_fdata, zeros(length(x))),
     )
+    @show result
     return primal(result), tangent(result)
 end
 
