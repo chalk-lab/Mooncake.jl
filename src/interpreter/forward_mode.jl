@@ -80,7 +80,6 @@ function build_frule(
 
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
-    @show sig
     if is_primitive(C, ForwardMode, sig, interp.world)
         return (debug_mode ? DebugFRule(frule!!) : frule!!)
     end
@@ -171,21 +170,15 @@ function generate_dual_ir(
     seed_id!()
 
     # Grab code associated to the primal.
-    t0 = Base.time_ns()
     primal_ir, _ = lookup_ir(interp, sig_or_mi)
-    t1 = Base.time_ns()
-    @info "IR lookup for $sig_or_mi took $((t1 - t0)/1e9) s"
     @static if VERSION > v"1.12-"
         primal_ir = set_valid_world!(primal_ir, interp.world)
     end
     nargs = length(primal_ir.argtypes)
 
     # Normalise the IR.
-    t0 = Base.time_ns()
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
     primal_ir = normalise!(primal_ir, spnames)
-    t1 = Base.time_ns()
-    @info "IR normalisation for $sig_or_mi took $((t1 - t0)/1e9) s"
 
     # Keep a copy of the primal IR with the insertions
     dual_ir = CC.copy(primal_ir)
@@ -205,15 +198,12 @@ function generate_dual_ir(
     # captures data structure, make use of `get_capture`.
     captures = Any[]
 
-    t0 = Base.time_ns()
     is_used = characterised_used_ssas(stmt(primal_ir.stmts))
     info = DualInfo(primal_ir, interp, is_used, debug_mode)
     for (n, inst) in enumerate(dual_ir.stmts)
         ssa = SSAValue(n)
         modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info)
     end
-    t1 = Base.time_ns()
-    @info "Dual IR generation for $sig_or_mi took $((t1 - t0)/1e9) s"
 
     # Process new nodes etc.
     dual_ir = CC.compact!(dual_ir)
@@ -226,10 +216,7 @@ function generate_dual_ir(
     dual_ir.argtypes[1] = _typeof(captures_tuple)
 
     # Optimize dual IR
-    t0 = Base.time_ns()
     dual_ir_opt = optimise_ir!(dual_ir; do_inline)
-    t1 = Base.time_ns()
-    @info "Dual IR optimisation for $sig_or_mi took $((t1 - t0)/1e9) s"
     return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
 end
 
@@ -342,11 +329,12 @@ end
 function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
 )
-    if !isdefined(stmt, :val)
+    # TODO: do we need this?
+    #=if !isdefined(stmt, :val)
         # UpsilonNode with Union{} type and #undef val
         @assert get_ir(dual_ir, ssa, :type) === Union{}
         stmt = UpsilonNode(Mooncake.PossiblyUninitTangent{Union{}}())
-    elseif !(stmt.val isa Union{Argument,SSAValue})
+    else=#if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
@@ -510,11 +498,7 @@ function frule_type(
     if is_primitive(C, ForwardMode, primal_sig, interp.world)
         return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
     end
-    
-    t0 = Base.time_ns()
     ir, _ = lookup_ir(interp, mi)
-    t1 = Base.time_ns()
-    @info "IR lookup for $mi in frule_type took $((t1 - t0)/1e9) s"
     nargs = length(ir.argtypes)
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)

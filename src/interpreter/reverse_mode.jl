@@ -1139,8 +1139,6 @@ end
 function build_derived_rrule(
     interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool,
 ) where {C}
-    @info "Entering build_derived_rrule"
-
     # We don't have a hand-coded rule, so derived one.
     lock(MOONCAKE_INFERENCE_LOCK)
     try
