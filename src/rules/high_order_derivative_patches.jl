@@ -19,11 +19,8 @@ function frule!!(
     sig = primal(_sig)
     debug_mode = primal(_debug_mode)
 
-    # TODO: see what can be unified with the primal version
-    # Derive **unoptimized** forwards- and reverse-pass IR, and shove in `MistyClosure`s.
-    # TODO: do_optimize=false leads to QuoteNodes which the forward-mode interpreter can't handle atm.
-    # TODO: but it seems saner to not optimize at all and fix the forward-mode interpreter.
-    dri = generate_ir(interp, sig_or_mi; debug_mode, do_inline=false)
+    # Derive **unoptimized** forwards- and reverse-pass IR.
+    dri = generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
 
     # Compute the signature. Needs careful handling with varargs.
     nargs = num_args(dri.info)
@@ -33,46 +30,54 @@ function frule!!(
         }
     end
 
-    # Optimize separately, and generate primal
-    # TODO: better way to copy_ir?
-    _copy_ir(ir) = IRCode(BBCode(ir))
-    optimized_fwd_ir = optimise_ir!(_copy_ir(dri.fwd_ir))
-    optimized_rvs_ir = optimise_ir!(_copy_ir(dri.rvs_ir))
-    fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
-    rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
+    # Optimize as much as possible, then generate primal
+    raw_rule = let
+        optimized_fwd_ir = optimise_ir!(CC.copy(dri.fwd_ir))
+        optimized_rvs_ir = optimise_ir!(CC.copy(dri.rvs_ir))
+        fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
+        rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
 
-    raw_rule = DerivedRule(sig, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
-    # TODO: what about debug more?
-    # primal_rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
+        DerivedRule(sig, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
+    end
 
     # Generate dual rule
-    # TODO: which ctx to use here?
-    interp_forward = MooncakeInterpreter(DefaultCtx, ForwardMode; world=interp.world)
+    raw_rule_tangent = let
+        # Optimize as much as possible, but with a forward-mode interpreter
+        # that will block inlining of frules
+        # TODO: which ctx to use here?
+        interp_forward = MooncakeInterpreter(DefaultCtx, ForwardMode; world=interp.world)
 
-    fwd_oc_unoptimized = misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
-    rvs_oc_unoptimized = misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)
+        optimized_fwd_ir = optimise_ir!(dri.fwd_ir)
+        optimized_rvs_ir = optimise_ir!(dri.rvs_ir)
+        fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
+        rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
 
-    # Build tangents at the same time to preserve aliasing (e.g. for comms)
-    captures_tangent = zero_tangent((fwd_oc_unoptimized.oc.captures, rvs_oc_unoptimized.oc.captures))
+        # Build tangents at the same time to preserve aliasing (e.g. for comms)
+        captures_tangent = zero_tangent((fwd_oc.oc.captures, rvs_oc.oc.captures))
 
-    # TODO: debug_mode=true makes the rule fail somehow; something related to varargs
-    fwd_oc_tangent = MistyClosureTangent(
-        captures_tangent[1],
-        build_frule(interp_forward, fwd_oc_unoptimized; skip_world_age_check=true, debug_mode=false)
-    )
-    rvs_oc_tangent = MistyClosureTangent(
-        captures_tangent[2],
-        build_frule(interp_forward, rvs_oc_unoptimized; skip_world_age_check=true, debug_mode=false)
-    )
+        # TODO: debug_mode=true makes the rule fail somehow; something related to varargs
+        fwd_oc_tangent = MistyClosureTangent(
+            captures_tangent[1],
+            build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode=false)
+        )
+        rvs_oc_tangent = MistyClosureTangent(
+            captures_tangent[2],
+            build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode=false)
+        )
 
-    # TODO: what about debug mode?
-    raw_rule_tangent = Tangent((;
-        fwds_oc=fwd_oc_tangent,
-        pb_oc_ref=MutableTangent((; x=PossiblyUninitTangent(rvs_oc_tangent))),
-        nargs=NoTangent(),
-    ))
+        Tangent((;
+            fwds_oc=fwd_oc_tangent,
+            pb_oc_ref=MutableTangent((; x=PossiblyUninitTangent(rvs_oc_tangent))),
+            nargs=NoTangent(),
+        ))
+    end
 
-    return Dual(raw_rule, raw_rule_tangent)
+    if debug_mode
+        debug_rule_tangent = Tangent((; rule=raw_rule_tangent))
+        return Dual(DebugRRule(raw_rule), debug_rule_tangent)
+    else
+        return Dual(raw_rule, raw_rule_tangent)
+    end
 end
 
 function rrule!!(
