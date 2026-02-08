@@ -10,20 +10,16 @@ function CRC.rrule_via_ad(config::MooncakeRuleConfig, f_args...; kwargs...)
     rule = build_rrule(f_args...)
     mooncake_rule_args = map(zero_fcodual, f_args)
     y, pullback!! = rule(mooncake_rule_args...)
-    forwardpass_res = primal(y)
+    forwardpass_res = _copy_output(primal(y))
 
-    # for fdata tangent data use chainrules pulback to touch actualy tagnetn data and not just nORDAT?
     function crc_pullback(Δ)
-        if fdata_type(typeof(forwardpass_res)) == NoFData()
-            increment_and_get_rdata!(tangent(y), NoRData(), Δ)
-        else
-            # get Mooncake tangent from cr tangent - Δ
-            mooncake_tangent = Mooncake.mooncake_tangent(forwardpass_res, Δ)
-            # RData of Δ
-            rdata_mooncake_tangent = Mooncake.rdata(mooncake_tangent)
-            # run Mooncake pullback
-            mooncake_gradients = pullback!!(rdata_mooncake_tangent)
-        end
+        dy = Mooncake.tangent(y)
+
+        # RData of Δ for passing into mooncake's pullback
+        dy_rdata_for_pullback = increment_and_get_rdata!(fdata(dy), rdata(dy), Δ)
+
+        # run Mooncake pullback
+        mooncake_gradients = pullback!!(dy_rdata_for_pullback)
 
         # CRC must see all gradients accumulated : mooncake_rule_args FData & RData got from pullback
         raw_tangents = map(
@@ -32,7 +28,7 @@ function CRC.rrule_via_ad(config::MooncakeRuleConfig, f_args...; kwargs...)
         return map(to_cr_tangent, raw_tangents)
     end
 
-    return forwardpass_res, mooncake_pullback
+    return forwardpass_res, crc_pullback
 end
 
 @unstable function parse_signature_expr(sig::Expr)
@@ -518,8 +514,9 @@ end
 """
     frule_wrapper(f::Dual, args::Dual...; cfg::MooncakeConfigType=nothing)
 
-Implements a `Mooncake.frule!!` for `f` applied to `args` by calling `ChainRulesCore.frule` with a `ChainRuleCore.RuleConfig` - `cfg`.
-`cfg` defaults to `nothing`. 
+Implements a `Mooncake.frule!!` for `f` applied to `args` by calling the respective `ChainRulesCore.frule`.
+If the `ChainRulesCore.frule` requires a config argument, this method only works when `Mooncake` is chosen as the config AD backend i.e. `cfg` = `MooncakeRuleConfig`.
+`cfg` defaults to `nothing`.
 """
 function frule_wrapper(fargs::Vararg{Dual,N}; cfg::MooncakeConfigType=nothing) where {N}
     tangents = tuple_map(to_cr_tangent ∘ tangent, fargs)
@@ -560,7 +557,7 @@ end
 
 Used to implement `Mooncake.rrule!!`s via `ChainRulesCore.rrule`.
 
-Given a function `foo`, argument types `arg_types`, and a method of `ChainRulesCore.rrule` and it's `ChainRuleCore.RuleConfig` - `cfg`,
+Given a function `foo`, argument types `arg_types`, a corresponding method of `ChainRulesCore.rrule` and optionally a config AD backend i.e. `cfg` = `MooncakeRuleConfig`.
 which applies to these, you can make use of this function as follows:
 ```julia
 Mooncake.@is_primitive DefaultCtx Tuple{typeof(foo), arg_types...}
@@ -575,8 +572,8 @@ ChainRulesCore expect.
 Furthermore, it is _essential_ that
 1. `f(args)` does not mutate `f` or `args`, and
 2. the result of `f(args)` does not alias any data stored in `f` or `args`.
-3. In case the `ChainRuleCore.rrule` is specific to Mooncake.jl only,
-   use kwarg `cfg=Mooncake.MooncakeRuleConfig()` for the `Mooncake.rrule_wrapper()` call. 
+3. In case the `ChainRuleCore.rrule` is specific to Mooncake.jl as the configured AD backend only,
+   use kwarg `cfg=Mooncake.MooncakeRuleConfig()` for the `Mooncake.rrule_wrapper()` call. `cfg` defaults to nothing.
 
 Subject to some constraints, you can use the [`@from_rrule`](@ref) macro to reduce the
 amount of boilerplate code that you are required to write even further.
