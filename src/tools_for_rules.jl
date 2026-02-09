@@ -442,7 +442,7 @@ function increment_and_get_rdata!(f, r, t)
 end
 
 """
-    nan_tangent_guard(dy::L, grad::T) where {L,T}  
+    nan_tangent_guard(dy::L, grad::T) where {L,T}
 
 Guard against NaN propagation in automatic differentiation.  
 
@@ -454,9 +454,14 @@ Otherwise, return `grad`.
 Note that this does not fully eliminate gradient poisoning; it relies on  
 zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
 """
-@inline function nan_tangent_guard(dy::L, grad::T) where {L,T}
-    _T = eltype(T)
-    grad .= iszero(dy) ? _T(0) : _T(NaN)
+@inline function nan_tangent_guard(
+    dy::L,
+    grad::T,
+) where {
+    L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+    T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+}
+    grad = iszero(dy) ? T(0) : T(NaN)
     return grad
 end
 
@@ -473,10 +478,14 @@ This behaviour may be overloaded to return alternative values
 See:
 https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html.
 """
-@inline function nondifferentiable_tangent_guard(dy::L, grad::T) where {L,T}
-    #  `dy .* NaN` returns a NaN tangent with the same type as `dy`.
-    _T = eltype(T)
-    grad .= iszero(dy) ? _T(0) : _T(NaN)
+@inline function nondifferentiable_tangent_guard(
+    dy::L,
+    grad::T,
+) where {
+    L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+    T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+}
+    grad = iszero(dy) ? T(0) : T(NaN)
     return grad
 end
 
@@ -496,7 +505,9 @@ This masking ensures that missing derivatives only affect results when they are 
     It cannot support `Int` tangents, since `NaN` is only defined for
     `AbstractFloat` types.
 """
-function notimplemented_tangent_guard(da::L) where {L<:Base.IEEEFloat}
+function notimplemented_tangent_guard(
+    da::L,
+) where {L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
     return if _dot(da, da) != L(0)
         L(NaN)
     else
@@ -504,13 +515,6 @@ function notimplemented_tangent_guard(da::L) where {L<:Base.IEEEFloat}
     end
 end
 
-function notimplemented_tangent_guard(da::Complex{L}) where {L<:Base.IEEEFloat}
-    return if _dot(da, da) != L(0)
-        Complex(L(NaN), L(NaN))
-    else
-        Complex(L(0), L(0))
-    end
-end
 function notimplemented_tangent_guard(da)
     throw(
         ArgumentError(
