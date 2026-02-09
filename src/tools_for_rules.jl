@@ -442,84 +442,86 @@ function increment_and_get_rdata!(f, r, t)
 end
 
 """
-    nan_tangent_guard(dy::L, grad::T) where {L,T}
+    nan_tangent_guard(dy::L, tangent::T) where {L,T}
 
 Guard against NaN propagation in automatic differentiation.  
 
 When `dy = 0`, the corresponding gradient does not contribute to the total  
 gradient, so a zero tangent is returned to prevent NaN poisoning.  
 
-Otherwise, return `grad`.  
+Otherwise, return `tangent`.  
 
 Note that this does not fully eliminate gradient poisoning; it relies on  
 zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
 """
 @inline function nan_tangent_guard(
     dy::L,
-    grad::T,
+    tangent::T,
 ) where {
     L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
     T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
 }
-    grad = iszero(dy) ? T(0) : T(NaN)
-    return grad
+    _tangent = iszero(dy) ? T(0) : tangent
+    return _tangent
 end
 
 """
-    nondifferentiable_tangent_guard(dy::L, grad::T) where {L,T}
+    nondifferentiable_tangent_guard(dy::L, tangent::T) where {L,T}
 
-Handle functions at non-differentiable domain points.
+Handle functions at non-differentiable domain points. See:
+https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html
+
 If `dy = 0`, the gradient does not contribute to the total gradient
 calculation, so a zero tangent is returned.
+
 Otherwise, return `T(NaN)` to signal that the function is
 non-differentiable at this point.
+
 This behaviour may be overloaded to return alternative values
-(e.g., a zero tangent) when required.
-See:
-https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html.
+(e.g., a zero tangent) when required. 
 """
 @inline function nondifferentiable_tangent_guard(
     dy::L,
-    grad::T,
+    tangent::T,
 ) where {
     L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
     T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
 }
-    grad = iszero(dy) ? T(0) : T(NaN)
-    return grad
+    _tangent = iszero(dy) ? T(0) : T(NaN)
+    return _tangent
 end
 
 """
-    notimplemented_tangent_guard(da::Mooncake.Tangent)
+    notimplemented_tangent_guard(dy::Mooncake.Tangent)
 
 Guards the use of a tangent associated with a `ChainRulesCore.NotImplemented` derivative.
 
-If `da` is nonzero, return a `NaN`-filled value matching the shape and type of `da`, which signals an unknown derivative.
+If `dy` is nonzero, return a `NaN`-filled value matching the shape and type of `da`, which signals an unknown derivative.
 
-If `da` is the zero tangent, return a zero-valued tangent in a form compatible with immediate algebraic composition inside Mooncake rules.
+If `dy` is the zero tangent, return a zero-valued tangent in a form compatible with immediate algebraic composition inside Mooncake rules.
 
 This masking ensures that missing derivatives only affect results when they are mathematically required.
 
 !!! note
-    This function is defined only for floating-point tangent spaces.
+    This function is defined only for floating-point and complex tangent spaces.
     It cannot support `Int` tangents, since `NaN` is only defined for
     `AbstractFloat` types.
 """
 function notimplemented_tangent_guard(
-    da::L,
+    dy::L,
 ) where {L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
-    return if _dot(da, da) != L(0)
+    return if _dot(dy, dy) != L(0)
         L(NaN)
     else
         L(0)
     end
 end
 
-function notimplemented_tangent_guard(da)
+function notimplemented_tangent_guard(dy)
     throw(
         ArgumentError(
             "Mooncake.jl does not currently have a method of " *
-            "`notimplemented_tangent_guard` to handle the tangent type $(typeof(da)). " *
+            "`notimplemented_tangent_guard` to handle the tangent type $(typeof(dy)). " *
             "Please consider writing a custom notimplemented_tangent_guard or open an issue.",
         ),
     )
