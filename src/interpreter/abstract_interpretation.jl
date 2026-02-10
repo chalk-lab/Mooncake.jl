@@ -182,7 +182,7 @@ function Core.Compiler.abstract_call_gf_by_type(
                     info = NoInlineCallInfo(call.info, atype)
                     # See comment in the non-Future branch above.
                     widen_rt = should_widen_primitive_call_return_type(call.rt, argtypes)
-                    return rewrap_callmeta(call, info; widen_rt=widen_rt)
+                    return rewrap_callmeta(call, info, widen_rt)
                 end
             end
         end
@@ -213,7 +213,7 @@ function should_widen_primitive_call_return_type(rt, argtypes::Vector{Any})
     return false
 end
 
-function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo; widen_rt::Bool=false)
+function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo, widen_rt::Bool)
     rt = widen_rt ? CC.widenconst(call.rt) : call.rt
     @static if VERSION ≥ v"1.11-"
         return CC.CallMeta(rt, call.exct, call.effects, info)
