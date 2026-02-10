@@ -173,14 +173,16 @@ function Core.Compiler.abstract_call_gf_by_type(
                 # custom rules. Prevent inlining *and* disable const-prop of the return
                 # value (otherwise `compact!` can fold the call away entirely, e.g. a
                 # primitive whose inferred return is `Const`).
-                return rewrap_callmeta(call, info; widen_rt=true)
+                widen_rt = should_widen_primitive_call_return_type(call.rt, argtypes)
+                return rewrap_callmeta(call, info; widen_rt=widen_rt)
             else
                 return CC.Future{CC.CallMeta}(
                     ret::CC.Future, interp, sv
                 ) do call, interp, sv
                     info = NoInlineCallInfo(call.info, atype)
                     # See comment in the non-Future branch above.
-                    return rewrap_callmeta(call, info; widen_rt=true)
+                    widen_rt = should_widen_primitive_call_return_type(call.rt, argtypes)
+                    return rewrap_callmeta(call, info; widen_rt=widen_rt)
                 end
             end
         end
@@ -200,6 +202,15 @@ function any_matches_primitive(applicable, C, M, world)
         end
     end
     false
+end
+
+function should_widen_primitive_call_return_type(rt, argtypes::Vector{Any})
+    rt isa CC.Const || return false
+    # `argtypes` usually includes the callee in position 1; we only care about runtime arguments.
+    for n in 2:length(argtypes)
+        argtypes[n] isa CC.Const || return true
+    end
+    return false
 end
 
 function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo; widen_rt::Bool=false)
