@@ -17,6 +17,10 @@ end
 @zero_derivative MinimalCtx Tuple{Type{Float16},Any,RoundingMode}
 @zero_derivative MinimalCtx Tuple{typeof(==),Type,Type}
 
+# `count` returns an `Int` and is non-differentiable; differentiating through its
+# implementation can also lead to avoidable allocations on LTS (see integration tests).
+@zero_derivative DefaultCtx Tuple{typeof(count),Any,Any}
+
 # Logging: String-related primitive rules
 using Base: getindex, getproperty
 using Base.Threads: Atomic
