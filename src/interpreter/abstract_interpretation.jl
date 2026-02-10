@@ -169,13 +169,18 @@ function Core.Compiler.abstract_call_gf_by_type(
             @static if VERSION < v"1.12-"
                 call = ret::CC.CallMeta
                 info = NoInlineCallInfo(call.info, atype)
-                return rewrap_callmeta(call, info)
+                # Primitives must remain visible in the caller IR so we can apply their
+                # custom rules. Prevent inlining *and* disable const-prop of the return
+                # value (otherwise `compact!` can fold the call away entirely, e.g. a
+                # primitive whose inferred return is `Const`).
+                return rewrap_callmeta(call, info; widen_rt=true)
             else
                 return CC.Future{CC.CallMeta}(
                     ret::CC.Future, interp, sv
                 ) do call, interp, sv
                     info = NoInlineCallInfo(call.info, atype)
-                    return rewrap_callmeta(call, info)
+                    # See comment in the non-Future branch above.
+                    return rewrap_callmeta(call, info; widen_rt=true)
                 end
             end
         end
@@ -197,11 +202,12 @@ function any_matches_primitive(applicable, C, M, world)
     false
 end
 
-function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo)
+function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo; widen_rt::Bool=false)
+    rt = widen_rt ? CC.widenconst(call.rt) : call.rt
     @static if VERSION ≥ v"1.11-"
-        return CC.CallMeta(call.rt, call.exct, call.effects, info)
+        return CC.CallMeta(rt, call.exct, call.effects, info)
     else
-        return CC.CallMeta(call.rt, call.effects, info)
+        return CC.CallMeta(rt, call.effects, info)
     end
 end
 
