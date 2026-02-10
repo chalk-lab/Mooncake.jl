@@ -455,8 +455,7 @@ Note that this does not fully eliminate gradient poisoning; it relies on
 zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
 """
 @inline function nan_tangent_guard(
-    dy::L,
-    tangent::T,
+    dy::L, tangent::T
 ) where {
     L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
     T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
@@ -484,8 +483,7 @@ This behaviour may be overloaded to return alternative values
 (e.g., a nan-tangent) when required. 
 """
 @inline function nondifferentiable_tangent_guard(
-    dy::L,
-    tangent::T,
+    dy::L, tangent::T
 ) where {
     L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
     T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
@@ -514,7 +512,7 @@ This masking ensures that missing derivatives only affect results when they are 
     `AbstractFloat` types.
 """
 function notimplemented_tangent_guard(
-    dy::L,
+    dy::L
 ) where {L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
     return if _dot(dy, dy) != L(0)
         L(NaN)
