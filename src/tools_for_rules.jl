@@ -461,8 +461,11 @@ zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
     L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
     T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
 }
-    _tangent = iszero(dy) ? T(0) : tangent
-    return _tangent
+    return if iszero(dy)
+        T(0)
+    else
+        tangent
+    end
 end
 
 """
@@ -474,11 +477,11 @@ https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html
 If `dy = 0`, the gradient does not contribute to the total gradient
 calculation, so a zero tangent is returned.
 
-Otherwise, return `T(NaN)` to signal that the function is
+Otherwise, return `T(0)` to signal that the function is
 non-differentiable at this point.
 
 This behaviour may be overloaded to return alternative values
-(e.g., a zero tangent) when required. 
+(e.g., a nan-tangent) when required. 
 """
 @inline function nondifferentiable_tangent_guard(
     dy::L,
@@ -487,8 +490,11 @@ This behaviour may be overloaded to return alternative values
     L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
     T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
 }
-    _tangent = iszero(dy) ? T(0) : T(NaN)
-    return _tangent
+    return if iszero(dy)
+        T(0)
+    else
+        T(0)
+    end
 end
 
 """

@@ -101,9 +101,9 @@ function rrule!!(::CoDual{typeof(log)}, b::CoDual{P}, x::CoDual{P}) where {P<:IE
     y = log(primal(b), primal(x))
     function log_adjoint(dy::P)
         log_b = log(primal(b))
-        grad_b = nan_tangent_guard(dy, -dy * y / (log_b * primal(b)))
-        grad_x = nan_tangent_guard(dy, dy / (primal(x) * log_b))
-        return NoRData(), grad_b, grad_x
+        db = nan_tangent_guard(dy, -dy * y / (log_b * primal(b)))
+        dx = nan_tangent_guard(dy, dy / (primal(x) * log_b))
+        return NoRData(), db, dx
     end
     return zero_fcodual(y), log_adjoint
 end
@@ -117,8 +117,8 @@ end
 function rrule!!(::CoDual{typeof(log)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log(primal(x))
     function log_adjoint(dy::P)
-        grad_x = nan_tangent_guard(dy, dy / primal(x))
-        return NoRData(), grad_x
+        dx = nan_tangent_guard(dy, dy / primal(x))
+        return NoRData(), dx
     end
     return zero_fcodual(y), log_adjoint
 end
@@ -132,8 +132,8 @@ end
 function rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = sqrt(primal(x))
     function sqrt_adjoint(dy::P)
-        grad_x = nan_tangent_guard(dy, dy / (2 * y))
-        return NoRData(), grad_x
+        dx = nan_tangent_guard(dy, dy / (2 * y))
+        return NoRData(), dx
     end
     return zero_fcodual(y), sqrt_adjoint
 end
@@ -147,8 +147,8 @@ end
 function rrule!!(::CoDual{typeof(cbrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = cbrt(primal(x))
     function cbrt_adjoint(dy::P)
-        grad_x = nan_tangent_guard(dy, dy / (3 * y^2))
-        return NoRData(), grad_x
+        dx = nan_tangent_guard(dy, dy / (3 * y^2))
+        return NoRData(), dx
     end
     return zero_fcodual(y), cbrt_adjoint
 end
@@ -161,8 +161,8 @@ end
 function rrule!!(::CoDual{typeof(log10)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log10(primal(x))
     function log10_adjoint(dy::P)
-        grad_x = nan_tangent_guard(dy, dy / (primal(x) * log(P(10))))
-        return NoRData(), grad_x
+        dx = nan_tangent_guard(dy, dy / (primal(x) * log(P(10))))
+        return NoRData(), dx
     end
     return zero_fcodual(y), log10_adjoint
 end
@@ -175,8 +175,8 @@ end
 function rrule!!(::CoDual{typeof(log2)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log2(primal(x))
     function log2_adjoint(dy::P)
-        grad_x = nan_tangent_guard(dy, dy / (primal(x) * log(P(2))))
-        return NoRData(), grad_x
+        dx = nan_tangent_guard(dy, dy / (primal(x) * log(P(2))))
+        return NoRData(), dx
     end
     return zero_fcodual(y), log2_adjoint
 end
@@ -189,8 +189,8 @@ end
 function rrule!!(::CoDual{typeof(log1p)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log1p(primal(x))
     function log1p_adjoint(dy::P)
-        grad_x = nan_tangent_guard(dy, dy / (1 + primal(x)))
-        return NoRData(), grad_x
+        dx = nan_tangent_guard(dy, dy / (1 + primal(x)))
+        return NoRData(), dx
     end
     return zero_fcodual(y), log1p_adjoint
 end
@@ -219,8 +219,8 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     h = hypot(primal(x), map(primal, xs)...)
     function hypot_pb!!(dh::P)
-        grads = map(a -> nan_tangent_guard(dh, dh * (primal(a) / h)), (x, xs...))
-        return NoRData(), grads...
+        tangents = map(a -> nan_tangent_guard(dh, dh * (primal(a) / h)), (x, xs...))
+        return NoRData(), tangents...
     end
     return zero_fcodual(h), hypot_pb!!
 end
