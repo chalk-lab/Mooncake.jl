@@ -2,10 +2,30 @@
 # General utilities
 #
 
-# CRC RuleConfig for specific CRC Rules that must work with only Mooncake Backend. 
-struct MooncakeRuleConfig <: CRC.RuleConfig{Union{CRC.HasReverseMode,CRC.HasForwardsMode}} end
+"""
+    MooncakeRuleConfig <: ChainRuleCore.RuleConfig{ChainRuleCore.HasReverseMode}
+
+A ChainRulesCore Rule configuration Type for rules that execute using only using Mooncake.jl as the AD backend.
+For details on `ChainRuleCore.RuleConfig`, `ChainRuleCore.HasReverseMode` etc. refer ChainRuleCore documentation: https://juliadiff.org/ChainRulesCore.jl/stable.
+"""
+struct MooncakeRuleConfig <: CRC.RuleConfig{CRC.HasReverseMode} end
+
+"""
+    MooncakeConfigType
+
+Type alias for `Union{Nothing,MooncakeRuleConfig}`.
+It is usefull for dispatching over the cfg kwarg for Mooncake utilities : [`frule_wrapper`](@ref) and [`rrule_wrapper`](@ref) etc.
+"""
 const MooncakeConfigType = Union{Nothing,MooncakeRuleConfig}
 
+"""
+    ChainRuleCore.rrule_via_ad(::MooncakeRuleConfig, f, args...; kwargs...)
+
+A Mooncake.jl dispatch for `ChainRuleCore.rrule_via_ad`.
+
+For detailed documentation around `ChainRuleCore.rrule_via_ad` and `ChainRuleCore.RuleConfig` & related methods
+See ChainRuleCore documentation: https://juliadiff.org/ChainRulesCore.jl/stable.
+"""
 function CRC.rrule_via_ad(config::MooncakeRuleConfig, f_args...; kwargs...)
     rule = build_rrule(f_args...)
     mooncake_rule_args = map(zero_fcodual, f_args)
