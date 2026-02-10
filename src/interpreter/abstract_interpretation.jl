@@ -174,7 +174,7 @@ function Core.Compiler.abstract_call_gf_by_type(
                 # value (otherwise `compact!` can fold the call away entirely, e.g. a
                 # primitive whose inferred return is `Const`).
                 widen_rt = should_widen_primitive_call_return_type(call.rt, argtypes)
-                return rewrap_callmeta(call, info; widen_rt=widen_rt)
+                return rewrap_callmeta(call, info, widen_rt)
             else
                 return CC.Future{CC.CallMeta}(
                     ret::CC.Future, interp, sv
