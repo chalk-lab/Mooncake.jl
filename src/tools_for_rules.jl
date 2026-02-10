@@ -470,17 +470,17 @@ end
 """
     nondifferentiable_tangent_guard(dy::L, tangent::T) where {L,T}
 
-Handle functions at non-differentiable domain points. See:
+Handle functions evaluated at non-differentiable points in their domain. See:
 https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html
 
-If `dy = 0`, the gradient does not contribute to the total gradient
+If `dy == 0`, the gradient contributes nothing to the total gradient
 calculation, so a zero tangent is returned.
 
-Otherwise, return `T(0)` to signal that the function is
-non-differentiable at this point.
+Otherwise, return the user-provided `tangent`, which may be used to
+signal the presence of a non-differentiable point.
 
-This behaviour may be overloaded to return alternative values
-(e.g., a nan-tangent) when required. 
+This behavior may be overloaded to return alternative values
+(e.g., a NaN tangent) when required.
 """
 @inline function nondifferentiable_tangent_guard(
     dy::L, tangent::T
@@ -491,7 +491,7 @@ This behaviour may be overloaded to return alternative values
     return if iszero(dy)
         T(0)
     else
-        T(0)
+        tangent
     end
 end
 
