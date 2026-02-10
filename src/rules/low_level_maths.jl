@@ -95,7 +95,9 @@ function frule!!(::Dual{typeof(log)}, b::Dual{P}, x::Dual{P}) where {P<:IEEEFloa
     _x, dx = extract(x)
     y = log(_b, _x)
     log_b = log(_b)
-    return Dual(y, -db * y / (log_b * _b) + dx * (inv(_x) / log_b))
+    dy_b = nan_tangent_guard(db, -db * y / (log_b * _b))
+    dy_x = nan_tangent_guard(dx, dx * (inv(_x) / log_b))
+    return Dual(y, dy_b + dy_x)
 end
 function rrule!!(::CoDual{typeof(log)}, b::CoDual{P}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log(primal(b), primal(x))
@@ -112,7 +114,8 @@ end
 function frule!!(::Dual{typeof(log)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
     y = log(_x)
-    return Dual(y, dx / _x)
+    dy = nan_tangent_guard(dx, dx / _x)
+    return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(log)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log(primal(x))
@@ -127,7 +130,8 @@ end
 function frule!!(::Dual{typeof(sqrt)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
     y = sqrt(_x)
-    return Dual(y, dx / (2 * y))
+    dy = nan_tangent_guard(dx, dx / (2 * y))
+    return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = sqrt(primal(x))
@@ -142,7 +146,8 @@ end
 function frule!!(::Dual{typeof(cbrt)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
     y = cbrt(_x)
-    return Dual(y, dx / (3 * y^2))
+    dy = nan_tangent_guard(dx, dx / (3 * y^2))
+    return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(cbrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = cbrt(primal(x))
@@ -156,7 +161,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(log10),P} where {P<:IEEEFloat}
 function frule!!(::Dual{typeof(log10)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
-    return Dual(log10(_x), dx / (_x * log(P(10))))
+    y = log10(_x)
+    dy = nan_tangent_guard(dx, dx / (_x * log(P(10))))
+    return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(log10)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log10(primal(x))
@@ -170,7 +177,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(log2),P} where {P<:IEEEFloat}
 function frule!!(::Dual{typeof(log2)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
-    return Dual(log2(_x), dx / (_x * log(P(2))))
+    y = log2(_x)
+    dy = nan_tangent_guard(dx, dx / (_x * log(P(2))))
+    return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(log2)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log2(primal(x))
@@ -184,7 +193,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(log1p),P} where {P<:IEEEFloat}
 function frule!!(::Dual{typeof(log1p)}, x::Dual{P}) where {P<:IEEEFloat}
     _x, dx = extract(x)
-    return Dual(log1p(_x), dx / (1 + _x))
+    y = log1p(_x)
+    dy = nan_tangent_guard(dx, dx / (1 + _x))
+    return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(log1p)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = log1p(primal(x))
@@ -211,7 +222,7 @@ function frule!!(
     ::Dual{typeof(hypot)}, x::Dual{P}, xs::Vararg{Dual{P}}
 ) where {P<:IEEEFloat}
     h = hypot(primal(x), map(primal, xs)...)
-    dh = sum(primal(a) * tangent(a) for a in (x, xs...)) / h
+    dh = sum(nan_tangent_guard(tangent(a), primal(a) * tangent(a)) for a in (x, xs...)) / h
     return Dual(h, dh)
 end
 function rrule!!(

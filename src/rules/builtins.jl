@@ -654,11 +654,10 @@ end
 function frule!!(::Dual{typeof(sqrt_llvm)}, x)
     _x, dx = extract(x)
     y = sqrt_llvm(_x)
-    dy = dx / (2 * y)
+    dy = nan_tangent_guard(dx, dx / (2 * y))
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
-    _x = primal(x)
     _y = sqrt_llvm(primal(x))
     function llvm_sqrt_pullback!!(dy)
         dx = nan_tangent_guard(dy, dy / (2 * _y))
@@ -669,8 +668,9 @@ end
 
 @intrinsic sqrt_llvm_fast
 function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
-    y = sqrt_llvm_fast(primal(x))
-    dy = tangent(x) / (2 * y)
+    _x, dx = extract(x)
+    y = sqrt_llvm_fast(_x)
+    dy = nan_tangent_guard(dx, dx / (2 * y))
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
