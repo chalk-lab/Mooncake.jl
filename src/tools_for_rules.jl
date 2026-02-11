@@ -2,6 +2,39 @@
 # General utilities
 #
 
+"""
+    ChainRuleCore.rrule_via_ad(::MooncakeRuleConfig, f, args...; kwargs...)
+
+A Mooncake.jl dispatch for `ChainRuleCore.rrule_via_ad`.
+
+For detailed documentation around `ChainRuleCore.rrule_via_ad` and `ChainRuleCore.RuleConfig` & related methods
+See ChainRuleCore documentation: https://juliadiff.org/ChainRulesCore.jl/stable.
+"""
+function CRC.rrule_via_ad(config::MooncakeRuleConfig, f_args...; kwargs...)
+    rule = build_rrule(f_args...)
+    mooncake_rule_args = map(zero_fcodual, f_args)
+    y, pullback!! = rule(mooncake_rule_args...)
+    forwardpass_res = _copy_output(primal(y))
+
+    function crc_pullback(Δ)
+        dy = Mooncake.tangent(y)
+
+        # RData of Δ for passing into mooncake's pullback
+        dy_rdata_for_pullback = increment_and_get_rdata!(fdata(dy), rdata(dy), Δ)
+
+        # run Mooncake pullback
+        mooncake_gradients = pullback!!(dy_rdata_for_pullback)
+
+        # CRC must see all gradients accumulated : mooncake_rule_args FData & RData got from pullback
+        raw_tangents = map(
+            Mooncake.tangent, Mooncake.tangent.(mooncake_rule_args), mooncake_gradients
+        )
+        return map(to_cr_tangent, raw_tangents)
+    end
+
+    return forwardpass_res, crc_pullback
+end
+
 @unstable function parse_signature_expr(sig::Expr)
     # Different parsing is required for `Tuple{...}` vs `Tuple{...} where ...`.
     if sig.head == :curly
@@ -400,7 +433,7 @@ and return the rdata component of `cr_tangent` by adding it to `zero_rdata`.
 function increment_and_get_rdata!(
     ::NoFData, r::T, t::T
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    r + t
+    return r + t
 end
 function increment_and_get_rdata!(
     f::Array{P}, ::NoRData, t::Array{P}
