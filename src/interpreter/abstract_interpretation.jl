@@ -204,9 +204,39 @@ function any_matches_primitive(applicable, C, M, world)
     false
 end
 
+# Decide whether to widen a primitive call's inferred return type from `CC.Const` to its
+# underlying Julia type — e.g. `Const(3.0)` to `Float64`.
+#
+# `CC.Const(val)` is an element of Julia's extended type lattice that records the exact
+# value a computation produces (see `Core.Const` and `Compiler/src/typelattice.jl`).  When
+# the compiler sees a call whose return type is `Const`, several optimisation passes can
+# replace the call with the literal value and delete the call site entirely:
+#
+#   - The inliner (`Compiler/src/ssair/inlining.jl`) turns such calls into a `ConstantCase`
+#     via `handle_single_case!`, which rewrites `ir[SSAValue(idx)][:stmt]` to the constant.
+#   - The `compact!` pass (`Compiler/src/ssair/ir.jl`) maps the SSA name to the literal in
+#     its rename table, making the original statement dead.
+#
+# For Mooncake primitives this is problematic: the call must survive into the final IR so
+# that the corresponding `rrule!!` runs during AD.  Widening the return type via
+# `CC.widenconst` (defined in `Compiler/src/typelattice.jl` as
+# `widenconst(c::Const) = typeof(c.val)`) strips the `Const` marker and prevents folding.
+# This may over-widen when a primitive inherently returns a constant regardless of its
+# inputs, but distinguishing that from genuine const-prop would require re-running inference.
+#
+# However, when every runtime argument is itself `Const`, the call is a genuine compile-time
+# constant (e.g. `sin(1.0)` where `1.0` is a literal in the source).  Folding is safe here
+# because the call can never see different values at runtime, so skipping the `rrule!!`
+# loses no derivative information.
+#
+# `call`: the `CC.CallMeta` returned by Julia's abstract interpretation for this call site.
+# `argtypes`: inferred types for all arguments.  Position 1 is the callee; positions 2:end
+#   are the actual runtime arguments.
+#
+# Returns `true` (widen needed) when `call.rt` is `Const` and at least one runtime argument
+# is not `Const`.  Returns `false` otherwise.
 function should_widen_primitive_call_return_type(call::CC.CallMeta, argtypes::Vector{Any})
     call.rt isa CC.Const || return false
-    # `argtypes` usually includes the callee in position 1; we only care about runtime arguments.
     for n in 2:length(argtypes)
         argtypes[n] isa CC.Const || return true
     end
