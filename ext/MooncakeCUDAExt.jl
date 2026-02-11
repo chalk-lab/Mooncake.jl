@@ -32,6 +32,7 @@ import Mooncake:
     primal_to_tangent_internal!!,
     _dot_internal,
     _scale_internal,
+    _new_,
     TestUtils,
     Dual,
     CoDual,
@@ -157,6 +158,7 @@ end
 
 # TODO: Mooncake defines rules for `_new_` instead of below. See
 # https://chalk-lab.github.io/Mooncake.jl/stable/developer_documentation/custom_tangent_type/#Checklist:-Functions-Needed-for-Recursive-Struct-Support
+#
 @is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
 function frule!!(
     p::Dual{Type{P}}, init::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
@@ -169,6 +171,26 @@ function rrule!!(
 ) where {P<:CuMaybeComplexArray,N}
     _dims = map(primal, dims)
     return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims...)
+end
+
+function frule!!(
+    f::Dual{typeof(Mooncake._new_),Mooncake.NoTangent},
+    p::Dual{A,Mooncake.NoTangent},
+    x::Dual{M,TM},
+) where {T,M<:CuArray{T},A<:Type{LinearAlgebra.Adjoint{T,M}},TM<:CuArray}
+    y = _new_(LinearAlgebra.Adjoint{T,M}, Mooncake.primal(x))
+    dy = Mooncake.Tangent((parent=Mooncake.tangent(x),))
+    return Dual(y, dy)
+end
+
+function frule!!(
+    f::Dual{typeof(Mooncake._new_),Mooncake.NoTangent},
+    p::Dual{A,Mooncake.NoTangent},
+    x::Dual{M,TM},
+) where {T,M<:CuArray{T},A<:Type{LinearAlgebra.Transpose{T,M}},TM<:CuArray}
+    y = _new_(LinearAlgebra.Transpose{T,M}, Mooncake.primal(x))
+    dy = Mooncake.Tangent((parent=Mooncake.tangent(x),))
+    return Dual(y, dy)
 end
 
 # getfield / lgetfield rules for CuArray.

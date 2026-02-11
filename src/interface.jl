@@ -658,20 +658,89 @@ function value_and_gradient!!(
     end
 end
 
+struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP}
+    rule::R
+    input_tangents::IT
+    output_primal::OP
+end
+
 """
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 """
-@unstable function prepare_derivative_cache(fx...; config=Config())
-    build_frule(fx...; config.debug_mode, config.silence_debug_messages)
+@unstable function prepare_derivative_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
+    fx = (f, x...)
+    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
+
+    if config.friendly_tangents
+        y = f(x...)
+        input_tangents = map(zero_tangent, fx)
+        output_primal = _copy_output(y)
+        return ForwardCache(rule, input_tangents, output_primal)
+    else
+        return ForwardCache(rule, nothing, nothing)
+    end
 end
 
 """
-    value_and_derivative!!(rule::R, f::Dual, x::Vararg{Dual,N})
+    value_and_derivative!!(cache::ForwardCache, f::Dual, x::Vararg{Dual,N})
 
 Returns a `Dual` containing the result of applying forward-mode AD to compute the (Frechet)
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
 """
-value_and_derivative!!(rule::R, fx::Vararg{Dual,N}) where {R,N} = rule(fx...)
+function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
+    # TODO: check Dual coherence here like we do below?
+    return cache.rule(fx...)
+end
+
+"""
+    value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
+
+Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
+
+Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
+
+!!! info
+    `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f` and `x` must be of the same size and shape as those used to construct the `cache`. This is to ensure that the gradient can be written to the memory allocated when the `cache` was built.
+
+!!! warning
+    `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
+"""
+function value_and_derivative!!(
+    cache::ForwardCache, f::NTuple{2,Any}, x::Vararg{NTuple{2,Any},N}
+) where {N}
+    fx = (f, x...)  # to avoid method ambiguity
+    friendly_tangents = !isnothing(cache.input_tangents)
+
+    input_primals = map(first, fx)
+    input_friendly_tangents = map(last, fx)
+
+    # translate from friendly to native
+    if friendly_tangents
+        input_tangents = map(
+            primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
+        )
+    else
+        input_tangents = input_friendly_tangents
+    end
+
+    input_duals = map(Dual, input_primals, input_tangents)
+
+    if !friendly_tangents  # in friendly mode, conversion should ensure tangent coherence
+        error_if_incorrect_dual_types(input_duals...)
+    end
+
+    output = cache.rule(input_duals...)
+    output_primal = primal(output)
+    output_tangent = tangent(output)
+
+    # translate from native back to friendly
+    if friendly_tangents
+        output_friendly_tangent = tangent_to_primal!!(cache.output_primal, output_tangent)
+        return output_primal, output_friendly_tangent
+    else
+        return output_primal, output_tangent
+    end
+end
