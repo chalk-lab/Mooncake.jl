@@ -14,7 +14,7 @@ struct MooncakeRuleConfig <: CRC.RuleConfig{CRC.HasReverseMode} end
     MooncakeConfigType
 
 Type alias for `Union{Nothing,MooncakeRuleConfig}`.
-It is usefull for dispatching over the cfg kwarg for Mooncake utilities : [`frule_wrapper`](@ref) and [`rrule_wrapper`](@ref) etc.
+It is useful for dispatching over the cfg kwarg for Mooncake utilities : [`frule_wrapper`](@ref) and [`rrule_wrapper`](@ref) etc.
 """
 const MooncakeConfigType = Union{Nothing,MooncakeRuleConfig}
 

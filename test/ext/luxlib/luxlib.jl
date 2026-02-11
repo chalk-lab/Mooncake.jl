@@ -84,6 +84,34 @@ using Mooncake.TestUtils: test_rule
                 )
             end,
         ),
+        Any[
+            (
+                false,
+                :none,
+                false,
+                LuxLib.Impl.bias_activation,
+                LuxLib.LoopedArrayOp(),
+                Lux.relu,
+                randn(5, 4, 3),
+                randn(4),
+            ),
+            (false, :none, true, LuxLib.Impl.reshape_bias, randn(5, 4, 3), randn(4)),
+            (false, :none, true, LuxLib.Impl.mean_var, randn(5, 4, 3)),
+            let x = randn(8, 8, 2, 2), weight = randn(3, 3, 2, 4), bias = randn(4)
+                (
+                    false,
+                    :none,
+                    false,
+                    LuxLib.Impl.fused_conv,
+                    LuxLib.LoopedArrayOp(),
+                    Lux.relu,
+                    weight,
+                    x,
+                    bias,
+                    NNlib.DenseConvDims(x, weight),
+                )
+            end,
+        ],
     )
         mode = Mooncake.ReverseMode
         test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode)

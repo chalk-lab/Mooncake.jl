@@ -11,7 +11,6 @@ using MLDataDevices: get_device_type
 import Mooncake:
     @from_rrule,
     DefaultCtx,
-    MinimalCtx,
     @mooncake_overlay,
     CoDual,
     @zero_adjoint,
@@ -136,7 +135,7 @@ import Mooncake:
     DefaultCtx,
     Tuple{
         typeof(Impl.fused_dense),
-        Impl.GPUBroadcastOp,
+        Impl.GPUBroadcastOp{Impl.CUDADevice},
         typeof(gelu),
         AbstractMatrix,
         AbstractMatrix,
@@ -181,7 +180,9 @@ import Mooncake:
     }
 )
 
-@from_rrule(DefaultCtx, Tuple{typeof(Impl.dropout_dot_mul),AbstractArray,AbstractArray})
+@from_rrule(
+    DefaultCtx, Tuple{typeof(LuxLib.Impl.dropout_dot_mul),AbstractArray,AbstractArray}
+)
 
 # groupnorm
 @zero_derivative DefaultCtx Tuple{typeof(Impl.groupnorm_reduce_dims),Vararg}
