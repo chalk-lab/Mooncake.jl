@@ -173,7 +173,7 @@ function Core.Compiler.abstract_call_gf_by_type(
                 # custom rules. Prevent inlining *and* disable const-prop of the return
                 # value (otherwise `compact!` can fold the call away entirely, e.g. a
                 # primitive whose inferred return is `Const`).
-                widen_rt = should_widen_primitive_call_return_type(call.rt, argtypes)
+                widen_rt = should_widen_primitive_call_return_type(call, argtypes)
                 return rewrap_callmeta(call, info, widen_rt)
             else
                 return CC.Future{CC.CallMeta}(
@@ -181,7 +181,7 @@ function Core.Compiler.abstract_call_gf_by_type(
                 ) do call, interp, sv
                     info = NoInlineCallInfo(call.info, atype)
                     # See comment in the non-Future branch above.
-                    widen_rt = should_widen_primitive_call_return_type(call.rt, argtypes)
+                    widen_rt = should_widen_primitive_call_return_type(call, argtypes)
                     return rewrap_callmeta(call, info, widen_rt)
                 end
             end
@@ -204,8 +204,8 @@ function any_matches_primitive(applicable, C, M, world)
     false
 end
 
-function should_widen_primitive_call_return_type(rt, argtypes::Vector{Any})
-    rt isa CC.Const || return false
+function should_widen_primitive_call_return_type(call::CC.CallMeta, argtypes::Vector{Any})
+    call.rt isa CC.Const || return false
     # `argtypes` usually includes the callee in position 1; we only care about runtime arguments.
     for n in 2:length(argtypes)
         argtypes[n] isa CC.Const || return true
@@ -214,6 +214,14 @@ function should_widen_primitive_call_return_type(rt, argtypes::Vector{Any})
 end
 
 function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo, widen_rt::Bool)
+    # If `widen_rt` is true, widen `call.rt` with `CC.widenconst`,  
+    # discarding any `Const` information to prevent constant folding;  
+    # otherwise, use `call.rt` unchanged.
+    #
+    # This drops value-level information tracked by inference  
+    # (e.g. `Const(3)` → `Int`), ensuring the call is not folded away.  
+    # For example, if `call.rt` is inferred as `Const(42)`, widening  
+    # yields `Int`, preserving the call so downstream rules still apply.
     rt = widen_rt ? CC.widenconst(call.rt) : call.rt
     @static if VERSION ≥ v"1.11-"
         return CC.CallMeta(rt, call.exct, call.effects, info)

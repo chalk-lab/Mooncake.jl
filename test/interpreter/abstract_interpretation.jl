@@ -8,9 +8,9 @@ contains_non_primitive(x) = @inline non_primitive(x)
 contains_primitive_behind_call(x) = @inline contains_primitive(x)
 union_split_primitive_call(x::Ref{Union{Float64,Float32}}) = @inline a_primitive(x[])
 
-# Issue #955: if a primitive call's return value is inferred as `Const`, the compiler can
-# fold the call away entirely. That makes the primitive invisible to Mooncake, so its
-# custom `rrule!!` never runs.
+# Issue #955: if a primitive call's return value is inferred as `Const`,
+# the compiler may fold the call away entirely. This makes the primitive 
+# invisible to Mooncake,  so its custom `rrule!!` never runs.
 fake_grad_955(x, y) = x
 Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(fake_grad_955),Any,Any}
 
