@@ -47,7 +47,7 @@ function increment_field!!(
     elseif (FieldName === :im) || (FieldName == 2)
         complex(real(x), re_or_im + imag(x))
     else
-        throw(ArgumentError(lazy"Unkown field `$FieldName` for type `$(Complex{P})`)"))
+        throw(ArgumentError(lazy"Unknown field `$FieldName` for type `$(Complex{P})`)"))
     end
 end
 
