@@ -112,7 +112,9 @@ import ..Mooncake:
     zero_fcodual,
     zero_dual,
     NoTangent,
-    Mode
+    Mode,
+    extract,
+    nan_tangent_guard
 
 using Core.Intrinsics: atomic_pointerref
 
@@ -151,7 +153,7 @@ macro inactive_intrinsic(name)
         function _is_primitive(
             ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof($name),Vararg}}
         )
-            true
+            return true
         end
         translate(::Val{Intrinsics.$name}) = $name
         function rrule!!(f::CoDual{typeof($name)}, args::Vararg{Any,N}) where {N}
@@ -650,26 +652,33 @@ end
 
 @intrinsic sqrt_llvm
 function frule!!(::Dual{typeof(sqrt_llvm)}, x)
-    y = sqrt_llvm(primal(x))
-    dy = tangent(x) / (2 * y)
+    _x, dx = extract(x)
+    y = sqrt_llvm(_x)
+    dy = nan_tangent_guard(dx, dx / (2 * y))
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
-    _x = primal(x)
     _y = sqrt_llvm(primal(x))
-    llvm_sqrt_pullback!!(dy) = NoRData(), ifelse(iszero(_y), P(0), dy / (2 * _y))
+    function llvm_sqrt_pullback!!(dy)
+        dx = nan_tangent_guard(dy, dy / (2 * _y))
+        return NoRData(), dx
+    end
     return CoDual(_y, NoFData()), llvm_sqrt_pullback!!
 end
 
 @intrinsic sqrt_llvm_fast
 function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
-    y = sqrt_llvm_fast(primal(x))
-    dy = tangent(x) / (2 * y)
+    _x, dx = extract(x)
+    y = sqrt_llvm_fast(_x)
+    dy = nan_tangent_guard(dx, dx / (2 * y))
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
-    llvm_sqrt_fast_pullback!!(dy) = NoRData(), ifelse(iszero(_y), P(0), dy / (2 * _y))
+    function llvm_sqrt_fast_pullback!!(dy)
+        dx = nan_tangent_guard(dy, dy / (2 * _y))
+        return NoRData(), dx
+    end
     return CoDual(_y, NoFData()), llvm_sqrt_fast_pullback!!
 end
 

@@ -94,3 +94,23 @@ foo_throws(e) = throw(e)
         )
     end
 end
+
+@testset "NaN handling in builtins rrules" begin
+    test_cases = mapreduce(vcat, [Float16, Float32, Float64]) do T
+        [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
+    end
+
+    # Test cases for avoiding `NaN` poisoning. 
+    #  See https://github.com/chalk-lab/Mooncake.jl/issues/807 
+    function builtins_nantester(f, args)
+        a = f(args)
+        b = args
+        return b
+    end
+
+    for (f, args) in test_cases
+        cache = prepare_gradient_cache(builtins_nantester, f, args)
+        _, grad = value_and_gradient!!(cache, builtins_nantester, f, args)
+        @test all(map(isone, grad[3:end]...))
+    end
+end
