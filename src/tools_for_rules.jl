@@ -3,20 +3,13 @@
 #
 
 """
-    MooncakeRuleConfig <: ChainRuleCore.RuleConfig{ChainRuleCore.HasReverseMode}
+    MooncakeRuleConfig <: ChainRulesCore.RuleConfig{ChainRulesCore.HasReverseMode}
 
-A ChainRulesCore Rule configuration Type for rules that execute using only using Mooncake.jl as the AD backend.
-For details on `ChainRuleCore.RuleConfig`, `ChainRuleCore.HasReverseMode` etc. refer ChainRuleCore documentation: https://juliadiff.org/ChainRulesCore.jl/stable.
+A `ChainRulesCore` rule configuration type for rules that are intended exclusively for Mooncake.jl. 
+For details on `ChainRulesCore.RuleConfig`,  `ChainRulesCore.HasReverseMode`, and related types, 
+refer to the `ChainRulesCore` documentation: https://juliadiff.org/ChainRulesCore.jl/stable
 """
 struct MooncakeRuleConfig <: CRC.RuleConfig{CRC.HasReverseMode} end
-
-"""
-    MooncakeConfigType
-
-Type alias for `Union{Nothing,MooncakeRuleConfig}`.
-It is useful for dispatching over the cfg kwarg for Mooncake utilities : [`frule_wrapper`](@ref) and [`rrule_wrapper`](@ref) etc.
-"""
-const MooncakeConfigType = Union{Nothing,MooncakeRuleConfig}
 
 @unstable function parse_signature_expr(sig::Expr)
     # Different parsing is required for `Tuple{...}` vs `Tuple{...} where ...`.
@@ -499,13 +492,15 @@ function notimplemented_tangent_guard(da)
 end
 
 """
-    frule_wrapper(f::Dual, args::Dual...; cfg::MooncakeConfigType=nothing)
+    frule_wrapper(f::Dual, args::Dual...; cfg::Tcfg=nothing) where Tcfg<:Union{Nothing,MooncakeRuleConfig}
 
 Implements a `Mooncake.frule!!` for `f` applied to `args` by calling the respective `ChainRulesCore.frule`.
-If the `ChainRulesCore.frule` requires a config argument, this method only works when `Mooncake` is chosen as the config AD backend i.e. `cfg` = `MooncakeRuleConfig`.
-`cfg` defaults to `nothing`.
+Set `cfg = MooncakeRuleConfig()` when the `ChainRulesCore.frule` and `ChainRulesCore.rrule` rules are intended exclusively for Mooncake.
+Otherwise, set to `nothing` (the default).
 """
-function frule_wrapper(fargs::Vararg{Dual,N}; cfg::MooncakeConfigType=nothing) where {N}
+function frule_wrapper(
+    fargs::Vararg{Dual,N}; cfg::Tcfg=nothing
+) where {Tcfg<:Union{Nothing,MooncakeRuleConfig},N}
     tangents = tuple_map(to_cr_tangent ∘ tangent, fargs)
     Ω, dΩ = if cfg isa MooncakeRuleConfig
         CRC.frule(cfg, tangents, tuple_map(primal, fargs)...)
@@ -516,8 +511,8 @@ function frule_wrapper(fargs::Vararg{Dual,N}; cfg::MooncakeConfigType=nothing) w
 end
 
 function frule_wrapper(
-    ::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}; cfg::MooncakeConfigType=nothing
-) where {N}
+    ::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}; cfg::Tcfg=nothing
+) where {Tcfg<:Union{Nothing,MooncakeRuleConfig},N}
     primals = map(primal, fargs)
     tangents = map(to_cr_tangent ∘ tangent, fargs[2:end])
     Ω, dΩ = if cfg isa MooncakeRuleConfig
@@ -540,12 +535,12 @@ function construct_frule_wrapper_def(arg_names, arg_types, where_params, cfg)
 end
 
 """
-    rrule_wrapper(f::CoDual, args::CoDual...; cfg::MooncakeConfigType=nothing)
+    rrule_wrapper(f::CoDual, args::CoDual...; cfg::Tcfg=nothing) where Tcfg<:Union{Nothing,MooncakeRuleConfig}
 
 Used to implement `Mooncake.rrule!!`s via `ChainRulesCore.rrule`.
 
-Given a function `foo`, argument types `arg_types`, a corresponding method of `ChainRulesCore.rrule` and optionally a config AD backend i.e. `cfg` = `MooncakeRuleConfig`.
-which applies to these, you can make use of this function as follows:
+Given a function `foo`, argument types `arg_types`, a corresponding `ChainRulesCore.rrule` method,  
+and optionally a config AD backend (i.e. `cfg = MooncakeRuleConfig()`), you can use this function as follows:
 ```julia
 Mooncake.@is_primitive DefaultCtx Tuple{typeof(foo), arg_types...}
 function Mooncake.rrule!!(f::CoDual{typeof(foo)}, args::CoDual...)
@@ -559,13 +554,15 @@ ChainRulesCore expect.
 Furthermore, it is _essential_ that
 1. `f(args)` does not mutate `f` or `args`, and
 2. the result of `f(args)` does not alias any data stored in `f` or `args`.
-3. In case the `ChainRuleCore.rrule` is specific to Mooncake.jl as the configured AD backend only,
-   use kwarg `cfg=Mooncake.MooncakeRuleConfig()` for the `Mooncake.rrule_wrapper()` call. `cfg` defaults to nothing.
+3. If the `ChainRulesCore.rrule` is specific to Mooncake.jl, pass the keyword argument  
+    `cfg = Mooncake.MooncakeRuleConfig()` to  `Mooncake.rrule_wrapper()`. Otherwise, set `cfg` to `nothing` (the default).
 
 Subject to some constraints, you can use the [`@from_rrule`](@ref) macro to reduce the
 amount of boilerplate code that you are required to write even further.
 """
-function rrule_wrapper(fargs::Vararg{CoDual,N}; cfg::MooncakeConfigType=nothing) where {N}
+function rrule_wrapper(
+    fargs::Vararg{CoDual,N}; cfg::Tcfg=nothing
+) where {Tcfg<:Union{Nothing,MooncakeRuleConfig},N}
 
     # Run forwards-pass.
     primals = tuple_map(primal, fargs)
@@ -594,8 +591,8 @@ function rrule_wrapper(fargs::Vararg{CoDual,N}; cfg::MooncakeConfigType=nothing)
 end
 
 function rrule_wrapper(
-    ::CoDual{typeof(Core.kwcall)}, fargs::Vararg{CoDual,N}; cfg::MooncakeConfigType=nothing
-) where {N}
+    ::CoDual{typeof(Core.kwcall)}, fargs::Vararg{CoDual,N}; cfg::Tcfg=nothing
+) where {Tcfg<:Union{Nothing,MooncakeRuleConfig},N}
 
     # Run forwards-pass.
     primals = tuple_map(primal, fargs)
@@ -653,8 +650,8 @@ Convenience functionality to assist in using `ChainRuleCore.frule`s and
 - `mode=nothing`: the mode to produce rules for. By default, produces rules for both forward
     and reverse mode. If `mode=ForwardMode` only rules for forward mode are produced. If
     `mode=ReverseMode` only rules for reverse mode are produced.
-- `cfg`: The `ChainRulesCore.jl` rule's RuleConfig, is nothing (default) or MooncakeRuleConfig() if
-    the `ChainRulesCore.frule` and `ChainRuleCore.rrule` are only specific to Mooncake.jl's AD usage.
+- `cfg`: Set to `MooncakeRuleConfig()` when the `ChainRulesCore.frule` and `ChainRulesCore.rrule` rules are intended exclusively for Mooncake.jl. 
+    Otherwise, set to `nothing` (the default).  See `ChainRulesCore.jl`’s  `RuleConfig` documentation for details.
 
 # Example Usage
 
