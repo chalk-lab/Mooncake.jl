@@ -552,6 +552,7 @@ function frule_wrapper(
 ) where {Tcfg<:Union{Nothing,MooncakeRuleConfig},N}
     tangents = tuple_map(to_cr_tangent ∘ tangent, fargs)
     Ω, dΩ = if cfg isa MooncakeRuleConfig
+        # pass the cfg object following the CRC frule convention
         CRC.frule(cfg, tangents, tuple_map(primal, fargs)...)
     else
         CRC.frule(tangents, tuple_map(primal, fargs)...)
@@ -565,6 +566,7 @@ function frule_wrapper(
     primals = map(primal, fargs)
     tangents = map(to_cr_tangent ∘ tangent, fargs[2:end])
     Ω, dΩ = if cfg isa MooncakeRuleConfig
+        # pass the cfg object following the CRC frule convention
         Core.kwcall(primals[1], CRC.frule, cfg, tangents, primals[2:end]...)
     else
         Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
@@ -575,6 +577,7 @@ end
 function construct_frule_wrapper_def(arg_names, arg_types, where_params, cfg)
     call_args = Any[frule_wrapper]
     if !isnothing(cfg)
+        # Pass `cfg` object as a keyword argument to support specialized frules.
         push!(call_args, Expr(:parameters, Expr(:kw, :cfg, cfg)))
     end
     append!(call_args, arg_names)
@@ -617,6 +620,7 @@ function rrule_wrapper(
     primals = tuple_map(primal, fargs)
     lazy_rdata = tuple_map(Mooncake.lazy_zero_rdata, primals)
     y_primal, cr_pb = if cfg isa MooncakeRuleConfig
+        # pass the cfg object following the CRC rrule convention
         CRC.rrule(cfg, primals...)
     else
         CRC.rrule(primals...)
@@ -647,6 +651,7 @@ function rrule_wrapper(
     primals = tuple_map(primal, fargs)
     lazy_rdata = tuple_map(lazy_zero_rdata, primals)
     y_primal, cr_pb = if cfg isa MooncakeRuleConfig
+        # pass the cfg object following the CRC rrule convention
         Core.kwcall(primals[1], CRC.rrule, cfg, primals[2:end]...)
     else
         Core.kwcall(primals[1], CRC.rrule, primals[2:end]...)
@@ -674,6 +679,7 @@ end
 function construct_rrule_wrapper_def(arg_names, arg_types, where_params, cfg)
     call_args = Any[rrule_wrapper]
     if !isnothing(cfg)
+        # Pass `cfg` object as a keyword argument to support specialized rrules.
         push!(call_args, Expr(:parameters, Expr(:kw, :cfg, cfg)))
     end
     append!(call_args, arg_names)
