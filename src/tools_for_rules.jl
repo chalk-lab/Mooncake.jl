@@ -813,7 +813,11 @@ macro from_chainrules(
             ),
         )
     end
-    return _from_chainrules_impl(ctx, sig, has_kwargs, mode, cfg)
+
+    # evaluate cfg expr in user's module
+    config = Base.eval(__module__, cfg)
+
+    return _from_chainrules_impl(ctx, sig, has_kwargs, mode, config)
 end
 
 function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode, cfg::CRC.RuleConfig)
@@ -911,5 +915,7 @@ Equivalent to `@from_chainrules ctx sig has_kwargs ReverseMode cfg`. See
 [`@from_chainrules`](@ref) for more information.
 """
 macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false, cfg=:(MooncakeRuleConfig()))
-    return _from_chainrules_impl(ctx, sig, has_kwargs, ReverseMode, cfg)
+    # evaluate cfg expr in user's module
+    config = Base.eval(__module__, cfg)
+    return _from_chainrules_impl(ctx, sig, has_kwargs, ReverseMode, config)
 end
