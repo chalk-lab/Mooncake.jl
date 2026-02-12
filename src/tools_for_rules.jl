@@ -541,45 +541,38 @@ function notimplemented_tangent_guard(dy)
 end
 
 """
-    frule_wrapper(f::Dual, args::Dual...; cfg::Tcfg=nothing) where Tcfg<:Union{Nothing,MooncakeRuleConfig}
+    frule_wrapper(f::Dual, args::Dual...; cfg::CRC.RuleConfig=MooncakeRuleConfig())
 
 Implements a `Mooncake.frule!!` for `f` applied to `args` by calling the respective `ChainRulesCore.frule`.
-Set `cfg = MooncakeRuleConfig()` when the `ChainRulesCore.frule` and `ChainRulesCore.rrule` rules are intended exclusively for Mooncake.
-Otherwise, set to `nothing` (the default).
+Set `cfg` to a valid `CRC.RuleConfig` object for any specific AD (Mooncake.jl, Zygote.jl, Enzyme.jl etc.) backend's `ChainRulesCore.frule` handling.
+Otherwise, this is set to `MooncakeRuleConfig()` (the default AD Backend).
 """
 function frule_wrapper(
-    fargs::Vararg{Dual,N}; cfg::Tcfg=nothing
-) where {Tcfg<:Union{Nothing,MooncakeRuleConfig},N}
+    fargs::Vararg{Dual,N}; cfg::CRC.RuleConfig=MooncakeRuleConfig()
+) where {N}
     tangents = tuple_map(to_cr_tangent ∘ tangent, fargs)
-    Ω, dΩ = if cfg isa MooncakeRuleConfig
-        # pass the cfg object following the CRC frule convention
-        CRC.frule(cfg, tangents, tuple_map(primal, fargs)...)
-    else
-        CRC.frule(tangents, tuple_map(primal, fargs)...)
-    end
+    # pass the cfg object following CRC.frule convention -> defaults to CRC.frule's fallback if cfg is not required.
+    Ω, dΩ = CRC.frule(cfg, tangents, tuple_map(primal, fargs)...)
+
     return Dual(Ω, mooncake_tangent(Ω, dΩ))
 end
 
 function frule_wrapper(
-    ::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}; cfg::Tcfg=nothing
-) where {Tcfg<:Union{Nothing,MooncakeRuleConfig},N}
+    ::Dual{typeof(Core.kwcall)},
+    fargs::Vararg{Dual,N};
+    cfg::CRC.RuleConfig=MooncakeRuleConfig(),
+) where {N}
     primals = map(primal, fargs)
     tangents = map(to_cr_tangent ∘ tangent, fargs[2:end])
-    Ω, dΩ = if cfg isa MooncakeRuleConfig
-        # pass the cfg object following the CRC frule convention
-        Core.kwcall(primals[1], CRC.frule, cfg, tangents, primals[2:end]...)
-    else
-        Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
-    end
+    # pass the cfg object following CRC.frule convention -> defaults to CRC.frule's fallback if cfg is not required.
+    Ω, dΩ = Core.kwcall(primals[1], CRC.frule, cfg, tangents, primals[2:end]...)
     return Dual(Ω, mooncake_tangent(Ω, dΩ))
 end
 
 function construct_frule_wrapper_def(arg_names, arg_types, where_params, cfg)
     call_args = Any[frule_wrapper]
-    if !isnothing(cfg)
-        # Pass `cfg` object as a keyword argument to support specialized frules.
-        push!(call_args, Expr(:parameters, Expr(:kw, :cfg, cfg)))
-    end
+    # Pass `cfg` object as a keyword argument to support specialized frules.
+    push!(call_args, Expr(:parameters, Expr(:kw, :cfg, cfg)))
     append!(call_args, arg_names)
     body = Expr(:call, call_args...)
 
@@ -587,12 +580,12 @@ function construct_frule_wrapper_def(arg_names, arg_types, where_params, cfg)
 end
 
 """
-    rrule_wrapper(f::CoDual, args::CoDual...; cfg::Tcfg=nothing) where Tcfg<:Union{Nothing,MooncakeRuleConfig}
+    rrule_wrapper(f::CoDual, args::CoDual...; cfg::CRC.RuleConfig=MooncakeRuleConfig())
 
 Used to implement `Mooncake.rrule!!`s via `ChainRulesCore.rrule`.
 
 Given a function `foo`, argument types `arg_types`, a corresponding `ChainRulesCore.rrule` method,  
-and optionally a config AD backend (i.e. `cfg = MooncakeRuleConfig()`), you can use this function as follows:
+and optionally a AD backend's config (i.e. `cfg = MooncakeRuleConfig()`), you can use this function as follows:
 ```julia
 Mooncake.@is_primitive DefaultCtx Tuple{typeof(foo), arg_types...}
 function Mooncake.rrule!!(f::CoDual{typeof(foo)}, args::CoDual...)
@@ -606,25 +599,22 @@ ChainRulesCore expect.
 Furthermore, it is _essential_ that
 1. `f(args)` does not mutate `f` or `args`, and
 2. the result of `f(args)` does not alias any data stored in `f` or `args`.
-3. If the `ChainRulesCore.rrule` is specific to Mooncake.jl, pass the keyword argument  
-    `cfg = Mooncake.MooncakeRuleConfig()` to  `Mooncake.rrule_wrapper()`. Otherwise, set `cfg` to `nothing` (the default).
+3. If the `ChainRulesCore.rrule` is specific to a particular AD backend (Mooncake.jl, Zygote.jl, Enzyme.jl etc.) - set `cfg` to the valid `ChainRulesCore.RuleConfig` object. 
+   A valid AD backend is usually rule/function specific, refer to the corresponding `ChainRulesCore.frule` and `ChainRulesCore.rrule` to decide/test handling.     
+   Otherwise, this is set to `MooncakeRuleConfig()` (the default backend).  See `ChainRulesCore.jl`’s  `RuleConfig` documentation for details.
 
 Subject to some constraints, you can use the [`@from_rrule`](@ref) macro to reduce the
 amount of boilerplate code that you are required to write even further.
 """
 function rrule_wrapper(
-    fargs::Vararg{CoDual,N}; cfg::Tcfg=nothing
-) where {Tcfg<:Union{Nothing,MooncakeRuleConfig},N}
+    fargs::Vararg{CoDual,N}; cfg::CRC.RuleConfig=MooncakeRuleConfig()
+) where {N}
 
     # Run forwards-pass.
     primals = tuple_map(primal, fargs)
     lazy_rdata = tuple_map(Mooncake.lazy_zero_rdata, primals)
-    y_primal, cr_pb = if cfg isa MooncakeRuleConfig
-        # pass the cfg object following the CRC rrule convention
-        CRC.rrule(cfg, primals...)
-    else
-        CRC.rrule(primals...)
-    end
+    # pass the cfg object following CRC.rrule convention -> defaults to CRC.rrule's fallback if cfg is not required.
+    y_primal, cr_pb = CRC.rrule(cfg, primals...)
     y_fdata = fdata(zero_tangent(y_primal))
 
     function pb!!(y_rdata)
@@ -644,18 +634,16 @@ function rrule_wrapper(
 end
 
 function rrule_wrapper(
-    ::CoDual{typeof(Core.kwcall)}, fargs::Vararg{CoDual,N}; cfg::Tcfg=nothing
-) where {Tcfg<:Union{Nothing,MooncakeRuleConfig},N}
+    ::CoDual{typeof(Core.kwcall)},
+    fargs::Vararg{CoDual,N};
+    cfg::CRC.RuleConfig=MooncakeRuleConfig(),
+) where {N}
 
     # Run forwards-pass.
     primals = tuple_map(primal, fargs)
     lazy_rdata = tuple_map(lazy_zero_rdata, primals)
-    y_primal, cr_pb = if cfg isa MooncakeRuleConfig
-        # pass the cfg object following the CRC rrule convention
-        Core.kwcall(primals[1], CRC.rrule, cfg, primals[2:end]...)
-    else
-        Core.kwcall(primals[1], CRC.rrule, primals[2:end]...)
-    end
+    # pass the cfg object following CRC.rrule convention -> defaults to CRC.rrule's fallback if cfg is not required.
+    y_primal, cr_pb = Core.kwcall(primals[1], CRC.rrule, cfg, primals[2:end]...)
     y_fdata = fdata(zero_tangent(y_primal))
 
     function pb!!(y_rdata)
@@ -678,10 +666,8 @@ end
 
 function construct_rrule_wrapper_def(arg_names, arg_types, where_params, cfg)
     call_args = Any[rrule_wrapper]
-    if !isnothing(cfg)
-        # Pass `cfg` object as a keyword argument to support specialized rrules.
-        push!(call_args, Expr(:parameters, Expr(:kw, :cfg, cfg)))
-    end
+    # Pass `cfg` object as a keyword argument to support specialized rrules.
+    push!(call_args, Expr(:parameters, Expr(:kw, :cfg, cfg)))
     append!(call_args, arg_names)
     body = Expr(:call, call_args...)
 
@@ -689,7 +675,7 @@ function construct_rrule_wrapper_def(arg_names, arg_types, where_params, cfg)
 end
 
 """
-    @from_chainrules ctx sig [has_kwargs=false mode=nothing cfg=nothing]
+    @from_chainrules ctx sig [has_kwargs=false mode=nothing cfg=MooncakeRuleConfig()]
 
 Convenience functionality to assist in using `ChainRuleCore.frule`s and
 `ChainRulesCore.rrule`s to write `frule!!`s and `rrule!!`s.
@@ -705,8 +691,9 @@ Convenience functionality to assist in using `ChainRuleCore.frule`s and
 - `mode=nothing`: the mode to produce rules for. By default, produces rules for both forward
     and reverse mode. If `mode=ForwardMode` only rules for forward mode are produced. If
     `mode=ReverseMode` only rules for reverse mode are produced.
-- `cfg`: Set to `MooncakeRuleConfig()` when the `ChainRulesCore.frule` and `ChainRulesCore.rrule` rules are intended exclusively for Mooncake.jl. 
-    Otherwise, set to `nothing` (the default).  See `ChainRulesCore.jl`’s  `RuleConfig` documentation for details.
+- `cfg`: Set to a valid `ChainRulesCore.RuleConfig` object for any valid AD backend (Mooncake.jl, Zygote.jl, Enzyme.jl etc.).
+    A valid AD backend is usually rule/function specific, refer to the corresponding `ChainRulesCore.frule` and `ChainRulesCore.rrule` to decide/test handling. 
+    Otherwise, this is set to `MooncakeRuleConfig()` (the default backend).  See `ChainRulesCore.jl`’s  `RuleConfig` documentation for details.
 
 # Example Usage
 
@@ -741,18 +728,18 @@ julia> # Check that the rule works as intended. Put this in your test suite.
 ## An Example with Keyword Arguments and ReverseMode
 
 ```jldoctest
-julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils, ReverseMode, MooncakeRuleConfig
+julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils, ReverseMode
 
 julia> import ChainRulesCore as CRC
 
 julia> foo(x::Real; cond::Bool) = cond ? 5x : 4x;
 
-julia> function CRC.rrule(::MooncakeRuleConfig, ::typeof(foo), x::Real; cond::Bool)  # This CRC.rrule is specific to Mooncake
+julia> function CRC.rrule(::typeof(foo), x::Real; cond::Bool)
            foo_pb(Ω::Real) = CRC.NoTangent(), cond ? 5Ω : 4Ω
            return foo(x; cond), foo_pb
        end;
 
-julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat} true ReverseMode MooncakeRuleConfig()
+julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat} true ReverseMode
 
 julia> _, pb = rrule!!(
            zero_fcodual(Core.kwcall),
@@ -812,7 +799,13 @@ great extent on complicated composite types. If `@from_chainrules` does not work
 case because the required method of either of these functions does not exist, please open an
 issue.
 """
-macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode, cfg=nothing)
+macro from_chainrules(
+    ctx,
+    sig::Expr,
+    has_kwargs::Bool=false,
+    mode=Mode,
+    cfg::CRC.RuleConfig=MooncakeRuleConfig(),
+)
     mode = mode == :ForwardMode ? ForwardMode : mode
     mode = mode == :ReverseMode ? ReverseMode : mode
     mode = mode == :Mode ? Mode : mode
@@ -827,7 +820,7 @@ macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode, cfg=not
     return _from_chainrules_impl(ctx, sig, has_kwargs, mode, cfg)
 end
 
-function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode, cfg)
+function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode, cfg::CRC.RuleConfig)
     arg_type_syms, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
@@ -916,11 +909,13 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode, cfg)
 end
 
 """
-    @from_rrule ctx sig [has_kwargs=false, cfg=nothing]
+    @from_rrule ctx sig [has_kwargs=false, cfg=MooncakeRuleConfig()]
 
 Equivalent to `@from_chainrules ctx sig has_kwargs ReverseMode cfg`. See
 [`@from_chainrules`](@ref) for more information.
 """
-macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false, cfg=nothing)
+macro from_rrule(
+    ctx, sig::Expr, has_kwargs::Bool=false, cfg::CRC.RuleConfig=MooncakeRuleConfig()
+)
     return _from_chainrules_impl(ctx, sig, has_kwargs, ReverseMode, cfg)
 end
