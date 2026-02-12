@@ -238,9 +238,9 @@ function maybe_widen_primitive_call_return_type(call::CC.CallMeta, argtypes::Vec
     rt = should_widen ? CC.widenconst(call.rt) : call.rt
 
     @static if VERSION ≥ v"1.11-"
-        return CC.CallMeta(rt, call.exct, call.effects, info)
+        return CC.CallMeta(rt, call.exct, call.effects, call.info)
     else
-        return CC.CallMeta(rt, call.effects, info)
+        return CC.CallMeta(rt, call.effects, call.info)
     end
 end
 
