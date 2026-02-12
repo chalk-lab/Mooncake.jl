@@ -800,11 +800,7 @@ case because the required method of either of these functions does not exist, pl
 issue.
 """
 macro from_chainrules(
-    ctx,
-    sig::Expr,
-    has_kwargs::Bool=false,
-    mode=Mode,
-    cfg::CRC.RuleConfig=MooncakeRuleConfig(),
+    ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode, cfg=:(MooncakeRuleConfig())
 )
     mode = mode == :ForwardMode ? ForwardMode : mode
     mode = mode == :ReverseMode ? ReverseMode : mode
@@ -914,8 +910,6 @@ end
 Equivalent to `@from_chainrules ctx sig has_kwargs ReverseMode cfg`. See
 [`@from_chainrules`](@ref) for more information.
 """
-macro from_rrule(
-    ctx, sig::Expr, has_kwargs::Bool=false, cfg::CRC.RuleConfig=MooncakeRuleConfig()
-)
+macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false, cfg=:(MooncakeRuleConfig()))
     return _from_chainrules_impl(ctx, sig, has_kwargs, ReverseMode, cfg)
 end
