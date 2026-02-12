@@ -204,37 +204,33 @@ function any_matches_primitive(applicable, C, M, world)
     false
 end
 
-# Decide whether to widen a primitive call's inferred return type from `CC.Const` to its
-# underlying Julia type — e.g. `Const(3.0)` to `Float64`.
+# Decide whether to widen a primitive call’s inferred return type from `CC.Const`
+# to its underlying Julia type (e.g. `Const(3.0)` → `Float64`).
 #
-# `CC.Const(val)` is an element of Julia's extended type lattice that records the exact
-# value a computation produces (see `Core.Const` and `Compiler/src/typelattice.jl`).  When
-# the compiler sees a call whose return type is `Const`, several optimisation passes can
-# replace the call with the literal value and delete the call site entirely:
+# `CC.Const(val)` records an exact value in Julia’s extended type lattice (see
+# `Core.Const` and `Compiler/src/typelattice.jl`). If a call is inferred as `Const`,
+# later passes may fold it away:
+#   - The inliner (`Compiler/src/ssair/inlining.jl`) rewrites it to a `ConstantCase`
+#     via `handle_single_case!`.
+#   - `compact!` (`Compiler/src/ssair/ir.jl`) propagates the literal through the
+#     rename table and deletes the dead statement.
 #
-#   - The inliner (`Compiler/src/ssair/inlining.jl`) turns such calls into a `ConstantCase`
-#     via `handle_single_case!`, which rewrites `ir[SSAValue(idx)][:stmt]` to the constant.
-#   - The `compact!` pass (`Compiler/src/ssair/ir.jl`) maps the SSA name to the literal in
-#     its rename table, making the original statement dead.
-#
-# For Mooncake primitives this is problematic: the call must survive into the final IR so
-# that the corresponding `rrule!!` runs during AD.  Widening the return type via
+# For Mooncake primitives, the call must remain in the final IR
+# so that the corresponding `rrule!!` executes during AD. Applying
 # `CC.widenconst` (defined in `Compiler/src/typelattice.jl` as
-# `widenconst(c::Const) = typeof(c.val)`) strips the `Const` marker and prevents folding.
-# This may over-widen when a primitive inherently returns a constant regardless of its
-# inputs, but distinguishing that from genuine const-prop would require re-running inference.
+# `widenconst(c::Const) = typeof(c.val)`) strips the `Const` wrapper and prevents
+# folding. This may over-widen if a primitive inherently returns a
+# constant, but such cases are rare and do not affect correctness.
 #
-# However, when every runtime argument is itself `Const`, the call is a genuine compile-time
-# constant (e.g. `sin(1.0)` where `1.0` is a literal in the source).  Folding is safe here
-# because the call can never see different values at runtime, so skipping the `rrule!!`
-# loses no derivative information.
+# If all runtime arguments are `Const`, the call is a genuine compile-time
+# constant (e.g. `sin(1.0)` with a literal argument), and folding is safe.
 #
-# `call`: the `CC.CallMeta` returned by Julia's abstract interpretation for this call site.
-# `argtypes`: inferred types for all arguments.  Position 1 is the callee; positions 2:end
-#   are the actual runtime arguments.
+# Arguments:
+#   - `call`: `CC.CallMeta` for this call site.
+#   - `argtypes`: inferred argument types (1 = callee, 2:end = runtime arguments).
 #
-# Returns `true` (widen needed) when `call.rt` is `Const` and at least one runtime argument
-# is not `Const`.  Returns `false` otherwise.
+# Returns `true` if `call.rt` is `Const` and at least one runtime argument is not
+# `Const`; otherwise `false`.
 function should_widen_primitive_call_return_type(call::CC.CallMeta, argtypes::Vector{Any})
     call.rt isa CC.Const || return false
     for n in 2:length(argtypes)
@@ -247,11 +243,6 @@ function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo, widen_rt::Bool)
     # If `widen_rt` is true, widen `call.rt` with `CC.widenconst`,  
     # discarding any `Const` information to prevent constant folding;  
     # otherwise, use `call.rt` unchanged.
-    #
-    # This drops value-level information tracked by inference  
-    # (e.g. `Const(3)` → `Int`), ensuring the call is not folded away.  
-    # For example, if `call.rt` is inferred as `Const(42)`, widening  
-    # yields `Int`, preserving the call so downstream rules still apply.
     rt = widen_rt ? CC.widenconst(call.rt) : call.rt
     @static if VERSION ≥ v"1.11-"
         return CC.CallMeta(rt, call.exct, call.effects, info)
