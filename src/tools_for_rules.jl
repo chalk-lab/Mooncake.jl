@@ -485,11 +485,8 @@ https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html
 If `dy == 0`, the gradient contributes nothing to the total gradient
 calculation, so a zero tangent is returned.
 
-Otherwise, return the user-provided `tangent`, which may be used to
-signal the presence of a non-differentiable point.
-
-This behavior may be overloaded to return alternative values
-(e.g., a NaN tangent) when required.
+Otherwise, return the user-provided `tangent` (eg, NaN), which may 
+be used to signal the presence of a non-differentiable point.
 """
 @inline function nondifferentiable_tangent_guard(
     dy::L, tangent::T

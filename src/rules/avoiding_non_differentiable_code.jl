@@ -17,6 +17,9 @@ end
 @zero_derivative MinimalCtx Tuple{Type{Float16},Any,RoundingMode}
 @zero_derivative MinimalCtx Tuple{typeof(==),Type,Type}
 
+# Optional rule to avoid unnecessary allocations on Julia 1.10
+@zero_derivative DefaultCtx Tuple{typeof(count),Any,Any}
+
 # Logging: String-related primitive rules
 using Base: getindex, getproperty
 using Base.Threads: Atomic

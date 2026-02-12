@@ -169,13 +169,17 @@ function Core.Compiler.abstract_call_gf_by_type(
             @static if VERSION < v"1.12-"
                 call = ret::CC.CallMeta
                 info = NoInlineCallInfo(call.info, atype)
-                return rewrap_callmeta(call, info)
+                # Keep primitives in caller IR by blocking inlining and
+                # return-value constant propagation.
+                _call = maybe_widen_primitive_call_return_type(call, argtypes)
+                return rewrap_callmeta(_call, info)
             else
                 return CC.Future{CC.CallMeta}(
                     ret::CC.Future, interp, sv
                 ) do call, interp, sv
                     info = NoInlineCallInfo(call.info, atype)
-                    return rewrap_callmeta(call, info)
+                    _call = maybe_widen_primitive_call_return_type(call, argtypes)
+                    return rewrap_callmeta(_call, info)
                 end
             end
         end
@@ -195,6 +199,49 @@ function any_matches_primitive(applicable, C, M, world)
         end
     end
     false
+end
+
+"""
+Decide whether to widen a primitive call’s inferred return type from `CC.Const`
+to its underlying Julia type (e.g. `Const(3.0)` → `Float64`).
+
+`CC.Const(val)` represents an exact value in Julia’s extended type lattice
+(see `Core.Const` and `Compiler/src/typelattice.jl`). If a call is inferred
+as `Const`, later compiler passes may fold it away:
+
+  - The inliner rewrites it to a `ConstantCase`.
+  - `compact!` propagates the literal and removes the dead statement.
+
+For Mooncake primitives, the call must remain in the final IR so that the
+corresponding `rrule!!` executes during AD. Applying `CC.widenconst`
+removes the `Const` wrapper and prevents folding.
+
+Widening is performed only when:
+  - the inferred return type is `Const`, and
+  - at least one runtime argument (i.e. excluding the callee) is not `Const`.
+
+If all runtime arguments are `Const`, the call is a genuine compile-time
+constant (e.g. `sin(1.0)` with a literal argument), and folding is safe.
+
+Arguments:
+  - `call`: `CC.CallMeta` for this call site.
+  - `argtypes`: inferred argument types
+      * index 1  → callee
+      * index 2:end → runtime arguments
+"""
+function maybe_widen_primitive_call_return_type(call::CC.CallMeta, argtypes::Vector{Any})
+    # Check whether any runtime argument is not `Const`
+    has_nonconst_runtime_arg = any(i -> !(argtypes[i] isa CC.Const), 2:length(argtypes))
+
+    should_widen = call.rt isa CC.Const && has_nonconst_runtime_arg
+
+    rt = should_widen ? CC.widenconst(call.rt) : call.rt
+
+    @static if VERSION ≥ v"1.11-"
+        return CC.CallMeta(rt, call.exct, call.effects, call.info)
+    else
+        return CC.CallMeta(rt, call.effects, call.info)
+    end
 end
 
 function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo)
