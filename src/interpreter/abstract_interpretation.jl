@@ -168,18 +168,15 @@ function Core.Compiler.abstract_call_gf_by_type(
         if any_prim
             @static if VERSION < v"1.12-"
                 call = ret::CC.CallMeta
-                info = NoInlineCallInfo(call.info, atype)
-                # Keep primitives in caller IR by blocking inlining and
-                # return-value constant propagation.
-                _call = maybe_widen_primitive_call_return_type(call, argtypes)
-                return rewrap_callmeta(_call, info)
+                # Keep primitives in caller IR by blocking const-folding and inlining
+                _call = widen_rettype_callmeta(call, argtypes)
+                return noinline_callmeta(_call, atype)
             else
                 return CC.Future{CC.CallMeta}(
                     ret::CC.Future, interp, sv
                 ) do call, interp, sv
-                    info = NoInlineCallInfo(call.info, atype)
-                    _call = maybe_widen_primitive_call_return_type(call, argtypes)
-                    return rewrap_callmeta(_call, info)
+                    _call = widen_rettype_callmeta(call, argtypes)
+                    return noinline_callmeta(_call, atype)
                 end
             end
         end
@@ -202,6 +199,8 @@ function any_matches_primitive(applicable, C, M, world)
 end
 
 """
+    widen_rettype_callmeta(call, argtypes)
+
 Decide whether to widen a primitive call’s inferred return type from `CC.Const`
 to its underlying Julia type (e.g. `Const(3.0)` → `Float64`).
 
@@ -224,12 +223,10 @@ If all runtime arguments are `Const`, the call is a genuine compile-time
 constant (e.g. `sin(1.0)` with a literal argument), and folding is safe.
 
 Arguments:
-  - `call`: `CC.CallMeta` for this call site.
-  - `argtypes`: inferred argument types
-      * index 1  → callee
-      * index 2:end → runtime arguments
+  - `call`: `CC.CallMeta` for the call site
+  - `argtypes`: inferred argument types (1 = callee, 2:end = runtime args)
 """
-function maybe_widen_primitive_call_return_type(call::CC.CallMeta, argtypes::Vector{Any})
+function widen_rettype_callmeta(call::CC.CallMeta, argtypes::Vector{Any})
     # Check whether any runtime argument is not `Const`
     has_nonconst_runtime_arg = any(i -> !(argtypes[i] isa CC.Const), 2:length(argtypes))
 
@@ -244,7 +241,8 @@ function maybe_widen_primitive_call_return_type(call::CC.CallMeta, argtypes::Vec
     end
 end
 
-function rewrap_callmeta(call::CC.CallMeta, info::CC.CallInfo)
+function noinline_callmeta(call::CC.CallMeta, @nospecialize(atype))
+    info = NoInlineCallInfo(call.info, atype)
     @static if VERSION ≥ v"1.11-"
         return CC.CallMeta(call.rt, call.exct, call.effects, info)
     else
