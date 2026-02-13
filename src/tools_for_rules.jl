@@ -797,7 +797,7 @@ case because the required method of either of these functions does not exist, pl
 issue.
 """
 macro from_chainrules(
-    ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode, cfg=:(MooncakeRuleConfig())
+    ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode, cfg=:(Mooncake.MooncakeRuleConfig())
 )
     mode = mode == :ForwardMode ? ForwardMode : mode
     mode = mode == :ReverseMode ? ReverseMode : mode
@@ -911,7 +911,9 @@ end
 Equivalent to `@from_chainrules ctx sig has_kwargs ReverseMode cfg`. See
 [`@from_chainrules`](@ref) for more information.
 """
-macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false, cfg=:(MooncakeRuleConfig()))
+macro from_rrule(
+    ctx, sig::Expr, has_kwargs::Bool=false, cfg=:(Mooncake.MooncakeRuleConfig())
+)
     # evaluate cfg expr in user's module
     config = Base.eval(__module__, cfg)
     return _from_chainrules_impl(ctx, sig, has_kwargs, ReverseMode, config)
