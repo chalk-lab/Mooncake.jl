@@ -98,6 +98,7 @@ function build_frule(
             dual_oc = misty_closure(
                 info.dual_ret_type, dual_ir, captures...; do_compile=true
             )
+            sig = flatten_va_sig(sig, info.isva, info.nargs)
             raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(dual_oc)
             rule = debug_mode ? DebugFRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
@@ -335,12 +336,7 @@ end
 function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
 )
-    # TODO: do we need this?
-    #=if !isdefined(stmt, :val)
-        # UpsilonNode with Union{} type and #undef val
-        @assert get_ir(dual_ir, ssa, :type) === Union{}
-        stmt = UpsilonNode(Mooncake.PossiblyUninitTangent{Union{}}())
-    else=#if !(stmt.val isa Union{Argument,SSAValue})
+    if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
@@ -500,17 +496,17 @@ end
 function frule_type(
     interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
 ) where {C}
-    primal_sig = _get_sig(mi)
-    if is_primitive(C, ForwardMode, primal_sig, interp.world)
+    if is_primitive(C, ForwardMode, _get_sig(mi), interp.world)
         return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
     end
     ir, _ = lookup_ir(interp, mi)
     nargs = length(ir.argtypes)
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
+    sig = Tuple{arg_types...}
     dual_args_type = Tuple{map(dual_type, arg_types)...}
     closure_type = RuleMC{dual_args_type,dual_ret_type(ir)}
-    Tderived_rule = DerivedFRule{primal_sig,closure_type,isva,nargs}
+    Tderived_rule = DerivedFRule{sig,closure_type,isva,nargs}
     return debug_mode ? DebugFRule{Tderived_rule} : Tderived_rule
 end
 

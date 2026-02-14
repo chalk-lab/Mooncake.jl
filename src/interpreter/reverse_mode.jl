@@ -1026,6 +1026,23 @@ _get_sig(sig::Type) = sig
 _get_sig(mi::Core.MethodInstance) = mi.specTypes
 _get_sig(mc::MistyClosure) = Tuple{map(CC.widenconst, mc.ir[].argtypes)...}
 
+"""
+Flatten the signature of a vararg method to group the
+possibly multiple vararg arguments (what users pass to the function)
+into a single tuple argument matching `ir.argtypes`.
+"""
+function flatten_va_sig(sig, isva, nargs)
+    @nospecialize sig
+
+    if isva
+        return Tuple{
+            sig.parameters[1:(nargs - 1)]...,Tuple{sig.parameters[nargs:end]...}
+        }
+    else
+        return sig
+    end
+end
+
 function forwards_ret_type(primal_ir::IRCode)
     return fcodual_type(compute_ir_rettype(primal_ir))
 end
@@ -1105,7 +1122,9 @@ If `debug_mode` is `true`, then all calls to rules are replaced with calls to `D
 function build_rrule(
     interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, silence_debug_messages=true
 ) where {C}
-    build_rrule_checks(interp, debug_mode, silence_debug_messages)
+    @nospecialize sig_or_mi
+
+    build_rrule_checks(interp, sig_or_mi, debug_mode, silence_debug_messages)
 
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
@@ -1118,7 +1137,9 @@ function build_rrule(
 end
 
 # Separated out so we can make an frule!! for it, for forward-over-reverse.
-function build_rrule_checks(interp::MooncakeInterpreter, debug_mode::Bool, silence_debug_messages::Bool)
+function build_rrule_checks(interp::MooncakeInterpreter, sig_or_mi, debug_mode::Bool, silence_debug_messages::Bool)
+    @nospecialize sig_or_mi
+
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
     # than the current world age.
     if Base.get_world_counter() > interp.world
@@ -1139,6 +1160,8 @@ end
 function build_derived_rrule(
     interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool,
 ) where {C}
+    @nospecialize sig_or_mi sig
+
     # We don't have a hand-coded rule, so derived one.
     lock(MOONCAKE_INFERENCE_LOCK)
     try
@@ -1155,12 +1178,7 @@ function build_derived_rrule(
 
             # Compute the signature. Needs careful handling with varargs.
             nargs = num_args(dri.info)
-            if dri.isva
-                sig = Tuple{
-                    sig.parameters[1:(nargs - 1)]...,Tuple{sig.parameters[nargs:end]...}
-                }
-            end
-
+            sig = flatten_va_sig(sig, dri.isva, nargs)
             raw_rule = DerivedRule(sig, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
             rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule

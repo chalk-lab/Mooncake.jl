@@ -1,5 +1,5 @@
 @zero_derivative MinimalCtx Tuple{typeof(get_interpreter),Type{<:Mode}}
-@zero_derivative MinimalCtx Tuple{typeof(build_rrule_checks),MooncakeInterpreter,Bool,Bool}
+@zero_derivative MinimalCtx Tuple{typeof(build_rrule_checks),MooncakeInterpreter,Any,Bool,Bool}
 # TODO: is this still needed?
 @zero_derivative MinimalCtx Tuple{typeof(is_primitive),Type,Type{<:Mode},Type,UInt}
 
@@ -9,11 +9,13 @@
 
 function frule!!(
     ::Dual{typeof(build_derived_rrule)},
-    _interp::Dual{<:MooncakeInterpreter},
+    _interp::Dual{<:MooncakeInterpreter{C}},
     _sig_or_mi::Dual,
     _sig::Dual,
     _debug_mode::Dual{Bool},
-)
+) where {C}
+    @nospecialize _sig_or_mi _sig
+
     interp = primal(_interp)
     sig_or_mi = primal(_sig_or_mi)
     sig = primal(_sig)
@@ -22,14 +24,6 @@ function frule!!(
     # Derive **unoptimized** forwards- and reverse-pass IR.
     dri = generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
 
-    # Compute the signature. Needs careful handling with varargs.
-    nargs = num_args(dri.info)
-    if dri.isva
-        sig = Tuple{
-            sig.parameters[1:(nargs - 1)]...,Tuple{sig.parameters[nargs:end]...}
-        }
-    end
-
     # Optimize as much as possible, then generate primal
     raw_rule = let
         optimized_fwd_ir = optimise_ir!(CC.copy(dri.fwd_ir))
@@ -37,6 +31,8 @@ function frule!!(
         fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
         rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
 
+        nargs = num_args(dri.info)
+        sig = flatten_va_sig(sig, dri.isva, nargs)
         DerivedRule(sig, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
     end
 
@@ -44,8 +40,7 @@ function frule!!(
     raw_rule_tangent = let
         # Optimize as much as possible, but with a forward-mode interpreter
         # that will block inlining of frules
-        # TODO: which ctx to use here?
-        interp_forward = MooncakeInterpreter(DefaultCtx, ForwardMode; world=interp.world)
+        interp_forward = MooncakeInterpreter(C, ForwardMode; world=interp.world)
 
         optimized_fwd_ir = optimise_ir!(dri.fwd_ir; interp=interp_forward)
         optimized_rvs_ir = optimise_ir!(dri.rvs_ir; interp=interp_forward)
@@ -55,14 +50,13 @@ function frule!!(
         # Build tangents at the same time to preserve aliasing (e.g. for comms)
         captures_tangent = zero_tangent((fwd_oc.oc.captures, rvs_oc.oc.captures))
 
-        # TODO: debug_mode=true makes the rule fail somehow; something related to varargs
         fwd_oc_tangent = MistyClosureTangent(
             captures_tangent[1],
-            build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode=false)
+            build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode)
         )
         rvs_oc_tangent = MistyClosureTangent(
             captures_tangent[2],
-            build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode=false)
+            build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode)
         )
 
         Tangent((;
