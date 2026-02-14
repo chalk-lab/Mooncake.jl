@@ -38,6 +38,8 @@ end
             RegTestStruct() = new()
         end
         f(x) = RegTestStruct()
-        TestUtils.test_rule(StableRNG(123), f, 1.0; perf_flag=:none, is_primitive=false, mode=ForwardMode)
+        TestUtils.test_rule(
+            StableRNG(123), f, 1.0; perf_flag=:none, is_primitive=false, mode=ForwardMode
+        )
     end
 end;
