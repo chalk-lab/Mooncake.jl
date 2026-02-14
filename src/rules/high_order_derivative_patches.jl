@@ -1,5 +1,7 @@
 @zero_derivative MinimalCtx Tuple{typeof(get_interpreter),Type{<:Mode}}
-@zero_derivative MinimalCtx Tuple{typeof(build_rrule_checks),MooncakeInterpreter,Any,Bool,Bool}
+@zero_derivative MinimalCtx Tuple{
+    typeof(build_rrule_checks),MooncakeInterpreter,Any,Bool,Bool
+}
 # TODO: is this still needed?
 @zero_derivative MinimalCtx Tuple{typeof(is_primitive),Type,Type{<:Mode},Type,UInt}
 
@@ -52,11 +54,11 @@ function frule!!(
 
         fwd_oc_tangent = MistyClosureTangent(
             captures_tangent[1],
-            build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode)
+            build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode),
         )
         rvs_oc_tangent = MistyClosureTangent(
             captures_tangent[2],
-            build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode)
+            build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode),
         )
 
         Tangent((;

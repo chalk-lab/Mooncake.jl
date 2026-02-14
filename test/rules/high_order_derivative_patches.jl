@@ -127,11 +127,7 @@ end
             value_and_gradient!!(rvscache, f, y)[2][2]
         end
         fwdcache = prepare_derivative_cache(grad, x; config)
-        hvp(y) = tangent(value_and_derivative!!(
-            fwdcache,
-            zero_dual(grad),
-            Dual(x, y),
-        ))
+        hvp(y) = tangent(value_and_derivative!!(fwdcache, zero_dual(grad), Dual(x, y)))
         n = length(x)
         H = zeros(n, n)
         for i in 1:n

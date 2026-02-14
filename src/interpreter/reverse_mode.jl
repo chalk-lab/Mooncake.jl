@@ -1035,9 +1035,7 @@ function flatten_va_sig(sig, isva, nargs)
     @nospecialize sig
 
     if isva
-        return Tuple{
-            sig.parameters[1:(nargs - 1)]...,Tuple{sig.parameters[nargs:end]...}
-        }
+        return Tuple{sig.parameters[1:(nargs - 1)]...,Tuple{sig.parameters[nargs:end]...}}
     else
         return sig
     end
@@ -1137,7 +1135,9 @@ function build_rrule(
 end
 
 # Separated out so we can make an frule!! for it, for forward-over-reverse.
-function build_rrule_checks(interp::MooncakeInterpreter, sig_or_mi, debug_mode::Bool, silence_debug_messages::Bool)
+function build_rrule_checks(
+    interp::MooncakeInterpreter, sig_or_mi, debug_mode::Bool, silence_debug_messages::Bool
+)
     @nospecialize sig_or_mi
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
@@ -1158,7 +1158,7 @@ function build_rrule_checks(interp::MooncakeInterpreter, sig_or_mi, debug_mode::
 end
 
 function build_derived_rrule(
-    interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool,
+    interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool
 ) where {C}
     @nospecialize sig_or_mi sig
 
@@ -1203,7 +1203,11 @@ end
 Used by `build_rrule`, and the various debugging tools: primal_ir, fwds_ir, adjoint_ir.
 """
 function generate_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true, do_optimize=true
+    interp::MooncakeInterpreter,
+    sig_or_mi;
+    debug_mode=false,
+    do_inline=true,
+    do_optimize=true,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
