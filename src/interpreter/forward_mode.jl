@@ -135,7 +135,6 @@ function verify_args(r::DerivedFRule{sig}, x) where {sig}
         map(_typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r))))...
     }
     Tx <: sig && return nothing
-    @show map(_typeof ∘ primal, x)
     throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
 end
 

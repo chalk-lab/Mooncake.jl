@@ -1033,11 +1033,10 @@ into a single tuple argument matching `ir.argtypes`.
 """
 function flatten_va_sig(sig, isva, nargs)
     @nospecialize sig
-
-    if isva
-        return Tuple{sig.parameters[1:(nargs - 1)]...,Tuple{sig.parameters[nargs:end]...}}
+    return if isva
+        Tuple{sig.parameters[1:(nargs - 1)]...,Tuple{sig.parameters[nargs:end]...}}
     else
-        return sig
+        sig
     end
 end
 
