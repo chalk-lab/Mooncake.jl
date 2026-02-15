@@ -672,6 +672,31 @@ function construct_rrule_wrapper_def(arg_names, arg_types, where_params, cfg)
 end
 
 """
+TODO : add docstrings
+"""
+function set_CRC_RuleConfig(cfg, __module__)
+    # Default to MooncakeRuleConfig
+    if isnothing(cfg)
+        return MooncakeRuleConfig()
+    else
+        # if cfg is provided, evaluate cfg expr in user's module only.
+        cfg = Base.eval(__module__, cfg)
+
+        # check for invalid cfg object
+        if !(typeof(cfg) <: CRC.RuleConfig)
+            throw(
+                ArgumentError(
+                    "@from_rrule cfg must be a subtype of CRC.RuleConfig " *
+                    " (given invalid cfg object); got $(cfg)",
+                ),
+            )
+        end
+
+        return cfg
+    end
+end
+
+"""
     @from_chainrules ctx sig [has_kwargs=false mode=nothing cfg=MooncakeRuleConfig()]
 
 Convenience functionality to assist in using `ChainRuleCore.frule`s and
@@ -796,9 +821,7 @@ great extent on complicated composite types. If `@from_chainrules` does not work
 case because the required method of either of these functions does not exist, please open an
 issue.
 """
-macro from_chainrules(
-    ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode, cfg=:(Mooncake.MooncakeRuleConfig())
-)
+macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode, cfg=nothing)
     mode = mode == :ForwardMode ? ForwardMode : mode
     mode = mode == :ReverseMode ? ReverseMode : mode
     mode = mode == :Mode ? Mode : mode
@@ -811,10 +834,10 @@ macro from_chainrules(
         )
     end
 
-    # evaluate cfg expr in user's module
-    config = Base.eval(__module__, cfg)
+    # handle CRC config passing
+    cfg = set_CRC_RuleConfig(cfg, __module__)
 
-    return _from_chainrules_impl(ctx, sig, has_kwargs, mode, config)
+    return _from_chainrules_impl(ctx, sig, has_kwargs, mode, cfg)
 end
 
 function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode, cfg::CRC.RuleConfig)
@@ -911,10 +934,9 @@ end
 Equivalent to `@from_chainrules ctx sig has_kwargs ReverseMode cfg`. See
 [`@from_chainrules`](@ref) for more information.
 """
-macro from_rrule(
-    ctx, sig::Expr, has_kwargs::Bool=false, cfg=:(Mooncake.MooncakeRuleConfig())
-)
-    # evaluate cfg expr in user's module
-    config = Base.eval(__module__, cfg)
-    return _from_chainrules_impl(ctx, sig, has_kwargs, ReverseMode, config)
+macro from_rrule(ctx, sig::Expr, has_kwargs::Bool=false, cfg=nothing)
+    # handle CRC config passing
+    cfg = set_CRC_RuleConfig(cfg, __module__)
+
+    return _from_chainrules_impl(ctx, sig, has_kwargs, ReverseMode, cfg)
 end
