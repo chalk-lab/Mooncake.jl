@@ -409,15 +409,20 @@ function increment_and_get_rdata!(
     return NoRData()
 end
 
+# dispatch for handling Tuple type RData
 function increment_and_get_rdata!(
     f::NoFData, r::Tuple{T,T}, t::CRC.Tangent{P,Tuple{T,T}}
 ) where {P,T}
+    # Apply element wise & recurse over a possible nested structure
+    # return Tuple sum of rdata. 
     return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t)
 end
 
+# dispatch for Tuple type FData where elements are Arrays.
 function increment_and_get_rdata!(
     f::Tuple{T,T}, r::NoRData, t::CRC.Tangent{P,Tuple{T,T}}
 ) where {P,M<:Base.IEEEFloat,T<:AbstractArray{M}}
+    # increment f by chainrules Tuple tangent fdata got via .backing accessor.
     increment!!(f, t.backing)
     return NoRData()
 end
