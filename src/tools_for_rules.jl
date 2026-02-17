@@ -409,19 +409,16 @@ function increment_and_get_rdata!(
     return NoRData()
 end
 
-function Mooncake.increment_and_get_rdata!(
-    f::NoFData, r::Tuple{T,T}, t::Tangent{P,Tuple{T,T}}
+function increment_and_get_rdata!(
+    f::NoFData, r::Tuple{T,T}, t::CRC.Tangent{P,Tuple{T,T}}
 ) where {P,T}
-    return (
-        Mooncake.increment_and_get_rdata!(f, r[1], t[1]),
-        Mooncake.increment_and_get_rdata!(f, r[2], t[2]),
-    )
+    return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t)
 end
 
-function Mooncake.increment_and_get_rdata!(
-    f::Tuple{T,T}, r::NoRData, t::Tangent{P,Tuple{T,T}}
-) where {P,M<:Base.IEEEFloat,T<:AbstractArray}
-    Mooncake.increment!!(f, t.backing)
+function increment_and_get_rdata!(
+    f::Tuple{T,T}, r::NoRData, t::CRC.Tangent{P,Tuple{T,T}}
+) where {P,M<:Base.IEEEFloat,T<:AbstractArray{M}}
+    increment!!(f, t.backing)
     return NoRData()
 end
 
