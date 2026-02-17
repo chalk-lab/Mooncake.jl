@@ -408,29 +408,22 @@ function increment_and_get_rdata!(
     increment!!(f, t)
     return NoRData()
 end
-
-# In https://github.com/SciML/Integrals.jl/pull/319, this comes up while handling Domain's Derivatives
-# dispatch for handling Tuple type RData 
-function increment_and_get_rdata!(
-    f::NoFData, r::Tuple{T,T}, t::CRC.Tangent{P,Tuple{T,T}}
-) where {P,T}
-    # Apply element wise & recurse over a possible nested structure
-    # return Tuple sum of rdata. 
-    return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t)
-end
-
-# dispatch for Tuple type FData where elements are Arrays
-function increment_and_get_rdata!(
-    f::Tuple{T,T}, r::NoRData, t::CRC.Tangent{P,Tuple{T,T}}
-) where {P,M<:Base.IEEEFloat,T<:AbstractArray{M}}
-    # increment f by chainrules Tuple tangent fdata got via .backing field.
-    increment!!(f, t.backing)
-    return NoRData()
-end
-
 increment_and_get_rdata!(::Any, r, ::CRC.NoTangent) = r
 function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
+end
+
+# This comes up in for example: https://github.com/SciML/Integrals.jl/pull/319 while handling Domain's gradients.
+function increment_and_get_rdata!(
+    f::NoFData, r::Tuple{T,T}, t::CRC.Tangent{P,Tuple{T,T}}
+) where {P,T}
+    return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t.backing)
+end
+function increment_and_get_rdata!(
+    f::Tuple{T,T}, r::NoRData, t::CRC.Tangent{P,Tuple{T,T}}
+) where {P,M<:Base.IEEEFloat,T<:AbstractArray{M}}
+    increment!!(f, t.backing)
+    return r
 end
 
 # If a ChainRulesCore complex tangent is `NotImplemented`, return a `NaN`-filled Mooncake tangent.
