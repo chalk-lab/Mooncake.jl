@@ -414,12 +414,18 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
 end
 
 # The need for these dispatches comes up for example in: https://github.com/SciML/Integrals.jl/pull/319 while handling Domain's gradients.
-function increment_and_get_rdata!(f::NoFData, r::Tuple, t::CRC.Tangent{P,<:Tuple}) where {P}
-    return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t.backing)
+function increment_and_get_rdata!(f, r, t::CRC.Tangent{P,<:Tuple}) where {P}
+    return increment_and_get_rdata!(f, r, t.backing)
 end
-function increment_and_get_rdata!(f::Tuple, r::NoRData, t::CRC.Tangent{P,<:Tuple}) where {P}
-    increment!!(f, t.backing)
+function increment_and_get_rdata!(f::NoFData, r::Tuple, t::Tuple)
+    return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t)
+end
+function increment_and_get_rdata!(f::Tuple, r::NoRData, t::Tuple)
+    increment!!(f, t)
     return r
+end
+function increment_and_get_rdata!(f::Tuple, r::Tuple, t::Tuple)
+    return map((fi, ri, ti) -> increment_and_get_rdata!(fi, ri, ti), f, r, t)
 end
 
 # If a ChainRulesCore complex tangent is `NotImplemented`, return a `NaN`-filled Mooncake tangent.
