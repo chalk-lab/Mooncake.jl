@@ -262,15 +262,15 @@ function _zero_derivative_impl(ctx, sig, mode)
     is_vararg = arg_type_symbols[end] == Expr(:escape, :Vararg)
     if is_vararg
         arg_types_deriv = vcat(
-            map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end-1)]),
+            map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
             :(Vararg{Mooncake.Dual}),
         )
         arg_types_adjoint = vcat(
-            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end-1)]),
+            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
             :(Vararg{Mooncake.CoDual}),
         )
         splat_symbol = Expr(Symbol("..."), arg_names[end])
-        tmp = arg_names[1:(end-1)]
+        tmp = arg_names[1:(end - 1)]
         body_deriv = Expr(:call, Mooncake.zero_derivative, tmp..., splat_symbol)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, tmp..., splat_symbol)
     else
