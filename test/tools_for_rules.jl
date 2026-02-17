@@ -14,9 +14,7 @@ using Mooncake:
     ForwardMode,
     ReverseMode,
     NoFData,
-    NoRData,
-    increment_and_get_rdata!
-
+    NoRData
 const CRC = ChainRulesCore
 
 local_function(x) = 3x
@@ -312,7 +310,7 @@ end
                 r = (1.0, 2.0)
                 t = ChainRulesCore.Tangent{Tuple{Float64,Float64}}(0.1, 0.2)
 
-                result = increment_and_get_rdata!(f_no, r, t)
+                result = Mooncake.increment_and_get_rdata!(f_no, r, t)
 
                 @test result isa Tuple{Float64,Float64}
                 @test result[1] ≈ 1.1
@@ -329,7 +327,7 @@ end
                 t_val2 = [0.2, 0.2]
                 t = ChainRulesCore.Tangent{Any}(t_val1, t_val2)
 
-                result = increment_and_get_rdata!(f, r_no, t)
+                result = Mooncake.increment_and_get_rdata!(f, r_no, t)
 
                 @test result isa NoRData
                 @test f1 ≈ [1.1, 1.1]
