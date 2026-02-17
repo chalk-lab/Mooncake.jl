@@ -310,7 +310,7 @@ end
             @testset "Tuple map dispatch (NoFData)" begin
                 # f, r, t - (NoFData, Tuple{T,T}, Tangent{P, Tuple{T,T}})
                 r = (1.0, 2.0)
-                t = CRC.Tangent{Tuple{Float64,Float64}}(0.1, 0.2)
+                t = ChainRulesCore.Tangent{Tuple{Float64,Float64}}(0.1, 0.2)
 
                 result = increment_and_get_rdata!(f_no, r, t)
 
@@ -327,7 +327,7 @@ end
 
                 t_val1 = [0.1, 0.1]
                 t_val2 = [0.2, 0.2]
-                t = CRC.Tangent{Any}(t_val1, t_val2)
+                t = ChainRulesCore.Tangent{Any}(t_val1, t_val2)
 
                 result = increment_and_get_rdata!(f, r_no, t)
 
