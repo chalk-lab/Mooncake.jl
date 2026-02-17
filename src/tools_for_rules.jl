@@ -413,7 +413,10 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
-# The need for these dispatches comes up for example in: https://github.com/SciML/Integrals.jl/pull/319 while handling Domain's gradients.
+# Tuple tangents from ChainRulesCore require special handling because tuple elements
+# may be a mix of types: some with only rdata (e.g., scalars), some with only fdata
+# (e.g., arrays), and some with both. These four dispatches for increment_and_get_rdata!
+# handle all the possible cases for when the ChainRulesCore.Tangent has Tuple type data.
 function increment_and_get_rdata!(f, r, t::CRC.Tangent{P,<:Tuple}) where {P}
     return increment_and_get_rdata!(f, r, t.backing)
 end
@@ -422,7 +425,7 @@ function increment_and_get_rdata!(f::NoFData, r::Tuple, t::Tuple)
 end
 function increment_and_get_rdata!(f::Tuple, r::NoRData, t::Tuple)
     increment!!(f, t)
-    return r
+    return NoRData()
 end
 function increment_and_get_rdata!(f::Tuple, r::Tuple, t::Tuple)
     return map((fi, ri, ti) -> increment_and_get_rdata!(fi, ri, ti), f, r, t)
