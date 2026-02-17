@@ -12,7 +12,10 @@ using Mooncake:
     DefaultCtx,
     @from_chainrules,
     ForwardMode,
-    ReverseMode
+    ReverseMode,
+    NoFData,
+    NoRData,
+    increment_and_get_rdata!
 
 const CRC = ChainRulesCore
 
@@ -296,6 +299,41 @@ end
             for expr in bad_mode_exprs
                 err = @test_throws LoadError eval(expr)
                 @test err.value.error isa ArgumentError
+            end
+        end
+
+        @testset "increment_and_get_rdata! specialized dispatches" begin
+            # Setup common types
+            f_no = NoFData()
+            r_no = NoRData()
+
+            @testset "Tuple map dispatch (NoFData)" begin
+                # f, r, t - (NoFData, Tuple{T,T}, Tangent{P, Tuple{T,T}})
+                r = (1.0, 2.0)
+                t = CRC.Tangent{Tuple{Float64,Float64}}(0.1, 0.2)
+
+                result = increment_and_get_rdata!(f_no, r, t)
+
+                @test result isa Tuple{Float64,Float64}
+                @test result[1] ≈ 1.1
+                @test result[2] ≈ 2.2
+            end
+
+            @testset "Array Tuple increment!! dispatch (NoRData)" begin
+                # f, r, t - (Tuple{T,T}, NoRData, Tangent{P, Tuple{T,T}})
+                f1 = [1.0, 1.0]
+                f2 = [2.0, 2.0]
+                f = (f1, f2)
+
+                t_val1 = [0.1, 0.1]
+                t_val2 = [0.2, 0.2]
+                t = CRC.Tangent{Any}(t_val1, t_val2)
+
+                result = increment_and_get_rdata!(f, r_no, t)
+
+                @test result isa NoRData
+                @test f1 ≈ [1.1, 1.1]
+                @test f2 ≈ [2.2, 2.2]
             end
         end
     end
