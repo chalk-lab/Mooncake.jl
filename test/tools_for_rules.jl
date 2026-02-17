@@ -15,6 +15,7 @@ using Mooncake:
     ReverseMode,
     NoFData,
     NoRData
+
 const CRC = ChainRulesCore
 
 local_function(x) = 3x
@@ -300,36 +301,36 @@ end
             end
         end
 
-        @testset "increment_and_get_rdata! specialized dispatches" begin
+        @testset "increment_and_get_rdata!(f, r, t) specialized dispatches" begin
             # Setup common types
             f_no = NoFData()
             r_no = NoRData()
 
             @testset "Tuple map dispatch (NoFData)" begin
-                # f, r, t - (NoFData, Tuple{T,T}, Tangent{P, Tuple{T,T}})
+                # f, r, t - NoFData, Tuple, Tangent{P, Tuple}
                 r = (1.0, 2.0)
-                t = ChainRulesCore.Tangent{Tuple{Float64,Float64}}(0.1, 0.2)
+                t = ChainRulesCore.Tangent{Any,typeof(r)}((0.1, 0.2))
 
                 result = Mooncake.increment_and_get_rdata!(f_no, r, t)
 
-                @test result isa Tuple{Float64,Float64}
+                @test result isa typeof(r)
                 @test result[1] ≈ 1.1
                 @test result[2] ≈ 2.2
             end
 
             @testset "Array Tuple increment!! dispatch (NoRData)" begin
-                # f, r, t - (Tuple{T,T}, NoRData, Tangent{P, Tuple{T,T}})
+                # f, r, t - Tuple{Array...}, NoRData, Tangent{P, Tuple{Array...}}
                 f1 = [1.0, 1.0]
                 f2 = [2.0, 2.0]
                 f = (f1, f2)
 
                 t_val1 = [0.1, 0.1]
                 t_val2 = [0.2, 0.2]
-                t = ChainRulesCore.Tangent{Any}(t_val1, t_val2)
+                t = ChainRulesCore.Tangent{Any,typeof(f)}((t_val1, t_val2))
 
                 result = Mooncake.increment_and_get_rdata!(f, r_no, t)
 
-                @test result isa NoRData
+                @test result isa typeof(r_no)
                 @test f1 ≈ [1.1, 1.1]
                 @test f2 ≈ [2.2, 2.2]
             end

@@ -262,15 +262,15 @@ function _zero_derivative_impl(ctx, sig, mode)
     is_vararg = arg_type_symbols[end] == Expr(:escape, :Vararg)
     if is_vararg
         arg_types_deriv = vcat(
-            map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
+            map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end-1)]),
             :(Vararg{Mooncake.Dual}),
         )
         arg_types_adjoint = vcat(
-            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
+            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end-1)]),
             :(Vararg{Mooncake.CoDual}),
         )
         splat_symbol = Expr(Symbol("..."), arg_names[end])
-        tmp = arg_names[1:(end - 1)]
+        tmp = arg_names[1:(end-1)]
         body_deriv = Expr(:call, Mooncake.zero_derivative, tmp..., splat_symbol)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, tmp..., splat_symbol)
     else
@@ -413,15 +413,11 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
-# This comes up in for example: https://github.com/SciML/Integrals.jl/pull/319 while handling Domain's gradients.
-function increment_and_get_rdata!(
-    f::NoFData, r::Tuple{T,T}, t::CRC.Tangent{P,Tuple{T,T}}
-) where {P,T}
+# The need for these dispatches comes up for example in: https://github.com/SciML/Integrals.jl/pull/319 while handling Domain's gradients.
+function increment_and_get_rdata!(f::NoFData, r::Tuple, t::CRC.Tangent{P,<:Tuple}) where {P}
     return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t.backing)
 end
-function increment_and_get_rdata!(
-    f::Tuple{T,T}, r::NoRData, t::CRC.Tangent{P,Tuple{T,T}}
-) where {P,M<:Base.IEEEFloat,T<:AbstractArray{M}}
+function increment_and_get_rdata!(f::Tuple, r::NoRData, t::CRC.Tangent{P,<:Tuple}) where {P}
     increment!!(f, t.backing)
     return r
 end
