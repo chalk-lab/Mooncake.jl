@@ -262,15 +262,15 @@ function _zero_derivative_impl(ctx, sig, mode)
     is_vararg = arg_type_symbols[end] == Expr(:escape, :Vararg)
     if is_vararg
         arg_types_deriv = vcat(
-            map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
+            map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end-1)]),
             :(Vararg{Mooncake.Dual}),
         )
         arg_types_adjoint = vcat(
-            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
+            map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end-1)]),
             :(Vararg{Mooncake.CoDual}),
         )
         splat_symbol = Expr(Symbol("..."), arg_names[end])
-        tmp = arg_names[1:(end - 1)]
+        tmp = arg_names[1:(end-1)]
         body_deriv = Expr(:call, Mooncake.zero_derivative, tmp..., splat_symbol)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, tmp..., splat_symbol)
     else
@@ -409,7 +409,8 @@ function increment_and_get_rdata!(
     return NoRData()
 end
 
-# dispatch for handling Tuple type RData
+# In https://github.com/SciML/Integrals.jl/pull/319, this comes up while handling Domain's Derivatives
+# dispatch for handling Tuple type RData 
 function increment_and_get_rdata!(
     f::NoFData, r::Tuple{T,T}, t::CRC.Tangent{P,Tuple{T,T}}
 ) where {P,T}
@@ -418,11 +419,11 @@ function increment_and_get_rdata!(
     return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t)
 end
 
-# dispatch for Tuple type FData where elements are Arrays.
+# dispatch for Tuple type FData where elements are Arrays
 function increment_and_get_rdata!(
     f::Tuple{T,T}, r::NoRData, t::CRC.Tangent{P,Tuple{T,T}}
 ) where {P,M<:Base.IEEEFloat,T<:AbstractArray{M}}
-    # increment f by chainrules Tuple tangent fdata got via .backing accessor.
+    # increment f by chainrules Tuple tangent fdata got via .backing field.
     increment!!(f, t.backing)
     return NoRData()
 end
