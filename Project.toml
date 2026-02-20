@@ -97,7 +97,6 @@ test = [
     "Aqua",
     "BenchmarkTools",
     "DiffTests",
-    "JET",
     "Logging",
     "Pkg",
     "Revise",

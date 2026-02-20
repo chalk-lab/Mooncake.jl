@@ -1,4 +1,10 @@
-using Aqua, BenchmarkTools, JET, LinearAlgebra, Logging, Random, StableRNGs, Mooncake, Test
+using Aqua, BenchmarkTools, LinearAlgebra, Logging, Random, StableRNGs, Mooncake, Test
+
+@static if VERSION < v"1.13-"
+    using Pkg
+    Pkg.add("JET")
+    using JET
+end
 
 using AllocCheck: AllocCheck # load to enable testing functionality
 

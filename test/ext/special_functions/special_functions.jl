@@ -2,7 +2,7 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using AllocCheck, JET, Mooncake, SpecialFunctions, StableRNGs, Test
+using AllocCheck, Mooncake, SpecialFunctions, StableRNGs, Test
 using Mooncake: ForwardMode, ReverseMode, map_prod
 using Mooncake.TestUtils: test_rule
 

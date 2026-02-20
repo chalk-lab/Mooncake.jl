@@ -2,7 +2,7 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using CUDA, cuDNN, JET, Mooncake, NNlib, StableRNGs, Test
+using CUDA, cuDNN, Mooncake, NNlib, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
 using NNlib: dropout
 

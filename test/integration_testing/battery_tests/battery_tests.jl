@@ -2,7 +2,7 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using AllocCheck, JET, LinearAlgebra, Mooncake, Random, StableRNGs, Test
+using AllocCheck, LinearAlgebra, Mooncake, Random, StableRNGs, Test
 using Mooncake: TestResources
 
 @testset "battery_tests" begin
