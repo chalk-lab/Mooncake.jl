@@ -176,9 +176,16 @@ defining custom behavior.
 """
 test_hook(f, caller, args...; kws...) = f()
 
+const _jet_calls_since_clear = Ref(0)
+
 function test_opt(x...)
     test_hook(test_opt, x...) do
         test_opt_internal(Shim(), x...)
+    end
+    _jet_calls_since_clear[] += 1
+    if _jet_calls_since_clear[] >= _JET_CLEAR_EVERY
+        _reclaim_jet_memory!()
+        _jet_calls_since_clear[] = 0
     end
 end
 test_opt_internal(::Any, x...) = throw(error("Load JET to use this function."))
@@ -1065,13 +1072,149 @@ end
 function run_rule_test_cases(rng_ctor, v::Val, mode=nothing)
     if mode in [nothing, ForwardMode]
         run_hand_written_rule_test_cases(rng_ctor, v, ForwardMode)
+        _reclaim_jet_memory!()
         run_derived_rule_test_cases(rng_ctor, v, ForwardMode)
     end
     if mode in [nothing, ReverseMode]
+        _reclaim_jet_memory!()
         run_hand_written_rule_test_cases(rng_ctor, v, ReverseMode)
+        _reclaim_jet_memory!()
         run_derived_rule_test_cases(rng_ctor, v, ReverseMode)
     end
     return nothing
+end
+
+# On Julia >= 1.12 with JET, the compiler accumulates tagged CodeInstances in the
+# global MethodInstance cache that cannot be evicted (jl_mi_cache_insert is write-only).
+# The `edges` field added in 1.12 creates deep reference chains (~68x summarysize
+# explosion per CI), causing unbounded memory growth during large test suites.
+#
+# The functions below periodically clear the heavy fields (`edges`, `inferred`) on
+# JET-owned CIs, turning them into lightweight shells. This keeps peak RSS bounded
+# without affecting correctness — JET results have already been extracted and tested.
+#
+# See: https://github.com/chalk-lab/Mooncake.jl/issues/969
+
+# Number of JET test_opt invocations between clearing passes. Lower values reduce peak
+# memory at the cost of JET re-analyzing previously-seen signatures. 50 calls ≈ 12
+# unique type signatures ≈ ~300 MB of JET CI overhead on Julia 1.12.
+const _JET_CLEAR_EVERY = 50
+
+function _reclaim_jet_memory!()
+    @static if VERSION >= v"1.12-"
+        _clear_jet_ci_data!()
+    end
+    GC.gc(true)
+end
+
+# Walk all loaded method tables and clear `edges`/`inferred` on JET-owned CIs.
+# Wrapped in try-catch so that JET/Julia internal API changes degrade gracefully.
+function _clear_jet_ci_data!()
+    try
+        jet_tokens = _get_jet_analysis_tokens()
+        isempty(jet_tokens) && return 0
+
+        cleared = 0
+        visited = IdDict{Method,Nothing}()
+        for mod in _all_loaded_modules()
+            for name in names(mod; all=true)
+                isdefined(mod, name) || continue
+                val = try
+                    ; getfield(mod, name);
+                catch
+                    ; continue;
+                end
+                val isa Function || continue
+                for m in methods(val)
+                    haskey(visited, m) && continue
+                    visited[m] = nothing
+                    for mi in Base.specializations(m)
+                        mi isa Core.MethodInstance || continue
+                        cleared += _clear_ci_chain!(mi, jet_tokens)
+                    end
+                end
+            end
+        end
+
+        _reset_jet_analyzer_caches!()
+        @debug "Cleared $cleared JET-owned CodeInstances"
+        return cleared
+    catch e
+        @debug "Failed to clear JET CI data" exception=(e, catch_backtrace())
+        return 0
+    end
+end
+
+function _get_jet_analysis_tokens()
+    tokens = Set{Any}()
+    if isdefined(Main, :JET)
+        jet = getfield(Main, :JET)
+        for cache_name in (:OPT_ANALYZER_CACHE, :JET_ANALYZER_CACHE)
+            if isdefined(jet, cache_name)
+                for token in values(getfield(jet, cache_name))
+                    push!(tokens, token)
+                end
+            end
+        end
+    end
+    return tokens
+end
+
+function _all_loaded_modules()
+    mods = Set{Module}()
+    for m in (Core, Base, Main)
+        _collect_submodules!(mods, m)
+    end
+    return mods
+end
+
+function _collect_submodules!(mods::Set{Module}, mod::Module)
+    mod in mods && return nothing
+    push!(mods, mod)
+    for name in names(mod; all=true)
+        isdefined(mod, name) || continue
+        val = try
+            ; getfield(mod, name);
+        catch
+            ; continue;
+        end
+        if val isa Module && val !== mod
+            _collect_submodules!(mods, val)
+        end
+    end
+end
+
+function _clear_ci_chain!(mi::Core.MethodInstance, tokens)
+    cleared = 0
+    isdefined(mi, :cache) || return 0
+    ci = mi.cache
+    while ci isa Core.CodeInstance
+        if ci.owner in tokens
+            @atomic ci.inferred = nothing
+            @atomic ci.edges = Core.svec()
+            cleared += 1
+        end
+        ci = isdefined(ci, :next) ? ci.next : nothing
+    end
+    return cleared
+end
+
+function _reset_jet_analyzer_caches!()
+    isdefined(Main, :JET) || return nothing
+    jet = getfield(Main, :JET)
+    for cache_name in (:OPT_ANALYZER_CACHE,)
+        if isdefined(jet, cache_name)
+            cache = getfield(jet, cache_name)
+            lock_sym = Symbol(cache_name, :_LOCK)
+            if isdefined(jet, lock_sym)
+                lock(getfield(jet, lock_sym)) do
+                    empty!(cache)
+                end
+            else
+                empty!(cache)
+            end
+        end
+    end
 end
 
 """
