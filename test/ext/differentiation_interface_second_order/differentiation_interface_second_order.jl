@@ -15,11 +15,6 @@ else
     [FIRST_ORDER...]
 end
 
-# No inner preparation, otherwise we might skip the frule for build_derived_rrule.
-# This makes the hessian quite slow but that will be fixed in the future.
-const DI = DifferentiationInterface
-DI.inner_preparation_behavior(::AutoMooncakeForward) = DI.DontPrepareInner()
-
 # Test second-order differentiation (forward-over-reverse)
 test_differentiation(
     [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))];
@@ -43,6 +38,9 @@ end
 end
 
 @static if VERSION > v"1.12-"
+    const DI = DifferentiationInterface
+    # Ensure MistyClosures are created at execution time to trigger the world-age issue.
+    DI.inner_preparation_behavior(::AutoMooncakeForward) = DI.DontPrepareInner()
     @testset "world age fix with closure (#916)" begin
         x0 = [0.0; fill(1.0, 9)]
         f = TestWorldAge.gams_objective
