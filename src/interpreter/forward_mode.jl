@@ -520,9 +520,7 @@ DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
 _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
-    # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
-    # See DynamicDerivedRule for details, the same reasoning applies.
-    sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
+    sig = Tuple{map(_typeof ∘ primal, args)...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ForwardMode)
