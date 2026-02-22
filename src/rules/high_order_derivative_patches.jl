@@ -98,31 +98,33 @@ end
 # forward-over-reverse by forwarding `inlining_policy` through `BugPatchInterpreter` to
 # `MooncakeInterpreter` during `optimise_ir!`, but this causes allocation regressions.
 # See https://github.com/chalk-lab/Mooncake.jl/pull/878 for details.
-# @static if VERSION >= v"1.11-"
-#     function frule!!(
-#         ::Dual{typeof(_foreigncall_)},
-#         ::Dual{Val{:jl_genericmemory_owner}},
-#         ::Dual{Val{Any}},
-#         ::Dual{Tuple{Val{Any}}},
-#         ::Dual{Val{0}},
-#         ::Dual{Val{:ccall}},
-#         a::Dual{<:Memory},
-#     )
-#         return zero_dual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
-#     end
-#     function rrule!!(
-#         ::CoDual{typeof(_foreigncall_)},
-#         ::CoDual{Val{:jl_genericmemory_owner}},
-#         ::CoDual{Val{Any}},
-#         ::CoDual{Tuple{Val{Any}}},
-#         ::CoDual{Val{0}},
-#         ::CoDual{Val{:ccall}},
-#         a::CoDual{<:Memory},
-#     )
-#         y = zero_fcodual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
-#         return y, NoPullback(ntuple(_ -> NoRData(), 7))
-#     end
-# end
+# TODO: can be removed once we improve the performance of differentiating through building
+# rules, such that the DI test will pass with no inner prep without this workaround.
+@static if VERSION >= v"1.11-"
+    function frule!!(
+        ::Dual{typeof(_foreigncall_)},
+        ::Dual{Val{:jl_genericmemory_owner}},
+        ::Dual{Val{Any}},
+        ::Dual{Tuple{Val{Any}}},
+        ::Dual{Val{0}},
+        ::Dual{Val{:ccall}},
+        a::Dual{<:Memory},
+    )
+        return zero_dual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
+    end
+    function rrule!!(
+        ::CoDual{typeof(_foreigncall_)},
+        ::CoDual{Val{:jl_genericmemory_owner}},
+        ::CoDual{Val{Any}},
+        ::CoDual{Tuple{Val{Any}}},
+        ::CoDual{Val{0}},
+        ::CoDual{Val{:ccall}},
+        a::CoDual{<:Memory},
+    )
+        y = zero_fcodual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
+        return y, NoPullback(ntuple(_ -> NoRData(), 7))
+    end
+end
 
 # TODO: is this still needed?
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
