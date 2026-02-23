@@ -149,7 +149,7 @@ function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TW
 end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     plus_twice_precision_integer_pb(dz::P) = NoRData(), dz, NoRData()
-    return zero_fcodual(x.x + primal(y)), plus_twp_int_pb
+    return zero_fcodual(x.x + primal(y)), plus_twice_precision_integer_pb
 end
 
 @is_primitive MinimalCtx Tuple{typeof(*),TWP,IEEEFloat}
