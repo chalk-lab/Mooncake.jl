@@ -148,7 +148,7 @@ function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TW
     return Dual(primal(x) + primal(y), tangent(x))
 end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
-    plus_twp_int_pb(dz::P) = NoRData(), dz, NoRData()
+    plus_twice_precision_integer_pb(dz::P) = NoRData(), dz, NoRData()
     return zero_fcodual(x.x + primal(y)), plus_twp_int_pb
 end
 
