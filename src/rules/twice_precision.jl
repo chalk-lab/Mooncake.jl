@@ -143,6 +143,15 @@ function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{P}) where {P<:TWP}
     return zero_fcodual(x.x + y.x), plus_pullback
 end
 
+@is_primitive MinimalCtx Tuple{typeof(+),TWP,Integer}
+function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TWP}
+    return Dual(primal(x) + primal(y), tangent(x))
+end
+function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
+    plus_twp_int_pb(dz::P) = NoRData(), dz, NoRData()
+    return zero_fcodual(x.x + primal(y)), plus_twp_int_pb
+end
+
 @is_primitive MinimalCtx Tuple{typeof(*),TWP,IEEEFloat}
 function frule!!(::Dual{typeof(*)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
     z = primal(x) * primal(y)
@@ -406,6 +415,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
             TwicePrecision(5.0, 3.0),
             TwicePrecision(4.0, 5.0),
         ),
+        (false, :stability_and_allocs, nothing, +, TwicePrecision(5.0, 3.0), 4),
         (false, :stability_and_allocs, nothing, *, TwicePrecision(5.0, 1e-12), 3.0),
         (false, :stability_and_allocs, nothing, *, TwicePrecision(5.0, 1e-12), 3),
         (false, :stability_and_allocs, nothing, /, TwicePrecision(5.0, 1e-12), 3.0),
