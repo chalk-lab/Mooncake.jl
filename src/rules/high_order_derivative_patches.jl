@@ -2,7 +2,6 @@
 @zero_derivative MinimalCtx Tuple{
     typeof(build_rrule_checks),MooncakeInterpreter,Any,Bool,Bool
 }
-# TODO: is this still needed?
 @zero_derivative MinimalCtx Tuple{typeof(is_primitive),Type,Type{<:Mode},Type,UInt}
 
 @is_primitive MinimalCtx Tuple{
@@ -129,7 +128,6 @@ end
 # TODO: is this still needed?
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
 
-# TODO: is this still needed?
 @static if VERSION < v"1.11-"
     @generated function frule!!(
         ::Dual{typeof(_foreigncall_)},
