@@ -672,6 +672,8 @@ _getter() = 5.0
     # and this test ensures that the workaround is effective.
     # This was only a problem in Julia v1.11, but push! should anyway work on all versions.
     @testset "push! in debug mode" begin
-        test_rule(sr(123456), push!, [[1.0, 2.0]], [3.0, 4.0]; is_primitive=false, debug_mode=true)
+        test_rule(
+            sr(123456), push!, [[1.0, 2.0]], [3.0, 4.0]; is_primitive=false, debug_mode=true
+        )
     end
 end
