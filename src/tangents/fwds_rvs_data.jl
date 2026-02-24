@@ -349,7 +349,6 @@ function __verify_fdata_value(c::IdDict{Any,Nothing}, p::Array, f::Array)
     # Array contain the tangents, so we must check that the fdata and rdata components are
     # correct separately.
     for n in eachindex(p)
-        @show size(p), size(f) n
         if isassigned(p, n)
             _p = p[n]
             ismutable(_p) && haskey(c, _p) && continue
