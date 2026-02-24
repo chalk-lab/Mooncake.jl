@@ -336,6 +336,15 @@ function __verify_fdata_value(c::IdDict{Any,Nothing}, p::Array, f::Array)
     # If the element type is `NoFData` then stop here.
     eltype(f) == NoFData && return nothing
 
+    @static if VERSION > v"1.11-" && VERSION < v"1.12-"
+        if p isa Vector && getfield(p, :size)[1] > length(p.ref.mem)
+            # Bail out of validation if the vector is in the middle of being resized,
+            # otherwise we would cause a segfault in debug mode when validating the tangent.
+            # (For example when reaching the inner function of _growend! in Julia v1.11)
+            return nothing
+        end
+    end
+
     # Recurse into each element and check that it is correct. Note that the elements of an
     # Array contain the tangents, so we must check that the fdata and rdata components are
     # correct separately.
