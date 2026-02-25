@@ -125,9 +125,6 @@ end
     end
 end
 
-# TODO: is this still needed?
-@zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
-
 @static if VERSION < v"1.11-"
     @generated function frule!!(
         ::Dual{typeof(_foreigncall_)},
