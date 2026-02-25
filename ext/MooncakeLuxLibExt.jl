@@ -20,9 +20,8 @@ using Static: True
 )
 
 ## For mooncake we are missing some rules. For now use the basic versions of the kernels
-@mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) = LuxLib.GenericBroadcastOp{
-    get_device_type(xs)
-}()
+@mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) =
+    LuxLib.GenericBroadcastOp{get_device_type(xs)}()
 
 # Utils extensions
 @mooncake_overlay Utils.within_autodiff(x) = True()
@@ -66,44 +65,94 @@ import LuxLib.Impl:
 
 import ChainRulesCore as CRC
 
-function CRC.rrule(
-    ::typeof(batchnorm_affine_normalize_internal),
-    opmode::AbstractInternalArrayOpMode,
-    ::typeof(identity),
-    x::AbstractArray{T,N},
-    μ::AbstractVector,
-    σ²::AbstractVector,
-    γ::LuxLib.Optional{<:AbstractVector},
-    β::LuxLib.Optional{<:AbstractVector},
-    ϵ::Real,
-) where {T,N}
-    y = similar(
-        x,
-        promote_type(
-            safe_eltype(x), safe_eltype(μ), safe_eltype(σ²), safe_eltype(γ), safe_eltype(β)
-        ),
-    )
-    γ′ = similar(
-        x, promote_type(safe_eltype(γ), safe_eltype(σ²), safe_eltype(ϵ)), size(x, N - 1)
-    )
+# function CRC.rrule(
+#     ::typeof(batchnorm_affine_normalize_internal),
+#     opmode::AbstractInternalArrayOpMode,
+#     ::typeof(identity),
+#     x::AbstractArray{T,N},
+#     μ::AbstractVector,
+#     σ²::AbstractVector,
+#     γ::LuxLib.Optional{<:AbstractVector},
+#     β::LuxLib.Optional{<:AbstractVector},
+#     ϵ::Real,
+# ) where {T,N}
+#     y = similar(
+#         x,
+#         promote_type(
+#             safe_eltype(x), safe_eltype(μ), safe_eltype(σ²), safe_eltype(γ), safe_eltype(β)
+#         ),
+#     )
+#     γ′ = similar(
+#         x, promote_type(safe_eltype(γ), safe_eltype(σ²), safe_eltype(ϵ)), size(x, N - 1)
+#     )
 
-    batchnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ, γ′)
+#     batchnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ, γ′)
 
-    𝒫x, 𝒫μ, 𝒫σ² = CRC.ProjectTo(x), CRC.ProjectTo(μ), CRC.ProjectTo(σ²)
-    𝒫γ = γ === nothing ? identity : CRC.ProjectTo(γ)
-    𝒫β = β === nothing ? identity : CRC.ProjectTo(β)
+#     𝒫x, 𝒫μ, 𝒫σ² = CRC.ProjectTo(x), CRC.ProjectTo(μ), CRC.ProjectTo(σ²)
+#     𝒫γ = γ === nothing ? identity : CRC.ProjectTo(γ)
+#     𝒫β = β === nothing ? identity : CRC.ProjectTo(β)
 
-    ∇batchnorm_affine_normalize_internal = LuxLib.Impl.@closure Δ -> begin
-        ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇batchnorm_affine_normalize(opmode, Δ, x, μ, σ², γ, β, ϵ, γ′)
-        ∂∅ = CRC.NoTangent()
-        return ∂∅, ∂∅, ∂∅, 𝒫x(∂x), 𝒫μ(∂μ), 𝒫σ²(∂σ²), 𝒫γ(∂γ), 𝒫β(∂β), ∂∅
-    end
+#     ∇batchnorm_affine_normalize_internal = LuxLib.Impl.@closure Δ -> begin
+#         ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇batchnorm_affine_normalize(opmode, Δ, x, μ, σ², γ, β, ϵ, γ′)
+#         ∂∅ = CRC.NoTangent()
+#         return ∂∅, ∂∅, ∂∅, 𝒫x(∂x), 𝒫μ(∂μ), 𝒫σ²(∂σ²), 𝒫γ(∂γ), 𝒫β(∂β), ∂∅
+#     end
 
-    return y, ∇batchnorm_affine_normalize_internal
-end
+#     return y, ∇batchnorm_affine_normalize_internal
+# end
 
-@from_rrule(
-    DefaultCtx,
+# @from_rrule(
+#     DefaultCtx,
+#     Tuple{
+#         typeof(batchnorm_affine_normalize_internal),
+#         AbstractInternalArrayOpMode,
+#         typeof(identity),
+#         AbstractArray,
+#         AbstractVector,
+#         AbstractVector,
+#         LuxLib.Optional{<:AbstractVector},
+#         LuxLib.Optional{<:AbstractVector},
+#         Real,
+#     },
+# )
+
+# @mooncake_overlay function batchnorm_affine_normalize_internal(
+#     opmode::LuxLib.AbstractInternalArrayOpMode,
+#     act::F,
+#     x::AbstractArray{xT,3},
+#     μ::AbstractVector,
+#     σ²::AbstractVector,
+#     γ::Union{Nothing,AbstractVector},
+#     β::Union{Nothing,AbstractVector},
+#     ϵ::Real,
+# ) where {F,xT}
+#     y = batchnorm_affine_normalize_internal(opmode, identity, x, μ, σ², γ, β, ϵ)
+#     LuxLib.Impl.activation!(y, opmode, act, y)
+#     return y
+# end
+
+# @mooncake_overlay function batchnorm_affine_normalize_internal(
+#     opmode::LuxLib.AbstractInternalArrayOpMode,
+#     ::typeof(identity),
+#     x::AbstractArray{xT,3},
+#     μ::AbstractVector,
+#     σ²::AbstractVector,
+#     γ::Union{Nothing,AbstractVector},
+#     β::Union{Nothing,AbstractVector},
+#     ϵ::Real,
+# ) where {xT}
+#     y = similar(
+#         x,
+#         promote_type(
+#             safe_eltype(x), safe_eltype(μ), safe_eltype(σ²), safe_eltype(γ), safe_eltype(β)
+#         ),
+#     )
+#     batchnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ)
+#     return y
+# end
+
+Mooncake.@is_primitive(
+    MinimalCtx,
     Tuple{
         typeof(batchnorm_affine_normalize_internal),
         AbstractInternalArrayOpMode,
@@ -117,39 +166,63 @@ end
     },
 )
 
-@mooncake_overlay function batchnorm_affine_normalize_internal(
-    opmode::LuxLib.AbstractInternalArrayOpMode,
-    act::F,
-    x::AbstractArray{xT,3},
-    μ::AbstractVector,
-    σ²::AbstractVector,
-    γ::Union{Nothing,AbstractVector},
-    β::Union{Nothing,AbstractVector},
-    ϵ::Real,
-) where {F,xT}
-    y = batchnorm_affine_normalize_internal(opmode, identity, x, μ, σ², γ, β, ϵ)
-    LuxLib.Impl.activation!(y, opmode, act, y)
-    return y
-end
+function Mooncake.rrule!!(
+    ::CoDual{typeof(batchnorm_affine_normalize_internal)},
+    opmode::CoDual{<:AbstractInternalArrayOpMode},
+    ::CoDual{typeof(identity)},
+    x::CoDual{<:AbstractArray{T,N}},
+    μ::CoDual{<:AbstractVector},
+    σ²::CoDual{<:AbstractVector},
+    γ::CoDual{<:LuxLib.Optional{<:AbstractVector}},
+    β::CoDual{<:LuxLib.Optional{<:AbstractVector}},
+    ϵ::CoDual{<:Real},
+) where {T,N}
+    _opmode = primal(opmode)
+    _x, _μ, _σ², _γ, _β, _ϵ = primal(x),
+    primal(μ), primal(σ²), primal(γ), primal(β),
+    primal(ϵ)
 
-@mooncake_overlay function batchnorm_affine_normalize_internal(
-    opmode::LuxLib.AbstractInternalArrayOpMode,
-    ::typeof(identity),
-    x::AbstractArray{xT,3},
-    μ::AbstractVector,
-    σ²::AbstractVector,
-    γ::Union{Nothing,AbstractVector},
-    β::Union{Nothing,AbstractVector},
-    ϵ::Real,
-) where {xT}
-    y = similar(
-        x,
+    _y = similar(
+        _x,
         promote_type(
-            safe_eltype(x), safe_eltype(μ), safe_eltype(σ²), safe_eltype(γ), safe_eltype(β)
+            safe_eltype(_x),
+            safe_eltype(_μ),
+            safe_eltype(_σ²),
+            safe_eltype(_γ),
+            safe_eltype(_β),
         ),
     )
-    batchnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ)
-    return y
+    _γ′ = similar(
+        _x,
+        promote_type(safe_eltype(_γ), safe_eltype(_σ²), safe_eltype(_ϵ)),
+        size(_x, N - 1),
+    )
+
+    batchnorm_affine_normalize_internal!(
+        _y, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ, _γ′
+    )
+
+    _dy = Mooncake.zero_tangent(_y)
+
+    pb!! = @closure Δy -> begin
+        ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇batchnorm_affine_normalize(
+            _opmode, Δy, _x, _μ, _σ², _γ, _β, _ϵ, _γ′
+        )
+
+        x.dx .+= ∂x
+        μ.dx .+= ∂μ
+        σ².dx .+= ∂σ²
+        _γ !== nothing && (γ.dx .+= ∂γ)
+        _β !== nothing && (β.dx .+= ∂β)
+
+        ∂ϵ = tangent(ϵ)
+
+        return NoRData(),
+        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
+        ∂ϵ
+    end
+
+    return CoDual(_y, _dy), pb!!
 end
 
 end
