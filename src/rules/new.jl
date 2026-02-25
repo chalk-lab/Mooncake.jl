@@ -55,8 +55,8 @@ end
             return :($F())
         end
     end
-    T_out = tangent_type(P)
-    return :($T_out(NamedTuple{$names}($(Expr(:call, tuple, tangent_exprs...)))))
+    # Compute tangent_type at runtime to ensure extension methods are available
+    return :(tangent_type($P)(NamedTuple{$names}($(Expr(:call, tuple, tangent_exprs...)))))
 end
 
 @inline function build_fdata(::Type{P}, x::Tuple, fdata::Tuple) where {P}
