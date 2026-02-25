@@ -55,7 +55,8 @@ end
             return :($F())
         end
     end
-    # Compute tangent_type at runtime to ensure extension methods are available
+    # compute `tangent_type` at runtime to avoid world-age issues, see #1008
+
     return :(tangent_type($P)(NamedTuple{$names}($(Expr(:call, tuple, tangent_exprs...)))))
 end
 

@@ -72,7 +72,8 @@ using Test
         )
         @test result isa Mooncake.FData{@NamedTuple{x::TangentForTestRecursiveA{Float32}}}
 
-        # Test build_output_tangent uses runtime tangent_type (related fix)
+        # Test `build_output_tangent` uses runtime `tangent_type`, see #1008
+
         T_wrapper = Mooncake.tangent_type(TestWrapper{TestRecursiveA{Float32}})
         result_tangent = Mooncake.build_output_tangent(
             TestWrapper{TestRecursiveA{Float32}}, (a,), (a_tangent,)
