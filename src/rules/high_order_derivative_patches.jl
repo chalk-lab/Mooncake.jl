@@ -125,7 +125,8 @@ end
     end
 end
 
-# TODO: is this still needed?
+# This rule is potentially unnecessary if fixes are made elsewhere,
+# but currently fixes differentiating through zero_tangent_internal for Arrays.
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
 
 @static if VERSION < v"1.11-"
