@@ -5,7 +5,6 @@ using Test
 # Mirrors the build_fdata world age regression test from PR #606.
 
 @testset "build_output_tangent world age regression test (#893, #1008)" begin
-
     @testset "Custom tangent type (#1008)" begin
         # Test that build_output_tangent computes tangent_type at runtime
         struct BOTTestStruct
@@ -64,8 +63,11 @@ using Test
         # Register the custom tangent type
         function Mooncake.tangent_type(::Type{TestRecursiveB{T}}) where {T}
             Tx = Mooncake.tangent_type(T)
-            return Tx == Mooncake.NoTangent ? Mooncake.NoTangent :
-                   TangentForTestRecursiveB{Tx}
+            return if Tx == Mooncake.NoTangent
+                Mooncake.NoTangent
+            else
+                TangentForTestRecursiveB{Tx}
+            end
         end
 
         # Wrapper type that would trigger the world age issue in build_output_tangent
