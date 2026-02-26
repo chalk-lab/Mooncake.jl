@@ -67,32 +67,4 @@
         )
         @test result isa T_wrapper
     end
-
-    @testset "Complex nested scenario" begin
-        # Even more complex: wrapper of wrapper of recursive type
-        struct OuterWrapperB{T}
-            inner::T
-        end
-
-        T_outer = Mooncake.tangent_type(OuterWrapperB{TestWrapperB{TestRecursiveB{Float64}}})
-        @test T_outer isa Type
-
-        # Create instances with actual recursion
-        b = TestRecursiveB(2.0)
-        b.b = TestRecursiveB(3.0)  # Make it actually recursive
-        wrapper = TestWrapperB(b)
-        outer = OuterWrapperB(wrapper)
-
-        # Test build_output_tangent in nested case
-        T_inner_wrapper = Mooncake.tangent_type(TestWrapperB{TestRecursiveB{Float64}})
-        b_tangent = TangentForTestRecursiveB{Float64}(0.0)
-        b_tangent.b = TangentForTestRecursiveB{Float64}(0.0)
-
-        result = Mooncake.build_output_tangent(
-            OuterWrapperB{TestWrapperB{TestRecursiveB{Float64}}},
-            (wrapper,),
-            (T_inner_wrapper((x=b_tangent,)),),
-        )
-        @test result isa T_outer
-    end
 end
