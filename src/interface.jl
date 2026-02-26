@@ -669,9 +669,9 @@ end
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 """
-@unstable function prepare_derivative_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
+@unstable function prepare_derivative_cache(f, x::Vararg{Any,N}; config=Config(), chunksize=1) where {N}
     fx = (f, x...)
-    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
+    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages, chunksize)
 
     if config.friendly_tangents
         y = f(x...)

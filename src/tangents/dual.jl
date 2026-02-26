@@ -7,14 +7,14 @@ is computed, and `tangent` the direction in which it is computed.
 
 Must satisfy `tangent_type(P) == T`.
 """
-struct Dual{P,T}
+struct Dual{P,T,N}
     primal::P
-    tangent::T
+    tangents::NTuple{N,T}
 end
 
 primal(x::Dual) = x.primal
-tangent(x::Dual) = x.tangent
-Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangent(x)))
+tangents(x::Dual) = x.tangents
+Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangents(x)))
 # Dual can be safely shared without copying
 _copy(x::P) where {P<:Dual} = x
 
@@ -25,18 +25,18 @@ Helper function. Returns the 2-tuple `x.x, x.dx`.
 """
 extract(x::Dual) = primal(x), tangent(x)
 
-zero_dual(x) = Dual(x, zero_tangent(x))
+zero_dual(x, N::Val) = Dual(x, ntuple(_ -> zero_tangent(x), N))
 randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 
-function dual_type(::Type{P}) where {P}
+function dual_type(::Type{P}, N) where {P}
     P == DataType && return Dual
-    P isa Union && return Union{dual_type(P.a),dual_type(P.b)}
+    P isa Union && return Union{dual_type(P.a, N),dual_type(P.b, N)}
     P <: UnionAll && return Dual # P is abstract, so we don't know its tangent type.
-    return isconcretetype(P) ? Dual{P,tangent_type(P)} : Dual
+    return isconcretetype(P) ? Dual{P,tangent_type(P),N} : Dual
 end
 
-function dual_type(p::Type{Type{P}}) where {P}
-    return @isdefined(P) ? Dual{Type{P},NoTangent} : Dual{_typeof(p),NoTangent}
+function dual_type(p::Type{Type{P}}, N) where {P}
+    return @isdefined(P) ? Dual{Type{P},NoTangent,N} : Dual{_typeof(p),NoTangent,N}
 end
 
 _primal(x) = x
@@ -63,7 +63,7 @@ function error_if_incorrect_dual_types(duals::Vararg{Dual,N}) where {N}
     end
 end
 
-@inline uninit_dual(x::P) where {P} = Dual(x, uninit_tangent(x))
+@inline uninit_dual(x::P, N) where {P} = Dual(x, ntuple(_ -> uninit_tangent(x), N))
 
 # Always sharpen the first thing if it's a type so static dispatch remains possible.
 function Dual(x::Type{P}, dx::NoTangent) where {P}
