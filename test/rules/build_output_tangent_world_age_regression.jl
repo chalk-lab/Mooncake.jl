@@ -1,4 +1,3 @@
-using Test
 
 # Regression test for build_output_tangent world age issue (#893, #1008)
 # Tests that @generated functions can see custom tangent_type definitions.
