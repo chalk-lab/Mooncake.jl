@@ -71,14 +71,27 @@ using Test
             TestWrapper{TestRecursiveA{Float32}}, (a,), fdata_tuple
         )
         @test result isa Mooncake.FData{@NamedTuple{x::TangentForTestRecursiveA{Float32}}}
+    end
 
-        # Test `build_output_tangent` uses runtime `tangent_type`, see #1008
+    @testset "build_output_tangent runtime tangent_type (#1008)" begin
+        # Test that build_output_tangent computes tangent_type at runtime
+        struct MyStruct
+            x::Float64
+        end
 
-        T_wrapper = Mooncake.tangent_type(TestWrapper{TestRecursiveA{Float32}})
-        result_tangent = Mooncake.build_output_tangent(
-            TestWrapper{TestRecursiveA{Float32}}, (a,), (a_tangent,)
-        )
-        @test result_tangent isa T_wrapper
+        # Custom tangent type with NamedTuple constructor for build_output_tangent
+        struct MyTangent
+            val::Float64
+        end
+        MyTangent(nt::NamedTuple{(:x,),Tuple{Float64}}) = MyTangent(nt.x)
+
+        function Mooncake.tangent_type(::Type{MyStruct})
+            return MyTangent
+        end
+
+        result = Mooncake.build_output_tangent(MyStruct, (1.5,), (0.5,))
+        @test result isa MyTangent
+        @test result.val == 0.5
     end
 
     @testset "Complex nested scenario" begin
