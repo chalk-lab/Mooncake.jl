@@ -413,6 +413,24 @@ function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
 
+# Tuple tangents from ChainRulesCore require special handling because tuple elements
+# may be a mix of types: some with only rdata (e.g., scalars), some with only fdata
+# (e.g., arrays), and some with both. These four dispatches for increment_and_get_rdata!
+# handle all the possible cases for when the ChainRulesCore.Tangent has Tuple type data.
+function increment_and_get_rdata!(f, r, t::CRC.Tangent{P,<:Tuple}) where {P}
+    return increment_and_get_rdata!(f, r, t.backing)
+end
+function increment_and_get_rdata!(f::NoFData, r::Tuple, t::Tuple)
+    return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t)
+end
+function increment_and_get_rdata!(f::Tuple, r::NoRData, t::Tuple)
+    increment!!(f, t)
+    return NoRData()
+end
+function increment_and_get_rdata!(f::Tuple, r::Tuple, t::Tuple)
+    return map((fi, ri, ti) -> increment_and_get_rdata!(fi, ri, ti), f, r, t)
+end
+
 # If a ChainRulesCore complex tangent is `NotImplemented`, return a `NaN`-filled Mooncake tangent.
 function increment_and_get_rdata!(
     f::NoFData, r::Complex{T}, t::CRC.NotImplemented

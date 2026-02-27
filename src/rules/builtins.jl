@@ -210,12 +210,45 @@ end
 @inactive_intrinsic and_int
 @inactive_intrinsic ashr_int
 
+# unsafe_wrap() gives an array view for the memory pointed by p.
+# Tangent propagation happens through memory aliasing rather than explicit
+# computation in the pullback. Downstream rules write directly into 
+# the tangent memory pointed to by tangent_arr.
+@is_primitive MinimalCtx Tuple{typeof(unsafe_wrap),<:Type{<:Array},Ptr,Any}
+function frule!!(
+    ::Dual{typeof(unsafe_wrap)}, ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
+) where {T}
+    primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
+    tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
+    return Dual(primal_arr, tangent_arr)
+end
+
+function rrule!!(
+    ::CoDual{typeof(unsafe_wrap)},
+    ::CoDual{<:Type{<:Array}},
+    p::CoDual{<:Ptr{T}},
+    dims::CoDual,
+) where {T}
+    primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
+    tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
+    function unsafe_wrap_pullback!!(::NoRData)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+
+    return CoDual(primal_arr, tangent_arr), unsafe_wrap_pullback!!
+end
+
 # atomic_fence
 # atomic_pointermodify
 # atomic_pointerref
 # atomic_pointerreplace
 
 @intrinsic atomic_pointerset
+function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
+    atomic_pointerset(primal(p), primal(x), primal(order))
+    atomic_pointerset(tangent(p), tangent(x), primal(order))
+    return p
+end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
@@ -228,8 +261,11 @@ function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDua
         atomic_pointerset(dp, old_tangent, _order)
         return NoRData(), NoRData(), rdata(dx_r), NoRData()
     end
+
     atomic_pointerset(_p, primal(x), _order)
-    atomic_pointerset(dp, zero_tangent(primal(x)), _order)
+    # zero_tangent(primal(x), tangent(x)) is used to correctly handle
+    # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
+    atomic_pointerset(dp, zero_tangent(primal(x), tangent(x)), _order)
     return p, atomic_pointerset_pullback!!
 end
 
@@ -637,8 +673,11 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
         pointerset(dp, old_tangent, _idx, _z)
         return NoRData(), NoRData(), rdata(dx_r), NoRData(), NoRData()
     end
+
     pointerset(_p, primal(x), _idx, _z)
-    pointerset(dp, zero_tangent(primal(x)), _idx, _z)
+    # zero_tangent(primal(x), tangent(x)) is used to correctly handle
+    # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
+    pointerset(dp, zero_tangent(primal(x), tangent(x)), _idx, _z)
     return p, pointerset_pullback!!
 end
 
@@ -1083,6 +1122,24 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(typeof),Any}
 
+function __pointers_to_pointers()
+    # Pointer to pointer.
+    c_1 = [5.0]
+    c_2 = [3.0, 4.0]
+    c = [pointer(c_1), pointer(c_2)]
+
+    c_new_val = [6.0, 5.0, 4.0]
+    cs = (c_1, c_2, c, c_new_val)
+
+    # Tangents of pointers to pointers.
+    dc_1 = copy(c_1)
+    dc_2 = copy(c_2)
+    dc = [pointer(dc_1), pointer(dc_2)]
+    dc_new_val = randn(3)
+    dcs = (dc_1, dc_2, dc, dc_new_val)
+    return cs, dcs
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     _x = Ref(5.0) # data used in tests which aren't protected by GC.
     _dx = Ref(4.0)
@@ -1099,9 +1156,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     dy = zero_tangent(y)
     dq = pointer(dy)
 
+    cs, dcs = __pointers_to_pointers()
+    (c_1, c_2, c, c_new_val) = cs
+    (dc_1, dc_2, dc, dc_new_val) = dcs
+
     # Slightly wider range for builtins whose performance is known not to be great.
     _range = (lb=1e-3, ub=200.0)
-    memory = Any[_x, _dx, _a, x, p, dx, dp, y, q, dy, dq]
+    memory = Any[_x, _dx, _a, x, p, dx, dp, y, q, dy, dq, cs..., dcs...]
 
     test_cases = Any[
 
@@ -1126,15 +1187,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         # atomic_pointermodify -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointerref -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointerreplace -- NEEDS IMPLEMENTING AND TESTING
-        # (
-        #     true,
-        #     :none,
-        #     nothing,
-        #     IntrinsicsWrappers.atomic_pointerset,
-        #     CoDual(p, dp),
-        #     1.0,
-        #     :monotonic,
-        # ),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerset,
+            CoDual(p, dp),
+            1.0,
+            :monotonic,
+        ),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerset,
+            CoDual(pointer(c), pointer(dc)),
+            CoDual(pointer(c_new_val), pointer(dc_new_val)),
+            :monotonic,
+        ),
         # atomic_pointerswap -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability, nothing, IntrinsicsWrappers.bitcast, Int64, 5.0),
         (false, :stability, nothing, IntrinsicsWrappers.bswap_int, 5),
@@ -1239,6 +1309,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             1,
         ),
         (true, :stability, nothing, IntrinsicsWrappers.pointerset, CoDual(q, dq), 1, 2, 1),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.pointerset,
+            CoDual(pointer(c), pointer(dc)),
+            CoDual(pointer(c_new_val), pointer(dc_new_val)),
+            1,
+            1,
+        ),
         # rem_float -- untested and unimplemented because seemingly unused on master
         # rem_float_fast -- untested and unimplemented because seemingly unused on master
         (false, :stability, nothing, IntrinsicsWrappers.rint_llvm, 5.0),
@@ -1390,6 +1470,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, typeassert, randn(5), Vector{Float64}),
         (false, :stability, nothing, typeof, 5.0),
         (false, :stability, nothing, typeof, randn(5)),
+        (true, :stability, nothing, unsafe_wrap, Array, CoDual(p, dp), 1),
+        (true, :stability, nothing, unsafe_wrap, Vector{Float64}, CoDual(p, dp), 1),
     ]
 
     if VERSION > v"1.12-"
@@ -1408,6 +1490,39 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
+    cs, dcs = __pointers_to_pointers()
+    (c_1, c_2, c, c_new_val) = cs
+    (dc_1, dc_2, dc, dc_new_val) = dcs
+
+    function f_pointerset(x)
+        c_1 = Ref(x)
+        c_2 = Ref(x * 2.0)
+        p = Ref(Base.unsafe_convert(Ptr{Float64}, c_1))
+        GC.@preserve c_1 c_2 p begin
+            pointerset(
+                Base.unsafe_convert(Ptr{Ptr{Float64}}, p),
+                Base.unsafe_convert(Ptr{Float64}, c_2),
+                1,
+                1,
+            )
+            unsafe_load(p[])
+        end
+    end
+
+    function f_atomic_pointerset(x)
+        c_1 = Ref(x)
+        c_2 = Ref(x * 2.0)
+        p = Ref(Base.unsafe_convert(Ptr{Float64}, c_1))
+        GC.@preserve c_1 c_2 p begin
+            Core.Intrinsics.atomic_pointerset(
+                Base.unsafe_convert(Ptr{Ptr{Float64}}, p),
+                Base.unsafe_convert(Ptr{Float64}, c_2),
+                :monotonic,
+            )
+            unsafe_load(p[])
+        end
+    end
+
     test_cases = Any[
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
@@ -1459,6 +1574,29 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             x -> (pointerset(pointer(x), UInt8(3), 2, 1); x),
             rand(UInt8, 5),
         ),
+        (
+            true,
+            :none,
+            nothing,
+            (x, v) ->
+                unsafe_wrap(Array, pointerset(pointer(x), pointer(v), 1, 1), length(x)),
+            CoDual(c, dc),
+            CoDual(c_new_val, dc_new_val),
+        ),
+        (
+            true,
+            :none,
+            nothing,
+            (x, v) -> unsafe_wrap(
+                Array,
+                Core.Intrinsics.atomic_pointerset(pointer(x), pointer(v), :monotonic),
+                length(x),
+            ),
+            CoDual(c, dc),
+            CoDual(c_new_val, dc_new_val),
+        ),
+        (true, :none, nothing, f_pointerset, CoDual(3.0, 1.0)),
+        (true, :none, nothing, f_atomic_pointerset, CoDual(3.0, 1.0)),
         (false, :none, nothing, getindex, randn(5), [1, 1]),
         (false, :none, nothing, getindex, randn(5), [1, 2, 2]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0], [1, 1]),
