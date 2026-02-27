@@ -48,7 +48,7 @@ import Mooncake:
 # Tangent type for FunctionWrapper. Also serves as fdata since FunctionWrapper is mutable.
 # Fields:
 # - fwds_wrapper: reverse-mode forward pass (OpaqueClosure capturing rrule)
-# - frule_wrapper: forward-mode rule (OpaqueClosure for forward-mode AD)
+# - frule_wrapper: forward-mode rule (OpaqueClosure capturing frule)
 # - dobj_ref: tangent of the wrapped callable
 mutable struct FunctionWrapperTangent{Tfwds_oc,Tfrule_oc}
     fwds_wrapper::Tfwds_oc
