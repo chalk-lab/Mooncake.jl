@@ -63,16 +63,20 @@ using FunctionWrappers: FunctionWrapper
             false,
             :none,
             true,
-            FunctionWrapper{Nothing,Tuple{Vector{Float64},Vector{Float64},Vector{Float64},Float64}},
-            (du, u, p, t) -> (du[1] = p[1] * u[1]; nothing),
+            FunctionWrapper{
+                Nothing,Tuple{Vector{Float64},Vector{Float64},Vector{Float64},Float64}
+            },
+            (du, u, p, t) -> (du[1]=p[1] * u[1]; nothing),
         ),
         # Test calling a FunctionWrapper with Nothing return type
         (
             false,
             :none,
             true,
-            FunctionWrapper{Nothing,Tuple{Vector{Float64},Vector{Float64},Vector{Float64},Float64}}(
-                (du, u, p, t) -> (du[1] = p[1] * u[1]; nothing)
+            FunctionWrapper{
+                Nothing,Tuple{Vector{Float64},Vector{Float64},Vector{Float64},Float64}
+            }(
+                (du, u, p, t) -> (du[1]=p[1] * u[1]; nothing)
             ),
             [0.0],
             [1.0],
