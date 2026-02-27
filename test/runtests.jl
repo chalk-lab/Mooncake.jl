@@ -34,6 +34,8 @@ include("front_matter.jl")
         include(joinpath("rules", "blas_level_3.jl"))
     elseif test_group == "rules/builtins"
         include(joinpath("rules", "builtins.jl"))
+    elseif test_group == "rules/complex"
+        include(joinpath("rules", "complex.jl"))
     elseif test_group == "rules/fastmath"
         include(joinpath("rules", "fastmath.jl"))
     elseif test_group == "rules/foreigncall"

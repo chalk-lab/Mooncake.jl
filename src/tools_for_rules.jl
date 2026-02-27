@@ -323,6 +323,7 @@ end
 Convert a Mooncake tangent into a type that ChainRules.jl `rrule`s expect to see.
 """
 to_cr_tangent(t::IEEEFloat) = t
+to_cr_tangent(t::Complex{<:IEEEFloat}) = t
 to_cr_tangent(t::Array{<:IEEEFloat}) = t
 to_cr_tangent(t::Array) = map(to_cr_tangent, t)
 to_cr_tangent(::NoTangent) = CRC.NoTangent()
@@ -362,6 +363,21 @@ function mooncake_tangent(p::P, t::T) where {P<:Tuple,T<:CRC.Tangent}
     return tangent_type(P) == NoTangent ? NoTangent() : map(mooncake_tangent, p, t.backing)
 end
 
+function mooncake_tangent(p::T, cr_tangent::T) where {P<:IEEEFloat,T<:Complex{P}}
+    return cr_tangent
+end
+
+# Convert `ChainRulesCore.NotImplemented` tangents to Mooncake-style `NaN` tangents.
+function mooncake_tangent(
+    p::T, cr_tangent::CRC.NotImplemented
+) where {P<:IEEEFloat,T<:Complex{P}}
+    return mooncake_tangent(p, T(P(NaN), P(NaN)))
+end
+
+function mooncake_tangent(p::T, cr_tangent::CRC.NotImplemented) where {T<:IEEEFloat}
+    return T(NaN)
+end
+
 function mooncake_tangent(p, cr_tangent)
     throw(
         ArgumentError(
@@ -381,14 +397,53 @@ end
 Increment `fdata` by the fdata component of the ChainRules.jl-style tangent, `cr_tangent`,
 and return the rdata component of `cr_tangent` by adding it to `zero_rdata`.
 """
-increment_and_get_rdata!(::NoFData, r::T, t::T) where {T<:IEEEFloat} = r + t
-function increment_and_get_rdata!(f::Array{P}, ::NoRData, t::Array{P}) where {P<:IEEEFloat}
+function increment_and_get_rdata!(
+    ::NoFData, r::T, t::T
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    return r + t
+end
+function increment_and_get_rdata!(
+    f::Array{P}, ::NoRData, t::Array{P}
+) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     increment!!(f, t)
     return NoRData()
 end
 increment_and_get_rdata!(::Any, r, ::CRC.NoTangent) = r
 function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
+end
+
+# Tuple tangents from ChainRulesCore require special handling because tuple elements
+# may be a mix of types: some with only rdata (e.g., scalars), some with only fdata
+# (e.g., arrays), and some with both. These four dispatches for increment_and_get_rdata!
+# handle all the possible cases for when the ChainRulesCore.Tangent has Tuple type data.
+function increment_and_get_rdata!(f, r, t::CRC.Tangent{P,<:Tuple}) where {P}
+    return increment_and_get_rdata!(f, r, t.backing)
+end
+function increment_and_get_rdata!(f::NoFData, r::Tuple, t::Tuple)
+    return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t)
+end
+function increment_and_get_rdata!(f::Tuple, r::NoRData, t::Tuple)
+    increment!!(f, t)
+    return NoRData()
+end
+function increment_and_get_rdata!(f::Tuple, r::Tuple, t::Tuple)
+    return map((fi, ri, ti) -> increment_and_get_rdata!(fi, ri, ti), f, r, t)
+end
+
+# If a ChainRulesCore complex tangent is `NotImplemented`, return a `NaN`-filled Mooncake tangent.
+function increment_and_get_rdata!(
+    f::NoFData, r::Complex{T}, t::CRC.NotImplemented
+) where {T<:IEEEFloat}
+    return Complex(T(NaN), T(NaN))
+end
+
+function increment_and_get_rdata!(f, r::T, t::CRC.NotImplemented) where {T<:IEEEFloat}
+    return T(NaN)
+end
+
+function increment_and_get_rdata!(f::NoFData, r::NoRData, t::CRC.NotImplemented)
+    return NoTangent()
 end
 
 function increment_and_get_rdata!(f, r, t)
@@ -400,6 +455,93 @@ function increment_and_get_rdata!(f, r, t)
             "`increment_and_get_rdata!` to handle this type combination. " *
             "Consider writing a custom rrule!! for your function instead, " *
             "or implement a method of `increment_and_get_rdata!` for this type combination.",
+        ),
+    )
+end
+
+"""
+    nan_tangent_guard(dy::L, tangent::T) where {L,T}
+
+Guard against NaN propagation in automatic differentiation.  
+
+When `dy = 0`, the corresponding gradient does not contribute to the total  
+gradient, so a zero tangent is returned to prevent NaN poisoning.  
+
+Otherwise, return `tangent`.  
+
+Note that this does not fully eliminate gradient poisoning; it relies on  
+zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
+"""
+@inline function nan_tangent_guard(
+    dy::L, tangent::T
+) where {
+    L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+    T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+}
+    return if iszero(dy)
+        T(0)
+    else
+        tangent
+    end
+end
+
+"""
+    nondifferentiable_tangent_guard(dy::L, tangent::T) where {L,T}
+
+Handle functions evaluated at non-differentiable points in their domain. See:
+https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html
+
+If `dy == 0`, the gradient contributes nothing to the total gradient
+calculation, so a zero tangent is returned.
+
+Otherwise, return the user-provided `tangent` (eg, NaN), which may 
+be used to signal the presence of a non-differentiable point.
+"""
+@inline function nondifferentiable_tangent_guard(
+    dy::L, tangent::T
+) where {
+    L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+    T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+}
+    return if iszero(dy)
+        T(0)
+    else
+        tangent
+    end
+end
+
+"""
+    notimplemented_tangent_guard(dy::Mooncake.Tangent)
+
+Guards the use of a tangent associated with a `ChainRulesCore.NotImplemented` derivative.
+
+If `dy` is nonzero, return a `NaN`-filled value matching the shape and type of `da`, which signals an unknown derivative.
+
+If `dy` is the zero tangent, return a zero-valued tangent in a form compatible with immediate algebraic composition inside Mooncake rules.
+
+This masking ensures that missing derivatives only affect results when they are mathematically required.
+
+!!! note
+    This function is defined only for floating-point and complex tangent spaces.
+    It cannot support `Int` tangents, since `NaN` is only defined for
+    `AbstractFloat` types.
+"""
+function notimplemented_tangent_guard(
+    dy::L
+) where {L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
+    return if _dot(dy, dy) != L(0)
+        L(NaN)
+    else
+        L(0)
+    end
+end
+
+function notimplemented_tangent_guard(dy)
+    throw(
+        ArgumentError(
+            "Mooncake.jl does not currently have a method of " *
+            "`notimplemented_tangent_guard` to handle the tangent type $(typeof(dy)). " *
+            "Please consider writing a custom notimplemented_tangent_guard or open an issue.",
         ),
     )
 end
@@ -629,6 +771,17 @@ case because the required method of either of these functions does not exist, pl
 issue.
 """
 macro from_chainrules(ctx, sig::Expr, has_kwargs::Bool=false, mode=Mode)
+    mode = mode == :ForwardMode ? ForwardMode : mode
+    mode = mode == :ReverseMode ? ReverseMode : mode
+    mode = mode == :Mode ? Mode : mode
+    if !(mode === Mode || mode === ForwardMode || mode === ReverseMode)
+        throw(
+            ArgumentError(
+                "@from_chainrules mode must be Mode, ForwardMode, or ReverseMode " *
+                "(use unqualified names); got $(mode)",
+            ),
+        )
+    end
     return _from_chainrules_impl(ctx, sig, has_kwargs, mode)
 end
 
@@ -637,8 +790,21 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
     codual_arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_syms)
-    frule_expr = construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
-    rrule_expr = construct_rrule_wrapper_def(arg_names, codual_arg_types, where_params)
+
+    # Determine which rules to generate based on mode
+    include_frule = (mode === Mode) || (mode === ForwardMode)
+    include_rrule = (mode === Mode) || (mode === ReverseMode)
+
+    frule_expr = if include_frule
+        construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
+    else
+        nothing
+    end
+    rrule_expr = if include_rrule
+        construct_rrule_wrapper_def(arg_names, codual_arg_types, where_params)
+    else
+        nothing
+    end
 
     if has_kwargs
         kw_sig = Expr(:curly, :Tuple, :(typeof(Core.kwcall)), :NamedTuple, arg_type_syms...)
@@ -651,42 +817,58 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
                 return true
             end
         end
-        kwargs_frule_expr = construct_frule_wrapper_def(
-            vcat(:_kwcall, :kwargs, arg_names),
-            vcat(
-                :(Mooncake.Dual{typeof(Core.kwcall)}),
-                :(Mooncake.Dual{<:NamedTuple}),
-                dual_arg_types,
-            ),
-            where_params,
-        )
-        kwargs_rrule_expr = construct_rrule_wrapper_def(
-            vcat(:_kwcall, :kwargs, arg_names),
-            vcat(
-                :(Mooncake.CoDual{typeof(Core.kwcall)}),
-                :(Mooncake.CoDual{<:NamedTuple}),
-                codual_arg_types,
-            ),
-            where_params,
-        )
+        kwargs_frule_expr = if include_frule
+            construct_frule_wrapper_def(
+                vcat(:_kwcall, :kwargs, arg_names),
+                vcat(
+                    :(Mooncake.Dual{typeof(Core.kwcall)}),
+                    :(Mooncake.Dual{<:NamedTuple}),
+                    dual_arg_types,
+                ),
+                where_params,
+            )
+        else
+            nothing
+        end
+        kwargs_rrule_expr = if include_rrule
+            construct_rrule_wrapper_def(
+                vcat(:_kwcall, :kwargs, arg_names),
+                vcat(
+                    :(Mooncake.CoDual{typeof(Core.kwcall)}),
+                    :(Mooncake.CoDual{<:NamedTuple}),
+                    codual_arg_types,
+                ),
+                where_params,
+            )
+        else
+            nothing
+        end
     else
         kw_is_primitive = nothing
         kwargs_frule_expr = nothing
         kwargs_rrule_expr = nothing
     end
 
-    return quote
+    is_primitive_expr = quote
         function Mooncake._is_primitive(
             ::Type{$(esc(ctx))}, ::Type{<:$mode}, ::Type{<:($(esc(sig)))}
         )
             return true
         end
-        $frule_expr
-        $rrule_expr
-        $kw_is_primitive
-        $kwargs_frule_expr
-        $kwargs_rrule_expr
     end
+
+    exprs = filter(
+        !isnothing,
+        [
+            is_primitive_expr,
+            frule_expr,
+            rrule_expr,
+            kw_is_primitive,
+            kwargs_frule_expr,
+            kwargs_rrule_expr,
+        ],
+    )
+    return Expr(:block, exprs...)
 end
 
 """

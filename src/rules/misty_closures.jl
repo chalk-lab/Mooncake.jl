@@ -32,7 +32,15 @@ end
 # reject our intentionally-older interpreter.
 #
 function _dual_mc(p::MistyClosure)
-    mc_world = UInt(p.oc.world)
+    @static if VERSION > v"1.12-"
+        # Use the IR's valid_worlds.max_world instead of oc.world to avoid world age mismatch.
+        # The oc.world can be slightly newer than valid_worlds.max_world if methods were
+        # defined between IR generation and OpaqueClosure creation. Using max_world ensures
+        # we're within the valid range while still having access to all methods the IR needs.
+        mc_world = UInt(p.ir[].valid_worlds.max_world)
+    else
+        mc_world = UInt(p.oc.world)
+    end
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
     return build_frule(interp, p; skip_world_age_check=true)
 end

@@ -101,4 +101,27 @@ end
         Mooncake.Dual(5.0, 1.0),
     )
     @test tangent(result) == 6 * 5.0
+
+    # Test for world-age mismatch fix in _dual_mc (Julia 1.12+ only).
+    # See: https://github.com/chalk-lab/Mooncake.jl/issues/916
+    # When methods are defined between IR creation and MistyClosure creation,
+    # oc.world exceeds ir.valid_worlds.max_world. The fix uses max_world.
+    # See also: test/ext/differentiation_interface_second_order for an integration test.
+    @static if VERSION > v"1.12-"
+        @testset "world age mismatch fix (#916)" begin
+            ir_test = Base.code_ircode_by_type(Tuple{typeof(mc_foo),Float64})[1][1]
+            ir_test.argtypes[1] = Any
+
+            # Advance world age by defining dummy methods
+            for i in 1:100
+                @eval $(Symbol("_mooncake_test_dummy_", i))() = $i
+            end
+
+            mc_test = Mooncake.MistyClosure(ir_test)
+            @test mc_test.oc.world > mc_test.ir[].valid_worlds.max_world
+
+            t = zero_tangent(mc_test)
+            @test t isa Mooncake.MistyClosureTangent
+        end
+    end
 end

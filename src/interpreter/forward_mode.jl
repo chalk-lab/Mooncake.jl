@@ -98,6 +98,7 @@ function build_frule(
             dual_oc = misty_closure(
                 info.dual_ret_type, dual_ir, captures...; do_compile=true
             )
+            sig = flatten_va_sig(sig, info.isva, info.nargs)
             raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(dual_oc)
             rule = debug_mode ? DebugFRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
@@ -295,8 +296,14 @@ function modify_fwd_ad_stmts!(
     end
 
     # stmt is a const, so we have to turn it into a dual.
-    dual_stmt = ReturnNode(const_dual!(captures, stmt.val))
-    Mooncake.replace_call!(dual_ir, ssa, dual_stmt)
+    d = const_dual!(captures, stmt.val)
+    if d isa Int
+        get_dual = Expr(:call, get_capture, Argument(1), d)
+        get_dual_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_dual), ATTACH_BEFORE)
+        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(get_dual_ssa))
+    else
+        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(d))
+    end
     return nothing
 end
 
@@ -378,7 +385,7 @@ function modify_fwd_ad_stmts!(
         args = map(__inc, raw_args)
 
         # Special case: if the result of a call to getfield is un-used, then leave the
-        # primal statment alone (just increment arguments as usual). This was causing
+        # primal statement alone (just increment arguments as usual). This was causing
         # performance problems in a couple of situations where the field being requested is
         # not known at compile time. `getfield` cannot be dead-code eliminated, because it
         # can throw an error if the requested field does not exist. Everything _other_ than
@@ -488,17 +495,17 @@ end
 function frule_type(
     interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
 ) where {C}
-    primal_sig = _get_sig(mi)
-    if is_primitive(C, ForwardMode, primal_sig, interp.world)
+    if is_primitive(C, ForwardMode, _get_sig(mi), interp.world)
         return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
     end
     ir, _ = lookup_ir(interp, mi)
     nargs = length(ir.argtypes)
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
+    sig = Tuple{arg_types...}
     dual_args_type = Tuple{map(dual_type, arg_types)...}
     closure_type = RuleMC{dual_args_type,dual_ret_type(ir)}
-    Tderived_rule = DerivedFRule{primal_sig,closure_type,isva,nargs}
+    Tderived_rule = DerivedFRule{sig,closure_type,isva,nargs}
     return debug_mode ? DebugFRule{Tderived_rule} : Tderived_rule
 end
 
@@ -513,7 +520,9 @@ DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
 _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
-    sig = Tuple{map(_typeof ∘ primal, args)...}
+    # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
+    # See DynamicDerivedRule for details, the same reasoning applies.
+    sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ForwardMode)

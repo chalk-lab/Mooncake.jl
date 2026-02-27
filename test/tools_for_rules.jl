@@ -12,7 +12,9 @@ using Mooncake:
     DefaultCtx,
     @from_chainrules,
     ForwardMode,
-    ReverseMode
+    ReverseMode,
+    NoFData,
+    NoRData
 
 const CRC = ChainRulesCore
 
@@ -136,6 +138,26 @@ end
 
 @from_chainrules(DefaultCtx, Tuple{typeof(test_kwargs_conditional),Float64}, true)
 
+# Test case for mode-specific @from_chainrules.
+
+fwd_only_chainrules(x::Float64) = 3x
+rev_only_chainrules(x::Float64) = 4x
+
+CRC.frule((_, dx), ::typeof(fwd_only_chainrules), x::Float64) = (3x, 3dx)
+function CRC.rrule(::typeof(fwd_only_chainrules), x::Float64)
+    pb(dy::Float64) = (CRC.NoTangent(), 3dy)
+    return 3x, pb
+end
+
+CRC.frule((_, dx), ::typeof(rev_only_chainrules), x::Float64) = (4x, 4dx)
+function CRC.rrule(::typeof(rev_only_chainrules), x::Float64)
+    pb(dy::Float64) = (CRC.NoTangent(), 4dy)
+    return 4x, pb
+end
+
+@from_chainrules DefaultCtx Tuple{typeof(fwd_only_chainrules),Float64} false ForwardMode
+@from_chainrules DefaultCtx Tuple{typeof(rev_only_chainrules),Float64} false ReverseMode
+
 end
 
 @testset "tools_for_rules" begin
@@ -227,6 +249,141 @@ end
             f = ToolsForRulesResources.test_bad_rdata
             out, pb!! = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(3.0))
             @test_throws ArgumentError pb!!(5.0)
+        end
+        @testset "forward mode only" begin
+            world = Base.get_world_counter()
+            sig = Tuple{typeof(ToolsForRulesResources.fwd_only_chainrules),Float64}
+            @test is_primitive(DefaultCtx, ForwardMode, sig, world)
+            @test !is_primitive(DefaultCtx, ReverseMode, sig, world)
+            test_rule(
+                sr(1),
+                ToolsForRulesResources.fwd_only_chainrules,
+                5.0;
+                perf_flag=:none,
+                is_primitive=true,
+                mode=ForwardMode,
+            )
+            rrule_sig = Tuple{
+                CoDual{typeof(ToolsForRulesResources.fwd_only_chainrules)},CoDual{Float64}
+            }
+            @test !hasmethod(rrule!!, rrule_sig)
+        end
+        @testset "reverse mode only" begin
+            world = Base.get_world_counter()
+            sig = Tuple{typeof(ToolsForRulesResources.rev_only_chainrules),Float64}
+            @test !is_primitive(DefaultCtx, ForwardMode, sig, world)
+            @test is_primitive(DefaultCtx, ReverseMode, sig, world)
+            test_rule(
+                sr(1),
+                ToolsForRulesResources.rev_only_chainrules,
+                5.0;
+                perf_flag=:none,
+                is_primitive=true,
+                mode=ReverseMode,
+            )
+            frule_sig = Tuple{
+                Dual{typeof(ToolsForRulesResources.rev_only_chainrules)},Dual{Float64}
+            }
+            @test !hasmethod(Mooncake.frule!!, frule_sig)
+        end
+        @testset "invalid mode" begin
+            bad_mode_exprs = [
+                :(Mooncake.@from_chainrules DefaultCtx Tuple{
+                    typeof(ToolsForRulesResources.test_sum),Array{<:Base.IEEEFloat}
+                } false BadMode),
+                :(Mooncake.@from_chainrules DefaultCtx Tuple{
+                    typeof(ToolsForRulesResources.test_sum),Array{<:Base.IEEEFloat}
+                } false Mooncake.ForwardMode),
+            ]
+            for expr in bad_mode_exprs
+                err = @test_throws LoadError eval(expr)
+                @test err.value.error isa ArgumentError
+            end
+        end
+
+        @testset "increment_and_get_rdata!(f, r, t) specialized dispatches" begin
+            f_no = NoFData()
+            r_no = NoRData()
+
+            @testset "NoFData - homogeneous Tuple rdata" begin
+                # f_no, r, t - NoFData, Tuple{Float64, Float64}, Tangent{Any, <:Tuple}
+                r = (rand(), rand())
+                dr = (rand(), rand())
+                t = ChainRulesCore.Tangent{Any,typeof(r)}(dr)
+
+                result = Mooncake.increment_and_get_rdata!(f_no, r, t)
+
+                @test result isa typeof(r)
+                @test result[1] ≈ r[1] + dr[1]
+                @test result[2] ≈ r[2] + dr[2]
+            end
+
+            @testset "NoFData - heterogeneous Tuple rdata" begin
+                # f_no, r, t - NoFData, Tuple{Tuple{Float64,Float64}, Float64}, Tangent{Any, <:Tuple}
+                r = ((rand(), rand()), rand())
+                dr = ((rand(), rand()), rand())
+                t = ChainRulesCore.Tangent{Any,typeof(r)}(dr)
+
+                result = Mooncake.increment_and_get_rdata!(f_no, r, t)
+
+                @test result isa typeof(r)
+                @test result[1][1] ≈ r[1][1] + dr[1][1]
+                @test result[1][2] ≈ r[1][2] + dr[1][2]
+                @test result[2] ≈ r[2] + dr[2]
+            end
+
+            @testset "NoRData - homogeneous Tuple fdata" begin
+                # f, r_no, t - Tuple{Vector{Float64}, Vector{Float64}}, NoRData, Tangent{Any, <:Tuple}
+                f1_orig = rand(3)
+                f2_orig = rand(3)
+                f = (copy(f1_orig), copy(f2_orig))
+
+                df1, df2 = rand(3), rand(3)
+                t = ChainRulesCore.Tangent{Any,typeof(f)}((df1, df2))
+
+                result = Mooncake.increment_and_get_rdata!(f, r_no, t)
+
+                @test result isa typeof(r_no)
+                @test f[1] ≈ f1_orig + df1
+                @test f[2] ≈ f2_orig + df2
+            end
+
+            @testset "NoRData - heterogeneous Tuple fdata" begin
+                # f, r_no, t - Tuple{Vector{Float64}, Vector{Float64}} (different lengths), NoRData, Tangent{Any, <:Tuple}
+                f1_orig = rand(3)
+                f2_orig = rand(2)
+                f = (copy(f1_orig), copy(f2_orig))
+
+                df1, df2 = rand(3), rand(2)
+                t = ChainRulesCore.Tangent{Any,typeof(f)}((df1, df2))
+
+                result = Mooncake.increment_and_get_rdata!(f, r_no, t)
+
+                @test result isa typeof(r_no)
+                @test f[1] ≈ f1_orig + df1
+                @test f[2] ≈ f2_orig + df2
+            end
+
+            @testset "Mixed - Tuple{Vector, Tuple} fdata and rdata" begin
+                # f1, r1, t1 - Tuple{Vector{Float64}, NoFData}, Tuple{NoRData, Tuple{Float64,Float64}}, Tangent{Any, <:Tuple}
+                f1_orig = rand(3)
+                f1 = (copy(f1_orig), f_no)
+
+                r2 = (rand(), rand())
+                r1 = (r_no, r2)
+
+                df1 = rand(3)
+                dr2 = (rand(), rand())
+                t1 = ChainRulesCore.Tangent{Any,typeof((f1_orig, r2))}((df1, dr2))
+
+                result = Mooncake.increment_and_get_rdata!(f1, r1, t1)
+
+                @test result isa typeof(r1)
+                @test result[1] isa typeof(r_no)
+                @test result[2][1] ≈ r2[1] + dr2[1]
+                @test result[2][2] ≈ r2[2] + dr2[2]
+                @test f1[1] ≈ f1_orig + df1
+            end
         end
     end
 end

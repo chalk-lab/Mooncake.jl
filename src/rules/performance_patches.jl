@@ -53,12 +53,12 @@ end
 function Mooncake.frule!!(
     ::Dual{typeof(LinearAlgebra._kron!)},
     out::Dual{<:AbstractMatrix{<:T}},
-    x1::Dual{<:AbstractMatrix{<:T}},
-    x2::Dual{<:AbstractMatrix{<:T}},
+    x1::Dual{<:AbstractVecOrMat{<:T}},
+    x2::Dual{<:AbstractVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
-    px1, dx1 = arrayify(x1)
-    px2, dx2 = arrayify(x2)
+    px1, dx1 = matrixify(x1)
+    px2, dx2 = matrixify(x2)
     LinearAlgebra._kron!(pout, px1, px2)
     # manually compute dout .= kron(dx1, px2) .+ kron(px1, dx2), otherwise performance
     # suffers
@@ -76,12 +76,12 @@ end
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
     out::CoDual{<:AbstractMatrix{<:T}},
-    x1::CoDual{<:AbstractMatrix{<:T}},
-    x2::CoDual{<:AbstractMatrix{<:T}},
+    x1::CoDual{<:AbstractVecOrMat{<:T}},
+    x2::CoDual{<:AbstractVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
-    px1, dx1 = arrayify(x1)
-    px2, dx2 = arrayify(x2)
+    px1, dx1 = matrixify(x1)
+    px2, dx2 = matrixify(x2)
     old_pout = copy(pout)
     LinearAlgebra._kron!(pout, px1, px2)
     function _kron!_pb!!(::NoRData)
@@ -101,17 +101,6 @@ function Mooncake.rrule!!(
     return out, _kron!_pb!!
 end
 
-@mooncake_overlay function LinearAlgebra._kron!(
-    out::Tm, a::Tv, b::Tm
-) where {T<:IEEEFloat,Tm<:AbstractMatrix{T},Tv<:AbstractVector{T}}
-    return LinearAlgebra._kron!(out, reshape(a, :, 1), b)::Tm
-end
-@mooncake_overlay function LinearAlgebra._kron!(
-    out::Tm, a::Tm, b::Tv
-) where {T<:IEEEFloat,Tm<:AbstractMatrix{T},Tv<:AbstractVector{T}}
-    return LinearAlgebra._kron!(out, a, reshape(b, :, 1))::Tm
-end
-
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
@@ -120,11 +109,11 @@ end
 } where {T<:IEEEFloat}
 function Mooncake.rrule!!(
     ::CoDual{typeof(kron)},
-    x1::CoDual{<:AbstractMatrix{<:T}},
-    x2::CoDual{<:AbstractMatrix{<:T}},
+    x1::CoDual{<:AbstractVecOrMat{<:T}},
+    x2::CoDual{<:AbstractVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
-    px1, dx1 = arrayify(x1)
-    px2, dx2 = arrayify(x2)
+    px1, dx1 = matrixify(x1)
+    px2, dx2 = matrixify(x2)
     y = kron(px1, px2)
     dy = zero(y)
     function kron_pb!!(::NoRData)
