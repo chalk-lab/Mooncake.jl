@@ -57,8 +57,7 @@ using FunctionWrappers: FunctionWrapper
             randn(100),
             randn(),
         ),
-        # Test FunctionWrapper with Nothing return type (issue #1005)
-        # Test constructing a FunctionWrapper with Nothing return type
+        # Test constructing a FunctionWrapper with Nothing return type (#1005)
         (
             false,
             :none,
@@ -68,7 +67,7 @@ using FunctionWrappers: FunctionWrapper
             },
             (du, u, p, t) -> (du[1]=p[1] * u[1]; nothing),
         ),
-        # Test calling a FunctionWrapper with Nothing return type
+        # Test calling a FunctionWrapper with Nothing return type (#1005)
         (
             false,
             :none,
