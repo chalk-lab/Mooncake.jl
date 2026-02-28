@@ -62,6 +62,23 @@ using Mooncake.TestUtils: test_rule
                 nothing,
                 nothing,
             ),
+            (
+                false,
+                :none,
+                false,
+                function (opmode, act, x, m, sigma2, gamma, beta)
+                    return LuxLib.Impl.batchnorm_affine_normalize_internal(
+                        opmode, act, x, m, sigma2, gamma, beta, 1e-3
+                    )
+                end,
+                LuxLib.LoopedArrayOp(),
+                Lux.relu,
+                randn(5, 4, 3),
+                randn(4),
+                rand(4) .+ 1.0,
+                randn(4),
+                randn(3),
+            ),
         ],
         vec(
             map(

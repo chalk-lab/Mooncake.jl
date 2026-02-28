@@ -78,6 +78,8 @@ import LuxLib.Impl:
     ∇batchnorm_affine_normalize,
     AbstractInternalArrayOpMode
 
+import ChainRulesCore as CRC
+
 @is_primitive MinimalCtx Tuple{
     typeof(batchnorm_affine_normalize_internal),
     AbstractInternalArrayOpMode,
@@ -85,8 +87,8 @@ import LuxLib.Impl:
     AbstractArray{xT,3},
     AbstractVector,
     AbstractVector,
-    LuxLib.Optional{AbstractVector},
-    LuxLib.Optional{AbstractVector},
+    LuxLib.Optional{<:AbstractVector},
+    LuxLib.Optional{<:AbstractVector},
     Real,
 } where {F,xT}
 
@@ -97,8 +99,8 @@ function Mooncake.rrule!!(
     x::CoDual{<:AbstractArray{xT,3}},
     μ::CoDual{<:AbstractVector},
     σ²::CoDual{<:AbstractVector},
-    γ::CoDual{<:LuxLib.Optional{AbstractVector}},
-    β::CoDual{<:LuxLib.Optional{AbstractVector}},
+    γ::CoDual{<:LuxLib.Optional{<:AbstractVector}},
+    β::CoDual{<:LuxLib.Optional{<:AbstractVector}},
     ϵ::CoDual{<:Real},
 ) where {F,xT}
     _opmode, _act, _ϵ = primal(opmode), primal(act), primal(ϵ)
@@ -141,7 +143,9 @@ function Mooncake.rrule!!(
         x̄ .+= ∂x
         μ̄ .+= ∂μ
         σ²̄ .+= ∂σ²
-        # γ and β have NoTangent gradients.
+        # γ, β may have NoTangent gradients for primal=nothing
+        ∂γ isa CRC.NoTangent || (γ̄ .+= ∂γ)
+        ∂β isa CRC.NoTangent || (β̄ .+= ∂β)
 
         return NoRData(),
         NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
