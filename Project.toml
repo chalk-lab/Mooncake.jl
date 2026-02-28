@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.8"
+version = "0.5.12"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -12,6 +12,7 @@ ExprTools = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MistyClosures = "dbe65cb8-6be2-42dd-bbc5-4196aaced4f4"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
@@ -68,6 +69,7 @@ LuxLib = "1.11"
 MLDataDevices = "1.10.0"
 MistyClosures = "2"
 NNlib = "0.9"
+PrecompileTools = "1"
 Pkg = "1"
 Random = "1"
 Revise = "3.0 - 3.12"
