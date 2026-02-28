@@ -77,7 +77,7 @@ using Mooncake.TestUtils: test_rule
                 randn(4),
                 rand(4) .+ 1.0,
                 randn(4),
-                randn(3),
+                randn(4),
             ),
         ],
         vec(
