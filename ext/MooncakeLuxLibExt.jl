@@ -25,14 +25,18 @@ using Mooncake:
 
 using Static: True
 
-@from_rrule(DefaultCtx, Tuple{typeof(Impl.matmul),Array{P},Array{P}} where {P<:IEEEFloat})
 @from_rrule(
-    DefaultCtx,
-    Tuple{typeof(Impl.matmuladd),Array{P},Array{P},Vector{P}} where {P<:IEEEFloat},
+    DefaultCtx, Tuple{typeof(LuxLib.Impl.matmul),Array{P},Array{P}} where {P<:IEEEFloat}
 )
 @from_rrule(
     DefaultCtx,
-    Tuple{typeof(Impl.batched_matmul_fallback),Array{P,3},Array{P,3}} where {P<:IEEEFloat},
+    Tuple{typeof(LuxLib.Impl.matmuladd),Array{P},Array{P},Vector{P}} where {P<:IEEEFloat},
+)
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(LuxLib.Impl.batched_matmul_fallback),Array{P,3},Array{P,3}
+    } where {P<:IEEEFloat},
 )
 
 ## For mooncake we are missing some rules. For now use the basic versions of the kernels
@@ -91,26 +95,26 @@ import LuxLib.Impl:
     instancenorm_reduce_dims,
     compute_layernorm_dims
 
-@zero_adjoint DefaultCtx Tuple{typeof(select_fastest_activation),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(sleefpirates_fast_act),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(get_non_heads_dim),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(make_causal_mask),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(get_non_contracting_dim),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(get_batched_matmul_repeat_dims),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(batchnorm_reduce_dims),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(get_batchnorm_statistics),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(groupnorm_reduce_dims),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(flattened_bias_dims),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(check_dropout_mask_shape_mismatch),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(dropout_shape),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(dropout_fptype),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(generate_alpha_dropout_noise),Vararg{Any}}
+@zero_adjoint DefaultCtx Tuple{typeof(select_fastest_activation),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(sleefpirates_fast_act),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_non_heads_dim),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(make_causal_mask),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_non_contracting_dim),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_batched_matmul_repeat_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(batchnorm_reduce_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_batchnorm_statistics),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(groupnorm_reduce_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(flattened_bias_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(check_dropout_mask_shape_mismatch),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(dropout_shape),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(dropout_fptype),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(generate_alpha_dropout_noise),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(generate_dropout_mask),AbstractRNG,Any,Any,Any,Any}
-@zero_adjoint DefaultCtx Tuple{typeof(update_running_statistics),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(update_normalization_statistics),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(get_norm_reshape_dims),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(instancenorm_reduce_dims),Vararg{Any}}
-@zero_adjoint DefaultCtx Tuple{typeof(compute_layernorm_dims),Vararg{Any}}
+@zero_adjoint DefaultCtx Tuple{typeof(update_running_statistics),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(update_normalization_statistics),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_norm_reshape_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(instancenorm_reduce_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(compute_layernorm_dims),Vararg}
 
 # This is a really horrible hack that we need to do until Mooncake is able to support the
 # call-back-into-ad interface that ChainRules exposes.
@@ -213,7 +217,6 @@ end
 # LuxLib native Mooncake rrules
 # Activation.    
 import LuxLib.Utils: True, False, unsafe_known
-import Lux: ConvDims
 import LuxLib.Impl:
     activation!!,
     activation!,
@@ -461,7 +464,7 @@ end
     AbstractArray{<:Any,N},
     AbstractArray{<:Any,N},
     LuxLib.Optional{<:AbstractVector},
-    ConvDims,
+    LuxLib.Impl.ConvDims,
 } where {F,N}
 
 function Mooncake.rrule!!(
@@ -471,7 +474,7 @@ function Mooncake.rrule!!(
     weight::CoDual{<:AbstractArray{wT,N}},
     x::CoDual{<:AbstractArray{xT,N}},
     bias::CoDual{<:LuxLib.Optional{<:AbstractVector}},
-    cdims::CoDual{<:ConvDims},
+    cdims::CoDual{<:LuxLib.Impl.ConvDims},
 ) where {F,wT,xT,N}
     _opmode, _act = primal(opmode), primal(act)
     _weight, w̄ = primal(weight), tangent(weight)
