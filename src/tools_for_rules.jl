@@ -409,6 +409,7 @@ function increment_and_get_rdata!(
     return NoRData()
 end
 increment_and_get_rdata!(::Any, r, ::CRC.NoTangent) = r
+increment_and_get_rdata!(::Any, r, ::Nothing) = r
 function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end
@@ -429,6 +430,27 @@ function increment_and_get_rdata!(f::Tuple, r::NoRData, t::Tuple)
 end
 function increment_and_get_rdata!(f::Tuple, r::Tuple, t::Tuple)
     return map((fi, ri, ti) -> increment_and_get_rdata!(fi, ri, ti), f, r, t)
+end
+
+# NamedTuple tangents from ChainRulesCore/Zygote require handling analogous to Tuple
+# tangents above. Struct fdata/rdata are wrapped in FData/RData types, so the dispatches
+# use those wrappers. These handle all possible cases for NamedTuple-backed tangent data.
+function increment_and_get_rdata!(f, r, t::CRC.Tangent{P,<:NamedTuple}) where {P}
+    return increment_and_get_rdata!(f, r, CRC.backing(t))
+end
+function increment_and_get_rdata!(::NoFData, r::RData, t::NamedTuple)
+    return RData(tuple_map((ri, ti) -> increment_and_get_rdata!(NoFData(), ri, ti), r.data, t))
+end
+function increment_and_get_rdata!(f::FData, ::NoRData, t::NamedTuple)
+    tuple_map((fi, ti) -> increment_and_get_rdata!(fi, NoRData(), ti), f.data, t)
+    return NoRData()
+end
+function increment_and_get_rdata!(f::FData{NT}, r::RData, t::NamedTuple) where {NT}
+    result = map(
+        (fi, ri, ti) -> increment_and_get_rdata!(fi, ri, ti),
+        values(f.data), values(r.data), values(t),
+    )
+    return RData(NamedTuple{fieldnames(NT)}(result))
 end
 
 # If a ChainRulesCore complex tangent is `NotImplemented`, return a `NaN`-filled Mooncake tangent.

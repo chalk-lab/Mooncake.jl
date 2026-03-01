@@ -384,6 +384,67 @@ end
                 @test result[2][2] ≈ r2[2] + dr2[2]
                 @test f1[1] ≈ f1_orig + df1
             end
+
+            @testset "Nothing as zero tangent" begin
+                @test Mooncake.increment_and_get_rdata!(f_no, r_no, nothing) === r_no
+                @test Mooncake.increment_and_get_rdata!(f_no, 1.0, nothing) === 1.0
+            end
+
+            @testset "CRC.Tangent{P, <:NamedTuple} unwrapping" begin
+                struct _TestNTStruct
+                    a::Float64
+                    b::Float64
+                end
+                r = Mooncake.RData((; a=1.0, b=2.0))
+                t = ChainRulesCore.Tangent{_TestNTStruct}(; a=0.5, b=0.5)
+                result = Mooncake.increment_and_get_rdata!(f_no, r, t)
+                @test result isa Mooncake.RData
+                @test result.data.a ≈ 1.5
+                @test result.data.b ≈ 2.5
+            end
+
+            @testset "FData + NoRData + NamedTuple" begin
+                f1_orig = rand(3)
+                f2_orig = rand(2)
+                f = Mooncake.FData((; x=copy(f1_orig), y=copy(f2_orig)))
+
+                df1, df2 = rand(3), rand(2)
+                t = (; x=df1, y=df2)
+
+                result = Mooncake.increment_and_get_rdata!(f, r_no, t)
+
+                @test result === r_no
+                @test f.data.x ≈ f1_orig + df1
+                @test f.data.y ≈ f2_orig + df2
+            end
+
+            @testset "NoFData + RData + NamedTuple" begin
+                r = Mooncake.RData((; a=1.0, b=2.0))
+                dr = (; a=0.5, b=0.5)
+
+                result = Mooncake.increment_and_get_rdata!(f_no, r, dr)
+
+                @test result isa Mooncake.RData
+                @test result.data.a ≈ 1.5
+                @test result.data.b ≈ 2.5
+            end
+
+            @testset "FData + RData + NamedTuple (mixed)" begin
+                f1_orig = rand(3)
+                f = Mooncake.FData((; arr=copy(f1_orig), scl=Mooncake.NoFData()))
+
+                r = Mooncake.RData((; arr=Mooncake.NoRData(), scl=5.0))
+
+                df1 = rand(3)
+                t = (; arr=df1, scl=1.0)
+
+                result = Mooncake.increment_and_get_rdata!(f, r, t)
+
+                @test result isa Mooncake.RData
+                @test result.data.arr === Mooncake.NoRData()
+                @test result.data.scl ≈ 6.0
+                @test f.data.arr ≈ f1_orig + df1
+            end
         end
     end
 end
