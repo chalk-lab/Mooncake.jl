@@ -105,6 +105,48 @@ using Mooncake.TestUtils: test_rule
                 )
             end,
         ),
+        # vec(
+        #     map(
+        #         Iterators.product(
+        #             [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
+        #             [Lux.relu, tanh, NNlib.gelu],
+        #         ),
+        #     ) do (opmode, activation)
+        #         (
+        #             false,
+        #             :none,
+        #             false,
+        #             function (opmode, act, x, bias)
+        #                 return LuxLib.Impl.bias_activation!!(
+        #                     opmode, LuxLib.Utils.True(), act, x, bias
+        #                 )
+        #             end,
+        #             opmode,
+        #             activation,
+        #             randn(5, 4),
+        #             randn(5),
+        #         )
+        #     end,
+        # ),
+        # vec(
+        #     map(
+        #         Iterators.product(
+        #             [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
+        #             [Lux.relu, tanh, NNlib.gelu],
+        #         ),
+        #     ) do (opmode, activation)
+        #         (
+        #             false,
+        #             :none,
+        #             true,
+        #             LuxLib.Impl.activation!!,
+        #             opmode,
+        #             LuxLib.Utils.True(),
+        #             activation,
+        #             randn(5, 4),
+        #         )
+        #     end,
+        # ),
         vec(
             map(
                 Iterators.product(
@@ -115,50 +157,45 @@ using Mooncake.TestUtils: test_rule
                 (
                     false,
                     :none,
-                    false,
-                    function (opmode, act, x, bias)
-                        return LuxLib.Impl.bias_activation!!(
-                            opmode, LuxLib.Utils.True(), act, x, bias
-                        )
-                    end,
+                    true,
+                    LuxLib.Impl.activation,
                     opmode,
                     activation,
                     randn(5, 4),
-                    randn(5),
                 )
             end,
         ),
-        # vec(
-        #     map(
-        #         Iterators.product(
-        #             [LuxLib.LoopedArrayOp()],
-        #             [randn(3), nothing],
-        #             [Lux.relu, tanh, NNlib.gelu],
-        #         ),
-        #     ) do (opmode, bias, activation)
-        #         cdims = NNlib.DenseConvDims(
-        #             randn(6, 6, 2, 3),
-        #             randn(3, 3, 2, 3);
-        #             stride=(1, 1),
-        #             padding=(0, 0),
-        #             dilation=(1, 1),
-        #         )
-        #         (
-        #             false,
-        #             :none,
-        #             false,
-        #             function (opmode, act, weight, x, bias, cdims)
-        #                 return LuxLib.Impl.fused_conv(opmode, act, weight, x, bias, cdims)
-        #             end,
-        #             opmode,
-        #             activation,
-        #             randn(3, 3, 2, 3),
-        #             randn(6, 6, 2, 3),
-        #             bias === nothing ? nothing : randn(3),
-        #             cdims,
-        #         )
-        #     end,
-        # ),
+        vec(
+            map(
+                Iterators.product(
+                    [LuxLib.LoopedArrayOp()],
+                    [randn(3), nothing],
+                    [Lux.relu, tanh, NNlib.gelu],
+                ),
+            ) do (opmode, bias, activation)
+                cdims = NNlib.DenseConvDims(
+                    randn(6, 6, 2, 3),
+                    randn(3, 3, 2, 3);
+                    stride=(1, 1),
+                    padding=(0, 0),
+                    dilation=(1, 1),
+                )
+                (
+                    false,
+                    :none,
+                    false,
+                    function (opmode, act, weight, x, bias, cdims)
+                        return LuxLib.Impl.fused_conv(opmode, act, weight, x, bias, cdims)
+                    end,
+                    opmode,
+                    activation,
+                    randn(3, 3, 2, 3),
+                    randn(6, 6, 2, 3),
+                    bias === nothing ? nothing : randn(3),
+                    cdims,
+                )
+            end,
+        ),
         vec(
             map(
                 Iterators.product(

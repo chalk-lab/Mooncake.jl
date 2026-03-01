@@ -1,6 +1,6 @@
 module MooncakeLuxLibExt
 
-using LuxLib, Random, Mooncake
+using LuxLib, Random, Mooncake, NNlib
 using Base: IEEEFloat
 
 import LuxLib: Impl, Utils
@@ -47,27 +47,27 @@ using Static: True
 # Utils extensions
 @mooncake_overlay Utils.within_autodiff(x) = True()
 
-# Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
-@mooncake_overlay function LuxLib.Impl.fused_dense(
-    opmode,
-    act::F,
-    weight::AbstractMatrix,
-    x::AbstractMatrix,
-    b::LuxLib.Optional{<:AbstractVector},
-) where {F}
-    return bias_activation(act, Impl.matmul(weight, x), b)
-end
+# # Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
+# @mooncake_overlay function LuxLib.Impl.fused_dense(
+#     opmode,
+#     act::F,
+#     weight::AbstractMatrix,
+#     x::AbstractMatrix,
+#     b::LuxLib.Optional{<:AbstractVector},
+# ) where {F}
+#     return bias_activation(act, Impl.matmul(weight, x), b)
+# end
 
-@mooncake_overlay function LuxLib.Impl.fused_conv(
-    ::LuxLib.Impl.AbstractInternalArrayOpMode,
-    act::F,
-    weight::AbstractArray{wT,N},
-    x::AbstractArray{xT,N},
-    bias::LuxLib.Optional{<:AbstractVector},
-    cdims::LuxLib.Impl.ConvDims,
-) where {F,wT,xT,N}
-    return LuxLib.Impl.bias_activation(act, LuxLib.Impl.conv(x, weight, cdims), bias)
-end
+# @mooncake_overlay function LuxLib.Impl.fused_conv(
+#     ::LuxLib.Impl.AbstractInternalArrayOpMode,
+#     act::F,
+#     weight::AbstractArray{wT,N},
+#     x::AbstractArray{xT,N},
+#     bias::LuxLib.Optional{<:AbstractVector},
+#     cdims::LuxLib.Impl.ConvDims,
+# ) where {F,wT,xT,N}
+#     return LuxLib.Impl.bias_activation(act, LuxLib.Impl.conv(x, weight, cdims), bias)
+# end
 
 import LuxLib.Utils: static_training_mode_check
 
@@ -93,7 +93,8 @@ import LuxLib.Impl:
     update_normalization_statistics,
     get_norm_reshape_dims,
     instancenorm_reduce_dims,
-    compute_layernorm_dims
+    compute_layernorm_dims,
+    NotaNumber
 
 @zero_adjoint DefaultCtx Tuple{typeof(select_fastest_activation),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(sleefpirates_fast_act),Vararg}
@@ -292,11 +293,13 @@ function Mooncake.rrule!!(
     return CoDual(y, ȳ), pb!!_fallback
 end
 
-@is_primitive MinimalCtx Tuple{typeof(activation),LoopedArrayOp,F,AbstractArray} where {F}
+@is_primitive MinimalCtx Tuple{
+    typeof(activation),AbstractInternalArrayOpMode,F,AbstractArray
+} where {F}
 
 function Mooncake.rrule!!(
     ::CoDual{typeof(activation)},
-    opmode::CoDual{<:LoopedArrayOp},
+    opmode::CoDual{<:AbstractInternalArrayOpMode},
     σ::CoDual{F},
     x::CoDual{<:AbstractArray{T}},
 ) where {F,T}
@@ -589,12 +592,12 @@ function Mooncake.rrule!!(
     )
     groupnorm_affine_normalize_internal!(y, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ)
 
-    act_cache = prepare_pullback_cache(_f, y)
+    act_cache = prepare_pullback_cache(broadcast, _f, y)
     z = _f.(y)
     ȳ = zero_tangent(z)
 
     function pb!!(::NoRData)
-        _, (_, ∂y) = value_and_pullback!!(act_cache, ȳ, _f, y)
+        _, (_, _, ∂y) = value_and_pullback!!(act_cache, ȳ, broadcast, _f, y)
 
         ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇groupnorm_affine_normalize(
             _opmode, ∂y, _x, _μ, _σ², _γ, _β, _ϵ
