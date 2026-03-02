@@ -40,9 +40,8 @@ using Static: True
 )
 
 ## For mooncake we are missing some rules. For now use the basic versions of the kernels
-@mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) = LuxLib.GenericBroadcastOp{
-    get_device_type(xs)
-}()
+@mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) =
+    LuxLib.GenericBroadcastOp{get_device_type(xs)}()
 
 # Utils extensions
 @mooncake_overlay Utils.within_autodiff(x) = True()
@@ -264,7 +263,8 @@ function Mooncake.rrule!!(
         activation!(_x, _opmode, _σ, _x)
 
         function pb!!_no_intermediate(::NoRData)
-            x̄ .+= ∇activation(_x, _x, _σ, NotaNumber())  # Δ=x̄ accumulated upstream
+            ∂x = ∇activation(x̄, _x, _σ, NotaNumber())  # x̄ as Δ
+            copyto!(x̄, ∂x)                               # transform, don't accumulate
             return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
         end
         return CoDual(_x, x̄), pb!!_no_intermediate
@@ -418,16 +418,17 @@ function Mooncake.rrule!!(
     T = concrete_bias_act_output_eltype(_σ, _x, _bias)
 
     if unsafe_known(activation_intermediate_not_needed(_σ, T))
+        _x_orig = copy(_x)
         bias_activation!(_x, _opmode, _σ, _x, _bias)
-        ȳ = zero_tangent(_x)
 
         function pb!!_no_intermediate(::NoRData)
-            ∂x = ∇activation(ȳ, _x, _σ, NotaNumber())
-            x̄ .+= ∂x
+            ∂x = ∇activation(x̄, _x, _σ, NotaNumber())
             b̄ .+= ∇bias_add(_bias, ∂x)
+            copyto!(x̄, ∂x)
+            copyto!(_x, _x_orig)
             return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
         end
-        return CoDual(_x, ȳ), pb!!_no_intermediate
+        return CoDual(_x, x̄), pb!!_no_intermediate
     end
 
     if unsafe_known(activation_has_rrule(_σ, T))
@@ -443,19 +444,24 @@ function Mooncake.rrule!!(
         return CoDual(y, ȳ), pb!!_has_rrule
     end
 
-    act_cache = prepare_pullback_cache(bias_activation, _opmode, _σ, _x, _bias)
-    y = bias_activation(_opmode, _σ, _x, _bias)
-    ȳ = zero_tangent(y)
+    # Fallback branch
+    _x_orig = copy(_x)
+    _rb = reshape_bias(_x_orig, _bias)
+    y = broadcast_bias_activation_generic(_σ, _x_orig, _rb)
+    copyto!(_x, y)  # explicitly mutate _x in-place to σ(x + bias)
+
+    act_cache = prepare_pullback_cache(broadcast_bias_activation_generic, _σ, _x_orig, _rb)
 
     function pb!!_fallback(::NoRData)
-        _, (_, _, _, ∂x, ∂b) = value_and_pullback!!(
-            act_cache, ȳ, bias_activation, _opmode, _σ, _x, _bias
+        _, (_, ∂x, ∂rb) = value_and_pullback!!(
+            act_cache, copy(x̄), broadcast_bias_activation_generic, _σ, _x_orig, _rb
         )
-        x̄ .+= ∂x
-        b̄ .+= ∂b
+        copyto!(x̄, ∂x)       # transform: ∂L/∂output → ∂L/∂input
+        b̄ .+= vec(∂rb)        # accumulate bias gradient
+        copyto!(_x, _x_orig)  # restore primal
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
-    return CoDual(y, ȳ), pb!!_fallback
+    return CoDual(_x, x̄), pb!!_fallback
 end
 
 # fused_conv
