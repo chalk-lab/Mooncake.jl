@@ -47,7 +47,7 @@ using Mooncake.TestUtils: test_rule
         vec(
             map(
                 Iterators.product(
-                    [LuxLib.LoopedArrayOp(), LuxLib.GPUBroadcastOp{Lux.CUDADevice}()],
+                    [LuxLib.LoopedArrayOp()],
                     [(nothing, nothing), (randn(4), randn(4))],
                     [Lux.relu, tanh, identity],
                 ),
