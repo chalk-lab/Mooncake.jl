@@ -12,16 +12,14 @@ using Mooncake:
     MinimalCtx,
     @mooncake_overlay,
     CoDual,
-    NoTangent,
     zero_tangent,
     primal,
     @is_primitive,
     NoRData,
     extract,
-    zero_fcodual,
-    tangent,
     prepare_pullback_cache,
-    value_and_pullback!!
+    value_and_pullback!!,
+    zero_rdata
 
 using Static: True
 
@@ -70,7 +68,9 @@ Mooncake.@zero_adjoint DefaultCtx Tuple{
     typeof(LuxLib.Impl.generate_dropout_mask),AbstractRNG,Any,Any,Any,Any
 }
 
-# Native Mooncake Rules for ChainRules that use RuleConfig, rrule_via_ad functionality.
+# Native Mooncake rule for batchnorm_affine_normalize_internal.
+# Upstream CRC.rrule uses rrule_via_ad (callback into AD) which Mooncake
+# cannot handle, so we provide a direct rrule!! with manual activation pullback.
 import LuxLib.Impl:
     safe_eltype,
     batchnorm_affine_normalize_internal,
@@ -80,6 +80,7 @@ import LuxLib.Impl:
 
 import ChainRulesCore as CRC
 
+# MinimalCtx: upstream CRC.rrule uses rrule_via_ad which Mooncake cannot trace
 @is_primitive MinimalCtx Tuple{
     typeof(batchnorm_affine_normalize_internal),
     AbstractInternalArrayOpMode,
@@ -124,7 +125,7 @@ function Mooncake.rrule!!(
         y_pre, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ, γ′
     )
 
-    act_cache = prepare_pullback_cache(_act, y_pre)
+    act_cache = prepare_pullback_cache(broadcast, _act, y_pre)
     # Forward pass using the activation function.
     y_out = _act.(y_pre)
     ȳ = zero_tangent(y_out)
@@ -132,7 +133,7 @@ function Mooncake.rrule!!(
     function pb!!(::NoRData)
         # run pullback for activation func applied on affine transform output
         # using the gradients accumulated in affine transform output's tangent.
-        _, (_, ∂y_pre) = value_and_pullback!!(act_cache, ȳ, _act, y_pre)
+        _, (_, _, ∂y_pre) = value_and_pullback!!(act_cache, ȳ, broadcast, _act, y_pre)
 
         # use activation func gradients to run pullback for affine transform func.
         ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇batchnorm_affine_normalize(
@@ -144,12 +145,12 @@ function Mooncake.rrule!!(
         μ̄ .+= ∂μ
         σ²̄ .+= ∂σ²
         # γ, β may have NoTangent gradients for primal=nothing
-        ∂γ isa CRC.NoTangent || (γ̄ .+= ∂γ)
-        ∂β isa CRC.NoTangent || (β̄ .+= ∂β)
+        isnothing(primal(γ)) || (γ̄ .+= ∂γ)
+        isnothing(primal(β)) || (β̄ .+= ∂β)
 
         return NoRData(),
         NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
-        NoRData()
+        zero_rdata(primal(ϵ))
     end
 
     return CoDual(y_out, ȳ), pb!!
