@@ -68,9 +68,6 @@ Mooncake.@zero_adjoint DefaultCtx Tuple{
     typeof(LuxLib.Impl.generate_dropout_mask),AbstractRNG,Any,Any,Any,Any
 }
 
-# Native Mooncake rule for batchnorm_affine_normalize_internal.
-# Upstream CRC.rrule uses rrule_via_ad (callback into AD) which Mooncake
-# cannot handle, so we provide a direct rrule!! with manual activation pullback.
 import LuxLib.Impl:
     safe_eltype,
     batchnorm_affine_normalize_internal,
@@ -80,32 +77,50 @@ import LuxLib.Impl:
 
 import ChainRulesCore as CRC
 
-# MinimalCtx: upstream CRC.rrule uses rrule_via_ad which Mooncake cannot trace
+# AD helper mapping function for the Lux affine transform.
+function _batchnorm_affine_normalize_identity(
+    opmode::AbstractInternalArrayOpMode,
+    x::AbstractArray{xT,3},
+    μ::AbstractVector,
+    σ²::AbstractVector,
+    γ::LuxLib.Optional{<:AbstractVector},
+    β::LuxLib.Optional{<:AbstractVector},
+    ϵ::Real,
+) where {xT}
+    PT_γ′ = promote_type(safe_eltype(γ), safe_eltype(σ²), safe_eltype(ϵ))
+    γ′ = similar(x, PT_γ′, size(x, 2))
+    PT = promote_type(
+        safe_eltype(x), safe_eltype(μ), safe_eltype(σ²), safe_eltype(γ), safe_eltype(β)
+    )
+    y = similar(x, PT)
+    batchnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ, γ′)
+    return y
+end
+
+# Native Mooncake rule for batchnorm_affine_normalize_internal.
+# `MinimalCtx` to avoid upstream CRC.rrule which uses `rrule_via_ad` which is avoided by Mooncake for performance.
 @is_primitive MinimalCtx Tuple{
-    typeof(batchnorm_affine_normalize_internal),
+    typeof(_batchnorm_affine_normalize_identity),
     AbstractInternalArrayOpMode,
-    F,
-    AbstractArray{xT,3},
+    AbstractArray{<:Any,3},
     AbstractVector,
     AbstractVector,
     LuxLib.Optional{<:AbstractVector},
     LuxLib.Optional{<:AbstractVector},
     Real,
-} where {F,xT}
+}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(batchnorm_affine_normalize_internal)},
+    ::CoDual{typeof(_batchnorm_affine_normalize_identity)},
     opmode::CoDual{<:AbstractInternalArrayOpMode},
-    act::CoDual{F},
     x::CoDual{<:AbstractArray{xT,3}},
     μ::CoDual{<:AbstractVector},
     σ²::CoDual{<:AbstractVector},
     γ::CoDual{<:LuxLib.Optional{<:AbstractVector}},
     β::CoDual{<:LuxLib.Optional{<:AbstractVector}},
     ϵ::CoDual{<:Real},
-) where {F,xT}
-    _opmode, _act, _ϵ = primal(opmode), primal(act), primal(ϵ)
-
+) where {xT}
+    _opmode, _ϵ = primal(opmode), primal(ϵ)
     _x, x̄ = extract(x)
     _μ, μ̄ = extract(μ)
     _σ², σ²̄ = extract(σ²)
@@ -114,46 +129,46 @@ function Mooncake.rrule!!(
 
     PT_γ′ = promote_type(safe_eltype(_γ), safe_eltype(_σ²), safe_eltype(_ϵ))
     γ′ = similar(_x, PT_γ′, size(_x, 2))
-
     PT = promote_type(
         safe_eltype(_x), safe_eltype(_μ), safe_eltype(_σ²), safe_eltype(_γ), safe_eltype(_β)
     )
-    y_pre = similar(_x, PT)
-
-    # forward pass using only the affine transform.
-    batchnorm_affine_normalize_internal!(
-        y_pre, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ, γ′
-    )
-
-    act_cache = prepare_pullback_cache(broadcast, _act, y_pre)
-    # Forward pass using the activation function.
-    y_out = _act.(y_pre)
-    ȳ = zero_tangent(y_out)
+    y = similar(_x, PT)
+    batchnorm_affine_normalize_internal!(y, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ, γ′)
+    ȳ = zero_tangent(y)
 
     function pb!!(::NoRData)
-        # run pullback for activation func applied on affine transform output
-        # using the gradients accumulated in affine transform output's tangent.
-        _, (_, _, ∂y_pre) = value_and_pullback!!(act_cache, ȳ, broadcast, _act, y_pre)
-
-        # use activation func gradients to run pullback for affine transform func.
         ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇batchnorm_affine_normalize(
-            _opmode, ∂y_pre, _x, _μ, _σ², _γ, _β, _ϵ, γ′
+            _opmode, ȳ, _x, _μ, _σ², _γ, _β, _ϵ, γ′
         )
 
-        # accumulate gradients
         x̄ .+= ∂x
         μ̄ .+= ∂μ
         σ²̄ .+= ∂σ²
-        # γ, β may have NoTangent gradients for primal=nothing
         isnothing(primal(γ)) || (γ̄ .+= ∂γ)
         isnothing(primal(β)) || (β̄ .+= ∂β)
 
         return NoRData(),
-        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
-        zero_rdata(primal(ϵ))
+        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
+        zero_rdata(_ϵ)
     end
 
-    return CoDual(y_out, ȳ), pb!!
+    return CoDual(y, ȳ), pb!!
+end
+
+# Overlay for `batchnorm_affine_normalize_internal` to use Mooncake AD's mapping function -> `_batchnorm_affine_normalize_identity`
+# the chosen `act` function's gradient is derived by Mooncake normally.
+@mooncake_overlay function batchnorm_affine_normalize_internal(
+    opmode::AbstractInternalArrayOpMode,
+    act::F,
+    x::AbstractArray{xT,3},
+    μ::AbstractVector,
+    σ²::AbstractVector,
+    γ::LuxLib.Optional{<:AbstractVector},
+    β::LuxLib.Optional{<:AbstractVector},
+    ϵ::Real,
+) where {F,xT}
+    y = _batchnorm_affine_normalize_identity(opmode, x, μ, σ², γ, β, ϵ)
+    return act.(y)
 end
 
 end
