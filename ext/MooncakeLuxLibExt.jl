@@ -17,7 +17,6 @@ using Mooncake:
     @is_primitive,
     NoRData,
     extract,
-    prepare_pullback_cache,
     value_and_pullback!!,
     zero_rdata
 
