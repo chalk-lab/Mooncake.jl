@@ -6,6 +6,10 @@ using JET, Lux, LuxLib, Mooncake, NNlib, SLEEFPirates, StableRNGs, Test
 using LuxLib.Impl: sleefpirates_fast_act
 using Mooncake.TestUtils: test_rule
 
+# Access AD helper functions present in the Extension module.
+const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
+@assert !isnothing(MooncakeLuxLibExt) "MooncakeLuxLibExt is required for testing !"
+
 @testset "luxlib" begin
     @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in
                                     vcat(
@@ -44,6 +48,30 @@ using Mooncake.TestUtils: test_rule
             LuxLib.Utils.True(),
             LuxLib.Utils.True(),
         ),],
+        vec(
+            map(
+                Iterators.product(
+                    [LuxLib.LoopedArrayOp()], [(nothing, nothing), (randn(4), randn(4))]
+                ),
+            ) do (opmode, (gamma, beta))
+                (
+                    false,
+                    :none,
+                    false,
+                    function (opmode, x, m, sigma2, gamma, beta)
+                        return MooncakeLuxLibExt._batchnorm_affine_normalize_identity(
+                            opmode, x, m, sigma2, gamma, beta, 1e-3
+                        )
+                    end,
+                    opmode,
+                    randn(5, 4, 3),
+                    randn(4),
+                    rand(4) .+ 1.0,
+                    gamma,
+                    beta,
+                )
+            end,
+        ),
         vec(
             map(
                 Iterators.product(
