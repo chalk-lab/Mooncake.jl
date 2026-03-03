@@ -73,7 +73,6 @@ import LuxLib.Impl:
     ∇batchnorm_affine_normalize,
     AbstractInternalArrayOpMode
 
-
 # AD helper mapping function for the Lux affine transform.
 function _batchnorm_affine_normalize_identity(
     opmode::AbstractInternalArrayOpMode,
