@@ -23,10 +23,23 @@ end
     end
 
     # Try try-catch statements.
-    rng = StableRNG(123)
-    perf_flag = :none
-    interface_only = false
-    is_primitive = false
-    mode = ForwardMode
-    TestUtils.test_rule(rng, foo, 5.0; perf_flag, interface_only, is_primitive, mode)
+    @testset "try-catch" begin
+        rng = StableRNG(123)
+        perf_flag = :none
+        interface_only = false
+        is_primitive = false
+        mode = ForwardMode
+        TestUtils.test_rule(rng, foo, 5.0; perf_flag, interface_only, is_primitive, mode)
+    end
+
+    @testset "capture in ReturnNode regression test" begin
+        struct RegTestStruct
+            x::Vector{Float64}
+            RegTestStruct() = new()
+        end
+        f(x) = RegTestStruct()
+        TestUtils.test_rule(
+            StableRNG(123), f, 1.0; perf_flag=:none, is_primitive=false, mode=ForwardMode
+        )
+    end
 end;

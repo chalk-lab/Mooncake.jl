@@ -13,7 +13,7 @@
 
 </div>
 
-The goal of the `Mooncake.jl` project is to produce an AD package which is written entirely in Julia, which improves over `ForwardDiff.jl`, `ReverseDiff.jl` and `Zygote.jl` in several ways, and is competitive with `Enzyme.jl`.
+The goal of the `Mooncake.jl` project is to produce an AD package written entirely in Julia that improves on `ForwardDiff.jl`, `ReverseDiff.jl`, and `Zygote.jl` in several ways.
 Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more info.
 
 ## Getting Started
@@ -26,10 +26,11 @@ There are several ways to interact with `Mooncake.jl`. To interact directly with
 ```julia
 import Mooncake as MC
 
+# f : ℂⁿ → ℝ
 f(x) = sum(abs2, x)
 x = [1.0 + 2.0im, 3.0 + 4.0im]
 
-cache = MC.prepare_gradient_cache(f, x)
+cache = MC.prepare_gradient_cache(f, x);
 val, grad = MC.value_and_gradient!!(cache, f, x)
 ```
 
@@ -38,10 +39,18 @@ You should expect that `MC.prepare_gradient_cache` takes a little bit of time to
 ```julia
 import DifferentiationInterface as DI
 
-# Reverse-mode AD. For forward-mode AD, use `AutoMooncakeForward()`
+# Gradient
 backend = DI.AutoMooncake()
-prep = DI.prepare_gradient(f, backend, x)
-DI.gradient(f, prep, backend, x)
+grad_cache = DI.prepare_gradient(f, backend, x);
+g = DI.gradient(f, grad_cache, backend, x)
+
+# Hessian (forward-over-reverse)
+hess_backend = DI.SecondOrder(
+    DI.AutoMooncakeForward(),
+    DI.AutoMooncake()
+)
+hess_cache = DI.prepare_hessian(f, hess_backend, x);
+H = DI.hessian(f, hess_cache, hess_backend, x)
 ```
 
 We generally recommend interacting with `Mooncake.jl` through `DifferentiationInterface.jl`, although this interface may lag behind Mooncake in supporting newly introduced features.

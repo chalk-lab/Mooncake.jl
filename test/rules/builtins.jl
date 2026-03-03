@@ -94,3 +94,64 @@ foo_throws(e) = throw(e)
         )
     end
 end
+
+@testset "pointer-to-pointer pointerset & atomic_pointerset correctness tests" begin
+    function f_pointerset(x)
+        c_1 = Ref(x)
+        c_2 = Ref(x * 2.0)
+        p = Ref(Base.unsafe_convert(Ptr{Float64}, c_1))
+        GC.@preserve c_1 c_2 p begin
+            Core.Intrinsics.pointerset(
+                Base.unsafe_convert(Ptr{Ptr{Float64}}, p),
+                Base.unsafe_convert(Ptr{Float64}, c_2),
+                1,
+                1,
+            )
+            unsafe_load(p[])
+        end
+    end
+
+    function f_atomic_pointerset(x)
+        c_1 = Ref(x)
+        c_2 = Ref(x * 2.0)
+        p = Ref(Base.unsafe_convert(Ptr{Float64}, c_1))
+        GC.@preserve c_1 c_2 p begin
+            Core.Intrinsics.atomic_pointerset(
+                Base.unsafe_convert(Ptr{Ptr{Float64}}, p),
+                Base.unsafe_convert(Ptr{Float64}, c_2),
+                :monotonic,
+            )
+            unsafe_load(p[])
+        end
+    end
+
+    cache_p = prepare_gradient_cache(f_pointerset, 3.0)
+    val_p, grad_p = value_and_gradient!!(cache_p, f_pointerset, 3.0)
+    @test val_p ≈ 6.0
+    @test grad_p[2] ≈ 2.0
+
+    cache_a = prepare_gradient_cache(f_atomic_pointerset, 3.0)
+    val_a, grad_a = value_and_gradient!!(cache_a, f_atomic_pointerset, 3.0)
+    @test val_a ≈ 6.0
+    @test grad_a[2] ≈ 2.0
+end
+
+@testset "NaN handling in builtins rrules" begin
+    test_cases = mapreduce(vcat, [Float16, Float32, Float64]) do T
+        [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
+    end
+
+    # Test cases for avoiding `NaN` poisoning. 
+    #  See https://github.com/chalk-lab/Mooncake.jl/issues/807 
+    function builtins_nantester(f, args)
+        a = f(args)
+        b = args
+        return b
+    end
+
+    for (f, args) in test_cases
+        cache = prepare_gradient_cache(builtins_nantester, f, args)
+        _, grad = value_and_gradient!!(cache, builtins_nantester, f, args)
+        @test all(map(isone, grad[3:end]...))
+    end
+end

@@ -8,6 +8,19 @@ contains_non_primitive(x) = @inline non_primitive(x)
 contains_primitive_behind_call(x) = @inline contains_primitive(x)
 union_split_primitive_call(x::Ref{Union{Float64,Float32}}) = @inline a_primitive(x[])
 
+# Issue #955: if a primitive call's return value is inferred as `Const`,
+# the compiler may fold the call away entirely. This makes the primitive 
+# invisible to Mooncake,  so its custom `rrule!!` never runs.
+fake_grad_955(x, y) = x
+Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(fake_grad_955),Any,Any}
+
+function Mooncake.rrule!!(::CoDual{typeof(fake_grad_955)}, x::CoDual, y::CoDual)
+    function fake_grad_955_pullback(dy)
+        return NoRData(), NoRData(), dy
+    end
+    return CoDual(x.x, y.dx), fake_grad_955_pullback
+end
+
 @testset "abstract_interpretation" begin
     # Check that inlining doesn't / does happen as expected.
     @testset "MooncakeInterpreter" begin
@@ -98,6 +111,17 @@ union_split_primitive_call(x::Ref{Union{Float64,Float32}}) = @inline a_primitive
             f = Base.Fix1(view, [5.0, 4.0])
             fargs = (Base._mapreduce_dim, f, vcat, Float64[], [1:1, 2:2], :)
             @test Base.code_typed_by_type(typeof(fargs))[1][2] == Vector{Float64}
+        end
+
+        @testset "955 - primitive call not const-folded away" begin
+            f = x -> fake_grad_955(1.0, 2x[1] + x[3])
+            x = [1.0, 2.0, 3.0]
+
+            cache = Mooncake.prepare_gradient_cache(f, x)
+            val, grad = Mooncake.value_and_gradient!!(cache, f, x)
+
+            @test val == 1.0
+            @test grad[2] == [2.0, 0.0, 1.0]
         end
     end
 end
