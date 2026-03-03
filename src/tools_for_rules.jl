@@ -439,7 +439,9 @@ function increment_and_get_rdata!(f, r, t::CRC.Tangent{P,<:NamedTuple}) where {P
     return increment_and_get_rdata!(f, r, CRC.backing(t))
 end
 function increment_and_get_rdata!(::NoFData, r::RData, t::NamedTuple)
-    return RData(tuple_map((ri, ti) -> increment_and_get_rdata!(NoFData(), ri, ti), r.data, t))
+    return RData(
+        tuple_map((ri, ti) -> increment_and_get_rdata!(NoFData(), ri, ti), r.data, t)
+    )
 end
 function increment_and_get_rdata!(f::FData, ::NoRData, t::NamedTuple)
     tuple_map((fi, ti) -> increment_and_get_rdata!(fi, NoRData(), ti), f.data, t)
@@ -448,7 +450,9 @@ end
 function increment_and_get_rdata!(f::FData{NT}, r::RData, t::NamedTuple) where {NT}
     result = map(
         (fi, ri, ti) -> increment_and_get_rdata!(fi, ri, ti),
-        values(f.data), values(r.data), values(t),
+        values(f.data),
+        values(r.data),
+        values(t),
     )
     return RData(NamedTuple{fieldnames(NT)}(result))
 end
