@@ -432,7 +432,7 @@ function increment_and_get_rdata!(f::Tuple, r::Tuple, t::Tuple)
     return map((fi, ri, ti) -> increment_and_get_rdata!(fi, ri, ti), f, r, t)
 end
 
-# NamedTuple tangents from ChainRulesCore/Zygote require handling analogous to Tuple
+# NamedTuple tangents from `ChainRulesCore` require handling analogous to Tuple
 # tangents above. Struct fdata/rdata are wrapped in FData/RData types, so the dispatches
 # use those wrappers. These handle all possible cases for NamedTuple-backed tangent data.
 function increment_and_get_rdata!(f, r, t::CRC.Tangent{P,<:NamedTuple}) where {P}
