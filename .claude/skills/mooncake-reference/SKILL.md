@@ -37,6 +37,10 @@ description: >
 **Action:**
 1. Read `docs/src/developer_documentation/ir_representation.md` — this is Mooncake's own comprehensive guide to Julia IR, with runnable doctests and worked examples.
 2. For implementation details, read `src/interpreter/ir_utils.jl` (IRCode helpers, `lookup_ir` at ~line 244).
+3. For Julia compiler source, use `WebFetch` on these raw GitHub URLs:
+   - `https://raw.githubusercontent.com/JuliaLang/julia/master/Compiler/src/ssair/ir.jl` — IRCode struct, InstructionStream, IncrementalCompact
+   - `https://raw.githubusercontent.com/JuliaLang/julia/master/Compiler/src/ssair/basicblock.jl` — BasicBlock struct, CFG
+   - Node types (GotoNode, PhiNode, PiNode, ReturnNode, SSAValue) are Core builtins — they're best explained in Mooncake's own `docs/src/developer_documentation/ir_representation.md` which covers them with worked examples.
 
 **Demo:**
 ```julia
@@ -244,6 +248,8 @@ show_diff(inspect_ir(sin, 1.0); from=:rvs_ir, to=:optimized_rvs)
 **Action:**
 1. Read `src/interpreter/abstract_interpretation.jl` — `MooncakeInterpreter <: CC.AbstractInterpreter` (~line 27), `abstract_call_gf_by_type` (~line 130) intercepts calls and wraps primitives in `NoInlineCallInfo`, `inlining_policy` (~line 254) blocks inlining for these.
 2. For context: `docs/src/developer_documentation/reverse_mode_design.md` — search for "AbstractInterpreter" section.
+3. For Julia's AbstractInterpreter interface, use `WebFetch` on:
+   - `https://raw.githubusercontent.com/JuliaLang/julia/master/Compiler/src/types.jl` — AbstractInterpreter definition
 
 ---
 
