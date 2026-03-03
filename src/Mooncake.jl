@@ -2,7 +2,7 @@ module Mooncake
 
 const CC = Core.Compiler
 
-using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, Random
+using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
@@ -178,5 +178,7 @@ end
 # Public, exported
 export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
 export prepare_derivative_cache
+
+include("precompile.jl")
 
 end

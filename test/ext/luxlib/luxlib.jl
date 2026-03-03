@@ -6,6 +6,10 @@ using JET, Lux, LuxLib, Mooncake, NNlib, SLEEFPirates, StableRNGs, Test
 using LuxLib.Impl: sleefpirates_fast_act
 using Mooncake.TestUtils: test_rule
 
+# Access AD helper functions present in the Extension module.
+const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
+@assert !isnothing(MooncakeLuxLibExt) "MooncakeLuxLibExt is required for testing !"
+
 @testset "luxlib" begin
     @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in
                                     vcat(
@@ -35,34 +39,66 @@ using Mooncake.TestUtils: test_rule
         ) do f
             return (false, :stability_and_allocs, true, sleefpirates_fast_act(f), randn())
         end,
-        Any[
-            (
-                false,
-                :stability_and_allocs,
-                true,
-                LuxLib.Utils.static_training_mode_check,
-                nothing,
-                LuxLib.Utils.True(),
-                LuxLib.Utils.True(),
-            ),
-            (
-                false,
-                :none,
-                false,
-                function (opmode, act, x, m, sigma2, gamma, beta)
-                    return LuxLib.Impl.batchnorm_affine_normalize_internal(
-                        opmode, act, x, m, sigma2, gamma, beta, 1e-3
-                    )
-                end,
-                LuxLib.LoopedArrayOp(),
-                Lux.relu,
-                randn(5, 4, 3),
-                randn(4),
-                rand(4) .+ 1.0,
-                nothing,
-                nothing,
-            ),
-        ],
+        Any[(
+            false,
+            :stability_and_allocs,
+            true,
+            LuxLib.Utils.static_training_mode_check,
+            nothing,
+            LuxLib.Utils.True(),
+            LuxLib.Utils.True(),
+        ),],
+        vec(
+            map(
+                Iterators.product(
+                    [LuxLib.LoopedArrayOp()], [(nothing, nothing), (randn(4), randn(4))]
+                ),
+            ) do (opmode, (gamma, beta))
+                (
+                    false,
+                    :none,
+                    false,
+                    function (opmode, x, m, sigma2, gamma, beta)
+                        return MooncakeLuxLibExt._batchnorm_affine_normalize_identity(
+                            opmode, x, m, sigma2, gamma, beta, 1e-3
+                        )
+                    end,
+                    opmode,
+                    randn(5, 4, 3),
+                    randn(4),
+                    rand(4) .+ 1.0,
+                    gamma,
+                    beta,
+                )
+            end,
+        ),
+        vec(
+            map(
+                Iterators.product(
+                    [LuxLib.LoopedArrayOp()],
+                    [(nothing, nothing), (randn(4), randn(4))],
+                    [Lux.relu, tanh, identity],
+                ),
+            ) do (opmode, (gamma, beta), activation)
+                (
+                    false,
+                    :none,
+                    false,
+                    function (opmode, act, x, m, sigma2, gamma, beta)
+                        return LuxLib.Impl.batchnorm_affine_normalize_internal(
+                            opmode, act, x, m, sigma2, gamma, beta, 1e-3
+                        )
+                    end,
+                    opmode,
+                    activation,
+                    randn(5, 4, 3),
+                    randn(4),
+                    rand(4) .+ 1.0,
+                    gamma,
+                    beta,
+                )
+            end,
+        ),
         vec(
             map(
                 Iterators.product(

@@ -116,3 +116,52 @@ end
         @test H ≈ H_expected rtol = 1e-10
     end
 end
+
+# Previous tests use build_f/rrule,
+# here we use the public interface directly.
+@testset "forward over reverse (public interface)" begin
+    function compute_hessian(f, x::Vector{Float64}; debug_mode=false)
+        config = Mooncake.Config(; debug_mode)
+        function grad(y)
+            rvscache = prepare_gradient_cache(f, y; config)
+            value_and_gradient!!(rvscache, f, y)[2][2]
+        end
+        fwdcache = prepare_derivative_cache(grad, x; config)
+        hvp(y) = tangent(value_and_derivative!!(fwdcache, zero_dual(grad), Dual(x, y)))
+        n = length(x)
+        H = zeros(n, n)
+        for i in 1:n
+            y = zeros(Float64, n)
+            y[i] = 1
+            H[:, i] = hvp(y)
+        end
+        return H
+    end
+
+    @testset "Rosenbrock" begin
+        rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
+        z = [1.2, 1.2]
+        H = compute_hessian(rosen, z)
+        expected_H = [1250.0 -480.0; -480.0 200.0]
+        @test H ≈ expected_H rtol = 1e-10
+    end
+
+    @testset "Rosenbrock (debug_mode=true)" begin
+        rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
+        z = [1.2, 1.2]
+        H = compute_hessian(rosen, z; debug_mode=true)
+        expected_H = [1250.0 -480.0; -480.0 200.0]
+        @test H ≈ expected_H rtol = 1e-10
+    end
+end
+
+@testset "reverse over reverse fails" begin
+    rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
+    z = [1.2, 1.2]
+
+    rvscache = prepare_gradient_cache(rosen, z)
+    grad(y) = value_and_gradient!!(rvscache, rosen, y)[2][2]
+    @test_throws "not currently supported" begin
+        prepare_gradient_cache(grad, z)
+    end
+end

@@ -44,19 +44,30 @@ function rrule!!(
     return CoDual(y, dy), pb!!
 end
 
-@generated function build_output_tangent(::Type{P}, x::Tuple, t::Tuple) where {P}
-    names = fieldnames(P)
-    tangent_exprs = map(eachindex(names)) do n
-        F = tangent_field_types(P)[n]
-        if n <= length(t.parameters)
-            data_expr = Expr(:call, __get_data, P, :x, :t, n)
-            return F <: PossiblyUninitTangent ? Expr(:call, F, data_expr) : data_expr
-        else
-            return :($F())
-        end
+@inline function build_output_tangent(::Type{P}, x::Tuple, t::Tuple) where {P}
+    return _build_output_tangent_cartesian(P, x, t, Val(fieldcount(P)), Val(fieldnames(P)))
+end
+@generated function _build_output_tangent_cartesian(
+    ::Type{P}, x::Tuple, t::Tt, ::Val{nfield}, ::Val{names}
+) where {P,nfield,names,Tt<:Tuple}
+    N = length(Tt.parameters)
+    quote
+        # Compute tangent_field_types and tangent_type at runtime to avoid world-age
+        # issues with user-defined tangent_type methods. See #893, #1008.
+        processed_tangent = Base.Cartesian.@ntuple(
+            $nfield, n -> let
+                F = tangent_field_types(P)[n]
+                if n <= $N
+                    data = __get_data(P, x, t, n)
+                    F <: PossiblyUninitTangent ? F(data) : data
+                else
+                    F()
+                end
+            end
+        )
+        T_out = tangent_type(P)
+        return T_out(NamedTuple{$names}(processed_tangent))
     end
-    T_out = tangent_type(P)
-    return :($T_out(NamedTuple{$names}($(Expr(:call, tuple, tangent_exprs...)))))
 end
 
 @inline function build_fdata(::Type{P}, x::Tuple, fdata::Tuple) where {P}

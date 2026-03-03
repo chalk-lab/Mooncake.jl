@@ -664,4 +664,16 @@ _getter() = 5.0
         @info Mooncake._typeof((f, x...))
         test_rule(sr(123456), f, x...; interface_only, is_primitive=false, perf_flag)
     end
+
+    # When the inner function of Base._growend! is reached,
+    # parameter `a` had its size increased before the underlying memory was reallocated,
+    # which causes a segfault in debug mode when validating the tangent.
+    # This is worked around in __verify_fdata_value,
+    # and this test ensures that the workaround is effective.
+    # This was only a problem in Julia v1.11, but push! should anyway work on all versions.
+    @testset "push! in debug mode" begin
+        test_rule(
+            sr(123456), push!, [[1.0, 2.0]], [3.0, 4.0]; is_primitive=false, debug_mode=true
+        )
+    end
 end
