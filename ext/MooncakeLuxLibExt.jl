@@ -94,7 +94,6 @@ function _batchnorm_affine_normalize_identity(
 end
 
 # Native Mooncake rule for batchnorm_affine_normalize_internal.
-# `MinimalCtx` to avoid upstream CRC.rrule which uses `rrule_via_ad` which is avoided by Mooncake for performance.
 @is_primitive MinimalCtx Tuple{
     typeof(_batchnorm_affine_normalize_identity),
     AbstractInternalArrayOpMode,
