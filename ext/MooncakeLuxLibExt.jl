@@ -73,7 +73,7 @@ import LuxLib.Impl:
     ∇batchnorm_affine_normalize,
     AbstractInternalArrayOpMode
 
-# AD helper mapping function for the Lux affine transform.
+# Helper function for the Lux affine transform.
 function _batchnorm_affine_normalize_identity(
     opmode::AbstractInternalArrayOpMode,
     x::AbstractArray{xT,3},
@@ -151,8 +151,10 @@ function Mooncake.rrule!!(
     return CoDual(y, ȳ), pb!!
 end
 
-# Overlay for `batchnorm_affine_normalize_internal` to use Mooncake AD's mapping function -> `_batchnorm_affine_normalize_identity`
-# the chosen `act` function's gradient is derived by Mooncake normally.
+# Overlay for `batchnorm_affine_normalize_internal`
+#  - Use Mooncake’s helper function `_batchnorm_affine_normalize_identity`  
+#     and its manually written rule.
+#  - Let Mooncake differentiate through the broadcasted `act` function.
 @mooncake_overlay function batchnorm_affine_normalize_internal(
     opmode::AbstractInternalArrayOpMode,
     act::F,
