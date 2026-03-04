@@ -101,3 +101,7 @@ inspect_ir(f, args...;
 - When showing diffs, highlight what changed and explain why the transformation matters.
 - If the user asks for a CFG, return the DOT string and suggest how to render it (e.g. `dot -Tpng cfg.dot -o cfg.png` or paste into a Graphviz viewer).
 - If errors occur, check that Mooncake is loaded and the function signature is valid.
+
+## Limitations
+
+This skill inspects Mooncake's **internal AD pipeline** — the IR it generates for forward/reverse passes. It does **not** detect performance issues at the Julia compiler boundary (specialization widening, SROA/allocation failures, inlining failures). If the IR looks correct but the function is still slow, use the **perf-diagnose** skill instead (`.claude/skills/perf-diagnose/`).
