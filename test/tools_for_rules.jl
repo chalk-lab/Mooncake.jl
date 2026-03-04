@@ -216,6 +216,8 @@ end
                 MutableTangent((a=5.0, b=ones(3))),
                 ChainRulesCore.Tangent{Any}(; a=5.0, b=ones(3)),
             ),
+            (PossiblyUninitTangent{Float64}(5.0), 5.0),
+            (PossiblyUninitTangent{Vector{Float64}}(), ChainRulesCore.NoTangent()),
         ]
             @test Mooncake.to_cr_tangent(t) == t_cr
         end

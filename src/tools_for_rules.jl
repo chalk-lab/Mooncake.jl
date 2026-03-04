@@ -331,6 +331,13 @@ to_cr_tangent(t::Tangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 to_cr_tangent(nt::NamedTuple) = CRC.Tangent{Any}(; map(to_cr_tangent, nt)...)
+function to_cr_tangent(x::PossiblyUninitTangent)
+    if is_init(x)
+        return to_cr_tangent(x.tangent)
+    else
+        return CRC.NoTangent()
+    end
+end
 
 function to_cr_tangent(t)
     throw(
