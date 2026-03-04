@@ -5,7 +5,10 @@ using PrecompileTools: @setup_workload, @compile_workload
 
 #! format: off
 
-# Skip precompilation on GitHub Actions for Julia versions earlier than 1.11
+# Skip precompilation on GitHub Actions for Julia versions earlier than 1.11.
+# On Julia LTS (1.10), precompilation can cause certain allocation tests to fail because
+# the extra native code changes memory layout / allocation behaviour.  See also the
+# identical guard in src/precompile.jl.
 @static if !haskey(ENV, "GITHUB_ACTIONS") || VERSION ≥ v"1.11-"
 
 # Precompile the AD machinery for the most common `logpdf` patterns so that users
