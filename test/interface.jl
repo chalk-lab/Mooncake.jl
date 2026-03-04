@@ -199,7 +199,7 @@ end
             end
             wrapper = MutableWrapper(Float64, 2.0)
             f_capturing_type = let w = wrapper
-                function(x::Vector{Float64})
+                function (x::Vector{Float64})
                     return x .* w.scale
                 end
             end
