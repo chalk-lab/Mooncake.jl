@@ -37,7 +37,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
                 LuxLib.NNlib.tanh_fast,
             ],
         ) do f
-            return (false, :allocs, true, sleefpirates_fast_act(f), randn())
+            return (false, :stability_and_allocs, true, sleefpirates_fast_act(f), randn())
         end,
         Any[(
             false,
