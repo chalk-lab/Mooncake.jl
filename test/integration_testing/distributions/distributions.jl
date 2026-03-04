@@ -111,7 +111,7 @@ sr(n::Int) = StableRNG(n)
         (:allocs, Normal(0.5, 1.0), 0.05),
         (:allocs, Normal(0.0, 1.5), -0.1),
         (:allocs, Normal(-0.1, 0.9), -0.3),
-        (:none NormalInverseGaussian(0.0, 1.0, 0.2, 0.1), 0.1),
+        (:none, NormalInverseGaussian(0.0, 1.0, 0.2, 0.1), 0.1),
         (:allocs, Pareto(1.0, 1.0), 3.5),
         (:allocs, Pareto(1.1, 0.9), 3.1),
         (:allocs, Pareto(1.0, 1.0), 1.4),
