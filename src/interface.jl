@@ -375,7 +375,7 @@ Required as Base.copy() does not work for all supported primal types. For exampl
 # and must not be deep-copied. They are Julia runtime internals that cannot be reconstructed
 # via jl_new_struct_uninit / jl_new_structv (e.g. Core.TypeName has fields with layout
 # constraints that trigger a TypeError when attempting to copy them).
-_copy_output(x::Type) = x
+@unstable _copy_output(x::Type) = x
 _copy_output(x::Core.TypeName) = x
 _copy_output(x::Module) = x
 
