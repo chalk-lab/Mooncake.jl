@@ -1,3 +1,9 @@
+# 0.5.0
+
+## Breaking Changes
+- The tangent type of a `Complex{P<:IEEEFloat}` is now `Complex{P}` instead of `Tangent{@NamedTuple{re::P, im::P}}`.
+- The `prepare_pullback_cache`, `prepare_gradient_cache` and `prepare_derivative_cache` interface functions now accept a `Mooncake.Config` directly.
+
 # 0.4.147
 
 ## Public Interface

@@ -201,7 +201,7 @@ This function has methods with will return the `IRCode` associated to:
 1. `Base.MethodInstances` (relevant for `:invoke` expressions -- see [Statement Transformation](@ref) below)
 1. `MistyClosures.MistyClosure` objects, which is essential when computing higher order derivatives and Hessians by applying Mooncake.jl to itself.
 
-#### Standardisation
+#### [Standardisation](@id standardisation)
 
 We apply the following transformations to the Julia IR.
 They can all be found in `ir_normalisation.jl`:
@@ -243,7 +243,7 @@ There are three cases to consider, in order of preference:
 Primitives:
 
 If `is_primitive` returns `true` when applied to the signature constructed from the static types of `f` and `x`, then we simply replace the expression with `Expr(:call, frule!!, f, x...)`, regardless whether we have an `:invoke` or `:call` expression.
-(Due to the [Standardisation](@ref) steps, it regularly happens that we see `:call` expressions in which we actually do know enough type information to do this, e.g. for `Mooncake._new_` `:call` expressions).
+(Due to the [Standardisation](@ref standardisation) steps, it regularly happens that we see `:call` expressions in which we actually do know enough type information to do this, e.g. for `Mooncake._new_` `:call` expressions).
 
 Static Dispatch:
 

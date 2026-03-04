@@ -1,7 +1,7 @@
 # Misc. Internals Notes
 
 This document contains an assortment of notes on some implementation details in Mooncake.jl.
-It is occassionally helpful to have them here for reference, but they are typically not essential reading unless working on the specific parts of Mooncake.jl to which they pertain.
+It is occasionally helpful to have them here for reference, but they are typically not essential reading unless working on the specific parts of Mooncake.jl to which they pertain.
 
 ## `tangent_type` and friends
 
@@ -135,5 +135,4 @@ The docstring below contains a thorough explanation:
 ```@docs; canonical=false
 Mooncake.LazyDerivedRule
 ```
-
 

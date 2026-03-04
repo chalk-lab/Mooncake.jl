@@ -60,12 +60,23 @@ function _add_to_primal_internal(
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
 end
 
-function _diff_internal(c::MaybeCache, p::P, q::P) where {V,N,P<:Array{V,N}}
-    key = (p, q)
-    haskey(c, key) && return c[key]::tangent_type(P)
-    t = Array{tangent_type(V),N}(undef, size(p))
-    c[key] = t
-    return _map_if_assigned!((p, q) -> _diff_internal(c, p, q), t, p, q)
+function tangent_to_primal_internal!!(
+    x::Array{P,N}, t::Array{<:Any,N}, c::MaybeCache
+) where {P,N}
+    haskey(c, x) && return c[x]::Array{P,N}
+    c[x] = x
+    return _map_if_assigned!(x, x, t) do xn, tn
+        return tangent_to_primal_internal!!(xn, tn, c)
+    end
+end
+function primal_to_tangent_internal!!(
+    t::Array{<:Any,N}, x::Array{P,N}, c::MaybeCache
+) where {P,N}
+    haskey(c, x) && return c[x]::Array{tangent_type(P),N}
+    c[x] = t
+    return _map_if_assigned!(t, t, x) do txn, xn
+        return primal_to_tangent_internal!!(txn, xn, c)
+    end
 end
 
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Vararg} where {T,N}

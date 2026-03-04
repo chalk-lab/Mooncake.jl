@@ -33,7 +33,8 @@ set_to_zero_internal!!(::SetToZeroCache, t::TWP) = zero_tangent_internal(t, NoCa
 
 _add_to_primal_internal(::MaybeCache, p::P, t::P, ::Bool) where {P<:TWP} = p + t
 
-_diff_internal(::MaybeCache, p::P, q::P) where {P<:TWP} = p - q
+tangent_to_primal_internal!!(x::P, t::P, ::MaybeCache) where {P<:TWP} = t
+primal_to_tangent_internal!!(t::P, x::P, ::MaybeCache) where {P<:TWP} = x
 
 _dot_internal(::MaybeCache, t::P, s::P) where {P<:TWP} = Float64(t) * Float64(s)
 
@@ -140,6 +141,15 @@ end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{P}) where {P<:TWP}
     plus_pullback(dz::P) = NoRData(), dz, dz
     return zero_fcodual(x.x + y.x), plus_pullback
+end
+
+@is_primitive MinimalCtx Tuple{typeof(+),TWP,Integer}
+function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TWP}
+    return Dual(primal(x) + primal(y), tangent(x))
+end
+function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
+    plus_twice_precision_integer_pb(dz::P) = NoRData(), dz, NoRData()
+    return zero_fcodual(x.x + primal(y)), plus_twice_precision_integer_pb
 end
 
 @is_primitive MinimalCtx Tuple{typeof(*),TWP,IEEEFloat}
@@ -405,6 +415,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
             TwicePrecision(5.0, 3.0),
             TwicePrecision(4.0, 5.0),
         ),
+        (false, :stability_and_allocs, nothing, +, TwicePrecision(5.0, 3.0), 4),
         (false, :stability_and_allocs, nothing, *, TwicePrecision(5.0, 1e-12), 3.0),
         (false, :stability_and_allocs, nothing, *, TwicePrecision(5.0, 1e-12), 3),
         (false, :stability_and_allocs, nothing, /, TwicePrecision(5.0, 1e-12), 3.0),

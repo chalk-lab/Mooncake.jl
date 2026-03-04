@@ -31,6 +31,7 @@ jobs:
           'rules/blas',
           'rules/blas_level_3',
           'rules/builtins',
+          'rules/complex',
           'rules/dispatch_doctor',
           'rules/fastmath',
           'rules/foreigncall',
@@ -46,6 +47,7 @@ jobs:
           'rules/tasks',
           'rules/twice_precision',
           'rules/performance_patches',
+          'rules/high_order_derivative_patches',
         ]
         version:
           - 'lts'
@@ -87,13 +89,13 @@ jobs:
       matrix:
         test_group: [
           {test_type: 'ext', label: 'differentiation_interface'},
+          {test_type: 'ext', label: 'differentiation_interface_second_order'},
           {test_type: 'ext', label: 'dynamic_expressions'},
           {test_type: 'ext', label: 'flux'},
           {test_type: 'ext', label: 'function_wrappers'},
           {test_type: 'ext', label: 'luxlib'},
           {test_type: 'ext', label: 'nnlib'},
           {test_type: 'ext', label: 'special_functions'},
-          {test_type: 'integration_testing', label: 'format'},
           {test_type: 'integration_testing', label: 'array'},
           {test_type: 'integration_testing', label: 'bijectors'},
           {test_type: 'integration_testing', label: 'diff_tests'},
@@ -115,6 +117,10 @@ jobs:
           - '1.12'
         arch:
           - x64
+        include:
+          - test_group: { test_type: 'integration_testing', label: 'format' }
+            version: 'lts'
+            arch: x64
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
@@ -182,7 +188,7 @@ jobs:
           PERF_GROUP: 'comparison'
           GKSwstype: '100'
         shell: bash
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: benchmarking-results
           path: bench_results/

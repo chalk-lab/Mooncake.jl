@@ -111,10 +111,11 @@ function __value_and_gradient!!(rule::R, fx::Vararg{CoDual,N}) where {R,N}
 end
 
 """
-    value_and_pullback!!(rule, ȳ, f, x...)
+    value_and_pullback!!(rule, ȳ, f, x...; friendly_tangents=false)
 
-Compute the value and pullback of `f(x...)`. `ȳ` must be a valid tangent for the primal
-return by `f(x...)`.
+Compute the value and pullback of `f(x...)`. If `friendly_tangents=false`,
+`ȳ` must be a valid tangent for the primal return by `f(x...)`.
+If `friendly_tangents=true`, `ȳ` must be of the same type as the primal returned by `f(x...)`.
 
 `rule` should be constructed using `build_rrule`.
 
@@ -139,12 +140,22 @@ use-case, consider pre-allocating the `CoDual`s and calling the other method of 
 function. The `CoDual`s should be primal-tangent pairs (as opposed to primal-fdata pairs).
 There are lots of ways to get this wrong though, so we generally advise against doing this.
 """
-function value_and_pullback!!(rule::R, ȳ, fx::Vararg{Any,N}) where {R,N}
-    return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
+function value_and_pullback!!(
+    rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=false
+) where {R,N}
+    if friendly_tangents
+        ȳ = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
+        value, pb = __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
+        friendly_pb = _copy_output((fx...,))
+        friendly_pb = tangent_to_primal!!(friendly_pb, pb)
+        return value, friendly_pb
+    else
+        return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
+    end
 end
 
 """
-    value_and_gradient!!(rule, f, x...)
+    value_and_gradient!!(rule, f, x...; friendly_tangents=false)
 
 Equivalent to `value_and_pullback!!(rule, 1.0, f, x...)`, and assumes `f` returns a
 `Union{Float16,Float32,Float64}`.
@@ -166,8 +177,17 @@ value_and_gradient!!(rule, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-function value_and_gradient!!(rule::R, fx::Vararg{Any,N}) where {R,N}
-    return __value_and_gradient!!(rule, __create_coduals(fx)...)
+function value_and_gradient!!(
+    rule::R, fx::Vararg{Any,N}; friendly_tangents=false
+) where {R,N}
+    if friendly_tangents
+        value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
+        friendly_gradient = _copy_output((fx...,))
+        friendly_gradient = tangent_to_primal!!(friendly_gradient, gradient)
+        return value, friendly_gradient
+    else
+        return __value_and_gradient!!(rule, __create_coduals(fx)...)
+    end
 end
 
 function __create_coduals(args)
@@ -188,10 +208,18 @@ function __create_coduals(args)
     end
 end
 
-struct Cache{Trule,Ty_cache,Ttangents<:Tuple}
+struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tfriendly_tangents,Tȳ_cache}
     rule::Trule
+    # Cache for function output; **primal** type for y.
     y_cache::Ty_cache
+    # Cache for internal gradient representation; **tangent** type for (f, x...)
     tangents::Ttangents
+    # Cache for friendly gradient representation.
+    # Same type as (f, x...), i.e. this is a **primal** type.
+    friendly_tangents::Tfriendly_tangents
+    # Cache to convert from friendly to internal representation of ȳ.
+    # Tangent type for y, i.e. this is a **tangent** type for y.
+    ȳ_cache::Tȳ_cache
 end
 
 """
@@ -437,20 +465,22 @@ function __exclude_unsupported_output_internal!(y::Ptr, ::Set{UInt})
 end
 
 """
-    prepare_pullback_cache(f, x...)
+    prepare_pullback_cache(f, x...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 """
-@unstable function prepare_pullback_cache(fx...; kwargs...)
+@unstable function prepare_pullback_cache(fx...; config=Config())
 
     # Check that the output of `fx` is supported.
     __exclude_func_with_unsupported_output(fx)
 
     # Construct rule and tangents.
     interp = get_interpreter(ReverseMode)
-    rule = build_rrule(interp, Tuple{map(_typeof, fx)...}; kwargs...)
+    rule = build_rrule(
+        interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages
+    )
     tangents = map(zero_tangent, fx)
 
     # Run the rule forwards -- this should do a decent chunk of pre-allocation.
@@ -461,7 +491,12 @@ The API guarantees that tangents are initialized at zero before the first autodi
 
     # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
     y_cache = _copy_output(primal(y))
-    return Cache(rule, _copy_to_output!!(y_cache, primal(y)), tangents)
+    y_cache = _copy_to_output!!(y_cache, primal(y))
+    if config.friendly_tangents
+        return Cache(rule, y_cache, tangents, _copy_output.(fx), zero_tangent(primal(y)))
+    else
+        return Cache(rule, y_cache, tangents, nothing, nothing)
+    end
 end
 
 """
@@ -474,10 +509,13 @@ end
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 pullback of `f` applied to `ȳ`. The first element is the component of the pullback
 associated to any fields of `f`, the second w.r.t the first element of `x`, etc.
+If the cache was prepared with `config.friendly_tangents=true`, the pullback uses the same types as
+those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
 
 There are no restrictions on what `y = f(x...)` is permitted to return. However, `ȳ` must be
-an acceptable tangent for `y`. This means that, for example, it must be true that
-`tangent_type(typeof(y)) == typeof(ȳ)`.
+an acceptable tangent for `y`. If the cache was prepared with `config.friendly_tangents=false`,
+this means that, for example, it must be true that `tangent_type(typeof(y)) == typeof(ȳ)`.
+If the cache was prepared with `config.friendly_tangents=true`, then `typeof(y) == typeof(ȳ)`.
 
 As with all functionality in Mooncake, if `f` modifes itself or `x`, `value_and_gradient!!`
 will return both to their original state as part of the process of computing the gradient.
@@ -521,23 +559,38 @@ function value_and_pullback!!(
 ) where {F,N}
     tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
-    return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
+    if !isnothing(cache.friendly_tangents)
+        ȳ = primal_to_tangent!!(cache.ȳ_cache, ȳ)
+        value, pb = __value_and_pullback!!(
+            cache.rule, ȳ, coduals...; y_cache=cache.y_cache
+        )
+        # Make sure that the non-differentiable parts are up-to-date. Whether this is needed is debatable.
+        friendly_pb = _copy_to_output!!(cache.friendly_tangents, (f, x...))
+        friendly_pb = tangent_to_primal!!(friendly_pb, pb)
+        value, friendly_pb
+    else
+        return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
+    end
 end
 
 """
-    prepare_gradient_cache(f, x...)
+    prepare_gradient_cache(f, x...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 """
-@unstable function prepare_gradient_cache(fx...; kwargs...)
-    rule = build_rrule(fx...; kwargs...)
+@unstable function prepare_gradient_cache(fx...; config=Config())
+    rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = map(zero_tangent, fx)
     y, rvs!! = rule(map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents)...)
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
-    return Cache(rule, nothing, tangents)
+    if config.friendly_tangents
+        return Cache(rule, nothing, tangents, tuple(_copy_output.(fx)...), nothing)
+    else
+        return Cache(rule, nothing, tangents, nothing, nothing)
+    end
 end
 
 """
@@ -546,6 +599,8 @@ end
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 gradient of `f` w.r.t. each argument. The first element is the gradient w.r.t any
 differentiable fields of `f`, the second w.r.t the first element of `x`, etc.
+If the cache was prepared with `config.friendly_tangents=true`, the pullback uses the same types as
+those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
 
 Assumes that `f` returns a `Union{Float16, Float32, Float64}`.
 
@@ -588,23 +643,104 @@ function value_and_gradient!!(
     x::Vararg{Any,N};
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
+    friendly_tangents = !isnothing(cache.friendly_tangents)
+
     tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
-    return __value_and_gradient!!(cache.rule, coduals...)
+    if friendly_tangents
+        value, gradient = __value_and_gradient!!(cache.rule, coduals...)
+        # Make sure that the non-differentiable parts are up-to-date. Whether this is needed is debatable.
+        friendly_gradient = _copy_to_output!!(cache.friendly_tangents, (f, x...))
+        friendly_gradient = tangent_to_primal!!(friendly_gradient, gradient)
+        return value, friendly_gradient
+    else
+        return __value_and_gradient!!(cache.rule, coduals...)
+    end
+end
+
+struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP}
+    rule::R
+    input_tangents::IT
+    output_primal::OP
 end
 
 """
-    prepare_derivative_cache(fx...; kwargs...)
+    prepare_derivative_cache(fx...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 """
-@unstable prepare_derivative_cache(fx...; kwargs...) = build_frule(fx...; kwargs...)
+@unstable function prepare_derivative_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
+    fx = (f, x...)
+    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
+
+    if config.friendly_tangents
+        y = f(x...)
+        input_tangents = map(zero_tangent, fx)
+        output_primal = _copy_output(y)
+        return ForwardCache(rule, input_tangents, output_primal)
+    else
+        return ForwardCache(rule, nothing, nothing)
+    end
+end
 
 """
-    value_and_derivative!!(rule::R, f::Dual, x::Vararg{Dual,N})
+    value_and_derivative!!(cache::ForwardCache, f::Dual, x::Vararg{Dual,N})
 
 Returns a `Dual` containing the result of applying forward-mode AD to compute the (Frechet)
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
 """
-value_and_derivative!!(rule::R, fx::Vararg{Dual,N}) where {R,N} = rule(fx...)
+function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
+    # TODO: check Dual coherence here like we do below?
+    return cache.rule(fx...)
+end
+
+"""
+    value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
+
+Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
+
+Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
+
+!!! info
+    `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f` and `x` must be of the same size and shape as those used to construct the `cache`. This is to ensure that the gradient can be written to the memory allocated when the `cache` was built.
+
+!!! warning
+    `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
+"""
+function value_and_derivative!!(
+    cache::ForwardCache, f::NTuple{2,Any}, x::Vararg{NTuple{2,Any},N}
+) where {N}
+    fx = (f, x...)  # to avoid method ambiguity
+    friendly_tangents = !isnothing(cache.input_tangents)
+
+    input_primals = map(first, fx)
+    input_friendly_tangents = map(last, fx)
+
+    # translate from friendly to native
+    if friendly_tangents
+        input_tangents = map(
+            primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
+        )
+    else
+        input_tangents = input_friendly_tangents
+    end
+
+    input_duals = map(Dual, input_primals, input_tangents)
+
+    if !friendly_tangents  # in friendly mode, conversion should ensure tangent coherence
+        error_if_incorrect_dual_types(input_duals...)
+    end
+
+    output = cache.rule(input_duals...)
+    output_primal = primal(output)
+    output_tangent = tangent(output)
+
+    # translate from native back to friendly
+    if friendly_tangents
+        output_friendly_tangent = tangent_to_primal!!(cache.output_primal, output_tangent)
+        return output_primal, output_friendly_tangent
+    else
+        return output_primal, output_tangent
+    end
+end

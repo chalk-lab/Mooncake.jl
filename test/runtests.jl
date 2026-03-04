@@ -34,6 +34,8 @@ include("front_matter.jl")
         include(joinpath("rules", "blas_level_3.jl"))
     elseif test_group == "rules/builtins"
         include(joinpath("rules", "builtins.jl"))
+    elseif test_group == "rules/complex"
+        include(joinpath("rules", "complex.jl"))
     elseif test_group == "rules/fastmath"
         include(joinpath("rules", "fastmath.jl"))
     elseif test_group == "rules/foreigncall"
@@ -66,6 +68,8 @@ include("front_matter.jl")
         include(joinpath("rules", "performance_patches.jl"))
     elseif test_group == "rules/dispatch_doctor"
         include(joinpath("rules", "dispatch_doctor.jl"))
+    elseif test_group == "rules/high_order_derivative_patches"
+        include(joinpath("rules", "high_order_derivative_patches.jl"))
     else
         throw(error("test_group=$(test_group) is not recognised"))
     end

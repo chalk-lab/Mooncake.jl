@@ -48,7 +48,7 @@ shared_data_tuple(p::SharedDataPairs)::Tuple = tuple(map(last, p.pairs)...)
 """
     shared_data_stmts(p::SharedDataPairs)::Vector{IDInstPair}
 
-Produce a sequence of id-statment pairs which will extract the data from
+Produce a sequence of id-statement pairs which will extract the data from
 `shared_data_tuple(p)` such that the correct value is associated to the correct `ID`.
 
 For example, if `p.pairs` is
@@ -686,7 +686,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         arg_types = map(arg -> get_primal_type(info, arg), args)
 
         # Special case: if the result of a call to getfield is un-used, then leave the
-        # primal statment alone (just increment arguments as usual). This was causing
+        # primal statement alone (just increment arguments as usual). This was causing
         # performance problems in a couple of situations where the field being requested is
         # not known at compile time. `getfield` cannot be dead-code eliminated, because it
         # can throw an error if the requested field does not exist. Everything _other_ than
@@ -1026,6 +1026,20 @@ _get_sig(sig::Type) = sig
 _get_sig(mi::Core.MethodInstance) = mi.specTypes
 _get_sig(mc::MistyClosure) = Tuple{map(CC.widenconst, mc.ir[].argtypes)...}
 
+"""
+Flatten the signature of a vararg method to group the
+possibly multiple vararg arguments (what users pass to the function)
+into a single tuple argument matching `ir.argtypes`.
+"""
+function flatten_va_sig(sig, isva, nargs)
+    @nospecialize sig
+    return if isva
+        Tuple{sig.parameters[1:(nargs - 1)]...,Tuple{sig.parameters[nargs:end]...}}
+    else
+        sig
+    end
+end
+
 function forwards_ret_type(primal_ir::IRCode)
     return fcodual_type(compute_ir_rettype(primal_ir))
 end
@@ -1105,6 +1119,25 @@ If `debug_mode` is `true`, then all calls to rules are replaced with calls to `D
 function build_rrule(
     interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, silence_debug_messages=true
 ) where {C}
+    @nospecialize sig_or_mi
+
+    build_rrule_checks(interp, sig_or_mi, debug_mode, silence_debug_messages)
+
+    # If we have a hand-coded rule, just use that.
+    sig = _get_sig(sig_or_mi)
+    if is_primitive(C, ReverseMode, sig, interp.world)
+        rule = build_primitive_rrule(sig)
+        return (debug_mode ? DebugRRule(rule) : rule)
+    end
+
+    return build_derived_rrule(interp, sig_or_mi, sig, debug_mode)
+end
+
+# Separated out so we can make an frule!! for it, for forward-over-reverse.
+function build_rrule_checks(
+    interp::MooncakeInterpreter, sig_or_mi, debug_mode::Bool, silence_debug_messages::Bool
+)
+    @nospecialize sig_or_mi
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
     # than the current world age.
@@ -1121,13 +1154,12 @@ function build_rrule(
     if !silence_debug_messages && debug_mode
         @info "Compiling rule for $sig_or_mi in debug mode. Disable for best performance."
     end
+end
 
-    # If we have a hand-coded rule, just use that.
-    sig = _get_sig(sig_or_mi)
-    if is_primitive(C, ReverseMode, sig, interp.world)
-        rule = build_primitive_rrule(sig)
-        return (debug_mode ? DebugRRule(rule) : rule)
-    end
+function build_derived_rrule(
+    interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool
+) where {C}
+    @nospecialize sig_or_mi sig
 
     # We don't have a hand-coded rule, so derived one.
     lock(MOONCAKE_INFERENCE_LOCK)
@@ -1145,12 +1177,7 @@ function build_rrule(
 
             # Compute the signature. Needs careful handling with varargs.
             nargs = num_args(dri.info)
-            if dri.isva
-                sig = Tuple{
-                    sig.parameters[1:(nargs - 1)]...,Tuple{sig.parameters[nargs:end]...}
-                }
-            end
-
+            sig = flatten_va_sig(sig, dri.isva, nargs)
             raw_rule = DerivedRule(sig, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
             rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
@@ -1175,7 +1202,11 @@ end
 Used by `build_rrule`, and the various debugging tools: primal_ir, fwds_ir, adjoint_ir.
 """
 function generate_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
+    interp::MooncakeInterpreter,
+    sig_or_mi;
+    debug_mode=false,
+    do_inline=true,
+    do_optimize=true,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -1216,8 +1247,8 @@ function generate_ir(
     rvs_ir = pullback_ir(
         primal_ir, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
     )
-    opt_fwd_ir = optimise_ir!(IRCode(fwd_ir); do_inline)
-    opt_rvs_ir = optimise_ir!(IRCode(rvs_ir); do_inline)
+    opt_fwd_ir = do_optimize ? optimise_ir!(IRCode(fwd_ir); do_inline) : IRCode(fwd_ir)
+    opt_rvs_ir = do_optimize ? optimise_ir!(IRCode(rvs_ir); do_inline) : IRCode(rvs_ir)
     return DerivedRuleInfo(
         ir, opt_fwd_ir, fwd_ret_type, opt_rvs_ir, rvs_ret_type, shared_data, info, isva
     )

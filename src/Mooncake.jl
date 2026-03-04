@@ -2,7 +2,7 @@ module Mooncake
 
 const CC = Core.Compiler
 
-using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, Random
+using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
@@ -39,7 +39,14 @@ using Core.Compiler: IRCode, NewInstruction
 using Core.Intrinsics: pointerref, pointerset
 using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
-using DispatchDoctor: @stable, @unstable
+using DispatchDoctor: @stable, @unstable, DispatchDoctor
+
+DispatchDoctor.register_macro!(
+    Symbol("@foldable"), DispatchDoctor.IncompatibleMacro, @__MODULE__
+)
+DispatchDoctor.register_macro!(
+    Symbol("@mooncake_overlay"), DispatchDoctor.IncompatibleMacro, @__MODULE__
+)
 
 # Needs to be defined before various other things.
 function _foreigncall_ end
@@ -128,10 +135,12 @@ end
 include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
+include("interface.jl")
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))
 include(joinpath("rules", "builtins.jl"))
+include(joinpath("rules", "complex.jl"))
 include(joinpath("rules", "dispatch_doctor.jl"))
 include(joinpath("rules", "fastmath.jl"))
 include(joinpath("rules", "foreigncall.jl"))
@@ -151,10 +160,9 @@ else
     include(joinpath("rules", "array_legacy.jl"))
 end
 
-# Including this in DispatchDoctor causes precompilation error. 
-@unstable include(joinpath("rules", "performance_patches.jl"))
+include(joinpath("rules", "performance_patches.jl"))
+include(joinpath("rules", "high_order_derivative_patches.jl"))
 
-include("interface.jl")
 include("config.jl")
 include("developer_tools.jl")
 
@@ -170,5 +178,7 @@ end
 # Public, exported
 export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
 export prepare_derivative_cache
+
+include("precompile.jl")
 
 end

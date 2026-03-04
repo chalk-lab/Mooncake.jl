@@ -57,8 +57,32 @@ using FunctionWrappers: FunctionWrapper
             randn(100),
             randn(),
         ),
+        # Test constructing a FunctionWrapper with Nothing return type (#1005)
+        (
+            false,
+            :none,
+            true,
+            FunctionWrapper{
+                Nothing,Tuple{Vector{Float64},Vector{Float64},Vector{Float64},Float64}
+            },
+            (du, u, p, t) -> (du[1]=p[1] * u[1]; nothing),
+        ),
+        # Test calling a FunctionWrapper with Nothing return type (#1005)
+        (
+            false,
+            :none,
+            true,
+            FunctionWrapper{
+                Nothing,Tuple{Vector{Float64},Vector{Float64},Vector{Float64},Float64}
+            }(
+                (du, u, p, t) -> (du[1]=p[1] * u[1]; nothing)
+            ),
+            [0.0],
+            [1.0],
+            [2.0],
+            0.5,
+        ),
     ]
-        mode = Mooncake.ReverseMode
-        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only, mode)
+        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
     end
 end

@@ -64,17 +64,12 @@ mutable struct TangentForA{Tx}
     x::Tx
     a::Union{TangentForA{Tx}, Mooncake.NoTangent}
 
-    function TangentForA{Tx}(x_tangent::Tx) where {Tx}
-        new{Tx}(x_tangent, Mooncake.NoTangent())
+    function TangentForA{Tx}() where {Tx}
+        new{Tx}()
     end
 
     function TangentForA{Tx}(x_tangent::Tx, a_tangent::Union{TangentForA{Tx}, Mooncake.NoTangent}) where {Tx}
         new{Tx}(x_tangent, a_tangent)
-    end
-
-    # This constructor is required by Mooncake's internal machinery for constructing tangents from named tuples
-    function TangentForA{Tx}(nt::@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}}) where {Tx}
-        return new{Tx}(nt.x, nt.a)
     end
 end
 ```
@@ -124,7 +119,17 @@ f1(a::A) = 2.0 * a.x
 
 When you try to differentiate this, Mooncake will complain it lacks an `rrule!!` for [`lgetfield`](@ref). The `lgetfield` function is Mooncake's internal version of `getfield` that accepts a `Val` type for the field name, enabling better type stability. You need to implement it:
 
-### 5.1. Field Access (`lgetfield`) Rule
+### 5.1. Zero Tangent Creation
+Mooncake will require a way to create a new zero tangent.
+A simple way is to add a constructor that takes a named tuple:
+```@example custom_tangent_type
+# Will be called directly by Mooncake's default implementation of zero_tangent_internal
+function TangentForA{Tx}(nt::@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}}) where {Tx}
+    return TangentForA{Tx}(nt.x, nt.a)
+end
+```
+
+### 5.2. Field Access (`lgetfield`) Rule
 
 ```@example custom_tangent_type
 Mooncake.@is_primitive Mooncake.MinimalCtx Tuple{typeof(Mooncake.lgetfield),A{T},Val} where {T}
@@ -159,15 +164,16 @@ function Mooncake.rrule!!(
 end
 ```
 
-### 5.2. Zeroing Out the Tangent
+### 5.3. Zeroing Out the Tangent
 
 Mooncake will next require [`set_to_zero!!`](@ref):
 
 ```@example custom_tangent_type
-function Mooncake.set_to_zero!!(t::TangentForA{Tx}) where Tx
-    t.x = Mooncake.set_to_zero!!(t.x)
+function Mooncake.set_to_zero_internal!!(c::Mooncake.SetToZeroCache, t::TangentForA{Tx}) where {Tx}
+    Mooncake._already_tracked!(c, t) && return t
+    t.x = Mooncake.set_to_zero_internal!!(c, t.x)
     if !(t.a isa Mooncake.NoTangent)
-        Mooncake.set_to_zero!!(t.a)
+        Mooncake.set_to_zero_internal!!(c, t.a)
     end
     return t
 end
@@ -212,18 +218,53 @@ You must provide adjoints for every `getfield`/`lgetfield` variant that appears 
 | [`_new_`](@ref)      | `A(x)`, `A(x, a::A)`, `A(x, nothing)`—three separate `rrule!!` methods     |
 | [`lsetfield!`](@ref) | `(A, Val{:field}, new_value)` including both Symbol & Int field IDs        |
 
+##### Why These Primitives?
+
+**`_new_`**: Mooncake’s IR normalisation rewrites `Expr(:new, ...)`—the lowered representation of composite type construction—into calls to [`_new_`](@ref). Because many `_new_` calls can be differentiated using generic rules (see [`src/rules/new.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/rules/new.jl)), explicit differentiation rules are only needed for construction logic that cannot be handled automatically. Such rules can often target `_new_` directly. Rules for individual constructor methods are only necessary when the constructor contains additional logic before lowering to `Expr(:new, ...)`. For example, a constructor that normalises its input—such as `Foo(x) = new(x / sum(x))`—performs computation before calling `_new_`, so a rule for that specific constructor method may be required.
+
+For example, the constructor call `A(1.0)` is lowered to:
+```julia
+_new_(A{Float64}, 1.0, nothing)
+```
+
+Here, [`_new_`](@ref) corresponds to the lowered object-construction operation itself (the `:new` IR node). In optimised Julia SSA IR, constructor syntax has been eliminated: object construction appears only as `:new` nodes rather than calls to user-defined constructor methods. The [`_new_`](@ref) primitive serves as a dispatchable, extensible wrapper around `:new`, allowing differentiation rules to target semantic object construction rather than surface-level constructor syntax.
+
+Splatted constructions are normalised analogously to [`_splat_new_`](@ref). The raw `:new` form can be inspected using `@code_lowered A(1.0)`. For details, see the [*standardisation*](@ref standardisation) section of forward differentiation and the implementation in `src/interpreter/ir_normalisation.jl`.
+
+**`lgetfield` and `lsetfield!`**: These functions are designed for type stability. The standard `getfield(x, :f)` with a symbol argument is not type-stable when the field cannot be constant-propagated. `lgetfield` addresses this by using `Val` to specify the field statically:
+
+```julia
+lgetfield(x, f::Val)
+```
+
+The analogous mutating form is `lsetfield!(x, Val(:f), v)`, which corresponds to `setfield!(x, :f, v)` when the field name is a compile-time constant. This only applies to mutable structs, since `setfield!` is invalid for immutable ones. Mooncake's IR normalisation also rewrites literal-field `setfield!` calls to `lsetfield!` for the same reason.
+
+This enables both the implementation and its pullback to be type-stable. It will always be the case that:
+
+```julia
+getfield(x, :f) === lgetfield(x, Val(:f))
+getfield(x, 2)  === lgetfield(x, Val(2))
+```
+
+This approach is identical to the one taken by `Zygote.jl` to circumvent the same problem. `Zygote.jl` calls the function `literal_getfield`, while Mooncake calls it `lgetfield`.
+
+**Why rules for both `lgetfield` and `Base.getfield`, but not for `setfield!`?** Mooncake’s IR normalisation transforms most `getfield` calls to `lgetfield` with `Val`-wrapped fields for type stability. However, `Base.getfield` rules are still needed for dynamic field access when the field cannot be proven constant at compile time.
+
+By contrast, separate rules for `setfield!` are generally unnecessary. In Mooncake’s ruleset, `setfield!` [always delegates](https://github.com/chalk-lab/Mooncake.jl/blob/b224566835c829772dd7c008189c9957073f1ba8/src/rules/builtins.jl#L1019-L1026) to `lsetfield!`, making `lsetfield!` the sole primitive that requires differentiation rules. This is possible because, at the IR level, the field name for `setfield!` must always be a compile-time constant by Julia convention. By contrast, `getfield` [does not always delegate](https://github.com/chalk-lab/Mooncake.jl/blob/b224566835c829772dd7c008189c9957073f1ba8/src/rules/builtins.jl#L923-L987): `getfield` can accept dynamic field indices in some contexts. Consequently, normalisation to `lgetfield` is conditional, and rules are required for both `lgetfield` and `Base.getfield`.
+
 #### Core Tangent Operations
 
-| Function                          | Purpose/feature tested                                           |
-| --------------------------------- | ---------------------------------------------------------------- |
-| [`zero_tangent_internal`](@ref)   | Structure-preserving zero generation with cycle cache            |
-| [`randn_tangent_internal`](@ref)  | Random tangent generator (for stochastic interface tests)        |
-| [`set_to_zero_internal!!`](@ref)  | Recursive in-place reset with cycle protection                   |
-| [`increment_internal!!`](@ref)    | In-place accumulation used in reverse pass                       |
-| [`_add_to_primal_internal`](@ref) | Adds a tangent to a primal (needed for finite-difference checks) |
-| [`_diff_internal`](@ref)          | Structural diff between two primals → tangent                    |
-| [`_dot_internal`](@ref)           | Inner-product between tangents (dual-number consistency)         |
-| [`_scale_internal`](@ref)         | Scalar × tangent scaling                                         |
+| Function                               | Purpose/feature tested                                           |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| [`zero_tangent_internal`](@ref)        | Structure-preserving zero generation with cycle cache            |
+| [`randn_tangent_internal`](@ref)       | Random tangent generator (for stochastic interface tests)        |
+| [`set_to_zero_internal!!`](@ref)       | Recursive in-place reset with cycle protection                   |
+| [`increment_internal!!`](@ref)         | In-place accumulation used in reverse pass                       |
+| [`_add_to_primal_internal`](@ref)      | Adds a tangent to a primal (needed for finite-difference checks) |
+| [`tangent_to_primal_internal!!`](@ref) | Copying differentiable data back into a primal                   |
+| [`primal_to_tangent_internal!!`](@ref) | Copying differentiable from a primal to a tangent type           |
+| [`_dot_internal`](@ref)                | Inner-product between tangents (dual-number consistency)         |
+| [`_scale_internal`](@ref)              | Scalar × tangent scaling                                         |
 
 #### Test Utilities
 
@@ -391,9 +432,9 @@ function Mooncake.zero_tangent_internal(p::A{T}, dict::Mooncake.MaybeCache) wher
     if haskey(dict, p)
         return dict[p]::TangentForA{Tx}
     end
-    x_t = Mooncake.zero_tangent_internal(p.x, dict)::Tx
-    t = TangentForA{Tx}(x_t)
+    t = TangentForA{Tx}()
     dict[p] = t
+    t.x = Mooncake.zero_tangent_internal(p.x, dict)::Tx
     if p.a === nothing
         t.a = Mooncake.NoTangent()
     else
@@ -402,15 +443,26 @@ function Mooncake.zero_tangent_internal(p::A{T}, dict::Mooncake.MaybeCache) wher
     return t
 end
 
+# Once `zero_tangent_internal` is added, the NamedTuple-based `TangentForA`
+# constructor is obsolete; we use `Base.delete_method` here to undo
+# a method defined earlier in this documentation.
+# 
+# NOTE: In a real package, do not call `delete_method`; remove the method
+# definition from the source instead.
+Base.delete_method(
+    # (we need a concrete type to find the method hence Float64)
+    only(methods(TangentForA{Float64}, Tuple{@NamedTuple{x::Tx, a::Union{Mooncake.NoTangent, TangentForA{Tx}}} where Tx}))
+)
+
 function Mooncake.randn_tangent_internal(rng::AbstractRNG, p::A{T}, dict::Mooncake.MaybeCache) where {T}
     Tx = Mooncake.tangent_type(T)
     Tx == Mooncake.NoTangent && return Mooncake.NoTangent()
     if haskey(dict, p)
         return dict[p]::TangentForA{Tx}
     end
-    x_t = Mooncake.randn_tangent_internal(rng, p.x, dict)::Tx
-    t = TangentForA{Tx}(x_t)
+    t = TangentForA{Tx}()
     dict[p] = t
+    t.x = Mooncake.randn_tangent_internal(rng, p.x, dict)::Tx
     if p.a === nothing
         t.a = Mooncake.NoTangent()
     else
@@ -429,42 +481,31 @@ function Mooncake.increment_internal!!(c::Mooncake.IncCache, t::TangentForA{Tx},
     return t
 end
 
-function Mooncake.set_to_zero_internal!!(c::Mooncake.SetToZeroCache, t::TangentForA{Tx}) where {Tx}
-    Mooncake._already_tracked!(c, t) && return t
-    t.x = Mooncake.set_to_zero_internal!!(c, t.x)
-    if !(t.a isa Mooncake.NoTangent)
-        t.a = Mooncake.set_to_zero_internal!!(c, t.a)
-    end
-    return t
-end
-
 function Mooncake._add_to_primal_internal(c::Mooncake.MaybeCache, p::A{T}, t::TangentForA{Tx}, unsafe::Bool) where {T,Tx}
     key = (p, t, unsafe)
     haskey(c, key) && return c[key]::A{T}
-    x_new = Mooncake._add_to_primal_internal(c, p.x, t.x, unsafe)
-    a_new = p.a === nothing ? nothing : Mooncake._add_to_primal_internal(c, p.a, t.a, unsafe)
-    p_new = a_new === nothing ? A(x_new) : A(x_new, a_new)
+    p_new = Mooncake._new_(A{T})
     c[key] = p_new
+    p_new.x = Mooncake._add_to_primal_internal(c, p.x, t.x, unsafe)
+    p_new.a = p.a === nothing ? nothing : Mooncake._add_to_primal_internal(c, p.a, t.a, unsafe)
     return p_new
 end
 
-function Mooncake._diff_internal(c::Mooncake.MaybeCache, p::A{T}, q::A{T}) where {T}
-    key = (p, q)
-    haskey(c, key) && return c[key]::Union{TangentForA{Mooncake.tangent_type(T)},Mooncake.NoTangent}
-    Tx = Mooncake.tangent_type(T)
-    if Tx == Mooncake.NoTangent
-        t = Mooncake.NoTangent()
-        c[key] = t
-        return t
-    end
-    x_t = Mooncake._diff_internal(c, p.x, q.x)
-    a_t = if p.a === nothing
-        Mooncake.NoTangent()
-    else
-        Mooncake._diff_internal(c, p.a, q.a)
-    end
-    t = TangentForA{Tx}(x_t, a_t)
-    c[key] = t
+function Mooncake.tangent_to_primal_internal!!(p::A{T}, t, c::Mooncake.MaybeCache) where {T}
+    t isa Mooncake.NoTangent && return p
+    haskey(c, p) && return c[p]::A{T}
+    c[p] = p
+    p.x = Mooncake.tangent_to_primal_internal!!(p.x, t.x, c)
+    p.a = Mooncake.tangent_to_primal_internal!!(p.a, t.a, c)
+    return p
+end
+
+function Mooncake.primal_to_tangent_internal!!(t, p::A{T}, c::Mooncake.MaybeCache) where {T}
+    t isa Mooncake.NoTangent && return Mooncake.NoTangent()
+    haskey(c, p) && return c[p]::TangentForA{Mooncake.tangent_type(T)}
+    c[p] = t
+    t.x = Mooncake.primal_to_tangent_internal!!(t.x, p.x, c)
+    t.a = Mooncake.primal_to_tangent_internal!!(t.a, p.a, c)
     return t
 end
 
@@ -482,10 +523,10 @@ end
 
 function Mooncake._scale_internal(c::Mooncake.MaybeCache, a::Float64, t::TangentForA{Tx}) where {Tx}
     haskey(c, t) && return c[t]::TangentForA{Tx}
-    x_new = Mooncake._scale_internal(c, a, t.x)
-    a_new = t.a isa Mooncake.NoTangent ? Mooncake.NoTangent() : Mooncake._scale_internal(c, a, t.a)
-    t_new = TangentForA{Tx}(x_new, a_new)
+    t_new = TangentForA{Tx}()
     c[t] = t_new
+    t_new.x = Mooncake._scale_internal(c, a, t.x)
+    t_new.a = t.a isa Mooncake.NoTangent ? Mooncake.NoTangent() : Mooncake._scale_internal(c, a, t.a)
     return t_new
 end
 
@@ -737,7 +778,17 @@ end
 ```
 
 Now we can run it again and successfully check if all the tangent / fdata / rdata and other required functionality works correctly for the self-referential type A.
+We run the check for both a non-cyclic case to check our method implementations,
+as well as a cyclic case to make sure that our interactions with the caches are correct.
 
 ```@example custom_tangent_type
+# Non-cyclic A
 Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))
+```
+
+```@example custom_tangent_type
+# Cyclic A
+cyclic_a = A(1.0, A(2.0))
+cyclic_a.a.a = cyclic_a
+Mooncake.TestUtils.test_data(Random.default_rng(), cyclic_a)
 ```

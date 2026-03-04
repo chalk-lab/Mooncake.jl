@@ -34,7 +34,7 @@ end
 
         @test Mooncake.terminator(bb) === nothing
 
-        # Final statment is regular instruction, so newly inserted instruction should go at
+        # Final statement is a regular instruction, so the newly inserted instruction should go at
         # the end of the block.
         @test Mooncake.insert_before_terminator!(bb, ID(), new_inst(ReturnNode(5))) ===
             nothing

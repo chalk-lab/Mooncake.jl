@@ -57,7 +57,7 @@ Consequently, there is in principle nothing to prevent `Mooncake.jl` from operat
 
 ### Correctness and Testing
 
-Mutation support enables writing `rrule!!`s at a low-level (`Core.InstrincFunction`s, `built-in function`s, `ccall`s to e.g. `BLAS` and `LAPACK` and the bits of Base Julia which are implemented in C).
+Mutation support enables writing `rrule!!`s at a low-level (`Core.IntrinsicFunction`s, `built-in function`s, `ccall`s to e.g. `BLAS` and `LAPACK` and the bits of Base Julia which are implemented in C).
 The simplicity of this low-level functionality makes implementing correct `rrule!!`s for it a simple task.
 In conjunction with being strict about the types used internally to represent (co)tangents, we have found this leads to `rrule!!`s composing very well, and AD being correct in practice as a consequence.
 
@@ -72,7 +72,7 @@ This contrasts with e.g. `ReverseDiff.jl`'s compiled tape, which can give silent
 ### Performance
 
 Hand-written `rrule!!`s have excellent performance, provided that they have been written well (most of the hand-written rules in `Mooncake.jl` have excellent performance, but some require optimisation. Doing this just requires investing some time).
-Consequently, whether or not the overall AD system has good performance is largely a question of how much overhead is associated to the mechanism by which hand-written `rrules!!`s are algorithmically composed.
+Consequently, whether or not the overall AD system has good performance is largely a question of how much overhead is associated to the mechanism by which hand-written `rrule!!`s are algorithmically composed.
 
 At present (03/2024), we do this in a _reasonably_ performant way (but better than the previous way!)
 See [Project Status](@ref) below for more info.
@@ -88,7 +88,7 @@ These two approaches entail different tradeoffs.
 ## Project Name
 
 Before an initial release, this package was called `Taped.jl`, but that name ceased to be helpful when we stopped using a classic "Wengert list"-style type to implement AD.
-For about 48 hours is was called `Phi.jl`, but the community guidelines state that the name of packages in the general registry should generally be at least 5 characters in length.
+For about 48 hours it was called `Phi.jl`, but the community guidelines state that the name of packages in the general registry should generally be at least 5 characters in length.
 
 We then chose `Tapir.jl`, and didn't initially feel that other work [of the same name](https://github.com/wsmoses/Tapir-LLVM) presented a serious name clash, as it isn't AD-specific or a Julia project.
 As it turns out, there has been significant work attempting to integrate the ideas from this work into the [Julia compiler](https://github.com/JuliaLang/julia/pull/39773), so the clash is something of a problem.
@@ -106,7 +106,7 @@ The plan is to proceed in three phases:
 1. maintenance
 
 You should take this with a pinch of salt, as it seems highly likely that we will have to revisit some design choices when optimising performance -- we do not, however, anticipate requiring major re-writes to the design as part of performance optimisation.
-We aim to reach the maintenance phase of the project before 01/06/2024.
+We aimed to enter the maintenance phase of the project by 01/06/2024. As of 6 January 2025, both forward- and reverse-mode differentiation are complete, with remaining work focused on chunk-mode forward differentiation and GPU support.
 
 !!! details "Updates"
     *Update: (07/02/2025)*

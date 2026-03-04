@@ -3,11 +3,7 @@
 There's a reasonable chance that you'll run into an issue with Mooncake.jl at some point.
 In order to debug what is going on when this happens, or to produce an MWE, it is helpful to have a convenient way to run Mooncake.jl on whatever function and arguments you have which are causing problems.
 
-We recommend making use of Mooncake.jl's testing functionality to generate your test cases:
-
-```@docs; canonical=false
-Mooncake.TestUtils.test_rule
-```
+We recommend using Mooncake.jl’s built-in testing utility [`Mooncake.TestUtils.test_rule`](@ref) to generate such test cases.
 
 This approach is convenient because it can
 1. check whether AD runs at all,
