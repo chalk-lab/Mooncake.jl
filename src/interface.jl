@@ -283,6 +283,12 @@ Required as Base.copy!() does not work for all supported primal types. For examp
 """
 _copy_to_output!!(dst::Number, src::Number) = src
 
+# Type values (DataType, UnionAll, Union), Core.TypeName, and Modules are reference-semantic
+# and must not be deep-copied; return src as-is.
+_copy_to_output!!(::Type, src::Type) = src
+_copy_to_output!!(::Core.TypeName, src::Core.TypeName) = src
+_copy_to_output!!(::Module, src::Module) = src
+
 # explicit copy for Core.svec
 function _copy_to_output!!(dst::SimpleVector, src::SimpleVector)
     return Core.svec(map(_copy_to_output!!, dst, src)...)
@@ -364,6 +370,15 @@ end
 Returns a copy of `x`, of the same type `T`. Allocates new memory for the copy.
 Required as Base.copy() does not work for all supported primal types. For example, `Base.copy` does not work for `Core.svec`.
 """
+
+# Type values (DataType, UnionAll, Union), Core.TypeName, and Modules are reference-semantic
+# and must not be deep-copied. They are Julia runtime internals that cannot be reconstructed
+# via jl_new_struct_uninit / jl_new_structv (e.g. Core.TypeName has fields with layout
+# constraints that trigger a TypeError when attempting to copy them).
+_copy_output(x::Type) = x
+_copy_output(x::Core.TypeName) = x
+_copy_output(x::Module) = x
+
 _copy_output(x::SimpleVector) = Core.svec([map(_copy_output, x_sub) for x_sub in x]...)
 
 # Array, Memory

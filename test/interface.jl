@@ -189,6 +189,30 @@ end
                 pb[2],
                 SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
+
+            # Regression test: friendly_tangents=true must not throw a TypeError when the
+            # differentiated closure captures a struct containing Type-valued fields
+            # (e.g. FunctionWrapper's internals).
+            mutable struct MutableWrapper
+                t::Type
+                scale::Float64
+            end
+            wrapper = MutableWrapper(Float64, 2.0)
+            f_capturing_type = let w = wrapper
+                function(x::Vector{Float64})
+                    return x .* w.scale
+                end
+            end
+            x_vec = [1.0, 2.0, 3.0]
+            ȳ_vec = [1.0, 1.0, 1.0]
+            cache_type = Mooncake.prepare_pullback_cache(
+                f_capturing_type, x_vec; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            v_type, pb_type = Mooncake.value_and_pullback!!(
+                cache_type, ȳ_vec, f_capturing_type, x_vec
+            )
+            @test v_type ≈ x_vec .* wrapper.scale
+            @test pb_type[2] ≈ ȳ_vec .* wrapper.scale
         end
     end
 
@@ -295,6 +319,39 @@ end
             catch err
                 @test isa(err, Mooncake.ValueAndPullbackReturnTypeError)
             end
+        end
+
+        # Regression test: _copy_output must handle Type values, Core.TypeName, and Modules
+        # as reference-semantic objects (returned as-is), to avoid a TypeError when a closure
+        # captures a struct containing such fields (e.g. FunctionWrapper).
+        @testset "_copy_output reference-semantic types" begin
+            # Type values
+            @test Mooncake._copy_output(Float64) === Float64
+            @test Mooncake._copy_output(Vector{Float64}) === Vector{Float64}
+            @test Mooncake._copy_output(Union{Float64,Int64}) === Union{Float64,Int64}
+
+            # Core.TypeName
+            @test Mooncake._copy_output(Float64.name) === Float64.name
+
+            # Module
+            @test Mooncake._copy_output(Base) === Base
+
+            # _copy_to_output!! for the same reference-semantic types
+            @test Mooncake._copy_to_output!!(Float64, Float64) === Float64
+            @test Mooncake._copy_to_output!!(Float64.name, Float64.name) === Float64.name
+            @test Mooncake._copy_to_output!!(Base, Base) === Base
+
+            # Mutable struct containing a Type field. Before the fix, _copy_output would
+            # recurse into the Type field and eventually hit Core.TypeName, causing a TypeError.
+            mutable struct MutableWithTypeField
+                t::Type
+                x::Float64
+            end
+            obj = MutableWithTypeField(Float64, 1.0)
+            obj_copy = Mooncake._copy_output(obj)
+            @test typeof(obj_copy) == MutableWithTypeField
+            @test obj_copy.t === Float64
+            @test obj_copy.x == 1.0
         end
     end
     @testset "forwards mode ($kwargs)" for kwargs in [
