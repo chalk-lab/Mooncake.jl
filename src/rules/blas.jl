@@ -1630,11 +1630,11 @@ end
 
 function _blas_level_3_params()
     t_flags = ['N', 'T', 'C']
-    αs  = [1.0, -0.25, 0.46 + 0.32im]
-    dαs = [0.0,  0.44, -0.20 + 0.38im]
-    βs  = [0.0,  0.33,  0.39 + 0.27im]
-    dβs = [0.0, -0.11,  0.86 + 0.44im]
-    Ps  = [Float64, Float32, ComplexF64, ComplexF32]
+    αs = [1.0, -0.25, 0.46 + 0.32im]
+    dαs = [0.0, 0.44, -0.20 + 0.38im]
+    βs = [0.0, 0.33, 0.39 + 0.27im]
+    dβs = [0.0, -0.11, 0.86 + 0.44im]
+    Ps = [Float64, Float32, ComplexF64, ComplexF32]
     return t_flags, αs, dαs, βs, dβs, Ps
 end
 
@@ -1655,9 +1655,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
         test_cases,
         let
             rng = rng_ctor(123456)
-            map_prod(
-                t_flags, ['N'], αs, βs, Ps, dαs, dβs
-            ) do (tA, tB, α, β, P, dα, dβ)
+            map_prod(t_flags, ['N'], αs, βs, Ps, dαs, dβs) do (tA, tB, α, β, P, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
 
@@ -1725,9 +1723,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3b})
         test_cases,
         let
             rng = rng_ctor(123456)
-            map_prod(
-                t_flags, ['T'], αs, βs, Ps, dαs, dβs
-            ) do (tA, tB, α, β, P, dα, dβ)
+            map_prod(t_flags, ['T'], αs, βs, Ps, dαs, dβs) do (tA, tB, α, β, P, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
 
@@ -1770,9 +1766,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
         test_cases,
         let
             rng = rng_ctor(123456)
-            map_prod(
-                t_flags, ['C'], αs, βs, Ps, dαs, dβs
-            ) do (tA, tB, α, β, P, dα, dβ)
+            map_prod(t_flags, ['C'], αs, βs, Ps, dαs, dβs) do (tA, tB, α, β, P, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
 
