@@ -1,7 +1,6 @@
-# Contains a ccall, which must be avoided.
+# The following functions contain ccall or llvmcall which cannot be differentiated.
 @zero_derivative MinimalCtx Tuple{Type{MersenneTwister},Any}
-
-# XoshiroSimd bulk operations use llvmcall which cannot be differentiated by Mooncake.
+# xoshiro_bulk_simd/nosimd(rng, dst::Ptr{UInt8}, len::Int64, eltype, [simd_width,] bits2float)
 @zero_derivative MinimalCtx Tuple{
     typeof(Random.XoshiroSimd.xoshiro_bulk_simd),
     Union{TaskLocalRNG,Xoshiro},
