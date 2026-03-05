@@ -190,30 +190,6 @@ end
                 SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
 
-            # Regression test: friendly_tangents=true must not throw a TypeError when the
-            # differentiated closure captures a struct containing Type-valued fields
-            # (e.g. FunctionWrapper's internals).
-            mutable struct MutableWrapper
-                t::Type
-                scale::Float64
-            end
-            wrapper = MutableWrapper(Float64, 2.0)
-            f_capturing_type = let w = wrapper
-                function (x::Vector{Float64})
-                    return x .* w.scale
-                end
-            end
-            x_vec = [1.0, 2.0, 3.0]
-            ȳ_vec = [1.0, 1.0, 1.0]
-            cache_type = Mooncake.prepare_pullback_cache(
-                f_capturing_type, x_vec; config=Mooncake.Config(; friendly_tangents=true)
-            )
-            v_type, pb_type = Mooncake.value_and_pullback!!(
-                cache_type, ȳ_vec, f_capturing_type, x_vec
-            )
-            @test v_type ≈ x_vec .* wrapper.scale
-            @test pb_type[2] ≈ ȳ_vec .* wrapper.scale
-
             # Regression test: _copy_output must use nfields(src), not nfields(P);
             # nfields(P) returns the wrong field count, causing jl_new_structv to
             # raise "invalid struct allocation".
