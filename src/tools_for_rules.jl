@@ -335,7 +335,7 @@ function to_cr_tangent(x::PossiblyUninitTangent)
     if is_init(x)
         return to_cr_tangent(x.tangent)
     else
-        return CRC.NoTangent()
+        return CRC.ZeroTangent()
     end
 end
 
