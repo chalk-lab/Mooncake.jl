@@ -1628,14 +1628,18 @@ end
 # stay live per @testset, so GC reclaims each set before the next is built. gemm!
 # mat×mat (dominant) is split by tB; derived tests use Val(:blas_level_3) directly.
 
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
+function _blas_level_3_params()
     t_flags = ['N', 'T', 'C']
-    αs = [1.0, -0.25, 0.46 + 0.32im]
-    dαs = [0.0, 0.44, -0.20 + 0.38im]
-    βs = [0.0, 0.33, 0.39 + 0.27im]
-    dβs = [0.0, -0.11, 0.86 + 0.44im]
-    realPs = [Float64, Float32]
-    Ps = [realPs..., complex.(realPs)...]
+    αs  = [1.0, -0.25, 0.46 + 0.32im]
+    dαs = [0.0,  0.44, -0.20 + 0.38im]
+    βs  = [0.0,  0.33,  0.39 + 0.27im]
+    dβs = [0.0, -0.11,  0.86 + 0.44im]
+    Ps  = [Float64, Float32, ComplexF64, ComplexF32]
+    return t_flags, αs, dαs, βs, dβs, Ps
+end
+
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
+    t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
 
     test_cases = Any[]
 
@@ -1705,13 +1709,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3b})
-    t_flags = ['N', 'T', 'C']
-    αs = [1.0, -0.25, 0.46 + 0.32im]
-    dαs = [0.0, 0.44, -0.20 + 0.38im]
-    βs = [0.0, 0.33, 0.39 + 0.27im]
-    dβs = [0.0, -0.11, 0.86 + 0.44im]
-    realPs = [Float64, Float32]
-    Ps = [realPs..., complex.(realPs)...]
+    t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
 
     test_cases = Any[]
 
@@ -1756,13 +1754,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3b})
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
-    t_flags = ['N', 'T', 'C']
-    αs = [1.0, -0.25, 0.46 + 0.32im]
-    dαs = [0.0, 0.44, -0.20 + 0.38im]
-    βs = [0.0, 0.33, 0.39 + 0.27im]
-    dβs = [0.0, -0.11, 0.86 + 0.44im]
-    realPs = [Float64, Float32]
-    Ps = [realPs..., complex.(realPs)...]
+    t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
 
     test_cases = Any[]
 
@@ -1832,15 +1824,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
-    t_flags = ['N', 'T', 'C']
-    αs = [1.0, -0.25, 0.46 + 0.32im]
-    dαs = [0.0, 0.44, -0.20 + 0.38im]
-    βs = [0.0, 0.33, 0.39 + 0.27im]
-    dβs = [0.0, -0.11, 0.86 + 0.44im]
+    t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
     uplos = ['L', 'U']
     dAs = ['N', 'U']
-    realPs = [Float64, Float32]
-    Ps = [realPs..., complex.(realPs)...]
 
     test_cases = Any[]
 
@@ -1937,10 +1923,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
-    t_flags = ['N', 'T', 'C']
+    t_flags, _, _, _, _, Ps = _blas_level_3_params()
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
-    realPs = [Float32, Float64]
-    Ps = [realPs..., complex.(realPs)...]
     rng = rng_ctor(123)
     test_cases = Any[]
 
