@@ -212,7 +212,6 @@ end
             cache_ns = Mooncake.prepare_pullback_cache(
                 f_nothing_struct, x_vec; config=Mooncake.Config(; friendly_tangents=true)
             )
-
             ȳ_vec = ones(3)
             v_ns, pb_ns = Mooncake.value_and_pullback!!(
                 cache_ns, ȳ_vec, f_nothing_struct, x_vec
