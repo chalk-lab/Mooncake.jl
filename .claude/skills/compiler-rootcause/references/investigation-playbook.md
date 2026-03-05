@@ -46,11 +46,6 @@ REF=v1.11.3
 BASE=https://raw.githubusercontent.com/JuliaLang/julia/v1.11.3
 ```
 
-If using Codex with a local clone:
-```bash
-git clone --depth 1 --branch v1.11.3 https://github.com/JuliaLang/julia.git /tmp/julia-src
-```
-
 
 ## Step 3: Fast triage against documentation
 
@@ -75,13 +70,8 @@ pitfall.
 
 **Action:** Look up the category in `source-map.md`. Read the primary files.
 
-**Preferred: Use Codex** for large files. Ask targeted questions:
-```
-"Read the function jl_compilation_sig in src/gf.c. Show the complete function
-with all comments. Explain what each major branch does."
-```
-
-**Fallback: Use WebFetch** with raw GitHub URLs:
+With a local clone, use Grep to find functions and Read to examine them.
+With WebFetch, use raw GitHub URLs with targeted prompts:
 ```
 WebFetch(
   url: "{BASE}/src/gf.c",
@@ -102,13 +92,6 @@ WebFetch(
 **Action:** In the fetched source, locate the exact predicate that controls the
 behavior. This is the "decision point" — the `if` statement or condition that
 determines whether widening/inlining/SROA happens.
-
-**Use Codex to search:**
-```
-"In src/gf.c, find every condition in jl_compilation_sig that decides whether
-to widen an argument type. For each one, explain: what triggers it, what type
-it widens to, and what could prevent it from firing."
-```
 
 **What to look for by category:**
 - Specialization: `notcalled_func`, `nospecialize`, `very_general_type`, `iscalled`
@@ -141,17 +124,9 @@ a boundary you can explain to the user:
 - **Downstream:** What does the decision affect? Trace through to the observable
   consequence (widened MethodInstance, failed inlining, heap allocation).
 
-**Use Codex to follow the chain:**
+Use Grep to search across the source tree for where inputs are set, e.g.:
 ```
-"The variable definition->called is checked in jl_compilation_sig. Where is
-this field set? Search src/method.c for where .called is assigned. Then trace
-back — where do the slotflags come from?"
-```
-
-This may require resuming the Codex session for multi-hop tracing:
-```bash
-codex exec resume --last "Now trace further back. The slotflags are set during
-lowering. Find where is_called is set in JuliaLowering/src/scope_analysis.jl."
+Grep(pattern: "->called", path: "/tmp/julia-src/src/method.c")
 ```
 
 **Artifact:** A chain showing: input source → decision point → output effect, e.g.:
