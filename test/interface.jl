@@ -208,6 +208,7 @@ end
                     return x .* s.a .+ s.b
                 end
             end
+            x_vec = randn(3)
             cache_ns = Mooncake.prepare_pullback_cache(
                 f_nothing_struct, x_vec; config=Mooncake.Config(; friendly_tangents=true)
             )
