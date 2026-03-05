@@ -214,10 +214,9 @@ end
             @test v_type ≈ x_vec .* wrapper.scale
             @test pb_type[2] ≈ ȳ_vec .* wrapper.scale
 
-            # Regression test: friendly_tangents=true must not throw when the closure
-            # captures an immutable struct with Nothing-typed fields.
+            # Regression test: immutable struct with Nothing-typed fields.
             # nfields(P) returns the number of fields on the DataType object itself (8),
-            # not the fields declared by struct P, so the old code passed the wrong
+            # not the fields declared by struct P, so nfields(P) would return the wrong
             # field count to jl_new_structv, raising "invalid struct allocation".
             struct ImmutableWithNothingFields
                 a::Float64
