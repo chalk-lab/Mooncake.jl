@@ -111,7 +111,6 @@ sr(n::Int) = StableRNG(n)
         (:allocs, Normal(0.5, 1.0), 0.05),
         (:allocs, Normal(0.0, 1.5), -0.1),
         (:allocs, Normal(-0.1, 0.9), -0.3),
-        # (:none NormalInverseGaussian(0.0, 1.0, 0.2, 0.1), 0.1), # foreigncall -- https://github.com/JuliaMath/SpecialFunctions.jl/blob/be1fa06fee58ec019a28fb0cd2b847ca83a5af9a/src/bessel.jl#L265
         (:allocs, Pareto(1.0, 1.0), 3.5),
         (:allocs, Pareto(1.1, 0.9), 3.1),
         (:allocs, Pareto(1.0, 1.0), 1.4),
@@ -216,6 +215,12 @@ sr(n::Int) = StableRNG(n)
         (:none, LKJ(5, 1.1), rand(sr(123456), LKJ(5, 1.1))),
     ]
     work_around_test_cases = Any[
+        (
+            :none,
+            "NormalInverseGaussian",
+            (μ, α, β, δ, x) -> logpdf(NormalInverseGaussian(μ, α, β, δ), x),
+            (0.0, 1.0, 0.2, 0.1, 0.1),
+        ),
         (
             :allocs,
             "InverseGamma",
