@@ -71,14 +71,14 @@ macro specialize_vararg(n::Int, fdef::Expr)
             wp
         else
             filter(wp) do p
-            if p isa Symbol
-                p != vararg_N
-            elseif p isa Expr && p.head == :(<:)
-                p.args[1] != vararg_N
-            else
-                true
+                if p isa Symbol
+                    p != vararg_N
+                elseif p isa Expr && p.head == :(<:)
+                    p.args[1] != vararg_N
+                else
+                    true
+                end
             end
-        end
         end
     end
 
