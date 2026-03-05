@@ -214,10 +214,9 @@ end
             @test v_type ≈ x_vec .* wrapper.scale
             @test pb_type[2] ≈ ȳ_vec .* wrapper.scale
 
-            # Regression test: immutable struct with Nothing-typed fields.
-            # nfields(P) returns the number of fields on the DataType object itself (8),
-            # not the fields declared by struct P, so nfields(P) would return the wrong
-            # field count to jl_new_structv, raising "invalid struct allocation".
+            # Regression test: _copy_output must use nfields(src), not nfields(P);
+            # nfields(P) returns the wrong field count, causing jl_new_structv to
+            # raise "invalid struct allocation".
             struct ImmutableWithNothingFields
                 a::Float64
                 b::Float64
