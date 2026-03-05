@@ -42,6 +42,10 @@ end
             ((x...) -> x[1] + x[2], randn(Float64), randn(Float64)),
             (sum, randn(10)),
             (x -> (x .*= 2; sum(x)), randn(10)),
+            # Regression test for https://github.com/chalk-lab/Mooncake.jl/issues/1020:
+            # passing a function-valued arg previously caused perf regressions due to
+            # missing specialisation; @inline on the interface functions fixes this.
+            ((xs, f) -> f(xs), randn(10), sum),
         ]
             kwargs = (debug_mode=false, silence_debug_messages=true)
             rule = build_rrule(fargs...; kwargs...)
