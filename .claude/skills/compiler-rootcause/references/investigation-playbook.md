@@ -94,10 +94,12 @@ behavior. This is the "decision point" — the `if` statement or condition that
 determines whether widening/inlining/SROA happens.
 
 **What to look for by category:**
-- Specialization: `notcalled_func`, `nospecialize`, `very_general_type`, `iscalled`
-- Inlining: cost comparison, effect requirements, `@noinline` propagation
-- SROA: escape state check, `is_load_forwardable`
-- Dispatch: `MethodMatchInfo` resolution, union splitting decisions
+- Specialization: widening predicates in `jl_compilation_sig` (see source-map.md §1)
+- Inlining: cost comparison against `MAX_INLINE_COST`, effect requirements, `@noinline` flags
+- SROA: escape state checks, `is_load_forwardable`, mutable vs immutable handling
+- Dispatch: `MethodMatchInfo` resolution, union splitting thresholds, `abstract_call` return types
+- World age: world range checks, `valid_worlds`, invalidation triggers
+- Boxing: `emit_box` calls in codegen, type-erased `jl_value_t*` boundaries
 
 **Caution: `@code_typed` can be misleading.** Calling `@code_typed f(args...)`
 creates a fresh, fully-concrete specialization on demand — one that runtime
@@ -106,11 +108,13 @@ will show perfectly optimized code while the actual runtime path uses a widened
 `MethodInstance`. Always cross-check with `Base.specializations(method)` to see
 what the runtime actually compiled. See `mwe-patterns.md` Pattern 1.
 
-**Artifact:** The exact condition (quote the source), e.g.:
-```c
-int notcalled_func = (i_arg > 0 && i_arg <= 8 &&
-    !(definition->called & (1 << (i_arg - 1))) &&
-    jl_subtype(elt, (jl_value_t*)jl_function_type));
+**Artifact:** The exact condition quoted from source, with file path and line
+number. Format example:
+```
+File: src/gf.c:1305
+Condition: [paste the if-statement or predicate verbatim]
+Fires when: [plain-English summary of what makes it true]
+Effect: [what happens when it fires]
 ```
 
 
@@ -129,15 +133,16 @@ Use Grep to search across the source tree for where inputs are set, e.g.:
 Grep(pattern: "->called", path: "/tmp/julia-src/src/method.c")
 ```
 
-**Artifact:** A chain showing: input source → decision point → output effect, e.g.:
+**Artifact:** A chain showing: input source → decision point → output effect.
+Use this format:
 ```
-scope_analysis.jl:685 (sets is_called when slot appears in call position)
-  → eval.jl:238 (encodes to slotflags bit 6)
-    → method.c:938-942 (reads slotflags → definition->called bitmask)
-      → gf.c:1188 (i_arg collapses vararg positions to last parameter)
-        → gf.c:1305-1314 (notcalled_func fires → widens to Function)
-          → widened MethodInstance used at runtime
+[file:line] (what sets the input)
+  → [file:line] (intermediate transformation)
+    → [file:line] (decision predicate fires)
+      → [observable consequence at runtime]
 ```
+The chain should be deep enough that someone unfamiliar with Julia internals
+can follow the causal path from user code to compiler behavior.
 
 
 ## Step 7: Construct MWE

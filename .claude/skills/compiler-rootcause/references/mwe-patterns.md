@@ -290,9 +290,9 @@ When reducing a package-specific issue to a Julia-only MWE:
 2. **Replace the package with a stub.** Create a function with the same
    signature shape as the one that exhibits the issue:
    ```julia
-   # If the original function was: value_and_gradient!!(cache, f, xs, sum)
+   # If the original function was: do_work(state, f, args..., options)
    # Stub preserving the call shape:
-   function my_stub(cache, f::F, x::Vararg{Any,N}) where {F,N}
+   function my_stub(state, f::F, x::Vararg{Any,N}) where {F,N}
        # body doesn't matter for specialization issues
        return f(x...)
    end
