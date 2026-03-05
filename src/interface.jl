@@ -179,8 +179,6 @@ value_and_gradient!!(rule, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-# @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
-# perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
 @inline function value_and_gradient!!(
     rule::R, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
@@ -554,8 +552,6 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-# @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
-# perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
 @inline function value_and_pullback!!(
     cache::Cache,
     ȳ,
@@ -643,8 +639,6 @@ value_and_gradient!!(cache, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-# @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
-# perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
 @inline function value_and_gradient!!(
     cache::Cache,
     f::F,
@@ -677,8 +671,6 @@ end
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 """
-# @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
-# perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
 ) where {N}
