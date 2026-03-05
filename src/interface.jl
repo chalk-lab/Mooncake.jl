@@ -334,13 +334,10 @@ function _copy_to_output!!(dst::P, src::P) where {P}
                     getfield(dst, src_sub), getfield(src, src_sub)
                 )
             else
-                nf = src_sub - 1  # Assumes if a undefined field is found, all subsequent fields are undefined.
-                break
+                return src
             end
         end
 
-        # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
-        !isassigned(flds, 1) && return src
         return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)::P
     end
 end

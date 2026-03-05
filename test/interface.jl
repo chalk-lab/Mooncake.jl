@@ -296,6 +296,19 @@ end
                 @test isa(err, Mooncake.ValueAndPullbackReturnTypeError)
             end
         end
+
+        # Regression test for https://github.com/chalk-lab/Mooncake.jl/pull/1030:
+        # _copy_to_output!! must not segfault on partially-initialised immutable structs.
+        @testset "_copy_to_output!! on partially-initialised immutable struct (PR#1030)" begin
+            struct _PR1030Struct
+                a::Int
+                b::Vector{Float64}
+            end
+            s = ccall(:jl_new_struct_uninit, Any, (Any,), _PR1030Struct)::_PR1030Struct
+            @test isdefined(s, 1)
+            @test !isdefined(s, 2)
+            @test Mooncake._copy_to_output!!(s, s) === s
+        end
     end
     @testset "forwards mode ($kwargs)" for kwargs in [
         (;),
