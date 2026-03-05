@@ -140,7 +140,7 @@ use-case, consider pre-allocating the `CoDual`s and calling the other method of 
 function. The `CoDual`s should be primal-tangent pairs (as opposed to primal-fdata pairs).
 There are lots of ways to get this wrong though, so we generally advise against doing this.
 """
-function value_and_pullback!!(
+@specialize_vararg 10 function value_and_pullback!!(
     rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
     if friendly_tangents
@@ -177,7 +177,7 @@ value_and_gradient!!(rule, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-function value_and_gradient!!(
+@specialize_vararg 10 function value_and_gradient!!(
     rule::R, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
     if friendly_tangents
@@ -550,7 +550,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-function value_and_pullback!!(
+@specialize_vararg 10 function value_and_pullback!!(
     cache::Cache,
     ȳ,
     f::F,
@@ -637,7 +637,7 @@ value_and_gradient!!(cache, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-function value_and_gradient!!(
+@specialize_vararg 10 function value_and_gradient!!(
     cache::Cache,
     f::F,
     x::Vararg{Any,N};
@@ -669,7 +669,9 @@ end
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 """
-@unstable function prepare_derivative_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
+@specialize_vararg 10 @unstable function prepare_derivative_cache(
+    f, x::Vararg{Any,N}; config=Config()
+) where {N}
     fx = (f, x...)
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
 

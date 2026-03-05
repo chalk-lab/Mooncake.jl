@@ -1,4 +1,134 @@
 """
+    @specialize_vararg n [macros...] function f(x, y::Vararg{T,N}; kw...) where {N} ... end
+
+Emit the original `Vararg` definition plus `n` specialized methods where the vararg is
+expanded into individual typed arguments (`y1::Y1, y2::Y2, …`). Each specialized method
+reconstructs the original tuple (`y = (y1, y2, …)`) before running the body.
+
+This forwards the original docstring and also supports an arbitrary number of optional outer
+macros (e.g. `@inline`) that are applied to every generated method.
+
+If the `N` type parameter from `Vararg{T,N}` appears in keyword argument defaults or the
+function body, it is replaced with the literal argument count in each specialization.
+
+For example,
+
+```julia
+@specialize_vararg 2 @mymacro function foo(x, y::Vararg{Any,N}; kw=z) where {N}
+    f(N)
+end
+```
+
+is expanded to
+
+```julia
+@mymacro function foo(x, y::Vararg{Any,N}; kw=z) where {N}
+    f(N)
+end
+@mymacro function foo(x, y1::Y1; kw=z) where {Y1<:Any}
+    y = (y1,)
+    f(1)
+end
+@mymacro function foo(x, y1::Y1, y2::Y2; kw=z) where {Y1<:Any, Y2<:Any}
+    y = (y1, y2)
+    f(2)
+end
+```
+
+This macro is modified from SpecializeVarargs.jl (which requires a signature of `function(x,
+y...)` -- i.e. with splatting instead of a Vararg annotation -- and currently doesn't
+support docstrings). The current macro handles only Vararg annotations, instead of
+splatting; but that's more consistent with the current usage in the Mooncake codebase.
+"""
+macro specialize_vararg(n::Int, fdef::Expr)
+    @assert n > 0
+
+    macros = Symbol[]
+    while fdef.head == :macrocall && length(fdef.args) == 3
+        push!(macros, fdef.args[1])
+        fdef = fdef.args[3]
+    end
+
+    d = ExprTools.splitdef(fdef)
+    get!(d, :whereparams, Any[])
+    get!(d, :body, Expr(:block))
+    get!(d, :args, Any[])
+
+    # Parse y::Vararg{T} or y::Vararg{T,N}
+    last_arg = d[:args][end]
+    @assert last_arg isa Expr && last_arg.head == :(::) "Last argument must be a Vararg annotation"
+    type_expr = last_arg.args[2]
+    @assert(
+        type_expr isa Expr && type_expr.head == :curly && type_expr.args[1] == :Vararg,
+        "Last argument must be a Vararg type, got $last_arg",
+    )
+    args_symbol = last_arg.args[1]
+    args_constr = type_expr.args[2]
+    vararg_N = length(type_expr.args) >= 3 ? type_expr.args[3] : nothing
+
+    function _drop_vararg_N(wp)
+        return if vararg_N === nothing
+            wp
+        else
+            filter(wp) do p
+            if p isa Symbol
+                p != vararg_N
+            elseif p isa Expr && p.head == :(<:)
+                p.args[1] != vararg_N
+            else
+                true
+            end
+        end
+        end
+    end
+
+    function _subst_N(ex, val)
+        return if vararg_N === nothing
+            ex
+        elseif ex === vararg_N
+            val
+        elseif ex isa Expr
+            Expr(ex.head, (_subst_N(a, val) for a in ex.args)...)
+        else
+            ex
+        end
+    end
+
+    function _wrap_macros(ex)
+        return if isempty(macros)
+            ex
+        else
+            foldr((m, f) -> Expr(:macrocall, m, nothing, f), macros; init=ex)
+        end
+    end
+    _doc(ex) = Expr(:macrocall, GlobalRef(Base, Symbol("@__doc__")), nothing, ex)
+
+    fdefs = Expr(:block)
+
+    # Emit the original Vararg definition (with @__doc__ for docstring support)
+    push!(fdefs.args, _doc(_wrap_macros(ExprTools.combinedef(deepcopy(d)))))
+
+    # Emit specialized definitions for 1..n args
+    for i in 1:n
+        di = deepcopy(d)
+        pop!(di[:args])
+        di[:whereparams] = _drop_vararg_N(di[:whereparams])
+        di[:kwargs] = [_subst_N(kw, i) for kw in get(di, :kwargs, Any[])]
+        di[:body] = _subst_N(di[:body], i)
+
+        args = Tuple(gensym("arg$j") for j in 1:i)
+        Ts = Tuple(gensym("T$j") for j in 1:i)
+
+        di[:whereparams] = (di[:whereparams]..., (T -> :($T <: $args_constr)).(Ts)...)
+        push!(di[:args], ((arg, T) -> :($arg::$T)).(args, Ts)...)
+        pushfirst!(di[:body].args, :($args_symbol = $(Expr(:tuple, args...))))
+        push!(fdefs.args, _wrap_macros(ExprTools.combinedef(di)))
+    end
+
+    return esc(fdefs)
+end
+
+"""
     _typeof(x)
 
 Central definition of typeof, which is specific to the use-required in this package.
