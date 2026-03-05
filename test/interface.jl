@@ -213,6 +213,31 @@ end
             )
             @test v_type ≈ x_vec .* wrapper.scale
             @test pb_type[2] ≈ ȳ_vec .* wrapper.scale
+
+            # Regression test: friendly_tangents=true must not throw when the closure
+            # captures an immutable struct with Nothing-typed fields.
+            # nfields(P) returns the number of fields on the DataType object itself (8),
+            # not the fields declared by struct P, so the old code passed the wrong
+            # field count to jl_new_structv, raising "invalid struct allocation".
+            struct ImmutableWithNothingFields
+                a::Float64
+                b::Float64
+                c::Nothing
+            end
+            nothing_struct = ImmutableWithNothingFields(1.0, 2.0, nothing)
+            f_nothing_struct = let s = nothing_struct
+                function (x::Vector{Float64})
+                    return x .* s.a .+ s.b
+                end
+            end
+            cache_ns = Mooncake.prepare_pullback_cache(
+                f_nothing_struct, x_vec; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            v_ns, pb_ns = Mooncake.value_and_pullback!!(
+                cache_ns, ȳ_vec, f_nothing_struct, x_vec
+            )
+            @test v_ns ≈ x_vec .* nothing_struct.a .+ nothing_struct.b
+            @test pb_ns[2] ≈ ȳ_vec .* nothing_struct.a
         end
     end
 
@@ -321,10 +346,11 @@ end
             end
         end
 
-        # Regression test: _copy_output must handle Type values, Core.TypeName, and Modules
-        # as reference-semantic objects (returned as-is), to avoid a TypeError when a closure
-        # captures a struct containing such fields (e.g. FunctionWrapper).
-        @testset "_copy_output reference-semantic types" begin
+        # Regression test: _copy_output must handle Type values, Core.TypeName,
+        # and Modules, which cannot be deep-copied (returned as-is), to avoid a
+        # TypeError when a closure captures a struct containing such fields
+        # (e.g. FunctionWrapper).
+        @testset "_copy_output non-deep-copyable types" begin
             # Type values
             @test Mooncake._copy_output(Float64) === Float64
             @test Mooncake._copy_output(Vector{Float64}) === Vector{Float64}
@@ -336,13 +362,12 @@ end
             # Module
             @test Mooncake._copy_output(Base) === Base
 
-            # _copy_to_output!! for the same reference-semantic types
+            # _copy_to_output!! for the same non-deep-copyable types
             @test Mooncake._copy_to_output!!(Float64, Float64) === Float64
             @test Mooncake._copy_to_output!!(Float64.name, Float64.name) === Float64.name
             @test Mooncake._copy_to_output!!(Base, Base) === Base
 
-            # Mutable struct containing a Type field. Before the fix, _copy_output would
-            # recurse into the Type field and eventually hit Core.TypeName, causing a TypeError.
+            # Mutable struct containing a Type field.
             mutable struct MutableWithTypeField
                 t::Type
                 x::Float64

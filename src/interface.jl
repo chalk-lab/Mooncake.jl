@@ -283,8 +283,8 @@ Required as Base.copy!() does not work for all supported primal types. For examp
 """
 _copy_to_output!!(dst::Number, src::Number) = src
 
-# Type values (DataType, UnionAll, Union), Core.TypeName, and Modules are reference-semantic
-# and must not be deep-copied; return src as-is.
+# Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
+# cannot be deep-copied; return src as-is.
 _copy_to_output!!(::Type, src::Type) = src
 _copy_to_output!!(::Core.TypeName, src::Core.TypeName) = src
 _copy_to_output!!(::Module, src::Module) = src
@@ -313,7 +313,9 @@ end
 # Handling structs
 function _copy_to_output!!(dst::P, src::P) where {P}
     isbitstype(P) && return src
-    nf = nfields(P)
+    # nfields(P) counts fields of the DataType object itself; use nfields(src) or
+    # fieldcount(P) to get the number of fields declared by struct P.
+    nf = nfields(src)
 
     if ismutable(src)
         for src_sub in 1:nf
@@ -370,11 +372,8 @@ end
 Returns a copy of `x`, of the same type `T`. Allocates new memory for the copy.
 Required as Base.copy() does not work for all supported primal types. For example, `Base.copy` does not work for `Core.svec`.
 """
-
-# Type values (DataType, UnionAll, Union), Core.TypeName, and Modules are reference-semantic
-# and must not be deep-copied. They are Julia runtime internals that cannot be reconstructed
-# via jl_new_struct_uninit / jl_new_structv (e.g. Core.TypeName has fields with layout
-# constraints that trigger a TypeError when attempting to copy them).
+# Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
+# cannot be deep-copied; return x as-is.
 @unstable _copy_output(x::Type) = x
 _copy_output(x::Core.TypeName) = x
 _copy_output(x::Module) = x
@@ -399,7 +398,9 @@ _copy_output(x::Union{Tuple,NamedTuple}) = map(_copy_output, x)::typeof(x)
 # mutable composite types, bitstype
 function _copy_output(x::P) where {P}
     isbitstype(P) && return x
-    nf = nfields(P)
+    # nfields(P) counts fields of the DataType object itself; use nfields(x) or
+    # fieldcount(P) to get the number of fields declared by struct P.
+    nf = nfields(x)
 
     if ismutable(x)
         _copy_output_mutable_cartesian(x, Val(nf))
