@@ -194,9 +194,7 @@ end
                 SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
 
-            # Regression test: _copy_output must use nfields(src), not nfields(P);
-            # nfields(P) returns the wrong field count, causing jl_new_structv to
-            # raise "invalid struct allocation".
+            # Regression test for "invalid struct allocation" and `TypeError` error. See #1024.
             struct ImmutableWithNothingFields
                 a::Float64
                 b::Float64
@@ -326,10 +324,8 @@ end
             end
         end
 
-        # Regression test: _copy_output must handle Type values, Core.TypeName,
-        # and Modules, which cannot be deep-copied (returned as-is), to avoid a
-        # TypeError when a closure captures a struct containing such fields
-        # (e.g. FunctionWrapper).
+        # `_copy_output` needs to be able handle `Type`, `Core.TypeName`,
+        # and `Module` values. See #1024.
         @testset "_copy_output non-deep-copyable types" begin
             # Type values
             @test Mooncake._copy_output(Float64) === Float64
