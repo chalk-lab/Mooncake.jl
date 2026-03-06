@@ -1808,31 +1808,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
         end...,
     )
 
-    # gemm! - vector × vector: ~4300 arrays
-    test_cases = append!(
-        test_cases,
-        let
-            rng = rng_ctor(123459)
-            map_prod(['T', 'C'], αs, βs, Ps, dαs, dβs) do (tA, α, β, P, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-                P <: BlasRealFloat && tA == 'C' && return []
-
-                As = blas_vectors(rng, P, 3; only_contiguous=true)
-                Bs = blas_vectors(rng, P, 3; only_contiguous=true)
-                Cs = blas_matrices(rng, P, 1, 1)
-
-                return map(As, Bs, Cs) do A, B, C
-                    a_da = CoDual(P(α), P(dα))
-                    b_db = CoDual(P(β), P(dβ))
-                    (
-                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
-                    )
-                end
-            end
-        end...,
-    )
-
     # gemm! - vector × matrix: ~12400 arrays
     test_cases = append!(
         test_cases,
@@ -1853,6 +1828,31 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
                     a_da = CoDual(P(α), P(dα))
                     b_db = CoDual(P(β), P(dβ))
                     (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+                end
+            end
+        end...,
+    )
+
+    # gemm! - vector × vector: ~4300 arrays
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123459)
+            map_prod(['T', 'C'], αs, βs, Ps, dαs, dβs) do (tA, α, β, P, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                P <: BlasRealFloat && tA == 'C' && return []
+
+                As = blas_vectors(rng, P, 3; only_contiguous=true)
+                Bs = blas_vectors(rng, P, 3; only_contiguous=true)
+                Cs = blas_matrices(rng, P, 1, 1)
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    )
                 end
             end
         end...,
