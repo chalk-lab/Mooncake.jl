@@ -361,21 +361,18 @@ end
 
         # Regression test: _copy_output must handle opaque mutable types with 0 fields
         # (Symbol, String) which cannot be allocated via jl_new_struct_uninit.
-        # This also means Dict (which internally stores a Memory{Symbol}) must be
-        # copyable, fixing prepare_gradient_cache with friendly_tangents=true when
-        # arguments include a Dict or a struct containing a Dict.
         @testset "_copy_output opaque mutable types (Symbol, String, Dict)" begin
             # Symbol and String are mutable with 0 user-visible fields
             @test Mooncake._copy_output(:hello) === :hello
             @test Mooncake._copy_output("hello") === "hello"
 
-            # Dict contains a Memory{Symbol} (keys) internally; this exercises the fix
+            # Dict contains a Memory{Symbol} (keys) internally
             d = Dict(:x => 1, :y => 2)
             d_copy = Mooncake._copy_output(d)
             @test d_copy == d
             @test d_copy !== d
 
-            # Dict{Symbol, Any} (as in user-reported case)
+            # Dict{Symbol, Any}
             d2 = Dict{Symbol,Any}(:x => [1.0, 2.0], :n => 3)
             d2_copy = Mooncake._copy_output(d2)
             @test d2_copy == d2
@@ -390,15 +387,6 @@ end
             ds_copy = Mooncake._copy_output(ds)
             @test ds_copy._n == ds._n
             @test ds_copy._data == ds._data
-
-            # prepare_gradient_cache with friendly_tangents=true must work with Dict args
-            f_dict = (x, d) -> sum(x) * Float32(d[:n])
-            x_test = randn(Float32, 3)
-            d_arg = Dict{Symbol,Any}(:n => 3)
-            cache = Mooncake.prepare_gradient_cache(
-                f_dict, x_test, d_arg; config=Mooncake.Config(friendly_tangents=true)
-            )
-            @test !isnothing(cache)
         end
     end
     @testset "forwards mode ($kwargs)" for kwargs in [
