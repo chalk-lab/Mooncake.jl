@@ -1070,14 +1070,16 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     end
 end
 
-function run_rule_test_cases(rng_ctor, v::Val, mode=nothing)
+function run_rule_test_cases(
+    rng_ctor, v::Val, mode=nothing; hand_written=true, derived=true
+)
     if mode in [nothing, ForwardMode]
-        run_hand_written_rule_test_cases(rng_ctor, v, ForwardMode)
-        run_derived_rule_test_cases(rng_ctor, v, ForwardMode)
+        hand_written && run_hand_written_rule_test_cases(rng_ctor, v, ForwardMode)
+        derived && run_derived_rule_test_cases(rng_ctor, v, ForwardMode)
     end
     if mode in [nothing, ReverseMode]
-        run_hand_written_rule_test_cases(rng_ctor, v, ReverseMode)
-        run_derived_rule_test_cases(rng_ctor, v, ReverseMode)
+        hand_written && run_hand_written_rule_test_cases(rng_ctor, v, ReverseMode)
+        derived && run_derived_rule_test_cases(rng_ctor, v, ReverseMode)
     end
     return nothing
 end

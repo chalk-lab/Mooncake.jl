@@ -1683,11 +1683,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
     return test_cases, memory
 end
 
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
-    memory = Any[]
-    return Any[], memory
-end
-
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3b})
     t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
 
@@ -1724,11 +1719,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3b})
 
     memory = Any[]
     return test_cases, memory
-end
-
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3b})
-    memory = Any[]
-    return Any[], memory
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
@@ -1769,11 +1759,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
     return test_cases, memory
 end
 
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
-    memory = Any[]
-    return Any[], memory
-end
-
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
     t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
     # 1.10 fails to infer part of a matmat product in the pullback
@@ -1794,10 +1779,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
         end
     end
     return Any[test_cases...;], Any[]
-end
-
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
-    return Any[], Any[]
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3e})
@@ -1823,10 +1804,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3e})
     return Any[test_cases...;], Any[]
 end
 
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3e})
-    return Any[], Any[]
-end
-
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3f})
     _, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
     # 1.10 fails to infer part of a matmat product in the pullback
@@ -1847,10 +1824,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3f})
         end
     end
     return Any[test_cases...;], Any[]
-end
-
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3f})
-    return Any[], Any[]
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
