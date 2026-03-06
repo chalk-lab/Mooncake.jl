@@ -1624,10 +1624,15 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas})
     return test_cases, memory
 end
 
-# The level 3 tests below are split from the others,
-# such that they can run in parallel on CI.
+# blas_level_3 tests are split by element type so GC can reclaim all arrays for one
+# precision before the next is allocated. Each set runs all level-3 BLAS variants
+# (gemm! mat×mat / mat×vec / vec×mat / vec×vec, trmm!, trsm!, aliased gemm!) for one
+# BlasFloat type. Test-case tuples hold direct refs to their primal arrays, which must
+# stay live for the full duration of the corresponding test_rule call; all tuples for a
+# set are built before any test in that set runs, so every array in the set is resident
+# simultaneously.
 
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
     αs = [1.0, -0.25, 0.46 + 0.32im]
     dαs = [0.0, 0.44, -0.20 + 0.38im]
@@ -1635,14 +1640,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     dβs = [0.0, -0.11, 0.86 + 0.44im]
     uplos = ['L', 'U']
     dAs = ['N', 'U']
-    realPs = [Float64, Float32]
-    Ps = [realPs..., complex.(realPs)...]
 
     test_cases = Any[]
-
-    #
-    # BLAS LEVEL 3
-    #
 
     # gemm! Tests
     # 1.10 fails to infer part of a matmat product in the pullback
@@ -1656,9 +1655,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         test_cases,
         let
             rng = rng_ctor(123456)
-            map_prod(
-                t_flags, t_flags, αs, βs, Ps, dαs, dβs
-            ) do (tA, tB, α, β, P, dα, dβ)
+            map_prod(t_flags, t_flags, αs, βs, dαs, dβs) do (tA, tB, α, β, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
 
@@ -1680,7 +1677,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         test_cases,
         let
             rng = rng_ctor(123457)
-            map_prod(t_flags, αs, βs, Ps, dαs, dβs) do (tA, α, β, P, dα, dβ)
+            map_prod(t_flags, αs, βs, dαs, dβs) do (tA, α, β, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
                 P <: BlasRealFloat && tA == 'C' && return []
@@ -1705,9 +1702,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         test_cases,
         let
             rng = rng_ctor(123458)
-            map_prod(
-                ['T', 'C'], t_flags, αs, βs, Ps, dαs, dβs
-            ) do (tA, tB, α, β, P, dα, dβ)
+            map_prod(['T', 'C'], t_flags, αs, βs, dαs, dβs) do (tA, tB, α, β, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
                 P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
@@ -1730,7 +1725,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         test_cases,
         let
             rng = rng_ctor(123459)
-            map_prod(['T', 'C'], αs, βs, Ps, dαs, dβs) do (tA, α, β, P, dα, dβ)
+            map_prod(['T', 'C'], αs, βs, dαs, dβs) do (tA, α, β, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
                 P <: BlasRealFloat && tA == 'C' && return []
@@ -1756,8 +1751,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         let
             rng = rng_ctor(123456)
             map_prod(
-                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps, dαs
-            ) do (side, ul, tA, dA, M, N, P, dα)
+                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], dαs
+            ) do (side, ul, tA, dA, M, N, dα)
                 P <: BlasRealFloat && imag(dα) != 0 && return []
 
                 t = tA == 'N'
@@ -1782,8 +1777,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         let
             rng = rng_ctor(123456)
             map_prod(
-                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps
-            ) do (side, ul, tA, dA, M, N, P)
+                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2]
+            ) do (side, ul, tA, dA, M, N)
                 t = tA == 'N'
                 R = side == 'L' ? M : N
                 a = randn(rng, P)
@@ -1805,18 +1800,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     return test_cases, memory
 end
 
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
+function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
-    realPs = [Float32, Float64]
-    Ps = [realPs..., complex.(realPs)...]
     rng = rng_ctor(123)
     test_cases = Any[]
 
     # aliased gemm!
     test_cases = append!(
         test_cases,
-        map_prod(t_flags, t_flags, Ps) do (tA, tB, P)
+        map_prod(t_flags, t_flags) do (tA, tB)
             As = blas_matrices(rng, P, 5, 5)
             Bs = blas_matrices(rng, P, 5, 5)
             a = randn(rng, P)
@@ -1828,4 +1821,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     )
     memory = Any[]
     return test_cases, memory
+end
+
+for P in (Float64, Float32, ComplexF64, ComplexF32)
+    sym = Symbol(:blas_level_3_, P)
+    @eval function hand_written_rule_test_cases(rng_ctor, ::Val{$(QuoteNode(sym))})
+        return hand_written_rule_test_cases(rng_ctor, Val(:blas_level_3), $P)
+    end
+    @eval function derived_rule_test_cases(rng_ctor, ::Val{$(QuoteNode(sym))})
+        return derived_rule_test_cases(rng_ctor, Val(:blas_level_3), $P)
+    end
 end
