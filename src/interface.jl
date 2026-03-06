@@ -288,7 +288,6 @@ _copy_to_output!!(dst::Number, src::Number) = src
 
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
 # cannot be deep-copied; return src as-is.
-# Overload _copy_to_output!! to customise (see Core.SimpleVector).
 _copy_to_output!!(::Type, src::Type) = src
 _copy_to_output!!(::Core.TypeName, src::Core.TypeName) = src
 _copy_to_output!!(::Module, src::Module) = src
@@ -382,7 +381,6 @@ For types with custom copy semantics, overload this function (see `Core.SimpleVe
 """
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
 # cannot be deep-copied; return x as-is.
-# Overload _copy_output to customise (see Core.SimpleVector).
 @unstable _copy_output(x::Type) = x
 _copy_output(x::Core.TypeName) = x
 _copy_output(x::Module) = x
