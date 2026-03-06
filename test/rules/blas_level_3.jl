@@ -5,5 +5,7 @@
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_level_3b))
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_level_3c))
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_level_3d))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:blas_level_3e))
+    TestUtils.run_rule_test_cases(StableRNG, Val(:blas_level_3f))
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_level_3))
 end
