@@ -302,7 +302,11 @@ end
 function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
-            dst[i] = _copy_to_output!!(dst[i], src[i])
+            dst[i] = if isassigned(dst, i)
+                _copy_to_output!!(dst[i], src[i])
+            else
+                _copy_output(src[i])
+            end
         end
     end
     return dst
@@ -321,10 +325,11 @@ function _copy_to_output!!(dst::P, src::P) where {P}
     # DataType object itself.
     nf = nfields(src)
 
+    # No Julia-visible fields (e.g. Symbol, String): nothing to update.
+    # Overload _copy_to_output!! to customise.
+    nf == 0 && return src
+
     if ismutable(src)
-        # No Julia-visible fields (e.g. Symbol, String): nothing to update.
-        # Overload _copy_to_output!! to customise.
-        nf == 0 && return src
         for src_sub in 1:nf
             if isdefined(src, src_sub)
                 # using ccall as setfield! fails for const fields of a mutable struct.
@@ -411,10 +416,11 @@ function _copy_output(x::P) where {P}
     # DataType object itself.
     nf = nfields(x)
 
+    # No Julia-visible fields (e.g. Symbol, String): nothing to copy.
+    # Overload _copy_output to customise.
+    nf == 0 && return x
+
     if ismutable(x)
-        # No Julia-visible fields (e.g. Symbol, String): nothing to copy.
-        # Overload _copy_output to customise.
-        nf == 0 && return x
         _copy_output_mutable_cartesian(x, Val(nf))
     else
         _copy_output_immutable_cartesian(x, Val(nf))
