@@ -1627,9 +1627,9 @@ end
 # blas_level_3 is split into 3a–3c + Val(:blas_level_3) to reduce peak memory. Each
 # test-case tuple holds direct refs to its primal arrays, which must stay live for the
 # full duration of the corresponding test_rule call. All tuples are built before any
-# test is run, so every array in the set is allocated simultaneously (~14k in 3a, ~7k
-# in 3b/3c, ~27k in blas_level_3). Splitting lets GC reclaim each set before the next
-# is constructed. gemm! mat×mat dominates and is split by tB across 3a–3c.
+# test is run, so every array in the set is allocated simultaneously (~7k per set in
+# 3a–3c; ~34k in blas_level_3). Splitting lets GC reclaim each set before the next is
+# constructed. 3a–3c each contain only gemm! mat×mat for a single tB value.
 
 function _blas_level_3_params()
     t_flags = ['N', 'T', 'C']
@@ -1670,31 +1670,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
                     a_da = CoDual(P(α), P(dα))
                     b_db = CoDual(P(β), P(dβ))
                     (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
-                end
-            end
-        end...,
-    )
-
-    # gemm! - matrix × vector: ~6600 arrays
-    test_cases = append!(
-        test_cases,
-        let
-            rng = rng_ctor(123457)
-            map_prod(t_flags, αs, βs, Ps, dαs, dβs) do (tA, α, β, P, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-                P <: BlasRealFloat && tA == 'C' && return []
-
-                As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
-                Bs = blas_vectors(rng, P, 4; only_contiguous=true)
-                Cs = blas_matrices(rng, P, 3, 1)
-
-                return map(As, Bs, Cs) do A, B, C
-                    a_da = CoDual(P(α), P(dα))
-                    b_db = CoDual(P(β), P(dβ))
-                    (
-                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
-                    )
                 end
             end
         end...,
@@ -1808,6 +1783,31 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
 
     # The tests are quite sensitive to the random inputs,
     # so each tested gemm! dispatch gets its own rng.
+
+    # gemm! - matrix × vector: ~6600 arrays
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123457)
+            map_prod(t_flags, αs, βs, Ps, dαs, dβs) do (tA, α, β, P, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                P <: BlasRealFloat && tA == 'C' && return []
+
+                As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
+                Bs = blas_vectors(rng, P, 4; only_contiguous=true)
+                Cs = blas_matrices(rng, P, 3, 1)
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    )
+                end
+            end
+        end...,
+    )
 
     # gemm! - vector × vector: ~4300 arrays
     test_cases = append!(
