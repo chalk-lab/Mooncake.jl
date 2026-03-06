@@ -405,6 +405,9 @@ function _copy_output(x::P) where {P}
     nf = nfields(x)
 
     if ismutable(x)
+        # Opaque mutable types like Symbol and String have no Julia-visible fields
+        # and cannot be allocated via jl_new_struct_uninit; return as-is.
+        nf == 0 && return x
         _copy_output_mutable_cartesian(x, Val(nf))
     else
         _copy_output_immutable_cartesian(x, Val(nf))
