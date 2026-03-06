@@ -81,7 +81,8 @@ function build_frule(
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
-        return (debug_mode ? DebugFRule(frule!!) : frule!!)
+        rule = build_primitive_frule(sig)
+        return (debug_mode ? DebugFRule(rule) : rule)
     end
 
     # We don't have a hand-coded rule, so derive one.
@@ -408,10 +409,15 @@ function modify_fwd_ad_stmts!(
 
         interp = info.interp
         if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
-            replace_call!(dual_ir, ssa, Expr(:call, frule!!, dual_args...))
+            rule = build_primitive_frule(sig)
         else
             dm = info.debug_mode
-            push!(captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm))
+            rule = isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm)
+        end
+        if safe_for_literal(rule)
+            replace_call!(dual_ir, ssa, Expr(:call, rule, dual_args...))
+        else
+            push!(captures, rule)
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
@@ -495,8 +501,10 @@ end
 function frule_type(
     interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
 ) where {C}
-    if is_primitive(C, ForwardMode, _get_sig(mi), interp.world)
-        return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
+    sig = _get_sig(mi)
+    if is_primitive(C, ForwardMode, sig, interp.world)
+        rule = build_primitive_frule(sig)
+        return debug_mode ? DebugFRule{typeof(rule)} : typeof(rule)
     end
     ir, _ = lookup_ir(interp, mi)
     nargs = length(ir.argtypes)
