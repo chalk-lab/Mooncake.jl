@@ -1806,19 +1806,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3e})
     perf_flag = VERSION < v"1.11-" ? :none : :stability
     # gemm! - vector × matrix: ~12400 arrays
     rng = rng_ctor(123458)
-    test_cases = map_prod(['T', 'C'], t_flags, αs, βs, Ps, dαs, dβs) do (tA, tB, α, β, P, dα, dβ)
-        P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-        P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-        P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
-        As = blas_vectors(rng, P, 3; only_contiguous=true)
-        Bs = blas_matrices(rng, P, tB == 'N' ? 3 : 5, tB == 'N' ? 5 : 3)
-        Cs = blas_matrices(rng, P, 1, 5)
-        return map(As, Bs, Cs) do A, B, C
-            a_da = CoDual(P(α), P(dα))
-            b_db = CoDual(P(β), P(dβ))
-            (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+    test_cases =
+        map_prod(['T', 'C'], t_flags, αs, βs, Ps, dαs, dβs) do (tA, tB, α, β, P, dα, dβ)
+            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+            P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
+            As = blas_vectors(rng, P, 3; only_contiguous=true)
+            Bs = blas_matrices(rng, P, tB == 'N' ? 3 : 5, tB == 'N' ? 5 : 3)
+            Cs = blas_matrices(rng, P, 1, 5)
+            return map(As, Bs, Cs) do A, B, C
+                a_da = CoDual(P(α), P(dα))
+                b_db = CoDual(P(β), P(dβ))
+                (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+            end
         end
-    end
     return Any[test_cases...;], Any[]
 end
 
