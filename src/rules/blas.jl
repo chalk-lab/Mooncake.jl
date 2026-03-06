@@ -1655,9 +1655,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3}, P::Type{<:
         test_cases,
         let
             rng = rng_ctor(123456)
-            map_prod(
-                t_flags, t_flags, αs, βs, dαs, dβs
-            ) do (tA, tB, α, β, dα, dβ)
+            map_prod(t_flags, t_flags, αs, βs, dαs, dβs) do (tA, tB, α, β, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
 
@@ -1704,9 +1702,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3}, P::Type{<:
         test_cases,
         let
             rng = rng_ctor(123458)
-            map_prod(
-                ['T', 'C'], t_flags, αs, βs, dαs, dβs
-            ) do (tA, tB, α, β, dα, dβ)
+            map_prod(['T', 'C'], t_flags, αs, βs, dαs, dβs) do (tA, tB, α, β, dα, dβ)
                 P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
                 P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
                 P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
