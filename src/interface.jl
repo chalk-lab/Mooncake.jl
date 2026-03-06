@@ -282,11 +282,13 @@ const _BuiltinArrays = @static VERSION >= v"1.11" ? Union{Array,Memory} : Array
 
 Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of `dst` and `src` must be the same.
 Required as Base.copy!() does not work for all supported primal types. For example, `Base.copy!` does not work for `Core.svec`.
+For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
 """
 _copy_to_output!!(dst::Number, src::Number) = src
 
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
 # cannot be deep-copied; return src as-is.
+# Overload _copy_to_output!! to customise (see Core.SimpleVector).
 _copy_to_output!!(::Type, src::Type) = src
 _copy_to_output!!(::Core.TypeName, src::Core.TypeName) = src
 _copy_to_output!!(::Module, src::Module) = src
@@ -315,11 +317,14 @@ end
 # Handling structs
 function _copy_to_output!!(dst::P, src::P) where {P}
     isbitstype(P) && return src
-    # nfields(P) counts fields of the DataType object itself; use nfields(src) or
-    # fieldcount(P) to get the number of fields declared by struct P.
+    # nfields(src) not nfields(P): the latter counts fields of the
+    # DataType object itself.
     nf = nfields(src)
 
     if ismutable(src)
+        # No Julia-visible fields (e.g. Symbol, String): nothing to update.
+        # Overload _copy_to_output!! to customise.
+        nf == 0 && return src
         for src_sub in 1:nf
             if isdefined(src, src_sub)
                 # using ccall as setfield! fails for const fields of a mutable struct.
@@ -373,9 +378,11 @@ end
 
 Returns a copy of `x`, of the same type `T`. Allocates new memory for the copy.
 Required as Base.copy() does not work for all supported primal types. For example, `Base.copy` does not work for `Core.svec`.
+For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
 """
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
 # cannot be deep-copied; return x as-is.
+# Overload _copy_output to customise (see Core.SimpleVector).
 @unstable _copy_output(x::Type) = x
 _copy_output(x::Core.TypeName) = x
 _copy_output(x::Module) = x
@@ -400,13 +407,13 @@ _copy_output(x::Union{Tuple,NamedTuple}) = map(_copy_output, x)::typeof(x)
 # mutable composite types, bitstype
 function _copy_output(x::P) where {P}
     isbitstype(P) && return x
-    # nfields(P) counts fields of the DataType object itself; use nfields(x) or
-    # fieldcount(P) to get the number of fields declared by struct P.
+    # nfields(x) not nfields(P): the latter counts fields of the
+    # DataType object itself.
     nf = nfields(x)
 
     if ismutable(x)
-        # Opaque mutable types like Symbol and String have no Julia-visible fields
-        # and cannot be allocated via jl_new_struct_uninit; return as-is.
+        # No Julia-visible fields (e.g. Symbol, String): nothing to copy.
+        # Overload _copy_output to customise.
         nf == 0 && return x
         _copy_output_mutable_cartesian(x, Val(nf))
     else
