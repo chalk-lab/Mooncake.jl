@@ -1624,201 +1624,139 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas})
     return test_cases, memory
 end
 
-# blas_level_3 is split into 3a–3f + Val(:blas_level_3) to reduce peak memory. Each
-# test-case tuple holds direct refs to its primal arrays, which must stay live for the
-# full duration of the corresponding test_rule call. All tuples are built before any
-# test is run, so every array in the set is allocated simultaneously. Splitting lets GC
-# reclaim each set before the next is constructed.
-#   3a–3c: gemm! mat×mat, one tB per set (~150 test cases each)
-#   3d:    gemm! mat×vec (~130 test cases)
-#   3e:    gemm! vec×mat (~220 test cases)
-#   3f:    gemm! vec×vec (~80 test cases)
-#   blas_level_3: trmm!, trsm!, aliased gemm! (~7600 test cases)
+# blas_level_3 tests are split by element type so GC can reclaim all arrays for one
+# precision before the next is allocated. Each set runs all level-3 BLAS variants
+# (gemm! mat×mat / mat×vec / vec×mat / vec×vec, trmm!, trsm!, aliased gemm!) for one
+# BlasFloat type. Test-case tuples hold direct refs to their primal arrays, which must
+# stay live for the full duration of the corresponding test_rule call; all tuples for a
+# set are built before any test in that set runs, so every array in the set is resident
+# simultaneously.
 
-function _blas_level_3_params()
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
-    # Three representative (α, dα, β, dβ) tuples covering β=0, real β≠0, and complex.
-    # The derivative formula for gemm! is linear in the scalars, so a full cartesian
-    # product over separate αs/dαs/βs/dβs arrays is redundant.
-    scalar_tuples = [
-        (1.0, 0.44, 0.0, -0.11),
-        (-0.25, 0.44, 0.33, -0.11),
-        (0.46 + 0.32im, -0.20 + 0.38im, 0.39 + 0.27im, 0.86 + 0.44im),
-    ]
-    Ps = [Float64, Float32, ComplexF64, ComplexF32]
-    return t_flags, scalar_tuples, Ps
-end
-
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
-    t_flags, scalar_tuples, Ps = _blas_level_3_params()
-
-    # 1.10 fails to infer part of a matmat product in the pullback
-    perf_flag = VERSION < v"1.11-" ? :none : :stability
-
-    # gemm! - matrix × matrix (tB='N' only; tB='T' in 3b, tB='C' in 3c)
-    rng = rng_ctor(123456)
-    test_cases = map_prod(t_flags, ['N'], scalar_tuples, Ps) do (tA, tB, scalar_tup, P)
-        α, dα, β, dβ = scalar_tup
-        P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-        P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-
-        As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
-        Bs = blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4)
-        Cs = blas_matrices(rng, P, 3, 5)
-
-        return map(As, Bs, Cs) do A, B, C
-            a_da = CoDual(P(α), P(dα))
-            b_db = CoDual(P(β), P(dβ))
-            (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
-        end
-    end
-
-    return Any[test_cases...;], Any[]
-end
-
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3b})
-    t_flags, scalar_tuples, Ps = _blas_level_3_params()
-
-    # 1.10 fails to infer part of a matmat product in the pullback
-    perf_flag = VERSION < v"1.11-" ? :none : :stability
-
-    # gemm! - matrix × matrix (tB='T' only; tB='N' in 3a, tB='C' in 3c)
-    rng = rng_ctor(123456)
-    test_cases = map_prod(t_flags, ['T'], scalar_tuples, Ps) do (tA, tB, scalar_tup, P)
-        α, dα, β, dβ = scalar_tup
-        P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-        P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-
-        As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
-        Bs = blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4)
-        Cs = blas_matrices(rng, P, 3, 5)
-
-        return map(As, Bs, Cs) do A, B, C
-            a_da = CoDual(P(α), P(dα))
-            b_db = CoDual(P(β), P(dβ))
-            (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
-        end
-    end
-
-    return Any[test_cases...;], Any[]
-end
-
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
-    t_flags, scalar_tuples, Ps = _blas_level_3_params()
-
-    # 1.10 fails to infer part of a matmat product in the pullback
-    perf_flag = VERSION < v"1.11-" ? :none : :stability
-
-    # gemm! - matrix × matrix (tB='C' only; tB='N' in 3a, tB='T' in 3b)
-    rng = rng_ctor(123456)
-    test_cases = map_prod(t_flags, ['C'], scalar_tuples, Ps) do (tA, tB, scalar_tup, P)
-        α, dα, β, dβ = scalar_tup
-        P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-        P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-
-        As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
-        Bs = blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4)
-        Cs = blas_matrices(rng, P, 3, 5)
-
-        return map(As, Bs, Cs) do A, B, C
-            a_da = CoDual(P(α), P(dα))
-            b_db = CoDual(P(β), P(dβ))
-            (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
-        end
-    end
-
-    return Any[test_cases...;], Any[]
-end
-
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
-    t_flags, scalar_tuples, Ps = _blas_level_3_params()
-    # 1.10 fails to infer part of a matmat product in the pullback
-    perf_flag = VERSION < v"1.11-" ? :none : :stability
-    # gemm! - matrix × vector
-    rng = rng_ctor(123457)
-    test_cases = map_prod(t_flags, scalar_tuples, Ps) do (tA, scalar_tup, P)
-        α, dα, β, dβ = scalar_tup
-        P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-        P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-        P <: BlasRealFloat && tA == 'C' && return []
-        As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
-        Bs = blas_vectors(rng, P, 4; only_contiguous=true)
-        Cs = blas_matrices(rng, P, 3, 1)
-        return map(As, Bs, Cs) do A, B, C
-            a_da = CoDual(P(α), P(dα))
-            b_db = CoDual(P(β), P(dβ))
-            (false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C)
-        end
-    end
-    return Any[test_cases...;], Any[]
-end
-
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3e})
-    t_flags, scalar_tuples, Ps = _blas_level_3_params()
-    # 1.10 fails to infer part of a matmat product in the pullback
-    perf_flag = VERSION < v"1.11-" ? :none : :stability
-    # gemm! - vector × matrix
-    rng = rng_ctor(123458)
-    test_cases =
-        map_prod(['T', 'C'], t_flags, scalar_tuples, Ps) do (tA, tB, scalar_tup, P)
-            α, dα, β, dβ = scalar_tup
-            P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-            P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-            P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
-            As = blas_vectors(rng, P, 3; only_contiguous=true)
-            Bs = blas_matrices(rng, P, tB == 'N' ? 3 : 5, tB == 'N' ? 5 : 3)
-            Cs = blas_matrices(rng, P, 1, 5)
-            return map(As, Bs, Cs) do A, B, C
-                a_da = CoDual(P(α), P(dα))
-                b_db = CoDual(P(β), P(dβ))
-                (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
-            end
-        end
-    return Any[test_cases...;], Any[]
-end
-
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3f})
-    _, scalar_tuples, Ps = _blas_level_3_params()
-    # 1.10 fails to infer part of a matmat product in the pullback
-    perf_flag = VERSION < v"1.11-" ? :none : :stability
-    # gemm! - vector × vector
-    rng = rng_ctor(123459)
-    test_cases = map_prod(['T', 'C'], scalar_tuples, Ps) do (tA, scalar_tup, P)
-        α, dα, β, dβ = scalar_tup
-        P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-        P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-        P <: BlasRealFloat && tA == 'C' && return []
-        As = blas_vectors(rng, P, 3; only_contiguous=true)
-        Bs = blas_vectors(rng, P, 3; only_contiguous=true)
-        Cs = blas_matrices(rng, P, 1, 1)
-        return map(As, Bs, Cs) do A, B, C
-            a_da = CoDual(P(α), P(dα))
-            b_db = CoDual(P(β), P(dβ))
-            (false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C)
-        end
-    end
-    return Any[test_cases...;], Any[]
-end
-
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
-    t_flags, scalar_tuples, Ps = _blas_level_3_params()
+    αs = [1.0, -0.25, 0.46 + 0.32im]
+    dαs = [0.0, 0.44, -0.20 + 0.38im]
+    βs = [0.0, 0.33, 0.39 + 0.27im]
+    dβs = [0.0, -0.11, 0.86 + 0.44im]
     uplos = ['L', 'U']
     dAs = ['N', 'U']
-    dαs = [st[2] for st in scalar_tuples]
 
     test_cases = Any[]
 
+    # gemm! Tests
     # 1.10 fails to infer part of a matmat product in the pullback
     perf_flag = VERSION < v"1.11-" ? :none : :stability
 
-    # trmm!: ~7700 arrays
+    # The tests are quite sensitive to the random inputs,
+    # so each tested gemm! dispatch gets its own rng.
+
+    # gemm! - matrix × matrix
     test_cases = append!(
         test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(
-                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps, dαs
-            ) do (side, ul, tA, dA, M, N, P, dα)
+                t_flags, t_flags, αs, βs, dαs, dβs
+            ) do (tA, tB, α, β, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+
+                As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
+                Bs = blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4)
+                Cs = blas_matrices(rng, P, 3, 5)
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+                end
+            end
+        end...,
+    )
+
+    # gemm! - matrix × vector
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123457)
+            map_prod(t_flags, αs, βs, dαs, dβs) do (tA, α, β, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                P <: BlasRealFloat && tA == 'C' && return []
+
+                As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
+                Bs = blas_vectors(rng, P, 4; only_contiguous=true)
+                Cs = blas_matrices(rng, P, 3, 1)
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    )
+                end
+            end
+        end...,
+    )
+
+    # gemm! - vector × matrix
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123458)
+            map_prod(
+                ['T', 'C'], t_flags, αs, βs, dαs, dβs
+            ) do (tA, tB, α, β, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
+
+                As = blas_vectors(rng, P, 3; only_contiguous=true)
+                Bs = blas_matrices(rng, P, tB == 'N' ? 3 : 5, tB == 'N' ? 5 : 3)
+                Cs = blas_matrices(rng, P, 1, 5)
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (false, perf_flag, nothing, BLAS.gemm!, tA, tB, a_da, A, B, b_db, C)
+                end
+            end
+        end...,
+    )
+
+    # gemm! - vector × vector
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123459)
+            map_prod(['T', 'C'], αs, βs, dαs, dβs) do (tA, α, β, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                P <: BlasRealFloat && tA == 'C' && return []
+
+                As = blas_vectors(rng, P, 3; only_contiguous=true)
+                Bs = blas_vectors(rng, P, 3; only_contiguous=true)
+                Cs = blas_matrices(rng, P, 1, 1)
+
+                return map(As, Bs, Cs) do A, B, C
+                    a_da = CoDual(P(α), P(dα))
+                    b_db = CoDual(P(β), P(dβ))
+                    (
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    )
+                end
+            end
+        end...,
+    )
+
+    # trmm!
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123456)
+            map_prod(
+                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], dαs
+            ) do (side, ul, tA, dA, M, N, dα)
                 P <: BlasRealFloat && imag(dα) != 0 && return []
 
                 t = tA == 'N'
@@ -1837,14 +1775,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
         end...,
     )
 
-    # trsm!: ~3100 arrays
+    # trsm!
     test_cases = append!(
         test_cases,
         let
             rng = rng_ctor(123456)
             map_prod(
-                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2], Ps
-            ) do (side, ul, tA, dA, M, N, P)
+                ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2]
+            ) do (side, ul, tA, dA, M, N)
                 t = tA == 'N'
                 R = side == 'L' ? M : N
                 a = randn(rng, P)
@@ -1866,8 +1804,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     return test_cases, memory
 end
 
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
-    t_flags, _, Ps = _blas_level_3_params()
+function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3}, P::Type{<:BlasFloat})
+    t_flags = ['N', 'T', 'C']
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
     rng = rng_ctor(123)
     test_cases = Any[]
@@ -1875,7 +1813,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     # aliased gemm!
     test_cases = append!(
         test_cases,
-        map_prod(t_flags, t_flags, Ps) do (tA, tB, P)
+        map_prod(t_flags, t_flags) do (tA, tB)
             As = blas_matrices(rng, P, 5, 5)
             Bs = blas_matrices(rng, P, 5, 5)
             a = randn(rng, P)
@@ -1887,4 +1825,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
     )
     memory = Any[]
     return test_cases, memory
+end
+
+for P in (Float64, Float32, ComplexF64, ComplexF32)
+    sym = Symbol(:blas_level_3_, P)
+    @eval function hand_written_rule_test_cases(rng_ctor, ::Val{$(QuoteNode(sym))})
+        return hand_written_rule_test_cases(rng_ctor, Val(:blas_level_3), $P)
+    end
+    @eval function derived_rule_test_cases(rng_ctor, ::Val{$(QuoteNode(sym))})
+        return derived_rule_test_cases(rng_ctor, Val(:blas_level_3), $P)
+    end
 end
