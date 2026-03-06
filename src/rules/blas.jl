@@ -1624,12 +1624,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas})
     return test_cases, memory
 end
 
-# blas_level_3 is split into 3a–3c + Val(:blas_level_3) to reduce peak memory. Each
+# blas_level_3 is split into 3a–3d + Val(:blas_level_3) to reduce peak memory. Each
 # test-case tuple holds direct refs to its primal arrays, which must stay live for the
 # full duration of the corresponding test_rule call. All tuples are built before any
 # test is run, so every array in the set is allocated simultaneously (~7k per set in
-# 3a–3c; ~34k in blas_level_3). Splitting lets GC reclaim each set before the next is
-# constructed. 3a–3c each contain only gemm! mat×mat for a single tB value.
+# 3a–3c; ~23k in 3d; ~11k in blas_level_3). Splitting lets GC reclaim each set before
+# the next is constructed. 3a–3c each contain only gemm! mat×mat for a single tB value;
+# 3d contains gemm! vector variants; blas_level_3 contains trmm!, trsm!, aliased gemm!.
 
 function _blas_level_3_params()
     t_flags = ['N', 'T', 'C']
@@ -1770,10 +1771,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
     return Any[], memory
 end
 
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
     t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
-    uplos = ['L', 'U']
-    dAs = ['N', 'U']
 
     test_cases = Any[]
 
@@ -1858,6 +1857,25 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
             end
         end...,
     )
+
+    memory = Any[]
+    return test_cases, memory
+end
+
+function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
+    memory = Any[]
+    return Any[], memory
+end
+
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
+    t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
+    uplos = ['L', 'U']
+    dAs = ['N', 'U']
+
+    test_cases = Any[]
+
+    # 1.10 fails to infer part of a matmat product in the pullback
+    perf_flag = VERSION < v"1.11-" ? :none : :stability
 
     # trmm!: ~7700 arrays
     test_cases = append!(
