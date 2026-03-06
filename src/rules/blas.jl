@@ -1624,9 +1624,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas})
     return test_cases, memory
 end
 
-# Split into 3a–3d (~8-10 MB each vs ~33 MB combined): array refs in test-case tuples
-# stay live per @testset, so GC reclaims each set before the next is built. gemm!
-# mat×mat (dominant) is split by tB; derived tests use Val(:blas_level_3) directly.
+# blas_level_3 is split into 3a–3c + Val(:blas_level_3) to reduce peak memory. Each
+# test-case tuple holds direct refs to its primal arrays, which must stay live for the
+# full duration of the corresponding test_rule call. All tuples are built before any
+# test is run, so every array in the set is allocated simultaneously (~14k in 3a, ~7k
+# in 3b/3c, ~27k in blas_level_3). Splitting lets GC reclaim each set before the next
+# is constructed. gemm! mat×mat dominates and is split by tB across 3a–3c.
 
 function _blas_level_3_params()
     t_flags = ['N', 'T', 'C']
@@ -1650,7 +1653,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
     # The tests are quite sensitive to the random inputs,
     # so each tested gemm! dispatch gets its own rng.
 
-    # gemm! - matrix × matrix (tB='N' only; tB='T' in 3b, tB='C' in 3c)
+    # gemm! - matrix × matrix (tB='N' only; tB='T' in 3b, tB='C' in 3c): ~7000 arrays
     test_cases = append!(
         test_cases,
         let
@@ -1672,7 +1675,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3a})
         end...,
     )
 
-    # gemm! - matrix × vector
+    # gemm! - matrix × vector: ~6600 arrays
     test_cases = append!(
         test_cases,
         let
@@ -1718,7 +1721,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3b})
     # The tests are quite sensitive to the random inputs,
     # so each tested gemm! dispatch gets its own rng.
 
-    # gemm! - matrix × matrix (tB='T' only; tB='N' in 3a, tB='C' in 3c)
+    # gemm! - matrix × matrix (tB='T' only; tB='N' in 3a, tB='C' in 3c): ~7000 arrays
     test_cases = append!(
         test_cases,
         let
@@ -1761,7 +1764,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
     # The tests are quite sensitive to the random inputs,
     # so each tested gemm! dispatch gets its own rng.
 
-    # gemm! - matrix × matrix (tB='C' only; tB='N' in 3a, tB='T' in 3b)
+    # gemm! - matrix × matrix (tB='C' only; tB='N' in 3a, tB='T' in 3b): ~7000 arrays
     test_cases = append!(
         test_cases,
         let
@@ -1783,7 +1786,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
         end...,
     )
 
-    # gemm! - vector × vector
+    memory = Any[]
+    return test_cases, memory
+end
+
+function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
+    memory = Any[]
+    return Any[], memory
+end
+
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
+    t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
+    uplos = ['L', 'U']
+    dAs = ['N', 'U']
+
+    test_cases = Any[]
+
+    # gemm! Tests
+    # 1.10 fails to infer part of a matmat product in the pullback
+    perf_flag = VERSION < v"1.11-" ? :none : :stability
+
+    # The tests are quite sensitive to the random inputs,
+    # so each tested gemm! dispatch gets its own rng.
+
+    # gemm! - vector × vector: ~4300 arrays
     test_cases = append!(
         test_cases,
         let
@@ -1808,30 +1834,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
         end...,
     )
 
-    memory = Any[]
-    return test_cases, memory
-end
-
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3c})
-    memory = Any[]
-    return Any[], memory
-end
-
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
-    t_flags, αs, dαs, βs, dβs, Ps = _blas_level_3_params()
-    uplos = ['L', 'U']
-    dAs = ['N', 'U']
-
-    test_cases = Any[]
-
-    # gemm! Tests
-    # 1.10 fails to infer part of a matmat product in the pullback
-    perf_flag = VERSION < v"1.11-" ? :none : :stability
-
-    # The tests are quite sensitive to the random inputs,
-    # so each tested gemm! dispatch gets its own rng.
-
-    # gemm! - vector × matrix
+    # gemm! - vector × matrix: ~12400 arrays
     test_cases = append!(
         test_cases,
         let
@@ -1856,7 +1859,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
         end...,
     )
 
-    # trmm!
+    # trmm!: ~7700 arrays
     test_cases = append!(
         test_cases,
         let
@@ -1882,7 +1885,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
         end...,
     )
 
-    # trsm!
+    # trsm!: ~3100 arrays
     test_cases = append!(
         test_cases,
         let
@@ -1909,11 +1912,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
 
     memory = Any[]
     return test_cases, memory
-end
-
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3d})
-    memory = Any[]
-    return Any[], memory
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3})
