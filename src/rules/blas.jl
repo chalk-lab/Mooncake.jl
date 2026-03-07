@@ -1483,12 +1483,8 @@ function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_conti
     return xs
 end
 
-# BLAS tests are split by element type so GC can reclaim all arrays for one precision
-# before the next is allocated. Test-case tuples hold direct refs to their primal arrays,
-# which must stay live for the full duration of the corresponding test_rule call; all
-# tuples for a set are built before any test in that set runs, so every array in the set
-# is resident simultaneously.
-
+# BLAS tests are split by element type so that arrays for each precision can be GC'd
+# before the next precision's arrays are allocated.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
     αs = [1.0, -0.25, 0.46 + 0.32im]
@@ -1738,19 +1734,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     rng = rng_ctor(123)
     test_cases = Any[]
 
-    # Utility tests are not precision-specific; emit once for Float64.
-    if P == Float64
-        append!(
-            test_cases,
-            [
-                (false, :stability, nothing, BLAS.get_num_threads),
-                (false, :stability, nothing, BLAS.lbt_get_num_threads),
-                (false, :stability, nothing, BLAS.set_num_threads, 1),
-                (false, :stability, nothing, BLAS.lbt_set_num_threads, 1),
-            ],
-        )
-    end
-
     #
     # BLAS LEVEL 1
     #
@@ -1788,29 +1771,21 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     # nrm2
     push!(test_cases, (false, :none, nothing, BLAS.nrm2, randn(rng, P, 105)))
 
-    # Misc extra tests (not precision-specific; emit once for Float64)
-    if P == Float64
-        push!(
-            test_cases, (false, :none, nothing, x -> sum(complex(x) * x), rand(rng, 5, 5))
-        )
-    end
-
     #
     # BLAS LEVEL 3
     #
 
-    # aliased gemm! — use a fresh rng with the original level-3 seed so that the random
-    # inputs match what the old derived_rule_test_cases(rng_ctor, Val(:blas_level_3), P)
-    # produced (it also called rng_ctor(123) on a clean slate).
+    # aliased gemm! — uses a fresh rng to avoid depending on the state left by the
+    # level-1/2 tests above.
     aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
-    rng_l3 = rng_ctor(123)
+    rng_gemm = rng_ctor(123)
     append!(
         test_cases,
         map_prod(t_flags, t_flags) do (tA, tB)
-            As = blas_matrices(rng_l3, P, 5, 5)
-            Bs = blas_matrices(rng_l3, P, 5, 5)
-            a = randn(rng_l3, P)
-            b = randn(rng_l3, P)
+            As = blas_matrices(rng_gemm, P, 5, 5)
+            Bs = blas_matrices(rng_gemm, P, 5, 5)
+            a = randn(rng_gemm, P)
+            b = randn(rng_gemm, P)
             return map_prod(As, Bs) do (A, B)
                 (false, :none, nothing, aliased_gemm!, tA, tB, a, b, A, B)
             end
@@ -1819,6 +1794,21 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
 
     memory = Any[]
     return test_cases, memory
+end
+
+# Tests that are not specific to any BlasFloat precision.
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
+    return Any[], Any[]
+end
+function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
+    test_cases = Any[
+        (false, :stability, nothing, BLAS.get_num_threads),
+        (false, :stability, nothing, BLAS.lbt_get_num_threads),
+        (false, :stability, nothing, BLAS.set_num_threads, 1),
+        (false, :stability, nothing, BLAS.lbt_set_num_threads, 1),
+        (false, :none, nothing, x -> sum(complex(x) * x), rand(rng_ctor(123), 5, 5)),
+    ]
+    return test_cases, Any[]
 end
 
 # One Val per BlasFloat precision; each runs all BLAS tests for that type so GC can

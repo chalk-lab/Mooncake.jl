@@ -1,8 +1,8 @@
-@testset "blas (Float64)" begin
+@testset "blas (basic)" begin
 
-    # arrayify tests are not precision-specific; they are placed here (Float64) so they
-    # run in exactly one CI job. Problems with arrayify tend to surface as confusing
-    # failures in the rule tests that use it, so it is worth unit-testing separately.
+    # arrayify tests are not precision-specific; placed here so they run in exactly one
+    # CI job. Problems with arrayify tend to surface as confusing failures in the rule
+    # tests that use it, so it is worth unit-testing separately.
     @testset "arrayify" begin
 
         # Verify that an unexpected type throws a sensible error.
@@ -33,5 +33,9 @@
         end
     end
 
+    TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))
+end
+
+@testset "blas (Float64)" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_Float64))
 end
