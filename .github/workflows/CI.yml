@@ -28,8 +28,10 @@ jobs:
         test_group: [
           'basic',
           'rules/avoiding_non_differentiable_code',
-          'rules/blas',
-          'rules/blas_level_3',
+          'rules/blas_Float64',
+          'rules/blas_Float32',
+          'rules/blas_ComplexF64',
+          'rules/blas_ComplexF32',
           'rules/builtins',
           'rules/complex',
           'rules/dispatch_doctor',
