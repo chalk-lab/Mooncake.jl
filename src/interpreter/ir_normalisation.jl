@@ -167,6 +167,7 @@ end
 
 # Copied from Umlaut.jl.
 __extract_foreigncall_name(x::Symbol) = Val(x)
+__extract_foreigncall_name(x::String) = Val(Symbol(x))
 function __extract_foreigncall_name(x::Expr)
     # Make sure that we're getting the expression that we're expecting.
     !Meta.isexpr(x, :call) && error("unexpected expr $x")
