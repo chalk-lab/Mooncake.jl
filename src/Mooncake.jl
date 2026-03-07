@@ -165,6 +165,7 @@ include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")
 include("developer_tools.jl")
+include("wrong_mode.jl")
 
 # Public, not exported
 include("public.jl")
