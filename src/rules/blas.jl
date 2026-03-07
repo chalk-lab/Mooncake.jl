@@ -1622,7 +1622,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(As, Bs, Cs) do A, B, C
                     a_da = CoDual(P(α), P(dα))
                     b_db = CoDual(P(β), P(dβ))
-                    (false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C)
+                    (
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    )
                 end
             end
         end...,
@@ -1668,7 +1670,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(As, Bs, Cs) do A, B, C
                     a_da = CoDual(P(α), P(dα))
                     b_db = CoDual(P(β), P(dβ))
-                    (false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C)
+                    (
+                        false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
+                    )
                 end
             end
         end...,
@@ -1692,7 +1696,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     α_dα = CoDual(randn(rng, P), P(dα))
                     # 1.10 fails to infer part of a matmat product in the pullback
                     perf_flag = VERSION < v"1.11-" ? :none : :stability
-                    (false, perf_flag, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B)
+                    (
+                        false, perf_flag, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B
+                    )
                 end
             end
         end...,
@@ -1734,12 +1740,15 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
 
     # Utility tests are not precision-specific; emit once for Float64.
     if P == Float64
-        append!(test_cases, [
-            (false, :stability, nothing, BLAS.get_num_threads),
-            (false, :stability, nothing, BLAS.lbt_get_num_threads),
-            (false, :stability, nothing, BLAS.set_num_threads, 1),
-            (false, :stability, nothing, BLAS.lbt_set_num_threads, 1),
-        ])
+        append!(
+            test_cases,
+            [
+                (false, :stability, nothing, BLAS.get_num_threads),
+                (false, :stability, nothing, BLAS.lbt_get_num_threads),
+                (false, :stability, nothing, BLAS.set_num_threads, 1),
+                (false, :stability, nothing, BLAS.lbt_set_num_threads, 1),
+            ],
+        )
     end
 
     #
@@ -1749,24 +1758,30 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     # dot (real types only)
     if P <: BlasRealFloat
         flags = (false, :none, nothing)
-        append!(test_cases, [
-            (flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-            (flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-            (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-            (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
-        ])
+        append!(
+            test_cases,
+            [
+                (flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                (flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+            ],
+        )
     end
 
     # dotc, dotu (complex types only)
     if !(P <: BlasRealFloat)
         flags = (false, :none, nothing)
         for f in [BLAS.dotc, BLAS.dotu]
-            append!(test_cases, [
-                (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-                (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-                (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-                (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
-            ])
+            append!(
+                test_cases,
+                [
+                    (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                    (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                    (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                    (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+                ],
+            )
         end
     end
 
@@ -1775,7 +1790,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
 
     # Misc extra tests (not precision-specific; emit once for Float64)
     if P == Float64
-        push!(test_cases, (false, :none, nothing, x -> sum(complex(x) * x), rand(rng, 5, 5)))
+        push!(
+            test_cases, (false, :none, nothing, x -> sum(complex(x) * x), rand(rng, 5, 5))
+        )
     end
 
     #
