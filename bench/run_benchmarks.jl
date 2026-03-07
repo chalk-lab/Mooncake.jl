@@ -314,7 +314,7 @@ end
 function benchmark_hand_written_rrules!!(rng_ctor)
     test_case_data = map([
         :avoiding_non_differentiable_code,
-        :blas,
+        :blas_Float64,
         :builtins,
         :fastmath,
         :foreigncall,

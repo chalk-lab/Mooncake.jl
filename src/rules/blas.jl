@@ -1483,14 +1483,14 @@ function blas_vectors(rng::AbstractRNG, P::Type{<:BlasFloat}, p::Int; only_conti
     return xs
 end
 
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
+# BLAS tests are split by element type so that arrays for each precision can be GC'd
+# before the next precision's arrays are allocated.
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
     αs = [1.0, -0.25, 0.46 + 0.32im]
     βs = [0.0, 0.33, 0.39 + 0.27im]
     uplos = ['L', 'U']
     dAs = ['N', 'U']
-    realPs = [Float64, Float32]
-    Ps = [realPs..., complex.(realPs)...]
     rng = rng_ctor(123456)
 
     test_cases = vcat(
@@ -1500,12 +1500,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         #
 
         # nrm2(n, x, incx)
-        map_prod(Ps, [5, 3], [1, 2]) do (P, n, incx)
+        map_prod([5, 3], [1, 2]) do (n, incx)
             return map([randn(rng, P, 105)]) do x
                 (false, :stability, nothing, BLAS.nrm2, n, x, incx)
             end
         end...,
-        map_prod(Ps, [1, 3, 11], [1, 2, 11]) do (P, n, incx)
+        map_prod([1, 3, 11], [1, 2, 11]) do (n, incx)
             flags = (false, :stability, nothing)
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
         end,
@@ -1515,7 +1515,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         #
 
         # gemv!
-        map_prod(t_flags, [1, 3], [1, 2], Ps, αs, βs) do (tA, M, N, P, α, β)
+        map_prod(t_flags, [1, 3], [1, 2], αs, βs) do (tA, M, N, α, β)
             P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
 
             As = [
@@ -1531,7 +1531,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         end...,
 
         # symv!, hemv!
-        map_prod([BLAS.symv!, BLAS.hemv!], ['L', 'U'], αs, βs, Ps) do (f, uplo, α, β, P)
+        map_prod([BLAS.symv!, BLAS.hemv!], ['L', 'U'], αs, βs) do (f, uplo, α, β)
             P <: BlasRealFloat && f == BLAS.hemv! && return []
             P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
 
@@ -1544,7 +1544,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         end...,
 
         # trmv!
-        map_prod(uplos, t_flags, dAs, [1, 3], Ps) do (ul, tA, dA, N, P)
+        map_prod(uplos, t_flags, dAs, [1, 3]) do (ul, tA, dA, N)
             As = blas_matrices(rng, P, N, N)
             bs = blas_vectors(rng, P, N)
             return map(As, bs) do A, b
@@ -1556,7 +1556,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         let
             # This test is sensitive to the random seed
             rng = rng_ctor(123457)
-            map_prod(uplos, t_flags, dAs, [1, 3], Ps) do (ul, tA, dA, N, P)
+            map_prod(uplos, t_flags, dAs, [1, 3]) do (ul, tA, dA, N)
                 As = blas_matrices(rng, P, N, N)
                 bs = blas_vectors(rng, P, N)
                 return map(As, bs) do A, b
@@ -1566,84 +1566,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas})
         end...,
     )
 
-    memory = Any[]
-    return test_cases, memory
-end
+    #
+    # BLAS LEVEL 3
+    #
 
-function derived_rule_test_cases(rng_ctor, ::Val{:blas})
-    realPs = [Float32, Float64]
-    Ps = [realPs..., complex.(realPs)...]
-    rng = rng_ctor(123)
-
-    test_cases = vcat(
-
-        # Utility
-        (false, :stability, nothing, BLAS.get_num_threads),
-        (false, :stability, nothing, BLAS.lbt_get_num_threads),
-        (false, :stability, nothing, BLAS.set_num_threads, 1),
-        (false, :stability, nothing, BLAS.lbt_set_num_threads, 1),
-
-        #
-        # BLAS LEVEL 1
-        #
-
-        # dot, dotc, dotu
-        map(realPs) do P
-            flags = (false, :none, nothing)
-            Any[
-                (flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-                (flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-                (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-                (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
-            ]
-        end...,
-        map_prod(complex.(realPs), [BLAS.dotc, BLAS.dotu]) do (P, f)
-            flags = (false, :none, nothing)
-            Any[
-                (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-                (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-                (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-                (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
-            ]
-        end...,
-
-        # nrm2
-        map_prod(Ps) do (P,)
-            return map([randn(rng, P, 105)]) do x
-                (false, :none, nothing, BLAS.nrm2, x)
-            end
-        end...,
-
-        #
-        # Misc extra tests
-        #
-
-        (false, :none, nothing, x -> sum(complex(x) * x), rand(rng, 5, 5)),
-    )
-    memory = Any[]
-    return test_cases, memory
-end
-
-# blas_level_3 tests are split by element type so GC can reclaim all arrays for one
-# precision before the next is allocated. Each set runs all level-3 BLAS variants
-# (gemm! mat×mat / mat×vec / vec×mat / vec×vec, trmm!, trsm!, aliased gemm!) for one
-# BlasFloat type. Test-case tuples hold direct refs to their primal arrays, which must
-# stay live for the full duration of the corresponding test_rule call; all tuples for a
-# set are built before any test in that set runs, so every array in the set is resident
-# simultaneously.
-
-function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3}, P::Type{<:BlasFloat})
-    t_flags = ['N', 'T', 'C']
-    αs = [1.0, -0.25, 0.46 + 0.32im]
     dαs = [0.0, 0.44, -0.20 + 0.38im]
-    βs = [0.0, 0.33, 0.39 + 0.27im]
     dβs = [0.0, -0.11, 0.86 + 0.44im]
-    uplos = ['L', 'U']
-    dAs = ['N', 'U']
 
-    test_cases = Any[]
-
-    # gemm! Tests
     # 1.10 fails to infer part of a matmat product in the pullback
     perf_flag = VERSION < v"1.11-" ? :none : :stability
 
@@ -1800,35 +1729,96 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_level_3}, P::Type{<:
     return test_cases, memory
 end
 
-function derived_rule_test_cases(rng_ctor, ::Val{:blas_level_3}, P::Type{<:BlasFloat})
+function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     t_flags = ['N', 'T', 'C']
-    aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
     rng = rng_ctor(123)
     test_cases = Any[]
 
-    # aliased gemm!
-    test_cases = append!(
+    #
+    # BLAS LEVEL 1
+    #
+
+    # dot (real types only)
+    if P <: BlasRealFloat
+        flags = (false, :none, nothing)
+        append!(
+            test_cases,
+            [
+                (flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                (flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+            ],
+        )
+    end
+
+    # dotc, dotu (complex types only)
+    if !(P <: BlasRealFloat)
+        flags = (false, :none, nothing)
+        for f in [BLAS.dotc, BLAS.dotu]
+            append!(
+                test_cases,
+                [
+                    (flags..., f, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                    (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                    (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                    (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+                ],
+            )
+        end
+    end
+
+    # nrm2
+    push!(test_cases, (false, :none, nothing, BLAS.nrm2, randn(rng, P, 105)))
+
+    #
+    # BLAS LEVEL 3
+    #
+
+    # aliased gemm! — uses a fresh rng to avoid depending on the state left by the
+    # level-1/2 tests above.
+    aliased_gemm! = (tA, tB, a, b, A, C) -> BLAS.gemm!(tA, tB, a, A, A, b, C)
+    rng_gemm = rng_ctor(123)
+    append!(
         test_cases,
         map_prod(t_flags, t_flags) do (tA, tB)
-            As = blas_matrices(rng, P, 5, 5)
-            Bs = blas_matrices(rng, P, 5, 5)
-            a = randn(rng, P)
-            b = randn(rng, P)
+            As = blas_matrices(rng_gemm, P, 5, 5)
+            Bs = blas_matrices(rng_gemm, P, 5, 5)
+            a = randn(rng_gemm, P)
+            b = randn(rng_gemm, P)
             return map_prod(As, Bs) do (A, B)
                 (false, :none, nothing, aliased_gemm!, tA, tB, a, b, A, B)
             end
         end...,
     )
+
     memory = Any[]
     return test_cases, memory
 end
 
+# Tests that are not specific to any BlasFloat precision.
+function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
+    return Any[], Any[]
+end
+function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
+    test_cases = Any[
+        (false, :stability, nothing, BLAS.get_num_threads),
+        (false, :stability, nothing, BLAS.lbt_get_num_threads),
+        (false, :stability, nothing, BLAS.set_num_threads, 1),
+        (false, :stability, nothing, BLAS.lbt_set_num_threads, 1),
+        (false, :none, nothing, x -> sum(complex(x) * x), rand(rng_ctor(123), 5, 5)),
+    ]
+    return test_cases, Any[]
+end
+
+# One Val per BlasFloat precision; each runs all BLAS tests for that type so GC can
+# reclaim one precision's arrays before the next is allocated.
 for P in (Float64, Float32, ComplexF64, ComplexF32)
-    sym = Symbol(:blas_level_3_, P)
+    sym = Symbol(:blas_, P)
     @eval function hand_written_rule_test_cases(rng_ctor, ::Val{$(QuoteNode(sym))})
-        return hand_written_rule_test_cases(rng_ctor, Val(:blas_level_3), $P)
+        return hand_written_rule_test_cases(rng_ctor, Val(:blas), $P)
     end
     @eval function derived_rule_test_cases(rng_ctor, ::Val{$(QuoteNode(sym))})
-        return derived_rule_test_cases(rng_ctor, Val(:blas_level_3), $P)
+        return derived_rule_test_cases(rng_ctor, Val(:blas), $P)
     end
 end
