@@ -15,7 +15,8 @@ import Mooncake:
     @is_primitive,
     zero_fcodual,
     NoRData,
-    extract
+    extract,
+    arrayify
 
 # Importing these rules provides improved numerical stability for `logistic`, and avoids
 # incorrect derivatives arising from a 'fast branch' in `logaddexp(x1, x2)` where x1 == x2
@@ -44,11 +45,34 @@ function frule!!(
     return Dual(y, dy)
 end
 function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kwargs::Dual{<:NamedTuple},
+    ::Dual{typeof(logsumexp)},
+    x::Dual{<:SubArray{P}},
+) where {P<:IEEEFloat}
+    y = logsumexp(primal(x); primal(kwargs)...)
+    xp, dx = arrayify(x)
+    dy = sum(dx .* (exp.(xp .- y)); primal(kwargs)...)
+    return Dual(y, dy)
+end
+function frule!!(
     ::Dual{typeof(logsumexp)}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
     y = logsumexp(primal(x))
     dy = zero(P)
     xp, dx = extract(x)
+    # same as dy = dot(dx, exp.(xp .- y)) but manually looped over to avoid allocations
+    for i in eachindex(dx)
+        @inbounds dy += dx[i] * exp(xp[i] - y)
+    end
+    return Dual(y, dy)
+end
+function frule!!(
+    ::Dual{typeof(logsumexp)}, x::Dual{<:SubArray{P}}
+) where {P<:IEEEFloat}
+    y = logsumexp(primal(x))
+    dy = zero(P)
+    xp, dx = arrayify(x)
     # same as dy = dot(dx, exp.(xp .- y)) but manually looped over to avoid allocations
     for i in eachindex(dx)
         @inbounds dy += dx[i] * exp(xp[i] - y)
@@ -71,6 +95,20 @@ function rrule!!(
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
+    kwargs::CoDual{<:NamedTuple{(:dims,),<:Tuple{Colon}}},
+    ::CoDual{typeof(logsumexp)},
+    x::CoDual{<:SubArray{P}},
+) where {P<:IEEEFloat}
+    y = logsumexp(primal(x); primal(kwargs)...)
+    px, dx = arrayify(x)
+    function logsumexp_pb!!(dy::P)
+        dx .+= dy .* exp.(px .- y)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(y), logsumexp_pb!!
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
     # all other dim arguments - i.e. ints or tuples thereof
     kwargs::CoDual{<:NamedTuple{(:dims,),<:Tuple{Any}}},
     ::CoDual{typeof(logsumexp)},
@@ -86,12 +124,39 @@ function rrule!!(
     return CoDual(y, dy), logsumexp_pb!!
 end
 function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    # all other dim arguments - i.e. ints or tuples thereof
+    kwargs::CoDual{<:NamedTuple{(:dims,),<:Tuple{Any}}},
+    ::CoDual{typeof(logsumexp)},
+    x::CoDual{<:SubArray{P}},
+) where {P<:IEEEFloat}
+    y = logsumexp(primal(x); primal(kwargs)...)
+    dy = zero(y)
+    px, dx = arrayify(x)
+    function logsumexp_pb!!(::NoRData)
+        dx .+= dy .* exp.(px .- y)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(y, dy), logsumexp_pb!!
+end
+function rrule!!(
     ::CoDual{typeof(logsumexp)}, x::CoDual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
     y = logsumexp(primal(x))
     dx = tangent(x)
     function logsumexp_pb!!(dy::P)
         dx .+= dy .* exp.(primal(x) .- y)
+        return NoRData(), NoRData()
+    end
+    return zero_fcodual(y), logsumexp_pb!!
+end
+function rrule!!(
+    ::CoDual{typeof(logsumexp)}, x::CoDual{<:SubArray{P}}
+) where {P<:IEEEFloat}
+    y = logsumexp(primal(x))
+    px, dx = arrayify(x)
+    function logsumexp_pb!!(dy::P)
+        dx .+= dy .* exp.(px .- y)
         return NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
