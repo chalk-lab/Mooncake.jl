@@ -24,7 +24,7 @@ import Mooncake:
     zero_fcodual,
     primal,
     tangent,
-    arrayify
+    arrayify,
 
 # Array types which we test rules against, so are confident work.
 const SupportedArray{P} = Union{
@@ -231,5 +231,39 @@ for pool in [:maxpool, :meanpool]
     )
 end
 @from_rrule(MinimalCtx, Tuple{typeof(pad_constant),SupportedArray,Any,Any}, true)
+
+# Direct rules for bias_act!(identity, x, b) on GPU arrays. NNlib's ChainRules rrule for
+# bias_act! requires a RuleConfig, which @from_rrule doesn't supply. On GPU, bias_act!
+# falls back to `x .+ b` (not in-place), so we return a new array with its own gradient
+# buffer, then in the pullback propagate dout to dx and sum over broadcast dims for db.
+const GPUIEEEArray{T<:IEEEFloat} = AbstractGPUArray{T}
+@is_primitive(
+    MinimalCtx, Tuple{typeof(bias_act!),typeof(identity),GPUIEEEArray,GPUIEEEArray},
+)
+function frule!!(
+    ::Dual{typeof(bias_act!)},
+    ::Dual{typeof(identity)},
+    x::Dual{<:GPUIEEEArray},
+    b::Dual{<:GPUIEEEArray},
+)
+    return Dual(primal(x) .+ primal(b), tangent(x) .+ tangent(b))
+end
+function rrule!!(
+    ::CoDual{typeof(bias_act!)},
+    ::CoDual{typeof(identity)},
+    x::CoDual{<:GPUIEEEArray{T,N}},
+    b::CoDual{<:GPUIEEEArray},
+) where {T,N}
+    y = primal(x) .+ primal(b)
+    dy = similar(y)
+    dy .= 0
+    dims = ntuple(d -> size(primal(b), d) == 1 ? d : N + 1, N)
+    function bias_act_id_pb!!(::NoRData)
+        x.dx .+= dy
+        b.dx .+= reshape(sum(dy; dims), size(primal(b)))
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(y, dy), bias_act_id_pb!!
+end
 
 end
