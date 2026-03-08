@@ -46,6 +46,7 @@ set_to_zero_internal!!(::SetToZeroCache, ::P) = zero(P)
 
 _scale_internal(::MaybeCache, a::Float64, t::P) = P(a * Float64(t))
 
+# Must return Float64: _dot_internal is always accumulated into a Float64 scalar.
 _dot_internal(::MaybeCache, t::P, s::P) = Float64(t) * Float64(s)
 
 _add_to_primal_internal(::MaybeCache, x::P, t::P, ::Bool) = x + t
