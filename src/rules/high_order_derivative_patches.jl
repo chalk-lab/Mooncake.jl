@@ -8,7 +8,17 @@
     typeof(build_derived_rrule),MooncakeInterpreter{C},Any,Any,Bool
 } where {C}
 
-function frule!!(
+function build_primitive_frule(sig::Type{<:Tuple{
+    typeof(build_derived_rrule),MooncakeInterpreter,Any,Any,Bool
+}})
+    return FoRCache(Dict{ClosureCacheKey,Any}())
+end
+
+struct FoRCache
+    cache::Dict{ClosureCacheKey,Any}
+end
+
+function (cache::FoRCache)(
     ::Dual{typeof(build_derived_rrule)},
     _interp::Dual{<:MooncakeInterpreter{C}},
     _sig_or_mi::Dual,
@@ -21,6 +31,12 @@ function frule!!(
     sig_or_mi = primal(_sig_or_mi)
     sig = primal(_sig)
     debug_mode = primal(_debug_mode)
+
+    cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode))
+    if haskey(cache.cache, cache_key)
+        rule, rule_tangent = cache.cache[cache_key]
+        return Dual(_copy(rule), _copy(rule_tangent))
+    end
 
     # Derive **unoptimized** forwards- and reverse-pass IR.
     dri = generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
@@ -69,8 +85,11 @@ function frule!!(
 
     if debug_mode
         debug_rule_tangent = Tangent((; rule=raw_rule_tangent))
-        return Dual(DebugRRule(raw_rule), debug_rule_tangent)
+        debug_rule = DebugFRule(raw_rule)
+        cache.cache[cache_key] = (debug_rule, debug_rule_tangent)
+        return Dual(debug_rule, debug_rule_tangent)
     else
+        cache.cache[cache_key] = (raw_rule, raw_rule_tangent)
         return Dual(raw_rule, raw_rule_tangent)
     end
 end
@@ -87,6 +106,29 @@ function rrule!!(
             "Reverse-over-reverse differentiation is not supported. " *
             "Encountered attempt to differentiate build_derived_rrule in reverse mode.",
         ),
+    )
+end
+
+# _copy for tangents of reverse rules, used by forward-over-reverse caching
+function _copy(rrule_tangent::@NamedTuple{
+    fwds_oc::Mooncake.MistyClosureTangent,
+    pb_oc_ref::Mooncake.MutableTangent{
+        @NamedTuple{x::Mooncake.PossiblyUninitTangent{Mooncake.MistyClosureTangent}}
+    },
+    nargs::NoTangent
+})
+    (; fwds_oc, pb_oc_ref) = rrule_tangent
+    rvs_oc = pb_oc_ref.fields.x.tangent
+    fwd_captures = fwds_oc.captures_tangent
+    rvs_captures = rvs_oc.captures_tangent
+    # Joint deepcopy to preserve aliasing
+    new_fwd_captures, new_rvs_captures = deepcopy((fwd_captures, rvs_captures))
+    return (;
+        fwds_oc=MistyClosureTangent(new_fwd_captures, _copy(fwds_oc.dual_callable)),
+        pb_oc_ref=MutableTangent((; x=PossiblyUninitTangent(
+            MistyClosureTangent(new_rvs_captures, _copy(rvs_oc.dual_callable))
+        ))),
+        nargs=NoTangent(),
     )
 end
 

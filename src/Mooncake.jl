@@ -59,6 +59,21 @@ Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`
 function frule!! end
 
 """
+    build_primitive_frule(sig::Type{<:Tuple})
+
+Construct an frule for signature `sig`. For this function to be called in `build_frule`, you
+must also ensure that a method of `_is_primitive(context_type, ForwardMode, sig)` exists,
+preferably by using the [@is_primitive](@ref) macro.
+The callable returned by this must obey the frule interface, but there are no restrictions
+on the type of callable itself. For example, you might return a callable `struct`. By
+default, this function returns `frule!!` so, most of the time, you should just implement a
+method of `frule!!`.
+
+See also [`build_primitive_rrule`](@ref) for the reverse-mode analogue of this function.
+"""
+build_primitive_frule(::Type{<:Tuple}) = frule!!
+
+"""
     rrule!!(f::CoDual, x::CoDual...)
 
 Performs the forwards-pass of AD. The `tangent` field of `f` and each `x` should contain the
