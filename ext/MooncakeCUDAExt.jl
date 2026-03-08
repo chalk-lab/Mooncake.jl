@@ -64,6 +64,7 @@ const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
 tangent_type(::Type{CuContext}) = NoTangent
 tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
 tangent_type(::Type{CUBLAS.cublasOperation_t}) = NoTangent
+tangent_type(::Type{CUBLAS.cublasComputeType_t}) = NoTangent
 
 tangent(p::CuMaybeComplexArray, ::NoRData) = p
 
