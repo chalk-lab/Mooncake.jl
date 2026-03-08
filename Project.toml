@@ -18,6 +18,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [weakdeps]
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
+BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 DynamicExpressions = "a40a106e-89c9-4ca8-8020-a735e8728b6b"
@@ -35,6 +36,7 @@ Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
 
 [extensions]
 MooncakeAllocCheckExt = "AllocCheck"
+MooncakeBFloat16sExt = "BFloat16s"
 MooncakeCUDAExt = "CUDA"
 MooncakeDistributionsExt = "Distributions"
 MooncakeDynamicExpressionsExt = "DynamicExpressions"
@@ -51,6 +53,7 @@ MooncakeSpecialFunctionsExt = "SpecialFunctions"
 ADTypes = "1.9"
 AllocCheck = "0.2"
 Aqua = "0.8.9"
+BFloat16s = "0.6"
 BenchmarkTools = "1"
 CUDA = "5"
 ChainRules = "1.71.0"

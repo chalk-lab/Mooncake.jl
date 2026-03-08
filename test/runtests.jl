@@ -64,8 +64,6 @@ include("front_matter.jl")
         include(joinpath("rules", "tasks.jl"))
     elseif test_group == "rules/twice_precision"
         include(joinpath("rules", "twice_precision.jl"))
-    elseif test_group == "rules/bfloat16"
-        include(joinpath("rules", "bfloat16.jl"))
     elseif test_group == "rules/memory"
         @static if VERSION >= v"1.11.0-rc4"
             include(joinpath("rules", "memory.jl"))

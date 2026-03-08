@@ -48,7 +48,6 @@ jobs:
           'rules/random',
           'rules/tasks',
           'rules/twice_precision',
-          'rules/bfloat16',
           'rules/performance_patches',
           'rules/high_order_derivative_patches',
         ]
@@ -98,6 +97,7 @@ jobs:
           {test_type: 'ext', label: 'function_wrappers'},
           {test_type: 'ext', label: 'luxlib'},
           {test_type: 'ext', label: 'nnlib'},
+          {test_type: 'ext', label: 'bfloat16s'},
           {test_type: 'ext', label: 'special_functions'},
           {test_type: 'integration_testing', label: 'array'},
           {test_type: 'integration_testing', label: 'bijectors'},
