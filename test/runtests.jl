@@ -28,10 +28,14 @@ include("front_matter.jl")
         include(joinpath("rules", "array_legacy.jl"))
     elseif test_group == "rules/avoiding_non_differentiable_code"
         include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
-    elseif test_group == "rules/blas"
-        include(joinpath("rules", "blas.jl"))
-    elseif test_group == "rules/blas_level_3"
-        include(joinpath("rules", "blas_level_3.jl"))
+    elseif test_group == "rules/blas_Float64"
+        include(joinpath("rules", "blas_Float64.jl"))
+    elseif test_group == "rules/blas_Float32"
+        include(joinpath("rules", "blas_Float32.jl"))
+    elseif test_group == "rules/blas_ComplexF64"
+        include(joinpath("rules", "blas_ComplexF64.jl"))
+    elseif test_group == "rules/blas_ComplexF32"
+        include(joinpath("rules", "blas_ComplexF32.jl"))
     elseif test_group == "rules/builtins"
         include(joinpath("rules", "builtins.jl"))
     elseif test_group == "rules/complex"
