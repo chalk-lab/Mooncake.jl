@@ -36,6 +36,8 @@ import Mooncake:
 
 const P = Core.BFloat16
 
+# zero(P) calls P(0), which requires BFloat16s.jl to define convert(Core.BFloat16, ::Int).
+# These therefore live here rather than in src/rules/bfloat16.jl.
 zero_tangent_internal(::P, ::MaybeCache) = zero(P)
 
 randn_tangent_internal(rng::AbstractRNG, ::P, ::MaybeCache) = P(randn(rng, Float32))
