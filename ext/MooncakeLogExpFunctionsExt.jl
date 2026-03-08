@@ -40,20 +40,20 @@ function frule!!(
     ::Dual{typeof(logsumexp)},
     x::Dual{<:AbstractArray{P}},
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x); primal(kwargs)...)
-    xp, dx = arrayify(x)
-    dy = sum(dx .* (exp.(xp .- y)); primal(kwargs)...)
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x; primal(kwargs)...)
+    dy = sum(_dx .* (exp.(_x .- y)); primal(kwargs)...)
     return Dual(y, dy)
 end
 function frule!!(
     ::Dual{typeof(logsumexp)}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x))
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x)
     dy = zero(P)
-    xp, dx = arrayify(x)
-    # same as dy = dot(dx, exp.(xp .- y)) but manually looped over to avoid allocations
-    for i in eachindex(dx)
-        @inbounds dy += dx[i] * exp(xp[i] - y)
+    # same as dy = dot(_dx, exp.(_x .- y)) but manually looped over to avoid allocations
+    for i in eachindex(_dx)
+        @inbounds dy += _dx[i] * exp(_x[i] - y)
     end
     return Dual(y, dy)
 end
@@ -63,10 +63,10 @@ function rrule!!(
     ::CoDual{typeof(logsumexp)},
     x::CoDual{<:AbstractArray{P}},
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x); primal(kwargs)...)
-    px, dx = arrayify(x)
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x; primal(kwargs)...)
     function logsumexp_pb!!(dy::P)
-        dx .+= dy .* exp.(px .- y)
+        _dx .+= dy .* exp.(_x .- y)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
@@ -78,11 +78,11 @@ function rrule!!(
     ::CoDual{typeof(logsumexp)},
     x::CoDual{<:AbstractArray{P}},
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x); primal(kwargs)...)
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x; primal(kwargs)...)
     dy = zero(y)
-    px, dx = arrayify(x)
     function logsumexp_pb!!(::NoRData)
-        dx .+= dy .* exp.(px .- y)
+        _dx .+= dy .* exp.(_x .- y)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy), logsumexp_pb!!
@@ -90,10 +90,10 @@ end
 function rrule!!(
     ::CoDual{typeof(logsumexp)}, x::CoDual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x))
-    px, dx = arrayify(x)
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x)
     function logsumexp_pb!!(dy::P)
-        dx .+= dy .* exp.(px .- y)
+        _dx .+= dy .* exp.(_x .- y)
         return NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
@@ -105,10 +105,10 @@ end
 function frule!!(
     ::Dual{typeof(logsumexp!)}, out::Dual{<:AbstractArray{P}}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
-    px, dx = arrayify(x)
-    y, dy = arrayify(out)
-    logsumexp!(y, px)
-    sum!(dy, dx .* exp.(px .- y))
+    _x, _dx = arrayify(x)
+    y, _dy = arrayify(out)
+    logsumexp!(y, _x)
+    sum!(_dy, _dx .* exp.(_x .- y))
     return out
 end
 function rrule!!(
@@ -116,14 +116,14 @@ function rrule!!(
     out::CoDual{<:AbstractArray{P}},
     x::CoDual{<:AbstractArray{P}},
 ) where {P<:IEEEFloat}
-    old_out = copy(primal(out))
-    px, dx = arrayify(x)
-    y, dy = arrayify(out)
-    logsumexp!(y, px)
+    _x, _dx = arrayify(x)
+    y, _dy = arrayify(out)
+    old_out = copy(y)
+    logsumexp!(y, _x)
     function logsumexp!_pb!!(::NoRData)
-        dx .+= dy .* exp.(px .- y)
+        _dx .+= _dy .* exp.(_x .- y)
         copyto!(y, old_out)
-        fill!(dy, zero(P))
+        fill!(_dy, zero(P))
         return NoRData(), NoRData(), NoRData()
     end
     return out, logsumexp!_pb!!
