@@ -190,6 +190,7 @@ else
 end
 
 include(joinpath("rules", "performance_patches.jl"))
+include(joinpath("rules", "rrule_via_nforward_patches.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")
