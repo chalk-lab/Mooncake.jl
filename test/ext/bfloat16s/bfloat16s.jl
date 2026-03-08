@@ -8,6 +8,13 @@ using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitt
 const P = Core.BFloat16
 const sr = StableRNG
 
+if Core.BFloat16 !== BFloat16s.BFloat16
+    @info "Skipping Core.BFloat16 tests: on this platform BFloat16s.BFloat16 is a " *
+        "separate type and Core.BFloat16 has no arithmetic support (LLVM < 19)."
+    # Tests run on x86_64 (LLVM >= 15) where BFloat16s.BFloat16 === Core.BFloat16.
+    exit(0)
+end
+
 @testset "bfloat16s" begin
     @testset "tangent interface" begin
         rng = sr(123)
