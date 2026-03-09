@@ -60,9 +60,9 @@ const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
 # `y = _new_(typeof(y), getfield(x, :data), getfield(x, :maxsize), getfield(x, :offset), (32, 64))`.
 # If this path grows, nearby internal storage types to watch for custom tangent handling are
 # `GPUArrays.RefCounted`, `CUDA.Managed`, `CUDA.DeviceMemory`, `CuStream`, and `CuContext`.
-# Mooncake's default tangents can easily become the wrong representation for these
-# handle-like CuArray internal types: their fields describe ownership/state/pointers, not
-# differentiable array data.
+# Mooncake's default tangents may not be buildable for these handle-like CuArray internal
+# types, because their fields can include ownership/state/pointer internals implemented as
+# new primitive types that need explicit tangent support.
 const CuDataRef = fieldtype(CuArray{Float32,1}, :data)
 
 # DataRef values are mutable reference-counted handles; preserve them as-is for fdata.
