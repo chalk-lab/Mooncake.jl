@@ -146,7 +146,9 @@ function Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuA
 end
 
 # @from_chainrules tools
-# TODO: missing `mooncake_tangent` implementation.
+# CuArray is its own tangent type and ChainRules also uses CuArray directly as the
+# tangent, so mooncake_tangent is the identity.
+mooncake_tangent(::CuMaybeComplexArray, t::CuMaybeComplexArray) = t
 to_cr_tangent(x::CuMaybeComplexArray) = x
 function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuMaybeComplexArray}
     f .+= t
