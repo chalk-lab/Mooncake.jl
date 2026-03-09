@@ -31,7 +31,22 @@ randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 function dual_type(::Type{P}) where {P}
     P == DataType && return Dual
     P isa Union && return Union{dual_type(P.a),dual_type(P.b)}
-    P <: UnionAll && return Dual # P is abstract, so we don't know its tangent type.
+    # P is abstract (a UnionAll generator or the UnionAll type itself), so we dont know its tangent type.
+    (P isa UnionAll || P == UnionAll) && return Dual
+
+    # Union Splitting
+    if P <: Tuple && !all(isconcretetype, (P.parameters...,))
+        field_types = (P.parameters...,)
+        union_fields = _findall(Base.Fix2(isa, Union), field_types)
+
+        # If there is exactly one Union field, split it to help the compiler
+        if length(union_fields) == 1 &&
+            all(p -> p isa Union || isconcretetype(p), field_types)
+            P_split = split_union_tuple_type(field_types)
+            return Union{dual_type(P_split.a),dual_type(P_split.b)}
+        end
+    end
+
     return isconcretetype(P) ? Dual{P,tangent_type(P)} : Dual
 end
 
