@@ -5,7 +5,6 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 using JET, Lux, LuxLib, Mooncake, NNlib, SLEEFPirates, StableRNGs, Test
 using LuxLib.Impl: sleefpirates_fast_act
 using Mooncake.TestUtils: test_rule
-using Static: static
 
 # Access AD helper functions present in the Extension module.
 const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
@@ -136,7 +135,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
                 zeros(1, 4, 1),
                 ones(1, 4, 1),
                 0.1,
-                (static(1), static(3)),
+                (Val(1), Val(3)),
             ),
             (
                 false,
