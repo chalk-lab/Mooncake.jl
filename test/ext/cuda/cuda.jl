@@ -53,9 +53,10 @@ using LinearAlgebra
         rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
         @testset "_new_ interface" begin
-            # Hand-build DataRef tangents because test_rule always creates randn_dual inputs,
-            # even for interface-only checks. For `_new_`, that would call randn_tangent on
-            # CuDataRef and recurse into CUDA's internal handle fields.
+            # Test the `_new_` frule!!/rrule!! interfaces directly.
+            # `test_rule` would create `randn_dual` inputs for `CuDataRef`, which would
+            # require custom `randn_tangent_internal`/`zero_tangent_internal` methods.
+            # We avoid that because those methods would mainly exist to satisfy the test helper.
             for ET in (Float64, ComplexF64)
                 data = getfield(_rand(rng, ET, 64, 32), :data)
                 test_frule_interface(
