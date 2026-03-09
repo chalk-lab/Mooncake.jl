@@ -17,7 +17,8 @@ using Mooncake:
     @is_primitive,
     NoRData,
     extract,
-    zero_rdata
+    zero_rdata,
+    @zero_adjoint
 
 using Static: True
 
@@ -61,10 +62,27 @@ end
     return LuxLib.Impl.bias_activation(act, LuxLib.Impl.conv(x, weight, cdims), bias)
 end
 
-Mooncake.@zero_adjoint DefaultCtx Tuple{typeof(static_training_mode_check),Vararg}
-Mooncake.@zero_adjoint DefaultCtx Tuple{
-    typeof(LuxLib.Impl.generate_dropout_mask),AbstractRNG,Any,Any,Any,Any
-}
+@zero_adjoint DefaultCtx Tuple{typeof(static_training_mode_check),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(generate_dropout_mask),AbstractRNG,Any,Any,Any,Any}
+@zero_adjoint DefaultCtx Tuple{typeof(select_fastest_activation),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(sleefpirates_fast_act),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_non_heads_dim),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(make_causal_mask),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_non_contracting_dim),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_batched_matmul_repeat_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(batchnorm_reduce_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_batchnorm_statistics),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(groupnorm_reduce_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(flattened_bias_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(check_dropout_mask_shape_mismatch),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(dropout_shape),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(dropout_fptype),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(generate_alpha_dropout_noise),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(update_running_statistics),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(update_normalization_statistics),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(get_norm_reshape_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(instancenorm_reduce_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(compute_layernorm_dims),Vararg}
 
 import LuxLib.Impl:
     safe_eltype,
