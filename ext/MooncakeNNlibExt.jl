@@ -232,8 +232,7 @@ for pool in [:maxpool, :meanpool]
 end
 @from_rrule(MinimalCtx, Tuple{typeof(pad_constant),SupportedArray,Any,Any}, true)
 
-# Direct rules for bias_act!(identity, x, b) on CPU and GPU arrays. NNlib's ChainRules
-# rrule for bias_act! requires a RuleConfig, which @from_rrule doesn't supply.
+# Direct rules for bias_act!(identity, x, b) on CPU and GPU arrays.
 # bias_act! modifies x in-place (x .+= b), so we save x's primal before mutation,
 # compute in-place, return x as output, and restore x's primal in the pullback.
 @is_primitive(
