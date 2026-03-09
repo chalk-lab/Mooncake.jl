@@ -5,15 +5,15 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 using AllocCheck, BFloat16s, JET, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
 
-const P = Core.BFloat16
-const sr = StableRNG
-
-if Core.BFloat16 !== BFloat16s.BFloat16
-    @info "Skipping Core.BFloat16 tests: on this platform BFloat16s.BFloat16 is a " *
-        "separate type and Core.BFloat16 has no arithmetic support (LLVM < 19)."
-    # Tests run on x86_64 (LLVM >= 15) where BFloat16s.BFloat16 === Core.BFloat16.
+# Core.BFloat16 is only available in Julia >= 1.11; no-op on 1.10.
+@static if VERSION < v"1.11-"
+    @info "Skipping Core.BFloat16 tests: on this platform, " *
+        "`BFloat16` has no arithmetic support."
     exit(0)
 end
+
+const sr = StableRNG
+const P = Core.BFloat16
 
 @testset "bfloat16s" begin
     @testset "tangent interface" begin
