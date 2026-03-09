@@ -356,40 +356,6 @@ function Mooncake.rrule!!(::CoDual{typeof(atanh)}, x::CoDual{P})
     return zero_fcodual(atanh(_x)), pb
 end
 
-# Julia's sinpi/cospi may return Float64 for BFloat16 inputs; define BFloat16 versions.
-Base.sinpi(x::P) = P(sinpi(Float64(x)))
-Base.cospi(x::P) = P(cospi(Float64(x)))
-
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(sinpi),P}
-function Mooncake.frule!!(::Dual{typeof(sinpi)}, x::Dual{P})
-    # Use sinpi/cospi (not sincospi) to match the primal function's return type and value.
-    _x = primal(x)
-    s = sinpi(_x)
-    c = cospi(_x)
-    return Dual(s, tangent(x) * P(Float32(π)) * c)
-end
-function Mooncake.rrule!!(::CoDual{typeof(sinpi)}, x::CoDual{P})
-    _x = primal(x)
-    s = sinpi(_x)
-    c = cospi(_x)
-    pb(dy::P) = NoRData(), dy * P(Float32(π)) * c
-    return zero_fcodual(s), pb
-end
-
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(cospi),P}
-function Mooncake.frule!!(::Dual{typeof(cospi)}, x::Dual{P})
-    _x = primal(x)
-    s = sinpi(_x)
-    c = cospi(_x)
-    return Dual(c, -tangent(x) * P(Float32(π)) * s)
-end
-function Mooncake.rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P})
-    _x = primal(x)
-    s = sinpi(_x)
-    c = cospi(_x)
-    pb(dy::P) = NoRData(), -dy * P(Float32(π)) * s
-    return zero_fcodual(c), pb
-end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(hypot),P,P}
 function Mooncake.frule!!(::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P})
@@ -424,21 +390,6 @@ function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
     return zero_fcodual(z), pow_pb
 end
 
-# atan(::BFloat16, ::BFloat16) is not provided by Julia; define it here.
-Base.atan(y::P, x::P) = P(atan(Float64(y), Float64(x)))
-
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(atan),P,P}
-function Mooncake.frule!!(::Dual{typeof(atan)}, y::Dual{P}, x::Dual{P})
-    _y, _x = primal(y), primal(x)
-    r2 = _x^2 + _y^2
-    return Dual(atan(_y, _x), (tangent(y) * _x - tangent(x) * _y) / r2)
-end
-function Mooncake.rrule!!(::CoDual{typeof(atan)}, y::CoDual{P}, x::CoDual{P})
-    _y, _x = primal(y), primal(x)
-    r2 = _x^2 + _y^2
-    pb(dz::P) = NoRData(), dz * _x / r2, -dz * _y / r2
-    return zero_fcodual(atan(_y, _x)), pb
-end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(max),P,P}
 function Mooncake.frule!!(::Dual{typeof(max)}, x::Dual{P}, y::Dual{P})
