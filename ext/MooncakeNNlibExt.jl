@@ -2,11 +2,30 @@ module MooncakeNNlibExt
 
 using GPUArraysCore, NNlib, Random, Mooncake
 using Base: IEEEFloat
-using NNlib: dropout
 using LinearAlgebra
+using LinearAlgebra: Adjoint, Transpose
+using NNlib:
+    conv,
+    depthwiseconv,
+    ∇logsoftmax_data,
+    ∇softmax_data,
+    logsoftmax,
+    softmax,
+    logsumexp,
+    dropout
 
-using NNlib: conv, depthwiseconv
-import Mooncake: @from_rrule, DefaultCtx, MinimalCtx
+import Mooncake:
+    @from_rrule,
+    DefaultCtx,
+    MinimalCtx,
+    @is_primitive,
+    rrule!!,
+    CoDual,
+    NoRData,
+    zero_fcodual,
+    primal,
+    tangent,
+    FData
 
 # Array types which we test rules against, so are confident work.
 const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
@@ -21,150 +40,129 @@ const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
     true,
 )
 
-# Helper accumulater functions
+# Helper accumulator functions
 _accum_fdata!(xf::AbstractArray, ::Array{T}, g::Array{T}) where {T<:IEEEFloat} = xf .+= g
 _accum_fdata!(xf::AbstractArray, ::Array{T}, g::T) where {T<:IEEEFloat} = xf .+= g
-function _accum_fdata!(
-    xf::Mooncake.FData, ::LinearAlgebra.Adjoint, g::Array{T}
-) where {T<:IEEEFloat}
+function _accum_fdata!(xf::FData, ::Adjoint, g::Array{T}) where {T<:IEEEFloat}
     return xf.data.parent .+= g'
 end
-function _accum_fdata!(
-    xf::Mooncake.FData, ::LinearAlgebra.Transpose, g::Array{T}
-) where {T<:IEEEFloat}
+function _accum_fdata!(xf::FData, ::Transpose, g::Array{T}) where {T<:IEEEFloat}
     return xf.data.parent .+= transpose(g)
 end
 
 # logsoftmax rrules
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(logsoftmax),AbstractArray{<:IEEEFloat}}
-Mooncake.@is_primitive MinimalCtx Tuple{
+
+@is_primitive MinimalCtx Tuple{typeof(logsoftmax),AbstractArray{<:IEEEFloat}}
+@is_primitive MinimalCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),AbstractArray{<:IEEEFloat}
 }
 
 function Mooncake.rrule!!(
-    ::Mooncake.CoDual{typeof(logsoftmax)}, x::Mooncake.CoDual{<:AbstractArray{<:IEEEFloat}}
+    ::CoDual{typeof(logsoftmax)}, x::CoDual{<:AbstractArray{<:IEEEFloat}}
 )
-    xp = Mooncake.primal(x)
+    xp = primal(x)
     y = logsoftmax(xp)
-    res = Mooncake.zero_fcodual(y)
-    function logsoftmax_pb!!(::Mooncake.NoRData)
-        _accum_fdata!(
-            Mooncake.tangent(x),
-            xp,
-            NNlib.∇logsoftmax_data(Mooncake.tangent(res), y; dims=1),
-        )
-        return Mooncake.NoRData(), Mooncake.NoRData()
+    res = zero_fcodual(y)
+    function logsoftmax_pb!!(::NoRData)
+        _accum_fdata!(tangent(x), xp, ∇logsoftmax_data(tangent(res), y; dims=1))
+        return NoRData(), NoRData()
     end
     return res, logsoftmax_pb!!
 end
 
 function Mooncake.rrule!!(
-    ::Mooncake.CoDual{typeof(Core.kwcall)},
-    kw::Mooncake.CoDual{<:NamedTuple{(:dims,)}},
-    ::Mooncake.CoDual{typeof(logsoftmax)},
-    x::Mooncake.CoDual{<:AbstractArray{<:IEEEFloat}},
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple{(:dims,)}},
+    ::CoDual{typeof(logsoftmax)},
+    x::CoDual{<:AbstractArray{<:IEEEFloat}},
 )
-    dims = Mooncake.primal(kw).dims
-    xp = Mooncake.primal(x)
+    dims = primal(kw).dims
+    xp = primal(x)
     y = logsoftmax(xp; dims)
-    res = Mooncake.zero_fcodual(y)
-    function logsoftmax_kw_pb!!(::Mooncake.NoRData)
-        _accum_fdata!(
-            Mooncake.tangent(x), xp, NNlib.∇logsoftmax_data(Mooncake.tangent(res), y; dims)
-        )
-        return Mooncake.NoRData(),
-        Mooncake.NoRData(), Mooncake.NoRData(),
-        Mooncake.NoRData()
+    res = zero_fcodual(y)
+    function logsoftmax_kw_pb!!(::NoRData)
+        _accum_fdata!(tangent(x), xp, ∇logsoftmax_data(tangent(res), y; dims))
+        return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsoftmax_kw_pb!!
 end
 
 # softmax rrules
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(softmax),AbstractArray{<:IEEEFloat}}
-Mooncake.@is_primitive MinimalCtx Tuple{
+
+@is_primitive MinimalCtx Tuple{typeof(softmax),AbstractArray{<:IEEEFloat}}
+@is_primitive MinimalCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(softmax),AbstractArray{<:IEEEFloat}
 }
 
 function Mooncake.rrule!!(
-    ::Mooncake.CoDual{typeof(softmax)}, x::Mooncake.CoDual{<:AbstractArray{<:IEEEFloat}}
+    ::CoDual{typeof(softmax)}, x::CoDual{<:AbstractArray{<:IEEEFloat}}
 )
-    xp = Mooncake.primal(x)
+    xp = primal(x)
     y = softmax(xp)
-    res = Mooncake.zero_fcodual(y)
-    function softmax_pb!!(::Mooncake.NoRData)
-        _accum_fdata!(
-            Mooncake.tangent(x), xp, NNlib.∇softmax_data(Mooncake.tangent(res), y; dims=1)
-        )
-        return Mooncake.NoRData(), Mooncake.NoRData()
+    res = zero_fcodual(y)
+    function softmax_pb!!(::NoRData)
+        _accum_fdata!(tangent(x), xp, ∇softmax_data(tangent(res), y; dims=1))
+        return NoRData(), NoRData()
     end
     return res, softmax_pb!!
 end
 
 function Mooncake.rrule!!(
-    ::Mooncake.CoDual{typeof(Core.kwcall)},
-    kw::Mooncake.CoDual{<:NamedTuple{(:dims,)}},
-    ::Mooncake.CoDual{typeof(softmax)},
-    x::Mooncake.CoDual{<:AbstractArray{<:IEEEFloat}},
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple{(:dims,)}},
+    ::CoDual{typeof(softmax)},
+    x::CoDual{<:AbstractArray{<:IEEEFloat}},
 )
-    dims = Mooncake.primal(kw).dims
-    xp = Mooncake.primal(x)
+    dims = primal(kw).dims
+    xp = primal(x)
     y = softmax(xp; dims)
-    res = Mooncake.zero_fcodual(y)
-    function softmax_kw_pb!!(::Mooncake.NoRData)
-        _accum_fdata!(
-            Mooncake.tangent(x), xp, NNlib.∇softmax_data(Mooncake.tangent(res), y; dims)
-        )
-        return Mooncake.NoRData(),
-        Mooncake.NoRData(), Mooncake.NoRData(),
-        Mooncake.NoRData()
+    res = zero_fcodual(y)
+    function softmax_kw_pb!!(::NoRData)
+        _accum_fdata!(tangent(x), xp, ∇softmax_data(tangent(res), y; dims))
+        return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, softmax_kw_pb!!
 end
 
 # logsumexp rrules
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(logsumexp),AbstractArray{<:IEEEFloat}}
-Mooncake.@is_primitive MinimalCtx Tuple{
+
+@is_primitive MinimalCtx Tuple{typeof(logsumexp),AbstractArray{<:IEEEFloat}}
+@is_primitive MinimalCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),AbstractArray{<:IEEEFloat}
 }
 
-# Scalar output (no dims kwarg)
 function Mooncake.rrule!!(
-    ::Mooncake.CoDual{typeof(logsumexp)}, x::Mooncake.CoDual{<:AbstractArray{T}}
+    ::CoDual{typeof(logsumexp)}, x::CoDual{<:AbstractArray{T}}
 ) where {T<:IEEEFloat}
-    xp = Mooncake.primal(x)
+    xp = primal(x)
     max_ = maximum(xp)
     @fastmath tmp = exp.(xp .- max_)
     s = sum(tmp)
     @fastmath y = max_ + log(s)
-    res = Mooncake.zero_fcodual(y)
-
+    res = zero_fcodual(y)
     function logsumexp_pb!!(dy::T)
-        _accum_fdata!(Mooncake.tangent(x), xp, dy .* tmp ./ s)
-        return Mooncake.NoRData(), Mooncake.NoRData()
+        _accum_fdata!(tangent(x), xp, dy .* tmp ./ s)
+        return NoRData(), NoRData()
     end
     return res, logsumexp_pb!!
 end
 
-# Array output (with dims kwarg)
 function Mooncake.rrule!!(
-    ::Mooncake.CoDual{typeof(Core.kwcall)},
-    kw::Mooncake.CoDual{<:NamedTuple{(:dims,)}},
-    ::Mooncake.CoDual{typeof(logsumexp)},
-    x::Mooncake.CoDual{<:AbstractArray{T}},
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple{(:dims,)}},
+    ::CoDual{typeof(logsumexp)},
+    x::CoDual{<:AbstractArray{T}},
 ) where {T<:IEEEFloat}
-    dims = Mooncake.primal(kw).dims
-    xp = Mooncake.primal(x)
+    dims = primal(kw).dims
+    xp = primal(x)
     max_ = maximum(xp; dims)
     @fastmath tmp = exp.(xp .- max_)
     s = sum(tmp; dims)
     @fastmath y = max_ .+ log.(s)
-    res = Mooncake.zero_fcodual(y)
-
-    function logsumexp_kw_pb!!(::Mooncake.NoRData)
-        _accum_fdata!(Mooncake.tangent(x), xp, Mooncake.tangent(res) .* tmp ./ s)
-        return Mooncake.NoRData(),
-        Mooncake.NoRData(), Mooncake.NoRData(),
-        Mooncake.NoRData()
+    res = zero_fcodual(y)
+    function logsumexp_kw_pb!!(::NoRData)
+        _accum_fdata!(tangent(x), xp, tangent(res) .* tmp ./ s)
+        return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsumexp_kw_pb!!
 end

@@ -70,9 +70,9 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             softmax,
             _rand(rng, 3, 3, 2),
         ),
-        (false, :stability, false, x -> softmax(x; dims=1), _rand(rng, 3, 2)),
-        (false, :stability, false, x -> softmax(x; dims=2), _rand(rng, 3, 2)),
-        (false, :stability, false, x -> softmax(x; dims=(1, 2)), _rand(rng, 3, 2)),
+        (false, :none, false, x -> softmax(x; dims=1), _rand(rng, 3, 2)),
+        (false, :none, false, x -> softmax(x; dims=2), _rand(rng, 3, 2)),
+        (false, :none, false, x -> softmax(x; dims=(1, 2)), _rand(rng, 3, 2)),
 
         # softmax with Adjoint, Transpose
         (false, :stability, true, softmax, _rand(rng, 2, 3)'),
@@ -147,30 +147,22 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         ),
 
         # logsumexp
-        (false, :stability, true, logsumexp, _rand(rng, 2)),
-        (false, :stability, true, logsumexp, _rand(rng, 3, 3)),
-        (false, :stability, true, logsumexp, _rand(rng, 3, 3, 2)),
-        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 2)),
-        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)),
-        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(rng, 3, 3)),
-        (
-            false,
-            :stability,
-            true,
-            Core.kwcall,
-            (dims=(1, 2),),
-            logsumexp,
-            _rand(rng, 3, 3, 2),
-        ),
+        (false, :none, true, logsumexp, _rand(rng, 2)),
+        (false, :none, true, logsumexp, _rand(rng, 3, 3)),
+        (false, :none, true, logsumexp, _rand(rng, 3, 3, 2)),
+        (false, :none, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 2)),
+        (false, :none, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)),
+        (false, :none, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)),
+        (false, :none, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(rng, 3, 3)),
+        (false, :none, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(rng, 3, 3, 2)),
 
         # logsumexp with Adjoint, Transpose
-        (false, :stability, true, logsumexp, _rand(rng, 2, 3)'),
-        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)'),
-        (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)'),
+        (false, :none, true, logsumexp, _rand(rng, 2, 3)'),
+        (false, :none, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)'),
+        (false, :none, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)'),
         (
             false,
-            :stability,
+            :none,
             true,
             Core.kwcall,
             (dims=1,),
@@ -179,7 +171,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         ),
         (
             false,
-            :stability,
+            :none,
             true,
             Core.kwcall,
             (dims=2,),
@@ -243,6 +235,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
     end
     @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in
                                     test_cases
+
         @info "$(typeof(fargs))"
         perf_flag = cuda ? :none : perf_flag
         mode = Mooncake.ReverseMode
