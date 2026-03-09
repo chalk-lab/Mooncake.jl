@@ -62,6 +62,11 @@ end
         (prevfloat, P(1.0)),
     ]
 
+    # Tolerances reflect BFloat16's ~3-digit precision. Test values are in [0.125, 0.25)
+    # so the ε=1e-2 FD perturbation (≈0.00129) exceeds the BF16 half-spacing (0.000488)
+    # and is captured, but snaps to one grid step (0.000977), giving ~24% relative error
+    # → rtol=0.4. Two functions (acos, exp10) also suffer output-side absorption at some
+    # inputs, yielding |LHS-RHS|≈0.16 even when ẏ_fd≠0 → atol=0.2.
     @testset "$(f) $(map(typeof, xs))" for (f, xs...) in cases
         test_rule(sr(123), f, xs...; is_primitive=true, atol=0.2, rtol=0.4)
     end
