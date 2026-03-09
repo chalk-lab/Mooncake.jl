@@ -62,6 +62,9 @@ using LinearAlgebra
             # transpose 
             (false, :none, false, transpose, _rand(rng, 64, 32)),
             (false, :none, false, transpose, _rand(rng, ComplexF64, 64, 32)),
+            # reshape — exercises the DataRef-based _new_ rule
+            (false, :none, false, x -> reshape(x, 32, 64), _rand(rng, 64, 32)),
+            (false, :none, false, x -> reshape(x, 32, 64), _rand(rng, ComplexF64, 64, 32)),
         ]
         @testset "$(typeof(fargs))" for (
             interface_only, perf_flag, is_primitive, fargs...

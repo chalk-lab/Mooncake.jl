@@ -155,46 +155,37 @@ end
 
 # Basic rules for operating on CuArrays.
 
+# Outer-constructor primitives are required here rather than `_new_` rules because the
+# `CuArray(undef, dims)` constructor body performs GPU memory allocation (pool_alloc,
+# DataRef construction, GPUArrays.cached_alloc) *before* the `new` call. A `_new_` rule
+# alone would force Mooncake to trace through all that CUDA-internal machinery. Making
+# the whole outer constructor primitive bypasses that and directly produces the correct
+# (primal, tangent) pair — a fresh uninitialized primal and a zero-initialised tangent
+# of the same shape.
 @zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
 
-# TODO: Mooncake defines rules for `_new_` instead of below. See
-# https://chalk-lab.github.io/Mooncake.jl/stable/developer_documentation/custom_tangent_type/#Checklist:-Functions-Needed-for-Recursive-Struct-Support
-#
-@is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
+# `_new_` rules for the DataRef-based inner CuArray constructor, used by e.g. `reshape`
+# and views. The tangent shares the DataRef (gradient memory) from the input tangent
+# array, but with the new dims/offset — so gradient accumulation is automatic.
 function frule!!(
-    p::Dual{Type{P}}, init::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
-) where {P<:CuMaybeComplexArray,N}
-    _dims = map(primal, dims)
-    return Dual(P(undef, _dims), P(undef, _dims))
+    ::Dual{typeof(_new_)}, ::Dual{Type{P}},
+    data::Dual, maxsize::Dual, offset::Dual, dims::Dual,
+) where {P<:CuMaybeComplexArray}
+    y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
+    dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
+    return Dual(y, dy)
 end
 function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::Vararg{CoDual{Int},N}
-) where {P<:CuMaybeComplexArray,N}
-    _dims = map(primal, dims)
-    return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims...)
-end
-
-function frule!!(
-    f::Dual{typeof(Mooncake._new_),Mooncake.NoTangent},
-    p::Dual{A,Mooncake.NoTangent},
-    x::Dual{M,TM},
-) where {T,M<:CuArray{T},A<:Type{LinearAlgebra.Adjoint{T,M}},TM<:CuArray}
-    y = _new_(LinearAlgebra.Adjoint{T,M}, Mooncake.primal(x))
-    dy = Mooncake.Tangent((parent=Mooncake.tangent(x),))
-    return Dual(y, dy)
-end
-
-function frule!!(
-    f::Dual{typeof(Mooncake._new_),Mooncake.NoTangent},
-    p::Dual{A,Mooncake.NoTangent},
-    x::Dual{M,TM},
-) where {T,M<:CuArray{T},A<:Type{LinearAlgebra.Transpose{T,M}},TM<:CuArray}
-    y = _new_(LinearAlgebra.Transpose{T,M}, Mooncake.primal(x))
-    dy = Mooncake.Tangent((parent=Mooncake.tangent(x),))
-    return Dual(y, dy)
+    ::CoDual{typeof(_new_)}, ::CoDual{Type{P}},
+    data::CoDual, maxsize::CoDual, offset::CoDual, dims::CoDual,
+) where {P<:CuMaybeComplexArray}
+    y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
+    dy = _new_(P, data.dx, primal(maxsize), primal(offset), primal(dims))
+    return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 6))
 end
 
 # getfield / lgetfield rules for CuArray.
+# CuArray has 4 fields: data (1, differentiable DataRef), maxsize (2), offset (3), dims (4).
 function frule!!(
     ::Dual{typeof(lgetfield)},
     x::Dual{<:CuArray,<:CuArray},
@@ -202,8 +193,8 @@ function frule!!(
     ::Dual{Val{order}},
 ) where {name,order}
     y = getfield(primal(x), name, order)
-    wants_size = name === 2 || name === :dims
-    dy = wants_size ? NoTangent() : tangent(x).data
+    is_data = name === 1 || name === :data
+    dy = is_data ? tangent(x).data : NoTangent()
     return Dual(y, dy)
 end
 function rrule!!(
@@ -213,8 +204,8 @@ function rrule!!(
     ::CoDual{Val{order}},
 ) where {name,order}
     y = getfield(primal(x), name, order)
-    wants_size = name === 2 || name === :dims
-    dy = wants_size ? NoFData() : x.dx
+    is_data = name === 1 || name === :data
+    dy = is_data ? x.dx.data : NoFData()
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -222,17 +213,17 @@ function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
 ) where {name}
     y = getfield(primal(x), name)
-    wants_size = name === 2 || name === :dims
-    dy = wants_size ? NoTangent() : tangent(x).data
+    is_data = name === 1 || name === :data
+    dy = is_data ? tangent(x).data : NoTangent()
     return Dual(y, dy)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuArray,<:CuArray}, ::CoDual{Val{name}}
 ) where {name}
     y = getfield(primal(x), name)
-    wants_size = name === 2 || name === :dims
-    dy = wants_size ? NoFData() : x.dx
-    return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
+    is_data = name === 1 || name === :data
+    dy = is_data ? x.dx.data : NoFData()
+    return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 3))
 end
 
 # Rule for `sum` is defined as a performance rule. 
