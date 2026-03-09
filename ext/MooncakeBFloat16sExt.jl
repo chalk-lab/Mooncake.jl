@@ -4,8 +4,8 @@ using Mooncake
 using Random: AbstractRNG
 
 #! format: off
-# Core.BFloat16 only exists on Julia >= 1.11; no-op on LTS.
-@static if isdefined(Core, :BFloat16)
+# Core.BFloat16 is only available in Julia >= 1.11; no-op on 1.10.
+@static if VERSION >= v"1.11-"
 
 using BFloat16s: BFloat16s
 
