@@ -3,6 +3,7 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, CUDA, JET, Mooncake, StableRNGs, Test
+using Mooncake: lgetfield
 using Mooncake.TestUtils: test_tangent_interface, test_tangent_splitting, test_rule
 using LinearAlgebra
 
