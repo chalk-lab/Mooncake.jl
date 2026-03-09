@@ -276,7 +276,7 @@ function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuFloatArray})
     return Dual(sum(px), sum(dx))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuFloatArray})
-    dx = x.dx
+    _, dx = arrayify(x)
     function sum_pb!!(dz)
         dx .+= dz
         return NoRData(), NoRData()
@@ -284,9 +284,7 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuFloatArray})
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
 end
 
-# Rules for the 3-arg mul!(C, A, B) on GPU arrays. Registering as a primitive
-# prevents Mooncake from tracing into CUBLAS internals (which contain types such
-# as cublasComputeType_t that have no tangent_type method).
+# Rules for the 3-arg mul!(C, A, B) on GPU arrays.
 @is_primitive(
     MinimalCtx,
     Tuple{typeof(mul!),<:CuMaybeComplexArray,<:CuMaybeComplexArray,<:CuMaybeComplexArray},

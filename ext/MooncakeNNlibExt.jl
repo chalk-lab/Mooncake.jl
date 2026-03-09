@@ -256,8 +256,8 @@ function rrule!!(
     x::CoDual{<:GPUIEEEArray{T,N}},
     b::CoDual{<:GPUIEEEArray},
 ) where {T,N}
-    px, dx = primal(x), tangent(x)
-    pb, db = primal(b), tangent(b)
+    px, dx = arrayify(x)
+    pb, db = arrayify(b)
     px_copy = copy(px)
     px .+= pb
     # Dims over which b is broadcast (size 1 in b but potentially larger in x).
