@@ -136,7 +136,7 @@ function Mooncake.rrule!!(
     ::CoDual{typeof(logsumexp)}, x::CoDual{<:AbstractArray{T}}
 ) where {T<:IEEEFloat}
     xp = primal(x)
-    max_ = maximum(xp)
+    max_ = maximum(xp; init=typemin(T))
     @fastmath tmp = exp.(xp .- max_)
     s = sum(tmp)
     @fastmath y = max_ + log(s)
@@ -156,7 +156,7 @@ function Mooncake.rrule!!(
 ) where {T<:IEEEFloat}
     dims = primal(kw).dims
     xp = primal(x)
-    max_ = maximum(xp; dims)
+    max_ = maximum(xp; dims, init=typemin(T))
     @fastmath tmp = exp.(xp .- max_)
     s = sum(tmp; dims)
     @fastmath y = max_ .+ log.(s)

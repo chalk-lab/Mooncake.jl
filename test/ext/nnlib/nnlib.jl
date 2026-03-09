@@ -147,22 +147,30 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         ),
 
         # logsumexp
-        (false, :none, true, logsumexp, _rand(rng, 2)),
-        (false, :none, true, logsumexp, _rand(rng, 3, 3)),
-        (false, :none, true, logsumexp, _rand(rng, 3, 3, 2)),
-        (false, :none, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 2)),
-        (false, :none, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)),
-        (false, :none, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)),
-        (false, :none, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(rng, 3, 3)),
-        (false, :none, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(rng, 3, 3, 2)),
-
-        # logsumexp with Adjoint, Transpose
-        (false, :none, true, logsumexp, _rand(rng, 2, 3)'),
-        (false, :none, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)'),
-        (false, :none, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)'),
+        (false, :stability, true, logsumexp, _rand(rng, 2)),
+        (false, :stability, true, logsumexp, _rand(rng, 3, 3)),
+        (false, :stability, true, logsumexp, _rand(rng, 3, 3, 2)),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 2)),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)),
+        (false, :stability, true, Core.kwcall, (dims=(1, 2),), logsumexp, _rand(rng, 3, 3)),
         (
             false,
-            :none,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=(1, 2),),
+            logsumexp,
+            _rand(rng, 3, 3, 2),
+        ),
+
+        # logsumexp with Adjoint, Transpose
+        (false, :stability, true, logsumexp, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)'),
+        (
+            false,
+            :stability,
             true,
             Core.kwcall,
             (dims=1,),
@@ -171,7 +179,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         ),
         (
             false,
-            :none,
+            :stability,
             true,
             Core.kwcall,
             (dims=2,),
