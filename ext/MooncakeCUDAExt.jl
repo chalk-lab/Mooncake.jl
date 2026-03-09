@@ -40,6 +40,7 @@ import Mooncake:
     NoPullback,
     NoFData,
     to_cr_tangent,
+    mooncake_tangent,
     increment_and_get_rdata!,
     MaybeCache,
     IncCache,
