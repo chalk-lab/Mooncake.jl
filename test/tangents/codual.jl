@@ -20,6 +20,8 @@
             Union{CoDual{Float64,NoFData},CoDual{Int,NoFData}},
         ),
         (UnionAll, CoDual, CoDual),
+        (DataType, CoDual, CoDual),
+        (Union{}, Union{}, Union{}),
 
         # Tuples:
         # Concrete tuples:

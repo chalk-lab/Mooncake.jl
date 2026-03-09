@@ -13,6 +13,7 @@
         (Union{Float64,Int}, Union{Dual{Float64,Float64},Dual{Int,NoTangent}}),
         (UnionAll, Dual),
         (DataType, Dual),
+        (Union{}, Union{}),
 
         # Tuples:
         (Tuple{Float64}, Dual{Tuple{Float64},Tuple{Float64}}),
