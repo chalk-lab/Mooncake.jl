@@ -1,12 +1,12 @@
 module MooncakeBFloat16sExt
 
-using BFloat16s: BFloat16s
-using Mooncake
-using Random: AbstractRNG
-
 #! format: off
 # Core.BFloat16 only exists on Julia >= 1.11; no-op on LTS.
 @static if isdefined(Core, :BFloat16)
+
+using Mooncake
+using Random: AbstractRNG
+using BFloat16s: BFloat16s
 
 import Mooncake:
     MaybeCache,
