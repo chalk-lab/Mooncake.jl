@@ -184,7 +184,7 @@ end
     # If `P` is a mutable type, then its forwards data is its tangent.
     ismutabletype(T) && return T
 
-    # If the type is itself abstract, it's forward data could be anything.
+    # If the type is itself abstract, its forward data could be anything.
     # The same goes for if the type has any undetermined type parameters.
     (isabstracttype(T) || !isconcretetype(T)) && return Any
 
@@ -470,7 +470,7 @@ end
     # If `P` is a mutable type, then all tangent info is propagated on the forwards-pass.
     ismutabletype(T) && return NoRData
 
-    # If the type is itself abstract, it's reverse data could be anything.
+    # If the type is itself abstract, its reverse data could be anything.
     # The same goes for if the type has any undetermined type parameters.
     (isabstracttype(T) || !isconcretetype(T)) && return Any
 
