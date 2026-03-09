@@ -224,7 +224,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         (false, :none, false, x -> pad_constant(x, 1, float(2.0)), x),
         (false, :none, false, x -> pad_constant(x, 1, float(2.0); dims=:), x),
 
-        # bias_act!(identity, x, b): GPU falls back to x .+ b (non-in-place)
+        # bias_act!(identity, x, b): modifies x in-place
         (false, :none, true, bias_act!, identity, _rand(rng, 8, 4), _rand(rng, 8)),
         (false, :none, true, bias_act!, identity, _rand(rng, 8), _rand(rng, 8)),
     ]

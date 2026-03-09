@@ -232,19 +232,24 @@ for pool in [:maxpool, :meanpool]
 end
 @from_rrule(MinimalCtx, Tuple{typeof(pad_constant),SupportedArray,Any,Any}, true)
 
-# Direct rules for bias_act!(identity, x, b) on GPU arrays. NNlib's ChainRules rrule for
-# bias_act! requires a RuleConfig, which @from_rrule doesn't supply. bias_act! modifies
-# x in-place (x .+= b), so we follow the same pattern as mul!: save x's primal before
-# mutation, compute in-place, return x as output, and restore x's primal in the pullback.
-const GPUIEEEArray{T<:IEEEFloat} = AbstractGPUArray{T}
+# Direct rules for bias_act!(identity, x, b) on CPU and GPU arrays. NNlib's ChainRules
+# rrule for bias_act! requires a RuleConfig, which @from_rrule doesn't supply.
+# bias_act! modifies x in-place (x .+= b), so we save x's primal before mutation,
+# compute in-place, return x as output, and restore x's primal in the pullback.
 @is_primitive(
-    MinimalCtx, Tuple{typeof(bias_act!),typeof(identity),GPUIEEEArray,GPUIEEEArray},
+    MinimalCtx,
+    Tuple{
+        typeof(bias_act!),
+        typeof(identity),
+        SupportedArray{<:IEEEFloat},
+        SupportedArray{<:IEEEFloat},
+    },
 )
 function frule!!(
     ::Dual{typeof(bias_act!)},
     ::Dual{typeof(identity)},
-    x::Dual{<:GPUIEEEArray},
-    b::Dual{<:GPUIEEEArray},
+    x::Dual{<:SupportedArray{<:IEEEFloat}},
+    b::Dual{<:SupportedArray{<:IEEEFloat}},
 )
     primal(x) .+= primal(b)
     tangent(x) .+= tangent(b)
@@ -253,9 +258,9 @@ end
 function rrule!!(
     ::CoDual{typeof(bias_act!)},
     ::CoDual{typeof(identity)},
-    x::CoDual{<:GPUIEEEArray{T,N}},
-    b::CoDual{<:GPUIEEEArray},
-) where {T,N}
+    x::CoDual{<:SupportedArray{P,N}},
+    b::CoDual{<:SupportedArray{<:IEEEFloat}},
+) where {P<:IEEEFloat,N}
     px, dx = arrayify(x)
     pb, db = arrayify(b)
     px_copy = copy(px)
