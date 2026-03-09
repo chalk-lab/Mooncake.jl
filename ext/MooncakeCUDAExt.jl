@@ -164,23 +164,6 @@ end
 # of the same shape.
 @zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
 
-# The Vararg form CuArray(undef, d1, d2, ...) is a distinct dispatch target from the
-# NTuple form above, so it needs its own primitive. Tangent is zero-initialised to avoid
-# treating uninitialised GPU memory as a gradient accumulator.
-@is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
-function frule!!(
-    ::Dual{Type{P}}, ::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
-) where {P<:CuMaybeComplexArray,N}
-    y = P(undef, map(primal, dims))
-    return Dual(y, zero(y))
-end
-function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::Vararg{CoDual{Int},N}
-) where {P<:CuMaybeComplexArray,N}
-    y = P(undef, map(primal, dims))
-    return CoDual(y, zero(y)), NoPullback(p, init, dims...)
-end
-
 # Primitive rule for `reshape`: prevents tracing into CUDA.jl's reshape body which calls
 # `copy(DataRef{...})` for reference-count management and hits llvmcall. reshape creates
 # a view (shared GPU memory), so the tangent is simply a reshaped view of the input

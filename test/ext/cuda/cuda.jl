@@ -27,7 +27,7 @@ using LinearAlgebra
                 undef,
                 256;
                 interface_only=true,
-                is_primitive=true,
+                is_primitive=false,
             )
             test_rule(
                 StableRNG(123456),
