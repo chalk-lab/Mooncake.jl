@@ -217,22 +217,31 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(sin),P}
 function Mooncake.frule!!(::Dual{typeof(sin)}, x::Dual{P})
-    s, c = sincos(primal(x))
+    # Use separate sin/cos calls: sincos(::BFloat16) is broken (infinitely recursive) in Julia 1.12.
+    _x = primal(x)
+    s = sin(_x)
+    c = cos(_x)
     return Dual(s, tangent(x) * c)
 end
 function Mooncake.rrule!!(::CoDual{typeof(sin)}, x::CoDual{P})
-    s, c = sincos(primal(x))
+    _x = primal(x)
+    s = sin(_x)
+    c = cos(_x)
     pb(dy::P) = NoRData(), dy * c
     return zero_fcodual(s), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(cos),P}
 function Mooncake.frule!!(::Dual{typeof(cos)}, x::Dual{P})
-    s, c = sincos(primal(x))
+    _x = primal(x)
+    s = sin(_x)
+    c = cos(_x)
     return Dual(c, -tangent(x) * s)
 end
 function Mooncake.rrule!!(::CoDual{typeof(cos)}, x::CoDual{P})
-    s, c = sincos(primal(x))
+    _x = primal(x)
+    s = sin(_x)
+    c = cos(_x)
     pb(dy::P) = NoRData(), -dy * s
     return zero_fcodual(c), pb
 end
@@ -347,24 +356,37 @@ function Mooncake.rrule!!(::CoDual{typeof(atanh)}, x::CoDual{P})
     return zero_fcodual(atanh(_x)), pb
 end
 
+# Julia's sinpi/cospi may return Float64 for BFloat16 inputs; define BFloat16 versions.
+Base.sinpi(x::P) = P(sinpi(Float64(x)))
+Base.cospi(x::P) = P(cospi(Float64(x)))
+
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(sinpi),P}
 function Mooncake.frule!!(::Dual{typeof(sinpi)}, x::Dual{P})
-    s, c = sincospi(primal(x))
+    # Use sinpi/cospi (not sincospi) to match the primal function's return type and value.
+    _x = primal(x)
+    s = sinpi(_x)
+    c = cospi(_x)
     return Dual(s, tangent(x) * P(Float32(π)) * c)
 end
 function Mooncake.rrule!!(::CoDual{typeof(sinpi)}, x::CoDual{P})
-    s, c = sincospi(primal(x))
+    _x = primal(x)
+    s = sinpi(_x)
+    c = cospi(_x)
     pb(dy::P) = NoRData(), dy * P(Float32(π)) * c
     return zero_fcodual(s), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(cospi),P}
 function Mooncake.frule!!(::Dual{typeof(cospi)}, x::Dual{P})
-    s, c = sincospi(primal(x))
+    _x = primal(x)
+    s = sinpi(_x)
+    c = cospi(_x)
     return Dual(c, -tangent(x) * P(Float32(π)) * s)
 end
 function Mooncake.rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P})
-    s, c = sincospi(primal(x))
+    _x = primal(x)
+    s = sinpi(_x)
+    c = cospi(_x)
     pb(dy::P) = NoRData(), -dy * P(Float32(π)) * s
     return zero_fcodual(c), pb
 end
@@ -401,6 +423,9 @@ function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
     end
     return zero_fcodual(z), pow_pb
 end
+
+# atan(::BFloat16, ::BFloat16) is not provided by Julia; define it here.
+Base.atan(y::P, x::P) = P(atan(Float64(y), Float64(x)))
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(atan),P,P}
 function Mooncake.frule!!(::Dual{typeof(atan)}, y::Dual{P}, x::Dual{P})

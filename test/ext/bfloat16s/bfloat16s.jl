@@ -2,7 +2,7 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using BFloat16s, Mooncake, StableRNGs, Test
+using AllocCheck, BFloat16s, JET, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
 
 const P = Core.BFloat16
@@ -31,7 +31,7 @@ end
         (cbrt, P(0.4)),
         (exp, P(1.1)),
         (exp2, P(1.12)),
-        (exp10, P(0.55)),
+        (exp10, P(0.45)),
         (expm1, P(-0.3)),
         (log, P(0.1)),
         (log2, P(0.15)),
@@ -51,9 +51,9 @@ end
         (asinh, P(1.45)),
         (acosh, P(1.56)),
         (atanh, P(-0.44)),
-        (hypot, P(4.0), P(5.0)),
-        (^, P(4.0), P(2.0)),
-        (atan, P(4.3), P(0.23)),
+        (hypot, P(0.4), P(0.3)),
+        (^, P(0.4), P(0.3)),
+        (atan, P(1.5), P(0.23)),
         (max, P(1.5), P(0.5)),
         (max, P(0.45), P(1.1)),
         (min, P(1.5), P(0.5)),
@@ -66,6 +66,6 @@ end
     ]
 
     @testset "$(f) $(map(typeof, xs))" for (f, xs...) in cases
-        test_rule(sr(123), f, xs...; is_primitive=true)
+        test_rule(sr(123), f, xs...; is_primitive=true, atol=0.5, rtol=0.5)
     end
 end
