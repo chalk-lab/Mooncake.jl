@@ -5,7 +5,10 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 using AllocCheck, CUDA, JET, Mooncake, StableRNGs, Test
 using Mooncake: lgetfield
 using Mooncake.TestUtils:
-    test_tangent_interface, test_tangent_splitting, test_rule, test_frule_interface,
+    test_tangent_interface,
+    test_tangent_splitting,
+    test_rule,
+    test_frule_interface,
     test_rrule_interface
 using LinearAlgebra
 
