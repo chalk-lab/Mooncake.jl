@@ -70,16 +70,32 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             softmax,
             _rand(rng, 3, 3, 2),
         ),
-        (false, :none, false, x -> softmax(x; dims=1), _rand(rng, 3, 2)),
-        (false, :none, false, x -> softmax(x; dims=2), _rand(rng, 3, 2)),
-        (false, :none, false, x -> softmax(x; dims=(1, 2)), _rand(rng, 3, 2)),
+        (false, :stability, false, x -> softmax(x; dims=1), _rand(rng, 3, 2)),
+        (false, :stability, false, x -> softmax(x; dims=2), _rand(rng, 3, 2)),
+        (false, :stability, false, x -> softmax(x; dims=(1, 2)), _rand(rng, 3, 2)),
 
         # softmax with Adjoint, Transpose
-        (false, :none, true, softmax, _rand(rng, 2, 3)'),
-        (false, :none, true, Core.kwcall, (dims=1,), softmax, _rand(rng, 3, 3)'),
-        (false, :none, true, Core.kwcall, (dims=2,), softmax, _rand(rng, 3, 3)'),
-        (false, :none, true, Core.kwcall, (dims=1,), softmax, transpose(_rand(rng, 3, 3))),
-        (false, :none, true, Core.kwcall, (dims=2,), softmax, transpose(_rand(rng, 3, 3))),
+        (false, :stability, true, softmax, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), softmax, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), softmax, _rand(rng, 3, 3)'),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=1,),
+            softmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=2,),
+            softmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
 
         # logsoftmax
         (false, :stability, true, logsoftmax, _rand(rng, 2)),
@@ -108,12 +124,12 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         ),
 
         # logsoftmax with Adjoints, Transpose
-        (false, :none, true, logsoftmax, _rand(rng, 2, 3)'),
-        (false, :none, true, Core.kwcall, (dims=1,), logsoftmax, _rand(rng, 3, 3)'),
-        (false, :none, true, Core.kwcall, (dims=2,), logsoftmax, _rand(rng, 3, 3)'),
+        (false, :stability, true, logsoftmax, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsoftmax, _rand(rng, 3, 3)'),
         (
             false,
-            :none,
+            :stability,
             true,
             Core.kwcall,
             (dims=1,),
@@ -122,7 +138,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         ),
         (
             false,
-            :none,
+            :stability,
             true,
             Core.kwcall,
             (dims=2,),
@@ -149,12 +165,12 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         ),
 
         # logsumexp with Adjoint, Transpose
-        (false, :none, true, logsumexp, _rand(rng, 2, 3)'),
-        (false, :none, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)'),
-        (false, :none, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)'),
+        (false, :stability, true, logsumexp, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)'),
         (
             false,
-            :none,
+            :stability,
             true,
             Core.kwcall,
             (dims=1,),
@@ -163,7 +179,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         ),
         (
             false,
-            :none,
+            :stability,
             true,
             Core.kwcall,
             (dims=2,),
@@ -237,15 +253,21 @@ end
 # Testing Helper functions
 const MooncakeNNlibExt = Base.get_extension(Mooncake, :MooncakeNNlibExt)
 const _accum_fdata! = MooncakeNNlibExt._accum_fdata!
-@testset "_accum_fdata!" begin
+
+@testset "_accum_fdata! helper tests" begin
     rng = StableRNG(123)
     A = randn(rng, 3, 4)
     g = randn(rng, 3, 4)
 
-    # Plain array accumulates in-place
+    # Plain array, array gradient
     xf = zeros(3, 4)
     _accum_fdata!(xf, A, g)
     @test xf ≈ g
+
+    # Plain array, scalar gradient
+    xf_scalar = zeros(3, 4)
+    _accum_fdata!(xf_scalar, A, 2.0)
+    @test xf_scalar ≈ fill(2.0, 3, 4)
 
     # Adjoint: gradient transposed back into parent
     parent_adj = zeros(4, 3)
@@ -259,8 +281,20 @@ const _accum_fdata! = MooncakeNNlibExt._accum_fdata!
     _accum_fdata!(xf_tr, transpose(A), g)
     @test parent_tr ≈ transpose(g)
 
-    # Accumulates (+=), not overwrites
+    # Accumulates (+=), not overwrites — plain array
     xf2 = ones(3, 4)
     _accum_fdata!(xf2, A, g)
     @test xf2 ≈ ones(3, 4) .+ g
+
+    # Accumulates (+=), not overwrites — Adjoint
+    parent_adj2 = ones(4, 3)
+    xf_adj2 = Mooncake.FData((parent=parent_adj2,))
+    _accum_fdata!(xf_adj2, A', g)
+    @test parent_adj2 ≈ ones(4, 3) .+ g'
+
+    # Accumulates (+=), not overwrites — Transpose
+    parent_tr2 = ones(4, 3)
+    xf_tr2 = Mooncake.FData((parent=parent_tr2,))
+    _accum_fdata!(xf_tr2, transpose(A), g)
+    @test parent_tr2 ≈ ones(4, 3) .+ transpose(g)
 end

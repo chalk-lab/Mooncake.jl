@@ -22,9 +22,16 @@ const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
 )
 
 # Helper accumulater functions
-_accum_fdata!(xf::AbstractArray, ::Any, g) = xf .+= g
-_accum_fdata!(xf::Mooncake.FData, ::LinearAlgebra.Adjoint, g) = xf.data.parent .+= g'
-function _accum_fdata!(xf::Mooncake.FData, ::LinearAlgebra.Transpose, g)
+_accum_fdata!(xf::AbstractArray, ::Array{T}, g::Array{T}) where {T<:IEEEFloat} = xf .+= g
+_accum_fdata!(xf::AbstractArray, ::Array{T}, g::T) where {T<:IEEEFloat} = xf .+= g
+function _accum_fdata!(
+    xf::Mooncake.FData, ::LinearAlgebra.Adjoint, g::Array{T}
+) where {T<:IEEEFloat}
+    return xf.data.parent .+= g'
+end
+function _accum_fdata!(
+    xf::Mooncake.FData, ::LinearAlgebra.Transpose, g::Array{T}
+) where {T<:IEEEFloat}
     return xf.data.parent .+= transpose(g)
 end
 
