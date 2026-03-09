@@ -33,8 +33,8 @@
 #
 # ── Constraints ────────────────────────────────────────────────────────────────────
 # - `chunk_size` is global across the whole call
-# - supported primals are IEEE float scalars, complex IEEE float scalars, and dense arrays
-#   with those element types
+# - supported primals are IEEE float scalars, complex IEEE float scalars, dense arrays
+#   with those element types, and tuples thereof
 # - rule construction requires stateless callables (singleton callable types)
 # - `friendly_tangents=true`, `debug_mode=true`, and differentiation with respect to `f`
 #   are intentionally unsupported here
@@ -50,6 +50,9 @@
 #   Mooncake.build_primitive_rrule(::Type{sig}) =
 #       Mooncake.nforward_build_rrule(sig; chunk_size=4)
 #
+# NDual lives in the CUDA extension but is shared with nforward so that GPU broadcast rules
+# and the nforward engine use the same type. Including it here is intentional: core Mooncake
+# always loads ndual.jl, and the CUDA extension reuses the definition without redefining it.
 include(joinpath(@__DIR__, "..", "..", "ext", "MooncakeCUDAExt", "ndual.jl"))
 
 #
@@ -100,6 +103,10 @@ end
 Concrete pullback object for `nforward` reverse rules. It stores the primal callable,
 primals, input tangents, and output fdata needed to rerun chunked NDual passes during the
 reverse sweep.
+
+!!! note
+    `NForwardPullback` must remain an `isbits` type for the scalar path to stay
+    allocation-free. Do not add any heap-allocated fields.
 """
 struct NForwardPullback{F,N,P,T,Y}
     f::F
@@ -128,11 +135,7 @@ supports stateless callables here.
 function nforward_build_frule(
     sig::Type{<:Tuple}; chunk_size::Integer, debug_mode=false, silence_debug_messages=true
 )
-    chunk_size = _nforward_check_chunk_size(chunk_size)
-    _nforward_check_callable_sig(sig)
-    debug_mode &&
-        throw(ArgumentError("nforward does not currently support `debug_mode=true`."))
-    silence_debug_messages
+    chunk_size = _nforward_validate(sig, chunk_size; debug_mode)
     return NForwardRule{sig,chunk_size}()
 end
 
@@ -166,11 +169,7 @@ stateless callables here.
 function nforward_build_rrule(
     sig::Type{<:Tuple}; chunk_size::Integer, debug_mode=false, silence_debug_messages=true
 )
-    chunk_size = _nforward_check_chunk_size(chunk_size)
-    _nforward_check_callable_sig(sig)
-    debug_mode &&
-        throw(ArgumentError("nforward does not currently support `debug_mode=true`."))
-    silence_debug_messages
+    chunk_size = _nforward_validate(sig, chunk_size; debug_mode)
     buf = _nforward_buf_ref(sig, Val(chunk_size))
     return NForwardRRule{sig,chunk_size,typeof(buf)}(buf)
 end
@@ -263,6 +262,10 @@ end
 # `value_and_gradient!!` calls. Evaluating one NDual-lifted primal directly is enough to recover
 # the scalar primal and derivative, which removes the remaining steady-state allocations for
 # singleton scalar inputs.
+#
+# Complex scalars (CoDual{<:Complex}) have no matching specialization here and fall through
+# to the generic `__value_and_gradient!!` in src/interface.jl, which runs the full pullback.
+# This is correct and tested; it is simply not on the allocation-free fast path.
 """
     __value_and_gradient!!(rule::NForwardRRule, f::CoDual, x::CoDual)
 
@@ -276,32 +279,11 @@ function __value_and_gradient!!(
 end
 
 """
-    __value_and_gradient!!(rule::NForwardRRule, f::CoDual, x::CoDual{Vector})
-
- Cached scalar-output vector fast path for `nforward` reverse rules.
-"""
-function __value_and_gradient!!(
-    rule::NForwardRRule{sig,chunk_size,<:Base.RefValue{Union{Nothing,Tworkspace}}},
-    f::CoDual,
-    x::CoDual{Vector{T}},
-) where {
-    sig,
-    chunk_size,
-    T<:IEEEFloat,
-    Tworkspace<:NamedTuple{(:seed, :lifted),Tuple{Matrix{T},Vector{NDual{T,chunk_size}}}},
-}
-    __verify_sig(rule, (f, x))
-    _nforward_check_function_tangent(tangent(f))
-    y, x_grad = _nforward_vector_scalar_value_and_gradient(
-        primal(f), x, rule.buf, Val(chunk_size)
-    )
-    return y, (_nforward_function_gradient(f), x_grad)
-end
-
-"""
     __value_and_gradient!!(rule::NForwardRRule, f::CoDual, x::CoDual{<:Array})
 
-Scalar-output dense-array fast path used when the vector specialization does not apply.
+Scalar-output dense-array fast path for `nforward` reverse rules. Dispatches to a
+typed-workspace path for `Vector{T}` inputs (via the buf type parameter) and a generic
+workspace path for higher-dimensional arrays.
 """
 function __value_and_gradient!!(
     rule::NForwardRRule{sig,chunk_size}, f::CoDual, x::CoDual{A}
@@ -349,6 +331,15 @@ end
     throw(ArgumentError("`chunk_size` must be a positive integer, got $chunk_size."))
 end
 
+# Shared preamble for frule/rrule builders: validate chunk_size, callable sig, and debug_mode.
+@inline function _nforward_validate(sig, chunk_size::Integer; debug_mode=false)
+    chunk_size = _nforward_check_chunk_size(chunk_size)
+    _nforward_check_callable_sig(sig)
+    debug_mode &&
+        throw(ArgumentError("nforward does not currently support `debug_mode=true`."))
+    return chunk_size
+end
+
 @inline function _nforward_default_chunk_size(x::Tuple)
     return max(1, min(sum(_nforward_input_dof, x), 8))
 end
@@ -376,6 +367,9 @@ end
 @inline function _nforward_is_supported_primal(::Type{<:Array{ET}}) where {ET}
     _nforward_is_supported_scalar(ET)
 end
+@inline function _nforward_is_supported_primal(T::Type{<:Tuple})
+    return all(_nforward_is_supported_primal, T.parameters)
+end
 @inline _nforward_is_supported_primal(::Type) = false
 
 @inline _nforward_input_error(x) = throw(
@@ -388,8 +382,8 @@ end
 @inline function _nforward_output_error(y)
     throw(
         ArgumentError(
-            "nforward currently supports only scalar or dense Array outputs with IEEEFloat / " *
-            "Complex IEEEFloat element types. Got $(typeof(y)).",
+            "nforward supports IEEEFloat / Complex IEEEFloat scalars, dense Arrays with " *
+            "those element types, and tuples thereof as outputs. Got $(typeof(y)).",
         ),
     )
 end
@@ -419,13 +413,11 @@ end
     )
 end
 
-@inline function __verify_sig(::NForwardRule{sig}, fx::Tuple) where {sig}
-    Tfx = Tuple{map(_typeof ∘ primal, fx)...}
-    Tfx <: sig && return nothing
-    throw(ArgumentError("Arguments with sig $Tfx do not subtype rule signature, $sig"))
-end
+@inline _nforward_rule_sig(::NForwardRule{sig}) where {sig} = sig
+@inline _nforward_rule_sig(::NForwardRRule{sig}) where {sig} = sig
 
-@inline function __verify_sig(::NForwardRRule{sig}, fx::Tuple) where {sig}
+@inline function __verify_sig(rule::Union{NForwardRule,NForwardRRule}, fx::Tuple)
+    sig = _nforward_rule_sig(rule)
     Tfx = Tuple{map(_typeof ∘ primal, fx)...}
     Tfx <: sig && return nothing
     throw(ArgumentError("Arguments with sig $Tfx do not subtype rule signature, $sig"))
@@ -464,7 +456,9 @@ end
 # each chunk's contributions into gradient storage.
 
 function _nforward_seed_tangent(x::IEEEFloat, chunk_size::Int, start_slot::Int, offset::Int)
-    lane = (offset + 1) - start_slot + 1
+    # offset+1 is this scalar's global slot; lane is its 1-indexed position in the chunk.
+    global_slot = offset + 1
+    lane = global_slot - start_slot + 1
     if chunk_size == 1
         return lane == 1 ? one(x) : zero(x)
     end
@@ -582,10 +576,9 @@ end
     return nothing
 end
 
-function _nforward_scatter_chunk!(grads::Tuple, inputs::Tuple, dy, start_slot::Int)
-    lanes = dy isa Tuple ? dy : (dy,)
+function _nforward_scatter_chunk!(grads::Tuple, inputs::Tuple, dy::Tuple, start_slot::Int)
     global_slot = start_slot
-    for lane_val in lanes
+    for lane_val in dy
         offset = 0
         for (i, x) in enumerate(inputs)
             dof = _nforward_input_dof(x)
@@ -636,50 +629,34 @@ end
     return real(conj(a) * b)
 end
 
-@inline _nforward_zero_output_tangent(y::T, ::Val{1}) where {T<:IEEEFloat} = zero(T)
-@inline _nforward_zero_output_tangent(y::Complex{T}, ::Val{1}) where {T<:IEEEFloat} = zero(
+# Scalar (real or complex): chunk_size=1 → plain scalar zero; chunk_size=N → N-tuple of zeros.
+@inline _nforward_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{1}) = zero(
     y
 )
-@inline function _nforward_zero_output_tangent(y::T, ::Val{N}) where {T<:IEEEFloat,N}
-    return ntuple(_ -> zero(T), Val(N))
-end
+@inline _nforward_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{N}) where {N} = ntuple(
+    _ -> zero(y), Val(N)
+)
+
+# Array (real or complex elements): chunk_size=1 → same-shape zero array; chunk_size=N → N extra lanes.
+@inline _nforward_zero_output_tangent(y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{1}) = zero_tangent(
+    y
+)
 @inline function _nforward_zero_output_tangent(
-    y::Complex{T}, ::Val{N}
-) where {T<:IEEEFloat,N}
-    return ntuple(_ -> zero(y), Val(N))
+    y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{N}
+) where {N}
+    return zeros(eltype(y), size(y)..., N)
 end
 
-@inline function _nforward_zero_output_tangent(
-    y::AbstractArray{T}, ::Val{1}
-) where {T<:IEEEFloat}
-    return zero_tangent(y)
-end
-@inline function _nforward_zero_output_tangent(
-    y::AbstractArray{Complex{T}}, ::Val{1}
-) where {T<:IEEEFloat}
-    return zero_tangent(y)
-end
-@inline function _nforward_zero_output_tangent(
-    y::AbstractArray{T}, ::Val{N}
-) where {T<:IEEEFloat,N}
-    return zeros(T, size(y)..., N)
-end
-@inline function _nforward_zero_output_tangent(
-    y::AbstractArray{Complex{T}}, ::Val{N}
-) where {T<:IEEEFloat,N}
-    return zeros(Complex{T}, size(y)..., N)
+# Tuple outputs: recurse element-wise.
+@inline function _nforward_zero_output_tangent(y::Tuple, ::Val{N}) where {N}
+    return map(yi -> _nforward_zero_output_tangent(yi, Val(N)), y)
 end
 
-@inline _nforward_scalar_lane(dy::T, ::Val{1}, ::Val{1}) where {T<:IEEEFloat} = dy
-@inline _nforward_scalar_lane(dy::Complex{T}, ::Val{1}, ::Val{1}) where {T<:IEEEFloat} = dy
-@inline function _nforward_scalar_lane(dy::NTuple{N,T}, ::Val{N}, ::Val{K}) where {N,T,K}
-    return dy[K]
-end
-@inline _nforward_scalar_lane(dy::T, ::Val{1}, ::Int) where {T<:IEEEFloat} = dy
-@inline _nforward_scalar_lane(dy::Complex{T}, ::Val{1}, ::Int) where {T<:IEEEFloat} = dy
-@inline function _nforward_scalar_lane(dy::NTuple{N,T}, ::Val{N}, lane::Int) where {N,T}
-    return dy[lane]
-end
+# chunk_size=1: tangent is a plain scalar — return it regardless of which lane is requested.
+@inline _nforward_scalar_lane(dy, ::Val{1}, _) = dy
+# chunk_size=N: tangent is an NTuple — index with a static Val{K} or a runtime Int.
+@inline _nforward_scalar_lane(dy::NTuple{N}, ::Val{N}, ::Val{K}) where {N,K} = dy[K]
+@inline _nforward_scalar_lane(dy::NTuple{N}, ::Val{N}, lane::Int) where {N} = dy[lane]
 
 function _nforward_contract_output(ȳ::T, dy::T) where {T<:IEEEFloat}
     return (_nforward_real_dot(ȳ, dy),)
@@ -699,17 +676,10 @@ function _nforward_contract_output(
     return ntuple(k -> _nforward_real_dot(ȳ, dy[k]), Val(N))
 end
 
-function _nforward_contract_output(ȳ::A, dy::A) where {T<:IEEEFloat,A<:AbstractArray{T}}
-    acc = zero(T)
-    @inbounds for I in CartesianIndices(ȳ)
-        acc += _nforward_real_dot(ȳ[I], dy[I])
-    end
-    return (acc,)
-end
-
+# Single-chunk array case (ȳ and dy have the same shape — real or complex elements).
 function _nforward_contract_output(
     ȳ::A, dy::A
-) where {T<:Complex{<:IEEEFloat},A<:AbstractArray{T}}
+) where {A<:AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}}
     acc = zero(real(eltype(ȳ)))
     @inbounds for I in CartesianIndices(ȳ)
         acc += _nforward_real_dot(ȳ[I], dy[I])
@@ -717,14 +687,15 @@ function _nforward_contract_output(
     return (acc,)
 end
 
+# Multi-chunk array case (dy has one extra trailing dimension of size N — real or complex).
 function _nforward_contract_output(
     ȳ::A, dy::B
-) where {T<:IEEEFloat,A<:AbstractArray{T},B<:AbstractArray{T}}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},A<:AbstractArray{T},B<:AbstractArray{T}}
     ndims(dy) == ndims(ȳ) + 1 || _nforward_output_error(dy)
     size(dy)[1:(end - 1)] == size(ȳ) || _nforward_output_error(dy)
     N = size(dy, ndims(dy))
     return ntuple(Val(N)) do k
-        acc = zero(T)
+        acc = zero(real(T))
         @inbounds for I in CartesianIndices(ȳ)
             idx = Tuple(I)
             acc += _nforward_real_dot(ȳ[I], dy[idx..., k])
@@ -733,24 +704,14 @@ function _nforward_contract_output(
     end
 end
 
-function _nforward_contract_output(
-    ȳ::A, dy::B
-) where {T<:Complex{<:IEEEFloat},A<:AbstractArray{T},B<:AbstractArray{T}}
-    ndims(dy) == ndims(ȳ) + 1 || _nforward_output_error(dy)
-    size(dy)[1:(end - 1)] == size(ȳ) || _nforward_output_error(dy)
-    N = size(dy, ndims(dy))
-    Treal = real(eltype(ȳ))
-    return ntuple(Val(N)) do k
-        acc = zero(Treal)
-        @inbounds for I in CartesianIndices(ȳ)
-            idx = Tuple(I)
-            acc += _nforward_real_dot(ȳ[I], dy[idx..., k])
-        end
-        acc
-    end
+# Tuple outputs: contract each element independently and sum lane contributions.
+function _nforward_contract_output(ȳ::Tuple, dy::Tuple)
+    length(ȳ) == length(dy) || _nforward_output_error(dy)
+    contributions = map(_nforward_contract_output, ȳ, dy)
+    return foldl((a, b) -> map(+, a, b), contributions)
 end
 
-function _nforward_contract_output(ȳ, dy)
+function _nforward_contract_output(ȳ, dy)
     _nforward_output_error(dy)
 end
 
@@ -1042,24 +1003,17 @@ function _nforward_extract(
     return primal, tangent
 end
 
-function _nforward_extract(y::T, ::Val{N}) where {T<:IEEEFloat,N}
-    return y, _nforward_zero_output_tangent(y, Val(N))
+# Tuple outputs: recurse into each element; primal and tangent are both tuples.
+function _nforward_extract(y::Tuple, ::Val{N}) where {N}
+    pairs = map(yi -> _nforward_extract(yi, Val(N)), y)
+    return map(first, pairs), map(last, pairs)
 end
 
-function _nforward_extract(y::Complex{T}, ::Val{N}) where {T<:IEEEFloat,N}
+# Non-NDual outputs: the primal carries no tangent information; synthesize a zero tangent.
+# Unsupported types fall through to _nforward_output_error via the is_supported_primal guard.
+function _nforward_extract(y, ::Val{N}) where {N}
+    _nforward_is_supported_primal(typeof(y)) || _nforward_output_error(y)
     return y, _nforward_zero_output_tangent(y, Val(N))
-end
-
-function _nforward_extract(y::AbstractArray{T}, ::Val{N}) where {T<:IEEEFloat,N}
-    return y, _nforward_zero_output_tangent(y, Val(N))
-end
-
-function _nforward_extract(y::AbstractArray{Complex{T}}, ::Val{N}) where {T<:IEEEFloat,N}
-    return y, _nforward_zero_output_tangent(y, Val(N))
-end
-
-function _nforward_extract(y, ::Val)
-    _nforward_output_error(y)
 end
 
 #
@@ -1119,44 +1073,19 @@ end
 end
 
 #
-# Cached array/vector scalar fast paths
+# Cached array scalar fast path
 #
-# The array and vector entrypoints stay separate so the vector path can keep its typed
-# workspace specialization without obscuring the generic dense-array path.
+# A single helper covers both Vector{T} and higher-dimensional Array{T,N} inputs.
+# The workspace is fetched via _nforward_scalar_bufs!, which dispatches on the buf type:
+# typed-ref bufs (Vector{T} inputs) stay fully inferred; untyped Ref{Any} bufs (N-D arrays)
+# fall back to a runtime type check inside _nforward_scalar_bufs!.
 
 function _nforward_array_scalar_value_and_gradient(
     f_runtime, x::CoDual{A}, buf::Base.RefValue, ::Val{C}
 ) where {C,T<:IEEEFloat,N,A<:Array{T,N}}
     x_primal = _nforward_check_primal(primal(x))
     grad = set_to_zero!!(tangent(x))
-    seed, lifted = _nforward_array_scalar_bufs!(buf, x_primal, Val(C))
-
-    y = zero(T)
-    for start_slot in 1:C:length(x_primal)
-        _nforward_seed_chunk!(seed, x_primal, start_slot)
-        _nforward_lift!(lifted, x_primal, seed, Val(C))
-        y, lane_vals = _nforward_scalar_lanes(f_runtime(lifted), T, Val(C))
-        global_slot = start_slot
-        for lane_val in lane_vals
-            global_slot > length(x_primal) && break
-            grad[global_slot] += lane_val
-            global_slot += 1
-        end
-    end
-
-    return y, grad
-end
-
-function _nforward_vector_scalar_value_and_gradient(
-    f_runtime, x::CoDual{Vector{T}}, buf::Base.RefValue{Union{Nothing,Tworkspace}}, ::Val{C}
-) where {
-    T<:IEEEFloat,
-    C,
-    Tworkspace<:NamedTuple{(:seed, :lifted),Tuple{Matrix{T},Vector{NDual{T,C}}}},
-}
-    x_primal = _nforward_check_primal(primal(x))
-    grad = set_to_zero!!(tangent(x))
-    seed, lifted = _nforward_vector_scalar_bufs!(buf, x_primal, Val(C))
+    seed, lifted = _nforward_scalar_bufs!(buf, x_primal, Val(C))
 
     y = zero(T)
     for start_slot in 1:C:length(x_primal)
@@ -1175,12 +1104,14 @@ function _nforward_vector_scalar_value_and_gradient(
 end
 
 #
-# Cached array/vector scalar fast-path helpers
+# Workspace helpers (_nforward_scalar_bufs!)
 #
-# Workspace caching and chunk lifting stay split between generic arrays and typed vectors to
-# preserve inference and steady-state allocation behavior.
+# Two methods, dispatched by buf type:
+#   - Typed-ref path (Vector{T}): buf type encodes the workspace type, giving fully-inferred
+#     allocation and a typed assertion with no runtime overhead.
+#   - Generic path (Array{T,N}): buf is Ref{Any}; workspace type is recovered by runtime isa
+#     check inside _nforward_scalar_bufs!.
 
-_nforward_buf_ref(sig, ::Val{nothing}) = Ref{Any}(nothing)
 _nforward_buf_ref(sig, ::Val) = Ref{Any}(nothing)
 
 function _nforward_buf_ref(::Type{Tuple{F,Vector{T}}}, ::Val{C}) where {F,T<:IEEEFloat,C}
@@ -1188,7 +1119,25 @@ function _nforward_buf_ref(::Type{Tuple{F,Vector{T}}}, ::Val{C}) where {F,T<:IEE
     return Ref{Union{Nothing,Tworkspace}}(nothing)
 end
 
-function _nforward_array_scalar_bufs!(
+# Typed-ref path: buf encodes the workspace type; Julia infers the allocation without a
+# runtime isa check.
+function _nforward_scalar_bufs!(
+    buf::Base.RefValue{Union{Nothing,Tworkspace}}, x::Vector{T}, ::Val{C}
+) where {
+    T<:IEEEFloat,
+    C,
+    Tworkspace<:NamedTuple{(:seed, :lifted),Tuple{Matrix{T},Vector{NDual{T,C}}}},
+}
+    ws = buf[]
+    if isnothing(ws) || size(ws.seed) != (length(x), C)
+        ws = Tworkspace((zeros(T, length(x), C), Vector{NDual{T,C}}(undef, length(x))))
+        buf[] = ws
+    end
+    return (ws::Tworkspace).seed, (ws::Tworkspace).lifted
+end
+
+# Generic path: buf is Ref{Any}; workspace type is derived from the input array shape.
+function _nforward_scalar_bufs!(
     buf::Base.RefValue, x::Array{T,N}, ::Val{C}
 ) where {T<:IEEEFloat,N,C}
     Tlift = NDual{T,C}
@@ -1201,24 +1150,7 @@ function _nforward_array_scalar_bufs!(
         ws = Tworkspace((zeros(T, expected_seed_size), Array{Tlift}(undef, size(x))))
         buf[] = ws
     end
-    typed_ws = ws::Tworkspace
-    return typed_ws.seed, typed_ws.lifted
-end
-
-function _nforward_vector_scalar_bufs!(
-    buf::Base.RefValue{Union{Nothing,Tworkspace}}, x::Vector{T}, ::Val{C}
-) where {
-    T<:IEEEFloat,
-    C,
-    Tworkspace<:NamedTuple{(:seed, :lifted),Tuple{Matrix{T},Vector{NDual{T,C}}}},
-}
-    ws = buf[]
-    if isnothing(ws) || size(ws.seed) != (length(x), C)
-        ws = Tworkspace((zeros(T, length(x), C), Vector{NDual{T,C}}(undef, length(x))))
-        buf[] = ws
-    end
-    typed_ws = ws::Tworkspace
-    return typed_ws.seed, typed_ws.lifted
+    return (ws::Tworkspace).seed, (ws::Tworkspace).lifted
 end
 
 function _nforward_seed_chunk!(

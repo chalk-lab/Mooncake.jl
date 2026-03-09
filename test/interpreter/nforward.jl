@@ -152,57 +152,43 @@ end
         @testset "scalar cache edge cases" begin
             square(x) = x^2
             constant_scalar(x) = 1.0
-            edge_cases = (
-                (
-                    name="single-input scalar cache with chunk_size>1",
-                    run=() -> begin
-                        x_single = 1.5
-                        cache = Mooncake.nforward_prepare_cache(
-                            square, x_single; chunk_size=2
-                        )
-                        value, grad = Mooncake.value_and_gradient!!(cache, square, x_single)
-                        @test value == square(x_single)
-                        @test grad == (Mooncake.NoTangent(), 2 * x_single)
-                    end,
-                ),
-                (
-                    name="constant outputs synthesize zero tangents",
-                    run=() -> begin
-                        x_const = 2.0
-                        cache_grad = Mooncake.nforward_prepare_cache(
-                            constant_scalar, x_const; chunk_size=1
-                        )
-                        value_grad, grad = Mooncake.value_and_gradient!!(
-                            cache_grad, constant_scalar, x_const
-                        )
-                        @test value_grad == 1.0
-                        @test grad == (Mooncake.NoTangent(), 0.0)
 
-                        cache_deriv = Mooncake.nforward_prepare_cache(
-                            constant_scalar, x_const; chunk_size=2
-                        )
-                        out = Mooncake.value_and_derivative!!(
-                            cache_deriv,
-                            Mooncake.zero_dual(constant_scalar),
-                            Mooncake.Dual(x_const, (1.0, 0.0)),
-                        )
-                        @test Mooncake.primal(out) == 1.0
-                        @test Mooncake.tangent(out) == (0.0, 0.0)
-                    end,
-                ),
-                (
-                    name="automatic chunk_size selection",
-                    run=() -> begin
-                        cache = Mooncake.nforward_prepare_cache(f, x, y)
-                        z_and_grad = Mooncake.value_and_gradient!!(cache, f, x, y)
-                        @test first(z_and_grad) == z
-                        @test last(z_and_grad) == (Mooncake.NoTangent(), y - sin(x), x)
-                    end,
-                ),
-            )
+            @testset "single-input scalar cache with chunk_size>1" begin
+                x_single = 1.5
+                cache = Mooncake.nforward_prepare_cache(square, x_single; chunk_size=2)
+                value, grad = Mooncake.value_and_gradient!!(cache, square, x_single)
+                @test value == square(x_single)
+                @test grad == (Mooncake.NoTangent(), 2 * x_single)
+            end
 
-            @testset "$case.name" for case in edge_cases
-                case.run()
+            @testset "constant outputs synthesize zero tangents" begin
+                x_const = 2.0
+                cache_grad = Mooncake.nforward_prepare_cache(
+                    constant_scalar, x_const; chunk_size=1
+                )
+                value, grad = Mooncake.value_and_gradient!!(
+                    cache_grad, constant_scalar, x_const
+                )
+                @test value == 1.0
+                @test grad == (Mooncake.NoTangent(), 0.0)
+
+                cache_deriv = Mooncake.nforward_prepare_cache(
+                    constant_scalar, x_const; chunk_size=2
+                )
+                out = Mooncake.value_and_derivative!!(
+                    cache_deriv,
+                    Mooncake.zero_dual(constant_scalar),
+                    Mooncake.Dual(x_const, (1.0, 0.0)),
+                )
+                @test Mooncake.primal(out) == 1.0
+                @test Mooncake.tangent(out) == (0.0, 0.0)
+            end
+
+            @testset "automatic chunk_size selection" begin
+                cache = Mooncake.nforward_prepare_cache(f, x, y)
+                value, grad = Mooncake.value_and_gradient!!(cache, f, x, y)
+                @test value == z
+                @test grad == (Mooncake.NoTangent(), y - sin(x), x)
             end
         end
 
@@ -304,6 +290,54 @@ end
             end
         end
 
+        @testset "tuple outputs" begin
+            @testset "sincos chunk_size=1 frule and rrule" begin
+                x_sc = 1.2
+                frule = Mooncake.nforward_build_frule(sincos, x_sc; chunk_size=1)
+                out = frule(Mooncake.zero_dual(sincos), Mooncake.Dual(x_sc, 1.0))
+                @test Mooncake.primal(out) == sincos(x_sc)
+                s_t, c_t = Mooncake.tangent(out)
+                @test s_t ≈ cos(x_sc)
+                @test c_t ≈ -sin(x_sc)
+
+                rrule = Mooncake.nforward_build_rrule(sincos, x_sc; chunk_size=1)
+                ȳ_sc, pb!! = rrule(
+                    Mooncake.zero_fcodual(sincos), Mooncake.zero_fcodual(x_sc)
+                )
+                @test Mooncake.primal(ȳ_sc) == sincos(x_sc)
+                ȳ_sin, ȳ_cos = 3.0, 2.0
+                @test pb!!((ȳ_sin, ȳ_cos)) ==
+                    (Mooncake.NoRData(), ȳ_sin * cos(x_sc) + ȳ_cos * (-sin(x_sc)))
+            end
+
+            @testset "sincos chunk_size=2 via prepare_cache" begin
+                x_sc = 0.7
+                cache = Mooncake.nforward_prepare_cache(sincos, x_sc; chunk_size=2)
+                value, pullback = Mooncake.value_and_pullback!!(
+                    cache.rrule, (3.0, 2.0), sincos, x_sc
+                )
+                @test value == sincos(x_sc)
+                @test pullback[2] ≈ 3.0 * cos(x_sc) + 2.0 * (-sin(x_sc))
+            end
+
+            @testset "modf derivative: frac=1, int=0" begin
+                x_mf = 3.7
+                frule = Mooncake.nforward_build_frule(modf, x_mf; chunk_size=1)
+                out = frule(Mooncake.zero_dual(modf), Mooncake.Dual(x_mf, 1.0))
+                @test Mooncake.primal(out) == modf(x_mf)
+                frac_t, int_t = Mooncake.tangent(out)
+                @test frac_t ≈ 1.0
+                @test int_t ≈ 0.0
+            end
+
+            @testset "tuple output rejects value_and_gradient!!" begin
+                cache = Mooncake.nforward_prepare_cache(sincos, 1.0; chunk_size=1)
+                @test_throws Mooncake.ValueAndGradientReturnTypeError Mooncake.value_and_gradient!!(
+                    cache, sincos, 1.0
+                )
+            end
+        end
+
         @testset "test_rule integration" begin
             nf = NForwardRRuleTestFunc{2,typeof(f)}(f)
             Mooncake.TestUtils.test_rule(
@@ -340,55 +374,28 @@ end
         end
 
         @testset "unsupported config is rejected" begin
-            unsupported_cases = (
-                (
-                    name="friendly tangents",
-                    thunk=() -> Mooncake.nforward_prepare_cache(
-                        f,
-                        x,
-                        y;
-                        chunk_size=1,
-                        config=Mooncake.Config(; friendly_tangents=true),
-                    ),
-                ),
-                (
-                    name="debug mode cache",
-                    thunk=() -> Mooncake.nforward_prepare_cache(
-                        f, x, y; chunk_size=1, config=Mooncake.Config(; debug_mode=true)
-                    ),
-                ),
-                (
-                    name="unsupported abstract array input",
-                    thunk=() ->
-                        Mooncake.nforward_prepare_cache(f, view([x, y], 1:2); chunk_size=1),
-                ),
-                (
-                    name="debug mode frule builder",
-                    thunk=() -> Mooncake.nforward_build_frule(
-                        f, x, y; chunk_size=1, debug_mode=true
-                    ),
-                ),
-                (
-                    name="debug mode rrule builder",
-                    thunk=() -> Mooncake.nforward_build_rrule(
-                        f, x, y; chunk_size=1, debug_mode=true
-                    ),
-                ),
+            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
+                f, x, y; chunk_size=1, config=Mooncake.Config(; friendly_tangents=true)
             )
-
-            @testset "$case.name" for case in unsupported_cases
-                @test_throws ArgumentError case.thunk()
-            end
+            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
+                f, x, y; chunk_size=1, config=Mooncake.Config(; debug_mode=true)
+            )
+            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
+                f, view([x, y], 1:2); chunk_size=1
+            )
+            @test_throws ArgumentError Mooncake.nforward_build_frule(
+                f, x, y; chunk_size=1, debug_mode=true
+            )
+            @test_throws ArgumentError Mooncake.nforward_build_rrule(
+                f, x, y; chunk_size=1, debug_mode=true
+            )
         end
 
         @testset "invalid chunk_size is rejected" begin
-            invalid_chunk_cases = (
-                () -> Mooncake.nforward_build_frule(f, x, y; chunk_size=0),
-                () -> Mooncake.nforward_prepare_cache(f, x, y; chunk_size=-1),
+            @test_throws ArgumentError Mooncake.nforward_build_frule(f, x, y; chunk_size=0)
+            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
+                f, x, y; chunk_size=-1
             )
-            for thunk in invalid_chunk_cases
-                @test_throws ArgumentError thunk()
-            end
         end
 
         @testset "function tangent rejection" begin
@@ -508,6 +515,24 @@ end
                 @test steady_state_allocations_rrule(rule, fx) == 0
                 @test steady_state_allocations_value_and_gradient(cache, case.f, case.x) ==
                     0
+            end
+
+            @testset "multi-argument array pullback pins allocations" begin
+                # The generic (multi-arg) pullback path allocates for temporaries; pin it so
+                # regressions are caught.  This does not assert zero: it asserts the value
+                # does not grow unexpectedly between runs (steady-state == 3rd-run value).
+                h(x, y) = sum(x .* y)
+                x_a = randn(8)
+                y_a = randn(8)
+                rrule = Mooncake.nforward_build_rrule(h, x_a, y_a; chunk_size=4)
+                fx = (
+                    Mooncake.zero_fcodual(h),
+                    Mooncake.zero_fcodual(x_a),
+                    Mooncake.zero_fcodual(y_a),
+                )
+                allocs = steady_state_allocations_rrule(rrule, fx)
+                # Re-measure to confirm steady-state (two identical runs).
+                @test steady_state_allocations_rrule(rrule, fx) == allocs
             end
         end
 

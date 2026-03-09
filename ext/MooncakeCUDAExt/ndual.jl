@@ -779,6 +779,31 @@ for _op in (:floor, :ceil, :round, :trunc, :div, :fld, :cld, :mod, :rem, :gcd, :
     )
 end
 
+# `rem(x, y)` has subgradient ∂x=1, ∂y=-floor(x/y) (a.e.). Defining the two-NDual
+# method here resolves the ambiguity with Base's `rem(x::T, y::T) where T<:Real` and
+# enables functions like `modf` that call `rem(x, T(1))` internally.
+# Rounding ops have zero partial derivatives (piecewise constant). Define specific methods
+# so that functions like `modf` (which calls `trunc`) work through NDual on the CPU.
+for _op in (:floor, :ceil, :trunc)
+    @eval function Base.$_op(x::NDual{T,N}) where {T<:IEEEFloat,N}
+        return NDual{T,N}(Base.$_op(ndual_value(x)), ntuple(_ -> zero(T), Val(N)))
+    end
+end
+function Base.round(x::NDual{T,N}, r::RoundingMode=RoundNearest) where {T<:IEEEFloat,N}
+    return NDual{T,N}(round(ndual_value(x), r), ntuple(_ -> zero(T), Val(N)))
+end
+
+# `rem(x, y)` has subgradient ∂x=1, ∂y=-floor(x/y) (a.e.). Defining the two-NDual
+# method here resolves the ambiguity with Base's `rem(x::T, y::T) where T<:Real` and
+# enables functions like `modf` that call `rem(x, T(1))` internally.
+function Base.rem(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
+    pv, yv = ndual_value(x), ndual_value(y)
+    c = floor(pv / yv)
+    return NDual{T,N}(
+        rem(pv, yv), ntuple(k -> ndual_partial(x, k) - c * ndual_partial(y, k), Val(N))
+    )
+end
+
 # ── Future: tiled GPU kernels with NDual ──────────────────────────────────────────
 #
 # The current broadcast AD uses one NDual{T,N} per thread: every thread computes
