@@ -41,17 +41,20 @@ const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
 )
 
 # Helper accumulator functions
-_accum_fdata!(xf::AbstractArray, ::Array{T}, g::Array{T}) where {T<:IEEEFloat} = xf .+= g
-_accum_fdata!(xf::AbstractArray, ::Array{T}, g::T) where {T<:IEEEFloat} = xf .+= g
-function _accum_fdata!(xf::FData, ::Adjoint, g::Array{T}) where {T<:IEEEFloat}
+function _accum_fdata!(
+    xf::AbstractArray, ::AbstractArray{T}, g::AbstractArray{T}
+) where {T<:IEEEFloat}
+    return xf .+= g
+end
+_accum_fdata!(xf::AbstractArray, ::AbstractArray{T}, g::T) where {T<:IEEEFloat} = xf .+= g
+function _accum_fdata!(xf::FData, ::Adjoint{T}, g::AbstractArray{T}) where {T<:IEEEFloat}
     return xf.data.parent .+= g'
 end
-function _accum_fdata!(xf::FData, ::Transpose, g::Array{T}) where {T<:IEEEFloat}
+function _accum_fdata!(xf::FData, ::Transpose{T}, g::AbstractArray{T}) where {T<:IEEEFloat}
     return xf.data.parent .+= transpose(g)
 end
 
 # logsoftmax rrules
-
 @is_primitive MinimalCtx Tuple{typeof(logsoftmax),AbstractArray{<:IEEEFloat}}
 @is_primitive MinimalCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),AbstractArray{<:IEEEFloat}
@@ -88,7 +91,6 @@ function Mooncake.rrule!!(
 end
 
 # softmax rrules
-
 @is_primitive MinimalCtx Tuple{typeof(softmax),AbstractArray{<:IEEEFloat}}
 @is_primitive MinimalCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(softmax),AbstractArray{<:IEEEFloat}
@@ -125,7 +127,6 @@ function Mooncake.rrule!!(
 end
 
 # logsumexp rrules
-
 @is_primitive MinimalCtx Tuple{typeof(logsumexp),AbstractArray{<:IEEEFloat}}
 @is_primitive MinimalCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),AbstractArray{<:IEEEFloat}
