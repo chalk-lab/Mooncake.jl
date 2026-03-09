@@ -233,9 +233,9 @@ end
 @from_rrule(MinimalCtx, Tuple{typeof(pad_constant),SupportedArray,Any,Any}, true)
 
 # Direct rules for bias_act!(identity, x, b) on GPU arrays. NNlib's ChainRules rrule for
-# bias_act! requires a RuleConfig, which @from_rrule doesn't supply. On GPU, bias_act!
-# falls back to `x .+ b` (not in-place), so we return a new array with its own gradient
-# buffer, then in the pullback propagate dout to dx and sum over broadcast dims for db.
+# bias_act! requires a RuleConfig, which @from_rrule doesn't supply. bias_act! modifies
+# x in-place (x .+= b), so we follow the same pattern as mul!: save x's primal before
+# mutation, compute in-place, return x as output, and restore x's primal in the pullback.
 const GPUIEEEArray{T<:IEEEFloat} = AbstractGPUArray{T}
 @is_primitive(
     MinimalCtx, Tuple{typeof(bias_act!),typeof(identity),GPUIEEEArray,GPUIEEEArray},
@@ -246,7 +246,9 @@ function frule!!(
     x::Dual{<:GPUIEEEArray},
     b::Dual{<:GPUIEEEArray},
 )
-    return Dual(primal(x) .+ primal(b), tangent(x) .+ tangent(b))
+    primal(x) .+= primal(b)
+    tangent(x) .+= tangent(b)
+    return x
 end
 function rrule!!(
     ::CoDual{typeof(bias_act!)},
@@ -254,16 +256,22 @@ function rrule!!(
     x::CoDual{<:GPUIEEEArray{T,N}},
     b::CoDual{<:GPUIEEEArray},
 ) where {T,N}
-    y = primal(x) .+ primal(b)
-    dy = similar(y)
-    dy .= 0
-    dims = ntuple(d -> size(primal(b), d) == 1 ? d : N + 1, N)
+    px, dx = primal(x), tangent(x)
+    pb, db = primal(b), tangent(b)
+    px_copy = copy(px)
+    px .+= pb
+    # Dims over which b is broadcast (size 1 in b but potentially larger in x).
+    broadcast_dims = Tuple(filter(d -> size(pb, d) == 1, 1:N))
     function bias_act_id_pb!!(::NoRData)
-        x.dx .+= dy
-        b.dx .+= reshape(sum(dy; dims), size(primal(b)))
+        if isempty(broadcast_dims)
+            db .+= dx
+        else
+            db .+= reshape(sum(dx; dims=broadcast_dims), size(pb))
+        end
+        copyto!(px, px_copy)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
-    return CoDual(y, dy), bias_act_id_pb!!
+    return x, bias_act_id_pb!!
 end
 
 end
