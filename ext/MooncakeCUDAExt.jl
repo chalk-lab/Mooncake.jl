@@ -155,19 +155,13 @@ end
 
 # Basic rules for operating on CuArrays.
 
-# Outer-constructor primitives are required here rather than `_new_` rules because the
-# `CuArray(undef, dims)` constructor body performs GPU memory allocation (pool_alloc,
-# DataRef construction, GPUArrays.cached_alloc) *before* the `new` call. A `_new_` rule
-# alone would force Mooncake to trace through all that CUDA-internal machinery. Making
-# the whole outer constructor primitive bypasses that and directly produces the correct
-# (primal, tangent) pair — a fresh uninitialized primal and a zero-initialised tangent
-# of the same shape.
+# Primitive (not _new_) because GPU allocation happens inside the constructor body before
+# the `new` call; tracing through it would hit CUDA-internal machinery.
 @zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
 
-# Primitive rule for `reshape`: prevents tracing into CUDA.jl's reshape body which calls
-# `copy(DataRef{...})` for reference-count management and hits llvmcall. reshape creates
-# a view (shared GPU memory), so the tangent is simply a reshaped view of the input
-# tangent — gradient accumulation propagates automatically and NoPullback is correct.
+# Primitive because CUDA.jl's reshape body calls copy(DataRef) for reference counting,
+# which uses llvmcall. reshape returns a view, so the tangent is a reshaped view of
+# x.dx and gradient accumulation propagates automatically — NoPullback is correct.
 @is_primitive(MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},)
 function frule!!(
     ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
@@ -182,9 +176,9 @@ function rrule!!(
         NoPullback(ntuple(_ -> NoRData(), 3))
 end
 
-# `_new_` rules for the DataRef-based inner CuArray constructor, used by e.g. `reshape`
-# and views. The tangent shares the DataRef (gradient memory) from the input tangent
-# array, but with the new dims/offset — so gradient accumulation is automatic.
+# `_new_` rules for the DataRef-based inner CuArray constructor (used by views and
+# similar operations). The tangent reuses the DataRef from the input tangent so that
+# gradient accumulation propagates automatically.
 function frule!!(
     ::Dual{typeof(_new_)}, ::Dual{Type{P}},
     data::Dual, maxsize::Dual, offset::Dual, dims::Dual,
