@@ -164,6 +164,41 @@ end
 # of the same shape.
 @zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
 
+# The Vararg form CuArray(undef, d1, d2, ...) is a distinct dispatch target from the
+# NTuple form above, so it needs its own primitive. Tangent is zero-initialised to avoid
+# treating uninitialised GPU memory as a gradient accumulator.
+@is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
+function frule!!(
+    ::Dual{Type{P}}, ::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
+) where {P<:CuMaybeComplexArray,N}
+    y = P(undef, map(primal, dims))
+    return Dual(y, zero(y))
+end
+function rrule!!(
+    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::Vararg{CoDual{Int},N}
+) where {P<:CuMaybeComplexArray,N}
+    y = P(undef, map(primal, dims))
+    return CoDual(y, zero(y)), NoPullback(p, init, dims...)
+end
+
+# Primitive rule for `reshape`: prevents tracing into CUDA.jl's reshape body which calls
+# `copy(DataRef{...})` for reference-count management and hits llvmcall. reshape creates
+# a view (shared GPU memory), so the tangent is simply a reshaped view of the input
+# tangent — gradient accumulation propagates automatically and NoPullback is correct.
+@is_primitive(MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},)
+function frule!!(
+    ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
+)
+    return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
+end
+function rrule!!(
+    ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
+)
+    _dims = primal(dims)
+    return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)),
+        NoPullback(ntuple(_ -> NoRData(), 3))
+end
+
 # `_new_` rules for the DataRef-based inner CuArray constructor, used by e.g. `reshape`
 # and views. The tangent shares the DataRef (gradient memory) from the input tangent
 # array, but with the new dims/offset — so gradient accumulation is automatic.
