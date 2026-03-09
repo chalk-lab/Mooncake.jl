@@ -53,6 +53,23 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+# Higher-level ops like `reshape(x, ...)` and view-like constructors reuse CuArray storage
+# by rebuilding the array from the `CuDataRef` returned by `getfield(x, :data)` plus
+# metadata. For example:
+# `y = reshape(x, 32, 64)` becomes
+# `y = _new_(typeof(y), getfield(x, :data), getfield(x, :maxsize), getfield(x, :offset), (32, 64))`.
+# If this path grows, nearby internal storage types to watch for custom tangent handling are
+# `GPUArrays.RefCounted`, `CUDA.Managed`, `CUDA.DeviceMemory`, `CuStream`, and `CuContext`.
+# Mooncake's default tangents can easily become the wrong representation for these
+# handle-like CuArray internal types: their fields describe ownership/state/pointers, not
+# differentiable array data.
+const CuDataRef = fieldtype(CuArray{Float32,1}, :data)
+
+# DataRef values are mutable reference-counted handles; preserve them as-is for fdata.
+@foldable tangent_type(::Type{P}) where {P<:CuDataRef} = P
+@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuDataRef} = P
+tangent(p::CuDataRef, ::NoRData) = p
+Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) = nothing
 
 # Tell Mooncake.jl how to handle CuArrays.
 

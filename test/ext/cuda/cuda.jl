@@ -4,7 +4,9 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, CUDA, JET, Mooncake, StableRNGs, Test
 using Mooncake: lgetfield
-using Mooncake.TestUtils: test_tangent_interface, test_tangent_splitting, test_rule
+using Mooncake.TestUtils:
+    test_tangent_interface, test_tangent_splitting, test_rule, test_frule_interface,
+    test_rrule_interface
 using LinearAlgebra
 
 @testset "cuda" begin
@@ -48,10 +50,34 @@ using LinearAlgebra
                 @test all(iszero, tangent_p)
             end
         end
-        Trng = CUDA.RNG
         rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
-        _sin_bcast(x) = sin.(x)
+        @testset "_new_ interface" begin
+            # Hand-build DataRef tangents because test_rule always creates randn_dual inputs,
+            # even for interface-only checks. For `_new_`, that would call randn_tangent on
+            # CuDataRef and recurse into CUDA's internal handle fields.
+            for ET in (Float64, ComplexF64)
+                data = getfield(_rand(rng, ET, 64, 32), :data)
+                test_frule_interface(
+                    Mooncake.Dual(Mooncake._new_, Mooncake.NoTangent()),
+                    Mooncake.Dual(CuArray{ET,2,CUDA.DeviceMemory}, Mooncake.NoTangent()),
+                    Mooncake.Dual(data, copy(data)),
+                    Mooncake.Dual(2048, Mooncake.NoTangent()),
+                    Mooncake.Dual(0, Mooncake.NoTangent()),
+                    Mooncake.Dual((64, 32), Mooncake.NoTangent());
+                    frule=Mooncake.frule!!,
+                )
+                test_rrule_interface(
+                    Mooncake.CoDual(Mooncake._new_, Mooncake.NoTangent()),
+                    Mooncake.CoDual(CuArray{ET,2,CUDA.DeviceMemory}, Mooncake.NoTangent()),
+                    Mooncake.CoDual(data, copy(data)),
+                    Mooncake.CoDual(2048, Mooncake.NoTangent()),
+                    Mooncake.CoDual(0, Mooncake.NoTangent()),
+                    Mooncake.CoDual((64, 32), Mooncake.NoTangent());
+                    rrule=Mooncake.rrule!!,
+                )
+            end
+        end
         test_cases = Any[
             # sum
             (false, :none, false, sum, _rand(rng, 64, 32)),
@@ -66,35 +92,13 @@ using LinearAlgebra
             # reshape — exercises the DataRef-based _new_ rule
             (false, :none, false, x -> reshape(x, 32, 64), _rand(rng, 64, 32)),
             (false, :none, false, x -> reshape(x, 32, 64), _rand(rng, ComplexF64, 64, 32)),
-            # _new_ — direct test of the DataRef-based rule
-            (
-                false,
-                :none,
-                true,
-                Mooncake._new_,
-                CuArray{Float64,2,CUDA.DeviceMemory},
-                getfield(_rand(rng, 64, 32), :data),
-                2048,
-                0,
-                (64, 32),
-            ),
-            (
-                false,
-                :none,
-                true,
-                Mooncake._new_,
-                CuArray{ComplexF64,2,CUDA.DeviceMemory},
-                getfield(_rand(rng, ComplexF64, 64, 32), :data),
-                2048,
-                0,
-                (64, 32),
-            ),
             # lgetfield
-            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(1)),
+            # `data` is an opaque storage handle, so only test the AD interface for these.
+            (true, :none, true, lgetfield, _rand(rng, 64, 32), Val(1)),
             (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(2)),
             (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(3)),
             (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(4)),
-            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:data)),
+            (true, :none, true, lgetfield, _rand(rng, 64, 32), Val(:data)),
             (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:maxsize)),
             (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:offset)),
             (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:dims)),
