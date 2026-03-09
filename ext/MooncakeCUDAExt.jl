@@ -162,7 +162,9 @@ end
 # Primitive because CUDA.jl's reshape body calls copy(DataRef) for reference counting,
 # which uses llvmcall. reshape returns a view, so the tangent is a reshaped view of
 # x.dx and gradient accumulation propagates automatically — NoPullback is correct.
-@is_primitive(MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},)
+@is_primitive(
+    MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
+)
 function frule!!(
     ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
 )
@@ -173,23 +175,31 @@ function rrule!!(
 )
     _dims = primal(dims)
     return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)),
-        NoPullback(ntuple(_ -> NoRData(), 3))
+    NoPullback(ntuple(_ -> NoRData(), 3))
 end
 
 # `_new_` rules for the DataRef-based inner CuArray constructor (used by views and
 # similar operations). The tangent reuses the DataRef from the input tangent so that
 # gradient accumulation propagates automatically.
 function frule!!(
-    ::Dual{typeof(_new_)}, ::Dual{Type{P}},
-    data::Dual, maxsize::Dual, offset::Dual, dims::Dual,
+    ::Dual{typeof(_new_)},
+    ::Dual{Type{P}},
+    data::Dual,
+    maxsize::Dual,
+    offset::Dual,
+    dims::Dual,
 ) where {P<:CuMaybeComplexArray}
     y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
     dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
     return Dual(y, dy)
 end
 function rrule!!(
-    ::CoDual{typeof(_new_)}, ::CoDual{Type{P}},
-    data::CoDual, maxsize::CoDual, offset::CoDual, dims::CoDual,
+    ::CoDual{typeof(_new_)},
+    ::CoDual{Type{P}},
+    data::CoDual,
+    maxsize::CoDual,
+    offset::CoDual,
+    dims::CoDual,
 ) where {P<:CuMaybeComplexArray}
     y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
     dy = _new_(P, data.dx, primal(maxsize), primal(offset), primal(dims))
