@@ -4,6 +4,10 @@ using BFloat16s: BFloat16s
 using Mooncake
 using Random: AbstractRNG
 
+#! format: off
+# Core.BFloat16 only exists on Julia >= 1.11; no-op on LTS.
+@static if isdefined(Core, :BFloat16)
+
 import Mooncake:
     MaybeCache,
     IncCache,
@@ -450,5 +454,8 @@ function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
     pb(dy::P) = NoRData(), dy
     return zero_fcodual(prevfloat(primal(x))), pb
 end
+
+end # end # @static if isdefined(Core, :BFloat16)
+#! format: on
 
 end # module MooncakeBFloat16sExt
