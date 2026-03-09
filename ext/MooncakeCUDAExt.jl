@@ -249,8 +249,7 @@ function rrule!!(
 end
 
 # Rule for `sum` is defined as a performance rule. 
-# TODO: These rules can be merged with the `sum` rules in `rules/performance_patches`. 
-# This would be done by defining `arrayify` for `CuFloatArray`.
+# See also `src/rules/performance_patches`. 
 @is_primitive(DefaultCtx, Tuple{typeof(sum),CuFloatArray})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuFloatArray})
     return Dual(sum(primal(x)), sum(tangent(x)))
