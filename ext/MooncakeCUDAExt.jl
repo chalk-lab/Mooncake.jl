@@ -248,8 +248,8 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 3))
 end
 
-# Rule for `sum` is defined as a performance rule. 
-# See also `src/rules/performance_patches`. 
+# Rule for `sum` is defined as a performance rule.
+# See also `src/rules/performance_patches`.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),CuFloatArray})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuFloatArray})
     return Dual(sum(primal(x)), sum(tangent(x)))
