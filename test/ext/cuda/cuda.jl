@@ -65,6 +65,38 @@ using LinearAlgebra
             # reshape — exercises the DataRef-based _new_ rule
             (false, :none, false, x -> reshape(x, 32, 64), _rand(rng, 64, 32)),
             (false, :none, false, x -> reshape(x, 32, 64), _rand(rng, ComplexF64, 64, 32)),
+            # _new_ — direct test of the DataRef-based rule
+            (
+                false,
+                :none,
+                true,
+                Mooncake._new_,
+                CuArray{Float64,2,CUDA.DeviceMemory},
+                getfield(_rand(rng, 64, 32), :data),
+                2048,
+                0,
+                (64, 32),
+            ),
+            (
+                false,
+                :none,
+                true,
+                Mooncake._new_,
+                CuArray{ComplexF64,2,CUDA.DeviceMemory},
+                getfield(_rand(rng, ComplexF64, 64, 32), :data),
+                2048,
+                0,
+                (64, 32),
+            ),
+            # lgetfield
+            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(1)),
+            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(2)),
+            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(3)),
+            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(4)),
+            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:data)),
+            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:maxsize)),
+            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:offset)),
+            (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:dims)),
         ]
         @testset "$(typeof(fargs))" for (
             interface_only, perf_flag, is_primitive, fargs...
