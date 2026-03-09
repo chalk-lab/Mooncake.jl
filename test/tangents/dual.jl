@@ -39,9 +39,10 @@
         # General Abstract Tuples
         (Tuple{Any}, Dual),
 
-        # Abstract Vararg / NTuple UnionAll tuples
+        # Abstract Vararg / NTuple UnionAll tuples (bounded and unbounded)
         (NTuple{N,Int} where {N}, Dual),
-        (Tuple{Vararg{Float64}} where {N}, Dual),
+        (Tuple{Vararg{Float64,N}} where {N}, Dual),
+        (Tuple{Vararg{Float64}}, Dual),
     ]
         @test TestUtils.check_allocs(dual_type, P) == D
     end
