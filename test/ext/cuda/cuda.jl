@@ -117,7 +117,15 @@ using LinearAlgebra
                 _rand(rng, 8, 32),
             ),
             # mul! (matrix × vector, Float64)
-            (false, :stability, false, mul!, _rand(rng, 16), _rand(rng, 16, 8), _rand(rng, 8)),
+            (
+                false,
+                :stability,
+                false,
+                mul!,
+                _rand(rng, 16),
+                _rand(rng, 16, 8),
+                _rand(rng, 8),
+            ),
             # mul! (matrix × matrix, ComplexF64)
             (
                 false,

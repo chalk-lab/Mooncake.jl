@@ -25,6 +25,8 @@ import Mooncake:
     primal,
     tangent,
     arrayify,
+    frule!!,
+    Dual
 
 # Array types which we test rules against, so are confident work.
 const SupportedArray{P} = Union{
@@ -42,7 +44,7 @@ const SupportedArray{P} = Union{
     function _maximum(
         x::Tx, dims, init
     ) where {T<:IEEEFloat,A<:Array{T},Tx<:Union{Adjoint{T,A},Transpose{T,A}}}
-        maximum(collect(x); dims, init)
+        return maximum(collect(x); dims, init)
     end
 end
 _maximum(x, dims, init) = maximum(x; dims, init)
