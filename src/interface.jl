@@ -252,7 +252,7 @@ end
 
 For checking if output`y` is a valid Mutable/immutable composite or a primitive type.
 Performs a recursive depth first search over the function output `y` with an `isbitstype()` check base case. The visited memory addresses are stored inside `address_set`.
-If the set already contains a newly visited address, it errors out indicating an Alais or Circular reference.
+If the set already contains a newly visited address, it errors out indicating an Alias or Circular reference.
 Also errors out if `y` is or contains a Pointer.
 It is called internally by [`__exclude_unsupported_output(y)`](@ref).
 """
