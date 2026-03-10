@@ -177,7 +177,8 @@ function Mooncake.rrule!!(
     # Only collect for CPU Adjoints/Transposes, as GPUArray must not be drawn to CPU.
     xp = _xp isa Union{Adjoint{T,<:Array{T}},Transpose{T,<:Array{T}}} ? collect(_xp) : _xp
     max_ = maximum(xp; dims, init=typemin(T))
-    @fastmath tmp = exp.(xp .- max_)
+    # avoids Inf instability when xp[i]==max_==Inf
+    @fastmath tmp = ifelse.(xp .== max_, one(T), exp.(xp .- max_))
     s = sum(tmp; dims)
     @fastmath y = max_ .+ log.(s)
     res = zero_fcodual(y)

@@ -299,3 +299,47 @@ const _accum_fdata! = MooncakeNNlibExt._accum_fdata!
     _accum_fdata!(xf_tr2, transpose(A), g)
     @test parent_tr2 ≈ ones(4, 3) .+ transpose(g)
 end
+
+@testset "logsumexp Inf/NaN stability" begin
+    function test_logsumexp_inf(x, dims)
+        seed = ones(eltype(x), size(logsumexp(x; dims=dims)))
+        cache = Mooncake.prepare_pullback_cache(
+            Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
+        )
+        y, (_, _, _, dx) = Mooncake.value_and_pullback!!(
+            cache, seed, Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
+        )
+        return y, dx
+    end
+
+    # All Inf inputs
+    y, dx = test_logsumexp_inf(Float32[Inf, Inf], 1)
+    @test all(isinf.(y)) && all(y .> 0)
+    @test !any(isnan.(dx))
+    @test dx ≈ Float32[0.5, 0.5]
+
+    # All Inf inputs - Matrix case
+    y, dx = test_logsumexp_inf(Float32[Inf Inf; Inf Inf], 1)
+    @test !any(isnan.(y)) && !any(isnan.(dx))
+    @test dx ≈ Float32[0.5 0.5; 0.5 0.5]
+
+    # All -Inf inputs
+    y, dx = test_logsumexp_inf(Float32[-Inf, -Inf], 1)
+    @test all(isinf.(y)) && all(y .< 0)
+    @test !any(isnan.(dx))
+    @test dx ≈ Float32[0.5, 0.5]
+
+    # Mixed Inf and finite inputs
+    y, dx = test_logsumexp_inf(Float32[Inf, 1.0f0], 1)
+    @test all(isinf.(y)) && all(y .> 0)
+    @test !any(isnan.(dx))
+    @test dx ≈ Float32[1.0f0, 0.0f0]
+
+    # Adjoint with Inf inputs
+    y, dx = test_logsumexp_inf(Float32[Inf 1.0f0; 2.0f0 Inf]', 1)
+    @test !any(isnan.(y)) && !any(isnan.(dx.fields.parent))
+
+    # Transpose with Inf inputs
+    y, dx = test_logsumexp_inf(transpose(Float32[Inf 1.0f0; 2.0f0 Inf]), 1)
+    @test !any(isnan.(y)) && !any(isnan.(dx.fields.parent))
+end
