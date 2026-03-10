@@ -42,27 +42,44 @@ const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
 
 # Helper accumulator functions
 function _accum_fdata!(
-    xf::AbstractArray, ::AbstractArray{T}, g::AbstractArray{T}
+    xf::SupportedArray{T}, ::SupportedArray{T}, g::SupportedArray{T}
 ) where {T<:IEEEFloat}
     return xf .+= g
 end
-_accum_fdata!(xf::AbstractArray, ::AbstractArray{T}, g::T) where {T<:IEEEFloat} = xf .+= g
-function _accum_fdata!(xf::FData, ::Adjoint{T}, g::AbstractArray{T}) where {T<:IEEEFloat}
+function _accum_fdata!(
+    xf::SupportedArray{T}, ::SupportedArray{T}, g::T
+) where {T<:IEEEFloat}
+    return xf .+= g
+end
+function _accum_fdata!(xf::FData, ::Adjoint{T}, g::Array{T}) where {T<:IEEEFloat}
     return xf.data.parent .+= g'
 end
-function _accum_fdata!(xf::FData, ::Transpose{T}, g::AbstractArray{T}) where {T<:IEEEFloat}
+function _accum_fdata!(xf::FData, ::Transpose{T}, g::Array{T}) where {T<:IEEEFloat}
     return xf.data.parent .+= transpose(g)
 end
 
+# Fallback for currently unhandled T<:AbsractArray, can be dealt with in the future.
+function _accum_fdata!(xf, x::AbstractArray{T}, g) where {T<:IEEEFloat}
+    return error(
+        """
+    `_accum_fdata!` is not implemented for array type $(typeof(x)).
+    If you are trying to differentiate through `softmax`, `logsoftmax`, or `logsumexp`
+    with a custom array wrapper, please open an issue or add a method:
+
+        _accum_fdata!(xf::YourTangentType, ::YourArrayType{T}, g::YourGradType) where {T<:IEEEFloat}
+    """,
+    )
+end
+
 # logsoftmax rrules
-@is_primitive MinimalCtx Tuple{typeof(logsoftmax),AbstractArray{<:IEEEFloat}}
+@is_primitive MinimalCtx Tuple{typeof(logsoftmax),AbstractArray{T}} where {T<:IEEEFloat}
 @is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),AbstractArray{<:IEEEFloat}
-}
+    typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),AbstractArray{T}
+} where {T<:IEEEFloat}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(logsoftmax)}, x::CoDual{<:AbstractArray{<:IEEEFloat}}
-)
+    ::CoDual{typeof(logsoftmax)}, x::CoDual{<:AbstractArray{T}}
+) where {T<:IEEEFloat}
     xp = primal(x)
     y = logsoftmax(xp)
     res = zero_fcodual(y)
@@ -77,8 +94,8 @@ function Mooncake.rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple{(:dims,)}},
     ::CoDual{typeof(logsoftmax)},
-    x::CoDual{<:AbstractArray{<:IEEEFloat}},
-)
+    x::CoDual{<:AbstractArray{T}},
+) where {T<:IEEEFloat}
     dims = primal(kw).dims
     xp = primal(x)
     y = logsoftmax(xp; dims)
@@ -91,14 +108,14 @@ function Mooncake.rrule!!(
 end
 
 # softmax rrules
-@is_primitive MinimalCtx Tuple{typeof(softmax),AbstractArray{<:IEEEFloat}}
+@is_primitive MinimalCtx Tuple{typeof(softmax),AbstractArray{T}} where {T<:IEEEFloat}
 @is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(softmax),AbstractArray{<:IEEEFloat}
-}
+    typeof(Core.kwcall),NamedTuple,typeof(softmax),AbstractArray{T}
+} where {T<:IEEEFloat}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(softmax)}, x::CoDual{<:AbstractArray{<:IEEEFloat}}
-)
+    ::CoDual{typeof(softmax)}, x::CoDual{<:AbstractArray{T}}
+) where {T<:IEEEFloat}
     xp = primal(x)
     y = softmax(xp)
     res = zero_fcodual(y)
@@ -113,8 +130,8 @@ function Mooncake.rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple{(:dims,)}},
     ::CoDual{typeof(softmax)},
-    x::CoDual{<:AbstractArray{<:IEEEFloat}},
-)
+    x::CoDual{<:AbstractArray{T}},
+) where {T<:IEEEFloat}
     dims = primal(kw).dims
     xp = primal(x)
     y = softmax(xp; dims)
@@ -127,10 +144,10 @@ function Mooncake.rrule!!(
 end
 
 # logsumexp rrules
-@is_primitive MinimalCtx Tuple{typeof(logsumexp),AbstractArray{<:IEEEFloat}}
+@is_primitive MinimalCtx Tuple{typeof(logsumexp),AbstractArray{T}} where {T<:IEEEFloat}
 @is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(logsumexp),AbstractArray{<:IEEEFloat}
-}
+    typeof(Core.kwcall),NamedTuple,typeof(logsumexp),AbstractArray{T}
+} where {T<:IEEEFloat}
 
 function Mooncake.rrule!!(
     ::CoDual{typeof(logsumexp)}, x::CoDual{<:AbstractArray{T}}
@@ -155,7 +172,9 @@ function Mooncake.rrule!!(
     x::CoDual{<:AbstractArray{T}},
 ) where {T<:IEEEFloat}
     dims = primal(kw).dims
-    xp = primal(x)
+    _xp = primal(x)
+    # For Adjoint/Transpose, avoid PermutedDimsArray instability in maximum call.
+    xp = _xp isa Union{Adjoint,Transpose} ? collect(_xp) : _xp
     max_ = maximum(xp; dims, init=typemin(T))
     @fastmath tmp = exp.(xp .- max_)
     s = sum(tmp; dims)
