@@ -51,10 +51,10 @@ function _accum_fdata!(
 ) where {T<:IEEEFloat}
     return xf .+= g
 end
-function _accum_fdata!(xf::FData, ::Adjoint{T}, g::Array{T}) where {T<:IEEEFloat}
+function _accum_fdata!(xf::FData, ::Adjoint, g::SupportedArray{T}) where {T<:IEEEFloat}
     return xf.data.parent .+= g'
 end
-function _accum_fdata!(xf::FData, ::Transpose{T}, g::Array{T}) where {T<:IEEEFloat}
+function _accum_fdata!(xf::FData, ::Transpose, g::SupportedArray{T}) where {T<:IEEEFloat}
     return xf.data.parent .+= transpose(g)
 end
 
@@ -174,7 +174,8 @@ function Mooncake.rrule!!(
     dims = primal(kw).dims
     _xp = primal(x)
     # For Adjoint/Transpose, avoid PermutedDimsArray instability in maximum call.
-    xp = _xp isa Union{Adjoint,Transpose} ? collect(_xp) : _xp
+    # Only collect for CPU Adjoints/Transposes, as GPUArray must not be drawn to CPU.
+    xp = _xp isa Union{Adjoint{T,<:Array{T}},Transpose{T,<:Array{T}}} ? collect(_xp) : _xp
     max_ = maximum(xp; dims, init=typemin(T))
     @fastmath tmp = exp.(xp .- max_)
     s = sum(tmp; dims)
