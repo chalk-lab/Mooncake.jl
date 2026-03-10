@@ -34,6 +34,19 @@ const SupportedArray{P} = Union{
     Transpose{P,<:Union{Array{P},AbstractGPUArray{P}}},
 }
 
+# On Julia ≤ 1.11, `maximum(x::Adjoint/Transpose; dims, init)` routes through
+# `LinearAlgebra.mapreducedim! → switch_dim12 → PermutedDimsArray`, leaving
+# type parameters unresolved and causing JET type-stability failures.
+# Collecting CPU-backed wrappers to a plain Array avoids that path.
+@static if VERSION < v"1.12"
+    function _maximum(
+        x::Tx, dims, init
+    ) where {T<:IEEEFloat,A<:Array{T},Tx<:Union{Adjoint{T,A},Transpose{T,A}}}
+        maximum(collect(x); dims, init)
+    end
+end
+_maximum(x, dims, init) = maximum(x; dims, init)
+
 @from_rrule(
     MinimalCtx,
     Tuple{
@@ -155,7 +168,7 @@ function Mooncake.rrule!!(
 ) where {T<:IEEEFloat}
     dims = primal(kw).dims
     xp = primal(x)
-    max_ = maximum(xp; dims, init=typemin(T))
+    max_ = _maximum(xp, dims, typemin(T))
     # avoids Inf instability when xp[i]==max_==Inf
     @fastmath tmp = ifelse.(xp .== max_, one(T), exp.(xp .- max_))
     s = sum(tmp; dims)
