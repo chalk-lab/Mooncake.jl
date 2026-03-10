@@ -251,52 +251,50 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
     end
 end
 
-# Testing Helper functions
-const MooncakeNNlibExt = Base.get_extension(Mooncake, :MooncakeNNlibExt)
-const _accum_fdata! = MooncakeNNlibExt._accum_fdata!
-
-@testset "_accum_fdata! helper tests" begin
+# Testing arrayify for Adjoint/Transpose accumulation
+@testset "arrayify Adjoint/Transpose tests" begin
     rng = StableRNG(123)
     A = randn(rng, 3, 4)
     g = randn(rng, 3, 4)
 
-    # Plain array, array gradient
+    # Plain array
     xf = zeros(3, 4)
-    _accum_fdata!(xf, A, g)
+    _, dxf = Mooncake.arrayify(A, xf)
+    dxf .+= g
     @test xf ≈ g
 
     # Plain array, scalar gradient
     xf_scalar = zeros(3, 4)
-    _accum_fdata!(xf_scalar, A, 2.0)
+    _, dxf_scalar = Mooncake.arrayify(A, xf_scalar)
+    dxf_scalar .+= 2.0
     @test xf_scalar ≈ fill(2.0, 3, 4)
 
     # Adjoint: gradient transposed back into parent
     parent_adj = zeros(4, 3)
     xf_adj = Mooncake.FData((parent=parent_adj,))
-    _accum_fdata!(xf_adj, A', g)
+    _, dxf_adj = Mooncake.arrayify(A', xf_adj)
+    dxf_adj .+= g
     @test parent_adj ≈ g'
 
     # Transpose: gradient transposed back into parent
     parent_tr = zeros(4, 3)
     xf_tr = Mooncake.FData((parent=parent_tr,))
-    _accum_fdata!(xf_tr, transpose(A), g)
+    _, dxf_tr = Mooncake.arrayify(transpose(A), xf_tr)
+    dxf_tr .+= g
     @test parent_tr ≈ transpose(g)
-
-    # Accumulates (+=), not overwrites — plain array
-    xf2 = ones(3, 4)
-    _accum_fdata!(xf2, A, g)
-    @test xf2 ≈ ones(3, 4) .+ g
 
     # Accumulates (+=), not overwrites — Adjoint
     parent_adj2 = ones(4, 3)
     xf_adj2 = Mooncake.FData((parent=parent_adj2,))
-    _accum_fdata!(xf_adj2, A', g)
+    _, dxf_adj2 = Mooncake.arrayify(A', xf_adj2)
+    dxf_adj2 .+= g
     @test parent_adj2 ≈ ones(4, 3) .+ g'
 
     # Accumulates (+=), not overwrites — Transpose
     parent_tr2 = ones(4, 3)
     xf_tr2 = Mooncake.FData((parent=parent_tr2,))
-    _accum_fdata!(xf_tr2, transpose(A), g)
+    _, dxf_tr2 = Mooncake.arrayify(transpose(A), xf_tr2)
+    dxf_tr2 .+= g
     @test parent_tr2 ≈ ones(4, 3) .+ transpose(g)
 end
 

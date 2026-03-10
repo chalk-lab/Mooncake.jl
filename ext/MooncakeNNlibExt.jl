@@ -25,7 +25,7 @@ import Mooncake:
     zero_fcodual,
     primal,
     tangent,
-    FData
+    arrayify
 
 # Array types which we test rules against, so are confident work.
 const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
@@ -40,37 +40,6 @@ const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
     true,
 )
 
-# Accumulator helper functions
-function _accum_fdata!(
-    xf::SupportedArray{T}, ::SupportedArray{T}, g::SupportedArray{T}
-) where {T<:IEEEFloat}
-    return xf .+= g
-end
-function _accum_fdata!(
-    xf::SupportedArray{T}, ::SupportedArray{T}, g::T
-) where {T<:IEEEFloat}
-    return xf .+= g
-end
-function _accum_fdata!(xf::FData, ::Adjoint, g::SupportedArray{T}) where {T<:IEEEFloat}
-    return xf.data.parent .+= g'
-end
-function _accum_fdata!(xf::FData, ::Transpose, g::SupportedArray{T}) where {T<:IEEEFloat}
-    return xf.data.parent .+= transpose(g)
-end
-
-# Fallback for currently unhandled T<:AbsractArray, can be dealt with in the future.
-function _accum_fdata!(xf, x::AbstractArray{T}, g) where {T<:IEEEFloat}
-    return error(
-        """
-    `_accum_fdata!` is not implemented for array type $(typeof(x)).
-    If you are trying to differentiate through `softmax`, `logsoftmax`, or `logsumexp`
-    with a custom array wrapper, please open an issue or add a method:
-
-        _accum_fdata!(xf::YourTangentType, ::YourArrayType{T}, g::YourGradType) where {T<:IEEEFloat}
-    """,
-    )
-end
-
 # logsoftmax rrules
 @is_primitive MinimalCtx Tuple{typeof(logsoftmax),AbstractArray{T}} where {T<:IEEEFloat}
 @is_primitive MinimalCtx Tuple{
@@ -84,7 +53,8 @@ function Mooncake.rrule!!(
     y = logsoftmax(xp)
     res = zero_fcodual(y)
     function logsoftmax_pb!!(::NoRData)
-        _accum_fdata!(tangent(x), xp, ∇logsoftmax_data(tangent(res), y; dims=1))
+        _, dx = arrayify(x)
+        dx .+= ∇logsoftmax_data(tangent(res), y; dims=1)
         return NoRData(), NoRData()
     end
     return res, logsoftmax_pb!!
@@ -101,7 +71,8 @@ function Mooncake.rrule!!(
     y = logsoftmax(xp; dims)
     res = zero_fcodual(y)
     function logsoftmax_kw_pb!!(::NoRData)
-        _accum_fdata!(tangent(x), xp, ∇logsoftmax_data(tangent(res), y; dims))
+        _, dx = arrayify(x)
+        dx .+= ∇logsoftmax_data(tangent(res), y; dims)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsoftmax_kw_pb!!
@@ -120,7 +91,8 @@ function Mooncake.rrule!!(
     y = softmax(xp)
     res = zero_fcodual(y)
     function softmax_pb!!(::NoRData)
-        _accum_fdata!(tangent(x), xp, ∇softmax_data(tangent(res), y; dims=1))
+        _, dx = arrayify(x)
+        dx .+= ∇softmax_data(tangent(res), y; dims=1)
         return NoRData(), NoRData()
     end
     return res, softmax_pb!!
@@ -137,7 +109,8 @@ function Mooncake.rrule!!(
     y = softmax(xp; dims)
     res = zero_fcodual(y)
     function softmax_kw_pb!!(::NoRData)
-        _accum_fdata!(tangent(x), xp, ∇softmax_data(tangent(res), y; dims))
+        _, dx = arrayify(x)
+        dx .+= ∇softmax_data(tangent(res), y; dims)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, softmax_kw_pb!!
@@ -159,7 +132,8 @@ function Mooncake.rrule!!(
     @fastmath y = max_ + log(s)
     res = zero_fcodual(y)
     function logsumexp_pb!!(dy::T)
-        _accum_fdata!(tangent(x), xp, dy .* tmp ./ s)
+        _, dx = arrayify(x)
+        dx .+= dy .* tmp ./ s
         return NoRData(), NoRData()
     end
     return res, logsumexp_pb!!
@@ -183,8 +157,8 @@ function Mooncake.rrule!!(
     @fastmath y = max_ .+ log.(s)
     res = zero_fcodual(y)
     function logsumexp_kw_pb!!(::NoRData)
-        # dispatch over _accum_fdata! for Adjoints/Transposes etc.
-        _accum_fdata!(tangent(x), _xp, tangent(res) .* tmp ./ s)
+        _, dx = arrayify(x)
+        dx .+= tangent(res) .* tmp ./ s
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsumexp_kw_pb!!
