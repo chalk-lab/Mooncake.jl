@@ -62,6 +62,18 @@ function arrayify(
     _, _dx = arrayify(x.data, _fields(dx).data)
     return x, Tx(_dx)
 end
+function arrayify(
+    x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
+    return x, adjoint(_dx)
+end
+function arrayify(
+    x::Transpose{T,<:AbstractArray{T}}, dx::TangentOrFData
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, _dx = arrayify(x.parent, _fields(dx).parent)
+    return x, transpose(_dx)
+end
 
 @static if VERSION >= v"1.11-rc4"
     arrayify(x::A, dx::A) where {A<:Memory{<:BlasFloat}} = (x, dx)
