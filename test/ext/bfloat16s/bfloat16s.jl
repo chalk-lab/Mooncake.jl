@@ -5,10 +5,10 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 using AllocCheck, BFloat16s, JET, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
 
-# Core.BFloat16 is only available in Julia >= 1.11; no-op on 1.10.
-@static if VERSION < v"1.11-"
-    @info "Skipping Core.BFloat16 tests: on this platform, " *
-        "`BFloat16` has no arithmetic support."
+# Core.BFloat16 requires Julia >= 1.11.
+# BFloat16s.BFloat16 === Core.BFloat16 is not guaranteed on all platforms.
+if VERSION < v"1.11-" || BFloat16s.BFloat16 !== Core.BFloat16
+    @info "Skipping Core.BFloat16 tests: BFloat16s.BFloat16 !== Core.BFloat16 on this platform/Julia version."
     exit(0)
 end
 

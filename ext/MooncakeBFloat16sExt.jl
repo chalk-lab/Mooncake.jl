@@ -4,10 +4,9 @@ using Mooncake
 using Random: AbstractRNG
 
 #! format: off
-# Core.BFloat16 is only available in Julia >= 1.11; no-op on 1.10.
-@static if VERSION >= v"1.11-"
-
 using BFloat16s: BFloat16s
+
+using Mooncake: @foldable
 
 import Mooncake:
     MaybeCache,
@@ -24,6 +23,7 @@ import Mooncake:
     primal_to_tangent_internal!!,
     zero_rdata,
     zero_rdata_from_type,
+    can_produce_zero_rdata_from_type,
     nan_tangent_guard,
     NoFData,
     NoRData,
@@ -34,6 +34,10 @@ import Mooncake:
     extract,
     zero_fcodual,
     MinimalCtx
+
+# Core.BFloat16 requires Julia >= 1.11.
+# BFloat16s.BFloat16 === Core.BFloat16 is not guaranteed on all platforms.
+@static if VERSION >= v"1.11-" && BFloat16s.BFloat16 === Core.BFloat16
 
 # On x86_64 with LLVM >= 15, BFloat16s.BFloat16 === Core.BFloat16.
 # On other platforms, BFloat16s.BFloat16 is a distinct type.
@@ -65,6 +69,8 @@ primal_to_tangent_internal!!(tx, x::P, ::MaybeCache) = x
 zero_rdata(::P) = zero(P)
 
 zero_rdata_from_type(::Type{P}) = zero(P)
+
+@foldable can_produce_zero_rdata_from_type(::Type{P}) = true
 
 @inline nan_tangent_guard(dy::P, t::P) = iszero(dy) ? zero(P) : t
 
@@ -384,13 +390,17 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(^),P,P}
 function Mooncake.frule!!(::Dual{typeof(^)}, x::Dual{P}, y::Dual{P})
     _x, _y = primal(x), primal(y)
     z = _x^_y
-    return Dual(z, _y * _x^(_y - one(P)) * tangent(x) + z * log(_x) * tangent(y))
+    return Dual(z,
+        nan_tangent_guard(tangent(x), _y * _x^(_y - one(P)) * tangent(x)) +
+        nan_tangent_guard(tangent(y), z * log(_x) * tangent(y)))
 end
 function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
     _x, _y = primal(x), primal(y)
     z = _x^_y
     function pow_pb(dz::P)
-        return NoRData(), dz * _y * _x^(_y - one(P)), dz * z * log(_x)
+        return NoRData(),
+            nan_tangent_guard(dz, dz * _y * _x^(_y - one(P))),
+            nan_tangent_guard(dz, dz * z * log(_x))
     end
     return zero_fcodual(z), pow_pb
 end
@@ -456,7 +466,7 @@ function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
     return zero_fcodual(prevfloat(primal(x))), pb
 end
 
-end # end # @static if isdefined(Core, :BFloat16)
+end # @static if BFloat16s.BFloat16 === Core.BFloat16
 #! format: on
 
 end # module MooncakeBFloat16sExt

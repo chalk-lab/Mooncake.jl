@@ -18,7 +18,5 @@ __verify_fdata_value(::IdDict{Any,Nothing}, ::Core.BFloat16, ::NoFData) = nothin
 
 _verify_rdata_value(::Core.BFloat16, ::Core.BFloat16) = nothing
 
-@foldable can_produce_zero_rdata_from_type(::Type{Core.BFloat16}) = true
-
 end # @static if isdefined(Core, :BFloat16)
 #! format: on
