@@ -102,7 +102,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:random})
         (false, :none, nothing, x -> randn(Random.seed!(TaskLocalRNG(), x)), 123),
 
         # It is not possible to make the numbers produced by a `RandomDevice` be
-        # deterministic, because it gets is randomness "from the device". As such, we cannot
+        # deterministic, because it gets its randomness "from the device". As such, we cannot
         # test that the numbers coming out of this are consistent, just that it runs.
         (true, :none, nothing, () -> randn(RandomDevice())),
     ]
