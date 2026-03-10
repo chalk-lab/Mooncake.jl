@@ -73,6 +73,8 @@ Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) =
 
 # Tell Mooncake.jl how to handle CuArrays.
 
+@foldable fdata_type(::Type{CuPtr{T}}) where {T} = CuPtr{T}
+@foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
 @foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
