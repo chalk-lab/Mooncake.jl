@@ -40,7 +40,7 @@ const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
     true,
 )
 
-# Helper accumulator functions
+# Accumulator helper functions
 function _accum_fdata!(
     xf::SupportedArray{T}, ::SupportedArray{T}, g::SupportedArray{T}
 ) where {T<:IEEEFloat}
