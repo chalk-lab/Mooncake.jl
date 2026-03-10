@@ -181,7 +181,8 @@ function Mooncake.rrule!!(
     @fastmath y = max_ .+ log.(s)
     res = zero_fcodual(y)
     function logsumexp_kw_pb!!(::NoRData)
-        _accum_fdata!(tangent(x), xp, tangent(res) .* tmp ./ s)
+        # dispatch over _accum_fdata! for Adjoints/Transposes etc.
+        _accum_fdata!(tangent(x), _xp, tangent(res) .* tmp ./ s)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsumexp_kw_pb!!
