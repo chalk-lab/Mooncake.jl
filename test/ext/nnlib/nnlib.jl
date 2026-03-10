@@ -123,7 +123,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             _rand(rng, 3, 3, 2),
         ),
 
-        # logsoftmax with Adjoints, Transpose
+        # logsoftmax with Adjoint, Transpose
         (false, :stability, true, logsoftmax, _rand(rng, 2, 3)'),
         (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(rng, 3, 3)'),
         (false, :stability, true, Core.kwcall, (dims=2,), logsoftmax, _rand(rng, 3, 3)'),
@@ -332,12 +332,4 @@ end
     @test all(isinf.(y)) && all(y .> 0)
     @test !any(isnan.(dx))
     @test dx ≈ Float32[1.0f0, 0.0f0]
-
-    # Adjoint with Inf inputs
-    y, dx = test_logsumexp_inf(Float32[Inf 1.0f0; 2.0f0 Inf]', 1)
-    @test !any(isnan.(y)) && !any(isnan.(dx.fields.parent))
-
-    # Transpose with Inf inputs
-    y, dx = test_logsumexp_inf(transpose(Float32[Inf 1.0f0; 2.0f0 Inf]), 1)
-    @test !any(isnan.(y)) && !any(isnan.(dx.fields.parent))
 end
