@@ -3,7 +3,6 @@ module MooncakeNNlibExt
 using GPUArraysCore, NNlib, Random, Mooncake
 using Base: IEEEFloat
 using LinearAlgebra
-using LinearAlgebra: Adjoint, Transpose
 using NNlib:
     conv,
     depthwiseconv,
@@ -28,11 +27,20 @@ import Mooncake:
     arrayify
 
 # Array types which we test rules against, so are confident work.
-const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
+const SupportedArray{P} = Union{
+    Array{P},
+    AbstractGPUArray{P},
+    Adjoint{P,<:Union{Array{P},AbstractGPUArray{P}}},
+    Transpose{P,<:Union{Array{P},AbstractGPUArray{P}}},
+}
 
 @from_rrule(
     MinimalCtx,
-    Tuple{typeof(batched_mul),SupportedArray{P,3},SupportedArray{P,3}} where {P<:IEEEFloat},
+    Tuple{
+        typeof(batched_mul),
+        Union{Array{P,3},AbstractGPUArray{P,3}},
+        Union{Array{P,3},AbstractGPUArray{P,3}},
+    } where {P<:IEEEFloat},
 )
 @from_rrule(
     MinimalCtx,
@@ -41,13 +49,13 @@ const SupportedArray{P,N} = Union{Array{P,N},AbstractGPUArray{P,N}}
 )
 
 # logsoftmax rrules
-@is_primitive MinimalCtx Tuple{typeof(logsoftmax),AbstractArray{T}} where {T<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(logsoftmax),SupportedArray{T}} where {T<:IEEEFloat}
 @is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),AbstractArray{T}
+    typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),SupportedArray{T}
 } where {T<:IEEEFloat}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(logsoftmax)}, x::CoDual{<:AbstractArray{T}}
+    ::CoDual{typeof(logsoftmax)}, x::CoDual{<:SupportedArray{T}}
 ) where {T<:IEEEFloat}
     xp = primal(x)
     y = logsoftmax(xp)
@@ -64,7 +72,7 @@ function Mooncake.rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple{(:dims,)}},
     ::CoDual{typeof(logsoftmax)},
-    x::CoDual{<:AbstractArray{T}},
+    x::CoDual{<:SupportedArray{T}},
 ) where {T<:IEEEFloat}
     dims = primal(kw).dims
     xp = primal(x)
@@ -79,13 +87,13 @@ function Mooncake.rrule!!(
 end
 
 # softmax rrules
-@is_primitive MinimalCtx Tuple{typeof(softmax),AbstractArray{T}} where {T<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(softmax),SupportedArray{T}} where {T<:IEEEFloat}
 @is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(softmax),AbstractArray{T}
+    typeof(Core.kwcall),NamedTuple,typeof(softmax),SupportedArray{T}
 } where {T<:IEEEFloat}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(softmax)}, x::CoDual{<:AbstractArray{T}}
+    ::CoDual{typeof(softmax)}, x::CoDual{<:SupportedArray{T}}
 ) where {T<:IEEEFloat}
     xp = primal(x)
     y = softmax(xp)
@@ -102,7 +110,7 @@ function Mooncake.rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple{(:dims,)}},
     ::CoDual{typeof(softmax)},
-    x::CoDual{<:AbstractArray{T}},
+    x::CoDual{<:SupportedArray{T}},
 ) where {T<:IEEEFloat}
     dims = primal(kw).dims
     xp = primal(x)
@@ -117,13 +125,13 @@ function Mooncake.rrule!!(
 end
 
 # logsumexp rrules
-@is_primitive MinimalCtx Tuple{typeof(logsumexp),AbstractArray{T}} where {T<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(logsumexp),SupportedArray{T}} where {T<:IEEEFloat}
 @is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(logsumexp),AbstractArray{T}
+    typeof(Core.kwcall),NamedTuple,typeof(logsumexp),SupportedArray{T}
 } where {T<:IEEEFloat}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(logsumexp)}, x::CoDual{<:AbstractArray{T}}
+    ::CoDual{typeof(logsumexp)}, x::CoDual{<:SupportedArray{T}}
 ) where {T<:IEEEFloat}
     xp = primal(x)
     max_ = maximum(xp; init=typemin(T))
@@ -143,13 +151,10 @@ function Mooncake.rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple{(:dims,)}},
     ::CoDual{typeof(logsumexp)},
-    x::CoDual{<:AbstractArray{T}},
+    x::CoDual{<:SupportedArray{T}},
 ) where {T<:IEEEFloat}
     dims = primal(kw).dims
-    _xp = primal(x)
-    # For Adjoint/Transpose, avoid PermutedDimsArray instability in maximum call.
-    # Only collect for CPU Adjoints/Transposes, as GPUArray must not be drawn to CPU.
-    xp = _xp isa Union{Adjoint{T,<:Array{T}},Transpose{T,<:Array{T}}} ? collect(_xp) : _xp
+    xp = primal(x)
     max_ = maximum(xp; dims, init=typemin(T))
     # avoids Inf instability when xp[i]==max_==Inf
     @fastmath tmp = ifelse.(xp .== max_, one(T), exp.(xp .- max_))
