@@ -47,8 +47,7 @@ using Mooncake:
     ForwardMode,
     ReverseMode,
     MistyClosureTangent,
-    dual_type,
-    verify_dual_type
+    dual_type
 
 using Mooncake:
     CC,

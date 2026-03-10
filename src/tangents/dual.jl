@@ -32,8 +32,10 @@ function dual_type(::Type{P}) where {P}
     P == Union{} && return Union{}
     P == DataType && return Dual
     P isa Union && return Union{dual_type(P.a),dual_type(P.b)}
-    # P is abstract (a UnionAll generator or the UnionAll type itself), so we dont know its tangent type.
-    (P isa UnionAll || P == UnionAll) && return Dual
+    # Use `isa` not `<:`: generators like `NTuple{N,Int} where N` are instances of
+    # UnionAll but not subtypes of it (`NTuple{N,Int} where N <: UnionAll` is false).
+    # `P == UnionAll` handles the UnionAll metatype itself (`UnionAll isa UnionAll` is false).
+    (P isa UnionAll || P == UnionAll) && return Dual # P is abstract, tangent type unknown.
 
     # Union Splitting
     if P <: Tuple && !all(isconcretetype, (P.parameters...,))

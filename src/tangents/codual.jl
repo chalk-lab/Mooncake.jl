@@ -38,12 +38,15 @@ zero_codual(x) = CoDual(x, zero_tangent(x))
 Equivalent to `CoDual(x, uninit_tangent(x))`.
 """
 uninit_codual(x) = CoDual(x, uninit_tangent(x))
+
 function _codual_internal(::Type{P}, f::F, extractor::E) where {P,F,E}
     P == Union{} && return Union{}
     P == DataType && return CoDual
     P isa Union && return Union{f(P.a),f(P.b)}
-    # P is abstract (a UnionAll generator or the UnionAll type itself), so we dont know its tangent type.
-    (P isa UnionAll || P == UnionAll) && return CoDual
+    # Use `isa` not `<:`: generators like `NTuple{N,Int} where N` are instances of
+    # UnionAll but not subtypes of it (`NTuple{N,Int} where N <: UnionAll` is false).
+    # `P == UnionAll` handles the UnionAll metatype itself (`UnionAll isa UnionAll` is false).
+    (P isa UnionAll || P == UnionAll) && return CoDual # P is abstract, tangent type unknown.
 
     if P <: Tuple && !all(isconcretetype, (P.parameters...,))
         field_types = (P.parameters...,)
