@@ -70,4 +70,28 @@ const P = Core.BFloat16
     @testset "$(f) $(map(typeof, xs))" for (f, xs...) in cases
         test_rule(sr(123), f, xs...; is_primitive=true, atol=0.2, rtol=0.4)
     end
+
+    # When x == 0 and 0 < y < 1: z = 0^y = 0, log(0) = -Inf, so z * log(x) = 0 * (-Inf) = NaN
+    # unless guarded. These tests verify the nan_tangent_guard fixes prevent NaN in both rules.
+    @testset "^ NaN guard: x=0" begin
+        x, y = P(0), P(0.5)
+        dx, dy = one(P), one(P)
+
+        # frule: tangent of the y-component must not be NaN
+        fwd_result = Mooncake.frule!!(
+            Mooncake.Dual(^, Mooncake.NoTangent()),
+            Mooncake.Dual(x, dx),
+            Mooncake.Dual(y, dy),
+        )
+        @test !isnan(Mooncake.tangent(fwd_result))
+        @test Mooncake.primal(fwd_result) == x^y
+
+        # rrule: y-rdata from the pullback must not be NaN
+        _, pb = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(^), Mooncake.zero_fcodual(x), Mooncake.zero_fcodual(y)
+        )
+        _, dx_r, dy_r = pb(one(P))
+        @test !isnan(dx_r)
+        @test !isnan(dy_r)
+    end
 end
