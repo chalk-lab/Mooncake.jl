@@ -106,6 +106,36 @@ using LinearAlgebra
             (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:maxsize)),
             (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:offset)),
             (false, :none, true, lgetfield, _rand(rng, 64, 32), Val(:dims)),
+            # mul! (matrix × matrix, Float64)
+            (
+                false,
+                :stability,
+                false,
+                mul!,
+                _rand(rng, 16, 32),
+                _rand(rng, 16, 8),
+                _rand(rng, 8, 32),
+            ),
+            # mul! (matrix × vector, Float64)
+            (
+                false,
+                :stability,
+                false,
+                mul!,
+                _rand(rng, 16),
+                _rand(rng, 16, 8),
+                _rand(rng, 8),
+            ),
+            # mul! (matrix × matrix, ComplexF64)
+            (
+                false,
+                :stability,
+                false,
+                mul!,
+                _rand(rng, ComplexF64, 16, 32),
+                _rand(rng, ComplexF64, 16, 8),
+                _rand(rng, ComplexF64, 8, 32),
+            ),
         ]
         @testset "$(typeof(fargs))" for (
             interface_only, perf_flag, is_primitive, fargs...

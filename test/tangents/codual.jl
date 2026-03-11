@@ -20,6 +20,8 @@
             Union{CoDual{Float64,NoFData},CoDual{Int,NoFData}},
         ),
         (UnionAll, CoDual, CoDual),
+        (DataType, CoDual, CoDual),
+        (Union{}, Union{}, Union{}),
 
         # Tuples:
         # Concrete tuples:
@@ -60,6 +62,11 @@
 
         # General Abstract Tuples
         (Tuple{Any}, CoDual, CoDual),
+
+        # Abstract Vararg / NTuple UnionAll tuples (bounded and unbounded)
+        (NTuple{N,Int} where {N}, CoDual, CoDual),
+        (Tuple{Vararg{Float64,N}} where {N}, CoDual, CoDual),
+        (Tuple{Vararg{Float64}}, CoDual, CoDual),
     ]
         @test TestUtils.check_allocs(codual_type, P) == D
         @test TestUtils.check_allocs(Mooncake.fcodual_type, P) == F

@@ -73,6 +73,8 @@ Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) =
 
 # Tell Mooncake.jl how to handle CuArrays.
 
+@foldable fdata_type(::Type{CuPtr{T}}) where {T} = CuPtr{T}
+@foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
 @foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
@@ -272,15 +274,56 @@ end
 # See also `src/rules/performance_patches`.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),CuFloatArray})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuFloatArray})
-    return Dual(sum(primal(x)), sum(tangent(x)))
+    px, dx = arrayify(x)
+    return Dual(sum(px), sum(dx))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuFloatArray})
-    dx = x.dx
+    _, dx = arrayify(x)
     function sum_pb!!(dz)
         dx .+= dz
         return NoRData(), NoRData()
     end
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
+end
+
+# Rules for the 3-arg mul!(C, A, B) on GPU arrays.
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(mul!),<:CuMaybeComplexArray,<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+function frule!!(
+    ::Dual{typeof(mul!)},
+    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    pC, dC = arrayify(C)
+    mul!(dC, dA, pB)             # dC  = dA*B   (product rule; overwrites since β=0)
+    mul!(dC, pA, dB, true, true) # dC += A*dB
+    mul!(pC, pA, pB)
+    return C
+end
+function rrule!!(
+    ::CoDual{typeof(mul!)},
+    C::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    A::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    B::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    pC, dC = arrayify(C)
+    pC_copy = copy(pC)
+    mul!(pC, pA, pB)
+    function mul!_pb!!(::NoRData)
+        mul!(dA, dC, pB', true, true)  # dA += dC * B^H
+        mul!(dB, pA', dC, true, true)  # dB += A^H * dC
+        copyto!(pC, pC_copy)           # restore C's primal (it was overwritten above)
+        dC .= 0                        # β=0: C_old does not contribute, so ∂L/∂C_old = 0
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return C, mul!_pb!!
 end
 
 end
