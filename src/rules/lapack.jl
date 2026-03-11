@@ -582,6 +582,46 @@ end
     end
 end
 
+# ==================== sytrf! (Bunch-Kaufman factorization) — NOT YET IMPLEMENTED ====================
+#
+# Issue: https://github.com/chalk-lab/Mooncake.jl/issues/819
+# `logdet(Symmetric(A))` fails because it calls `LAPACK.sytrf!` (Bunch-Kaufman factorization),
+# which has no AD rule.
+#
+# All of the following user-facing calls hit sytrf! for BlasFloat symmetric matrices:
+#
+#   Use case                         | Call path
+#   ---------------------------------|------------------------------------------------
+#   logdet(Symmetric(A))             | → _factorize → bunchkaufman → sytrf!
+#   det(Symmetric(A))                | same
+#   logabsdet(Symmetric(A))          | same
+#   inv(Symmetric(A))                | → bunchkaufman → sytrf!, then sytri!
+#   Symmetric(A) \ b                 | → bunchkaufman → sytrf!, then sytrs!
+#   factorize(Symmetric(A))          | → bunchkaufman → sytrf!
+#   bunchkaufman(Symmetric(A))       | → sytrf! directly
+#   isposdef(Symmetric(A))           | → _factorize → bunchkaufman → sytrf!
+#
+# Possible fix strategies (in order of increasing complexity):
+#
+#   1. Direct rules for logdet / logabsdet / det on Symmetric:
+#      d logdet(Sym(A)) / dA = A⁻¹  (since A is symmetric). ~10-line rule each.
+#      Covers logdet/det/logabsdet only; does not fix inv or \.
+#
+#   2. Rule for bunchkaufman(::Symmetric) returning a BunchKaufman struct:
+#      More involved, but covers all downstream uses (logdet, inv, \).
+#
+#   3. Rule for LAPACK.sytrf! directly (frule!! + rrule!! on packed LD storage):
+#      Maximal coverage, but requires careful handling of LAPACK.syconv! row/col
+#      swaps when converting packed LD → clean unit-triangular factor T.
+#      Specifically: syconv!(way='C') applies forward row swaps on the strict
+#      triangular part; tangents/cotangents computed in T-ordering must be
+#      mapped back to A_LD-ordering before storing.
+#      No existing public implementation in any AD framework (ChainRules.jl,
+#      JAX, PyTorch) — this is novel; see Seeger et al. arXiv:1710.08717 which
+#      covers Cholesky/LQ/eigensym but explicitly omits pivoted LDL.
+#
+# Strategy 1 is recommended as the first step (fixes #819); strategy 2 or 3 for full coverage.
+
 function zero_tri!(A, uplo::Char)
     if uplo == 'U'
         tril!(A, -1)
