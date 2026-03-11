@@ -582,7 +582,7 @@ end
     end
 end
 
-# ==================== sytrf! (Bunch-Kaufman factorization) — NOT YET IMPLEMENTED ====================
+# sytrf! (Bunch-Kaufman factorization)
 #
 # Issue: https://github.com/chalk-lab/Mooncake.jl/issues/819
 # `logdet(Symmetric(A))` fails because it calls `LAPACK.sytrf!` (Bunch-Kaufman factorization),
@@ -590,20 +590,20 @@ end
 #
 # All of the following user-facing calls hit sytrf! for BlasFloat symmetric matrices:
 #
-#   Use case                         | Call path
-#   ---------------------------------|------------------------------------------------
-#   logdet(Symmetric(A))             | → _factorize → bunchkaufman → sytrf!
-#   det(Symmetric(A))                | same
-#   logabsdet(Symmetric(A))          | same
-#   inv(Symmetric(A))                | → bunchkaufman → sytrf!, then sytri!
-#   Symmetric(A) \ b                 | → bunchkaufman → sytrf!, then sytrs!
-#   factorize(Symmetric(A))          | → bunchkaufman → sytrf!
-#   bunchkaufman(Symmetric(A))       | → sytrf! directly
-#   isposdef(Symmetric(A))           | → _factorize → bunchkaufman → sytrf!
+#   Use case                         | Call path                          | Rule added?
+#   ---------------------------------|------------------------------------|------------
+#   logdet(Symmetric(A))             | → _factorize → bunchkaufman → sytrf! | yes
+#   det(Symmetric(A))                | same                               | yes
+#   logabsdet(Symmetric(A))          | same                               | yes
+#   inv(Symmetric(A))                | → bunchkaufman → sytrf!, then sytri! | no
+#   Symmetric(A) \ b                 | → bunchkaufman → sytrf!, then sytrs! | no
+#   factorize(Symmetric(A))          | → bunchkaufman → sytrf!            | no
+#   bunchkaufman(Symmetric(A))       | → sytrf! directly                  | no
+#   isposdef(Symmetric(A))           | → _factorize → bunchkaufman → sytrf! | no
 #
 # Possible fix strategies (in order of increasing complexity):
 #
-#   1. Direct rules for logdet / logabsdet / det on Symmetric:
+#   1. Direct rules for logdet / logabsdet / det on Symmetric:  ← DONE (below)
 #      d logdet(Sym(A)) / dA = A⁻¹  (since A is symmetric). ~10-line rule each.
 #      Covers logdet/det/logabsdet only; does not fix inv or \.
 #
@@ -620,7 +620,7 @@ end
 #      JAX, PyTorch) — this is novel; see Seeger et al. arXiv:1710.08717 which
 #      covers Cholesky/LQ/eigensym but explicitly omits pivoted LDL.
 #
-# Strategy 1 is recommended as the first step (fixes #819); strategy 2 or 3 for full coverage.
+# Strategy 2 or 3 required for full coverage (inv, \, factorize, etc.).
 
 function zero_tri!(A, uplo::Char)
     if uplo == 'U'
@@ -631,6 +631,114 @@ function zero_tri!(A, uplo::Char)
         A .= zero(eltype(A))
     end
     return nothing
+end
+
+# Symmetric stores uplo as a Char, but its constructor takes a Symbol.
+# The generic _add_to_primal_internal tries P(fields...) which breaks for Symmetric
+# because it passes a Char where a Symbol is expected.  Override it here.
+function _add_to_primal_internal(
+    c::MaybeCache, p::Symmetric{P,M}, t::Tangent, unsafe::Bool
+) where {P,M}
+    new_data = _add_to_primal_internal(c, p.data, t.fields.data, unsafe)
+    return Symmetric(new_data, Symbol(p.uplo))
+end
+
+# logdet / det / logabsdet on Symmetric (strategy 1)
+#
+# Gradient of logdet(Symmetric(A, uplo)) w.r.t. the underlying data array A:
+#   ∂/∂A[i,j] = 2*(Sym(A)⁻¹)[i,j]  for i<j in the active triangle
+#              =   (Sym(A)⁻¹)[i,i]  for i=j
+#              = 0                   for indices outside the active triangle
+
+# Accumulate ȳ * ∂logdet(Sym(A,uplo))/∂A into ddata in-place.
+function _accum_sym_logdet!(
+    ddata::AbstractMatrix{P}, Sinv::AbstractMatrix{P}, ȳ::P, uplo::Char
+) where {P}
+    n = size(ddata, 1)
+    if uplo == 'U'
+        @inbounds for j in 1:n
+            for i in 1:(j - 1)
+                ddata[i, j] += 2 * ȳ * Sinv[i, j]
+            end
+            ddata[j, j] += ȳ * Sinv[j, j]
+        end
+    else
+        @inbounds for j in 1:n
+            ddata[j, j] += ȳ * Sinv[j, j]
+            for i in (j + 1):n
+                ddata[i, j] += 2 * ȳ * Sinv[i, j]
+            end
+        end
+    end
+    return nothing
+end
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(logdet),Symmetric{P,<:AbstractMatrix{P}}} where {P<:BlasRealFloat},
+)
+function frule!!(::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P}}) where {P<:BlasRealFloat}
+    S, d_data = arrayify(_S)
+    Sinv = inv(S)
+    return Dual(logdet(S), dot(Sinv, Symmetric(d_data, Symbol(S.uplo))))
+end
+function rrule!!(
+    ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P}}
+) where {P<:BlasRealFloat}
+    S, ddata = arrayify(_S)
+    Sinv = inv(S)
+    ld = logdet(S)
+    function logdet_sym_pb!!(ȳ::P)
+        _accum_sym_logdet!(ddata, Sinv, ȳ, S.uplo)
+        return NoRData(), NoRData()
+    end
+    return CoDual(ld, NoFData()), logdet_sym_pb!!
+end
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(det),Symmetric{P,<:AbstractMatrix{P}}} where {P<:BlasRealFloat},
+)
+function frule!!(::Dual{typeof(det)}, _S::Dual{<:Symmetric{P}}) where {P<:BlasRealFloat}
+    S, d_data = arrayify(_S)
+    d = det(S)
+    Sinv = inv(S)
+    return Dual(d, d * dot(Sinv, Symmetric(d_data, Symbol(S.uplo))))
+end
+function rrule!!(::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P}}) where {P<:BlasRealFloat}
+    S, ddata = arrayify(_S)
+    d = det(S)
+    Sinv = inv(S)
+    function det_sym_pb!!(ȳ::P)
+        _accum_sym_logdet!(ddata, Sinv, ȳ * d, S.uplo)
+        return NoRData(), NoRData()
+    end
+    return CoDual(d, NoFData()), det_sym_pb!!
+end
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(logabsdet),Symmetric{P,<:AbstractMatrix{P}}} where {P<:BlasRealFloat},
+)
+function frule!!(
+    ::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P}}
+) where {P<:BlasRealFloat}
+    S, d_data = arrayify(_S)
+    ld, s = logabsdet(S)
+    Sinv = inv(S)
+    return Dual((ld, s), (dot(Sinv, Symmetric(d_data, Symbol(S.uplo))), zero(P)))
+end
+function rrule!!(
+    ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P}}
+) where {P<:BlasRealFloat}
+    S, ddata = arrayify(_S)
+    ld, s = logabsdet(S)
+    Sinv = inv(S)
+    function logabsdet_sym_pb!!(ȳ::Tuple{P,P})
+        _accum_sym_logdet!(ddata, Sinv, ȳ[1], S.uplo)
+        return NoRData(), NoRData()
+    end
+    return CoDual((ld, s), NoFData()), logabsdet_sym_pb!!
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
@@ -722,6 +830,46 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
         else
             []
         end)...,
+
+        # logdet / det / logabsdet on Symmetric
+        # Positive-definite inputs: valid for all three functions.
+        map_prod([1, 3, 5], ['U', 'L'], Ps) do (N, uplo, P)
+            As = positive_definite_blas_matrices(rng, P, N)
+            Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
+            return vcat(
+                map(S -> (false, :none, nothing, logdet, S), Ss),
+                map(S -> (false, :none, nothing, det, S), Ss),
+                map(S -> (false, :none, nothing, logabsdet, S), Ss),
+            )
+        end...,
+
+        # Negative-definite inputs: det < 0 for odd N, det > 0 for even N.
+        # logdet is not tested here (requires det > 0).
+        map_prod([2, 3], ['U', 'L'], Ps) do (N, uplo, P)
+            As = map(positive_definite_blas_matrices(rng, P, N)) do A
+                A .= -A
+                return A
+            end
+            Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
+            return vcat(
+                map(S -> (false, :none, nothing, det, S), Ss),
+                map(S -> (false, :none, nothing, logabsdet, S), Ss),
+            )
+        end...,
+
+        # Indefinite inputs: eigenvalues alternate ±1, ±2, …
+        # Covers mixed-sign-determinant cases for det and logabsdet.
+        map_prod([2, 4], ['U', 'L'], Ps) do (N, uplo, P)
+            As = map(invertible_blas_matrices(rng, P, N)) do V
+                λs = P[isodd(i) ? P(i) : -P(i) for i in 1:N]
+                return collect(V * Diagonal(λs) * V')
+            end
+            Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
+            return vcat(
+                map(S -> (false, :none, nothing, det, S), Ss),
+                map(S -> (false, :none, nothing, logabsdet, S), Ss),
+            )
+        end...,
     )
     memory = Any[]
     return test_cases, memory
