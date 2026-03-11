@@ -85,7 +85,7 @@ const P = Core.BFloat16
             Mooncake.Dual(y, dy),
         )
         @test Mooncake.primal(fwd_result) === x^y
-        @test Mooncake.tangent(fwd_result) === P(Inf)  # x-term dominates: _y * 0^(-0.5) * dx
+        @test Mooncake.tangent(fwd_result) === P(Inf)  # y-term guarded to 0; x-term = _y * 0^(-0.5) * dx = Inf
 
         fwd_result_zero_dx = Mooncake.frule!!(
             Mooncake.Dual(^, Mooncake.NoTangent()),
@@ -94,7 +94,7 @@ const P = Core.BFloat16
         )
         @test Mooncake.tangent(fwd_result_zero_dx) === zero(P)  # y-term guarded: z*log(0)*dy = 0
 
-        # rrule: x-rdata may be Inf (upstream gradient nonzero into diverging slope);
+        # rrule: x-rdata is Inf (dz * _y * 0^(-0.5) = Inf, upstream gradient into diverging slope);
         # y-rdata must be exactly 0 (inner guard on z blocks 0*(-Inf)=NaN).
         _, pb = Mooncake.rrule!!(
             Mooncake.zero_fcodual(^), Mooncake.zero_fcodual(x), Mooncake.zero_fcodual(y)

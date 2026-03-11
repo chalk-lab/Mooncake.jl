@@ -390,8 +390,9 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(^),P,P}
 function Mooncake.frule!!(::Dual{typeof(^)}, x::Dual{P}, y::Dual{P})
     _x, _y = primal(x), primal(y)
     z = _x^_y
-    # Note: _x^(_y-1) is computed separately from z to correctly handle _x=0: z/_x = 0/0 = NaN
-    # whereas _x^(_y-1) = Inf, which is the mathematically correct diverging gradient.
+    # Note: _x^(_y-1) is computed separately from z to correctly handle _x=0:
+    # z/_x = 0/0 = NaN, whereas _x^(_y-1) gives the correct value at the boundary
+    # (e.g. Inf when 0 < _y < 1, since d/dx(x^y)|_{x=0} diverges).
     return Dual(z,
         nan_tangent_guard(tangent(x), _y * _x^(_y - one(P)) * tangent(x)) +
         # Guard on z (not tangent(y)): when _x=0, z=0 and log(_x)=-Inf, so
