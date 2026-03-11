@@ -392,7 +392,7 @@ function Mooncake.frule!!(::Dual{typeof(^)}, x::Dual{P}, y::Dual{P})
     z = _x^_y
     return Dual(z,
         nan_tangent_guard(tangent(x), _y * _x^(_y - one(P)) * tangent(x)) +
-        nan_tangent_guard(tangent(y), z * log(_x) * tangent(y)))
+        nan_tangent_guard(z, z * log(_x) * tangent(y)))
 end
 function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
     _x, _y = primal(x), primal(y)
@@ -400,7 +400,7 @@ function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
     function pow_pb(dz::P)
         return NoRData(),
             nan_tangent_guard(dz, dz * _y * _x^(_y - one(P))),
-            nan_tangent_guard(dz, dz * z * log(_x))
+            nan_tangent_guard(dz, nan_tangent_guard(z, dz * z * log(_x)))
     end
     return zero_fcodual(z), pow_pb
 end
