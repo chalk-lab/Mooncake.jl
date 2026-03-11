@@ -590,21 +590,21 @@ end
 #
 # All of the following user-facing calls hit sytrf! for BlasFloat symmetric matrices:
 #
-#   Use case                         | Call path                          | Rule added?
-#   ---------------------------------|------------------------------------|------------
-#   logdet(Symmetric(A))             | → _factorize → bunchkaufman → sytrf! | yes
-#   det(Symmetric(A))                | same                               | yes
-#   logabsdet(Symmetric(A))          | same                               | yes
-#   inv(Symmetric(A))                | → bunchkaufman → sytrf!, then sytri! | no
-#   Symmetric(A) \ b                 | → bunchkaufman → sytrf!, then sytrs! | no
-#   factorize(Symmetric(A))          | → bunchkaufman → sytrf!            | no
-#   bunchkaufman(Symmetric(A))       | → sytrf! directly                  | no
-#   isposdef(Symmetric(A))           | → _factorize → bunchkaufman → sytrf! | no
+#   Use case                         | Call path                              | Rule added?
+#   ---------------------------------|----------------------------------------|------------
+#   logdet(Symmetric(A))             | → _factorize → bunchkaufman → sytrf!   | yes
+#   det(Symmetric(A))                | same                                   | yes
+#   logabsdet(Symmetric(A))          | same                                   | yes
+#   inv(Symmetric(A))                | → bunchkaufman → sytrf!, then sytri!   | no
+#   Symmetric(A) \ b                 | → bunchkaufman → sytrf!, then sytrs!   | no
+#   factorize(Symmetric(A))          | → bunchkaufman → sytrf!                | no
+#   bunchkaufman(Symmetric(A))       | → sytrf! directly                      | no
+#   isposdef(Symmetric(A))           | → _factorize → bunchkaufman → sytrf!   | no
 #
 # Possible fix strategies (in order of increasing complexity):
 #
 #   1. Direct rules for logdet / logabsdet / det on Symmetric:  ← DONE (below)
-#      d logdet(Sym(A)) / dA = A⁻¹  (since A is symmetric). ~10-line rule each.
+#      d logdet(Sym(A)) / dSym(A) = Sym(A)⁻¹ (off-diagonal stored entries scaled ×2).
 #      Covers logdet/det/logabsdet only; does not fix inv or \.
 #
 #   2. Rule for bunchkaufman(::Symmetric) returning a BunchKaufman struct:
@@ -639,18 +639,30 @@ end
 function _add_to_primal_internal(
     c::MaybeCache, p::Symmetric{P,M}, t::Tangent, unsafe::Bool
 ) where {P,M}
-    new_data = _add_to_primal_internal(c, p.data, t.fields.data, unsafe)
+    new_data = _add_to_primal_internal(c, p.data, _fields(t).data, unsafe)
     return Symmetric(new_data, Symbol(p.uplo))
 end
 
-# logdet / det / logabsdet on Symmetric (strategy 1)
-#
-# Gradient of logdet(Symmetric(A, uplo)) w.r.t. the underlying data array A:
-#   ∂/∂A[i,j] = 2*(Sym(A)⁻¹)[i,j]  for i<j in the active triangle
-#              =   (Sym(A)⁻¹)[i,i]  for i=j
-#              = 0                   for indices outside the active triangle
+"""
+    _accum_sym_logdet!(ddata, Sinv, ȳ, uplo)
 
-# Accumulate ȳ * ∂logdet(Sym(A,uplo))/∂A into ddata in-place.
+Accumulate `ȳ * ∂logdet(Symmetric(A, uplo))/∂A` into `ddata` in-place, where
+`Sinv = inv(Symmetric(A, uplo))`.
+
+The gradient of `logdet(S)` w.r.t. the stored data array `A` of `S = Symmetric(A, uplo)` is:
+
+    ∂logdet(S)/∂A[i,j] = S⁻¹[i,j]    for i = j  (diagonal)
+                        = 2·S⁻¹[i,j]  for i ≠ j, (i,j) in the active triangle
+                        = 0            otherwise
+
+The factor of 2 for off-diagonal entries arises because `A[i,j]` represents both
+`S[i,j]` and `S[j,i]`. Equivalently, in forward mode: `ḋ = dot(S⁻¹, Symmetric(dA, uplo))`.
+
+This accumulator is shared by the `logdet`, `det`, and `logabsdet` rules:
+- `logdet`:     calls with scalar `ȳ`
+- `det`:        calls with scalar `ȳ * det(S)`  (chain rule through `exp ∘ logdet`)
+- `logabsdet`:  calls with scalar `ȳ[1]`        (sign component has zero derivative)
+"""
 function _accum_sym_logdet!(
     ddata::AbstractMatrix{P}, Sinv::AbstractMatrix{P}, ȳ::P, uplo::Char
 ) where {P}
@@ -673,6 +685,18 @@ function _accum_sym_logdet!(
     return nothing
 end
 
+"""
+    logdet(S::Symmetric{<:BlasRealFloat})
+
+Primitive rule for `logdet` of a real symmetric matrix.
+
+Given `S = Symmetric(A, uplo)`, the Fréchet derivative is:
+
+    d/dt logdet(S + t·dS)|_{t=0} = dot(S⁻¹, Symmetric(dA, uplo))
+
+which equals `tr(S⁻¹ · sym(dA))`. See [`_accum_sym_logdet!`](@ref) for the gradient
+w.r.t. the underlying data array `A`.
+"""
 @is_primitive(
     MinimalCtx,
     Tuple{typeof(logdet),Symmetric{P,<:AbstractMatrix{P}}} where {P<:BlasRealFloat},
@@ -695,6 +719,18 @@ function rrule!!(
     return CoDual(ld, NoFData()), logdet_sym_pb!!
 end
 
+"""
+    det(S::Symmetric{<:BlasRealFloat})
+
+Primitive rule for `det` of a real symmetric matrix.
+
+Given `S = Symmetric(A, uplo)`, the Fréchet derivative follows from `det = exp ∘ logdet`:
+
+    d/dt det(S + t·dS)|_{t=0} = det(S) · dot(S⁻¹, Symmetric(dA, uplo))
+
+The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with scalar
+`ȳ · det(S)`.
+"""
 @is_primitive(
     MinimalCtx,
     Tuple{typeof(det),Symmetric{P,<:AbstractMatrix{P}}} where {P<:BlasRealFloat},
@@ -716,6 +752,19 @@ function rrule!!(::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P}}) where {P<:Bl
     return CoDual(d, NoFData()), det_sym_pb!!
 end
 
+"""
+    logabsdet(S::Symmetric{<:BlasRealFloat})
+
+Primitive rule for `logabsdet` of a real symmetric matrix. Returns `(log|det(S)|, sign(det(S)))`.
+
+Given `S = Symmetric(A, uplo)`, the Fréchet derivative of the first output is identical
+to that of `logdet`:
+
+    d/dt log|det(S + t·dS)||_{t=0} = dot(S⁻¹, Symmetric(dA, uplo))
+
+The sign component has zero derivative w.r.t. `A`. In reverse mode only `ȳ[1]` (the
+cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
+"""
 @is_primitive(
     MinimalCtx,
     Tuple{typeof(logabsdet),Symmetric{P,<:AbstractMatrix{P}}} where {P<:BlasRealFloat},
@@ -836,16 +885,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
         map_prod([1, 3, 5], ['U', 'L'], Ps) do (N, uplo, P)
             As = positive_definite_blas_matrices(rng, P, N)
             Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
-            # For det with Float32, the central-difference FD test fails for non-contiguous
-            # backings (e.g. 3-D-array-backed SubArrays): the test perturbation is normalised
-            # over the full parent, so the effective step in the matrix is O(ε/√parent_size),
-            # which falls in Float32's cancellation regime before the truncation error
-            # becomes small enough. The formula is correct (Float64 and logdet/logabsdet pass);
-            # we run interface-only checks for those cases.
-            det_iface_only(A) = P == Float32 && !(A isa Matrix{P})
+            # For det with Float32 non-contiguous arrays (e.g. 3-D-backed SubArrays), the FD
+            # test normalises the perturbation over the full parent, so the effective step in
+            # the submatrix is O(ε/√parent_size) — too small for Float32's precision. In
+            # principle this could also be addressed by using a smaller FD step size matched
+            # to the submatrix rather than the parent, but that requires test infrastructure
+            # changes. Instead we collect to a contiguous Matrix before wrapping in Symmetric
+            # to get a valid FD step size. This does not test the SubArray code path for
+            # Float32 det, but that is covered indirectly: the Float64 analogues exercise the
+            # same frule!!/rrule!! with SubArrays, and logdet/logabsdet pass full correctness
+            # checks at both precisions for all array types.
+            det_A(A) = P == Float32 && !(A isa Matrix{P}) ? collect(A) : A
+            Ss_det = map(A -> Symmetric(det_A(A), Symbol(uplo)), As)
             return vcat(
                 map(S -> (false, :none, nothing, logdet, S), Ss),
-                map((A, S) -> (det_iface_only(A), :none, nothing, det, S), As, Ss),
+                map(S -> (false, :none, nothing, det, S), Ss_det),
                 map(S -> (false, :none, nothing, logabsdet, S), Ss),
             )
         end...,
@@ -858,9 +912,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
                 return A
             end
             Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
-            det_iface_only(A) = P == Float32 && !(A isa Matrix{P})
+            # Same Float32 FD limitation as above — collect non-contiguous arrays.
+            det_A(A) = P == Float32 && !(A isa Matrix{P}) ? collect(A) : A
+            Ss_det = map(A -> Symmetric(det_A(A), Symbol(uplo)), As)
             return vcat(
-                map((A, S) -> (det_iface_only(A), :none, nothing, det, S), As, Ss),
+                map(S -> (false, :none, nothing, det, S), Ss_det),
                 map(S -> (false, :none, nothing, logabsdet, S), Ss),
             )
         end...,
