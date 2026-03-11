@@ -24,14 +24,17 @@ import Mooncake:
     zero_fcodual,
     primal,
     tangent,
-    arrayify
+    arrayify,
+    frule!!,
+    Dual
 
 # Array types which we test rules against, so are confident work.
-const SupportedArray{P} = Union{
-    Array{P},
-    AbstractGPUArray{P},
-    Adjoint{P,<:Union{Array{P},AbstractGPUArray{P}}},
-    Transpose{P,<:Union{Array{P},AbstractGPUArray{P}}},
+# Parametric on both element type P and dimensionality N.
+const SupportedArray{P,N} = Union{
+    Array{P,N},
+    AbstractGPUArray{P,N},
+    Adjoint{P,<:Union{Array{P,N},AbstractGPUArray{P,N}}},
+    Transpose{P,<:Union{Array{P,N},AbstractGPUArray{P,N}}},
 }
 
 # On Julia ≤ 1.11, `maximum(x::Adjoint/Transpose; dims, init)` routes through
@@ -42,7 +45,7 @@ const SupportedArray{P} = Union{
     function _maximum(
         x::Tx, dims, init
     ) where {T<:IEEEFloat,A<:Array{T},Tx<:Union{Adjoint{T,A},Transpose{T,A}}}
-        maximum(collect(x); dims, init)
+        return maximum(collect(x); dims, init)
     end
 end
 _maximum(x, dims, init) = maximum(x; dims, init)
@@ -57,19 +60,21 @@ _maximum(x, dims, init) = maximum(x; dims, init)
 )
 @from_rrule(
     MinimalCtx,
-    Tuple{typeof(dropout),AbstractRNG,SupportedArray{P},P} where {P<:IEEEFloat},
+    Tuple{typeof(dropout),AbstractRNG,SupportedArray{P,N},P} where {P<:IEEEFloat,N},
     true,
 )
 
 # logsoftmax rrules
-@is_primitive MinimalCtx Tuple{typeof(logsoftmax),SupportedArray{T}} where {T<:IEEEFloat}
 @is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),SupportedArray{T}
-} where {T<:IEEEFloat}
+    typeof(logsoftmax),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
+@is_primitive MinimalCtx Tuple{
+    typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(logsoftmax)}, x::CoDual{<:SupportedArray{T}}
-) where {T<:IEEEFloat}
+    ::CoDual{typeof(logsoftmax)}, x::CoDual{<:SupportedArray{T,N}}
+) where {T<:IEEEFloat,N}
     xp = primal(x)
     y = logsoftmax(xp)
     res = zero_fcodual(y)
@@ -85,8 +90,8 @@ function Mooncake.rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple{(:dims,)}},
     ::CoDual{typeof(logsoftmax)},
-    x::CoDual{<:SupportedArray{T}},
-) where {T<:IEEEFloat}
+    x::CoDual{<:SupportedArray{T,N}},
+) where {T<:IEEEFloat,N}
     dims = primal(kw).dims
     xp = primal(x)
     y = logsoftmax(xp; dims)
@@ -100,14 +105,14 @@ function Mooncake.rrule!!(
 end
 
 # softmax rrules
-@is_primitive MinimalCtx Tuple{typeof(softmax),SupportedArray{T}} where {T<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(softmax),SupportedArray{T,N}} where {T<:IEEEFloat,N}
 @is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(softmax),SupportedArray{T}
-} where {T<:IEEEFloat}
+    typeof(Core.kwcall),NamedTuple,typeof(softmax),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(softmax)}, x::CoDual{<:SupportedArray{T}}
-) where {T<:IEEEFloat}
+    ::CoDual{typeof(softmax)}, x::CoDual{<:SupportedArray{T,N}}
+) where {T<:IEEEFloat,N}
     xp = primal(x)
     y = softmax(xp)
     res = zero_fcodual(y)
@@ -123,8 +128,8 @@ function Mooncake.rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple{(:dims,)}},
     ::CoDual{typeof(softmax)},
-    x::CoDual{<:SupportedArray{T}},
-) where {T<:IEEEFloat}
+    x::CoDual{<:SupportedArray{T,N}},
+) where {T<:IEEEFloat,N}
     dims = primal(kw).dims
     xp = primal(x)
     y = softmax(xp; dims)
@@ -138,14 +143,14 @@ function Mooncake.rrule!!(
 end
 
 # logsumexp rrules
-@is_primitive MinimalCtx Tuple{typeof(logsumexp),SupportedArray{T}} where {T<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(logsumexp),SupportedArray{T,N}} where {T<:IEEEFloat,N}
 @is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(logsumexp),SupportedArray{T}
-} where {T<:IEEEFloat}
+    typeof(Core.kwcall),NamedTuple,typeof(logsumexp),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(logsumexp)}, x::CoDual{<:SupportedArray{T}}
-) where {T<:IEEEFloat}
+    ::CoDual{typeof(logsumexp)}, x::CoDual{<:SupportedArray{T,N}}
+) where {T<:IEEEFloat,N}
     xp = primal(x)
     max_ = maximum(xp; init=typemin(T))
     @fastmath tmp = exp.(xp .- max_)
@@ -164,8 +169,8 @@ function Mooncake.rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple{(:dims,)}},
     ::CoDual{typeof(logsumexp)},
-    x::CoDual{<:SupportedArray{T}},
-) where {T<:IEEEFloat}
+    x::CoDual{<:SupportedArray{T,N}},
+) where {T<:IEEEFloat,N}
     dims = primal(kw).dims
     xp = primal(x)
     max_ = _maximum(xp, dims, typemin(T))
@@ -184,20 +189,26 @@ end
 
 @from_rrule(
     MinimalCtx,
-    Tuple{typeof(upsample_nearest),SupportedArray{<:IEEEFloat},NTuple{N,Int} where {N}},
+    Tuple{typeof(upsample_nearest),SupportedArray{<:IEEEFloat,N},NTuple{M,Int}} where {N,M},
 )
 @from_rrule(
     MinimalCtx,
     Tuple{
-        typeof(NNlib.fold),SupportedArray{<:IEEEFloat},NTuple{N,Int} where {N},DenseConvDims
-    },
-)
-@from_rrule(
-    MinimalCtx, Tuple{typeof(NNlib.unfold),SupportedArray{<:IEEEFloat},DenseConvDims}
+        typeof(NNlib.fold),SupportedArray{<:IEEEFloat,N},NTuple{M,Int},DenseConvDims
+    } where {N,M},
 )
 @from_rrule(
     MinimalCtx,
-    Tuple{typeof(NNlib.scatter),Any,SupportedArray,SupportedArray{<:Union{Integer,Tuple}}},
+    Tuple{typeof(NNlib.unfold),SupportedArray{<:IEEEFloat,N},DenseConvDims} where {N},
+)
+@from_rrule(
+    MinimalCtx,
+    Tuple{
+        typeof(NNlib.scatter),
+        Any,
+        SupportedArray{P,N},
+        SupportedArray{<:Union{Integer,Tuple},M},
+    } where {P,N,M},
     true,
 )
 for conv in [:conv, :depthwiseconv]
@@ -206,30 +217,80 @@ for conv in [:conv, :depthwiseconv]
     @eval @from_rrule(
         MinimalCtx,
         Tuple{
-            typeof($conv),SupportedArray{P},SupportedArray{P},ConvDims
-        } where {P<:IEEEFloat},
+            typeof($conv),SupportedArray{P,N},SupportedArray{P,M},ConvDims
+        } where {P<:IEEEFloat,N,M},
         true,
     )
     @eval @from_rrule(
         MinimalCtx,
         Tuple{
-            typeof($∇conv_data),SupportedArray{P},SupportedArray{P},ConvDims
-        } where {P<:IEEEFloat},
+            typeof($∇conv_data),SupportedArray{P,N},SupportedArray{P,M},ConvDims
+        } where {P<:IEEEFloat,N,M},
         true,
     )
 end
 @from_rrule(
     MinimalCtx,
     Tuple{
-        typeof(∇conv_filter),SupportedArray{P},SupportedArray{P},ConvDims
-    } where {P<:IEEEFloat},
+        typeof(∇conv_filter),SupportedArray{P,N},SupportedArray{P,M},ConvDims
+    } where {P<:IEEEFloat,N,M},
     true,
 )
 for pool in [:maxpool, :meanpool]
     @eval @from_rrule(
-        MinimalCtx, Tuple{typeof($pool),SupportedArray{<:IEEEFloat},PoolDims}, true
+        MinimalCtx,
+        Tuple{typeof($pool),SupportedArray{<:IEEEFloat,N},PoolDims} where {N},
+        true,
     )
 end
-@from_rrule(MinimalCtx, Tuple{typeof(pad_constant),SupportedArray,Any,Any}, true)
+@from_rrule(
+    MinimalCtx, Tuple{typeof(pad_constant),SupportedArray{P,N},Any,Any} where {P,N}, true,
+)
+
+# Direct rules for bias_act!(identity, x, b) on CPU and GPU arrays.
+# bias_act! modifies x in-place (x .+= b), so we save x's primal before mutation,
+# compute in-place, return x as output, and restore x's primal in the pullback.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(bias_act!),
+        typeof(identity),
+        SupportedArray{<:IEEEFloat,N} where {N},
+        SupportedArray{<:IEEEFloat,M} where {M},
+    },
+)
+function frule!!(
+    ::Dual{typeof(bias_act!)},
+    ::Dual{typeof(identity)},
+    x::Dual{<:SupportedArray{<:IEEEFloat,N}},
+    b::Dual{<:SupportedArray{<:IEEEFloat,M}},
+) where {N,M}
+    primal(x) .+= primal(b)
+    tangent(x) .+= tangent(b)
+    return x
+end
+function rrule!!(
+    ::CoDual{typeof(bias_act!)},
+    ::CoDual{typeof(identity)},
+    x::CoDual{<:SupportedArray{P}},
+    b::CoDual{<:SupportedArray{<:IEEEFloat}},
+) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    pb, db = arrayify(b)
+    px_copy = copy(px)
+    px .+= pb
+    # Dims over which b is broadcast (size 1 in b but potentially larger in x).
+    broadcast_dims = Tuple(filter(d -> size(pb, d) == 1, 1:ndims(px)))
+    function bias_act_id_pb!!(::NoRData)
+        if isempty(broadcast_dims)
+            db .+= dx
+        else
+            db .+= reshape(sum(dx; dims=broadcast_dims), size(pb))
+        end
+        copyto!(px, px_copy)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return x, bias_act_id_pb!!
+end
 
 end
