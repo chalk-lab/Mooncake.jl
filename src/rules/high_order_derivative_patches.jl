@@ -8,7 +8,17 @@
     typeof(build_derived_rrule),MooncakeInterpreter{C},Any,Any,Bool
 } where {C}
 
-function frule!!(
+function build_primitive_frule(
+    sig::Type{<:Tuple{typeof(build_derived_rrule),MooncakeInterpreter,Any,Any,Bool}}
+)
+    return FoRCache(Dict{ClosureCacheKey,Any}())
+end
+
+struct FoRCache
+    cache::Dict{ClosureCacheKey,Any}
+end
+
+function (cache::FoRCache)(
     ::Dual{typeof(build_derived_rrule)},
     _interp::Dual{<:MooncakeInterpreter{C}},
     _sig_or_mi::Dual,
@@ -21,6 +31,35 @@ function frule!!(
     sig_or_mi = primal(_sig_or_mi)
     sig = primal(_sig)
     debug_mode = primal(_debug_mode)
+
+    cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode))
+    if haskey(cache.cache, cache_key)
+        rule, fwd_dual_callable, rvs_dual_callable = cache.cache[cache_key]
+        new_rule = _copy(rule)
+        # _copy(Stack{T}) resets each primal Stack to empty. Regenerate captures_tangent
+        # from the fresh primal so tangent Stacks are empty and size-consistent.
+        # fwd_oc and rvs_oc share the same comms Stack objects from shared_data
+        # (fwd_oc.captures[i] === rvs_oc.captures[i]), so their tangents must also be
+        # aliased: the fwds tangent pass writes to comms tangent Stacks and the rvs tangent
+        # pass reads from the same objects. zero_tangent uses an IdDict internally, so
+        # calling it jointly on both captures tuples ensures captures_tangent[1][i] ===
+        # captures_tangent[2][i] for aliased primal objects.
+        inner_rule = debug_mode ? new_rule.rule : new_rule
+        captures_tangent = zero_tangent((
+            inner_rule.fwds_oc.oc.captures, inner_rule.pb_oc_ref[].oc.captures
+        ))
+        inner_tangent = Tangent((;
+            fwds_oc=MistyClosureTangent(captures_tangent[1], _copy(fwd_dual_callable)),
+            pb_oc_ref=MutableTangent((;
+                x=PossiblyUninitTangent(
+                    MistyClosureTangent(captures_tangent[2], _copy(rvs_dual_callable))
+                )
+            )),
+            nargs=NoTangent(),
+        ))
+        new_rule_tangent = debug_mode ? Tangent((; rule=inner_tangent)) : inner_tangent
+        return Dual(new_rule, new_rule_tangent)
+    end
 
     # Derive **unoptimized** forwards- and reverse-pass IR.
     dri = generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
@@ -38,7 +77,7 @@ function frule!!(
     end
 
     # Generate dual rule
-    raw_rule_tangent = let
+    fwd_dual_callable, rvs_dual_callable, raw_rule_tangent = let
         # Optimize as much as possible, but with a forward-mode interpreter
         # that will block inlining of frules
         interp_forward = MooncakeInterpreter(C, ForwardMode; world=interp.world)
@@ -48,29 +87,33 @@ function frule!!(
         fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
         rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
 
-        # Build tangents at the same time to preserve aliasing (e.g. for comms)
+        # fwd_oc and rvs_oc share the same comms Stack objects from shared_data.
+        # zero_tangent is called jointly on both captures tuples so that aliased primal objects
+        # map to a single shared tangent via its IdDict — captures_tangent[1][i] ===
+        # captures_tangent[2][i]. The fwds tangent pass writes to these comms tangent Stacks;
+        # the rvs tangent pass reads from the same objects.
         captures_tangent = zero_tangent((fwd_oc.oc.captures, rvs_oc.oc.captures))
 
-        fwd_oc_tangent = MistyClosureTangent(
-            captures_tangent[1],
-            build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode),
-        )
-        rvs_oc_tangent = MistyClosureTangent(
-            captures_tangent[2],
-            build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode),
-        )
+        fwd_dc = build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode)
+        rvs_dc = build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode)
 
-        Tangent((;
-            fwds_oc=fwd_oc_tangent,
-            pb_oc_ref=MutableTangent((; x=PossiblyUninitTangent(rvs_oc_tangent))),
+        tangent = Tangent((;
+            fwds_oc=MistyClosureTangent(captures_tangent[1], fwd_dc),
+            pb_oc_ref=MutableTangent((;
+                x=PossiblyUninitTangent(MistyClosureTangent(captures_tangent[2], rvs_dc))
+            )),
             nargs=NoTangent(),
         ))
+        fwd_dc, rvs_dc, tangent
     end
 
     if debug_mode
         debug_rule_tangent = Tangent((; rule=raw_rule_tangent))
-        return Dual(DebugRRule(raw_rule), debug_rule_tangent)
+        debug_rule = DebugRRule(raw_rule)
+        cache.cache[cache_key] = (debug_rule, fwd_dual_callable, rvs_dual_callable)
+        return Dual(debug_rule, debug_rule_tangent)
     else
+        cache.cache[cache_key] = (raw_rule, fwd_dual_callable, rvs_dual_callable)
         return Dual(raw_rule, raw_rule_tangent)
     end
 end

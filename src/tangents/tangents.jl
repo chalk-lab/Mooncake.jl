@@ -43,6 +43,8 @@ struct Tangent{Tfields<:NamedTuple}
     fields::Tfields
 end
 
+_copy(x::T) where {T<:Tangent} = T(_copy(x.fields))
+
 Base.:(==)(x::Tangent, y::Tangent) = x.fields == y.fields
 
 """
