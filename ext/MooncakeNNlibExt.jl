@@ -259,15 +259,15 @@ end
 function rrule!!(
     ::CoDual{typeof(bias_act!)},
     ::CoDual{typeof(identity)},
-    x::CoDual{<:SupportedArray{P,N}},
+    x::CoDual{<:SupportedArray{P}},
     b::CoDual{<:SupportedArray{<:IEEEFloat}},
-) where {P<:IEEEFloat,N}
+) where {P<:IEEEFloat}
     px, dx = arrayify(x)
     pb, db = arrayify(b)
     px_copy = copy(px)
     px .+= pb
     # Dims over which b is broadcast (size 1 in b but potentially larger in x).
-    broadcast_dims = Tuple(filter(d -> size(pb, d) == 1, 1:N))
+    broadcast_dims = Tuple(filter(d -> size(pb, d) == 1, 1:ndims(px)))
     function bias_act_id_pb!!(::NoRData)
         if isempty(broadcast_dims)
             db .+= dx
