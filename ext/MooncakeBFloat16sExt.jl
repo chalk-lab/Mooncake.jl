@@ -390,8 +390,12 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(^),P,P}
 function Mooncake.frule!!(::Dual{typeof(^)}, x::Dual{P}, y::Dual{P})
     _x, _y = primal(x), primal(y)
     z = _x^_y
+    # Note: _x^(_y-1) is computed separately from z to correctly handle _x=0: z/_x = 0/0 = NaN
+    # whereas _x^(_y-1) = Inf, which is the mathematically correct diverging gradient.
     return Dual(z,
         nan_tangent_guard(tangent(x), _y * _x^(_y - one(P)) * tangent(x)) +
+        # Guard on z (not tangent(y)): when _x=0, z=0 and log(_x)=-Inf, so
+        # z*log(_x)*tangent(y) = 0*(-Inf)*tangent(y) = NaN without this guard.
         nan_tangent_guard(z, z * log(_x) * tangent(y)))
 end
 function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
@@ -400,6 +404,8 @@ function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
     function pow_pb(dz::P)
         return NoRData(),
             nan_tangent_guard(dz, dz * _y * _x^(_y - one(P))),
+            # Inner guard on z: prevents 0*(-Inf)=NaN when _x=0 (z=0, log(_x)=-Inf).
+            # Outer guard on dz: standard upstream-zero mask (dz=0 → zero gradient).
             nan_tangent_guard(dz, nan_tangent_guard(z, dz * z * log(_x)))
     end
     return zero_fcodual(z), pow_pb

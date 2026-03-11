@@ -77,21 +77,30 @@ const P = Core.BFloat16
         x, y = P(0), P(0.5)
         dx, dy = one(P), one(P)
 
-        # frule: tangent of the y-component must not be NaN
+        # frule: x-tangent diverges to Inf (correct: d/dx(0^0.5) = +Inf);
+        # y-tangent must be exactly 0 (guarded from 0*(-Inf)=NaN).
         fwd_result = Mooncake.frule!!(
             Mooncake.Dual(^, Mooncake.NoTangent()),
             Mooncake.Dual(x, dx),
             Mooncake.Dual(y, dy),
         )
-        @test !isnan(Mooncake.tangent(fwd_result))
-        @test Mooncake.primal(fwd_result) == x^y
+        @test Mooncake.primal(fwd_result) === x^y
+        @test Mooncake.tangent(fwd_result) === P(Inf)  # x-term dominates: _y * 0^(-0.5) * dx
 
-        # rrule: y-rdata from the pullback must not be NaN
+        fwd_result_zero_dx = Mooncake.frule!!(
+            Mooncake.Dual(^, Mooncake.NoTangent()),
+            Mooncake.Dual(x, zero(P)),  # dx = 0: x-term guarded to 0
+            Mooncake.Dual(y, dy),
+        )
+        @test Mooncake.tangent(fwd_result_zero_dx) === zero(P)  # y-term guarded: z*log(0)*dy = 0
+
+        # rrule: x-rdata may be Inf (upstream gradient nonzero into diverging slope);
+        # y-rdata must be exactly 0 (inner guard on z blocks 0*(-Inf)=NaN).
         _, pb = Mooncake.rrule!!(
             Mooncake.zero_fcodual(^), Mooncake.zero_fcodual(x), Mooncake.zero_fcodual(y)
         )
         _, dx_r, dy_r = pb(one(P))
-        @test !isnan(dx_r)
-        @test !isnan(dy_r)
+        @test dx_r === P(Inf)   # dz * _y * 0^(-0.5) = Inf
+        @test dy_r === zero(P)  # inner guard: z=0 blocks z*log(0)*dz = NaN
     end
 end
