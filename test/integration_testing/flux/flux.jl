@@ -51,3 +51,29 @@ test_cases = Any[(loss, ps, st, x, mask), (loss_acl, psacl, stacl, x)]
         mode=Mooncake.ReverseMode,
     )
 end
+
+#
+# Tests from https://github.com/FluxML/Flux.jl/blob/d15c7dc54f080dd67193e8228329d6d127952b81/test/ext_mooncake.jl
+#
+
+using Statistics: mean
+
+include(joinpath(pkgdir(Flux), "test", "test_utils.jl"))
+
+# We only check that the gradient runs (interface_only=true), not correctness
+# against a reference. Correctness is tested separately in Flux's own test suite.
+@testset "mooncake gradient" begin
+    for (model, x, name) in TEST_MODELS
+        @testset "grad check $name" begin
+            Mooncake.TestUtils.test_rule(
+                StableRNG(123),
+                m -> mean(m(x)),
+                model;
+                is_primitive=false,
+                interface_only=true,
+                unsafe_perturb=true,
+                mode=Mooncake.ReverseMode,
+            )
+        end
+    end
+end
