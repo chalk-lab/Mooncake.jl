@@ -3,8 +3,27 @@ module MooncakeCUDAExt
 using LinearAlgebra, Random, Mooncake
 
 using Base: IEEEFloat
-using CUDA: CuArray, CuRefValue, CuPtr, CuContext, CUmemPoolHandle_st
+using CUDA:
+    CuArray,
+    CuRefValue,
+    CuPtr,
+    CuContext,
+    CuStream,
+    CUmemPoolHandle_st,
+    CUdevice_attribute_enum,
+    cudaError_enum,
+    libraryPropertyType,
+    TaskLocalState,
+    task_local_state!,
+    active_state,
+    CuDevice,
+    attribute,
+    cuDeviceGetAttribute,
+    DeviceMemory,
+    UnifiedMemory,
+    HostMemory
 using CUDA: CUBLAS
+using CUDA: CUSPARSE
 
 import Mooncake:
     MinimalCtx,
@@ -53,25 +72,21 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
-# Higher-level ops like `reshape(x, ...)` and view-like constructors reuse CuArray storage
-# by rebuilding the array from the `CuDataRef` returned by `getfield(x, :data)` plus
-# metadata. For example:
-# `y = reshape(x, 32, 64)` becomes
-# `y = _new_(typeof(y), getfield(x, :data), getfield(x, :maxsize), getfield(x, :offset), (32, 64))`.
-# If this path grows, nearby internal storage types to watch for custom tangent handling are
-# `GPUArrays.RefCounted`, `CUDA.Managed`, `CUDA.DeviceMemory`, `CuStream`, and `CuContext`.
-# Mooncake's default tangents may not be buildable for these handle-like CuArray internal
-# types, because their fields can include ownership/state/pointer internals implemented as
-# new primitive types that need explicit tangent support.
-const CuDataRef = fieldtype(CuArray{Float32,1}, :data)
+
+# CuArray{T,N,M}.data is a DataRef — a reference-counted handle to the GPU memory buffer.
+# Operations like reshape and view reconstruct a CuArray from its components.
+# CuDataRef expanded to cover DeviceMemory, UnifiedMemory, and HostMemory variants.
+const CuDataRef = Union{
+    fieldtype(CuArray{Float32,1,DeviceMemory}, :data),
+    fieldtype(CuArray{Float32,1,UnifiedMemory}, :data),
+    fieldtype(CuArray{Float32,1,HostMemory}, :data),
+}
 
 # DataRef values are mutable reference-counted handles; preserve them as-is for fdata.
 @foldable tangent_type(::Type{P}) where {P<:CuDataRef} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuDataRef} = P
 tangent(p::CuDataRef, ::NoRData) = p
 Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) = nothing
-
-# Tell Mooncake.jl how to handle CuArrays.
 
 @foldable fdata_type(::Type{CuPtr{T}}) where {T} = CuPtr{T}
 @foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
@@ -81,10 +96,79 @@ Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) =
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
 }
-tangent_type(::Type{CuContext}) = NoTangent
-tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
-tangent_type(::Type{CUBLAS.cublasOperation_t}) = NoTangent
-tangent_type(::Type{CUBLAS.cublasComputeType_t}) = NoTangent
+
+# Non-differentiable CUDA handle, enum, and state types.
+#
+# Opaque pointer types (Ptr{X}): Mooncake's default tangent_type(::Type{Ptr{P}}) returns
+# Ptr{tangent_type(P)}, and zero_tangent_internal(::Ptr, ::MaybeCache) throws
+# unconditionally.  Both must be overridden for each concrete opaque pointer type.
+#
+# Plain struct/enum types: only tangent_type needs overriding (NoTangent stops traversal).
+for (_cuda_opaque_t, _is_ptr) in [
+    # --- opaque C handle/descriptor Ptr types (CUBLAS) ---
+    (CUmemPoolHandle_st, true),
+    (CUBLAS.cublasContext, true),
+    (CUBLAS.cublasXtContext, true),
+    # --- opaque C handle/descriptor Ptr types (CUSPARSE) ---
+    (CUSPARSE.cusparseContext, true),
+    (CUSPARSE.cusparseMatDescr, true),
+    (CUSPARSE.bsrsv2Info, true),
+    (CUSPARSE.bsrsm2Info, true),
+    (CUSPARSE.csric02Info, true),
+    (CUSPARSE.bsric02Info, true),
+    (CUSPARSE.csrilu02Info, true),
+    (CUSPARSE.bsrilu02Info, true),
+    (CUSPARSE.csru2csrInfo, true),
+    (CUSPARSE.cusparseColorInfo, true),
+    (CUSPARSE.pruneInfo, true),
+    (CUSPARSE.cusparseSpVecDescr, true),
+    (CUSPARSE.cusparseDnVecDescr, true),
+    (CUSPARSE.cusparseSpMatDescr, true),
+    (CUSPARSE.cusparseDnMatDescr, true),
+    (CUSPARSE.cusparseSpSVDescr, true),
+    (CUSPARSE.cusparseSpSMDescr, true),
+    (CUSPARSE.cusparseSpGEMMDescr, true),
+    (CUSPARSE.cusparseSpMMOpPlan, true),
+    # --- CUBLAS enum/status types ---
+    (CUBLAS.cublasOperation_t, false),
+    (CUBLAS.cublasComputeType_t, false),
+    (CUBLAS.cublasStatus_t, false),
+    (CUBLAS.cublasGemmAlgo_t, false),
+    # --- other non-differentiable CUDA types ---
+    (libraryPropertyType, false),
+    (CUdevice_attribute_enum, false),
+    (cudaError_enum, false),
+    # CuStream contains Ptr/Bool/CuContext fields; without NoTangent Mooncake generates a
+    # MutableTangent that propagates into task-local CUDA state → SIGILL at runtime.
+    (CuStream, false),
+    # TaskLocalState bundles device index, stream handles, and library contexts — all
+    # non-differentiable CUDA runtime state.
+    (TaskLocalState, false),
+    # CuContext wraps an opaque Ptr{Cvoid} to the CUDA context — no differentiable content.
+    (CuContext, false),
+]
+    if _is_ptr
+        @eval tangent_type(::Type{Ptr{$_cuda_opaque_t}}) = NoTangent
+        @eval zero_tangent_internal(::Ptr{$_cuda_opaque_t}, ::MaybeCache) = NoTangent()
+    else
+        @eval tangent_type(::Type{$_cuda_opaque_t}) = NoTangent
+    end
+end
+
+# CUDA runtime state functions — non-differentiable, must be registered as primitives.
+@zero_derivative MinimalCtx Tuple{typeof(task_local_state!)}
+@zero_derivative MinimalCtx Tuple{typeof(active_state)}
+@zero_derivative MinimalCtx Tuple{typeof(CUBLAS.version)}
+@zero_derivative MinimalCtx Tuple{typeof(CUBLAS.handle)}
+@zero_derivative MinimalCtx Tuple{typeof(CUSPARSE.handle)}
+@zero_derivative MinimalCtx Tuple{
+    typeof(cuDeviceGetAttribute),Base.RefValue{Int32},CUdevice_attribute_enum,CuDevice
+}
+@zero_derivative MinimalCtx Tuple{typeof(attribute),CuDevice,CUdevice_attribute_enum}
+
+# CuArray{<:Integer} and CuArray{<:Bool} are index/mask arrays — not differentiable.
+tangent_type(::Type{<:CuArray{<:Union{Integer,Bool}}}) = NoTangent
+tangent_type(::Type{<:CuArray{<:Union{Integer,Bool}}}, ::Type{NoRData}) = NoTangent
 
 tangent(p::CuMaybeComplexArray, ::NoRData) = p
 
@@ -283,7 +367,7 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuFloatArray})
         dx .+= dz
         return NoRData(), NoRData()
     end
-    return zero_fcodual(sum(identity, x.x)), sum_pb!!
+    return zero_fcodual(sum(primal(x))), sum_pb!!
 end
 
 # Rules for the 3-arg mul!(C, A, B) on GPU arrays.

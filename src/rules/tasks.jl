@@ -56,7 +56,9 @@ tangent(t::TaskTangent, ::NoRData) = t
     f === :rngState2 && return NoTangent()
     f === :rngState3 && return NoTangent()
     f === :rngState4 && return NoTangent()
-    return error("Unhandled field $f")
+    # All other Task fields (:storage, :code, :donenotify, :result, :logstate, :next,
+    # :queue, :sticky, etc.) are non-differentiable runtime infrastructure.
+    return NoTangent()
 end
 @inline function _get_fdata_field(_, t::TaskTangent, f)
     f === :rngState0 && return NoFData()
@@ -64,7 +66,8 @@ end
     f === :rngState2 && return NoFData()
     f === :rngState3 && return NoFData()
     f === :rngState4 && return NoFData()
-    return error("Unhandled field $f")
+    # All other Task fields are non-differentiable runtime infrastructure.
+    return NoFData()
 end
 
 @inline increment_field_rdata!(::TaskTangent, ::NoRData, ::Val) = nothing
@@ -75,7 +78,8 @@ function get_tangent_field(t::TaskTangent, f)
     f === :rngState2 && return NoTangent()
     f === :rngState3 && return NoTangent()
     f === :rngState4 && return NoTangent()
-    throw(error("Unhandled field $f"))
+    # All other Task fields are non-differentiable runtime infrastructure.
+    return NoTangent()
 end
 
 const TaskDual = Dual{Task,TaskTangent}
