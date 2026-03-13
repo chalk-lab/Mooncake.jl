@@ -240,7 +240,7 @@ function rrule!!(
 
     # Pre-allocate B1 with concrete type before the if/else to avoid Core.Box in the
     # pullback closure. B2 is always just an alias for B, so we use B directly below.
-    B1 = similar(B)
+    B1 = zero(B)
 
     if trans == 'N'
         # Apply permutation matrix.

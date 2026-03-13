@@ -346,8 +346,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(2)),
 
         # mutable structs
-        (true, :none, nothing, lgetfield, MutableFoo(5.0), Val(:a)),
-        (false, :none, nothing, lgetfield, MutableFoo(5.0, randn(5)), Val(:b)),
+        (true, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0), Val(:a)),
+        (false, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0, randn(5)), Val(:b)),
         (false, :none, nothing, lgetfield, UInt8, Val(:name)),
         (false, :none, nothing, lgetfield, UInt8, Val(:super)),
         (true, :none, nothing, lgetfield, UInt8, Val(:layout)),
