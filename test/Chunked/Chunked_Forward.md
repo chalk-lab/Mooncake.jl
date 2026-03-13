@@ -12,8 +12,11 @@ particularly useful for functions `f: R^n -> R^m` where `m > n` (many outputs, f
 ## Motivation
 
 Mooncake's current forward mode propagates **one tangent direction per call** to `frule!!`.
-Computing a full Jacobian for `f: R^n -> R^m` therefore requires `n` separate `frule!!` calls —
+Writing all rules again for Chunked Tangent Types is a waste of time.
+A step further is computing a full Jacobian for `f: R^n -> R^m` therefore requires `n` separate `frule!!` calls —
 one per input dimension.
+
+But best way ? 
 
 The key observation is: if `f` is **Fréchet differentiable** at the primal point, its derivative
 is a bounded linear map. This means we can:
