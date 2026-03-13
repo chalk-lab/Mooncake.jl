@@ -2,7 +2,8 @@
 
 ## Summary
 
-This PR proposes a new tangent type — `ChunkedPrimitiveTangent{T, N}` — and a corresponding
+This PR introduces Chunked Forward Mode AD in a totally Modular way, without affecting, interfering with the current Core Library's Implementation & Performance. It only compliments it.
+Specifically, we currently work with — `ChunkedPrimitiveTangent{T, N}` — and a corresponding
 dispatch for `Mooncake.frule!!` that propagates **N tangent directions simultaneously** in a
 single forward pass. This is the forward-mode analogue of batched reverse-mode AD, and is
 particularly useful for functions `f: R^n -> R^m` where `m > n` (many outputs, few inputs).
