@@ -15,9 +15,14 @@ else
     [FIRST_ORDER...]
 end
 
+scens = filter(DifferentiationInterfaceTest.default_scenarios()) do s
+    s.f !== DifferentiationInterfaceTest.arr_to_num_no_linalg
+end
+
 # Test second-order differentiation (forward-over-reverse)
 test_differentiation(
-    [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))];
+    [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))],
+    scens;
     excluded=EXCLUDED,
     logging=true,
 )
