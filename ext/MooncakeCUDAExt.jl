@@ -147,8 +147,11 @@ for (_cuda_opaque_t, _is_ptr) in [
     # --- other non-differentiable CUDA types ---
     (libraryPropertyType, false),
     (CUdevice_attribute_enum, false),
+    (cublasPointerMode_t, false),
+    (cublasFillMode_t, false),
+    (cublasDiagType_t, false),
     (cudaError_enum, false),
-    # CuStream contains Ptr/Bool/CuContext fields; without NoTangent Mooncake generates a
+    # CuStream contains Ptr/Bool/CuContext fields; without NoTangent, Mooncake generates a
     # MutableTangent that propagates into task-local CUDA state → SIGILL at runtime.
     (CuStream, false),
     # TaskLocalState bundles device index, stream handles, and library contexts — all
