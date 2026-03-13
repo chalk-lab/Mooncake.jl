@@ -74,8 +74,18 @@ const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
 
 # CuArray{T,N,M}.data is a DataRef — a reference-counted handle to the GPU memory buffer.
-# Operations like reshape and view reconstruct a CuArray from its components.
-# CuDataRef expanded to cover DeviceMemory, UnifiedMemory, and HostMemory variants.
+# Operations like reshape and view reconstruct a CuArray from its components:
+#   `y = _new_(typeof(y), getfield(x, :data), getfield(x, :maxsize), getfield(x, :offset), dims)`.
+# The tangent of data flows through these _new_ calls, so Mooncake needs lgetfield and
+# _new_ rules for DataRef.
+#
+# CuArray{T,N,M} uses a different DataRef concrete type for each memory kind M:
+#   DeviceMemory  → DataRef{Managed{DeviceMemory}}
+#   UnifiedMemory → DataRef{Managed{UnifiedMemory}}
+#   HostMemory    → DataRef{Managed{HostMemory}}
+# DataRef does NOT depend on T or N — only on M — so three entries cover every
+# CuArray{T,N,M} combination.  Missing a variant causes Mooncake to fall through to the
+# generic struct handler, which tries to build tangents for DataRef's internal Ptr fields.
 const CuDataRef = Union{
     fieldtype(CuArray{Float32,1,DeviceMemory}, :data),
     fieldtype(CuArray{Float32,1,UnifiedMemory}, :data),
