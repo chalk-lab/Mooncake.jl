@@ -24,6 +24,7 @@ using CUDA:
     HostMemory
 using CUDA: CUBLAS
 using CUDA: CUSPARSE
+using CUDA: CUSOLVER
 
 import Mooncake:
     MinimalCtx,
@@ -159,6 +160,23 @@ for (_cuda_opaque_t, _is_ptr) in [
     (TaskLocalState, false),
     # CuContext wraps an opaque Ptr{Cvoid} to the CUDA context — no differentiable content.
     (CuContext, false),
+    # --- opaque C handle/descriptor Ptr types (CUSOLVER) ---
+    (CUSOLVER.syevjInfo_t, true),
+    (CUSOLVER.gesvdjInfo_t, true),
+    (CUSOLVER.cusolverDnIRSParams_t, true),
+    (CUSOLVER.cusolverDnIRSInfos_t, true),
+    (CUSOLVER.cusolverDnParams_t, true),
+    # --- CUSOLVER enum/status types ---
+    (CUSOLVER.cusolverDnFunction_t, false),
+    (CUSOLVER.cusolverEigMode_t, false),
+    (CUSOLVER.cusolverEigType_t, false),
+    (CUSOLVER.cusolverEigRange_t, false),
+    (CUSOLVER.cusolverNorm_t, false),
+    (CUSOLVER.cusolverIRSRefinement_t, false),
+    (CUSOLVER.cusolverAlgMode_t, false),
+    (CUSOLVER.cusolverStorevMode_t, false),
+    (CUSOLVER.cusolverDirectMode_t, false),
+    (CUSOLVER.cusolverDeterministicMode_t, false),
 ]
     if _is_ptr
         @eval tangent_type(::Type{Ptr{$_cuda_opaque_t}}) = NoTangent
