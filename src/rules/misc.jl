@@ -42,9 +42,9 @@ end
 """
     lgetfield(x, f::Val)
 
-An implementation of `getfield` in which the the field `f` is specified statically via a
+An implementation of `getfield` in which the field `f` is specified statically via a
 `Val`. This enables the implementation to be type-stable even when it is not
-possible to constant-propagate `f`. Moreover, it enable the pullback to also be type-stable.
+possible to constant-propagate `f`. Moreover, it enables the pullback to also be type-stable.
 
 It will always be the case that
 ```julia

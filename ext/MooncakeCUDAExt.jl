@@ -40,6 +40,7 @@ import Mooncake:
     NoPullback,
     NoFData,
     to_cr_tangent,
+    mooncake_tangent,
     increment_and_get_rdata!,
     MaybeCache,
     IncCache,
@@ -52,9 +53,28 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+# Higher-level ops like `reshape(x, ...)` and view-like constructors reuse CuArray storage
+# by rebuilding the array from the `CuDataRef` returned by `getfield(x, :data)` plus
+# metadata. For example:
+# `y = reshape(x, 32, 64)` becomes
+# `y = _new_(typeof(y), getfield(x, :data), getfield(x, :maxsize), getfield(x, :offset), (32, 64))`.
+# If this path grows, nearby internal storage types to watch for custom tangent handling are
+# `GPUArrays.RefCounted`, `CUDA.Managed`, `CUDA.DeviceMemory`, `CuStream`, and `CuContext`.
+# Mooncake's default tangents may not be buildable for these handle-like CuArray internal
+# types, because their fields can include ownership/state/pointer internals implemented as
+# new primitive types that need explicit tangent support.
+const CuDataRef = fieldtype(CuArray{Float32,1}, :data)
+
+# DataRef values are mutable reference-counted handles; preserve them as-is for fdata.
+@foldable tangent_type(::Type{P}) where {P<:CuDataRef} = P
+@foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuDataRef} = P
+tangent(p::CuDataRef, ::NoRData) = p
+Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) = nothing
 
 # Tell Mooncake.jl how to handle CuArrays.
 
+@foldable fdata_type(::Type{CuPtr{T}}) where {T} = CuPtr{T}
+@foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
 @foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
 @unstable @foldable tangent_type(::Type{CuPtr{P}}) where {P} = CuPtr{tangent_type(P)}
@@ -64,6 +84,7 @@ const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
 tangent_type(::Type{CuContext}) = NoTangent
 tangent_type(::Type{Ptr{CUmemPoolHandle_st}}) = NoTangent
 tangent_type(::Type{CUBLAS.cublasOperation_t}) = NoTangent
+tangent_type(::Type{CUBLAS.cublasComputeType_t}) = NoTangent
 
 tangent(p::CuMaybeComplexArray, ::NoRData) = p
 
@@ -145,7 +166,9 @@ function Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, p::CuArray, f::CuA
 end
 
 # @from_chainrules tools
-# TODO: missing `mooncake_tangent` implementation.
+# CuArray is its own tangent type and ChainRules also uses CuArray directly as the
+# tangent, so mooncake_tangent is the identity.
+mooncake_tangent(::CuMaybeComplexArray, t::CuMaybeComplexArray) = t
 to_cr_tangent(x::CuMaybeComplexArray) = x
 function increment_and_get_rdata!(f::T, ::NoRData, t::T) where {T<:CuMaybeComplexArray}
     f .+= t
@@ -154,46 +177,59 @@ end
 
 # Basic rules for operating on CuArrays.
 
+# Primitive (not _new_) because GPU allocation happens inside the constructor body before
+# the `new` call; tracing through it would hit CUDA-internal machinery.
 @zero_derivative MinimalCtx Tuple{Type{<:CuArray},UndefInitializer,NTuple{N,Int}} where {N}
 
-# TODO: Mooncake defines rules for `_new_` instead of below. See
-# https://chalk-lab.github.io/Mooncake.jl/stable/developer_documentation/custom_tangent_type/#Checklist:-Functions-Needed-for-Recursive-Struct-Support
-#
-@is_primitive(MinimalCtx, Tuple{Type{<:CuArray},UndefInitializer,Vararg{Int,N}} where {N},)
+# Primitive because CUDA.jl's reshape body calls copy(DataRef) for reference counting,
+# which uses llvmcall. reshape returns a view, so the tangent is a reshaped view of
+# x.dx and gradient accumulation propagates automatically — NoPullback is correct.
+@is_primitive(
+    MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
+)
 function frule!!(
-    p::Dual{Type{P}}, init::Dual{UndefInitializer}, dims::Vararg{Dual{Int},N}
-) where {P<:CuMaybeComplexArray,N}
-    _dims = map(primal, dims)
-    return Dual(P(undef, _dims), P(undef, _dims))
+    ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
+)
+    return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
 end
 function rrule!!(
-    p::CoDual{Type{P}}, init::CoDual{UndefInitializer}, dims::Vararg{CoDual{Int},N}
-) where {P<:CuMaybeComplexArray,N}
-    _dims = map(primal, dims)
-    return CoDual(P(undef, _dims), P(undef, _dims)), NoPullback(p, init, dims...)
+    ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
+)
+    _dims = primal(dims)
+    return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)),
+    NoPullback(ntuple(_ -> NoRData(), 3))
 end
 
+# `_new_` rules for the DataRef-based inner CuArray constructor (used by views and
+# similar operations). The tangent reuses the DataRef from the input tangent so that
+# gradient accumulation propagates automatically.
 function frule!!(
-    f::Dual{typeof(Mooncake._new_),Mooncake.NoTangent},
-    p::Dual{A,Mooncake.NoTangent},
-    x::Dual{M,TM},
-) where {T,M<:CuArray{T},A<:Type{LinearAlgebra.Adjoint{T,M}},TM<:CuArray}
-    y = _new_(LinearAlgebra.Adjoint{T,M}, Mooncake.primal(x))
-    dy = Mooncake.Tangent((parent=Mooncake.tangent(x),))
+    ::Dual{typeof(_new_)},
+    ::Dual{Type{P}},
+    data::Dual,
+    maxsize::Dual,
+    offset::Dual,
+    dims::Dual,
+) where {P<:CuMaybeComplexArray}
+    y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
+    dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
     return Dual(y, dy)
 end
-
-function frule!!(
-    f::Dual{typeof(Mooncake._new_),Mooncake.NoTangent},
-    p::Dual{A,Mooncake.NoTangent},
-    x::Dual{M,TM},
-) where {T,M<:CuArray{T},A<:Type{LinearAlgebra.Transpose{T,M}},TM<:CuArray}
-    y = _new_(LinearAlgebra.Transpose{T,M}, Mooncake.primal(x))
-    dy = Mooncake.Tangent((parent=Mooncake.tangent(x),))
-    return Dual(y, dy)
+function rrule!!(
+    ::CoDual{typeof(_new_)},
+    ::CoDual{Type{P}},
+    data::CoDual,
+    maxsize::CoDual,
+    offset::CoDual,
+    dims::CoDual,
+) where {P<:CuMaybeComplexArray}
+    y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
+    dy = _new_(P, data.dx, primal(maxsize), primal(offset), primal(dims))
+    return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 6))
 end
 
 # getfield / lgetfield rules for CuArray.
+# CuArray has 4 fields: data (1, differentiable DataRef), maxsize (2), offset (3), dims (4).
 function frule!!(
     ::Dual{typeof(lgetfield)},
     x::Dual{<:CuArray,<:CuArray},
@@ -201,8 +237,8 @@ function frule!!(
     ::Dual{Val{order}},
 ) where {name,order}
     y = getfield(primal(x), name, order)
-    wants_size = name === 2 || name === :dims
-    dy = wants_size ? NoTangent() : tangent(x).data
+    is_data = name === 1 || name === :data
+    dy = is_data ? tangent(x).data : NoTangent()
     return Dual(y, dy)
 end
 function rrule!!(
@@ -212,8 +248,8 @@ function rrule!!(
     ::CoDual{Val{order}},
 ) where {name,order}
     y = getfield(primal(x), name, order)
-    wants_size = name === 2 || name === :dims
-    dy = wants_size ? NoFData() : x.dx
+    is_data = name === 1 || name === :data
+    dy = is_data ? x.dx.data : NoFData()
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -221,33 +257,73 @@ function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
 ) where {name}
     y = getfield(primal(x), name)
-    wants_size = name === 2 || name === :dims
-    dy = wants_size ? NoTangent() : tangent(x).data
+    is_data = name === 1 || name === :data
+    dy = is_data ? tangent(x).data : NoTangent()
     return Dual(y, dy)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuArray,<:CuArray}, ::CoDual{Val{name}}
 ) where {name}
     y = getfield(primal(x), name)
-    wants_size = name === 2 || name === :dims
-    dy = wants_size ? NoFData() : x.dx
-    return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
+    is_data = name === 1 || name === :data
+    dy = is_data ? x.dx.data : NoFData()
+    return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 3))
 end
 
-# Rule for `sum` is defined as a performance rule. 
-# TODO: These rules can be merged with the `sum` rules in `rules/performance_patches`. 
-# This would be done by defining `arrayify` for `CuFloatArray`.
+# Rule for `sum` is defined as a performance rule.
+# See also `src/rules/performance_patches`.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),CuFloatArray})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuFloatArray})
-    return Dual(sum(primal(x)), sum(tangent(x)))
+    px, dx = arrayify(x)
+    return Dual(sum(px), sum(dx))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuFloatArray})
-    dx = x.dx
+    _, dx = arrayify(x)
     function sum_pb!!(dz)
         dx .+= dz
         return NoRData(), NoRData()
     end
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
+end
+
+# Rules for the 3-arg mul!(C, A, B) on GPU arrays.
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(mul!),<:CuMaybeComplexArray,<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+function frule!!(
+    ::Dual{typeof(mul!)},
+    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    pC, dC = arrayify(C)
+    mul!(dC, dA, pB)             # dC  = dA*B   (product rule; overwrites since β=0)
+    mul!(dC, pA, dB, true, true) # dC += A*dB
+    mul!(pC, pA, pB)
+    return C
+end
+function rrule!!(
+    ::CoDual{typeof(mul!)},
+    C::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    A::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    B::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    pC, dC = arrayify(C)
+    pC_copy = copy(pC)
+    mul!(pC, pA, pB)
+    function mul!_pb!!(::NoRData)
+        mul!(dA, dC, pB', true, true)  # dA += dC * B^H
+        mul!(dB, pA', dC, true, true)  # dB += A^H * dC
+        copyto!(pC, pC_copy)           # restore C's primal (it was overwritten above)
+        dC .= 0                        # β=0: C_old does not contribute, so ∂L/∂C_old = 0
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return C, mul!_pb!!
 end
 
 end

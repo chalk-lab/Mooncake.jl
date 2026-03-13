@@ -74,6 +74,29 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         (false, :none, false, x -> softmax(x; dims=2), _rand(rng, 3, 2)),
         (false, :none, false, x -> softmax(x; dims=(1, 2)), _rand(rng, 3, 2)),
 
+        # softmax with Adjoint, Transpose
+        (false, :stability, true, softmax, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), softmax, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), softmax, _rand(rng, 3, 3)'),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=1,),
+            softmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=2,),
+            softmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
+
         # logsoftmax
         (false, :stability, true, logsoftmax, _rand(rng, 2)),
         (false, :stability, true, logsoftmax, _rand(rng, 2, 3)),
@@ -100,6 +123,29 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             _rand(rng, 3, 3, 2),
         ),
 
+        # logsoftmax with Adjoint, Transpose
+        (false, :stability, true, logsoftmax, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsoftmax, _rand(rng, 3, 3)'),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=1,),
+            logsoftmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=2,),
+            logsoftmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
+
         # logsumexp
         (false, :stability, true, logsumexp, _rand(rng, 2)),
         (false, :stability, true, logsumexp, _rand(rng, 3, 3)),
@@ -116,6 +162,29 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             (dims=(1, 2),),
             logsumexp,
             _rand(rng, 3, 3, 2),
+        ),
+
+        # logsumexp with Adjoint, Transpose
+        (false, :stability, true, logsumexp, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)'),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=1,),
+            logsumexp,
+            transpose(_rand(rng, 3, 3)),
+        ),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=2,),
+            logsumexp,
+            transpose(_rand(rng, 3, 3)),
         ),
 
         # upsample_nearest
@@ -154,6 +223,10 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         # padding
         (false, :none, false, x -> pad_constant(x, 1, float(2.0)), x),
         (false, :none, false, x -> pad_constant(x, 1, float(2.0); dims=:), x),
+
+        # bias_act!(identity, x, b): modifies x in-place
+        (false, :stability, true, bias_act!, identity, _rand(rng, 8, 4), _rand(rng, 8)),
+        (false, :stability, true, bias_act!, identity, _rand(rng, 8), _rand(rng, 8)),
     ]
     if !cuda
 
@@ -180,4 +253,87 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         mode = Mooncake.ReverseMode
         test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode)
     end
+end
+
+# Testing arrayify for Adjoint/Transpose accumulation
+@testset "arrayify Adjoint/Transpose tests" begin
+    rng = StableRNG(123)
+    A = randn(rng, 3, 4)
+    g = randn(rng, 3, 4)
+
+    # Plain array
+    xf = zeros(3, 4)
+    _, dxf = Mooncake.arrayify(A, xf)
+    dxf .+= g
+    @test xf ≈ g
+
+    # Plain array, scalar gradient
+    xf_scalar = zeros(3, 4)
+    _, dxf_scalar = Mooncake.arrayify(A, xf_scalar)
+    dxf_scalar .+= 2.0
+    @test xf_scalar ≈ fill(2.0, 3, 4)
+
+    # Adjoint: gradient transposed back into parent
+    parent_adj = zeros(4, 3)
+    xf_adj = Mooncake.FData((parent=parent_adj,))
+    _, dxf_adj = Mooncake.arrayify(A', xf_adj)
+    dxf_adj .+= g
+    @test parent_adj ≈ g'
+
+    # Transpose: gradient transposed back into parent
+    parent_tr = zeros(4, 3)
+    xf_tr = Mooncake.FData((parent=parent_tr,))
+    _, dxf_tr = Mooncake.arrayify(transpose(A), xf_tr)
+    dxf_tr .+= g
+    @test parent_tr ≈ transpose(g)
+
+    # Accumulates (+=), not overwrites — Adjoint
+    parent_adj2 = ones(4, 3)
+    xf_adj2 = Mooncake.FData((parent=parent_adj2,))
+    _, dxf_adj2 = Mooncake.arrayify(A', xf_adj2)
+    dxf_adj2 .+= g
+    @test parent_adj2 ≈ ones(4, 3) .+ g'
+
+    # Accumulates (+=), not overwrites — Transpose
+    parent_tr2 = ones(4, 3)
+    xf_tr2 = Mooncake.FData((parent=parent_tr2,))
+    _, dxf_tr2 = Mooncake.arrayify(transpose(A), xf_tr2)
+    dxf_tr2 .+= g
+    @test parent_tr2 ≈ ones(4, 3) .+ transpose(g)
+end
+
+@testset "logsumexp Inf/NaN stability" begin
+    function test_logsumexp_inf(x, dims)
+        seed = ones(eltype(x), size(logsumexp(x; dims=dims)))
+        cache = Mooncake.prepare_pullback_cache(
+            Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
+        )
+        y, (_, _, _, dx) = Mooncake.value_and_pullback!!(
+            cache, seed, Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
+        )
+        return y, dx
+    end
+
+    # All Inf inputs
+    y, dx = test_logsumexp_inf(Float32[Inf, Inf], 1)
+    @test all(isinf.(y)) && all(y .> 0)
+    @test !any(isnan.(dx))
+    @test dx ≈ Float32[0.5, 0.5]
+
+    # All Inf inputs - Matrix case
+    y, dx = test_logsumexp_inf(Float32[Inf Inf; Inf Inf], 1)
+    @test !any(isnan.(y)) && !any(isnan.(dx))
+    @test dx ≈ Float32[0.5 0.5; 0.5 0.5]
+
+    # All -Inf inputs
+    y, dx = test_logsumexp_inf(Float32[-Inf, -Inf], 1)
+    @test all(isinf.(y)) && all(y .< 0)
+    @test !any(isnan.(dx))
+    @test dx ≈ Float32[0.5, 0.5]
+
+    # Mixed Inf and finite inputs
+    y, dx = test_logsumexp_inf(Float32[Inf, 1.0f0], 1)
+    @test all(isinf.(y)) && all(y .> 0)
+    @test !any(isnan.(dx))
+    @test dx ≈ Float32[1.0f0, 0.0f0]
 end

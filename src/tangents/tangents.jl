@@ -475,7 +475,7 @@ end
     # If the type is a Union, then take the union type of its arguments.
     P isa Union && return :(Union{tangent_type($(P.a)),tangent_type($(P.b))})
 
-    # If the type is itself abstract, it's tangent could be anything.
+    # If the type is itself abstract, its tangent could be anything.
     # The same goes for if the type has any undetermined type parameters.
     (isabstracttype(P) || !isconcretetype(P)) && return Any
 
@@ -584,11 +584,11 @@ end
         # If dealing with a mutable type, ensure that we have an entry in `d`.
         if tangent_type(P) <: MutableTangent
             haskey(d, x) && return d[x]::tangent_type(P)
-            d[x] = tangent_type(P)() # create a uninitialised MutableTangent
+            d[x] = tangent_type(P)() # create an uninitialised MutableTangent
         end
 
         # For each field in `x`, construct its zero tangent. This is where the generated
-        # expression above it used. Everything else is regular code.
+        # expression above is used. Everything else is regular code.
         fields = backing_type(P)($tangent_fields_tuple_expr)
 
         if tangent_type(P) <: MutableTangent
@@ -693,11 +693,11 @@ end
         # If dealing with a mutable type, ensure that we have an entry in `d`.
         if tangent_type(P) <: MutableTangent
             haskey(d, x) && return d[x]::tangent_type(P)
-            d[x] = tangent_type(P)() # create a uninitialised MutableTangent
+            d[x] = tangent_type(P)() # create an uninitialised MutableTangent
         end
 
         # For each field in `x`, construct its randn tangent. This is where the generated
-        # expression above it used. Everything else is regular code.
+        # expression above is used. Everything else is regular code.
         fields = backing_type(P)($tangent_fields_tuple_expr)
 
         if tangent_type(P) <: MutableTangent
