@@ -117,6 +117,7 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         _cumprod_sum(x) = sum(cumprod(x))
         _cumprod_cx_sum(x) = real(sum(cumprod(x)))
         _accumulate_plus_sum(x) = sum(accumulate(+, x))
+        _accumulate_plus_cx_sum(x) = real(sum(accumulate(+, x)))
         # vector indexing — gather/scatter-add
         _gather_sum(x, idx) = sum(x[idx])
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
@@ -138,11 +139,42 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         # adjoint of a CuVector times a CuMatrix — dispatches through generic_matmatmul!
         # because CUBLAS.gemm! only accepts CuMatrix inputs; now covered by the explicit rule.
         _cu_slice_adj_mul(x, cy) = sum(cu(x[:, 1])' * cy)
+        # copy(CuArray) → copyto! → unsafe_copyto! — exercises the unsafe_copyto! rule.
+        _copy_sum(x) = sum(copy(x))
+        _copy_sum_cx(x) = real(sum(copy(x)))
+        # in-place broadcast (x .= f.(y)) — exercises materialize! frule!! / rrule!!.
+        # _inplace_add_alias! tests the aliasing-safe path: dest appears in bc.args.
+        # _inplace_cx_abs2! tests real-output-into-complex-dest: abs2(ℂ)→ℝ written into
+        # a ComplexF64 array, exercising Float64→ComplexF64 promotion and 2-DOF partials.
+        _inplace_sin!(x, y) = (x.=sin.(y); sum(x))
+        _inplace_add_alias!(x, y) = (x.=x .+ y; sum(x))
+        _inplace_cx_abs2!(x, y) = (x.=abs2.(y); real(sum(x)))
         # GPU→CPU transfer inside the function: Array(x::CuArray) path.
         _gpu_to_cpu(x) = sum(Array(x) .^ 2)
-        # Bool mask via broadcast — creates a CuArray{Bool} internally; verifies that
-        # integer/bool CuArrays (tangent_type = NoTangent) don't crash AD.
-        _bool_mask_sum(x) = sum(x .* (x .> zero(eltype(x))))
+        # CPU→GPU transfer: copies a host Array into a GPU dest via unsafe_copyto!(GPU←CPU).
+        # Exercises the mixed-device rrule (dest::CuArray, src::Array).
+        # The gradient flows back from the GPU cotangent to the CPU src tangent.
+        function _cpu_to_gpu_sum(x)
+            dest = similar(x)
+            copyto!(dest, Array(x))
+            return sum(dest)
+        end
+        # CuPtr arithmetic — exercises the CuPtr{T} + Integer primitives.
+        # _view_sum: view(x, range) triggers SubArray → unsafe_convert(CuPtr{T}, parent) +
+        # offset, which is CuPtr{Float32} + Integer (differentiable T).
+        _view_sum(x) = sum(view(x, 2:length(x)))
+        _view_sum_cx(x) = real(sum(view(x, 2:length(x))))
+        # _view_bool_gate_sum: Bool mask applied via a view; CuArray{Bool} is
+        # non-differentiable (tangent_type(Bool)=NoTangent), so gradient flows
+        # through x only.  Verifies that Bool CuArray views don't crash AD.
+        _view_bool_gate_sum(x) = sum(x .* Float32.(view(x .> zero(eltype(x)), 1:length(x))))
+        # Helpers for non-default memory types.
+        _rand_unified =
+            (rng, sz...) ->
+                CuArray{Float32,length(sz),CUDA.UnifiedMemory}(randn(rng, Float32, sz...))
+        _rand_host =
+            (rng, sz...) ->
+                CuArray{Float32,length(sz),CUDA.HostMemory}(randn(rng, Float32, sz...))
         # Dense-layer-style: W*x + b — exercises matmul (mightalias via copy in
         # the rrule) plus bias broadcast on GPU.
         _linear(W, x, b) = sum(W * x .+ b)
@@ -347,8 +379,9 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             # cumprod — explicit rule (real and complex, nonzero inputs)
             (false, :none, false, _cumprod_sum, _rand_pos(rng, 16)),
             (false, :none, false, _cumprod_cx_sum, _rand(rng, ComplexF64, 16)),
-            # accumulate(+) — explicit rule
+            # accumulate(+) — explicit rule (real and complex)
             (false, :none, false, _accumulate_plus_sum, _rand(rng, 16)),
+            (false, :none, false, _accumulate_plus_cx_sum, _rand(rng, ComplexF64, 16)),
             # vector indexing — gather forward, scatter-add pullback
             (
                 false,
@@ -422,10 +455,62 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
                 _host_rand(rng, Float32, 3, 3),
                 _rand(rng, Float32, 3, 3),
             ),
+            # copy(CuArray) → copyto! → unsafe_copyto! — regression for UpsilonNode error.
+            (false, :none, false, _copy_sum, _rand(rng, 16)),
+            (false, :none, false, _copy_sum_cx, _rand(rng, ComplexF64, 16)),
+            # UnifiedMemory and HostMemory CuArrays — same unsafe_copyto! rule, different M.
+            (false, :none, false, _copy_sum, _rand_unified(rng, 16)),
+            (false, :none, false, _copy_sum, _rand_host(rng, 16)),
+            # Direct unsafe_copyto!(dest, doffs, src, soffs, n) tests (is_primitive=true).
+            # Full-array copy: doffs=soffs=1, n=length(src).
+            (false, :none, true, unsafe_copyto!, _rand(rng, 16), 1, _rand(rng, 16), 1, 16),
+            # Sub-range copy: only elements 2..5 of dest are overwritten; rest unchanged.
+            (false, :none, true, unsafe_copyto!, _rand(rng, 16), 2, _rand(rng, 16), 1, 4),
+            # Complex full-array copy.
+            (
+                false,
+                :none,
+                true,
+                unsafe_copyto!,
+                _rand(rng, ComplexF64, 8),
+                1,
+                _rand(rng, ComplexF64, 8),
+                1,
+                8,
+            ),
             # GPU→CPU transfer: Array(x::CuArray) path.
             (false, :none, false, _gpu_to_cpu, _rand(rng, 16)),
-            # Bool mask broadcast — CuArray{Bool} tangent_type = NoTangent must not crash.
-            (false, :none, false, _bool_mask_sum, _rand_pos(rng, 16)),
+            # CPU→GPU transfer: copyto!(CuArray, Array) → unsafe_copyto!(GPU, CPU).
+            (false, :none, false, _cpu_to_gpu_sum, _rand(rng, 16)),
+            # CuPtr{T} + Integer — differentiable T (Float32): view(x, range) internally
+            # calls unsafe_convert(CuPtr{Float32}, SubArray) = unsafe_convert(parent) + offset.
+            (false, :none, false, _view_sum, _rand(rng, 16)),
+            (false, :none, false, _view_sum_cx, _rand(rng, ComplexF64, 16)),
+            # Bool-masked sum: CuArray{Bool} is non-differentiable; gradient flows through x.
+            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, 16)),
+            # fill!(CuArray, val) — GPU fill! has internal try/catch → UpsilonNode.
+            # Regression for Flux LSTM hidden-state reset (fill! with integer 0).
+            # Also test float value to exercise gradient propagation through x.
+            (false, :none, true, fill!, _rand(rng, 16), 0.0f0),
+            (false, :none, true, fill!, _rand(rng, 4, 4), 0.0f0),
+            # Complex CuArray: tests rdata_type(ComplexF64) + sum(da) on complex tangent.
+            (false, :none, true, fill!, _rand(rng, ComplexF64, 8), 0.5 + 0.5im),
+            # Lambda wrapper: not itself a primitive; is_primitive=false so test_rule does not
+            # assert that the built rule is frule!!/rrule!!.
+            (false, :none, false, (a) -> (fill!(a, Int32(0)); sum(a)), _rand(rng, 16)),
+            # in-place broadcast — exercises materialize! frule!! / rrule!!.
+            # Three cases: basic (sin), aliased dest (x .= x .+ y),
+            # and real-output-into-complex-dest (abs2: ℂ→ℝ stored into ComplexF64 array).
+            (false, :none, false, _inplace_sin!, _rand(rng, 16), _rand(rng, 16)),
+            (false, :none, false, _inplace_add_alias!, _rand(rng, 16), _rand(rng, 16)),
+            (
+                false,
+                :none,
+                false,
+                _inplace_cx_abs2!,
+                _rand(rng, ComplexF64, 16),
+                _rand(rng, ComplexF64, 16),
+            ),
             # Dense-layer-style forward pass: W*x + b → relu → sum.
             # Exercises the 7-arg generic_matmatmul! rule + bias broadcast + mightalias.
             (
@@ -456,6 +541,56 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only)
         end
 
+        # Direct unit tests for CuPtr{T} + Integer frule!! / rrule!!.
+        #
+        # Background: there are two dispatch branches in the rule:
+        #   • Differentiable T (e.g. Float32): fdata_type(CuPtr{Float32}) = CuPtr{Float32}.
+        #     Both primal and tangent pointers are offset by n.
+        #   • Non-differentiable T (e.g. Cvoid, Bool): fdata_type(CuPtr{Cvoid}) = NoFData.
+        #     Only the primal is offset; the tangent stays NoTangent / NoFData.
+        #
+        # Why direct calls and not test_rule?
+        #   CuPtr is not an array type, so test_rule cannot construct meaningful inputs.
+        #   The functional path (_view_sum / _view_sum_cx) exercises the differentiable-T
+        #   branch end-to-end via SubArray → unsafe_convert → CuPtr{Float32} + offset.
+        #   However, that path never touches the non-differentiable-T branch: a
+        #   CuArray{Bool} view has tangent_type(Bool)=NoTangent, so unsafe_convert is
+        #   never called with a Bool fdata, and CuPtr{Bool}+Integer is never reached.
+        #   These direct tests are therefore the only coverage for the NoFData branch.
+        @testset "CuPtr{T} + Integer direct (Float32 and Cvoid)" begin
+            # ── frule!! — differentiable T ────────────────────────────────────────────
+            # Both primal and tangent pointers must advance by the same byte offset n.
+            p32 = CuPtr{Float32}(UInt64(4096))
+            dp32 = Dual(p32, CuPtr{Float32}(UInt64(4096)))  # tangent = same base addr
+            dn = Dual(Int64(64), NoTangent())
+            result = _MooncakeCUDAExt.frule!!(Dual(+, NoTangent()), dp32, dn)
+            @test primal(result) == p32 + 64
+            @test tangent(result) == CuPtr{Float32}(UInt64(4096)) + 64
+
+            # ── frule!! — non-differentiable T (Cvoid) ───────────────────────────────
+            # Only primal advances; tangent must remain NoTangent (not crash or wrong type).
+            pv = CuPtr{Cvoid}(UInt64(4096))
+            dpv = Dual(pv, NoTangent())
+            result_v = _MooncakeCUDAExt.frule!!(Dual(+, NoTangent()), dpv, dn)
+            @test primal(result_v) == pv + 64
+            @test tangent(result_v) isa NoTangent
+
+            # ── rrule!! — differentiable T ────────────────────────────────────────────
+            # Output tangent (fdata) must be the offset tangent pointer.
+            dp32_co = CoDual(p32, CuPtr{Float32}(UInt64(4096)))
+            dn_co = CoDual(Int64(64), NoFData())
+            out, pb = _MooncakeCUDAExt.rrule!!(CoDual(+, NoFData()), dp32_co, dn_co)
+            @test primal(out) == p32 + 64
+            @test tangent(out) == CuPtr{Float32}(UInt64(4096)) + 64
+
+            # ── rrule!! — non-differentiable T (Cvoid) ───────────────────────────────
+            # Output fdata must be NoFData (not crash, not a stray pointer).
+            dpv_co = CoDual(pv, NoFData())
+            out_v, pb_v = _MooncakeCUDAExt.rrule!!(CoDual(+, NoFData()), dpv_co, dn_co)
+            @test primal(out_v) == pv + 64
+            @test tangent(out_v) isa NoFData
+        end
+
         # Verify that unsupported GPU operations throw user-friendly ArgumentErrors rather
         # than silent wrong answers or opaque internal crashes.  Each case exercises an
         # explicit catch-all rule that blocks an unimplemented differentiation path.
@@ -482,6 +617,31 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
                 y = _rand(rng, Float32, 4)
                 @test_throws r"vcat on CuArray is not yet differentiable" value_and_gradient!!(
                     prepare_gradient_cache(f, x, y), f, x, y
+                )
+            end
+
+            # Scalar getindex/setindex! on CuArray — throw to prevent silent scalar GPU ops.
+            @testset "scalar getindex CuArray not differentiable" begin
+                f = x -> x[1]
+                x = _rand(rng, Float32, 4)
+                @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
+                    prepare_gradient_cache(f, x), f, x
+                )
+            end
+            @testset "scalar setindex! CuArray not differentiable" begin
+                f = x -> (x[1]=0.0f0; sum(x))
+                x = _rand(rng, Float32, 4)
+                @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
+                    prepare_gradient_cache(f, x), f, x
+                )
+            end
+
+            # accumulate with unsupported op — catch-all rule throws ArgumentError.
+            @testset "accumulate non-+ CuArray not differentiable" begin
+                f = x -> sum(accumulate(*, x))
+                x = _rand(rng, Float32, 4)
+                @test_throws r"accumulate on CuArray only supports op=\+" value_and_gradient!!(
+                    prepare_gradient_cache(f, x), f, x
                 )
             end
 

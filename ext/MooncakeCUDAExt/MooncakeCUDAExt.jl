@@ -2,7 +2,7 @@ module MooncakeCUDAExt
 
 using LinearAlgebra, Random, Mooncake
 
-using Base: IEEEFloat
+using Base: IEEEFloat, unsafe_convert
 using CUDA:
     CuArray,
     CuRefValue,
@@ -114,6 +114,18 @@ const CuDataRef = Union{
 tangent(p::CuDataRef, ::NoRData) = p
 Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) = nothing
 
+# copy(::CuDataRef) is called by GPUArrays.derive (which backs view, reinterpret, and
+# similar operations) for reference-count management.  It is a bookkeeping operation —
+# the primal copy increments the refcount; the tangent DataRef is also copied so that the
+# new CuArray's .data field holds a separate handle to the same tangent GPU memory.
+@is_primitive(MinimalCtx, Tuple{typeof(copy),<:CuDataRef})
+function frule!!(::Dual{typeof(copy)}, x::Dual{<:CuDataRef,<:CuDataRef})
+    return Dual(copy(primal(x)), copy(tangent(x)))
+end
+function rrule!!(::CoDual{typeof(copy)}, x::CoDual{<:CuDataRef,<:CuDataRef})
+    return CoDual(copy(primal(x)), copy(tangent(x))), NoPullback(ntuple(_ -> NoRData(), 2))
+end
+
 # CuPtr and CuArray tangent types.
 # CuPtr carries no differentiable content (it's a device address), so rdata is NoRData.
 # CuMaybeComplexArray (float/complex GPU arrays) is its own tangent — gradient arrays
@@ -139,6 +151,62 @@ Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) =
 function zero_tangent_internal(x::CuPtr{T}, ::MaybeCache) where {T}
     tangent_type(T) === NoTangent && return NoTangent()
     CuPtr{tangent_type(T)}(UInt64(0))
+end
+
+# unsafe_convert(::Type{CuPtr{T}}, x::CuArray{T}):
+# Returns a raw device pointer to x's data buffer.  For AD, the fdata of the returned
+# CuPtr is the pointer to the tangent buffer — both primal and tangent CuArrays have
+# the same layout, so unsafe_convert on the tangent gives the correct tangent pointer.
+# Needed because the traced body accesses DataRef internals (llvmcall) and loses the
+# tangent, causing a CoDual{CuPtr{T}, CuPtr{T}} ← CoDual{CuPtr{T}, NoFData} TypeError.
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(unsafe_convert),Type{CuPtr{T}},CuArray{T}} where {T<:IEEEFloat},
+)
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(unsafe_convert),Type{CuPtr{T}},CuArray{T}} where {T<:Complex{<:IEEEFloat}},
+)
+function frule!!(
+    ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{CuArray{T},CuArray{T}}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
+end
+function rrule!!(
+    ::CoDual{typeof(unsafe_convert)},
+    ::CoDual{Type{CuPtr{T}}},
+    x::CoDual{CuArray{T},CuArray{T}},
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    return CoDual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, x.dx)),
+    NoPullback(ntuple(_ -> NoRData(), 3))
+end
+
+# CuPtr arithmetic: (p::CuPtr{T}) + (n::Integer) offsets a device pointer by n bytes.
+# For differentiable T the tangent is also a CuPtr; it must be offset by the same amount
+# since primal and tangent arrays are laid out identically.
+# For non-differentiable T (e.g. CuPtr{Cvoid} used in memory management), the tangent
+# is NoTangent and the pointer arithmetic carries no gradient.
+@is_primitive(MinimalCtx, Tuple{typeof(+),CuPtr{T},Integer} where {T})
+function frule!!(
+    ::Dual{typeof(+)}, p::Dual{CuPtr{T},CuPtr{T}}, n::Dual{<:Integer,NoTangent}
+) where {T}
+    return Dual(primal(p) + primal(n), tangent(p) + primal(n))
+end
+function frule!!(
+    ::Dual{typeof(+)}, p::Dual{CuPtr{T},NoTangent}, n::Dual{<:Integer,NoTangent}
+) where {T}
+    return Dual(primal(p) + primal(n), NoTangent())
+end
+function rrule!!(
+    ::CoDual{typeof(+)}, p::CoDual{CuPtr{T},CuPtr{T}}, n::CoDual{<:Integer,NoFData}
+) where {T}
+    return CoDual(primal(p) + primal(n), tangent(p) + primal(n)),
+    NoPullback(ntuple(_ -> NoRData(), 3))
+end
+function rrule!!(
+    ::CoDual{typeof(+)}, p::CoDual{CuPtr{T},NoFData}, n::CoDual{<:Integer,NoFData}
+) where {T}
+    return CoDual(primal(p) + primal(n), NoFData()), NoPullback(ntuple(_ -> NoRData(), 3))
 end
 
 # Non-differentiable CUDA handle, enum, and state types.
@@ -330,7 +398,9 @@ function zero_tangent_internal(x::CuMaybeComplexArray, dict::MaybeCache)
 end
 function randn_tangent_internal(rng::AbstractRNG, x::CuMaybeComplexArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = CuArray(randn(rng, eltype(x), size(x)...))
+    # Use `similar` to match the memory kind of `x` (DeviceMemory, UnifiedMemory, or
+    # HostMemory), then populate from a CPU-side randn so we don't need a GPU RNG.
+    t = copyto!(similar(x), randn(rng, eltype(x), size(x)...))
     dict[x] = t
     return t
 end
@@ -808,6 +878,160 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
         return NoRData(), NoRData()
     end
     return zero_fcodual(sum(primal(x))), sum_pb!!
+end
+
+# Rule for `unsafe_copyto!(dest, doffs, src, soffs, n)` on GPU arrays.
+# This function contains try/catch blocks (UpsilonNodes) from `context!(...)` that
+# Mooncake cannot trace. It implements a GPU memcpy — the gradient is identity:
+# accumulate the destination tangent into the source tangent over the same range.
+#
+# Forward: copy both primal and tangent with the same offsets.
+# Backward: accumulate ddest[doffs:doffs+n-1] into dsrc[soffs:soffs+n-1], then zero ddest range.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(unsafe_copyto!),
+        <:CuMaybeComplexArray,
+        Integer,
+        <:CuMaybeComplexArray,
+        Integer,
+        Integer,
+    },
+)
+function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::Dual{<:Integer,NoTangent},
+    src::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    soffs::Dual{<:Integer,NoTangent},
+    n::Dual{<:Integer,NoTangent},
+)
+    pdest, ddest = arrayify(dest)
+    psrc, dsrc = arrayify(src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    return dest
+end
+function rrule!!(
+    ::CoDual{typeof(unsafe_copyto!)},
+    dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::CoDual{<:Integer,NoFData},
+    src::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    soffs::CoDual{<:Integer,NoFData},
+    n::CoDual{<:Integer,NoFData},
+)
+    pdest, ddest = arrayify(dest)
+    psrc, dsrc = arrayify(src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    dest_range = doffs_v:(doffs_v + n_v - 1)
+    src_range = soffs_v:(soffs_v + n_v - 1)
+    # Save the overwritten slice of dest (primal + tangent) so the pullback can restore it.
+    pdest_copy = copy(view(pdest, dest_range))
+    ddest_copy = copy(view(ddest, dest_range))
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    function unsafe_copyto!_pb!!(::NoRData)
+        # Accumulate gradient into src tangent, then restore dest to pre-mutation state.
+        view(dsrc, src_range) .+= view(ddest, dest_range)
+        copyto!(view(pdest, dest_range), pdest_copy)
+        copyto!(view(ddest, dest_range), ddest_copy)
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return dest, unsafe_copyto!_pb!!
+end
+
+# Rule for unsafe_copyto!(dest, doffs, src, soffs, n) where dest is a GPU array but src
+# is a CPU Array (cross-device: host → device).  This path is taken e.g. when a Lux
+# StatefulRecurrentCell initialises its hidden state from zeros32(...) and copies it to
+# the GPU.  The pullback accumulates the GPU cotangent of the overwritten region back
+# into the CPU src tangent via a synchronous device-to-host transfer.
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
+)
+function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::Dual{<:Integer,NoTangent},
+    src::Dual{<:Array,<:Array},
+    soffs::Dual{<:Integer,NoTangent},
+    n::Dual{<:Integer,NoTangent},
+)
+    pdest, ddest = arrayify(dest)
+    psrc, dsrc = primal(src), tangent(src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    return dest
+end
+function rrule!!(
+    ::CoDual{typeof(unsafe_copyto!)},
+    dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::CoDual{<:Integer,NoFData},
+    src::CoDual{<:Array,<:Array},
+    soffs::CoDual{<:Integer,NoFData},
+    n::CoDual{<:Integer,NoFData},
+)
+    pdest, ddest = arrayify(dest)
+    psrc, dsrc = primal(src), tangent(src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    dest_range = doffs_v:(doffs_v + n_v - 1)
+    src_range = soffs_v:(soffs_v + n_v - 1)
+    # Save overwritten slice via host copies (avoids scalar indexing on GPU).
+    pdest_copy = Array(view(pdest, dest_range))
+    ddest_copy = Array(view(ddest, dest_range))
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    function mixed_copyto!_pb!!(::NoRData)
+        # Propagate GPU cotangent back to CPU src tangent.
+        view(dsrc, src_range) .+= Array(view(ddest, dest_range))
+        # Restore dest primal and tangent to their pre-copy state.
+        unsafe_copyto!(pdest, doffs_v, pdest_copy, 1, n_v)
+        unsafe_copyto!(ddest, doffs_v, ddest_copy, 1, n_v)
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return dest, mixed_copyto!_pb!!
+end
+
+# fill! on a GPU array has an internal try/catch block (for GPU error handling) that
+# generates an UpsilonNode in the IR, which Mooncake cannot differentiate through.
+# Provide explicit rules.
+#
+# Semantics: fill!(a, x) sets every element of a to x, so:
+#   - d(output_i)/d(a_input_j) = 0  → tangent of a's prior content does not flow forward
+#   - d(output_i)/d(x) = 1          → tangent(x) (if any) broadcasts into tangent(a)
+# For integer x the tangent is NoTangent, so the tangent array is zeroed.
+# For float x the tangent array is filled with tangent(x).
+@is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
+function frule!!(
+    ::Dual{typeof(fill!)}, a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
+)
+    fill!(primal(a), primal(x))
+    tx = tangent(x)
+    fill!(tangent(a), tx isa NoTangent ? zero(eltype(tangent(a))) : eltype(tangent(a))(tx))
+    return a
+end
+function rrule!!(
+    ::CoDual{typeof(fill!)},
+    a::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    x::CoDual,
+)
+    pa, da = primal(a), tangent(a)
+    old = copy(pa)
+    fill!(pa, primal(x))
+    function fill!_gpu_pb!!(::NoRData)
+        copyto!(pa, old)
+        # Gradient of x: ∂loss/∂x = Σ ∂loss/∂a_i = sum(da).
+        # For non-differentiable x (tangent_type = NoTangent, e.g. integers) return NoRData.
+        # Must use tangent_type here — rdata_type throws for primitive non-float types.
+        dx = if tangent_type(typeof(primal(x))) == NoTangent
+            NoRData()
+        else
+            rdata_type(typeof(primal(x)))(sum(da))
+        end
+        fill!(da, zero(eltype(da)))
+        return NoRData(), NoRData(), dx
+    end
+    return a, fill!_gpu_pb!!
 end
 
 # _fields overload for CuArray tangents: the tangent of a plain CuArray is itself.
@@ -1610,6 +1834,27 @@ end
 # handle it in _leaf_effective_tangent / materialize_pb!! / _gpu_fill_args_rdata.
 
 # ── Dual-wrapping helpers for GPU kernels ────────────────────────────────────────────
+#
+# LIMITATION: this forward-mode broadcast strategy works for pure elementwise Julia
+# functions, but breaks down for operations that are NOT implemented as Julia broadcasts:
+#
+#   • cuDNN-backed layers (BatchNorm, InstanceNorm, LayerNorm via cudnnNormForward!) call
+#     C++ library kernels that receive raw Float32/Float64 device pointers.  They never
+#     see the NDual-element CuArrays that Mooncake inserts, so the GPU compiler fails to
+#     generate a kernel for NDual{Float32, N} element types.
+#
+#   • Any Lux/Flux layer that dispatches to a specialised CUDA primitive (softmax via
+#     NNlib.softmax!, attention scoring, etc.) hits the same wall: the primitive expects
+#     plain float arrays, not NDual arrays.
+#
+# The failure mode is a GPU kernel-compilation error at trace time, e.g.:
+#   "LLVM error: ... cannot select: ... NDual{Float32, 3}"
+# (N = total real DOFs across all broadcast inputs; 3 arises for BatchNorm as
+#  scale + input + bias each contribute one real DOF.)
+#
+# Fix: add an explicit rrule!! for the cuDNN / NNlib primitive so Mooncake never tries
+# to trace through it with NDual inputs.  See the unsafe_copyto! and fill! rules above
+# for the pattern to follow.
 
 # Wrap a real differentiable scalar as an NDual with a one-hot partial at
 # `slot` (1-indexed, out of N total slots).  Non-differentiable types (Int, Bool, …)
@@ -2073,13 +2318,21 @@ function rrule!!(
     dual_out = nothing  # primal written to pout; partials in partial_slots — NDual array can be freed
 
     function materialize!_pb!!(::NoRData)
+        # Snapshot dout before any modifications. When dest appears in bc.args
+        # (e.g. x .= x .+ y), flat_fdatas contains fd = dout for x's slot.
+        # Without a snapshot, _leaf_accum_fdata!(x, dout, contrib) would corrupt
+        # dout mid-loop, causing subsequent slots to read a doubled value, and
+        # fill!(dout, 0) at the end would then zero x's gradient entirely.
+        # Zeroing dout first and then accumulating avoids both problems.
+        g = copy(dout)
+        fill!(dout, 0)
         scalar_grads = has_scalars ? Any[] : nothing
         offset = 0
         for (pa, fd) in zip(flat_pargs, flat_fdatas)
             dof = _broadcast_elem_dof(pa)
             if dof == 1
                 k = offset + 1
-                contrib = broadcast((p, d) -> real(conj(d) * p), partial_slots[k], dout)
+                contrib = broadcast((p, d) -> real(conj(d) * p), partial_slots[k], g)
                 if pa isa IEEEFloat
                     push!(scalar_grads::Vector{Any}, sum(contrib))
                 else
@@ -2091,7 +2344,7 @@ function rrule!!(
                     (p1, p2, d) -> complex(real(conj(d) * p1), real(conj(d) * p2)),
                     partial_slots[k1],
                     partial_slots[k2],
-                    dout,
+                    g,
                 )
                 if pa isa Complex{<:IEEEFloat}
                     push!(scalar_grads::Vector{Any}, sum(contrib))
@@ -2106,8 +2359,6 @@ function rrule!!(
         else
             _gpu_fill_scalar_rdata(bc_primal, scalar_grads, Ref(1))
         end
-        # Zero dout: gradient has been propagated; earlier ops accumulate fresh.
-        fill!(dout, 0)
         # Restore primal to allow the reverse pass to see the pre-broadcast value.
         copyto!(pout, old_pout)
         return NoRData(), NoRData(), r_bc
