@@ -986,13 +986,13 @@ function Mooncake.TestUtils.has_equal_data_internal(t::TangentForA{Tx}, s::Tange
     end
 end</code></pre><p>Now we can run it again and successfully check if all the tangent / fdata / rdata and other required functionality works correctly for the self-referential type A. We run the check for both a non-cyclic case to check our method implementations, as well as a cyclic case to make sure that our interactions with the caches are correct.</p><pre><code class="language-julia hljs"># Non-cyclic A
 Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Test Summary: | Pass  Total  Time
-===           |   22     22  2.2s
+===           |   22     22  2.0s
 Test Summary: | Pass  Total  Time
-ifelse        |   48     48  2.0s
+ifelse        |   48     48  1.9s
 Test Summary: | Pass  Total  Time
 sizeof        |   10     10  0.9s
 Test Summary: | Pass  Total  Time
-isa           |   33     33  2.4s
+isa           |   33     33  2.3s
 Test Summary: | Pass  Total  Time
 tuple         |   33     33  2.7s
 Test Summary: | Pass  Total  Time
@@ -1000,9 +1000,9 @@ typeassert    |   11     11  0.7s
 Test Summary: | Pass  Total  Time
 typeof        |   10     10  0.9s
 Test Summary: | Pass  Total  Time
-getfield      |   92     92  4.1s
+getfield      |   92     92  4.0s
 Test Summary: | Pass  Total  Time
-lgetfield     |   92     92  6.8s
+lgetfield     |   92     92  6.7s
 Test Summary: | Pass  Total  Time
 _new_         |   12     12  0.9s
 Test Summary: | Pass  Total  Time
