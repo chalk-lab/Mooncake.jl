@@ -29,7 +29,7 @@ steps:
           - "cuda"
           - "nnlib"
 
-  - label: "Julia v{{matrix.version}}, ext/di_{{matrix.di_test}}"
+  - label: "Julia v{{matrix.version}}, ext/{{matrix.di_test}}"
     plugins:
       - JuliaCI/julia#v1:
           version: "{{matrix.version}}"

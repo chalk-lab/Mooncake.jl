@@ -4,6 +4,7 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, CUDA, JET, Mooncake, StableRNGs, Test
 using CUDA.GPUArrays: unsafe_free!
+using CUDA: hasfieldcount
 using Mooncake: lgetfield
 using Mooncake.TestUtils:
     test_tangent_interface,
@@ -631,20 +632,19 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         end
 
         @testset "hasfieldcount frule!! / rrule!!" begin
-            # CUDA.hasfieldcount(T) returns Bool — no gradient path.
+            # hasfieldcount(T) returns Bool — no gradient path.
             # Verify the primal result is forwarded and tangent is always NoTangent/NoFData.
             for T in (ComplexF64, Float32, Any)
-                expected = CUDA.hasfieldcount(T)
+                expected = hasfieldcount(T)
 
                 result = _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(CUDA.hasfieldcount, NoTangent()),
-                    Mooncake.Dual(T, NoTangent()),
+                    Mooncake.Dual(hasfieldcount, NoTangent()), Mooncake.Dual(T, NoTangent())
                 )
                 @test primal(result) === expected
                 @test tangent(result) isa NoTangent
 
                 out, pb = _MooncakeCUDAExt.rrule!!(
-                    CoDual(CUDA.hasfieldcount, NoFData()), CoDual(T, NoFData())
+                    CoDual(hasfieldcount, NoFData()), CoDual(T, NoFData())
                 )
                 @test primal(out) === expected
                 @test tangent(out) isa NoFData
