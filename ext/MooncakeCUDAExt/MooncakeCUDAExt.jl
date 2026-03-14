@@ -70,9 +70,11 @@ import Mooncake:
     IncCache,
     NoRData,
     arrayify,
+    matrixify,
     _fields,
     zero_rdata,
-    RData
+    RData,
+    nan_tangent_guard
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
@@ -82,6 +84,8 @@ include("ndual.jl")
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+const CuMaybeComplexVec = Union{CuArray{<:IEEEFloat,1},CuArray{<:Complex{<:IEEEFloat},1}}
+const CuMaybeComplexMat = Union{CuArray{<:IEEEFloat,2},CuArray{<:Complex{<:IEEEFloat},2}}
 const CuFloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 # CuArray{T,N,M}.data is a DataRef — a reference-counted handle to the GPU memory buffer.
 # Operations like reshape and view reconstruct a CuArray from its components:
@@ -299,6 +303,12 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(is_capturing),CuStream}
 @zero_derivative MinimalCtx Tuple{typeof(capture_status)}
 @zero_derivative MinimalCtx Tuple{typeof(capture_status),CuStream}
+# Base.mightalias(A::CuArray, B::CuArray) checks whether two GPU arrays share memory.
+# It is called internally by copyto!.  Without this rule, forward-mode tracing enters
+# mightalias's body where it accesses DataRef fields: our lgetfield rule returns NoFData
+# for those, but Mooncake may infer MutableTangent for the inner RefCounted struct,
+# causing a tangent type mismatch.
+@zero_derivative MinimalCtx Tuple{typeof(Base.mightalias),T,S} where {T<:CuArray,S<:CuArray}
 # CuArray{<:Integer} and CuArray{<:Bool} are index/mask arrays — not differentiable.
 # Assigning NoTangent stops Mooncake from building a struct tangent from CuArray's
 # internal fields (data::CuDataRef, maxsize::Int, offset::Int, dims::NTuple).
@@ -454,6 +464,40 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 6))
 end
 
+# lgetfield rules for DataRef.  DataRef has three fields: :rc (ref count Atomic{Int}),
+# :freed (Bool), :cached (the wrapped memory object, e.g. Managed{DeviceMemory}).
+# All are reference-counting internals — no derivative flows through them.
+# tangent_type(DataRef) = DataRef (opaque handle), so the tangent is the DataRef itself;
+# field accesses return NoTangent/NoFData.
+function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::Dual{<:CuDataRef,<:CuDataRef},
+    ::Dual{Val{name}},
+    ::Dual{Val{order}},
+) where {name,order}
+    return Dual(getfield(primal(x), name, order), NoTangent())
+end
+function rrule!!(
+    ::CoDual{typeof(lgetfield)},
+    x::CoDual{<:CuDataRef,<:CuDataRef},
+    ::CoDual{Val{name}},
+    ::CoDual{Val{order}},
+) where {name,order}
+    return CoDual(getfield(primal(x), name, order), NoFData()),
+    NoPullback(ntuple(_ -> NoRData(), 4))
+end
+function frule!!(
+    ::Dual{typeof(lgetfield)}, x::Dual{<:CuDataRef,<:CuDataRef}, ::Dual{Val{name}}
+) where {name}
+    return Dual(getfield(primal(x), name), NoTangent())
+end
+function rrule!!(
+    ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuDataRef,<:CuDataRef}, ::CoDual{Val{name}}
+) where {name}
+    return CoDual(getfield(primal(x), name), NoFData()),
+    NoPullback(ntuple(_ -> NoRData(), 3))
+end
+
 # lgetfield rules for CuArray.  CuArray has 4 fields:
 #   :data (field 1) — the DataRef handle; tangent flows here
 #   :maxsize (field 2), :offset (field 3), :dims (field 4) — non-differentiable metadata
@@ -495,6 +539,259 @@ function rrule!!(
     is_data = name === 1 || name === :data
     dy = is_data ? x.dx.data : NoFData()
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 3))
+end
+
+# Scalar indexing on CuArrays (e.g. x[1]) requires device→host round-trips and is
+# disallowed by CUDA.jl by default.  Give a clear AD error rather than a cryptic one.
+const _SCALAR_IDX_MSG =
+    "Mooncake: scalar indexing of CuArray is not differentiable. " *
+    "Rewrite using vectorised indexing (e.g. x[idx] with idx::AbstractVector) or " *
+    "broadcasting. Add a new rule or open an issue at " *
+    "https://github.com/chalk-lab/Mooncake.jl."
+@is_primitive(MinimalCtx, Tuple{typeof(getindex),CuArray,Integer})
+function frule!!(::Dual{typeof(getindex)}, x::Dual{<:CuArray}, i::Dual{<:Integer})
+    throw(ArgumentError(_SCALAR_IDX_MSG))
+end
+function rrule!!(::CoDual{typeof(getindex)}, x::CoDual{<:CuArray}, i::CoDual{<:Integer})
+    throw(ArgumentError(_SCALAR_IDX_MSG))
+end
+
+@is_primitive(MinimalCtx, Tuple{typeof(setindex!),CuArray,Any,Integer})
+function frule!!(::Dual{typeof(setindex!)}, x::Dual{<:CuArray}, v::Dual, i::Dual{<:Integer})
+    throw(ArgumentError(_SCALAR_IDX_MSG))
+end
+function rrule!!(
+    ::CoDual{typeof(setindex!)}, x::CoDual{<:CuArray}, v::CoDual, i::CoDual{<:Integer}
+)
+    throw(ArgumentError(_SCALAR_IDX_MSG))
+end
+
+# Vector indexing: y = x[idx] where idx is a vector of integers (gather).
+#
+# frule:    dy = dx[idx]          (gather tangents)
+# pullback: dx[idx] .+= dy_out   (scatter-add cotangents)
+#
+# Note: repeated indices in idx are undefined (last write wins on GPU without atomics).
+# Distinct-index usage (e.g. embedding lookup, slicing) is safe.
+@is_primitive(
+    MinimalCtx, Tuple{typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Integer}}
+)
+function frule!!(
+    ::Dual{typeof(getindex)},
+    x::Dual{<:CuMaybeComplexArray},
+    idx::Dual{<:AbstractVector{<:Integer}},
+)
+    px, dx = arrayify(x)
+    return Dual(px[primal(idx)], dx[primal(idx)])
+end
+function rrule!!(
+    ::CoDual{typeof(getindex)},
+    x::CoDual{<:CuMaybeComplexArray},
+    idx::CoDual{<:AbstractVector{<:Integer}},
+)
+    px, dx = arrayify(x)
+    pidx = primal(idx)
+    y = px[pidx]
+    dy_out = zero(y)
+    function getindex_pb!!(::NoRData)
+        dx[pidx] .+= dy_out
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(y, dy_out), getindex_pb!!
+end
+
+# norm: d(norm(x)) = Re(dot(x, dx)) / norm(x)  (valid for both real and complex x)
+#       pullback:  dx += (dy / norm(x)) * x
+#
+# dot (real): d(dot(x,y)) = dot(dx,y) + dot(x,dy)
+#             pullback:     dx += dz*y,  dy += dz*x
+@is_primitive(MinimalCtx, Tuple{typeof(norm),CuMaybeComplexArray})
+function frule!!(::Dual{typeof(norm)}, x::Dual{<:CuMaybeComplexArray})
+    px, dx = arrayify(x)
+    y = norm(px)
+    dy = iszero(y) ? zero(real(eltype(px))) : real(dot(px, dx)) / y
+    return Dual(y, dy)
+end
+function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
+    px, dx = arrayify(x)
+    y = norm(px)
+    function norm_pb!!(dy)
+        # iszero triggers a device→host sync — inherent since we branch on the scalar result.
+        iszero(y) || (dx .+= (dy / y) .* px)
+        return NoRData(), NoRData()
+    end
+    return zero_fcodual(y), norm_pb!!
+end
+
+@is_primitive(MinimalCtx, Tuple{typeof(dot),CuFloatArray,CuFloatArray})
+function frule!!(::Dual{typeof(dot)}, x::Dual{<:CuFloatArray}, y::Dual{<:CuFloatArray})
+    px, dx = arrayify(x)
+    py, dy = arrayify(y)
+    return Dual(dot(px, py), dot(dx, py) + dot(px, dy))
+end
+function rrule!!(
+    ::CoDual{typeof(dot)}, x::CoDual{<:CuFloatArray}, y::CoDual{<:CuFloatArray}
+)
+    px, dx = arrayify(x)
+    py, dy = arrayify(y)
+    function dot_pb!!(dz)
+        dx .+= dz .* py
+        dy .+= dz .* px
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(dot(px, py)), dot_pb!!
+end
+
+# Catch-all error rules for GPU reductions that use opaque CUDA kernels.
+# These ops are differentiable in principle but lack explicit rules.
+const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk-lab/Mooncake.jl."
+for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuArray})
+    @eval function frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...)
+        throw(
+            ArgumentError(
+                "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
+            ),
+        )
+    end
+    @eval function rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...)
+        throw(
+            ArgumentError(
+                "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
+            ),
+        )
+    end
+end
+
+# Rules for `prod(x)` on GPU arrays.
+#
+# prod(x) = x₁·x₂·…·xₙ,  ∂prod/∂xᵢ = prod(x)/xᵢ
+# frule:    dy = prod(x) · sum(dx ./ x)
+# pullback: dx[i] += dy · prod(x) / x[i]
+#
+# Note: undefined when any element of x is zero (gradient is skipped in that case).
+@is_primitive(MinimalCtx, Tuple{typeof(prod),CuMaybeComplexArray})
+function frule!!(::Dual{typeof(prod)}, x::Dual{<:CuMaybeComplexArray})
+    px, dx = arrayify(x)
+    y = prod(px)
+    dy = iszero(y) ? zero(y) : y * sum(dx ./ px)
+    return Dual(y, dy)
+end
+function rrule!!(::CoDual{typeof(prod)}, x::CoDual{<:CuMaybeComplexArray})
+    px, dx = arrayify(x)
+    y = prod(px)
+    function prod_pb!!(dy)
+        # Wirtinger chain rule for holomorphic prod: Δxᵢ = Δy · conj(y/xᵢ)
+        # For real inputs conj is a no-op, so this is backward compatible.
+        # iszero triggers a device→host sync — inherent since we branch on the scalar result.
+        iszero(y) || (dx .+= dy .* conj.(y ./ px))
+        return NoRData(), NoRData()
+    end
+    return zero_fcodual(y), prod_pb!!
+end
+
+# Rules for `cumsum(x)` on GPU arrays.
+#
+# y[k] = Σᵢ₌₁ᵏ x[i],  so ∂y[k]/∂x[i] = 1 if i≤k else 0
+# frule:    dy = cumsum(dx)
+# pullback: dx[i] += Σₖ≥ᵢ dy[k]  =  reverse(cumsum(reverse(dy)))
+#
+# Supports the optional `dims` keyword (passed through to CUDA's cumsum).
+@is_primitive(MinimalCtx, Tuple{typeof(cumsum),CuMaybeComplexArray})
+function frule!!(::Dual{typeof(cumsum)}, x::Dual{<:CuMaybeComplexArray}; kw...)
+    px, dx = arrayify(x)
+    return Dual(cumsum(px; kw...), cumsum(dx; kw...))
+end
+function rrule!!(::CoDual{typeof(cumsum)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
+    px, dx = arrayify(x)
+    y = cumsum(px; kw...)
+    dy_out = zero(y)
+    d = get(kw, :dims, 1)
+    function cumsum_pb!!(::NoRData)
+        dx .+= reverse(cumsum(reverse(dy_out; dims=d); dims=d); dims=d)
+        return NoRData(), NoRData()
+    end
+    return CoDual(y, dy_out), cumsum_pb!!
+end
+
+# Rules for `cumprod(x)` on GPU arrays.
+#
+# y[k] = Πᵢ₌₁ᵏ x[i],  ∂y[k]/∂x[i] = y[k]/x[i] if i≤k else 0
+# frule:    dy[k] = y[k] · cumsum(dx ./ x)[k]
+# pullback: dx[i] += (1/x[i]) · Σₖ≥ᵢ dy[k]·y[k]
+#           i.e.  dx .+= reverse(cumsum(reverse(dy .* y))) ./ x
+#
+# Zero elements: when x[i] == 0 the cumulative product y[k] == 0 for all k ≥ i,
+# so the Jacobian at that position is zero (the zero annihilates the product).
+# nan_tangent_guard is used to return zero instead of NaN/Inf from 0/0 or x/0.
+@is_primitive(MinimalCtx, Tuple{typeof(cumprod),CuMaybeComplexArray})
+function frule!!(::Dual{typeof(cumprod)}, x::Dual{<:CuMaybeComplexArray}; kw...)
+    px, dx = arrayify(x)
+    y = cumprod(px; kw...)
+    inv_px = nan_tangent_guard.(px, inv.(px))
+    dy = y .* cumsum(dx .* inv_px; kw...)
+    return Dual(y, dy)
+end
+function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
+    px, dx = arrayify(x)
+    y = cumprod(px; kw...)
+    dy_out = zero(y)
+    d = get(kw, :dims, 1)
+    function cumprod_pb!!(::NoRData)
+        # Wirtinger chain rule: Δxᵢ = (1/conj(xᵢ)) · Σₖ≥ᵢ Δyₖ · conj(yₖ)
+        # i.e. dx .+= reverse(cumsum(reverse(dy .* conj.(y)))) ./ conj.(px)
+        # For real inputs conj is a no-op, so this is backward compatible.
+        # nan_tangent_guard: where px == 0 the product is annihilated (zero gradient).
+        inv_cx_px = nan_tangent_guard.(px, inv.(conj.(px)))
+        dx .+=
+            reverse(cumsum(reverse(dy_out .* conj.(y); dims=d); dims=d); dims=d) .*
+            inv_cx_px
+        return NoRData(), NoRData()
+    end
+    return CoDual(y, dy_out), cumprod_pb!!
+end
+
+# Rules for `accumulate(+, x)` — identical to cumsum but via the accumulate interface.
+# Other operators are not supported and throw an informative error (catch-all below).
+@is_primitive(MinimalCtx, Tuple{typeof(accumulate),typeof(+),CuMaybeComplexArray})
+function frule!!(
+    ::Dual{typeof(accumulate)}, ::Dual{typeof(+)}, x::Dual{<:CuMaybeComplexArray}; kw...
+)
+    px, dx = arrayify(x)
+    return Dual(accumulate(+, px; kw...), cumsum(dx; kw...))
+end
+function rrule!!(
+    ::CoDual{typeof(accumulate)},
+    ::CoDual{typeof(+)},
+    x::CoDual{<:CuMaybeComplexArray};
+    kw...,
+)
+    px, dx = arrayify(x)
+    y = accumulate(+, px; kw...)
+    dy_out = zero(y)
+    d = get(kw, :dims, 1)
+    function accumulate_plus_pb!!(::NoRData)
+        dx .+= reverse(cumsum(reverse(dy_out; dims=d); dims=d); dims=d)
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(y, dy_out), accumulate_plus_pb!!
+end
+@is_primitive(MinimalCtx, Tuple{typeof(accumulate),Any,CuArray})
+function frule!!(::Dual{typeof(accumulate)}, op::Dual, x::Dual{<:CuArray}; kwargs...)
+    throw(
+        ArgumentError(
+            "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
+            _UNIMPL_MSG,
+        ),
+    )
+end
+function rrule!!(::CoDual{typeof(accumulate)}, op::CoDual, x::CoDual{<:CuArray}; kwargs...)
+    throw(
+        ArgumentError(
+            "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
+            _UNIMPL_MSG,
+        ),
+    )
 end
 
 # Rule for `sum(x)` — widened from CuFloatArray to also cover complex CuArrays.
@@ -665,6 +962,515 @@ function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuComplexArray})
     return zero_fcodual(y), sum_f_cx_pb!!
 end
 
+# Rules for `mapreduce(f, op, x)` on GPU arrays.
+#
+# CUDA.jl uses opaque reduction kernels that Mooncake cannot trace.  We intercept
+# the op=+ and op=Base.add_sum cases by delegating to the sum frule!!/rrule!! above.
+#
+#   mapreduce(f, +, x)        ≡  sum(f, x)
+#   mapreduce(f, add_sum, x)  ≡  sum(f, x)   (add_sum is Base's internal alias for +)
+#
+# Both operators must be covered: Base.sum(f, x) dispatches through
+#   Base._sum(f, x, :) → mapreduce(f, add_sum, x)
+# in Julia 1.11, so op=+ alone is insufficient.
+#
+# The mapreduce pullback returns one extra NoRData for the `op` argument compared
+# to the sum pullback.
+for _op in (:(+), :(Base.add_sum))
+    @eval @is_primitive(
+        MinimalCtx, Tuple{typeof(mapreduce),Any,typeof($_op),CuMaybeComplexArray}
+    )
+    @eval function frule!!(
+        ::Dual{typeof(mapreduce)},
+        f::Dual,
+        ::Dual{typeof($_op)},
+        x::Dual{<:CuMaybeComplexArray},
+    )
+        return frule!!(Dual(sum, NoTangent()), f, x)
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(mapreduce)},
+        f::CoDual,
+        ::CoDual{typeof($_op)},
+        x::CoDual{<:CuMaybeComplexArray},
+    )
+        y, sum_pb!! = rrule!!(zero_fcodual(sum), f, x)
+        function mapreduce_pb!!(dy)
+            _, r_f, r_x = sum_pb!!(dy)          # sum pullback: (sum, f, x)
+            return NoRData(), r_f, NoRData(), r_x  # mapreduce: (mapreduce, f, op, x)
+        end
+        return y, mapreduce_pb!!
+    end
+end
+
+# Rules for `reduce(op, x)` on GPU arrays.
+#
+#   reduce(+, x)  ≡  sum(x),   delegated to the sum rrule
+#   reduce(*, x)  ≡  prod(x),  delegated to the prod rrule
+#
+# Unlike mapreduce, reduce is user-facing and Base does not route through the
+# add_sum / mul_prod aliases here, so only the literal + and * are needed.
+# The reduce pullback returns one extra NoRData for `op` compared to sum/prod.
+for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
+    @eval @is_primitive(MinimalCtx, Tuple{typeof(reduce),typeof($_op),CuMaybeComplexArray})
+    @eval function frule!!(
+        ::Dual{typeof(reduce)}, ::Dual{typeof($_op)}, x::Dual{<:CuMaybeComplexArray}
+    )
+        return frule!!(Dual($_fn, NoTangent()), x)
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(reduce)}, ::CoDual{typeof($_op)}, x::CoDual{<:CuMaybeComplexArray}
+    )
+        y, pb!! = rrule!!(zero_fcodual($_fn), x)
+        function reduce_pb!!(dy)
+            _, r_x = pb!!(dy)              # delegate pullback: (fn, x)
+            return NoRData(), NoRData(), r_x  # reduce: (reduce, op, x)
+        end
+        return y, reduce_pb!!
+    end
+end
+
+# Catch-all rules for unsupported operators — give a clear error rather than letting
+# Mooncake attempt to trace into an opaque CUDA reduction kernel.
+@is_primitive(MinimalCtx, Tuple{typeof(mapreduce),Any,Any,CuArray})
+function frule!!(::Dual{typeof(mapreduce)}, f::Dual, op::Dual, x::Dual{<:CuArray})
+    throw(
+        ArgumentError(
+            "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
+            "got op=$(primal(op)). " *
+            _UNIMPL_MSG,
+        ),
+    )
+end
+function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<:CuArray})
+    throw(
+        ArgumentError(
+            "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
+            "got op=$(primal(op)). " *
+            _UNIMPL_MSG,
+        ),
+    )
+end
+
+@is_primitive(MinimalCtx, Tuple{typeof(reduce),Any,CuArray})
+function frule!!(::Dual{typeof(reduce)}, op::Dual, x::Dual{<:CuArray})
+    throw(
+        ArgumentError(
+            "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
+            "got op=$(primal(op)). " *
+            _UNIMPL_MSG,
+        ),
+    )
+end
+function rrule!!(::CoDual{typeof(reduce)}, op::CoDual, x::CoDual{<:CuArray})
+    throw(
+        ArgumentError(
+            "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
+            "got op=$(primal(op)). " *
+            _UNIMPL_MSG,
+        ),
+    )
+end
+
+# vcat / hcat / cat on CuArrays are not yet supported — give a clear error rather than
+# letting Mooncake attempt to trace through opaque CUDA memory kernels.
+for _fn in (:vcat, :hcat)
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Vararg{Union{CuArray,Number}}})
+    @eval function frule!!(::Dual{typeof($_fn)}, args::Dual...)
+        throw(
+            ArgumentError(
+                "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
+            ),
+        )
+    end
+    @eval function rrule!!(::CoDual{typeof($_fn)}, args::CoDual...)
+        throw(
+            ArgumentError(
+                "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
+            ),
+        )
+    end
+end
+@is_primitive(MinimalCtx, Tuple{typeof(cat),Vararg{Union{CuArray,Number}}})
+function frule!!(::Dual{typeof(cat)}, args::Dual...; kwargs...)
+    throw(
+        ArgumentError("Mooncake: cat on CuArray is not yet differentiable. " * _UNIMPL_MSG)
+    )
+end
+function rrule!!(::CoDual{typeof(cat)}, args::CoDual...; kwargs...)
+    throw(
+        ArgumentError("Mooncake: cat on CuArray is not yet differentiable. " * _UNIMPL_MSG)
+    )
+end
+
+# Rules are written at the `generic_matmatmul!` / `generic_matvecmul!` level rather
+# than at the individual CUBLAS primitive level (gemm!, gemv!, gemmEx!, symm!, ...).
+# This gives broad coverage of the LinearAlgebra.mul! dispatch chain with just two
+# rules, and is correct for all practical ML workloads (dense real/complex arrays).
+# The tradeoff: symmetric/Hermitian cases (tA='S'/'H', dispatching to symv!/hemv!
+# in the primal) use gemm!/gemv! in the backward, which is mathematically correct
+# only when the full matrix is populated. Direct CUBLAS calls that bypass
+# LinearAlgebra.mul! are not covered; add lower-level rules if that becomes needed.
+
+# Rule for `LinearAlgebra.generic_matmatmul!` on real and complex GPU arrays.
+#
+# `generic_matmatmul!(C, tA, tB, A, B)` computes C = op_A(A) * op_B(B) in-place,
+# where tA, tB ∈ {'N','T','C'} are BLAS transpose flags. It is the generic fallback
+# that LinearAlgebra dispatches to when CUBLAS has no specific method — for example,
+# `adjoint(CuVector) * CuMatrix` falls through here because CUBLAS.gemm! only accepts
+# CuMatrix inputs.
+#
+# Strategy: reshape any CuVector to (n,1) CuMatrix via `matrixify` (zero-copy), then
+# delegate to CUBLAS.gemm! which is differentiable and avoids scalar GPU indexing.
+#
+# Backward formulas for C = op_A(A) * op_B(B) (real and complex; uses '^H' = Hermitian
+# conjugate, which CUBLAS flag 'C' handles; for real 'C' == 'T'):
+#   tA='N': dA += dC * op_B(B)^H    (flags: 'N', tB=='N' ? 'C' : 'N')
+#   tA≠'N': dA += op_B(B) * dC^H   (flags: tB, 'C')
+#   tB='N': dB += op_A(A)^H * dC   (flags: tA=='N' ? 'C' : 'N', 'N')
+#   tB≠'N': dB += dC^H * op_A(A)   (flags: 'C', tA)
+#
+# Limitation: the 'T' (plain transpose) flag is only correct for real arrays.
+# For complex arrays, 'T' would require element-wise conjugation (conj(B)) in the
+# backward, which cannot be expressed as a single CUBLAS GEMM call. A runtime guard
+# below rejects complex + 'T' rather than silently returning incorrect gradients.
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(LinearAlgebra.generic_matmatmul!),
+        <:CuMaybeComplexArray,
+        Char,
+        Char,
+        <:CuMaybeComplexArray,
+        <:CuMaybeComplexArray,
+    },
+)
+function frule!!(
+    ::Dual{typeof(LinearAlgebra.generic_matmatmul!)},
+    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    tA::Dual{Char,NoTangent},
+    tB::Dual{Char,NoTangent},
+    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+    pC, dC = matrixify(C)
+    pA, dA = matrixify(A)
+    pB, dB = matrixify(B)
+    tAv = primal(tA)
+    tBv = primal(tB)
+    T = eltype(pA)
+    T <: Complex &&
+        (tAv == 'T' || tBv == 'T') &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays — the backward requires element-wise " *
+                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
+                "Use adjoint ('C') instead of transpose ('T').",
+            ),
+        )
+    _1 = one(T)
+    _0 = zero(T)
+    # primal: C = op_A(A) * op_B(B)
+    CUBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
+    # tangent (product rule): dC = op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)
+    CUBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
+    CUBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
+    return C
+end
+function rrule!!(
+    ::CoDual{typeof(LinearAlgebra.generic_matmatmul!)},
+    C::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    tA::CoDual{Char,NoFData},
+    tB::CoDual{Char,NoFData},
+    A::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    B::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+    pC, dC = matrixify(C)
+    pA, dA = matrixify(A)
+    pB, dB = matrixify(B)
+    tAv = primal(tA)
+    tBv = primal(tB)
+    T = eltype(pA)
+    T <: Complex &&
+        (tAv == 'T' || tBv == 'T') &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays — the backward requires element-wise " *
+                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
+                "Use adjoint ('C') instead of transpose ('T').",
+            ),
+        )
+    _1 = one(T)
+    _0 = zero(T)
+    pC_copy = copy(pC)
+    CUBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
+    function generic_matmatmul!_pb!!(::NoRData)
+        if tAv == 'N'
+            CUBLAS.gemm!('N', tBv == 'N' ? 'C' : 'N', _1, dC, pB, _1, dA) # dA += dC * op_B(B)^H
+        else
+            CUBLAS.gemm!(tBv, 'C', _1, pB, dC, _1, dA)                     # dA += op_B(B) * dC^H
+        end
+        if tBv == 'N'
+            CUBLAS.gemm!(tAv == 'N' ? 'C' : 'N', 'N', _1, pA, dC, _1, dB) # dB += op_A(A)^H * dC
+        else
+            CUBLAS.gemm!('C', tAv, _1, dC, pA, _1, dB)                     # dB += dC^H * op_A(A)
+        end
+        copyto!(pC, pC_copy)
+        dC .= _0
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return C, generic_matmatmul!_pb!!
+end
+
+# 7-arg version of `generic_matmatmul!`: used by CUDA.jl's override of the LinearAlgebra
+# function, which always passes explicit alpha and beta scalars.  The 5-arg rule above
+# covers the pure LinearAlgebra fallback path; this rule covers the CUDA.jl path
+# (cublas/linalg.jl line 349) that is reached from `A * B` → `mul!` → matmul dispatch.
+#
+# alpha / beta are treated as non-differentiable (NoTangent / NoFData): they are
+# typically `true`/`false` (from `MulAddMul`) and we never differentiate w.r.t. them.
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(LinearAlgebra.generic_matmatmul!),
+        <:CuMaybeComplexArray,
+        Char,
+        Char,
+        <:CuMaybeComplexArray,
+        <:CuMaybeComplexArray,
+        Number,
+        Number,
+    },
+)
+function frule!!(
+    ::Dual{typeof(LinearAlgebra.generic_matmatmul!)},
+    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    tA::Dual{Char,NoTangent},
+    tB::Dual{Char,NoTangent},
+    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    alpha::Dual{<:Number,NoTangent},
+    beta::Dual{<:Number,NoTangent},
+)
+    pC, dC = matrixify(C)
+    pA, dA = matrixify(A)
+    pB, dB = matrixify(B)
+    tAv = primal(tA)
+    tBv = primal(tB)
+    T = eltype(pA)
+    T <: Complex &&
+        (tAv == 'T' || tBv == 'T') &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays — the backward requires element-wise " *
+                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
+                "Use adjoint ('C') instead of transpose ('T').",
+            ),
+        )
+    _α = T(primal(alpha))
+    _β = T(primal(beta))
+    _1 = one(T)
+    # primal: C := α*op_A(A)*op_B(B) + β*C
+    CUBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
+    # tangent: dC := α*(op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)) + β*dC
+    CUBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
+    CUBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
+    return C
+end
+function rrule!!(
+    ::CoDual{typeof(LinearAlgebra.generic_matmatmul!)},
+    C::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    tA::CoDual{Char,NoFData},
+    tB::CoDual{Char,NoFData},
+    A::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    B::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    alpha::CoDual{<:Number,NoFData},
+    beta::CoDual{<:Number,NoFData},
+)
+    pC, dC = matrixify(C)
+    pA, dA = matrixify(A)
+    pB, dB = matrixify(B)
+    tAv = primal(tA)
+    tBv = primal(tB)
+    T = eltype(pA)
+    T <: Complex &&
+        (tAv == 'T' || tBv == 'T') &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays — the backward requires element-wise " *
+                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
+                "Use adjoint ('C') instead of transpose ('T').",
+            ),
+        )
+    _α = T(primal(alpha))
+    _β = T(primal(beta))
+    _1 = one(T)
+    pC_copy = copy(pC)
+    CUBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
+    function generic_matmatmul!_7arg_pb!!(::NoRData)
+        # Adjoint of C = α*op_A(A)*op_B(B) + β*C_old requires conj(α) and conj(β).
+        # For real scalars conj is identity, so this is backward-compatible.
+        _cα = conj(_α)
+        _cβ = conj(_β)
+        if tAv == 'N'
+            CUBLAS.gemm!('N', tBv == 'N' ? 'C' : 'N', _cα, dC, pB, _1, dA) # dA += conj(α)*dC*op_B(B)^H
+        else
+            CUBLAS.gemm!(tBv, 'C', _cα, pB, dC, _1, dA)                     # dA += conj(α)*op_B(B)*dC^H
+        end
+        if tBv == 'N'
+            CUBLAS.gemm!(tAv == 'N' ? 'C' : 'N', 'N', _cα, pA, dC, _1, dB) # dB += conj(α)*op_A(A)^H*dC
+        else
+            CUBLAS.gemm!('C', tAv, _cα, dC, pA, _1, dB)                     # dB += conj(α)*dC^H*op_A(A)
+        end
+        copyto!(pC, pC_copy)
+        dC .*= _cβ  # gradient w.r.t. C_old: ΔC_old = conj(β) * ΔC_new
+        return NoRData(),
+        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
+        NoRData()
+    end
+    return C, generic_matmatmul!_7arg_pb!!
+end
+
+# Rule for `LinearAlgebra.generic_matvecmul!` on real and complex GPU arrays.
+#
+# `generic_matvecmul!(Y, tA, A, B, alpha, beta)` computes Y = alpha*op(A)*B + beta*Y
+# in-place, where tA ∈ {'N','T','C'} is the BLAS transpose flag.
+# CUDA.jl overrides this to call CUBLAS.gemv! directly (cublas/linalg.jl), bypassing
+# `mul!`. Without this rule, Mooncake's forward-mode interpreter traces into CUDA's
+# task-local-storage machinery (CUBLAS.handle → task_local_state!) which contains
+# `Unreachable` code paths when called with dual types → SIGILL.
+#
+# Strategy: for the primal and tangent pass use CUBLAS.gemv!; for the dA update
+# (an outer product) reshape both vectors to (n,1) matrices and use CUBLAS.gemm!.
+#
+# Backward formulas for Y = alpha*op(A)*B + beta*Y_old (ȳ = cotangent of Y):
+#   tA='N': dA += alpha * ȳ * B^H  (outer product via gemm!('N','C'))
+#   tA≠'N': dA += alpha * B * ȳ^H  (outer product via gemm!('N','C'), roles swapped)
+#   tA='N': dB += alpha * A^H * ȳ  (gemv!('C'))
+#   tA≠'N': dB += alpha * A   * ȳ  (gemv!('N'), since op(A)^H = A)
+#   dY_old  = beta * ȳ             (pass-through scaled by beta)
+#
+# Limitation: 'T' flag for complex arrays is rejected (same as generic_matmatmul!).
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(LinearAlgebra.generic_matvecmul!),
+        <:CuMaybeComplexVec,
+        <:AbstractChar,
+        <:CuMaybeComplexMat,
+        <:CuMaybeComplexVec,
+        Number,
+        Number,
+    },
+)
+function frule!!(
+    ::Dual{typeof(LinearAlgebra.generic_matvecmul!)},
+    Y::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
+    tA::Dual{<:AbstractChar,NoTangent},
+    A::Dual{<:CuMaybeComplexMat,<:CuMaybeComplexMat},
+    B::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
+    alpha::Dual{<:Number,NoTangent},
+    beta::Dual{<:Number,NoTangent},
+)
+    pY, dY = primal(Y), tangent(Y)
+    pA, dA = primal(A), tangent(A)
+    pB, dB = primal(B), tangent(B)
+    tAv = primal(tA)
+    av = primal(alpha)
+    bv = primal(beta)
+    T = eltype(pA)
+    eltype(pB) == T || throw(
+        ArgumentError(
+            "Mooncake: GPU gemv with mismatched element types " *
+            "(A=$(T), B=$(eltype(pB))) is not supported. " *
+            "Cast all arrays to the same element type before multiplying. " *
+            "(Note: cu() downcasts Float64/ComplexF64 to Float32/ComplexF32 by default; " *
+            "use CuArray(x) to preserve the element type.)",
+        ),
+    )
+    T <: Complex &&
+        tAv == 'T' &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matvecmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays. Use adjoint ('C') instead.",
+            ),
+        )
+    _1 = one(T)
+    # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
+    CUBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
+    CUBLAS.gemv!(tAv, av, pA, dB, _1, dY) # dY += av*op(pA)*dB
+    # primal: pY = av*op(pA)*pB + bv*pY
+    CUBLAS.gemv!(tAv, av, pA, pB, bv, pY)
+    return Y
+end
+function rrule!!(
+    ::CoDual{typeof(LinearAlgebra.generic_matvecmul!)},
+    Y::CoDual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
+    tA::CoDual{<:AbstractChar,NoFData},
+    A::CoDual{<:CuMaybeComplexMat,<:CuMaybeComplexMat},
+    B::CoDual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
+    alpha::CoDual{<:Number,NoFData},
+    beta::CoDual{<:Number,NoFData},
+)
+    pY, dY = primal(Y), tangent(Y)
+    pA, dA = primal(A), tangent(A)
+    pB, dB = primal(B), tangent(B)
+    tAv = primal(tA)
+    av = primal(alpha)
+    bv = primal(beta)
+    T = eltype(pA)
+    eltype(pB) == T || throw(
+        ArgumentError(
+            "Mooncake: GPU gemv with mismatched element types " *
+            "(A=$(T), B=$(eltype(pB))) is not supported. " *
+            "Cast all arrays to the same element type before multiplying. " *
+            "(Note: cu() downcasts Float64/ComplexF64 to Float32/ComplexF32 by default; " *
+            "use CuArray(x) to preserve the element type.)",
+        ),
+    )
+    T <: Complex &&
+        tAv == 'T' &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matvecmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays. Use adjoint ('C') instead.",
+            ),
+        )
+    _1 = one(T)
+    pY_copy = copy(pY)
+    CUBLAS.gemv!(tAv, av, pA, pB, bv, pY)
+    function generic_matvecmul!_pb!!(::NoRData)
+        # dA update: outer product — reshape vectors to (n,1) matrices for gemm!
+        dY_mat = reshape(dY, :, 1)
+        pB_mat = reshape(pB, :, 1)
+        if tAv == 'N'
+            CUBLAS.gemm!('N', 'C', av, dY_mat, pB_mat, _1, dA) # dA += av * ȳ * B^H
+        else
+            CUBLAS.gemm!('N', 'C', av, pB_mat, dY_mat, _1, dA) # dA += av * B * ȳ^H
+        end
+        # dB update: gemv with Hermitian conjugate of op(A)
+        if tAv == 'N'
+            CUBLAS.gemv!('C', av, pA, dY, _1, dB) # dB += av * A^H * ȳ
+        else
+            CUBLAS.gemv!('N', av, pA, dY, _1, dB) # dB += av * A   * ȳ  (op(A)^H = A)
+        end
+        # Y tangent passes through scaled by beta
+        dY .*= bv
+        copyto!(pY, pY_copy)
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return Y, generic_matvecmul!_pb!!
+end
+# The tangent of Array{T} is Array{T} (fdata, accumulated in-place).
+# The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
 function frule!!(::Dual{typeof(cu)}, x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
     return Dual(cu(primal(x)), cu(tangent(x)))
