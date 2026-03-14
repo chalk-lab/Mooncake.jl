@@ -23,10 +23,12 @@ using CUDA:
     UnifiedMemory,
     HostMemory,
     is_capturing,
-    capture_status
+    capture_status,
+    hasfieldcount
 using CUDA: CUBLAS
 using CUDA: CUSPARSE
 using CUDA: CUSOLVER
+using CUDA.GPUArrays: unsafe_free!
 using Base.Broadcast: Broadcasted
 import Mooncake:
     MinimalCtx,
@@ -113,6 +115,15 @@ const CuDataRef = Union{
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuDataRef} = P
 tangent(p::CuDataRef, ::NoRData) = p
 Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) = nothing
+# zero_tangent_internal for CuDataRef: returns copy(x), which increments the refcount and
+# shares the same underlying GPU buffer as the primal.  This is NOT a true zero buffer —
+# it is an alias of the primal's memory.  It is safe only because DataRef tangents are
+# fully opaque: lgetfield returns NoTangent for every field, so no gradient operation ever
+# writes through a DataRef tangent directly.  All actual gradient accumulation goes via the
+# enclosing CuMaybeComplexArray rule, which allocates its own freshly-zeroed GPU array and
+# sets .data to a DataRef for that new buffer — so by the time gradient accumulation runs,
+# the DataRef tangent has already been replaced and copy(x) is never written to.
+zero_tangent_internal(x::T, ::MaybeCache) where {T<:CuDataRef} = copy(x)
 
 # copy(::CuDataRef) is called by GPUArrays.derive (which backs view, reinterpret, and
 # similar operations) for reference-count management.  It is a bookkeeping operation —
@@ -990,6 +1001,49 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
     return dest, mixed_copyto!_pb!!
+end
+
+# unsafe_free! releases GPU memory early (normally handled by GC finalizer).
+# It is a pure side-effect with no mathematical output — gradient is zero.
+# Both the primal and its fdata (if any) are independent GPU allocations; free both.
+@is_primitive MinimalCtx Tuple{typeof(unsafe_free!),CuArray}
+function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
+    unsafe_free!(primal(x))
+    dx = tangent(x)
+    dx isa NoFData || unsafe_free!(dx)
+    return Dual(nothing, NoTangent())
+end
+function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
+    unsafe_free!(primal(x))
+    dx = tangent(x)
+    dx isa NoFData || unsafe_free!(dx)
+    return CoDual(nothing, NoFData()), NoPullback(ntuple(_ -> NoRData(), 2))
+end
+
+# Core.finalizer(f, x) registers f as a GC finalizer for x. This is a pure side-effect
+# (no mathematical output) encountered inside CuArray constructors (e.g. view/derive).
+# The primal registration must happen; the gradient is zero.
+@is_primitive MinimalCtx Tuple{typeof(Core.finalizer),Any,Any}
+function frule!!(::Dual{typeof(Core.finalizer)}, f::Dual, x::Dual)
+    Core.finalizer(primal(f), primal(x))
+    return Dual(nothing, NoTangent())
+end
+function rrule!!(::CoDual{typeof(Core.finalizer)}, f::CoDual, x::CoDual)
+    Core.finalizer(primal(f), primal(x))
+    return CoDual(nothing, NoFData()), NoPullback(ntuple(_ -> NoRData(), 3))
+end
+
+# CUDA.hasfieldcount (imported as hasfieldcount) checks whether fieldcount(T) is valid for
+# type T.
+# It contains a try/catch block which causes Mooncake's IR transformation to produce
+# invalid IR ("terminator not last in block"). Mark as primitive: returns Bool, no gradient.
+@is_primitive MinimalCtx Tuple{typeof(hasfieldcount),Type}
+function frule!!(::Dual{typeof(hasfieldcount)}, T::Dual{<:Type})
+    return Dual(hasfieldcount(primal(T)), NoTangent())
+end
+function rrule!!(::CoDual{typeof(hasfieldcount)}, T::CoDual{<:Type})
+    return CoDual(hasfieldcount(primal(T)), NoFData()),
+    NoPullback(ntuple(_ -> NoRData(), 2))
 end
 
 # fill! on a GPU array has an internal try/catch block (for GPU error handling) that

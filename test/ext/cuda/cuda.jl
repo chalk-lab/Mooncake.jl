@@ -561,17 +561,17 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             # ── frule!! — differentiable T ────────────────────────────────────────────
             # Both primal and tangent pointers must advance by the same byte offset n.
             p32 = CuPtr{Float32}(UInt64(4096))
-            dp32 = Dual(p32, CuPtr{Float32}(UInt64(4096)))  # tangent = same base addr
-            dn = Dual(Int64(64), NoTangent())
-            result = _MooncakeCUDAExt.frule!!(Dual(+, NoTangent()), dp32, dn)
+            dp32 = Mooncake.Dual(p32, CuPtr{Float32}(UInt64(4096)))  # tangent = same base addr
+            dn = Mooncake.Dual(Int64(64), NoTangent())
+            result = _MooncakeCUDAExt.frule!!(Mooncake.Dual(+, NoTangent()), dp32, dn)
             @test primal(result) == p32 + 64
             @test tangent(result) == CuPtr{Float32}(UInt64(4096)) + 64
 
             # ── frule!! — non-differentiable T (Cvoid) ───────────────────────────────
             # Only primal advances; tangent must remain NoTangent (not crash or wrong type).
             pv = CuPtr{Cvoid}(UInt64(4096))
-            dpv = Dual(pv, NoTangent())
-            result_v = _MooncakeCUDAExt.frule!!(Dual(+, NoTangent()), dpv, dn)
+            dpv = Mooncake.Dual(pv, NoTangent())
+            result_v = _MooncakeCUDAExt.frule!!(Mooncake.Dual(+, NoTangent()), dpv, dn)
             @test primal(result_v) == pv + 64
             @test tangent(result_v) isa NoTangent
 
