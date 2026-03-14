@@ -6,26 +6,25 @@ using DifferentiationInterface, DifferentiationInterfaceTest
 using Mooncake: Mooncake
 using Test
 
-EXCLUDED = @static if VERSION ≥ v"1.11-" && VERSION ≤ v"1.12-"
-    # testing only :hessian on 1.11 due to opaque closure bug.
-    # This is potentially the same issue as discussed in
-    # https://github.com/chalk-lab/MistyClosures.jl/pull/12#issue-3278662295
-    [FIRST_ORDER..., :hvp, :second_derivative]
-else
-    [FIRST_ORDER...]
-end
+# hvp and second_derivative are broken on Julia 1.11 due to an opaque closure bug.
+# https://github.com/chalk-lab/MistyClosures.jl/pull/12#issue-3278662295
+const _broken_on_1_11 = v"1.11-" ≤ VERSION ≤ v"1.12-"
 
 scens = filter(DifferentiationInterfaceTest.default_scenarios()) do s
     s.f !== DifferentiationInterfaceTest.arr_to_num_no_linalg
 end
 
+const _backend = [
+    SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))
+]
+const _DI_TEST = get(ENV, "DI_SECOND_ORDER_TEST", "both")
+
 # Test second-order differentiation (forward-over-reverse)
-test_differentiation(
-    [SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))],
-    scens;
-    excluded=EXCLUDED,
-    logging=true,
-)
+for variant in (:hvp, :second_derivative)
+    _DI_TEST in ("both", string(variant)) || continue
+    excluded = _broken_on_1_11 ? [FIRST_ORDER..., variant] : [FIRST_ORDER...]
+    test_differentiation(_backend, scens; excluded, logging=true)
+end
 
 # Test for world-age fix when using closures (#916, #632)
 # The bug occurs when:

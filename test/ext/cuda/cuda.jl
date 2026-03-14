@@ -3,6 +3,7 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, CUDA, JET, Mooncake, StableRNGs, Test
+using CUDA.GPUArrays: unsafe_free!
 using Mooncake: lgetfield
 using Mooncake.TestUtils:
     test_tangent_interface,
@@ -167,7 +168,10 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         # _view_bool_gate_sum: Bool mask applied via a view; CuArray{Bool} is
         # non-differentiable (tangent_type(Bool)=NoTangent), so gradient flows
         # through x only.  Verifies that Bool CuArray views don't crash AD.
-        _view_bool_gate_sum(x) = sum(x .* Float32.(view(x .> zero(eltype(x)), 1:length(x))))
+        # Uses eltype(x) conversion to work for any float precision.
+        _view_bool_gate_sum(x) = sum(
+            x .* eltype(x).(view(x .> zero(eltype(x)), 1:length(x)))
+        )
         # Helpers for non-default memory types.
         _rand_unified =
             (rng, sz...) ->
@@ -487,7 +491,9 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             (false, :none, false, _view_sum, _rand(rng, 16)),
             (false, :none, false, _view_sum_cx, _rand(rng, ComplexF64, 16)),
             # Bool-masked sum: CuArray{Bool} is non-differentiable; gradient flows through x.
+            # Test both Float32 (original) and Float64 (regression for DataRef zero_tangent).
             (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, 16)),
+            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, Float64, 16)),
             # fill!(CuArray, val) — GPU fill! has internal try/catch → UpsilonNode.
             # Regression for Flux LSTM hidden-state reset (fill! with integer 0).
             # Also test float value to exercise gradient propagation through x.
@@ -589,6 +595,108 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             out_v, pb_v = _MooncakeCUDAExt.rrule!!(CoDual(+, NoFData()), dpv_co, dn_co)
             @test primal(out_v) == pv + 64
             @test tangent(out_v) isa NoFData
+        end
+
+        # Direct unit tests for Core.finalizer, hasfieldcount, and copy(::CuDataRef).
+        #
+        # test_rule cannot be used for these because:
+        #   - Core.finalizer has a side effect (GC registration) and returns nothing.
+        #   - hasfieldcount takes a Type value; test_rule cannot construct array-like
+        #     tangents for Type arguments.
+        #   - copy(::CuDataRef) requires randn_tangent_internal for DataRef, which does
+        #     not exist (DataRef is opaque — it has no numerical content to randomise).
+        @testset "Core.finalizer frule!! / rrule!!" begin
+            # Core.finalizer(f, x) registers f as a GC finalizer for x; returns nothing.
+            # The rule simply calls the primal and returns Dual/CoDual(nothing, NoTangent).
+            fin = _ -> nothing
+            arr = _rand(rng, Float32, 4)
+            tarr = zero_tangent(arr)
+
+            # frule!!: output is Dual(nothing, NoTangent()).
+            result = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(Core.finalizer, NoTangent()),
+                Mooncake.Dual(fin, NoTangent()),
+                Mooncake.Dual(arr, tarr),
+            )
+            @test primal(result) === nothing
+            @test tangent(result) isa NoTangent
+
+            # rrule!!: output fdata is NoFData; pullback returns NoRData for all inputs.
+            out, pb = _MooncakeCUDAExt.rrule!!(
+                CoDual(Core.finalizer, NoFData()), CoDual(fin, NoFData()), CoDual(arr, tarr)
+            )
+            @test primal(out) === nothing
+            @test tangent(out) isa NoFData
+            @test all(x -> x isa NoRData, pb(NoRData()))
+        end
+
+        @testset "hasfieldcount frule!! / rrule!!" begin
+            # CUDA.hasfieldcount(T) returns Bool — no gradient path.
+            # Verify the primal result is forwarded and tangent is always NoTangent/NoFData.
+            for T in (ComplexF64, Float32, Any)
+                expected = CUDA.hasfieldcount(T)
+
+                result = _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(CUDA.hasfieldcount, NoTangent()),
+                    Mooncake.Dual(T, NoTangent()),
+                )
+                @test primal(result) === expected
+                @test tangent(result) isa NoTangent
+
+                out, pb = _MooncakeCUDAExt.rrule!!(
+                    CoDual(CUDA.hasfieldcount, NoFData()), CoDual(T, NoFData())
+                )
+                @test primal(out) === expected
+                @test tangent(out) isa NoFData
+                @test all(x -> x isa NoRData, pb(NoRData()))
+            end
+        end
+
+        @testset "copy(::CuDataRef) frule!! / rrule!!" begin
+            # copy(::DataRef) increments the refcount and returns a new handle to the
+            # same GPU buffer.  frule!!: both primal and tangent DataRefs are copied.
+            # rrule!!: same; pullback is NoPullback (no numerical gradient through DataRef).
+            ref = getfield(_rand(rng, Float32, 16), :data)
+            tref = copy(ref)
+
+            result = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(copy, NoTangent()), Mooncake.Dual(ref, tref)
+            )
+            @test primal(result) isa typeof(ref)
+            @test primal(result) !== ref    # must be a new handle, not the same object
+            @test tangent(result) isa typeof(tref)
+            @test tangent(result) !== tref  # tangent DataRef also copied
+
+            out, pb = _MooncakeCUDAExt.rrule!!(CoDual(copy, NoFData()), CoDual(ref, tref))
+            @test primal(out) isa typeof(ref)
+            @test primal(out) !== ref
+            @test tangent(out) isa typeof(tref)
+            @test tangent(out) !== tref
+            @test all(x -> x isa NoRData, pb(NoRData()))
+        end
+
+        @testset "unsafe_free! frule!! / rrule!!" begin
+            # unsafe_free! releases GPU memory early; pure side-effect, no gradient.
+            # frule!!: returns Dual(nothing, NoTangent()); both primal and tangent freed.
+            # rrule!!: returns CoDual(nothing, NoFData()) — regression test for the bug
+            #          where NoTangent() was incorrectly used in the fdata slot.
+            arr = _rand(rng, Float32, 4)
+            tarr = zero_tangent(arr)
+
+            result = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(unsafe_free!, NoTangent()), Mooncake.Dual(arr, tarr)
+            )
+            @test primal(result) === nothing
+            @test tangent(result) isa NoTangent
+
+            arr2 = _rand(rng, Float32, 4)
+            tarr2 = zero_tangent(arr2)
+            out, pb = _MooncakeCUDAExt.rrule!!(
+                CoDual(unsafe_free!, NoFData()), CoDual(arr2, tarr2)
+            )
+            @test primal(out) === nothing
+            @test tangent(out) isa NoFData  # must be NoFData, not NoTangent
+            @test all(x -> x isa NoRData, pb(NoRData()))
         end
 
         # Verify that unsupported GPU operations throw user-friendly ArgumentErrors rather

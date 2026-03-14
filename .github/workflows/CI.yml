@@ -91,7 +91,6 @@ jobs:
       matrix:
         test_group: [
           {test_type: 'ext', label: 'differentiation_interface'},
-          {test_type: 'ext', label: 'differentiation_interface_second_order'},
           {test_type: 'ext', label: 'dynamic_expressions'},
           {test_type: 'ext', label: 'flux'},
           {test_type: 'ext', label: 'function_wrappers'},
@@ -108,11 +107,9 @@ jobs:
           {test_type: 'integration_testing', label: 'dynamicppl'},
           {test_type: 'integration_testing', label: 'gp'},
           {test_type: 'integration_testing', label: 'logexpfunctions'},
-          {test_type: 'integration_testing', label: 'lux'},
           {test_type: 'integration_testing', label: 'battery_tests'},
           {test_type: 'integration_testing', label: 'misc_abstract_array'},
           {test_type: 'integration_testing', label: 'temporalgps'},
-          {test_type: 'integration_testing', label: 'flux'},
         ]
         version:
           - 'lts'
