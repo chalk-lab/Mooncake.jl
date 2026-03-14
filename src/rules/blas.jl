@@ -1124,7 +1124,7 @@ for (fname, elty, relty) in (
             Char,
             Char,
             $relty,
-            AbstractMatrix{$elty},
+            AbstractVecOrMat{$elty},
             $relty,
             AbstractMatrix{$elty},
         }
@@ -1134,7 +1134,7 @@ for (fname, elty, relty) in (
         _uplo::Dual{Char},
         _t::Dual{Char},
         α_dα::Dual{$relty},
-        A_dA::Dual{<:AbstractMatrix{$elty}},
+        A_dA::Dual{<:AbstractVecOrMat{$elty}},
         β_dβ::Dual{$relty},
         C_dC::Dual{<:AbstractMatrix{$elty}},
     )
@@ -1143,7 +1143,7 @@ for (fname, elty, relty) in (
         uplo = primal(_uplo)
         t = primal(_t)
         α, dα = extract(α_dα)
-        A, dA = arrayify(A_dA)
+        A, dA = matrixify(A_dA)
         β, dβ = extract(β_dβ)
         C, dC = arrayify(C_dC)
 
@@ -1167,7 +1167,7 @@ for (fname, elty, relty) in (
         _uplo::CoDual{Char},
         _t::CoDual{Char},
         α_dα::CoDual{$relty},
-        A_dA::CoDual{<:AbstractMatrix{$elty}},
+        A_dA::CoDual{<:AbstractVecOrMat{$elty}},
         β_dβ::CoDual{$relty},
         C_dC::CoDual{<:AbstractMatrix{$elty}},
     )
@@ -1176,7 +1176,7 @@ for (fname, elty, relty) in (
         uplo = primal(_uplo)
         trans = primal(_t)
         α = primal(α_dα)
-        A, dA = arrayify(A_dA)
+        A, dA = matrixify(A_dA)
         β = primal(β_dβ)
         C, dC = arrayify(C_dC)
 
@@ -1681,6 +1681,58 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     (
                         false, perf_flag, nothing, BLAS.gemm!, tA, 'N', a_da, A, B, b_db, C
                     )
+                end
+            end
+        end...,
+    )
+
+    # syrk! / herk! — matrix input
+    # syrk! accepts trans ∈ {'N','T'}; herk! (complex) accepts trans ∈ {'N','C'}
+    syrk_herk_trans = P <: BlasComplexFloat ? ['N', 'C'] : ['N', 'T']
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123460)
+            map_prod(uplos, syrk_herk_trans, αs, βs, dαs, dβs) do (ul, t, α, β, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                f = P <: BlasComplexFloat ? BLAS.herk! : BLAS.syrk!
+                # herk! requires real-valued α, β (relty = real(P) for complex P)
+                ra = P <: BlasComplexFloat ? real(P)(real(α)) : P(α)
+                rb = P <: BlasComplexFloat ? real(P)(real(β)) : P(β)
+                rda = P <: BlasComplexFloat ? real(P)(real(dα)) : P(dα)
+                rdb = P <: BlasComplexFloat ? real(P)(real(dβ)) : P(dβ)
+                nA, kA = t == 'N' ? (3, 2) : (2, 3)
+                As = blas_matrices(rng, P, nA, kA)
+                Cs = blas_matrices(rng, P, 3, 3)
+                return map(As, Cs) do A, C
+                    a_da = CoDual(ra, rda)
+                    b_db = CoDual(rb, rdb)
+                    (false, perf_flag, nothing, f, ul, t, a_da, A, b_db, C)
+                end
+            end
+        end...,
+    )
+
+    # syrk! / herk! — vector input (fixes issue #786: mul!(C, v, v') via BLAS.syrk!)
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123461)
+            map_prod(uplos, αs, βs, dαs, dβs) do (ul, α, β, dα, dβ)
+                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
+                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+                f = P <: BlasComplexFloat ? BLAS.herk! : BLAS.syrk!
+                ra = P <: BlasComplexFloat ? real(P)(real(α)) : P(α)
+                rb = P <: BlasComplexFloat ? real(P)(real(β)) : P(β)
+                rda = P <: BlasComplexFloat ? real(P)(real(dα)) : P(dα)
+                rdb = P <: BlasComplexFloat ? real(P)(real(dβ)) : P(dβ)
+                vs = blas_vectors(rng, P, 3; only_contiguous=true)
+                Cs = blas_matrices(rng, P, 3, 3)
+                return map(vs, Cs) do v, C
+                    a_da = CoDual(ra, rda)
+                    b_db = CoDual(rb, rdb)
+                    (false, perf_flag, nothing, f, ul, 'N', a_da, v, b_db, C)
                 end
             end
         end...,
