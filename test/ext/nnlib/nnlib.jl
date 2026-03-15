@@ -58,7 +58,7 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             true,
             Impl.batched_matmul_fallback,
             randn(rng, 3, 2, 3),
-            randn(rng, 3, 5, 3),
+            randn(rng, 2, 5, 3),
         ),
         (
             false,
