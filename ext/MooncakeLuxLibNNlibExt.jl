@@ -44,13 +44,8 @@ end
     Union{LuxLibNNlibSupportedArray{P},NNlibBatchedWrapper{P}},
 } where {P<:IEEEFloat}
 
-function Mooncake.rrule!!(
-    ::CoDual{typeof(Impl.batched_matmul_fallback)}, x::CoDual{Tx}, y::CoDual{Ty}
-) where {
-    P<:IEEEFloat,
-    Tx<:Union{LuxLibNNlibSupportedArray{P},NNlibBatchedWrapper{P}},
-    Ty<:Union{LuxLibNNlibSupportedArray{P},NNlibBatchedWrapper{P}},
-}
+# common body for the two rules to avoid ambiguous dispatch for Array,Array (already present in MooncakeLuxLibExt.jl)
+function _batched_matmul_rrule!!(x::CoDual{Tx}, y::CoDual{Ty}) where {Tx,Ty}
     px, dx = arrayify(x)
     py, dy = arrayify(y)
     res = zero_fcodual(Impl.batched_matmul_fallback(px, py))
@@ -67,6 +62,22 @@ function Mooncake.rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return res, batched_matmul_pb!!
+end
+
+function Mooncake.rrule!!(
+    ::CoDual{typeof(Impl.batched_matmul_fallback)}, x::CoDual{Tx}, y::CoDual{Ty}
+) where {
+    P<:IEEEFloat,
+    Tx<:Union{LuxLibNNlibSupportedArray{P},NNlibBatchedWrapper{P}},
+    Ty<:NNlibBatchedWrapper{P},
+}
+    return _batched_matmul_rrule!!(x, y)
+end
+
+function Mooncake.rrule!!(
+    ::CoDual{typeof(Impl.batched_matmul_fallback)}, x::CoDual{Tx}, y::CoDual{Ty}
+) where {P<:IEEEFloat,Tx<:NNlibBatchedWrapper{P},Ty<:LuxLibNNlibSupportedArray{P}}
+    return _batched_matmul_rrule!!(x, y)
 end
 
 end
