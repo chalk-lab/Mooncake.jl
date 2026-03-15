@@ -38,14 +38,14 @@ function Mooncake.arrayify(
     return x, NNlib.batched_adjoint(_dx)
 end
 
-@is_primitive MinimalCtx Tuple{
-    typeof(Impl.batched_matmul_fallback),
-    Union{LuxLibNNlibSupportedArray{P},NNlibBatchedWrapper{P}},
-    Union{LuxLibNNlibSupportedArray{P},NNlibBatchedWrapper{P}},
-} where {P<:IEEEFloat}
-
-# common body for the two rules to avoid ambiguous dispatch for Array,Array (already present in MooncakeLuxLibExt.jl)
-function _batched_matmul_rrule!!(x::CoDual{Tx}, y::CoDual{Ty}) where {Tx,Ty}
+# common body for the two rules to avoid ambiguous dispatches (see Array x Array in MooncakeLuxLibExt.jl)
+function _batched_matmul_rrule!!(
+    x::CoDual{Tx}, y::CoDual{Ty}
+) where {
+    P<:IEEEFloat,
+    Tx<:Union{LuxLibNNlibSupportedArray{P},NNlibBatchedWrapper{P}},
+    Ty<:Union{LuxLibNNlibSupportedArray{P},NNlibBatchedWrapper{P}},
+}
     px, dx = arrayify(x)
     py, dy = arrayify(y)
     res = zero_fcodual(Impl.batched_matmul_fallback(px, py))
@@ -64,6 +64,12 @@ function _batched_matmul_rrule!!(x::CoDual{Tx}, y::CoDual{Ty}) where {Tx,Ty}
     return res, batched_matmul_pb!!
 end
 
+@is_primitive MinimalCtx Tuple{
+    typeof(Impl.batched_matmul_fallback),
+    Union{LuxLibNNlibSupportedArray{P},NNlibBatchedWrapper{P}},
+    NNlibBatchedWrapper{P},
+} where {P<:IEEEFloat}
+
 function Mooncake.rrule!!(
     ::CoDual{typeof(Impl.batched_matmul_fallback)}, x::CoDual{Tx}, y::CoDual{Ty}
 ) where {
@@ -73,6 +79,10 @@ function Mooncake.rrule!!(
 }
     return _batched_matmul_rrule!!(x, y)
 end
+
+@is_primitive MinimalCtx Tuple{
+    typeof(Impl.batched_matmul_fallback),NNlibBatchedWrapper{P},LuxLibNNlibSupportedArray{P}
+} where {P<:IEEEFloat}
 
 function Mooncake.rrule!!(
     ::CoDual{typeof(Impl.batched_matmul_fallback)}, x::CoDual{Tx}, y::CoDual{Ty}
