@@ -5,6 +5,8 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 using CUDA, cuDNN, JET, Mooncake, NNlib, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
 using NNlib: dropout
+using LuxLib
+import LuxLib: Impl
 
 dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
@@ -48,6 +50,80 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
         # batched_mul
         (false, :none, true, batched_mul, _rand(rng, 3, 2, 3), _rand(rng, 2, 5, 3)),
+
+        # batched_matmul_fallback for Array, NNlib.BatchedTranspose, NNlib.BatchedAdjoint
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            randn(rng, 3, 2, 3),
+            randn(rng, 2, 5, 3),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            randn(rng, 3, 2, 3),
+            NNlib.batched_transpose(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            randn(rng, 3, 2, 3),
+            NNlib.batched_adjoint(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_transpose(randn(rng, 2, 3, 3)),
+            randn(rng, 2, 5, 3),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_adjoint(randn(rng, 2, 3, 3)),
+            randn(rng, 2, 5, 3),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_transpose(randn(rng, 2, 3, 3)),
+            NNlib.batched_transpose(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_adjoint(randn(rng, 2, 3, 3)),
+            NNlib.batched_adjoint(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_transpose(randn(rng, 2, 3, 3)),
+            NNlib.batched_adjoint(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_adjoint(randn(rng, 2, 3, 3)),
+            NNlib.batched_transpose(randn(rng, 5, 2, 3)),
+        ),
 
         # dropout
         (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2), float(0.5)),
@@ -255,51 +331,81 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
     end
 end
 
-# Testing arrayify for Adjoint/Transpose accumulation
-@testset "arrayify Adjoint/Transpose tests" begin
+# Testing arrayify for general adjoint, transpose types (LinearAlgebra.jl, NNlib.jl etc)
+@testset "arrayify wrapper tests" begin
     rng = StableRNG(123)
-    A = randn(rng, 3, 4)
-    g = randn(rng, 3, 4)
+    A2 = randn(rng, 3, 4)
+    g2 = randn(rng, 3, 4)
+    A3 = randn(Float32, 3, 4, 2)
+    g3 = randn(Float32, 3, 4, 2)
 
     # Plain array
     xf = zeros(3, 4)
-    _, dxf = Mooncake.arrayify(A, xf)
-    dxf .+= g
-    @test xf ≈ g
+    _, dxf = Mooncake.arrayify(A2, xf)
+    dxf .+= g2
+    @test xf ≈ g2
 
     # Plain array, scalar gradient
     xf_scalar = zeros(3, 4)
-    _, dxf_scalar = Mooncake.arrayify(A, xf_scalar)
+    _, dxf_scalar = Mooncake.arrayify(A2, xf_scalar)
     dxf_scalar .+= 2.0
     @test xf_scalar ≈ fill(2.0, 3, 4)
 
-    # Adjoint: gradient transposed back into parent
+    # Adjoint
     parent_adj = zeros(4, 3)
-    xf_adj = Mooncake.FData((parent=parent_adj,))
-    _, dxf_adj = Mooncake.arrayify(A', xf_adj)
-    dxf_adj .+= g
-    @test parent_adj ≈ g'
+    _, dxf_adj = Mooncake.arrayify(A2', Mooncake.FData((parent=parent_adj,)))
+    dxf_adj .+= g2
+    @test parent_adj ≈ g2'
 
-    # Transpose: gradient transposed back into parent
+    # Transpose
     parent_tr = zeros(4, 3)
-    xf_tr = Mooncake.FData((parent=parent_tr,))
-    _, dxf_tr = Mooncake.arrayify(transpose(A), xf_tr)
-    dxf_tr .+= g
-    @test parent_tr ≈ transpose(g)
+    _, dxf_tr = Mooncake.arrayify(transpose(A2), Mooncake.FData((parent=parent_tr,)))
+    dxf_tr .+= g2
+    @test parent_tr ≈ transpose(g2)
 
-    # Accumulates (+=), not overwrites — Adjoint
+    # Accumulates — Adjoint
     parent_adj2 = ones(4, 3)
-    xf_adj2 = Mooncake.FData((parent=parent_adj2,))
-    _, dxf_adj2 = Mooncake.arrayify(A', xf_adj2)
-    dxf_adj2 .+= g
-    @test parent_adj2 ≈ ones(4, 3) .+ g'
+    _, dxf_adj2 = Mooncake.arrayify(A2', Mooncake.FData((parent=parent_adj2,)))
+    dxf_adj2 .+= g2
+    @test parent_adj2 ≈ ones(4, 3) .+ g2'
 
-    # Accumulates (+=), not overwrites — Transpose
+    # Accumulates — Transpose
     parent_tr2 = ones(4, 3)
-    xf_tr2 = Mooncake.FData((parent=parent_tr2,))
-    _, dxf_tr2 = Mooncake.arrayify(transpose(A), xf_tr2)
-    dxf_tr2 .+= g
-    @test parent_tr2 ≈ ones(4, 3) .+ transpose(g)
+    _, dxf_tr2 = Mooncake.arrayify(transpose(A2), Mooncake.FData((parent=parent_tr2,)))
+    dxf_tr2 .+= g2
+    @test parent_tr2 ≈ ones(4, 3) .+ transpose(g2)
+
+    # BatchedTranspose
+    parent_bt = zeros(Float32, 4, 3, 2)
+    _, dxf_bt = Mooncake.arrayify(
+        NNlib.batched_transpose(A3), Mooncake.FData((parent=parent_bt,))
+    )
+    dxf_bt .+= g3
+    @test parent_bt ≈ permutedims(g3, (2, 1, 3))
+
+    # BatchedAdjoint
+    parent_ba = zeros(Float32, 4, 3, 2)
+    _, dxf_ba = Mooncake.arrayify(
+        NNlib.batched_adjoint(A3), Mooncake.FData((parent=parent_ba,))
+    )
+    dxf_ba .+= g3
+    @test parent_ba ≈ permutedims(g3, (2, 1, 3))
+
+    # Accumulates — BatchedTranspose
+    parent_bt2 = ones(Float32, 4, 3, 2)
+    _, dxf_bt2 = Mooncake.arrayify(
+        NNlib.batched_transpose(A3), Mooncake.FData((parent=parent_bt2,))
+    )
+    dxf_bt2 .+= g3
+    @test parent_bt2 ≈ ones(Float32, 4, 3, 2) .+ permutedims(g3, (2, 1, 3))
+
+    # Accumulates — BatchedAdjoint
+    parent_ba2 = ones(Float32, 4, 3, 2)
+    _, dxf_ba2 = Mooncake.arrayify(
+        NNlib.batched_adjoint(A3), Mooncake.FData((parent=parent_ba2,))
+    )
+    dxf_ba2 .+= g3
+    @test parent_ba2 ≈ ones(Float32, 4, 3, 2) .+ permutedims(g3, (2, 1, 3))
 end
 
 @testset "logsumexp Inf/NaN stability" begin
