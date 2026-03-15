@@ -94,7 +94,6 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
                 LuxLib.LoopedArrayOp(),
                 Float32,
             ),
-            (false, :stability_and_allocs, true, sleefpirates_fast_act, NNlib.tanh_fast),
             (
                 false,
                 :stability_and_allocs,

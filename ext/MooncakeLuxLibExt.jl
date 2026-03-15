@@ -65,7 +65,6 @@ end
 import LuxLib.Utils: static_training_mode_check
 import LuxLib.Impl:
     select_fastest_activation,
-    sleefpirates_fast_act,
     get_non_heads_dim,
     make_causal_mask,
     get_non_contracting_dim,
@@ -88,7 +87,6 @@ import LuxLib.Impl:
 @zero_adjoint DefaultCtx Tuple{typeof(static_training_mode_check),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(generate_dropout_mask),AbstractRNG,Any,Any,Any,Any}
 @zero_adjoint DefaultCtx Tuple{typeof(select_fastest_activation),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(sleefpirates_fast_act),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(get_non_heads_dim),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(make_causal_mask),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(get_non_contracting_dim),Vararg}
