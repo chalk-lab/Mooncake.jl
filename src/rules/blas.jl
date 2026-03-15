@@ -63,6 +63,12 @@ function arrayify(
     return x, Tx(_dx)
 end
 function arrayify(
+    x::Symmetric{T,<:AbstractMatrix{T}}, dx::TangentOrFData
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, _dx
+end
+function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
 ) where {T<:Union{IEEEFloat,BlasFloat}}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
