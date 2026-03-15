@@ -25,15 +25,15 @@ const NNlibBatchedWrapper{P} = Union{
 
 # NNlib.jl specific Mooncake.arrayify dispatches
 function Mooncake.arrayify(
-    x::NNlib.BatchedTranspose{T,<:LuxLibNNlibSupportedArray{T}}, dx::Mooncake.TangentOrFData
-) where {T<:IEEEFloat}
+    x::NNlib.BatchedTranspose{T,L}, dx::Mooncake.TangentOrFData
+) where {T<:IEEEFloat,L<:LuxLibNNlibSupportedArray{T}}
     _, _dx = Mooncake.arrayify(x.parent, Mooncake._fields(dx).parent)
     return x, NNlib.batched_transpose(_dx)
 end
 
 function Mooncake.arrayify(
-    x::NNlib.BatchedAdjoint{T,<:LuxLibNNlibSupportedArray{T}}, dx::Mooncake.TangentOrFData
-) where {T<:IEEEFloat}
+    x::NNlib.BatchedAdjoint{T,L}, dx::Mooncake.TangentOrFData
+) where {T<:IEEEFloat,L<:LuxLibNNlibSupportedArray{T}}
     _, _dx = Mooncake.arrayify(x.parent, Mooncake._fields(dx).parent)
     return x, NNlib.batched_adjoint(_dx)
 end
