@@ -1,6 +1,7 @@
 module MooncakeLuxLibNNlibExt
 
-using LuxLib, NNlib, Mooncake, GPUArraysCore
+using LuxLib, NNlib, Mooncake
+import NNlib.GPUArraysCore: AbstractGPUArray
 using Base: IEEEFloat
 import LuxLib: Impl
 import Mooncake:
