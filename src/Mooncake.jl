@@ -37,6 +37,7 @@ using Core:
     compilerbarrier
 using Core.Compiler: IRCode, NewInstruction
 using Core.Intrinsics: pointerref, pointerset
+using LinearAlgebra: dot
 using LinearAlgebra.BLAS: @blasfunc, BlasInt, trsm!, BlasFloat
 using LinearAlgebra.LAPACK: getrf!, getrs!, getri!, trtrs!, potrf!, potrs!
 using DispatchDoctor: @stable, @unstable, DispatchDoctor
@@ -166,6 +167,7 @@ include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")
 include("developer_tools.jl")
+include("wrong_mode.jl")
 
 # Public, not exported
 include("public.jl")

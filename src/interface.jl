@@ -32,11 +32,17 @@ function __verify_sig(rule::DerivedRule{<:Any,sig}, fx::Tfx) where {sig,Tfx}
     end
 end
 
+function __verify_sig(rule::DerivedFRule{<:Any,sig}, fx::Tfx) where {sig,Tfx}
+    # TODO: what should this do?
+    return nothing
+end
+
 __verify_sig(rule::DebugRRule, fx) = __verify_sig(rule.rule, fx)
 
 # rrule!! doesn't specify specific argument types which must be used, so there's nothing to
 # check here.
 __verify_sig(::typeof(rrule!!), fx::Tuple) = nothing
+__verify_sig(::typeof(frule!!), fx::Tuple) = nothing
 
 struct ValueAndGradientReturnTypeError <: Exception
     msg::String

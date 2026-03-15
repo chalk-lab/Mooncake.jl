@@ -10,6 +10,8 @@ Base.copy(::NoFData) = NoFData()
 
 increment_internal!!(::IncCache, ::NoFData, ::NoFData) = NoFData()
 
+LinearAlgebra.dot(::NoFData, ::NoFData) = false
+
 """
     FData(data::NamedTuple)
 
@@ -412,6 +414,8 @@ Base.copy(::NoRData) = NoRData()
 @inline increment_internal!!(::IncCache, ::NoRData, ::NoRData) = NoRData()
 
 @inline increment_field!!(::NoRData, y, ::Val) = NoRData()
+
+LinearAlgebra.dot(::NoRData, ::NoRData) = false
 
 struct RData{T<:NamedTuple}
     data::T
