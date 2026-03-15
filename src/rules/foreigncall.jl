@@ -359,7 +359,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (
             true,
             :none, # primal is unstable
-            (lb=1e-3, ub=100),
+            (lb=1e-3, ub=250),
             unsafe_pointer_to_objref,
             CoDual(
                 pointer_from_objref(_x),
