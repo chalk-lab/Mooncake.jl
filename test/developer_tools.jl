@@ -24,4 +24,7 @@
     @test Mooncake.primal_ir(
         Mooncake.MooncakeInterpreter(ReverseMode), Tuple{typeof(bar_llvmcall),Int}
     ) isa CC.IRCode
+    @test Mooncake.primal_ir(
+        Mooncake.MooncakeInterpreter(ForwardMode), Tuple{typeof(bar_llvmcall),Int}
+    ) isa CC.IRCode
 end
