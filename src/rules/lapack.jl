@@ -935,6 +935,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
                 map(S -> (false, :none, nothing, logabsdet, S), Ss),
             )
         end...,
+
+        # Singular inputs: logabsdet returns (-Inf, 0.0) without throwing.
+        # FD is not meaningful at a singular point, so interface_only = true.
+        # The gradient is zero (iszero(s) guard), which is also not FD-verifiable.
+        map_prod([2, 3], ['U', 'L'], Ps) do (N, uplo, P)
+            # rank-1 outer-product: v*v' is symmetric and singular for N ≥ 2
+            v = ones(P, N)
+            A = v * v'
+            S = Symmetric(A, Symbol(uplo))
+            return [(true, :none, nothing, logabsdet, S)]
+        end...,
     )
     memory = Any[]
     return test_cases, memory
