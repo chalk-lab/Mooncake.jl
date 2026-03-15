@@ -2,11 +2,15 @@
     primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple})::IRCode
 
 !!! warning
-    This is not part of the public interface of Mooncake. As such, it may change as 
+    This is not part of the public interface of Mooncake. As such, it may change as
     part of a non-breaking release of the package.
 
-Get the `Core.Compiler.IRCode` associated to `sig` from which the a rule can be derived.
-Roughly equivalent to `Base.code_ircode_by_type(sig; interp)`.
+Get the `Core.Compiler.IRCode` associated to `sig`. Roughly equivalent to
+`Base.code_ircode_by_type(sig; interp)`.
+
+Unlike `fwd_ir` and `rvs_ir`, this function does not attempt to derive a reverse rule, so
+it will succeed even for functions containing non-differentiable code (e.g. `llvmcall`,
+foreign calls).
 
 For example, if you wanted to get the IR associated to the call `map(sin, randn(10))`, you
 could do one of the following calls:
@@ -20,7 +24,11 @@ true
 ```
 """
 function primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple})::IRCode
-    return generate_ir(interp, sig).primal_ir
+    ir, _ = lookup_ir(interp, sig)
+    @static if VERSION > v"1.12-"
+        ir = set_valid_world!(ir, interp.world)
+    end
+    return ir
 end
 
 """
