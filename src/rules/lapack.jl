@@ -776,6 +776,7 @@ function frule!!(
 ) where {P<:BlasRealFloat}
     S, d_data = arrayify(_S)
     ld, s = logabsdet(S)
+    iszero(s) && return Dual((ld, s), (zero(P), zero(P)))
     Sinv = inv(S)
     return Dual((ld, s), (dot(Sinv, Symmetric(d_data, Symbol(S.uplo))), zero(P)))
 end
@@ -784,8 +785,9 @@ function rrule!!(
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
     ld, s = logabsdet(S)
-    Sinv = inv(S)
+    Sinv = iszero(s) ? nothing : inv(S)
     function logabsdet_sym_pb!!(ȳ::Tuple{P,P})
+        isnothing(Sinv) && return NoRData(), NoRData()
         _accum_sym_logdet!(ddata, Sinv, ȳ[1], S.uplo)
         return NoRData(), NoRData()
     end
