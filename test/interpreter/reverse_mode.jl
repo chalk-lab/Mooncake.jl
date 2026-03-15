@@ -348,6 +348,30 @@ end
     end
     @testset "MooncakeRuleCompilationError" begin
         @test_throws(Mooncake.MooncakeRuleCompilationError, Mooncake.build_rrule(sin))
+        # showerror should include the originating method's source location (issue #649)
+        function _rrule_error_test_llvmcall(x::Int64)
+            Base.llvmcall(
+                (
+                    """
+                declare i64 @llvm.abs.i64(i64, i1)
+                define i64 @entry(i64) {
+                %x = call i64 @llvm.abs.i64(i64 %0, i1 0)
+                ret i64 %x
+                }
+                    """,
+                    "entry",
+                ), Int64, Tuple{Int64}, x
+            )
+        end
+        err = try
+            Mooncake.build_rrule(Tuple{typeof(_rrule_error_test_llvmcall),Int64})
+            nothing
+        catch e
+            e
+        end
+        @test err isa Mooncake.MooncakeRuleCompilationError
+        msg = sprint(showerror, err)
+        @test startswith(msg, "Mooncake failed to differentiate the following method:")
     end
     @testset "$(_typeof((f, x...)))" for (n, (interface_only, perf_flag, bnds, f, x...)) in
                                          collect(
