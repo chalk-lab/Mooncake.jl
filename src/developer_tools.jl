@@ -8,10 +8,7 @@
 Get the `Core.Compiler.IRCode` associated to `sig`. Roughly equivalent to
 `Base.code_ircode_by_type(sig; interp)`.
 
-Unlike `fwd_ir` and `rvs_ir`, this function does not attempt to derive a reverse rule, so
-it will succeed even for functions containing non-differentiable code (e.g. `llvmcall`,
-foreign calls). Note that the IR returned is as produced by type inference, before any
-Mooncake-specific normalisation, so it may differ from the IR used internally by AD.
+Unlike `fwd_ir` and `rvs_ir`, this function does not attempt to derive a reverse rule.
 
 For example, if you wanted to get the IR associated to the call `map(sin, randn(10))`, you
 could do one of the following calls:
@@ -29,7 +26,8 @@ function primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple})::IRCode
     @static if VERSION > v"1.12-"
         ir = set_valid_world!(ir, interp.world)
     end
-    return ir
+    _, spnames = is_vararg_and_sparam_names(sig)
+    return normalise!(ir, spnames)
 end
 
 """
