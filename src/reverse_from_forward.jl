@@ -1,5 +1,33 @@
-struct ForwardModeRRule!!{FR}
+# Build a tuple of pre-allocated buffers for ForwardModeRRule!!, one entry per
+# argument type in `Sig` (excluding the leading function type).
+# Entry i is `nothing` for scalar (IEEEFloat) arguments, and a Ref holding an
+# empty placeholder array for array arguments.  Using a @generated function
+# gives a precisely typed NTuple (e.g. Tuple{Nothing, Ref{Vector{Float64}}}),
+# so that indexing with a compile-time constant inside ntuple(Val(N)) is fully
+# type-stable with no union splitting.
+@generated function _make_fwd_bufs(::Type{Sig}) where {Sig<:Tuple}
+    N = length(Sig.parameters) - 1  # exclude the function type
+    exprs = map(1:N) do i
+        T = Sig.parameters[i + 1]
+        if T <: IEEEFloat
+            :(nothing)
+        else
+            dims = ntuple(_ -> 0, ndims(T))
+            :(Ref{$T}($T(undef, $(dims...))))  # empty placeholder; resized on first call
+        end
+    end
+    return :(($(exprs...),))
+end
+
+# `_zero_bufs[i]` and `_basis_bufs[i]` are typed tuples produced by
+# _make_fwd_bufs: `nothing` for scalar args, `Ref{Array{T,N}}` for array
+# args.  The Refs hold empty arrays initially and are lazily populated on the
+# first call (inside prepare_pullback_cache), then reused on every subsequent
+# call to avoid per-call heap allocation.
+struct ForwardModeRRule!!{FR, ZB<:Tuple, BB<:Tuple}
     _frule!!::FR
+    _zero_bufs::ZB
+    _basis_bufs::BB
 end
 
 function __verify_sig(rule::ForwardModeRRule!!, fx)
@@ -7,11 +35,11 @@ function __verify_sig(rule::ForwardModeRRule!!, fx)
     return __verify_sig(rule._frule!!, fx)
 end
 
-function (forward_mode_rrule!!::ForwardModeRRule!!)(
+function (fmr::ForwardModeRRule!!)(
     f_codual::CoDual{F},
     args_codual::Vararg{<:CoDual{<:Union{IEEEFloat,<:Array{<:IEEEFloat}}},N},  # TODO: relax
 ) where {F,N}
-    (; _frule!!) = forward_mode_rrule!!
+    (; _frule!!) = fmr
     f = primal(f_codual)
     args = map(primal, args_codual)
 
@@ -23,8 +51,24 @@ function (forward_mode_rrule!!::ForwardModeRRule!!)(
         )
     end
 
+    # Build args_dual_zero, reusing pre-allocated buffers for array args.
+    # For each i, fmr._zero_bufs[i] is statically typed (Nothing or Ref{Array}),
+    # so the branch below is resolved at compile time inside ntuple(Val(N)).
+    args_dual_zero = ntuple(Val(N)) do i
+        buf_ref = fmr._zero_bufs[i]
+        if buf_ref === nothing
+            zero_dual(args[i])  # scalar: no heap allocation
+        else
+            if isempty(buf_ref[])
+                buf_ref[] = zero(args[i])  # first call: allocate with the right size
+            else
+                fill!(buf_ref[], zero(eltype(buf_ref[])))  # subsequent calls: reuse
+            end
+            Dual(args[i], buf_ref[])
+        end
+    end
+
     f_dual = Dual(f, NoTangent())
-    args_dual_zero = map(zero_dual, args)
     y_dual = _frule!!(f_dual, args_dual_zero...)
 
     y = primal(y_dual)
@@ -61,9 +105,11 @@ function (forward_mode_rrule!!::ForwardModeRRule!!)(
                 return nothing
             else
                 @assert args[i] isa Array{<:IEEEFloat} # TODO: relax
-                # Reuse a single buffer for the basis vector: set b[j]=1, call frule, reset.
-                # This avoids one allocation per input dimension.
-                b = zero(args[i])
+                b_ref = fmr._basis_bufs[i]  # statically typed: Ref{Array{T,N}}
+                if isempty(b_ref[])
+                    b_ref[] = zero(args[i])  # first call: allocate with the right size
+                end
+                b = b_ref[]
                 for j in eachindex(args[i])
                     b[j] = oneunit(eltype(b))
                     args_dual_one_ij = ntuple(Val(N)) do k
@@ -87,7 +133,6 @@ function (forward_mode_rrule!!::ForwardModeRRule!!)(
 
     return y_codual, forward_mode_pullback
 end
-
 
 """
     @reverse_from_forward signature
@@ -119,7 +164,9 @@ macro reverse_from_forward(sig)
         function Mooncake.build_primitive_rrule(concrete_sig::Type{<:$(esc(sig))})
             interp = get_interpreter(ForwardMode)
             _frule!! = build_frule(interp, concrete_sig)
-            return ForwardModeRRule!!(_frule!!)
+            zero_bufs = _make_fwd_bufs(concrete_sig)
+            basis_bufs = _make_fwd_bufs(concrete_sig)
+            return ForwardModeRRule!!(_frule!!, zero_bufs, basis_bufs)
         end
     end
 end
