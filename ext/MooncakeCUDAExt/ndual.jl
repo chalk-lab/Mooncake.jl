@@ -630,7 +630,9 @@ function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}) where {T,N}
     ifelse(a.value <= lo.value, lo, ifelse(a.value >= hi.value, hi, a))
 end
 function Base.clamp(a::NDual{T,N}, lo::Real, hi::Real) where {T,N}
-    ifelse(a.value <= T(lo), NDual{T,N}(T(lo)), ifelse(a.value >= T(hi), NDual{T,N}(T(hi)), a))
+    ifelse(
+        a.value <= T(lo), NDual{T,N}(T(lo)), ifelse(a.value >= T(hi), NDual{T,N}(T(hi)), a)
+    )
 end
 
 # flipsign / copysign — sign of result determined by primal; tangent follows.
@@ -727,8 +729,17 @@ function Base.sqrt(z::Complex{NDual{T,N}}) where {T,N}
     a, b = real(z), imag(z)
     r = hypot(a, b)
     half = T(0.5)
-    re = sqrt(NDual{T,N}((r.value + a.value) * half, _pt_scale(_pt_add(r.partials, a.partials), half)))
-    im = copysign(one(NDual{T,N}), b) * sqrt(NDual{T,N}((r.value - a.value) * half, _pt_scale(_pt_sub(r.partials, a.partials), half)))
+    re = sqrt(
+        NDual{T,N}(
+            (r.value + a.value) * half, _pt_scale(_pt_add(r.partials, a.partials), half)
+        ),
+    )
+    im =
+        copysign(one(NDual{T,N}), b) * sqrt(
+            NDual{T,N}(
+                (r.value - a.value) * half, _pt_scale(_pt_sub(r.partials, a.partials), half)
+            ),
+        )
     Complex(re, im)
 end
 
