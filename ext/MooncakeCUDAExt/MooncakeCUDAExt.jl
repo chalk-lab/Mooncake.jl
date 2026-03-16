@@ -1293,9 +1293,10 @@ function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuComplexArray})
             p1, p2 = partial_slots
             # p1, p2 are plain CuArray{T} of extracted partials (∂f/∂Re and ∂f/∂Im).
             # real(conj(dy) * p) is the Wirtinger chain-rule contribution.
-            dx .+= broadcast(
-                (s1, s2) -> complex(real(conj(dy) * s1), real(conj(dy) * s2)), p1, p2
-            )
+            # Hoist conj(dy) — it is a scalar, so computing it inside the broadcast
+            # would redundantly re-evaluate it once per element.
+            cdy = conj(dy)
+            dx .+= broadcast((s1, s2) -> complex(real(cdy * s1), real(cdy * s2)), p1, p2)
         end
         return NoRData(), NoRData(), NoRData()
     end
