@@ -1,6 +1,7 @@
 module MooncakeNNlibExt
 
-using GPUArraysCore, NNlib, Random, Mooncake
+using NNlib, Random, Mooncake
+import NNlib.GPUArraysCore: AbstractGPUArray
 using Base: IEEEFloat
 using LinearAlgebra
 using NNlib:

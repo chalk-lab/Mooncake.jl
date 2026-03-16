@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.22"
+version = "0.5.23"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -20,6 +20,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
 BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 DynamicExpressions = "a40a106e-89c9-4ca8-8020-a735e8728b6b"
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
@@ -38,6 +39,7 @@ Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
 MooncakeAllocCheckExt = "AllocCheck"
 MooncakeBFloat16sExt = "BFloat16s"
 MooncakeCUDAExt = "CUDA"
+MooncakecuDNNExt = ["CUDA", "cuDNN"]
 MooncakeDistributionsExt = "Distributions"
 MooncakeDynamicExpressionsExt = "DynamicExpressions"
 MooncakeFluxExt = "Flux"
@@ -46,7 +48,8 @@ MooncakeJETExt = "JET"
 MooncakeLogExpFunctionsExt = "LogExpFunctions"
 MooncakeLuxLibExt = ["LuxLib", "NNlib", "MLDataDevices", "Static"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
-MooncakeNNlibExt = ["NNlib", "GPUArraysCore", "LinearAlgebra"]
+MooncakeLuxLibNNlibExt = ["LuxLib", "NNlib"]
+MooncakeNNlibExt = ["NNlib", "LinearAlgebra"]
 MooncakeSpecialFunctionsExt = "SpecialFunctions"
 
 [compat]
@@ -56,6 +59,7 @@ Aqua = "0.8.9"
 BFloat16s = "0.6"
 BenchmarkTools = "1"
 CUDA = "5"
+cuDNN = "1"
 ChainRules = "1.71.0"
 ChainRulesCore = "1"
 DiffTests = "0.1"

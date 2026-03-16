@@ -4,6 +4,7 @@ using LuxLib, Random, Mooncake, NNlib
 using Base: IEEEFloat
 
 import LuxLib: Impl, Utils
+import LuxLib.NNlib.GPUArraysCore: AbstractGPUArray
 using MLDataDevices: get_device_type
 import ChainRulesCore as CRC
 using Mooncake:
@@ -35,6 +36,12 @@ using Static: True
         typeof(LuxLib.Impl.batched_matmul_fallback),Array{P,3},Array{P,3}
     } where {P<:IEEEFloat},
 )
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.batched_matmul_fallback),AbstractGPUArray{P,3},AbstractGPUArray{P,3}
+    } where {P<:IEEEFloat},
+)
 
 ## For mooncake we are missing some rules. For now use the basic versions of the kernels
 @mooncake_overlay LuxLib.internal_operation_mode(xs::Tuple) = LuxLib.GenericBroadcastOp{
@@ -48,7 +55,6 @@ using Static: True
 import LuxLib.Utils: static_training_mode_check
 import LuxLib.Impl:
     select_fastest_activation,
-    sleefpirates_fast_act,
     get_non_heads_dim,
     make_causal_mask,
     get_non_contracting_dim,
@@ -71,7 +77,6 @@ import LuxLib.Impl:
 @zero_adjoint DefaultCtx Tuple{typeof(static_training_mode_check),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(generate_dropout_mask),AbstractRNG,Any,Any,Any,Any}
 @zero_adjoint DefaultCtx Tuple{typeof(select_fastest_activation),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(sleefpirates_fast_act),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(get_non_heads_dim),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(make_causal_mask),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(get_non_contracting_dim),Vararg}

@@ -3,6 +3,9 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, CUDA, JET, Mooncake, StableRNGs, Test
+using CUDA.GPUArrays: unsafe_free!
+using CUDA: hasfieldcount
+using Base: unsafe_convert
 using Mooncake: lgetfield
 using Mooncake.TestUtils:
     test_tangent_interface,
@@ -34,6 +37,7 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             test_tangent_splitting(StableRNG(123456), p)
 
             # Check we can instantiate a CuArray.
+            # 1D: goes through DerivedRule (not a registered primitive).
             test_rule(
                 StableRNG(123456),
                 CuArray{ET,1,CUDA.DeviceMemory},
@@ -42,6 +46,8 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
                 interface_only=true,
                 is_primitive=false,
             )
+            # 2D: marked is_primitive=true to test the primitive interface directly
+            # (Mooncake has a _new_ primitive rule for CuArray construction).
             test_rule(
                 StableRNG(123456),
                 CuArray{ET,2,CUDA.DeviceMemory},
@@ -96,16 +102,20 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         # intercept op=+ / op=Base.add_sum and redirect to the ForwardDiff.Dual machinery.
         # Note: in Julia 1.11, sum(f, x) dispatches through Base._sum → mapreduce(f, add_sum, x)
         # rather than being intercepted by our sum(f, x) primitive; both code paths are tested.
-        # _sum_f_sin and _sum_f_abs2 are already defined above (from broadcast section).
+        # Note: _sum_f_sin is defined above (line 79); _sum_f_abs2 is defined below (line 135).
         _mapreduce_sin(x) = mapreduce(sin, +, x)
         _mapreduce_exp(x) = mapreduce(exp, +, x)
         _mapreduce_cx_abs2(x) = mapreduce(abs2, +, x)
         _mapreduce_cx_sin_re(x) = real(mapreduce(sin, +, x))
         _reduce_plus(x) = reduce(+, x)
+        # _reduce_plus_cx returns a complex scalar for complex input (no real() wrap), unlike
+        # _prod_cx / _cumsum_cx_sum etc.  The separate alias keeps the testset name distinct.
         _reduce_plus_cx(x) = reduce(+, x)
         _reduce_mul(x) = reduce(*, x)
         _reduce_mul_cx(x) = reduce(*, x)
-        # norm / dot — CUBLAS routines with explicit rules
+        # norm / dot — CUBLAS routines with explicit rules.
+        # norm() always returns a real scalar regardless of element type, so _norm_cx has
+        # the same body as _norm; the alias exists solely to label the complex-input testset.
         _norm(x) = norm(x)
         _norm_cx(x) = norm(x)
         _dot(x, y) = dot(x, y)
@@ -117,6 +127,7 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         _cumprod_sum(x) = sum(cumprod(x))
         _cumprod_cx_sum(x) = real(sum(cumprod(x)))
         _accumulate_plus_sum(x) = sum(accumulate(+, x))
+        _accumulate_plus_cx_sum(x) = real(sum(accumulate(+, x)))
         # vector indexing — gather/scatter-add
         _gather_sum(x, idx) = sum(x[idx])
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
@@ -138,11 +149,45 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         # adjoint of a CuVector times a CuMatrix — dispatches through generic_matmatmul!
         # because CUBLAS.gemm! only accepts CuMatrix inputs; now covered by the explicit rule.
         _cu_slice_adj_mul(x, cy) = sum(cu(x[:, 1])' * cy)
+        # copy(CuArray) → copyto! → unsafe_copyto! — exercises the unsafe_copyto! rule.
+        _copy_sum(x) = sum(copy(x))
+        _copy_sum_cx(x) = real(sum(copy(x)))
+        # in-place broadcast (x .= f.(y)) — exercises materialize! frule!! / rrule!!.
+        # _inplace_add_alias! tests the aliasing-safe path: dest appears in bc.args.
+        # _inplace_cx_abs2! tests real-output-into-complex-dest: abs2(ℂ)→ℝ written into
+        # a ComplexF64 array, exercising Float64→ComplexF64 promotion and 2-DOF partials.
+        _inplace_sin!(x, y) = (x.=sin.(y); sum(x))
+        _inplace_add_alias!(x, y) = (x.=x .+ y; sum(x))
+        _inplace_cx_abs2!(x, y) = (x.=abs2.(y); real(sum(x)))
         # GPU→CPU transfer inside the function: Array(x::CuArray) path.
         _gpu_to_cpu(x) = sum(Array(x) .^ 2)
-        # Bool mask via broadcast — creates a CuArray{Bool} internally; verifies that
-        # integer/bool CuArrays (tangent_type = NoTangent) don't crash AD.
-        _bool_mask_sum(x) = sum(x .* (x .> zero(eltype(x))))
+        # CPU→GPU transfer: copies a host Array into a GPU dest via unsafe_copyto!(GPU←CPU).
+        # Exercises the mixed-device rrule (dest::CuArray, src::Array).
+        # The gradient flows back from the GPU cotangent to the CPU src tangent.
+        function _cpu_to_gpu_sum(x)
+            dest = similar(x)
+            copyto!(dest, Array(x))
+            return sum(dest)
+        end
+        # CuPtr arithmetic — exercises the CuPtr{T} + Integer primitives.
+        # _view_sum: view(x, range) triggers SubArray → unsafe_convert(CuPtr{T}, parent) +
+        # offset, which is CuPtr{Float32} + Integer (differentiable T).
+        _view_sum(x) = sum(view(x, 2:length(x)))
+        _view_sum_cx(x) = real(sum(view(x, 2:length(x))))
+        # _view_bool_gate_sum: Bool mask applied via a view; CuArray{Bool} is
+        # non-differentiable (tangent_type(Bool)=NoTangent), so gradient flows
+        # through x only.  Verifies that Bool CuArray views don't crash AD.
+        # Uses eltype(x) conversion to work for any float precision.
+        _view_bool_gate_sum(x) = sum(
+            x .* eltype(x).(view(x .> zero(eltype(x)), 1:length(x)))
+        )
+        # Helpers for non-default memory types.
+        _rand_unified =
+            (rng, sz...) ->
+                CuArray{Float32,length(sz),CUDA.UnifiedMemory}(randn(rng, Float32, sz...))
+        _rand_host =
+            (rng, sz...) ->
+                CuArray{Float32,length(sz),CUDA.HostMemory}(randn(rng, Float32, sz...))
         # Dense-layer-style: W*x + b — exercises matmul (mightalias via copy in
         # the rrule) plus bias broadcast on GPU.
         _linear(W, x, b) = sum(W * x .+ b)
@@ -158,6 +203,11 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             # `test_rule` would create `randn_dual` inputs for `CuDataRef`, which would
             # require custom `randn_tangent_internal`/`zero_tangent_internal` methods.
             # We avoid that because those methods would mainly exist to satisfy the test helper.
+            #
+            # NOTE: test_frule_interface and test_rrule_interface both take full tangents
+            # (tangent_type) in the second Dual/CoDual slot, then extract fdata internally
+            # via to_fwds before calling the rule.  Non-differentiable args therefore take
+            # NoTangent() here — NOT NoFData(), even for the rrule interface test.
             for ET in (Float64, ComplexF64)
                 data = getfield(_rand(rng, ET, 64, 32), :data)
                 test_frule_interface(
@@ -207,7 +257,7 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             # mul! (matrix × matrix, Float64)
             (
                 false,
-                :stability,
+                :none,
                 false,
                 mul!,
                 _rand(rng, 16, 32),
@@ -215,20 +265,12 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
                 _rand(rng, 8, 32),
             ),
             # mul! (matrix × vector, Float64)
-            (
-                false,
-                :stability,
-                false,
-                mul!,
-                _rand(rng, 16),
-                _rand(rng, 16, 8),
-                _rand(rng, 8),
-            ),
+            (false, :none, false, mul!, _rand(rng, 16), _rand(rng, 16, 8), _rand(rng, 8)),
             # mul! (matrix × matrix, ComplexF64) — cuBLAS bug on Julia ≤ 1.10, skip.
             (if VERSION >= v"1.11"
                 [(
                     false,
-                    :stability,
+                    :none,
                     false,
                     mul!,
                     _rand(rng, ComplexF64, 16, 32),
@@ -241,7 +283,7 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             # mul! (matrix × vector, Float32)
             (
                 false,
-                :stability,
+                :none,
                 false,
                 mul!,
                 _rand(rng, Float32, 16),
@@ -347,8 +389,9 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             # cumprod — explicit rule (real and complex, nonzero inputs)
             (false, :none, false, _cumprod_sum, _rand_pos(rng, 16)),
             (false, :none, false, _cumprod_cx_sum, _rand(rng, ComplexF64, 16)),
-            # accumulate(+) — explicit rule
+            # accumulate(+) — explicit rule (real and complex)
             (false, :none, false, _accumulate_plus_sum, _rand(rng, 16)),
+            (false, :none, false, _accumulate_plus_cx_sum, _rand(rng, ComplexF64, 16)),
             # vector indexing — gather forward, scatter-add pullback
             (
                 false,
@@ -368,9 +411,8 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             ),
             # Diagonal + lgetfield(:diag) + broadcast — exercises the full pipeline
             (false, :none, false, _diagonal_field_bcast, _rand_pos(rng, 16)),
-            # sum(f, x) with non-smooth f (abs) and real abs2
+            # sum(f, x) with non-smooth f (abs)
             (false, :none, false, _sum_f_abs, _rand(rng, 16)),
-            (false, :none, false, _sum_f_abs2, _rand(rng, 16)),
             # sum(f, Adjoint) — tests sum(f, x) dispatch when input is an Adjoint wrapper
             (false, :none, false, _sum_adj_pow3, _rand(rng, 16)),
             # sum(A') / sum(transpose(A)) for complex arrays
@@ -422,10 +464,64 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
                 _host_rand(rng, Float32, 3, 3),
                 _rand(rng, Float32, 3, 3),
             ),
+            # copy(CuArray) → copyto! → unsafe_copyto! — regression for UpsilonNode error.
+            (false, :none, false, _copy_sum, _rand(rng, 16)),
+            (false, :none, false, _copy_sum_cx, _rand(rng, ComplexF64, 16)),
+            # UnifiedMemory and HostMemory CuArrays — same unsafe_copyto! rule, different M.
+            (false, :none, false, _copy_sum, _rand_unified(rng, 16)),
+            (false, :none, false, _copy_sum, _rand_host(rng, 16)),
+            # Direct unsafe_copyto!(dest, doffs, src, soffs, n) tests (is_primitive=true).
+            # Full-array copy: doffs=soffs=1, n=length(src).
+            (false, :none, true, unsafe_copyto!, _rand(rng, 16), 1, _rand(rng, 16), 1, 16),
+            # Sub-range copy: only elements 2..5 of dest are overwritten; rest unchanged.
+            (false, :none, true, unsafe_copyto!, _rand(rng, 16), 2, _rand(rng, 16), 1, 4),
+            # Complex full-array copy.
+            (
+                false,
+                :none,
+                true,
+                unsafe_copyto!,
+                _rand(rng, ComplexF64, 8),
+                1,
+                _rand(rng, ComplexF64, 8),
+                1,
+                8,
+            ),
             # GPU→CPU transfer: Array(x::CuArray) path.
             (false, :none, false, _gpu_to_cpu, _rand(rng, 16)),
-            # Bool mask broadcast — CuArray{Bool} tangent_type = NoTangent must not crash.
-            (false, :none, false, _bool_mask_sum, _rand_pos(rng, 16)),
+            # CPU→GPU transfer: copyto!(CuArray, Array) → unsafe_copyto!(GPU, CPU).
+            (false, :none, false, _cpu_to_gpu_sum, _rand(rng, 16)),
+            # CuPtr{T} + Integer — differentiable T (Float32): view(x, range) internally
+            # calls unsafe_convert(CuPtr{Float32}, SubArray) = unsafe_convert(parent) + offset.
+            (false, :none, false, _view_sum, _rand(rng, 16)),
+            (false, :none, false, _view_sum_cx, _rand(rng, ComplexF64, 16)),
+            # Bool-masked sum: CuArray{Bool} is non-differentiable; gradient flows through x.
+            # Test both Float32 (original) and Float64 (regression for DataRef zero_tangent).
+            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, 16)),
+            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, Float64, 16)),
+            # fill!(CuArray, val) — GPU fill! has internal try/catch → UpsilonNode.
+            # Regression for Flux LSTM hidden-state reset (fill! with integer 0).
+            # Also test float value to exercise gradient propagation through x.
+            (false, :none, true, fill!, _rand(rng, 16), 0.0f0),
+            (false, :none, true, fill!, _rand(rng, 4, 4), 0.0f0),
+            # Complex CuArray: tests rdata_type(ComplexF64) + sum(da) on complex tangent.
+            (false, :none, true, fill!, _rand(rng, ComplexF64, 8), 0.5 + 0.5im),
+            # Lambda wrapper: not itself a primitive; is_primitive=false so test_rule does not
+            # assert that the built rule is frule!!/rrule!!.
+            (false, :none, false, (a) -> (fill!(a, Int32(0)); sum(a)), _rand(rng, 16)),
+            # in-place broadcast — exercises materialize! frule!! / rrule!!.
+            # Three cases: basic (sin), aliased dest (x .= x .+ y),
+            # and real-output-into-complex-dest (abs2: ℂ→ℝ stored into ComplexF64 array).
+            (false, :none, false, _inplace_sin!, _rand(rng, 16), _rand(rng, 16)),
+            (false, :none, false, _inplace_add_alias!, _rand(rng, 16), _rand(rng, 16)),
+            (
+                false,
+                :none,
+                false,
+                _inplace_cx_abs2!,
+                _rand(rng, ComplexF64, 16),
+                _rand(rng, ComplexF64, 16),
+            ),
             # Dense-layer-style forward pass: W*x + b → relu → sum.
             # Exercises the 7-arg generic_matmatmul! rule + bias broadcast + mightalias.
             (
@@ -447,13 +543,246 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
                 _rand(rng, ComplexF64, 4),
             ),
         ]
-        @testset "$(typeof(fargs))" for (
-            interface_only, perf_flag, is_primitive, fargs...
-        ) in test_cases
+        @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
+                                        test_cases
 
-            @info "$(typeof(fargs))"
-            perf_flag = cuda ? :none : perf_flag
-            test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only)
+            argtypes = join(string.(typeof.(fargs[2:end])), ", ")
+            @info "[GPU] testing $(fargs[1])($argtypes)"
+            # CUDA.jl internal dispatch patterns produce spurious JET/AllocCheck hits
+            # unrelated to our rules, so stability checks are not meaningful on GPU.
+            test_rule(
+                StableRNG(123), fargs...; perf_flag=:none, is_primitive, interface_only
+            )
+        end
+
+        # Direct unit tests for CuPtr{T} + Integer frule!! / rrule!!.
+        #
+        # Background: there are two dispatch branches in the rule:
+        #   • Differentiable T (e.g. Float32): fdata_type(CuPtr{Float32}) = CuPtr{Float32}.
+        #     Both primal and tangent pointers are offset by n.
+        #   • Non-differentiable T (e.g. Cvoid, Bool): fdata_type(CuPtr{Cvoid}) = NoFData.
+        #     Only the primal is offset; the tangent stays NoTangent / NoFData.
+        #
+        # Why direct calls and not test_rule?
+        #   CuPtr is not an array type, so test_rule cannot construct meaningful inputs.
+        #   The functional path (_view_sum / _view_sum_cx) exercises the differentiable-T
+        #   branch end-to-end via SubArray → unsafe_convert → CuPtr{Float32} + offset.
+        #   However, that path never touches the non-differentiable-T branch: a
+        #   CuArray{Bool} view has tangent_type(Bool)=NoTangent, so unsafe_convert is
+        #   never called with a Bool fdata, and CuPtr{Bool}+Integer is never reached.
+        #   These direct tests are therefore the only coverage for the NoFData branch.
+        @testset "CuPtr{T} + Integer direct (Float32 and Cvoid)" begin
+            # ── frule!! — differentiable T ────────────────────────────────────────────
+            # Both primal and tangent pointers must advance by the same byte offset n.
+            p32 = CuPtr{Float32}(UInt64(4096))
+            dp32 = Mooncake.Dual(p32, CuPtr{Float32}(UInt64(4096)))  # Mooncake.tangent = same base addr
+            dn = Mooncake.Dual(Int64(64), Mooncake.NoTangent())
+            result = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(+, Mooncake.NoTangent()), dp32, dn
+            )
+            @test Mooncake.primal(result) == p32 + 64
+            @test Mooncake.tangent(result) == CuPtr{Float32}(UInt64(4096)) + 64
+
+            # ── frule!! — non-differentiable T (Cvoid) ───────────────────────────────
+            # Only primal advances; tangent must remain NoTangent (not crash or wrong type).
+            pv = CuPtr{Cvoid}(UInt64(4096))
+            dpv = Mooncake.Dual(pv, Mooncake.NoTangent())
+            result_v = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(+, Mooncake.NoTangent()), dpv, dn
+            )
+            @test Mooncake.primal(result_v) == pv + 64
+            @test Mooncake.tangent(result_v) isa Mooncake.NoTangent
+
+            # ── rrule!! — differentiable T ────────────────────────────────────────────
+            # Output tangent (fdata) must be the offset tangent pointer.
+            dp32_co = Mooncake.CoDual(p32, CuPtr{Float32}(UInt64(4096)))
+            dn_co = Mooncake.CoDual(Int64(64), Mooncake.NoFData())
+            out, pb = _MooncakeCUDAExt.rrule!!(
+                Mooncake.CoDual(+, Mooncake.NoFData()), dp32_co, dn_co
+            )
+            @test Mooncake.primal(out) == p32 + 64
+            @test Mooncake.tangent(out) == CuPtr{Float32}(UInt64(4096)) + 64
+
+            # ── rrule!! — non-differentiable T (Cvoid) ───────────────────────────────
+            # Output fdata must be NoFData (not crash, not a stray pointer).
+            dpv_co = Mooncake.CoDual(pv, Mooncake.NoFData())
+            out_v, pb_v = _MooncakeCUDAExt.rrule!!(
+                Mooncake.CoDual(+, Mooncake.NoFData()), dpv_co, dn_co
+            )
+            @test Mooncake.primal(out_v) == pv + 64
+            @test Mooncake.tangent(out_v) isa Mooncake.NoFData
+        end
+
+        # Direct unit tests for Core.finalizer, hasfieldcount, and copy(::CuDataRef).
+        #
+        # test_rule cannot be used for these because:
+        #   - Core.finalizer has a side effect (GC registration) and returns nothing.
+        #   - hasfieldcount takes a Type value; test_rule cannot construct array-like
+        #     tangents for Type arguments.
+        #   - copy(::CuDataRef) requires randn_tangent_internal for DataRef, which does
+        #     not exist (DataRef is opaque — it has no numerical content to randomise).
+        @testset "Core.finalizer frule!! / rrule!!" begin
+            # Core.finalizer(f, x) registers f as a GC finalizer for x; returns nothing.
+            # The rule simply calls the primal and returns Dual(nothing, NoTangent()) /
+            # CoDual(nothing, NoFData()).
+            fin = _ -> nothing
+            arr = _rand(rng, Float32, 4)
+            tarr = Mooncake.zero_tangent(arr)
+
+            # frule!!: output is Dual(nothing, NoTangent()).
+            result = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(Core.finalizer, Mooncake.NoTangent()),
+                Mooncake.Dual(fin, Mooncake.NoTangent()),
+                Mooncake.Dual(arr, tarr),
+            )
+            @test Mooncake.primal(result) === nothing
+            @test Mooncake.tangent(result) isa Mooncake.NoTangent
+
+            # rrule!!: output fdata is NoFData; pullback returns NoRData for all inputs.
+            out, pb = _MooncakeCUDAExt.rrule!!(
+                Mooncake.CoDual(Core.finalizer, Mooncake.NoFData()),
+                Mooncake.CoDual(fin, Mooncake.NoFData()),
+                Mooncake.CoDual(arr, tarr),
+            )
+            @test Mooncake.primal(out) === nothing
+            @test Mooncake.tangent(out) isa Mooncake.NoFData
+            @test all(x -> x isa Mooncake.NoRData, pb(Mooncake.NoRData()))
+        end
+
+        @testset "hasfieldcount frule!! / rrule!!" begin
+            # hasfieldcount(T) returns Bool — no gradient path.
+            # Verify the primal result is forwarded and tangent is always NoTangent/NoFData.
+            for T in (ComplexF64, Float32, Any)
+                expected = hasfieldcount(T)
+
+                result = _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(hasfieldcount, Mooncake.NoTangent()),
+                    Mooncake.Dual(T, Mooncake.NoTangent()),
+                )
+                @test Mooncake.primal(result) === expected
+                @test Mooncake.tangent(result) isa Mooncake.NoTangent
+
+                out, pb = _MooncakeCUDAExt.rrule!!(
+                    Mooncake.CoDual(hasfieldcount, Mooncake.NoFData()),
+                    Mooncake.CoDual(T, Mooncake.NoFData()),
+                )
+                @test Mooncake.primal(out) === expected
+                @test Mooncake.tangent(out) isa Mooncake.NoFData
+                @test all(x -> x isa Mooncake.NoRData, pb(Mooncake.NoRData()))
+            end
+        end
+
+        @testset "copy(::CuDataRef) frule!! / rrule!!" begin
+            # copy(::DataRef) increments the refcount and returns a new handle to the
+            # same GPU buffer.  frule!!: both primal and tangent DataRefs are copied.
+            # rrule!!: same; pullback is NoPullback (no numerical gradient through DataRef).
+            ref = getfield(_rand(rng, Float32, 16), :data)
+            tref = copy(ref)
+
+            result = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(copy, Mooncake.NoTangent()), Mooncake.Dual(ref, tref)
+            )
+            @test Mooncake.primal(result) isa typeof(ref)
+            @test Mooncake.primal(result) !== ref    # must be a new handle, not the same object
+            @test Mooncake.tangent(result) isa typeof(tref)
+            @test Mooncake.tangent(result) !== tref  # Mooncake.tangent DataRef also copied
+
+            out, pb = _MooncakeCUDAExt.rrule!!(
+                Mooncake.CoDual(copy, Mooncake.NoFData()), Mooncake.CoDual(ref, tref)
+            )
+            @test Mooncake.primal(out) isa typeof(ref)
+            @test Mooncake.primal(out) !== ref
+            @test Mooncake.tangent(out) isa typeof(tref)
+            @test Mooncake.tangent(out) !== tref
+            @test all(x -> x isa Mooncake.NoRData, pb(Mooncake.NoRData()))
+        end
+
+        @testset "unsafe_free! frule!! / rrule!!" begin
+            # unsafe_free! releases GPU memory early; pure side-effect, no gradient.
+            # frule!!: returns Dual(nothing, NoTangent()); both primal and tangent freed.
+            # rrule!!: returns CoDual(nothing, NoFData()) — regression test for the bug
+            #          where NoTangent() was incorrectly used in the fdata slot.
+            arr = _rand(rng, Float32, 4)
+            tarr = Mooncake.zero_tangent(arr)
+
+            result = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(unsafe_free!, Mooncake.NoTangent()), Mooncake.Dual(arr, tarr)
+            )
+            @test Mooncake.primal(result) === nothing
+            @test Mooncake.tangent(result) isa Mooncake.NoTangent
+
+            arr2 = _rand(rng, Float32, 4)
+            tarr2 = Mooncake.zero_tangent(arr2)
+            out, pb = _MooncakeCUDAExt.rrule!!(
+                Mooncake.CoDual(unsafe_free!, Mooncake.NoFData()),
+                Mooncake.CoDual(arr2, tarr2),
+            )
+            @test Mooncake.primal(out) === nothing
+            @test Mooncake.tangent(out) isa Mooncake.NoFData  # must be Mooncake.NoFData, not Mooncake.NoTangent
+            @test all(x -> x isa Mooncake.NoRData, pb(Mooncake.NoRData()))
+        end
+
+        # unsafe_convert dispatch — invariant type-parameter regression test.
+        #
+        # Issue: the original rules were declared as frule!!(x::Dual{CuArray{T},CuArray{T}})
+        # and rrule!!(x::CoDual{CuArray{T},CuArray{T}}).  Julia's type parameters are
+        # invariant, so a concrete CuArray{Float32,2,DeviceMemory} does NOT match the
+        # UnionAll CuArray{Float32} as a type parameter, and dispatch silently misses.
+        # Fix: use Dual{X,X} / CoDual{X,X} where X<:CuArray{T} to push subtyping into
+        # the where-clause, allowing X to be unified with the fully-specified concrete type.
+        @testset "unsafe_convert frule!! / rrule!! dispatch on concrete CuArray" begin
+            arr = _rand(rng, Float32, 4, 4)  # CuArray{Float32,2,DeviceMemory} — 3 type params
+            tarr = Mooncake.zero_tangent(arr)
+
+            # frule!!: both primal and tangent pointers returned.
+            result = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(unsafe_convert, Mooncake.NoTangent()),
+                Mooncake.Dual(CuPtr{Float32}, Mooncake.NoTangent()),
+                Mooncake.Dual(arr, tarr),
+            )
+            @test Mooncake.primal(result) isa CuPtr{Float32}
+            @test Mooncake.tangent(result) isa CuPtr{Float32}
+
+            # rrule!!: output is CoDual of primal and tangent pointers; pullback is NoPullback.
+            arr2 = _rand(rng, Float32, 4, 4)
+            tarr2 = Mooncake.zero_tangent(arr2)
+            out, pb = _MooncakeCUDAExt.rrule!!(
+                Mooncake.CoDual(unsafe_convert, Mooncake.NoFData()),
+                Mooncake.CoDual(CuPtr{Float32}, Mooncake.NoFData()),
+                Mooncake.CoDual(arr2, tarr2),
+            )
+            @test Mooncake.primal(out) isa CuPtr{Float32}
+            @test Mooncake.tangent(out) isa CuPtr{Float32}
+            @test all(x -> x isa Mooncake.NoRData, pb(Mooncake.NoRData()))
+        end
+
+        # _premat_nondiff_args: structural invariant test.
+        #
+        # Issue: Base.Broadcast.flatten composes nested Broadcasted nodes into a single
+        # function object.  When an inner broadcast uses a non-differentiable function
+        # such as Type{Float64} (e.g. `Float64.(bool_array)`), flatten embeds that type
+        # into the composed function's closure.  Type{Float64} is not isbits, so passing
+        # it to a GPU kernel fails with "non-bitstype argument" on Julia 1.10 (on Julia
+        # 1.12 a separate all-NoTangent collapse in tangent_type happens to hide the bug).
+        #
+        # Fix: _premat_nondiff_args walks the primal Broadcasted tree before flatten and
+        # replaces any sub-Broadcasted whose total Dual-slot count (_total_bcast_dof) is
+        # zero with its already-materialized plain CuArray value.  After that replacement
+        # flatten only sees plain arrays as leaves, and its composed function is isbits.
+        @testset "_premat_nondiff_args makes flat_bc.f isbits" begin
+            x = CUDA.rand(Float64, 4)
+            bool_mask = x .> 0  # CuArray{Bool}
+
+            # Construct `x .* Float64.(bool_mask)` as a nested Broadcasted tree.
+            # The inner node captures Type{Float64} which is NOT isbits.
+            inner = Base.Broadcast.broadcasted(Float64, bool_mask)
+            outer = Base.Broadcast.broadcasted(*, x, inner)
+
+            # After _premat_nondiff_args: inner node (dof==0) replaced by plain CuArray.
+            fixed = _MooncakeCUDAExt._premat_nondiff_args(outer)
+            @test !(fixed.args[2] isa Base.Broadcast.Broadcasted)
+            flat_fixed = Base.Broadcast.flatten(fixed)
+            @test isbitstype(typeof(flat_fixed.f))
         end
 
         # Verify that unsupported GPU operations throw user-friendly ArgumentErrors rather
@@ -482,6 +811,31 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
                 y = _rand(rng, Float32, 4)
                 @test_throws r"vcat on CuArray is not yet differentiable" value_and_gradient!!(
                     prepare_gradient_cache(f, x, y), f, x, y
+                )
+            end
+
+            # Scalar getindex/setindex! on CuArray — throw to prevent silent scalar GPU ops.
+            @testset "scalar getindex CuArray not differentiable" begin
+                f = x -> x[1]
+                x = _rand(rng, Float32, 4)
+                @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
+                    prepare_gradient_cache(f, x), f, x
+                )
+            end
+            @testset "scalar setindex! CuArray not differentiable" begin
+                f = x -> (x[1]=0.0f0; sum(x))
+                x = _rand(rng, Float32, 4)
+                @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
+                    prepare_gradient_cache(f, x), f, x
+                )
+            end
+
+            # accumulate with unsupported op — catch-all rule throws ArgumentError.
+            @testset "accumulate non-+ CuArray not differentiable" begin
+                f = x -> sum(accumulate(*, x))
+                x = _rand(rng, Float32, 4)
+                @test_throws r"accumulate on CuArray only supports op=\+" value_and_gradient!!(
+                    prepare_gradient_cache(f, x), f, x
                 )
             end
 

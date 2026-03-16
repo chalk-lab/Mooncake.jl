@@ -177,6 +177,20 @@ function is_vararg_and_sparam_names(sig)::Tuple{Bool,Vector{Symbol}}
 end
 
 """
+    lookup_method(sig)::Union{Method,Nothing}
+
+Returns the first `Method` matching `sig`, or `nothing` if no match is found. Unlike
+`is_vararg_and_sparam_names`, this does not throw if there are zero or multiple matches.
+"""
+function lookup_method(sig)::Union{Method,Nothing}
+    world = Base.get_world_counter()
+    min = Base.RefValue{UInt}(typemin(UInt))
+    max = Base.RefValue{UInt}(typemax(UInt))
+    ms = Base._methods_by_ftype(sig, nothing, 1, world, true, min, max, Ptr{Int32}(C_NULL))
+    return (ms isa Vector && !isempty(ms)) ? first(ms).method : nothing
+end
+
+"""
     is_vararg_and_sparam_names(mi::Core.MethodInstance)
 
 Calls `is_vararg_and_sparam_names` on `mi.def::Method`.

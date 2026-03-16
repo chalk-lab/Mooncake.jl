@@ -2,7 +2,7 @@ module MooncakeCUDAExt
 
 using LinearAlgebra, Random, Mooncake
 
-using Base: IEEEFloat
+using Base: IEEEFloat, unsafe_convert
 using CUDA:
     CuArray,
     CuRefValue,
@@ -23,10 +23,12 @@ using CUDA:
     UnifiedMemory,
     HostMemory,
     is_capturing,
-    capture_status
+    capture_status,
+    hasfieldcount
 using CUDA: CUBLAS
 using CUDA: CUSPARSE
 using CUDA: CUSOLVER
+using CUDA.GPUArrays: unsafe_free!
 using Base.Broadcast: Broadcasted
 import Mooncake:
     MinimalCtx,
@@ -113,6 +115,27 @@ const CuDataRef = Union{
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuDataRef} = P
 tangent(p::CuDataRef, ::NoRData) = p
 Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) = nothing
+# zero_tangent_internal for CuDataRef: returns copy(x), which increments the refcount and
+# shares the same underlying GPU buffer as the primal.  This is NOT a true zero buffer —
+# it is an alias of the primal's memory.  It is safe only because DataRef tangents are
+# fully opaque: lgetfield returns NoTangent for every field, so no gradient operation ever
+# writes through a DataRef tangent directly.  All actual gradient accumulation goes via the
+# enclosing CuMaybeComplexArray rule, which allocates its own freshly-zeroed GPU array and
+# sets .data to a DataRef for that new buffer — so by the time gradient accumulation runs,
+# the DataRef tangent has already been replaced and copy(x) is never written to.
+zero_tangent_internal(x::T, ::MaybeCache) where {T<:CuDataRef} = copy(x)
+
+# copy(::CuDataRef) is called by GPUArrays.derive (which backs view, reinterpret, and
+# similar operations) for reference-count management.  It is a bookkeeping operation —
+# the primal copy increments the refcount; the tangent DataRef is also copied so that the
+# new CuArray's .data field holds a separate handle to the same tangent GPU memory.
+@is_primitive(MinimalCtx, Tuple{typeof(copy),<:CuDataRef})
+function frule!!(::Dual{typeof(copy)}, x::Dual{<:CuDataRef,<:CuDataRef})
+    return Dual(copy(primal(x)), copy(tangent(x)))
+end
+function rrule!!(::CoDual{typeof(copy)}, x::CoDual{<:CuDataRef,<:CuDataRef})
+    return CoDual(copy(primal(x)), copy(tangent(x))), NoPullback(ntuple(_ -> NoRData(), 2))
+end
 
 # CuPtr and CuArray tangent types.
 # CuPtr carries no differentiable content (it's a device address), so rdata is NoRData.
@@ -139,6 +162,64 @@ Mooncake.__verify_fdata_value(::IdDict{Any,Nothing}, ::CuDataRef, ::CuDataRef) =
 function zero_tangent_internal(x::CuPtr{T}, ::MaybeCache) where {T}
     tangent_type(T) === NoTangent && return NoTangent()
     CuPtr{tangent_type(T)}(UInt64(0))
+end
+
+# unsafe_convert(::Type{CuPtr{T}}, x::CuArray{T}):
+# Returns a raw device pointer to x's data buffer.  For AD, the fdata of the returned
+# CuPtr is the pointer to the tangent buffer — both primal and tangent CuArrays have
+# the same layout, so unsafe_convert on the tangent gives the correct tangent pointer.
+# Needed because the traced body accesses DataRef internals (llvmcall) and loses the
+# tangent, causing a CoDual{CuPtr{T}, CuPtr{T}} ← CoDual{CuPtr{T}, NoFData} TypeError.
+#
+# The rules use CoDual{X,X} where X<:CuArray{T} rather than CoDual{CuArray{T},CuArray{T}}
+# because Julia's type parameters are invariant: CuArray{Float32,2,Mem} ≠ CuArray{Float32}
+# as a parameter, so the latter signature would never match a concrete CuArray argument.
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(unsafe_convert),Type{CuPtr{T}},CuArray{T}} where {T<:IEEEFloat},
+)
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(unsafe_convert),Type{CuPtr{T}},CuArray{T}} where {T<:Complex{<:IEEEFloat}},
+)
+function frule!!(
+    ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
+    return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
+end
+function rrule!!(
+    ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
+    return CoDual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, x.dx)),
+    NoPullback(ntuple(_ -> NoRData(), 3))
+end
+
+# CuPtr arithmetic: (p::CuPtr{T}) + (n::Integer) offsets a device pointer by n bytes.
+# For differentiable T the tangent is also a CuPtr; it must be offset by the same amount
+# since primal and tangent arrays are laid out identically.
+# For non-differentiable T (e.g. CuPtr{Cvoid} used in memory management), the tangent
+# is NoTangent and the pointer arithmetic carries no gradient.
+@is_primitive(MinimalCtx, Tuple{typeof(+),CuPtr{T},Integer} where {T})
+function frule!!(
+    ::Dual{typeof(+)}, p::Dual{CuPtr{T},CuPtr{T}}, n::Dual{<:Integer,NoTangent}
+) where {T}
+    return Dual(primal(p) + primal(n), tangent(p) + primal(n))
+end
+function frule!!(
+    ::Dual{typeof(+)}, p::Dual{CuPtr{T},NoTangent}, n::Dual{<:Integer,NoTangent}
+) where {T}
+    return Dual(primal(p) + primal(n), NoTangent())
+end
+function rrule!!(
+    ::CoDual{typeof(+)}, p::CoDual{CuPtr{T},CuPtr{T}}, n::CoDual{<:Integer,NoFData}
+) where {T}
+    return CoDual(primal(p) + primal(n), tangent(p) + primal(n)),
+    NoPullback(ntuple(_ -> NoRData(), 3))
+end
+function rrule!!(
+    ::CoDual{typeof(+)}, p::CoDual{CuPtr{T},NoFData}, n::CoDual{<:Integer,NoFData}
+) where {T}
+    return CoDual(primal(p) + primal(n), NoFData()), NoPullback(ntuple(_ -> NoRData(), 3))
 end
 
 # Non-differentiable CUDA handle, enum, and state types.
@@ -200,6 +281,8 @@ end
 # CUDA @cenum types are primitive types (integer-backed C enums) — never differentiable.
 # Mooncake's generic tangent_type @generated function errors on primitive types with no
 # registered method, so we register all of them here programmatically.
+# Covers: CUBLAS, CUSPARSE, CUSOLVER.
+# cuDNN enums are handled in MooncakeCUDNNExt (loaded only when cuDNN is available).
 # Filter: parentmodule(T) must be one of the CUDA family modules, to avoid accidentally
 # re-registering standard Julia primitive types (Bool, Int32, Float64, ...) that happen
 # to be visible in the CUDA namespace.
@@ -330,7 +413,9 @@ function zero_tangent_internal(x::CuMaybeComplexArray, dict::MaybeCache)
 end
 function randn_tangent_internal(rng::AbstractRNG, x::CuMaybeComplexArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
-    t = CuArray(randn(rng, eltype(x), size(x)...))
+    # Use `similar` to match the memory kind of `x` (DeviceMemory, UnifiedMemory, or
+    # HostMemory), then populate from a CPU-side randn so we don't need a GPU RNG.
+    t = copyto!(similar(x), randn(rng, eltype(x), size(x)...))
     dict[x] = t
     return t
 end
@@ -810,6 +895,203 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
     return zero_fcodual(sum(primal(x))), sum_pb!!
 end
 
+# Rule for `unsafe_copyto!(dest, doffs, src, soffs, n)` on GPU arrays.
+# This function contains try/catch blocks (UpsilonNodes) from `context!(...)` that
+# Mooncake cannot trace. It implements a GPU memcpy — the gradient is identity:
+# accumulate the destination tangent into the source tangent over the same range.
+#
+# Forward: copy both primal and tangent with the same offsets.
+# Backward: accumulate ddest[doffs:doffs+n-1] into dsrc[soffs:soffs+n-1], then zero ddest range.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(unsafe_copyto!),
+        <:CuMaybeComplexArray,
+        Integer,
+        <:CuMaybeComplexArray,
+        Integer,
+        Integer,
+    },
+)
+function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::Dual{<:Integer,NoTangent},
+    src::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    soffs::Dual{<:Integer,NoTangent},
+    n::Dual{<:Integer,NoTangent},
+)
+    pdest, ddest = arrayify(dest)
+    psrc, dsrc = arrayify(src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    return dest
+end
+function rrule!!(
+    ::CoDual{typeof(unsafe_copyto!)},
+    dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::CoDual{<:Integer,NoFData},
+    src::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    soffs::CoDual{<:Integer,NoFData},
+    n::CoDual{<:Integer,NoFData},
+)
+    pdest, ddest = arrayify(dest)
+    psrc, dsrc = arrayify(src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    dest_range = doffs_v:(doffs_v + n_v - 1)
+    src_range = soffs_v:(soffs_v + n_v - 1)
+    # Save the overwritten slice of dest (primal + tangent) so the pullback can restore it.
+    pdest_copy = copy(view(pdest, dest_range))
+    ddest_copy = copy(view(ddest, dest_range))
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    function unsafe_copyto!_pb!!(::NoRData)
+        # Accumulate gradient into src tangent, then restore dest to pre-mutation state.
+        view(dsrc, src_range) .+= view(ddest, dest_range)
+        copyto!(view(pdest, dest_range), pdest_copy)
+        copyto!(view(ddest, dest_range), ddest_copy)
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return dest, unsafe_copyto!_pb!!
+end
+
+# Rule for unsafe_copyto!(dest, doffs, src, soffs, n) where dest is a GPU array but src
+# is a CPU Array (cross-device: host → device).  This path is taken e.g. when a Lux
+# StatefulRecurrentCell initialises its hidden state from zeros32(...) and copies it to
+# the GPU.  The pullback accumulates the GPU cotangent of the overwritten region back
+# into the CPU src tangent via a synchronous device-to-host transfer.
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
+)
+function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::Dual{<:Integer,NoTangent},
+    src::Dual{<:Array,<:Array},
+    soffs::Dual{<:Integer,NoTangent},
+    n::Dual{<:Integer,NoTangent},
+)
+    pdest, ddest = arrayify(dest)
+    psrc, dsrc = primal(src), tangent(src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    return dest
+end
+function rrule!!(
+    ::CoDual{typeof(unsafe_copyto!)},
+    dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::CoDual{<:Integer,NoFData},
+    src::CoDual{<:Array,<:Array},
+    soffs::CoDual{<:Integer,NoFData},
+    n::CoDual{<:Integer,NoFData},
+)
+    pdest, ddest = arrayify(dest)
+    psrc, dsrc = primal(src), tangent(src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    dest_range = doffs_v:(doffs_v + n_v - 1)
+    src_range = soffs_v:(soffs_v + n_v - 1)
+    # Save overwritten slice via host copies (avoids scalar indexing on GPU).
+    pdest_copy = Array(view(pdest, dest_range))
+    ddest_copy = Array(view(ddest, dest_range))
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    function mixed_copyto!_pb!!(::NoRData)
+        # Propagate GPU cotangent back to CPU src tangent.
+        view(dsrc, src_range) .+= Array(view(ddest, dest_range))
+        # Restore dest primal and tangent to their pre-copy state.
+        unsafe_copyto!(pdest, doffs_v, pdest_copy, 1, n_v)
+        unsafe_copyto!(ddest, doffs_v, ddest_copy, 1, n_v)
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return dest, mixed_copyto!_pb!!
+end
+
+# unsafe_free! releases GPU memory early (normally handled by GC finalizer).
+# It is a pure side-effect with no mathematical output — gradient is zero.
+# Both the primal and its fdata (if any) are independent GPU allocations; free both.
+@is_primitive MinimalCtx Tuple{typeof(unsafe_free!),CuArray}
+function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
+    unsafe_free!(primal(x))
+    dx = tangent(x)
+    dx isa NoFData || unsafe_free!(dx)
+    return Dual(nothing, NoTangent())
+end
+function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
+    unsafe_free!(primal(x))
+    dx = tangent(x)
+    dx isa NoFData || unsafe_free!(dx)
+    return CoDual(nothing, NoFData()), NoPullback(ntuple(_ -> NoRData(), 2))
+end
+
+# Core.finalizer(f, x) registers f as a GC finalizer for x. This is a pure side-effect
+# (no mathematical output) encountered inside CuArray constructors (e.g. view/derive).
+# The primal registration must happen; the gradient is zero.
+@is_primitive MinimalCtx Tuple{typeof(Core.finalizer),Any,Any}
+function frule!!(::Dual{typeof(Core.finalizer)}, f::Dual, x::Dual)
+    Core.finalizer(primal(f), primal(x))
+    return Dual(nothing, NoTangent())
+end
+function rrule!!(::CoDual{typeof(Core.finalizer)}, f::CoDual, x::CoDual)
+    Core.finalizer(primal(f), primal(x))
+    return CoDual(nothing, NoFData()), NoPullback(ntuple(_ -> NoRData(), 3))
+end
+
+# CUDA.hasfieldcount (imported as hasfieldcount) checks whether fieldcount(T) is valid for
+# type T.
+# It contains a try/catch block which causes Mooncake's IR transformation to produce
+# invalid IR ("terminator not last in block"). Mark as primitive: returns Bool, no gradient.
+@is_primitive MinimalCtx Tuple{typeof(hasfieldcount),Type}
+function frule!!(::Dual{typeof(hasfieldcount)}, T::Dual{<:Type})
+    return Dual(hasfieldcount(primal(T)), NoTangent())
+end
+function rrule!!(::CoDual{typeof(hasfieldcount)}, T::CoDual{<:Type})
+    return CoDual(hasfieldcount(primal(T)), NoFData()),
+    NoPullback(ntuple(_ -> NoRData(), 2))
+end
+
+# fill! on a GPU array has an internal try/catch block (for GPU error handling) that
+# generates an UpsilonNode in the IR, which Mooncake cannot differentiate through.
+# Provide explicit rules.
+#
+# Semantics: fill!(a, x) sets every element of a to x, so:
+#   - d(output_i)/d(a_input_j) = 0  → tangent of a's prior content does not flow forward
+#   - d(output_i)/d(x) = 1          → tangent(x) (if any) broadcasts into tangent(a)
+# For integer x the tangent is NoTangent, so the tangent array is zeroed.
+# For float x the tangent array is filled with tangent(x).
+@is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
+function frule!!(
+    ::Dual{typeof(fill!)}, a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
+)
+    fill!(primal(a), primal(x))
+    tx = tangent(x)
+    fill!(tangent(a), tx isa NoTangent ? zero(eltype(tangent(a))) : eltype(tangent(a))(tx))
+    return a
+end
+function rrule!!(
+    ::CoDual{typeof(fill!)},
+    a::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    x::CoDual,
+)
+    pa, da = primal(a), tangent(a)
+    old = copy(pa)
+    fill!(pa, primal(x))
+    function fill!_gpu_pb!!(::NoRData)
+        copyto!(pa, old)
+        # Gradient of x: ∂loss/∂x = Σ ∂loss/∂a_i = sum(da).
+        # For non-differentiable x (tangent_type = NoTangent, e.g. integers) return NoRData.
+        # Must use tangent_type here — rdata_type throws for primitive non-float types.
+        dx = if tangent_type(typeof(primal(x))) == NoTangent
+            NoRData()
+        else
+            rdata_type(typeof(primal(x)))(sum(da))
+        end
+        fill!(da, zero(eltype(da)))
+        return NoRData(), NoRData(), dx
+    end
+    return a, fill!_gpu_pb!!
+end
+
 # _fields overload for CuArray tangents: the tangent of a plain CuArray is itself.
 # for Adjoint/Transpose wrappers (tangent = Tangent/FData with a .parent field).
 _fields(x::CuMaybeComplexArray) = (parent=x,)
@@ -872,6 +1154,36 @@ end
 # Complex arrays: two Dual slots per element (one for Re, one for Im) — see the
 # CuComplexArray overload below.  This correctly handles non-holomorphic f (e.g. abs2)
 # via Wirtinger calculus.
+#
+# Limitation: the NDual pass threads duals only through the CuArray *elements*.
+# Scalars or other state captured inside f's closure are invisible to the kernel
+# and receive no gradient.  If f has differentiable captured variables
+# (rdata_type(f) ≠ NoRData), the pullback would silently return zero for them,
+# producing wrong gradients and a type mismatch in increment!!.
+# _check_gpu_sum_f detects this case early and raises an informative error.
+function _check_gpu_sum_f(f)
+    F = typeof(f)
+    # Zero-field types (singletons such as typeof(abs2), typeof(sin)) have no captured
+    # state and are always safe. Calling rdata_type on them can hit an internal
+    # fields_type MethodError for plain function types, so we short-circuit here.
+    fieldcount(F) == 0 && return nothing
+    RT = rdata_type(F)
+    if RT !== NoRData
+        throw(
+            ArgumentError(
+                "Mooncake GPU sum/mapreduce rule does not support $F as the mapping " *
+                "function because it has rdata type $RT, meaning it captures " *
+                "differentiable state (e.g. a closed-over Float32 scalar). The GPU rule " *
+                "threads NDuals only through the CuArray elements and cannot propagate " *
+                "gradients back through captured variables. To fix this, implement a " *
+                "custom rrule!! for the enclosing function (e.g. Statistics.varm) or " *
+                "restructure the computation to avoid differentiable closures.",
+            ),
+        )
+    end
+    return nothing
+end
+
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuFloatArray})
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,<:Adjoint{<:IEEEFloat,<:CuFloatArray}})
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,<:Transpose{<:IEEEFloat,<:CuFloatArray}})
@@ -884,6 +1196,7 @@ function frule!!(
         Transpose{<:IEEEFloat,<:CuFloatArray},
     },
 }
+    _check_gpu_sum_f(primal(f))
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(primal(f), flat_px)
@@ -905,13 +1218,23 @@ function rrule!!(
         Transpose{<:IEEEFloat,<:CuFloatArray},
     },
 }
+    _check_gpu_sum_f(primal(f))
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(primal(f), flat_px)
     y = sum(_gpu_dual_val, out)
+    # Pre-extract the single partial slot and free the NDual array immediately.
+    # The NDual array is (1+1)× the size of a float array; keeping it alive in the
+    # closure for the pullback doubles GPU memory use unnecessarily.
+    partial_slot = if _is_gpu_differentiable(eltype(out))
+        broadcast(o -> _gpu_dual_part_cx(o, 1), out)
+    else
+        nothing
+    end
+    out = nothing
     function sum_f_pb!!(dy)
-        if _is_gpu_differentiable(eltype(out))
-            flat_dx .+= dy .* broadcast(o -> _gpu_dual_part_cx(o, 1), out)
+        if partial_slot !== nothing
+            flat_dx .+= dy .* partial_slot
         end
         return NoRData(), NoRData(), NoRData()
     end
@@ -930,6 +1253,7 @@ end
 # Performance: equivalent to NDual with 2-wide Duals — one kernel pass.
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuComplexArray})
 function frule!!(::Dual{typeof(sum)}, f::Dual, x::Dual{<:CuComplexArray})
+    _check_gpu_sum_f(primal(f))
     pf, px, dx = primal(f), primal(x), tangent(x)
     out = _gpu_broadcast_dual(pf, px)
     y = sum(_gpu_dual_val, out)
@@ -948,14 +1272,31 @@ function frule!!(::Dual{typeof(sum)}, f::Dual, x::Dual{<:CuComplexArray})
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuComplexArray})
+    _check_gpu_sum_f(primal(f))
     pf, px, dx = primal(f), primal(x), tangent(x)
     out = _gpu_broadcast_dual(pf, px)
     y = sum(_gpu_dual_val, out)
+    # Pre-extract the two partial slots (re and im DOFs) and free the NDual array.
+    # The complex NDual array is (2+1)× the size of a float array; holding it in the
+    # closure triples GPU memory use for the duration of the backward pass.
+    partial_slots = if _is_gpu_differentiable(eltype(out))
+        (
+            broadcast(o -> _gpu_dual_part_cx(o, 1), out),
+            broadcast(o -> _gpu_dual_part_cx(o, 2), out),
+        )
+    else
+        nothing
+    end
+    out = nothing
     function sum_f_cx_pb!!(dy)
-        if _is_gpu_differentiable(eltype(out))
-            dx .+= broadcast(
-                o -> complex(_gpu_adj_part(o, dy, 1), _gpu_adj_part(o, dy, 2)), out
-            )
+        if partial_slots !== nothing
+            p1, p2 = partial_slots
+            # p1, p2 are plain CuArray{T} of extracted partials (∂f/∂Re and ∂f/∂Im).
+            # real(conj(dy) * p) is the Wirtinger chain-rule contribution.
+            # Hoist conj(dy) — it is a scalar, so computing it inside the broadcast
+            # would redundantly re-evaluate it once per element.
+            cdy = conj(dy)
+            dx .+= broadcast((s1, s2) -> complex(real(cdy * s1), real(cdy * s2)), p1, p2)
         end
         return NoRData(), NoRData(), NoRData()
     end
@@ -1610,6 +1951,27 @@ end
 # handle it in _leaf_effective_tangent / materialize_pb!! / _gpu_fill_args_rdata.
 
 # ── Dual-wrapping helpers for GPU kernels ────────────────────────────────────────────
+#
+# LIMITATION: this forward-mode broadcast strategy works for pure elementwise Julia
+# functions, but breaks down for operations that are NOT implemented as Julia broadcasts:
+#
+#   • cuDNN-backed layers (BatchNorm, InstanceNorm, LayerNorm via cudnnNormForward!) call
+#     C++ library kernels that receive raw Float32/Float64 device pointers.  They never
+#     see the NDual-element CuArrays that Mooncake inserts, so the GPU compiler fails to
+#     generate a kernel for NDual{Float32, N} element types.
+#
+#   • Any Lux/Flux layer that dispatches to a specialised CUDA primitive (softmax via
+#     NNlib.softmax!, attention scoring, etc.) hits the same wall: the primitive expects
+#     plain float arrays, not NDual arrays.
+#
+# The failure mode is a GPU kernel-compilation error at trace time, e.g.:
+#   "LLVM error: ... cannot select: ... NDual{Float32, 3}"
+# (N = total real DOFs across all broadcast inputs; 3 arises for BatchNorm as
+#  scale + input + bias each contribute one real DOF.)
+#
+# Fix: add an explicit rrule!! for the cuDNN / NNlib primitive so Mooncake never tries
+# to trace through it with NDual inputs.  See the unsafe_copyto! and fill! rules above
+# for the pattern to follow.
 
 # Wrap a real differentiable scalar as an NDual with a one-hot partial at
 # `slot` (1-indexed, out of N total slots).  Non-differentiable types (Int, Bool, …)
@@ -1706,6 +2068,37 @@ end
 @inline _broadcast_elem_dof_type(::Type{<:Complex{<:IEEEFloat}}) = 2
 @inline _broadcast_elem_dof_type(::Type) = 0
 
+# Total Dual slots in a (possibly-nested) Broadcasted tree.  A sub-broadcast with
+# _total_bcast_dof == 0 has no differentiable leaves and can be pre-materialized to a
+# plain array before the GPU dual kernel, keeping flat_bc.f isbits (e.g. when one arg is
+# `Float64.(CuArray{Bool})`: the inner broadcast has dof==0 but its composed function
+# captures Type{Float64} which is not isbits).
+@inline _total_bcast_dof(bc::Broadcasted) = sum(_total_arg_dof, bc.args; init=0)
+@inline _total_arg_dof(a::Broadcasted) = _total_bcast_dof(a)
+@inline _total_arg_dof(a) = _broadcast_elem_dof(a)
+
+# Replace any nested Broadcasted sub-expression whose total dof is zero with its
+# primal materialized value.  This ensures Base.Broadcast.flatten(bc) produces an
+# isbits composed function, which is required for GPU kernel compilation.
+# Note: the resulting plain CuArray{T} (e.g. CuArray{Float64}) will have dof==1 and
+# consume one Dual slot in the kernel, but its _leaf_effective_tangent returns nothing
+# (tangent is not a CuArray), so the slot contribution is discarded — correct but
+# slightly wasteful.  This is unavoidable without a tagged wrapper type.
+function _premat_nondiff_args(bc::Broadcasted)
+    new_args = map(bc.args) do a
+        if a isa Broadcasted
+            if _total_bcast_dof(a) == 0
+                Base.Broadcast.materialize(a)
+            else
+                _premat_nondiff_args(a)
+            end
+        else
+            a
+        end
+    end
+    Broadcasted(bc.f, new_args, bc.axes)
+end
+
 # ── Adjoint / Transpose leaf helpers ─────────────────────────────────────────────────
 #
 # When a broadcast leaf is `A'` or `transpose(A)` the GPU kernel element is A'[i,j]
@@ -1745,10 +2138,11 @@ end
 # at positions d > length(sz), not d <= n_extra.
 function _unbroadcast(dx::CuArray, sz::Tuple)
     size(dx) == sz && return dx
-    dims = ntuple(ndims(dx)) do d
-        d > length(sz) || sz[d] == 1
+    # Collect reduction dims as a Tuple (stack-allocated) to avoid filter's heap Vector.
+    reduce_dims = ntuple(ndims(dx)) do d
+        d > length(sz) || sz[d] == 1 ? d : 0
     end
-    reduce_dims = filter(d -> dims[d], 1:ndims(dx))
+    reduce_dims = filter(!iszero, reduce_dims)  # Tuple filter — no heap alloc
     return isempty(reduce_dims) ? reshape(dx, sz) : reshape(sum(dx; dims=reduce_dims), sz)
 end
 
@@ -1773,7 +2167,25 @@ end
 # possibly-nested Broadcasted / tangent pair.  Works for both reverse mode (FData, uses
 # _fields(td).args) and forward mode (Tangent, uses _fields(td).args) because _fields
 # abstracts over both.
+#
+# When td is NoTangent or NoFData the whole sub-expression has no differentiable content.
+# We still extract the primal leaves (the GPU kernel needs them) paired with NoTangent;
+# contributions from non-differentiable leaves are filtered out downstream via the
+# _leaf_effective_tangent / _leaf_accum_fdata! catch-all methods (which return nothing
+# when the tangent is not a CuArray or IEEEFloat scalar).
 @inline _gpu_bcast_leaves(bc, td) = _gpu_bcast_leaves_args(bc.args, _fields(td).args)
+@inline _gpu_bcast_leaves(bc, ::Union{NoTangent,NoFData}) = _gpu_bcast_leaves_nots(bc.args)
+@inline _gpu_bcast_leaves_nots(::Tuple{}) = ((), ())
+@inline function _gpu_bcast_leaves_nots(args::Tuple)
+    a1 = first(args)
+    rest_ps, rest_ts = _gpu_bcast_leaves_nots(Base.tail(args))
+    if a1 isa Broadcasted
+        inner_ps, inner_ts = _gpu_bcast_leaves(a1, NoTangent())
+        return (inner_ps..., rest_ps...), (inner_ts..., rest_ts...)
+    else
+        return (a1, rest_ps...), (NoTangent(), rest_ts...)
+    end
+end
 @inline _gpu_bcast_leaves_args(::Tuple{}, ::Tuple{}) = ((), ())
 @inline function _gpu_bcast_leaves_args(args::Tuple, tds::Tuple)
     a1 = first(args)
@@ -1828,30 +2240,98 @@ end
 # Note: scalar args (IEEEFloat/Complex) are not checked here; a Float64 scalar mixed
 # with a Float32 CuArray silently promotes the broadcast to Float64, which may be slow
 # or unsupported on some GPUs.  Cast the scalar explicitly if needed.
+
+# Shared pullback accumulation for materialize and materialize! rrules.
+#
+# Walks flat_pargs in order, computing the contribution from each arg's partial
+# slot(s) and gradient dy, then accumulating into the arg's fdata via
+# _leaf_accum_fdata!.  Scalar IEEEFloat/Complex args have no fdata slot; their
+# gradients are returned in a Vector that the caller uses to build r_bc via
+# _gpu_fill_scalar_rdata.
+#
+# Returns r_bc (the Broadcasted rdata), or zero_rdata(bc_primal) if no scalars.
+function _gpu_accum_pullback!(
+    flat_pargs,
+    flat_fdatas,
+    partial_slots::AbstractVector,
+    dy_out,
+    has_scalars::Bool,
+    bc_primal,
+)
+    scalar_grads = has_scalars ? Any[] : nothing
+    offset = 0
+    for (pa, fd) in zip(flat_pargs, flat_fdatas)
+        dof = _broadcast_elem_dof(pa)
+        if dof == 1
+            k = offset + 1
+            contrib = broadcast((p, d) -> real(conj(d) * p), partial_slots[k], dy_out)
+            if pa isa IEEEFloat
+                push!(scalar_grads::Vector{Any}, sum(contrib))
+            else
+                _leaf_accum_fdata!(pa, fd, contrib)
+            end
+        elseif dof == 2
+            k1, k2 = offset + 1, offset + 2
+            contrib = broadcast(
+                (p1, p2, d) -> complex(real(conj(d) * p1), real(conj(d) * p2)),
+                partial_slots[k1],
+                partial_slots[k2],
+                dy_out,
+            )
+            if pa isa Complex{<:IEEEFloat}
+                push!(scalar_grads::Vector{Any}, sum(contrib))
+            else
+                _leaf_accum_fdata!(pa, fd, contrib)
+            end
+        end
+        offset += dof
+    end
+    return if isnothing(scalar_grads)
+        zero_rdata(bc_primal)
+    else
+        _gpu_fill_scalar_rdata(bc_primal, scalar_grads, Ref(1))
+    end
+end
+
 function _check_mixed_gpu_eltype(flat_pargs)
-    gpu_ets = [
-        eltype(pa) for pa in flat_pargs if pa isa CuMaybeComplexArray ||
-        pa isa Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray} ||
-        pa isa Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}
-    ]
-    length(unique(gpu_ets)) <= 1 && return nothing
-    throw(
-        ArgumentError(
-            "Mooncake: GPU broadcast over arrays with mixed element types " *
-            "($(join(gpu_ets, ", "))) is not supported. " *
-            "Cast all inputs to the same type before broadcasting.",
-        ),
-    )
+    # Walk flat_pargs with an early-exit loop rather than building a temporary array.
+    # In the common case (all same element type), this allocates nothing.
+    first_et = nothing
+    for pa in flat_pargs
+        (
+            pa isa CuMaybeComplexArray ||
+            pa isa Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray} ||
+            pa isa Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}
+        ) || continue
+        et = eltype(pa)
+        if first_et === nothing
+            first_et = et
+        elseif et !== first_et
+            throw(
+                ArgumentError(
+                    "Mooncake: GPU broadcast over arrays with mixed element types " *
+                    "($first_et and $et) is not supported. " *
+                    "Cast all inputs to the same type before broadcasting.",
+                ),
+            )
+        end
+    end
+    return nothing
 end
 
 function frule!!(
     ::Dual{typeof(Base.Broadcast.materialize)}, bc::Dual{<:Broadcasted{<:CuArrayStyle}}
 )
     bc_primal = primal(bc)
-    flat_bc = Base.Broadcast.flatten(bc_primal)
-    # flat_pargs == flat_bc.args (both depth-first leaves of bc_primal); _gpu_bcast_leaves
-    # is used here solely to also obtain the paired tangent data flat_ts.
-    flat_pargs, flat_ts = _gpu_bcast_leaves(bc_primal, tangent(bc))
+    # Pre-materialize sub-broadcasts with zero Dual slots so that Base.Broadcast.flatten
+    # produces an isbits composed function.  Without this, a sub-broadcast like
+    # `Float64.(CuArray{Bool})` (dof==0, function=Type{Float64}) would be inlined into
+    # flat_bc.f by flatten, making flat_bc.f non-isbits and failing GPU compilation.
+    bc_flat = _premat_nondiff_args(bc_primal)
+    flat_bc = Base.Broadcast.flatten(bc_flat)
+    # flat_pargs == flat_bc.args (leaves of bc_flat after pre-materialisation);
+    # _gpu_bcast_leaves is used here solely to also obtain the paired tangent data flat_ts.
+    flat_pargs, flat_ts = _gpu_bcast_leaves(bc_flat, tangent(bc))
     _check_mixed_gpu_eltype(flat_pargs)
 
     # One GPU kernel: compute primal AND all partial derivatives simultaneously.
@@ -1894,11 +2374,15 @@ function rrule!!(
     bc_primal = primal(bc)
     bc_fdata = tangent(bc)
 
+    # Pre-materialize sub-broadcasts with zero Dual slots so that Base.Broadcast.flatten
+    # produces an isbits composed function (same rationale as in frule!!).
+    bc_flat = _premat_nondiff_args(bc_primal)
     # Flatten nested Broadcasted trees into a single composed function + leaf args.
-    # flat_pargs == flat_bc.args; _gpu_bcast_leaves is used to also obtain flat_fdatas.
-    flat_bc = Base.Broadcast.flatten(bc_primal)
+    # flat_pargs == flat_bc.args (leaves after pre-materialisation); _gpu_bcast_leaves
+    # is used to also obtain flat_fdatas.
+    flat_bc = Base.Broadcast.flatten(bc_flat)
     flat_pf = flat_bc.f
-    flat_pargs, flat_fdatas = _gpu_bcast_leaves(bc_primal, bc_fdata)
+    flat_pargs, flat_fdatas = _gpu_bcast_leaves(bc_flat, bc_fdata)
     _check_mixed_gpu_eltype(flat_pargs)
 
     # One GPU kernel: compute primal AND all N partial derivatives simultaneously.
@@ -1923,43 +2407,9 @@ function rrule!!(
     has_scalars = any(pa isa CuFloatOrComplex for pa in flat_pargs)
 
     function materialize_pb!!(::NoRData)
-        # Walk flat_pargs in order, tracking the cumulative Dual-slot offset.
-        # CuArray / Adjoint / Transpose inputs accumulate via _leaf_accum_fdata!.
-        # Scalar IEEEFloat / Complex inputs have no fdata slot; their gradients are
-        # collected here and returned via rdata (packed into the Broadcasted rdata tree).
-        scalar_grads = has_scalars ? Any[] : nothing
-        offset = 0
-        for (pa, fd) in zip(flat_pargs, flat_fdatas)
-            dof = _broadcast_elem_dof(pa)
-            if dof == 1
-                k = offset + 1
-                contrib = broadcast((p, d) -> real(conj(d) * p), partial_slots[k], dy_out)
-                if pa isa IEEEFloat
-                    push!(scalar_grads::Vector{Any}, sum(contrib))
-                else
-                    _leaf_accum_fdata!(pa, fd, contrib)
-                end
-            elseif dof == 2
-                k1, k2 = offset + 1, offset + 2
-                contrib = broadcast(
-                    (p1, p2, d) -> complex(real(conj(d) * p1), real(conj(d) * p2)),
-                    partial_slots[k1],
-                    partial_slots[k2],
-                    dy_out,
-                )
-                if pa isa Complex{<:IEEEFloat}
-                    push!(scalar_grads::Vector{Any}, sum(contrib))
-                else
-                    _leaf_accum_fdata!(pa, fd, contrib)
-                end
-            end
-            offset += dof
-        end
-        r_bc = if isnothing(scalar_grads)
-            zero_rdata(bc_primal)
-        else
-            _gpu_fill_scalar_rdata(bc_primal, scalar_grads, Ref(1))
-        end
+        r_bc = _gpu_accum_pullback!(
+            flat_pargs, flat_fdatas, partial_slots, dy_out, has_scalars, bc_primal
+        )
         return NoRData(), r_bc
     end
 
@@ -1992,8 +2442,9 @@ function frule!!(
     bc::Dual{<:Broadcasted{<:CuArrayStyle}},
 ) where {P<:CuMaybeComplexArray}
     bc_primal = primal(bc)
-    flat_bc = Base.Broadcast.flatten(bc_primal)
-    flat_pargs, flat_ts = _gpu_bcast_leaves(bc_primal, tangent(bc))
+    bc_flat = _premat_nondiff_args(bc_primal)
+    flat_bc = Base.Broadcast.flatten(bc_flat)
+    flat_pargs, flat_ts = _gpu_bcast_leaves(bc_flat, tangent(bc))
     _check_mixed_gpu_eltype(flat_pargs)
 
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
@@ -2004,7 +2455,7 @@ function frule!!(
 
     # Non-differentiable output (e.g. Bool arrays): zero the tangent and return.
     if !_is_gpu_differentiable(eltype(dual_out))
-        fill!(dout, 0)
+        fill!(dout, zero(eltype(dout)))
         return dest
     end
 
@@ -2040,9 +2491,10 @@ function rrule!!(
     bc_primal = primal(bc)
     bc_fdata = tangent(bc)
 
-    flat_bc = Base.Broadcast.flatten(bc_primal)
+    bc_flat = _premat_nondiff_args(bc_primal)
+    flat_bc = Base.Broadcast.flatten(bc_flat)
     flat_pf = flat_bc.f
-    flat_pargs, flat_fdatas = _gpu_bcast_leaves(bc_primal, bc_fdata)
+    flat_pargs, flat_fdatas = _gpu_bcast_leaves(bc_flat, bc_fdata)
     _check_mixed_gpu_eltype(flat_pargs)
 
     # Save primal for restoration in the pullback.
@@ -2073,41 +2525,15 @@ function rrule!!(
     dual_out = nothing  # primal written to pout; partials in partial_slots — NDual array can be freed
 
     function materialize!_pb!!(::NoRData)
-        scalar_grads = has_scalars ? Any[] : nothing
-        offset = 0
-        for (pa, fd) in zip(flat_pargs, flat_fdatas)
-            dof = _broadcast_elem_dof(pa)
-            if dof == 1
-                k = offset + 1
-                contrib = broadcast((p, d) -> real(conj(d) * p), partial_slots[k], dout)
-                if pa isa IEEEFloat
-                    push!(scalar_grads::Vector{Any}, sum(contrib))
-                else
-                    _leaf_accum_fdata!(pa, fd, contrib)
-                end
-            elseif dof == 2
-                k1, k2 = offset + 1, offset + 2
-                contrib = broadcast(
-                    (p1, p2, d) -> complex(real(conj(d) * p1), real(conj(d) * p2)),
-                    partial_slots[k1],
-                    partial_slots[k2],
-                    dout,
-                )
-                if pa isa Complex{<:IEEEFloat}
-                    push!(scalar_grads::Vector{Any}, sum(contrib))
-                else
-                    _leaf_accum_fdata!(pa, fd, contrib)
-                end
-            end
-            offset += dof
-        end
-        r_bc = if isnothing(scalar_grads)
-            zero_rdata(bc_primal)
-        else
-            _gpu_fill_scalar_rdata(bc_primal, scalar_grads, Ref(1))
-        end
-        # Zero dout: gradient has been propagated; earlier ops accumulate fresh.
+        # Snapshot dout before any modifications. When dest appears in bc.args
+        # (e.g. x .= x .+ y), flat_fdatas contains fd = dout for x's slot.
+        # Without a snapshot, _leaf_accum_fdata!(x, dout, contrib) would corrupt
+        # dout mid-loop, causing subsequent slots to read a doubled value.
+        g = copy(dout)
         fill!(dout, 0)
+        r_bc = _gpu_accum_pullback!(
+            flat_pargs, flat_fdatas, partial_slots, g, has_scalars, bc_primal
+        )
         # Restore primal to allow the reverse pass to see the pre-broadcast value.
         copyto!(pout, old_pout)
         return NoRData(), NoRData(), r_bc
