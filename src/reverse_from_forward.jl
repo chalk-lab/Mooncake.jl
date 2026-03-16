@@ -1,30 +1,36 @@
 # Build a tuple of pre-allocated buffers for ForwardModeRRule!!, one entry per
 # argument type in `Sig` (excluding the leading function type).
-# Entry i is `nothing` for scalar (IEEEFloat) arguments, and a Ref holding an
-# empty placeholder array for array arguments.  Using a @generated function
+# Entry i is `nothing` for scalar (IEEEFloat) arguments, and a `Ref` holding an
+# empty placeholder array for array arguments.  Using a `@generated` function
 # gives a precisely typed NTuple (e.g. Tuple{Nothing, Ref{Vector{Float64}}}),
-# so that indexing with a compile-time constant inside ntuple(Val(N)) is fully
-# type-stable with no union splitting.
+# so that indexing with a compile-time constant inside the caller's ntuple(Val(N))
+# is fully type-stable with no union splitting.
 @generated function _make_fwd_bufs(::Type{Sig}) where {Sig<:Tuple}
     N = length(Sig.parameters) - 1  # exclude the function type
     exprs = map(1:N) do i
         T = Sig.parameters[i + 1]
         if T <: IEEEFloat
             :(nothing)
-        else
+        elseif T <: Array{<:IEEEFloat}
             dims = ntuple(_ -> 0, ndims(T))
-            :(Ref{$T}($T(undef, $(dims...))))  # empty placeholder; resized on first call
+            :(Ref{$T}($T(undef, $(dims...))))  # empty placeholder; sized on first use, resized if shape changes
+        else
+            throw(
+                ArgumentError(
+                    "unsupported argument type $T in `_make_fwd_bufs`: expected IEEEFloat or Array{<:IEEEFloat}",
+                ),
+            )
         end
     end
     return :(($(exprs...),))
 end
 
 # `_zero_bufs[i]` and `_basis_bufs[i]` are typed tuples produced by
-# _make_fwd_bufs: `nothing` for scalar args, `Ref{Array{T,N}}` for array
-# args.  The Refs hold empty arrays initially and are lazily populated on the
-# first call (inside prepare_pullback_cache), then reused on every subsequent
-# call to avoid per-call heap allocation.
-struct ForwardModeRRule!!{FR, ZB<:Tuple, BB<:Tuple}
+# _make_fwd_bufs: `nothing` for scalar args, `Ref{Array{T,D}}` for array
+# args.  The Refs hold empty arrays initially and are lazily sized on the
+# first call, then reused on every subsequent call to avoid per-call heap
+# allocation.  If the array size changes between calls the buffer is resized.
+struct ForwardModeRRule!!{FR,ZB<:Tuple,BB<:Tuple}
     _frule!!::FR
     _zero_bufs::ZB
     _basis_bufs::BB
@@ -52,22 +58,24 @@ function (fmr::ForwardModeRRule!!)(
     end
 
     # Build args_dual_zero, reusing pre-allocated buffers for array args.
-    # For each i, fmr._zero_bufs[i] is statically typed (Nothing or Ref{Array}),
+    # For each i, fmr._zero_bufs[i] is statically typed (Nothing or Ref{<:Array}),
     # so the branch below is resolved at compile time inside ntuple(Val(N)).
     args_dual_zero = ntuple(Val(N)) do i
         buf_ref = fmr._zero_bufs[i]
         if buf_ref === nothing
             zero_dual(args[i])  # scalar: no heap allocation
         else
-            if isempty(buf_ref[])
-                buf_ref[] = zero(args[i])  # first call: allocate with the right size
+            if size(buf_ref[]) != size(args[i])
+                buf_ref[] = zero(args[i])  # first call or size change: (re)allocate
             else
-                fill!(buf_ref[], zero(eltype(buf_ref[])))  # subsequent calls: reuse
+                fill!(buf_ref[], zero(eltype(buf_ref[])))  # same size: reuse
             end
             Dual(args[i], buf_ref[])
         end
     end
 
+    # Zero-tangent forward pass: run the primal to get y.
+    # Tangents are all zero so this pass does not contribute to any derivative.
     f_dual = Dual(f, NoTangent())
     y_dual = _frule!!(f_dual, args_dual_zero...)
 
@@ -78,7 +86,6 @@ function (fmr::ForwardModeRRule!!)(
         @assert dy_rdata isa rdata_type(typeof(y)) # TODO: check this at compile time
         # compute args rdata
         dargs_rdata = ntuple(Val(N)) do i
-            # ntuple ensures unrolling with statically inferrable integers (hopefully)
             if rdata_type(typeof(args[i])) == NoRData
                 return NoRData()
             else
@@ -87,27 +94,25 @@ function (fmr::ForwardModeRRule!!)(
                 args_dual_one_i = ntuple(Val(N)) do k
                     k == i ? Dual(args[i], one(args[i])) : args_dual_zero[k]
                 end
-                # compute partial derivative with respect to argument i
+                # Forward pass with unit perturbation on arg i gives ∂y/∂xᵢ.
                 y_dual_one_i = _frule!!(f_dual, args_dual_one_i...)
                 partial_derivative_i = tangent(y_dual_one_i)
-                # deduce one component of the pullback using a dot product
-                rdata_i =
-                    dot(fdata(partial_derivative_i), tangent(y_codual)) +
-                    dot(rdata(partial_derivative_i), dy_rdata)
+                # VJP: rdata_i = <∂y/∂xᵢ, dy_rdata>.
+                # y_codual is zero_fcodual so its fdata is zero; only rdata contributes.
+                rdata_i = dot(rdata(partial_derivative_i), dy_rdata)
                 return rdata_i
             end
         end
 
         # update args fdata
         ntuple(Val(N)) do i
-            # ntuple ensures unrolling with statically inferrable integers (hopefully)
             if tangent(args_codual[i]) isa NoFData
                 return nothing
             else
                 @assert args[i] isa Array{<:IEEEFloat} # TODO: relax
-                b_ref = fmr._basis_bufs[i]  # statically typed: Ref{Array{T,N}}
-                if isempty(b_ref[])
-                    b_ref[] = zero(args[i])  # first call: allocate with the right size
+                b_ref = fmr._basis_bufs[i]  # statically typed: Ref{Array{T,D}}
+                if size(b_ref[]) != size(args[i])
+                    b_ref[] = zero(args[i])  # first call or size change: (re)allocate
                 end
                 b = b_ref[]
                 for j in eachindex(args[i])
@@ -115,20 +120,22 @@ function (fmr::ForwardModeRRule!!)(
                     args_dual_one_ij = ntuple(Val(N)) do k
                         k == i ? Dual(args[i], b) : args_dual_zero[k]
                     end
+                    # Forward pass with unit perturbation on element j of arg i gives column j of ∂y/∂xᵢ.
                     y_dual_one_ij = _frule!!(f_dual, args_dual_one_ij...)
                     partial_derivative_ij = tangent(y_dual_one_ij)
-                    tangent(args_codual[i])[j] +=
-                        dot(fdata(partial_derivative_ij), tangent(y_codual)) +
-                        dot(rdata(partial_derivative_ij), dy_rdata)
+                    # VJP: accumulate <∂y/∂xᵢ[j], dy_rdata> into fdata of arg i.
+                    # y_codual is zero_fcodual so its fdata is zero; only rdata contributes.
+                    tangent(args_codual[i])[j] += dot(
+                        rdata(partial_derivative_ij), dy_rdata
+                    )
                     b[j] = zero(eltype(b))
                 end
                 return nothing
             end
         end
 
-        # return function and args rdata
-        df_rdata = NoRData()
-        return (df_rdata, dargs_rdata...)
+        # The function has no tangent (NoTangent), so its rdata is NoRData.
+        return (NoRData(), dargs_rdata...)
     end
 
     return y_codual, forward_mode_pullback
@@ -143,13 +150,15 @@ Define a reverse rule for a given `signature` (function type + argument types) f
 
     @reverse_from_forward Tuple{typeof(f), Float64, Vector{Float64}}
 
-This forces function calls `f(::Float64, ::Vector{Float64})` to be differentiated in forward mode inside any reverse-mode procedure.
+Registers a reverse-mode `rrule!!` for `f(::Float64, ::Vector{Float64})` that implements
+the pullback via repeated forward passes (one per input dimension).
 
 !!! warning
     This macro is still experimental and has strict limitations:
         - The function must have all its arguments and its output of type `<:Base.IEEEFloat` or `Array{<:Base.IEEEFloat}`
         - The function must not close over any data (its own tangent type must be `NoTangent`)
-        - The function must not mutate any of its arguments. That's because we need to run several forward passes for each argument to mimick a reverse pass, so the state of the arguments must remain unchanged.
+        - The function must not mutate any of its arguments, because the pullback runs several forward passes and relies on the arguments remaining unchanged between them
+        - The rule is **not thread-safe**: it holds shared mutable buffers that are reused across calls. Do not call the same cached rule concurrently from multiple threads.
 """
 macro reverse_from_forward(sig)
     if !(Meta.isexpr(sig, :curly) && sig.args[1] == :Tuple)

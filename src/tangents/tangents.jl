@@ -1007,7 +1007,9 @@ Should be defined for all standard tangent types.
 Inner product between tangents `t` and `s`. Must return a `Float64`.
 Always available because all tangent types correspond to finite-dimensional vector spaces.
 """
-_dot(t::T, s::T) where {T} = _dot_internal(isbitstype(T) ? NoCache() : IdDict{Any,Any}(), t, s)::Float64
+function _dot(t::T, s::T) where {T}
+    _dot_internal(isbitstype(T) ? NoCache() : IdDict{Any,Any}(), t, s)::Float64
+end
 
 """
     _dot_internal(c::MaybeCache, t::T, s::T) where {T}

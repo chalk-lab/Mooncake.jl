@@ -11,7 +11,7 @@ using Mooncake:
     value_and_pullback!!,
     primal,
     tangent
-using Mooncake.TestUtils: test_rule
+using Mooncake.TestUtils: test_rule, count_allocs
 using StableRNGs
 using Test
 
@@ -39,6 +39,11 @@ f4_true(x::Vector{Float64}) = map(cube, x)
 f5(x::AbstractArray{<:Real}, y::Real) = sin(y) * sum(abs2, x)
 f6(y, x) = f5(x, y)
 
+# fperf_v: array → scalar with an allocation-free frule!!, used in perf regression tests.
+# With an alloc-free frule!!, any allocations detected in the round-trip indicate a
+# regression in the ForwardModeRRule!! wrapper itself.
+fperf_v(x::Vector{Float64}) = sum(cube, x)
+
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(f1),Float64}
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(f1_true),Float64}
 
@@ -50,6 +55,8 @@ f6(y, x) = f5(x, y)
 
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(f4),Vector{Float64}}
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(f4_true),Vector{Float64}}
+
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(fperf_v),Vector{Float64}}
 
 function Mooncake.frule!!(
     ::Union{Dual{typeof(f1)},Dual{typeof(f1_true)}}, x_dual::Dual{Float64}
@@ -88,6 +95,11 @@ function Mooncake.frule!!(
     return Dual(y, dy)
 end
 
+function Mooncake.frule!!(::Dual{typeof(fperf_v)}, x_dual::Dual{Vector{Float64}})
+    x, dx = primal(x_dual), tangent(x_dual)
+    return Dual(sum(cube, x), sum(i -> 3x[i]^2 * dx[i], eachindex(x)))
+end
+
 @reverse_from_forward Tuple{typeof(f1),Float64}
 @reverse_from_forward Tuple{typeof(f1_true),Float64}
 
@@ -99,6 +111,8 @@ end
 
 @reverse_from_forward Tuple{typeof(f4),Vector{Float64}}
 @reverse_from_forward Tuple{typeof(f4_true),Vector{Float64}}
+
+@reverse_from_forward Tuple{typeof(fperf_v),Vector{Float64}}
 
 # use abstract types
 @reverse_from_forward Tuple{typeof(f5),AbstractArray{<:AbstractFloat},AbstractFloat}
@@ -117,7 +131,7 @@ end
         @test val == x^3
         @test pb[1] == Mooncake.NoTangent()
         @test pb[2] == dy * 3x^2
-        test_rule(StableRNG(63), f1_true, x; is_primitive=false)
+        test_rule(StableRNG(63), f1_true, x; is_primitive=false, perf_flag=:allocs)
     end
     @testset "Scalar to array" begin
         x = 5.0
@@ -159,6 +173,29 @@ end
         @test pb[1] == Mooncake.NoTangent()
         test_rule(StableRNG(63), f5, x, y; is_primitive=false)
         test_rule(StableRNG(63), f6, y, x; is_primitive=false)
+    end
+end;
+
+## Allocations
+
+@testset verbose = true "Allocations" begin
+    @testset "Array input, scalar output: zero allocations" begin
+        # fperf_v has an alloc-free frule!!, so any allocations detected indicate a
+        # regression in ForwardModeRRule!! itself. perf_flag=:allocs warms up then counts.
+        test_rule(StableRNG(63), fperf_v, [3.0, 5.0]; is_primitive=false, perf_flag=:allocs)
+    end
+    @testset "Buffer resize: correctness with variable-size arrays" begin
+        # Regression for the size-mismatch bug: the same cached rule must produce
+        # correct gradients when called with arrays of different sizes.
+        cache = prepare_pullback_cache(fperf_v, zeros(2))
+        _, pb2 = value_and_pullback!!(cache, 1.0, fperf_v, [1.0, 2.0])
+        @test pb2[2] ≈ 3 .* [1.0, 2.0] .^ 2
+        _, pb3 = value_and_pullback!!(cache, 1.0, fperf_v, [1.0, 2.0, 3.0])
+        @test pb3[2] ≈ 3 .* [1.0, 2.0, 3.0] .^ 2
+        # After resizing, steady-state calls should be allocation-free.
+        x3 = [1.0, 2.0, 3.0]
+        value_and_pullback!!(cache, 1.0, fperf_v, x3)  # warm up new size
+        @test count_allocs(value_and_pullback!!, cache, 1.0, fperf_v, x3) == 0
     end
 end;
 
