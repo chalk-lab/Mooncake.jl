@@ -1058,8 +1058,10 @@ function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
     # Print the source location of the method being differentiated, if available.
     try
         m = lookup_method(err.sig)
-        m !== nothing &&
-            println(io, "Mooncake failed to differentiate the following method: $m\n")
+        if m !== nothing
+            println(io, "Mooncake failed to differentiate the following method: $m")
+            println(io)  # blank line before the main error body
+        end
     catch e
         # If method lookup fails for any reason, skip gracefully.
         @debug "MooncakeRuleCompilationError: method lookup failed" exception = e

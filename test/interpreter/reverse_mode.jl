@@ -372,6 +372,7 @@ end
         @test err isa Mooncake.MooncakeRuleCompilationError
         msg = sprint(showerror, err)
         @test startswith(msg, "Mooncake failed to differentiate the following method:")
+        @test contains(msg, "_rrule_error_test_llvmcall")
     end
     @testset "$(_typeof((f, x...)))" for (n, (interface_only, perf_flag, bnds, f, x...)) in
                                          collect(
