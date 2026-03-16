@@ -87,6 +87,9 @@ function (fmr::ForwardModeRRule!!)(
         # The full output seed ȳ is split: its fdata was accumulated into tangent(y_codual)
         # by increment!! in __value_and_pullback!!, and its rdata is passed as dy_rdata.
         # Reconstruct the full output tangent for use in dot products below.
+        # Note: `tangent(y_codual)` (not `fdata(y_codual)`) is correct here — `fdata` is not
+        # defined on CoDuals. For a forward-mode CoDual, `tangent(c) == c.dx` stores the fdata
+        # directly, so `tangent(tangent(y_codual), dy_rdata)` is `tangent(fdata, rdata)`.
         dy_full = tangent(tangent(y_codual), dy_rdata)
         # compute args rdata
         dargs_rdata = ntuple(Val(N)) do i
