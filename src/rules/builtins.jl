@@ -1434,7 +1434,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability_and_allocs, nothing, getfield, (1, 2), 1),
         (false, :stability_and_allocs, nothing, getfield, (a=5, b=4), 1),
         (false, :stability_and_allocs, nothing, getfield, (a=5, b=4), 2),
-        # getfield on Tuple{Type{T},...} with integer index: primal is ~1–2 ns, rule overhead ~6 µs.
+        # getfield on Tuple{Type{T},...} with integer index: the primal is trivial but the
+        # rule triggers type-system dispatch, making the ratio large. Loose bounds are intentional.
         (false, :none, (lb=1e-3, ub=200), getfield, (Float64, Float64), 1),
         (false, :none, (lb=1e-3, ub=250), getfield, (Float64, Float64), 2, false),
         (false, :none, _range, getfield, (a=5.0, b=4), 1),
