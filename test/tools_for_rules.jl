@@ -220,7 +220,7 @@ end
             perf_flag=:stability_and_allocs,
         )
 
-        @test_throws ArgumentError @zero_derivative MinimalCtx Tuple{
+        @test_throws ArgumentError Mooncake.@zero_derivative MinimalCtx Tuple{
             Vararg,typeof(zero_tester)
         }
 
