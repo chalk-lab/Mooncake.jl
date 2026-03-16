@@ -125,6 +125,32 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             NNlib.batched_transpose(randn(rng, 5, 2, 3)),
         ),
 
+        # batched_matmul_fallback: batch-size-1 broadcasting (exercises sum(tmp; dims=3) path)
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            randn(rng, 3, 2, 1),
+            NNlib.batched_transpose(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_adjoint(randn(rng, 2, 3, 3)),
+            randn(rng, 2, 5, 1),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_transpose(randn(rng, 2, 3, 1)),
+            NNlib.batched_adjoint(randn(rng, 5, 2, 3)),
+        ),
+
         # dropout
         (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2), float(0.5)),
         (true, :none, false, dropout_tester_2, Trng, _rand(rng, 2, 2), float(0.1)),
