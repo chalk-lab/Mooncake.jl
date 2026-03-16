@@ -24,8 +24,7 @@ model { x ~ normal(0, 1); }
 
         # Direct call (no kwargs) — uses the positional rrule!! with defaults.
         test_rule(
-            rng, BridgeStan.log_density, sm, q;
-            is_primitive=true, mode=Mooncake.ReverseMode,
+            rng, BridgeStan.log_density, sm, q; is_primitive=true, mode=Mooncake.ReverseMode
         )
 
         # Kwarg call — exercises the Core.kwcall rrule!! with explicit kwargs.

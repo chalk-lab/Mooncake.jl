@@ -1,7 +1,17 @@
 module MooncakeBridgeStanExt
 
 using BridgeStan, Mooncake
-import Mooncake: DefaultCtx, rrule!!, @is_primitive, CoDual, zero_fcodual, NoRData, primal, tangent, tangent_type, NoTangent
+import Mooncake:
+    DefaultCtx,
+    rrule!!,
+    @is_primitive,
+    CoDual,
+    zero_fcodual,
+    NoRData,
+    primal,
+    tangent,
+    tangent_type,
+    NoTangent
 
 # StanModel contains C pointers (Ptr{Nothing}) which Mooncake can't recurse into.
 # Declaring its tangent type as NoTangent short-circuits the generic struct machinery.
@@ -19,9 +29,7 @@ end
 
 # Rule for the direct call: log_density(sm, q) — no kwargs, defaults apply.
 @is_primitive DefaultCtx Tuple{
-    typeof(BridgeStan.log_density),
-    BridgeStan.StanModel,
-    AbstractVector{<:Real},
+    typeof(BridgeStan.log_density),BridgeStan.StanModel,AbstractVector{<:Real}
 }
 
 function rrule!!(
