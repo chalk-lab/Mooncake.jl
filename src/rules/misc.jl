@@ -47,7 +47,8 @@ Returns its argument(s) with zero gradient. Gradients will not propagate through
 argument in the reverse pass. In the forward pass, arguments are returned unchanged.
 
 With a single argument, returns the argument directly. With multiple arguments, returns
-a tuple. Keyword arguments are not supported.
+a tuple. With no arguments, returns an empty tuple. Keyword arguments are not supported
+and will throw an `ArgumentError`.
 
 This is analogous to `tf.stop_gradient` in TensorFlow and `jax.lax.stop_gradient` in JAX.
 
@@ -63,7 +64,7 @@ julia> cache = Mooncake.prepare_gradient_cache(f, [3.0, 4.0]);
 
 julia> _, (_, g) = Mooncake.value_and_gradient!!(cache, f, [3.0, 4.0]);
 
-julia> g  # gradient only w.r.t. x[1]; x[2] contribution is stopped
+julia> g  # g[2] == 0: gradient through x[2] inside stop_gradient is blocked
 2-element Vector{Float64}:
  4.0
  0.0
@@ -82,13 +83,13 @@ end
     typeof(Core.kwcall),NamedTuple,typeof(stop_gradient),Vararg{Any}
 }
 
-@inline function frule!!(::Dual{typeof(stop_gradient)}, args::Dual...)
+function frule!!(::Dual{typeof(stop_gradient)}, args::Dual...)
     primals = map(primal, args)
     y_primal = length(primals) == 1 ? only(primals) : primals
     return zero_dual(y_primal)
 end
 
-@inline function frule!!(
+function frule!!(
     ::Dual{typeof(Core.kwcall)},
     ::Dual{<:NamedTuple},
     ::Dual{typeof(stop_gradient)},
@@ -97,7 +98,7 @@ end
     throw(ArgumentError("stop_gradient does not support keyword arguments"))
 end
 
-@inline function rrule!!(::CoDual{typeof(stop_gradient)}, args::CoDual...)
+function rrule!!(::CoDual{typeof(stop_gradient)}, args::CoDual...)
     # Copy fdata so that in-place gradient accumulation into the output does not
     # affect the inputs' fdata (i.e., avoids aliasing of tangent storage).
     primals = map(primal, args)
@@ -110,7 +111,7 @@ end
     return y, stop_gradient_pb!!
 end
 
-@inline function rrule!!(
+function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     ::CoDual{<:NamedTuple},
     ::CoDual{typeof(stop_gradient)},
@@ -321,6 +322,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (true, :none, nothing, stop_gradient, 5.0),
         (true, :none, nothing, stop_gradient, randn(4)),
         (true, :none, nothing, stop_gradient, (3.0, 4.0)),
+        (true, :none, nothing, stop_gradient, 5.0, randn(4)),
 
         # Rules to avoid pointer type conversions.
         (
