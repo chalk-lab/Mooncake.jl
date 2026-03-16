@@ -18,24 +18,21 @@ import Mooncake:
 Mooncake.tangent_type(::Type{BridgeStan.StanModel}) = NoTangent
 
 # Shared forward pass: compute log density and gradient in a single Stan call.
-# BridgeStan's C interface requires Vector{Float64}; convert is a no-op when the
-# type already matches, so there is no unnecessary copy for the common case.
 function _log_density_fwd(sm, q, propto, jacobian)
-    q_vec = convert(Vector{Float64}, q)
-    grad = Vector{Float64}(undef, length(q_vec))
-    ld, _ = BridgeStan.log_density_gradient!(sm, q_vec, grad; propto, jacobian)
+    grad = Vector{Float64}(undef, length(q))
+    ld, _ = BridgeStan.log_density_gradient!(sm, q, grad; propto, jacobian)
     return ld, grad
 end
 
 # Rule for the direct call: log_density(sm, q) — no kwargs, defaults apply.
 @is_primitive DefaultCtx Tuple{
-    typeof(BridgeStan.log_density),BridgeStan.StanModel,AbstractVector{<:Real}
+    typeof(BridgeStan.log_density),BridgeStan.StanModel,Vector{Float64}
 }
 
 function rrule!!(
     ::CoDual{typeof(BridgeStan.log_density)},
     sm::CoDual{BridgeStan.StanModel},
-    q::CoDual{<:AbstractVector{<:Real}},
+    q::CoDual{Vector{Float64}},
 )
     ld, grad = _log_density_fwd(primal(sm), primal(q), true, true)
     function log_density_pb(dld::Float64)
@@ -51,7 +48,7 @@ end
     NamedTuple,
     typeof(BridgeStan.log_density),
     BridgeStan.StanModel,
-    AbstractVector{<:Real},
+    Vector{Float64},
 }
 
 function rrule!!(
@@ -59,7 +56,7 @@ function rrule!!(
     kwargs::CoDual{<:NamedTuple},
     ::CoDual{typeof(BridgeStan.log_density)},
     sm::CoDual{BridgeStan.StanModel},
-    q::CoDual{<:AbstractVector{<:Real}},
+    q::CoDual{Vector{Float64}},
 )
     kw = primal(kwargs)
     propto = get(kw, :propto, true)::Bool
