@@ -1181,6 +1181,7 @@ function _check_gpu_sum_f(f)
             ),
         )
     end
+    return nothing
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuFloatArray})
@@ -2399,7 +2400,7 @@ function frule!!(
 
     # Non-differentiable output (e.g. Bool arrays): zero the tangent and return.
     if !_is_gpu_differentiable(eltype(dual_out))
-        fill!(dout, 0)
+        fill!(dout, zero(eltype(dout)))
         return dest
     end
 
@@ -2473,10 +2474,10 @@ function rrule!!(
         # (e.g. x .= x .+ y), flat_fdatas contains fd = dout for x's slot.
         # Without a snapshot, _leaf_accum_fdata!(x, dout, contrib) would corrupt
         # dout mid-loop, causing subsequent slots to read a doubled value, and
-        # fill!(dout, 0) at the end would then zero x's gradient entirely.
-        # Zeroing dout first and then accumulating avoids both problems.
+        # zeroing dout at the end would then zero x's gradient entirely.
+        # Snapshot dout into g first, then zero dout before accumulating.
         g = copy(dout)
-        fill!(dout, 0)
+        fill!(dout, zero(eltype(dout)))
         scalar_grads = has_scalars ? Any[] : nothing
         offset = 0
         for (pa, fd) in zip(flat_pargs, flat_fdatas)
