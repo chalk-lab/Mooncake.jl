@@ -2,11 +2,9 @@
 
 ## CUDA extension
 
-Differentiation support for standard Julia/CUDA operations, focusing on four areas.
+Differentiation support for standard Julia/CUDA operations, focusing on
 
-**Linear algebra** — BLAS matrix/vector products, `dot`, `norm`, reductions
-(`sum`, `prod`, `cumsum`, `cumprod`, `mapreduce`), and scalar/vector indexing,
-including complex inputs:
+**Linear algebra** — BLAS matrix–vector products, `dot`, `norm`, and reductions (`sum`, `prod`, `cumsum`, `cumprod`, `mapreduce`) are supported, including complex inputs. Vector indexing is also supported for CUDA arrays. Scalar indexing is not supported by design.
 
 ```julia
 # matrix multiply
@@ -30,9 +28,9 @@ f = x -> mapreduce(abs2, +, x) / length(x)
 f = A -> real(sum(A * adjoint(A)))
 ```
 
-**Broadcasting** — CUDA.jl compiles a specialised GPU kernel for each broadcast
-expression at runtime via `cufunction`. From Mooncake's perspective, this kernel is
-a `foreigncall` — opaque Julia source that cannot be traced. To differentiate
+**Broadcasting** — CUDA.jl compiles a specialised GPU kernel for each broadcast expression 
+at runtime via `cufunction`. From Mooncake's perspective, this kernel appears as 
+a `foreigncall`—opaque LLVM or PTX code that cannot be traced. To differentiate
 through it, Mooncake exploits CUDA.jl's support for user-defined GPU-compatible
 types: `NDual` dual numbers are registered as valid GPU element types, so the same
 `cufunction` machinery re-compiles the kernel for dual-number inputs. Derivatives
@@ -47,8 +45,8 @@ cache = prepare_gradient_cache(f, x)
 _, (_, ∂x) = value_and_gradient!!(cache, f, x)  # ∂x::CuArray{Float32}
 ```
 
-**Mutation and reshape** — `fill!`, `unsafe_copyto!`, `materialize!`, `reshape`,
-and CPU↔GPU transfers:
+**Mutation and reshape** — rules for `fill!`, `unsafe_copyto!`, `unsafe_convert`, `materialize!`, 
+`reshape`, `CuPtr` arithmetic, and CPU↔GPU transfers:
 
 ```julia
 f = x -> sum(reshape(x, 4, 2))     # reshape on GPU
@@ -56,12 +54,8 @@ f = x -> sum(sin.(cu(x)))           # CPU → GPU (gradient flows back to CPU)
 f = x -> sum(Array(x).^2)           # GPU → CPU
 ```
 
-**Memory management** — `DataRef`, `unsafe_free!`, `Core.finalizer`, `CuPtr`
-arithmetic, and cuDNN type registrations that allow Mooncake to trace through
-cuDNN-adjacent code.
-
-CI integration tests added for Flux and Lux models (CPU + GPU). Flux/Lux-specific
-rules are outside Mooncake's scope — models run via the general CUDA extension rules.
+CI integration tests added for Flux and Lux models (CPU + GPU). Flux/Lux-specific rules 
+are outside Mooncake's scope — models run via the general CUDA extension rules.
 
 **Known limitation — Flux/Lux GPU performance:** without explicit reverse-mode rules
 for neural network operators, Mooncake falls back to the NDual forward-mode broadcast

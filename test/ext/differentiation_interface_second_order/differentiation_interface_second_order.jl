@@ -10,9 +10,7 @@ using Test
 # https://github.com/chalk-lab/MistyClosures.jl/pull/12#issue-3278662295
 const _broken_on_1_11 = v"1.11-" ≤ VERSION ≤ v"1.12-"
 
-scens = filter(DifferentiationInterfaceTest.default_scenarios()) do s
-    s.f !== DifferentiationInterfaceTest.arr_to_num_no_linalg
-end
+scens = DifferentiationInterfaceTest.default_scenarios()
 
 const _backend = [
     SecondOrder(AutoMooncakeForward(; config=nothing), AutoMooncake(; config=nothing))
@@ -22,9 +20,9 @@ const _DI_TEST = get(ENV, "DI_SECOND_ORDER_TEST", "both")
 # Test second-order differentiation (forward-over-reverse)
 for variant in (:hvp, :second_derivative)
     _DI_TEST in ("both", string(variant)) || continue
-    excluded =
-        _broken_on_1_11 ? [FIRST_ORDER..., :hvp, :second_derivative] : [FIRST_ORDER...]
-    test_differentiation(_backend, scens; excluded, logging=true)
+    _broken_on_1_11 && continue  # broken on 1.11 due to an opaque closure bug
+    other = variant == :hvp ? :second_derivative : :hvp
+    test_differentiation(_backend, scens; excluded=[FIRST_ORDER..., other], logging=true)
 end
 
 # Test for world-age fix when using closures (#916, #632)
