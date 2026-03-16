@@ -36,6 +36,11 @@ counted_vararg_zero_tester(x::Float64...) = 0
     typeof(counted_vararg_zero_tester),Vararg{Float64,N}
 } where {N}
 
+nested_vararg_zero_tester(x::Vector{Float64}...) = 0
+@zero_derivative MinimalCtx Tuple{
+    typeof(nested_vararg_zero_tester),Vararg{Vector{Float64},N}
+} where {N}
+
 zero_tester_forward_only(x) = 0
 @zero_derivative MinimalCtx Tuple{typeof(zero_tester_forward_only),Float64} ForwardMode
 
@@ -206,6 +211,18 @@ end
             is_primitive=true,
             perf_flag=:stability_and_allocs,
         )
+        test_rule(
+            sr(123),
+            ToolsForRulesResources.nested_vararg_zero_tester,
+            [5.0],
+            [4.0];
+            is_primitive=true,
+            perf_flag=:stability_and_allocs,
+        )
+
+        @test_throws ArgumentError @zero_derivative MinimalCtx Tuple{
+            Vararg,typeof(zero_tester)
+        }
 
         world = Base.get_world_counter()
         perf_flag = :stability_and_allocs

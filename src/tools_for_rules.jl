@@ -287,6 +287,20 @@ function _zero_derivative_impl(ctx, sig, mode)
     # then the last argument requires special treatment.
     arg_type_symbols, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
+
+    # Detect Vararg in a non-last position, which is invalid Julia and would silently
+    # produce a broken rule.
+    for t in arg_type_symbols[1:(end - 1)]
+        if _is_vararg_expr(t)
+            throw(
+                ArgumentError(
+                    "@zero_derivative: `Vararg` may only appear as the last element of " *
+                    "the signature tuple, but got: $sig",
+                ),
+            )
+        end
+    end
+
     is_vararg = _is_vararg_expr(arg_type_symbols[end])
     if is_vararg
         arg_types_deriv = vcat(
