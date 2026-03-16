@@ -220,9 +220,10 @@ end
             perf_flag=:stability_and_allocs,
         )
 
-        @test_throws ArgumentError Mooncake.@zero_derivative MinimalCtx Tuple{
-            Vararg,typeof(zero_tester)
-        }
+        @test_throws(
+            r"@zero_derivative: `Vararg` may only appear as the last element of",
+            Mooncake.@zero_derivative MinimalCtx Tuple{Vararg,typeof(zero_tester)}
+        )
 
         world = Base.get_world_counter()
         perf_flag = :stability_and_allocs

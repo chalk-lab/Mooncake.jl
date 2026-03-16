@@ -289,15 +289,14 @@ function _zero_derivative_impl(ctx, sig, mode)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
 
     # Detect Vararg in a non-last position, which is invalid Julia and would silently
-    # produce a broken rule.
+    # produce a broken rule. Return a throw expression (rather than throwing here) so that
+    # the error is raised at runtime and can be caught by @test_throws in tests.
     for t in arg_type_symbols[1:(end - 1)]
         if _is_vararg_expr(t)
-            throw(
-                ArgumentError(
-                    "@zero_derivative: `Vararg` may only appear as the last element of " *
-                    "the signature tuple, but got: $sig",
-                ),
-            )
+            msg =
+                "@zero_derivative: `Vararg` may only appear as the last element of " *
+                "the signature tuple, but got: $sig"
+            return :(throw(ArgumentError($msg)))
         end
     end
 
