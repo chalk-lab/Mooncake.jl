@@ -253,21 +253,49 @@ macro zero_derivative(ctx, sig, mode=Mode)
     return _zero_derivative_impl(ctx, sig, mode)
 end
 
+# Returns true if `ex` (an already-escaped expression from parse_signature_expr) is any
+# form of Vararg: bare `Vararg`, `Vararg{T}`, or `Vararg{T,N}`.
+function _is_vararg_expr(ex)
+    ex == Expr(:escape, :Vararg) && return true
+    return ex isa Expr &&
+        ex.head == :escape &&
+        ex.args[1] isa Expr &&
+        ex.args[1].head == :curly &&
+        ex.args[1].args[1] == :Vararg
+end
+
+# Given an escaped Vararg expression and a wrapper type symbol (e.g. :(Mooncake.Dual)),
+# produce the appropriate Vararg type for the rule signature:
+#   Vararg        -> Vararg{wrapper}
+#   Vararg{T}     -> Vararg{wrapper{<:T}}
+#   Vararg{T,N}   -> Vararg{wrapper{<:T},N}
+# The inner components T and N are individually re-escaped so they resolve in the
+# caller's scope (parse_signature_expr already escaped the whole arg as one unit).
+function _vararg_wrapped_type(vararg_esc_expr, wrapper)
+    inner = vararg_esc_expr.args[1]
+    inner == :Vararg && return :(Vararg{$wrapper})
+    # inner is Expr(:curly, :Vararg, T) or Expr(:curly, :Vararg, T, N)
+    T = Expr(:escape, inner.args[2])
+    length(inner.args) == 2 && return :(Vararg{$wrapper{<:$T}})
+    N = Expr(:escape, inner.args[3])
+    return :(Vararg{$wrapper{<:$T},$N})
+end
+
 function _zero_derivative_impl(ctx, sig, mode)
 
     # Parse the signature, and construct the rule definition. If it is a vararg definition,
     # then the last argument requires special treatment.
     arg_type_symbols, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
-    is_vararg = arg_type_symbols[end] == Expr(:escape, :Vararg)
+    is_vararg = _is_vararg_expr(arg_type_symbols[end])
     if is_vararg
         arg_types_deriv = vcat(
             map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
-            :(Vararg{Mooncake.Dual}),
+            _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.Dual)),
         )
         arg_types_adjoint = vcat(
             map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
-            :(Vararg{Mooncake.CoDual}),
+            _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.CoDual)),
         )
         splat_symbol = Expr(Symbol("..."), arg_names[end])
         tmp = arg_names[1:(end - 1)]

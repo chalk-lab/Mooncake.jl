@@ -28,6 +28,12 @@ zero_tester(x) = 0
 vararg_zero_tester(x...) = 0
 @zero_derivative MinimalCtx Tuple{typeof(vararg_zero_tester),Vararg}
 
+typed_vararg_zero_tester(x::Float64...) = 0
+@zero_derivative MinimalCtx Tuple{typeof(typed_vararg_zero_tester),Vararg{Float64}}
+
+counted_vararg_zero_tester(x::Float64...) = 0
+@zero_derivative MinimalCtx Tuple{typeof(counted_vararg_zero_tester),Vararg{Float64,N}} where {N}
+
 zero_tester_forward_only(x) = 0
 @zero_derivative MinimalCtx Tuple{typeof(zero_tester_forward_only),Float64} ForwardMode
 
@@ -177,6 +183,22 @@ end
         test_rule(
             sr(123),
             ToolsForRulesResources.vararg_zero_tester,
+            5.0,
+            4.0;
+            is_primitive=true,
+            perf_flag=:stability_and_allocs,
+        )
+        test_rule(
+            sr(123),
+            ToolsForRulesResources.typed_vararg_zero_tester,
+            5.0,
+            4.0;
+            is_primitive=true,
+            perf_flag=:stability_and_allocs,
+        )
+        test_rule(
+            sr(123),
+            ToolsForRulesResources.counted_vararg_zero_tester,
             5.0,
             4.0;
             is_primitive=true,
