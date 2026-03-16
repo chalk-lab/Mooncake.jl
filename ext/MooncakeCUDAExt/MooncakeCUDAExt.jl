@@ -1181,6 +1181,7 @@ function _check_gpu_sum_f(f)
             ),
         )
     end
+    return nothing
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuFloatArray})
@@ -1226,8 +1227,7 @@ function rrule!!(
     # The NDual array is (1+1)× the size of a float array; keeping it alive in the
     # closure for the pullback doubles GPU memory use unnecessarily.
     partial_slot = if _is_gpu_differentiable(eltype(out))
-        p = broadcast(o -> _gpu_dual_part_cx(o, 1), out)
-        p
+        broadcast(o -> _gpu_dual_part_cx(o, 1), out)
     else
         nothing
     end
@@ -2240,6 +2240,7 @@ end
 # Note: scalar args (IEEEFloat/Complex) are not checked here; a Float64 scalar mixed
 # with a Float32 CuArray silently promotes the broadcast to Float64, which may be slow
 # or unsupported on some GPUs.  Cast the scalar explicitly if needed.
+
 # Shared pullback accumulation for materialize and materialize! rrules.
 #
 # Walks flat_pargs in order, computing the contribution from each arg's partial
@@ -2454,7 +2455,7 @@ function frule!!(
 
     # Non-differentiable output (e.g. Bool arrays): zero the tangent and return.
     if !_is_gpu_differentiable(eltype(dual_out))
-        fill!(dout, 0)
+        fill!(dout, zero(eltype(dout)))
         return dest
     end
 

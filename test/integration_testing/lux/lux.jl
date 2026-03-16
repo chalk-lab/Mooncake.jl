@@ -236,7 +236,7 @@ const TEST_MODELS = Any[
 ]
 
 @testset "lux" begin
-    @testset "$(typeof(f))" for (interface_only, gpu_supported, f, x) in TEST_MODELS
+    @testset "$(_model_name(f))" for (interface_only, gpu_supported, f, x) in TEST_MODELS
         @info "[CPU] testing $(_model_name(f))"
         rng = sr(123546)
         cvt = eltype(x) == Float64 ? f64 : f32
@@ -258,7 +258,9 @@ end
 if CUDA.functional()
     dev = gpu_device()
     @testset "lux (GPU)" begin
-        @testset "$(typeof(f))" for (interface_only, gpu_supported, f, x) in TEST_MODELS
+        @testset "$(_model_name(f))" for (interface_only, gpu_supported, f, x) in
+                                         TEST_MODELS
+
             gpu_supported || continue  # GPU support not yet implemented
             eltype(x) == Float64 && continue  # Float64 CuArrays not supported
             @info "[GPU] testing $(_model_name(f))"
