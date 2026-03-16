@@ -1280,7 +1280,10 @@ function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuComplexArray})
     # The complex NDual array is (2+1)× the size of a float array; holding it in the
     # closure triples GPU memory use for the duration of the backward pass.
     partial_slots = if _is_gpu_differentiable(eltype(out))
-        (broadcast(o -> _gpu_dual_part_cx(o, 1), out), broadcast(o -> _gpu_dual_part_cx(o, 2), out))
+        (
+            broadcast(o -> _gpu_dual_part_cx(o, 1), out),
+            broadcast(o -> _gpu_dual_part_cx(o, 2), out),
+        )
     else
         nothing
     end
