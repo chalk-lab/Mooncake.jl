@@ -63,7 +63,7 @@ function arrayify(
     return x, Tx(_dx)
 end
 function arrayify(
-    x::Symmetric{T,<:AbstractMatrix{T}}, dx::TangentOrFData
+    x::Symmetric{T,<:StridedMatrix{T}}, dx::TangentOrFData
 ) where {T<:Union{IEEEFloat,BlasFloat}}
     _, _dx = arrayify(x.data, _fields(dx).data)
     return x, _dx

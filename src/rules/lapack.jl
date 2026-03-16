@@ -699,15 +699,17 @@ w.r.t. the underlying data array `A`.
 """
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(logdet),Symmetric{P,<:AbstractMatrix{P}}} where {P<:BlasRealFloat},
+    Tuple{typeof(logdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
-function frule!!(::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P}}) where {P<:BlasRealFloat}
+function frule!!(
+    ::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
     S, d_data = arrayify(_S)
     Sinv = inv(S)
     return Dual(logdet(S), dot(Sinv, Symmetric(d_data, Symbol(S.uplo))))
 end
 function rrule!!(
-    ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P}}
+    ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
     Sinv = inv(S)
@@ -732,17 +734,20 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
 `ȳ · det(S)`.
 """
 @is_primitive(
-    MinimalCtx,
-    Tuple{typeof(det),Symmetric{P,<:AbstractMatrix{P}}} where {P<:BlasRealFloat},
+    MinimalCtx, Tuple{typeof(det),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
-function frule!!(::Dual{typeof(det)}, _S::Dual{<:Symmetric{P}}) where {P<:BlasRealFloat}
+function frule!!(
+    ::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
     S, d_data = arrayify(_S)
     d = det(S)
     iszero(d) && return Dual(d, zero(P))
     Sinv = inv(S)
     return Dual(d, d * dot(Sinv, Symmetric(d_data, Symbol(S.uplo))))
 end
-function rrule!!(::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P}}) where {P<:BlasRealFloat}
+function rrule!!(
+    ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
     d = det(S)
     Sinv = iszero(d) ? nothing : inv(S)
@@ -769,10 +774,10 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
 """
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(logabsdet),Symmetric{P,<:AbstractMatrix{P}}} where {P<:BlasRealFloat},
+    Tuple{typeof(logabsdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P}}
+    ::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
     S, d_data = arrayify(_S)
     ld, s = logabsdet(S)
@@ -781,7 +786,7 @@ function frule!!(
     return Dual((ld, s), (dot(Sinv, Symmetric(d_data, Symbol(S.uplo))), zero(P)))
 end
 function rrule!!(
-    ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P}}
+    ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
     ld, s = logabsdet(S)
