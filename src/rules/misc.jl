@@ -40,6 +40,86 @@
 end
 
 """
+    stop_gradient(x)
+    stop_gradient(x, y, ...)
+
+Returns its argument(s) with zero gradient. Gradients will not propagate through any
+argument in the reverse pass. In the forward pass, arguments are returned unchanged.
+
+With a single argument, returns the argument directly. With multiple arguments, returns
+a tuple. Keyword arguments are not supported.
+
+This is analogous to `tf.stop_gradient` in TensorFlow and `jax.lax.stop_gradient` in JAX.
+
+# Examples
+
+```jldoctest
+julia> using Mooncake
+
+julia> f(x) = x[1] * Mooncake.stop_gradient(x)[2]
+f (generic function with 1 method)
+
+julia> cache = Mooncake.prepare_gradient_cache(f, [3.0, 4.0]);
+
+julia> _, (_, g) = Mooncake.value_and_gradient!!(cache, f, [3.0, 4.0]);
+
+julia> g  # gradient only w.r.t. x[1]; x[2] contribution is stopped
+2-element Vector{Float64}:
+ 4.0
+ 0.0
+```
+"""
+stop_gradient(args...) = length(args) == 1 ? args[1] : args
+
+# Intercept kwarg calls without generating a positional fallback (which would overwrite
+# the method above). Defining directly on Core.kwcall avoids that conflict.
+function Core.kwcall(::NamedTuple, ::typeof(stop_gradient), args...)
+    throw(ArgumentError("stop_gradient does not support keyword arguments"))
+end
+
+@is_primitive MinimalCtx Tuple{typeof(stop_gradient),Vararg{Any}}
+@is_primitive MinimalCtx Tuple{
+    typeof(Core.kwcall),NamedTuple,typeof(stop_gradient),Vararg{Any}
+}
+
+@inline function frule!!(::Dual{typeof(stop_gradient)}, args::Dual...)
+    primals = map(primal, args)
+    y_primal = length(primals) == 1 ? only(primals) : primals
+    return zero_dual(y_primal)
+end
+
+@inline function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    ::Dual{<:NamedTuple},
+    ::Dual{typeof(stop_gradient)},
+    args::Dual...,
+)
+    throw(ArgumentError("stop_gradient does not support keyword arguments"))
+end
+
+@inline function rrule!!(::CoDual{typeof(stop_gradient)}, args::CoDual...)
+    # Copy fdata so that in-place gradient accumulation into the output does not
+    # affect the inputs' fdata (i.e., avoids aliasing of tangent storage).
+    primals = map(primal, args)
+    fdata_copies = map(x -> _copy(tangent(x)), args)
+    y_primal = length(primals) == 1 ? only(primals) : primals
+    y_fdata = length(fdata_copies) == 1 ? only(fdata_copies) : fdata_copies
+    y = CoDual(y_primal, y_fdata)
+    lzrs = map(x -> lazy_zero_rdata(primal(x)), args)
+    stop_gradient_pb!!(_) = (NoRData(), map(instantiate, lzrs)...)
+    return y, stop_gradient_pb!!
+end
+
+@inline function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    ::CoDual{<:NamedTuple},
+    ::CoDual{typeof(stop_gradient)},
+    args::CoDual...,
+)
+    throw(ArgumentError("stop_gradient does not support keyword arguments"))
+end
+
+"""
     lgetfield(x, f::Val)
 
 An implementation of `getfield` in which the field `f` is specified statically via a
@@ -235,6 +315,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
     memory = Any[_x, _dx]
 
     specific_test_cases = Any[
+        # stop_gradient: value passes through, gradients are zeroed out.
+        # interface_only=true because the rule intentionally returns zero gradient,
+        # which does not match the finite-difference Jacobian of the primal (identity).
+        (true, :none, nothing, stop_gradient, 5.0),
+        (true, :none, nothing, stop_gradient, randn(4)),
+        (true, :none, nothing, stop_gradient, (3.0, 4.0)),
+
         # Rules to avoid pointer type conversions.
         (
             true,

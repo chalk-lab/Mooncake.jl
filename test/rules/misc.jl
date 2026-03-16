@@ -1,4 +1,9 @@
 @testset "misc" begin
+    @testset "stop_gradient" begin
+        @test_throws ArgumentError Mooncake.stop_gradient(1.0; kw=1)
+        f_kw(x) = sum(Mooncake.stop_gradient(x; kw=1))
+        @test_throws ArgumentError Mooncake.prepare_gradient_cache(f_kw, [1.0, 2.0])
+    end
     @testset "lgetfield" begin
         x = (5.0, 4)
         @test lgetfield(x, Val(1)) == getfield(x, 1)
