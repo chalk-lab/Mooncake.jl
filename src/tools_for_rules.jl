@@ -258,10 +258,10 @@ end
 function _is_vararg_expr(ex)
     ex == Expr(:escape, :Vararg) && return true
     return ex isa Expr &&
-        ex.head == :escape &&
-        ex.args[1] isa Expr &&
-        ex.args[1].head == :curly &&
-        ex.args[1].args[1] == :Vararg
+           ex.head == :escape &&
+           ex.args[1] isa Expr &&
+           ex.args[1].head == :curly &&
+           ex.args[1].args[1] == :Vararg
 end
 
 # Given an escaped Vararg expression and a wrapper type symbol (e.g. :(Mooncake.Dual)),

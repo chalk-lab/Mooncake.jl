@@ -32,7 +32,9 @@ typed_vararg_zero_tester(x::Float64...) = 0
 @zero_derivative MinimalCtx Tuple{typeof(typed_vararg_zero_tester),Vararg{Float64}}
 
 counted_vararg_zero_tester(x::Float64...) = 0
-@zero_derivative MinimalCtx Tuple{typeof(counted_vararg_zero_tester),Vararg{Float64,N}} where {N}
+@zero_derivative MinimalCtx Tuple{
+    typeof(counted_vararg_zero_tester),Vararg{Float64,N}
+} where {N}
 
 zero_tester_forward_only(x) = 0
 @zero_derivative MinimalCtx Tuple{typeof(zero_tester_forward_only),Float64} ForwardMode
