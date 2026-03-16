@@ -644,7 +644,7 @@ function _add_to_primal_internal(
 end
 
 """
-    _accum_sym_logdet!(ddata, Sinv, ȳ, uplo)
+    _accum_sym_logdet!(ddata::StridedMatrix, Sinv::StridedMatrix, ȳ, uplo)
 
 Accumulate `ȳ * ∂logdet(Symmetric(A, uplo))/∂A` into `ddata` in-place, where
 `Sinv = inv(Symmetric(A, uplo))`.
@@ -662,9 +662,12 @@ This accumulator is shared by the `logdet`, `det`, and `logabsdet` rules:
 - `logdet`:     calls with scalar `ȳ`
 - `det`:        calls with scalar `ȳ * det(S)`  (chain rule through `exp ∘ logdet`)
 - `logabsdet`:  calls with scalar `ȳ[1]`        (sign component has zero derivative)
+
+When `ddata` is a `Symmetric` matrix, `uplo` and the backing store are extracted
+automatically via the two-argument overload below.
 """
 function _accum_sym_logdet!(
-    ddata::AbstractMatrix{P}, Sinv::AbstractMatrix{P}, ȳ::P, uplo::Char
+    ddata::StridedMatrix{P}, Sinv::StridedMatrix{P}, ȳ::P, uplo::Char
 ) where {P}
     n = size(ddata, 1)
     if uplo == 'U'
@@ -683,6 +686,9 @@ function _accum_sym_logdet!(
         end
     end
     return nothing
+end
+function _accum_sym_logdet!(ddata::Symmetric{P}, Sinv::StridedMatrix{P}, ȳ::P) where {P}
+    _accum_sym_logdet!(ddata.data, Sinv, ȳ, ddata.uplo)
 end
 
 """
@@ -707,7 +713,7 @@ function frule!!(
     S, d_data = arrayify(_S)
     F = bunchkaufman(S)
     Sinv = inv(F)
-    return Dual(logdet(F), dot(Sinv, Symmetric(d_data, Symbol(S.uplo))))
+    return Dual(logdet(F), dot(Sinv, d_data))
 end
 function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -717,7 +723,7 @@ function rrule!!(
     ld = logdet(F)
     Sinv = inv(F)
     function logdet_sym_pb!!(ȳ::P)
-        _accum_sym_logdet!(ddata, Sinv, ȳ, S.uplo)
+        _accum_sym_logdet!(ddata, Sinv, ȳ)
         return NoRData(), NoRData()
     end
     return CoDual(ld, NoFData()), logdet_sym_pb!!
@@ -749,7 +755,7 @@ function frule!!(
     # measure-zero in practice.
     iszero(d) && return Dual(d, zero(P))
     Sinv = inv(F)
-    return Dual(d, d * dot(Sinv, Symmetric(d_data, Symbol(S.uplo))))
+    return Dual(d, d * dot(Sinv, d_data))
 end
 function rrule!!(
     ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -761,7 +767,7 @@ function rrule!!(
     function det_sym_pb!!(ȳ::P)
         # Zero gradient for singular S (approximate; see frule!! for details).
         isnothing(Sinv) && return NoRData(), NoRData()
-        _accum_sym_logdet!(ddata, Sinv, ȳ * d, S.uplo)
+        _accum_sym_logdet!(ddata, Sinv, ȳ * d)
         return NoRData(), NoRData()
     end
     return CoDual(d, NoFData()), det_sym_pb!!
@@ -792,7 +798,7 @@ function frule!!(
     ld, s = logabsdet(F)
     iszero(s) && return Dual((ld, s), (zero(P), zero(P)))
     Sinv = inv(F)
-    return Dual((ld, s), (dot(Sinv, Symmetric(d_data, Symbol(S.uplo))), zero(P)))
+    return Dual((ld, s), (dot(Sinv, d_data), zero(P)))
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -803,7 +809,7 @@ function rrule!!(
     Sinv = iszero(s) ? nothing : inv(F)
     function logabsdet_sym_pb!!(ȳ::Tuple{P,P})
         isnothing(Sinv) && return NoRData(), NoRData()
-        _accum_sym_logdet!(ddata, Sinv, ȳ[1], S.uplo)
+        _accum_sym_logdet!(ddata, Sinv, ȳ[1])
         return NoRData(), NoRData()
     end
     return CoDual((ld, s), NoFData()), logabsdet_sym_pb!!
