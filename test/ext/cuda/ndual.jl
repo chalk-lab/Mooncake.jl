@@ -218,19 +218,33 @@
         @test ndual_partial(max(a, b), 1) ≈ 1.0  # a wins
         @test ndual_value(min(a, b)) ≈ 1.0
         @test ndual_partial(min(a, b), 1) ≈ 0.0  # b wins
+        # equal values: max/min must not error and must return one of the two
+        eq = _d(2.0, 1.0)
+        @test ndual_value(max(eq, eq)) ≈ 2.0
+        @test ndual_value(min(eq, eq)) ≈ 2.0
 
         xc = _d(2.0, 1.0)
         @test ndual_value(clamp(xc, 0.0, 1.0)) ≈ 1.0
-        @test ndual_partial(clamp(xc, 0.0, 1.0), 1) ≈ 0.0  # clamped
+        @test ndual_partial(clamp(xc, 0.0, 1.0), 1) ≈ 0.0  # clamped at hi
+        @test ndual_value(clamp(xc, 3.0, 4.0)) ≈ 3.0
+        @test ndual_partial(clamp(xc, 3.0, 4.0), 1) ≈ 0.0  # clamped at lo
         @test ndual_value(clamp(xc, 0.0, 3.0)) ≈ 2.0
         @test ndual_partial(clamp(xc, 0.0, 3.0), 1) ≈ 1.0  # pass-through
+        # NDual lo/hi variant
+        lo, hi = _d(0.0, 0.0), _d(1.0, 0.0)
+        @test ndual_value(clamp(xc, lo, hi)) ≈ 1.0
+        @test ndual_partial(clamp(xc, lo, hi), 1) ≈ 0.0
 
         # flipsign / copysign
         xf = _d(2.0, 1.0)
         @test ndual_value(flipsign(xf, _d(-1.0, 0.0))) ≈ -2.0
         @test ndual_partial(flipsign(xf, _d(-1.0, 0.0)), 1) ≈ -1.0
+        @test ndual_value(flipsign(xf, _d(1.0, 0.0))) ≈ 2.0
+        @test ndual_partial(flipsign(xf, _d(1.0, 0.0)), 1) ≈ 1.0
         @test ndual_value(copysign(xf, _d(-1.0, 0.0))) ≈ -2.0
         @test ndual_partial(copysign(xf, _d(-1.0, 0.0)), 1) ≈ -1.0
+        @test ndual_value(copysign(xf, _d(1.0, 0.0))) ≈ 2.0
+        @test ndual_partial(copysign(xf, _d(1.0, 0.0)), 1) ≈ 1.0
     end
 
     @testset "Float32" begin

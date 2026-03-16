@@ -408,7 +408,8 @@ function Base.cosh(a::NDual{T,N}) where {T,N}
     NDual{T,N}(cosh(a.value), _pt_scale(a.partials, sinh(a.value)))
 end
 function Base.tanh(a::NDual{T,N}) where {T,N}
-    NDual{T,N}(tanh(a.value), _pt_scale(a.partials, one(T) - tanh(a.value)^2))
+    tv = tanh(a.value)
+    NDual{T,N}(tv, _pt_scale(a.partials, one(T) - tv^2))
 end
 function Base.asinh(a::NDual{T,N}) where {T,N}
     NDual{T,N}(asinh(a.value), _pt_scale(a.partials, inv(sqrt(a.value^2 + one(T)))))
@@ -615,27 +616,29 @@ function Base.hypot(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
 end
 
 # min / max — subgradient: select the tangent of the winning branch.
+# ifelse is used instead of ?: to stay branchless on GPU (see file header).
 function Base.max(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    a.value >= b.value ? a : b
+    ifelse(a.value >= b.value, a, b)
 end
 function Base.min(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    a.value <= b.value ? a : b
+    ifelse(a.value <= b.value, a, b)
 end
 
 # clamp — subgradient: zero tangent at the clamped endpoints.
+# Nested ifelse keeps all branches branchless (no warp divergence on GPU).
 function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}) where {T,N}
-    a.value <= lo.value ? lo : (a.value >= hi.value ? hi : a)
+    ifelse(a.value <= lo.value, lo, ifelse(a.value >= hi.value, hi, a))
 end
 function Base.clamp(a::NDual{T,N}, lo::Real, hi::Real) where {T,N}
-    a.value <= T(lo) ? NDual{T,N}(T(lo)) : (a.value >= T(hi) ? NDual{T,N}(T(hi)) : a)
+    ifelse(a.value <= T(lo), NDual{T,N}(T(lo)), ifelse(a.value >= T(hi), NDual{T,N}(T(hi)), a))
 end
 
 # flipsign / copysign — sign of result determined by primal; tangent follows.
 function Base.flipsign(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    signbit(b.value) ? -a : a
+    ifelse(signbit(b.value), -a, a)
 end
 function Base.copysign(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    signbit(a.value) == signbit(b.value) ? a : -a
+    ifelse(signbit(a.value) == signbit(b.value), a, -a)
 end
 
 # ── Real / imag / conj — for Complex{NDual} to compose generically ────────────────
@@ -718,11 +721,14 @@ function Base.log(z::Complex{NDual{T,N}}) where {T,N}
 end
 
 # sqrt(a + bi) = sqrt((|z|+a)/2) + i·sign(b)·sqrt((|z|-a)/2)
+# Construct the NDual arguments to sqrt directly with _pt_scale to avoid an
+# unnecessary NDual*NDual product-rule evaluation (the factor 0.5 has zero partials).
 function Base.sqrt(z::Complex{NDual{T,N}}) where {T,N}
     a, b = real(z), imag(z)
     r = hypot(a, b)
-    re = sqrt((r + a) * NDual{T,N}(T(0.5)))
-    im = copysign(one(NDual{T,N}), b) * sqrt((r - a) * NDual{T,N}(T(0.5)))
+    half = T(0.5)
+    re = sqrt(NDual{T,N}((r.value + a.value) * half, _pt_scale(_pt_add(r.partials, a.partials), half)))
+    im = copysign(one(NDual{T,N}), b) * sqrt(NDual{T,N}((r.value - a.value) * half, _pt_scale(_pt_sub(r.partials, a.partials), half)))
     Complex(re, im)
 end
 
