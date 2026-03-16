@@ -229,9 +229,9 @@ true
 julia> rrule!!(zero_fcodual(foo_varargs), zero_fcodual(3.0), zero_fcodual(5))[2](NoRData())
 (NoRData(), 0.0, NoRData())
 ```
-Be aware that it is not currently possible to specify any of the type parameters of the
-`Vararg`. For example, the signature `Tuple{typeof(foo), Vararg{Float64, 5}}` will not work
-with this macro.
+Typed and counted `Vararg`s are also supported. For example,
+`Tuple{typeof(foo), Vararg{Float64}}` constrains all vararg slots to `Float64`, and
+`Tuple{typeof(foo), Vararg{Float64, N}} where {N}` additionally constrains the count.
 
 WARNING: this is only correct if the output of the function does not alias any fields of the
 function, or any of its arguments. For example, applying this macro to the function `x -> x`
@@ -242,9 +242,8 @@ made a mistake.
 
 # Signatures Unsupported By This Macro
 
-If the signature you wish to apply `@zero_derivative` to is not supported, for example because
-it uses a `Vararg` with a type parameter, you can still make use of
-[`zero_derivative`](@ref).
+If the signature you wish to apply `@zero_derivative` to is not supported, you can still
+make use of [`zero_derivative`](@ref).
 
 """
 macro zero_derivative(ctx, sig, mode=Mode)
