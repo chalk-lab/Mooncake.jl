@@ -227,7 +227,7 @@ end
         )
     end
     @testset "Unsupported input types" begin
-        @test_throws MethodError prepare_pullback_cache(f_tup, (5.0,))
+        @test_throws ArgumentError prepare_pullback_cache(f_tup, (5.0,))
     end
     @testset "Forgot macro" begin
         @test_throws "MethodError: no method matching rrule!!" prepare_pullback_cache(

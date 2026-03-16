@@ -84,6 +84,10 @@ function (fmr::ForwardModeRRule!!)(
 
     function forward_mode_pullback(dy_rdata)
         @assert dy_rdata isa rdata_type(typeof(y)) # TODO: check this at compile time
+        # The full output seed ȳ is split: its fdata was accumulated into tangent(y_codual)
+        # by increment!! in __value_and_pullback!!, and its rdata is passed as dy_rdata.
+        # Reconstruct the full output tangent for use in dot products below.
+        dy_full = tangent(tangent(y_codual), dy_rdata)
         # compute args rdata
         dargs_rdata = ntuple(Val(N)) do i
             if rdata_type(typeof(args[i])) == NoRData
@@ -97,9 +101,8 @@ function (fmr::ForwardModeRRule!!)(
                 # Forward pass with unit perturbation on arg i gives ∂y/∂xᵢ.
                 y_dual_one_i = _frule!!(f_dual, args_dual_one_i...)
                 partial_derivative_i = tangent(y_dual_one_i)
-                # VJP: rdata_i = <∂y/∂xᵢ, dy_rdata>.
-                # y_codual is zero_fcodual so its fdata is zero; only rdata contributes.
-                rdata_i = dot(rdata(partial_derivative_i), dy_rdata)
+                # VJP: rdata_i = <∂y/∂xᵢ, ȳ>. Use the full output seed (fdata + rdata).
+                rdata_i = _dot(partial_derivative_i, dy_full)
                 return rdata_i
             end
         end
@@ -114,6 +117,12 @@ function (fmr::ForwardModeRRule!!)(
                 if size(b_ref[]) != size(args[i])
                     b_ref[] = zero(args[i])  # first call or size change: (re)allocate
                 end
+                # Resize the gradient accumulator if the input size changed.
+                t = tangent(args_codual[i])
+                if length(t) != length(args[i])
+                    resize!(t, length(args[i]))
+                    fill!(t, zero(eltype(t)))
+                end
                 b = b_ref[]
                 for j in eachindex(args[i])
                     b[j] = oneunit(eltype(b))
@@ -123,11 +132,8 @@ function (fmr::ForwardModeRRule!!)(
                     # Forward pass with unit perturbation on element j of arg i gives column j of ∂y/∂xᵢ.
                     y_dual_one_ij = _frule!!(f_dual, args_dual_one_ij...)
                     partial_derivative_ij = tangent(y_dual_one_ij)
-                    # VJP: accumulate <∂y/∂xᵢ[j], dy_rdata> into fdata of arg i.
-                    # y_codual is zero_fcodual so its fdata is zero; only rdata contributes.
-                    tangent(args_codual[i])[j] += dot(
-                        rdata(partial_derivative_ij), dy_rdata
-                    )
+                    # VJP: accumulate <∂y/∂xᵢ[j], ȳ> into fdata of arg i.
+                    t[j] += _dot(partial_derivative_ij, dy_full)
                     b[j] = zero(eltype(b))
                 end
                 return nothing
