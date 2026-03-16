@@ -1,3 +1,4 @@
+# Resources for @from_chainrules / @from_rrule tests
 module ToolsForRulesResources
 
 # Note: do not `using Mooncake` in this module to ensure that all of the macros work
@@ -157,6 +158,129 @@ end
 
 @from_chainrules DefaultCtx Tuple{typeof(fwd_only_chainrules),Float64} false ForwardMode
 @from_chainrules DefaultCtx Tuple{typeof(rev_only_chainrules),Float64} false ReverseMode
+
+end
+
+# Resources for @from_forward tests
+module FromForwardResources
+
+using LinearAlgebra
+using Base: IEEEFloat
+using Mooncake:
+    Dual,
+    DefaultCtx,
+    ForwardMode,
+    ReverseMode,
+    @is_primitive,
+    @from_forward,
+    primal,
+    tangent
+
+cube(x) = x^3
+fourthpow(x) = x^4
+
+f1(x::Float64) = sin(x)
+f1_true(x::Float64) = cube(x)
+
+f2(x::Float64) = [sin(x), cos(x)]
+f2_true(x::Float64) = [cube(x), fourthpow(x)]
+
+f3(x::Vector{Float64}) = sum(sin, x)
+f3_true(x::Vector{Float64}) = sum(cube, x)
+
+f4(x::Vector{Float64}) = map(sin, x)
+f4_true(x::Vector{Float64}) = map(cube, x)
+
+# not primitives, we'll rely on derived forward rules
+f5(x::AbstractArray{<:Real}, y::Real) = sin(y) * sum(abs2, x)
+f6(y, x) = f5(x, y)
+
+# fperf_v: array → scalar with an allocation-free frule!!, used in perf regression tests.
+fperf_v(x::Vector{Float64}) = sum(cube, x)
+
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(f1),Float64}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(f1_true),Float64}
+
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(f2),Float64}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(f2_true),Float64}
+
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(f3),Vector{Float64}}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(f3_true),Vector{Float64}}
+
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(f4),Vector{Float64}}
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(f4_true),Vector{Float64}}
+
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(fperf_v),Vector{Float64}}
+
+function Mooncake.frule!!(
+    ::Union{Dual{typeof(f1)},Dual{typeof(f1_true)}}, x_dual::Dual{Float64}
+)
+    x, dx = primal(x_dual), tangent(x_dual)
+    y = x^3
+    dy = 3x^2 * dx
+    return Dual(y, dy)
+end
+
+function Mooncake.frule!!(
+    ::Union{Dual{typeof(f2)},Dual{typeof(f2_true)}}, x_dual::Dual{Float64}
+)
+    x, dx = primal(x_dual), tangent(x_dual)
+    y, z = x^3, x^4
+    dy, dz = 3x^2 * dx, 4x^3 * dx
+    return Dual([y, z], [dy, dz])
+end
+
+function Mooncake.frule!!(
+    ::Union{Dual{typeof(f3)},Dual{typeof(f3_true)}}, x_dual::Dual{Vector{Float64}}
+)
+    x, dx = primal(x_dual), tangent(x_dual)
+    y = sum(_x -> _x^3, x)
+    dy = dot(map(_x -> 3 * _x^2, x), dx)
+    return Dual(y, dy)
+end
+
+function Mooncake.frule!!(
+    ::Union{Dual{typeof(f4)},Dual{typeof(f4_true)}}, x_dual::Dual{Vector{Float64}}
+)
+    x, dx = primal(x_dual), tangent(x_dual)
+    y = map(_x -> _x^3, x)
+    J = diagm(map(_x -> 3 * _x^2, x))
+    dy = J * dx
+    return Dual(y, dy)
+end
+
+function Mooncake.frule!!(::Dual{typeof(fperf_v)}, x_dual::Dual{Vector{Float64}})
+    x, dx = primal(x_dual), tangent(x_dual)
+    return Dual(sum(cube, x), sum(i -> 3x[i]^2 * dx[i], eachindex(x)))
+end
+
+@from_forward Tuple{typeof(f1),Float64}
+@from_forward Tuple{typeof(f1_true),Float64}
+
+@from_forward Tuple{typeof(f2),Float64}
+@from_forward Tuple{typeof(f2_true),Float64}
+
+@from_forward Tuple{typeof(f3),Vector{Float64}}
+@from_forward Tuple{typeof(f3_true),Vector{Float64}}
+
+@from_forward Tuple{typeof(f4),Vector{Float64}}
+@from_forward Tuple{typeof(f4_true),Vector{Float64}}
+
+@from_forward Tuple{typeof(fperf_v),Vector{Float64}}
+
+# use abstract types
+@from_forward Tuple{typeof(f5),AbstractArray{<:AbstractFloat},AbstractFloat}
+@from_forward Tuple{typeof(f6),AbstractFloat,AbstractArray{<:AbstractFloat}}
+
+# unsupported types
+f_tup(x::Tuple{Float64}) = x[1]
+@from_forward(Tuple{typeof(f_tup),Tuple{Float64}})
+
+struct Multiplier
+    a::Float64
+end
+(m::Multiplier)(x) = m.a * x
+@from_forward Tuple{Multiplier,Float64}
 
 end
 
@@ -386,6 +510,115 @@ end
                 @test result[2][1] ≈ r2[1] + dr2[1]
                 @test result[2][2] ≈ r2[2] + dr2[2]
                 @test f1[1] ≈ f1_orig + df1
+            end
+        end
+    end
+
+    @testset "@from_forward" begin
+        R = FromForwardResources
+
+        # is_primitive=false because test_rule's is_primitive=true asserts the rule is exactly rrule!!,
+        # but @from_forward registers a ForwardModeRRule!! via build_primitive_rrule. With
+        # is_primitive=false the type-equality check is skipped while the rule is still built and
+        # numerically validated via finite differences.
+        @testset "Working cases" begin
+            @testset "Scalar to scalar" begin
+                x = 5.0
+                dy = 7.0
+                cache = Mooncake.prepare_pullback_cache(R.f1, zero(x))
+                val, pb = value_and_pullback!!(cache, dy, R.f1, x)
+                @test val == x^3
+                @test pb[1] == Mooncake.NoTangent()
+                @test pb[2] == dy * 3x^2
+                test_rule(
+                    StableRNG(63), R.f1_true, x; is_primitive=false, perf_flag=:allocs
+                )
+            end
+            @testset "Scalar to array" begin
+                x = 5.0
+                dy = [7.0, 11.0]
+                cache = Mooncake.prepare_pullback_cache(R.f2, zero(x))
+                val, pb = value_and_pullback!!(cache, dy, R.f2, x)
+                @test val == [x^3, x^4]
+                @test pb[1] == Mooncake.NoTangent()
+                @test pb[2] == dy[1] * 3x^2 + dy[2] * 4x^3
+                test_rule(StableRNG(63), R.f2_true, x; is_primitive=false)
+            end
+            @testset "Array to scalar" begin
+                x = [5.0, 13.0]
+                dy = 7.0
+                cache = Mooncake.prepare_pullback_cache(R.f3, zero(x))
+                val, pb = value_and_pullback!!(cache, dy, R.f3, x)
+                @test val == sum(R.cube, x)
+                @test pb[1] == Mooncake.NoTangent()
+                @test pb[2] == dy .* map(_x -> 3 * _x^2, x)
+                test_rule(StableRNG(63), R.f3_true, x; is_primitive=false)
+            end
+            @testset "Array to array" begin
+                x = [5.0, 13.0]
+                dy = [7.0, 11.0]
+                cache = Mooncake.prepare_pullback_cache(R.f4, zero(x))
+                val, pb = value_and_pullback!!(cache, dy, R.f4, x)
+                @test val == map(R.cube, x)
+                @test pb[1] == Mooncake.NoTangent()
+                @test pb[2] ≈ dy .* map(_x -> 3 * _x^2, x)
+                test_rule(StableRNG(63), R.f4_true, x; is_primitive=false)
+            end
+            @testset "Multiple arguments" begin
+                x = [5.0, 13.0]
+                y = 11.0
+                dz = 17.0
+                cache = Mooncake.prepare_pullback_cache(R.f5, zero(x), zero(y))
+                val, pb = value_and_pullback!!(cache, dz, R.f5, x, y)
+                @test val == sin(y) * sum(abs2, x)
+                @test pb[1] == Mooncake.NoTangent()
+                test_rule(StableRNG(63), R.f5, x, y; is_primitive=false)
+                test_rule(StableRNG(63), R.f6, y, x; is_primitive=false)
+            end
+        end
+
+        @testset "Allocations" begin
+            @testset "Array input, scalar output: zero allocations" begin
+                test_rule(
+                    StableRNG(63),
+                    R.fperf_v,
+                    [3.0, 5.0];
+                    is_primitive=false,
+                    perf_flag=:allocs,
+                )
+            end
+            @testset "Buffer resize: correctness with variable-size arrays" begin
+                cache = Mooncake.prepare_pullback_cache(R.fperf_v, zeros(2))
+                _, pb2 = value_and_pullback!!(cache, 1.0, R.fperf_v, [1.0, 2.0])
+                @test pb2[2] ≈ 3 .* [1.0, 2.0] .^ 2
+                _, pb3 = value_and_pullback!!(cache, 1.0, R.fperf_v, [1.0, 2.0, 3.0])
+                @test pb3[2] ≈ 3 .* [1.0, 2.0, 3.0] .^ 2
+                x3 = [1.0, 2.0, 3.0]
+                value_and_pullback!!(cache, 1.0, R.fperf_v, x3)  # warm up new size
+                @test Mooncake.TestUtils.count_allocs(
+                    value_and_pullback!!, cache, 1.0, R.fperf_v, x3
+                ) == 0
+            end
+        end
+
+        @testset "Failing cases" begin
+            @testset "Wrong expression (not a Tuple{...})" begin
+                @test_throws "LoadError: ArgumentError: The provided signature must be of the form `Tuple{typeof(f), ...}`." @eval @from_forward(
+                    :(f3(x::Float64))
+                )
+            end
+            @testset "Closures" begin
+                @test_throws "ArgumentError: `Mooncake.@from_forward` does not support functions which close over data." Mooncake.prepare_gradient_cache(
+                    R.Multiplier(2.0), 5.0
+                )
+            end
+            @testset "Unsupported input types" begin
+                @test_throws ArgumentError Mooncake.prepare_pullback_cache(R.f_tup, (5.0,))
+            end
+            @testset "Wrong signature (no method)" begin
+                @test_throws "MethodError: no method matching f1(::Float32)" Mooncake.prepare_pullback_cache(
+                    R.f1, Float32(1.0)
+                )
             end
         end
     end
