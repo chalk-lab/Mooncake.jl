@@ -66,6 +66,8 @@ function arrayify(
     x::Symmetric{T,<:StridedMatrix{T}}, dx::TangentOrFData
 ) where {T<:Union{IEEEFloat,BlasFloat}}
     _, _dx = arrayify(x.data, _fields(dx).data)
+    # Returns the raw backing matrix, not Symmetric(_dx, ...), because the rrule
+    # accumulates gradients in-place (setindex!), which Symmetric does not support.
     return x, _dx
 end
 function arrayify(

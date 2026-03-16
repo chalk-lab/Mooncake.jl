@@ -705,15 +705,17 @@ function frule!!(
     ::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
     S, d_data = arrayify(_S)
-    Sinv = inv(S)
-    return Dual(logdet(S), dot(Sinv, Symmetric(d_data, Symbol(S.uplo))))
+    F = bunchkaufman(S)
+    Sinv = inv(F)
+    return Dual(logdet(F), dot(Sinv, Symmetric(d_data, Symbol(S.uplo))))
 end
 function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
-    Sinv = inv(S)
-    ld = logdet(S)
+    F = bunchkaufman(S)
+    ld = logdet(F)
+    Sinv = inv(F)
     function logdet_sym_pb!!(ȳ::P)
         _accum_sym_logdet!(ddata, Sinv, ȳ, S.uplo)
         return NoRData(), NoRData()
@@ -740,18 +742,24 @@ function frule!!(
     ::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
     S, d_data = arrayify(_S)
-    d = det(S)
+    F = bunchkaufman(S; check=false)
+    d = det(F)
+    # Zero tangent for singular S. Strictly correct only for rank ≤ n-2; at rank n-1
+    # the true derivative is the adjugate (nonzero), but exact floating-point zeros are
+    # measure-zero in practice.
     iszero(d) && return Dual(d, zero(P))
-    Sinv = inv(S)
+    Sinv = inv(F)
     return Dual(d, d * dot(Sinv, Symmetric(d_data, Symbol(S.uplo))))
 end
 function rrule!!(
     ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
-    d = det(S)
-    Sinv = iszero(d) ? nothing : inv(S)
+    F = bunchkaufman(S; check=false)
+    d = det(F)
+    Sinv = iszero(d) ? nothing : inv(F)
     function det_sym_pb!!(ȳ::P)
+        # Zero gradient for singular S (approximate; see frule!! for details).
         isnothing(Sinv) && return NoRData(), NoRData()
         _accum_sym_logdet!(ddata, Sinv, ȳ * d, S.uplo)
         return NoRData(), NoRData()
@@ -780,17 +788,19 @@ function frule!!(
     ::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
     S, d_data = arrayify(_S)
-    ld, s = logabsdet(S)
+    F = bunchkaufman(S; check=false)
+    ld, s = logabsdet(F)
     iszero(s) && return Dual((ld, s), (zero(P), zero(P)))
-    Sinv = inv(S)
+    Sinv = inv(F)
     return Dual((ld, s), (dot(Sinv, Symmetric(d_data, Symbol(S.uplo))), zero(P)))
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
-    ld, s = logabsdet(S)
-    Sinv = iszero(s) ? nothing : inv(S)
+    F = bunchkaufman(S; check=false)
+    ld, s = logabsdet(F)
+    Sinv = iszero(s) ? nothing : inv(F)
     function logabsdet_sym_pb!!(ȳ::Tuple{P,P})
         isnothing(Sinv) && return NoRData(), NoRData()
         _accum_sym_logdet!(ddata, Sinv, ȳ[1], S.uplo)
