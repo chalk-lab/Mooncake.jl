@@ -236,6 +236,11 @@ function rrule!!(
 
     # Pivot B.
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
+    ip = invperm(p)
+
+    # Pre-allocate B1 with concrete type before the if/else to avoid Core.Box in the
+    # pullback closure. B2 is always just an alias for B, so we use B directly below.
+    B1 = similar(B)
 
     if trans == 'N'
         # Apply permutation matrix.
@@ -243,22 +248,20 @@ function rrule!!(
 
         # Run inv(L) * B and write result to B.
         LAPACK.trtrs!('L', 'N', 'U', A, B)
-        B1 = copy(B) # record intermediate state for use in pullback.
+        copyto!(B1, B) # record intermediate state for use in pullback.
 
         # Run inv(U) * B and write result to B.
         LAPACK.trtrs!('U', 'N', 'N', A, B)
-        B2 = B
     else
         # Run inv(U)^T * B and write result to B.
         LAPACK.trtrs!('U', 'T', 'N', A, B)
-        B1 = copy(B) # record intermediate state for use in pullback.
+        copyto!(B1, B) # record intermediate state for use in pullback.
 
         # Run inv(L)^T * B and write result to B.
         LAPACK.trtrs!('L', 'T', 'U', A, B)
-        B2 = B
 
         # Apply permutation matrix.
-        B2 .= B2[invperm(p), :]
+        B .= B[ip, :]
     end
 
     function getrs_pb!!(::NoRData)
@@ -266,23 +269,23 @@ function rrule!!(
 
             # Run pullback for inv(U) * B.
             LAPACK.trtrs!('U', 'T', 'N', A, dB)
-            dA .-= tri!(dB * B2', 'U', 'N')
+            dA .-= tri!(dB * B', 'U', 'N')
 
             # Run pullback for inv(L) * B.
             LAPACK.trtrs!('L', 'T', 'U', A, dB)
             dA .-= tri!(dB * B1', 'L', 'U')
 
             # Undo permutation.
-            dB .= dB[invperm(p), :]
+            dB .= dB[ip, :]
         else
 
             # Undo permutation.
             dB .= dB[p, :]
-            B2 .= B2[p, :]
+            B .= B[p, :]
 
             # Run pullback for inv(L^T) * B.
             LAPACK.trtrs!('L', 'N', 'U', A, dB)
-            dA .-= tri!(B2 * dB', 'L', 'U')
+            dA .-= tri!(B * dB', 'L', 'U')
 
             # Run pullback for inv(U^T) * B.
             LAPACK.trtrs!('U', 'N', 'N', A, dB)

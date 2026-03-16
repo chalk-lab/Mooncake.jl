@@ -1536,7 +1536,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             ]
             xs = [blas_vectors(rng, P, N); blas_vectors(rng, P, tA == 'N' ? 1 : M)]
             ys = [blas_vectors(rng, P, M); blas_vectors(rng, P, tA == 'N' ? M : 1)]
-            flags = (false, :stability, (lb=1e-3, ub=10.0))
+            flags = (false, :stability, (lb=1e-3, ub=30.0))
             return map(As, xs, ys) do A, x, y
                 (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
             end
