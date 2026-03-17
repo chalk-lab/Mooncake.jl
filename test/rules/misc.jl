@@ -4,8 +4,6 @@
         x = [1.0, 2.0]
         @test Mooncake.stop_gradient(3.0) === 3.0
         @test Mooncake.stop_gradient(x) === x
-        @test Mooncake.stop_gradient(x, 4.0) == (x, 4.0)
-
         # Gradient is zero when the entire input goes through stop_gradient.
         f_zero(x) = sum(Mooncake.stop_gradient(x))
         c_zero = Mooncake.prepare_gradient_cache(f_zero, x)
@@ -18,20 +16,23 @@
         _, (_, g_partial) = Mooncake.value_and_gradient!!(c_partial, f_partial, x)
         @test g_partial ≈ [2.0, 0.0]
 
-        # Multi-arg: both gradients are zero.
-        f_multi(x, y) =
-            let sg = Mooncake.stop_gradient(x, y);
-                sum(sg[1]) + sg[2];
-            end
-        c_multi = Mooncake.prepare_gradient_cache(f_multi, x, 4.0)
-        _, (_, gx, gy) = Mooncake.value_and_gradient!!(c_multi, f_multi, x, 4.0)
-        @test iszero(gx)
-        @test iszero(gy)
+        # Multiple values: pack into a tuple, gradients for all elements are zeroed.
+        y = [3.0, 4.0]
+        function f_tuple(x, y)
+            t = Mooncake.stop_gradient((x, y))
+            return sum(t[1]) + sum(t[2])
+        end
+        c_tuple = Mooncake.prepare_gradient_cache(f_tuple, x, y)
+        _, (_, gx_tuple, gy_tuple) = Mooncake.value_and_gradient!!(c_tuple, f_tuple, x, y)
+        @test iszero(gx_tuple)
+        @test iszero(gy_tuple)
 
-        # Kwargs throw in both primal and AD contexts.
-        @test_throws ArgumentError Mooncake.stop_gradient(1.0; kw=1)
-        f_kw(x) = sum(Mooncake.stop_gradient(x; kw=1))
-        @test_throws ArgumentError Mooncake.prepare_gradient_cache(f_kw, [1.0, 2.0])
+        # Keyword arguments are rejected with a MethodError.
+        @test_throws MethodError Mooncake.stop_gradient(1.0; kw=1)
+        @static if isdefined(Core, :throw_methoderror)
+            f_kw(x) = sum(Mooncake.stop_gradient(x; kw=1))
+            @test_throws MethodError Mooncake.prepare_gradient_cache(f_kw, [1.0, 2.0])
+        end
     end
     @testset "lgetfield" begin
         x = (5.0, 4)

@@ -41,14 +41,13 @@ end
 
 """
     stop_gradient(x)
-    stop_gradient(x, y, ...)
 
-Returns its argument(s) with zero gradient. Gradients will not propagate through any
-argument in the reverse pass. In the forward pass, arguments are returned unchanged.
+Returns `x` with zero gradient. Gradients will not propagate through `x` in the reverse
+pass. In the forward pass, `x` is returned unchanged. Keyword arguments are not supported
+and will throw a `MethodError`.
 
-With a single argument, returns the argument directly. With multiple arguments, returns
-a tuple. With no arguments, returns an empty tuple. Keyword arguments are not supported
-and will throw an `ArgumentError`.
+To stop gradients through multiple values at once, pack them into a tuple:
+`stop_gradient((x, y, z))`.
 
 This is analogous to `tf.stop_gradient` in TensorFlow and `jax.lax.stop_gradient` in JAX.
 
@@ -87,44 +86,20 @@ julia> g  # g[2] == 0: gradient through x[2] inside stop_gradient is blocked
  0.0
 ```
 """
-stop_gradient(args...) = length(args) == 1 ? args[1] : args
+stop_gradient(x) = x
 
-# Intercept kwarg calls without generating a positional fallback (which would overwrite
-# the method above). Defining directly on Core.kwcall avoids that conflict.
-function Core.kwcall(::NamedTuple, ::typeof(stop_gradient), args...)
-    throw(ArgumentError("stop_gradient does not support keyword arguments"))
+@is_primitive MinimalCtx Tuple{typeof(stop_gradient),Any}
+
+function frule!!(::Dual{typeof(stop_gradient)}, x::Dual)
+    return zero_dual(primal(x))
 end
 
-@is_primitive MinimalCtx Tuple{typeof(stop_gradient),Vararg{Any}}
-@is_primitive MinimalCtx Tuple{
-    typeof(Core.kwcall),NamedTuple,typeof(stop_gradient),Vararg{Any}
-}
-
-function frule!!(::Dual{typeof(stop_gradient)}, args::Dual...)
-    primals = map(primal, args)
-    y_primal = length(primals) == 1 ? only(primals) : primals
-    return zero_dual(y_primal)
-end
-
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    ::CoDual{typeof(stop_gradient)},
-    args::CoDual...,
-)
-    throw(ArgumentError("stop_gradient does not support keyword arguments"))
-end
-
-function rrule!!(::CoDual{typeof(stop_gradient)}, args::CoDual...)
+function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
     # Copy fdata so that in-place gradient accumulation into the output does not
-    # affect the inputs' fdata (i.e., avoids aliasing of tangent storage).
-    primals = map(primal, args)
-    fdata_copies = map(x -> _copy(tangent(x)), args)
-    y_primal = length(primals) == 1 ? only(primals) : primals
-    y_fdata = length(fdata_copies) == 1 ? only(fdata_copies) : fdata_copies
-    y = CoDual(y_primal, y_fdata)
-    lzrs = map(x -> lazy_zero_rdata(primal(x)), args)
-    stop_gradient_pb!!(_) = (NoRData(), map(instantiate, lzrs)...)
+    # affect the input's fdata (i.e., avoids aliasing of tangent storage).
+    y = CoDual(primal(x), _copy(tangent(x)))
+    lzr = lazy_zero_rdata(primal(x))
+    stop_gradient_pb!!(_) = (NoRData(), instantiate(lzr))
     return y, stop_gradient_pb!!
 end
 
@@ -330,7 +305,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (true, :none, nothing, stop_gradient, 5.0),
         (true, :none, nothing, stop_gradient, randn(4)),
         (true, :none, nothing, stop_gradient, (3.0, 4.0)),
-        (true, :none, nothing, stop_gradient, 5.0, randn(4)),
 
         # Rules to avoid pointer type conversions.
         (
