@@ -34,8 +34,28 @@ Mooncake.@from_rrule
 
 ## Deriving a Reverse Rule via Forward Mode Differentiation
 
-If you have a Mooncake `frule!!` for a function (whether hand-written or derived), you can
-automatically obtain a reverse-mode `rrule!!` without writing a pullback by hand:
+A reverse-mode rule can be derived automatically via Mooncake's forward mode AD (similar to `ChainRules.rrule_via_ad`).
+This is useful when the function uses `try`/`catch` control flow, which Mooncake's reverse mode cannot handle, or when forward mode is more efficient for a particular function, as Mooncake's forward-mode interpreter is generally more compiler-friendly.
+For example, a function that throws on invalid input in reverse mode:
+
+```jldoctest from-forward-trycatch
+julia> import Mooncake
+
+julia> function safe_log(x::Float64)
+           try
+               return log(x)
+           catch
+               return -Inf
+           end
+       end
+safe_log (generic function with 1 method)
+
+julia> # Mooncake.prepare_gradient_cache(safe_log, 1.0)  # throws MooncakeRuleCompilationError
+
+julia> Mooncake.@from_forward Tuple{typeof(safe_log), Float64}
+
+julia> Mooncake.prepare_gradient_cache(safe_log, 1.0);  # now works
+```
 
 ```@docs; canonical=false
 Mooncake.@from_forward
