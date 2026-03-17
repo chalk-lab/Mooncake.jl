@@ -27,6 +27,17 @@ const TangentOrFData = Union{Tangent,FData}
 Return the primal field of `x`, and convert its fdata into an array of the same type as the
 primal. This operation is not guaranteed to be possible for all array types, but seems to be
 possible for all array types of interest so far.
+
+## Convention
+
+Every `arrayify` overload preserves the wrapper type: the returned tangent is always wrapped
+in the same concrete type as the primal (e.g. `Diagonal` → `Diagonal`, `Adjoint` → `Adjoint`,
+`Symmetric` → `Symmetric`). Rules that need to write into the tangent in-place must account
+for whether the wrapper supports `setindex!`; if it does not (e.g. `Symmetric`), a dedicated
+helper should extract the backing store (see `_accum_sym_logdet!`).
+
+`matrixify` and `viewify` are thin wrappers built on top of `arrayify` and share the same
+convention.
 """
 function arrayify(
     x::Union{Dual{A},CoDual{A}}
@@ -61,6 +72,12 @@ function arrayify(
 ) where {T<:IEEEFloat,Tx<:LinearAlgebra.AbstractTriangular{T}}
     _, _dx = arrayify(x.data, _fields(dx).data)
     return x, Tx(_dx)
+end
+function arrayify(
+    x::Symmetric{T,<:StridedMatrix{T}}, dx::TangentOrFData
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Symmetric(_dx, Symbol(x.uplo))
 end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData

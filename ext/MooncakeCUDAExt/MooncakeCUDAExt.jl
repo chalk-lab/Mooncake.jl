@@ -822,12 +822,13 @@ function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw
     y = cumprod(px; kw...)
     dy_out = zero(y)
     d = get(kw, :dims, 1)
+    # Pre-compute once at rule construction time: reused on every pullback call.
+    # nan_tangent_guard: where px == 0 the product is annihilated (zero gradient).
+    inv_cx_px = nan_tangent_guard.(px, inv.(conj.(px)))
     function cumprod_pb!!(::NoRData)
         # Wirtinger chain rule: Δxᵢ = (1/conj(xᵢ)) · Σₖ≥ᵢ Δyₖ · conj(yₖ)
         # i.e. dx .+= reverse(cumsum(reverse(dy .* conj.(y)))) ./ conj.(px)
         # For real inputs conj is a no-op, so this is backward compatible.
-        # nan_tangent_guard: where px == 0 the product is annihilated (zero gradient).
-        inv_cx_px = nan_tangent_guard.(px, inv.(conj.(px)))
         dx .+=
             reverse(cumsum(reverse(dy_out .* conj.(y); dims=d); dims=d); dims=d) .*
             inv_cx_px
@@ -1453,6 +1454,47 @@ end
 # only when the full matrix is populated. Direct CUBLAS calls that bypass
 # LinearAlgebra.mul! are not covered; add lower-level rules if that becomes needed.
 
+# Guard helpers shared by the generic_matmatmul! and generic_matvecmul! rules.
+
+@inline function _check_complex_transpose_flag(T, tAv, tBv)
+    T <: Complex &&
+        (tAv == 'T' || tBv == 'T') &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays — the backward requires element-wise " *
+                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
+                "Use adjoint ('C') instead of transpose ('T').",
+            ),
+        )
+    return nothing
+end
+
+@inline function _check_gemv_eltypes(T, T_B)
+    T_B == T || throw(
+        ArgumentError(
+            "Mooncake: GPU gemv with mismatched element types " *
+            "(A=$(T), B=$(T_B)) is not supported. " *
+            "Cast all arrays to the same element type before multiplying. " *
+            "(Note: cu() downcasts Float64/ComplexF64 to Float32/ComplexF32 by default; " *
+            "use CuArray(x) to preserve the element type.)",
+        ),
+    )
+    return nothing
+end
+
+@inline function _check_complex_matvecmul_transpose(T, tAv)
+    T <: Complex &&
+        tAv == 'T' &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matvecmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays. Use adjoint ('C') instead.",
+            ),
+        )
+    return nothing
+end
+
 # Rule for `LinearAlgebra.generic_matmatmul!` on real and complex GPU arrays.
 #
 # `generic_matmatmul!(C, tA, tB, A, B)` computes C = op_A(A) * op_B(B) in-place,
@@ -1501,16 +1543,7 @@ function frule!!(
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
-    T <: Complex &&
-        (tAv == 'T' || tBv == 'T') &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays — the backward requires element-wise " *
-                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
-                "Use adjoint ('C') instead of transpose ('T').",
-            ),
-        )
+    _check_complex_transpose_flag(T, tAv, tBv)
     _1 = one(T)
     _0 = zero(T)
     # primal: C = op_A(A) * op_B(B)
@@ -1534,16 +1567,7 @@ function rrule!!(
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
-    T <: Complex &&
-        (tAv == 'T' || tBv == 'T') &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays — the backward requires element-wise " *
-                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
-                "Use adjoint ('C') instead of transpose ('T').",
-            ),
-        )
+    _check_complex_transpose_flag(T, tAv, tBv)
     _1 = one(T)
     _0 = zero(T)
     pC_copy = copy(pC)
@@ -1603,16 +1627,7 @@ function frule!!(
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
-    T <: Complex &&
-        (tAv == 'T' || tBv == 'T') &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays — the backward requires element-wise " *
-                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
-                "Use adjoint ('C') instead of transpose ('T').",
-            ),
-        )
+    _check_complex_transpose_flag(T, tAv, tBv)
     _α = T(primal(alpha))
     _β = T(primal(beta))
     _1 = one(T)
@@ -1639,16 +1654,7 @@ function rrule!!(
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
-    T <: Complex &&
-        (tAv == 'T' || tBv == 'T') &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays — the backward requires element-wise " *
-                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
-                "Use adjoint ('C') instead of transpose ('T').",
-            ),
-        )
+    _check_complex_transpose_flag(T, tAv, tBv)
     _α = T(primal(alpha))
     _β = T(primal(beta))
     _1 = one(T)
@@ -1727,23 +1733,8 @@ function frule!!(
     av = primal(alpha)
     bv = primal(beta)
     T = eltype(pA)
-    eltype(pB) == T || throw(
-        ArgumentError(
-            "Mooncake: GPU gemv with mismatched element types " *
-            "(A=$(T), B=$(eltype(pB))) is not supported. " *
-            "Cast all arrays to the same element type before multiplying. " *
-            "(Note: cu() downcasts Float64/ComplexF64 to Float32/ComplexF32 by default; " *
-            "use CuArray(x) to preserve the element type.)",
-        ),
-    )
-    T <: Complex &&
-        tAv == 'T' &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matvecmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays. Use adjoint ('C') instead.",
-            ),
-        )
+    _check_gemv_eltypes(T, eltype(pB))
+    _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
     # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
     CUBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
@@ -1768,23 +1759,8 @@ function rrule!!(
     av = primal(alpha)
     bv = primal(beta)
     T = eltype(pA)
-    eltype(pB) == T || throw(
-        ArgumentError(
-            "Mooncake: GPU gemv with mismatched element types " *
-            "(A=$(T), B=$(eltype(pB))) is not supported. " *
-            "Cast all arrays to the same element type before multiplying. " *
-            "(Note: cu() downcasts Float64/ComplexF64 to Float32/ComplexF32 by default; " *
-            "use CuArray(x) to preserve the element type.)",
-        ),
-    )
-    T <: Complex &&
-        tAv == 'T' &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matvecmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays. Use adjoint ('C') instead.",
-            ),
-        )
+    _check_gemv_eltypes(T, eltype(pB))
+    _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
     pY_copy = copy(pY)
     CUBLAS.gemv!(tAv, av, pA, pB, bv, pY)
