@@ -629,9 +629,11 @@ end
                 )
             end
             @testset "Wrong signature (no method)" begin
-                @test_throws "MethodError: no method matching f1(::Float32)" Mooncake.prepare_pullback_cache(
-                    R.f1, Float32(1.0)
-                )
+                let ex = @test_throws MethodError Mooncake.prepare_pullback_cache(
+                        R.f1, Float32(1.0)
+                    )
+                    @test ex.value.f === R.f1
+                end
             end
         end
     end
