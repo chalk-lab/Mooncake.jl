@@ -214,7 +214,7 @@ julia> rrule!!(zero_fcodual(foo), zero_fcodual(3.0))[2](NoRData())
 (NoRData(), 0.0)
 ```
 
-Limited support for `Vararg`s is also available. For example
+`Vararg` signatures are also supported. For example
 ```jldoctest
 julia> using Mooncake: @zero_derivative, DefaultCtx, zero_fcodual, rrule!!, is_primitive, ReverseMode
 
@@ -272,6 +272,8 @@ end
 # caller's scope (parse_signature_expr already escaped the whole arg as one unit).
 function _vararg_wrapped_type(vararg_esc_expr, wrapper)
     inner = vararg_esc_expr.args[1]
+    # Bare `Vararg` maps to `Vararg{wrapper}` without `<:` — any Dual/CoDual matches,
+    # consistent with `Vararg` meaning `Vararg{Any}`.
     inner == :Vararg && return :(Vararg{$wrapper})
     # inner is Expr(:curly, :Vararg, T) or Expr(:curly, :Vararg, T, N)
     T = Expr(:escape, inner.args[2])

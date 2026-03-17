@@ -186,7 +186,6 @@ function lookup_method(sig)::Union{Method,Nothing}
     world = Base.get_world_counter()
     min = Base.RefValue{UInt}(typemin(UInt))
     max = Base.RefValue{UInt}(typemax(UInt))
-    # Base._methods_by_ftype is a Julia-internal API.
     ms = Base._methods_by_ftype(sig, nothing, 1, world, true, min, max, Ptr{Int32}(C_NULL))
     return (ms isa Vector && !isempty(ms)) ? first(ms).method : nothing
 end
