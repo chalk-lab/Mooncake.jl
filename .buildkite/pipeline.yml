@@ -52,7 +52,8 @@ steps:
         version:
           - "1.10"
           - "1.11"
-          - "1.12"
+          # Exceeds one hour and times out on Buildkite.
+          # - "1.12" 
         di_test:
           - "hvp"
           - "second_derivative"
