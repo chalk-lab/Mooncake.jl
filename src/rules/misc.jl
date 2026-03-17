@@ -52,6 +52,24 @@ and will throw an `ArgumentError`.
 
 This is analogous to `tf.stop_gradient` in TensorFlow and `jax.lax.stop_gradient` in JAX.
 
+!!! warning
+    Mooncake requires that aliased primals have aliased fdatas (the "aliasing invariant"):
+    `primal(a) === primal(b)` implies `fdata(a) === fdata(b)`. `stop_gradient`
+    deliberately breaks this — the returned CoDual has `primal(y) === primal(x)` but
+    `fdata(y) = _copy(fdata(x))` — so that downstream gradient accumulation into `y` does
+    not affect `x`. This is safe in typical use, but will produce incorrect gradients if
+    the output is mutated in-place and `x` is subsequently read (or vice versa), because
+    the two fdata buffers diverge. For example:
+    ```julia
+    function f(x)
+        y = stop_gradient(x)  # primal(y) === x, but fdata(y) ≠ fdata(x)
+        y[1] = 2.0            # mutates x[1], but tangent goes into fdata(y)
+        return x[1] + x[2]   # reads fdata(x), which is now out of sync with fdata(y)
+    end
+    ```
+    In practice this is unlikely: `stop_gradient` is intended to detach a value, not to
+    alias it back alongside the original. See issue #1081.
+
 # Examples
 
 ```jldoctest
