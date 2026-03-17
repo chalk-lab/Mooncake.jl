@@ -744,3 +744,81 @@ function value_and_derivative!!(
         return output_primal, output_tangent
     end
 end
+
+struct HVPCache{Tgrad_f,Tgrad_tangent,Tfwd_cache}
+    grad_f::Tgrad_f
+    # Pre-computed zero tangent for grad_f; the function is never perturbed, only x is.
+    grad_tangent::Tgrad_tangent
+    fwd_cache::Tfwd_cache
+end
+
+"""
+    prepare_hvp_cache(f, x; config=Mooncake.Config())
+
+Prepare a cache for computing Hessian-vector products (HVPs) of `f` at points shaped like
+`x`. Returns an `HVPCache` for use with [`value_and_hvp!!`](@ref).
+
+`f` must map `x` (or values of the same shape) to a scalar.
+
+The cache compiles an outer forward-mode rule over an inner reverse-mode gradient, using
+[`FoRCache`](@ref) to ensure the inner rule is compiled only once regardless of how many
+HVPs are subsequently evaluated.
+
+*Note:* `cache` is tied to the type and shape of `x`. Evaluating at a different point is
+fine, but changing the shape requires a new cache.
+
+```jldoctest
+f(x) = sum(x .* x)
+x = [1.0, 2.0]
+cache = Mooncake.prepare_hvp_cache(f, x)
+gradient, hvp = Mooncake.value_and_hvp!!(cache, [1.0, 0.0], x)
+gradient ≈ [2.0, 4.0] && hvp ≈ [2.0, 0.0]
+
+# output
+
+true
+```
+"""
+@unstable function prepare_hvp_cache(f, x; config=Config())
+    # grad_f calls prepare_gradient_cache internally so that FoRCache (instantiated when
+    # the outer frule is built) can cache the inner rule compilation across HVP calls.
+    grad_f = let f=f, config=config
+        y -> begin
+            grad_cache = prepare_gradient_cache(f, y; config)
+            value_and_gradient!!(grad_cache, f, y)[2][2]
+        end
+    end
+    fwd_cache = prepare_derivative_cache(grad_f, x; config)
+    return HVPCache(grad_f, zero_tangent(grad_f), fwd_cache)
+end
+
+"""
+    value_and_hvp!!(cache::HVPCache, v, x)
+
+Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `f` at `x`
+and the Hessian-vector product `H(x) v`, where `H(x)` is the Hessian of `f` at `x`.
+
+Returns a 2-tuple `(∇f(x), H(x)v)` using internal Mooncake tangent types. For
+`f: Rⁿ → R` with `x::Vector{Float64}`, both outputs are `Vector{Float64}`.
+
+!!! warning
+    `cache` owns the mutable state in the returned values. Take a copy before calling again
+    if you need to retain previous results.
+
+```jldoctest
+f(x) = sum(x .* x)
+x = [1.0, 2.0]
+cache = Mooncake.prepare_hvp_cache(f, x)
+gradient, hvp = Mooncake.value_and_hvp!!(cache, [1.0, 0.0], x)
+gradient ≈ [2.0, 4.0] && hvp ≈ [2.0, 0.0]
+
+# output
+
+true
+```
+"""
+function value_and_hvp!!(cache::HVPCache, v, x)
+    return value_and_derivative!!(
+        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x, v)
+    )
+end

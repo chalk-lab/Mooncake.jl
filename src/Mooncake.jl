@@ -193,6 +193,7 @@ end
 # Public, exported
 export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
 export prepare_derivative_cache
+export prepare_hvp_cache, value_and_hvp!!
 
 include("precompile.jl")
 
