@@ -20,7 +20,9 @@
 
         # Multi-arg: both gradients are zero.
         f_multi(x, y) =
-            sum(Mooncake.stop_gradient(x, y)[1]) + Mooncake.stop_gradient(x, y)[2]
+            let sg = Mooncake.stop_gradient(x, y);
+                sum(sg[1]) + sg[2];
+            end
         c_multi = Mooncake.prepare_gradient_cache(f_multi, x, 4.0)
         _, (_, gx, gy) = Mooncake.value_and_gradient!!(c_multi, f_multi, x, 4.0)
         @test iszero(gx)

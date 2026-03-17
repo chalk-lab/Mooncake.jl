@@ -57,9 +57,9 @@ This is analogous to `tf.stop_gradient` in TensorFlow and `jax.lax.stop_gradient
     `primal(a) === primal(b)` implies `fdata(a) === fdata(b)`. `stop_gradient`
     deliberately breaks this — the returned CoDual has `primal(y) === primal(x)` but
     `fdata(y) = _copy(fdata(x))` — so that downstream gradient accumulation into `y` does
-    not affect `x`. This is safe in typical use, but will produce incorrect gradients if
-    the output is mutated in-place and `x` is subsequently read (or vice versa), because
-    the two fdata buffers diverge. For example:
+    not affect `x`. This will produce incorrect gradients if the output is mutated in-place
+    and `x` is subsequently read (or vice versa), because the two fdata buffers diverge.
+    For example:
     ```julia
     function f(x)
         y = stop_gradient(x)  # primal(y) === x, but fdata(y) ≠ fdata(x)
@@ -67,8 +67,7 @@ This is analogous to `tf.stop_gradient` in TensorFlow and `jax.lax.stop_gradient
         return x[1] + x[2]   # reads fdata(x), which is now out of sync with fdata(y)
     end
     ```
-    In practice this is unlikely: `stop_gradient` is intended to detach a value, not to
-    alias it back alongside the original. See issue #1081.
+    See https://github.com/chalk-lab/Mooncake.jl/issues/1081 for more details.
 
 # Examples
 
@@ -107,11 +106,11 @@ function frule!!(::Dual{typeof(stop_gradient)}, args::Dual...)
     return zero_dual(y_primal)
 end
 
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    ::Dual{<:NamedTuple},
-    ::Dual{typeof(stop_gradient)},
-    args::Dual...,
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    ::CoDual{<:NamedTuple},
+    ::CoDual{typeof(stop_gradient)},
+    args::CoDual...,
 )
     throw(ArgumentError("stop_gradient does not support keyword arguments"))
 end
@@ -127,15 +126,6 @@ function rrule!!(::CoDual{typeof(stop_gradient)}, args::CoDual...)
     lzrs = map(x -> lazy_zero_rdata(primal(x)), args)
     stop_gradient_pb!!(_) = (NoRData(), map(instantiate, lzrs)...)
     return y, stop_gradient_pb!!
-end
-
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    ::CoDual{typeof(stop_gradient)},
-    args::CoDual...,
-)
-    throw(ArgumentError("stop_gradient does not support keyword arguments"))
 end
 
 """
