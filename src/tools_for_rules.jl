@@ -892,13 +892,9 @@ end
 # Functionality supporting @from_forward
 #
 
-# Build a tuple of pre-allocated buffers for ForwardModeRRule!!, one entry per
-# argument type in `Sig` (excluding the leading function type).
-# Entry i is `nothing` for scalar (IEEEFloat) arguments, and a `Ref` holding an
-# empty placeholder array for array arguments.  Using a `@generated` function
-# gives a precisely typed NTuple (e.g. Tuple{Nothing, Ref{Vector{Float64}}}),
-# so that indexing with a compile-time constant inside the caller's ntuple(Val(N))
-# is fully type-stable with no union splitting.
+# Returns a typed tuple with one entry per argument (excluding the function).
+# `nothing` for IEEEFloat args; `Ref{Array{T,D}}` holding an empty array for array args.
+# The empty array is sized on first use and resized when the input shape changes.
 @generated function _make_fwd_bufs(::Type{Sig}) where {Sig<:Tuple}
     N = length(Sig.parameters) - 1  # exclude the function type
     exprs = map(1:N) do i
@@ -907,7 +903,7 @@ end
             :(nothing)
         elseif T <: Array{<:IEEEFloat}
             dims = ntuple(_ -> 0, ndims(T))
-            :(Ref{$T}($T(undef, $(dims...))))  # empty placeholder; sized on first use, resized if shape changes
+            :(Ref{$T}($T(undef, $(dims...))))
         else
             throw(
                 ArgumentError(
@@ -919,11 +915,9 @@ end
     return :(($(exprs...),))
 end
 
-# `_zero_bufs[i]` and `_basis_bufs[i]` are typed tuples produced by
-# _make_fwd_bufs: `nothing` for scalar args, `Ref{Array{T,D}}` for array
-# args.  The Refs hold empty arrays initially and are lazily sized on the
-# first call, then reused on every subsequent call to avoid per-call heap
-# allocation.  If the array size changes between calls the buffer is resized.
+# `_zero_bufs[i]`: zero-tangent buffers for the primal forward pass (one per arg).
+# `_basis_bufs[i]`: unit-perturbation buffers for the pullback (one per arg).
+# Both are `nothing` for scalar args and `Ref{Array}` for array args.
 struct ForwardModeRRule!!{FR,ZB<:Tuple,BB<:Tuple}
     _frule!!::FR
     _zero_bufs::ZB
@@ -951,25 +945,22 @@ function (fmr::ForwardModeRRule!!)(
         )
     end
 
-    # Build args_dual_zero, reusing pre-allocated buffers for array args.
-    # For each i, fmr._zero_bufs[i] is statically typed (Nothing or Ref{<:Array}),
-    # so the branch below is resolved at compile time inside ntuple(Val(N)).
+    # Prepare zero-tangent duals for the primal forward pass.
     args_dual_zero = ntuple(Val(N)) do i
         buf_ref = fmr._zero_bufs[i]
         if buf_ref === nothing
-            zero_dual(args[i])  # scalar: no heap allocation
+            zero_dual(args[i])
         else
             if size(buf_ref[]) != size(args[i])
-                buf_ref[] = zero(args[i])  # first call or size change: (re)allocate
+                buf_ref[] = zero(args[i])
             else
-                fill!(buf_ref[], zero(eltype(buf_ref[])))  # same size: reuse
+                fill!(buf_ref[], zero(eltype(buf_ref[])))
             end
             Dual(args[i], buf_ref[])
         end
     end
 
-    # Zero-tangent forward pass: run the primal to get y.
-    # Tangents are all zero so this pass does not contribute to any derivative.
+    # Primal forward pass with zero tangents to obtain y.
     f_dual = Dual(f, NoTangent())
     y_dual = _frule!!(f_dual, args_dual_zero...)
 
@@ -977,67 +968,50 @@ function (fmr::ForwardModeRRule!!)(
     y_codual = zero_fcodual(y)
 
     function forward_mode_pullback(dy_rdata)
-        @assert dy_rdata isa rdata_type(typeof(y)) # TODO: check this at compile time
-        # The full output seed ȳ is split: its fdata was accumulated into tangent(y_codual)
-        # by increment!! in __value_and_pullback!!, and its rdata is passed as dy_rdata.
-        # Reconstruct the full output tangent for use in dot products below.
-        # Note: `tangent(y_codual)` (not `fdata(y_codual)`) is correct here — `fdata` is not
-        # defined on CoDuals. For a forward-mode CoDual, `tangent(c) == c.dx` stores the fdata
-        # directly, so `tangent(tangent(y_codual), dy_rdata)` is `tangent(fdata, rdata)`.
+        @assert dy_rdata isa rdata_type(typeof(y))
+        # Combine fdata (accumulated into tangent(y_codual) before this call) and
+        # rdata into the full output tangent used in all dot products below.
         dy_full = tangent(tangent(y_codual), dy_rdata)
-        # compute args rdata
+
+        # Scalar args: rdata via one forward pass per arg with unit perturbation.
         dargs_rdata = ntuple(Val(N)) do i
             if rdata_type(typeof(args[i])) == NoRData
                 return NoRData()
             else
                 @assert args[i] isa IEEEFloat # TODO: relax
-                # create perturbation of scalar argument i
                 args_dual_one_i = ntuple(Val(N)) do k
                     k == i ? Dual(args[i], one(args[i])) : args_dual_zero[k]
                 end
-                # Forward pass with unit perturbation on arg i gives ∂y/∂xᵢ.
                 y_dual_one_i = _frule!!(f_dual, args_dual_one_i...)
-                partial_derivative_i = tangent(y_dual_one_i)
-                # VJP: rdata_i = <∂y/∂xᵢ, ȳ>. Use the full output seed (fdata + rdata).
-                rdata_i = _dot(partial_derivative_i, dy_full)
-                return rdata_i
+                return _dot(tangent(y_dual_one_i), dy_full)
             end
         end
 
-        # update args fdata
-        ntuple(Val(N)) do i
-            if tangent(args_codual[i]) isa NoFData
-                return nothing
-            else
-                @assert args[i] isa Array{<:IEEEFloat} # TODO: relax
-                b_ref = fmr._basis_bufs[i]  # statically typed: Ref{Array{T,D}}
-                if size(b_ref[]) != size(args[i])
-                    b_ref[] = zero(args[i])  # first call or size change: (re)allocate
+        # Array args: fdata via one forward pass per element (column-by-column VJP).
+        for i in 1:N
+            tangent(args_codual[i]) isa NoFData && continue
+            @assert args[i] isa Array{<:IEEEFloat} # TODO: relax
+            b_ref = fmr._basis_bufs[i]
+            if size(b_ref[]) != size(args[i])
+                b_ref[] = zero(args[i])
+            end
+            t = tangent(args_codual[i])
+            if length(t) != length(args[i])
+                resize!(t, length(args[i]))
+                fill!(t, zero(eltype(t)))
+            end
+            b = b_ref[]
+            for j in eachindex(args[i])
+                b[j] = oneunit(eltype(b))
+                args_dual_one_ij = ntuple(Val(N)) do k
+                    k == i ? Dual(args[i], b) : args_dual_zero[k]
                 end
-                # Resize the gradient accumulator if the input size changed.
-                t = tangent(args_codual[i])
-                if length(t) != length(args[i])
-                    resize!(t, length(args[i]))
-                    fill!(t, zero(eltype(t)))
-                end
-                b = b_ref[]
-                for j in eachindex(args[i])
-                    b[j] = oneunit(eltype(b))
-                    args_dual_one_ij = ntuple(Val(N)) do k
-                        k == i ? Dual(args[i], b) : args_dual_zero[k]
-                    end
-                    # Forward pass with unit perturbation on element j of arg i gives column j of ∂y/∂xᵢ.
-                    y_dual_one_ij = _frule!!(f_dual, args_dual_one_ij...)
-                    partial_derivative_ij = tangent(y_dual_one_ij)
-                    # VJP: accumulate <∂y/∂xᵢ[j], ȳ> into fdata of arg i.
-                    t[j] += _dot(partial_derivative_ij, dy_full)
-                    b[j] = zero(eltype(b))
-                end
-                return nothing
+                y_dual_one_ij = _frule!!(f_dual, args_dual_one_ij...)
+                t[j] += _dot(tangent(y_dual_one_ij), dy_full)
+                b[j] = zero(eltype(b))
             end
         end
 
-        # The function has no tangent (NoTangent), so its rdata is NoRData.
         return (NoRData(), dargs_rdata...)
     end
 
@@ -1047,20 +1021,46 @@ end
 """
     @from_forward signature
 
-Define a reverse rule for a given `signature` (function type + argument types) from an existing (primitive or derived) forward rule.
+Define a reverse rule for a given `signature` (function type + argument types) from an
+existing (primitive or derived) forward rule (`frule!!`).
+
+Unlike [`@from_rrule`](@ref), which wraps a ChainRules `rrule`, this macro wraps a
+Mooncake `frule!!`. You must define (or derive) a `frule!!` for the signature before
+calling this macro.
 
 # Example
 
-    @from_forward Tuple{typeof(f), Float64, Vector{Float64}}
+```julia
+mysin(x::Float64) = sin(x)
 
-Registers a reverse-mode `rrule!!` for `f(::Float64, ::Vector{Float64})` that implements
-the pullback via repeated forward passes (one per input dimension).
+# 1. Mark the function as a forward-mode primitive.
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(mysin),Float64}
+
+# 2. Implement the forward rule.
+function Mooncake.frule!!(::Dual{typeof(mysin)}, x::Dual{Float64})
+    v = primal(x)
+    return Dual(sin(v), cos(v) * tangent(x))
+end
+
+# 3. Derive the reverse rule automatically from the forward rule.
+Mooncake.@from_forward Tuple{typeof(mysin),Float64}
+```
+
+This registers a reverse-mode `rrule!!` that implements the pullback via repeated forward
+passes (one per input dimension).
+
+!!! note
+    Unlike Mooncake's reverse-mode interpreter, the forward-mode interpreter supports
+    `try`/`catch` control flow. This makes `@from_forward` a practical option for
+    functions that use exception handling for domain checks (e.g. throwing on invalid
+    input), where direct reverse-mode AD would fail.
 
 !!! warning
     This macro is still experimental and has strict limitations:
-        - The function must have all its arguments and its output of type `<:Base.IEEEFloat` or `Array{<:Base.IEEEFloat}`
+        - The function must have all its arguments and its output of type `<:Base.IEEEFloat` or `Array{<:Base.IEEEFloat}` when called (the signature passed to `@from_forward` may use abstract supertypes, but concrete call sites must satisfy this constraint)
         - The function must not close over any data (its own tangent type must be `NoTangent`)
         - The function must not mutate any of its arguments, because the pullback runs several forward passes and relies on the arguments remaining unchanged between them
+        - The `frule!!` must not mutate its tangent inputs: the pullback reuses zero-tangent buffers across forward passes and relies on them remaining zero
         - The rule is **not thread-safe**: it holds shared mutable buffers that are reused across calls. Do not call the same cached rule concurrently from multiple threads.
 """
 macro from_forward(sig)

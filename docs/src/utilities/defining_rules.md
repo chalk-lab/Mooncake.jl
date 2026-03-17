@@ -32,6 +32,15 @@ There is enough similarity between these two systems that most of the boilerplat
 Mooncake.@from_rrule
 ```
 
+## Deriving a Reverse Rule via Forward Mode Differentiation
+
+If you have a Mooncake `frule!!` for a function (whether hand-written or derived), you can
+automatically obtain a reverse-mode `rrule!!` without writing a pullback by hand:
+
+```@docs; canonical=false
+Mooncake.@from_forward
+```
+
 ## Adding Methods To `rrule!!` And `build_primitive_rrule`
 
 If the above strategies do not work for you, you should first implement a method of [`Mooncake.is_primitive`](@ref) for the signature of interest:

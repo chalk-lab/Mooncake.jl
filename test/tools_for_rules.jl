@@ -166,6 +166,8 @@ module FromForwardResources
 
 using LinearAlgebra
 using Base: IEEEFloat
+import Mooncake: frule!!
+
 using Mooncake:
     Dual,
     DefaultCtx,
@@ -212,25 +214,21 @@ fperf_v(x::Vector{Float64}) = sum(cube, x)
 
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(fperf_v),Vector{Float64}}
 
-function Mooncake.frule!!(
-    ::Union{Dual{typeof(f1)},Dual{typeof(f1_true)}}, x_dual::Dual{Float64}
-)
+function frule!!(::Union{Dual{typeof(f1)},Dual{typeof(f1_true)}}, x_dual::Dual{Float64})
     x, dx = primal(x_dual), tangent(x_dual)
     y = x^3
     dy = 3x^2 * dx
     return Dual(y, dy)
 end
 
-function Mooncake.frule!!(
-    ::Union{Dual{typeof(f2)},Dual{typeof(f2_true)}}, x_dual::Dual{Float64}
-)
+function frule!!(::Union{Dual{typeof(f2)},Dual{typeof(f2_true)}}, x_dual::Dual{Float64})
     x, dx = primal(x_dual), tangent(x_dual)
     y, z = x^3, x^4
     dy, dz = 3x^2 * dx, 4x^3 * dx
     return Dual([y, z], [dy, dz])
 end
 
-function Mooncake.frule!!(
+function frule!!(
     ::Union{Dual{typeof(f3)},Dual{typeof(f3_true)}}, x_dual::Dual{Vector{Float64}}
 )
     x, dx = primal(x_dual), tangent(x_dual)
@@ -239,7 +237,7 @@ function Mooncake.frule!!(
     return Dual(y, dy)
 end
 
-function Mooncake.frule!!(
+function frule!!(
     ::Union{Dual{typeof(f4)},Dual{typeof(f4_true)}}, x_dual::Dual{Vector{Float64}}
 )
     x, dx = primal(x_dual), tangent(x_dual)
@@ -249,7 +247,7 @@ function Mooncake.frule!!(
     return Dual(y, dy)
 end
 
-function Mooncake.frule!!(::Dual{typeof(fperf_v)}, x_dual::Dual{Vector{Float64}})
+function frule!!(::Dual{typeof(fperf_v)}, x_dual::Dual{Vector{Float64}})
     x, dx = primal(x_dual), tangent(x_dual)
     return Dual(sum(cube, x), sum(i -> 3x[i]^2 * dx[i], eachindex(x)))
 end
@@ -268,9 +266,14 @@ end
 
 @from_forward Tuple{typeof(fperf_v),Vector{Float64}}
 
-# use abstract types
 @from_forward Tuple{typeof(f5),AbstractArray{<:AbstractFloat},AbstractFloat}
 @from_forward Tuple{typeof(f6),AbstractFloat,AbstractArray{<:AbstractFloat}}
+
+# forgot macro: marked as a reverse-mode primitive (so the interpreter won't
+# recurse) but @from_forward was never called, leaving no rrule!! or
+# build_primitive_rrule. prepare_pullback_cache must therefore throw.
+f_forgot_macro(x::Float64) = x^2
+@is_primitive DefaultCtx ReverseMode Tuple{typeof(f_forgot_macro),Float64}
 
 # unsupported types
 f_tup(x::Tuple{Float64}) = x[1]
@@ -564,16 +567,21 @@ end
                 @test pb[2] ≈ dy .* map(_x -> 3 * _x^2, x)
                 test_rule(StableRNG(63), R.f4_true, x; is_primitive=false)
             end
-            @testset "Multiple arguments" begin
-                x = [5.0, 13.0]
-                y = 11.0
-                dz = 17.0
-                cache = Mooncake.prepare_pullback_cache(R.f5, zero(x), zero(y))
-                val, pb = value_and_pullback!!(cache, dz, R.f5, x, y)
-                @test val == sin(y) * sum(abs2, x)
-                @test pb[1] == Mooncake.NoTangent()
-                test_rule(StableRNG(63), R.f5, x, y; is_primitive=false)
-                test_rule(StableRNG(63), R.f6, y, x; is_primitive=false)
+            # Julia bug on < 1.11: JIT codegen crash (specsig OC call), fixed in 1.11.
+            @static if VERSION >= v"1.11"
+                @testset "Multiple arguments" begin
+                    x = [5.0, 13.0]
+                    y = 11.0
+                    dz = 17.0
+                    cache = Mooncake.prepare_pullback_cache(R.f5, zero(x), zero(y))
+                    val, pb = value_and_pullback!!(cache, dz, R.f5, x, y)
+                    @test val == sin(y) * sum(abs2, x)
+                    @test pb[1] == Mooncake.NoTangent()
+                    @test pb[2] ≈ dz .* sin(y) .* 2 .* x   # ∂/∂x (array fdata)
+                    @test pb[3] ≈ dz * cos(y) * sum(abs2, x)  # ∂/∂y (scalar rdata)
+                    test_rule(StableRNG(63), R.f5, x, y; is_primitive=false)
+                    test_rule(StableRNG(63), R.f6, y, x; is_primitive=false)
+                end
             end
         end
 
@@ -603,7 +611,7 @@ end
 
         @testset "Failing cases" begin
             @testset "Wrong expression (not a Tuple{...})" begin
-                @test_throws "LoadError: ArgumentError: The provided signature must be of the form `Tuple{typeof(f), ...}`." @eval @from_forward(
+                @test_throws "LoadError: ArgumentError: The provided signature must be of the form `Tuple{typeof(f), ...}`." @eval Mooncake.@from_forward(
                     :(f3(x::Float64))
                 )
             end
@@ -614,6 +622,11 @@ end
             end
             @testset "Unsupported input types" begin
                 @test_throws ArgumentError Mooncake.prepare_pullback_cache(R.f_tup, (5.0,))
+            end
+            @testset "Forgot macro" begin
+                @test_throws MethodError Mooncake.prepare_pullback_cache(
+                    R.f_forgot_macro, 1.0
+                )
             end
             @testset "Wrong signature (no method)" begin
                 @test_throws "MethodError: no method matching f1(::Float32)" Mooncake.prepare_pullback_cache(
