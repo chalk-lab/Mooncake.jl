@@ -1078,6 +1078,7 @@ end
 frule!!(::Dual{typeof(throw)}, args::Dual...) = throw(map(primal, args)...)
 rrule!!(::CoDual{typeof(throw)}, args::CoDual...) = throw(map(primal, args)...)
 
+# Only defined in v1.12+
 @static if isdefined(Core, :throw_methoderror)
     function frule!!(::Dual{typeof(Core.throw_methoderror)}, args::Dual...)
         Core.throw_methoderror(map(primal, args)...)
