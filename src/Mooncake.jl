@@ -70,6 +70,18 @@ default, this function returns `frule!!` so, most of the time, you should just i
 method of `frule!!`.
 
 See also [`build_primitive_rrule`](@ref) for the reverse-mode analogue of this function.
+
+# Extended Help
+
+The purpose of this function is to permit computation at rule construction time, which can
+be re-used at runtime. For example, you might wish to derive some information from `sig`
+which you use at runtime (e.g. the fdata type of one of the arguments). While constant
+propagation will often optimise this kind of computation away, it will sometimes fail to do
+so in hard-to-predict circumstances. Consequently, if you need certain computations not to
+happen at runtime in order to guarantee good performance, you might wish to e.g. emit a
+callable `struct` with type parameters which are the result of this computation. In this
+context, the motivation for using this function is the same as that of using staged
+programming (e.g. via `@generated` functions) more generally.
 """
 build_primitive_frule(::Type{<:Tuple}) = frule!!
 
@@ -189,6 +201,7 @@ end
 
 @public Config, value_and_pullback!!, prepare_pullback_cache
 @public Dual
+@public HVPCache
 
 # Public, exported
 export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!

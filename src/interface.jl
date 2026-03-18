@@ -745,6 +745,8 @@ function value_and_derivative!!(
     end
 end
 
+# `fwd_cache` is the derivative cache for `grad_f` — it captures the frule for `grad_f`,
+# which in turn holds a `LazyFoRRule` that caches the inner rrule compilation across HVP calls.
 struct HVPCache{Tgrad_f,Tgrad_tangent,Tfwd_cache}
     grad_f::Tgrad_f
     # Pre-computed zero tangent for grad_f; the function is never perturbed, only x is.
@@ -753,19 +755,19 @@ struct HVPCache{Tgrad_f,Tgrad_tangent,Tfwd_cache}
 end
 
 """
-    prepare_hvp_cache(f, x; config=Mooncake.Config())
+    prepare_hvp_cache(f, x...; config=Mooncake.Config())
 
-Prepare a cache for computing Hessian-vector products (HVPs) of `f` at points shaped like
-`x`. Returns an `HVPCache` for use with [`value_and_hvp!!`](@ref).
+Prepare a cache for computing Hessian-vector products (HVPs) of `f`. Returns an `HVPCache`
+for use with [`value_and_hvp!!`](@ref).
 
-`f` must map `x` (or values of the same shape) to a scalar.
+`f` must map `x...` to a scalar. Multiple arguments are supported: see
+[`value_and_hvp!!`](@ref) for the calling convention.
 
-The cache compiles an outer forward-mode rule over an inner reverse-mode gradient, using
-[`FoRCache`](@ref) to ensure the inner rule is compiled only once regardless of how many
-HVPs are subsequently evaluated.
+The cache compiles an outer forward-mode rule over an inner reverse-mode gradient. The
+inner rule is compiled only once regardless of how many HVPs are subsequently evaluated.
 
-*Note:* `cache` is tied to the type and shape of `x`. Evaluating at a different point is
-fine, but changing the shape requires a new cache.
+*Note:* `cache` is tied to the types and shapes of `x...`. Evaluating at a different point
+is fine, but changing the shapes requires a new cache.
 
 ```jldoctest
 f(x) = sum(x .* x)
@@ -780,9 +782,9 @@ true
 ```
 """
 @unstable function prepare_hvp_cache(f, x; config=Config())
-    # grad_f calls prepare_gradient_cache internally so that FoRCache (instantiated when
+    # grad_f calls prepare_gradient_cache internally so that LazyFoRRule (instantiated when
     # the outer frule is built) can cache the inner rule compilation across HVP calls.
-    grad_f = let f=f, config=config
+    grad_f = let f = f, config = config
         y -> begin
             grad_cache = prepare_gradient_cache(f, y; config)
             value_and_gradient!!(grad_cache, f, y)[2][2]
@@ -792,14 +794,31 @@ true
     return HVPCache(grad_f, zero_tangent(grad_f), fwd_cache)
 end
 
+@unstable function prepare_hvp_cache(f, x1, x2, xs...; config=Config())
+    all_xs = (x1, x2, xs...)
+    grad_f = let f = f, config = config
+        function (ys...)
+            grad_cache = prepare_gradient_cache(f, ys...; config)
+            # Drop the gradient w.r.t. f itself (always index 1); return only x-arg gradients.
+            Base.tail(value_and_gradient!!(grad_cache, f, ys...)[2])
+        end
+    end
+    fwd_cache = prepare_derivative_cache(grad_f, all_xs...; config)
+    return HVPCache(grad_f, zero_tangent(grad_f), fwd_cache)
+end
+
 """
     value_and_hvp!!(cache::HVPCache, v, x)
+    value_and_hvp!!(cache::HVPCache, vs::Tuple, x1, x2, ...)
 
-Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `f` at `x`
-and the Hessian-vector product `H(x) v`, where `H(x)` is the Hessian of `f` at `x`.
+Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `f` at
+`x...` and the Hessian-vector product `H v`.
 
-Returns a 2-tuple `(∇f(x), H(x)v)` using internal Mooncake tangent types. For
+**Single argument:** `v` is the tangent direction; returns `(∇f(x), H(x)v)`. For
 `f: Rⁿ → R` with `x::Vector{Float64}`, both outputs are `Vector{Float64}`.
+
+**Multiple arguments:** `vs` is a tuple of tangent directions (one per argument); returns
+`((∇f_x1, ∇f_x2, ...), (Hv_x1, Hv_x2, ...))`.
 
 !!! warning
     `cache` owns the mutable state in the returned values. Take a copy before calling again
@@ -820,5 +839,13 @@ true
 function value_and_hvp!!(cache::HVPCache, v, x)
     return value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x, v)
+    )
+end
+
+function value_and_hvp!!(cache::HVPCache, vs::Tuple, x1, x2, xs...)
+    all_xs = (x1, x2, xs...)
+    x_v_pairs = map((x, v) -> (x, v), all_xs, vs)
+    return value_and_derivative!!(
+        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), x_v_pairs...
     )
 end

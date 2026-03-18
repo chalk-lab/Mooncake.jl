@@ -176,7 +176,7 @@ function _compute_hessian_native(f, x::Vector{Float64}; debug_mode=false)
     for i in 1:n
         fill!(v, 0.0)
         v[i] = 1.0
-        _, col = value_and_hvp!!(cache, copy(v), x)
+        _, col = value_and_hvp!!(cache, v, x)
         H[:, i] = col
     end
     return H
@@ -213,14 +213,15 @@ end
     end
 
     @testset "cache reuse across multiple HVP calls" begin
-        # The FoRCache should compile the inner rule only once; verify the cache
+        # The LazyFoRRule should compile the inner rule only once; verify the cache
         # produces consistent results when called repeatedly with different directions.
         f(x) = sum(x .* x)  # H = 2I
         x = [1.0, 2.0, 3.0]
         cache = prepare_hvp_cache(f, x)
         n = length(x)
         for i in 1:n
-            v = zeros(n); v[i] = 1.0
+            v = zeros(n)
+            v[i] = 1.0
             _, hvp = value_and_hvp!!(cache, v, x)
             expected = 2.0 .* v
             @test hvp ≈ expected rtol = 1e-10
@@ -232,5 +233,18 @@ end
         x = [2.0, 3.0]
         H = _compute_hessian_native(f, x)
         @test H ≈ [2.0 0.0; 0.0 2.0] rtol = 1e-10
+    end
+
+    @testset "multi-argument HVP" begin
+        # f(x, y) = sum(x .* x) + sum(y .* y): H = 2I (block-diagonal, decoupled)
+        f(x, y) = sum(x .* x) + sum(y .* y)
+        x = [1.0, 2.0]
+        y = [3.0]
+        cache = prepare_hvp_cache(f, x, y)
+        (grad_x, grad_y), (hvp_x, hvp_y) = value_and_hvp!!(cache, ([1.0, 0.0], [0.0]), x, y)
+        @test grad_x ≈ [2.0, 4.0] rtol = 1e-10
+        @test grad_y ≈ [6.0] rtol = 1e-10
+        @test hvp_x ≈ [2.0, 0.0] rtol = 1e-10
+        @test hvp_y ≈ [0.0] rtol = 1e-10
     end
 end
