@@ -572,6 +572,21 @@ end
             @test Hyy1 ≈ 2 * I
             @test Hyy2 ≈ 2 * I
         end
+
+        @testset "multi-arg: first arg empty" begin
+            # Regression test: when ns[1]==0 but other args non-empty, value and grads
+            # must still be initialised (previously caused UndefVarError).
+            f(x, y) = sum(y .^ 2)
+            x = Float64[]
+            y = [1.0, 2.0]
+            cache = prepare_hessian_cache(f, x, y)
+            val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_and_hessian!!(cache, f, x, y)
+            @test val ≈ f(x, y)
+            @test gx == Float64[]
+            @test gy ≈ 2y
+            @test Hxx == zeros(0, 0)
+            @test Hyy ≈ 2 * I
+        end
     end
 
     @testset "selective zeroing of cotangents" begin

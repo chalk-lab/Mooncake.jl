@@ -162,64 +162,144 @@ function _compile_for_rule(
     return rule, fwd_dc, rvs_dc, rule_tangent
 end
 
-function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
-    ::Dual{typeof(build_derived_rrule)},
-    _interp::Dual{<:MooncakeInterpreter{C}},
-    _sig_or_mi::Dual,
-    _sig::Dual,
-    _debug_mode::Dual{Bool},
-) where {Trule,Tfwd,Trvs,C}
-    @nospecialize _sig_or_mi _sig
+@static if VERSION < v"1.11-"
+    # On Julia 1.10, we encounter a segfault when an OpaqueClosure/MistyClosure is
+    # called with a specialised signature whose declared return type disagrees with
+    # what the IR actually returns (JuliaLang/julia#51016).
+    # The MistyClosure dual callables produced by _compile_for_rule can hit this if
+    # called with wrong tangent types.
+    #
+    # The fix: @generated lets us check tangent types at compile time.  For a bad
+    # specialisation we return :(error(...)), so the compiler never generates the
+    # MistyClosure call for those types.  For well-typed calls the normal body is emitted.
+    #
+    # NOTE: @generated alone (without the type check) does NOT prevent the segfault —
+    # returning an unconditional quote generates the same code as a plain function.
+    # The early-return on mismatch is the critical part.
+    @generated function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
+        _bdr::Dual{typeof(build_derived_rrule)},
+        _interp::Dual{<:MooncakeInterpreter{C}},
+        _sig_or_mi::Dual,
+        _sig::Dual,
+        _debug_mode::Dual{Bool},
+    ) where {Trule,Tfwd,Trvs,C}
+        all_dts = (_bdr, _interp, _sig_or_mi, _sig, _debug_mode)
+        for dt in all_dts
+            P = dt.parameters[1]
+            T = dt.parameters[2]
+            if T !== tangent_type(P)
+                msg = "Error in inputs to rule with input types $(Tuple{all_dts...})"
+                return :(error($msg))
+            end
+        end
+        return quote
+            debug_mode = primal(_debug_mode)
+            if isdefined(cache, :rule)
+                return _for_rule_cached_dual(
+                    cache.rule, cache.fwd_dual_callable, cache.rvs_dual_callable, debug_mode
+                )
+            end
+            rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
+                primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
+            )
+            cache.rule = rule
+            cache.fwd_dual_callable = fwd_dc
+            cache.rvs_dual_callable = rvs_dc
+            return Dual(rule, rule_tangent)
+        end
+    end
 
-    debug_mode = primal(_debug_mode)
+    @generated function (cache::DynamicFoRRule)(
+        _bdr::Dual{typeof(build_derived_rrule)},
+        _interp::Dual{<:MooncakeInterpreter{C}},
+        _sig_or_mi::Dual,
+        _sig::Dual,
+        _debug_mode::Dual{Bool},
+    ) where {C}
+        all_dts = (_bdr, _interp, _sig_or_mi, _sig, _debug_mode)
+        for dt in all_dts
+            P = dt.parameters[1]
+            T = dt.parameters[2]
+            if T !== tangent_type(P)
+                msg = "Error in inputs to rule with input types $(Tuple{all_dts...})"
+                return :(error($msg))
+            end
+        end
+        return quote
+            debug_mode = primal(_debug_mode)
+            dict_key = (primal(_sig), debug_mode)
+            entry = get(cache.cache, dict_key, nothing)
+            if entry !== nothing
+                rule, fwd_dc, rvs_dc = entry
+                return _for_rule_cached_dual(rule, fwd_dc, rvs_dc, debug_mode)
+            end
+            rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
+                primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
+            )
+            cache.cache[dict_key] = (rule, fwd_dc, rvs_dc)
+            return Dual(rule, rule_tangent)
+        end
+    end
+else
+    function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
+        ::Dual{typeof(build_derived_rrule)},
+        _interp::Dual{<:MooncakeInterpreter{C}},
+        _sig_or_mi::Dual,
+        _sig::Dual,
+        _debug_mode::Dual{Bool},
+    ) where {Trule,Tfwd,Trvs,C}
+        @nospecialize _sig_or_mi _sig
 
-    # Cache hit: reuse compiled artifacts with fresh empty Stacks. Neither sig nor
-    # debug_mode is re-checked: each LazyFoRRule lives at exactly one call site in the
-    # compiled IR (inside a fixed-grad_f closure), so both are invariant for its lifetime.
-    if isdefined(cache, :rule)
-        return _for_rule_cached_dual(
-            cache.rule, cache.fwd_dual_callable, cache.rvs_dual_callable, debug_mode
+        debug_mode = primal(_debug_mode)
+
+        # Cache hit: reuse compiled artifacts with fresh empty Stacks. Neither sig nor
+        # debug_mode is re-checked: each LazyFoRRule lives at exactly one call site in the
+        # compiled IR (inside a fixed-grad_f closure), so both are invariant for its lifetime.
+        if isdefined(cache, :rule)
+            return _for_rule_cached_dual(
+                cache.rule, cache.fwd_dual_callable, cache.rvs_dual_callable, debug_mode
+            )
+        end
+
+        # First call: compile, populate the single-slot cache, return.
+        rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
+            primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
         )
+        cache.rule = rule
+        cache.fwd_dual_callable = fwd_dc
+        cache.rvs_dual_callable = rvs_dc
+        return Dual(rule, rule_tangent)
     end
 
-    # First call: compile, populate the single-slot cache, return.
-    rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
-        primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
-    )
-    cache.rule = rule
-    cache.fwd_dual_callable = fwd_dc
-    cache.rvs_dual_callable = rvs_dc
-    return Dual(rule, rule_tangent)
-end
+    function (cache::DynamicFoRRule)(
+        ::Dual{typeof(build_derived_rrule)},
+        _interp::Dual{<:MooncakeInterpreter{C}},
+        _sig_or_mi::Dual,
+        _sig::Dual,
+        _debug_mode::Dual{Bool},
+    ) where {C}
+        @nospecialize _sig_or_mi _sig
 
-function (cache::DynamicFoRRule)(
-    ::Dual{typeof(build_derived_rrule)},
-    _interp::Dual{<:MooncakeInterpreter{C}},
-    _sig_or_mi::Dual,
-    _sig::Dual,
-    _debug_mode::Dual{Bool},
-) where {C}
-    @nospecialize _sig_or_mi _sig
+        debug_mode = primal(_debug_mode)
 
-    debug_mode = primal(_debug_mode)
+        # Key on (sig, debug_mode): sig distinguishes inner functions sharing this call site;
+        # debug_mode is included because DebugRRule and DerivedRule have different field
+        # layouts — serving one to a caller expecting the other causes FieldError.
+        dict_key = (primal(_sig), debug_mode)
 
-    # Key on (sig, debug_mode): sig distinguishes inner functions sharing this call site;
-    # debug_mode is included because DebugRRule and DerivedRule have different field
-    # layouts — serving one to a caller expecting the other causes FieldError.
-    dict_key = (primal(_sig), debug_mode)
+        entry = get(cache.cache, dict_key, nothing)
+        if entry !== nothing
+            rule, fwd_dc, rvs_dc = entry
+            return _for_rule_cached_dual(rule, fwd_dc, rvs_dc, debug_mode)
+        end
 
-    entry = get(cache.cache, dict_key, nothing)
-    if entry !== nothing
-        rule, fwd_dc, rvs_dc = entry
-        return _for_rule_cached_dual(rule, fwd_dc, rvs_dc, debug_mode)
+        # First call for this (sig, debug_mode): compile, cache, return.
+        rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
+            primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
+        )
+        cache.cache[dict_key] = (rule, fwd_dc, rvs_dc)
+        return Dual(rule, rule_tangent)
     end
-
-    # First call for this (sig, debug_mode): compile, cache, return.
-    rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
-        primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
-    )
-    cache.cache[dict_key] = (rule, fwd_dc, rvs_dc)
-    return Dual(rule, rule_tangent)
 end
 
 function rrule!!(

@@ -76,4 +76,6 @@ Mooncake.prepare_gradient_cache
 Mooncake.prepare_pullback_cache
 Mooncake.prepare_hvp_cache
 Mooncake.value_and_hvp!!
+Mooncake.prepare_hessian_cache
+Mooncake.value_and_hessian!!
 ```

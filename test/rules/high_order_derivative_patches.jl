@@ -166,22 +166,6 @@ end
     end
 end
 
-# Helper: compute the full Hessian matrix using prepare_hvp_cache + value_and_hvp!!
-function _compute_hessian_native(f, x::Vector{Float64}; debug_mode=false)
-    config = Mooncake.Config(; debug_mode)
-    cache = prepare_hvp_cache(f, x; config)
-    n = length(x)
-    H = zeros(n, n)
-    v = zeros(n)
-    for i in 1:n
-        fill!(v, 0.0)
-        v[i] = 1.0
-        _, _, col = value_and_hvp!!(cache, v, x)
-        H[:, i] = col
-    end
-    return H
-end
-
 @testset "native HVP interface (prepare_hvp_cache + value_and_hvp!!)" begin
     @testset "gradient correctness for x^4" begin
         f(x) = x[1]^4.0
@@ -202,14 +186,18 @@ end
     @testset "Rosenbrock Hessian" begin
         rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
         z = [1.2, 1.2]
-        H = _compute_hessian_native(rosen, z)
+        _, _, H = value_and_hessian!!(prepare_hessian_cache(rosen, z), rosen, z)
         @test H ≈ [1250.0 -480.0; -480.0 200.0] rtol = 1e-10
     end
 
     @testset "Rosenbrock Hessian (debug_mode=true)" begin
         rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
         z = [1.2, 1.2]
-        H = _compute_hessian_native(rosen, z; debug_mode=true)
+        _, _, H = value_and_hessian!!(
+            prepare_hessian_cache(rosen, z; config=Mooncake.Config(; debug_mode=true)),
+            rosen,
+            z,
+        )
         @test H ≈ [1250.0 -480.0; -480.0 200.0] rtol = 1e-10
     end
 
@@ -232,7 +220,7 @@ end
     @testset "broadcast sum of squares Hessian" begin
         f(x) = sum(x .* x)
         x = [2.0, 3.0]
-        H = _compute_hessian_native(f, x)
+        _, _, H = value_and_hessian!!(prepare_hessian_cache(f, x), f, x)
         @test H ≈ [2.0 0.0; 0.0 2.0] rtol = 1e-10
     end
 

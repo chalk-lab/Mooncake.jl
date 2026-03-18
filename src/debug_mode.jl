@@ -26,11 +26,18 @@ _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
 @static if VERSION < v"1.11-"
-    # On Julia 1.10, use @generated to check types at compile time, preventing the
-    # compiler from ever seeing rule.rule(x...) with mismatched types, which would
-    # cause a segfault (JuliaLang/julia#51016).
+    # On Julia 1.10, we encounter a segfault when an OpaqueClosure/MistyClosure is
+    # called with a specialised signature whose declared return type disagrees with
+    # what the IR actually returns (JuliaLang/julia#51016).  Using @generated we
+    # check tangent types at compile time; for a bad specialisation we return
+    # :(error(...)) so the compiler never generates code for rule.rule(x...) with
+    # mismatched types.  For well-typed calls the normal body is emitted.
+    #
+    # NOTE: @generated alone (without the type check) does NOT prevent the segfault —
+    # returning an unconditional quote generates the same code as a plain function.
+    # The early-return on mismatch is the critical part.
     @generated function (rule::DebugFRule{Trule})(x::Vararg{Dual,N}) where {Trule,N}
-        # First, check tangent type consistency for all Dual inputs at compile time.
+        # Check tangent type consistency for all Dual inputs at compile time.
         # This prevents the compiler from generating code for rule.rule(x...) with
         # mismatched Dual types (e.g., Dual{Float64,Float32} instead of Dual{Float64,Float64}).
         for dt in x

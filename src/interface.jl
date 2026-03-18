@@ -1002,14 +1002,16 @@ function _value_and_hessian_multi!!(
         return fval, map(copy, gs), H_blocks
     end
     local value, grads
+    first_iter = true
     for argidx in 1:nargs
         v = vs[argidx]
         for i in 1:ns[argidx]
             v[i] = one(T)
             fval, gs, hvps = value_and_hvp!!(cache, vs, all_xs...)
-            if argidx == 1 && i == 1
+            if first_iter
                 value = fval
                 grads = map(copy, gs)
+                first_iter = false
             end
             for k in 1:nargs
                 H_blocks[k][argidx][:, i] .= hvps[k]
