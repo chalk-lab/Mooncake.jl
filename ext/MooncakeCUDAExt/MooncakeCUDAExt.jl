@@ -822,12 +822,13 @@ function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw
     y = cumprod(px; kw...)
     dy_out = zero(y)
     d = get(kw, :dims, 1)
+    # Pre-compute once at rule construction time: reused on every pullback call.
+    # nan_tangent_guard: where px == 0 the product is annihilated (zero gradient).
+    inv_cx_px = nan_tangent_guard.(px, inv.(conj.(px)))
     function cumprod_pb!!(::NoRData)
         # Wirtinger chain rule: Δxᵢ = (1/conj(xᵢ)) · Σₖ≥ᵢ Δyₖ · conj(yₖ)
         # i.e. dx .+= reverse(cumsum(reverse(dy .* conj.(y)))) ./ conj.(px)
         # For real inputs conj is a no-op, so this is backward compatible.
-        # nan_tangent_guard: where px == 0 the product is annihilated (zero gradient).
-        inv_cx_px = nan_tangent_guard.(px, inv.(conj.(px)))
         dx .+=
             reverse(cumsum(reverse(dy_out .* conj.(y); dims=d); dims=d); dims=d) .*
             inv_cx_px
@@ -1181,6 +1182,7 @@ function _check_gpu_sum_f(f)
             ),
         )
     end
+    return nothing
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuFloatArray})
@@ -1222,9 +1224,18 @@ function rrule!!(
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(primal(f), flat_px)
     y = sum(_gpu_dual_val, out)
+    # Pre-extract the single partial slot and free the NDual array immediately.
+    # The NDual array is (1+1)× the size of a float array; keeping it alive in the
+    # closure for the pullback doubles GPU memory use unnecessarily.
+    partial_slot = if _is_gpu_differentiable(eltype(out))
+        broadcast(o -> _gpu_dual_part_cx(o, 1), out)
+    else
+        nothing
+    end
+    out = nothing
     function sum_f_pb!!(dy)
-        if _is_gpu_differentiable(eltype(out))
-            flat_dx .+= dy .* broadcast(o -> _gpu_dual_part_cx(o, 1), out)
+        if partial_slot !== nothing
+            flat_dx .+= dy .* partial_slot
         end
         return NoRData(), NoRData(), NoRData()
     end
@@ -1266,11 +1277,27 @@ function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuComplexArray})
     pf, px, dx = primal(f), primal(x), tangent(x)
     out = _gpu_broadcast_dual(pf, px)
     y = sum(_gpu_dual_val, out)
+    # Pre-extract the two partial slots (re and im DOFs) and free the NDual array.
+    # The complex NDual array is (2+1)× the size of a float array; holding it in the
+    # closure triples GPU memory use for the duration of the backward pass.
+    partial_slots = if _is_gpu_differentiable(eltype(out))
+        (
+            broadcast(o -> _gpu_dual_part_cx(o, 1), out),
+            broadcast(o -> _gpu_dual_part_cx(o, 2), out),
+        )
+    else
+        nothing
+    end
+    out = nothing
     function sum_f_cx_pb!!(dy)
-        if _is_gpu_differentiable(eltype(out))
-            dx .+= broadcast(
-                o -> complex(_gpu_adj_part(o, dy, 1), _gpu_adj_part(o, dy, 2)), out
-            )
+        if partial_slots !== nothing
+            p1, p2 = partial_slots
+            # p1, p2 are plain CuArray{T} of extracted partials (∂f/∂Re and ∂f/∂Im).
+            # real(conj(dy) * p) is the Wirtinger chain-rule contribution.
+            # Hoist conj(dy) — it is a scalar, so computing it inside the broadcast
+            # would redundantly re-evaluate it once per element.
+            cdy = conj(dy)
+            dx .+= broadcast((s1, s2) -> complex(real(cdy * s1), real(cdy * s2)), p1, p2)
         end
         return NoRData(), NoRData(), NoRData()
     end
@@ -1427,6 +1454,47 @@ end
 # only when the full matrix is populated. Direct CUBLAS calls that bypass
 # LinearAlgebra.mul! are not covered; add lower-level rules if that becomes needed.
 
+# Guard helpers shared by the generic_matmatmul! and generic_matvecmul! rules.
+
+@inline function _check_complex_transpose_flag(T, tAv, tBv)
+    T <: Complex &&
+        (tAv == 'T' || tBv == 'T') &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays — the backward requires element-wise " *
+                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
+                "Use adjoint ('C') instead of transpose ('T').",
+            ),
+        )
+    return nothing
+end
+
+@inline function _check_gemv_eltypes(T, T_B)
+    T_B == T || throw(
+        ArgumentError(
+            "Mooncake: GPU gemv with mismatched element types " *
+            "(A=$(T), B=$(T_B)) is not supported. " *
+            "Cast all arrays to the same element type before multiplying. " *
+            "(Note: cu() downcasts Float64/ComplexF64 to Float32/ComplexF32 by default; " *
+            "use CuArray(x) to preserve the element type.)",
+        ),
+    )
+    return nothing
+end
+
+@inline function _check_complex_matvecmul_transpose(T, tAv)
+    T <: Complex &&
+        tAv == 'T' &&
+        throw(
+            ArgumentError(
+                "Mooncake: generic_matvecmul! with the 'T' (plain transpose) flag is not " *
+                "supported for complex CuArrays. Use adjoint ('C') instead.",
+            ),
+        )
+    return nothing
+end
+
 # Rule for `LinearAlgebra.generic_matmatmul!` on real and complex GPU arrays.
 #
 # `generic_matmatmul!(C, tA, tB, A, B)` computes C = op_A(A) * op_B(B) in-place,
@@ -1475,16 +1543,7 @@ function frule!!(
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
-    T <: Complex &&
-        (tAv == 'T' || tBv == 'T') &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays — the backward requires element-wise " *
-                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
-                "Use adjoint ('C') instead of transpose ('T').",
-            ),
-        )
+    _check_complex_transpose_flag(T, tAv, tBv)
     _1 = one(T)
     _0 = zero(T)
     # primal: C = op_A(A) * op_B(B)
@@ -1508,16 +1567,7 @@ function rrule!!(
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
-    T <: Complex &&
-        (tAv == 'T' || tBv == 'T') &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays — the backward requires element-wise " *
-                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
-                "Use adjoint ('C') instead of transpose ('T').",
-            ),
-        )
+    _check_complex_transpose_flag(T, tAv, tBv)
     _1 = one(T)
     _0 = zero(T)
     pC_copy = copy(pC)
@@ -1577,16 +1627,7 @@ function frule!!(
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
-    T <: Complex &&
-        (tAv == 'T' || tBv == 'T') &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays — the backward requires element-wise " *
-                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
-                "Use adjoint ('C') instead of transpose ('T').",
-            ),
-        )
+    _check_complex_transpose_flag(T, tAv, tBv)
     _α = T(primal(alpha))
     _β = T(primal(beta))
     _1 = one(T)
@@ -1613,16 +1654,7 @@ function rrule!!(
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
-    T <: Complex &&
-        (tAv == 'T' || tBv == 'T') &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays — the backward requires element-wise " *
-                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
-                "Use adjoint ('C') instead of transpose ('T').",
-            ),
-        )
+    _check_complex_transpose_flag(T, tAv, tBv)
     _α = T(primal(alpha))
     _β = T(primal(beta))
     _1 = one(T)
@@ -1701,23 +1733,8 @@ function frule!!(
     av = primal(alpha)
     bv = primal(beta)
     T = eltype(pA)
-    eltype(pB) == T || throw(
-        ArgumentError(
-            "Mooncake: GPU gemv with mismatched element types " *
-            "(A=$(T), B=$(eltype(pB))) is not supported. " *
-            "Cast all arrays to the same element type before multiplying. " *
-            "(Note: cu() downcasts Float64/ComplexF64 to Float32/ComplexF32 by default; " *
-            "use CuArray(x) to preserve the element type.)",
-        ),
-    )
-    T <: Complex &&
-        tAv == 'T' &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matvecmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays. Use adjoint ('C') instead.",
-            ),
-        )
+    _check_gemv_eltypes(T, eltype(pB))
+    _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
     # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
     CUBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
@@ -1742,23 +1759,8 @@ function rrule!!(
     av = primal(alpha)
     bv = primal(beta)
     T = eltype(pA)
-    eltype(pB) == T || throw(
-        ArgumentError(
-            "Mooncake: GPU gemv with mismatched element types " *
-            "(A=$(T), B=$(eltype(pB))) is not supported. " *
-            "Cast all arrays to the same element type before multiplying. " *
-            "(Note: cu() downcasts Float64/ComplexF64 to Float32/ComplexF32 by default; " *
-            "use CuArray(x) to preserve the element type.)",
-        ),
-    )
-    T <: Complex &&
-        tAv == 'T' &&
-        throw(
-            ArgumentError(
-                "Mooncake: generic_matvecmul! with the 'T' (plain transpose) flag is not " *
-                "supported for complex CuArrays. Use adjoint ('C') instead.",
-            ),
-        )
+    _check_gemv_eltypes(T, eltype(pB))
+    _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
     pY_copy = copy(pY)
     CUBLAS.gemv!(tAv, av, pA, pB, bv, pY)
@@ -2112,10 +2114,11 @@ end
 # at positions d > length(sz), not d <= n_extra.
 function _unbroadcast(dx::CuArray, sz::Tuple)
     size(dx) == sz && return dx
-    dims = ntuple(ndims(dx)) do d
-        d > length(sz) || sz[d] == 1
+    # Collect reduction dims as a Tuple (stack-allocated) to avoid filter's heap Vector.
+    reduce_dims = ntuple(ndims(dx)) do d
+        d > length(sz) || sz[d] == 1 ? d : 0
     end
-    reduce_dims = filter(d -> dims[d], 1:ndims(dx))
+    reduce_dims = filter(!iszero, reduce_dims)  # Tuple filter — no heap alloc
     return isempty(reduce_dims) ? reshape(dx, sz) : reshape(sum(dx; dims=reduce_dims), sz)
 end
 
@@ -2213,20 +2216,83 @@ end
 # Note: scalar args (IEEEFloat/Complex) are not checked here; a Float64 scalar mixed
 # with a Float32 CuArray silently promotes the broadcast to Float64, which may be slow
 # or unsupported on some GPUs.  Cast the scalar explicitly if needed.
+
+# Shared pullback accumulation for materialize and materialize! rrules.
+#
+# Walks flat_pargs in order, computing the contribution from each arg's partial
+# slot(s) and gradient dy, then accumulating into the arg's fdata via
+# _leaf_accum_fdata!.  Scalar IEEEFloat/Complex args have no fdata slot; their
+# gradients are returned in a Vector that the caller uses to build r_bc via
+# _gpu_fill_scalar_rdata.
+#
+# Returns r_bc (the Broadcasted rdata), or zero_rdata(bc_primal) if no scalars.
+function _gpu_accum_pullback!(
+    flat_pargs,
+    flat_fdatas,
+    partial_slots::AbstractVector,
+    dy_out,
+    has_scalars::Bool,
+    bc_primal,
+)
+    scalar_grads = has_scalars ? Any[] : nothing
+    offset = 0
+    for (pa, fd) in zip(flat_pargs, flat_fdatas)
+        dof = _broadcast_elem_dof(pa)
+        if dof == 1
+            k = offset + 1
+            contrib = broadcast((p, d) -> real(conj(d) * p), partial_slots[k], dy_out)
+            if pa isa IEEEFloat
+                push!(scalar_grads::Vector{Any}, sum(contrib))
+            else
+                _leaf_accum_fdata!(pa, fd, contrib)
+            end
+        elseif dof == 2
+            k1, k2 = offset + 1, offset + 2
+            contrib = broadcast(
+                (p1, p2, d) -> complex(real(conj(d) * p1), real(conj(d) * p2)),
+                partial_slots[k1],
+                partial_slots[k2],
+                dy_out,
+            )
+            if pa isa Complex{<:IEEEFloat}
+                push!(scalar_grads::Vector{Any}, sum(contrib))
+            else
+                _leaf_accum_fdata!(pa, fd, contrib)
+            end
+        end
+        offset += dof
+    end
+    return if isnothing(scalar_grads)
+        zero_rdata(bc_primal)
+    else
+        _gpu_fill_scalar_rdata(bc_primal, scalar_grads, Ref(1))
+    end
+end
+
 function _check_mixed_gpu_eltype(flat_pargs)
-    gpu_ets = [
-        eltype(pa) for pa in flat_pargs if pa isa CuMaybeComplexArray ||
-        pa isa Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray} ||
-        pa isa Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}
-    ]
-    length(unique(gpu_ets)) <= 1 && return nothing
-    throw(
-        ArgumentError(
-            "Mooncake: GPU broadcast over arrays with mixed element types " *
-            "($(join(gpu_ets, ", "))) is not supported. " *
-            "Cast all inputs to the same type before broadcasting.",
-        ),
-    )
+    # Walk flat_pargs with an early-exit loop rather than building a temporary array.
+    # In the common case (all same element type), this allocates nothing.
+    first_et = nothing
+    for pa in flat_pargs
+        (
+            pa isa CuMaybeComplexArray ||
+            pa isa Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray} ||
+            pa isa Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}
+        ) || continue
+        et = eltype(pa)
+        if first_et === nothing
+            first_et = et
+        elseif et !== first_et
+            throw(
+                ArgumentError(
+                    "Mooncake: GPU broadcast over arrays with mixed element types " *
+                    "($first_et and $et) is not supported. " *
+                    "Cast all inputs to the same type before broadcasting.",
+                ),
+            )
+        end
+    end
+    return nothing
 end
 
 function frule!!(
@@ -2317,43 +2383,9 @@ function rrule!!(
     has_scalars = any(pa isa CuFloatOrComplex for pa in flat_pargs)
 
     function materialize_pb!!(::NoRData)
-        # Walk flat_pargs in order, tracking the cumulative Dual-slot offset.
-        # CuArray / Adjoint / Transpose inputs accumulate via _leaf_accum_fdata!.
-        # Scalar IEEEFloat / Complex inputs have no fdata slot; their gradients are
-        # collected here and returned via rdata (packed into the Broadcasted rdata tree).
-        scalar_grads = has_scalars ? Any[] : nothing
-        offset = 0
-        for (pa, fd) in zip(flat_pargs, flat_fdatas)
-            dof = _broadcast_elem_dof(pa)
-            if dof == 1
-                k = offset + 1
-                contrib = broadcast((p, d) -> real(conj(d) * p), partial_slots[k], dy_out)
-                if pa isa IEEEFloat
-                    push!(scalar_grads::Vector{Any}, sum(contrib))
-                else
-                    _leaf_accum_fdata!(pa, fd, contrib)
-                end
-            elseif dof == 2
-                k1, k2 = offset + 1, offset + 2
-                contrib = broadcast(
-                    (p1, p2, d) -> complex(real(conj(d) * p1), real(conj(d) * p2)),
-                    partial_slots[k1],
-                    partial_slots[k2],
-                    dy_out,
-                )
-                if pa isa Complex{<:IEEEFloat}
-                    push!(scalar_grads::Vector{Any}, sum(contrib))
-                else
-                    _leaf_accum_fdata!(pa, fd, contrib)
-                end
-            end
-            offset += dof
-        end
-        r_bc = if isnothing(scalar_grads)
-            zero_rdata(bc_primal)
-        else
-            _gpu_fill_scalar_rdata(bc_primal, scalar_grads, Ref(1))
-        end
+        r_bc = _gpu_accum_pullback!(
+            flat_pargs, flat_fdatas, partial_slots, dy_out, has_scalars, bc_primal
+        )
         return NoRData(), r_bc
     end
 
@@ -2399,7 +2431,7 @@ function frule!!(
 
     # Non-differentiable output (e.g. Bool arrays): zero the tangent and return.
     if !_is_gpu_differentiable(eltype(dual_out))
-        fill!(dout, 0)
+        fill!(dout, zero(eltype(dout)))
         return dest
     end
 
@@ -2472,44 +2504,12 @@ function rrule!!(
         # Snapshot dout before any modifications. When dest appears in bc.args
         # (e.g. x .= x .+ y), flat_fdatas contains fd = dout for x's slot.
         # Without a snapshot, _leaf_accum_fdata!(x, dout, contrib) would corrupt
-        # dout mid-loop, causing subsequent slots to read a doubled value, and
-        # fill!(dout, 0) at the end would then zero x's gradient entirely.
-        # Zeroing dout first and then accumulating avoids both problems.
+        # dout mid-loop, causing subsequent slots to read a doubled value.
         g = copy(dout)
         fill!(dout, 0)
-        scalar_grads = has_scalars ? Any[] : nothing
-        offset = 0
-        for (pa, fd) in zip(flat_pargs, flat_fdatas)
-            dof = _broadcast_elem_dof(pa)
-            if dof == 1
-                k = offset + 1
-                contrib = broadcast((p, d) -> real(conj(d) * p), partial_slots[k], g)
-                if pa isa IEEEFloat
-                    push!(scalar_grads::Vector{Any}, sum(contrib))
-                else
-                    _leaf_accum_fdata!(pa, fd, contrib)
-                end
-            elseif dof == 2
-                k1, k2 = offset + 1, offset + 2
-                contrib = broadcast(
-                    (p1, p2, d) -> complex(real(conj(d) * p1), real(conj(d) * p2)),
-                    partial_slots[k1],
-                    partial_slots[k2],
-                    g,
-                )
-                if pa isa Complex{<:IEEEFloat}
-                    push!(scalar_grads::Vector{Any}, sum(contrib))
-                else
-                    _leaf_accum_fdata!(pa, fd, contrib)
-                end
-            end
-            offset += dof
-        end
-        r_bc = if isnothing(scalar_grads)
-            zero_rdata(bc_primal)
-        else
-            _gpu_fill_scalar_rdata(bc_primal, scalar_grads, Ref(1))
-        end
+        r_bc = _gpu_accum_pullback!(
+            flat_pargs, flat_fdatas, partial_slots, g, has_scalars, bc_primal
+        )
         # Restore primal to allow the reverse pass to see the pre-broadcast value.
         copyto!(pout, old_pout)
         return NoRData(), NoRData(), r_bc

@@ -48,7 +48,8 @@ MooncakeJETExt = "JET"
 MooncakeLogExpFunctionsExt = "LogExpFunctions"
 MooncakeLuxLibExt = ["LuxLib", "MLDataDevices", "Static"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
-MooncakeNNlibExt = ["NNlib", "GPUArraysCore", "LinearAlgebra"]
+MooncakeLuxLibNNlibExt = ["LuxLib", "NNlib"]
+MooncakeNNlibExt = ["NNlib", "LinearAlgebra"]
 MooncakeSpecialFunctionsExt = "SpecialFunctions"
 
 [compat]
