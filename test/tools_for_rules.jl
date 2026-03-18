@@ -212,6 +212,9 @@ f3_true(x::Vector{Float64}) = sum(cube, x)
 f4(x::Vector{Float64}) = map(sin, x)
 f4_true(x::Vector{Float64}) = map(cube, x)
 
+# matrix inputs: element-wise map (matrix → matrix)
+f4m(x::Matrix{Float64}) = map(sin, x)
+
 # not primitives, we'll rely on derived forward rules
 f5(x::AbstractArray{<:Real}, y::Real) = sin(y) * sum(abs2, x)
 f6(y, x) = f5(x, y)
@@ -231,8 +234,12 @@ fperf_v(x::Vector{Float64}) = sum(cube, x)
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(f4),Vector{Float64}}
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(f4_true),Vector{Float64}}
 
+@is_primitive DefaultCtx ForwardMode Tuple{typeof(f4m),Matrix{Float64}}
+
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(fperf_v),Vector{Float64}}
 
+# We define rules for fi that pretend fi_true was run instead, to check that Mooncake
+# doesn't recurse inside the function; we still use fi_true in TestUtils.test_rule.
 function frule!!(::Union{Dual{typeof(f1)},Dual{typeof(f1_true)}}, x_dual::Dual{Float64})
     x, dx = primal(x_dual), tangent(x_dual)
     y = x^3
@@ -266,6 +273,11 @@ function frule!!(
     return Dual(y, dy)
 end
 
+function frule!!(::Dual{typeof(f4m)}, x_dual::Dual{Matrix{Float64}})
+    x, dx = primal(x_dual), tangent(x_dual)
+    return Dual(map(sin, x), map((_x, _dx) -> cos(_x) * _dx, x, dx))
+end
+
 function frule!!(::Dual{typeof(fperf_v)}, x_dual::Dual{Vector{Float64}})
     x, dx = primal(x_dual), tangent(x_dual)
     return Dual(sum(cube, x), sum(i -> 3x[i]^2 * dx[i], eachindex(x)))
@@ -282,6 +294,8 @@ end
 
 @from_forward Tuple{typeof(f4),Vector{Float64}}
 @from_forward Tuple{typeof(f4_true),Vector{Float64}}
+
+@from_forward Tuple{typeof(f4m),Matrix{Float64}}
 
 @from_forward Tuple{typeof(fperf_v),Vector{Float64}}
 
@@ -636,6 +650,16 @@ end
                 @test pb[1] == Mooncake.NoTangent()
                 @test pb[2] ≈ dy .* map(_x -> 3 * _x^2, x)
                 test_rule(StableRNG(63), R.f4_true, x; is_primitive=false)
+            end
+            @testset "Matrix to matrix" begin
+                x = [5.0 13.0; 3.0 7.0]
+                dy = [7.0 11.0; 2.0 4.0]
+                cache = Mooncake.prepare_pullback_cache(R.f4m, zero(x))
+                val, pb = value_and_pullback!!(cache, dy, R.f4m, x)
+                @test val == map(sin, x)
+                @test pb[1] == Mooncake.NoTangent()
+                @test pb[2] ≈ dy .* map(cos, x)
+                test_rule(StableRNG(63), R.f4m, x; is_primitive=false)
             end
             # Julia bug on < 1.11: JIT codegen crash (specsig OC call), fixed in 1.11.
             @static if VERSION >= v"1.11"

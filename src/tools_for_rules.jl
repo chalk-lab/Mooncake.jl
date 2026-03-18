@@ -960,15 +960,16 @@ end
 # `_zero_bufs[i]`: zero-tangent buffers for the primal forward pass (one per arg).
 # `_basis_bufs[i]`: unit-perturbation buffers for the pullback (one per arg).
 # Both are `nothing` for scalar args and `Ref{Array}` for array args.
-struct ForwardModeRRule!!{FR,ZB<:Tuple,BB<:Tuple}
+struct ForwardModeRRule!!{FR,B<:Tuple}
     _frule!!::FR
-    _zero_bufs::ZB
-    _basis_bufs::BB
+    _zero_bufs::B
+    _basis_bufs::B
 end
 
-function __verify_sig(rule::ForwardModeRRule!!, fx)
-    # TODO: modify `fx`
-    return __verify_sig(rule._frule!!, fx)
+function __verify_sig(::ForwardModeRRule!!, fx)
+    # The _frule!! signature is already validated during build_frule. Passing CoDual-derived
+    # fx to __verify_sig for the frule would error once DerivedFRule verification is filled in.
+    return nothing
 end
 
 function (fmr::ForwardModeRRule!!)(
@@ -1025,23 +1026,20 @@ function (fmr::ForwardModeRRule!!)(
                     k == i ? Dual(args[i], one(args[i])) : args_dual_zero[k]
                 end
                 y_dual_one_i = _frule!!(f_dual, args_dual_one_i...)
-                return _dot(tangent(y_dual_one_i), dy_full)
+                return typeof(args[i])(_dot(tangent(y_dual_one_i), dy_full))
             end
         end
 
         # Array args: fdata via one forward pass per element (column-by-column VJP).
-        for i in 1:N
-            tangent(args_codual[i]) isa NoFData && continue
+        # ntuple(Val(N)) ensures each iteration is specialised on i for type stability.
+        ntuple(Val(N)) do i
+            tangent(args_codual[i]) isa NoFData && return nothing
             @assert args[i] isa Array{<:IEEEFloat} # TODO: relax
             b_ref = fmr._basis_bufs[i]
             if size(b_ref[]) != size(args[i])
                 b_ref[] = zero(args[i])
             end
             t = tangent(args_codual[i])
-            if length(t) != length(args[i])
-                resize!(t, length(args[i]))
-                fill!(t, zero(eltype(t)))
-            end
             b = b_ref[]
             for j in eachindex(args[i])
                 b[j] = oneunit(eltype(b))
@@ -1052,6 +1050,7 @@ function (fmr::ForwardModeRRule!!)(
                 t[j] += _dot(tangent(y_dual_one_ij), dy_full)
                 b[j] = zero(eltype(b))
             end
+            return nothing
         end
 
         return (NoRData(), dargs_rdata...)
@@ -1075,16 +1074,6 @@ calling this macro.
 ```julia
 mysin(x::Float64) = sin(x)
 
-# 1. Mark the function as a forward-mode primitive.
-@is_primitive DefaultCtx ForwardMode Tuple{typeof(mysin),Float64}
-
-# 2. Implement the forward rule.
-function Mooncake.frule!!(::Dual{typeof(mysin)}, x::Dual{Float64})
-    v = primal(x)
-    return Dual(sin(v), cos(v) * tangent(x))
-end
-
-# 3. Derive the reverse rule automatically from the forward rule.
 Mooncake.@from_forward Tuple{typeof(mysin),Float64}
 ```
 
