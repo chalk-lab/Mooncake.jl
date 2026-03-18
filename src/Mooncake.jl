@@ -201,7 +201,6 @@ end
 
 @public Config, value_and_pullback!!, prepare_pullback_cache
 @public Dual
-@public HVPCache
 
 # Public, exported
 export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!

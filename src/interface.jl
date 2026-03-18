@@ -820,7 +820,8 @@ Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `
 `f: Rⁿ → R` with `x::Vector{Float64}`, the gradient and HVP are `Vector{Float64}`.
 
 **Multiple arguments:** `vs` is a tuple of tangent directions (one per argument); returns
-`(f(x...), (∇f_x1, ∇f_x2, ...), (Hv_x1, Hv_x2, ...))`.
+`(f(x...), (∇f_x1, ∇f_x2, ...), (h1, h2, ...))` where `hk = ∑_j (∂²f/∂xk∂xj) vs[j]`
+is the joint Hessian-vector product for argument `xk`.
 
 !!! warning
     `cache` owns the mutable state in the returned values. Take a copy before calling again
@@ -846,49 +847,25 @@ function value_and_hvp!!(cache::HVPCache, v, x)
 end
 
 function value_and_hvp!!(cache::HVPCache, vs::Tuple, x1, x2, xs...)
-    all_xs = (x1, x2, xs...)
-    x_v_pairs = map((x, v) -> (x, v), all_xs, vs)
     (f_val, grads), (_, hvps) = value_and_derivative!!(
-        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), x_v_pairs...
+        cache.fwd_cache,
+        (cache.grad_f, cache.grad_tangent),
+        map(tuple, (x1, x2, xs...), vs)...,
     )
     return f_val, grads, hvps
 end
 
-# Private helper used by the Hessian API: run the rrule for f at x, backpropagate a
-# scalar seed of 1, and return a copy of the accumulated gradient (fdata).
-# x_fdata is a pre-allocated buffer (the fdata component of x's tangent); it is zeroed
-# here before use so callers do not need to reset it.
-function _hessian_grad(
-    rule, f, x::AbstractVector{T}, x_fdata::AbstractVector{T}
-) where {T<:IEEEFloat}
-    fill!(x_fdata, zero(T))
-    _, pb!! = rule(zero_fcodual(f), CoDual(x, x_fdata))
-    pb!!(one(T))
-    return copy(x_fdata)
-end
-
 """
-    HessianCache
+    prepare_hessian_cache(f, x...; config=Mooncake.Config())
 
-Cache for computing Hessians using forward-over-reverse AD. Build with
-[`prepare_hessian_cache`](@ref).
-"""
-struct HessianCache{Tfrule,Trrule,Tf,Tfd}
-    frule::Tfrule
-    rrule::Trrule
-    f::Tf
-    x_fdata::Tfd  # gradient buffer (fdata of x), shared with the inner rrule
-end
+Return a cache for computing `f(x...)`, gradients `∇f`, and the Hessian (or Hessian
+blocks) of `f` via [`value_and_hessian!!`](@ref). Returns an [`HVPCache`](@ref), which
+can also be used directly with [`value_and_hvp!!`](@ref).
 
-"""
-    prepare_hessian_cache(f, x::AbstractVector{<:IEEEFloat}; config=Mooncake.Config())
+Each `x` must be an `AbstractVector` of IEEE floats (all of the same float type).
 
-Return a cache for computing `f(x)`, `∇f(x)`, and `∇²f(x)` via
-[`value_and_hessian!!`](@ref).
-
-`f` must map a vector of IEEE floats to a scalar IEEE float.
-Hessian computation uses forward-over-reverse AD: `n = length(x)` forward-mode passes
-over the reverse-mode gradient function.
+Hessian computation uses forward-over-reverse AD: one forward-mode pass per input
+dimension over the reverse-mode gradient function.
 
 ```jldoctest
 f(x) = sum(x .^ 2)
@@ -901,36 +878,31 @@ Mooncake.value_and_hessian!!(cache, f, x)
 (14.0, [2.0, 4.0, 6.0], [2.0 0.0 0.0; 0.0 2.0 0.0; 0.0 0.0 2.0])
 ```
 """
-@unstable function prepare_hessian_cache(
-    f, x::AbstractVector{T}; config=Config()
-) where {T<:IEEEFloat}
-    x_fdata = fdata(zero_tangent(x))
-    rrule = build_rrule(f, x; config.debug_mode, config.silence_debug_messages)
-    frule = build_frule(
-        _hessian_grad,
-        rrule,
-        f,
-        x,
-        x_fdata;
-        config.debug_mode,
-        config.silence_debug_messages,
-    )
-    return HessianCache(frule, rrule, f, x_fdata)
+@unstable function prepare_hessian_cache(f, x...; config=Config())
+    return prepare_hvp_cache(f, x...; config)
 end
 
 """
-    value_and_hessian!!(cache::HessianCache, f, x::AbstractVector{T}) where {T<:IEEEFloat}
+    value_and_hessian!!(cache::HVPCache, f, x...)
 
-Using a pre-built `cache`, compute and return `(value, gradient, hessian)` of `f` at `x`:
-- `value = f(x)`
-- `gradient = ∇f(x)`, a vector of length `n = length(x)`
-- `hessian = ∇²f(x)`, an `n×n` matrix
+Using a pre-built `cache` (from [`prepare_hessian_cache`](@ref) or
+[`prepare_hvp_cache`](@ref)), compute and return `(value, gradient, hessian)` of `f`.
 
-Uses forward-over-reverse AD: `n` forward-mode passes on the gradient function.
+**Single argument:** returns `(f(x), ∇f(x), ∇²f(x))` — value, gradient vector, Hessian
+matrix.
+
+**Multiple arguments:** returns `(f(x1,...), (∇_x1 f, ∇_x2 f, ...), H_blocks)` where
+`H_blocks[k][j]` is the `nk × nj` matrix `∂²f/∂xk∂xj`. The return structure differs
+from the single-argument case.
+
+Uses forward-over-reverse AD: one forward-mode pass per total input dimension.
 
 !!! info
-    `cache` must be the output of [`prepare_hessian_cache`](@ref), and `x` must have the
-    same size and element type as used to construct the cache.
+    `cache` must be the output of [`prepare_hessian_cache`](@ref) or
+    [`prepare_hvp_cache`](@ref), and all `x` arguments must have the same sizes and
+    element types as used to construct the cache. `f` is only used directly when all
+    `x` arguments are empty; otherwise the function value is recovered from inside the
+    cached gradient.
 
 # Example
 ```jldoctest
@@ -947,33 +919,69 @@ H
  -480.0   200.0
 ```
 """
-function value_and_hessian!!(
-    cache::HessianCache, f, x::AbstractVector{T}
+@unstable function value_and_hessian!!(cache::HVPCache, f, x...)
+    length(x) == 0 &&
+        throw(ArgumentError("value_and_hessian!! requires at least one x argument"))
+    if length(x) == 1
+        x1 = only(x)
+        T = eltype(x1)
+        length(x1) == 0 && return f(x1), T[], zeros(T, 0, 0)
+        return _value_and_hessian_single!!(cache, x1)
+    else
+        return _value_and_hessian_multi!!(cache, x...)
+    end
+end
+
+function _value_and_hessian_single!!(
+    cache::HVPCache, x::AbstractVector{T}
 ) where {T<:IEEEFloat}
     n = length(x)
     H = zeros(T, n, n)
-    n == 0 && return f(x), T[], H
-
-    x_tangent = zeros(T, n)
-    v_tangent = zeros(T, n)  # tangent for x_fdata; zeroed by frule on each call
-
-    local gradient
+    v = zeros(T, n)
+    local value, gradient
     for i in 1:n
-        fill!(x_tangent, zero(T))
-        x_tangent[i] = one(T)
-        result = cache.frule(
-            zero_dual(_hessian_grad),
-            zero_dual(cache.rrule),
-            zero_dual(cache.f),
-            Dual(x, x_tangent),
-            Dual(cache.x_fdata, v_tangent),
-        )
+        v[i] = one(T)
+        fval, grad, hvp = value_and_hvp!!(cache, v, x)
         if i == 1
-            gradient = copy(primal(result))
+            value = fval
+            gradient = copy(grad)
         end
-        H[:, i] = tangent(result)
+        H[:, i] .= hvp
+        v[i] = zero(T)
     end
-
-    value = f(x)
     return value, gradient, H
+end
+
+function _value_and_hessian_multi!!(
+    cache::HVPCache, x1::AbstractVector{T}, x2::AbstractVector{T}, xs::AbstractVector{T}...
+) where {T<:IEEEFloat}
+    all_xs = (x1, x2, xs...)
+    nargs = length(all_xs)
+    ns = map(length, all_xs)
+    # H_blocks[k][j] = ∂²f/∂xk∂xj, shape ns[k] × ns[j]
+    H_blocks = ntuple(k -> ntuple(j -> zeros(T, ns[k], ns[j]), nargs), nargs)
+    # one mutable tangent buffer per argument (reused across HVP calls)
+    vs = map(ni -> zeros(T, ni), ns)
+    # if all arguments are empty, skip the HVP loop and recover value/grads directly
+    if all(==(0), ns)
+        fval, gs, _ = value_and_hvp!!(cache, vs, all_xs...)
+        return fval, map(copy, gs), H_blocks
+    end
+    local value, grads
+    for argidx in 1:nargs
+        v = vs[argidx]
+        for i in 1:ns[argidx]
+            v[i] = one(T)
+            fval, gs, hvps = value_and_hvp!!(cache, vs, all_xs...)
+            if argidx == 1 && i == 1
+                value = fval
+                grads = map(copy, gs)
+            end
+            for k in 1:nargs
+                H_blocks[k][argidx][:, i] .= hvps[k]
+            end
+            v[i] = zero(T)
+        end
+    end
+    return value, grads, H_blocks
 end

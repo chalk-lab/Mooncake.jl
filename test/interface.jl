@@ -426,6 +426,53 @@ end
             @test v ≈ rosen(z)
             @test H ≈ rosen_H(z) rtol = 1e-10
         end
+
+        @testset "n=0 edge case" begin
+            f(x) = 0.0
+            x = Float64[]
+            cache = prepare_hessian_cache(f, x)
+            v, g, H = value_and_hessian!!(cache, f, x)
+            @test v == 0.0
+            @test g == Float64[]
+            @test H == zeros(0, 0)
+        end
+
+        @testset "multi-arg: two vectors" begin
+            # f(x, y) = x'x + y'y + x[1]*y[1]
+            # ∇_x f = 2x + [y[1], 0, ...]
+            # ∇_y f = 2y + [x[1], 0, ...]
+            # H_xx = 2I, H_yy = 2I
+            # H_xy = H_yx = [[1, 0, ...]; [0, ...]] (only [1,1] entry is 1)
+            f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
+            x = [1.0, 2.0]
+            y = [3.0, 4.0]
+            cache = prepare_hessian_cache(f, x, y)
+            val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_and_hessian!!(cache, f, x, y)
+            @test val ≈ f(x, y)
+            @test gx ≈ 2x + [y[1], 0.0] rtol = 1e-10
+            @test gy ≈ 2y + [x[1], 0.0] rtol = 1e-10
+            @test Hxx ≈ 2 * I rtol = 1e-10
+            @test Hyy ≈ 2 * I rtol = 1e-10
+            @test Hxy ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
+            @test Hyx ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
+        end
+
+        @testset "multi-arg: cache reuse" begin
+            f(x, y) = sum(x .^ 2) + sum(y .^ 2)
+            x1, y1 = [1.0, 0.0], [0.0, 1.0]
+            x2, y2 = [2.0, 3.0], [4.0, 5.0]
+            cache = prepare_hessian_cache(f, x1, y1)
+            v1, (gx1, gy1), ((Hxx1, _), (_, Hyy1)) = value_and_hessian!!(cache, f, x1, y1)
+            v2, (gx2, gy2), ((Hxx2, _), (_, Hyy2)) = value_and_hessian!!(cache, f, x2, y2)
+            @test v1 ≈ f(x1, y1)
+            @test v2 ≈ f(x2, y2)
+            @test gx1 ≈ 2x1
+            @test gx2 ≈ 2x2
+            @test Hxx1 ≈ 2 * I
+            @test Hxx2 ≈ 2 * I  # Hessian is constant for sum of squares
+            @test Hyy1 ≈ 2 * I
+            @test Hyy2 ≈ 2 * I
+        end
     end
 
     @testset "selective zeroing of cotangents" begin
