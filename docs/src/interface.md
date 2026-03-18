@@ -74,4 +74,6 @@ Mooncake.value_and_pullback!!(::Mooncake.Cache, ȳ, f::F, x::Vararg{Any, N}) whe
 Mooncake.prepare_derivative_cache
 Mooncake.prepare_gradient_cache
 Mooncake.prepare_pullback_cache
+Mooncake.prepare_hvp_cache
+Mooncake.value_and_hvp!!
 ```
