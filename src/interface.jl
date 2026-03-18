@@ -853,3 +853,127 @@ function value_and_hvp!!(cache::HVPCache, vs::Tuple, x1, x2, xs...)
     )
     return f_val, grads, hvps
 end
+
+# Private helper used by the Hessian API: run the rrule for f at x, backpropagate a
+# scalar seed of 1, and return a copy of the accumulated gradient (fdata).
+# x_fdata is a pre-allocated buffer (the fdata component of x's tangent); it is zeroed
+# here before use so callers do not need to reset it.
+function _hessian_grad(
+    rule, f, x::AbstractVector{T}, x_fdata::AbstractVector{T}
+) where {T<:IEEEFloat}
+    fill!(x_fdata, zero(T))
+    _, pb!! = rule(zero_fcodual(f), CoDual(x, x_fdata))
+    pb!!(one(T))
+    return copy(x_fdata)
+end
+
+"""
+    HessianCache
+
+Cache for computing Hessians using forward-over-reverse AD. Build with
+[`prepare_hessian_cache`](@ref).
+"""
+struct HessianCache{Tfrule,Trrule,Tf,Tfd}
+    frule::Tfrule
+    rrule::Trrule
+    f::Tf
+    x_fdata::Tfd  # gradient buffer (fdata of x), shared with the inner rrule
+end
+
+"""
+    prepare_hessian_cache(f, x::AbstractVector{<:IEEEFloat}; config=Mooncake.Config())
+
+Return a cache for computing `f(x)`, `∇f(x)`, and `∇²f(x)` via
+[`value_and_hessian!!`](@ref).
+
+`f` must map a vector of IEEE floats to a scalar IEEE float.
+Hessian computation uses forward-over-reverse AD: `n = length(x)` forward-mode passes
+over the reverse-mode gradient function.
+
+```jldoctest
+f(x) = sum(x .^ 2)
+x = [1.0, 2.0, 3.0]
+cache = Mooncake.prepare_hessian_cache(f, x)
+Mooncake.value_and_hessian!!(cache, f, x)
+
+# output
+
+(14.0, [2.0, 4.0, 6.0], [2.0 0.0 0.0; 0.0 2.0 0.0; 0.0 0.0 2.0])
+```
+"""
+@unstable function prepare_hessian_cache(
+    f, x::AbstractVector{T}; config=Config()
+) where {T<:IEEEFloat}
+    x_fdata = fdata(zero_tangent(x))
+    rrule = build_rrule(f, x; config.debug_mode, config.silence_debug_messages)
+    frule = build_frule(
+        _hessian_grad,
+        rrule,
+        f,
+        x,
+        x_fdata;
+        config.debug_mode,
+        config.silence_debug_messages,
+    )
+    return HessianCache(frule, rrule, f, x_fdata)
+end
+
+"""
+    value_and_hessian!!(cache::HessianCache, f, x::AbstractVector{T}) where {T<:IEEEFloat}
+
+Using a pre-built `cache`, compute and return `(value, gradient, hessian)` of `f` at `x`:
+- `value = f(x)`
+- `gradient = ∇f(x)`, a vector of length `n = length(x)`
+- `hessian = ∇²f(x)`, an `n×n` matrix
+
+Uses forward-over-reverse AD: `n` forward-mode passes on the gradient function.
+
+!!! info
+    `cache` must be the output of [`prepare_hessian_cache`](@ref), and `x` must have the
+    same size and element type as used to construct the cache.
+
+# Example
+```jldoctest
+f(x) = (1 - x[1])^2 + 100 * (x[2] - x[1]^2)^2
+x = [1.2, 1.2]
+cache = Mooncake.prepare_hessian_cache(f, x)
+_, _, H = Mooncake.value_and_hessian!!(cache, f, x)
+H
+
+# output
+
+2×2 Matrix{Float64}:
+ 1250.0  -480.0
+ -480.0   200.0
+```
+"""
+function value_and_hessian!!(
+    cache::HessianCache, f, x::AbstractVector{T}
+) where {T<:IEEEFloat}
+    n = length(x)
+    H = zeros(T, n, n)
+    n == 0 && return f(x), T[], H
+
+    x_tangent = zeros(T, n)
+    v_tangent = zeros(T, n)  # tangent for x_fdata; zeroed by frule on each call
+
+    local gradient
+    for i in 1:n
+        fill!(x_tangent, zero(T))
+        x_tangent[i] = one(T)
+        result = cache.frule(
+            zero_dual(_hessian_grad),
+            zero_dual(cache.rrule),
+            zero_dual(cache.f),
+            Dual(x, x_tangent),
+            Dual(cache.x_fdata, v_tangent),
+        )
+        if i == 1
+            gradient = copy(primal(result))
+        end
+        H[:, i] = tangent(result)
+    end
+
+    value = f(x)
+    return value, gradient, H
+end

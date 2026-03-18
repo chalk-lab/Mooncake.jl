@@ -34,7 +34,24 @@ cache = MC.prepare_gradient_cache(f, x);
 val, grad = MC.value_and_gradient!!(cache, f, x)
 ```
 
-You should expect that `MC.prepare_gradient_cache` takes a little bit of time to run, but that `MC.value_and_gradient!!` is fast. For additional details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). You can also interact with `Mooncake.jl` via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
+You should expect that `MC.prepare_gradient_cache` takes a little bit of time to run, but that `MC.value_and_gradient!!` is fast.
+
+Hessians of scalar-valued functions `f : ℝⁿ → ℝ` can be computed natively via forward-over-reverse AD using `MC.value_and_hessian!!`:
+
+```julia
+import Mooncake as MC
+
+f(x) = (1 - x[1])^2 + 100 * (x[2] - x[1]^2)^2  # Rosenbrock
+x = [1.2, 1.2]
+
+cache = MC.prepare_hessian_cache(f, x);
+val, grad, H = MC.value_and_hessian!!(cache, f, x)
+# val  : f(x)
+# grad : ∇f(x)  (length-n vector)
+# H    : ∇²f(x) (n×n matrix)
+```
+
+For additional details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). You can also interact with `Mooncake.jl` via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
 
 ```julia
 import DifferentiationInterface as DI

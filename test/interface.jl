@@ -1,8 +1,10 @@
 using Mooncake.TestUtils: count_allocs, has_equal_data
 using Mooncake:
     prepare_gradient_cache,
+    prepare_hessian_cache,
     prepare_pullback_cache,
     value_and_gradient!!,
+    value_and_hessian!!,
     value_and_pullback!!
 
 struct SimplePair
@@ -359,6 +361,70 @@ end
             @test_throws "Tangent types do not match primal types:" Mooncake.value_and_derivative!!(
                 cache_sp_unfriendly, zip(fx_sp, dfx_sp)...
             )
+        end
+    end
+
+    @testset "value_and_hessian!!" begin
+        rosen(z) = (1 - z[1])^2 + 100 * (z[2] - z[1]^2)^2
+        function rosen_H(z)
+            h11 = 2 - 400 * (z[2] - z[1]^2) + 800 * z[1]^2
+            h12 = -400 * z[1]
+            return [h11 h12; h12 200.0]
+        end
+        rosen_g(z) = [-2*(1 - z[1]) - 400*z[1]*(z[2] - z[1]^2), 200*(z[2] - z[1]^2)]
+
+        @testset "Rosenbrock Float64" begin
+            z = [1.2, 1.2]
+            cache = prepare_hessian_cache(rosen, z)
+            v, g, H = value_and_hessian!!(cache, rosen, z)
+            @test v ≈ rosen(z)
+            @test g ≈ rosen_g(z) rtol = 1e-10
+            @test H ≈ rosen_H(z) rtol = 1e-10
+        end
+
+        @testset "Rosenbrock Float32" begin
+            z = Float32[1.2, 1.2]
+            cache = prepare_hessian_cache(rosen, z)
+            v, g, H = value_and_hessian!!(cache, rosen, z)
+            @test v isa Float32
+            @test g isa Vector{Float32}
+            @test H isa Matrix{Float32}
+            @test v ≈ rosen(z) rtol = 1e-4
+            @test H ≈ rosen_H(Float64[1.2, 1.2]) rtol = 1e-4
+        end
+
+        @testset "quadratic (diagonal Hessian)" begin
+            f(x) = sum(x .^ 2)
+            x = [1.0, 2.0, 3.0]
+            cache = prepare_hessian_cache(f, x)
+            v, g, H = value_and_hessian!!(cache, f, x)
+            @test v ≈ 14.0
+            @test g ≈ [2.0, 4.0, 6.0]
+            @test H ≈ 2 * I
+        end
+
+        @testset "cache reuse with different x" begin
+            f(x) = sum(x .^ 2)
+            x1 = [1.0, 0.0]
+            x2 = [2.0, 3.0]
+            cache = prepare_hessian_cache(f, x1)
+            v1, g1, H1 = value_and_hessian!!(cache, f, x1)
+            v2, g2, H2 = value_and_hessian!!(cache, f, x2)
+            @test v1 ≈ 1.0
+            @test v2 ≈ 13.0
+            @test g1 ≈ [2.0, 0.0]
+            @test g2 ≈ [4.0, 6.0]
+            @test H1 ≈ H2  # Hessian of sum(x^2) is 2I everywhere
+        end
+
+        @testset "debug_mode=true" begin
+            z = [1.2, 1.2]
+            cache = prepare_hessian_cache(
+                rosen, z; config=Mooncake.Config(; debug_mode=true)
+            )
+            v, g, H = value_and_hessian!!(cache, rosen, z)
+            @test v ≈ rosen(z)
+            @test H ≈ rosen_H(z) rtol = 1e-10
         end
     end
 
