@@ -171,7 +171,7 @@ end
         f(x) = x[1]^4.0
         x = [2.0]
         cache = prepare_hvp_cache(f, x)
-        f_val, grad, _ = value_and_hvp!!(cache, [1.0], x)
+        f_val, grad, _ = value_and_hvp!!(cache, f, [1.0], x)
         @test f_val ≈ 16.0
         @test grad ≈ [32.0]
     end
@@ -179,26 +179,8 @@ end
     @testset "HVP correctness for x^4" begin
         f(x) = x[1]^4.0
         x = [2.0]
-        _, _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), [1.0], x)
+        _, _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, [1.0], x)
         @test hvp ≈ [48.0]
-    end
-
-    @testset "Rosenbrock Hessian" begin
-        rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
-        z = [1.2, 1.2]
-        _, _, H = value_and_hessian!!(prepare_hessian_cache(rosen, z), rosen, z)
-        @test H ≈ [1250.0 -480.0; -480.0 200.0] rtol = 1e-10
-    end
-
-    @testset "Rosenbrock Hessian (debug_mode=true)" begin
-        rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
-        z = [1.2, 1.2]
-        _, _, H = value_and_hessian!!(
-            prepare_hessian_cache(rosen, z; config=Mooncake.Config(; debug_mode=true)),
-            rosen,
-            z,
-        )
-        @test H ≈ [1250.0 -480.0; -480.0 200.0] rtol = 1e-10
     end
 
     @testset "cache reuse across multiple HVP calls" begin
@@ -211,17 +193,10 @@ end
         for i in 1:n
             v = zeros(n)
             v[i] = 1.0
-            _, _, hvp = value_and_hvp!!(cache, v, x)
+            _, _, hvp = value_and_hvp!!(cache, f, v, x)
             expected = 2.0 .* v
             @test hvp ≈ expected rtol = 1e-10
         end
-    end
-
-    @testset "broadcast sum of squares Hessian" begin
-        f(x) = sum(x .* x)
-        x = [2.0, 3.0]
-        _, _, H = value_and_hessian!!(prepare_hessian_cache(f, x), f, x)
-        @test H ≈ [2.0 0.0; 0.0 2.0] rtol = 1e-10
     end
 
     @testset "multi-argument HVP" begin
@@ -231,7 +206,7 @@ end
         y = [3.0]
         cache = prepare_hvp_cache(f, x, y)
         _, (grad_x, grad_y), (hvp_x, hvp_y) = value_and_hvp!!(
-            cache, ([1.0, 0.0], [0.0]), x, y
+            cache, f, ([1.0, 0.0], [0.0]), x, y
         )
         @test grad_x ≈ [2.0, 4.0] rtol = 1e-10
         @test grad_y ≈ [6.0] rtol = 1e-10

@@ -1,9 +1,11 @@
-using Mooncake.TestUtils: count_allocs, has_equal_data
+using Mooncake.TestUtils: count_allocs, has_equal_data, test_hook
 using Mooncake:
     prepare_gradient_cache,
+    prepare_hvp_cache,
     prepare_hessian_cache,
     prepare_pullback_cache,
     value_and_gradient!!,
+    value_and_hvp!!,
     value_and_hessian!!,
     value_and_pullback!!
 
@@ -463,129 +465,174 @@ end
         end
     end
 
+    @testset "value_and_hvp!!" begin
+        test_hook(Val(:allow_unstable_hvp_interface_test)) do
+            @testset "multi-argument HVP validates direction arity" begin
+                f(x, y) = sum(x .* x) + sum(y .* y)
+                x = [1.0, 2.0]
+                y = [3.0]
+                cache = prepare_hvp_cache(f, x, y)
+                @test_throws ArgumentError value_and_hvp!!(cache, f, ([1.0, 0.0],), x, y)
+            end
+        end
+    end
+
     @testset "value_and_hessian!!" begin
-        rosen(z) = (1 - z[1])^2 + 100 * (z[2] - z[1]^2)^2
-        function rosen_H(z)
-            h11 = 2 - 400 * (z[2] - z[1]^2) + 800 * z[1]^2
-            h12 = -400 * z[1]
-            return [h11 h12; h12 200.0]
-        end
-        rosen_g(z) = [-2*(1 - z[1]) - 400*z[1]*(z[2] - z[1]^2), 200*(z[2] - z[1]^2)]
+        test_hook(Val(:allow_unstable_hessian_interface_test)) do
+            rosen(z) = (1 - z[1])^2 + 100 * (z[2] - z[1]^2)^2
+            function rosen_H(z)
+                h11 = 2 - 400 * (z[2] - z[1]^2) + 800 * z[1]^2
+                h12 = -400 * z[1]
+                return [h11 h12; h12 200.0]
+            end
+            rosen_g(z) = [-2*(1 - z[1]) - 400*z[1]*(z[2] - z[1]^2), 200*(z[2] - z[1]^2)]
 
-        @testset "Rosenbrock Float64" begin
-            z = [1.2, 1.2]
-            cache = prepare_hessian_cache(rosen, z)
-            v, g, H = value_and_hessian!!(cache, rosen, z)
-            @test v ≈ rosen(z)
-            @test g ≈ rosen_g(z) rtol = 1e-10
-            @test H ≈ rosen_H(z) rtol = 1e-10
-        end
+            @testset "Rosenbrock Float64" begin
+                z = [1.2, 1.2]
+                cache = prepare_hessian_cache(rosen, z)
+                v, g, H = value_and_hessian!!(cache, rosen, z)
+                @test v ≈ rosen(z)
+                @test g ≈ rosen_g(z) rtol = 1e-10
+                @test H ≈ rosen_H(z) rtol = 1e-10
+            end
 
-        @testset "Rosenbrock Float32" begin
-            z = Float32[1.2, 1.2]
-            cache = prepare_hessian_cache(rosen, z)
-            v, g, H = value_and_hessian!!(cache, rosen, z)
-            @test v isa Float32
-            @test g isa Vector{Float32}
-            @test H isa Matrix{Float32}
-            @test v ≈ rosen(z) rtol = 1e-4
-            @test H ≈ rosen_H(Float64[1.2, 1.2]) rtol = 1e-4
-        end
+            @testset "Rosenbrock Float32" begin
+                z = Float32[1.2, 1.2]
+                cache = prepare_hessian_cache(rosen, z)
+                v, g, H = value_and_hessian!!(cache, rosen, z)
+                @test v isa Float32
+                @test g isa Vector{Float32}
+                @test H isa Matrix{Float32}
+                @test v ≈ rosen(z) rtol = 1e-4
+                @test H ≈ rosen_H(Float64[1.2, 1.2]) rtol = 1e-4
+            end
 
-        @testset "quadratic (diagonal Hessian)" begin
-            f(x) = sum(x .^ 2)
-            x = [1.0, 2.0, 3.0]
-            cache = prepare_hessian_cache(f, x)
-            v, g, H = value_and_hessian!!(cache, f, x)
-            @test v ≈ 14.0
-            @test g ≈ [2.0, 4.0, 6.0]
-            @test H ≈ 2 * I
-        end
+            @testset "quadratic (diagonal Hessian)" begin
+                f(x) = sum(x .^ 2)
+                x = [1.0, 2.0, 3.0]
+                cache = prepare_hessian_cache(f, x)
+                v, g, H = value_and_hessian!!(cache, f, x)
+                @test v ≈ 14.0
+                @test g ≈ [2.0, 4.0, 6.0]
+                @test H ≈ 2 * I
+            end
 
-        @testset "cache reuse with different x" begin
-            f(x) = sum(x .^ 2)
-            x1 = [1.0, 0.0]
-            x2 = [2.0, 3.0]
-            cache = prepare_hessian_cache(f, x1)
-            v1, g1, H1 = value_and_hessian!!(cache, f, x1)
-            v2, g2, H2 = value_and_hessian!!(cache, f, x2)
-            @test v1 ≈ 1.0
-            @test v2 ≈ 13.0
-            @test g1 ≈ [2.0, 0.0]
-            @test g2 ≈ [4.0, 6.0]
-            @test H1 ≈ H2  # Hessian of sum(x^2) is 2I everywhere
-        end
+            @testset "cache reuse with different x" begin
+                f(x) = sum(x .^ 2)
+                x1 = [1.0, 0.0]
+                x2 = [2.0, 3.0]
+                cache = prepare_hessian_cache(f, x1)
+                v1, g1, H1 = value_and_hessian!!(cache, f, x1)
+                v2, g2, H2 = value_and_hessian!!(cache, f, x2)
+                @test v1 ≈ 1.0
+                @test v2 ≈ 13.0
+                @test g1 ≈ [2.0, 0.0]
+                @test g2 ≈ [4.0, 6.0]
+                @test H1 ≈ H2
+            end
 
-        @testset "debug_mode=true" begin
-            z = [1.2, 1.2]
-            cache = prepare_hessian_cache(
-                rosen, z; config=Mooncake.Config(; debug_mode=true)
-            )
-            v, g, H = value_and_hessian!!(cache, rosen, z)
-            @test v ≈ rosen(z)
-            @test H ≈ rosen_H(z) rtol = 1e-10
-        end
+            @testset "debug_mode=true" begin
+                z = [1.2, 1.2]
+                cache = prepare_hessian_cache(
+                    rosen, z; config=Mooncake.Config(; debug_mode=true)
+                )
+                v, g, H = value_and_hessian!!(cache, rosen, z)
+                @test v ≈ rosen(z)
+                @test H ≈ rosen_H(z) rtol = 1e-10
+            end
 
-        @testset "n=0 edge case" begin
-            f(x) = 0.0
-            x = Float64[]
-            cache = prepare_hessian_cache(f, x)
-            v, g, H = value_and_hessian!!(cache, f, x)
-            @test v == 0.0
-            @test g == Float64[]
-            @test H == zeros(0, 0)
-        end
+            @testset "n=0 edge case" begin
+                f(x) = 0.0
+                x = Float64[]
+                cache = prepare_hessian_cache(f, x)
+                v, g, H = value_and_hessian!!(cache, f, x)
+                @test v == 0.0
+                @test g == Float64[]
+                @test H == zeros(0, 0)
+            end
 
-        @testset "multi-arg: two vectors" begin
-            # f(x, y) = x'x + y'y + x[1]*y[1]
-            # ∇_x f = 2x + [y[1], 0, ...]
-            # ∇_y f = 2y + [x[1], 0, ...]
-            # H_xx = 2I, H_yy = 2I
-            # H_xy = H_yx = [[1, 0, ...]; [0, ...]] (only [1,1] entry is 1)
-            f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
-            x = [1.0, 2.0]
-            y = [3.0, 4.0]
-            cache = prepare_hessian_cache(f, x, y)
-            val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_and_hessian!!(cache, f, x, y)
-            @test val ≈ f(x, y)
-            @test gx ≈ 2x + [y[1], 0.0] rtol = 1e-10
-            @test gy ≈ 2y + [x[1], 0.0] rtol = 1e-10
-            @test Hxx ≈ 2 * I rtol = 1e-10
-            @test Hyy ≈ 2 * I rtol = 1e-10
-            @test Hxy ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
-            @test Hyx ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
-        end
+            @testset "multi-arg: two vectors" begin
+                f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
+                x = [1.0, 2.0]
+                y = [3.0, 4.0]
+                cache = prepare_hessian_cache(f, x, y)
+                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_and_hessian!!(
+                    cache, f, x, y
+                )
+                @test val ≈ f(x, y)
+                @test gx ≈ 2x + [y[1], 0.0] rtol = 1e-10
+                @test gy ≈ 2y + [x[1], 0.0] rtol = 1e-10
+                @test Hxx ≈ 2 * I rtol = 1e-10
+                @test Hyy ≈ 2 * I rtol = 1e-10
+                @test Hxy ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
+                @test Hyx ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
+            end
 
-        @testset "multi-arg: cache reuse" begin
-            f(x, y) = sum(x .^ 2) + sum(y .^ 2)
-            x1, y1 = [1.0, 0.0], [0.0, 1.0]
-            x2, y2 = [2.0, 3.0], [4.0, 5.0]
-            cache = prepare_hessian_cache(f, x1, y1)
-            v1, (gx1, gy1), ((Hxx1, _), (_, Hyy1)) = value_and_hessian!!(cache, f, x1, y1)
-            v2, (gx2, gy2), ((Hxx2, _), (_, Hyy2)) = value_and_hessian!!(cache, f, x2, y2)
-            @test v1 ≈ f(x1, y1)
-            @test v2 ≈ f(x2, y2)
-            @test gx1 ≈ 2x1
-            @test gx2 ≈ 2x2
-            @test Hxx1 ≈ 2 * I
-            @test Hxx2 ≈ 2 * I  # Hessian is constant for sum of squares
-            @test Hyy1 ≈ 2 * I
-            @test Hyy2 ≈ 2 * I
-        end
+            @testset "multi-arg: cache reuse" begin
+                f(x, y) = sum(x .^ 2) + sum(y .^ 2)
+                x1, y1 = [1.0, 0.0], [0.0, 1.0]
+                x2, y2 = [2.0, 3.0], [4.0, 5.0]
+                cache = prepare_hessian_cache(f, x1, y1)
+                v1, (gx1, gy1), ((Hxx1, _), (_, Hyy1)) = value_and_hessian!!(
+                    cache, f, x1, y1
+                )
+                v2, (gx2, gy2), ((Hxx2, _), (_, Hyy2)) = value_and_hessian!!(
+                    cache, f, x2, y2
+                )
+                @test v1 ≈ f(x1, y1)
+                @test v2 ≈ f(x2, y2)
+                @test gx1 ≈ 2x1
+                @test gx2 ≈ 2x2
+                @test Hxx1 ≈ 2 * I
+                @test Hxx2 ≈ 2 * I
+                @test Hyy1 ≈ 2 * I
+                @test Hyy2 ≈ 2 * I
+            end
 
-        @testset "multi-arg: first arg empty" begin
-            # Regression test: when ns[1]==0 but other args non-empty, value and grads
-            # must still be initialised (previously caused UndefVarError).
-            f(x, y) = sum(y .^ 2)
-            x = Float64[]
-            y = [1.0, 2.0]
-            cache = prepare_hessian_cache(f, x, y)
-            val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_and_hessian!!(cache, f, x, y)
-            @test val ≈ f(x, y)
-            @test gx == Float64[]
-            @test gy ≈ 2y
-            @test Hxx == zeros(0, 0)
-            @test Hyy ≈ 2 * I
+            @testset "multi-arg: first arg empty" begin
+                f(x, y) = sum(y .^ 2)
+                x = Float64[]
+                y = [1.0, 2.0]
+                cache = prepare_hessian_cache(f, x, y)
+                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_and_hessian!!(
+                    cache, f, x, y
+                )
+                @test val ≈ f(x, y)
+                @test gx == Float64[]
+                @test gy ≈ 2y
+                @test Hxx == zeros(0, 0)
+                @test Hyy ≈ 2 * I
+            end
+
+            @testset "reject non-vector inputs" begin
+                f(x) = sum(x .^ 2)
+                x = [1.0 2.0; 3.0 4.0]
+                cache = prepare_hessian_cache(f, x)
+                @test_throws ArgumentError value_and_hessian!!(cache, f, x)
+            end
+
+            @testset "reject non-IEEEFloat element types" begin
+                f(x) = sum(x .^ 2)
+                x = ComplexF64[1 + 0im, 2 + 0im]
+                cache = prepare_hessian_cache(f, x)
+                @test_throws ArgumentError value_and_hessian!!(cache, f, x)
+            end
+
+            @testset "reject mismatched element types across arguments" begin
+                f(x, y) = sum(x .^ 2) + sum(y .^ 2)
+                x = Float64[1.0, 2.0]
+                y = Float32[3.0, 4.0]
+                cache = prepare_hessian_cache(f, x, y)
+                @test_throws ArgumentError value_and_hessian!!(cache, f, x, y)
+            end
+
+            @testset "reject mismatched function object" begin
+                f(x) = sum(x .^ 2)
+                g(x) = sum(3 .* x .^ 2)
+                x = [1.0, 2.0]
+                cache = prepare_hessian_cache(f, x)
+                @test_throws ArgumentError value_and_hessian!!(cache, g, x)
+            end
         end
     end
 
