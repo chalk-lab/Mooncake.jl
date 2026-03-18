@@ -13,8 +13,8 @@
 # on every value_and_hvp!! call, so caching is essential: the first call compiles the
 # inner DerivedRule and dual callables; subsequent calls reuse them via _copy (cheap).
 #
-# build_primitive_frule returns a LazyFoRRule instance as the frule callable. LazyFoRRule is a
-# callable struct rather than a plain function so it can cache compiled artifacts.
+# build_primitive_frule returns a LazyFoRRule as the frule. LazyFoRRule is a callable struct
+# rather than a plain function so it can cache compiled artifacts.
 # __build_primitive_frule is @generated: it uses Core.Compiler.return_type to infer
 # Trule/Tfwd/Trvs so the LazyFoRRule is fully typed at construction. The three artifact
 # fields are uninitialized until the first call, at which point they are populated and
@@ -81,6 +81,11 @@ function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
     # because build_primitive_frule returns one LazyFoRRule per call site in the
     # compiled IR, and every call through that site uses the same config (and therefore
     # the same debug_mode) for the lifetime of the closure.
+    #
+    # LazyFoRRule is shared across value_and_hvp!! calls (like LazyDerivedRule), but
+    # unlike LazyDerivedRule it cannot guarantee its Stacks are balanced on return, so
+    # each call gets fresh empty Stacks via _copy (compiled code is shared, not copied)
+    # and fresh zero tangent Stacks via zero_tangent.
     if isdefined(cache, :rule)
         new_rule = _copy(cache.rule)
         # _copy(Stack{T}) resets each primal Stack to empty. Regenerate captures_tangent

@@ -745,8 +745,8 @@ function value_and_derivative!!(
     end
 end
 
-# `fwd_cache` is the derivative cache for `grad_f` — it captures the frule for `grad_f`,
-# which in turn holds a `LazyFoRRule` that caches the inner rrule compilation across HVP calls.
+# `fwd_cache` is the derivative cache for `grad_f`. The compiled inner rrule is cached
+# across `value_and_hvp!!` calls via a `LazyFoRRule` captured inside `fwd_cache`'s frule.
 struct HVPCache{Tgrad_f,Tgrad_tangent,Tfwd_cache}
     grad_f::Tgrad_f
     # Pre-computed zero tangent for grad_f; the function is never perturbed, only x is.
@@ -782,8 +782,8 @@ true
 ```
 """
 @unstable function prepare_hvp_cache(f, x; config=Config())
-    # grad_f calls prepare_gradient_cache internally so that LazyFoRRule (instantiated when
-    # the outer frule is built) can cache the inner rule compilation across HVP calls.
+    # grad_f calls prepare_gradient_cache internally so that the compiled inner rule is
+    # cached across value_and_hvp!! calls via the LazyFoRRule in the outer frule.
     grad_f = let f = f, config = config
         y -> begin
             grad_cache = prepare_gradient_cache(f, y; config)
