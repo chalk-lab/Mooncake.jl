@@ -1,12 +1,20 @@
 """
-    primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple})::IRCode
+    primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple}; normalize=true)::IRCode
 
 !!! warning
-    This is not part of the public interface of Mooncake. As such, it may change as 
+    This is not part of the public interface of Mooncake. As such, it may change as
     part of a non-breaking release of the package.
 
-Get the `Core.Compiler.IRCode` associated to `sig` from which the a rule can be derived.
-Roughly equivalent to `Base.code_ircode_by_type(sig; interp)`.
+Get the `Core.Compiler.IRCode` associated to `sig`. Roughly equivalent to
+`Base.code_ircode_by_type(sig; interp)`.
+
+Unlike `fwd_ir` and `rvs_ir`, this function does not attempt to derive a reverse rule.
+
+# Keyword Arguments
+- `normalize::Bool`: if `true` (default), apply Mooncake's IR normalisation pass so the
+    returned IR matches what the AD pipeline uses internally. Set to `false` to skip
+    normalisation, which allows inspection of primal IR for functions containing code that
+    Mooncake cannot normalise (e.g. `llvmcall`, unsupported intrinsics).
 
 For example, if you wanted to get the IR associated to the call `map(sin, randn(10))`, you
 could do one of the following calls:
@@ -19,8 +27,14 @@ julia> primal_ir(get_interpreter(ReverseMode), typeof((map, sin, randn(10)))) is
 true
 ```
 """
-function primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple})::IRCode
-    return generate_ir(interp, sig).primal_ir
+function primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple}; normalize=true)::IRCode
+    ir, _ = lookup_ir(interp, sig)
+    @static if VERSION > v"1.12-"
+        ir = set_valid_world!(ir, interp.world)
+    end
+    normalize || return ir
+    _, spnames = is_vararg_and_sparam_names(sig)
+    return normalise!(ir, spnames)
 end
 
 """

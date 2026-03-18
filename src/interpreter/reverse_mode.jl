@@ -93,13 +93,13 @@ codegen which produces the forwards- and reverse-passes.
     to determine which blocks to visit.
 - `block_stack`: the block stack. Can always be found at `block_stack_id` in the forwards-
     and reverse-passes.
-- `entry_id`: ID associated to the block inserted at the start of execution in the the
+- `entry_id`: ID associated to the block inserted at the start of execution in the
     forwards-pass, and the end of execution in the pullback.
 - `shared_data_pairs`: the `SharedDataPairs` used to define the captured variables passed
     to both the forwards- and reverse-passes.
 - `arg_types`: a map from `Argument` to its static type.
 - `ssa_insts`: a map from `ID` associated to lines to the primal `NewInstruction`. This
-    contains the line of code, its static / inferred type, and some other detailss. See
+    contains the line of code, its static / inferred type, and some other details. See
     `Core.Compiler.NewInstruction` for a full list of fields.
 - `arg_rdata_ref_ids`: the dict mapping from arguments to the `ID` which creates and
     initialises the `Ref` which contains the reverse data associated to that argument.
@@ -827,7 +827,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
                 rdata_inc_expr = Expr(:call, getfield, call_pullback_id, n)
                 rdata_inc = (rdata_inc_id, new_inst(rdata_inc_expr))
 
-                # Construct statments to increment ref.
+                # Construct statements to increment ref.
                 return vcat(rdata_inc, increment_ref_stmts(rev_data_id, rdata_inc_id))
             end
 
@@ -1056,6 +1056,17 @@ struct MooncakeRuleCompilationError <: Exception
 end
 
 function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
+    # Print the source location of the method being differentiated, if available.
+    try
+        m = lookup_method(err.sig)
+        if m !== nothing
+            println(io, "Mooncake failed to differentiate the following method: $m")
+            println(io)  # blank line before the main error body
+        end
+    catch e
+        # If method lookup fails for any reason, skip gracefully.
+        @debug "MooncakeRuleCompilationError: method lookup failed" exception = e
+    end
     msg =
         "MooncakeRuleCompilationError: an error occurred while Mooncake was compiling a " *
         "rule to differentiate something. If the `caused by` error " *

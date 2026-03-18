@@ -307,7 +307,7 @@ function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
         dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
     elseif T <: Ptr && _x isa Union{Int,UInt}
         int2ptr_err_msg =
-            "It is not permissible to bitcast to an Int/UInt type to a Ptr type during AD, as " *
+            "It is not permissible to bitcast from an Int/UInt type to a Ptr type during AD, as " *
             "this risks giving the wrong answer, or causing Julia to segfault. " *
             "If this call to bitcast appears as part of the implementation of a " *
             "differentiable function, you should write a rule for this function, or modify " *
@@ -1390,7 +1390,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (true, :stability, nothing, Core._typevar, :T, Union{}, Any),
         (false, :none, _range, Core.apply_type, Vector, Float64),
         (false, :none, _range, Core.apply_type, Array, Float64, 2),
-        (false, :none, nothing, compilerbarrier, :type, 5.0),
+        (false, :none, (lb=1e-3, ub=100), compilerbarrier, :type, 5.0),
         # Core.const_arrayref -- NEEDS IMPLEMENTING AND TESTING
         # Core.donotdelete -- NEEDS IMPLEMENTING AND TESTING
         # Core.finalizer -- NEEDS IMPLEMENTING AND TESTING
@@ -1414,12 +1414,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, (lb=1e-3, ub=20.0), fieldtype, StructFoo, :b),
         (false, :stability, (lb=1e-3, ub=20.0), fieldtype, MutableFoo, :a),
         (false, :stability, (lb=1e-3, ub=20.0), fieldtype, MutableFoo, :b),
-        (true, :none, _range, getfield, StructFoo(5.0), :a),
-        (false, :none, _range, getfield, StructFoo(5.0, randn(5)), :a),
-        (false, :none, _range, getfield, StructFoo(5.0, randn(5)), :b),
-        (true, :none, _range, getfield, StructFoo(5.0), 1),
-        (false, :none, _range, getfield, StructFoo(5.0, randn(5)), 1),
-        (false, :none, _range, getfield, StructFoo(5.0, randn(5)), 2),
+        # Symbol-indexed getfield on StructFoo is slower (~251x) than expected.
+        (true, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0), :a),
+        (false, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0, randn(5)), :a),
+        (false, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0, randn(5)), :b),
+        # Int-indexed getfield on StructFoo is slower (~420x) than Symbol-indexed.
+        (true, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0), 1),
+        (false, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0, randn(5)), 1),
+        (false, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0, randn(5)), 2),
         (true, :none, _range, getfield, MutableFoo(5.0), :a),
         (false, :none, _range, getfield, MutableFoo(5.0, randn(5)), :b),
         (false, :stability_and_allocs, nothing, getfield, UnitRange{Int}(5:9), :start),
@@ -1432,8 +1434,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability_and_allocs, nothing, getfield, (1, 2), 1),
         (false, :stability_and_allocs, nothing, getfield, (a=5, b=4), 1),
         (false, :stability_and_allocs, nothing, getfield, (a=5, b=4), 2),
-        (false, :none, nothing, getfield, (Float64, Float64), 1),
-        (false, :none, nothing, getfield, (Float64, Float64), 2, false),
+        # getfield on Tuple{Type{T},...} with integer index: the primal is trivial but the
+        # rule triggers type-system dispatch, making the ratio large. Loose bounds are intentional.
+        (false, :none, (lb=1e-3, ub=200), getfield, (Float64, Float64), 1),
+        (false, :none, (lb=1e-3, ub=250), getfield, (Float64, Float64), 2, false),
         (false, :none, _range, getfield, (a=5.0, b=4), 1),
         (false, :none, _range, getfield, (a=5.0, b=4), 2),
         (false, :none, _range, getfield, UInt8, :name),

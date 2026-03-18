@@ -1040,6 +1040,8 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory = test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
         Mooncake.hand_written_rule_test_cases(rng_ctor, v)
     end
+    # GC.@preserve keeps backing objects alive for tests involving pointer-backed
+    # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
@@ -1052,6 +1054,8 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory = test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
         Mooncake.derived_rule_test_cases(rng_ctor, v)
     end
+    # GC.@preserve keeps backing objects alive for tests involving pointer-backed
+    # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
