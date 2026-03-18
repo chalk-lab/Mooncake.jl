@@ -176,7 +176,7 @@ function _compute_hessian_native(f, x::Vector{Float64}; debug_mode=false)
     for i in 1:n
         fill!(v, 0.0)
         v[i] = 1.0
-        _, col = value_and_hvp!!(cache, v, x)
+        _, _, col = value_and_hvp!!(cache, v, x)
         H[:, i] = col
     end
     return H
@@ -187,14 +187,15 @@ end
         f(x) = x[1]^4.0
         x = [2.0]
         cache = prepare_hvp_cache(f, x)
-        grad, _ = value_and_hvp!!(cache, [1.0], x)
+        f_val, grad, _ = value_and_hvp!!(cache, [1.0], x)
+        @test f_val ≈ 16.0
         @test grad ≈ [32.0]
     end
 
     @testset "HVP correctness for x^4" begin
         f(x) = x[1]^4.0
         x = [2.0]
-        _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), [1.0], x)
+        _, _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), [1.0], x)
         @test hvp ≈ [48.0]
     end
 
@@ -222,7 +223,7 @@ end
         for i in 1:n
             v = zeros(n)
             v[i] = 1.0
-            _, hvp = value_and_hvp!!(cache, v, x)
+            _, _, hvp = value_and_hvp!!(cache, v, x)
             expected = 2.0 .* v
             @test hvp ≈ expected rtol = 1e-10
         end
@@ -241,7 +242,9 @@ end
         x = [1.0, 2.0]
         y = [3.0]
         cache = prepare_hvp_cache(f, x, y)
-        (grad_x, grad_y), (hvp_x, hvp_y) = value_and_hvp!!(cache, ([1.0, 0.0], [0.0]), x, y)
+        _, (grad_x, grad_y), (hvp_x, hvp_y) = value_and_hvp!!(
+            cache, ([1.0, 0.0], [0.0]), x, y
+        )
         @test grad_x ≈ [2.0, 4.0] rtol = 1e-10
         @test grad_y ≈ [6.0] rtol = 1e-10
         @test hvp_x ≈ [2.0, 0.0] rtol = 1e-10

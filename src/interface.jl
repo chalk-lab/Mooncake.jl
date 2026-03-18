@@ -773,8 +773,8 @@ is fine, but changing the shapes requires a new cache.
 f(x) = sum(x .* x)
 x = [1.0, 2.0]
 cache = Mooncake.prepare_hvp_cache(f, x)
-gradient, hvp = Mooncake.value_and_hvp!!(cache, [1.0, 0.0], x)
-gradient ≈ [2.0, 4.0] && hvp ≈ [2.0, 0.0]
+f_val, gradient, hvp = Mooncake.value_and_hvp!!(cache, [1.0, 0.0], x)
+f_val ≈ 5.0 && gradient ≈ [2.0, 4.0] && hvp ≈ [2.0, 0.0]
 
 # output
 
@@ -787,7 +787,8 @@ true
     grad_f = let f = f, config = config
         y -> begin
             grad_cache = prepare_gradient_cache(f, y; config)
-            value_and_gradient!!(grad_cache, f, y)[2][2]
+            val_and_grad = value_and_gradient!!(grad_cache, f, y)
+            (val_and_grad[1], val_and_grad[2][2])
         end
     end
     fwd_cache = prepare_derivative_cache(grad_f, x; config)
@@ -799,8 +800,9 @@ end
     grad_f = let f = f, config = config
         function (ys...)
             grad_cache = prepare_gradient_cache(f, ys...; config)
+            val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
             # Drop the gradient w.r.t. f itself (always index 1); return only x-arg gradients.
-            Base.tail(value_and_gradient!!(grad_cache, f, ys...)[2])
+            (val_and_grad[1], Base.tail(val_and_grad[2]))
         end
     end
     fwd_cache = prepare_derivative_cache(grad_f, all_xs...; config)
@@ -814,11 +816,11 @@ end
 Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `f` at
 `x...` and the Hessian-vector product `H v`.
 
-**Single argument:** `v` is the tangent direction; returns `(∇f(x), H(x)v)`. For
-`f: Rⁿ → R` with `x::Vector{Float64}`, both outputs are `Vector{Float64}`.
+**Single argument:** `v` is the tangent direction; returns `(f(x), ∇f(x), H(x)v)`. For
+`f: Rⁿ → R` with `x::Vector{Float64}`, the gradient and HVP are `Vector{Float64}`.
 
 **Multiple arguments:** `vs` is a tuple of tangent directions (one per argument); returns
-`((∇f_x1, ∇f_x2, ...), (Hv_x1, Hv_x2, ...))`.
+`(f(x...), (∇f_x1, ∇f_x2, ...), (Hv_x1, Hv_x2, ...))`.
 
 !!! warning
     `cache` owns the mutable state in the returned values. Take a copy before calling again
@@ -828,8 +830,8 @@ Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `
 f(x) = sum(x .* x)
 x = [1.0, 2.0]
 cache = Mooncake.prepare_hvp_cache(f, x)
-gradient, hvp = Mooncake.value_and_hvp!!(cache, [1.0, 0.0], x)
-gradient ≈ [2.0, 4.0] && hvp ≈ [2.0, 0.0]
+f_val, gradient, hvp = Mooncake.value_and_hvp!!(cache, [1.0, 0.0], x)
+f_val ≈ 5.0 && gradient ≈ [2.0, 4.0] && hvp ≈ [2.0, 0.0]
 
 # output
 
@@ -837,15 +839,17 @@ true
 ```
 """
 function value_and_hvp!!(cache::HVPCache, v, x)
-    return value_and_derivative!!(
+    (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x, v)
     )
+    return f_val, grad, hvp
 end
 
 function value_and_hvp!!(cache::HVPCache, vs::Tuple, x1, x2, xs...)
     all_xs = (x1, x2, xs...)
     x_v_pairs = map((x, v) -> (x, v), all_xs, vs)
-    return value_and_derivative!!(
+    (f_val, grads), (_, hvps) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), x_v_pairs...
     )
+    return f_val, grads, hvps
 end

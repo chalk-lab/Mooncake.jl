@@ -77,10 +77,11 @@ function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
 
     debug_mode = primal(_debug_mode)
 
-    # Cache hit: reuse compiled rule + dual callables. `debug_mode` is not re-checked
-    # because build_primitive_frule returns one LazyFoRRule per call site in the
-    # compiled IR, and every call through that site uses the same config (and therefore
-    # the same debug_mode) for the lifetime of the closure.
+    # Cache hit: reuse compiled rule + dual callables. Neither `debug_mode` nor the
+    # signature (`sig_or_mi`) is re-checked: build_primitive_frule places one LazyFoRRule
+    # per call site in the compiled IR, and the call site is inside the closure for a
+    # fixed `grad_f`, so both the config and the signature of the inner function are
+    # invariant across value_and_hvp!! calls for the lifetime of this closure.
     #
     # LazyFoRRule is shared across value_and_hvp!! calls (like LazyDerivedRule), but
     # unlike LazyDerivedRule it cannot guarantee its Stacks are balanced on return, so
