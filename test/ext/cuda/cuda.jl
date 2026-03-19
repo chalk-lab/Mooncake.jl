@@ -29,6 +29,20 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         # with other rules.
         #
         # Check we can operate on CuArrays of various element types.
+
+        @testset "_copy_output / _copy_to_output!! for CuArray{$ET}" for ET in (
+            Float32, Float64, ComplexF32, ComplexF64
+        )
+            p = CuArray(randn(ET, 4, 4))
+            p_copy = Mooncake._copy_output(p)
+            @test p_copy == p
+            @test p_copy !== p
+            @test typeof(p_copy) == typeof(p)
+            p2 = CuArray(randn(ET, 4, 4))
+            Mooncake._copy_to_output!!(p_copy, p2)
+            @test p_copy == p2
+        end
+
         @testset for ET in (Float32, Float64, ComplexF32, ComplexF64)
             # Use `undef` to test against garbage memory (NaNs, Infs, subnormals).
             # `randn` generates well-behaved values and can miss these edge cases.

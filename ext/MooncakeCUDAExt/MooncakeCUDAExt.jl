@@ -76,7 +76,9 @@ import Mooncake:
     _fields,
     zero_rdata,
     RData,
-    nan_tangent_guard
+    nan_tangent_guard,
+    _copy_output,
+    _copy_to_output!!
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
@@ -86,6 +88,12 @@ include("ndual.jl")
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+Mooncake._copy_output(x::CuMaybeComplexArray) = copy(x)
+function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuMaybeComplexArray}
+    copyto!(dst, src)
+    return dst
+end
+
 const CuMaybeComplexVec = Union{CuArray{<:IEEEFloat,1},CuArray{<:Complex{<:IEEEFloat},1}}
 const CuMaybeComplexMat = Union{CuArray{<:IEEEFloat,2},CuArray{<:Complex{<:IEEEFloat},2}}
 const CuFloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}

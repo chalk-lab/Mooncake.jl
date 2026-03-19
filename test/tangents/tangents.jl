@@ -207,6 +207,73 @@ using DispatchDoctor: allow_unstable
         @test Mooncake.require_tangent_cache(P) == Val(expected_result)
     end
 
+    # Structs for _copy_output / _copy_to_output!! regression test cases
+    # mutable struct with a Type field
+    mutable struct MutableWithTypeField
+        t::Type
+        x::Float64
+    end
+    # immutable struct containing a Dict
+    struct DataStoreForTest
+        _n::Int
+        _data::Dict{Symbol,Any}
+    end
+
+    @testset "_copy_output edge-case types" begin
+        rng = Xoshiro(123456)
+
+        # See #1024 for the below :
+        # _copy_output must handle Type, Core.TypeName, and Module values
+        test_tangent(rng, Float64; interface_only=true)
+        test_tangent(rng, Vector{Float64}; interface_only=true)
+        test_tangent(rng, Union{Float64,Int64}; interface_only=true)
+        test_tangent(rng, Float64.name; interface_only=true)
+        test_tangent(rng, Base; interface_only=true)
+        # explicit tests for _copy_output and _copy_to_output!! with different src/dst values
+        let obj = MutableWithTypeField(Float64, 1.0)
+            obj_copy = Mooncake._copy_output(obj)
+            @test typeof(obj_copy) == MutableWithTypeField
+            @test obj_copy.t === Float64
+            @test obj_copy.x == 1.0
+            obj2 = MutableWithTypeField(Int64, 2.0)
+            Mooncake._copy_to_output!!(obj_copy, obj2)
+            @test obj_copy.t === Int64
+            @test obj_copy.x == 2.0
+        end
+
+        # See #1033 for the below :
+        # Opaque mutable types (nfields == 0), Explicit === checks are required
+        # identity return from a real copy for these types
+        @test Mooncake._copy_output(:hello) === :hello
+        @test Mooncake._copy_output("hello") === "hello"
+        # _copy_to_output!! must return src (not dst) for opaque mutable types.
+        @test Mooncake._copy_to_output!!(:hello, :world) === :world
+        @test Mooncake._copy_to_output!!("hello", "world") === "world"
+        # Dict contains Memory{Symbol} internally so _copy_output must deepcopy it.
+        # The !== check verifies a new object is returned only.
+        let d = Dict(:x => 1, :y => 2)
+            d_copy = Mooncake._copy_output(d)
+            @test d_copy == d
+            @test d_copy !== d
+        end
+        let d2 = Dict{Symbol,Any}(:x => [1.0, 2.0], :n => 3)
+            d2_copy = Mooncake._copy_output(d2)
+            @test d2_copy == d2
+            @test d2_copy !== d2
+        end
+        # explicit tests for _copy_output and _copy_to_output!! with different src/dst values
+        # Dict-containing immutable structs.
+        let ds = DataStoreForTest(3, Dict{Symbol,Any}(:x => randn(Float32, 2)))
+            ds_copy = Mooncake._copy_output(ds)
+            @test ds_copy._n == ds._n
+            @test ds_copy._data == ds._data
+            ds2 = DataStoreForTest(5, Dict{Symbol,Any}(:y => randn(Float32, 2)))
+            ds_copy2 = Mooncake._copy_to_output!!(ds_copy, ds2)
+            @test ds_copy2._n == ds2._n
+            @test ds_copy2._data == ds2._data
+        end
+    end
+
     @testset "Union handling of possibly uninitialised structs" begin
         F = Mooncake.FData{
             @NamedTuple{

@@ -1306,6 +1306,19 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
         t3 = _increment!!(t3, t1)
         @test has_equal_data(t2, t3)
     end
+
+    # _copy_output and _copy_to_output!! correctness tests for primal type.
+    # Skip if p is not a valid output (e.g. contains Ptr, circular reference, or alias) else error.
+    try
+        Mooncake.__exclude_unsupported_output(p)
+        p_copy = Mooncake._copy_output(p)
+        @test has_equal_data(p, p_copy)
+        @test typeof(p_copy) == P
+        p_inplace = Mooncake._copy_to_output!!(p_copy, p)
+        @test has_equal_data(p, p_inplace)
+    catch e
+        e isa Mooncake.ValueAndPullbackReturnTypeError || rethrow(e)
+    end
 end
 
 # Helper used in `test_tangent_interface`.
