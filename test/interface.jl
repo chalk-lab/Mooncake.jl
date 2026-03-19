@@ -474,6 +474,17 @@ end
                 cache = prepare_hvp_cache(f, x, y)
                 @test_throws ArgumentError value_and_hvp!!(cache, f, ([1.0, 0.0],), x, y)
             end
+
+            @testset "HVP validates tangent shapes" begin
+                f(x, y) = sum(x .* x) + sum(y .* y)
+                x = [1.0, 2.0]
+                y = [3.0]
+                cache1 = prepare_hvp_cache(sum, x)
+                @test_throws ArgumentError value_and_hvp!!(cache1, sum, [1.0], x)
+
+                cache2 = prepare_hvp_cache(f, x, y)
+                @test_throws ArgumentError value_and_hvp!!(cache2, f, ([1.0], [0.0]), x, y)
+            end
         end
     end
 
@@ -549,6 +560,16 @@ end
                 @test v == 0.0
                 @test g == Float64[]
                 @test H == zeros(0, 0)
+            end
+
+            @testset "n=0 edge case with cache reuse" begin
+                f(x) = 0.0
+                x = Float64[]
+                cache = prepare_hessian_cache(f, x)
+                v1, g1, H1 = value_and_hessian!!(cache, f, x)
+                v2, g2, H2 = value_and_hessian!!(cache, f, x)
+                @test (v1, g1, H1) == (0.0, Float64[], zeros(0, 0))
+                @test (v2, g2, H2) == (0.0, Float64[], zeros(0, 0))
             end
 
             @testset "multi-arg: two vectors" begin

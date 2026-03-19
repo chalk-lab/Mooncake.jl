@@ -35,7 +35,10 @@ end
 
 # Dict-keyed cache for the non-concrete (Any) case of __build_primitive_frule.
 # Cache key is (sig, debug_mode):
-#   - sig        distinguishes inner functions sharing the @nospecialize call site
+#   - sig        distinguishes inner functions sharing the @nospecialize call site.
+#                We intentionally do not key on sig_or_mi: the compiled DerivedRule is a
+#                function of the signature-level IR selected for this call site, and in
+#                current Julia each reachable MethodInstance here has a unique sig.
 #   - debug_mode is included because DebugRRule and plain DerivedRule have different
 #     field layouts; mixing them in _for_rule_cached_dual causes FieldError on the
 #     `new_rule.rule` access in the debug branch.
@@ -195,6 +198,7 @@ end
         return quote
             debug_mode = primal(_debug_mode)
             if isdefined(cache, :rule)
+                @assert debug_mode == (cache.rule isa DebugRRule) "LazyFoRRule cache hit with a different debug_mode than the rule was compiled for"
                 return _for_rule_cached_dual(
                     cache.rule, cache.fwd_dual_callable, cache.rvs_dual_callable, debug_mode
                 )
@@ -252,10 +256,13 @@ else
 
         debug_mode = primal(_debug_mode)
 
-        # Cache hit: reuse compiled artifacts with fresh empty Stacks. Neither sig nor
-        # debug_mode is re-checked: each LazyFoRRule lives at exactly one call site in the
-        # compiled IR (inside a fixed-grad_f closure), so both are invariant for its lifetime.
+        # Cache hit: reuse compiled artifacts with fresh empty Stacks. sig is not
+        # re-checked because each LazyFoRRule lives at exactly one call site in the
+        # compiled IR (inside a fixed-grad_f closure), so the inner signature is
+        # invariant for its lifetime. debug_mode is asserted below because the cached rule
+        # layout differs between DebugRRule and plain DerivedRule.
         if isdefined(cache, :rule)
+            @assert debug_mode == (cache.rule isa DebugRRule) "LazyFoRRule cache hit with a different debug_mode than the rule was compiled for"
             return _for_rule_cached_dual(
                 cache.rule, cache.fwd_dual_callable, cache.rvs_dual_callable, debug_mode
             )
@@ -282,9 +289,12 @@ else
 
         debug_mode = primal(_debug_mode)
 
-        # Key on (sig, debug_mode): sig distinguishes inner functions sharing this call site;
-        # debug_mode is included because DebugRRule and DerivedRule have different field
-        # layouts — serving one to a caller expecting the other causes FieldError.
+        # Key on (sig, debug_mode): sig distinguishes inner functions sharing this call
+        # site, while sig_or_mi is intentionally omitted because the compiled rule is
+        # determined by the signature-level IR selected here and each relevant
+        # MethodInstance currently has a unique sig. debug_mode is included because
+        # DebugRRule and DerivedRule have different field layouts — serving one to a
+        # caller expecting the other causes FieldError.
         dict_key = (primal(_sig), debug_mode)
 
         entry = get(cache.cache, dict_key, nothing)

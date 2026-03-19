@@ -791,6 +791,9 @@ struct HVPCache{Tf,Tgrad_f,Tgrad_tangent,Tfwd_cache}
     f::Tf
     grad_f::Tgrad_f
     # Pre-computed zero tangent for grad_f; the function is never perturbed, only x is.
+    # Safe to reuse because grad_f's closure environment is shape-stable for the lifetime
+    # of the cache: grad_cache mutates stored values between calls but does not change the
+    # closure/capture structure that zero_tangent depends on.
     grad_tangent::Tgrad_tangent
     fwd_cache::Tfwd_cache
 end
@@ -799,6 +802,23 @@ end
     cache.f === f || throw(
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
+    return nothing
+end
+
+@inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
+    if applicable(axes, primal) && applicable(axes, tangent)
+        axes(primal) == axes(tangent) || throw(
+            ArgumentError(
+                "Tangent direction for argument $arg_index must match the primal axes; got axes $(axes(tangent)) for tangent vs $(axes(primal)) for primal",
+            ),
+        )
+    elseif applicable(length, primal) && applicable(length, tangent)
+        length(primal) == length(tangent) || throw(
+            ArgumentError(
+                "Tangent direction for argument $arg_index must match the primal length; got length $(length(tangent)) for tangent vs $(length(primal)) for primal",
+            ),
+        )
+    end
     return nothing
 end
 
@@ -899,6 +919,7 @@ true
     N == 0 && throw(ArgumentError("value_and_hvp!! requires at least one x argument"))
     return if N == 1
         x1 = only(x)
+        _assert_matching_tangent_shape(x1, v, 1)
         (f_val, grad), (_, hvp) = value_and_derivative!!(
             cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
         )
@@ -908,6 +929,9 @@ true
             throw(ArgumentError("Expected one tangent direction per primal argument"))
         length(v) == N ||
             throw(ArgumentError("Expected one tangent direction per primal argument"))
+        for i in 1:N
+            _assert_matching_tangent_shape(x[i], v[i], i)
+        end
         (f_val, grads), (_, hvps) = value_and_derivative!!(
             cache.fwd_cache, (cache.grad_f, cache.grad_tangent), map(tuple, x, v)...
         )
@@ -922,10 +946,10 @@ Return a cache for computing `f(x...)`, gradients `∇f`, and the Hessian (or He
 blocks) of `f` via [`value_and_hessian!!`](@ref). Returns an [`HVPCache`](@ref), which
 can also be used directly with [`value_and_hvp!!`](@ref).
 
-`prepare_hessian_cache` reuses the generic HVP cache builder and therefore does not
-validate the `x...` inputs eagerly. The current `value_and_hessian!!` implementation
-supports only `AbstractVector`s of IEEE floats, with all arguments sharing the same
-element type.
+`prepare_hessian_cache` reuses the generic HVP cache builder. It eagerly checks only
+that at least one `x` argument was provided; validation that the `x...` inputs are
+`AbstractVector`s of IEEE floats, all with the same element type, is deferred to
+[`value_and_hessian!!`](@ref).
 
 Hessian computation uses forward-over-reverse AD: one forward-mode pass per input
 dimension over the reverse-mode gradient function.
@@ -1029,7 +1053,11 @@ H
     T = _validate_hessian_arguments(x...)
     return if N == 1
         x1 = only(x)
-        length(x1) == 0 && return f(x1), T[], zeros(T, 0, 0)
+        if length(x1) == 0
+            v = similar(x1, T)
+            fval, grad, _ = value_and_hvp!!(cache, f, v, x1)
+            return fval, copy(grad), zeros(T, 0, 0)
+        end
         n = length(x1)
         H = zeros(T, n, n)
         v = zeros(T, n)
@@ -1046,6 +1074,8 @@ H
         end
         value, gradient, H
     else
+        # Rebuild the tuple from a statically visible head/tail split so inference keeps
+        # the concrete argument tuple arity instead of widening through generic iteration.
         x1, x2, xs = x[1], x[2], Base.tail(Base.tail(x))
         all_xs = (x1, x2, xs...)
         nargs = length(all_xs)
