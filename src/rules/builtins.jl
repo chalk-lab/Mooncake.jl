@@ -1034,12 +1034,7 @@ function rrule!!(
     end
 end
 
-# `@generated is_homogeneous_and_immutable(::P) where {P<:Tuple} = allequal(fieldtypes(P))`
-# Emitting a literal Bool is semantically equivalent here, but gives the compiler a simpler,
-# allocation-free result.
-@generated function is_homogeneous_and_immutable(::P) where {P<:Tuple}
-    return allequal(fieldtypes(P)) ? :(true) : :(false)
-end
+@generated is_homogeneous_and_immutable(::P) where {P<:Tuple} = allequal(fieldtypes(P))
 
 @inline is_homogeneous_and_immutable(p::NamedTuple) = is_homogeneous_and_immutable(Tuple(p))
 is_homogeneous_and_immutable(::Any) = false
