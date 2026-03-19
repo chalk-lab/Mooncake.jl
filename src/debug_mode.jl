@@ -36,14 +36,16 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 @static if VERSION < v"1.11-"
     # On Julia 1.10, we encounter a segfault when an OpaqueClosure/MistyClosure is
     # called with a specialised signature whose declared return type disagrees with
-    # what the IR actually returns (JuliaLang/julia#51016).  Using @generated we
+    # what the IR actually returns (JuliaLang/julia#51016). Using @generated we
     # check tangent types at compile time; for a bad specialisation we return
     # :(error(...)) so the compiler never generates code for rule.rule(x...) with
-    # mismatched types.  For well-typed calls the normal body is emitted.
+    # mismatched types. For well-typed calls the normal body is emitted.
     #
-    # NOTE: @generated alone (without the type check) does NOT prevent the segfault —
+    # NOTE: @generated alone (without the type check) does NOT prevent the segfault -
     # returning an unconditional quote generates the same code as a plain function.
     # The early-return on mismatch is the critical part.
+    #
+    # See https://github.com/JuliaLang/julia/issues/61368
     @generated function (rule::DebugFRule{Trule})(x::Vararg{Dual,N}) where {Trule,N}
         # Check tangent type consistency for all Dual inputs at compile time.
         # This prevents the compiler from generating code for rule.rule(x...) with
@@ -236,6 +238,8 @@ for `DebugRRule` for details.
     # Julia 1.10 can segfault while codegen'ing an OpaqueClosure call for an invalid CoDual
     # specialization before these runtime debug checks execute. Reject bad specializations at
     # compile time so the compiler never generates `rule.rule(x...)` for them.
+    #
+    # See https://github.com/JuliaLang/julia/issues/61368
     @generated function (rule::DebugRRule{Trule})(x::Vararg{CoDual,N}) where {Trule,N}
         for dt in x
             P = dt.parameters[1]
