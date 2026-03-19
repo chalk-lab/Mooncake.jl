@@ -238,6 +238,8 @@ for `DebugRRule` for details.
     # Julia 1.10 can segfault while codegen'ing an OpaqueClosure call for an invalid CoDual
     # specialization before these runtime debug checks execute. Reject bad specializations at
     # compile time so the compiler never generates `rule.rule(x...)` for them.
+    #
+    # See https://github.com/JuliaLang/julia/issues/61368
     @generated function (rule::DebugRRule{Trule})(x::Vararg{CoDual,N}) where {Trule,N}
         for dt in x
             P = dt.parameters[1]
