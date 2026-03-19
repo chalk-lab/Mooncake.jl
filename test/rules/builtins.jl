@@ -93,6 +93,20 @@ foo_throws(e) = throw(e)
             rule_assert(zero_fcodual(foo_throws), zero_fcodual(AssertionError("hmmm")))
         )
     end
+
+    @testset "throw_inexacterror propagation" begin
+        # Generic function that triggers throw_inexacterror via an inexact integer conversion.
+        f_inexact(x) = Int8(round(Int, x))
+        @test_throws InexactError prepare_gradient_cache(f_inexact, 200.0)
+    end
+
+    @static if isdefined(Core, :throw_methoderror)
+        @testset "throw_methoderror propagation" begin
+            # Generic function that triggers throw_methoderror (no matching method).
+            f_nomatch(x) = x + "not a number"
+            @test_throws MethodError prepare_gradient_cache(f_nomatch, 1.0)
+        end
+    end
 end
 
 @testset "pointer-to-pointer pointerset & atomic_pointerset correctness tests" begin

@@ -43,8 +43,7 @@ end
     stop_gradient(x)
 
 Returns `x` with zero gradient. Gradients will not propagate through `x` in the reverse
-pass. In the forward pass, `x` is returned unchanged. Keyword arguments are not supported
-and will throw a `MethodError`.
+pass. In the forward pass, `x` is returned unchanged.
 
 To stop gradients through multiple values at once, pack them into a tuple:
 `stop_gradient((x, y, z))`.

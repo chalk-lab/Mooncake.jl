@@ -26,13 +26,6 @@
         _, (_, gx_tuple, gy_tuple) = Mooncake.value_and_gradient!!(c_tuple, f_tuple, x, y)
         @test iszero(gx_tuple)
         @test iszero(gy_tuple)
-
-        # Keyword arguments are rejected with a MethodError.
-        @test_throws MethodError Mooncake.stop_gradient(1.0; kw=1)
-        @static if isdefined(Core, :throw_methoderror)
-            f_kw(x) = sum(Mooncake.stop_gradient(x; kw=1))
-            @test_throws MethodError Mooncake.prepare_gradient_cache(f_kw, [1.0, 2.0])
-        end
     end
     @testset "lgetfield" begin
         x = (5.0, 4)
