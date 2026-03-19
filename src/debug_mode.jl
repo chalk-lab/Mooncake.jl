@@ -44,6 +44,8 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
     # NOTE: @generated alone (without the type check) does NOT prevent the segfault -
     # returning an unconditional quote generates the same code as a plain function.
     # The early-return on mismatch is the critical part.
+    
+    # See https://github.com/JuliaLang/julia/issues/61368
     @generated function (rule::DebugFRule{Trule})(x::Vararg{Dual,N}) where {Trule,N}
         # First, check tangent type consistency for all Dual inputs at compile time.
         # This prevents the compiler from generating code for rule.rule(x...) with
