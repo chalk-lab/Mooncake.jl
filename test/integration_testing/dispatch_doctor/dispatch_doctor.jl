@@ -71,14 +71,11 @@ function TestUtils.test_hook(f, ::typeof(Mooncake.compute_oc_signature), x...)
     allow_unstable(f)
 end
 
-# DispatchDoctor currently crashes in Julia's opaque-closure codegen for parts of the
-# interface suite, so we keep this integration focused on the lower-level files that can
-# run under instrumentation.
-@static if VERSION < v"1.12-"
-    include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
+include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
 
-    include(joinpath(@__DIR__, "..", "..", "utils.jl"))
-    include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
-    include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
-    include(joinpath(@__DIR__, "..", "..", "stack.jl"))
-end
+include(joinpath(@__DIR__, "..", "..", "utils.jl"))
+include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
+include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
+include(joinpath(@__DIR__, "..", "..", "stack.jl"))
+include(joinpath(@__DIR__, "..", "..", "debug_mode.jl"))
+include(joinpath(@__DIR__, "..", "..", "interface.jl"))

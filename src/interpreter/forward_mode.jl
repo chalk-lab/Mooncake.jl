@@ -96,9 +96,7 @@ function build_frule(
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
             dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
-            dual_oc = misty_closure(
-                info.dual_ret_type, dual_ir, captures...; do_compile=true
-            )
+            dual_oc = misty_closure(info.dual_ret_type, dual_ir, captures...)
             sig = flatten_va_sig(sig, info.isva, info.nargs)
             raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(dual_oc)
             rule = debug_mode ? DebugFRule(raw_rule) : raw_rule
@@ -161,6 +159,9 @@ struct DualInfo
     interp::MooncakeInterpreter
     is_used::Vector{Bool}
     debug_mode::Bool
+    # Expected derived-frule return type; used to keep rewritten ReturnNodes aligned
+    # with the MistyClosure signature on Julia 1.10.
+    dual_ret_type::Type
 end
 
 function generate_dual_ir(
@@ -200,7 +201,7 @@ function generate_dual_ir(
     captures = Any[]
 
     is_used = characterised_used_ssas(stmt(primal_ir.stmts))
-    info = DualInfo(primal_ir, interp, is_used, debug_mode)
+    info = DualInfo(primal_ir, interp, is_used, debug_mode, dual_ret_type(primal_ir))
     for (n, inst) in enumerate(dual_ir.stmts)
         ssa = SSAValue(n)
         modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info)
@@ -218,7 +219,7 @@ function generate_dual_ir(
 
     # Optimize dual IR
     dual_ir_opt = optimise_ir!(dual_ir; do_inline)
-    return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
+    return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, info.dual_ret_type)
 end
 
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
@@ -285,14 +286,22 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::ReturnNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::ReturnNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     # undefined `val` field means that stmt is unreachable.
     isdefined(stmt, :val) || return nothing
 
     # stmt is an Argument, then already a dual, and must just be incremented.
     if stmt.val isa Union{Argument,SSAValue}
-        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(__inc(stmt.val)))
+        # Keep the rewritten IR return value aligned with the MistyClosure's declared
+        # return type; on Julia 1.10, letting these diverge can crash OC codegen.
+        assert_dual_ssa = CC.insert_node!(
+            dual_ir,
+            ssa,
+            new_inst(Expr(:call, typeassert, __inc(stmt.val), info.dual_ret_type)),
+            ATTACH_BEFORE,
+        )
+        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(assert_dual_ssa))
         return nothing
     end
 
@@ -301,9 +310,21 @@ function modify_fwd_ad_stmts!(
     if d isa Int
         get_dual = Expr(:call, get_capture, Argument(1), d)
         get_dual_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_dual), ATTACH_BEFORE)
-        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(get_dual_ssa))
+        assert_dual_ssa = CC.insert_node!(
+            dual_ir,
+            ssa,
+            new_inst(Expr(:call, typeassert, get_dual_ssa, info.dual_ret_type)),
+            ATTACH_BEFORE,
+        )
+        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(assert_dual_ssa))
     else
-        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(d))
+        assert_dual_ssa = CC.insert_node!(
+            dual_ir,
+            ssa,
+            new_inst(Expr(:call, typeassert, d, info.dual_ret_type)),
+            ATTACH_BEFORE,
+        )
+        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(assert_dual_ssa))
     end
     return nothing
 end
