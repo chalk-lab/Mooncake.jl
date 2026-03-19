@@ -20,15 +20,30 @@ end
 # Recursively copy the wrapped rule
 _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
+_rule_primal_sig(::Type{T}) where {T} = T.parameters[1]
+function _rule_isva(::Type{T}) where {T}
+    return T <: DerivedFRule ? T.parameters[3] : T.parameters[6]
+end
+function _rule_nargs(::Type{T}) where {T}
+    return T <: DerivedFRule ? T.parameters[4] : T.parameters[7].parameters[1]
+end
+
 """
     (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
 
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
 @static if VERSION < v"1.11-"
-    # On Julia 1.10, use @generated to check types at compile time, preventing the
-    # compiler from ever seeing rule.rule(x...) with mismatched types, which would
-    # cause a segfault (JuliaLang/julia#51016).
+    # On Julia 1.10, we encounter a segfault when an OpaqueClosure/MistyClosure is
+    # called with a specialised signature whose declared return type disagrees with
+    # what the IR actually returns (JuliaLang/julia#51016). Using @generated we
+    # check tangent types at compile time; for a bad specialisation we return
+    # :(error(...)) so the compiler never generates code for rule.rule(x...) with
+    # mismatched types. For well-typed calls the normal body is emitted.
+    #
+    # NOTE: @generated alone (without the type check) does NOT prevent the segfault -
+    # returning an unconditional quote generates the same code as a plain function.
+    # The early-return on mismatch is the critical part.
     @generated function (rule::DebugFRule{Trule})(x::Vararg{Dual,N}) where {Trule,N}
         # First, check tangent type consistency for all Dual inputs at compile time.
         # This prevents the compiler from generating code for rule.rule(x...) with
@@ -45,9 +60,9 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 
         # Check primal types match rule signature
         if Trule <: DerivedFRule && isconcretetype(Trule)
-            sig = Trule.parameters[1]      # primal_sig
-            isva = Trule.parameters[3]
-            nargs_val = Trule.parameters[4]
+            sig = _rule_primal_sig(Trule)
+            isva = _rule_isva(Trule)
+            nargs_val = _rule_nargs(Trule)
 
             # Extract primal types
             primal_types = [dt.parameters[1] for dt in x]
@@ -232,9 +247,9 @@ for `DebugRRule` for details.
         end
 
         if Trule <: DerivedRule && isconcretetype(Trule)
-            sig = Trule.parameters[1]
-            isva = Trule.parameters[6]
-            nargs_val = Trule.parameters[7].parameters[1]
+            sig = _rule_primal_sig(Trule)
+            isva = _rule_isva(Trule)
+            nargs_val = _rule_nargs(Trule)
 
             primal_types = [dt.parameters[1] for dt in x]
             if isva
