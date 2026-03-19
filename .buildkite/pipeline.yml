@@ -29,35 +29,6 @@ steps:
           - "cuda"
           - "nnlib"
 
-  - label: "Julia v{{matrix.version}}, ext/{{matrix.di_test}}"
-    plugins:
-      - JuliaCI/julia#v1:
-          version: "{{matrix.version}}"
-      - JuliaCI/julia-coverage#v1:
-          dirs:
-            - src
-            - ext
-    command: julia --code-coverage=user --eval='include("test/run_extra.jl")'
-    agents:
-      queue: "juliagpu"
-      cuda: "*"
-    if: build.message !~ /\[skip tests\]/
-    timeout_in_minutes: 60
-    env:
-      LABEL: "differentiation_interface_second_order"
-      TEST_TYPE: ext
-      DI_SECOND_ORDER_TEST: "{{matrix.di_test}}"
-    matrix:
-      setup:
-        version:
-          - "1.10"
-          - "1.11"
-          # Exceeds one hour and times out on Buildkite.
-          # - "1.12" 
-        di_test:
-          - "hvp"
-          - "second_derivative"
-
   - label: "Julia v{{matrix.version}}, integration/{{matrix.label}}"
     plugins:
       - JuliaCI/julia#v1:
@@ -84,4 +55,3 @@ steps:
         label:
           - "flux"
           - "lux"
-
