@@ -1957,7 +1957,10 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     fwd_args_type = Tuple{map(fcodual_type, arg_types)...}
     fwd_return_type = forwards_ret_type(ir)
     Trdata_return = rdata_type(tangent_type(Treturn))
-    pb_args_type = Trdata_return === Union{} ? Union{} : Tuple{Trdata_return}
+    # `Trdata_return === Union{} ? Union{} : Tuple{Trdata_return}`
+    # For non-returning primals, Tuple{} means a zero-argument pullback; Union{} would
+    # instead mean there is no possible argument value.
+    pb_args_type = Trdata_return === Union{} ? Tuple{} : Tuple{Trdata_return}
     pb_return_type = pullback_ret_type(ir)
     nargs = Val{length(ir.argtypes)}
 
