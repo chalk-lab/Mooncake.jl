@@ -612,7 +612,7 @@ end
             end
 
             @testset "reject non-IEEEFloat element types" begin
-                f(x) = sum(x .^ 2)
+                f(x) = sum(abs2, x)
                 x = ComplexF64[1 + 0im, 2 + 0im]
                 cache = prepare_hessian_cache(f, x)
                 @test_throws ArgumentError value_and_hessian!!(cache, f, x)

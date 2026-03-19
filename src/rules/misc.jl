@@ -27,6 +27,17 @@
 @zero_derivative DefaultCtx Tuple{typeof(Base.throw_boundserror),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Base.Broadcast.eltypes),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Base.eltype),Vararg}
+# Debug verification helpers are diagnostic-only. They should execute at primal time, but
+# AD should never propagate derivatives through them in any context.
+@zero_derivative MinimalCtx Tuple{typeof(verify_args),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_dual_inputs),Tuple}
+@zero_derivative MinimalCtx Tuple{typeof(verify_dual_output),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_dual_value),Dual}
+@zero_derivative MinimalCtx Tuple{typeof(verify_rvs_input),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_rvs_output),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_fwds_inputs),Any,Tuple}
+@zero_derivative MinimalCtx Tuple{typeof(verify_fwds_output),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_fwds),CoDual}
 @zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType}
 @zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType,Int}
 @zero_derivative MinimalCtx Tuple{Type,TypeVar,Type}
