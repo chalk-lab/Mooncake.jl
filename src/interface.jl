@@ -833,21 +833,19 @@ true
     f::F, x::Vararg{Any,N}; config=Config()
 ) where {F,N}
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
+    # Pre-build the reverse-mode gradient cache so forward-over-reverse differentiates
+    # only through gradient evaluation, not through repeated rule construction.
+    grad_cache = prepare_gradient_cache(f, x...; config)
     grad_f = if N == 1
-        # grad_f calls prepare_gradient_cache internally so that the compiled inner rule is
-        # cached across value_and_hvp!! calls via the LazyFoRRule in the outer frule.
-        let f = f, config = config
+        let f = f, grad_cache = grad_cache
             y -> begin
-                grad_cache = prepare_gradient_cache(f, y; config)
                 val_and_grad = value_and_gradient!!(grad_cache, f, y)
                 (val_and_grad[1], val_and_grad[2][2])
             end
         end
     else
-        all_xs = x
-        let f = f, config = config
+        let f = f, grad_cache = grad_cache
             function (ys...)
-                grad_cache = prepare_gradient_cache(f, ys...; config)
                 val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
                 # Drop the gradient w.r.t. f itself (always index 1); return only x-arg gradients.
                 (val_and_grad[1], Base.tail(val_and_grad[2]))
