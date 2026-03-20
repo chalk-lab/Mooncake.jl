@@ -233,7 +233,7 @@ using DispatchDoctor: allow_unstable
         # Module names need explicit tests
         @test Mooncake._copy_output(Float64.name)===Float64.name
         @test Mooncake._copy_to_output!!(Float64.name, Float64.name)===Float64.name
-        @test Mooncake._copy_output(Base)===BaWWWse
+        @test Mooncake._copy_output(Base)===Base
         @test Mooncake._copy_to_output!!(Base, Base)===Base
 
         # explicit tests for _copy_output and _copy_to_output!! with different src/dst values
