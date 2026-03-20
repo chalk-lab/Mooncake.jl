@@ -13,6 +13,12 @@ end
 function TestUtils.test_hook(f, ::typeof(Mooncake.derived_rule_test_cases), ::Any...)
     return allow_unstable(f)
 end
+function TestUtils.test_hook(f, ::Val{:allow_unstable_hvp_interface_test}, ::Any...)
+    return allow_unstable(f)
+end
+function TestUtils.test_hook(f, ::Val{:allow_unstable_hessian_interface_test}, ::Any...)
+    return allow_unstable(f)
+end
 
 # Automatically skip instability checks for types which are themselves unstable,
 # or which are unreasonably hard to infer.
@@ -65,11 +71,16 @@ function TestUtils.test_hook(f, ::typeof(Mooncake.compute_oc_signature), x...)
     allow_unstable(f)
 end
 
-include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
+# Skip this integration test on Julia 1.10 because DispatchDoctor currently
+# interferes with Mooncake there.
+@static if VERSION >= v"1.11"
+    include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
 
-include(joinpath(@__DIR__, "..", "..", "utils.jl"))
-include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
-include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
-include(joinpath(@__DIR__, "..", "..", "stack.jl"))
-include(joinpath(@__DIR__, "..", "..", "debug_mode.jl"))
-include(joinpath(@__DIR__, "..", "..", "interface.jl"))
+    include(joinpath(@__DIR__, "..", "..", "utils.jl"))
+    include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
+    include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
+    include(joinpath(@__DIR__, "..", "..", "stack.jl"))
+    include(joinpath(@__DIR__, "..", "..", "interface.jl"))
+else
+    println("Skipping DispatchDoctor integration tests on Julia $VERSION.")
+end

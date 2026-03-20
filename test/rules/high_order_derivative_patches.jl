@@ -165,3 +165,52 @@ end
         prepare_gradient_cache(grad, z)
     end
 end
+
+@testset "native HVP interface (prepare_hvp_cache + value_and_hvp!!)" begin
+    @testset "gradient correctness for x^4" begin
+        f(x) = x[1]^4.0
+        x = [2.0]
+        cache = prepare_hvp_cache(f, x)
+        f_val, grad, _ = value_and_hvp!!(cache, f, [1.0], x)
+        @test f_val ≈ 16.0
+        @test grad ≈ [32.0]
+    end
+
+    @testset "HVP correctness for x^4" begin
+        f(x) = x[1]^4.0
+        x = [2.0]
+        _, _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, [1.0], x)
+        @test hvp ≈ [48.0]
+    end
+
+    @testset "cache reuse across multiple HVP calls" begin
+        # The LazyFoRRule should compile the inner rule only once; verify the cache
+        # produces consistent results when called repeatedly with different directions.
+        f(x) = sum(x .* x)  # H = 2I
+        x = [1.0, 2.0, 3.0]
+        cache = prepare_hvp_cache(f, x)
+        n = length(x)
+        for i in 1:n
+            v = zeros(n)
+            v[i] = 1.0
+            _, _, hvp = value_and_hvp!!(cache, f, v, x)
+            expected = 2.0 .* v
+            @test hvp ≈ expected rtol = 1e-10
+        end
+    end
+
+    @testset "multi-argument HVP" begin
+        # f(x, y) = sum(x .* x) + sum(y .* y): H = 2I (block-diagonal, decoupled)
+        f(x, y) = sum(x .* x) + sum(y .* y)
+        x = [1.0, 2.0]
+        y = [3.0]
+        cache = prepare_hvp_cache(f, x, y)
+        _, (grad_x, grad_y), (hvp_x, hvp_y) = value_and_hvp!!(
+            cache, f, ([1.0, 0.0], [0.0]), x, y
+        )
+        @test grad_x ≈ [2.0, 4.0] rtol = 1e-10
+        @test grad_y ≈ [6.0] rtol = 1e-10
+        @test hvp_x ≈ [2.0, 0.0] rtol = 1e-10
+        @test hvp_y ≈ [0.0] rtol = 1e-10
+    end
+end
