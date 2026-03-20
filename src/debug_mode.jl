@@ -47,7 +47,7 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
     #
     # See https://github.com/JuliaLang/julia/issues/61368
     @generated function (rule::DebugFRule{Trule})(x::Vararg{Dual,N}) where {Trule,N}
-        # First, check tangent type consistency for all Dual inputs at compile time.
+        # Check tangent type consistency for all Dual inputs at compile time.
         # This prevents the compiler from generating code for rule.rule(x...) with
         # mismatched Dual types (e.g., Dual{Float64,Float32} instead of Dual{Float64,Float64}).
         for dt in x

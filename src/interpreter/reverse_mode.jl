@@ -704,7 +704,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         sig = Tuple{arg_types...}
         interp = info.interp
         raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
-            rrule!! # intrinsic / builtin / thing we provably have rule for
+            build_primitive_rrule(sig) # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
             mi = get_mi(stmt.args[1])
             LazyDerivedRule(mi, info.debug_mode) # Static dispatch
@@ -1943,8 +1943,9 @@ important for performance in dynamic dispatch, and to ensure that recursion work
 properly.
 """
 function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where {C}
-    if is_primitive(C, ReverseMode, _get_sig(sig_or_mi), interp.world)
-        rule = build_primitive_rrule(_get_sig(sig_or_mi))
+    sig = _get_sig(sig_or_mi)
+    if is_primitive(C, ReverseMode, sig, interp.world)
+        rule = build_primitive_rrule(sig)
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)
     end
 
