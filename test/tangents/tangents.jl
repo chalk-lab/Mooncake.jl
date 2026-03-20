@@ -228,7 +228,8 @@ using DispatchDoctor: allow_unstable
         test_tangent(rng, Vector{Float64}; interface_only=true)
         test_tangent(rng, Union{Float64,Int64}; interface_only=true)
         test_tangent(rng, Float64.name; interface_only=true)
-        test_tangent(rng, Base; interface_only=true)
+        @test Mooncake._copy_output(Base)===Base
+        @test Mooncake._copy_to_output!!(Base, Base)===Base
         # explicit tests for _copy_output and _copy_to_output!! with different src/dst values
         let obj = MutableWithTypeField(Float64, 1.0)
             obj_copy = Mooncake._copy_output(obj)

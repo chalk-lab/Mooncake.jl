@@ -418,10 +418,20 @@ function _copy_output(x::P) where {P}
     # Overload _copy_output to customise.
     nf == 0 && return x
 
-    if ismutable(x)
-        _copy_output_mutable_cartesian(x, Val(nf))
-    else
-        _copy_output_immutable_cartesian(x, Val(nf))
+    try
+        if ismutable(x)
+            return _copy_output_mutable_cartesian(x, Val(nf))
+        else
+            return _copy_output_immutable_cartesian(x, Val(nf))
+        end
+    catch e
+        throw(
+            ArgumentError(
+                "Mooncake.jl does not currently have a method `_copy_output` for type $P. " *
+                "Please open an issue or define a custom `_copy_output` method for this type. " *
+                "Original error: $e",
+            ),
+        )
     end
 end
 
