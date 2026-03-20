@@ -1397,6 +1397,9 @@ function _test_tangent_performance(rng::AbstractRNG, p::P) where {P}
     # way we're handling partial initialisation. Hopefully this will change in the future.
     __increment_should_allocate(P) || test_allocations(t, z)
 
+    # NoTangents do not follow the below tests.
+    t isa NoTangent && return true
+
     # set_tangent_field! should never allocate.
     t isa MutableTangent && test_set_tangent_field!_performance(t, z)
     return t isa Union{MutableTangent,Tangent} && test_get_tangent_field_performance(t)

@@ -224,12 +224,18 @@ using DispatchDoctor: allow_unstable
 
         # See #1024 for the below :
         # _copy_output must handle Type, Core.TypeName, and Module values
-        test_tangent(rng, Float64; interface_only=true)
-        test_tangent(rng, Vector{Float64}; interface_only=true)
-        test_tangent(rng, Union{Float64,Int64}; interface_only=true)
-        test_tangent(rng, Float64.name; interface_only=true)
-        @test Mooncake._copy_output(Base)===Base
+        @test Mooncake.TestUtils.test_tangent(rng, Float64; interface_only=false)
+        @test Mooncake.TestUtils.test_tangent(rng, Vector{Float64}; interface_only=false)
+        @test Mooncake.TestUtils.test_tangent(
+            rng, Union{Float64,Int64}; interface_only=false
+        )
+
+        # Module names need explicit tests
+        @test Mooncake._copy_output(Float64.name)===Float64.name
+        @test Mooncake._copy_to_output!!(Float64.name, Float64.name)===Float64.name
+        @test Mooncake._copy_output(Base)===BaWWWse
         @test Mooncake._copy_to_output!!(Base, Base)===Base
+
         # explicit tests for _copy_output and _copy_to_output!! with different src/dst values
         let obj = MutableWithTypeField(Float64, 1.0)
             obj_copy = Mooncake._copy_output(obj)
@@ -247,9 +253,11 @@ using DispatchDoctor: allow_unstable
         # identity return from a real copy for these types
         @test Mooncake._copy_output(:hello) === :hello
         @test Mooncake._copy_output("hello") === "hello"
+
         # _copy_to_output!! must return src (not dst) for opaque mutable types.
         @test Mooncake._copy_to_output!!(:hello, :world) === :world
         @test Mooncake._copy_to_output!!("hello", "world") === "world"
+
         # Dict contains Memory{Symbol} internally so _copy_output must deepcopy it.
         # The !== check verifies a new object is returned only.
         let d = Dict(:x => 1, :y => 2)
@@ -262,6 +270,7 @@ using DispatchDoctor: allow_unstable
             @test d2_copy == d2
             @test d2_copy !== d2
         end
+
         # explicit tests for _copy_output and _copy_to_output!! with different src/dst values
         # Dict-containing immutable structs.
         let ds = DataStoreForTest(3, Dict{Symbol,Any}(:x => randn(Float32, 2)))
