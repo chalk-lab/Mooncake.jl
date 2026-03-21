@@ -11,6 +11,8 @@ using DynamicExpressions
 using DynamicExpressions: Nullable
 using StableRNGs: StableRNG
 
+# Needed for certain parts of TestUtils
+using JET: JET
 using AllocCheck: AllocCheck
 
 using Test
