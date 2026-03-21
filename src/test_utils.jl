@@ -1449,36 +1449,25 @@ end
 # @generated functions specialise fully on all argument types (including Type{T}), so
 # lumping everything into one Vararg gives full specialisation on both the function and
 # its arguments. @generated function bodies cannot contain closures, so the @noinline
-# measurement barrier from the old eval-loop approach is replaced by _MeasureAllocs: an
+# measurement barrier from the old eval-loop approach is replaced by Tcount_allocs: an
 # immutable struct whose callable method is @noinline, replicating the same effect.
 # test_hook is called so that external tools (e.g. the dispatch_doctor integration test)
 # can intercept and suppress the measurement where needed.
-struct _MeasureAllocs{F,Args<:Tuple}
+struct Tcount_allocs{F,Args<:Tuple}
     f::F
     args::Args
 end
-@noinline function (m::_MeasureAllocs)()
+@noinline function (m::Tcount_allocs)()
     stats = Base.gc_num()
     m.f(m.args...)
     return Base.gc_alloc_count(Base.GC_Diff(Base.gc_num(), stats))
 end
-@generated function count_allocs(fx::Vararg{Any,N}) where {N}
-    args = [:(fx[$i]) for i in 2:N]
+@generated function count_allocs(f_and_x::Vararg{Any,N}) where {N}
+    args = [:(f_and_x[$i]) for i in 2:N]
     quote
-        test_hook(_MeasureAllocs(fx[1], ($(args...),)), count_allocs, fx[1], $(args...))
-    end
-end
-@generated function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-    args = [:(x[$i]) for i in 1:N]
-    quote
-        test_hook(_MeasureAllocs(f, ($(args...),)), count_allocs, f, $(args...))
-    end
-end
-# Needs a special case when `f` itself is a type constructor.
-@generated function count_allocs(::Type{F}, x::Vararg{Any,N}) where {F,N}
-    args = [:(x[$i]) for i in 1:N]
-    quote
-        test_hook(_MeasureAllocs(F, ($(args...),)), count_allocs, F, $(args...))
+        test_hook(
+            Tcount_allocs(f_and_x[1], ($(args...),)), count_allocs, f_and_x[1], $(args...)
+        )
     end
 end
 
