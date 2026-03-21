@@ -177,10 +177,10 @@ end
 @public Dual
 
 # Public, exported
-export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
-export prepare_derivative_cache
+export prepare_gradient_cache, value_and_gradient!!     # reverse
+export prepare_derivative_cache, value_and_derivative!! # forward
 export prepare_hvp_cache, value_and_hvp!!
-export value_and_hessian!!, prepare_hessian_cache
+export prepare_hessian_cache, value_and_hessian!!
 
 include("precompile.jl")
 
