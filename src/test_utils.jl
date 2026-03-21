@@ -1431,6 +1431,8 @@ function test_get_tangent_field_performance(t::Union{MutableTangent,Tangent})
     end
 end
 
+# Counts the number of GC allocations made by a function call.
+#
 # A plain Vararg method does not fully specialise on Type{T} arguments — they widen to
 # DataType — which causes spurious allocations to be reported. For example:
 #
@@ -1447,27 +1449,25 @@ end
 #                                                                    ^^^^^^^^^^^ preserved
 #
 # @generated functions specialise fully on all argument types (including Type{T}), so
-# lumping everything into one Vararg gives full specialisation on both the function and
-# its arguments. @generated function bodies cannot contain closures, so the @noinline
-# measurement barrier from the old eval-loop approach is replaced by Tcount_allocs: an
-# immutable struct whose callable method is @noinline, replicating the same effect.
-# test_hook is called so that external tools (e.g. the dispatch_doctor integration test)
-# can intercept and suppress the measurement where needed.
-struct Tcount_allocs{F,Args<:Tuple}
-    f::F
-    args::Args
-end
-@noinline function (m::Tcount_allocs)()
-    stats = Base.gc_num()
-    m.f(m.args...)
-    return Base.gc_alloc_count(Base.GC_Diff(Base.gc_num(), stats))
-end
-@generated function count_allocs(f_and_x::Vararg{Any,N}) where {N}
+# packing f and its arguments into one Vararg gives per-element-type specialisation
+# without explicit numbered overloads. @generated function bodies cannot contain closures,
+# so the measurement window (gc_num / gc_alloc_count) lives in __count_allocs (inlinable,
+# no barrier) and test_hook lives in the count_allocs wrapper so that external tools
+# (e.g. dispatch_doctor) can intercept and suppress the measurement where needed.
+@generated function __count_allocs(f_and_x::Vararg{Any,N}) where {N}
+    N >= 1 ||
+        return :(error("__count_allocs requires at least one argument (the function)"))
     args = [:(f_and_x[$i]) for i in 2:N]
     quote
-        test_hook(
-            Tcount_allocs(f_and_x[1], ($(args...),)), count_allocs, f_and_x[1], $(args...)
-        )
+        stats = Base.gc_num()
+        f_and_x[1]($(args...))
+        Base.gc_alloc_count(Base.GC_Diff(Base.gc_num(), stats))
+    end
+end
+function count_allocs(f_and_x::Vararg{Any,N}; test_hook::Bool=true) where {N}
+    test_hook || return __count_allocs(f_and_x...)
+    return TestUtils.test_hook(count_allocs, f_and_x...) do
+        __count_allocs(f_and_x...)
     end
 end
 
