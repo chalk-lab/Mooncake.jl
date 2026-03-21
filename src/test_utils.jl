@@ -771,32 +771,6 @@ __forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N} = frule(x_ẋ...)
     return pb!!(Mooncake.zero_rdata(primal(out)))
 end
 
-# Counts the number of GC allocations made by a function call.
-#
-# __count_allocs: @generated inner that owns the gc measurement window. Specialises fully
-# on Vararg element types (avoiding DataType-widening for Type{T} args) and is inlinable,
-# so the JIT can inline the gc window directly around the call with no @noinline barrier.
-# Closures are forbidden in @generated bodies, so test_hook lives in the outer wrapper.
-#
-# count_allocs: regular wrapper. By default (test_hook=true) it calls test_hook so that
-# external tools (e.g. dispatch_doctor) can intercept. Pass test_hook=false to bypass
-# test_hook entirely — callers that pass test_hook=false are not intercepted by
-# dispatch_doctor.
-@generated function __count_allocs(f_and_x::Vararg{Any,N}) where {N}
-    args = [:(f_and_x[$i]) for i in 2:N]
-    quote
-        stats = Base.gc_num()
-        f_and_x[1]($(args...))
-        Base.gc_alloc_count(Base.GC_Diff(Base.gc_num(), stats))
-    end
-end
-function count_allocs(f_and_x::Vararg{Any,N}; test_hook::Bool=true) where {N}
-    test_hook || return __count_allocs(f_and_x...)
-    return TestUtils.test_hook(count_allocs, f_and_x...) do
-        __count_allocs(f_and_x...)
-    end
-end
-
 function test_frule_performance(
     performance_checks_flag::Symbol, rule::R, f_ḟ::F, x_ẋ::Vararg{Any,N}
 ) where {R,F,N}
@@ -1454,6 +1428,46 @@ function test_get_tangent_field_performance(t::Union{MutableTangent,Tangent})
         report_opt(Tuple{typeof(_get_tangent_field),typeof(t),typeof(s)})
         @inferred _get_tangent_field(t, s)
         @test count_allocs(_get_tangent_field, t, s) == 0
+    end
+end
+
+# Counts the number of GC allocations made by a function call.
+#
+# A plain Vararg method does not fully specialise on Type{T} arguments — they widen to
+# DataType — which causes spurious allocations to be reported. For example:
+#
+#   vararg(f::F, x::Vararg{Any,N}) where {F,N} = nothing
+#   vararg(rand, Xoshiro(1), Float64)
+#   Base.specializations(@which vararg(rand, Xoshiro(1), Float64))
+#   # => MethodInstance for vararg(::typeof(rand), ::Xoshiro, ::Type)
+#                                                               ^^^^^^ widened, abstract dispatch
+#
+#   explicit(f::F, x1::X1, x2::X2) where {F,X1,X2} = nothing
+#   explicit(rand, Xoshiro(1), Float64)
+#   Base.specializations(@which explicit(rand, Xoshiro(1), Float64))
+#   # => MethodInstance for explicit(::typeof(rand), ::Xoshiro, ::Type{Float64})
+#                                                                    ^^^^^^^^^^^ preserved
+#
+# @generated functions specialise fully on all argument types (including Type{T}), so
+# packing f and its arguments into one Vararg gives per-element-type specialisation
+# without explicit numbered overloads. @generated function bodies cannot contain closures,
+# so the measurement window (gc_num / gc_alloc_count) lives in __count_allocs (inlinable,
+# no barrier) and test_hook lives in the count_allocs wrapper so that external tools
+# (e.g. dispatch_doctor) can intercept and suppress the measurement where needed.
+@generated function __count_allocs(f_and_x::Vararg{Any,N}) where {N}
+    N >= 1 ||
+        return :(error("__count_allocs requires at least one argument (the function)"))
+    args = [:(f_and_x[$i]) for i in 2:N]
+    quote
+        stats = Base.gc_num()
+        f_and_x[1]($(args...))
+        Base.gc_alloc_count(Base.GC_Diff(Base.gc_num(), stats))
+    end
+end
+function count_allocs(f_and_x::Vararg{Any,N}; test_hook::Bool=true) where {N}
+    test_hook || return __count_allocs(f_and_x...)
+    return TestUtils.test_hook(count_allocs, f_and_x...) do
+        __count_allocs(f_and_x...)
     end
 end
 

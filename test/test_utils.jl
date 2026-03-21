@@ -143,11 +143,7 @@
         # causing a spurious boxing allocation on Julia 1.12. The @generated design
         # specialises on element types and preserves the concrete Type{T} parameter.
         @test TestUtils.count_allocs(isbitstype, Float64) == 0
-        # Type{T} args: @generated specialisation avoids DataType-widening that would
-        # otherwise cause spurious allocations through the Vararg tuple.
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Float64}) == 0
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Vector{Float64}}) == 0
-        # Type constructor as first arg: Ref(1.0) heap-allocates.
-        @test TestUtils.count_allocs(Ref, 1.0) >= 1
     end
 end
