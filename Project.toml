@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.2"
+version = "0.5.23"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -12,12 +12,16 @@ ExprTools = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MistyClosures = "dbe65cb8-6be2-42dd-bbc5-4196aaced4f4"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [weakdeps]
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
+BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 DynamicExpressions = "a40a106e-89c9-4ca8-8020-a735e8728b6b"
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
 FunctionWrappers = "069b7b12-0de2-55c6-9aab-29f3d0a68a2e"
@@ -33,7 +37,10 @@ Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
 
 [extensions]
 MooncakeAllocCheckExt = "AllocCheck"
+MooncakeBFloat16sExt = "BFloat16s"
 MooncakeCUDAExt = "CUDA"
+MooncakecuDNNExt = ["CUDA", "cuDNN"]
+MooncakeDistributionsExt = "Distributions"
 MooncakeDynamicExpressionsExt = "DynamicExpressions"
 MooncakeFluxExt = "Flux"
 MooncakeFunctionWrappersExt = "FunctionWrappers"
@@ -41,19 +48,23 @@ MooncakeJETExt = "JET"
 MooncakeLogExpFunctionsExt = "LogExpFunctions"
 MooncakeLuxLibExt = ["LuxLib", "MLDataDevices", "Static"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
-MooncakeNNlibExt = ["NNlib", "GPUArraysCore"]
+MooncakeLuxLibNNlibExt = ["LuxLib", "NNlib"]
+MooncakeNNlibExt = ["NNlib", "LinearAlgebra"]
 MooncakeSpecialFunctionsExt = "SpecialFunctions"
 
 [compat]
 ADTypes = "1.9"
 AllocCheck = "0.2"
 Aqua = "0.8.9"
+BFloat16s = "0.6"
 BenchmarkTools = "1"
 CUDA = "5"
+cuDNN = "1"
 ChainRules = "1.71.0"
 ChainRulesCore = "1"
 DiffTests = "0.1"
 DispatchDoctor = "0.4.28"
+Distributions = "0.25"
 DynamicExpressions = "2"
 ExprTools = "0.1"
 Flux = "0.16.3"
@@ -68,6 +79,7 @@ LuxLib = "1.11"
 MLDataDevices = "1.10.0"
 MistyClosures = "2"
 NNlib = "0.9"
+PrecompileTools = "1"
 Pkg = "1"
 Random = "1"
 Revise = "3.0 - 3.12"
@@ -97,6 +109,7 @@ test = [
     "Aqua",
     "BenchmarkTools",
     "DiffTests",
+    "JET",
     "Logging",
     "Pkg",
     "Revise",

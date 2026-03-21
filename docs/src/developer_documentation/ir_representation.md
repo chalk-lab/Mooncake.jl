@@ -254,7 +254,7 @@ julia> bb_ir.blocks[3].inst_ids
  ID(102)
 ```
 There is exactly one `ID` per instruction, and it is an error to have the same `ID` associated to multiple instructions.
-Similarly, while the number associated to a basic block in `IRCode` is a function of the number of basic blocks which preceed it, the `ID` of a basic block in `BBCode` is stored in its `id` field:
+Similarly, while the number associated to a basic block in `IRCode` is a function of the number of basic blocks which precede it, the `ID` of a basic block in `BBCode` is stored in its `id` field:
 ```jldoctest my_factorial
 julia> bb_ir.blocks[3].id
 ID(106)
@@ -416,18 +416,15 @@ Since the name associated to instructions does not change when you insert anothe
 ```jldoctest my_factorial
 julia> using Mooncake.BasicBlockCode: ID, new_inst
 
-julia> new_id = ID() # this produces a new unique `ID`.
-ID(108)
+julia> new_id = ID(); # this produces a new unique `ID`.
 
-julia> target_id = bb_ir_copy.blocks[3].insts[1].stmt.args[2] # find `ID` of argument to add_int.
-ID(97)
+julia> target_id = bb_ir_copy.blocks[3].insts[1].stmt.args[2]; # find `ID` of argument to add_int.
 
 julia> ni = new_inst(Expr(:call, Base.mul_int, target_id, 2), Int);
 
 julia> insert!(bb_ir_copy.blocks[3], 1, new_id, ni)
 
-julia> bb_ir_copy.blocks[3].insts[2].stmt.args[2] = new_id
-ID(108)
+julia> bb_ir_copy.blocks[3].insts[2].stmt.args[2] = new_id;
 
 julia> CC.IRCode(bb_ir_copy)
   1 ─      nothing::Nothing

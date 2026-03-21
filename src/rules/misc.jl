@@ -42,9 +42,9 @@ end
 """
     lgetfield(x, f::Val)
 
-An implementation of `getfield` in which the the field `f` is specified statically via a
+An implementation of `getfield` in which the field `f` is specified statically via a
 `Val`. This enables the implementation to be type-stable even when it is not
-possible to constant-propagate `f`. Moreover, it enable the pullback to also be type-stable.
+possible to constant-propagate `f`. Moreover, it enables the pullback to also be type-stable.
 
 It will always be the case that
 ```julia
@@ -75,6 +75,10 @@ _get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fiel
 function _get_tangent_field(f::Union{Tangent,MutableTangent}, name, inbounds)
     return val(getfield(f.fields, name, inbounds))
 end
+# When the struct tangent is NoTangent (e.g. a non-differentiable type captured inside
+# another struct), field access also contributes no derivative.
+_get_tangent_field(::NoTangent, _) = NoTangent()
+_get_tangent_field(::NoTangent, _, _) = NoTangent()
 
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
@@ -337,16 +341,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         # structs
         (false, :stability_and_allocs, nothing, lgetfield, 1:5, Val(:start)),
         (false, :stability_and_allocs, nothing, lgetfield, 1:5, Val(:stop)),
-        (true, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0), Val(:a)),
-        (false, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0, randn(5)), Val(:a)),
-        (false, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0, randn(5)), Val(:b)),
-        (true, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0), Val(1)),
-        (false, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0, randn(5)), Val(1)),
-        (false, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0, randn(5)), Val(2)),
+        # `getfield` primal is ~1–2 ns; rule overhead is ~100–500 ns. ub=750 gives margin.
+        (true, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0), Val(:a)),
+        (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(:a)),
+        (false, :none, (lb=1e-3, ub=200), lgetfield, StructFoo(5.0, randn(5)), Val(:b)),
+        (true, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0), Val(1)),
+        (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(1)),
+        (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(2)),
 
         # mutable structs
-        (true, :none, nothing, lgetfield, MutableFoo(5.0), Val(:a)),
-        (false, :none, nothing, lgetfield, MutableFoo(5.0, randn(5)), Val(:b)),
+        (true, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0), Val(:a)),
+        (false, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0, randn(5)), Val(:b)),
         (false, :none, nothing, lgetfield, UInt8, Val(:name)),
         (false, :none, nothing, lgetfield, UInt8, Val(:super)),
         (true, :none, nothing, lgetfield, UInt8, Val(:layout)),
@@ -354,7 +359,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (false, :none, nothing, lgetfield, UInt8, Val(:flags)),
     ]
 
-    # Create `lgetfield` tests for each type in TestTypes in order to increase coverage.
+    # Create `lgetfield` tests for each type in TestTypes for broader coverage.
     general_lgetfield_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         _, primal = TestTypes.instantiate((interface_only, P, args))
         names = fieldnames(P)[1:length(args)] # only query fields which get initialised
@@ -370,7 +375,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         order in Any[(), (Val(false),)]
     ]
 
-    # Create `lsetfield` testsfor each type in TestTypes in order to increase coverage.
+    # Create `lsetfield!` tests for each type in TestTypes for broader coverage.
     general_lsetfield_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         ismutabletype(P) || return Any[]
         _, primal = TestTypes.instantiate((interface_only, P, args))

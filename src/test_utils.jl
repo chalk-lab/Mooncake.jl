@@ -1016,7 +1016,7 @@ function test_rule(
                 if test_fwd
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
-                        cache_key = (sig, false, :forward)
+                        cache_key = (sig, debug_mode, :forward)
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
                     end
@@ -1024,7 +1024,7 @@ function test_rule(
                 if test_rvs
                     C_rvs = Mooncake.context_type(rvs_interp)
                     if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
-                        cache_key = (sig, false, :reverse)
+                        cache_key = (sig, debug_mode, :reverse)
                         k = Mooncake.ClosureCacheKey(rvs_interp.world, cache_key)
                         @test haskey(rvs_interp.oc_cache, k)
                     end
@@ -1040,6 +1040,8 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory = test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
         Mooncake.hand_written_rule_test_cases(rng_ctor, v)
     end
+    # GC.@preserve keeps backing objects alive for tests involving pointer-backed
+    # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
@@ -1052,6 +1054,8 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory = test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
         Mooncake.derived_rule_test_cases(rng_ctor, v)
     end
+    # GC.@preserve keeps backing objects alive for tests involving pointer-backed
+    # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases

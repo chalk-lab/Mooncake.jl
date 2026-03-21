@@ -214,7 +214,7 @@ julia> rrule!!(zero_fcodual(foo), zero_fcodual(3.0))[2](NoRData())
 (NoRData(), 0.0)
 ```
 
-Limited support for `Vararg`s is also available. For example
+`Vararg` signatures are also supported. For example
 ```jldoctest
 julia> using Mooncake: @zero_derivative, DefaultCtx, zero_fcodual, rrule!!, is_primitive, ReverseMode
 
@@ -229,9 +229,9 @@ true
 julia> rrule!!(zero_fcodual(foo_varargs), zero_fcodual(3.0), zero_fcodual(5))[2](NoRData())
 (NoRData(), 0.0, NoRData())
 ```
-Be aware that it is not currently possible to specify any of the type parameters of the
-`Vararg`. For example, the signature `Tuple{typeof(foo), Vararg{Float64, 5}}` will not work
-with this macro.
+Typed and counted `Vararg`s are also supported. For example,
+`Tuple{typeof(foo), Vararg{Float64}}` constrains all vararg slots to `Float64`, and
+`Tuple{typeof(foo), Vararg{Float64, N}} where {N}` additionally constrains the count.
 
 WARNING: this is only correct if the output of the function does not alias any fields of the
 function, or any of its arguments. For example, applying this macro to the function `x -> x`
@@ -242,9 +242,8 @@ made a mistake.
 
 # Signatures Unsupported By This Macro
 
-If the signature you wish to apply `@zero_derivative` to is not supported, for example because
-it uses a `Vararg` with a type parameter, you can still make use of
-[`zero_derivative`](@ref).
+If the signature you wish to apply `@zero_derivative` to is not supported, you can still
+make use of [`zero_derivative`](@ref).
 
 """
 macro zero_derivative(ctx, sig, mode=Mode)
@@ -253,21 +252,64 @@ macro zero_derivative(ctx, sig, mode=Mode)
     return _zero_derivative_impl(ctx, sig, mode)
 end
 
+# Returns true if `ex` (an already-escaped expression from parse_signature_expr) is any
+# form of Vararg: bare `Vararg`, `Vararg{T}`, or `Vararg{T,N}`.
+function _is_vararg_expr(ex)
+    ex == Expr(:escape, :Vararg) && return true
+    return ex isa Expr &&
+           ex.head == :escape &&
+           ex.args[1] isa Expr &&
+           ex.args[1].head == :curly &&
+           ex.args[1].args[1] == :Vararg
+end
+
+# Given an escaped Vararg expression and a wrapper type symbol (e.g. :(Mooncake.Dual)),
+# produce the appropriate Vararg type for the rule signature:
+#   Vararg        -> Vararg{wrapper}
+#   Vararg{T}     -> Vararg{wrapper{<:T}}
+#   Vararg{T,N}   -> Vararg{wrapper{<:T},N}
+# The inner components T and N are individually re-escaped so they resolve in the
+# caller's scope (parse_signature_expr already escaped the whole arg as one unit).
+function _vararg_wrapped_type(vararg_esc_expr, wrapper)
+    inner = vararg_esc_expr.args[1]
+    # Bare `Vararg` maps to `Vararg{wrapper}` without `<:` — any Dual/CoDual matches,
+    # consistent with `Vararg` meaning `Vararg{Any}`.
+    inner == :Vararg && return :(Vararg{$wrapper})
+    # inner is Expr(:curly, :Vararg, T) or Expr(:curly, :Vararg, T, N)
+    T = Expr(:escape, inner.args[2])
+    length(inner.args) == 2 && return :(Vararg{$wrapper{<:$T}})
+    N = Expr(:escape, inner.args[3])
+    return :(Vararg{$wrapper{<:$T},$N})
+end
+
 function _zero_derivative_impl(ctx, sig, mode)
 
     # Parse the signature, and construct the rule definition. If it is a vararg definition,
     # then the last argument requires special treatment.
     arg_type_symbols, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
-    is_vararg = arg_type_symbols[end] == Expr(:escape, :Vararg)
+
+    # Detect Vararg in a non-last position, which is invalid Julia and would silently
+    # produce a broken rule. Return a throw expression (rather than throwing here) so that
+    # the error is raised at runtime and can be caught by @test_throws in tests.
+    for t in arg_type_symbols[1:(end - 1)]
+        if _is_vararg_expr(t)
+            msg =
+                "@zero_derivative: `Vararg` may only appear as the last element of " *
+                "the signature tuple, but got: $sig"
+            return :(throw(ArgumentError($msg)))
+        end
+    end
+
+    is_vararg = _is_vararg_expr(arg_type_symbols[end])
     if is_vararg
         arg_types_deriv = vcat(
             map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
-            :(Vararg{Mooncake.Dual}),
+            _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.Dual)),
         )
         arg_types_adjoint = vcat(
             map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
-            :(Vararg{Mooncake.CoDual}),
+            _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.CoDual)),
         )
         splat_symbol = Expr(Symbol("..."), arg_names[end])
         tmp = arg_names[1:(end - 1)]
@@ -331,6 +373,13 @@ to_cr_tangent(t::Tangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
 to_cr_tangent(nt::NamedTuple) = CRC.Tangent{Any}(; map(to_cr_tangent, nt)...)
+function to_cr_tangent(x::PossiblyUninitTangent)
+    if is_init(x)
+        return to_cr_tangent(x.tangent)
+    else
+        return CRC.ZeroTangent()
+    end
+end
 
 function to_cr_tangent(t)
     throw(
@@ -400,7 +449,7 @@ and return the rdata component of `cr_tangent` by adding it to `zero_rdata`.
 function increment_and_get_rdata!(
     ::NoFData, r::T, t::T
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    r + t
+    return r + t
 end
 function increment_and_get_rdata!(
     f::Array{P}, ::NoRData, t::Array{P}
@@ -411,6 +460,24 @@ end
 increment_and_get_rdata!(::Any, r, ::CRC.NoTangent) = r
 function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
+end
+
+# Tuple tangents from ChainRulesCore require special handling because tuple elements
+# may be a mix of types: some with only rdata (e.g., scalars), some with only fdata
+# (e.g., arrays), and some with both. These four dispatches for increment_and_get_rdata!
+# handle all the possible cases for when the ChainRulesCore.Tangent has Tuple type data.
+function increment_and_get_rdata!(f, r, t::CRC.Tangent{P,<:Tuple}) where {P}
+    return increment_and_get_rdata!(f, r, t.backing)
+end
+function increment_and_get_rdata!(f::NoFData, r::Tuple, t::Tuple)
+    return map((ri, ti) -> increment_and_get_rdata!(f, ri, ti), r, t)
+end
+function increment_and_get_rdata!(f::Tuple, r::NoRData, t::Tuple)
+    increment!!(f, t)
+    return NoRData()
+end
+function increment_and_get_rdata!(f::Tuple, r::Tuple, t::Tuple)
+    return map((fi, ri, ti) -> increment_and_get_rdata!(fi, ri, ti), f, r, t)
 end
 
 # If a ChainRulesCore complex tangent is `NotImplemented`, return a `NaN`-filled Mooncake tangent.
@@ -442,41 +509,87 @@ function increment_and_get_rdata!(f, r, t)
 end
 
 """
-    notimplemented_tangent_guard(da::Mooncake.Tangent)
+    nan_tangent_guard(dy::L, tangent::T) where {L,T}
+
+Guard against NaN propagation in automatic differentiation.  
+
+When `dy = 0`, the corresponding gradient does not contribute to the total  
+gradient, so a zero tangent is returned to prevent NaN poisoning.  
+
+Otherwise, return `tangent`.  
+
+Note that this does not fully eliminate gradient poisoning; it relies on  
+zero masking (i.e., a strong zero with `dy = 0`) to reduce NaN propagation.
+"""
+@inline function nan_tangent_guard(
+    dy::L, tangent::T
+) where {
+    L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+    T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+}
+    return if iszero(dy)
+        T(0)
+    else
+        tangent
+    end
+end
+
+"""
+    nondifferentiable_tangent_guard(dy::L, tangent::T) where {L,T}
+
+Handle functions evaluated at non-differentiable points in their domain. See:
+https://juliadiff.org/ChainRulesCore.jl/dev/maths/nondiff_points.html
+
+If `dy == 0`, the gradient contributes nothing to the total gradient
+calculation, so a zero tangent is returned.
+
+Otherwise, return the user-provided `tangent` (eg, NaN), which may 
+be used to signal the presence of a non-differentiable point.
+"""
+@inline function nondifferentiable_tangent_guard(
+    dy::L, tangent::T
+) where {
+    L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+    T<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}},
+}
+    return if iszero(dy)
+        T(0)
+    else
+        tangent
+    end
+end
+
+"""
+    notimplemented_tangent_guard(dy::Mooncake.Tangent)
 
 Guards the use of a tangent associated with a `ChainRulesCore.NotImplemented` derivative.
 
-If `da` is nonzero, return a `NaN`-filled value matching the shape and type of `da`, which signals an unknown derivative.
+If `dy` is nonzero, return a `NaN`-filled value matching the shape and type of `da`, which signals an unknown derivative.
 
-If `da` is the zero tangent, return a zero-valued tangent in a form compatible with immediate algebraic composition inside Mooncake rules.
+If `dy` is the zero tangent, return a zero-valued tangent in a form compatible with immediate algebraic composition inside Mooncake rules.
 
 This masking ensures that missing derivatives only affect results when they are mathematically required.
 
 !!! note
-    This function is defined only for floating-point tangent spaces.
+    This function is defined only for floating-point and complex tangent spaces.
     It cannot support `Int` tangents, since `NaN` is only defined for
     `AbstractFloat` types.
 """
-function notimplemented_tangent_guard(da::L) where {L<:Base.IEEEFloat}
-    return if _dot(da, da) != L(0)
+function notimplemented_tangent_guard(
+    dy::L
+) where {L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
+    return if _dot(dy, dy) != L(0)
         L(NaN)
     else
         L(0)
     end
 end
 
-function notimplemented_tangent_guard(da::Complex{L}) where {L<:Base.IEEEFloat}
-    return if _dot(da, da) != L(0)
-        Complex(L(NaN), L(NaN))
-    else
-        Complex(L(0), L(0))
-    end
-end
-function notimplemented_tangent_guard(da)
+function notimplemented_tangent_guard(dy)
     throw(
         ArgumentError(
             "Mooncake.jl does not currently have a method of " *
-            "`notimplemented_tangent_guard` to handle the tangent type $(typeof(da)). " *
+            "`notimplemented_tangent_guard` to handle the tangent type $(typeof(dy)). " *
             "Please consider writing a custom notimplemented_tangent_guard or open an issue.",
         ),
     )

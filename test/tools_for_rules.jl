@@ -12,7 +12,9 @@ using Mooncake:
     DefaultCtx,
     @from_chainrules,
     ForwardMode,
-    ReverseMode
+    ReverseMode,
+    NoFData,
+    NoRData
 
 const CRC = ChainRulesCore
 
@@ -25,6 +27,25 @@ zero_tester(x) = 0
 
 vararg_zero_tester(x...) = 0
 @zero_derivative MinimalCtx Tuple{typeof(vararg_zero_tester),Vararg}
+
+typed_vararg_zero_tester(x::Float64...) = 0
+@zero_derivative MinimalCtx Tuple{typeof(typed_vararg_zero_tester),Vararg{Float64}}
+
+counted_vararg_zero_tester(x::Float64...) = 0
+@zero_derivative MinimalCtx Tuple{
+    typeof(counted_vararg_zero_tester),Vararg{Float64,N}
+} where {N}
+
+nested_vararg_zero_tester(x::Vector{Float64}...) = 0
+@zero_derivative MinimalCtx Tuple{
+    typeof(nested_vararg_zero_tester),Vararg{Vector{Float64},N}
+} where {N}
+
+mixed_vararg_zero_tester(n::Int, x::Float64...) = 0
+@zero_derivative MinimalCtx Tuple{typeof(mixed_vararg_zero_tester),Int,Vararg{Float64}}
+@zero_derivative MinimalCtx Tuple{
+    typeof(mixed_vararg_zero_tester),Int,Vararg{Float64,N}
+} where {N}
 
 zero_tester_forward_only(x) = 0
 @zero_derivative MinimalCtx Tuple{typeof(zero_tester_forward_only),Float64} ForwardMode
@@ -180,6 +201,57 @@ end
             is_primitive=true,
             perf_flag=:stability_and_allocs,
         )
+        test_rule(
+            sr(123),
+            ToolsForRulesResources.typed_vararg_zero_tester,
+            5.0,
+            4.0;
+            is_primitive=true,
+            perf_flag=:stability_and_allocs,
+        )
+        test_rule(
+            sr(123),
+            ToolsForRulesResources.counted_vararg_zero_tester,
+            5.0,
+            4.0;
+            is_primitive=true,
+            perf_flag=:stability_and_allocs,
+        )
+        test_rule(
+            sr(123),
+            ToolsForRulesResources.counted_vararg_zero_tester;
+            is_primitive=true,
+            perf_flag=:stability_and_allocs,
+        )
+        test_rule(
+            sr(123),
+            ToolsForRulesResources.nested_vararg_zero_tester,
+            [5.0],
+            [4.0];
+            is_primitive=true,
+            perf_flag=:stability_and_allocs,
+        )
+        test_rule(
+            sr(123),
+            ToolsForRulesResources.mixed_vararg_zero_tester,
+            3,
+            5.0,
+            4.0;
+            is_primitive=true,
+            perf_flag=:stability_and_allocs,
+        )
+        test_rule(
+            sr(123),
+            ToolsForRulesResources.mixed_vararg_zero_tester,
+            3;
+            is_primitive=true,
+            perf_flag=:stability_and_allocs,
+        )
+
+        @test_throws(
+            r"@zero_derivative: `Vararg` may only appear as the last element of",
+            Mooncake.@zero_derivative MinimalCtx Tuple{Vararg,typeof(zero_tester)}
+        )
 
         world = Base.get_world_counter()
         perf_flag = :stability_and_allocs
@@ -214,6 +286,9 @@ end
                 MutableTangent((a=5.0, b=ones(3))),
                 ChainRulesCore.Tangent{Any}(; a=5.0, b=ones(3)),
             ),
+            (PossiblyUninitTangent{Float64}(5.0), 5.0),
+            (PossiblyUninitTangent{Vector{Float64}}([5.0]), [5.0]),
+            (PossiblyUninitTangent{Vector{Float64}}(), ChainRulesCore.ZeroTangent()),
         ]
             @test Mooncake.to_cr_tangent(t) == t_cr
         end
@@ -296,6 +371,91 @@ end
             for expr in bad_mode_exprs
                 err = @test_throws LoadError eval(expr)
                 @test err.value.error isa ArgumentError
+            end
+        end
+
+        @testset "increment_and_get_rdata!(f, r, t) specialized dispatches" begin
+            f_no = NoFData()
+            r_no = NoRData()
+
+            @testset "NoFData - homogeneous Tuple rdata" begin
+                # f_no, r, t - NoFData, Tuple{Float64, Float64}, Tangent{Any, <:Tuple}
+                r = (rand(), rand())
+                dr = (rand(), rand())
+                t = ChainRulesCore.Tangent{Any,typeof(r)}(dr)
+
+                result = Mooncake.increment_and_get_rdata!(f_no, r, t)
+
+                @test result isa typeof(r)
+                @test result[1] ≈ r[1] + dr[1]
+                @test result[2] ≈ r[2] + dr[2]
+            end
+
+            @testset "NoFData - heterogeneous Tuple rdata" begin
+                # f_no, r, t - NoFData, Tuple{Tuple{Float64,Float64}, Float64}, Tangent{Any, <:Tuple}
+                r = ((rand(), rand()), rand())
+                dr = ((rand(), rand()), rand())
+                t = ChainRulesCore.Tangent{Any,typeof(r)}(dr)
+
+                result = Mooncake.increment_and_get_rdata!(f_no, r, t)
+
+                @test result isa typeof(r)
+                @test result[1][1] ≈ r[1][1] + dr[1][1]
+                @test result[1][2] ≈ r[1][2] + dr[1][2]
+                @test result[2] ≈ r[2] + dr[2]
+            end
+
+            @testset "NoRData - homogeneous Tuple fdata" begin
+                # f, r_no, t - Tuple{Vector{Float64}, Vector{Float64}}, NoRData, Tangent{Any, <:Tuple}
+                f1_orig = rand(3)
+                f2_orig = rand(3)
+                f = (copy(f1_orig), copy(f2_orig))
+
+                df1, df2 = rand(3), rand(3)
+                t = ChainRulesCore.Tangent{Any,typeof(f)}((df1, df2))
+
+                result = Mooncake.increment_and_get_rdata!(f, r_no, t)
+
+                @test result isa typeof(r_no)
+                @test f[1] ≈ f1_orig + df1
+                @test f[2] ≈ f2_orig + df2
+            end
+
+            @testset "NoRData - heterogeneous Tuple fdata" begin
+                # f, r_no, t - Tuple{Vector{Float64}, Vector{Float64}} (different lengths), NoRData, Tangent{Any, <:Tuple}
+                f1_orig = rand(3)
+                f2_orig = rand(2)
+                f = (copy(f1_orig), copy(f2_orig))
+
+                df1, df2 = rand(3), rand(2)
+                t = ChainRulesCore.Tangent{Any,typeof(f)}((df1, df2))
+
+                result = Mooncake.increment_and_get_rdata!(f, r_no, t)
+
+                @test result isa typeof(r_no)
+                @test f[1] ≈ f1_orig + df1
+                @test f[2] ≈ f2_orig + df2
+            end
+
+            @testset "Mixed - Tuple{Vector, Tuple} fdata and rdata" begin
+                # f1, r1, t1 - Tuple{Vector{Float64}, NoFData}, Tuple{NoRData, Tuple{Float64,Float64}}, Tangent{Any, <:Tuple}
+                f1_orig = rand(3)
+                f1 = (copy(f1_orig), f_no)
+
+                r2 = (rand(), rand())
+                r1 = (r_no, r2)
+
+                df1 = rand(3)
+                dr2 = (rand(), rand())
+                t1 = ChainRulesCore.Tangent{Any,typeof((f1_orig, r2))}((df1, dr2))
+
+                result = Mooncake.increment_and_get_rdata!(f1, r1, t1)
+
+                @test result isa typeof(r1)
+                @test result[1] isa typeof(r_no)
+                @test result[2][1] ≈ r2[1] + dr2[1]
+                @test result[2][2] ≈ r2[2] + dr2[2]
+                @test f1[1] ≈ f1_orig + df1
             end
         end
     end
