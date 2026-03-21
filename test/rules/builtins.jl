@@ -26,7 +26,7 @@ foo_throws(e) = throw(e)
     @testset "is_homogeneous_and_immutable" begin
         x = Tuple(randn(1000))
         @test @inferred Mooncake.is_homogeneous_and_immutable(x)
-        @test (@allocations Mooncake.is_homogeneous_and_immutable(x)) == 0
+        @test TestUtils.count_allocs(Mooncake.is_homogeneous_and_immutable, x) == 0
     end
 
     TestUtils.run_rule_test_cases(StableRNG, Val(:builtins))

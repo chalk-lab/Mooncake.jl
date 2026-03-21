@@ -131,4 +131,15 @@
         z̄ = (x̄..., tangent(y_ȳ))
         @test_throws AssertionError populate_address_map(z, z̄)
     end
+    @testset "count_allocs" begin
+        # Zero-alloc functions return 0.
+        @test TestUtils.count_allocs(identity, 1.0) == 0
+        @test TestUtils.count_allocs(+, 1.0, 2.0) == 0
+        # Type{T} arguments are specialised correctly (not widened to DataType).
+        @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Float64}) == 0
+        @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Vector{Float64}}) == 0
+        # Type constructor as first arg: count_allocs(Ref, 1.0) calls Ref(1.0), which
+        # heap-allocates. Verifies count_allocs works when f is a type constructor.
+        @test TestUtils.count_allocs(Ref, 1.0) >= 1
+    end
 end
