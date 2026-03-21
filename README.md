@@ -46,18 +46,9 @@ For additional details, see the [interface docs](https://chalk-lab.github.io/Moo
 ```julia
 import DifferentiationInterface as DI
 
-# Gradient
 backend = DI.AutoMooncake()
 grad_cache = DI.prepare_gradient(f, backend, x);
 g = DI.gradient(f, grad_cache, backend, x)
-
-# Hessian (forward-over-reverse)
-hess_backend = DI.SecondOrder(
-    DI.AutoMooncakeForward(),
-    DI.AutoMooncake()
-)
-hess_cache = DI.prepare_hessian(f, hess_backend, x);
-H = DI.hessian(f, hess_cache, hess_backend, x)
 ```
 
 We generally recommend interacting with `Mooncake.jl` through `DifferentiationInterface.jl`, although this interface may lag behind Mooncake in supporting newly introduced features.
