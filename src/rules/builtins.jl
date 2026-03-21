@@ -1076,15 +1076,20 @@ end
 # swapfield!
 
 frule!!(::Dual{typeof(throw)}, args::Dual...) = throw(map(primal, args)...)
-rrule!!(::CoDual{typeof(throw)}, args::CoDual...) = throw(map(primal, args)...)
+function rrule!!(::CoDual{typeof(throw)}, args::CoDual...)
+    throw(map(primal, args)...), _ -> (NoRData(), map(_ -> NoRData(), args)...)
+end
 
 # Only defined in v1.12+
 @static if isdefined(Core, :throw_methoderror)
-    function frule!!(::Dual{typeof(Core.throw_methoderror)}, args::Dual...)
-        Core.throw_methoderror(map(primal, args)...)
-    end
+    frule!!(::Dual{typeof(Core.throw_methoderror)}, args::Dual...) = Core.throw_methoderror(
+        map(primal, args)...
+    )
     function rrule!!(::CoDual{typeof(Core.throw_methoderror)}, args::CoDual...)
-        Core.throw_methoderror(map(primal, args)...)
+        return (
+            Core.throw_methoderror(map(primal, args)...),
+            _ -> (NoRData(), map(_ -> NoRData(), args)...),
+        )
     end
 end
 
@@ -1092,7 +1097,10 @@ function frule!!(::Dual{typeof(Core.throw_inexacterror)}, args::Dual...)
     Core.throw_inexacterror(map(primal, args)...)
 end
 function rrule!!(::CoDual{typeof(Core.throw_inexacterror)}, args::CoDual...)
-    Core.throw_inexacterror(map(primal, args)...)
+    return (
+        Core.throw_inexacterror(map(primal, args)...),
+        _ -> (NoRData(), map(_ -> NoRData(), args)...),
+    )
 end
 
 struct TuplePullback{N} end
