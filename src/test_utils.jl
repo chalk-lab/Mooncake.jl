@@ -803,19 +803,11 @@ function test_frule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @static if VERSION >= v"1.12"
-            @test count_allocs(f, x...) == 0
-        else
-            @test (@allocations f(x...)) == 0
-        end
+        @test count_allocs(f, x...) == 0
 
         # Test allocations in forwards-mode.
         __forwards(rule, f_ḟ, x_ẋ...)
-        @static if VERSION >= v"1.12"
-            @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
-        else
-            @test (@allocations __forwards(rule, f_ḟ, x_ẋ...)) == 0
-        end
+        @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
     end
 end
 
@@ -854,22 +846,13 @@ function test_rrule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @static if VERSION >= v"1.12"
-            @test count_allocs(f, x...) == 0
-        else
-            @test (@allocations f(x...)) == 0
-        end
+        @test count_allocs(f, x...) == 0
 
         # Test allocations in round-trip.
         f_f̄_fwds = to_fwds(f_f̄)
         x_x̄_fwds = map(to_fwds, x_x̄)
         __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
-        @static if VERSION >= v"1.12"
-            @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
-        else
-            @test (@allocations __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)) ==
-                0
-        end
+        @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
     end
 end
 
@@ -1448,69 +1431,54 @@ function test_get_tangent_field_performance(t::Union{MutableTangent,Tangent})
     end
 end
 
-# This faff is needed to work around the fact that `Base.allocations(() -> f(x...))` reports
-# spurious allocations when any of `x` is a DataType (which necessitates a manual expansion
-# of the splat), and `Base.allocations(f, x...)` also reports spurious allocations sometimes
-# when the arguments `x` aren't interpolated (which necessitates a closure). The only way to
-# make it work is to generate the code `Base.allocations(() -> f(x1, x2))`, etc., for each
-# arity of `f` (up to a reasonable limit). It would be nicer to use a generated function for
-# this, but generated functions can't contain closures.
-function __allocs end
-function count_allocs end
-const __MAX_ARGS_ALLOCS = 10
-@static if VERSION >= v"1.12-"
-    for nargs in 0:__MAX_ARGS_ALLOCS
-        args = [Symbol("x", i) for i in 1:nargs]
-        types = [Symbol("X", i) for i in 1:nargs]
-        sigs = [:($(args[i])::$(types[i])) for i in 1:nargs]
-        fexpr = quote
-            function count_allocs(f::F, $(sigs...)) where {F,$(types...)}
-                test_hook(count_allocs, f, $(args...)) do
-                    stats = Base.gc_num()
-                    @noinline clos = () -> f($(args...))
-                    clos()
-                    diff = Base.GC_Diff(Base.gc_num(), stats)
-                    return Base.gc_alloc_count(diff)
-                end
-            end
-            # Needs a special case when `f` itself is a type constructor
-            function count_allocs(::Type{F}, $(sigs...)) where {F,$(types...)}
-                test_hook(count_allocs, F, $(args...)) do
-                    stats = Base.gc_num()
-                    @noinline clos = () -> F($(args...))
-                    clos()
-                    diff = Base.GC_Diff(Base.gc_num(), stats)
-                    return Base.gc_alloc_count(diff)
-                end
-            end
-        end
-        eval(fexpr)
+# A plain Vararg method does not fully specialise on Type{T} arguments — they widen to
+# DataType — which causes spurious allocations to be reported. For example:
+#
+#   vararg(f::F, x::Vararg{Any,N}) where {F,N} = nothing
+#   vararg(rand, Xoshiro(1), Float64)
+#   Base.specializations(@which vararg(rand, Xoshiro(1), Float64))
+#   # => MethodInstance for vararg(::typeof(rand), ::Xoshiro, ::Type)
+#                                                               ^^^^^^ widened, abstract dispatch
+#
+#   explicit(f::F, x1::X1, x2::X2) where {F,X1,X2} = nothing
+#   explicit(rand, Xoshiro(1), Float64)
+#   Base.specializations(@which explicit(rand, Xoshiro(1), Float64))
+#   # => MethodInstance for explicit(::typeof(rand), ::Xoshiro, ::Type{Float64})
+#                                                                    ^^^^^^^^^^^ preserved
+#
+# @generated functions specialise fully on all argument types (including Type{T}), so
+# lumping everything into one Vararg gives full specialisation on both the function and
+# its arguments. @generated function bodies cannot contain closures, so the @noinline
+# measurement barrier from the old eval-loop approach is replaced by _MeasureAllocs: an
+# immutable struct whose callable method is @noinline, replicating the same effect.
+# test_hook is called so that external tools (e.g. the dispatch_doctor integration test)
+# can intercept and suppress the measurement where needed.
+struct _MeasureAllocs{F,Args<:Tuple}
+    f::F
+    args::Args
+end
+@noinline function (m::_MeasureAllocs)()
+    stats = Base.gc_num()
+    m.f(m.args...)
+    return Base.gc_alloc_count(Base.GC_Diff(Base.gc_num(), stats))
+end
+@generated function count_allocs(fx::Vararg{Any,N}) where {N}
+    args = [:(fx[$i]) for i in 2:N]
+    quote
+        test_hook(_MeasureAllocs(fx[1], ($(args...),)), count_allocs, fx[1], $(args...))
     end
-    # Catch-all method for when there are more than __MAX_ARGS_ALLOCS arguments. The risk of
-    # using Vararg here on Julia 1.12 is that it leads to incomplete specialisation when any
-    # of the arguments are DataTypes, which can cause spurious allocations. See e.g.
-    # https://discourse.julialang.org/t/specialization-on-vararg-of-types/108251.
-    function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-        test_hook(count_allocs, f, x...) do
-            # This method should only be hit if N > __MAX_ARGS_ALLOCS, but we can check
-            # nonetheless
-            N > __MAX_ARGS_ALLOCS &&
-                @warn "using varargs method for `count_allocs` since there were $N arguments; this may lead to spurious allocations being reported if any arguments are `DataType`s"
-            stats = Base.gc_num()
-            @noinline clos = () -> f(x...)
-            clos()
-            diff = Base.GC_Diff(Base.gc_num(), stats)
-            return Base.gc_alloc_count(diff)
-        end
+end
+@generated function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
+    args = [:(x[$i]) for i in 1:N]
+    quote
+        test_hook(_MeasureAllocs(f, ($(args...),)), count_allocs, f, $(args...))
     end
-else
-    # Fallback for Julia <= 1.11. Note that this will report spurious allocations if any of
-    # `x` are `DataType`s so it is best to just call `@allocations f(x...)` directly instead
-    # of `count_allocs(f, x...)`.
-    function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-        test_hook(count_allocs, f, x...) do
-            @allocations f(x...)
-        end
+end
+# Needs a special case when `f` itself is a type constructor.
+@generated function count_allocs(::Type{F}, x::Vararg{Any,N}) where {F,N}
+    args = [:(x[$i]) for i in 1:N]
+    quote
+        test_hook(_MeasureAllocs(F, ($(args...),)), count_allocs, F, $(args...))
     end
 end
 

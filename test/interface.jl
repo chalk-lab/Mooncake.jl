@@ -1,4 +1,5 @@
-using Mooncake.TestUtils: count_allocs, has_equal_data
+using Mooncake: TestUtils
+using Mooncake.TestUtils: has_equal_data
 using Mooncake:
     prepare_gradient_cache,
     prepare_pullback_cache,
@@ -68,7 +69,7 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs(value_and_gradient!!, cache, fargs...)
+            alloc_count = TestUtils.count_allocs(value_and_gradient!!, cache, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
@@ -141,7 +142,7 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
+            alloc_count = TestUtils.count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
