@@ -1,4 +1,4 @@
-using Mooncake.TestUtils: count_allocs, has_equal_data, test_hook
+using Mooncake: TestUtils
 using Mooncake:
     prepare_gradient_cache,
     prepare_hvp_cache,
@@ -72,7 +72,7 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs(value_and_gradient!!, cache, fargs...)
+            alloc_count = TestUtils.count_allocs(value_and_gradient!!, cache, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
@@ -145,7 +145,7 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
+            alloc_count = TestUtils.count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
@@ -161,8 +161,8 @@ end
 
             cache = Mooncake.prepare_pullback_cache(testf, x)
             v, pb = Mooncake.value_and_pullback!!(cache, x̄_unfriendly, testf, x)
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 Mooncake.Tangent((;
                     x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2
@@ -173,16 +173,16 @@ end
                 testf, x; config=Mooncake.Config(; friendly_tangents=true)
             )
             v, pb = Mooncake.value_and_pullback!!(cache, x̄, testf, x)
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
 
             rrule = build_rrule(testf, x)
             v, pb = Mooncake.value_and_pullback!!(rrule, x̄_unfriendly, testf, x)
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 Mooncake.Tangent((;
                     x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2
@@ -192,8 +192,8 @@ end
             v, pb = Mooncake.value_and_pullback!!(
                 rrule, x̄, testf, x; friendly_tangents=true
             )
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
@@ -319,8 +319,8 @@ end
                     test_copy = Mooncake._copy_output(original)
                     test_inplace_copy = Mooncake._copy_to_output!!(test_copy, original)
 
-                    @test Mooncake.TestUtils.has_equal_data(original, test_copy)
-                    @test Mooncake.TestUtils.has_equal_data(original, test_inplace_copy)
+                    @test TestUtils.has_equal_data(original, test_copy)
+                    @test TestUtils.has_equal_data(original, test_inplace_copy)
                     @test typeof(test_copy) == typeof(original)
                 end
             catch err
@@ -489,7 +489,7 @@ end
     end
 
     @testset "value_and_hessian!!" begin
-        test_hook(Val(:allow_unstable_hessian_interface_test)) do
+        TestUtils.test_hook(Val(:allow_unstable_hessian_interface_test)) do
             rosen(z) = (1 - z[1])^2 + 100 * (z[2] - z[1]^2)^2
             function rosen_H(z)
                 h11 = 2 - 400 * (z[2] - z[1]^2) + 800 * z[1]^2

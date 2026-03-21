@@ -1,3 +1,22 @@
+# 0.5.24
+
+Add `stop_gradient(x)` to block gradient propagation (TensorFlow/JAX analogue).
+```julia
+julia> using Mooncake
+
+julia> f(x) = x[1] * Mooncake.stop_gradient(x)[2]
+f (generic function with 1 method)
+
+julia> cache = Mooncake.prepare_gradient_cache(f, [3.0, 4.0]);
+
+julia> _, (_, g) = Mooncake.value_and_gradient!!(cache, f, [3.0, 4.0]);
+
+julia> g  # g[2] == 0: gradient through x[2] inside stop_gradient is blocked
+2-element Vector{Float64}:
+ 4.0
+ 0.0
+```
+
 # 0.5.23
 
 ## CUDA extension
