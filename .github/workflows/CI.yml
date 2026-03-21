@@ -208,14 +208,12 @@ jobs:
           } >> $GITHUB_OUTPUT
       - name: Sync PR summary
         if: github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          SUMMARY_PERF_CONTENT: |
+        uses: ./.github/actions/sync-pr-summary
+        with:
+          perf-content: |
             Performance Ratio:
             Ratio of time to compute gradient and time to compute function.
             Warning: results are very approximate! See [here](https://github.com/chalk-lab/Mooncake.jl/tree/main/bench#inter-framework-benchmarking) for more context.
             ```
             ${{ steps.read-file.outputs.table }}
             ```
-        run: python3 .github/scripts/sync_pr_summary.py
