@@ -206,27 +206,16 @@ jobs:
             cat bench/benchmark_results.txt
             echo "EOF"
           } >> $GITHUB_OUTPUT
-          
-      - name: Find Comment
-        uses: peter-evans/find-comment@v4
-        id: fc
-        with:
-          issue-number: ${{ github.event.pull_request.number }}
-          comment-author: github-actions[bot]
-          body-includes: "perf-results"
-
-      - id: post-report-as-pr-comment
-        name: Post Report as Pull Request Comment
-        uses: peter-evans/create-or-update-comment@v5
-        with:
-          issue-number: ${{ github.event.pull_request.number }}
-          body: |
-            <!-- perf-results -->
+      - name: Sync PR summary
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SUMMARY_PERF_CONTENT: |
             Performance Ratio:
             Ratio of time to compute gradient and time to compute function.
             Warning: results are very approximate! See [here](https://github.com/chalk-lab/Mooncake.jl/tree/main/bench#inter-framework-benchmarking) for more context.
             ```
             ${{ steps.read-file.outputs.table }}
             ```
-          comment-id: ${{ steps.fc.outputs.comment-id }}
-          edit-mode: replace
+        run: python3 .github/scripts/sync_pr_summary.py
