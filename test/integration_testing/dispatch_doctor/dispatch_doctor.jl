@@ -71,16 +71,15 @@ function TestUtils.test_hook(f, ::typeof(Mooncake.compute_oc_signature), x...)
     allow_unstable(f)
 end
 
-# Skip this integration test on Julia 1.10 because DispatchDoctor currently
-# interferes with Mooncake there.
-@static if VERSION >= v"1.11"
-    include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
+include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
 
-    include(joinpath(@__DIR__, "..", "..", "utils.jl"))
-    include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
-    include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
-    include(joinpath(@__DIR__, "..", "..", "stack.jl"))
-    include(joinpath(@__DIR__, "..", "..", "interface.jl"))
-else
-    println("Skipping DispatchDoctor integration tests on Julia $VERSION.")
-end
+include(joinpath(@__DIR__, "..", "..", "utils.jl"))
+include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
+include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
+include(joinpath(@__DIR__, "..", "..", "stack.jl"))
+
+# Skip these interface tests, as DispatchDoctor appears to interfere  
+# with the Julia compiler when Mooncake is run in debug mode with  
+# deliberately incorrect input arguments
+
+# include(joinpath(@__DIR__, "..", "..", "interface.jl"))
