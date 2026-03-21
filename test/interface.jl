@@ -466,7 +466,7 @@ end
     end
 
     @testset "value_and_hvp!!" begin
-        test_hook(Val(:allow_unstable_hvp_interface_test)) do
+        TestUtils.test_hook(Val(:allow_unstable_hvp_interface_test)) do
             @testset "multi-argument HVP validates direction arity" begin
                 f(x, y) = sum(x .* x) + sum(y .* y)
                 x = [1.0, 2.0]
