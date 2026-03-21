@@ -1,5 +1,4 @@
 using Mooncake: TestUtils
-using Mooncake.TestUtils: has_equal_data
 using Mooncake:
     prepare_gradient_cache,
     prepare_pullback_cache,
@@ -158,8 +157,8 @@ end
 
             cache = Mooncake.prepare_pullback_cache(testf, x)
             v, pb = Mooncake.value_and_pullback!!(cache, x̄_unfriendly, testf, x)
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 Mooncake.Tangent((;
                     x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2
@@ -170,16 +169,16 @@ end
                 testf, x; config=Mooncake.Config(; friendly_tangents=true)
             )
             v, pb = Mooncake.value_and_pullback!!(cache, x̄, testf, x)
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
 
             rrule = build_rrule(testf, x)
             v, pb = Mooncake.value_and_pullback!!(rrule, x̄_unfriendly, testf, x)
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 Mooncake.Tangent((;
                     x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2
@@ -189,8 +188,8 @@ end
             v, pb = Mooncake.value_and_pullback!!(
                 rrule, x̄, testf, x; friendly_tangents=true
             )
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
@@ -316,8 +315,8 @@ end
                     test_copy = Mooncake._copy_output(original)
                     test_inplace_copy = Mooncake._copy_to_output!!(test_copy, original)
 
-                    @test Mooncake.TestUtils.has_equal_data(original, test_copy)
-                    @test Mooncake.TestUtils.has_equal_data(original, test_inplace_copy)
+                    @test TestUtils.has_equal_data(original, test_copy)
+                    @test TestUtils.has_equal_data(original, test_inplace_copy)
                     @test typeof(test_copy) == typeof(original)
                 end
             catch err
