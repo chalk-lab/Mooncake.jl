@@ -132,14 +132,22 @@
         @test_throws AssertionError populate_address_map(z, z̄)
     end
     @testset "count_allocs" begin
-        # Zero-alloc functions return 0.
+        # Function form: zero-alloc functions return 0.
         @test TestUtils.count_allocs(identity, 1.0) == 0
         @test TestUtils.count_allocs(+, 1.0, 2.0) == 0
-        # Type{T} arguments are specialised correctly (not widened to DataType).
+        # Regression: non-isbits arg (heap object). An @noinline barrier would box the
+        # array when passing it through the Vararg tuple, causing a spurious allocation
+        # on Julia 1.10. The @generated design avoids the barrier entirely.
+        @test TestUtils.count_allocs(length, [1, 2, 3]) == 0
+        # Regression: Type{T} arg. A plain Vararg method widens Type{Float64} to DataType,
+        # causing a spurious boxing allocation on Julia 1.12. The @generated design
+        # specialises on element types and preserves the concrete Type{T} parameter.
+        @test TestUtils.count_allocs(isbitstype, Float64) == 0
+        # Type{T} args: @generated specialisation avoids DataType-widening that would
+        # otherwise cause spurious allocations through the Vararg tuple.
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Float64}) == 0
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Vector{Float64}}) == 0
-        # Type constructor as first arg: count_allocs(Ref, 1.0) calls Ref(1.0), which
-        # heap-allocates. Verifies count_allocs works when f is a type constructor.
+        # Type constructor as first arg: Ref(1.0) heap-allocates.
         @test TestUtils.count_allocs(Ref, 1.0) >= 1
     end
 end
