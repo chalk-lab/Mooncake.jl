@@ -192,12 +192,6 @@ jobs:
         with:
           name: benchmarking-results
           path: bench_results/
-      # Useful code for testing action.
-      # - run: |
-      #     text="this is line one
-      #     this is line two
-      #     this is line three"
-      #     echo "$text" > benchmark_results.txt
       - name: Read file content
         id: read-file
         run: |
@@ -207,7 +201,6 @@ jobs:
             echo "EOF"
           } >> $GITHUB_OUTPUT
       - name: Sync PR summary
-        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: ./.github/actions/sync-pr-summary
         with:
           perf-content: |
