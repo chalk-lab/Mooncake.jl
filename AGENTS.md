@@ -29,10 +29,16 @@ Mooncake.jl is a Julia-first automatic differentiation package focused on:
 - If you change public APIs, developer tooling, or core internals, update docs under `docs/src/` when needed.
 - Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
 
+## Consistency
+
+- When changing Julia version support, update `Project.toml`, `.github/workflows/CI.yml`, and `SUPPORT_POLICY.md` together.
+- Preserve source/test/CI symmetry for new rules and internals: add the matching test file, wire it into `test/runtests.jl` when applicable, and update CI if it deserves its own group.
+
 ## Testing
 
 - Run focused test groups during development instead of the full suite when possible.
 - For new differentiation rules, prefer testing them with `Mooncake.TestUtils.test_rule`.
+- `src/test_resources.jl` is shared test infrastructure, not dead code. It feeds broad interpreter/rule tests indirectly via `TestResources.generate_test_functions()`, so do not judge it by one-file-one-test symmetry.
 - Typical command from the repo root:
 
 ```bash
@@ -40,6 +46,7 @@ julia --project=. -e 'import Pkg; Pkg.test(; test_args=ARGS)' -- rules/random
 ```
 
 - Extension and integration tests should generally be run from their own files/environments under `test/ext/` and `test/integration_testing/`.
+- `test/ext/` and `test/integration_testing/` are part of the package contract, not optional extras. Changes to weakdeps/extensions often need updates there even if core tests still pass.
 
 ## Documentation
 
