@@ -32,6 +32,7 @@ LuxLib = "82251201-b29d-42c6-8e01-566dec8acb11"
 MLDataDevices = "7e8f7934-dd98-4c1a-8fe8-92b47a384d40"
 NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
 SLEEFPirates = "476501e8-09a2-5ece-8869-fb82de89a1fa"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
 
@@ -50,6 +51,7 @@ MooncakeLuxLibExt = ["LuxLib", "MLDataDevices", "Static"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
 MooncakeLuxLibNNlibExt = ["LuxLib", "NNlib"]
 MooncakeNNlibExt = ["NNlib", "LinearAlgebra"]
+MooncakeSparseArraysExt = "SparseArrays"
 MooncakeSpecialFunctionsExt = "SpecialFunctions"
 
 [compat]
@@ -84,6 +86,7 @@ Pkg = "1"
 Random = "1"
 Revise = "3.0 - 3.12"
 SLEEFPirates = "0.6.43"
+SparseArrays = "1"
 SpecialFunctions = "2"
 StableRNGs = "1"
 Static = "1.1.1"
