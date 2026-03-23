@@ -295,6 +295,30 @@ end
         result = Mooncake.tangent_to_primal!!(H_copy, dH)
         @test result == Hermitian([1.0+0im 1.0+0im; 1.0+0im 1.0+0im])
     end
+
+    @testset "Hermitian uplo=L - real(H[2,1])" begin
+        f = (H::Hermitian) -> real(H[2, 1])
+        H = Hermitian([1.0+0im 2.0-1im; 2.0+1im 3.0+0im], :L)
+        cache = Mooncake.prepare_pullback_cache(
+            f, H; config=Mooncake.Config(friendly_tangents=false)
+        )
+        _, (_, dH) = Mooncake.value_and_pullback!!(cache, 1.0, f, H)
+        H_copy = Mooncake._copy_output(H)
+        result = Mooncake.tangent_to_primal!!(H_copy, dH)
+        @test result == Hermitian([0.0+0im 0.5+0im; 0.5+0im 0.0+0im], :L)
+    end
+
+    @testset "Hermitian uplo=L - sum of real parts" begin
+        f = (H::Hermitian) -> sum(real.(H))
+        H = Hermitian([1.0+0im 2.0-1im; 2.0+1im 3.0+0im], :L)
+        cache = Mooncake.prepare_pullback_cache(
+            f, H; config=Mooncake.Config(friendly_tangents=false)
+        )
+        _, (_, dH) = Mooncake.value_and_pullback!!(cache, 1.0, f, H)
+        H_copy = Mooncake._copy_output(H)
+        result = Mooncake.tangent_to_primal!!(H_copy, dH)
+        @test result == Hermitian([1.0+0im 1.0+0im; 1.0+0im 1.0+0im], :L)
+    end
 end
 
 # The goal of these tests is to check that we can indeed generate tangent types for anything

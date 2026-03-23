@@ -42,7 +42,7 @@ function Mooncake.tangent_to_primal_internal!!(
     x::LinearAlgebra.Symmetric{T,S}, tx, c::MaybeCache
 ) where {T,S}
     tx isa Mooncake.NoTangent && return x
-    data_tangent = tx.fields.data
+    data_tangent = val(tx.fields.data)
     n = size(x.data, 1)
     for j in 1:n, i in 1:n
         if i == j
@@ -59,7 +59,7 @@ function Mooncake.tangent_to_primal_internal!!(
     x::LinearAlgebra.Hermitian{T,S}, tx, c::MaybeCache
 ) where {T,S}
     tx isa Mooncake.NoTangent && return x
-    data_tangent = tx.fields.data
+    data_tangent = val(tx.fields.data)
     n = size(x.data, 1)
     for j in 1:n, i in 1:n
         if i == j

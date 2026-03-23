@@ -1284,6 +1284,10 @@ Implementation of [`tangent_to_primal!!`](@ref).
 For mutable types, the cache should be used to avoid infinite recursion.
 For every mutable `x`, if there is an entry `c[x]`, then it can be returned directly.
 Otherwise, the corresponding updated primal should be stored in the cache.
+
+Additional specializations for types defined in other modules live alongside their rules:
+- `IdDict`: `src/rules/iddict.jl`
+- `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`: `src/rules/linear_algebra.jl`
 """
 function tangent_to_primal_internal!! end
 """
