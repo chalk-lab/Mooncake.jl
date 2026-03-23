@@ -201,7 +201,7 @@ jobs:
             echo "EOF"
           } >> $GITHUB_OUTPUT
       - name: Sync PR summary
-        uses: ./.github/actions/sync-pr-summary
+        uses: TuringLang/actions/SyncPRSummary@main
         with:
           perf-content: |
             Performance Ratio:

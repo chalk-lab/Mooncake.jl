@@ -26,7 +26,7 @@ jobs:
           post-preview-comment: 'false'
       - name: Sync PR summary
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: ./.github/actions/sync-pr-summary
+        uses: TuringLang/actions/SyncPRSummary@main
         with:
           docs-content: |
             Mooncake.jl documentation for PR #${{ github.event.pull_request.number }} is available at:
