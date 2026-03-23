@@ -17,14 +17,13 @@ You are helping the user diagnose performance issues at the Julia compiler bound
 
 ## Setup
 
-The diagnostic script lives at `.claude/skills/perf-diagnose/scripts/perf_diagnose.jl`.
-
-Start a Julia session (or reuse an existing one) and load the script:
+The diagnostic functions are part of Mooncake.jl. Start a Julia session and load the package:
 
 ```julia
-using Revise
-includet(".claude/skills/perf-diagnose/scripts/perf_diagnose.jl")
+using Mooncake
 ```
+
+All functions below are accessed via the `Mooncake` module (e.g. `Mooncake.diagnose_perf`).
 
 ## Gathering user intent
 
@@ -52,25 +51,27 @@ Do not assume — ask the user to pick.
 ## Commands reference
 
 ```julia
+using Mooncake
+
 # Full diagnostic
-report = diagnose_perf(f, args...)
-show_report(report)
+report = Mooncake.diagnose_perf(f, args...)
+Mooncake.show_report(report)
 
 # Quick inspect + display
-report = quick_diagnose(f, args...)
+report = Mooncake.quick_diagnose(f, args...)
 
 # Individual detectors
-spec   = check_specialization(f, args...)
-allocs = check_allocations(f, args...)
-inl    = check_inlining(f, args...)
+spec   = Mooncake.check_specialization(f, args...)
+allocs = Mooncake.check_allocations(f, args...)
+inl    = Mooncake.check_inlining(f, args...)
 
-show_specialization(spec)
-show_allocations(allocs)
-show_inlining(inl)
+Mooncake.show_specialization(spec)
+Mooncake.show_allocations(allocs)
+Mooncake.show_inlining(inl)
 
 # Compare two calls
-comp = compare_perf(f, args_a, args_b)
-show_comparison(comp)
+comp = Mooncake.compare_perf(f, args_a, args_b)
+Mooncake.show_comparison(comp)
 ```
 
 ## How to present results
@@ -79,4 +80,4 @@ show_comparison(comp)
 - Present the report in fenced code blocks, highlighting findings marked with `[!]`.
 - For each finding, explain the severity and the suggested fix.
 - When using compare mode, highlight which slots differ and the metrics delta.
-- If errors occur, check that InteractiveUtils is loaded and the function signature is valid.
+- If errors occur, check that Mooncake is loaded and the function signature is valid.

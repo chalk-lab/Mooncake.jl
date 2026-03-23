@@ -27,11 +27,13 @@ If this is still first-pass triage, use `perf-diagnose` first.
 ## Required workflow
 
 1. Pin Julia version first (`VERSION`, optional commit). See
-   `references/version-policy.md`.
+   `docs/src/developer_documentation/compiler_version_policy.md`.
 2. Classify the symptom and pick the initial category. See
-   `references/source-map.md`.
-3. Run the full method in `references/investigation-playbook.md`.
-4. Build an A/B MWE with `references/mwe-patterns.md`.
+   `docs/src/developer_documentation/compiler_source_map.md`.
+3. Run the full method in
+   `docs/src/developer_documentation/compiler_investigation_playbook.md`.
+4. Build an A/B MWE with
+   `docs/src/developer_documentation/compiler_mwe_patterns.md`.
 5. Write the root-cause report with exact predicate and source path.
 
 ## Source access

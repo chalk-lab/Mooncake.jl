@@ -10,14 +10,13 @@ You are helping the user inspect IR (Intermediate Representation) transformation
 
 ## Setup
 
-The IR inspection script lives at `.claude/skills/ir-inspect/scripts/ir_inspect.jl`.
-
-Start a Julia session (or reuse an existing one) and load the script:
+The IR inspection functions are part of Mooncake.jl. Start a Julia session and load the package:
 
 ```julia
-using Revise
-includet(".claude/skills/ir-inspect/scripts/ir_inspect.jl")
+using Mooncake
 ```
+
+All functions below are accessed via the `Mooncake` module (e.g. `Mooncake.inspect_ir`).
 
 ## Gathering user intent
 
@@ -59,34 +58,35 @@ Do not assume — ask the user to pick.
 ## Commands reference
 
 ```julia
+using Mooncake
+
 # Full inspection
-ins = inspect_ir(f, args...; mode=:reverse)  # or mode=:forward
+ins = Mooncake.inspect_ir(f, args...; mode=:reverse)  # or mode=:forward
 
 # View stages
-show_ir(ins)                          # all stages
-show_stage(ins, :raw)                 # one stage
-show_stage(ins, :normalized)
+Mooncake.show_ir(ins)                          # all stages
+Mooncake.show_stage(ins, :raw)                 # one stage
 
 # Diffs between stages
-show_diff(ins; from=:raw, to=:normalized)
-show_all_diffs(ins)
+Mooncake.show_diff(ins; from=:raw, to=:normalized)
+Mooncake.show_all_diffs(ins)
 
 # World age debugging
-show_world_info(ins)
+Mooncake.show_world_info(ins)
 
 # CFG as DOT string
-println(cfg_dot(ins, :bbcode))
+println(Mooncake.cfg_dot(ins, :bbcode))
 
 # Write everything to files
-write_ir(ins, "/tmp/ir_output")
+Mooncake.write_ir(ins, "/tmp/ir_output")
 
 # Shorthand helpers
-ins = inspect_fwd(f, args...)         # forward mode
-ins = inspect_rvs(f, args...)         # reverse mode
-ins = quick_inspect(f, args...)       # inspect + display immediately
+ins = Mooncake.inspect_fwd(f, args...)         # forward mode
+ins = Mooncake.inspect_rvs(f, args...)         # reverse mode
+ins = Mooncake.quick_inspect(f, args...)       # inspect + display immediately
 
 # Options
-inspect_ir(f, args...;
+Mooncake.inspect_ir(f, args...;
     mode       = :reverse,
     optimize   = true,
     do_inline  = true,
@@ -104,4 +104,4 @@ inspect_ir(f, args...;
 
 ## Limitations
 
-This skill inspects Mooncake's **internal AD pipeline** — the IR it generates for forward/reverse passes. It does **not** detect performance issues at the Julia compiler boundary (specialization widening, SROA/allocation failures, inlining failures). If the IR looks correct but the function is still slow, use the **perf-diagnose** skill instead (`.claude/skills/perf-diagnose/`).
+This skill inspects Mooncake's **internal AD pipeline** — the IR it generates for forward/reverse passes. It does **not** detect performance issues at the Julia compiler boundary (specialization widening, SROA/allocation failures, inlining failures). If the IR looks correct but the function is still slow, use the **perf-diagnose** skill instead.
