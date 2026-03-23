@@ -1287,7 +1287,7 @@ Otherwise, the corresponding updated primal should be stored in the cache.
 
 Additional specializations for types defined in other modules live alongside their rules:
 - `IdDict`: `src/rules/iddict.jl`
-- `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`: `src/rules/linear_algebra.jl`
+- `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, `LinearAlgebra.SymTridiagonal`: `src/rules/linear_algebra.jl`
 """
 function tangent_to_primal_internal!! end
 """

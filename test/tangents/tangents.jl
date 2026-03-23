@@ -329,6 +329,34 @@ end
     end
 end
 
+@testset "tangent_to_primal!! for SymTridiagonal" begin
+    @testset "S[1,2]" begin
+        f = (S::SymTridiagonal) -> S[1, 2]
+        S = SymTridiagonal([1.0, 3.0], [2.0])
+        cache = Mooncake.prepare_pullback_cache(
+            f, S; config=Mooncake.Config(friendly_tangents=false)
+        )
+        _, (_, dS) = Mooncake.value_and_pullback!!(cache, 1.0, f, S)
+        S_copy = Mooncake._copy_output(S)
+        result = Mooncake.tangent_to_primal!!(S_copy, dS)
+        @test result == SymTridiagonal([0.0, 0.0], [0.5])
+    end
+
+    @testset "sum" begin
+        # Reading both S[i,i+1] and S[i+1,i] routes both accesses to ev[i], so without
+        # the /2 fix the off-diagonal entries would be 2.0 instead of 1.0.
+        f = (S::SymTridiagonal) -> S[1, 1] + S[1, 2] + S[2, 1] + S[2, 2]
+        S = SymTridiagonal([1.0, 3.0], [2.0])
+        cache = Mooncake.prepare_pullback_cache(
+            f, S; config=Mooncake.Config(friendly_tangents=false)
+        )
+        _, (_, dS) = Mooncake.value_and_pullback!!(cache, 1.0, f, S)
+        S_copy = Mooncake._copy_output(S)
+        result = Mooncake.tangent_to_primal!!(S_copy, dS)
+        @test result == SymTridiagonal([1.0, 1.0], [1.0])
+    end
+end
+
 # The goal of these tests is to check that we can indeed generate tangent types for anything
 # that we will encounter in the Julia language. We try to achieve this by pulling in types
 # from LinearAlgebra, and Random, and generating tangents for them.

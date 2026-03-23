@@ -84,6 +84,26 @@ function Mooncake.tangent_to_primal_internal!!(
     return x
 end
 
+# SymTridiagonal stores ev[i] for both A[i,i+1] and A[i+1,i], so the same doubling issue
+# applies as for Symmetric: both reads route to ev[i], while the tangent entry for the
+# other direction accumulates no gradient. By the same ⟨G, δS⟩ = δf argument,
+# G.ev[i] = ∂f/∂(ev[i]) / 2. The diagonal dv[i] represents only A[i,i], so no correction
+# is needed there.
+function Mooncake.tangent_to_primal_internal!!(
+    x::LinearAlgebra.SymTridiagonal{T,V}, tx, c::MaybeCache
+) where {T,V}
+    tx isa Mooncake.NoTangent && return x
+    dv_tangent = val(tx.fields.dv)
+    ev_tangent = val(tx.fields.ev)
+    for i in eachindex(x.dv)
+        x.dv[i] = dv_tangent[i]
+    end
+    for i in eachindex(x.ev)
+        x.ev[i] = ev_tangent[i] / 2
+    end
+    return x
+end
+
 function derived_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
