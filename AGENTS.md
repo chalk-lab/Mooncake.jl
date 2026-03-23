@@ -53,8 +53,8 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer writing rules at the lowest practical level, often around foreign-call
   boundaries (see `src/rules/blas.jl`), to reduce the total number of rules that need to
   be maintained.
-- Use `@zero_adjoint` for rules with a zero gradient rather than writing a manual
-  `rrule!!`. Check `src/rules/` for other convenience macros before writing a rule from
+- Use `@zero_derivative` for rules with a zero derivative rather than writing a manual
+  rule. Check `src/rules/` for other convenience macros before writing a rule from
   scratch.
 - When choosing a tangent type: use `NoTangent` for non-differentiable types (e.g.
   integers, booleans, symbols); use `ZeroTangent` when the type is differentiable but
