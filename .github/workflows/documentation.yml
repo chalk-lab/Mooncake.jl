@@ -17,8 +17,17 @@ jobs:
 
     steps:
       - name: Build and deploy Documenter.jl docs
+        id: docsdocumenter
         env:
           GKSwstype: nul # turn off GR's interactive plotting for notebooks
         uses: TuringLang/actions/DocsDocumenter@main
         with:
           julia-version: '1.11'
+          post-preview-comment: 'false'
+      - name: Sync PR summary
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: TuringLang/actions/SyncPRSummary@main
+        with:
+          docs-content: |
+            Mooncake.jl documentation for PR #${{ github.event.pull_request.number }} is available at:
+            ${{ steps.docsdocumenter.outputs.preview_url }}
