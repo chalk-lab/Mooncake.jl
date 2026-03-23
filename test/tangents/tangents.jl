@@ -233,6 +233,65 @@ using DispatchDoctor: allow_unstable
             @test tangent_type(F, Mooncake.NoRData) == T
         end
     end
+
+    # For Symmetric and Hermitian, tangent_to_friendly_internal!! copies the raw backing
+    # data matrix directly: the stored triangle holds the tangent, the other is zero/junk.
+    # For SymTridiagonal, dv and ev are copied into the appropriate diagonals; all other
+    # entries are zero. The original structure is lost — the result is a plain Matrix{T}.
+
+    @testset "Symmetric uplo=$uplo" for (uplo, tx_data) in
+                                        ((:U, [1.0 6.0; 0.0 1.0]), (:L, [1.0 0.0; 6.0 1.0]))
+        S = LinearAlgebra.Symmetric([1.0 2.0; 999.0 4.0], uplo)
+        tx = Mooncake.build_tangent(typeof(S), tx_data, NoTangent())
+        dest = Mooncake.friendly_tangent_dest(S)
+        # internal!!: writes in-place, raw data copy
+        @test Mooncake.tangent_to_friendly_internal!!(S, dest, tx) === dest
+        @test dest == tx_data
+        # public API: allocates dest via friendly_tangent_dest, same result
+        @test Mooncake.tangent_to_friendly!!(S, tx) == tx_data
+    end
+
+    @testset "Hermitian uplo=$uplo" for (uplo, tx_data) in
+                                        ((:U, [2.0 6.0; 0.0 2.0]), (:L, [2.0 0.0; 6.0 2.0]))
+        H = LinearAlgebra.Hermitian([1.0 2.0; 999.0 4.0], uplo)
+        tx = Mooncake.build_tangent(typeof(H), tx_data, NoTangent())
+        dest = Mooncake.friendly_tangent_dest(H)
+        @test Mooncake.tangent_to_friendly_internal!!(H, dest, tx) === dest
+        @test dest == tx_data
+        @test Mooncake.tangent_to_friendly!!(H, tx) == tx_data
+    end
+
+    @testset "SymTridiagonal" begin
+        ST = LinearAlgebra.SymTridiagonal([1.0, 2.0, 3.0], [4.0, 5.0])
+        tx = Mooncake.build_tangent(typeof(ST), [1.0, 2.0, 3.0], [6.0, 8.0])
+        dest = Mooncake.friendly_tangent_dest(ST)
+        # internal!!: writes in-place; dv on diagonal, ev on both off-diagonals, zeros elsewhere
+        @test Mooncake.tangent_to_friendly_internal!!(ST, dest, tx) === dest
+        @test dest[1, 1] == 1.0 && dest[2, 2] == 2.0 && dest[3, 3] == 3.0
+        @test dest[1, 2] == 6.0 && dest[2, 1] == 6.0
+        @test dest[2, 3] == 8.0 && dest[3, 2] == 8.0
+        @test dest[1, 3] == 0.0 && dest[3, 1] == 0.0
+        # public API produces the same result
+        @test Mooncake.tangent_to_friendly!!(ST, tx) == dest
+    end
+
+    @testset "tangent_to_friendly!! routing" begin
+        s = 3.0
+        S = LinearAlgebra.Symmetric([1.0 2.0; 999.0 4.0])
+        tx_S_data = [1.0 6.0; 0.0 1.0]
+        tx_S = Mooncake.build_tangent(typeof(S), tx_S_data, NoTangent())
+
+        # nothing dest: falls back to tangent_to_primal_internal!!, returns primal type
+        @test Mooncake.tangent_to_friendly!!((s, nothing), 7.0) === 7.0
+
+        # typed dest: delegates to tangent_to_friendly_internal!!, writes in-place
+        dest = Mooncake.friendly_tangent_dest(S)
+        result = Mooncake.tangent_to_friendly!!((S, dest), tx_S)
+        @test result === dest && result == tx_S_data
+
+        # 2-arg form: equivalent to bundle with dest from friendly_tangent_dest
+        @test Mooncake.tangent_to_friendly!!(S, tx_S) == tx_S_data
+    end
 end
 
 # The goal of these tests is to check that we can indeed generate tangent types for anything

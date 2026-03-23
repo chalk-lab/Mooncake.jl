@@ -1251,17 +1251,70 @@ for T in [Symbol, Int, Val]
 end
 
 """
-    tangent_to_primal!!(primal::P, tangent)::P where {P}
+    friendly_tangent_dest(x)
 
-Translate a tangent back to a primal type, modifying the differentiable fields
-of the primal in place as much as possible to minimize allocations.
-The tangent is not modified, and the returned primal will not alias it.
+Return a pre-allocated output buffer for the user-facing gradient of a primal `x`.
+
+Returns `nothing` when `typeof(x)` is already the friendly tangent type (the default).
+Override to return a pre-allocated buffer of the appropriate type for structured types
+whose user-facing gradient differs from the primal — for example, `LinearAlgebra.Symmetric`
+returns a `Matrix` so that `tangent_to_friendly!!` can write into it in-place.
+
+Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
+`LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
 """
-function tangent_to_primal!!(primal::P, tangent) where {P}
+friendly_tangent_dest(::Any) = nothing
+
+"""
+    tangent_to_friendly!!((tangent_as_primal, tangent_as_friendly)::Tuple{P,D}, tangent) where {P,D}
+
+Translate a tangent to a user-facing gradient.
+
+`tangent_as_primal` provides a primal-type buffer for `tangent_to_primal_internal!!` and
+is used for dispatch. `tangent_as_friendly` is a pre-allocated output buffer from
+[`friendly_tangent_dest`](@ref).
+
+When `tangent_as_friendly = nothing`, converts `tangent` to primal space directly via
+`tangent_to_primal_internal!!`. Otherwise delegates to
+[`tangent_to_friendly_internal!!`](@ref)`(tangent_as_primal, tangent_as_friendly, tangent)`.
+
+A 2-argument form `tangent_to_friendly!!(tangent_as_primal, tangent)` is provided as a
+convenience and calls [`friendly_tangent_dest`](@ref) to allocate `tangent_as_friendly`.
+
+This is the function used by the `friendly_tangents=true` path in `interface.jl`.
+"""
+function tangent_to_friendly!!((tangent_as_primal, _)::Tuple{P,Nothing}, tangent) where {P}
     @assert typeof(tangent) <: tangent_type(P)
     return tangent_to_primal_internal!!(
-        primal, tangent, isbitstype(P) ? NoCache() : IdDict()
-    )::P
+        tangent_as_primal, tangent, isbitstype(P) ? NoCache() : IdDict()
+    )
+end
+function tangent_to_friendly!!(
+    (tangent_as_primal, tangent_as_friendly)::Tuple{P,D}, tangent
+) where {P,D}
+    @assert typeof(tangent) <: tangent_type(P)
+    return tangent_to_friendly_internal!!(tangent_as_primal, tangent_as_friendly, tangent)
+end
+
+"""
+    tangent_to_friendly_internal!!(tangent_as_primal, tangent_as_friendly, tangent)
+
+Implementation hook for [`tangent_to_friendly!!`](@ref).
+
+Called when `tangent_as_friendly` is not `nothing`. `tangent_as_primal` is available for
+dispatch on the primal type. Override together with [`friendly_tangent_dest`](@ref) to
+provide a direct tangent → friendly conversion.
+
+Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
+`LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
+"""
+function tangent_to_friendly_internal!! end
+
+# 2-arg convenience: calls friendly_tangent_dest to obtain tangent_as_friendly.
+function tangent_to_friendly!!(tangent_as_primal::P, tangent) where {P}
+    tangent_to_friendly!!(
+        (tangent_as_primal, friendly_tangent_dest(tangent_as_primal)), tangent
+    )
 end
 
 """
@@ -1281,7 +1334,8 @@ end
 """
     tangent_to_primal_internal!!(x, tx, c::MaybeCache)
 
-Implementation of [`tangent_to_primal!!`](@ref).
+Internal implementation used by [`tangent_to_friendly!!`](@ref) and directly by
+`tangent_to_primal_internal!!`-based paths.
 
 For mutable types, the cache should be used to avoid infinite recursion.
 For every mutable `x`, if there is an entry `c[x]`, then it can be returned directly.
@@ -1335,7 +1389,7 @@ function primal_to_tangent_internal!!(tx, x::NamedTuple, c::MaybeCache)
 end
 function tangent_to_primal_internal!!(x::Ptr{T}, tx, c::MaybeCache) where {T}
     tangent_type(T) == NoTangent && return x
-    return throw(ArgumentError("tangent_to_primal!! not available for pointers."))
+    return throw(ArgumentError("tangent_to_primal_internal!! not available for pointers."))
 end
 function primal_to_tangent_internal!!(tx, x::Ptr{T}, c::MaybeCache) where {T}
     tangent_type(T) == NoTangent && return NoTangent()

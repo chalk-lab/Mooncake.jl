@@ -145,7 +145,6 @@ using Mooncake:
     _scale,
     _add_to_primal,
     primal_to_tangent!!,
-    tangent_to_primal!!,
     _dot,
     NoFData,
     fdata_type,
@@ -1272,7 +1271,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     @test has_equal_data(__scale(1.0, t), t)
     @test has_equal_data(__scale(2.0, t), _increment!!(deepcopy(t), t))
 
-    # Test for tangent_to_primal!! / primal_to_tangent!!
+    # Test for tangent_to_primal_internal!! / primal_to_tangent!!
     p1 = deepcopy([p])[1]
     t1 = _randn_tangent(rng, p1)
     p1 = _tangent_to_primal!!(p1, t1)
