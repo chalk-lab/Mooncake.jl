@@ -53,6 +53,18 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer writing rules at the lowest practical level, often around foreign-call
   boundaries (see `src/rules/blas.jl`), to reduce the total number of rules that need to
   be maintained.
+- For rules whose primal has no meaningful derivative (e.g. functions that only affect
+  non-differentiable outputs), use `@zero_adjoint` rather than writing a manual `rrule!!`.
+  Similar convenience macros exist for other common patterns; check `src/rules/` for
+  examples before writing a rule from scratch.
+- When choosing a tangent type: use `NoTangent` for non-differentiable types (e.g.
+  integers, booleans, symbols); use `ZeroTangent` when the type is differentiable but
+  the derivative is structurally zero in a given rule.
+- Be careful with rule signature breadth: an overly general type signature can silently
+  shadow a more specific rule or introduce method ambiguity errors. Prefer the narrowest
+  signature that covers the intended cases.
+- Only forward-over-reverse nested AD is tested. Do not assume rules compose correctly
+  under reverse-over-reverse or other higher-order combinations unless explicitly verified.
 - Prefer clear Julia error messages, especially around malformed rules, unsupported
   cases, and rule-construction failures.
 - Mooncake's AD transform should preserve core execution properties: allocation-free
