@@ -19,6 +19,11 @@ struct MakeAUnionAll{T} end
 
 end
 
+# Regression for non-returning primals: `rule_type` must predict `Tuple{}` pullback args
+# to match `build_rrule`, otherwise lazy derived-rule materialization hits a type mismatch
+# (PR #1099).
+rule_type_nonreturning(e::Exception) = throw(e)
+
 @testset "s2s_reverse_mode_ad" begin
     @testset "SharedDataPairs" begin
         m = SharedDataPairs()
@@ -339,6 +344,7 @@ end
             Tuple{typeof(TestResources.tuple_with_union),Bool},
             Tuple{typeof(TestResources.tuple_with_union_2),Bool},
             Tuple{typeof(TestResources.tuple_with_union_3),Bool,Bool},
+            Tuple{typeof(rule_type_nonreturning),ArgumentError},
         ],
         debug_mode in [true, false]
 
