@@ -60,6 +60,8 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer writing rules at the lowest practical level, often around foreign-call
   boundaries (see `src/rules/blas.jl`), to reduce the total number of rules that need to
   be maintained.
+- Implement both `frule!!` and `rrule!!` for new primitives where possible; rules that
+  cover only one mode limit composability.
 - Every custom rule must be accompanied by an `@is_primitive` declaration; without it
   the AD will not dispatch to the rule.
 - Use `@zero_derivative` for rules with a zero derivative rather than writing a manual
