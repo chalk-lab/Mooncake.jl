@@ -37,10 +37,17 @@ The overall target is: correct by construction where possible, aggressively test
 
 ## Working Conventions
 
-- Keep changes aligned with the existing source/test layout: tests for `src/.../foo.jl` usually live at `test/.../foo.jl`.
-- Put shared test setup in `test/front_matter.jl`; test-group dispatch lives in `test/runtests.jl`.
-- For complex rules, especially array-heavy rules, prefer canonicalising inputs at the rule boundary with utilities such as `arrayify` rather than proliferating specialized methods.
-- Mooncake provides helpers for importing rules from ChainRules via `@from_rrule` / `@from_chainrules`, but use them conservatively. In practice, restrict to scalar and array-like cases whose element types are `IEEEFloat` or `Complex` numbers, where tangent conversions are well-defined and round-trip correctly.
+- Keep changes aligned with the existing source/test layout: tests for
+  `src/.../foo.jl` usually live at `test/.../foo.jl`.
+- Put shared test setup in `test/front_matter.jl`; test-group dispatch lives in
+  `test/runtests.jl`.
+- For complex rules, especially array-heavy rules, prefer canonicalising inputs at the
+  rule boundary with utilities such as `arrayify` rather than proliferating specialized
+  methods.
+- Mooncake provides helpers for importing rules from ChainRules via `@from_rrule` /
+  `@from_chainrules`, but use them conservatively. In practice, restrict to scalar and
+  array-like cases whose element types are `IEEEFloat` or `Complex` numbers, where
+  tangent conversions are well-defined and round-trip correctly.
 - World-age issues can arise when generated functions call back into Julia dispatch.
   `tangent_type` and `build_fdata` are generated functions; all sub-function calls must
   be in the returned expression (runtime), not in the generator body (generation time).
@@ -76,13 +83,16 @@ The overall target is: correct by construction where possible, aggressively test
   with tests, documentation, and clear error messages.
 - Prepared caches are shape/type dependent; when cache construction changes, test reuse
   semantics and failure modes.
-- If you change public APIs, developer tooling, or core internals, update docs under `docs/src/` when needed.
-- Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
+- If you change public APIs, developer tooling, or core internals, update docs under
+  `docs/src/` when needed.
+- Prefer targeted changes over broad refactors unless the task explicitly requires
+  restructuring.
 - Prefer clear, concise names for variables, types, and methods.
 
 ## Consistency
 
-- When changing Julia version support, update `Project.toml`, `.github/workflows/CI.yml`, and `SUPPORT_POLICY.md` together.
+- When changing Julia version support, update `Project.toml`,
+  `.github/workflows/CI.yml`, and `SUPPORT_POLICY.md` together.
 - For new rules and internals, keep source, test-group wiring, and CI coverage in sync:
   add the matching test file, wire it into `test/runtests.jl` when applicable, and
   update CI if it deserves its own group.
@@ -131,8 +141,8 @@ Then include the specific test file you want.
 ## Documentation
 
 - `docs/make.jl` defines the Documenter build and navigation structure.
-- Main docs sections include top-level user pages such as `index.md`, `tutorial.md`, and
-  `interface.md`.
+- Main docs sections include top-level user pages such as `index.md`, `tutorial.md`,
+  and `interface.md`.
 - Known unsupported or incomplete behaviour is documented in
   `docs/src/known_limitations.md`.
 - Conceptual material lives under `docs/src/understanding_mooncake/`.
@@ -141,4 +151,5 @@ Then include the specific test file you want.
 - For defining or adapting rules, see `docs/src/utilities/defining_rules.md`; for
   complex array-like rules, see its `Canonicalising Tangent Types` section for
   `arrayify`/`matrixify` guidance.
-- For recursive types or custom tangent implementations, start with `docs/src/developer_documentation/custom_tangent_type.md`.
+- For recursive types or custom tangent implementations, start with
+  `docs/src/developer_documentation/custom_tangent_type.md`.
