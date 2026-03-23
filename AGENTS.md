@@ -97,6 +97,8 @@ The overall target is: correct by construction where possible, aggressively test
 
 - When changing Julia version support, update `Project.toml`,
   `.github/workflows/CI.yml`, and `SUPPORT_POLICY.md` together.
+- When a new rule depends on internals of an external package, tighten the
+  corresponding `[compat]` bound in `Project.toml`.
 - For new rules and internals, keep source, test-group wiring, and CI coverage in sync:
   add the matching test file, wire it into `test/runtests.jl` when applicable, and
   update CI if it deserves its own group.
