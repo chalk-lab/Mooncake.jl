@@ -235,6 +235,58 @@ using DispatchDoctor: allow_unstable
     end
 end
 
+@testset "tangent_to_primal!! for Symmetric and Hermitian" begin
+    @testset "Symmetric uplo=U - S[1,2]" begin
+        f = (S::Symmetric) -> S[1, 2]
+        S = Symmetric([1.0 2.0; 0.0 3.0])
+        cache = prepare_pullback_cache(f, S; config=Mooncake.Config(friendly_tangents=false))
+        _, (_, dS) = value_and_pullback!!(cache, 1.0, f, S)
+        S_copy = Mooncake._copy_output(S)
+        result = Mooncake.tangent_to_primal!!(S_copy, dS)
+        @test result == Symmetric([0.0 1.0; 1.0 0.0])
+    end
+
+    @testset "Symmetric uplo=U - sum" begin
+        f = (S::Symmetric) -> sum(S)
+        S = Symmetric([1.0 2.0; 0.0 3.0])
+        cache = prepare_pullback_cache(f, S; config=Mooncake.Config(friendly_tangents=false))
+        _, (_, dS) = value_and_pullback!!(cache, 1.0, f, S)
+        S_copy = Mooncake._copy_output(S)
+        result = Mooncake.tangent_to_primal!!(S_copy, dS)
+        @test result == Symmetric([1.0 1.0; 1.0 1.0])
+    end
+
+    @testset "Symmetric uplo=L - sum" begin
+        f = (S::Symmetric) -> sum(S)
+        S = Symmetric([1.0 0.0; 2.0 3.0], :L)
+        cache = prepare_pullback_cache(f, S; config=Mooncake.Config(friendly_tangents=false))
+        _, (_, dS) = value_and_pullback!!(cache, 1.0, f, S)
+        S_copy = Mooncake._copy_output(S)
+        result = Mooncake.tangent_to_primal!!(S_copy, dS)
+        @test result == Symmetric([1.0 1.0; 1.0 1.0])
+    end
+
+    @testset "Hermitian uplo=U - real(H[1,2])" begin
+        f = (H::Hermitian) -> real(H[1, 2])
+        H = Hermitian([1.0+0im 2.0+1im; 2.0-1im 3.0+0im])
+        cache = prepare_pullback_cache(f, H; config=Mooncake.Config(friendly_tangents=false))
+        _, (_, dH) = value_and_pullback!!(cache, 1.0, f, H)
+        H_copy = Mooncake._copy_output(H)
+        result = Mooncake.tangent_to_primal!!(H_copy, dH)
+        @test result == Hermitian([0.0+0im 1.0+0im; 1.0+0im 0.0+0im])
+    end
+
+    @testset "Hermitian uplo=U - sum of real parts" begin
+        f = (H::Hermitian) -> sum(real.(H))
+        H = Hermitian([1.0+0im 2.0+1im; 2.0-1im 3.0+0im])
+        cache = prepare_pullback_cache(f, H; config=Mooncake.Config(friendly_tangents=false))
+        _, (_, dH) = value_and_pullback!!(cache, 1.0, f, H)
+        H_copy = Mooncake._copy_output(H)
+        result = Mooncake.tangent_to_primal!!(H_copy, dH)
+        @test result == Hermitian([1.0+0im 1.0+0im; 1.0+0im 1.0+0im])
+    end
+end
+
 # The goal of these tests is to check that we can indeed generate tangent types for anything
 # that we will encounter in the Julia language. We try to achieve this by pulling in types
 # from LinearAlgebra, and Random, and generating tangents for them.
