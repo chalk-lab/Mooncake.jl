@@ -154,7 +154,7 @@ function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
 end
 
 # In automatically generated code, it is meaningless to include code coverage effects.
-# Moreover, it seems to cause some serious inference probems. Consequently, it makes sense
+# Moreover, it seems to cause some serious inference problems. Consequently, it makes sense
 # to remove such effects before optimising IRCode.
 function __strip_coverage!(ir::IRCode)
     for n in eachindex(stmt(ir.stmts))

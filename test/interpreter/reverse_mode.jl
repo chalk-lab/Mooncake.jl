@@ -19,6 +19,11 @@ struct MakeAUnionAll{T} end
 
 end
 
+# Regression for non-returning primals: `rule_type` must predict `Tuple{}` pullback args
+# to match `build_rrule`, otherwise lazy derived-rule materialization hits a type mismatch
+# (PR #1099).
+rule_type_nonreturning(e::Exception) = throw(e)
+
 @testset "s2s_reverse_mode_ad" begin
     @testset "SharedDataPairs" begin
         m = SharedDataPairs()
@@ -339,6 +344,7 @@ end
             Tuple{typeof(TestResources.tuple_with_union),Bool},
             Tuple{typeof(TestResources.tuple_with_union_2),Bool},
             Tuple{typeof(TestResources.tuple_with_union_3),Bool,Bool},
+            Tuple{typeof(rule_type_nonreturning),ArgumentError},
         ],
         debug_mode in [true, false]
 
@@ -348,6 +354,31 @@ end
     end
     @testset "MooncakeRuleCompilationError" begin
         @test_throws(Mooncake.MooncakeRuleCompilationError, Mooncake.build_rrule(sin))
+        # showerror should include the originating method's source location (issue #649)
+        function _rrule_error_test_llvmcall(x::Int64)
+            Base.llvmcall(
+                (
+                    """
+                declare i64 @llvm.abs.i64(i64, i1)
+                define i64 @entry(i64) {
+                %x = call i64 @llvm.abs.i64(i64 %0, i1 0)
+                ret i64 %x
+                }
+                    """,
+                    "entry",
+                ), Int64, Tuple{Int64}, x
+            )
+        end
+        err = try
+            Mooncake.build_rrule(Tuple{typeof(_rrule_error_test_llvmcall),Int64})
+            nothing
+        catch e
+            e
+        end
+        @test err isa Mooncake.MooncakeRuleCompilationError
+        msg = sprint(showerror, err)
+        @test startswith(msg, "Mooncake failed to differentiate the following method:")
+        @test contains(msg, "_rrule_error_test_llvmcall")
     end
     @testset "$(_typeof((f, x...)))" for (n, (interface_only, perf_flag, bnds, f, x...)) in
                                          collect(

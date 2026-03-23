@@ -5,6 +5,9 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 using Mooncake: Mooncake, TestUtils, Tangent
 using DispatchDoctor: allow_unstable, type_instability
 
+# Each test_hook below intercepts a specific TestUtils function to suppress
+# DispatchDoctor's type-instability checks where needed. All hooks dispatch on ::typeof(f)
+# so that adding new methods to those functions automatically narrows the hook.
 TestUtils.test_hook(::Any, ::typeof(TestUtils.test_opt), ::Any...) = nothing
 TestUtils.test_hook(::Any, ::typeof(TestUtils.report_opt), tt) = nothing
 function TestUtils.test_hook(f, ::typeof(Mooncake.hand_written_rule_test_cases), ::Any...)
@@ -65,13 +68,11 @@ function TestUtils.test_hook(f, ::typeof(Mooncake.compute_oc_signature), x...)
     allow_unstable(f)
 end
 
-# DispatchDoctor triggers a segfault on Julia 1.12.
-@static if VERSION < v"1.12-"
-    include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
+include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
 
-    include(joinpath(@__DIR__, "..", "..", "utils.jl"))
-    include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
-    include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
-    include(joinpath(@__DIR__, "..", "..", "stack.jl"))
-    include(joinpath(@__DIR__, "..", "..", "interface.jl"))
-end
+include(joinpath(@__DIR__, "..", "..", "utils.jl"))
+include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
+include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
+include(joinpath(@__DIR__, "..", "..", "stack.jl"))
+include(joinpath(@__DIR__, "..", "..", "debug_mode.jl"))
+include(joinpath(@__DIR__, "..", "..", "interface.jl"))

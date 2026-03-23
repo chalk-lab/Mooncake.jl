@@ -35,14 +35,27 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, true, logsumexp, randn(sr(1), P, 5)),
                 (:allocs, true, logsumexp, randn(sr(2), P, 5, 4)),
                 (:allocs, true, logsumexp, randn(sr(3), P, 5, 4, 3)),
+                # subarray/view inputs, see #1035
+                (:allocs, true, logsumexp, view(randn(sr(1), P, 5), 1:4)),
                 # edge case with two equal inputs: see #881 for discussion
                 (:allocs, true, logsumexp, [1.0, 1.0]),
                 (:none, false, x -> logsumexp(x; dims=1), randn(sr(4), P, 5, 4)),
                 (:none, false, x -> logsumexp(x; dims=1), fill(1.0, 2, 2)),
                 (:none, false, x -> logsumexp(x; dims=2), randn(sr(5), P, 5, 4)),
                 (:none, false, x -> logsumexp(x; dims=2), fill(1.0, 2, 2)),
+                # subarray/view inputs, see #1035
+                (:none, false, x -> logsumexp(x; dims=2), view(fill(1.0, 3, 3), 1:2, 1:2)),
                 (:none, true, logsumexp!, rand(sr(6), P, 5), randn(sr(7), P, 5, 4)),
+                (
+                    :none,
+                    true,
+                    logsumexp!,
+                    rand(sr(6), P, 5),
+                    view(randn(sr(7), P, 5, 4), 1:5, 1:4),
+                ),
                 (:none, true, logsumexp!, [P(1.0)], [P(2.0), P(2.0)]),
+                (:none, true, logsumexp!, [P(1.0)], view([P(2.0), P(2.0)], 1:2)),
+                (:none, true, logsumexp!, view([P(1.0)], 1:1), view([P(2.0), P(2.0)], 1:2)),
                 # not a primitive because the two inputs have different eltypes, but we can
                 # still check that it runs correctly
                 (
@@ -53,6 +66,8 @@ sr(n::Int) = StableRNG(n)
                     randn(sr(7), Float32, 5, 4),
                 ),
                 (:none, false, softmax, randn(sr(7), P, 10)),
+                # subarray/view inputs, see #1035
+                (:none, false, softmax, view(randn(sr(7), P, 10), 1:5)),
                 (:allocs, false, cloglog, P(0.5)),
                 (:allocs, false, cexpexp, -P(0.3)),
                 (:allocs, false, loglogistic, P(0.5)),

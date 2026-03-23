@@ -194,7 +194,13 @@ function benchmark_rules!!(
                 () -> primals,
                 primals -> (primals[1], _deepcopy(primals[2:end])),
                 (a -> a[1]((a[2]...))),
-                _ -> true;
+                # With evals=1 and seconds=1, Chairmarks collects thousands of samples.
+                # Some benchmarks (e.g. gp_lml) allocate hundreds of KiB per call, so
+                # without GC intervention, garbage accumulates across samples until the GC
+                # fires mid-sample and inflates that sample's time by 2-3x or more. Running
+                # an incremental GC in the teardown (which is excluded from timing) keeps
+                # the heap clean and prevents GC from interrupting timed evaluations.
+                _ -> GC.gc(false);
                 evals=1,
                 seconds=seconds,
             )
@@ -210,7 +216,7 @@ function benchmark_rules!!(
                 () -> (rule, coduals),
                 ((rule, coduals),) -> (rule, copy_coduals(coduals...)),
                 a -> to_benchmark(a[1], a[2]...),
-                _ -> true;
+                _ -> GC.gc(false);
                 evals=1,
                 seconds=seconds,
             )
@@ -225,7 +231,7 @@ function benchmark_rules!!(
                 () -> (rule, duals),
                 ((rule, duals),) -> (rule, copy_coduals(duals...)),
                 a -> to_benchmark(a[1], a[2]...),
-                _ -> true;
+                _ -> GC.gc(false);
                 evals=1,
                 seconds=seconds,
             )
@@ -314,7 +320,7 @@ end
 function benchmark_hand_written_rrules!!(rng_ctor)
     test_case_data = map([
         :avoiding_non_differentiable_code,
-        :blas,
+        :blas_Float64,
         :builtins,
         :fastmath,
         :foreigncall,

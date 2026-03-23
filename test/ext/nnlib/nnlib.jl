@@ -5,6 +5,8 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 using CUDA, cuDNN, JET, Mooncake, NNlib, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
 using NNlib: dropout
+using LuxLib
+import LuxLib: Impl
 
 dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
@@ -49,6 +51,106 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         # batched_mul
         (false, :none, true, batched_mul, _rand(rng, 3, 2, 3), _rand(rng, 2, 5, 3)),
 
+        # batched_matmul_fallback for Array, NNlib.BatchedTranspose, NNlib.BatchedAdjoint
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            randn(rng, 3, 2, 3),
+            randn(rng, 2, 5, 3),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            randn(rng, 3, 2, 3),
+            NNlib.batched_transpose(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            randn(rng, 3, 2, 3),
+            NNlib.batched_adjoint(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_transpose(randn(rng, 2, 3, 3)),
+            randn(rng, 2, 5, 3),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_adjoint(randn(rng, 2, 3, 3)),
+            randn(rng, 2, 5, 3),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_transpose(randn(rng, 2, 3, 3)),
+            NNlib.batched_transpose(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_adjoint(randn(rng, 2, 3, 3)),
+            NNlib.batched_adjoint(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_transpose(randn(rng, 2, 3, 3)),
+            NNlib.batched_adjoint(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_adjoint(randn(rng, 2, 3, 3)),
+            NNlib.batched_transpose(randn(rng, 5, 2, 3)),
+        ),
+
+        # batched_matmul_fallback: batch-size-1 broadcasting (exercises sum(tmp; dims=3) path)
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            randn(rng, 3, 2, 1),
+            NNlib.batched_transpose(randn(rng, 5, 2, 3)),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_adjoint(randn(rng, 2, 3, 3)),
+            randn(rng, 2, 5, 1),
+        ),
+        (
+            false,
+            :none,
+            true,
+            Impl.batched_matmul_fallback,
+            NNlib.batched_transpose(randn(rng, 2, 3, 1)),
+            NNlib.batched_adjoint(randn(rng, 5, 2, 3)),
+        ),
+
         # dropout
         (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2), float(0.5)),
         (true, :none, false, dropout_tester_2, Trng, _rand(rng, 2, 2), float(0.1)),
@@ -73,6 +175,29 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         (false, :none, false, x -> softmax(x; dims=1), _rand(rng, 3, 2)),
         (false, :none, false, x -> softmax(x; dims=2), _rand(rng, 3, 2)),
         (false, :none, false, x -> softmax(x; dims=(1, 2)), _rand(rng, 3, 2)),
+
+        # softmax with Adjoint, Transpose
+        (false, :stability, true, softmax, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), softmax, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), softmax, _rand(rng, 3, 3)'),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=1,),
+            softmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=2,),
+            softmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
 
         # logsoftmax
         (false, :stability, true, logsoftmax, _rand(rng, 2)),
@@ -100,6 +225,29 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             _rand(rng, 3, 3, 2),
         ),
 
+        # logsoftmax with Adjoint, Transpose
+        (false, :stability, true, logsoftmax, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsoftmax, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsoftmax, _rand(rng, 3, 3)'),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=1,),
+            logsoftmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=2,),
+            logsoftmax,
+            transpose(_rand(rng, 3, 3)),
+        ),
+
         # logsumexp
         (false, :stability, true, logsumexp, _rand(rng, 2)),
         (false, :stability, true, logsumexp, _rand(rng, 3, 3)),
@@ -116,6 +264,29 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             (dims=(1, 2),),
             logsumexp,
             _rand(rng, 3, 3, 2),
+        ),
+
+        # logsumexp with Adjoint, Transpose
+        (false, :stability, true, logsumexp, _rand(rng, 2, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=1,), logsumexp, _rand(rng, 3, 3)'),
+        (false, :stability, true, Core.kwcall, (dims=2,), logsumexp, _rand(rng, 3, 3)'),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=1,),
+            logsumexp,
+            transpose(_rand(rng, 3, 3)),
+        ),
+        (
+            false,
+            :stability,
+            true,
+            Core.kwcall,
+            (dims=2,),
+            logsumexp,
+            transpose(_rand(rng, 3, 3)),
         ),
 
         # upsample_nearest
@@ -154,6 +325,10 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         # padding
         (false, :none, false, x -> pad_constant(x, 1, float(2.0)), x),
         (false, :none, false, x -> pad_constant(x, 1, float(2.0); dims=:), x),
+
+        # bias_act!(identity, x, b): modifies x in-place
+        (false, :stability, true, bias_act!, identity, _rand(rng, 8, 4), _rand(rng, 8)),
+        (false, :stability, true, bias_act!, identity, _rand(rng, 8), _rand(rng, 8)),
     ]
     if !cuda
 
@@ -180,4 +355,117 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         mode = Mooncake.ReverseMode
         test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode)
     end
+end
+
+# Testing arrayify for general adjoint, transpose types (LinearAlgebra.jl, NNlib.jl etc)
+@testset "arrayify wrapper tests" begin
+    rng = StableRNG(123)
+    A2 = randn(rng, 3, 4)
+    g2 = randn(rng, 3, 4)
+    A3 = randn(Float32, 3, 4, 2)
+    g3 = randn(Float32, 3, 4, 2)
+
+    # Plain array
+    xf = zeros(3, 4)
+    _, dxf = Mooncake.arrayify(A2, xf)
+    dxf .+= g2
+    @test xf ≈ g2
+
+    # Plain array, scalar gradient
+    xf_scalar = zeros(3, 4)
+    _, dxf_scalar = Mooncake.arrayify(A2, xf_scalar)
+    dxf_scalar .+= 2.0
+    @test xf_scalar ≈ fill(2.0, 3, 4)
+
+    # Adjoint
+    parent_adj = zeros(4, 3)
+    _, dxf_adj = Mooncake.arrayify(A2', Mooncake.FData((parent=parent_adj,)))
+    dxf_adj .+= g2
+    @test parent_adj ≈ g2'
+
+    # Transpose
+    parent_tr = zeros(4, 3)
+    _, dxf_tr = Mooncake.arrayify(transpose(A2), Mooncake.FData((parent=parent_tr,)))
+    dxf_tr .+= g2
+    @test parent_tr ≈ transpose(g2)
+
+    # Accumulates — Adjoint
+    parent_adj2 = ones(4, 3)
+    _, dxf_adj2 = Mooncake.arrayify(A2', Mooncake.FData((parent=parent_adj2,)))
+    dxf_adj2 .+= g2
+    @test parent_adj2 ≈ ones(4, 3) .+ g2'
+
+    # Accumulates — Transpose
+    parent_tr2 = ones(4, 3)
+    _, dxf_tr2 = Mooncake.arrayify(transpose(A2), Mooncake.FData((parent=parent_tr2,)))
+    dxf_tr2 .+= g2
+    @test parent_tr2 ≈ ones(4, 3) .+ transpose(g2)
+
+    # BatchedTranspose
+    parent_bt = zeros(Float32, 4, 3, 2)
+    _, dxf_bt = Mooncake.arrayify(
+        NNlib.batched_transpose(A3), Mooncake.FData((parent=parent_bt,))
+    )
+    dxf_bt .+= g3
+    @test parent_bt ≈ permutedims(g3, (2, 1, 3))
+
+    # BatchedAdjoint
+    parent_ba = zeros(Float32, 4, 3, 2)
+    _, dxf_ba = Mooncake.arrayify(
+        NNlib.batched_adjoint(A3), Mooncake.FData((parent=parent_ba,))
+    )
+    dxf_ba .+= g3
+    @test parent_ba ≈ permutedims(g3, (2, 1, 3))
+
+    # Accumulates — BatchedTranspose
+    parent_bt2 = ones(Float32, 4, 3, 2)
+    _, dxf_bt2 = Mooncake.arrayify(
+        NNlib.batched_transpose(A3), Mooncake.FData((parent=parent_bt2,))
+    )
+    dxf_bt2 .+= g3
+    @test parent_bt2 ≈ ones(Float32, 4, 3, 2) .+ permutedims(g3, (2, 1, 3))
+
+    # Accumulates — BatchedAdjoint
+    parent_ba2 = ones(Float32, 4, 3, 2)
+    _, dxf_ba2 = Mooncake.arrayify(
+        NNlib.batched_adjoint(A3), Mooncake.FData((parent=parent_ba2,))
+    )
+    dxf_ba2 .+= g3
+    @test parent_ba2 ≈ ones(Float32, 4, 3, 2) .+ permutedims(g3, (2, 1, 3))
+end
+
+@testset "logsumexp Inf/NaN stability" begin
+    function test_logsumexp_inf(x, dims)
+        seed = ones(eltype(x), size(logsumexp(x; dims=dims)))
+        cache = Mooncake.prepare_pullback_cache(
+            Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
+        )
+        y, (_, _, _, dx) = Mooncake.value_and_pullback!!(
+            cache, seed, Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
+        )
+        return y, dx
+    end
+
+    # All Inf inputs
+    y, dx = test_logsumexp_inf(Float32[Inf, Inf], 1)
+    @test all(isinf.(y)) && all(y .> 0)
+    @test !any(isnan.(dx))
+    @test dx ≈ Float32[0.5, 0.5]
+
+    # All Inf inputs - Matrix case
+    y, dx = test_logsumexp_inf(Float32[Inf Inf; Inf Inf], 1)
+    @test !any(isnan.(y)) && !any(isnan.(dx))
+    @test dx ≈ Float32[0.5 0.5; 0.5 0.5]
+
+    # All -Inf inputs
+    y, dx = test_logsumexp_inf(Float32[-Inf, -Inf], 1)
+    @test all(isinf.(y)) && all(y .< 0)
+    @test !any(isnan.(dx))
+    @test dx ≈ Float32[0.5, 0.5]
+
+    # Mixed Inf and finite inputs
+    y, dx = test_logsumexp_inf(Float32[Inf, 1.0f0], 1)
+    @test all(isinf.(y)) && all(y .> 0)
+    @test !any(isnan.(dx))
+    @test dx ≈ Float32[1.0f0, 0.0f0]
 end

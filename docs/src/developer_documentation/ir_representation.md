@@ -254,7 +254,7 @@ julia> bb_ir.blocks[3].inst_ids
  ID(102)
 ```
 There is exactly one `ID` per instruction, and it is an error to have the same `ID` associated to multiple instructions.
-Similarly, while the number associated to a basic block in `IRCode` is a function of the number of basic blocks which preceed it, the `ID` of a basic block in `BBCode` is stored in its `id` field:
+Similarly, while the number associated to a basic block in `IRCode` is a function of the number of basic blocks which precede it, the `ID` of a basic block in `BBCode` is stored in its `id` field:
 ```jldoctest my_factorial
 julia> bb_ir.blocks[3].id
 ID(106)
