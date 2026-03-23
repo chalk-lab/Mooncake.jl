@@ -38,10 +38,10 @@ end
 # Symmetric: off-diagonal elements in the stored triangle are doubled in the internal
 # tangent representation (each off-diagonal element appears twice in the symmetric matrix).
 # Divide by 2 to recover the user-friendly gradient w.r.t. the symmetric matrix elements.
-function tangent_to_primal_internal!!(
-    x::Symmetric{T,S}, tx, c::MaybeCache
+function Mooncake.tangent_to_primal_internal!!(
+    x::LinearAlgebra.Symmetric{T,S}, tx, c::MaybeCache
 ) where {T,S}
-    tx isa NoTangent && return x
+    tx isa Mooncake.NoTangent && return x
     data_tangent = tx.fields.data
     n = size(x.data, 1)
     for j in 1:n, i in 1:n
@@ -55,10 +55,10 @@ function tangent_to_primal_internal!!(
 end
 
 # Hermitian: same doubling issue as Symmetric for off-diagonal elements.
-function tangent_to_primal_internal!!(
-    x::Hermitian{T,S}, tx, c::MaybeCache
+function Mooncake.tangent_to_primal_internal!!(
+    x::LinearAlgebra.Hermitian{T,S}, tx, c::MaybeCache
 ) where {T,S}
-    tx isa NoTangent && return x
+    tx isa Mooncake.NoTangent && return x
     data_tangent = tx.fields.data
     n = size(x.data, 1)
     for j in 1:n, i in 1:n
