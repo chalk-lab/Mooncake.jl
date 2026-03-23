@@ -68,6 +68,10 @@ end
 # full-matrix gradient requires G[i,j] = ∂f/∂(H.data[i,j]) / 2.
 # Additionally, diagonal entries of a Hermitian matrix are constrained to be real, so we
 # take real() to drop any imaginary noise in the accumulated diagonal gradient.
+#
+# The cleaner fix would be a custom tangent type for Hermitian that encodes this factor
+# structurally, so no correction is needed at conversion time. This specialisation is a
+# pragmatic workaround at the tangent_to_primal!! boundary instead.
 function Mooncake.tangent_to_primal_internal!!(
     x::LinearAlgebra.Hermitian{T,S}, tx, c::MaybeCache
 ) where {T,S}
@@ -84,11 +88,15 @@ function Mooncake.tangent_to_primal_internal!!(
     return x
 end
 
-# SymTridiagonal stores ev[i] for both A[i,i+1] and A[i+1,i], so the same doubling issue
-# applies as for Symmetric: both reads route to ev[i], while the tangent entry for the
-# other direction accumulates no gradient. By the same ⟨G, δS⟩ = δf argument,
-# G.ev[i] = ∂f/∂(ev[i]) / 2. The diagonal dv[i] represents only A[i,i], so no correction
-# is needed there.
+# SymTridiagonal stores x.ev[i] as the single slot for both A[i,i+1] and A[i+1,i] —
+# unlike Symmetric, there is no separate non-stored entry; both reads accumulate directly
+# into x.ev[i]. By the same ⟨G, δS⟩ = δf argument as Symmetric, the full-matrix gradient
+# requires G[i,i+1] = ∂f/∂(x.ev[i]) / 2. The diagonal x.dv[i] represents only A[i,i],
+# so no correction is needed there.
+#
+# The cleaner fix would be a custom tangent type for SymTridiagonal that encodes this
+# factor structurally, so no correction is needed at conversion time. This specialisation
+# is a pragmatic workaround at the tangent_to_primal!! boundary instead.
 function Mooncake.tangent_to_primal_internal!!(
     x::LinearAlgebra.SymTridiagonal{T,V}, tx, c::MaybeCache
 ) where {T,V}

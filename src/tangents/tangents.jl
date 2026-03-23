@@ -1288,6 +1288,16 @@ Otherwise, the corresponding updated primal should be stored in the cache.
 Additional specializations for types defined in other modules live alongside their rules:
 - `IdDict`: `src/rules/iddict.jl`
 - `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, `LinearAlgebra.SymTridiagonal`: `src/rules/linear_algebra.jl`
+
+**User-defined types with shared storage** — if a type stores a single value that
+represents multiple logical positions (e.g. a symmetry wrapper where `A[i,j]` and `A[j,i]`
+read from the same field), the internal tangent is correct (each read accumulates into the
+same slot as expected), but the generic implementation of `tangent_to_primal_internal!!`
+will produce incorrect user-facing gradients: the conversion to a full-matrix gradient
+requires dividing by the number of positions sharing that slot, which the generic
+implementation does not do. Define a specialization of `tangent_to_primal_internal!!` for
+any such type, following the `LinearAlgebra.Symmetric` implementation in
+`src/rules/linear_algebra.jl` as a reference.
 """
 function tangent_to_primal_internal!! end
 """
