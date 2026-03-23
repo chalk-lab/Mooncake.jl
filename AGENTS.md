@@ -40,7 +40,16 @@ The overall target is: correct by construction where possible, aggressively test
 - Keep changes aligned with the existing source/test layout: tests for `src/.../foo.jl` usually live at `test/.../foo.jl`.
 - Put shared test setup in `test/front_matter.jl`; test-group dispatch lives in `test/runtests.jl`.
 - For complex rules, especially array-heavy rules, prefer canonicalising inputs at the rule boundary with utilities such as `arrayify` rather than proliferating specialized methods.
-- Mooncake provides helpers for importing rules from ChainRules via `@from_rrule` / `@from_chainrules`, but use them conservatively. In practice, keep this to scalar and array-like cases where the tangent conversions are robust.
+- Mooncake provides helpers for importing rules from ChainRules via `@from_rrule` / `@from_chainrules`, but use them conservatively. In practice, restrict to scalar and array-like cases whose element types are `IEEEFloat` or `Complex` numbers — these are the cases where Mooncake's tangent conversions are well-defined and round-trip correctly.
+- World-age issues can arise when generated functions call back into Julia dispatch.
+  `tangent_type` and `build_fdata` are generated functions; all sub-function calls must
+  be in the returned expression (runtime), not in the generator body (generation time).
+  If you add or modify either function, verify this.
+- Avoid modifying `src/interpreter/` unless the task explicitly targets it.
+  `Mooncake.primal_ir`, `Mooncake.dual_ir`, `Mooncake.fwd_ir`, and `Mooncake.rvs_ir`
+  (see `docs/src/developer_documentation/developer_tools.md`) are available for
+  inspection, but do not write rules or code that depends on their output — they are not
+  semver-stable.
 - Prefer writing rules at the lowest practical level, often around foreign-call
   boundaries (see `src/rules/blas.jl`), to reduce the total number of rules that need to
   be maintained.
@@ -79,9 +88,9 @@ The overall target is: correct by construction where possible, aggressively test
 - Bug fixes in rules, the interpreter, or compiler interop should ideally land with a
   focused regression test.
 - If a fix depends on compiler or world-age behaviour, isolate it and test it directly.
-- Be careful with `friendly_tangents` for structured wrappers such as `Symmetric` and
-  `Hermitian`: the displayed tangent can be misleading even when the underlying tangent
-  data is correct.
+- `friendly_tangents` can display a misleading value for structured or wrapped types even
+  when the underlying tangent data is correct. Do not treat a surprising `friendly_tangents`
+  result as proof of a bug without also inspecting the raw tangent.
 - `src/test_resources.jl` is shared test infrastructure, not dead code. It feeds broad
   interpreter/rule tests indirectly via `TestResources.generate_test_functions()`, so do
   not judge it by one-file-one-test symmetry.
@@ -101,7 +110,8 @@ mkdir -p temp/testenv
 julia --project=temp/testenv -e 'using Pkg; Pkg.add("TestEnv"); Pkg.develop(path=".")'
 julia --project=temp/testenv -e 'using TestEnv; TestEnv.activate(); include("test/front_matter.jl")'
 ```
-- Then include the specific test file you want.
+
+Then include the specific test file you want.
 
 - Extension and integration tests should generally be run from their own
   files/environments under `test/ext/` and `test/integration_testing/`. These are part
@@ -118,7 +128,7 @@ julia --project=temp/testenv -e 'using TestEnv; TestEnv.activate(); include("tes
 - Conceptual material lives under `docs/src/understanding_mooncake/`.
 - Utility docs live under `docs/src/utilities/`.
 - Internal and contributor material lives under `docs/src/developer_documentation/`.
-- For defining or adapting differentiation rules, start with
-  `docs/src/utilities/defining_rules.md`.
-- For complex array-like rules, see the `Canonicalising Tangent Types` section in `docs/src/utilities/defining_rules.md` for `arrayify`/`matrixify` guidance.
+- For defining or adapting rules, see `docs/src/utilities/defining_rules.md`; for
+  complex array-like rules, see its `Canonicalising Tangent Types` section for
+  `arrayify`/`matrixify` guidance.
 - For recursive types or custom tangent implementations, start with `docs/src/developer_documentation/custom_tangent_type.md`.
