@@ -60,6 +60,8 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer writing rules at the lowest practical level, often around foreign-call
   boundaries (see `src/rules/blas.jl`), to reduce the total number of rules that need to
   be maintained.
+- Every custom rule must be accompanied by an `@is_primitive` declaration; without it
+  the AD will not dispatch to the rule.
 - Use `@zero_derivative` for rules with a zero derivative rather than writing a manual
   rule. Check `src/rules/` for other convenience macros before writing a rule from
   scratch.
@@ -105,6 +107,8 @@ The overall target is: correct by construction where possible, aggressively test
   relevant rules for compatibility and composability.
 - Mooncake has a debug mode which is useful for testing malformed rules and diagnosing
   rule failures; see `docs/src/utilities/debug_mode.md`.
+- For performance-sensitive rules, verify by running the `frule!!` or `rrule!!`
+  directly and checking allocations and runtime against the primal.
 - Bug fixes in rules, the interpreter, or compiler interop should ideally land with a
   focused regression test.
 - If a fix depends on compiler or world-age behaviour, isolate it and test it directly.
