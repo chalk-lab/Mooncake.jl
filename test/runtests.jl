@@ -1,3 +1,22 @@
+#=
+  Two ways to run tests (from Mooncake.jl root):
+
+  1. Interactive — iterate on individual files; TestEnv makes deps like Aqua.jl and JET.jl available.
+
+     One-time setup:
+       mkdir -p temp/testenv
+       julia --project=temp/testenv -e 'using Pkg; Pkg.add("TestEnv"); Pkg.develop(path=".")'
+
+     Then each session:
+       julia --project=temp/testenv -e 'using TestEnv; TestEnv.activate("Mooncake"); include("test/front_matter.jl")'
+
+     Then include individual test files, e.g.: include("test/interpreter/nforward.jl")
+
+  2. Batch — run a named test group end-to-end via Pkg.test:
+       julia --project=. -e 'import Pkg; Pkg.test(; test_args=["rules/lapack"])'
+
+     If test_args is omitted, the "basic" group runs (not the full suite).
+=#
 include("front_matter.jl")
 
 @testset "Mooncake.jl" begin
