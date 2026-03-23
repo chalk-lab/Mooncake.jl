@@ -1,4 +1,4 @@
-using Mooncake.TestUtils: count_allocs, has_equal_data
+using Mooncake: TestUtils
 using Mooncake:
     prepare_gradient_cache,
     prepare_pullback_cache,
@@ -68,7 +68,7 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs(value_and_gradient!!, cache, fargs...)
+            alloc_count = TestUtils.count_allocs(value_and_gradient!!, cache, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
@@ -141,7 +141,7 @@ end
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
+            alloc_count = TestUtils.count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
             if alloc_count > 0
                 @test_broken alloc_count == 0
             else
@@ -157,8 +157,8 @@ end
 
             cache = Mooncake.prepare_pullback_cache(testf, x)
             v, pb = Mooncake.value_and_pullback!!(cache, x̄_unfriendly, testf, x)
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 Mooncake.Tangent((;
                     x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2
@@ -169,16 +169,16 @@ end
                 testf, x; config=Mooncake.Config(; friendly_tangents=true)
             )
             v, pb = Mooncake.value_and_pullback!!(cache, x̄, testf, x)
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
 
             rrule = build_rrule(testf, x)
             v, pb = Mooncake.value_and_pullback!!(rrule, x̄_unfriendly, testf, x)
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 Mooncake.Tangent((;
                     x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2
@@ -188,8 +188,8 @@ end
             v, pb = Mooncake.value_and_pullback!!(
                 rrule, x̄, testf, x; friendly_tangents=true
             )
-            @test has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
-            @test has_equal_data(
+            @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
+            @test TestUtils.has_equal_data(
                 pb[2],
                 SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
@@ -304,6 +304,96 @@ end
             catch err
                 @test isa(err, Mooncake.ValueAndPullbackReturnTypeError)
             end
+        end
+
+        @testset "_copy_output & _copy_to_output!!, $(test_set)" for test_set in
+                                                                     additional_test_set
+
+            original = test_set[2]
+            try
+                if isnothing(Mooncake.__exclude_unsupported_output(original))
+                    test_copy = Mooncake._copy_output(original)
+                    test_inplace_copy = Mooncake._copy_to_output!!(test_copy, original)
+
+                    @test TestUtils.has_equal_data(original, test_copy)
+                    @test TestUtils.has_equal_data(original, test_inplace_copy)
+                    @test typeof(test_copy) == typeof(original)
+                end
+            catch err
+                @test isa(err, Mooncake.ValueAndPullbackReturnTypeError)
+            end
+        end
+
+        # `_copy_output` needs to be able handle `Type`, `Core.TypeName`,
+        # and `Module` values. See #1024.
+        @testset "_copy_output non-deep-copyable types" begin
+            # Type values
+            @test Mooncake._copy_output(Float64) === Float64
+            @test Mooncake._copy_output(Vector{Float64}) === Vector{Float64}
+            @test Mooncake._copy_output(Union{Float64,Int64}) === Union{Float64,Int64}
+
+            # Core.TypeName
+            @test Mooncake._copy_output(Float64.name) === Float64.name
+
+            # Module
+            @test Mooncake._copy_output(Base) === Base
+
+            # _copy_to_output!! for the same non-deep-copyable types
+            @test Mooncake._copy_to_output!!(Float64, Float64) === Float64
+            @test Mooncake._copy_to_output!!(Float64.name, Float64.name) === Float64.name
+            @test Mooncake._copy_to_output!!(Base, Base) === Base
+
+            # Mutable struct containing a Type field.
+            mutable struct MutableWithTypeField
+                t::Type
+                x::Float64
+            end
+            obj = MutableWithTypeField(Float64, 1.0)
+            obj_copy = Mooncake._copy_output(obj)
+            @test typeof(obj_copy) == MutableWithTypeField
+            @test obj_copy.t === Float64
+            @test obj_copy.x == 1.0
+            obj2 = MutableWithTypeField(Int64, 2.0)
+            Mooncake._copy_to_output!!(obj_copy, obj2)
+            @test obj_copy.t === Int64
+            @test obj_copy.x == 2.0
+        end
+
+        # Fix for #1033: opaque mutable types (nfields == 0).
+        @testset "_copy_output opaque mutable types (Symbol, String, Dict)" begin
+            # Symbol and String are mutable with 0 user-visible fields
+            @test Mooncake._copy_output(:hello) === :hello
+            @test Mooncake._copy_output("hello") === "hello"
+
+            # _copy_to_output!! must return src for opaque mutable types, not dst
+            @test Mooncake._copy_to_output!!(:hello, :world) === :world
+            @test Mooncake._copy_to_output!!("hello", "world") === "world"
+
+            # Dict contains a Memory{Symbol} (keys) internally
+            d = Dict(:x => 1, :y => 2)
+            d_copy = Mooncake._copy_output(d)
+            @test d_copy == d
+            @test d_copy !== d
+
+            # Dict{Symbol, Any}
+            d2 = Dict{Symbol,Any}(:x => [1.0, 2.0], :n => 3)
+            d2_copy = Mooncake._copy_output(d2)
+            @test d2_copy == d2
+            @test d2_copy !== d2
+
+            # Struct containing a Dict must also be copyable
+            struct DataStoreForTest
+                _n::Int
+                _data::Dict{Symbol,Any}
+            end
+            ds = DataStoreForTest(3, Dict{Symbol,Any}(:x => randn(Float32, 2)))
+            ds_copy = Mooncake._copy_output(ds)
+            @test ds_copy._n == ds._n
+            @test ds_copy._data == ds._data
+            ds2 = DataStoreForTest(5, Dict{Symbol,Any}(:y => randn(Float32, 2)))
+            ds_copy2 = Mooncake._copy_to_output!!(ds_copy, ds2)
+            @test ds_copy2._n == ds2._n
+            @test ds_copy2._data == ds2._data
         end
     end
     @testset "forwards mode ($kwargs)" for kwargs in [

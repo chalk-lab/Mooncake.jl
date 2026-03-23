@@ -1317,7 +1317,11 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
         p_inplace = Mooncake._copy_to_output!!(p_copy, p)
         @test has_equal_data(p, p_inplace)
     catch e
-        e isa Mooncake.ValueAndPullbackReturnTypeError || rethrow(e)
+        if e isa Mooncake.ValueAndPullbackReturnTypeError
+            @warn "_copy_output/_copy_to_output!! test skipped for type $P: $e"
+        else
+            rethrow(e)
+        end
     end
 end
 
