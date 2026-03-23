@@ -51,6 +51,69 @@
 end
 
 """
+    stop_gradient(x)
+
+Returns `x` with zero gradient. Gradients will not propagate through `x` in the reverse
+pass. In the forward pass, `x` is returned unchanged.
+
+To stop gradients through multiple values at once, pack them into a tuple:
+`stop_gradient((x, y, z))`.
+
+This is analogous to `tf.stop_gradient` in TensorFlow and `jax.lax.stop_gradient` in JAX.
+
+!!! warning
+    Mooncake requires that aliased primals have aliased fdatas (the "aliasing invariant"):
+    `primal(a) === primal(b)` implies `fdata(a) === fdata(b)`. `stop_gradient`
+    deliberately breaks this — the returned CoDual has `primal(y) === primal(x)` but
+    `fdata(y) = _copy(fdata(x))` — so that downstream gradient accumulation into `y` does
+    not affect `x`. This will produce incorrect gradients if the output is mutated in-place
+    and `x` is subsequently read (or vice versa), because the two fdata buffers diverge.
+    For example:
+    ```julia
+    function f(x)
+        y = stop_gradient(x)  # primal(y) === x, but fdata(y) ≠ fdata(x)
+        y[1] = 2.0            # mutates x[1], but tangent goes into fdata(y)
+        return x[1] + x[2]   # reads fdata(x), which is now out of sync with fdata(y)
+    end
+    ```
+    See https://github.com/chalk-lab/Mooncake.jl/issues/1081 for more details.
+
+# Examples
+
+```jldoctest
+julia> using Mooncake
+
+julia> f(x) = x[1] * Mooncake.stop_gradient(x)[2]
+f (generic function with 1 method)
+
+julia> cache = Mooncake.prepare_gradient_cache(f, [3.0, 4.0]);
+
+julia> _, (_, g) = Mooncake.value_and_gradient!!(cache, f, [3.0, 4.0]);
+
+julia> g  # g[2] == 0: gradient through x[2] inside stop_gradient is blocked
+2-element Vector{Float64}:
+ 4.0
+ 0.0
+```
+"""
+stop_gradient(x) = x
+
+@is_primitive MinimalCtx Tuple{typeof(stop_gradient),Any}
+
+function frule!!(::Dual{typeof(stop_gradient)}, x::Dual)
+    return zero_dual(primal(x))
+end
+
+function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
+    # Copy fdata so that in-place gradient accumulation into the output does not
+    # affect the input's fdata (i.e., avoids aliasing of tangent storage).
+    y = CoDual(primal(x), _copy(tangent(x)))
+    lzr = lazy_zero_rdata(primal(x))
+    stop_gradient_pb!!(_) = (NoRData(), instantiate(lzr))
+    return y, stop_gradient_pb!!
+end
+
+"""
     lgetfield(x, f::Val)
 
 An implementation of `getfield` in which the field `f` is specified statically via a
@@ -246,6 +309,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
     memory = Any[_x, _dx]
 
     specific_test_cases = Any[
+        # stop_gradient: value passes through, gradients are zeroed out.
+        # interface_only=true because the rule intentionally returns zero gradient,
+        # which does not match the finite-difference Jacobian of the primal (identity).
+        (true, :none, nothing, stop_gradient, 5.0),
+        (true, :none, nothing, stop_gradient, randn(4)),
+        (true, :none, nothing, stop_gradient, (3.0, 4.0)),
+
         # Rules to avoid pointer type conversions.
         (
             true,
