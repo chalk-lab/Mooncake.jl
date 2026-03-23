@@ -35,9 +35,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     return test_cases, memory
 end
 
-# Symmetric: off-diagonal elements in the stored triangle are doubled in the internal
-# tangent representation (each off-diagonal element appears twice in the symmetric matrix).
-# Divide by 2 to recover the user-friendly gradient w.r.t. the symmetric matrix elements.
+# Symmetric's tangent is a plain Tangent wrapping a full Matrix, with no knowledge of
+# symmetric structure. Both S[i,j] and S[j,i] route to the same stored slot S.data[i,j]
+# (the tangent entry S.data[j,i] accumulates no gradient and stays zero), so the chain
+# rule accumulates all gradient into S.data[i,j] without accounting for the fact that it
+# represents two matrix entries. A perturbation of ε to S.data[i,j] changes both S[i,j]
+# and S[j,i] by ε, so the full-matrix gradient G must satisfy ⟨G, δS⟩ = δf, which
+# requires G[i,j] = ∂f/∂(S.data[i,j]) / 2. Without this, ⟨G, δS⟩ would equal 2·δf.
+#
+# The cleaner fix would be a custom tangent type for Symmetric that encodes this factor
+# structurally, so no correction is needed at conversion time. This specialisation is a
+# pragmatic workaround at the tangent_to_primal!! boundary instead.
 function Mooncake.tangent_to_primal_internal!!(
     x::LinearAlgebra.Symmetric{T,S}, tx, c::MaybeCache
 ) where {T,S}
@@ -54,7 +62,12 @@ function Mooncake.tangent_to_primal_internal!!(
     return x
 end
 
-# Hermitian: same doubling issue as Symmetric for off-diagonal elements.
+# Hermitian's tangent has the same structure as Symmetric's: H[i,j] and H[j,i]
+# (= conj(H.data[i,j])) both route to H.data[i,j], while the tangent entry H.data[j,i]
+# accumulates no gradient and stays zero. By the same ⟨G, δH⟩ = δf argument, the
+# full-matrix gradient requires G[i,j] = ∂f/∂(H.data[i,j]) / 2.
+# Additionally, diagonal entries of a Hermitian matrix are constrained to be real, so we
+# take real() to drop any imaginary noise in the accumulated diagonal gradient.
 function Mooncake.tangent_to_primal_internal!!(
     x::LinearAlgebra.Hermitian{T,S}, tx, c::MaybeCache
 ) where {T,S}

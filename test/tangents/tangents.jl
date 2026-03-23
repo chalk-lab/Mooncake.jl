@@ -238,7 +238,7 @@ end
 @testset "tangent_to_primal!! for Symmetric and Hermitian" begin
     @testset "Symmetric uplo=U - S[1,2]" begin
         f = (S::Symmetric) -> S[1, 2]
-        S = Symmetric([1.0 2.0; 0.0 3.0])
+        S = Symmetric([1.0 2.0; 999.0 3.0])  # 999.0 is in the non-stored triangle and is ignored
         cache = Mooncake.prepare_pullback_cache(
             f, S; config=Mooncake.Config(friendly_tangents=false)
         )
@@ -249,8 +249,10 @@ end
     end
 
     @testset "Symmetric uplo=U - sum" begin
+        # Reading both S[i,j] and S[j,i] routes both accesses to S.data[i,j], so without
+        # the /2 fix the off-diagonal entries would be 2.0 instead of 1.0.
         f = (S::Symmetric) -> S[1, 1] + S[1, 2] + S[2, 1] + S[2, 2]
-        S = Symmetric([1.0 2.0; 0.0 3.0])
+        S = Symmetric([1.0 2.0; 999.0 3.0])  # 999.0 is in the non-stored triangle and is ignored
         cache = Mooncake.prepare_pullback_cache(
             f, S; config=Mooncake.Config(friendly_tangents=false)
         )
@@ -261,8 +263,10 @@ end
     end
 
     @testset "Symmetric uplo=L - sum" begin
+        # Reading both S[i,j] and S[j,i] routes both accesses to S.data[i,j], so without
+        # the /2 fix the off-diagonal entries would be 2.0 instead of 1.0.
         f = (S::Symmetric) -> S[1, 1] + S[1, 2] + S[2, 1] + S[2, 2]
-        S = Symmetric([1.0 0.0; 2.0 3.0], :L)
+        S = Symmetric([1.0 999.0; 2.0 3.0], :L)  # 999.0 is in the non-stored triangle and is ignored
         cache = Mooncake.prepare_pullback_cache(
             f, S; config=Mooncake.Config(friendly_tangents=false)
         )
@@ -274,7 +278,7 @@ end
 
     @testset "Hermitian uplo=U - real(H[1,2])" begin
         f = (H::Hermitian) -> real(H[1, 2])
-        H = Hermitian([1.0+0im 2.0+1im; 2.0-1im 3.0+0im])
+        H = Hermitian([1.0+0im 2.0+1im; 999.0+0im 3.0+0im])  # 999.0+0im is in the non-stored triangle and is ignored
         cache = Mooncake.prepare_pullback_cache(
             f, H; config=Mooncake.Config(friendly_tangents=false)
         )
@@ -285,8 +289,10 @@ end
     end
 
     @testset "Hermitian uplo=U - sum of real parts" begin
-        f = (H::Hermitian) -> sum(real.(H))
-        H = Hermitian([1.0+0im 2.0+1im; 2.0-1im 3.0+0im])
+        # Reading both H[i,j] and H[j,i] routes both accesses to H.data[i,j], so without
+        # the /2 fix the off-diagonal real parts would be 2.0 instead of 1.0.
+        f = (H::Hermitian) -> real(H[1, 1]) + real(H[1, 2]) + real(H[2, 1]) + real(H[2, 2])
+        H = Hermitian([1.0+0im 2.0+1im; 999.0+0im 3.0+0im])  # 999.0+0im is in the non-stored triangle and is ignored
         cache = Mooncake.prepare_pullback_cache(
             f, H; config=Mooncake.Config(friendly_tangents=false)
         )
@@ -298,7 +304,7 @@ end
 
     @testset "Hermitian uplo=L - real(H[2,1])" begin
         f = (H::Hermitian) -> real(H[2, 1])
-        H = Hermitian([1.0+0im 2.0-1im; 2.0+1im 3.0+0im], :L)
+        H = Hermitian([1.0+0im 999.0+0im; 2.0+1im 3.0+0im], :L)  # 999.0+0im is in the non-stored triangle and is ignored
         cache = Mooncake.prepare_pullback_cache(
             f, H; config=Mooncake.Config(friendly_tangents=false)
         )
@@ -309,8 +315,10 @@ end
     end
 
     @testset "Hermitian uplo=L - sum of real parts" begin
-        f = (H::Hermitian) -> sum(real.(H))
-        H = Hermitian([1.0+0im 2.0-1im; 2.0+1im 3.0+0im], :L)
+        # Reading both H[i,j] and H[j,i] routes both accesses to H.data[i,j], so without
+        # the /2 fix the off-diagonal real parts would be 2.0 instead of 1.0.
+        f = (H::Hermitian) -> real(H[1, 1]) + real(H[1, 2]) + real(H[2, 1]) + real(H[2, 2])
+        H = Hermitian([1.0+0im 999.0+0im; 2.0+1im 3.0+0im], :L)  # 999.0+0im is in the non-stored triangle and is ignored
         cache = Mooncake.prepare_pullback_cache(
             f, H; config=Mooncake.Config(friendly_tangents=false)
         )
