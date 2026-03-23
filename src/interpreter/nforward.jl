@@ -1,3 +1,4 @@
+using ..NDuals
 # ── nforward: NDual-backed forward-mode engine ────────────────────────────────────
 # `nforward` evaluates code by lifting inputs into `NDual`s and running the primal
 # function directly on those lifted values. It does not reuse Mooncake's ordinary forward
@@ -50,11 +51,6 @@
 #   Mooncake.build_primitive_rrule(::Type{sig}) =
 #       Mooncake.nforward_build_rrule(sig; chunk_size=4)
 #
-# NDual lives in the CUDA extension but is shared with nforward so that GPU broadcast rules
-# and the nforward engine use the same type. Including it here is intentional: core Mooncake
-# always loads ndual.jl, and the CUDA extension reuses the definition without redefining it.
-include(joinpath(@__DIR__, "..", "..", "ext", "MooncakeCUDAExt", "ndual.jl"))
-
 #
 # Core types
 #
@@ -940,18 +936,23 @@ end
 
 @inline function _nforward_extract_scalar(d::NDual{T,N}, ::Val{N}) where {T,N}
     return if N == 1
-        ndual_value(d), ndual_partial(d, 1)
+        NDuals.ndual_value(d), NDuals.ndual_partial(d, 1)
     else
-        ndual_value(d), ntuple(k -> ndual_partial(d, k), Val(N))
+        NDuals.ndual_value(d), ntuple(k -> NDuals.ndual_partial(d, k), Val(N))
     end
 end
 
 @inline function _nforward_extract_scalar(z::Complex{NDual{T,N}}, ::Val{N}) where {T,N}
-    primal = complex(ndual_value(real(z)), ndual_value(imag(z)))
+    primal = complex(NDuals.ndual_value(real(z)), NDuals.ndual_value(imag(z)))
     tangent = if N == 1
-        complex(ndual_partial(real(z), 1), ndual_partial(imag(z), 1))
+        complex(NDuals.ndual_partial(real(z), 1), NDuals.ndual_partial(imag(z), 1))
     else
-        ntuple(k -> complex(ndual_partial(real(z), k), ndual_partial(imag(z), k)), Val(N))
+        ntuple(
+            k -> complex(
+                NDuals.ndual_partial(real(z), k), NDuals.ndual_partial(imag(z), k)
+            ),
+            Val(N),
+        )
     end
     return primal, tangent
 end
@@ -968,13 +969,13 @@ function _nforward_extract(y::AbstractArray{<:NDual{T,N}}, ::Val{N}) where {T,N}
     primal = similar(y, T)
     tangent = N == 1 ? similar(y, T) : similar(y, T, size(y)..., N)
     @inbounds for I in CartesianIndices(y)
-        primal[I] = ndual_value(y[I])
+        primal[I] = NDuals.ndual_value(y[I])
         idx = Tuple(I)
         if N == 1
-            tangent[I] = ndual_partial(y[I], 1)
+            tangent[I] = NDuals.ndual_partial(y[I], 1)
         else
             for k in 1:N
-                tangent[idx..., k] = ndual_partial(y[I], k)
+                tangent[idx..., k] = NDuals.ndual_partial(y[I], k)
             end
         end
     end
@@ -988,14 +989,16 @@ function _nforward_extract(
     primal = similar(y, T)
     tangent = N == 1 ? similar(y, T) : similar(y, T, size(y)..., N)
     @inbounds for I in CartesianIndices(y)
-        primal[I] = complex(ndual_value(real(y[I])), ndual_value(imag(y[I])))
+        primal[I] = complex(NDuals.ndual_value(real(y[I])), NDuals.ndual_value(imag(y[I])))
         idx = Tuple(I)
         if N == 1
-            tangent[I] = complex(ndual_partial(real(y[I]), 1), ndual_partial(imag(y[I]), 1))
+            tangent[I] = complex(
+                NDuals.ndual_partial(real(y[I]), 1), NDuals.ndual_partial(imag(y[I]), 1)
+            )
         else
             for k in 1:N
                 tangent[idx..., k] = complex(
-                    ndual_partial(real(y[I]), k), ndual_partial(imag(y[I]), k)
+                    NDuals.ndual_partial(real(y[I]), k), NDuals.ndual_partial(imag(y[I]), k)
                 )
             end
         end
@@ -1188,7 +1191,7 @@ outputs, so this helper works for both NDual-carrying and plain scalar results.
 @inline function _nforward_scalar_lanes(
     y_raw::NDual{T,C}, ::Type{T}, ::Val{C}
 ) where {T<:IEEEFloat,C}
-    return ndual_value(y_raw), ntuple(k -> ndual_partial(y_raw, k), Val(C))
+    return NDuals.ndual_value(y_raw), ntuple(k -> NDuals.ndual_partial(y_raw, k), Val(C))
 end
 
 @inline function _nforward_scalar_lanes(y_raw, ::Type{T}, ::Val{C}) where {T<:IEEEFloat,C}

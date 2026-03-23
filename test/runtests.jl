@@ -40,6 +40,7 @@ include("front_matter.jl")
             include(joinpath("interpreter", "nforward.jl"))
             include(joinpath("interpreter", "reverse_mode.jl"))
         end
+        include(joinpath("rules", "ndual.jl"))
         include("tools_for_rules.jl")
         include("interface.jl")
         include("config.jl")

@@ -1,6 +1,13 @@
-# ── NDual: N-wide dual number for GPU kernel forward-mode AD ──────────────────────
-# This type lives entirely within the CUDA extension and is not exported from
-# Mooncake core.  All GPU broadcast forward-mode rules use it internally.
+# ── NDual: N-wide dual number for forward-mode AD ─────────────────────────────────
+# Shared by the nforward engine and the CUDA extension. Defined here in Mooncake
+# core so both can use the same type without redefinition.
+
+module NDuals
+
+using Base: IEEEFloat
+
+export NDual
+
 #
 # ── Role of `ntuple` ──────────────────────────────────────────────────────────────
 # `ntuple(f, Val(N))` is the workhorse for constructing and transforming NDual
@@ -260,10 +267,12 @@ NDual{T,N}(x::Real) where {T<:IEEEFloat,N} = NDual{T,N}(T(x), ntuple(_ -> zero(T
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
 @inline _pt_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
-@inline _pt_add(p::NTuple{N,T}, q::NTuple{N,T}) where {N,T} = ntuple(i -> p[i] + q[i],
-                                                                     Val(N))
-@inline _pt_sub(p::NTuple{N,T}, q::NTuple{N,T}) where {N,T} = ntuple(i -> p[i] - q[i],
-                                                                     Val(N))
+@inline _pt_add(p::NTuple{N,T}, q::NTuple{N,T}) where {N,T} = ntuple(
+    i -> p[i] + q[i], Val(N)
+)
+@inline _pt_sub(p::NTuple{N,T}, q::NTuple{N,T}) where {N,T} = ntuple(
+    i -> p[i] - q[i], Val(N)
+)
 @inline _pt_neg(p::NTuple{N,T}) where {N,T} = ntuple(i -> -p[i], Val(N))
 @inline _pt_zero(::Val{N}, ::Type{T}) where {N,T} = ntuple(_ -> zero(T), Val(N))
 
@@ -314,17 +323,18 @@ Base.:-(a::NDual{T,N}) where {T,N} = NDual{T,N}(-a.value, _pt_neg(a.partials))
 
 # Product rule: d(a*b) = a*db + b*da
 function Base.:*(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    return NDual{T,N}(a.value * b.value,
-                      _pt_add(_pt_scale(a.partials, b.value),
-                              _pt_scale(b.partials, a.value)))
+    return NDual{T,N}(
+        a.value * b.value,
+        _pt_add(_pt_scale(a.partials, b.value), _pt_scale(b.partials, a.value)),
+    )
 end
 
 # Quotient rule: d(a/b) = (da - (a/b)*db) / b
 function Base.:/(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     v = a.value / b.value
-    return NDual{T,N}(v,
-                      _pt_scale(_pt_sub(a.partials, _pt_scale(b.partials, v)),
-                                inv(b.value)))
+    return NDual{T,N}(
+        v, _pt_scale(_pt_sub(a.partials, _pt_scale(b.partials, v)), inv(b.value))
+    )
 end
 
 Base.inv(a::NDual{T,N}) where {T,N} = one(NDual{T,N}) / a
@@ -351,9 +361,12 @@ function Base.:^(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     v = a.value^b.value
     coeff_a = b.value / a.value
     coeff_b = log(a.value)
-    return NDual{T,N}(v,
-                      _pt_scale(_pt_add(_pt_scale(a.partials, coeff_a),
-                                        _pt_scale(b.partials, coeff_b)), v))
+    return NDual{T,N}(
+        v,
+        _pt_scale(
+            _pt_add(_pt_scale(a.partials, coeff_a), _pt_scale(b.partials, coeff_b)), v
+        ),
+    )
 end
 
 # d(b^a)/da = b^a * log(b)  (b a plain Real, a the NDual)
@@ -386,9 +399,12 @@ function Base.atan(a::NDual{T,N}) where {T,N}
 end
 function Base.atan(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     r2 = a.value^2 + b.value^2
-    return NDual{T,N}(atan(a.value, b.value),
-                      _pt_scale(_pt_sub(_pt_scale(a.partials, b.value),
-                                        _pt_scale(b.partials, a.value)), inv(r2)))
+    return NDual{T,N}(
+        atan(a.value, b.value),
+        _pt_scale(
+            _pt_sub(_pt_scale(a.partials, b.value), _pt_scale(b.partials, a.value)), inv(r2)
+        ),
+    )
 end
 
 # Hyperbolic
@@ -426,12 +442,14 @@ function Base.coth(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(coth(a.value), _pt_scale(a.partials, -(sv^2)))
 end
 function Base.asech(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(asech(a.value),
-                      _pt_scale(a.partials, -inv(a.value * sqrt(one(T) - a.value^2))))
+    return NDual{T,N}(
+        asech(a.value), _pt_scale(a.partials, -inv(a.value * sqrt(one(T) - a.value^2)))
+    )
 end
 function Base.acsch(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acsch(a.value),
-                      _pt_scale(a.partials, -inv(abs(a.value) * sqrt(one(T) + a.value^2))))
+    return NDual{T,N}(
+        acsch(a.value), _pt_scale(a.partials, -inv(abs(a.value) * sqrt(one(T) + a.value^2)))
+    )
 end
 function Base.acoth(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(acoth(a.value), _pt_scale(a.partials, inv(one(T) - a.value^2)))
@@ -494,7 +512,7 @@ Base.sign(a::NDual{T,N}) where {T,N} = NDual{T,N}(sign(a.value), _pt_zero(Val(N)
 function Base.sincos(a::NDual{T,N}) where {T,N}
     sv, cv = sincos(a.value)
     return NDual{T,N}(sv, _pt_scale(a.partials, cv)),
-           NDual{T,N}(cv, _pt_scale(a.partials, -sv))
+    NDual{T,N}(cv, _pt_scale(a.partials, -sv))
 end
 
 # sinpi / cospi — sin(π·x) and cos(π·x); derivative gains a π factor.
@@ -515,7 +533,7 @@ end
 function Base.sincospi(a::NDual{T,N}) where {T<:IEEEFloat,N}
     sv, cv = sincospi(a.value)
     return NDual{T,N}(sv, _pt_scale(a.partials, T(π) * cv)),
-           NDual{T,N}(cv, _pt_scale(a.partials, -T(π) * sv))
+    NDual{T,N}(cv, _pt_scale(a.partials, -T(π) * sv))
 end
 
 # Reciprocal trigonometric: sec, csc, cot and their inverses.
@@ -532,12 +550,14 @@ function Base.cot(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(cv, _pt_scale(a.partials, -(one(T) + cv^2)))
 end
 function Base.asec(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(asec(a.value),
-                      _pt_scale(a.partials, inv(abs(a.value) * sqrt(a.value^2 - one(T)))))
+    return NDual{T,N}(
+        asec(a.value), _pt_scale(a.partials, inv(abs(a.value) * sqrt(a.value^2 - one(T))))
+    )
 end
 function Base.acsc(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acsc(a.value),
-                      _pt_scale(a.partials, -inv(abs(a.value) * sqrt(a.value^2 - one(T)))))
+    return NDual{T,N}(
+        acsc(a.value), _pt_scale(a.partials, -inv(abs(a.value) * sqrt(a.value^2 - one(T))))
+    )
 end
 function Base.acot(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(acot(a.value), _pt_scale(a.partials, -inv(one(T) + a.value^2)))
@@ -567,30 +587,36 @@ function Base.cotd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(cv, _pt_scale(a.partials, T(-deg2rad(one(T) + cv^2))))
 end
 function Base.asind(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(asind(a.value),
-                      _pt_scale(a.partials, inv(T(deg2rad(sqrt(one(T) - a.value^2))))))
+    return NDual{T,N}(
+        asind(a.value), _pt_scale(a.partials, inv(T(deg2rad(sqrt(one(T) - a.value^2)))))
+    )
 end
 function Base.acosd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acosd(a.value),
-                      _pt_scale(a.partials, -inv(T(deg2rad(sqrt(one(T) - a.value^2))))))
+    return NDual{T,N}(
+        acosd(a.value), _pt_scale(a.partials, -inv(T(deg2rad(sqrt(one(T) - a.value^2)))))
+    )
 end
 function Base.atand(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(atand(a.value),
-                      _pt_scale(a.partials, inv(T(deg2rad(one(T) + a.value^2)))))
+    return NDual{T,N}(
+        atand(a.value), _pt_scale(a.partials, inv(T(deg2rad(one(T) + a.value^2))))
+    )
 end
 function Base.asecd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(asecd(a.value),
-                      _pt_scale(a.partials,
-                                inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))))
+    return NDual{T,N}(
+        asecd(a.value),
+        _pt_scale(a.partials, inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))),
+    )
 end
 function Base.acscd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acscd(a.value),
-                      _pt_scale(a.partials,
-                                -inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))))
+    return NDual{T,N}(
+        acscd(a.value),
+        _pt_scale(a.partials, -inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))),
+    )
 end
 function Base.acotd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acotd(a.value),
-                      _pt_scale(a.partials, -inv(T(deg2rad(one(T) + a.value^2)))))
+    return NDual{T,N}(
+        acotd(a.value), _pt_scale(a.partials, -inv(T(deg2rad(one(T) + a.value^2))))
+    )
 end
 
 # Angle unit conversions — linear transforms; derivative is the constant scale factor.
@@ -609,9 +635,9 @@ end
 # hypot — d/da hypot(a,b) = a / hypot(a,b), d/db = b / hypot(a,b).
 function Base.hypot(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     h = hypot(a.value, b.value)
-    return NDual{T,N}(h,
-                      _pt_add(_pt_scale(a.partials, a.value / h),
-                              _pt_scale(b.partials, b.value / h)))
+    return NDual{T,N}(
+        h, _pt_add(_pt_scale(a.partials, a.value / h), _pt_scale(b.partials, b.value / h))
+    )
 end
 
 # min / max — subgradient: select the tangent of the winning branch.
@@ -629,8 +655,9 @@ function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}) where {T,N}
     return ifelse(a.value <= lo.value, lo, ifelse(a.value >= hi.value, hi, a))
 end
 function Base.clamp(a::NDual{T,N}, lo::Real, hi::Real) where {T,N}
-    return ifelse(a.value <= T(lo), NDual{T,N}(T(lo)),
-                  ifelse(a.value >= T(hi), NDual{T,N}(T(hi)), a))
+    return ifelse(
+        a.value <= T(lo), NDual{T,N}(T(lo)), ifelse(a.value >= T(hi), NDual{T,N}(T(hi)), a)
+    )
 end
 
 # flipsign / copysign — sign of result determined by primal; tangent follows.
@@ -727,10 +754,17 @@ function Base.sqrt(z::Complex{NDual{T,N}}) where {T,N}
     a, b = real(z), imag(z)
     r = hypot(a, b)
     half = T(0.5)
-    re = sqrt(NDual{T,N}((r.value + a.value) * half,
-                         _pt_scale(_pt_add(r.partials, a.partials), half)))
-    im = copysign(one(NDual{T,N}), b) * sqrt(NDual{T,N}((r.value - a.value) * half,
-                                                        _pt_scale(_pt_sub(r.partials, a.partials), half)))
+    re = sqrt(
+        NDual{T,N}(
+            (r.value + a.value) * half, _pt_scale(_pt_add(r.partials, a.partials), half)
+        ),
+    )
+    im =
+        copysign(one(NDual{T,N}), b) * sqrt(
+            NDual{T,N}(
+                (r.value - a.value) * half, _pt_scale(_pt_sub(r.partials, a.partials), half)
+            ),
+        )
     return Complex(re, im)
 end
 
@@ -755,15 +789,19 @@ struct NDualUnsupportedError <: Exception
     op::Symbol
 end
 function Base.showerror(io::IO, e::NDualUnsupportedError)
-    return print(io,
-                 "NDual does not support `$(e.op)`. ",
-                 "This operation cannot propagate partial derivatives through a GPU broadcast kernel. ",
-                 "Use a differentiable alternative, or open an issue if a subgradient rule makes sense.")
+    return print(
+        io,
+        "NDual does not support `$(e.op)`. ",
+        "This operation cannot propagate partial derivatives through a GPU broadcast kernel. ",
+        "Use a differentiable alternative, or open an issue if a subgradient rule makes sense.",
+    )
 end
 
 for _op in (:floor, :ceil, :round, :trunc, :div, :fld, :cld, :mod, :rem, :gcd, :lcm)
     @eval Base.$_op(::NDual, args...) = throw(NDualUnsupportedError($(QuoteNode(_op))))
-    @eval Base.$_op(::Type, ::NDual, args...) = throw(NDualUnsupportedError($(QuoteNode(_op))))
+    @eval Base.$_op(::Type, ::NDual, args...) = throw(
+        NDualUnsupportedError($(QuoteNode(_op)))
+    )
 end
 
 # `rem(x, y)` has subgradient ∂x=1, ∂y=-floor(x/y) (a.e.). Defining the two-NDual
@@ -786,8 +824,9 @@ end
 function Base.rem(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
     pv, yv = ndual_value(x), ndual_value(y)
     c = floor(pv / yv)
-    return NDual{T,N}(rem(pv, yv),
-                      ntuple(k -> ndual_partial(x, k) - c * ndual_partial(y, k), Val(N)))
+    return NDual{T,N}(
+        rem(pv, yv), ntuple(k -> ndual_partial(x, k) - c * ndual_partial(y, k), Val(N))
+    )
 end
 
 # ── Future: tiled GPU kernels with NDual ──────────────────────────────────────────
@@ -859,3 +898,5 @@ end
 #
 #   Tiled forward:     O(M·K·sizeof T)   peak memory per launch (K < N),
 #                      ceil(N/K) passes  over input data.
+
+end # module NDuals

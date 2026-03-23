@@ -76,12 +76,15 @@ import Mooncake:
     _fields,
     zero_rdata,
     RData,
-    nan_tangent_guard
+    nan_tangent_guard,
+    NDual,
+    ndual_value,
+    ndual_partial
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
 
-include("ndual.jl")
+# NDual is defined in src/rules/nduals.jl and loaded as part of Mooncake core.
 
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}

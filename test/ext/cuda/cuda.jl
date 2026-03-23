@@ -15,12 +15,7 @@ using Mooncake.TestUtils:
     test_rrule_interface
 using LinearAlgebra
 
-# Access NDual and friends from the CUDA extension (they are not exported from Mooncake core).
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
-const NDual = _MooncakeCUDAExt.NDual
-const ndual_value = _MooncakeCUDAExt.ndual_value
-const ndual_partial = _MooncakeCUDAExt.ndual_partial
-const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
 
 @testset "cuda" begin
     cuda = CUDA.functional()
@@ -868,6 +863,4 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
     else
         println("Tests are skipped because no CUDA device was found.")
     end
-
-    include("ndual.jl")
 end

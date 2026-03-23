@@ -163,6 +163,7 @@ include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
 include("interface.jl")
+include(joinpath("rules", "nduals.jl"))
 include(joinpath("interpreter", "nforward.jl"))
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
