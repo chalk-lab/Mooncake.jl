@@ -249,7 +249,7 @@ end
     end
 
     @testset "Symmetric uplo=U - sum" begin
-        f = (S::Symmetric) -> sum(S)
+        f = (S::Symmetric) -> S[1, 1] + S[1, 2] + S[2, 1] + S[2, 2]
         S = Symmetric([1.0 2.0; 0.0 3.0])
         cache = Mooncake.prepare_pullback_cache(
             f, S; config=Mooncake.Config(friendly_tangents=false)
@@ -261,7 +261,7 @@ end
     end
 
     @testset "Symmetric uplo=L - sum" begin
-        f = (S::Symmetric) -> sum(S)
+        f = (S::Symmetric) -> S[1, 1] + S[1, 2] + S[2, 1] + S[2, 2]
         S = Symmetric([1.0 0.0; 2.0 3.0], :L)
         cache = Mooncake.prepare_pullback_cache(
             f, S; config=Mooncake.Config(friendly_tangents=false)
