@@ -40,7 +40,7 @@ The overall target is: correct by construction where possible, aggressively test
 - Keep changes aligned with the existing source/test layout: tests for `src/.../foo.jl` usually live at `test/.../foo.jl`.
 - Put shared test setup in `test/front_matter.jl`; test-group dispatch lives in `test/runtests.jl`.
 - For complex rules, especially array-heavy rules, prefer canonicalising inputs at the rule boundary with utilities such as `arrayify` rather than proliferating specialized methods.
-- Mooncake provides helpers for importing rules from ChainRules via `@from_rrule` / `@from_chainrules`, but use them conservatively. In practice, restrict to scalar and array-like cases whose element types are `IEEEFloat` or `Complex` numbers — these are the cases where Mooncake's tangent conversions are well-defined and round-trip correctly.
+- Mooncake provides helpers for importing rules from ChainRules via `@from_rrule` / `@from_chainrules`, but use them conservatively. In practice, restrict to scalar and array-like cases whose element types are `IEEEFloat` or `Complex` numbers, where tangent conversions are well-defined and round-trip correctly.
 - World-age issues can arise when generated functions call back into Julia dispatch.
   `tangent_type` and `build_fdata` are generated functions; all sub-function calls must
   be in the returned expression (runtime), not in the generator body (generation time).
@@ -53,16 +53,14 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer writing rules at the lowest practical level, often around foreign-call
   boundaries (see `src/rules/blas.jl`), to reduce the total number of rules that need to
   be maintained.
-- For rules whose primal has no meaningful derivative (e.g. functions that only affect
-  non-differentiable outputs), use `@zero_adjoint` rather than writing a manual `rrule!!`.
-  Similar convenience macros exist for other common patterns; check `src/rules/` for
-  examples before writing a rule from scratch.
+- Use `@zero_adjoint` for rules with a zero gradient rather than writing a manual
+  `rrule!!`. Check `src/rules/` for other convenience macros before writing a rule from
+  scratch.
 - When choosing a tangent type: use `NoTangent` for non-differentiable types (e.g.
   integers, booleans, symbols); use `ZeroTangent` when the type is differentiable but
   the derivative is structurally zero in a given rule.
-- Be careful with rule signature breadth: an overly general type signature can silently
-  shadow a more specific rule or introduce method ambiguity errors. Prefer the narrowest
-  signature that covers the intended cases.
+- Prefer the narrowest rule signature that covers the intended cases; overly broad
+  signatures can silently shadow more specific rules or cause method ambiguity errors.
 - Only forward-over-reverse nested AD is tested. Do not assume rules compose correctly
   under reverse-over-reverse or other higher-order combinations unless explicitly verified.
 - Prefer clear Julia error messages, especially around malformed rules, unsupported
@@ -80,7 +78,6 @@ The overall target is: correct by construction where possible, aggressively test
   semantics and failure modes.
 - If you change public APIs, developer tooling, or core internals, update docs under `docs/src/` when needed.
 - Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
-- Prefer clear, concise names for variables, types, and methods.
 
 ## Consistency
 
