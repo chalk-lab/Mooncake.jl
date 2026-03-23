@@ -86,6 +86,9 @@ include("ndual.jl")
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+
+# Without these overloads the generic struct handler would recurse into CuMaybeComplexArray's
+# Julia-visible fields — wrong for GPU arrays.
 Mooncake._copy_output(x::CuMaybeComplexArray) = copy(x)
 function Mooncake._copy_to_output!!(dst::P, src::P) where {P<:CuMaybeComplexArray}
     copyto!(dst, src)
