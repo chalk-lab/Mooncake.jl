@@ -12,7 +12,7 @@ end
 
     # Check that the rule for `Memory{P}` only produces two allocations.
     generate_mem()
-    @test 2 >= @allocations generate_mem()
+    @test TestUtils.count_allocs(generate_mem) <= 2
 
     # Check that zero_tangent and randn_tangent yield consistent results.
     @testset "$f" for f in [zero_tangent, Base.Fix1(randn_tangent, Xoshiro(123))]
