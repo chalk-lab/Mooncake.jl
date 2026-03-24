@@ -89,21 +89,30 @@ function _bench_frule(rule, f_dual, x_duals)
     return rule(f_dual, x_duals...)
 end
 
+# ── DOF helpers ───────────────────────────────────────────────────────────────
+
+_dof(x::AbstractArray{<:Real})    = length(x)
+_dof(x::AbstractArray{<:Complex}) = 2 * length(x)
+_dof(x::Real)                     = 1
+_dof(x::Complex)                  = 2
+_total_dof(x::Tuple)              = sum(_dof, x)
+
 # ── Test cases ────────────────────────────────────────────────────────────────
 # Each entry:  (label, f, x_tuple, chunk_size_for_cN)
+# cN is the "medium" chunk; cDOF (= total DOF) is added automatically.
 
 function nfb_cases(rng)
     v1k = randn(rng, 1_000)
     m10 = randn(rng, 10, 10)
     return [
-        ("sum_1000",              sum,                      (v1k,),  8),
-        ("_sum_1000",             _nfb_sum,                 (v1k,),  8),
-        ("sum_sin_1000",          _nfb_sum_sin,             (v1k,),  8),
-        ("_sum_sin_1000",         _nfb_sum_sin_loop,        (v1k,),  8),
-        ("naive_map_sin_cos_exp", _nfb_naive_map_sin_cos_exp, (m10,), 8),
-        ("map_sin_cos_exp",       _nfb_map_sin_cos_exp,     (m10,),  8),
-        ("broadcast_sin_cos_exp", _nfb_broadcast_sin_cos_exp, (m10,), 8),
-        ("large_single_block",    _nfb_large_single_block,  ([0.9, 0.99],), 2),
+        ("sum_1000",              sum,                        (v1k,),         8),
+        ("_sum_1000",             _nfb_sum,                   (v1k,),         8),
+        ("sum_sin_1000",          _nfb_sum_sin,               (v1k,),         8),
+        ("_sum_sin_1000",         _nfb_sum_sin_loop,          (v1k,),         8),
+        ("naive_map_sin_cos_exp", _nfb_naive_map_sin_cos_exp, (m10,),         8),
+        ("map_sin_cos_exp",       _nfb_map_sin_cos_exp,       (m10,),         8),
+        ("broadcast_sin_cos_exp", _nfb_broadcast_sin_cos_exp, (m10,),         8),
+        ("large_single_block",    _nfb_large_single_block,    ([0.9, 0.99],), 2),
     ]
 end
 
@@ -117,82 +126,90 @@ function run_nfb(; seconds=0.5)
     frule_rows = []
 
     for (label, f, x, cN) in cases
-        @info "Benchmarking: $label"
+        dof = _total_dof(x)
+        @info "Benchmarking: $label  (DOF=$dof)"
 
         # Pre-build all rules (compilation excluded from timing).
-        mc_rrule  = Mooncake.build_rrule(f, x...)
-        mc_frule  = Mooncake.build_frule(f, x...)
-        nf_rrule1 = Mooncake.nforward_build_rrule(f, x...; chunk_size=1)
-        nf_rruleN = Mooncake.nforward_build_rrule(f, x...; chunk_size=cN)
-        nf_frule1 = Mooncake.nforward_build_frule(f, x...; chunk_size=1)
-        nf_fruleN = Mooncake.nforward_build_frule(f, x...; chunk_size=cN)
+        mc_rrule   = Mooncake.build_rrule(f, x...)
+        mc_frule   = Mooncake.build_frule(f, x...)
+        nf_rrule1  = Mooncake.nforward_build_rrule(f, x...; chunk_size=1)
+        nf_rruleN  = Mooncake.nforward_build_rrule(f, x...; chunk_size=cN)
+        nf_rruleD  = Mooncake.nforward_build_rrule(f, x...; chunk_size=dof)
+        nf_frule1  = Mooncake.nforward_build_frule(f, x...; chunk_size=1)
+        nf_fruleN  = Mooncake.nforward_build_frule(f, x...; chunk_size=cN)
+        nf_fruleD  = Mooncake.nforward_build_frule(f, x...; chunk_size=dof)
 
         # Shared input views (rules must not mutate x itself).
         f_cd   = CoDual(f, NoFData())
         x_cds  = map(_codual, x)
         f_md   = Dual(f, NoTangent())
         x_mds  = map(_mc_dual, x)
-        x_ds1  = map(xi -> _nf_dual(xi, 1),  x)
-        x_dsN  = map(xi -> _nf_dual(xi, cN), x)
+        x_ds1  = map(xi -> _nf_dual(xi, 1),   x)
+        x_dsN  = map(xi -> _nf_dual(xi, cN),  x)
+        x_dsD  = map(xi -> _nf_dual(xi, dof), x)
 
         # Warm up all paths.
         for _ in 1:3
             f(x...)
-            _bench_rrule(mc_rrule, f_cd, x_cds)
-            _bench_frule(mc_frule, f_md, x_mds)
+            _bench_rrule(mc_rrule,  f_cd, x_cds)
+            _bench_frule(mc_frule,  f_md, x_mds)
             _bench_rrule(nf_rrule1, f_cd, x_cds)
             _bench_rrule(nf_rruleN, f_cd, x_cds)
+            _bench_rrule(nf_rruleD, f_cd, x_cds)
             _bench_frule(nf_frule1, f_md, x_ds1)
             _bench_frule(nf_fruleN, f_md, x_dsN)
+            _bench_frule(nf_fruleD, f_md, x_dsD)
         end
         GC.gc(true)
 
-        t_prim   = median(@be(f($x...), seconds=seconds)).time
-        t_mc_rr  = median(@be(_bench_rrule($mc_rrule,  $f_cd, $x_cds),  seconds=seconds)).time
-        t_nf_rr1 = median(@be(_bench_rrule($nf_rrule1, $f_cd, $x_cds),  seconds=seconds)).time
-        t_nf_rrN = median(@be(_bench_rrule($nf_rruleN, $f_cd, $x_cds),  seconds=seconds)).time
-        t_mc_fr  = median(@be(_bench_frule($mc_frule,  $f_md, $x_mds),  seconds=seconds)).time
-        t_nf_fr1 = median(@be(_bench_frule($nf_frule1, $f_md, $x_ds1),  seconds=seconds)).time
-        t_nf_frN = median(@be(_bench_frule($nf_fruleN, $f_md, $x_dsN),  seconds=seconds)).time
+        t_prim    = median(@be(f($x...), seconds=seconds)).time
+        t_mc_rr   = median(@be(_bench_rrule($mc_rrule,  $f_cd, $x_cds), seconds=seconds)).time
+        t_nf_rr1  = median(@be(_bench_rrule($nf_rrule1, $f_cd, $x_cds), seconds=seconds)).time
+        t_nf_rrN  = median(@be(_bench_rrule($nf_rruleN, $f_cd, $x_cds), seconds=seconds)).time
+        t_nf_rrD  = median(@be(_bench_rrule($nf_rruleD, $f_cd, $x_cds), seconds=seconds)).time
+        t_mc_fr   = median(@be(_bench_frule($mc_frule,  $f_md, $x_mds), seconds=seconds)).time
+        t_nf_fr1  = median(@be(_bench_frule($nf_frule1, $f_md, $x_ds1), seconds=seconds)).time
+        t_nf_frN  = median(@be(_bench_frule($nf_fruleN, $f_md, $x_dsN), seconds=seconds)).time
+        t_nf_frD  = median(@be(_bench_frule($nf_fruleD, $f_md, $x_dsD), seconds=seconds)).time
 
-        push!(rrule_rows, (
-            label         = label,
-            primal        = _fmt(t_prim),
-            mc_rrule      = _ratio(t_mc_rr, t_prim),
-            nf_rrule_c1   = _ratio(t_nf_rr1, t_prim),
-            nf_rrule_c8   = "c$cN: " * _ratio(t_nf_rrN, t_prim),
-        ))
-        push!(frule_rows, (
-            label         = label,
-            primal        = _fmt(t_prim),
-            mc_frule      = _ratio(t_mc_fr, t_prim),
-            nf_frule_c1   = _ratio(t_nf_fr1, t_prim),
-            nf_frule_c8   = "c$cN: " * _ratio(t_nf_frN, t_prim),
-        ))
+        push!(rrule_rows, [
+            label,
+            string(dof),
+            _fmt(t_prim),
+            _ratio(t_mc_rr,  t_prim),
+            _ratio(t_nf_rr1, t_prim),
+            "c$cN: " * _ratio(t_nf_rrN, t_prim),
+            "c$dof: " * _ratio(t_nf_rrD, t_prim),
+        ])
+        push!(frule_rows, [
+            label,
+            string(dof),
+            _fmt(t_prim),
+            _ratio(t_mc_fr,  t_prim),
+            _ratio(t_nf_fr1, t_prim),
+            "c$cN: " * _ratio(t_nf_frN, t_prim),
+            "c$dof: " * _ratio(t_nf_frD, t_prim),
+        ])
     end
 
+    rrule_header = ["Test", "DOF", "Primal", "mc_rrule", "nf_rrule c1", "nf_rrule cN", "nf_rrule cDOF"]
+    frule_header = ["Test", "DOF", "Primal", "mc_frule", "nf_frule c1", "nf_frule cN", "nf_frule cDOF"]
+
     println("\n=== Full gradient (rrule) — time relative to primal ===\n")
-    _print_table(
-        rrule_rows,
-        ["Test", "Primal", "mc_rrule", "nf_rrule c1", "nf_rrule cN"],
+    pretty_table(
+        permutedims(reduce(hcat, rrule_rows));
+        column_labels=rrule_header,
+        alignment=[:l, :r, :r, :r, :r, :r, :r],
+        display_size=(-1, -1),
     )
 
     println("\n=== JVP / single forward pass (frule) — time relative to primal ===\n")
-    _print_table(
-        frule_rows,
-        ["Test", "Primal", "mc_frule", "nf_frule c1", "nf_frule cN"],
+    pretty_table(
+        permutedims(reduce(hcat, frule_rows));
+        column_labels=frule_header,
+        alignment=[:l, :r, :r, :r, :r, :r, :r],
+        display_size=(-1, -1),
     )
-end
-
-function _print_table(rows, header)
-    mat = hcat(
-        [r.label      for r in rows],
-        [r.primal     for r in rows],
-        [r[3]         for r in rows],
-        [r[4]         for r in rows],
-        [r[5]         for r in rows],
-    )
-    pretty_table(mat; column_labels=header, alignment=[:l, :r, :r, :r, :r])
 end
 
 _fmt(t) = t < 1e-6 ? "$(round(t*1e9; sigdigits=3)) ns" :
