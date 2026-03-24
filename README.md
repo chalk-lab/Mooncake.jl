@@ -33,7 +33,7 @@ grad_cache = MC.prepare_gradient_cache(f, x);
 val, grad = MC.value_and_gradient!!(grad_cache, f, x)
 
 hess_cache = MC.prepare_hessian_cache(f, x);
-val, grad, H = MC.value_and_hessian!!(hess_cache, f, x)
+val, grad, H = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 # val  : f(x)
 # grad : ∇f(x)  (length-n vector)
 # H    : ∇²f(x) (n×n matrix)

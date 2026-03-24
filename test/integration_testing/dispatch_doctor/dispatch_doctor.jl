@@ -81,8 +81,10 @@ include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
 include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
 include(joinpath(@__DIR__, "..", "..", "stack.jl"))
 
-# Skip these interface tests, as DispatchDoctor appears to interfere  
-# with the Julia compiler when Mooncake is run in debug mode with  
-# deliberately incorrect input arguments
+# The interface tests include debug-mode runs that deliberately pass incorrect
+# arguments, causing DispatchDoctor, Julia Base, and the compiler to raise issues
+# most likely unrelated to Mooncake. In general, Mooncake should avoid depending
+# on third-party compiler-based tools; JET (developed by JuliaLang) is the
+# exception.
 
 # include(joinpath(@__DIR__, "..", "..", "interface.jl"))

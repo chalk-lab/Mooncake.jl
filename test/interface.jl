@@ -6,7 +6,7 @@ using Mooncake:
     prepare_pullback_cache,
     value_and_gradient!!,
     value_and_hvp!!,
-    value_and_hessian!!,
+    value_gradient_and_hessian!!,
     value_and_pullback!!
 
 struct SimplePair
@@ -488,7 +488,7 @@ end
         end
     end
 
-    @testset "value_and_hessian!!" begin
+    @testset "value_gradient_and_hessian!!" begin
         TestUtils.test_hook(Val(:allow_unstable_hessian_interface_test)) do
             rosen(z) = (1 - z[1])^2 + 100 * (z[2] - z[1]^2)^2
             function rosen_H(z)
@@ -501,7 +501,7 @@ end
             @testset "Rosenbrock Float64" begin
                 z = [1.2, 1.2]
                 cache = prepare_hessian_cache(rosen, z)
-                v, g, H = value_and_hessian!!(cache, rosen, z)
+                v, g, H = value_gradient_and_hessian!!(cache, rosen, z)
                 @test v ≈ rosen(z)
                 @test g ≈ rosen_g(z) rtol = 1e-10
                 @test H ≈ rosen_H(z) rtol = 1e-10
@@ -510,7 +510,7 @@ end
             @testset "Rosenbrock Float32" begin
                 z = Float32[1.2, 1.2]
                 cache = prepare_hessian_cache(rosen, z)
-                v, g, H = value_and_hessian!!(cache, rosen, z)
+                v, g, H = value_gradient_and_hessian!!(cache, rosen, z)
                 @test v isa Float32
                 @test g isa Vector{Float32}
                 @test H isa Matrix{Float32}
@@ -522,7 +522,7 @@ end
                 f(x) = sum(x .^ 2)
                 x = [1.0, 2.0, 3.0]
                 cache = prepare_hessian_cache(f, x)
-                v, g, H = value_and_hessian!!(cache, f, x)
+                v, g, H = value_gradient_and_hessian!!(cache, f, x)
                 @test v ≈ 14.0
                 @test g ≈ [2.0, 4.0, 6.0]
                 @test H ≈ 2 * I
@@ -533,8 +533,8 @@ end
                 x1 = [1.0, 0.0]
                 x2 = [2.0, 3.0]
                 cache = prepare_hessian_cache(f, x1)
-                v1, g1, H1 = value_and_hessian!!(cache, f, x1)
-                v2, g2, H2 = value_and_hessian!!(cache, f, x2)
+                v1, g1, H1 = value_gradient_and_hessian!!(cache, f, x1)
+                v2, g2, H2 = value_gradient_and_hessian!!(cache, f, x2)
                 @test v1 ≈ 1.0
                 @test v2 ≈ 13.0
                 @test g1 ≈ [2.0, 0.0]
@@ -547,7 +547,7 @@ end
                 cache = prepare_hessian_cache(
                     rosen, z; config=Mooncake.Config(; debug_mode=true)
                 )
-                v, g, H = value_and_hessian!!(cache, rosen, z)
+                v, g, H = value_gradient_and_hessian!!(cache, rosen, z)
                 @test v ≈ rosen(z)
                 @test H ≈ rosen_H(z) rtol = 1e-10
             end
@@ -556,7 +556,7 @@ end
                 f(x) = 0.0
                 x = Float64[]
                 cache = prepare_hessian_cache(f, x)
-                v, g, H = value_and_hessian!!(cache, f, x)
+                v, g, H = value_gradient_and_hessian!!(cache, f, x)
                 @test v == 0.0
                 @test g == Float64[]
                 @test H == zeros(0, 0)
@@ -566,8 +566,8 @@ end
                 f(x) = 0.0
                 x = Float64[]
                 cache = prepare_hessian_cache(f, x)
-                v1, g1, H1 = value_and_hessian!!(cache, f, x)
-                v2, g2, H2 = value_and_hessian!!(cache, f, x)
+                v1, g1, H1 = value_gradient_and_hessian!!(cache, f, x)
+                v2, g2, H2 = value_gradient_and_hessian!!(cache, f, x)
                 @test (v1, g1, H1) == (0.0, Float64[], zeros(0, 0))
                 @test (v2, g2, H2) == (0.0, Float64[], zeros(0, 0))
             end
@@ -577,7 +577,7 @@ end
                 x = [1.0, 2.0]
                 y = [3.0, 4.0]
                 cache = prepare_hessian_cache(f, x, y)
-                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_and_hessian!!(
+                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
                     cache, f, x, y
                 )
                 @test val ≈ f(x, y)
@@ -594,10 +594,10 @@ end
                 x1, y1 = [1.0, 0.0], [0.0, 1.0]
                 x2, y2 = [2.0, 3.0], [4.0, 5.0]
                 cache = prepare_hessian_cache(f, x1, y1)
-                v1, (gx1, gy1), ((Hxx1, _), (_, Hyy1)) = value_and_hessian!!(
+                v1, (gx1, gy1), ((Hxx1, _), (_, Hyy1)) = value_gradient_and_hessian!!(
                     cache, f, x1, y1
                 )
-                v2, (gx2, gy2), ((Hxx2, _), (_, Hyy2)) = value_and_hessian!!(
+                v2, (gx2, gy2), ((Hxx2, _), (_, Hyy2)) = value_gradient_and_hessian!!(
                     cache, f, x2, y2
                 )
                 @test v1 ≈ f(x1, y1)
@@ -615,7 +615,7 @@ end
                 x = Float64[]
                 y = [1.0, 2.0]
                 cache = prepare_hessian_cache(f, x, y)
-                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_and_hessian!!(
+                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
                     cache, f, x, y
                 )
                 @test val ≈ f(x, y)
@@ -625,18 +625,35 @@ end
                 @test Hyy ≈ 2 * I
             end
 
+            @testset "multi-arg: all args empty" begin
+                f(x, y) = 0.0
+                x = Float64[]
+                y = Float64[]
+                cache = prepare_hessian_cache(f, x, y)
+                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
+                    cache, f, x, y
+                )
+                @test val == 0.0
+                @test gx == Float64[]
+                @test gy == Float64[]
+                @test Hxx == zeros(0, 0)
+                @test Hxy == zeros(0, 0)
+                @test Hyx == zeros(0, 0)
+                @test Hyy == zeros(0, 0)
+            end
+
             @testset "reject non-vector inputs" begin
                 f(x) = sum(x .^ 2)
                 x = [1.0 2.0; 3.0 4.0]
                 cache = prepare_hessian_cache(f, x)
-                @test_throws ArgumentError value_and_hessian!!(cache, f, x)
+                @test_throws ArgumentError value_gradient_and_hessian!!(cache, f, x)
             end
 
             @testset "reject non-IEEEFloat element types" begin
                 f(x) = sum(abs2, x)
                 x = ComplexF64[1 + 0im, 2 + 0im]
                 cache = prepare_hessian_cache(f, x)
-                @test_throws ArgumentError value_and_hessian!!(cache, f, x)
+                @test_throws ArgumentError value_gradient_and_hessian!!(cache, f, x)
             end
 
             @testset "reject mismatched element types across arguments" begin
@@ -644,7 +661,7 @@ end
                 x = Float64[1.0, 2.0]
                 y = Float32[3.0, 4.0]
                 cache = prepare_hessian_cache(f, x, y)
-                @test_throws ArgumentError value_and_hessian!!(cache, f, x, y)
+                @test_throws ArgumentError value_gradient_and_hessian!!(cache, f, x, y)
             end
 
             @testset "reject mismatched function object" begin
@@ -652,7 +669,7 @@ end
                 g(x) = sum(3 .* x .^ 2)
                 x = [1.0, 2.0]
                 cache = prepare_hessian_cache(f, x)
-                @test_throws ArgumentError value_and_hessian!!(cache, g, x)
+                @test_throws ArgumentError value_gradient_and_hessian!!(cache, g, x)
             end
         end
     end

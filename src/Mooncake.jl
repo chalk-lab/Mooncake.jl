@@ -207,7 +207,7 @@ end
 export prepare_gradient_cache, value_and_gradient!!     # reverse
 export prepare_derivative_cache, value_and_derivative!! # forward
 export prepare_hvp_cache, value_and_hvp!!
-export prepare_hessian_cache, value_and_hessian!!
+export prepare_hessian_cache, value_gradient_and_hessian!!
 
 include("precompile.jl")
 
