@@ -161,6 +161,7 @@ else
     include(joinpath("rules", "array_legacy.jl"))
 end
 
+include(joinpath("rules", "threads.jl"))
 include(joinpath("rules", "performance_patches.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
@@ -179,6 +180,7 @@ end
 # Public, exported
 export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
 export prepare_derivative_cache
+export threaded_map!
 
 include("precompile.jl")
 
