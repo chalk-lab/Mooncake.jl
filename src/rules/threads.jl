@@ -1,61 +1,65 @@
 """
-    threaded_map!(f, output::Vector{T1}, input::Vector{T2}) -> output
+    threaded_map!(f, output::Vector{T}, inputs::Vector{T}...) -> output
 
-Apply `f` element-wise from `input` to `output` using `Threads.@threads`, and return
-`output`.
+Apply `f` element-wise to corresponding elements of `inputs`, storing results in `output`,
+using `Threads.@threads`.
 
 For reverse-mode AD via Mooncake to be correct and race-free, two conditions must hold:
 
-1. Both `T1` and `T2` must be subtypes of `IEEEFloat` (`Float16`, `Float32`, or `Float64`).
-   Since each element is a bits-type scalar with an independent cotangent slot in the
-   gradient vector, per-element writes during the reverse pass are race-free.
+1. All vectors must have the same element type `T <: IEEEFloat` (`Float16`, `Float32`, or
+   `Float64`). Since each element is a bits-type scalar with an independent cotangent slot,
+   per-element gradient writes during the reverse pass are race-free.
 
-2. `f` must carry no mutable differentiable state. Specifically, `f` should be a
-   non-closure function (e.g. `sin`, `exp`, a user-defined non-closure) so that the
-   compiled rule for `f` can be shared across threads without a race on its fdata.
+2. `f` must carry no mutable differentiable state (e.g. a non-closure function or a closure
+   that captures only immutable data) so that the compiled scalar rule for `f` can be shared
+   across threads without a race on its fdata.
 
 See https://github.com/chalk-lab/Mooncake.jl/issues/791.
 """
-function threaded_map!(f::F, output::Vector{T1}, input::Vector{T2}) where {F,T1,T2}
-    length(output) >= length(input) || throw(
+function threaded_map!(f::F, output::Vector{T}, inputs::Vector{T}...) where {F,T}
+    isempty(inputs) && throw(ArgumentError("threaded_map!: at least one input vector required"))
+    n = minimum(length, inputs)
+    length(output) >= n || throw(
         ArgumentError(
-            "threaded_map!: output length $(length(output)) < input length $(length(input))"
+            "threaded_map!: output length $(length(output)) < input length $n"
         ),
     )
-    Threads.@threads for i in eachindex(input)
-        @inbounds output[i] = f(@inbounds input[i])
+    N = length(inputs)
+    Threads.@threads for i in 1:n
+        output[i] = f(ntuple(j -> inputs[j][i], Val(N))...)
     end
     return output
 end
 
 @is_primitive MinimalCtx ReverseMode Tuple{
-    typeof(threaded_map!),F,Vector{T1},Vector{T2}
-} where {F,T1<:IEEEFloat,T2<:IEEEFloat}
+    typeof(threaded_map!),F,Vector{T},Vararg{Vector{T}}
+} where {F,T<:IEEEFloat}
 
-# Cache pre-compiled scalar rules: (F, T2) -> rule, so build_rrule is paid once per type
-# combination rather than once per call. Access is serial (rrule!! is called on the main
-# thread before the parallel section), so no lock is needed.
+# Cache pre-compiled scalar rules keyed by (F, N, T) so build_rrule is paid once per type
+# combination. Accessed serially (rrule!! runs on the caller's thread before the parallel
+# sections), so no lock is needed.
 const _threaded_map_rule_cache = IdDict{Any,Any}()
 
 @inline function rrule!!(
     ::CoDual{typeof(threaded_map!)},
     f::CoDual{F},
-    output::CoDual{Vector{T1},Vector{T1}},
-    input::CoDual{Vector{T2},Vector{T2}},
-) where {F,T1<:IEEEFloat,T2<:IEEEFloat}
-    fp = primal(f)
-    xp = primal(input)
-    yp = primal(output)
-    xd = tangent(input)   # cotangent accumulator for input elements
-    yd = tangent(output)  # cotangent accumulator for output elements
-    n = length(xp)
+    output::CoDual{Vector{T},Vector{T}},
+    inputs::CoDual{Vector{T},Vector{T}}...,
+) where {F,T<:IEEEFloat}
+    fp  = primal(f)
+    xps = map(primal, inputs)   # NTuple{N, Vector{T}} — primals
+    xds = map(tangent, inputs)  # NTuple{N, Vector{T}} — cotangent accumulators
+    yp  = primal(output)
+    yd  = tangent(output)
+    N   = length(inputs)
+    n   = minimum(length, xps)
 
-    # Get or build the scalar rule for f (one per (F, T2) type pair).
-    f_rule = get!(_threaded_map_rule_cache, (F, T2)) do
-        build_rrule(Tuple{F,T2})
+    # Get or build the scalar rule for f applied to N arguments of type T.
+    f_rule = get!(_threaded_map_rule_cache, (F, N, T)) do
+        build_rrule(Tuple{F,Vararg{T,N}})
     end
 
-    # Save old output values for restoration in the pullback (undo-tape semantics).
+    # Save current output state for restoration in the pullback (undo-tape semantics).
     old_yp = copy(yp)
     old_yd = copy(yd)
 
@@ -65,25 +69,28 @@ const _threaded_map_rule_cache = IdDict{Any,Any}()
     # Forward pass: run f element-wise in parallel.
     # Zero yd[i] because we overwrite output[i] (mirrors isbits_arrayset_rrule).
     Threads.@threads for i in 1:n
-        xi = @inbounds xp[i]
-        yi_codual, pb = f_rule(zero_fcodual(fp), CoDual(xi, NoFData()))
-        @inbounds yp[i] = primal(yi_codual)
-        @inbounds yd[i] = zero_tangent(primal(yi_codual))
-        @inbounds pullbacks[i] = pb
+        xi_coduals = ntuple(j -> CoDual(xps[j][i], NoFData()), Val(N))
+        yi_codual, pb = f_rule(zero_fcodual(fp), xi_coduals...)
+        yp[i] = primal(yi_codual)
+        yd[i] = zero_tangent(primal(yi_codual))
+        pullbacks[i] = pb
     end
 
     function threaded_map_pb!!(::NoRData)
-        # Reverse pass: propagate cotangents from output back to input in parallel.
-        # After the upstream pullbacks run, yd[i] holds the cotangent for output[i].
+        # Reverse pass: read cotangents accumulated in yd[i] by the upstream and propagate
+        # them back to each input's cotangent accumulator.
         Threads.@threads for i in 1:n
-            dy_i = @inbounds yd[i]
-            _, dx_i = @inbounds pullbacks[i](dy_i)
-            @inbounds xd[i] += dx_i
+            dy_i = yd[i]
+            # pullbacks[i](dy_i) returns (NoRData(), dx1, dx2, ..., dxN)
+            rdata_tuple = pullbacks[i](dy_i)
+            for j in 1:N
+                xds[j][i] += rdata_tuple[j + 1]
+            end
         end
-        # Restore output to its pre-call state (primal and cotangent).
+        # Restore output to its pre-call state.
         copyto!(yp, old_yp)
         copyto!(yd, old_yd)
-        return NoRData(), NoRData(), NoRData(), NoRData()
+        return NoRData(), NoRData(), NoRData(), ntuple(_ -> NoRData(), Val(N))...
     end
 
     return output, threaded_map_pb!!
@@ -91,8 +98,12 @@ end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:threads})
     test_cases = Any[
+        # Single input, Float64
         (false, :none, nothing, threaded_map!, sin, zeros(Float64, 4), randn(Float64, 4)),
+        # Single input, Float32
         (false, :none, nothing, threaded_map!, exp, zeros(Float32, 3), abs.(randn(Float32, 3))),
+        # Two inputs, Float64
+        (false, :none, nothing, threaded_map!, +, zeros(Float64, 4), randn(Float64, 4), randn(Float64, 4)),
     ]
     memory = Any[]
     return test_cases, memory
