@@ -82,3 +82,46 @@ end
 The key insight is that `matrixify` is one of several canonicalisation utilities (alongside `arrayify`) used to reconcile heterogeneous tangent representations into simple, uniform forms. In this case, tangents associated with vectors, matrices, views, `Diagonal`, `Symmetric`, `PDMat`, and other array wrappers are converted into a standard dense matrix representation that the rule can consume directly. Without this step, the rule would require multiple specialised methods or intricate dispatch logic to account for every admissible tangent representation.
 
 Although this pattern is especially visible in BLAS- and LAPACK-backed rules—where performance-critical kernels must accommodate many array wrappers—it is not specific to linear algebra. Canonicalisation is a general rule-design technique: it isolates type heterogeneity at the boundary of the rule, simplifies the core logic, and improves maintainability across any domain where primitives admit many equivalent tangent representations (e.g. broadcasting, structured arrays, or custom numeric types).
+
+## Customising Friendly Gradients
+
+When `friendly_tangents=true` is passed to `value_and_gradient!!` or `prepare_gradient_cache`, Mooncake converts its internal tangent representation into user-facing values.
+The default conversion reconstructs a value of the primal type, which works well for plain structs.
+For types that store only a compressed representation of a symmetric or structured object — such as `LinearAlgebra.Symmetric`, which stores only one triangle of the full matrix — the default conversion would expose the compressed internal tangent rather than the full matrix the user expects.
+
+Two hooks control this conversion:
+
+```@docs; canonical=false
+Mooncake.FriendlyTangentCache
+Mooncake.friendly_tangent_cache
+Mooncake.tangent_to_friendly!!
+Mooncake.tangent_to_friendly_internal!!
+```
+
+### Example: full-matrix gradient for a structured matrix type
+
+Suppose `MyMatrix{T}` stores data compactly but represents a full matrix.
+To expose a plain `Matrix{T}` gradient to the user:
+
+```julia
+# Step 1: tell Mooncake to use a pre-allocated Matrix{T} buffer.
+Mooncake.friendly_tangent_cache(x::MyMatrix{T}) where {T} =
+    Mooncake.FriendlyTangentCache{:as_customised}(Matrix{T}(undef, size(x)...))
+
+# Step 2: implement the conversion from internal tangent to the buffer.
+function Mooncake.tangent_to_friendly_internal!!(
+    ::MyMatrix{T}, dest::Matrix{T}, tangent
+) where {T}
+    # Fill `dest` from `tangent` however makes sense for MyMatrix.
+    copyto!(dest, tangent.fields.data)  # adjust to match MyMatrix's tangent layout
+    return dest
+end
+```
+
+Any struct that _contains_ a `MyMatrix` field will automatically use the recursive
+field-by-field path and expose that field's gradient as a `Matrix{T}` too — no
+additional overrides required.
+
+The existing overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
+`LinearAlgebra.SymTridiagonal` in `src/rules/linear_algebra.jl` follow exactly this
+pattern and serve as reference implementations.

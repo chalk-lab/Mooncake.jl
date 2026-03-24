@@ -111,6 +111,50 @@ end
             v, dx = Mooncake.value_and_gradient!!(rule, f, x; friendly_tangents=true)
             @test dx[2] isa SimplePair
             @test dx[2] == SimplePair(2 * x.x1, cos(x.x2))
+
+            # Struct with a Symmetric field: friendly gradient unpacks the Symmetric tangent
+            # to a plain Matrix (MWE 1 & 2 from temp/friendly_tangent_mwes.jl).
+            struct WithSymField
+                m::LinearAlgebra.Symmetric{Float64,Matrix{Float64}}
+                v::Float64
+            end
+            foo = WithSymField(LinearAlgebra.Symmetric([1.0 2.0; 3.0 4.0]), 3.14)
+            # Use element access rather than sum: Base.sum uses Base._InitialValue as its
+            # initial accumulator, producing Union{Base._InitialValue, Float64} during
+            # tracing. fcodual_type then returns a non-concrete Union type, which
+            # DispatchDoctor flags as a type instability (pre-existing Base behaviour).
+            f_sym = (x::WithSymField) -> x.m[1, 1] + x.m[2, 1] + x.v^2
+
+            rule_sym = build_rrule(f_sym, foo)
+            _, grads_sym = Mooncake.value_and_gradient!!(
+                rule_sym, f_sym, foo; friendly_tangents=true
+            )
+            @test grads_sym[2] isa NamedTuple{(:m, :v)}
+            @test grads_sym[2].m isa Matrix{Float64}
+            @test grads_sym[2].v ≈ 2 * foo.v
+
+            cache_sym = Mooncake.prepare_gradient_cache(
+                f_sym, foo; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            _, dx_sym = Mooncake.value_and_gradient!!(cache_sym, f_sym, foo)
+            @test dx_sym[2] isa NamedTuple{(:m, :v)}
+            @test dx_sym[2].m isa Matrix{Float64}
+            @test dx_sym[2].m == grads_sym[2].m
+            @test dx_sym[2].v ≈ grads_sym[2].v
+
+            # Vector of structs: friendly gradient returns a Vector of the same struct type
+            # (MWE 3 from temp/friendly_tangent_mwes.jl).
+            struct ScalarBox
+                x::Float64
+            end
+            f_vec = (v::Vector{ScalarBox}) -> sum(b.x^2 for b in v)
+            v_boxes = [ScalarBox(1.0), ScalarBox(2.0), ScalarBox(3.0)]
+            rule_vec = build_rrule(f_vec, v_boxes)
+            _, grads_vec = Mooncake.value_and_gradient!!(
+                rule_vec, f_vec, v_boxes; friendly_tangents=true
+            )
+            @test grads_vec[2] isa Vector{ScalarBox}
+            @test grads_vec[2] == [ScalarBox(2.0), ScalarBox(4.0), ScalarBox(6.0)]
         end
     end
     @testset "value_and_pullback!!" begin

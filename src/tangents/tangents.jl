@@ -1335,7 +1335,7 @@ Mooncake.friendly_tangent_cache(x::MyMatrix{T}) =
 Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 `LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
 """
-@generated function friendly_tangent_cache(x::P) where {P}
+@unstable @generated function friendly_tangent_cache(x::P) where {P}
     # Immutable struct with fields: generate both the NamedTuple path and the leaf path,
     # and pick at runtime via _needs_friendly_struct_recursion (which calls Base.return_types
     # and therefore cannot run in the generator body).
@@ -1380,6 +1380,8 @@ build `dest` and creates a fresh cache `c`, then delegates to the 4-argument for
 
 Returns the unwrapped user-facing value (not the `FriendlyTangentCache` wrapper).
 """
+function tangent_to_friendly!! end
+
 # :as_primal — refresh non-differentiable fields from primal, then write tangent in.
 function tangent_to_friendly!!(
     dest::FriendlyTangentCache{:as_primal,B}, primal, tangent, c::MaybeCache
@@ -1390,14 +1392,16 @@ end
 
 # :as_raw — return the raw Mooncake tangent directly.  The buffer is nothing and unused.
 # The returned value aliases internal cache storage; copy before the next AD call if needed.
-function tangent_to_friendly!!(
+# Unstable: return type is the type of `tangent`, which depends on the primal.
+@unstable function tangent_to_friendly!!(
     ::FriendlyTangentCache{:as_raw}, ::Any, tangent, ::MaybeCache
 )
     return tangent
 end
 
 # :as_customised — delegate to user hook.
-function tangent_to_friendly!!(
+# Unstable: return type depends on the user-supplied tangent_to_friendly_internal!! method.
+@unstable function tangent_to_friendly!!(
     dest::FriendlyTangentCache{:as_customised}, primal, tangent, ::MaybeCache
 )
     return tangent_to_friendly_internal!!(primal, dest.buffer, tangent)
@@ -1446,14 +1450,16 @@ end
 # the same object; for immutable element types a new value is returned.  Using map rather
 # than in-place assignment handles both uniformly, since the result element type may differ
 # from dest's element type for immutable struct elements.
-function tangent_to_friendly!!(
+# Unstable: element result type depends on the element's friendly cache mode.
+@unstable function tangent_to_friendly!!(
     dest::AbstractArray, primal::AbstractArray, tangent::AbstractArray, c::MaybeCache
 )
     return map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dest, primal, tangent)
 end
 
 # 2-arg convenience: builds dest + cache from the primal, then delegates.
-function tangent_to_friendly!!(primal::P, tangent) where {P}
+# Unstable: dest type from friendly_tangent_cache is value-dependent.
+@unstable function tangent_to_friendly!!(primal::P, tangent) where {P}
     dest = friendly_tangent_cache(primal)
     c = isbitstype(P) ? NoCache() : IdDict{Any,Any}()
     return tangent_to_friendly!!(dest, primal, tangent, c)
@@ -1472,7 +1478,7 @@ buffer from the cache.
 Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 `LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
 """
-function tangent_to_friendly_internal!! end
+@unstable function tangent_to_friendly_internal!! end
 
 """
     primal_to_tangent!!(tangent::T, primal)::T where {T}
