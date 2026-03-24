@@ -198,6 +198,11 @@ Prepare a cache for [`value_and_derivative!!`](@ref) and [`value_and_gradient!!`
 when used with an [`NForwardCache`](@ref).
 
 If `chunk_size` is omitted, nforward uses `min(total_dof, 8)` with a floor of 1.
+
+!!! warning "Not thread-safe"
+    Each `NForwardCache` owns mutable workspace buffers (including pre-allocated tangent
+    arrays) that are mutated in-place during every call to `value_and_gradient!!`. Do not
+    share a single cache across threads; create one cache per thread instead.
 """
 @unstable @inline function nforward_prepare_cache(
     f, x::Vararg{Any,N}; chunk_size=nothing, config=Config()
@@ -398,7 +403,10 @@ end
     F = sig.parameters[1]
     Base.issingletontype(F) || throw(
         ArgumentError(
-            "nforward only supports stateless callables for rule construction. Got $F."
+            "nforward only supports stateless callables for rule construction. Got $F. " *
+            "Stateless callables are required because nforward re-evaluates the function " *
+            "multiple times with different tangent seeds; a mutable callable would " *
+            "produce incorrect gradients on the second and subsequent evaluations.",
         ),
     )
     f = F.instance
@@ -415,6 +423,9 @@ end
 @inline function __verify_sig(rule::Union{NForwardRule,NForwardRRule}, fx::Tuple)
     sig = _nforward_rule_sig(rule)
     Tfx = Tuple{map(_typeof ∘ primal, fx)...}
+    # Use <: (subtype) rather than == so that a rule built for an abstract signature
+    # (e.g. Tuple{typeof(f), AbstractVector{Float64}}) also accepts concrete subtypes
+    # at call time. This mirrors the convention used elsewhere in Mooncake's dispatch.
     Tfx <: sig && return nothing
     throw(ArgumentError("Arguments with sig $Tfx do not subtype rule signature, $sig"))
 end
@@ -511,12 +522,17 @@ end
 function _nforward_seed_tangent(
     x::AbstractArray{Complex{T}}, chunk_size::Int, start_slot::Int, offset::Int
 ) where {T<:IEEEFloat}
+    # Each complex element contributes 2 DOFs in consecutive global slots:
+    #   odd  local_slot → seed the real part  (complex(1, 0))
+    #   even local_slot → seed the imaginary part (complex(0, 1))
+    # So element index = cld(local_slot, 2) and part = isodd(local_slot).
     if chunk_size == 1
         dx = zero_tangent(x)
         global_slot = start_slot
         if offset < global_slot <= offset + 2 * length(x)
-            elem = cld(global_slot - offset, 2)
-            dx[elem] = if isodd(global_slot - offset)
+            local_slot = global_slot - offset
+            elem = cld(local_slot, 2)
+            dx[elem] = if isodd(local_slot)
                 complex(one(T), zero(T))
             else
                 complex(zero(T), one(T))
@@ -858,7 +874,7 @@ end
     throw(
         ArgumentError(
             "Expected scalar tangent for $(T) to be a Real when chunk_size == 1, or " *
-            "a length-$N tuple/vector of reals. Got $(typeof(dx)).",
+            "a length-$N tuple/vector of reals. Got $(typeof(dx)): $dx.",
         ),
     )
 end
@@ -876,7 +892,8 @@ end
     throw(
         ArgumentError(
             "Expected complex scalar tangent for $(typeof(x)) to be a Complex when " *
-            "chunk_size == 1, or a length-$N tuple/vector of complex values. Got $(typeof(dx)).",
+            "chunk_size == 1, or a length-$N tuple/vector of complex values. " *
+            "Got $(typeof(dx)): $dx.",
         ),
     )
 end
