@@ -1171,22 +1171,34 @@ end
 # Cached array scalar fast path
 #
 # A single helper covers both Vector{T} and higher-dimensional Array{T,N} inputs.
-# The workspace is fetched via _nforward_scalar_bufs!, which dispatches on the buf type:
-# typed-ref bufs (Vector{T} inputs) stay fully inferred; untyped Ref{Any} bufs (N-D arrays)
-# fall back to a runtime type check inside _nforward_scalar_bufs!.
+# The lifted array is fetched (and lazily allocated) via _nforward_rrule_lifted!, which
+# dispatches on the buf ref type: typed-ref bufs (Vector{T} inputs) stay fully inferred;
+# untyped Ref{Any} bufs (N-D arrays) fall back to a runtime type check.
+#
+# The inner loop uses an incremental seeding strategy:
+#   1. The lifted array is initialised once with zero partials — O(n).
+#   2. Per chunk: only the C active elements are set to unit-partial form — O(C).
+#   3. After f is evaluated, those C elements are reset to zero — O(C).
+#
+# This replaces the previous O(n×C) approach (fill! the full seed + lift! every chunk)
+# with O(n) + O(C)×chunks, matching how ForwardDiff manages its GradientConfig.
 
 function _nforward_array_scalar_value_and_gradient(
     f_runtime, x::CoDual{A}, buf::Base.RefValue, ::Val{C}
 ) where {C,T<:IEEEFloat,N,A<:Array{T,N}}
     x_primal = _nforward_check_primal(primal(x))
     grad = set_to_zero!!(tangent(x))
-    seed, lifted = _nforward_scalar_bufs!(buf, x_primal, Val(C))
+    lifted = _nforward_rrule_lifted!(buf, x_primal, Val(C))
+
+    # Initialise all elements to (x[i], 0̄) once; chunks then update only C slots each.
+    _nforward_init_lifted!(lifted, x_primal, Val(C))
+    cart = CartesianIndices(x_primal)
 
     y = zero(T)
     for start_slot in 1:C:length(x_primal)
-        _nforward_seed_chunk!(seed, x_primal, start_slot)
-        _nforward_lift!(lifted, x_primal, seed, Val(C))
+        _nforward_seed_lifted_chunk!(lifted, x_primal, cart, start_slot, Val(C))
         y, lane_vals = _nforward_scalar_lanes(f_runtime(lifted), T, Val(C))
+        _nforward_unseed_lifted_chunk!(lifted, x_primal, cart, start_slot, Val(C))
         global_slot = start_slot
         @inbounds for lane_val in lane_vals
             global_slot > length(x_primal) && break
@@ -1199,68 +1211,81 @@ function _nforward_array_scalar_value_and_gradient(
 end
 
 #
-# Workspace helpers (_nforward_scalar_bufs!)
+# Workspace helpers (_nforward_buf_ref / _nforward_rrule_lifted!)
 #
-# Two methods, dispatched by buf type:
-#   - Typed-ref path (Vector{T}): buf type encodes the workspace type, giving fully-inferred
-#     allocation and a typed assertion with no runtime overhead.
-#   - Generic path (Array{T,N}): buf is Ref{Any}; workspace type is recovered by runtime isa
-#     check inside _nforward_scalar_bufs!.
+# The rrule buf stores only the lifted Array{NDual{T,C}} — no seed array needed.
+# Two buf types are used, matching the frule buf pattern:
+#   - Typed-ref (Vector{T} input): fully inferred, no runtime isa check.
+#   - Generic Ref{Any} (N-D array input): workspace type recovered at runtime.
 
 _nforward_buf_ref(sig, ::Val) = Ref{Any}(nothing)
 
 function _nforward_buf_ref(::Type{Tuple{F,Vector{T}}}, ::Val{C}) where {F,T<:IEEEFloat,C}
-    Tworkspace = NamedTuple{(:seed, :lifted),Tuple{Matrix{T},Vector{NDual{T,C}}}}
-    return Ref{Union{Nothing,Tworkspace}}(nothing)
+    return Ref{Union{Nothing,Vector{NDual{T,C}}}}(nothing)
 end
 
-# Typed-ref path: buf encodes the workspace type; Julia infers the allocation without a
-# runtime isa check.
-function _nforward_scalar_bufs!(
-    buf::Base.RefValue{Union{Nothing,Tworkspace}}, x::Vector{T}, ::Val{C}
-) where {
-    T<:IEEEFloat,
-    C,
-    Tworkspace<:NamedTuple{(:seed, :lifted),Tuple{Matrix{T},Vector{NDual{T,C}}}},
-}
+# Typed-ref path: fully inferred.
+function _nforward_rrule_lifted!(
+    buf::Base.RefValue{Union{Nothing,Vector{NDual{T,C}}}}, x::Vector{T}, ::Val{C}
+) where {T<:IEEEFloat,C}
     ws = buf[]
-    if isnothing(ws) || size(ws.seed) != (length(x), C)
-        ws = Tworkspace((zeros(T, length(x), C), Vector{NDual{T,C}}(undef, length(x))))
-        buf[] = ws
+    if ws === nothing || length(ws::Vector{NDual{T,C}}) != length(x)
+        buf[] = Vector{NDual{T,C}}(undef, length(x))
     end
-    return (ws::Tworkspace).seed, (ws::Tworkspace).lifted
+    return buf[]::Vector{NDual{T,C}}
 end
 
-# Generic path: buf is Ref{Any}; workspace type is derived from the input array shape.
-function _nforward_scalar_bufs!(
+# Generic path: buf is Ref{Any}; workspace type recovered at runtime.
+function _nforward_rrule_lifted!(
     buf::Base.RefValue, x::Array{T,N}, ::Val{C}
 ) where {T<:IEEEFloat,N,C}
     Tlift = NDual{T,C}
-    Tworkspace = NamedTuple{(:seed, :lifted),Tuple{Array{T,N + 1},Array{Tlift,N}}}
     ws = buf[]
-    expected_seed_size = (size(x)..., C)
-    if !(ws isa Tworkspace) ||
-        size(ws.seed) ≠ expected_seed_size ||
-        size(ws.lifted) ≠ size(x)
-        ws = Tworkspace((zeros(T, expected_seed_size), Array{Tlift}(undef, size(x))))
-        buf[] = ws
+    if !(ws isa Array{Tlift,N} && size(ws) == size(x))
+        buf[] = Array{Tlift,N}(undef, size(x))
     end
-    return (ws::Tworkspace).seed, (ws::Tworkspace).lifted
+    return buf[]::Array{Tlift,N}
 end
 
-function _nforward_seed_chunk!(
-    seed::Array{T}, x::Array{T}, start_slot::Int
-) where {T<:IEEEFloat}
-    fill!(seed, zero(T))
-    cart_inds = CartesianIndices(x)
-    chunk_size = size(seed, ndims(seed))
-    for lane in 1:chunk_size
-        global_slot = start_slot + lane - 1
-        global_slot > length(x) && break
-        idx = Tuple(cart_inds[global_slot])
-        seed[idx..., lane] = one(T)
+# Initialise every element of `lifted` to NDual(x[i], 0̄) — O(n), called once per
+# value_and_gradient!! invocation.  Chunks then update only C elements each.
+function _nforward_init_lifted!(
+    lifted::Array{NDual{T,C},N}, x::Array{T,N}, ::Val{C}
+) where {T<:IEEEFloat,C,N}
+    z = ntuple(_ -> zero(T), Val(C))
+    @inbounds for I in CartesianIndices(x)
+        lifted[I] = NDual{T,C}(x[I], z)
     end
-    return seed
+    return lifted
+end
+
+# Set C elements starting at `start_slot` to unit-partial form — O(C).
+function _nforward_seed_lifted_chunk!(
+    lifted::Array{NDual{T,C},N}, x::Array{T,N}, cart::CartesianIndices,
+    start_slot::Int, ::Val{C}
+) where {T<:IEEEFloat,C,N}
+    @inbounds for lane in 1:C
+        gs = start_slot + lane - 1
+        gs > length(x) && break
+        I = cart[gs]
+        lifted[I] = NDual{T,C}(x[I], ntuple(k -> T(k == lane), Val(C)))
+    end
+    return lifted
+end
+
+# Reset those same C elements back to zero-partial form — O(C).
+function _nforward_unseed_lifted_chunk!(
+    lifted::Array{NDual{T,C},N}, x::Array{T,N}, cart::CartesianIndices,
+    start_slot::Int, ::Val{C}
+) where {T<:IEEEFloat,C,N}
+    z = ntuple(_ -> zero(T), Val(C))
+    @inbounds for lane in 1:C
+        gs = start_slot + lane - 1
+        gs > length(x) && break
+        I = cart[gs]
+        lifted[I] = NDual{T,C}(x[I], z)
+    end
+    return lifted
 end
 
 function _nforward_lift!(
