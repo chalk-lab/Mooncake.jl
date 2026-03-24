@@ -1251,71 +1251,209 @@ for T in [Symbol, Int, Val]
 end
 
 """
-    friendly_tangent_dest(x)
+    FriendlyTangentCache{M, B}
 
-Return a pre-allocated output buffer for the user-facing gradient of a primal `x`.
+Pre-allocated output buffer for the user-facing gradient of a primal, carrying a mode
+flag `M` that drives dispatch in [`tangent_to_friendly!!`](@ref).
 
-Returns `nothing` when `typeof(x)` is already the friendly tangent type (the default).
-Override to return a pre-allocated buffer of the appropriate type for structured types
-whose user-facing gradient differs from the primal — for example, `LinearAlgebra.Symmetric`
-returns a `Matrix` so that `tangent_to_friendly!!` can write into it in-place.
+`M` is one of three symbols:
+- `:as_primal` — default; `buffer` is a copy of the primal (via `_copy_output`).  At
+  runtime, non-differentiable fields are refreshed from the current primal and the tangent
+  is written in via `tangent_to_primal_internal!!`.
+- `:as_raw` — `buffer` is `nothing` (unused); at runtime the raw Mooncake tangent is
+  returned directly, aliasing internal cache storage.
+- `:as_customised` — `buffer` is a user-supplied friendly output buffer (e.g.
+  `Matrix{T}` for `Symmetric{T}`).  At runtime,
+  [`tangent_to_friendly_internal!!`](@ref) is called to fill it.
+
+**Ownership note:** `:as_raw` and `friendly_tangents=false` both return values that
+alias internal cache storage.  It is safe to inspect them immediately, but if you need to
+keep them across subsequent AD calls with the same cache, `deepcopy` them first.
+
+Override [`friendly_tangent_cache`](@ref) to return a `FriendlyTangentCache` of the
+desired mode for custom types.
+"""
+struct FriendlyTangentCache{M,B}
+    buffer::B
+end
+FriendlyTangentCache{M}(buffer::B) where {M,B} = FriendlyTangentCache{M,B}(buffer)
+
+# Returns true iff the field type FT has a custom (non-:as_primal) friendly_tangent_cache.
+# Detected by running Base.return_types on friendly_tangent_cache for FT: if there is a
+# concrete method (e.g. for Symmetric), inference resolves it without circularity.
+function _field_has_custom_friendly_cache(::Type{FT}) where {FT}
+    isconcretetype(FT) || return false
+    rts = Base.return_types(friendly_tangent_cache, Tuple{FT})
+    isempty(rts) && return false
+    RT = only(rts)
+    return RT <: FriendlyTangentCache{:as_customised} || RT <: FriendlyTangentCache{:as_raw}
+end
+
+# Returns true iff any field of T (recursively) uses a non-:as_primal friendly cache,
+# meaning the composite type T should use the recursive NamedTuple approach.
+function _needs_friendly_struct_recursion(::Type{T}) where {T}
+    isconcretetype(T) || return false
+    isprimitivetype(T) && return false
+    ismutabletype(T) && return false
+    T <: AbstractArray && return false
+    T <: Tuple && return false
+    fieldcount(T) == 0 && return false
+    return any(1:fieldcount(T)) do i
+        FT = fieldtype(T, i)
+        _field_has_custom_friendly_cache(FT) || _needs_friendly_struct_recursion(FT)
+    end
+end
+
+"""
+    friendly_tangent_cache(x)
+
+Return a pre-allocated [`FriendlyTangentCache`](@ref) (or a `NamedTuple` / `Array` thereof
+for composite types) for the primal `x`.
+
+For composite types whose user-facing gradient matches the primal type (e.g. plain
+structs with only numeric fields), the default implementation returns a
+`FriendlyTangentCache{:as_primal}`, which uses [`tangent_to_primal_internal!!`](@ref) to
+reconstruct a value of the primal type.
+
+For composite types that contain fields with custom friendly-tangent representations, the
+default implementation recurses into each field and returns a `NamedTuple` of per-field
+caches.  This is detected automatically: if `friendly_tangent_cache` for a field type
+returns a `FriendlyTangentCache{:as_customised}` or `:as_raw`, the parent struct recurses.
+
+Override to provide a completely custom cache:
+
+```julia
+# Custom friendly buffer + conversion hook.  Parent structs that contain MyMatrix will
+# automatically detect this and use the recursive NamedTuple path.
+Mooncake.friendly_tangent_cache(x::MyMatrix{T}) =
+    FriendlyTangentCache{:as_customised}(Matrix{T}(undef, size(x)...))
+```
 
 Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 `LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
 """
-friendly_tangent_dest(::Any) = nothing
-
-"""
-    tangent_to_friendly!!((tangent_as_primal, tangent_as_friendly)::Tuple{P,D}, tangent) where {P,D}
-
-Translate a tangent to a user-facing gradient.
-
-`tangent_as_primal` provides a primal-type buffer for `tangent_to_primal_internal!!` and
-is used for dispatch. `tangent_as_friendly` is a pre-allocated output buffer from
-[`friendly_tangent_dest`](@ref).
-
-When `tangent_as_friendly = nothing`, converts `tangent` to primal space directly via
-`tangent_to_primal_internal!!`. Otherwise delegates to
-[`tangent_to_friendly_internal!!`](@ref)`(tangent_as_primal, tangent_as_friendly, tangent)`.
-
-A 2-argument form `tangent_to_friendly!!(tangent_as_primal, tangent)` is provided as a
-convenience and calls [`friendly_tangent_dest`](@ref) to allocate `tangent_as_friendly`.
-
-This is the function used by the `friendly_tangents=true` path in `interface.jl`.
-"""
-function tangent_to_friendly!!((tangent_as_primal, _)::Tuple{P,Nothing}, tangent) where {P}
-    @assert typeof(tangent) <: tangent_type(P)
-    return tangent_to_primal_internal!!(
-        tangent_as_primal, tangent, isbitstype(P) ? NoCache() : IdDict()
-    )
+@generated function friendly_tangent_cache(x::P) where {P}
+    # Immutable struct with fields: generate both the NamedTuple path and the leaf path,
+    # and pick at runtime via _needs_friendly_struct_recursion (which calls Base.return_types
+    # and therefore cannot run in the generator body).
+    if !isprimitivetype(P) &&
+        !ismutabletype(P) &&
+        fieldcount(P) > 0 &&
+        !(P <: AbstractArray) &&
+        !(P <: Tuple)
+        names = fieldnames(P)
+        dest_exprs = [:(friendly_tangent_cache(getfield(x, $i))) for i in 1:fieldcount(P)]
+        return quote
+            if _needs_friendly_struct_recursion($P)
+                NamedTuple{$names}(($(dest_exprs...),))
+            else
+                friendly_tangent_cache_internal(x)
+            end
+        end
+    end
+    # Array whose elements are non-primitive structs: recurse element-wise.
+    if P <: AbstractArray && !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}})
+        return :(map(friendly_tangent_cache, x))
+    end
+    # Everything else (primitives, mutable types): default leaf.
+    return :(friendly_tangent_cache_internal(x))
 end
+
+# Default leaf: buffer is a copy of the primal.
+friendly_tangent_cache_internal(x) = FriendlyTangentCache{:as_primal}(_copy_output(x))
+
+"""
+    tangent_to_friendly!!(dest, primal, tangent, c::MaybeCache)
+    tangent_to_friendly!!(primal, tangent)
+
+Translate a Mooncake tangent to a user-facing gradient.
+
+The 4-argument form dispatches on the [`FriendlyTangentCache`](@ref) mode stored in `dest`
+(or recurses into a `NamedTuple` / `AbstractArray` dest tree).  `c` is an `IdDict` or
+`NoCache` used to handle aliased mutable buffers across a single call.
+
+The 2-argument form is a convenience wrapper: it calls [`friendly_tangent_cache`](@ref) to
+build `dest` and creates a fresh cache `c`, then delegates to the 4-argument form.
+
+Returns the unwrapped user-facing value (not the `FriendlyTangentCache` wrapper).
+"""
+# :as_primal — refresh non-differentiable fields from primal, then write tangent in.
 function tangent_to_friendly!!(
-    (tangent_as_primal, tangent_as_friendly)::Tuple{P,D}, tangent
-) where {P,D}
-    @assert typeof(tangent) <: tangent_type(P)
-    return tangent_to_friendly_internal!!(tangent_as_primal, tangent_as_friendly, tangent)
+    dest::FriendlyTangentCache{:as_primal,B}, primal, tangent, c::MaybeCache
+) where {B}
+    refreshed = _copy_to_output!!(dest.buffer, primal)
+    return tangent_to_primal_internal!!(refreshed, tangent, c)
+end
+
+# :as_raw — return the raw Mooncake tangent directly.  The buffer is nothing and unused.
+# The returned value aliases internal cache storage; copy before the next AD call if needed.
+function tangent_to_friendly!!(
+    ::FriendlyTangentCache{:as_raw}, ::Any, tangent, ::MaybeCache
+)
+    return tangent
+end
+
+# :as_customised — delegate to user hook.
+function tangent_to_friendly!!(
+    dest::FriendlyTangentCache{:as_customised}, primal, tangent, ::MaybeCache
+)
+    return tangent_to_friendly_internal!!(primal, dest.buffer, tangent)
+end
+
+# NamedTuple dest: recurse into struct fields.
+@generated function tangent_to_friendly!!(
+    dest::NamedTuple{names}, primal::P, tangent, c::MaybeCache
+) where {names,P}
+    n = length(names)
+    field_exprs = map(1:n) do i
+        quote
+            if is_init(tangent.fields[$i])
+                tangent_to_friendly!!(
+                    dest[$i], getfield(primal, $i), val(tangent.fields[$i]), c
+                )
+            else
+                dest[$i]
+            end
+        end
+    end
+    return quote
+        tangent isa NoTangent && return dest
+        NamedTuple{$names}(($(field_exprs...),))
+    end
+end
+
+# AbstractArray dest: recurse element-wise, returning a new array of friendly values.
+# For mutable element types, tangent_to_friendly!! updates the element in place and returns
+# the same object; for immutable element types a new value is returned.  Using map rather
+# than in-place assignment handles both uniformly, since the result element type may differ
+# from dest's element type for immutable struct elements.
+function tangent_to_friendly!!(
+    dest::AbstractArray, primal::AbstractArray, tangent::AbstractArray, c::MaybeCache
+)
+    return map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dest, primal, tangent)
+end
+
+# 2-arg convenience: builds dest + cache from the primal, then delegates.
+function tangent_to_friendly!!(primal::P, tangent) where {P}
+    dest = friendly_tangent_cache(primal)
+    c = isbitstype(P) ? NoCache() : IdDict{Any,Any}()
+    return tangent_to_friendly!!(dest, primal, tangent, c)
 end
 
 """
-    tangent_to_friendly_internal!!(tangent_as_primal, tangent_as_friendly, tangent)
+    tangent_to_friendly_internal!!(primal, dest, tangent)
 
-Implementation hook for [`tangent_to_friendly!!`](@ref).
+Implementation hook for the `:as_customised` mode of [`tangent_to_friendly!!`](@ref).
 
-Called when `tangent_as_friendly` is not `nothing`. `tangent_as_primal` is available for
-dispatch on the primal type. Override together with [`friendly_tangent_dest`](@ref) to
-provide a direct tangent → friendly conversion.
+Override together with [`friendly_tangent_cache`](@ref) (returning a
+`FriendlyTangentCache{:as_customised}`) to provide a direct tangent → friendly conversion
+for custom types.  `primal` is available for dispatch; `dest` is the pre-allocated output
+buffer from the cache.
 
 Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 `LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
 """
 function tangent_to_friendly_internal!! end
-
-# 2-arg convenience: calls friendly_tangent_dest to obtain tangent_as_friendly.
-function tangent_to_friendly!!(tangent_as_primal::P, tangent) where {P}
-    tangent_to_friendly!!(
-        (tangent_as_primal, friendly_tangent_dest(tangent_as_primal)), tangent
-    )
-end
 
 """
     primal_to_tangent!!(tangent::T, primal)::T where {T}

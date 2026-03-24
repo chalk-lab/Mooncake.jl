@@ -148,10 +148,13 @@ There are lots of ways to get this wrong though, so we generally advise against 
     if friendly_tangents
         ȳ = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
         value, pb = __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
-        tangent_as_primals = _copy_output((fx...,))
-        tangent_as_friendly = map(friendly_tangent_dest, (fx...,))
-        pairs = tuple_map(tuple, tangent_as_primals, tangent_as_friendly)
-        friendly_pb = tuple_map(tangent_to_friendly!!, pairs, pb)
+        dests = map(friendly_tangent_cache, (fx...,))
+        c = IdDict{Any,Any}()
+        friendly_pb = tuple_map(
+            (dp, t) -> tangent_to_friendly!!(dp[1], dp[2], t, c),
+            tuple_map(tuple, dests, (fx...,)),
+            pb,
+        )
         return value, friendly_pb
     else
         return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
@@ -186,10 +189,13 @@ value_and_gradient!!(rule, f, x, y)
 ) where {R,N}
     if friendly_tangents
         value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
-        tangent_as_primals = _copy_output((fx...,))
-        tangent_as_friendly = map(friendly_tangent_dest, (fx...,))
-        pairs = tuple_map(tuple, tangent_as_primals, tangent_as_friendly)
-        friendly_gradient = tuple_map(tangent_to_friendly!!, pairs, gradient)
+        dests = map(friendly_tangent_cache, (fx...,))
+        c = IdDict{Any,Any}()
+        friendly_gradient = tuple_map(
+            (dp, t) -> tangent_to_friendly!!(dp[1], dp[2], t, c),
+            tuple_map(tuple, dests, (fx...,)),
+            gradient,
+        )
         return value, friendly_gradient
     else
         return __value_and_gradient!!(rule, __create_coduals(fx)...)
@@ -214,20 +220,15 @@ function __create_coduals(args)
     end
 end
 
-struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Ttap,Ttaf,Tȳ_cache}
+struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache}
     rule::Trule
     # Cache for function output; **primal** type for y.
     y_cache::Ty_cache
     # Cache for internal gradient representation; **tangent** type for (f, x...)
     tangents::Ttangents
-    # Tangent expressed as primals: copies of (f, x...) used for dispatch/metadata in
-    # tangent_to_friendly!! (or nothing when friendly_tangents=false).
-    tangent_as_primals::Ttap
-    # Tangent expressed in the friendly type: pre-allocated output buffers for
-    # tangent_to_friendly!!. tangent_as_friendly[i] is nothing when the primal type is
-    # already the friendly tangent type, otherwise a buffer of the friendly type
-    # (e.g. Matrix{T} for Symmetric{T}).
-    tangent_as_friendly::Ttaf
+    # Pre-allocated friendly-tangent dest tree for (f, x...), built by
+    # map(friendly_tangent_cache, fx).  `nothing` when friendly_tangents=false.
+    dests::Tdests
     # Cache to convert from friendly to internal representation of ȳ.
     # Tangent type for y, i.e. this is a **tangent** type for y.
     ȳ_cache::Tȳ_cache
@@ -534,11 +535,10 @@ The API guarantees that tangents are initialized at zero before the first autodi
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
     if config.friendly_tangents
-        fp = map(_copy_output, fx)
-        fd = map(friendly_tangent_dest, fx)
-        return Cache(rule, y_cache, tangents, fp, fd, zero_tangent(primal(y)))
+        dests = map(friendly_tangent_cache, fx)
+        return Cache(rule, y_cache, tangents, dests, zero_tangent(primal(y)))
     else
-        return Cache(rule, y_cache, tangents, nothing, nothing, nothing)
+        return Cache(rule, y_cache, tangents, nothing, nothing)
     end
 end
 
@@ -602,16 +602,18 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 ) where {F,N}
     tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
-    if !isnothing(cache.tangent_as_primals)
+    if !isnothing(cache.dests)
         ȳ = primal_to_tangent!!(cache.ȳ_cache, ȳ)
         value, pb = __value_and_pullback!!(
             cache.rule, ȳ, coduals...; y_cache=cache.y_cache
         )
-        # Make sure that the non-differentiable parts are up-to-date. Whether this is needed is debatable.
-        tangent_as_primals = _copy_to_output!!(cache.tangent_as_primals, (f, x...))
-        pairs = tuple_map(tuple, tangent_as_primals, cache.tangent_as_friendly)
-        friendly_pb = tuple_map(tangent_to_friendly!!, pairs, pb)
-        value, friendly_pb
+        c = IdDict{Any,Any}()
+        friendly_pb = tuple_map(
+            (dp, t) -> tangent_to_friendly!!(dp[1], dp[2], t, c),
+            tuple_map(tuple, cache.dests, (f, x...)),
+            pb,
+        )
+        return value, friendly_pb
     else
         return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
     end
@@ -631,11 +633,10 @@ The API guarantees that tangents are initialized at zero before the first autodi
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
     if config.friendly_tangents
-        fp = tuple(_copy_output.(fx)...)
-        fd = tuple(map(friendly_tangent_dest, fx)...)
-        return Cache(rule, nothing, tangents, fp, fd, nothing)
+        dests = tuple(map(friendly_tangent_cache, fx)...)
+        return Cache(rule, nothing, tangents, dests, nothing)
     else
-        return Cache(rule, nothing, tangents, nothing, nothing, nothing)
+        return Cache(rule, nothing, tangents, nothing, nothing)
     end
 end
 
@@ -689,26 +690,28 @@ value_and_gradient!!(cache, f, x, y)
     x::Vararg{Any,N};
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
-    friendly_tangents = !isnothing(cache.tangent_as_primals)
+    friendly_tangents = !isnothing(cache.dests)
 
     tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
     if friendly_tangents
         value, gradient = __value_and_gradient!!(cache.rule, coduals...)
-        # Make sure that the non-differentiable parts are up-to-date. Whether this is needed is debatable.
-        tangent_as_primals = _copy_to_output!!(cache.tangent_as_primals, (f, x...))
-        pairs = tuple_map(tuple, tangent_as_primals, cache.tangent_as_friendly)
-        friendly_gradient = tuple_map(tangent_to_friendly!!, pairs, gradient)
+        c = IdDict{Any,Any}()
+        friendly_gradient = tuple_map(
+            (dp, t) -> tangent_to_friendly!!(dp[1], dp[2], t, c),
+            tuple_map(tuple, cache.dests, (f, x...)),
+            gradient,
+        )
         return value, friendly_gradient
     else
         return __value_and_gradient!!(cache.rule, coduals...)
     end
 end
 
-struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP}
+struct ForwardCache{R,IT<:Union{Nothing,Tuple},OD}
     rule::R
     input_tangents::IT
-    output_primal::OP
+    output_dest::OD
 end
 
 """
@@ -725,8 +728,8 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     if config.friendly_tangents
         y = f(x...)
         input_tangents = map(zero_tangent, fx)
-        output_primal = _copy_output(y)
-        return ForwardCache(rule, input_tangents, output_primal)
+        output_dest = friendly_tangent_cache(y)
+        return ForwardCache(rule, input_tangents, output_dest)
     else
         return ForwardCache(rule, nothing, nothing)
     end
@@ -787,7 +790,10 @@ function value_and_derivative!!(
 
     # translate from native back to friendly
     if friendly_tangents
-        output_friendly_tangent = tangent_to_friendly!!(cache.output_primal, output_tangent)
+        c = IdDict{Any,Any}()
+        output_friendly_tangent = tangent_to_friendly!!(
+            cache.output_dest, output_primal, output_tangent, c
+        )
         return output_primal, output_friendly_tangent
     else
         return output_primal, output_tangent

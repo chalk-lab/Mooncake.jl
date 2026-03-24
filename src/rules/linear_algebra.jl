@@ -1,4 +1,4 @@
-# friendly_tangent_dest and tangent_to_friendly_internal!! for structured matrix types.
+# friendly_tangent_cache and tangent_to_friendly_internal!! for structured matrix types.
 #
 # Symmetric, Hermitian, and SymTridiagonal store only part of the matrix internally but
 # represent a full symmetric/Hermitian matrix. The user-facing gradient is a plain Matrix{T}.
@@ -7,19 +7,19 @@
 # retains the original structure — it must be treated as a dense matrix. The original
 # Symmetric/Hermitian/SymTridiagonal structure is therefore lost in the friendly gradient.
 #
-# friendly_tangent_dest pre-allocates the Matrix{T} output buffer at prepare time.
+# friendly_tangent_cache pre-allocates the Matrix{T} output buffer at prepare time.
 # tangent_to_friendly_internal!! copies the raw tangent fields directly into the dest.
 # This is safe because tangents are always initialised to zero, so the unused triangle
 # (for Symmetric/Hermitian) or off-tridiagonal entries (for SymTridiagonal) are zero.
 
-function Mooncake.friendly_tangent_dest(x::LinearAlgebra.Symmetric{T}) where {T}
-    Matrix{T}(undef, size(x.data)...)
+function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Symmetric{T}) where {T}
+    FriendlyTangentCache{:as_customised}(Matrix{T}(undef, size(x.data)...))
 end
-function Mooncake.friendly_tangent_dest(x::LinearAlgebra.Hermitian{T}) where {T}
-    Matrix{T}(undef, size(x.data)...)
+function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Hermitian{T}) where {T}
+    FriendlyTangentCache{:as_customised}(Matrix{T}(undef, size(x.data)...))
 end
-function Mooncake.friendly_tangent_dest(x::LinearAlgebra.SymTridiagonal{T}) where {T}
-    Matrix{T}(undef, length(x.dv), length(x.dv))
+function Mooncake.friendly_tangent_cache(x::LinearAlgebra.SymTridiagonal{T}) where {T}
+    FriendlyTangentCache{:as_customised}(Matrix{T}(undef, length(x.dv), length(x.dv)))
 end
 
 function Mooncake.tangent_to_friendly_internal!!(

@@ -243,11 +243,13 @@ using DispatchDoctor: allow_unstable
                                         ((:U, [1.0 6.0; 0.0 1.0]), (:L, [1.0 0.0; 6.0 1.0]))
         S = LinearAlgebra.Symmetric([1.0 2.0; 999.0 4.0], uplo)
         tx = Mooncake.build_tangent(typeof(S), tx_data, NoTangent())
-        dest = Mooncake.friendly_tangent_dest(S)
+        cache = Mooncake.friendly_tangent_cache(S)
+        @test cache isa Mooncake.FriendlyTangentCache{:as_customised}
+        dest = cache.buffer
         # internal!!: writes in-place, raw data copy
         @test Mooncake.tangent_to_friendly_internal!!(S, dest, tx) === dest
         @test dest == tx_data
-        # public API: allocates dest via friendly_tangent_dest, same result
+        # 2-arg public API: allocates cache from friendly_tangent_cache, same result
         @test Mooncake.tangent_to_friendly!!(S, tx) == tx_data
     end
 
@@ -255,7 +257,9 @@ using DispatchDoctor: allow_unstable
                                         ((:U, [2.0 6.0; 0.0 2.0]), (:L, [2.0 0.0; 6.0 2.0]))
         H = LinearAlgebra.Hermitian([1.0 2.0; 999.0 4.0], uplo)
         tx = Mooncake.build_tangent(typeof(H), tx_data, NoTangent())
-        dest = Mooncake.friendly_tangent_dest(H)
+        cache = Mooncake.friendly_tangent_cache(H)
+        @test cache isa Mooncake.FriendlyTangentCache{:as_customised}
+        dest = cache.buffer
         @test Mooncake.tangent_to_friendly_internal!!(H, dest, tx) === dest
         @test dest == tx_data
         @test Mooncake.tangent_to_friendly!!(H, tx) == tx_data
@@ -264,7 +268,9 @@ using DispatchDoctor: allow_unstable
     @testset "SymTridiagonal" begin
         ST = LinearAlgebra.SymTridiagonal([1.0, 2.0, 3.0], [4.0, 5.0])
         tx = Mooncake.build_tangent(typeof(ST), [1.0, 2.0, 3.0], [6.0, 8.0])
-        dest = Mooncake.friendly_tangent_dest(ST)
+        cache = Mooncake.friendly_tangent_cache(ST)
+        @test cache isa Mooncake.FriendlyTangentCache{:as_customised}
+        dest = cache.buffer
         # internal!!: writes in-place; dv on diagonal, ev on both off-diagonals, zeros elsewhere
         @test Mooncake.tangent_to_friendly_internal!!(ST, dest, tx) === dest
         @test dest[1, 1] == 1.0 && dest[2, 2] == 2.0 && dest[3, 3] == 3.0
@@ -281,16 +287,38 @@ using DispatchDoctor: allow_unstable
         tx_S_data = [1.0 6.0; 0.0 1.0]
         tx_S = Mooncake.build_tangent(typeof(S), tx_S_data, NoTangent())
 
-        # nothing dest: falls back to tangent_to_primal_internal!!, returns primal type
-        @test Mooncake.tangent_to_friendly!!((s, nothing), 7.0) === 7.0
+        # scalar: FriendlyTangentCache{:as_primal} leaf, returns tangent value directly
+        @test Mooncake.tangent_to_friendly!!(s, 7.0) === 7.0
 
-        # typed dest: delegates to tangent_to_friendly_internal!!, writes in-place
-        dest = Mooncake.friendly_tangent_dest(S)
-        result = Mooncake.tangent_to_friendly!!((S, dest), tx_S)
-        @test result === dest && result == tx_S_data
+        # :as_customised cache: delegates to tangent_to_friendly_internal!!, writes in-place
+        c_S = Mooncake.friendly_tangent_cache(S)
+        result = Mooncake.tangent_to_friendly!!(c_S, S, tx_S, Mooncake.NoCache())
+        @test result === c_S.buffer && result == tx_S_data
 
-        # 2-arg form: equivalent to bundle with dest from friendly_tangent_dest
+        # 2-arg form: equivalent to 4-arg with fresh cache
         @test Mooncake.tangent_to_friendly!!(S, tx_S) == tx_S_data
+    end
+
+    @testset "friendly_tangent_cache recursive struct" begin
+        # Struct with a Symmetric field: friendly_tangent_cache should recurse and return
+        # a NamedTuple with a FriendlyTangentCache{:as_customised} for the matrix field.
+        struct FooWithSym
+            m::LinearAlgebra.Symmetric{Float64,Matrix{Float64}}
+            v::Float64
+        end
+        foo = FooWithSym(LinearAlgebra.Symmetric([1.0 2.0; 3.0 4.0]), 3.14)
+        d = Mooncake.friendly_tangent_cache(foo)
+        @test d isa NamedTuple{(:m, :v)}
+        @test d.m isa Mooncake.FriendlyTangentCache{:as_customised}
+        @test d.v isa Mooncake.FriendlyTangentCache{:as_primal}
+
+        # Tangent for FooWithSym
+        tx_m = Mooncake.build_tangent(typeof(foo.m), [0.5 1.0; 0.0 0.5], NoTangent())
+        tx_foo = Mooncake.Tangent((; m=tx_m, v=2.0))
+        result = Mooncake.tangent_to_friendly!!(foo, tx_foo)
+        @test result isa NamedTuple{(:m, :v)}
+        @test result.m == [0.5 1.0; 0.0 0.5]
+        @test result.v == 2.0
     end
 end
 
