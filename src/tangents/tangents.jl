@@ -1284,16 +1284,19 @@ FriendlyTangentCache{M}(buffer::B) where {M,B} = FriendlyTangentCache{M,B}(buffe
 function _field_has_custom_friendly_cache(::Type{FT}) where {FT}
     isconcretetype(FT) || return false
     rts = Base.return_types(friendly_tangent_cache, Tuple{FT})
-    isempty(rts) && return false
+    # Guard against method ambiguity or failed inference: only trust a unique result.
+    length(rts) == 1 || return false
     RT = only(rts)
     return RT <: FriendlyTangentCache{:as_customised} || RT <: FriendlyTangentCache{:as_raw}
 end
 
 # Returns true iff any field of T (recursively) uses a non-:as_primal friendly cache,
-# meaning the composite type T should use the recursive NamedTuple approach.
+# meaning the composite type T should use the recursive NamedTuple path.
 function _needs_friendly_struct_recursion(::Type{T}) where {T}
     isconcretetype(T) || return false
     isprimitivetype(T) && return false
+    # Mutable types always use the whole-struct :as_primal leaf path — their tangent is a
+    # MutableTangent, not a Tangent, and tangent_to_primal_internal!! handles them as a unit.
     ismutabletype(T) && return false
     T <: AbstractArray && return false
     T <: Tuple && return false
@@ -1401,6 +1404,8 @@ function tangent_to_friendly!!(
 end
 
 # NamedTuple dest: recurse into struct fields.
+# `tangent` must be a Tangent (immutable struct tangent) whose `.fields` NamedTuple is
+# integer-indexable and whose elements are PossiblyUninitTangent-or-plain tangents.
 @generated function tangent_to_friendly!!(
     dest::NamedTuple{names}, primal::P, tangent, c::MaybeCache
 ) where {names,P}
@@ -1412,7 +1417,21 @@ end
                     dest[$i], getfield(primal, $i), val(tangent.fields[$i]), c
                 )
             else
-                dest[$i]
+                # PossiblyUninitTangent with isInit=false: field had zero contribution.
+                # If the primal field is defined, convert a canonical zero tangent so the
+                # return type is consistent with the initialised path.  If the primal field
+                # is also undefined, fall back to returning the cache entry as-is (the field
+                # cannot be meaningfully represented as a friendly value).
+                if isdefined(primal, $i)
+                    tangent_to_friendly!!(
+                        dest[$i],
+                        getfield(primal, $i),
+                        zero_tangent(getfield(primal, $i)),
+                        c,
+                    )
+                else
+                    dest[$i]
+                end
             end
         end
     end
