@@ -28,8 +28,10 @@ jobs:
         test_group: [
           'basic',
           'rules/avoiding_non_differentiable_code',
-          'rules/blas',
-          'rules/blas_level_3',
+          'rules/blas_Float64',
+          'rules/blas_Float32',
+          'rules/blas_ComplexF64',
+          'rules/blas_ComplexF32',
           'rules/builtins',
           'rules/complex',
           'rules/dispatch_doctor',
@@ -89,12 +91,12 @@ jobs:
       matrix:
         test_group: [
           {test_type: 'ext', label: 'differentiation_interface'},
-          {test_type: 'ext', label: 'differentiation_interface_second_order'},
           {test_type: 'ext', label: 'dynamic_expressions'},
           {test_type: 'ext', label: 'flux'},
           {test_type: 'ext', label: 'function_wrappers'},
           {test_type: 'ext', label: 'luxlib'},
           {test_type: 'ext', label: 'nnlib'},
+          {test_type: 'ext', label: 'bfloat16s'},
           {test_type: 'ext', label: 'special_functions'},
           {test_type: 'integration_testing', label: 'array'},
           {test_type: 'integration_testing', label: 'bijectors'},
@@ -105,11 +107,9 @@ jobs:
           {test_type: 'integration_testing', label: 'dynamicppl'},
           {test_type: 'integration_testing', label: 'gp'},
           {test_type: 'integration_testing', label: 'logexpfunctions'},
-          {test_type: 'integration_testing', label: 'lux'},
           {test_type: 'integration_testing', label: 'battery_tests'},
           {test_type: 'integration_testing', label: 'misc_abstract_array'},
           {test_type: 'integration_testing', label: 'temporalgps'},
-          {test_type: 'integration_testing', label: 'flux'},
         ]
         version:
           - 'lts'
@@ -188,16 +188,10 @@ jobs:
           PERF_GROUP: 'comparison'
           GKSwstype: '100'
         shell: bash
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: benchmarking-results
           path: bench_results/
-      # Useful code for testing action.
-      # - run: |
-      #     text="this is line one
-      #     this is line two
-      #     this is line three"
-      #     echo "$text" > benchmark_results.txt
       - name: Read file content
         id: read-file
         run: |
@@ -206,27 +200,13 @@ jobs:
             cat bench/benchmark_results.txt
             echo "EOF"
           } >> $GITHUB_OUTPUT
-          
-      - name: Find Comment
-        uses: peter-evans/find-comment@v4
-        id: fc
+      - name: Sync PR summary
+        uses: TuringLang/actions/SyncPRSummary@main
         with:
-          issue-number: ${{ github.event.pull_request.number }}
-          comment-author: github-actions[bot]
-          body-includes: "perf-results"
-
-      - id: post-report-as-pr-comment
-        name: Post Report as Pull Request Comment
-        uses: peter-evans/create-or-update-comment@v5
-        with:
-          issue-number: ${{ github.event.pull_request.number }}
-          body: |
-            <!-- perf-results -->
+          perf-content: |
             Performance Ratio:
             Ratio of time to compute gradient and time to compute function.
             Warning: results are very approximate! See [here](https://github.com/chalk-lab/Mooncake.jl/tree/main/bench#inter-framework-benchmarking) for more context.
             ```
             ${{ steps.read-file.outputs.table }}
             ```
-          comment-id: ${{ steps.fc.outputs.comment-id }}
-          edit-mode: replace

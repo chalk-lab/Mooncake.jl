@@ -1,3 +1,22 @@
+#=
+  Two ways to run tests (from Mooncake.jl root):
+
+  1. Interactive — iterate on individual files; TestEnv makes deps like Aqua.jl and JET.jl available.
+
+     One-time setup:
+       mkdir -p temp/testenv
+       julia --project=temp/testenv -e 'using Pkg; Pkg.add("TestEnv"); Pkg.develop(path=".")'
+
+     Then each session:
+       julia --project=temp/testenv -e 'using TestEnv; TestEnv.activate("Mooncake"); include("test/front_matter.jl")'
+
+     Then include individual test files, e.g.: include("test/interpreter/nforward.jl")
+
+  2. Batch — run a named test group end-to-end via Pkg.test:
+       julia --project=. -e 'import Pkg; Pkg.test(; test_args=["rules/lapack"])'
+
+     If test_args is omitted, the "basic" group runs (not the full suite).
+=#
 include("front_matter.jl")
 
 @testset "Mooncake.jl" begin
@@ -7,6 +26,7 @@ include("front_matter.jl")
         include(joinpath("tangents", "tangents.jl"))
         include(joinpath("tangents", "fwds_rvs_data.jl"))
         include(joinpath("tangents", "codual.jl"))
+        include(joinpath("tangents", "dual.jl"))
         include("debug_mode.jl")
         include("stack.jl")
         @testset "interpreter" begin
@@ -28,10 +48,14 @@ include("front_matter.jl")
         include(joinpath("rules", "array_legacy.jl"))
     elseif test_group == "rules/avoiding_non_differentiable_code"
         include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
-    elseif test_group == "rules/blas"
-        include(joinpath("rules", "blas.jl"))
-    elseif test_group == "rules/blas_level_3"
-        include(joinpath("rules", "blas_level_3.jl"))
+    elseif test_group == "rules/blas_Float64"
+        include(joinpath("rules", "blas_Float64.jl"))
+    elseif test_group == "rules/blas_Float32"
+        include(joinpath("rules", "blas_Float32.jl"))
+    elseif test_group == "rules/blas_ComplexF64"
+        include(joinpath("rules", "blas_ComplexF64.jl"))
+    elseif test_group == "rules/blas_ComplexF32"
+        include(joinpath("rules", "blas_ComplexF32.jl"))
     elseif test_group == "rules/builtins"
         include(joinpath("rules", "builtins.jl"))
     elseif test_group == "rules/complex"

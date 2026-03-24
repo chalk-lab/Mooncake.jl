@@ -2,7 +2,7 @@ env:
   SECRET_CODECOV_TOKEN: "nkcRFVXdaPNAbiI0x3qK/XUG8rWjBc8fU73YEyP35SeS465XORqrIYrHUbHuJTRyeyqNRdsHaBcV1P7TBbKAaTQAjHQ1Q0KYfd0uRMSWpZSCgTBz5AwttAxVfFrX+Ky3PzTi2TfDe0uPFZtFo0Asq6sUEr1on+Oo+j+q6br2NK6CrA5yKKuTX4Q2V/UPOIK4vNXY3+zDTKSNtr+HQOlcVEeRIk/0ZQ78Cjd52flEaVw8GWo/CC4YBzLtcOZgaFdgOTEDNHMr0mw6zLE4Y6nxq4lHVSoraSjxjhkB0pXTZ1c51yHX8Jc+q6HC5s87+2Zq5YtsuQSGao+eMtkTAYwfLw==;U2FsdGVkX18z27J3+gNgxsPNnXA0ad4LvZnXeohTam7/6UPqX5+3BYI0tAiVkCho4vlJyL7dd8JEyNtk9BFXsg=="
 
 steps:
-  - label: "Julia v{{matrix.version}}, {{matrix.label}}"
+  - label: "Julia v{{matrix.version}}, ext/{{matrix.label}}"
     plugins:
       - JuliaCI/julia#v1:
           version: "{{matrix.version}}"
@@ -23,8 +23,33 @@ steps:
       setup:
         version:
           - "1.10"
-          - "1.11"
           - "1.12"
         label:
           - "cuda"
           - "nnlib"
+
+  - label: "Julia v{{matrix.version}}, integration/{{matrix.label}}"
+    plugins:
+      - JuliaCI/julia#v1:
+          version: "{{matrix.version}}"
+      - JuliaCI/julia-coverage#v1:
+          dirs:
+            - src
+            - ext
+    command: julia --code-coverage=user --eval='include("test/run_extra.jl")'
+    agents:
+      queue: "juliagpu"
+      cuda: "*"
+    if: build.message !~ /\[skip tests\]/
+    timeout_in_minutes: 60
+    env:
+      LABEL: "{{matrix.label}}"
+      TEST_TYPE: integration_testing
+    matrix:
+      setup:
+        version:
+          - "1.10"
+          - "1.12"
+        label:
+          - "flux"
+          - "lux"

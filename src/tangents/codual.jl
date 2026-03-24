@@ -43,6 +43,10 @@ function _codual_internal(::Type{P}, f::F, extractor::E) where {P,F,E}
     P == Union{} && return Union{}
     P == DataType && return CoDual
     P isa Union && return Union{f(P.a),f(P.b)}
+    # Use `isa` not `<:`: generators like `NTuple{N,Int} where N` are instances of
+    # UnionAll but not subtypes of it (`NTuple{N,Int} where N <: UnionAll` is false).
+    # `P == UnionAll` handles the UnionAll metatype itself (`UnionAll isa UnionAll` is false).
+    (P isa UnionAll || P == UnionAll) && return CoDual # P is abstract, tangent type unknown.
 
     if P <: Tuple && !all(isconcretetype, (P.parameters...,))
         field_types = (P.parameters...,)
@@ -54,7 +58,6 @@ function _codual_internal(::Type{P}, f::F, extractor::E) where {P,F,E}
         end
     end
 
-    P <: UnionAll && return CoDual # P is abstract, so we don't know its tangent type.
     return isconcretetype(P) ? CoDual{P,extractor(P)} : CoDual
 end
 

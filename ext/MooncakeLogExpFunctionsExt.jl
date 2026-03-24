@@ -15,7 +15,8 @@ import Mooncake:
     @is_primitive,
     zero_fcodual,
     NoRData,
-    extract
+    extract,
+    arrayify
 
 # Importing these rules provides improved numerical stability for `logistic`, and avoids
 # incorrect derivatives arising from a 'fast branch' in `logaddexp(x1, x2)` where x1 == x2
@@ -39,19 +40,20 @@ function frule!!(
     ::Dual{typeof(logsumexp)},
     x::Dual{<:AbstractArray{P}},
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x); primal(kwargs)...)
-    dy = sum(tangent(x) .* (exp.(primal(x) .- y)); primal(kwargs)...)
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x; primal(kwargs)...)
+    dy = sum(_dx .* (exp.(_x .- y)); primal(kwargs)...)
     return Dual(y, dy)
 end
 function frule!!(
     ::Dual{typeof(logsumexp)}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x))
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x)
     dy = zero(P)
-    xp, dx = extract(x)
-    # same as dy = dot(dx, exp.(xp .- y)) but manually looped over to avoid allocations
-    for i in eachindex(dx)
-        @inbounds dy += dx[i] * exp(xp[i] - y)
+    # same as dy = dot(_dx, exp.(_x .- y)) but manually looped over to avoid allocations
+    for i in eachindex(_dx)
+        @inbounds dy += _dx[i] * exp(_x[i] - y)
     end
     return Dual(y, dy)
 end
@@ -61,10 +63,10 @@ function rrule!!(
     ::CoDual{typeof(logsumexp)},
     x::CoDual{<:AbstractArray{P}},
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x); primal(kwargs)...)
-    dx = tangent(x)
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x; primal(kwargs)...)
     function logsumexp_pb!!(dy::P)
-        dx .+= dy .* exp.(primal(x) .- y)
+        _dx .+= dy .* exp.(_x .- y)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
@@ -76,11 +78,11 @@ function rrule!!(
     ::CoDual{typeof(logsumexp)},
     x::CoDual{<:AbstractArray{P}},
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x); primal(kwargs)...)
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x; primal(kwargs)...)
     dy = zero(y)
-    dx = tangent(x)
     function logsumexp_pb!!(::NoRData)
-        dx .+= dy .* exp.(primal(x) .- y)
+        _dx .+= dy .* exp.(_x .- y)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy), logsumexp_pb!!
@@ -88,10 +90,10 @@ end
 function rrule!!(
     ::CoDual{typeof(logsumexp)}, x::CoDual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
-    y = logsumexp(primal(x))
-    dx = tangent(x)
+    _x, _dx = arrayify(x)
+    y = logsumexp(_x)
     function logsumexp_pb!!(dy::P)
-        dx .+= dy .* exp.(primal(x) .- y)
+        _dx .+= dy .* exp.(_x .- y)
         return NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
@@ -103,8 +105,10 @@ end
 function frule!!(
     ::Dual{typeof(logsumexp!)}, out::Dual{<:AbstractArray{P}}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
-    logsumexp!(primal(out), primal(x))
-    sum!(tangent(out), tangent(x) .* exp.(primal(x) .- primal(out)))
+    _x, _dx = arrayify(x)
+    y, _dy = arrayify(out)
+    logsumexp!(y, _x)
+    sum!(_dy, _dx .* exp.(_x .- y))
     return out
 end
 function rrule!!(
@@ -112,14 +116,14 @@ function rrule!!(
     out::CoDual{<:AbstractArray{P}},
     x::CoDual{<:AbstractArray{P}},
 ) where {P<:IEEEFloat}
-    old_out = copy(primal(out))
-    logsumexp!(primal(out), primal(x))
-    y, dy = extract(out)
-    dx = tangent(x)
+    _x, _dx = arrayify(x)
+    y, _dy = arrayify(out)
+    old_out = copy(y)
+    logsumexp!(y, _x)
     function logsumexp!_pb!!(::NoRData)
-        dx .+= dy .* exp.(primal(x) .- y)
+        _dx .+= _dy .* exp.(_x .- y)
         copyto!(y, old_out)
-        fill!(dy, zero(P))
+        fill!(_dy, zero(P))
         return NoRData(), NoRData(), NoRData()
     end
     return out, logsumexp!_pb!!

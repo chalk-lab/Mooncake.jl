@@ -27,6 +27,17 @@
 @zero_derivative DefaultCtx Tuple{typeof(Base.throw_boundserror),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Base.Broadcast.eltypes),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Base.eltype),Vararg}
+# Debug verification helpers are diagnostic-only. They should execute at primal time, but
+# AD should never propagate derivatives through them in any context.
+@zero_derivative MinimalCtx Tuple{typeof(verify_args),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_dual_inputs),Tuple}
+@zero_derivative MinimalCtx Tuple{typeof(verify_dual_output),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_dual_value),Dual}
+@zero_derivative MinimalCtx Tuple{typeof(verify_rvs_input),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_rvs_output),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_fwds_inputs),Any,Tuple}
+@zero_derivative MinimalCtx Tuple{typeof(verify_fwds_output),Any,Any}
+@zero_derivative MinimalCtx Tuple{typeof(verify_fwds),CoDual}
 @zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType}
 @zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType,Int}
 @zero_derivative MinimalCtx Tuple{Type,TypeVar,Type}
@@ -40,11 +51,74 @@
 end
 
 """
+    stop_gradient(x)
+
+Returns `x` with zero gradient. Gradients will not propagate through `x` in the reverse
+pass. In the forward pass, `x` is returned unchanged.
+
+To stop gradients through multiple values at once, pack them into a tuple:
+`stop_gradient((x, y, z))`.
+
+This is analogous to `tf.stop_gradient` in TensorFlow and `jax.lax.stop_gradient` in JAX.
+
+!!! warning
+    Mooncake requires that aliased primals have aliased fdatas (the "aliasing invariant"):
+    `primal(a) === primal(b)` implies `fdata(a) === fdata(b)`. `stop_gradient`
+    deliberately breaks this — the returned CoDual has `primal(y) === primal(x)` but
+    `fdata(y) = _copy(fdata(x))` — so that downstream gradient accumulation into `y` does
+    not affect `x`. This will produce incorrect gradients if the output is mutated in-place
+    and `x` is subsequently read (or vice versa), because the two fdata buffers diverge.
+    For example:
+    ```julia
+    function f(x)
+        y = stop_gradient(x)  # primal(y) === x, but fdata(y) ≠ fdata(x)
+        y[1] = 2.0            # mutates x[1], but tangent goes into fdata(y)
+        return x[1] + x[2]   # reads fdata(x), which is now out of sync with fdata(y)
+    end
+    ```
+    See https://github.com/chalk-lab/Mooncake.jl/issues/1081 for more details.
+
+# Examples
+
+```jldoctest
+julia> using Mooncake
+
+julia> f(x) = x[1] * Mooncake.stop_gradient(x)[2]
+f (generic function with 1 method)
+
+julia> cache = Mooncake.prepare_gradient_cache(f, [3.0, 4.0]);
+
+julia> _, (_, g) = Mooncake.value_and_gradient!!(cache, f, [3.0, 4.0]);
+
+julia> g  # g[2] == 0: gradient through x[2] inside stop_gradient is blocked
+2-element Vector{Float64}:
+ 4.0
+ 0.0
+```
+"""
+stop_gradient(x) = x
+
+@is_primitive MinimalCtx Tuple{typeof(stop_gradient),Any}
+
+function frule!!(::Dual{typeof(stop_gradient)}, x::Dual)
+    return zero_dual(primal(x))
+end
+
+function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
+    # Copy fdata so that in-place gradient accumulation into the output does not
+    # affect the input's fdata (i.e., avoids aliasing of tangent storage).
+    y = CoDual(primal(x), _copy(tangent(x)))
+    lzr = lazy_zero_rdata(primal(x))
+    stop_gradient_pb!!(_) = (NoRData(), instantiate(lzr))
+    return y, stop_gradient_pb!!
+end
+
+"""
     lgetfield(x, f::Val)
 
-An implementation of `getfield` in which the the field `f` is specified statically via a
+An implementation of `getfield` in which the field `f` is specified statically via a
 `Val`. This enables the implementation to be type-stable even when it is not
-possible to constant-propagate `f`. Moreover, it enable the pullback to also be type-stable.
+possible to constant-propagate `f`. Moreover, it enables the pullback to also be type-stable.
 
 It will always be the case that
 ```julia
@@ -75,6 +149,10 @@ _get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fiel
 function _get_tangent_field(f::Union{Tangent,MutableTangent}, name, inbounds)
     return val(getfield(f.fields, name, inbounds))
 end
+# When the struct tangent is NoTangent (e.g. a non-differentiable type captured inside
+# another struct), field access also contributes no derivative.
+_get_tangent_field(::NoTangent, _) = NoTangent()
+_get_tangent_field(::NoTangent, _, _) = NoTangent()
 
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
@@ -231,6 +309,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
     memory = Any[_x, _dx]
 
     specific_test_cases = Any[
+        # stop_gradient: value passes through, gradients are zeroed out.
+        # interface_only=true because the rule intentionally returns zero gradient,
+        # which does not match the finite-difference Jacobian of the primal (identity).
+        (true, :none, nothing, stop_gradient, 5.0),
+        (true, :none, nothing, stop_gradient, randn(4)),
+        (true, :none, nothing, stop_gradient, (3.0, 4.0)),
+
         # Rules to avoid pointer type conversions.
         (
             true,
@@ -337,16 +422,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         # structs
         (false, :stability_and_allocs, nothing, lgetfield, 1:5, Val(:start)),
         (false, :stability_and_allocs, nothing, lgetfield, 1:5, Val(:stop)),
-        (true, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0), Val(:a)),
-        (false, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0, randn(5)), Val(:a)),
-        (false, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0, randn(5)), Val(:b)),
-        (true, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0), Val(1)),
-        (false, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0, randn(5)), Val(1)),
-        (false, :none, (lb=1, ub=100), lgetfield, StructFoo(5.0, randn(5)), Val(2)),
+        # `getfield` primal is ~1–2 ns; rule overhead is ~100–500 ns. ub=750 gives margin.
+        (true, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0), Val(:a)),
+        (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(:a)),
+        (false, :none, (lb=1e-3, ub=200), lgetfield, StructFoo(5.0, randn(5)), Val(:b)),
+        (true, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0), Val(1)),
+        (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(1)),
+        (false, :none, (lb=1e-3, ub=750), lgetfield, StructFoo(5.0, randn(5)), Val(2)),
 
         # mutable structs
-        (true, :none, nothing, lgetfield, MutableFoo(5.0), Val(:a)),
-        (false, :none, nothing, lgetfield, MutableFoo(5.0, randn(5)), Val(:b)),
+        (true, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0), Val(:a)),
+        (false, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0, randn(5)), Val(:b)),
         (false, :none, nothing, lgetfield, UInt8, Val(:name)),
         (false, :none, nothing, lgetfield, UInt8, Val(:super)),
         (true, :none, nothing, lgetfield, UInt8, Val(:layout)),
@@ -354,7 +440,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (false, :none, nothing, lgetfield, UInt8, Val(:flags)),
     ]
 
-    # Create `lgetfield` tests for each type in TestTypes in order to increase coverage.
+    # Create `lgetfield` tests for each type in TestTypes for broader coverage.
     general_lgetfield_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         _, primal = TestTypes.instantiate((interface_only, P, args))
         names = fieldnames(P)[1:length(args)] # only query fields which get initialised
@@ -370,7 +456,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         order in Any[(), (Val(false),)]
     ]
 
-    # Create `lsetfield` testsfor each type in TestTypes in order to increase coverage.
+    # Create `lsetfield!` tests for each type in TestTypes for broader coverage.
     general_lsetfield_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         ismutabletype(P) || return Any[]
         _, primal = TestTypes.instantiate((interface_only, P, args))
