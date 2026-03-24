@@ -10,9 +10,9 @@ For reverse-mode AD via Mooncake to be correct and race-free, two conditions mus
    `Float64`). Since each element is a bits-type scalar with an independent cotangent slot,
    per-element gradient writes during the reverse pass are race-free.
 
-2. `f` must carry no mutable differentiable state (e.g. a non-closure function or a closure
-   that captures only immutable data) so that the compiled scalar rule for `f` can be shared
-   across threads without a race on its fdata.
+2. `f` must satisfy `fdata_type(tangent_type(F)) == NoFData`, i.e. it carries no mutable
+   differentiable state. This covers plain (non-closure) functions and closures that capture
+   only `IEEEFloat` scalars. Closures capturing mutable containers are not supported.
 
 See https://github.com/chalk-lab/Mooncake.jl/issues/791.
 """
@@ -77,20 +77,35 @@ const _threaded_map_rule_cache = IdDict{Any,Any}()
     end
 
     function threaded_map_pb!!(::NoRData)
+        # rdata type for f: NoRData for plain functions; RData{...} for closures
+        # capturing IEEEFloat scalars.
+        FRData = rdata_type(tangent_type(F))
+
+        # Option A: allocate one slot per element for f's rdata. Each thread i writes
+        # only f_rdatas[i], so no race. After the loop, fold serially into f_rdata.
+        # TODO: Option B — per-thread accumulators (O(nthreads) instead of O(n) memory)
+        # using Threads.@threads :static + threadid(). Deferred because :static
+        # scheduling has composability concerns with nested parallelism.
+        f_rdatas = FRData === NoRData ? nothing : Vector{FRData}(undef, n)
+
         # Reverse pass: read cotangents accumulated in yd[i] by the upstream and propagate
         # them back to each input's cotangent accumulator.
         Threads.@threads for i in 1:n
             dy_i = yd[i]
-            # pullbacks[i](dy_i) returns (NoRData(), dx1, dx2, ..., dxN)
             rdata_tuple = pullbacks[i](dy_i)
+            FRData !== NoRData && (f_rdatas[i] = rdata_tuple[1])
             for j in 1:N
                 xds[j][i] += rdata_tuple[j + 1]
             end
         end
+
+        f_rdata = FRData === NoRData ? NoRData() :
+            foldl((a, b) -> increment_internal!!(NoCache(), a, b), f_rdatas; init=zero_rdata(fp))
+
         # Restore output to its pre-call state.
         copyto!(yp, old_yp)
         copyto!(yd, old_yd)
-        return NoRData(), NoRData(), NoRData(), ntuple(_ -> NoRData(), Val(N))...
+        return NoRData(), f_rdata, NoRData(), ntuple(_ -> NoRData(), Val(N))...
     end
 
     return output, threaded_map_pb!!
@@ -98,12 +113,14 @@ end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:threads})
     test_cases = Any[
-        # Single input, Float64
+        # Single input, Float64 — plain function (NoRData for f)
         (false, :none, nothing, threaded_map!, sin, zeros(Float64, 4), randn(Float64, 4)),
-        # Single input, Float32
+        # Single input, Float32 — plain function
         (false, :none, nothing, threaded_map!, exp, zeros(Float32, 3), abs.(randn(Float32, 3))),
-        # Two inputs, Float64
+        # Two inputs, Float64 — plain function
         (false, :none, nothing, threaded_map!, +, zeros(Float64, 4), randn(Float64, 4), randn(Float64, 4)),
+        # Single input, Float64 — isbits closure (non-trivial RData for f)
+        (false, :none, nothing, threaded_map!, (let a = 2.0; x -> a * x; end), zeros(Float64, 4), randn(Float64, 4)),
     ]
     memory = Any[]
     return test_cases, memory
