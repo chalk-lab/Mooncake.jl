@@ -1265,6 +1265,11 @@ Mode tag: reconstruct a value of the primal type (opt-in).  `buffer` is a copy o
 primal allocated at prepare time; at runtime it is refreshed with non-differentiable fields
 from the current primal, then filled with tangent data via `tangent_to_primal_internal!!`.
 Used for mutable collections such as `AbstractDict`.
+
+!!! note
+    The full buffer is refreshed from the current primal on every call via `_copy_to_output!!`.
+    For large dicts this can be expensive; key-comparison alternatives are worse in the
+    general case.  Accepted cost for the correctness guarantee.
 """
 struct AsPrimal end
 
@@ -1276,7 +1281,11 @@ Abstract mode tag for user-defined conversions (opt-in).  Override
 `FriendlyTangentCache{AsCustomised}(your_buffer)` and implement
 [`tangent_to_friendly_internal!!`](@ref) to fill the buffer.
 
-`AsMutableFields` is the only built-in subtype; do not subclass `AsCustomised` yourself.
+[`AsMutableFields`](@ref) is the only built-in subtype.  User-defined subtypes of
+`AsCustomised` are also supported: [`tangent_to_friendly!!`](@ref) dispatches via
+`where {M<:AsCustomised}`, so any subtype `M <: AsCustomised` will correctly call
+`tangent_to_friendly_internal!!`.  However, using `AsCustomised` directly is simpler
+and sufficient for most cases.
 """
 abstract type AsCustomised end
 
@@ -1486,6 +1495,8 @@ Returns the unwrapped user-facing value (not the `FriendlyTangentCache` wrapper)
 function tangent_to_friendly!! end
 
 # AsPrimal — refresh non-differentiable fields from primal, then write tangent in.
+# Note: _copy_to_output!! refreshes the full buffer from the current primal on every call.
+# For large dicts this is O(n); key-comparison alternatives are worse in the general case.
 function tangent_to_friendly!!(
     dest::FriendlyTangentCache{AsPrimal,B}, primal, tangent, c::MaybeCache
 ) where {B}
