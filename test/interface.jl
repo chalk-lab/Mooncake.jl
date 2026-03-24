@@ -99,8 +99,9 @@ end
                 f, x; config=Mooncake.Config(; friendly_tangents=true)
             )
             v, dx = Mooncake.value_and_gradient!!(cache, f, x)
-            @test dx[2] isa SimplePair
-            @test dx[2] == SimplePair(2 * x.x1, cos(x.x2))
+            # SimplePair has no :as_primal opt-in; friendly tangent is a NamedTuple of fields
+            @test dx[2] isa @NamedTuple{x1::Float64, x2::Float64}
+            @test dx[2] == (; x1=2 * x.x1, x2=cos(x.x2))
 
             rule = build_rrule(f, x)
 
@@ -109,8 +110,9 @@ end
             @test dx[2].fields == (; x1=2 * x.x1, x2=cos(x.x2))
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x; friendly_tangents=true)
-            @test dx[2] isa SimplePair
-            @test dx[2] == SimplePair(2 * x.x1, cos(x.x2))
+            # SimplePair has no :as_primal opt-in; friendly tangent is a NamedTuple of fields
+            @test dx[2] isa @NamedTuple{x1::Float64, x2::Float64}
+            @test dx[2] == (; x1=2 * x.x1, x2=cos(x.x2))
 
             # Struct with a Symmetric field: friendly gradient unpacks the Symmetric tangent
             # to a plain Matrix (MWE 1 & 2 from temp/friendly_tangent_mwes.jl).
@@ -156,8 +158,10 @@ end
             _, grads_vec = Mooncake.value_and_gradient!!(
                 rule_vec, f_vec, v_boxes; friendly_tangents=true
             )
-            @test grads_vec[2] isa Vector{ScalarBox}
-            @test grads_vec[2] == [ScalarBox(2.0), ScalarBox(4.0), ScalarBox(6.0)]
+            # ScalarBox is a struct so friendly tangent is a NamedTuple; the Vector of such
+            # NamedTuples is returned as a Vector{@NamedTuple{x::Float64}}.
+            @test grads_vec[2] isa AbstractVector
+            @test [g.x for g in grads_vec[2]] ≈ [2.0, 4.0, 6.0]
         end
     end
     @testset "value_and_pullback!!" begin
@@ -215,11 +219,13 @@ end
             cache = Mooncake.prepare_pullback_cache(
                 testf, x; config=Mooncake.Config(; friendly_tangents=true)
             )
+            # SimplePair has no :as_primal opt-in; friendly tangent is a NamedTuple of fields.
+            # ȳ is passed as a primal (SimplePair); output gradient is a NamedTuple.
             v, pb = Mooncake.value_and_pullback!!(cache, x̄, testf, x)
             @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
             @test TestUtils.has_equal_data(
                 pb[2],
-                SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
+                (; x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
 
             rrule = build_rrule(testf, x)
@@ -238,7 +244,7 @@ end
             @test TestUtils.has_equal_data(v, SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2))
             @test TestUtils.has_equal_data(
                 pb[2],
-                SimplePair(2x.x1 * x̄.x1 + x.x2 * x̄.x2, cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
+                (; x1=2x.x1 * x̄.x1 + x.x2 * x̄.x2, x2=cos(x.x2) * x̄.x1 + x.x1 * x̄.x2),
             )
 
             # Regression test for "invalid struct allocation" and `TypeError` error. See #1024.
@@ -491,10 +497,11 @@ end
             z_and_dz_sp = Mooncake.value_and_derivative!!(
                 cache_sp_friendly, zip(fx_sp, dfx_sp)...
             )
-            # output is friendly
-            @test z_and_dz_sp isa Tuple{SimplePair,SimplePair}
+            # primal output is friendly; tangent is a NamedTuple of per-field gradients.
             @test first(z_and_dz_sp) == SimplePair(z, 2.0)
-            @test last(z_and_dz_sp) == SimplePair(dz, 0.0)
+            dz_sp = last(z_and_dz_sp)
+            @test dz_sp.x1 ≈ dz
+            @test dz_sp.x2 == 0.0
 
             cache_sp_unfriendly = Mooncake.prepare_derivative_cache(
                 fx_sp...; config=Mooncake.Config(; friendly_tangents=false, kwargs...)

@@ -85,9 +85,19 @@ Although this pattern is especially visible in BLAS- and LAPACK-backed rules—w
 
 ## Customising Friendly Gradients
 
-When `friendly_tangents=true` is passed to `value_and_gradient!!` or `prepare_gradient_cache`, Mooncake converts its internal tangent representation into user-facing values.
-By default the raw Mooncake tangent is returned unchanged, which is safe for any type but may be unfamiliar to users who expect a value of the primal type.
-For types that store only a compressed representation — such as `LinearAlgebra.Symmetric`, which stores only one triangle of the full matrix — an override is needed to expose the correct full-matrix gradient.
+When `friendly_tangents=true` is passed to `value_and_gradient!!` or `prepare_gradient_cache`, Mooncake converts its internal tangent representation into user-facing values. The conversion by type is:
+
+- **Immutable structs, mutable structs (with standard `MutableTangent`), and closures with differentiable fields**: `NamedTuple` of per-field gradients, keyed by field name.
+- **`Tuple`**: `Tuple` of per-element gradients.
+- **`AbstractArray` with non-`IEEEFloat` (or complex) eltype**: array of per-element gradients.
+- **`AbstractArray` with `IEEEFloat` (or complex) eltype**: plain array tangent, unchanged.
+- **Callables with no captured differentiable state**: `NoTangent()`, unchanged.
+- **`AbstractDict`**: a dict of the same type as the primal, with the same keys and gradient values.
+- **Everything else** (primitive types, zero-field types, mutable structs with custom tangent types): raw Mooncake tangent, unchanged unless customised as described below.
+
+For example, with `friendly_tangents=false` (default), an immutable struct `Foo` with fields `a::Float64` and `b::Vector{Float64}` returns a `Mooncake.Tangent` wrapping `(a = da, b = db)`, and a mutable struct `Bar` with the same fields returns a `Mooncake.MutableTangent` wrapping `(a = da, b = db)`. With `friendly_tangents=true` both unwrap to the plain `NamedTuple` `(a = da, b = db)` where `da::Float64` and `db::Vector{Float64}`.
+
+An override is needed when the default output is unreadable or unintuitive — for example, types that store only a compressed representation, such as `LinearAlgebra.Symmetric`, which stores only one triangle of the full matrix but logically represents both.
 
 Two hooks control this conversion:
 
@@ -112,15 +122,15 @@ Mooncake.friendly_tangent_cache(x::MyMatrix{T}) where {T} =
 function Mooncake.tangent_to_friendly_internal!!(
     ::MyMatrix{T}, dest::Matrix{T}, tangent
 ) where {T}
-    # Fill `dest` from `tangent` however makes sense for MyMatrix.
-    copyto!(dest, tangent.fields.data)  # adjust to match MyMatrix's tangent layout
+    # `val` unwraps the stored field tangent; adjust the field name to match MyMatrix's layout.
+    copyto!(dest, Mooncake.val(tangent.fields.data))
     return dest
 end
 ```
 
-Any struct that _contains_ a `MyMatrix` field will automatically use the recursive
-field-by-field path and expose that field's gradient as a `Matrix{T}` too — no
-additional overrides required.
+Any struct that _contains_ a `MyMatrix` field will automatically expose that field's
+gradient as a `Matrix{T}` — no additional overrides required, because the default
+struct recursion builds a `NamedTuple` of per-field friendly gradients.
 
 The existing overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 `LinearAlgebra.SymTridiagonal` in `src/rules/linear_algebra.jl` follow exactly this

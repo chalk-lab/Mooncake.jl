@@ -336,6 +336,27 @@ using DispatchDoctor: allow_unstable
         @test result[2] == [1.0 2.0; 0.0 1.0]
     end
 
+    @testset "friendly_tangent_cache mutable struct" begin
+        # Mutable structs use Val{:as_mutable_fields}: cache is a sentinel at prepare time,
+        # fields are unwrapped to a plain NamedTuple at tangent_to_friendly!! time.
+        mutable struct MutFoo
+            a::Float64
+            b::Vector{Float64}
+        end
+        x = MutFoo(2.0, [1.0, 2.0])
+        d = Mooncake.friendly_tangent_cache(x)
+        @test d isa Mooncake.FriendlyTangentCache{Val{:as_mutable_fields}}
+
+        tx = Mooncake.MutableTangent((;
+            a=Mooncake.PossiblyUninitTangent(3.0),
+            b=Mooncake.PossiblyUninitTangent([0.5, 1.5]),
+        ))
+        result = Mooncake.tangent_to_friendly!!(x, tx)
+        @test result isa NamedTuple{(:a, :b)}
+        @test result.a === 3.0
+        @test result.b == [0.5, 1.5]
+    end
+
     @testset "friendly_tangent_cache AbstractDict opt-in" begin
         # Dict is mutable: falls through to friendly_tangent_cache_internal via AbstractDict
         # override, returning :as_primal.
