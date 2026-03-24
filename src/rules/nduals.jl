@@ -379,14 +379,18 @@ end
 # Each follows: f(Dual(v,p)) = Dual(f(v), f'(v)*p)
 
 # Trig
+# Use sincos / sincosd to share the cordic/libm computation between sin and cos.
 function Base.sin(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sin(a.value), _pt_scale(a.partials, cos(a.value)))
+    s, c = sincos(a.value)
+    return NDual{T,N}(s, _pt_scale(a.partials, c))
 end
 function Base.cos(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cos(a.value), _pt_scale(a.partials, -sin(a.value)))
+    s, c = sincos(a.value)
+    return NDual{T,N}(c, _pt_scale(a.partials, -s))
 end
 function Base.tan(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(tan(a.value), _pt_scale(a.partials, inv(cos(a.value))^2))
+    s, c = sincos(a.value)
+    return NDual{T,N}(s / c, _pt_scale(a.partials, inv(c)^2))
 end
 function Base.asin(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(asin(a.value), _pt_scale(a.partials, inv(sqrt(one(T) - a.value^2))))
