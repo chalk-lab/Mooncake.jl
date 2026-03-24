@@ -62,9 +62,16 @@ using ..NDuals
 
 Callable forward-mode rule used by `nforward`.
 
-`NForwardRule` is built from a statically-known call signature.
+`NForwardRule` is built from a statically-known call signature. `buf` holds a reusable
+typed scratch buffer for in-place array lifting when a chunk-layout tangent is available.
 """
-struct NForwardRule{sig,N} end
+struct NForwardRule{sig,N,Tbuf<:Base.RefValue}
+    buf::Tbuf
+end
+
+# Backward-compatible zero-arg constructor used by primitive rules in rule_via_nforward_patches.jl.
+NForwardRule{sig,N}() where {sig,N} =
+    NForwardRule{sig,N,Base.RefValue{Any}}(Ref{Any}(nothing))
 
 """
     NForwardRRule
@@ -111,6 +118,23 @@ struct NForwardPullback{F,N,P,T,Y}
     y_fdata::Y
 end
 
+"""
+    NForwardArrayScalarPullback
+
+Lightweight pullback returned by the optimised single-array-input / scalar-output rrule fast
+path.  The full gradient (∂f/∂x_i for all i) has already been computed eagerly and written
+into `grad` (which is the same object as `tangent(x_codual)`) during the rrule call.  The
+pullback just scales in-place by the output cotangent `ȳ`.
+"""
+struct NForwardArrayScalarPullback{G<:AbstractArray}
+    grad::G  # aliased with tangent(x_cd); holds ∂f/∂x after the rrule call
+end
+
+function (pb::NForwardArrayScalarPullback)(y_rdata)
+    isone(y_rdata) || (pb.grad .*= y_rdata)
+    return (NoRData(), NoRData())
+end
+
 #
 # Public construction and cached execution
 #
@@ -132,7 +156,8 @@ function nforward_build_frule(
     sig::Type{<:Tuple}; chunk_size::Integer, debug_mode=false, silence_debug_messages=true
 )
     chunk_size = _nforward_validate(sig, chunk_size; debug_mode)
-    return NForwardRule{sig,chunk_size}()
+    buf = _nforward_frule_buf_ref(sig, Val(chunk_size))
+    return NForwardRule{sig,chunk_size,typeof(buf)}(buf)
 end
 
 function nforward_build_frule(
@@ -149,6 +174,25 @@ function (rule::NForwardRule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
     primals = map(primal, x)
     tangents = map(tangent, x)
     y, dy = _nforward_eval(primal(f), primals, tangents, Val(N))
+    return Dual(y, dy)
+end
+
+# Optimised single-array-input frule: reuses a pre-allocated lifted buffer when the tangent
+# is in chunk layout (ndims(dx) == ndims(x) + 1, i.e. N > 1).  Falls through to the
+# generic allocating path when the tangent is in plain layout (N == 1).
+function (rule::NForwardRule{sig,N})(
+    f::Dual, x::Dual{Array{T,Nd},Array{T,Nd1}}
+) where {sig,N,T<:IEEEFloat,Nd,Nd1}
+    __verify_sig(rule, (f, x))
+    _nforward_check_function_tangent(tangent(f))
+    px = _nforward_check_primal(primal(x))
+    dx = tangent(x)
+    if Nd1 == Nd + 1  # chunk layout — use in-place lift with pre-allocated buffer
+        lifted = _nforward_frule_lifted!(rule.buf, px, dx, Val(N))
+        y, dy = _nforward_extract(primal(f)(lifted), Val(N))
+    else  # plain layout (N == 1) — fall back to the allocating path
+        y, dy = _nforward_eval(primal(f), (px,), (dx,), Val(N))
+    end
     return Dual(y, dy)
 end
 
@@ -189,6 +233,37 @@ function (rule::NForwardRRule{sig,N})(f::CoDual, x::Vararg{CoDual,M}) where {sig
         ArgumentError("nforward does not support differentiating with respect to `f`.")
     )
     return _nforward_rrule_call(primal(f), x, Val(N))
+end
+
+# Optimised single-real-array-input rrule: runs the full chunked forward sweep eagerly
+# using pre-allocated buffers (via `_nforward_array_scalar_value_and_gradient`) when the
+# output is a scalar IEEEFloat.  The pullback then only needs to scale the pre-computed
+# gradient by the output cotangent — zero per-call allocations at steady state.
+#
+# For non-scalar outputs the rrule falls back to the generic chunked path, which handles
+# arbitrary supported output types.
+function (rule::NForwardRRule{sig,N})(
+    f::CoDual, x::CoDual{A}
+) where {sig,N,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
+    __verify_sig(rule, (f, x))
+    tangent(f) isa NoFData || throw(
+        ArgumentError("nforward does not support differentiating with respect to `f`.")
+    )
+    f_runtime = primal(f)
+    x_primal = _nforward_check_primal(primal(x))
+    y_primal = f_runtime(x_primal)
+    if y_primal isa IEEEFloat
+        # Scalar output: run the full gradient computation eagerly with zero steady-state
+        # allocations.  tangent(x) is zeroed and populated with ∂f/∂x_i by the call below.
+        y, _ = _nforward_array_scalar_value_and_gradient(f_runtime, x, rule.buf, Val(N))
+        y_cd = CoDual(y, fdata(zero_tangent(y)))
+        return y_cd, NForwardArrayScalarPullback(tangent(x))
+    else
+        # Non-scalar output: fall back to the generic path.
+        _nforward_is_supported_primal(typeof(y_primal)) || _nforward_output_error(y_primal)
+        y_cd = CoDual(y_primal, fdata(zero_tangent(y_primal)))
+        return y_cd, _nforward_pullback(f_runtime, (x_primal,), (tangent(x),), tangent(y_cd), Val(N))
+    end
 end
 
 """
@@ -1196,6 +1271,47 @@ function _nforward_lift!(
         out[I] = NDual{T,C}(x[I], ntuple(k -> dx[idx..., k], Val(C)))
     end
     return out
+end
+
+#
+# Frule lifted-array buffer helpers (_nforward_frule_buf_ref / _nforward_frule_lifted!)
+#
+# The frule receives the seed tangent directly from the caller (as the tangent part of the
+# input Dual), so no seed buffer is needed — only a pre-allocated Array{NDual{T,C}} of the
+# same shape as the primal input.  Two buf types are used:
+#   - Typed-ref (Vector{T} input): fully inferred, no runtime isa check.
+#   - Generic Ref{Any} (higher-dimensional inputs): workspace type recovered at runtime.
+
+_nforward_frule_buf_ref(sig, ::Val) = Ref{Any}(nothing)
+
+function _nforward_frule_buf_ref(
+    ::Type{Tuple{F,Vector{T}}}, ::Val{C}
+) where {F,T<:IEEEFloat,C}
+    return Ref{Union{Nothing,Vector{NDual{T,C}}}}(nothing)
+end
+
+# Typed-ref path for Vector{T} inputs.
+function _nforward_frule_lifted!(
+    buf::Base.RefValue{Union{Nothing,Vector{NDual{T,C}}}},
+    x::Vector{T}, dx::Array{T}, ::Val{C}
+) where {T<:IEEEFloat,C}
+    ws = buf[]
+    if ws === nothing || length(ws::Vector{NDual{T,C}}) != length(x)
+        buf[] = Vector{NDual{T,C}}(undef, length(x))
+    end
+    return _nforward_lift!(buf[]::Vector{NDual{T,C}}, x, dx, Val(C))
+end
+
+# Generic path for Array{T,Nd} inputs (Ref{Any} buf).
+function _nforward_frule_lifted!(
+    buf::Base.RefValue, x::Array{T,Nd}, dx::Array{T}, ::Val{C}
+) where {T<:IEEEFloat,Nd,C}
+    Tlift = NDual{T,C}
+    ws = buf[]
+    if !(ws isa Array{Tlift,Nd} && size(ws) == size(x))
+        buf[] = Array{Tlift,Nd}(undef, size(x))
+    end
+    return _nforward_lift!(buf[]::Array{Tlift,Nd}, x, dx, Val(C))
 end
 
 """
