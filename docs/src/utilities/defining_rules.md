@@ -86,8 +86,8 @@ Although this pattern is especially visible in BLAS- and LAPACK-backed rules—w
 ## Customising Friendly Gradients
 
 When `friendly_tangents=true` is passed to `value_and_gradient!!` or `prepare_gradient_cache`, Mooncake converts its internal tangent representation into user-facing values.
-The default conversion reconstructs a value of the primal type, which works well for plain structs.
-For types that store only a compressed representation of a symmetric or structured object — such as `LinearAlgebra.Symmetric`, which stores only one triangle of the full matrix — the default conversion would expose the compressed internal tangent rather than the full matrix the user expects.
+By default the raw Mooncake tangent is returned unchanged, which is safe for any type but may be unfamiliar to users who expect a value of the primal type.
+For types that store only a compressed representation — such as `LinearAlgebra.Symmetric`, which stores only one triangle of the full matrix — an override is needed to expose the correct full-matrix gradient.
 
 Two hooks control this conversion:
 
@@ -106,7 +106,7 @@ To expose a plain `Matrix{T}` gradient to the user:
 ```julia
 # Step 1: tell Mooncake to use a pre-allocated Matrix{T} buffer.
 Mooncake.friendly_tangent_cache(x::MyMatrix{T}) where {T} =
-    Mooncake.FriendlyTangentCache{:as_customised}(Matrix{T}(undef, size(x)...))
+    Mooncake.FriendlyTangentCache{Val{:as_customised}}(Matrix{T}(undef, size(x)...))
 
 # Step 2: implement the conversion from internal tangent to the buffer.
 function Mooncake.tangent_to_friendly_internal!!(

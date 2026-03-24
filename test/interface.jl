@@ -131,6 +131,9 @@ end
             )
             @test grads_sym[2] isa NamedTuple{(:m, :v)}
             @test grads_sym[2].m isa Matrix{Float64}
+            # m[1,1] and m[2,1] both read from data[1,1] and data[1,2] respectively
+            # (Symmetric :U stores upper triangle; m[2,1] aliases data[1,2]).
+            @test grads_sym[2].m ≈ [1.0 1.0; 0.0 0.0]
             @test grads_sym[2].v ≈ 2 * foo.v
 
             cache_sym = Mooncake.prepare_gradient_cache(

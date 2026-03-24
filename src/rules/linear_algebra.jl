@@ -8,18 +8,19 @@
 # Symmetric/Hermitian/SymTridiagonal structure is therefore lost in the friendly gradient.
 #
 # friendly_tangent_cache pre-allocates the Matrix{T} output buffer at prepare time.
-# tangent_to_friendly_internal!! copies the raw tangent fields directly into the dest.
-# This is safe because tangents are always initialised to zero, so the unused triangle
-# (for Symmetric/Hermitian) or off-tridiagonal entries (for SymTridiagonal) are zero.
+# tangent_to_friendly_internal!! copies the stored tangent fields directly into dest.
+# The stored triangle (for Symmetric/Hermitian) or diagonals (for SymTridiagonal) hold the
+# accumulated chain-rule gradient; all other entries are zero-initialised by Mooncake and
+# are left zero by fill! (SymTridiagonal) or implicit via copyto! (Symmetric/Hermitian).
 
 function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Symmetric{T}) where {T}
-    FriendlyTangentCache{:as_customised}(Matrix{T}(undef, size(x.data)...))
+    FriendlyTangentCache{Val{:as_customised}}(Matrix{T}(undef, size(x.data)...))
 end
 function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Hermitian{T}) where {T}
-    FriendlyTangentCache{:as_customised}(Matrix{T}(undef, size(x.data)...))
+    FriendlyTangentCache{Val{:as_customised}}(Matrix{T}(undef, size(x.data)...))
 end
 function Mooncake.friendly_tangent_cache(x::LinearAlgebra.SymTridiagonal{T}) where {T}
-    FriendlyTangentCache{:as_customised}(Matrix{T}(undef, length(x.dv), length(x.dv)))
+    FriendlyTangentCache{Val{:as_customised}}(Matrix{T}(undef, length(x.dv), length(x.dv)))
 end
 
 function Mooncake.tangent_to_friendly_internal!!(
