@@ -63,17 +63,32 @@ const _threaded_map_rule_cache = IdDict{Any,Any}()
     old_yp = copy(yp)
     old_yd = copy(yd)
 
-    # Storage for per-element pullbacks.
-    pullbacks = Vector{Any}(undef, n)
+    # Handle empty input vectors: nothing to compute.
+    if n == 0
+        pb_noop(::NoRData) = begin
+            copyto!(yp, old_yp); copyto!(yd, old_yd)
+            return NoRData(), NoRData(), NoRData(), ntuple(_ -> NoRData(), Val(N))...
+        end
+        return output, pb_noop
+    end
 
-    # Forward pass: run f element-wise in parallel.
-    # Zero yd[i] because we overwrite output[i] (mirrors isbits_arrayset_rrule).
-    Threads.@threads for i in 1:n
-        xi_coduals = ntuple(j -> CoDual(xps[j][i], NoFData()), Val(N))
-        yi_codual, pb = f_rule(zero_fcodual(fp), xi_coduals...)
-        yp[i] = primal(yi_codual)
-        yd[i] = zero_tangent(primal(yi_codual))
-        pullbacks[i] = pb
+    # Forward pass: run element 1 serially to determine the concrete pullback type,
+    # then run elements 2:n in parallel. This gives Vector{PBType} instead of
+    # Vector{Any}, eliminating boxing and dynamic dispatch in the reverse pass.
+    xi1 = ntuple(j -> CoDual(@inbounds(xps[j][1]), NoFData()), Val(N))
+    yi1_codual, pb1 = f_rule(zero_fcodual(fp), xi1...)
+    @inbounds yp[1] = primal(yi1_codual)
+    @inbounds yd[1] = zero_tangent(primal(yi1_codual))
+    PBType = typeof(pb1)
+    pullbacks = Vector{PBType}(undef, n)
+    @inbounds pullbacks[1] = pb1
+
+    Threads.@threads for i in 2:n
+        xi = ntuple(j -> CoDual(@inbounds(xps[j][i]), NoFData()), Val(N))
+        yi_codual, pb = f_rule(zero_fcodual(fp), xi...)
+        @inbounds yp[i] = primal(yi_codual)
+        @inbounds yd[i] = zero_tangent(primal(yi_codual))
+        @inbounds pullbacks[i] = pb
     end
 
     function threaded_map_pb!!(::NoRData)
@@ -81,21 +96,21 @@ const _threaded_map_rule_cache = IdDict{Any,Any}()
         # capturing IEEEFloat scalars.
         FRData = rdata_type(tangent_type(F))
 
-        # Option A: allocate one slot per element for f's rdata. Each thread i writes
-        # only f_rdatas[i], so no race. After the loop, fold serially into f_rdata.
-        # TODO: Option B — per-thread accumulators (O(nthreads) instead of O(n) memory)
-        # using Threads.@threads :static + threadid(). Deferred because :static
-        # scheduling has composability concerns with nested parallelism.
+        # Option A: per-element f-rdata storage (race-free: thread i writes only
+        # f_rdatas[i]). Fold serially after the parallel loop.
+        # TODO: Option B — per-thread accumulators with Threads.@threads :static +
+        # threadid() for O(nthreads) memory. Deferred: :static has composability concerns.
         f_rdatas = FRData === NoRData ? nothing : Vector{FRData}(undef, n)
 
         # Reverse pass: read cotangents accumulated in yd[i] by the upstream and propagate
         # them back to each input's cotangent accumulator.
         Threads.@threads for i in 1:n
-            dy_i = yd[i]
-            rdata_tuple = pullbacks[i](dy_i)
-            FRData !== NoRData && (f_rdatas[i] = rdata_tuple[1])
+            @inbounds dy_i = yd[i]
+            @inbounds pb_i = pullbacks[i]
+            rdata_tuple = pb_i(dy_i)
+            FRData !== NoRData && @inbounds(f_rdatas[i] = rdata_tuple[1])
             for j in 1:N
-                xds[j][i] += rdata_tuple[j + 1]
+                @inbounds xds[j][i] += rdata_tuple[j + 1]
             end
         end
 
