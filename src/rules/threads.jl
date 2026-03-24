@@ -1,14 +1,15 @@
 """
-    threaded_map!(f, output::Vector{T}, inputs::Vector{T}...) -> output
+    threaded_map!(f, output::Vector{Tout}, inputs::Vector{<:IEEEFloat}...) -> output
 
 Apply `f` element-wise to corresponding elements of `inputs`, storing results in `output`,
 using `Threads.@threads`.
 
 For reverse-mode AD via Mooncake to be correct and race-free, two conditions must hold:
 
-1. All vectors must have the same element type `T <: IEEEFloat` (`Float16`, `Float32`, or
-   `Float64`). Since each element is a bits-type scalar with an independent cotangent slot,
-   per-element gradient writes during the reverse pass are race-free.
+1. `output` must have element type `Tout <: IEEEFloat` and each input must have element
+   type `Ti <: IEEEFloat`. The element types need not be the same across vectors. Since
+   each element is a bits-type scalar with an independent cotangent slot, per-element
+   gradient writes during the reverse pass are race-free.
 
 2. `f` must satisfy `fdata_type(tangent_type(F)) == NoFData`, i.e. it carries no mutable
    differentiable state. This covers plain (non-closure) functions and closures that capture
@@ -16,7 +17,7 @@ For reverse-mode AD via Mooncake to be correct and race-free, two conditions mus
 
 See https://github.com/chalk-lab/Mooncake.jl/issues/791.
 """
-function threaded_map!(f::F, output::Vector{T}, inputs::Vector{T}...) where {F,T}
+function threaded_map!(f::F, output::Vector{<:IEEEFloat}, inputs::Vector{<:IEEEFloat}...) where {F}
     isempty(inputs) && throw(ArgumentError("threaded_map!: at least one input vector required"))
     n = minimum(length, inputs)
     length(output) >= n || throw(
@@ -32,31 +33,33 @@ function threaded_map!(f::F, output::Vector{T}, inputs::Vector{T}...) where {F,T
 end
 
 @is_primitive MinimalCtx ReverseMode Tuple{
-    typeof(threaded_map!),F,Vector{T},Vararg{Vector{T}}
-} where {F,T<:IEEEFloat}
+    typeof(threaded_map!),F,Vector{<:IEEEFloat},Vararg{Vector{<:IEEEFloat}}
+} where {F}
 
-# Cache pre-compiled scalar rules keyed by (F, N, T) so build_rrule is paid once per type
-# combination. Accessed serially (rrule!! runs on the caller's thread before the parallel
-# sections), so no lock is needed.
+# Cache pre-compiled scalar rules keyed by (F, input_Ts) so build_rrule is paid once per
+# type combination. Accessed serially (rrule!! runs on the caller's thread before the
+# parallel sections), so no lock is needed.
 const _threaded_map_rule_cache = IdDict{Any,Any}()
 
 @inline function rrule!!(
     ::CoDual{typeof(threaded_map!)},
     f::CoDual{F},
-    output::CoDual{Vector{T},Vector{T}},
-    inputs::CoDual{Vector{T},Vector{T}}...,
-) where {F,T<:IEEEFloat}
+    output::CoDual{Vector{Tout}, Vector{Tout}},
+    inputs::CoDual{<:Vector{<:IEEEFloat}, <:Vector{<:IEEEFloat}}...,
+) where {F, Tout<:IEEEFloat}
     fp  = primal(f)
-    xps = map(primal, inputs)   # NTuple{N, Vector{T}} — primals
-    xds = map(tangent, inputs)  # NTuple{N, Vector{T}} — cotangent accumulators
+    xps = map(primal, inputs)   # NTuple of Vector{Ti} — primals (Ti may differ)
+    xds = map(tangent, inputs)  # NTuple of Vector{Ti} — cotangent accumulators
     yp  = primal(output)
     yd  = tangent(output)
     N   = length(inputs)
     n   = minimum(length, xps)
 
-    # Get or build the scalar rule for f applied to N arguments of type T.
-    f_rule = get!(_threaded_map_rule_cache, (F, N, T)) do
-        build_rrule(Tuple{F,Vararg{T,N}})
+    # Get or build the scalar rule for f applied to (T1, T2, ..., TN).
+    # Cache key is (F, input_element_types) to handle heterogeneous inputs.
+    input_Ts = map(eltype, xps)  # e.g. (Float32, Float64) for mixed inputs
+    f_rule = get!(_threaded_map_rule_cache, (F, input_Ts)) do
+        build_rrule(Tuple{F, input_Ts...})
     end
 
     # Save current output state for restoration in the pullback (undo-tape semantics).
@@ -136,6 +139,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:threads})
         (false, :none, nothing, threaded_map!, +, zeros(Float64, 4), randn(Float64, 4), randn(Float64, 4)),
         # Single input, Float64 — isbits closure (non-trivial RData for f)
         (false, :none, nothing, threaded_map!, (let a = 2.0; x -> a * x; end), zeros(Float64, 4), randn(Float64, 4)),
+        # Heterogeneous element types: Float32 input, Float64 output
+        (false, :none, nothing, threaded_map!, Float64, zeros(Float64, 4), abs.(randn(Float32, 4))),
+        # Heterogeneous element types: Float32 + Float64 inputs, Float64 output
+        (false, :none, nothing, threaded_map!, (x, y) -> x + y, zeros(Float64, 4), abs.(randn(Float32, 4)), randn(Float64, 4)),
     ]
     memory = Any[]
     return test_cases, memory
