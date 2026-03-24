@@ -7,6 +7,7 @@ import Mooncake.TestUtils: check_allocs_internal, Shim
 @check_allocs check_allocs_internal(::Shim, f::F, x, y) where {F} = f(x, y)
 @check_allocs check_allocs_internal(::Shim, f::F, x, y, z) where {F} = f(x, y, z)
 
+# TODO: remove the fix below after https://github.com/JuliaLang/AllocCheck.jl/pull/100 is merged
 function __init__()
     # AllocCheck's allowlist includes "get_pgcstack" but not "get_pgcstack_static",
     # which is the arm64-specific variant used on Apple Silicon. Patch fn_may_allocate
