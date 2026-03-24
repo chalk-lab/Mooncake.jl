@@ -32,47 +32,41 @@ end
     typeof(threaded_map!),F,Vector{T1},Vector{T2}
 } where {F,T1<:IEEEFloat,T2<:IEEEFloat}
 
-struct ThreadedMapRRule{R}
-    f_rule::R
-end
+# Cache pre-compiled scalar rules: (F, T2) -> rule, so build_rrule is paid once per type
+# combination rather than once per call. Access is serial (rrule!! is called on the main
+# thread before the parallel section), so no lock is needed.
+const _threaded_map_rule_cache = IdDict{Any,Any}()
 
-"""
-    build_primitive_rrule(::Type{Tuple{typeof(threaded_map!), F, Vector{T1}, Vector{T2}}})
-
-Pre-compile the rule for `f::F` applied to `T2` scalars once at rule-construction time,
-then reuse it across all elements and calls.
-"""
-function build_primitive_rrule(
-    ::Type{Tuple{typeof(threaded_map!),F,Vector{T1},Vector{T2}}}
-) where {F,T1<:IEEEFloat,T2<:IEEEFloat}
-    return ThreadedMapRRule(build_rrule(Tuple{F,T2}))
-end
-
-function (rule::ThreadedMapRRule)(
+@inline function rrule!!(
     ::CoDual{typeof(threaded_map!)},
     f::CoDual{F},
     output::CoDual{Vector{T1},Vector{T1}},
     input::CoDual{Vector{T2},Vector{T2}},
 ) where {F,T1<:IEEEFloat,T2<:IEEEFloat}
+    fp = primal(f)
     xp = primal(input)
     yp = primal(output)
     xd = tangent(input)   # cotangent accumulator for input elements
     yd = tangent(output)  # cotangent accumulator for output elements
-    fp = primal(f)
     n = length(xp)
+
+    # Get or build the scalar rule for f (one per (F, T2) type pair).
+    f_rule = get!(_threaded_map_rule_cache, (F, T2)) do
+        build_rrule(Tuple{F,T2})
+    end
 
     # Save old output values for restoration in the pullback (undo-tape semantics).
     old_yp = copy(yp)
     old_yd = copy(yd)
 
-    # Storage for per-element pullbacks (one per input element).
+    # Storage for per-element pullbacks.
     pullbacks = Vector{Any}(undef, n)
 
     # Forward pass: run f element-wise in parallel.
     # Zero yd[i] because we overwrite output[i] (mirrors isbits_arrayset_rrule).
     Threads.@threads for i in 1:n
         xi = @inbounds xp[i]
-        yi_codual, pb = rule.f_rule(zero_fcodual(fp), CoDual(xi, NoFData()))
+        yi_codual, pb = f_rule(zero_fcodual(fp), CoDual(xi, NoFData()))
         @inbounds yp[i] = primal(yi_codual)
         @inbounds yd[i] = zero_tangent(primal(yi_codual))
         @inbounds pullbacks[i] = pb
