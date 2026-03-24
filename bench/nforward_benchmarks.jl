@@ -1,11 +1,19 @@
 # bench/nforward_benchmarks.jl
 #
-# Benchmark nforward frule / rrule against primal and standard Mooncake rules,
-# using the same functions as the inter-framework comparison in run_benchmarks.jl.
+# Benchmark nforward frule / rrule against primal, standard Mooncake, and ForwardDiff.
+# Uses the same functions as the inter-framework comparison in run_benchmarks.jl.
 #
 # Two tables are produced:
-#   Full gradient  – primal, mc_rrule, nf_rrule_c1, nf_rrule_cN (× primal)
-#   JVP (1 pass)   – primal, mc_frule, nf_frule_c1, nf_frule_cN (× primal)
+#   Full gradient (rrule) – primal, mc_rrule, nf_rrule c1/cN/cDOF   (× primal)
+#   Forward mode (frule)  – primal, mc_frule, nf_frule c1/cN/cDOF,
+#                           fd_grad c1/cN/cDOF                        (× primal)
+#
+# Column semantics:
+#   nf_frule cC  – one nforward pass computing C simultaneous JVPs
+#   fd_grad  cC  – ForwardDiff.gradient with Chunk{C} (full gradient,
+#                  ceil(DOF/C) passes); at cDOF this is a single pass
+#
+# Results are saved to bench/results/nforward_<commit>.txt.
 #
 # Run:
 #   julia --project=bench bench/nforward_benchmarks.jl
@@ -13,7 +21,7 @@
 using Pkg
 Pkg.develop(; path=joinpath(@__DIR__, ".."))
 
-using Chairmarks, Mooncake, PrettyTables, StableRNGs, Statistics
+using Chairmarks, ForwardDiff, Mooncake, PrettyTables, StableRNGs, Statistics
 
 using Mooncake:
     Dual, CoDual, NoFData, NoTangent, primal, tangent, fdata, zero_tangent, zero_rdata
@@ -61,22 +69,40 @@ _nfb_map_sin_cos_exp(x::AbstractArray{<:Real}) = sum(map(z -> sin(cos(exp(z))), 
 _nfb_broadcast_sin_cos_exp(x::AbstractArray{<:Real}) = sum(sin.(cos.(exp.(x))))
 _nfb_large_single_block(x::AbstractVector{<:Real}) = _nfb_g(x[1], x[2], Val(400))
 
+# ── DOF helpers ───────────────────────────────────────────────────────────────
+
+_dof(x::AbstractArray{<:Real})    = length(x)
+_dof(x::AbstractArray{<:Complex}) = 2 * length(x)
+_dof(::Real)                      = 1
+_dof(::Complex)                   = 2
+_total_dof(x::Tuple)              = sum(_dof, x)
+
 # ── Dual / CoDual input construction ─────────────────────────────────────────
 
-# Build an nforward frule Dual input.
-# chunk_size=1: tangent is same shape as x.
-# chunk_size=N: tangent gets an extra trailing dimension of size N.
 _nf_dual(x::Float64, N::Int) = N == 1 ? Dual(x, one(x)) : Dual(x, ntuple(_ -> one(x), N))
 function _nf_dual(x::AbstractArray{Float64}, N::Int)
     dx = N == 1 ? ones(Float64, size(x)) : ones(Float64, size(x)..., N)
     return Dual(x, dx)
 end
 
-# Build a standard Mooncake frule Dual input (zero tangent, same shape).
 _mc_dual(x) = Mooncake.zero_dual(x)
+_codual(x)  = CoDual(x, fdata(zero_tangent(x)))
 
-# Build a CoDual for rrule calls (zero fdata).
-_codual(x) = CoDual(x, fdata(zero_tangent(x)))
+# ── ForwardDiff helpers ───────────────────────────────────────────────────────
+# All test cases have exactly one array argument, so GradientConfig applies directly.
+# chunk_size is capped at ForwardDiff's recommended maximum (12) to avoid register
+# pressure from very wide chunk types; the cap is noted in the column label.
+
+const _FD_MAX_CHUNK = 12
+
+function _fd_cfg(f, x::AbstractArray, chunk::Int)
+    c = min(chunk, _FD_MAX_CHUNK)
+    return ForwardDiff.GradientConfig(f, vec(x), ForwardDiff.Chunk{c}()), c
+end
+
+function _bench_fd_grad(f, x::AbstractArray, cfg)
+    return ForwardDiff.gradient(f, vec(x), cfg)
+end
 
 # ── Benchmark helpers ─────────────────────────────────────────────────────────
 
@@ -85,21 +111,11 @@ function _bench_rrule(rule, f_cd, x_cds)
     return pb(zero_rdata(primal(out)))
 end
 
-function _bench_frule(rule, f_dual, x_duals)
-    return rule(f_dual, x_duals...)
-end
-
-# ── DOF helpers ───────────────────────────────────────────────────────────────
-
-_dof(x::AbstractArray{<:Real})    = length(x)
-_dof(x::AbstractArray{<:Complex}) = 2 * length(x)
-_dof(x::Real)                     = 1
-_dof(x::Complex)                  = 2
-_total_dof(x::Tuple)              = sum(_dof, x)
+_bench_frule(rule, f_dual, x_duals) = rule(f_dual, x_duals...)
 
 # ── Test cases ────────────────────────────────────────────────────────────────
-# Each entry:  (label, f, x_tuple, chunk_size_for_cN)
-# cN is the "medium" chunk; cDOF (= total DOF) is added automatically.
+# Each entry:  (label, f, x_tuple, cN)
+# cN is the medium chunk size; cDOF (total DOF) is computed automatically.
 
 function nfb_cases(rng)
     v1k = randn(rng, 1_000)
@@ -139,16 +155,22 @@ function run_nfb(; seconds=0.5)
         nf_fruleN  = Mooncake.nforward_build_frule(f, x...; chunk_size=cN)
         nf_fruleD  = Mooncake.nforward_build_frule(f, x...; chunk_size=dof)
 
-        # Shared input views (rules must not mutate x itself).
-        f_cd   = CoDual(f, NoFData())
-        x_cds  = map(_codual, x)
-        f_md   = Dual(f, NoTangent())
-        x_mds  = map(_mc_dual, x)
-        x_ds1  = map(xi -> _nf_dual(xi, 1),   x)
-        x_dsN  = map(xi -> _nf_dual(xi, cN),  x)
-        x_dsD  = map(xi -> _nf_dual(xi, dof), x)
+        # ForwardDiff configs.  Only single-array inputs are supported here.
+        fd_cfg1, _     = _fd_cfg(f, only(x), 1)
+        fd_cfgN, cN_fd = _fd_cfg(f, only(x), cN)
+        fd_cfgD, cD_fd = _fd_cfg(f, only(x), dof)
+        x_vec = vec(only(x))
 
-        # Warm up all paths.
+        # Shared Mooncake inputs.
+        f_cd  = CoDual(f, NoFData())
+        x_cds = map(_codual, x)
+        f_md  = Dual(f, NoTangent())
+        x_mds = map(_mc_dual, x)
+        x_ds1 = map(xi -> _nf_dual(xi, 1),   x)
+        x_dsN = map(xi -> _nf_dual(xi, cN),  x)
+        x_dsD = map(xi -> _nf_dual(xi, dof), x)
+
+        # Warm up.
         for _ in 1:3
             f(x...)
             _bench_rrule(mc_rrule,  f_cd, x_cds)
@@ -159,6 +181,9 @@ function run_nfb(; seconds=0.5)
             _bench_frule(nf_frule1, f_md, x_ds1)
             _bench_frule(nf_fruleN, f_md, x_dsN)
             _bench_frule(nf_fruleD, f_md, x_dsD)
+            _bench_fd_grad(f, only(x), fd_cfg1)
+            _bench_fd_grad(f, only(x), fd_cfgN)
+            _bench_fd_grad(f, only(x), fd_cfgD)
         end
         GC.gc(true)
 
@@ -171,45 +196,63 @@ function run_nfb(; seconds=0.5)
         t_nf_fr1  = median(@be(_bench_frule($nf_frule1, $f_md, $x_ds1), seconds=seconds)).time
         t_nf_frN  = median(@be(_bench_frule($nf_fruleN, $f_md, $x_dsN), seconds=seconds)).time
         t_nf_frD  = median(@be(_bench_frule($nf_fruleD, $f_md, $x_dsD), seconds=seconds)).time
+        t_fd_gr1  = median(@be(_bench_fd_grad($f, $(only(x)), $fd_cfg1), seconds=seconds)).time
+        t_fd_grN  = median(@be(_bench_fd_grad($f, $(only(x)), $fd_cfgN), seconds=seconds)).time
+        t_fd_grD  = median(@be(_bench_fd_grad($f, $(only(x)), $fd_cfgD), seconds=seconds)).time
 
         push!(rrule_rows, [
-            label,
-            string(dof),
-            _fmt(t_prim),
+            label, string(dof), _fmt(t_prim),
             _ratio(t_mc_rr,  t_prim),
             _ratio(t_nf_rr1, t_prim),
-            "c$cN: " * _ratio(t_nf_rrN, t_prim),
-            "c$dof: " * _ratio(t_nf_rrD, t_prim),
+            "c$cN: "   * _ratio(t_nf_rrN, t_prim),
+            "c$dof: "  * _ratio(t_nf_rrD, t_prim),
         ])
         push!(frule_rows, [
-            label,
-            string(dof),
-            _fmt(t_prim),
+            label, string(dof), _fmt(t_prim),
             _ratio(t_mc_fr,  t_prim),
             _ratio(t_nf_fr1, t_prim),
-            "c$cN: " * _ratio(t_nf_frN, t_prim),
-            "c$dof: " * _ratio(t_nf_frD, t_prim),
+            "c$cN: "   * _ratio(t_nf_frN, t_prim),
+            "c$dof: "  * _ratio(t_nf_frD, t_prim),
+            _ratio(t_fd_gr1, t_prim),
+            "c$cN_fd: " * _ratio(t_fd_grN, t_prim),
+            "c$cD_fd: " * _ratio(t_fd_grD, t_prim),
         ])
     end
 
-    rrule_header = ["Test", "DOF", "Primal", "mc_rrule", "nf_rrule c1", "nf_rrule cN", "nf_rrule cDOF"]
-    frule_header = ["Test", "DOF", "Primal", "mc_frule", "nf_frule c1", "nf_frule cN", "nf_frule cDOF"]
+    rrule_header = [
+        "Test", "DOF", "Primal",
+        "mc_rrule", "nf_rrule c1", "nf_rrule cN", "nf_rrule cDOF",
+    ]
+    frule_header = [
+        "Test", "DOF", "Primal",
+        "mc_frule", "nf_frule c1", "nf_frule cN", "nf_frule cDOF",
+        "fd_grad c1", "fd_grad cN", "fd_grad cDOF",
+    ]
 
-    println("\n=== Full gradient (rrule) — time relative to primal ===\n")
-    pretty_table(
-        permutedims(reduce(hcat, rrule_rows));
-        column_labels=rrule_header,
-        alignment=[:l, :r, :r, :r, :r, :r, :r],
-        display_size=(-1, -1),
-    )
+    rrule_mat  = permutedims(reduce(hcat, rrule_rows))
+    frule_mat  = permutedims(reduce(hcat, frule_rows))
+    rrule_aln  = [:l, :r, :r, :r, :r, :r, :r]
+    frule_aln  = [:l, :r, :r, :r, :r, :r, :r, :r, :r, :r]
 
-    println("\n=== JVP / single forward pass (frule) — time relative to primal ===\n")
-    pretty_table(
-        permutedims(reduce(hcat, frule_rows));
-        column_labels=frule_header,
-        alignment=[:l, :r, :r, :r, :r, :r, :r],
-        display_size=(-1, -1),
-    )
+    io = IOBuffer()
+
+    commit = strip(read(`git rev-parse --short HEAD`, String))
+    header_line = "nforward benchmark  commit=$(commit)  julia=$(VERSION)"
+    for out in (stdout, io)
+        println(out, "\n", header_line)
+        println(out, "\n=== Full gradient (rrule) — time relative to primal ===\n")
+        pretty_table(out, rrule_mat; column_labels=rrule_header, alignment=rrule_aln, display_size=(-1,-1))
+        println(out, "\n=== Forward-mode (frule) — time relative to primal ===")
+        println(out, "    nf_frule cC  = one nforward pass, C simultaneous JVPs")
+        println(out, "    fd_grad  cC  = ForwardDiff.gradient with Chunk{C} (full gradient; capped at $_FD_MAX_CHUNK)\n")
+        pretty_table(out, frule_mat; column_labels=frule_header, alignment=frule_aln, display_size=(-1,-1))
+    end
+
+    results_dir = joinpath(@__DIR__, "results")
+    mkpath(results_dir)
+    outfile = joinpath(results_dir, "nforward_$(commit).txt")
+    write(outfile, String(take!(io)))
+    println("\nResults saved to $outfile")
 end
 
 _fmt(t) = t < 1e-6 ? "$(round(t*1e9; sigdigits=3)) ns" :
