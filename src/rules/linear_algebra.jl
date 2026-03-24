@@ -28,19 +28,19 @@ function Mooncake.friendly_tangent_cache(x::LinearAlgebra.SymTridiagonal{T}) whe
     FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, length(x.dv), length(x.dv)))
 end
 
-function Mooncake.tangent_to_friendly_internal!!(
+@unstable function Mooncake.tangent_to_friendly_internal!!(
     tangent_as_friendly::Matrix{T}, ::LinearAlgebra.Symmetric{T}, tangent
 ) where {T}
     return copyto!(tangent_as_friendly, val(tangent.fields.data))
 end
 
-function Mooncake.tangent_to_friendly_internal!!(
+@unstable function Mooncake.tangent_to_friendly_internal!!(
     tangent_as_friendly::Matrix{T}, ::LinearAlgebra.Hermitian{T}, tangent
 ) where {T}
     return copyto!(tangent_as_friendly, val(tangent.fields.data))
 end
 
-function Mooncake.tangent_to_friendly_internal!!(
+@unstable function Mooncake.tangent_to_friendly_internal!!(
     tangent_as_friendly::Matrix{T}, ::LinearAlgebra.SymTridiagonal{T}, tangent
 ) where {T}
     dv = val(tangent.fields.dv)

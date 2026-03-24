@@ -1254,7 +1254,8 @@ end
     AsRaw
 
 Mode tag: return the raw Mooncake tangent unchanged.  Default for primitive types, float
-arrays, zero-field types, and types with custom tangent types.
+arrays, zero-field types, and types with custom tangent types.  `buffer` is always
+`nothing`; no allocation is made at prepare time.
 """
 struct AsRaw end
 
@@ -1319,9 +1320,9 @@ do not apply to composite types.
 **User-overridable modes** (for use in custom [`friendly_tangent_cache`](@ref) overloads):
 - [`AsRaw`](@ref) — default for all non-composite types without an explicit override
   (Julia primitive types, float arrays, types with custom tangent types, zero-field types).
-  `buffer` holds a zero tangent allocated at prepare time but unused at runtime. The raw
-  Mooncake tangent is returned directly, aliasing internal cache storage; copy it before
-  the next AD call with the same cache if you need to retain it.
+  `buffer` is `nothing` — no allocation at prepare time. The raw Mooncake tangent is
+  returned directly, aliasing internal cache storage; copy it before the next AD call
+  with the same cache if you need to retain it.
 - [`AsPrimal`](@ref) — opt-in; `buffer` is a copy of the primal (via `_copy_output`).
   At runtime, non-differentiable fields are refreshed from the current primal and the
   tangent is written in via `tangent_to_primal_internal!!`.  Used for mutable
@@ -1469,7 +1470,7 @@ end
 # AsPrimal is an explicit opt-in (e.g. mutable collections).
 # Immutable structs with fields use the NamedTuple path; mutable structs use AsMutableFields.
 function friendly_tangent_cache_internal(x::P) where {P}
-    return FriendlyTangentCache{AsRaw}(zero_tangent(x))
+    return FriendlyTangentCache{AsRaw}(nothing)
 end
 
 # Mutable collections: reconstruct as the primal container type.
@@ -1592,7 +1593,7 @@ end
 # Fallback: mutable struct with a custom tangent type (not MutableTangent).
 # Return the raw tangent unchanged — same as AsRaw behaviour.
 #
-# Dispatch note: the `where {M<:AsCustomised}` method below also matches
+# Dispatch note: the `where {M<:AsCustomised}` method above also matches
 # FriendlyTangentCache{AsMutableFields} (since AsMutableFields <: AsCustomised), but Julia
 # prefers this method because a concrete invariant type parameter (AsMutableFields) is more
 # specific than a UnionAll bound (M<:AsCustomised).  The ordering has been verified with
@@ -1713,10 +1714,7 @@ additional dispatch if needed.
 Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 `LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
 """
-# @unstable on the stub signals to DispatchDoctor that all methods of this function have
-# a type-unstable return (dependent on the user-supplied buffer type), so callers
-# that need type stability must isolate this call behind their own @unstable boundary.
-@unstable function tangent_to_friendly_internal!! end
+function tangent_to_friendly_internal!! end
 
 """
     tangent_to_primal!!(primal::P, tangent)::P where {P}

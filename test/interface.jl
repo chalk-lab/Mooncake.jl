@@ -10,6 +10,15 @@ struct SimplePair
     x2::Float64
 end
 
+struct WithSymField
+    m::LinearAlgebra.Symmetric{Float64,Matrix{Float64}}
+    v::Float64
+end
+
+struct ScalarBox
+    x::Float64
+end
+
 @testset "interface" begin
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
         (1.0, (x, y) -> x * y + sin(x) * cos(y), 5.0, 4.0),
@@ -116,10 +125,6 @@ end
 
             # Struct with a Symmetric field: friendly gradient unpacks the Symmetric tangent
             # to a plain Matrix (MWE 1 & 2 from temp/friendly_tangent_mwes.jl).
-            struct WithSymField
-                m::LinearAlgebra.Symmetric{Float64,Matrix{Float64}}
-                v::Float64
-            end
             foo = WithSymField(LinearAlgebra.Symmetric([1.0 2.0; 3.0 4.0]), 3.14)
             # Use element access rather than sum: Base.sum uses Base._InitialValue as its
             # initial accumulator, producing Union{Base._InitialValue, Float64} during
@@ -149,9 +154,6 @@ end
 
             # Vector of structs: friendly gradient returns a Vector of the same struct type
             # (MWE 3 from temp/friendly_tangent_mwes.jl).
-            struct ScalarBox
-                x::Float64
-            end
             f_vec = (v::Vector{ScalarBox}) -> sum(b.x^2 for b in v)
             v_boxes = [ScalarBox(1.0), ScalarBox(2.0), ScalarBox(3.0)]
             rule_vec = build_rrule(f_vec, v_boxes)
