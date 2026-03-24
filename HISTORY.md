@@ -1,3 +1,20 @@
+# 0.5.26
+
+The `friendly_tangents=true` path previously converted every internal tangent back to a value of the primal type via `tangent_to_primal!!`. This relied on `_copy_output` to pre-allocate a buffer and `tangent_to_primal_internal!!` to fill it on every call. Both steps are problematic:
+
+- `_copy_output` is best-effort and not guaranteed correct for all types — [#1084](https://github.com/chalk-lab/Mooncake.jl/issues/1084) is a recent silent failure  
+- The primal round-trip was wrong for types with shared storage (e.g. `Symmetric`, where one stored entry represents two logical positions), silently returning an incorrect gradient [#937](https://github.com/chalk-lab/Mooncake.jl/issues/937)
+
+## Default behaviour change
+
+| Before                      | After                         |
+|----------------------------|-------------------------------|
+| default: value of primal   | default: raw Mooncake tangent |
+| primal round-trip: always  | primal round-trip: explicit opt-in |
+| custom gradient: not possible | custom gradient: explicit opt-in |
+
+The raw-tangent default is safer: it never silently drops or corrupts information, avoids the allocation overhead, and the only types that go through reconstruction are explicit opt-ins (`AbstractDict`, `Symmetric`, `Hermitian`, `SymTridiagonal`) with their own tests.
+
 # 0.5.24
 
 Add `stop_gradient(x)` to block gradient propagation (TensorFlow/JAX analogue).
