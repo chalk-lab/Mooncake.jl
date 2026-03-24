@@ -1251,31 +1251,83 @@ for T in [Symbol, Int, Val]
 end
 
 """
+    AsRaw
+
+Mode tag: return the raw Mooncake tangent unchanged.  Default for primitive types, float
+arrays, zero-field types, and types with custom tangent types.
+"""
+struct AsRaw end
+
+"""
+    AsPrimal
+
+Mode tag: reconstruct a value of the primal type (opt-in).  `buffer` is a copy of the
+primal allocated at prepare time; at runtime it is refreshed with non-differentiable fields
+from the current primal, then filled with tangent data via `tangent_to_primal_internal!!`.
+Used for mutable collections such as `AbstractDict`.
+"""
+struct AsPrimal end
+
+"""
+    AsCustomised
+
+Abstract mode tag for user-defined conversions (opt-in).  Override
+[`friendly_tangent_cache`](@ref) to return a
+`FriendlyTangentCache{AsCustomised}(your_buffer)` and implement
+[`tangent_to_friendly_internal!!`](@ref) to fill the buffer.
+
+`AsMutableFields` is the only built-in subtype; do not subclass `AsCustomised` yourself.
+"""
+abstract type AsCustomised end
+
+"""
+    AsMutableFields <: AsCustomised
+
+Internal mode tag generated automatically for mutable structs with fields and the standard
+`MutableTangent` tangent type.  `buffer` is a `NamedTuple` of per-field caches built at
+prepare time; at runtime each field is recursively converted and the results are assembled
+into a `NamedTuple`.
+
+Do not use this tag in your own [`friendly_tangent_cache`](@ref) overloads; use
+[`AsCustomised`](@ref) instead.
+"""
+struct AsMutableFields <: AsCustomised end
+
+"""
     FriendlyTangentCache{M, B}
 
 Pre-allocated output buffer for the user-facing gradient of a **non-composite** primal
 type, carrying a mode flag `M` that drives dispatch in [`tangent_to_friendly!!`](@ref).
 
 A type is **non-composite** if [`friendly_tangent_cache`](@ref) returns a single
-`FriendlyTangentCache{Val{mode}}` for it.  A type is **composite** if
+`FriendlyTangentCache{M}` for it.  A type is **composite** if
 `friendly_tangent_cache` instead recurses into its sub-components and returns a
-`NamedTuple`, `Tuple`, or `Array` of per-element caches.  The three modes below
+`NamedTuple`, `Tuple`, or `Array` of per-element caches.  The modes below
 do not apply to composite types.
 
-`M` is one of three `Val` type parameters, exclusive to non-composite types:
-- `Val{:as_raw}` — default for all non-composite types without an explicit override
-  (Julia primitive types, mutable structs, float arrays, types with custom tangent types,
-  zero-field types). `buffer` holds a zero tangent allocated at prepare time but unused at
-  runtime. The raw Mooncake tangent is returned directly, aliasing internal cache storage;
-  copy it before the next AD call with the same cache if you need to retain it.
-- `Val{:as_primal}` — opt-in; `buffer` is a copy of the primal (via `_copy_output`).
+`M` is one of the following mode types:
+
+**User-overridable modes** (for use in custom [`friendly_tangent_cache`](@ref) overloads):
+- [`AsRaw`](@ref) — default for all non-composite types without an explicit override
+  (Julia primitive types, float arrays, types with custom tangent types, zero-field types).
+  `buffer` holds a zero tangent allocated at prepare time but unused at runtime. The raw
+  Mooncake tangent is returned directly, aliasing internal cache storage; copy it before
+  the next AD call with the same cache if you need to retain it.
+- [`AsPrimal`](@ref) — opt-in; `buffer` is a copy of the primal (via `_copy_output`).
   At runtime, non-differentiable fields are refreshed from the current primal and the
   tangent is written in via `tangent_to_primal_internal!!`.  Used for mutable
   collections (e.g. `AbstractDict`) where the user-facing gradient should have the same
   container type as the primal.
-- `Val{:as_customised}` — opt-in; `buffer` is a user-supplied friendly output buffer
+- [`AsCustomised`](@ref) — opt-in; `buffer` is a user-supplied friendly output buffer
   (e.g. `Matrix{T}` for `Symmetric{T}`).  At runtime,
   [`tangent_to_friendly_internal!!`](@ref) is called to fill it.
+
+**Internal mode** (generated automatically; do not use in overloads):
+- [`AsMutableFields`](@ref) — used internally for mutable structs with fields and the
+  standard `MutableTangent` tangent type.  `buffer` is a `NamedTuple` of per-field caches
+  built at prepare time.  At runtime, each field is recursively converted and the results
+  are assembled into a `NamedTuple`.  Mutable structs with a custom tangent type fall
+  through to `AsRaw`.
 
 Override [`friendly_tangent_cache`](@ref) to return a `FriendlyTangentCache` of the
 desired mode for custom types.
@@ -1291,10 +1343,9 @@ FriendlyTangentCache{M}(buffer::B) where {M,B} = FriendlyTangentCache{M,B}(buffe
 Return a pre-allocated cache for the user-facing gradient of the primal `x`.
 
 A primal type is **non-composite** if this function returns a single
-[`FriendlyTangentCache{Val{mode}}`](@ref).  It is **composite** if this function recurses
+[`FriendlyTangentCache{M}`](@ref) for it.  It is **composite** if this function recurses
 into sub-components and returns a nested `NamedTuple`, `Tuple`, or `Array` of per-element
-caches instead.  The three modes (`:as_raw`, `:as_primal`, `:as_customised`) do not
-apply to composite types.
+caches instead.
 
 **Behaviour by type category:**
 
@@ -1303,19 +1354,30 @@ apply to composite types.
 | Immutable struct with fields and standard `Tangent` | `NamedTuple` of per-field caches *(composite)* |
 | `Tuple` | `Tuple` of per-element caches *(composite)* |
 | `AbstractArray` with non-float eltype | `Array` of per-element caches via `map` *(composite)* |
-| `AbstractDict` | `FriendlyTangentCache{Val{:as_primal}}` *(non-composite)* |
-| `LinearAlgebra.Symmetric` / `Hermitian` / `SymTridiagonal` | `FriendlyTangentCache{Val{:as_customised}}` *(non-composite)* |
-| Everything else (Julia primitive types, mutable structs, float arrays, custom-tangent types, zero-field types) | `FriendlyTangentCache{Val{:as_raw}}` *(non-composite)* |
+| Mutable struct with fields and standard `MutableTangent` | `FriendlyTangentCache{AsMutableFields}` — per-field `NamedTuple` at runtime *(non-composite, internal mode)* |
+| `AbstractDict` | `FriendlyTangentCache{AsPrimal}` *(non-composite)* |
+| `LinearAlgebra.Symmetric` / `Hermitian` / `SymTridiagonal` | `FriendlyTangentCache{AsCustomised}` *(non-composite)* |
+| Everything else (Julia primitive types, float arrays, custom-tangent types, zero-field types) | `FriendlyTangentCache{AsRaw}` *(non-composite)* |
 
 Override to opt a type into a non-composite mode with a custom buffer:
 
 ```julia
-Mooncake.friendly_tangent_cache(x::MyMatrix{T}) =
-    FriendlyTangentCache{Val{:as_customised}}(Matrix{T}(undef, size(x)...))
+Mooncake.friendly_tangent_cache(x::MyMatrix{T}) where {T} =
+    Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}(Matrix{T}(undef, size(x)...))
 ```
 
 Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 `LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
+
+!!! warning
+    Mutable structs whose fields form a self-referential cycle (e.g. a linked-list node
+    whose `next` field points to another instance of the same type) will cause a
+    `StackOverflowError` when this function descends into their fields at prepare time.
+    Override `friendly_tangent_cache` for such types to avoid recursion:
+    ```julia
+    Mooncake.friendly_tangent_cache(::MyRecursiveType) =
+        Mooncake.FriendlyTangentCache{Mooncake.AsRaw}(nothing)
+    ```
 """
 @unstable @generated function friendly_tangent_cache(x::P) where {P}
     # Concrete Tuple: recurse element-wise and return a Tuple dest.
@@ -1345,13 +1407,13 @@ Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
                 :(friendly_tangent_cache(getfield(x, $i)))
             else
                 # Field may be undefined: guard with isdefined to avoid UndefRefError.
-                # The :as_raw non-composite mode with a nothing buffer is safe because tangent_to_friendly!!
+                # The AsRaw non-composite mode with a nothing buffer is safe because tangent_to_friendly!!
                 # returns dest[$i] as-is when both the primal and tangent fields are undefined.
                 :(
                     if isdefined(x, $i)
                         friendly_tangent_cache(getfield(x, $i))
                     else
-                        FriendlyTangentCache{Val{:as_raw}}(nothing)
+                        FriendlyTangentCache{AsRaw}(nothing)
                     end
                 )
             end
@@ -1381,12 +1443,12 @@ Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
                     if isdefined(x, $i)
                         friendly_tangent_cache(getfield(x, $i))
                     else
-                        FriendlyTangentCache{Val{:as_raw}}(nothing)
+                        FriendlyTangentCache{AsRaw}(nothing)
                     end
                 )
             end
         end
-        return :(FriendlyTangentCache{Val{:as_mutable_fields}}(
+        return :(FriendlyTangentCache{AsMutableFields}(
             NamedTuple{$names}(($(dest_exprs...),))
         ))
     end
@@ -1395,15 +1457,15 @@ Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 end
 
 # Default non-composite mode: return the raw Mooncake tangent.
-# :as_primal is an explicit opt-in (e.g. mutable collections).
-# Immutable structs with fields use the NamedTuple path; mutable structs use :as_mutable_fields.
+# AsPrimal is an explicit opt-in (e.g. mutable collections).
+# Immutable structs with fields use the NamedTuple path; mutable structs use AsMutableFields.
 function friendly_tangent_cache_internal(x::P) where {P}
-    return FriendlyTangentCache{Val{:as_raw}}(zero_tangent(x))
+    return FriendlyTangentCache{AsRaw}(zero_tangent(x))
 end
 
 # Mutable collections: reconstruct as the primal container type.
 function friendly_tangent_cache(x::AbstractDict)
-    FriendlyTangentCache{Val{:as_primal}}(_copy_output(x))
+    FriendlyTangentCache{AsPrimal}(_copy_output(x))
 end
 
 """
@@ -1423,41 +1485,44 @@ Returns the unwrapped user-facing value (not the `FriendlyTangentCache` wrapper)
 """
 function tangent_to_friendly!! end
 
-# Val{:as_primal} — refresh non-differentiable fields from primal, then write tangent in.
+# AsPrimal — refresh non-differentiable fields from primal, then write tangent in.
 function tangent_to_friendly!!(
-    dest::FriendlyTangentCache{Val{:as_primal},B}, primal, tangent, c::MaybeCache
+    dest::FriendlyTangentCache{AsPrimal,B}, primal, tangent, c::MaybeCache
 ) where {B}
     refreshed = _copy_to_output!!(dest.buffer, primal)
     return tangent_to_primal_internal!!(refreshed, tangent, c)
 end
 
-# Val{:as_raw} — used for primitives and zero-field types (via friendly_tangent_cache_internal).
+# AsRaw — used for primitives and zero-field types (via friendly_tangent_cache_internal).
 # Returns the raw Mooncake tangent directly; the buffer is pre-allocated but unused at runtime.
 # The returned value aliases internal cache storage; copy before the next AD call if needed.
 # Unstable: return type is the type of `tangent`, which depends on the primal.
 @unstable function tangent_to_friendly!!(
-    ::FriendlyTangentCache{Val{:as_raw}}, ::Any, tangent, ::MaybeCache
+    ::FriendlyTangentCache{AsRaw}, ::Any, tangent, ::MaybeCache
 )
     return tangent
 end
 
-# Val{:as_customised} — delegate to user hook.
+# AsCustomised (and any user-defined subtype of AsCustomised) — delegate to user hook.
+# Using `where {M<:AsCustomised}` ensures that user subtypes of AsCustomised are matched,
+# not just the abstract type itself.  AsMutableFields has its own more-specific methods
+# above, so Julia dispatch selects those in preference to this method.
 # Unstable: return type depends on the user-supplied tangent_to_friendly_internal!! method.
 @unstable function tangent_to_friendly!!(
-    dest::FriendlyTangentCache{Val{:as_customised}}, primal, tangent, ::MaybeCache
-)
-    return tangent_to_friendly_internal!!(primal, dest.buffer, tangent)
+    dest::FriendlyTangentCache{M}, primal, tangent, ::MaybeCache
+) where {M<:AsCustomised}
+    return tangent_to_friendly_internal!!(dest.buffer, primal, tangent)
 end
 
-# Val{:as_mutable_fields} — mutable struct with standard MutableTangent: recurse into
-# fields and return a NamedTuple. This is a built-in special case of :as_customised:
+# AsMutableFields — mutable struct with standard MutableTangent: recurse into
+# fields and return a NamedTuple. This is a built-in special case of AsCustomised:
 # it provides the same field-by-field NamedTuple unwrapping generically for mutable structs
 # whose tangent type is MutableTangent (the Mooncake default for mutable structs with fields).
 # Per-field caches are pre-built into dest.buffer at prepare time (no per-call allocation).
 # Mutable structs with a custom tangent type (not MutableTangent) fall through to the
 # @unstable fallback below, which returns the raw tangent unchanged.
 @generated function tangent_to_friendly!!(
-    dest::FriendlyTangentCache{Val{:as_mutable_fields}},
+    dest::FriendlyTangentCache{AsMutableFields},
     primal::P,
     tangent::MutableTangent,
     c::MaybeCache,
@@ -1514,9 +1579,15 @@ end
 end
 
 # Fallback: mutable struct with a custom tangent type (not MutableTangent).
-# Return the raw tangent unchanged — same as :as_raw behaviour.
+# Return the raw tangent unchanged — same as AsRaw behaviour.
+#
+# Dispatch note: the `where {M<:AsCustomised}` method below also matches
+# FriendlyTangentCache{AsMutableFields} (since AsMutableFields <: AsCustomised), but Julia
+# prefers this method because a concrete invariant type parameter (AsMutableFields) is more
+# specific than a UnionAll bound (M<:AsCustomised).  The ordering has been verified with
+# @which and there is no dispatch ambiguity.
 @unstable function tangent_to_friendly!!(
-    ::FriendlyTangentCache{Val{:as_mutable_fields}}, ::Any, tangent, ::MaybeCache
+    ::FriendlyTangentCache{AsMutableFields}, ::Any, tangent, ::MaybeCache
 )
     return tangent
 end
@@ -1524,7 +1595,7 @@ end
 # NamedTuple dest: recurse into immutable struct fields.
 # `tangent` must be a Tangent (immutable struct tangent) whose `.fields` NamedTuple is
 # integer-indexable and whose elements are PossiblyUninitTangent-or-plain tangents.
-# Mutable structs use the Val{:as_mutable_fields} path above instead.
+# Mutable structs use the AsMutableFields path above instead.
 # When `tangent isa NoTangent` the primal type has no differentiable fields according to
 # the runtime world (e.g. because an extension declared tangent_type(P) == NoTangent after
 # friendly_tangent_cache built the NamedTuple dest at prepare time).  In that case we fall
@@ -1618,18 +1689,22 @@ end
 end
 
 """
-    tangent_to_friendly_internal!!(primal, dest, tangent)
+    tangent_to_friendly_internal!!(dest, primal, tangent)
 
-Implementation hook for the `:as_customised` mode of [`tangent_to_friendly!!`](@ref).
+Implementation hook for the [`AsCustomised`](@ref) mode of [`tangent_to_friendly!!`](@ref).
 
 Override together with [`friendly_tangent_cache`](@ref) (returning a
-`FriendlyTangentCache{Val{:as_customised}}`) to provide a direct tangent → friendly conversion
-for custom types.  `primal` is available for dispatch; `dest` is the pre-allocated output
-buffer from the cache.
+`FriendlyTangentCache{Mooncake.AsCustomised}`) to provide a direct tangent → friendly
+conversion for custom types.  `dest` is the pre-allocated output buffer from the cache
+(used for dispatch on its type and for in-place writing); `primal` is available for
+additional dispatch if needed.
 
 Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 `LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
 """
+# @unstable on the stub signals to DispatchDoctor that all methods of this function have
+# a type-unstable return (dependent on the user-supplied buffer type), so callers
+# that need type stability must isolate this call behind their own @unstable boundary.
 @unstable function tangent_to_friendly_internal!! end
 
 """
@@ -1677,7 +1752,7 @@ end
 """
     tangent_to_primal_internal!!(x, tx, c::MaybeCache)
 
-Internal implementation called by the `Val{:as_primal}` path of
+Internal implementation called by the [`AsPrimal`](@ref) path of
 [`tangent_to_friendly!!`](@ref) and recursively within itself.
 
 For mutable types, the cache should be used to avoid infinite recursion.

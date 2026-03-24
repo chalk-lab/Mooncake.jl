@@ -140,25 +140,30 @@ use-case, consider pre-allocating the `CoDual`s and calling the other method of 
 function. The `CoDual`s should be primal-tangent pairs (as opposed to primal-fdata pairs).
 There are lots of ways to get this wrong though, so we generally advise against doing this.
 """
+# Returns NoCache when all primals are bits types (no mutable aliasing possible).
+# Otherwise returns IdDict to handle aliased mutable buffers across the tuple of tangents.
+_friendly_cache(fx::Tuple) = all(isbitstype ∘ typeof, fx) ? NoCache() : IdDict{Any,Any}()
+
 # @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
 # perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
-@inline @unstable function value_and_pullback!!(
+@inline function value_and_pullback!!(
     rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
-    if friendly_tangents
-        ȳ = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
-        value, pb = __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
-        dests = map(friendly_tangent_cache, (fx...,))
-        c = IdDict{Any,Any}()
-        friendly_pb = tuple_map(
-            (dp, t) -> tangent_to_friendly!!(dp[1], dp[2], t, c),
-            tuple_map(tuple, dests, (fx...,)),
-            pb,
-        )
-        return value, friendly_pb
-    else
-        return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
-    end
+    friendly_tangents && return _value_and_pullback_friendly!!(rule, ȳ, fx...)
+    return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
+end
+
+@unstable function _value_and_pullback_friendly!!(
+    rule::R, ȳ, fx::Vararg{Any,N}
+) where {R,N}
+    ȳ = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
+    value, pb = __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
+    dests = map(friendly_tangent_cache, (fx...,))
+    c = _friendly_cache((fx...,))
+    friendly_pb = tuple_map(
+        (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, (fx...,), pb
+    )
+    return value, friendly_pb
 end
 
 """
@@ -184,22 +189,21 @@ value_and_gradient!!(rule, f, x, y)
 (4.0, (NoTangent(), [1.0, 1.0], [2.0, 2.0]))
 ```
 """
-@inline @unstable function value_and_gradient!!(
+@inline function value_and_gradient!!(
     rule::R, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
-    if friendly_tangents
-        value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
-        dests = map(friendly_tangent_cache, (fx...,))
-        c = IdDict{Any,Any}()
-        friendly_gradient = tuple_map(
-            (dp, t) -> tangent_to_friendly!!(dp[1], dp[2], t, c),
-            tuple_map(tuple, dests, (fx...,)),
-            gradient,
-        )
-        return value, friendly_gradient
-    else
-        return __value_and_gradient!!(rule, __create_coduals(fx)...)
-    end
+    friendly_tangents && return _value_and_gradient_friendly!!(rule, fx...)
+    return __value_and_gradient!!(rule, __create_coduals(fx)...)
+end
+
+@unstable function _value_and_gradient_friendly!!(rule::R, fx::Vararg{Any,N}) where {R,N}
+    value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
+    dests = map(friendly_tangent_cache, (fx...,))
+    c = _friendly_cache((fx...,))
+    friendly_gradient = tuple_map(
+        (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, (fx...,), gradient
+    )
+    return value, friendly_gradient
 end
 
 function __create_coduals(args)
@@ -607,11 +611,9 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
         value, pb = __value_and_pullback!!(
             cache.rule, ȳ, coduals...; y_cache=cache.y_cache
         )
-        c = IdDict{Any,Any}()
+        c = _friendly_cache((f, x...))
         friendly_pb = tuple_map(
-            (dp, t) -> tangent_to_friendly!!(dp[1], dp[2], t, c),
-            tuple_map(tuple, cache.dests, (f, x...)),
-            pb,
+            (d, p, t) -> tangent_to_friendly!!(d, p, t, c), cache.dests, (f, x...), pb
         )
         return value, friendly_pb
     else
@@ -696,11 +698,9 @@ value_and_gradient!!(cache, f, x, y)
     coduals = tuple_map(CoDual, (f, x...), tangents)
     if friendly_tangents
         value, gradient = __value_and_gradient!!(cache.rule, coduals...)
-        c = IdDict{Any,Any}()
+        c = _friendly_cache((f, x...))
         friendly_gradient = tuple_map(
-            (dp, t) -> tangent_to_friendly!!(dp[1], dp[2], t, c),
-            tuple_map(tuple, cache.dests, (f, x...)),
-            gradient,
+            (d, p, t) -> tangent_to_friendly!!(d, p, t, c), cache.dests, (f, x...), gradient
         )
         return value, friendly_gradient
     else
@@ -790,7 +790,7 @@ function value_and_derivative!!(
 
     # translate from native back to friendly
     if friendly_tangents
-        c = IdDict{Any,Any}()
+        c = _friendly_cache((output_primal,))
         output_friendly_tangent = tangent_to_friendly!!(
             cache.output_dest, output_primal, output_tangent, c
         )

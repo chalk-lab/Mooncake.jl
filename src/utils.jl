@@ -22,6 +22,10 @@ Binary extension of `tuple_map`. Nearly equivalent to `map(f, x, y)`, but guaran
 specialise on all element types of `x` and `y`. Furthermore, errors if `x` and `y` aren't
 the same length, while `map` will just produce a new tuple whose length is equal to the
 shorter of `x` and `y`.
+
+    tuple_map(f::F, x::Tuple, y::Tuple, z::Tuple) where {F}
+
+Ternary extension of `tuple_map`. Nearly equivalent to `map(f, x, y, z)`.
 """
 @inline @generated function tuple_map(f::F, x::Tuple) where {F}
     return Expr(:call, :tuple, map(n -> :(f(getfield(x, $n))), 1:fieldcount(x))...)
@@ -32,6 +36,18 @@ end
         return :(throw(ArgumentError("length(x) != length(y)")))
     else
         stmts = map(n -> :(f(getfield(x, $n), getfield(y, $n))), 1:fieldcount(x))
+        return Expr(:call, :tuple, stmts...)
+    end
+end
+
+@inline @generated function tuple_map(f::F, x::Tuple, y::Tuple, z::Tuple) where {F}
+    if length(x.parameters) != length(y.parameters) ||
+        length(x.parameters) != length(z.parameters)
+        return :(throw(ArgumentError("x, y, and z must have the same length")))
+    else
+        stmts = map(
+            n -> :(f(getfield(x, $n), getfield(y, $n), getfield(z, $n))), 1:fieldcount(x)
+        )
         return Expr(:call, :tuple, stmts...)
     end
 end

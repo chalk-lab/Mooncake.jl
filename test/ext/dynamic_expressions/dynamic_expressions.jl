@@ -80,7 +80,12 @@ end
             y, dfexpr = value_and_gradient!!(cache, eval_sum, expr)
             d_f, d_expr = dfexpr
 
+            # d_expr is a MutableTangent (friendly_tangents returns NamedTuple for immutable
+            # structs, but Expression/Node are mutable so the tangent is still MutableTangent).
+            # .tree is a PossiblyUninitTangent-wrapped MutableTangent; .children[2] accesses
+            # the second child node's tangent; .x is the val-field tangent; .val is Float64.
             const_tangent = d_expr.tree.children[2].x.val
+            @test const_tangent ≈ N
         end
 
         @testset "Propagate through a tree copy" begin
@@ -95,6 +100,7 @@ end
             d_f, d_expr = full_tangent
 
             const_tangent = d_expr.tree.children[2].x.val
+            @test const_tangent ≈ 100
         end
 
         @testset "Propagate through multiple tree operations" begin

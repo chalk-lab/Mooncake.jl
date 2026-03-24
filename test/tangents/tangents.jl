@@ -244,10 +244,10 @@ using DispatchDoctor: allow_unstable
         S = LinearAlgebra.Symmetric([1.0 2.0; 999.0 4.0], uplo)
         tx = Mooncake.build_tangent(typeof(S), tx_data, NoTangent())
         cache = Mooncake.friendly_tangent_cache(S)
-        @test cache isa Mooncake.FriendlyTangentCache{Val{:as_customised}}
+        @test cache isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
         dest = cache.buffer
         # internal!!: writes in-place, raw data copy
-        @test Mooncake.tangent_to_friendly_internal!!(S, dest, tx) === dest
+        @test Mooncake.tangent_to_friendly_internal!!(dest, S, tx) === dest
         @test dest == tx_data
         # 2-arg public API: allocates cache from friendly_tangent_cache, same result
         @test Mooncake.tangent_to_friendly!!(S, tx) == tx_data
@@ -258,9 +258,9 @@ using DispatchDoctor: allow_unstable
         H = LinearAlgebra.Hermitian([1.0 2.0; 999.0 4.0], uplo)
         tx = Mooncake.build_tangent(typeof(H), tx_data, NoTangent())
         cache = Mooncake.friendly_tangent_cache(H)
-        @test cache isa Mooncake.FriendlyTangentCache{Val{:as_customised}}
+        @test cache isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
         dest = cache.buffer
-        @test Mooncake.tangent_to_friendly_internal!!(H, dest, tx) === dest
+        @test Mooncake.tangent_to_friendly_internal!!(dest, H, tx) === dest
         @test dest == tx_data
         @test Mooncake.tangent_to_friendly!!(H, tx) == tx_data
     end
@@ -269,10 +269,10 @@ using DispatchDoctor: allow_unstable
         ST = LinearAlgebra.SymTridiagonal([1.0, 2.0, 3.0], [4.0, 5.0])
         tx = Mooncake.build_tangent(typeof(ST), [1.0, 2.0, 3.0], [6.0, 8.0])
         cache = Mooncake.friendly_tangent_cache(ST)
-        @test cache isa Mooncake.FriendlyTangentCache{Val{:as_customised}}
+        @test cache isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
         dest = cache.buffer
         # internal!!: writes in-place; dv on diagonal, ev on both off-diagonals, zeros elsewhere
-        @test Mooncake.tangent_to_friendly_internal!!(ST, dest, tx) === dest
+        @test Mooncake.tangent_to_friendly_internal!!(dest, ST, tx) === dest
         @test dest[1, 1] == 1.0 && dest[2, 2] == 2.0 && dest[3, 3] == 3.0
         @test dest[1, 2] == 6.0 && dest[2, 1] == 6.0
         @test dest[2, 3] == 8.0 && dest[3, 2] == 8.0
@@ -287,10 +287,10 @@ using DispatchDoctor: allow_unstable
         tx_S_data = [1.0 6.0; 0.0 1.0]
         tx_S = Mooncake.build_tangent(typeof(S), tx_S_data, NoTangent())
 
-        # scalar Float64: FriendlyTangentCache{Val{:as_raw}} leaf (tangent_type==P), returns tangent directly
+        # scalar Float64: FriendlyTangentCache{AsRaw} leaf (tangent_type==P), returns tangent directly
         @test Mooncake.tangent_to_friendly!!(s, 7.0) === 7.0
 
-        # Val{:as_customised} cache: delegates to tangent_to_friendly_internal!!, writes in-place
+        # AsCustomised cache: delegates to tangent_to_friendly_internal!!, writes in-place
         c_S = Mooncake.friendly_tangent_cache(S)
         result = Mooncake.tangent_to_friendly!!(c_S, S, tx_S, Mooncake.NoCache())
         @test result === c_S.buffer && result == tx_S_data
@@ -301,7 +301,7 @@ using DispatchDoctor: allow_unstable
 
     @testset "friendly_tangent_cache recursive struct" begin
         # Struct with a Symmetric field: friendly_tangent_cache should recurse and return
-        # a NamedTuple with a FriendlyTangentCache{Val{:as_customised}} for the matrix field.
+        # a NamedTuple with a FriendlyTangentCache{AsCustomised} for the matrix field.
         struct FooWithSym
             m::LinearAlgebra.Symmetric{Float64,Matrix{Float64}}
             v::Float64
@@ -309,8 +309,8 @@ using DispatchDoctor: allow_unstable
         foo = FooWithSym(LinearAlgebra.Symmetric([1.0 2.0; 3.0 4.0]), 3.14)
         d = Mooncake.friendly_tangent_cache(foo)
         @test d isa NamedTuple{(:m, :v)}
-        @test d.m isa Mooncake.FriendlyTangentCache{Val{:as_customised}}
-        @test d.v isa Mooncake.FriendlyTangentCache{Val{:as_raw}}
+        @test d.m isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
+        @test d.v isa Mooncake.FriendlyTangentCache{Mooncake.AsRaw}
 
         # Tangent for FooWithSym
         tx_m = Mooncake.build_tangent(typeof(foo.m), [0.5 1.0; 0.0 0.5], NoTangent())
@@ -326,8 +326,8 @@ using DispatchDoctor: allow_unstable
         t = (1.0, LinearAlgebra.Symmetric([1.0 2.0; 3.0 4.0]))
         d = Mooncake.friendly_tangent_cache(t)
         @test d isa Tuple
-        @test d[1] isa Mooncake.FriendlyTangentCache{Val{:as_raw}}   # Float64: raw == primal
-        @test d[2] isa Mooncake.FriendlyTangentCache{Val{:as_customised}}
+        @test d[1] isa Mooncake.FriendlyTangentCache{Mooncake.AsRaw}   # Float64: raw == primal
+        @test d[2] isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
 
         tx_t = (7.0, Mooncake.build_tangent(typeof(t[2]), [1.0 2.0; 0.0 1.0], NoTangent()))
         result = Mooncake.tangent_to_friendly!!(t, tx_t)
@@ -337,7 +337,7 @@ using DispatchDoctor: allow_unstable
     end
 
     @testset "friendly_tangent_cache mutable struct" begin
-        # Mutable structs use Val{:as_mutable_fields}: cache is a sentinel at prepare time,
+        # Mutable structs use AsMutableFields: cache is a sentinel at prepare time,
         # fields are unwrapped to a plain NamedTuple at tangent_to_friendly!! time.
         mutable struct MutFoo
             a::Float64
@@ -345,7 +345,7 @@ using DispatchDoctor: allow_unstable
         end
         x = MutFoo(2.0, [1.0, 2.0])
         d = Mooncake.friendly_tangent_cache(x)
-        @test d isa Mooncake.FriendlyTangentCache{Val{:as_mutable_fields}}
+        @test d isa Mooncake.FriendlyTangentCache{Mooncake.AsMutableFields}
 
         tx = Mooncake.MutableTangent((;
             a=Mooncake.PossiblyUninitTangent(3.0),
@@ -359,9 +359,9 @@ using DispatchDoctor: allow_unstable
 
     @testset "friendly_tangent_cache AbstractDict opt-in" begin
         # Dict is mutable: falls through to friendly_tangent_cache_internal via AbstractDict
-        # override, returning :as_primal.
+        # override, returning AsPrimal.
         d_cache = Mooncake.friendly_tangent_cache(Dict("a" => 1.0))
-        @test d_cache isa Mooncake.FriendlyTangentCache{Val{:as_primal}}
+        @test d_cache isa Mooncake.FriendlyTangentCache{Mooncake.AsPrimal}
     end
 end
 

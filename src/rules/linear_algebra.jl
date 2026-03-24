@@ -12,31 +12,36 @@
 # The stored triangle (for Symmetric/Hermitian) or diagonals (for SymTridiagonal) hold the
 # accumulated chain-rule gradient; all other entries are zero-initialised by Mooncake and
 # are left zero by fill! (SymTridiagonal) or implicit via copyto! (Symmetric/Hermitian).
+#
+# For Hermitian{T} where T is complex: the stored triangle of .data accumulates the
+# chain-rule gradient for both logical positions it represents (via Mooncake's usual
+# tangent accumulation), and the non-stored triangle is zero-initialised. copyto! copies
+# the full data matrix (including complex entries) to dest, which is a plain Matrix{T}.
 
 function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Symmetric{T}) where {T}
-    FriendlyTangentCache{Val{:as_customised}}(Matrix{T}(undef, size(x.data)...))
+    FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, size(x)...))
 end
 function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Hermitian{T}) where {T}
-    FriendlyTangentCache{Val{:as_customised}}(Matrix{T}(undef, size(x.data)...))
+    FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, size(x)...))
 end
 function Mooncake.friendly_tangent_cache(x::LinearAlgebra.SymTridiagonal{T}) where {T}
-    FriendlyTangentCache{Val{:as_customised}}(Matrix{T}(undef, length(x.dv), length(x.dv)))
+    FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, length(x.dv), length(x.dv)))
 end
 
 function Mooncake.tangent_to_friendly_internal!!(
-    ::LinearAlgebra.Symmetric{T}, tangent_as_friendly::Matrix{T}, tangent
+    tangent_as_friendly::Matrix{T}, ::LinearAlgebra.Symmetric{T}, tangent
 ) where {T}
     return copyto!(tangent_as_friendly, val(tangent.fields.data))
 end
 
 function Mooncake.tangent_to_friendly_internal!!(
-    ::LinearAlgebra.Hermitian{T}, tangent_as_friendly::Matrix{T}, tangent
+    tangent_as_friendly::Matrix{T}, ::LinearAlgebra.Hermitian{T}, tangent
 ) where {T}
     return copyto!(tangent_as_friendly, val(tangent.fields.data))
 end
 
 function Mooncake.tangent_to_friendly_internal!!(
-    ::LinearAlgebra.SymTridiagonal{T}, tangent_as_friendly::Matrix{T}, tangent
+    tangent_as_friendly::Matrix{T}, ::LinearAlgebra.SymTridiagonal{T}, tangent
 ) where {T}
     dv = val(tangent.fields.dv)
     ev = val(tangent.fields.ev)

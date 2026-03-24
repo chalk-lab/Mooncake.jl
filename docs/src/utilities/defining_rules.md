@@ -116,11 +116,12 @@ To expose a plain `Matrix{T}` gradient to the user:
 ```julia
 # Step 1: tell Mooncake to use a pre-allocated Matrix{T} buffer.
 Mooncake.friendly_tangent_cache(x::MyMatrix{T}) where {T} =
-    Mooncake.FriendlyTangentCache{Val{:as_customised}}(Matrix{T}(undef, size(x)...))
+    Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}(Matrix{T}(undef, size(x)...))
 
 # Step 2: implement the conversion from internal tangent to the buffer.
+# Argument order: (dest, primal, tangent) — dest is first, used for dispatch on its type.
 function Mooncake.tangent_to_friendly_internal!!(
-    ::MyMatrix{T}, dest::Matrix{T}, tangent
+    dest::Matrix{T}, ::MyMatrix{T}, tangent
 ) where {T}
     # `val` unwraps the stored field tangent; adjust the field name to match MyMatrix's layout.
     copyto!(dest, Mooncake.val(tangent.fields.data))
