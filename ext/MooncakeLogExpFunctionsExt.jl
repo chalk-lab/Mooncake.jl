@@ -17,6 +17,23 @@ import Mooncake:
     NoRData,
     extract,
     arrayify
+using Mooncake.NDuals: NDual
+
+# ── NDual performance fixes ───────────────────────────────────────────────────
+# logistic(x::Real) = inv(exp(-x) + one(x)) produces a zero-partial NDual from
+# one(x), making the + dispatch to NDual+NDual and generating `fadd 0.0, p[i]`
+# per partial slot that LLVM cannot fold (IEEE -0.0).  Use one(T) (plain scalar)
+# so the + hits the NDual+Real path whose partials are just copied, not added.
+@inline function LogExpFunctions.logistic(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    return inv(exp(-x) + one(T))
+end
+
+# _log1pexp_thresholds(x::Real) computes branch thresholds using oftype(x, logtwo),
+# producing zero-partial NDuals and running NDual arithmetic on pure constants.
+# Float64/Float32 have hardcoded overloads; redirect NDual to those.
+@inline function LogExpFunctions._log1pexp_thresholds(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    return LogExpFunctions._log1pexp_thresholds(x.value)
+end
 
 # Importing these rules provides improved numerical stability for `logistic`, and avoids
 # incorrect derivatives arising from a 'fast branch' in `logaddexp(x1, x2)` where x1 == x2

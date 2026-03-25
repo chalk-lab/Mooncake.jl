@@ -5,7 +5,7 @@
 module NDuals
 
 using Base: IEEEFloat
-import LinearAlgebra
+using LinearAlgebra: LinearAlgebra
 
 export NDual
 
@@ -408,7 +408,67 @@ end
     return NDual{T,N}(vi, _pt_scale(a.partials, -(vi * vi)))
 end
 
-@inline Base.muladd(a::NDual{T,N}, b::NDual{T,N}, c::NDual{T,N}) where {T,N} = a * b + c
+# FMA (Fused Multiply-Add) based muladd: a single CPU instruction computes a*b+c
+# in one step instead of separate fmul+fadd.  The default `a*b+c` would compute
+# the product rule in two passes, emitting separate fmul+fadd per partial slot.
+# Using nested muladd fuses both into two FMA instructions per slot:
+#   value:   muladd(va, vb, vc)
+#   partial: muladd(va, pb[i], muladd(vb, pa[i], pc[i]))
+# This halves the instruction count for the matmul inner loop and triangular-
+# solve back-substitution, which are the dominant cost in sum_matmat / sum_linsolve.
+@inline function Base.muladd(a::NDual{T,N}, b::NDual{T,N}, c::NDual{T,N}) where {T,N}
+    return NDual{T,N}(
+        muladd(a.value, b.value, c.value),
+        ntuple(
+            i -> muladd(
+                a.value, b.partials[i], muladd(b.value, a.partials[i], c.partials[i])
+            ),
+            Val(N),
+        ),
+    )
+end
+# Base.fma guarantees a single hardware FMA instruction (no intermediate rounding),
+# whereas muladd may or may not fuse depending on platform/compiler flags.
+@inline function Base.fma(a::NDual{T,N}, b::NDual{T,N}, c::NDual{T,N}) where {T,N}
+    return NDual{T,N}(
+        fma(a.value, b.value, c.value),
+        ntuple(
+            i -> fma(a.value, b.partials[i], fma(b.value, a.partials[i], c.partials[i])),
+            Val(N),
+        ),
+    )
+end
+
+# Real*NDual+NDual and NDual*Real+NDual: the mixed cases arise in triangular solves
+# where the factor matrix is Float64 and the rhs is NDual.  One FMA per partial slot.
+@inline function Base.muladd(a::R, b::NDual{T,N}, c::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    return NDual{S,N}(
+        muladd(S(a), S(b.value), S(c.value)),
+        ntuple(i -> muladd(S(a), S(b.partials[i]), S(c.partials[i])), Val(N)),
+    )
+end
+@inline function Base.fma(a::R, b::NDual{T,N}, c::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    return NDual{S,N}(
+        fma(S(a), S(b.value), S(c.value)),
+        ntuple(i -> fma(S(a), S(b.partials[i]), S(c.partials[i])), Val(N)),
+    )
+end
+@inline function Base.muladd(a::NDual{T,N}, b::R, c::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    return NDual{S,N}(
+        muladd(S(a.value), S(b), S(c.value)),
+        ntuple(i -> muladd(S(a.partials[i]), S(b), S(c.partials[i])), Val(N)),
+    )
+end
+@inline function Base.fma(a::NDual{T,N}, b::R, c::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    return NDual{S,N}(
+        fma(S(a.value), S(b), S(c.value)),
+        ntuple(i -> fma(S(a.partials[i]), S(b), S(c.partials[i])), Val(N)),
+    )
+end
 
 # ── Integer and real power ────────────────────────────────────────────────────────
 
@@ -766,13 +826,18 @@ Base.isreal(::NDual) = true
 # an external call.  This specialisation keeps the loop body inlinable so LLVM can
 # vectorise the partials accumulation.
 @inline function LinearAlgebra.dot(
-    x::AbstractVector{NDual{T,N}}, y::AbstractVector{NDual{T,N}}) where {T,N}
+    x::AbstractVector{NDual{T,N}}, y::AbstractVector{NDual{T,N}}
+) where {T,N}
     lx = length(x)
-    lx == length(y) || throw(DimensionMismatch(lazy"first array has length $(lx) which does not match the length of the second, $(length(y))."))
+    lx == length(y) || throw(
+        DimensionMismatch(
+            lazy"first array has length $(lx) which does not match the length of the second, $(length(y)).",
+        ),
+    )
     lx == 0 && return NDual{T,N}(zero(T))
     @inbounds s = x[1] * y[1]
     @inbounds for i in 2:lx
-        s = s + x[i] * y[i]
+        s = muladd(x[i], y[i], s)
     end
     return s
 end
@@ -785,6 +850,18 @@ Base.:<=(a::NDual, b::NDual) = a.value <= b.value
 Base.:>=(a::NDual, b::NDual) = a.value >= b.value
 Base.:(==)(a::NDual, b::NDual) = a.value == b.value
 Base.isless(a::NDual, b::NDual) = isless(a.value, b.value)
+
+# NDual vs plain Real: compare value directly, avoiding zero-partial NDual construction
+# via promotion.  The NDual×NDual methods above are more specific and still win when
+# both sides are NDual.
+Base.:<(a::NDual, b::Real) = a.value < b
+Base.:>(a::NDual, b::Real) = a.value > b
+Base.:<=(a::NDual, b::Real) = a.value <= b
+Base.:>=(a::NDual, b::Real) = a.value >= b
+Base.:<(a::Real, b::NDual) = a < b.value
+Base.:>(a::Real, b::NDual) = a > b.value
+Base.:<=(a::Real, b::NDual) = a <= b.value
+Base.:>=(a::Real, b::NDual) = a >= b.value
 Base.isnan(a::NDual) = isnan(a.value)
 Base.isinf(a::NDual) = isinf(a.value)
 Base.isfinite(a::NDual) = isfinite(a.value)
@@ -914,7 +991,9 @@ for _op in (:floor, :ceil, :trunc)
         return NDual{T,N}(Base.$_op(ndual_value(x)), ntuple(_ -> zero(T), Val(N)))
     end
 end
-@inline function Base.round(x::NDual{T,N}, r::RoundingMode=RoundNearest) where {T<:IEEEFloat,N}
+@inline function Base.round(
+    x::NDual{T,N}, r::RoundingMode=RoundNearest
+) where {T<:IEEEFloat,N}
     return NDual{T,N}(round(ndual_value(x), r), ntuple(_ -> zero(T), Val(N)))
 end
 
