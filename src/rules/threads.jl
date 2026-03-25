@@ -55,7 +55,10 @@ end
     # Forward pass: run f element-wise in parallel, storing per-element pullbacks.
     # Zero yd[i] because we overwrite output[i] (mirrors isbits_arrayset_rrule).
     # Calls rrule!! directly — Julia's method dispatch caches the specialisation.
-    pullbacks = Vector{Any}(undef, n)
+    # Infer the concrete pullback type via Core.Compiler.return_type (same technique
+    # as Base.Broadcast.combine_eltypes) to avoid a Vector{Any}.
+    PBType = pullback_type(typeof(rrule!!), (F, map(eltype, xps)...))
+    pullbacks = Vector{PBType}(undef, n)
     Threads.@threads for i in 1:n
         xi = ntuple(j -> CoDual(xps[j][i], NoFData()), Val(N))
         yi_codual, pb = rrule!!(zero_fcodual(fp), xi...)
