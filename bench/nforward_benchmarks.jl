@@ -22,7 +22,7 @@
 using Pkg
 Pkg.develop(; path=joinpath(@__DIR__, ".."))
 
-using Chairmarks, DiffTests, ForwardDiff, Mooncake, PrettyTables, Printf, StableRNGs, Statistics
+using Chairmarks, DiffTests, ForwardDiff, LogExpFunctions, Mooncake, PrettyTables, Printf, StableRNGs, Statistics
 
 using Mooncake:
     Dual, CoDual, NoFData, NoTangent, primal, tangent, fdata, zero_tangent, zero_rdata
@@ -69,6 +69,48 @@ end
 _nfb_map_sin_cos_exp(x::AbstractArray{<:Real}) = sum(map(z -> sin(cos(exp(z))), x))
 _nfb_broadcast_sin_cos_exp(x::AbstractArray{<:Real}) = sum(sin.(cos.(exp.(x))))
 _nfb_large_single_block(x::AbstractVector{<:Real}) = _nfb_g(x[1], x[2], Val(400))
+
+# ── DiffTests: num2num (scalar→scalar wrapped as 1-element vector) ─────────────
+# Wrapping as x -> f(x[1]) gives DOF=1; ForwardDiff.gradient on a 1-element vec
+# is equivalent to ForwardDiff.derivative, so FD comparison remains valid.
+_nfb_num2num_1(x) = DiffTests.num2num_1(x[1])   # sin(x)^2 / cos(x)^2
+_nfb_num2num_2(x) = DiffTests.num2num_2(x[1])   # 2x + sqrt(x³),  x > 0
+_nfb_num2num_3(x) = DiffTests.num2num_3(x[1])   # 10.31^(2x) − x
+_nfb_num2num_5(x) = DiffTests.num2num_5(x[1])   # sigmoid(x)
+
+# ── DiffTests: mat2num (additional matrix→scalar functions) ───────────────────
+# mat2num_2 uses reshape() internally so it accepts a flattened vector directly.
+# Inputs must be small and positive to keep the log() argument above zero.
+_nfb_mat2num_2(x) = DiffTests.mat2num_2(x)
+# mat2num_4(M) = mean(sum(sin.(M) * M, dims=2)) requires a 2-D matrix; wrap so
+# ForwardDiff can use the flattened vector (FD calls f(vec(x)) internally).
+_nfb_mat2num_4(x) = DiffTests.mat2num_4(reshape(x, 4, 4))
+
+# ── logexpfunctions: scalar functions applied element-wise (vec→scalar) ────────
+# Mirrors test/integration_testing/logexpfunctions/ scalar cases.
+_nfb_logsumexp(x)     = logsumexp(x)
+_nfb_sum_xlogx(x)     = sum(xlogx.(x))            # x*log(x),  x > 0
+_nfb_sum_logistic(x)  = sum(logistic.(x))          # 1/(1+exp(−x))
+_nfb_sum_log1pexp(x)  = sum(log1pexp.(x))          # log(1+exp(x))
+_nfb_sum_logcosh(x)   = sum(logcosh.(x))           # log(cosh(x))
+# logaddexp uses two halves of the input vector as the two arguments
+_nfb_sum_logaddexp(x) = sum(logaddexp.(x[1:end÷2], x[end÷2+1:end]))
+
+# ── array: linear-algebra scalar wrappers ─────────────────────────────────────
+# Mirrors test/integration_testing/array/array.jl matrix-operation test cases.
+# Constants are fixed at load time; the gradient input is the vector x.
+using LinearAlgebra
+const _nfb_A5  = randn(StableRNG(1), 5, 5)                  # arbitrary 5×5 matrix
+const _nfb_M5  = _nfb_A5 * _nfb_A5' + 5 * I                # positive-definite solve target
+_nfb_sum_matvec(x)  = sum(_nfb_A5 * x)                      # matrix–vector product
+_nfb_sum_linsolve(x) = sum(_nfb_M5 \ x)                     # linear solve (A\b)
+_nfb_sum_matmat(x)  = sum(reshape(x, 5, 5) * reshape(x, 5, 5))  # matrix–matrix product
+
+# ── misc_abstract_array: view / indexing scalar wrappers ─────────────────────
+# Mirrors test/integration_testing/misc_abstract_array/misc_abstract_array.jl.
+# (map and broadcast already covered in the Mooncake baseline section above.)
+_nfb_sum_view(x)     = sum(view(x, 1:5))           # SubArray gradient
+_nfb_sum_getindex(x) = x[1] + x[3] + x[5] + x[7] + x[9]  # scattered reads
 
 # ── DOF helpers ───────────────────────────────────────────────────────────────
 
@@ -143,6 +185,15 @@ function nfb_cases(rng)
     v10  = abs.(randn(rng, 10)) .+ 0.1  # positive entries for log/sqrt safety
     v100 = randn(rng, 100)
     m5   = randn(rng, 5, 5)
+
+    # Extra input vectors for new sections.
+    v1_pos  = [1.5]                              # DOF=1 scalar wrap, positive
+    v16_pos = abs.(randn(rng, 16)) .* 0.1 .+ 0.1  # DOF=16 small-positive for mat2num_2
+    v100_pos = abs.(randn(rng, 100)) .+ 0.01    # positive for xlogx/logit
+    v100_pair = randn(rng, 100)                  # even-length for logaddexp split
+    v5   = randn(rng, 5)                         # DOF=5 for LA cases
+    v10_misc = randn(rng, 10)                    # DOF=10 for misc_abstract_array
+
     return [
         # ── Mooncake baseline suite ──────────────────────────────────────────────
         ("sum_1000",              sum,                        (v1k,),         8),
@@ -171,6 +222,44 @@ function nfb_cases(rng)
         # mat2num_1 omitted: calls x*x which means matrix product for Matrix input but
         # vector product for vec(x) (used in the FD comparison), so benchmarks differ.
         ("mat2num_3",             DiffTests.mat2num_3,        (m5,),          8),
+        # ── DiffTests: num2num (scalar→scalar, wrapped as 1-element vector) ──────
+        # From DiffTests.NUMBER_TO_NUMBER_FUNCS; vec2num_4 omitted (returns Int64=1).
+        # Wrapped as f(x[1]) so FD comparison uses gradient of a 1-element array.
+        ("num2num_1",             _nfb_num2num_1,             (v1_pos,),      1),
+        ("num2num_2",             _nfb_num2num_2,             (v1_pos,),      1),
+        ("num2num_3",             _nfb_num2num_3,             (v1_pos,),      1),
+        ("num2num_5",             _nfb_num2num_5,             (v1_pos,),      1),
+        # ── DiffTests: additional matrix→scalar ──────────────────────────────────
+        # mat2num_2 accepts a flattened vector (uses reshape internally).
+        # mat2num_4 wraps reshape(x, 4, 4) to accept vector input for FD comparison.
+        ("mat2num_2",             _nfb_mat2num_2,             (v16_pos,),     8),
+        ("mat2num_4",             _nfb_mat2num_4,             (randn(rng, 16),), 8),
+        # ── logexpfunctions integration test functions ────────────────────────────
+        # Mirrors test/integration_testing/logexpfunctions/logexpfunctions.jl.
+        # Array→scalar: logsumexp directly; scalar functions applied element-wise.
+        # v100_pair has even length so logaddexp can split it into two halves.
+        ("logsumexp",             _nfb_logsumexp,             (v100,),        8),
+        ("sum_xlogx",             _nfb_sum_xlogx,             (v100_pos,),    8),
+        ("sum_logistic",          _nfb_sum_logistic,          (v100,),        8),
+        ("sum_log1pexp",          _nfb_sum_log1pexp,          (v100,),        8),
+        ("sum_logcosh",           _nfb_sum_logcosh,           (v100,),        8),
+        ("sum_logaddexp",         _nfb_sum_logaddexp,         (v100_pair,),   8),
+        # ── array integration test functions ─────────────────────────────────────
+        # Mirrors test/integration_testing/array/array.jl linear-algebra cases.
+        # Constants _nfb_A5 / _nfb_M5 are fixed at load time; gradient is w.r.t. x.
+        ("sum_matvec",            _nfb_sum_matvec,            (v5,),          5),
+        ("sum_linsolve",          _nfb_sum_linsolve,          (v5,),          5),
+        ("sum_matmat",            _nfb_sum_matmat,            (vec(m5),),     8),
+        # ── misc_abstract_array integration test functions ────────────────────────
+        # Mirrors test/integration_testing/misc_abstract_array/misc_abstract_array.jl.
+        # map/broadcast already covered by naive_map_sin_cos_exp / broadcast_sin_cos_exp.
+        ("sum_view",              _nfb_sum_view,              (v10_misc,),    5),
+        ("sum_getindex",          _nfb_sum_getindex,          (v10_misc,),    5),
+        # ── battery_tests: not applicable ────────────────────────────────────────
+        # test/integration_testing/battery_tests/battery_tests.jl runs Mooncake.TestUtils.test_data
+        # on plain values/types (booleans, ints, strings, arrays, custom structs) to verify
+        # tangent-type correctness.  It does not differentiate any functions, so there are
+        # no gradient benchmarks to add from that file.
     ]
 end
 
