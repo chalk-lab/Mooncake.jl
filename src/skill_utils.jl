@@ -172,15 +172,18 @@ end
     This is not part of the public interface of Mooncake.
 
 Inspect IR transformations for a function call. Returns an `IRInspection` struct
-containing all stages, diffs, and CFG data.
+containing all stages and diffs.
 
 # Keyword Arguments
 - `mode::Symbol = :reverse`: `:forward` or `:reverse` mode
-- `world::UInt = Base.get_world_counter()`: World age for compilation
-- `optimize::Bool = true`: Whether to run optimization passes
-- `do_inline::Bool = true`: Whether to inline during optimization
-- `compute_diffs::Bool = true`: Whether to compute diffs between stages
-- `debug_mode::Bool = false`: Enable Mooncake debug mode
+- `world::UInt = Base.get_world_counter()`: world age recorded in the result
+  for diagnostics (used by `world_age_info`), but does not influence IR generation
+- `optimize::Bool = true`: whether to run the final `optimise_ir!` pass
+  (intermediate stages are always generated without inlining for readability)
+- `do_inline::Bool = true`: whether to inline during the final optimization pass
+  (only has an effect when `optimize=true`)
+- `compute_diffs::Bool = true`: whether to compute diffs between stages
+- `debug_mode::Bool = false`: enable Mooncake debug mode
 """
 function inspect_ir(
     f,
@@ -192,6 +195,8 @@ function inspect_ir(
     compute_diffs::Bool=true,
     debug_mode::Bool=false,
 )
+    mode in (:forward, :reverse) ||
+        throw(ArgumentError("mode must be :forward or :reverse, got :$mode"))
     sig = Tuple{typeof(f),map(typeof, args)...}
     interp_mode = mode == :forward ? ForwardMode : ReverseMode
     interp = get_interpreter(interp_mode)
