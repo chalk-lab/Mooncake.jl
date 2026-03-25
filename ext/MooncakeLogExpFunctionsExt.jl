@@ -55,6 +55,19 @@ end
            T(LogExpFunctions.IrrationalConstants.logtwo)
 end
 
+# xlogx(x) = x == 0 ? zero(x*log(x)) : x*log(x).  The generic implementation computes
+# x*log(x) speculatively over the full NDual before the iszero branch can discard the
+# result.  Specialise to: (1) early-exit on x.value (scalar branch, no NDual work),
+# (2) compute log once at scalar level, (3) apply the chain rule d/dx[x log x] = log(x)+1
+# with a single scalar multiply per partial slot, saving one NDual multiply and one NDual log.
+@inline function LogExpFunctions.xlogx(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    iszero(v) && return zero(x)
+    lv = log(v)
+    d = lv + one(T)  # derivative: d/dx[x log x] = log(x) + 1
+    return NDual(v * lv, ntuple(i -> x.partials[i] * d, Val(N)))
+end
+
 # Importing these rules provides improved numerical stability for `logistic`, and avoids
 # incorrect derivatives arising from a 'fast branch' in `logaddexp(x1, x2)` where x1 == x2
 # (similar to that for `logsumexp` below). The other chain rules for LogExpFunctions were
