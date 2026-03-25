@@ -35,6 +35,26 @@ end
     return LogExpFunctions._log1pexp_thresholds(x.value)
 end
 
+# log1pexp, _log1pexp, and logcosh are not @inline in LogExpFunctions, so the
+# compiler cannot fuse their branch structure with the caller's loop body.
+# Specialize here so the entire computation inlines at the call site.
+@inline function LogExpFunctions._log1pexp(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    x1, x2, x3, x4 = LogExpFunctions._log1pexp_thresholds(x)
+    x < x1 && return zero(x)
+    x < x2 && return exp(x)
+    x < x3 && return log1p(exp(x))
+    x < x4 && return x + exp(-x)
+    return x
+end
+
+@inline function LogExpFunctions.logcosh(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    abs_x = abs(x)
+    # Call _log1pexp directly (inline) rather than log1pexp, to avoid inlining the
+    # 5-branch body into logaddexp (which also calls log1pexp) and bloating that path.
+    return abs_x + LogExpFunctions._log1pexp(-2 * abs_x) -
+           T(LogExpFunctions.IrrationalConstants.logtwo)
+end
+
 # Importing these rules provides improved numerical stability for `logistic`, and avoids
 # incorrect derivatives arising from a 'fast branch' in `logaddexp(x1, x2)` where x1 == x2
 # (similar to that for `logsumexp` below). The other chain rules for LogExpFunctions were

@@ -842,6 +842,20 @@ Base.isreal(::NDual) = true
     return s
 end
 
+# ── LinearAlgebra.ldiv for LU{T} with NDual rhs ──────────────────────────────────
+# The generic ldiv(F::Factorization, B) (non-mutating) converts the factorization to
+# LU{NDual} before calling ldiv!, allocating a full Matrix{NDual} for no reason.
+# The generic ldiv!(A::LU, B::AbstractVecOrMat) already handles mixed element types
+# (Float64 factors, NDual rhs) correctly via _apply_ipiv_rows! + triangular solves.
+# Override ldiv to bypass the conversion and call ldiv! directly.
+@inline function LinearAlgebra.ldiv(
+    F::LinearAlgebra.LU{T,<:AbstractMatrix{T}}, b::AbstractVector{<:NDual{T}}
+) where {T}
+    bb = copy(b)
+    LinearAlgebra.ldiv!(F, bb)
+    return bb
+end
+
 # ── Comparisons (on value only — for control flow in kernels) ──────────────────────
 
 Base.:<(a::NDual, b::NDual) = a.value < b.value

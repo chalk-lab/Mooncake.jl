@@ -593,4 +593,26 @@ using Mooncake.NDuals
         # dimension mismatch throws
         @test_throws DimensionMismatch LinearAlgebra.dot(xd, [_d(1.0, 0.0)])
     end
+
+    @testset "LinearAlgebra.ldiv (LU{Float64} backslash Vector{NDual})" begin
+        # Verify that LU{Float64} \ Vector{NDual} uses the Float64-coefficient path
+        # instead of converting to LU{NDual}, and produces correct values and partials.
+        A = [4.0 1.0; 1.0 3.0]   # SPD 2×2
+        F = lu(A)
+        # x = NDual with value [1.0, 2.0]; seed on slot 1
+        xd = [_d2(1.0, 1.0, 0.0), _d2(2.0, 0.0, 1.0)]
+        # expected: A \ [1,2] = [0.2, 0.6] (since A = [4 1; 1 3], det=11)
+        y_val = A \ [1.0, 2.0]
+        yd = F \ xd
+        @test NDuals.ndual_value(yd[1]) ≈ y_val[1]
+        @test NDuals.ndual_value(yd[2]) ≈ y_val[2]
+        # partial w.r.t. slot 1: A \ [1,0]
+        dy1 = A \ [1.0, 0.0]
+        @test NDuals.ndual_partial(yd[1], 1) ≈ dy1[1]
+        @test NDuals.ndual_partial(yd[2], 1) ≈ dy1[2]
+        # partial w.r.t. slot 2: A \ [0,1]
+        dy2 = A \ [0.0, 1.0]
+        @test NDuals.ndual_partial(yd[1], 2) ≈ dy2[1]
+        @test NDuals.ndual_partial(yd[2], 2) ≈ dy2[2]
+    end
 end
