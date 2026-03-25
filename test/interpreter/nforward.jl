@@ -562,3 +562,148 @@ end
         end
     end
 end
+
+# ── Integration test helpers ──────────────────────────────────────────────────
+# Module-level constants and wrappers so functions are singleton callables.
+
+const _nfw_A5 = randn(Xoshiro(99), 5, 5)
+const _nfw_M5 = _nfw_A5 * _nfw_A5' + 5LinearAlgebra.I
+_nfw_sum_matvec(x)   = sum(_nfw_A5 * x)
+_nfw_sum_linsolve(x) = sum(_nfw_M5 \ x)
+_nfw_sum_matmat(x)   = sum(reshape(x, 5, 5) * reshape(x, 5, 5))
+_nfw_sum_view(x)     = sum(view(x, 1:5))
+_nfw_sum_getindex(x) = x[1] + x[3] + x[5] + x[7] + x[9]
+
+# ── logexpfunctions integration ───────────────────────────────────────────────
+# All singleton scalar and vector/matrix functions from
+# test/integration_testing/logexpfunctions/logexpfunctions.jl.
+#
+# Excluded (API limitations, not missing NDual rules):
+#   logsumexp(x; dims=...) — kwarg lambda, not singleton callable
+#   logsumexp!             — mutating output argument
+#   softmax                — vector output (value_and_gradient!! rejects)
+@testset "logexpfunctions integration" begin
+    using LogExpFunctions
+    rng = Xoshiro(1)
+
+    scalar1_cases = Any[
+        (xlogx,          1.1),
+        (xexpx,          -0.5),
+        (logistic,       0.5),
+        (logit,          0.3),
+        (logcosh,        1.5),
+        (logabssinh,     0.3),
+        (log1psq,        0.3),
+        (log1pexp,       0.1),
+        (log1mexp,       -0.5),
+        (log2mexp,       0.1),
+        (logexpm1,       0.1),
+        (log1pmx,        -0.95),
+        (logmxp1,        0.02),
+        (cloglog,        0.5),
+        (cexpexp,        -0.3),
+        (loglogistic,    0.5),
+        (logitexp,       -0.3),
+        (log1mlogistic,  -0.9),
+        (logit1mexp,     -0.6),
+    ]
+    @testset "$f" for (f, x) in scalar1_cases
+        nf = NForwardRRuleTestFunc{1,typeof(f)}(f)
+        Mooncake.TestUtils.test_rule(
+            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
+        )
+    end
+
+    scalar2_cases = Any[
+        (xlogy,     0.3,  1.2),
+        (xlog1py,   0.3,  -0.5),
+        (xexpy,     1.0,  -0.7),
+        (logaddexp, -0.5, 0.4),
+        (logaddexp, 1.5,  1.5),   # equal-input edge case, see #881
+        (logsubexp, -0.5, -5.0),
+    ]
+    @testset "$f($a, $b)" for (f, a, b) in scalar2_cases
+        nf = NForwardRRuleTestFunc{2,typeof(f)}(f)
+        Mooncake.TestUtils.test_rule(
+            rng, nf, a, b; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
+        )
+    end
+
+    @testset "logsumexp($desc)" for (desc, x) in [
+        ("vector",     randn(rng, 5)),
+        ("matrix",     randn(rng, 5, 4)),
+        ("view",       view(randn(rng, 5), 1:4)),
+        ("[1.0,1.0]",  [1.0, 1.0]),   # equal-input edge case, see #881
+    ]
+        nf = NForwardRRuleTestFunc{8,typeof(logsumexp)}(logsumexp)
+        Mooncake.TestUtils.test_rule(
+            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
+        )
+    end
+
+    # Float32 — verify LogExpFunctions' precision-generic branches work
+    @testset "$f (Float32)" for (f, x) in Any[
+        (xlogx,    Float32(1.1)),
+        (logistic, Float32(0.5)),
+        (log1pexp, Float32(0.1)),
+        (logcosh,  Float32(1.5)),
+    ]
+        nf = NForwardRRuleTestFunc{1,typeof(f)}(f)
+        Mooncake.TestUtils.test_rule(
+            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
+        )
+    end
+    @testset "logaddexp (Float32)" begin
+        nf = NForwardRRuleTestFunc{2,typeof(logaddexp)}(logaddexp)
+        Mooncake.TestUtils.test_rule(
+            rng, nf, -Float32(0.5), Float32(0.4);
+            is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
+        )
+    end
+end
+
+# ── array integration ─────────────────────────────────────────────────────────
+# Representative LA cases from test/integration_testing/array/array.jl.
+# Uses module-level constant matrices (_nfw_A5, _nfw_M5) for singleton wrappers.
+#
+# Excluded (API limitations, not missing rules):
+#   mul! / setindex! / push! — mutating
+#   adjoint / Transpose outputs — non-dense output type rejected
+@testset "array integration" begin
+    rng = Xoshiro(2)
+    @testset "$name" for (name, f, x, C) in [
+        ("sum_matvec",   _nfw_sum_matvec,   randn(rng, 5),  5),
+        ("sum_linsolve", _nfw_sum_linsolve, randn(rng, 5),  5),
+        ("sum_matmat",   _nfw_sum_matmat,   randn(rng, 25), 8),
+    ]
+        nf = NForwardRRuleTestFunc{C,typeof(f)}(f)
+        Mooncake.TestUtils.test_rule(
+            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
+        )
+    end
+end
+
+# ── misc_abstract_array integration ──────────────────────────────────────────
+# View and getindex cases from
+# test/integration_testing/misc_abstract_array/misc_abstract_array.jl.
+# Wrapped as named functions because Int/UnitRange inputs are rejected by
+# nforward's input validation when passed directly to getindex/view.
+#
+# Excluded (API limitations, not missing rules):
+#   getindex(arr, Int)     — Int64 input rejected
+#   view(arr, Range, Int)  — UnitRange/Int64 inputs rejected
+#   setindex! / push!      — mutating
+#   Pointer operations     — not differentiable
+#   map/broadcast wrappers — vector output (pullback needed, not gradient)
+@testset "misc_abstract_array integration" begin
+    rng = Xoshiro(3)
+    @testset "$name" for (name, f, x, C) in [
+        ("sum_view",     _nfw_sum_view,     randn(rng, 10), 5),
+        ("sum_getindex", _nfw_sum_getindex, randn(rng, 10), 5),
+    ]
+        nf = NForwardRRuleTestFunc{C,typeof(f)}(f)
+        Mooncake.TestUtils.test_rule(
+            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
+        )
+    end
+end
