@@ -1,4 +1,5 @@
 # NDual unit tests — pure arithmetic on the NDual type; no GPU device required.
+using LinearAlgebra
 using Mooncake.NDuals
 @testset "NDual" begin
     # helpers
@@ -507,5 +508,27 @@ using Mooncake.NDuals
         # -0.0 partials must also be treated as zero (==-based, not ===-based)
         @test iszero(NDual{Float64,1}(0.0, (-0.0,)))
         @test hash(_d(3.0, 1.0), UInt(0)) == hash(3.0, UInt(0))
+    end
+
+    @testset "LinearAlgebra.dot" begin
+        # xd = [3+t·1, 4+t·0], yd = [1+t·0, 2+t·1]
+        # dot = 3·1 + 4·2 = 11; ∂dot/∂t = 1·1 + 4·1 = 5
+        xd = [_d(3.0, 1.0), _d(4.0, 0.0)]
+        yd = [_d(1.0, 0.0), _d(2.0, 1.0)]
+        d = LinearAlgebra.dot(xd, yd)
+        @test NDuals.ndual_value(d) ≈ 3.0 * 1.0 + 4.0 * 2.0   # = 11
+        @test NDuals.ndual_partial(d, 1) ≈ 1.0 + 4.0            # = 5
+
+        # dot(x, x) = sum(x[i]^2); ∂dot/∂t = 2·3·1 + 2·4·0 = 6
+        d2 = LinearAlgebra.dot(xd, xd)
+        @test NDuals.ndual_value(d2) ≈ 3.0^2 + 4.0^2            # = 25
+        @test NDuals.ndual_partial(d2, 1) ≈ 2.0 * 3.0           # = 6
+
+        # empty input returns zero NDual
+        empty = NDual{Float64,1}[]
+        @test LinearAlgebra.dot(empty, empty) == NDual{Float64,1}(0.0)
+
+        # dimension mismatch throws
+        @test_throws DimensionMismatch LinearAlgebra.dot(xd, [_d(1.0, 0.0)])
     end
 end

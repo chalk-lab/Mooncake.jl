@@ -5,6 +5,7 @@
 module NDuals
 
 using Base: IEEEFloat
+import LinearAlgebra
 
 export NDual
 
@@ -744,11 +745,29 @@ end
 # ── Real / imag / conj — for Complex{NDual} to compose generically ────────────────
 # A NDual is always the "real part" of itself; conj is the identity for reals.
 
-Base.real(a::NDual) = a
+@inline Base.real(a::NDual) = a
 Base.imag(a::NDual{T,N}) where {T,N} = zero(NDual{T,N})
-Base.conj(a::NDual) = a
+@inline Base.conj(a::NDual) = a
 Base.reim(a::NDual{T,N}) where {T,N} = (a, zero(NDual{T,N}))
 Base.isreal(::NDual) = true
+
+# ── LinearAlgebra.dot specialisation ──────────────────────────────────────────────
+# The generic AbstractArray fallback calls dot(x[i], y[i]) per element via an
+# out-of-line function (sret convention for large structs), which prevents LLVM from
+# fusing the inner loop.  For NDual{T,8} each element costs 2×72-byte memcpys plus
+# an external call.  This specialisation keeps the loop body inlinable so LLVM can
+# vectorise the partials accumulation.
+@inline function LinearAlgebra.dot(
+    x::AbstractVector{NDual{T,N}}, y::AbstractVector{NDual{T,N}}) where {T,N}
+    lx = length(x)
+    lx == length(y) || throw(DimensionMismatch(lazy"first array has length $(lx) which does not match the length of the second, $(length(y))."))
+    lx == 0 && return NDual{T,N}(zero(T))
+    @inbounds s = x[1] * y[1]
+    @inbounds for i in 2:lx
+        s = s + x[i] * y[i]
+    end
+    return s
+end
 
 # ── Comparisons (on value only — for control flow in kernels) ──────────────────────
 
