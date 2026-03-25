@@ -22,7 +22,7 @@
 using Pkg
 Pkg.develop(; path=joinpath(@__DIR__, ".."))
 
-using Chairmarks, ForwardDiff, Mooncake, PrettyTables, Printf, StableRNGs, Statistics
+using Chairmarks, DiffTests, ForwardDiff, Mooncake, PrettyTables, Printf, StableRNGs, Statistics
 
 using Mooncake:
     Dual, CoDual, NoFData, NoTangent, primal, tangent, fdata, zero_tangent, zero_rdata
@@ -148,6 +148,8 @@ function nfb_cases(rng)
         ("broadcast_sin_cos_exp", _nfb_broadcast_sin_cos_exp, (m10,),         8),
         # DOF=2 so cN=cDOF; the cN and cDOF columns (and all three fd_grad columns) are identical.
         ("large_single_block",    _nfb_large_single_block,    ([0.9, 0.99],), 2),
+        ("rosenbrock_1",          DiffTests.rosenbrock_1,     (randn(rng, 100),), 8),
+        ("ackley",                DiffTests.ackley,           (randn(rng, 100),), 8),
     ]
 end
 
