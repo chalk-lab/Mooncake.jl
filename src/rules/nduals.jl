@@ -285,6 +285,14 @@ Base.floatmin(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(floatmin(T))
 Base.floatmax(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(floatmax(T))
 Base.typemin(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(typemin(T))
 Base.typemax(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(typemax(T))
+Base.precision(::Type{NDual{T,N}}) where {T<:AbstractFloat,N} = precision(T)
+Base.precision(::NDual{T,N}) where {T<:AbstractFloat,N} = precision(T)
+# nextfloat / prevfloat: perturb only the scalar value; partials are unchanged since
+# these are used to compute thresholds (e.g. in LogExpFunctions piecewise branches).
+Base.nextfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(nextfloat(a.value))
+Base.prevfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(prevfloat(a.value))
+# exponent / significand: scalar operations; return scalar value (integer / NDual).
+Base.exponent(a::NDual) = exponent(a.value)
 
 # ── Zero / One ────────────────────────────────────────────────────────────────────
 

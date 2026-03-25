@@ -510,6 +510,22 @@ using Mooncake.NDuals
         @test hash(_d(3.0, 1.0), UInt(0)) == hash(3.0, UInt(0))
     end
 
+    @testset "precision / nextfloat / exponent" begin
+        d = NDual{Float64,2}(3.0, (1.0, 0.0))
+        @test Base.precision(NDual{Float64,2}) === precision(Float64)
+        @test Base.precision(d) === precision(Float64)
+        # nextfloat/prevfloat: value advances, partials are zero (non-differentiable;
+        # used only to compute numerical thresholds e.g. in LogExpFunctions)
+        nd = nextfloat(d)
+        @test NDuals.ndual_value(nd) === nextfloat(3.0)
+        @test nd.partials === (0.0, 0.0)
+        pd = prevfloat(d)
+        @test NDuals.ndual_value(pd) === prevfloat(3.0)
+        @test NDuals.ndual_value(nextfloat(zero(d))) === nextfloat(0.0)
+        # exponent returns an Int, not an NDual
+        @test Base.exponent(d) === exponent(3.0)
+    end
+
     @testset "LinearAlgebra.dot" begin
         # xd = [3+t·1, 4+t·0], yd = [1+t·0, 2+t·1]
         # dot = 3·1 + 4·2 = 11; ∂dot/∂t = 1·1 + 4·1 = 5
