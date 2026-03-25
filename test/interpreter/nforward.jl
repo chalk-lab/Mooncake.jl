@@ -568,11 +568,31 @@ end
 
 const _nfw_A5 = randn(Xoshiro(99), 5, 5)
 const _nfw_M5 = _nfw_A5 * _nfw_A5' + 5LinearAlgebra.I
-_nfw_sum_matvec(x)   = sum(_nfw_A5 * x)
+const _nfw_A35 = randn(Xoshiro(88), 3, 5)   # for mul! wrapper
+_nfw_sum_matvec(x) = sum(_nfw_A5 * x)
 _nfw_sum_linsolve(x) = sum(_nfw_M5 \ x)
-_nfw_sum_matmat(x)   = sum(reshape(x, 5, 5) * reshape(x, 5, 5))
-_nfw_sum_view(x)     = sum(view(x, 1:5))
+_nfw_sum_matmat(x) = sum(reshape(x, 5, 5) * reshape(x, 5, 5))
+_nfw_sum_view(x) = sum(view(x, 1:5))
 _nfw_sum_getindex(x) = x[1] + x[3] + x[5] + x[7] + x[9]
+
+# Wrappers for previously-excluded cases: kwarg lambdas, vector outputs, mutating.
+# All use sum/dot to reduce to a scalar so value_and_gradient!! applies.
+# Mutating wrappers use similar(x, ...) so the buffer element type follows x
+# (Float64 in primal runs, NDual{Float64,N} during the forward sweep).
+_nfw_lse_dims1(x) = sum(logsumexp(x; dims=1))       # kwarg → named function
+_nfw_lse_dims2(x) = sum(logsumexp(x; dims=2))
+_nfw_softmax_dot(x) = dot(softmax(x), x)               # non-trivial scalar from softmax
+_nfw_sum_adjoint_v(x) = sum(adjoint(x))                  # Adjoint output → wrapped
+_nfw_sum_adjoint_m(x) = sum(adjoint(reshape(x, 4, 3)))
+_nfw_sum_map_sin(x) = sum(map(sin, x))                 # map → vector output → sum
+_nfw_getindex_4(x) = x[4]                             # hardcoded index avoids Int input
+_nfw_view_23_1(x) = sum(view(x, 2:3, 1))            # hardcoded UnitRange/Int
+_nfw_setindex_sum(x) = (y=copy(x); setindex!(y, 2.0, 3); sum(y))  # mutating via copy
+_nfw_mul_sum(x) = (C=similar(x, 3); mul!(C, _nfw_A35, x); sum(C))  # similar(x) = right eltype
+_nfw_push_sum(x) = (y=copy(x[1:(end - 1)]); push!(y, x[end]); sum(y))
+function _nfw_lse_bang_sum(x)
+    (r=similar(x, size(x, 1)); logsumexp!(r, reshape(x, size(x, 1), :)); sum(r))
+end
 
 # ── logexpfunctions integration ───────────────────────────────────────────────
 # All singleton scalar and vector/matrix functions from
@@ -587,25 +607,25 @@ _nfw_sum_getindex(x) = x[1] + x[3] + x[5] + x[7] + x[9]
     rng = Xoshiro(1)
 
     scalar1_cases = Any[
-        (xlogx,          1.1),
-        (xexpx,          -0.5),
-        (logistic,       0.5),
-        (logit,          0.3),
-        (logcosh,        1.5),
-        (logabssinh,     0.3),
-        (log1psq,        0.3),
-        (log1pexp,       0.1),
-        (log1mexp,       -0.5),
-        (log2mexp,       0.1),
-        (logexpm1,       0.1),
-        (log1pmx,        -0.95),
-        (logmxp1,        0.02),
-        (cloglog,        0.5),
-        (cexpexp,        -0.3),
-        (loglogistic,    0.5),
-        (logitexp,       -0.3),
-        (log1mlogistic,  -0.9),
-        (logit1mexp,     -0.6),
+        (xlogx, 1.1),
+        (xexpx, -0.5),
+        (logistic, 0.5),
+        (logit, 0.3),
+        (logcosh, 1.5),
+        (logabssinh, 0.3),
+        (log1psq, 0.3),
+        (log1pexp, 0.1),
+        (log1mexp, -0.5),
+        (log2mexp, 0.1),
+        (logexpm1, 0.1),
+        (log1pmx, -0.95),
+        (logmxp1, 0.02),
+        (cloglog, 0.5),
+        (cexpexp, -0.3),
+        (loglogistic, 0.5),
+        (logitexp, -0.3),
+        (log1mlogistic, -0.9),
+        (logit1mexp, -0.6),
     ]
     @testset "$f" for (f, x) in scalar1_cases
         nf = NForwardRRuleTestFunc{1,typeof(f)}(f)
@@ -615,11 +635,11 @@ _nfw_sum_getindex(x) = x[1] + x[3] + x[5] + x[7] + x[9]
     end
 
     scalar2_cases = Any[
-        (xlogy,     0.3,  1.2),
-        (xlog1py,   0.3,  -0.5),
-        (xexpy,     1.0,  -0.7),
+        (xlogy, 0.3, 1.2),
+        (xlog1py, 0.3, -0.5),
+        (xexpy, 1.0, -0.7),
         (logaddexp, -0.5, 0.4),
-        (logaddexp, 1.5,  1.5),   # equal-input edge case, see #881
+        (logaddexp, 1.5, 1.5),   # equal-input edge case, see #881
         (logsubexp, -0.5, -5.0),
     ]
     @testset "$f($a, $b)" for (f, a, b) in scalar2_cases
@@ -630,10 +650,10 @@ _nfw_sum_getindex(x) = x[1] + x[3] + x[5] + x[7] + x[9]
     end
 
     @testset "logsumexp($desc)" for (desc, x) in [
-        ("vector",     randn(rng, 5)),
-        ("matrix",     randn(rng, 5, 4)),
-        ("view",       view(randn(rng, 5), 1:4)),
-        ("[1.0,1.0]",  [1.0, 1.0]),   # equal-input edge case, see #881
+        ("vector", randn(rng, 5)),
+        ("matrix", randn(rng, 5, 4)),
+        ("view", view(randn(rng, 5), 1:4)),
+        ("[1.0,1.0]", [1.0, 1.0]),   # equal-input edge case, see #881
     ]
         nf = NForwardRRuleTestFunc{8,typeof(logsumexp)}(logsumexp)
         Mooncake.TestUtils.test_rule(
@@ -643,10 +663,10 @@ _nfw_sum_getindex(x) = x[1] + x[3] + x[5] + x[7] + x[9]
 
     # Float32 — verify LogExpFunctions' precision-generic branches work
     @testset "$f (Float32)" for (f, x) in Any[
-        (xlogx,    Float32(1.1)),
+        (xlogx, Float32(1.1)),
         (logistic, Float32(0.5)),
         (log1pexp, Float32(0.1)),
-        (logcosh,  Float32(1.5)),
+        (logcosh, Float32(1.5)),
     ]
         nf = NForwardRRuleTestFunc{1,typeof(f)}(f)
         Mooncake.TestUtils.test_rule(
@@ -656,8 +676,13 @@ _nfw_sum_getindex(x) = x[1] + x[3] + x[5] + x[7] + x[9]
     @testset "logaddexp (Float32)" begin
         nf = NForwardRRuleTestFunc{2,typeof(logaddexp)}(logaddexp)
         Mooncake.TestUtils.test_rule(
-            rng, nf, -Float32(0.5), Float32(0.4);
-            is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
+            rng,
+            nf,
+            -Float32(0.5),
+            Float32(0.4);
+            is_primitive=false,
+            perf_flag=:none,
+            mode=Mooncake.ReverseMode,
         )
     end
 end
@@ -672,9 +697,9 @@ end
 @testset "array integration" begin
     rng = Xoshiro(2)
     @testset "$name" for (name, f, x, C) in [
-        ("sum_matvec",   _nfw_sum_matvec,   randn(rng, 5),  5),
-        ("sum_linsolve", _nfw_sum_linsolve, randn(rng, 5),  5),
-        ("sum_matmat",   _nfw_sum_matmat,   randn(rng, 25), 8),
+        ("sum_matvec", _nfw_sum_matvec, randn(rng, 5), 5),
+        ("sum_linsolve", _nfw_sum_linsolve, randn(rng, 5), 5),
+        ("sum_matmat", _nfw_sum_matmat, randn(rng, 25), 8),
     ]
         nf = NForwardRRuleTestFunc{C,typeof(f)}(f)
         Mooncake.TestUtils.test_rule(
@@ -698,8 +723,40 @@ end
 @testset "misc_abstract_array integration" begin
     rng = Xoshiro(3)
     @testset "$name" for (name, f, x, C) in [
-        ("sum_view",     _nfw_sum_view,     randn(rng, 10), 5),
+        ("sum_view", _nfw_sum_view, randn(rng, 10), 5),
         ("sum_getindex", _nfw_sum_getindex, randn(rng, 10), 5),
+    ]
+        nf = NForwardRRuleTestFunc{C,typeof(f)}(f)
+        Mooncake.TestUtils.test_rule(
+            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
+        )
+    end
+end
+
+# ── wrapped previously-excluded cases ─────────────────────────────────────────
+# Functions that previously couldn't be tested directly because they either
+# had kwarg-lambda callables, vector/adjoint outputs, or mutating interfaces.
+# All are wrapped as singleton named functions that return a scalar.
+@testset "wrapped integration" begin
+    using LogExpFunctions
+    rng = Xoshiro(4)
+    @testset "$name" for (name, f, x, C) in [
+        # kwarg lambdas wrapped as named functions
+        ("lse_dims1", _nfw_lse_dims1, randn(rng, 5, 4), 5),
+        ("lse_dims2", _nfw_lse_dims2, randn(rng, 5, 4), 5),
+        # vector/adjoint outputs reduced to scalar via dot/sum
+        ("softmax_dot", _nfw_softmax_dot, randn(rng, 6), 5),
+        ("adjoint_vec", _nfw_sum_adjoint_v, randn(rng, 7), 5),
+        ("adjoint_mat", _nfw_sum_adjoint_m, randn(rng, 12), 5),
+        ("map_sin", _nfw_sum_map_sin, randn(rng, 8), 5),
+        # hardcoded-index wrappers (avoid passing Int/UnitRange as nforward inputs)
+        ("getindex_4", _nfw_getindex_4, randn(rng, 9), 3),
+        ("view_23_1", _nfw_view_23_1, randn(rng, 3, 4), 3),
+        # mutating cases using copy/similar so element type follows x
+        ("setindex_sum", _nfw_setindex_sum, randn(rng, 6), 5),
+        ("mul_sum", _nfw_mul_sum, randn(rng, 5), 5),
+        ("push_sum", _nfw_push_sum, randn(rng, 5), 5),
+        ("lse_bang_sum", _nfw_lse_bang_sum, randn(rng, 20), 5),
     ]
         nf = NForwardRRuleTestFunc{C,typeof(f)}(f)
         Mooncake.TestUtils.test_rule(

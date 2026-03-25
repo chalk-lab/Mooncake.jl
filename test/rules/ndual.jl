@@ -526,6 +526,52 @@ using Mooncake.NDuals
         @test Base.exponent(d) === exponent(3.0)
     end
 
+    @testset "muladd and fma" begin
+        a = _d2(2.0, 1.0, 0.0)   # 2 + e1
+        b = _d2(3.0, 0.0, 1.0)   # 3 + e2
+        c = _d2(1.0, 0.0, 0.0)   # 1 (constant)
+
+        # muladd(a, b, c): value = 2*3+1 = 7; partials = (b.v=3, a.v=2, 0)
+        r = muladd(a, b, c)
+        @test NDuals.ndual_value(r) ≈ 7.0
+        @test NDuals.ndual_partial(r, 1) ≈ 3.0
+        @test NDuals.ndual_partial(r, 2) ≈ 2.0
+
+        # fma(a, b, c): same values as muladd (guaranteed single instruction)
+        r = fma(a, b, c)
+        @test NDuals.ndual_value(r) ≈ 7.0
+        @test NDuals.ndual_partial(r, 1) ≈ 3.0
+        @test NDuals.ndual_partial(r, 2) ≈ 2.0
+
+        # muladd/fma(Real, NDual, NDual): value = 2*3+1 = 7; only b's partials scaled
+        r = muladd(2.0, b, c)
+        @test NDuals.ndual_value(r) ≈ 7.0
+        @test NDuals.ndual_partial(r, 1) ≈ 0.0
+        @test NDuals.ndual_partial(r, 2) ≈ 2.0
+        r = fma(2.0, b, c)
+        @test NDuals.ndual_value(r) ≈ 7.0
+        @test NDuals.ndual_partial(r, 1) ≈ 0.0
+        @test NDuals.ndual_partial(r, 2) ≈ 2.0
+
+        # muladd/fma(NDual, Real, NDual): value = 2*3+1 = 7; only a's partials scaled
+        r = muladd(a, 3.0, c)
+        @test NDuals.ndual_value(r) ≈ 7.0
+        @test NDuals.ndual_partial(r, 1) ≈ 3.0
+        @test NDuals.ndual_partial(r, 2) ≈ 0.0
+        r = fma(a, 3.0, c)
+        @test NDuals.ndual_value(r) ≈ 7.0
+        @test NDuals.ndual_partial(r, 1) ≈ 3.0
+        @test NDuals.ndual_partial(r, 2) ≈ 0.0
+
+        # consistency: muladd and fma agree with a*b+c
+        @test muladd(a, b, c) == a * b + c
+        @test fma(a, b, c) == a * b + c
+        @test muladd(2.0, b, c) == 2.0 * b + c
+        @test fma(2.0, b, c) == 2.0 * b + c
+        @test muladd(a, 3.0, c) == a * 3.0 + c
+        @test fma(a, 3.0, c) == a * 3.0 + c
+    end
+
     @testset "LinearAlgebra.dot" begin
         # xd = [3+t·1, 4+t·0], yd = [1+t·0, 2+t·1]
         # dot = 3·1 + 4·2 = 11; ∂dot/∂t = 1·1 + 4·1 = 5
