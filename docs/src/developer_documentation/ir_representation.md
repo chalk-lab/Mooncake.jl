@@ -526,8 +526,13 @@ Observe that in order to tie the conditional to the goto-if-not, we simply ensur
 
 ### Run the new code
 
-As ever, we can construct a `Core.OpaqueClosure` using `IRCode` in order to produce something runnable:
+As ever, we can construct a `Core.OpaqueClosure` using `IRCode` in order to produce something runnable.
+Since `new_ir` originated as method IR, its first argument type still corresponds to the
+function object rather than the opaque-closure environment tuple. For a zero-capture
+opaque closure, we therefore first rewrite `argtypes[1]` to `Tuple{}`:
 ```jldoctest my_factorial
+julia> new_ir.argtypes[1] = Tuple{};
+
 julia> oc = Core.OpaqueClosure(new_ir; do_compile=true)
 (::Int64)::Int64->◌
 

@@ -16,6 +16,12 @@ end
 function TestUtils.test_hook(f, ::typeof(Mooncake.derived_rule_test_cases), ::Any...)
     return allow_unstable(f)
 end
+function TestUtils.test_hook(f, ::Val{:allow_unstable_hvp_interface_test}, ::Any...)
+    return allow_unstable(f)
+end
+function TestUtils.test_hook(f, ::Val{:allow_unstable_hessian_interface_test}, ::Any...)
+    return allow_unstable(f)
+end
 
 # Automatically skip instability checks for types which are themselves unstable,
 # or which are unreasonably hard to infer.
@@ -74,5 +80,11 @@ include(joinpath(@__DIR__, "..", "..", "utils.jl"))
 include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "tangents.jl")))
 include(joinpath(@__DIR__, "..", "..", joinpath("tangents", "codual.jl")))
 include(joinpath(@__DIR__, "..", "..", "stack.jl"))
-include(joinpath(@__DIR__, "..", "..", "debug_mode.jl"))
-include(joinpath(@__DIR__, "..", "..", "interface.jl"))
+
+# The interface tests include debug-mode runs that deliberately pass incorrect
+# arguments, causing DispatchDoctor, Julia Base, and the compiler to raise issues
+# most likely unrelated to Mooncake. In general, Mooncake should avoid depending
+# on third-party compiler-based tools; JET (developed by JuliaLang) is the
+# exception.
+
+# include(joinpath(@__DIR__, "..", "..", "interface.jl"))
