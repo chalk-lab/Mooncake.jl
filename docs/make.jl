@@ -23,7 +23,8 @@ makedocs(;
     format=Documenter.HTML(;
         mathengine=Documenter.KaTeX(Dict(:macros => Dict("\\RR" => "\\mathbb{R}"))),
         size_threshold_ignore=[
-            joinpath("developer_documentation", "internal_docstrings.md")
+            joinpath("developer_documentation", "internal_docstrings.md"),
+            joinpath("developer_documentation", "advanced_debugging.md"),
         ],
     ),
     modules=[Mooncake],

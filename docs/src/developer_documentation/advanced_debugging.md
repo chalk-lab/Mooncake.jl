@@ -14,21 +14,35 @@ module in `src/skill_utils.jl` provides IR inspection utilities to view each
 stage and diff consecutive transformations. These are
 internal developer tools accessible via the `Mooncake.SkillUtils` prefix.
 
-```julia
-using Mooncake
-using Mooncake.SkillUtils
+```@setup advanced_debugging
+using Mooncake: Mooncake
+using Mooncake.SkillUtils: inspect_ir, show_ir, show_stage, show_diff, show_world_info
+```
 
+```@example advanced_debugging
 # Inspect all stages of the reverse-mode pipeline
 ins = inspect_ir(sin, 1.0)
 show_ir(ins)                              # all stages
-show_stage(ins, :raw)                     # one stage
-show_diff(ins; from=:raw, to=:normalized) # diff between stages
+nothing # hide
+```
 
+```@example advanced_debugging
+show_stage(ins, :raw)                     # one stage
+nothing # hide
+```
+
+```@example advanced_debugging
+show_diff(ins; from=:raw, to=:normalized) # diff between stages
+nothing # hide
+```
+
+```@example advanced_debugging
 # Forward mode
 ins = inspect_ir(sin, 1.0; mode=:forward)
 
 # World age info (useful for debugging stale code)
 show_world_info(ins)
+nothing # hide
 ```
 
 ### Reverse mode stages
@@ -75,9 +89,10 @@ In Mooncake, this most commonly affects:
 
 To debug, inspect the world age of generated code:
 
-```julia
-ins = inspect_ir(f, args...)
+```@example advanced_debugging
+ins = inspect_ir(sin, 1.0)
 show_world_info(ins)
+nothing # hide
 ```
 
 This reports the world at which each stage was compiled and flags mismatches.
