@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
-version = "0.5.24"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
+version = "0.5.24"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -20,6 +20,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
 BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 DynamicExpressions = "a40a106e-89c9-4ca8-8020-a735e8728b6b"
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
@@ -33,12 +34,12 @@ NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
 SLEEFPirates = "476501e8-09a2-5ece-8869-fb82de89a1fa"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
-cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
 
 [extensions]
 MooncakeAllocCheckExt = "AllocCheck"
 MooncakeBFloat16sExt = "BFloat16s"
 MooncakeCUDAExt = "CUDA"
+MooncakecuDNNExt = ["CUDA", "cuDNN"]
 MooncakeDistributionsExt = "Distributions"
 MooncakeDynamicExpressionsExt = "DynamicExpressions"
 MooncakeFluxExt = "Flux"
@@ -46,11 +47,10 @@ MooncakeFunctionWrappersExt = "FunctionWrappers"
 MooncakeJETExt = "JET"
 MooncakeLogExpFunctionsExt = "LogExpFunctions"
 MooncakeLuxLibExt = ["LuxLib", "MLDataDevices", "Static"]
-MooncakeLuxLibNNlibExt = ["LuxLib", "NNlib"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
+MooncakeLuxLibNNlibExt = ["LuxLib", "NNlib"]
 MooncakeNNlibExt = ["NNlib", "LinearAlgebra"]
 MooncakeSpecialFunctionsExt = "SpecialFunctions"
-MooncakecuDNNExt = ["CUDA", "cuDNN"]
 
 [compat]
 ADTypes = "1.9"
@@ -59,6 +59,7 @@ Aqua = "0.8.9"
 BFloat16s = "0.6"
 BenchmarkTools = "1"
 CUDA = "5"
+cuDNN = "1"
 ChainRules = "1.71.0"
 ChainRulesCore = "1"
 DiffTests = "0.1"
@@ -78,8 +79,8 @@ LuxLib = "1.11"
 MLDataDevices = "1.10.0"
 MistyClosures = "2"
 NNlib = "0.9"
-Pkg = "1"
 PrecompileTools = "1"
+Pkg = "1"
 Random = "1"
 Revise = "3.0 - 3.12"
 SLEEFPirates = "0.6.43"
@@ -87,7 +88,6 @@ SpecialFunctions = "2"
 StableRNGs = "1"
 Static = "1.1.1"
 Test = "1"
-cuDNN = "1"
 julia = "~1.10.8, 1.11.6, 1.12.1"
 
 [extras]
@@ -104,4 +104,15 @@ StableRNGs = "860ef19b-820b-49d6-a774-d7a799459cd3"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["AllocCheck", "Aqua", "BenchmarkTools", "DiffTests", "JET", "Logging", "Pkg", "Revise", "StableRNGs", "Test"]
+test = [
+    "AllocCheck",
+    "Aqua",
+    "BenchmarkTools",
+    "DiffTests",
+    "JET",
+    "Logging",
+    "Pkg",
+    "Revise",
+    "StableRNGs",
+    "Test",
+]
