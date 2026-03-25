@@ -1,24 +1,22 @@
 """
-    threaded_map!(f, output::Vector{Tout}, inputs::Vector{<:IEEEFloat}...) -> output
+    threaded_map!(f, output::Vector, inputs::Vector...) -> output
 
 Apply `f` element-wise to corresponding elements of `inputs`, storing results in `output`,
 using `Threads.@threads`.
 
-For reverse-mode AD via Mooncake to be correct and race-free, two conditions must hold:
-
-1. `output` must have element type `Tout <: IEEEFloat` and each input must have element
-   type `Ti <: IEEEFloat`. The element types need not be the same across vectors. Since
-   each element is a bits-type scalar with an independent cotangent slot, per-element
-   gradient writes during the reverse pass are race-free.
-
-2. `f` must satisfy `fdata_type(tangent_type(F)) == NoFData`, i.e. it carries no mutable
-   differentiable state. This covers plain (non-closure) functions and closures that capture
-   only `IEEEFloat` scalars. Closures capturing mutable containers are not supported.
+All element types must be isbits (checked at runtime); element types need not be identical
+across vectors. For reverse-mode AD via Mooncake to be race-free, `f` must also satisfy
+`fdata_type(tangent_type(F)) == NoFData`, i.e. it carries no mutable differentiable state.
+This covers plain functions and closures capturing only isbits scalars.
 
 See https://github.com/chalk-lab/Mooncake.jl/issues/791.
 """
-function threaded_map!(f::F, output::Vector{<:IEEEFloat}, inputs::Vector{<:IEEEFloat}...) where {F}
+function threaded_map!(f::F, output::Vector, inputs::Vector...) where {F}
     isempty(inputs) && throw(ArgumentError("threaded_map!: at least one input vector required"))
+    all(v -> isbitstype(eltype(v)), (output, inputs...)) || throw(ArgumentError(
+        "threaded_map!: all element types must be isbits; " *
+        "got $(map(eltype, (output, inputs...)))"
+    ))
     n = minimum(length, inputs)
     length(output) >= n || throw(
         ArgumentError(
@@ -33,70 +31,42 @@ function threaded_map!(f::F, output::Vector{<:IEEEFloat}, inputs::Vector{<:IEEEF
 end
 
 @is_primitive MinimalCtx ReverseMode Tuple{
-    typeof(threaded_map!),F,Vector{<:IEEEFloat},Vararg{Vector{<:IEEEFloat}}
+    typeof(threaded_map!),F,Vector,Vararg{Vector}
 } where {F}
-
-# Cache pre-compiled scalar rules keyed by (F, input_Ts) so build_rrule is paid once per
-# type combination. Accessed serially (rrule!! runs on the caller's thread before the
-# parallel sections), so no lock is needed.
-const _threaded_map_rule_cache = IdDict{Any,Any}()
 
 @inline function rrule!!(
     ::CoDual{typeof(threaded_map!)},
     f::CoDual{F},
     output::CoDual{Vector{Tout}, Vector{Tout}},
-    inputs::CoDual{<:Vector{<:IEEEFloat}, <:Vector{<:IEEEFloat}}...,
-) where {F, Tout<:IEEEFloat}
+    inputs::CoDual...,
+) where {F, Tout}
     fp  = primal(f)
-    xps = map(primal, inputs)   # NTuple of Vector{Ti} — primals (Ti may differ)
-    xds = map(tangent, inputs)  # NTuple of Vector{Ti} — cotangent accumulators
+    xps = map(primal, inputs)
+    xds = map(tangent, inputs)  # Vector{Ti} for differentiable Ti, NoFData for others
     yp  = primal(output)
     yd  = tangent(output)
     N   = length(inputs)
     n   = minimum(length, xps)
 
-    # Get or build the scalar rule for f applied to (T1, T2, ..., TN).
-    # Cache key is (F, input_element_types) to handle heterogeneous inputs.
-    input_Ts = map(eltype, xps)  # e.g. (Float32, Float64) for mixed inputs
-    f_rule = get!(_threaded_map_rule_cache, (F, input_Ts)) do
-        build_rrule(Tuple{F, input_Ts...})
-    end
-
     # Save current output state for restoration in the pullback (undo-tape semantics).
     old_yp = copy(yp)
     old_yd = copy(yd)
 
-    # Handle empty input vectors: nothing to compute.
-    if n == 0
-        pb_noop(::NoRData) = begin
-            copyto!(yp, old_yp); copyto!(yd, old_yd)
-            return NoRData(), NoRData(), NoRData(), ntuple(_ -> NoRData(), Val(N))...
-        end
-        return output, pb_noop
-    end
-
-    # Forward pass: run element 1 serially to determine the concrete pullback type,
-    # then run elements 2:n in parallel. This gives Vector{PBType} instead of
-    # Vector{Any}, eliminating boxing and dynamic dispatch in the reverse pass.
-    xi1 = ntuple(j -> CoDual(@inbounds(xps[j][1]), NoFData()), Val(N))
-    yi1_codual, pb1 = f_rule(zero_fcodual(fp), xi1...)
-    @inbounds yp[1] = primal(yi1_codual)
-    @inbounds yd[1] = zero_tangent(primal(yi1_codual))
-    PBType = typeof(pb1)
-    pullbacks = Vector{PBType}(undef, n)
-    @inbounds pullbacks[1] = pb1
-
-    Threads.@threads for i in 2:n
-        xi = ntuple(j -> CoDual(@inbounds(xps[j][i]), NoFData()), Val(N))
-        yi_codual, pb = f_rule(zero_fcodual(fp), xi...)
-        @inbounds yp[i] = primal(yi_codual)
-        @inbounds yd[i] = zero_tangent(primal(yi_codual))
-        @inbounds pullbacks[i] = pb
+    # Forward pass: run f element-wise in parallel, storing per-element pullbacks.
+    # Zero yd[i] because we overwrite output[i] (mirrors isbits_arrayset_rrule).
+    # Calls rrule!! directly — Julia's method dispatch caches the specialisation.
+    pullbacks = Vector{Any}(undef, n)
+    Threads.@threads for i in 1:n
+        xi = ntuple(j -> CoDual(xps[j][i], NoFData()), Val(N))
+        yi_codual, pb = rrule!!(zero_fcodual(fp), xi...)
+        yp[i] = primal(yi_codual)
+        yd[i] = zero_tangent(primal(yi_codual))
+        pullbacks[i] = pb
     end
 
     function threaded_map_pb!!(::NoRData)
         # rdata type for f: NoRData for plain functions; RData{...} for closures
-        # capturing IEEEFloat scalars.
+        # capturing isbits scalars.
         FRData = rdata_type(tangent_type(F))
 
         # Option A: per-element f-rdata storage (race-free: thread i writes only
@@ -106,14 +76,13 @@ const _threaded_map_rule_cache = IdDict{Any,Any}()
         f_rdatas = FRData === NoRData ? nothing : Vector{FRData}(undef, n)
 
         # Reverse pass: read cotangents accumulated in yd[i] by the upstream and propagate
-        # them back to each input's cotangent accumulator.
+        # them back to each input's cotangent accumulator (skip non-differentiable inputs).
         Threads.@threads for i in 1:n
-            @inbounds dy_i = yd[i]
-            @inbounds pb_i = pullbacks[i]
-            rdata_tuple = pb_i(dy_i)
-            FRData !== NoRData && @inbounds(f_rdatas[i] = rdata_tuple[1])
+            rdata_tuple = pullbacks[i](yd[i])
+            FRData !== NoRData && (f_rdatas[i] = rdata_tuple[1])
             for j in 1:N
-                @inbounds xds[j][i] += rdata_tuple[j + 1]
+                xd = xds[j]
+                xd isa NoFData || (xd[i] += rdata_tuple[j + 1])
             end
         end
 
