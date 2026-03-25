@@ -23,11 +23,14 @@ using Mooncake.NDuals
         @test isbits(NDual{Float32,3}(1.0f0, (0.0f0, 0.0f0, 0.0f0)))
     end
 
-    @testset "zero / one" begin
+    @testset "zero / one / oneunit" begin
         @test zero(NDual{Float64,2}) == NDual{Float64,2}(0.0, (0.0, 0.0))
         @test one(NDual{Float64,2}) == NDual{Float64,2}(1.0, (0.0, 0.0))
         @test zero(_d(1.0, 2.0)) == NDual{Float64,1}(0.0, (0.0,))
         @test one(_d(1.0, 2.0)) == NDual{Float64,1}(1.0, (0.0,))
+        # oneunit(T) must return T(1) with zero partials, not call T(one(T)) which errors
+        @test oneunit(NDual{Float64,2}) == NDual{Float64,2}(1.0, (0.0, 0.0))
+        @test oneunit(_d(3.0, 1.0)) == NDual{Float64,1}(1.0, (0.0,))
     end
 
     @testset "promote / convert" begin
@@ -89,25 +92,51 @@ using Mooncake.NDuals
         @test NDuals.ndual_partial(r, 1) ≈ 1.0 / 3.0
         @test NDuals.ndual_partial(r, 2) ≈ -(2.0 / 3.0) / 3.0
 
-        # mixing with plain numbers via promotion
+        # Direct Real ± NDual: partials unchanged for +/-, negated for c-x
         @test NDuals.ndual_value(a + 1.0) ≈ 3.0
         @test NDuals.ndual_partial(a + 1.0, 1) ≈ 1.0
+        @test NDuals.ndual_value(1.0 + a) ≈ 3.0
+        @test NDuals.ndual_partial(1.0 + a, 1) ≈ 1.0
+        @test NDuals.ndual_value(5.0 - a) ≈ 3.0
+        @test NDuals.ndual_partial(5.0 - a, 1) ≈ -1.0   # -(a.partials)
+        @test NDuals.ndual_value(a - 1.0) ≈ 1.0
+        @test NDuals.ndual_partial(a - 1.0, 1) ≈ 1.0
+
+        # Direct Real*NDual: scales partials without product rule
         @test NDuals.ndual_value(2.0 * a) ≈ 4.0
         @test NDuals.ndual_partial(2.0 * a, 1) ≈ 2.0
+        @test NDuals.ndual_value(a * 3.0) ≈ 6.0
+        @test NDuals.ndual_partial(a * 3.0, 1) ≈ 3.0
+
+        # Direct NDual / Real: scales partials by reciprocal
+        @test NDuals.ndual_value(a / 2.0) ≈ 1.0
+        @test NDuals.ndual_partial(a / 2.0, 1) ≈ 0.5
+
+        # Direct inv: d(1/x)/dx = -1/x²
+        x = _d(3.0, 1.0)
+        @test NDuals.ndual_value(inv(x)) ≈ 1/3.0
+        @test NDuals.ndual_partial(inv(x), 1) ≈ -1/9.0
     end
 
     @testset "power" begin
         x = _d(3.0, 1.0)
+        # literal integer powers — dispatches through Base.literal_pow
         # d(x^2)/dx = 2x
         @test NDuals.ndual_value(x^2) ≈ 9.0
         @test NDuals.ndual_partial(x^2, 1) ≈ 6.0
         # d(x^3)/dx = 3x^2
         @test NDuals.ndual_value(x^3) ≈ 27.0
         @test NDuals.ndual_partial(x^3, 1) ≈ 27.0
-        # x^0
+        # literal x^0 → one, zero derivative
         @test NDuals.ndual_value(x^0) ≈ 1.0
         @test NDuals.ndual_partial(x^0, 1) ≈ 0.0
-        # real exponent
+        # literal negative integer power: x^(-1) = 1/x, d/dx = -1/x²
+        @test NDuals.ndual_value(x^(-1)) ≈ 1/3.0
+        @test NDuals.ndual_partial(x^(-1), 1) ≈ -1/9.0
+        # literal x^(-2): d/dx = -2/x³
+        @test NDuals.ndual_value(x^(-2)) ≈ 1/9.0
+        @test NDuals.ndual_partial(x^(-2), 1) ≈ -2/27.0
+        # real exponent (runtime Float64, uses ^(NDual, Real))
         @test NDuals.ndual_value(x^2.0) ≈ 9.0
         @test NDuals.ndual_partial(x^2.0, 1) ≈ 6.0
         # real exponent b=0.0: d(x^0)/dx = 0 everywhere, including x=0 (no NaN)

@@ -138,7 +138,13 @@ _bench_frule(rule, f_dual, x_duals) = rule(f_dual, x_duals...)
 function nfb_cases(rng)
     v1k = randn(rng, 1_000)
     m10 = randn(rng, 10, 10)
+    # Small / medium vectors for DiffTests cases.
+    # DiffTests requires length >= 5; use n=10 (DOF=10) for small cases, n=100 for larger.
+    v10  = abs.(randn(rng, 10)) .+ 0.1  # positive entries for log/sqrt safety
+    v100 = randn(rng, 100)
+    m5   = randn(rng, 5, 5)
     return [
+        # ── Mooncake baseline suite ──────────────────────────────────────────────
         ("sum_1000",              sum,                        (v1k,),         8),
         ("_sum_1000",             _nfb_sum,                   (v1k,),         8),
         ("sum_sin_1000",          _nfb_sum_sin,               (v1k,),         8),
@@ -148,8 +154,23 @@ function nfb_cases(rng)
         ("broadcast_sin_cos_exp", _nfb_broadcast_sin_cos_exp, (m10,),         8),
         # DOF=2 so cN=cDOF; the cN and cDOF columns (and all three fd_grad columns) are identical.
         ("large_single_block",    _nfb_large_single_block,    ([0.9, 0.99],), 2),
-        ("rosenbrock_1",          DiffTests.rosenbrock_1,     (randn(rng, 100),), 8),
-        ("ackley",                DiffTests.ackley,           (randn(rng, 100),), 8),
+        # ── DiffTests: vector→scalar (small DOF) ─────────────────────────────────
+        ("rosenbrock_1",          DiffTests.rosenbrock_1,     (v100,),        8),
+        ("rosenbrock_2",          DiffTests.rosenbrock_2,     (v10,),         8),
+        ("rosenbrock_3",          DiffTests.rosenbrock_3,     (v10,),         8),
+        ("rosenbrock_4",          DiffTests.rosenbrock_4,     (v10,),         8),
+        ("ackley",                DiffTests.ackley,           (v100,),        8),
+        ("self_weighted_logit",   DiffTests.self_weighted_logit, (v10,),      8),
+        ("vec2num_1",             DiffTests.vec2num_1,        (v10,),         8),
+        ("vec2num_2",             DiffTests.vec2num_2,        (v10,),         8),
+        ("vec2num_3",             DiffTests.vec2num_3,        (v10,),         8),
+        ("vec2num_5",             DiffTests.vec2num_5,        (v10,),         8),
+        ("vec2num_6",             DiffTests.vec2num_6,        (v10,),         8),
+        ("vec2num_7",             DiffTests.vec2num_7,        (v10,),         8),
+        # ── DiffTests: matrix→scalar ─────────────────────────────────────────────
+        # mat2num_1 omitted: calls x*x which means matrix product for Matrix input but
+        # vector product for vec(x) (used in the FD comparison), so benchmarks differ.
+        ("mat2num_3",             DiffTests.mat2num_3,        (m5,),          8),
     ]
 end
 
