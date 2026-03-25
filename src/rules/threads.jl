@@ -23,9 +23,11 @@ function threaded_map!(f::F, output::Vector, inputs::Vector...) where {F}
             "threaded_map!: output length $(length(output)) < input length $n"
         ),
     )
-    N = length(inputs)
+    N    = length(inputs)
+    valN = Val(N)  # Val{N} computed at outer scope where N is a compile-time constant;
+                   # capturing valN::Val{N} in the closure lets ntuple unroll correctly.
     Threads.@threads for i in 1:n
-        output[i] = f(ntuple(j -> inputs[j][i], Val(N))...)
+        output[i] = f(ntuple(j -> inputs[j][i], valN)...)
     end
     return output
 end
@@ -45,7 +47,9 @@ end
     xds = map(tangent, inputs)  # Vector{Ti} for differentiable Ti, NoFData for others
     yp  = primal(output)
     yd  = tangent(output)
-    N   = length(inputs)
+    N    = length(inputs)
+    valN = Val(N)  # Val{N} computed at outer scope where N is a compile-time constant;
+                   # capturing valN::Val{N} in closures lets ntuple unroll correctly.
     n   = minimum(length, xps)
 
     # Save current output state for restoration in the pullback (undo-tape semantics).
@@ -60,7 +64,7 @@ end
     PBType = pullback_type(typeof(rrule!!), (F, map(eltype, xps)...))
     pullbacks = Vector{PBType}(undef, n)
     Threads.@threads for i in 1:n
-        xi = ntuple(j -> CoDual(xps[j][i], NoFData()), Val(N))
+        xi = ntuple(j -> CoDual(xps[j][i], NoFData()), valN)
         yi_codual, pb = rrule!!(zero_fcodual(fp), xi...)
         yp[i] = primal(yi_codual)
         yd[i] = zero_tangent(primal(yi_codual))
@@ -95,7 +99,7 @@ end
         # Restore output to its pre-call state.
         copyto!(yp, old_yp)
         copyto!(yd, old_yd)
-        return NoRData(), f_rdata, NoRData(), ntuple(_ -> NoRData(), Val(N))...
+        return NoRData(), f_rdata, NoRData(), ntuple(_ -> NoRData(), valN)...
     end
 
     return output, threaded_map_pb!!
