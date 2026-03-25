@@ -12,22 +12,14 @@ x = randn(Float64, n)
 out1 = zeros(Float64, n)
 out2 = zeros(Float64, n)
 
-# Reference serial implementation for primal correctness check.
-function serial_map!(f, y, x)
-    for i in eachindex(x)
-        y[i] = f(x[i])
-    end
-    return y
-end
-
 # More compute-heavy function: tanh is transcendental with higher compute-to-memory ratio.
 f_bench = tanh
 
 # --- Correctness: primal ---
 threaded_map!(f_bench, out1, x)
-serial_map!(f_bench, out2, x)
+map!(f_bench, out2, x)
 if !isapprox(out1, out2; rtol=1e-12)
-    println("FAIL: threaded_map! primal result differs from serial")
+    println("FAIL: threaded_map! primal result differs from map!")
     exit(1)
 end
 
@@ -50,33 +42,28 @@ if !isapprox(grad, expected_grad; rtol=1e-6)
 end
 
 # --- Primal timing (informational — not asserted) ---
-# Note: a plain serial loop can be SIMD-vectorised by the compiler, making the
-# primal speedup of Threads.@threads over serial unpredictable for lightweight f.
+# Note: map! can be SIMD-vectorised by the compiler, making the primal speedup of
+# Threads.@threads over map! unpredictable for lightweight f.
 for _ in 1:5
     threaded_map!(f_bench, out1, x)
-    serial_map!(f_bench, out2, x)
+    map!(f_bench, out2, x)
 end
 t_threaded = minimum([@elapsed(threaded_map!(f_bench, out1, x)) for _ in 1:20])
-t_serial   = minimum([@elapsed(serial_map!(f_bench, out2, x))   for _ in 1:20])
+t_serial   = minimum([@elapsed(map!(f_bench, out2, x))          for _ in 1:20])
 nthreads   = Threads.nthreads()
 println("primal: nthreads=$nthreads  serial=$(round(t_serial*1e3; digits=2))ms  " *
         "threaded=$(round(t_threaded*1e3; digits=2))ms  " *
         "speedup=$(round(t_serial/t_threaded; digits=2))x  (informational)")
 
-# --- AD speedup: threaded_map! vs for-loop differentiated by Mooncake's interpreter ---
+# --- AD speedup: threaded_map! vs map! differentiated by Mooncake ---
+# Both functions have the same structure: sum(map!-variant(f, zeros(n), v)).
+# threaded_map! uses a hand-coded parallel rrule!!; map! is traced by Mooncake's interpreter.
 # Both benchmarks start from a prepared gradient cache (no compilation overhead).
-# threaded_map! has a hand-coded parallel rrule!! (forward + backward both @threads).
-# loss_serial uses a plain for loop which Mooncake differentiates via its interpreter
-# (serially).  The ratio measures the benefit of the parallel primitive.
 function loss_threaded(v)
     return sum(threaded_map!(f_bench, zeros(length(v)), v))
 end
 function loss_serial_ad(v)
-    s = zero(eltype(v))
-    for i in eachindex(v)
-        s += f_bench(v[i])
-    end
-    return s
+    return sum(map!(f_bench, zeros(length(v)), v))
 end
 
 cache_t = prepare_gradient_cache(loss_threaded, x)
