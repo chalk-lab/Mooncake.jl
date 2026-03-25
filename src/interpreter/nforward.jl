@@ -82,8 +82,13 @@ Callable reverse-mode rule used by `nforward`.
 [`nforward_build_rrule`](@ref) calls and primitive reverse-mode registration route through
 that signature-based construction path. `buf` holds reusable typed scratch buffers for
 cached scalar-output fast paths when that is available.
+
+The `scalar_out` type parameter is `true` when inference confirms at rule-build time that
+`f` returns an `IEEEFloat` scalar for the given input types. This allows the single-array
+rrule specialisation to skip the redundant primal type-check call, which otherwise costs
+one full function evaluation per gradient call.
 """
-struct NForwardRRule{sig,N,Tbuf<:Base.RefValue}
+struct NForwardRRule{sig,N,Tbuf<:Base.RefValue,scalar_out}
     buf::Tbuf
 end
 
@@ -211,7 +216,8 @@ function nforward_build_rrule(
 )
     chunk_size = _nforward_validate(sig, chunk_size; debug_mode)
     buf = _nforward_buf_ref(sig, Val(chunk_size))
-    return NForwardRRule{sig,chunk_size,typeof(buf)}(buf)
+    scalar_out = _nforward_infer_scalar_output(sig)
+    return NForwardRRule{sig,chunk_size,typeof(buf),scalar_out}(buf)
 end
 
 function nforward_build_rrule(
@@ -235,16 +241,35 @@ function (rule::NForwardRRule{sig,N})(f::CoDual, x::Vararg{CoDual,M}) where {sig
     return _nforward_rrule_call(primal(f), x, Val(N))
 end
 
-# Optimised single-real-array-input rrule: runs the full chunked forward sweep eagerly
-# using pre-allocated buffers (via `_nforward_array_scalar_value_and_gradient`) when the
-# output is a scalar IEEEFloat.  The pullback then only needs to scale the pre-computed
-# gradient by the output cotangent — zero per-call allocations at steady state.
+# Optimised single-real-array-input rrule, scalar-output fast path.
 #
-# For non-scalar outputs the rrule falls back to the generic chunked path, which handles
-# arbitrary supported output types.
-function (rule::NForwardRRule{sig,N})(
+# When `scalar_out=true` (inferred at rule-build time), the output is known to be an
+# IEEEFloat scalar so we skip the redundant primal type-check call.  For small DOF / single-
+# chunk problems that extra call would cost one full function evaluation — e.g. for
+# `large_single_block` (DOF=2, 400 scalar ops) it was ~23% of total rrule time.
+#
+# The pullback only needs to scale the pre-computed gradient by the output cotangent —
+# zero per-call allocations at steady state.
+function (rule::NForwardRRule{sig,N,Tbuf,true})(
     f::CoDual, x::CoDual{A}
-) where {sig,N,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
+) where {sig,N,Tbuf,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
+    __verify_sig(rule, (f, x))
+    tangent(f) isa NoFData || throw(
+        ArgumentError("nforward does not support differentiating with respect to `f`.")
+    )
+    f_runtime = primal(f)
+    _nforward_check_primal(primal(x))
+    # Output type is known scalar — skip primal call and go straight to gradient sweep.
+    y, _ = _nforward_array_scalar_value_and_gradient(f_runtime, x, rule.buf, Val(N))
+    y_cd = CoDual(y, fdata(zero_tangent(y)))
+    return y_cd, NForwardArrayScalarPullback(tangent(x))
+end
+
+# Fallback: output type not known to be scalar at build time.  Run a primal call to
+# dispatch between the scalar fast path and the generic chunked path.
+function (rule::NForwardRRule{sig,N,Tbuf,false})(
+    f::CoDual, x::CoDual{A}
+) where {sig,N,Tbuf,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
     __verify_sig(rule, (f, x))
     tangent(f) isa NoFData || throw(
         ArgumentError("nforward does not support differentiating with respect to `f`.")
@@ -253,13 +278,10 @@ function (rule::NForwardRRule{sig,N})(
     x_primal = _nforward_check_primal(primal(x))
     y_primal = f_runtime(x_primal)
     if y_primal isa IEEEFloat
-        # Scalar output: run the full gradient computation eagerly with zero steady-state
-        # allocations.  tangent(x) is zeroed and populated with ∂f/∂x_i by the call below.
         y, _ = _nforward_array_scalar_value_and_gradient(f_runtime, x, rule.buf, Val(N))
         y_cd = CoDual(y, fdata(zero_tangent(y)))
         return y_cd, NForwardArrayScalarPullback(tangent(x))
     else
-        # Non-scalar output: fall back to the generic path.
         _nforward_is_supported_primal(typeof(y_primal)) || _nforward_output_error(y_primal)
         y_cd = CoDual(y_primal, fdata(zero_tangent(y_primal)))
         return y_cd, _nforward_pullback(f_runtime, (x_primal,), (tangent(x),), tangent(y_cd), Val(N))
@@ -401,6 +423,17 @@ end
 #
 # Shared validation, sizing, and shape utilities used across the forward, reverse, and cached
 # execution paths.
+
+# Infer at rule-build time whether `sig` has a scalar IEEEFloat output.
+# Used to set the `scalar_out` type parameter on `NForwardRRule`, allowing the hot-path
+# rrule to skip the redundant primal type-check call for known-scalar functions.
+function _nforward_infer_scalar_output(sig::Type{<:Tuple})
+    F = sig.parameters[1]
+    Base.issingletontype(F) || return false
+    argtypes = Tuple{(sig.parameters[i] for i in 2:length(sig.parameters))...}
+    rt = Base.return_types(F.instance, argtypes)
+    return !isempty(rt) && rt[1] <: IEEEFloat
+end
 
 @inline function _nforward_check_chunk_size(chunk_size::Integer)
     chunk_size > 0 && return Int(chunk_size)
