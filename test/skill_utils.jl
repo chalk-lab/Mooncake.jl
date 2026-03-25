@@ -34,8 +34,9 @@ multi_arg_fn(x, y) = x * y + sin(x)
         @test ins.world isa UInt
         @test isempty(ins.notes)
 
-        expected_stages =
-            [:raw, :normalized, :bbcode, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs]
+        expected_stages = [
+            :raw, :normalized, :bbcode, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs
+        ]
         @test ins.stage_order == expected_stages
         for s in expected_stages
             @test haskey(ins.stages, s)
@@ -53,7 +54,6 @@ multi_arg_fn(x, y) = x * y + sin(x)
         for (from, to) in ins.stage_graph
             @test haskey(ins.diffs, from => to)
         end
-
     end
 
     @testset "inspect_ir forward mode" begin
@@ -164,8 +164,7 @@ multi_arg_fn(x, y) = x * y + sin(x)
         write_ir(ins, tmpdir)
         files = readdir(tmpdir)
 
-        @test length(files) ==
-            length(ins.stages) + length(ins.diffs)
+        @test length(files) == length(ins.stages) + length(ins.diffs)
 
         for s in keys(ins.stages)
             @test "$(s).txt" in files
@@ -221,12 +220,9 @@ multi_arg_fn(x, y) = x * y + sin(x)
         @test (:fwd_ir => :optimized_fwd) in rg
         @test (:rvs_ir => :optimized_rvs) in rg
 
-        @test forward_stage_order() ==
-            [:raw, :normalized, :bbcode, :dual_ir, :optimized]
-        @test reverse_stage_order() == [
-            :raw, :normalized, :bbcode, :fwd_ir, :rvs_ir, :optimized_fwd,
-            :optimized_rvs,
-        ]
+        @test forward_stage_order() == [:raw, :normalized, :bbcode, :dual_ir, :optimized]
+        @test reverse_stage_order() ==
+            [:raw, :normalized, :bbcode, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs]
     end
 
     @testset "StageMeta" begin

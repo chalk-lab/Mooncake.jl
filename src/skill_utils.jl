@@ -30,12 +30,7 @@ struct StageMeta
     valid_worlds::Union{UnitRange{UInt},Nothing}
 end
 
-function StageMeta(;
-    block_count=0,
-    inst_count=0,
-    edge_count=0,
-    valid_worlds=nothing,
-)
+function StageMeta(; block_count=0, inst_count=0, edge_count=0, valid_worlds=nothing)
     return StageMeta(block_count, inst_count, edge_count, valid_worlds)
 end
 
@@ -225,13 +220,11 @@ function inspect_ir(
         # Stage 3: BBCode
         bbcode = BBCode(normalized_ir)
         bbcode = remove_unreachable_blocks!(bbcode)
-        stages[:bbcode] =
-            IRStage(:bbcode, bbcode, render_ir(bbcode), extract_meta(bbcode))
+        stages[:bbcode] = IRStage(:bbcode, bbcode, render_ir(bbcode), extract_meta(bbcode))
 
         # Mode-specific stages
         if mode == :forward
-            dual_ir, _, _ =
-                generate_dual_ir(interp, sig; debug_mode, do_inline=false)
+            dual_ir, _, _ = generate_dual_ir(interp, sig; debug_mode, do_inline=false)
             stages[:dual_ir] = IRStage(
                 :dual_ir, dual_ir, render_ir(dual_ir), extract_meta(dual_ir)
             )
@@ -268,8 +261,9 @@ function inspect_ir(
     stage_order = mode == :forward ? forward_stage_order() : reverse_stage_order()
     stage_graph = mode == :forward ? forward_stage_graph() : reverse_stage_graph()
     stage_order = filter(s -> haskey(stages, s), stage_order)
-    stage_graph =
-        filter(p -> haskey(stages, p.first) && haskey(stages, p.second), stage_graph)
+    stage_graph = filter(
+        p -> haskey(stages, p.first) && haskey(stages, p.second), stage_graph
+    )
 
     diffs = Dict{Pair{Symbol,Symbol},String}()
     if compute_diffs
@@ -278,9 +272,7 @@ function inspect_ir(
         end
     end
 
-    return IRInspection(
-        mode, sig, world, stages, stage_order, stage_graph, diffs, notes,
-    )
+    return IRInspection(mode, sig, world, stages, stage_order, stage_graph, diffs, notes)
 end
 
 # --- Display Functions ---
@@ -393,9 +385,15 @@ function world_age_info(ins::IRInspection)
         vw = stage.meta.valid_worlds
         vw === nothing && continue
         if ins.world < first(vw)
-            push!(mismatches, "Stage $name: min_world $(first(vw)) > inspection world $(ins.world)")
+            push!(
+                mismatches,
+                "Stage $name: min_world $(first(vw)) > inspection world $(ins.world)",
+            )
         elseif ins.world > last(vw)
-            push!(mismatches, "Stage $name: max_world $(last(vw)) < inspection world $(ins.world) (stale)")
+            push!(
+                mismatches,
+                "Stage $name: max_world $(last(vw)) < inspection world $(ins.world) (stale)",
+            )
         end
     end
 
@@ -470,9 +468,8 @@ function write_ir(ins::IRInspection, outdir::String)
         end
     end
     return println(
-        "Wrote $(length(ins.stages)) stages, $(length(ins.diffs)) diffs to $outdir",
+        "Wrote $(length(ins.stages)) stages, $(length(ins.diffs)) diffs to $outdir"
     )
 end
 
 end # module SkillUtils
-
