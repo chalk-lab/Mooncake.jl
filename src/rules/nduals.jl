@@ -1230,6 +1230,10 @@ end
 # dispatching, so the generic (non-BLAS) matrix multiply is used.
 for _WrapType in (:Symmetric, :Hermitian)
     @eval begin
+        # AbstractVecOrMat covers vectors; the AbstractMatrix overloads below resolve
+        # the ambiguity with LinearAlgebra's *(AbstractMatrix, AbstractMatrix) when B
+        # is a plain Matrix (LinearAlgebra wins on B, we win on A — ambiguous without
+        # a more specific method that wins on both).
         function Base.:*(
             A::LinearAlgebra.$_WrapType{
                 NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
@@ -1238,9 +1242,25 @@ for _WrapType in (:Symmetric, :Hermitian)
         ) where {T<:IEEEFloat,N}
             return Matrix(A) * B
         end
+        function Base.:*(
+            A::LinearAlgebra.$_WrapType{
+                NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
+            },
+            B::AbstractMatrix,
+        ) where {T<:IEEEFloat,N}
+            return Matrix(A) * B
+        end
 
         function Base.:*(
             A::AbstractVecOrMat,
+            B::LinearAlgebra.$_WrapType{
+                NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
+            },
+        ) where {T<:IEEEFloat,N}
+            return A * Matrix(B)
+        end
+        function Base.:*(
+            A::AbstractMatrix,
             B::LinearAlgebra.$_WrapType{
                 NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
             },
