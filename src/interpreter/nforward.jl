@@ -70,8 +70,9 @@ struct NForwardRule{sig,N,Tbuf<:Base.RefValue}
 end
 
 # Backward-compatible zero-arg constructor used by primitive rules in rule_via_nforward_patches.jl.
-NForwardRule{sig,N}() where {sig,N} =
+function NForwardRule{sig,N}() where {sig,N}
     NForwardRule{sig,N,Base.RefValue{Any}}(Ref{Any}(nothing))
+end
 
 """
     NForwardRRule
@@ -81,15 +82,18 @@ Callable reverse-mode rule used by `nforward`.
 `NForwardRRule` is built from a statically-known call signature. Both direct
 [`nforward_build_rrule`](@ref) calls and primitive reverse-mode registration route through
 that signature-based construction path. `buf` holds reusable typed scratch buffers for
-cached scalar-output fast paths when that is available.
+cached scalar-output fast paths when that is available. `grad_buf` holds a separate
+pre-allocated gradient buffer for the single-array-input scalar-output fast paths, allowing
+the rrule to stay allocation-free at steady state without copying the computed gradient.
 
 The `scalar_out` type parameter is `true` when inference confirms at rule-build time that
 `f` returns an `IEEEFloat` scalar for the given input types. This allows the single-array
 rrule specialisation to skip the redundant primal type-check call, which otherwise costs
 one full function evaluation per gradient call.
 """
-struct NForwardRRule{sig,N,Tbuf<:Base.RefValue,scalar_out}
+struct NForwardRRule{sig,N,Tbuf<:Base.RefValue,scalar_out,Tgbuf<:Base.RefValue}
     buf::Tbuf
+    grad_buf::Tgbuf
 end
 
 """
@@ -113,8 +117,10 @@ primals, input tangents, and output fdata needed to rerun chunked NDual passes d
 reverse sweep.
 
 !!! note
-    `NForwardPullback` must remain an `isbits` type for the scalar path to stay
-    allocation-free. Do not add any heap-allocated fields.
+    The scalar specialization `NForwardPullback{F,N,Tuple{T},Tuple{NoFData},Y}` with
+    `T<:Number` must remain an `isbits` type for that path to stay allocation-free. The
+    generic path (array or multi-input primals) is not isbits and allocates as usual.
+    Do not add heap-allocated fields without auditing both paths.
 """
 struct NForwardPullback{F,N,P,T,Y}
     f::F
@@ -127,16 +133,22 @@ end
     NForwardArrayScalarPullback
 
 Lightweight pullback returned by the optimised single-array-input / scalar-output rrule fast
-path.  The full gradient (∂f/∂x_i for all i) has already been computed eagerly and written
-into `grad` (which is the same object as `tangent(x_codual)`) during the rrule call.  The
-pullback just scales in-place by the output cotangent `ȳ`.
+path.  The full gradient (∂f/∂x_i for all i) is computed eagerly during the rrule call and
+stored in `grad` (a separate copy, not aliased with `tangent(x_codual)`).  `fdata` is a
+reference to `tangent(x_codual)`.  The pullback accumulates `ȳ * grad` into `fdata`,
+satisfying Mooncake's standard increment semantics for mutable array tangents.
 """
 struct NForwardArrayScalarPullback{G<:AbstractArray}
-    grad::G  # aliased with tangent(x_cd); holds ∂f/∂x after the rrule call
+    grad::G   # precomputed ∂f/∂x; does NOT alias fdata
+    fdata::G  # tangent(x_cd); the accumulation target
 end
 
 function (pb::NForwardArrayScalarPullback)(y_rdata)
-    isone(y_rdata) || (pb.grad .*= y_rdata)
+    if isone(y_rdata)
+        pb.fdata .+= pb.grad
+    else
+        pb.fdata .+= y_rdata .* pb.grad
+    end
     return (NoRData(), NoRData())
 end
 
@@ -147,8 +159,8 @@ end
 # first, then dive into the lower-level pipelines only as needed.
 
 """
-    nforward_build_frule(f, x...; chunk_size)
-    nforward_build_frule(sig::Type{<:Tuple}; chunk_size)
+    nforward_build_frule(f, x...; chunk_size=nothing)
+    nforward_build_frule(sig::Type{<:Tuple}; chunk_size=nothing)
 
 Build a forward-mode rule through `nforward`.
 
@@ -156,17 +168,33 @@ This path is independent from Mooncake's ordinary forwards-mode interpreter and 
 standard `frule!!` interface. It evaluates the primal function directly on NDual-lifted
 scalar / dense-array inputs. Rule construction is signature-based, so `nforward` only
 supports stateless callables here.
+
+If `chunk_size` is omitted, nforward automatically selects `min(DOF, hardware_preferred_width)`
+from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64
+registers). For scalar-only signatures the DOF is known exactly at type level; for
+signatures containing arrays the preferred width is used directly.
+
+!!! warning "Not thread-safe"
+    The returned `NForwardRule` holds a mutable workspace buffer that is updated in-place
+    on every call. Do not share a single rule across threads; build one rule per thread.
+
+!!! note "debug_mode"
+    The `debug_mode` keyword is accepted for API compatibility with `nforward_prepare_cache`
+    but always throws when `true`; nforward-specific debug checks are not yet implemented.
+    Mooncake's outer debug wrapper still validates CoDual inputs/outputs when the rule is
+    invoked inside a debug-mode rrule.
 """
 function nforward_build_frule(
-    sig::Type{<:Tuple}; chunk_size::Integer, debug_mode=false, silence_debug_messages=true
+    sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
-    chunk_size = _nforward_validate(sig, chunk_size; debug_mode)
-    buf = _nforward_frule_buf_ref(sig, Val(chunk_size))
-    return NForwardRule{sig,chunk_size,typeof(buf)}(buf)
+    resolved = isnothing(chunk_size) ? _nforward_sig_default_chunk_size(sig) : chunk_size
+    resolved = _nforward_validate(sig, resolved; debug_mode)
+    buf = _nforward_frule_buf_ref(sig, Val(resolved))
+    return NForwardRule{sig,resolved,typeof(buf)}(buf)
 end
 
 function nforward_build_frule(
-    f, x...; chunk_size::Integer, debug_mode=false, silence_debug_messages=true
+    f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
     return nforward_build_frule(
         typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages
@@ -174,7 +202,7 @@ function nforward_build_frule(
 end
 
 function (rule::NForwardRule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
-    __verify_sig(rule, (f, x...))
+    _nforward_verify_sig(rule, (f, x...))
     _nforward_check_function_tangent(tangent(f))
     primals = map(primal, x)
     tangents = map(tangent, x)
@@ -188,7 +216,7 @@ end
 function (rule::NForwardRule{sig,N})(
     f::Dual, x::Dual{Array{T,Nd},Array{T,Nd1}}
 ) where {sig,N,T<:IEEEFloat,Nd,Nd1}
-    __verify_sig(rule, (f, x))
+    _nforward_verify_sig(rule, (f, x))
     _nforward_check_function_tangent(tangent(f))
     px = _nforward_check_primal(primal(x))
     dx = tangent(x)
@@ -202,26 +230,47 @@ function (rule::NForwardRule{sig,N})(
 end
 
 """
-    nforward_build_rrule(f, x...; chunk_size)
-    nforward_build_rrule(sig::Type{<:Tuple}; chunk_size)
+    nforward_build_rrule(f, x...; chunk_size=nothing)
+    nforward_build_rrule(sig::Type{<:Tuple}; chunk_size=nothing)
 
 Build a reverse-mode rule through `nforward`.
 
 The reverse rule is derived from chunked NDual forward passes and obeys the standard
 `rrule!!` interface. Rule construction is signature-based, so `nforward` only supports
 stateless callables here.
+
+If `chunk_size` is omitted, nforward automatically selects `min(DOF, hardware_preferred_width)`
+from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64
+registers). For scalar-only signatures the DOF is known exactly at type level; for
+signatures containing arrays the preferred width is used directly.
+
+!!! warning "Not thread-safe"
+    The returned `NForwardRRule` holds mutable workspace buffers (`buf`, `grad_buf`) that
+    are updated in-place on every call. Do not share a single rule across threads; build
+    one rule per thread, or use [`nforward_prepare_cache`](@ref) and create one cache per
+    thread.
+
+!!! note "debug_mode"
+    The `debug_mode` keyword is accepted for API compatibility with `nforward_prepare_cache`
+    but always throws when `true`; nforward-specific debug checks are not yet implemented.
+    Mooncake's outer debug wrapper still validates CoDual inputs/outputs when the rule is
+    invoked inside a debug-mode rrule.
 """
 function nforward_build_rrule(
-    sig::Type{<:Tuple}; chunk_size::Integer, debug_mode=false, silence_debug_messages=true
+    sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
-    chunk_size = _nforward_validate(sig, chunk_size; debug_mode)
-    buf = _nforward_buf_ref(sig, Val(chunk_size))
+    resolved = isnothing(chunk_size) ? _nforward_sig_default_chunk_size(sig) : chunk_size
+    resolved = _nforward_validate(sig, resolved; debug_mode)
+    buf = _nforward_buf_ref(sig, Val(resolved))
+    grad_buf = _nforward_grad_buf_ref(sig)
     scalar_out = _nforward_infer_scalar_output(sig)
-    return NForwardRRule{sig,chunk_size,typeof(buf),scalar_out}(buf)
+    return NForwardRRule{sig,resolved,typeof(buf),scalar_out,typeof(grad_buf)}(
+        buf, grad_buf
+    )
 end
 
 function nforward_build_rrule(
-    f, x...; chunk_size::Integer, debug_mode=false, silence_debug_messages=true
+    f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
     return nforward_build_rrule(
         typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages
@@ -232,9 +281,11 @@ end
     (rule::NForwardRRule)(f::CoDual, x::Vararg{CoDual})
 
 Evaluate an `nforward` reverse rule and return both the output `CoDual` and pullback.
+`f` must be a stateless callable: `tangent(f)` must be `NoFData`, otherwise an
+`ArgumentError` is thrown. Differentiating with respect to `f` is not supported.
 """
 function (rule::NForwardRRule{sig,N})(f::CoDual, x::Vararg{CoDual,M}) where {sig,N,M}
-    __verify_sig(rule, (f, x...))
+    _nforward_verify_sig(rule, (f, x...))
     tangent(f) isa NoFData || throw(
         ArgumentError("nforward does not support differentiating with respect to `f`.")
     )
@@ -253,16 +304,21 @@ end
 function (rule::NForwardRRule{sig,N,Tbuf,true})(
     f::CoDual, x::CoDual{A}
 ) where {sig,N,Tbuf,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
-    __verify_sig(rule, (f, x))
+    _nforward_verify_sig(rule, (f, x))
     tangent(f) isa NoFData || throw(
         ArgumentError("nforward does not support differentiating with respect to `f`.")
     )
     f_runtime = primal(f)
     _nforward_check_primal(primal(x))
     # Output type is known scalar — skip primal call and go straight to gradient sweep.
-    y, _ = _nforward_array_scalar_value_and_gradient(f_runtime, x, rule.buf, Val(N))
+    # Gradient is written to the pre-allocated grad_buf (not into tangent(x)), so the
+    # pullback can accumulate into the existing fdata without a copy.
+    grad_arr = _nforward_lazy_grad_buf!(rule.grad_buf, primal(x))
+    y, _ = _nforward_array_scalar_value_and_gradient(
+        f_runtime, x, rule.buf, grad_arr, Val(N)
+    )
     y_cd = CoDual(y, fdata(zero_tangent(y)))
-    return y_cd, NForwardArrayScalarPullback(tangent(x))
+    return y_cd, NForwardArrayScalarPullback(grad_arr, tangent(x))
 end
 
 # Fallback: output type not known to be scalar at build time.  Run a primal call to
@@ -270,7 +326,7 @@ end
 function (rule::NForwardRRule{sig,N,Tbuf,false})(
     f::CoDual, x::CoDual{A}
 ) where {sig,N,Tbuf,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
-    __verify_sig(rule, (f, x))
+    _nforward_verify_sig(rule, (f, x))
     tangent(f) isa NoFData || throw(
         ArgumentError("nforward does not support differentiating with respect to `f`.")
     )
@@ -278,13 +334,17 @@ function (rule::NForwardRRule{sig,N,Tbuf,false})(
     x_primal = _nforward_check_primal(primal(x))
     y_primal = f_runtime(x_primal)
     if y_primal isa IEEEFloat
-        y, _ = _nforward_array_scalar_value_and_gradient(f_runtime, x, rule.buf, Val(N))
+        grad_arr = _nforward_lazy_grad_buf!(rule.grad_buf, x_primal)
+        y, _ = _nforward_array_scalar_value_and_gradient(
+            f_runtime, x, rule.buf, grad_arr, Val(N)
+        )
         y_cd = CoDual(y, fdata(zero_tangent(y)))
-        return y_cd, NForwardArrayScalarPullback(tangent(x))
+        return y_cd, NForwardArrayScalarPullback(grad_arr, tangent(x))
     else
         _nforward_is_supported_primal(typeof(y_primal)) || _nforward_output_error(y_primal)
         y_cd = CoDual(y_primal, fdata(zero_tangent(y_primal)))
-        return y_cd, _nforward_pullback(f_runtime, (x_primal,), (tangent(x),), tangent(y_cd), Val(N))
+        return y_cd,
+        _nforward_pullback(f_runtime, (x_primal,), (tangent(x),), tangent(y_cd), Val(N))
     end
 end
 
@@ -294,7 +354,8 @@ end
 Prepare a cache for [`value_and_derivative!!`](@ref) and [`value_and_gradient!!`](@ref)
 when used with an [`NForwardCache`](@ref).
 
-If `chunk_size` is omitted, nforward uses `min(total_dof, 8)` with a floor of 1.
+If `chunk_size` is omitted, nforward uses `min(total_dof, 8)` with a floor of 1
+(same default as [`nforward_build_rrule`](@ref)).
 
 !!! warning "Not thread-safe"
     Each `NForwardCache` owns mutable workspace buffers (including pre-allocated tangent
@@ -372,7 +433,7 @@ Dispatch the scalar cached fast path for `nforward` reverse mode.
 function __value_and_gradient!!(
     rule::NForwardRRule{sig,N}, f::CoDual, x::CoDual{T}
 ) where {sig,N,T<:IEEEFloat}
-    __verify_sig(rule, (f, x))
+    _nforward_verify_sig(rule, (f, x))
     return _nforward_scalar_value_and_gradient(primal(f), f, x, Val(N))
 end
 
@@ -386,7 +447,7 @@ workspace path for higher-dimensional arrays.
 function __value_and_gradient!!(
     rule::NForwardRRule{sig,chunk_size}, f::CoDual, x::CoDual{A}
 ) where {sig,chunk_size,T<:IEEEFloat,N,A<:Array{T,N}}
-    __verify_sig(rule, (f, x))
+    _nforward_verify_sig(rule, (f, x))
     _nforward_check_function_tangent(tangent(f))
     y, x_grad = _nforward_array_scalar_value_and_gradient(
         primal(f), x, rule.buf, Val(chunk_size)
@@ -400,13 +461,28 @@ const NFORWARD_DEBUG_MODE_WARNING =
     "inner nforward rule executes without nforward-specific debug checks."
 
 """
+    _copy(rule::NForwardRule)
+
+Copy an `NForwardRule` while resetting cached workspace state.
+"""
+function _copy(x::NForwardRule{sig,N,Tbuf}) where {sig,N,Tbuf}
+    return NForwardRule{sig,N,Tbuf}(Tbuf(nothing))
+end
+
+"""
     _copy(rule::NForwardRRule)
 
 Copy an `NForwardRRule` while resetting cached workspace state.
 """
-function _copy(x::P) where {P<:NForwardRRule}
-    return P(typeof(x.buf)(nothing))
+function _copy(
+    x::NForwardRRule{sig,N,Tbuf,scalar_out,Tgbuf}
+) where {sig,N,Tbuf,scalar_out,Tgbuf}
+    return NForwardRRule{sig,N,Tbuf,scalar_out,Tgbuf}(Tbuf(nothing), Tgbuf(nothing))
 end
+
+# NForwardRRule bakes sig into its type parameters and validates internally via
+# _nforward_verify_sig on every call; no redundant check is needed here.
+__verify_sig(::NForwardRRule, ::Tuple) = nothing
 
 """
     verify_fwds_inputs(rule::NForwardRRule, x)
@@ -427,6 +503,12 @@ end
 # Infer at rule-build time whether `sig` has a scalar IEEEFloat output.
 # Used to set the `scalar_out` type parameter on `NForwardRRule`, allowing the hot-path
 # rrule to skip the redundant primal type-check call for known-scalar functions.
+#
+# Uses `Base.return_types`, which is a best-effort hint: it may return `[Any]` for
+# type-unstable functions or under some world-age conditions.  In those cases this
+# function safely returns `false`, and the rrule falls through to the runtime primal
+# check (`scalar_out=false` path).  There is no correctness risk from a missed inference
+# — only a missed optimisation.
 function _nforward_infer_scalar_output(sig::Type{<:Tuple})
     F = sig.parameters[1]
     Base.issingletontype(F) || return false
@@ -449,15 +531,52 @@ end
     return chunk_size
 end
 
+# Conservative SIMD-friendly default: 8 lanes covers one AVX-512 register (8×Float64)
+# and two AVX2 registers.  Chunk sizes beyond 8 add register pressure without
+# proportional throughput gains on most hardware.
+const _NFORWARD_PREFERRED_CHUNK_SIZE = 8
+
 @inline function _nforward_default_chunk_size(x::Tuple)
-    return max(1, min(sum(_nforward_input_dof, x), 8))
+    return max(1, min(sum(_nforward_input_dof, x), _NFORWARD_PREFERRED_CHUNK_SIZE))
+end
+
+# Type-level DOF: returns the number of differentiable scalar components for a
+# concrete type, or `nothing` when the size cannot be determined from the type
+# alone (e.g. heap-allocated Array whose length is a runtime value).
+@inline _nforward_type_dof(::Type{<:IEEEFloat}) = 1
+@inline _nforward_type_dof(::Type{<:Complex{<:IEEEFloat}}) = 2
+@inline _nforward_type_dof(T::Type{<:Tuple}) = sum(_nforward_type_dof, T.parameters; init=0)
+# Arrays: size is a runtime value, so DOF is unknown at type level.
+@inline _nforward_type_dof(::Type{<:AbstractArray}) = nothing
+@inline _nforward_type_dof(::Type) = 0  # non-differentiable (e.g. function type)
+
+# Sum type-level DOF across all argument types in a signature, skipping the
+# function type at position 1.  Returns `nothing` if any input has unknown DOF
+# (i.e. contains an array whose size is not encoded in its type).
+@inline function _nforward_sig_dof(::Type{sig}) where {sig<:Tuple}
+    params = sig.parameters
+    total = 0
+    for i in 2:length(params)
+        d = _nforward_type_dof(params[i])
+        d === nothing && return nothing
+        total += d
+    end
+    return total
+end
+
+# Default chunk size from a signature alone: min(DOF, preferred) when DOF is
+# statically known; preferred width when any input has an array type.
+@inline function _nforward_sig_default_chunk_size(::Type{sig}) where {sig<:Tuple}
+    dof = _nforward_sig_dof(sig)
+    preferred = _NFORWARD_PREFERRED_CHUNK_SIZE
+    return dof === nothing ? preferred : max(1, min(dof, preferred))
 end
 
 """
     _nforward_resolve_chunk_size(chunk_size, x)
 
 Return the chunk size used for an `nforward` call, defaulting to
-`min(total_dof(x), 8)` when `chunk_size === nothing`.
+`min(total_dof(x), _NFORWARD_PREFERRED_CHUNK_SIZE)` when `chunk_size === nothing`.
 """
 @inline function _nforward_resolve_chunk_size(chunk_size, x::Tuple)
     return if isnothing(chunk_size)
@@ -528,7 +647,7 @@ end
 @inline _nforward_rule_sig(::NForwardRule{sig}) where {sig} = sig
 @inline _nforward_rule_sig(::NForwardRRule{sig}) where {sig} = sig
 
-@inline function __verify_sig(rule::Union{NForwardRule,NForwardRRule}, fx::Tuple)
+@inline function _nforward_verify_sig(rule::Union{NForwardRule,NForwardRRule}, fx::Tuple)
     sig = _nforward_rule_sig(rule)
     Tfx = Tuple{map(_typeof ∘ primal, fx)...}
     # Use <: (subtype) rather than == so that a rule built for an abstract signature
@@ -553,8 +672,10 @@ end
     all(args_to_zero) && return nothing
     throw(
         ArgumentError(
-            "nforward does not currently support custom `args_to_zero`; pass the default " *
-            "all-true tuple instead.",
+            "nforward does not currently support selective `args_to_zero` (partial " *
+            "gradient computation). To differentiate only w.r.t. a subset of inputs, " *
+            "call the NForwardRRule directly and manually zero the tangents for the " *
+            "inputs you do not want to differentiate through.",
         ),
     )
 end
@@ -563,6 +684,8 @@ end
 @inline _nforward_input_dof(x::Complex{<:IEEEFloat}) = 2
 @inline _nforward_input_dof(x::AbstractArray{<:IEEEFloat}) = length(x)
 @inline _nforward_input_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
+# Tuple inputs: sum DOFs of each element (tuples are supported as top-level inputs).
+@inline _nforward_input_dof(x::Tuple) = sum(_nforward_input_dof, x; init=0)
 
 #
 # Reverse accumulation utilities
@@ -716,26 +839,37 @@ end
 
 function _nforward_gradient_refs(primals::Tuple, tangents::Tuple)
     return map(primals, tangents) do x, dx
-        g = zero_tangent(x, dx)
-        x isa Number ? Ref(g) : set_to_zero!!(g)
+        if x isa Number
+            g = zero_tangent(x, dx)
+            Ref(g)
+        else
+            # Use a fresh zeros array (not the fdata) for VJP accumulation.  The generic
+            # pullback adds this into the fdata at the end so that existing fdata content
+            # (e.g. contributions from other uses of the same array) is preserved.
+            zero_tangent(x)
+        end
     end
 end
 
 _nforward_unwrap_gradient(g::Base.RefValue) = g[]
 _nforward_unwrap_gradient(g) = g
 
+# `slot` is the 1-based DOF index within the scalar/complex input: 1 for the real
+# component (or the sole IEEEFloat slot), 2 for the imaginary component of a complex.
+# Called from `_nforward_scalar_gradient_rdata` with the loop's global_slot, which
+# equals the local slot because that path is specialised to a single input at offset 0.
 @inline function _nforward_accumulate_scalar_gradient(
-    g::T, local_slot::Int, v
+    g::T, slot::Int, v
 ) where {T<:IEEEFloat}
-    local_slot == 1 ? g + v : g
+    slot == 1 ? g + v : g
 end
 
 @inline function _nforward_accumulate_scalar_gradient(
-    g::Complex{T}, local_slot::Int, v
+    g::Complex{T}, slot::Int, v
 ) where {T<:IEEEFloat}
-    if local_slot == 1
+    if slot == 1
         return g + complex(v, zero(T))
-    elseif local_slot == 2
+    elseif slot == 2
         return g + complex(zero(T), v)
     end
     return g
@@ -808,6 +942,10 @@ function _nforward_contract_output(
 end
 
 # Multi-chunk array case (dy has one extra trailing dimension of size N — real or complex).
+# Both arrays must share the same element type T.  Mixed-precision cases (e.g.
+# ȳ::Vector{Float32} with dy::Matrix{Float64}) fall through to the generic error overload
+# below.  In practice nforward keeps element types consistent across primal/tangent, so
+# this situation only arises from incorrect external use.
 function _nforward_contract_output(
     ȳ::A, dy::B
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},A<:AbstractArray{T},B<:AbstractArray{T}}
@@ -930,6 +1068,11 @@ function (pb::NForwardPullback{F,N})(y_rdata) where {F,N}
         _, dy = _nforward_eval(pb.f, pb.primals, tangents, Val(N))
         lane_vals = _nforward_contract_output(ȳ, dy)
         _nforward_scatter_chunk!(grads, pb.primals, lane_vals, start_slot)
+    end
+    # For array inputs the gradient lives in grads[i] (a fresh zeros array).  Accumulate it
+    # into the fdata (pb.tangents[i]) so that existing fdata contributions are preserved.
+    foreach(pb.tangents, grads) do fdata, grad
+        fdata isa AbstractArray && (fdata .+= _nforward_unwrap_gradient(grad))
     end
     return tuple(
         rdata(zero_tangent(pb.f)), map(g -> rdata(_nforward_unwrap_gradient(g)), grads)...
@@ -1216,11 +1359,14 @@ end
 # This replaces the previous O(n×C) approach (fill! the full seed + lift! every chunk)
 # with O(n) + O(C)×chunks, matching how ForwardDiff manages its GradientConfig.
 
+# Primary overload: gradient is written to an explicitly provided buffer `grad`.
+# `grad` must have the same shape and element type as `primal(x)`.
+# The buffer is zeroed at the start of each call.  Does NOT touch `tangent(x)`.
 function _nforward_array_scalar_value_and_gradient(
-    f_runtime, x::CoDual{A}, buf::Base.RefValue, ::Val{C}
+    f_runtime, x::CoDual{A}, buf::Base.RefValue, grad::A, ::Val{C}
 ) where {C,T<:IEEEFloat,N,A<:Array{T,N}}
     x_primal = _nforward_check_primal(primal(x))
-    grad = set_to_zero!!(tangent(x))
+    fill!(grad, zero(T))
     lifted = _nforward_rrule_lifted!(buf, x_primal, Val(C))
 
     # Initialise all elements to (x[i], 0̄) once; chunks then update only C slots each.
@@ -1243,11 +1389,23 @@ function _nforward_array_scalar_value_and_gradient(
     return y, grad
 end
 
+# Backward-compatible overload: accumulates into tangent(x) directly (the buffer is
+# zeroed inside the primary overload before use).
+# Used by __value_and_gradient!! where the caller expects the returned gradient to be
+# the fdata array (i.e. tangent(x) == x_grad after the call).
+function _nforward_array_scalar_value_and_gradient(
+    f_runtime, x::CoDual{A}, buf::Base.RefValue, ::Val{C}
+) where {C,T<:IEEEFloat,N,A<:Array{T,N}}
+    return _nforward_array_scalar_value_and_gradient(f_runtime, x, buf, tangent(x), Val(C))
+end
+
 #
-# Workspace helpers (_nforward_buf_ref / _nforward_rrule_lifted!)
+# Workspace helpers (_nforward_buf_ref / _nforward_rrule_lifted! /
+#                    _nforward_grad_buf_ref / _nforward_lazy_grad_buf!)
 #
 # The rrule buf stores only the lifted Array{NDual{T,C}} — no seed array needed.
-# Two buf types are used, matching the frule buf pattern:
+# The grad_buf stores a pre-allocated gradient array matching the input shape.
+# Two ref types are used for each, matching the frule buf pattern:
 #   - Typed-ref (Vector{T} input): fully inferred, no runtime isa check.
 #   - Generic Ref{Any} (N-D array input): workspace type recovered at runtime.
 
@@ -1255,6 +1413,12 @@ _nforward_buf_ref(sig, ::Val) = Ref{Any}(nothing)
 
 function _nforward_buf_ref(::Type{Tuple{F,Vector{T}}}, ::Val{C}) where {F,T<:IEEEFloat,C}
     return Ref{Union{Nothing,Vector{NDual{T,C}}}}(nothing)
+end
+
+_nforward_grad_buf_ref(sig) = Ref{Any}(nothing)
+
+function _nforward_grad_buf_ref(::Type{Tuple{F,Vector{T}}}) where {F,T<:IEEEFloat}
+    return Ref{Union{Nothing,Vector{T}}}(nothing)
 end
 
 # Typed-ref path: fully inferred.
@@ -1280,6 +1444,28 @@ function _nforward_rrule_lifted!(
     return buf[]::Array{Tlift,N}
 end
 
+# Typed-ref path: fully inferred.
+function _nforward_lazy_grad_buf!(
+    grad_buf::Base.RefValue{Union{Nothing,Vector{T}}}, x_primal::Vector{T}
+) where {T<:IEEEFloat}
+    ws = grad_buf[]
+    if ws === nothing || length(ws::Vector{T}) != length(x_primal)
+        grad_buf[] = Vector{T}(undef, length(x_primal))
+    end
+    return grad_buf[]::Vector{T}
+end
+
+# Generic path: grad_buf is Ref{Any}; gradient array type recovered at runtime.
+function _nforward_lazy_grad_buf!(
+    grad_buf::Base.RefValue, x_primal::Array{T,N}
+) where {T<:IEEEFloat,N}
+    ws = grad_buf[]
+    if !(ws isa Array{T,N} && size(ws) == size(x_primal))
+        grad_buf[] = Array{T,N}(undef, size(x_primal))
+    end
+    return grad_buf[]::Array{T,N}
+end
+
 # Initialise every element of `lifted` to NDual(x[i], 0̄) — O(n), called once per
 # value_and_gradient!! invocation.  Chunks then update only C elements each.
 function _nforward_init_lifted!(
@@ -1294,8 +1480,11 @@ end
 
 # Set C elements starting at `start_slot` to unit-partial form — O(C).
 function _nforward_seed_lifted_chunk!(
-    lifted::Array{NDual{T,C},N}, x::Array{T,N}, cart::CartesianIndices,
-    start_slot::Int, ::Val{C}
+    lifted::Array{NDual{T,C},N},
+    x::Array{T,N},
+    cart::CartesianIndices,
+    start_slot::Int,
+    ::Val{C},
 ) where {T<:IEEEFloat,C,N}
     @inbounds for lane in 1:C
         gs = start_slot + lane - 1
@@ -1308,8 +1497,11 @@ end
 
 # Reset those same C elements back to zero-partial form — O(C).
 function _nforward_unseed_lifted_chunk!(
-    lifted::Array{NDual{T,C},N}, x::Array{T,N}, cart::CartesianIndices,
-    start_slot::Int, ::Val{C}
+    lifted::Array{NDual{T,C},N},
+    x::Array{T,N},
+    cart::CartesianIndices,
+    start_slot::Int,
+    ::Val{C},
 ) where {T<:IEEEFloat,C,N}
     z = ntuple(_ -> zero(T), Val(C))
     @inbounds for lane in 1:C
@@ -1351,7 +1543,9 @@ end
 # Typed-ref path for Vector{T} inputs.
 function _nforward_frule_lifted!(
     buf::Base.RefValue{Union{Nothing,Vector{NDual{T,C}}}},
-    x::Vector{T}, dx::Array{T}, ::Val{C}
+    x::Vector{T},
+    dx::Array{T},
+    ::Val{C},
 ) where {T<:IEEEFloat,C}
     ws = buf[]
     if ws === nothing || length(ws::Vector{NDual{T,C}}) != length(x)

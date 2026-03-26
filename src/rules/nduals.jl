@@ -257,6 +257,12 @@ end
 
 # Promote a plain scalar to a NDual with zero partials (acts as a constant).
 NDual{T,N}(x::Real) where {T<:IEEEFloat,N} = NDual{T,N}(T(x), ntuple(_ -> zero(T), Val(N)))
+# Identity / same-precision constructor: NDual{T,N}(d::NDual{T,N}) must not call T(d).
+NDual{T,N}(d::NDual{T,N}) where {T<:IEEEFloat,N} = d
+# Cross-precision constructor: NDual{T,N}(d::NDual{S,N}) where S ≠ T.
+function NDual{T,N}(d::NDual{S,N}) where {T<:IEEEFloat,N,S<:IEEEFloat}
+    NDual{T,N}(T(d.value), ntuple(i -> T(d.partials[i]), Val(N)))
+end
 
 # ── Accessors ────────────────────────────────────────────────────────────────────
 
@@ -285,6 +291,9 @@ Base.floatmin(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(floatmin(T))
 Base.floatmax(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(floatmax(T))
 Base.typemin(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(typemin(T))
 Base.typemax(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(typemax(T))
+# Instance dispatch: floatmin(x::NDual) and floatmax(x::NDual) forward to the type method.
+Base.floatmin(x::NDual{T,N}) where {T,N} = NDual{T,N}(floatmin(T))
+Base.floatmax(x::NDual{T,N}) where {T,N} = NDual{T,N}(floatmax(T))
 Base.precision(::Type{NDual{T,N}}) where {T<:AbstractFloat,N} = precision(T)
 Base.precision(::NDual{T,N}) where {T<:AbstractFloat,N} = precision(T)
 # nextfloat / prevfloat: perturb only the scalar value; partials are unchanged since
@@ -884,6 +893,10 @@ Base.signbit(a::NDual) = signbit(a.value)
 # ── Utility ───────────────────────────────────────────────────────────────────────
 Base.eps(d::NDual) = eps(d.value)
 Base.eps(::Type{NDual{T,N}}) where {T,N} = eps(T)
+# Checks both the primal value and all partial slots.  In GPU kernels this evaluates
+# N partial values before short-circuiting; prefer `iszero(d.value)` inside hot kernel
+# loops where the partial check is unnecessary and could cause warp divergence.
+# This method is intended for host-side utility and correctness checks (e.g. hash, tests).
 @inline function Base.iszero(d::NDual{T,N}) where {T,N}
     return iszero(d.value) && all(iszero, d.partials)
 end
@@ -1093,3 +1106,112 @@ end
 #                      ceil(N/K) passes  over input data.
 
 end # module NDuals
+
+# ── Cholesky factorization for matrices of NDuals ─────────────────────────────────
+#
+# Forward-mode Cholesky derivative.  For A = L·Lᵀ (lower Cholesky) with symmetric
+# perturbation Ȧ, the corresponding perturbation of L is
+#
+#   L̇ = L · Φ(L⁻¹ · Ȧ · L⁻ᵀ)
+#
+# where Φ zeroes the strict upper triangle and halves the diagonal:
+#
+#   Φ(S)ᵢⱼ = Sᵢⱼ    for i > j   (strict lower triangle)
+#   Φ(S)ᵢᵢ = Sᵢᵢ/2  for i = j   (diagonal halved)
+#   Φ(S)ᵢⱼ = 0      for i < j   (upper triangle)
+#
+# Equivalently: Φ(S) = LowerTriangular(S) - Diagonal(diag(S)/2).
+#
+# The rule computes the primal Cholesky once in Float64, then applies the derivative
+# formula N times (once per partial slot) using triangular solves, avoiding the need
+# to run the full Cholesky algorithm on NDual-typed elements.
+
+function _cholesky_ndual_fwd(
+    L::AbstractMatrix{T}, Ȧ::AbstractMatrix{T}
+) where {T<:IEEEFloat}
+    Lt = LinearAlgebra.LowerTriangular(L)
+    S = Lt \ (Ȧ / Lt')
+    Φ = LinearAlgebra.LowerTriangular(S) - LinearAlgebra.Diagonal(diag(S) / 2)
+    return Matrix(Lt * Φ)
+end
+
+function LinearAlgebra.cholesky(
+    A::AbstractMatrix{NDuals.NDual{T,N}},
+    (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
+    check::Bool=true,
+) where {T<:IEEEFloat,N}
+    A₀ = map(NDuals.ndual_value, A)
+    F₀ = cholesky(Hermitian(A₀); check)
+    L₀ = Matrix(F₀.L)                    # dense lower-triangular Matrix{T}
+    L̇s = ntuple(
+        k -> _cholesky_ndual_fwd(L₀, map(x -> NDuals.ndual_partial(x, k), A)), Val(N)
+    )
+    n = size(L₀, 1)
+    L_nd = Matrix{NDuals.NDual{T,N}}(undef, n, n)
+    @inbounds for i in 1:n, j in 1:n
+        L_nd[i, j] = NDuals.NDual{T,N}(L₀[i, j], ntuple(k -> L̇s[k][i, j], Val(N)))
+    end
+    return Cholesky(L_nd, 'L', 0)
+end
+
+# Hermitian and Symmetric wrappers: materialise the symmetric view, then defer to
+# the Matrix{NDual} method above.
+#
+# Critically, we call `copytri!` to mirror the active triangle before passing the
+# matrix to `cholesky(::Matrix{NDual})`.  Without this, the `_cholesky_ndual_fwd`
+# helper would see raw (unmirrored) NDual values for the inactive triangle, producing
+# wrong partial derivatives for those positions.  For real NDual, Hermitian and
+# Symmetric are equivalent (conj is identity), so a single `copytri!` suffices.
+for _WrapType in (:Hermitian, :Symmetric)
+    @eval function LinearAlgebra.cholesky(
+        A::LinearAlgebra.$_WrapType{NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}},
+        (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
+        check::Bool=true,
+    ) where {T<:IEEEFloat,N}
+        data = LinearAlgebra.copytri!(copy(A.data), A.uplo)
+        return cholesky(data, LinearAlgebra.NoPivot(); check)
+    end
+end
+
+# ── Symmetric / Hermitian matrix operations for NDual ────────────────────────────────
+#
+# LinearAlgebra's BLAS-backed `mul!` specialisations don't accept NDual elements.
+# Materialise the lazy symmetric/hermitian wrapper to a plain Matrix{NDual} before
+# dispatching, so the generic (non-BLAS) matrix multiply is used.
+for _WrapType in (:Symmetric, :Hermitian)
+    @eval begin
+        function Base.:*(
+            A::LinearAlgebra.$_WrapType{
+                NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
+            },
+            B::AbstractVecOrMat,
+        ) where {T<:IEEEFloat,N}
+            return Matrix(A) * B
+        end
+
+        function Base.:*(
+            A::AbstractVecOrMat,
+            B::LinearAlgebra.$_WrapType{
+                NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
+            },
+        ) where {T<:IEEEFloat,N}
+            return A * Matrix(B)
+        end
+    end
+end
+
+# logdet(Cholesky{NDual}): 2·∑ᵢ log(Lᵢᵢ).
+# The generic LinearAlgebra path reaches this formula via `sum(log, diag(C.L))`, but
+# `diag(LowerTriangular{NDual})` may trigger a BLAS-adjacent specialisation.  Spelling
+# it out explicitly avoids that ambiguity.
+function LinearAlgebra.logdet(
+    C::LinearAlgebra.Cholesky{NDuals.NDual{T,N},Matrix{NDuals.NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    L = C.L
+    n = size(L, 1)
+    s = log(L[1, 1])
+    for i in 2:n
+        s = s + log(L[i, i])
+    end
+    return 2 * s
+end

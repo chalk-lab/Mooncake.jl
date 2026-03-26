@@ -541,4 +541,235 @@ function frule!!(
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
 
+# ── NDual overloads for SpecialFunctions ──────────────────────────────────────
+#
+# These let NDual-typed inputs (used by nforward / Hessian) propagate through
+# the special-function calls that appear inside distribution logpdfs (Beta,
+# Gamma, Chi, Dirichlet, …).
+#
+# Each method evaluates the primal at the Float64 value, then propagates the
+# N partial slots using the known scalar derivative:
+#
+#   d/dx loggamma(x)     = digamma(x)
+#   d/dx digamma(x)      = trigamma(x)
+#   d/dx trigamma(x)     = polygamma(2, x)
+#   d/dx polygamma(n, x) = polygamma(n+1, x)
+#   d/dx logbeta(x, y)   = digamma(x) - digamma(x+y)
+#   d/dy logbeta(x, y)   = digamma(y) - digamma(x+y)
+#   d/dx beta(x, y)      = beta(x, y) * (digamma(x) - digamma(x+y))
+#   d/dx gamma(x)        = gamma(x) * digamma(x)
+#   d/dx erf(x)          = 2/√π · exp(-x²)
+#   d/dx erfc(x)         = -2/√π · exp(-x²)
+#   d/dx erfinv(x)       = √π/2 · exp(erfinv(x)²)
+#   d/dx besselk(ν, x)   = -(besselk(ν-1,x) + besselk(ν+1,x)) / 2
+
+using Mooncake.NDuals: NDual
+
+@inline function SpecialFunctions.loggamma(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    dv = SpecialFunctions.digamma(v)
+    return NDual{T,N}(SpecialFunctions.loggamma(v), ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+@inline function SpecialFunctions.logabsgamma(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    lv, sv = SpecialFunctions.logabsgamma(v)
+    dv = SpecialFunctions.digamma(v)
+    return (NDual{T,N}(lv, ntuple(k -> dv * x.partials[k], Val(N))), sv)
+end
+
+@inline function SpecialFunctions.digamma(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    dv = SpecialFunctions.trigamma(v)
+    return NDual{T,N}(SpecialFunctions.digamma(v), ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+@inline function SpecialFunctions.trigamma(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    dv = SpecialFunctions.polygamma(2, v)
+    return NDual{T,N}(SpecialFunctions.trigamma(v), ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+@inline function SpecialFunctions.polygamma(
+    n::Integer, x::NDual{T,N}
+) where {T<:IEEEFloat,N}
+    v = x.value
+    dv = SpecialFunctions.polygamma(n + 1, v)
+    return NDual{T,N}(
+        SpecialFunctions.polygamma(n, v), ntuple(k -> dv * x.partials[k], Val(N))
+    )
+end
+
+@inline function SpecialFunctions.gamma(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    gv = SpecialFunctions.gamma(v)
+    dv = gv * SpecialFunctions.digamma(v)
+    return NDual{T,N}(gv, ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+@inline function SpecialFunctions.logbeta(
+    x::NDual{T,N}, y::NDual{T,N}
+) where {T<:IEEEFloat,N}
+    xv, yv = x.value, y.value
+    ψx = SpecialFunctions.digamma(xv)
+    ψy = SpecialFunctions.digamma(yv)
+    ψxy = SpecialFunctions.digamma(xv + yv)
+    return NDual{T,N}(
+        SpecialFunctions.logbeta(xv, yv),
+        ntuple(k -> (ψx - ψxy) * x.partials[k] + (ψy - ψxy) * y.partials[k], Val(N)),
+    )
+end
+
+@inline function SpecialFunctions.logbeta(x::NDual{T,N}, y::Real) where {T<:IEEEFloat,N}
+    xv, yv = x.value, T(y)
+    ψx = SpecialFunctions.digamma(xv)
+    ψxy = SpecialFunctions.digamma(xv + yv)
+    return NDual{T,N}(
+        SpecialFunctions.logbeta(xv, yv), ntuple(k -> (ψx - ψxy) * x.partials[k], Val(N))
+    )
+end
+
+@inline function SpecialFunctions.logbeta(x::Real, y::NDual{T,N}) where {T<:IEEEFloat,N}
+    xv, yv = T(x), y.value
+    ψy = SpecialFunctions.digamma(yv)
+    ψxy = SpecialFunctions.digamma(xv + yv)
+    return NDual{T,N}(
+        SpecialFunctions.logbeta(xv, yv), ntuple(k -> (ψy - ψxy) * y.partials[k], Val(N))
+    )
+end
+
+@inline function SpecialFunctions.beta(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
+    xv, yv = x.value, y.value
+    bv = SpecialFunctions.beta(xv, yv)
+    ψx = SpecialFunctions.digamma(xv)
+    ψy = SpecialFunctions.digamma(yv)
+    ψxy = SpecialFunctions.digamma(xv + yv)
+    return NDual{T,N}(
+        bv,
+        ntuple(k -> bv * ((ψx - ψxy) * x.partials[k] + (ψy - ψxy) * y.partials[k]), Val(N)),
+    )
+end
+
+@inline function SpecialFunctions.erf(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    dv = T(2 / sqrt(π)) * exp(-v^2)
+    return NDual{T,N}(SpecialFunctions.erf(v), ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+@inline function SpecialFunctions.erfc(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    dv = -T(2 / sqrt(π)) * exp(-v^2)
+    return NDual{T,N}(SpecialFunctions.erfc(v), ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+@inline function SpecialFunctions.erfinv(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    inv_v = SpecialFunctions.erfinv(v)
+    dv = T(sqrt(π) / 2) * exp(inv_v^2)
+    return NDual{T,N}(inv_v, ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+# Helper: extract the scalar (Float64/Float32) value from ν, which may be NDual when the
+# Julia promote machinery wraps an integer/float order into the same type as x.
+# Derivative w.r.t. ν is not implemented; callers differentiating only through x are correct.
+_bessel_nu(ν::NDual) = ν.value
+_bessel_nu(ν::Real) = ν
+
+# d/dx besselk(ν, x) = -(besselk(ν-1, x) + besselk(ν+1, x)) / 2
+@inline function SpecialFunctions.besselk(ν::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    νv, v = _bessel_nu(ν), x.value
+    dv = -(SpecialFunctions.besselk(νv - 1, v) + SpecialFunctions.besselk(νv + 1, v)) / 2
+    return NDual{T,N}(
+        SpecialFunctions.besselk(νv, v), ntuple(k -> dv * x.partials[k], Val(N))
+    )
+end
+
+# d/dx besseli(ν, x) = (besseli(ν-1, x) + besseli(ν+1, x)) / 2
+# Without NDual overloads the generic `bessel*(nu::Real, x::Real) = bessel*(nu, float(x))`
+# path recurses infinitely because `float(x::NDual) = x`.
+@inline function SpecialFunctions.besseli(ν::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    νv, v = _bessel_nu(ν), x.value
+    dv = (SpecialFunctions.besseli(νv - 1, v) + SpecialFunctions.besseli(νv + 1, v)) / 2
+    return NDual{T,N}(
+        SpecialFunctions.besseli(νv, v), ntuple(k -> dv * x.partials[k], Val(N))
+    )
+end
+
+# besselix(ν, x) = besseli(ν, x) * exp(-|x|)  (exponentially scaled).
+# VonMises stores besselix(0, κ) in the constructor, making this the hot path.
+# d/dx besselix(ν,x) = (besselix(ν-1,x)+besselix(ν+1,x))/2 - besselix(ν,x)  (x>0)
+@inline function SpecialFunctions.besselix(ν::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    νv, v = _bessel_nu(ν), x.value
+    yv = SpecialFunctions.besselix(νv, v)
+    dv =
+        (SpecialFunctions.besselix(νv - 1, v) + SpecialFunctions.besselix(νv + 1, v)) / 2 -
+        yv
+    return NDual{T,N}(yv, ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+# besselkx(ν, x) = besselk(ν, x) * exp(x)  (exponentially scaled).
+# d/dx besselkx(ν,x) = besselkx(ν,x) - (besselkx(ν-1,x)+besselkx(ν+1,x))/2  (x>0)
+@inline function SpecialFunctions.besselkx(ν::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    νv, v = _bessel_nu(ν), x.value
+    yv = SpecialFunctions.besselkx(νv, v)
+    dv =
+        yv -
+        (SpecialFunctions.besselkx(νv - 1, v) + SpecialFunctions.besselkx(νv + 1, v)) / 2
+    return NDual{T,N}(yv, ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+# d/dx bessely(ν, x) = (bessely(ν-1, x) - bessely(ν+1, x)) / 2
+@inline function SpecialFunctions.bessely(ν::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    νv, v = _bessel_nu(ν), x.value
+    dv = (SpecialFunctions.bessely(νv - 1, v) - SpecialFunctions.bessely(νv + 1, v)) / 2
+    return NDual{T,N}(
+        SpecialFunctions.bessely(νv, v), ntuple(k -> dv * x.partials[k], Val(N))
+    )
+end
+
+# d/dx besselj(ν, x) = (besselj(ν-1, x) - besselj(ν+1, x)) / 2
+@inline function SpecialFunctions.besselj(ν::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    νv, v = _bessel_nu(ν), x.value
+    dv = (SpecialFunctions.besselj(νv - 1, v) - SpecialFunctions.besselj(νv + 1, v)) / 2
+    return NDual{T,N}(
+        SpecialFunctions.besselj(νv, v), ntuple(k -> dv * x.partials[k], Val(N))
+    )
+end
+
+# beta_inc(a, b, x) = (I_x(a,b), 1 - I_x(a,b)) — regularized incomplete beta function.
+# Implements the x-partial: ∂I_x(a,b)/∂x = x^(a-1)·(1-x)^(b-1) / B(a,b)  (the Beta PDF).
+# Derivatives w.r.t. the shape parameters a, b are not implemented; callers that promote
+# Float64 shape params to NDual (zero partials) get the correct result, but differentiating
+# w.r.t. a or b directly will give wrong answers.
+
+# Case: a and b are plain Reals (not NDual), only x varies.
+function SpecialFunctions.beta_inc(a::Real, b::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    av, bv, xv = T(a), T(b), x.value
+    Iv, Qv = SpecialFunctions.beta_inc(av, bv, xv)
+    d_dx = exp(
+        (av - 1) * log(xv) + (bv - 1) * log(1 - xv) - SpecialFunctions.logbeta(av, bv)
+    )
+    return (
+        NDual{T,N}(Iv, ntuple(k -> d_dx * x.partials[k], Val(N))),
+        NDual{T,N}(Qv, ntuple(k -> -d_dx * x.partials[k], Val(N))),
+    )
+end
+
+# Case: all three args are NDual (e.g. when StatsFuns promotes Float64 shape params).
+# Only the x-partial is computed; the a,b partials contribute zero when their .partials
+# are all-zero (the typical promoted case), which is the only supported scenario.
+function SpecialFunctions.beta_inc(
+    a::NDual{T,N}, b::NDual{T,N}, x::NDual{T,N}
+) where {T<:IEEEFloat,N}
+    av, bv, xv = a.value, b.value, x.value
+    Iv, Qv = SpecialFunctions.beta_inc(av, bv, xv)
+    d_dx = exp(
+        (av - 1) * log(xv) + (bv - 1) * log(1 - xv) - SpecialFunctions.logbeta(av, bv)
+    )
+    return (
+        NDual{T,N}(Iv, ntuple(k -> d_dx * x.partials[k], Val(N))),
+        NDual{T,N}(Qv, ntuple(k -> -d_dx * x.partials[k], Val(N))),
+    )
+end
+
 end

@@ -615,4 +615,101 @@ using Mooncake.NDuals
         @test NDuals.ndual_partial(yd[1], 2) ≈ dy2[1]
         @test NDuals.ndual_partial(yd[2], 2) ≈ dy2[2]
     end
+
+    @testset "cholesky(Matrix{NDual})" begin
+        # 2×2 SPD matrix A₀ with N=3 independent perturbation directions:
+        #   slot 1 ↔ ∂/∂A₁₁, slot 2 ↔ ∂/∂A₁₂ (symmetric), slot 3 ↔ ∂/∂A₂₂
+        a11, a12, a22 = 4.0, 2.0, 3.0
+        A₀ = [a11 a12; a12 a22]
+        A_nd = [
+            NDual{Float64,3}(a11, (1.0, 0.0, 0.0)) NDual{Float64,3}(a12, (0.0, 1.0, 0.0));
+            NDual{Float64,3}(a12, (0.0, 1.0, 0.0)) NDual{Float64,3}(a22, (0.0, 0.0, 1.0))
+        ]
+
+        F_nd = cholesky(A_nd)
+        L_nd = F_nd.L
+        L₀ = Matrix(cholesky(Hermitian(A₀)).L)
+
+        # Primal values match Float64 reference
+        @test NDuals.ndual_value(L_nd[1, 1]) ≈ L₀[1, 1]
+        @test NDuals.ndual_value(L_nd[2, 1]) ≈ L₀[2, 1]
+        @test NDuals.ndual_value(L_nd[2, 2]) ≈ L₀[2, 2]
+        @test NDuals.ndual_value(L_nd[1, 2]) ≈ 0.0  # upper triangle zero
+
+        # Partials verified by finite differences
+        ε = 1e-7
+        for (k, δA) in enumerate([
+            [ε 0.0; 0.0 0.0],   # slot 1: ∂/∂A₁₁
+            [0.0 ε; ε 0.0],     # slot 2: ∂/∂A₁₂ (symmetric)
+            [0.0 0.0; 0.0 ε],   # slot 3: ∂/∂A₂₂
+        ])
+            L_pert = Matrix(cholesky(Hermitian(A₀ + δA)).L)
+            L_dot = (L_pert - L₀) / ε
+            @test NDuals.ndual_partial(L_nd[1, 1], k) ≈ L_dot[1, 1] rtol = 1e-5
+            @test NDuals.ndual_partial(L_nd[2, 1], k) ≈ L_dot[2, 1] rtol = 1e-5
+            @test NDuals.ndual_partial(L_nd[2, 2], k) ≈ L_dot[2, 2] rtol = 1e-5
+        end
+
+        # Symmetric{NDual} and Hermitian{NDual} wrappers dispatch correctly
+        for F_wrap in (cholesky(Hermitian(A_nd)), cholesky(Symmetric(A_nd)))
+            @test NDuals.ndual_value(F_wrap.L[1, 1]) ≈ L₀[1, 1]
+            @test NDuals.ndual_value(F_wrap.L[2, 1]) ≈ L₀[2, 1]
+            @test NDuals.ndual_value(F_wrap.L[2, 2]) ≈ L₀[2, 2]
+        end
+
+        # logdet(Cholesky{NDual}) = log(det(A₀)) verified by finite differences
+        ld_nd = logdet(F_nd)
+        @test NDuals.ndual_value(ld_nd) ≈ logdet(A₀)
+        ε = 1e-7
+        for (k, δA) in enumerate([[ε 0.0; 0.0 0.0], [0.0 ε; ε 0.0], [0.0 0.0; 0.0 ε]])
+            ld_pert = logdet(A₀ + δA)
+            @test NDuals.ndual_partial(ld_nd, k) ≈ (ld_pert - logdet(A₀)) / ε rtol = 1e-5
+        end
+
+        # Float32 sanity check
+        A_nd32 = [
+            NDual{Float32,1}(Float32(a11), (1.0f0,)) NDual{Float32,1}(Float32(a12), (0.0f0,));
+            NDual{Float32,1}(Float32(a12), (0.0f0,)) NDual{Float32,1}(Float32(a22), (0.0f0,))
+        ]
+        F32 = cholesky(A_nd32)
+        @test F32.L[1, 1] isa NDual{Float32,1}
+        @test NDuals.ndual_value(F32.L[1, 1]) ≈ Float32(L₀[1, 1])
+    end
+
+    @testset "Symmetric / Hermitian matrix multiply with NDual" begin
+        # A_nd is a Symmetric 2×2 matrix; B is a plain Float64 matrix.
+        # LinearAlgebra's BLAS path for Symmetric mul doesn't support NDual elements;
+        # the materialise-then-multiply rules should intercept this.
+        a11, a12, a22 = 4.0, 2.0, 3.0
+        A_nd = Symmetric(
+            [
+                NDual{Float64,3}(a11, (1.0, 0.0, 0.0)) NDual{Float64,3}(a12, (0.0, 1.0, 0.0));
+                NDual{Float64,3}(a12, (0.0, 1.0, 0.0)) NDual{Float64,3}(a22, (0.0, 0.0, 1.0))
+            ],
+        )
+        A₀ = [a11 a12; a12 a22]
+        B = [1.0 0.0; 0.0 2.0]
+
+        # (Symmetric{NDual}) * Matrix{Float64}
+        C1 = A_nd * B
+        C_ref = A₀ * B
+        @test NDuals.ndual_value.(C1) ≈ C_ref
+
+        # Matrix{Float64} * (Symmetric{NDual})
+        C2 = B * A_nd
+        C_ref2 = B * A₀
+        @test NDuals.ndual_value.(C2) ≈ C_ref2
+
+        # Hermitian{NDual} * Matrix{Float64}
+        A_herm = Hermitian(Matrix(A_nd))
+        C3 = A_herm * B
+        @test NDuals.ndual_value.(C3) ≈ C_ref
+
+        # Partials: (Symmetric{NDual}) * [1 0; 0 1] = Matrix(A_nd), so ∂C/∂A₁₁ slot 1
+        I2 = Matrix(1.0I, 2, 2)
+        Cp = A_nd * I2
+        @test NDuals.ndual_partial(Cp[1, 1], 1) ≈ 1.0   # ∂A₁₁
+        @test NDuals.ndual_partial(Cp[1, 2], 2) ≈ 1.0   # ∂A₁₂
+        @test NDuals.ndual_partial(Cp[2, 2], 3) ≈ 1.0   # ∂A₂₂
+    end
 end

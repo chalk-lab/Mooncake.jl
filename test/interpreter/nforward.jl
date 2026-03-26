@@ -1,9 +1,10 @@
 # Run this file directly with:
-# julia --project -e 'using Test, Mooncake, Random; include("test/interpreter/nforward.jl")'
+# julia --project=bench -e 'using Test, Mooncake; include("test/interpreter/nforward.jl")'
 
 # Test support
 # Shared helpers and primitive registrations used by the structured sections below.
 
+using LinearAlgebra, Random
 using Random: Xoshiro
 
 struct NForwardRRuleTestFunc{N,F}
@@ -189,6 +190,41 @@ end
                 value, grad = Mooncake.value_and_gradient!!(cache, f, x, y)
                 @test value == z
                 @test grad == (Mooncake.NoTangent(), y - sin(x), x)
+
+                # nforward_build_frule / nforward_build_rrule omitting chunk_size
+                auto_frule = Mooncake.nforward_build_frule(f, x, y)
+                @test auto_frule isa Mooncake.NForwardRule  # compiles without chunk_size
+                auto_rrule = Mooncake.nforward_build_rrule(f, x, y)
+                @test auto_rrule isa Mooncake.NForwardRRule
+                value2, grad2 = Mooncake.value_and_gradient!!(auto_rrule, f, x, y)
+                @test value2 == z
+                @test grad2 == (Mooncake.NoTangent(), y - sin(x), x)
+            end
+
+            @testset "_nforward_sig_dof and _nforward_sig_default_chunk_size" begin
+                # scalar-only sigs: DOF is known exactly at type level
+                @test Mooncake._nforward_sig_dof(
+                    Tuple{typeof(nforward_safe_log),Float64}
+                ) == 1
+                @test Mooncake._nforward_sig_dof(Tuple{typeof(f),Float64,Float64}) == 2
+                @test Mooncake._nforward_sig_dof(Tuple{typeof(f),ComplexF64,Float64}) == 3
+
+                # array input: DOF is unknown (nothing)
+                @test isnothing(
+                    Mooncake._nforward_sig_dof(Tuple{typeof(f),Vector{Float64}})
+                )
+
+                # default chunk: min(DOF, preferred) for scalar; preferred for array
+                pref = Mooncake._NFORWARD_PREFERRED_CHUNK_SIZE
+                @test Mooncake._nforward_sig_default_chunk_size(
+                    Tuple{typeof(nforward_safe_log),Float64}
+                ) == 1
+                @test Mooncake._nforward_sig_default_chunk_size(
+                    Tuple{typeof(f),Float64,Float64}
+                ) == 2
+                @test Mooncake._nforward_sig_default_chunk_size(
+                    Tuple{typeof(f),Vector{Float64}}
+                ) == pref
             end
         end
 

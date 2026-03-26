@@ -36,11 +36,16 @@ end
 # ── clamp(x, lo, hi) ──────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(clamp),P,P,P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(clamp)}, x::Dual{P}, lo::Dual{P},
-                 hi::Dual{P}) where {P<:IEEEFloat}
+function frule!!(
+    f::Dual{typeof(clamp)}, x::Dual{P}, lo::Dual{P}, hi::Dual{P}
+) where {P<:IEEEFloat}
     return NForwardRule{Tuple{typeof(clamp),P,P,P},1}()(f, x, lo, hi)
 end
 function build_primitive_rrule(sig::Type{<:Tuple{typeof(clamp),P,P,P}}) where {P<:IEEEFloat}
+    # chunk_size=3 == DOF: all three inputs (x, lo, hi) are simultaneously differentiable.
+    # Using chunk_size=3 computes ∂/∂x, ∂/∂lo, and ∂/∂hi in a single forward pass.  When
+    # lo/hi are known constants at the call site, inference will fold their partials to zero
+    # at no extra runtime cost.
     return nforward_build_rrule(sig; chunk_size=3)
 end
 
