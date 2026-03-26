@@ -1827,9 +1827,6 @@ DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug
 # Create new dynamic rule with empty cache and same debug mode
 _copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
 
-# No Julia 1.10 protection needed (JuliaLang/julia#51016): Vararg{Any,N} prevents
-# specialisation on concrete argument types, so no MistyClosure is called with a
-# concrete wrong-type specialisation.
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 
     # `Base._stable_typeof` is used here, rather than `typeof` or `Mooncake._typeof`. Its
@@ -1928,9 +1925,6 @@ end
 # Create new lazy rule with same method instance and debug mode
 _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
 
-# No Julia 1.10 protection needed (JuliaLang/julia#51016): Vararg{Any,N} means args
-# are typed as Any in the body, so the inner MistyClosure call is never specialised
-# on concrete argument types that could mismatch the closure's declared return type.
 @inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
     return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
 end

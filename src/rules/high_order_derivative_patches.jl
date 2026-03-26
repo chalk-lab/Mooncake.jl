@@ -165,9 +165,6 @@ function _compile_for_rule(
     return rule, fwd_dc, rvs_dc, rule_tangent
 end
 
-# No Julia 1.10 protection needed (JuliaLang/julia#51016): these callables never call a
-# MistyClosure with the input Dual arguments. They only extract primal values and return
-# a Dual wrapping the compiled rule; wrong tangent types cannot reach a MistyClosure call.
 function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
     ::Dual{typeof(build_derived_rrule)},
     _interp::Dual{<:MooncakeInterpreter{C}},
