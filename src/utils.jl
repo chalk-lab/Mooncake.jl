@@ -363,6 +363,13 @@ function opaque_closure(
     end
     src = CC.ir_to_codeinf!(src, ir)
     src.rettype = ret_type
+    # On Julia < 1.11, do_compile=true triggers a codegen crash (JuliaLang/julia#61368)
+    # when an OpaqueClosure is called via a specialised signature whose declared return type
+    # disagrees with what the IR actually produces. Deferring compilation to first call
+    # avoids the crash entirely.
+    @static if VERSION < v"1.11-"
+        do_compile = false
+    end
     oc = Base.Experimental.generate_opaque_closure(
         sig, Union{}, ret_type, src, nargs, isva, env...; do_compile
     )::Core.OpaqueClosure{sig,ret_type}

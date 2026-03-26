@@ -488,15 +488,11 @@ end
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode)
 
 @static if VERSION < v"1.11-"
-    # LazyFRule uses Vararg{Dual,N}: Julia specialises on the concrete Dual{P,T}
-    # argument types and calls the resulting MistyClosure frule with those types.
-    # On Julia 1.10 (JuliaLang/julia#51016), T !== tangent_type(P) causes a segfault.
-    # The @generated guard catches mismatched tangent types at compile time and returns
-    # an error expression, preventing the bad MistyClosure call from being emitted.
-    # NOTE: Base.invokelatest is used for tangent_type to avoid world-age issues:
-    # tangent_type is a @generated function, and calling it at generation time of
-    # another @generated function would freeze it at an old world age, missing
-    # tangent_type methods added by extensions loaded after this point.
+    # On Julia 1.10 (JuliaLang/julia#51016), calling a MistyClosure with a concrete
+    # Dual{P,T} where T !== tangent_type(P) can crash in emit_specsig_oc_call. The
+    # @generated guard rejects bad specialisations at compile time so no code is
+    # emitted for them. Base.invokelatest is used to call tangent_type to avoid
+    # world-age issues at generation time.
     @inline @generated function (rule::LazyFRule)(args::Vararg{Dual,N}) where {N}
         for dt in args.parameters
             P = dt.parameters[1]
@@ -554,15 +550,8 @@ DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
 _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
 
 @static if VERSION < v"1.11-"
-    # DynamicFRule uses Vararg{Dual,N}: Julia specialises on the concrete Dual{P,T}
-    # argument types and calls the resulting MistyClosure frule with those types.
-    # On Julia 1.10 (JuliaLang/julia#51016), T !== tangent_type(P) causes a segfault.
-    # The @generated guard catches mismatched tangent types at compile time and returns
-    # an error expression, preventing the bad MistyClosure call from being emitted.
-    # NOTE: Base.invokelatest is used for tangent_type to avoid world-age issues:
-    # tangent_type is a @generated function, and calling it at generation time of
-    # another @generated function would freeze it at an old world age, missing
-    # tangent_type methods added by extensions loaded after this point.
+    # Same @generated guard as LazyFRule: reject bad Dual specialisations at compile
+    # time to prevent the emit_specsig_oc_call crash (JuliaLang/julia#51016).
     @generated function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
         for dt in args.parameters
             P = dt.parameters[1]
