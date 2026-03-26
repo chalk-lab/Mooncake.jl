@@ -235,7 +235,8 @@ sr(n::Int) = StableRNG(n)
     #   • product_distribution components: Distribution objects are not NDual-parameterised.
     #   • truncated Beta shape params: ∂I_x/∂a, ∂I_x/∂b not implemented; bounds+x only for NForward.
     #   • LKJCholesky observation: pass lower-triangular L as plain Matrix, reconstruct inside lambda.
-    #   • Array-argument cases (Dirichlet, MvLogitNormal): modes=(:forward, :reverse).
+    #   • Dirichlet with array α: NDual <: AbstractFloat so Vector{NDual} works; chunk_size=3.
+    #   • MvLogitNormal with pre-built Symmetric/PDMat S arg: modes=(:forward, :reverse).
     #   • reshape, vec, LKJCholesky workaround: modes=(:forward, :reverse).
 
     _NForwardMode(f, args, C) = Mooncake.nforward_build_rrule(f, args...; chunk_size=C)
@@ -1669,19 +1670,31 @@ sr(n::Int) = StableRNG(n)
             :none,
         ),
 
-        # ── Forward+Reverse only (run_nforward=false) ─────────────────────────────
-        # Array arguments or constructor limitations prevent NDual input.
-
-        # Dirichlet with array concentration parameter.
+        # Dirichlet with array concentration parameter — NDual <: AbstractFloat so
+        # Dirichlet(Vector{NDual}) works directly; chunk_size=3 (2 α elems + x).
         (
             "Dirichlet α (array)",
             (a, x) -> logpdf(Dirichlet(a), [x, 1 - x]),
             ([1.5, 1.1], 0.6),
-            0,
-            (:forward, :reverse),
+            3,
+            (:forward, :reverse, :nforward),
             :none,
         ),
-        # MvLogitNormal with array mean and matrix covariance (Symmetric+PDMat path).
+
+        # ── Forward+Reverse only ───────────────────────────────────────────────────
+        # NForward not applicable for the following entries:
+        #
+        #   MvLogitNormal m+Σ (array)  — S is a pre-built Symmetric{PDMat}; nforward_build_rrule
+        #                                does not seed structured-matrix args with NDual partials
+        #   truncated Beta α+β         — ∂I_x/∂a and ∂I_x/∂b not implemented; can't differentiate
+        #   left-truncated Beta α+β      through the truncation normalisation w.r.t. shape params
+        #   reshape / vec              — Distribution objects baked into lambda; no float params to seed
+        #   LKJCholesky workaround     — regular-AD coverage only; NForward covered by LKJCholesky L/η+L
+
+        # S is a pre-built Symmetric{Float64,PDMat{Float64}} passed as an argument.
+        # nforward_build_rrule does not seed structured-matrix args (Symmetric wrapping
+        # PDMat) with NDual partials.  The scalar-param "MvLogitNormal m+Σ+x" entry
+        # above already covers NForward differentiation through MvLogitNormal.
         (
             "MvLogitNormal m+Σ (array)",
             (m, S, x) -> logpdf(MvLogitNormal(m, S), vcat(x, 1 - sum(x))),
@@ -1690,8 +1703,12 @@ sr(n::Int) = StableRNG(n)
             (:forward, :reverse),
             :none,
         ),
-        # truncated Beta with shape params (α, β) as differentiable args.
-        # NForward is not supported here: ∂I_x/∂a and ∂I_x/∂b are not implemented.
+        # truncated Beta / left-truncated Beta with shape params (α, β) as differentiable
+        # args.  NForward not supported: differentiating through the truncation normalisation
+        # constant requires ∂I_x/∂a and ∂I_x/∂b (partial derivatives of the regularised
+        # incomplete beta function w.r.t. shape params), which are not implemented.
+        # The NForward entries "truncated Beta 1" / "truncated Beta lower 1" above cover
+        # NForward for truncated Beta with α, β fixed.
         (
             "truncated Beta α+β",
             (a, b, α, β, x) -> logpdf(truncated(Beta(α, β), a, b), x),
@@ -1700,7 +1717,6 @@ sr(n::Int) = StableRNG(n)
             (:forward, :reverse),
             :allocs,
         ),
-        # left-truncated Beta with shape params as differentiable args.
         (
             "left-truncated Beta α+β",
             (a, α, β, x) -> logpdf(truncated(Beta(α, β); lower=a), x),
@@ -1709,8 +1725,10 @@ sr(n::Int) = StableRNG(n)
             (:forward, :reverse),
             :none,
         ),
-        # reshape / vec — product_distribution wrappers; NDual cannot be passed as the
-        # matrix/vector observation type here.
+        # reshape / vec — the Distribution objects (product_distribution, LKJ) are
+        # baked into the lambda as non-float values; there are no float parameters to
+        # seed as NDual.  These entries exist for regular-AD coverage of the wrapper
+        # code paths only.
         (
             "reshape",
             x -> logpdf(reshape(product_distribution([Normal(), Uniform()]), 1, 2), x),
@@ -1727,8 +1745,10 @@ sr(n::Int) = StableRNG(n)
             (:forward, :reverse),
             :none,
         ),
-        # LKJCholesky via Cholesky-from-scratch workaround (2×2).
-        # Differentiates w.r.t. raw matrix X and concentration v; Cholesky constructed inside.
+        # LKJCholesky workaround (2×2): constructs Cholesky from scratch inside the lambda.
+        # NForward equivalent is "LKJCholesky L" / "LKJCholesky η+L" above (size-5, proper
+        # Lmat approach).  This entry exercises the Cholesky-from-raw-matrix code path
+        # under regular AD only.
         (
             "LKJCholesky workaround",
             function (X, v)
