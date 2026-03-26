@@ -314,9 +314,7 @@ function (rule::NForwardRRule{sig,N,Tbuf,true})(
     # Gradient is written to the pre-allocated grad_buf (not into tangent(x)), so the
     # pullback can accumulate into the existing fdata without a copy.
     grad_arr = _nforward_lazy_grad_buf!(rule.grad_buf, primal(x))
-    y, _ = _nforward_array_scalar_value_and_gradient(
-        f_runtime, x, rule.buf, grad_arr, Val(N)
-    )
+    y = _nforward_array_scalar_value_and_gradient(f_runtime, x, rule.buf, grad_arr, Val(N))
     y_cd = CoDual(y, fdata(zero_tangent(y)))
     return y_cd, NForwardArrayScalarPullback(grad_arr, tangent(x))
 end
@@ -335,7 +333,7 @@ function (rule::NForwardRRule{sig,N,Tbuf,false})(
     y_primal = f_runtime(x_primal)
     if y_primal isa IEEEFloat
         grad_arr = _nforward_lazy_grad_buf!(rule.grad_buf, x_primal)
-        y, _ = _nforward_array_scalar_value_and_gradient(
+        y = _nforward_array_scalar_value_and_gradient(
             f_runtime, x, rule.buf, grad_arr, Val(N)
         )
         y_cd = CoDual(y, fdata(zero_tangent(y)))
@@ -449,10 +447,8 @@ function __value_and_gradient!!(
 ) where {sig,chunk_size,T<:IEEEFloat,N,A<:Array{T,N}}
     _nforward_verify_sig(rule, (f, x))
     _nforward_check_function_tangent(tangent(f))
-    y, x_grad = _nforward_array_scalar_value_and_gradient(
-        primal(f), x, rule.buf, Val(chunk_size)
-    )
-    return y, (_nforward_function_gradient(f), x_grad)
+    y = _nforward_array_scalar_value_and_gradient(primal(f), x, rule.buf, Val(chunk_size))
+    return y, (_nforward_function_gradient(f), tangent(x))
 end
 
 const NFORWARD_DEBUG_MODE_WARNING =
@@ -693,7 +689,9 @@ end
 # These helpers seed input directions, contract output tangents with cotangents, and scatter
 # each chunk's contributions into gradient storage.
 
-function _nforward_seed_tangent(x::IEEEFloat, chunk_size::Int, start_slot::Int, offset::Int)
+@inline function _nforward_seed_tangent(
+    x::IEEEFloat, chunk_size::Int, start_slot::Int, offset::Int
+)
     # offset+1 is this scalar's global slot; lane is its 1-indexed position in the chunk.
     global_slot = offset + 1
     lane = global_slot - start_slot + 1
@@ -1170,7 +1168,7 @@ end
     )
 end
 
-function _nforward_lift(x::T, dx, ::Val{N}) where {T<:IEEEFloat,N}
+@inline function _nforward_lift(x::T, dx, ::Val{N}) where {T<:IEEEFloat,N}
     return NDual{T,N}(x, _nforward_scalar_partials(x, dx, Val(N)))
 end
 
@@ -1225,11 +1223,11 @@ end
     return primal, tangent
 end
 
-function _nforward_extract(y::NDual{T,N}, ::Val{N}) where {T,N}
+@inline function _nforward_extract(y::NDual{T,N}, ::Val{N}) where {T,N}
     return _nforward_extract_scalar(y, Val(N))
 end
 
-function _nforward_extract(y::Complex{NDual{T,N}}, ::Val{N}) where {T,N}
+@inline function _nforward_extract(y::Complex{NDual{T,N}}, ::Val{N}) where {T,N}
     return _nforward_extract_scalar(y, Val(N))
 end
 
@@ -1361,39 +1359,47 @@ end
 
 # Primary overload: gradient is written to an explicitly provided buffer `grad`.
 # `grad` must have the same shape and element type as `primal(x)`.
-# The buffer is zeroed at the start of each call.  Does NOT touch `tangent(x)`.
-function _nforward_array_scalar_value_and_gradient(
+# Each element of `grad` is written exactly once, so no fill! is needed — callers must
+# ensure `grad` is zeroed before use (e.g. via set_to_zero_maybe!! in value_and_gradient!!).
+# Does NOT touch `tangent(x)`.
+@inline function _nforward_array_scalar_value_and_gradient(
     f_runtime, x::CoDual{A}, buf::Base.RefValue, grad::A, ::Val{C}
 ) where {C,T<:IEEEFloat,N,A<:Array{T,N}}
     x_primal = _nforward_check_primal(primal(x))
-    fill!(grad, zero(T))
+    n = length(x_primal)
     lifted = _nforward_rrule_lifted!(buf, x_primal, Val(C))
 
-    # Initialise all elements to (x[i], 0̄) once; chunks then update only C slots each.
-    _nforward_init_lifted!(lifted, x_primal, Val(C))
+    # For multi-chunk cases (DOF > C), init the full lifted array to zero-partial form so
+    # that non-seeded slots stay zero across chunks.  For DOF ≤ C (single chunk) every
+    # element is seeded immediately, so init is dead and skipped.
+    n > C && _nforward_init_lifted!(lifted, x_primal, Val(C))
     cart = CartesianIndices(x_primal)
 
     y = zero(T)
-    for start_slot in 1:C:length(x_primal)
+    for start_slot in 1:C:n
         _nforward_seed_lifted_chunk!(lifted, x_primal, cart, start_slot, Val(C))
         y, lane_vals = _nforward_scalar_lanes(f_runtime(lifted), T, Val(C))
-        _nforward_unseed_lifted_chunk!(lifted, x_primal, cart, start_slot, Val(C))
+        # Skip unseed on the last chunk: the buffer is always re-seeded (or re-inited) at
+        # the start of the next call, so leaving the last chunk seeded is safe.
+        start_slot + C <= n &&
+            _nforward_unseed_lifted_chunk!(lifted, x_primal, cart, start_slot, Val(C))
         global_slot = start_slot
         @inbounds for lane_val in lane_vals
-            global_slot > length(x_primal) && break
-            grad[global_slot] += lane_val
+            global_slot > n && break
+            grad[global_slot] = lane_val  # write (not accumulate); each slot written once
             global_slot += 1
         end
     end
 
-    return y, grad
+    return y
 end
 
-# Backward-compatible overload: accumulates into tangent(x) directly (the buffer is
-# zeroed inside the primary overload before use).
+# Backward-compatible overload: writes gradient into tangent(x) directly.
+# The caller (value_and_gradient!!) must zero tangent(x) before each call via
+# set_to_zero_maybe!!, since the primary overload no longer calls fill!.
 # Used by __value_and_gradient!! where the caller expects the returned gradient to be
 # the fdata array (i.e. tangent(x) == x_grad after the call).
-function _nforward_array_scalar_value_and_gradient(
+@inline function _nforward_array_scalar_value_and_gradient(
     f_runtime, x::CoDual{A}, buf::Base.RefValue, ::Val{C}
 ) where {C,T<:IEEEFloat,N,A<:Array{T,N}}
     return _nforward_array_scalar_value_and_gradient(f_runtime, x, buf, tangent(x), Val(C))
@@ -1422,53 +1428,59 @@ function _nforward_grad_buf_ref(::Type{Tuple{F,Vector{T}}}) where {F,T<:IEEEFloa
 end
 
 # Typed-ref path: fully inferred.
-function _nforward_rrule_lifted!(
+# Load buf[] once; update ws in the branch so the return can reuse it without a second load.
+@inline function _nforward_rrule_lifted!(
     buf::Base.RefValue{Union{Nothing,Vector{NDual{T,C}}}}, x::Vector{T}, ::Val{C}
 ) where {T<:IEEEFloat,C}
     ws = buf[]
     if ws === nothing || length(ws::Vector{NDual{T,C}}) != length(x)
-        buf[] = Vector{NDual{T,C}}(undef, length(x))
+        ws = Vector{NDual{T,C}}(undef, length(x))
+        buf[] = ws
     end
-    return buf[]::Vector{NDual{T,C}}
+    return ws::Vector{NDual{T,C}}
 end
 
 # Generic path: buf is Ref{Any}; workspace type recovered at runtime.
-function _nforward_rrule_lifted!(
+@inline function _nforward_rrule_lifted!(
     buf::Base.RefValue, x::Array{T,N}, ::Val{C}
 ) where {T<:IEEEFloat,N,C}
     Tlift = NDual{T,C}
     ws = buf[]
     if !(ws isa Array{Tlift,N} && size(ws) == size(x))
-        buf[] = Array{Tlift,N}(undef, size(x))
+        ws = Array{Tlift,N}(undef, size(x))
+        buf[] = ws
     end
-    return buf[]::Array{Tlift,N}
+    return ws::Array{Tlift,N}
 end
 
 # Typed-ref path: fully inferred.
-function _nforward_lazy_grad_buf!(
+# Load grad_buf[] once; update ws in the branch so the return can reuse it without a second load.
+@inline function _nforward_lazy_grad_buf!(
     grad_buf::Base.RefValue{Union{Nothing,Vector{T}}}, x_primal::Vector{T}
 ) where {T<:IEEEFloat}
     ws = grad_buf[]
     if ws === nothing || length(ws::Vector{T}) != length(x_primal)
-        grad_buf[] = Vector{T}(undef, length(x_primal))
+        ws = Vector{T}(undef, length(x_primal))
+        grad_buf[] = ws
     end
-    return grad_buf[]::Vector{T}
+    return ws::Vector{T}
 end
 
 # Generic path: grad_buf is Ref{Any}; gradient array type recovered at runtime.
-function _nforward_lazy_grad_buf!(
+@inline function _nforward_lazy_grad_buf!(
     grad_buf::Base.RefValue, x_primal::Array{T,N}
 ) where {T<:IEEEFloat,N}
     ws = grad_buf[]
     if !(ws isa Array{T,N} && size(ws) == size(x_primal))
-        grad_buf[] = Array{T,N}(undef, size(x_primal))
+        ws = Array{T,N}(undef, size(x_primal))
+        grad_buf[] = ws
     end
-    return grad_buf[]::Array{T,N}
+    return ws::Array{T,N}
 end
 
 # Initialise every element of `lifted` to NDual(x[i], 0̄) — O(n), called once per
 # value_and_gradient!! invocation.  Chunks then update only C elements each.
-function _nforward_init_lifted!(
+@inline function _nforward_init_lifted!(
     lifted::Array{NDual{T,C},N}, x::Array{T,N}, ::Val{C}
 ) where {T<:IEEEFloat,C,N}
     z = ntuple(_ -> zero(T), Val(C))
@@ -1479,7 +1491,7 @@ function _nforward_init_lifted!(
 end
 
 # Set C elements starting at `start_slot` to unit-partial form — O(C).
-function _nforward_seed_lifted_chunk!(
+@inline function _nforward_seed_lifted_chunk!(
     lifted::Array{NDual{T,C},N},
     x::Array{T,N},
     cart::CartesianIndices,
@@ -1496,7 +1508,7 @@ function _nforward_seed_lifted_chunk!(
 end
 
 # Reset those same C elements back to zero-partial form — O(C).
-function _nforward_unseed_lifted_chunk!(
+@inline function _nforward_unseed_lifted_chunk!(
     lifted::Array{NDual{T,C},N},
     x::Array{T,N},
     cart::CartesianIndices,
