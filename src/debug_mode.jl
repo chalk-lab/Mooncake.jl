@@ -84,10 +84,10 @@ post-conditions to `pb`. Let `dx = pb.pb(dy)`, for some rdata `dy`, then this fu
 
 Reverse pass counterpart to [`DebugRRule`](@ref)
 """
-struct DebugPullback{Tpb,Ty,Tx}
+struct DebugPullback{Tpb,Ty}
     pb::Tpb
     y::Ty
-    x::Tx
+    x  # not type-parameterized; primal types depend on call-site argument types
 end
 
 """
