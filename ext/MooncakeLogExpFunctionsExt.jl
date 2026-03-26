@@ -63,25 +63,44 @@ end
 # logsumexp in scalar T, then propagates partials in a single additional pass.
 # Result: same answer, no Tuple boxing, and the inner loop operates on plain T and
 # NTuple{N,T} fields rather than full NDual dispatch.
+#
+# _nf_logsumexp_accum is a separate @inline function (not a closure) so that `grad` is a
+# function parameter rather than a variable that is both captured and reassigned.  Julia
+# would otherwise box `grad` in a Core.Box, forcing heap reads for every grad[k] access
+# inside the ntuple closure.
+@inline function _nf_logsumexp_accum(
+    grad::NTuple{N,T}, w::T, partials::NTuple{N,T}
+) where {N,T}
+    return ntuple(k -> grad[k] + w * partials[k], Val(N))
+end
+
+@inline function _nf_logsumexp_scale(grad::NTuple{N,T}, inv_sw::T) where {N,T}
+    return ntuple(k -> grad[k] * inv_sw, Val(N))
+end
+
 function LogExpFunctions.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEEFloat,N}
     isempty(x) && return NDual{T,N}(typemin(T))
     # Pass 1: find maximum primal value for numerical stability.
     u = @inbounds x[begin].value
     @inbounds for i in (firstindex(x) + 1):lastindex(x)
         v = x[i].value
-        if v > u; u = v; end
+        v > u && (u = v)
     end
     # Pass 2: accumulate sum(exp(xᵢ − u)) and partial-slot weighted sums.
+    # Both _nf_logsumexp_accum and _nf_logsumexp_scale take grad as a function parameter
+    # rather than capturing it as a closure variable.  If any ntuple closure captured grad
+    # while it is also reassigned in this scope, Julia would box grad in a Core.Box and
+    # force heap access on every grad[k] read.
     sum_w = zero(T)
     grad = ntuple(_ -> zero(T), Val(N))
     @inbounds for xi in x
         w = exp(xi.value - u)
         sum_w += w
-        grad = ntuple(k -> grad[k] + w * xi.partials[k], Val(N))
+        grad = _nf_logsumexp_accum(grad, w, xi.partials)
     end
     y_val = u + log(sum_w)
     inv_sw = inv(sum_w)
-    return NDual{T,N}(y_val, ntuple(k -> grad[k] * inv_sw, Val(N)))
+    return NDual{T,N}(y_val, _nf_logsumexp_scale(grad, inv_sw))
 end
 
 # xlogx(x) = x == 0 ? zero(x*log(x)) : x*log(x).  The generic implementation computes
