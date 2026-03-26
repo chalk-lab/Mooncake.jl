@@ -18,8 +18,7 @@
 #
 #   • Concrete Trule → LazyFoRRule{Trule,Tfwd,Trvs}: fully-typed single-slot cache.
 #     Zero virtual dispatch on cache hits. Safe because each instance lives at exactly
-#     one call site in the compiled IR (not safe_for_literal), so only one inner
-#     signature ever reaches it.
+#     one call site in the compiled IR, so only one inner signature ever reaches it.
 #
 #   • Non-concrete Trule (Trule = Any) → DynamicFoRRule: Dict-keyed cache. Arises
 #     when build_rrule's @nospecialize sig_or_mi causes the forward-mode compiler to
@@ -37,16 +36,19 @@ end
 # Cache key is (sig, debug_mode):
 #   - sig        distinguishes inner functions sharing the @nospecialize call site.
 #                We intentionally do not key on sig_or_mi: the compiled DerivedRule is a
-#                function of the signature-level IR selected for this call site, and in
-#                current Julia each reachable MethodInstance here has a unique sig.
+#                function of the signature-level IR selected here, and each reachable
+#                MethodInstance at this call site currently has a unique sig. If that
+#                assumption ever breaks (two MethodInstances with the same sig but different
+#                IR), we would silently serve the wrong cached rule, producing incorrect
+#                derivatives. A future fix would be to key on sig_or_mi instead.
 #   - debug_mode is included because DebugRRule and plain DerivedRule have different
-#     field layouts; mixing them in _for_rule_cached_dual causes FieldError on the
-#     `new_rule.rule` access in the debug branch.
+#     field layouts; serving one to a caller expecting the other causes FieldError on the
+#     `new_rule.rule` access in _for_rule_cached_dual's debug branch.
 # Not thread-safe: the Dict is mutated without a lock (same caveat as LazyFoRRule's
 # bare field assignment).
 mutable struct DynamicFoRRule
-    cache::Dict{Any,Tuple{Any,Any,Any}}  # (sig, debug_mode) => (rule, fwd_dc, rvs_dc)
-    DynamicFoRRule() = new(Dict{Any,Tuple{Any,Any,Any}}())
+    cache::Dict{Tuple{Any,Bool},Tuple{Any,Any,Any}}  # (sig, debug_mode) => (rule, fwd_dc, rvs_dc)
+    DynamicFoRRule() = new(Dict{Tuple{Any,Bool},Tuple{Any,Any,Any}}())
 end
 
 @generated function __build_primitive_frule(
@@ -67,7 +69,13 @@ end
     end
     # Extract DerivedRule from the DebugRRule wrapper (if present) to access
     # the forward and reverse closure field types.
+    # build_derived_rrule always returns a DerivedRule (or DebugRRule{DerivedRule{...}}),
+    # so inner always has :fwds_oc and :pb_oc_ref. Guard against any other inner type
+    # (e.g. a primitive wrapped in DebugRRule) that would throw FieldError here.
     inner = Trule <: DebugRRule ? fieldtype(Trule, :rule) : Trule
+    if !hasfield(inner, :fwds_oc) || !hasfield(inner, :pb_oc_ref)
+        return :(DynamicFoRRule())
+    end
     fwds_oc_T = fieldtype(inner, :fwds_oc)
     rvs_oc_T = fieldtype(fieldtype(inner, :pb_oc_ref), :x)
     interp_fwd_T = MooncakeInterpreter{C,ForwardMode}
@@ -182,7 +190,12 @@ function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
     # invariant for its lifetime. debug_mode is asserted below because the cached rule
     # layout differs between DebugRRule and plain DerivedRule.
     if isdefined(cache, :rule)
-        @assert debug_mode == (cache.rule isa DebugRRule) "LazyFoRRule cache hit with a different debug_mode than the rule was compiled for"
+        if debug_mode != (cache.rule isa DebugRRule)
+            error(
+                "LazyFoRRule cache hit with debug_mode=$debug_mode but cached rule is " *
+                "$(typeof(cache.rule)); debug_mode must be consistent across calls.",
+            )
+        end
         return _for_rule_cached_dual(
             cache.rule, cache.fwd_dual_callable, cache.rvs_dual_callable, debug_mode
         )
