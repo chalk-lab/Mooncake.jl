@@ -5,7 +5,14 @@ module DispatchDoctorRules
 # for, e.g., Enzyme and ChainRulesCore.
 
 import ..@zero_derivative
+import ..@is_primitive
 import ..DefaultCtx
+import .._foreigncall_
+import ..CoDual
+import ..Dual
+import ..NoTangent
+import ..NoPullback
+import ..zero_fcodual
 
 import DispatchDoctor._RuntimeChecks: is_precompiling, checking_enabled
 import DispatchDoctor._Stabilization: _show_warning, _construct_pairs
@@ -27,5 +34,41 @@ import DispatchDoctor._Utils:
 
 @zero_derivative DefaultCtx Tuple{typeof(is_precompiling)}
 @zero_derivative DefaultCtx Tuple{typeof(checking_enabled)}
+
+# is_precompiling() is @inline, so Julia inlines its ccall body directly into
+# DispatchDoctor's @stable wrappers. The @zero_derivative rules above apply only to the
+# named-function call sites, not to the resulting inlined foreigncall node. Add explicit
+# rules for the raw foreigncall so that nested AD through @stable-wrapped functions works.
+#! format: off
+@is_primitive DefaultCtx Tuple{
+    typeof(_foreigncall_),
+    Val{:jl_generating_output},
+    Val{Cint},
+    Tuple{},
+    Val{0},
+    Val{:ccall},
+}
+#! format: on
+function frule!!(
+    ::Dual{typeof(_foreigncall_)},
+    ::Dual{Val{:jl_generating_output}},
+    ::Dual{Val{Cint}},
+    ::Dual{Tuple{}},
+    ::Dual{Val{0}},
+    ::Dual{Val{:ccall}},
+)
+    return Dual(ccall(:jl_generating_output, Cint, ()), NoTangent())
+end
+function rrule!!(
+    f::CoDual{typeof(_foreigncall_)},
+    name::CoDual{Val{:jl_generating_output}},
+    rt::CoDual{Val{Cint}},
+    at::CoDual{Tuple{}},
+    nreq::CoDual{Val{0}},
+    cc::CoDual{Val{:ccall}},
+)
+    pb = NoPullback(f, name, rt, at, nreq, cc)
+    return zero_fcodual(ccall(:jl_generating_output, Cint, ())), pb
+end
 
 end

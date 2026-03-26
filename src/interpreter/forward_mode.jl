@@ -122,6 +122,16 @@ end
     return fwd.fwd_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
 end
 
+# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
+# asserting the return type, which is encoded in the MistyClosure type parameter.
+@static if VERSION < v"1.11-"
+    @inline function __call_rule(
+        rule::DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}, args
+    ) where {P,A,R,isva,nargs}
+        return __call_rule_erased!(Base.inferencebarrier(rule), args)::R
+    end
+end
+
 # Copy forward rule with recursively copied captures
 function _copy(x::P) where {P<:DerivedFRule}
     return P(replace_captures(x.fwd_oc, _copy(x.fwd_oc.oc.captures)))
@@ -488,13 +498,13 @@ end
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode)
 
 @inline function (rule::LazyFRule)(args::Vararg{Any,N}) where {N}
-    return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
+    return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
 end
 
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode)
     rule.rule = build_frule(interp, rule.mi; debug_mode=rule.debug_mode)
-    return rule.rule(args...)
+    return __call_rule(rule.rule, args)
 end
 
 function dual_ret_type(primal_ir::IRCode)
@@ -540,5 +550,5 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
         rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
         dynamic_rule.cache[sig] = rule
     end
-    return rule(args...)
+    return __call_rule(rule, args)
 end

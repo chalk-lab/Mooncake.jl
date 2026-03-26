@@ -13,7 +13,7 @@ function __value_and_pullback!!(
 ) where {R,N,T}
     fx_fwds = tuple_map(to_fwds, fx)
     __verify_sig(rule, fx_fwds)
-    out, pb!! = rule(fx_fwds...)
+    out, pb!! = __call_rule(rule, fx_fwds)
     @assert _typeof(tangent(out)) == fdata_type(T)
     increment!!(tangent(out), fdata(ȳ))
     v = if y_cache === nothing
@@ -37,6 +37,12 @@ __verify_sig(rule::DebugRRule, fx) = __verify_sig(rule.rule, fx)
 # rrule!! doesn't specify specific argument types which must be used, so there's nothing to
 # check here.
 __verify_sig(::typeof(rrule!!), fx::Tuple) = nothing
+
+@static if VERSION < v"1.11-"
+    # rrule!! is a plain Julia function (not an OpaqueClosure), so calling it directly is
+    # safe on Julia 1.10; the inferencebarrier workaround is not needed here.
+    @inline __call_rule(rule::typeof(rrule!!), args) = rule(args...)
+end
 
 struct ValueAndGradientReturnTypeError <: Exception
     msg::String
@@ -104,7 +110,7 @@ Mooncake.__value_and_gradient!!(
 function __value_and_gradient!!(rule::R, fx::Vararg{CoDual,N}) where {R,N}
     fx_fwds = tuple_map(to_fwds, fx)
     __verify_sig(rule, fx_fwds)
-    out, pb!! = rule(fx_fwds...)
+    out, pb!! = __call_rule(rule, fx_fwds)
     y = primal(out)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     return y, tuple_map((f, r) -> tangent(fdata(tangent(f)), r), fx, pb!!(one(y)))
@@ -516,7 +522,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     tangents = map(zero_tangent, fx)
 
     # Run the rule forwards -- this should do a decent chunk of pre-allocation.
-    y, rvs!! = rule(map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents)...)
+    y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
     # Run reverse-pass in order to reset stacks + state.
     rvs!!(zero_rdata(primal(y)))
@@ -615,7 +621,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
 @unstable function prepare_gradient_cache(fx...; config=Config())
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = map(zero_tangent, fx)
-    y, rvs!! = rule(map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents)...)
+    y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
     if config.friendly_tangents
@@ -726,7 +732,7 @@ in `f` and `x`.
 """
 function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
     # TODO: check Dual coherence here like we do below?
-    return cache.rule(fx...)
+    return __call_rule(cache.rule, fx)
 end
 
 """
@@ -766,7 +772,7 @@ function value_and_derivative!!(
         error_if_incorrect_dual_types(input_duals...)
     end
 
-    output = cache.rule(input_duals...)
+    output = __call_rule(cache.rule, input_duals)
     output_primal = primal(output)
     output_tangent = tangent(output)
 

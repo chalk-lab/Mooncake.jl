@@ -20,91 +20,17 @@ end
 # Recursively copy the wrapped rule
 _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
-_rule_primal_sig(::Type{T}) where {T} = T.parameters[1]
-function _rule_isva(::Type{T}) where {T}
-    return T <: DerivedFRule ? T.parameters[3] : T.parameters[6]
-end
-function _rule_nargs(::Type{T}) where {T}
-    return T <: DerivedFRule ? T.parameters[4] : T.parameters[7].parameters[1]
-end
-
 """
     (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
 
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
-@static if VERSION < v"1.11-"
-    # On Julia 1.10, we encounter a segfault when an OpaqueClosure/MistyClosure is
-    # called with a specialised signature whose declared return type disagrees with
-    # what the IR actually returns (JuliaLang/julia#51016). Using @generated we
-    # check tangent types at compile time; for a bad specialisation we return
-    # :(error(...)) so the compiler never generates code for rule.rule(x...) with
-    # mismatched types. For well-typed calls the normal body is emitted.
-    #
-    # NOTE: @generated alone (without the type check) does NOT prevent the segfault -
-    # returning an unconditional quote generates the same code as a plain function.
-    # The early-return on mismatch is the critical part.
-    #
-    # See https://github.com/JuliaLang/julia/issues/61368
-    @generated function (rule::DebugFRule{Trule})(x::Vararg{Dual,N}) where {Trule,N}
-        # Check tangent type consistency for all Dual inputs at compile time.
-        # This prevents the compiler from generating code for rule.rule(x...) with
-        # mismatched Dual types (e.g., Dual{Float64,Float32} instead of Dual{Float64,Float64}).
-        for dt in x
-            P = dt.parameters[1]  # primal type
-            T = dt.parameters[2]  # tangent type
-            T_expected = tangent_type(P)
-            if T !== T_expected
-                msg = "Error in inputs to rule with input types $(Tuple{x...})"
-                return :(error($msg))
-            end
-        end
-
-        # Check primal types match rule signature
-        if Trule <: DerivedFRule && isconcretetype(Trule)
-            sig = _rule_primal_sig(Trule)
-            isva = _rule_isva(Trule)
-            nargs_val = _rule_nargs(Trule)
-
-            # Extract primal types
-            primal_types = [dt.parameters[1] for dt in x]
-
-            # Handle varargs unflattening
-            if isva
-                regular_types = primal_types[1:(nargs_val - 1)]
-                vararg_types = primal_types[nargs_val:end]
-                grouped_type = Tuple{vararg_types...}
-                final_types = [regular_types..., grouped_type]
-            else
-                final_types = primal_types
-            end
-
-            Tx = Tuple{final_types...}
-            if !(Tx <: sig)
-                msg = "Error in inputs to rule with input types $(Tuple{x...})"
-                return :(error($msg))
-            end
-        end
-
-        return quote
-            verify_dual_inputs(x)
-            y = rule.rule(x...)
-            verify_dual_output(x, y)
-            return y
-        end
-    end
-else
-    @noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
-        try
-            verify_args(rule.rule, x)
-        catch
-            error("Error in inputs to rule with input types $(_typeof(x))")
-        end
-        verify_dual_inputs(x)
-        y = rule.rule(x...)
-        verify_dual_output(x, y)
-        return y::Dual
-    end
+@noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+    verify_args(rule.rule, x)
+    verify_dual_inputs(x)
+    y = __call_rule(rule.rule, x)
+    verify_dual_output(x, y)
+    return y
 end
 
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
@@ -234,58 +160,20 @@ _copy(x::P) where {P<:DebugRRule} = P(_copy(x.rule))
 Apply type checking to enforce pre- and post-conditions on `rule.rule`. See the docstring
 for `DebugRRule` for details.
 """
+@noinline function (rule::DebugRRule)(x::Vararg{CoDual,N}) where {N}
+    verify_fwds_inputs(rule.rule, x)
+    y, pb = __call_rule(rule.rule, x)
+    verify_fwds_output(x, y)
+    return y, DebugPullback(pb, primal(y), map(primal, x))
+end
+
 @static if VERSION < v"1.11-"
-    # Julia 1.10 can segfault while codegen'ing an OpaqueClosure call for an invalid CoDual
-    # specialization before these runtime debug checks execute. Reject bad specializations at
-    # compile time so the compiler never generates `rule.rule(x...)` for them.
-    #
-    # See https://github.com/JuliaLang/julia/issues/61368
-    @generated function (rule::DebugRRule{Trule})(x::Vararg{CoDual,N}) where {Trule,N}
-        for dt in x
-            P = dt.parameters[1]
-            T_expected = fcodual_type(P)
-            if !(dt <: T_expected)
-                msg = "error in inputs to rule with input types $(Tuple{x...})"
-                return :(error($msg))
-            end
-        end
-
-        if Trule <: DerivedRule && isconcretetype(Trule)
-            sig = _rule_primal_sig(Trule)
-            isva = _rule_isva(Trule)
-            nargs_val = _rule_nargs(Trule)
-
-            primal_types = [dt.parameters[1] for dt in x]
-            if isva
-                regular_types = primal_types[1:(nargs_val - 1)]
-                vararg_types = primal_types[nargs_val:end]
-                grouped_type = Tuple{vararg_types...}
-                final_types = [regular_types..., grouped_type]
-            else
-                final_types = primal_types
-            end
-
-            Tx = Tuple{final_types...}
-            if !(Tx <: sig)
-                msg = "error in inputs to rule with input types $(Tuple{x...})"
-                return :(error($msg))
-            end
-        end
-
-        return quote
-            verify_fwds_inputs(rule.rule, x)
-            y, pb = rule.rule(x...)
-            verify_fwds_output(x, y)
-            return y::CoDual, DebugPullback(pb, primal(y), map(primal, x))
-        end
-    end
-else
-    @noinline function (rule::DebugRRule)(x::Vararg{CoDual,N}) where {N}
-        verify_fwds_inputs(rule.rule, x)
-        y, pb = rule.rule(x...)
-        verify_fwds_output(x, y)
-        return y::CoDual, DebugPullback(pb, primal(y), map(primal, x))
-    end
+    # DebugFRule and DebugRRule do not contain OpaqueClosure directly; their __call__
+    # methods delegate to the inner rule which handles OC safety via its own
+    # __call_rule specialisation. Calling them directly is safe on Julia 1.10 and avoids
+    # a second unnecessary inferencebarrier.
+    @inline __call_rule(rule::DebugFRule, args) = rule(args...)
+    @inline __call_rule(rule::DebugRRule, args) = rule(args...)
 end
 
 # DerivedRule adds a method to this function.

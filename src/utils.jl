@@ -490,3 +490,46 @@ _copy(x::Tuple) = map(_copy, x)
 _copy(x::NamedTuple) = map(_copy, x)
 _copy(x::Ref{T}) where {T} = isassigned(x) ? Ref{T}(_copy(x[])) : Ref{T}()
 _copy(x::Type) = x
+
+# TODO: remove the Julia < 1.11 branch (and the corresponding @static VERSION guards in
+# test_utils.jl) once https://github.com/JuliaLang/julia/issues/61368 is fixed and
+# Julia 1.10 support is dropped.
+#
+# Julia 1.10 codegen bug (julia#61368 / #51016): jl_compile_workqueue crashes in
+# emit_specsig_oc_call when compiling an OC body that transitively calls another OC
+# type whose CodeInstance has been invalidated (null specfun) by a world-counter advance
+# (e.g. from loading DispatchDoctor or defining new methods).
+#
+# Fix: __call_rule type-erases rule via Base.inferencebarrier on Julia 1.10 so the
+# compiled code calls through jl_apply_generic (which never invokes emit_specsig_oc_call).
+# The @noinline wrapper ensures this erased call is a separate compilation unit. On Julia
+# 1.11+ the bug is absent and __call_rule is a direct call. The type-erasure causes
+# isbits argument boxing at each nested rule callsite (jl_apply_generic requires boxed
+# args), so zero-allocation performance checks are skipped on Julia < 1.11 in test_utils.
+#
+# This generic fallback returns Any. Specialised overloads restore type stability:
+#   - DerivedFRule, DerivedRule (forward_mode.jl, reverse_mode.jl): type assertion via params
+#   - DebugFRule, DebugRRule (debug_mode.jl): direct call (no OC, no barrier needed)
+#   - typeof(rrule!!) (interface.jl): direct call (plain function, no OC)
+# Dynamic rules (DynamicFRule, DynamicDerivedRule) cannot be handled statically and remain
+# unstable on Julia 1.10.
+#
+# Used by LazyFRule, DynamicFRule, LazyDerivedRule, DynamicDerivedRule, RRuleZeroWrapper,
+# DebugFRule, and DebugRRule.
+#
+# Approximate Mooncake-free MWE (Julia 1.10):
+#   dep(x::Float64) = x * 2.0
+#   inner = Base.Experimental.@opaque (x::Float64) -> dep(x)
+#   inner(1.0)                    # compile inner at world W₀
+#   dep(x::Float64) = x * 3.0    # redefine dep → invalidates inner's CodeInstance
+#   struct Wrapper{T}; oc::T; end
+#   (w::Wrapper)(x) = w.oc(x)    # call chain exposes typeof(inner) to the workqueue
+#   w = Wrapper(inner)            # concrete Wrapper{typeof(inner)}
+#   Base.Experimental.@opaque (x::Float64) -> w(x)  # crash: workqueue compiles
+#                                 # Wrapper::call, reaches typeof(inner) with null specfun
+@static if VERSION < v"1.11-"
+    @noinline __call_rule_erased!(rule, args) = rule(args...)
+    @inline __call_rule(rule, args) = __call_rule_erased!(Base.inferencebarrier(rule), args)
+else
+    @inline __call_rule(rule, args) = rule(args...)
+end

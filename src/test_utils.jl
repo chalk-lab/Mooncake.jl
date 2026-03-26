@@ -806,8 +806,14 @@ function test_frule_performance(
         @test count_allocs(f, x...) == 0
 
         # Test allocations in forwards-mode.
-        __forwards(rule, f_ḟ, x_ẋ...)
-        @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
+        # On Julia 1.10, __call_rule uses Base.inferencebarrier to work around a codegen
+        # crash (julia#61368). This boxes isbits values (e.g. Dual{Float64}) at every
+        # nested rule callsite inside the compiled OC, producing non-zero alloc counts
+        # even for correct rules. Skip this check on Julia < 1.11.
+        @static if VERSION >= v"1.11-"
+            __forwards(rule, f_ḟ, x_ẋ...)
+            @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
+        end
     end
 end
 
@@ -849,10 +855,16 @@ function test_rrule_performance(
         @test count_allocs(f, x...) == 0
 
         # Test allocations in round-trip.
-        f_f̄_fwds = to_fwds(f_f̄)
-        x_x̄_fwds = map(to_fwds, x_x̄)
-        __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
-        @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
+        # Skip on Julia < 1.11 for the same reason as the frule check above: the
+        # inferencebarrier workaround in __call_rule boxes isbits values at every
+        # nested rule callsite inside the compiled OC, producing spurious non-zero
+        # alloc counts on Julia 1.10.
+        @static if VERSION >= v"1.11-"
+            f_f̄_fwds = to_fwds(f_f̄)
+            x_x̄_fwds = map(to_fwds, x_x̄)
+            __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
+            @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
+        end
     end
 end
 
