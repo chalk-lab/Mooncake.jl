@@ -487,27 +487,8 @@ end
 # Create new lazy rule with same method instance and debug mode
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode)
 
-@static if VERSION < v"1.11-"
-    # On Julia 1.10 (JuliaLang/julia#51016), calling a MistyClosure with a concrete
-    # Dual{P,T} where T !== tangent_type(P) can crash in emit_specsig_oc_call. The
-    # @generated guard rejects bad specialisations at compile time so no code is
-    # emitted for them. Base.invokelatest is used to call tangent_type to avoid
-    # world-age issues at generation time.
-    @inline @generated function (rule::LazyFRule)(args::Vararg{Dual,N}) where {N}
-        for dt in args.parameters
-            P = dt.parameters[1]
-            T = dt.parameters[2]
-            if T !== Base.invokelatest(tangent_type, P)
-                msg = "Error in inputs to LazyFRule with argument types $args"
-                return :(error($msg))
-            end
-        end
-        return :(isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args))
-    end
-else
-    @inline function (rule::LazyFRule)(args::Vararg{Dual,N}) where {N}
-        return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
-    end
+@inline function (rule::LazyFRule)(args::Vararg{Dual,N}) where {N}
+    return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
 end
 
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
@@ -549,42 +530,15 @@ DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
 # Create new dynamic rule with empty cache and same debug mode
 _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
 
-@static if VERSION < v"1.11-"
-    # Same @generated guard as LazyFRule: reject bad Dual specialisations at compile
-    # time to prevent the emit_specsig_oc_call crash (JuliaLang/julia#51016).
-    @generated function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
-        for dt in args.parameters
-            P = dt.parameters[1]
-            T = dt.parameters[2]
-            if T !== Base.invokelatest(tangent_type, P)
-                msg = "Error in inputs to DynamicFRule with argument types $args"
-                return :(error($msg))
-            end
-        end
-        return quote
-            # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
-            # See DynamicDerivedRule for details, the same reasoning applies.
-            sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
-            rule = get(dynamic_rule.cache, sig, nothing)
-            if rule === nothing
-                interp = get_interpreter(ForwardMode)
-                rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
-                dynamic_rule.cache[sig] = rule
-            end
-            return rule(args...)
-        end
+function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
+    # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
+    # See DynamicDerivedRule for details, the same reasoning applies.
+    sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
+    rule = get(dynamic_rule.cache, sig, nothing)
+    if rule === nothing
+        interp = get_interpreter(ForwardMode)
+        rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        dynamic_rule.cache[sig] = rule
     end
-else
-    function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
-        # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
-        # See DynamicDerivedRule for details, the same reasoning applies.
-        sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
-        rule = get(dynamic_rule.cache, sig, nothing)
-        if rule === nothing
-            interp = get_interpreter(ForwardMode)
-            rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
-            dynamic_rule.cache[sig] = rule
-        end
-        return rule(args...)
-    end
+    return rule(args...)
 end
