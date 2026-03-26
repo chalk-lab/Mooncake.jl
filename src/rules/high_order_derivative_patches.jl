@@ -81,6 +81,11 @@ end
     interp_fwd_T = MooncakeInterpreter{C,ForwardMode}
     Tfwd = Core.Compiler.return_type(build_frule, Tuple{interp_fwd_T,fwds_oc_T})
     Trvs = Core.Compiler.return_type(build_frule, Tuple{interp_fwd_T,rvs_oc_T})
+    # Fall back to DynamicFoRRule if inference cannot pin down the dual callable types;
+    # LazyFoRRule{Trule,Any,Any} would defeat its own purpose (typed single-slot cache).
+    if !isconcretetype(Tfwd) || !isconcretetype(Trvs)
+        return :(DynamicFoRRule())
+    end
     return :(LazyFoRRule{$Trule,$Tfwd,$Trvs}())
 end
 
@@ -149,6 +154,16 @@ function _compile_for_rule(
 
     # Build forward-mode dual callables for the fwd and rvs passes.
     # Use a forward-mode interpreter to block inlining of frules during optimisation.
+    #
+    # Aliasing: fwd_oc and rvs_oc share the comms Stack objects from dri.shared_data
+    # (fwd_oc.oc.captures[i] === rvs_oc.oc.captures[i] for shared slots).  Calling
+    # zero_tangent jointly on (fwd_oc.oc.captures, rvs_oc.oc.captures) preserves this
+    # aliasing in the returned captures_tangent, so the tangent Stacks written by the
+    # forward-tangent pass are the same objects read by the reverse-tangent pass.
+    # NOTE: fwd_dc and rvs_dc returned here alias with the tangent embedded in
+    # raw_rule_tangent (fwds_oc / pb_oc_ref fields). Callers that cache (rule, fwd_dc,
+    # rvs_dc) and later call _for_rule_cached_dual must use _copy to get fresh Stacks
+    # and a new independent tangent — do not reuse these objects directly.
     fwd_dc, rvs_dc, raw_rule_tangent = let
         interp_forward = MooncakeInterpreter(C, ForwardMode; world=interp.world)
         optimized_fwd_ir = optimise_ir!(dri.fwd_ir; interp=interp_forward)
@@ -187,7 +202,7 @@ function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
     # Cache hit: reuse compiled artifacts with fresh empty Stacks. sig is not
     # re-checked because each LazyFoRRule lives at exactly one call site in the
     # compiled IR (inside a fixed-grad_f closure), so the inner signature is
-    # invariant for its lifetime. debug_mode is asserted below because the cached rule
+    # invariant for its lifetime. debug_mode is checked below because the cached rule
     # layout differs between DebugRRule and plain DerivedRule.
     if isdefined(cache, :rule)
         if debug_mode != (cache.rule isa DebugRRule)
