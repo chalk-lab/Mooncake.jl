@@ -40,7 +40,7 @@ export NDual
 # across threads) an unoptimised branch causes warp divergence.
 
 """
-    NDual{T<:IEEEFloat, N} <: Real
+    NDual{T<:IEEEFloat, N} <: AbstractFloat
 
 An N-wide dual number: carries one primal `value::T` and `N` partial derivatives
 `partials::NTuple{N,T}`.  It is a plain `isbits` type — lives in GPU registers and
@@ -92,7 +92,7 @@ specific node types that appear in a `Broadcasted` tree
 
 For complex inputs the kernel uses `Complex{NDual{T,N}}` where each component
 (`re`, `im`) carries its own N partials.  Julia's generic `Complex` arithmetic
-(`+`, `*`, `sin`, etc.) composes with `NDual` naturally because `NDual <: Real`.
+(`+`, `*`, `sin`, etc.) composes with `NDual` naturally because `NDual <: AbstractFloat`.
 
 ## Usage in GPU kernels
 
@@ -248,7 +248,7 @@ conversion is needed at the kernel boundary.
 - `NForwardMode{N}` requires N to be chosen before compilation; adaptive chunk sizing
   (as in ForwardDiff) would need dynamic dispatch or recompilation.
 """
-struct NDual{T<:IEEEFloat,N} <: Real
+struct NDual{T<:IEEEFloat,N} <: AbstractFloat
     value::T
     partials::NTuple{N,T}
 end
@@ -516,6 +516,11 @@ end
     dv = ifelse(iszero(n), zero(T), T(n) * Base.literal_pow(^, a.value, Val(n - 1)))
     return NDual{T,N}(v, _pt_scale(a.partials, dv))
 end
+# Base defines literal_pow(^, ::AbstractFloat, ::Val{-1}) = inv(x) as a concrete
+# specialisation.  Since NDual <: AbstractFloat, this creates an ambiguity with the
+# general Val{n} method above (NDual wins on arg 2, Base wins on the concrete Val).
+# Resolve with a concrete override that delegates to our inv rule.
+@inline Base.literal_pow(::typeof(^), a::NDual{T,N}, ::Val{-1}) where {T,N} = inv(a)
 
 # d(x^n) = n * x^(n-1) * dx  (ifelse keeps this branchless; see file header)
 @inline function Base.:^(a::NDual{T,N}, n::Integer) where {T,N}
