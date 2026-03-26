@@ -165,7 +165,7 @@ function _compile_for_rule(
     return rule, fwd_dc, rvs_dc, rule_tangent
 end
 
-function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
+@inline function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
     ::Dual{typeof(build_derived_rrule)},
     _interp::Dual{<:MooncakeInterpreter{C}},
     _sig_or_mi::Dual,
@@ -198,7 +198,7 @@ function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
     return Dual(rule, rule_tangent)
 end
 
-function (cache::DynamicFoRRule)(
+@inline function (cache::DynamicFoRRule)(
     ::Dual{typeof(build_derived_rrule)},
     _interp::Dual{<:MooncakeInterpreter{C}},
     _sig_or_mi::Dual,
