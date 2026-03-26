@@ -55,6 +55,35 @@ end
            T(LogExpFunctions.IrrationalConstants.logtwo)
 end
 
+# logsumexp(x::AbstractVector{NDual}): direct scalar-then-differentiate implementation.
+# The generic LogExpFunctions path runs _logsumexp_onepass_reduce which calls reduce()
+# with a Tuple{NDual,NDual} accumulator — one _logsumexp_onepass_op call per element
+# that internally does isnan checks, real() calls, and exp() on full NDual values.
+# This implementation extracts the scalar primal values once, computes the primal
+# logsumexp in scalar T, then propagates partials in a single additional pass.
+# Result: same answer, no Tuple boxing, and the inner loop operates on plain T and
+# NTuple{N,T} fields rather than full NDual dispatch.
+function LogExpFunctions.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEEFloat,N}
+    isempty(x) && return NDual{T,N}(typemin(T))
+    # Pass 1: find maximum primal value for numerical stability.
+    u = @inbounds x[begin].value
+    @inbounds for i in (firstindex(x) + 1):lastindex(x)
+        v = x[i].value
+        if v > u; u = v; end
+    end
+    # Pass 2: accumulate sum(exp(xᵢ − u)) and partial-slot weighted sums.
+    sum_w = zero(T)
+    grad = ntuple(_ -> zero(T), Val(N))
+    @inbounds for xi in x
+        w = exp(xi.value - u)
+        sum_w += w
+        grad = ntuple(k -> grad[k] + w * xi.partials[k], Val(N))
+    end
+    y_val = u + log(sum_w)
+    inv_sw = inv(sum_w)
+    return NDual{T,N}(y_val, ntuple(k -> grad[k] * inv_sw, Val(N)))
+end
+
 # xlogx(x) = x == 0 ? zero(x*log(x)) : x*log(x).  The generic implementation computes
 # x*log(x) speculatively over the full NDual before the iszero branch can discard the
 # result.  Specialise to: (1) early-exit on x.value (scalar branch, no NDual work),

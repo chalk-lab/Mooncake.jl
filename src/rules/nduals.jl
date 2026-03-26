@@ -1292,3 +1292,29 @@ function LinearAlgebra.logdet(
     end
     return 2 * s
 end
+
+# ── Array reductions for NDual ─────────────────────────────────────────────────
+# Base's generic mapreduce_impl is @noinline, which prevents the compiler from
+# fusing the inner reduction loop with surrounding code.  For NDual{T,N} compound
+# types this is particularly costly: the noinline barrier defeats register-level
+# accumulation of all N partial slots simultaneously.  These inlineable overrides
+# replace the barrier with a simple sequential left-fold that LLVM can optimise.
+@inline function Base.mapreduce_impl(
+    f::F, op::O, A::AbstractArray{<:NDuals.NDual{T,N}},
+    ifirst::Integer, ilast::Integer,
+) where {F,O,T,N}
+    ifirst > ilast && return Base.mapreduce_empty(f, op, eltype(A))
+    @inbounds acc = f(A[ifirst])
+    @inbounds for i in (ifirst + 1):ilast
+        acc = op(acc, f(A[i]))
+    end
+    return acc
+end
+
+# 6-arg form (blksize is unused; pairwise recursion is never beneficial for NDual).
+@inline function Base.mapreduce_impl(
+    f::F, op::O, A::AbstractArray{<:NDuals.NDual{T,N}},
+    ifirst::Integer, ilast::Integer, ::Int,
+) where {F,O,T,N}
+    return Base.mapreduce_impl(f, op, A, ifirst, ilast)
+end
