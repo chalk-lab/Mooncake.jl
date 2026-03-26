@@ -76,7 +76,7 @@ end
 
 include(joinpath(@__DIR__, "..", "..", "front_matter.jl"))
 
-# julia#61368 regression: loading DispatchDoctor (above) advances the world counter by
+# julia#61368 workaround: loading DispatchDoctor (above) advances the world counter by
 # defining many methods, which on Julia 1.10 would invalidate inner OC CodeInstances and
 # trigger a segfault in emit_specsig_oc_call when building an outer frule. The @eval below
 # simulates a further world-counter advance mid-test, matching the actual failure mode.
