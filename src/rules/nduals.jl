@@ -396,6 +396,13 @@ end
     return NDual{S,N}(S(x.value) * s, ntuple(i -> S(x.partials[i]) * s, Val(N)))
 end
 
+# Bool * NDual: Base defines *(::Bool, ::AbstractFloat) with "strong zero" semantics
+# (false*NaN == 0.0 via ifelse, not multiplication) as a concrete AbstractFloat overload.
+# Since NDual <: AbstractFloat this is now ambiguous with our Real*NDual method.
+# Resolve with concrete Bool overloads that preserve the same strong-zero contract.
+@inline Base.:*(b::Bool, x::NDual{T,N}) where {T,N} = ifelse(b, x, copysign(zero(x), x))
+@inline Base.:*(x::NDual{T,N}, b::Bool) where {T,N} = b * x
+
 # Quotient rule: d(a/b) = (da - (a/b)*db) / b
 @inline function Base.:/(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     v = a.value / b.value
