@@ -257,6 +257,12 @@ end
 
 # Promote a plain scalar to a NDual with zero partials (acts as a constant).
 NDual{T,N}(x::Real) where {T<:IEEEFloat,N} = NDual{T,N}(T(x), ntuple(_ -> zero(T), Val(N)))
+# NDual{T,N}(::Rational{S}) is ambiguous between the NDual{T,N}(::Real) method above and
+# Base's `(::Type{T})(x::Rational{S}) where {S, T<:AbstractFloat}` (rational.jl).
+# Resolve by making the Rational case concrete.
+function NDual{T,N}(x::Rational{S}) where {T<:IEEEFloat,N,S}
+    NDual{T,N}(T(x), ntuple(_ -> zero(T), Val(N)))
+end
 # Identity / same-precision constructor: NDual{T,N}(d::NDual{T,N}) must not call T(d).
 NDual{T,N}(d::NDual{T,N}) where {T<:IEEEFloat,N} = d
 # Cross-precision constructor: NDual{T,N}(d::NDual{S,N}) where S ≠ T.
@@ -396,10 +402,14 @@ end
     return NDual{S,N}(S(x.value) * s, ntuple(i -> S(x.partials[i]) * s, Val(N)))
 end
 
-# Bool * NDual: Base defines *(::Bool, ::AbstractFloat) with "strong zero" semantics
-# (false*NaN == 0.0 via ifelse, not multiplication) as a concrete AbstractFloat overload.
-# Since NDual <: AbstractFloat this is now ambiguous with our Real*NDual method.
-# Resolve with concrete Bool overloads that preserve the same strong-zero contract.
+# Bool ± NDual and Bool * NDual: Base defines concrete overloads for (Bool, AbstractFloat)
+# in bool.jl (+(::Bool, ::T), +(::T, ::Bool), *(::Bool, ::T), *(::T, ::Bool) where T<:AbstractFloat).
+# Since NDual <: AbstractFloat these are now ambiguous with our (Real, NDual) methods.
+# Resolve with concrete Bool overloads:
+#   + : Bool acts as its numeric value (false=0, true=1) — same as T(b) + x.
+#   * : preserves Base's "strong zero" contract (false*NaN == 0.0 via ifelse).
+@inline Base.:+(b::Bool, x::NDual{T,N}) where {T,N} = NDual{T,N}(T(b) + x.value, x.partials)
+@inline Base.:+(x::NDual{T,N}, b::Bool) where {T,N} = b + x
 @inline Base.:*(b::Bool, x::NDual{T,N}) where {T,N} = ifelse(b, x, copysign(zero(x), x))
 @inline Base.:*(x::NDual{T,N}, b::Bool) where {T,N} = b * x
 
@@ -1300,8 +1310,7 @@ end
 # accumulation of all N partial slots simultaneously.  These inlineable overrides
 # replace the barrier with a simple sequential left-fold that LLVM can optimise.
 @inline function Base.mapreduce_impl(
-    f::F, op::O, A::AbstractArray{<:NDuals.NDual{T,N}},
-    ifirst::Integer, ilast::Integer,
+    f::F, op::O, A::AbstractArray{<:NDuals.NDual{T,N}}, ifirst::Integer, ilast::Integer
 ) where {F,O,T,N}
     ifirst > ilast && return Base.mapreduce_empty(f, op, eltype(A))
     @inbounds acc = f(A[ifirst])
@@ -1313,8 +1322,12 @@ end
 
 # 6-arg form (blksize is unused; pairwise recursion is never beneficial for NDual).
 @inline function Base.mapreduce_impl(
-    f::F, op::O, A::AbstractArray{<:NDuals.NDual{T,N}},
-    ifirst::Integer, ilast::Integer, ::Int,
+    f::F,
+    op::O,
+    A::AbstractArray{<:NDuals.NDual{T,N}},
+    ifirst::Integer,
+    ilast::Integer,
+    ::Int,
 ) where {F,O,T,N}
     return Base.mapreduce_impl(f, op, A, ifirst, ilast)
 end
