@@ -410,6 +410,19 @@ end
     return NDual{T,N}(x.value * s, _pt_scale(x.partials, s))
 end
 
+# Real / NDual: d(c/b) = -(c/b²) db.  Without this, c::Real is promoted to
+# NDual(c, zeros) and the quotient rule runs with a zero-partial numerator,
+# producing a fneg(partial) chain that cancels with inv's -r² scaling but forces
+# LLVM to emit a `fadd x, 0.0` canonicalization per partial slot (IEEE -0 rule).
+# Defining this explicitly computes the scale as -(c*vi²) — a single scalar fneg —
+# which pairs with the fneg already in the partial to give fmul(neg,neg)=pos,
+# eliminating the fsub/fadd artifact.  Mirrors ForwardDiff's /(::Real,::Dual).
+@inline function Base.:/(c::R, x::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    vi = inv(S(x.value))
+    return NDual{S,N}(S(c) * vi, _pt_scale(x.partials, -(S(c) * vi * vi)))
+end
+
 # Direct inv: d(1/x)/dx = -1/x² = -(1/x)².  Avoids the quotient-rule path that
 # promoting one(T)/a would trigger, eliminating a useless `0*x.value` fmul per slot.
 @inline function Base.inv(a::NDual{T,N}) where {T,N}
@@ -476,6 +489,20 @@ end
     return NDual{S,N}(
         fma(S(a.value), S(b), S(c.value)),
         ntuple(i -> fma(S(a.partials[i]), S(b), S(c.partials[i])), Val(N)),
+    )
+end
+
+# NDual*NDual+Real: product rule with a scalar addend.  Without this, c::Real is promoted
+# to NDual(c, zeros) and the inner muladd becomes muladd(bv, ap, 0.0) per partial slot,
+# emitting a wasted `fadd 0.0` (IEEE -0 semantics prevent LLVM from folding it).
+# Specialising drops the zero addend: partial_i = muladd(av, bp[i], bv * ap[i]).
+@inline function Base.muladd(a::NDual{T,N}, b::NDual{T,N}, c::R) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    return NDual{S,N}(
+        muladd(S(a.value), S(b.value), S(c)),
+        ntuple(
+            i -> muladd(S(a.value), S(b.partials[i]), S(b.value) * S(a.partials[i])), Val(N)
+        ),
     )
 end
 
@@ -556,6 +583,24 @@ end
             _pt_sub(_pt_scale(a.partials, b.value), _pt_scale(b.partials, a.value)), inv(r2)
         ),
     )
+end
+
+# NDual*Real atan: d/dy[atan(y,x)] = x/(y²+x²).  Without this, x::Real is promoted to
+# NDual(x, zeros), and _pt_scale(x.partials, y.value) generates a fmul(partial, 0.0) per
+# slot (zero-partial scale), followed by a wasted subtraction of that zero from the result.
+@inline function Base.atan(y::NDual{T,N}, x::R) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    r2 = S(y.value)^2 + S(x)^2
+    return NDual{S,N}(atan(S(y.value), S(x)), _pt_scale(y.partials, S(x) / r2))
+end
+
+# Real*NDual atan: d/dx[atan(y,x)] = -y/(y²+x²).  Without this, y::Real is promoted to
+# NDual(y, zeros), and _pt_scale(y.partials, x.value) = 0 per slot, then fsub(0, partial)
+# hits the same IEEE -0 canonicalization that the old Real/NDual division had.
+@inline function Base.atan(y::R, x::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    r2 = S(y)^2 + S(x.value)^2
+    return NDual{S,N}(atan(S(y), S(x.value)), _pt_scale(x.partials, -S(y) / r2))
 end
 
 # Hyperbolic
