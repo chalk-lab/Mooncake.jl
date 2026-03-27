@@ -30,8 +30,30 @@
 @from_chainrules MinimalCtx Tuple{typeof(exp2),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(exp10),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(expm1),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(sin),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(cos),IEEEFloat}
+# Hand-written rules for sin/cos use sincos to compute both values in a single call,
+# halving the number of transcendental operations compared to calling sin and cos separately.
+# The pullback closures capture only an IEEEFloat value and are therefore isbits.
+@is_primitive MinimalCtx Tuple{typeof(sin),IEEEFloat}
+function frule!!(::Dual{typeof(sin)}, x::Dual{P}) where {P<:IEEEFloat}
+    s, c = sincos(primal(x))
+    return Dual(s, c * tangent(x))
+end
+function rrule!!(::CoDual{typeof(sin)}, x::CoDual{P}) where {P<:IEEEFloat}
+    s, c = sincos(primal(x))
+    sin_pb!!(dy::P) = NoRData(), dy * c
+    return zero_fcodual(s), sin_pb!!
+end
+
+@is_primitive MinimalCtx Tuple{typeof(cos),IEEEFloat}
+function frule!!(::Dual{typeof(cos)}, x::Dual{P}) where {P<:IEEEFloat}
+    s, c = sincos(primal(x))
+    return Dual(c, -s * tangent(x))
+end
+function rrule!!(::CoDual{typeof(cos)}, x::CoDual{P}) where {P<:IEEEFloat}
+    s, c = sincos(primal(x))
+    cos_pb!!(dy::P) = NoRData(), -dy * s
+    return zero_fcodual(c), cos_pb!!
+end
 @from_chainrules MinimalCtx Tuple{typeof(tan),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(sec),IEEEFloat}
 @from_chainrules MinimalCtx Tuple{typeof(csc),IEEEFloat}

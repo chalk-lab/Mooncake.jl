@@ -963,9 +963,16 @@ function test_rule(
     frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
     rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
 
-    # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
-    test_fwd && is_primitive && @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
-    test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
+    # If something is primitive, then the rule should be a hand-written rule (not a derived
+    # rule produced by the AD transform). Stateful rules returned by `build_primitive_rrule`
+    # overrides satisfy this: they are not DerivedRule/LazyDerivedRule/DynamicDerivedRule.
+    _derived_types = Union{
+        Mooncake.DerivedRule,Mooncake.LazyDerivedRule,Mooncake.DynamicDerivedRule
+    }
+    _is_hand_written_frule(r) = !isa(r isa DebugFRule ? r.rule : r, _derived_types)
+    _is_hand_written_rrule(r) = !isa(r isa DebugRRule ? r.rule : r, _derived_types)
+    test_fwd && is_primitive && @test _is_hand_written_frule(frule)
+    test_rvs && is_primitive && @test _is_hand_written_rrule(rrule)
 
     # Generate random tangents for anything that is not already a CoDual.
     x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
