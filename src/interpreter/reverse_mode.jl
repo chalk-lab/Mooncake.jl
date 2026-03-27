@@ -1981,7 +1981,7 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ReverseMode, sig, interp.world)
         # Build the rule to obtain its concrete type. For non-singleton primitive rules
-        # (e.g. NForwardRRule) this allocates a throwaway instance; the cost is compile-
+        # (e.g. NfwdMooncake.RRule) this allocates a throwaway instance; the cost is compile-
         # time only and does not affect hot-path performance.
         rule = build_primitive_rrule(sig)
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)

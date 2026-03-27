@@ -1,5 +1,5 @@
 # Run this file directly with:
-# julia --project=bench -e 'using Test, Mooncake; include("test/interpreter/nforward.jl")'
+# julia --project=bench -e 'using Test, Mooncake; include("test/nfwd/nfwdmooncake.jl")'
 
 # Test support
 # Shared helpers and primitive registrations used by the structured sections below.
@@ -7,16 +7,16 @@
 using LinearAlgebra, Random
 using Random: Xoshiro
 
-struct NForwardRRuleTestFunc{N,F}
+struct NfwdRRuleTestFunc{N,F}
     f::F
 end
 
-(f::NForwardRRuleTestFunc)(x...) = f.f(x...)
+(f::NfwdRRuleTestFunc)(x...) = f.f(x...)
 
 function Mooncake.build_rrule(
-    f::NForwardRRuleTestFunc{N}, x...; debug_mode=false, silence_debug_messages=true
+    f::NfwdRRuleTestFunc{N}, x...; debug_mode=false, silence_debug_messages=true
 ) where {N}
-    return Mooncake.nforward_build_rrule(
+    return Mooncake.NfwdMooncake.build_rrule(
         f.f, x...; chunk_size=N, debug_mode, silence_debug_messages
     )
 end
@@ -29,15 +29,21 @@ function steady_state_allocations_rrule(rule, fx::Tuple)
     return @allocated rule(fx...)
 end
 
+# Bug fix note: measuring `@allocated value_and_gradient!!(...)` through a generic helper
+# counted wrapper/capture overhead on Julia 1.10 and produced a false 192-byte regression.
+@noinline _allocated_value_and_gradient(cache::C, f::F, x::X) where {C,F,X} = @allocated Mooncake.value_and_gradient!!(
+    cache, f, x
+)
+
 function steady_state_allocations_value_and_gradient(cache, f, x)
     for _ in 1:3
         Mooncake.value_and_gradient!!(cache, f, x)
     end
     GC.gc()
-    return @allocated Mooncake.value_and_gradient!!(cache, f, x)
+    return _allocated_value_and_gradient(cache, f, x)
 end
 
-function nforward_safe_log(x)
+function nfwd_safe_log(x)
     try
         return log(x)
     catch
@@ -45,7 +51,7 @@ function nforward_safe_log(x)
     end
 end
 
-function nforward_safe_log_vec(x)
+function nfwd_safe_log_vec(x)
     try
         return [log(x), x^2]
     catch
@@ -53,34 +59,32 @@ function nforward_safe_log_vec(x)
     end
 end
 
-nforward_outer(x) = nforward_safe_log(x) + x^2
+nfwd_outer(x) = nfwd_safe_log(x) + x^2
 vector_sum_sq(x) = sum(abs2, x)
 
-struct NForwardDerivedMultiplier
+struct NfwdDerivedMultiplier
     a::Float64
 end
 
-(m::NForwardDerivedMultiplier)(x) = m.a * x
+(m::NfwdDerivedMultiplier)(x) = m.a * x
 
 Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{
-    typeof(nforward_safe_log),Float64
+    typeof(nfwd_safe_log),Float64
 }
 
-function Mooncake.build_primitive_rrule(::Type{<:Tuple{typeof(nforward_safe_log),Float64}})
-    return Mooncake.nforward_build_rrule(
-        Tuple{typeof(nforward_safe_log),Float64}; chunk_size=1
+function Mooncake.build_primitive_rrule(::Type{<:Tuple{typeof(nfwd_safe_log),Float64}})
+    return Mooncake.NfwdMooncake.build_rrule(
+        Tuple{typeof(nfwd_safe_log),Float64}; chunk_size=1
     )
 end
 
 Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{
-    typeof(nforward_safe_log_vec),Float64
+    typeof(nfwd_safe_log_vec),Float64
 }
 
-function Mooncake.build_primitive_rrule(
-    ::Type{<:Tuple{typeof(nforward_safe_log_vec),Float64}}
-)
-    return Mooncake.nforward_build_rrule(
-        Tuple{typeof(nforward_safe_log_vec),Float64}; chunk_size=1
+function Mooncake.build_primitive_rrule(::Type{<:Tuple{typeof(nfwd_safe_log_vec),Float64}})
+    return Mooncake.NfwdMooncake.build_rrule(
+        Tuple{typeof(nfwd_safe_log_vec),Float64}; chunk_size=1
     )
 end
 
@@ -91,12 +95,12 @@ Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{
 function Mooncake.build_primitive_rrule(
     ::Type{<:Tuple{typeof(vector_sum_sq),Vector{Float64}}}
 )
-    return Mooncake.nforward_build_rrule(
+    return Mooncake.NfwdMooncake.build_rrule(
         Tuple{typeof(vector_sum_sq),Vector{Float64}}; chunk_size=4
     )
 end
 
-@testset "nforward API" begin
+@testset "nfwd API" begin
     f = (x, y) -> x * y + cos(x)
     x, y = 5.0, 4.0
     dx, dy = 3.0, 2.0
@@ -120,13 +124,17 @@ end
     @testset "public rule and cache entrypoints" begin
         @testset "scalar rule construction and caches" begin
             @testset "$case.name" for case in scalar_cases
-                rule = Mooncake.nforward_build_frule(f, x, y; chunk_size=case.chunk_size)
+                rule = Mooncake.NfwdMooncake.build_frule(
+                    f, x, y; chunk_size=case.chunk_size
+                )
                 out = rule(Mooncake.zero_dual(f), case.dual_inputs...)
                 @test out isa Mooncake.Dual
                 @test Mooncake.primal(out) == z
                 @test Mooncake.tangent(out) == case.expected_tangent
 
-                rrule = Mooncake.nforward_build_rrule(f, x, y; chunk_size=case.chunk_size)
+                rrule = Mooncake.NfwdMooncake.build_rrule(
+                    f, x, y; chunk_size=case.chunk_size
+                )
                 ȳ, pb!! = rrule(
                     Mooncake.zero_fcodual(f),
                     Mooncake.zero_fcodual(x),
@@ -135,7 +143,9 @@ end
                 @test Mooncake.primal(ȳ) == z
                 @test pb!!(1.0) == (Mooncake.NoRData(), y - sin(x), x)
 
-                cache = Mooncake.nforward_prepare_cache(f, x, y; chunk_size=case.chunk_size)
+                cache = Mooncake.NfwdMooncake.prepare_cache(
+                    f, x, y; chunk_size=case.chunk_size
+                )
                 z_and_dz_dual = Mooncake.value_and_derivative!!(
                     cache, Mooncake.zero_dual(f), case.dual_inputs...
                 )
@@ -156,7 +166,7 @@ end
 
             @testset "single-input scalar cache with chunk_size>1" begin
                 x_single = 1.5
-                cache = Mooncake.nforward_prepare_cache(square, x_single; chunk_size=2)
+                cache = Mooncake.NfwdMooncake.prepare_cache(square, x_single; chunk_size=2)
                 value, grad = Mooncake.value_and_gradient!!(cache, square, x_single)
                 @test value == square(x_single)
                 @test grad == (Mooncake.NoTangent(), 2 * x_single)
@@ -164,7 +174,7 @@ end
 
             @testset "constant outputs synthesize zero tangents" begin
                 x_const = 2.0
-                cache_grad = Mooncake.nforward_prepare_cache(
+                cache_grad = Mooncake.NfwdMooncake.prepare_cache(
                     constant_scalar, x_const; chunk_size=1
                 )
                 value, grad = Mooncake.value_and_gradient!!(
@@ -173,7 +183,7 @@ end
                 @test value == 1.0
                 @test grad == (Mooncake.NoTangent(), 0.0)
 
-                cache_deriv = Mooncake.nforward_prepare_cache(
+                cache_deriv = Mooncake.NfwdMooncake.prepare_cache(
                     constant_scalar, x_const; chunk_size=2
                 )
                 out = Mooncake.value_and_derivative!!(
@@ -186,43 +196,41 @@ end
             end
 
             @testset "automatic chunk_size selection" begin
-                cache = Mooncake.nforward_prepare_cache(f, x, y)
+                cache = Mooncake.NfwdMooncake.prepare_cache(f, x, y)
                 value, grad = Mooncake.value_and_gradient!!(cache, f, x, y)
                 @test value == z
                 @test grad == (Mooncake.NoTangent(), y - sin(x), x)
 
-                # nforward_build_frule / nforward_build_rrule omitting chunk_size
-                auto_frule = Mooncake.nforward_build_frule(f, x, y)
-                @test auto_frule isa Mooncake.NForwardRule  # compiles without chunk_size
-                auto_rrule = Mooncake.nforward_build_rrule(f, x, y)
-                @test auto_rrule isa Mooncake.NForwardRRule
+                # NfwdMooncake.build_frule / NfwdMooncake.build_rrule omitting chunk_size
+                auto_frule = Mooncake.NfwdMooncake.build_frule(f, x, y)
+                @test auto_frule isa Mooncake.NfwdMooncake.Rule  # compiles without chunk_size
+                auto_rrule = Mooncake.NfwdMooncake.build_rrule(f, x, y)
+                @test auto_rrule isa Mooncake.NfwdMooncake.RRule
                 value2, grad2 = Mooncake.value_and_gradient!!(auto_rrule, f, x, y)
                 @test value2 == z
                 @test grad2 == (Mooncake.NoTangent(), y - sin(x), x)
             end
 
-            @testset "_nforward_sig_dof and _nforward_sig_default_chunk_size" begin
+            @testset "_nfwd_sig_dof and _nfwd_sig_default_chunk_size" begin
                 # scalar-only sigs: DOF is known exactly at type level
-                @test Mooncake._nforward_sig_dof(
-                    Tuple{typeof(nforward_safe_log),Float64}
-                ) == 1
-                @test Mooncake._nforward_sig_dof(Tuple{typeof(f),Float64,Float64}) == 2
-                @test Mooncake._nforward_sig_dof(Tuple{typeof(f),ComplexF64,Float64}) == 3
+                @test Mooncake.Nfwd._nfwd_sig_dof(Tuple{typeof(nfwd_safe_log),Float64}) == 1
+                @test Mooncake.Nfwd._nfwd_sig_dof(Tuple{typeof(f),Float64,Float64}) == 2
+                @test Mooncake.Nfwd._nfwd_sig_dof(Tuple{typeof(f),ComplexF64,Float64}) == 3
 
                 # array input: DOF is unknown (nothing)
                 @test isnothing(
-                    Mooncake._nforward_sig_dof(Tuple{typeof(f),Vector{Float64}})
+                    Mooncake.Nfwd._nfwd_sig_dof(Tuple{typeof(f),Vector{Float64}})
                 )
 
                 # default chunk: min(DOF, preferred) for scalar; preferred for array
-                pref = Mooncake._NFORWARD_PREFERRED_CHUNK_SIZE
-                @test Mooncake._nforward_sig_default_chunk_size(
-                    Tuple{typeof(nforward_safe_log),Float64}
+                pref = Mooncake.Nfwd._NFWD_PREFERRED_CHUNK_SIZE
+                @test Mooncake.Nfwd._nfwd_sig_default_chunk_size(
+                    Tuple{typeof(nfwd_safe_log),Float64}
                 ) == 1
-                @test Mooncake._nforward_sig_default_chunk_size(
+                @test Mooncake.Nfwd._nfwd_sig_default_chunk_size(
                     Tuple{typeof(f),Float64,Float64}
                 ) == 2
-                @test Mooncake._nforward_sig_default_chunk_size(
+                @test Mooncake.Nfwd._nfwd_sig_default_chunk_size(
                     Tuple{typeof(f),Vector{Float64}}
                 ) == pref
             end
@@ -233,13 +241,13 @@ end
                 g(x) = sin.(x)
                 x_vec = [1.0, 2.0]
                 dx_vec = reshape([1.0, 0.0, 0.0, 1.0], 2, 2)
-                rrule = Mooncake.nforward_build_rrule(g, x_vec; chunk_size=2)
+                rrule = Mooncake.NfwdMooncake.build_rrule(g, x_vec; chunk_size=2)
                 value, pullback = Mooncake.value_and_pullback!!(rrule, [3.0, 4.0], g, x_vec)
                 @test value == sin.(x_vec)
                 @test pullback ==
                     (Mooncake.NoTangent(), [3.0 * cos(x_vec[1]), 4.0 * cos(x_vec[2])])
 
-                cache = Mooncake.nforward_prepare_cache(g, x_vec; chunk_size=2)
+                cache = Mooncake.NfwdMooncake.prepare_cache(g, x_vec; chunk_size=2)
                 y_and_dy = Mooncake.value_and_derivative!!(
                     cache, Mooncake.zero_dual(g), Mooncake.Dual(x_vec, dx_vec)
                 )
@@ -256,17 +264,17 @@ end
                 zc = ComplexF64(1.2, -0.3)
                 dzc = ComplexF64(0.5, -0.25)
                 expected_dzc = real((2zc - sin(zc)) * dzc)
-                rule = Mooncake.nforward_build_frule(fc, zc; chunk_size=1)
+                rule = Mooncake.NfwdMooncake.build_frule(fc, zc; chunk_size=1)
                 out = rule(Mooncake.zero_dual(fc), Mooncake.Dual(zc, dzc))
                 @test Mooncake.primal(out) == fc(zc)
                 @test Mooncake.tangent(out) ≈ expected_dzc
 
-                rrule = Mooncake.nforward_build_rrule(fc, zc; chunk_size=2)
+                rrule = Mooncake.NfwdMooncake.build_rrule(fc, zc; chunk_size=2)
                 ȳ, pb!! = rrule(Mooncake.zero_fcodual(fc), Mooncake.zero_fcodual(zc))
                 @test Mooncake.primal(ȳ) == fc(zc)
                 @test pb!!(1.0) == (Mooncake.NoRData(), conj(2zc - sin(zc)))
 
-                cache_scalar = Mooncake.nforward_prepare_cache(fc, zc; chunk_size=2)
+                cache_scalar = Mooncake.NfwdMooncake.prepare_cache(fc, zc; chunk_size=2)
                 z_and_grad = Mooncake.value_and_gradient!!(cache_scalar, fc, zc)
                 @test first(z_and_grad) == fc(zc)
                 @test last(z_and_grad) == (Mooncake.NoTangent(), conj(2zc - sin(zc)))
@@ -276,7 +284,7 @@ end
                 dz_vec = reshape(
                     ComplexF64[1.0 + 0.0im, 0.0 + 0.0im, 0.0 + 0.0im, 0.0 + 1.0im], 2, 2
                 )
-                cache = Mooncake.nforward_prepare_cache(gc, z_vec; chunk_size=2)
+                cache = Mooncake.NfwdMooncake.prepare_cache(gc, z_vec; chunk_size=2)
                 out_vec = Mooncake.value_and_derivative!!(
                     cache, Mooncake.zero_dual(gc), Mooncake.Dual(z_vec, dz_vec)
                 )
@@ -285,7 +293,7 @@ end
 
                 hc(z) = z .* z
                 ȳ_vec = ComplexF64[2.0 - 1.0im, -0.5 + 0.25im]
-                rrule_vec = Mooncake.nforward_build_rrule(hc, z_vec; chunk_size=2)
+                rrule_vec = Mooncake.NfwdMooncake.build_rrule(hc, z_vec; chunk_size=2)
                 value_vec, pullback_vec = Mooncake.value_and_pullback!!(
                     rrule_vec, ȳ_vec, hc, z_vec
                 )
@@ -297,7 +305,7 @@ end
                 h(x, y) = sum(x .* y)
                 x_vec = [1.0, 2.0]
                 y_vec = [3.0, 4.0]
-                cache = Mooncake.nforward_prepare_cache(h, x_vec, y_vec; chunk_size=2)
+                cache = Mooncake.NfwdMooncake.prepare_cache(h, x_vec, y_vec; chunk_size=2)
                 dx = reshape([1.0, 0.0, 0.0, 0.0], 2, 2)
                 dy = reshape([0.0, 0.0, 1.0, 0.0], 2, 2)
                 out = Mooncake.value_and_derivative!!(
@@ -314,7 +322,7 @@ end
                 dX = zeros(2, 2, 2)
                 dX[1, 1, 1] = 1.0
                 dX[2, 2, 2] = 1.0
-                cache_matrix = Mooncake.nforward_prepare_cache(hm, X; chunk_size=2)
+                cache_matrix = Mooncake.NfwdMooncake.prepare_cache(hm, X; chunk_size=2)
                 y_and_dy = Mooncake.value_and_derivative!!(
                     cache_matrix, Mooncake.zero_dual(hm), Mooncake.Dual(X, dX)
                 )
@@ -329,14 +337,14 @@ end
         @testset "tuple outputs" begin
             @testset "sincos chunk_size=1 frule and rrule" begin
                 x_sc = 1.2
-                frule = Mooncake.nforward_build_frule(sincos, x_sc; chunk_size=1)
+                frule = Mooncake.NfwdMooncake.build_frule(sincos, x_sc; chunk_size=1)
                 out = frule(Mooncake.zero_dual(sincos), Mooncake.Dual(x_sc, 1.0))
                 @test Mooncake.primal(out) == sincos(x_sc)
                 s_t, c_t = Mooncake.tangent(out)
                 @test s_t ≈ cos(x_sc)
                 @test c_t ≈ -sin(x_sc)
 
-                rrule = Mooncake.nforward_build_rrule(sincos, x_sc; chunk_size=1)
+                rrule = Mooncake.NfwdMooncake.build_rrule(sincos, x_sc; chunk_size=1)
                 ȳ_sc, pb!! = rrule(
                     Mooncake.zero_fcodual(sincos), Mooncake.zero_fcodual(x_sc)
                 )
@@ -348,7 +356,7 @@ end
 
             @testset "sincos chunk_size=2 via prepare_cache" begin
                 x_sc = 0.7
-                cache = Mooncake.nforward_prepare_cache(sincos, x_sc; chunk_size=2)
+                cache = Mooncake.NfwdMooncake.prepare_cache(sincos, x_sc; chunk_size=2)
                 value, pullback = Mooncake.value_and_pullback!!(
                     cache.rrule, (3.0, 2.0), sincos, x_sc
                 )
@@ -358,7 +366,7 @@ end
 
             @testset "modf derivative: frac=1, int=0" begin
                 x_mf = 3.7
-                frule = Mooncake.nforward_build_frule(modf, x_mf; chunk_size=1)
+                frule = Mooncake.NfwdMooncake.build_frule(modf, x_mf; chunk_size=1)
                 out = frule(Mooncake.zero_dual(modf), Mooncake.Dual(x_mf, 1.0))
                 @test Mooncake.primal(out) == modf(x_mf)
                 frac_t, int_t = Mooncake.tangent(out)
@@ -367,7 +375,7 @@ end
             end
 
             @testset "tuple output rejects value_and_gradient!!" begin
-                cache = Mooncake.nforward_prepare_cache(sincos, 1.0; chunk_size=1)
+                cache = Mooncake.NfwdMooncake.prepare_cache(sincos, 1.0; chunk_size=1)
                 @test_throws Mooncake.ValueAndGradientReturnTypeError Mooncake.value_and_gradient!!(
                     cache, sincos, 1.0
                 )
@@ -375,7 +383,7 @@ end
         end
 
         @testset "test_rule integration" begin
-            nf = NForwardRRuleTestFunc{2,typeof(f)}(f)
+            nf = NfwdRRuleTestFunc{2,typeof(f)}(f)
             Mooncake.TestUtils.test_rule(
                 Xoshiro(123),
                 nf,
@@ -392,55 +400,57 @@ end
         @testset "stateful callables are rejected" begin
             a = 2.0
             f_stateful = x -> a * x
-            @test_throws ArgumentError Mooncake.nforward_build_frule(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_frule(
                 f_stateful, 5.0; chunk_size=1
             )
-            @test_throws ArgumentError Mooncake.nforward_build_rrule(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
                 f_stateful, 5.0; chunk_size=1
             )
-            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
                 f_stateful, 5.0; chunk_size=1
             )
-            @test_throws ArgumentError Mooncake.nforward_build_rrule(
-                Tuple{NForwardDerivedMultiplier,Float64}; chunk_size=1
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
+                Tuple{NfwdDerivedMultiplier,Float64}; chunk_size=1
             )
-            @test_throws ArgumentError Mooncake.nforward_build_rrule(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
                 Tuple{Nothing,Float64}; chunk_size=1
             )
         end
 
         @testset "unsupported config is rejected" begin
-            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
                 f, x, y; chunk_size=1, config=Mooncake.Config(; friendly_tangents=true)
             )
-            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
                 f, x, y; chunk_size=1, config=Mooncake.Config(; debug_mode=true)
             )
-            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
+            @test_throws Mooncake.NfwdMooncake.UnsupportedInputError Mooncake.NfwdMooncake.prepare_cache(
                 f, view([x, y], 1:2); chunk_size=1
             )
-            @test_throws ArgumentError Mooncake.nforward_build_frule(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_frule(
                 f, x, y; chunk_size=1, debug_mode=true
             )
-            @test_throws ArgumentError Mooncake.nforward_build_rrule(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
                 f, x, y; chunk_size=1, debug_mode=true
             )
         end
 
         @testset "invalid chunk_size is rejected" begin
-            @test_throws ArgumentError Mooncake.nforward_build_frule(f, x, y; chunk_size=0)
-            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_frule(
+                f, x, y; chunk_size=0
+            )
+            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
                 f, x, y; chunk_size=-1
             )
         end
 
         @testset "function tangent rejection" begin
-            rule = Mooncake.nforward_build_frule(f, x, y; chunk_size=1)
+            rule = Mooncake.NfwdMooncake.build_frule(f, x, y; chunk_size=1)
             @test_throws ArgumentError rule(
                 Mooncake.Dual(f, 1.0), Mooncake.Dual(x, dx), Mooncake.Dual(y, dy)
             )
 
-            rrule = Mooncake.nforward_build_rrule(f, x, y; chunk_size=1)
+            rrule = Mooncake.NfwdMooncake.build_rrule(f, x, y; chunk_size=1)
             @test_throws ArgumentError rrule(
                 Mooncake.CoDual(f, 1.0), Mooncake.zero_fcodual(x), Mooncake.zero_fcodual(y)
             )
@@ -449,14 +459,14 @@ end
         @testset "array tangent validation" begin
             g(x) = sin.(x)
             x_vec = [1.0, 2.0]
-            cache = Mooncake.nforward_prepare_cache(g, x_vec; chunk_size=2)
+            cache = Mooncake.NfwdMooncake.prepare_cache(g, x_vec; chunk_size=2)
             @test_throws ArgumentError Mooncake.value_and_derivative!!(
                 cache, Mooncake.zero_dual(g), Mooncake.Dual(x_vec, [1.0, 2.0, 3.0])
             )
         end
 
         @testset "args_to_zero validation" begin
-            cache = Mooncake.nforward_prepare_cache(f, x, y; chunk_size=2)
+            cache = Mooncake.NfwdMooncake.prepare_cache(f, x, y; chunk_size=2)
             bad_args_to_zero_cases = ((true, true), (true, false, true))
             for args_to_zero in bad_args_to_zero_cases
                 @test_throws ArgumentError Mooncake.value_and_gradient!!(
@@ -467,18 +477,36 @@ end
 
         @testset "cache size mismatch is rejected" begin
             g(x) = sum(x)
-            cache = Mooncake.nforward_prepare_cache(g, [1.0, 2.0]; chunk_size=1)
+            cache = Mooncake.NfwdMooncake.prepare_cache(g, [1.0, 2.0]; chunk_size=1)
             @test_throws ArgumentError Mooncake.value_and_gradient!!(
                 cache, g, [1.0, 2.0, 3.0]
             )
         end
+
+        @testset "cache specs and chunk fallback helpers" begin
+            @test Mooncake.NfwdMooncake._nfwd_sig(sin) == (type=typeof(sin), size=())
+            @test Mooncake.NfwdMooncake._nfwd_sig([1.0, 2.0]) ==
+                (type=Vector{Float64}, size=(2,))
+            @test Mooncake.NfwdMooncake._nfwd_sig(1.0) == (type=Float64, size=())
+
+            @test Mooncake._chunk_should_fallback_to_lane_loop(
+                Mooncake.NfwdMooncake.UnsupportedInputError("unsupported input")
+            )
+            @test Mooncake._chunk_should_fallback_to_lane_loop(
+                Mooncake.NfwdMooncake.UnsupportedOutputError("unsupported output")
+            )
+            @test Mooncake._chunk_should_fallback_to_lane_loop(
+                Mooncake.Nfwd.NDualUnsupportedError(:floor)
+            )
+            @test !Mooncake._chunk_should_fallback_to_lane_loop(ArgumentError("other"))
+        end
     end
 
     @testset "primitive reverse-mode integration" begin
-        @testset "signature-based build returns nforward reverse rule" begin
+        @testset "signature-based build returns nfwd reverse rule" begin
             interp = Mooncake.get_interpreter(Mooncake.ReverseMode)
-            rule = Mooncake.build_rrule(interp, Tuple{typeof(nforward_safe_log),Float64})
-            @test rule isa Mooncake.NForwardRRule
+            rule = Mooncake.build_rrule(interp, Tuple{typeof(nfwd_safe_log),Float64})
+            @test rule isa Mooncake.NfwdMooncake.RRule
         end
 
         primitive_scalar_cases = (
@@ -497,32 +525,30 @@ end
         )
 
         @testset "$case.name" for case in primitive_scalar_cases
-            cache = Mooncake.prepare_gradient_cache(nforward_safe_log, case.x)
-            value, grad = Mooncake.value_and_gradient!!(cache, nforward_safe_log, case.x)
+            cache = Mooncake.prepare_gradient_cache(nfwd_safe_log, case.x)
+            value, grad = Mooncake.value_and_gradient!!(cache, nfwd_safe_log, case.x)
             @test value == case.expected_value || value ≈ case.expected_value
             @test grad == (Mooncake.NoTangent(), case.expected_grad)
         end
 
-        @testset "pullback cache uses the nforward primitive backend" begin
+        @testset "pullback cache uses the nfwd primitive backend" begin
             x = 2.0
             ȳ = [3.0, 4.0]
-            cache = Mooncake.prepare_pullback_cache(nforward_safe_log_vec, x)
-            value, pullback = Mooncake.value_and_pullback!!(
-                cache, ȳ, nforward_safe_log_vec, x
-            )
+            cache = Mooncake.prepare_pullback_cache(nfwd_safe_log_vec, x)
+            value, pullback = Mooncake.value_and_pullback!!(cache, ȳ, nfwd_safe_log_vec, x)
             @test value ≈ [log(x), x^2]
             @test pullback == (Mooncake.NoTangent(), ȳ[1] / x + ȳ[2] * 2x)
         end
 
         @testset "nested derived calls reuse the backend" begin
             x = 2.0
-            cache = Mooncake.prepare_gradient_cache(nforward_outer, x)
-            value, grad = Mooncake.value_and_gradient!!(cache, nforward_outer, x)
+            cache = Mooncake.prepare_gradient_cache(nfwd_outer, x)
+            value, grad = Mooncake.value_and_gradient!!(cache, nfwd_outer, x)
             @test value ≈ log(x) + x^2
             @test grad == (Mooncake.NoTangent(), inv(x) + 2x)
         end
 
-        @testset "cached vector gradients use the nforward backend" begin
+        @testset "cached vector gradients use the nfwd backend" begin
             x = randn(16)
             cache = Mooncake.prepare_gradient_cache(vector_sum_sq, x)
             value, grad = Mooncake.value_and_gradient!!(cache, vector_sum_sq, x)
@@ -534,7 +560,7 @@ end
             allocation_cases = (
                 (
                     name="scalar primitive path stays allocation-free",
-                    f=nforward_safe_log,
+                    f=nfwd_safe_log,
                     x=2.0,
                 ),
                 (
@@ -560,7 +586,7 @@ end
                 h(x, y) = sum(x .* y)
                 x_a = randn(8)
                 y_a = randn(8)
-                rrule = Mooncake.nforward_build_rrule(h, x_a, y_a; chunk_size=4)
+                rrule = Mooncake.NfwdMooncake.build_rrule(h, x_a, y_a; chunk_size=4)
                 fx = (
                     Mooncake.zero_fcodual(h),
                     Mooncake.zero_fcodual(x_a),
@@ -573,8 +599,8 @@ end
         end
 
         @testset "unsupported callable-state and function tangents fail explicitly" begin
-            @test_throws ArgumentError Mooncake.nforward_prepare_cache(
-                NForwardDerivedMultiplier(2.0), 5.0
+            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
+                NfwdDerivedMultiplier(2.0), 5.0
             )
             x = randn(16)
             rule = Mooncake.build_rrule(vector_sum_sq, x)
@@ -586,12 +612,12 @@ end
         @testset "debug mode warns and runs with outer debug checks" begin
             x = 2.0
             cache = Mooncake.prepare_gradient_cache(
-                nforward_safe_log,
+                nfwd_safe_log,
                 x;
                 config=Mooncake.Config(; debug_mode=true, silence_debug_messages=true),
             )
             @test_logs (:warn, r"ignore `debug_mode=true`") begin
-                value, grad = Mooncake.value_and_gradient!!(cache, nforward_safe_log, x)
+                value, grad = Mooncake.value_and_gradient!!(cache, nfwd_safe_log, x)
                 @test value ≈ log(x)
                 @test grad == (Mooncake.NoTangent(), inv(x))
             end
@@ -664,7 +690,7 @@ end
         (logit1mexp, -0.6),
     ]
     @testset "$f" for (f, x) in scalar1_cases
-        nf = NForwardRRuleTestFunc{1,typeof(f)}(f)
+        nf = NfwdRRuleTestFunc{1,typeof(f)}(f)
         Mooncake.TestUtils.test_rule(
             rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
         )
@@ -679,7 +705,7 @@ end
         (logsubexp, -0.5, -5.0),
     ]
     @testset "$f($a, $b)" for (f, a, b) in scalar2_cases
-        nf = NForwardRRuleTestFunc{2,typeof(f)}(f)
+        nf = NfwdRRuleTestFunc{2,typeof(f)}(f)
         Mooncake.TestUtils.test_rule(
             rng, nf, a, b; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
         )
@@ -691,7 +717,7 @@ end
         ("view", view(randn(rng, 5), 1:4)),
         ("[1.0,1.0]", [1.0, 1.0]),   # equal-input edge case, see #881
     ]
-        nf = NForwardRRuleTestFunc{8,typeof(logsumexp)}(logsumexp)
+        nf = NfwdRRuleTestFunc{8,typeof(logsumexp)}(logsumexp)
         Mooncake.TestUtils.test_rule(
             rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
         )
@@ -704,13 +730,13 @@ end
         (log1pexp, Float32(0.1)),
         (logcosh, Float32(1.5)),
     ]
-        nf = NForwardRRuleTestFunc{1,typeof(f)}(f)
+        nf = NfwdRRuleTestFunc{1,typeof(f)}(f)
         Mooncake.TestUtils.test_rule(
             rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
         )
     end
     @testset "logaddexp (Float32)" begin
-        nf = NForwardRRuleTestFunc{2,typeof(logaddexp)}(logaddexp)
+        nf = NfwdRRuleTestFunc{2,typeof(logaddexp)}(logaddexp)
         Mooncake.TestUtils.test_rule(
             rng,
             nf,
@@ -737,7 +763,7 @@ end
         ("sum_linsolve", _nfw_sum_linsolve, randn(rng, 5), 5),
         ("sum_matmat", _nfw_sum_matmat, randn(rng, 25), 8),
     ]
-        nf = NForwardRRuleTestFunc{C,typeof(f)}(f)
+        nf = NfwdRRuleTestFunc{C,typeof(f)}(f)
         Mooncake.TestUtils.test_rule(
             rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
         )
@@ -748,7 +774,7 @@ end
 # View and getindex cases from
 # test/integration_testing/misc_abstract_array/misc_abstract_array.jl.
 # Wrapped as named functions because Int/UnitRange inputs are rejected by
-# nforward's input validation when passed directly to getindex/view.
+# nfwd's input validation when passed directly to getindex/view.
 #
 # Excluded (API limitations, not missing rules):
 #   getindex(arr, Int)     — Int64 input rejected
@@ -762,7 +788,7 @@ end
         ("sum_view", _nfw_sum_view, randn(rng, 10), 5),
         ("sum_getindex", _nfw_sum_getindex, randn(rng, 10), 5),
     ]
-        nf = NForwardRRuleTestFunc{C,typeof(f)}(f)
+        nf = NfwdRRuleTestFunc{C,typeof(f)}(f)
         Mooncake.TestUtils.test_rule(
             rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
         )
@@ -785,7 +811,7 @@ end
         ("adjoint_vec", _nfw_sum_adjoint_v, randn(rng, 7), 5),
         ("adjoint_mat", _nfw_sum_adjoint_m, randn(rng, 12), 5),
         ("map_sin", _nfw_sum_map_sin, randn(rng, 8), 5),
-        # hardcoded-index wrappers (avoid passing Int/UnitRange as nforward inputs)
+        # hardcoded-index wrappers (avoid passing Int/UnitRange as nfwd inputs)
         ("getindex_4", _nfw_getindex_4, randn(rng, 9), 3),
         ("view_23_1", _nfw_view_23_1, randn(rng, 3, 4), 3),
         # mutating cases using copy/similar so element type follows x
@@ -794,7 +820,7 @@ end
         ("push_sum", _nfw_push_sum, randn(rng, 5), 5),
         ("lse_bang_sum", _nfw_lse_bang_sum, randn(rng, 20), 5),
     ]
-        nf = NForwardRRuleTestFunc{C,typeof(f)}(f)
+        nf = NfwdRRuleTestFunc{C,typeof(f)}(f)
         Mooncake.TestUtils.test_rule(
             rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
         )

@@ -543,7 +543,7 @@ end
 
 # ── NDual overloads for SpecialFunctions ──────────────────────────────────────
 #
-# These let NDual-typed inputs (used by nforward / Hessian) propagate through
+# These let NDual-typed inputs (used by nfwd / Hessian) propagate through
 # the special-function calls that appear inside distribution logpdfs (Beta,
 # Gamma, Chi, Dirichlet, …).
 #
@@ -563,7 +563,7 @@ end
 #   d/dx erfinv(x)       = √π/2 · exp(erfinv(x)²)
 #   d/dx besselk(ν, x)   = -(besselk(ν-1,x) + besselk(ν+1,x)) / 2
 
-using Mooncake.NDuals: NDual
+using Mooncake.Nfwd: NDual
 
 @inline function SpecialFunctions.loggamma(x::NDual{T,N}) where {T<:IEEEFloat,N}
     v = x.value

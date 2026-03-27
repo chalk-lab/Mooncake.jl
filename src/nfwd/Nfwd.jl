@@ -1,13 +1,37 @@
-# ── NDual: N-wide dual number for forward-mode AD ─────────────────────────────────
-# Shared by the nforward engine and the CUDA extension. Defined here in Mooncake
-# core so both can use the same type without redefinition.
-
-module NDuals
+module Nfwd
 
 using Base: IEEEFloat
-using LinearAlgebra: LinearAlgebra
+using LinearAlgebra
 
-export NDual
+export NDual,
+    NDualUnsupportedError,
+    ndual_value,
+    ndual_partial,
+    ndual_partials,
+    Rule,
+    RRule,
+    Cache,
+    rule_chunk_size,
+    UnsupportedError,
+    UnsupportedInputError,
+    UnsupportedOutputError,
+    _NFWD_PREFERRED_CHUNK_SIZE,
+    _nfwd_check_callable_sig,
+    _nfwd_check_chunk_size,
+    _nfwd_check_primal,
+    _nfwd_default_chunk_size,
+    _nfwd_infer_scalar_output,
+    _nfwd_input_dof,
+    _nfwd_input_error,
+    _nfwd_is_supported_primal,
+    _nfwd_is_supported_scalar,
+    _nfwd_output_error,
+    _nfwd_resolve_chunk_size,
+    _nfwd_rule_sig,
+    _nfwd_sig_default_chunk_size,
+    _nfwd_sig_dof,
+    _nfwd_type_dof,
+    _nfwd_validate
 
 #
 # ── Role of `ntuple` ──────────────────────────────────────────────────────────────
@@ -109,7 +133,7 @@ To extend to a new scalar type S (non-IEEEFloat): define `_broadcast_elem_dof_ty
 and handle the wrapping / gradient extraction in `_leaf_effective_tangent`,
 `materialize_pb!!`, and `_gpu_fill_args_rdata` in `MooncakeCUDAExt.jl`.
 
-## Chunk-mode AD via NForwardMode{N}
+## Chunk-mode AD via NfwdMode{N}
 
 ### Background: Mooncake forward mode is width-1
 
@@ -134,16 +158,16 @@ boundaries where each pass would otherwise incur a full launch overhead.
 `tangent_type(Float64) = NDual{Float64,N}` globally, infecting every `frule!!` in the
 call graph and breaking type coherence throughout.
 
-### NForwardMode{N}: NDual as the tangent type
+### NfwdMode{N}: NDual as the tangent type
 
 The clean solution is a new AD context that overrides `tangent_type` for scalar leaves:
 
 ```julia
-struct NForwardMode{N} end
+struct NfwdMode{N} end
 
 # NDual is the tangent type — value field=0 by convention, partials carry N directions
-tangent_type(::NForwardMode{N}, ::Type{T}) where {N, T<:IEEEFloat}          = NDual{T,N}
-tangent_type(::NForwardMode{N}, ::Type{Complex{T}}) where {N, T<:IEEEFloat} = Complex{NDual{T,N}}
+tangent_type(::NfwdMode{N}, ::Type{T}) where {N, T<:IEEEFloat}          = NDual{T,N}
+tangent_type(::NfwdMode{N}, ::Type{Complex{T}}) where {N, T<:IEEEFloat} = Complex{NDual{T,N}}
 
 zero_ntangent(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat} =
     NDual{T,N}(zero(T), ntuple(_ -> zero(T), Val(N)))
@@ -162,7 +186,7 @@ signatures, not tangent types).
 Rules written generically in the tangent require no changes:
 
 ```julia
-# Existing frule!! for sin — tangent(x)::NDual{T,N} in NForwardMode
+# Existing frule!! for sin — tangent(x)::NDual{T,N} in NfwdMode
 frule!!(::Dual{typeof(sin)}, x::Dual{T}) where {T<:IEEEFloat} =
     Dual(sin(primal(x)), cos(primal(x)) * tangent(x))
 #                        ^^^^^^^^^^^^^^^^ T (scalar) * NDual{T,N} → NDual{T,N}  ✓
@@ -181,13 +205,13 @@ composed of scalar multiplication and addition propagate the N directions automa
 2. **Hand-coded rules using `nan_tangent_guard`** (`log`, `sqrt`, `cbrt`, …) —
    `nan_tangent_guard` is explicitly constrained to `IEEEFloat | Complex{<:IEEEFloat}`.
    Passing an NDual tangent would produce a `MethodError`.  An `NDual` overload of
-   `nan_tangent_guard` would be needed to use these functions inside `NForwardMode{N}`.
+   `nan_tangent_guard` would be needed to use these functions inside `NfwdMode{N}`.
 
-In practice `NForwardMode{N}` is designed for **GPU kernel boundaries** where each
+In practice `NfwdMode{N}` is designed for **GPU kernel boundaries** where each
 width-1 pass costs a full kernel launch.  For CPU scalar ops the overhead is negligible
 and there is no motivation to use chunk mode.
 
-### `frule!!` template in NForwardMode
+### `frule!!` template in NfwdMode
 
 This pattern applies at any opaque boundary — most commonly a GPU kernel, but equally
 valid for any CPU operation that needs an explicit N-wide rule (e.g. to override a
@@ -195,7 +219,7 @@ hand-coded rule that uses `nan_tangent_guard`, or to differentiate through an ex
 library call).  The only difference between GPU and CPU versions is the array type
 (`CuArray` vs `Array`) and the absence of a kernel launch on CPU.
 
-In NForwardMode the tangent of a `CuArray{T}` arg is `CuArray{NDual{T,N}}`, so the
+In NfwdMode the tangent of a `CuArray{T}` arg is `CuArray{NDual{T,N}}`, so the
 NDual kernel input is built by a trivial merge — no `flatten_to_ndual` needed:
 
 ```julia
@@ -227,7 +251,7 @@ function full_jacobian(f!, out::CuArray{T}, x::CuArray{T}) where {T}
     ∂x  = CuArray([seed_ntangent(Val(N), T, i) for i in 1:N])
     ∂out = fill!(similar(out, NDual{T,N}), zero_ntangent(Val(N), T))
 
-    rule = build_frule(NForwardMode{N}(), typeof(f!), CuArray{T}, CuArray{T})
+    rule = build_frule(NfwdMode{N}(), typeof(f!), CuArray{T}, CuArray{T})
     rule(Dual(f!, NoTangent()), Dual(out, ∂out), Dual(x, ∂x))
 
     # ∂out[i].partials == (∂out[i]/∂x[1], …, ∂out[i]/∂x[N]) — full m×N Jacobian
@@ -236,7 +260,7 @@ function full_jacobian(f!, out::CuArray{T}, x::CuArray{T}) where {T}
 end
 ```
 
-Versus N separate width-1 passes, NForwardMode{N} needs **one** pass.  NDual is the
+Versus N separate width-1 passes, NfwdMode{N} needs **one** pass.  NDual is the
 natural tangent type because its arithmetic is already register-friendly and no
 conversion is needed at the kernel boundary.
 
@@ -245,7 +269,7 @@ conversion is needed at the kernel boundary.
 - Non-float leaves (`Int`, `Bool`, …) carry zero partial and must bypass NDual wrapping.
 - Mixed-precision structs (`Float32` + `Float64` fields) require a promoted `T` or
   separate NDual blocks per precision group.
-- `NForwardMode{N}` requires N to be chosen before compilation; adaptive chunk sizing
+- `NfwdMode{N}` requires N to be chosen before compilation; adaptive chunk sizing
   (as in ForwardDiff) would need dynamic dispatch or recompilation.
 """
 struct NDual{T<:IEEEFloat,N} <: AbstractFloat
@@ -726,7 +750,7 @@ end
 end
 Base.sign(a::NDual{T,N}) where {T,N} = NDual{T,N}(sign(a.value), _pt_zero(Val(N), T))
 
-# sincos — fused sin+cos; returns (sin(a), cos(a)) as a tuple of NDuals.
+# sincos — fused sin+cos; returns (sin(a), cos(a)) as a tuple of 
 @inline function Base.sincos(a::NDual{T,N}) where {T,N}
     sv, cv = sincos(a.value)
     return NDual{T,N}(sv, _pt_scale(a.partials, cv)),
@@ -1075,6 +1099,15 @@ for _op in (:floor, :ceil, :round, :trunc, :div, :fld, :cld, :mod, :rem, :gcd, :
     )
 end
 
+# Keep the integer-conversion entrypoints explicit as well. These are the user-facing
+# typed rounding paths (`floor(Int, x)`, `round(Int, x)`, etc.) and should fail with the
+# same NDual-specific error instead of falling through to AbstractFloat methods.
+for _op in (:floor, :ceil, :round, :trunc)
+    @eval Base.$_op(::Type{I}, ::NDual, args...) where {I<:Integer} = throw(
+        NDualUnsupportedError($(QuoteNode(_op)))
+    )
+end
+
 # `rem(x, y)` has subgradient ∂x=1, ∂y=-floor(x/y) (a.e.). Defining the two-NDual
 # method here resolves the ambiguity with Base's `rem(x::T, y::T) where T<:Real` and
 # enables functions like `modf` that call `rem(x, T(1))` internally.
@@ -1172,8 +1205,6 @@ end
 #   Tiled forward:     O(M·K·sizeof T)   peak memory per launch (K < N),
 #                      ceil(N/K) passes  over input data.
 
-end # module NDuals
-
 # ── Cholesky factorization for matrices of NDuals ─────────────────────────────────
 #
 # Forward-mode Cholesky derivative.  For A = L·Lᵀ (lower Cholesky) with symmetric
@@ -1203,22 +1234,20 @@ function _cholesky_ndual_fwd(
 end
 
 function LinearAlgebra.cholesky(
-    A::AbstractMatrix{NDuals.NDual{T,N}},
+    A::AbstractMatrix{NDual{T,N}},
     (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
     check::Bool=true,
 ) where {T<:IEEEFloat,N}
-    A₀ = map(NDuals.ndual_value, A)
-    F₀ = cholesky(Hermitian(A₀); check)
+    A₀ = map(ndual_value, A)
+    F₀ = LinearAlgebra.cholesky(LinearAlgebra.Hermitian(A₀); check)
     L₀ = Matrix(F₀.L)                    # dense lower-triangular Matrix{T}
-    L̇s = ntuple(
-        k -> _cholesky_ndual_fwd(L₀, map(x -> NDuals.ndual_partial(x, k), A)), Val(N)
-    )
+    L̇s = ntuple(k -> _cholesky_ndual_fwd(L₀, map(x -> ndual_partial(x, k), A)), Val(N))
     n = size(L₀, 1)
-    L_nd = Matrix{NDuals.NDual{T,N}}(undef, n, n)
+    L_nd = Matrix{NDual{T,N}}(undef, n, n)
     @inbounds for i in 1:n, j in 1:n
-        L_nd[i, j] = NDuals.NDual{T,N}(L₀[i, j], ntuple(k -> L̇s[k][i, j], Val(N)))
+        L_nd[i, j] = NDual{T,N}(L₀[i, j], ntuple(k -> L̇s[k][i, j], Val(N)))
     end
-    return Cholesky(L_nd, 'L', 0)
+    return LinearAlgebra.Cholesky(L_nd, 'L', 0)
 end
 
 # Hermitian and Symmetric wrappers: materialise the symmetric view, then defer to
@@ -1231,12 +1260,12 @@ end
 # Symmetric are equivalent (conj is identity), so a single `copytri!` suffices.
 for _WrapType in (:Hermitian, :Symmetric)
     @eval function LinearAlgebra.cholesky(
-        A::LinearAlgebra.$_WrapType{NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}},
+        A::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
         (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
         check::Bool=true,
     ) where {T<:IEEEFloat,N}
         data = LinearAlgebra.copytri!(copy(A.data), A.uplo)
-        return cholesky(data, LinearAlgebra.NoPivot(); check)
+        return LinearAlgebra.cholesky(data, LinearAlgebra.NoPivot(); check)
     end
 end
 
@@ -1252,17 +1281,13 @@ for _WrapType in (:Symmetric, :Hermitian)
         # is a plain Matrix (LinearAlgebra wins on B, we win on A — ambiguous without
         # a more specific method that wins on both).
         function Base.:*(
-            A::LinearAlgebra.$_WrapType{
-                NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
-            },
+            A::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
             B::AbstractVecOrMat,
         ) where {T<:IEEEFloat,N}
             return Matrix(A) * B
         end
         function Base.:*(
-            A::LinearAlgebra.$_WrapType{
-                NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
-            },
+            A::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
             B::AbstractMatrix,
         ) where {T<:IEEEFloat,N}
             return Matrix(A) * B
@@ -1270,17 +1295,13 @@ for _WrapType in (:Symmetric, :Hermitian)
 
         function Base.:*(
             A::AbstractVecOrMat,
-            B::LinearAlgebra.$_WrapType{
-                NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
-            },
+            B::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
         ) where {T<:IEEEFloat,N}
             return A * Matrix(B)
         end
         function Base.:*(
             A::AbstractMatrix,
-            B::LinearAlgebra.$_WrapType{
-                NDuals.NDual{T,N},<:AbstractMatrix{NDuals.NDual{T,N}}
-            },
+            B::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
         ) where {T<:IEEEFloat,N}
             return A * Matrix(B)
         end
@@ -1292,7 +1313,7 @@ end
 # `diag(LowerTriangular{NDual})` may trigger a BLAS-adjacent specialisation.  Spelling
 # it out explicitly avoids that ambiguity.
 function LinearAlgebra.logdet(
-    C::LinearAlgebra.Cholesky{NDuals.NDual{T,N},Matrix{NDuals.NDual{T,N}}}
+    C::LinearAlgebra.Cholesky{NDual{T,N},Matrix{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     L = C.L
     n = size(L, 1)
@@ -1310,7 +1331,7 @@ end
 # accumulation of all N partial slots simultaneously.  These inlineable overrides
 # replace the barrier with a simple sequential left-fold that LLVM can optimise.
 @inline function Base.mapreduce_impl(
-    f::F, op::O, A::AbstractArray{<:NDuals.NDual{T,N}}, ifirst::Integer, ilast::Integer
+    f::F, op::O, A::AbstractArray{<:NDual{T,N}}, ifirst::Integer, ilast::Integer
 ) where {F,O,T,N}
     ifirst > ilast && return Base.mapreduce_empty(f, op, eltype(A))
     @inbounds acc = f(A[ifirst])
@@ -1322,12 +1343,214 @@ end
 
 # 6-arg form (blksize is unused; pairwise recursion is never beneficial for NDual).
 @inline function Base.mapreduce_impl(
-    f::F,
-    op::O,
-    A::AbstractArray{<:NDuals.NDual{T,N}},
-    ifirst::Integer,
-    ilast::Integer,
-    ::Int,
+    f::F, op::O, A::AbstractArray{<:NDual{T,N}}, ifirst::Integer, ilast::Integer, ::Int
 ) where {F,O,T,N}
     return Base.mapreduce_impl(f, op, A, ifirst, ilast)
+end
+
+"""
+    Rule
+
+Callable forward-mode rule used by `nfwd`.
+
+`Rule` is built from a statically-known call signature. `buf` holds a reusable
+typed scratch buffer for in-place array lifting when a chunk-layout tangent is available.
+"""
+struct Rule{sig,N,Tbuf<:Base.RefValue}
+    buf::Tbuf
+end
+
+# Backward-compatible zero-arg constructor used by primitive rules in
+# rule_via_nfwd_patches.jl.
+function Rule{sig,N}() where {sig,N}
+    Rule{sig,N,Base.RefValue{Any}}(Ref{Any}(nothing))
+end
+
+@inline rule_chunk_size(::Type{<:Rule{sig,N}}) where {sig,N} = N
+
+"""
+    RRule
+
+Callable reverse-mode rule used by `nfwd`.
+
+`RRule` is built from a statically-known call signature. Both direct
+[`build_rrule`](@ref) calls and primitive reverse-mode registration route through
+that signature-based construction path. `buf` holds reusable typed scratch buffers for
+cached scalar-output fast paths when that is available. `grad_buf` holds a separate
+pre-allocated gradient buffer for the single-array-input scalar-output fast paths, allowing
+the rrule to stay allocation-free at steady state without copying the computed gradient.
+
+The `scalar_out` type parameter is `true` when inference confirms at rule-build time that
+`f` returns an `IEEEFloat` scalar for the given input types. This allows the single-array
+rrule specialisation to skip the redundant primal type-check call, which otherwise costs
+one full function evaluation per gradient call.
+"""
+struct RRule{sig,N,Tbuf<:Base.RefValue,scalar_out,Tgbuf<:Base.RefValue}
+    buf::Tbuf
+    grad_buf::Tgbuf
+end
+
+"""
+    Cache
+
+Cache returned by [`prepare_cache`](@ref). It owns the forward/reverse rules,
+runtime input signatures, and reusable zero tangents used by cached `nfwd` calls.
+"""
+struct Cache{RF,RR,S<:Tuple,TT<:Tuple}
+    frule::RF
+    rrule::RR
+    sigs::S
+    tangents::TT
+end
+
+# Infer at rule-build time whether `sig` has a scalar IEEEFloat output.
+# Used to set the `scalar_out` type parameter on `RRule`, allowing the hot-path
+# rrule to skip the redundant primal type-check call for known-scalar functions.
+#
+# Uses `Base.return_types`, which is a best-effort hint: it may return `[Any]` for
+# type-unstable functions or under some world-age conditions. In those cases this
+# function safely returns `false`, and the rrule falls through to the runtime primal
+# check (`scalar_out=false` path). There is no correctness risk from a missed inference
+# and only a missed optimisation.
+function _nfwd_infer_scalar_output(sig::Type{<:Tuple})
+    F = sig.parameters[1]
+    Base.issingletontype(F) || return false
+    argtypes = Tuple{(sig.parameters[i] for i in 2:length(sig.parameters))...}
+    rt = Base.return_types(F.instance, argtypes)
+    return !isempty(rt) && rt[1] <: IEEEFloat
+end
+
+@inline function _nfwd_check_chunk_size(chunk_size::Integer)
+    chunk_size > 0 && return Int(chunk_size)
+    throw(ArgumentError("`chunk_size` must be a positive integer, got $chunk_size."))
+end
+
+# Shared preamble for frule/rrule builders: validate chunk_size, callable sig, and
+# debug_mode.
+@inline function _nfwd_validate(sig, chunk_size::Integer; debug_mode=false)
+    chunk_size = _nfwd_check_chunk_size(chunk_size)
+    _nfwd_check_callable_sig(sig)
+    debug_mode && throw(ArgumentError("nfwd does not currently support `debug_mode=true`."))
+    return chunk_size
+end
+
+# Conservative SIMD-friendly default: 8 lanes covers one AVX-512 register (8×Float64)
+# and two AVX2 registers. Chunk sizes beyond 8 add register pressure without
+# proportional throughput gains on most hardware.
+const _NFWD_PREFERRED_CHUNK_SIZE = 8
+
+@inline function _nfwd_default_chunk_size(x::Tuple)
+    return max(1, min(sum(_nfwd_input_dof, x), _NFWD_PREFERRED_CHUNK_SIZE))
+end
+
+# Type-level DOF: returns the number of differentiable scalar components for a
+# concrete type, or `nothing` when the size cannot be determined from the type
+# alone (e.g. heap-allocated Array whose length is a runtime value).
+@inline _nfwd_type_dof(::Type{<:IEEEFloat}) = 1
+@inline _nfwd_type_dof(::Type{<:Complex{<:IEEEFloat}}) = 2
+@inline _nfwd_type_dof(T::Type{<:Tuple}) = sum(_nfwd_type_dof, T.parameters; init=0)
+@inline _nfwd_type_dof(::Type{<:AbstractArray}) = nothing
+@inline _nfwd_type_dof(::Type) = 0
+
+@inline function _nfwd_sig_dof(::Type{sig}) where {sig<:Tuple}
+    params = sig.parameters
+    total = 0
+    for i in 2:length(params)
+        d = _nfwd_type_dof(params[i])
+        d === nothing && return nothing
+        total += d
+    end
+    return total
+end
+
+@inline function _nfwd_sig_default_chunk_size(::Type{sig}) where {sig<:Tuple}
+    dof = _nfwd_sig_dof(sig)
+    preferred = _NFWD_PREFERRED_CHUNK_SIZE
+    return dof === nothing ? preferred : max(1, min(dof, preferred))
+end
+
+@inline function _nfwd_resolve_chunk_size(chunk_size, x::Tuple)
+    return if isnothing(chunk_size)
+        _nfwd_default_chunk_size(x)
+    else
+        _nfwd_check_chunk_size(chunk_size)
+    end
+end
+
+@inline _nfwd_is_supported_scalar(::Type{<:IEEEFloat}) = true
+@inline _nfwd_is_supported_scalar(::Type{<:Complex{<:IEEEFloat}}) = true
+@inline _nfwd_is_supported_scalar(::Type) = false
+
+@inline _nfwd_is_supported_primal(::Type{<:IEEEFloat}) = true
+@inline _nfwd_is_supported_primal(::Type{<:Complex{<:IEEEFloat}}) = true
+@inline function _nfwd_is_supported_primal(::Type{<:Array{ET}}) where {ET}
+    _nfwd_is_supported_scalar(ET)
+end
+@inline function _nfwd_is_supported_primal(T::Type{<:Tuple})
+    return all(_nfwd_is_supported_primal, T.parameters)
+end
+@inline _nfwd_is_supported_primal(::Type) = false
+
+abstract type UnsupportedError <: Exception end
+
+struct UnsupportedInputError <: UnsupportedError
+    msg::String
+end
+
+struct UnsupportedOutputError <: UnsupportedError
+    msg::String
+end
+
+@inline function Base.showerror(
+    io::IO, err::Union{UnsupportedInputError,UnsupportedOutputError}
+)
+    return print(io, err.msg)
+end
+
+@inline _nfwd_input_error(x) = throw(
+    UnsupportedInputError(
+        "nfwd currently supports only IEEEFloat / Complex IEEEFloat scalars and " *
+        "dense Array inputs with those element types. Got $(typeof(x)).",
+    ),
+)
+
+@inline function _nfwd_output_error(y)
+    throw(
+        UnsupportedOutputError(
+            "nfwd supports IEEEFloat / Complex IEEEFloat scalars, dense Arrays with " *
+            "those element types, and tuples thereof as outputs. Got $(typeof(y)).",
+        ),
+    )
+end
+
+@inline function _nfwd_check_primal(x)
+    _nfwd_is_supported_primal(typeof(x)) || _nfwd_input_error(x)
+    return x
+end
+
+@inline function _nfwd_check_callable_sig(sig::Type{<:Tuple})
+    F = sig.parameters[1]
+    Base.issingletontype(F) || throw(
+        ArgumentError(
+            "nfwd only supports stateless callables for rule construction. Got $F. " *
+            "Stateless callables are required because nfwd re-evaluates the function " *
+            "multiple times with different tangent seeds; a mutable callable would " *
+            "produce incorrect gradients on the second and subsequent evaluations.",
+        ),
+    )
+    f = F.instance
+    argsig = Tuple{(sig.parameters[i] for i in 2:length(sig.parameters))...}
+    hasmethod(f, argsig) && return sig
+    throw(ArgumentError("nfwd rule construction expected a callable signature, got $sig."))
+end
+
+@inline _nfwd_rule_sig(::Rule{sig}) where {sig} = sig
+@inline _nfwd_rule_sig(::RRule{sig}) where {sig} = sig
+
+@inline _nfwd_input_dof(x::IEEEFloat) = 1
+@inline _nfwd_input_dof(x::Complex{<:IEEEFloat}) = 2
+@inline _nfwd_input_dof(x::AbstractArray{<:IEEEFloat}) = length(x)
+@inline _nfwd_input_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
+@inline _nfwd_input_dof(x::Tuple) = sum(_nfwd_input_dof, x; init=0)
+
 end

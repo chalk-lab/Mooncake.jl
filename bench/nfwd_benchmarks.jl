@@ -1,6 +1,6 @@
-# bench/nforward_benchmarks.jl
+# bench/nfwd_benchmarks.jl
 #
-# Benchmark nforward frule / rrule against primal, standard Mooncake, and ForwardDiff.
+# Benchmark nfwd frule / rrule against primal, standard Mooncake, and ForwardDiff.
 # Uses the same functions as the inter-framework comparison in run_benchmarks.jl.
 #
 # Two tables are produced:
@@ -10,14 +10,14 @@
 #                           fd_grad c1/cN/c≤DOF /pass                  (× primal)
 #
 # Column semantics:
-#   nf_frule cC  – one nforward pass computing C simultaneous JVPs
+#   nf_frule cC  – one nfwd pass computing C simultaneous JVPs
 #   fd_grad  cC/pass – ForwardDiff.gradient with Chunk{C}, total time ÷ ⌈DOF/C⌉
 #                      (cost of one ForwardDiff pass; comparable to nf_frule cC)
 #
-# Results are saved to bench/results/nforward_<commit>.txt.
+# Results are saved to bench/results/nfwd_<commit>.txt.
 #
 # Run:
-#   julia --project=bench bench/nforward_benchmarks.jl
+#   julia --project=bench bench/nfwd_benchmarks.jl
 
 using Pkg
 Pkg.develop(; path=joinpath(@__DIR__, ".."))
@@ -37,8 +37,8 @@ using Mooncake:
 
 # ── Named wrappers ────────────────────────────────────────────────────────────
 # The inter-framework suite defines several of these as anonymous functions
-# (closures), which nforward cannot use (stateless callables only).
-# These named top-level functions are equivalent and nforward-compatible.
+# (closures), which nfwd cannot use (stateless callables only).
+# These named top-level functions are equivalent and nfwd-compatible.
 
 @inline function _nfb_g(x, a, ::Val{N}) where {N}
     return N > 0 ? _nfb_g(x * a, a, Val(N - 1)) : x
@@ -130,11 +130,11 @@ _total_dof(x::Tuple) = sum(_dof, x)
 
 # ── Dual / CoDual input construction ─────────────────────────────────────────
 
-# nforward's tangent convention (from _nforward_seed_tangent / _nforward_scalar_lane):
+# nfwd's tangent convention (from `_nfwd_seed_tangent` / `_nfwd_scalar_lane`):
 #   chunk_size == 1  → tangent is a bare scalar / same-shape array (NOT a 1-tuple)
 #   chunk_size == N  → tangent is an NTuple{N} for scalars, or (size(x)..., N) array
 # Identity seeding: lane k carries a 1 at position k, 0 elsewhere.  This matches both
-# ForwardDiff's unit-vector seeding and nforward's internal pullback seeding, ensuring
+# ForwardDiff's unit-vector seeding and nfwd's internal pullback seeding, ensuring
 # the frule benchmark exercises the same tangent arithmetic as real gradient computation.
 function _nf_dual(x::Float64, N::Int)
     N == 1 ? Dual(x, one(x)) : Dual(x, ntuple(k -> ifelse(k == 1, one(x), zero(x)), N))
@@ -289,12 +289,12 @@ function run_nfb(; seconds=0.5)
         # Pre-build all rules (compilation excluded from timing).
         mc_rrule = Mooncake.build_rrule(f, x...)
         mc_frule = Mooncake.build_frule(f, x...)
-        nf_rrule1 = Mooncake.nforward_build_rrule(f, x...; chunk_size=1)
-        nf_rruleN = Mooncake.nforward_build_rrule(f, x...; chunk_size=cN)
-        nf_rruleD = Mooncake.nforward_build_rrule(f, x...; chunk_size=dof)
-        nf_frule1 = Mooncake.nforward_build_frule(f, x...; chunk_size=1)
-        nf_fruleN = Mooncake.nforward_build_frule(f, x...; chunk_size=cN)
-        nf_fruleD = Mooncake.nforward_build_frule(f, x...; chunk_size=dof)
+        nf_rrule1 = Mooncake.NfwdMooncake.build_rrule(f, x...; chunk_size=1)
+        nf_rruleN = Mooncake.NfwdMooncake.build_rrule(f, x...; chunk_size=cN)
+        nf_rruleD = Mooncake.NfwdMooncake.build_rrule(f, x...; chunk_size=dof)
+        nf_frule1 = Mooncake.NfwdMooncake.build_frule(f, x...; chunk_size=1)
+        nf_fruleN = Mooncake.NfwdMooncake.build_frule(f, x...; chunk_size=cN)
+        nf_fruleD = Mooncake.NfwdMooncake.build_frule(f, x...; chunk_size=dof)
 
         # ForwardDiff configs.  Only single-array inputs are supported here.
         fd_cfg1, _ = _fd_cfg(f, only(x), 1)
@@ -445,7 +445,7 @@ function run_nfb(; seconds=0.5)
     io = IOBuffer()
 
     commit = strip(read(`git rev-parse --short HEAD`, String))
-    header_line = "nforward benchmark  commit=$(commit)  julia=$(VERSION)"
+    header_line = "nfwd benchmark  commit=$(commit)  julia=$(VERSION)"
     for out in (stdout, io)
         println(out, "\n", header_line)
         println(out, "\n=== Full gradient (rrule) — time relative to primal ===")
@@ -461,7 +461,7 @@ function run_nfb(; seconds=0.5)
             display_size=(-1, -1),
         )
         println(out, "\n=== Forward-mode (frule) — time relative to primal ===")
-        println(out, "    nf_frule cC  = one nforward pass, C simultaneous JVPs")
+        println(out, "    nf_frule cC  = one nfwd pass, C simultaneous JVPs")
         println(
             out,
             "    fd_grad  cC/pass = ForwardDiff.gradient with Chunk{C}, total time ÷ ⌈DOF/C⌉ passes (c≤DOF capped at $_FD_MAX_CHUNK)\n",
@@ -478,7 +478,7 @@ function run_nfb(; seconds=0.5)
 
     results_dir = joinpath(@__DIR__, "results")
     mkpath(results_dir)
-    outfile = joinpath(results_dir, "nforward_$(commit).txt")
+    outfile = joinpath(results_dir, "nfwd_$(commit).txt")
     write(outfile, String(take!(io)))
     println("\nResults saved to $outfile")
 end
@@ -508,7 +508,7 @@ end
 function _print_summary_table(io, rows)
     col1 = 32
     println(io)
-    println(io, "=== nforward vs ForwardDiff (nf_rrule cN vs fd_grad cN) ===")
+    println(io, "=== nfwd vs ForwardDiff (nf_rrule cN vs fd_grad cN) ===")
     println(io)
     println(
         io,
@@ -516,7 +516,7 @@ function _print_summary_table(io, rows)
             "| %-*s | %-8s | %-7s | %-6s |",
             col1,
             "benchmark (c8 unless noted)",
-            "nforward",
+            "nfwd",
             "FD",
             "nf/fd"
         )

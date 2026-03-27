@@ -538,7 +538,7 @@ function frule_type(
     sig = _get_sig(mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
         # Build the rule to obtain its concrete type. For non-singleton primitive rules
-        # (e.g. NForwardRule) this allocates a throwaway instance; the cost is compile-
+        # (e.g. NfwdMooncake.Rule) this allocates a throwaway instance; the cost is compile-
         # time only and does not affect hot-path performance.
         rule = build_primitive_frule(sig)
         return debug_mode ? DebugFRule{typeof(rule)} : typeof(rule)

@@ -78,13 +78,12 @@ import Mooncake:
     RData,
     nan_tangent_guard,
     NDual,
-    ndual_value,
-    ndual_partial
+    Nfwd
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
 
-# NDual is defined in src/rules/nduals.jl and loaded as part of Mooncake core.
+# NDual lives in Mooncake.Nfwd and is loaded as part of Mooncake core.
 
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
@@ -1221,7 +1220,7 @@ function frule!!(
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(primal(f), flat_px)
-    y = sum(_gpu_dual_val, out)
+    y = sum(_gpu_dual_val, out; init=zero(_gpu_dual_val_type(eltype(out))))
     # JVP: d(sum(f(x))) = sum(f'(x) · dx) element-wise
     dy = if _is_gpu_differentiable(eltype(out)) && !(flat_dx isa NoTangent)
         sum(broadcast((o, t) -> _gpu_dual_part_cx(o, 1) * t, out, flat_dx))
@@ -1243,7 +1242,7 @@ function rrule!!(
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
     out = _gpu_broadcast_dual(primal(f), flat_px)
-    y = sum(_gpu_dual_val, out)
+    y = sum(_gpu_dual_val, out; init=zero(_gpu_dual_val_type(eltype(out))))
     # Pre-extract the single partial slot and free the NDual array immediately.
     # The NDual array is (1+1)× the size of a float array; keeping it alive in the
     # closure for the pullback doubles GPU memory use unnecessarily.
@@ -1277,7 +1276,7 @@ function frule!!(::Dual{typeof(sum)}, f::Dual, x::Dual{<:CuComplexArray})
     _check_gpu_sum_f(primal(f))
     pf, px, dx = primal(f), primal(x), tangent(x)
     out = _gpu_broadcast_dual(pf, px)
-    y = sum(_gpu_dual_val, out)
+    y = sum(_gpu_dual_val, out; init=zero(_gpu_dual_val_type(eltype(out))))
     dy = if _is_gpu_differentiable(eltype(out)) && !(dx isa NoTangent)
         sum(
             broadcast(
@@ -1296,7 +1295,7 @@ function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuComplexArray})
     _check_gpu_sum_f(primal(f))
     pf, px, dx = primal(f), primal(x), tangent(x)
     out = _gpu_broadcast_dual(pf, px)
-    y = sum(_gpu_dual_val, out)
+    y = sum(_gpu_dual_val, out; init=zero(_gpu_dual_val_type(eltype(out))))
     # Pre-extract the two partial slots (re and im DOFs) and free the NDual array.
     # The complex NDual array is (2+1)× the size of a float array; holding it in the
     # closure triples GPU memory use for the duration of the backward pass.
@@ -2034,15 +2033,19 @@ function _gpu_broadcast_dual(f::F, args...) where {F}
 end
 
 # Extract primal value from a Dual or Complex{Dual} element; pass others through.
-@inline _gpu_dual_val(x::NDual) = ndual_value(x)
+@inline _gpu_dual_val(x::NDual) = Nfwd.ndual_value(x)
 @inline _gpu_dual_val(x::Complex{<:NDual}) = complex(
-    ndual_value(real(x)), ndual_value(imag(x))
+    Nfwd.ndual_value(real(x)), Nfwd.ndual_value(imag(x))
 )
 @inline _gpu_dual_val(x) = x
 
-@inline _gpu_dual_part_cx(x::NDual{T,N}, k::Int) where {T,N} = ndual_partial(x, k)
+@inline _gpu_dual_val_type(::Type{<:NDual{T}}) where {T} = T
+@inline _gpu_dual_val_type(::Type{Complex{NDual{T,N}}}) where {T,N} = Complex{T}
+@inline _gpu_dual_val_type(::Type{T}) where {T} = T
+
+@inline _gpu_dual_part_cx(x::NDual{T,N}, k::Int) where {T,N} = Nfwd.ndual_partial(x, k)
 @inline _gpu_dual_part_cx(x::Complex{NDual{T,N}}, k::Int) where {T,N} = complex(
-    ndual_partial(real(x), k), ndual_partial(imag(x), k)
+    Nfwd.ndual_partial(real(x), k), Nfwd.ndual_partial(imag(x), k)
 )
 @inline _gpu_dual_part_cx(x, ::Int) = false
 

@@ -29,9 +29,15 @@ import Mooncake as MC
 f(x) = (1 - x[1])^2 + 100 * (x[2] - x[1]^2)^2  # Rosenbrock
 x = [1.2, 1.2]
 
+# Reverse mode
 grad_cache = MC.prepare_gradient_cache(f, x);
 val, grad = MC.value_and_gradient!!(grad_cache, f, x)
 
+# Forward mode
+fwd_cache = MC.prepare_derivative_cache(f, x);
+val_fwd, grad_fwd = MC.value_and_gradient!!(fwd_cache, f, x)
+
+# Hessian
 hess_cache = MC.prepare_hessian_cache(f, x);
 val, grad, H = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 # val  : f(x)

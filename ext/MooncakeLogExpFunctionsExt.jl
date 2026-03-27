@@ -17,7 +17,7 @@ import Mooncake:
     NoRData,
     extract,
     arrayify
-using Mooncake.NDuals: NDual
+using Mooncake.Nfwd: NDual
 
 # ── NDual performance fixes ───────────────────────────────────────────────────
 # logistic(x::Real) = inv(exp(-x) + one(x)) produces a zero-partial NDual from

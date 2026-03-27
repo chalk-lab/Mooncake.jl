@@ -10,10 +10,10 @@
      Then each session:
        julia --project=temp/testenv -e 'using TestEnv; TestEnv.activate("Mooncake"); include("test/front_matter.jl")'
 
-     Then include individual test files, e.g.: include("test/interpreter/nforward.jl")
+     Then include individual test files, e.g.: include("test/nfwd/nfwdmooncake.jl")
 
   2. Batch — run a named test group end-to-end via Pkg.test:
-       julia --project=. -e 'import Pkg; Pkg.test(; test_args=["rules/lapack"])'
+       julia --project=. -e 'import Pkg; Pkg.test(; test_args=["Nfwd"])'
 
      If test_args is omitted, the "basic" group runs (not the full suite).
 =#
@@ -37,15 +37,16 @@ include("front_matter.jl")
             include(joinpath("interpreter", "ir_normalisation.jl"))
             include(joinpath("interpreter", "zero_like_rdata.jl"))
             include(joinpath("interpreter", "forward_mode.jl"))
-            include(joinpath("interpreter", "nforward.jl"))
             include(joinpath("interpreter", "reverse_mode.jl"))
         end
-        include(joinpath("rules", "ndual.jl"))
         include("tools_for_rules.jl")
         include("interface.jl")
         include("config.jl")
         include("developer_tools.jl")
         include("test_utils.jl")
+    elseif test_group == "Nfwd"
+        include(joinpath("nfwd", "nfwd.jl"))
+        include(joinpath("nfwd", "nfwdmooncake.jl"))
     elseif test_group == "rules/array_legacy"
         include(joinpath("rules", "array_legacy.jl"))
     elseif test_group == "rules/avoiding_non_differentiable_code"
