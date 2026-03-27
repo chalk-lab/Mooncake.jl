@@ -151,21 +151,21 @@ end
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
-# Stateful rule (issue #403): all backward logic lives in KronRuleCallable; rrule!!
+# Stateful rule (issue #403): all backward logic lives in KronRule; rrule!!
 # delegates to a fresh instance so there is a single implementation.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
-mutable struct KronRuleCallable{T<:IEEEFloat}
+mutable struct KronRule{T<:IEEEFloat}
     px1::Matrix{T}  # collected to plain Matrix so dot() is contiguous-fast
     px2::Matrix{T}
     dx1::AbstractMatrix{T}
     dx2::AbstractMatrix{T}
     dy::Matrix{T}
-    KronRuleCallable{T}() where {T<:IEEEFloat} = new{T}()
+    KronRule{T}() where {T<:IEEEFloat} = new{T}()
 end
-_copy(::KronRuleCallable{T}) where {T} = KronRuleCallable{T}()
-@inline function (rule::KronRuleCallable{T})(
+_copy(::KronRule{T}) where {T} = KronRule{T}()
+@inline function (rule::KronRule{T})(
     ::CoDual{typeof(kron)},
     x1::CoDual{<:AbstractVecOrMat{<:T}},
     x2::CoDual{<:AbstractVecOrMat{<:T}},
@@ -181,7 +181,7 @@ _copy(::KronRuleCallable{T}) where {T} = KronRuleCallable{T}()
     rule.dy = dy
     return CoDual(y, dy), rule
 end
-@inline function (pb::KronRuleCallable{T})(::NoRData) where {T<:IEEEFloat}
+@inline function (pb::KronRule{T})(::NoRData) where {T<:IEEEFloat}
     M, N = size(pb.dx1)
     P, Q = size(pb.dx2)
     # dx1[m,n] = ⟨dC_block_mn, B⟩  where dC_block_mn = dy[(m-1)P+1:mP, (n-1)Q+1:nQ]
@@ -203,12 +203,12 @@ function Mooncake.rrule!!(
     x1::CoDual{<:AbstractVecOrMat{<:T}},
     x2::CoDual{<:AbstractVecOrMat{<:T}},
 ) where {T<:IEEEFloat}
-    return KronRuleCallable{T}()(f, x1, x2)
+    return KronRule{T}()(f, x1, x2)
 end
 function build_primitive_rrule(
     ::Type{S}
 ) where {T<:IEEEFloat,A<:AbstractMatrix{T},B<:AbstractMatrix{T},S<:Tuple{typeof(kron),A,B}}
-    return KronRuleCallable{T}()
+    return KronRule{T}()
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
@@ -235,19 +235,19 @@ end
 function rrule!!(
     f::CoDual{typeof(*)}, A::CoDual{<:Matrix{P}}, B::CoDual{<:Matrix{P}}
 ) where {P<:Union{Float32,Float64}}
-    return MatMulRuleCallable{P}()(f, A, B)
+    return MatMulRule{P}()(f, A, B)
 end
 
-mutable struct MatMulRuleCallable{P<:Union{Float32,Float64}}
+mutable struct MatMulRule{P<:Union{Float32,Float64}}
     pA::Matrix{P}
     pB::Matrix{P}
     dA::Matrix{P}
     dB::Matrix{P}
     dC::Matrix{P}
-    MatMulRuleCallable{P}() where {P<:Union{Float32,Float64}} = new{P}()
+    MatMulRule{P}() where {P<:Union{Float32,Float64}} = new{P}()
 end
-_copy(::MatMulRuleCallable{P}) where {P} = MatMulRuleCallable{P}()
-@inline function (rule::MatMulRuleCallable{P})(
+_copy(::MatMulRule{P}) where {P} = MatMulRule{P}()
+@inline function (rule::MatMulRule{P})(
     ::CoDual{typeof(*)}, A::CoDual{<:Matrix{P}}, B::CoDual{<:Matrix{P}}
 ) where {P<:Union{Float32,Float64}}
     pA, dA = arrayify(A)
@@ -261,7 +261,7 @@ _copy(::MatMulRuleCallable{P}) where {P} = MatMulRuleCallable{P}()
     rule.dC = dC
     return CoDual(C, dC), rule
 end
-@inline function (pb::MatMulRuleCallable{P})(::NoRData) where {P<:Union{Float32,Float64}}
+@inline function (pb::MatMulRule{P})(::NoRData) where {P<:Union{Float32,Float64}}
     BLAS.gemm!('N', 'T', one(P), pb.dC, pb.pB, one(P), pb.dA)
     BLAS.gemm!('T', 'N', one(P), pb.pA, pb.dC, one(P), pb.dB)
     return NoRData(), NoRData(), NoRData()
@@ -269,7 +269,7 @@ end
 function build_primitive_rrule(
     ::Type{T}
 ) where {P<:Union{Float32,Float64},T<:Tuple{typeof(*),Matrix{P},Matrix{P}}}
-    return MatMulRuleCallable{P}()
+    return MatMulRule{P}()
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
