@@ -1053,22 +1053,18 @@ end
 
 @inline function _nfwd_extract_scalar(d::NDual{T,N}, ::Val{N}) where {T,N}
     return if N == 1
-        Nfwd.ndual_value(d), Nfwd.ndual_partial(d, 1)
+        Nfwd._nfwd_dual_value(d), Nfwd._nfwd_dual_partial(d, 1)
     else
-        Nfwd.ndual_value(d), ntuple(k -> Nfwd.ndual_partial(d, k), Val(N))
+        Nfwd._nfwd_dual_value(d), ntuple(k -> Nfwd._nfwd_dual_partial(d, k), Val(N))
     end
 end
 
 @inline function _nfwd_extract_scalar(z::Complex{NDual{T,N}}, ::Val{N}) where {T,N}
-    primal = complex(Nfwd.ndual_value(real(z)), Nfwd.ndual_value(imag(z)))
+    primal = Nfwd._nfwd_dual_value(z)
     tangent = if N == 1
-        complex(Nfwd.ndual_partial(real(z), 1), Nfwd.ndual_partial(imag(z), 1))
+        Nfwd._nfwd_dual_partial(z, 1)
     else
-        ntuple(
-            k ->
-                complex(Nfwd.ndual_partial(real(z), k), Nfwd.ndual_partial(imag(z), k)),
-            Val(N),
-        )
+        ntuple(k -> Nfwd._nfwd_dual_partial(z, k), Val(N))
     end
     return primal, tangent
 end
@@ -1085,13 +1081,13 @@ function _nfwd_extract(y::AbstractArray{<:NDual{T,N}}, ::Val{N}) where {T,N}
     primal = similar(y, T)
     tangent = N == 1 ? similar(y, T) : similar(y, T, size(y)..., N)
     @inbounds for I in CartesianIndices(y)
-        primal[I] = Nfwd.ndual_value(y[I])
+        primal[I] = Nfwd._nfwd_dual_value(y[I])
         idx = Tuple(I)
         if N == 1
-            tangent[I] = Nfwd.ndual_partial(y[I], 1)
+            tangent[I] = Nfwd._nfwd_dual_partial(y[I], 1)
         else
             for k in 1:N
-                tangent[idx..., k] = Nfwd.ndual_partial(y[I], k)
+                tangent[idx..., k] = Nfwd._nfwd_dual_partial(y[I], k)
             end
         end
     end
@@ -1105,17 +1101,13 @@ function _nfwd_extract(
     primal = similar(y, T)
     tangent = N == 1 ? similar(y, T) : similar(y, T, size(y)..., N)
     @inbounds for I in CartesianIndices(y)
-        primal[I] = complex(Nfwd.ndual_value(real(y[I])), Nfwd.ndual_value(imag(y[I])))
+        primal[I] = Nfwd._nfwd_dual_value(y[I])
         idx = Tuple(I)
         if N == 1
-            tangent[I] = complex(
-                Nfwd.ndual_partial(real(y[I]), 1), Nfwd.ndual_partial(imag(y[I]), 1)
-            )
+            tangent[I] = Nfwd._nfwd_dual_partial(y[I], 1)
         else
             for k in 1:N
-                tangent[idx..., k] = complex(
-                    Nfwd.ndual_partial(real(y[I]), k), Nfwd.ndual_partial(imag(y[I]), k)
-                )
+                tangent[idx..., k] = Nfwd._nfwd_dual_partial(y[I], k)
             end
         end
     end

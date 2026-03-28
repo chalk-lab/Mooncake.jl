@@ -48,7 +48,9 @@ include("front_matter.jl")
         include(joinpath("nfwd", "nfwd.jl"))
         include(joinpath("nfwd", "nfwdmooncake.jl"))
     elseif test_group == "rules/array_legacy"
-        include(joinpath("rules", "array_legacy.jl"))
+        @static if VERSION < v"1.11.0-rc4"
+            include(joinpath("rules", "array_legacy.jl"))
+        end
     elseif test_group == "rules/avoiding_non_differentiable_code"
         include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
     elseif test_group == "rules/blas_Float64"

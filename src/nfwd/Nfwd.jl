@@ -300,6 +300,27 @@ end
 @inline ndual_partial(d::NDual, k::Int) = d.partials[k]
 @inline ndual_partials(d::NDual) = d.partials
 
+# Internal NDual decode helpers shared by nfwd and the CUDA extension.
+@inline _nfwd_dual_value(d::NDual) = ndual_value(d)
+@inline _nfwd_dual_value(z::Complex{<:NDual}) = complex(
+    ndual_value(real(z)), ndual_value(imag(z))
+)
+@inline _nfwd_dual_value(x) = x
+
+@inline _nfwd_dual_partial(d::NDual, k::Int) = ndual_partial(d, k)
+@inline _nfwd_dual_partial(z::Complex{<:NDual}, k::Int) = complex(
+    ndual_partial(real(z), k), ndual_partial(imag(z), k)
+)
+@inline _nfwd_dual_partial(x, ::Int) = false
+
+@inline _nfwd_dual_primal_type(::Type{<:NDual{T}}) where {T} = T
+@inline _nfwd_dual_primal_type(::Type{Complex{NDual{T,N}}}) where {T,N} = Complex{T}
+@inline _nfwd_dual_primal_type(::Type{T}) where {T} = T
+
+@inline _nfwd_dual_has_partials(::Type{<:NDual}) = true
+@inline _nfwd_dual_has_partials(::Type{<:Complex{<:NDual}}) = true
+@inline _nfwd_dual_has_partials(::Type) = false
+
 # ── NTuple arithmetic helpers ─────────────────────────────────────────────────────
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
@@ -1622,5 +1643,18 @@ end
 @inline _nfwd_input_dof(x::AbstractArray{<:IEEEFloat}) = length(x)
 @inline _nfwd_input_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
 @inline _nfwd_input_dof(x::Tuple) = sum(_nfwd_input_dof, x; init=0)
+
+@inline function _nfwd_leaf_dof_type(T::Type)
+    dof = _nfwd_type_dof(T)
+    return isnothing(dof) ? 0 : dof
+end
+
+@inline _nfwd_leaf_dof_type(::Type{<:AbstractArray{T}}) where {T} = _nfwd_leaf_dof_type(T)
+@inline _nfwd_leaf_dof(x) = _nfwd_leaf_dof_type(typeof(x))
+
+@inline function _nfwd_slot_meta(x, offset::Int)
+    dof = _nfwd_leaf_dof(x)
+    return (; dof, slot1=offset + 1, slot2=offset + 2)
+end
 
 end
