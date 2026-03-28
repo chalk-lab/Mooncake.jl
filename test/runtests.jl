@@ -10,7 +10,7 @@
      Then each session:
        julia --project=temp/testenv -e 'using TestEnv; TestEnv.activate("Mooncake"); include("test/front_matter.jl")'
 
-     Then include individual test files, e.g.: include("test/nfwd/nfwd.jl")
+     Then include individual test files, e.g.: include("test/nfwd/nfwdmooncake.jl")
 
   2. Batch — run a named test group end-to-end via Pkg.test:
        julia --project=. -e 'import Pkg; Pkg.test(; test_args=["Nfwd"])'
@@ -46,6 +46,7 @@ include("front_matter.jl")
         include("test_utils.jl")
     elseif test_group == "Nfwd"
         include(joinpath("nfwd", "nfwd.jl"))
+        include(joinpath("nfwd", "nfwdmooncake.jl"))
     elseif test_group == "rules/array_legacy"
         @static if VERSION < v"1.11.0-rc4"
             include(joinpath("rules", "array_legacy.jl"))

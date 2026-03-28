@@ -723,8 +723,8 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # If debug mode has been requested, use a debug rule.
         rule = info.debug_mode ? DebugRRule(zero_wrapped_rule) : zero_wrapped_rule
 
-        # If the rule is `rrule!!` (i.e. `sig` is primitive), then don't bother putting
-        # the rule into shared data, because it's safe to put it directly into the code.
+        # If the primitive rule is a singleton, then don't bother putting it into shared
+        # data because it's safe to put it directly into the code.
         rule_ref = add_data_if_not_singleton!(info, rule)
 
         # If the type of the pullback is a singleton type, then there is no need to store it
@@ -1980,6 +1980,9 @@ properly.
 function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where {C}
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ReverseMode, sig, interp.world)
+        # Build the rule to obtain its concrete type. For non-singleton primitive rules
+        # (e.g. NfwdMooncake.RRule) this allocates a throwaway instance; the cost is compile-
+        # time only and does not affect hot-path performance.
         rule = build_primitive_rrule(sig)
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)
     end
