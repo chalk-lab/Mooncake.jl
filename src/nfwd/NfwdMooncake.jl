@@ -214,8 +214,7 @@ signatures containing arrays the preferred width is used directly.
 function build_frule(
     sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
-    resolved = isnothing(chunk_size) ? _nfwd_sig_default_chunk_size(sig) : chunk_size
-    resolved = _nfwd_validate(sig, resolved; debug_mode)
+    resolved = _nfwd_resolve_rule_chunk_size(sig, chunk_size; debug_mode)
     buf = _nfwd_frule_buf_ref(sig, Val(resolved))
     return Rule{sig,resolved,typeof(buf)}(buf)
 end
@@ -285,8 +284,7 @@ signatures containing arrays the preferred width is used directly.
 function build_rrule(
     sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
-    resolved = isnothing(chunk_size) ? _nfwd_sig_default_chunk_size(sig) : chunk_size
-    resolved = _nfwd_validate(sig, resolved; debug_mode)
+    resolved = _nfwd_resolve_rule_chunk_size(sig, chunk_size; debug_mode)
     buf = _nfwd_buf_ref(sig, Val(resolved))
     grad_buf = _nfwd_grad_buf_ref(sig)
     scalar_out = _nfwd_infer_scalar_output(sig)
@@ -308,8 +306,7 @@ Evaluate an `nfwd` reverse rule and return both the output `CoDual` and pullback
 """
 function (rule::RRule{sig,N})(f::CoDual, x::Vararg{CoDual,M}) where {sig,N,M}
     _nfwd_verify_sig(rule, (f, x...))
-    tangent(f) isa NoFData ||
-        throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
+    _nfwd_check_function_tangent(tangent(f))
     return _nfwd_rrule_call(primal(f), x, Val(N))
 end
 
@@ -325,18 +322,11 @@ end
 function (rule::RRule{sig,N,Tbuf,true})(
     f::CoDual, x::CoDual{A}
 ) where {sig,N,Tbuf,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
-    _nfwd_verify_sig(rule, (f, x))
-    tangent(f) isa NoFData ||
-        throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
-    f_runtime = primal(f)
-    _nfwd_check_primal(primal(x))
+    f_runtime, x_primal = _nfwd_prepare_array_rrule_call(rule, f, x)
     # Output type is known scalar — skip primal call and go straight to gradient sweep.
     # Gradient is written to the pre-allocated grad_buf (not into tangent(x)), so the
     # pullback can accumulate into the existing fdata without a copy.
-    grad_arr = _nfwd_lazy_grad_buf!(rule.grad_buf, primal(x))
-    y = _nfwd_array_scalar_value_and_gradient(f_runtime, x, rule.buf, grad_arr, Val(N))
-    y_cd = CoDual(y, fdata(zero_tangent(y)))
-    return y_cd, ArrayScalarPullback(grad_arr, tangent(x))
+    return _nfwd_array_scalar_rrule_result(rule, f_runtime, x, x_primal, Val(N))
 end
 
 # Fallback: output type not known to be scalar at build time.  Run a primal call to
@@ -344,17 +334,10 @@ end
 function (rule::RRule{sig,N,Tbuf,false})(
     f::CoDual, x::CoDual{A}
 ) where {sig,N,Tbuf,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
-    _nfwd_verify_sig(rule, (f, x))
-    tangent(f) isa NoFData ||
-        throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
-    f_runtime = primal(f)
-    x_primal = _nfwd_check_primal(primal(x))
+    f_runtime, x_primal = _nfwd_prepare_array_rrule_call(rule, f, x)
     y_primal = f_runtime(x_primal)
     if y_primal isa IEEEFloat
-        grad_arr = _nfwd_lazy_grad_buf!(rule.grad_buf, x_primal)
-        y = _nfwd_array_scalar_value_and_gradient(f_runtime, x, rule.buf, grad_arr, Val(N))
-        y_cd = CoDual(y, fdata(zero_tangent(y)))
-        return y_cd, ArrayScalarPullback(grad_arr, tangent(x))
+        return _nfwd_array_scalar_rrule_result(rule, f_runtime, x, x_primal, Val(N))
     else
         _nfwd_is_supported_primal(typeof(y_primal)) || _nfwd_output_error(y_primal)
         y_cd = CoDual(y_primal, fdata(zero_tangent(y_primal)))
@@ -512,8 +495,15 @@ end
 # execution paths.
 
 @inline function _nfwd_check_function_tangent(df)
-    df isa NoTangent && return nothing
+    df isa Union{NoTangent,NoFData} && return nothing
     throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
+end
+
+@inline function _nfwd_resolve_rule_chunk_size(
+    sig::Type{<:Tuple}, chunk_size; debug_mode::Bool
+)
+    resolved = isnothing(chunk_size) ? _nfwd_sig_default_chunk_size(sig) : chunk_size
+    return _nfwd_validate(sig, resolved; debug_mode)
 end
 
 @inline function _nfwd_verify_sig(rule::Union{Rule,RRule}, fx::Tuple)
@@ -770,6 +760,8 @@ end
 # chunk_size=1: tangent is a plain scalar — return it regardless of which lane is requested.
 @inline _nfwd_scalar_lane(dy, ::Val{1}, _) = dy
 # chunk_size=N: tangent is an NTuple — index with a static Val{K} or a runtime Int.
+@inline _nfwd_scalar_lane(dy::Tuple{Any}, ::Val{1}, ::Val{K}) where {K} = dy[1]
+@inline _nfwd_scalar_lane(dy::Tuple{Any}, ::Val{1}, _lane::Int) = dy[1]
 @inline _nfwd_scalar_lane(dy::NTuple{N}, ::Val{N}, ::Val{K}) where {N,K} = dy[K]
 @inline _nfwd_scalar_lane(dy::NTuple{N}, ::Val{N}, lane::Int) where {N} = dy[lane]
 
@@ -1179,6 +1171,23 @@ end
 
 @inline _nfwd_function_gradient(f::CoDual) = tangent(fdata(tangent(f)), NoRData())
 
+@inline function _nfwd_prepare_array_rrule_call(
+    rule::RRule, f::CoDual, x::CoDual{A}
+) where {A<:Array}
+    _nfwd_verify_sig(rule, (f, x))
+    _nfwd_check_function_tangent(tangent(f))
+    return primal(f), _nfwd_check_primal(primal(x))
+end
+
+@inline function _nfwd_array_scalar_rrule_result(
+    rule::RRule{sig,N}, f_runtime, x::CoDual{A}, x_primal::A, ::Val{N}
+) where {sig,N,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
+    grad_arr = _nfwd_lazy_grad_buf!(rule.grad_buf, x_primal)
+    y = _nfwd_array_scalar_value_and_gradient(f_runtime, x, rule.buf, grad_arr, Val(N))
+    y_cd = CoDual(y, fdata(zero_tangent(y)))
+    return y_cd, ArrayScalarPullback(grad_arr, tangent(x))
+end
+
 @inline function _nfwd_scalar_value_and_gradient(
     f_runtime, f::CoDual, x::CoDual{T}, ::Val{N}
 ) where {T<:IEEEFloat,N}
@@ -1285,55 +1294,62 @@ function _nfwd_grad_buf_ref(::Type{Tuple{F,Vector{T}}}) where {F,T<:IEEEFloat}
     return Ref{Union{Nothing,Vector{T}}}(nothing)
 end
 
+@inline function _nfwd_alloc_workspace(::Type{Vector{T}}, dims::Tuple{Int}) where {T}
+    return Vector{T}(undef, dims[1])
+end
+
+@inline function _nfwd_alloc_workspace(::Type{Array{T,N}}, dims::NTuple{N,Int}) where {T,N}
+    return Array{T,N}(undef, dims)
+end
+
+@inline function _nfwd_array_workspace!(
+    buf::Base.RefValue{Union{Nothing,A}}, ::Type{A}, dims
+) where {A<:Array}
+    ws = buf[]
+    if ws === nothing || size(ws::A) != dims
+        ws = _nfwd_alloc_workspace(A, dims)
+        buf[] = ws
+    end
+    return ws::A
+end
+
+@inline function _nfwd_array_workspace!(
+    buf::Base.RefValue, ::Type{A}, dims
+) where {A<:Array}
+    ws = buf[]
+    if !(ws isa A && size(ws) == dims)
+        ws = _nfwd_alloc_workspace(A, dims)
+        buf[] = ws
+    end
+    return ws::A
+end
+
 # Typed-ref path: fully inferred.
-# Load buf[] once; update ws in the branch so the return can reuse it without a second load.
 @inline function _nfwd_rrule_lifted!(
     buf::Base.RefValue{Union{Nothing,Vector{NDual{T,C}}}}, x::Vector{T}, ::Val{C}
 ) where {T<:IEEEFloat,C}
-    ws = buf[]
-    if ws === nothing || length(ws::Vector{NDual{T,C}}) != length(x)
-        ws = Vector{NDual{T,C}}(undef, length(x))
-        buf[] = ws
-    end
-    return ws::Vector{NDual{T,C}}
+    return _nfwd_array_workspace!(buf, Vector{NDual{T,C}}, (length(x),))
 end
 
 # Generic path: buf is Ref{Any}; workspace type recovered at runtime.
 @inline function _nfwd_rrule_lifted!(
     buf::Base.RefValue, x::Array{T,N}, ::Val{C}
 ) where {T<:IEEEFloat,N,C}
-    Tlift = NDual{T,C}
-    ws = buf[]
-    if !(ws isa Array{Tlift,N} && size(ws) == size(x))
-        ws = Array{Tlift,N}(undef, size(x))
-        buf[] = ws
-    end
-    return ws::Array{Tlift,N}
+    return _nfwd_array_workspace!(buf, Array{NDual{T,C},N}, size(x))
 end
 
 # Typed-ref path: fully inferred.
-# Load grad_buf[] once; update ws in the branch so the return can reuse it without a second load.
 @inline function _nfwd_lazy_grad_buf!(
     grad_buf::Base.RefValue{Union{Nothing,Vector{T}}}, x_primal::Vector{T}
 ) where {T<:IEEEFloat}
-    ws = grad_buf[]
-    if ws === nothing || length(ws::Vector{T}) != length(x_primal)
-        ws = Vector{T}(undef, length(x_primal))
-        grad_buf[] = ws
-    end
-    return ws::Vector{T}
+    return _nfwd_array_workspace!(grad_buf, Vector{T}, (length(x_primal),))
 end
 
 # Generic path: grad_buf is Ref{Any}; gradient array type recovered at runtime.
 @inline function _nfwd_lazy_grad_buf!(
     grad_buf::Base.RefValue, x_primal::Array{T,N}
 ) where {T<:IEEEFloat,N}
-    ws = grad_buf[]
-    if !(ws isa Array{T,N} && size(ws) == size(x_primal))
-        ws = Array{T,N}(undef, size(x_primal))
-        grad_buf[] = ws
-    end
-    return ws::Array{T,N}
+    return _nfwd_array_workspace!(grad_buf, Array{T,N}, size(x_primal))
 end
 
 # Initialise every element of `lifted` to NDual(x[i], 0̄) — O(n), called once per
@@ -1415,23 +1431,16 @@ function _nfwd_frule_lifted!(
     dx::Array{T},
     ::Val{C},
 ) where {T<:IEEEFloat,C}
-    ws = buf[]
-    if ws === nothing || length(ws::Vector{NDual{T,C}}) != length(x)
-        buf[] = Vector{NDual{T,C}}(undef, length(x))
-    end
-    return _nfwd_lift!(buf[]::Vector{NDual{T,C}}, x, dx, Val(C))
+    ws = _nfwd_array_workspace!(buf, Vector{NDual{T,C}}, (length(x),))
+    return _nfwd_lift!(ws, x, dx, Val(C))
 end
 
 # Generic path for Array{T,Nd} inputs (Ref{Any} buf).
 function _nfwd_frule_lifted!(
     buf::Base.RefValue, x::Array{T,Nd}, dx::Array{T}, ::Val{C}
 ) where {T<:IEEEFloat,Nd,C}
-    Tlift = NDual{T,C}
-    ws = buf[]
-    if !(ws isa Array{Tlift,Nd} && size(ws) == size(x))
-        buf[] = Array{Tlift,Nd}(undef, size(x))
-    end
-    return _nfwd_lift!(buf[]::Array{Tlift,Nd}, x, dx, Val(C))
+    ws = _nfwd_array_workspace!(buf, Array{NDual{T,C},Nd}, size(x))
+    return _nfwd_lift!(ws, x, dx, Val(C))
 end
 
 """

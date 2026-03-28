@@ -230,6 +230,22 @@ struct CountedChunkArrayCall end
             end
         end
 
+        @testset "pullback cache mismatch errors" begin
+            f_arr = x -> sum(abs2, x)
+            x_arr = [1.0, 2.0]
+            cache = Mooncake.prepare_pullback_cache(f_arr, x_arr)
+
+            @test_throws r"Cached autodiff call has a size mismatch for `x1`" Mooncake.value_and_pullback!!(
+                cache, 1.0, f_arr, [1.0, 2.0, 3.0]
+            )
+            @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_pullback!!(
+                cache, 1.0, f_arr, Float32[1.0, 2.0]
+            )
+            @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_pullback!!(
+                cache, 1.0, f_arr, reshape([1.0, 2.0], 2, 1)
+            )
+        end
+
         @testset "friendly tangents" begin
             testf(x::SimplePair) = SimplePair(x.x1^2 + sin(x.x2), x.x1 * x.x2)
             x = SimplePair(1.0, 2.0)
@@ -872,6 +888,55 @@ struct CountedChunkArrayCall end
                 @test CHUNK_ARRAY_EVAL_COUNT[] == 1
             end
         end
+
+        @testset "forward cache mismatch errors" begin
+            f_arr = x -> sum(abs2, x)
+            x_arr = [x, y]
+            dx_arr = [dx, 0.0]
+            cache = Mooncake.prepare_derivative_cache(
+                f_arr, x_arr; config=Mooncake.Config(; kwargs...)
+            )
+
+            @test_throws r"Cached autodiff call has a size mismatch for `x1`" Mooncake.value_and_derivative!!(
+                cache, (f_arr, Mooncake.NoTangent()), ([x, y, 3.0], [dx, 0.0, 0.0])
+            )
+            @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_derivative!!(
+                cache, (f_arr, Mooncake.NoTangent()), (Float32[x, y], Float32[dx, 0.0])
+            )
+            @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_derivative!!(
+                cache,
+                (f_arr, Mooncake.NoTangent()),
+                (reshape([x, y], 2, 1), reshape([dx, 0.0], 2, 1)),
+            )
+
+            @test_throws r"Cached autodiff call has a size mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_arr, [x, y, 3.0]
+            )
+            @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_arr, Float32[x, y]
+            )
+            @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_arr, reshape([x, y], 2, 1)
+            )
+        end
+
+        @testset "reverse cache mismatch errors" begin
+            f_arr = x -> sum(abs2, x)
+            x_arr = [x, y]
+            cache = Mooncake.prepare_gradient_cache(
+                f_arr, x_arr; config=Mooncake.Config(; kwargs...)
+            )
+
+            @test_throws r"Cached autodiff call has a size mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_arr, [x, y, 3.0]
+            )
+            @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_arr, Float32[x, y]
+            )
+            @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_gradient!!(
+                cache, f_arr, reshape([x, y], 2, 1)
+            )
+        end
     end
 
     @testset "value_and_hvp!!" begin
@@ -893,6 +958,21 @@ struct CountedChunkArrayCall end
 
                 cache2 = prepare_hvp_cache(f, x, y)
                 @test_throws ArgumentError value_and_hvp!!(cache2, f, ([1.0], [0.0]), x, y)
+            end
+
+            @testset "HVP cache mismatch errors" begin
+                f(x) = sum(x .* x)
+                x = [1.0, 2.0]
+                cache = prepare_hvp_cache(f, x)
+                @test_throws r"Cached autodiff call has a size mismatch for `x1`" value_and_hvp!!(
+                    cache, f, [1.0, 0.0, 0.0], [1.0, 2.0, 3.0]
+                )
+                @test_throws r"Cached autodiff call has a type mismatch for `x1`" value_and_hvp!!(
+                    cache, f, Float32[1.0, 0.0], Float32[1.0, 2.0]
+                )
+                @test_throws r"Cached autodiff call has a type mismatch for `x1`" value_and_hvp!!(
+                    cache, f, reshape([1.0, 0.0], 2, 1), reshape([1.0, 2.0], 2, 1)
+                )
             end
         end
     end
@@ -1079,6 +1159,18 @@ struct CountedChunkArrayCall end
                 x = [1.0, 2.0]
                 cache = prepare_hessian_cache(f, x)
                 @test_throws ArgumentError value_gradient_and_hessian!!(cache, g, x)
+            end
+
+            @testset "hessian cache mismatch errors" begin
+                f(x) = sum(x .^ 2)
+                x = [1.0, 2.0]
+                cache = prepare_hessian_cache(f, x)
+                @test_throws r"Cached autodiff call has a size mismatch for `x1`" value_gradient_and_hessian!!(
+                    cache, f, [1.0, 2.0, 3.0]
+                )
+                @test_throws r"Cached autodiff call has a type mismatch for `x1`" value_gradient_and_hessian!!(
+                    cache, f, Float32[1.0, 2.0]
+                )
             end
         end
     end

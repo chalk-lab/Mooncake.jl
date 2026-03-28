@@ -304,13 +304,9 @@ end
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
 @inline _pt_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
-@inline _pt_add(p::NTuple{N,T}, q::NTuple{N,T}) where {N,T} = ntuple(
-    i -> p[i] + q[i], Val(N)
-)
-@inline _pt_sub(p::NTuple{N,T}, q::NTuple{N,T}) where {N,T} = ntuple(
-    i -> p[i] - q[i], Val(N)
-)
-@inline _pt_neg(p::NTuple{N,T}) where {N,T} = ntuple(i -> -p[i], Val(N))
+@inline _pt_add(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] + q[i], Val(N))
+@inline _pt_sub(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] - q[i], Val(N))
+@inline _pt_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
 @inline _pt_zero(::Val{N}, ::Type{T}) where {N,T} = ntuple(_ -> zero(T), Val(N))
 
 # ── AbstractFloat traits (needed for promote_rule with Complex etc.) ──────────────
@@ -362,6 +358,24 @@ end
 @inline function Base.convert(::Type{NDual{T,N}}, d::NDual{S,N}) where {T,N,S<:IEEEFloat}
     return NDual{T,N}(T(d.value), ntuple(i -> T(d.partials[i]), Val(N)))
 end
+@inline function NDual{T,N}(x::Real, r::RoundingMode) where {T<:IEEEFloat,N}
+    return NDual{T,N}(T(x, r), _pt_zero(Val(N), T))
+end
+
+@noinline function _throw_ndual_lane_mismatch(op::Symbol, n1::Int, n2::Int)
+    throw(
+        DimensionMismatch(
+            "NDual lane count mismatch in `$op`: left operand has $n1 lanes, right operand has $n2 lanes.",
+        ),
+    )
+end
+
+@inline function _promote_matching_nduals(
+    op::Symbol, a::NDual{T1,N1}, b::NDual{T2,N2}
+) where {T1,T2,N1,N2}
+    N1 == N2 || _throw_ndual_lane_mismatch(op, N1, N2)
+    return promote(a, b)
+end
 
 # ── Arithmetic ────────────────────────────────────────────────────────────────────
 
@@ -401,6 +415,18 @@ end
 @inline Base.:-(a::NDual{T1,N}, b::NDual{T2,N}) where {T1,T2,N} = -(promote(a, b)...)
 @inline Base.:*(a::NDual{T1,N}, b::NDual{T2,N}) where {T1,T2,N} = *(promote(a, b)...)
 @inline Base.:/(a::NDual{T1,N}, b::NDual{T2,N}) where {T1,T2,N} = /(promote(a, b)...)
+@inline Base.:+(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = +(_promote_matching_nduals(
+    :+, a, b
+)...)
+@inline Base.:-(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = -(_promote_matching_nduals(
+    :-, a, b
+)...)
+@inline Base.:*(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = *(_promote_matching_nduals(
+    :*, a, b
+)...)
+@inline Base.:/(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = /(_promote_matching_nduals(
+    :/, a, b
+)...)
 
 # Product rule: d(a*b) = a*db + b*da
 @inline function Base.:*(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
@@ -570,6 +596,8 @@ end
     return NDual{T,N}(v, _pt_scale(a.partials, dv))
 end
 
+@inline Base.:^(a::NDual{T,N}, b::Rational) where {T,N} = a ^ T(b)
+
 @inline function Base.:^(a::NDual{T,N}, b::Real) where {T,N}
     v = a.value^T(b)
     dv = ifelse(iszero(T(b)), zero(T), T(b) * a.value^(T(b) - one(T)))
@@ -588,12 +616,16 @@ end
         ),
     )
 end
+@inline Base.:^(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = ^(_promote_matching_nduals(
+    :^, a, b
+)...)
 
 # d(b^a)/da = b^a * log(b)  (b a plain Real, a the NDual)
 @inline function Base.:^(b::Real, a::NDual{T,N}) where {T,N}
     v = T(b)^a.value
     return NDual{T,N}(v, _pt_scale(a.partials, v * T(log(b))))
 end
+@inline Base.:^(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = exp(a)
 
 # ── Math functions ─────────────────────────────────────────────────────────────────
 # Each follows: f(Dual(v,p)) = Dual(f(v), f'(v)*p)
@@ -630,6 +662,9 @@ end
         ),
     )
 end
+@inline Base.atan(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = atan(
+    _promote_matching_nduals(:atan, a, b)...
+)
 
 # NDual*Real atan: d/dy[atan(y,x)] = x/(y²+x²).  Without this, x::Real is promoted to
 # NDual(x, zeros), and _pt_scale(x.partials, y.value) generates a fmul(partial, 0.0) per
@@ -727,6 +762,7 @@ end
 @inline function Base.log(b::Real, a::NDual{T,N}) where {T,N}
     return NDual{T,N}(log(b, a.value), _pt_scale(a.partials, inv(a.value * T(log(b)))))
 end
+@inline Base.log(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = log(a)
 
 # ldexp(a, n) = a * 2^n — linear; derivative = 2^n.
 @inline function Base.ldexp(a::NDual{T,N}, n::Integer) where {T,N}
@@ -926,7 +962,7 @@ Base.isreal(::NDual) = true
 # an external call.  This specialisation keeps the loop body inlinable so LLVM can
 # vectorise the partials accumulation.
 @inline function LinearAlgebra.dot(
-    x::AbstractVector{NDual{T,N}}, y::AbstractVector{NDual{T,N}}
+    x::StridedVector{NDual{T,N}}, y::StridedVector{NDual{T,N}}
 ) where {T,N}
     lx = length(x)
     lx == length(y) || throw(
@@ -976,6 +1012,12 @@ Base.:<(a::Real, b::NDual) = a < b.value
 Base.:>(a::Real, b::NDual) = a > b.value
 Base.:<=(a::Real, b::NDual) = a <= b.value
 Base.:>=(a::Real, b::NDual) = a >= b.value
+Base.:<(a::NDual, b::Rational) = a.value < b
+Base.:<(a::Rational, b::NDual) = a < b.value
+Base.:<=(a::NDual, b::Rational) = a.value <= b
+Base.:<=(a::Rational, b::NDual) = a <= b.value
+Base.:<=(a::NDual, b::AbstractIrrational) = a.value <= b
+Base.:<=(a::AbstractIrrational, b::NDual) = a <= b.value
 Base.isnan(a::NDual) = isnan(a.value)
 Base.isinf(a::NDual) = isinf(a.value)
 Base.isfinite(a::NDual) = isfinite(a.value)
@@ -1092,18 +1134,11 @@ end
     )
 end
 
-for _op in (:floor, :ceil, :round, :trunc, :div, :fld, :cld, :mod, :rem, :gcd, :lcm)
-    @eval Base.$_op(::NDual, args...) = throw(NDualUnsupportedError($(QuoteNode(_op))))
-    @eval Base.$_op(::Type, ::NDual, args...) = throw(
-        NDualUnsupportedError($(QuoteNode(_op)))
-    )
-end
-
 # Keep the integer-conversion entrypoints explicit as well. These are the user-facing
 # typed rounding paths (`floor(Int, x)`, `round(Int, x)`, etc.) and should fail with the
 # same NDual-specific error instead of falling through to AbstractFloat methods.
 for _op in (:floor, :ceil, :round, :trunc)
-    @eval Base.$_op(::Type{I}, ::NDual, args...) where {I<:Integer} = throw(
+    @eval Base.$_op(::Type{I}, ::NDual{T,N}) where {I<:Union{Signed,Unsigned},T<:IEEEFloat,N} = throw(
         NDualUnsupportedError($(QuoteNode(_op)))
     )
 end
@@ -1118,10 +1153,41 @@ for _op in (:floor, :ceil, :trunc)
         return NDual{T,N}(Base.$_op(ndual_value(x)), ntuple(_ -> zero(T), Val(N)))
     end
 end
-@inline function Base.round(
-    x::NDual{T,N}, r::RoundingMode=RoundNearest
-) where {T<:IEEEFloat,N}
-    return NDual{T,N}(round(ndual_value(x), r), ntuple(_ -> zero(T), Val(N)))
+@inline Base.round(x::NDual{T,N}) where {T<:IEEEFloat,N} = NDual{T,N}(
+    round(ndual_value(x)), ntuple(_ -> zero(T), Val(N))
+)
+for _r in (
+    RoundNearest,
+    RoundNearestTiesAway,
+    RoundNearestTiesUp,
+    RoundToZero,
+    RoundFromZero,
+    RoundUp,
+    RoundDown,
+)
+    @eval @inline function Base.round(x::NDual{T,N}, ::typeof($_r)) where {T<:IEEEFloat,N}
+        return NDual{T,N}(round(ndual_value(x), $_r), ntuple(_ -> zero(T), Val(N)))
+    end
+    @eval @inline function Base.round(
+        ::Type{I}, x::NDual{T,N}, ::typeof($_r)
+    ) where {I<:Union{Signed,Unsigned},T<:IEEEFloat,N}
+        throw(NDualUnsupportedError(:round))
+    end
+end
+
+for _op in (:div, :fld, :cld, :mod, :gcd, :lcm)
+    @eval Base.$_op(x::NDual{T,N}) where {T<:IEEEFloat,N} = throw(
+        NDualUnsupportedError($(QuoteNode(_op)))
+    )
+    @eval Base.$_op(x::NDual{T,N}, y::Real) where {T<:IEEEFloat,N} = throw(
+        NDualUnsupportedError($(QuoteNode(_op)))
+    )
+    @eval Base.$_op(x::Real, y::NDual{T,N}) where {T<:IEEEFloat,N} = throw(
+        NDualUnsupportedError($(QuoteNode(_op)))
+    )
+    @eval Base.$_op(x::NDual{T,N}, y::NDual{S,M}) where {T<:IEEEFloat,S<:IEEEFloat,N,M} = throw(
+        NDualUnsupportedError($(QuoteNode(_op)))
+    )
 end
 
 # `rem(x, y)` has subgradient ∂x=1, ∂y=-floor(x/y) (a.e.). Defining the two-NDual
@@ -1260,7 +1326,7 @@ end
 # Symmetric are equivalent (conj is identity), so a single `copytri!` suffices.
 for _WrapType in (:Hermitian, :Symmetric)
     @eval function LinearAlgebra.cholesky(
-        A::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
+        A::LinearAlgebra.$_WrapType{NDual{T,N},<:StridedMatrix{NDual{T,N}}},
         (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
         check::Bool=true,
     ) where {T<:IEEEFloat,N}
@@ -1282,25 +1348,13 @@ for _WrapType in (:Symmetric, :Hermitian)
         # a more specific method that wins on both).
         function Base.:*(
             A::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
-            B::AbstractVecOrMat,
-        ) where {T<:IEEEFloat,N}
-            return Matrix(A) * B
-        end
-        function Base.:*(
-            A::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
-            B::AbstractMatrix,
+            B::Union{StridedVector,StridedMatrix},
         ) where {T<:IEEEFloat,N}
             return Matrix(A) * B
         end
 
         function Base.:*(
-            A::AbstractVecOrMat,
-            B::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
-        ) where {T<:IEEEFloat,N}
-            return A * Matrix(B)
-        end
-        function Base.:*(
-            A::AbstractMatrix,
+            A::Union{StridedVector,StridedMatrix},
             B::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
         ) where {T<:IEEEFloat,N}
             return A * Matrix(B)
@@ -1330,7 +1384,7 @@ end
 # types this is particularly costly: the noinline barrier defeats register-level
 # accumulation of all N partial slots simultaneously.  These inlineable overrides
 # replace the barrier with a simple sequential left-fold that LLVM can optimise.
-@inline function Base.mapreduce_impl(
+@inline function _ndual_mapreduce_impl(
     f::F, op::O, A::AbstractArray{<:NDual{T,N}}, ifirst::Integer, ilast::Integer
 ) where {F,O,T,N}
     ifirst > ilast && return Base.mapreduce_empty(f, op, eltype(A))
@@ -1339,6 +1393,22 @@ end
         acc = op(acc, f(A[i]))
     end
     return acc
+end
+
+@inline function Base.mapreduce_impl(
+    f::F, op::O, A::AbstractArray{<:NDual{T,N}}, ifirst::Integer, ilast::Integer
+) where {F,O,T,N}
+    return _ndual_mapreduce_impl(f, op, A, ifirst, ilast)
+end
+
+@inline function Base.mapreduce_impl(
+    f::F,
+    op::Union{typeof(max),typeof(min)},
+    A::AbstractArray{<:NDual{T,N}},
+    ifirst::Int,
+    ilast::Int,
+) where {F,T,N}
+    return _ndual_mapreduce_impl(f, op, A, ifirst, ilast)
 end
 
 # 6-arg form (blksize is unused; pairwise recursion is never beneficial for NDual).
