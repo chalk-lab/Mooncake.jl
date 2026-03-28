@@ -60,6 +60,21 @@ Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`
 function frule!! end
 
 """
+    chunk_frule!!(cache, input_primals, input_tangents, ::Val{N}; friendly_tangents=false)
+
+Internal batched forward-mode interface used by chunked `value_and_derivative!!` and the
+forward-mode gradient cache. Conceptually:
+- `value_and_derivative!!` calls `chunk_frule!!` when the user provides chunk tangents.
+- `value_and_gradient!!` seeds standard-basis chunk tangents internally, then repeatedly
+  calls `chunk_frule!!` and accumulates the lane contributions into gradient buffers.
+
+The generic implementation evaluates one lane at a time via ordinary `frule!!` / derived
+forward rules. Specialized backends, such as `nfwd`, may override this to evaluate all
+lanes in one pass.
+"""
+function chunk_frule!! end
+
+"""
     build_primitive_frule(sig::Type{<:Tuple})
 
 Construct an frule for signature `sig`. For this function to be called in `build_frule`, you
@@ -69,6 +84,13 @@ The callable returned by this must obey the frule interface, but there are no re
 on the type of callable itself. For example, you might return a callable `struct`. By
 default, this function returns `frule!!` so, most of the time, you should just implement a
 method of `frule!!`.
+
+Mooncake's AD transform constructs primitive forward rules via this builder. However,
+manual primitive call sites still exist in hand-written rules, tests, and docs, so direct
+methods of `frule!!` may still be needed even when `build_primitive_frule` is defined.
+Accordingly, when adding a new rule, it is still usually preferable to define `frule!!`
+directly and only overload `build_primitive_frule` when you specifically need
+construction-time work.
 
 See also [`build_primitive_rrule`](@ref) for the reverse-mode analogue of this function.
 
@@ -122,6 +144,13 @@ on the type of callable itself. For example, you might return a callable `struct
 default, this function returns `rrule!!` so, most of the time, you should just implement a
 method of `rrule!!`.
 
+Mooncake's AD transform constructs primitive reverse rules via this builder. However,
+manual primitive call sites still exist in hand-written rules, tests, and docs, so direct
+methods of `rrule!!` may still be needed even when `build_primitive_rrule` is defined.
+Accordingly, when adding a new rule, it is still usually preferable to define `rrule!!`
+directly and only overload `build_primitive_rrule` when you specifically need
+construction-time work.
+
 # Extended Help
 
 The purpose of this function is to permit computation at rule construction time, which can
@@ -164,6 +193,8 @@ include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
 include("interface.jl")
+include(joinpath("nfwd", "Nfwd.jl"))
+using .Nfwd: NDual
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))
