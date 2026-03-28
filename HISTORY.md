@@ -1,6 +1,11 @@
-# 0.5.26
+# 0.6
 
+- Add `nfwd`: a new N-wide forward-mode implementation built around `NDual`, with `Nfwd` / `NfwdMooncake` internals and broad tests for scalar, array, and rule-building paths.
+- Expand Mooncake's forward-mode interface and caching around `nfwd`, including prepared derivative/gradient cache improvements and lower-allocation hot paths for repeated calls.
+- Route a broader scalar-math set through nfwd-backed direct primitive `frule!!` / `rrule!!` wrappers, reducing dependence on imported ChainRules rules for these cases.
 - Move the ChainRules-backed matrix `exp` rule into `MooncakeChainRulesExt`, making `ChainRules` a weak dependency rather than a core dependency.
+- Add precompile workloads, including complex scalar reverse/forward-mode paths for `ComplexF64` and `ComplexF32`.
+- Improve docs for `nfwd`, including usage examples, interface notes, and clarification of nfwd/public-interface overheads.
 
 The `friendly_tangents=true` path previously converted every internal tangent to a value of the primal type via `tangent_to_primal!!`. This relied on `_copy_output` to pre-allocate a buffer and `tangent_to_primal_internal!!` to fill it on every call. Both steps proved problematic:
 

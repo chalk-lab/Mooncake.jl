@@ -251,11 +251,11 @@ end
 # @cenum (primitive) types are handled by the programmatic loop further below.
 function _register_cuda_opaque_types!()
     for (_cuda_opaque_t, _is_ptr) in [
-        # --- opaque C handle/descriptor Ptr types (CUBLAS) ---
+        # Opaque C handle/descriptor Ptr types (CUBLAS)
         (CUmemPoolHandle_st, true),
         (CUBLAS.cublasContext, true),
         (CUBLAS.cublasXtContext, true),
-        # --- opaque C handle/descriptor Ptr types (CUSPARSE) ---
+        # Opaque C handle/descriptor Ptr types (CUSPARSE)
         (CUSPARSE.cusparseContext, true),
         (CUSPARSE.cusparseMatDescr, true),
         (CUSPARSE.bsrsv2Info, true),
@@ -282,7 +282,7 @@ function _register_cuda_opaque_types!()
         (TaskLocalState, false),
         # CuContext wraps an opaque Ptr{Cvoid} to the CUDA context.
         (CuContext, false),
-        # --- opaque C handle/descriptor Ptr types (CUSOLVER) ---
+        # Opaque C handle/descriptor Ptr types (CUSOLVER)
         (CUSOLVER.syevjInfo_t, true),
         (CUSOLVER.gesvdjInfo_t, true),
         (CUSOLVER.cusolverDnIRSParams_t, true),
@@ -1837,7 +1837,7 @@ end
 
 # ===== GPU broadcasting rule (materialize-level, NDual-based forward pass) =====
 #
-# --- How it works ---
+# How it works
 #
 # Goal: given y = f.(x1, x2, ...) on CuArrays, compute both y and the gradient
 # dy/dx_i in a single GPU kernel pass.
