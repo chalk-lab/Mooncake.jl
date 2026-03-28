@@ -13,12 +13,31 @@ end
 
 (f::NfwdRRuleTestFunc)(x...) = f.f(x...)
 
+function nfwd_test_rule(
+    rng::AbstractRNG, chunk_size::Int, f, args...; perf_flag=:none, kwargs...
+)
+    nf = NfwdRRuleTestFunc{chunk_size,typeof(f)}(f)
+    return Mooncake.TestUtils.test_rule(
+        rng,
+        nf,
+        args...;
+        is_primitive=false,
+        perf_flag,
+        mode=Mooncake.ReverseMode,
+        kwargs...,
+    )
+end
+
 function Mooncake.build_rrule(
     f::NfwdRRuleTestFunc{N}, x...; debug_mode=false, silence_debug_messages=true
 ) where {N}
     return Mooncake.NfwdMooncake.build_rrule(
         f.f, x...; chunk_size=N, debug_mode, silence_debug_messages
     )
+end
+
+function _nfwd_primitive_rrule(sig::Type{<:Tuple}, chunk_size::Int)
+    Mooncake.NfwdMooncake.build_rrule(sig; chunk_size)
 end
 
 function steady_state_allocations_rrule(rule, fx::Tuple)
@@ -73,9 +92,7 @@ Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{
 }
 
 function Mooncake.build_primitive_rrule(::Type{<:Tuple{typeof(nfwd_safe_log),Float64}})
-    return Mooncake.NfwdMooncake.build_rrule(
-        Tuple{typeof(nfwd_safe_log),Float64}; chunk_size=1
-    )
+    return _nfwd_primitive_rrule(Tuple{typeof(nfwd_safe_log),Float64}, 1)
 end
 
 Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{
@@ -83,9 +100,7 @@ Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{
 }
 
 function Mooncake.build_primitive_rrule(::Type{<:Tuple{typeof(nfwd_safe_log_vec),Float64}})
-    return Mooncake.NfwdMooncake.build_rrule(
-        Tuple{typeof(nfwd_safe_log_vec),Float64}; chunk_size=1
-    )
+    return _nfwd_primitive_rrule(Tuple{typeof(nfwd_safe_log_vec),Float64}, 1)
 end
 
 Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{
@@ -95,9 +110,7 @@ Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{
 function Mooncake.build_primitive_rrule(
     ::Type{<:Tuple{typeof(vector_sum_sq),Vector{Float64}}}
 )
-    return Mooncake.NfwdMooncake.build_rrule(
-        Tuple{typeof(vector_sum_sq),Vector{Float64}}; chunk_size=4
-    )
+    return _nfwd_primitive_rrule(Tuple{typeof(vector_sum_sq),Vector{Float64}}, 4)
 end
 
 @testset "nfwd API" begin
@@ -383,16 +396,7 @@ end
         end
 
         @testset "test_rule integration" begin
-            nf = NfwdRRuleTestFunc{2,typeof(f)}(f)
-            Mooncake.TestUtils.test_rule(
-                Xoshiro(123),
-                nf,
-                x,
-                y;
-                is_primitive=false,
-                perf_flag=:none,
-                mode=Mooncake.ReverseMode,
-            )
+            nfwd_test_rule(Xoshiro(123), 2, f, x, y)
         end
     end
 
@@ -690,10 +694,7 @@ end
         (logit1mexp, -0.6),
     ]
     @testset "$f" for (f, x) in scalar1_cases
-        nf = NfwdRRuleTestFunc{1,typeof(f)}(f)
-        Mooncake.TestUtils.test_rule(
-            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
-        )
+        nfwd_test_rule(rng, 1, f, x)
     end
 
     scalar2_cases = Any[
@@ -705,10 +706,7 @@ end
         (logsubexp, -0.5, -5.0),
     ]
     @testset "$f($a, $b)" for (f, a, b) in scalar2_cases
-        nf = NfwdRRuleTestFunc{2,typeof(f)}(f)
-        Mooncake.TestUtils.test_rule(
-            rng, nf, a, b; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
-        )
+        nfwd_test_rule(rng, 2, f, a, b)
     end
 
     @testset "logsumexp($desc)" for (desc, x) in [
@@ -717,10 +715,7 @@ end
         ("view", view(randn(rng, 5), 1:4)),
         ("[1.0,1.0]", [1.0, 1.0]),   # equal-input edge case, see #881
     ]
-        nf = NfwdRRuleTestFunc{8,typeof(logsumexp)}(logsumexp)
-        Mooncake.TestUtils.test_rule(
-            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
-        )
+        nfwd_test_rule(rng, 8, logsumexp, x)
     end
 
     # Float32 — verify LogExpFunctions' precision-generic branches work
@@ -730,22 +725,10 @@ end
         (log1pexp, Float32(0.1)),
         (logcosh, Float32(1.5)),
     ]
-        nf = NfwdRRuleTestFunc{1,typeof(f)}(f)
-        Mooncake.TestUtils.test_rule(
-            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
-        )
+        nfwd_test_rule(rng, 1, f, x)
     end
     @testset "logaddexp (Float32)" begin
-        nf = NfwdRRuleTestFunc{2,typeof(logaddexp)}(logaddexp)
-        Mooncake.TestUtils.test_rule(
-            rng,
-            nf,
-            -Float32(0.5),
-            Float32(0.4);
-            is_primitive=false,
-            perf_flag=:none,
-            mode=Mooncake.ReverseMode,
-        )
+        nfwd_test_rule(rng, 2, logaddexp, -Float32(0.5), Float32(0.4))
     end
 end
 
@@ -763,10 +746,7 @@ end
         ("sum_linsolve", _nfw_sum_linsolve, randn(rng, 5), 5),
         ("sum_matmat", _nfw_sum_matmat, randn(rng, 25), 8),
     ]
-        nf = NfwdRRuleTestFunc{C,typeof(f)}(f)
-        Mooncake.TestUtils.test_rule(
-            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
-        )
+        nfwd_test_rule(rng, C, f, x)
     end
 end
 
@@ -788,10 +768,7 @@ end
         ("sum_view", _nfw_sum_view, randn(rng, 10), 5),
         ("sum_getindex", _nfw_sum_getindex, randn(rng, 10), 5),
     ]
-        nf = NfwdRRuleTestFunc{C,typeof(f)}(f)
-        Mooncake.TestUtils.test_rule(
-            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
-        )
+        nfwd_test_rule(rng, C, f, x)
     end
 end
 
@@ -820,9 +797,6 @@ end
         ("push_sum", _nfw_push_sum, randn(rng, 5), 5),
         ("lse_bang_sum", _nfw_lse_bang_sum, randn(rng, 20), 5),
     ]
-        nf = NfwdRRuleTestFunc{C,typeof(f)}(f)
-        Mooncake.TestUtils.test_rule(
-            rng, nf, x; is_primitive=false, perf_flag=:none, mode=Mooncake.ReverseMode
-        )
+        nfwd_test_rule(rng, C, f, x)
     end
 end

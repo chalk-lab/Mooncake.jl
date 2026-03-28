@@ -401,6 +401,15 @@ end
 
 Run the cached `nfwd` reverse rule after validating cache specs and zeroing the cached
 input tangents.
+
+!!! note "Interface overhead"
+    `value_and_gradient!!` is a more general cached interface than invoking the
+    underlying `NfwdMooncake` rule directly. It still performs cache-spec checks,
+    zeroes cached tangents, and rebuilds the corresponding `CoDual` inputs on each
+    call. For tight benchmarks on supported nfwd signatures over `IEEEFloat` /
+    `Complex{<:IEEEFloat}` scalars, dense arrays with those element types, and tuples
+    thereof, calling `NfwdMooncake.build_rrule(...)(...)` directly avoids part of this
+    interface and cache-management overhead.
 """
 function value_and_gradient!!(
     cache::Cache,

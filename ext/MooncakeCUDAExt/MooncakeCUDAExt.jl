@@ -79,7 +79,6 @@ import Mooncake:
     nan_tangent_guard,
     NDual,
     Nfwd
-import Mooncake.NfwdMooncake: _nfwd_real_dot
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
@@ -2171,6 +2170,7 @@ end
     end
 end
 @inline _gpu_bcast_leaves_args(::Tuple{}, ::Tuple{}) = ((), ())
+@inline _gpu_bcast_leaves_args(args::Tuple, ::Tuple{}) = _gpu_bcast_leaves_nots(args)
 @inline function _gpu_bcast_leaves_args(args::Tuple, tds::Tuple)
     a1 = first(args)
     td1 = first(tds)
@@ -2317,6 +2317,10 @@ end
 # gradients are returned in a Vector that the caller uses to build r_bc via
 # _gpu_fill_scalar_rdata.
 #
+# Keep the contraction inline here rather than reusing `_nfwd_real_dot`: these
+# GPU pullbacks need mixed-precision support (e.g. Float64 cotangent against
+# Float32 partials) and CUDA-friendly codegen for complex broadcasts.
+#
 # Returns r_bc (the Broadcasted rdata), or zero_rdata(bc_primal) if no scalars.
 function _gpu_accum_pullback!(
     flat_pargs,
@@ -2334,7 +2338,7 @@ function _gpu_accum_pullback!(
         meta = _gpu_leaf_slot_meta(pa, offset)
         if meta.dof == 1
             contrib = broadcast(
-                (p, d) -> _nfwd_real_dot(d, p), partial_slots[meta.slot1], dy_out
+                (p, d) -> real(conj(d) * p), partial_slots[meta.slot1], dy_out
             )
             if meta.is_scalar
                 (scalar_grads::Vector{Any})[scalar_index] = sum(contrib)
@@ -2344,7 +2348,7 @@ function _gpu_accum_pullback!(
             end
         elseif meta.dof == 2
             contrib = broadcast(
-                (p1, p2, d) -> complex(_nfwd_real_dot(d, p1), _nfwd_real_dot(d, p2)),
+                (p1, p2, d) -> complex(real(conj(d) * p1), real(conj(d) * p2)),
                 partial_slots[meta.slot1],
                 partial_slots[meta.slot2],
                 dy_out,
@@ -2370,11 +2374,12 @@ function _gpu_accumulate_reduced_pullback!(flat_pargs, flat_fdatas, partial_slot
     for (pa, fd) in zip(flat_pargs, flat_fdatas)
         meta = _gpu_leaf_slot_meta(pa, offset)
         if meta.dof == 1
-            contrib = broadcast(p -> _nfwd_real_dot(dy, p), partial_slots[meta.slot1])
+            contrib = broadcast(p -> real(conj(dy) * p), partial_slots[meta.slot1])
             _leaf_accum_fdata!(pa, fd, contrib)
         elseif meta.dof == 2
+            cdy = conj(dy)
             contrib = broadcast(
-                (p1, p2) -> complex(_nfwd_real_dot(dy, p1), _nfwd_real_dot(dy, p2)),
+                (p1, p2) -> complex(real(cdy * p1), real(cdy * p2)),
                 partial_slots[meta.slot1],
                 partial_slots[meta.slot2],
             )

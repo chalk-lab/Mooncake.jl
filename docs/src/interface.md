@@ -73,6 +73,14 @@ fcache = MC.prepare_derivative_cache(g, x_eval)
 val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 ```
 
+When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
+higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as
+custom structs, to the scalar/array/tuple nfwd signatures used internally, and it also
+does the usual cache checks and tangent zeroing. That extra interface work adds some
+overhead relative to calling `NfwdMooncake.build_rrule(...)(...)` directly on a supported
+nfwd signature over `IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those
+element types, and tuples thereof.
+
 ## API Reference
 
 ```@docs; canonical=true

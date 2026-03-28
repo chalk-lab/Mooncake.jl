@@ -153,6 +153,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # scalar variable in a broadcast — gradient w.r.t. both x (CuArray) and c (scalar)
         _bcast_scalar_mul(x, c) = sum(c .* x)
         _bcast_scalar_add(x, c) = sum(x .+ c)
+        _bcast_sum_abs2(x) = sum(abs2.(x))  # regression for mixed-precision reduced pullback
         _bcast_cx_scalar_mul(x, c) = real(sum(c .* x))     # real scalar, complex array
         _bcast_cx_cx_scalar_mul(x, c) = real(sum(c .* x))  # complex scalar, complex array
         # adjoint of a CuVector times a CuMatrix — dispatches through generic_matmatmul!
@@ -332,6 +333,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # 2D broadcast inputs — exercises _unbroadcast and reshape paths
             (false, :none, false, _bcast_sum_sin, _rand(rng, 8, 4)),
             (false, :none, false, _bcast_sum_exp, _rand(rng, 8, 4)),
+            (false, :none, false, _bcast_sum_abs2, _rand(rng, Float32, 16)),
             # sum(f, ::CuFloatArray) — Float32 variant
             (false, :none, false, _sum_f_sin, _rand(rng, Float32, 16)),
             # sum(f, ::CuComplexArray) — 2-wide Duals, f:ℂ→ℝ and f:ℂ→ℂ
