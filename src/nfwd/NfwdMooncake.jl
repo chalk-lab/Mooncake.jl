@@ -91,6 +91,20 @@ import ..Mooncake:
 # High-level rule/cache objects first. The implementation details they rely on are defined
 # in later sections.
 
+"""
+    Cache
+
+Cache returned by [`prepare_cache`](@ref). It owns the prepared `nfwd` forward/reverse
+rules, runtime input signatures, and reusable zero tangents used by cached calls through
+the Mooncake-facing `value_and_derivative!!` / `value_and_gradient!!` interface.
+"""
+struct Cache{RF,RR,S<:Tuple,TT<:Tuple}
+    frule::RF
+    rrule::RR
+    sigs::S
+    tangents::TT
+end
+
 @inline function _try_chunk_frule_nfwd(
     cache::ForwardCache, input_primals::Tuple, input_tangents::Tuple, ::Val{N}
 ) where {N}
@@ -210,6 +224,21 @@ signatures containing arrays the preferred width is used directly.
     but always throws when `true`; nfwd-specific debug checks are not yet implemented.
     Mooncake's outer debug wrapper still validates CoDual inputs/outputs when the rule is
     invoked inside a debug-mode rrule.
+
+## Example
+
+```julia
+julia> using Mooncake
+
+julia> frule = Mooncake.NfwdMooncake.build_frule(
+           Tuple{typeof(sum), Vector{Float64}}; chunk_size=1
+       );
+
+julia> x = [1.0, 2.0, 3.0];
+
+julia> frule(Mooncake.Dual(sum, Mooncake.NoTangent()), Mooncake.Dual(x, ones(3)))
+Mooncake.Dual(6.0, 3.0)
+```
 """
 function build_frule(
     sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
@@ -280,6 +309,32 @@ signatures containing arrays the preferred width is used directly.
     but always throws when `true`; nfwd-specific debug checks are not yet implemented.
     Mooncake's outer debug wrapper still validates CoDual inputs/outputs when the rule is
     invoked inside a debug-mode rrule.
+
+## Example
+
+```julia
+julia> using Mooncake
+
+julia> f(x) = sum(abs2, x)
+f (generic function with 1 method)
+
+julia> rrule = Mooncake.NfwdMooncake.build_rrule(
+           Tuple{typeof(f), Vector{Float64}}; chunk_size=1
+       );
+
+julia> x = [1.0, 2.0, 3.0];
+
+julia> y, pb!! = rrule(
+           Mooncake.CoDual(f, Mooncake.NoFData()),
+           Mooncake.CoDual(x, zeros(3)),
+       );
+
+julia> Mooncake.primal(y)
+14.0
+
+julia> pb!!(1.0)
+(Mooncake.NoRData(), [2.0, 4.0, 6.0])
+```
 """
 function build_rrule(
     sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true

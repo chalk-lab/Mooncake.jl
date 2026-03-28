@@ -1,3 +1,61 @@
+"""
+    Nfwd
+
+Low-level N-wide dual arithmetic used by Mooncake's `nfwd` machinery.
+
+## High-level examples
+
+Construct an `NDual` directly and inspect its primal value and partials:
+
+```julia
+julia> d = NDual{Float64,2}(1.5, (1.0, 0.0))
+NDual{Float64, 2}(1.5, (1.0, 0.0))
+
+julia> ndual_value(d)
+1.5
+
+julia> ndual_partial(d, 1)
+1.0
+```
+
+Propagate multiple directions through ordinary scalar code in one pass:
+
+```julia
+julia> x = NDual{Float64,2}(2.0, (1.0, 0.0));  # seed dx
+
+julia> y = NDual{Float64,2}(3.0, (0.0, 1.0));  # seed dy
+
+julia> z = x * y + sin(x);
+
+julia> ndual_value(z)
+6.909297426825682
+
+julia> ndual_partials(z)  # (dz/dx, dz/dy)
+(2.5838531634528574, 2.0)
+```
+
+Use `NDual` arrays with reductions such as `sum(abs2, xs)`:
+
+```julia
+julia> xs = [
+           NDual{Float64,2}(1.0, (1.0, 0.0)),
+           NDual{Float64,2}(2.0, (0.0, 1.0)),
+       ];
+
+julia> y = sum(abs2, xs);
+
+julia> ndual_value(y)
+5.0
+
+julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
+(2.0, 4.0)
+```
+
+For Mooncake-interface rule construction on concrete signatures, see
+`Mooncake.NfwdMooncake.build_frule` and `Mooncake.NfwdMooncake.build_rrule`.
+`Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; `NfwdMooncake`
+packages that machinery into Mooncake's `Dual` / `CoDual` rule interface.
+"""
 module Nfwd
 
 using Base: IEEEFloat
@@ -10,7 +68,6 @@ export NDual,
     ndual_partials,
     Rule,
     RRule,
-    Cache,
     rule_chunk_size,
     UnsupportedError,
     UnsupportedInputError,
@@ -1479,19 +1536,6 @@ one full function evaluation per gradient call.
 struct RRule{sig,N,Tbuf<:Base.RefValue,scalar_out,Tgbuf<:Base.RefValue}
     buf::Tbuf
     grad_buf::Tgbuf
-end
-
-"""
-    Cache
-
-Cache returned by [`prepare_cache`](@ref). It owns the forward/reverse rules,
-runtime input signatures, and reusable zero tangents used by cached `nfwd` calls.
-"""
-struct Cache{RF,RR,S<:Tuple,TT<:Tuple}
-    frule::RF
-    rrule::RR
-    sigs::S
-    tangents::TT
 end
 
 # Infer at rule-build time whether `sig` has a scalar IEEEFloat output.
