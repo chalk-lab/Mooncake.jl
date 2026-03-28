@@ -697,13 +697,13 @@ end
 
 # besselix(ν, x) = besseli(ν, x) * exp(-|x|)  (exponentially scaled).
 # VonMises stores besselix(0, κ) in the constructor, making this the hot path.
-# d/dx besselix(ν,x) = (besselix(ν-1,x)+besselix(ν+1,x))/2 - besselix(ν,x)  (x>0)
+# d/dx besselix(ν,x) = (besselix(ν-1,x)+besselix(ν+1,x))/2 - sign(x) * besselix(ν,x)
 @inline function SpecialFunctions.besselix(ν::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
     νv, v = _bessel_nu(ν), x.value
     yv = SpecialFunctions.besselix(νv, v)
     dv =
         (SpecialFunctions.besselix(νv - 1, v) + SpecialFunctions.besselix(νv + 1, v)) / 2 -
-        yv
+        sign(v) * yv
     return NDual{T,N}(yv, ntuple(k -> dv * x.partials[k], Val(N)))
 end
 

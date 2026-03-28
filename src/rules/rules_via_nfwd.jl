@@ -25,9 +25,58 @@
 #     clamp(x, lo, hi) (scalar output, DOF=3)
 #
 
-macro nfwd_unary_scalar_primitive(fn)
-    f = esc(fn)
-    return quote
+# ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
+for f in (
+    exp,
+    exp2,
+    exp10,
+    expm1,
+    sin,
+    cos,
+    tan,
+    sec,
+    csc,
+    cot,
+    sind,
+    cosd,
+    tand,
+    secd,
+    cscd,
+    cotd,
+    sinpi,
+    asin,
+    acos,
+    atan,
+    asec,
+    acsc,
+    acot,
+    asind,
+    acosd,
+    atand,
+    asecd,
+    acscd,
+    acotd,
+    sinh,
+    cosh,
+    tanh,
+    sech,
+    csch,
+    coth,
+    asinh,
+    acosh,
+    atanh,
+    asech,
+    acsch,
+    acoth,
+    sinc,
+    deg2rad,
+    rad2deg,
+    Base.FastMath.exp_fast,
+    Base.FastMath.exp2_fast,
+    Base.FastMath.exp10_fast,
+    Base.FastMath.sincos,
+)
+    @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
         function frule!!(fdual::Dual{typeof($f)}, x::Dual{P}) where {P<:IEEEFloat}
             return NfwdMooncake.Rule{Tuple{typeof($f),P},1}()(fdual, x)
@@ -37,57 +86,6 @@ macro nfwd_unary_scalar_primitive(fn)
         end
     end
 end
-
-# ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
-
-@nfwd_unary_scalar_primitive exp
-@nfwd_unary_scalar_primitive exp2
-@nfwd_unary_scalar_primitive exp10
-@nfwd_unary_scalar_primitive expm1
-@nfwd_unary_scalar_primitive sin
-@nfwd_unary_scalar_primitive cos
-@nfwd_unary_scalar_primitive tan
-@nfwd_unary_scalar_primitive sec
-@nfwd_unary_scalar_primitive csc
-@nfwd_unary_scalar_primitive cot
-@nfwd_unary_scalar_primitive sind
-@nfwd_unary_scalar_primitive cosd
-@nfwd_unary_scalar_primitive tand
-@nfwd_unary_scalar_primitive secd
-@nfwd_unary_scalar_primitive cscd
-@nfwd_unary_scalar_primitive cotd
-@nfwd_unary_scalar_primitive sinpi
-@nfwd_unary_scalar_primitive asin
-@nfwd_unary_scalar_primitive acos
-@nfwd_unary_scalar_primitive atan
-@nfwd_unary_scalar_primitive asec
-@nfwd_unary_scalar_primitive acsc
-@nfwd_unary_scalar_primitive acot
-@nfwd_unary_scalar_primitive asind
-@nfwd_unary_scalar_primitive acosd
-@nfwd_unary_scalar_primitive atand
-@nfwd_unary_scalar_primitive asecd
-@nfwd_unary_scalar_primitive acscd
-@nfwd_unary_scalar_primitive acotd
-@nfwd_unary_scalar_primitive sinh
-@nfwd_unary_scalar_primitive cosh
-@nfwd_unary_scalar_primitive tanh
-@nfwd_unary_scalar_primitive sech
-@nfwd_unary_scalar_primitive csch
-@nfwd_unary_scalar_primitive coth
-@nfwd_unary_scalar_primitive asinh
-@nfwd_unary_scalar_primitive acosh
-@nfwd_unary_scalar_primitive atanh
-@nfwd_unary_scalar_primitive asech
-@nfwd_unary_scalar_primitive acsch
-@nfwd_unary_scalar_primitive acoth
-@nfwd_unary_scalar_primitive sinc
-@nfwd_unary_scalar_primitive deg2rad
-@nfwd_unary_scalar_primitive rad2deg
-@nfwd_unary_scalar_primitive Base.FastMath.exp_fast
-@nfwd_unary_scalar_primitive Base.FastMath.exp2_fast
-@nfwd_unary_scalar_primitive Base.FastMath.exp10_fast
-@nfwd_unary_scalar_primitive Base.FastMath.sincos
 
 # ── tanpi ─────────────────────────────────────────────────────────────────────
 

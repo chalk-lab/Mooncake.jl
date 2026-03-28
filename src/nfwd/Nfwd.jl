@@ -1541,10 +1541,9 @@ end
 # Backward-compatible zero-arg constructor used by primitive rules in
 # rules_via_nfwd.jl.
 function RRule{sig,N}() where {sig,N}
-    buf = _nfwd_buf_ref(sig, Val(N))
-    grad_buf = _nfwd_grad_buf_ref(sig)
-    scalar_out = _nfwd_infer_scalar_output(sig)
-    return RRule{sig,N,typeof(buf),scalar_out,typeof(grad_buf)}(buf, grad_buf)
+    buf = Ref{Any}(nothing)
+    grad_buf = Ref{Any}(nothing)
+    return RRule{sig,N,typeof(buf),false,typeof(grad_buf)}(buf, grad_buf)
 end
 
 # Infer at rule-build time whether `sig` has a scalar IEEEFloat output.

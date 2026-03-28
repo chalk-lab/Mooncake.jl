@@ -1,5 +1,7 @@
 # 0.5.26
 
+- Move the ChainRules-backed matrix `exp` rule into `MooncakeChainRulesExt`, making `ChainRules` a weak dependency rather than a core dependency.
+
 The `friendly_tangents=true` path previously converted every internal tangent to a value of the primal type via `tangent_to_primal!!`. This relied on `_copy_output` to pre-allocate a buffer and `tangent_to_primal_internal!!` to fill it on every call. Both steps proved problematic:
 
 - `_copy_output` is best-effort and not guaranteed correct for all types — [#1084](https://github.com/chalk-lab/Mooncake.jl/issues/1084) shows a recent silent failure

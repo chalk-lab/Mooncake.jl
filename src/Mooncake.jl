@@ -2,7 +2,7 @@ module Mooncake
 
 const CC = Core.Compiler
 
-using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
+using ADTypes, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
@@ -84,6 +84,13 @@ on the type of callable itself. For example, you might return a callable `struct
 default, this function returns `frule!!` so, most of the time, you should just implement a
 method of `frule!!`.
 
+Mooncake's AD transform constructs primitive forward rules via this builder. However,
+manual primitive call sites still exist in hand-written rules, tests, and docs, so direct
+methods of `frule!!` may still be needed even when `build_primitive_frule` is defined.
+Accordingly, when adding a new rule, it is still usually preferable to define `frule!!`
+directly and only overload `build_primitive_frule` when you specifically need
+construction-time work.
+
 See also [`build_primitive_rrule`](@ref) for the reverse-mode analogue of this function.
 
 # Extended Help
@@ -135,6 +142,13 @@ The callable returned by this must obey the rrule interface, but there are no re
 on the type of callable itself. For example, you might return a callable `struct`. By
 default, this function returns `rrule!!` so, most of the time, you should just implement a
 method of `rrule!!`.
+
+Mooncake's AD transform constructs primitive reverse rules via this builder. However,
+manual primitive call sites still exist in hand-written rules, tests, and docs, so direct
+methods of `rrule!!` may still be needed even when `build_primitive_rrule` is defined.
+Accordingly, when adding a new rule, it is still usually preferable to define `rrule!!`
+directly and only overload `build_primitive_rrule` when you specifically need
+construction-time work.
 
 # Extended Help
 
