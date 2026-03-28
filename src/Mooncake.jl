@@ -2,7 +2,8 @@ module Mooncake
 
 const CC = Core.Compiler
 
-using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
+using ADTypes, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
+using ChainRules
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
