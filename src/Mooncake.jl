@@ -3,7 +3,6 @@ module Mooncake
 const CC = Core.Compiler
 
 using ADTypes, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
-using ChainRules
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
@@ -222,6 +221,7 @@ else
 end
 
 include(joinpath("rules", "performance_patches.jl"))
+include(joinpath("rules", "rules_via_nfwd.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")

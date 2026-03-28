@@ -5,7 +5,6 @@ version = "0.5.24"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
-ChainRules = "082447d4-558c-5d27-93f4-14fc19e9eca2"
 ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
 DispatchDoctor = "8d63f2c5-f18a-4cf2-ba9d-b3f60fc568c8"
 ExprTools = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
@@ -19,6 +18,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 [weakdeps]
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
 BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
+ChainRules = "082447d4-558c-5d27-93f4-14fc19e9eca2"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
