@@ -24,58 +24,108 @@
 #   quite hard to parse.
 #
 # There were essentially no remaining advantages to using an @eval-loop to import rules
-# from DiffRules, so this file now imports them from ChainRules.jl.
+# from DiffRules, so this file now defines the remaining scalar rules directly.
 
-@from_chainrules MinimalCtx Tuple{typeof(exp),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(exp2),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(exp10),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(expm1),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(sin),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(cos),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(tan),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(sec),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(csc),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(cot),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(sind),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(cosd),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(tand),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(secd),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(cscd),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(cotd),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(sinpi),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(asin),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(acos),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(atan),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(asec),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(acsc),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(acot),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(asind),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(acosd),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(atand),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(asecd),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(acscd),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(acotd),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(sinh),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(cosh),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(tanh),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(sech),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(csch),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(coth),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(asinh),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(acosh),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(atanh),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(asech),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(acsch),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(acoth),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(sinc),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(deg2rad),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(rad2deg),IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
+# Unary scalar smooth rules and `atan(y, x)` now route through `nfwd` in
+# `rules_via_nfwd.jl`.
+@zero_derivative MinimalCtx Tuple{typeof(log),Int}
 
-@from_chainrules MinimalCtx Tuple{typeof(atan),P,P} where {P<:IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(max),P,P} where {P<:IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(min),P,P} where {P<:IEEEFloat}
-@from_chainrules MinimalCtx Tuple{typeof(mod),P,P} where {P<:IEEEFloat}
+@inline _pow_grad_x(x, p, y) = p * y / x
+@inline function _pow_grad_x(x::P, p::P, y) where {P<:IEEEFloat}
+    return if !iszero(x) || p < zero(P)
+        p * y / x
+    elseif isone(p)
+        one(y)
+    elseif iszero(p) || p > one(P)
+        zero(y)
+    else
+        oftype(y, Inf)
+    end
+end
+
+@inline _pow_grad_p(x, p, y) = y * log(complex(x))
+@inline function _pow_grad_p(x::P, p::P, y) where {P<:IEEEFloat}
+    return if !iszero(x)
+        y * real(log(complex(x)))
+    elseif p > zero(P)
+        zero(y)
+    else
+        oftype(y, NaN)
+    end
+end
+
+@is_primitive MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(^)}, x::Dual{P}, p::Dual{P}) where {P<:IEEEFloat}
+    _x, dx = extract(x)
+    _p, dp = extract(p)
+    y = _x^_p
+    dy_x = _pow_grad_x(_x, _p, float(y)) * dx
+    if iszero(dp)
+        return Dual(y, dy_x)
+    end
+    dy_p = _pow_grad_p(_x, _p, float(y)) * dp
+    return Dual(y, dy_x + dy_p)
+end
+function rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, p::CoDual{P}) where {P<:IEEEFloat}
+    y = primal(x)^primal(p)
+    function pow_pb!!(dy::P)
+        return (
+            NoRData(),
+            _pow_grad_x(primal(x), primal(p), float(y)) * dy,
+            _pow_grad_p(primal(x), primal(p), float(y)) * dy,
+        )
+    end
+    return zero_fcodual(y), pow_pb!!
+end
+
+@is_primitive MinimalCtx Tuple{typeof(max),P,P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(max)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFloat}
+    gt = primal(x) > primal(y)
+    return Dual(max(primal(x), primal(y)), ifelse(gt, tangent(x), tangent(y)))
+end
+function rrule!!(::CoDual{typeof(max)}, x::CoDual{P}, y::CoDual{P}) where {P<:IEEEFloat}
+    gt = primal(x) > primal(y)
+    function max_pb!!(dz::P)
+        z = zero(dz)
+        return NoRData(), ifelse(gt, dz, z), ifelse(gt, z, dz)
+    end
+    return zero_fcodual(max(primal(x), primal(y))), max_pb!!
+end
+
+@is_primitive MinimalCtx Tuple{typeof(min),P,P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(min)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFloat}
+    gt = primal(x) > primal(y)
+    return Dual(min(primal(x), primal(y)), ifelse(gt, tangent(y), tangent(x)))
+end
+function rrule!!(::CoDual{typeof(min)}, x::CoDual{P}, y::CoDual{P}) where {P<:IEEEFloat}
+    gt = primal(x) > primal(y)
+    function min_pb!!(dz::P)
+        z = zero(dz)
+        return NoRData(), ifelse(gt, z, dz), ifelse(gt, dz, z)
+    end
+    return zero_fcodual(min(primal(x), primal(y))), min_pb!!
+end
+
+@inline function _mod_grad_coeffs(x::P, y::P) where {P<:IEEEFloat}
+    u = x / y
+    nan = oftype(u, NaN)
+    isint = isinteger(u)
+    return ifelse(isint, nan, one(u)), ifelse(isint, nan, -floor(u))
+end
+
+@is_primitive MinimalCtx Tuple{typeof(mod),P,P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(mod)}, x::Dual{P}, y::Dual{P}) where {P<:IEEEFloat}
+    dx_coeff, dy_coeff = _mod_grad_coeffs(primal(x), primal(y))
+    return Dual(mod(primal(x), primal(y)), dx_coeff * tangent(x) + dy_coeff * tangent(y))
+end
+function rrule!!(::CoDual{typeof(mod)}, x::CoDual{P}, y::CoDual{P}) where {P<:IEEEFloat}
+    z = mod(primal(x), primal(y))
+    function mod_pb!!(dz::P)
+        dx_coeff, dy_coeff = _mod_grad_coeffs(primal(x), primal(y))
+        return NoRData(), dx_coeff * dz, dy_coeff * dz
+    end
+    return zero_fcodual(z), mod_pb!!
+end
 
 @is_primitive MinimalCtx Tuple{typeof(mod2pi),IEEEFloat}
 function frule!!(::Dual{typeof(mod2pi)}, x::Dual{P}) where {P<:IEEEFloat}

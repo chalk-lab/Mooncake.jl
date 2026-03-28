@@ -1509,7 +1509,7 @@ struct Rule{sig,N,Tbuf<:Base.RefValue}
 end
 
 # Backward-compatible zero-arg constructor used by primitive rules in
-# rule_via_nfwd_patches.jl.
+# rules_via_nfwd.jl.
 function Rule{sig,N}() where {sig,N}
     Rule{sig,N,Base.RefValue{Any}}(Ref{Any}(nothing))
 end
@@ -1536,6 +1536,15 @@ one full function evaluation per gradient call.
 struct RRule{sig,N,Tbuf<:Base.RefValue,scalar_out,Tgbuf<:Base.RefValue}
     buf::Tbuf
     grad_buf::Tgbuf
+end
+
+# Backward-compatible zero-arg constructor used by primitive rules in
+# rules_via_nfwd.jl.
+function RRule{sig,N}() where {sig,N}
+    buf = _nfwd_buf_ref(sig, Val(N))
+    grad_buf = _nfwd_grad_buf_ref(sig)
+    scalar_out = _nfwd_infer_scalar_output(sig)
+    return RRule{sig,N,typeof(buf),scalar_out,typeof(grad_buf)}(buf, grad_buf)
 end
 
 # Infer at rule-build time whether `sig` has a scalar IEEEFloat output.

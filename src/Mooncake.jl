@@ -207,7 +207,7 @@ else
 end
 
 include(joinpath("rules", "performance_patches.jl"))
-include(joinpath("rules", "rule_via_nfwd_patches.jl"))
+include(joinpath("rules", "rules_via_nfwd.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")
