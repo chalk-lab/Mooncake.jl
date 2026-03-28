@@ -64,12 +64,30 @@ val, grad = MC.value_and_gradient!!(
 Aside: Any performance impact from using `friendly_tangents = true` should be very minor.
 If it is noticeable, something is likely wrong—please open an issue.
 
+If you want to use forward mode explicitly, the cache from `prepare_derivative_cache` can now
+also drive `value_and_gradient!!` for scalar outputs. Mooncake seeds standard-basis directions
+internally and evaluates them in chunks:
+
+```@example interface
+fcache = MC.prepare_derivative_cache(g, x_eval)
+val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
+```
+
+When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
+higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as
+custom structs, to the scalar/array/tuple nfwd signatures used internally, and it also
+does the usual cache checks and tangent zeroing. That extra interface work adds some
+overhead relative to calling `NfwdMooncake.build_rrule(...)(...)` directly on a supported
+nfwd signature over `IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those
+element types, and tuples thereof.
+
 ## API Reference
 
 ```@docs; canonical=true
 Mooncake.Config
 Mooncake.value_and_derivative!!
 Mooncake.value_and_gradient!!(::Mooncake.Cache, f::F, x::Vararg{Any, N}) where {F, N}
+Mooncake.value_and_gradient!!(::Mooncake.ForwardCache, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.value_and_pullback!!(::Mooncake.Cache, ȳ, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.prepare_derivative_cache
 Mooncake.prepare_gradient_cache
