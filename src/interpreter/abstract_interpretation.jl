@@ -136,18 +136,8 @@ function Core.Compiler.abstract_call_gf_by_type(
     sv::CC.AbsIntState,
     max_methods::Int,
 ) where {C,M}
-
-    # invoke the default abstract call to get the default CC.CallMeta.
-    ret = @invoke CC.abstract_call_gf_by_type(
-        interp::CC.AbstractInterpreter,
-        f::Any,
-        arginfo::CC.ArgInfo,
-        si::CC.StmtInfo,
-        atype::Any,
-        sv::CC.AbsIntState,
-        max_methods::Int,
-    )
     argtypes = arginfo.argtypes
+    # Pure method table lookup - no body recursion, always cheap.
     if VERSION < v"1.12-"
         𝕃ᵢ = Core.Compiler.typeinf_lattice(interp)
         matches = Core.Compiler.find_matching_methods(
@@ -163,9 +153,18 @@ function Core.Compiler.abstract_call_gf_by_type(
     end
     if !isa(matches, Core.Compiler.FailedMethodMatch)
         (; valid_worlds, applicable) = matches
-        # For all applicable method matches, we need to check if any of them could hit a primitive
+        # Check primitives before doing any inference. By checking primitives
+        # first, we avoid unnecessary recursion.
         any_prim = any_matches_primitive(applicable, C, M, interp.world)
         if any_prim
+            # Use NativeInterpreter instead of MooncakeInterpreter to infer the primitive call.
+            # NativeInterpreter does not repass MooncakeInterpreter into inner calls, so
+            # recursion into the primitive's body is bounded and terminates. We still get the
+            # correct return type, exception type, and effects from full inference.
+            native_interp = CC.NativeInterpreter(interp.world)
+            ret = CC.abstract_call_gf_by_type(
+                native_interp, f, arginfo, si, atype, sv, max_methods
+            )
             @static if VERSION < v"1.12-"
                 call = ret::CC.CallMeta
                 # Keep primitives in caller IR by blocking const-folding and inlining
@@ -181,7 +180,17 @@ function Core.Compiler.abstract_call_gf_by_type(
             end
         end
     end
-    ret
+    # Not a primitives method's IR hence, need to recurse with MooncakeInterpreter. Inner calls will fire
+    # this Mooncake abstract_call_gf_by_type dispatch again, so any primitive encountered deeper in the call tree is also caught.
+    @invoke CC.abstract_call_gf_by_type(
+        interp::CC.AbstractInterpreter,
+        f::Any,
+        arginfo::CC.ArgInfo,
+        si::CC.StmtInfo,
+        atype::Any,
+        sv::CC.AbsIntState,
+        max_methods::Int,
+    )
 end
 
 function any_matches_primitive(applicable, C, M, world)
