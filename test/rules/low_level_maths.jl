@@ -68,6 +68,51 @@
         end
     end
 
+    @testset "nfwd-backed non-smooth scalar rules" begin
+        for T in (Float16, Float32, Float64)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(one(T), zero(T)))
+            ) === one(T)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(T(2), zero(T)))
+            ) === zero(T)
+            @test isinf(
+                tangent(
+                    Mooncake.frule!!(
+                        zero_dual(^), Dual(zero(T), one(T)), Dual(T(0.5), zero(T))
+                    ),
+                ),
+            )
+
+            @test isnan(
+                tangent(
+                    Mooncake.frule!!(
+                        zero_dual(mod), Dual(T(4), one(T)), Dual(T(2), zero(T))
+                    ),
+                ),
+            )
+            @test isnan(tangent(Mooncake.frule!!(zero_dual(mod2pi), Dual(T(2π), one(T)))))
+
+            @test tangent(
+                Mooncake.frule!!(
+                    zero_dual(max), Dual(one(T), one(T)), Dual(one(T), zero(T))
+                ),
+            ) === zero(T)
+            @test tangent(
+                Mooncake.frule!!(
+                    zero_dual(min), Dual(one(T), one(T)), Dual(one(T), zero(T))
+                ),
+            ) === one(T)
+
+            @test tangent(Mooncake.frule!!(zero_dual(Base.eps), Dual(one(T), one(T)))) ===
+                zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(nextfloat), Dual(one(T), one(T)))) ===
+                one(T)
+            @test tangent(Mooncake.frule!!(zero_dual(prevfloat), Dual(one(T), one(T)))) ===
+                one(T)
+        end
+    end
+
     # These are all examples of signatures which we do _not_ want to make primitives,
     # because they are very shallow wrappers around lower-level primitives for which we
     # already have rules.

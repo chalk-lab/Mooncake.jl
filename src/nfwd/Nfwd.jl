@@ -403,6 +403,36 @@ end
 @inline _pt_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
 @inline _pt_zero(::Val{N}, ::Type{T}) where {N,T} = ntuple(_ -> zero(T), Val(N))
 
+# These helpers define the scalar edge-case behavior used by nfwd for non-smooth
+# primitives: `^` keeps the removable-singularity cases at x == 0, while `mod` and
+# `mod2pi` return NaN coefficients at their discontinuity points.
+@inline _nfwd_pow_grad_x(x, p, y) = p * y / x
+@inline function _nfwd_pow_grad_x(x::P, p::P, y) where {P<:IEEEFloat}
+    return ifelse(
+        !iszero(x) || p < zero(P),
+        p * y / x,
+        ifelse(isone(p), one(y), ifelse(iszero(p) || p > one(P), zero(y), oftype(y, Inf))),
+    )
+end
+
+@inline _nfwd_pow_grad_p(x, p, y) = y * log(complex(x))
+@inline function _nfwd_pow_grad_p(x::P, p::P, y) where {P<:IEEEFloat}
+    return ifelse(
+        !iszero(x), y * real(log(complex(x))), ifelse(p > zero(P), zero(y), oftype(y, NaN))
+    )
+end
+
+@inline function _nfwd_mod_grad_coeffs(x::P, y::P) where {P<:IEEEFloat}
+    u = x / y
+    nan = oftype(u, NaN)
+    isint = isinteger(u)
+    return ifelse(isint, nan, one(u)), ifelse(isint, nan, -floor(u))
+end
+
+@inline _nfwd_mod2pi_grad(x::P) where {P<:IEEEFloat} = ifelse(
+    isinteger(x / P(2π)), P(NaN), one(P)
+)
+
 # ── AbstractFloat traits (needed for promote_rule with Complex etc.) ──────────────
 
 Base.float(a::NDual) = a
@@ -416,10 +446,10 @@ Base.floatmin(x::NDual{T,N}) where {T,N} = NDual{T,N}(floatmin(T))
 Base.floatmax(x::NDual{T,N}) where {T,N} = NDual{T,N}(floatmax(T))
 Base.precision(::Type{NDual{T,N}}) where {T<:AbstractFloat,N} = precision(T)
 Base.precision(::NDual{T,N}) where {T<:AbstractFloat,N} = precision(T)
-# nextfloat / prevfloat: perturb only the scalar value; partials are unchanged since
-# these are used to compute thresholds (e.g. in LogExpFunctions piecewise branches).
-Base.nextfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(nextfloat(a.value))
-Base.prevfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(prevfloat(a.value))
+# nextfloat / prevfloat are treated as identity maps for differentiation, so preserve the
+# partials while advancing or retreating the scalar value by one representable step.
+Base.nextfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(nextfloat(a.value), a.partials)
+Base.prevfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(prevfloat(a.value), a.partials)
 # exponent / significand: scalar operations; return scalar value (integer / NDual).
 Base.exponent(a::NDual) = exponent(a.value)
 
@@ -693,20 +723,19 @@ end
 @inline Base.:^(a::NDual{T,N}, b::Rational) where {T,N} = a ^ T(b)
 
 @inline function Base.:^(a::NDual{T,N}, b::Real) where {T,N}
-    v = a.value^T(b)
-    dv = ifelse(iszero(T(b)), zero(T), T(b) * a.value^(T(b) - one(T)))
-    return NDual{T,N}(v, _pt_scale(a.partials, dv))
+    bT = T(b)
+    v = a.value^bT
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, bT, v)))
 end
 
 @inline function Base.:^(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    # d(a^b) = a^b * (b/a * da + log(a) * db)
     v = a.value^b.value
-    coeff_a = b.value / a.value
-    coeff_b = log(a.value)
+    coeff_a = _nfwd_pow_grad_x(a.value, b.value, float(v))
+    coeff_b = _nfwd_pow_grad_p(a.value, b.value, float(v))
     return NDual{T,N}(
         v,
-        _pt_scale(
-            _pt_add(_pt_scale(a.partials, coeff_a), _pt_scale(b.partials, coeff_b)), v
+        _pt_add(
+            _pt_guarded_scale(a.partials, coeff_a), _pt_guarded_scale(b.partials, coeff_b)
         ),
     )
 end
@@ -1047,7 +1076,7 @@ end
 # min / max — subgradient: select the tangent of the winning branch.
 # ifelse is used instead of ?: to stay branchless on GPU (see file header).
 @inline function Base.max(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    return ifelse(a.value >= b.value, a, b)
+    return ifelse(a.value > b.value, a, b)
 end
 @inline function Base.min(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     return ifelse(a.value <= b.value, a, b)
@@ -1301,7 +1330,7 @@ for _r in (
     end
 end
 
-for _op in (:div, :fld, :cld, :mod, :gcd, :lcm)
+for _op in (:div, :fld, :cld, :gcd, :lcm)
     @eval Base.$_op(x::NDual{T,N}) where {T<:IEEEFloat,N} = throw(
         NDualUnsupportedError($(QuoteNode(_op)))
     )
@@ -1325,6 +1354,29 @@ end
     return NDual{T,N}(
         rem(pv, yv), ntuple(k -> ndual_partial(x, k) - c * ndual_partial(y, k), Val(N))
     )
+end
+
+@inline function Base.mod(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
+    coeff_x, coeff_y = _nfwd_mod_grad_coeffs(x.value, y.value)
+    return NDual{T,N}(
+        mod(x.value, y.value),
+        _pt_add(_pt_scale(x.partials, coeff_x), _pt_scale(y.partials, coeff_y)),
+    )
+end
+@inline Base.mod(x::NDual{T1,N1}, y::NDual{T2,N2}) where {T1<:IEEEFloat,T2<:IEEEFloat,N1,N2} = mod(
+    _promote_matching_nduals(:mod, x, y)...
+)
+@inline Base.mod(x::NDual{T,N}) where {T<:IEEEFloat,N} = throw(NDualUnsupportedError(:mod))
+@inline Base.mod(x::NDual{T,N}, y::Real) where {T<:IEEEFloat,N} = throw(
+    NDualUnsupportedError(:mod)
+)
+@inline Base.mod(x::Real, y::NDual{T,N}) where {T<:IEEEFloat,N} = throw(
+    NDualUnsupportedError(:mod)
+)
+
+@inline function Base.mod2pi(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    coeff = _nfwd_mod2pi_grad(x.value)
+    return NDual{T,N}(mod2pi(x.value), _pt_scale(x.partials, coeff))
 end
 
 # ── Future: tiled GPU kernels with NDual ──────────────────────────────────────────

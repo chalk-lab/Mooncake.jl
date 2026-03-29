@@ -143,6 +143,40 @@ using Mooncake.Nfwd
         # real exponent b=0.0: d(x^0)/dx = 0 everywhere, including x=0 (no NaN)
         @test Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1) === 0.0
         @test !isnan(Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1))
+
+        z1 = _d2(0.0, 1.0, 0.0)
+        p1 = _d2(1.0, 0.0, 0.0)
+        @test Nfwd.ndual_partial(z1^p1, 1) === 1.0
+
+        z2 = _d2(0.0, 1.0, 0.0)
+        p2 = _d2(2.0, 0.0, 0.0)
+        @test Nfwd.ndual_partial(z2^p2, 1) === 0.0
+
+        zh = _d2(0.0, 1.0, 0.0)
+        ph = _d2(0.5, 0.0, 0.0)
+        @test isinf(Nfwd.ndual_partial(zh^ph, 1))
+
+        xb = _d2(-2.0, 0.0, 1.0)
+        pb = _d2(3.0, 1.0, 0.0)
+        @test Nfwd.ndual_partial(xb^pb, 1) ≈ -8.0 * log(2.0)
+    end
+
+    @testset "mod and mod2pi" begin
+        m = mod(_d2(7.5, 1.0, 0.0), _d2(2.3, 0.0, 1.0))
+        @test Nfwd.ndual_value(m) ≈ mod(7.5, 2.3)
+        @test Nfwd.ndual_partial(m, 1) === 1.0
+        @test Nfwd.ndual_partial(m, 2) ≈ -floor(7.5 / 2.3)
+
+        ms = mod(_d2(4.0, 1.0, 0.0), _d2(2.0, 0.0, 1.0))
+        @test isnan(Nfwd.ndual_partial(ms, 1))
+        @test isnan(Nfwd.ndual_partial(ms, 2))
+
+        a = mod2pi(_d(0.1, 1.0))
+        @test Nfwd.ndual_value(a) ≈ mod2pi(0.1)
+        @test Nfwd.ndual_partial(a, 1) === 1.0
+
+        as = mod2pi(_d(2π, 1.0))
+        @test isnan(Nfwd.ndual_partial(as, 1))
     end
 
     @testset "math functions" begin
@@ -277,10 +311,11 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(max(a, b), 1) ≈ 1.0  # a wins
         @test Nfwd.ndual_value(min(a, b)) ≈ 1.0
         @test Nfwd.ndual_partial(min(a, b), 1) ≈ 0.0  # b wins
-        # equal values: max/min must not error and must return one of the two
-        eq = _d(2.0, 1.0)
-        @test Nfwd.ndual_value(max(eq, eq)) ≈ 2.0
-        @test Nfwd.ndual_value(min(eq, eq)) ≈ 2.0
+        eq1, eq2 = _d(2.0, 1.0), _d(2.0, 0.0)
+        @test Nfwd.ndual_value(max(eq1, eq2)) ≈ 2.0
+        @test Nfwd.ndual_partial(max(eq1, eq2), 1) ≈ 0.0
+        @test Nfwd.ndual_value(min(eq1, eq2)) ≈ 2.0
+        @test Nfwd.ndual_partial(min(eq1, eq2), 1) ≈ 1.0
 
         xc = _d(2.0, 1.0)
         @test Nfwd.ndual_value(clamp(xc, 0.0, 1.0)) ≈ 1.0
@@ -550,13 +585,14 @@ using Mooncake.Nfwd
         d = NDual{Float64,2}(3.0, (1.0, 0.0))
         @test Base.precision(NDual{Float64,2}) === precision(Float64)
         @test Base.precision(d) === precision(Float64)
-        # nextfloat/prevfloat: value advances, partials are zero (non-differentiable;
-        # used only to compute numerical thresholds e.g. in LogExpFunctions)
+        # nextfloat/prevfloat advance the value by one representable step and keep the
+        # partials unchanged.
         nd = nextfloat(d)
         @test Nfwd.ndual_value(nd) === nextfloat(3.0)
-        @test nd.partials === (0.0, 0.0)
+        @test nd.partials === (1.0, 0.0)
         pd = prevfloat(d)
         @test Nfwd.ndual_value(pd) === prevfloat(3.0)
+        @test pd.partials === (1.0, 0.0)
         @test Nfwd.ndual_value(nextfloat(zero(d))) === nextfloat(0.0)
         # exponent returns an Int, not an NDual
         @test Base.exponent(d) === exponent(3.0)

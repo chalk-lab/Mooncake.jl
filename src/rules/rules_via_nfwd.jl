@@ -84,6 +84,10 @@ for f in (
     sinc,
     deg2rad,
     rad2deg,
+    mod2pi,
+    Base.eps,
+    nextfloat,
+    prevfloat,
     Base.FastMath.exp_fast,
     Base.FastMath.exp2_fast,
     Base.FastMath.exp10_fast,
@@ -116,50 +120,37 @@ function rrule!!(f::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
 
-# ── clamp(x, lo, hi) ──────────────────────────────────────────────────────────
-
-@is_primitive MinimalCtx Tuple{typeof(atan),P,P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(atan)}, y::Dual{P}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, y, x)
-end
-function rrule!!(f::CoDual{typeof(atan)}, y::CoDual{P}, x::CoDual{P}) where {P<:IEEEFloat}
-    # Use the primitive nfwd entrypoint so the 2-argument reverse rule stays allocation-free.
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(2), f, y, x)
-end
-
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.atan_fast),P,P} where {P<:IEEEFloat}
-function frule!!(
-    f::Dual{typeof(Base.FastMath.atan_fast)}, y::Dual{P}, x::Dual{P}
-) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, y, x)
-end
-function rrule!!(
-    f::CoDual{typeof(Base.FastMath.atan_fast)}, y::CoDual{P}, x::CoDual{P}
-) where {P<:IEEEFloat}
-    # Base.FastMath.atan_fast shares the same 2-argument reverse path as atan.
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(2), f, y, x)
+# ── nfwd-backed fixed-arity scalar rules ──────────────────────────────────────
+for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
+        function frule!!(
+            fdual::Dual{typeof($f)}, x1::Dual{P}, x2::Dual{P}
+        ) where {P<:IEEEFloat}
+            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2)
+        end
+        function rrule!!(
+            fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}
+        ) where {P<:IEEEFloat}
+            return NfwdMooncake._nfwd_primitive_rrule_call(Val(2), fcodual, x1, x2)
+        end
+    end
 end
 
-@is_primitive MinimalCtx Tuple{typeof(log),P,P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(log)}, b::Dual{P}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, b, x)
-end
-function rrule!!(f::CoDual{typeof(log)}, b::CoDual{P}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(2), f, b, x)
-end
-
-# ── clamp(x, lo, hi) ──────────────────────────────────────────────────────────
-
-@is_primitive MinimalCtx Tuple{typeof(clamp),P,P,P} where {P<:IEEEFloat}
-function frule!!(
-    f::Dual{typeof(clamp)}, x::Dual{P}, lo::Dual{P}, hi::Dual{P}
-) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x, lo, hi)
-end
-function rrule!!(
-    f::CoDual{typeof(clamp)}, x::CoDual{P}, lo::CoDual{P}, hi::CoDual{P}
-) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(3), f, x, lo, hi)
+for f in (clamp,)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof($f),P,P,P} where {P<:IEEEFloat}
+        function frule!!(
+            fdual::Dual{typeof($f)}, x1::Dual{P}, x2::Dual{P}, x3::Dual{P}
+        ) where {P<:IEEEFloat}
+            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2, x3)
+        end
+        function rrule!!(
+            fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}, x3::CoDual{P}
+        ) where {P<:IEEEFloat}
+            return NfwdMooncake._nfwd_primitive_rrule_call(Val(3), fcodual, x1, x2, x3)
+        end
+    end
 end
 
 # ── sincosd ───────────────────────────────────────────────────────────────────
