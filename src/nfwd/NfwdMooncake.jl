@@ -788,7 +788,6 @@ end
         _nfwd_gradient_rdatas(Base.tail(grads))...,
     )
 end
-
 # `slot` is the 1-based DOF index within the scalar/complex input: 1 for the real
 # component (or the sole IEEEFloat slot), 2 for the imaginary component of a complex.
 # Called from `_nfwd_scalar_gradient_rdata` with the loop's global_slot, which
@@ -959,7 +958,6 @@ end
         )...,
     )
 end
-
 """
     _nfwd_scalar_gradient_rdata(pb, y_rdata)
 
