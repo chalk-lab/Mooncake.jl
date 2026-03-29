@@ -2052,15 +2052,20 @@ end
 end
 
 # Replace any nested Broadcasted sub-expression whose tangent/fdata tree is
-# `NoTangent`/`NoFData` with its primal materialized value. This catches zero-DOF
-# subtrees such as `Float64.(b .> 0)` on Julia 1.10, where the primal leaves still have
-# differentiable element types (`b::CuArray{Float64}`) even though the nested broadcast
-# contributes no derivative information.
+# `NoTangent`/`NoFData`, or whose flattened broadcast function is not isbits, with its
+# primal materialized value. This catches zero-DOF subtrees such as `Float64.(b .> 0)`,
+# where flattening the nested broadcast embeds `Type{Float64}` in the composed function
+# object and makes the GPU kernel argument non-isbits.
 #
 # Note: the resulting plain CuArray leaf may still have a differentiable eltype, so the
 # GPU dual kernel may reserve a slot for it. `_leaf_effective_tangent` returns `nothing`
 # for the paired `NoTangent`, so the slot contribution is discarded. That is slightly
 # wasteful but keeps the kernel function isbits and GPU-compilable.
+@inline _gpu_bcast_needs_premat(bc::Broadcasted) =
+    !isbitstype(typeof(Base.Broadcast.flatten(bc).f))
+
+_premat_nondiff_args(bc::Broadcasted) = _premat_nondiff_args(bc, NoTangent())
+
 function _premat_nondiff_args(bc::Broadcasted, td)
     targs = if td isa Union{NoTangent,NoFData}
         ntuple(_ -> NoTangent(), length(bc.args))
@@ -2074,7 +2079,12 @@ function _premat_nondiff_args(bc::Broadcasted, td)
             if ta isa Union{NoTangent,NoFData}
                 Base.Broadcast.materialize(a)
             else
-                _premat_nondiff_args(a, ta)
+                a_prepared = _premat_nondiff_args(a, ta)
+                if _gpu_bcast_needs_premat(a_prepared)
+                    Base.Broadcast.materialize(a_prepared)
+                else
+                    a_prepared
+                end
             end
         else
             a

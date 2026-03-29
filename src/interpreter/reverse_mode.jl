@@ -1213,7 +1213,21 @@ function build_derived_rrule(
             return _copy(interp.oc_cache[oc_cache_key])
         else
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
-            dri = generate_ir(interp, sig_or_mi; debug_mode)
+            dri = try
+                generate_ir(interp, sig_or_mi; debug_mode)
+            catch err
+                # Julia 1.10 can hit this IR-interpreter limitation during optimization on
+                # otherwise valid derived reverse rules. Retry without optimize_ir! so rule
+                # construction remains robust for those methods.
+                if err isa AssertionError && occursin(
+                    "irinterp is unable to handle heavy recursion",
+                    sprint(showerror, err),
+                )
+                    generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
+                else
+                    rethrow()
+                end
+            end
             fwd_oc = misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
             rvs_oc = misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)
 
