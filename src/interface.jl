@@ -554,11 +554,16 @@ The API guarantees that tangents are initialized at zero before the first autodi
             tangents,
             dests,
             zero_tangent(primal(y)),
-            map(_prepared_cache_input_spec, fx),
+            tuple_map(_prepared_cache_input_spec, fx),
         )
     else
         return Cache(
-            rule, y_cache, tangents, nothing, nothing, map(_prepared_cache_input_spec, fx)
+            rule,
+            y_cache,
+            tangents,
+            nothing,
+            nothing,
+            tuple_map(_prepared_cache_input_spec, fx),
         )
     end
 end
@@ -655,11 +660,21 @@ The API guarantees that tangents are initialized at zero before the first autodi
     if config.friendly_tangents
         dests = tuple(map(friendly_tangent_cache, fx)...)
         return Cache(
-            rule, nothing, tangents, dests, nothing, map(_prepared_cache_input_spec, fx)
+            rule,
+            nothing,
+            tangents,
+            dests,
+            nothing,
+            tuple_map(_prepared_cache_input_spec, fx),
         )
     else
         return Cache(
-            rule, nothing, tangents, nothing, nothing, map(_prepared_cache_input_spec, fx)
+            rule,
+            nothing,
+            tangents,
+            nothing,
+            nothing,
+            tuple_map(_prepared_cache_input_spec, fx),
         )
     end
 end
@@ -731,8 +746,18 @@ value_and_gradient!!(cache, f, x, y)
     end
 end
 
-struct ForwardChunkFastPath{FR,PB,GR,SG,SB,SW}
-    frules::FR
+# This cache stores one forward rule per supported chunk width (1 through 8).
+# Keeping those rules in separate fields lets the code pick, for example, the
+# width-3 rule directly, instead of indexing into a tuple of mixed rule types.
+struct ForwardChunkFastPath{R1,R2,R3,R4,R5,R6,R7,R8,PB,GR,SG,SB,SW}
+    frule_1::R1
+    frule_2::R2
+    frule_3::R3
+    frule_4::R4
+    frule_5::R5
+    frule_6::R6
+    frule_7::R7
+    frule_8::R8
     pack_buffers::PB
     gradient_rrule::GR
     small_vector_gradient_frule::SG
@@ -748,6 +773,16 @@ struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
     gradient_workspace::GW
     chunk_fastpath::CF
     input_specs::S
+end
+
+# Cache specs are compared again when a prepared cache is reused. If we store
+# `typeof(x)` directly in a tuple or named tuple, the `type` field is specialized
+# as `Type{T}` for each input value. Wrapping the spec in a concrete struct forces
+# that field to `DataType`, so cache construction and reuse agree on the top-level
+# spec type for inputs such as `x::Vector{Float64}`.
+struct PreparedCacheInputSpec{S}
+    type::DataType
+    size::S
 end
 
 """
@@ -787,7 +822,11 @@ end
 const _CHUNK_NFWD_MAX_LANES = 8
 
 @inline function _prepared_cache_input_spec(x)
-    return x isa AbstractArray ? (type=typeof(x), size=size(x)) : (type=typeof(x), size=())
+    return if x isa AbstractArray
+        PreparedCacheInputSpec(typeof(x), size(x))
+    else
+        PreparedCacheInputSpec(typeof(x), ())
+    end
 end
 
 @inline _prepared_cache_arg_label(i::Int) = i == 1 ? "`f`" : "`x$(i - 1)`"
@@ -1190,11 +1229,29 @@ end
     # packed here. Tuple-like or structured top-level primals stay on the ordinary lane
     # loop until the chunk-aware IR frontend can repack them soundly.
     all(_chunk_can_use_nfwd, Base.tail(params)) || return nothing
-    frules = ntuple(
-        n -> NfwdMooncake.build_frule(
-            sig; chunk_size=n, debug_mode=false, silence_debug_messages=true
-        ),
-        Val(_CHUNK_NFWD_MAX_LANES),
+    frule_1 = NfwdMooncake.build_frule(
+        sig; chunk_size=1, debug_mode=false, silence_debug_messages=true
+    )
+    frule_2 = NfwdMooncake.build_frule(
+        sig; chunk_size=2, debug_mode=false, silence_debug_messages=true
+    )
+    frule_3 = NfwdMooncake.build_frule(
+        sig; chunk_size=3, debug_mode=false, silence_debug_messages=true
+    )
+    frule_4 = NfwdMooncake.build_frule(
+        sig; chunk_size=4, debug_mode=false, silence_debug_messages=true
+    )
+    frule_5 = NfwdMooncake.build_frule(
+        sig; chunk_size=5, debug_mode=false, silence_debug_messages=true
+    )
+    frule_6 = NfwdMooncake.build_frule(
+        sig; chunk_size=6, debug_mode=false, silence_debug_messages=true
+    )
+    frule_7 = NfwdMooncake.build_frule(
+        sig; chunk_size=7, debug_mode=false, silence_debug_messages=true
+    )
+    frule_8 = NfwdMooncake.build_frule(
+        sig; chunk_size=8, debug_mode=false, silence_debug_messages=true
     )
     pack_buffers = tuple_map(_chunk_pack_buffer_template, Base.tail(fx))
     # Bug fix note: keep the cached nfwd gradient fast path narrow. The generic
@@ -1215,7 +1272,10 @@ end
             _chunk_can_use_nfwd_small_vector_gradient(params[2]) &&
             1 <= length(last(fx)) <= _CHUNK_NFWD_MAX_LANES
         )
-            frules[length(last(fx))]
+            getfield(
+                (frule_1, frule_2, frule_3, frule_4, frule_5, frule_6, frule_7, frule_8),
+                length(last(fx)),
+            )
         else
             nothing
         end
@@ -1244,9 +1304,18 @@ end
     # Bug fix note: probe the chunk_size=1 nfwd frule once at cache construction time.
     # This excludes valid Julia functions that happen not to run on NDual-lifted values from
     # the zero-allocation fast path, without paying a runtime guard cost on every call.
-    _chunk_fastpath_supported(fx, frules) || return nothing
+    _chunk_fastpath_supported(
+        fx, (frule_1, frule_2, frule_3, frule_4, frule_5, frule_6, frule_7, frule_8)
+    ) || return nothing
     return ForwardChunkFastPath(
-        frules,
+        frule_1,
+        frule_2,
+        frule_3,
+        frule_4,
+        frule_5,
+        frule_6,
+        frule_7,
+        frule_8,
         pack_buffers,
         gradient_rrule,
         small_vector_gradient_frule,
@@ -1311,8 +1380,15 @@ end
 end
 
 @inline function _chunk_nfwd_rule(fastpath::ForwardChunkFastPath, ::Val{N}) where {N}
-    N <= _CHUNK_NFWD_MAX_LANES || return nothing
-    return fastpath.frules[N]
+    N == 1 && return fastpath.frule_1
+    N == 2 && return fastpath.frule_2
+    N == 3 && return fastpath.frule_3
+    N == 4 && return fastpath.frule_4
+    N == 5 && return fastpath.frule_5
+    N == 6 && return fastpath.frule_6
+    N == 7 && return fastpath.frule_7
+    N == 8 && return fastpath.frule_8
+    return nothing
 end
 
 @inline function _chunk_pack_buffer!(
@@ -1474,6 +1550,18 @@ end
     ::Val{N};
     friendly_tangents::Bool,
 ) where {N}
+    return _chunk_lane_loop_frule!!(
+        cache, input_primals, input_tangents, Val(N), Val(friendly_tangents)
+    )
+end
+
+@noinline function _chunk_lane_loop_frule!!(
+    cache::ForwardCache,
+    input_primals::Tuple,
+    input_tangents::Tuple,
+    ::Val{N},
+    ::Val{friendly_tangents},
+) where {N,friendly_tangents}
     # Canonical fallback backend for batched forward mode: evaluate one width-1 lane at a
     # time through the ordinary forward rule, then repack the outputs into `NTangent`.
     # Specialized `chunk_frule!!` methods may replace this with a true batched execution.
@@ -1574,7 +1662,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             _copy_output(fx),
             _forward_cache_gradient_workspace_ref(typeof(fx)),
             _maybe_build_chunk_fastpath(fx, config),
-            map(_prepared_cache_input_spec, fx),
+            tuple_map(_prepared_cache_input_spec, fx),
         )
     else
         return ForwardCache(
@@ -1584,7 +1672,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             nothing,
             _forward_cache_gradient_workspace_ref(typeof(fx)),
             _maybe_build_chunk_fastpath(fx, config),
-            map(_prepared_cache_input_spec, fx),
+            tuple_map(_prepared_cache_input_spec, fx),
         )
     end
 end
@@ -1762,56 +1850,58 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
     `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
 """
 @inline function _value_and_derivative_tuple_interface(
-    cache::ForwardCache, fx::FX
-) where {FX<:Tuple}
-    friendly_tangents = !isnothing(cache.input_tangents)
-
+    cache::ForwardCache{R,IT,OP,FG,GW,CF,S}, fx::FX
+) where {R,IT<:Tuple,OP,FG,GW,CF,S,FX<:Tuple}
     input_primals = tuple_map(first, fx)
     input_friendly_tangents = tuple_map(last, fx)
     _prepared_cache_check_specs(cache.input_specs, input_primals)
 
-    if friendly_tangents && !isnothing(_resolve_chunk_size(input_friendly_tangents))
+    if !isnothing(_resolve_chunk_size(input_friendly_tangents))
         return _value_and_derivative_chunked(
-            cache, input_primals, input_friendly_tangents; friendly_tangents
+            cache, input_primals, input_friendly_tangents; friendly_tangents=true
         )
     end
 
-    # translate from friendly to native
-    if friendly_tangents
-        input_tangents = tuple_map(
-            primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
-        )
-    else
-        input_tangents = input_friendly_tangents
-    end
+    input_tangents = tuple_map(
+        primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
+    )
 
     if !isnothing(_resolve_chunk_size(input_tangents))
         return _value_and_derivative_chunked(
-            cache, input_primals, input_tangents; friendly_tangents
+            cache, input_primals, input_tangents; friendly_tangents=true
         )
     end
 
     input_duals = tuple_map(Dual, input_primals, input_tangents)
-
-    if !friendly_tangents  # in friendly mode, conversion should ensure tangent coherence
-        error_if_incorrect_dual_types(input_duals...)
-    end
-
     output = __call_rule(cache.rule, input_duals)
     output_primal = primal(output)
     output_tangent = tangent(output)
 
-    # translate from native back to friendly
-    if friendly_tangents
-        c = _friendly_cache((output_primal,))
-        output_dest = friendly_tangent_cache(output_primal)
-        output_friendly_tangent = tangent_to_friendly!!(
-            output_dest, output_primal, output_tangent, c
+    c = _friendly_cache((output_primal,))
+    output_dest = friendly_tangent_cache(output_primal)
+    output_friendly_tangent = tangent_to_friendly!!(
+        output_dest, output_primal, output_tangent, c
+    )
+    return output_primal, output_friendly_tangent
+end
+
+@inline function _value_and_derivative_tuple_interface(
+    cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S}, fx::FX
+) where {R,OP,FG,GW,CF,S,FX<:Tuple}
+    input_primals = tuple_map(first, fx)
+    input_tangents = tuple_map(last, fx)
+    _prepared_cache_check_specs(cache.input_specs, input_primals)
+
+    if !isnothing(_resolve_chunk_size(input_tangents))
+        return _value_and_derivative_chunked(
+            cache, input_primals, input_tangents; friendly_tangents=false
         )
-        return output_primal, output_friendly_tangent
-    else
-        return output_primal, output_tangent
     end
+
+    input_duals = tuple_map(Dual, input_primals, input_tangents)
+    error_if_incorrect_dual_types(input_duals...)
+    output = __call_rule(cache.rule, input_duals)
+    return primal(output), tangent(output)
 end
 
 # `fwd_cache` is the derivative cache for `grad_f`. The compiled inner rrule is cached

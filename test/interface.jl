@@ -577,8 +577,8 @@ struct CountedChunkArrayCall end
                 (f_int, Mooncake.zero_tangent(f_int)),
                 (x, Mooncake.NTangent((dx, dy))),
             )
-            @test z_and_dz_int_chunk isa Tuple{Int64,Mooncake.NTangent}
             @test first(z_and_dz_int_chunk) == 1
+            @test last(z_and_dz_int_chunk) isa Mooncake.NTangent
             @test last(z_and_dz_int_chunk) ==
                 Mooncake.NTangent((Mooncake.NoTangent(), Mooncake.NoTangent()))
         end

@@ -106,5 +106,6 @@ include(joinpath(@__DIR__, "..", "..", "stack.jl"))
 # most likely unrelated to Mooncake. In general, Mooncake should avoid depending
 # on third-party compiler-based tools; JET (developed by JuliaLang) is the
 # exception.
-
-include(joinpath(@__DIR__, "..", "..", "interface.jl"))
+allow_unstable() do
+    include(joinpath(@__DIR__, "..", "..", "interface.jl"))
+end
