@@ -1,5 +1,5 @@
 #
-# nfwd-backed primitive rules for Tier 1 scalar functions.
+# nfwd-backed primitive rules for scalar functions.
 #
 # Each entry registers direct primitive `frule!!` / `rrule!!` wrappers backed by
 # the nfwd engine, which avoids hand-coding pullbacks for well-supported scalar
