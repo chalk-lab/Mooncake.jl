@@ -750,6 +750,15 @@ end
 end
 @inline Base.:^(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = exp(a)
 
+@inline function Base.FastMath.pow_fast(a::NDual{T,N}, n::Integer) where {T,N}
+    v = Base.FastMath.pow_fast(a.value, n)
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(n), v)))
+end
+@inline function Base.FastMath.pow_fast(a::NDual{T,N}, ::Val{p}) where {T,N,p}
+    v = Base.FastMath.pow_fast(a.value, Val(p))
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(p), v)))
+end
+
 # ── Math functions ─────────────────────────────────────────────────────────────────
 # Each follows: f(Dual(v,p)) = Dual(f(v), f'(v)*p)
 

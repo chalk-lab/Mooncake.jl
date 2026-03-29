@@ -137,6 +137,31 @@ for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
     end
 end
 
+# Integer-power fastmath rules share the same local derivative as scalar `pow_fast`,
+# but only the floating-point base is differentiable.
+@is_primitive MinimalCtx Tuple{
+    typeof(Base.FastMath.pow_fast),P,I
+} where {P<:IEEEFloat,I<:Integer}
+function frule!!(
+    ::Dual{typeof(Base.FastMath.pow_fast)}, x::Dual{P}, n::Dual{I}
+) where {P<:IEEEFloat,I<:Integer}
+    _x, dx = extract(x)
+    _n = primal(n)
+    y = Base.FastMath.pow_fast(_x, _n)
+    return Dual(y, Nfwd._nfwd_pow_grad_x(_x, P(_n), float(y)) * dx)
+end
+function rrule!!(
+    ::CoDual{typeof(Base.FastMath.pow_fast)}, x::CoDual{P}, n::CoDual{I}
+) where {P<:IEEEFloat,I<:Integer}
+    _x = primal(x)
+    _n = primal(n)
+    y = Base.FastMath.pow_fast(_x, _n)
+    function pow_fast_pb!!(dy::P)
+        return NoRData(), Nfwd._nfwd_pow_grad_x(_x, P(_n), float(y)) * dy, NoRData()
+    end
+    return zero_fcodual(y), pow_fast_pb!!
+end
+
 for f in (clamp,)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P,P} where {P<:IEEEFloat}

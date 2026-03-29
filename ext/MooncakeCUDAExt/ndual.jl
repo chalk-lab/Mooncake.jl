@@ -260,6 +260,15 @@ NDual{T,N}(x::Real) where {T<:IEEEFloat,N} = NDual{T,N}(T(x), ntuple(_ -> zero(T
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
 @inline _pt_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
+# `_nfwd_zero_mask` keeps inactive NDual lanes from turning `0 * Inf` or `0 * NaN`
+# into poisoned partials at singular derivative sites such as `log`, `sqrt`, and `hypot`.
+@inline _nfwd_zero_mask(a, b) = ifelse(iszero(a), zero(b), b)
+@inline function _pt_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
+    return ntuple(i -> begin
+        pi = p[i]
+        pi * _nfwd_zero_mask(pi, s)
+    end, Val(N))
+end
 @inline _pt_add(p::NTuple{N,T}, q::NTuple{N,T}) where {N,T} = ntuple(
     i -> p[i] + q[i], Val(N)
 )
@@ -459,16 +468,16 @@ function Base.exp10(a::NDual{T,N}) where {T,N}
     (ev=exp10(a.value); NDual{T,N}(ev, _pt_scale(a.partials, ev * T(log(10)))))
 end
 function Base.log(a::NDual{T,N}) where {T,N}
-    NDual{T,N}(log(a.value), _pt_scale(a.partials, inv(a.value)))
+    NDual{T,N}(log(a.value), _pt_guarded_scale(a.partials, inv(a.value)))
 end
 function Base.log2(a::NDual{T,N}) where {T,N}
-    NDual{T,N}(log2(a.value), _pt_scale(a.partials, inv(a.value * T(log(2)))))
+    NDual{T,N}(log2(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(2)))))
 end
 function Base.log10(a::NDual{T,N}) where {T,N}
-    NDual{T,N}(log10(a.value), _pt_scale(a.partials, inv(a.value * T(log(10)))))
+    NDual{T,N}(log10(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(10)))))
 end
 function Base.log1p(a::NDual{T,N}) where {T,N}
-    NDual{T,N}(log1p(a.value), _pt_scale(a.partials, inv(one(T) + a.value)))
+    NDual{T,N}(log1p(a.value), _pt_guarded_scale(a.partials, inv(one(T) + a.value)))
 end
 function Base.expm1(a::NDual{T,N}) where {T,N}
     NDual{T,N}(expm1(a.value), _pt_scale(a.partials, exp(a.value)))
@@ -476,8 +485,21 @@ end
 
 # Two-argument log: log(b, x) = log(x)/log(b); d/dx = inv(x * log(b)).
 function Base.log(b::Real, a::NDual{T,N}) where {T,N}
-    NDual{T,N}(log(b, a.value), _pt_scale(a.partials, inv(a.value * T(log(b)))))
+    NDual{T,N}(log(b, a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(b)))))
 end
+function Base.log(b::NDual{T,N}, a::NDual{T,N}) where {T,N}
+    log_b = log(b.value)
+    y = log(b.value, a.value)
+    return NDual{T,N}(
+        y,
+        _pt_add(
+            _pt_guarded_scale(b.partials, -y / (b.value * log_b)),
+            _pt_guarded_scale(a.partials, inv(a.value * log_b)),
+        ),
+    )
+end
+Base.log(b::NDual{T,N}, a::Real) where {T,N} = log(b, NDual{T,N}(a))
+Base.log(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = log(a)
 
 # ldexp(a, n) = a * 2^n — linear; derivative = 2^n.
 function Base.ldexp(a::NDual{T,N}, n::Integer) where {T,N}
@@ -486,10 +508,10 @@ end
 
 # Roots
 function Base.sqrt(a::NDual{T,N}) where {T,N}
-    (sv=sqrt(a.value); NDual{T,N}(sv, _pt_scale(a.partials, inv(2 * sv))))
+    (sv=sqrt(a.value); NDual{T,N}(sv, _pt_guarded_scale(a.partials, inv(2 * sv))))
 end
 function Base.cbrt(a::NDual{T,N}) where {T,N}
-    (cv=cbrt(a.value); NDual{T,N}(cv, _pt_scale(a.partials, inv(3 * cv^2))))
+    (cv=cbrt(a.value); NDual{T,N}(cv, _pt_guarded_scale(a.partials, inv(3 * cv^2))))
 end
 
 # Absolute value and sign
@@ -611,14 +633,18 @@ end
 function Base.hypot(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     h = hypot(a.value, b.value)
     NDual{T,N}(
-        h, _pt_add(_pt_scale(a.partials, a.value / h), _pt_scale(b.partials, b.value / h))
+        h,
+        _pt_add(
+            _pt_scale(a.partials, _nfwd_zero_mask(a.value, a.value / h)),
+            _pt_scale(b.partials, _nfwd_zero_mask(b.value, b.value / h)),
+        ),
     )
 end
 
 # min / max — subgradient: select the tangent of the winning branch.
 # ifelse is used instead of ?: to stay branchless on GPU (see file header).
 function Base.max(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    ifelse(a.value >= b.value, a, b)
+    ifelse(a.value > b.value, a, b)
 end
 function Base.min(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     ifelse(a.value <= b.value, a, b)

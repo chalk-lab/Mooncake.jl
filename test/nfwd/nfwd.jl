@@ -159,6 +159,12 @@ using Mooncake.Nfwd
         xb = _d2(-2.0, 0.0, 1.0)
         pb = _d2(3.0, 1.0, 0.0)
         @test Nfwd.ndual_partial(xb^pb, 1) ≈ -8.0 * log(2.0)
+
+        xf = _d(3.0, 1.0)
+        @test Nfwd.ndual_value(Base.FastMath.pow_fast(xf, Int32(2))) ≈ 9.0
+        @test Nfwd.ndual_partial(Base.FastMath.pow_fast(xf, Int32(2)), 1) ≈ 6.0
+        @test Nfwd.ndual_value(Base.FastMath.pow_fast(xf, Val(3))) ≈ 27.0
+        @test Nfwd.ndual_partial(Base.FastMath.pow_fast(xf, Val(3)), 1) ≈ 27.0
     end
 
     @testset "mod and mod2pi" begin

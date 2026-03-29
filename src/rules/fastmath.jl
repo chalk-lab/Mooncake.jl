@@ -90,7 +90,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:fastmath})
                 (false, :allocs, nothing, Base.FastMath.mul_fast, P(5.0), P(4.0)),
                 (false, :allocs, nothing, Base.FastMath.ne_fast, P(5.0), P(4.0)),
                 (false, :allocs, nothing, Base.FastMath.pow_fast, P(5.0), P(2.0)),
-                # (:allocs, Base.FastMath.pow_fast, P(5.0), 2), # errors -- NEEDS RULE!
+                (false, :allocs, nothing, Base.FastMath.pow_fast, P(5.0), Int32(2)),
                 # (:allocs, Base.FastMath.rem_fast, P(5.0), P(2.0)), # error -- NEEDS RULE! 
                 (false, :allocs, nothing, Base.FastMath.sign_fast, P(5.0)),
                 (false, :allocs, nothing, Base.FastMath.sign_fast, P(-5.0)),
