@@ -33,6 +33,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:fastmath})
                 (false, :allocs, nothing, Base.FastMath.asin_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.asinh_fast, P(1.3)),
                 (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4)),
+                (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4), P(3.2)),
                 (false, :allocs, nothing, Base.FastMath.atanh_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.cbrt_fast, P(0.4)),
                 (false, :allocs, nothing, Base.FastMath.cis_fast, P(0.5)),
@@ -89,7 +90,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:fastmath})
                 (false, :allocs, nothing, Base.FastMath.mul_fast, P(5.0), P(4.0)),
                 (false, :allocs, nothing, Base.FastMath.ne_fast, P(5.0), P(4.0)),
                 (false, :allocs, nothing, Base.FastMath.pow_fast, P(5.0), P(2.0)),
-                # (:allocs, Base.FastMath.pow_fast, P(5.0), 2), # errors -- NEEDS RULE!
+                (false, :allocs, nothing, Base.FastMath.pow_fast, P(5.0), Int32(2)),
                 # (:allocs, Base.FastMath.rem_fast, P(5.0), P(2.0)), # error -- NEEDS RULE! 
                 (false, :allocs, nothing, Base.FastMath.sign_fast, P(5.0)),
                 (false, :allocs, nothing, Base.FastMath.sign_fast, P(-5.0)),

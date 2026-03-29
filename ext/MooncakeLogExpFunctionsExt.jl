@@ -78,6 +78,18 @@ end
     return ntuple(k -> grad[k] * inv_sw, Val(N))
 end
 
+@inline function _nf_logsumexp_inf(x::AbstractVector{NDual{T,N}}, u::T) where {T,N}
+    count_u = 0
+    grad = ntuple(_ -> zero(T), Val(N))
+    @inbounds for xi in x
+        if xi.value == u
+            count_u += 1
+            grad = _nf_logsumexp_accum(grad, one(T), xi.partials)
+        end
+    end
+    return NDual{T,N}(u, _nf_logsumexp_scale(grad, inv(T(count_u))))
+end
+
 function LogExpFunctions.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEEFloat,N}
     isempty(x) && return NDual{T,N}(typemin(T))
     # Pass 1: find maximum primal value for numerical stability.
@@ -86,6 +98,7 @@ function LogExpFunctions.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEE
         v = x[i].value
         v > u && (u = v)
     end
+    isinf(u) && return _nf_logsumexp_inf(x, u)
     # Pass 2: accumulate sum(exp(xᵢ − u)) and partial-slot weighted sums.
     # Both _nf_logsumexp_accum and _nf_logsumexp_scale take grad as a function parameter
     # rather than capturing it as a closure variable.  If any ntuple closure captured grad

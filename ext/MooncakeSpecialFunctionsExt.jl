@@ -669,10 +669,24 @@ end
     return NDual{T,N}(inv_v, ntuple(k -> dv * x.partials[k], Val(N)))
 end
 
-# Helper: extract the scalar (Float64/Float32) value from ν, which may be NDual when the
-# Julia promote machinery wraps an integer/float order into the same type as x.
-# Derivative w.r.t. ν is not implemented; callers differentiating only through x are correct.
-_bessel_nu(ν::NDual) = ν.value
+@inline _ndual_partials_are_zero(partials::NTuple) = all(iszero, partials)
+
+@noinline function _throw_ndual_notimplemented(name::Symbol, argname::Symbol)
+    throw(
+        ArgumentError(
+            "SpecialFunctions.$name does not support nfwd differentiation with respect to " *
+            "`$argname`; pass a constant parameter or a promoted NDual with zero partials.",
+        ),
+    )
+end
+
+# Helper: extract the scalar (Float64/Float32) value from ν, which may be an NDual when the
+# Julia promote machinery wraps an order into the same type as x. Active order tangents are
+# not supported here and must fail loudly rather than being silently dropped.
+function _bessel_nu(ν::NDual)
+    _ndual_partials_are_zero(ν.partials) || _throw_ndual_notimplemented(:bessel, :ν)
+    return ν.value
+end
 _bessel_nu(ν::Real) = ν
 
 # d/dx besselk(ν, x) = -(besselk(ν-1, x) + besselk(ν+1, x)) / 2
@@ -756,11 +770,13 @@ function SpecialFunctions.beta_inc(a::Real, b::Real, x::NDual{T,N}) where {T<:IE
 end
 
 # Case: all three args are NDual (e.g. when StatsFuns promotes Float64 shape params).
-# Only the x-partial is computed; the a,b partials contribute zero when their .partials
-# are all-zero (the typical promoted case), which is the only supported scenario.
+# Only the x-partial is computed; zero-partial promoted shape parameters are supported,
+# but active shape-parameter tangents must fail loudly rather than being ignored.
 function SpecialFunctions.beta_inc(
     a::NDual{T,N}, b::NDual{T,N}, x::NDual{T,N}
 ) where {T<:IEEEFloat,N}
+    _ndual_partials_are_zero(a.partials) || _throw_ndual_notimplemented(:beta_inc, :a)
+    _ndual_partials_are_zero(b.partials) || _throw_ndual_notimplemented(:beta_inc, :b)
     av, bv, xv = a.value, b.value, x.value
     Iv, Qv = SpecialFunctions.beta_inc(av, bv, xv)
     d_dx = exp(

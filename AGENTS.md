@@ -61,6 +61,7 @@ The overall target is: correct by construction where possible, aggressively test
 
 - Prefer constructing a minimal working example (MWE) first, then running the smallest focused test group that validates the fix, and only then broader test groups if needed.
 - For new differentiation rules, prefer testing them with `Mooncake.TestUtils.test_rule`.
+- Do not disable tests or weaken performance assertions just to get CI green; if that appears necessary, stop and ask for confirmation first.
 - Ensure supported primal types and their tangent types are exercised against the relevant rules for compatibility and composability.
 - Mooncake has a debug mode which is useful for testing malformed rules and diagnosing rule failures; see `docs/src/utilities/debug_mode.md`.
 - For performance-sensitive rules, verify by running the `frule!!` or `rrule!!` directly and checking allocations and runtime against the primal. Use `@allocated` to ensure that zero-allocation primals still yield zero-allocation AD paths, and `@code_warntype` to check for type stability.

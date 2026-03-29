@@ -728,9 +728,13 @@ value_and_gradient!!(cache, f, x, y)
     f::F,
     x::Vararg{Any,N};
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
+    verbose::Bool=false,
 ) where {F,N}
     friendly_tangents = !isnothing(cache.dests)
     _prepared_cache_check_specs(cache.input_specs, (f, x...))
+    if verbose
+        print(stdout, "# Reverse mode: (friendly = ", friendly_tangents, ")\n")
+    end
 
     tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
@@ -773,6 +777,34 @@ struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
     gradient_workspace::GW
     chunk_fastpath::CF
     input_specs::S
+end
+
+@inline function _maybe_print_forward_route(
+    verbose::Bool, cache::ForwardCache, nfwd::Bool, chunk_size
+)
+    verbose || return nothing
+    print(
+        stdout,
+        "# Forward mode: (nfwd = ",
+        nfwd,
+        ", friendly = ",
+        !isnothing(cache.input_tangents),
+        ", chunk_size = ",
+        isnothing(chunk_size) ? ":not_chunked" : string(chunk_size),
+        ")\n",
+    )
+    return nothing
+end
+
+@noinline function _chunk_frule_with_backend(
+    cache::ForwardCache,
+    input_primals::Tuple,
+    input_tangents::Tuple,
+    ::Val{N};
+    friendly_tangents::Bool=false,
+) where {N}
+    return chunk_frule!!(cache, input_primals, input_tangents, Val(N); friendly_tangents),
+    false
 end
 
 # Cache specs are compared again when a prepared cache is reused. If we store
@@ -1624,7 +1656,10 @@ end
     ::Val{N};
     friendly_tangents::Bool,
 ) where {N}
-    return chunk_frule!!(cache, input_primals, input_tangents, Val(N); friendly_tangents)
+    result, _ = _chunk_frule_with_backend(
+        cache, input_primals, input_tangents, Val(N); friendly_tangents
+    )
+    return result
 end
 
 @noinline function _value_and_derivative_chunked(
@@ -1694,15 +1729,18 @@ This overload exists so callers can prepare a forward cache once, then use it ei
 directional derivatives via [`value_and_derivative!!`](@ref) or full gradients via chunked
 forward mode.
 """
-function _value_and_gradient_forwardcache_generic(cache::ForwardCache, input_primals::Tuple)
+function _value_and_gradient_forwardcache_generic_info(
+    cache::ForwardCache, input_primals::Tuple
+)
     native_gradients = _forward_cache_gradient_workspace!(cache, input_primals)
     total_dof = _forward_cache_input_dof(input_primals)
 
     if total_dof == 0
         output = cache.rule(tuple_map(Dual, input_primals, native_gradients)...)
-        return _forward_cache_finish_value_and_gradient(
+        result = _forward_cache_finish_value_and_gradient(
             cache, input_primals, primal(output), native_gradients
         )
+        return result, false, nothing
     end
 
     chunk_size = min(total_dof, _CHUNK_NFWD_MAX_LANES)
@@ -1713,9 +1751,18 @@ function _value_and_gradient_forwardcache_generic(cache::ForwardCache, input_pri
     # `value_and_gradient!!` is a client of the batched forward interface: it seeds
     # standard-basis chunk tangents, calls `chunk_frule!!` via `_value_and_derivative_chunked`,
     # and accumulates the resulting lane contributions into gradient storage.
-    y, first_chunk_dy = _value_and_derivative_chunked(
-        cache, input_primals, first_input_tangents; friendly_tangents=false
-    )
+    y, first_chunk_dy, used_nfwd =
+        let pair = _chunk_frule_with_backend(
+                cache,
+                input_primals,
+                first_input_tangents,
+                Val(first_chunk_width);
+                friendly_tangents=false,
+            )
+            result, used_nfwd = pair
+            y, dy = result
+            (y, dy, used_nfwd)
+        end
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     native_gradients = _forward_cache_accumulate_chunk!(
         native_gradients, first_input_tangents, first_chunk_dy
@@ -1726,17 +1773,28 @@ function _value_and_gradient_forwardcache_generic(cache::ForwardCache, input_pri
         input_tangents = _forward_cache_seed_chunk_inputs(
             input_primals, start_slot, chunk_width
         )
-        _, chunk_dy = _value_and_derivative_chunked(
-            cache, input_primals, input_tangents; friendly_tangents=false
-        )
+        _, chunk_dy, chunk_used_nfwd =
+            let pair = _chunk_frule_with_backend(
+                    cache,
+                    input_primals,
+                    input_tangents,
+                    Val(chunk_width);
+                    friendly_tangents=false,
+                )
+                result, used_nfwd = pair
+                y, dy = result
+                (y, dy, used_nfwd)
+            end
+        used_nfwd |= chunk_used_nfwd
         native_gradients = _forward_cache_accumulate_chunk!(
             native_gradients, input_tangents, chunk_dy
         )
     end
 
-    return _forward_cache_finish_value_and_gradient(
+    result = _forward_cache_finish_value_and_gradient(
         cache, input_primals, y, native_gradients
     )
+    return result, used_nfwd, chunk_size
 end
 
 #
@@ -1746,23 +1804,26 @@ end
 # Scalar `value_and_gradient!!` fast path: this is a width-1 forward evaluation, using
 # `cache.rule` or the cached width-1 nfwd rule when available. The win here is
 # avoiding the generic `chunk_frule!!` path's chunk seeding and lane accumulation.
-function value_and_gradient!!(cache::ForwardCache, f::F, x::T) where {F,T<:IEEEFloat}
+function value_and_gradient!!(
+    cache::ForwardCache, f::F, x::T; verbose::Bool=false
+) where {F,T<:IEEEFloat}
     _prepared_cache_check_specs(cache.input_specs, f, x)
-    output = let fastpath = cache.chunk_fastpath
+    output, used_nfwd, chunk_size = let fastpath = cache.chunk_fastpath
         if isnothing(fastpath)
-            cache.rule(Dual(f, NoTangent()), Dual(x, one(x)))
+            cache.rule(Dual(f, NoTangent()), Dual(x, one(x))), false, nothing
         else
             rule = _chunk_nfwd_rule(fastpath, Val(1))
             if isnothing(rule)
-                cache.rule(Dual(f, NoTangent()), Dual(x, one(x)))
+                cache.rule(Dual(f, NoTangent()), Dual(x, one(x))), false, nothing
             else
                 # Bug fix note: the scalar 1-DOF fast path should use the cached nfwd
                 # frule. Unsupported NDual cases are filtered out at cache construction time,
                 # so the steady-state call path stays allocation-free and competitive.
-                rule(Dual(f, NoTangent()), Dual(x, one(x)))
+                rule(Dual(f, NoTangent()), Dual(x, one(x))), true, 1
             end
         end
     end
+    _maybe_print_forward_route(verbose, cache, used_nfwd, chunk_size)
     return _forward_cache_finish_value_and_gradient(
         cache, (f, x), primal(output), (NoTangent(), tangent(output))
     )
@@ -1773,7 +1834,7 @@ end
 # count exactly matches the full gradient width, instead of the generic `chunk_frule!!`
 # path's seed-chunk/accumulate loop.
 @inline function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::V
+    cache::ForwardCache, f::F, x::V; verbose::Bool=false
 ) where {F,T<:IEEEFloat,V<:Vector{T}}
     _prepared_cache_check_specs(cache.input_specs, f, x)
     fastpath = cache.chunk_fastpath
@@ -1785,11 +1846,17 @@ end
             f,
             x,
         )
+        _maybe_print_forward_route(verbose, cache, true, length(x))
         return _forward_cache_finish_value_and_gradient(cache, (f, x), y, output)
     elseif !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
+        _maybe_print_forward_route(verbose, cache, true, _CHUNK_NFWD_MAX_LANES)
         return _forward_cache_gradient_rrule_fastpath(cache, fastpath, f, x)
     end
-    return _value_and_gradient_forwardcache_generic(cache, (f, x))
+    result, used_nfwd, chunk_size = _value_and_gradient_forwardcache_generic_info(
+        cache, (f, x)
+    )
+    _maybe_print_forward_route(verbose, cache, used_nfwd, chunk_size)
+    return result
 end
 
 # Array `value_and_gradient!!` fast path: this one is also nfwd-specific, but it uses
@@ -1797,20 +1864,31 @@ end
 # `NTangent` interface. The win here is writing gradients directly, avoiding the
 # generic chunk path's `NTangent` packing/unpacking and lane accumulation.
 function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::A
+    cache::ForwardCache, f::F, x::A; verbose::Bool=false
 ) where {F,A<:Array{<:IEEEFloat}}
     _prepared_cache_check_specs(cache.input_specs, f, x)
     fastpath = cache.chunk_fastpath
     if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
+        _maybe_print_forward_route(verbose, cache, true, _CHUNK_NFWD_MAX_LANES)
         return _forward_cache_gradient_rrule_fastpath(cache, fastpath, f, x)
     end
-    return _value_and_gradient_forwardcache_generic(cache, (f, x))
+    result, used_nfwd, chunk_size = _value_and_gradient_forwardcache_generic_info(
+        cache, (f, x)
+    )
+    _maybe_print_forward_route(verbose, cache, used_nfwd, chunk_size)
+    return result
 end
 
-function value_and_gradient!!(cache::ForwardCache, f::F, x::Vararg{Any,N}) where {F,N}
+function value_and_gradient!!(
+    cache::ForwardCache, f::F, x::Vararg{Any,N}; verbose::Bool=false
+) where {F,N}
     input_primals = (f, x...)
     _prepared_cache_check_specs(cache.input_specs, input_primals)
-    return _value_and_gradient_forwardcache_generic(cache, input_primals)
+    result, used_nfwd, chunk_size = _value_and_gradient_forwardcache_generic_info(
+        cache, input_primals
+    )
+    _maybe_print_forward_route(verbose, cache, used_nfwd, chunk_size)
+    return result
 end
 
 """

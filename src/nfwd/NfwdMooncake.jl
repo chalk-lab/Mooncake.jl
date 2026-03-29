@@ -14,6 +14,7 @@ import ..Mooncake:
     NoTangent,
     __value_and_gradient!!,
     __verify_sig,
+    _chunk_frule_with_backend,
     _chunk_lane_loop_frule!!,
     _chunk_nfwd_rule,
     _chunk_pack_tangent,
@@ -133,7 +134,7 @@ end
     return _chunk_unpack_nfwd_output(primal(output), tangent(output), Val(N))
 end
 
-@noinline function chunk_frule!!(
+@noinline function _chunk_frule_with_backend(
     cache::ForwardCache{R,IT,OP,FG,GW,CF},
     input_primals::Tuple,
     input_tangents::Tuple,
@@ -144,10 +145,24 @@ end
     # NDual-backed batched backend: try one packed multi-lane forward pass first, then
     # fall back to the generic lane loop only for runtime NDual-specific unsupported cases.
     nfwd_output = _try_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
-    !isnothing(nfwd_output) && return nfwd_output
-    return _chunk_lane_loop_frule!!(
+    !isnothing(nfwd_output) && return nfwd_output, true
+    result = _chunk_lane_loop_frule!!(
         cache, input_primals, input_tangents, Val(N); friendly_tangents
     )
+    return result, false
+end
+
+@noinline function chunk_frule!!(
+    cache::ForwardCache{R,IT,OP,FG,GW,CF},
+    input_primals::Tuple,
+    input_tangents::Tuple,
+    ::Val{N};
+    friendly_tangents::Bool=false,
+) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:ForwardChunkFastPath,N}
+    result, _ = _chunk_frule_with_backend(
+        cache, input_primals, input_tangents, Val(N); friendly_tangents
+    )
+    return result
 end
 
 """
@@ -254,6 +269,50 @@ function build_frule(
     return build_frule(typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages)
 end
 
+# Primitive scalar wrappers in rules_via_nfwd.jl only need these nfwd execution helpers.
+# Calling these helpers avoids constructing a fresh Rule/RRule wrapper at every primitive
+# callsite, which would otherwise add avoidable allocations and dispatch overhead to hot
+# scalar rules. Rule and RRule still back the public build_frule/build_rrule APIs, where
+# the caller builds one wrapper, reuses it, and keeps its mutable workspace private to
+# that instance. Primitive rules do not have that caller-owned lifecycle: they are
+# entered through ordinary Mooncake dispatch, so using Rule/RRule there would either
+# build a new mutable wrapper per call or hide shared mutable workspace behind a plain
+# rule method. That shared-state hazard is not unique to nfwd, but it matters most here
+# because primitive rules are expected to behave like ordinary stateless methods.
+@inline function _nfwd_primitive_frule_call(
+    ::Val{N}, f::Dual, x::Vararg{Dual,M}
+) where {M,N}
+    _nfwd_check_function_tangent(tangent(f))
+    primals = map(primal, x)
+    tangents = map(tangent, x)
+    y, dy = _nfwd_eval(primal(f), primals, tangents, Val(N))
+    return Dual(y, dy)
+end
+
+# The generic vararg path can allocate for small scalar primitive wrappers, so keep
+# fixed-arity entry points here for common binary/ternary rules such as `atan`, `log`,
+# and `clamp`.
+@inline function _nfwd_primitive_frule_call(::Val{N}, f::Dual, x1::Dual, x2::Dual) where {N}
+    _nfwd_check_function_tangent(tangent(f))
+    y, dy = _nfwd_eval(
+        primal(f), (primal(x1), primal(x2)), (tangent(x1), tangent(x2)), Val(N)
+    )
+    return Dual(y, dy)
+end
+
+@inline function _nfwd_primitive_frule_call(
+    ::Val{N}, f::Dual, x1::Dual, x2::Dual, x3::Dual
+) where {N}
+    _nfwd_check_function_tangent(tangent(f))
+    y, dy = _nfwd_eval(
+        primal(f),
+        (primal(x1), primal(x2), primal(x3)),
+        (tangent(x1), tangent(x2), tangent(x3)),
+        Val(N),
+    )
+    return Dual(y, dy)
+end
+
 function (rule::Rule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
     _nfwd_verify_sig(rule, (f, x...))
     _nfwd_check_function_tangent(tangent(f))
@@ -350,6 +409,13 @@ function build_rrule(
     f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
     return build_rrule(typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages)
+end
+
+@inline function _nfwd_primitive_rrule_call(
+    ::Val{N}, f::CoDual, x::Vararg{CoDual,M}
+) where {M,N}
+    _nfwd_check_function_tangent(tangent(f))
+    return _nfwd_rrule_call(primal(f), x, Val(N))
 end
 
 """
@@ -788,6 +854,46 @@ end
         _nfwd_gradient_rdatas(Base.tail(grads))...,
     )
 end
+
+@inline _nfwd_zero_scalar_grads(::Tuple{}, ::Tuple{}) = ()
+@inline function _nfwd_zero_scalar_grads(primals::Tuple, tangents::Tuple)
+    return (
+        zero_tangent(first(primals), first(tangents)),
+        _nfwd_zero_scalar_grads(Base.tail(primals), Base.tail(tangents))...,
+    )
+end
+
+@inline function _nfwd_update_scalar_grad(
+    grads::Tuple, primals::Tuple, global_slot::Int, lane_val, offset::Int=0
+)
+    x = first(primals)
+    dof = _nfwd_input_dof(x)
+    if offset < global_slot <= offset + dof
+        local_slot = global_slot - offset
+        return (
+            _nfwd_accumulate_scalar_gradient(first(grads), local_slot, lane_val),
+            Base.tail(grads)...,
+        )
+    end
+    return (
+        first(grads),
+        _nfwd_update_scalar_grad(
+            Base.tail(grads), Base.tail(primals), global_slot, lane_val, offset + dof
+        )...,
+    )
+end
+
+@inline function _nfwd_scatter_scalar_chunk(
+    grads::Tuple, primals::Tuple, dy::Tuple, start_slot::Int
+)
+    global_slot = start_slot
+    for lane_val in dy
+        grads = _nfwd_update_scalar_grad(grads, primals, global_slot, lane_val)
+        global_slot += 1
+    end
+    return grads
+end
+
 # `slot` is the 1-based DOF index within the scalar/complex input: 1 for the real
 # component (or the sole IEEEFloat slot), 2 for the imaginary component of a complex.
 # Called from `_nfwd_scalar_gradient_rdata` with the loop's global_slot, which
@@ -808,11 +914,11 @@ end
 end
 
 @inline function _nfwd_real_dot(a::T, b::T) where {T<:IEEEFloat}
-    return a * b
+    return a * Nfwd._nfwd_zero_mask(a, b)
 end
 
 @inline function _nfwd_real_dot(a::Complex{T}, b::Complex{T}) where {T<:IEEEFloat}
-    return real(conj(a) * b)
+    return real(conj(a) * Nfwd._nfwd_zero_mask(a, b))
 end
 
 # Scalar (real or complex): chunk_size=1 → plain scalar zero; chunk_size=N → N-tuple of zeros.
@@ -931,6 +1037,26 @@ reruns chunked NDual passes during the reverse sweep.
     return y, _nfwd_pullback(f, primals, tangents, tangent(y), Val(N))
 end
 
+# Match the fixed-arity forward fast paths above: the generic tuple path can allocate for
+# small scalar primitive pullbacks as well.
+@inline function _nfwd_rrule_call(f, x::Tuple{CoDual,CoDual}, ::Val{N}) where {N}
+    primals = (primal(x[1]), primal(x[2]))
+    tangents = (tangent(x[1]), tangent(x[2]))
+    y_primal = f(primals...)
+    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
+    y = CoDual(y_primal, fdata(zero_tangent(y_primal)))
+    return y, _nfwd_pullback(f, primals, tangents, tangent(y), Val(N))
+end
+
+@inline function _nfwd_rrule_call(f, x::Tuple{CoDual,CoDual,CoDual}, ::Val{N}) where {N}
+    primals = (primal(x[1]), primal(x[2]), primal(x[3]))
+    tangents = (tangent(x[1]), tangent(x[2]), tangent(x[3]))
+    y_primal = f(primals...)
+    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
+    y = CoDual(y_primal, fdata(zero_tangent(y_primal)))
+    return y, _nfwd_pullback(f, primals, tangents, tangent(y), Val(N))
+end
+
 @inline function _nfwd_rrule_call(f, x::Tuple, chunk_size::Integer)
     return _nfwd_rrule_call(f, x, Val(_nfwd_check_chunk_size(chunk_size)))
 end
@@ -992,6 +1118,22 @@ function (pb::Pullback{F,N,Tuple{T},Tuple{NoFData},Y})(y_rdata) where {F,N,T<:Nu
     return (rdata(zero_tangent(pb.f)), _nfwd_scalar_gradient_rdata(pb, y_rdata))
 end
 
+function (pb::Pullback{F,N,P,T,Y})(
+    y_rdata
+) where {F,N,P<:Tuple{Vararg{Number}},T<:Tuple{Vararg{NoFData}},Y}
+    ȳ = tangent(pb.y_fdata, y_rdata)
+    # Accumulate gradients in tuple form so multi-scalar pullbacks stay allocation-free.
+    grads = _nfwd_zero_scalar_grads(pb.primals, pb.tangents)
+    total_dof = _nfwd_input_dof(pb.primals)
+    for start_slot in 1:N:total_dof
+        seeded_tangents = _nfwd_seed_tangents(pb.primals, Val(N), start_slot)
+        _, dy = _nfwd_eval(pb.f, pb.primals, seeded_tangents, Val(N))
+        lane_vals = _nfwd_contract_output(ȳ, dy)
+        grads = _nfwd_scatter_scalar_chunk(grads, pb.primals, lane_vals, start_slot)
+    end
+    return tuple(rdata(zero_tangent(pb.f)), _nfwd_gradient_rdatas(grads)...)
+end
+
 """
     (pb::Pullback)(y_rdata)
 
@@ -1042,6 +1184,26 @@ function _nfwd_eval(
 ) where {T<:Number,D,N}
     lifted = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
     return _nfwd_extract(f(lifted), Val(N))
+end
+
+# Small scalar tuples can allocate when lifted through the generic `map` path above, so
+# keep fixed-arity scalar specializations for the common binary/ternary primitive
+# wrappers that are expected to stay allocation-free.
+function _nfwd_eval(
+    f, primals::Tuple{T1,T2}, tangents::Tuple{D1,D2}, ::Val{N}
+) where {T1<:Number,T2<:Number,D1,D2,N}
+    lifted1 = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
+    lifted2 = _nfwd_lift(_nfwd_check_primal(primals[2]), tangents[2], Val(N))
+    return _nfwd_extract(f(lifted1, lifted2), Val(N))
+end
+
+function _nfwd_eval(
+    f, primals::Tuple{T1,T2,T3}, tangents::Tuple{D1,D2,D3}, ::Val{N}
+) where {T1<:Number,T2<:Number,T3<:Number,D1,D2,D3,N}
+    lifted1 = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
+    lifted2 = _nfwd_lift(_nfwd_check_primal(primals[2]), tangents[2], Val(N))
+    lifted3 = _nfwd_lift(_nfwd_check_primal(primals[3]), tangents[3], Val(N))
+    return _nfwd_extract(f(lifted1, lifted2, lifted3), Val(N))
 end
 
 #
