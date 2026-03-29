@@ -71,10 +71,11 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
                 is_primitive=true,
             )
             dp = Mooncake.zero_codual(p)
+            primal_p, tangent_p = Mooncake.arrayify(dp)
+            @test primal_p === p
             if ET <: Real
-                @test Mooncake.arrayify(dp) == (p, Mooncake.zero_tangent(p))
+                @test tangent_p == Mooncake.zero_tangent(p)
             elseif ET <: Complex
-                primal_p, tangent_p = Mooncake.arrayify(dp)
                 @test (primal_p, tangent_p) isa
                     Tuple{CuArray{ET,2,CUDA.DeviceMemory},CuArray{ET,2,CUDA.DeviceMemory}}
                 @test all(iszero, tangent_p)

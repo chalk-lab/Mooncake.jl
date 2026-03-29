@@ -254,6 +254,26 @@ function build_frule(
     return build_frule(typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages)
 end
 
+# Primitive scalar wrappers in rules_via_nfwd.jl only need these nfwd execution helpers.
+# Calling these helpers avoids constructing a fresh Rule/RRule wrapper at every primitive
+# callsite, which would otherwise add avoidable allocations and dispatch overhead to hot
+# scalar rules. Rule and RRule still back the public build_frule/build_rrule APIs, where
+# the caller builds one wrapper, reuses it, and keeps its mutable workspace private to
+# that instance. Primitive rules do not have that caller-owned lifecycle: they are
+# entered through ordinary Mooncake dispatch, so using Rule/RRule there would either
+# build a new mutable wrapper per call or hide shared mutable workspace behind a plain
+# rule method. That shared-state hazard is not unique to nfwd, but it matters most here
+# because primitive rules are expected to behave like ordinary stateless methods.
+@inline function _nfwd_primitive_frule_call(
+    ::Val{N}, f::Dual, x::Vararg{Dual,M}
+) where {M,N}
+    _nfwd_check_function_tangent(tangent(f))
+    primals = map(primal, x)
+    tangents = map(tangent, x)
+    y, dy = _nfwd_eval(primal(f), primals, tangents, Val(N))
+    return Dual(y, dy)
+end
+
 function (rule::Rule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
     _nfwd_verify_sig(rule, (f, x...))
     _nfwd_check_function_tangent(tangent(f))
@@ -350,6 +370,13 @@ function build_rrule(
     f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
     return build_rrule(typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages)
+end
+
+@inline function _nfwd_primitive_rrule_call(
+    ::Val{N}, f::CoDual, x::Vararg{CoDual,M}
+) where {M,N}
+    _nfwd_check_function_tangent(tangent(f))
+    return _nfwd_rrule_call(primal(f), x, Val(N))
 end
 
 """
@@ -788,6 +815,46 @@ end
         _nfwd_gradient_rdatas(Base.tail(grads))...,
     )
 end
+
+@inline _nfwd_zero_scalar_grads(::Tuple{}, ::Tuple{}) = ()
+@inline function _nfwd_zero_scalar_grads(primals::Tuple, tangents::Tuple)
+    return (
+        zero_tangent(first(primals), first(tangents)),
+        _nfwd_zero_scalar_grads(Base.tail(primals), Base.tail(tangents))...,
+    )
+end
+
+@inline function _nfwd_update_scalar_grad(
+    grads::Tuple, primals::Tuple, global_slot::Int, lane_val, offset::Int=0
+)
+    x = first(primals)
+    dof = _nfwd_input_dof(x)
+    if offset < global_slot <= offset + dof
+        local_slot = global_slot - offset
+        return (
+            _nfwd_accumulate_scalar_gradient(first(grads), local_slot, lane_val),
+            Base.tail(grads)...,
+        )
+    end
+    return (
+        first(grads),
+        _nfwd_update_scalar_grad(
+            Base.tail(grads), Base.tail(primals), global_slot, lane_val, offset + dof
+        )...,
+    )
+end
+
+@inline function _nfwd_scatter_scalar_chunk(
+    grads::Tuple, primals::Tuple, dy::Tuple, start_slot::Int
+)
+    global_slot = start_slot
+    for lane_val in dy
+        grads = _nfwd_update_scalar_grad(grads, primals, global_slot, lane_val)
+        global_slot += 1
+    end
+    return grads
+end
+
 # `slot` is the 1-based DOF index within the scalar/complex input: 1 for the real
 # component (or the sole IEEEFloat slot), 2 for the imaginary component of a complex.
 # Called from `_nfwd_scalar_gradient_rdata` with the loop's global_slot, which
@@ -990,6 +1057,22 @@ Scalar-input pullback specialization returning reverse data without the generic 
 """
 function (pb::Pullback{F,N,Tuple{T},Tuple{NoFData},Y})(y_rdata) where {F,N,T<:Number,Y}
     return (rdata(zero_tangent(pb.f)), _nfwd_scalar_gradient_rdata(pb, y_rdata))
+end
+
+function (pb::Pullback{F,N,P,T,Y})(
+    y_rdata
+) where {F,N,P<:Tuple{Vararg{Number}},T<:Tuple{Vararg{NoFData}},Y}
+    ȳ = tangent(pb.y_fdata, y_rdata)
+    # Accumulate gradients in tuple form so multi-scalar pullbacks stay allocation-free.
+    grads = _nfwd_zero_scalar_grads(pb.primals, pb.tangents)
+    total_dof = _nfwd_input_dof(pb.primals)
+    for start_slot in 1:N:total_dof
+        seeded_tangents = _nfwd_seed_tangents(pb.primals, Val(N), start_slot)
+        _, dy = _nfwd_eval(pb.f, pb.primals, seeded_tangents, Val(N))
+        lane_vals = _nfwd_contract_output(ȳ, dy)
+        grads = _nfwd_scatter_scalar_chunk(grads, pb.primals, lane_vals, start_slot)
+    end
+    return tuple(rdata(zero_tangent(pb.f)), _nfwd_gradient_rdatas(grads)...)
 end
 
 """

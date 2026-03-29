@@ -33,6 +33,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:fastmath})
                 (false, :allocs, nothing, Base.FastMath.asin_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.asinh_fast, P(1.3)),
                 (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4)),
+                (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4), P(3.2)),
                 (false, :allocs, nothing, Base.FastMath.atanh_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.cbrt_fast, P(0.4)),
                 (false, :allocs, nothing, Base.FastMath.cis_fast, P(0.5)),

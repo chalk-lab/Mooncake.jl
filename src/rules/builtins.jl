@@ -997,7 +997,8 @@ function rrule!!(
     if tangent_type(P) == NoTangent
         y = uninit_fcodual(getfield(primal(x), primal(name)))
         return y, NoPullback(f, x, name)
-    elseif is_homogeneous_and_immutable(primal(x))
+    elseif !ismutabletype(P)
+        # Immutable structs can update the selected field directly without going through lgetfield.
         dx_r = lazy_zero_rdata(primal(x))
         _name = primal(name)
         function immutable_lgetfield_pb!!(dy)
@@ -1017,7 +1018,8 @@ function rrule!!(
     if tangent_type(P) == NoTangent
         y = uninit_fcodual(getfield(primal(x), primal(name)))
         return y, NoPullback(f, x, name, order)
-    elseif is_homogeneous_and_immutable(primal(x))
+    elseif !ismutabletype(P)
+        # The ordered immutable case can use the same direct field update path.
         dx_r = lazy_zero_rdata(primal(x))
         _name = primal(name)
         function immutable_lgetfield_pb!!(dy)
@@ -1034,6 +1036,8 @@ function rrule!!(
     end
 end
 
+# TODO: remove once no remaining callers depend on the older homogeneous-immutable
+# getfield fast-path selection.
 @generated is_homogeneous_and_immutable(::P) where {P<:Tuple} = allequal(fieldtypes(P))
 
 @inline is_homogeneous_and_immutable(p::NamedTuple) = is_homogeneous_and_immutable(Tuple(p))
@@ -1439,11 +1443,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, (lb=1e-3, ub=20.0), fieldtype, StructFoo, :b),
         (false, :stability, (lb=1e-3, ub=20.0), fieldtype, MutableFoo, :a),
         (false, :stability, (lb=1e-3, ub=20.0), fieldtype, MutableFoo, :b),
-        # Symbol-indexed getfield on StructFoo is slower (~251x) than expected.
+        # These primals are tiny builtins, so keep some ratio headroom for timing noise.
         (true, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0), :a),
         (false, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0, randn(5)), :a),
         (false, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0, randn(5)), :b),
-        # Int-indexed getfield on StructFoo is slower (~420x) than Symbol-indexed.
+        # Integer field lookup still merits a slightly wider bound than symbol lookup.
         (true, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0), 1),
         (false, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0, randn(5)), 1),
         (false, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0, randn(5)), 2),

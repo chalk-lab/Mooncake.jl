@@ -1503,6 +1503,11 @@ Callable forward-mode rule used by `nfwd`.
 
 `Rule` is built from a statically-known call signature. `buf` holds a reusable
 typed scratch buffer for in-place array lifting when a chunk-layout tangent is available.
+
+!!! warning
+    `Rule` owns mutable workspace. Reusing one instance avoids repeated wrapper
+    construction, but a single instance must not be shared across concurrent calls.
+    This is a general shared-mutable-state hazard, not something specific to `nfwd`.
 """
 struct Rule{sig,N,Tbuf<:Base.RefValue}
     buf::Tbuf
@@ -1532,6 +1537,12 @@ The `scalar_out` type parameter is `true` when inference confirms at rule-build 
 `f` returns an `IEEEFloat` scalar for the given input types. This allows the single-array
 rrule specialisation to skip the redundant primal type-check call, which otherwise costs
 one full function evaluation per gradient call.
+
+!!! warning
+    `RRule` owns mutable workspace in `buf` and `grad_buf`. Reusing one instance avoids
+    repeated wrapper construction, but a single instance must not be shared across
+    concurrent calls. This is a general shared-mutable-state hazard, not something
+    specific to `nfwd`.
 """
 struct RRule{sig,N,Tbuf<:Base.RefValue,scalar_out,Tgbuf<:Base.RefValue}
     buf::Tbuf
