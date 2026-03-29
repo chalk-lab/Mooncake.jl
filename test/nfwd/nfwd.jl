@@ -242,6 +242,35 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_value(h) ≈ 5.0
         @test Nfwd.ndual_partial(h, 1) ≈ 3.0 / 5.0  # d/dx hypot(x,y) = x/h
 
+        # zero tangents must stay zero at singular derivative sites
+        @test Nfwd.ndual_partial(log(_d(0.0, 0.0)), 1) === 0.0
+        @test !isnan(Nfwd.ndual_partial(log(_d(0.0, 0.0)), 1))
+        @test Nfwd.ndual_partial(sqrt(_d(0.0, 0.0)), 1) === 0.0
+        @test !isnan(Nfwd.ndual_partial(sqrt(_d(0.0, 0.0)), 1))
+        @test Nfwd.ndual_partial(cbrt(_d(0.0, 0.0)), 1) === 0.0
+        @test !isnan(Nfwd.ndual_partial(cbrt(_d(0.0, 0.0)), 1))
+        @test Nfwd.ndual_partial(log10(_d(0.0, 0.0)), 1) === 0.0
+        @test !isnan(Nfwd.ndual_partial(log10(_d(0.0, 0.0)), 1))
+        @test Nfwd.ndual_partial(log2(_d(0.0, 0.0)), 1) === 0.0
+        @test !isnan(Nfwd.ndual_partial(log2(_d(0.0, 0.0)), 1))
+        @test Nfwd.ndual_partial(log1p(_d(-1.0, 0.0)), 1) === 0.0
+        @test !isnan(Nfwd.ndual_partial(log1p(_d(-1.0, 0.0)), 1))
+
+        l0 = log(_d2(2.0, 0.0, 0.0), _d2(0.0, 0.0, 0.0))
+        @test Nfwd.ndual_partial(l0, 1) === 0.0
+        @test !isnan(Nfwd.ndual_partial(l0, 1))
+        @test Nfwd.ndual_partial(l0, 2) === 0.0
+        @test !isnan(Nfwd.ndual_partial(l0, 2))
+
+        h0 = hypot(_d2(0.0, 0.0, 0.0), _d2(0.0, 0.0, 0.0))
+        @test Nfwd.ndual_partial(h0, 1) === 0.0
+        @test !isnan(Nfwd.ndual_partial(h0, 1))
+        @test Nfwd.ndual_partial(h0, 2) === 0.0
+        @test !isnan(Nfwd.ndual_partial(h0, 2))
+        h3 = hypot(_d2(0.0, 0.0, 0.0), _d2(0.0, 0.0, 0.0), _d2(0.0, 0.0, 0.0))
+        @test Nfwd.ndual_partial(h3, 1) === 0.0
+        @test !isnan(Nfwd.ndual_partial(h3, 1))
+
         # max / min / clamp
         a, b = _d(3.0, 1.0), _d(1.0, 0.0)
         @test Nfwd.ndual_value(max(a, b)) ≈ 3.0
@@ -485,6 +514,13 @@ using Mooncake.Nfwd
         x = _d(4.0, 1.0)
         @test Nfwd.ndual_value(log(2, x)) ≈ log(2, 4.0)
         @test Nfwd.ndual_partial(log(2, x), 1) ≈ inv(4.0 * log(2))
+
+        b = _d2(2.0, 1.0, 0.0)
+        x2 = _d2(4.0, 0.0, 1.0)
+        r = log(b, x2)
+        @test Nfwd.ndual_value(r) ≈ log(2.0, 4.0)
+        @test Nfwd.ndual_partial(r, 1) ≈ -log(2.0, 4.0) / (2.0 * log(2.0))
+        @test Nfwd.ndual_partial(r, 2) ≈ inv(4.0 * log(2.0))
 
         y = _d(1.5, 1.0)
         @test Nfwd.ndual_value(ldexp(y, 3)) ≈ ldexp(1.5, 3)

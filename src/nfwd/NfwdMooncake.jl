@@ -274,6 +274,30 @@ end
     return Dual(y, dy)
 end
 
+# The generic vararg path can allocate for small scalar primitive wrappers, so keep
+# fixed-arity entry points here for common binary/ternary rules such as `atan`, `log`,
+# and `clamp`.
+@inline function _nfwd_primitive_frule_call(::Val{N}, f::Dual, x1::Dual, x2::Dual) where {N}
+    _nfwd_check_function_tangent(tangent(f))
+    y, dy = _nfwd_eval(
+        primal(f), (primal(x1), primal(x2)), (tangent(x1), tangent(x2)), Val(N)
+    )
+    return Dual(y, dy)
+end
+
+@inline function _nfwd_primitive_frule_call(
+    ::Val{N}, f::Dual, x1::Dual, x2::Dual, x3::Dual
+) where {N}
+    _nfwd_check_function_tangent(tangent(f))
+    y, dy = _nfwd_eval(
+        primal(f),
+        (primal(x1), primal(x2), primal(x3)),
+        (tangent(x1), tangent(x2), tangent(x3)),
+        Val(N),
+    )
+    return Dual(y, dy)
+end
+
 function (rule::Rule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
     _nfwd_verify_sig(rule, (f, x...))
     _nfwd_check_function_tangent(tangent(f))
@@ -875,11 +899,11 @@ end
 end
 
 @inline function _nfwd_real_dot(a::T, b::T) where {T<:IEEEFloat}
-    return a * b
+    return a * Nfwd._nfwd_zero_mask(a, b)
 end
 
 @inline function _nfwd_real_dot(a::Complex{T}, b::Complex{T}) where {T<:IEEEFloat}
-    return real(conj(a) * b)
+    return real(conj(a) * Nfwd._nfwd_zero_mask(a, b))
 end
 
 # Scalar (real or complex): chunk_size=1 → plain scalar zero; chunk_size=N → N-tuple of zeros.
@@ -992,6 +1016,26 @@ reruns chunked NDual passes during the reverse sweep.
 @inline function _nfwd_rrule_call(f, x::Tuple{Vararg{CoDual,M}}, ::Val{N}) where {M,N}
     primals = map(primal, x)
     tangents = map(tangent, x)
+    y_primal = f(primals...)
+    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
+    y = CoDual(y_primal, fdata(zero_tangent(y_primal)))
+    return y, _nfwd_pullback(f, primals, tangents, tangent(y), Val(N))
+end
+
+# Match the fixed-arity forward fast paths above: the generic tuple path can allocate for
+# small scalar primitive pullbacks as well.
+@inline function _nfwd_rrule_call(f, x::Tuple{CoDual,CoDual}, ::Val{N}) where {N}
+    primals = (primal(x[1]), primal(x[2]))
+    tangents = (tangent(x[1]), tangent(x[2]))
+    y_primal = f(primals...)
+    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
+    y = CoDual(y_primal, fdata(zero_tangent(y_primal)))
+    return y, _nfwd_pullback(f, primals, tangents, tangent(y), Val(N))
+end
+
+@inline function _nfwd_rrule_call(f, x::Tuple{CoDual,CoDual,CoDual}, ::Val{N}) where {N}
+    primals = (primal(x[1]), primal(x[2]), primal(x[3]))
+    tangents = (tangent(x[1]), tangent(x[2]), tangent(x[3]))
     y_primal = f(primals...)
     _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
     y = CoDual(y_primal, fdata(zero_tangent(y_primal)))
@@ -1125,6 +1169,26 @@ function _nfwd_eval(
 ) where {T<:Number,D,N}
     lifted = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
     return _nfwd_extract(f(lifted), Val(N))
+end
+
+# Small scalar tuples can allocate when lifted through the generic `map` path above, so
+# keep fixed-arity scalar specializations for the common binary/ternary primitive
+# wrappers that are expected to stay allocation-free.
+function _nfwd_eval(
+    f, primals::Tuple{T1,T2}, tangents::Tuple{D1,D2}, ::Val{N}
+) where {T1<:Number,T2<:Number,D1,D2,N}
+    lifted1 = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
+    lifted2 = _nfwd_lift(_nfwd_check_primal(primals[2]), tangents[2], Val(N))
+    return _nfwd_extract(f(lifted1, lifted2), Val(N))
+end
+
+function _nfwd_eval(
+    f, primals::Tuple{T1,T2,T3}, tangents::Tuple{D1,D2,D3}, ::Val{N}
+) where {T1<:Number,T2<:Number,T3<:Number,D1,D2,D3,N}
+    lifted1 = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
+    lifted2 = _nfwd_lift(_nfwd_check_primal(primals[2]), tangents[2], Val(N))
+    lifted3 = _nfwd_lift(_nfwd_check_primal(primals[3]), tangents[3], Val(N))
+    return _nfwd_extract(f(lifted1, lifted2, lifted3), Val(N))
 end
 
 #

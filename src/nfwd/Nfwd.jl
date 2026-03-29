@@ -261,8 +261,9 @@ composed of scalar multiplication and addition propagate the N directions automa
 
 2. **Hand-coded rules using `nan_tangent_guard`** (`log`, `sqrt`, `cbrt`, …) —
    `nan_tangent_guard` is explicitly constrained to `IEEEFloat | Complex{<:IEEEFloat}`.
-   Passing an NDual tangent would produce a `MethodError`.  An `NDual` overload of
-   `nan_tangent_guard` would be needed to use these functions inside `NfwdMode{N}`.
+   Passing an NDual tangent would produce a `MethodError`, so these functions need
+   dedicated NDual methods that preserve the same zero-mask behavior instead of calling
+   `nan_tangent_guard` directly.
 
 In practice `NfwdMode{N}` is designed for **GPU kernel boundaries** where each
 width-1 pass costs a full kernel launch.  For CPU scalar ops the overhead is negligible
@@ -382,6 +383,21 @@ end
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
 @inline _pt_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
+# `_nfwd_zero_mask` plays the same role as `nan_tangent_guard` for scalar NDual algebra:
+# when the local seed / upstream factor `a` is zero, replace `b` by zero(b) before the
+# multiply so `0 * Inf` and `0 * NaN` collapse to zero instead of poisoning the tangent.
+# nfwd uses this in forward mode through `_pt_guarded_scale`, which masks zero NDual lanes
+# in singular formulas such as `log`, `sqrt`, `cbrt`, and `hypot`, and in reverse mode
+# through `_nfwd_real_dot`, which masks zero upstream cotangents before contracting them
+# against nfwd output tangents. This is the same strong-zero idea used in other AD systems,
+# including ForwardDiff, to keep inactive directions from turning into NaNs.
+@inline _nfwd_zero_mask(a, b) = ifelse(iszero(a), zero(b), b)
+@inline function _pt_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
+    return ntuple(i -> begin
+        pi = p[i]
+        pi * _nfwd_zero_mask(pi, s)
+    end, Val(N))
+end
 @inline _pt_add(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] + q[i], Val(N))
 @inline _pt_sub(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] - q[i], Val(N))
 @inline _pt_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
@@ -821,25 +837,46 @@ end
     return (ev=exp10(a.value); NDual{T,N}(ev, _pt_scale(a.partials, ev * T(log(10)))))
 end
 @inline function Base.log(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log(a.value), _pt_scale(a.partials, inv(a.value)))
+    return NDual{T,N}(log(a.value), _pt_guarded_scale(a.partials, inv(a.value)))
 end
 @inline function Base.log2(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log2(a.value), _pt_scale(a.partials, inv(a.value * T(log(2)))))
+    return NDual{T,N}(
+        log2(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(2))))
+    )
 end
 @inline function Base.log10(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log10(a.value), _pt_scale(a.partials, inv(a.value * T(log(10)))))
+    return NDual{T,N}(
+        log10(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(10))))
+    )
 end
 @inline function Base.log1p(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log1p(a.value), _pt_scale(a.partials, inv(one(T) + a.value)))
+    return NDual{T,N}(log1p(a.value), _pt_guarded_scale(a.partials, inv(one(T) + a.value)))
 end
 @inline function Base.expm1(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(expm1(a.value), _pt_scale(a.partials, exp(a.value)))
 end
 
-# Two-argument log: log(b, x) = log(x)/log(b); d/dx = inv(x * log(b)).
+# Two-argument log: log(b, x) = log(x)/log(b); d/dx = inv(x * log(b)),
+# d/db = -log(x) / (b * log(b)^2) = -log(b, x) / (b * log(b)).
 @inline function Base.log(b::Real, a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log(b, a.value), _pt_scale(a.partials, inv(a.value * T(log(b)))))
+    return NDual{T,N}(
+        log(b, a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(b))))
+    )
 end
+@inline function Base.log(b::NDual{T,N}, a::NDual{T,N}) where {T,N}
+    log_b = log(b.value)
+    y = log(b.value, a.value)
+    return NDual{T,N}(
+        y,
+        _pt_add(
+            _pt_guarded_scale(b.partials, -y / (b.value * log_b)),
+            _pt_guarded_scale(a.partials, inv(a.value * log_b)),
+        ),
+    )
+end
+@inline Base.log(b::NDual{T1,N1}, a::NDual{T2,N2}) where {T1,T2,N1,N2} = log(
+    _promote_matching_nduals(:log, b, a)...
+)
 @inline Base.log(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = log(a)
 
 # ldexp(a, n) = a * 2^n — linear; derivative = 2^n.
@@ -849,10 +886,10 @@ end
 
 # Roots
 @inline function Base.sqrt(a::NDual{T,N}) where {T,N}
-    return (sv=sqrt(a.value); NDual{T,N}(sv, _pt_scale(a.partials, inv(2 * sv))))
+    return (sv=sqrt(a.value); NDual{T,N}(sv, _pt_guarded_scale(a.partials, inv(2 * sv))))
 end
 @inline function Base.cbrt(a::NDual{T,N}) where {T,N}
-    return (cv=cbrt(a.value); NDual{T,N}(cv, _pt_scale(a.partials, inv(3 * cv^2))))
+    return (cv=cbrt(a.value); NDual{T,N}(cv, _pt_guarded_scale(a.partials, inv(3 * cv^2))))
 end
 
 # Absolute value and sign
@@ -991,9 +1028,20 @@ end
 # hypot — d/da hypot(a,b) = a / hypot(a,b), d/db = b / hypot(a,b).
 @inline function Base.hypot(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     h = hypot(a.value, b.value)
+    coeff_a = _nfwd_zero_mask(a.value, a.value / h)
+    coeff_b = _nfwd_zero_mask(b.value, b.value / h)
     return NDual{T,N}(
-        h, _pt_add(_pt_scale(a.partials, a.value / h), _pt_scale(b.partials, b.value / h))
+        h, _pt_add(_pt_scale(a.partials, coeff_a), _pt_scale(b.partials, coeff_b))
     )
+end
+@inline Base.hypot(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = hypot(
+    _promote_matching_nduals(:hypot, a, b)...
+)
+@inline Base.hypot(a::NDual{T,N}) where {T,N} = abs(a)
+@inline function Base.hypot(
+    a::NDual{T,N}, b::NDual{T,N}, c::NDual{T,N}, xs::Vararg{NDual{T,N},M}
+) where {T,N,M}
+    return hypot(hypot(a, b), c, xs...)
 end
 
 # min / max — subgradient: select the tangent of the winning branch.

@@ -37,8 +37,15 @@ for f in (
     exp2,
     exp10,
     expm1,
+    log,
+    log10,
+    log2,
+    log1p,
+    sqrt,
+    cbrt,
     sin,
     cos,
+    cospi,
     tan,
     sec,
     csc,
@@ -133,6 +140,14 @@ function rrule!!(
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(2), f, y, x)
 end
 
+@is_primitive MinimalCtx Tuple{typeof(log),P,P} where {P<:IEEEFloat}
+function frule!!(f::Dual{typeof(log)}, b::Dual{P}, x::Dual{P}) where {P<:IEEEFloat}
+    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, b, x)
+end
+function rrule!!(f::CoDual{typeof(log)}, b::CoDual{P}, x::CoDual{P}) where {P<:IEEEFloat}
+    return NfwdMooncake._nfwd_primitive_rrule_call(Val(2), f, b, x)
+end
+
 # ── clamp(x, lo, hi) ──────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(clamp),P,P,P} where {P<:IEEEFloat}
@@ -179,4 +194,18 @@ function frule!!(f::Dual{typeof(modf)}, x::Dual{P}) where {P<:IEEEFloat}
 end
 function rrule!!(f::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
+end
+
+# ── hypot(x, xs...) ───────────────────────────────────────────────────────────
+
+@is_primitive MinimalCtx Tuple{typeof(hypot),P,Vararg{P}} where {P<:IEEEFloat}
+function frule!!(
+    f::Dual{typeof(hypot)}, x::Dual{P}, xs::Vararg{Dual{P},M}
+) where {P<:IEEEFloat,M}
+    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x, xs...)
+end
+function rrule!!(
+    f::CoDual{typeof(hypot)}, x::CoDual{P}, xs::Vararg{CoDual{P},M}
+) where {P<:IEEEFloat,M}
+    return NfwdMooncake._nfwd_primitive_rrule_call(Val(M + 1), f, x, xs...)
 end
