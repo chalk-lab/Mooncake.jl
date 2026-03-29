@@ -1624,15 +1624,18 @@ end
 @inline _nfwd_is_supported_scalar(::Type{<:Complex{<:IEEEFloat}}) = true
 @inline _nfwd_is_supported_scalar(::Type) = false
 
-@inline _nfwd_is_supported_primal(::Type{<:IEEEFloat}) = true
-@inline _nfwd_is_supported_primal(::Type{<:Complex{<:IEEEFloat}}) = true
-@inline function _nfwd_is_supported_primal(::Type{<:Array{ET}}) where {ET}
+@inline _nfwd_tuple_primal_supported(::Tuple{}) = true
+@inline function _nfwd_tuple_primal_supported(x::Tuple)
+    return _nfwd_is_supported_primal(first(x)) && _nfwd_tuple_primal_supported(Base.tail(x))
+end
+
+@inline _nfwd_is_supported_primal(::IEEEFloat) = true
+@inline _nfwd_is_supported_primal(::Complex{<:IEEEFloat}) = true
+@inline function _nfwd_is_supported_primal(x::Array{ET}) where {ET}
     _nfwd_is_supported_scalar(ET)
 end
-@inline function _nfwd_is_supported_primal(T::Type{<:Tuple})
-    return all(_nfwd_is_supported_primal, T.parameters)
-end
-@inline _nfwd_is_supported_primal(::Type) = false
+@inline _nfwd_is_supported_primal(x::Tuple) = _nfwd_tuple_primal_supported(x)
+@inline _nfwd_is_supported_primal(::Any) = false
 
 abstract type UnsupportedError <: Exception end
 
@@ -1667,7 +1670,7 @@ end
 end
 
 @inline function _nfwd_check_primal(x)
-    _nfwd_is_supported_primal(typeof(x)) || _nfwd_input_error(x)
+    _nfwd_is_supported_primal(x) || _nfwd_input_error(x)
     return x
 end
 

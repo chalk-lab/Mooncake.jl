@@ -11,6 +11,9 @@ _sym(A) = A'A
 _pdmat(A) = PDMat(_sym(A) + 5I)
 sr(n::Int) = StableRNG(n)
 
+const LKJ_SAMPLE_RMAT = collect(rand(StableRNG(123456), LKJ(5, 1.1)))
+const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1.1)).L)
+
 @testset "distributions" begin
     logpdf_test_cases = Any[
 
@@ -1588,7 +1591,7 @@ sr(n::Int) = StableRNG(n)
         ),
         (
             "LKJ η",
-            η -> logpdf(LKJ(5, η), rand(StableRNG(123456), LKJ(5, 1.1))),
+            η -> logpdf(LKJ(5, η), LKJ_SAMPLE_RMAT),
             (1.1,),
             1,
             (:forward, :reverse, :nfwd),
@@ -1597,7 +1600,7 @@ sr(n::Int) = StableRNG(n)
         (
             "LKJ R",
             Rmat -> logpdf(LKJ(5, 1.1), Rmat),
-            (collect(rand(StableRNG(123456), LKJ(5, 1.1))),),
+            (LKJ_SAMPLE_RMAT,),
             25,
             (:forward, :reverse, :nfwd),
             :none,
@@ -1605,7 +1608,7 @@ sr(n::Int) = StableRNG(n)
         (
             "LKJ η+R",
             (η, Rmat) -> logpdf(LKJ(5, η), Rmat),
-            (1.1, collect(rand(StableRNG(123456), LKJ(5, 1.1)))),
+            (1.1, LKJ_SAMPLE_RMAT),
             26,
             (:forward, :reverse, :nfwd),
             :none,
@@ -1653,20 +1656,23 @@ sr(n::Int) = StableRNG(n)
         # LKJCholesky — workaround: pass lower-triangular factor L as a plain Matrix.
         # Cholesky's constructor requires a numeric matrix, not NDual, so we accept Lmat::Matrix
         # as the NDual input and reconstruct Cholesky(Lmat, 'L', 0) inside the lambda.
+        # Restrict these to reverse/nfwd: forward-mode correctness uses unconstrained finite-
+        # difference perturbations of Lmat, which leave the valid Cholesky manifold and produce
+        # NaN primal evaluations.
         (
             "LKJCholesky L",
             Lmat -> logpdf(LKJCholesky(5, 1.1), Cholesky(Lmat, 'L', 0)),
-            (Matrix(rand(StableRNG(123456), LKJCholesky(5, 1.1)).L),),
+            (LKJ_CHOLESKY_SAMPLE_LMAT,),
             25,
-            (:forward, :reverse, :nfwd),
+            (:reverse, :nfwd),
             :none,
         ),
         (
             "LKJCholesky η+L",
             (η, Lmat) -> logpdf(LKJCholesky(5, η), Cholesky(Lmat, 'L', 0)),
-            (1.1, Matrix(rand(StableRNG(123456), LKJCholesky(5, 1.1)).L)),
+            (1.1, LKJ_CHOLESKY_SAMPLE_LMAT),
             26,
-            (:forward, :reverse, :nfwd),
+            (:reverse, :nfwd),
             :none,
         ),
 

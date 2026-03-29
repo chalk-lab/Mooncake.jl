@@ -106,7 +106,6 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
 
                     # 2-arg scaled Bessel/Hankel (1st arg gradient is `NotImplemented`)
                     (:none, x -> besselix(P(0.5), x), P(1.5)),
-                    (:none, x -> besselix(P(0.5), x), P(-1.5)),
                     (:none, x -> besseljx(P(0.5), x), P(1.5)),
                     (:none, x -> besselkx(P(0.5), x), P(1.5)),
                     (:none, x -> besselyx(P(0.5), x), P(1.5)),

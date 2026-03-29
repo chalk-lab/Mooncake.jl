@@ -394,7 +394,7 @@ function (rule::RRule{sig,N,Tbuf,false})(
     if y_primal isa IEEEFloat
         return _nfwd_array_scalar_rrule_result(rule, f_runtime, x, x_primal, Val(N))
     else
-        _nfwd_is_supported_primal(typeof(y_primal)) || _nfwd_output_error(y_primal)
+        _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
         y_cd = CoDual(y_primal, fdata(zero_tangent(y_primal)))
         return y_cd,
         _nfwd_pullback(f_runtime, (x_primal,), (tangent(x),), tangent(y_cd), Val(N))
@@ -754,22 +754,40 @@ function _nfwd_scatter_chunk!(grads::Tuple, inputs::Tuple, dy::Tuple, start_slot
     return nothing
 end
 
-function _nfwd_gradient_refs(primals::Tuple, tangents::Tuple)
-    return map(primals, tangents) do x, dx
-        if x isa Number
-            g = zero_tangent(x, dx)
-            Ref(g)
-        else
-            # Use a fresh zeros array (not the fdata) for VJP accumulation.  The generic
-            # pullback adds this into the fdata at the end so that existing fdata content
-            # (e.g. contributions from other uses of the same array) is preserved.
-            zero_tangent(x)
-        end
+@inline _nfwd_gradient_refs(::Tuple{}, ::Tuple{}) = ()
+@inline function _nfwd_gradient_refs(primals::Tuple, tangents::Tuple)
+    x = first(primals)
+    dx = first(tangents)
+    g = if x isa Number
+        Ref(zero_tangent(x, dx))
+    else
+        # Use a fresh zeros array (not the fdata) for VJP accumulation. The generic
+        # pullback adds this into the fdata at the end so that existing fdata content
+        # (e.g. contributions from other uses of the same array) is preserved.
+        zero_tangent(x)
     end
+    return (g, _nfwd_gradient_refs(Base.tail(primals), Base.tail(tangents))...)
 end
 
 _nfwd_unwrap_gradient(g::Base.RefValue) = g[]
 _nfwd_unwrap_gradient(g) = g
+
+@inline _nfwd_accumulate_array_gradients!(::Tuple{}, ::Tuple{}) = nothing
+@inline function _nfwd_accumulate_array_gradients!(tangents::Tuple, grads::Tuple)
+    fdata = first(tangents)
+    grad = first(grads)
+    fdata isa AbstractArray && (fdata .+= _nfwd_unwrap_gradient(grad))
+    _nfwd_accumulate_array_gradients!(Base.tail(tangents), Base.tail(grads))
+    return nothing
+end
+
+@inline _nfwd_gradient_rdatas(::Tuple{}) = ()
+@inline function _nfwd_gradient_rdatas(grads::Tuple)
+    return (
+        rdata(_nfwd_unwrap_gradient(first(grads))),
+        _nfwd_gradient_rdatas(Base.tail(grads))...,
+    )
+end
 
 # `slot` is the 1-based DOF index within the scalar/complex input: 1 for the real
 # component (or the sole IEEEFloat slot), 2 for the imaginary component of a complex.
@@ -909,7 +927,7 @@ reruns chunked NDual passes during the reverse sweep.
     primals = map(primal, x)
     tangents = map(tangent, x)
     y_primal = f(primals...)
-    _nfwd_is_supported_primal(typeof(y_primal)) || _nfwd_output_error(y_primal)
+    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
     y = CoDual(y_primal, fdata(zero_tangent(y_primal)))
     return y, _nfwd_pullback(f, primals, tangents, tangent(y), Val(N))
 end
@@ -926,6 +944,19 @@ Package the state needed for a later reverse sweep into an `Pullback`.
 function _nfwd_pullback(f, primals::Tuple, tangents::Tuple, y_fdata, ::Val{N}) where {N}
     return Pullback{typeof(f),N,typeof(primals),typeof(tangents),typeof(y_fdata)}(
         f, primals, tangents, y_fdata
+    )
+end
+
+@inline _nfwd_seed_tangents(::Tuple{}, ::Val{N}, start_slot::Int, offset::Int=0) where {N} = ()
+@inline function _nfwd_seed_tangents(
+    primals::Tuple, ::Val{N}, start_slot::Int, offset::Int=0
+) where {N}
+    x = first(primals)
+    return (
+        _nfwd_seed_tangent(x, N, start_slot, offset),
+        _nfwd_seed_tangents(
+            Base.tail(primals), Val(N), start_slot, offset + _nfwd_input_dof(x)
+        )...,
     )
 end
 
@@ -972,26 +1003,17 @@ into the cached gradient containers.
 function (pb::Pullback{F,N})(y_rdata) where {F,N}
     ȳ = tangent(pb.y_fdata, y_rdata)
     grads = _nfwd_gradient_refs(pb.primals, pb.tangents)
-    total_dof = sum(_nfwd_input_dof, pb.primals)
+    total_dof = _nfwd_input_dof(pb.primals)
     for start_slot in 1:N:total_dof
-        offset = 0
-        tangents = map(pb.primals) do x
-            t = _nfwd_seed_tangent(x, N, start_slot, offset)
-            offset += _nfwd_input_dof(x)
-            t
-        end
-        _, dy = _nfwd_eval(pb.f, pb.primals, tangents, Val(N))
+        seeded_tangents = _nfwd_seed_tangents(pb.primals, Val(N), start_slot)
+        _, dy = _nfwd_eval(pb.f, pb.primals, seeded_tangents, Val(N))
         lane_vals = _nfwd_contract_output(ȳ, dy)
         _nfwd_scatter_chunk!(grads, pb.primals, lane_vals, start_slot)
     end
-    # For array inputs the gradient lives in grads[i] (a fresh zeros array).  Accumulate it
+    # For array inputs the gradient lives in grads[i] (a fresh zeros array). Accumulate it
     # into the fdata (pb.tangents[i]) so that existing fdata contributions are preserved.
-    foreach(pb.tangents, grads) do fdata, grad
-        fdata isa AbstractArray && (fdata .+= _nfwd_unwrap_gradient(grad))
-    end
-    return tuple(
-        rdata(zero_tangent(pb.f)), map(g -> rdata(_nfwd_unwrap_gradient(g)), grads)...
-    )
+    _nfwd_accumulate_array_gradients!(pb.tangents, grads)
+    return tuple(rdata(zero_tangent(pb.f)), _nfwd_gradient_rdatas(grads)...)
 end
 
 #
@@ -1187,7 +1209,7 @@ end
 # Non-NDual outputs: the primal carries no tangent information; synthesize a zero tangent.
 # Unsupported types fall through to _nfwd_output_error via the is_supported_primal guard.
 function _nfwd_extract(y, ::Val{N}) where {N}
-    _nfwd_is_supported_primal(typeof(y)) || _nfwd_output_error(y)
+    _nfwd_is_supported_primal(y) || _nfwd_output_error(y)
     return y, _nfwd_zero_output_tangent(y, Val(N))
 end
 
