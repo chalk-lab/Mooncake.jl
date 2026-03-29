@@ -3,6 +3,7 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, JET, Mooncake, SpecialFunctions, StableRNGs, Test
+using Mooncake.Nfwd: NDual
 using Mooncake: ForwardMode, ReverseMode, map_prod
 using Mooncake.TestUtils: test_rule
 
@@ -149,5 +150,17 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                 StableRNG(123456), f, x...; perf_flag, is_primitive=false
             )
         end
+    end
+
+    @testset "NDual unsupported parameter directions" begin
+        ν_active = NDual{Float64,1}(3.0, (1.0,))
+        x_active = NDual{Float64,1}(1.5, (1.0,))
+        @test_throws ArgumentError besselj(ν_active, x_active)
+
+        a_active = NDual{Float64,1}(2.0, (1.0,))
+        b_zero = NDual{Float64,1}(3.0, (0.0,))
+        x_zero = NDual{Float64,1}(0.4, (0.0,))
+        @test_throws ArgumentError beta_inc(a_active, b_zero, x_zero)
+        @test_throws ArgumentError beta_inc(b_zero, a_active, x_zero)
     end
 end
