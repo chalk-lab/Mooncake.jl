@@ -7,6 +7,30 @@ using Mooncake.Nfwd: NDual
 using Mooncake: ForwardMode, ReverseMode, map_prod
 using Mooncake.TestUtils: test_rule
 
+# On Julia 1.10, a subset of upstream SpecialFunctions scalar primals allocate in ways
+# that are independent of Mooncake's imported rule path. Keep the type-stability checks,
+# but skip the zero-allocation assertion for those known cases only.
+function _sf_perf_flag(::Type{P}, name::Symbol, default::Symbol) where {P}
+    VERSION < v"1.11" || return default
+    name in (:digamma, :erfinv, :invdigamma, :trigamma, :expintx) && return :stability
+    P === Float32 || return default
+    name in (:logerfc, :logerfcx, :beta, :logbeta, :logabsgamma, :loggamma) &&
+        return :stability
+    return default
+end
+
+function _sf_nonprimitive_perf_flag(::Type{P}, name::Symbol, default::Symbol) where {P}
+    VERSION < v"1.11" || return default
+    P === Float32 && name === :logabsbeta && return :none
+    return default
+end
+
+function _sf_nonprimitive_perf_flag(name::Symbol, default::Symbol)
+    VERSION < v"1.11" || return default
+    name in (:gammax, :rgammax) && return :none
+    return default
+end
+
 # Helper methods to enable mixed Float32/Float64 operations. 
 # Required for compatibility with Julia 1.12+.
 Union{Float32,Float64}(x) = Float64(x)
@@ -29,26 +53,35 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                 (:stability_and_allocs, bessely0, P(0.1)),
                 (VERSION >= v"1.11" ? :stability_and_allocs : :none, bessely1, P(0.1)),
                 (:stability_and_allocs, dawson, P(0.1)),
-                (:stability_and_allocs, digamma, P(0.1)),
+                (_sf_perf_flag(P, :digamma, :stability_and_allocs), digamma, P(0.1)),
                 (:stability_and_allocs, erf, P(0.1)),
                 (:stability_and_allocs, erf, P(0.1), P(0.5)),
                 (:stability_and_allocs, erfc, P(0.1)),
-                (:stability_and_allocs, logerfc, P(0.1)),
+                (_sf_perf_flag(P, :logerfc, :stability_and_allocs), logerfc, P(0.1)),
                 (:stability_and_allocs, erfcinv, P(0.1)),
                 (:stability_and_allocs, erfcx, P(0.1)),
-                (:stability_and_allocs, logerfcx, P(0.1)),
+                (_sf_perf_flag(P, :logerfcx, :stability_and_allocs), logerfcx, P(0.1)),
                 (:stability_and_allocs, erfi, P(0.1)),
-                (:stability_and_allocs, erfinv, P(0.1)),
+                (_sf_perf_flag(P, :erfinv, :stability_and_allocs), erfinv, P(0.1)),
                 (:stability_and_allocs, gamma, P(0.1)),
-                (:stability_and_allocs, invdigamma, P(0.1)),
-                (:stability_and_allocs, trigamma, P(0.1)),
+                (_sf_perf_flag(P, :invdigamma, :stability_and_allocs), invdigamma, P(0.1)),
+                (_sf_perf_flag(P, :trigamma, :stability_and_allocs), trigamma, P(0.1)),
                 (:stability_and_allocs, polygamma, 3, P(0.1)),
-                (:stability_and_allocs, beta, P(0.3), P(0.1)),
-                (:stability_and_allocs, logbeta, P(0.3), P(0.1)),
-                (:stability_and_allocs, logabsgamma, P(0.3)),
-                (:stability_and_allocs, loggamma, P(0.3)),
+                (_sf_perf_flag(P, :beta, :stability_and_allocs), beta, P(0.3), P(0.1)),
+                (
+                    _sf_perf_flag(P, :logbeta, :stability_and_allocs),
+                    logbeta,
+                    P(0.3),
+                    P(0.1),
+                ),
+                (
+                    _sf_perf_flag(P, :logabsgamma, :stability_and_allocs),
+                    logabsgamma,
+                    P(0.3),
+                ),
+                (_sf_perf_flag(P, :loggamma, :stability_and_allocs), loggamma, P(0.3)),
                 (:stability_and_allocs, expint, P(0.3)),
-                (:stability_and_allocs, expintx, P(0.3)),
+                (_sf_perf_flag(P, :expintx, :stability_and_allocs), expintx, P(0.3)),
                 (:stability_and_allocs, expinti, P(0.3)),
                 (:stability_and_allocs, sinint, P(0.3)),
                 (:stability_and_allocs, cosint, P(0.3)),
@@ -69,13 +102,18 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                 (:none, logerf, P(-1.2), P(-1.1)), # third branch
                 (:none, logerf, P(0.3), P(1.1)), # fourth branch
                 (:allocs, SpecialFunctions.loggammadiv, P(1.0), P(9.0)),
-                (:allocs, logabsbeta, P(0.3), P(0.1)),
+                (
+                    _sf_nonprimitive_perf_flag(P, :logabsbeta, :allocs),
+                    logabsbeta,
+                    P(0.3),
+                    P(0.1),
+                ),
             ]
         end...,
 
         # Functions which only support Float64.
-        (:allocs, SpecialFunctions.gammax, 1.0),
-        (:allocs, SpecialFunctions.rgammax, 3.0, 6.0),
+        (_sf_nonprimitive_perf_flag(:gammax, :allocs), SpecialFunctions.gammax, 1.0),
+        (_sf_nonprimitive_perf_flag(:rgammax, :allocs), SpecialFunctions.rgammax, 3.0, 6.0),
         (:allocs, SpecialFunctions.rgamma1pm1, 0.1),
         (:allocs, SpecialFunctions.auxgam, 0.1),
         (:allocs, SpecialFunctions.loggamma1p, 0.3),

@@ -2051,35 +2051,36 @@ end
     return (; is_diff, primal_out, n_slots, partial_slots)
 end
 
-# Total Dual slots in a (possibly-nested) Broadcasted tree.  A sub-broadcast with
-# _total_bcast_dof == 0 has no differentiable leaves and can be pre-materialized to a
-# plain array before the GPU dual kernel, keeping flat_bc.f isbits (e.g. when one arg is
-# `Float64.(CuArray{Bool})`: the inner broadcast has dof==0 but its composed function
-# captures Type{Float64} which is not isbits).
-@inline _total_bcast_dof(bc::Broadcasted) = sum(_total_arg_dof, bc.args; init=0)
-@inline _total_arg_dof(a::Broadcasted) = _total_bcast_dof(a)
-@inline _total_arg_dof(a) = Nfwd._nfwd_leaf_dof(a)
-
-# Replace any nested Broadcasted sub-expression whose total dof is zero with its
-# primal materialized value.  This ensures Base.Broadcast.flatten(bc) produces an
-# isbits composed function, which is required for GPU kernel compilation.
-# Note: the resulting plain CuArray{T} (e.g. CuArray{Float64}) will have dof==1 and
-# consume one Dual slot in the kernel, but its _leaf_effective_tangent returns nothing
-# (tangent is not a CuArray), so the slot contribution is discarded — correct but
-# slightly wasteful.  This is unavoidable without a tagged wrapper type.
-function _premat_nondiff_args(bc::Broadcasted)
-    new_args = map(bc.args) do a
+# Replace any nested Broadcasted sub-expression whose tangent/fdata tree is
+# `NoTangent`/`NoFData` with its primal materialized value. This catches zero-DOF
+# subtrees such as `Float64.(b .> 0)` on Julia 1.10, where the primal leaves still have
+# differentiable element types (`b::CuArray{Float64}`) even though the nested broadcast
+# contributes no derivative information.
+#
+# Note: the resulting plain CuArray leaf may still have a differentiable eltype, so the
+# GPU dual kernel may reserve a slot for it. `_leaf_effective_tangent` returns `nothing`
+# for the paired `NoTangent`, so the slot contribution is discarded. That is slightly
+# wasteful but keeps the kernel function isbits and GPU-compilable.
+function _premat_nondiff_args(bc::Broadcasted, td)
+    targs = if td isa Union{NoTangent,NoFData}
+        ntuple(_ -> NoTangent(), length(bc.args))
+    else
+        _fields(td).args
+    end
+    new_args = ntuple(length(bc.args)) do i
+        a = bc.args[i]
+        ta = targs[i]
         if a isa Broadcasted
-            if _total_bcast_dof(a) == 0
+            if ta isa Union{NoTangent,NoFData}
                 Base.Broadcast.materialize(a)
             else
-                _premat_nondiff_args(a)
+                _premat_nondiff_args(a, ta)
             end
         else
             a
         end
     end
-    Broadcasted(bc.f, new_args, bc.axes)
+    return Broadcasted(bc.f, new_args, bc.axes)
 end
 
 # ── Adjoint / Transpose leaf helpers ─────────────────────────────────────────────────
@@ -2156,37 +2157,55 @@ end
 # contributions from non-differentiable leaves are filtered out downstream via the
 # _leaf_effective_tangent / _leaf_accum_fdata! catch-all methods (which return nothing
 # when the tangent is not a CuArray or IEEEFloat scalar).
-@inline _gpu_bcast_leaves(bc, td) = _gpu_bcast_leaves_args(bc.args, _fields(td).args)
-@inline _gpu_bcast_leaves(bc, ::Union{NoTangent,NoFData}) = _gpu_bcast_leaves_nots(bc.args)
+@inline function _gpu_bcast_leaves(bc_prepared, bc_primal, td)
+    return _gpu_bcast_leaves_args(bc_prepared.args, bc_primal.args, _fields(td).args)
+end
+@inline _gpu_bcast_leaves(bc_prepared, _, ::Union{NoTangent,NoFData}) = _gpu_bcast_leaves_nots(
+    bc_prepared.args
+)
 @inline _gpu_bcast_leaves_nots(::Tuple{}) = ((), ())
 @inline function _gpu_bcast_leaves_nots(args::Tuple)
     a1 = first(args)
     rest_ps, rest_ts = _gpu_bcast_leaves_nots(Base.tail(args))
     if a1 isa Broadcasted
-        inner_ps, inner_ts = _gpu_bcast_leaves(a1, NoTangent())
+        inner_ps, inner_ts = _gpu_bcast_leaves(a1, a1, NoTangent())
         return (inner_ps..., rest_ps...), (inner_ts..., rest_ts...)
     else
         return (a1, rest_ps...), (NoTangent(), rest_ts...)
     end
 end
-@inline _gpu_bcast_leaves_args(::Tuple{}, ::Tuple{}) = ((), ())
-@inline _gpu_bcast_leaves_args(args::Tuple, ::Tuple{}) = _gpu_bcast_leaves_nots(args)
-@inline function _gpu_bcast_leaves_args(args::Tuple, tds::Tuple)
-    a1 = first(args)
+@inline _gpu_bcast_leaves_args(::Tuple{}, ::Tuple{}, ::Tuple{}) = ((), ())
+@inline _gpu_bcast_leaves_args(args_prepared::Tuple, ::Tuple, ::Tuple{}) = _gpu_bcast_leaves_nots(
+    args_prepared
+)
+@inline function _gpu_bcast_leaves_args(
+    args_prepared::Tuple, args_primal::Tuple, tds::Tuple
+)
+    a1_prepared = first(args_prepared)
+    a1_primal = first(args_primal)
     td1 = first(tds)
-    rest_ps, rest_ts = _gpu_bcast_leaves_args(Base.tail(args), Base.tail(tds))
-    if a1 isa Broadcasted
-        inner_ps, inner_ts = _gpu_bcast_leaves(a1, td1)
+    rest_ps, rest_ts = _gpu_bcast_leaves_args(
+        Base.tail(args_prepared), Base.tail(args_primal), Base.tail(tds)
+    )
+    if a1_prepared isa Broadcasted
+        inner_ps, inner_ts = _gpu_bcast_leaves(a1_prepared, a1_primal, td1)
         return (inner_ps..., rest_ps...), (inner_ts..., rest_ts...)
+    elseif a1_primal isa Broadcasted
+        # `_premat_nondiff_args` collapsed a zero-DOF nested Broadcasted subtree to a plain
+        # leaf. That subtree has no differentiable content, so pair the prepared leaf with
+        # NoTangent rather than the original nested tangent/fdata tree.
+        return (a1_prepared, rest_ps...), (NoTangent(), rest_ts...)
     else
-        return (a1, rest_ps...), (td1, rest_ts...)
+        return (a1_prepared, rest_ps...), (td1, rest_ts...)
     end
 end
 
 function _prepare_gpu_broadcast(bc_primal, tangent_or_fdata)
-    bc_prepared = _premat_nondiff_args(bc_primal)
+    bc_prepared = _premat_nondiff_args(bc_primal, tangent_or_fdata)
     flat_bc = Base.Broadcast.flatten(bc_prepared)
-    flat_pargs, flat_tangent_or_fdata = _gpu_bcast_leaves(flat_bc, tangent_or_fdata)
+    flat_pargs, flat_tangent_or_fdata = _gpu_bcast_leaves(
+        bc_prepared, bc_primal, tangent_or_fdata
+    )
     _check_mixed_gpu_eltype(flat_pargs)
     return bc_prepared, flat_bc, flat_pargs, flat_tangent_or_fdata
 end
@@ -2225,28 +2244,36 @@ end
 function _gpu_fill_scalar_rdata(
     bc::Broadcasted, scalar_map::Tuple, scalar_grads::AbstractVector
 )
-    r_args = _gpu_fill_args_rdata(bc.args, scalar_map, scalar_grads)
-    return RData((;
-        style=zero_rdata(bc.style),
-        f=zero_rdata(bc.f),
-        args=r_args,
-        axes=zero_rdata(bc.axes),
-    ))
+    zbc = zero_rdata(bc)
+    zbc isa NoRData && return zbc
+    return _gpu_fill_scalar_rdata(zbc, bc, scalar_map, scalar_grads)
 end
 
-function _gpu_fill_args_rdata(args::Tuple, scalar_map::Tuple, scalar_grads::AbstractVector)
+function _gpu_fill_scalar_rdata(
+    zbc::RData, bc::Broadcasted, scalar_map::Tuple, scalar_grads::AbstractVector
+)
+    r_args = _gpu_fill_args_rdata(zbc.data.args, bc.args, scalar_map, scalar_grads)
+    return RData((; style=zbc.data.style, f=zbc.data.f, args=r_args, axes=zbc.data.axes))
+end
+
+function _gpu_fill_args_rdata(
+    zargs::Tuple, args::Tuple, scalar_map::Tuple, scalar_grads::AbstractVector
+)
     ntuple(length(args)) do i
+        za = zargs[i]
         a = args[i]
         scalar_meta = scalar_map[i]
         if a isa Broadcasted
-            _gpu_fill_scalar_rdata(a, scalar_meta, scalar_grads)
+            za isa NoRData ? za : _gpu_fill_scalar_rdata(za, a, scalar_meta, scalar_grads)
         elseif scalar_meta isa Int
             scalar_grads[scalar_meta]
         else
-            zero_rdata(a)
+            za
         end
     end
 end
+
+_gpu_fill_args_rdata(::NoRData, ::Tuple, ::Tuple, ::AbstractVector) = NoRData()
 
 function _gpu_accumulate_jvp!(dy, flat_pargs, flat_tangents, dual_out)
     offset = 0
@@ -2445,7 +2472,7 @@ function rrule!!(
     bc_prepared, flat_bc, flat_pargs, flat_fdatas = _prepare_gpu_broadcast(
         bc_primal, bc_fdata
     )
-    scalar_map, scalar_count = _gpu_collect_scalar_map(bc_prepared)
+    scalar_map, scalar_count = _gpu_collect_scalar_map(bc_primal)
     scalar_map = iszero(scalar_count) ? nothing : scalar_map
 
     # One GPU kernel: compute primal AND all N partial derivatives simultaneously.
@@ -2538,7 +2565,7 @@ function rrule!!(
     bc_prepared, flat_bc, flat_pargs, flat_fdatas = _prepare_gpu_broadcast(
         bc_primal, bc_fdata
     )
-    scalar_map, scalar_count = _gpu_collect_scalar_map(bc_prepared)
+    scalar_map, scalar_count = _gpu_collect_scalar_map(bc_primal)
     scalar_map = iszero(scalar_count) ? nothing : scalar_map
 
     # Save primal for restoration in the pullback.

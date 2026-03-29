@@ -157,6 +157,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _bcast_sum_abs2(x) = sum(abs2.(x))  # regression for mixed-precision reduced pullback
         _bcast_cx_scalar_mul(x, c) = real(sum(c .* x))     # real scalar, complex array
         _bcast_cx_cx_scalar_mul(x, c) = real(sum(c .* x))  # complex scalar, complex array
+        _bcast_nested_sin_add(x, y) = sum(sin.(x .+ y))
+        _bcast_zero_dof_nested(x, c, b) = sum(x .+ c .* Float64.(b .> 0))
+        _inplace_zero_dof_nested!(dest, x, c, b) =
+            (dest.=x .+ c .* Float64.(b .> 0); sum(dest))
         # adjoint of a CuVector times a CuMatrix — dispatches through generic_matmatmul!
         # because CUBLAS.gemm! only accepts CuMatrix inputs; now covered by the explicit rule.
         _cu_slice_adj_mul(x, cy) = sum(cu(x[:, 1])' * cy)
@@ -795,6 +799,62 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @test !(fixed.args[2] isa Base.Broadcast.Broadcasted)
             flat_fixed = Base.Broadcast.flatten(fixed)
             @test isbitstype(typeof(flat_fixed.f))
+        end
+
+        @testset "nested GPU broadcast gradients keep tree alignment" begin
+            x = CuArray(randn(rng, 4))
+            y = CuArray(randn(rng, 4))
+            cache = prepare_gradient_cache(
+                _bcast_nested_sin_add,
+                x,
+                y;
+                config=Mooncake.Config(; friendly_tangents=true),
+            )
+            val, grads = value_and_gradient!!(cache, _bcast_nested_sin_add, x, y)
+            @test val ≈ sum(Array(sin.(x .+ y)))
+            expected = Array(cos.(x .+ y))
+            @test Array(grads[2]) ≈ expected
+            @test Array(grads[3]) ≈ expected
+        end
+
+        @testset "zero-DOF nested broadcast scalar gradients reconstruct on reverse pass" begin
+            x = CuArray(randn(rng, 4))
+            c = 2.5
+            b = CuArray(Float64[-2.0, 1.0, -3.0, 4.0])
+            mask = Float64.(Array(b) .> 0)
+            cache = prepare_gradient_cache(
+                _bcast_zero_dof_nested,
+                x,
+                c,
+                b;
+                config=Mooncake.Config(; friendly_tangents=true),
+            )
+            val, grads = value_and_gradient!!(cache, _bcast_zero_dof_nested, x, c, b)
+            @test val ≈ sum(Array(x) .+ c .* mask)
+            @test Array(grads[2]) ≈ ones(length(mask))
+            @test grads[3] ≈ sum(mask)
+        end
+
+        @testset "in-place zero-DOF nested broadcasts reconstruct scalar gradients" begin
+            dest = CuArray(zeros(4))
+            x = CuArray(randn(rng, 4))
+            c = -1.25
+            b = CuArray(Float64[-2.0, 1.0, -3.0, 4.0])
+            mask = Float64.(Array(b) .> 0)
+            cache = prepare_gradient_cache(
+                _inplace_zero_dof_nested!,
+                dest,
+                x,
+                c,
+                b;
+                config=Mooncake.Config(; friendly_tangents=true),
+            )
+            val, grads = value_and_gradient!!(
+                cache, _inplace_zero_dof_nested!, dest, x, c, b
+            )
+            @test val ≈ sum(Array(x) .+ c .* mask)
+            @test Array(grads[3]) ≈ ones(length(mask))
+            @test grads[4] ≈ sum(mask)
         end
 
         # Verify that unsupported GPU operations throw user-friendly ArgumentErrors rather
