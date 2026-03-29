@@ -158,6 +158,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _bcast_cx_scalar_mul(x, c) = real(sum(c .* x))     # real scalar, complex array
         _bcast_cx_cx_scalar_mul(x, c) = real(sum(c .* x))  # complex scalar, complex array
         _bcast_nested_sin_add(x, y) = sum(sin.(x .+ y))
+        _bcast_nested_float_cast_sin(x) = sum(sin.(Float64.(x)))
         _bcast_zero_dof_nested(x, c, b) = sum(x .+ c .* Float64.(b .> 0))
         _inplace_zero_dof_nested!(dest, x, c, b) =
             (dest.=x .+ c .* Float64.(b .> 0); sum(dest))
@@ -815,6 +816,20 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             expected = Array(cos.(x .+ y))
             @test Array(grads[2]) ≈ expected
             @test Array(grads[3]) ≈ expected
+        end
+
+        @testset "differentiable nested float casts still propagate gradients" begin
+            x = CuArray(randn(rng, Float32, 4))
+            cache = prepare_gradient_cache(
+                _bcast_nested_float_cast_sin,
+                x;
+                config=Mooncake.Config(; friendly_tangents=true),
+            )
+            val, grads = value_and_gradient!!(cache, _bcast_nested_float_cast_sin, x)
+            expected_val = sum(sin.(Float64.(Array(x))))
+            expected_grad = Float32.(cos.(Float64.(Array(x))))
+            @test val ≈ expected_val
+            @test Array(grads[2]) ≈ expected_grad
         end
 
         @testset "zero-DOF nested broadcast scalar gradients reconstruct on reverse pass" begin
