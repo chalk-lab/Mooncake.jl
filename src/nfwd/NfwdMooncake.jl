@@ -14,6 +14,7 @@ import ..Mooncake:
     NoTangent,
     __value_and_gradient!!,
     __verify_sig,
+    _chunk_frule_with_backend,
     _chunk_lane_loop_frule!!,
     _chunk_nfwd_rule,
     _chunk_pack_tangent,
@@ -133,7 +134,7 @@ end
     return _chunk_unpack_nfwd_output(primal(output), tangent(output), Val(N))
 end
 
-@noinline function chunk_frule!!(
+@noinline function _chunk_frule_with_backend(
     cache::ForwardCache{R,IT,OP,FG,GW,CF},
     input_primals::Tuple,
     input_tangents::Tuple,
@@ -144,10 +145,24 @@ end
     # NDual-backed batched backend: try one packed multi-lane forward pass first, then
     # fall back to the generic lane loop only for runtime NDual-specific unsupported cases.
     nfwd_output = _try_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
-    !isnothing(nfwd_output) && return nfwd_output
-    return _chunk_lane_loop_frule!!(
+    !isnothing(nfwd_output) && return nfwd_output, true
+    result = _chunk_lane_loop_frule!!(
         cache, input_primals, input_tangents, Val(N); friendly_tangents
     )
+    return result, false
+end
+
+@noinline function chunk_frule!!(
+    cache::ForwardCache{R,IT,OP,FG,GW,CF},
+    input_primals::Tuple,
+    input_tangents::Tuple,
+    ::Val{N};
+    friendly_tangents::Bool=false,
+) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:ForwardChunkFastPath,N}
+    result, _ = _chunk_frule_with_backend(
+        cache, input_primals, input_tangents, Val(N); friendly_tangents
+    )
+    return result
 end
 
 """

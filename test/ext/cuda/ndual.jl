@@ -251,6 +251,15 @@
         eq = _d(2.0, 1.0)
         @test ndual_value(max(eq, eq)) ≈ 2.0
         @test ndual_value(min(eq, eq)) ≈ 2.0
+        zpos, zneg = _d(0.0, 1.0), _d(-0.0, 0.0)
+        @test isequal(ndual_value(max(zpos, zneg)), 0.0)
+        @test ndual_partial(max(zpos, zneg), 1) ≈ 1.0
+        @test isequal(ndual_value(max(zneg, zpos)), 0.0)
+        @test ndual_partial(max(zneg, zpos), 1) ≈ 1.0
+        @test isequal(ndual_value(min(zpos, zneg)), -0.0)
+        @test ndual_partial(min(zpos, zneg), 1) ≈ 0.0
+        @test isequal(ndual_value(min(zneg, zpos)), -0.0)
+        @test ndual_partial(min(zneg, zpos), 1) ≈ 0.0
 
         xc = _d(2.0, 1.0)
         @test ndual_value(clamp(xc, 0.0, 1.0)) ≈ 1.0

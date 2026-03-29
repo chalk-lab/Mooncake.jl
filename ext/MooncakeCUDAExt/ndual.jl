@@ -641,13 +641,30 @@ function Base.hypot(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     )
 end
 
-# min / max — subgradient: select the tangent of the winning branch.
-# ifelse is used instead of ?: to stay branchless on GPU (see file header).
+@inline function _ndual_pick_max(a, b)
+    v = max(a, b)
+    a_matches = isequal(v, a)
+    b_matches = isequal(v, b)
+    return ifelse(
+        a_matches & !b_matches, true, ifelse(b_matches & !a_matches, false, false)
+    )
+end
+
+@inline function _ndual_pick_min(a, b)
+    v = min(a, b)
+    a_matches = isequal(v, a)
+    b_matches = isequal(v, b)
+    return ifelse(a_matches & !b_matches, true, ifelse(b_matches & !a_matches, false, true))
+end
+
+# min / max — preserve Base's scalar result on NaN and signed-zero ties, then select the
+# corresponding tangent. When both operands are exactly the same scalar value, keep the
+# existing ordinary-tie convention (second arg for max, first arg for min).
 function Base.max(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    ifelse(a.value > b.value, a, b)
+    ifelse(_ndual_pick_max(a.value, b.value), a, b)
 end
 function Base.min(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    ifelse(a.value <= b.value, a, b)
+    ifelse(_ndual_pick_min(a.value, b.value), a, b)
 end
 
 # clamp — subgradient: zero tangent at the clamped endpoints.

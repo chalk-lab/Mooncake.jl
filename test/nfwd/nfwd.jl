@@ -322,6 +322,15 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(max(eq1, eq2), 1) ≈ 0.0
         @test Nfwd.ndual_value(min(eq1, eq2)) ≈ 2.0
         @test Nfwd.ndual_partial(min(eq1, eq2), 1) ≈ 1.0
+        zpos, zneg = _d(0.0, 1.0), _d(-0.0, 0.0)
+        @test isequal(Nfwd.ndual_value(max(zpos, zneg)), 0.0)
+        @test Nfwd.ndual_partial(max(zpos, zneg), 1) ≈ 1.0
+        @test isequal(Nfwd.ndual_value(max(zneg, zpos)), 0.0)
+        @test Nfwd.ndual_partial(max(zneg, zpos), 1) ≈ 1.0
+        @test isequal(Nfwd.ndual_value(min(zpos, zneg)), -0.0)
+        @test Nfwd.ndual_partial(min(zpos, zneg), 1) ≈ 0.0
+        @test isequal(Nfwd.ndual_value(min(zneg, zpos)), -0.0)
+        @test Nfwd.ndual_partial(min(zneg, zpos), 1) ≈ 0.0
 
         xc = _d(2.0, 1.0)
         @test Nfwd.ndual_value(clamp(xc, 0.0, 1.0)) ≈ 1.0
