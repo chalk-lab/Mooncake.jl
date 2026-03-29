@@ -3,7 +3,9 @@ struct MissingForeigncallRuleError <: Exception
     msg::String
 end
 
-Base.showerror(io::IO, err::MissingForeigncallRuleError) = print(io, err.msg)
+function Base.showerror(io::IO, err::MissingForeigncallRuleError)
+    _print_boxed_error(io, split(err.msg, '\n'))
+end
 
 # Fallback foreigncall rules. This is a sufficiently common special case, that it's worth
 # creating an informative error message, so that users have some chance of knowing why

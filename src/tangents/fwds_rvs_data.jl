@@ -290,6 +290,10 @@ struct InvalidFDataException <: Exception
     msg::String
 end
 
+function Base.showerror(io::IO, err::InvalidFDataException)
+    _print_boxed_error(io, split("InvalidFDataException: $(err.msg)", '\n'))
+end
+
 """
     verify_fdata_type(P::Type, F::Type)::Nothing
 
@@ -760,6 +764,10 @@ Exception indicating that there is a problem with the rdata associated to a prim
 """
 struct InvalidRDataException <: Exception
     msg::String
+end
+
+function Base.showerror(io::IO, err::InvalidRDataException)
+    _print_boxed_error(io, split("InvalidRDataException: $(err.msg)", '\n'))
 end
 
 """

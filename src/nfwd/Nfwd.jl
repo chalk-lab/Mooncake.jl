@@ -1787,7 +1787,7 @@ end
 @inline function Base.showerror(
     io::IO, err::Union{UnsupportedInputError,UnsupportedOutputError}
 )
-    return print(io, err.msg)
+    return _print_boxed_error(io, split(err.msg, '\n'))
 end
 
 @inline _nfwd_input_error(x) = throw(

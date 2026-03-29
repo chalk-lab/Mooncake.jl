@@ -7,6 +7,28 @@ Central definition of typeof, which is specific to the use-required in this pack
 @unstable _typeof(x::Tuple) = Tuple{tuple_map(_typeof, x)...}
 @unstable _typeof(x::NamedTuple{names}) where {names} = NamedTuple{names,_typeof(Tuple(x))}
 
+function _print_boxed_message(io::IO, level::AbstractString, lines; footer=nothing)
+    first_item = iterate(lines)
+    isnothing(first_item) && return nothing
+    line, state = first_item
+    println(io, "┌ ", level, ": ", line)
+    while true
+        item = iterate(lines, state)
+        isnothing(item) && break
+        line, state = item
+        println(io, "│ ", line)
+    end
+    return isnothing(footer) ? println(io, "└") : println(io, "└ ", footer)
+end
+
+function _print_boxed_error(io::IO, lines; footer=nothing)
+    _print_boxed_message(io, "Error", lines; footer)
+end
+
+function _print_boxed_info(io::IO, lines; footer=nothing)
+    _print_boxed_message(io, "Info", lines; footer)
+end
+
 """
     tuple_map(f::F, x::Tuple) where {F}
 

@@ -61,6 +61,14 @@ struct ValueAndPullbackReturnTypeError <: Exception
     msg::String
 end
 
+function Base.showerror(io::IO, err::ValueAndGradientReturnTypeError)
+    _print_boxed_error(io, split("ValueAndGradientReturnTypeError: $(err.msg)", '\n'))
+end
+
+function Base.showerror(io::IO, err::ValueAndPullbackReturnTypeError)
+    _print_boxed_error(io, split("ValueAndPullbackReturnTypeError: $(err.msg)", '\n'))
+end
+
 function throw_forward_ret_type_error(y)
     throw(
         ValueAndPullbackReturnTypeError(
@@ -732,9 +740,7 @@ value_and_gradient!!(cache, f, x, y)
 ) where {F,N}
     friendly_tangents = !isnothing(cache.dests)
     _prepared_cache_check_specs(cache.input_specs, (f, x...))
-    if verbose
-        print(stdout, "# Reverse mode: (friendly = ", friendly_tangents, ")\n")
-    end
+    _maybe_log_reverse_route(verbose, friendly_tangents)
 
     tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
     coduals = tuple_map(CoDual, (f, x...), tangents)
@@ -748,6 +754,19 @@ value_and_gradient!!(cache, f, x, y)
     else
         return __value_and_gradient!!(cache.rule, coduals...)
     end
+end
+
+@inline function _maybe_log_reverse_route(verbose::Bool, friendly_tangents::Bool)
+    verbose || return nothing
+    _print_boxed_info(
+        stdout,
+        (
+            "`value_and_gradient!!` route",
+            "mode = :reverse",
+            "friendly_tangents = $(friendly_tangents)",
+        ),
+    )
+    return nothing
 end
 
 # This cache stores one forward rule per supported chunk width (1 through 8).
@@ -783,15 +802,15 @@ end
     verbose::Bool, cache::ForwardCache, nfwd::Bool, chunk_size
 )
     verbose || return nothing
-    print(
+    _print_boxed_info(
         stdout,
-        "# Forward mode: (nfwd = ",
-        nfwd,
-        ", friendly = ",
-        !isnothing(cache.input_tangents),
-        ", chunk_size = ",
-        isnothing(chunk_size) ? ":not_chunked" : string(chunk_size),
-        ")\n",
+        (
+            "`value_and_gradient!!` route",
+            "mode = :forward",
+            "nfwd = $(nfwd)",
+            "friendly_tangents = $(!isnothing(cache.input_tangents))",
+            "chunk_size = $(isnothing(chunk_size) ? :not_chunked : chunk_size)",
+        ),
     )
     return nothing
 end
@@ -863,6 +882,14 @@ end
 
 @inline _prepared_cache_arg_label(i::Int) = i == 1 ? "`f`" : "`x$(i - 1)`"
 
+struct PreparedCacheSpecError <: Exception
+    msg::String
+end
+
+function Base.showerror(io::IO, err::PreparedCacheSpecError)
+    _print_boxed_error(io, split("PreparedCacheSpecError: $(err.msg)", '\n'))
+end
+
 function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     label = _prepared_cache_arg_label(i)
     msg = if kind === :arity
@@ -878,7 +905,7 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
         "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
         "with the same top-level array sizes they were prepared with."
     end
-    throw(ArgumentError(msg))
+    throw(PreparedCacheSpecError(msg))
 end
 
 @inline function _prepared_cache_check_spec(i::Int, spec, x)
