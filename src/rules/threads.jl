@@ -12,6 +12,19 @@ This covers plain functions and closures capturing only isbits scalars.
 See https://github.com/chalk-lab/Mooncake.jl/issues/791.
 """
 function threaded_map!(f::F, output::Vector, inputs::Vector...) where {F}
+    n = _check_threaded_map!(output, inputs)
+    N    = length(inputs)
+    valN = Val(N)  # Val{N} computed at outer scope where N is a compile-time constant;
+                   # capturing valN::Val{N} in the closure lets ntuple unroll correctly.
+    Threads.@threads for i in 1:n
+        output[i] = f(ntuple(j -> inputs[j][i], valN)...)
+    end
+    return output
+end
+
+# Shared validation for both primal and AD paths. Returns the effective length (minimum
+# of input lengths, upper-bounded by output length).
+function _check_threaded_map!(output::Vector, inputs)
     isempty(inputs) && throw(ArgumentError("threaded_map!: at least one input vector required"))
     all(v -> isbitstype(eltype(v)), (output, inputs...)) || throw(ArgumentError(
         "threaded_map!: all element types must be isbits; " *
@@ -23,13 +36,7 @@ function threaded_map!(f::F, output::Vector, inputs::Vector...) where {F}
             "threaded_map!: output length $(length(output)) < input length $n"
         ),
     )
-    N    = length(inputs)
-    valN = Val(N)  # Val{N} computed at outer scope where N is a compile-time constant;
-                   # capturing valN::Val{N} in the closure lets ntuple unroll correctly.
-    Threads.@threads for i in 1:n
-        output[i] = f(ntuple(j -> inputs[j][i], valN)...)
-    end
-    return output
+    return n
 end
 
 @is_primitive MinimalCtx ReverseMode Tuple{
@@ -50,11 +57,10 @@ end
     N    = length(inputs)
     valN = Val(N)  # Val{N} computed at outer scope where N is a compile-time constant;
                    # capturing valN::Val{N} in closures lets ntuple unroll correctly.
-    n   = minimum(length, xps)
+    n   = _check_threaded_map!(yp, xps)
 
-    # Save current output state for restoration in the pullback (undo-tape semantics).
+    # Save current primal output state for restoration in the pullback (undo-tape semantics).
     old_yp = copy(yp)
-    old_yd = copy(yd)
 
     # Forward pass: run f element-wise in parallel, storing per-element pullbacks.
     # Zero yd[i] because we overwrite output[i] (mirrors isbits_arrayset_rrule).
@@ -84,8 +90,12 @@ end
 
         # Reverse pass: read cotangents accumulated in yd[i] by the upstream and propagate
         # them back to each input's cotangent accumulator (skip non-differentiable inputs).
+        # Zero out yd[i] after reading — the forward pass set it to zero, so zeroing
+        # restores it to its post-forward state without needing a saved copy.
         Threads.@threads for i in 1:n
-            rdata_tuple = pullbacks[i](yd[i])
+            dy_i = yd[i]
+            yd[i] = zero_tangent(yp[i])
+            rdata_tuple = pullbacks[i](dy_i)
             FRData !== NoRData && (f_rdatas[i] = rdata_tuple[1])
             for j in 1:N
                 xd = xds[j]
@@ -96,9 +106,8 @@ end
         f_rdata = FRData === NoRData ? NoRData() :
             foldl((a, b) -> increment_internal!!(NoCache(), a, b), f_rdatas; init=zero_rdata(fp))
 
-        # Restore output to its pre-call state.
+        # Restore primal output to its pre-call state.
         copyto!(yp, old_yp)
-        copyto!(yd, old_yd)
         return NoRData(), f_rdata, NoRData(), ntuple(_ -> NoRData(), valN)...
     end
 
