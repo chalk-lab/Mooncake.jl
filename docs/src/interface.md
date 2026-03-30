@@ -36,13 +36,13 @@ The first part of the gradient is the gradient wrt. `g` itself, here `NoTangent(
 The second part of the gradient is the gradient wrt. `x`; for the type `SimplePair`, its gradient is represented using a `@NamedTuple{x1::Float64, x2::Float64}` wrapped in a `Tangent` object.
 The gradient wrt. `x1` can for example be retrieved with `grad[2].fields.x1`.
 
-With `friendly_tangents=true`, gradients use the same types as the original function:
+With `friendly_tangents=true`, gradients are returned in a more readable form:
 
 ```@example interface
 cache = MC.prepare_gradient_cache(g, x_eval; config=MC.Config(friendly_tangents=true))
 val, grad = MC.value_and_gradient!!(cache, g, x_eval)
 ```
-The gradient wrt. `x` is now `SimplePair(2.0, 4.0)`.
+The gradient wrt. `x` is now the NamedTuple `(x1 = 2.0, x2 = 4.0)`.
 
 In addition, there is an optional tuple-typed argument `args_to_zero` that specifies
 a true/false value for each argument (e.g., `g`, `x_eval`), allowing tangent
@@ -64,14 +64,46 @@ val, grad = MC.value_and_gradient!!(
 Aside: Any performance impact from using `friendly_tangents = true` should be very minor.
 If it is noticeable, something is likely wrong—please open an issue.
 
+If you want to use forward mode explicitly, the cache from `prepare_derivative_cache` can now
+also drive `value_and_gradient!!` for scalar outputs. Mooncake seeds standard-basis directions
+internally and evaluates them in chunks:
+
+```@example interface
+fcache = MC.prepare_derivative_cache(g, x_eval; config=MC.Config(chunk_size=2))
+val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
+```
+
+Passing `Config(chunk_size=2)` caps the forward chunk width used by this public cache path
+when it dispatches to `NfwdMooncake`. If `Nfwd` is not used, changing `chunk_size` is not
+useful. You can check which backend was used by calling `value_and_gradient!!(...;
+verbose=true)`. Leaving `chunk_size=nothing` keeps Mooncake's default heuristic.
+
+When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
+higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as
+custom structs, to the scalar/array/tuple nfwd signatures used internally, and it also
+does the usual cache checks and tangent zeroing. That extra interface work adds some
+overhead relative to calling `NfwdMooncake.build_rrule(...)(...)` directly on a supported
+nfwd signature over `IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those
+element types, and tuples thereof.
+
+Separately, the Hessian path exposed by `prepare_hessian_cache` /
+`value_gradient_and_hessian!!` uses forward-over-reverse AD over a captured gradient
+closure. It does not currently use the public `NfwdMooncake` fast path, even though the
+outer layer is forward mode.
+
 ## API Reference
 
 ```@docs; canonical=true
 Mooncake.Config
 Mooncake.value_and_derivative!!
 Mooncake.value_and_gradient!!(::Mooncake.Cache, f::F, x::Vararg{Any, N}) where {F, N}
+Mooncake.value_and_gradient!!(::Mooncake.ForwardCache, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.value_and_pullback!!(::Mooncake.Cache, ȳ, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.prepare_derivative_cache
 Mooncake.prepare_gradient_cache
 Mooncake.prepare_pullback_cache
+Mooncake.prepare_hvp_cache
+Mooncake.value_and_hvp!!
+Mooncake.prepare_hessian_cache
+Mooncake.value_gradient_and_hessian!!
 ```

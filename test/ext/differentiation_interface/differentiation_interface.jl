@@ -6,9 +6,16 @@ using DifferentiationInterface, DifferentiationInterfaceTest
 using Mooncake: Mooncake
 using Test
 
-# Test first-order differentiation (reverse mode)
+backends = [
+    AutoMooncake(),
+    AutoMooncakeForward(),
+    AutoMooncake(; config = Mooncake.Config(; friendly_tangents = true)),
+    AutoMooncakeForward(; config = Mooncake.Config(; friendly_tangents = true)),
+]
+
+# Test first-order differentiation
 test_differentiation(
-    [AutoMooncake(; config=nothing), AutoMooncake(; config=Mooncake.Config())];
+    backends;
     excluded=SECOND_ORDER,
     logging=true,
 )

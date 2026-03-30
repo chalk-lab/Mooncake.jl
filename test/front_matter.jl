@@ -2,6 +2,7 @@ using Aqua, BenchmarkTools, JET, LinearAlgebra, Logging, Random, StableRNGs, Moo
 
 using AllocCheck: AllocCheck # load to enable testing functionality
 
+using ChainRules
 using ChainRulesCore: ChainRulesCore
 
 using Base: unsafe_load, pointer_from_objref, IEEEFloat, TwicePrecision

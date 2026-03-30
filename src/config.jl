@@ -1,5 +1,10 @@
 """
-    Config(; debug_mode::Bool=false, silence_debug_messages::Bool=false, friendly_tangents::Bool=false)
+    Config(;
+        debug_mode::Bool=false,
+        silence_debug_messages::Bool=false,
+        friendly_tangents::Bool=false,
+        chunk_size::Union{Nothing,Int}=nothing,
+    )
 
 Configuration struct for use with `ADTypes.AutoMooncake`.
 
@@ -17,9 +22,14 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     The tangent is converted from/to the friendly representation at the interface level,
     so all Mooncake internal computations and rule implementations always use the
     [`tangent_type`](@ref) representation.
+- `chunk_size::Union{Nothing,Int}=nothing`: optional chunk width for the public
+    `prepare_derivative_cache` / `value_and_gradient!!` forward-mode path. `nothing` uses
+    Mooncake's default chunking heuristic. This does not affect reverse-mode caches, and
+    `NfwdMooncake.prepare_cache` continues to use its own explicit `chunk_size` keyword.
 """
 @kwdef struct Config
     debug_mode::Bool = false
     silence_debug_messages::Bool = false
     friendly_tangents::Bool = false
+    chunk_size::Union{Nothing,Int} = nothing
 end
