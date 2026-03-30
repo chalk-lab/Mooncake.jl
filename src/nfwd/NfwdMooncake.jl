@@ -15,7 +15,6 @@ import ..Mooncake:
     __value_and_gradient!!,
     __verify_sig,
     _chunk_pack_tangent,
-    _fcache_nfwd_chunk_should_fallback_to_lane_loop,
     _fcache_derivative_chunked!!,
     _typeof,
     _fcache_derivative_chunked_loop!!,
@@ -138,12 +137,7 @@ end
     )
     fd = Dual(first(input_primals), NoTangent())
     x_duals = tuple_map(Dual, Base.tail(input_primals), packed_tangents)
-    output = try
-        rule(fd, x_duals...)
-    catch err
-        _fcache_nfwd_chunk_should_fallback_to_lane_loop(err) && return nothing
-        rethrow(err)
-    end
+    output = rule(fd, x_duals...)
     y = primal(output)
     dy = tangent(output)
     # Re-express the packed nfwd output at the public chunk boundary as one tangent per lane.
@@ -167,8 +161,9 @@ end
     N < 1 && throw(ArgumentError("NTangent inputs must contain at least one lane."))
     input_primals = map(first, x_dx)
     input_tangents = map(last, x_dx)
-    # NDual-backed batched backend: try one packed multi-lane forward pass first, then
-    # fall back to the generic lane loop only for runtime NDual-specific unsupported cases.
+    # NDual-backed batched backend: attempt a packed multi-lane forward pass. Falls back
+    # to the generic lane loop only when no fastpath applies (N == 1, N > 8, or no
+    # ForwardChunkFastPath built for this cache); NDual-specific errors are not caught.
     nfwd_output = _try_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
     !isnothing(nfwd_output) && return nfwd_output
     return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)

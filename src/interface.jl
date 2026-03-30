@@ -799,6 +799,14 @@ struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
     input_specs::S
 end
 
+@generated function _fcache_gradient_lazy_workspace_ref(::Type{T}) where {T<:Tuple}
+    tangent_types = map(P -> :(tangent_type($P)), T.parameters)
+    workspace_type = Expr(:curly, :Tuple, tangent_types...)
+    # Keep the lazy gradient workspace concretely typed without evaluating `zero_tangent`
+    # on the actual inputs at cache-construction time.
+    return :(Ref{Union{Nothing,$workspace_type}}(nothing))
+end
+
 @inline function _maybe_log_fwd_backend(
     verbose::Bool, cache::ForwardCache, nfwd::Bool, chunk_size
 )
@@ -1124,25 +1132,38 @@ function _fcache_gradient_seed_tangent(
     return build_tangent(P, fields...)
 end
 
-# shared fcache nfwd chunk machinery
-# nfwd fast-path summary:
-# - Disabled when `config.debug_mode == true`.
-# - Requires `f` to have a singleton type; closures and callable structs with runtime
-#   fields do not qualify.
-# - Requires every top-level differentiable input in `x...` to be an `IEEEFloat`,
-#   `Complex{<:IEEEFloat}`, or `Array{T}` with nfwd-supported scalar `T`. Top-level
-#   tuple/struct inputs stay on the ordinary chunked path.
-# - Probes the width-1 nfwd `frule` once on NDual-lifted inputs at cache construction
-#   time. If that probe hits an NDual-specific unsupported case, `chunk_fastpath` is not built.
-# - Gradient-only shortcuts are narrower:
-#   scalar path for qualifying 1-DOF calls; `gradient_rrule` path only for single-input
-#   `(f, x::Array{<:IEEEFloat})`; exact-width vector path only for single-input
-#   `(f, x::Vector{<:IEEEFloat})` with `1 <= length(x) <= 8` and, when requested,
-#   `length(x) <= chunk_size`.
-# - Even with `chunk_fastpath`, chunked execution may still fall back at runtime to
-#   `_fcache_derivative_chunked_loop!!` on:
-#   `NfwdMooncake.UnsupportedError`, `Nfwd.NDualUnsupportedError`, or
-#   `MethodError` / `TypeError` / `InexactError` whose rendered message mentions `NDual`.
+# Shared `fcache` nfwd chunk machinery.
+# Attempts to build a `ForwardChunkFastPath`; returns `nothing` if any eligibility
+# check fails.
+#
+# Eligibility (construction-time gates, evaluated in order):
+# - `config.debug_mode` must be false.
+# - `typeof(f)` must be a singleton type; closures and callable structs with fields
+#   do not qualify.
+# - Every argument in `x...` must be an `IEEEFloat`, `Complex{<:IEEEFloat}`, or
+#   `Array{T}` with `T <: IEEEFloat` or `T <: Complex{<:IEEEFloat}`. Arguments of tuple or
+#   struct type stay on the ordinary chunked path.
+# - The chunk_size=1 frule is probed on zero-tangent `Dual` inputs. If it raises an
+#   NDual-unsupported error (see `_fcache_nfwd_is_ndual_unsupported`),
+#   `nothing` is returned.
+#
+# Gradient-only shortcuts stored on the `ForwardChunkFastPath` (each narrower than
+# the general chunk path):
+# - `frule_1` doubles as the scalar fast path for `(f, x::IEEEFloat)` calls via the
+#   scalar `value_and_gradient!!` specialisation.
+# - `gradient_rrule`: built only for single-argument `(f, x::Array{<:IEEEFloat})`.
+# - `small_vector_gradient_frule`: built only for single-argument
+#   `(f, x::Vector{<:IEEEFloat})` with `1 <= length(x) <= 8` and, when a chunk_size
+#   is requested, `length(x) <= chunk_size`. Uses an exact-width frule seeded with an
+#   identity-matrix tangent. A second construction-time probe on that tangent gates
+#   inclusion; if the probe fails, the field is left as `nothing`.
+#
+# Runtime errors: NDual-specific errors (`NfwdMooncake.UnsupportedError`,
+# `Nfwd.NDualUnsupportedError`, or `MethodError`/`TypeError`/`InexactError` whose
+# rendered message mentions `NDual`) are not caught at runtime and will propagate to
+# the caller. The construction-time probe should exclude most such cases; a runtime
+# failure indicates a case the probe did not cover (e.g. a chunk width > 1 that
+# behaves differently from width 1).
 @inline function _fcache_nfwd_chunk_fastpath_maybe_build(fx::Tuple, config)
     config.debug_mode && return nothing
     sig = typeof(fx)
@@ -1237,7 +1258,7 @@ end
             small_vector_gradient_frule(fd, x_duals...)
             false
         catch err
-            _fcache_nfwd_chunk_should_fallback_to_lane_loop(err) || rethrow(err)
+            _fcache_nfwd_is_ndual_unsupported(err) || rethrow(err)
             true
         end
             small_vector_gradient_frule = nothing
@@ -1264,7 +1285,7 @@ end
         try
             frule_1(fd, x_duals...)
         catch err
-            _fcache_nfwd_chunk_should_fallback_to_lane_loop(err) || rethrow(err)
+            _fcache_nfwd_is_ndual_unsupported(err) || rethrow(err)
             return nothing
         end
     end
@@ -1355,7 +1376,7 @@ end
     )
 end
 
-@inline function _fcache_nfwd_chunk_should_fallback_to_lane_loop(err)
+@inline function _fcache_nfwd_is_ndual_unsupported(err)
     err isa NfwdMooncake.UnsupportedError && return true
     err isa Nfwd.NDualUnsupportedError && return true
     msg = sprint(showerror, err)
@@ -1405,8 +1426,9 @@ end
 #
 #   shared nfwd chunk machinery:
 #     NfwdMooncake.jl overrides _fcache_derivative_chunked!! for
-#     ForwardChunkFastPath caches to attempt a packed NDual multi-lane pass, falling back
-#     to _fcache_derivative_chunked_loop!! on runtime NDual-specific unsupported cases.
+#     ForwardChunkFastPath caches to attempt a packed NDual multi-lane pass; NDual errors
+#     propagate to the caller. Falls back to _fcache_derivative_chunked_loop!! only when
+#     no fastpath applies (N == 1, N > 8, or no ForwardChunkFastPath on the cache).
 #
 # fcache derivative chunk execution
 @noinline function _fcache_derivative_chunked_loop!!(
@@ -1513,9 +1535,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             tuple_map(_prepared_cache_input_spec, fx),
         )
     else
-        gradient_workspace = Ref{Union{Nothing,typeof(tuple_map(zero_tangent, fx))}}(
-            nothing
-        )
+        gradient_workspace = _fcache_gradient_lazy_workspace_ref(typeof(fx))
         return ForwardCache(
             rule,
             nothing,
@@ -1596,9 +1616,10 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
     # standard-basis chunk tangents, calls
     # `_fcache_derivative_chunked!!`, and accumulates the resulting lane
     # contributions into gradient storage.
-    # `used_nfwd` is derived statically from the cache rather than from the runtime backend
-    # choice, so it will be true even when nfwd falls back to the lane loop at runtime.
-    # This is acceptable since `used_nfwd` is only used for verbose logging.
+    # `used_nfwd` reflects whether a `ForwardChunkFastPath` was built for this cache.
+    # Since input sizes are fixed by the cache spec, all chunk widths are determined at
+    # construction time, so this flag accurately reflects runtime nfwd usage.
+    # (N == 1 chunks still use the lane loop by design; that is not a fallback.)
     used_nfwd = !isnothing(cache.chunk_fastpath)
     y, first_chunk_dy = _fcache_derivative_chunked!!(
         cache,
@@ -1673,7 +1694,7 @@ end
 #   `value_and_gradient!!`, `_fcache_gradient_chunked!!`.
 # - shared nfwd chunk machinery:
 #   `_fcache_nfwd_chunk_fastpath_maybe_build`,
-#   `_fcache_nfwd_chunk_should_fallback_to_lane_loop`.
+#   `_fcache_nfwd_is_ndual_unsupported`.
 #
 # Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)`:
 # - `x::IEEEFloat`: scalar width-1 path
