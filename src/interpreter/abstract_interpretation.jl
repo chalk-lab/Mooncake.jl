@@ -137,7 +137,7 @@ function Core.Compiler.abstract_call_gf_by_type(
     max_methods::Int,
 ) where {C,M}
     argtypes = arginfo.argtypes
-    # Perform method lookup without recursing into method bodies. This is lookup operation
+    # Perform method lookup without recursing into method bodies. This is lookup operation that
     # determines which methods could be called and is cheaper than IR body inference via recursion.
     if VERSION < v"1.12-"
         𝕃ᵢ = Core.Compiler.typeinf_lattice(interp)
