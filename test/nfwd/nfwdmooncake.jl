@@ -48,6 +48,54 @@ function steady_state_allocations_rrule(rule, fx::Tuple)
     return @allocated rule(fx...)
 end
 
+# Fixed-arity @noinline wrappers for frule!! / rrule!! allocation measurement.
+# Vararg wrappers cannot be used here: the untyped call chain injects tuple construction
+# that inflates the measured count regardless of warmup.
+@noinline _alloc_frule2(f::F, x1::X, x2::X) where {F,X} = @allocated Mooncake.frule!!(
+    f, x1, x2
+)
+@noinline _alloc_frule3(f::F, x1::X, x2::X, x3::X) where {F,X} = @allocated Mooncake.frule!!(
+    f, x1, x2, x3
+)
+@noinline _alloc_rrule2(f::F, x1::X, x2::X) where {F,X} = @allocated Mooncake.rrule!!(
+    f, x1, x2
+)
+@noinline _alloc_rrule3(f::F, x1::X, x2::X, x3::X) where {F,X} = @allocated Mooncake.rrule!!(
+    f, x1, x2, x3
+)
+
+function steady_state_allocations_frule2(f, x1, x2)
+    for _ in 1:5
+        Mooncake.frule!!(f, x1, x2)
+    end
+    GC.gc()
+    return _alloc_frule2(f, x1, x2)
+end
+
+function steady_state_allocations_frule3(f, x1, x2, x3)
+    for _ in 1:5
+        Mooncake.frule!!(f, x1, x2, x3)
+    end
+    GC.gc()
+    return _alloc_frule3(f, x1, x2, x3)
+end
+
+function steady_state_allocations_primitive_rrule2(f, x1, x2)
+    for _ in 1:5
+        Mooncake.rrule!!(f, x1, x2)
+    end
+    GC.gc()
+    return _alloc_rrule2(f, x1, x2)
+end
+
+function steady_state_allocations_primitive_rrule3(f, x1, x2, x3)
+    for _ in 1:5
+        Mooncake.rrule!!(f, x1, x2, x3)
+    end
+    GC.gc()
+    return _alloc_rrule3(f, x1, x2, x3)
+end
+
 # Bug fix note: measuring `@allocated value_and_gradient!!(...)` through a generic helper
 # counted wrapper/capture overhead on Julia 1.10 and produced a false 192-byte regression.
 @noinline _allocated_value_and_gradient(cache::C, f::F, x::X) where {C,F,X} = @allocated Mooncake.value_and_gradient!!(
@@ -580,6 +628,32 @@ end
                 cache = Mooncake.prepare_gradient_cache(case.f, case.x)
                 @test steady_state_allocations_rrule(rule, fx) == 0
                 @test steady_state_allocations_value_and_gradient(cache, case.f, case.x) ==
+                    0
+            end
+
+            @testset "binary/ternary frule!! and rrule!! stay allocation-free" begin
+                # Regression: consolidating _nfwd_extract to a Union method caused
+                # runtime dispatch on the result type, adding ~224 bytes per call.
+                # Regression: using `map` in vararg _nfwd_primitive_frule_call broke the
+                # inlining chain into _nfwd_eval, also causing allocations.
+                # Regression: _pt_scale/_pt_sub/_pt_add closure heap-allocation for N=1.
+                f_atan = Mooncake.Dual(atan, Mooncake.NoTangent())
+                x1 = Mooncake.Dual(1.0, 1.0)
+                x2 = Mooncake.Dual(2.0, 0.0)
+                @test steady_state_allocations_frule2(f_atan, x1, x2) == 0
+
+                cf_atan = Mooncake.zero_fcodual(atan)
+                cx1 = Mooncake.CoDual(1.0, Mooncake.NoFData())
+                cx2 = Mooncake.CoDual(2.0, Mooncake.NoFData())
+                @test steady_state_allocations_primitive_rrule2(cf_atan, cx1, cx2) == 0
+
+                f_clamp = Mooncake.Dual(clamp, Mooncake.NoTangent())
+                x3 = Mooncake.Dual(0.0, 0.0)
+                @test steady_state_allocations_frule3(f_clamp, x1, x2, x3) == 0
+
+                cf_clamp = Mooncake.zero_fcodual(clamp)
+                cx3 = Mooncake.CoDual(0.0, Mooncake.NoFData())
+                @test steady_state_allocations_primitive_rrule3(cf_clamp, cx1, cx2, cx3) ==
                     0
             end
 

@@ -59,19 +59,19 @@ Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`
 function frule!! end
 
 """
-    chunk_frule!!(cache, input_primals, input_tangents, ::Val{N}; friendly_tangents=false)
+    value_and_derivative_chunked!!(cache, ::Val{N}, x_dx::Tuple...; friendly_tangents=false)
 
 Internal batched forward-mode interface used by chunked `value_and_derivative!!` and the
 forward-mode gradient cache. Conceptually:
-- `value_and_derivative!!` calls `chunk_frule!!` when the user provides chunk tangents.
+- `value_and_derivative!!` calls `value_and_derivative_chunked!!` when the user provides chunk tangents.
 - `value_and_gradient!!` seeds standard-basis chunk tangents internally, then repeatedly
-  calls `chunk_frule!!` and accumulates the lane contributions into gradient buffers.
+  calls `value_and_derivative_chunked!!` and accumulates the lane contributions into gradient buffers.
 
 The generic implementation evaluates one lane at a time via ordinary `frule!!` / derived
 forward rules. Specialized backends, such as `nfwd`, may override this to evaluate all
 lanes in one pass.
 """
-function chunk_frule!! end
+function value_and_derivative_chunked!! end
 
 """
     build_primitive_frule(sig::Type{<:Tuple})

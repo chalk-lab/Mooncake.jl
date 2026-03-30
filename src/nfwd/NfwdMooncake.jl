@@ -14,14 +14,12 @@ import ..Mooncake:
     NoTangent,
     __value_and_gradient!!,
     __verify_sig,
-    _chunk_frule_with_backend,
-    _chunk_lane_loop_frule!!,
     _chunk_nfwd_rule,
     _chunk_pack_tangent,
     _chunk_should_fallback_to_lane_loop,
     _chunk_unpack_nfwd_output,
     _typeof,
-    chunk_frule!!,
+    _value_and_derivative_chunked_loop!!,
     fdata,
     primal,
     rdata,
@@ -30,6 +28,7 @@ import ..Mooncake:
     throw_val_and_grad_ret_type_error,
     tuple_map,
     value_and_derivative!!,
+    value_and_derivative_chunked!!,
     value_and_gradient!!,
     verify_fwds_inputs,
     zero_tangent
@@ -134,35 +133,20 @@ end
     return _chunk_unpack_nfwd_output(primal(output), tangent(output), Val(N))
 end
 
-@noinline function _chunk_frule_with_backend(
+@noinline function value_and_derivative_chunked!!(
     cache::ForwardCache{R,IT,OP,FG,GW,CF},
-    input_primals::Tuple,
-    input_tangents::Tuple,
-    ::Val{N};
+    ::Val{N},
+    x_dx::Vararg{Tuple,M};
     friendly_tangents::Bool=false,
-) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:ForwardChunkFastPath,N}
+) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:ForwardChunkFastPath,N,M}
     N < 1 && throw(ArgumentError("NTangent inputs must contain at least one lane."))
+    input_primals = map(first, x_dx)
+    input_tangents = map(last, x_dx)
     # NDual-backed batched backend: try one packed multi-lane forward pass first, then
     # fall back to the generic lane loop only for runtime NDual-specific unsupported cases.
     nfwd_output = _try_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
-    !isnothing(nfwd_output) && return nfwd_output, true
-    result = _chunk_lane_loop_frule!!(
-        cache, input_primals, input_tangents, Val(N); friendly_tangents
-    )
-    return result, false
-end
-
-@noinline function chunk_frule!!(
-    cache::ForwardCache{R,IT,OP,FG,GW,CF},
-    input_primals::Tuple,
-    input_tangents::Tuple,
-    ::Val{N};
-    friendly_tangents::Bool=false,
-) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:ForwardChunkFastPath,N}
-    result, _ = _chunk_frule_with_backend(
-        cache, input_primals, input_tangents, Val(N); friendly_tangents
-    )
-    return result
+    !isnothing(nfwd_output) && return nfwd_output
+    return _value_and_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
 end
 
 """

@@ -383,6 +383,8 @@ end
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
 @inline _pt_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
+# N=1 specializations avoid closure heap-allocation on the scalar (chunk_size=1) hot path.
+@inline _pt_scale(p::NTuple{1,T}, s::T) where {T} = (s * p[1],)
 # `_nfwd_zero_mask` plays the same role as `nan_tangent_guard` for scalar NDual algebra:
 # when the local seed / upstream factor `a` is zero, replace `b` by zero(b) before the
 # multiply so `0 * Inf` and `0 * NaN` collapse to zero instead of poisoning the tangent.
@@ -402,6 +404,10 @@ end
 @inline _pt_sub(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] - q[i], Val(N))
 @inline _pt_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
 @inline _pt_zero(::Val{N}, ::Type{T}) where {N,T} = ntuple(_ -> zero(T), Val(N))
+@inline _pt_add(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] + q[1],)
+@inline _pt_sub(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] - q[1],)
+@inline _pt_neg(p::NTuple{1,T}) where {T} = (-p[1],)
+@inline _pt_zero(::Val{1}, ::Type{T}) where {T} = (zero(T),)
 
 # These helpers define the scalar edge-case behavior used by nfwd for non-smooth
 # primitives: `^` keeps the removable-singularity cases at x == 0, while `mod` and
