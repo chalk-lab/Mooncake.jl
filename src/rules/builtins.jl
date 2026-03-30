@@ -37,7 +37,7 @@ function rrule!!(f::CoDual{<:Core.Builtin}, args...)
 end
 
 function Base.showerror(io::IO, err::MissingRuleForBuiltinException)
-    return _print_boxed_error(io, split("MissingRuleForBuiltinException: $(err.msg)", '\n'))
+    return _print_boxed_error(io, split(err.msg, '\n'))
 end
 
 """

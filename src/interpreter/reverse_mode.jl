@@ -1065,6 +1065,7 @@ struct MooncakeRuleCompilationError <: Exception
     interp::MooncakeInterpreter
     sig
     debug_mode::Bool
+    cause::Exception
 end
 
 function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
@@ -1074,6 +1075,27 @@ function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
         "not make it clear to you how the problem can be fixed, please open an issue",
         "at github.com/chalk-lab/Mooncake.jl describing your problem.",
     )
+    cause_width = min(_boxed_message_width(io, "│ "), 78)
+    cause_lines = let lines = if hasfield(typeof(err.cause), :msg)
+            msg = getfield(err.cause, :msg)
+            if msg isa AbstractString
+                split(msg, '\n')
+            else
+                split(sprint(showerror, err.cause), '\n')
+            end
+        else
+            split(sprint(showerror, err.cause), '\n')
+        end
+        while !isempty(lines) && isempty(last(lines))
+            pop!(lines)
+        end
+        wrapped_lines = String[]
+        for line in lines
+            append!(wrapped_lines, _wrap_boxed_line(line, cause_width))
+        end
+        wrapped_lines
+    end
+    detail_lines = ("Caused by:", cause_lines..., "", msg_lines...)
 
     # Print the source location of the method being differentiated, if available.
     try
@@ -1089,19 +1111,19 @@ function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
                     "Mooncake failed to differentiate the following method:",
                     header,
                     "",
-                    msg_lines...,
+                    detail_lines...,
                 );
                 footer=isnothing(location) ? nothing : "@ $location",
             )
             println(io)  # blank line before the main error body
         else
-            _print_boxed_error(io, msg_lines)
+            _print_boxed_error(io, detail_lines)
             println(io)
         end
     catch e
         # If method lookup fails for any reason, skip gracefully.
         @debug "MooncakeRuleCompilationError: method lookup failed" exception = e
-        _print_boxed_error(io, msg_lines)
+        _print_boxed_error(io, detail_lines)
         println(io)
     end
     println(io, "To replicate this error run the following:\n")
@@ -1244,7 +1266,7 @@ function build_derived_rrule(
             rethrow(e)
         else
             sig = sig_or_mi isa Core.MethodInstance ? sig_or_mi.specTypes : sig_or_mi
-            throw(MooncakeRuleCompilationError(interp, sig, debug_mode))
+            throw(MooncakeRuleCompilationError(interp, sig, debug_mode, e))
         end
     finally
         unlock(MOONCAKE_INFERENCE_LOCK)

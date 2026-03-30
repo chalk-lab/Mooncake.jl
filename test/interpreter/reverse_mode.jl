@@ -376,9 +376,10 @@ rule_type_nonreturning(e::Exception) = throw(e)
             e
         end
         @test err isa Mooncake.MooncakeRuleCompilationError
-        msg = sprint(showerror, err)
+        msg = sprint(showerror, err; context=:displaysize => (24, 120))
         @test startswith(msg, "Mooncake failed to differentiate the following method:")
         @test contains(msg, "_rrule_error_test_llvmcall")
+        @test contains(msg, "Caused by:")
     end
     @testset "$(_typeof((f, x...)))" for (n, (interface_only, perf_flag, bnds, f, x...)) in
                                          collect(
