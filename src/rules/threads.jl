@@ -6,13 +6,11 @@ using `Threads.@threads`.
 
 All element types must be isbits (checked at runtime); element types need not be identical
 across vectors. For reverse-mode AD via Mooncake to be race-free, `f` must also satisfy
-`fdata_type(tangent_type(F)) == NoFData`, i.e. it carries no mutable differentiable state.
-This covers plain functions and closures capturing only isbits scalars.
-
-See https://github.com/chalk-lab/Mooncake.jl/issues/791.
+`fdata_type(tangent_type(typeof(f))) == NoFData`, i.e. it carries no mutable differentiable
+state. This covers plain functions and closures capturing only isbits scalars.
 """
-function threaded_map!(f::F, output::Vector, inputs::Vector...) where {F}
-    n = _check_threaded_map!(output, inputs)
+function threaded_map!(f, output::Vector, inputs::Vector...)
+    n = _check_threaded_map!(f, output, inputs)
     N    = length(inputs)
     valN = Val(N)  # Val{N} computed at outer scope where N is a compile-time constant;
                    # capturing valN::Val{N} in the closure lets ntuple unroll correctly.
@@ -23,12 +21,16 @@ function threaded_map!(f::F, output::Vector, inputs::Vector...) where {F}
 end
 
 # Shared validation for both primal and AD paths. Returns the effective length (minimum
-# of input lengths, upper-bounded by output length).
-function _check_threaded_map!(output::Vector, inputs)
+# of input lengths, upper-bounded by output length) — same semantics as map!.
+function _check_threaded_map!(f, output::Vector, inputs)
     isempty(inputs) && throw(ArgumentError("threaded_map!: at least one input vector required"))
     all(v -> isbitstype(eltype(v)), (output, inputs...)) || throw(ArgumentError(
         "threaded_map!: all element types must be isbits; " *
         "got $(map(eltype, (output, inputs...)))"
+    ))
+    fdata_type(tangent_type(typeof(f))) == NoFData || throw(ArgumentError(
+        "threaded_map!: f must satisfy fdata_type(tangent_type(typeof(f))) == NoFData " *
+        "(no mutable differentiable state); got typeof(f) = $(typeof(f))"
     ))
     n = minimum(length, inputs)
     length(output) >= n || throw(
@@ -46,18 +48,18 @@ end
 @inline function rrule!!(
     ::CoDual{typeof(threaded_map!)},
     f::CoDual{F},
-    output::CoDual{Vector{Tout}, Vector{Tout}},
-    inputs::CoDual...,
-) where {F, Tout}
+    output::CoDual{<:Vector},
+    inputs::CoDual{<:Vector}...,
+) where {F}
     fp  = primal(f)
     xps = map(primal, inputs)
-    xds = map(tangent, inputs)  # Vector{Ti} for differentiable Ti, NoFData for others
+    xds = map(tangent, inputs)
     yp  = primal(output)
     yd  = tangent(output)
     N    = length(inputs)
     valN = Val(N)  # Val{N} computed at outer scope where N is a compile-time constant;
                    # capturing valN::Val{N} in closures lets ntuple unroll correctly.
-    n   = _check_threaded_map!(yp, xps)
+    n   = _check_threaded_map!(fp, yp, xps)
 
     # Save current primal output state for restoration in the pullback (undo-tape semantics).
     old_yp = copy(yp)
@@ -92,6 +94,9 @@ end
         # them back to each input's cotangent accumulator (skip non-differentiable inputs).
         # Zero out yd[i] after reading — the forward pass set it to zero, so zeroing
         # restores it to its post-forward state without needing a saved copy.
+        # Use increment_rdata!! rather than += : for isbits structs, xd[i]::Tangent{...}
+        # but the pullback returns RData{...} — different types; increment_rdata!! handles
+        # all tangent types uniformly.
         Threads.@threads for i in 1:n
             dy_i = yd[i]
             yd[i] = zero_tangent(yp[i])
