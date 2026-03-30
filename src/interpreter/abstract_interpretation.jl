@@ -137,7 +137,8 @@ function Core.Compiler.abstract_call_gf_by_type(
     max_methods::Int,
 ) where {C,M}
     argtypes = arginfo.argtypes
-    # Pure method table lookup - no body recursion, always cheap.
+    # Perform method lookup without recursing into method bodies. This is lookup operation
+    # determines which methods could be called and is cheaper than IR body inference via recursion.
     if VERSION < v"1.12-"
         𝕃ᵢ = Core.Compiler.typeinf_lattice(interp)
         matches = Core.Compiler.find_matching_methods(
@@ -153,14 +154,15 @@ function Core.Compiler.abstract_call_gf_by_type(
     end
     if !isa(matches, Core.Compiler.FailedMethodMatch)
         (; valid_worlds, applicable) = matches
-        # Check primitives before doing any inference. By checking primitives
-        # first, we avoid unnecessary recursion.
+        # For applicable method matches in IR, we need to check if any of them is a primitive.
         any_prim = any_matches_primitive(applicable, C, M, interp.world)
         if any_prim
-            # Use NativeInterpreter instead of MooncakeInterpreter to infer the primitive call.
-            # NativeInterpreter does not repass MooncakeInterpreter into inner calls, so
-            # recursion into the primitive's body is bounded and terminates. We still get the
-            # correct return type, exception type, and effects from full inference.
+            # Use NativeInterpreter instead of MooncakeInterpreter to infer primitive calls.
+            # This is efficient and safe because:
+            # 1. Primitive's Julia IR does not need to be searched further for primitives/inferred return type via MooncakeInterpreter.
+            # 2. NativeInterpreter's inference is sufficient to determine the return types.
+            # 3. By not recursing with MooncakeInterpreter, we avoid unbounded recursion into primitive implementations.
+            # See https://github.com/chalk-lab/Mooncake.jl/pull/1115 for detailed rationale.
             native_interp = CC.NativeInterpreter(interp.world)
             ret = CC.abstract_call_gf_by_type(
                 native_interp, f, arginfo, si, atype, sv, max_methods
@@ -180,9 +182,8 @@ function Core.Compiler.abstract_call_gf_by_type(
             end
         end
     end
-    # Not a primitives method's IR hence, need to recurse with MooncakeInterpreter. Inner calls will fire
-    # this Mooncake abstract_call_gf_by_type dispatch again, so any primitive encountered deeper in the call tree is also caught.
-    @invoke CC.abstract_call_gf_by_type(
+
+    return @invoke CC.abstract_call_gf_by_type(
         interp::CC.AbstractInterpreter,
         f::Any,
         arginfo::CC.ArgInfo,
