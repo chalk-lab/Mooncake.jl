@@ -541,16 +541,18 @@ end
                 (type=Vector{Float64}, size=(2,))
             @test Mooncake.NfwdMooncake._nfwd_sig(1.0) == (type=Float64, size=())
 
-            @test Mooncake._chunk_should_fallback_to_lane_loop(
+            @test Mooncake._fcache_nfwd_chunk_should_fallback_to_lane_loop(
                 Mooncake.NfwdMooncake.UnsupportedInputError("unsupported input")
             )
-            @test Mooncake._chunk_should_fallback_to_lane_loop(
+            @test Mooncake._fcache_nfwd_chunk_should_fallback_to_lane_loop(
                 Mooncake.NfwdMooncake.UnsupportedOutputError("unsupported output")
             )
-            @test Mooncake._chunk_should_fallback_to_lane_loop(
+            @test Mooncake._fcache_nfwd_chunk_should_fallback_to_lane_loop(
                 Mooncake.Nfwd.NDualUnsupportedError(:floor)
             )
-            @test !Mooncake._chunk_should_fallback_to_lane_loop(ArgumentError("other"))
+            @test !Mooncake._fcache_nfwd_chunk_should_fallback_to_lane_loop(
+                ArgumentError("other")
+            )
         end
     end
 

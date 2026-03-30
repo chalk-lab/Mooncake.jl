@@ -14,12 +14,11 @@ import ..Mooncake:
     NoTangent,
     __value_and_gradient!!,
     __verify_sig,
-    _chunk_nfwd_rule,
     _chunk_pack_tangent,
-    _chunk_should_fallback_to_lane_loop,
-    _chunk_unpack_nfwd_output,
+    _fcache_nfwd_chunk_should_fallback_to_lane_loop,
+    _fcache_derivative_chunked!!,
     _typeof,
-    _value_and_derivative_chunked_loop!!,
+    _fcache_derivative_chunked_loop!!,
     fdata,
     primal,
     rdata,
@@ -28,7 +27,6 @@ import ..Mooncake:
     throw_val_and_grad_ret_type_error,
     tuple_map,
     value_and_derivative!!,
-    value_and_derivative_chunked!!,
     value_and_gradient!!,
     verify_fwds_inputs,
     zero_tangent
@@ -111,7 +109,23 @@ end
     N == 1 && return nothing
     fastpath = cache.chunk_fastpath
     isnothing(fastpath) && return nothing
-    rule = _chunk_nfwd_rule(fastpath, Val(N))
+    rule = if N == 2
+        fastpath.frule_2
+    elseif N == 3
+        fastpath.frule_3
+    elseif N == 4
+        fastpath.frule_4
+    elseif N == 5
+        fastpath.frule_5
+    elseif N == 6
+        fastpath.frule_6
+    elseif N == 7
+        fastpath.frule_7
+    elseif N == 8
+        fastpath.frule_8
+    else
+        nothing
+    end
     isnothing(rule) && return nothing
     packed_tangents = ntuple(
         i -> _chunk_pack_tangent(
@@ -127,13 +141,24 @@ end
     output = try
         rule(fd, x_duals...)
     catch err
-        _chunk_should_fallback_to_lane_loop(err) && return nothing
+        _fcache_nfwd_chunk_should_fallback_to_lane_loop(err) && return nothing
         rethrow(err)
     end
-    return _chunk_unpack_nfwd_output(primal(output), tangent(output), Val(N))
+    y = primal(output)
+    dy = tangent(output)
+    # Re-express the packed nfwd output at the public chunk boundary as one tangent per lane.
+    unpack_output_lane(yi::IEEEFloat, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
+    unpack_output_lane(yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
+    unpack_output_lane(yi::Array, dyi::Array, ::Val{lane}) where {lane} = selectdim(
+        dyi, ndims(dyi), lane
+    )
+    unpack_output_lane(yi::Tuple, dyi::Tuple, ::Val{lane}) where {lane} = tuple_map(
+        (yij, dyij) -> unpack_output_lane(yij, dyij, Val(lane)), yi, dyi
+    )
+    return y, NTangent(ntuple(lane -> unpack_output_lane(y, dy, Val(lane)), Val(N)))
 end
 
-@noinline function value_and_derivative_chunked!!(
+@noinline function _fcache_derivative_chunked!!(
     cache::ForwardCache{R,IT,OP,FG,GW,CF},
     ::Val{N},
     x_dx::Vararg{Tuple,M};
@@ -146,7 +171,7 @@ end
     # fall back to the generic lane loop only for runtime NDual-specific unsupported cases.
     nfwd_output = _try_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
     !isnothing(nfwd_output) && return nfwd_output
-    return _value_and_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
+    return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
 end
 
 """
