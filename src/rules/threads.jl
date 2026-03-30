@@ -99,7 +99,7 @@ end
             FRData !== NoRData && (f_rdatas[i] = rdata_tuple[1])
             for j in 1:N
                 xd = xds[j]
-                xd isa NoFData || (xd[i] += rdata_tuple[j + 1])
+                xd isa NoFData || (xd[i] = increment_rdata!!(xd[i], rdata_tuple[j + 1]))
             end
         end
 
