@@ -63,13 +63,13 @@ const _gpu_disabled = false
 
 # ── GPU AD status notes ──────────────────────────────────────────────────────────────
 #
-# When Mooncake lacks an explicit rule for a GPU operation it falls back to
-# differentiating through the Julia source via a forward-mode (chunked) broadcast
+# When Mooncake lacks an explicit rule for a GPU operation, it falls back to
+# differentiating CUDA kernel via a forward-mode (chunked) broadcast
 # using NDual{T,N} dual numbers inside GPU kernels.  N = total real DOFs across all
 # broadcast inputs (1 per Float arg, 2 per Complex arg).  This works for pure
-# element-wise Julia functions but has two important limitations:
+# element-wise Julia functions, but has two important limitations:
 #
-#   1. CORRECTNESS — some GPU operations are not differentiable by Mooncake without
+#   1. COVERAGE — some GPU operations are not differentiable by Mooncake without
 #      explicit rules:
 #        • cuDNN operators (batchnorm_cudnn!, …) — need an rrule!!
 #        • Base.permutedims(::CuArray) — called by LuxLib.batched_matmul in the
@@ -79,15 +79,15 @@ const _gpu_disabled = false
 #
 #   2. PERFORMANCE — forward-mode broadcast is essentially chunked forward-mode AD:
 #      it requires one GPU kernel launch per output DOF.  For models with many
-#      parameters this scales as O(params) in memory and time, which is prohibitive
+#      parameters, this scales as O(params) in memory and time, which is prohibitive
 #      for large models even when it compiles.  Fix: add reverse-mode rrule!! so
 #      Mooncake runs a single backward pass regardless of parameter count.
 #
 #   3. CPU/GPU TANGENT MISMATCH (Flux-specific) — Flux stores weights directly as
 #      struct type parameters, e.g. Dense{identity, Matrix{Float32}, Vector{Float32}}.
-#      gpu() replaces the runtime values but the static type params remain Matrix{Float32}.
+#      gpu() replaces the runtime values, but the static type params remain Matrix{Float32}.
 #      Mooncake computes tangent_type from static types, so weight tangents are
-#      Matrix{Float32} (CPU).  During test_rule the perturbed primal is reconstructed
+#      Matrix{Float32} (CPU).  During test_rule, the perturbed primal is reconstructed
 #      as (primal + tangent), giving a Dense with a CPU weight matrix that is then
 #      called on a GPU input:
 #

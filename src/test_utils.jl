@@ -145,7 +145,6 @@ using Mooncake:
     _scale,
     _add_to_primal,
     primal_to_tangent!!,
-    tangent_to_primal!!,
     _dot,
     NoFData,
     fdata_type,
@@ -364,11 +363,17 @@ function populate_address_map_internal(m::AddressMap, primal::P, tangent::T) whe
     T === NoTangent && return m
     T === NoFData && return m
     if ismutabletype(P)
-        @assert T <: MutableTangent
+        @assert T <: MutableTangent "Expected tangent type to be a MutableTangent for mutable primal type $(P), but got $(T)."
         k = pointer_from_objref(primal)
         v = pointer_from_objref(tangent)
         if haskey(m, k)
-            @assert m[k] == v
+            @assert(
+                m[k] == v,
+                "Aliasing not preserved: primal object at address $(k) maps to tangent " *
+                    "at address $(m[k]), but also maps to a different tangent at address $(v). " *
+                    "This means two references to the same primal object do not share the " *
+                    "same tangent object.",
+            )
             return m
         end
         m[k] = v
@@ -404,7 +409,13 @@ function populate_address_map_internal(m::AddressMap, p::Array, t::Array)
     k = pointer_from_objref(p)
     v = pointer_from_objref(t)
     if haskey(m, k)
-        @assert m[k] == v
+        @assert(
+            m[k] == v,
+            "Aliasing not preserved: primal Array at address $(k) maps to tangent " *
+                "at address $(m[k]), but also maps to a different tangent at address $(v). " *
+                "This means two references to the same primal object do not share the " *
+                "same tangent object.",
+        )
         return m
     end
     m[k] = v
@@ -418,7 +429,13 @@ function populate_address_map_internal(m::AddressMap, p::Core.SimpleVector, t::V
     k = pointer_from_objref(p)
     v = pointer_from_objref(t)
     if haskey(m, k)
-        @assert m[k] == v
+        @assert(
+            m[k] == v,
+            "Aliasing not preserved: primal SimpleVector at address $(k) maps to " *
+                "tangent at address $(m[k]), but also maps to a different tangent at " *
+                "address $(v). This means two references to the same primal object do " *
+                "not share the same tangent object.",
+        )
         return m
     end
     m[k] = v
@@ -803,18 +820,22 @@ function test_frule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @static if VERSION >= v"1.12"
+        # On Julia 1.10 under `Pkg.test`, `--check-bounds=yes` can introduce small,
+        # configuration-dependent allocations even for primal calls that are otherwise
+        # zero-alloc in ordinary execution. Keep the zero-allocation assertion in the
+        # default/performance configuration, but skip it in that test-only mode.
+        if !(VERSION < v"1.11-" && Base.JLOptions().check_bounds == 1)
             @test count_allocs(f, x...) == 0
-        else
-            @test (@allocations f(x...)) == 0
         end
 
         # Test allocations in forwards-mode.
-        __forwards(rule, f_ḟ, x_ẋ...)
-        @static if VERSION >= v"1.12"
-            @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
-        else
-            @test (@allocations __forwards(rule, f_ḟ, x_ẋ...)) == 0
+        # On Julia 1.10, __call_rule uses Base.inferencebarrier to work around a codegen
+        # crash (julia#61368). This boxes isbits values (e.g. Dual{Float64}) at every
+        # nested rule callsite inside the compiled OC, producing non-zero alloc counts
+        # even for correct rules. Skip this check on Julia < 1.11.
+        @static if VERSION >= v"1.11-"
+            __forwards(rule, f_ḟ, x_ẋ...)
+            @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
         end
     end
 end
@@ -854,21 +875,20 @@ function test_rrule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @static if VERSION >= v"1.12"
+        if !(VERSION < v"1.11-" && Base.JLOptions().check_bounds == 1)
             @test count_allocs(f, x...) == 0
-        else
-            @test (@allocations f(x...)) == 0
         end
 
         # Test allocations in round-trip.
-        f_f̄_fwds = to_fwds(f_f̄)
-        x_x̄_fwds = map(to_fwds, x_x̄)
-        __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
-        @static if VERSION >= v"1.12"
+        # Skip on Julia < 1.11 for the same reason as the frule check above: the
+        # inferencebarrier workaround in __call_rule boxes isbits values at every
+        # nested rule callsite inside the compiled OC, producing spurious non-zero
+        # alloc counts on Julia 1.10.
+        @static if VERSION >= v"1.11-"
+            f_f̄_fwds = to_fwds(f_f̄)
+            x_x̄_fwds = map(to_fwds, x_x̄)
+            __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
             @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
-        else
-            @test (@allocations __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)) ==
-                0
         end
     end
 end
@@ -956,6 +976,8 @@ function test_rule(
     output_tangent=nothing,
     atol=1e-3,
     rtol=1e-3,
+    frule=nothing,
+    rrule=nothing,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -964,14 +986,33 @@ function test_rule(
     sig = _typeof(__get_primals(x))
     test_fwd = mode in [nothing, ForwardMode]
     test_rvs = mode in [nothing, ReverseMode]
-    fwd_interp = test_fwd ? get_interpreter(ForwardMode) : missing
-    rvs_interp = test_rvs ? get_interpreter(ReverseMode) : missing
-    frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
-    rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
+    fwd_interp = (test_fwd && isnothing(frule)) ? get_interpreter(ForwardMode) : missing
+    rvs_interp = (test_rvs && isnothing(rrule)) ? get_interpreter(ReverseMode) : missing
+    frule = if !isnothing(frule)
+        frule
+    elseif test_fwd
+        build_frule(fwd_interp, sig; debug_mode)
+    else
+        missing
+    end
+    rrule = if !isnothing(rrule)
+        rrule
+    elseif test_rvs
+        build_rrule(rvs_interp, sig; debug_mode)
+    else
+        missing
+    end
 
     # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
-    test_fwd && is_primitive && @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
-    test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
+    # Skip when a pre-built rule was supplied — the caller owns it.
+    test_fwd &&
+        is_primitive &&
+        !ismissing(fwd_interp) &&
+        @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
+    test_rvs &&
+        is_primitive &&
+        !ismissing(rvs_interp) &&
+        @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
     x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
@@ -1013,7 +1054,7 @@ function test_rule(
 
             # Verify that rules have been cached.
             @testset "Caching" begin
-                if test_fwd
+                if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
                         cache_key = (sig, debug_mode, :forward)
@@ -1021,7 +1062,7 @@ function test_rule(
                         @test haskey(fwd_interp.oc_cache, k)
                     end
                 end
-                if test_rvs
+                if test_rvs && !ismissing(rvs_interp)
                     C_rvs = Mooncake.context_type(rvs_interp)
                     if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
                         cache_key = (sig, debug_mode, :reverse)
@@ -1289,7 +1330,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     @test has_equal_data(__scale(1.0, t), t)
     @test has_equal_data(__scale(2.0, t), _increment!!(deepcopy(t), t))
 
-    # Test for tangent_to_primal!! / primal_to_tangent!!
+    # Test for tangent_to_primal_internal!! / primal_to_tangent!!
     p1 = deepcopy([p])[1]
     t1 = _randn_tangent(rng, p1)
     p1 = _tangent_to_primal!!(p1, t1)
@@ -1448,69 +1489,43 @@ function test_get_tangent_field_performance(t::Union{MutableTangent,Tangent})
     end
 end
 
-# This faff is needed to work around the fact that `Base.allocations(() -> f(x...))` reports
-# spurious allocations when any of `x` is a DataType (which necessitates a manual expansion
-# of the splat), and `Base.allocations(f, x...)` also reports spurious allocations sometimes
-# when the arguments `x` aren't interpolated (which necessitates a closure). The only way to
-# make it work is to generate the code `Base.allocations(() -> f(x1, x2))`, etc., for each
-# arity of `f` (up to a reasonable limit). It would be nicer to use a generated function for
-# this, but generated functions can't contain closures.
-function __allocs end
-function count_allocs end
-const __MAX_ARGS_ALLOCS = 10
-@static if VERSION >= v"1.12-"
-    for nargs in 0:__MAX_ARGS_ALLOCS
-        args = [Symbol("x", i) for i in 1:nargs]
-        types = [Symbol("X", i) for i in 1:nargs]
-        sigs = [:($(args[i])::$(types[i])) for i in 1:nargs]
-        fexpr = quote
-            function count_allocs(f::F, $(sigs...)) where {F,$(types...)}
-                test_hook(count_allocs, f, $(args...)) do
-                    stats = Base.gc_num()
-                    @noinline clos = () -> f($(args...))
-                    clos()
-                    diff = Base.GC_Diff(Base.gc_num(), stats)
-                    return Base.gc_alloc_count(diff)
-                end
-            end
-            # Needs a special case when `f` itself is a type constructor
-            function count_allocs(::Type{F}, $(sigs...)) where {F,$(types...)}
-                test_hook(count_allocs, F, $(args...)) do
-                    stats = Base.gc_num()
-                    @noinline clos = () -> F($(args...))
-                    clos()
-                    diff = Base.GC_Diff(Base.gc_num(), stats)
-                    return Base.gc_alloc_count(diff)
-                end
-            end
-        end
-        eval(fexpr)
+# Counts the number of GC allocations made by a function call.
+#
+# A plain Vararg method does not fully specialise on Type{T} arguments — they widen to
+# DataType — which causes spurious allocations to be reported. For example:
+#
+#   vararg(f::F, x::Vararg{Any,N}) where {F,N} = nothing
+#   vararg(rand, Xoshiro(1), Float64)
+#   Base.specializations(@which vararg(rand, Xoshiro(1), Float64))
+#   # => MethodInstance for vararg(::typeof(rand), ::Xoshiro, ::Type)
+#                                                               ^^^^^^ widened, abstract dispatch
+#
+#   explicit(f::F, x1::X1, x2::X2) where {F,X1,X2} = nothing
+#   explicit(rand, Xoshiro(1), Float64)
+#   Base.specializations(@which explicit(rand, Xoshiro(1), Float64))
+#   # => MethodInstance for explicit(::typeof(rand), ::Xoshiro, ::Type{Float64})
+#                                                                    ^^^^^^^^^^^ preserved
+#
+# @generated functions specialise fully on all argument types (including Type{T}), so
+# packing f and its arguments into one Vararg gives per-element-type specialisation
+# without explicit numbered overloads. @generated function bodies cannot contain closures,
+# so the measurement window (gc_num / gc_alloc_count) lives in __count_allocs (inlinable,
+# no barrier) and test_hook lives in the count_allocs wrapper so that external tools
+# (e.g. dispatch_doctor) can intercept and suppress the measurement where needed.
+@generated function __count_allocs(f_and_x::Vararg{Any,N}) where {N}
+    N >= 1 ||
+        return :(error("__count_allocs requires at least one argument (the function)"))
+    args = [:(f_and_x[$i]) for i in 2:N]
+    quote
+        stats = Base.gc_num()
+        f_and_x[1]($(args...))
+        Base.gc_alloc_count(Base.GC_Diff(Base.gc_num(), stats))
     end
-    # Catch-all method for when there are more than __MAX_ARGS_ALLOCS arguments. The risk of
-    # using Vararg here on Julia 1.12 is that it leads to incomplete specialisation when any
-    # of the arguments are DataTypes, which can cause spurious allocations. See e.g.
-    # https://discourse.julialang.org/t/specialization-on-vararg-of-types/108251.
-    function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-        test_hook(count_allocs, f, x...) do
-            # This method should only be hit if N > __MAX_ARGS_ALLOCS, but we can check
-            # nonetheless
-            N > __MAX_ARGS_ALLOCS &&
-                @warn "using varargs method for `count_allocs` since there were $N arguments; this may lead to spurious allocations being reported if any arguments are `DataType`s"
-            stats = Base.gc_num()
-            @noinline clos = () -> f(x...)
-            clos()
-            diff = Base.GC_Diff(Base.gc_num(), stats)
-            return Base.gc_alloc_count(diff)
-        end
-    end
-else
-    # Fallback for Julia <= 1.11. Note that this will report spurious allocations if any of
-    # `x` are `DataType`s so it is best to just call `@allocations f(x...)` directly instead
-    # of `count_allocs(f, x...)`.
-    function count_allocs(f::F, x::Vararg{Any,N}) where {F,N}
-        test_hook(count_allocs, f, x...) do
-            @allocations f(x...)
-        end
+end
+function count_allocs(f_and_x::Vararg{Any,N}; test_hook::Bool=true) where {N}
+    test_hook || return __count_allocs(f_and_x...)
+    return TestUtils.test_hook(count_allocs, f_and_x...) do
+        __count_allocs(f_and_x...)
     end
 end
 

@@ -19,6 +19,11 @@ struct MakeAUnionAll{T} end
 
 end
 
+# Regression for non-returning primals: `rule_type` must predict `Tuple{}` pullback args
+# to match `build_rrule`, otherwise lazy derived-rule materialization hits a type mismatch
+# (PR #1099).
+rule_type_nonreturning(e::Exception) = throw(e)
+
 @testset "s2s_reverse_mode_ad" begin
     @testset "SharedDataPairs" begin
         m = SharedDataPairs()
@@ -339,6 +344,7 @@ end
             Tuple{typeof(TestResources.tuple_with_union),Bool},
             Tuple{typeof(TestResources.tuple_with_union_2),Bool},
             Tuple{typeof(TestResources.tuple_with_union_3),Bool,Bool},
+            Tuple{typeof(rule_type_nonreturning),ArgumentError},
         ],
         debug_mode in [true, false]
 
@@ -370,9 +376,10 @@ end
             e
         end
         @test err isa Mooncake.MooncakeRuleCompilationError
-        msg = sprint(showerror, err)
+        msg = sprint(showerror, err; context=:displaysize => (24, 120))
         @test startswith(msg, "Mooncake failed to differentiate the following method:")
         @test contains(msg, "_rrule_error_test_llvmcall")
+        @test contains(msg, "Caused by:")
     end
     @testset "$(_typeof((f, x...)))" for (n, (interface_only, perf_flag, bnds, f, x...)) in
                                          collect(
@@ -448,6 +455,20 @@ end
         rule = Mooncake.DynamicDerivedRule(false)
         args = (zero_fcodual(identity), zero_fcodual((v=S2SGlobals.MakeAUnionAll,)))
         @test rule(args...) isa Tuple{CoDual,Any}
+    end
+    @testset "_pullback_type" begin
+        # On Julia 1.10, keyword functions are lowered to old-style `##foo#N` wrappers
+        # rather than `Core.kwcall`. When Mooncake compiles a derived rrule for such a
+        # wrapper, `pullback_type` calls `Core.Compiler.return_type` on the inner `rrule!!`
+        # call. If inference gives up — e.g. because the `@from_rrule` wrapper calls
+        # `ChainRulesCore.rrule` and the pullback closure type cannot be resolved — it
+        # returns bare `Tuple`, whose `parameters` field is `svec(Vararg{Any})` (length 1).
+        # `_pullback_type` must not index past the end of that vector.
+        @test Mooncake._pullback_type(Tuple) === Any        # svec(Vararg{Any}), length 1
+        @test Mooncake._pullback_type(Tuple{}) === Any      # svec(), length 0
+        @test Mooncake._pullback_type(Tuple{Int}) === Any   # svec(Int), length 1
+        # Sanity-check: well-formed 2-element tuple still extracts the second parameter.
+        @test Mooncake._pullback_type(Tuple{Int,Float64}) === Float64
     end
     @testset "literal Strings do not appear in shared data" begin
         f() = "hello"

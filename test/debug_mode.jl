@@ -6,6 +6,7 @@
             f = x -> 5x
             rule = build_rrule(f, 5.0; debug_mode=true)
             @test_throws ErrorException rule(zero_fcodual(f), CoDual(0.0f0, 1.0f0))
+            @test_throws ErrorException rule(zero_fcodual(f), CoDual(5.0, 1.0))
         end
 
         # Forwards-pass tests.
@@ -48,7 +49,7 @@
         @testset "argument checking" begin
             f = x -> 5x
             rule = Mooncake.build_frule(zero_dual(f), 5.0; debug_mode=true)
-            @test_throws ErrorException rule(
+            @test_throws ArgumentError rule(
                 zero_dual(f), Mooncake.Dual(Float32(5.0), Float32(1.0))
             )
         end

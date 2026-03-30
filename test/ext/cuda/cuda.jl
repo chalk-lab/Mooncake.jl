@@ -15,12 +15,7 @@ using Mooncake.TestUtils:
     test_rrule_interface
 using LinearAlgebra
 
-# Access NDual and friends from the CUDA extension (they are not exported from Mooncake core).
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
-const NDual = _MooncakeCUDAExt.NDual
-const ndual_value = _MooncakeCUDAExt.ndual_value
-const ndual_partial = _MooncakeCUDAExt.ndual_partial
-const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
 
 @testset "cuda" begin
     cuda = CUDA.functional()
@@ -29,6 +24,20 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         # with other rules.
         #
         # Check we can operate on CuArrays of various element types.
+
+        @testset "_copy_output / _copy_to_output!! for CuArray{$ET}" for ET in (
+            Float32, Float64, ComplexF32, ComplexF64
+        )
+            p = CuArray(randn(ET, 4, 4))
+            p_copy = Mooncake._copy_output(p)
+            @test p_copy == p
+            @test p_copy !== p
+            @test typeof(p_copy) == typeof(p)
+            p2 = CuArray(randn(ET, 4, 4))
+            Mooncake._copy_to_output!!(p_copy, p2)
+            @test p_copy == p2
+        end
+
         @testset for ET in (Float32, Float64, ComplexF32, ComplexF64)
             # Use `undef` to test against garbage memory (NaNs, Infs, subnormals).
             # `randn` generates well-behaved values and can miss these edge cases.
@@ -57,10 +66,11 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
                 is_primitive=true,
             )
             dp = Mooncake.zero_codual(p)
+            primal_p, tangent_p = Mooncake.arrayify(dp)
+            @test primal_p === p
             if ET <: Real
-                @test Mooncake.arrayify(dp) == (p, Mooncake.zero_tangent(p))
+                @test tangent_p == Mooncake.zero_tangent(p)
             elseif ET <: Complex
-                primal_p, tangent_p = Mooncake.arrayify(dp)
                 @test (primal_p, tangent_p) isa
                     Tuple{CuArray{ET,2,CUDA.DeviceMemory},CuArray{ET,2,CUDA.DeviceMemory}}
                 @test all(iszero, tangent_p)
@@ -144,8 +154,14 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
         # scalar variable in a broadcast — gradient w.r.t. both x (CuArray) and c (scalar)
         _bcast_scalar_mul(x, c) = sum(c .* x)
         _bcast_scalar_add(x, c) = sum(x .+ c)
+        _bcast_sum_abs2(x) = sum(abs2.(x))  # regression for mixed-precision reduced pullback
         _bcast_cx_scalar_mul(x, c) = real(sum(c .* x))     # real scalar, complex array
         _bcast_cx_cx_scalar_mul(x, c) = real(sum(c .* x))  # complex scalar, complex array
+        _bcast_nested_sin_add(x, y) = sum(sin.(x .+ y))
+        _bcast_nested_float_cast_sin(x) = sum(sin.(Float64.(x)))
+        _bcast_zero_dof_nested(x, c, b) = sum(x .+ c .* Float64.(b .> 0))
+        _inplace_zero_dof_nested!(dest, x, c, b) =
+            (dest.=x .+ c .* Float64.(b .> 0); sum(dest))
         # adjoint of a CuVector times a CuMatrix — dispatches through generic_matmatmul!
         # because CUBLAS.gemm! only accepts CuMatrix inputs; now covered by the explicit rule.
         _cu_slice_adj_mul(x, cy) = sum(cu(x[:, 1])' * cy)
@@ -323,6 +339,7 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             # 2D broadcast inputs — exercises _unbroadcast and reshape paths
             (false, :none, false, _bcast_sum_sin, _rand(rng, 8, 4)),
             (false, :none, false, _bcast_sum_exp, _rand(rng, 8, 4)),
+            (false, :none, false, _bcast_sum_abs2, _rand(rng, Float32, 16)),
             # sum(f, ::CuFloatArray) — Float32 variant
             (false, :none, false, _sum_f_sin, _rand(rng, Float32, 16)),
             # sum(f, ::CuComplexArray) — 2-wide Duals, f:ℂ→ℝ and f:ℂ→ℂ
@@ -785,6 +802,76 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
             @test isbitstype(typeof(flat_fixed.f))
         end
 
+        @testset "nested GPU broadcast gradients keep tree alignment" begin
+            x = CuArray(randn(rng, 4))
+            y = CuArray(randn(rng, 4))
+            cache = prepare_gradient_cache(
+                _bcast_nested_sin_add,
+                x,
+                y;
+                config=Mooncake.Config(; friendly_tangents=true),
+            )
+            val, grads = value_and_gradient!!(cache, _bcast_nested_sin_add, x, y)
+            @test val ≈ sum(Array(sin.(x .+ y)))
+            expected = Array(cos.(x .+ y))
+            @test Array(grads[2]) ≈ expected
+            @test Array(grads[3]) ≈ expected
+        end
+
+        @testset "differentiable nested float casts still propagate gradients" begin
+            x = CuArray(randn(rng, Float32, 4))
+            cache = prepare_gradient_cache(
+                _bcast_nested_float_cast_sin,
+                x;
+                config=Mooncake.Config(; friendly_tangents=true),
+            )
+            val, grads = value_and_gradient!!(cache, _bcast_nested_float_cast_sin, x)
+            expected_val = sum(sin.(Float64.(Array(x))))
+            expected_grad = Float32.(cos.(Float64.(Array(x))))
+            @test val ≈ expected_val
+            @test Array(grads[2]) ≈ expected_grad
+        end
+
+        @testset "zero-DOF nested broadcast scalar gradients reconstruct on reverse pass" begin
+            x = CuArray(randn(rng, 4))
+            c = 2.5
+            b = CuArray(Float64[-2.0, 1.0, -3.0, 4.0])
+            mask = Float64.(Array(b) .> 0)
+            cache = prepare_gradient_cache(
+                _bcast_zero_dof_nested,
+                x,
+                c,
+                b;
+                config=Mooncake.Config(; friendly_tangents=true),
+            )
+            val, grads = value_and_gradient!!(cache, _bcast_zero_dof_nested, x, c, b)
+            @test val ≈ sum(Array(x) .+ c .* mask)
+            @test Array(grads[2]) ≈ ones(length(mask))
+            @test grads[3] ≈ sum(mask)
+        end
+
+        @testset "in-place zero-DOF nested broadcasts reconstruct scalar gradients" begin
+            dest = CuArray(zeros(4))
+            x = CuArray(randn(rng, 4))
+            c = -1.25
+            b = CuArray(Float64[-2.0, 1.0, -3.0, 4.0])
+            mask = Float64.(Array(b) .> 0)
+            cache = prepare_gradient_cache(
+                _inplace_zero_dof_nested!,
+                dest,
+                x,
+                c,
+                b;
+                config=Mooncake.Config(; friendly_tangents=true),
+            )
+            val, grads = value_and_gradient!!(
+                cache, _inplace_zero_dof_nested!, dest, x, c, b
+            )
+            @test val ≈ sum(Array(x) .+ c .* mask)
+            @test Array(grads[3]) ≈ ones(length(mask))
+            @test grads[4] ≈ sum(mask)
+        end
+
         # Verify that unsupported GPU operations throw user-friendly ArgumentErrors rather
         # than silent wrong answers or opaque internal crashes.  Each case exercises an
         # explicit catch-all rule that blocks an unimplemented differentiation path.
@@ -854,6 +941,4 @@ const NDualUnsupportedError = _MooncakeCUDAExt.NDualUnsupportedError
     else
         println("Tests are skipped because no CUDA device was found.")
     end
-
-    include("ndual.jl")
 end

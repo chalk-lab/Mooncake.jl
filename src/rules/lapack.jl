@@ -585,6 +585,46 @@ end
     end
 end
 
+# sytrf! (Bunch-Kaufman factorization)
+#
+# Issue: https://github.com/chalk-lab/Mooncake.jl/issues/819
+# `logdet(Symmetric(A))` fails because it calls `LAPACK.sytrf!` (Bunch-Kaufman factorization),
+# which has no AD rule.
+#
+# All of the following user-facing calls hit sytrf! for BlasFloat symmetric matrices:
+#
+#   Use case                         | Call path                              | Rule added?
+#   ---------------------------------|----------------------------------------|------------
+#   logdet(Symmetric(A))             | → _factorize → bunchkaufman → sytrf!   | yes
+#   det(Symmetric(A))                | same                                   | yes
+#   logabsdet(Symmetric(A))          | same                                   | yes
+#   inv(Symmetric(A))                | → bunchkaufman → sytrf!, then sytri!   | no
+#   Symmetric(A) \ b                 | → bunchkaufman → sytrf!, then sytrs!   | no
+#   factorize(Symmetric(A))          | → bunchkaufman → sytrf!                | no
+#   bunchkaufman(Symmetric(A))       | → sytrf! directly                      | no
+#   isposdef(Symmetric(A))           | → _factorize → bunchkaufman → sytrf!   | no
+#
+# Possible fix strategies (in order of increasing complexity):
+#
+#   1. Direct rules for logdet / logabsdet / det on Symmetric:  ← DONE (below)
+#      d logdet(Sym(A)) / dSym(A) = Sym(A)⁻¹ (off-diagonal stored entries scaled ×2).
+#      Covers logdet/det/logabsdet only; does not fix inv or \.
+#
+#   2. Rule for bunchkaufman(::Symmetric) returning a BunchKaufman struct:
+#      More involved, but covers all downstream uses (logdet, inv, \).
+#
+#   3. Rule for LAPACK.sytrf! directly (frule!! + rrule!! on packed LD storage):
+#      Maximal coverage, but requires careful handling of LAPACK.syconv! row/col
+#      swaps when converting packed LD → clean unit-triangular factor T.
+#      Specifically: syconv!(way='C') applies forward row swaps on the strict
+#      triangular part; tangents/cotangents computed in T-ordering must be
+#      mapped back to A_LD-ordering before storing.
+#      No existing public implementation in any AD framework (ChainRules.jl,
+#      JAX, PyTorch) — this is novel; see Seeger et al. arXiv:1710.08717 which
+#      covers Cholesky/LQ/eigensym but explicitly omits pivoted LDL.
+#
+# Strategy 2 or 3 required for full coverage (inv, \, factorize, etc.).
+
 function zero_tri!(A, uplo::Char)
     if uplo == 'U'
         tril!(A, -1)
@@ -594,6 +634,188 @@ function zero_tri!(A, uplo::Char)
         A .= zero(eltype(A))
     end
     return nothing
+end
+
+# Symmetric stores uplo as a Char, but its constructor takes a Symbol.
+# The generic _add_to_primal_internal tries P(fields...) which breaks for Symmetric
+# because it passes a Char where a Symbol is expected.  Override it here.
+function _add_to_primal_internal(
+    c::MaybeCache, p::Symmetric{P,M}, t::Tangent, unsafe::Bool
+) where {P,M}
+    new_data = _add_to_primal_internal(c, p.data, _fields(t).data, unsafe)
+    return Symmetric(new_data, Symbol(p.uplo))
+end
+
+"""
+    _accum_sym_logdet!(ddata::StridedMatrix, Sinv::StridedMatrix, ȳ, uplo)
+
+Accumulate `ȳ * ∂logdet(Symmetric(A, uplo))/∂A` into `ddata` in-place, where
+`Sinv = inv(Symmetric(A, uplo))`.
+
+The gradient of `logdet(S)` w.r.t. the stored data array `A` of `S = Symmetric(A, uplo)` is:
+
+    ∂logdet(S)/∂A[i,j] = S⁻¹[i,j]    for i = j  (diagonal)
+                        = 2·S⁻¹[i,j]  for i ≠ j, (i,j) in the active triangle
+                        = 0            otherwise
+
+The factor of 2 for off-diagonal entries arises because `A[i,j]` represents both
+`S[i,j]` and `S[j,i]`. Equivalently, in forward mode: `ḋ = dot(S⁻¹, Symmetric(dA, uplo))`.
+
+This accumulator is shared by the `logdet`, `det`, and `logabsdet` rules:
+- `logdet`:     calls with scalar `ȳ`
+- `det`:        calls with scalar `ȳ * det(S)`  (chain rule through `exp ∘ logdet`)
+- `logabsdet`:  calls with scalar `ȳ[1]`        (sign component has zero derivative)
+
+When `ddata` is a `Symmetric` matrix, `uplo` and the backing store are extracted
+automatically via the two-argument overload below.
+"""
+function _accum_sym_logdet!(
+    ddata::StridedMatrix{P}, Sinv::StridedMatrix{P}, ȳ::P, uplo::Char
+) where {P}
+    n = size(ddata, 1)
+    if uplo == 'U'
+        @inbounds for j in 1:n
+            for i in 1:(j - 1)
+                ddata[i, j] += 2 * ȳ * Sinv[i, j]
+            end
+            ddata[j, j] += ȳ * Sinv[j, j]
+        end
+    else
+        @inbounds for j in 1:n
+            ddata[j, j] += ȳ * Sinv[j, j]
+            for i in (j + 1):n
+                ddata[i, j] += 2 * ȳ * Sinv[i, j]
+            end
+        end
+    end
+    return nothing
+end
+function _accum_sym_logdet!(ddata::Symmetric{P}, Sinv::StridedMatrix{P}, ȳ::P) where {P}
+    _accum_sym_logdet!(ddata.data, Sinv, ȳ, ddata.uplo)
+end
+
+"""
+    logdet(S::Symmetric{<:BlasRealFloat})
+
+Primitive rule for `logdet` of a real symmetric matrix.
+
+Given `S = Symmetric(A, uplo)`, the Fréchet derivative is:
+
+    d/dt logdet(S + t·dS)|_{t=0} = dot(S⁻¹, Symmetric(dA, uplo))
+
+which equals `tr(S⁻¹ · sym(dA))`. See [`_accum_sym_logdet!`](@ref) for the gradient
+w.r.t. the underlying data array `A`.
+"""
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(logdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
+)
+function frule!!(
+    ::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
+    S, d_data = arrayify(_S)
+    F = bunchkaufman(S)
+    Sinv = inv(F)
+    return Dual(logdet(F), dot(Sinv, d_data))
+end
+function rrule!!(
+    ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
+    S, ddata = arrayify(_S)
+    F = bunchkaufman(S)
+    ld = logdet(F)
+    Sinv = inv(F)
+    function logdet_sym_pb!!(ȳ::P)
+        _accum_sym_logdet!(ddata, Sinv, ȳ)
+        return NoRData(), NoRData()
+    end
+    return CoDual(ld, NoFData()), logdet_sym_pb!!
+end
+
+"""
+    det(S::Symmetric{<:BlasRealFloat})
+
+Primitive rule for `det` of a real symmetric matrix.
+
+Given `S = Symmetric(A, uplo)`, the Fréchet derivative follows from `det = exp ∘ logdet`:
+
+    d/dt det(S + t·dS)|_{t=0} = det(S) · dot(S⁻¹, Symmetric(dA, uplo))
+
+The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with scalar
+`ȳ · det(S)`.
+"""
+@is_primitive(
+    MinimalCtx, Tuple{typeof(det),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
+)
+function frule!!(
+    ::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
+    S, d_data = arrayify(_S)
+    F = bunchkaufman(S; check=false)
+    d = det(F)
+    # Zero tangent for singular S. Strictly correct only for rank ≤ n-2; at rank n-1
+    # the true derivative is the adjugate (nonzero), but exact floating-point zeros are
+    # measure-zero in practice.
+    iszero(d) && return Dual(d, zero(P))
+    Sinv = inv(F)
+    return Dual(d, d * dot(Sinv, d_data))
+end
+function rrule!!(
+    ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
+    S, ddata = arrayify(_S)
+    F = bunchkaufman(S; check=false)
+    d = det(F)
+    Sinv = iszero(d) ? nothing : inv(F)
+    function det_sym_pb!!(ȳ::P)
+        # Zero gradient for singular S (approximate; see frule!! for details).
+        isnothing(Sinv) && return NoRData(), NoRData()
+        _accum_sym_logdet!(ddata, Sinv, ȳ * d)
+        return NoRData(), NoRData()
+    end
+    return CoDual(d, NoFData()), det_sym_pb!!
+end
+
+"""
+    logabsdet(S::Symmetric{<:BlasRealFloat})
+
+Primitive rule for `logabsdet` of a real symmetric matrix. Returns `(log|det(S)|, sign(det(S)))`.
+
+Given `S = Symmetric(A, uplo)`, the Fréchet derivative of the first output is identical
+to that of `logdet`:
+
+    d/dt log|det(S + t·dS)||_{t=0} = dot(S⁻¹, Symmetric(dA, uplo))
+
+The sign component has zero derivative w.r.t. `A`. In reverse mode only `ȳ[1]` (the
+cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
+"""
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(logabsdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
+)
+function frule!!(
+    ::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
+    S, d_data = arrayify(_S)
+    F = bunchkaufman(S; check=false)
+    ld, s = logabsdet(F)
+    iszero(s) && return Dual((ld, s), (zero(P), zero(P)))
+    Sinv = inv(F)
+    return Dual((ld, s), (dot(Sinv, d_data), zero(P)))
+end
+function rrule!!(
+    ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
+    S, ddata = arrayify(_S)
+    F = bunchkaufman(S; check=false)
+    ld, s = logabsdet(F)
+    Sinv = iszero(s) ? nothing : inv(F)
+    function logabsdet_sym_pb!!(ȳ::Tuple{P,P})
+        isnothing(Sinv) && return NoRData(), NoRData()
+        _accum_sym_logdet!(ddata, Sinv, ȳ[1])
+        return NoRData(), NoRData()
+    end
+    return CoDual((ld, s), NoFData()), logabsdet_sym_pb!!
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
@@ -685,6 +907,69 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
         else
             []
         end)...,
+
+        # logdet / det / logabsdet on Symmetric
+        # Positive-definite inputs: valid for all three functions.
+        map_prod([1, 3, 5], ['U', 'L'], Ps) do (N, uplo, P)
+            As = positive_definite_blas_matrices(rng, P, N)
+            Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
+            # For Float32 det, the FD correctness check is unreliable:
+            # - Non-contiguous arrays: the FD test normalises the perturbation over the full
+            #   parent, so the effective step in the submatrix is O(ε/√parent_size) — too
+            #   small for Float32's precision.
+            # - Contiguous arrays with large N (e.g. N=5): det can reach O(10³), causing
+            #   Float32 cancellation in (det(A+εδ)−det(A−εδ)) to dominate at every step size.
+            # Mark all Float32 det tests as interface_only. The gradient is verified
+            # indirectly: Float64 det tests exercise the same frule!!/rrule!! code paths, and
+            # Float32 logdet/logabsdet pass full FD checks using the same accumulator.
+            det_interface_only = P == Float32
+            return vcat(
+                map(S -> (false, :none, nothing, logdet, S), Ss),
+                map(S -> (det_interface_only, :none, nothing, det, S), Ss),
+                map(S -> (false, :none, nothing, logabsdet, S), Ss),
+            )
+        end...,
+
+        # Negative-definite inputs: det < 0 for odd N, det > 0 for even N.
+        # logdet is not tested here (requires det > 0).
+        map_prod([2, 3], ['U', 'L'], Ps) do (N, uplo, P)
+            As = map(positive_definite_blas_matrices(rng, P, N)) do A
+                A .= -A
+                return A
+            end
+            Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
+            # Same Float32 FD limitations as positive-definite above — use interface_only.
+            det_interface_only = P == Float32
+            return vcat(
+                map(S -> (det_interface_only, :none, nothing, det, S), Ss),
+                map(S -> (false, :none, nothing, logabsdet, S), Ss),
+            )
+        end...,
+
+        # Indefinite inputs: eigenvalues alternate ±1, ±2, …
+        # Covers mixed-sign-determinant cases for det and logabsdet.
+        map_prod([2, 4], ['U', 'L'], Ps) do (N, uplo, P)
+            As = map(invertible_blas_matrices(rng, P, N)) do V
+                λs = P[isodd(i) ? P(i) : -P(i) for i in 1:N]
+                return collect(V * Diagonal(λs) * V')
+            end
+            Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
+            return vcat(
+                map(S -> (false, :none, nothing, det, S), Ss),
+                map(S -> (false, :none, nothing, logabsdet, S), Ss),
+            )
+        end...,
+
+        # Singular inputs: logabsdet returns (-Inf, 0.0) without throwing.
+        # FD is not meaningful at a singular point, so interface_only = true.
+        # The gradient is zero (iszero(s) guard), which is also not FD-verifiable.
+        map_prod([2, 3], ['U', 'L'], Ps) do (N, uplo, P)
+            # rank-1 outer-product: v*v' is symmetric and singular for N ≥ 2
+            v = ones(P, N)
+            A = v * v'
+            S = Symmetric(A, Symbol(uplo))
+            return [(true, :none, nothing, logabsdet, S)]
+        end...,
     )
     memory = Any[]
     return test_cases, memory

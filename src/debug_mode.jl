@@ -25,69 +25,12 @@ _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
-@static if VERSION < v"1.11-"
-    # On Julia 1.10, use @generated to check types at compile time, preventing the
-    # compiler from ever seeing rule.rule(x...) with mismatched types, which would
-    # cause a segfault (JuliaLang/julia#51016).
-    @generated function (rule::DebugFRule{Trule})(x::Vararg{Dual,N}) where {Trule,N}
-        # First, check tangent type consistency for all Dual inputs at compile time.
-        # This prevents the compiler from generating code for rule.rule(x...) with
-        # mismatched Dual types (e.g., Dual{Float64,Float32} instead of Dual{Float64,Float64}).
-        for dt in x
-            P = dt.parameters[1]  # primal type
-            T = dt.parameters[2]  # tangent type
-            T_expected = tangent_type(P)
-            if T !== T_expected
-                msg = "Error in inputs to rule with input types $(Tuple{x...})"
-                return :(error($msg))
-            end
-        end
-
-        # Check primal types match rule signature
-        if Trule <: DerivedFRule && isconcretetype(Trule)
-            sig = Trule.parameters[1]      # primal_sig
-            isva = Trule.parameters[3]
-            nargs_val = Trule.parameters[4]
-
-            # Extract primal types
-            primal_types = [dt.parameters[1] for dt in x]
-
-            # Handle varargs unflattening
-            if isva
-                regular_types = primal_types[1:(nargs_val - 1)]
-                vararg_types = primal_types[nargs_val:end]
-                grouped_type = Tuple{vararg_types...}
-                final_types = [regular_types..., grouped_type]
-            else
-                final_types = primal_types
-            end
-
-            Tx = Tuple{final_types...}
-            if !(Tx <: sig)
-                msg = "Error in inputs to rule with input types $(Tuple{x...})"
-                return :(error($msg))
-            end
-        end
-
-        return quote
-            verify_dual_inputs(x)
-            y = rule.rule(x...)
-            verify_dual_output(x, y)
-            return y
-        end
-    end
-else
-    @noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
-        try
-            verify_args(rule.rule, x)
-        catch
-            error("Error in inputs to rule with input types $(_typeof(x))")
-        end
-        verify_dual_inputs(x)
-        y = rule.rule(x...)
-        verify_dual_output(x, y)
-        return y::Dual
-    end
+@noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+    verify_args(rule.rule, x)
+    verify_dual_inputs(x)
+    y = __call_rule(rule.rule, x)
+    verify_dual_output(x, y)
+    return y
 end
 
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
@@ -141,10 +84,10 @@ post-conditions to `pb`. Let `dx = pb.pb(dy)`, for some rdata `dy`, then this fu
 
 Reverse pass counterpart to [`DebugRRule`](@ref)
 """
-struct DebugPullback{Tpb,Ty,Tx}
+struct DebugPullback{Tpb,Ty}
     pb::Tpb
     y::Ty
-    x::Tx
+    x  # not type-parameterized; primal types depend on call-site argument types
 end
 
 """
@@ -219,9 +162,18 @@ for `DebugRRule` for details.
 """
 @noinline function (rule::DebugRRule)(x::Vararg{CoDual,N}) where {N}
     verify_fwds_inputs(rule.rule, x)
-    y, pb = rule.rule(x...)
+    y, pb = __call_rule(rule.rule, x)
     verify_fwds_output(x, y)
-    return y::CoDual, DebugPullback(pb, primal(y), map(primal, x))
+    return y, DebugPullback(pb, primal(y), map(primal, x))
+end
+
+@static if VERSION < v"1.11-"
+    # DebugFRule and DebugRRule do not contain OpaqueClosure directly; their __call__
+    # methods delegate to the inner rule which handles OC safety via its own
+    # __call_rule specialisation. Calling them directly is safe on Julia 1.10 and avoids
+    # a second unnecessary inferencebarrier.
+    @inline __call_rule(rule::DebugFRule, args) = rule(args...)
+    @inline __call_rule(rule::DebugRRule, args) = rule(args...)
 end
 
 # DerivedRule adds a method to this function.

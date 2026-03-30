@@ -214,7 +214,7 @@ julia> rrule!!(zero_fcodual(foo), zero_fcodual(3.0))[2](NoRData())
 (NoRData(), 0.0)
 ```
 
-Limited support for `Vararg`s is also available. For example
+`Vararg` signatures are also supported. For example
 ```jldoctest
 julia> using Mooncake: @zero_derivative, DefaultCtx, zero_fcodual, rrule!!, is_primitive, ReverseMode
 
@@ -229,9 +229,9 @@ true
 julia> rrule!!(zero_fcodual(foo_varargs), zero_fcodual(3.0), zero_fcodual(5))[2](NoRData())
 (NoRData(), 0.0, NoRData())
 ```
-Be aware that it is not currently possible to specify any of the type parameters of the
-`Vararg`. For example, the signature `Tuple{typeof(foo), Vararg{Float64, 5}}` will not work
-with this macro.
+Typed and counted `Vararg`s are also supported. For example,
+`Tuple{typeof(foo), Vararg{Float64}}` constrains all vararg slots to `Float64`, and
+`Tuple{typeof(foo), Vararg{Float64, N}} where {N}` additionally constrains the count.
 
 WARNING: this is only correct if the output of the function does not alias any fields of the
 function, or any of its arguments. For example, applying this macro to the function `x -> x`
@@ -242,9 +242,8 @@ made a mistake.
 
 # Signatures Unsupported By This Macro
 
-If the signature you wish to apply `@zero_derivative` to is not supported, for example because
-it uses a `Vararg` with a type parameter, you can still make use of
-[`zero_derivative`](@ref).
+If the signature you wish to apply `@zero_derivative` to is not supported, you can still
+make use of [`zero_derivative`](@ref).
 
 """
 macro zero_derivative(ctx, sig, mode=Mode)
@@ -253,21 +252,64 @@ macro zero_derivative(ctx, sig, mode=Mode)
     return _zero_derivative_impl(ctx, sig, mode)
 end
 
+# Returns true if `ex` (an already-escaped expression from parse_signature_expr) is any
+# form of Vararg: bare `Vararg`, `Vararg{T}`, or `Vararg{T,N}`.
+function _is_vararg_expr(ex)
+    ex == Expr(:escape, :Vararg) && return true
+    return ex isa Expr &&
+           ex.head == :escape &&
+           ex.args[1] isa Expr &&
+           ex.args[1].head == :curly &&
+           ex.args[1].args[1] == :Vararg
+end
+
+# Given an escaped Vararg expression and a wrapper type symbol (e.g. :(Mooncake.Dual)),
+# produce the appropriate Vararg type for the rule signature:
+#   Vararg        -> Vararg{wrapper}
+#   Vararg{T}     -> Vararg{wrapper{<:T}}
+#   Vararg{T,N}   -> Vararg{wrapper{<:T},N}
+# The inner components T and N are individually re-escaped so they resolve in the
+# caller's scope (parse_signature_expr already escaped the whole arg as one unit).
+function _vararg_wrapped_type(vararg_esc_expr, wrapper)
+    inner = vararg_esc_expr.args[1]
+    # Bare `Vararg` maps to `Vararg{wrapper}` without `<:` — any Dual/CoDual matches,
+    # consistent with `Vararg` meaning `Vararg{Any}`.
+    inner == :Vararg && return :(Vararg{$wrapper})
+    # inner is Expr(:curly, :Vararg, T) or Expr(:curly, :Vararg, T, N)
+    T = Expr(:escape, inner.args[2])
+    length(inner.args) == 2 && return :(Vararg{$wrapper{<:$T}})
+    N = Expr(:escape, inner.args[3])
+    return :(Vararg{$wrapper{<:$T},$N})
+end
+
 function _zero_derivative_impl(ctx, sig, mode)
 
     # Parse the signature, and construct the rule definition. If it is a vararg definition,
     # then the last argument requires special treatment.
     arg_type_symbols, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
-    is_vararg = arg_type_symbols[end] == Expr(:escape, :Vararg)
+
+    # Detect Vararg in a non-last position, which is invalid Julia and would silently
+    # produce a broken rule. Return a throw expression (rather than throwing here) so that
+    # the error is raised at runtime and can be caught by @test_throws in tests.
+    for t in arg_type_symbols[1:(end - 1)]
+        if _is_vararg_expr(t)
+            msg =
+                "@zero_derivative: `Vararg` may only appear as the last element of " *
+                "the signature tuple, but got: $sig"
+            return :(throw(ArgumentError($msg)))
+        end
+    end
+
+    is_vararg = _is_vararg_expr(arg_type_symbols[end])
     if is_vararg
         arg_types_deriv = vcat(
             map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
-            :(Vararg{Mooncake.Dual}),
+            _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.Dual)),
         )
         arg_types_adjoint = vcat(
             map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
-            :(Vararg{Mooncake.CoDual}),
+            _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.CoDual)),
         )
         splat_symbol = Expr(Symbol("..."), arg_names[end])
         tmp = arg_names[1:(end - 1)]

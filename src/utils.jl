@@ -7,6 +7,95 @@ Central definition of typeof, which is specific to the use-required in this pack
 @unstable _typeof(x::Tuple) = Tuple{tuple_map(_typeof, x)...}
 @unstable _typeof(x::NamedTuple{names}) where {names} = NamedTuple{names,_typeof(Tuple(x))}
 
+function _print_boxed_message(io::IO, level::AbstractString, lines; footer=nothing)
+    first_item = iterate(lines)
+    isnothing(first_item) && return nothing
+    line, state = first_item
+    first_prefix = "┌ " * level * ": "
+    rest_prefix = "│ "
+    first_width = _boxed_message_width(io, first_prefix)
+    rest_width = _boxed_message_width(io, rest_prefix)
+    first_wrapped = _wrap_boxed_line(line, first_width)
+    println(io, first_prefix, first(first_wrapped))
+    for wrapped_line in Base.tail(first_wrapped)
+        println(io, rest_prefix, wrapped_line)
+    end
+    while true
+        item = iterate(lines, state)
+        isnothing(item) && break
+        line, state = item
+        for wrapped_line in _wrap_boxed_line(line, rest_width)
+            println(io, rest_prefix, wrapped_line)
+        end
+    end
+    return isnothing(footer) ? println(io, "└") : println(io, "└ ", footer)
+end
+
+function _print_boxed_block(io::IO, first_prefix::AbstractString, lines; footer=nothing)
+    first_item = iterate(lines)
+    isnothing(first_item) && return nothing
+    line, state = first_item
+    rest_prefix = "│ "
+    first_width = _boxed_message_width(io, first_prefix)
+    rest_width = _boxed_message_width(io, rest_prefix)
+    first_wrapped = _wrap_boxed_line(line, first_width)
+    println(io, first_prefix, first(first_wrapped))
+    for wrapped_line in Base.tail(first_wrapped)
+        println(io, rest_prefix, wrapped_line)
+    end
+    while true
+        item = iterate(lines, state)
+        isnothing(item) && break
+        line, state = item
+        for wrapped_line in _wrap_boxed_line(line, rest_width)
+            println(io, rest_prefix, wrapped_line)
+        end
+    end
+    return isnothing(footer) ? println(io, "└") : println(io, "└ ", footer)
+end
+
+@inline function _boxed_message_width(io::IO, prefix::AbstractString)
+    cols = get(io, :displaysize, displaysize(io))[2]
+    return max(20, cols - textwidth(prefix))
+end
+
+function _wrap_boxed_line(line, width::Int)
+    text = string(line)
+    isempty(text) && return (text,)
+    width < 1 && return (text,)
+    textwidth(text) <= width && return (text,)
+
+    wrapped = String[]
+    remaining = text
+    while textwidth(remaining) > width
+        split_idx = nothing
+        for idx in eachindex(remaining)
+            textwidth(SubString(remaining, 1, idx)) > width && break
+            remaining[idx] == ' ' && (split_idx = idx)
+        end
+        if isnothing(split_idx)
+            split_idx = firstindex(remaining)
+            for idx in eachindex(remaining)
+                textwidth(SubString(remaining, firstindex(remaining), idx)) > width && break
+                split_idx = idx
+            end
+        end
+        push!(wrapped, rstrip(SubString(remaining, firstindex(remaining), split_idx)))
+        remaining = lstrip(SubString(remaining, nextind(remaining, split_idx)))
+        isempty(remaining) && break
+    end
+    isempty(remaining) || push!(wrapped, remaining)
+    return Tuple(wrapped)
+end
+
+function _print_boxed_error(io::IO, lines; footer=nothing)
+    _print_boxed_block(io, "", lines; footer)
+end
+
+function _print_boxed_info(io::IO, lines; footer=nothing)
+    _print_boxed_message(io, "Info", lines; footer)
+end
+
 """
     tuple_map(f::F, x::Tuple) where {F}
 
@@ -22,6 +111,10 @@ Binary extension of `tuple_map`. Nearly equivalent to `map(f, x, y)`, but guaran
 specialise on all element types of `x` and `y`. Furthermore, errors if `x` and `y` aren't
 the same length, while `map` will just produce a new tuple whose length is equal to the
 shorter of `x` and `y`.
+
+    tuple_map(f::F, x::Tuple, y::Tuple, z::Tuple) where {F}
+
+Ternary extension of `tuple_map`. Nearly equivalent to `map(f, x, y, z)`.
 """
 @inline @generated function tuple_map(f::F, x::Tuple) where {F}
     return Expr(:call, :tuple, map(n -> :(f(getfield(x, $n))), 1:fieldcount(x))...)
@@ -32,6 +125,18 @@ end
         return :(throw(ArgumentError("length(x) != length(y)")))
     else
         stmts = map(n -> :(f(getfield(x, $n), getfield(y, $n))), 1:fieldcount(x))
+        return Expr(:call, :tuple, stmts...)
+    end
+end
+
+@inline @generated function tuple_map(f::F, x::Tuple, y::Tuple, z::Tuple) where {F}
+    if length(x.parameters) != length(y.parameters) ||
+        length(x.parameters) != length(z.parameters)
+        return :(throw(ArgumentError("x, y, and z must have the same length")))
+    else
+        stmts = map(
+            n -> :(f(getfield(x, $n), getfield(y, $n), getfield(z, $n))), 1:fieldcount(x)
+        )
         return Expr(:call, :tuple, stmts...)
     end
 end
@@ -490,3 +595,46 @@ _copy(x::Tuple) = map(_copy, x)
 _copy(x::NamedTuple) = map(_copy, x)
 _copy(x::Ref{T}) where {T} = isassigned(x) ? Ref{T}(_copy(x[])) : Ref{T}()
 _copy(x::Type) = x
+
+# TODO: remove the Julia < 1.11 branch (and the corresponding @static VERSION guards in
+# test_utils.jl) once https://github.com/JuliaLang/julia/issues/61368 is fixed and
+# Julia 1.10 support is dropped.
+#
+# Julia 1.10 codegen bug (julia#61368 / #51016): jl_compile_workqueue crashes in
+# emit_specsig_oc_call when compiling an OC body that transitively calls another OC
+# type whose CodeInstance has been invalidated (null specfun) by a world-counter advance
+# (e.g. from loading DispatchDoctor or defining new methods).
+#
+# Fix: __call_rule type-erases rule via Base.inferencebarrier on Julia 1.10 so the
+# compiled code calls through jl_apply_generic (which never invokes emit_specsig_oc_call).
+# The @noinline wrapper ensures this erased call is a separate compilation unit. On Julia
+# 1.11+ the bug is absent and __call_rule is a direct call. The type-erasure causes
+# isbits argument boxing at each nested rule callsite (jl_apply_generic requires boxed
+# args), so zero-allocation performance checks are skipped on Julia < 1.11 in test_utils.
+#
+# This generic fallback returns Any. Specialised overloads restore type stability:
+#   - DerivedFRule, DerivedRule (forward_mode.jl, reverse_mode.jl): type assertion via params
+#   - DebugFRule, DebugRRule (debug_mode.jl): direct call (no OC, no barrier needed)
+#   - typeof(rrule!!) (interface.jl): direct call (plain function, no OC)
+# Dynamic rules (DynamicFRule, DynamicDerivedRule) cannot be handled statically and remain
+# unstable on Julia 1.10.
+#
+# Used by LazyFRule, DynamicFRule, LazyDerivedRule, DynamicDerivedRule, RRuleZeroWrapper,
+# DebugFRule, and DebugRRule.
+#
+# Approximate Mooncake-free MWE (Julia 1.10):
+#   dep(x::Float64) = x * 2.0
+#   inner = Base.Experimental.@opaque (x::Float64) -> dep(x)
+#   inner(1.0)                    # compile inner at world W₀
+#   dep(x::Float64) = x * 3.0    # redefine dep → invalidates inner's CodeInstance
+#   struct Wrapper{T}; oc::T; end
+#   (w::Wrapper)(x) = w.oc(x)    # call chain exposes typeof(inner) to the workqueue
+#   w = Wrapper(inner)            # concrete Wrapper{typeof(inner)}
+#   Base.Experimental.@opaque (x::Float64) -> w(x)  # crash: workqueue compiles
+#                                 # Wrapper::call, reaches typeof(inner) with null specfun
+@static if VERSION < v"1.11-"
+    @noinline __call_rule_erased!(rule, args) = rule(args...)
+    @inline __call_rule(rule, args) = __call_rule_erased!(Base.inferencebarrier(rule), args)
+else
+    @inline __call_rule(rule, args) = rule(args...)
+end
