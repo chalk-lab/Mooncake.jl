@@ -37,7 +37,7 @@ Do not assume — ask the user to pick.
 ### Reverse mode stages (default)
 | Stage | Symbol | Description |
 |-------|--------|-------------|
-| Raw IR | `:raw` | Original IR from Julia's compiler |
+| Raw IR | `:raw` | optimised, type-infered SSAIR from Julia's compiler |
 | Normalized | `:normalized` | After Mooncake's normalization passes |
 | BBCode | `:bbcode` | BBCode representation with stable IDs |
 | Forward IR | `:fwd_ir` | Generated forward-pass IR |
@@ -48,9 +48,9 @@ Do not assume — ask the user to pick.
 ### Forward mode stages
 | Stage | Symbol | Description |
 |-------|--------|-------------|
-| Raw IR | `:raw` | Original IR from Julia's compiler |
+| Raw IR | `:raw` | optimised, type-infered SSAIR from Julia's compiler |
 | Normalized | `:normalized` | After Mooncake's normalization passes |
-| BBCode | `:bbcode` | BBCode representation with stable IDs |
+| BBCode | `:bbcode` | Mooncake's forward autograd doesn't use BBCode |
 | Dual IR | `:dual_ir` | Generated dual-number IR |
 | Optimized | `:optimized` | After optimization passes |
 

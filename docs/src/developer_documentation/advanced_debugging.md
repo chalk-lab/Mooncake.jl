@@ -4,7 +4,7 @@ This guide covers debugging techniques for issues that go beyond Mooncake's
 rule system -- problems at the boundary between Mooncake's generated code and
 Julia's compiler, runtime, or type system.
 
-For rule-level debugging (wrong tangent types, segfaults), see
+For rule-level debugging (eg, wrong tangent types, incorrect gradients), see
 [Debug Mode](@ref) and [Debugging and MWEs](@ref).
 
 ## IR inspection
