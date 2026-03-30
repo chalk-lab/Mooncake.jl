@@ -69,9 +69,14 @@ also drive `value_and_gradient!!` for scalar outputs. Mooncake seeds standard-ba
 internally and evaluates them in chunks:
 
 ```@example interface
-fcache = MC.prepare_derivative_cache(g, x_eval)
+fcache = MC.prepare_derivative_cache(g, x_eval; config=MC.Config(chunk_size=2))
 val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 ```
+
+Passing `Config(chunk_size=2)` caps the forward chunk width used by this public cache path
+when it dispatches to `NfwdMooncake`. If `Nfwd` is not used, changing `chunk_size` is not
+useful. You can check which backend was used by calling `value_and_gradient!!(...;
+verbose=true)`. Leaving `chunk_size=nothing` keeps Mooncake's default heuristic.
 
 When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
 higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as
@@ -80,6 +85,11 @@ does the usual cache checks and tangent zeroing. That extra interface work adds 
 overhead relative to calling `NfwdMooncake.build_rrule(...)(...)` directly on a supported
 nfwd signature over `IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those
 element types, and tuples thereof.
+
+Separately, the Hessian path exposed by `prepare_hessian_cache` /
+`value_gradient_and_hessian!!` uses forward-over-reverse AD over a captured gradient
+closure. It does not currently use the public `NfwdMooncake` fast path, even though the
+outer layer is forward mode.
 
 ## API Reference
 

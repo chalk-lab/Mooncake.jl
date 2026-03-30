@@ -841,6 +841,20 @@ struct CountedChunkArrayCall end
                 ) == (z, (Mooncake.NoTangent(), y - sin(x), x))
                 @test CHUNK_SCALAR_EVAL_COUNT[] == 1
 
+                scalar_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
+                    scalar_f,
+                    x,
+                    y;
+                    config=Mooncake.Config(;
+                        debug_mode=false, friendly_tangents=false, chunk_size=1
+                    ),
+                )
+                CHUNK_SCALAR_EVAL_COUNT[] = 0
+                @test Mooncake.value_and_gradient!!(
+                    scalar_cache_grad_fwd_chunked, scalar_f, x, y
+                ) == (z, (Mooncake.NoTangent(), y - sin(x), x))
+                @test CHUNK_SCALAR_EVAL_COUNT[] == 2
+
                 array_f = CountedChunkArrayCall()
                 x_arr = [x, y]
                 array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
@@ -855,6 +869,19 @@ struct CountedChunkArrayCall end
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, array_cache_grad_fwd, array_f, x_arr
                 ) == 0
+
+                array_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
+                    array_f,
+                    x_arr;
+                    config=Mooncake.Config(;
+                        debug_mode=false, friendly_tangents=false, chunk_size=1
+                    ),
+                )
+                CHUNK_ARRAY_EVAL_COUNT[] = 0
+                @test Mooncake.value_and_gradient!!(
+                    array_cache_grad_fwd_chunked, array_f, x_arr
+                ) == (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
+                @test CHUNK_ARRAY_EVAL_COUNT[] == 2
 
                 singleton_x_arr = [x]
                 singleton_array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
@@ -935,6 +962,15 @@ struct CountedChunkArrayCall end
             )
             @test_throws r"Cached autodiff call has a type mismatch for `x1`" Mooncake.value_and_gradient!!(
                 cache, f_arr, reshape([x, y], 2, 1)
+            )
+        end
+
+        @testset "prepare_derivative_cache chunk_size config" begin
+            @test_throws ArgumentError Mooncake.prepare_derivative_cache(
+                sin, x; config=Mooncake.Config(; chunk_size=0)
+            )
+            @test_throws ArgumentError Mooncake.prepare_derivative_cache(
+                sin, x; config=Mooncake.Config(; chunk_size=-1)
             )
         end
     end

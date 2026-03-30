@@ -794,8 +794,24 @@ struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
     output_primal::OP
     friendly_gradients::FG
     gradient_workspace::GW
+    gradient_chunk_size::Int
     chunk_fastpath::CF
     input_specs::S
+end
+
+@inline function _forward_cache_requested_chunk_size(config)
+    requested = getfield(config, :chunk_size)
+    return isnothing(requested) ? 0 : Nfwd._nfwd_check_chunk_size(requested)
+end
+
+@inline function _forward_cache_gradient_chunk_size(cache::ForwardCache, total_dof::Integer)
+    total_dof == 0 && return 0
+    requested = cache.gradient_chunk_size
+    return if requested == 0
+        min(total_dof, _CHUNK_NFWD_MAX_LANES)
+    else
+        min(total_dof, requested)
+    end
 end
 
 @inline function _maybe_log_fwd_backend(
@@ -876,21 +892,25 @@ struct PreparedCacheSpecError <: Exception
 end
 
 function Base.showerror(io::IO, err::PreparedCacheSpecError)
-    _print_boxed_error(io, split("PreparedCacheSpecError: $(err.msg)", '\n'))
+    _print_boxed_error(io, split("PreparedCacheSpecError:\n$(err.msg)", '\n'))
 end
 
 function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     label = _prepared_cache_arg_label(i)
     msg = if kind === :arity
-        "Cached autodiff call expected $(expected) total arguments `(f, x...)`, got $(got). " *
+        "Cached autodiff call expected $(expected) total arguments `(f, x...)`, got $(got).\n" *
         "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
         "with the same top-level argument structure they were prepared with."
     elseif kind === :type
-        "Cached autodiff call has a type mismatch for $label: expected $expected, got $got. " *
+        "Cached autodiff call has a type mismatch for $label.\n" *
+        "Expected top-level type: $expected\n" *
+        "Got top-level type: $got\n" *
         "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
         "with the same top-level argument types they were prepared with."
     else
-        "Cached autodiff call has a size mismatch for $label: expected $expected, got $got. " *
+        "Cached autodiff call has a size mismatch for $label.\n" *
+        "Expected top-level size: $expected\n" *
+        "Got top-level size: $got\n" *
         "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
         "with the same top-level array sizes they were prepared with."
     end
@@ -1271,6 +1291,7 @@ end
     config.debug_mode && return nothing
     sig = typeof(fx)
     params = Tuple(sig.parameters)
+    requested_chunk_size = _forward_cache_requested_chunk_size(config)
     F = params[1]
     Base.issingletontype(F) || return nothing
     # Current NDual fast-path boundary: only scalar/complex/array top-level primals are
@@ -1307,7 +1328,10 @@ end
     # the chunked forward frontend already gets the full gradient in one NDual pass.
     gradient_rrule = if length(params) == 2 && _chunk_can_use_nfwd_gradient(params[2])
         NfwdMooncake.build_rrule(
-            sig; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
+            sig;
+            chunk_size=(requested_chunk_size == 0 ? nothing : requested_chunk_size),
+            debug_mode=false,
+            silence_debug_messages=true,
         )
     else
         nothing
@@ -1318,7 +1342,9 @@ end
         if (
             length(params) == 2 &&
             _chunk_can_use_nfwd_small_vector_gradient(params[2]) &&
-            1 <= length(last(fx)) <= _CHUNK_NFWD_MAX_LANES
+            1 <= length(last(fx)) <= _CHUNK_NFWD_MAX_LANES &&
+            length(last(fx)) <=
+            (requested_chunk_size == 0 ? _CHUNK_NFWD_MAX_LANES : requested_chunk_size)
         )
             getfield(
                 (frule_1, frule_2, frule_3, frule_4, frule_5, frule_6, frule_7, frule_8),
@@ -1662,6 +1688,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     f, x::Vararg{Any,N}; config=Config()
 ) where {N}
     fx = (f, x...)
+    gradient_chunk_size = _forward_cache_requested_chunk_size(config)
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
 
     if config.friendly_tangents
@@ -1674,6 +1701,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             output_primal,
             _copy_output(fx),
             _forward_cache_gradient_workspace_ref(typeof(fx)),
+            gradient_chunk_size,
             _maybe_build_chunk_fastpath(fx, config),
             tuple_map(_prepared_cache_input_spec, fx),
         )
@@ -1684,6 +1712,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             nothing,
             nothing,
             _forward_cache_gradient_workspace_ref(typeof(fx)),
+            gradient_chunk_size,
             _maybe_build_chunk_fastpath(fx, config),
             tuple_map(_prepared_cache_input_spec, fx),
         )
@@ -1721,7 +1750,7 @@ function _value_and_gradient_forwardcache_generic_info(
         return result, false, nothing
     end
 
-    chunk_size = min(total_dof, _CHUNK_NFWD_MAX_LANES)
+    chunk_size = _forward_cache_gradient_chunk_size(cache, total_dof)
     first_chunk_width = min(chunk_size, total_dof)
     first_input_tangents = _forward_cache_seed_chunk_inputs(
         input_primals, 1, first_chunk_width
@@ -1815,10 +1844,17 @@ end
             f,
             x,
         )
-        _maybe_log_fwd_backend(verbose, cache, true, length(x))
+        _maybe_log_fwd_backend(
+            verbose, cache, true, _forward_cache_gradient_chunk_size(cache, length(x))
+        )
         return _forward_cache_finish_value_and_gradient(cache, (f, x), y, output)
     elseif !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
-        _maybe_log_fwd_backend(verbose, cache, true, _CHUNK_NFWD_MAX_LANES)
+        _maybe_log_fwd_backend(
+            verbose,
+            cache,
+            true,
+            _forward_cache_gradient_chunk_size(cache, _forward_cache_input_dof((f, x))),
+        )
         return _forward_cache_gradient_rrule_fastpath(cache, fastpath, f, x)
     end
     result, used_nfwd, chunk_size = _value_and_gradient_forwardcache_generic_info(
@@ -1838,7 +1874,12 @@ function value_and_gradient!!(
     _verify_cache_inputs(cache.input_specs, f, x)
     fastpath = cache.chunk_fastpath
     if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
-        _maybe_log_fwd_backend(verbose, cache, true, _CHUNK_NFWD_MAX_LANES)
+        _maybe_log_fwd_backend(
+            verbose,
+            cache,
+            true,
+            _forward_cache_gradient_chunk_size(cache, _forward_cache_input_dof((f, x))),
+        )
         return _forward_cache_gradient_rrule_fastpath(cache, fastpath, f, x)
     end
     result, used_nfwd, chunk_size = _value_and_gradient_forwardcache_generic_info(
@@ -1934,7 +1975,7 @@ end
 
 @inline function value_and_derivative!!(
     cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
-) where {R,OP,FG,GW,CF,S,M}
+) where {R,OP,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
     input_tangents = tuple_map(last, fx)
     _verify_cache_inputs(cache.input_specs, input_primals)
@@ -2127,6 +2168,12 @@ that at least one `x` argument was provided; validation that the `x...` inputs a
 Hessian computation uses forward-over-reverse AD: one forward-mode pass per input
 dimension over the reverse-mode gradient function.
 
+!!! note
+    This path currently uses Mooncake's generic public forward cache over the captured
+    reverse-mode gradient closure. It does not currently dispatch to the public
+    `NfwdMooncake` fast path used by some `prepare_derivative_cache` /
+    `value_and_gradient!!` calls.
+
 ```jldoctest
 f(x) = sum(x .^ 2)
 x = [1.0, 2.0, 3.0]
@@ -2286,7 +2333,7 @@ end
 # zero-arg overloads (Aqua detects the ambiguity without this more-specific method).
 function value_and_derivative!!(
     cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S}
-) where {R,OP,FG,GW,CF,S}
+) where {R,OP,FG,GW,CF,S<:Tuple}
     _verify_cache_inputs(cache.input_specs, ())
     error("unreachable")
 end
