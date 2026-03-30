@@ -21,7 +21,8 @@ using ..Mooncake:
     generate_dual_ir,
     generate_ir,
     optimise_ir!,
-    seed_id!
+    seed_id!,
+    set_valid_world!
 
 struct StageMeta
     block_count::Int
@@ -165,6 +166,22 @@ end
 
 # --- Main Inspection ---
 
+function primal_stages(interp, sig)
+    raw_ir, _ = lookup_ir(interp, sig)
+    @static if VERSION > v"1.12-"
+        # Keep the early inspection stages on the same world-restricted IR path that the
+        # AD generators use, so cross-stage diffs reflect the real pipeline.
+        raw_ir = set_valid_world!(raw_ir, interp.world)
+    end
+
+    _, spnames = is_vararg_and_sparam_names(sig)
+    normalized_ir = CC.copy(raw_ir)
+    normalise!(normalized_ir, spnames)
+
+    bbcode = remove_unreachable_blocks!(BBCode(normalized_ir))
+    return raw_ir, normalized_ir, bbcode
+end
+
 """
     inspect_ir(f, args...; kwargs...) -> IRInspection
 
@@ -206,61 +223,51 @@ function inspect_ir(
 
     seed_id!()
 
-    try
-        # Stage 1: Raw IR
-        raw_ir, _ = lookup_ir(interp, sig)
-        stages[:raw] = IRStage(:raw, raw_ir, render_ir(raw_ir), extract_meta(raw_ir))
+    # Propagate generation failures so callers do not mistake partial inspection output
+    # for a successful run.
+    # Stage 1: Raw IR
+    raw_ir, normalized_ir, bbcode = primal_stages(interp, sig)
+    stages[:raw] = IRStage(:raw, raw_ir, render_ir(raw_ir), extract_meta(raw_ir))
+    stages[:normalized] = IRStage(
+        :normalized, normalized_ir, render_ir(normalized_ir), extract_meta(normalized_ir)
+    )
+    stages[:bbcode] = IRStage(:bbcode, bbcode, render_ir(bbcode), extract_meta(bbcode))
 
-        # Stage 2: Normalized IR
-        _, spnames = is_vararg_and_sparam_names(sig)
-        normalized_ir = CC.copy(raw_ir)
-        normalise!(normalized_ir, spnames)
-        stages[:normalized] = IRStage(
-            :normalized,
-            normalized_ir,
-            render_ir(normalized_ir),
-            extract_meta(normalized_ir),
+    # Mode-specific stages
+    if mode == :forward
+        # `:dual_ir` should be the first AD transform output, not an already-optimized IR.
+        dual_ir, _, _ = generate_dual_ir(
+            interp, sig; debug_mode, do_inline=false, do_optimize=false
         )
-
-        # Stage 3: BBCode
-        bbcode = BBCode(normalized_ir)
-        bbcode = remove_unreachable_blocks!(bbcode)
-        stages[:bbcode] = IRStage(:bbcode, bbcode, render_ir(bbcode), extract_meta(bbcode))
-
-        # Mode-specific stages
-        if mode == :forward
-            dual_ir, _, _ = generate_dual_ir(interp, sig; debug_mode, do_inline=false)
-            stages[:dual_ir] = IRStage(
-                :dual_ir, dual_ir, render_ir(dual_ir), extract_meta(dual_ir)
+        stages[:dual_ir] = IRStage(
+            :dual_ir, dual_ir, render_ir(dual_ir), extract_meta(dual_ir)
+        )
+        if optimize
+            opt_ir = optimise_ir!(CC.copy(dual_ir); do_inline)
+            stages[:optimized] = IRStage(
+                :optimized, opt_ir, render_ir(opt_ir), extract_meta(opt_ir)
             )
-            if optimize
-                opt_ir = optimise_ir!(CC.copy(dual_ir); do_inline)
-                stages[:optimized] = IRStage(
-                    :optimized, opt_ir, render_ir(opt_ir), extract_meta(opt_ir)
-                )
-            end
-        else
-            dri = generate_ir(interp, sig; debug_mode, do_inline=false)
-            stages[:fwd_ir] = IRStage(
-                :fwd_ir, dri.fwd_ir, render_ir(dri.fwd_ir), extract_meta(dri.fwd_ir)
-            )
-            stages[:rvs_ir] = IRStage(
-                :rvs_ir, dri.rvs_ir, render_ir(dri.rvs_ir), extract_meta(dri.rvs_ir)
-            )
-            if optimize
-                opt_fwd = optimise_ir!(CC.copy(dri.fwd_ir); do_inline)
-                opt_rvs = optimise_ir!(CC.copy(dri.rvs_ir); do_inline)
-                stages[:optimized_fwd] = IRStage(
-                    :optimized_fwd, opt_fwd, render_ir(opt_fwd), extract_meta(opt_fwd)
-                )
-                stages[:optimized_rvs] = IRStage(
-                    :optimized_rvs, opt_rvs, render_ir(opt_rvs), extract_meta(opt_rvs)
-                )
-            end
         end
-    catch e
-        push!(notes, "Error during IR generation: $e")
-        @error "IR inspection failed" exception = (e, catch_backtrace())
+    else
+        # Mirror the reverse-mode pipeline before the final optimisation pass so
+        # `:fwd_ir`/`:rvs_ir` and `:optimized_*` represent distinct stages.
+        dri = generate_ir(interp, sig; debug_mode, do_inline=false, do_optimize=false)
+        stages[:fwd_ir] = IRStage(
+            :fwd_ir, dri.fwd_ir, render_ir(dri.fwd_ir), extract_meta(dri.fwd_ir)
+        )
+        stages[:rvs_ir] = IRStage(
+            :rvs_ir, dri.rvs_ir, render_ir(dri.rvs_ir), extract_meta(dri.rvs_ir)
+        )
+        if optimize
+            opt_fwd = optimise_ir!(CC.copy(dri.fwd_ir); do_inline)
+            opt_rvs = optimise_ir!(CC.copy(dri.rvs_ir); do_inline)
+            stages[:optimized_fwd] = IRStage(
+                :optimized_fwd, opt_fwd, render_ir(opt_fwd), extract_meta(opt_fwd)
+            )
+            stages[:optimized_rvs] = IRStage(
+                :optimized_rvs, opt_rvs, render_ir(opt_rvs), extract_meta(opt_rvs)
+            )
+        end
     end
 
     stage_order = mode == :forward ? forward_stage_order() : reverse_stage_order()
