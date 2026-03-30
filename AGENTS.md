@@ -9,7 +9,7 @@ Mooncake.jl is a Julia-first automatic differentiation package focused on:
 - composability: rules should compose predictably across primitives, custom tangents, nested AD, and mixed-mode AD
 - representation discipline: tangent and cotangent types should be canonical enough that invariants are easy to state, test, and preserve
 - strong diagnostics: malformed rules, tangent mismatches, world-age/compiler issues, and mutation mistakes should be easy to surface and debug
-- clear invalidity boundaries: unsupported cases should fail loudly and locally, not silently produce wrong derivatives
+- clear validity boundaries: unsupported cases should fail loudly and locally, not silently produce wrong derivatives
 - numerical robustness, including removable-singularity cases that would otherwise produce NaNs/Infs
 - performance via hand-written low-level `rrule!!` / `frule!!`, strict tangent and cotangent types, and cached prepare/run APIs
 
@@ -42,7 +42,7 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer the narrowest rule signature that covers the intended cases; overly broad signatures can silently shadow more specific rules or cause method ambiguity errors.
 - Only forward-over-reverse nested AD is tested. Do not assume rules compose correctly under reverse-over-reverse or other higher-order combinations unless explicitly verified.
 - Prefer clear Julia error messages, especially around malformed rules, unsupported cases, and rule-construction failures.
-- Mooncake's AD transform should preserve core execution properties: allocation-free primals should yield allocation-free pullbacks; otherwise, pullbacks should add only a small constant-factor allocation overhead; and type-stable primals should yield type-stable pullbacks.
+- Mooncake's AD transform should preserve core execution properties: if the primal has zero allocation, the pullback should also have zero allocation; otherwise, pullbacks should allocate only a small constant-factor times the primal allocation (`c *` primal allocation); and type-stable primals should yield type-stable pullbacks.
 - Preserve semantics under mutation and aliasing, not just pure-function cases.
 - In reverse mode, Mooncake usually restores mutations on the pullback; stateful exceptions need explicit rules and focused tests.
 - Internal helper APIs may change freely, but exported and public behaviour should come with tests, documentation, and clear error messages.
@@ -59,17 +59,19 @@ The overall target is: correct by construction where possible, aggressively test
 
 ## Testing
 
-- Run focused test groups during development instead of the full suite when possible.
+- Prefer constructing a minimal working example (MWE) first, then running the smallest focused test group that validates the fix, and only then broader test groups if needed.
 - For new differentiation rules, prefer testing them with `Mooncake.TestUtils.test_rule`.
+- Do not disable tests or weaken performance assertions just to get CI green; if that appears necessary, stop and ask for confirmation first.
 - Ensure supported primal types and their tangent types are exercised against the relevant rules for compatibility and composability.
 - Mooncake has a debug mode which is useful for testing malformed rules and diagnosing rule failures; see `docs/src/utilities/debug_mode.md`.
-- For performance-sensitive rules, verify by running the `frule!!` or `rrule!!` directly and checking allocations and runtime against the primal. Use `@allocated` to ensure no unexpected allocations and `@code_warntype` to check for type stability.
+- For performance-sensitive rules, verify by running the `frule!!` or `rrule!!` directly and checking allocations and runtime against the primal. Use `@allocated` to ensure that zero-allocation primals still yield zero-allocation AD paths, and `@code_warntype` to check for type stability.
 - Bug fixes in rules, the interpreter, or compiler interop should ideally land with a focused regression test.
 - If a fix depends on compiler or world-age behaviour, isolate it and test it directly.
 - `friendly_tangents` can display a misleading value for structured or wrapped types even when the underlying tangent data is correct. Do not treat a surprising `friendly_tangents` result as proof of a bug without also inspecting the raw tangent.
 - `src/test_resources.jl` is shared test infrastructure, not dead code. It feeds broad interpreter/rule tests indirectly via `TestResources.generate_test_functions()`, so do not judge it by one-file-one-test symmetry.
-- Put ad hoc experiments and scratch scripts in `temp/`, not in tracked source or test files.
+- Treat `temp/` as local scratch space, preferably untracked. Put ad hoc experiments, scratch scripts, and debugging MWEs there rather than in source or test files.
 - See `test/runtests.jl` for how to run tests (interactively or in groups).
+- When running multiple Julia minor versions locally, prefer version-specific manifests such as `Manifest-v1.10.toml` and `Manifest-v1.12.toml` instead of re-resolving a shared `Manifest.toml`. Julia will pick the matching manifest automatically, which avoids cross-version resolver breakage.
 - Extension and integration tests should generally be run from their own files/environments under `test/ext/` and `test/integration_testing/`. These are part of the package contract, not optional extras, so changes to weakdeps/extensions often need updates there even if core tests still pass.
 
 ## Documentation

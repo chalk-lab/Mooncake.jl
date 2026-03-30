@@ -261,8 +261,9 @@ composed of scalar multiplication and addition propagate the N directions automa
 
 2. **Hand-coded rules using `nan_tangent_guard`** (`log`, `sqrt`, `cbrt`, …) —
    `nan_tangent_guard` is explicitly constrained to `IEEEFloat | Complex{<:IEEEFloat}`.
-   Passing an NDual tangent would produce a `MethodError`.  An `NDual` overload of
-   `nan_tangent_guard` would be needed to use these functions inside `NfwdMode{N}`.
+   Passing an NDual tangent would produce a `MethodError`, so these functions need
+   dedicated NDual methods that preserve the same zero-mask behavior instead of calling
+   `nan_tangent_guard` directly.
 
 In practice `NfwdMode{N}` is designed for **GPU kernel boundaries** where each
 width-1 pass costs a full kernel launch.  For CPU scalar ops the overhead is negligible
@@ -382,10 +383,61 @@ end
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
 @inline _pt_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
+# N=1 specializations avoid closure heap-allocation on the scalar (chunk_size=1) hot path.
+@inline _pt_scale(p::NTuple{1,T}, s::T) where {T} = (s * p[1],)
+# `_nfwd_zero_mask` plays the same role as `nan_tangent_guard` for scalar NDual algebra:
+# when the local seed / upstream factor `a` is zero, replace `b` by zero(b) before the
+# multiply so `0 * Inf` and `0 * NaN` collapse to zero instead of poisoning the tangent.
+# nfwd uses this in forward mode through `_pt_guarded_scale`, which masks zero NDual lanes
+# in singular formulas such as `log`, `sqrt`, `cbrt`, and `hypot`, and in reverse mode
+# through `_nfwd_real_dot`, which masks zero upstream cotangents before contracting them
+# against nfwd output tangents. This is the same strong-zero idea used in other AD systems,
+# including ForwardDiff, to keep inactive directions from turning into NaNs.
+@inline _nfwd_zero_mask(a, b) = ifelse(iszero(a), zero(b), b)
+@inline function _pt_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
+    return ntuple(i -> begin
+        pi = p[i]
+        pi * _nfwd_zero_mask(pi, s)
+    end, Val(N))
+end
 @inline _pt_add(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] + q[i], Val(N))
 @inline _pt_sub(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] - q[i], Val(N))
 @inline _pt_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
 @inline _pt_zero(::Val{N}, ::Type{T}) where {N,T} = ntuple(_ -> zero(T), Val(N))
+@inline _pt_add(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] + q[1],)
+@inline _pt_sub(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] - q[1],)
+@inline _pt_neg(p::NTuple{1,T}) where {T} = (-p[1],)
+@inline _pt_zero(::Val{1}, ::Type{T}) where {T} = (zero(T),)
+
+# These helpers define the scalar edge-case behavior used by nfwd for non-smooth
+# primitives: `^` keeps the removable-singularity cases at x == 0, while `mod` and
+# `mod2pi` return NaN coefficients at their discontinuity points.
+@inline _nfwd_pow_grad_x(x, p, y) = p * y / x
+@inline function _nfwd_pow_grad_x(x::P, p::P, y) where {P<:IEEEFloat}
+    return ifelse(
+        !iszero(x) || p < zero(P),
+        p * y / x,
+        ifelse(isone(p), one(y), ifelse(iszero(p) || p > one(P), zero(y), oftype(y, Inf))),
+    )
+end
+
+@inline _nfwd_pow_grad_p(x, p, y) = y * log(complex(x))
+@inline function _nfwd_pow_grad_p(x::P, p::P, y) where {P<:IEEEFloat}
+    return ifelse(
+        !iszero(x), y * real(log(complex(x))), ifelse(p > zero(P), zero(y), oftype(y, NaN))
+    )
+end
+
+@inline function _nfwd_mod_grad_coeffs(x::P, y::P) where {P<:IEEEFloat}
+    u = x / y
+    nan = oftype(u, NaN)
+    isint = isinteger(u)
+    return ifelse(isint, nan, one(u)), ifelse(isint, nan, -floor(u))
+end
+
+@inline _nfwd_mod2pi_grad(x::P) where {P<:IEEEFloat} = ifelse(
+    isinteger(x / P(2π)), P(NaN), one(P)
+)
 
 # ── AbstractFloat traits (needed for promote_rule with Complex etc.) ──────────────
 
@@ -400,10 +452,10 @@ Base.floatmin(x::NDual{T,N}) where {T,N} = NDual{T,N}(floatmin(T))
 Base.floatmax(x::NDual{T,N}) where {T,N} = NDual{T,N}(floatmax(T))
 Base.precision(::Type{NDual{T,N}}) where {T<:AbstractFloat,N} = precision(T)
 Base.precision(::NDual{T,N}) where {T<:AbstractFloat,N} = precision(T)
-# nextfloat / prevfloat: perturb only the scalar value; partials are unchanged since
-# these are used to compute thresholds (e.g. in LogExpFunctions piecewise branches).
-Base.nextfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(nextfloat(a.value))
-Base.prevfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(prevfloat(a.value))
+# nextfloat / prevfloat are treated as identity maps for differentiation, so preserve the
+# partials while advancing or retreating the scalar value by one representable step.
+Base.nextfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(nextfloat(a.value), a.partials)
+Base.prevfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(prevfloat(a.value), a.partials)
 # exponent / significand: scalar operations; return scalar value (integer / NDual).
 Base.exponent(a::NDual) = exponent(a.value)
 
@@ -677,20 +729,19 @@ end
 @inline Base.:^(a::NDual{T,N}, b::Rational) where {T,N} = a ^ T(b)
 
 @inline function Base.:^(a::NDual{T,N}, b::Real) where {T,N}
-    v = a.value^T(b)
-    dv = ifelse(iszero(T(b)), zero(T), T(b) * a.value^(T(b) - one(T)))
-    return NDual{T,N}(v, _pt_scale(a.partials, dv))
+    bT = T(b)
+    v = a.value^bT
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, bT, v)))
 end
 
 @inline function Base.:^(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    # d(a^b) = a^b * (b/a * da + log(a) * db)
     v = a.value^b.value
-    coeff_a = b.value / a.value
-    coeff_b = log(a.value)
+    coeff_a = _nfwd_pow_grad_x(a.value, b.value, float(v))
+    coeff_b = _nfwd_pow_grad_p(a.value, b.value, float(v))
     return NDual{T,N}(
         v,
-        _pt_scale(
-            _pt_add(_pt_scale(a.partials, coeff_a), _pt_scale(b.partials, coeff_b)), v
+        _pt_add(
+            _pt_guarded_scale(a.partials, coeff_a), _pt_guarded_scale(b.partials, coeff_b)
         ),
     )
 end
@@ -704,6 +755,15 @@ end
     return NDual{T,N}(v, _pt_scale(a.partials, v * T(log(b))))
 end
 @inline Base.:^(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = exp(a)
+
+@inline function Base.FastMath.pow_fast(a::NDual{T,N}, n::Integer) where {T,N}
+    v = Base.FastMath.pow_fast(a.value, n)
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(n), v)))
+end
+@inline function Base.FastMath.pow_fast(a::NDual{T,N}, ::Val{p}) where {T,N,p}
+    v = Base.FastMath.pow_fast(a.value, Val(p))
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(p), v)))
+end
 
 # ── Math functions ─────────────────────────────────────────────────────────────────
 # Each follows: f(Dual(v,p)) = Dual(f(v), f'(v)*p)
@@ -821,25 +881,46 @@ end
     return (ev=exp10(a.value); NDual{T,N}(ev, _pt_scale(a.partials, ev * T(log(10)))))
 end
 @inline function Base.log(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log(a.value), _pt_scale(a.partials, inv(a.value)))
+    return NDual{T,N}(log(a.value), _pt_guarded_scale(a.partials, inv(a.value)))
 end
 @inline function Base.log2(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log2(a.value), _pt_scale(a.partials, inv(a.value * T(log(2)))))
+    return NDual{T,N}(
+        log2(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(2))))
+    )
 end
 @inline function Base.log10(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log10(a.value), _pt_scale(a.partials, inv(a.value * T(log(10)))))
+    return NDual{T,N}(
+        log10(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(10))))
+    )
 end
 @inline function Base.log1p(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log1p(a.value), _pt_scale(a.partials, inv(one(T) + a.value)))
+    return NDual{T,N}(log1p(a.value), _pt_guarded_scale(a.partials, inv(one(T) + a.value)))
 end
 @inline function Base.expm1(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(expm1(a.value), _pt_scale(a.partials, exp(a.value)))
 end
 
-# Two-argument log: log(b, x) = log(x)/log(b); d/dx = inv(x * log(b)).
+# Two-argument log: log(b, x) = log(x)/log(b); d/dx = inv(x * log(b)),
+# d/db = -log(x) / (b * log(b)^2) = -log(b, x) / (b * log(b)).
 @inline function Base.log(b::Real, a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log(b, a.value), _pt_scale(a.partials, inv(a.value * T(log(b)))))
+    return NDual{T,N}(
+        log(b, a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(b))))
+    )
 end
+@inline function Base.log(b::NDual{T,N}, a::NDual{T,N}) where {T,N}
+    log_b = log(b.value)
+    y = log(b.value, a.value)
+    return NDual{T,N}(
+        y,
+        _pt_add(
+            _pt_guarded_scale(b.partials, -y / (b.value * log_b)),
+            _pt_guarded_scale(a.partials, inv(a.value * log_b)),
+        ),
+    )
+end
+@inline Base.log(b::NDual{T1,N1}, a::NDual{T2,N2}) where {T1,T2,N1,N2} = log(
+    _promote_matching_nduals(:log, b, a)...
+)
 @inline Base.log(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = log(a)
 
 # ldexp(a, n) = a * 2^n — linear; derivative = 2^n.
@@ -849,10 +930,10 @@ end
 
 # Roots
 @inline function Base.sqrt(a::NDual{T,N}) where {T,N}
-    return (sv=sqrt(a.value); NDual{T,N}(sv, _pt_scale(a.partials, inv(2 * sv))))
+    return (sv=sqrt(a.value); NDual{T,N}(sv, _pt_guarded_scale(a.partials, inv(2 * sv))))
 end
 @inline function Base.cbrt(a::NDual{T,N}) where {T,N}
-    return (cv=cbrt(a.value); NDual{T,N}(cv, _pt_scale(a.partials, inv(3 * cv^2))))
+    return (cv=cbrt(a.value); NDual{T,N}(cv, _pt_guarded_scale(a.partials, inv(3 * cv^2))))
 end
 
 # Absolute value and sign
@@ -991,18 +1072,46 @@ end
 # hypot — d/da hypot(a,b) = a / hypot(a,b), d/db = b / hypot(a,b).
 @inline function Base.hypot(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     h = hypot(a.value, b.value)
+    coeff_a = _nfwd_zero_mask(a.value, a.value / h)
+    coeff_b = _nfwd_zero_mask(b.value, b.value / h)
     return NDual{T,N}(
-        h, _pt_add(_pt_scale(a.partials, a.value / h), _pt_scale(b.partials, b.value / h))
+        h, _pt_add(_pt_scale(a.partials, coeff_a), _pt_scale(b.partials, coeff_b))
+    )
+end
+@inline Base.hypot(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = hypot(
+    _promote_matching_nduals(:hypot, a, b)...
+)
+@inline Base.hypot(a::NDual{T,N}) where {T,N} = abs(a)
+@inline function Base.hypot(
+    a::NDual{T,N}, b::NDual{T,N}, c::NDual{T,N}, xs::Vararg{NDual{T,N},M}
+) where {T,N,M}
+    return hypot(hypot(a, b), c, xs...)
+end
+
+@inline function _ndual_pick_max(a, b)
+    v = max(a, b)
+    a_matches = isequal(v, a)
+    b_matches = isequal(v, b)
+    return ifelse(
+        a_matches & !b_matches, true, ifelse(b_matches & !a_matches, false, false)
     )
 end
 
-# min / max — subgradient: select the tangent of the winning branch.
-# ifelse is used instead of ?: to stay branchless on GPU (see file header).
+@inline function _ndual_pick_min(a, b)
+    v = min(a, b)
+    a_matches = isequal(v, a)
+    b_matches = isequal(v, b)
+    return ifelse(a_matches & !b_matches, true, ifelse(b_matches & !a_matches, false, true))
+end
+
+# min / max — preserve Base's scalar result on NaN and signed-zero ties, then select the
+# corresponding tangent. When both operands are exactly the same scalar value, keep the
+# existing ordinary-tie convention (second arg for max, first arg for min).
 @inline function Base.max(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    return ifelse(a.value >= b.value, a, b)
+    return ifelse(_ndual_pick_max(a.value, b.value), a, b)
 end
 @inline function Base.min(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    return ifelse(a.value <= b.value, a, b)
+    return ifelse(_ndual_pick_min(a.value, b.value), a, b)
 end
 
 # clamp — subgradient: zero tangent at the clamped endpoints.
@@ -1253,7 +1362,7 @@ for _r in (
     end
 end
 
-for _op in (:div, :fld, :cld, :mod, :gcd, :lcm)
+for _op in (:div, :fld, :cld, :gcd, :lcm)
     @eval Base.$_op(x::NDual{T,N}) where {T<:IEEEFloat,N} = throw(
         NDualUnsupportedError($(QuoteNode(_op)))
     )
@@ -1277,6 +1386,29 @@ end
     return NDual{T,N}(
         rem(pv, yv), ntuple(k -> ndual_partial(x, k) - c * ndual_partial(y, k), Val(N))
     )
+end
+
+@inline function Base.mod(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
+    coeff_x, coeff_y = _nfwd_mod_grad_coeffs(x.value, y.value)
+    return NDual{T,N}(
+        mod(x.value, y.value),
+        _pt_add(_pt_scale(x.partials, coeff_x), _pt_scale(y.partials, coeff_y)),
+    )
+end
+@inline Base.mod(x::NDual{T1,N1}, y::NDual{T2,N2}) where {T1<:IEEEFloat,T2<:IEEEFloat,N1,N2} = mod(
+    _promote_matching_nduals(:mod, x, y)...
+)
+@inline Base.mod(x::NDual{T,N}) where {T<:IEEEFloat,N} = throw(NDualUnsupportedError(:mod))
+@inline Base.mod(x::NDual{T,N}, y::Real) where {T<:IEEEFloat,N} = throw(
+    NDualUnsupportedError(:mod)
+)
+@inline Base.mod(x::Real, y::NDual{T,N}) where {T<:IEEEFloat,N} = throw(
+    NDualUnsupportedError(:mod)
+)
+
+@inline function Base.mod2pi(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    coeff = _nfwd_mod2pi_grad(x.value)
+    return NDual{T,N}(mod2pi(x.value), _pt_scale(x.partials, coeff))
 end
 
 # ── Future: tiled GPU kernels with NDual ──────────────────────────────────────────
@@ -1503,6 +1635,11 @@ Callable forward-mode rule used by `nfwd`.
 
 `Rule` is built from a statically-known call signature. `buf` holds a reusable
 typed scratch buffer for in-place array lifting when a chunk-layout tangent is available.
+
+!!! warning
+    `Rule` owns mutable workspace. Reusing one instance avoids repeated wrapper
+    construction, but a single instance must not be shared across concurrent calls.
+    This is a general shared-mutable-state hazard, not something specific to `nfwd`.
 """
 struct Rule{sig,N,Tbuf<:Base.RefValue}
     buf::Tbuf
@@ -1532,6 +1669,12 @@ The `scalar_out` type parameter is `true` when inference confirms at rule-build 
 `f` returns an `IEEEFloat` scalar for the given input types. This allows the single-array
 rrule specialisation to skip the redundant primal type-check call, which otherwise costs
 one full function evaluation per gradient call.
+
+!!! warning
+    `RRule` owns mutable workspace in `buf` and `grad_buf`. Reusing one instance avoids
+    repeated wrapper construction, but a single instance must not be shared across
+    concurrent calls. This is a general shared-mutable-state hazard, not something
+    specific to `nfwd`.
 """
 struct RRule{sig,N,Tbuf<:Base.RefValue,scalar_out,Tgbuf<:Base.RefValue}
     buf::Tbuf
@@ -1624,15 +1767,18 @@ end
 @inline _nfwd_is_supported_scalar(::Type{<:Complex{<:IEEEFloat}}) = true
 @inline _nfwd_is_supported_scalar(::Type) = false
 
-@inline _nfwd_is_supported_primal(::Type{<:IEEEFloat}) = true
-@inline _nfwd_is_supported_primal(::Type{<:Complex{<:IEEEFloat}}) = true
-@inline function _nfwd_is_supported_primal(::Type{<:Array{ET}}) where {ET}
+@inline _nfwd_tuple_primal_supported(::Tuple{}) = true
+@inline function _nfwd_tuple_primal_supported(x::Tuple)
+    return _nfwd_is_supported_primal(first(x)) && _nfwd_tuple_primal_supported(Base.tail(x))
+end
+
+@inline _nfwd_is_supported_primal(::IEEEFloat) = true
+@inline _nfwd_is_supported_primal(::Complex{<:IEEEFloat}) = true
+@inline function _nfwd_is_supported_primal(x::Array{ET}) where {ET}
     _nfwd_is_supported_scalar(ET)
 end
-@inline function _nfwd_is_supported_primal(T::Type{<:Tuple})
-    return all(_nfwd_is_supported_primal, T.parameters)
-end
-@inline _nfwd_is_supported_primal(::Type) = false
+@inline _nfwd_is_supported_primal(x::Tuple) = _nfwd_tuple_primal_supported(x)
+@inline _nfwd_is_supported_primal(::Any) = false
 
 abstract type UnsupportedError <: Exception end
 
@@ -1647,7 +1793,7 @@ end
 @inline function Base.showerror(
     io::IO, err::Union{UnsupportedInputError,UnsupportedOutputError}
 )
-    return print(io, err.msg)
+    return _print_boxed_error(io, split(err.msg, '\n'))
 end
 
 @inline _nfwd_input_error(x) = throw(
@@ -1667,7 +1813,7 @@ end
 end
 
 @inline function _nfwd_check_primal(x)
-    _nfwd_is_supported_primal(typeof(x)) || _nfwd_input_error(x)
+    _nfwd_is_supported_primal(x) || _nfwd_input_error(x)
     return x
 end
 

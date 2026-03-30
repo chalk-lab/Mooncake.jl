@@ -3,7 +3,9 @@ struct MissingForeigncallRuleError <: Exception
     msg::String
 end
 
-Base.showerror(io::IO, err::MissingForeigncallRuleError) = print(io, err.msg)
+function Base.showerror(io::IO, err::MissingForeigncallRuleError)
+    _print_boxed_error(io, split(err.msg, '\n'))
+end
 
 # Fallback foreigncall rules. This is a sufficiently common special case, that it's worth
 # creating an informative error message, so that users have some chance of knowing why
@@ -287,6 +289,59 @@ function rrule!!(
     x = tuple_map(primal, args)
     pb!! = NoPullback((NoRData(), NoRData(), tuple_map(_ -> NoRData(), args)...))
     return uninit_fcodual(_foreigncall_(Val(:jl_string_ptr), x...)), pb!!
+end
+
+for (name, P) in
+    ((Symbol("llvm.powi.f32.i32"), Float32), (Symbol("llvm.powi.f64.i32"), Float64))
+    @eval function frule!!(
+        ::Dual{typeof(_foreigncall_)},
+        ::Dual{Val{$(QuoteNode(name))}},
+        ::Dual{Val{$P}},
+        ::Dual{Tuple{Val{$P},Val{Int32}}},
+        ::Dual{Val{0}},
+        ::Dual{Val{:llvmcall}},
+        x::Dual{$P},
+        n::Dual{Int32},
+        ::Dual{Int32},
+        ::Dual{$P},
+    )
+        _x, dx = extract(x)
+        _n = primal(n)
+        y = Base.FastMath.pow_fast(_x, _n)
+        return Dual(y, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dx)
+    end
+
+    @eval function rrule!!(
+        ::CoDual{typeof(_foreigncall_)},
+        ::CoDual{Val{$(QuoteNode(name))}},
+        ::CoDual{Val{$P}},
+        ::CoDual{Tuple{Val{$P},Val{Int32}}},
+        ::CoDual{Val{0}},
+        ::CoDual{Val{:llvmcall}},
+        x::CoDual{$P},
+        n::CoDual{Int32},
+        n_dup::CoDual{Int32},
+        x_dup::CoDual{$P},
+    )
+        _x = primal(x)
+        _n = primal(n)
+        y = Base.FastMath.pow_fast(_x, _n)
+        function llvm_powi_pb!!(dy::$P)
+            dx = Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dy
+            return (
+                NoRData(),
+                NoRData(),
+                NoRData(),
+                NoRData(),
+                NoRData(),
+                dx,
+                NoRData(),
+                NoRData(),
+                zero_rdata(primal(x_dup)),
+            )
+        end
+        return zero_fcodual(y), llvm_powi_pb!!
+    end
 end
 
 function unexpected_foreigncall_error(name)

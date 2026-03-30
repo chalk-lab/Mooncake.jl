@@ -802,7 +802,13 @@ function test_frule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test count_allocs(f, x...) == 0
+        # On Julia 1.10 under `Pkg.test`, `--check-bounds=yes` can introduce small,
+        # configuration-dependent allocations even for primal calls that are otherwise
+        # zero-alloc in ordinary execution. Keep the zero-allocation assertion in the
+        # default/performance configuration, but skip it in that test-only mode.
+        if !(VERSION < v"1.11-" && Base.JLOptions().check_bounds == 1)
+            @test count_allocs(f, x...) == 0
+        end
 
         # Test allocations in forwards-mode.
         # On Julia 1.10, __call_rule uses Base.inferencebarrier to work around a codegen
@@ -851,7 +857,9 @@ function test_rrule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test count_allocs(f, x...) == 0
+        if !(VERSION < v"1.11-" && Base.JLOptions().check_bounds == 1)
+            @test count_allocs(f, x...) == 0
+        end
 
         # Test allocations in round-trip.
         # Skip on Julia < 1.11 for the same reason as the frule check above: the
@@ -950,6 +958,8 @@ function test_rule(
     output_tangent=nothing,
     atol=1e-3,
     rtol=1e-3,
+    frule=nothing,
+    rrule=nothing,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -958,14 +968,33 @@ function test_rule(
     sig = _typeof(__get_primals(x))
     test_fwd = mode in [nothing, ForwardMode]
     test_rvs = mode in [nothing, ReverseMode]
-    fwd_interp = test_fwd ? get_interpreter(ForwardMode) : missing
-    rvs_interp = test_rvs ? get_interpreter(ReverseMode) : missing
-    frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
-    rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
+    fwd_interp = (test_fwd && isnothing(frule)) ? get_interpreter(ForwardMode) : missing
+    rvs_interp = (test_rvs && isnothing(rrule)) ? get_interpreter(ReverseMode) : missing
+    frule = if !isnothing(frule)
+        frule
+    elseif test_fwd
+        build_frule(fwd_interp, sig; debug_mode)
+    else
+        missing
+    end
+    rrule = if !isnothing(rrule)
+        rrule
+    elseif test_rvs
+        build_rrule(rvs_interp, sig; debug_mode)
+    else
+        missing
+    end
 
     # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
-    test_fwd && is_primitive && @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
-    test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
+    # Skip when a pre-built rule was supplied — the caller owns it.
+    test_fwd &&
+        is_primitive &&
+        !ismissing(fwd_interp) &&
+        @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
+    test_rvs &&
+        is_primitive &&
+        !ismissing(rvs_interp) &&
+        @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
     x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
@@ -1007,7 +1036,7 @@ function test_rule(
 
             # Verify that rules have been cached.
             @testset "Caching" begin
-                if test_fwd
+                if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
                         cache_key = (sig, debug_mode, :forward)
@@ -1015,7 +1044,7 @@ function test_rule(
                         @test haskey(fwd_interp.oc_cache, k)
                     end
                 end
-                if test_rvs
+                if test_rvs && !ismissing(rvs_interp)
                     C_rvs = Mooncake.context_type(rvs_interp)
                     if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
                         cache_key = (sig, debug_mode, :reverse)

@@ -16,6 +16,11 @@
 The goal of the `Mooncake.jl` project is to produce an AD package written entirely in Julia that improves on `ForwardDiff.jl`, `ReverseDiff.jl`, and `Zygote.jl` in several ways.
 Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more info.
 
+> [!IMPORTANT]
+> `Mooncake.jl` accepts issues and pull requests for reproducible defects only. Feature requests, enhancements, redesign proposals, support requests, and debugging requests without a
+  minimal reproducible example are out of scope and will be closed. Although Mooncake currently supports a select subset of Julia standard libraries, mathematical libraries, and
+  `CUDA.jl`, its intended rule-coverage scope is Julia Base, so requests for missing rules outside Julia Base are out of scope.
+
 ## Getting Started
 
 Check that you're running a version of Julia that Mooncake.jl supports.
@@ -29,9 +34,15 @@ import Mooncake as MC
 f(x) = (1 - x[1])^2 + 100 * (x[2] - x[1]^2)^2  # Rosenbrock
 x = [1.2, 1.2]
 
+# Reverse mode
 grad_cache = MC.prepare_gradient_cache(f, x);
 val, grad = MC.value_and_gradient!!(grad_cache, f, x)
 
+# Forward mode
+fwd_cache = MC.prepare_derivative_cache(f, x);
+val_fwd, grad_fwd = MC.value_and_gradient!!(fwd_cache, f, x)
+
+# Hessian
 hess_cache = MC.prepare_hessian_cache(f, x);
 val, grad, H = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 # val  : f(x)

@@ -1106,7 +1106,7 @@ function Base.showerror(io::IO, err::AddToPrimalException)
         "by setting the `unsafe_perturb` setting to `true` -- check the docstring " *
         "for `Mooncake._add_to_primal` to ensure that your use case is unlikely to " *
         "cause problems."
-    return println(io, msg)
+    return _print_boxed_error(io, split("AddToPrimalException: $msg", '\n'))
 end
 
 function __construct_type(::Type{P}, unsafe::Bool, fields::Vararg{Any,N})::P where {P,N}
