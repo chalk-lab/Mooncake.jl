@@ -6,6 +6,9 @@ using JET, Lux, LuxLib, Mooncake, NNlib, SLEEFPirates, StableRNGs, Test
 using LuxLib.Impl: sleefpirates_fast_act
 using Mooncake.TestUtils: test_rule
 
+# Custom activation to exercise fallback paths (no pre-defined rrule, needs intermediate).
+_custom_act(x) = sin(x)
+
 # Access AD helper functions present in the Extension module.
 const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
 @assert !isnothing(MooncakeLuxLibExt) "MooncakeLuxLibExt is required for testing !"
@@ -218,7 +221,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
                 Iterators.product(
                     [LuxLib.LoopedArrayOp()],
                     [(nothing, nothing), (randn(4), randn(4))],
-                    [Lux.relu, tanh, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                 ),
             ) do (opmode, (gamma, beta), activation)
                 (
@@ -245,7 +248,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
                 Iterators.product(
                     [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
                     [randn(5), nothing],
-                    [Lux.relu, tanh, NNlib.gelu, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                 ),
             ) do (opmode, bias, activation)
                 (
@@ -265,7 +268,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
             map(
                 Iterators.product(
                     [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
-                    [Lux.relu, tanh, NNlib.gelu, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                 ),
             ) do (opmode, activation)
                 (
@@ -286,7 +289,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
             map(
                 Iterators.product(
                     [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
-                    [Lux.relu, tanh, NNlib.gelu, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                 ),
             ) do (opmode, activation)
                 (
@@ -309,7 +312,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
             map(
                 Iterators.product(
                     [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
-                    [Lux.relu, tanh, NNlib.gelu, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                 ),
             ) do (opmode, activation)
                 (
@@ -332,7 +335,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
             map(
                 Iterators.product(
                     [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
-                    [Lux.relu, tanh, NNlib.gelu, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                 ),
             ) do (opmode, activation)
                 (
@@ -354,7 +357,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
             map(
                 Iterators.product(
                     [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
-                    [Lux.relu, tanh, NNlib.gelu, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                 ),
             ) do (opmode, activation)
                 (
@@ -376,7 +379,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
             map(
                 Iterators.product(
                     [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
-                    [Lux.relu, tanh, NNlib.gelu, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                 ),
             ) do (opmode, activation)
                 (
@@ -393,9 +396,9 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
         vec(
             map(
                 Iterators.product(
-                    [LuxLib.LoopedArrayOp()],
+                    [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
                     [randn(3), nothing],
-                    [Lux.relu, tanh, NNlib.gelu, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                 ),
             ) do (opmode, bias, activation)
                 cdims = NNlib.DenseConvDims(
@@ -425,7 +428,7 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
             map(
                 Iterators.product(
                     [LuxLib.LoopedArrayOp()],
-                    [Lux.relu, tanh, NNlib.gelu, identity],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                     [true, false],
                 ),
             ) do (opmode, activation, affine)

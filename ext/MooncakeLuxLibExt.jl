@@ -15,6 +15,7 @@ using Mooncake:
     CoDual,
     zero_tangent,
     primal,
+    tangent,
     @is_primitive,
     NoRData,
     extract,
@@ -161,6 +162,7 @@ function Mooncake.rrule!!(
     ȳ = zero_tangent(y)
 
     function pb!!(::NoRData)
+        # ∇batchnorm_affine_normalize returns CRC.NoTangent() for γ/β when they are nothing.
         ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇batchnorm_affine_normalize(
             _opmode, ȳ, _x, _μ, _σ², _γ, _β, _ϵ, γ′
         )
@@ -179,9 +181,6 @@ function Mooncake.rrule!!(
     return CoDual(y, ȳ), pb!!
 end
 
-# Overlay for `batchnorm_affine_normalize_internal`
-#  - Use Mooncake’s helper function `_batchnorm_affine_normalize_identity` and its manually written rule.
-#  - Let Mooncake differentiate through the broadcasted `act` function.
 @mooncake_overlay function batchnorm_affine_normalize_internal(
     opmode::AbstractInternalArrayOpMode,
     act::F,
@@ -196,45 +195,48 @@ end
     return act.(y)
 end
 
-# Native Mooncake rrules for activation
+# Native Mooncake rrules for activation, bias_activation, and fused_conv.
 
 import LuxLib.Utils: True, False, unsafe_known
 import LuxLib.Impl:
     activation!!,
-    activation!,
-    LoopedArrayOp,
     bias_activation,
     bias_activation!!,
-    bias_activation!,
     bias_activation_cached!!,
     bias_add!,
-    broadcast_bias_activation_generic,
     fused_conv,
+    conv,
     conv_bias_act,
     conv!,
-    ∇fused_conv,
     ∇conv_bias,
     groupnorm_affine_normalize_internal,
     groupnorm_affine_normalize_internal!,
     ∇groupnorm_affine_normalize,
     concrete_bias_act_output_eltype,
-    reshape_bias,
     ∇bias_add,
     activation_intermediate_not_needed,
     activation_has_rrule,
     activation,
     ∇activation,
+    NotaNumber,
     AbstractInternalArrayOpMode,
     LoopedArrayOp
 
+# Fast helper for activation: called from the overlay for activations where LuxLib has
+# an optimised ∇activation kernel (activation_intermediate_not_needed or activation_has_rrule).
+function _activation_fast(
+    opmode::AbstractInternalArrayOpMode, σ::F, x::AbstractArray{T}
+) where {F,T}
+    return activation(opmode, σ, x)
+end
+
 @is_primitive MinimalCtx Tuple{
-    typeof(activation!!),AbstractInternalArrayOpMode,True,F,AbstractArray
+    typeof(_activation_fast),AbstractInternalArrayOpMode,F,AbstractArray
 } where {F}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(activation!!)},
+    ::CoDual{typeof(_activation_fast)},
     opmode::CoDual{<:AbstractInternalArrayOpMode},
-    ::CoDual{True},
     σ::CoDual{F},
     x::CoDual{<:AbstractArray{T}},
 ) where {F,T}
@@ -242,158 +244,101 @@ function Mooncake.rrule!!(
     _x, x̄ = primal(x), tangent(x)
 
     if unsafe_known(activation_intermediate_not_needed(_σ, T))
-        _x_orig = copy(_x)
-        activation!(_x, _opmode, _σ, _x)
-
-        function pb!!_no_intermediate(::NoRData)
-            ∂x = ∇activation(x̄, _x, _σ, NotaNumber())
-            copyto!(x̄, ∂x)
-            copyto!(_x, _x_orig)
-            return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
-        end
-        return CoDual(_x, x̄), pb!!_no_intermediate
-    end
-
-    if unsafe_known(activation_has_rrule(_σ, T))
-        _x_orig = copy(_x)
-        y = activation(_opmode, _σ, _x)
-        copyto!(_x, y)
-
-        function pb!!_has_rrule(::NoRData)
-            ∂x = ∇activation(x̄, y, _σ, _x_orig)
-            copyto!(x̄, ∂x)
-            copyto!(_x, _x_orig)
-            return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
-        end
-        return CoDual(_x, x̄), pb!!_has_rrule
-    end
-
-    _x_orig = copy(_x)
-    y = _σ.(_x)
-    copyto!(_x, y)
-    act_cache = prepare_pullback_cache(broadcast, _σ, _x_orig)
-
-    function pb!!_fallback(::NoRData)
-        _, (_, _, ∂x) = value_and_pullback!!(act_cache, copy(x̄), broadcast, _σ, _x_orig)
-        copyto!(x̄, ∂x)
-        copyto!(_x, _x_orig)
-        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
-    end
-    return CoDual(_x, x̄), pb!!_fallback
-end
-
-@is_primitive MinimalCtx Tuple{
-    typeof(activation),AbstractInternalArrayOpMode,F,AbstractArray
-} where {F}
-
-function Mooncake.rrule!!(
-    ::CoDual{typeof(activation)},
-    opmode::CoDual{<:AbstractInternalArrayOpMode},
-    σ::CoDual{F},
-    x::CoDual{<:AbstractArray{T}},
-) where {F,T}
-    _opmode, _σ = primal(opmode), primal(σ)
-    _x, x̄ = primal(x), tangent(x)
-
-    if unsafe_known(activation_has_rrule(_σ, T))
         y = activation(_opmode, _σ, _x)
         ȳ = zero_tangent(y)
-
-        function pb!!_has_rrule(::NoRData)
-            x̄ .+= ∇activation(ȳ, y, _σ, _x)
+        function pb!!_no_intermediate(::NoRData)
+            x̄ .+= ∇activation(ȳ, y, _σ, NotaNumber())
             return NoRData(), NoRData(), NoRData(), NoRData()
-        end
-        return CoDual(y, ȳ), pb!!_has_rrule
-    end
-
-    act_cache = prepare_pullback_cache(broadcast, _σ, _x)
-    y = _σ.(_x)
-    ȳ = zero_tangent(y)
-
-    function pb!!_fallback(::NoRData)
-        _, (_, _, ∂x) = value_and_pullback!!(act_cache, ȳ, broadcast, _σ, _x)
-        x̄ .+= ∂x
-        return NoRData(), NoRData(), NoRData(), NoRData()
-    end
-    return CoDual(y, ȳ), pb!!_fallback
-end
-
-# Native Mooncake rrules for bias_activation
-
-@is_primitive MinimalCtx Tuple{
-    typeof(bias_activation),AbstractInternalArrayOpMode,F,AbstractArray,AbstractVector
-} where {F}
-
-function Mooncake.rrule!!(
-    ::CoDual{typeof(bias_activation)},
-    opmode::CoDual{<:AbstractInternalArrayOpMode},
-    σ::CoDual{F},
-    x::CoDual{<:AbstractArray{xT,N}},
-    bias::CoDual{<:AbstractVector},
-) where {F,xT,N}
-    _opmode, _σ = primal(opmode), primal(σ)
-    _x, x̄ = primal(x), tangent(x)
-    _bias, b̄ = primal(bias), tangent(bias)
-
-    T = concrete_bias_act_output_eltype(_σ, _x, _bias)
-
-    if unsafe_known(activation_intermediate_not_needed(_σ, T))
-        y = bias_activation(_opmode, _σ, _x, _bias)
-        ȳ = zero_tangent(y)
-
-        function pb!!_no_intermediate(::NoRData)
-            ∂x = ∇activation(ȳ, y, _σ, NotaNumber())
-            x̄ .+= ∂x
-            b̄ .+= ∇bias_add(_bias, ∂x)
-            return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
         end
         return CoDual(y, ȳ), pb!!_no_intermediate
     end
 
-    if unsafe_known(activation_has_rrule(_σ, T))
-        tmp = similar(_x, T)
-        bias_add!(tmp, _opmode, _x, _bias)
-        y = activation(_opmode, _σ, tmp)
-        ȳ = zero_tangent(y)
-
-        function pb!!_has_rrule(::NoRData)
-            ∂x = ∇activation(ȳ, y, _σ, tmp)
-            x̄ .+= ∂x
-            b̄ .+= ∇bias_add(_bias, ∂x)
-            return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
-        end
-        return CoDual(y, ȳ), pb!!_has_rrule
-    end
-
-    _rb = reshape_bias(_x, _bias)
-    act_cache = prepare_pullback_cache(broadcast_bias_activation_generic, _σ, _x, _rb)
-    y = broadcast_bias_activation_generic(_σ, _x, _rb)
+    # activation_has_rrule is true (guaranteed by overlay).
+    y = activation(_opmode, _σ, _x)
     ȳ = zero_tangent(y)
-
-    function pb!!_fallback(::NoRData)
-        _, (_, ∂x, ∂rb) = value_and_pullback!!(
-            act_cache, ȳ, broadcast_bias_activation_generic, _σ, _x, _rb
-        )
-        x̄ .+= ∂x
-        b̄ .+= vec(∂rb)
-        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    function pb!!_has_rrule(::NoRData)
+        x̄ .+= ∇activation(ȳ, y, _σ, _x)
+        return NoRData(), NoRData(), NoRData(), NoRData()
     end
-    return CoDual(y, ȳ), pb!!_fallback
+    return CoDual(y, ȳ), pb!!_has_rrule
+end
+
+# Overlay: fast activations go through _activation_fast; custom σ falls back to σ.(x).
+@mooncake_overlay function activation(
+    opmode::AbstractInternalArrayOpMode, σ::F, x::AbstractArray{T}
+) where {F,T}
+    if unsafe_known(activation_intermediate_not_needed(σ, T)) ||
+       unsafe_known(activation_has_rrule(σ, T))
+        return _activation_fast(opmode, σ, x)
+    end
+    return σ.(x)
+end
+
+# Under Mooncake, internal_operation_mode returns GenericBroadcastOp so activation!! is non-mutating.
+@mooncake_overlay function activation!!(
+    opmode::AbstractInternalArrayOpMode, ::True, σ::F, x::AbstractArray
+) where {F}
+    return activation(opmode, σ, x)
+end
+
+# Helper for bias add with identity activation; rrule uses LuxLib's ∇bias_add.
+function _bias_add_identity(
+    opmode::AbstractInternalArrayOpMode, x::AbstractArray{xT,N}, bias::AbstractVector
+) where {xT,N}
+    T = concrete_bias_act_output_eltype(identity, x, bias)
+    out = similar(x, T)
+    bias_add!(out, opmode, x, bias)
+    return out
 end
 
 @is_primitive MinimalCtx Tuple{
-    typeof(bias_activation!!),
+    typeof(_bias_add_identity),AbstractInternalArrayOpMode,AbstractArray,AbstractVector
+}
+
+function Mooncake.rrule!!(
+    ::CoDual{typeof(_bias_add_identity)},
+    opmode::CoDual{<:AbstractInternalArrayOpMode},
+    x::CoDual{<:AbstractArray{xT,N}},
+    bias::CoDual{<:AbstractVector},
+) where {xT,N}
+    _opmode = primal(opmode)
+    _x, x̄ = primal(x), tangent(x)
+    _bias, b̄ = primal(bias), tangent(bias)
+
+    T = concrete_bias_act_output_eltype(identity, _x, _bias)
+    out = similar(_x, T)
+    bias_add!(out, _opmode, _x, _bias)
+    ō = zero_tangent(out)
+
+    function pb!!(::NoRData)
+        x̄ .+= ō
+        b̄ .+= ∇bias_add(_bias, ō)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(out, ō), pb!!
+end
+
+# Fast helper for bias_activation; called from the overlay for fast activations.
+function _bias_activation_fast(
+    opmode::AbstractInternalArrayOpMode,
+    σ::F,
+    x::AbstractArray{xT,N},
+    bias::AbstractVector,
+) where {F,xT,N}
+    return bias_activation(opmode, σ, x, bias)
+end
+
+@is_primitive MinimalCtx Tuple{
+    typeof(_bias_activation_fast),
     AbstractInternalArrayOpMode,
-    True,
     F,
     AbstractArray,
     AbstractVector,
 } where {F}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(bias_activation!!)},
+    ::CoDual{typeof(_bias_activation_fast)},
     opmode::CoDual{<:AbstractInternalArrayOpMode},
-    ::CoDual{True},
     σ::CoDual{F},
     x::CoDual{<:AbstractArray{xT,N}},
     bias::CoDual{<:AbstractVector},
@@ -401,81 +346,75 @@ function Mooncake.rrule!!(
     _opmode, _σ = primal(opmode), primal(σ)
     _x, x̄ = primal(x), tangent(x)
     _bias, b̄ = primal(bias), tangent(bias)
-
     T = concrete_bias_act_output_eltype(_σ, _x, _bias)
 
     if unsafe_known(activation_intermediate_not_needed(_σ, T))
-        _x_orig = copy(_x)
-        y = bias_activation!!(_opmode, True(), _σ, _x, _bias)
-        mutated = y === _x
-        ȳ = mutated ? x̄ : zero_tangent(y)
-
+        y = bias_activation(_opmode, _σ, _x, _bias)
+        ȳ = zero_tangent(y)
         function pb!!_no_intermediate(::NoRData)
             ∂x = ∇activation(ȳ, y, _σ, NotaNumber())
+            x̄ .+= ∂x
             b̄ .+= ∇bias_add(_bias, ∂x)
-            if mutated
-                copyto!(x̄, ∂x)
-                copyto!(_x, _x_orig)
-            else
-                x̄ .+= ∂x
-            end
-            return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+            return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
         end
         return CoDual(y, ȳ), pb!!_no_intermediate
     end
 
-    if unsafe_known(activation_has_rrule(_σ, T))
-        _x_orig = copy(_x)
-        tmp = similar(_x, T)
-        bias_add!(tmp, _opmode, _x, _bias)
-        y = activation(_opmode, _σ, tmp)
-        mutated = !(_opmode isa LuxLib.GenericBroadcastOp)
-        mutated && copyto!(_x, y)
-        ȳ = mutated ? x̄ : zero_tangent(y)
-
-        function pb!!_has_rrule(::NoRData)
-            ∂x = ∇activation(ȳ, y, _σ, tmp)
-            b̄ .+= ∇bias_add(_bias, ∂x)
-            if mutated
-                copyto!(x̄, ∂x)
-                copyto!(_x, _x_orig)
-            else
-                x̄ .+= ∂x
-            end
-            return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
-        end
-        return CoDual(mutated ? _x : y, ȳ), pb!!_has_rrule
+    # activation_has_rrule is true (guaranteed by overlay).
+    tmp = similar(_x, T)
+    bias_add!(tmp, _opmode, _x, _bias)
+    y = activation(_opmode, _σ, tmp)
+    ȳ = zero_tangent(y)
+    function pb!!_has_rrule(::NoRData)
+        ∂x = ∇activation(ȳ, y, _σ, tmp)
+        x̄ .+= ∂x
+        b̄ .+= ∇bias_add(_bias, ∂x)
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
-
-    # Fallback
-    _x_orig = copy(_x)
-    _rb = reshape_bias(_x_orig, _bias)
-    y = broadcast_bias_activation_generic(_σ, _x_orig, _rb)
-    mutated = y === _x
-    mutated || copyto!(_x, y)
-    ȳ = mutated ? x̄ : zero_tangent(y)
-    act_cache = prepare_pullback_cache(broadcast_bias_activation_generic, _σ, _x_orig, _rb)
-
-    function pb!!_fallback(::NoRData)
-        _, (_, ∂x, ∂rb) = value_and_pullback!!(
-            act_cache, copy(ȳ), broadcast_bias_activation_generic, _σ, _x_orig, _rb
-        )
-        if mutated
-            copyto!(x̄, ∂x)
-            copyto!(_x, _x_orig)
-        else
-            x̄ .+= ∂x
-        end
-        b̄ .+= vec(∂rb)
-        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
-    end
-    return CoDual(y, ȳ), pb!!_fallback
+    return CoDual(y, ȳ), pb!!_has_rrule
 end
 
-# Native Mooncake rrules for fused_conv
+# Overlay: fast activations go through _bias_activation_fast; custom σ uses _bias_add_identity + σ.(y).
+@mooncake_overlay function bias_activation(
+    opmode::AbstractInternalArrayOpMode,
+    σ::F,
+    x::AbstractArray{xT,N},
+    bias::AbstractVector,
+) where {F,xT,N}
+    T = concrete_bias_act_output_eltype(σ, x, bias)
+    if unsafe_known(activation_intermediate_not_needed(σ, T)) ||
+       unsafe_known(activation_has_rrule(σ, T))
+        return _bias_activation_fast(opmode, σ, x, bias)
+    end
+    y = _bias_add_identity(opmode, x, bias)
+    return σ.(y)
+end
+
+# Under Mooncake, internal_operation_mode returns GenericBroadcastOp so bias_activation!! is non-mutating.
+@mooncake_overlay function bias_activation!!(
+    opmode::AbstractInternalArrayOpMode,
+    ::True,
+    σ::F,
+    x::AbstractArray,
+    bias::AbstractVector,
+) where {F}
+    return bias_activation(opmode, σ, x, bias)
+end
+
+# Fast helper for fused_conv; rrule uses LuxLib's fused ∇conv_bias kernel.
+function _fused_conv_fast(
+    opmode::AbstractInternalArrayOpMode,
+    act::F,
+    weight::AbstractArray{wT,N},
+    x::AbstractArray{xT,N},
+    bias::LuxLib.Optional{<:AbstractVector},
+    cdims::LuxLib.Impl.ConvDims,
+) where {F,wT,xT,N}
+    return fused_conv(opmode, act, weight, x, bias, cdims)
+end
 
 @is_primitive MinimalCtx Tuple{
-    typeof(fused_conv),
+    typeof(_fused_conv_fast),
     AbstractInternalArrayOpMode,
     F,
     AbstractArray{<:Any,N},
@@ -485,7 +424,7 @@ end
 } where {F,N}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(fused_conv)},
+    ::CoDual{typeof(_fused_conv_fast)},
     opmode::CoDual{<:AbstractInternalArrayOpMode},
     act::CoDual{F},
     weight::CoDual{<:AbstractArray{wT,N}},
@@ -504,9 +443,9 @@ function Mooncake.rrule!!(
     if unsafe_known(activation_intermediate_not_needed(_act, T))
         y = conv_bias_act(_x, _weight, _cdims, _bias, _act)
         ȳ = zero_tangent(y)
-
         function pb!!_no_intermediate(::NoRData)
             ∂y = ∇activation(ȳ, y, _act, NotaNumber())
+            # ∇conv_bias follows CRC conventions: returns CRC.NoTangent() when bias=nothing.
             ∂w, ∂x, ∂b = ∇conv_bias(∂y, _weight, _x, _bias, _cdims)
             w̄ .+= ∂w
             x̄ .+= ∂x
@@ -518,43 +457,42 @@ function Mooncake.rrule!!(
         return CoDual(y, ȳ), pb!!_no_intermediate
     end
 
+    # activation_has_rrule is true (guaranteed by overlay).
     y_pre = similar(
         _x, T, NNlib.output_size(_cdims)..., NNlib.channels_out(_cdims), size(_x, N)
     )
     conv!(y_pre, _x, _weight, _cdims)
-
-    if unsafe_known(activation_has_rrule(_act, T))
-        z, tmp = bias_activation_cached!!(_act, y_pre, _bias)
-        ȳ = zero_tangent(z)
-
-        function pb!!_has_rrule(::NoRData)
-            ∂y = ∇activation(ȳ, z, _act, tmp)
-            ∂w, ∂x, ∂b = ∇conv_bias(∂y, _weight, _x, _bias, _cdims)
-            w̄ .+= ∂w
-            x̄ .+= ∂x
-            ∂b isa CRC.NoTangent || (b̄ .+= ∂b)
-            return NoRData(),
-            NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
-            NoRData()
-        end
-        return CoDual(z, ȳ), pb!!_has_rrule
-    end
-
-    act_cache = prepare_pullback_cache(bias_activation, _act, y_pre, _bias)
-    z = bias_activation(_act, y_pre, _bias)
+    z, tmp = bias_activation_cached!!(_act, y_pre, _bias)
     ȳ = zero_tangent(z)
-
-    function pb!!_fallback(::NoRData)
-        _, (_, ∂y_pre, ∂b) = value_and_pullback!!(
-            act_cache, ȳ, bias_activation, _act, y_pre, _bias
-        )
-        ∂w, ∂x, _ = ∇conv_bias(∂y_pre, ∂b, _weight, _x, _bias, _cdims)
+    function pb!!_has_rrule(::NoRData)
+        ∂y = ∇activation(ȳ, z, _act, tmp)
+        ∂w, ∂x, ∂b = ∇conv_bias(∂y, _weight, _x, _bias, _cdims)
         w̄ .+= ∂w
         x̄ .+= ∂x
         ∂b isa CRC.NoTangent || (b̄ .+= ∂b)
-        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+        return NoRData(),
+        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
+        NoRData()
     end
-    return CoDual(z, ȳ), pb!!_fallback
+    return CoDual(z, ȳ), pb!!_has_rrule
+end
+
+# Overlay: fast activations go through _fused_conv_fast; custom act decomposes into conv + bias_activation.
+@mooncake_overlay function fused_conv(
+    opmode::AbstractInternalArrayOpMode,
+    act::F,
+    weight::AbstractArray{wT,N},
+    x::AbstractArray{xT,N},
+    bias::LuxLib.Optional{<:AbstractVector},
+    cdims::LuxLib.Impl.ConvDims,
+) where {F,wT,xT,N}
+    T = concrete_bias_act_output_eltype(act, weight, x, bias)
+    if unsafe_known(activation_intermediate_not_needed(act, T)) ||
+       unsafe_known(activation_has_rrule(act, T))
+        return _fused_conv_fast(opmode, act, weight, x, bias, cdims)
+    end
+    y_pre = conv(x, weight, cdims)
+    return bias_activation(act, y_pre, bias)
 end
 
 # Native Mooncake rrules for groupnorm_affine_normalize_internal
@@ -564,30 +502,53 @@ import LuxLib.Impl:
     groupnorm_affine_normalize_internal!,
     ∇groupnorm_affine_normalize
 
+# Helper function for groupnorm with identity activation (analogous to
+# _batchnorm_affine_normalize_identity).
+function _groupnorm_affine_normalize_identity(
+    opmode::AbstractInternalArrayOpMode,
+    x::AbstractArray{T,4},
+    μ::AbstractArray{<:Any,4},
+    σ²::AbstractArray{<:Any,4},
+    γ::LuxLib.Optional{<:AbstractArray{<:Any,4}},
+    β::LuxLib.Optional{<:AbstractArray{<:Any,4}},
+    ϵ::Real,
+) where {T}
+    y = similar(
+        x,
+        promote_type(
+            safe_eltype(x),
+            safe_eltype(μ),
+            safe_eltype(σ²),
+            safe_eltype(γ),
+            safe_eltype(β),
+        ),
+    )
+    groupnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ)
+    return y
+end
+
 @is_primitive MinimalCtx Tuple{
-    typeof(groupnorm_affine_normalize_internal),
+    typeof(_groupnorm_affine_normalize_identity),
     AbstractInternalArrayOpMode,
-    F,
     AbstractArray{<:Any,4},
     AbstractArray{<:Any,4},
     AbstractArray{<:Any,4},
     LuxLib.Optional{<:AbstractArray{<:Any,4}},
     LuxLib.Optional{<:AbstractArray{<:Any,4}},
     Real,
-} where {F}
+}
 
 function Mooncake.rrule!!(
-    ::CoDual{typeof(groupnorm_affine_normalize_internal)},
+    ::CoDual{typeof(_groupnorm_affine_normalize_identity)},
     opmode::CoDual{<:AbstractInternalArrayOpMode},
-    f::CoDual{F},
     x::CoDual{<:AbstractArray{T,4}},
-    μ::CoDual{<:AbstractArray{μT,4}},
-    σ²::CoDual{<:AbstractArray{σ²T,4}},
+    μ::CoDual{<:AbstractArray{<:Any,4}},
+    σ²::CoDual{<:AbstractArray{<:Any,4}},
     γ::CoDual{<:LuxLib.Optional{<:AbstractArray{<:Any,4}}},
     β::CoDual{<:LuxLib.Optional{<:AbstractArray{<:Any,4}}},
     ϵ::CoDual{<:Real},
-) where {F,T,μT,σ²T}
-    _opmode, _f, _ϵ = primal(opmode), primal(f), primal(ϵ)
+) where {T}
+    _opmode, _ϵ = primal(opmode), primal(ϵ)
     _x, x̄ = primal(x), tangent(x)
     _μ, μ̄ = primal(μ), tangent(μ)
     _σ², σ²̄ = primal(σ²), tangent(σ²)
@@ -605,30 +566,39 @@ function Mooncake.rrule!!(
         ),
     )
     groupnorm_affine_normalize_internal!(y, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ)
-
-    act_cache = prepare_pullback_cache(broadcast, _f, y)
-    z = _f.(y)
-    ȳ = zero_tangent(z)
+    ȳ = zero_tangent(y)
 
     function pb!!(::NoRData)
-        _, (_, _, ∂y) = value_and_pullback!!(act_cache, ȳ, broadcast, _f, y)
-
+        # ∇groupnorm_affine_normalize returns CRC.NoTangent() for γ/β when they are nothing.
         ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇groupnorm_affine_normalize(
-            _opmode, ∂y, _x, _μ, _σ², _γ, _β, _ϵ
+            _opmode, ȳ, _x, _μ, _σ², _γ, _β, _ϵ
         )
-
         x̄ .+= ∂x
         μ̄ .+= ∂μ
         σ²̄ .+= ∂σ²
         ∂γ isa CRC.NoTangent || (γ̄ .+= ∂γ)
         ∂β isa CRC.NoTangent || (β̄ .+= ∂β)
-
+        # ϵ is a Real scalar — must return zero_rdata so Mooncake can accumulate it
+        # correctly when chained through the overlay.
         return NoRData(),
-        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
-        NoRData()
+        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), zero_rdata(_ϵ)
     end
 
-    return CoDual(z, ȳ), pb!!
+    return CoDual(y, ȳ), pb!!
+end
+
+@mooncake_overlay function groupnorm_affine_normalize_internal(
+    opmode::AbstractInternalArrayOpMode,
+    f::F,
+    x::AbstractArray{T,4},
+    μ::AbstractArray{<:Any,4},
+    σ²::AbstractArray{<:Any,4},
+    γ::LuxLib.Optional{<:AbstractArray{<:Any,4}},
+    β::LuxLib.Optional{<:AbstractArray{<:Any,4}},
+    ϵ::Real,
+) where {F,T}
+    y = _groupnorm_affine_normalize_identity(opmode, x, μ, σ², γ, β, ϵ)
+    return f.(y)
 end
 
 end
