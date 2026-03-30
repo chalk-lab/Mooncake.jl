@@ -370,9 +370,9 @@ function populate_address_map_internal(m::AddressMap, primal::P, tangent::T) whe
             @assert(
                 m[k] == v,
                 "Aliasing not preserved: primal object at address $(k) maps to tangent " *
-                "at address $(m[k]), but also maps to a different tangent at address $(v). " *
-                "This means two references to the same primal object do not share the " *
-                "same tangent object.",
+                    "at address $(m[k]), but also maps to a different tangent at address $(v). " *
+                    "This means two references to the same primal object do not share the " *
+                    "same tangent object.",
             )
             return m
         end
@@ -412,9 +412,9 @@ function populate_address_map_internal(m::AddressMap, p::Array, t::Array)
         @assert(
             m[k] == v,
             "Aliasing not preserved: primal Array at address $(k) maps to tangent " *
-            "at address $(m[k]), but also maps to a different tangent at address $(v). " *
-            "This means two references to the same primal object do not share the " *
-            "same tangent object.",
+                "at address $(m[k]), but also maps to a different tangent at address $(v). " *
+                "This means two references to the same primal object do not share the " *
+                "same tangent object.",
         )
         return m
     end
@@ -432,9 +432,9 @@ function populate_address_map_internal(m::AddressMap, p::Core.SimpleVector, t::V
         @assert(
             m[k] == v,
             "Aliasing not preserved: primal SimpleVector at address $(k) maps to " *
-            "tangent at address $(m[k]), but also maps to a different tangent at " *
-            "address $(v). This means two references to the same primal object do " *
-            "not share the same tangent object.",
+                "tangent at address $(m[k]), but also maps to a different tangent at " *
+                "address $(v). This means two references to the same primal object do " *
+                "not share the same tangent object.",
         )
         return m
     end
