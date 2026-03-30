@@ -25,6 +25,18 @@ using Mooncake.SkillUtils:
 
 test_fn(x) = sin(x) * cos(x)
 multi_arg_fn(x, y) = x * y + sin(x)
+function bar_llvmcall(x)
+    Base.llvmcall((
+        """
+    declare i64 @llvm.abs.i64(i64, i1)
+    define i64 @entry(i64) {
+    %x = call i64 @llvm.abs.i64(i64 %0, i1 0)
+    ret i64 %x
+    }
+        """,
+        "entry",
+    ), Int64, Tuple{Int64}, x)
+end
 
 @testset "ir_inspect" begin
     @testset "inspect_ir reverse mode" begin
@@ -70,16 +82,34 @@ multi_arg_fn(x, y) = x * y + sin(x)
 
     @testset "inspect_ir optimize=false" begin
         ins = inspect_ir(sin, 1.0; optimize=false)
+        sig = Tuple{typeof(sin),Float64}
+        interp_rvs = get_interpreter(ReverseMode)
+        dri = Mooncake.generate_ir(interp_rvs, sig; do_inline=false, do_optimize=false)
         @test ins.mode == :reverse
         @test :raw in ins.stage_order
         @test :fwd_ir in ins.stage_order
         @test :rvs_ir in ins.stage_order
         @test !haskey(ins.stages, :optimized_fwd)
         @test !haskey(ins.stages, :optimized_rvs)
+        @test render_ir(ins.stages[:raw].ir) ==
+            render_ir(Mooncake.primal_ir(interp_rvs, sig; normalize=false))
+        @test render_ir(ins.stages[:normalized].ir) ==
+            render_ir(Mooncake.primal_ir(interp_rvs, sig))
+        @test render_ir(ins.stages[:fwd_ir].ir) == render_ir(dri.fwd_ir)
+        @test render_ir(ins.stages[:rvs_ir].ir) == render_ir(dri.rvs_ir)
 
         ins_fwd = inspect_fwd(sin, 1.0; optimize=false)
+        interp_fwd = get_interpreter(ForwardMode)
+        dual_ir, _, _ = Mooncake.generate_dual_ir(
+            interp_fwd, sig; do_inline=false, do_optimize=false
+        )
         @test :dual_ir in ins_fwd.stage_order
         @test !haskey(ins_fwd.stages, :optimized)
+        @test render_ir(ins_fwd.stages[:raw].ir) ==
+            render_ir(Mooncake.primal_ir(interp_fwd, sig; normalize=false))
+        @test render_ir(ins_fwd.stages[:normalized].ir) ==
+            render_ir(Mooncake.primal_ir(interp_fwd, sig))
+        @test render_ir(ins_fwd.stages[:dual_ir].ir) == render_ir(dual_ir)
     end
 
     @testset "inspect_ir multi-arg function" begin
@@ -202,6 +232,11 @@ multi_arg_fn(x, y) = x * y + sin(x)
         ins = quick_inspect(sin, 1.0; mode=:forward, stages=:raw)
         @test ins isa IRInspection
         @test ins.mode == :forward
+    end
+
+    @testset "inspection failures propagate" begin
+        @test_throws Exception inspect_ir(bar_llvmcall, 1)
+        @test_throws Exception quick_inspect(bar_llvmcall, 1)
     end
 
     @testset "stage graph structure" begin
