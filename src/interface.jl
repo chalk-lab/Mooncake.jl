@@ -1067,32 +1067,6 @@ end
     return cache.gradient_chunk_size
 end
 
-@inline _fcache_single_argument_input(cache::ForwardCache, f, x) = _verify_prepared_cache_call(
-    cache, (f, x)
-)
-
-@inline function _fcache_single_argument_gradient_workspace(cache::ForwardCache, x)
-    return let workspace = cache.gradient_workspace[]
-        if isnothing(workspace)
-            workspace = (NoTangent(), zero_tangent(x))
-            cache.gradient_workspace[] = workspace
-            workspace
-        else
-            set_to_zero!!(workspace[2])
-            workspace
-        end
-    end
-end
-
-@inline function _fcache_scalar_frule(cache::ForwardCache)
-    fastpath = getfield(cache, :chunkcache)
-    return if isnothing(fastpath) || isnothing(getfield(fastpath, :frule_1))
-        getfield(cache, :rule)
-    else
-        getfield(fastpath, :frule_1)
-    end
-end
-
 @inline function _fcache_value_and_gradient_width1!!(cache::ForwardCache, rule, f, x)
     output = rule(Dual(f, NoTangent()), Dual(x, one(x)))
     y = primal(output)
@@ -1102,7 +1076,16 @@ end
 end
 
 @inline function _fcache_value_and_gradient_rrule!!(cache::ForwardCache, rule, f, x)
-    native_gradients = _fcache_single_argument_gradient_workspace(cache, x)
+    native_gradients = let workspace = cache.gradient_workspace[]
+        if isnothing(workspace)
+            workspace = (NoTangent(), zero_tangent(x))
+            cache.gradient_workspace[] = workspace
+            workspace
+        else
+            set_to_zero!!(workspace[2])
+            workspace
+        end
+    end
     y, output = __value_and_gradient!!(
         rule, CoDual(f, native_gradients[1]), CoDual(x, native_gradients[2])
     )
@@ -1962,8 +1945,14 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::T
 ) where {F,T<:IEEEFloat}
-    _fcache_single_argument_input(cache, f, x)
-    return _fcache_value_and_gradient_width1!!(cache, _fcache_scalar_frule(cache), f, x)
+    _verify_prepared_cache_call(cache, (f, x))
+    fastpath = cache.chunkcache
+    rule = if isnothing(fastpath) || isnothing(fastpath.frule_1)
+        cache.rule
+    else
+        fastpath.frule_1
+    end
+    return _fcache_value_and_gradient_width1!!(cache, rule, f, x)
 end
 
 # Small-vector `value_and_gradient!!` fast path: this one is nfwd-specific. When the
@@ -1973,7 +1962,7 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::V
 ) where {F,T<:IEEEFloat,V<:Vector{T}}
-    _fcache_single_argument_input(cache, f, x)
+    _verify_prepared_cache_call(cache, (f, x))
     fastpath = cache.chunkcache
     if !isnothing(fastpath) && !isnothing(fastpath.small_vector_gradient_frule)
         rule = fastpath.small_vector_gradient_frule
@@ -2007,7 +1996,7 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::A
 ) where {F,A<:Array{<:IEEEFloat}}
-    _fcache_single_argument_input(cache, f, x)
+    _verify_prepared_cache_call(cache, (f, x))
     fastpath = cache.chunkcache
     if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
         return _fcache_value_and_gradient_rrule!!(cache, fastpath.gradient_rrule, f, x)
