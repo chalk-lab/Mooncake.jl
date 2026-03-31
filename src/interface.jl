@@ -2112,19 +2112,13 @@ struct HVPCache{Tf,Tgrad_f,Tgrad_tangent,Tfwd_cache,TOS}
     output_spec::TOS
 end
 
-@inline _hvp_cache_uses_nfwd(cache::HVPCache) =
-    !isnothing(getfield(getfield(cache, :fwd_cache), :chunkcache))
-@inline _hvp_cache_x_input_specs(cache::HVPCache) = Base.tail(
-    getfield(getfield(cache, :fwd_cache), :input_specs)
-)
-
 function Base.show(io::IO, cache::HVPCache)
     print(
         io,
         "Mooncake.HVPCache(",
         "mode=:forward_over_reverse, ",
         "nfwd=",
-        _hvp_cache_uses_nfwd(cache),
+        !isnothing(getfield(getfield(cache, :fwd_cache), :chunkcache)),
         ", ",
         "inputs=",
         _cache_input_count(getfield(cache, :fwd_cache)),
@@ -2138,23 +2132,16 @@ function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
         "Mooncake.HVPCache\n",
         "  mode: forward_over_reverse\n",
         "  nfwd: ",
-        _hvp_cache_uses_nfwd(cache),
+        !isnothing(getfield(getfield(cache, :fwd_cache), :chunkcache)),
         "\n",
         "  inputs: ",
         _cache_input_count(getfield(cache, :fwd_cache)),
     )
     _cache_print_io_summary(
         io,
-        _hvp_cache_x_input_specs(cache),
+        Base.tail(getfield(getfield(cache, :fwd_cache), :input_specs)),
         _cache_spec_summary(getfield(cache, :output_spec)),
     )
-end
-
-@inline function _assert_hvp_cache_function(cache::HVPCache, f)
-    cache.f === f || throw(
-        ArgumentError("`f` must be the same function object used to construct `cache`")
-    )
-    return nothing
 end
 
 @inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
@@ -2265,7 +2252,9 @@ true
 ```
 """
 @inline function value_and_hvp!!(cache::HVPCache, f::F, v, x1::T1) where {F,T1}
-    _assert_hvp_cache_function(cache, f)
+    cache.f === f || throw(
+        ArgumentError("`f` must be the same function object used to construct `cache`")
+    )
     spec1, spec2 = getfield(cache.fwd_cache, :input_specs)
     typeof(cache.grad_f) == spec1.type ||
         _throw_prepared_cache_spec_error(:type, 1, spec1.type, typeof(cache.grad_f))
@@ -2286,7 +2275,9 @@ end
     cache::HVPCache, f::F, v::Tuple, x1::T1, xrest::Vararg{Any,N}
 ) where {F,T1,N}
     all_x = (x1, xrest...)
-    _assert_hvp_cache_function(cache, f)
+    cache.f === f || throw(
+        ArgumentError("`f` must be the same function object used to construct `cache`")
+    )
     input_primals = (cache.grad_f, all_x...)
     specs = getfield(cache.fwd_cache, :input_specs)
     length(specs) == length(input_primals) ||
@@ -2425,7 +2416,9 @@ H
 @unstable @inline function value_gradient_and_hessian!!(
     cache::HVPCache, f::F, x1::T1
 ) where {F,T1}
-    _assert_hvp_cache_function(cache, f)
+    cache.f === f || throw(
+        ArgumentError("`f` must be the same function object used to construct `cache`")
+    )
     T = _validate_hessian_argument(x1, 1)
     if length(x1) == 0
         v = similar(x1, T)
@@ -2452,7 +2445,9 @@ end
 @unstable @inline function value_gradient_and_hessian!!(
     cache::HVPCache, f::F, x1::T1, xrest::Vararg{Any,N}
 ) where {F,T1,N}
-    _assert_hvp_cache_function(cache, f)
+    cache.f === f || throw(
+        ArgumentError("`f` must be the same function object used to construct `cache`")
+    )
     all_xs = (x1, xrest...)
     T = _validate_hessian_arguments(all_xs...)
     nargs = N + 1
