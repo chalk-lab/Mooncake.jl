@@ -2155,40 +2155,6 @@ end
     return nothing
 end
 
-@inline function _verify_hvp_cache_call(cache::HVPCache, f, x::Tuple)
-    _assert_hvp_cache_function(cache, f)
-    _verify_prepared_cache_call(cache.fwd_cache, (cache.grad_f, x...))
-    return x
-end
-
-@inline function _verify_hvp_direction_shapes(all_x::Tuple{Any}, v)
-    _assert_matching_tangent_shape(only(all_x), v, 1)
-    return all_x, v
-end
-
-@inline function _verify_hvp_direction_shapes(all_x::Tuple, v::Tuple)
-    length(v) == length(all_x) ||
-        throw(ArgumentError("Expected one tangent direction per primal argument"))
-    for i in eachindex(all_x)
-        _assert_matching_tangent_shape(all_x[i], v[i], i)
-    end
-    return all_x, v
-end
-
-@inline function _value_and_hvp_nokwarg(cache::HVPCache, v, all_x::Tuple{Any})
-    (f_val, grad), (_, hvp) = value_and_derivative!!(
-        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (only(all_x), v)
-    )
-    return f_val, grad, hvp
-end
-
-@inline function _value_and_hvp_nokwarg(cache::HVPCache, v::Tuple, all_x::Tuple)
-    (f_val, grads), (_, hvps) = value_and_derivative!!(
-        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), map(tuple, all_x, v)...
-    )
-    return f_val, grads, hvps
-end
-
 @inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
     if applicable(axes, primal) && applicable(axes, tangent)
         axes(primal) == axes(tangent) || throw(
@@ -2297,17 +2263,30 @@ true
 ```
 """
 @inline function value_and_hvp!!(cache::HVPCache, f::F, v, x1::T1) where {F,T1}
-    all_x = _verify_hvp_cache_call(cache, f, (x1,))
-    _verify_hvp_direction_shapes(all_x, v)
-    return _value_and_hvp_nokwarg(cache, v, all_x)
+    _assert_hvp_cache_function(cache, f)
+    _verify_prepared_cache_call(cache.fwd_cache, (cache.grad_f, x1))
+    _assert_matching_tangent_shape(x1, v, 1)
+    (f_val, grad), (_, hvp) = value_and_derivative!!(
+        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
+    )
+    return f_val, grad, hvp
 end
 
 @inline function value_and_hvp!!(
     cache::HVPCache, f::F, v::Tuple, x1::T1, xrest::Vararg{Any,N}
 ) where {F,T1,N}
-    all_x = _verify_hvp_cache_call(cache, f, (x1, xrest...))
-    _verify_hvp_direction_shapes(all_x, v)
-    return _value_and_hvp_nokwarg(cache, v, all_x)
+    all_x = (x1, xrest...)
+    _assert_hvp_cache_function(cache, f)
+    _verify_prepared_cache_call(cache.fwd_cache, (cache.grad_f, all_x...))
+    length(v) == length(all_x) ||
+        throw(ArgumentError("Expected one tangent direction per primal argument"))
+    for i in eachindex(all_x)
+        _assert_matching_tangent_shape(all_x[i], v[i], i)
+    end
+    (f_val, grads), (_, hvps) = value_and_derivative!!(
+        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), map(tuple, all_x, v)...
+    )
+    return f_val, grads, hvps
 end
 
 """
