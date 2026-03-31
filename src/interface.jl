@@ -248,6 +248,15 @@ The `Dual` interface returns the rule output directly. The tuple interface retur
 `(y, dy)` using the rule's native tangent representation. Specialized rule types may
 add chunked `NTangent` support on top of this entrypoint.
 """
+@inline function value_and_derivative!!(rule::R) where {R}
+    throw(
+        ArgumentError(
+            "`value_and_derivative!!(rule, ...)` expects at least the function input, " *
+            "either as `f::Dual` or `(f, df)`.",
+        ),
+    )
+end
+
 @inline function value_and_derivative!!(rule::R, fx::Vararg{Dual,N}) where {R,N}
     return __call_rule(rule, fx)
 end

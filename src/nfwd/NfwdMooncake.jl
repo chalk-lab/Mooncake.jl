@@ -535,7 +535,7 @@ function (rule::RRule{sig,N,Tbuf,false})(
     if y_primal isa IEEEFloat
         return _nfwd_array_scalar_rrule_result(rule, f_runtime, x, x_primal, Val(N))
     else
-        _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
+        _nfwd_is_supported_primal(y_primal) || _nfwd_output_error((x_primal,), y_primal)
         y_cd = CoDual(y_primal, fdata(zero_tangent(y_primal)))
         return y_cd,
         _nfwd_pullback(f_runtime, (x_primal,), (tangent(x),), tangent(y_cd), Val(N))
@@ -1016,7 +1016,7 @@ reruns chunked NDual passes during the reverse sweep.
     primals = map(primal, x)
     tangents = map(tangent, x)
     y_primal = f(primals...)
-    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
+    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(primals, y_primal)
     y = CoDual(y_primal, fdata(zero_tangent(y_primal)))
     return y, _nfwd_pullback(f, primals, tangents, tangent(y), Val(N))
 end
@@ -1027,7 +1027,7 @@ end
     primals = (primal(x[1]), primal(x[2]))
     tangents = (tangent(x[1]), tangent(x[2]))
     y_primal = f(primals...)
-    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
+    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(primals, y_primal)
     y = CoDual(y_primal, fdata(zero_tangent(y_primal)))
     return y, _nfwd_pullback(f, primals, tangents, tangent(y), Val(N))
 end
@@ -1036,7 +1036,7 @@ end
     primals = (primal(x[1]), primal(x[2]), primal(x[3]))
     tangents = (tangent(x[1]), tangent(x[2]), tangent(x[3]))
     y_primal = f(primals...)
-    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(y_primal)
+    _nfwd_is_supported_primal(y_primal) || _nfwd_output_error(primals, y_primal)
     y = CoDual(y_primal, fdata(zero_tangent(y_primal)))
     return y, _nfwd_pullback(f, primals, tangents, tangent(y), Val(N))
 end
@@ -1155,7 +1155,7 @@ function _nfwd_eval(f, primals::Tuple, tangents::Tuple, ::Val{N}) where {N}
     lifted = map(
         (x, dx) -> _nfwd_lift(_nfwd_check_primal(x), dx, Val(N)), primals, tangents
     )
-    return _nfwd_extract(f(lifted...), Val(N))
+    return _nfwd_extract(f(lifted...), primals, Val(N))
 end
 
 """
@@ -1167,7 +1167,7 @@ function _nfwd_eval(
     f, primals::Tuple{T}, tangents::Tuple{D}, ::Val{N}
 ) where {T<:Number,D,N}
     lifted = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
-    return _nfwd_extract(f(lifted), Val(N))
+    return _nfwd_extract(f(lifted), primals, Val(N))
 end
 
 # Small scalar tuples can allocate when lifted through the generic `map` path above, so
@@ -1178,7 +1178,7 @@ function _nfwd_eval(
 ) where {T1<:Number,T2<:Number,D1,D2,N}
     lifted1 = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
     lifted2 = _nfwd_lift(_nfwd_check_primal(primals[2]), tangents[2], Val(N))
-    return _nfwd_extract(f(lifted1, lifted2), Val(N))
+    return _nfwd_extract(f(lifted1, lifted2), primals, Val(N))
 end
 
 function _nfwd_eval(
@@ -1187,7 +1187,7 @@ function _nfwd_eval(
     lifted1 = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
     lifted2 = _nfwd_lift(_nfwd_check_primal(primals[2]), tangents[2], Val(N))
     lifted3 = _nfwd_lift(_nfwd_check_primal(primals[3]), tangents[3], Val(N))
-    return _nfwd_extract(f(lifted1, lifted2, lifted3), Val(N))
+    return _nfwd_extract(f(lifted1, lifted2, lifted3), primals, Val(N))
 end
 
 #
@@ -1303,8 +1303,16 @@ end
     return _nfwd_extract_scalar(y, Val(N))
 end
 
+@inline function _nfwd_extract(y::NDual{T,N}, primals::Tuple, ::Val{N}) where {T,N}
+    return _nfwd_extract(y, Val(N))
+end
+
 @inline function _nfwd_extract(y::Complex{NDual{T,N}}, ::Val{N}) where {T,N}
     return _nfwd_extract_scalar(y, Val(N))
+end
+
+@inline function _nfwd_extract(y::Complex{NDual{T,N}}, primals::Tuple, ::Val{N}) where {T,N}
+    return _nfwd_extract(y, Val(N))
 end
 
 function _nfwd_extract(y::AbstractArray{<:NDual{T,N}}, ::Val{N}) where {T,N}
@@ -1322,6 +1330,12 @@ function _nfwd_extract(y::AbstractArray{<:NDual{T,N}}, ::Val{N}) where {T,N}
         end
     end
     return primal, tangent
+end
+
+@inline function _nfwd_extract(
+    y::AbstractArray{<:NDual{T,N}}, primals::Tuple, ::Val{N}
+) where {T,N}
+    return _nfwd_extract(y, Val(N))
 end
 
 function _nfwd_extract(
@@ -1344,9 +1358,20 @@ function _nfwd_extract(
     return primal, tangent
 end
 
+@inline function _nfwd_extract(
+    y::AbstractArray{<:Complex{NDual{Treal,N}}}, primals::Tuple, ::Val{N}
+) where {Treal,N}
+    return _nfwd_extract(y, Val(N))
+end
+
 # Tuple outputs: recurse into each element; primal and tangent are both tuples.
 function _nfwd_extract(y::Tuple, ::Val{N}) where {N}
     pairs = map(yi -> _nfwd_extract(yi, Val(N)), y)
+    return map(first, pairs), map(last, pairs)
+end
+
+function _nfwd_extract(y::Tuple, primals::Tuple, ::Val{N}) where {N}
+    pairs = map(yi -> _nfwd_extract(yi, primals, Val(N)), y)
     return map(first, pairs), map(last, pairs)
 end
 
@@ -1354,6 +1379,11 @@ end
 # Unsupported types fall through to _nfwd_output_error via the is_supported_primal guard.
 function _nfwd_extract(y, ::Val{N}) where {N}
     _nfwd_is_supported_primal(y) || _nfwd_output_error(y)
+    return y, _nfwd_zero_output_tangent(y, Val(N))
+end
+
+function _nfwd_extract(y, primals::Tuple, ::Val{N}) where {N}
+    _nfwd_is_supported_primal(y) || _nfwd_output_error(primals, y)
     return y, _nfwd_zero_output_tangent(y, Val(N))
 end
 

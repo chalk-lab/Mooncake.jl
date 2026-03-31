@@ -243,6 +243,41 @@ end
                 @test grad == (Mooncake.NoTangent(), 2 * x_single)
             end
 
+            @testset "single-input scalar NDual outputs still extract correctly" begin
+                x_single = 1.5
+
+                frule = Mooncake.NfwdMooncake.build_frule(exp, x_single; chunk_size=1)
+                out = Mooncake.value_and_derivative!!(
+                    frule, (exp, Mooncake.NoTangent()), (x_single, 1.0)
+                )
+                @test out == (exp(x_single), exp(x_single))
+
+                rrule = Mooncake.NfwdMooncake.build_rrule(exp, x_single; chunk_size=1)
+                value, grad = Mooncake.value_and_gradient!!(rrule, exp, x_single)
+                @test value == exp(x_single)
+                @test grad == (Mooncake.NoTangent(), exp(x_single))
+            end
+
+            @testset "unsupported output diagnostics include supported shapes and values" begin
+                f_int(x) = x > 0 ? 1 : 2
+                rule = Mooncake.NfwdMooncake.build_frule(f_int, x; chunk_size=1)
+                err = try
+                    Mooncake.value_and_derivative!!(
+                        rule, (f_int, Mooncake.NoTangent()), (x, 1.0)
+                    )
+                    nothing
+                catch err
+                    err
+                end
+                msg = sprint(showerror, err)
+                @test err isa Mooncake.Nfwd.UnsupportedOutputError
+                @test occursin("nfwd output unsupported.", msg)
+                @test occursin("Supported nfwd inputs:", msg)
+                @test occursin("Supported nfwd outputs:", msg)
+                @test occursin("1. Float64 (scalar)", msg)
+                @test occursin("Int64 (not size-bearing)", msg)
+            end
+
             @testset "automatic chunk_size selection" begin
                 # NfwdMooncake.build_frule / NfwdMooncake.build_rrule omitting chunk_size
                 auto_frule = Mooncake.NfwdMooncake.build_frule(f, x, y)

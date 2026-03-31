@@ -1302,8 +1302,8 @@ end
 # integer division, modulo) throw a clear error instead of falling through to a
 # confusing MethodError or, worse, silently dropping gradients.
 #
-# If you hit this from a GPU broadcast kernel, the function you are differentiating
-# calls one of these non-differentiable operations on a floating-point argument.
+# If you hit this, the function you are differentiating calls one of these
+# non-differentiable operations on a floating-point argument.
 # Options:
 #   • Replace the operation with a differentiable approximation.
 #   • Mark that argument as non-differentiable so NDual wrapping is skipped.
@@ -1313,11 +1313,13 @@ struct NDualUnsupportedError <: Exception
     op::Symbol
 end
 @inline function Base.showerror(io::IO, e::NDualUnsupportedError)
-    return print(
+    return _nfwd_print_boxed_error(
         io,
-        "NDual does not support `$(e.op)`. ",
-        "This operation cannot propagate partial derivatives through a GPU broadcast kernel. ",
-        "Use a differentiable alternative, or open an issue if a subgradient rule makes sense.",
+        [
+            "NDual does not support `$(e.op)`.",
+            "This operation cannot propagate partial derivatives.",
+            "Use a differentiable alternative, or open an issue if a subgradient rule makes sense.",
+        ],
     )
 end
 
@@ -1790,18 +1792,61 @@ struct UnsupportedOutputError <: UnsupportedError
     msg::String
 end
 
-@inline function _nfwd_print_boxed_error(io::IO, lines)
+@inline function _nfwd_boxed_message_width(io::IO, prefix::AbstractString)
+    cols = get(io, :displaysize, displaysize(io))[2]
+    return max(20, cols - textwidth(prefix))
+end
+
+function _nfwd_wrap_boxed_line(line, width::Int)
+    text = string(line)
+    isempty(text) && return (text,)
+    width < 1 && return (text,)
+    textwidth(text) <= width && return (text,)
+
+    wrapped = String[]
+    remaining = text
+    while textwidth(remaining) > width
+        split_idx = nothing
+        for idx in eachindex(remaining)
+            textwidth(SubString(remaining, 1, idx)) > width && break
+            remaining[idx] == ' ' && (split_idx = idx)
+        end
+        if isnothing(split_idx)
+            split_idx = firstindex(remaining)
+            for idx in eachindex(remaining)
+                textwidth(SubString(remaining, firstindex(remaining), idx)) > width && break
+                split_idx = idx
+            end
+        end
+        push!(wrapped, rstrip(SubString(remaining, firstindex(remaining), split_idx)))
+        remaining = lstrip(SubString(remaining, nextind(remaining, split_idx)))
+        isempty(remaining) && break
+    end
+    isempty(remaining) || push!(wrapped, remaining)
+    return Tuple(wrapped)
+end
+
+function _nfwd_print_boxed_error(io::IO, lines)
     first_item = iterate(lines)
     isnothing(first_item) && return nothing
     line, state = first_item
-    println(io, "┌ ", line)
+    rest_prefix = "  │ "
+    first_width = _nfwd_boxed_message_width(io, "")
+    rest_width = _nfwd_boxed_message_width(io, rest_prefix)
+    first_wrapped = _nfwd_wrap_boxed_line(line, first_width)
+    println(io, first(first_wrapped))
+    for wrapped_line in Base.tail(first_wrapped)
+        println(io, rest_prefix, wrapped_line)
+    end
     while true
         item = iterate(lines, state)
         isnothing(item) && break
         line, state = item
-        println(io, "│ ", line)
+        for wrapped_line in _nfwd_wrap_boxed_line(line, rest_width)
+            println(io, rest_prefix, wrapped_line)
+        end
     end
-    print(io, "└")
+    print(io, "  └")
 end
 
 @inline function Base.showerror(
@@ -1810,18 +1855,54 @@ end
     return _nfwd_print_boxed_error(io, split(err.msg, '\n'))
 end
 
+@inline _nfwd_supported_input_summary() = "IEEEFloat scalars, Complex{<:IEEEFloat} scalars, and dense Arrays with those element types"
+
+@inline _nfwd_supported_output_summary() = "IEEEFloat scalars, Complex{<:IEEEFloat} scalars, dense Arrays with those element types, and tuples thereof"
+
+@inline _nfwd_shape_summary(::IEEEFloat) = "scalar"
+@inline _nfwd_shape_summary(::Complex{<:IEEEFloat}) = "scalar"
+@inline _nfwd_shape_summary(x::AbstractArray) = "size $(size(x))"
+@inline _nfwd_shape_summary(x::Tuple) = "tuple length $(length(x))"
+@inline _nfwd_shape_summary(::Any) = "not size-bearing"
+
+@inline _nfwd_value_summary(x) = "$(typeof(x)) ($(_nfwd_shape_summary(x)))"
+
+@inline function _nfwd_inputs_summary(xs::Tuple)
+    isempty(xs) && return "  (none)"
+    return join(ntuple(i -> "  $i. $(_nfwd_value_summary(xs[i]))", Val(length(xs))), '\n')
+end
+
 @inline _nfwd_input_error(x) = throw(
     UnsupportedInputError(
-        "nfwd currently supports only IEEEFloat / Complex IEEEFloat scalars and " *
-        "dense Array inputs with those element types. Got $(typeof(x)).",
+        "nfwd input unsupported.\n" *
+        "Supported nfwd inputs: $(_nfwd_supported_input_summary()).\n" *
+        "Input:\n" *
+        "  $(_nfwd_value_summary(x))",
     ),
 )
 
 @inline function _nfwd_output_error(y)
     throw(
         UnsupportedOutputError(
-            "nfwd supports IEEEFloat / Complex IEEEFloat scalars, dense Arrays with " *
-            "those element types, and tuples thereof as outputs. Got $(typeof(y)).",
+            "nfwd output unsupported.\n" *
+            "Supported nfwd inputs: $(_nfwd_supported_input_summary()).\n" *
+            "Supported nfwd outputs: $(_nfwd_supported_output_summary()).\n" *
+            "Output:\n" *
+            "  $(_nfwd_value_summary(y))",
+        ),
+    )
+end
+
+@inline function _nfwd_output_error(xs::Tuple, y)
+    throw(
+        UnsupportedOutputError(
+            "nfwd output unsupported.\n" *
+            "Supported nfwd inputs: $(_nfwd_supported_input_summary()).\n" *
+            "Supported nfwd outputs: $(_nfwd_supported_output_summary()).\n" *
+            "Inputs:\n" *
+            "$(_nfwd_inputs_summary(xs))\n" *
+            "Output:\n" *
+            "  $(_nfwd_value_summary(y))",
         ),
     )
 end
