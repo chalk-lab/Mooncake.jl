@@ -651,8 +651,19 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
-    input_specs = tuple_map(_prepared_cache_input_spec, fx)
-    output_spec = _prepared_cache_input_spec(primal(y))
+    input_specs = map(fx) do x
+        if x isa AbstractArray
+            PreparedCacheInputSpec(typeof(x), size(x))
+        else
+            PreparedCacheInputSpec(typeof(x), ())
+        end
+    end
+    output_primal = primal(y)
+    output_spec = if output_primal isa AbstractArray
+        PreparedCacheInputSpec(typeof(output_primal), size(output_primal))
+    else
+        PreparedCacheInputSpec(typeof(output_primal), ())
+    end
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
         return Cache(
@@ -768,8 +779,19 @@ The API guarantees that tangents are initialized at zero before the first autodi
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
-    input_specs = tuple_map(_prepared_cache_input_spec, fx)
-    output_spec = _prepared_cache_input_spec(primal(y))
+    input_specs = map(fx) do x
+        if x isa AbstractArray
+            PreparedCacheInputSpec(typeof(x), size(x))
+        else
+            PreparedCacheInputSpec(typeof(x), ())
+        end
+    end
+    output_primal = primal(y)
+    output_spec = if output_primal isa AbstractArray
+        PreparedCacheInputSpec(typeof(output_primal), size(output_primal))
+    else
+        PreparedCacheInputSpec(typeof(output_primal), ())
+    end
     if config.friendly_tangents
         dests = tuple(map(friendly_tangent_cache, fx)...)
         return Cache(rule, nothing, tangents, dests, nothing, input_specs, output_spec)
@@ -889,20 +911,19 @@ struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
     input_specs::S
 end
 
-@inline _cache_x_input_specs(cache::ForwardCache) = Base.tail(getfield(cache, :input_specs))
-
-@inline function _forward_cache_display_chunk_size(cache::ForwardCache)
-    chunk_size = getfield(cache, :gradient_chunk_size)
-    return getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size
-end
-
 @inline _dual_primal_type(::Type) = Any
 @inline _dual_primal_type(::Type{Dual{Y,T}}) where {Y,T} = Y
 
 @inline function _forward_cache_output_summary(cache::ForwardCache)
     output_primal = getfield(cache, :output_primal)
     return if !isnothing(output_primal)
-        _cache_spec_summary(_prepared_cache_input_spec(output_primal))
+        _cache_spec_summary(
+            if output_primal isa AbstractArray
+                PreparedCacheInputSpec(typeof(output_primal), size(output_primal))
+            else
+                PreparedCacheInputSpec(typeof(output_primal), ())
+            end,
+        )
     else
         dual_arg_types = Tuple{
             map(spec -> dual_type(spec.type), getfield(cache, :input_specs))...
@@ -913,6 +934,7 @@ end
 end
 
 function Base.show(io::IO, cache::ForwardCache)
+    chunk_size = getfield(cache, :gradient_chunk_size)
     print(
         io,
         "Mooncake.ForwardCache(",
@@ -922,7 +944,7 @@ function Base.show(io::IO, cache::ForwardCache)
         ", nfwd=",
         !isnothing(getfield(cache, :chunkcache)),
         ", chunk_size=",
-        _forward_cache_display_chunk_size(cache),
+        getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size,
         ", inputs=",
         _cache_input_count(cache),
         ")",
@@ -930,6 +952,7 @@ function Base.show(io::IO, cache::ForwardCache)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", cache::ForwardCache)
+    chunk_size = getfield(cache, :gradient_chunk_size)
     print(
         io,
         "Mooncake.ForwardCache\n",
@@ -941,13 +964,13 @@ function Base.show(io::IO, ::MIME"text/plain", cache::ForwardCache)
         !isnothing(getfield(cache, :chunkcache)),
         "\n",
         "  chunk_size: ",
-        _forward_cache_display_chunk_size(cache),
+        getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size,
         "\n",
         "  inputs: ",
         _cache_input_count(cache),
     )
     _cache_print_io_summary(
-        io, _cache_x_input_specs(cache), _forward_cache_output_summary(cache)
+        io, Base.tail(getfield(cache, :input_specs)), _forward_cache_output_summary(cache)
     )
 end
 
@@ -1008,14 +1031,6 @@ Base.getindex(x::NTangent, i::Int) = x.lanes[i]
 Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
 
 const _CHUNK_NFWD_MAX_LANES = 8
-
-@inline function _prepared_cache_input_spec(x)
-    return if x isa AbstractArray
-        PreparedCacheInputSpec(typeof(x), size(x))
-    else
-        PreparedCacheInputSpec(typeof(x), ())
-    end
-end
 
 @inline function _fcache_small_vector_fill_identity!(packed::Matrix{T}) where {T}
     fill!(packed, zero(T))
@@ -1644,7 +1659,13 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     end
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
     chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
-    input_specs = tuple_map(_prepared_cache_input_spec, fx)
+    input_specs = map(fx) do x
+        if x isa AbstractArray
+            PreparedCacheInputSpec(typeof(x), size(x))
+        else
+            PreparedCacheInputSpec(typeof(x), ())
+        end
+    end
     if config.friendly_tangents
         y = f(x...)
         input_tangents = tuple_map(zero_tangent, fx)
