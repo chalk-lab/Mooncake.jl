@@ -2021,30 +2021,25 @@ function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {
     return __call_rule(cache.rule, fx)
 end
 
-@inline function _fcache_value_and_derivative_output(
-    cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S},
-    input_primals::Tuple,
-    input_tangents::Tuple,
-) where {R,OP,FG,GW,CF,S}
-    N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
-    !isnothing(N_val) && return _fcache_derivative_chunked!!(
-        cache,
-        N_val,
-        map(tuple, input_primals, input_tangents)...;
-        friendly_tangents=false,
-    )
+"""
+    value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
 
-    input_duals = tuple_map(Dual, input_primals, input_tangents)
-    error_if_incorrect_dual_types(input_duals...)
-    output = __call_rule(cache.rule, input_duals)
-    return primal(output), tangent(output)
-end
+Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
 
-@inline function _fcache_value_and_derivative_output(
-    cache::ForwardCache{R,IT,OP,FG,GW,CF,S},
-    input_primals::Tuple,
-    input_friendly_tangents::Tuple,
-) where {R,IT<:Tuple,OP,FG,GW,CF,S}
+Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
+
+!!! info
+    `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f` and `x` must be of the same size and shape as those used to construct the `cache`. This is to ensure that the gradient can be written to the memory allocated when the `cache` was built.
+
+!!! warning
+    `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
+"""
+@inline function value_and_derivative!!(
+    cache::ForwardCache{R,IT,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
+) where {R,IT<:Tuple,OP,FG,GW,CF,S,M}
+    input_primals = tuple_map(first, fx)
+    _verify_prepared_cache_call(cache, input_primals)
+    input_friendly_tangents = tuple_map(last, fx)
     N_val = _fcache_derivative_ntangent_lane_count(input_friendly_tangents)
     !isnothing(N_val) && return _fcache_derivative_chunked!!(
         cache,
@@ -2064,37 +2059,15 @@ end
         friendly_tangents=true,
     )
 
-    input_duals = tuple_map(Dual, input_primals, input_tangents)
-    output = __call_rule(cache.rule, input_duals)
+    output = __call_rule(cache.rule, tuple_map(Dual, input_primals, input_tangents))
     output_primal = primal(output)
-    output_tangent = tangent(output)
-    c = _friendly_cache((output_primal,))
-    output_dest = friendly_tangent_cache(output_primal)
     output_friendly_tangent = tangent_to_friendly!!(
-        output_dest, output_primal, output_tangent, c
+        friendly_tangent_cache(output_primal),
+        output_primal,
+        tangent(output),
+        _friendly_cache((output_primal,)),
     )
     return output_primal, output_friendly_tangent
-end
-
-"""
-    value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
-
-Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
-
-Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
-
-!!! info
-    `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f` and `x` must be of the same size and shape as those used to construct the `cache`. This is to ensure that the gradient can be written to the memory allocated when the `cache` was built.
-
-!!! warning
-    `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
-"""
-@inline function value_and_derivative!!(
-    cache::ForwardCache{R,IT,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
-) where {R,IT<:Tuple,OP,FG,GW,CF,S,M}
-    input_primals = tuple_map(first, fx)
-    _verify_prepared_cache_call(cache, input_primals)
-    return _fcache_value_and_derivative_output(cache, input_primals, tuple_map(last, fx))
 end
 
 @inline function value_and_derivative!!(
@@ -2102,7 +2075,19 @@ end
 ) where {R,OP,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
     _verify_prepared_cache_call(cache, input_primals)
-    return _fcache_value_and_derivative_output(cache, input_primals, tuple_map(last, fx))
+    input_tangents = tuple_map(last, fx)
+    N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
+    !isnothing(N_val) && return _fcache_derivative_chunked!!(
+        cache,
+        N_val,
+        map(tuple, input_primals, input_tangents)...;
+        friendly_tangents=false,
+    )
+
+    input_duals = tuple_map(Dual, input_primals, input_tangents)
+    error_if_incorrect_dual_types(input_duals...)
+    output = __call_rule(cache.rule, input_duals)
+    return primal(output), tangent(output)
 end
 
 # `fwd_cache` is the derivative cache for `grad_f`. The compiled inner rrule is cached
