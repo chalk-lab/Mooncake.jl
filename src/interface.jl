@@ -314,9 +314,6 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     output_spec::TOS
 end
 
-@inline _reverse_tangent_style(cache::Cache) =
-    isnothing(getfield(cache, :dests)) ? _NativeTangents() : _FriendlyTangents()
-
 @inline function _prepare_reverse_rule_state(rule, fx::Tuple)
     tangents = map(zero_tangent, fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
@@ -332,39 +329,6 @@ end
 ) where {N}
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     return tuple_map(CoDual, fx, tangents)
-end
-
-@inline function _value_and_pullback_nokwarg(
-    cache::Cache, ȳ, fx::Tuple, args_to_zero::NTuple, ::_NativeTangents
-)
-    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
-    return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
-end
-
-@inline function _value_and_pullback_nokwarg(
-    cache::Cache, ȳ, fx::Tuple, args_to_zero::NTuple, ::_FriendlyTangents
-)
-    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
-    ȳ_tangent = primal_to_tangent!!(cache.ȳ_cache, ȳ)
-    value, pb = __value_and_pullback!!(
-        cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
-    )
-    return value, _reverse_friendly_tangents(fx, pb)
-end
-
-@inline function _value_and_gradient_nokwarg(
-    cache::Cache, fx::Tuple, args_to_zero::NTuple, ::_NativeTangents
-)
-    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
-    return __value_and_gradient!!(cache.rule, coduals...)
-end
-
-@inline function _value_and_gradient_nokwarg(
-    cache::Cache, fx::Tuple, args_to_zero::NTuple, ::_FriendlyTangents
-)
-    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
-    value, gradient = __value_and_gradient!!(cache.rule, coduals...)
-    return value, _reverse_friendly_tangents(fx, gradient)
 end
 
 @inline _cache_input_count(cache) = length(getfield(cache, :input_specs)) - 1
@@ -803,9 +767,15 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _verify_prepared_cache_call(cache, fx)
-    return _value_and_pullback_nokwarg(
-        cache, ȳ, fx, args_to_zero, _reverse_tangent_style(cache)
+    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
+    if isnothing(cache.dests)
+        return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
+    end
+    ȳ_tangent = primal_to_tangent!!(cache.ȳ_cache, ȳ)
+    value, pb = __value_and_pullback!!(
+        cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
     )
+    return value, _reverse_friendly_tangents(fx, pb)
 end
 
 """
@@ -881,9 +851,12 @@ value_and_gradient!!(cache, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _verify_prepared_cache_call(cache, fx)
-    return _value_and_gradient_nokwarg(
-        cache, fx, args_to_zero, _reverse_tangent_style(cache)
-    )
+    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
+    if isnothing(cache.dests)
+        return __value_and_gradient!!(cache.rule, coduals...)
+    end
+    value, gradient = __value_and_gradient!!(cache.rule, coduals...)
+    return value, _reverse_friendly_tangents(fx, gradient)
 end
 
 # Internal nfwd chunk cache stored inside `ForwardCache`.
