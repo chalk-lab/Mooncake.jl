@@ -828,6 +828,10 @@ struct CountedChunkArrayCall end
                     Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
                 )
                 if VERSION < v"1.11"
+                    # Under Julia 1.10's test environment, `count_allocs` already reports
+                    # scalar primal allocations for `Base.sin` / `x -> x^2 + sin(x)`, so this
+                    # prepared scalar forward-cache path cannot satisfy the zero-allocation
+                    # assertion there even though the same check is clean on 1.11+.
                     @test_skip scalar_allocs == 0
                 else
                     @test scalar_allocs == 0
