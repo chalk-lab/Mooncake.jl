@@ -824,9 +824,14 @@ struct CountedChunkArrayCall end
             if get(kwargs, :debug_mode, false)
                 @test true
             else
-                @test TestUtils.count_allocs(
+                scalar_allocs = TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
-                ) == 0
+                )
+                if VERSION < v"1.11"
+                    @test_skip scalar_allocs == 0
+                else
+                    @test scalar_allocs == 0
+                end
 
                 scalar_f = CountedChunkScalarCall()
                 scalar_cache_grad_fwd = Mooncake.prepare_derivative_cache(
@@ -972,6 +977,98 @@ struct CountedChunkArrayCall end
             @test_throws ArgumentError Mooncake.prepare_derivative_cache(
                 sin, x; config=Mooncake.Config(; chunk_size=-1)
             )
+        end
+
+        @testset "prepare_derivative_cache nfwd opt-out" begin
+            @testset "$(label)" for (label, f, args, counter, no_nfwd_count) in (
+                ("scalar", CountedChunkScalarCall(), (x, y), CHUNK_SCALAR_EVAL_COUNT, 2),
+                ("array", CountedChunkArrayCall(), ([x, y],), CHUNK_ARRAY_EVAL_COUNT, 2),
+            )
+                cache = Mooncake.prepare_derivative_cache(
+                    f, args...; config=Mooncake.Config(; debug_mode=false, friendly_tangents=false)
+                )
+                cache_no_nfwd = Mooncake.prepare_derivative_cache(
+                    f,
+                    args...;
+                    config=Mooncake.Config(;
+                        debug_mode=false, friendly_tangents=false, enable_nfwd=false
+                    ),
+                )
+
+                counter[] = 0
+                Mooncake.value_and_gradient!!(cache, f, args...)
+                @test counter[] == 1
+
+                counter[] = 0
+                Mooncake.value_and_gradient!!(cache_no_nfwd, f, args...)
+                @test counter[] == no_nfwd_count
+            end
+        end
+
+        @testset "nfwd runtime error suggests opt-out" begin
+            let
+                _ndual_width_sensitive_sum(x, y) = x + y
+                function _ndual_width_sensitive_sum(x::Mooncake.Nfwd.NDual{T,N}, y) where {T,N}
+                    N == 1 && return x + y
+                    throw(Mooncake.Nfwd.NDualUnsupportedError(:test_width_sensitive_sum))
+                end
+
+                cache = Mooncake.prepare_derivative_cache(
+                    _ndual_width_sensitive_sum,
+                    x,
+                    y;
+                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                )
+                err = try
+                    Mooncake.value_and_gradient!!(cache, _ndual_width_sensitive_sum, x, y)
+                    nothing
+                catch err
+                    err
+                end
+                @test err isa Mooncake.ForwardModeNfwdRuntimeError
+                @test occursin("enable_nfwd=false", sprint(showerror, err))
+                @test occursin("NDualUnsupportedError", sprint(showerror, err))
+
+                cache_no_nfwd = Mooncake.prepare_derivative_cache(
+                    _ndual_width_sensitive_sum,
+                    x,
+                    y;
+                    config=Mooncake.Config(;
+                        debug_mode=false, friendly_tangents=false, enable_nfwd=false
+                    ),
+                )
+                @test Mooncake.value_and_gradient!!(
+                    cache_no_nfwd, _ndual_width_sensitive_sum, x, y
+                ) == (_ndual_width_sensitive_sum(x, y), (Mooncake.NoTangent(), one(x), one(y)))
+            end
+        end
+
+        @testset "small-vector probe uses fresh cached seed buffer" begin
+            let
+                small_vector_probe_mutation(x) = sum(x)
+                function small_vector_probe_mutation(x::Vector{Mooncake.Nfwd.NDual{T,N}}) where {T,N}
+                    @inbounds for i in eachindex(x)
+                        xi = x[i]
+                        x[i] = Mooncake.Nfwd.NDual{T,N}(
+                            xi.value, ntuple(k -> xi.partials[k] + xi.partials[k], Val(N))
+                        )
+                    end
+                    return sum(x)
+                end
+
+                x_arr = [x, y]
+                cache = Mooncake.prepare_derivative_cache(
+                    small_vector_probe_mutation,
+                    x_arr;
+                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                )
+                @test !isnothing(cache.chunk_fastpath)
+                @test !isnothing(cache.chunk_fastpath.small_vector_gradient_frule)
+                # The probe doubles each seeded lane once; reusing that mutated seed at
+                # runtime would double again and produce `[4, 4]` instead of `[2, 2]`.
+                @test Mooncake.value_and_gradient!!(cache, small_vector_probe_mutation, x_arr) ==
+                    (sum(x_arr), (Mooncake.NoTangent(), fill(eltype(x_arr)(2), length(x_arr))))
+            end
         end
     end
 

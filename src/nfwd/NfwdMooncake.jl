@@ -12,12 +12,14 @@ import ..Mooncake:
     NoFData,
     NoRData,
     NoTangent,
+    NTangent,
     __value_and_gradient!!,
     __verify_sig,
     _chunk_pack_tangent,
     _fcache_derivative_chunked!!,
     _typeof,
     _fcache_derivative_chunked_loop!!,
+    _fcache_rethrow_ndual_runtime_error,
     fdata,
     primal,
     rdata,
@@ -102,9 +104,22 @@ struct Cache{RF,RR,S<:Tuple,TT<:Tuple}
     tangents::TT
 end
 
+@inline _nfwd_unpack_output_lane(yi::IEEEFloat, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
+@inline _nfwd_unpack_output_lane(
+    yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}
+) where {lane} = dyi[lane]
+@inline _nfwd_unpack_output_lane(yi::Array, dyi::Array, ::Val{lane}) where {lane} = selectdim(
+    dyi, ndims(dyi), lane
+)
+@inline function _nfwd_unpack_output_lane(yi::Tuple, dyi::Tuple, ::Val{lane}) where {lane}
+    return tuple_map((yij, dyij) -> _nfwd_unpack_output_lane(yij, dyij, Val(lane)), yi, dyi)
+end
+
 @inline function _try_chunk_frule_nfwd(
     cache::ForwardCache, input_primals::Tuple, input_tangents::Tuple, ::Val{N}
 ) where {N}
+    # Width-1 derivatives already have a dedicated scalar fast path; keep the chunked
+    # nfwd entrypoint focused on genuine multi-lane calls.
     N == 1 && return nothing
     fastpath = cache.chunk_fastpath
     isnothing(fastpath) && return nothing
@@ -137,19 +152,15 @@ end
     )
     fd = Dual(first(input_primals), NoTangent())
     x_duals = tuple_map(Dual, Base.tail(input_primals), packed_tangents)
-    output = rule(fd, x_duals...)
+    output = try
+        rule(fd, x_duals...)
+    catch err
+        _fcache_rethrow_ndual_runtime_error(err)
+    end
     y = primal(output)
     dy = tangent(output)
     # Re-express the packed nfwd output at the public chunk boundary as one tangent per lane.
-    unpack_output_lane(yi::IEEEFloat, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
-    unpack_output_lane(yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
-    unpack_output_lane(yi::Array, dyi::Array, ::Val{lane}) where {lane} = selectdim(
-        dyi, ndims(dyi), lane
-    )
-    unpack_output_lane(yi::Tuple, dyi::Tuple, ::Val{lane}) where {lane} = tuple_map(
-        (yij, dyij) -> unpack_output_lane(yij, dyij, Val(lane)), yi, dyi
-    )
-    return y, NTangent(ntuple(lane -> unpack_output_lane(y, dy, Val(lane)), Val(N)))
+    return y, NTangent(ntuple(lane -> _nfwd_unpack_output_lane(y, dy, Val(lane)), Val(N)))
 end
 
 @noinline function _fcache_derivative_chunked!!(
@@ -163,8 +174,13 @@ end
     input_tangents = map(last, x_dx)
     # NDual-backed batched backend: attempt a packed multi-lane forward pass. Falls back
     # to the generic lane loop only when no fastpath applies (N == 1, N > 8, or no
-    # ForwardChunkFastPath built for this cache); NDual-specific errors are not caught.
-    nfwd_output = _try_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
+    # ForwardChunkFastPath built for this cache). NDual-specific runtime errors are
+    # rethrown with guidance to rebuild the cache with nfwd disabled.
+    nfwd_output = try
+        _try_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
+    catch err
+        _fcache_rethrow_ndual_runtime_error(err)
+    end
     !isnothing(nfwd_output) && return nfwd_output
     return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
 end
@@ -323,6 +339,40 @@ function (rule::Rule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
     primals = map(primal, x)
     tangents = map(tangent, x)
     y, dy = _nfwd_eval(primal(f), primals, tangents, Val(N))
+    return Dual(y, dy)
+end
+
+# Scalar-input specializations avoid the generic vararg/map path, which otherwise leaves
+# small cached nfwd rules on an allocating hot path.
+@inline function (rule::Rule{sig,N})(f::Dual, x::Dual{T,D}) where {sig,N,T<:Number,D}
+    _nfwd_verify_sig(rule, (f, x))
+    _nfwd_check_function_tangent(tangent(f))
+    y, dy = _nfwd_eval(primal(f), (primal(x),), (tangent(x),), Val(N))
+    return Dual(y, dy)
+end
+
+@inline function (rule::Rule{sig,N})(
+    f::Dual, x1::Dual{T1,D1}, x2::Dual{T2,D2}
+) where {sig,N,T1<:Number,T2<:Number,D1,D2}
+    _nfwd_verify_sig(rule, (f, x1, x2))
+    _nfwd_check_function_tangent(tangent(f))
+    y, dy = _nfwd_eval(
+        primal(f), (primal(x1), primal(x2)), (tangent(x1), tangent(x2)), Val(N)
+    )
+    return Dual(y, dy)
+end
+
+@inline function (rule::Rule{sig,N})(
+    f::Dual, x1::Dual{T1,D1}, x2::Dual{T2,D2}, x3::Dual{T3,D3}
+) where {sig,N,T1<:Number,T2<:Number,T3<:Number,D1,D2,D3}
+    _nfwd_verify_sig(rule, (f, x1, x2, x3))
+    _nfwd_check_function_tangent(tangent(f))
+    y, dy = _nfwd_eval(
+        primal(f),
+        (primal(x1), primal(x2), primal(x3)),
+        (tangent(x1), tangent(x2), tangent(x3)),
+        Val(N),
+    )
     return Dual(y, dy)
 end
 

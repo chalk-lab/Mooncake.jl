@@ -476,7 +476,7 @@ end
             @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
                 f, x, y; chunk_size=1, config=Mooncake.Config(; debug_mode=true)
             )
-            @test_throws Mooncake.NfwdMooncake.UnsupportedInputError Mooncake.NfwdMooncake.prepare_cache(
+            @test_throws Mooncake.Nfwd.UnsupportedInputError Mooncake.NfwdMooncake.prepare_cache(
                 f, view([x, y], 1:2); chunk_size=1
             )
             @test_throws ArgumentError Mooncake.NfwdMooncake.build_frule(
@@ -542,10 +542,10 @@ end
             @test Mooncake.NfwdMooncake._nfwd_sig(1.0) == (type=Float64, size=())
 
             @test Mooncake._fcache_nfwd_is_ndual_unsupported(
-                Mooncake.NfwdMooncake.UnsupportedInputError("unsupported input")
+                Mooncake.Nfwd.UnsupportedInputError("unsupported input")
             )
             @test Mooncake._fcache_nfwd_is_ndual_unsupported(
-                Mooncake.NfwdMooncake.UnsupportedOutputError("unsupported output")
+                Mooncake.Nfwd.UnsupportedOutputError("unsupported output")
             )
             @test Mooncake._fcache_nfwd_is_ndual_unsupported(
                 Mooncake.Nfwd.NDualUnsupportedError(:floor)
