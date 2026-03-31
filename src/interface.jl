@@ -2161,25 +2161,6 @@ end
     return x
 end
 
-@inline function _hvp_gradient_function(f, grad_cache, ::Val{true})
-    return let f = f, grad_cache = grad_cache
-        y -> begin
-            val_and_grad = value_and_gradient!!(grad_cache, f, y)
-            (val_and_grad[1], val_and_grad[2][2])
-        end
-    end
-end
-
-@inline function _hvp_gradient_function(f, grad_cache, ::Val{false})
-    return let f = f, grad_cache = grad_cache
-        function (ys...)
-            val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
-            # Drop the gradient w.r.t. f itself (always index 1); return only x-arg gradients.
-            (val_and_grad[1], Base.tail(val_and_grad[2]))
-        end
-    end
-end
-
 @inline function _verify_hvp_direction_shapes(all_x::Tuple{Any}, v)
     _assert_matching_tangent_shape(only(all_x), v, 1)
     return all_x, v
@@ -2259,7 +2240,18 @@ true
     # Pre-build the reverse-mode gradient cache so forward-over-reverse differentiates
     # only through gradient evaluation, not through repeated rule construction.
     grad_cache = prepare_gradient_cache(f, x...; config)
-    grad_f = _hvp_gradient_function(f, grad_cache, Val(N == 1))
+    grad_f = if N == 1
+        y -> begin
+            val_and_grad = value_and_gradient!!(grad_cache, f, y)
+            (val_and_grad[1], val_and_grad[2][2])
+        end
+    else
+        function (ys...)
+            val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
+            # Drop the gradient w.r.t. f itself (always index 1); return only x-arg gradients.
+            (val_and_grad[1], Base.tail(val_and_grad[2]))
+        end
+    end
     fwd_cache = prepare_derivative_cache(grad_f, x...; config)
     return HVPCache(
         f, grad_f, zero_tangent(grad_f), fwd_cache, getfield(grad_cache, :output_spec)
