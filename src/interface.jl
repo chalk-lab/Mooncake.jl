@@ -158,26 +158,54 @@ There are lots of ways to get this wrong though, so we generally advise against 
 # Otherwise returns IdDict to handle aliased mutable buffers across the tuple of tangents.
 _friendly_cache(fx::Tuple) = all(isbitstype ∘ typeof, fx) ? NoCache() : IdDict{Any,Any}()
 
+abstract type _ReverseTangentStyle end
+struct _NativeTangents <: _ReverseTangentStyle end
+struct _FriendlyTangents <: _ReverseTangentStyle end
+
+@inline _reverse_tangent_style(friendly_tangents::Bool) =
+    friendly_tangents ? _FriendlyTangents() : _NativeTangents()
+
+@inline function _reverse_friendly_tangents(fx::Tuple, tangents::Tuple)
+    dests = map(friendly_tangent_cache, fx)
+    c = _friendly_cache(fx)
+    return tuple_map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, tangents)
+end
+
+@inline function _value_and_pullback_nokwarg(
+    rule::R, ȳ, fx::Tuple, ::_NativeTangents
+) where {R}
+    return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
+end
+
+@unstable function _value_and_pullback_nokwarg(
+    rule::R, ȳ, fx::Tuple, ::_FriendlyTangents
+) where {R}
+    ȳ_tangent = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
+    value, pb = __value_and_pullback!!(rule, ȳ_tangent, __create_coduals(fx)...)
+    return value, _reverse_friendly_tangents(fx, pb)
+end
+
+@inline function _value_and_gradient_nokwarg(
+    rule::R, fx::Tuple, ::_NativeTangents
+) where {R}
+    return __value_and_gradient!!(rule, __create_coduals(fx)...)
+end
+
+@unstable function _value_and_gradient_nokwarg(
+    rule::R, fx::Tuple, ::_FriendlyTangents
+) where {R}
+    value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
+    return value, _reverse_friendly_tangents(fx, gradient)
+end
+
 # @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
 # perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
 @inline function value_and_pullback!!(
     rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
-    friendly_tangents && return _value_and_pullback_friendly!!(rule, ȳ, fx...)
-    return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
-end
-
-@unstable function _value_and_pullback_friendly!!(
-    rule::R, ȳ, fx::Vararg{Any,N}
-) where {R,N}
-    ȳ = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
-    value, pb = __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
-    dests = map(friendly_tangent_cache, (fx...,))
-    c = _friendly_cache((fx...,))
-    friendly_pb = tuple_map(
-        (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, (fx...,), pb
+    return _value_and_pullback_nokwarg(
+        rule, ȳ, fx, _reverse_tangent_style(friendly_tangents)
     )
-    return value, friendly_pb
 end
 
 """
@@ -206,18 +234,7 @@ value_and_gradient!!(rule, f, x, y)
 @inline function value_and_gradient!!(
     rule::R, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
-    friendly_tangents && return _value_and_gradient_friendly!!(rule, fx...)
-    return __value_and_gradient!!(rule, __create_coduals(fx)...)
-end
-
-@unstable function _value_and_gradient_friendly!!(rule::R, fx::Vararg{Any,N}) where {R,N}
-    value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
-    dests = map(friendly_tangent_cache, (fx...,))
-    c = _friendly_cache((fx...,))
-    friendly_gradient = tuple_map(
-        (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, (fx...,), gradient
-    )
-    return value, friendly_gradient
+    return _value_and_gradient_nokwarg(rule, fx, _reverse_tangent_style(friendly_tangents))
 end
 
 function __create_coduals(args)
@@ -295,6 +312,59 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     input_specs::TIS
     # Top-level type/size signature for y = f(x...).
     output_spec::TOS
+end
+
+@inline _reverse_tangent_style(cache::Cache) =
+    isnothing(getfield(cache, :dests)) ? _NativeTangents() : _FriendlyTangents()
+
+@inline function _prepare_reverse_rule_state(rule, fx::Tuple)
+    tangents = map(zero_tangent, fx)
+    y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
+    return tangents, y, rvs!!
+end
+
+@inline _prepared_reverse_cache_specs(fx::Tuple, y) = (
+    tuple_map(_prepared_cache_input_spec, fx), _prepared_cache_input_spec(primal(y))
+)
+
+@inline function _reverse_cache_coduals(
+    cache::Cache, fx::Tuple, args_to_zero::NTuple{N,Bool}
+) where {N}
+    tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
+    return tuple_map(CoDual, fx, tangents)
+end
+
+@inline function _value_and_pullback_nokwarg(
+    cache::Cache, ȳ, fx::Tuple, args_to_zero::NTuple, ::_NativeTangents
+)
+    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
+    return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
+end
+
+@inline function _value_and_pullback_nokwarg(
+    cache::Cache, ȳ, fx::Tuple, args_to_zero::NTuple, ::_FriendlyTangents
+)
+    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
+    ȳ_tangent = primal_to_tangent!!(cache.ȳ_cache, ȳ)
+    value, pb = __value_and_pullback!!(
+        cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
+    )
+    return value, _reverse_friendly_tangents(fx, pb)
+end
+
+@inline function _value_and_gradient_nokwarg(
+    cache::Cache, fx::Tuple, args_to_zero::NTuple, ::_NativeTangents
+)
+    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
+    return __value_and_gradient!!(cache.rule, coduals...)
+end
+
+@inline function _value_and_gradient_nokwarg(
+    cache::Cache, fx::Tuple, args_to_zero::NTuple, ::_FriendlyTangents
+)
+    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
+    value, gradient = __value_and_gradient!!(cache.rule, coduals...)
+    return value, _reverse_friendly_tangents(fx, gradient)
 end
 
 @inline _cache_input_count(cache) = length(getfield(cache, :input_specs)) - 1
@@ -648,10 +718,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     rule = build_rrule(
         interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages
     )
-    tangents = map(zero_tangent, fx)
-
-    # Run the rule forwards -- this should do a decent chunk of pre-allocation.
-    y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
+    tangents, y, rvs!! = _prepare_reverse_rule_state(rule, fx)
 
     # Run reverse-pass in order to reset stacks + state.
     rvs!!(zero_rdata(primal(y)))
@@ -659,6 +726,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
+    input_specs, output_spec = _prepared_reverse_cache_specs(fx, y)
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
         return Cache(
@@ -667,19 +735,11 @@ The API guarantees that tangents are initialized at zero before the first autodi
             tangents,
             dests,
             zero_tangent(primal(y)),
-            tuple_map(_prepared_cache_input_spec, fx),
-            _prepared_cache_input_spec(primal(y)),
+            input_specs,
+            output_spec,
         )
     else
-        return Cache(
-            rule,
-            y_cache,
-            tangents,
-            nothing,
-            nothing,
-            tuple_map(_prepared_cache_input_spec, fx),
-            _prepared_cache_input_spec(primal(y)),
-        )
+        return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
     end
 end
 
@@ -741,22 +801,11 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     x::Vararg{Any,N};
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
-    _verify_cache_inputs(cache.input_specs, (f, x...))
-    tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
-    coduals = tuple_map(CoDual, (f, x...), tangents)
-    if !isnothing(cache.dests)
-        ȳ = primal_to_tangent!!(cache.ȳ_cache, ȳ)
-        value, pb = __value_and_pullback!!(
-            cache.rule, ȳ, coduals...; y_cache=cache.y_cache
-        )
-        c = _friendly_cache((f, x...))
-        friendly_pb = tuple_map(
-            (d, p, t) -> tangent_to_friendly!!(d, p, t, c), cache.dests, (f, x...), pb
-        )
-        return value, friendly_pb
-    else
-        return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
-    end
+    fx = (f, x...)
+    _verify_cache_inputs(cache.input_specs, fx)
+    return _value_and_pullback_nokwarg(
+        cache, ȳ, fx, args_to_zero, _reverse_tangent_style(cache)
+    )
 end
 
 """
@@ -768,31 +817,15 @@ The API guarantees that tangents are initialized at zero before the first autodi
 """
 @unstable function prepare_gradient_cache(fx...; config=Config())
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
-    tangents = map(zero_tangent, fx)
-    y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
+    tangents, y, rvs!! = _prepare_reverse_rule_state(rule, fx)
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
+    input_specs, output_spec = _prepared_reverse_cache_specs(fx, y)
     if config.friendly_tangents
         dests = tuple(map(friendly_tangent_cache, fx)...)
-        return Cache(
-            rule,
-            nothing,
-            tangents,
-            dests,
-            nothing,
-            tuple_map(_prepared_cache_input_spec, fx),
-            _prepared_cache_input_spec(primal(y)),
-        )
+        return Cache(rule, nothing, tangents, dests, nothing, input_specs, output_spec)
     else
-        return Cache(
-            rule,
-            nothing,
-            tangents,
-            nothing,
-            nothing,
-            tuple_map(_prepared_cache_input_spec, fx),
-            _prepared_cache_input_spec(primal(y)),
-        )
+        return Cache(rule, nothing, tangents, nothing, nothing, input_specs, output_spec)
     end
 end
 
@@ -846,21 +879,11 @@ value_and_gradient!!(cache, f, x, y)
     x::Vararg{Any,N};
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
-    friendly_tangents = !isnothing(cache.dests)
-    _verify_cache_inputs(cache.input_specs, (f, x...))
-
-    tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
-    coduals = tuple_map(CoDual, (f, x...), tangents)
-    if friendly_tangents
-        value, gradient = __value_and_gradient!!(cache.rule, coduals...)
-        c = _friendly_cache((f, x...))
-        friendly_gradient = tuple_map(
-            (d, p, t) -> tangent_to_friendly!!(d, p, t, c), cache.dests, (f, x...), gradient
-        )
-        return value, friendly_gradient
-    else
-        return __value_and_gradient!!(cache.rule, coduals...)
-    end
+    fx = (f, x...)
+    _verify_cache_inputs(cache.input_specs, fx)
+    return _value_and_gradient_nokwarg(
+        cache, fx, args_to_zero, _reverse_tangent_style(cache)
+    )
 end
 
 # Internal nfwd chunk cache stored inside `ForwardCache`.
