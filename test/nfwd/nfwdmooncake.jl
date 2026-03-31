@@ -182,8 +182,8 @@ end
         ),
     )
 
-    @testset "public rule and cache entrypoints" begin
-        @testset "scalar rule construction and caches" begin
+    @testset "public rule entrypoints" begin
+        @testset "scalar rule construction" begin
             @testset "$case.name" for case in scalar_cases
                 rule = Mooncake.NfwdMooncake.build_frule(
                     f, x, y; chunk_size=case.chunk_size
@@ -203,65 +203,47 @@ end
                 )
                 @test Mooncake.primal(ȳ) == z
                 @test pb!!(1.0) == (Mooncake.NoRData(), y - sin(x), x)
+            end
 
-                cache = Mooncake.NfwdMooncake.prepare_cache(
-                    f, x, y; chunk_size=case.chunk_size
-                )
-                z_and_dz_dual = Mooncake.value_and_derivative!!(
-                    cache, Mooncake.zero_dual(f), case.dual_inputs...
-                )
-                @test z_and_dz_dual isa Mooncake.Dual
-                @test Mooncake.primal(z_and_dz_dual) == z
-                @test Mooncake.tangent(z_and_dz_dual) == case.expected_tangent
+            @testset "direct value_and_derivative!! on Rule" begin
+                rule = Mooncake.NfwdMooncake.build_frule(f, x, y; chunk_size=2)
 
-                case.chunk_size == 1 && continue
-                z_and_grad = Mooncake.value_and_gradient!!(cache, f, x, y)
-                @test first(z_and_grad) == z
-                @test last(z_and_grad) == (Mooncake.NoTangent(), y - sin(x), x)
+                out_dual = Mooncake.value_and_derivative!!(
+                    rule,
+                    Mooncake.zero_dual(f),
+                    Mooncake.Dual(x, (dx, 0.0)),
+                    Mooncake.Dual(y, (0.0, dy)),
+                )
+                @test Mooncake.primal(out_dual) == z
+                @test Mooncake.tangent(out_dual) == (dx * y + dx * (-sin(x)), x * dy)
+
+                out_tuple = Mooncake.value_and_derivative!!(
+                    rule, (f, Mooncake.NoTangent()), (x, (dx, 0.0)), (y, (0.0, dy))
+                )
+                @test out_tuple == (z, (dx * y + dx * (-sin(x)), x * dy))
+
+                out_chunk = Mooncake.value_and_derivative!!(
+                    rule,
+                    (f, Mooncake.NoTangent()),
+                    (x, Mooncake.NTangent((dx, 0.0))),
+                    (y, Mooncake.NTangent((0.0, dy))),
+                )
+                @test out_chunk == (z, Mooncake.NTangent((dx * y + dx * (-sin(x)), x * dy)))
             end
         end
 
-        @testset "scalar cache edge cases" begin
+        @testset "scalar rule edge cases" begin
             square(x) = x^2
-            constant_scalar(x) = 1.0
 
-            @testset "single-input scalar cache with chunk_size>1" begin
+            @testset "single-input scalar rule with chunk_size>1" begin
                 x_single = 1.5
-                cache = Mooncake.NfwdMooncake.prepare_cache(square, x_single; chunk_size=2)
-                value, grad = Mooncake.value_and_gradient!!(cache, square, x_single)
+                rule = Mooncake.NfwdMooncake.build_rrule(square, x_single; chunk_size=2)
+                value, grad = Mooncake.value_and_gradient!!(rule, square, x_single)
                 @test value == square(x_single)
                 @test grad == (Mooncake.NoTangent(), 2 * x_single)
             end
 
-            @testset "constant outputs synthesize zero tangents" begin
-                x_const = 2.0
-                cache_grad = Mooncake.NfwdMooncake.prepare_cache(
-                    constant_scalar, x_const; chunk_size=1
-                )
-                value, grad = Mooncake.value_and_gradient!!(
-                    cache_grad, constant_scalar, x_const
-                )
-                @test value == 1.0
-                @test grad == (Mooncake.NoTangent(), 0.0)
-
-                cache_deriv = Mooncake.NfwdMooncake.prepare_cache(
-                    constant_scalar, x_const; chunk_size=2
-                )
-                out = Mooncake.value_and_derivative!!(
-                    cache_deriv,
-                    Mooncake.zero_dual(constant_scalar),
-                    Mooncake.Dual(x_const, (1.0, 0.0)),
-                )
-                @test Mooncake.primal(out) == 1.0
-                @test Mooncake.tangent(out) == (0.0, 0.0)
-            end
-
             @testset "automatic chunk_size selection" begin
-                cache = Mooncake.NfwdMooncake.prepare_cache(f, x, y)
-                value, grad = Mooncake.value_and_gradient!!(cache, f, x, y)
-                @test value == z
-                @test grad == (Mooncake.NoTangent(), y - sin(x), x)
-
                 # NfwdMooncake.build_frule / NfwdMooncake.build_rrule omitting chunk_size
                 auto_frule = Mooncake.NfwdMooncake.build_frule(f, x, y)
                 @test auto_frule isa Mooncake.NfwdMooncake.Rule  # compiles without chunk_size
@@ -308,16 +290,10 @@ end
                 @test pullback ==
                     (Mooncake.NoTangent(), [3.0 * cos(x_vec[1]), 4.0 * cos(x_vec[2])])
 
-                cache = Mooncake.NfwdMooncake.prepare_cache(g, x_vec; chunk_size=2)
-                y_and_dy = Mooncake.value_and_derivative!!(
-                    cache, Mooncake.zero_dual(g), Mooncake.Dual(x_vec, dx_vec)
-                )
-                @test Mooncake.primal(y_and_dy) == sin.(x_vec)
-                @test Mooncake.tangent(y_and_dy) ≈ [cos(x_vec[1]) 0.0; 0.0 cos(x_vec[2])]
-
-                @test_throws Mooncake.ValueAndGradientReturnTypeError Mooncake.value_and_gradient!!(
-                    cache, g, x_vec
-                )
+                frule = Mooncake.NfwdMooncake.build_frule(g, x_vec; chunk_size=2)
+                out = frule(Mooncake.zero_dual(g), Mooncake.Dual(x_vec, dx_vec))
+                @test Mooncake.primal(out) == sin.(x_vec)
+                @test Mooncake.tangent(out) ≈ [cos(x_vec[1]) 0.0; 0.0 cos(x_vec[2])]
             end
 
             @testset "complex inputs" begin
@@ -335,20 +311,17 @@ end
                 @test Mooncake.primal(ȳ) == fc(zc)
                 @test pb!!(1.0) == (Mooncake.NoRData(), conj(2zc - sin(zc)))
 
-                cache_scalar = Mooncake.NfwdMooncake.prepare_cache(fc, zc; chunk_size=2)
-                z_and_grad = Mooncake.value_and_gradient!!(cache_scalar, fc, zc)
-                @test first(z_and_grad) == fc(zc)
-                @test last(z_and_grad) == (Mooncake.NoTangent(), conj(2zc - sin(zc)))
+                value_scalar, grad_scalar = Mooncake.value_and_gradient!!(rrule, fc, zc)
+                @test value_scalar == fc(zc)
+                @test grad_scalar == (Mooncake.NoTangent(), conj(2zc - sin(zc)))
 
                 gc(z) = sum(abs2, z)
                 z_vec = ComplexF64[1.0 + 2.0im, -3.0 + 0.5im]
                 dz_vec = reshape(
                     ComplexF64[1.0 + 0.0im, 0.0 + 0.0im, 0.0 + 0.0im, 0.0 + 1.0im], 2, 2
                 )
-                cache = Mooncake.NfwdMooncake.prepare_cache(gc, z_vec; chunk_size=2)
-                out_vec = Mooncake.value_and_derivative!!(
-                    cache, Mooncake.zero_dual(gc), Mooncake.Dual(z_vec, dz_vec)
-                )
+                frule_vec = Mooncake.NfwdMooncake.build_frule(gc, z_vec; chunk_size=2)
+                out_vec = frule_vec(Mooncake.zero_dual(gc), Mooncake.Dual(z_vec, dz_vec))
                 @test Mooncake.primal(out_vec) == gc(z_vec)
                 @test Mooncake.tangent(out_vec) == (2.0, 1.0)
 
@@ -366,11 +339,10 @@ end
                 h(x, y) = sum(x .* y)
                 x_vec = [1.0, 2.0]
                 y_vec = [3.0, 4.0]
-                cache = Mooncake.NfwdMooncake.prepare_cache(h, x_vec, y_vec; chunk_size=2)
                 dx = reshape([1.0, 0.0, 0.0, 0.0], 2, 2)
                 dy = reshape([0.0, 0.0, 1.0, 0.0], 2, 2)
-                out = Mooncake.value_and_derivative!!(
-                    cache,
+                frule = Mooncake.NfwdMooncake.build_frule(h, x_vec, y_vec; chunk_size=2)
+                out = frule(
                     Mooncake.zero_dual(h),
                     Mooncake.Dual(x_vec, dx),
                     Mooncake.Dual(y_vec, dy),
@@ -383,10 +355,8 @@ end
                 dX = zeros(2, 2, 2)
                 dX[1, 1, 1] = 1.0
                 dX[2, 2, 2] = 1.0
-                cache_matrix = Mooncake.NfwdMooncake.prepare_cache(hm, X; chunk_size=2)
-                y_and_dy = Mooncake.value_and_derivative!!(
-                    cache_matrix, Mooncake.zero_dual(hm), Mooncake.Dual(X, dX)
-                )
+                frule_matrix = Mooncake.NfwdMooncake.build_frule(hm, X; chunk_size=2)
+                y_and_dy = frule_matrix(Mooncake.zero_dual(hm), Mooncake.Dual(X, dX))
                 @test Mooncake.primal(y_and_dy) == sin.(X)
                 expected = zeros(2, 2, 2)
                 expected[1, 1, 1] = cos(X[1, 1])
@@ -415,16 +385,6 @@ end
                     (Mooncake.NoRData(), ȳ_sin * cos(x_sc) + ȳ_cos * (-sin(x_sc)))
             end
 
-            @testset "sincos chunk_size=2 via prepare_cache" begin
-                x_sc = 0.7
-                cache = Mooncake.NfwdMooncake.prepare_cache(sincos, x_sc; chunk_size=2)
-                value, pullback = Mooncake.value_and_pullback!!(
-                    cache.rrule, (3.0, 2.0), sincos, x_sc
-                )
-                @test value == sincos(x_sc)
-                @test pullback[2] ≈ 3.0 * cos(x_sc) + 2.0 * (-sin(x_sc))
-            end
-
             @testset "modf derivative: frac=1, int=0" begin
                 x_mf = 3.7
                 frule = Mooncake.NfwdMooncake.build_frule(modf, x_mf; chunk_size=1)
@@ -433,13 +393,6 @@ end
                 frac_t, int_t = Mooncake.tangent(out)
                 @test frac_t ≈ 1.0
                 @test int_t ≈ 0.0
-            end
-
-            @testset "tuple output rejects value_and_gradient!!" begin
-                cache = Mooncake.NfwdMooncake.prepare_cache(sincos, 1.0; chunk_size=1)
-                @test_throws Mooncake.ValueAndGradientReturnTypeError Mooncake.value_and_gradient!!(
-                    cache, sincos, 1.0
-                )
             end
         end
 
@@ -458,9 +411,6 @@ end
             @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
                 f_stateful, 5.0; chunk_size=1
             )
-            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
-                f_stateful, 5.0; chunk_size=1
-            )
             @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
                 Tuple{NfwdDerivedMultiplier,Float64}; chunk_size=1
             )
@@ -470,15 +420,6 @@ end
         end
 
         @testset "unsupported config is rejected" begin
-            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
-                f, x, y; chunk_size=1, config=Mooncake.Config(; friendly_tangents=true)
-            )
-            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
-                f, x, y; chunk_size=1, config=Mooncake.Config(; debug_mode=true)
-            )
-            @test_throws Mooncake.Nfwd.UnsupportedInputError Mooncake.NfwdMooncake.prepare_cache(
-                f, view([x, y], 1:2); chunk_size=1
-            )
             @test_throws ArgumentError Mooncake.NfwdMooncake.build_frule(
                 f, x, y; chunk_size=1, debug_mode=true
             )
@@ -491,7 +432,7 @@ end
             @test_throws ArgumentError Mooncake.NfwdMooncake.build_frule(
                 f, x, y; chunk_size=0
             )
-            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
                 f, x, y; chunk_size=-1
             )
         end
@@ -511,35 +452,10 @@ end
         @testset "array tangent validation" begin
             g(x) = sin.(x)
             x_vec = [1.0, 2.0]
-            cache = Mooncake.NfwdMooncake.prepare_cache(g, x_vec; chunk_size=2)
-            @test_throws ArgumentError Mooncake.value_and_derivative!!(
-                cache, Mooncake.zero_dual(g), Mooncake.Dual(x_vec, [1.0, 2.0, 3.0])
+            rule = Mooncake.NfwdMooncake.build_frule(g, x_vec; chunk_size=2)
+            @test_throws ArgumentError rule(
+                Mooncake.zero_dual(g), Mooncake.Dual(x_vec, [1.0, 2.0, 3.0])
             )
-        end
-
-        @testset "args_to_zero validation" begin
-            cache = Mooncake.NfwdMooncake.prepare_cache(f, x, y; chunk_size=2)
-            bad_args_to_zero_cases = ((true, true), (true, false, true))
-            for args_to_zero in bad_args_to_zero_cases
-                @test_throws ArgumentError Mooncake.value_and_gradient!!(
-                    cache, f, x, y; args_to_zero
-                )
-            end
-        end
-
-        @testset "cache size mismatch is rejected" begin
-            g(x) = sum(x)
-            cache = Mooncake.NfwdMooncake.prepare_cache(g, [1.0, 2.0]; chunk_size=1)
-            @test_throws ArgumentError Mooncake.value_and_gradient!!(
-                cache, g, [1.0, 2.0, 3.0]
-            )
-        end
-
-        @testset "cache specs helpers" begin
-            @test Mooncake.NfwdMooncake._nfwd_sig(sin) == (type=typeof(sin), size=())
-            @test Mooncake.NfwdMooncake._nfwd_sig([1.0, 2.0]) ==
-                (type=Vector{Float64}, size=(2,))
-            @test Mooncake.NfwdMooncake._nfwd_sig(1.0) == (type=Float64, size=())
         end
     end
 
@@ -666,9 +582,6 @@ end
         end
 
         @testset "unsupported callable-state and function tangents fail explicitly" begin
-            @test_throws ArgumentError Mooncake.NfwdMooncake.prepare_cache(
-                NfwdDerivedMultiplier(2.0), 5.0
-            )
             x = randn(16)
             rule = Mooncake.build_rrule(vector_sum_sq, x)
             bad_f = Mooncake.CoDual(vector_sum_sq, 1.0)

@@ -61,20 +61,12 @@ struct ValueAndPullbackReturnTypeError <: Exception
     msg::String
 end
 
-struct NfwdRuntimeError <: Exception
-    msg::String
-end
-
 function Base.showerror(io::IO, err::ValueAndGradientReturnTypeError)
     _print_boxed_error(io, split("ValueAndGradientReturnTypeError: $(err.msg)", '\n'))
 end
 
 function Base.showerror(io::IO, err::ValueAndPullbackReturnTypeError)
     _print_boxed_error(io, split("ValueAndPullbackReturnTypeError: $(err.msg)", '\n'))
-end
-
-function Base.showerror(io::IO, err::NfwdRuntimeError)
-    _print_boxed_error(io, split("NfwdRuntimeError:\n$(err.msg)", '\n'))
 end
 
 function throw_forward_ret_type_error(y)
@@ -90,20 +82,6 @@ function throw_circular_reference_or_alias_error(y)
         ValueAndPullbackReturnTypeError(
             "Object with address $(objectid(y)) and type $(typeof(y)) appears more than once." *
             " Output cannot contain Circular references or aliases",
-        ),
-    )
-end
-
-@noinline function _fcache_rethrow_ndual_construction_error(err)
-    _is_ndual_unsupported_error(err) || rethrow(err)
-    throw(
-        NfwdRuntimeError(
-            "Encountered an NDual-specific error while probing the prepared " *
-            "forward-cache nfwd fast path at cache-construction time.\n" *
-            "Rebuild the cache with `config=Mooncake.Config(; enable_nfwd=false)` " *
-            "to force the ordinary `frule!!` path instead.\n" *
-            "Original exception type: $(typeof(err))\n" *
-            "Original error: $(sprint(showerror, err))",
         ),
     )
 end
@@ -260,6 +238,28 @@ function __create_coduals(args)
     end
 end
 
+"""
+    value_and_derivative!!(rule, f::Dual, x::Dual...)
+    value_and_derivative!!(rule, (f, df), (x, dx), ...)
+
+Run a forward rule directly, without first constructing a `ForwardCache`.
+
+The `Dual` interface returns the rule output directly. The tuple interface returns
+`(y, dy)` using the rule's native tangent representation. Specialized rule types may
+add chunked `NTangent` support on top of this entrypoint.
+"""
+@inline function value_and_derivative!!(rule::R, fx::Vararg{Dual,N}) where {R,N}
+    return __call_rule(rule, fx)
+end
+
+@inline function value_and_derivative!!(rule::R, fx::Vararg{Tuple{Any,Any},N}) where {R,N}
+    input_primals = tuple_map(first, fx)
+    input_tangents = tuple_map(last, fx)
+    input_duals = tuple_map(Dual, input_primals, input_tangents)
+    output = __call_rule(rule, input_duals)
+    return primal(output), tangent(output)
+end
+
 # Cache types in this file:
 # - `Cache`: reusable reverse-mode cache for repeated `value_and_pullback!!` and
 #   `value_and_gradient!!` calls.
@@ -268,12 +268,8 @@ end
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
 # Internal helper cache types in this file:
-# - `ChunkCache`: internal nfwd helper cache stored inside `ForwardCache` when the
+# - `NfwdCache`: internal nfwd helper cache stored inside `ForwardCache` when the
 #   prepared forward cache can use packed NDual execution.
-# Related cache types in `src/nfwd/NfwdMooncake.jl`:
-# - `NfwdMooncake.Cache`: standalone nfwd cache for repeated nfwd-native
-#   `value_and_derivative!!` and `value_and_gradient!!` calls through
-#   `NfwdMooncake.prepare_cache`.
 struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple}
     rule::Trule
     # Cache for function output; **primal** type for y.
@@ -819,13 +815,12 @@ value_and_gradient!!(cache, f, x, y)
 end
 
 # Internal nfwd chunk cache stored inside `ForwardCache`.
-# Unlike `NfwdMooncake.Cache`, which is the standalone nfwd prepared cache returned by
-# `NfwdMooncake.prepare_cache`, this bundle is only the optional chunked nfwd backend used
-# to accelerate Mooncake's public `ForwardCache` path.
+# This bundle is only the optional chunked nfwd backend used to accelerate Mooncake's
+# public `ForwardCache` path.
 # It stores one forward rule per supported chunk width (1 through 8). Keeping those rules
 # in separate fields lets the code pick, for example, the width-3 rule directly, instead
 # of indexing into a tuple of mixed rule types.
-struct ChunkCache{R1,R2,R3,R4,R5,R6,R7,R8,PB,GR,SG,SB,SW}
+struct NfwdCache{R1,R2,R3,R4,R5,R6,R7,R8,PB,GR,SG,SB,SW}
     frule_1::R1
     frule_2::R2
     frule_3::R3
@@ -1243,7 +1238,7 @@ function _fcache_gradient_seed_tangent(
 end
 
 # Shared `fcache` nfwd chunk machinery.
-# Attempts to build a `ChunkCache`; returns `nothing` if any eligibility
+# Attempts to build an `NfwdCache`; returns `nothing` if any eligibility
 # check fails.
 #
 # Eligibility (construction-time gates, evaluated in order):
@@ -1253,11 +1248,11 @@ end
 # - Every argument in `x...` must be an `IEEEFloat`, `Complex{<:IEEEFloat}`, or
 #   `Array{T}` with `T <: IEEEFloat` or `T <: Complex{<:IEEEFloat}`. Arguments of tuple or
 #   struct type stay on the ordinary chunked path.
-# - The chunk_size=1 frule is probed on zero-tangent `Dual` inputs. If it raises an
-#   NDual-unsupported error (see `_is_ndual_unsupported_error`), cache construction
-#   throws an `NfwdRuntimeError` with guidance to rebuild with `enable_nfwd=false`.
+# - These gates avoid known-inapplicable signatures without executing user code during
+#   cache construction. A remaining nfwd limitation is surfaced later, when the prepared
+#   cache is first used.
 #
-# Gradient-only shortcuts stored on the `ChunkCache` (each narrower than
+# Gradient-only shortcuts stored on the `NfwdCache` (each narrower than
 # the general chunk path):
 # - `frule_1` doubles as the scalar fast path for `(f, x::IEEEFloat)` calls via the
 #   scalar `value_and_gradient!!` specialisation.
@@ -1265,8 +1260,7 @@ end
 # - `small_vector_gradient_frule`: built only for single-argument
 #   `(f, x::Vector{<:IEEEFloat})` with `1 <= length(x) <= 8` and, when a chunk_size
 #   is requested, `length(x) <= chunk_size`. Uses an exact-width frule seeded with an
-#   identity-matrix tangent. A second construction-time probe on that tangent gates
-#   inclusion; if the probe fails, the field is left as `nothing`.
+#   identity-matrix tangent.
 @inline function _fcache_build_nfwd_chunk_cache(fx::Tuple, config)
     config.debug_mode && return nothing
     getfield(config, :enable_nfwd) || return nothing
@@ -1319,9 +1313,9 @@ end
             Ref{Union{Nothing,Array{eltype(x)}}}(nothing)
         end
     end
-    # Bug fix note: keep the cached nfwd gradient fast path narrow. The generic
-    # `NfwdMooncake.Cache` gradient entrypoint is not a win for multi-argument scalar calls, where
-    # the chunked forward frontend already gets the full gradient in one NDual pass.
+    # Bug fix note: keep the cached nfwd gradient fast path narrow. A dedicated cached
+    # reverse entrypoint is not a win for multi-argument scalar calls, where the chunked
+    # forward frontend already gets the full gradient in one NDual pass.
     gradient_rrule = if length(params) == 2 && params[2] <: Array{<:IEEEFloat}
         NfwdMooncake.build_rrule(
             sig;
@@ -1350,25 +1344,7 @@ end
             nothing
         end
     small_vector_gradient_buffer = if !isnothing(small_vector_gradient_frule)
-        probe_seed = _fcache_small_vector_identity_seed(last(fx))
-        exact_width_tangents = (probe_seed,)
-        fd = Dual(first(fx), NoTangent())
-        x_duals = tuple_map(Dual, Base.tail(fx), exact_width_tangents)
-        probe_failed = try
-            small_vector_gradient_frule(fd, x_duals...)
-            false
-        catch err
-            _is_ndual_unsupported_error(err) || rethrow(err)
-            true
-        end
-        if probe_failed
-            small_vector_gradient_frule = nothing
-            nothing
-        else
-            # `frule!!` may legally mutate its tangent inputs during the probe, so restore
-            # the runtime buffer to a clean identity seed before caching it.
-            _fcache_small_vector_fill_identity!(probe_seed)
-        end
+        _fcache_small_vector_identity_seed(last(fx))
     else
         nothing
     end
@@ -1379,19 +1355,7 @@ end
     else
         nothing
     end
-    # Bug fix note: probe the chunk_size=1 nfwd frule once at cache construction time.
-    # This excludes valid Julia functions that happen not to run on NDual-lifted values from
-    # the zero-allocation fast path, without paying a runtime guard cost on every call.
-    let fd = Dual(first(fx), NoTangent()),
-        x_duals = tuple_map(Dual, Base.tail(fx), tuple_map(zero_tangent, Base.tail(fx)))
-
-        try
-            frule_1(fd, x_duals...)
-        catch err
-            _fcache_rethrow_ndual_construction_error(err)
-        end
-    end
-    return ChunkCache(
+    return NfwdCache(
         frule_1,
         frule_2,
         frule_3,
@@ -1478,14 +1442,6 @@ end
     )
 end
 
-@inline function _is_ndual_unsupported_error(err)
-    err isa Nfwd.UnsupportedError && return true
-    err isa Nfwd.NDualUnsupportedError && return true
-    msg = sprint(showerror, err)
-    return (err isa MethodError || err isa TypeError || err isa InexactError) &&
-           occursin("NDual", msg)
-end
-
 # fcache derivative helpers
 @generated function _fcache_derivative_ntangent_lane_count(ts::T) where {T<:Tuple}
     lane_count = nothing
@@ -1528,9 +1484,9 @@ end
 #
 #   shared nfwd chunk machinery:
 #     NfwdMooncake.jl overrides _fcache_derivative_chunked!! for
-#     ChunkCache caches to attempt a packed NDual multi-lane pass. Falls back to
+#     NfwdCache caches to attempt a packed NDual multi-lane pass. Falls back to
 #     _fcache_derivative_chunked_loop!! only when no fastpath applies
-#     (N == 1, N > 8, or no ChunkCache on the cache).
+#     (N == 1, N > 8, or no NfwdCache on the cache).
 #
 # fcache derivative chunk execution
 @noinline function _fcache_derivative_chunked_loop!!(

@@ -1790,10 +1790,24 @@ struct UnsupportedOutputError <: UnsupportedError
     msg::String
 end
 
+@inline function _nfwd_print_boxed_error(io::IO, lines)
+    first_item = iterate(lines)
+    isnothing(first_item) && return nothing
+    line, state = first_item
+    println(io, "┌ ", line)
+    while true
+        item = iterate(lines, state)
+        isnothing(item) && break
+        line, state = item
+        println(io, "│ ", line)
+    end
+    print(io, "└")
+end
+
 @inline function Base.showerror(
     io::IO, err::Union{UnsupportedInputError,UnsupportedOutputError}
 )
-    return _print_boxed_error(io, split(err.msg, '\n'))
+    return _nfwd_print_boxed_error(io, split(err.msg, '\n'))
 end
 
 @inline _nfwd_input_error(x) = throw(

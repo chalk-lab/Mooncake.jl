@@ -8,7 +8,7 @@ import ..Mooncake:
     CoDual,
     Dual,
     ForwardCache,
-    ChunkCache,
+    NfwdCache,
     NoFData,
     NoRData,
     NoTangent,
@@ -22,7 +22,6 @@ import ..Mooncake:
     fdata,
     primal,
     rdata,
-    set_to_zero_maybe!!,
     tangent,
     throw_val_and_grad_ret_type_error,
     tuple_map,
@@ -39,7 +38,7 @@ import ..Mooncake:
 # ── File layout ────────────────────────────────────────────────────────────────────
 # This file is organized as:
 # - core types
-# - public rule/cache entrypoints
+# - public rule entrypoints
 # - shared validation and layout helpers
 # - reverse accumulation and execution
 # - forward evaluation pipeline
@@ -58,11 +57,6 @@ import ..Mooncake:
 #     consumed via `rule(f::CoDual, x::CoDual...)`
 #     obeys the standard `rrule!!` interface
 #     also accepts `sig::Type{<:Tuple}` for signature-based construction
-#
-#   prepare_cache(f, x...; chunk_size)
-#     returns `Cache`
-#     consumed via `value_and_derivative!!(cache, f::Dual, x::Dual...)`
-#     consumed via `value_and_gradient!!(cache, f, x...)`
 #
 # ── Constraints ────────────────────────────────────────────────────────────────────
 # - `chunk_size` is global across the whole call
@@ -88,24 +82,6 @@ import ..Mooncake:
 #
 # High-level rule/cache objects first. The implementation details they rely on are defined
 # in later sections.
-
-"""
-    Cache
-
-Cache returned by [`prepare_cache`](@ref). It owns the prepared `nfwd` forward/reverse
-rules, runtime input signatures, and reusable zero tangents used by cached calls through
-the Mooncake-facing `value_and_derivative!!` / `value_and_gradient!!` interface.
-
-Unlike `Mooncake.ChunkCache`, this is the standalone nfwd prepared cache exposed by
-`NfwdMooncake.prepare_cache`; it is not the internal chunked backend attached to
-`Mooncake.ForwardCache`.
-"""
-struct Cache{RF,RR,S<:Tuple,TT<:Tuple}
-    frule::RF
-    rrule::RR
-    sigs::S
-    tangents::TT
-end
 
 @inline _nfwd_unpack_output_lane(yi::IEEEFloat, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
 @inline _nfwd_unpack_output_lane(yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
@@ -165,13 +141,13 @@ end
     ::Val{N},
     x_dx::Vararg{Tuple,M};
     friendly_tangents::Bool=false,
-) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:ChunkCache,N,M}
+) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:NfwdCache,N,M}
     N < 1 && throw(ArgumentError("NTangent inputs must contain at least one lane."))
     input_primals = map(first, x_dx)
     input_tangents = map(last, x_dx)
     # NDual-backed batched backend: attempt a packed multi-lane forward pass. Falls back
     # to the generic lane loop only when no fastpath applies (N == 1, N > 8, or no
-    # ChunkCache built for this cache).
+    # NfwdCache built for this cache).
     nfwd_output = _maybe_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
     !isnothing(nfwd_output) && return nfwd_output
     return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
@@ -221,7 +197,7 @@ function (pb::ArrayScalarPullback)(y_rdata)
 end
 
 #
-# Public construction and cached execution
+# Public construction and execution
 #
 # These are the main `nfwd` entry points. A reviewer should be able to read this section
 # first, then dive into the lower-level pipelines only as needed.
@@ -247,10 +223,10 @@ signatures containing arrays the preferred width is used directly.
     on every call. Do not share a single rule across threads; build one rule per thread.
 
 !!! note "debug_mode"
-    The `debug_mode` keyword is accepted for API compatibility with `prepare_cache`
-    but always throws when `true`; nfwd-specific debug checks are not yet implemented.
-    Mooncake's outer debug wrapper still validates CoDual inputs/outputs when the rule is
-    invoked inside a debug-mode rrule.
+    The `debug_mode` keyword is accepted for API consistency with Mooncake's other
+    rule/cache builders but always throws when `true`; nfwd-specific debug checks are
+    not yet implemented. Mooncake's outer debug wrapper still validates CoDual
+    inputs/outputs when the rule is invoked inside a debug-mode rrule.
 
 ## Example
 
@@ -388,6 +364,59 @@ function (rule::Rule{sig,N})(
     return Dual(y, dy)
 end
 
+@inline _nfwd_rule_pack_buffer(::IEEEFloat) = nothing
+@inline _nfwd_rule_pack_buffer(::Complex{<:IEEEFloat}) = nothing
+@inline function _nfwd_rule_pack_buffer(
+    x::Array{T}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    return Ref{Union{Nothing,Array{T}}}(nothing)
+end
+@inline _nfwd_rule_pack_buffer(x::Tuple) = tuple_map(_nfwd_rule_pack_buffer, x)
+
+@inline function Mooncake.value_and_derivative!!(
+    rule::Rule{sig,N}, fx::Vararg{Tuple{Any,Any},M}
+) where {sig,N,M}
+    # The generic `value_and_derivative!!(rule, ...)` entrypoint in `interface.jl` dispatches
+    # here for `NfwdMooncake.Rule`. This path detects `NTangent`, packs it once into nfwd's
+    # native width-N tangent layout, calls the rule once, and unpacks the result back to
+    # `NTangent`; it is not the lane-loop fallback used by the generic cached chunk path.
+    input_primals = tuple_map(first, fx)
+    input_tangents = tuple_map(last, fx)
+    lane_count = Mooncake._fcache_derivative_ntangent_lane_count(input_tangents)
+    isnothing(lane_count) && return invoke(
+        Mooncake.value_and_derivative!!,
+        Tuple{Any,Vararg{Tuple{Any,Any},M}},
+        rule,
+        fx...,
+    )
+    lane_count isa Val{N} || throw(
+        ArgumentError(
+            "NTangent inputs have $(typeof(lane_count).parameters[1]) lanes, but this nfwd rule " *
+            "was built with chunk_size=$N.",
+        ),
+    )
+    pack_buffers = tuple_map(_nfwd_rule_pack_buffer, Base.tail(input_primals))
+    packed_tangents = ntuple(
+        i -> _chunk_pack_tangent(
+            Base.tail(input_primals)[i],
+            Base.tail(input_tangents)[i],
+            pack_buffers[i],
+            Val(N),
+        ),
+        Val(fieldcount(typeof(pack_buffers))),
+    )
+    # Keep this at the Rule/Dual boundary: `f` stays on its ordinary width-1 tangent,
+    # while the argument tangents are packed to the rule's native width-N layout and the
+    # rule itself performs the NDual lift internally.
+    output = rule(
+        Dual(first(input_primals), first(input_tangents)),
+        tuple_map(Dual, Base.tail(input_primals), packed_tangents)...,
+    )
+    y = primal(output)
+    dy = tangent(output)
+    return y, NTangent(ntuple(lane -> _nfwd_unpack_output_lane(y, dy, Val(lane)), Val(N)))
+end
+
 """
     build_rrule(f, x...; chunk_size=nothing)
     build_rrule(sig::Type{<:Tuple}; chunk_size=nothing)
@@ -406,14 +435,14 @@ signatures containing arrays the preferred width is used directly.
 !!! warning "Not thread-safe"
     The returned `RRule` holds mutable workspace buffers (`buf`, `grad_buf`) that
     are updated in-place on every call. Do not share a single rule across threads; build
-    one rule per thread, or use [`prepare_cache`](@ref) and create one cache per
-    thread.
+    one rule per thread, or use `Mooncake.prepare_derivative_cache` and create one cache
+    per thread.
 
 !!! note "debug_mode"
-    The `debug_mode` keyword is accepted for API compatibility with `prepare_cache`
-    but always throws when `true`; nfwd-specific debug checks are not yet implemented.
-    Mooncake's outer debug wrapper still validates CoDual inputs/outputs when the rule is
-    invoked inside a debug-mode rrule.
+    The `debug_mode` keyword is accepted for API consistency with Mooncake's other
+    rule/cache builders but always throws when `true`; nfwd-specific debug checks are
+    not yet implemented. Mooncake's outer debug wrapper still validates CoDual
+    inputs/outputs when the rule is invoked inside a debug-mode rrule.
 
 ## Example
 
@@ -511,83 +540,6 @@ function (rule::RRule{sig,N,Tbuf,false})(
         return y_cd,
         _nfwd_pullback(f_runtime, (x_primal,), (tangent(x),), tangent(y_cd), Val(N))
     end
-end
-
-"""
-    prepare_cache(f, x...; chunk_size=nothing, config=Mooncake.Config())
-
-Prepare a cache for [`value_and_derivative!!`](@ref) and [`value_and_gradient!!`](@ref)
-when used with a [`Cache`](@ref).
-
-If `chunk_size` is omitted, nfwd uses `min(total_dof, 8)` with a floor of 1
-(same default as [`build_rrule`](@ref)).
-
-!!! warning "Not thread-safe"
-    Each `Cache` owns mutable workspace buffers (including pre-allocated tangent
-    arrays) that are mutated in-place during every call to `value_and_gradient!!`. Do not
-    share a single cache across threads; create one cache per thread instead.
-"""
-@unstable @inline function prepare_cache(
-    f, x::Vararg{Any,N}; chunk_size=nothing, config=Mooncake.Config()
-) where {N}
-    _nfwd_check_config(config)
-    map(_nfwd_check_primal, x)
-    chunk_size = _nfwd_resolve_chunk_size(chunk_size, x)
-    sigs = map(_nfwd_sig, (f, x...))
-    frule = build_frule(
-        f,
-        x...;
-        chunk_size,
-        debug_mode=config.debug_mode,
-        silence_debug_messages=config.silence_debug_messages,
-    )
-    rrule = build_rrule(
-        f,
-        x...;
-        chunk_size,
-        debug_mode=config.debug_mode,
-        silence_debug_messages=config.silence_debug_messages,
-    )
-    tangents = map(zero_tangent, (f, x...))
-    return Cache(frule, rrule, sigs, tangents)
-end
-
-"""
-    value_and_derivative!!(cache::Cache, f::Dual, x::Dual...)
-
-Run the cached `nfwd` forward rule after checking that the runtime inputs match the cache
-signature.
-"""
-function value_and_derivative!!(cache::Cache, f::Dual, x::Vararg{Dual,N}) where {N}
-    _nfwd_check_sigs(cache.sigs, (primal(f), map(primal, x)...))
-    return cache.frule(f, x...)
-end
-
-"""
-    value_and_gradient!!(cache::Cache, f, x...; args_to_zero=...)
-
-Run the cached `nfwd` reverse rule after validating cache specs and zeroing the cached
-input tangents.
-
-!!! note "Interface overhead"
-    `value_and_gradient!!` is a more general cached interface than invoking the
-    underlying `NfwdMooncake` rule directly. It still performs cache-spec checks,
-    zeroes cached tangents, and rebuilds the corresponding `CoDual` inputs on each
-    call. For tight benchmarks on supported nfwd signatures over `IEEEFloat` /
-    `Complex{<:IEEEFloat}` scalars, dense arrays with those element types, and tuples
-    thereof, calling `NfwdMooncake.build_rrule(...)(...)` directly avoids part of this
-    interface and cache-management overhead.
-"""
-function value_and_gradient!!(
-    cache::Cache,
-    f::F,
-    x::Vararg{Any,N};
-    args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
-) where {F,N}
-    _nfwd_check_args_to_zero(args_to_zero, N + 1)
-    _nfwd_check_sigs(cache.sigs, (f, x...))
-    tangents = tuple_map(set_to_zero_maybe!!, cache.tangents, args_to_zero)
-    return __value_and_gradient!!(cache.rrule, tuple_map(CoDual, (f, x...), tangents)...)
 end
 
 # Optimization note:
@@ -698,20 +650,6 @@ end
     config.debug_mode &&
         throw(ArgumentError("nfwd does not currently support `debug_mode=true`."))
     return nothing
-end
-
-@inline function _nfwd_check_args_to_zero(args_to_zero::NTuple, expected::Int)
-    length(args_to_zero) == expected ||
-        throw(ArgumentError("`args_to_zero` must have length $expected for this call."))
-    all(args_to_zero) && return nothing
-    throw(
-        ArgumentError(
-            "nfwd does not currently support selective `args_to_zero` (partial " *
-            "gradient computation). To differentiate only w.r.t. a subset of inputs, " *
-            "call the RRule directly and manually zero the tangents for the " *
-            "inputs you do not want to differentiate through.",
-        ),
-    )
 end
 
 #
@@ -1417,40 +1355,6 @@ end
 function _nfwd_extract(y, ::Val{N}) where {N}
     _nfwd_is_supported_primal(y) || _nfwd_output_error(y)
     return y, _nfwd_zero_output_tangent(y, Val(N))
-end
-
-#
-# Cache specs
-#
-# Cached entrypoints use these shape/type descriptors before dispatching into the shared
-# forward or reverse pipelines.
-
-@inline function _nfwd_sig(x)
-    if x isa Function
-        return (type=typeof(x), size=())
-    elseif x isa AbstractArray
-        return (type=typeof(x), size=size(x))
-    else
-        return (type=typeof(x), size=())
-    end
-end
-
-function _nfwd_check_sigs(sigs::Tuple, fx::Tuple)
-    length(sigs) == length(fx) || throw(ArgumentError("nfwd cache arity mismatch."))
-    for (sig, x) in zip(sigs, fx)
-        typeof(x) == sig.type || throw(
-            ArgumentError(
-                "nfwd cache type mismatch: expected $(sig.type), got $(typeof(x))."
-            ),
-        )
-        x isa AbstractArray || continue
-        size(x) == sig.size || throw(
-            ArgumentError(
-                "nfwd cache size mismatch: expected $(sig.size), got $(size(x))."
-            ),
-        )
-    end
-    return nothing
 end
 
 @inline _nfwd_function_gradient(f::CoDual) = tangent(fdata(tangent(f)), NoRData())

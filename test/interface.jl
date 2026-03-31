@@ -47,6 +47,12 @@ const CHUNK_ARRAY_EVAL_COUNT = Ref(0)
 struct CountedChunkArrayCall end
 (::CountedChunkArrayCall)(x) = (CHUNK_ARRAY_EVAL_COUNT[] += 1; sum(abs2, x))
 
+const NFWD_PREPARE_COUNTER = Ref(0)
+_ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
+function _ndual_prepare_side_effect(x::Mooncake.Nfwd.NDual)
+    throw(Mooncake.Nfwd.NDualUnsupportedError(:test_prepare_side_effect))
+end
+
 @testset "interface" begin
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
         (1.0, (x, y) -> x * y + sin(x) * cos(y), 5.0, 4.0),
@@ -618,7 +624,7 @@ struct CountedChunkArrayCall end
         @testset "Non-differentiable outputs" begin
             f_int = x -> x > 0 ? 1 : 2
             cache_int = Mooncake.prepare_derivative_cache(
-                f_int, x; config=Mooncake.Config(; kwargs...)
+                f_int, x; config=Mooncake.Config(; enable_nfwd=false, kwargs...)
             )
             z_and_dz_int_chunk = Mooncake.value_and_derivative!!(
                 cache_int,
@@ -843,7 +849,7 @@ struct CountedChunkArrayCall end
             f32_scalar = x -> Float32(x^2 + sin(x))
             x32 = Float32(x)
             f32_scalar_cache = Mooncake.prepare_derivative_cache(
-                f32_scalar, x32; config=Mooncake.Config(; kwargs...)
+                f32_scalar, x32; config=Mooncake.Config(; enable_nfwd=false, kwargs...)
             )
             @test Mooncake.value_and_gradient!!(f32_scalar_cache, f32_scalar, x32) ==
                 (f32_scalar(x32), (Mooncake.NoTangent(), Float32(2x32 + cos(x32))))
@@ -851,7 +857,7 @@ struct CountedChunkArrayCall end
             f32_vec = x -> Float32(sum(abs2, x))
             x32_vec = Float32[x, y]
             f32_vec_cache = Mooncake.prepare_derivative_cache(
-                f32_vec, x32_vec; config=Mooncake.Config(; kwargs...)
+                f32_vec, x32_vec; config=Mooncake.Config(; enable_nfwd=false, kwargs...)
             )
             @test Mooncake.value_and_gradient!!(f32_vec_cache, f32_vec, x32_vec) ==
                 (f32_vec(x32_vec), (Mooncake.NoTangent(), Float32.(2 .* x32_vec)))
@@ -859,7 +865,7 @@ struct CountedChunkArrayCall end
             f32_tuple = t -> Float32(t[1]^2 + sin(t[2]))
             tuple_x32 = (Float32(x), Float32(y))
             f32_tuple_cache = Mooncake.prepare_derivative_cache(
-                f32_tuple, tuple_x32; config=Mooncake.Config(; kwargs...)
+                f32_tuple, tuple_x32; config=Mooncake.Config(; enable_nfwd=false, kwargs...)
             )
             @test Mooncake.value_and_gradient!!(f32_tuple_cache, f32_tuple, tuple_x32) == (
                 f32_tuple(tuple_x32),
@@ -1091,41 +1097,41 @@ struct CountedChunkArrayCall end
             end
         end
 
-        @testset "nfwd construction error suggests opt-out" begin
+        @testset "prepare_derivative_cache does not execute nfwd-eligible functions" begin
             let
-                _ndual_probe_reject(x) = x^2 + one(x)
-                _ndual_probe_reject(x::Mooncake.Nfwd.NDual) = throw(
-                    Mooncake.Nfwd.NDualUnsupportedError(:test_probe_reject)
+                NFWD_PREPARE_COUNTER[] = 0
+
+                cache = Mooncake.prepare_derivative_cache(
+                    _ndual_prepare_side_effect,
+                    x;
+                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
                 )
+                @test NFWD_PREPARE_COUNTER[] == 0
 
                 err = try
-                    Mooncake.prepare_derivative_cache(
-                        _ndual_probe_reject,
-                        x;
-                        config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                    )
+                    Mooncake.value_and_gradient!!(cache, _ndual_prepare_side_effect, x)
                     nothing
                 catch err
                     err
                 end
-                @test err isa Mooncake.NfwdRuntimeError
-                @test occursin("enable_nfwd=false", sprint(showerror, err))
-                @test occursin("NDualUnsupportedError", sprint(showerror, err))
+                @test err isa Mooncake.Nfwd.NDualUnsupportedError
+                @test NFWD_PREPARE_COUNTER[] == 0
 
                 cache_no_nfwd = Mooncake.prepare_derivative_cache(
-                    _ndual_probe_reject,
+                    _ndual_prepare_side_effect,
                     x;
                     config=Mooncake.Config(;
                         debug_mode=false, friendly_tangents=false, enable_nfwd=false
                     ),
                 )
                 @test Mooncake.value_and_gradient!!(
-                    cache_no_nfwd, _ndual_probe_reject, x
-                ) == (_ndual_probe_reject(x), (Mooncake.NoTangent(), 2 * x))
+                    cache_no_nfwd, _ndual_prepare_side_effect, x
+                ) == (x^2 + one(x), (Mooncake.NoTangent(), 2 * x))
+                @test NFWD_PREPARE_COUNTER[] == 1
             end
         end
 
-        @testset "small-vector probe uses fresh cached seed buffer" begin
+        @testset "small-vector cached seed buffer is reset between calls" begin
             let
                 small_vector_probe_mutation(x) = sum(x)
                 function small_vector_probe_mutation(
@@ -1148,8 +1154,8 @@ struct CountedChunkArrayCall end
                 )
                 @test !isnothing(cache.chunkcache)
                 @test !isnothing(cache.chunkcache.small_vector_gradient_frule)
-                # The probe doubles each seeded lane once; reusing that mutated seed at
-                # runtime would double again and produce `[4, 4]` instead of `[2, 2]`.
+                # Each runtime call doubles the active seed lane once; if the cached seed
+                # were not restored to identity before reuse, the second call would drift.
                 expected = (
                     sum(x_arr),
                     (Mooncake.NoTangent(), fill(eltype(x_arr)(2), length(x_arr))),
