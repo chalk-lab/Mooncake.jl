@@ -1059,37 +1059,28 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     throw(PreparedCacheSpecError(msg))
 end
 
-@generated function _validate_prepared_cache_inputs(
-    specs::Tuple, fx::Vararg{Any,N}
-) where {N}
-    checks = Any[:(
-        length(specs) == $N ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(specs), $N)
-    )]
-    for i in 1:N
-        push!(
-            checks,
-            quote
-                typeof(fx[$i]) == specs[$i].type || _throw_prepared_cache_spec_error(
-                    :type, $i, specs[$i].type, typeof(fx[$i])
-                )
-                if fx[$i] isa AbstractArray
-                    size(fx[$i]) == specs[$i].size || _throw_prepared_cache_spec_error(
-                        :size, $i, specs[$i].size, size(fx[$i])
-                    )
+# Shared prepared-cache input validation for Cache, ForwardCache, and HVPCache entry points.
+@generated function _validate_prepared_cache_inputs(specs::Tuple, fx::Tuple)
+    n = length(specs.parameters)
+    m = length(fx.parameters)
+    n == m || return :(_throw_prepared_cache_spec_error(:arity, 0, $n, $m))
+    checks = Expr(:block)
+    for i in 1:n
+        push!(checks.args, quote
+            let spec = specs[$i], x_i = fx[$i]
+                typeof(x_i) == spec.type ||
+                    _throw_prepared_cache_spec_error(:type, $i, spec.type, typeof(x_i))
+                if x_i isa AbstractArray
+                    size(x_i) == spec.size ||
+                        _throw_prepared_cache_spec_error(:size, $i, spec.size, size(x_i))
                 end
-            end,
-        )
+            end
+        end)
     end
     return quote
-        $(checks...)
-        return nothing
+        $checks
+        return fx
     end
-end
-
-@inline function _validate_prepared_cache_inputs(specs::Tuple, fx::Tuple)
-    _validate_prepared_cache_inputs(specs, fx...)
-    return nothing
 end
 
 # fcache gradient bookkeeping
@@ -1895,7 +1886,7 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::T
 ) where {F,T<:IEEEFloat}
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), f, x)
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
     rule = if isnothing(fastpath) || isnothing(fastpath.frule_1)
         cache.rule
@@ -1925,7 +1916,7 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::V
 ) where {F,T<:IEEEFloat,V<:Vector{T}}
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), f, x)
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
     if !isnothing(fastpath) && !isnothing(fastpath.small_vector_gradient_frule)
         rule = fastpath.small_vector_gradient_frule
@@ -1939,10 +1930,16 @@ end
         native_gradients = fastpath.small_vector_gradient_workspace
         # The exact-width nfwd rule returns one lane per vector entry, so write those
         # lanes straight into the cached gradient buffer without going through the
-        # generic chunked seed/accumulate path.
-        @inbounds for i in 1:NfwdMooncake.rule_chunk_size(typeof(rule))
-            native_gradients[2][i] =
-                output_tangent isa Tuple ? output_tangent[i] : output_tangent
+        # generic chunked seed/accumulate path.  Hoist the `isa Tuple` check out of
+        # the loop so each branch contains a concretely-typed body.
+        if output_tangent isa Tuple
+            @inbounds for i in 1:NfwdMooncake.rule_chunk_size(typeof(rule))
+                native_gradients[2][i] = output_tangent[i]
+            end
+        else
+            @inbounds for i in 1:NfwdMooncake.rule_chunk_size(typeof(rule))
+                native_gradients[2][i] = output_tangent
+            end
         end
         if isnothing(cache.input_tangents)
             return y, native_gradients
@@ -1993,7 +1990,7 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::A
 ) where {F,A<:Array{<:IEEEFloat}}
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), f, x)
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
     if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
         native_gradients = let workspace = cache.gradient_workspace[]
