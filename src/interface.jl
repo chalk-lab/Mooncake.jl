@@ -2207,6 +2207,53 @@ end
     return x
 end
 
+@inline function _hvp_gradient_function(f, grad_cache, ::Val{true})
+    return let f = f, grad_cache = grad_cache
+        y -> begin
+            val_and_grad = value_and_gradient!!(grad_cache, f, y)
+            (val_and_grad[1], val_and_grad[2][2])
+        end
+    end
+end
+
+@inline function _hvp_gradient_function(f, grad_cache, ::Val{false})
+    return let f = f, grad_cache = grad_cache
+        function (ys...)
+            val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
+            # Drop the gradient w.r.t. f itself (always index 1); return only x-arg gradients.
+            (val_and_grad[1], Base.tail(val_and_grad[2]))
+        end
+    end
+end
+
+@inline function _verify_hvp_direction_shapes(all_x::Tuple{Any}, v)
+    _assert_matching_tangent_shape(only(all_x), v, 1)
+    return all_x, v
+end
+
+@inline function _verify_hvp_direction_shapes(all_x::Tuple, v::Tuple)
+    length(v) == length(all_x) ||
+        throw(ArgumentError("Expected one tangent direction per primal argument"))
+    for i in eachindex(all_x)
+        _assert_matching_tangent_shape(all_x[i], v[i], i)
+    end
+    return all_x, v
+end
+
+@inline function _value_and_hvp_nokwarg(cache::HVPCache, v, all_x::Tuple{Any})
+    (f_val, grad), (_, hvp) = value_and_derivative!!(
+        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (only(all_x), v)
+    )
+    return f_val, grad, hvp
+end
+
+@inline function _value_and_hvp_nokwarg(cache::HVPCache, v::Tuple, all_x::Tuple)
+    (f_val, grads), (_, hvps) = value_and_derivative!!(
+        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), map(tuple, all_x, v)...
+    )
+    return f_val, grads, hvps
+end
+
 @inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
     if applicable(axes, primal) && applicable(axes, tangent)
         axes(primal) == axes(tangent) || throw(
@@ -2258,22 +2305,7 @@ true
     # Pre-build the reverse-mode gradient cache so forward-over-reverse differentiates
     # only through gradient evaluation, not through repeated rule construction.
     grad_cache = prepare_gradient_cache(f, x...; config)
-    grad_f = if N == 1
-        let f = f, grad_cache = grad_cache
-            y -> begin
-                val_and_grad = value_and_gradient!!(grad_cache, f, y)
-                (val_and_grad[1], val_and_grad[2][2])
-            end
-        end
-    else
-        let f = f, grad_cache = grad_cache
-            function (ys...)
-                val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
-                # Drop the gradient w.r.t. f itself (always index 1); return only x-arg gradients.
-                (val_and_grad[1], Base.tail(val_and_grad[2]))
-            end
-        end
-    end
+    grad_f = _hvp_gradient_function(f, grad_cache, Val(N == 1))
     fwd_cache = prepare_derivative_cache(grad_f, x...; config)
     return HVPCache(
         f, grad_f, zero_tangent(grad_f), fwd_cache, getfield(grad_cache, :output_spec)
@@ -2319,28 +2351,17 @@ true
 ```
 """
 @inline function value_and_hvp!!(cache::HVPCache, f::F, v, x1::T1) where {F,T1}
-    _verify_hvp_cache_call(cache, f, (x1,))
-    _assert_matching_tangent_shape(x1, v, 1)
-    (f_val, grad), (_, hvp) = value_and_derivative!!(
-        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
-    )
-    return f_val, grad, hvp
+    all_x = _verify_hvp_cache_call(cache, f, (x1,))
+    _verify_hvp_direction_shapes(all_x, v)
+    return _value_and_hvp_nokwarg(cache, v, all_x)
 end
 
 @inline function value_and_hvp!!(
     cache::HVPCache, f::F, v::Tuple, x1::T1, xrest::Vararg{Any,N}
 ) where {F,T1,N}
     all_x = _verify_hvp_cache_call(cache, f, (x1, xrest...))
-    nargs = N + 1
-    length(v) == nargs ||
-        throw(ArgumentError("Expected one tangent direction per primal argument"))
-    for i in 1:nargs
-        _assert_matching_tangent_shape(all_x[i], v[i], i)
-    end
-    (f_val, grads), (_, hvps) = value_and_derivative!!(
-        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), map(tuple, all_x, v)...
-    )
-    return f_val, grads, hvps
+    _verify_hvp_direction_shapes(all_x, v)
+    return _value_and_hvp_nokwarg(cache, v, all_x)
 end
 
 """
