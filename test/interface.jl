@@ -160,16 +160,33 @@ end
             @test occursin("mode=:forward", forward_show)
             @test occursin("friendly_tangents=true", forward_show)
             @test occursin("nfwd=false", forward_show)
-            @test occursin("chunk_size=2", forward_show)
+            @test occursin("chunk_size=1", forward_show)
 
             forward_plain = repr(MIME"text/plain"(), forward_cache)
             @test occursin("Mooncake.ForwardCache", forward_plain)
             @test occursin("mode: forward", forward_plain)
             @test occursin("friendly_tangents: true", forward_plain)
             @test occursin("nfwd: false", forward_plain)
-            @test occursin("chunk_size: 2", forward_plain)
+            @test occursin("chunk_size: 1", forward_plain)
             @test occursin("input_1: Float64 (scalar)", forward_plain)
             @test occursin("output: Float64 (scalar)", forward_plain)
+
+            forward_cache_chunk2 = Mooncake.prepare_derivative_cache(
+                (x, y) -> x * y + sin(x),
+                1.0,
+                2.0;
+                config=Mooncake.Config(;
+                    debug_mode=false,
+                    friendly_tangents=true,
+                    chunk_size=2,
+                    enable_nfwd=false,
+                ),
+            )
+            forward_chunk2_show = sprint(show, forward_cache_chunk2)
+            @test occursin("chunk_size=2", forward_chunk2_show)
+
+            forward_chunk2_plain = repr(MIME"text/plain"(), forward_cache_chunk2)
+            @test occursin("chunk_size: 2", forward_chunk2_plain)
 
             hvp_cache = Mooncake.prepare_hvp_cache(sin, 1.0)
             hvp_show = sprint(show, hvp_cache)
