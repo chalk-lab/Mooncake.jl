@@ -50,6 +50,7 @@ The overall target is: correct by construction where possible, aggressively test
 - If you change public APIs, developer tooling, or core internals, update docs under `docs/src/` when needed.
 - Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
 - Prefer clear, concise names for variables, types, and methods.
+- When fixing bugs or performance issues (allocations, type instability), prefer minimal inline fixes rather than introducing new helper functions.
 
 ## Consistency
 

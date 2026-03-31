@@ -363,11 +363,17 @@ function populate_address_map_internal(m::AddressMap, primal::P, tangent::T) whe
     T === NoTangent && return m
     T === NoFData && return m
     if ismutabletype(P)
-        @assert T <: MutableTangent
+        @assert T <: MutableTangent "Expected tangent type to be a MutableTangent for mutable primal type $(P), but got $(T)."
         k = pointer_from_objref(primal)
         v = pointer_from_objref(tangent)
         if haskey(m, k)
-            @assert m[k] == v
+            @assert(
+                m[k] == v,
+                "Aliasing not preserved: primal object at address $(k) maps to tangent " *
+                    "at address $(m[k]), but also maps to a different tangent at address $(v). " *
+                    "This means two references to the same primal object do not share the " *
+                    "same tangent object.",
+            )
             return m
         end
         m[k] = v
@@ -403,7 +409,13 @@ function populate_address_map_internal(m::AddressMap, p::Array, t::Array)
     k = pointer_from_objref(p)
     v = pointer_from_objref(t)
     if haskey(m, k)
-        @assert m[k] == v
+        @assert(
+            m[k] == v,
+            "Aliasing not preserved: primal Array at address $(k) maps to tangent " *
+                "at address $(m[k]), but also maps to a different tangent at address $(v). " *
+                "This means two references to the same primal object do not share the " *
+                "same tangent object.",
+        )
         return m
     end
     m[k] = v
@@ -417,7 +429,13 @@ function populate_address_map_internal(m::AddressMap, p::Core.SimpleVector, t::V
     k = pointer_from_objref(p)
     v = pointer_from_objref(t)
     if haskey(m, k)
-        @assert m[k] == v
+        @assert(
+            m[k] == v,
+            "Aliasing not preserved: primal SimpleVector at address $(k) maps to " *
+                "tangent at address $(m[k]), but also maps to a different tangent at " *
+                "address $(v). This means two references to the same primal object do " *
+                "not share the same tangent object.",
+        )
         return m
     end
     m[k] = v

@@ -75,8 +75,11 @@ val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 
 Passing `Config(chunk_size=2)` caps the forward chunk width used by this public cache path
 when it dispatches to `NfwdMooncake`. If `Nfwd` is not used, changing `chunk_size` is not
-useful. You can check which backend was used by calling `value_and_gradient!!(...;
-verbose=true)`. Leaving `chunk_size=nothing` keeps Mooncake's default heuristic.
+useful. Leaving `chunk_size=nothing` keeps Mooncake's default heuristic. Cache
+construction stays passive, but a later `value_and_gradient!!` or
+`value_and_derivative!!` call may still fail at runtime if `nfwd` turns out not to
+support the function. In that case, rebuild the cache with `Config(enable_nfwd=false)` to
+force the ordinary `frule!!` path instead.
 
 When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
 higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as

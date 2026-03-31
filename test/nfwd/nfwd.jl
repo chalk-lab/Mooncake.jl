@@ -394,8 +394,39 @@ using Mooncake.Nfwd
         catch e
             e
         end
-        @test occursin("div", sprint(showerror, err))
-        @test occursin("NDual", sprint(showerror, err))
+        msg = sprint(showerror, err)
+        @test startswith(msg, "NDual does not support `div`.")
+        @test occursin("\n  │ ", msg)
+        @test occursin("This operation cannot propagate partial derivatives.", msg)
+    end
+
+    @testset "unsupported output diagnostics" begin
+        err = try
+            Nfwd._nfwd_output_error((1.0, [2.0, 3.0]), [1, 2])
+        catch err
+            err
+        end
+        msg = sprint(showerror, err)
+        @test err isa Nfwd.UnsupportedOutputError
+        @test occursin("nfwd output unsupported.", msg)
+        @test occursin("Supported nfwd inputs:", msg)
+        @test occursin("Supported nfwd outputs:", msg)
+        @test occursin("1. Float64 (scalar)", msg)
+        @test occursin("2. Vector{Float64} (size (2,))", msg)
+        @test occursin("Vector{Int64} (size (2,))", msg)
+    end
+
+    @testset "unsupported input diagnostics" begin
+        err = try
+            Nfwd._nfwd_input_error([1, 2])
+        catch err
+            err
+        end
+        msg = sprint(showerror, err)
+        @test err isa Nfwd.UnsupportedInputError
+        @test occursin("nfwd input unsupported.", msg)
+        @test occursin("Supported nfwd inputs:", msg)
+        @test occursin("Vector{Int64} (size (2,))", msg)
     end
 
     @testset "Complex{NDual}" begin
