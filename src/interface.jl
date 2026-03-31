@@ -1723,64 +1723,6 @@ end
     return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
 end
 
-@inline function _fcache_requested_chunk_size(config)
-    requested = getfield(config, :chunk_size)
-    return isnothing(requested) ? 0 : Nfwd._nfwd_check_chunk_size(requested)
-end
-
-@inline function _fcache_gradient_chunk_config(fx::Tuple, config)
-    requested_chunk_size = _fcache_requested_chunk_size(config)
-    gradient_chunk_size_auto = requested_chunk_size == 0
-    total_dof = _fcache_gradient_input_dof(fx)
-    gradient_chunk_size = if gradient_chunk_size_auto
-        min(total_dof, _CHUNK_NFWD_MAX_LANES)
-    else
-        min(total_dof, requested_chunk_size)
-    end
-    return gradient_chunk_size, gradient_chunk_size_auto
-end
-
-@inline function _prepare_derivative_cache_nokwarg(
-    rule, fx::Tuple, config, gradient_chunk_size::Int, gradient_chunk_size_auto::Bool
-)
-    chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
-    input_specs = tuple_map(_prepared_cache_input_spec, fx)
-    if config.friendly_tangents
-        y = first(fx)(Base.tail(fx)...)
-        input_tangents = tuple_map(zero_tangent, fx)
-        # The friendly branch already materializes a concrete `input_tangents` tuple, so an
-        # inline typed `Ref` is enough here; the generated helper below is only needed for
-        # the non-friendly branch, which must preserve a concrete workspace type without
-        # constructing the runtime tangents eagerly.
-        gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
-        output_primal = _copy_output(y)
-        return ForwardCache(
-            rule,
-            input_tangents,
-            output_primal,
-            _copy_output(fx),
-            gradient_workspace,
-            gradient_chunk_size,
-            gradient_chunk_size_auto,
-            chunkcache,
-            input_specs,
-        )
-    end
-
-    gradient_workspace = _fcache_gradient_lazy_workspace_ref(typeof(fx))
-    return ForwardCache(
-        rule,
-        nothing,
-        nothing,
-        nothing,
-        gradient_workspace,
-        gradient_chunk_size,
-        gradient_chunk_size_auto,
-        chunkcache,
-        input_specs,
-    )
-end
-
 """
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
@@ -1790,12 +1732,50 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     f, x::Vararg{Any,N}; config=Config()
 ) where {N}
     fx = (f, x...)
-    gradient_chunk_size, gradient_chunk_size_auto = _fcache_gradient_chunk_config(
-        fx, config
-    )
+    requested_chunk_size = getfield(config, :chunk_size)
+    requested_chunk_size = if isnothing(requested_chunk_size)
+        0
+    else
+        Nfwd._nfwd_check_chunk_size(requested_chunk_size)
+    end
+    gradient_chunk_size_auto = requested_chunk_size == 0
+    gradient_chunk_size = let total_dof = _fcache_gradient_input_dof(fx)
+        if gradient_chunk_size_auto
+            min(total_dof, _CHUNK_NFWD_MAX_LANES)
+        else
+            min(total_dof, requested_chunk_size)
+        end
+    end
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
-    return _prepare_derivative_cache_nokwarg(
-        rule, fx, config, gradient_chunk_size, gradient_chunk_size_auto
+    chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
+    input_specs = tuple_map(_prepared_cache_input_spec, fx)
+    if config.friendly_tangents
+        y = f(x...)
+        input_tangents = tuple_map(zero_tangent, fx)
+        gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
+        return ForwardCache(
+            rule,
+            input_tangents,
+            _copy_output(y),
+            _copy_output(fx),
+            gradient_workspace,
+            gradient_chunk_size,
+            gradient_chunk_size_auto,
+            chunkcache,
+            input_specs,
+        )
+    end
+
+    return ForwardCache(
+        rule,
+        nothing,
+        nothing,
+        nothing,
+        _fcache_gradient_lazy_workspace_ref(typeof(fx)),
+        gradient_chunk_size,
+        gradient_chunk_size_auto,
+        chunkcache,
+        input_specs,
     )
 end
 
