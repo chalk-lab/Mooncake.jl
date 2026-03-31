@@ -158,44 +158,10 @@ There are lots of ways to get this wrong though, so we generally advise against 
 # Otherwise returns IdDict to handle aliased mutable buffers across the tuple of tangents.
 _friendly_cache(fx::Tuple) = all(isbitstype ∘ typeof, fx) ? NoCache() : IdDict{Any,Any}()
 
-abstract type _ReverseTangentStyle end
-struct _NativeTangents <: _ReverseTangentStyle end
-struct _FriendlyTangents <: _ReverseTangentStyle end
-
-@inline _reverse_tangent_style(friendly_tangents::Bool) =
-    friendly_tangents ? _FriendlyTangents() : _NativeTangents()
-
 @inline function _reverse_friendly_tangents(fx::Tuple, tangents::Tuple)
     dests = map(friendly_tangent_cache, fx)
     c = _friendly_cache(fx)
     return tuple_map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, tangents)
-end
-
-@inline function _value_and_pullback_nokwarg(
-    rule::R, ȳ, fx::Tuple, ::_NativeTangents
-) where {R}
-    return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
-end
-
-@unstable function _value_and_pullback_nokwarg(
-    rule::R, ȳ, fx::Tuple, ::_FriendlyTangents
-) where {R}
-    ȳ_tangent = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
-    value, pb = __value_and_pullback!!(rule, ȳ_tangent, __create_coduals(fx)...)
-    return value, _reverse_friendly_tangents(fx, pb)
-end
-
-@inline function _value_and_gradient_nokwarg(
-    rule::R, fx::Tuple, ::_NativeTangents
-) where {R}
-    return __value_and_gradient!!(rule, __create_coduals(fx)...)
-end
-
-@unstable function _value_and_gradient_nokwarg(
-    rule::R, fx::Tuple, ::_FriendlyTangents
-) where {R}
-    value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
-    return value, _reverse_friendly_tangents(fx, gradient)
 end
 
 # @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
@@ -203,9 +169,12 @@ end
 @inline function value_and_pullback!!(
     rule::R, ȳ, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
-    return _value_and_pullback_nokwarg(
-        rule, ȳ, fx, _reverse_tangent_style(friendly_tangents)
-    )
+    if friendly_tangents
+        ȳ_tangent = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
+        value, pb = __value_and_pullback!!(rule, ȳ_tangent, __create_coduals(fx)...)
+        return value, _reverse_friendly_tangents(fx, pb)
+    end
+    return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
 end
 
 """
@@ -234,7 +203,11 @@ value_and_gradient!!(rule, f, x, y)
 @inline function value_and_gradient!!(
     rule::R, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
-    return _value_and_gradient_nokwarg(rule, fx, _reverse_tangent_style(friendly_tangents))
+    if friendly_tangents
+        value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
+        return value, _reverse_friendly_tangents(fx, gradient)
+    end
+    return __value_and_gradient!!(rule, __create_coduals(fx)...)
 end
 
 function __create_coduals(args)
