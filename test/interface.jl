@@ -258,6 +258,9 @@ end
             @test dx_sym[2].m isa Matrix{Float64}
             @test dx_sym[2].m == grads_sym[2].m
             @test dx_sym[2].v ≈ grads_sym[2].v
+            _, dx_sym2 = Mooncake.value_and_gradient!!(cache_sym, f_sym, foo)
+            @test dx_sym2[2].m === dx_sym[2].m
+            @test dx_sym2[2].m == grads_sym[2].m
 
             # Vector of structs: friendly gradient returns a Vector of the same struct type
             # (MWE 3 from temp/friendly_tangent_mwes.jl).

@@ -760,9 +760,10 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     value, pb = __value_and_pullback!!(
         cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
     )
-    dests = map(friendly_tangent_cache, fx)
     c = _friendly_cache(fx)
-    friendly_pb = tuple_map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, pb)
+    friendly_pb = tuple_map(
+        (d, p, t) -> tangent_to_friendly!!(d, p, t, c), getfield(cache, :dests), fx, pb
+    )
     return value, friendly_pb
 end
 
@@ -869,10 +870,12 @@ value_and_gradient!!(cache, f, x, y)
         return __value_and_gradient!!(cache.rule, coduals...)
     end
     value, gradient = __value_and_gradient!!(cache.rule, coduals...)
-    dests = map(friendly_tangent_cache, fx)
     c = _friendly_cache(fx)
     friendly_gradient = tuple_map(
-        (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, gradient
+        (d, p, t) -> tangent_to_friendly!!(d, p, t, c),
+        getfield(cache, :dests),
+        fx,
+        gradient,
     )
     return value, friendly_gradient
 end
