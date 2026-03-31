@@ -1693,17 +1693,6 @@ This overload exists so callers can prepare a forward cache once, then use it ei
 directional derivatives via [`value_and_derivative!!`](@ref) or full gradients via chunked
 forward mode.
 """
-@inline function _fcache_output_gradients(
-    cache::ForwardCache, input_primals::Tuple, native_gradients
-)
-    return if isnothing(cache.input_tangents)
-        native_gradients
-    else
-        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
-        tangent_to_primal!!(friendly_gradients, native_gradients)
-    end
-end
-
 function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
     native_gradients = let workspace = cache.gradient_workspace[]
         if isnothing(workspace)
@@ -1722,7 +1711,11 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
         output = cache.rule(tuple_map(Dual, input_primals, native_gradients)...)
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        return y, _fcache_output_gradients(cache, input_primals, native_gradients)
+        if isnothing(cache.input_tangents)
+            return y, native_gradients
+        end
+        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
+        return y, tangent_to_primal!!(friendly_gradients, native_gradients)
     end
 
     chunk_size = cache.gradient_chunk_size
@@ -1792,7 +1785,11 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
         end
     end
 
-    return y, _fcache_output_gradients(cache, input_primals, native_gradients)
+    if isnothing(cache.input_tangents)
+        return y, native_gradients
+    end
+    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
+    return y, tangent_to_primal!!(friendly_gradients, native_gradients)
 end
 
 #
@@ -1840,7 +1837,11 @@ end
     y = primal(output)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     native_gradients = (NoTangent(), tangent(output))
-    return y, _fcache_output_gradients(cache, (f, x), native_gradients)
+    if isnothing(cache.input_tangents)
+        return y, native_gradients
+    end
+    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
+    return y, tangent_to_primal!!(friendly_gradients, native_gradients)
 end
 
 # Small-vector `value_and_gradient!!` fast path: this one is nfwd-specific. When the
@@ -1877,7 +1878,11 @@ end
             native_gradients[2][i] =
                 output_tangent isa Tuple ? output_tangent[i] : output_tangent
         end
-        return y, _fcache_output_gradients(cache, (f, x), native_gradients)
+        if isnothing(cache.input_tangents)
+            return y, native_gradients
+        end
+        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
+        return y, tangent_to_primal!!(friendly_gradients, native_gradients)
     elseif !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
         native_gradients = let workspace = cache.gradient_workspace[]
             if isnothing(workspace)
@@ -1895,7 +1900,11 @@ end
             CoDual(x, native_gradients[2]),
         )
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        return y, _fcache_output_gradients(cache, (f, x), output)
+        if isnothing(cache.input_tangents)
+            return y, output
+        end
+        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
+        return y, tangent_to_primal!!(friendly_gradients, output)
     end
     return _fcache_gradient_chunked!!(cache, (f, x))
 end
@@ -1935,7 +1944,11 @@ end
             CoDual(x, native_gradients[2]),
         )
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        return y, _fcache_output_gradients(cache, (f, x), output)
+        if isnothing(cache.input_tangents)
+            return y, output
+        end
+        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
+        return y, tangent_to_primal!!(friendly_gradients, output)
     end
     return _fcache_gradient_chunked!!(cache, (f, x))
 end
