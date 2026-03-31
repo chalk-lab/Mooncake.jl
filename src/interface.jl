@@ -1740,29 +1740,30 @@ end
     return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
 end
 
-"""
-    prepare_derivative_cache(fx...; config=Mooncake.Config())
+@inline function _fcache_requested_chunk_size(config)
+    requested = getfield(config, :chunk_size)
+    return isnothing(requested) ? 0 : Nfwd._nfwd_check_chunk_size(requested)
+end
 
-Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
-"""
-@unstable @inline function prepare_derivative_cache(
-    f, x::Vararg{Any,N}; config=Config()
-) where {N}
-    fx = (f, x...)
-    requested_gradient_chunk_size = let requested = getfield(config, :chunk_size)
-        isnothing(requested) ? 0 : Nfwd._nfwd_check_chunk_size(requested)
-    end
-    gradient_chunk_size_auto = requested_gradient_chunk_size == 0
+@inline function _fcache_gradient_chunk_config(fx::Tuple, config)
+    requested_chunk_size = _fcache_requested_chunk_size(config)
+    gradient_chunk_size_auto = requested_chunk_size == 0
     total_dof = _fcache_gradient_input_dof(fx)
     gradient_chunk_size = if gradient_chunk_size_auto
         min(total_dof, _CHUNK_NFWD_MAX_LANES)
     else
-        min(total_dof, requested_gradient_chunk_size)
+        min(total_dof, requested_chunk_size)
     end
-    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
+    return gradient_chunk_size, gradient_chunk_size_auto
+end
 
+@inline function _prepare_derivative_cache_nokwarg(
+    rule, fx::Tuple, config, gradient_chunk_size::Int, gradient_chunk_size_auto::Bool
+)
+    chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
+    input_specs = tuple_map(_prepared_cache_input_spec, fx)
     if config.friendly_tangents
-        y = f(x...)
+        y = first(fx)(Base.tail(fx)...)
         input_tangents = tuple_map(zero_tangent, fx)
         # The friendly branch already materializes a concrete `input_tangents` tuple, so an
         # inline typed `Ref` is enough here; the generated helper below is only needed for
@@ -1778,23 +1779,41 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             gradient_workspace,
             gradient_chunk_size,
             gradient_chunk_size_auto,
-            _fcache_build_nfwd_chunk_cache(fx, config),
-            tuple_map(_prepared_cache_input_spec, fx),
-        )
-    else
-        gradient_workspace = _fcache_gradient_lazy_workspace_ref(typeof(fx))
-        return ForwardCache(
-            rule,
-            nothing,
-            nothing,
-            nothing,
-            gradient_workspace,
-            gradient_chunk_size,
-            gradient_chunk_size_auto,
-            _fcache_build_nfwd_chunk_cache(fx, config),
-            tuple_map(_prepared_cache_input_spec, fx),
+            chunkcache,
+            input_specs,
         )
     end
+
+    gradient_workspace = _fcache_gradient_lazy_workspace_ref(typeof(fx))
+    return ForwardCache(
+        rule,
+        nothing,
+        nothing,
+        nothing,
+        gradient_workspace,
+        gradient_chunk_size,
+        gradient_chunk_size_auto,
+        chunkcache,
+        input_specs,
+    )
+end
+
+"""
+    prepare_derivative_cache(fx...; config=Mooncake.Config())
+
+Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
+"""
+@unstable @inline function prepare_derivative_cache(
+    f, x::Vararg{Any,N}; config=Config()
+) where {N}
+    fx = (f, x...)
+    gradient_chunk_size, gradient_chunk_size_auto = _fcache_gradient_chunk_config(
+        fx, config
+    )
+    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
+    return _prepare_derivative_cache_nokwarg(
+        rule, fx, config, gradient_chunk_size, gradient_chunk_size_auto
+    )
 end
 
 #
@@ -2033,6 +2052,61 @@ function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {
     return __call_rule(cache.rule, fx)
 end
 
+@inline function _fcache_value_and_derivative_output(
+    cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S},
+    input_primals::Tuple,
+    input_tangents::Tuple,
+) where {R,OP,FG,GW,CF,S}
+    N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
+    !isnothing(N_val) && return _fcache_derivative_chunked!!(
+        cache,
+        N_val,
+        map(tuple, input_primals, input_tangents)...;
+        friendly_tangents=false,
+    )
+
+    input_duals = tuple_map(Dual, input_primals, input_tangents)
+    error_if_incorrect_dual_types(input_duals...)
+    output = __call_rule(cache.rule, input_duals)
+    return primal(output), tangent(output)
+end
+
+@inline function _fcache_value_and_derivative_output(
+    cache::ForwardCache{R,IT,OP,FG,GW,CF,S},
+    input_primals::Tuple,
+    input_friendly_tangents::Tuple,
+) where {R,IT<:Tuple,OP,FG,GW,CF,S}
+    N_val = _fcache_derivative_ntangent_lane_count(input_friendly_tangents)
+    !isnothing(N_val) && return _fcache_derivative_chunked!!(
+        cache,
+        N_val,
+        map(tuple, input_primals, input_friendly_tangents)...;
+        friendly_tangents=true,
+    )
+
+    input_tangents = tuple_map(
+        primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
+    )
+    N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
+    !isnothing(N_val) && return _fcache_derivative_chunked!!(
+        cache,
+        N_val,
+        map(tuple, input_primals, input_tangents)...;
+        friendly_tangents=true,
+    )
+
+    input_duals = tuple_map(Dual, input_primals, input_tangents)
+    output = __call_rule(cache.rule, input_duals)
+    output_primal = primal(output)
+    output_tangent = tangent(output)
+    c = _friendly_cache((output_primal,))
+    output_dest = friendly_tangent_cache(output_primal)
+    output_friendly_tangent = tangent_to_friendly!!(
+        output_dest, output_primal, output_tangent, c
+    )
+    return output_primal, output_friendly_tangent
+end
+
 """
     value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
 
@@ -2050,53 +2124,16 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
     cache::ForwardCache{R,IT,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,IT<:Tuple,OP,FG,GW,CF,S,M}
     input_primals = tuple_map(first, fx)
-    input_friendly_tangents = tuple_map(last, fx)
     _verify_prepared_cache_call(cache, input_primals)
-
-    N_val = _fcache_derivative_ntangent_lane_count(input_friendly_tangents)
-    !isnothing(N_val) &&
-        return _fcache_derivative_chunked!!(cache, N_val, fx...; friendly_tangents=true)
-
-    input_tangents = tuple_map(
-        primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
-    )
-
-    N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
-    !isnothing(N_val) && return _fcache_derivative_chunked!!(
-        cache,
-        N_val,
-        map(tuple, input_primals, input_tangents)...;
-        friendly_tangents=true,
-    )
-
-    input_duals = tuple_map(Dual, input_primals, input_tangents)
-    output = __call_rule(cache.rule, input_duals)
-    output_primal = primal(output)
-    output_tangent = tangent(output)
-
-    c = _friendly_cache((output_primal,))
-    output_dest = friendly_tangent_cache(output_primal)
-    output_friendly_tangent = tangent_to_friendly!!(
-        output_dest, output_primal, output_tangent, c
-    )
-    return output_primal, output_friendly_tangent
+    return _fcache_value_and_derivative_output(cache, input_primals, tuple_map(last, fx))
 end
 
 @inline function value_and_derivative!!(
     cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,OP,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
-    input_tangents = tuple_map(last, fx)
-    _verify_cache_inputs(cache.input_specs, input_primals)
-
-    N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
-    !isnothing(N_val) &&
-        return _fcache_derivative_chunked!!(cache, N_val, fx...; friendly_tangents=false)
-
-    input_duals = tuple_map(Dual, input_primals, input_tangents)
-    error_if_incorrect_dual_types(input_duals...)
-    output = __call_rule(cache.rule, input_duals)
-    return primal(output), tangent(output)
+    _verify_prepared_cache_call(cache, input_primals)
+    return _fcache_value_and_derivative_output(cache, input_primals, tuple_map(last, fx))
 end
 
 # `fwd_cache` is the derivative cache for `grad_f`. The compiled inner rrule is cached
