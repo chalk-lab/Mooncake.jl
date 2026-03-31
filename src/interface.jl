@@ -158,12 +158,6 @@ There are lots of ways to get this wrong though, so we generally advise against 
 # Otherwise returns IdDict to handle aliased mutable buffers across the tuple of tangents.
 _friendly_cache(fx::Tuple) = all(isbitstype ∘ typeof, fx) ? NoCache() : IdDict{Any,Any}()
 
-@inline function _reverse_friendly_tangents(fx::Tuple, tangents::Tuple)
-    dests = map(friendly_tangent_cache, fx)
-    c = _friendly_cache(fx)
-    return tuple_map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, tangents)
-end
-
 # @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
 # perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
 @inline function value_and_pullback!!(
@@ -172,7 +166,12 @@ end
     if friendly_tangents
         ȳ_tangent = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
         value, pb = __value_and_pullback!!(rule, ȳ_tangent, __create_coduals(fx)...)
-        return value, _reverse_friendly_tangents(fx, pb)
+        dests = map(friendly_tangent_cache, fx)
+        c = _friendly_cache(fx)
+        friendly_pb = tuple_map(
+            (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, pb
+        )
+        return value, friendly_pb
     end
     return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
 end
@@ -205,7 +204,12 @@ value_and_gradient!!(rule, f, x, y)
 ) where {R,N}
     if friendly_tangents
         value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
-        return value, _reverse_friendly_tangents(fx, gradient)
+        dests = map(friendly_tangent_cache, fx)
+        c = _friendly_cache(fx)
+        friendly_gradient = tuple_map(
+            (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, gradient
+        )
+        return value, friendly_gradient
     end
     return __value_and_gradient!!(rule, __create_coduals(fx)...)
 end
@@ -285,23 +289,6 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     input_specs::TIS
     # Top-level type/size signature for y = f(x...).
     output_spec::TOS
-end
-
-@inline function _prepare_reverse_rule_state(rule, fx::Tuple)
-    tangents = map(zero_tangent, fx)
-    y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
-    return tangents, y, rvs!!
-end
-
-@inline _prepared_reverse_cache_specs(fx::Tuple, y) = (
-    tuple_map(_prepared_cache_input_spec, fx), _prepared_cache_input_spec(primal(y))
-)
-
-@inline function _reverse_cache_coduals(
-    cache::Cache, fx::Tuple, args_to_zero::NTuple{N,Bool}
-) where {N}
-    tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
-    return tuple_map(CoDual, fx, tangents)
 end
 
 @inline _cache_input_count(cache) = length(getfield(cache, :input_specs)) - 1
@@ -655,7 +642,8 @@ The API guarantees that tangents are initialized at zero before the first autodi
     rule = build_rrule(
         interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages
     )
-    tangents, y, rvs!! = _prepare_reverse_rule_state(rule, fx)
+    tangents = map(zero_tangent, fx)
+    y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
     # Run reverse-pass in order to reset stacks + state.
     rvs!!(zero_rdata(primal(y)))
@@ -663,7 +651,8 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
-    input_specs, output_spec = _prepared_reverse_cache_specs(fx, y)
+    input_specs = tuple_map(_prepared_cache_input_spec, fx)
+    output_spec = _prepared_cache_input_spec(primal(y))
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
         return Cache(
@@ -739,8 +728,9 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    _verify_prepared_cache_call(cache, fx)
-    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
+    _verify_cache_inputs(getfield(cache, :input_specs), fx)
+    tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
+    coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
         return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
     end
@@ -748,7 +738,10 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     value, pb = __value_and_pullback!!(
         cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
     )
-    return value, _reverse_friendly_tangents(fx, pb)
+    dests = map(friendly_tangent_cache, fx)
+    c = _friendly_cache(fx)
+    friendly_pb = tuple_map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, pb)
+    return value, friendly_pb
 end
 
 """
@@ -760,10 +753,12 @@ The API guarantees that tangents are initialized at zero before the first autodi
 """
 @unstable function prepare_gradient_cache(fx...; config=Config())
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
-    tangents, y, rvs!! = _prepare_reverse_rule_state(rule, fx)
+    tangents = map(zero_tangent, fx)
+    y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
-    input_specs, output_spec = _prepared_reverse_cache_specs(fx, y)
+    input_specs = tuple_map(_prepared_cache_input_spec, fx)
+    output_spec = _prepared_cache_input_spec(primal(y))
     if config.friendly_tangents
         dests = tuple(map(friendly_tangent_cache, fx)...)
         return Cache(rule, nothing, tangents, dests, nothing, input_specs, output_spec)
@@ -823,13 +818,19 @@ value_and_gradient!!(cache, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    _verify_prepared_cache_call(cache, fx)
-    coduals = _reverse_cache_coduals(cache, fx, args_to_zero)
+    _verify_cache_inputs(getfield(cache, :input_specs), fx)
+    tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
+    coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
         return __value_and_gradient!!(cache.rule, coduals...)
     end
     value, gradient = __value_and_gradient!!(cache.rule, coduals...)
-    return value, _reverse_friendly_tangents(fx, gradient)
+    dests = map(friendly_tangent_cache, fx)
+    c = _friendly_cache(fx)
+    friendly_gradient = tuple_map(
+        (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, gradient
+    )
+    return value, friendly_gradient
 end
 
 # Internal nfwd chunk cache stored inside `ForwardCache`.
@@ -1008,32 +1009,6 @@ end
     return packed
 end
 
-@inline function _fcache_value_and_gradient_width1!!(cache::ForwardCache, rule, f, x)
-    output = rule(Dual(f, NoTangent()), Dual(x, one(x)))
-    y = primal(output)
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    native_gradients = (NoTangent(), tangent(output))
-    return y, _fcache_output_gradients(cache, (f, x), native_gradients)
-end
-
-@inline function _fcache_value_and_gradient_rrule!!(cache::ForwardCache, rule, f, x)
-    native_gradients = let workspace = cache.gradient_workspace[]
-        if isnothing(workspace)
-            workspace = (NoTangent(), zero_tangent(x))
-            cache.gradient_workspace[] = workspace
-            workspace
-        else
-            set_to_zero!!(workspace[2])
-            workspace
-        end
-    end
-    y, output = __value_and_gradient!!(
-        rule, CoDual(f, native_gradients[1]), CoDual(x, native_gradients[2])
-    )
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    return y, _fcache_output_gradients(cache, (f, x), output)
-end
-
 struct PreparedCacheSpecError <: Exception
     msg::String
 end
@@ -1085,11 +1060,6 @@ end
         _throw_prepared_cache_spec_error(:arity, 0, length(specs), length(fx))
     _verify_cache_inputs_impl(1, specs, fx)
     return nothing
-end
-
-@inline function _verify_prepared_cache_call(cache, fx::Tuple)
-    _verify_cache_inputs(getfield(cache, :input_specs), fx)
-    return fx
 end
 
 @inline function _verify_cache_inputs(specs::Tuple{S1,S2}, f, x) where {S1,S2}
@@ -1864,14 +1834,18 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::T
 ) where {F,T<:IEEEFloat}
-    _verify_prepared_cache_call(cache, (f, x))
+    _verify_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
     rule = if isnothing(fastpath) || isnothing(fastpath.frule_1)
         cache.rule
     else
         fastpath.frule_1
     end
-    return _fcache_value_and_gradient_width1!!(cache, rule, f, x)
+    output = rule(Dual(f, NoTangent()), Dual(x, one(x)))
+    y = primal(output)
+    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    native_gradients = (NoTangent(), tangent(output))
+    return y, _fcache_output_gradients(cache, (f, x), native_gradients)
 end
 
 # Small-vector `value_and_gradient!!` fast path: this one is nfwd-specific. When the
@@ -1881,7 +1855,7 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::V
 ) where {F,T<:IEEEFloat,V<:Vector{T}}
-    _verify_prepared_cache_call(cache, (f, x))
+    _verify_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
     if !isnothing(fastpath) && !isnothing(fastpath.small_vector_gradient_frule)
         rule = fastpath.small_vector_gradient_frule
@@ -1902,7 +1876,23 @@ end
         end
         return y, _fcache_output_gradients(cache, (f, x), native_gradients)
     elseif !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
-        return _fcache_value_and_gradient_rrule!!(cache, fastpath.gradient_rrule, f, x)
+        native_gradients = let workspace = cache.gradient_workspace[]
+            if isnothing(workspace)
+                workspace = (NoTangent(), zero_tangent(x))
+                cache.gradient_workspace[] = workspace
+                workspace
+            else
+                set_to_zero!!(workspace[2])
+                workspace
+            end
+        end
+        y, output = __value_and_gradient!!(
+            fastpath.gradient_rrule,
+            CoDual(f, native_gradients[1]),
+            CoDual(x, native_gradients[2]),
+        )
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        return y, _fcache_output_gradients(cache, (f, x), output)
     end
     return _fcache_gradient_chunked!!(cache, (f, x))
 end
@@ -1915,16 +1905,33 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::A
 ) where {F,A<:Array{<:IEEEFloat}}
-    _verify_prepared_cache_call(cache, (f, x))
+    _verify_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
     if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
-        return _fcache_value_and_gradient_rrule!!(cache, fastpath.gradient_rrule, f, x)
+        native_gradients = let workspace = cache.gradient_workspace[]
+            if isnothing(workspace)
+                workspace = (NoTangent(), zero_tangent(x))
+                cache.gradient_workspace[] = workspace
+                workspace
+            else
+                set_to_zero!!(workspace[2])
+                workspace
+            end
+        end
+        y, output = __value_and_gradient!!(
+            fastpath.gradient_rrule,
+            CoDual(f, native_gradients[1]),
+            CoDual(x, native_gradients[2]),
+        )
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        return y, _fcache_output_gradients(cache, (f, x), output)
     end
     return _fcache_gradient_chunked!!(cache, (f, x))
 end
 
 function value_and_gradient!!(cache::ForwardCache, f::F, x::Vararg{Any,N}) where {F,N}
-    input_primals = _verify_prepared_cache_call(cache, (f, x...))
+    input_primals = (f, x...)
+    _verify_cache_inputs(getfield(cache, :input_specs), input_primals)
     return _fcache_gradient_chunked!!(cache, input_primals)
 end
 
@@ -1945,7 +1952,7 @@ in `f` and `x`.
 # - tuple inputs whose tangents are ordinary width-1 tangents are first wrapped into
 #   `Dual(primal, tangent)` values, then passed to the cached `frule`
 function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
-    _verify_prepared_cache_call(cache, map(primal, fx))
+    _verify_cache_inputs(getfield(cache, :input_specs), map(primal, fx))
     if any(x -> tangent(x) isa NTangent, fx)
         # Bug fix note: routing chunked `Dual(...)` inputs through the tuple path hit a
         # Julia 1.10 compiler/codegen crash, so chunked inputs currently stay tuple-only.
@@ -1977,7 +1984,7 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
     cache::ForwardCache{R,IT,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,IT<:Tuple,OP,FG,GW,CF,S,M}
     input_primals = tuple_map(first, fx)
-    _verify_prepared_cache_call(cache, input_primals)
+    _verify_cache_inputs(getfield(cache, :input_specs), input_primals)
     input_friendly_tangents = tuple_map(last, fx)
     N_val = _fcache_derivative_ntangent_lane_count(input_friendly_tangents)
     !isnothing(N_val) && return _fcache_derivative_chunked!!(
@@ -2013,7 +2020,7 @@ end
     cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,OP,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
-    _verify_prepared_cache_call(cache, input_primals)
+    _verify_cache_inputs(getfield(cache, :input_specs), input_primals)
     input_tangents = tuple_map(last, fx)
     N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
     !isnothing(N_val) && return _fcache_derivative_chunked!!(
@@ -2203,7 +2210,7 @@ true
 """
 @inline function value_and_hvp!!(cache::HVPCache, f::F, v, x1::T1) where {F,T1}
     _assert_hvp_cache_function(cache, f)
-    _verify_prepared_cache_call(cache.fwd_cache, (cache.grad_f, x1))
+    _verify_cache_inputs(getfield(cache.fwd_cache, :input_specs), (cache.grad_f, x1))
     _assert_matching_tangent_shape(x1, v, 1)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
@@ -2216,7 +2223,7 @@ end
 ) where {F,T1,N}
     all_x = (x1, xrest...)
     _assert_hvp_cache_function(cache, f)
-    _verify_prepared_cache_call(cache.fwd_cache, (cache.grad_f, all_x...))
+    _verify_cache_inputs(getfield(cache.fwd_cache, :input_specs), (cache.grad_f, all_x...))
     length(v) == length(all_x) ||
         throw(ArgumentError("Expected one tangent direction per primal argument"))
     for i in eachindex(all_x)
