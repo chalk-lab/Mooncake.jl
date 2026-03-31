@@ -1058,6 +1058,23 @@ end
         end
 
         @testset "prepare_derivative_cache nfwd opt-out" begin
+            cache_supported = Mooncake.prepare_derivative_cache(
+                (a, b) -> a * b + sin(a),
+                x,
+                y;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            cache_supported_no_nfwd = Mooncake.prepare_derivative_cache(
+                (a, b) -> a * b + sin(a),
+                x,
+                y;
+                config=Mooncake.Config(;
+                    debug_mode=false, friendly_tangents=false, enable_nfwd=false
+                ),
+            )
+            @test !isnothing(getfield(cache_supported, :chunkcache))
+            @test isnothing(getfield(cache_supported_no_nfwd, :chunkcache))
+
             @testset "$(label)" for (label, f, args, counter, no_nfwd_count) in (
                 ("scalar", CountedChunkScalarCall(), (x, y), CHUNK_SCALAR_EVAL_COUNT, 2),
                 ("array", CountedChunkArrayCall(), ([x, y],), CHUNK_ARRAY_EVAL_COUNT, 2),

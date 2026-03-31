@@ -273,6 +273,8 @@ end
 # Internal helper cache types in this file:
 # - `NfwdCache`: internal nfwd helper cache stored inside `ForwardCache` when the
 #   prepared forward cache can use packed NDual execution.
+# All seven parameters are load-bearing: they keep the prepared reverse cache concrete
+# across the cached rule, reusable primal/tangent buffers, and cached input/output specs.
 struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     rule::Trule
     # Cache for function output; **primal** type for y.
@@ -739,18 +741,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    specs = getfield(cache, :input_specs)
-    length(specs) == length(fx) ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(specs), length(fx))
-    for i in eachindex(specs, fx)
-        spec = specs[i]
-        x_i = fx[i]
-        typeof(x_i) == spec.type ||
-            _throw_prepared_cache_spec_error(:type, i, spec.type, typeof(x_i))
-        x_i isa AbstractArray || continue
-        size(x_i) == spec.size ||
-            _throw_prepared_cache_spec_error(:size, i, spec.size, size(x_i))
-    end
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -852,18 +843,7 @@ value_and_gradient!!(cache, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    specs = getfield(cache, :input_specs)
-    length(specs) == length(fx) ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(specs), length(fx))
-    for i in eachindex(specs, fx)
-        spec = specs[i]
-        x_i = fx[i]
-        typeof(x_i) == spec.type ||
-            _throw_prepared_cache_spec_error(:type, i, spec.type, typeof(x_i))
-        x_i isa AbstractArray || continue
-        size(x_i) == spec.size ||
-            _throw_prepared_cache_spec_error(:size, i, spec.size, size(x_i))
-    end
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -1077,6 +1057,22 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
         "with the same top-level array sizes they were prepared with."
     end
     throw(PreparedCacheSpecError(msg))
+end
+
+# Shared prepared-cache input validation for Cache, ForwardCache, and HVPCache entry points.
+@inline function _validate_prepared_cache_inputs(specs::Tuple, fx::Tuple)
+    length(specs) == length(fx) ||
+        _throw_prepared_cache_spec_error(:arity, 0, length(specs), length(fx))
+    for i in eachindex(specs, fx)
+        spec = specs[i]
+        x_i = fx[i]
+        typeof(x_i) == spec.type ||
+            _throw_prepared_cache_spec_error(:type, i, spec.type, typeof(x_i))
+        x_i isa AbstractArray || continue
+        size(x_i) == spec.size ||
+            _throw_prepared_cache_spec_error(:size, i, spec.size, size(x_i))
+    end
+    return fx
 end
 
 # fcache gradient bookkeeping
@@ -1842,15 +1838,7 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::T
 ) where {F,T<:IEEEFloat}
-    spec1, spec2 = getfield(cache, :input_specs)
-    typeof(f) == spec1.type ||
-        _throw_prepared_cache_spec_error(:type, 1, spec1.type, typeof(f))
-    typeof(x) == spec2.type ||
-        _throw_prepared_cache_spec_error(:type, 2, spec2.type, typeof(x))
-    if x isa AbstractArray
-        size(x) == spec2.size ||
-            _throw_prepared_cache_spec_error(:size, 2, spec2.size, size(x))
-    end
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
     rule = if isnothing(fastpath) || isnothing(fastpath.frule_1)
         cache.rule
@@ -1875,15 +1863,7 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::V
 ) where {F,T<:IEEEFloat,V<:Vector{T}}
-    spec1, spec2 = getfield(cache, :input_specs)
-    typeof(f) == spec1.type ||
-        _throw_prepared_cache_spec_error(:type, 1, spec1.type, typeof(f))
-    typeof(x) == spec2.type ||
-        _throw_prepared_cache_spec_error(:type, 2, spec2.type, typeof(x))
-    if x isa AbstractArray
-        size(x) == spec2.size ||
-            _throw_prepared_cache_spec_error(:size, 2, spec2.size, size(x))
-    end
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
     if !isnothing(fastpath) && !isnothing(fastpath.small_vector_gradient_frule)
         rule = fastpath.small_vector_gradient_frule
@@ -1941,15 +1921,7 @@ end
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::A
 ) where {F,A<:Array{<:IEEEFloat}}
-    spec1, spec2 = getfield(cache, :input_specs)
-    typeof(f) == spec1.type ||
-        _throw_prepared_cache_spec_error(:type, 1, spec1.type, typeof(f))
-    typeof(x) == spec2.type ||
-        _throw_prepared_cache_spec_error(:type, 2, spec2.type, typeof(x))
-    if x isa AbstractArray
-        size(x) == spec2.size ||
-            _throw_prepared_cache_spec_error(:size, 2, spec2.size, size(x))
-    end
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
     if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
         native_gradients = let workspace = cache.gradient_workspace[]
@@ -1979,18 +1951,7 @@ end
 
 function value_and_gradient!!(cache::ForwardCache, f::F, x::Vararg{Any,N}) where {F,N}
     input_primals = (f, x...)
-    specs = getfield(cache, :input_specs)
-    length(specs) == length(input_primals) ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(specs), length(input_primals))
-    for i in eachindex(specs, input_primals)
-        spec = specs[i]
-        x_i = input_primals[i]
-        typeof(x_i) == spec.type ||
-            _throw_prepared_cache_spec_error(:type, i, spec.type, typeof(x_i))
-        x_i isa AbstractArray || continue
-        size(x_i) == spec.size ||
-            _throw_prepared_cache_spec_error(:size, i, spec.size, size(x_i))
-    end
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     return _fcache_gradient_chunked!!(cache, input_primals)
 end
 
@@ -2012,18 +1973,7 @@ in `f` and `x`.
 #   `Dual(primal, tangent)` values, then passed to the cached `frule`
 function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
     input_primals = map(primal, fx)
-    specs = getfield(cache, :input_specs)
-    length(specs) == length(input_primals) ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(specs), length(input_primals))
-    for i in eachindex(specs, input_primals)
-        spec = specs[i]
-        x_i = input_primals[i]
-        typeof(x_i) == spec.type ||
-            _throw_prepared_cache_spec_error(:type, i, spec.type, typeof(x_i))
-        x_i isa AbstractArray || continue
-        size(x_i) == spec.size ||
-            _throw_prepared_cache_spec_error(:size, i, spec.size, size(x_i))
-    end
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     if any(x -> tangent(x) isa NTangent, fx)
         # Bug fix note: routing chunked `Dual(...)` inputs through the tuple path hit a
         # Julia 1.10 compiler/codegen crash, so chunked inputs currently stay tuple-only.
@@ -2055,18 +2005,7 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
     cache::ForwardCache{R,IT,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,IT<:Tuple,OP,FG,GW,CF,S,M}
     input_primals = tuple_map(first, fx)
-    specs = getfield(cache, :input_specs)
-    length(specs) == length(input_primals) ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(specs), length(input_primals))
-    for i in eachindex(specs, input_primals)
-        spec = specs[i]
-        x_i = input_primals[i]
-        typeof(x_i) == spec.type ||
-            _throw_prepared_cache_spec_error(:type, i, spec.type, typeof(x_i))
-        x_i isa AbstractArray || continue
-        size(x_i) == spec.size ||
-            _throw_prepared_cache_spec_error(:size, i, spec.size, size(x_i))
-    end
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     input_friendly_tangents = tuple_map(last, fx)
     N_val = _fcache_derivative_ntangent_lane_count(input_friendly_tangents)
     !isnothing(N_val) && return _fcache_derivative_chunked!!(
@@ -2102,18 +2041,7 @@ end
     cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,OP,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
-    specs = getfield(cache, :input_specs)
-    length(specs) == length(input_primals) ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(specs), length(input_primals))
-    for i in eachindex(specs, input_primals)
-        spec = specs[i]
-        x_i = input_primals[i]
-        typeof(x_i) == spec.type ||
-            _throw_prepared_cache_spec_error(:type, i, spec.type, typeof(x_i))
-        x_i isa AbstractArray || continue
-        size(x_i) == spec.size ||
-            _throw_prepared_cache_spec_error(:size, i, spec.size, size(x_i))
-    end
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     input_tangents = tuple_map(last, fx)
     N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
     !isnothing(N_val) && return _fcache_derivative_chunked!!(
@@ -2292,15 +2220,9 @@ true
     cache.f === f || throw(
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
-    spec1, spec2 = getfield(cache.fwd_cache, :input_specs)
-    typeof(cache.grad_f) == spec1.type ||
-        _throw_prepared_cache_spec_error(:type, 1, spec1.type, typeof(cache.grad_f))
-    typeof(x1) == spec2.type ||
-        _throw_prepared_cache_spec_error(:type, 2, spec2.type, typeof(x1))
-    if x1 isa AbstractArray
-        size(x1) == spec2.size ||
-            _throw_prepared_cache_spec_error(:size, 2, spec2.size, size(x1))
-    end
+    _validate_prepared_cache_inputs(
+        getfield(cache.fwd_cache, :input_specs), (cache.grad_f, x1)
+    )
     _assert_matching_tangent_shape(x1, v, 1)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
@@ -2316,18 +2238,7 @@ end
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
     input_primals = (cache.grad_f, all_x...)
-    specs = getfield(cache.fwd_cache, :input_specs)
-    length(specs) == length(input_primals) ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(specs), length(input_primals))
-    for i in eachindex(specs, input_primals)
-        spec = specs[i]
-        x_i = input_primals[i]
-        typeof(x_i) == spec.type ||
-            _throw_prepared_cache_spec_error(:type, i, spec.type, typeof(x_i))
-        x_i isa AbstractArray || continue
-        size(x_i) == spec.size ||
-            _throw_prepared_cache_spec_error(:size, i, spec.size, size(x_i))
-    end
+    _validate_prepared_cache_inputs(getfield(cache.fwd_cache, :input_specs), input_primals)
     length(v) == length(all_x) ||
         throw(ArgumentError("Expected one tangent direction per primal argument"))
     for i in eachindex(all_x)
@@ -2524,13 +2435,11 @@ end
 function value_and_derivative!!(
     cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S}
 ) where {R,OP,FG,GW,CF,S<:Tuple}
-    length(cache.input_specs) == 0 ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(cache.input_specs), 0)
+    _validate_prepared_cache_inputs(cache.input_specs, ())
     error("unreachable")
 end
 
 function value_and_derivative!!(cache::ForwardCache)
-    length(cache.input_specs) == 0 ||
-        _throw_prepared_cache_spec_error(:arity, 0, length(cache.input_specs), 0)
+    _validate_prepared_cache_inputs(cache.input_specs, ())
     error("unreachable")
 end
