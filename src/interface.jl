@@ -1062,11 +1062,6 @@ end
     return packed
 end
 
-@inline function _fcache_gradient_chunk_size(cache::ForwardCache, total_dof::Int)
-    total_dof == 0 && return 0
-    return cache.gradient_chunk_size
-end
-
 @inline function _fcache_value_and_gradient_width1!!(cache::ForwardCache, rule, f, x)
     output = rule(Dual(f, NoTangent()), Dual(x, one(x)))
     y = primal(output)
@@ -1093,8 +1088,6 @@ end
     return y, _fcache_output_gradients(cache, (f, x), output)
 end
 
-@inline _prepared_cache_arg_label(i::Int) = i == 1 ? "`f`" : "`x$(i - 1)`"
-
 struct PreparedCacheSpecError <: Exception
     msg::String
 end
@@ -1104,7 +1097,7 @@ function Base.showerror(io::IO, err::PreparedCacheSpecError)
 end
 
 function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
-    label = _prepared_cache_arg_label(i)
+    label = i == 1 ? "`f`" : "`x$(i - 1)`"
     msg = if kind === :arity
         "Cached autodiff call expected $(expected) total arguments `(f, x...)`, got $(got).\n" *
         "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
@@ -1829,7 +1822,7 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
         return y, _fcache_output_gradients(cache, input_primals, native_gradients)
     end
 
-    chunk_size = _fcache_gradient_chunk_size(cache, total_dof)
+    chunk_size = cache.gradient_chunk_size
     first_chunk_width = min(chunk_size, total_dof)
     # Build one chunk of standard-basis directions, then transpose from lane-major
     # storage to the input-major `NTangent` tuple expected by `_fcache_derivative_chunked!!`.
