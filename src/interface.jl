@@ -1649,24 +1649,26 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         Nfwd._nfwd_check_chunk_size(requested_chunk_size)
     end
     gradient_chunk_size_auto = requested_chunk_size == 0
-    gradient_chunk_size = let total_dof = _fcache_gradient_input_dof(fx)
-        if gradient_chunk_size_auto
-            min(total_dof, _CHUNK_NFWD_MAX_LANES)
-        else
-            min(total_dof, requested_chunk_size)
-        end
-    end
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
-    chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
-    input_specs = map(fx) do x
-        if x isa AbstractArray
-            PreparedCacheInputSpec(typeof(x), size(x))
-        else
-            PreparedCacheInputSpec(typeof(x), ())
-        end
-    end
     if config.friendly_tangents
         y = f(x...)
+        # Snapshot post-primal shapes for friendly caches because the eager prepare-time
+        # primal may legally resize top-level inputs.
+        chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
+        input_specs = map(fx) do x
+            if x isa AbstractArray
+                PreparedCacheInputSpec(typeof(x), size(x))
+            else
+                PreparedCacheInputSpec(typeof(x), ())
+            end
+        end
+        gradient_chunk_size = let total_dof = _fcache_gradient_input_dof(fx)
+            if gradient_chunk_size_auto
+                min(total_dof, _CHUNK_NFWD_MAX_LANES)
+            else
+                min(total_dof, requested_chunk_size)
+            end
+        end
         input_tangents = tuple_map(zero_tangent, fx)
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
         return ForwardCache(
@@ -1680,6 +1682,22 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             chunkcache,
             input_specs,
         )
+    end
+
+    chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
+    input_specs = map(fx) do x
+        if x isa AbstractArray
+            PreparedCacheInputSpec(typeof(x), size(x))
+        else
+            PreparedCacheInputSpec(typeof(x), ())
+        end
+    end
+    gradient_chunk_size = let total_dof = _fcache_gradient_input_dof(fx)
+        if gradient_chunk_size_auto
+            min(total_dof, _CHUNK_NFWD_MAX_LANES)
+        else
+            min(total_dof, requested_chunk_size)
+        end
     end
 
     return ForwardCache(

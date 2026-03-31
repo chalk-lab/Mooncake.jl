@@ -53,6 +53,15 @@ function _ndual_prepare_side_effect(x::Mooncake.Nfwd.NDual)
     throw(Mooncake.Nfwd.NDualUnsupportedError(:test_prepare_side_effect))
 end
 
+const FRIENDLY_FORWARD_PREPARE_RESIZE_ONCE = Ref(false)
+function _friendly_forward_prepare_resize_sum(x::AbstractVector)
+    if FRIENDLY_FORWARD_PREPARE_RESIZE_ONCE[]
+        push!(x, x[1])
+        FRIENDLY_FORWARD_PREPARE_RESIZE_ONCE[] = false
+    end
+    return sum(abs2, x)
+end
+
 @testset "interface" begin
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
         (1.0, (x, y) -> x * y + sin(x) * cos(y), 5.0, 4.0),
@@ -1212,6 +1221,26 @@ end
                     cache, small_vector_probe_mutation, x_arr
                 ) == expected
             end
+        end
+
+        @testset "friendly forward cache snapshots post-prepare resize" begin
+            x_arr = [x, y]
+            FRIENDLY_FORWARD_PREPARE_RESIZE_ONCE[] = true
+            cache = Mooncake.prepare_derivative_cache(
+                _friendly_forward_prepare_resize_sum,
+                x_arr;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=true),
+            )
+            @test x_arr == [x, y, x]
+            @test getfield(cache, :input_specs)[2].size == (3,)
+            @test cache.gradient_chunk_size == 3
+            @test !isnothing(cache.chunkcache)
+            @test !isnothing(cache.chunkcache.small_vector_gradient_frule)
+            @test size(cache.chunkcache.small_vector_gradient_buffer) == (3, 3)
+            @test length(cache.chunkcache.small_vector_gradient_workspace[2]) == 3
+            @test Mooncake.value_and_gradient!!(
+                cache, _friendly_forward_prepare_resize_sum, x_arr
+            ) == (sum(abs2, x_arr), (_friendly_forward_prepare_resize_sum, 2 .* x_arr))
         end
     end
 
