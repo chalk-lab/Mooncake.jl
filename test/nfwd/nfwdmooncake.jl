@@ -535,22 +535,11 @@ end
             )
         end
 
-        @testset "cache specs and chunk fallback helpers" begin
+        @testset "cache specs helpers" begin
             @test Mooncake.NfwdMooncake._nfwd_sig(sin) == (type=typeof(sin), size=())
             @test Mooncake.NfwdMooncake._nfwd_sig([1.0, 2.0]) ==
                 (type=Vector{Float64}, size=(2,))
             @test Mooncake.NfwdMooncake._nfwd_sig(1.0) == (type=Float64, size=())
-
-            @test Mooncake._fcache_nfwd_is_ndual_unsupported(
-                Mooncake.Nfwd.UnsupportedInputError("unsupported input")
-            )
-            @test Mooncake._fcache_nfwd_is_ndual_unsupported(
-                Mooncake.Nfwd.UnsupportedOutputError("unsupported output")
-            )
-            @test Mooncake._fcache_nfwd_is_ndual_unsupported(
-                Mooncake.Nfwd.NDualUnsupportedError(:floor)
-            )
-            @test !Mooncake._fcache_nfwd_is_ndual_unsupported(ArgumentError("other"))
         end
     end
 

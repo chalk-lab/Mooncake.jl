@@ -123,6 +123,54 @@ struct CountedChunkArrayCall end
             Mooncake.prepare_gradient_cache(identity, (5.0, 4.0)),
         )
 
+        @testset "cache display" begin
+            reverse_cache = Mooncake.prepare_gradient_cache(
+                sin, 1.0; config=Mooncake.Config(; debug_mode=false, friendly_tangents=true)
+            )
+            reverse_show = sprint(show, reverse_cache)
+            @test occursin("Mooncake.Cache(", reverse_show)
+            @test occursin("mode=:reverse", reverse_show)
+            @test occursin("friendly_tangents=true", reverse_show)
+
+            reverse_plain = repr(MIME"text/plain"(), reverse_cache)
+            @test occursin("Mooncake.Cache", reverse_plain)
+            @test occursin("mode: reverse", reverse_plain)
+            @test occursin("friendly_tangents: true", reverse_plain)
+
+            forward_cache = Mooncake.prepare_derivative_cache(
+                sin,
+                1.0;
+                config=Mooncake.Config(;
+                    debug_mode=false,
+                    friendly_tangents=true,
+                    chunk_size=2,
+                    enable_nfwd=false,
+                ),
+            )
+            forward_show = sprint(show, forward_cache)
+            @test occursin("Mooncake.ForwardCache(", forward_show)
+            @test occursin("mode=:forward", forward_show)
+            @test occursin("friendly_tangents=true", forward_show)
+            @test occursin("nfwd=false", forward_show)
+            @test occursin("chunk_size=2", forward_show)
+
+            forward_plain = repr(MIME"text/plain"(), forward_cache)
+            @test occursin("Mooncake.ForwardCache", forward_plain)
+            @test occursin("mode: forward", forward_plain)
+            @test occursin("friendly_tangents: true", forward_plain)
+            @test occursin("nfwd: false", forward_plain)
+            @test occursin("chunk_size: 2", forward_plain)
+
+            hvp_cache = Mooncake.prepare_hvp_cache(sin, 1.0)
+            hvp_show = sprint(show, hvp_cache)
+            @test occursin("Mooncake.HVPCache(", hvp_show)
+            @test occursin("mode=:forward_over_reverse", hvp_show)
+
+            hvp_plain = repr(MIME"text/plain"(), hvp_cache)
+            @test occursin("Mooncake.HVPCache", hvp_plain)
+            @test occursin("mode: forward_over_reverse", hvp_plain)
+        end
+
         @testset "friendly tangents" begin
             f = (x::SimplePair) -> x.x1^2 + sin(x.x2)
             x = SimplePair(1.0, 2.0)
@@ -827,15 +875,7 @@ struct CountedChunkArrayCall end
                 scalar_allocs = TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
                 )
-                if VERSION < v"1.11"
-                    # Under Julia 1.10's test environment, `count_allocs` already reports
-                    # scalar primal allocations for `Base.sin` / `x -> x^2 + sin(x)`, so this
-                    # prepared scalar forward-cache path cannot satisfy the zero-allocation
-                    # assertion there even though the same check is clean on 1.11+.
-                    @test_skip scalar_allocs == 0
-                else
-                    @test scalar_allocs == 0
-                end
+                @test scalar_allocs == 0
 
                 scalar_f = CountedChunkScalarCall()
                 scalar_cache_grad_fwd = Mooncake.prepare_derivative_cache(
@@ -989,7 +1029,9 @@ struct CountedChunkArrayCall end
                 ("array", CountedChunkArrayCall(), ([x, y],), CHUNK_ARRAY_EVAL_COUNT, 2),
             )
                 cache = Mooncake.prepare_derivative_cache(
-                    f, args...; config=Mooncake.Config(; debug_mode=false, friendly_tangents=false)
+                    f,
+                    args...;
+                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
                 )
                 cache_no_nfwd = Mooncake.prepare_derivative_cache(
                     f,
@@ -1009,10 +1051,12 @@ struct CountedChunkArrayCall end
             end
         end
 
-        @testset "nfwd runtime error suggests opt-out" begin
+        @testset "nfwd runtime NDual errors propagate raw" begin
             let
                 _ndual_width_sensitive_sum(x, y) = x + y
-                function _ndual_width_sensitive_sum(x::Mooncake.Nfwd.NDual{T,N}, y) where {T,N}
+                function _ndual_width_sensitive_sum(
+                    x::Mooncake.Nfwd.NDual{T,N}, y
+                ) where {T,N}
                     N == 1 && return x + y
                     throw(Mooncake.Nfwd.NDualUnsupportedError(:test_width_sensitive_sum))
                 end
@@ -1029,9 +1073,7 @@ struct CountedChunkArrayCall end
                 catch err
                     err
                 end
-                @test err isa Mooncake.ForwardModeNfwdRuntimeError
-                @test occursin("enable_nfwd=false", sprint(showerror, err))
-                @test occursin("NDualUnsupportedError", sprint(showerror, err))
+                @test err isa Mooncake.Nfwd.NDualUnsupportedError
 
                 cache_no_nfwd = Mooncake.prepare_derivative_cache(
                     _ndual_width_sensitive_sum,
@@ -1043,14 +1085,52 @@ struct CountedChunkArrayCall end
                 )
                 @test Mooncake.value_and_gradient!!(
                     cache_no_nfwd, _ndual_width_sensitive_sum, x, y
-                ) == (_ndual_width_sensitive_sum(x, y), (Mooncake.NoTangent(), one(x), one(y)))
+                ) == (
+                    _ndual_width_sensitive_sum(x, y), (Mooncake.NoTangent(), one(x), one(y))
+                )
+            end
+        end
+
+        @testset "nfwd construction error suggests opt-out" begin
+            let
+                _ndual_probe_reject(x) = x^2 + one(x)
+                _ndual_probe_reject(x::Mooncake.Nfwd.NDual) = throw(
+                    Mooncake.Nfwd.NDualUnsupportedError(:test_probe_reject)
+                )
+
+                err = try
+                    Mooncake.prepare_derivative_cache(
+                        _ndual_probe_reject,
+                        x;
+                        config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                    )
+                    nothing
+                catch err
+                    err
+                end
+                @test err isa Mooncake.NfwdRuntimeError
+                @test occursin("enable_nfwd=false", sprint(showerror, err))
+                @test occursin("NDualUnsupportedError", sprint(showerror, err))
+
+                cache_no_nfwd = Mooncake.prepare_derivative_cache(
+                    _ndual_probe_reject,
+                    x;
+                    config=Mooncake.Config(;
+                        debug_mode=false, friendly_tangents=false, enable_nfwd=false
+                    ),
+                )
+                @test Mooncake.value_and_gradient!!(
+                    cache_no_nfwd, _ndual_probe_reject, x
+                ) == (_ndual_probe_reject(x), (Mooncake.NoTangent(), 2 * x))
             end
         end
 
         @testset "small-vector probe uses fresh cached seed buffer" begin
             let
                 small_vector_probe_mutation(x) = sum(x)
-                function small_vector_probe_mutation(x::Vector{Mooncake.Nfwd.NDual{T,N}}) where {T,N}
+                function small_vector_probe_mutation(
+                    x::Vector{Mooncake.Nfwd.NDual{T,N}}
+                ) where {T,N}
                     @inbounds for i in eachindex(x)
                         xi = x[i]
                         x[i] = Mooncake.Nfwd.NDual{T,N}(
@@ -1066,12 +1146,20 @@ struct CountedChunkArrayCall end
                     x_arr;
                     config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
                 )
-                @test !isnothing(cache.chunk_fastpath)
-                @test !isnothing(cache.chunk_fastpath.small_vector_gradient_frule)
+                @test !isnothing(cache.chunkcache)
+                @test !isnothing(cache.chunkcache.small_vector_gradient_frule)
                 # The probe doubles each seeded lane once; reusing that mutated seed at
                 # runtime would double again and produce `[4, 4]` instead of `[2, 2]`.
-                @test Mooncake.value_and_gradient!!(cache, small_vector_probe_mutation, x_arr) ==
-                    (sum(x_arr), (Mooncake.NoTangent(), fill(eltype(x_arr)(2), length(x_arr))))
+                expected = (
+                    sum(x_arr),
+                    (Mooncake.NoTangent(), fill(eltype(x_arr)(2), length(x_arr))),
+                )
+                @test Mooncake.value_and_gradient!!(
+                    cache, small_vector_probe_mutation, x_arr
+                ) == expected
+                @test Mooncake.value_and_gradient!!(
+                    cache, small_vector_probe_mutation, x_arr
+                ) == expected
             end
         end
     end

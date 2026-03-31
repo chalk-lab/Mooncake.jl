@@ -18,6 +18,17 @@
 
      If test_args is omitted, the "basic" group runs (not the full suite).
 =#
+# Note: Julia 1.10 can mis-measure scalar allocations when Mooncake is loaded from
+# the precompiled package image inside Pkg.test's temporary merged test environment.
+# Canonical MWE:
+#   julia +1.10 --project=. -e 'import Pkg; Pkg.test(; test_args=["basic"])'
+# can make scalar checks like `TestUtils.count_allocs(Base.sin, 1.0)` go non-zero,
+# while the same probe is zero in an ordinary `--project=.` session.
+# Local workaround: rerun the probe outside `Pkg.test`, for example with
+# `julia +1.10 --project=. -e 'using Mooncake, Mooncake.TestUtils; println(TestUtils.count_allocs(Base.sin, 1.0))'`.
+# If you specifically want to avoid loading package-image cache state, try adding
+# `--pkgimages=no` when starting Julia.
+
 include("front_matter.jl")
 
 @testset "Mooncake.jl" begin

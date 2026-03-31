@@ -8,7 +8,7 @@ import ..Mooncake:
     CoDual,
     Dual,
     ForwardCache,
-    ForwardChunkFastPath,
+    ChunkCache,
     NoFData,
     NoRData,
     NoTangent,
@@ -19,7 +19,6 @@ import ..Mooncake:
     _fcache_derivative_chunked!!,
     _typeof,
     _fcache_derivative_chunked_loop!!,
-    _fcache_rethrow_ndual_runtime_error,
     fdata,
     primal,
     rdata,
@@ -96,6 +95,10 @@ import ..Mooncake:
 Cache returned by [`prepare_cache`](@ref). It owns the prepared `nfwd` forward/reverse
 rules, runtime input signatures, and reusable zero tangents used by cached calls through
 the Mooncake-facing `value_and_derivative!!` / `value_and_gradient!!` interface.
+
+Unlike `Mooncake.ChunkCache`, this is the standalone nfwd prepared cache exposed by
+`NfwdMooncake.prepare_cache`; it is not the internal chunked backend attached to
+`Mooncake.ForwardCache`.
 """
 struct Cache{RF,RR,S<:Tuple,TT<:Tuple}
     frule::RF
@@ -105,9 +108,7 @@ struct Cache{RF,RR,S<:Tuple,TT<:Tuple}
 end
 
 @inline _nfwd_unpack_output_lane(yi::IEEEFloat, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
-@inline _nfwd_unpack_output_lane(
-    yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}
-) where {lane} = dyi[lane]
+@inline _nfwd_unpack_output_lane(yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
 @inline _nfwd_unpack_output_lane(yi::Array, dyi::Array, ::Val{lane}) where {lane} = selectdim(
     dyi, ndims(dyi), lane
 )
@@ -115,13 +116,13 @@ end
     return tuple_map((yij, dyij) -> _nfwd_unpack_output_lane(yij, dyij, Val(lane)), yi, dyi)
 end
 
-@inline function _try_chunk_frule_nfwd(
+@inline function _maybe_chunk_frule_nfwd(
     cache::ForwardCache, input_primals::Tuple, input_tangents::Tuple, ::Val{N}
 ) where {N}
     # Width-1 derivatives already have a dedicated scalar fast path; keep the chunked
     # nfwd entrypoint focused on genuine multi-lane calls.
     N == 1 && return nothing
-    fastpath = cache.chunk_fastpath
+    fastpath = cache.chunkcache
     isnothing(fastpath) && return nothing
     rule = if N == 2
         fastpath.frule_2
@@ -152,11 +153,7 @@ end
     )
     fd = Dual(first(input_primals), NoTangent())
     x_duals = tuple_map(Dual, Base.tail(input_primals), packed_tangents)
-    output = try
-        rule(fd, x_duals...)
-    catch err
-        _fcache_rethrow_ndual_runtime_error(err)
-    end
+    output = rule(fd, x_duals...)
     y = primal(output)
     dy = tangent(output)
     # Re-express the packed nfwd output at the public chunk boundary as one tangent per lane.
@@ -168,19 +165,14 @@ end
     ::Val{N},
     x_dx::Vararg{Tuple,M};
     friendly_tangents::Bool=false,
-) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:ForwardChunkFastPath,N,M}
+) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:ChunkCache,N,M}
     N < 1 && throw(ArgumentError("NTangent inputs must contain at least one lane."))
     input_primals = map(first, x_dx)
     input_tangents = map(last, x_dx)
     # NDual-backed batched backend: attempt a packed multi-lane forward pass. Falls back
     # to the generic lane loop only when no fastpath applies (N == 1, N > 8, or no
-    # ForwardChunkFastPath built for this cache). NDual-specific runtime errors are
-    # rethrown with guidance to rebuild the cache with nfwd disabled.
-    nfwd_output = try
-        _try_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
-    catch err
-        _fcache_rethrow_ndual_runtime_error(err)
-    end
+    # ChunkCache built for this cache).
+    nfwd_output = _maybe_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
     !isnothing(nfwd_output) && return nfwd_output
     return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
 end
