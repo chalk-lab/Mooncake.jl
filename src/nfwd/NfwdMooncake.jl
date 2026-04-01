@@ -533,6 +533,11 @@ end
     return tuple_map((yij, dyij) -> _nfwd_unpack_output_lane(yij, dyij, Val(lane)), yi, dyi)
 end
 
+@inline function _nfwd_pack_output_tangent(y, dy, ::Val{N}) where {N}
+    lanes = ntuple(k -> _nfwd_unpack_output_lane(y, dy, Val(k)), Val(N))
+    return _nfwd_pack_lanes(y, lanes, Val(N))
+end
+
 # Cache-side chunked forward execution: attempt one call through a prebuilt chunked rule
 # from `prepare_derivative_cache`, then fall back to the generic lane loop only when no
 # rule for that chunk width is available.
@@ -702,8 +707,11 @@ end
     _nfwd_check_function_tangent(tangent(f))
     primals = map(primal, x)
     tangents = map(tangent, x)
-    y, dy = _nfwd_eval(primal(f), primals, tangents, Val(N))
-    return Dual(y, dy)
+    packed = _nfwd_primitive_packed_lane_count(tangents)
+    y, dy = _nfwd_eval(
+        primal(f), primals, tangents, _nfwd_primitive_chunk_size(Val(N), tangents)
+    )
+    return Dual(y, isnothing(packed) ? dy : _nfwd_pack_output_tangent(y, dy, Val(packed)))
 end
 
 # The generic vararg path can allocate for small scalar primitive wrappers, so keep
@@ -711,23 +719,30 @@ end
 # and `clamp`.
 @inline function _nfwd_primitive_frule_call(::Val{N}, f::Dual, x1::Dual, x2::Dual) where {N}
     _nfwd_check_function_tangent(tangent(f))
+    tangents = (tangent(x1), tangent(x2))
+    packed = _nfwd_primitive_packed_lane_count(tangents)
     y, dy = _nfwd_eval(
-        primal(f), (primal(x1), primal(x2)), (tangent(x1), tangent(x2)), Val(N)
+        primal(f),
+        (primal(x1), primal(x2)),
+        tangents,
+        _nfwd_primitive_chunk_size(Val(N), tangents),
     )
-    return Dual(y, dy)
+    return Dual(y, isnothing(packed) ? dy : _nfwd_pack_output_tangent(y, dy, Val(packed)))
 end
 
 @inline function _nfwd_primitive_frule_call(
     ::Val{N}, f::Dual, x1::Dual, x2::Dual, x3::Dual
 ) where {N}
     _nfwd_check_function_tangent(tangent(f))
+    tangents = (tangent(x1), tangent(x2), tangent(x3))
+    packed = _nfwd_primitive_packed_lane_count(tangents)
     y, dy = _nfwd_eval(
         primal(f),
         (primal(x1), primal(x2), primal(x3)),
-        (tangent(x1), tangent(x2), tangent(x3)),
-        Val(N),
+        tangents,
+        _nfwd_primitive_chunk_size(Val(N), tangents),
     )
-    return Dual(y, dy)
+    return Dual(y, isnothing(packed) ? dy : _nfwd_pack_output_tangent(y, dy, Val(packed)))
 end
 
 function (rule::Rule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
@@ -1624,6 +1639,35 @@ end
 #
 # These utilities translate between Mooncake tangent layouts and NDual-based lifted values.
 
+@inline _nfwd_primitive_packed_lane_count(::NoTangent) = nothing
+@inline _nfwd_primitive_packed_lane_count(::IEEEFloat) = nothing
+@inline _nfwd_primitive_packed_lane_count(::Complex{<:IEEEFloat}) = nothing
+@inline _nfwd_primitive_packed_lane_count(::NDual{T,N}) where {T,N} = N
+@inline _nfwd_primitive_packed_lane_count(::Complex{NDual{T,N}}) where {T,N} = N
+@inline function _nfwd_primitive_packed_lane_count(x::AbstractArray)
+    ET = eltype(x)
+    return if ET <: NDual
+        ET.parameters[2]
+    elseif ET <: Complex{<:NDual}
+        ET.parameters[1].parameters[2]
+    else
+        nothing
+    end
+end
+@inline function _nfwd_primitive_packed_lane_count(x::Tuple)
+    packed = nothing
+    for xi in x
+        packed = _nfwd_merge_lane_counts(packed, _nfwd_primitive_packed_lane_count(xi))
+    end
+    return packed
+end
+@inline _nfwd_primitive_packed_lane_count(::Any) = nothing
+
+@inline function _nfwd_primitive_chunk_size(::Val{N}, tangents::Tuple) where {N}
+    packed = _nfwd_primitive_packed_lane_count(tangents)
+    return isnothing(packed) ? Val(N) : Val(packed)
+end
+
 @inline function _nfwd_scalar_partials(x::T, dx, ::Val{N}) where {T<:IEEEFloat,N}
     if N == 1 && dx isa Real
         return (T(dx),)
@@ -1638,6 +1682,12 @@ end
             "a length-$N tuple/vector of reals. Got $(typeof(dx)): $dx.",
         ),
     )
+end
+
+@inline function _nfwd_scalar_partials(
+    x::T, dx::NDual{S,N}, ::Val{N}
+) where {T<:IEEEFloat,S<:IEEEFloat,N}
+    return ntuple(i -> T(Nfwd.ndual_partial(dx, i)), Val(N))
 end
 
 @inline function _nfwd_complex_partials(x::Complex{T}, dx, ::Val{N}) where {T<:IEEEFloat,N}
@@ -1655,6 +1705,13 @@ end
             "Got $(typeof(dx)): $dx.",
         ),
     )
+end
+
+@inline function _nfwd_complex_partials(
+    x::Complex{T}, dx::Complex{NDual{S,N}}, ::Val{N}
+) where {T<:IEEEFloat,S<:IEEEFloat,N}
+    return ntuple(i -> T(Nfwd.ndual_partial(real(dx), i)), Val(N)),
+    ntuple(i -> T(Nfwd.ndual_partial(imag(dx), i)), Val(N))
 end
 
 @inline function _nfwd_array_tangent_dims(x::AbstractArray, ::Val{N}) where {N}
