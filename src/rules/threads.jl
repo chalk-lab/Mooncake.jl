@@ -271,25 +271,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:threads})
             abs.(randn(Float32, 4)),
         ),
         # Destination can be the shortest vector, same as Base.map!
-        (
-            false,
-            :none,
-            nothing,
-            threaded_map!,
-            sin,
-            zeros(Float64, 2),
-            randn(Float64, 4),
-        ),
+        (false, :none, nothing, threaded_map!, sin, zeros(Float64, 2), randn(Float64, 4)),
         # Longer destination leaves a suffix untouched; its returned adjoint must survive.
-        (
-            false,
-            :none,
-            nothing,
-            threaded_map!,
-            sin,
-            zeros(Float64, 6),
-            randn(Float64, 4),
-        ),
+        (false, :none, nothing, threaded_map!, sin, zeros(Float64, 6), randn(Float64, 4)),
         # Heterogeneous element types: Float32 + Float64 inputs, Float64 output
         (
             false,
@@ -312,15 +296,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:threads})
             randn(Float64, 4),
         ),
         # In-place aliasing output === input should keep the input adjoint.
-        (
-            false,
-            :none,
-            nothing,
-            threaded_map!,
-            sin,
-            alias_vec,
-            alias_vec,
-        ),
+        (false, :none, nothing, threaded_map!, sin, alias_vec, alias_vec),
     ]
     memory = Any[]
     return test_cases, memory

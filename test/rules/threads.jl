@@ -5,8 +5,8 @@
         Mooncake.hand_written_rule_test_cases(StableRNG, Val(:threads))
     end
     GC.@preserve memory @testset "$f, $(Mooncake._typeof(x))" for (
-            interface_only, perf_flag, _, f, x...
-        ) in test_cases
+        interface_only, perf_flag, _, f, x...
+    ) in test_cases
 
         TestUtils.test_rule(
             StableRNG(123),
@@ -25,8 +25,8 @@
         Mooncake.derived_rule_test_cases(StableRNG, Val(:threads))
     end
     GC.@preserve derived_memory @testset "$f, $(Mooncake._typeof(x))" for (
-            interface_only, perf_flag, _, f, x...
-        ) in derived_cases
+        interface_only, perf_flag, _, f, x...
+    ) in derived_cases
 
         TestUtils.test_rule(
             StableRNG(123),
@@ -60,10 +60,7 @@
     @testset "primitive builder" begin
         rule = Mooncake.build_rrule(
             Tuple{
-                typeof(Mooncake.threaded_map!),
-                typeof(sin),
-                Vector{Float64},
-                Vector{Float64},
+                typeof(Mooncake.threaded_map!),typeof(sin),Vector{Float64},Vector{Float64}
             },
         )
         @test rule isa Mooncake.ThreadedMapReverseRule
