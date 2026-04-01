@@ -1421,19 +1421,14 @@ end
     )
 end
 
-@inline function _chunk_pack_tangent(::IEEEFloat, dx::NTangent, _buf, ::Val{N}) where {N}
-    return ntuple(k -> dx[k], Val(N))
-end
-@inline function _chunk_pack_tangent(::IEEEFloat, dx, _buf, ::Val{N}) where {N}
-    return ntuple(_ -> dx, Val(N))
-end
-
 @inline function _chunk_pack_tangent(
-    ::Complex{<:IEEEFloat}, dx::NTangent, _buf, ::Val{N}
+    ::Union{IEEEFloat,Complex{<:IEEEFloat}}, dx::NTangent, _buf, ::Val{N}
 ) where {N}
     return ntuple(k -> dx[k], Val(N))
 end
-@inline function _chunk_pack_tangent(::Complex{<:IEEEFloat}, dx, _buf, ::Val{N}) where {N}
+@inline function _chunk_pack_tangent(
+    ::Union{IEEEFloat,Complex{<:IEEEFloat}}, dx, _buf, ::Val{N}
+) where {N}
     return ntuple(_ -> dx, Val(N))
 end
 
