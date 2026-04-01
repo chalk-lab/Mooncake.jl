@@ -98,7 +98,7 @@ import LuxLib.Impl:
 @mooncake_overlay Utils.within_autodiff(x) = True()
 
 # Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
-@mooncake_overlay function LuxLib.Impl.fused_dense( 
+@mooncake_overlay function LuxLib.Impl.fused_dense(
     opmode,
     act::F,
     weight::AbstractMatrix,
@@ -257,11 +257,7 @@ function _groupnorm_affine_normalize_identity(
     y = similar(
         x,
         promote_type(
-            safe_eltype(x),
-            safe_eltype(μ),
-            safe_eltype(σ²),
-            safe_eltype(γ),
-            safe_eltype(β),
+            safe_eltype(x), safe_eltype(μ), safe_eltype(σ²), safe_eltype(γ), safe_eltype(β)
         ),
     )
     groupnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ)
@@ -322,7 +318,8 @@ function Mooncake.rrule!!(
         # ϵ is a Real scalar — must return zero_rdata so Mooncake can accumulate it
         # correctly when chained through the overlay.
         return NoRData(),
-        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), zero_rdata(_ϵ)
+        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
+        zero_rdata(_ϵ)
     end
 
     return CoDual(y, ȳ), pb!!
