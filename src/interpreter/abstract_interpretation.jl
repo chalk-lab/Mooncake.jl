@@ -137,8 +137,8 @@ function Core.Compiler.abstract_call_gf_by_type(
     max_methods::Int,
 ) where {C,M}
     argtypes = arginfo.argtypes
-    # Perform method lookup without recursing into method bodies. This is lookup operation that
-    # determines which methods could be called and is cheaper than IR body inference via recursion.
+    # Look up applicable methods for this call site without recursing into their bodies.
+    # We need the method set to check for primitives before deciding how to proceed.
     if VERSION < v"1.12-"
         𝕃ᵢ = Core.Compiler.typeinf_lattice(interp)
         matches = Core.Compiler.find_matching_methods(
@@ -157,12 +157,14 @@ function Core.Compiler.abstract_call_gf_by_type(
         # For applicable method matches in IR, we need to check if any of them is a primitive.
         any_prim = any_matches_primitive(applicable, C, M, interp.world)
         if any_prim
-            # Use NativeInterpreter instead of MooncakeInterpreter to infer primitive calls.
-            # This is efficient and safe because:
-            # 1. Primitive's Julia IR does not need to be searched further for primitives/inferred return type via MooncakeInterpreter.
-            # 2. NativeInterpreter's inference is sufficient to determine the return types.
-            # 3. By not recursing with MooncakeInterpreter, we avoid unbounded recursion into primitive implementations.
-            # See https://github.com/chalk-lab/Mooncake.jl/pull/1115 for detailed rationale.
+            # A primitive has a hand-written rrule!! - Mooncake never needs to inspect its body.
+            # Using NativeInterpreter here is safe because:
+            #   - return types are still inferred correctly by standard Julia inference
+            #   - inlining/const-folding is blocked below via noinline_callmeta, so the primitive
+            #     call is preserved in the caller's IR for Mooncake to dispatch its rrule!! at runtime
+            # Using MooncakeInterpreter would recurse into the primitive's entire call tree
+            # looking for further primitives - work that is pure waste, and unbounded for large
+            # packages like SciML. See PR #1115 for the full analysis.
             native_interp = CC.NativeInterpreter(interp.world)
             ret = CC.abstract_call_gf_by_type(
                 native_interp, f, arginfo, si, atype, sv, max_methods
