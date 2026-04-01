@@ -633,6 +633,9 @@ end
 Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
+
+!!! note
+    Calls `f(x...)` once during cache preparation.
 """
 @unstable function prepare_pullback_cache(fx...; config=Config())
 
@@ -764,6 +767,9 @@ end
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
+
+!!! note
+    Calls `f(x...)` once during cache preparation.
 """
 @unstable function prepare_gradient_cache(fx...; config=Config())
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
@@ -909,7 +915,9 @@ end
         )
     else
         dual_arg_types = Tuple{
-            map(spec -> dual_type(spec.type), getfield(cache, :input_specs))...
+            map(
+                spec -> dual_type(typeof(spec).parameters[1]), getfield(cache, :input_specs)
+            )...,
         }
         output_type = Core.Compiler.return_type(getfield(cache, :rule), dual_arg_types)
         _cache_type_summary(_dual_primal_type(output_type))
@@ -966,35 +974,35 @@ end
     return :(Ref{Union{Nothing,$workspace_type}}(nothing))
 end
 
-# Cache specs are compared again when a prepared cache is reused. If we store
-# `typeof(x)` directly in a tuple or named tuple, the `type` field is specialized
-# as `Type{T}` for each input value. Wrapping the spec in a concrete struct forces
-# that field to `DataType`, so cache construction and reuse agree on the top-level
-# spec type for inputs such as `x::Vector{Float64}`.
-struct PreparedCacheInputSpec{S}
-    type::DataType
+# Cache specs are compared again when a prepared cache is reused. The input type `T` is
+# encoded as a type parameter so that `_validate_prepared_cache_inputs` can read it at
+# @generated specialisation time — eliminating the runtime `jl_types_equal` call that
+# a `DataType`-valued field would require.
+struct PreparedCacheInputSpec{T,S}
     size::S
 end
 
-@inline function _cache_spec_size_summary(spec)
-    return if spec.type <: IEEEFloat || spec.type <: Complex{<:IEEEFloat}
+PreparedCacheInputSpec(::Type{T}, s::S) where {T,S} = PreparedCacheInputSpec{T,S}(s)
+
+@inline function _cache_spec_size_summary(spec::PreparedCacheInputSpec{T}) where {T}
+    return if T <: IEEEFloat || T <: Complex{<:IEEEFloat}
         "scalar"
-    elseif spec.type <: AbstractArray
+    elseif T <: AbstractArray
         "size $(spec.size)"
-    elseif spec.type <: NamedTuple
+    elseif T <: NamedTuple
         "named tuple"
-    elseif spec.type <: Tuple
+    elseif T <: Tuple
         "tuple"
-    elseif spec.type <: Function
+    elseif T <: Function
         "function"
-    elseif fieldcount(spec.type) > 0 || Base.ismutabletype(spec.type)
+    elseif fieldcount(T) > 0 || Base.ismutabletype(T)
         "struct"
     else
         "value"
     end
 end
 
-@inline _cache_spec_summary(spec) = "$(spec.type) ($(_cache_spec_size_summary(spec)))"
+@inline _cache_spec_summary(spec::PreparedCacheInputSpec{T}) where {T} = "$(T) ($(_cache_spec_size_summary(spec)))"
 
 """
     NTangent(lanes)
@@ -1060,22 +1068,30 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
 end
 
 # Shared prepared-cache input validation for Cache, ForwardCache, and HVPCache entry points.
+# The expected type T_i is extracted from the PreparedCacheInputSpec{T_i,S_i} type parameter
+# at @generated specialisation time, so the emitted `typeof(x_i) == T_i` comparison uses a
+# compile-time constant type — eliminating the runtime jl_types_equal call.
 @generated function _validate_prepared_cache_inputs(specs::Tuple, fx::Tuple)
     n = length(specs.parameters)
     m = length(fx.parameters)
     n == m || return :(_throw_prepared_cache_spec_error(:arity, 0, $n, $m))
     checks = Expr(:block)
     for i in 1:n
-        push!(checks.args, quote
-            let spec = specs[$i], x_i = fx[$i]
-                typeof(x_i) == spec.type ||
-                    _throw_prepared_cache_spec_error(:type, $i, spec.type, typeof(x_i))
-                if x_i isa AbstractArray
-                    size(x_i) == spec.size ||
-                        _throw_prepared_cache_spec_error(:size, $i, spec.size, size(x_i))
+        T_i = specs.parameters[i].parameters[1]
+        push!(
+            checks.args,
+            quote
+                let x_i = fx[$i]
+                    typeof(x_i) == $T_i ||
+                        _throw_prepared_cache_spec_error(:type, $i, $T_i, typeof(x_i))
+                    if x_i isa AbstractArray
+                        size(x_i) == specs[$i].size || _throw_prepared_cache_spec_error(
+                            :size, $i, specs[$i].size, size(x_i)
+                        )
+                    end
                 end
-            end
-        end)
+            end,
+        )
     end
     return quote
         $checks
@@ -1600,9 +1616,9 @@ end
     y = primal(first_output)
     first_tangent = if friendly_tangents
         tangent_to_primal_internal!!(
-            _copy_output(cache.output_primal),
+            _copy_output(y),
             tangent(first_output),
-            isbitstype(typeof(cache.output_primal)) ? NoCache() : IdDict{Any,Any}(),
+            isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}(),
         )
     else
         # Bug fix note: chunked forward can return `NoTangent()` lanes for
@@ -1623,13 +1639,9 @@ end
             lane_output = compute_lane_output(Val(n + 1))
             return if friendly_tangents
                 tangent_to_primal_internal!!(
-                    _copy_output(cache.output_primal),
+                    _copy_output(y),
                     tangent(lane_output),
-                    if isbitstype(typeof(cache.output_primal))
-                        NoCache()
-                    else
-                        IdDict{Any,Any}()
-                    end,
+                    isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}(),
                 )
             else
                 lane_output_tangent = tangent(lane_output)
@@ -1657,6 +1669,9 @@ end
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
+
+!!! note
+    Calls `f(x...)` once during cache preparation.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
@@ -1669,41 +1684,8 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         Nfwd._nfwd_check_chunk_size(requested_chunk_size)
     end
     gradient_chunk_size_auto = requested_chunk_size == 0
+    y = f(x...)
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
-    if config.friendly_tangents
-        y = f(x...)
-        # Snapshot post-primal shapes for friendly caches because the eager prepare-time
-        # primal may legally resize top-level inputs.
-        chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
-        input_specs = map(fx) do x
-            if x isa AbstractArray
-                PreparedCacheInputSpec(typeof(x), size(x))
-            else
-                PreparedCacheInputSpec(typeof(x), ())
-            end
-        end
-        gradient_chunk_size = let total_dof = _fcache_gradient_input_dof(fx)
-            if gradient_chunk_size_auto
-                min(total_dof, _CHUNK_NFWD_MAX_LANES)
-            else
-                min(total_dof, requested_chunk_size)
-            end
-        end
-        input_tangents = tuple_map(zero_tangent, fx)
-        gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
-        return ForwardCache(
-            rule,
-            input_tangents,
-            _copy_output(y),
-            _copy_output(fx),
-            gradient_workspace,
-            gradient_chunk_size,
-            gradient_chunk_size_auto,
-            chunkcache,
-            input_specs,
-        )
-    end
-
     chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
     input_specs = map(fx) do x
         if x isa AbstractArray
@@ -1719,11 +1701,26 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             min(total_dof, requested_chunk_size)
         end
     end
-
+    output_primal = _copy_output(y)
+    if config.friendly_tangents
+        input_tangents = tuple_map(zero_tangent, fx)
+        gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
+        return ForwardCache(
+            rule,
+            input_tangents,
+            output_primal,
+            _copy_output(fx),
+            gradient_workspace,
+            gradient_chunk_size,
+            gradient_chunk_size_auto,
+            chunkcache,
+            input_specs,
+        )
+    end
     return ForwardCache(
         rule,
         nothing,
-        nothing,
+        output_primal,
         nothing,
         _fcache_gradient_lazy_workspace_ref(typeof(fx)),
         gradient_chunk_size,
@@ -2214,6 +2211,9 @@ inner rule is compiled only once regardless of how many HVPs are subsequently ev
 
 *Note:* `cache` is tied to the types and shapes of `x...`. Evaluating at a different point
 is fine, but changing the shapes requires a new cache.
+
+!!! note
+    Calls `f(x...)` during cache preparation (via inner gradient and derivative caches).
 
 ```jldoctest
 f(x) = sum(x .* x)
