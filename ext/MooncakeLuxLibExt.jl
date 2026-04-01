@@ -40,25 +40,23 @@ import LuxLib.Impl:
     update_normalization_statistics,
     get_norm_reshape_dims,
     instancenorm_reduce_dims,
-    compute_layernorm_dims
+    compute_layernorm_dims,
+    matmul,
+    matmuladd,
+    batched_matmul_fallback
 
+@from_rrule(DefaultCtx, Tuple{typeof(matmul),Array{P},Array{P}} where {P<:IEEEFloat})
 @from_rrule(
-    DefaultCtx, Tuple{typeof(LuxLib.Impl.matmul),Array{P},Array{P}} where {P<:IEEEFloat}
+    DefaultCtx, Tuple{typeof(matmuladd),Array{P},Array{P},Vector{P}} where {P<:IEEEFloat},
 )
 @from_rrule(
     DefaultCtx,
-    Tuple{typeof(LuxLib.Impl.matmuladd),Array{P},Array{P},Vector{P}} where {P<:IEEEFloat},
-)
-@from_rrule(
-    DefaultCtx,
-    Tuple{
-        typeof(LuxLib.Impl.batched_matmul_fallback),Array{P,3},Array{P,3}
-    } where {P<:IEEEFloat},
+    Tuple{typeof(batched_matmul_fallback),Array{P,3},Array{P,3}} where {P<:IEEEFloat},
 )
 @from_rrule(
     DefaultCtx,
     Tuple{
-        typeof(Impl.batched_matmul_fallback),AbstractGPUArray{P,3},AbstractGPUArray{P,3}
+        typeof(batched_matmul_fallback),AbstractGPUArray{P,3},AbstractGPUArray{P,3}
     } where {P<:IEEEFloat},
 )
 
@@ -78,7 +76,7 @@ import LuxLib.Impl:
     x::AbstractMatrix,
     b::LuxLib.Optional{<:AbstractVector},
 ) where {F}
-    return LuxLib.Impl.bias_activation(act, LuxLib.Impl.matmul(weight, x), b)
+    return LuxLib.Impl.bias_activation(act, matmul(weight, x), b)
 end
 
 @mooncake_overlay function LuxLib.Impl.fused_conv(
