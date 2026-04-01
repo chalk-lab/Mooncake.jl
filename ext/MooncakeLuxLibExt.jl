@@ -24,6 +24,7 @@ using Mooncake:
 import LuxLib.Utils: static_training_mode_check, True, False
 import LuxLib.Impl:
     get_non_heads_dim,
+    safe_eltype,
     make_causal_mask,
     get_non_contracting_dim,
     get_batched_matmul_repeat_dims,
