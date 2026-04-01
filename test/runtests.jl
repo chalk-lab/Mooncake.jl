@@ -105,6 +105,8 @@ include("front_matter.jl")
         @static if VERSION >= v"1.11.0-rc4"
             include(joinpath("rules", "memory.jl"))
         end
+    elseif test_group == "rules/threads"
+        include(joinpath("rules", "threads.jl"))
     elseif test_group == "rules/performance_patches"
         include(joinpath("rules", "performance_patches.jl"))
     elseif test_group == "rules/dispatch_doctor"
