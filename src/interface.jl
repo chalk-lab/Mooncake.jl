@@ -1362,30 +1362,10 @@ end
     requested_chunk_size = let requested = getfield(config, :chunk_size)
         isnothing(requested) ? 0 : Nfwd._nfwd_check_chunk_size(requested)
     end
-    frule_1 = NfwdMooncake.build_chunked_frule(
-        sig; chunk_size=1, silence_debug_messages=true
-    )
-    frule_2 = NfwdMooncake.build_chunked_frule(
-        sig; chunk_size=2, silence_debug_messages=true
-    )
-    frule_3 = NfwdMooncake.build_chunked_frule(
-        sig; chunk_size=3, silence_debug_messages=true
-    )
-    frule_4 = NfwdMooncake.build_chunked_frule(
-        sig; chunk_size=4, silence_debug_messages=true
-    )
-    frule_5 = NfwdMooncake.build_chunked_frule(
-        sig; chunk_size=5, silence_debug_messages=true
-    )
-    frule_6 = NfwdMooncake.build_chunked_frule(
-        sig; chunk_size=6, silence_debug_messages=true
-    )
-    frule_7 = NfwdMooncake.build_chunked_frule(
-        sig; chunk_size=7, silence_debug_messages=true
-    )
-    frule_8 = NfwdMooncake.build_chunked_frule(
-        sig; chunk_size=8, silence_debug_messages=true
-    )
+    chunk_frules = ntuple(Val(_CHUNK_NFWD_MAX_LANES)) do n
+        NfwdMooncake.build_chunked_frule(sig; chunk_size=n, silence_debug_messages=true)
+    end
+    frule_1, frule_2, frule_3, frule_4, frule_5, frule_6, frule_7, frule_8 = chunk_frules
     # Small vectors are faster through an exact-width chunked frule than through the
     # generic chunked gradient assembly path, which otherwise seeds and accumulates lanes.
     small_vector_gradient_frule =
