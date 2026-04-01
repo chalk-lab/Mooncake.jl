@@ -7,7 +7,7 @@ using LuxLib.Impl: sleefpirates_fast_act
 using Mooncake.TestUtils: test_rule
 
 # Custom activation to exercise fallback paths (no pre-defined rrule, needs intermediate).
-_custom_act(x) = sin(x)
+_custom_act(x) = x^2 + 1
 
 # Access AD helper functions present in the Extension module.
 const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)

@@ -3,10 +3,9 @@ module MooncakeLuxLibExt
 using LuxLib, Random, Mooncake
 using Base: IEEEFloat
 
-import LuxLib: Impl, Utils
+import LuxLib: Impl, Utils, AbstractInternalArrayOpMode
 import LuxLib.NNlib.GPUArraysCore: AbstractGPUArray
 using MLDataDevices: get_device_type
-import ChainRulesCore as CRC
 using Mooncake:
     @from_rrule,
     DefaultCtx,
@@ -22,9 +21,7 @@ using Mooncake:
     zero_rdata,
     @zero_adjoint
 
-using Static: True
-
-import LuxLib.Utils: static_training_mode_check, True, False, unsafe_known
+import LuxLib.Utils: static_training_mode_check, True, False
 import LuxLib.Impl:
     get_non_heads_dim,
     make_causal_mask,
@@ -44,30 +41,6 @@ import LuxLib.Impl:
     get_norm_reshape_dims,
     instancenorm_reduce_dims,
     compute_layernorm_dims
-
-import LuxLib.Impl:
-    activation!!,
-    bias_activation,
-    bias_activation!!,
-    bias_activation_cached!!,
-    bias_add!,
-    fused_conv,
-    conv,
-    conv_bias_act,
-    conv!,
-    ∇conv_bias,
-    groupnorm_affine_normalize_internal,
-    groupnorm_affine_normalize_internal!,
-    ∇groupnorm_affine_normalize,
-    concrete_bias_act_output_eltype,
-    ∇bias_add,
-    activation_intermediate_not_needed,
-    activation_has_rrule,
-    activation,
-    ∇activation,
-    NotaNumber,
-    AbstractInternalArrayOpMode,
-    LoopedArrayOp
 
 @from_rrule(
     DefaultCtx, Tuple{typeof(LuxLib.Impl.matmul),Array{P},Array{P}} where {P<:IEEEFloat}
@@ -140,13 +113,6 @@ end
 @zero_adjoint DefaultCtx Tuple{typeof(instancenorm_reduce_dims),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(compute_layernorm_dims),Vararg}
 
-import LuxLib.Impl:
-    safe_eltype,
-    batchnorm_affine_normalize_internal,
-    batchnorm_affine_normalize_internal!,
-    ∇batchnorm_affine_normalize,
-    AbstractInternalArrayOpMode
-
 # Helper function for the Lux affine transform.
 function _batchnorm_affine_normalize_identity(
     opmode::AbstractInternalArrayOpMode,
@@ -163,7 +129,9 @@ function _batchnorm_affine_normalize_identity(
         safe_eltype(x), safe_eltype(μ), safe_eltype(σ²), safe_eltype(γ), safe_eltype(β)
     )
     y = similar(x, PT)
-    batchnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ, γ′)
+    LuxLib.Impl.batchnorm_affine_normalize_internal!(
+        y, opmode, identity, x, μ, σ², γ, β, ϵ, γ′
+    )
     return y
 end
 
@@ -202,12 +170,13 @@ function Mooncake.rrule!!(
         safe_eltype(_x), safe_eltype(_μ), safe_eltype(_σ²), safe_eltype(_γ), safe_eltype(_β)
     )
     y = similar(_x, PT)
-    batchnorm_affine_normalize_internal!(y, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ, γ′)
+    LuxLib.Impl.batchnorm_affine_normalize_internal!(
+        y, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ, γ′
+    )
     ȳ = zero_tangent(y)
 
     function pb!!(::NoRData)
-        # ∇batchnorm_affine_normalize returns CRC.NoTangent() for γ/β when they are nothing.
-        ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇batchnorm_affine_normalize(
+        ∂x, ∂μ, ∂σ², ∂γ, ∂β = LuxLib.Impl.∇batchnorm_affine_normalize(
             _opmode, ȳ, _x, _μ, _σ², _γ, _β, _ϵ, γ′
         )
 
@@ -225,7 +194,7 @@ function Mooncake.rrule!!(
     return CoDual(y, ȳ), pb!!
 end
 
-@mooncake_overlay function batchnorm_affine_normalize_internal(
+@mooncake_overlay function LuxLib.Impl.batchnorm_affine_normalize_internal(
     opmode::AbstractInternalArrayOpMode,
     act::F,
     x::AbstractArray{xT,3},
@@ -237,106 +206,6 @@ end
 ) where {F,xT}
     y = _batchnorm_affine_normalize_identity(opmode, x, μ, σ², γ, β, ϵ)
     return act.(y)
-end
-
-# Native Mooncake rrules for groupnorm_affine_normalize_internal
-
-# Overlay for `batchnorm_affine_normalize_internal`
-#  - Use Mooncake’s helper function `_batchnorm_affine_normalize_identity`  
-#     and its manually written rule.
-#  - Let Mooncake differentiate through the broadcasted `act` function.
-function _groupnorm_affine_normalize_identity(
-    opmode::AbstractInternalArrayOpMode,
-    x::AbstractArray{T,4},
-    μ::AbstractArray{<:Any,4},
-    σ²::AbstractArray{<:Any,4},
-    γ::LuxLib.Optional{<:AbstractArray{<:Any,4}},
-    β::LuxLib.Optional{<:AbstractArray{<:Any,4}},
-    ϵ::Real,
-) where {T}
-    y = similar(
-        x,
-        promote_type(
-            safe_eltype(x), safe_eltype(μ), safe_eltype(σ²), safe_eltype(γ), safe_eltype(β)
-        ),
-    )
-    groupnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ)
-    return y
-end
-
-@is_primitive MinimalCtx Tuple{
-    typeof(_groupnorm_affine_normalize_identity),
-    AbstractInternalArrayOpMode,
-    AbstractArray{<:Any,4},
-    AbstractArray{<:Any,4},
-    AbstractArray{<:Any,4},
-    LuxLib.Optional{<:AbstractArray{<:Any,4}},
-    LuxLib.Optional{<:AbstractArray{<:Any,4}},
-    Real,
-}
-
-function Mooncake.rrule!!(
-    ::CoDual{typeof(_groupnorm_affine_normalize_identity)},
-    opmode::CoDual{<:AbstractInternalArrayOpMode},
-    x::CoDual{<:AbstractArray{T,4}},
-    μ::CoDual{<:AbstractArray{<:Any,4}},
-    σ²::CoDual{<:AbstractArray{<:Any,4}},
-    γ::CoDual{<:LuxLib.Optional{<:AbstractArray{<:Any,4}}},
-    β::CoDual{<:LuxLib.Optional{<:AbstractArray{<:Any,4}}},
-    ϵ::CoDual{<:Real},
-) where {T}
-    _opmode, _ϵ = primal(opmode), primal(ϵ)
-    _x, x̄ = primal(x), tangent(x)
-    _μ, μ̄ = primal(μ), tangent(μ)
-    _σ², σ²̄ = primal(σ²), tangent(σ²)
-    _γ, γ̄ = primal(γ), tangent(γ)
-    _β, β̄ = primal(β), tangent(β)
-
-    y = similar(
-        _x,
-        promote_type(
-            safe_eltype(_x),
-            safe_eltype(_μ),
-            safe_eltype(_σ²),
-            safe_eltype(_γ),
-            safe_eltype(_β),
-        ),
-    )
-    groupnorm_affine_normalize_internal!(y, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ)
-    ȳ = zero_tangent(y)
-
-    function pb!!(::NoRData)
-        # ∇groupnorm_affine_normalize returns CRC.NoTangent() for γ/β when they are nothing.
-        ∂x, ∂μ, ∂σ², ∂γ, ∂β = ∇groupnorm_affine_normalize(
-            _opmode, ȳ, _x, _μ, _σ², _γ, _β, _ϵ
-        )
-        x̄ .+= ∂x
-        μ̄ .+= ∂μ
-        σ²̄ .+= ∂σ²
-        ∂γ isa CRC.NoTangent || (γ̄ .+= ∂γ)
-        ∂β isa CRC.NoTangent || (β̄ .+= ∂β)
-        # ϵ is a Real scalar — must return zero_rdata so Mooncake can accumulate it
-        # correctly when chained through the overlay.
-        return NoRData(),
-        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
-        zero_rdata(_ϵ)
-    end
-
-    return CoDual(y, ȳ), pb!!
-end
-
-@mooncake_overlay function groupnorm_affine_normalize_internal(
-    opmode::AbstractInternalArrayOpMode,
-    f::F,
-    x::AbstractArray{T,4},
-    μ::AbstractArray{<:Any,4},
-    σ²::AbstractArray{<:Any,4},
-    γ::LuxLib.Optional{<:AbstractArray{<:Any,4}},
-    β::LuxLib.Optional{<:AbstractArray{<:Any,4}},
-    ϵ::Real,
-) where {F,T}
-    y = _groupnorm_affine_normalize_identity(opmode, x, μ, σ², γ, β, ϵ)
-    return f.(y)
 end
 
 end
