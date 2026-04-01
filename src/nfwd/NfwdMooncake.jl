@@ -32,8 +32,8 @@ import ..Mooncake:
 
 # ── nfwd: NDual-backed forward-mode engine ────────────────────────────────────────
 # `nfwd` evaluates code by lifting inputs into `NDual`s and running the primal
-# function directly on those lifted values. It does not reuse Mooncake's ordinary forward
-# interpreter, even when `chunk_size == 1`.
+# function directly on those lifted values. It does not reuse Mooncake's `frule!!`
+# (aka ir-based forward) path, even when `chunk_size == 1`.
 #
 # ── File layout ────────────────────────────────────────────────────────────────────
 # This file is organized as:
@@ -208,10 +208,10 @@ end
 
 Build a forward-mode rule through `nfwd`.
 
-This path is independent from Mooncake's ordinary forwards-mode interpreter and obeys the
-standard `frule!!` interface. It evaluates the primal function directly on NDual-lifted
-scalar / dense-array inputs. Rule construction is signature-based, so `nfwd` only
-supports stateless callables here.
+This path is independent from Mooncake's `frule!!` (aka ir-based forward) path and obeys
+the standard `frule!!` interface. It evaluates the primal function directly on
+NDual-lifted scalar / dense-array inputs. Rule construction is signature-based, so `nfwd`
+only supports stateless callables here.
 
 If `chunk_size` is omitted, nfwd automatically selects `min(DOF, hardware_preferred_width)`
 from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64
@@ -1497,19 +1497,19 @@ end
 # The rrule buf stores only the lifted Array{NDual{T,C}} — no seed array needed.
 # The grad_buf stores a pre-allocated gradient array matching the input shape.
 # Two ref types are used for each, matching the frule buf pattern:
-#   - Typed-ref (Vector{T} input): fully inferred, no runtime isa check.
-#   - Generic Ref{Any} (N-D array input): workspace type recovered at runtime.
+#   - Typed-ref (Array{T,Nd} input): fully inferred, no runtime isa check.
+#   - Generic Ref{Any} (non-array / unsupported input): workspace type recovered at runtime.
 
 _nfwd_buf_ref(sig, ::Val) = Ref{Any}(nothing)
 
-function _nfwd_buf_ref(::Type{Tuple{F,Vector{T}}}, ::Val{C}) where {F,T<:IEEEFloat,C}
-    return Ref{Union{Nothing,Vector{NDual{T,C}}}}(nothing)
+function _nfwd_buf_ref(::Type{Tuple{F,Array{T,Nd}}}, ::Val{C}) where {F,T<:IEEEFloat,Nd,C}
+    return Ref{Union{Nothing,Array{NDual{T,C},Nd}}}(nothing)
 end
 
 _nfwd_grad_buf_ref(sig) = Ref{Any}(nothing)
 
-function _nfwd_grad_buf_ref(::Type{Tuple{F,Vector{T}}}) where {F,T<:IEEEFloat}
-    return Ref{Union{Nothing,Vector{T}}}(nothing)
+function _nfwd_grad_buf_ref(::Type{Tuple{F,Array{T,Nd}}}) where {F,T<:IEEEFloat,Nd}
+    return Ref{Union{Nothing,Array{T,Nd}}}(nothing)
 end
 
 @inline function _nfwd_alloc_workspace(::Type{Vector{T}}, dims::Tuple{Int}) where {T}
@@ -1542,11 +1542,11 @@ end
     return ws::A
 end
 
-# Typed-ref path: fully inferred.
+# Typed-ref path: fully inferred (covers all array ranks, including Vector).
 @inline function _nfwd_rrule_lifted!(
-    buf::Base.RefValue{Union{Nothing,Vector{NDual{T,C}}}}, x::Vector{T}, ::Val{C}
-) where {T<:IEEEFloat,C}
-    return _nfwd_array_workspace!(buf, Vector{NDual{T,C}}, (length(x),))
+    buf::Base.RefValue{Union{Nothing,Array{NDual{T,C},N}}}, x::Array{T,N}, ::Val{C}
+) where {T<:IEEEFloat,N,C}
+    return _nfwd_array_workspace!(buf, Array{NDual{T,C},N}, size(x))
 end
 
 # Generic path: buf is Ref{Any}; workspace type recovered at runtime.
@@ -1556,11 +1556,11 @@ end
     return _nfwd_array_workspace!(buf, Array{NDual{T,C},N}, size(x))
 end
 
-# Typed-ref path: fully inferred.
+# Typed-ref path: fully inferred (covers all array ranks, including Vector).
 @inline function _nfwd_lazy_grad_buf!(
-    grad_buf::Base.RefValue{Union{Nothing,Vector{T}}}, x_primal::Vector{T}
-) where {T<:IEEEFloat}
-    return _nfwd_array_workspace!(grad_buf, Vector{T}, (length(x_primal),))
+    grad_buf::Base.RefValue{Union{Nothing,Array{T,N}}}, x_primal::Array{T,N}
+) where {T<:IEEEFloat,N}
+    return _nfwd_array_workspace!(grad_buf, Array{T,N}, size(x_primal))
 end
 
 # Generic path: grad_buf is Ref{Any}; gradient array type recovered at runtime.
@@ -1633,23 +1633,25 @@ end
 # The frule receives the seed tangent directly from the caller (as the tangent part of the
 # input Dual), so no seed buffer is needed — only a pre-allocated Array{NDual{T,C}} of the
 # same shape as the primal input.  Two buf types are used:
-#   - Typed-ref (Vector{T} input): fully inferred, no runtime isa check.
-#   - Generic Ref{Any} (higher-dimensional inputs): workspace type recovered at runtime.
+#   - Typed-ref (Array{T,Nd} input): fully inferred, no runtime isa check.
+#   - Generic Ref{Any} (non-array / unsupported input): workspace type recovered at runtime.
 
 _nfwd_frule_buf_ref(sig, ::Val) = Ref{Any}(nothing)
 
-function _nfwd_frule_buf_ref(::Type{Tuple{F,Vector{T}}}, ::Val{C}) where {F,T<:IEEEFloat,C}
-    return Ref{Union{Nothing,Vector{NDual{T,C}}}}(nothing)
+function _nfwd_frule_buf_ref(
+    ::Type{Tuple{F,Array{T,Nd}}}, ::Val{C}
+) where {F,T<:IEEEFloat,Nd,C}
+    return Ref{Union{Nothing,Array{NDual{T,C},Nd}}}(nothing)
 end
 
-# Typed-ref path for Vector{T} inputs.
+# Typed-ref path for Array{T,Nd} inputs (covers all ranks, including Vector).
 function _nfwd_frule_lifted!(
-    buf::Base.RefValue{Union{Nothing,Vector{NDual{T,C}}}},
-    x::Vector{T},
+    buf::Base.RefValue{Union{Nothing,Array{NDual{T,C},Nd}}},
+    x::Array{T,Nd},
     dx::Array{T},
     ::Val{C},
-) where {T<:IEEEFloat,C}
-    ws = _nfwd_array_workspace!(buf, Vector{NDual{T,C}}, (length(x),))
+) where {T<:IEEEFloat,Nd,C}
+    ws = _nfwd_array_workspace!(buf, Array{NDual{T,C},Nd}, size(x))
     return _nfwd_lift!(ws, x, dx, Val(C))
 end
 
