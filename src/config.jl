@@ -27,8 +27,8 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     `prepare_derivative_cache` / `value_and_gradient!!` forward-mode path. `nothing` uses
     Mooncake's default chunking heuristic. This does not affect reverse-mode caches.
 - `enable_nfwd::Bool=true`: whether prepared forward-mode caches may use the `nfwd`
-    NDual-backed fast path. Setting this to `false` forces the ordinary `frule!!` path in
-    `prepare_derivative_cache` and APIs layered on top of it, such as
+    NDual-backed fast path. Setting this to `false` forces the `frule!!` (aka ir-based
+    forward) path in `prepare_derivative_cache` and APIs layered on top of it, such as
     `prepare_hvp_cache` and `prepare_hessian_cache`. When left enabled, cache
     construction stays passive, but `value_and_derivative!!` / `value_and_gradient!!`
     may still error at runtime if `nfwd` turns out not to support the function.

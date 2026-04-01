@@ -79,8 +79,8 @@ useful. Leaving `chunk_size=nothing` keeps Mooncake's default heuristic. Cache
 construction stays passive, but a later `value_and_gradient!!` or
 `value_and_derivative!!` call may still fail at runtime if `nfwd` turns out not to
 support the function. In that case, rebuild the cache with `Config(enable_nfwd=false)` to
-force the ordinary `frule!!` path instead. `show(cache)` / `repr(cache)` also report
-whether the prepared `ForwardCache` is currently using `nfwd`.
+force the `frule!!` (aka ir-based forward) path instead. `show(cache)` / `repr(cache)`
+also report whether the prepared `ForwardCache` is currently using `nfwd`.
 
 When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
 higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as

@@ -32,8 +32,8 @@ import ..Mooncake:
 
 # ── nfwd: NDual-backed forward-mode engine ────────────────────────────────────────
 # `nfwd` evaluates code by lifting inputs into `NDual`s and running the primal
-# function directly on those lifted values. It does not reuse Mooncake's ordinary forward
-# interpreter, even when `chunk_size == 1`.
+# function directly on those lifted values. It does not reuse Mooncake's `frule!!`
+# (aka ir-based forward) path, even when `chunk_size == 1`.
 #
 # ── File layout ────────────────────────────────────────────────────────────────────
 # This file is organized as:
@@ -208,10 +208,10 @@ end
 
 Build a forward-mode rule through `nfwd`.
 
-This path is independent from Mooncake's ordinary forwards-mode interpreter and obeys the
-standard `frule!!` interface. It evaluates the primal function directly on NDual-lifted
-scalar / dense-array inputs. Rule construction is signature-based, so `nfwd` only
-supports stateless callables here.
+This path is independent from Mooncake's `frule!!` (aka ir-based forward) path and obeys
+the standard `frule!!` interface. It evaluates the primal function directly on
+NDual-lifted scalar / dense-array inputs. Rule construction is signature-based, so `nfwd`
+only supports stateless callables here.
 
 If `chunk_size` is omitted, nfwd automatically selects `min(DOF, hardware_preferred_width)`
 from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64

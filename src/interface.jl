@@ -1593,7 +1593,8 @@ end
     cache::ForwardCache, ::Val{N}, ::Val{friendly_tangents}, x_dx::Vararg{Tuple,M}
 ) where {N,friendly_tangents,M}
     # Canonical fallback backend for batched forward mode: evaluate one width-1 lane at a
-    # time through the ordinary forward rule, then repack the outputs into `NTangent`.
+    # time through the cached `frule!!` (aka ir-based forward) rule, then repack the
+    # outputs into `NTangent`.
     # Specialized `_fcache_derivative_chunked!!` methods may replace this
     # with a true batched execution.
     input_primals = map(first, x_dx)
@@ -1671,7 +1672,9 @@ end
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 
 !!! note
-    Calls `f(x...)` once during cache preparation.
+    On the `frule!!` (aka ir-based forward) path, calls `f(x...)` once during cache
+    preparation. On the `Nfwd` path, cache construction stays lazy and does not execute
+    `f(x...)`.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
@@ -1684,9 +1687,8 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         Nfwd._nfwd_check_chunk_size(requested_chunk_size)
     end
     gradient_chunk_size_auto = requested_chunk_size == 0
-    y = f(x...)
-    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
     chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
+    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
     input_specs = map(fx) do x
         if x isa AbstractArray
             PreparedCacheInputSpec(typeof(x), size(x))
@@ -1701,7 +1703,11 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             min(total_dof, requested_chunk_size)
         end
     end
-    output_primal = _copy_output(y)
+    output_primal = if isnothing(chunkcache)
+        _copy_output(f(x...))
+    else
+        nothing
+    end
     if config.friendly_tangents
         input_tangents = tuple_map(zero_tangent, fx)
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
