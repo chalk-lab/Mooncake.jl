@@ -157,14 +157,19 @@ function Core.Compiler.abstract_call_gf_by_type(
         # For applicable method matches in IR, we need to check if any of them is a primitive.
         any_prim = any_matches_primitive(applicable, C, M, interp.world)
         if any_prim
-            # A primitive has a hand-written rrule!! - Mooncake never needs to inspect its body.
-            # Using NativeInterpreter here is safe because:
-            #   - return types (present in the returned CallMeta) are still inferred correctly by standard Julia inference
-            #   - inlining/const-folding is blocked below via noinline_callmeta, so the primitive
-            #     call is preserved in the caller's IR for Mooncake to dispatch its rrule!! at runtime
-            # Using MooncakeInterpreter would recurse into the primitive's entire call tree
-            # looking for further primitives - work that is pure waste, and unbounded for large
-            # packages like SciML. See PR #1115 for the full analysis.
+              # A primitive already has a hand-written `rrule!!`, so Mooncake does not need
+              # to inspect its body when differentiating. The only thing we need here is the
+              # ordinary `CallMeta` for the call site, especially the inferred return type.
+              #
+              # We therefore ask `NativeInterpreter` for the `CallMeta`. This avoids recursing
+              # through the callee IR using Mooncake's primitive-search logic:
+              # `MooncakeInterpreter` would walk nested calls in that body, check them for
+              # primitives, and continue that search down the callee tree. That extra work is
+              # unnecessary for a primitive with a hand-written rule.
+              #
+              # `noinline_callmeta` below then blocks inlining/const-folding so the primitive
+              # call stays in the caller IR and Mooncake can dispatch its `rrule!!` at runtime.
+              # See PR #1115 for more discussion.
             native_interp = CC.NativeInterpreter(interp.world)
             ret = CC.abstract_call_gf_by_type(
                 native_interp, f, arginfo, si, atype, sv, max_methods
