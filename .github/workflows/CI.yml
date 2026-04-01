@@ -71,7 +71,7 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
           include-all-prereleases: false
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         env:
@@ -128,7 +128,7 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
           include-all-prereleases: false
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: |
           if [ ${{ matrix.test_group.test_type }} == 'ext' ]; then
@@ -161,7 +161,7 @@ jobs:
           version: '1.11'
           arch: x64
           include-all-prereleases: false
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: julia --project=bench --eval 'include("bench/run_benchmarks.jl"); main()'
         env:
@@ -180,7 +180,7 @@ jobs:
           version: '1.11'
           arch: x64
           include-all-prereleases: false
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: mkdir bench_results
       - run: julia --project=bench --eval 'include("bench/run_benchmarks.jl"); main()'
