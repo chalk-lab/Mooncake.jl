@@ -166,17 +166,6 @@ function build_chunked_frule(
     )
 end
 
-@inline function build_chunked_ir_frule(args...; kwargs...)
-    # Compatibility alias for older experimental callers.
-    return build_chunked_frule(args...; kwargs...)
-end
-
-@inline function build_tangent_frule(args...; kwargs...)
-    # Compatibility alias for older experimental callers; the chunked IR path is now
-    # named explicitly in `build_chunked_frule`.
-    return build_chunked_frule(args...; kwargs...)
-end
-
 # Design note:
 # This file exposes two forward-mode interfaces, but they are intentionally separate:
 #
@@ -313,6 +302,15 @@ end
 end
 
 @inline _nfwd_pack_lanes(x, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
+@inline _nfwd_pack_lanes(x::T, ::NTuple{N,NoTangent}, ::Val{N}) where {T<:IEEEFloat,N} = NoTangent()
+@inline function _nfwd_pack_lanes(
+    x::Complex{T}, ::NTuple{N,NoTangent}, ::Val{N}
+) where {T<:IEEEFloat,N}
+    return NoTangent()
+end
+@inline _nfwd_pack_lanes(x::Array, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
+@inline _nfwd_pack_lanes(x::Tuple, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
+@inline _nfwd_pack_lanes(x::NamedTuple, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
 
 @inline function _nfwd_pack_lanes(x::T, lanes::NTuple{N}, ::Val{N}) where {T<:IEEEFloat,N}
     return NDual{T,N}(zero(T), ntuple(k -> T(lanes[k]), Val(N)))
