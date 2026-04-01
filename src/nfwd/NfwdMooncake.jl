@@ -677,11 +677,11 @@ end
     return value_and_derivative!!(rule.rule, normalized_fx...)
 end
 
-@inline _nfwd_unpack_output_lane(yi::IEEEFloat, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
-@inline _nfwd_unpack_output_lane(yi::IEEEFloat, dyi::IEEEFloat, ::Val{1}) = dyi
-@inline _nfwd_unpack_output_lane(yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
+@inline _nfwd_unpack_output_lane(yi::Union{IEEEFloat,Complex{<:IEEEFloat}}, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
 @inline _nfwd_unpack_output_lane(
-    yi::Complex{<:IEEEFloat}, dyi::Complex{<:IEEEFloat}, ::Val{1}
+    yi::Union{IEEEFloat,Complex{<:IEEEFloat}},
+    dyi::Union{IEEEFloat,Complex{<:IEEEFloat}},
+    ::Val{1},
 ) = dyi
 @inline _nfwd_unpack_output_lane(yi::Array, dyi::Array, ::Val{lane}) where {lane} = selectdim(
     dyi, ndims(dyi), lane
