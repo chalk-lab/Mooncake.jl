@@ -228,6 +228,8 @@ end
 @inline _nfwd_packed_tangent_type(::Val{N}, ::Type{P}) where {N,P} = _nfwd_pack_tangent_storage_type(
     Val(N), Mooncake.tangent_type(P)
 )
+@inline _nfwd_packed_tangent_type(::Val, ::Type{<:Function}) = NoTangent
+@inline _nfwd_pack_tangent_storage_type(::Val, ::Type{Any}) = Any
 @inline _nfwd_pack_tangent_storage_type(::Val, ::Type{NoTangent}) = NoTangent
 @inline _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat} = NDual{
     T,N
@@ -247,6 +249,7 @@ end
 @inline _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{Mooncake.PossiblyUninitTangent{F}}) where {N,F} = Mooncake.PossiblyUninitTangent{
     _nfwd_pack_tangent_storage_type(Val(N), F)
 }
+@inline _nfwd_pack_tangent_storage_type(::Val, ::Type{T}) where {T} = T
 
 @generated function _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{T}) where {N,T<:Tuple}
     packed = map(p -> _nfwd_pack_tangent_storage_type(Val(N), p), T.parameters)
@@ -1075,7 +1078,7 @@ end
     sig::Type{<:Tuple}, chunk_size; debug_mode::Bool
 )
     resolved = isnothing(chunk_size) ? _nfwd_sig_default_chunk_size(sig) : chunk_size
-    return _nfwd_validate(sig, resolved; debug_mode)
+    return _nfwd_check_chunk_size(resolved)
 end
 
 @inline function _nfwd_verify_sig(rule::Union{Rule,RRule}, fx::Tuple)
