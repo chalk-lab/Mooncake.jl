@@ -135,6 +135,17 @@ end
 
 (m::NfwdDerivedMultiplier)(x) = m.a * x
 
+nfwd_dispatch_gap(::Any) = -1.0
+nfwd_dispatch_gap(x::Vector{Float64}) = sum(x)
+
+struct NfwdBox64
+    x::Float64
+end
+
+nfwd_box64_roundtrip(x) = NfwdBox64(x).x
+
+nfwd_wrapper_target(x) = sin(x) + x^2
+
 Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{
     typeof(nfwd_safe_log),Float64
 }
@@ -162,6 +173,62 @@ function Mooncake.build_primitive_rrule(
 end
 
 @testset "nfwd API" begin
+    @testset "chunked ir derived frule" begin
+        @testset "stays on chunked ir path for nested dispatch" begin
+            x = 1.5
+            nested_chunked_ir_helper(x) = nfwd_wrapper_target(x)
+            nested_chunked_ir_helper(x::Mooncake.Nfwd.NDual) = throw(
+                Mooncake.Nfwd.NDualUnsupportedError(:chunked_ir_nested_dispatch)
+            )
+            nested_chunked_ir_target(x) = nested_chunked_ir_helper(x)
+            rule = Mooncake.NfwdMooncake.build_chunked_frule(
+                nested_chunked_ir_target, x; chunk_size=2
+            )
+
+            y, dy = Mooncake.value_and_derivative!!(
+                rule,
+                (nested_chunked_ir_target, Mooncake.NoTangent()),
+                (x, Mooncake.NTangent((1.0, 2.0))),
+            )
+
+            expected = cos(x) + 2x
+            @test y == nested_chunked_ir_target(x)
+            @test dy == Mooncake.NTangent((expected, 2 * expected))
+        end
+
+        @testset "preserves primal dispatch boundary" begin
+            x = [1.0, 2.0, 3.0]
+            rule = Mooncake.NfwdMooncake.build_chunked_frule(
+                nfwd_dispatch_gap, x; chunk_size=2
+            )
+
+            y, dy = Mooncake.value_and_derivative!!(
+                rule,
+                (nfwd_dispatch_gap, Mooncake.NoTangent()),
+                (x, Mooncake.NTangent((ones(3), fill(2.0, 3)))),
+            )
+
+            @test y == sum(x)
+            @test dy == Mooncake.NTangent((3.0, 6.0))
+        end
+
+        @testset "reuses tangent system through _new_" begin
+            x = 3.0
+            rule = Mooncake.NfwdMooncake.build_chunked_frule(
+                nfwd_box64_roundtrip, x; chunk_size=2
+            )
+
+            y, dy = Mooncake.value_and_derivative!!(
+                rule,
+                (nfwd_box64_roundtrip, Mooncake.NoTangent()),
+                (x, Mooncake.NTangent((1.0, 2.0))),
+            )
+
+            @test y == x
+            @test dy == Mooncake.NTangent((1.0, 2.0))
+        end
+    end
+
     f = (x, y) -> x * y + cos(x)
     x, y = 5.0, 4.0
     dx, dy = 3.0, 2.0

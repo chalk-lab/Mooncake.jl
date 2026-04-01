@@ -159,14 +159,14 @@ end
             @test occursin("Mooncake.ForwardCache(", forward_show)
             @test occursin("mode=:forward", forward_show)
             @test occursin("friendly_tangents=true", forward_show)
-            @test occursin("nfwd=false", forward_show)
+            @test occursin("chunked=false", forward_show)
             @test occursin("chunk_size=1", forward_show)
 
             forward_plain = repr(MIME"text/plain"(), forward_cache)
             @test occursin("Mooncake.ForwardCache", forward_plain)
             @test occursin("mode: forward", forward_plain)
             @test occursin("friendly_tangents: true", forward_plain)
-            @test occursin("nfwd: false", forward_plain)
+            @test occursin("chunked: false", forward_plain)
             @test occursin("chunk_size: 1", forward_plain)
             @test occursin("input_1: Float64 (scalar)", forward_plain)
             @test occursin("output: Float64 (scalar)", forward_plain)
@@ -192,12 +192,12 @@ end
             hvp_show = sprint(show, hvp_cache)
             @test occursin("Mooncake.HVPCache(", hvp_show)
             @test occursin("mode=:forward_over_reverse", hvp_show)
-            @test occursin("nfwd=false", hvp_show)
+            @test occursin("chunked=false", hvp_show)
 
             hvp_plain = repr(MIME"text/plain"(), hvp_cache)
             @test occursin("Mooncake.HVPCache", hvp_plain)
             @test occursin("mode: forward_over_reverse", hvp_plain)
-            @test occursin("nfwd: false", hvp_plain)
+            @test occursin("chunked: false", hvp_plain)
             @test occursin("input_1: Float64 (scalar)", hvp_plain)
             @test occursin("output: Float64 (scalar)", hvp_plain)
         end
@@ -1087,7 +1087,7 @@ end
             )
         end
 
-        @testset "prepare_derivative_cache nfwd opt-out" begin
+        @testset "prepare_derivative_cache chunk fastpath opt-out" begin
             cache_supported = Mooncake.prepare_derivative_cache(
                 (a, b) -> a * b + sin(a),
                 x,
@@ -1132,7 +1132,7 @@ end
             end
         end
 
-        @testset "nfwd runtime NDual errors propagate raw" begin
+        @testset "chunked cache stays on primal dispatch boundary" begin
             let
                 _ndual_width_sensitive_sum(x, y) = x + y
                 function _ndual_width_sensitive_sum(
@@ -1148,14 +1148,6 @@ end
                     y;
                     config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
                 )
-                err = try
-                    Mooncake.value_and_gradient!!(cache, _ndual_width_sensitive_sum, x, y)
-                    nothing
-                catch err
-                    err
-                end
-                @test err isa Mooncake.Nfwd.NDualUnsupportedError
-
                 cache_no_nfwd = Mooncake.prepare_derivative_cache(
                     _ndual_width_sensitive_sum,
                     x,
@@ -1164,15 +1156,60 @@ end
                         debug_mode=false, friendly_tangents=false, enable_nfwd=false
                     ),
                 )
-                @test Mooncake.value_and_gradient!!(
-                    cache_no_nfwd, _ndual_width_sensitive_sum, x, y
-                ) == (
+
+                expected = (
                     _ndual_width_sensitive_sum(x, y), (Mooncake.NoTangent(), one(x), one(y))
                 )
+                @test Mooncake.value_and_gradient!!(
+                    cache, _ndual_width_sensitive_sum, x, y
+                ) == expected
+                @test Mooncake.value_and_gradient!!(
+                    cache_no_nfwd, _ndual_width_sensitive_sum, x, y
+                ) == expected
             end
         end
 
-        @testset "prepare_derivative_cache does not execute nfwd-eligible functions" begin
+        @testset "chunked cache ignores width-specific nddual overloads" begin
+            let
+                width_sensitive_sum(x::AbstractVector{<:Base.IEEEFloat}) = sum(x)
+                width_sensitive_sum(x::Vector{Mooncake.Nfwd.NDual{T,2}}) where {T} = zero(T)
+
+                x_vec = [x, y]
+                cache = Mooncake.prepare_derivative_cache(
+                    width_sensitive_sum,
+                    x_vec;
+                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                )
+
+                expected = (
+                    sum(x_vec),
+                    (Mooncake.NoTangent(), fill(eltype(x_vec)(1), length(x_vec))),
+                )
+                @test Mooncake.value_and_gradient!!(cache, width_sensitive_sum, x_vec) ==
+                    expected
+            end
+        end
+
+        @testset "chunked cache ignores nested nddual-specialized methods" begin
+            let
+                nested_width_helper(x) = sin(x) + x^2
+                nested_width_helper(x::Mooncake.Nfwd.NDual) = throw(
+                    Mooncake.Nfwd.NDualUnsupportedError(:chunked_cache_nested_dispatch)
+                )
+                nested_width_wrapper(x) = nested_width_helper(x)
+
+                cache = Mooncake.prepare_derivative_cache(
+                    nested_width_wrapper,
+                    x;
+                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                )
+
+                @test Mooncake.value_and_gradient!!(cache, nested_width_wrapper, x) ==
+                    (nested_width_wrapper(x), (Mooncake.NoTangent(), cos(x) + 2 * x))
+            end
+        end
+
+        @testset "prepare_derivative_cache does not execute during chunked cache build" begin
             let
                 NFWD_PREPARE_COUNTER[] = 0
 
@@ -1183,15 +1220,6 @@ end
                 )
                 @test NFWD_PREPARE_COUNTER[] == 0
 
-                err = try
-                    Mooncake.value_and_gradient!!(cache, _ndual_prepare_side_effect, x)
-                    nothing
-                catch err
-                    err
-                end
-                @test err isa Mooncake.Nfwd.NDualUnsupportedError
-                @test NFWD_PREPARE_COUNTER[] == 0
-
                 cache_no_nfwd = Mooncake.prepare_derivative_cache(
                     _ndual_prepare_side_effect,
                     x;
@@ -1199,48 +1227,36 @@ end
                         debug_mode=false, friendly_tangents=false, enable_nfwd=false
                     ),
                 )
+                @test Mooncake.value_and_gradient!!(cache, _ndual_prepare_side_effect, x) ==
+                    (x^2 + one(x), (Mooncake.NoTangent(), 2 * x))
+                @test NFWD_PREPARE_COUNTER[] == 1
                 @test Mooncake.value_and_gradient!!(
                     cache_no_nfwd, _ndual_prepare_side_effect, x
                 ) == (x^2 + one(x), (Mooncake.NoTangent(), 2 * x))
-                @test NFWD_PREPARE_COUNTER[] == 1
+                @test NFWD_PREPARE_COUNTER[] == 2
             end
         end
 
-        @testset "small-vector cached seed buffer is reset between calls" begin
+        @testset "small-vector exact-width chunked rule is reusable" begin
             let
-                small_vector_probe_mutation(x) = sum(x)
-                function small_vector_probe_mutation(
-                    x::Vector{Mooncake.Nfwd.NDual{T,N}}
-                ) where {T,N}
-                    @inbounds for i in eachindex(x)
-                        xi = x[i]
-                        x[i] = Mooncake.Nfwd.NDual{T,N}(
-                            xi.value, ntuple(k -> xi.partials[k] + xi.partials[k], Val(N))
-                        )
-                    end
-                    return sum(x)
-                end
+                small_vector_probe(x) = sum(x)
 
                 x_arr = [x, y]
                 cache = Mooncake.prepare_derivative_cache(
-                    small_vector_probe_mutation,
+                    small_vector_probe,
                     x_arr;
                     config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
                 )
                 @test !isnothing(cache.chunkcache)
                 @test !isnothing(cache.chunkcache.small_vector_gradient_frule)
-                # Each runtime call doubles the active seed lane once; if the cached seed
-                # were not restored to identity before reuse, the second call would drift.
                 expected = (
                     sum(x_arr),
-                    (Mooncake.NoTangent(), fill(eltype(x_arr)(2), length(x_arr))),
+                    (Mooncake.NoTangent(), fill(eltype(x_arr)(1), length(x_arr))),
                 )
-                @test Mooncake.value_and_gradient!!(
-                    cache, small_vector_probe_mutation, x_arr
-                ) == expected
-                @test Mooncake.value_and_gradient!!(
-                    cache, small_vector_probe_mutation, x_arr
-                ) == expected
+                @test Mooncake.value_and_gradient!!(cache, small_vector_probe, x_arr) ==
+                    expected
+                @test Mooncake.value_and_gradient!!(cache, small_vector_probe, x_arr) ==
+                    expected
             end
         end
     end

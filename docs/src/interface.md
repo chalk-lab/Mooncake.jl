@@ -74,13 +74,14 @@ val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 ```
 
 Passing `Config(chunk_size=2)` caps the forward chunk width used by this public cache path
-when it dispatches to `NfwdMooncake`. If `Nfwd` is not used, changing `chunk_size` is not
-useful. Leaving `chunk_size=nothing` keeps Mooncake's default heuristic. Cache
-construction stays passive, but a later `value_and_gradient!!` or
-`value_and_derivative!!` call may still fail at runtime if `nfwd` turns out not to
-support the function. In that case, rebuild the cache with `Config(enable_nfwd=false)` to
-force the `frule!!` (aka ir-based forward) path instead. `show(cache)` / `repr(cache)`
-also report whether the prepared `ForwardCache` is currently using `nfwd`.
+when it dispatches to its prepared chunked backend. That backend reuses the same chunked
+frontend exposed by `NfwdMooncake.build_chunked_frule`: derived code stays on the
+semantics-preserving chunked IR path, while primitive calls over nfwd-supported
+signatures may use NDual rules directly. Leaving `chunk_size=nothing` keeps Mooncake's
+default heuristic. `Config(enable_nfwd=false)` disables this prepared-cache chunked
+backend entirely and forces the ordinary `frule!!` path for `prepare_derivative_cache`
+and APIs layered on top of it. `show(cache)` / `repr(cache)` report whether the prepared
+`ForwardCache` currently has the optional chunked backend available.
 
 When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
 higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as

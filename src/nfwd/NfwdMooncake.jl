@@ -83,6 +83,449 @@ import ..Mooncake:
 # High-level rule/cache objects first. The implementation details they rely on are defined
 # in later sections.
 
+# ── Experimental chunked IR path ──────────────────────────────────────────────────
+# This path does not generate `f(::Vector{NDual{...}})`-style overloads and it does not
+# introduce lifted primal structs. Instead it reuses Mooncake's IR-based forward transform
+# and changes only the tangent representation used inside that transform.
+#
+# The key idea is:
+# - keep the primal in `Dual{P,...}` unchanged, so dispatch still sees the original
+#   argument types (for example `Vector{Float64}` or `Box64`);
+# - reuse Mooncake's existing tangent tree shape for arrays, tuples, and structs; and
+# - replace only differentiable leaf tangents with packed `NDual` lanes.
+#
+# Concretely, the transform builds `Dual{P, packed_tangent_type(P)}` rather than the
+# usual `Dual{P, tangent_type(P)}`. For a tangent like
+#   `Tangent((; a=1.0, b=[2.0, 3.0]))`
+# the packed form is still a `Tangent` with the same field layout, but `a` becomes one
+# `NDual` and `b` becomes an array of `NDual`s.
+#
+# Importantly, this does *not* semantically store a second copy of the primal inside the
+# tangent. The real primal remains `primal(x)`. Packed scalar tangent leaves are represented
+# as `NDual(zero(T), partials)` and only the partial lanes are used. There is still some
+# storage overhead because `NDual` has a `value` slot and because tangents already mirror
+# the primal's container structure, but the tangent does not carry another logical primal.
+#
+# This is why the path fixes the two motivating failures:
+# - concrete dispatch is preserved because methods still receive the original primal types;
+# - concrete struct construction works because the primal program still constructs the
+#   original struct, while Mooncake's `_new_` rule constructs a matching packed tangent
+#   separately, rather than requiring the primal struct itself to store `NDual`s.
+#
+# The builder below:
+# 1. packs ordinary Mooncake tangents / `NTangent` bundles into the packed tangent tree,
+# 2. runs the ordinary derived `frule`, and
+# 3. unpacks the result back to Mooncake's public tangent representation.
+#
+# Scope note: this is currently an experimental forward-mode `frule` path only, not a full
+# replacement for the existing `nfwd` reverse/cache machinery.
+# `ChunkedIRMode{N}` selects the chunked IR path: derive a forward rule from IR, keep
+# primal values unchanged, and store the `N` derivative lanes only in the tangent.
+struct ChunkedIRMode{N} end
+
+# `ChunkedIRRule` is the public rule object returned by `build_chunked_frule` for the
+# chunked IR path.
+# It lives here, rather than in `forward_mode.jl`, because the raw derived IR rule does not
+# know about Mooncake's chunked public tangent interface (`NTangent`). This wrapper adds
+# the chunk pack/unpack boundary that converts between public chunked tangents and the
+# internal `NDual`-leaf tangent tree used by the chunked IR path.
+struct ChunkedIRRule{sig,N,R}
+    rule::R
+end
+
+# `ChunkedNDualRule` adapts a primitive nfwd rule to the packed tangent interface used by
+# the chunked frontend. It is used only at primitive boundaries whose primal argument
+# types are all nfwd-supported.
+struct ChunkedNDualRule{sig,N,R}
+    rule::R
+end
+
+@inline rule_chunk_size(::Type{<:ChunkedIRRule{sig,N}}) where {sig,N} = N
+@inline rule_chunk_size(::Type{<:ChunkedNDualRule{sig,N}}) where {sig,N} = N
+@inline (rule::ChunkedIRRule)(args...) = rule.rule(args...)
+
+function build_chunked_frule(
+    sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
+)
+    resolved = _nfwd_resolve_rule_chunk_size(sig, chunk_size; debug_mode)
+    inner = Mooncake.build_frule(
+        Mooncake.get_interpreter(Mooncake.ForwardMode),
+        sig;
+        debug_mode,
+        silence_debug_messages,
+        tangent_mode=ChunkedIRMode{resolved}(),
+    )
+    return ChunkedIRRule{sig,resolved,typeof(inner)}(inner)
+end
+
+function build_chunked_frule(
+    f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
+)
+    return build_chunked_frule(
+        typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages
+    )
+end
+
+@inline function build_chunked_ir_frule(args...; kwargs...)
+    # Compatibility alias for older experimental callers.
+    return build_chunked_frule(args...; kwargs...)
+end
+
+@inline function build_tangent_frule(args...; kwargs...)
+    # Compatibility alias for older experimental callers; the chunked IR path is now
+    # named explicitly in `build_chunked_frule`.
+    return build_chunked_frule(args...; kwargs...)
+end
+
+# Design note:
+# This file exposes two forward-mode interfaces, but they are intentionally separate:
+#
+# 1. Chunked IR path.
+#    Pathway:
+#      `build_chunked_frule`
+#      -> `Mooncake.build_frule(...; tangent_mode=ChunkedIRMode)`
+#      -> derived IR executes on ordinary primal values, while primitive calls may select
+#         `ChunkedNDualRule` when their primal signature is nfwd-supported.
+#    In this path, the primal values keep their original Julia types and only the tangent
+#    is changed. The tangent still uses Mooncake's normal structural tangent layout for
+#    tuples, arrays, and structs, but differentiable leaf tangents are packed into
+#    `NDual` lanes. This is the semantics-preserving path: Julia dispatch still sees the
+#    same primal argument types as the original program.
+#
+# 2. Nfwd path.
+#    Pathway:
+#      `NfwdMooncake.build_frule` / `NfwdMooncake.build_rrule`
+#      -> execute Julia code directly on NDual-lifted primals.
+#    This path is explicit. It is still useful when callers intentionally want `nfwd`
+#    semantics and know their code is compatible with NDual replay.
+#
+# The key correctness rule is that the chunked frontend never lowers derived user code to
+# NDual replay automatically. Even if the top-level call appears safe, dispatch can still
+# change at nested calls or for different chunk widths. Primitive boundaries are the one
+# safe exception: there is no inner Julia call graph to replay, so for primitive signatures
+# whose primal argument types are nfwd-supported we default to the existing nfwd rule.
+@inline _nfwd_supported_primal_type(::Type{<:IEEEFloat}) = true
+@inline _nfwd_supported_primal_type(::Type{<:Complex{<:IEEEFloat}}) = true
+@inline _nfwd_supported_primal_type(::Type{<:Array{T}}) where {T} = Nfwd._nfwd_is_supported_scalar(
+    T
+)
+@generated function _nfwd_supported_primal_type(::Type{T}) where {T<:Tuple}
+    checks = map(p -> _nfwd_supported_primal_type(p), T.parameters)
+    return all(checks) ? :(true) : :(false)
+end
+@inline _nfwd_supported_primal_type(::Type) = false
+
+function _nfwd_supports_primitive_sig(sig::Type{<:Tuple})
+    try
+        Nfwd._nfwd_check_callable_sig(sig)
+    catch
+        return false
+    end
+    return all(_nfwd_supported_primal_type, Base.tail(sig.parameters))
+end
+
+function Mooncake._fwd_primitive_rule(
+    ::ChunkedIRMode{N},
+    interp,
+    sig::Type{<:Tuple};
+    debug_mode=false,
+    silence_debug_messages=true,
+) where {N}
+    _nfwd_supports_primitive_sig(sig) || return nothing
+    inner = build_frule(sig; chunk_size=N, silence_debug_messages)
+    return ChunkedNDualRule{sig,N,typeof(inner)}(inner)
+end
+
+@inline _nfwd_packed_tangent_type(::Val{N}, ::Type{P}) where {N,P} = _nfwd_pack_tangent_storage_type(
+    Val(N), Mooncake.tangent_type(P)
+)
+@inline _nfwd_pack_tangent_storage_type(::Val, ::Type{NoTangent}) = NoTangent
+@inline _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat} = NDual{
+    T,N
+}
+@inline _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat} = Complex{
+    NDual{T,N}
+}
+@inline _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{Array{T,Nd}}) where {N,T,Nd} = Array{
+    _nfwd_pack_tangent_storage_type(Val(N), T),Nd
+}
+@inline _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{Mooncake.Tangent{F}}) where {N,F} = Mooncake.Tangent{
+    _nfwd_pack_tangent_storage_type(Val(N), F)
+}
+@inline _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{Mooncake.MutableTangent{F}}) where {N,F} = Mooncake.MutableTangent{
+    _nfwd_pack_tangent_storage_type(Val(N), F)
+}
+@inline _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{Mooncake.PossiblyUninitTangent{F}}) where {N,F} = Mooncake.PossiblyUninitTangent{
+    _nfwd_pack_tangent_storage_type(Val(N), F)
+}
+
+@generated function _nfwd_pack_tangent_storage_type(::Val{N}, ::Type{T}) where {N,T<:Tuple}
+    packed = map(p -> _nfwd_pack_tangent_storage_type(Val(N), p), T.parameters)
+    return Expr(:curly, :Tuple, packed...)
+end
+
+@generated function _nfwd_pack_tangent_storage_type(
+    ::Val{N}, ::Type{NT}
+) where {N,names,Ts,NT<:NamedTuple{names,Ts}}
+    packed_ts = _nfwd_pack_tangent_storage_type(Val(N), Ts)
+    return :(NamedTuple{$names,$packed_ts})
+end
+
+function _nfwd_packed_dual_type(::Val{N}, ::Type{P}) where {N,P}
+    P == Union{} && return Union{}
+    P == DataType && return Dual
+    P isa Union && return Union{
+        _nfwd_packed_dual_type(Val(N), P.a),_nfwd_packed_dual_type(Val(N), P.b)
+    }
+    (P isa UnionAll || P == UnionAll) && return Dual
+    return isconcretetype(P) ? Dual{P,_nfwd_packed_tangent_type(Val(N), P)} : Dual
+end
+
+function Mooncake._fwd_dual_type(::ChunkedIRMode{N}, ::Type{P}) where {N,P}
+    _nfwd_packed_dual_type(Val(N), P)
+end
+function Mooncake._fwd_zero_dual(::ChunkedIRMode{N}, x) where {N}
+    Dual(x, _nfwd_pack_public_tangent(x, zero_tangent(x), Val(N)))
+end
+function Mooncake._fwd_uninit_dual(::ChunkedIRMode{N}, x) where {N}
+    Mooncake._fwd_zero_dual(ChunkedIRMode{N}(), x)
+end
+
+@inline _nfwd_pack_struct_lane_field(t::Mooncake.Tangent, i::Int) = Mooncake.val(
+    getfield(t.fields, i)
+)
+@inline _nfwd_pack_struct_lane_field(t::Mooncake.MutableTangent, i::Int) = Mooncake.val(
+    getfield(t.fields, i)
+)
+
+@inline function _nfwd_pack_public_tangent(x, dx, ::Val{N}) where {N}
+    lanes = if dx isa NTangent
+        length(dx) == N || throw(
+            ArgumentError(
+                "Packed chunk rule expected $N tangent lanes, got $(length(dx))."
+            ),
+        )
+        dx.lanes
+    else
+        ntuple(_ -> dx, Val(N))
+    end
+    return _nfwd_pack_lanes(x, lanes, Val(N))
+end
+
+@inline _nfwd_pack_lanes(x, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
+
+@inline function _nfwd_pack_lanes(x::T, lanes::NTuple{N}, ::Val{N}) where {T<:IEEEFloat,N}
+    return NDual{T,N}(zero(T), ntuple(k -> T(lanes[k]), Val(N)))
+end
+
+@inline function _nfwd_pack_lanes(
+    x::Complex{T}, lanes::NTuple{N}, ::Val{N}
+) where {T<:IEEEFloat,N}
+    return Complex(
+        NDual{T,N}(zero(T), ntuple(k -> T(real(lanes[k])), Val(N))),
+        NDual{T,N}(zero(T), ntuple(k -> T(imag(lanes[k])), Val(N))),
+    )
+end
+
+function _nfwd_pack_lanes(x::Array, lanes::NTuple{N}, ::Val{N}) where {N}
+    ET = _nfwd_packed_tangent_type(Val(N), eltype(x))
+    out = Array{ET,ndims(x)}(undef, size(x))
+    @inbounds for I in CartesianIndices(x)
+        out[I] = _nfwd_pack_lanes(x[I], ntuple(k -> lanes[k][I], Val(N)), Val(N))
+    end
+    return out
+end
+
+@inline function _nfwd_pack_lanes(x::Tuple, lanes::NTuple{N}, ::Val{N}) where {N}
+    Mooncake.tangent_type(typeof(x)) === NoTangent && return NoTangent()
+    return ntuple(
+        i -> _nfwd_pack_lanes(x[i], ntuple(k -> lanes[k][i], Val(N)), Val(N)),
+        Val(length(x)),
+    )
+end
+
+@inline function _nfwd_pack_lanes(x::NamedTuple, lanes::NTuple{N}, ::Val{N}) where {N}
+    names = fieldnames(typeof(x))
+    values = ntuple(
+        i -> _nfwd_pack_lanes(
+            getfield(x, i), ntuple(k -> getfield(lanes[k], i), Val(N)), Val(N)
+        ),
+        Val(fieldcount(typeof(x))),
+    )
+    return NamedTuple{names}(values)
+end
+
+function _nfwd_pack_lanes(x, lanes::NTuple{N}, ::Val{N}) where {N}
+    Mooncake.tangent_type(typeof(x)) === NoTangent && return NoTangent()
+    packed_type = _nfwd_packed_tangent_type(Val(N), typeof(x))
+    values = ntuple(
+        i -> _nfwd_pack_lanes(
+            getfield(x, i),
+            ntuple(k -> _nfwd_pack_struct_lane_field(lanes[k], i), Val(N)),
+            Val(N),
+        ),
+        Val(fieldcount(typeof(x))),
+    )
+    return packed_type(NamedTuple{fieldnames(typeof(x))}(values))
+end
+
+@inline _nfwd_unpack_packed_tangent(y, dy, ::Val{1}) = _nfwd_unpack_packed_lane(
+    y, dy, Val(1)
+)
+@inline function _nfwd_unpack_packed_tangent(y, dy, ::Val{N}) where {N}
+    return NTangent(ntuple(k -> _nfwd_unpack_packed_lane(y, dy, Val(k)), Val(N)))
+end
+
+@inline _nfwd_unpack_packed_lane(y, ::NoTangent, ::Val) = NoTangent()
+@inline _nfwd_unpack_packed_lane(y::T, dy::NDual{T,N}, ::Val{k}) where {T<:IEEEFloat,N,k} = Nfwd.ndual_partial(
+    dy, k
+)
+@inline function _nfwd_unpack_packed_lane(
+    y::Complex{T}, dy::Complex{NDual{T,N}}, ::Val{k}
+) where {T<:IEEEFloat,N,k}
+    return Nfwd.ndual_partial(dy, k)
+end
+
+function _nfwd_unpack_packed_lane(y::Array, dy::Array, ::Val{k}) where {k}
+    ET = Mooncake.tangent_type(eltype(y))
+    out = Array{ET,ndims(y)}(undef, size(y))
+    @inbounds for I in CartesianIndices(y)
+        out[I] = _nfwd_unpack_packed_lane(y[I], dy[I], Val(k))
+    end
+    return out
+end
+
+@inline function _nfwd_unpack_packed_lane(y::Tuple, dy::Tuple, ::Val{k}) where {k}
+    return ntuple(i -> _nfwd_unpack_packed_lane(y[i], dy[i], Val(k)), Val(length(y)))
+end
+
+@inline function _nfwd_unpack_packed_lane(y::NamedTuple, dy::NamedTuple, ::Val{k}) where {k}
+    names = fieldnames(typeof(y))
+    values = ntuple(
+        i -> _nfwd_unpack_packed_lane(getfield(y, i), getfield(dy, i), Val(k)),
+        Val(fieldcount(typeof(y))),
+    )
+    return NamedTuple{names}(values)
+end
+
+function _nfwd_unpack_packed_lane(y, dy::Mooncake.Tangent, ::Val{k}) where {k}
+    T = Mooncake.tangent_type(typeof(y))
+    values = ntuple(
+        i -> _nfwd_unpack_packed_lane(
+            getfield(y, i), Mooncake.val(getfield(dy.fields, i)), Val(k)
+        ),
+        Val(fieldcount(typeof(y))),
+    )
+    return T(NamedTuple{fieldnames(typeof(y))}(values))
+end
+
+function _nfwd_unpack_packed_lane(y, dy::Mooncake.MutableTangent, ::Val{k}) where {k}
+    T = Mooncake.tangent_type(typeof(y))
+    values = ntuple(
+        i -> _nfwd_unpack_packed_lane(
+            getfield(y, i), Mooncake.val(getfield(dy.fields, i)), Val(k)
+        ),
+        Val(fieldcount(typeof(y))),
+    )
+    return T(NamedTuple{fieldnames(typeof(y))}(values))
+end
+
+@inline function _nfwd_packed_lane_count_type(::Type{<:NDual{T,N}}) where {T,N}
+    return N
+end
+@inline function _nfwd_packed_lane_count_type(::Type{<:Complex{NDual{T,N}}}) where {T,N}
+    return N
+end
+@inline function _nfwd_packed_lane_count_type(::Type{<:Array{T}}) where {T}
+    return _nfwd_packed_lane_count_type(T)
+end
+@inline function _nfwd_packed_lane_count_type(::Type{<:Mooncake.Tangent{F}}) where {F}
+    return _nfwd_packed_lane_count_type(F)
+end
+@inline function _nfwd_packed_lane_count_type(
+    ::Type{<:Mooncake.MutableTangent{F}}
+) where {F}
+    return _nfwd_packed_lane_count_type(F)
+end
+@inline function _nfwd_packed_lane_count_type(
+    ::Type{<:Mooncake.PossiblyUninitTangent{F}}
+) where {F}
+    return _nfwd_packed_lane_count_type(F)
+end
+
+function _nfwd_merge_lane_counts(a, b)
+    isnothing(a) && return b
+    isnothing(b) && return a
+    a == b || throw(ArgumentError("Packed tangent lanes disagree: $a vs $b."))
+    return a
+end
+
+@generated function _nfwd_packed_lane_count_type(::Type{T}) where {T<:Tuple}
+    counts = map(_nfwd_packed_lane_count_type, T.parameters)
+    merged = nothing
+    for c in counts
+        merged = _nfwd_merge_lane_counts(merged, c)
+    end
+    return isnothing(merged) ? :(nothing) : merged
+end
+
+@generated function _nfwd_packed_lane_count_type(
+    ::Type{NT}
+) where {names,Ts,NT<:NamedTuple{names,Ts}}
+    merged = _nfwd_packed_lane_count_type(Ts)
+    return isnothing(merged) ? :(nothing) : merged
+end
+
+@inline _nfwd_packed_lane_count_type(::Type) = nothing
+
+function value_and_derivative!!(
+    rule::ChunkedIRRule{sig,N}, fx::Vararg{Tuple{Any,Any},M}
+) where {sig,N,M}
+    packed_args = tuple_map(
+        (x, dx) -> Dual(x, _nfwd_pack_public_tangent(x, dx, Val(N))),
+        tuple_map(first, fx),
+        tuple_map(last, fx),
+    )
+    output = rule.rule(packed_args...)
+    return primal(output),
+    _nfwd_unpack_packed_tangent(primal(output), tangent(output), Val(N))
+end
+
+@inline _collapse_chunked_function_tangent(dx::NoTangent) = NoTangent()
+@inline function _collapse_chunked_function_tangent(dx::NTangent)
+    all(t -> t isa NoTangent, dx) || throw(
+        ArgumentError(
+            "Chunked nddual primitive rules do not support differentiating with respect to `f`.",
+        ),
+    )
+    return NoTangent()
+end
+@inline _collapse_chunked_function_tangent(dx) = dx
+
+@inline function (rule::ChunkedNDualRule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
+    fx = (
+        (primal(f), tangent(f)),
+        ntuple(
+            i -> (
+                primal(x[i]),
+                _nfwd_unpack_packed_tangent(primal(x[i]), tangent(x[i]), Val(N)),
+            ),
+            Val(M),
+        )...,
+    )
+    y, dy = value_and_derivative!!(rule.rule, fx...)
+    return Dual(y, _nfwd_pack_public_tangent(y, dy, Val(N)))
+end
+
+@inline function value_and_derivative!!(
+    rule::ChunkedNDualRule{sig,N}, fx::Vararg{Tuple{Any,Any},M}
+) where {sig,N,M}
+    normalized_fx = (
+        (first(fx[1]), _collapse_chunked_function_tangent(last(fx[1]))), Base.tail(fx)...
+    )
+    return value_and_derivative!!(rule.rule, normalized_fx...)
+end
+
 @inline _nfwd_unpack_output_lane(yi::IEEEFloat, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
 @inline _nfwd_unpack_output_lane(yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
 @inline _nfwd_unpack_output_lane(yi::Array, dyi::Array, ::Val{lane}) where {lane} = selectdim(
@@ -92,16 +535,18 @@ import ..Mooncake:
     return tuple_map((yij, dyij) -> _nfwd_unpack_output_lane(yij, dyij, Val(lane)), yi, dyi)
 end
 
-@inline function _maybe_chunk_frule_nfwd(
+# Cache-side chunked forward execution: attempt one call through a prebuilt chunked rule
+# from `prepare_derivative_cache`, then fall back to the generic lane loop only when no
+# rule for that chunk width is available.
+@inline function _maybe_chunk_frule_chunked_ir(
     cache::ForwardCache, input_primals::Tuple, input_tangents::Tuple, ::Val{N}
 ) where {N}
-    # Width-1 derivatives already have a dedicated scalar fast path; keep the chunked
-    # nfwd entrypoint focused on genuine multi-lane calls.
-    N == 1 && return nothing
     fastpath = cache.chunkcache
     isnothing(fastpath) && return nothing
     rule = if N == 2
         fastpath.frule_2
+    elseif N == 1
+        fastpath.frule_1
     elseif N == 3
         fastpath.frule_3
     elseif N == 4
@@ -118,22 +563,7 @@ end
         nothing
     end
     isnothing(rule) && return nothing
-    packed_tangents = ntuple(
-        i -> _chunk_pack_tangent(
-            Base.tail(input_primals)[i],
-            Base.tail(input_tangents)[i],
-            fastpath.pack_buffers[i],
-            Val(N),
-        ),
-        Val(fieldcount(typeof(fastpath.pack_buffers))),
-    )
-    fd = Dual(first(input_primals), NoTangent())
-    x_duals = tuple_map(Dual, Base.tail(input_primals), packed_tangents)
-    output = rule(fd, x_duals...)
-    y = primal(output)
-    dy = tangent(output)
-    # Re-express the packed nfwd output at the public chunk boundary as one tangent per lane.
-    return y, NTangent(ntuple(lane -> _nfwd_unpack_output_lane(y, dy, Val(lane)), Val(N)))
+    return value_and_derivative!!(rule, map(tuple, input_primals, input_tangents)...)
 end
 
 @noinline function _fcache_derivative_chunked!!(
@@ -145,11 +575,12 @@ end
     N < 1 && throw(ArgumentError("NTangent inputs must contain at least one lane."))
     input_primals = map(first, x_dx)
     input_tangents = map(last, x_dx)
-    # NDual-backed batched backend: attempt a packed multi-lane forward pass. Falls back
-    # to the generic lane loop only when no fastpath applies (N == 1, N > 8, or no
-    # NfwdCache built for this cache).
-    nfwd_output = _maybe_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
-    !isnothing(nfwd_output) && return nfwd_output
+    friendly_tangents &&
+        return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
+    chunked_output = _maybe_chunk_frule_chunked_ir(
+        cache, input_primals, input_tangents, Val(N)
+    )
+    !isnothing(chunked_output) && return chunked_output
     return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
 end
 

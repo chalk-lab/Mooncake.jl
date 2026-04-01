@@ -26,12 +26,12 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
 - `chunk_size::Union{Nothing,Int}=nothing`: optional chunk width for the public
     `prepare_derivative_cache` / `value_and_gradient!!` forward-mode path. `nothing` uses
     Mooncake's default chunking heuristic. This does not affect reverse-mode caches.
-- `enable_nfwd::Bool=true`: whether prepared forward-mode caches may use the `nfwd`
-    NDual-backed fast path. Setting this to `false` forces the `frule!!` (aka ir-based
-    forward) path in `prepare_derivative_cache` and APIs layered on top of it, such as
-    `prepare_hvp_cache` and `prepare_hessian_cache`. When left enabled, cache
-    construction stays passive, but `value_and_derivative!!` / `value_and_gradient!!`
-    may still error at runtime if `nfwd` turns out not to support the function.
+- `enable_nfwd::Bool=true`: legacy config name for enabling Mooncake's prepared-cache
+    chunked forward backend. When enabled, prepared caches may prebuild width-specific
+    chunked IR rules and reuse them in public forward-mode APIs. When disabled, prepared
+    caches always stay on the ordinary non-cached `frule!!` path. This flag does not
+    affect direct use of `NfwdMooncake.build_chunked_frule`, which always keeps the full
+    chunked IR path available.
 """
 @kwdef struct Config
     debug_mode::Bool = false

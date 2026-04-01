@@ -271,8 +271,8 @@ end
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
 # Internal helper cache types in this file:
-# - `NfwdCache`: internal nfwd helper cache stored inside `ForwardCache` when the
-#   prepared forward cache can use packed NDual execution.
+# - `NfwdCache`: internal cache bundle stored inside `ForwardCache` when the prepared
+#   forward cache can use the chunked backend. The type name is legacy.
 # All seven parameters are load-bearing: they keep the prepared reverse cache concrete
 # across the cached rule, reusable primal/tangent buffers, and cached input/output specs.
 struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
@@ -866,9 +866,9 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-# Internal nfwd chunk cache stored inside `ForwardCache`.
-# This bundle is only the optional chunked nfwd backend used to accelerate Mooncake's
-# public `ForwardCache` path.
+# Internal chunked forward cache stored inside `ForwardCache`.
+# `NfwdCache` is a legacy internal name: this bundle now stores the prepared-cache
+# chunked backend in general, not just direct nfwd execution.
 # It stores one forward rule per supported chunk width (1 through 8). Keeping those rules
 # in separate fields lets the code pick, for example, the width-3 rule directly, instead
 # of indexing into a tuple of mixed rule types.
@@ -932,7 +932,7 @@ function Base.show(io::IO, cache::ForwardCache)
         "mode=:forward, ",
         "friendly_tangents=",
         !isnothing(getfield(cache, :input_tangents)),
-        ", nfwd=",
+        ", chunked=",
         !isnothing(getfield(cache, :chunkcache)),
         ", chunk_size=",
         getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size,
@@ -951,7 +951,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::ForwardCache)
         "  friendly_tangents: ",
         !isnothing(getfield(cache, :input_tangents)),
         "\n",
-        "  nfwd: ",
+        "  chunked: ",
         !isnothing(getfield(cache, :chunkcache)),
         "\n",
         "  chunk_size: ",
@@ -1331,31 +1331,28 @@ function _fcache_gradient_seed_tangent(
     return build_tangent(P, fields...)
 end
 
-# Shared `fcache` nfwd chunk machinery.
-# Attempts to build an `NfwdCache`; returns `nothing` if any eligibility
+# Shared `fcache` chunk machinery.
+# Attempts to build a cache of chunked forward rules; returns `nothing` if any eligibility
 # check fails.
 #
 # Eligibility (construction-time gates, evaluated in order):
 # - `config.debug_mode` must be false.
-# - `typeof(f)` must be a singleton type; closures and callable structs with fields
-#   do not qualify.
-# - Every argument in `x...` must be an `IEEEFloat`, `Complex{<:IEEEFloat}`, or
-#   `Array{T}` with `T <: IEEEFloat` or `T <: Complex{<:IEEEFloat}`. Arguments of tuple or
-#   struct type stay on the ordinary chunked path.
-# - These gates avoid known-inapplicable signatures without executing user code during
-#   cache construction. A remaining nfwd limitation is surfaced later, when the prepared
-#   cache is first used.
+# - `config.enable_nfwd` must be true. Despite the legacy config name, this now gates the
+#   prepared-cache chunked forward backend in general.
+# The prepared-cache backend stores width-specific `build_chunked_frule` rules. This keeps
+# public chunked cache execution on the same chunked frontend as the direct rule API:
+# derived code stays on the semantics-preserving chunked IR path, while primitive calls
+# over nfwd-supported signatures may use NDual rules directly.
 #
-# Gradient-only shortcuts stored on the `NfwdCache` (each narrower than
+# Gradient-only shortcuts stored on the cache bundle (each narrower than
 # the general chunk path):
 # - `frule_1` doubles as the scalar fast path for `(f, x::IEEEFloat)` calls via the
 #   scalar `value_and_gradient!!` specialisation.
-# - `gradient_rrule`: built only for single-argument `(f, x::Array{<:IEEEFloat})`.
 # - `small_vector_gradient_frule`: built only for single-argument
 #   `(f, x::Vector{<:IEEEFloat})` with `1 <= length(x) <= 8` and, when a chunk_size
 #   is requested, `length(x) <= chunk_size`. Uses an exact-width frule seeded with an
 #   identity-matrix tangent.
-@inline function _fcache_build_nfwd_chunk_cache(fx::Tuple, config)
+@inline function _fcache_build_chunk_cache(fx::Tuple, config)
     config.debug_mode && return nothing
     getfield(config, :enable_nfwd) || return nothing
     sig = typeof(fx)
@@ -1363,65 +1360,32 @@ end
     requested_chunk_size = let requested = getfield(config, :chunk_size)
         isnothing(requested) ? 0 : Nfwd._nfwd_check_chunk_size(requested)
     end
-    F = params[1]
-    Base.issingletontype(F) || return nothing
-    # Current NDual fast-path boundary: only scalar/complex/array top-level primals are
-    # packed here. Tuple-like or structured top-level primals stay on the ordinary lane
-    # loop until the chunk-aware IR frontend can repack them soundly.
-    all(Base.tail(params)) do P
-        P <: IEEEFloat && return true
-        P <: Complex{<:IEEEFloat} && return true
-        P <: Array || return false
-        return Nfwd._nfwd_is_supported_scalar(P.parameters[1])
-    end || return nothing
-    frule_1 = NfwdMooncake.build_frule(
-        sig; chunk_size=1, debug_mode=false, silence_debug_messages=true
+    frule_1 = NfwdMooncake.build_chunked_frule(
+        sig; chunk_size=1, silence_debug_messages=true
     )
-    frule_2 = NfwdMooncake.build_frule(
-        sig; chunk_size=2, debug_mode=false, silence_debug_messages=true
+    frule_2 = NfwdMooncake.build_chunked_frule(
+        sig; chunk_size=2, silence_debug_messages=true
     )
-    frule_3 = NfwdMooncake.build_frule(
-        sig; chunk_size=3, debug_mode=false, silence_debug_messages=true
+    frule_3 = NfwdMooncake.build_chunked_frule(
+        sig; chunk_size=3, silence_debug_messages=true
     )
-    frule_4 = NfwdMooncake.build_frule(
-        sig; chunk_size=4, debug_mode=false, silence_debug_messages=true
+    frule_4 = NfwdMooncake.build_chunked_frule(
+        sig; chunk_size=4, silence_debug_messages=true
     )
-    frule_5 = NfwdMooncake.build_frule(
-        sig; chunk_size=5, debug_mode=false, silence_debug_messages=true
+    frule_5 = NfwdMooncake.build_chunked_frule(
+        sig; chunk_size=5, silence_debug_messages=true
     )
-    frule_6 = NfwdMooncake.build_frule(
-        sig; chunk_size=6, debug_mode=false, silence_debug_messages=true
+    frule_6 = NfwdMooncake.build_chunked_frule(
+        sig; chunk_size=6, silence_debug_messages=true
     )
-    frule_7 = NfwdMooncake.build_frule(
-        sig; chunk_size=7, debug_mode=false, silence_debug_messages=true
+    frule_7 = NfwdMooncake.build_chunked_frule(
+        sig; chunk_size=7, silence_debug_messages=true
     )
-    frule_8 = NfwdMooncake.build_frule(
-        sig; chunk_size=8, debug_mode=false, silence_debug_messages=true
+    frule_8 = NfwdMooncake.build_chunked_frule(
+        sig; chunk_size=8, silence_debug_messages=true
     )
-    # Arrays need a reusable packed `(size(x)..., lanes)` scratch buffer; scalar inputs pack
-    # directly into tuples and do not need cached storage.
-    pack_buffers = tuple_map(Base.tail(fx)) do x
-        if x isa IEEEFloat || x isa Complex{<:IEEEFloat}
-            nothing
-        else
-            Ref{Union{Nothing,Array{eltype(x)}}}(nothing)
-        end
-    end
-    # Bug fix note: keep the cached nfwd gradient fast path narrow. A dedicated cached
-    # reverse entrypoint is not a win for multi-argument scalar calls, where the chunked
-    # forward frontend already gets the full gradient in one NDual pass.
-    gradient_rrule = if length(params) == 2 && params[2] <: Array{<:IEEEFloat}
-        NfwdMooncake.build_rrule(
-            sig;
-            chunk_size=(requested_chunk_size == 0 ? nothing : requested_chunk_size),
-            debug_mode=false,
-            silence_debug_messages=true,
-        )
-    else
-        nothing
-    end
-    # Small vectors are faster through an exact-width NDual frule than through the generic
-    # array gradient rrule, which defaults to width 8 and leaves a fixed overhead at n <= 8.
+    # Small vectors are faster through an exact-width chunked frule than through the
+    # generic chunked gradient assembly path, which otherwise seeds and accumulates lanes.
     small_vector_gradient_frule =
         if (
             length(params) == 2 &&
@@ -1458,8 +1422,8 @@ end
         frule_6,
         frule_7,
         frule_8,
-        pack_buffers,
-        gradient_rrule,
+        nothing,
+        nothing,
         small_vector_gradient_frule,
         small_vector_gradient_buffer,
         small_vector_gradient_workspace,
@@ -1576,11 +1540,10 @@ end
 #     The scalar / small-vector / dense-array gradient fast paths bypass that generic
 #     chunked gradient assembly path.
 #
-#   shared nfwd chunk machinery:
-#     NfwdMooncake.jl overrides _fcache_derivative_chunked!! for
-#     NfwdCache caches to attempt a packed NDual multi-lane pass. Falls back to
-#     _fcache_derivative_chunked_loop!! only when no fastpath applies
-#     (N == 1, N > 8, or no NfwdCache on the cache).
+#   shared chunk machinery:
+#     NfwdMooncake.jl overrides `_fcache_derivative_chunked!!` for caches with a
+#     chunkcache to attempt a prebuilt chunked-IR multi-lane pass. Falls back to
+#     `_fcache_derivative_chunked_loop!!` only when no fastpath applies.
 #
 # fcache derivative chunk execution
 @noinline function _fcache_derivative_chunked_loop!!(
@@ -1686,7 +1649,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         Nfwd._nfwd_check_chunk_size(requested_chunk_size)
     end
     gradient_chunk_size_auto = requested_chunk_size == 0
-    chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
+    chunkcache = _fcache_build_chunk_cache(fx, config)
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
     input_specs = map(fx) do x
         if x isa AbstractArray
@@ -1867,7 +1830,7 @@ end
 # - gradient machinery:
 #   `value_and_gradient!!`, `_fcache_gradient_chunked!!`.
 # - shared nfwd chunk machinery:
-#   `_fcache_build_nfwd_chunk_cache`,
+#   `_fcache_build_chunk_cache`,
 #   `_is_ndual_unsupported_error`.
 #
 # Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)`:
@@ -1878,20 +1841,29 @@ end
 #   repeatedly calls `_fcache_derivative_chunked!!`
 
 # Scalar `value_and_gradient!!` fast path: this is a width-1 forward evaluation, using
-# `cache.rule` or the cached width-1 nfwd rule when available. The win here is
-# avoiding the generic `_fcache_derivative_chunked!!` path's chunk
-# seeding and lane accumulation.
+# the cached width-1 chunked rule when available. The win here is avoiding the generic
+# `_fcache_derivative_chunked!!` path's chunk seeding and lane accumulation.
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::T
 ) where {F,T<:IEEEFloat}
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
-    rule = if isnothing(fastpath) || isnothing(fastpath.frule_1)
-        cache.rule
-    else
-        fastpath.frule_1
+    if !isnothing(fastpath) && !isnothing(fastpath.frule_1)
+        y, dy = value_and_derivative!!(fastpath.frule_1, (f, NoTangent()), (x, one(x)))
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        native_gradients = (NoTangent(), dy)
+        if isnothing(cache.input_tangents)
+            return y, native_gradients
+        end
+        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
+        return y,
+        tangent_to_primal_internal!!(
+            friendly_gradients,
+            native_gradients,
+            isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
+        )
     end
-    output = rule(Dual(f, NoTangent()), Dual(x, one(x)))
+    output = cache.rule(Dual(f, NoTangent()), Dual(x, one(x)))
     y = primal(output)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     native_gradients = (NoTangent(), tangent(output))
@@ -1907,10 +1879,9 @@ end
     )
 end
 
-# Small-vector `value_and_gradient!!` fast path: this one is nfwd-specific. When the
-# full gradient fits under `_CHUNK_NFWD_MAX_LANES`, use one nfwd pass whose lane
-# count exactly matches the full gradient width, instead of the generic
-# `_fcache_derivative_chunked!!` path's seed-chunk/accumulate loop.
+# Small-vector `value_and_gradient!!` fast path: when the full gradient fits under
+# `_CHUNK_NFWD_MAX_LANES`, use one exact-width chunked forward pass instead of the
+# generic `_fcache_derivative_chunked!!` path's seed-chunk/accumulate loop.
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::V
 ) where {F,T<:IEEEFloat,V<:Vector{T}}
@@ -1918,26 +1889,19 @@ end
     fastpath = cache.chunkcache
     if !isnothing(fastpath) && !isnothing(fastpath.small_vector_gradient_frule)
         rule = fastpath.small_vector_gradient_frule
-        # `frule!!` may legally mutate its tangent inputs, so restore the cached
-        # exact-width seed matrix before every reuse of the prepared cache.
         _fcache_small_vector_fill_identity!(fastpath.small_vector_gradient_buffer)
-        output = rule(Dual(f, NoTangent()), Dual(x, fastpath.small_vector_gradient_buffer))
-        y = primal(output)
+        seeds = NTangent(
+            ntuple(i -> view(fastpath.small_vector_gradient_buffer, :, i), Val(length(x)))
+        )
+        y, output_tangent = value_and_derivative!!(rule, (f, NoTangent()), (x, seeds))
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        output_tangent = tangent(output)
         native_gradients = fastpath.small_vector_gradient_workspace
-        # The exact-width nfwd rule returns one lane per vector entry, so write those
-        # lanes straight into the cached gradient buffer without going through the
-        # generic chunked seed/accumulate path.  Hoist the `isa Tuple` check out of
-        # the loop so each branch contains a concretely-typed body.
-        if output_tangent isa Tuple
+        if output_tangent isa NTangent
             @inbounds for i in 1:NfwdMooncake.rule_chunk_size(typeof(rule))
                 native_gradients[2][i] = output_tangent[i]
             end
         else
-            @inbounds for i in 1:NfwdMooncake.rule_chunk_size(typeof(rule))
-                native_gradients[2][i] = output_tangent
-            end
+            native_gradients[2][1] = output_tangent
         end
         if isnothing(cache.input_tangents)
             return y, native_gradients
@@ -1949,75 +1913,15 @@ end
             native_gradients,
             isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
         )
-    elseif !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
-        native_gradients = let workspace = cache.gradient_workspace[]
-            if isnothing(workspace)
-                workspace = (NoTangent(), zero_tangent(x))
-                cache.gradient_workspace[] = workspace
-                workspace
-            else
-                set_to_zero!!(workspace[2])
-                workspace
-            end
-        end
-        y, output = __value_and_gradient!!(
-            fastpath.gradient_rrule,
-            CoDual(f, native_gradients[1]),
-            CoDual(x, native_gradients[2]),
-        )
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        if isnothing(cache.input_tangents)
-            return y, output
-        end
-        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
-        return y,
-        tangent_to_primal_internal!!(
-            friendly_gradients,
-            output,
-            isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-        )
     end
     return _fcache_gradient_chunked!!(cache, (f, x))
 end
 
-# Array `value_and_gradient!!` fast path: this one is also nfwd-specific, but it uses
-# the cached nfwd-derived gradient `rrule` rather than the
-# `_fcache_derivative_chunked!!` / `NTangent` interface. The win here is
-# writing gradients directly, avoiding the
-# generic chunk path's `NTangent` packing/unpacking and lane accumulation.
+# Array `value_and_gradient!!` path: use the generic chunked gradient assembly.
 @inline function value_and_gradient!!(
     cache::ForwardCache, f::F, x::A
 ) where {F,A<:Array{<:IEEEFloat}}
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
-    fastpath = cache.chunkcache
-    if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
-        native_gradients = let workspace = cache.gradient_workspace[]
-            if isnothing(workspace)
-                workspace = (NoTangent(), zero_tangent(x))
-                cache.gradient_workspace[] = workspace
-                workspace
-            else
-                set_to_zero!!(workspace[2])
-                workspace
-            end
-        end
-        y, output = __value_and_gradient!!(
-            fastpath.gradient_rrule,
-            CoDual(f, native_gradients[1]),
-            CoDual(x, native_gradients[2]),
-        )
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        if isnothing(cache.input_tangents)
-            return y, output
-        end
-        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
-        return y,
-        tangent_to_primal_internal!!(
-            friendly_gradients,
-            output,
-            isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-        )
-    end
     return _fcache_gradient_chunked!!(cache, (f, x))
 end
 
@@ -2154,7 +2058,7 @@ function Base.show(io::IO, cache::HVPCache)
         io,
         "Mooncake.HVPCache(",
         "mode=:forward_over_reverse, ",
-        "nfwd=",
+        "chunked=",
         !isnothing(getfield(getfield(cache, :fwd_cache), :chunkcache)),
         ", ",
         "inputs=",
@@ -2168,7 +2072,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
         io,
         "Mooncake.HVPCache\n",
         "  mode: forward_over_reverse\n",
-        "  nfwd: ",
+        "  chunked: ",
         !isnothing(getfield(getfield(cache, :fwd_cache), :chunkcache)),
         "\n",
         "  inputs: ",

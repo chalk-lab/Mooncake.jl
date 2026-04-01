@@ -1,12 +1,22 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
+@inline function _output_tangent_type(::Type{P}, tangents::Tuple) where {P}
+    packed_lanes = NfwdMooncake._nfwd_packed_lane_count_type(typeof(tangents))
+    return if isnothing(packed_lanes)
+        tangent_type(P)
+    else
+        NfwdMooncake._nfwd_packed_tangent_type(Val(packed_lanes), P)
+    end
+end
+
 function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) where {P,N}
     y = _new_(P, tuple_map(primal, x)...)
-    T = tangent_type(P)
+    tangents = tuple_map(tangent, x)
+    T = _output_tangent_type(P, tangents)
     dy = if T == NoTangent
         NoTangent()
     else
-        build_output_tangent(P, tuple_map(primal, x), tuple_map(tangent, x))
+        build_output_tangent(P, tuple_map(primal, x), tangents, T)
     end
     return Dual(y, dy)
 end
@@ -44,12 +54,14 @@ function rrule!!(
     return CoDual(y, dy), pb!!
 end
 
-@inline function build_output_tangent(::Type{P}, x::Tuple, t::Tuple) where {P}
-    return _build_output_tangent_cartesian(P, x, t, Val(fieldcount(P)), Val(fieldnames(P)))
+@inline function build_output_tangent(::Type{P}, x::Tuple, t::Tuple, T_out) where {P}
+    return _build_output_tangent_cartesian(
+        P, x, t, T_out, Val(fieldcount(P)), Val(fieldnames(P))
+    )
 end
 @generated function _build_output_tangent_cartesian(
-    ::Type{P}, x::Tuple, t::Tt, ::Val{nfield}, ::Val{names}
-) where {P,nfield,names,Tt<:Tuple}
+    ::Type{P}, x::Tuple, t::Tt, ::Type{T_out}, ::Val{nfield}, ::Val{names}
+) where {P,nfield,names,Tt<:Tuple,T_out}
     N = length(Tt.parameters)
     quote
         # Compute tangent_field_types and tangent_type at runtime to avoid world-age
@@ -65,7 +77,6 @@ end
                 end
             end
         )
-        T_out = tangent_type(P)
         return T_out(NamedTuple{$names}(processed_tangent))
     end
 end
