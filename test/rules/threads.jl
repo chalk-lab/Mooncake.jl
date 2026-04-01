@@ -10,10 +10,6 @@ end
     x = randn(4)
 
     TestUtils.test_rule(
-        StableRNG(123),
-        threaded_sin_sum,
-        x;
-        is_primitive=false,
-        mode=ForwardMode,
+        StableRNG(123), threaded_sin_sum, x; is_primitive=false, mode=ForwardMode
     )
 end
