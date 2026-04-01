@@ -725,22 +725,20 @@ end
 ) where {N}
     fastpath = cache.chunkcache
     isnothing(fastpath) && return nothing
-    rule = if N == 2
-        fastpath.frule_2
-    elseif N == 1
-        fastpath.frule_1
-    elseif N == 3
-        fastpath.frule_3
-    elseif N == 4
-        fastpath.frule_4
-    elseif N == 5
-        fastpath.frule_5
-    elseif N == 6
-        fastpath.frule_6
-    elseif N == 7
-        fastpath.frule_7
-    elseif N == 8
-        fastpath.frule_8
+    rule = if 1 <= N <= _CHUNK_NFWD_MAX_LANES
+        getfield(
+            (
+                fastpath.frule_1,
+                fastpath.frule_2,
+                fastpath.frule_3,
+                fastpath.frule_4,
+                fastpath.frule_5,
+                fastpath.frule_6,
+                fastpath.frule_7,
+                fastpath.frule_8,
+            ),
+            N,
+        )
     else
         nothing
     end
