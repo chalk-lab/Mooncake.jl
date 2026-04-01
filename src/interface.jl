@@ -881,7 +881,7 @@ struct NfwdCache{R1,R2,R3,R4,R5,R6,R7,R8,PB,GR,SG,SB,SW}
     frule_6::R6
     frule_7::R7
     frule_8::R8
-    pack_buffers::PB
+    small_vector_pack_buffer::PB
     gradient_rrule::GR
     small_vector_gradient_frule::SG
     small_vector_gradient_buffer::SB
@@ -1420,7 +1420,7 @@ end
     else
         nothing
     end
-    pack_buffers = if !isnothing(small_vector_gradient_frule)
+    small_vector_pack_buffer = if !isnothing(small_vector_gradient_frule)
         NfwdMooncake._chunked_ir_small_vector_pack_buffer(
             last(fx),
             Val(NfwdMooncake.rule_chunk_size(typeof(small_vector_gradient_frule))),
@@ -1444,7 +1444,7 @@ end
         frule_6,
         frule_7,
         frule_8,
-        pack_buffers,
+        small_vector_pack_buffer,
         gradient_rrule,
         small_vector_gradient_frule,
         small_vector_gradient_buffer,
@@ -1916,7 +1916,11 @@ end
         rule = fastpath.small_vector_gradient_frule
         _fcache_small_vector_fill_identity!(fastpath.small_vector_gradient_buffer)
         y, output_tangent = NfwdMooncake._chunked_ir_small_vector_value_and_derivative!(
-            rule, f, x, fastpath.small_vector_gradient_buffer, fastpath.pack_buffers
+            rule,
+            f,
+            x,
+            fastpath.small_vector_gradient_buffer,
+            fastpath.small_vector_pack_buffer,
         )
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         native_gradients = fastpath.small_vector_gradient_workspace
