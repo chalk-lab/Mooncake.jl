@@ -2,7 +2,7 @@ module Mooncake
 
 const CC = Core.Compiler
 
-using ADTypes, ChainRules, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
+using ADTypes, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
@@ -59,6 +59,25 @@ Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`
 function frule!! end
 
 """
+    _fcache_derivative_chunked!!(
+        cache, ::Val{N}, x_dx::Tuple...; friendly_tangents=false
+    )
+
+Internal batched forward-mode interface used by chunked `value_and_derivative!!` and the
+forward-mode gradient cache. Conceptually:
+- `value_and_derivative!!` calls `_fcache_derivative_chunked!!` when the
+  user provides chunk tangents.
+- `value_and_gradient!!` seeds standard-basis chunk tangents internally, then repeatedly
+  calls `_fcache_derivative_chunked!!` and accumulates the lane
+  contributions into gradient buffers.
+
+The generic implementation evaluates one lane at a time via ordinary `frule!!` / derived
+forward rules. Specialized backends, such as `nfwd`, may override this to evaluate all
+lanes in one pass.
+"""
+function _fcache_derivative_chunked!! end
+
+"""
     build_primitive_frule(sig::Type{<:Tuple})
 
 Construct an frule for signature `sig`. For this function to be called in `build_frule`, you
@@ -68,6 +87,13 @@ The callable returned by this must obey the frule interface, but there are no re
 on the type of callable itself. For example, you might return a callable `struct`. By
 default, this function returns `frule!!` so, most of the time, you should just implement a
 method of `frule!!`.
+
+Mooncake's AD transform constructs primitive forward rules via this builder. However,
+manual primitive call sites still exist in hand-written rules, tests, and docs, so direct
+methods of `frule!!` may still be needed even when `build_primitive_frule` is defined.
+Accordingly, when adding a new rule, it is still usually preferable to define `frule!!`
+directly and only overload `build_primitive_frule` when you specifically need
+construction-time work.
 
 See also [`build_primitive_rrule`](@ref) for the reverse-mode analogue of this function.
 
@@ -121,6 +147,13 @@ on the type of callable itself. For example, you might return a callable `struct
 default, this function returns `rrule!!` so, most of the time, you should just implement a
 method of `rrule!!`.
 
+Mooncake's AD transform constructs primitive reverse rules via this builder. However,
+manual primitive call sites still exist in hand-written rules, tests, and docs, so direct
+methods of `rrule!!` may still be needed even when `build_primitive_rrule` is defined.
+Accordingly, when adding a new rule, it is still usually preferable to define `rrule!!`
+directly and only overload `build_primitive_rrule` when you specifically need
+construction-time work.
+
 # Extended Help
 
 The purpose of this function is to permit computation at rule construction time, which can
@@ -163,6 +196,9 @@ include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
 include("interface.jl")
+include(joinpath("nfwd", "Nfwd.jl"))
+using .Nfwd: NDual
+include(joinpath("nfwd", "NfwdMooncake.jl"))
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))
@@ -189,6 +225,7 @@ else
 end
 
 include(joinpath("rules", "performance_patches.jl"))
+include(joinpath("rules", "rules_via_nfwd.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")
@@ -204,8 +241,10 @@ end
 @public Dual
 
 # Public, exported
-export value_and_gradient!!, prepare_gradient_cache, value_and_derivative!!
-export prepare_derivative_cache
+export prepare_gradient_cache, value_and_gradient!!     # reverse
+export prepare_derivative_cache, value_and_derivative!! # forward
+export prepare_hvp_cache, value_and_hvp!!
+export prepare_hessian_cache, value_gradient_and_hessian!!
 
 include("precompile.jl")
 
