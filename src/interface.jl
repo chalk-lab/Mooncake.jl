@@ -1365,7 +1365,6 @@ end
     chunk_frules = ntuple(Val(_CHUNK_NFWD_MAX_LANES)) do n
         NfwdMooncake.build_chunked_frule(sig; chunk_size=n, silence_debug_messages=true)
     end
-    frule_1, frule_2, frule_3, frule_4, frule_5, frule_6, frule_7, frule_8 = chunk_frules
     # Small vectors are faster through an exact-width chunked frule than through the
     # generic chunked gradient assembly path, which otherwise seeds and accumulates lanes.
     small_vector_gradient_frule =
@@ -1376,10 +1375,7 @@ end
             length(last(fx)) <=
             (requested_chunk_size == 0 ? _CHUNK_NFWD_MAX_LANES : requested_chunk_size)
         )
-            getfield(
-                (frule_1, frule_2, frule_3, frule_4, frule_5, frule_6, frule_7, frule_8),
-                length(last(fx)),
-            )
+            getfield(chunk_frules, length(last(fx)))
         else
             nothing
         end
@@ -1416,14 +1412,7 @@ end
         nothing
     end
     return NfwdCache(
-        frule_1,
-        frule_2,
-        frule_3,
-        frule_4,
-        frule_5,
-        frule_6,
-        frule_7,
-        frule_8,
+        chunk_frules...,
         small_vector_pack_buffer,
         gradient_rrule,
         small_vector_gradient_frule,
