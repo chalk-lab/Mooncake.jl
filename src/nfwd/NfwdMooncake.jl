@@ -695,19 +695,17 @@ end
     return _nfwd_pack_lanes(y, lanes, Val(N))
 end
 
-@inline function _chunked_ir_small_vector_pack_buffer(
-    x::Vector{T}, ::Val{N}
-) where {T<:IEEEFloat,N}
-    return Ref(Vector{NDual{T,N}}(undef, length(x)))
-end
+@inline _chunked_ir_small_vector_pack_buffer(x::Vector{T}, ::Val{N}) where {T<:IEEEFloat,N} = Ref(
+    Vector{NDual{T,N}}(undef, length(x))
+)
 
 @inline function _chunked_ir_small_vector_value_and_derivative!(
-    rule::ChunkedIRRule{sig,N},
+    rule::ChunkedIRRule{<:Any,N},
     f,
     x::Vector{T},
     seed_buffer::Matrix{T},
     packed_ref::Base.RefValue{Vector{NDual{T,N}}},
-) where {sig,N,T<:IEEEFloat}
+) where {N,T<:IEEEFloat}
     packed = packed_ref[]
     @inbounds for i in eachindex(x)
         packed[i] = NDual{T,N}(zero(T), ntuple(lane -> seed_buffer[i, lane], Val(N)))
