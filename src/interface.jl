@@ -1672,9 +1672,8 @@ end
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 
 !!! note
-    On the `frule!!` (aka ir-based forward) path, calls `f(x...)` once during cache
-    preparation. On the `Nfwd` path, cache construction stays lazy and does not execute
-    `f(x...)`.
+    Cache construction stays lazy and does not execute `f(x...)`, whether the prepared
+    cache later runs through the IR-based `frule!!` path or an `Nfwd` fast path.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
@@ -1703,11 +1702,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             min(total_dof, requested_chunk_size)
         end
     end
-    output_primal = if isnothing(chunkcache)
-        _copy_output(f(x...))
-    else
-        nothing
-    end
+    output_primal = nothing
     if config.friendly_tangents
         input_tangents = tuple_map(zero_tangent, fx)
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
