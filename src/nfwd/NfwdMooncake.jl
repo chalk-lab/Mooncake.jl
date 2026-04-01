@@ -481,22 +481,12 @@ end
     _nfwd_chunk_cache(typeof(dy)), y, dy, Val(1)
 )
 @inline function _nfwd_unpack_packed_tangent(
-    y::T, dy::NDual{T,1}, ::Val{1}
+    y::Union{T,Complex{T}}, dy::Union{NDual{T,1},Complex{NDual{T,1}}}, ::Val{1}
 ) where {T<:IEEEFloat}
     return Nfwd.ndual_partial(dy, 1)
 end
 @inline function _nfwd_unpack_packed_tangent(
-    y::Complex{T}, dy::Complex{NDual{T,1}}, ::Val{1}
-) where {T<:IEEEFloat}
-    return Nfwd.ndual_partial(dy, 1)
-end
-@inline function _nfwd_unpack_packed_tangent(
-    y::T, dy::NDual{T,N}, ::Val{N}
-) where {T<:IEEEFloat,N}
-    return NTangent(ntuple(k -> Nfwd.ndual_partial(dy, k), Val(N)))
-end
-@inline function _nfwd_unpack_packed_tangent(
-    y::Complex{T}, dy::Complex{NDual{T,N}}, ::Val{N}
+    y::Union{T,Complex{T}}, dy::Union{NDual{T,N},Complex{NDual{T,N}}}, ::Val{N}
 ) where {T<:IEEEFloat,N}
     return NTangent(ntuple(k -> Nfwd.ndual_partial(dy, k), Val(N)))
 end
@@ -723,7 +713,7 @@ end
 ) where {N}
     fastpath = cache.chunkcache
     isnothing(fastpath) && return nothing
-    rule = if 1 <= N <= _CHUNK_NFWD_MAX_LANES
+    rule = if 1 <= N <= 8
         getfield(
             (
                 fastpath.frule_1,
