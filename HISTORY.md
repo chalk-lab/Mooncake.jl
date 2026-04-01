@@ -1,4 +1,4 @@
-# 0.6
+# 0.5.25
 
 - Add `nfwd`: a new N-wide forward-mode implementation built around `NDual`, with `Nfwd` / `NfwdMooncake` internals and broad tests for scalar, array, and rule-building paths.
 - Expand Mooncake's forward-mode interface and caching around `nfwd`, including prepared derivative/gradient cache improvements and lower-allocation hot paths for repeated calls.

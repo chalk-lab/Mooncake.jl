@@ -18,12 +18,12 @@ using PrecompileTools: @setup_workload, @compile_workload
 
 @setup_workload begin
     # A non-primitive scalar function: exercises the derived-rule code path end-to-end.
-    _precompile_f(x::Float64) = sin(x) + cos(x) * exp(x)
+    _precompile_f(x) = sin(x) + cos(x) * exp(x)
     # A non-primitive vector function: exercises array tangent/fdata handling as well.
-    _precompile_g(x::Vector{Float64}) = sum(abs2, x)
+    _precompile_g(x) = sum(abs2, x)
     # A non-primitive Complex scalar function: exercises complex primitive dispatch.
-    _precompile_h(z::ComplexF64) = abs2(sin(z) + cos(z) * exp(z))
-    _precompile_h32(z::ComplexF32) = abs2(sin(z) + cos(z) * exp(z))
+    _precompile_h(z) = abs2(sin(z) + cos(z) * exp(z))
+    _precompile_h32(z) = abs2(sin(z) + cos(z) * exp(z))
 
     xs = [1.0, 2.0, 3.0]
     z = 1.0 + 2.0im
