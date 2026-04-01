@@ -179,7 +179,7 @@ end
 
 @intrinsic add_float
 function frule!!(::Dual{typeof(add_float)}, a, b)
-    return Dual(add_float(primal(a), primal(b)), add_float(tangent(a), tangent(b)))
+    return Dual(add_float(primal(a), primal(b)), tangent(a) + tangent(b))
 end
 function rrule!!(::CoDual{typeof(add_float)}, a, b)
     add_float_pb!!(c̄) = NoRData(), c̄, c̄
@@ -190,7 +190,7 @@ end
 @intrinsic add_float_fast
 function frule!!(::Dual{typeof(add_float_fast)}, a, b)
     c = add_float_fast(primal(a), primal(b))
-    dc = add_float_fast(tangent(a), tangent(b))
+    dc = tangent(a) + tangent(b)
     return Dual(c, dc)
 end
 function rrule!!(::CoDual{typeof(add_float_fast)}, a, b)
@@ -387,7 +387,7 @@ function frule!!(::Dual{typeof(div_float)}, a, b)
     c = div_float(primal(a), primal(b))
     da = tangent(a)
     db = tangent(b)
-    dc = div_float(da, primal(b)) - div_float(primal(a) * db, primal(b)^2)
+    dc = da / primal(b) - (primal(a) * db) / primal(b)^2
     return Dual(c, dc)
 end
 function rrule!!(::CoDual{typeof(div_float)}, a, b)
@@ -403,7 +403,7 @@ function frule!!(::Dual{typeof(div_float_fast)}, a, b)
     c = div_float_fast(primal(a), primal(b))
     da = tangent(a)
     db = tangent(b)
-    dc = div_float_fast(da, primal(b)) - div_float_fast(primal(a) * db, primal(b)^2)
+    dc = da / primal(b) - (primal(a) * db) / primal(b)^2
     return Dual(c, dc)
 end
 function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
@@ -564,7 +564,7 @@ end
 @intrinsic mul_float
 function frule!!(::Dual{typeof(mul_float)}, a, b)
     p = mul_float(primal(a), primal(b))
-    dp = add_float(mul_float(primal(a), tangent(b)), mul_float(primal(b), tangent(a)))
+    dp = primal(a) * tangent(b) + primal(b) * tangent(a)
     return Dual(p, dp)
 end
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
@@ -577,7 +577,7 @@ end
 @intrinsic mul_float_fast
 function frule!!(::Dual{typeof(mul_float_fast)}, a, b)
     c = mul_float_fast(primal(a), primal(b))
-    dc = mul_float_fast(primal(a), tangent(b)) + mul_float_fast(tangent(a), primal(b))
+    dc = primal(a) * tangent(b) + tangent(a) * primal(b)
     return Dual(c, dc)
 end
 function rrule!!(::CoDual{typeof(mul_float_fast)}, a, b)
@@ -609,7 +609,7 @@ end
 @inactive_intrinsic ne_int
 
 @intrinsic neg_float
-frule!!(::Dual{typeof(neg_float)}, x) = Dual(neg_float(primal(x)), neg_float(tangent(x)))
+frule!!(::Dual{typeof(neg_float)}, x) = Dual(neg_float(primal(x)), -tangent(x))
 function rrule!!(::CoDual{typeof(neg_float)}, x)
     _x = primal(x)
     neg_float_pullback!!(dy) = NoRData(), -dy
@@ -618,7 +618,7 @@ end
 
 @intrinsic neg_float_fast
 function frule!!(::Dual{typeof(neg_float_fast)}, x)
-    return Dual(neg_float_fast(primal(x)), neg_float_fast(tangent(x)))
+    return Dual(neg_float_fast(primal(x)), -tangent(x))
 end
 function rrule!!(::CoDual{typeof(neg_float_fast)}, x)
     _x = primal(x)
@@ -725,7 +725,7 @@ end
 @intrinsic sub_float
 function frule!!(::Dual{typeof(sub_float)}, a, b)
     c = sub_float(primal(a), primal(b))
-    dc = sub_float(tangent(a), tangent(b))
+    dc = tangent(a) - tangent(b)
     return Dual(c, dc)
 end
 function rrule!!(::CoDual{typeof(sub_float)}, a, b)
@@ -738,7 +738,7 @@ end
 @intrinsic sub_float_fast
 function frule!!(::Dual{typeof(sub_float_fast)}, a, b)
     c = sub_float_fast(primal(a), primal(b))
-    dc = sub_float_fast(tangent(a), tangent(b))
+    dc = tangent(a) - tangent(b)
     return Dual(c, dc)
 end
 function rrule!!(::CoDual{typeof(sub_float_fast)}, a, b)

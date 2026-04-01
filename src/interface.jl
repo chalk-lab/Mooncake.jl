@@ -1346,6 +1346,8 @@ end
 #
 # Gradient-only shortcuts stored on the cache bundle (each narrower than
 # the general chunk path):
+# - `gradient_rrule`: built only for default-shape array gradients, where the
+#   reverse cache remains the allocation-stable path for full gradients.
 # - `frule_1` doubles as the scalar fast path for `(f, x::IEEEFloat)` calls via the
 #   scalar `value_and_gradient!!` specialisation.
 # - `small_vector_gradient_frule`: built only for single-argument
@@ -1401,8 +1403,28 @@ end
         else
             nothing
         end
+    gradient_rrule =
+        if (
+            requested_chunk_size == 0 &&
+            first(fx) isa Function &&
+            Base.issingletontype(typeof(first(fx))) &&
+            length(params) == 2 &&
+            params[2] <: Array{<:IEEEFloat}
+        )
+            prepare_gradient_cache(fx...; config)
+        else
+            nothing
+        end
     small_vector_gradient_buffer = if !isnothing(small_vector_gradient_frule)
         _fcache_small_vector_identity_seed(last(fx))
+    else
+        nothing
+    end
+    pack_buffers = if !isnothing(small_vector_gradient_frule)
+        NfwdMooncake._chunked_ir_small_vector_pack_buffer(
+            last(fx),
+            Val(NfwdMooncake.rule_chunk_size(typeof(small_vector_gradient_frule))),
+        )
     else
         nothing
     end
@@ -1422,8 +1444,8 @@ end
         frule_6,
         frule_7,
         frule_8,
-        nothing,
-        nothing,
+        pack_buffers,
+        gradient_rrule,
         small_vector_gradient_frule,
         small_vector_gradient_buffer,
         small_vector_gradient_workspace,
@@ -1887,13 +1909,15 @@ end
 ) where {F,T<:IEEEFloat,V<:Vector{T}}
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
     fastpath = cache.chunkcache
+    if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
+        return value_and_gradient!!(fastpath.gradient_rrule, f, x)
+    end
     if !isnothing(fastpath) && !isnothing(fastpath.small_vector_gradient_frule)
         rule = fastpath.small_vector_gradient_frule
         _fcache_small_vector_fill_identity!(fastpath.small_vector_gradient_buffer)
-        seeds = NTangent(
-            ntuple(i -> view(fastpath.small_vector_gradient_buffer, :, i), Val(length(x)))
+        y, output_tangent = NfwdMooncake._chunked_ir_small_vector_value_and_derivative!(
+            rule, f, x, fastpath.small_vector_gradient_buffer, fastpath.pack_buffers
         )
-        y, output_tangent = value_and_derivative!!(rule, (f, NoTangent()), (x, seeds))
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         native_gradients = fastpath.small_vector_gradient_workspace
         if output_tangent isa NTangent
@@ -1922,6 +1946,10 @@ end
     cache::ForwardCache, f::F, x::A
 ) where {F,A<:Array{<:IEEEFloat}}
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    fastpath = cache.chunkcache
+    if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
+        return value_and_gradient!!(fastpath.gradient_rrule, f, x)
+    end
     return _fcache_gradient_chunked!!(cache, (f, x))
 end
 

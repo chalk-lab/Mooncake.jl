@@ -147,7 +147,7 @@ end
 function build_chunked_frule(
     sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
-    resolved = _nfwd_resolve_rule_chunk_size(sig, chunk_size; debug_mode)
+    resolved = _chunked_resolve_rule_chunk_size(sig, chunk_size)
     inner = Mooncake.build_frule(
         Mooncake.get_interpreter(Mooncake.ForwardMode),
         sig;
@@ -283,12 +283,23 @@ function Mooncake._fwd_uninit_dual(::ChunkedIRMode{N}, x) where {N}
     Mooncake._fwd_zero_dual(ChunkedIRMode{N}(), x)
 end
 
-@inline _nfwd_pack_struct_lane_field(t::Mooncake.Tangent, i::Int) = Mooncake.val(
-    getfield(t.fields, i)
+@inline _nfwd_pack_struct_lane_field(t::Mooncake.Tangent, i::Int) = getfield(t.fields, i)
+@inline _nfwd_pack_struct_lane_field(t::Mooncake.MutableTangent, i::Int) = getfield(
+    t.fields, i
 )
-@inline _nfwd_pack_struct_lane_field(t::Mooncake.MutableTangent, i::Int) = Mooncake.val(
-    getfield(t.fields, i)
+
+@inline _nfwd_chunk_cache(::Val{true}) = IdDict{Any,Any}()
+@inline _nfwd_chunk_cache(::Val{false}) = Mooncake.NoCache()
+@inline _nfwd_chunk_cache(::Type{T}) where {T} = _nfwd_chunk_cache(
+    Mooncake.require_tangent_cache(T)
 )
+@inline _nfwd_cache_lookup(::Mooncake.NoCache, _) = nothing
+@inline _nfwd_cache_lookup(c::IdDict{Any,Any}, key) = get(c, key, nothing)
+@inline _nfwd_cache_store!(::Mooncake.NoCache, _, value) = value
+@inline function _nfwd_cache_store!(c::IdDict{Any,Any}, key, value)
+    c[key] = value
+    return value
+end
 
 @inline function _nfwd_pack_public_tangent(x, dx, ::Val{N}) where {N}
     lanes = if dx isa NTangent
@@ -301,23 +312,26 @@ end
     else
         ntuple(_ -> dx, Val(N))
     end
-    return _nfwd_pack_lanes(x, lanes, Val(N))
+    return _nfwd_pack_lanes(_nfwd_chunk_cache(typeof(x)), x, lanes, Val(N))
 end
 
-@inline _nfwd_pack_lanes(x, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
-@inline _nfwd_pack_lanes(x::T, ::NTuple{N,NoTangent}, ::Val{N}) where {T<:IEEEFloat,N} = NoTangent()
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::T, ::NTuple{N,NoTangent}, ::Val{N}) where {T<:IEEEFloat,N} = NoTangent()
 @inline function _nfwd_pack_lanes(
-    x::Complex{T}, ::NTuple{N,NoTangent}, ::Val{N}
+    ::Mooncake.MaybeCache, x::Complex{T}, ::NTuple{N,NoTangent}, ::Val{N}
 ) where {T<:IEEEFloat,N}
     return NoTangent()
 end
-@inline _nfwd_pack_lanes(x::Array, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
-@inline _nfwd_pack_lanes(x::Tuple, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
-@inline _nfwd_pack_lanes(x::NamedTuple, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::Array, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::Tuple, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::NamedTuple, ::NTuple{N,NoTangent}, ::Val{N}) where {N} = NoTangent()
 
 @inline function _nfwd_pack_lanes(x::T, lanes::NTuple{N}, ::Val{N}) where {T<:IEEEFloat,N}
     return NDual{T,N}(zero(T), ntuple(k -> T(lanes[k]), Val(N)))
 end
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::T, lanes::NTuple{N}, v::Val{N}) where {T<:IEEEFloat,N} = _nfwd_pack_lanes(
+    x, lanes, v
+)
 
 @inline function _nfwd_pack_lanes(
     x::Complex{T}, lanes::NTuple{N}, ::Val{N}
@@ -327,43 +341,136 @@ end
         NDual{T,N}(zero(T), ntuple(k -> T(imag(lanes[k])), Val(N))),
     )
 end
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::Complex{T}, lanes::NTuple{N}, v::Val{N}) where {T<:IEEEFloat,N} = _nfwd_pack_lanes(
+    x, lanes, v
+)
 
-function _nfwd_pack_lanes(x::Array, lanes::NTuple{N}, ::Val{N}) where {N}
+function _nfwd_pack_lanes(
+    c::Mooncake.MaybeCache, x::Array, lanes::NTuple{N}, ::Val{N}
+) where {N}
     ET = _nfwd_packed_tangent_type(Val(N), eltype(x))
+    cached = _nfwd_cache_lookup(c, x)
+    !isnothing(cached) && return cached::Array{ET,ndims(x)}
     out = Array{ET,ndims(x)}(undef, size(x))
+    _nfwd_cache_store!(c, x, out)
     @inbounds for I in CartesianIndices(x)
-        out[I] = _nfwd_pack_lanes(x[I], ntuple(k -> lanes[k][I], Val(N)), Val(N))
+        out[I] = _nfwd_pack_lanes(c, x[I], ntuple(k -> lanes[k][I], Val(N)), Val(N))
     end
     return out
 end
 
-@inline function _nfwd_pack_lanes(x::Tuple, lanes::NTuple{N}, ::Val{N}) where {N}
+@inline function _nfwd_pack_lanes(
+    c::Mooncake.MaybeCache, x::Tuple, lanes::NTuple{N}, ::Val{N}
+) where {N}
     Mooncake.tangent_type(typeof(x)) === NoTangent && return NoTangent()
     return ntuple(
-        i -> _nfwd_pack_lanes(x[i], ntuple(k -> lanes[k][i], Val(N)), Val(N)),
+        i -> _nfwd_pack_lanes(c, x[i], ntuple(k -> lanes[k][i], Val(N)), Val(N)),
         Val(length(x)),
     )
 end
 
-@inline function _nfwd_pack_lanes(x::NamedTuple, lanes::NTuple{N}, ::Val{N}) where {N}
+@inline function _nfwd_pack_lanes(
+    c::Mooncake.MaybeCache, x::NamedTuple, lanes::NTuple{N}, ::Val{N}
+) where {N}
     names = fieldnames(typeof(x))
     values = ntuple(
         i -> _nfwd_pack_lanes(
-            getfield(x, i), ntuple(k -> getfield(lanes[k], i), Val(N)), Val(N)
+            c, getfield(x, i), ntuple(k -> getfield(lanes[k], i), Val(N)), Val(N)
         ),
         Val(fieldcount(typeof(x))),
     )
     return NamedTuple{names}(values)
 end
 
-function _nfwd_pack_lanes(x, lanes::NTuple{N}, ::Val{N}) where {N}
+@inline function _nfwd_pack_possible_uninit_lanes(
+    c::Mooncake.MaybeCache, x, lanes::NTuple{N,<:Mooncake.PossiblyUninitTangent}, ::Val{N}
+) where {N}
+    all(lane -> !Mooncake.is_init(lane), lanes) &&
+        return Mooncake.PossiblyUninitTangent(_nfwd_packed_tangent_type(Val(N), typeof(x)))
+    inner = _nfwd_pack_lanes(
+        c,
+        x,
+        ntuple(
+            k -> Mooncake.is_init(lanes[k]) ? Mooncake.val(lanes[k]) : zero_tangent(x),
+            Val(N),
+        ),
+        Val(N),
+    )
+    return Mooncake.PossiblyUninitTangent(inner)
+end
+@inline _nfwd_pack_lanes(c::Mooncake.MaybeCache, x::T, lanes::NTuple{N,<:Mooncake.PossiblyUninitTangent}, v::Val{N}) where {T<:IEEEFloat,N} = _nfwd_pack_possible_uninit_lanes(
+    c, x, lanes, v
+)
+@inline _nfwd_pack_lanes(c::Mooncake.MaybeCache, x::Complex{T}, lanes::NTuple{N,<:Mooncake.PossiblyUninitTangent}, v::Val{N}) where {T<:IEEEFloat,N} = _nfwd_pack_possible_uninit_lanes(
+    c, x, lanes, v
+)
+@inline _nfwd_pack_lanes(c::Mooncake.MaybeCache, x::Array, lanes::NTuple{N,<:Mooncake.PossiblyUninitTangent}, v::Val{N}) where {N} = _nfwd_pack_possible_uninit_lanes(
+    c, x, lanes, v
+)
+@inline _nfwd_pack_lanes(c::Mooncake.MaybeCache, x::Tuple, lanes::NTuple{N,<:Mooncake.PossiblyUninitTangent}, v::Val{N}) where {N} = _nfwd_pack_possible_uninit_lanes(
+    c, x, lanes, v
+)
+@inline _nfwd_pack_lanes(c::Mooncake.MaybeCache, x::NamedTuple, lanes::NTuple{N,<:Mooncake.PossiblyUninitTangent}, v::Val{N}) where {N} = _nfwd_pack_possible_uninit_lanes(
+    c, x, lanes, v
+)
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::T, ::Tuple{}, ::Val{0}) where {T<:IEEEFloat} = NoTangent()
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::Complex{T}, ::Tuple{}, ::Val{0}) where {T<:IEEEFloat} = NoTangent()
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::Array, ::Tuple{}, ::Val{0}) = NoTangent()
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::Tuple, ::Tuple{}, ::Val{0}) = NoTangent()
+@inline _nfwd_pack_lanes(::Mooncake.MaybeCache, x::NamedTuple, ::Tuple{}, ::Val{0}) = NoTangent()
+
+@inline _nfwd_pack_struct_field_value(::Type{T}, x) where {T} = convert(T, x)
+@inline _nfwd_pack_struct_field_value(::Type{Mooncake.PossiblyUninitTangent{T}}, x) where {T} = Mooncake.PossiblyUninitTangent{
+    T
+}(
+    x
+)
+@inline _nfwd_pack_struct_field_value(
+    ::Type{Mooncake.PossiblyUninitTangent{T}}, x::Mooncake.PossiblyUninitTangent{T}
+) where {T} = x
+@inline function _nfwd_pack_struct_field_value(
+    ::Type{Mooncake.PossiblyUninitTangent{T}}, x::Mooncake.PossiblyUninitTangent
+) where {T}
+    return if Mooncake.is_init(x)
+        Mooncake.PossiblyUninitTangent{T}(_nfwd_pack_struct_field_value(T, Mooncake.val(x)))
+    else
+        Mooncake.PossiblyUninitTangent(T)
+    end
+end
+
+function _nfwd_pack_lanes(c::Mooncake.MaybeCache, x, lanes::NTuple{N}, ::Val{N}) where {N}
     Mooncake.tangent_type(typeof(x)) === NoTangent && return NoTangent()
     packed_type = _nfwd_packed_tangent_type(Val(N), typeof(x))
+    packed_fields_type = Mooncake.fields_type(packed_type)
+    if packed_type <: Mooncake.MutableTangent
+        cached = _nfwd_cache_lookup(c, x)
+        !isnothing(cached) && return cached::packed_type
+        packed = packed_type()
+        _nfwd_cache_store!(c, x, packed)
+        values = ntuple(
+            i -> _nfwd_pack_struct_field_value(
+                fieldtype(packed_fields_type, i),
+                _nfwd_pack_lanes(
+                    c,
+                    getfield(x, i),
+                    ntuple(k -> _nfwd_pack_struct_lane_field(lanes[k], i), Val(N)),
+                    Val(N),
+                ),
+            ),
+            Val(fieldcount(typeof(x))),
+        )
+        packed.fields = packed_fields_type(values)
+        return packed
+    end
     values = ntuple(
-        i -> _nfwd_pack_lanes(
-            getfield(x, i),
-            ntuple(k -> _nfwd_pack_struct_lane_field(lanes[k], i), Val(N)),
-            Val(N),
+        i -> _nfwd_pack_struct_field_value(
+            fieldtype(packed_fields_type, i),
+            _nfwd_pack_lanes(
+                c,
+                getfield(x, i),
+                ntuple(k -> _nfwd_pack_struct_lane_field(lanes[k], i), Val(N)),
+                Val(N),
+            ),
         ),
         Val(fieldcount(typeof(x))),
     )
@@ -371,64 +478,107 @@ function _nfwd_pack_lanes(x, lanes::NTuple{N}, ::Val{N}) where {N}
 end
 
 @inline _nfwd_unpack_packed_tangent(y, dy, ::Val{1}) = _nfwd_unpack_packed_lane(
-    y, dy, Val(1)
+    _nfwd_chunk_cache(typeof(dy)), y, dy, Val(1)
 )
+@inline function _nfwd_unpack_packed_tangent(
+    y::T, dy::NDual{T,1}, ::Val{1}
+) where {T<:IEEEFloat}
+    return Nfwd.ndual_partial(dy, 1)
+end
+@inline function _nfwd_unpack_packed_tangent(
+    y::Complex{T}, dy::Complex{NDual{T,1}}, ::Val{1}
+) where {T<:IEEEFloat}
+    return Nfwd.ndual_partial(dy, 1)
+end
+@inline function _nfwd_unpack_packed_tangent(
+    y::T, dy::NDual{T,N}, ::Val{N}
+) where {T<:IEEEFloat,N}
+    return NTangent(ntuple(k -> Nfwd.ndual_partial(dy, k), Val(N)))
+end
+@inline function _nfwd_unpack_packed_tangent(
+    y::Complex{T}, dy::Complex{NDual{T,N}}, ::Val{N}
+) where {T<:IEEEFloat,N}
+    return NTangent(ntuple(k -> Nfwd.ndual_partial(dy, k), Val(N)))
+end
 @inline function _nfwd_unpack_packed_tangent(y, dy, ::Val{N}) where {N}
-    return NTangent(ntuple(k -> _nfwd_unpack_packed_lane(y, dy, Val(k)), Val(N)))
+    return NTangent(
+        ntuple(
+            k -> _nfwd_unpack_packed_lane(_nfwd_chunk_cache(typeof(dy)), y, dy, Val(k)),
+            Val(N),
+        ),
+    )
 end
 
-@inline _nfwd_unpack_packed_lane(y, ::NoTangent, ::Val) = NoTangent()
-@inline _nfwd_unpack_packed_lane(y::T, dy::NDual{T,N}, ::Val{k}) where {T<:IEEEFloat,N,k} = Nfwd.ndual_partial(
+@inline _nfwd_unpack_packed_lane(::Mooncake.MaybeCache, y, ::NoTangent, ::Val) = NoTangent()
+@inline _nfwd_unpack_packed_lane(::Mooncake.MaybeCache, y::T, dy::NDual{T,N}, ::Val{k}) where {T<:IEEEFloat,N,k} = Nfwd.ndual_partial(
     dy, k
 )
 @inline function _nfwd_unpack_packed_lane(
-    y::Complex{T}, dy::Complex{NDual{T,N}}, ::Val{k}
+    ::Mooncake.MaybeCache, y::Complex{T}, dy::Complex{NDual{T,N}}, ::Val{k}
 ) where {T<:IEEEFloat,N,k}
     return Nfwd.ndual_partial(dy, k)
 end
 
-function _nfwd_unpack_packed_lane(y::Array, dy::Array, ::Val{k}) where {k}
+function _nfwd_unpack_packed_lane(
+    c::Mooncake.MaybeCache, y::Array, dy::Array, ::Val{k}
+) where {k}
     ET = Mooncake.tangent_type(eltype(y))
+    cached = _nfwd_cache_lookup(c, dy)
+    !isnothing(cached) && return cached::Array{ET,ndims(y)}
     out = Array{ET,ndims(y)}(undef, size(y))
+    _nfwd_cache_store!(c, dy, out)
     @inbounds for I in CartesianIndices(y)
-        out[I] = _nfwd_unpack_packed_lane(y[I], dy[I], Val(k))
+        out[I] = _nfwd_unpack_packed_lane(c, y[I], dy[I], Val(k))
     end
     return out
 end
 
-@inline function _nfwd_unpack_packed_lane(y::Tuple, dy::Tuple, ::Val{k}) where {k}
-    return ntuple(i -> _nfwd_unpack_packed_lane(y[i], dy[i], Val(k)), Val(length(y)))
+@inline function _nfwd_unpack_packed_lane(
+    c::Mooncake.MaybeCache, y::Tuple, dy::Tuple, ::Val{k}
+) where {k}
+    return ntuple(i -> _nfwd_unpack_packed_lane(c, y[i], dy[i], Val(k)), Val(length(y)))
 end
 
-@inline function _nfwd_unpack_packed_lane(y::NamedTuple, dy::NamedTuple, ::Val{k}) where {k}
+@inline function _nfwd_unpack_packed_lane(
+    c::Mooncake.MaybeCache, y::NamedTuple, dy::NamedTuple, ::Val{k}
+) where {k}
     names = fieldnames(typeof(y))
     values = ntuple(
-        i -> _nfwd_unpack_packed_lane(getfield(y, i), getfield(dy, i), Val(k)),
+        i -> _nfwd_unpack_packed_lane(c, getfield(y, i), getfield(dy, i), Val(k)),
         Val(fieldcount(typeof(y))),
     )
     return NamedTuple{names}(values)
 end
 
-function _nfwd_unpack_packed_lane(y, dy::Mooncake.Tangent, ::Val{k}) where {k}
+function _nfwd_unpack_packed_lane(
+    c::Mooncake.MaybeCache, y, dy::Mooncake.Tangent, ::Val{k}
+) where {k}
     T = Mooncake.tangent_type(typeof(y))
     values = ntuple(
         i -> _nfwd_unpack_packed_lane(
-            getfield(y, i), Mooncake.val(getfield(dy.fields, i)), Val(k)
+            c, getfield(y, i), Mooncake.val(getfield(dy.fields, i)), Val(k)
         ),
         Val(fieldcount(typeof(y))),
     )
     return T(NamedTuple{fieldnames(typeof(y))}(values))
 end
 
-function _nfwd_unpack_packed_lane(y, dy::Mooncake.MutableTangent, ::Val{k}) where {k}
+function _nfwd_unpack_packed_lane(
+    c::Mooncake.MaybeCache, y, dy::Mooncake.MutableTangent, ::Val{k}
+) where {k}
     T = Mooncake.tangent_type(typeof(y))
+    cached = _nfwd_cache_lookup(c, dy)
+    !isnothing(cached) && return cached::T
+    out = T()
+    _nfwd_cache_store!(c, dy, out)
     values = ntuple(
         i -> _nfwd_unpack_packed_lane(
-            getfield(y, i), Mooncake.val(getfield(dy.fields, i)), Val(k)
+            c, getfield(y, i), Mooncake.val(getfield(dy.fields, i)), Val(k)
         ),
         Val(fieldcount(typeof(y))),
     )
-    return T(NamedTuple{fieldnames(typeof(y))}(values))
+    out.fields = NamedTuple{fieldnames(typeof(y))}(values)
+    return out
 end
 
 @inline function _nfwd_packed_lane_count_type(::Type{<:NDual{T,N}}) where {T,N}
@@ -528,7 +678,11 @@ end
 end
 
 @inline _nfwd_unpack_output_lane(yi::IEEEFloat, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
+@inline _nfwd_unpack_output_lane(yi::IEEEFloat, dyi::IEEEFloat, ::Val{1}) = dyi
 @inline _nfwd_unpack_output_lane(yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
+@inline _nfwd_unpack_output_lane(
+    yi::Complex{<:IEEEFloat}, dyi::Complex{<:IEEEFloat}, ::Val{1}
+) = dyi
 @inline _nfwd_unpack_output_lane(yi::Array, dyi::Array, ::Val{lane}) where {lane} = selectdim(
     dyi, ndims(dyi), lane
 )
@@ -539,6 +693,28 @@ end
 @inline function _nfwd_pack_output_tangent(y, dy, ::Val{N}) where {N}
     lanes = ntuple(k -> _nfwd_unpack_output_lane(y, dy, Val(k)), Val(N))
     return _nfwd_pack_lanes(y, lanes, Val(N))
+end
+
+@inline function _chunked_ir_small_vector_pack_buffer(
+    x::Vector{T}, ::Val{N}
+) where {T<:IEEEFloat,N}
+    return Ref(Vector{NDual{T,N}}(undef, length(x)))
+end
+
+@inline function _chunked_ir_small_vector_value_and_derivative!(
+    rule::ChunkedIRRule{sig,N},
+    f,
+    x::Vector{T},
+    seed_buffer::Matrix{T},
+    packed_ref::Base.RefValue{Vector{NDual{T,N}}},
+) where {sig,N,T<:IEEEFloat}
+    packed = packed_ref[]
+    @inbounds for i in eachindex(x)
+        packed[i] = NDual{T,N}(zero(T), ntuple(lane -> seed_buffer[i, lane], Val(N)))
+    end
+    output = rule.rule(Dual(f, NoTangent()), Dual(x, packed))
+    return primal(output),
+    _nfwd_unpack_packed_tangent(primal(output), tangent(output), Val(N))
 end
 
 # Cache-side chunked forward execution: attempt one call through a prebuilt chunked rule
@@ -1074,11 +1250,16 @@ end
     throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
 end
 
+@inline function _chunked_resolve_rule_chunk_size(sig::Type{<:Tuple}, chunk_size)
+    resolved = isnothing(chunk_size) ? _nfwd_sig_default_chunk_size(sig) : chunk_size
+    return _nfwd_check_chunk_size(resolved)
+end
+
 @inline function _nfwd_resolve_rule_chunk_size(
     sig::Type{<:Tuple}, chunk_size; debug_mode::Bool
 )
     resolved = isnothing(chunk_size) ? _nfwd_sig_default_chunk_size(sig) : chunk_size
-    return _nfwd_check_chunk_size(resolved)
+    return _nfwd_validate(sig, resolved; debug_mode)
 end
 
 @inline function _nfwd_verify_sig(rule::Union{Rule,RRule}, fx::Tuple)

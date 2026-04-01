@@ -192,12 +192,12 @@ end
             hvp_show = sprint(show, hvp_cache)
             @test occursin("Mooncake.HVPCache(", hvp_show)
             @test occursin("mode=:forward_over_reverse", hvp_show)
-            @test occursin("chunked=false", hvp_show)
+            @test occursin("chunked=true", hvp_show)
 
             hvp_plain = repr(MIME"text/plain"(), hvp_cache)
             @test occursin("Mooncake.HVPCache", hvp_plain)
             @test occursin("mode: forward_over_reverse", hvp_plain)
-            @test occursin("chunked: false", hvp_plain)
+            @test occursin("chunked: true", hvp_plain)
             @test occursin("input_1: Float64 (scalar)", hvp_plain)
             @test occursin("output: Float64 (scalar)", hvp_plain)
         end
