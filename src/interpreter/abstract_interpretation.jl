@@ -159,7 +159,7 @@ function Core.Compiler.abstract_call_gf_by_type(
         if any_prim
             # A primitive has a hand-written rrule!! - Mooncake never needs to inspect its body.
             # Using NativeInterpreter here is safe because:
-            #   - return types are still inferred correctly by standard Julia inference
+            #   - return types (present in the returned CallMeta) are still inferred correctly by standard Julia inference
             #   - inlining/const-folding is blocked below via noinline_callmeta, so the primitive
             #     call is preserved in the caller's IR for Mooncake to dispatch its rrule!! at runtime
             # Using MooncakeInterpreter would recurse into the primitive's entire call tree
