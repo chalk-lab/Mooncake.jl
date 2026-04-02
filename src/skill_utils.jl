@@ -21,7 +21,8 @@ using ..Mooncake:
     generate_dual_ir,
     generate_ir,
     optimise_ir!,
-    seed_id!
+    seed_id!,
+    set_valid_world!
 
 struct StageMeta
     block_count::Int
@@ -170,7 +171,7 @@ function primal_stages(interp, sig)
     @static if VERSION > v"1.12-"
         # Keep the early inspection stages on the same world-restricted IR path that the
         # AD generators use, so cross-stage diffs reflect the real pipeline.
-        raw_ir = Mooncake.set_valid_world!(raw_ir, interp.world)
+        raw_ir = set_valid_world!(raw_ir, interp.world)
     end
 
     _, spnames = is_vararg_and_sparam_names(sig)
