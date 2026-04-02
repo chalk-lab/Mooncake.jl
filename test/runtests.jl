@@ -44,6 +44,7 @@ include("front_matter.jl")
         include("interface.jl")
         include("config.jl")
         include("developer_tools.jl")
+        include("skill_utils.jl")
         include("test_utils.jl")
     elseif test_group == "Nfwd"
         include(joinpath("nfwd", "nfwd.jl"))

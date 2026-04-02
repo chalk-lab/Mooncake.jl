@@ -47,7 +47,11 @@ show_world_info(ins)
 
 ### Forward mode stages
 
-`:raw` → `:normalized` → `:bbcode` → `:dual_ir` → `:optimized`
+`:raw` → `:normalized` → `:dual_ir` → `:optimized`
+
+!!! note
+    The inspection tool also shows a `:bbcode` stage for cross-mode comparison,
+    but forward mode does not use BBCode internally.
 
 When something looks wrong in generated code, diff consecutive stages to find
 which transformation introduced the issue.
@@ -78,10 +82,13 @@ compiled code not picking up new method definitions.
 
 In Mooncake, this most commonly affects:
 
-- **`DerivedRule` / `DerivedFRule`**: rules compiled at one world may become
+- **`DerivedRule` / `DerivedFRule`**: compiled at a fixed world, can become
   stale if methods they depend on are redefined.
-- **`LazyDerivedRule` / `DynamicDerivedRule`**: these handle world age
-  transitions by recompiling on demand.
+- **`LazyDerivedRule`**: compiles on first call (static dispatch via `:invoke`),
+  obtaining a fresh interpreter at that point.
+- **`DynamicDerivedRule`**: resolves per-call by runtime argument types (dynamic
+  dispatch via `:call`), checking a cache and obtaining a fresh interpreter on
+  miss.
 
 To debug, inspect the world age of generated code:
 

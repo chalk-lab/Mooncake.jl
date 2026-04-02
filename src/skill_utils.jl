@@ -466,7 +466,7 @@ end
 
 Write all stages, diffs, and CFGs to files.
 """
-function write_ir(ins::IRInspection, outdir::String)
+function write_ir(ins::IRInspection, outdir::String; io::IO=stdout)
     mkpath(outdir)
     for (name, stage) in ins.stages
         open(joinpath(outdir, "$(name).txt"), "w") do f
@@ -479,7 +479,7 @@ function write_ir(ins::IRInspection, outdir::String)
         end
     end
     return println(
-        "Wrote $(length(ins.stages)) stages, $(length(ins.diffs)) diffs to $outdir"
+        io, "Wrote $(length(ins.stages)) stages, $(length(ins.diffs)) diffs to $outdir"
     )
 end
 

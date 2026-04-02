@@ -50,7 +50,7 @@ Do not assume — ask the user to pick.
 |-------|--------|-------------|
 | Raw IR | `:raw` | optimised, type-infered SSAIR from Julia's compiler |
 | Normalized | `:normalized` | After Mooncake's normalization passes |
-| BBCode | `:bbcode` | Mooncake's forward autograd doesn't use BBCode |
+| BBCode | `:bbcode` | Inspection-only — forward mode does not use BBCode internally |
 | Dual IR | `:dual_ir` | Generated dual-number IR |
 | Optimized | `:optimized` | After optimization passes |
 
