@@ -28,7 +28,7 @@ extract(x::Dual) = primal(x), tangent(x)
 zero_dual(x) = Dual(x, zero_tangent(x))
 randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 
-function dual_type(::Type{P}) where {P}
+@unstable function dual_type(::Type{P}) where {P}
     P == Union{} && return Union{}
     P == DataType && return Dual
     P isa Union && return Union{dual_type(P.a),dual_type(P.b)}

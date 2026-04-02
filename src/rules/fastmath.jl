@@ -1,58 +1,6 @@
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.exp_fast),IEEEFloat}
-function frule!!(::Dual{typeof(Base.FastMath.exp_fast)}, x::Dual{P}) where {P<:IEEEFloat}
-    y = Base.FastMath.exp_fast(primal(x))
-    return Dual(y, y * tangent(x))
-end
-function rrule!!(
-    ::CoDual{typeof(Base.FastMath.exp_fast)}, x::CoDual{P}
-) where {P<:IEEEFloat}
-    yp = Base.FastMath.exp_fast(primal(x))
-    exp_fast_pb!!(dy::P) = NoRData(), dy * yp
-    return CoDual(yp, NoFData()), exp_fast_pb!!
-end
-
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.exp2_fast),IEEEFloat}
-function frule!!(::Dual{typeof(Base.FastMath.exp2_fast)}, x::Dual{P}) where {P<:IEEEFloat}
-    y = Base.FastMath.exp2_fast(primal(x))
-    return Dual(y, y * tangent(x) * P(log(2)))
-end
-function rrule!!(
-    ::CoDual{typeof(Base.FastMath.exp2_fast)}, x::CoDual{P}
-) where {P<:IEEEFloat}
-    yp = Base.FastMath.exp2_fast(primal(x))
-    exp2_fast_pb!!(dy::P) = NoRData(), dy * yp * P(log(2))
-    return CoDual(yp, NoFData()), exp2_fast_pb!!
-end
-
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.exp10_fast),IEEEFloat}
-function frule!!(::Dual{typeof(Base.FastMath.exp10_fast)}, x::Dual{P}) where {P<:IEEEFloat}
-    y = Base.FastMath.exp10_fast(primal(x))
-    return Dual(y, y * tangent(x) * P(log(10)))
-end
-function rrule!!(
-    ::CoDual{typeof(Base.FastMath.exp10_fast)}, x::CoDual{P}
-) where {P<:IEEEFloat}
-    yp = Base.FastMath.exp10_fast(primal(x))
-    exp2_fast_pb!!(dy::P) = NoRData(), dy * yp * P(log(10))
-    return CoDual(yp, NoFData()), exp2_fast_pb!!
-end
-
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.sincos),IEEEFloat}
-function frule!!(::Dual{typeof(Base.FastMath.sincos)}, x::Dual{P}) where {P<:IEEEFloat}
-    y = Base.FastMath.sincos(primal(x))
-    dx = tangent(x)
-    return Dual(y, (y[2] * dx, -y[1] * dx))
-end
-function rrule!!(::CoDual{typeof(Base.FastMath.sincos)}, x::CoDual{P}) where {P<:IEEEFloat}
-    y = Base.FastMath.sincos(primal(x))
-    sincos_fast_adj!!(dy::Tuple{P,P}) = NoRData(), dy[1] * y[2] - dy[2] * y[1]
-    return CoDual(y, NoFData()), sincos_fast_adj!!
-end
-
-@is_primitive MinimalCtx Tuple{typeof(Base.log),Union{IEEEFloat,Int}}
-@zero_derivative MinimalCtx Tuple{typeof(log),Int}
-
 function hand_written_rule_test_cases(rng_ctor, ::Val{:fastmath})
+    # The nfwd-backed scalar fastmath rules live in `rules_via_nfwd.jl`; this
+    # test set only keeps the remaining fastmath-specific cases local.
     test_cases = reduce(
         vcat,
         map([Float64, Float32]) do P
@@ -85,6 +33,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:fastmath})
                 (false, :allocs, nothing, Base.FastMath.asin_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.asinh_fast, P(1.3)),
                 (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4)),
+                (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4), P(3.2)),
                 (false, :allocs, nothing, Base.FastMath.atanh_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.cbrt_fast, P(0.4)),
                 (false, :allocs, nothing, Base.FastMath.cis_fast, P(0.5)),
@@ -141,7 +90,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:fastmath})
                 (false, :allocs, nothing, Base.FastMath.mul_fast, P(5.0), P(4.0)),
                 (false, :allocs, nothing, Base.FastMath.ne_fast, P(5.0), P(4.0)),
                 (false, :allocs, nothing, Base.FastMath.pow_fast, P(5.0), P(2.0)),
-                # (:allocs, Base.FastMath.pow_fast, P(5.0), 2), # errors -- NEEDS RULE!
+                (false, :allocs, nothing, Base.FastMath.pow_fast, P(5.0), Int32(2)),
                 # (:allocs, Base.FastMath.rem_fast, P(5.0), P(2.0)), # error -- NEEDS RULE! 
                 (false, :allocs, nothing, Base.FastMath.sign_fast, P(5.0)),
                 (false, :allocs, nothing, Base.FastMath.sign_fast, P(-5.0)),

@@ -231,7 +231,7 @@ For example, consider
 julia> using Mooncake.BasicBlockCode: ID # to improve printing
 
 julia> bb_ir.blocks[3].insts[1]
-Core.Compiler.NewInstruction(:(Base.add_int(ID(97), 1)), Int64, Core.Compiler.NoCallInfo(), 9, 0x000012e0)
+Core.Compiler.NewInstruction(:(Base.add_int(ID(109), 1)), Int64, Core.Compiler.NoCallInfo(), 9, 0x000012e0)
 ```
 This is the first instruction of the third basic block.
 The first field is a call to `Base.add_int`, the second field is `Int64` (we promise that the other fields are just copies of the corresponding data from the `Core.Compiler.InstructionStream` in the original `IRCode` representation of this IR).
@@ -249,15 +249,15 @@ The final major difference between `IRCode` and `BBCode` is that all ssa values 
 ```jldoctest my_factorial
 julia> bb_ir.blocks[3].inst_ids
 3-element Vector{ID}:
- ID(100)
- ID(101)
- ID(102)
+ ID(112)
+ ID(113)
+ ID(114)
 ```
 There is exactly one `ID` per instruction, and it is an error to have the same `ID` associated to multiple instructions.
 Similarly, while the number associated to a basic block in `IRCode` is a function of the number of basic blocks which precede it, the `ID` of a basic block in `BBCode` is stored in its `id` field:
 ```jldoctest my_factorial
 julia> bb_ir.blocks[3].id
-ID(106)
+ID(118)
 ```
 As a result of this, all references to ssa values and basic block numbers in `IRCode` are replaced with `ID`s in `BBCode`.
 The purpose of this is to guarantee that the "name" of a basic block and an instruction does not change when you insert new basic blocks and new instructions.
@@ -319,10 +319,10 @@ The same transformation can be performed on `BBCode`:
 julia> bb_ir_copy = copy(bb_ir);
 
 julia> old_inst = bb_ir_copy.blocks[3].insts[2]
-Core.Compiler.NewInstruction(:(Base.mul_int(ID(96), ID(100))), Int64, Core.Compiler.NoCallInfo(), 10, 0x000012e0)
+Core.Compiler.NewInstruction(:(Base.mul_int(ID(108), ID(112))), Int64, Core.Compiler.NoCallInfo(), 10, 0x000012e0)
 
 julia> new_stmt = Expr(:call, Base.add_int, old_inst.stmt.args[2:end]...)
-:((Core.Intrinsics.add_int)(ID(96), ID(100)))
+:((Core.Intrinsics.add_int)(ID(108), ID(112)))
 
 julia> bb_ir_copy.blocks[3].insts[2] = CC.NewInstruction(old_inst; stmt=new_stmt);
 
@@ -526,8 +526,13 @@ Observe that in order to tie the conditional to the goto-if-not, we simply ensur
 
 ### Run the new code
 
-As ever, we can construct a `Core.OpaqueClosure` using `IRCode` in order to produce something runnable:
+As ever, we can construct a `Core.OpaqueClosure` using `IRCode` in order to produce something runnable.
+Since `new_ir` originated as method IR, its first argument type still corresponds to the
+function object rather than the opaque-closure environment tuple. For a zero-capture
+opaque closure, we therefore first rewrite `argtypes[1]` to `Tuple{}`:
 ```jldoctest my_factorial
+julia> new_ir.argtypes[1] = Tuple{};
+
 julia> oc = Core.OpaqueClosure(new_ir; do_compile=true)
 (::Int64)::Int64->◌
 

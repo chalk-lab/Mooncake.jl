@@ -135,6 +135,7 @@
         # Function form: zero-alloc functions return 0.
         @test TestUtils.count_allocs(identity, 1.0) == 0
         @test TestUtils.count_allocs(+, 1.0, 2.0) == 0
+        @test TestUtils.count_allocs(Base.sin, 1.0) == 0
         # Regression: non-isbits arg (heap object). An @noinline barrier would box the
         # array when passing it through the Vararg tuple, causing a spurious allocation
         # on Julia 1.10. The @generated design avoids the barrier entirely.

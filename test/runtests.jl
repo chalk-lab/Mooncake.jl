@@ -1,3 +1,34 @@
+#=
+  Two ways to run tests (from Mooncake.jl root):
+
+  1. Interactive — iterate on individual files; TestEnv makes deps like Aqua.jl and JET.jl available.
+
+     One-time setup:
+       mkdir -p temp/testenv
+       julia --project=temp/testenv -e 'using Pkg; Pkg.add("TestEnv"); Pkg.develop(path=".")'
+
+     Then each session:
+       julia --project=temp/testenv -e 'using TestEnv; TestEnv.activate("Mooncake"); include("test/front_matter.jl")'
+
+     Then include individual test files, e.g.: include("test/nfwd/nfwd.jl")
+     or include("test/nfwd/nfwdmooncake.jl")
+
+  2. Batch — run a named test group end-to-end via Pkg.test:
+       julia --project=. -e 'import Pkg; Pkg.test(; test_args=["Nfwd"])'
+
+     If test_args is omitted, the "basic" group runs (not the full suite).
+=#
+# Note: Julia 1.10 can mis-measure scalar allocations when Mooncake is loaded from
+# the precompiled package image inside Pkg.test's temporary merged test environment.
+# Canonical MWE:
+#   julia +1.10 --project=. -e 'import Pkg; Pkg.test(; test_args=["basic"])'
+# can make scalar checks like `TestUtils.count_allocs(Base.sin, 1.0)` go non-zero,
+# while the same probe is zero in an ordinary `--project=.` session.
+# Local workaround: rerun the probe outside `Pkg.test`, for example with
+# `julia +1.10 --project=. -e 'using Mooncake, Mooncake.TestUtils; println(TestUtils.count_allocs(Base.sin, 1.0))'`.
+# If you specifically want to avoid loading package-image cache state, try adding
+# `--pkgimages=no` when starting Julia.
+
 include("front_matter.jl")
 
 @testset "Mooncake.jl" begin
@@ -25,8 +56,13 @@ include("front_matter.jl")
         include("config.jl")
         include("developer_tools.jl")
         include("test_utils.jl")
+    elseif test_group == "Nfwd"
+        include(joinpath("nfwd", "nfwd.jl"))
+        include(joinpath("nfwd", "nfwdmooncake.jl"))
     elseif test_group == "rules/array_legacy"
-        include(joinpath("rules", "array_legacy.jl"))
+        @static if VERSION < v"1.11.0-rc4"
+            include(joinpath("rules", "array_legacy.jl"))
+        end
     elseif test_group == "rules/avoiding_non_differentiable_code"
         include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
     elseif test_group == "rules/blas_Float64"

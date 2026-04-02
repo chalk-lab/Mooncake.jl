@@ -145,7 +145,6 @@ using Mooncake:
     _scale,
     _add_to_primal,
     primal_to_tangent!!,
-    tangent_to_primal!!,
     _dot,
     NoFData,
     fdata_type,
@@ -364,11 +363,17 @@ function populate_address_map_internal(m::AddressMap, primal::P, tangent::T) whe
     T === NoTangent && return m
     T === NoFData && return m
     if ismutabletype(P)
-        @assert T <: MutableTangent
+        @assert T <: MutableTangent "Expected tangent type to be a MutableTangent for mutable primal type $(P), but got $(T)."
         k = pointer_from_objref(primal)
         v = pointer_from_objref(tangent)
         if haskey(m, k)
-            @assert m[k] == v
+            @assert(
+                m[k] == v,
+                "Aliasing not preserved: primal object at address $(k) maps to tangent " *
+                    "at address $(m[k]), but also maps to a different tangent at address $(v). " *
+                    "This means two references to the same primal object do not share the " *
+                    "same tangent object.",
+            )
             return m
         end
         m[k] = v
@@ -404,7 +409,13 @@ function populate_address_map_internal(m::AddressMap, p::Array, t::Array)
     k = pointer_from_objref(p)
     v = pointer_from_objref(t)
     if haskey(m, k)
-        @assert m[k] == v
+        @assert(
+            m[k] == v,
+            "Aliasing not preserved: primal Array at address $(k) maps to tangent " *
+                "at address $(m[k]), but also maps to a different tangent at address $(v). " *
+                "This means two references to the same primal object do not share the " *
+                "same tangent object.",
+        )
         return m
     end
     m[k] = v
@@ -418,7 +429,13 @@ function populate_address_map_internal(m::AddressMap, p::Core.SimpleVector, t::V
     k = pointer_from_objref(p)
     v = pointer_from_objref(t)
     if haskey(m, k)
-        @assert m[k] == v
+        @assert(
+            m[k] == v,
+            "Aliasing not preserved: primal SimpleVector at address $(k) maps to " *
+                "tangent at address $(m[k]), but also maps to a different tangent at " *
+                "address $(v). This means two references to the same primal object do " *
+                "not share the same tangent object.",
+        )
         return m
     end
     m[k] = v
@@ -803,11 +820,23 @@ function test_frule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test count_allocs(f, x...) == 0
+        # On Julia 1.10 under `Pkg.test`, `--check-bounds=yes` can introduce small,
+        # configuration-dependent allocations even for primal calls that are otherwise
+        # zero-alloc in ordinary execution. Keep the zero-allocation assertion in the
+        # default/performance configuration, but skip it in that test-only mode.
+        if !(VERSION < v"1.11-" && Base.JLOptions().check_bounds == 1)
+            @test count_allocs(f, x...) == 0
+        end
 
         # Test allocations in forwards-mode.
-        __forwards(rule, f_ḟ, x_ẋ...)
-        @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
+        # On Julia 1.10, __call_rule uses Base.inferencebarrier to work around a codegen
+        # crash (julia#61368). This boxes isbits values (e.g. Dual{Float64}) at every
+        # nested rule callsite inside the compiled OC, producing non-zero alloc counts
+        # even for correct rules. Skip this check on Julia < 1.11.
+        @static if VERSION >= v"1.11-"
+            __forwards(rule, f_ḟ, x_ẋ...)
+            @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
+        end
     end
 end
 
@@ -846,13 +875,21 @@ function test_rrule_performance(
 
         # Test allocations in primal.
         f(x...)
-        @test count_allocs(f, x...) == 0
+        if !(VERSION < v"1.11-" && Base.JLOptions().check_bounds == 1)
+            @test count_allocs(f, x...) == 0
+        end
 
         # Test allocations in round-trip.
-        f_f̄_fwds = to_fwds(f_f̄)
-        x_x̄_fwds = map(to_fwds, x_x̄)
-        __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
-        @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
+        # Skip on Julia < 1.11 for the same reason as the frule check above: the
+        # inferencebarrier workaround in __call_rule boxes isbits values at every
+        # nested rule callsite inside the compiled OC, producing spurious non-zero
+        # alloc counts on Julia 1.10.
+        @static if VERSION >= v"1.11-"
+            f_f̄_fwds = to_fwds(f_f̄)
+            x_x̄_fwds = map(to_fwds, x_x̄)
+            __forwards_and_backwards(rule, f_f̄_fwds, x_x̄_fwds...)
+            @test count_allocs(__forwards_and_backwards, rule, f_f̄_fwds, x_x̄_fwds...) == 0
+        end
     end
 end
 
@@ -939,6 +976,8 @@ function test_rule(
     output_tangent=nothing,
     atol=1e-3,
     rtol=1e-3,
+    frule=nothing,
+    rrule=nothing,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -947,14 +986,33 @@ function test_rule(
     sig = _typeof(__get_primals(x))
     test_fwd = mode in [nothing, ForwardMode]
     test_rvs = mode in [nothing, ReverseMode]
-    fwd_interp = test_fwd ? get_interpreter(ForwardMode) : missing
-    rvs_interp = test_rvs ? get_interpreter(ReverseMode) : missing
-    frule = test_fwd ? build_frule(fwd_interp, sig; debug_mode) : missing
-    rrule = test_rvs ? build_rrule(rvs_interp, sig; debug_mode) : missing
+    fwd_interp = (test_fwd && isnothing(frule)) ? get_interpreter(ForwardMode) : missing
+    rvs_interp = (test_rvs && isnothing(rrule)) ? get_interpreter(ReverseMode) : missing
+    frule = if !isnothing(frule)
+        frule
+    elseif test_fwd
+        build_frule(fwd_interp, sig; debug_mode)
+    else
+        missing
+    end
+    rrule = if !isnothing(rrule)
+        rrule
+    elseif test_rvs
+        build_rrule(rvs_interp, sig; debug_mode)
+    else
+        missing
+    end
 
     # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
-    test_fwd && is_primitive && @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
-    test_rvs && is_primitive && @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
+    # Skip when a pre-built rule was supplied — the caller owns it.
+    test_fwd &&
+        is_primitive &&
+        !ismissing(fwd_interp) &&
+        @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
+    test_rvs &&
+        is_primitive &&
+        !ismissing(rvs_interp) &&
+        @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
     x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
@@ -996,7 +1054,7 @@ function test_rule(
 
             # Verify that rules have been cached.
             @testset "Caching" begin
-                if test_fwd
+                if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
                         cache_key = (sig, debug_mode, :forward)
@@ -1004,7 +1062,7 @@ function test_rule(
                         @test haskey(fwd_interp.oc_cache, k)
                     end
                 end
-                if test_rvs
+                if test_rvs && !ismissing(rvs_interp)
                     C_rvs = Mooncake.context_type(rvs_interp)
                     if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)
                         cache_key = (sig, debug_mode, :reverse)
@@ -1272,7 +1330,7 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     @test has_equal_data(__scale(1.0, t), t)
     @test has_equal_data(__scale(2.0, t), _increment!!(deepcopy(t), t))
 
-    # Test for tangent_to_primal!! / primal_to_tangent!!
+    # Test for tangent_to_primal_internal!! / primal_to_tangent!!
     p1 = deepcopy([p])[1]
     t1 = _randn_tangent(rng, p1)
     p1 = _tangent_to_primal!!(p1, t1)

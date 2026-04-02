@@ -16,41 +16,40 @@
 The goal of the `Mooncake.jl` project is to produce an AD package written entirely in Julia that improves on `ForwardDiff.jl`, `ReverseDiff.jl`, and `Zygote.jl` in several ways.
 Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more info.
 
+> [!IMPORTANT]
+> `Mooncake.jl` accepts issues and pull requests for reproducible defects only. Feature requests, enhancements, redesign proposals, support requests, and debugging requests without a
+  minimal reproducible example are out of scope and will be closed. Although Mooncake currently supports a select subset of Julia standard libraries, mathematical libraries, and
+  `CUDA.jl`, its intended rule-coverage scope is Julia Base, so requests for missing rules outside Julia Base are out of scope.
+
 ## Getting Started
 
 Check that you're running a version of Julia that Mooncake.jl supports.
 See the `SUPPORT_POLICY.md` file for more info.
 
-There are several ways to interact with `Mooncake.jl`. To interact directly with `Mooncake.jl`, use `Mooncake.value_and_gradient!!`, which exposes the native API and allows reuse of a prepared gradient cache. For example, it can be used to compute the gradient of a function mapping a `Vector{ComplexF64}` to a `Float64`.
+There are several ways to interact with `Mooncake.jl`. To interact directly with `Mooncake.jl`, use Mooncake's native API, which allows reuse of prepared caches for repeated gradient and Hessian evaluations:
 
 ```julia
 import Mooncake as MC
 
-# f : ℂⁿ → ℝ
-f(x) = sum(abs2, x)
-x = [1.0 + 2.0im, 3.0 + 4.0im]
+f(x) = (1 - x[1])^2 + 100 * (x[2] - x[1]^2)^2  # Rosenbrock
+x = [1.2, 1.2]
 
-cache = MC.prepare_gradient_cache(f, x);
-val, grad = MC.value_and_gradient!!(cache, f, x)
+# Reverse mode
+grad_cache = MC.prepare_gradient_cache(f, x);
+val, grad = MC.value_and_gradient!!(grad_cache, f, x)
+
+# Forward mode
+fwd_cache = MC.prepare_derivative_cache(f, x);
+val_fwd, grad_fwd = MC.value_and_gradient!!(fwd_cache, f, x)
+
+# Hessian
+hess_cache = MC.prepare_hessian_cache(f, x);
+val, grad, H = MC.value_gradient_and_hessian!!(hess_cache, f, x)
+# val  : f(x)
+# grad : ∇f(x)  (length-n vector)
+# H    : ∇²f(x) (n×n matrix)
 ```
 
-You should expect that `MC.prepare_gradient_cache` takes a little bit of time to run, but that `MC.value_and_gradient!!` is fast. For additional details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). You can also interact with `Mooncake.jl` via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
+You should expect that `MC.prepare_gradient_cache` and `MC.prepare_hessian_cache` take a little time to run, but that subsequent calls using the prepared caches are fast.
 
-```julia
-import DifferentiationInterface as DI
-
-# Gradient
-backend = DI.AutoMooncake()
-grad_cache = DI.prepare_gradient(f, backend, x);
-g = DI.gradient(f, grad_cache, backend, x)
-
-# Hessian (forward-over-reverse)
-hess_backend = DI.SecondOrder(
-    DI.AutoMooncakeForward(),
-    DI.AutoMooncake()
-)
-hess_cache = DI.prepare_hessian(f, hess_backend, x);
-H = DI.hessian(f, hess_cache, hess_backend, x)
-```
-
-We generally recommend interacting with `Mooncake.jl` through `DifferentiationInterface.jl`, although this interface may lag behind Mooncake in supporting newly introduced features.
+For additional details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). You can also interact with `Mooncake.jl` via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/), although this interface may lag behind Mooncake in supporting newly introduced features.
