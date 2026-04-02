@@ -21,8 +21,11 @@ using ..Mooncake:
     generate_dual_ir,
     generate_ir,
     optimise_ir!,
-    seed_id!,
-    set_valid_world!
+    seed_id!
+
+@static if VERSION > v"1.12-"
+    using ..Mooncake: set_valid_world!
+end
 
 struct StageMeta
     block_count::Int
