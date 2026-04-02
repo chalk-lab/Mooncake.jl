@@ -44,17 +44,6 @@ using Mooncake:
 # Utils extensions
 @mooncake_overlay Utils.within_autodiff(x) = Utils.True()
 
-@mooncake_overlay function LuxLib.Impl.fused_conv(
-    ::LuxLib.Impl.AbstractInternalArrayOpMode,
-    act::F,
-    weight::AbstractArray{wT,N},
-    x::AbstractArray{xT,N},
-    bias::LuxLib.Optional{<:AbstractVector},
-    cdims::Impl.ConvDims,
-) where {F,wT,xT,N}
-    return LuxLib.Impl.bias_activation(act, Impl.conv(x, weight, cdims), bias)
-end
-
 # zero gradient/non differentiable functions
 @zero_adjoint DefaultCtx Tuple{typeof(Utils.static_training_mode_check),Vararg}
 @zero_adjoint DefaultCtx Tuple{
@@ -77,6 +66,18 @@ end
 @zero_adjoint DefaultCtx Tuple{typeof(Impl.get_norm_reshape_dims),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(Impl.instancenorm_reduce_dims),Vararg}
 @zero_adjoint DefaultCtx Tuple{typeof(Impl.compute_layernorm_dims),Vararg}
+
+# Re-implement LuxLib.Impl.batchnorm_affine_normalize_internal and LuxLib.Impl.fused_conv to ensure that Mooncake can differentiate them.
+@mooncake_overlay function LuxLib.Impl.fused_conv(
+    ::LuxLib.Impl.AbstractInternalArrayOpMode,
+    act::F,
+    weight::AbstractArray{wT,N},
+    x::AbstractArray{xT,N},
+    bias::LuxLib.Optional{<:AbstractVector},
+    cdims::Impl.ConvDims,
+) where {F,wT,xT,N}
+    return LuxLib.Impl.bias_activation(act, Impl.conv(x, weight, cdims), bias)
+end
 
 # Helper function for the Lux affine transform.
 function _batchnorm_affine_normalize_identity(
