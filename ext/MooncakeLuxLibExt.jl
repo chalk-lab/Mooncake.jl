@@ -3,7 +3,7 @@ module MooncakeLuxLibExt
 using LuxLib, Random, Mooncake
 using Base: IEEEFloat
 
-import LuxLib: Impl, Utils, AbstractInternalArrayOpMode
+import LuxLib: Impl, Utils
 import LuxLib.NNlib.GPUArraysCore: AbstractGPUArray
 using MLDataDevices: get_device_type
 using Mooncake:
@@ -14,50 +14,25 @@ using Mooncake:
     CoDual,
     zero_tangent,
     primal,
-    tangent,
     @is_primitive,
     NoRData,
     extract,
     zero_rdata,
     @zero_adjoint
 
-import LuxLib.Utils: static_training_mode_check, True, False
-import LuxLib.Impl:
-    get_non_heads_dim,
-    safe_eltype,
-    make_causal_mask,
-    get_non_contracting_dim,
-    get_batched_matmul_repeat_dims,
-    batchnorm_reduce_dims,
-    get_batchnorm_statistics,
-    groupnorm_reduce_dims,
-    flattened_bias_dims,
-    check_dropout_mask_shape_mismatch,
-    dropout_shape,
-    dropout_fptype,
-    generate_alpha_dropout_noise,
-    generate_dropout_mask,
-    update_running_statistics,
-    update_normalization_statistics,
-    get_norm_reshape_dims,
-    instancenorm_reduce_dims,
-    compute_layernorm_dims,
-    matmul,
-    matmuladd,
-    batched_matmul_fallback
-
-@from_rrule(DefaultCtx, Tuple{typeof(matmul),Array{P},Array{P}} where {P<:IEEEFloat})
+@from_rrule(DefaultCtx, Tuple{typeof(Impl.matmul),Array{P},Array{P}} where {P<:IEEEFloat})
 @from_rrule(
-    DefaultCtx, Tuple{typeof(matmuladd),Array{P},Array{P},Vector{P}} where {P<:IEEEFloat},
+    DefaultCtx,
+    Tuple{typeof(Impl.matmuladd),Array{P},Array{P},Vector{P}} where {P<:IEEEFloat},
 )
 @from_rrule(
     DefaultCtx,
-    Tuple{typeof(batched_matmul_fallback),Array{P,3},Array{P,3}} where {P<:IEEEFloat},
+    Tuple{typeof(Impl.batched_matmul_fallback),Array{P,3},Array{P,3}} where {P<:IEEEFloat},
 )
 @from_rrule(
     DefaultCtx,
     Tuple{
-        typeof(batched_matmul_fallback),AbstractGPUArray{P,3},AbstractGPUArray{P,3}
+        typeof(Impl.batched_matmul_fallback),AbstractGPUArray{P,3},AbstractGPUArray{P,3}
     } where {P<:IEEEFloat},
 )
 
@@ -67,54 +42,46 @@ import LuxLib.Impl:
 }()
 
 # Utils extensions
-@mooncake_overlay Utils.within_autodiff(x) = True()
+@mooncake_overlay Utils.within_autodiff(x) = Utils.True()
 
-# Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
-@mooncake_overlay function LuxLib.Impl.fused_dense(
-    opmode,
-    act::F,
-    weight::AbstractMatrix,
-    x::AbstractMatrix,
-    b::LuxLib.Optional{<:AbstractVector},
-) where {F}
-    return LuxLib.Impl.bias_activation(act, matmul(weight, x), b)
-end
-
+# # Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
 @mooncake_overlay function LuxLib.Impl.fused_conv(
     ::LuxLib.Impl.AbstractInternalArrayOpMode,
     act::F,
     weight::AbstractArray{wT,N},
     x::AbstractArray{xT,N},
     bias::LuxLib.Optional{<:AbstractVector},
-    cdims::LuxLib.Impl.ConvDims,
+    cdims::Impl.ConvDims,
 ) where {F,wT,xT,N}
-    return LuxLib.Impl.bias_activation(act, LuxLib.Impl.conv(x, weight, cdims), bias)
+    return LuxLib.Impl.bias_activation(act, Impl.conv(x, weight, cdims), bias)
 end
 
 # zero gradient/non differentiable functions
-@zero_adjoint DefaultCtx Tuple{typeof(static_training_mode_check),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(generate_dropout_mask),AbstractRNG,Any,Any,Any,Any}
-@zero_adjoint DefaultCtx Tuple{typeof(get_non_heads_dim),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(make_causal_mask),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(get_non_contracting_dim),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(get_batched_matmul_repeat_dims),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(batchnorm_reduce_dims),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(get_batchnorm_statistics),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(groupnorm_reduce_dims),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(flattened_bias_dims),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(check_dropout_mask_shape_mismatch),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(dropout_shape),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(dropout_fptype),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(generate_alpha_dropout_noise),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(update_running_statistics),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(update_normalization_statistics),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(get_norm_reshape_dims),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(instancenorm_reduce_dims),Vararg}
-@zero_adjoint DefaultCtx Tuple{typeof(compute_layernorm_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Utils.static_training_mode_check),Vararg}
+@zero_adjoint DefaultCtx Tuple{
+    typeof(Impl.generate_dropout_mask),AbstractRNG,Any,Any,Any,Any
+}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.get_non_heads_dim),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.make_causal_mask),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.get_non_contracting_dim),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.get_batched_matmul_repeat_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.batchnorm_reduce_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.get_batchnorm_statistics),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.groupnorm_reduce_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.flattened_bias_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.check_dropout_mask_shape_mismatch),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.dropout_shape),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.dropout_fptype),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.generate_alpha_dropout_noise),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.update_running_statistics),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.update_normalization_statistics),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.get_norm_reshape_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.instancenorm_reduce_dims),Vararg}
+@zero_adjoint DefaultCtx Tuple{typeof(Impl.compute_layernorm_dims),Vararg}
 
 # Helper function for the Lux affine transform.
 function _batchnorm_affine_normalize_identity(
-    opmode::AbstractInternalArrayOpMode,
+    opmode::Impl.AbstractInternalArrayOpMode,
     x::AbstractArray{xT,3},
     μ::AbstractVector,
     σ²::AbstractVector,
@@ -122,22 +89,24 @@ function _batchnorm_affine_normalize_identity(
     β::LuxLib.Optional{<:AbstractVector},
     ϵ::Real,
 ) where {xT}
-    PT_γ′ = promote_type(safe_eltype(γ), safe_eltype(σ²), safe_eltype(ϵ))
+    PT_γ′ = promote_type(Impl.safe_eltype(γ), Impl.safe_eltype(σ²), Impl.safe_eltype(ϵ))
     γ′ = similar(x, PT_γ′, size(x, 2))
     PT = promote_type(
-        safe_eltype(x), safe_eltype(μ), safe_eltype(σ²), safe_eltype(γ), safe_eltype(β)
+        Impl.safe_eltype(x),
+        Impl.safe_eltype(μ),
+        Impl.safe_eltype(σ²),
+        Impl.safe_eltype(γ),
+        Impl.safe_eltype(β),
     )
     y = similar(x, PT)
-    LuxLib.Impl.batchnorm_affine_normalize_internal!(
-        y, opmode, identity, x, μ, σ², γ, β, ϵ, γ′
-    )
+    Impl.batchnorm_affine_normalize_internal!(y, opmode, identity, x, μ, σ², γ, β, ϵ, γ′)
     return y
 end
 
 # Native Mooncake rule for differentiating through batchnorm_affine_normalize_internal.
 @is_primitive MinimalCtx Tuple{
     typeof(_batchnorm_affine_normalize_identity),
-    AbstractInternalArrayOpMode,
+    Impl.AbstractInternalArrayOpMode,
     AbstractArray{<:Any,3},
     AbstractVector,
     AbstractVector,
@@ -148,7 +117,7 @@ end
 
 function Mooncake.rrule!!(
     ::CoDual{typeof(_batchnorm_affine_normalize_identity)},
-    opmode::CoDual{<:AbstractInternalArrayOpMode},
+    opmode::CoDual{<:Impl.AbstractInternalArrayOpMode},
     x::CoDual{<:AbstractArray{xT,3}},
     μ::CoDual{<:AbstractVector},
     σ²::CoDual{<:AbstractVector},
@@ -163,19 +132,23 @@ function Mooncake.rrule!!(
     _γ, γ̄ = extract(γ)
     _β, β̄ = extract(β)
 
-    PT_γ′ = promote_type(safe_eltype(_γ), safe_eltype(_σ²), safe_eltype(_ϵ))
+    PT_γ′ = promote_type(Impl.safe_eltype(_γ), Impl.safe_eltype(_σ²), Impl.safe_eltype(_ϵ))
     γ′ = similar(_x, PT_γ′, size(_x, 2))
     PT = promote_type(
-        safe_eltype(_x), safe_eltype(_μ), safe_eltype(_σ²), safe_eltype(_γ), safe_eltype(_β)
+        Impl.safe_eltype(_x),
+        Impl.safe_eltype(_μ),
+        Impl.safe_eltype(_σ²),
+        Impl.safe_eltype(_γ),
+        Impl.safe_eltype(_β),
     )
     y = similar(_x, PT)
-    LuxLib.Impl.batchnorm_affine_normalize_internal!(
+    Impl.batchnorm_affine_normalize_internal!(
         y, _opmode, identity, _x, _μ, _σ², _γ, _β, _ϵ, γ′
     )
     ȳ = zero_tangent(y)
 
     function pb!!(::NoRData)
-        ∂x, ∂μ, ∂σ², ∂γ, ∂β = LuxLib.Impl.∇batchnorm_affine_normalize(
+        ∂x, ∂μ, ∂σ², ∂γ, ∂β = Impl.∇batchnorm_affine_normalize(
             _opmode, ȳ, _x, _μ, _σ², _γ, _β, _ϵ, γ′
         )
 
@@ -194,7 +167,7 @@ function Mooncake.rrule!!(
 end
 
 @mooncake_overlay function LuxLib.Impl.batchnorm_affine_normalize_internal(
-    opmode::AbstractInternalArrayOpMode,
+    opmode::Impl.AbstractInternalArrayOpMode,
     act::F,
     x::AbstractArray{xT,3},
     μ::AbstractVector,
