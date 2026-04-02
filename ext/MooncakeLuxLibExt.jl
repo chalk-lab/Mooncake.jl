@@ -44,7 +44,6 @@ using Mooncake:
 # Utils extensions
 @mooncake_overlay Utils.within_autodiff(x) = Utils.True()
 
-# # Re-implement a bunch of methods to ensure that Mooncake can differentiate them.
 @mooncake_overlay function LuxLib.Impl.fused_conv(
     ::LuxLib.Impl.AbstractInternalArrayOpMode,
     act::F,
