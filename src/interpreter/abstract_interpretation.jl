@@ -136,18 +136,9 @@ function Core.Compiler.abstract_call_gf_by_type(
     sv::CC.AbsIntState,
     max_methods::Int,
 ) where {C,M}
-
-    # invoke the default abstract call to get the default CC.CallMeta.
-    ret = @invoke CC.abstract_call_gf_by_type(
-        interp::CC.AbstractInterpreter,
-        f::Any,
-        arginfo::CC.ArgInfo,
-        si::CC.StmtInfo,
-        atype::Any,
-        sv::CC.AbsIntState,
-        max_methods::Int,
-    )
     argtypes = arginfo.argtypes
+    # Look up applicable methods for this call site without recursing into their bodies.
+    # We need the method set to check for primitives before deciding how to proceed.
     if VERSION < v"1.12-"
         𝕃ᵢ = Core.Compiler.typeinf_lattice(interp)
         matches = Core.Compiler.find_matching_methods(
@@ -163,9 +154,26 @@ function Core.Compiler.abstract_call_gf_by_type(
     end
     if !isa(matches, Core.Compiler.FailedMethodMatch)
         (; valid_worlds, applicable) = matches
-        # For all applicable method matches, we need to check if any of them could hit a primitive
+        # For applicable method matches in IR, we need to check if any of them is a primitive.
         any_prim = any_matches_primitive(applicable, C, M, interp.world)
         if any_prim
+            # A primitive already has a hand-written `rrule!!`, so Mooncake does not need
+            # to inspect its body when differentiating. The only thing we need here is the
+            # ordinary `CallMeta` for the call site, especially the inferred return type.
+            #
+            # We therefore ask `NativeInterpreter` for the `CallMeta`. This avoids recursing
+            # through the callee IR using Mooncake's primitive-search logic:
+            # `MooncakeInterpreter` would walk nested calls in that body, check them for
+            # primitives, and continue that search down the callee tree. That extra work is
+            # unnecessary for a primitive with a hand-written rule.
+            #
+            # `noinline_callmeta` below then blocks inlining/const-folding so the primitive
+            # call stays in the caller IR and Mooncake can dispatch its `rrule!!` at runtime.
+            # See PR #1115 for more discussion.
+            native_interp = CC.NativeInterpreter(interp.world)
+            ret = CC.abstract_call_gf_by_type(
+                native_interp, f, arginfo, si, atype, sv, max_methods
+            )
             @static if VERSION < v"1.12-"
                 call = ret::CC.CallMeta
                 # Keep primitives in caller IR by blocking const-folding and inlining
@@ -181,7 +189,16 @@ function Core.Compiler.abstract_call_gf_by_type(
             end
         end
     end
-    ret
+
+    return @invoke CC.abstract_call_gf_by_type(
+        interp::CC.AbstractInterpreter,
+        f::Any,
+        arginfo::CC.ArgInfo,
+        si::CC.StmtInfo,
+        atype::Any,
+        sv::CC.AbsIntState,
+        max_methods::Int,
+    )
 end
 
 function any_matches_primitive(applicable, C, M, world)
