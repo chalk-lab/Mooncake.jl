@@ -196,7 +196,11 @@ function primitive_dispatch_note(mode::Symbol, sig::Type)::String
 end
 
 function primitive_inspection(
-    interp::MooncakeInterpreter{C}, mode::Symbol, interp_mode::Type{<:Union{ForwardMode,ReverseMode}}, sig::Type, world::UInt
+    interp::MooncakeInterpreter{C},
+    mode::Symbol,
+    interp_mode::Type{<:Union{ForwardMode,ReverseMode}},
+    sig::Type,
+    world::UInt,
 ) where {C}
     if is_primitive(C, interp_mode, sig, interp.world)
         return IRInspection(
