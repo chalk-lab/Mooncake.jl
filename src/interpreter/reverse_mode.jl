@@ -1623,6 +1623,15 @@ struct CFGBlock
     insts::Vector{IDInstPair}
 end
 
+function _remap_assigned_phi_values(f, values::Vector{Any})::Vector{Any}
+    # Keep dead-edge phi slots undefined while remapping the assigned incoming values.
+    new_values = Vector{Any}(undef, length(values))
+    for n in eachindex(values)
+        isassigned(values, n) && (new_values[n] = f(values[n]))
+    end
+    return new_values
+end
+
 function _ssa_to_ids(d::SSAToIdDict, inst::NewInstruction)
     return NewInstruction(inst; stmt=_ssa_to_ids(d, inst.stmt))
 end
@@ -1634,13 +1643,7 @@ _ssa_to_ids(d::SSAToIdDict, x::PiNode) = PiNode(get(d, x.val, x.val), get(d, x.t
 _ssa_to_ids(::SSAToIdDict, x::QuoteNode) = x
 _ssa_to_ids(::SSAToIdDict, x) = x
 function _ssa_to_ids(d::SSAToIdDict, x::PhiNode)
-    new_values = Vector{Any}(undef, length(x.values))
-    for n in eachindex(x.values)
-        if isassigned(x.values, n)
-            new_values[n] = get(d, x.values[n], x.values[n])
-        end
-    end
-    return PhiNode(x.edges, new_values)
+    return PhiNode(x.edges, _remap_assigned_phi_values(v -> get(d, v, v), x.values))
 end
 _ssa_to_ids(::SSAToIdDict, x::GotoNode) = x
 _ssa_to_ids(d::SSAToIdDict, x::GotoIfNot) = GotoIfNot(get(d, x.cond, x.cond), x.dest)
@@ -1888,13 +1891,10 @@ _cfg_to_ssas(d::Dict, x::PiNode) = PiNode(get(d, x.val, x.val), get(d, x.typ, x.
 _cfg_to_ssas(d::Dict, x::QuoteNode) = x
 _cfg_to_ssas(d::Dict, x) = x
 function _cfg_to_ssas(d::Dict, x::IDPhiNode)
-    new_values = Vector{Any}(undef, length(x.values))
-    for n in eachindex(x.values)
-        if isassigned(x.values, n)
-            new_values[n] = get(d, x.values[n], x.values[n])
-        end
-    end
-    return PhiNode(map(edge -> Int32(getindex(d, edge).id), x.edges), new_values)
+    return PhiNode(
+        map(edge -> Int32(getindex(d, edge).id), x.edges),
+        _remap_assigned_phi_values(v -> get(d, v, v), x.values),
+    )
 end
 _cfg_to_ssas(d::Dict, x::IDGotoNode) = GotoNode(d[x.label].id)
 _cfg_to_ssas(d::Dict, x::IDGotoIfNot) = GotoIfNot(get(d, x.cond, x.cond), d[x.dest].id)
