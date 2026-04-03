@@ -1692,10 +1692,9 @@ function _cfg_terminator(block::CFGBlock)
 end
 
 function _cfg_phi_nodes(block::CFGBlock)
-    n_phi_nodes = findlast(x -> x[2].stmt isa IDPhiNode, block.insts)
-    if n_phi_nodes === nothing
-        n_phi_nodes = 0
-    end
+    # Phi nodes are only valid at the start of a block, so stop at the first non-phi.
+    n_phi_nodes = findfirst(x -> !(x[2].stmt isa IDPhiNode), block.insts)
+    n_phi_nodes = isnothing(n_phi_nodes) ? length(block.insts) : n_phi_nodes - 1
     return first.(block.insts[1:n_phi_nodes]), last.(block.insts[1:n_phi_nodes])
 end
 
