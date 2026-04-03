@@ -34,16 +34,22 @@ const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
 for f in [rand!, randn!, randexp!]
     @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
     @eval function frule!!(
-        ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
+        ::Dual{typeof($f)},
+        rng::Dual{<:SpecialisedRNGs},
+        x::Dual{<:Array{Float64},NoTangent},
+    )
+        $f(primal(rng), primal(x))
+        return x
+    end
+    @eval function frule!!(
+        ::Dual{typeof($f)},
+        rng::Dual{<:SpecialisedRNGs},
+        x::Dual{<:Array{Float64},<:NTangent},
     )
         $f(primal(rng), primal(x))
         dx = tangent(x)
-        if dx isa NTangent
-            @inbounds for lane in 1:length(dx)
-                dx[lane] .= 0
-            end
-        else
-            dx .= 0
+        @inbounds for lane in 1:length(dx)
+            dx[lane] .= 0
         end
         return x
     end

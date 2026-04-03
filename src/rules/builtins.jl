@@ -456,9 +456,16 @@ end
 
 @intrinsic fpext
 function frule!!(
-    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P}
+    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P,NoTangent}
 ) where {Pext<:IEEEFloat,P<:IEEEFloat}
-    return Dual(fpext(Pext, primal(x)), fpext(Pext, tangent(x)))
+    return Dual(fpext(Pext, primal(x)), NoTangent())
+end
+function frule!!(
+    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P,<:NTangent}
+) where {Pext<:IEEEFloat,P<:IEEEFloat}
+    return Dual(
+        fpext(Pext, primal(x)), NTangent(map(dx -> fpext(Pext, dx), tangent(x).lanes))
+    )
 end
 function rrule!!(
     ::CoDual{typeof(fpext)}, ::CoDual{Type{Pext}}, x::CoDual{P}
@@ -473,9 +480,17 @@ end
 
 @intrinsic fptrunc
 function frule!!(
-    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P}
+    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P,NoTangent}
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
-    return Dual(fptrunc(Ptrunc, primal(x)), fptrunc(Ptrunc, tangent(x)))
+    return Dual(fptrunc(Ptrunc, primal(x)), NoTangent())
+end
+function frule!!(
+    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P,<:NTangent}
+) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
+    return Dual(
+        fptrunc(Ptrunc, primal(x)),
+        NTangent(map(dx -> fptrunc(Ptrunc, dx), tangent(x).lanes)),
+    )
 end
 function rrule!!(
     ::CoDual{typeof(fptrunc)}, ::CoDual{Type{Ptrunc}}, x::CoDual{P}

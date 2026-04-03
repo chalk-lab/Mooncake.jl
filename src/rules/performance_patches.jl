@@ -17,10 +17,11 @@
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
-function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
-    dx = tangent(x)
-    dx === NoTangent() && return Dual(sum(primal(x)), NoTangent())
-    dy = NTangent(map(sum, dx.lanes))
+function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P},NoTangent}) where {P<:IEEEFloat}
+    return Dual(sum(primal(x)), NoTangent())
+end
+function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P},<:NTangent}) where {P<:IEEEFloat}
+    dy = NTangent(map(sum, tangent(x).lanes))
     return Dual(sum(primal(x)), dy)
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
@@ -35,12 +36,15 @@ end
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
 function frule!!(
-    ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
+    ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P},NoTangent}
+) where {P<:IEEEFloat}
+    return Dual(sum(abs2, primal(x)), NoTangent())
+end
+function frule!!(
+    ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P},<:NTangent}
 ) where {P<:IEEEFloat}
     px = primal(x)
-    dx = tangent(x)
-    dx === NoTangent() && return Dual(sum(abs2, px), NoTangent())
-    dy = NTangent(map(dxi -> 2 * dot(px, dxi), dx.lanes))
+    dy = NTangent(map(dxi -> 2 * dot(px, dxi), tangent(x).lanes))
     return Dual(sum(abs2, px), dy)
 end
 function rrule!!(
