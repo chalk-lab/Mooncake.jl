@@ -1,3 +1,95 @@
+const _id_count::Dict{Int,Int32} = Dict{Int,Int32}()
+
+struct ID
+    id::Int32
+    function ID()
+        current_thread_id = Threads.threadid()
+        id_count = get(_id_count, current_thread_id, Int32(0))
+        _id_count[current_thread_id] = id_count + Int32(1)
+        return new(id_count)
+    end
+end
+
+Base.copy(id::ID) = id
+
+function seed_id!()
+    return global _id_count[Threads.threadid()] = 0
+end
+
+struct IDPhiNode
+    edges::Vector{ID}
+    values::Vector{Any}
+end
+
+Base.:(==)(x::IDPhiNode, y::IDPhiNode) = x.edges == y.edges && x.values == y.values
+Base.copy(node::IDPhiNode) = IDPhiNode(copy(node.edges), copy(node.values))
+
+struct IDGotoNode
+    label::ID
+end
+
+Base.copy(node::IDGotoNode) = IDGotoNode(copy(node.label))
+
+struct IDGotoIfNot
+    cond::Any
+    dest::ID
+end
+
+Base.copy(node::IDGotoIfNot) = IDGotoIfNot(copy(node.cond), copy(node.dest))
+
+struct Switch
+    conds::Vector{Any}
+    dests::Vector{ID}
+    fallthrough_dest::ID
+    function Switch(conds::Vector{Any}, dests::Vector{ID}, fallthrough_dest::ID)
+        @assert length(conds) == length(dests)
+        return new(conds, dests, fallthrough_dest)
+    end
+end
+
+const IDInstPair = Tuple{ID,NewInstruction}
+const InstVector = Vector{NewInstruction}
+const SSAToIdDict = Dict{SSAValue,ID}
+const BlockNumToIdDict = Dict{Integer,ID}
+
+function characterise_used_ids(stmts::Vector{IDInstPair})::Dict{ID,Bool}
+    is_used = Dict{ID,Bool}()
+    for (id, _) in stmts
+        @assert !haskey(is_used, id)
+        is_used[id] = false
+    end
+    for (_, inst) in stmts
+        _find_id_uses!(is_used, inst.stmt)
+    end
+    return is_used
+end
+
+function _find_id_uses!(d::Dict{ID,Bool}, x::Expr)
+    foreach(a -> _find_id_uses!(d, a), x.args)
+    return nothing
+end
+function _find_id_uses!(d::Dict{ID,Bool}, x::IDGotoIfNot)
+    return _find_id_uses!(d, x.cond)
+end
+_find_id_uses!(::Dict{ID,Bool}, ::IDGotoNode) = nothing
+function _find_id_uses!(d::Dict{ID,Bool}, x::PiNode)
+    return _find_id_uses!(d, x.val)
+end
+function _find_id_uses!(d::Dict{ID,Bool}, x::IDPhiNode)
+    for n in eachindex(x.values)
+        # Normalized compiler phi nodes can leave incoming values undefined on dead edges.
+        isassigned(x.values, n) || continue
+        _find_id_uses!(d, x.values[n])
+    end
+    return nothing
+end
+function _find_id_uses!(d::Dict{ID,Bool}, x::ReturnNode)
+    return isdefined(x, :val) ? _find_id_uses!(d, x.val) : nothing
+end
+_find_id_uses!(::Dict{ID,Bool}, ::QuoteNode) = nothing
+_find_id_uses!(d::Dict{ID,Bool}, x::ID) = d[x] = true
+_find_id_uses!(::Dict{ID,Bool}, x) = nothing
+
 """
     SharedDataPairs()
 
@@ -137,7 +229,6 @@ struct ADInfo
     rvs_ret_type::Type
 end
 
-# The constructor that you should use for ADInfo if you don't have a BBCode lying around.
 # See the definition of the ADInfo struct for info on the arguments.
 function ADInfo(
     interp::MooncakeInterpreter,
@@ -164,35 +255,6 @@ function ADInfo(
         debug_mode,
         is_used_dict,
         add_data!(shared_data_pairs, zero_lazy_rdata_ref),
-        fwd_ret_type,
-        rvs_ret_type,
-    )
-end
-
-# The constructor you should use for ADInfo if you _do_ have a BBCode lying around. See the
-# ADInfo struct for information regarding `interp` and `debug_mode`.
-function ADInfo(
-    interp::MooncakeInterpreter,
-    ir::BBCode,
-    debug_mode::Bool,
-    fwd_ret_type::Type,
-    rvs_ret_type::Type,
-)
-    arg_types = Dict{Argument,Any}(
-        map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir.argtypes))
-    )
-    stmts = collect_stmts(ir)
-    ssa_insts = Dict{ID,NewInstruction}(stmts)
-    is_used_dict = characterise_used_ids(stmts)
-    Tlazy_rdata_ref = Tuple{map(lazy_zero_rdata_type ∘ CC.widenconst, ir.argtypes)...}
-    zero_lazy_rdata_ref = Ref{Tlazy_rdata_ref}()
-    return ADInfo(
-        interp,
-        arg_types,
-        ssa_insts,
-        is_used_dict,
-        debug_mode,
-        zero_lazy_rdata_ref,
         fwd_ret_type,
         rvs_ret_type,
     )
@@ -1299,35 +1361,54 @@ function generate_ir(
     fwd_ret_type = forwards_ret_type(ir)
     rvs_ret_type = pullback_ret_type(ir)
 
-    # Normalise the IR, and generated BBCode version of it.
+    # Reverse mode now starts from normalized IRCode and uses the local CFG builder directly.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
     ir = normalise!(ir, spnames)
-    primal_ir = BBCode(ir)
-    primal_blocks = _remove_unreachable_cfg_blocks!(map(_cfg_block, primal_ir.blocks))
-    primal_ir = lower_cfg_blocks(
-        primal_ir, primal_ir.argtypes, primal_blocks; sort_cfg=false
-    )
+    primal_blocks = _remove_unreachable_cfg_blocks!(_ircode_to_cfg_blocks(ir))
 
     # Compute global info.
-    info = ADInfo(interp, primal_ir, debug_mode, fwd_ret_type, rvs_ret_type)
+    arg_types = Dict{Argument,Any}(
+        map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir.argtypes))
+    )
+    primal_stmts = reduce(vcat, map(block -> block.insts, primal_blocks); init=IDInstPair[])
+    ssa_insts = Dict{ID,NewInstruction}(primal_stmts)
+    is_used_dict = characterise_used_ids(primal_stmts)
+    Tlazy_rdata_ref = Tuple{map(lazy_zero_rdata_type ∘ CC.widenconst, ir.argtypes)...}
+    zero_lazy_rdata_ref = Ref{Tlazy_rdata_ref}()
+    info = ADInfo(
+        interp,
+        arg_types,
+        ssa_insts,
+        is_used_dict,
+        debug_mode,
+        zero_lazy_rdata_ref,
+        fwd_ret_type,
+        rvs_ret_type,
+    )
 
-    # For each block in the fwds and pullback BBCode, translate all statements. Running this
-    # will, in general, push items to `info.shared_data_pairs`.
-    ad_stmts_blocks = map(primal_ir.blocks) do primal_blk
-        ids = primal_blk.inst_ids
-        primal_stmts = map(x -> x.stmt, primal_blk.insts)
-        return (primal_blk.id, make_ad_stmts!.(primal_stmts, ids, Ref(info)))
+    # For each block in the primal CFG, translate all statements. Running this will, in
+    # general, push items to `info.shared_data_pairs`.
+    ad_stmts_blocks = map(primal_blocks) do primal_blk
+        ids = first.(primal_blk.insts)
+        stmts = map(x -> x[2].stmt, primal_blk.insts)
+        return (primal_blk.id, make_ad_stmts!.(stmts, ids, Ref(info)))
     end
 
-    # Make shared data, and construct BBCode for forwards-pass and pullback.
+    # Make shared data, and construct IR for the forwards-pass and pullback.
     fwds_comms_insts, pb_comms_insts = create_comms_insts!(ad_stmts_blocks, info)
     shared_data = shared_data_tuple(info.shared_data_pairs)
 
     fwd_ir = forwards_pass_ir(
-        primal_ir, ad_stmts_blocks, fwds_comms_insts, info, _typeof(shared_data)
+        ir, primal_blocks, ad_stmts_blocks, fwds_comms_insts, info, _typeof(shared_data)
     )
     rvs_ir = pullback_ir(
-        primal_ir, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
+        ir,
+        primal_blocks,
+        Treturn,
+        ad_stmts_blocks,
+        pb_comms_insts,
+        info,
+        _typeof(shared_data),
     )
     opt_fwd_ir = do_optimize ? optimise_ir!(fwd_ir; do_inline) : fwd_ir
     opt_rvs_ir = do_optimize ? optimise_ir!(rvs_ir; do_inline) : rvs_ir
@@ -1428,14 +1509,24 @@ function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
 end
 
 """
-    forwards_pass_ir(ir::BBCode, ad_stmts_blocks::ADStmts, info::ADInfo, Tshared_data)
+    forwards_pass_ir(
+        ir::IRCode,
+        primal_blocks,
+        ad_stmts_blocks::ADStmts,
+        info::ADInfo,
+        Tshared_data,
+    )
 
 Produce the IR associated to the `OpaqueClosure` which runs most of the forwards-pass.
 """
 function forwards_pass_ir(
-    ir::BBCode, ad_stmts_blocks::ADStmts, fwds_comms_insts, info::ADInfo, Tshared_data
+    ir::IRCode,
+    primal_blocks,
+    ad_stmts_blocks::ADStmts,
+    fwds_comms_insts,
+    info::ADInfo,
+    Tshared_data,
 )
-    primal_blocks = map(_cfg_block, ir.blocks)
     is_unique_pred, pred_is_unique_pred = _characterise_unique_predecessor_blocks(
         primal_blocks
     )
@@ -1446,7 +1537,7 @@ function forwards_pass_ir(
     # Push the entry id onto the block stack if needed. Create `LazyZeroRData` for each
     # argument, and put it in the `Ref` for use on the reverse-pass.
     sds = shared_data_stmts(info.shared_data_pairs)
-    if pred_is_unique_pred[ir.blocks[1].id]
+    if pred_is_unique_pred[primal_blocks[1].id]
         push_block_stack_insts = IDInstPair[]
     else
         push_block_stack_stmt = Expr(
@@ -1470,7 +1561,7 @@ function forwards_pass_ir(
     #   the `comms_id` field of `ADStmtInfo`,
     # 3. insert a statement which logs the ID of the current block (if necessary to know
     #   how to perform the reverse-pass),
-    # 4. return the BBlock.
+    # 4. return the CFG block.
     blocks = map(ad_stmts_blocks, fwds_comms_insts) do (block_id, ad_stmts), comms_insts
 
         # Extract the `fwds` fields from the stmts, and create the block for the fwds pass.
@@ -1533,9 +1624,64 @@ struct CFGBlock
 end
 
 CFGBlock(id::ID, insts::AbstractVector{IDInstPair}) = CFGBlock(id, collect(insts))
-_cfg_block(block::BBlock) = CFGBlock(block.id, collect_stmts(block))
 
-_lower_cfg_block(block::CFGBlock) = BBlock(block.id, block.insts)
+function _new_inst_vec(x::CC.InstructionStream)
+    insts = @static VERSION < v"1.11.0-rc4" ? x.inst : x.stmt
+    return map((v...,) -> NewInstruction(v...), insts, x.type, x.info, x.line, x.flag)
+end
+
+function _ssa_to_ids(d::SSAToIdDict, inst::NewInstruction)
+    return NewInstruction(inst; stmt=_ssa_to_ids(d, inst.stmt))
+end
+function _ssa_to_ids(d::SSAToIdDict, x::ReturnNode)
+    return isdefined(x, :val) ? ReturnNode(get(d, x.val, x.val)) : x
+end
+_ssa_to_ids(d::SSAToIdDict, x::Expr) = Expr(x.head, map(a -> get(d, a, a), x.args)...)
+_ssa_to_ids(d::SSAToIdDict, x::PiNode) = PiNode(get(d, x.val, x.val), get(d, x.typ, x.typ))
+_ssa_to_ids(::SSAToIdDict, x::QuoteNode) = x
+_ssa_to_ids(::SSAToIdDict, x) = x
+function _ssa_to_ids(d::SSAToIdDict, x::PhiNode)
+    new_values = Vector{Any}(undef, length(x.values))
+    for n in eachindex(x.values)
+        if isassigned(x.values, n)
+            new_values[n] = get(d, x.values[n], x.values[n])
+        end
+    end
+    return PhiNode(x.edges, new_values)
+end
+_ssa_to_ids(::SSAToIdDict, x::GotoNode) = x
+_ssa_to_ids(d::SSAToIdDict, x::GotoIfNot) = GotoIfNot(get(d, x.cond, x.cond), x.dest)
+
+function _ssas_to_ids(insts::InstVector)::Tuple{Vector{ID},InstVector}
+    ids = map(_ -> ID(), insts)
+    val_id_map = SSAToIdDict(zip(SSAValue.(eachindex(insts)), ids))
+    return ids, map(Base.Fix1(_ssa_to_ids, val_id_map), insts)
+end
+
+function _block_num_to_ids(d::BlockNumToIdDict, x::NewInstruction)
+    return NewInstruction(x; stmt=_block_num_to_ids(d, x.stmt))
+end
+function _block_num_to_ids(d::BlockNumToIdDict, x::PhiNode)
+    return IDPhiNode(ID[d[e] for e in x.edges], x.values)
+end
+_block_num_to_ids(d::BlockNumToIdDict, x::GotoNode) = IDGotoNode(d[x.label])
+_block_num_to_ids(d::BlockNumToIdDict, x::GotoIfNot) = IDGotoIfNot(x.cond, d[x.dest])
+_block_num_to_ids(::BlockNumToIdDict, x) = x
+
+function _block_nums_to_ids(insts::InstVector, cfg::CC.CFG)::Tuple{Vector{ID},InstVector}
+    ids = map(_ -> ID(), cfg.blocks)
+    block_num_id_map = BlockNumToIdDict(zip(eachindex(cfg.blocks), ids))
+    return ids, map(Base.Fix1(_block_num_to_ids, block_num_id_map), insts)
+end
+
+function _ircode_to_cfg_blocks(ir::IRCode)::Vector{CFGBlock}
+    stmts = _new_inst_vec(ir.stmts)
+    ssa_ids, stmts = _ssas_to_ids(stmts)
+    block_ids, stmts = _block_nums_to_ids(stmts, ir.cfg)
+    return map(zip(block_ids, ir.cfg.blocks)) do (block_id, bb)
+        CFGBlock(block_id, collect(zip(ssa_ids[bb.stmts], stmts[bb.stmts])))
+    end
+end
 
 _cfg_terminator(stmt) = stmt isa Union{Switch,IDGotoIfNot,IDGotoNode,ReturnNode}
 function _cfg_terminator(block::CFGBlock)
@@ -1663,6 +1809,10 @@ function _characterise_unique_predecessor_blocks(
     return is_unique_pred, pred_is_unique_pred
 end
 
+function characterise_unique_predecessor_blocks(blocks)
+    _characterise_unique_predecessor_blocks(blocks)
+end
+
 function _insert_before_terminator!(insts::Vector{IDInstPair}, inst::IDInstPair)
     if !isempty(insts) && _cfg_terminator(last(insts)[2].stmt)
         insert!(insts, length(insts), inst)
@@ -1774,46 +1924,13 @@ function _cfg_lines_to_blocks(insts::InstVector, cfg::CC.CFG)::InstVector
 end
 
 """
-    lower_cfg_blocks(ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true)::BBCode
+    lower_cfg_blocks_to_ir(ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true)
 
-Lower reverse-mode-local CFG blocks through `BBCode`. This remains as a transitional helper
-for tests and primal-side adapters.
-"""
-@static if VERSION >= v"1.12-"
-    function lower_cfg_blocks(
-        ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
-    )::BBCode
-        blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
-        return BBCode(
-            map(_lower_cfg_block, blocks),
-            arg_types,
-            ir.sptypes,
-            ir.debuginfo,
-            ir.meta,
-            ir.valid_worlds,
-        )
-    end
-else
-    function lower_cfg_blocks(
-        ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
-    )::BBCode
-        blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
-        return BBCode(
-            map(_lower_cfg_block, blocks), arg_types, ir.sptypes, ir.linetable, ir.meta
-        )
-    end
-end
-
-"""
-    lower_cfg_blocks_to_ir(
-        ir::Union{BBCode,IRCode}, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true
-    )::IRCode
-
-Lower reverse-mode-local CFG blocks directly to `IRCode`, without routing through `BBCode`.
+Lower reverse-mode-local CFG blocks directly to `IRCode`.
 """
 @static if VERSION > v"1.12-"
     function lower_cfg_blocks_to_ir(
-        ir::Union{BBCode,IRCode}, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+        ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
     )::IRCode
         blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
         blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))
@@ -1847,7 +1964,7 @@ Lower reverse-mode-local CFG blocks directly to `IRCode`, without routing throug
     end
 else
     function lower_cfg_blocks_to_ir(
-        ir::Union{BBCode,IRCode}, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+        ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
     )::IRCode
         blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
         blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))
@@ -1872,15 +1989,26 @@ else
 end
 
 """
-    pullback_ir(ir::BBCode, Tret, ad_stmts_blocks::ADStmts, info::ADInfo, Tshared_data)
+    pullback_ir(
+        ir::IRCode,
+        primal_blocks,
+        Tret,
+        ad_stmts_blocks::ADStmts,
+        info::ADInfo,
+        Tshared_data,
+    )
 
 Produce the IR associated to the `OpaqueClosure` which runs most of the pullback.
 """
 function pullback_ir(
-    ir::BBCode, Tret, ad_stmts_blocks::ADStmts, pb_comms_insts, info::ADInfo, Tshared_data
+    ir::IRCode,
+    primal_blocks,
+    Tret,
+    ad_stmts_blocks::ADStmts,
+    pb_comms_insts,
+    info::ADInfo,
+    Tshared_data,
 )
-    primal_blocks = map(_cfg_block, ir.blocks)
-
     # Compute the blocks which return in the primal.
     primal_exit_blocks_inds = findall(
         is_reachable_return_node ∘ _cfg_terminator, primal_blocks

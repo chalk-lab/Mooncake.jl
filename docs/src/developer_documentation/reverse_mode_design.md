@@ -72,7 +72,7 @@ Do line by line transformation of the statements and then possibly refresh the C
 Examples of how line-by-line transformations can be done, are defined in [`Mooncake.make_ad_stmts!`](@ref).
 The `IRCode` nodes are not explicitly documented in <https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form> or <https://docs.julialang.org/en/v1/devdocs/ssair/#Main-SSA-data-structure>. Might need completion of official docs, but Mooncake docs in the meantime.
 
-For historical background on the old `BBCode` path and examples of IR transformation strategies, see [IR Representations and Code Transformations](@ref).
+Reverse mode now assembles through the inline CFG builder in [`reverse_mode.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl) and lowers directly back to compiler IR.
 
 Inlining pass can prevent us from using high-level rules by inlining the function (e.g. unrolling a loop).
 The contexts in [`interpreter/contexts.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/src/interpreter/contexts.jl) are `MinimalCtx` (necessary for AD to work) and `DefaultCtx` (ensure that we hit all of the rules).
