@@ -1699,24 +1699,25 @@ function _cfg_phi_nodes(block::CFGBlock)
 end
 
 function _compute_cfg_successors(blocks::Vector{CFGBlock})::Dict{ID,Vector{ID}}
-    succs = map(enumerate(blocks)) do (n, block)
+    succs = Dict{ID,Vector{ID}}()
+    for (n, block) in enumerate(blocks)
         is_final_block = n == length(blocks)
         t = _cfg_terminator(block)
         if t === nothing
-            return is_final_block ? ID[] : ID[blocks[n + 1].id]
+            succs[block.id] = is_final_block ? ID[] : ID[blocks[n + 1].id]
         elseif t isa IDGotoNode
-            return [t.label]
+            succs[block.id] = ID[t.label]
         elseif t isa IDGotoIfNot
-            return is_final_block ? ID[t.dest] : ID[t.dest, blocks[n + 1].id]
+            succs[block.id] = is_final_block ? ID[t.dest] : ID[t.dest, blocks[n + 1].id]
         elseif t isa ReturnNode
-            return ID[]
+            succs[block.id] = ID[]
         elseif t isa Switch
-            return vcat(t.dests, t.fallthrough_dest)
+            succs[block.id] = vcat(t.dests, t.fallthrough_dest)
         else
             error("Unhandled terminator $t")
         end
     end
-    return Dict{ID,Vector{ID}}((block.id, succ) for (block, succ) in zip(blocks, succs))
+    return succs
 end
 
 function _compute_cfg_predecessors(blocks::Vector{CFGBlock})::Dict{ID,Vector{ID}}
