@@ -1523,6 +1523,52 @@ __lazy_zero_rdata_primal(T, x) = lazy_zero_rdata(T, primal(x))
     return :(r[] = tuple_map(__lazy_zero_rdata_primal, $(fieldtypes(T)), args))
 end
 
+#
+# Pullback CFG builder
+#
+
+"""
+    CFGBlock(id::ID, insts::Vector{IDInstPair})
+
+Reverse-mode-local basic block representation used while assembling the pullback CFG before
+lowering through `BBCode`.
+"""
+struct CFGBlock
+    id::ID
+    insts::Vector{IDInstPair}
+end
+
+CFGBlock(id::ID, insts::AbstractVector{IDInstPair}) = CFGBlock(id, collect(insts))
+
+_lower_cfg_block(block::CFGBlock) = BBlock(block.id, block.insts)
+
+"""
+    lower_cfg_blocks(ir::BBCode, arg_types, blocks::Vector{CFGBlock})::BBCode
+
+Lower reverse-mode-local CFG blocks through `BBCode`, then apply the usual compiler-facing
+cleanup steps.
+"""
+@static if VERSION >= v"1.12-"
+    function lower_cfg_blocks(ir::BBCode, arg_types, blocks::Vector{CFGBlock})::BBCode
+        pb_ir = BBCode(
+            map(_lower_cfg_block, blocks),
+            arg_types,
+            ir.sptypes,
+            ir.debuginfo,
+            ir.meta,
+            ir.valid_worlds,
+        )
+        return remove_unreachable_blocks!(sort_blocks!(pb_ir))
+    end
+else
+    function lower_cfg_blocks(ir::BBCode, arg_types, blocks::Vector{CFGBlock})::BBCode
+        pb_ir = BBCode(
+            map(_lower_cfg_block, blocks), arg_types, ir.sptypes, ir.linetable, ir.meta
+        )
+        return remove_unreachable_blocks!(sort_blocks!(pb_ir))
+    end
+end
+
 """
     pullback_ir(ir::BBCode, Tret, ad_stmts_blocks::ADStmts, info::ADInfo, Tshared_data)
 
@@ -1542,14 +1588,8 @@ function pullback_ir(
     # terminates without throwing, meaning that if AD hits this function, it definitely
     # won't succeed on the forwards-pass. As such, the reverse-pass can just be a no-op.
     if isempty(primal_exit_blocks_inds)
-        blocks = [BBlock(ID(), [(ID(), new_inst(ReturnNode(nothing)))])]
-        @static if VERSION >= v"1.12-"
-            return BBCode(
-                blocks, Any[Any], ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds
-            )
-        else
-            return BBCode(blocks, Any[Any], ir.sptypes, ir.linetable, ir.meta)
-        end
+        blocks = [CFGBlock(ID(), [(ID(), new_inst(ReturnNode(nothing)))])]
+        return lower_cfg_blocks(ir, Any[Any], blocks)
     end
 
     #
@@ -1569,7 +1609,7 @@ function pullback_ir(
     rev_data_ref_stmts = reverse_data_ref_stmts(info)
     exit_blocks_ids = map(n -> ir.blocks[n].id, primal_exit_blocks_inds)
     switch_stmts = make_switch_stmts(exit_blocks_ids, length(exit_blocks_ids) == 1, info)
-    entry_block = BBlock(ID(), vcat(data_stmts, rev_data_ref_stmts, switch_stmts))
+    entry_block = CFGBlock(ID(), vcat(data_stmts, rev_data_ref_stmts, switch_stmts))
 
     # For each basic block in the primal:
     # 1. if the block is reachable on the reverse-pass, the bulk of its statements are the
@@ -1593,7 +1633,7 @@ function pullback_ir(
 
         # Short-circuit if we know that this block cannot be reached on the reverse-pass.
         if is_unreachable_return_node(terminator(blk))
-            return BBlock(blk_id, [(ID(), new_inst(nothing))])
+            return CFGBlock(blk_id, [(ID(), new_inst(nothing))])
         end
 
         # Extract reverse-stmts from ad_stmts.
@@ -1606,7 +1646,7 @@ function pullback_ir(
 
         # Combine all blocks and return. See `create_comms_insts!` for more info regarding
         # `comms_insts`.
-        rvs_block = BBlock(blk_id, vcat(comms_insts, rvs_ad_stmts, additional_stmts))
+        rvs_block = CFGBlock(blk_id, vcat(comms_insts, rvs_ad_stmts, additional_stmts))
         return vcat(rvs_block, new_blocks)
     end
     main_blocks = reduce(vcat, main_blocks)
@@ -1661,7 +1701,7 @@ function pullback_ir(
 
     # Construct return node and assemble final basic block.
     ret = new_inst(ReturnNode(assert_id))
-    exit_block = BBlock(
+    exit_block = CFGBlock(
         info.entry_id,
         vcat(
             (lazy_zero_rdata_tuple_id, lazy_zero_rdata_tuple),
@@ -1674,13 +1714,7 @@ function pullback_ir(
     # which are unreachable, in the sense that they have no predecessors (except the entry
     # block). This ought not to be necessary, but _appears_ to be necessary in order to
     # avoid annoying the Julia compiler.
-    blks = vcat(entry_block, main_blocks, exit_block)
-    @static if VERSION >= v"1.12-"
-        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds)
-    else
-        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.linetable, ir.meta)
-    end
-    return remove_unreachable_blocks!(sort_blocks!(pb_ir))
+    return lower_cfg_blocks(ir, arg_types, vcat([entry_block], main_blocks, [exit_block]))
 end
 
 """
@@ -1699,7 +1733,7 @@ function conclude_rvs_block(
 
     # If there are no PhiNodes in this block, switch directly to the predecessor.
     if length(phi_ids) == 0
-        return make_switch_stmts(pred_ids, pred_is_unique_pred, info), BBlock[]
+        return make_switch_stmts(pred_ids, pred_is_unique_pred, info), CFGBlock[]
     end
 
     # Create statements which extract + zero the rdata refs associated to them.
@@ -1798,7 +1832,7 @@ function rvs_phi_block(
     end
     inc_stmts = reduce(vcat, filter(x -> !(x === nothing), tmp); init=IDInstPair[])
     goto_stmt = (ID(), new_inst(IDGotoNode(pred_id)))
-    return BBlock(ID(), vcat(inc_stmts, goto_stmt))
+    return CFGBlock(ID(), vcat(inc_stmts, goto_stmt))
 end
 
 """

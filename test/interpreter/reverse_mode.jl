@@ -137,6 +137,23 @@ rule_type_nonreturning(e::Exception) = throw(e)
         # pass, then this constructor ought to error.
         @test_throws ArgumentError ad_stmt_info(ID(), ID(), nothing, nothing)
     end
+    @testset "ReverseModeCFG.lower_cfg_blocks" begin
+        ir = Mooncake.ircode(Any[ReturnNode(nothing)], Any[Any])
+        entry_id = ID()
+        mid_id = ID()
+        dead_id = ID()
+        blocks = Mooncake.CFGBlock[
+            Mooncake.CFGBlock(entry_id, [(ID(), new_inst(IDGotoNode(mid_id)))]),
+            Mooncake.CFGBlock(dead_id, [(ID(), new_inst(ReturnNode(2)))]),
+            Mooncake.CFGBlock(mid_id, [(ID(), new_inst(ReturnNode(1)))]),
+        ]
+
+        lowered = Mooncake.lower_cfg_blocks(BBCode(ir), Any[Any], blocks)
+
+        @test map(blk -> blk.id, lowered.blocks) == [entry_id, mid_id]
+        @test Mooncake.terminator(lowered.blocks[1]) == IDGotoNode(mid_id)
+        @test Mooncake.terminator(lowered.blocks[2]) == ReturnNode(1)
+    end
     @testset "inc_args" begin
         @test Mooncake.inc_args(Expr(:call, sin, Argument(4))) ==
             Expr(:call, sin, Argument(5))
