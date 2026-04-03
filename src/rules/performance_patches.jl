@@ -19,7 +19,8 @@
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
     dx = tangent(x)
-    dy = dx isa NTangent ? NTangent(map(sum, dx.lanes)) : sum(dx)
+    dx === NoTangent() && return Dual(sum(primal(x)), NoTangent())
+    dy = NTangent(map(sum, dx.lanes))
     return Dual(sum(primal(x)), dy)
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
@@ -38,8 +39,8 @@ function frule!!(
 ) where {P<:IEEEFloat}
     px = primal(x)
     dx = tangent(x)
-    dy =
-        dx isa NTangent ? NTangent(map(dxi -> 2 * dot(px, dxi), dx.lanes)) : 2 * dot(px, dx)
+    dx === NoTangent() && return Dual(sum(abs2, px), NoTangent())
+    dy = NTangent(map(dxi -> 2 * dot(px, dxi), dx.lanes))
     return Dual(sum(abs2, px), dy)
 end
 function rrule!!(
