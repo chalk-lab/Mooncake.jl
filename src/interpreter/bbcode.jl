@@ -5,8 +5,6 @@ See the docstring for the `BBCode` `struct` for info on this file.
 """
 module BasicBlockCode
 
-using Graphs
-
 using Core.Compiler:
     ReturnNode,
     PhiNode,
@@ -806,37 +804,31 @@ function _remove_double_edges(ir::BBCode)
 end
 
 """
-    _build_graph_of_cfg(blks::Vector{BBlock})::Tuple{SimpleDiGraph, Dict{ID, Int}}
-
-Builds a `SimpleDiGraph`, `g`, representing of the CFG associated to `blks`, where `blks`
-comprises the collection of basic blocks associated to a `BBCode`.
-This is a type from Graphs.jl, so constructing `g` makes it straightforward to analyse the
-control flow structure of `ir` using algorithms from Graphs.jl.
-
-Returns a 2-tuple, whose first element is `g`, and whose second element is a map from
-the `ID` associated to each basic block in `ir`, to the `Int` corresponding to its node
-index in `g`.
-"""
-function _build_graph_of_cfg(blks::Vector{BBlock})::Tuple{SimpleDiGraph,Dict{ID,Int}}
-    node_ints = collect(eachindex(blks))
-    id_to_int = Dict(zip(map(blk -> blk.id, blks), node_ints))
-    successors = _compute_all_successors(blks)
-    g = SimpleDiGraph(length(blks))
-    for blk in blks, successor in successors[blk.id]
-        add_edge!(g, id_to_int[blk.id], id_to_int[successor])
-    end
-    return g, id_to_int
-end
-
-"""
     _distance_to_entry(blks::Vector{BBlock})::Vector{Int}
 
 For each basic block in `blks`, compute the distance from it to the entry point (the first
 block. The distance is `typemax(Int)` if no path from the entry point to a given node.
 """
 function _distance_to_entry(blks::Vector{BBlock})::Vector{Int}
-    g, id_to_int = _build_graph_of_cfg(blks)
-    return dijkstra_shortest_paths(g, id_to_int[blks[1].id]).dists
+    id_to_int = Dict(zip(map(blk -> blk.id, blks), eachindex(blks)))
+    successors = _compute_all_successors(blks)
+    distances = fill(typemax(Int), length(blks))
+    distances[1] = 0
+    queue = [blks[1].id]
+    head = 1
+    while head <= length(queue)
+        blk_id = queue[head]
+        head += 1
+        dist = distances[id_to_int[blk_id]]
+        for successor in successors[blk_id]
+            successor_idx = id_to_int[successor]
+            if distances[successor_idx] == typemax(Int)
+                distances[successor_idx] = dist + 1
+                push!(queue, successor)
+            end
+        end
+    end
+    return distances
 end
 
 """

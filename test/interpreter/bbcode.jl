@@ -230,6 +230,27 @@ end
         @test Mooncake.BasicBlockCode._is_reachable(BBCode(ir).blocks) ==
             [true, false, false]
     end
+    @testset "_distance_to_entry and sort_blocks!" begin
+        blk_id_1 = ID()
+        blk_id_2 = ID()
+        blk_id_3 = ID()
+        blk_id_4 = ID()
+        blks = BBlock[
+            BBlock(blk_id_1, [ID()], [new_inst(IDGotoNode(blk_id_4))]),
+            BBlock(blk_id_3, [ID()], [new_inst(ReturnNode(3))]),
+            BBlock(blk_id_2, [ID()], [new_inst(ReturnNode(2))]),
+            BBlock(blk_id_4, [ID()], [new_inst(IDGotoNode(blk_id_2))]),
+        ]
+        ir = Mooncake.ircode(Any[ReturnNode(nothing)], Any[Any])
+        bb_ir = BBCode(ir, blks)
+
+        @test Mooncake.BasicBlockCode._distance_to_entry(bb_ir.blocks) ==
+            [0, typemax(Int), 2, 1]
+
+        sorted_bb_ir = Mooncake.sort_blocks!(bb_ir)
+        @test map(blk -> blk.id, sorted_bb_ir.blocks) ==
+            [blk_id_1, blk_id_4, blk_id_2, blk_id_3]
+    end
     @testset "remove_unreachable_blocks!" begin
 
         # This test case has two important features:
