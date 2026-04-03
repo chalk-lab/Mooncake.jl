@@ -1623,13 +1623,6 @@ struct CFGBlock
     insts::Vector{IDInstPair}
 end
 
-CFGBlock(id::ID, insts::AbstractVector{IDInstPair}) = CFGBlock(id, collect(insts))
-
-function _new_inst_vec(x::CC.InstructionStream)
-    insts = @static VERSION < v"1.11.0-rc4" ? x.inst : x.stmt
-    return map((v...,) -> NewInstruction(v...), insts, x.type, x.info, x.line, x.flag)
-end
-
 function _ssa_to_ids(d::SSAToIdDict, inst::NewInstruction)
     return NewInstruction(inst; stmt=_ssa_to_ids(d, inst.stmt))
 end
@@ -1675,7 +1668,15 @@ function _block_nums_to_ids(insts::InstVector, cfg::CC.CFG)::Tuple{Vector{ID},In
 end
 
 function _ircode_to_cfg_blocks(ir::IRCode)::Vector{CFGBlock}
-    stmts = _new_inst_vec(ir.stmts)
+    raw_stmts = @static VERSION < v"1.11.0-rc4" ? ir.stmts.inst : ir.stmts.stmt
+    stmts = map(
+        (stmt, type, info, line, flag) -> NewInstruction(stmt, type, info, line, flag),
+        raw_stmts,
+        ir.stmts.type,
+        ir.stmts.info,
+        ir.stmts.line,
+        ir.stmts.flag,
+    )
     ssa_ids, stmts = _ssas_to_ids(stmts)
     block_ids, stmts = _block_nums_to_ids(stmts, ir.cfg)
     return map(zip(block_ids, ir.cfg.blocks)) do (block_id, bb)
@@ -1759,11 +1760,8 @@ function _sort_cfg_blocks!(blocks::Vector{CFGBlock})::Vector{CFGBlock}
     return blocks
 end
 
-_cfg_is_reachable(blocks::Vector{CFGBlock})::Vector{Bool} =
-    _cfg_distance_to_entry(blocks) .< typemax(Int)
-
 function _remove_unreachable_cfg_blocks!(blocks::Vector{CFGBlock})::Vector{CFGBlock}
-    is_reachable = _cfg_is_reachable(blocks)
+    is_reachable = _cfg_distance_to_entry(blocks) .< typemax(Int)
     remaining_blocks = blocks[is_reachable]
     removed_block_ids = map(idx -> blocks[idx].id, findall(!, is_reachable))
     for block in remaining_blocks, (_, inst) in block.insts
@@ -1807,10 +1805,6 @@ function _characterise_unique_predecessor_blocks(
     entry_id = block_ids[1]
     pred_is_unique_pred[entry_id] = isempty(preds[entry_id])
     return is_unique_pred, pred_is_unique_pred
-end
-
-function characterise_unique_predecessor_blocks(blocks)
-    _characterise_unique_predecessor_blocks(blocks)
 end
 
 function _insert_before_terminator!(insts::Vector{IDInstPair}, inst::IDInstPair)
