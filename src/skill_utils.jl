@@ -13,7 +13,9 @@ using ..Mooncake:
     BasicBlockCode,
     ForwardMode,
     ReverseMode,
+    MooncakeInterpreter,
     get_interpreter,
+    is_primitive,
     lookup_ir,
     is_vararg_and_sparam_names,
     normalise!,
@@ -185,6 +187,36 @@ function primal_stages(interp, sig)
     return raw_ir, normalized_ir, bbcode
 end
 
+function primitive_dispatch_note(mode::Symbol, sig::Type)::String
+    rule_builder = mode == :forward ? "build_primitive_frule" : "build_primitive_rrule"
+    return (
+        "`$sig` dispatches via Mooncake's primitive $(mode)-mode rule path, so " *
+        "`$rule_builder` would be used and no AD IR stages were generated."
+    )
+end
+
+function primitive_inspection(
+    interp::MooncakeInterpreter{C},
+    mode::Symbol,
+    interp_mode::Type{<:Union{ForwardMode,ReverseMode}},
+    sig::Type,
+    world::UInt,
+) where {C}
+    if is_primitive(C, interp_mode, sig, interp.world)
+        return IRInspection(
+            mode,
+            sig,
+            world,
+            Dict{Symbol,IRStage}(),
+            Symbol[],
+            Pair{Symbol,Symbol}[],
+            Dict{Pair{Symbol,Symbol},String}(),
+            [primitive_dispatch_note(mode, sig)],
+        )
+    end
+    return nothing
+end
+
 """
     inspect_ir(f, args...; kwargs...) -> IRInspection
 
@@ -204,6 +236,10 @@ containing all stages and diffs.
   (only has an effect when `optimize=true`)
 - `compute_diffs::Bool = true`: whether to compute diffs between stages
 - `debug_mode::Bool = false`: enable Mooncake debug mode
+
+If the signature is primitive in the active mode, Mooncake would dispatch directly to a
+hand-written rule. In that case `inspect_ir` reports the primitive path in `notes` and
+does not force AD IR generation.
 """
 function inspect_ir(
     f,
@@ -220,6 +256,8 @@ function inspect_ir(
     sig = Tuple{typeof(f),map(typeof, args)...}
     interp_mode = mode == :forward ? ForwardMode : ReverseMode
     interp = get_interpreter(interp_mode)
+    primitive_ins = primitive_inspection(interp, mode, interp_mode, sig, world)
+    primitive_ins === nothing || return primitive_ins
 
     stages = Dict{Symbol,IRStage}()
     notes = String[]

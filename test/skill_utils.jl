@@ -37,12 +37,14 @@ function bar_llvmcall(x)
         "entry",
     ), Int64, Tuple{Int64}, x)
 end
+zero_derivative_llvmcall(x) = bar_llvmcall(x)
+Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmcall),Int}
 
 @testset "ir_inspect" begin
     @testset "inspect_ir reverse mode" begin
-        ins = inspect_ir(sin, 1.0)
+        ins = inspect_ir(test_fn, 1.0)
         @test ins.mode == :reverse
-        @test ins.sig == Tuple{typeof(sin),Float64}
+        @test ins.sig == Tuple{typeof(test_fn),Float64}
         @test ins.world isa UInt
         @test isempty(ins.notes)
 
@@ -69,7 +71,7 @@ end
     end
 
     @testset "inspect_ir forward mode" begin
-        ins = inspect_fwd(sin, 1.0)
+        ins = inspect_fwd(test_fn, 1.0)
         @test ins.mode == :forward
 
         expected_stages = [:raw, :normalized, :bbcode, :dual_ir, :optimized]
@@ -81,8 +83,8 @@ end
     end
 
     @testset "inspect_ir optimize=false" begin
-        ins = inspect_ir(sin, 1.0; optimize=false)
-        sig = Tuple{typeof(sin),Float64}
+        ins = inspect_ir(test_fn, 1.0; optimize=false)
+        sig = Tuple{typeof(test_fn),Float64}
         interp_rvs = get_interpreter(ReverseMode)
         dri = Mooncake.generate_ir(interp_rvs, sig; do_inline=false, do_optimize=false)
         @test ins.mode == :reverse
@@ -98,7 +100,7 @@ end
         @test render_ir(ins.stages[:fwd_ir].ir) == render_ir(dri.fwd_ir)
         @test render_ir(ins.stages[:rvs_ir].ir) == render_ir(dri.rvs_ir)
 
-        ins_fwd = inspect_fwd(sin, 1.0; optimize=false)
+        ins_fwd = inspect_fwd(test_fn, 1.0; optimize=false)
         interp_fwd = get_interpreter(ForwardMode)
         dual_ir, _, _ = Mooncake.generate_dual_ir(
             interp_fwd, sig; do_inline=false, do_optimize=false
@@ -112,6 +114,30 @@ end
         @test render_ir(ins_fwd.stages[:dual_ir].ir) == render_ir(dual_ir)
     end
 
+    @testset "primitive signatures report dispatch path" begin
+        ins = inspect_ir(sin, 1.0)
+        @test isempty(ins.stages)
+        @test isempty(ins.stage_order)
+        @test isempty(ins.stage_graph)
+        @test isempty(ins.diffs)
+        @test length(ins.notes) == 1
+        @test occursin("primitive reverse-mode rule path", only(ins.notes))
+        @test occursin("build_primitive_rrule", only(ins.notes))
+
+        ins_fwd = inspect_fwd(sin, 1.0)
+        @test isempty(ins_fwd.stages)
+        @test isempty(ins_fwd.stage_order)
+        @test isempty(ins_fwd.stage_graph)
+        @test isempty(ins_fwd.diffs)
+        @test length(ins_fwd.notes) == 1
+        @test occursin("primitive forward-mode rule path", only(ins_fwd.notes))
+        @test occursin("build_primitive_frule", only(ins_fwd.notes))
+
+        llvm_ins = inspect_ir(zero_derivative_llvmcall, 1)
+        @test isempty(llvm_ins.stages)
+        @test occursin("build_primitive_rrule", only(llvm_ins.notes))
+    end
+
     @testset "inspect_ir multi-arg function" begin
         ins = inspect_ir(multi_arg_fn, 1.0, 2.0)
         @test ins.sig == Tuple{typeof(multi_arg_fn),Float64,Float64}
@@ -119,7 +145,7 @@ end
     end
 
     @testset "show_ir" begin
-        ins = inspect_fwd(sin, 1.0)
+        ins = inspect_fwd(test_fn, 1.0)
         io = IOBuffer()
         show_ir(ins; io)
         output = String(take!(io))
@@ -131,7 +157,7 @@ end
     end
 
     @testset "show_stage" begin
-        ins = inspect_ir(sin, 1.0)
+        ins = inspect_ir(test_fn, 1.0)
         io = IOBuffer()
         show_stage(ins, :raw; io)
         output = String(take!(io))
@@ -140,7 +166,7 @@ end
     end
 
     @testset "diff_ir and show_diff" begin
-        ins = inspect_fwd(sin, 1.0)
+        ins = inspect_fwd(test_fn, 1.0)
 
         d = diff_ir(ins; from=:raw, to=:normalized)
         @test d isa String
@@ -160,7 +186,7 @@ end
     end
 
     @testset "show_all_diffs" begin
-        ins = inspect_fwd(sin, 1.0)
+        ins = inspect_fwd(test_fn, 1.0)
         io = IOBuffer()
         show_all_diffs(ins; io)
         output = String(take!(io))
@@ -171,7 +197,7 @@ end
     end
 
     @testset "world_age_info" begin
-        ins = inspect_ir(sin, 1.0)
+        ins = inspect_ir(test_fn, 1.0)
         report = world_age_info(ins)
         @test report isa WorldAgeReport
         @test report.inspection_world isa UInt
@@ -180,7 +206,7 @@ end
     end
 
     @testset "show_world_info" begin
-        ins = inspect_ir(sin, 1.0)
+        ins = inspect_ir(test_fn, 1.0)
         io = IOBuffer()
         show_world_info(ins; io)
         output = String(take!(io))
@@ -189,7 +215,7 @@ end
     end
 
     @testset "write_ir" begin
-        ins = inspect_fwd(sin, 1.0)
+        ins = inspect_fwd(test_fn, 1.0)
         tmpdir = mktempdir()
         write_ir(ins, tmpdir)
         files = readdir(tmpdir)
@@ -216,20 +242,20 @@ end
     end
 
     @testset "render_ir" begin
-        ins = inspect_ir(sin, 1.0)
+        ins = inspect_ir(test_fn, 1.0)
         @test !isempty(render_ir(ins.stages[:raw].ir))
         @test !isempty(render_ir(ins.stages[:bbcode].ir))
         @test occursin("Block", render_ir(ins.stages[:bbcode].ir))
     end
 
     @testset "convenience functions" begin
-        ins_rvs = inspect_rvs(sin, 1.0)
+        ins_rvs = inspect_rvs(test_fn, 1.0)
         @test ins_rvs.mode == :reverse
 
-        ins_fwd = inspect_fwd(sin, 1.0)
+        ins_fwd = inspect_fwd(test_fn, 1.0)
         @test ins_fwd.mode == :forward
 
-        ins = quick_inspect(sin, 1.0; mode=:forward, stages=:raw)
+        ins = quick_inspect(test_fn, 1.0; mode=:forward, stages=:raw)
         @test ins isa IRInspection
         @test ins.mode == :forward
     end
@@ -273,12 +299,12 @@ end
     end
 
     @testset "extract_meta" begin
-        ins = inspect_ir(sin, 1.0)
+        ins = inspect_ir(test_fn, 1.0)
 
         raw_meta = extract_meta(ins.stages[:raw].ir)
         @test raw_meta.block_count > 0
         @test raw_meta.inst_count > 0
-        @test raw_meta.edge_count > 0
+        @test raw_meta.edge_count >= 0
 
         bb_meta = extract_meta(ins.stages[:bbcode].ir)
         @test bb_meta.block_count > 0
