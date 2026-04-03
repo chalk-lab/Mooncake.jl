@@ -153,6 +153,23 @@ rule_type_nonreturning(e::Exception) = throw(e)
         @test map(blk -> blk.id, lowered.blocks) == [entry_id, mid_id]
         @test Mooncake.terminator(lowered.blocks[1]) == IDGotoNode(mid_id)
         @test Mooncake.terminator(lowered.blocks[2]) == ReturnNode(1)
+
+        exit_id = ID()
+        unsorted_blocks = Mooncake.CFGBlock[
+            Mooncake.CFGBlock(entry_id, [(ID(), new_inst(IDGotoNode(exit_id)))]),
+            Mooncake.CFGBlock(mid_id, [(ID(), new_inst(ReturnNode(1)))]),
+            Mooncake.CFGBlock(exit_id, [(ID(), new_inst(IDGotoNode(mid_id)))]),
+        ]
+        unsorted = Mooncake.lower_cfg_blocks(
+            BBCode(ir), Any[Any], unsorted_blocks; sort_cfg=false
+        )
+        @test map(blk -> blk.id, unsorted.blocks) == [entry_id, mid_id, exit_id]
+
+        insts = [(ID(), new_inst(IDGotoNode(mid_id)))]
+        inserted = (ID(), new_inst(ReturnNode(3)))
+        Mooncake._insert_before_terminator!(insts, inserted)
+        @test insts[1] == inserted
+        @test insts[2][2].stmt == IDGotoNode(mid_id)
     end
     @testset "inc_args" begin
         @test Mooncake.inc_args(Expr(:call, sin, Argument(4))) ==

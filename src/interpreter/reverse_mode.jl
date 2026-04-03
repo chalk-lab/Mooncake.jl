@@ -1455,7 +1455,7 @@ function forwards_pass_ir(
     )
     lazy_zero_rdata_insts = [(ID(), new_inst(lazy_zero_rdata_stmt))]
     entry_stmts = vcat(sds, lazy_zero_rdata_insts, push_block_stack_insts)
-    entry_block = BBlock(info.entry_id, entry_stmts)
+    entry_block = CFGBlock(info.entry_id, entry_stmts)
 
     # Construct augmented version of each basic block from the primal. For each block:
     # 1. pull the translated basic block statements from ad_stmts_blocks,
@@ -1467,11 +1467,11 @@ function forwards_pass_ir(
     blocks = map(ad_stmts_blocks, fwds_comms_insts) do (block_id, ad_stmts), comms_insts
 
         # Extract the `fwds` fields from the stmts, and create the block for the fwds pass.
-        blk = BBlock(block_id, reduce(vcat, map(x -> x.fwds, ad_stmts)))
+        insts = reduce(vcat, map(x -> x.fwds, ad_stmts))
 
         # Insert communcation instructions. See `create_comms_insts!` for an explanation.
         for stack_inst in comms_insts
-            insert_before_terminator!(blk, stack_inst[1], stack_inst[2])
+            _insert_before_terminator!(insts, stack_inst)
         end
 
         # Log the ID of the current basic block. This is needed to know which basic block to
@@ -1480,30 +1480,15 @@ function forwards_pass_ir(
         # passed through this block as opposed to any other).
         if !is_unique_pred[block_id]
             ins_stmt = Expr(:call, __push_blk_stack!, info.block_stack_id, block_id.id)
-            insert_before_terminator!(blk, ID(), new_inst(ins_stmt))
+            _insert_before_terminator!(insts, (ID(), new_inst(ins_stmt)))
         end
 
-        return blk
+        return CFGBlock(block_id, insts)
     end
 
     # Create and return the `BBCode` for the forwards-pass.
     arg_types = vcat(Tshared_data, map(fcodual_type ∘ CC.widenconst, ir.argtypes))
-    new_ir = BBCode(ir, vcat(entry_block, blocks))
-    @static if VERSION > v"1.12-"
-        new_ir = BBCode(
-            new_ir.blocks,
-            arg_types,
-            new_ir.sptypes,
-            new_ir.debuginfo,
-            new_ir.meta,
-            new_ir.valid_worlds,
-        )
-    else
-        new_ir = BBCode(
-            new_ir.blocks, arg_types, new_ir.sptypes, new_ir.linetable, new_ir.meta
-        )
-    end
-    return remove_unreachable_blocks!(new_ir)
+    return lower_cfg_blocks(ir, arg_types, vcat([entry_block], blocks); sort_cfg=false)
 end
 
 """
@@ -1542,14 +1527,27 @@ CFGBlock(id::ID, insts::AbstractVector{IDInstPair}) = CFGBlock(id, collect(insts
 
 _lower_cfg_block(block::CFGBlock) = BBlock(block.id, block.insts)
 
+_cfg_terminator(stmt) = stmt isa Union{Switch,IDGotoIfNot,IDGotoNode,ReturnNode}
+
+function _insert_before_terminator!(insts::Vector{IDInstPair}, inst::IDInstPair)
+    if !isempty(insts) && _cfg_terminator(last(insts)[2].stmt)
+        insert!(insts, length(insts), inst)
+    else
+        push!(insts, inst)
+    end
+    return insts
+end
+
 """
-    lower_cfg_blocks(ir::BBCode, arg_types, blocks::Vector{CFGBlock})::BBCode
+    lower_cfg_blocks(ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true)::BBCode
 
 Lower reverse-mode-local CFG blocks through `BBCode`, then apply the usual compiler-facing
 cleanup steps.
 """
 @static if VERSION >= v"1.12-"
-    function lower_cfg_blocks(ir::BBCode, arg_types, blocks::Vector{CFGBlock})::BBCode
+    function lower_cfg_blocks(
+        ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+    )::BBCode
         pb_ir = BBCode(
             map(_lower_cfg_block, blocks),
             arg_types,
@@ -1558,14 +1556,18 @@ cleanup steps.
             ir.meta,
             ir.valid_worlds,
         )
-        return remove_unreachable_blocks!(sort_blocks!(pb_ir))
+        sort_cfg && sort_blocks!(pb_ir)
+        return remove_unreachable_blocks!(pb_ir)
     end
 else
-    function lower_cfg_blocks(ir::BBCode, arg_types, blocks::Vector{CFGBlock})::BBCode
+    function lower_cfg_blocks(
+        ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+    )::BBCode
         pb_ir = BBCode(
             map(_lower_cfg_block, blocks), arg_types, ir.sptypes, ir.linetable, ir.meta
         )
-        return remove_unreachable_blocks!(sort_blocks!(pb_ir))
+        sort_cfg && sort_blocks!(pb_ir)
+        return remove_unreachable_blocks!(pb_ir)
     end
 end
 
