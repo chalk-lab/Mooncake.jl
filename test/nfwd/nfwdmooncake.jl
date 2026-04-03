@@ -58,31 +58,15 @@ function steady_state_allocations_rrule(rule, fx::Tuple)
         rule(fx...)
     end
     GC.gc()
-    return @allocated rule(fx...)
+    return Mooncake.TestUtils.count_allocs(Base.splat(rule), fx)
 end
-
-# Fixed-arity @noinline wrappers for frule!! / rrule!! allocation measurement.
-# Vararg wrappers cannot be used here: the untyped call chain injects tuple construction
-# that inflates the measured count regardless of warmup.
-@noinline _alloc_frule2(f::F, x1::X, x2::X) where {F,X} = @allocated Mooncake.frule!!(
-    f, x1, x2
-)
-@noinline _alloc_frule3(f::F, x1::X, x2::X, x3::X) where {F,X} = @allocated Mooncake.frule!!(
-    f, x1, x2, x3
-)
-@noinline _alloc_rrule2(f::F, x1::X, x2::X) where {F,X} = @allocated Mooncake.rrule!!(
-    f, x1, x2
-)
-@noinline _alloc_rrule3(f::F, x1::X, x2::X, x3::X) where {F,X} = @allocated Mooncake.rrule!!(
-    f, x1, x2, x3
-)
 
 function steady_state_allocations_frule2(f, x1, x2)
     for _ in 1:5
         Mooncake.frule!!(f, x1, x2)
     end
     GC.gc()
-    return _alloc_frule2(f, x1, x2)
+    return Mooncake.TestUtils.count_allocs(Mooncake.frule!!, f, x1, x2)
 end
 
 function steady_state_allocations_frule3(f, x1, x2, x3)
@@ -90,7 +74,7 @@ function steady_state_allocations_frule3(f, x1, x2, x3)
         Mooncake.frule!!(f, x1, x2, x3)
     end
     GC.gc()
-    return _alloc_frule3(f, x1, x2, x3)
+    return Mooncake.TestUtils.count_allocs(Mooncake.frule!!, f, x1, x2, x3)
 end
 
 function steady_state_allocations_primitive_rrule2(f, x1, x2)
@@ -98,7 +82,7 @@ function steady_state_allocations_primitive_rrule2(f, x1, x2)
         Mooncake.rrule!!(f, x1, x2)
     end
     GC.gc()
-    return _alloc_rrule2(f, x1, x2)
+    return Mooncake.TestUtils.count_allocs(Mooncake.rrule!!, f, x1, x2)
 end
 
 function steady_state_allocations_primitive_rrule3(f, x1, x2, x3)
@@ -106,21 +90,15 @@ function steady_state_allocations_primitive_rrule3(f, x1, x2, x3)
         Mooncake.rrule!!(f, x1, x2, x3)
     end
     GC.gc()
-    return _alloc_rrule3(f, x1, x2, x3)
+    return Mooncake.TestUtils.count_allocs(Mooncake.rrule!!, f, x1, x2, x3)
 end
-
-# Bug fix note: measuring `@allocated value_and_gradient!!(...)` through a generic helper
-# counted wrapper/capture overhead on Julia 1.10 and produced a false 192-byte regression.
-@noinline _allocated_value_and_gradient(cache::C, f::F, x::X) where {C,F,X} = @allocated Mooncake.value_and_gradient!!(
-    cache, f, x
-)
 
 function steady_state_allocations_value_and_gradient(cache, f, x)
     for _ in 1:3
         Mooncake.value_and_gradient!!(cache, f, x)
     end
     GC.gc()
-    return _allocated_value_and_gradient(cache, f, x)
+    return Mooncake.TestUtils.count_allocs(Mooncake.value_and_gradient!!, cache, f, x)
 end
 
 function nfwd_safe_log(x)

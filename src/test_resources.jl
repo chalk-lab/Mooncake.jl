@@ -830,7 +830,8 @@ function generate_test_functions()
         ),
         (false, :none, nothing, mul!, randn(3, 5)', randn(5, 5), randn(5, 3), 4.0, 3.0),
         (false, :none, nothing, Random.SHA.digest!, Random.SHA.SHA2_256_CTX()),
-        (false, :none, nothing, Xoshiro, 123456),
+        # RNG constructor coverage lives in `src/rules/random.jl`; keep the broad corpus here
+        # away from `Random.seed!` internals so reverse-mode failures stay focused.
         (false, :none, nothing, *, randn(250, 500), randn(500, 250)),
         (false, :allocs, nothing, test_sin, 1.0),
         (false, :allocs, nothing, test_cos_sin, 2.0),

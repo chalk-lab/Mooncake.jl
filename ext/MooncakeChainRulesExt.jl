@@ -29,27 +29,21 @@ function (pb::ExpPullback)(::NoRData)
     return NoRData(), NoRData()
 end
 
-function frule!!(::Dual{typeof(exp)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(exp)}, X_dX::Dual{Matrix{P},<:NTangent}) where {P<:IEEEFloat}
     X = primal(X_dX)
     dX = tangent(X_dX)
-    if dX isa NTangent
-        first_X = copy(X)
-        Y, first_lane = ChainRules.frule(
-            (ChainRules.NoTangent(), copy(dX[1])), LinearAlgebra.exp!, first_X
-        )
-        lane_tangents = ntuple(Val(length(dX))) do lane
-            lane == 1 && return first_lane
-            _, lane_dY = ChainRules.frule(
-                (ChainRules.NoTangent(), copy(dX[lane])), LinearAlgebra.exp!, copy(X)
-            )
-            return lane_dY
-        end
-        return Dual(Y, NTangent(lane_tangents))
-    end
-    X_copy = copy(X)
-    return Dual(
-        ChainRules.frule((ChainRules.NoTangent(), copy(dX)), LinearAlgebra.exp!, X_copy)...
+    first_X = copy(X)
+    Y, first_lane = ChainRules.frule(
+        (ChainRules.NoTangent(), copy(dX[1])), LinearAlgebra.exp!, first_X
     )
+    lane_tangents = ntuple(Val(length(dX))) do lane
+        lane == 1 && return first_lane
+        _, lane_dY = ChainRules.frule(
+            (ChainRules.NoTangent(), copy(dX[lane])), LinearAlgebra.exp!, copy(X)
+        )
+        return lane_dY
+    end
+    return Dual(Y, NTangent(lane_tangents))
 end
 
 function rrule!!(::CoDual{typeof(exp)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloat}
