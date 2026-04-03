@@ -1302,7 +1302,11 @@ function generate_ir(
     # Normalise the IR, and generated BBCode version of it.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
     ir = normalise!(ir, spnames)
-    primal_ir = remove_unreachable_blocks!(BBCode(ir))
+    primal_ir = BBCode(ir)
+    primal_blocks = _remove_unreachable_cfg_blocks!(map(_cfg_block, primal_ir.blocks))
+    primal_ir = lower_cfg_blocks(
+        primal_ir, primal_ir.argtypes, primal_blocks; sort_cfg=false
+    )
 
     # Compute global info.
     info = ADInfo(interp, primal_ir, debug_mode, fwd_ret_type, rvs_ret_type)
@@ -1431,7 +1435,10 @@ Produce the IR associated to the `OpaqueClosure` which runs most of the forwards
 function forwards_pass_ir(
     ir::BBCode, ad_stmts_blocks::ADStmts, fwds_comms_insts, info::ADInfo, Tshared_data
 )
-    is_unique_pred, pred_is_unique_pred = characterise_unique_predecessor_blocks(ir.blocks)
+    primal_blocks = map(_cfg_block, ir.blocks)
+    is_unique_pred, pred_is_unique_pred = _characterise_unique_predecessor_blocks(
+        primal_blocks
+    )
 
     # Insert a block at the start which extracts all items from the captures field of the
     # `OpaqueClosure`, which contains all of the data shared between the forwards- and
@@ -1543,6 +1550,117 @@ function _cfg_phi_nodes(block::CFGBlock)
     return first.(block.insts[1:n_phi_nodes]), last.(block.insts[1:n_phi_nodes])
 end
 
+function _compute_cfg_successors(blocks::Vector{CFGBlock})::Dict{ID,Vector{ID}}
+    succs = map(enumerate(blocks)) do (n, block)
+        is_final_block = n == length(blocks)
+        t = _cfg_terminator(block)
+        if t === nothing
+            return is_final_block ? ID[] : ID[blocks[n + 1].id]
+        elseif t isa IDGotoNode
+            return [t.label]
+        elseif t isa IDGotoIfNot
+            return is_final_block ? ID[t.dest] : ID[t.dest, blocks[n + 1].id]
+        elseif t isa ReturnNode
+            return ID[]
+        elseif t isa Switch
+            return vcat(t.dests, t.fallthrough_dest)
+        else
+            error("Unhandled terminator $t")
+        end
+    end
+    return Dict{ID,Vector{ID}}((block.id, succ) for (block, succ) in zip(blocks, succs))
+end
+
+function _compute_cfg_predecessors(blocks::Vector{CFGBlock})::Dict{ID,Vector{ID}}
+    successor_map = _compute_cfg_successors(blocks)
+    ks = collect(keys(successor_map))
+    predecessor_map = Dict{ID,Vector{ID}}(zip(ks, map(_ -> ID[], ks)))
+    for (k, succs) in successor_map
+        for succ in succs
+            push!(predecessor_map[succ], k)
+        end
+    end
+    return predecessor_map
+end
+
+function _cfg_distance_to_entry(blocks::Vector{CFGBlock})::Vector{Int}
+    id_to_int = Dict(zip(map(block -> block.id, blocks), eachindex(blocks)))
+    successors = _compute_cfg_successors(blocks)
+    distances = fill(typemax(Int), length(blocks))
+    distances[1] = 0
+    queue = [blocks[1].id]
+    head = 1
+    while head <= length(queue)
+        block_id = queue[head]
+        head += 1
+        dist = distances[id_to_int[block_id]]
+        for successor in successors[block_id]
+            successor_idx = id_to_int[successor]
+            if distances[successor_idx] == typemax(Int)
+                distances[successor_idx] = dist + 1
+                push!(queue, successor)
+            end
+        end
+    end
+    return distances
+end
+
+function _sort_cfg_blocks!(blocks::Vector{CFGBlock})::Vector{CFGBlock}
+    I = sortperm(_cfg_distance_to_entry(blocks))
+    blocks .= blocks[I]
+    return blocks
+end
+
+_cfg_is_reachable(blocks::Vector{CFGBlock})::Vector{Bool} =
+    _cfg_distance_to_entry(blocks) .< typemax(Int)
+
+function _remove_unreachable_cfg_blocks!(blocks::Vector{CFGBlock})::Vector{CFGBlock}
+    is_reachable = _cfg_is_reachable(blocks)
+    remaining_blocks = blocks[is_reachable]
+    removed_block_ids = map(idx -> blocks[idx].id, findall(!, is_reachable))
+    for block in remaining_blocks, (_, inst) in block.insts
+        stmt = inst.stmt
+        stmt isa IDPhiNode || continue
+        for n in reverse(1:length(stmt.edges))
+            if stmt.edges[n] in removed_block_ids
+                deleteat!(stmt.edges, n)
+                deleteat!(stmt.values, n)
+            end
+        end
+    end
+    return remaining_blocks
+end
+
+function _characterise_unique_predecessor_blocks(
+    blocks::Vector{CFGBlock}
+)::Tuple{Dict{ID,Bool},Dict{ID,Bool}}
+    block_ids = ID[block.id for block in blocks]
+    preds = _compute_cfg_predecessors(blocks)
+    succs = _compute_cfg_successors(blocks)
+
+    is_unique_pred = Dict{ID,Bool}()
+    for id in block_ids
+        ss = succs[id]
+        is_unique_pred[id] = !isempty(ss) && all(s -> length(preds[s]) == 1, ss)
+    end
+
+    reachable_return_blocks = filter(blocks) do block
+        is_reachable_return_node(_cfg_terminator(block))
+    end
+    if length(reachable_return_blocks) == 1
+        is_unique_pred[only(reachable_return_blocks).id] = true
+    end
+
+    pred_is_unique_pred = Dict{ID,Bool}()
+    for id in block_ids
+        pred_is_unique_pred[id] = length(preds[id]) == 1 && is_unique_pred[only(preds[id])]
+    end
+
+    entry_id = block_ids[1]
+    pred_is_unique_pred[entry_id] = isempty(preds[entry_id])
+    return is_unique_pred, pred_is_unique_pred
+end
+
 function _insert_before_terminator!(insts::Vector{IDInstPair}, inst::IDInstPair)
     if !isempty(insts) && _cfg_terminator(last(insts)[2].stmt)
         insert!(insts, length(insts), inst)
@@ -1562,6 +1680,8 @@ cleanup steps.
     function lower_cfg_blocks(
         ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
     )::BBCode
+        blocks = sort_cfg ? _sort_cfg_blocks!(copy(blocks)) : copy(blocks)
+        blocks = _remove_unreachable_cfg_blocks!(blocks)
         pb_ir = BBCode(
             map(_lower_cfg_block, blocks),
             arg_types,
@@ -1570,18 +1690,18 @@ cleanup steps.
             ir.meta,
             ir.valid_worlds,
         )
-        sort_cfg && sort_blocks!(pb_ir)
-        return remove_unreachable_blocks!(pb_ir)
+        return pb_ir
     end
 else
     function lower_cfg_blocks(
         ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
     )::BBCode
+        blocks = sort_cfg ? _sort_cfg_blocks!(copy(blocks)) : copy(blocks)
+        blocks = _remove_unreachable_cfg_blocks!(blocks)
         pb_ir = BBCode(
             map(_lower_cfg_block, blocks), arg_types, ir.sptypes, ir.linetable, ir.meta
         )
-        sort_cfg && sort_blocks!(pb_ir)
-        return remove_unreachable_blocks!(pb_ir)
+        return pb_ir
     end
 end
 
@@ -1645,8 +1765,8 @@ function pullback_ir(
     #   characterise_unique_predecessor_blocks is used in forwards_pass_ir).
     # 4. if the block began with one or more PhiNodes, then handle their rdata.
     # 5. jump to the predecessor block.
-    ps = compute_all_predecessors(ir)
-    _, pred_is_unique_pred = characterise_unique_predecessor_blocks(ir.blocks)
+    ps = _compute_cfg_predecessors(primal_blocks)
+    _, pred_is_unique_pred = _characterise_unique_predecessor_blocks(primal_blocks)
     main_blocks = map(
         ad_stmts_blocks, enumerate(primal_blocks), pb_comms_insts
     ) do (blk_id, ad_stmts), (n, blk), comms_insts

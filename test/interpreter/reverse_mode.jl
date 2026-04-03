@@ -182,6 +182,25 @@ rule_type_nonreturning(e::Exception) = throw(e)
         @test length(phi_ids) == 1
         @test only(phis).stmt == IDPhiNode([entry_id, mid_id], Any[Argument(1), 2])
         @test Mooncake._cfg_terminator(phi_block) == ReturnNode(nothing)
+
+        join_id = ID()
+        phi_edge_blocks = Mooncake.CFGBlock[
+            Mooncake.CFGBlock(entry_id, [(ID(), new_inst(IDGotoNode(join_id)))]),
+            Mooncake.CFGBlock(dead_id, [(ID(), new_inst(IDGotoNode(join_id)))]),
+            Mooncake.CFGBlock(
+                join_id,
+                [
+                    (ID(), new_inst(IDPhiNode([entry_id, dead_id], Any[Argument(1), 2]))),
+                    (ID(), new_inst(ReturnNode(1))),
+                ],
+            ),
+        ]
+        preds = Mooncake._compute_cfg_predecessors(phi_edge_blocks)
+        @test Set(preds[join_id]) == Set([entry_id, dead_id])
+
+        lowered_phi_edges = Mooncake.lower_cfg_blocks(BBCode(ir), Any[Any], phi_edge_blocks)
+        lowered_phi = lowered_phi_edges.blocks[2].insts[1].stmt
+        @test lowered_phi == IDPhiNode([entry_id], Any[Argument(1)])
     end
     @testset "inc_args" begin
         @test Mooncake.inc_args(Expr(:call, sin, Argument(4))) ==
