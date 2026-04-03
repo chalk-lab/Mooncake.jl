@@ -1816,9 +1816,10 @@ function _insert_before_terminator!(insts::Vector{IDInstPair}, inst::IDInstPair)
 end
 
 function _canonicalise_cfg_blocks(blocks::Vector{CFGBlock}; sort_cfg::Bool=true)
-    _remove_unreachable_cfg_blocks!(
-        sort_cfg ? _sort_cfg_blocks!(copy(blocks)) : copy(blocks)
-    )
+    blocks = copy(blocks)
+    # Canonicalization is "sort first, then prune" so phi-edge cleanup sees final block order.
+    sort_cfg && _sort_cfg_blocks!(blocks)
+    return _remove_unreachable_cfg_blocks!(blocks)
 end
 
 function _cfg_lower_switch_statements(blocks::Vector{CFGBlock})::Vector{CFGBlock}
