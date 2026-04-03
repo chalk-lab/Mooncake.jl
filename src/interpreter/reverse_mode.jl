@@ -1850,10 +1850,8 @@ function _cfg_remove_double_edges(blocks::Vector{CFGBlock})::Vector{CFGBlock}
         t = _cfg_terminator(block)
         if n < length(blocks) && t isa IDGotoIfNot && t.dest == blocks[n + 1].id
             term_id, term_inst = last(block.insts)
-            new_insts = vcat(
-                block.insts[1:(end - 1)],
-                [(term_id, NewInstruction(term_inst; stmt=IDGotoNode(t.dest)))],
-            )
+            new_insts = copy(block.insts)
+            new_insts[end] = (term_id, NewInstruction(term_inst; stmt=IDGotoNode(t.dest)))
             return CFGBlock(block.id, new_insts)
         else
             return block
