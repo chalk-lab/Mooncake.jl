@@ -42,7 +42,12 @@ function _dual_mc(p::MistyClosure)
         mc_world = UInt(p.oc.world)
     end
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
-    return build_frule(interp, p; skip_world_age_check=true)
+    # Keep MistyClosure's cached callable on the raw derived-rule path. The public
+    # `build_frule` entrypoint now returns the chunked forward wrapper, but
+    # `dual_callable` is an internal helper used inside the MistyClosure primitive rule.
+    return Mooncake._build_raw_frule(
+        interp, p; skip_world_age_check=true, tangent_mode=Mooncake.IRfwdMode{1}()
+    )
 end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
@@ -94,6 +99,29 @@ end
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MistyClosureTangent}
     captures_tangent = _scale_internal(c, a, t.captures_tangent)
     return T(captures_tangent, t.dual_callable)
+end
+
+function NfwdMooncake._nfwd_pack_lanes(
+    c::MaybeCache, x::MistyClosure, lanes::NTuple{N,MistyClosureTangent}, ::Val{N}
+) where {N}
+    captures = NfwdMooncake._nfwd_pack_lanes(
+        c, x.oc.captures, ntuple(k -> lanes[k].captures_tangent, Val(N)), Val(N)
+    )
+    return MistyClosureTangent(captures, first(lanes).dual_callable)
+end
+@inline function NfwdMooncake._nfwd_pack_lanes(
+    ::MaybeCache, ::MistyClosure, ::Tuple{}, ::Val{0}
+)
+    return NoTangent()
+end
+
+function NfwdMooncake._nfwd_unpack_packed_lane(
+    c::MaybeCache, y::MistyClosure, dy::MistyClosureTangent, ::Val{k}
+) where {k}
+    captures = NfwdMooncake._nfwd_unpack_packed_lane(
+        c, y.oc.captures, dy.captures_tangent, Val(k)
+    )
+    return MistyClosureTangent(captures, dy.dual_callable)
 end
 
 import .TestUtils: populate_address_map_internal, AddressMap, has_equal_data_internal
@@ -198,8 +226,15 @@ end
 
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
 function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
-    dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
-    return tangent(f).dual_callable(dual_captures, x...)
+    tf = tangent(f)
+    if tf isa NTangent
+        dual_captures = Dual(
+            primal(f).oc.captures, NTangent(map(t -> t.captures_tangent, tf.lanes))
+        )
+        return first(tf).dual_callable(dual_captures, x...)
+    end
+    dual_captures = Dual(primal(f).oc.captures, tf.captures_tangent)
+    return tf.dual_callable(dual_captures, x...)
 end
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =

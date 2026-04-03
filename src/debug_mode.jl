@@ -54,22 +54,30 @@ end
 end
 
 @noinline function verify_dual_value(d::Dual{P,T}) where {P,T}
-    # Fast path: type-level check using the Dual type parameters to enforce T == tangent_type(P)
-    T_expected = tangent_type(P)
-    if T !== T_expected
+    # Fast path: public `Dual` values may use either the canonical width-1 tangent
+    # or the canonical width-N `NTangent` wrapper used by chunked forward mode.
+    if !verify_dual_type(d)
         throw(
             InvalidFDataException(
                 "Dual tangent type mismatch: primal $P requires tangent type " *
-                "$T_expected, but got $T",
+                "$(tangent_type(P)) or $(NTangent_type(P)), but got $T",
             ),
         )
     end
 
-    # Slow path: deep structural validation
+    # Slow path: deep structural validation.
     p, t = primal(d), tangent(d)
-    # We validate fdata and rdata separately so these helpers stay in sync with reverse-mode checks.
-    verify_fdata_value(p, fdata(t))
-    verify_rdata_value(p, rdata(t))
+    if t isa NTangent
+        for lane_tangent in t
+            verify_fdata_value(p, fdata(lane_tangent))
+            verify_rdata_value(p, rdata(lane_tangent))
+        end
+    else
+        # We validate fdata and rdata separately so these helpers stay in sync with
+        # reverse-mode checks.
+        verify_fdata_value(p, fdata(t))
+        verify_rdata_value(p, rdata(t))
+    end
 
     return nothing
 end

@@ -18,6 +18,8 @@ const BlasComplexFloat = Union{ComplexF32,ComplexF64}
 
 _fields(x::Tangent) = x.fields
 _fields(x::FData) = x.data
+@inline _blas_scalar_tangent(dx::NTangent{Tuple{T}}) where {T} = dx[1]
+@inline _blas_scalar_tangent(dx) = dx
 
 const TangentOrFData = Union{Tangent,FData}
 
@@ -39,6 +41,13 @@ helper should extract the backing store (see `_accum_sym_logdet!`).
 `matrixify` and `viewify` are thin wrappers built on top of `arrayify` and share the same
 convention.
 """
+function arrayify(x, dx::NTangent{Tuple{D}}) where {D}
+    # IRfwd stores even width-1 internal tangents as NTangent((dx,)). BLAS/LAPACK rules
+    # still operate lane-by-lane, so unwrap the single lane locally instead of teaching
+    # every downstream helper about the width-1 wrapper.
+    return arrayify(x, dx[1])
+end
+
 function arrayify(
     x::Union{Dual{A},CoDual{A}}
 ) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
@@ -343,6 +352,7 @@ function frule!!(
     n = primal(_n)
     incx = primal(_incx)
     a, da = extract(a_da)
+    da = _blas_scalar_tangent(da)
     X, dX = arrayify(X_dX)
 
     # Compute Frechet derivative.
@@ -414,6 +424,8 @@ end
     y, dy = arrayify(y_dy)
     α, dα = extract(alpha)
     β, dβ = extract(beta)
+    dα = _blas_scalar_tangent(dα)
+    dβ = _blas_scalar_tangent(dβ)
 
     _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
 
@@ -555,6 +567,8 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         ul = primal(uplo)
         α, dα = extract(alpha)
         β, dβ = extract(beta)
+        dα = _blas_scalar_tangent(dα)
+        dβ = _blas_scalar_tangent(dβ)
         A, dA = arrayify(A_dA)
         x, dx = arrayify(x_dx)
         y, dy = arrayify(y_dy)
@@ -887,6 +901,8 @@ end
     tB = primal(transB)
     α, dα = extract(alpha)
     β, dβ = extract(beta)
+    dα = _blas_scalar_tangent(dα)
+    dβ = _blas_scalar_tangent(dβ)
     A, dA = matrixify(A_dA)
     B, dB = matrixify(B_dB)
     C, dC = arrayify(C_dC)
@@ -1033,6 +1049,8 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         ul = primal(uplo)
         α, dα = extract(alpha)
         β, dβ = extract(beta)
+        dα = _blas_scalar_tangent(dα)
+        dβ = _blas_scalar_tangent(dβ)
         A, dA = arrayify(A_dA)
         B, dB = arrayify(B_dB)
         C, dC = arrayify(C_dC)
@@ -1160,8 +1178,10 @@ for (fname, elty, relty) in (
         uplo = primal(_uplo)
         t = primal(_t)
         α, dα = extract(α_dα)
+        dα = _blas_scalar_tangent(dα)
         A, dA = matrixify(A_dA)
         β, dβ = extract(β_dβ)
+        dβ = _blas_scalar_tangent(dβ)
         C, dC = arrayify(C_dC)
 
         # Compute Frechet derivative.
@@ -1262,6 +1282,7 @@ function frule!!(
     ta = primal(_ta)
     diag = primal(_diag)
     α, dα = extract(α_dα)
+    dα = _blas_scalar_tangent(dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
@@ -1368,6 +1389,7 @@ function frule!!(
     trans = primal(_t)
     diag = primal(_diag)
     α, dα = extract(α_dα)
+    dα = _blas_scalar_tangent(dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 

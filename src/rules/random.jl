@@ -37,7 +37,14 @@ for f in [rand!, randn!, randexp!]
         ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
     )
         $f(primal(rng), primal(x))
-        tangent(x) .= 0
+        dx = tangent(x)
+        if dx isa NTangent
+            @inbounds for lane in 1:length(dx)
+                dx[lane] .= 0
+            end
+        else
+            dx .= 0
+        end
         return x
     end
     @eval function rrule!!(

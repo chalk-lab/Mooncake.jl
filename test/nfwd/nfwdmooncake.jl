@@ -40,6 +40,19 @@ function _nfwd_primitive_rrule(sig::Type{<:Tuple}, chunk_size::Int)
     Mooncake.NfwdMooncake.build_rrule(sig; chunk_size)
 end
 
+function nfwd_public_tangent(y, dy::Mooncake.NTangent)
+    if y isa AbstractArray
+        return length(dy) == 1 ? dy[1] : cat(dy...; dims=ndims(y) + 1)
+    end
+    return length(dy) == 1 ? dy[1] : tuple(dy...)
+end
+
+nfwd_public_tangent(_, dy) = dy
+function nfwd_public_tangent(out::Mooncake.Dual)
+    nfwd_public_tangent(Mooncake.primal(out), Mooncake.tangent(out))
+end
+nfwd_public_result(y, dy) = (y, nfwd_public_tangent(y, dy))
+
 function steady_state_allocations_rrule(rule, fx::Tuple)
     for _ in 1:3
         rule(fx...)
@@ -244,7 +257,10 @@ end
         (
             name="chunk_size=2 scalar lanes",
             chunk_size=2,
-            dual_inputs=(Mooncake.Dual(x, (dx, 0.0)), Mooncake.Dual(y, (0.0, dy))),
+            dual_inputs=(
+                Mooncake.Dual(x, Mooncake.NTangent((dx, 0.0))),
+                Mooncake.Dual(y, Mooncake.NTangent((0.0, dy))),
+            ),
             expected_tangent=(dx * y + dx * (-sin(x)), x * dy),
         ),
     )
@@ -258,7 +274,7 @@ end
                 out = rule(Mooncake.zero_dual(f), case.dual_inputs...)
                 @test out isa Mooncake.Dual
                 @test Mooncake.primal(out) == z
-                @test Mooncake.tangent(out) == case.expected_tangent
+                @test nfwd_public_tangent(out) == case.expected_tangent
 
                 rrule = Mooncake.NfwdMooncake.build_rrule(
                     f, x, y; chunk_size=case.chunk_size
@@ -278,16 +294,20 @@ end
                 out_dual = Mooncake.value_and_derivative!!(
                     rule,
                     Mooncake.zero_dual(f),
-                    Mooncake.Dual(x, (dx, 0.0)),
-                    Mooncake.Dual(y, (0.0, dy)),
+                    Mooncake.Dual(x, Mooncake.NTangent((dx, 0.0))),
+                    Mooncake.Dual(y, Mooncake.NTangent((0.0, dy))),
                 )
                 @test Mooncake.primal(out_dual) == z
-                @test Mooncake.tangent(out_dual) == (dx * y + dx * (-sin(x)), x * dy)
+                @test nfwd_public_tangent(out_dual) == (dx * y + dx * (-sin(x)), x * dy)
 
                 out_tuple = Mooncake.value_and_derivative!!(
-                    rule, (f, Mooncake.NoTangent()), (x, (dx, 0.0)), (y, (0.0, dy))
+                    rule,
+                    (f, Mooncake.NoTangent()),
+                    (x, Mooncake.NTangent((dx, 0.0))),
+                    (y, Mooncake.NTangent((0.0, dy))),
                 )
-                @test out_tuple == (z, (dx * y + dx * (-sin(x)), x * dy))
+                @test nfwd_public_result(out_tuple...) ==
+                    (z, (dx * y + dx * (-sin(x)), x * dy))
 
                 out_chunk = Mooncake.value_and_derivative!!(
                     rule,
@@ -317,7 +337,7 @@ end
                 out = Mooncake.value_and_derivative!!(
                     frule, (exp, Mooncake.NoTangent()), (x_single, 1.0)
                 )
-                @test out == (exp(x_single), exp(x_single))
+                @test nfwd_public_result(out...) == (exp(x_single), exp(x_single))
 
                 rrule = Mooncake.NfwdMooncake.build_rrule(exp, x_single; chunk_size=1)
                 value, grad = Mooncake.value_and_gradient!!(rrule, exp, x_single)
@@ -393,9 +413,12 @@ end
                     (Mooncake.NoTangent(), [3.0 * cos(x_vec[1]), 4.0 * cos(x_vec[2])])
 
                 frule = Mooncake.NfwdMooncake.build_frule(g, x_vec; chunk_size=2)
-                out = frule(Mooncake.zero_dual(g), Mooncake.Dual(x_vec, dx_vec))
+                out = frule(
+                    Mooncake.zero_dual(g),
+                    Mooncake.Dual(x_vec, Mooncake.NTangent(([1.0, 0.0], [0.0, 1.0]))),
+                )
                 @test Mooncake.primal(out) == sin.(x_vec)
-                @test Mooncake.tangent(out) ≈ [cos(x_vec[1]) 0.0; 0.0 cos(x_vec[2])]
+                @test nfwd_public_tangent(out) ≈ [cos(x_vec[1]) 0.0; 0.0 cos(x_vec[2])]
             end
 
             @testset "complex inputs" begin
@@ -406,7 +429,7 @@ end
                 rule = Mooncake.NfwdMooncake.build_frule(fc, zc; chunk_size=1)
                 out = rule(Mooncake.zero_dual(fc), Mooncake.Dual(zc, dzc))
                 @test Mooncake.primal(out) == fc(zc)
-                @test Mooncake.tangent(out) ≈ expected_dzc
+                @test nfwd_public_tangent(out) ≈ expected_dzc
 
                 rrule = Mooncake.NfwdMooncake.build_rrule(fc, zc; chunk_size=2)
                 ȳ, pb!! = rrule(Mooncake.zero_fcodual(fc), Mooncake.zero_fcodual(zc))
@@ -423,9 +446,12 @@ end
                     ComplexF64[1.0 + 0.0im, 0.0 + 0.0im, 0.0 + 0.0im, 0.0 + 1.0im], 2, 2
                 )
                 frule_vec = Mooncake.NfwdMooncake.build_frule(gc, z_vec; chunk_size=2)
-                out_vec = frule_vec(Mooncake.zero_dual(gc), Mooncake.Dual(z_vec, dz_vec))
+                out_vec = frule_vec(
+                    Mooncake.zero_dual(gc),
+                    Mooncake.Dual(z_vec, Mooncake.NTangent((dz_vec[:, 1], dz_vec[:, 2]))),
+                )
                 @test Mooncake.primal(out_vec) == gc(z_vec)
-                @test Mooncake.tangent(out_vec) == (2.0, 1.0)
+                @test nfwd_public_tangent(out_vec) == (2.0, 1.0)
 
                 hc(z) = z .* z
                 ȳ_vec = ComplexF64[2.0 - 1.0im, -0.5 + 0.25im]
@@ -446,11 +472,11 @@ end
                 frule = Mooncake.NfwdMooncake.build_frule(h, x_vec, y_vec; chunk_size=2)
                 out = frule(
                     Mooncake.zero_dual(h),
-                    Mooncake.Dual(x_vec, dx),
-                    Mooncake.Dual(y_vec, dy),
+                    Mooncake.Dual(x_vec, Mooncake.NTangent((dx[:, 1], dx[:, 2]))),
+                    Mooncake.Dual(y_vec, Mooncake.NTangent((dy[:, 1], dy[:, 2]))),
                 )
                 @test Mooncake.primal(out) == h(x_vec, y_vec)
-                @test Mooncake.tangent(out) == (3.0, 1.0)
+                @test nfwd_public_tangent(out) == (3.0, 1.0)
 
                 hm(X) = sin.(X)
                 X = reshape([1.0, 2.0, 3.0, 4.0], 2, 2)
@@ -458,12 +484,15 @@ end
                 dX[1, 1, 1] = 1.0
                 dX[2, 2, 2] = 1.0
                 frule_matrix = Mooncake.NfwdMooncake.build_frule(hm, X; chunk_size=2)
-                y_and_dy = frule_matrix(Mooncake.zero_dual(hm), Mooncake.Dual(X, dX))
+                y_and_dy = frule_matrix(
+                    Mooncake.zero_dual(hm),
+                    Mooncake.Dual(X, Mooncake.NTangent((dX[:, :, 1], dX[:, :, 2]))),
+                )
                 @test Mooncake.primal(y_and_dy) == sin.(X)
                 expected = zeros(2, 2, 2)
                 expected[1, 1, 1] = cos(X[1, 1])
                 expected[2, 2, 2] = cos(X[2, 2])
-                @test Mooncake.tangent(y_and_dy) ≈ expected
+                @test nfwd_public_tangent(y_and_dy) ≈ expected
             end
         end
 
@@ -473,7 +502,7 @@ end
                 frule = Mooncake.NfwdMooncake.build_frule(sincos, x_sc; chunk_size=1)
                 out = frule(Mooncake.zero_dual(sincos), Mooncake.Dual(x_sc, 1.0))
                 @test Mooncake.primal(out) == sincos(x_sc)
-                s_t, c_t = Mooncake.tangent(out)
+                s_t, c_t = nfwd_public_tangent(out)
                 @test s_t ≈ cos(x_sc)
                 @test c_t ≈ -sin(x_sc)
 
@@ -492,7 +521,7 @@ end
                 frule = Mooncake.NfwdMooncake.build_frule(modf, x_mf; chunk_size=1)
                 out = frule(Mooncake.zero_dual(modf), Mooncake.Dual(x_mf, 1.0))
                 @test Mooncake.primal(out) == modf(x_mf)
-                frac_t, int_t = Mooncake.tangent(out)
+                frac_t, int_t = nfwd_public_tangent(out)
                 @test frac_t ≈ 1.0
                 @test int_t ≈ 0.0
             end
@@ -558,6 +587,16 @@ end
             @test_throws ArgumentError rule(
                 Mooncake.zero_dual(g), Mooncake.Dual(x_vec, [1.0, 2.0, 3.0])
             )
+        end
+
+        @testset "dense array workspace reuses fixed-shape storage without allocation" begin
+            ws = Mooncake.NfwdMooncake.NfwdDenseArrayWorkspace{Float64,2}()
+            buf = Mooncake.NfwdMooncake._nfwd_dense_array_workspace!(ws, (8, 2))
+            @test buf === Mooncake.NfwdMooncake._nfwd_dense_array_workspace!(ws, (8, 2))
+            GC.gc()
+            @test Mooncake.TestUtils.count_allocs(
+                Mooncake.NfwdMooncake._nfwd_dense_array_workspace!, ws, (8, 2)
+            ) == 0
         end
     end
 

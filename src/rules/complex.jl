@@ -60,16 +60,16 @@ function _dot_internal(::MaybeCache, t::T, s::T) where {T<:CF}
     _dot(real(t), real(s)) + _dot(imag(t), imag(s))
 end
 
-_scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
+_scale_internal(::MaybeCache, a::IEEEFloat, t::T) where {T<:CF} = T(a * t)
 
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Complex{P},Val} where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CF,<:CF}, ::Dual{Val{FieldName}}
+    ::Dual{typeof(lgetfield)}, x::Dual{<:CF}, ::Dual{Val{FieldName}}
 ) where {FieldName}
     y = getfield(primal(x), FieldName)
-    dy = getfield(tangent(x), FieldName)
+    dy = get_tangent_field(tangent(x), FieldName)
     return Dual(y, dy)
 end
 function rrule!!(
@@ -105,10 +105,10 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(_new_),<:Complex{P},P,P} where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(_new_)}, ::Dual{Type{Complex{P}}}, re::Dual{P}, im::Dual{P}
-) where {P<:IEEEFloat}
+    ::Dual{typeof(_new_)}, ::Dual{Type{Complex{P}}}, re::Dual{P,Tr}, im::Dual{P,Ti}
+) where {P<:IEEEFloat,Tr,Ti}
     x = _new_(Complex{P}, primal(re), primal(im))
-    dx = _new_(Complex{P}, tangent(re), tangent(im))
+    dx = complex(tangent(re), tangent(im))
     return Dual(x, dx)
 end
 function rrule!!(

@@ -77,6 +77,11 @@ function tangent_to_primal_internal!!(x::P, t, c::MaybeCache) where {P<:IdDict}
     end
     return x
 end
+@inline function tangent_to_primal_internal!!(
+    x::P, t::NTangent{Tuple{T}}, c::MaybeCache
+) where {P<:IdDict,T}
+    return tangent_to_primal_internal!!(x, t[1], c)
+end
 function primal_to_tangent_internal!!(t, x::P, c::MaybeCache) where {P<:IdDict}
     haskey(c, x) && return c[x]::tangent_type(P)
     @assert union(keys(t), keys(x)) == keys(t)
@@ -120,10 +125,45 @@ tangent(f::IdDict, ::NoRData) = f
 # All of the rules in here are provided in order to avoid nasty `:ccall`s, and to support
 # standard built-in functionality on `IdDict`s.
 
+@inline function _iddict_rehash_tangent!(dt::NTangent{L}, newsz) where {L<:Tuple}
+    ntuple(n -> Base.rehash!(dt[n], newsz), Val(fieldcount(L)))
+    return dt
+end
+@inline function _iddict_rehash_tangent!(dt, newsz)
+    Base.rehash!(dt, newsz)
+    return dt
+end
+
+@inline function _iddict_setindex_tangent!(dt::NTangent{L}, dv, key) where {L<:Tuple}
+    if dv isa NTangent
+        ntuple(n -> setindex!(dt[n], dv[n], key), Val(fieldcount(L)))
+    else
+        ntuple(n -> setindex!(dt[n], dv, key), Val(fieldcount(L)))
+    end
+    return dt
+end
+@inline function _iddict_setindex_tangent!(dt, dv, key)
+    setindex!(dt, dv, key)
+    return dt
+end
+
+@inline function _iddict_get_tangent(dt::NTangent{L}, key, default) where {L<:Tuple}
+    if default isa NTangent
+        return NTangent(ntuple(n -> get(dt[n], key, default[n]), Val(fieldcount(L))))
+    end
+    return NTangent(ntuple(n -> get(dt[n], key, default), Val(fieldcount(L))))
+end
+@inline _iddict_get_tangent(dt, key, default) = get(dt, key, default)
+
+@inline function _iddict_getindex_tangent(dt::NTangent{L}, key) where {L<:Tuple}
+    return NTangent(ntuple(n -> getindex(dt[n], key), Val(fieldcount(L))))
+end
+@inline _iddict_getindex_tangent(dt, key) = getindex(dt, key)
+
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
 function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
     Base.rehash!(primal(d), primal(newsz))
-    Base.rehash!(tangent(d), primal(newsz))
+    _iddict_rehash_tangent!(tangent(d), primal(newsz))
     return d
 end
 function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoDual)
@@ -135,7 +175,7 @@ end
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
 function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
     setindex!(primal(d), primal(val), primal(key))
-    setindex!(tangent(d), tangent(val), primal(key))
+    _iddict_setindex_tangent!(tangent(d), tangent(val), primal(key))
     return d
 end
 function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) where {K,V}
@@ -175,7 +215,7 @@ function frule!!(
     ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Dual
 ) where {K,V}
     x = get(primal(d), primal(key), primal(default))
-    dx = get(tangent(d), primal(key), tangent(default))
+    dx = _iddict_get_tangent(tangent(d), primal(key), tangent(default))
     return Dual(x, dx)
 end
 function rrule!!(
@@ -202,7 +242,9 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
 function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
-    return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
+    return Dual(
+        getindex(primal(d), primal(key)), _iddict_getindex_tangent(tangent(d), primal(key))
+    )
 end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{IdDict{K,V}}, key::CoDual

@@ -111,6 +111,7 @@ import ..Mooncake:
     zero_fcodual,
     zero_dual,
     NoTangent,
+    NTangent,
     Mode,
     extract,
     nan_tangent_guard
@@ -209,6 +210,16 @@ end
 @inactive_intrinsic and_int
 @inactive_intrinsic ashr_int
 
+@inline _builtins_lane_map(f, x::NTangent) = NTangent(map(f, x.lanes))
+@inline _builtins_lane_map(f, x) = f(x)
+@inline function _builtins_lane_map(f, x::NTangent, y::NTangent)
+    length(x) == length(y) || throw(ArgumentError("NTangent lane counts must agree."))
+    return NTangent(map(f, x.lanes, y.lanes))
+end
+@inline _builtins_lane_map(f, x::NTangent, y) = NTangent(map(dx -> f(dx, y), x.lanes))
+@inline _builtins_lane_map(f, x, y::NTangent) = NTangent(map(dy -> f(x, dy), y.lanes))
+@inline _builtins_lane_map(f, x, y) = f(x, y)
+
 # unsafe_wrap() gives an array view for the memory pointed by p.
 # Tangent propagation happens through memory aliasing rather than explicit
 # computation in the pullback. Downstream rules write directly into 
@@ -218,7 +229,7 @@ function frule!!(
     ::Dual{typeof(unsafe_wrap)}, ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
 ) where {T}
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
-    tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
+    tangent_arr = _builtins_lane_map(dp -> unsafe_wrap(Array, dp, primal(dims)), tangent(p))
     return Dual(primal_arr, tangent_arr)
 end
 
@@ -245,7 +256,9 @@ end
 @intrinsic atomic_pointerset
 function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
     atomic_pointerset(primal(p), primal(x), primal(order))
-    atomic_pointerset(tangent(p), tangent(x), primal(order))
+    _builtins_lane_map(
+        (dp, dx) -> atomic_pointerset(dp, dx, primal(order)), tangent(p), tangent(x)
+    )
     return p
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
@@ -284,7 +297,13 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     _x = primal(x)
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
-        dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
+        Tx = Ptr{tangent_type(eltype(T))}
+        dx = tangent(x)
+        dv = if dx isa NTangent
+            NTangent(map(dxi -> bitcast(Tx, dxi), dx.lanes))
+        else
+            bitcast(Tx, dx)
+        end
     else
         dv = NoTangent()
     end
@@ -592,8 +611,10 @@ end
 @intrinsic muladd_float
 function frule!!(::Dual{typeof(muladd_float)}, x, y, z)
     a = muladd_float(primal(x), primal(y), primal(z))
-    dz = tangent(z)
-    da = muladd_float(tangent(x), primal(y), muladd_float(primal(x), tangent(y), dz))
+    # Bug fix note: only the primal path should use the float intrinsic directly. In the
+    # NTangent-first IRfwd path, tangent values are lane wrappers rather than raw floats,
+    # so the tangent update must use ordinary lane-wise arithmetic.
+    da = tangent(x) * primal(y) + primal(x) * tangent(y) + tangent(z)
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(muladd_float)}, x, y, z)
@@ -633,7 +654,7 @@ end
 @intrinsic pointerref
 function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
-    da = pointerref(tangent(x), primal(y), primal(z))
+    da = _builtins_lane_map(dx -> pointerref(dx, primal(y), primal(z)), tangent(x))
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
@@ -656,7 +677,9 @@ end
 @intrinsic pointerset
 function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
-    pointerset(tangent(p), tangent(x), primal(idx), primal(z))
+    _builtins_lane_map(
+        (dp, dx) -> pointerset(dp, dx, primal(idx), primal(z)), tangent(p), tangent(x)
+    )
     return p
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
@@ -794,6 +817,13 @@ end
 # A primitive used to avoid exposing `_apply_iterate_equivalent` to `Core._apply_iterate`.
 __vec_to_tuple(v::Vector) = Tuple(v)
 
+# Bug fix note: the outer `NTangent` already carries the chunk lanes. When a lane-local
+# vector contains width-1 `NTangent`s from earlier IRfwd plumbing, we must unwrap them
+# before forming the structured tuple tangent for that lane; otherwise we build nested
+# `NTangent`s where the lane should contain the plain `tangent_type(...)` data.
+@inline _lane_vec_to_tuple(v::Vector) = Tuple(map(_unwrap_unit_ntangent, v))
+__vec_to_tuple(v::NTangent) = NTangent(map(_lane_vec_to_tuple, v.lanes))
+
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
 function frule!!(::Dual{typeof(__vec_to_tuple)}, v::Dual{<:Vector})
     x = __vec_to_tuple(primal(v))
@@ -837,7 +867,11 @@ function frule!!(
 )
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
-    tv = getindex(tangent(v), ind)
+    tv = if tangent(v) isa NTangent
+        NTangent(ntuple(n -> getindex(tangent(v)[n], ind), Val(length(tangent(v)))))
+    else
+        getindex(tangent(v), ind)
+    end
     return Dual(pv, tv)
 end
 function rrule!!(
@@ -964,28 +998,31 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(applicable),Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(fieldtype),Vararg}
 
-const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
+const StandardTangentType = Union{
+    Tuple,NamedTuple,Tangent,MutableTangent,NTangent,NoTangent
+}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
-function frule!!(
-    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual
-) where {P}
+function frule!!(::Dual{typeof(getfield)}, x::Dual{P,T}, name::Dual) where {P,T}
     _name = primal(name)
     if tangent_type(P) == NoTangent
         return uninit_dual(getfield(primal(x), _name))
     else
-        return Dual(getfield(primal(x), _name), _get_tangent_field(tangent(x), _name))
+        y = getfield(primal(x), _name)
+        tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
+        return Dual(y, _get_tangent_field(tangent(x), _name))
     end
 end
 function frule!!(
-    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
-) where {P}
+    ::Dual{typeof(getfield)}, x::Dual{P,T}, name::Dual, inbounds::Dual
+) where {P,T}
     _name = primal(name)
     _inbounds = primal(inbounds)
     if tangent_type(P) == NoTangent
         return uninit_dual(getfield(primal(x), _name, _inbounds))
     else
         y = getfield(primal(x), _name, _inbounds)
+        tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
         dy = _get_tangent_field(tangent(x), _name, _inbounds)
         return Dual(y, dy)
     end
@@ -1122,9 +1159,23 @@ function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     primal_output = tuple(map(primal, args)...)
     if tangent_type(_typeof(primal_output)) == NoTangent
         return zero_dual(primal_output)
-    else
-        return Dual(primal_output, tuple(map(tangent, args)...))
     end
+    tangents = tuple_map(tangent, args)
+    ntangent_lanes = Mooncake._fcache_derivative_ntangent_lane_count(tangents)
+    if isnothing(ntangent_lanes)
+        return dual_type(typeof(primal_output))(primal_output, tangents)
+    elseif ntangent_lanes isa Val{1}
+        return dual_type(typeof(primal_output))(
+            primal_output, ntuple(i -> Mooncake._ntangent_lane(tangents[i], Val(1)), Val(N))
+        )
+    end
+    tangent_output = NTangent(
+        ntuple(
+            lane -> ntuple(i -> Mooncake._ntangent_lane(tangents[i], Val(lane)), Val(N)),
+            ntangent_lanes,
+        ),
+    )
+    return Dual(primal_output, tangent_output)
 end
 
 function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
@@ -1146,6 +1197,19 @@ end
 function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
     typeassert_pullback(dy) = NoRData(), dy, NoRData()
     return CoDual(typeassert(primal(x), primal(type)), tangent(x)), typeassert_pullback
+end
+
+@is_primitive MinimalCtx Tuple{typeof(Base.indexed_iterate),Base.ReinterpretArray,Vararg}
+function frule!!(
+    ::Dual{typeof(Base.indexed_iterate)}, x::Dual{R}, args::Vararg{Dual,N}
+) where {T,R<:Base.ReinterpretArray{T},N}
+    tangent_type(T) == NoTangent || throw(
+        ArgumentError(
+            "No forward rule is available for indexed_iterate on ReinterpretArray{$T}; " *
+            "write a dedicated rule if this reinterpretation is meant to be differentiable.",
+        ),
+    )
+    return zero_dual(Base.indexed_iterate(primal(x), map(primal, args)...))
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(typeof),Any}

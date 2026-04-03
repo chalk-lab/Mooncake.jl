@@ -554,9 +554,12 @@ function test_multi_use_pi_node(x::Base.RefValue{Any})
     return v
 end
 
+const _test_union_of_arrays_alt = Float32[0.5, -1.25, 2.0, 3.5]
+
 function test_union_of_arrays(x::Vector{Float64}, b::Bool)
-    y = randn(Xoshiro(1), Float32, 4)
-    z = b ? x : y
+    # Keep this deterministic and side-effect free: the test only needs a small union over
+    # array element types, not RNG internals such as `Random.seed!`.
+    z = b ? x : _test_union_of_arrays_alt
     return 2z
 end
 

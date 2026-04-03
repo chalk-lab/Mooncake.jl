@@ -929,9 +929,19 @@ _pullback_type(T::Union) = Union{_pullback_type(T.a),_pullback_type(T.b)}
 @inline function __fwds_pass_no_ad!(f::F, raw_args::Vararg{Any,N}) where {F,N}
     return tuple_splat(__get_primal(f), tuple_map(__get_primal, raw_args))
 end
+@inline function __fwds_pass_no_ad!(::typeof(rrule!!), raw_args::Vararg{Any,N}) where {N}
+    return tuple_splat(rrule!!, tuple_map(__get_rrule_arg, raw_args))
+end
+@inline function __fwds_pass_no_ad!(
+    f::DebugRRule{typeof(rrule!!)}, raw_args::Vararg{Any,N}
+) where {N}
+    return tuple_splat(f, tuple_map(__get_rrule_arg, raw_args))
+end
 
 __get_primal(x::CoDual) = primal(x)
 __get_primal(x) = x
+__get_rrule_arg(x::Dual{<:CoDual}) = primal(x)
+__get_rrule_arg(x) = x
 
 const RuleMC{A,R} = MistyClosure{OpaqueClosure{A,R}}
 

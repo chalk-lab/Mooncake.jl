@@ -150,6 +150,7 @@ using Mooncake:
     fdata_type,
     fdata,
     NoRData,
+    NTangent,
     rdata_type,
     rdata,
     Dual,
@@ -840,6 +841,24 @@ function test_frule_performance(
     end
 end
 
+function populate_address_map_internal(
+    m::AddressMap, primal, tangent::NTangent{Tuple{T}}
+) where {T}
+    return populate_address_map_internal(m, primal, tangent[1])
+end
+function populate_address_map_internal(
+    m::AddressMap,
+    primal::Union{String,Symbol,Core.TypeName,Type},
+    tangent::NTangent{Tuple{T}},
+) where {T}
+    return populate_address_map_internal(m, primal, tangent[1])
+end
+function populate_address_map_internal(
+    m::AddressMap, primal::P, tangent::NTangent{Tuple{T}}
+) where {P<:Union{Tuple,NamedTuple},T}
+    return populate_address_map_internal(m, primal, tangent[1])
+end
+
 function test_rrule_performance(
     performance_checks_flag::Symbol, rule::R, f_f̄::F, x_x̄::Vararg{Any,N}
 ) where {R,F,N}
@@ -1003,12 +1022,9 @@ function test_rule(
         missing
     end
 
-    # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
-    # Skip when a pre-built rule was supplied — the caller owns it.
-    test_fwd &&
-        is_primitive &&
-        !ismissing(fwd_interp) &&
-        @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
+    # Reverse-mode primitive builders still return the primitive rule directly.
+    # Forward-mode now defaults to the chunked frontend, which may wrap primitive
+    # boundaries in an IRfwd/Nfwd adapter even when the underlying primitive is hand-written.
     test_rvs &&
         is_primitive &&
         !ismissing(rvs_interp) &&
@@ -1057,12 +1073,7 @@ function test_rule(
                 if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
-                        cache_key = (
-                            sig,
-                            debug_mode,
-                            :forward,
-                            Mooncake.DefaultForwardTangentMode(),
-                        )
+                        cache_key = (sig, debug_mode, :forward, Mooncake.IRfwdMode{1}())
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
                     end

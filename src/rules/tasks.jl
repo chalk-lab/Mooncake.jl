@@ -36,6 +36,9 @@ set_to_zero_internal!!(::SetToZeroCache, t::TaskTangent) = t
 _add_to_primal_internal(::MaybeCache, p::Task, t::TaskTangent, ::Bool) = p
 
 tangent_to_primal_internal!!(x::Task, t, ::MaybeCache) = x
+@inline tangent_to_primal_internal!!(
+    x::Task, t::NTangent{Tuple{T}}, ::MaybeCache
+) where {T} = x
 primal_to_tangent_internal!!(t, x::Task, ::MaybeCache) = t
 
 _dot_internal(::MaybeCache, ::TaskTangent, ::TaskTangent) = 0.0
@@ -60,6 +63,9 @@ tangent(t::TaskTangent, ::NoRData) = t
     # :queue, :sticky, etc.) are non-differentiable runtime infrastructure.
     return NoTangent()
 end
+@inline _get_tangent_field(t::TaskTangent, ::Val{name}) where {name} = _get_tangent_field(
+    t, name
+)
 @inline function _get_fdata_field(_, t::TaskTangent, f)
     f === :rngState0 && return NoFData()
     f === :rngState1 && return NoFData()
@@ -81,6 +87,8 @@ function get_tangent_field(t::TaskTangent, f)
     # All other Task fields are non-differentiable runtime infrastructure.
     return NoTangent()
 end
+@inline get_tangent_field(t::TaskTangent, f::Int) = get_tangent_field(t, fieldname(Task, f))
+@inline get_tangent_field(t::TaskTangent, f::Symbol) = _get_tangent_field(t, f)
 
 const TaskDual = Dual{Task,TaskTangent}
 const TaskCoDual = CoDual{Task,TaskTangent}

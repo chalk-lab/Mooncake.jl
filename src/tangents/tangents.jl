@@ -9,6 +9,40 @@ You might need to use this for `primitive type`s though.
 struct NoTangent end
 
 """
+    NTangent(lanes)
+
+Explicit wrapper for chunked forward-mode tangents at the `Dual` boundary.
+
+Each element of `lanes` is one tangent lane.
+"""
+struct NTangent{L<:Tuple}
+    lanes::L
+end
+
+Base.length(x::NTangent) = length(x.lanes)
+Base.getindex(x::NTangent, i::Int) = x.lanes[i]
+Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
+Base.copy(x::NTangent) = NTangent(map(copy, x.lanes))
+Base.zero(x::NTangent) = NTangent(map(zero, x.lanes))
+Base.iszero(x::NTangent) = all(iszero, x.lanes)
+_copy(x::NTangent) = NTangent(map(_copy, x.lanes))
+Base.:(+)(x::NTangent{L}, y::NTangent{L}) where {L<:Tuple} = increment!!(_copy(x), y)
+function Base.:(+)(x::NTangent{L}, y::Integer) where {L<:Tuple}
+    NTangent(map(xi -> xi + y, x.lanes))
+end
+Base.:(+)(x::Integer, y::NTangent{L}) where {L<:Tuple} = y + x
+Base.:(-)(x::NTangent) = _scale(-1.0, x)
+Base.:(-)(x::NTangent{L}, y::NTangent{L}) where {L<:Tuple} = increment!!(_copy(x), -y)
+Base.:(*)(a::Real, t::NTangent) = _scale(float(a), t)
+Base.:(*)(t::NTangent, a::Real) = _scale(float(a), t)
+Base.:(*)(a::IEEEFloat, t::NTangent) = _scale(a, t)
+Base.:(*)(t::NTangent, a::IEEEFloat) = _scale(a, t)
+Base.:(/)(t::NTangent, a::Real) = _scale(inv(float(a)), t)
+function Base.complex(x::NTangent{L}, y::NTangent{L}) where {L<:Tuple}
+    NTangent(tuple_map(complex, x.lanes, y.lanes))
+end
+
+"""
     PossiblyUninitTangent{T}
 
 Represents a `T` which maybe or may not be present. Does not distinguish between 0 and
@@ -90,6 +124,18 @@ were actually fields of `t`. This is the moral equivalent of `getfield` for
 ) where {F}
     return get_tangent_field(t, _sym_to_int(F, Val(s)))
 end
+@unstable @inline function get_tangent_field(t::NTangent, i::Int)
+    return NTangent(
+        ntuple(n -> get_tangent_field(t[n], i), Val(fieldcount(typeof(t.lanes))))
+    )
+end
+@unstable @inline function get_tangent_field(t::NTangent, s::Symbol)
+    return NTangent(
+        ntuple(n -> get_tangent_field(t[n], s), Val(fieldcount(typeof(t.lanes))))
+    )
+end
+@unstable @inline get_tangent_field(t, i::Int) = getfield(t, i)
+@unstable @inline get_tangent_field(t, s::Symbol) = getfield(t, s)
 
 """
     set_tangent_field!(t::MutableTangent{Tfields}, i::Int, x) where {Tfields}
@@ -100,10 +146,16 @@ Has the same semantics that `setfield!` would have if the data in the `fields` f
 were actually fields of `t`. This is the moral equivalent of `setfield!` for
 [`MutableTangent`](@ref).
 """
-@inline function set_tangent_field!(t::MutableTangent{Tfields}, i::Int, x) where {Tfields}
+@inline function set_tangent_field!(
+    t::MutableTangent{Tfields}, i::Int, x::X
+) where {Tfields,X}
     fields = t.fields
     Ti = fieldtype(Tfields, i)
-    new_val = Ti <: PossiblyUninitTangent ? Ti(x) : x
+    new_val = if Ti <: PossiblyUninitTangent
+        Ti(x)
+    else
+        x::Ti
+    end
     new_fields = Tfields(ntuple(n -> n == i ? new_val : fields[n], fieldcount(Tfields)))
     t.fields = new_fields
     return x
@@ -111,6 +163,16 @@ end
 
 @inline function set_tangent_field!(t::MutableTangent{T}, s::Symbol, x) where {T}
     return set_tangent_field!(t, _sym_to_int(T, Val(s)), x)
+end
+@inline function set_tangent_field!(t::NTangent, i::Int, x::NTangent)
+    return NTangent(
+        ntuple(n -> set_tangent_field!(t[n], i, x[n]), Val(fieldcount(typeof(t.lanes))))
+    )
+end
+@inline function set_tangent_field!(t::NTangent, s::Symbol, x::NTangent)
+    return NTangent(
+        ntuple(n -> set_tangent_field!(t[n], s, x[n]), Val(fieldcount(typeof(t.lanes))))
+    )
 end
 
 @generated function _sym_to_int(::Type{Tfields}, ::Val{s}) where {Tfields,s}
@@ -890,6 +952,11 @@ counting". If `c` is a `NoCache`, assume no aliasing or circular referencing.
 """
 increment_internal!!(::IncCache, ::NoTangent, ::NoTangent) = NoTangent()
 increment_internal!!(::IncCache, x::T, y::T) where {T<:IEEEFloat} = x + y
+function increment_internal!!(c::IncCache, x::NTangent{L}, y::NTangent{L}) where {L<:Tuple}
+    return NTangent(
+        tuple_map((xi, yi) -> increment_internal!!(c, xi, yi), x.lanes, y.lanes)
+    )
+end
 function increment_internal!!(::IncCache, x::Ptr{T}, y::Ptr{T}) where {T}
     return x === y ? x : throw(error("Incrementing pointers is not supported!"))
 end
@@ -947,6 +1014,9 @@ references are correctly handled. If `c` is a `NoCache`, assume no circular refe
 """
 set_to_zero_internal!!(::SetToZeroCache, ::NoTangent) = NoTangent()
 set_to_zero_internal!!(::SetToZeroCache, x::Base.IEEEFloat) = zero(x)
+function set_to_zero_internal!!(c::SetToZeroCache, x::NTangent)
+    return NTangent(tuple_map(Base.Fix1(set_to_zero_internal!!, c), x.lanes))
+end
 function set_to_zero_internal!!(c::SetToZeroCache, x::Union{Tuple,NamedTuple})
     return tuple_map(Base.Fix1(set_to_zero_internal!!, c), x)
 end
@@ -971,26 +1041,29 @@ Should be defined for all standard tangent types.
 Multiply tangent `t` by scalar `a`. Always possible because any given tangent type must
 correspond to a vector field. Not using `*` in order to avoid piracy.
 """
-_scale(a::Float64, t) = _scale_internal(IdDict{Any,Any}(), a, t)
+_scale(a::IEEEFloat, t) = _scale_internal(IdDict{Any,Any}(), a, t)
 
 """
-    _scale_internal(c::MaybeCache, a::Float64, t)
+    _scale_internal(c::MaybeCache, a::IEEEFloat, t)
 
 Implementation for [`_scale`](@ref). Use `c` to handle circular references and aliasing in
 `t`. If `c` is a `NoCache` assume no circular references or aliasing in `c`.
 """
-_scale_internal(::MaybeCache, ::Float64, ::NoTangent) = NoTangent()
-_scale_internal(::MaybeCache, a::Float64, t::T) where {T<:IEEEFloat} = T(a * t)
-@unstable function _scale_internal(c::MaybeCache, a::Float64, t::Union{Tuple,NamedTuple})
+_scale_internal(::MaybeCache, ::IEEEFloat, ::NoTangent) = NoTangent()
+_scale_internal(::MaybeCache, a::IEEEFloat, t::T) where {T<:IEEEFloat} = T(a * t)
+function _scale_internal(c::MaybeCache, a::IEEEFloat, t::NTangent)
+    return NTangent(map(ti -> _scale_internal(c, a, ti)::typeof(ti), t.lanes))
+end
+@unstable function _scale_internal(c::MaybeCache, a::IEEEFloat, t::Union{Tuple,NamedTuple})
     return map(ti -> _scale_internal(c, a, ti)::typeof(ti), t)
 end
-function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:PossiblyUninitTangent}
+function _scale_internal(c::MaybeCache, a::IEEEFloat, t::T) where {T<:PossiblyUninitTangent}
     return is_init(t) ? T(_scale_internal(c, a, val(t))) : T()
 end
-function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Tangent}
+function _scale_internal(c::MaybeCache, a::IEEEFloat, t::T) where {T<:Tangent}
     return T(_scale_internal(c, a, t.fields))
 end
-function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MutableTangent}
+function _scale_internal(c::MaybeCache, a::IEEEFloat, t::T) where {T<:MutableTangent}
     haskey(c, t) && return c[t]::T
     y = T()
     c[t] = y
@@ -1009,7 +1082,10 @@ Should be defined for all standard tangent types.
 Inner product between tangents `t` and `s`. Must return a `Float64`.
 Always available because all tangent types correspond to finite-dimensional vector spaces.
 """
-_dot(t::T, s::T) where {T} = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
+_dot(t, s) = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
+@inline _dot(t, s::NTangent{Tuple{T}}) where {T} = _dot(t, s[1])
+@inline _dot(t::NTangent{Tuple{T}}, s) where {T} = _dot(t[1], s)
+@inline _dot(t::NTangent{Tuple{T}}, s::NTangent{Tuple{S}}) where {T,S} = _dot(t[1], s[1])
 
 """
     _dot_internal(c::MaybeCache, t::T, s::T) where {T}
@@ -1020,8 +1096,35 @@ or aliasing.
 """
 _dot_internal(::MaybeCache, ::NoTangent, ::NoTangent) = 0.0
 _dot_internal(::MaybeCache, t::T, s::T) where {T<:Union{IEEEFloat,Integer}} = Float64(t * s)
+function _dot_internal(c::MaybeCache, t::NTangent, s::NTangent)
+    return sum(
+        map((ti, si) -> _dot_internal(c, ti, si)::Float64, t.lanes, s.lanes); init=0.0
+    )::Float64
+end
+@inline function _dot_internal(
+    c::MaybeCache, t::NTangent{Tuple{T}}, s::NTangent{Tuple{S}}
+) where {T,S}
+    return _dot_internal(c, t[1], s[1])::Float64
+end
+@inline function _dot_internal(c::MaybeCache, t::NTangent, s::NTangent{Tuple{S}}) where {S}
+    return _dot_internal(c, t, s[1])::Float64
+end
+@inline function _dot_internal(c::MaybeCache, t::NTangent{Tuple{S}}, s::NTangent) where {S}
+    return _dot_internal(c, t[1], s)::Float64
+end
+function _dot_internal(c::MaybeCache, t, s::NTangent{Tuple{S}}) where {S}
+    return _dot_internal(c, t, s[1])::Float64
+end
+function _dot_internal(c::MaybeCache, t::NTangent{Tuple{S}}, s) where {S}
+    return _dot_internal(c, t[1], s)::Float64
+end
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tuple,NamedTuple}}
     return sum(map((t, s) -> _dot_internal(c, t, s)::Float64, t, s); init=0.0)::Float64
+end
+function _dot_internal(
+    c::MaybeCache, t::T, s::S
+) where {T<:Union{Tuple,NamedTuple},S<:Union{Tuple,NamedTuple}}
+    return sum(map((ti, si) -> _dot_internal(c, ti, si)::Float64, t, s); init=0.0)::Float64
 end
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:PossiblyUninitTangent}
     is_init(t) && is_init(s) && return _dot_internal(c, val(t), val(s))::Float64
@@ -1074,6 +1177,11 @@ aliasing in either `x` or `t`.
 """
 _add_to_primal_internal(::MaybeCache, x, ::NoTangent, ::Bool) = x
 _add_to_primal_internal(::MaybeCache, x::T, t::T, ::Bool) where {T<:IEEEFloat} = x + t
+function _add_to_primal_internal(
+    c::MaybeCache, x, t::NTangent{Tuple{T}}, unsafe::Bool
+) where {T}
+    return _add_to_primal_internal(c, x, t[1], unsafe)
+end
 function _add_to_primal_internal(
     c::MaybeCache, x::SimpleVector, t::Vector{Any}, unsafe::Bool
 )
@@ -1514,6 +1622,52 @@ end
 )
     return tangent
 end
+@unstable function tangent_to_friendly!!(
+    dest, primal, tangent::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::NamedTuple{names}, primal::P, tangent::NTangent{Tuple{T}}, c::MaybeCache
+) where {names,P,T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::Tuple, primal::Tuple, tangent::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::FriendlyTangentCache{AsRaw}, primal, tangent::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::FriendlyTangentCache{AsPrimal,B},
+    primal,
+    tangent::NTangent{Tuple{T}},
+    c::MaybeCache,
+) where {B,T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::FriendlyTangentCache{M}, primal, tangent::NTangent{Tuple{T}}, c::MaybeCache
+) where {M<:AsCustomised,T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::FriendlyTangentCache{AsMutableFields},
+    primal,
+    tangent::NTangent{Tuple{T}},
+    c::MaybeCache,
+) where {T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::FriendlyTangentCache{AsRaw}, primal, tangent::NTangent, c::MaybeCache
+)
+    return NTangent(map(t -> tangent_to_friendly!!(dest, primal, t, c), tangent.lanes))
+end
 
 # AsCustomised (and any user-defined subtype of AsCustomised) — delegate to user hook.
 # Using `where {M<:AsCustomised}` ensures that user subtypes of AsCustomised are matched,
@@ -1780,6 +1934,15 @@ Otherwise, the corresponding updated tangent should be stored in the cache.
 """
 function primal_to_tangent_internal!! end
 
+function tangent_to_primal_internal!!(x, tx::NTangent{Tuple{T}}, c::MaybeCache) where {T}
+    tangent_to_primal_internal!!(x, tx[1], c)
+end
+function tangent_to_primal_internal!!(
+    x::Union{Int8,Int16,Int32,Int64,Int128}, tx::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
+    x
+end
+
 function tangent_to_primal_internal!!(
     x::Union{Int8,Int16,Int32,Int64,Int128}, tx, c::MaybeCache
 )
@@ -1791,6 +1954,16 @@ function primal_to_tangent_internal!!(
     NoTangent()
 end
 tangent_to_primal_internal!!(x::IEEEFloat, tx, c::MaybeCache) = tx
+function tangent_to_primal_internal!!(
+    x::IEEEFloat, tx::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
+    tangent_to_primal_internal!!(x, tx[1], c)
+end
+@inline function tangent_to_primal_internal!!(
+    x::Tuple, tx::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
+    return tangent_to_primal_internal!!(x, tx[1], c)
+end
 primal_to_tangent_internal!!(tx, x::IEEEFloat, c::MaybeCache) = x
 @generated function tangent_to_primal_internal!!(x::Tuple, tx, c::MaybeCache)
     ttp_exprs = map(n -> :(tangent_to_primal_internal!!(x[$n], tx[$n], c)), 1:fieldcount(x))
@@ -1810,6 +1983,11 @@ function tangent_to_primal_internal!!(x::NamedTuple, tx, c::MaybeCache)
     tx isa NoTangent && return x
     return tuple_map((xn, txn) -> tangent_to_primal_internal!!(xn, txn, c), x, tx)
 end
+@inline function tangent_to_primal_internal!!(
+    x::NamedTuple, tx::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
+    return tangent_to_primal_internal!!(x, tx[1], c)
+end
 function primal_to_tangent_internal!!(tx, x::NamedTuple, c::MaybeCache)
     tx isa NoTangent && return NoTangent()
     return tuple_map((txn, xn) -> primal_to_tangent_internal!!(txn, xn, c), tx, x)
@@ -1817,6 +1995,11 @@ end
 function tangent_to_primal_internal!!(x::Ptr{T}, tx, c::MaybeCache) where {T}
     tangent_type(T) == NoTangent && return x
     return throw(ArgumentError("tangent_to_primal_internal!! not available for pointers."))
+end
+@inline function tangent_to_primal_internal!!(
+    x::Ptr{T}, tx::NTangent{Tuple{S}}, c::MaybeCache
+) where {T,S}
+    return tangent_to_primal_internal!!(x, tx[1], c)
 end
 function primal_to_tangent_internal!!(tx, x::Ptr{T}, c::MaybeCache) where {T}
     tangent_type(T) == NoTangent && return NoTangent()
@@ -1831,6 +2014,11 @@ function tangent_to_primal_internal!!(x::SimpleVector, tx, c::MaybeCache)
     end...)
     c[x] = x′
     return x′
+end
+@inline function tangent_to_primal_internal!!(
+    x::SimpleVector, tx::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
+    return tangent_to_primal_internal!!(x, tx[1], c)
 end
 function primal_to_tangent_internal!!(tx, x::SimpleVector, c::MaybeCache)
     haskey(c, x) && return c[x]::Vector{Any}

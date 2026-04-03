@@ -18,7 +18,9 @@
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
-    return Dual(sum(primal(x)), sum(tangent(x)))
+    dx = tangent(x)
+    dy = dx isa NTangent ? NTangent(map(sum, dx.lanes)) : sum(dx)
+    return Dual(sum(primal(x)), dy)
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
@@ -34,7 +36,11 @@ end
 function frule!!(
     ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
 ) where {P<:IEEEFloat}
-    return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
+    px = primal(x)
+    dx = tangent(x)
+    dy =
+        dx isa NTangent ? NTangent(map(dxi -> 2 * dot(px, dxi), dx.lanes)) : 2 * dot(px, dx)
+    return Dual(sum(abs2, px), dy)
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}

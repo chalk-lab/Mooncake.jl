@@ -4,7 +4,16 @@ using ChainRules, LinearAlgebra, Mooncake
 using Base: IEEEFloat
 
 import Mooncake:
-    @is_primitive, CoDual, Dual, MinimalCtx, NoRData, frule!!, primal, rrule!!, tangent
+    @is_primitive,
+    CoDual,
+    Dual,
+    MinimalCtx,
+    NTangent,
+    NoRData,
+    frule!!,
+    primal,
+    rrule!!,
+    tangent
 
 @is_primitive MinimalCtx Tuple{typeof(exp),Matrix{<:IEEEFloat}}
 
@@ -21,9 +30,26 @@ function (pb::ExpPullback)(::NoRData)
 end
 
 function frule!!(::Dual{typeof(exp)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
-    X = copy(primal(X_dX))
-    dX = copy(tangent(X_dX))
-    return Dual(ChainRules.frule((ChainRules.NoTangent(), dX), LinearAlgebra.exp!, X)...)
+    X = primal(X_dX)
+    dX = tangent(X_dX)
+    if dX isa NTangent
+        first_X = copy(X)
+        Y, first_lane = ChainRules.frule(
+            (ChainRules.NoTangent(), copy(dX[1])), LinearAlgebra.exp!, first_X
+        )
+        lane_tangents = ntuple(Val(length(dX))) do lane
+            lane == 1 && return first_lane
+            _, lane_dY = ChainRules.frule(
+                (ChainRules.NoTangent(), copy(dX[lane])), LinearAlgebra.exp!, copy(X)
+            )
+            return lane_dY
+        end
+        return Dual(Y, NTangent(lane_tangents))
+    end
+    X_copy = copy(X)
+    return Dual(
+        ChainRules.frule((ChainRules.NoTangent(), copy(dX)), LinearAlgebra.exp!, X_copy)...
+    )
 end
 
 function rrule!!(::CoDual{typeof(exp)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloat}

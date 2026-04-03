@@ -102,6 +102,11 @@ function tangent_to_primal_internal!!(
         return tangent_to_primal_internal!!(xn, tn, c)
     end
 end
+@inline function tangent_to_primal_internal!!(
+    x::Memory{P}, t::NTangent{Tuple{T}}, c::MaybeCache
+) where {P,T}
+    return tangent_to_primal_internal!!(x, t[1], c)
+end
 function primal_to_tangent_internal!!(
     t::Memory{T}, x::Memory{<:Any}, c::MaybeCache
 ) where {T}
@@ -229,6 +234,11 @@ function tangent_to_primal_internal!!(
         return tangent_to_primal_internal!!(xn, tn, c)
     end
 end
+@inline function tangent_to_primal_internal!!(
+    x::MemoryRef, tx::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
+    return tangent_to_primal_internal!!(x, tx[1], c)
+end
 function primal_to_tangent_internal!!(
     t::Array{T,N}, x::Array{<:Any,N}, c::MaybeCache
 ) where {T,N}
@@ -251,7 +261,9 @@ function frule!!(
     n::Dual{Int},
 ) where {P}
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
+    _memory_lane_map(
+        (ddest, dsrc) -> unsafe_copyto!(ddest, dsrc, primal(n)), tangent(dest), tangent(src)
+    )
     return dest
 end
 function rrule!!(
@@ -413,7 +425,13 @@ end
     ordering = primal(_ordering)
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), _val(ordering), _val(bc))
-    dy = memoryrefget(tangent(x), _val(ordering), _val(bc))
+    tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
+    dx = tangent(x)
+    dy = if dx isa NTangent
+        NTangent(ntuple(n -> memoryrefget(dx[n], _val(ordering), _val(bc)), Val(length(dx))))
+    else
+        memoryrefget(dx, _val(ordering), _val(bc))
+    end
     return Dual(y, dy)
 end
 @inline function rrule!!(
@@ -444,7 +462,13 @@ end
     ordering = primal(_ordering)
     boundscheck = primal(_boundscheck)
     y = memoryrefget(primal(x), ordering, boundscheck)
-    dy = memoryrefget(tangent(x), ordering, boundscheck)
+    tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
+    dx = tangent(x)
+    dy = if dx isa NTangent
+        NTangent(ntuple(n -> memoryrefget(dx[n], ordering, boundscheck), Val(length(dx))))
+    else
+        memoryrefget(dx, ordering, boundscheck)
+    end
     return Dual(y, dy)
 end
 @inline Base.@propagate_inbounds function rrule!!(
@@ -465,15 +489,42 @@ end
 
 # Core.memoryrefmodify!
 
+@inline function _memory_lane_map(f, x)
+    lane_count = Mooncake._fcache_derivative_ntangent_lane_count((x,))
+    isnothing(lane_count) && return f(x)
+    return NTangent(ntuple(lane -> f(Mooncake._ntangent_lane(x, Val(lane))), lane_count))
+end
+
+@inline function _memory_lane_map(f, x, y)
+    lane_count = Mooncake._fcache_derivative_ntangent_lane_count((x, y))
+    isnothing(lane_count) && return f(x, y)
+    return NTangent(
+        ntuple(
+            lane -> f(
+                Mooncake._ntangent_lane(x, Val(lane)),
+                Mooncake._ntangent_lane(y, Val(lane)),
+            ),
+            lane_count,
+        ),
+    )
+end
+
+@inline _memoryrefnew_tangent(dx::NoTangent, args...) = NoTangent()
+@inline function _memoryrefnew_tangent(dx, args...)
+    return _memory_lane_map(dxi -> memoryrefnew(dxi, args...), dx)
+end
+
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
-    return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
+    return Dual(memoryrefnew(primal(x)), _memoryrefnew_tangent(tangent(x)))
 end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef}, ii::Dual{Int})
-    return Dual(memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii)))
+    return Dual(
+        memoryrefnew(primal(x), primal(ii)), _memoryrefnew_tangent(tangent(x), primal(ii))
+    )
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
@@ -488,7 +539,7 @@ end
     boundscheck::Dual{Bool},
 )
     y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
+    dy = _memoryrefnew_tangent(tangent(x), primal(ii), primal(boundscheck))
     return Dual(y, dy)
 end
 @inline function rrule!!(
@@ -516,13 +567,17 @@ end
 
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
+    x::Dual{<:MemoryRef{P}},
     value::Dual,
     ::Dual{Val{ordering}},
     ::Dual{Val{boundscheck}},
-) where {P,V,ordering,boundscheck}
+) where {P,ordering,boundscheck}
     memoryrefset!(primal(x), primal(value), ordering, boundscheck)
-    memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
+    _memory_lane_map(
+        (dx, dvalue) -> memoryrefset!(dx, dvalue, ordering, boundscheck),
+        tangent(x),
+        tangent(value),
+    )
     return value
 end
 @inline function rrule!!(
@@ -579,11 +634,11 @@ end
 
 @inline function frule!!(
     ::Dual{typeof(memoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
+    x::Dual{<:MemoryRef{P}},
     value::Dual,
     ordering::Dual{Symbol},
     boundscheck::Dual{Bool},
-) where {P,V}
+) where {P}
     return frule!!(
         zero_dual(lmemoryrefset!),
         x,
@@ -665,7 +720,9 @@ function frule!!(
     size::Dual{<:NTuple{N,Int}},
 ) where {P,N}
     y = _new_(Array{P,N}, primal(ref), primal(size))
-    dy = _new_(Array{tangent_type(P),N}, tangent(ref), primal(size))
+    dy = _memory_lane_map(
+        dref -> _new_(Array{tangent_type(P),N}, dref, primal(size)), tangent(ref)
+    )
     return Dual(y, dy)
 end
 function rrule!!(
@@ -719,7 +776,11 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
+    dy = if wants_length
+        NoTangent()
+    else
+        _memory_lane_map(dx -> bitcast(Ptr{NoTangent}, dx.ptr), tangent(x))
+    end
     return Dual(y, dy)
 end
 function rrule!!(
@@ -742,7 +803,11 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
+    dy = if wants_offset
+        _memory_lane_map(dx -> bitcast(Ptr{NoTangent}, dx.ptr_or_offset), tangent(x))
+    else
+        _memory_lane_map(dx -> dx.mem, tangent(x))
+    end
     return Dual(y, dy)
 end
 function rrule!!(
@@ -765,7 +830,7 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_size = name === 2 || name === :size
-    dy = wants_size ? NoTangent() : tangent(x).ref
+    dy = wants_size ? NoTangent() : _memory_lane_map(dx -> dx.ref, tangent(x))
     return Dual(y, dy)
 end
 function rrule!!(
@@ -786,6 +851,11 @@ function frule!!(
     f::Dual{typeof(lgetfield)}, x::Dual{<:_MemTypes,<:_MemTypes}, name::Dual{<:Val}
 )
     return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
+end
+function frule!!(
+    ::Dual{typeof(lgetfield)}, x::Dual{P,T}, name::Dual{Val{f}}
+) where {P<:_MemTypes,T<:_MemTypes,f}
+    return frule!!(zero_dual(lgetfield), x, name, zero_dual(Val(:not_atomic)))
 end
 function rrule!!(
     f::CoDual{typeof(lgetfield)}, x::CoDual{<:_MemTypes,<:_MemTypes}, name::CoDual{<:Val}
@@ -866,7 +936,7 @@ end
 # Misc. other rules which are required for correctness.
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), _copy(tangent(a)))
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)

@@ -635,6 +635,23 @@ _copy(x::Type) = x
 @static if VERSION < v"1.11-"
     @noinline __call_rule_erased!(rule, args) = rule(args...)
     @inline __call_rule(rule, args) = __call_rule_erased!(Base.inferencebarrier(rule), args)
+
+    # TODO: if all internal OpaqueClosure / MistyClosure callsites are routed through
+    # `__call_opaque_closure`, this helper may be able to subsume the OpaqueClosure-specific
+    # part of `__call_rule`.
+    @noinline function __call_opaque_closure_erased!(oc::OpaqueClosure, args)
+        return Core._apply_iterate(iterate, oc, args)
+    end
+    @inline function __call_opaque_closure(oc::OpaqueClosure, args)
+        return __call_opaque_closure_erased!(
+            Base.inferencebarrier(oc), Base.inferencebarrier(args)
+        )
+    end
 else
     @inline __call_rule(rule, args) = rule(args...)
+    @inline __call_opaque_closure(oc::OpaqueClosure, args) = Core._apply_iterate(
+        iterate, oc, args
+    )
 end
+
+@inline __call_opaque_closure(mc::MistyClosure, args) = __call_opaque_closure(mc.oc, args)

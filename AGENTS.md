@@ -66,6 +66,7 @@ The overall target is: correct by construction where possible, aggressively test
 - Ensure supported primal types and their tangent types are exercised against the relevant rules for compatibility and composability.
 - Mooncake has a debug mode which is useful for testing malformed rules and diagnosing rule failures; see `docs/src/utilities/debug_mode.md`.
 - For performance-sensitive rules, verify by running the `frule!!` or `rrule!!` directly and checking allocations and runtime against the primal. Use `@allocated` to ensure that zero-allocation primals still yield zero-allocation AD paths, and `@code_warntype` to check for type stability.
+- For allocation-sensitive tests, `Mooncake.TestUtils.count_allocs` is often more accurate and robust than a raw `@allocated` probe, especially when the measurement needs to avoid top-level compilation noise.
 - Bug fixes in rules, the interpreter, or compiler interop should ideally land with a focused regression test.
 - If a fix depends on compiler or world-age behaviour, isolate it and test it directly.
 - `friendly_tangents` can display a misleading value for structured or wrapped types even when the underlying tangent data is correct. Do not treat a surprising `friendly_tangents` result as proof of a bug without also inspecting the raw tangent.

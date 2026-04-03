@@ -8,6 +8,16 @@
         # Verify that an unexpected type throws a sensible error.
         @test_throws "Encountered unexpected array type" Mooncake.arrayify(5, 4)
 
+        # Width-1 chunked IRfwd keeps array tangents wrapped as NTangent((dx,)).
+        # BLAS/LAPACK helpers should unwrap that single lane locally and preserve aliasing.
+        @testset "width-1 NTangent unwrap" begin
+            x = reshape(collect(1.0:6.0), 2, 3)
+            dx = ones(size(x))
+            _x, _dx = Mooncake.arrayify(x, Mooncake.NTangent((dx,)))
+            @test _x === x
+            @test _dx === dx
+        end
+
         # Verify all test cases can be array-ified.
         @testset "$P" for P in [Float32, Float64, ComplexF32, ComplexF64]
             xs = vcat(

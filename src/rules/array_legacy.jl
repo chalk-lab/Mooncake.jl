@@ -86,7 +86,10 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
     Base._deletebeg!(primal(a), primal(d))
-    Base._deletebeg!(tangent(a), primal(d))
+    IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
+        Base._deletebeg!(da, primal(d))
+        return da
+    end
     return zero_dual(nothing)
 end
 function rrule!!(
@@ -113,7 +116,10 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
     Base._deleteend!(primal(a), primal(d))
-    Base._deleteend!(tangent(a), primal(d))
+    IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
+        Base._deleteend!(da, primal(d))
+        return da
+    end
     return zero_dual(nothing)
 end
 function rrule!!(
@@ -152,7 +158,10 @@ function frule!!(
     delta::Dual{<:Integer},
 )
     Base._deleteat!(primal(a), primal(i), primal(delta))
-    Base._deleteat!(tangent(a), primal(i), primal(delta))
+    IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
+        Base._deleteat!(da, primal(i), primal(delta))
+        return da
+    end
     return zero_dual(nothing)
 end
 function rrule!!(
@@ -187,7 +196,10 @@ function frule!!(
     ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
 ) where {T}
     Base._growbeg!(primal(a), primal(d))
-    Base._growbeg!(tangent(a), primal(d))
+    IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
+        Base._growbeg!(da, primal(d))
+        return da
+    end
     return zero_dual(nothing)
 end
 function rrule!!(
@@ -209,7 +221,10 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
     Base._growend!(primal(a), primal(d))
-    Base._growend!(tangent(a), primal(d))
+    IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
+        Base._growend!(da, primal(d))
+        return da
+    end
     return zero_dual(nothing)
 end
 function rrule!!(
@@ -233,7 +248,10 @@ function frule!!(
     ::Dual{typeof(Base._growat!)}, a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
 )
     Base._growat!(primal(a), primal(i), primal(d))
-    Base._growat!(tangent(a), primal(i), primal(d))
+    IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
+        Base._growat!(da, primal(i), primal(d))
+        return da
+    end
     return zero_dual(nothing)
 end
 function rrule!!(
@@ -261,9 +279,17 @@ end
 @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
 function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
     sizehint!(primal(x), primal(sz))
-    sizehint!(tangent(x), primal(sz))
+    IntrinsicsWrappers._builtins_lane_map(tangent(x)) do dx
+        sizehint!(dx, primal(sz))
+        return dx
+    end
     return x
 end
+
+@inline _jl_array_ptr_tangent(da::Array{V}) where {V} = ccall(
+    :jl_array_ptr, Ptr{V}, (Any,), da
+)
+
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
@@ -277,10 +303,10 @@ function frule!!(
     ::Dual{Tuple{Val{Any}}},
     ::Dual, # nreq
     ::Dual, # calling convention
-    a::Dual{<:Array{T},<:Array{V}},
-) where {T,V}
+    a::Dual{<:Array{T}},
+) where {T}
     y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
-    dy = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
+    dy = IntrinsicsWrappers._builtins_lane_map(_jl_array_ptr_tangent, tangent(a))
     return Dual(y, dy)
 end
 function rrule!!(
@@ -312,7 +338,14 @@ function frule!!(
 ) where {T}
     _n = primal(n)
     Base.unsafe_copyto!(primal(dest), primal(doffs), primal(src), primal(soffs), _n)
-    Base.unsafe_copyto!(tangent(dest), primal(doffs), tangent(src), primal(soffs), _n)
+    IntrinsicsWrappers._builtins_lane_map(
+        (ddest, dsrc) -> begin
+            Base.unsafe_copyto!(ddest, primal(doffs), dsrc, primal(soffs), _n)
+            ddest
+        end,
+        tangent(dest),
+        tangent(src),
+    )
     return dest
 end
 function rrule!!(
@@ -370,7 +403,9 @@ Base.@propagate_inbounds function frule!!(
 ) where {N}
     _inds = tuple_map(primal, inds)
     y = arrayref(primal(inbounds), primal(x), _inds...)
-    dy = arrayref(primal(inbounds), tangent(x), _inds...)
+    dy = IntrinsicsWrappers._builtins_lane_map(
+        dx -> arrayref(primal(inbounds), dx, _inds...), tangent(x)
+    )
     return Dual(y, dy)
 end
 Base.@propagate_inbounds function rrule!!(
@@ -405,7 +440,10 @@ function frule!!(
 )
     _inds = tuple_map(primal, inds)
     Core.arrayset(primal(inbounds), primal(A), primal(v), _inds...)
-    Core.arrayset(primal(inbounds), tangent(A), tangent(v), _inds...)
+    IntrinsicsWrappers._builtins_lane_map(tangent(A), tangent(v)) do dA, dv
+        Core.arrayset(primal(inbounds), dA, dv, _inds...)
+        return dA
+    end
     return A
 end
 function rrule!!(
@@ -476,7 +514,7 @@ function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), _copy(tangent(a)))
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)

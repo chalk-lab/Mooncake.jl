@@ -608,13 +608,13 @@ end
             )
             @test z_and_dz_dual isa Mooncake.Dual
             @test Mooncake.primal(z_and_dz_dual) == z
-            @test Mooncake.tangent(z_and_dz_dual) == dz
+            @test Mooncake.tangent(z_and_dz_dual) == Mooncake.NTangent((dz,))
 
             # new tuple interface
             z_and_dz_tup = Mooncake.value_and_derivative!!(cache, zip(fx, dfx)...)
-            @test z_and_dz_tup isa Tuple{Float64,Float64}
+            @test z_and_dz_tup isa Tuple{Float64,Mooncake.NTangent}
             @test first(z_and_dz_tup) == z
-            @test last(z_and_dz_tup) == dz
+            @test last(z_and_dz_tup) == Mooncake.NTangent((dz,))
 
             z_and_dz_chunk_tup = Mooncake.value_and_derivative!!(
                 cache,

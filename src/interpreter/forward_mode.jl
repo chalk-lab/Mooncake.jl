@@ -26,24 +26,24 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-struct DefaultForwardTangentMode end
+struct IRfwdMode{N} end
 
-@inline _fwd_dual_type(::DefaultForwardTangentMode, ::Type{P}) where {P} = dual_type(P)
-@inline _fwd_zero_dual(::DefaultForwardTangentMode, x) = zero_dual(x)
-@inline _fwd_uninit_dual(::DefaultForwardTangentMode, x) = uninit_dual(x)
+function _fwd_dual_type end
+function _fwd_zero_dual end
+function _fwd_uninit_dual end
 @inline _fwd_primitive_rule(
     ::Any, interp, sig; debug_mode=false, silence_debug_messages=true
 ) = nothing
 
-function build_frule(
-    args...;
-    debug_mode=false,
-    silence_debug_messages=true,
-    tangent_mode=DefaultForwardTangentMode(),
+function build_frule end
+function build_chunked_frule end
+
+function _build_raw_frule(
+    args...; debug_mode=false, silence_debug_messages=true, tangent_mode=IRfwdMode{1}()
 )
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages, tangent_mode)
+    return _build_raw_frule(interp, sig; debug_mode, silence_debug_messages, tangent_mode)
 end
 
 struct DualRuleInfo
@@ -67,13 +67,13 @@ Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
 than the current world (e.g., when building rules for MistyClosure which uses its own world).
 """
-function build_frule(
+function _build_raw_frule(
     interp::MooncakeInterpreter{C},
     sig_or_mi;
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
-    tangent_mode=DefaultForwardTangentMode(),
+    tangent_mode=IRfwdMode{1}(),
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -150,7 +150,8 @@ end
     @inline function __call_rule(
         rule::DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}, args
     ) where {P,A,R,isva,nargs}
-        return __call_rule_erased!(Base.inferencebarrier(rule), args)::R
+        uf_args = __unflatten_dual_varargs(isva, args, Val(nargs))
+        return __call_opaque_closure(rule.fwd_oc, uf_args)::R
     end
 end
 
@@ -175,17 +176,24 @@ end
     __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
 
 If isva and nargs=2, then inputs `(Dual(5.0, 0.0), Dual(4.0, 0.0), Dual(3.0, 0.0))`
-are transformed into `(Dual(5.0, 0.0), Dual((5.0, 4.0), (0.0, 0.0)))`.
+are transformed into `(Dual(5.0, NTangent((0.0,))), Dual((5.0, 4.0), NTangent(((0.0, 0.0),))))`.
 """
-function __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
+function __unflatten_dual_varargs(
+    isva::Bool, args::Tuple{Vararg{Any,N}}, ::Val{nargs}
+) where {N,nargs}
     isva || return args
-    group_primal = map(primal, args[nargs:end])
+    group_primal = ntuple(i -> primal(args[nargs + i - 1]), Val(N - nargs + 1))
     if tangent_type(_typeof(group_primal)) == NoTangent
         grouped_args = zero_dual(group_primal)
     else
-        grouped_args = Dual(group_primal, map(tangent, args[nargs:end]))
+        grouped_args = Dual(
+            group_primal,
+            _canonical_forward_tangent(
+                group_primal, ntuple(i -> tangent(args[nargs + i - 1]), Val(N - nargs + 1))
+            ),
+        )
     end
-    return (args[1:(nargs - 1)]..., grouped_args)
+    return (ntuple(i -> args[i], Val(nargs - 1))..., grouped_args)
 end
 
 struct DualInfo
@@ -201,7 +209,7 @@ function generate_dual_ir(
     sig_or_mi;
     debug_mode=false,
     do_inline=true,
-    tangent_mode=DefaultForwardTangentMode(),
+    tangent_mode=IRfwdMode{1}(),
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -275,7 +283,7 @@ Whether or not the value is a literal, or an index into the captures, can be det
 the return type.
 """
 function const_dual!(
-    captures::Vector{Any}, stmt, tangent_mode=DefaultForwardTangentMode()
+    captures::Vector{Any}, stmt, tangent_mode=IRfwdMode{1}()
 )::Union{Dual,Int}
     v = get_const_primal_value(stmt)
     x = _fwd_uninit_dual(tangent_mode, v)
@@ -374,14 +382,65 @@ end
 function modify_fwd_ad_stmts!(
     stmt::PiNode, dual_ir::IRCode, ssa::SSAValue, ::Vector{Any}, info::DualInfo
 )
+    stmt == PiNode(nothing, Union{}) && return replace_call!(dual_ir, ssa, nothing)
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
+        # A PiNode narrows the primal value, not the whole Dual object. Rewriting
+        #
+        #     π(v, T)
+        #
+        # as
+        #
+        #     π(dual_v, Dual{T, ...})
+        #
+        # is unsound when the incoming dual was built from an abstract source such as
+        # `Ref{Any}`. For example:
+        #
+        #     pi_node_tester(y::Ref{Any}) = isa(y[], Int) ? sin(y[]) : y[]
+        #
+        # can reach the `Int` branch with a value whose runtime primal is `5::Int` even
+        # though the incoming dual was created from the abstract source type `Any`.
+        # Pretending that the whole dual had already narrowed to `Dual{Int, ...}` caused
+        # an invalid transformed program and eventually an illegal-instruction crash.
+        # See the matching note in `src/tangents/dual.jl` for the constructor-side fix
+        # that sharpens abstract source types to `typeof(x)` before this control-flow
+        # refinement happens.
+        #
+        # The correct forward rewrite is:
+        #   1. extract `primal(v)` and `tangent(v)`,
+        #   2. apply the PiNode only to `primal(v)`,
+        #   3. rebuild `Dual(refined_primal, tangent(v))`.
+        #
+        # This preserves the control-flow refinement on the primal while letting normal
+        # dual construction recanonicalize the tangent against the refined runtime value.
+        primal_ssa = CC.insert_node!(
+            dual_ir,
+            ssa,
+            new_inst(Expr(:call, getfield, v, QuoteNode(:primal))),
+            ATTACH_BEFORE,
+        )
+        tangent_ssa = CC.insert_node!(
+            dual_ir,
+            ssa,
+            new_inst(Expr(:call, getfield, v, QuoteNode(:tangent))),
+            ATTACH_BEFORE,
+        )
+        refined_primal_ssa = CC.insert_node!(
+            dual_ir,
+            ssa,
+            new_inst(PiNode(primal_ssa, CC.widenconst(stmt.typ))),
+            ATTACH_BEFORE,
+        )
+        replace_call!(dual_ir, ssa, Expr(:call, Dual, refined_primal_ssa, tangent_ssa))
     else
         v = _fwd_uninit_dual(info.tangent_mode, get_const_primal_value(stmt.val))
+        replace_call!(
+            dual_ir,
+            ssa,
+            PiNode(v, _fwd_dual_type(info.tangent_mode, CC.widenconst(stmt.typ))),
+        )
     end
-    replace_call!(
-        dual_ir, ssa, PiNode(v, _fwd_dual_type(info.tangent_mode, CC.widenconst(stmt.typ)))
-    )
+    set_ir!(dual_ir, ssa, :type, _fwd_dual_type(info.tangent_mode, CC.widenconst(stmt.typ)))
     return nothing
 end
 
@@ -467,13 +526,36 @@ function modify_fwd_ad_stmts!(
             return nothing
         end
 
+        interp = info.interp
+
+        # If every non-function input type is non-differentiable, there is usually no
+        # forward work to do for this call. Evaluate the primal path and wrap the result in
+        # a zero dual directly rather than routing through derived rule construction.
+        #
+        # Keep primitives on the normal rule path even in this case. Some primitives are
+        # only valid through their dedicated frule!!, e.g. `_foreigncall_(Val(:jl_type_unionall), ...)`
+        # which should stay on the zero-derivative primitive rule rather than replaying the
+        # raw foreigncall through `__fwds_pass_no_ad!`.
+        if all(T -> tangent_type(T) === NoTangent, @view(sig_types[2:end])) &&
+            !is_primitive(context_type(info.interp), ForwardMode, sig, info.interp.world)
+            primal_ssa = CC.insert_node!(
+                dual_ir,
+                ssa,
+                new_inst(Expr(:call, __fwds_pass_no_ad!, args...)),
+                ATTACH_BEFORE,
+            )
+            replace_call!(
+                dual_ir, ssa, Expr(:call, _fwd_zero_dual, info.tangent_mode, primal_ssa)
+            )
+            return nothing
+        end
+
         # Dual-ise arguments.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
             return _fwd_uninit_dual(info.tangent_mode, get_const_primal_value(arg))
         end
 
-        interp = info.interp
         if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
             rule = build_primitive_frule(sig)
             if safe_for_literal(rule)
@@ -496,7 +578,10 @@ function modify_fwd_ad_stmts!(
             )
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
-            replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
+            args_ssa = CC.insert_node!(
+                dual_ir, ssa, new_inst(Expr(:call, tuple, dual_args...)), ATTACH_BEFORE
+            )
+            replace_call!(dual_ir, ssa, Expr(:call, __call_rule, rule_ssa, args_ssa))
         end
     elseif isexpr(stmt, :boundscheck)
         # Keep the boundscheck, but put it in a Dual.
@@ -550,7 +635,7 @@ mutable struct LazyFRule{primal_sig,Trule,Tmode}
     mi::Core.MethodInstance
     rule::Trule
     function LazyFRule(
-        mi::Core.MethodInstance, debug_mode::Bool, tangent_mode=DefaultForwardTangentMode()
+        mi::Core.MethodInstance, debug_mode::Bool, tangent_mode=IRfwdMode{1}()
     )
         interp = get_interpreter(ForwardMode)
         return new{
@@ -569,40 +654,30 @@ end
 # Create new lazy rule with same method instance and debug mode
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.tangent_mode)
 
-# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
-# LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
-# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyFRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        rule::LazyFRule{sig,DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}},
-        args,
-    ) where {sig,P,A,R,isva,nargs}
-        return rule(args...)::R
-    end
-    @inline function __call_rule(
-        rule::LazyFRule{
-            sig,DebugFRule{DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}}
-        },
-        args,
-    ) where {sig,P,A,R,isva,nargs}
-        return rule(args...)::R
-    end
+@inline _canonicalise_fwd_arg(x) = x
+@inline function _canonicalise_fwd_arg(x::Dual{P,<:NTangent}) where {P}
+    tangent_type(typeof(primal(x))) == NoTangent || return x
+    return Dual{P,NoTangent}(primal(x), NoTangent())
 end
 
 @inline function (rule::LazyFRule)(args::Vararg{Any,N}) where {N}
-    return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
+    canonical_args = map(_canonicalise_fwd_arg, args)
+    return if isdefined(rule, :rule)
+        __call_rule(rule.rule, canonical_args)
+    else
+        _build_rule!(rule, canonical_args)
+    end
 end
 
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode)
-    rule.rule = build_frule(
+    rule.rule = _build_raw_frule(
         interp, rule.mi; debug_mode=rule.debug_mode, tangent_mode=rule.tangent_mode
     )
     return __call_rule(rule.rule, args)
 end
 
-function dual_ret_type(primal_ir::IRCode, tangent_mode=DefaultForwardTangentMode())
+function dual_ret_type(primal_ir::IRCode, tangent_mode=IRfwdMode{1}())
     return _fwd_dual_type(tangent_mode, compute_ir_rettype(primal_ir))
 end
 
@@ -610,7 +685,7 @@ function frule_type(
     interp::MooncakeInterpreter{C},
     mi::CC.MethodInstance;
     debug_mode,
-    tangent_mode=DefaultForwardTangentMode(),
+    tangent_mode=IRfwdMode{1}(),
 ) where {C}
     sig = _get_sig(mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
@@ -638,7 +713,7 @@ struct DynamicFRule{V,Tmode}
     tangent_mode::Tmode
 end
 
-function DynamicFRule(debug_mode::Bool, tangent_mode=DefaultForwardTangentMode())
+function DynamicFRule(debug_mode::Bool, tangent_mode=IRfwdMode{1}())
     DynamicFRule(Dict{Any,Any}(), debug_mode, tangent_mode)
 end
 
@@ -652,7 +727,7 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ForwardMode)
-        rule = build_frule(
+        rule = _build_raw_frule(
             interp,
             sig;
             debug_mode=dynamic_rule.debug_mode,
@@ -660,5 +735,6 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
         )
         dynamic_rule.cache[sig] = rule
     end
-    return __call_rule(rule, args)
+    canonical_args = map(_canonicalise_fwd_arg, args)
+    return __call_rule(rule, canonical_args)
 end

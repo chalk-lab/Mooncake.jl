@@ -1,38 +1,53 @@
 @testset "Dual" begin
-    @test Dual(5.0, 4.0) isa Dual{Float64,Float64}
+    @test Dual(5.0, 4.0) isa Dual{Float64,Mooncake.NTangent{Tuple{Float64}}}
     @test Dual(Float64, NoTangent()) isa Dual{Type{Float64},NoTangent}
-    @test zero_dual(5.0) == Dual(5.0, 0.0)
+    @test zero_dual(5.0) == Dual{Float64,Mooncake.NTangent{Tuple{Float64}}}(5.0, 0.0)
 
     @testset "$P" for (P, D) in Any[
-        (Float64, Dual{Float64,Float64}),
+        (Float64, Dual{Float64,Mooncake.NTangent{Tuple{Float64}}}),
         (Int, Dual{Int,NoTangent}),
         (Real, Dual),
         (Any, Dual),
         (Type{UnitRange{Int}}, Dual{Type{UnitRange{Int}},NoTangent}),
         (Type{Tuple{T}} where {T}, Dual),
-        (Union{Float64,Int}, Union{Dual{Float64,Float64},Dual{Int,NoTangent}}),
+        (
+            Union{Float64,Int},
+            Union{Dual{Float64,Mooncake.NTangent{Tuple{Float64}}},Dual{Int,NoTangent}},
+        ),
         (UnionAll, Dual),
         (DataType, Dual),
         (Union{}, Union{}),
 
         # Tuples:
-        (Tuple{Float64}, Dual{Tuple{Float64},Tuple{Float64}}),
-        (Tuple{Float64,Float32}, Dual{Tuple{Float64,Float32},Tuple{Float64,Float32}}),
+        (Tuple{Float64}, Dual{Tuple{Float64},Mooncake.NTangent{Tuple{Tuple{Float64}}}}),
+        (
+            Tuple{Float64,Float32},
+            Dual{Tuple{Float64,Float32},Mooncake.NTangent{Tuple{Tuple{Float64,Float32}}}},
+        ),
         (
             Tuple{Int,Float64,Float32},
-            Dual{Tuple{Int,Float64,Float32},Tuple{NoTangent,Float64,Float32}},
+            Dual{
+                Tuple{Int,Float64,Float32},
+                Mooncake.NTangent{Tuple{Tuple{NoTangent,Float64,Float32}}},
+            },
         ),
 
         # Small-Union Tuples
         (
             Tuple{Union{Float32,Float64}},
-            Union{Dual{Tuple{Float32},Tuple{Float32}},Dual{Tuple{Float64},Tuple{Float64}}},
+            Union{
+                Dual{Tuple{Float32},Mooncake.NTangent{Tuple{Tuple{Float32}}}},
+                Dual{Tuple{Float64},Mooncake.NTangent{Tuple{Tuple{Float64}}}},
+            },
         ),
         (
             Tuple{Nothing,Union{Int,Float64}},
             Union{
                 Dual{Tuple{Nothing,Int},NoTangent},
-                Dual{Tuple{Nothing,Float64},Tuple{NoTangent,Float64}},
+                Dual{
+                    Tuple{Nothing,Float64},
+                    Mooncake.NTangent{Tuple{Tuple{NoTangent,Float64}}},
+                },
             },
         ),
 
@@ -46,4 +61,26 @@
     ]
         @test TestUtils.check_allocs(dual_type, P) == D
     end
+
+    @test_throws ArgumentError Mooncake._canonical_forward_tangent(
+        (1.0, 2.0), (Mooncake.NTangent((1.0,)), Mooncake.NTangent((2.0, 3.0)))
+    )
+
+    err = try
+        Dual(5.0, (1.0, 2.0))
+        nothing
+    catch err
+        err
+    end
+    @test err isa ArgumentError
+    @test occursin("NTangent(...)", sprint(showerror, err))
+
+    err = try
+        Dual([1.0, 2.0], [1.0 0.0; 0.0 1.0])
+        nothing
+    catch err
+        err
+    end
+    @test err isa ArgumentError
+    @test occursin("NTangent(...)", sprint(showerror, err))
 end

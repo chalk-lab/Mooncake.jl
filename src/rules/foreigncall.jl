@@ -88,7 +88,13 @@ end
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
 function frule!!(::Dual{typeof(pointer_from_objref)}, x)
     y = pointer_from_objref(primal(x))
-    dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
+    Tptr = Ptr{tangent_type(Nothing)}
+    dx = tangent(x)
+    dy = if dx isa NTangent
+        NTangent(map(dxi -> bitcast(Tptr, pointer_from_objref(dxi)), dx.lanes))
+    else
+        bitcast(Tptr, pointer_from_objref(dx))
+    end
     return Dual(y, dy)
 end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
@@ -103,7 +109,10 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
 function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
-    return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+    return Dual(
+        unsafe_pointer_to_objref(primal(x)),
+        _builtins_lane_map(unsafe_pointer_to_objref, tangent(x)),
+    )
 end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
@@ -126,7 +135,9 @@ function frule!!(
     ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
 ) where {T}
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
+    _builtins_lane_map(
+        (ddest, dsrc) -> unsafe_copyto!(ddest, dsrc, primal(n)), tangent(dest), tangent(src)
+    )
     return dest
 end
 function rrule!!(
@@ -377,7 +388,6 @@ for name in [
     :(:jl_array_del_beg),
     :(:jl_array_grow_beg),
     :(:jl_value_ptr),
-    :(:jl_type_unionall),
     :(:jl_threadid),
     :(:memhash_seed),
     :(:memhash32_seed),

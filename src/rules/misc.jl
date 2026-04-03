@@ -134,25 +134,69 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
 @inline function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}
-) where {P,T<:StandardTangentType,f}
+) where {P,T,f}
     primal_field = getfield(primal(x), f)
     if tangent_type(P) === NoTangent
         return uninit_dual(primal_field)
     else
-        Dual(primal_field, _get_tangent_field(tangent(x), f))
+        Dual(primal_field, _get_tangent_field(tangent(x), Val(f)))
     end
 end
 
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
+_get_tangent_field(f::Union{NamedTuple,Tuple}, ::Val{name}) where {name} = getfield(f, name)
+function _get_tangent_field(
+    f::Union{NamedTuple,Tuple}, ::Val{name}, ::Val{inbounds}
+) where {name,inbounds}
+    getfield(f, name, inbounds)
+end
 _get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fields, name))
 function _get_tangent_field(f::Union{Tangent,MutableTangent}, name, inbounds)
     return val(getfield(f.fields, name, inbounds))
+end
+function _get_tangent_field(f::Union{Tangent,MutableTangent}, ::Val{name}) where {name}
+    val(getfield(f.fields, name))
+end
+function _get_tangent_field(
+    f::Union{Tangent,MutableTangent}, ::Val{name}, ::Val{inbounds}
+) where {name,inbounds}
+    return val(getfield(f.fields, name, inbounds))
+end
+@inline function _get_tangent_field(f::NTangent, name)
+    return NTangent(
+        ntuple(n -> _get_tangent_field(f[n], name), Val(fieldcount(typeof(f.lanes))))
+    )
+end
+@inline function _get_tangent_field(f::NTangent, name, inbounds)
+    return NTangent(
+        ntuple(
+            n -> _get_tangent_field(f[n], name, inbounds), Val(fieldcount(typeof(f.lanes)))
+        ),
+    )
+end
+@inline function _get_tangent_field(f::NTangent{L}, ::Val{name}) where {L<:Tuple,name}
+    return NTangent(ntuple(n -> _get_tangent_field(f[n], Val(name)), Val(fieldcount(L))))
+end
+@inline function _get_tangent_field(
+    f::NTangent{L}, ::Val{name}, ::Val{inbounds}
+) where {L<:Tuple,name,inbounds}
+    return NTangent(
+        ntuple(n -> _get_tangent_field(f[n], Val(name), Val(inbounds)), Val(fieldcount(L)))
+    )
+end
+_get_tangent_field(f, name) = getfield(f, name)
+_get_tangent_field(f, name, inbounds) = getfield(f, name, inbounds)
+_get_tangent_field(f, ::Val{name}) where {name} = getfield(f, name)
+function _get_tangent_field(f, ::Val{name}, ::Val{inbounds}) where {name,inbounds}
+    getfield(f, name, inbounds)
 end
 # When the struct tangent is NoTangent (e.g. a non-differentiable type captured inside
 # another struct), field access also contributes no derivative.
 _get_tangent_field(::NoTangent, _) = NoTangent()
 _get_tangent_field(::NoTangent, _, _) = NoTangent()
+_get_tangent_field(::NoTangent, ::Val) = NoTangent()
+_get_tangent_field(::NoTangent, ::Val, ::Val) = NoTangent()
 
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
@@ -197,16 +241,13 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
 @inline function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{P,<:StandardTangentType},
-    ::Dual{Val{f}},
-    ::Dual{Val{order}},
-) where {P,f,order}
+    ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}, ::Dual{Val{order}}
+) where {P,T,f,order}
     primal_field = getfield(primal(x), f, order)
     if tangent_type(P) === NoTangent
         return uninit_dual(primal_field)
     else
-        return Dual(primal_field, _get_tangent_field(tangent(x), f))
+        return Dual(primal_field, _get_tangent_field(tangent(x), Val(f)))
     end
 end
 @inline function rrule!!(
@@ -230,6 +271,25 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lsetfield!),Any,Any,Any}
+struct LSetFieldFRule{name} end
+
+@inline function (rule::LSetFieldFRule{name})(
+    ::Dual{typeof(lsetfield!)}, value::Dual, ::Dual{Val{name}}, x::Dual
+) where {name}
+    return lsetfield_frule(value, zero_dual(Val(name)), x)
+end
+
+function build_primitive_frule(
+    ::Type{<:Tuple{typeof(lsetfield!),P,Val{name},X}}
+) where {P,name,X}
+    return LSetFieldFRule{name}()
+end
+
+@inline function frule!!(
+    ::Dual{typeof(lsetfield!)}, value::Dual{P,<:NTangent}, name::Dual, x::Dual
+) where {P}
+    return lsetfield_frule(value, name, x)
+end
 @inline function frule!!(
     ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Dual
 ) where {P,T<:StandardTangentType}
@@ -244,6 +304,27 @@ end
 function lsetfield_frule(value::Dual{P,T}, ::Dual{Val{name}}, x::Dual) where {P,T,name}
     setfield!(primal(value), name, primal(x))
     T !== NoTangent && set_tangent_field!(tangent(value), name, tangent(x))
+    return x
+end
+function lsetfield_frule(
+    value::Dual{P,NoTangent}, ::Dual{Val{name}}, x::Dual
+) where {P,name}
+    setfield!(primal(value), name, primal(x))
+    return x
+end
+function lsetfield_frule(
+    value::Dual{P,<:NTangent}, ::Dual{Val{name}}, x::Dual
+) where {P,name}
+    setfield!(primal(value), name, primal(x))
+    dv = tangent(value)
+    dx = tangent(x)
+    if dx isa NTangent
+        ntuple(
+            n -> set_tangent_field!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.lanes)))
+        )
+    else
+        ntuple(n -> set_tangent_field!(dv[n], name, dx), Val(fieldcount(typeof(dv.lanes))))
+    end
     return x
 end
 

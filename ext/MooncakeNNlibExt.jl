@@ -23,6 +23,7 @@ import Mooncake:
     rrule!!,
     CoDual,
     NoRData,
+    NTangent,
     zero_fcodual,
     primal,
     tangent,
@@ -309,7 +310,21 @@ function frule!!(
     b::Dual{<:SupportedArray{<:IEEEFloat,M}},
 ) where {N,M}
     primal(x) .+= primal(b)
-    tangent(x) .+= tangent(b)
+    dx = tangent(x)
+    db = tangent(b)
+    if dx isa NTangent
+        if db isa NTangent
+            @inbounds for lane in 1:length(dx)
+                dx[lane] .+= db[lane]
+            end
+        else
+            @inbounds for lane in 1:length(dx)
+                dx[lane] .+= db
+            end
+        end
+    else
+        dx .+= db isa NTangent ? db[1] : db
+    end
     return x
 end
 function rrule!!(

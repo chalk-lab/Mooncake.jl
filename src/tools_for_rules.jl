@@ -369,6 +369,16 @@ to_cr_tangent(t::Complex{<:IEEEFloat}) = t
 to_cr_tangent(t::Array{<:IEEEFloat}) = t
 to_cr_tangent(t::Array) = map(to_cr_tangent, t)
 to_cr_tangent(::NoTangent) = CRC.NoTangent()
+function to_cr_tangent(t::NTangent)
+    length(t) == 1 && return to_cr_tangent(t[1])
+    throw(
+        ArgumentError(
+            "The type $(typeof(t)) is not supported with @from_chainrules or @from_rrule. " *
+            "ChainRules `frule` / `rrule` wrappers currently accept only one forward lane " *
+            "at a time, so chunked tangents must be lowered before calling `to_cr_tangent`.",
+        ),
+    )
+end
 to_cr_tangent(t::Tangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::MutableTangent) = CRC.Tangent{Any}(; map(to_cr_tangent, t.fields)...)
 to_cr_tangent(t::Tuple) = CRC.Tangent{Any}(map(to_cr_tangent, t)...)
