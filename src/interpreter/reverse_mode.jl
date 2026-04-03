@@ -1805,13 +1805,15 @@ else
 end
 
 """
-    lower_cfg_blocks_to_ir(ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true)::IRCode
+    lower_cfg_blocks_to_ir(
+        ir::Union{BBCode,IRCode}, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true
+    )::IRCode
 
 Lower reverse-mode-local CFG blocks directly to `IRCode`, without routing through `BBCode`.
 """
 @static if VERSION > v"1.12-"
     function lower_cfg_blocks_to_ir(
-        ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+        ir::Union{BBCode,IRCode}, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
     )::IRCode
         blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
         blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))
@@ -1845,7 +1847,7 @@ Lower reverse-mode-local CFG blocks directly to `IRCode`, without routing throug
     end
 else
     function lower_cfg_blocks_to_ir(
-        ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+        ir::Union{BBCode,IRCode}, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
     )::IRCode
         blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
         blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))

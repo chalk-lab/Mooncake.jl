@@ -43,7 +43,7 @@ This format is obtained from `CodeInfo`, used to perform most optimizations in t
 The function [`normalise!`](@ref Mooncake.normalise!) is a custom pass to modify `IRCode` and make some expressions nicer to work with.
 The possible expressions one can encountered in lowered ASTs are documented [here](https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form).
 
-Reverse-mode specific stuff: return type retrieval, `ADInfo`, `bbcode.jl`, `zero_like_rdata.jl`. The `BBCode` structure was a convenience for IR transformation.
+Reverse-mode specific stuff: return type retrieval, `ADInfo`, the inline CFG builder in `reverse_mode.jl`, and `zero_like_rdata.jl`. Reverse mode now assembles through a builder-local CFG and lowers directly back to `IRCode`.
 
 Beyond the [`interpreter`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/) folder, check out [`tangents.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/tangents.jl) for forward mode.
 
@@ -64,15 +64,15 @@ To manipulate `IRCode`, check out the fields:
 - `ir.new_nodes` is an optimization buffer, not important
 - `ir.sptypes` is for type parameters of the called function
 
-We must maintain coherence between the various components of `IRCode` (especially `ir.stmts` and `ir.cfg`). That is the reason behind `BBCode`, to make coherence easier.
-We can deduce the CFG from the statements but not the other way around: it's only composed of blocks of statement indices.
+We must maintain coherence between the various components of `IRCode` (especially `ir.stmts` and `ir.cfg`).
+The current reverse-mode implementation handles this by assembling into a builder-local CFG first, then lowering the result back to coherent compiler IR in one step.
 In forward mode we shouldn't have to modify anything but `ir.stmts`.
 Do line by line transformation of the statements and then possibly refresh the CFG.
 
 Examples of how line-by-line transformations can be done, are defined in [`Mooncake.make_ad_stmts!`](@ref).
 The `IRCode` nodes are not explicitly documented in <https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form> or <https://docs.julialang.org/en/v1/devdocs/ssair/#Main-SSA-data-structure>. Might need completion of official docs, but Mooncake docs in the meantime.
 
-For additional information about `IRCode` and `BBCode` data structures and transformation examples, see [IR Representations and Code Transformations](@ref).
+For historical background on the old `BBCode` path and examples of IR transformation strategies, see [IR Representations and Code Transformations](@ref).
 
 Inlining pass can prevent us from using high-level rules by inlining the function (e.g. unrolling a loop).
 The contexts in [`interpreter/contexts.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/src/interpreter/contexts.jl) are `MinimalCtx` (necessary for AD to work) and `DefaultCtx` (ensure that we hit all of the rules).

@@ -148,14 +148,37 @@ rule_type_nonreturning(e::Exception) = throw(e)
             Mooncake.CFGBlock(mid_id, [(ID(), new_inst(ReturnNode(1)))]),
         ]
 
-        lowered = Mooncake.lower_cfg_blocks(BBCode(ir), Any[Any], blocks)
-        lowered_ir = Mooncake.lower_cfg_blocks_to_ir(BBCode(ir), Any[Any], blocks)
+        lowered = Mooncake._canonicalise_cfg_blocks(blocks)
+        lowered_ir = Mooncake.lower_cfg_blocks_to_ir(ir, Any[Any], blocks)
 
-        @test map(blk -> blk.id, lowered.blocks) == [entry_id, mid_id]
-        @test Mooncake.terminator(lowered.blocks[1]) == IDGotoNode(mid_id)
-        @test Mooncake.terminator(lowered.blocks[2]) == ReturnNode(1)
+        @test map(blk -> blk.id, lowered) == [entry_id, mid_id]
+        @test Mooncake._cfg_terminator(lowered[1]) == IDGotoNode(mid_id)
+        @test Mooncake._cfg_terminator(lowered[2]) == ReturnNode(1)
         @test stmt(lowered_ir.stmts)[1] == GotoNode(2)
         @test stmt(lowered_ir.stmts)[2] == ReturnNode(1)
+        lowered_cfg = Mooncake._cfg_control_flow_graph(lowered)
+        @test all(
+            map(
+                (lhs, rhs) -> lhs.stmts == rhs.stmts,
+                lowered_ir.cfg.blocks,
+                lowered_cfg.blocks,
+            ),
+        )
+        @test all(
+            map(
+                (lhs, rhs) -> lhs.preds == rhs.preds,
+                lowered_ir.cfg.blocks,
+                lowered_cfg.blocks,
+            ),
+        )
+        @test all(
+            map(
+                (lhs, rhs) -> lhs.succs == rhs.succs,
+                lowered_ir.cfg.blocks,
+                lowered_cfg.blocks,
+            ),
+        )
+        @test lowered_ir.cfg.index == lowered_cfg.index
 
         exit_id = ID()
         unsorted_blocks = Mooncake.CFGBlock[
@@ -163,10 +186,8 @@ rule_type_nonreturning(e::Exception) = throw(e)
             Mooncake.CFGBlock(mid_id, [(ID(), new_inst(ReturnNode(1)))]),
             Mooncake.CFGBlock(exit_id, [(ID(), new_inst(IDGotoNode(mid_id)))]),
         ]
-        unsorted = Mooncake.lower_cfg_blocks(
-            BBCode(ir), Any[Any], unsorted_blocks; sort_cfg=false
-        )
-        @test map(blk -> blk.id, unsorted.blocks) == [entry_id, mid_id, exit_id]
+        unsorted = Mooncake._canonicalise_cfg_blocks(unsorted_blocks; sort_cfg=false)
+        @test map(blk -> blk.id, unsorted) == [entry_id, mid_id, exit_id]
 
         insts = [(ID(), new_inst(IDGotoNode(mid_id)))]
         inserted = (ID(), new_inst(ReturnNode(3)))
@@ -201,13 +222,11 @@ rule_type_nonreturning(e::Exception) = throw(e)
         preds = Mooncake._compute_cfg_predecessors(phi_edge_blocks)
         @test Set(preds[join_id]) == Set([entry_id, dead_id])
 
-        lowered_phi_edges = Mooncake.lower_cfg_blocks(BBCode(ir), Any[Any], phi_edge_blocks)
-        lowered_phi = lowered_phi_edges.blocks[2].insts[1].stmt
+        lowered_phi_edges = Mooncake._canonicalise_cfg_blocks(phi_edge_blocks)
+        lowered_phi = lowered_phi_edges[2].insts[1][2].stmt
         @test lowered_phi == IDPhiNode([entry_id], Any[Argument(1)])
 
-        lowered_phi_ir = Mooncake.lower_cfg_blocks_to_ir(
-            BBCode(ir), Any[Any], phi_edge_blocks
-        )
+        lowered_phi_ir = Mooncake.lower_cfg_blocks_to_ir(ir, Any[Any], phi_edge_blocks)
         @test stmt(lowered_phi_ir.stmts)[2] == PhiNode(Int32[1], Any[Argument(1)])
     end
     @testset "inc_args" begin
