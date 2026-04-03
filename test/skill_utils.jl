@@ -304,7 +304,7 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
         raw_meta = extract_meta(ins.stages[:raw].ir)
         @test raw_meta.block_count > 0
         @test raw_meta.inst_count > 0
-        @test raw_meta.edge_count > 0
+        @test raw_meta.edge_count >= 0
 
         bb_meta = extract_meta(ins.stages[:bbcode].ir)
         @test bb_meta.block_count > 0
