@@ -17,11 +17,12 @@ internal developer tools accessible via the `Mooncake.SkillUtils` prefix.
 ```@setup advanced_debugging
 using Mooncake: Mooncake
 using Mooncake.SkillUtils: inspect_ir, show_ir, show_stage, show_diff, show_world_info
+demo_fn(x) = sin(x) * cos(x)
 ```
 
 ```@example advanced_debugging
 # Inspect all stages of the reverse-mode pipeline
-ins = inspect_ir(sin, 1.0)
+ins = inspect_ir(demo_fn, 1.0)
 show_ir(ins)                              # all stages
 ```
 
@@ -35,7 +36,7 @@ show_diff(ins; from=:raw, to=:normalized) # diff between stages
 
 ```@example advanced_debugging
 # Forward mode
-ins = inspect_ir(sin, 1.0; mode=:forward)
+ins = inspect_ir(demo_fn, 1.0; mode=:forward)
 
 # World age info (useful for debugging stale code)
 show_world_info(ins)
@@ -52,6 +53,11 @@ show_world_info(ins)
 !!! note
     The inspection tool also shows a `:bbcode` stage for cross-mode comparison,
     but forward mode does not use BBCode internally.
+
+!!! note
+    Primitive signatures such as `sin` do not generate AD IR stages here. Mooncake
+    dispatches those calls straight to `build_primitive_frule` / `build_primitive_rrule`,
+    so `inspect_ir` reports that path in `notes` instead of forcing derived IR generation.
 
 When something looks wrong in generated code, diff consecutive stages to find
 which transformation introduced the issue.
@@ -93,7 +99,7 @@ In Mooncake, this most commonly affects:
 To debug, inspect the world age of generated code:
 
 ```@example advanced_debugging
-ins = inspect_ir(sin, 1.0)
+ins = inspect_ir(demo_fn, 1.0)
 show_world_info(ins)
 ```
 
