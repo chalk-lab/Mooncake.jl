@@ -418,6 +418,27 @@ const MooncakeLuxLibExt = Base.get_extension(Mooncake, :MooncakeLuxLibExt)
         vec(
             map(
                 Iterators.product(
+                    [LuxLib.LoopedArrayOp(), LuxLib.GenericBroadcastOp{Lux.CPUDevice()}()],
+                    [randn(5), nothing],
+                    [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
+                ),
+            ) do (opmode, bias, activation)
+                (
+                    false,
+                    :none,
+                    false,
+                    LuxLib.Impl.fused_dense,
+                    opmode,
+                    activation,
+                    randn(5, 4),
+                    randn(4, 2),
+                    bias,
+                )
+            end,
+        ),
+        vec(
+            map(
+                Iterators.product(
                     [LuxLib.LoopedArrayOp()],
                     [Lux.relu, tanh, NNlib.gelu, identity, _custom_act],
                     [true, false],
