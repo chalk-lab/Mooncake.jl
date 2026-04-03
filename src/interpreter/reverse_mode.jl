@@ -1721,8 +1721,7 @@ end
 
 function _compute_cfg_predecessors(blocks::Vector{CFGBlock})::Dict{ID,Vector{ID}}
     successor_map = _compute_cfg_successors(blocks)
-    ks = collect(keys(successor_map))
-    predecessor_map = Dict{ID,Vector{ID}}(zip(ks, map(_ -> ID[], ks)))
+    predecessor_map = Dict{ID,Vector{ID}}(block.id => ID[] for block in blocks)
     for (k, succs) in successor_map
         for succ in succs
             push!(predecessor_map[succ], k)
