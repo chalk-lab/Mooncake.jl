@@ -1524,10 +1524,24 @@ struct CFGBlock
 end
 
 CFGBlock(id::ID, insts::AbstractVector{IDInstPair}) = CFGBlock(id, collect(insts))
+_cfg_block(block::BBlock) = CFGBlock(block.id, collect_stmts(block))
 
 _lower_cfg_block(block::CFGBlock) = BBlock(block.id, block.insts)
 
 _cfg_terminator(stmt) = stmt isa Union{Switch,IDGotoIfNot,IDGotoNode,ReturnNode}
+function _cfg_terminator(block::CFGBlock)
+    isempty(block.insts) && return nothing
+    stmt = last(block.insts)[2].stmt
+    return _cfg_terminator(stmt) ? stmt : nothing
+end
+
+function _cfg_phi_nodes(block::CFGBlock)
+    n_phi_nodes = findlast(x -> x[2].stmt isa IDPhiNode, block.insts)
+    if n_phi_nodes === nothing
+        n_phi_nodes = 0
+    end
+    return first.(block.insts[1:n_phi_nodes]), last.(block.insts[1:n_phi_nodes])
+end
 
 function _insert_before_terminator!(insts::Vector{IDInstPair}, inst::IDInstPair)
     if !isempty(insts) && _cfg_terminator(last(insts)[2].stmt)
@@ -1579,8 +1593,12 @@ Produce the IR associated to the `OpaqueClosure` which runs most of the pullback
 function pullback_ir(
     ir::BBCode, Tret, ad_stmts_blocks::ADStmts, pb_comms_insts, info::ADInfo, Tshared_data
 )
+    primal_blocks = map(_cfg_block, ir.blocks)
+
     # Compute the blocks which return in the primal.
-    primal_exit_blocks_inds = findall(is_reachable_return_node ∘ terminator, ir.blocks)
+    primal_exit_blocks_inds = findall(
+        is_reachable_return_node ∘ _cfg_terminator, primal_blocks
+    )
 
     #
     # Short-circuit for non-terminating primals -- applies to a tiny fraction of primals:
@@ -1609,7 +1627,7 @@ function pullback_ir(
     #   no need to pop the block stack.
     data_stmts = shared_data_stmts(info.shared_data_pairs)
     rev_data_ref_stmts = reverse_data_ref_stmts(info)
-    exit_blocks_ids = map(n -> ir.blocks[n].id, primal_exit_blocks_inds)
+    exit_blocks_ids = map(n -> primal_blocks[n].id, primal_exit_blocks_inds)
     switch_stmts = make_switch_stmts(exit_blocks_ids, length(exit_blocks_ids) == 1, info)
     entry_block = CFGBlock(ID(), vcat(data_stmts, rev_data_ref_stmts, switch_stmts))
 
@@ -1630,11 +1648,11 @@ function pullback_ir(
     ps = compute_all_predecessors(ir)
     _, pred_is_unique_pred = characterise_unique_predecessor_blocks(ir.blocks)
     main_blocks = map(
-        ad_stmts_blocks, enumerate(ir.blocks), pb_comms_insts
+        ad_stmts_blocks, enumerate(primal_blocks), pb_comms_insts
     ) do (blk_id, ad_stmts), (n, blk), comms_insts
 
         # Short-circuit if we know that this block cannot be reached on the reverse-pass.
-        if is_unreachable_return_node(terminator(blk))
+        if is_unreachable_return_node(_cfg_terminator(blk))
             return CFGBlock(blk_id, [(ID(), new_inst(nothing))])
         end
 
@@ -1721,17 +1739,17 @@ end
 
 """
     conclude_rvs_block(
-        blk::BBlock, pred_ids::Vector{ID}, pred_is_unique_pred::Bool, info::ADInfo
+        blk::CFGBlock, pred_ids::Vector{ID}, pred_is_unique_pred::Bool, info::ADInfo
     )
 
 Generates code which is inserted at the end of each counterpart block in the reverse-pass.
 Handles phi nodes, and choosing the correct next block to switch to.
 """
 function conclude_rvs_block(
-    blk::BBlock, pred_ids::Vector{ID}, pred_is_unique_pred::Bool, info::ADInfo
+    blk::CFGBlock, pred_ids::Vector{ID}, pred_is_unique_pred::Bool, info::ADInfo
 )
     # Get the PhiNodes and their IDs.
-    phi_ids, phis = phi_nodes(blk)
+    phi_ids, phis = _cfg_phi_nodes(blk)
 
     # If there are no PhiNodes in this block, switch directly to the predecessor.
     if length(phi_ids) == 0
@@ -1747,7 +1765,7 @@ function conclude_rvs_block(
     end
     deref_stmts = reduce(vcat, tmp; init=IDInstPair[])
 
-    # For each predecessor, create a `BBlock` which processes its corresponding edge in
+    # For each predecessor, create a `CFGBlock` which processes its corresponding edge in
     # each of the `PhiNode`s.
     new_blocks = map(pred_ids) do pred_id
         values = Any[__get_value(pred_id, p.stmt) for p in phis]
@@ -1788,7 +1806,7 @@ end
 """
     rvs_phi_block(pred_id::ID, rdata_ids::Vector{ID}, values::Vector{Any}, info::ADInfo)
 
-Produces a `BBlock` which runs the reverse-pass for the edge associated to `pred_id` in a
+Produces a `CFGBlock` which runs the reverse-pass for the edge associated to `pred_id` in a
 collection of `IDPhiNode`s, and then goes to the block associated to `pred_id`.
 
 For example, suppose that we encounter the following collection of `PhiNode`s at the start

@@ -170,6 +170,18 @@ rule_type_nonreturning(e::Exception) = throw(e)
         Mooncake._insert_before_terminator!(insts, inserted)
         @test insts[1] == inserted
         @test insts[2][2].stmt == IDGotoNode(mid_id)
+
+        phi_block = Mooncake.CFGBlock(
+            ID(),
+            [
+                (ID(), new_inst(IDPhiNode([entry_id, mid_id], Any[Argument(1), 2]))),
+                (ID(), new_inst(ReturnNode(nothing))),
+            ],
+        )
+        phi_ids, phis = Mooncake._cfg_phi_nodes(phi_block)
+        @test length(phi_ids) == 1
+        @test only(phis).stmt == IDPhiNode([entry_id, mid_id], Any[Argument(1), 2])
+        @test Mooncake._cfg_terminator(phi_block) == ReturnNode(nothing)
     end
     @testset "inc_args" begin
         @test Mooncake.inc_args(Expr(:call, sin, Argument(4))) ==
