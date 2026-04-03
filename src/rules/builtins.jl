@@ -442,9 +442,23 @@ end
 @inactive_intrinsic floor_llvm
 
 @intrinsic fma_float
-function frule!!(::Dual{typeof(fma_float)}, x, y, z)
+function frule!!(
+    ::Dual{typeof(fma_float)}, x::Dual{P,NoTangent}, y::Dual{P,NoTangent}, z::Dual{P,NoTangent}
+) where {P<:IEEEFloat}
+    return Dual(fma_float(primal(x), primal(y), primal(z)), NoTangent())
+end
+function frule!!(
+    ::Dual{typeof(fma_float)}, x::Dual{P,<:NTangent}, y::Dual{P,<:NTangent}, z::Dual{P,<:NTangent}
+) where {P<:IEEEFloat}
     a = fma_float(primal(x), primal(y), primal(z))
-    da = fma_float(tangent(x), primal(y), fma_float(primal(x), tangent(y), tangent(z)))
+    dx = tangent(x).lanes
+    dy = tangent(y).lanes
+    dz = tangent(z).lanes
+    da = NTangent(
+        ntuple(Val(length(dx))) do n
+            fma_float(dx[n], primal(y), fma_float(primal(x), dy[n], dz[n]))
+        end,
+    )
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
@@ -727,10 +741,12 @@ end
 @inactive_intrinsic slt_int
 
 @intrinsic sqrt_llvm
-function frule!!(::Dual{typeof(sqrt_llvm)}, x)
-    _x, dx = extract(x)
-    y = sqrt_llvm(_x)
-    dy = nan_tangent_guard(dx, dx / (2 * y))
+function frule!!(::Dual{typeof(sqrt_llvm)}, x::Dual{P,NoTangent}) where {P<:IEEEFloat}
+    return Dual(sqrt_llvm(primal(x)), NoTangent())
+end
+function frule!!(::Dual{typeof(sqrt_llvm)}, x::Dual{P,<:NTangent}) where {P<:IEEEFloat}
+    y = sqrt_llvm(primal(x))
+    dy = NTangent(map(dx -> nan_tangent_guard(dx, dx / (2 * y)), tangent(x).lanes))
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
@@ -743,10 +759,16 @@ function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
 end
 
 @intrinsic sqrt_llvm_fast
-function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
-    _x, dx = extract(x)
-    y = sqrt_llvm_fast(_x)
-    dy = nan_tangent_guard(dx, dx / (2 * y))
+function frule!!(
+    ::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,NoTangent}
+) where {P<:IEEEFloat}
+    return Dual(sqrt_llvm_fast(primal(x)), NoTangent())
+end
+function frule!!(
+    ::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,<:NTangent}
+) where {P<:IEEEFloat}
+    y = sqrt_llvm_fast(primal(x))
+    dy = NTangent(map(dx -> nan_tangent_guard(dx, dx / (2 * y)), tangent(x).lanes))
     return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}

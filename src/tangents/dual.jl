@@ -123,6 +123,8 @@ end
     return NTangent(ntuple(lane -> _ntangent_lane(dx, Val(lane)), Val(lane_count)))
 end
 
+@inline _canonical_forward_tangent(x::Type, dx) = NoTangent()
+
 @inline function _chunked_forward_tangent(x::P, dx, ::Val{N}) where {P,N}
     tangent_type(typeof(x)) == NoTangent && return NoTangent()
     array_chunked = _array_chunked_forward_tangent(x, dx, Val(N))
@@ -150,6 +152,8 @@ end
     )
     return tx
 end
+
+@inline _chunked_forward_tangent(x::Type, dx, ::Val) = NoTangent()
 
 @inline function _chunked_zero_tangent(x, ::Val{N}) where {N}
     zx = zero_tangent(x)
@@ -205,6 +209,7 @@ Helper function. Returns the 2-tuple `x.x, x.dx`.
 extract(x::Dual) = primal(x), tangent(x)
 
 zero_dual(x) = dual_type(typeof(x))(x, zero_tangent(x))
+zero_dual(x::Type) = Dual(x, NoTangent())
 randn_dual(rng::AbstractRNG, x) = dual_type(typeof(x))(x, randn_tangent(rng, x))
 
 @unstable function dual_type(::Type{P}) where {P}
