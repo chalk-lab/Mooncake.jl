@@ -9,16 +9,12 @@ using Test
 backends = [
     AutoMooncake(),
     AutoMooncakeForward(),
-    AutoMooncake(; config = Mooncake.Config(; friendly_tangents = true)),
-    AutoMooncakeForward(; config = Mooncake.Config(; friendly_tangents = true)),
+    AutoMooncake(; config=Mooncake.Config(; friendly_tangents=true)),
+    AutoMooncakeForward(; config=Mooncake.Config(; friendly_tangents=true)),
 ]
 
 # Test first-order differentiation
-test_differentiation(
-    backends;
-    excluded=SECOND_ORDER,
-    logging=true,
-)
+test_differentiation(backends; excluded=SECOND_ORDER, logging=true)
 
 # Test for world-age fix when using closures (#916, #632)
 # The bug occurs when:
