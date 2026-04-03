@@ -1920,15 +1920,15 @@ end
 
 Lower reverse-mode-local CFG blocks directly to `IRCode`.
 """
-@static if VERSION > v"1.12-"
-    function lower_cfg_blocks_to_ir(
-        ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
-    )::IRCode
-        blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
-        blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))
-        insts = _cfg_ids_to_line_numbers(blocks)
-        cfg = _cfg_control_flow_graph(blocks)
-        insts = _cfg_lines_to_blocks(insts, cfg)
+function lower_cfg_blocks_to_ir(
+    ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+)::IRCode
+    blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
+    blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))
+    insts = _cfg_ids_to_line_numbers(blocks)
+    cfg = _cfg_control_flow_graph(blocks)
+    insts = _cfg_lines_to_blocks(insts, cfg)
+    @static if VERSION > v"1.12-"
         lines = CC.copy(ir.debuginfo.codelocs)
         n = length(insts)
         if length(lines) > 3n
@@ -1953,16 +1953,7 @@ Lower reverse-mode-local CFG blocks directly to `IRCode`.
             CC.copy(ir.sptypes),
             ir.valid_worlds,
         )
-    end
-else
-    function lower_cfg_blocks_to_ir(
-        ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
-    )::IRCode
-        blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
-        blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))
-        insts = _cfg_ids_to_line_numbers(blocks)
-        cfg = _cfg_control_flow_graph(blocks)
-        insts = _cfg_lines_to_blocks(insts, cfg)
+    else
         return IRCode(
             CC.InstructionStream(
                 Any[x.stmt for x in insts],
