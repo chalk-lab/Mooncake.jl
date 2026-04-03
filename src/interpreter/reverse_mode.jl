@@ -1370,7 +1370,7 @@ function generate_ir(
     arg_types = Dict{Argument,Any}(
         map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir.argtypes))
     )
-    primal_stmts = reduce(vcat, map(block -> block.insts, primal_blocks); init=IDInstPair[])
+    primal_stmts = [inst for block in primal_blocks for inst in block.insts]
     ssa_insts = Dict{ID,NewInstruction}(primal_stmts)
     is_used_dict = characterise_used_ids(primal_stmts)
     Tlazy_rdata_ref = Tuple{map(lazy_zero_rdata_type ∘ CC.widenconst, ir.argtypes)...}
@@ -1905,7 +1905,7 @@ function _cfg_ids_to_line_numbers(blocks::Vector{CFGBlock})::InstVector
     block_ids = map(block -> block.id, blocks)
     block_lengths = map(block -> length(block.insts), blocks)
     block_start_ssas = SSAValue.(vcat(1, cumsum(block_lengths)[1:(end - 1)] .+ 1))
-    lines = reduce(vcat, map(block -> block.insts, blocks); init=IDInstPair[])
+    lines = [inst for block in blocks for inst in block.insts]
     line_ids = first.(lines)
     line_ssas = SSAValue.(eachindex(line_ids))
     id_to_ssa_map = Dict(zip(vcat(block_ids, line_ids), vcat(block_start_ssas, line_ssas)))
