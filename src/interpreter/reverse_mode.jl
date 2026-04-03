@@ -1668,10 +1668,10 @@ function _block_nums_to_ids(insts::InstVector, cfg::CC.CFG)::Tuple{Vector{ID},In
 end
 
 function _ircode_to_cfg_blocks(ir::IRCode)::Vector{CFGBlock}
-    raw_stmts = @static VERSION < v"1.11.0-rc4" ? ir.stmts.inst : ir.stmts.stmt
+    # Reuse the shared cross-version stmt accessor rather than branching on field names here.
     stmts = map(
         (stmt, type, info, line, flag) -> NewInstruction(stmt, type, info, line, flag),
-        raw_stmts,
+        stmt(ir.stmts),
         ir.stmts.type,
         ir.stmts.info,
         ir.stmts.line,
