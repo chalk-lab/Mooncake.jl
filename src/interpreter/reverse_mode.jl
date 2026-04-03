@@ -1329,8 +1329,8 @@ function generate_ir(
     rvs_ir = pullback_ir(
         primal_ir, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
     )
-    opt_fwd_ir = do_optimize ? optimise_ir!(IRCode(fwd_ir); do_inline) : IRCode(fwd_ir)
-    opt_rvs_ir = do_optimize ? optimise_ir!(IRCode(rvs_ir); do_inline) : IRCode(rvs_ir)
+    opt_fwd_ir = do_optimize ? optimise_ir!(fwd_ir; do_inline) : fwd_ir
+    opt_rvs_ir = do_optimize ? optimise_ir!(rvs_ir; do_inline) : rvs_ir
     return DerivedRuleInfo(
         ir, opt_fwd_ir, fwd_ret_type, opt_rvs_ir, rvs_ret_type, shared_data, info, isva
     )
@@ -1493,9 +1493,11 @@ function forwards_pass_ir(
         return CFGBlock(block_id, insts)
     end
 
-    # Create and return the `BBCode` for the forwards-pass.
+    # Lower the forwards-pass CFG directly to `IRCode`.
     arg_types = vcat(Tshared_data, map(fcodual_type ∘ CC.widenconst, ir.argtypes))
-    return lower_cfg_blocks(ir, arg_types, vcat([entry_block], blocks); sort_cfg=false)
+    return lower_cfg_blocks_to_ir(
+        ir, arg_types, vcat([entry_block], blocks); sort_cfg=false
+    )
 end
 
 """
@@ -1522,8 +1524,8 @@ end
 """
     CFGBlock(id::ID, insts::Vector{IDInstPair})
 
-Reverse-mode-local basic block representation used while assembling the pullback CFG before
-lowering through `BBCode`.
+Reverse-mode-local basic block representation used while assembling reverse-mode CFGs before
+lowering to compiler IR.
 """
 struct CFGBlock
     id::ID
@@ -1670,19 +1672,119 @@ function _insert_before_terminator!(insts::Vector{IDInstPair}, inst::IDInstPair)
     return insts
 end
 
+function _canonicalise_cfg_blocks(blocks::Vector{CFGBlock}; sort_cfg::Bool=true)
+    _remove_unreachable_cfg_blocks!(
+        sort_cfg ? _sort_cfg_blocks!(copy(blocks)) : copy(blocks)
+    )
+end
+
+function _cfg_lower_switch_statements(blocks::Vector{CFGBlock})::Vector{CFGBlock}
+    new_blocks = CFGBlock[]
+    for block in blocks
+        t = _cfg_terminator(block)
+        if t isa Switch
+            push!(new_blocks, CFGBlock(block.id, block.insts[1:(end - 1)]))
+            foreach(t.conds, t.dests) do cond, dest
+                push!(
+                    new_blocks,
+                    CFGBlock(ID(), [(ID(), new_inst(IDGotoIfNot(cond, dest), Any))]),
+                )
+            end
+            push!(
+                new_blocks,
+                CFGBlock(ID(), [(ID(), new_inst(IDGotoNode(t.fallthrough_dest), Any))]),
+            )
+        else
+            push!(new_blocks, block)
+        end
+    end
+    return new_blocks
+end
+
+function _cfg_remove_double_edges(blocks::Vector{CFGBlock})::Vector{CFGBlock}
+    return map(enumerate(blocks)) do (n, block)
+        t = _cfg_terminator(block)
+        if n < length(blocks) && t isa IDGotoIfNot && t.dest == blocks[n + 1].id
+            term_id, term_inst = last(block.insts)
+            new_insts = vcat(
+                block.insts[1:(end - 1)],
+                [(term_id, NewInstruction(term_inst; stmt=IDGotoNode(t.dest)))],
+            )
+            return CFGBlock(block.id, new_insts)
+        else
+            return block
+        end
+    end
+end
+
+function _cfg_control_flow_graph(blocks::Vector{CFGBlock})::CC.CFG
+    preds_ids = _compute_cfg_predecessors(blocks)
+    succs_ids = _compute_cfg_successors(blocks)
+    block_ids = map(block -> block.id, blocks)
+    id_to_num = Dict{ID,Int}(zip(block_ids, eachindex(block_ids)))
+    preds = map(id -> sort(map(p -> id_to_num[p], preds_ids[id])), block_ids)
+    succs = map(id -> sort(map(s -> id_to_num[s], succs_ids[id])), block_ids)
+    @static if VERSION >= v"1.11"
+        push!(preds[1], 0)
+    end
+    index = vcat(0, cumsum(map(block -> length(block.insts), blocks))) .+ 1
+    basic_blocks = map(eachindex(blocks)) do n
+        stmt_range = CC.StmtRange(index[n], index[n + 1] - 1)
+        return CC.BasicBlock(stmt_range, preds[n], succs[n])
+    end
+    return CC.CFG(basic_blocks, index[2:(end - 1)])
+end
+
+function _cfg_to_ssas(d::Dict, inst::NewInstruction)
+    return NewInstruction(inst; stmt=_cfg_to_ssas(d, inst.stmt))
+end
+function _cfg_to_ssas(d::Dict, x::ReturnNode)
+    isdefined(x, :val) ? ReturnNode(get(d, x.val, x.val)) : x
+end
+_cfg_to_ssas(d::Dict, x::Expr) = Expr(x.head, map(a -> get(d, a, a), x.args)...)
+_cfg_to_ssas(d::Dict, x::PiNode) = PiNode(get(d, x.val, x.val), get(d, x.typ, x.typ))
+_cfg_to_ssas(d::Dict, x::QuoteNode) = x
+_cfg_to_ssas(d::Dict, x) = x
+function _cfg_to_ssas(d::Dict, x::IDPhiNode)
+    new_values = Vector{Any}(undef, length(x.values))
+    for n in eachindex(x.values)
+        if isassigned(x.values, n)
+            new_values[n] = get(d, x.values[n], x.values[n])
+        end
+    end
+    return PhiNode(map(edge -> Int32(getindex(d, edge).id), x.edges), new_values)
+end
+_cfg_to_ssas(d::Dict, x::IDGotoNode) = GotoNode(d[x.label].id)
+_cfg_to_ssas(d::Dict, x::IDGotoIfNot) = GotoIfNot(get(d, x.cond, x.cond), d[x.dest].id)
+
+function _cfg_ids_to_line_numbers(blocks::Vector{CFGBlock})::InstVector
+    block_ids = map(block -> block.id, blocks)
+    block_lengths = map(block -> length(block.insts), blocks)
+    block_start_ssas = SSAValue.(vcat(1, cumsum(block_lengths)[1:(end - 1)] .+ 1))
+    lines = reduce(vcat, map(block -> block.insts, blocks); init=IDInstPair[])
+    line_ids = first.(lines)
+    line_ssas = SSAValue.(eachindex(line_ids))
+    id_to_ssa_map = Dict(zip(vcat(block_ids, line_ids), vcat(block_start_ssas, line_ssas)))
+    return [_cfg_to_ssas(id_to_ssa_map, inst) for (_, inst) in lines]
+end
+
+function _cfg_lines_to_blocks(insts::InstVector, cfg::CC.CFG)::InstVector
+    stmts = __line_numbers_to_block_numbers!(Any[x.stmt for x in insts], cfg)
+    return map((inst, stmt) -> NewInstruction(inst; stmt), insts, stmts)
+end
+
 """
     lower_cfg_blocks(ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true)::BBCode
 
-Lower reverse-mode-local CFG blocks through `BBCode`, then apply the usual compiler-facing
-cleanup steps.
+Lower reverse-mode-local CFG blocks through `BBCode`. This remains as a transitional helper
+for tests and primal-side adapters.
 """
 @static if VERSION >= v"1.12-"
     function lower_cfg_blocks(
         ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
     )::BBCode
-        blocks = sort_cfg ? _sort_cfg_blocks!(copy(blocks)) : copy(blocks)
-        blocks = _remove_unreachable_cfg_blocks!(blocks)
-        pb_ir = BBCode(
+        blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
+        return BBCode(
             map(_lower_cfg_block, blocks),
             arg_types,
             ir.sptypes,
@@ -1690,18 +1792,80 @@ cleanup steps.
             ir.meta,
             ir.valid_worlds,
         )
-        return pb_ir
     end
 else
     function lower_cfg_blocks(
         ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
     )::BBCode
-        blocks = sort_cfg ? _sort_cfg_blocks!(copy(blocks)) : copy(blocks)
-        blocks = _remove_unreachable_cfg_blocks!(blocks)
-        pb_ir = BBCode(
+        blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
+        return BBCode(
             map(_lower_cfg_block, blocks), arg_types, ir.sptypes, ir.linetable, ir.meta
         )
-        return pb_ir
+    end
+end
+
+"""
+    lower_cfg_blocks_to_ir(ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true)::IRCode
+
+Lower reverse-mode-local CFG blocks directly to `IRCode`, without routing through `BBCode`.
+"""
+@static if VERSION > v"1.12-"
+    function lower_cfg_blocks_to_ir(
+        ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+    )::IRCode
+        blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
+        blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))
+        insts = _cfg_ids_to_line_numbers(blocks)
+        cfg = _cfg_control_flow_graph(blocks)
+        insts = _cfg_lines_to_blocks(insts, cfg)
+        lines = CC.copy(ir.debuginfo.codelocs)
+        n = length(insts)
+        if length(lines) > 3n
+            resize!(lines, 3n)
+        elseif length(lines) < 3n
+            for _ in (length(lines) + 1):3n
+                push!(lines, 0)
+            end
+        end
+        return IRCode(
+            CC.InstructionStream(
+                Any[x.stmt for x in insts],
+                Any[x.type for x in insts],
+                CC.CallInfo[x.info for x in insts],
+                lines,
+                UInt32[x.flag for x in insts],
+            ),
+            cfg,
+            CC.copy(ir.debuginfo),
+            Any[arg_types...],
+            CC.copy(ir.meta),
+            CC.copy(ir.sptypes),
+            ir.valid_worlds,
+        )
+    end
+else
+    function lower_cfg_blocks_to_ir(
+        ir::BBCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+    )::IRCode
+        blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
+        blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))
+        insts = _cfg_ids_to_line_numbers(blocks)
+        cfg = _cfg_control_flow_graph(blocks)
+        insts = _cfg_lines_to_blocks(insts, cfg)
+        return IRCode(
+            CC.InstructionStream(
+                Any[x.stmt for x in insts],
+                Any[x.type for x in insts],
+                CC.CallInfo[x.info for x in insts],
+                Int32[x.line for x in insts],
+                UInt32[x.flag for x in insts],
+            ),
+            cfg,
+            CC.copy(ir.linetable),
+            Any[arg_types...],
+            CC.copy(ir.meta),
+            CC.copy(ir.sptypes),
+        )
     end
 end
 
@@ -1729,7 +1893,7 @@ function pullback_ir(
     # won't succeed on the forwards-pass. As such, the reverse-pass can just be a no-op.
     if isempty(primal_exit_blocks_inds)
         blocks = [CFGBlock(ID(), [(ID(), new_inst(ReturnNode(nothing)))])]
-        return lower_cfg_blocks(ir, Any[Any], blocks)
+        return lower_cfg_blocks_to_ir(ir, Any[Any], blocks)
     end
 
     #
@@ -1850,11 +2014,10 @@ function pullback_ir(
         ),
     )
 
-    # Create and return `BBCode` for the pullback. Sort the blocks and remove any blocks
-    # which are unreachable, in the sense that they have no predecessors (except the entry
-    # block). This ought not to be necessary, but _appears_ to be necessary in order to
-    # avoid annoying the Julia compiler.
-    return lower_cfg_blocks(ir, arg_types, vcat([entry_block], main_blocks, [exit_block]))
+    # Lower the pullback CFG directly to `IRCode`.
+    return lower_cfg_blocks_to_ir(
+        ir, arg_types, vcat([entry_block], main_blocks, [exit_block])
+    )
 end
 
 """

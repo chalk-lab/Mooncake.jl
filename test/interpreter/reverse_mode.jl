@@ -149,10 +149,13 @@ rule_type_nonreturning(e::Exception) = throw(e)
         ]
 
         lowered = Mooncake.lower_cfg_blocks(BBCode(ir), Any[Any], blocks)
+        lowered_ir = Mooncake.lower_cfg_blocks_to_ir(BBCode(ir), Any[Any], blocks)
 
         @test map(blk -> blk.id, lowered.blocks) == [entry_id, mid_id]
         @test Mooncake.terminator(lowered.blocks[1]) == IDGotoNode(mid_id)
         @test Mooncake.terminator(lowered.blocks[2]) == ReturnNode(1)
+        @test stmt(lowered_ir.stmts)[1] == GotoNode(2)
+        @test stmt(lowered_ir.stmts)[2] == ReturnNode(1)
 
         exit_id = ID()
         unsorted_blocks = Mooncake.CFGBlock[
@@ -201,6 +204,11 @@ rule_type_nonreturning(e::Exception) = throw(e)
         lowered_phi_edges = Mooncake.lower_cfg_blocks(BBCode(ir), Any[Any], phi_edge_blocks)
         lowered_phi = lowered_phi_edges.blocks[2].insts[1].stmt
         @test lowered_phi == IDPhiNode([entry_id], Any[Argument(1)])
+
+        lowered_phi_ir = Mooncake.lower_cfg_blocks_to_ir(
+            BBCode(ir), Any[Any], phi_edge_blocks
+        )
+        @test stmt(lowered_phi_ir.stmts)[2] == PhiNode(Int32[1], Any[Argument(1)])
     end
     @testset "inc_args" begin
         @test Mooncake.inc_args(Expr(:call, sin, Argument(4))) ==
