@@ -2126,7 +2126,7 @@ function _nfwd_lift(x::A, dx::NTangent, ::Val{N}) where {ET,A<:AbstractArray{ET}
     )
     out = similar(x, ET <: IEEEFloat ? NDual{ET,N} : Complex{NDual{ET.parameters[1],N}})
     @inbounds for I in CartesianIndices(x)
-        out[I] = _nfwd_lift(x[I], NTangent(ntuple(k -> dx[k][I], Val(N))), Val(N))
+        out[I] = _nfwd_lift(x[I], NTangent(map(dk -> dk[I], dx.lanes)), Val(N))
     end
     return out
 end
@@ -2140,8 +2140,7 @@ end
         ArgumentError("Expected $N tangent lanes for $(typeof(x)), got $(length(dx)).")
     )
     return ntuple(
-        i -> _nfwd_lift(x[i], NTangent(ntuple(k -> dx[k][i], Val(N))), Val(N)),
-        Val(length(x)),
+        i -> _nfwd_lift(x[i], NTangent(map(dk -> dk[i], dx.lanes)), Val(N)), Val(length(x))
     )
 end
 
@@ -2156,7 +2155,7 @@ end
     names = fieldnames(typeof(x))
     values = ntuple(
         i -> _nfwd_lift(
-            getfield(x, i), NTangent(ntuple(k -> getfield(dx[k], i), Val(N))), Val(N)
+            getfield(x, i), NTangent(map(dk -> getfield(dk, i), dx.lanes)), Val(N)
         ),
         Val(fieldcount(typeof(x))),
     )
