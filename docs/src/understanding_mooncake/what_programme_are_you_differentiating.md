@@ -51,8 +51,8 @@ At a high level, you can think of this approach as first "mathematising" the pro
 
 ## Part 1: Simple Compositions of Pure Functions
 
-For this class of `function`s, the translation between the Julia `function` and differentiable function used to model it is almost trivial.
-We ask for patience, and promise that the modelling task will become more interesting shortly!
+For this class of `function`s, the translation between the Julia `function` and the
+differentiable function used to model it is almost trivial.
 
 ### `function` Class
 
@@ -192,7 +192,7 @@ that new value, producing ``(W, X, Y, XW)``.
     \operatorname{ret}(W, X, Y, \hat{Y}, \varepsilon, l) :=&\, l \nonumber
 \end{align}
 ```
-In words, our mathematical model for `linear_regression_loss` is the composition of four differentiable functions. The first three map from a tuple containing all variables seen so far, to a tuple containing the same variables _and_ the value returned by the operation being modeled, and the fourth simple reads off the elements of the final tuple which were passed in as arguments, and the return value.
+In words, our mathematical model for `linear_regression_loss` is the composition of four differentiable functions. The first three map from a tuple containing all variables seen so far, to a tuple containing the same variables _and_ the value returned by the operation being modeled, and the fourth simply reads off the elements of the final tuple which were passed in as arguments, and the return value.
 
 In general, we model the ``n``th Julia `function` _call_ with a function ``\varphi_n`` mapping from a tuple of ``D`` elements to a tuple of ``D + 1`` elements, of the form
 ```math
@@ -269,23 +269,24 @@ Applying this result to our previous examples, we see that
 
 Combining this result with the adjoint of the derivative of ``\varphi`` yields
 ```math
-D[\varphi, x]^\ast (\bar{y}) = (\bar{y}_1, \dots, \bar{y}_D) + \sum_{n=1}^N c_n(D [g, z]^\ast (\bar{y})).
+D[\varphi, x]^\ast (\bar{y}) = (\bar{y}_1, \dots, \bar{y}_D) + \sum_{n=1}^N c_n(D [g, z]^\ast (\bar{y}_{D+1})).
 ```
 
-We must also find the derivative of the adjoint of ``r``.
+We must also find the derivative of the adjoint of ``\operatorname{ret}``.
 It is linear, so it is its own derivative.
 Assume ``f`` is of the form
 ```math
-f = r \circ \varphi_P \circ \dots \circ \varphi_1
+f = \operatorname{ret} \circ \varphi_P \circ \dots \circ \varphi_1
 ```
 and that its arguments are ``N``-tuples.
-Then ``r`` maps from ``(N + P)``-tuples to a single value, and its adjoint is a tuple of length ``N + P`` given by
+Then ``\operatorname{ret}`` maps from ``(N + P)``-tuples to a single value, and its adjoint is a
+tuple of length ``N + P`` given by
 ```math
-r^\ast(\bar{y}) = (0, \dots, 0, \bar{y}_{N+1}).
+\operatorname{ret}^\ast(\bar{y}) = (0, \dots, 0, \bar{y}).
 ```
-Finally, the adjoint the derivative of ``f`` is
+Finally, the adjoint of the derivative of ``f`` is
 ```math
-D [f,x]^\ast = D[\varphi_1, x_1]^\ast \circ \dots \circ D [\varphi_P, x_P]^\ast \circ r^\ast
+D [f,x]^\ast = D[\varphi_1, x_1]^\ast \circ \dots \circ D [\varphi_P, x_P]^\ast \circ \operatorname{ret}^\ast
 ```
 where ``x_p := \varphi_{p-1}(x_{p-1})`` and ``x_1 := x``.
 Since we now have expressions for all of the terms in this, we consider how to produce a programme which implements this adjoint.
@@ -313,7 +314,7 @@ function rule(f, W, X, Y)
     l, adjoint_dot = rule(dot, eps, eps)
     function adjoint_f(dout)
 
-        # Implement adjoint of r. Assume that we have a way to produce zero gradients.
+        # Implement the adjoint of ret. Assume that we have a way to produce zero gradients.
         dl = dout
         deps = zero_gradient(eps)
         dY_hat = zero_gradient(Y_hat)

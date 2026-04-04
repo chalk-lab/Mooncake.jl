@@ -217,48 +217,6 @@ These examples use schematic names such as `x_arg` rather than exact lowered arg
 In the real generated IR, argument indices can shift because the generated closures carry extra
 state in addition to the primal arguments.
 
-## Where This Lives in Code
-
-Rule building is done statically, based on types. Some methods accept values, e.g.
-```julia
-build_rrule(args...; debug_mode=false)
-```
-but these simply extract the argument types and call the main method for
-[`build_rrule`](@ref Mooncake.build_rrule).
-
-The main implementation lives in
-[`reverse_mode.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl),
-especially:
-
-```julia
-build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false)
-```
-
-Here `sig_or_mi` is either a signature such as `Tuple{typeof(foo), Float64}` or a
-`Core.MethodInstance`.
-
-If the signature has a custom rule ([`Mooncake.is_primitive`](@ref) returns `true`), Mooncake
-uses that rule. Otherwise it looks up the primal IR and differentiates it.
-
-The forward and reverse pass IRs are created by [`generate_ir`](@ref Mooncake.generate_ir):
-
-```julia
-generate_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
-)
-```
-
-[`lookup_ir`](@ref Mooncake.lookup_ir) calls `Core.Compiler.typeinf_ircode` on a method
-instance, which is a lower-level version of `Base.code_ircode`.
-
-The IR considered here is `Core.Compiler.IRCode`, not the `CodeInfo` shown by `@code_typed`.
-This is the compiler IR that Julia optimizes internally before converting back to `CodeInfo`.
-
-[`normalise!`](@ref Mooncake.normalise!) is Mooncake's custom pass that rewrites some `IRCode`
-expressions into forms that are easier for the AD transform to handle. Reverse mode then builds
-its forward and pullback programs through the local CFG builder in `reverse_mode.jl` and lowers
-the result back to `IRCode`.
-
 ## `CFGBlock`: The Reverse-Mode Working IR
 
 `CFGBlock` is Mooncake's reverse-mode-local basic-block representation. It is the format used
@@ -514,7 +472,7 @@ switch_to_reverse_phi_edge(...)
 If the primal arrived from block `#1`, the reverse phi-edge block behaves roughly like:
 
 ```julia
-increment_ref!(r_2, %d6)
+increment_ref!(r_arg_x, %d6)
 goto reverse_block_for_#1
 ```
 
@@ -637,7 +595,7 @@ bb3:
     goto bb4
 
 bb4:
-    %6 = φ (#2 => %5, #3 => _2)
+    %6 = φ (#2 => %5, #3 => arg_x)
     return %6
 ```
 
@@ -645,7 +603,7 @@ The forward pass computes `%6` in the usual SSA sense. The reverse pass has to d
 at the join:
 
 1. determine whether control came from `bb2` or `bb3`
-2. send the cotangent of `%6` back to `%5` or `_2` accordingly
+2. send the cotangent of `%6` back to `%5` or `arg_x` accordingly
 
 So the reverse CFG for `bb4` behaves roughly like:
 
@@ -664,7 +622,7 @@ rvs_phi_edge_bb2:
     goto rvs_bb2
 
 rvs_phi_edge_bb3:
-    increment_ref!(r_2, d6)
+    increment_ref!(r_arg_x, d6)
     goto rvs_bb3
 ```
 
@@ -818,6 +776,35 @@ are the main landmarks:
 - phi-edge reverse routing: `conclude_rvs_block`, `rvs_phi_block`
 - local CFG representation: `CFGBlock`
 - lowering back to compiler IR: `lower_cfg_blocks_to_ir`
+
+## Where This Lives in Code
+
+If you want to connect the conceptual story above to the implementation, the main entry points
+are:
+
+```julia
+build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false)
+
+generate_ir(
+    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
+)
+```
+
+Here `sig_or_mi` is either a signature such as `Tuple{typeof(foo), Float64}` or a
+`Core.MethodInstance`.
+
+If the signature has a custom rule ([`Mooncake.is_primitive`](@ref) returns `true`), Mooncake
+uses that rule. Otherwise it looks up the primal IR and differentiates it.
+
+[`lookup_ir`](@ref Mooncake.lookup_ir) calls `Core.Compiler.typeinf_ircode` on a method
+instance, which is a lower-level version of `Base.code_ircode`.
+
+The transform works on `Core.Compiler.IRCode`, not the `CodeInfo` shown by `@code_typed`.
+[`normalise!`](@ref Mooncake.normalise!) rewrites some `IRCode` expressions into forms that are
+easier for the AD transform to handle, after which reverse mode assembles through the local CFG
+builder in
+[`reverse_mode.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl)
+and lowers back to `IRCode`.
 
 ## Captures and Closure Construction
 
