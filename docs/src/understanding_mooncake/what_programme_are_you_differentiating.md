@@ -18,9 +18,9 @@ end
 ```
 the following rule is a correct implementation of reverse-mode AD for it:
 ```julia
-function r(f, x, y)
-    a, adj_g = r(g, x)
-    b, adj_h = r(h, a, y)
+function rr(f, x, y)
+    a, adj_g = rr(g, x)
+    b, adj_h = rr(h, a, y)
     function adj_f(db)
         _, da, dy = adj_h(db)
         _, dx = adj_g(da)
@@ -32,6 +32,10 @@ end
 Observe that the above rule essentially does the following:
 1. forwards-pass: replace calls to rules.
 2. reverse-pass: run adjoints in reverse order, adding together rdata when a variable is used multiple times.
+
+This opening example uses a Mooncake-like rule shape, including `NoRData()`, because it is meant
+to preview the final target. In the next section we temporarily switch to a simpler pedagogical
+rule interface that strips away some bookkeeping and focuses only on the adjoint structure.
 
 This way of writing rules is the essence of the "A" in "AD".
 This page is therefore dedicated to building up to this example via a sequence of increasingly general examples.
@@ -175,13 +179,17 @@ Each call reads some of the existing values, computes a new one, and appends tha
 the running state. The tuple-based model below is just a precise way of writing down that idea.
 
 We model this `function` as a function ``f`` defined as follows:
+
+For example, ``\varphi_1`` takes the current tuple ``(W, X, Y)``, computes ``XW``, and appends
+that new value, producing ``(W, X, Y, XW)``.
+
 ```math
 \begin{align}
-    f :=&\, r \circ \varphi_3 \circ \varphi_2 \circ \varphi_1 \textrm{ where } \nonumber \\
+    f :=&\, \operatorname{ret} \circ \varphi_3 \circ \varphi_2 \circ \varphi_1 \textrm{ where } \nonumber \\
     \varphi_1(W, X, Y) :=&\, (W, X, Y, XW) \nonumber \\
     \varphi_2(W, X, Y, \hat{Y}) :=&\, (W, X, Y, \hat{Y}, Y - \hat{Y}) \nonumber \\
     \varphi_3(W, X, Y, \hat{Y}, \varepsilon) :=&\, (W, X, Y, \hat{Y}, \varepsilon, \|\varepsilon\|_2^2) \nonumber \\
-    r(W, X, Y, \hat{Y}, \varepsilon, l) :=&\, l \nonumber
+    \operatorname{ret}(W, X, Y, \hat{Y}, \varepsilon, l) :=&\, l \nonumber
 \end{align}
 ```
 In words, our mathematical model for `linear_regression_loss` is the composition of four differentiable functions. The first three map from a tuple containing all variables seen so far, to a tuple containing the same variables _and_ the value returned by the operation being modeled, and the fourth simple reads off the elements of the final tuple which were passed in as arguments, and the return value.
@@ -208,7 +216,7 @@ Note that the argument to ``a_1`` is a 3-tuple, to ``a_2`` a 4-tuple, and to ``a
 Crucially, observe that ``f`` has exactly the same structure as ``g_1``, ``g_2``, and ``g_3`` -- it maps from the tuple containing its arguments to its `return` value.
 This gives us a recursive structure which is essential for making AD work.
 
-``r`` always just maps from a tuple to the last element of that tuple.
+``\operatorname{ret}`` always just maps from a tuple to the last element of that tuple.
 
 ### Differentiating the Mathematical Model
 
@@ -225,7 +233,7 @@ Letting ``\bar{y} := (\bar{y}_1, \dots \bar{y}_{D+1})``, we can perform the usua
         &= \langle (\bar{y}_1, \dots, \bar{y}_D) + D[g \circ a, x]^\ast (\bar{y}_{D+1}), \dot{x} \rangle. \nonumber
 \end{align}
 ```
-So, what is ``D[g \circ a, x]^\ast (\bar{y}_{D+1})``?.
+So, what is ``D[g \circ a, x]^\ast (\bar{y}_{D+1})``?
 First let ``z := a(x)`` and observe that ``D[a, x] = a`` since ``a`` is linear.
 It follows that
 ```math

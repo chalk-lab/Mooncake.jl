@@ -250,6 +250,10 @@ That split is deliberate:
 2. The builder provides a convenient place to manipulate reverse-mode control flow.
 3. The final lowering step re-establishes standard compiler IR with a coherent CFG.
 
+This page is mainly about the representations themselves. For the full reverse-mode pipeline,
+including statement translation, control-flow replay, and forward-to-reverse communication, see
+[`reverse_mode_design.md`](reverse_mode_design.md).
+
 ## Summary
 
 `IRCode` is the main compiler-facing representation throughout Mooncake.

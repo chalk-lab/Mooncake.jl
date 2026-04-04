@@ -1,49 +1,9 @@
 # Reverse-Mode Design
 
-## Compilation process
-
 Last checked: 04/04/2026, Julia v1.10 / v1.11 / v1.12.
 
 This page gives a high-level map of how Mooncake's reverse-mode transform is structured.
 It is aimed at readers who want to understand the main ideas before reading the implementation.
-
-Rule building is done statically, based on types. Some methods accept values, e.g.
-```julia
-build_rrule(args...; debug_mode=false)
-```
-but these simply extract the types of all the arguments and call the main method (non Helper) for [`build_rrule`](@ref Mooncake.build_rrule).
-
-The action happens in [`reverse_mode.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl), in particular the following method:
-```julia
-build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false)
-```
-`sig_or_mi` is either a signature, such as `Tuple{typeof(foo), Float64}`, or a `Core.MethodInstance`.
-Signatures are extracted from `Core.MethodInstance`s as necessary.
-
-If a signature has a custom rule ([`Mooncake.is_primitive`](@ref) returns `true`), we take it, otherwise we generate the IR and differentiate it.
-
-The forward and reverse pass IRs are created by the [`generate_ir`](@ref Mooncake.generate_ir) method.
-The `OpaqueClosure` allows going back from the IR to a callable object. More precisely we use `MistyClosure` to store the associated IR.
-
-The `Pullback` and `DerivedRule` structs are convenience wrappers for `MistyClosure`s with some bookkeeping.
-
-Diving one level deeper, in the following method:
-
-```julia
-generate_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
-)
-```
-
-The function [`lookup_ir`](@ref Mooncake.lookup_ir) calls `Core.Compiler.typeinf_ircode` on a method instance, which is a lower-level version of `Base.code_ircode`.
-
-The IR considered is of type `Core.Compiler.IRCode`, which is different from the `CodeInfo` returned by `@code_typed`.
-This format is obtained from `CodeInfo`, used to perform most optimizations in the Julia IR in the [evaluation pipeline](https://docs.julialang.org/en/v1/devdocs/eval/), then converted back to `CodeInfo`.
-
-The function [`normalise!`](@ref Mooncake.normalise!) is a custom pass to modify `IRCode` and make some expressions nicer to work with.
-The possible expressions one can encounter in lowered ASTs are documented [here](https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form).
-
-Reverse-mode specific stuff: return type retrieval, `ADInfo`, the inline CFG builder in `reverse_mode.jl`, and `zero_like_rdata.jl`. Reverse mode now assembles through a builder-local CFG and lowers directly back to `IRCode`.
 
 ## High-Level Transform: `IRCode` to `IRCode`
 
@@ -51,7 +11,8 @@ The reverse-mode pipeline is easiest to understand as a four-step transform:
 
 1. Start from normalized primal `IRCode`.
 2. Convert that `IRCode` into Mooncake's builder-local CFG representation.
-3. Assemble new forward and reverse CFGs, then lower each one back to compiler `IRCode`.
+3. Assemble new forward and reverse CFGs.
+4. Lower each assembled CFG back to compiler `IRCode`.
 
 So reverse mode is no longer "edit compiler IR in place until it works". The compiler `IRCode`
 is the input and output format, but most of the reverse-mode assembly happens in the middle on
@@ -136,6 +97,168 @@ That middle CFG stage is what keeps the reverse-mode implementation manageable: 
 hard control-flow surgery from the compiler's concrete `IRCode` datastructure, and only lowers
 back to compiler IR once the new program structure is complete.
 
+## A Worked Mini-Example
+
+Here is the smallest useful mental model for the whole reverse-mode pipeline. Consider a primal
+function with one active call followed by a return:
+
+```julia
+function f(x)
+    y = sin(x)
+    return y
+end
+```
+
+Very roughly, the normalized primal `IRCode` looks like:
+
+```text
+bb1:
+    %1 = sin(_2)
+    return %1
+```
+
+### Step 1: statement translation
+
+`make_ad_stmts!` translates the call and the return into forward and reverse fragments.
+
+For the call, the important effect is:
+
+```text
+forward:
+    %rule_result = rule_for_sin(x_arg)
+    %pb = getfield(%rule_result, 2)
+    %1 = getfield(%rule_result, 1)
+
+reverse:
+    %d1 = rdata_ref_for_%1[]
+    rdata_ref_for_%1[] = zero(...)
+    %dx = %pb(%d1)
+    increment_ref!(rdata_ref_for_x, getfield(%dx, 1))
+```
+
+For the return, the important effect is:
+
+```text
+forward:
+    return %1
+
+reverse:
+    increment_ref!(rdata_ref_for_%1, dy)
+```
+
+### Step 2: forward CFG assembly
+
+`forwards_pass_ir` wraps those fragments in a forward CFG with an extra entry block.
+
+Conceptually:
+
+```text
+fwd_entry:
+    load shared captures
+    initialize lazy zero-rdata state
+    goto fwd_bb1
+
+fwd_bb1:
+    %rule_result = ...
+    %pb = ...
+    %1 = ...
+    push!(comms_stack, tuple(%pb))
+    return %1
+```
+
+The forward closure therefore does two things at once:
+
+1. computes the primal/codual result
+2. stores the information that the pullback will need later
+
+### Step 3: pullback CFG assembly
+
+`pullback_ir` builds a separate pullback CFG:
+
+```text
+rvs_entry:
+    load shared captures
+    create reverse-data refs
+    goto rvs_bb1
+
+rvs_bb1:
+    %pb = getfield(pop!(comms_stack), 1)
+    increment_ref!(rdata_ref_for_%1, dy)
+    %d1 = rdata_ref_for_%1[]
+    rdata_ref_for_%1[] = zero(...)
+    %dx = %pb(%d1)
+    increment_ref!(rdata_ref_for_x, getfield(%dx, 1))
+    goto rvs_exit
+
+rvs_exit:
+    read argument rdata refs
+    instantiate any lazy zero-rdata placeholders
+    return argument cotangent tuple
+```
+
+This is the essential pattern repeated across larger examples: the pullback is a separate CFG
+that consumes stored forward-pass data and sends cotangents backward through the primal
+dependency structure.
+
+### Step 4: lower back to compiler IR
+
+Finally, `lower_cfg_blocks_to_ir` converts both CFGs back to ordinary compiler `IRCode`.
+
+So even in this tiny example the real flow is:
+
+```text
+primal IRCode
+  -> translated statement fragments
+  -> forward CFG / pullback CFG
+  -> forward IRCode / pullback IRCode
+```
+
+These examples use schematic names such as `x_arg` rather than exact lowered argument slots.
+In the real generated IR, argument indices can shift because the generated closures carry extra
+state in addition to the primal arguments.
+
+## Where This Lives in Code
+
+Rule building is done statically, based on types. Some methods accept values, e.g.
+```julia
+build_rrule(args...; debug_mode=false)
+```
+but these simply extract the argument types and call the main method for
+[`build_rrule`](@ref Mooncake.build_rrule).
+
+The main implementation lives in
+[`reverse_mode.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl),
+especially:
+
+```julia
+build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false)
+```
+
+Here `sig_or_mi` is either a signature such as `Tuple{typeof(foo), Float64}` or a
+`Core.MethodInstance`.
+
+If the signature has a custom rule ([`Mooncake.is_primitive`](@ref) returns `true`), Mooncake
+uses that rule. Otherwise it looks up the primal IR and differentiates it.
+
+The forward and reverse pass IRs are created by [`generate_ir`](@ref Mooncake.generate_ir):
+
+```julia
+generate_ir(
+    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
+)
+```
+
+[`lookup_ir`](@ref Mooncake.lookup_ir) calls `Core.Compiler.typeinf_ircode` on a method
+instance, which is a lower-level version of `Base.code_ircode`.
+
+The IR considered here is `Core.Compiler.IRCode`, not the `CodeInfo` shown by `@code_typed`.
+This is the compiler IR that Julia optimizes internally before converting back to `CodeInfo`.
+
+[`normalise!`](@ref Mooncake.normalise!) is Mooncake's custom pass that rewrites some `IRCode`
+expressions into forms that are easier for the AD transform to handle. Reverse mode then builds
+its forward and pullback programs through the local CFG builder in `reverse_mode.jl` and lowers
+the result back to `IRCode`.
+
 ## `CFGBlock`: The Reverse-Mode Working IR
 
 `CFGBlock` is Mooncake's reverse-mode-local basic-block representation. It is the format used
@@ -205,6 +328,35 @@ back to `IRCode`, rebuild block/SSA numbering, and hand the result back to the c
 Mooncake still begins with normalized primal `IRCode` and ends with compiler `IRCode`, but it
 does the difficult control-flow surgery in `CFGBlock` form because that is the point where the
 transform needs flexibility more than compiler-format exactness.
+
+## Data Structures That Matter Most
+
+Two data structures carry most of the transform's state:
+
+- `ADInfo`: global state shared across the whole derivation
+- `ADStmtInfo`: the per-statement translation result
+
+### `ADInfo`
+
+When reading the implementation, the most important `ADInfo` fields are:
+
+- `shared_data_pairs`: the values captured by both generated closures
+- `block_stack_id` and `block_stack`: the control-flow replay channel
+- `arg_rdata_ref_ids` and `ssa_rdata_ref_ids`: where reverse data is accumulated
+- `ssa_insts` and `arg_types`: the primal type information used during translation
+- `lazy_zero_rdata_ref_id`: the placeholder-zero mechanism used at pullback exit
+
+The remaining fields mostly support those jobs rather than introducing separate ideas.
+
+### `ADStmtInfo`
+
+`ADStmtInfo` is simpler. Its central fields are:
+
+- `fwds`: forward-pass instructions for the primal statement
+- `rvs`: reverse-pass instructions for that statement
+- `comms_id`: the optional value that must survive from forward execution to pullback execution
+
+If you understand those three fields, you understand the role of `ADStmtInfo`.
 
 ## Statement-Level MWEs
 
@@ -334,18 +486,19 @@ that return value and accumulates it into the reverse-data reference associated 
 Consider a primal block that starts with a phi node:
 
 ```julia
-3 ┄ %6 = φ (#1 => _2, #2 => %5)
+3 ┄ %6 = φ (#1 => arg_x, #2 => %5)
 ```
 
 On the forward pass, this is mostly structural. The phi node is rebuilt so that its incoming
 values are coduals rather than raw primal values:
 
 ```julia
-3 ┄ %6 = φ (#1 => _3, #2 => %5)
+3 ┄ %6 = φ (#1 => codual_arg_x, #2 => %5)
 ```
 
-The argument changes from `_2` to `_3` because the generated forward closure has an extra
-leading shared-data argument, so the primal arguments are shifted by one position.
+Schematically, the incoming primal argument is replaced by the corresponding codual argument in
+the generated forward closure. In the real lowered IR, the exact argument slot can shift because
+the generated closure carries extra leading state.
 
 The important work happens on the reverse side, not at the phi statement itself. Suppose the
 cotangent for `%6` is stored in `r%6`. When the pullback reaches the reverse counterpart of
@@ -536,6 +689,39 @@ to `bb2`. No stack traffic is needed for that edge.
 This optimization matters because dynamic control-flow logging is only needed where the forward
 execution path loses information that the pullback must recover later.
 
+## Entry and Exit Blocks
+
+Both generated closures contain extra structural blocks that do not correspond directly to a
+single primal block.
+
+### Forward entry block
+
+The forward entry block is responsible for:
+
+- loading shared captured data
+- initializing lazy zero-rdata placeholders for arguments
+- optionally logging the synthetic entry block for later reverse dispatch
+
+### Pullback entry block
+
+The pullback entry block is responsible for:
+
+- loading the same shared captured data
+- creating reverse-data references for arguments and SSA values
+- dispatching to the reverse block associated with the primal block that actually returned
+
+### Pullback exit block
+
+The pullback exit block is responsible for:
+
+- reading argument reverse-data references
+- materializing true zeros from lazy zero-rdata placeholders where needed
+- packaging the final argument cotangent tuple
+- returning that tuple with the expected type
+
+These blocks are worth calling out explicitly because they explain why the generated forward and
+reverse CFGs do not look like simple block-for-block reversals of the primal CFG.
+
 ## Forward-to-Reverse Communication
 
 Forward and reverse code do not communicate through a single channel. The current design uses
@@ -618,6 +804,170 @@ In short, the three communication mechanisms are:
 2. per-block comms stacks for dynamic forward values such as pullback objects
 3. the block stack for replaying dynamic control flow on the reverse pass
 
+## Concept-to-Helper Map
+
+If you want to jump from the conceptual description in this page to the implementation, these
+are the main landmarks:
+
+- statement translation: `make_ad_stmts!`
+- shared captured data: `SharedDataPairs`, `shared_data_tuple`, `shared_data_stmts`
+- per-block forward-to-reverse values: `create_comms_insts!`
+- forward CFG assembly: `forwards_pass_ir`
+- pullback CFG assembly: `pullback_ir`
+- control-flow replay: `__push_blk_stack!`, `__pop_blk_stack!`, `make_switch_stmts`
+- phi-edge reverse routing: `conclude_rvs_block`, `rvs_phi_block`
+- local CFG representation: `CFGBlock`
+- lowering back to compiler IR: `lower_cfg_blocks_to_ir`
+
+## Captures and Closure Construction
+
+The generated forward and reverse `IRCode`s do not communicate by calling each other directly.
+They communicate partly through ordinary runtime values and partly through a shared captures
+tuple that is embedded into the generated closures.
+
+### What gets captured
+
+The shared captures tuple contains the values recorded in `SharedDataPairs`, such as:
+
+- static rule objects that are not safe or convenient to inline directly
+- stacks used for per-block communication
+- the block stack used for control-flow replay
+- the lazy-zero-rdata reference used to finish the pullback result
+
+`generate_ir` builds this tuple with:
+
+```julia
+shared_data = shared_data_tuple(info.shared_data_pairs)
+```
+
+and both generated closures are later constructed with that same tuple:
+
+```julia
+fwd_oc = misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
+rvs_oc = misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)
+```
+
+Both generated closures therefore receive access to the same logical captured data. At the
+start of each closure, `shared_data_stmts` lowers that tuple back into local IDs.
+
+So the resulting `IRCode` does not contain the captured values directly as ordinary SSA
+definitions. Instead, it contains loads from the closure's captures field near the entry block.
+
+### MWE: one captured tuple shared by both closures
+
+Suppose `SharedDataPairs` conceptually contains:
+
+```text
+[(id_rule, some_rule), (id_blk, block_stack), (id_zero, lazy_zero_ref)]
+```
+
+Then:
+
+```text
+shared_data_tuple(...) == (some_rule, block_stack, lazy_zero_ref)
+```
+
+and the entry blocks in the lowered `IRCode`s begin by reconstructing those bindings:
+
+```text
+fwd_entry:
+    id_rule = getfield(_1, 1)
+    id_blk  = getfield(_1, 2)
+    id_zero = getfield(_1, 3)
+    ...
+
+rvs_entry:
+    id_rule = getfield(_1, 1)
+    id_blk  = getfield(_1, 2)
+    id_zero = getfield(_1, 3)
+    ...
+```
+
+Here `_1` is the generated closure object. The `getfield` operations shown above are the loads
+that recover values from that closure's captured state. The important point is that the two
+generated closures do not each get separate logical bindings. They are built against the same
+captured state assembled during derivation.
+
+### How forward-to-reverse sharing appears in the final IR
+
+After lowering, the final forward `IRCode` still contains the machinery that writes dynamic data
+needed by the pullback:
+
+- pushes onto comms stacks for values such as pullback objects
+- pushes onto the block stack when control-flow replay is needed
+- initialization of lazy zero-rdata placeholders
+
+The final pullback `IRCode` contains the matching reads:
+
+- pops from comms stacks
+- pops from the block stack
+- loads from reverse-data references
+- loads from the lazy-zero-rdata capture when finishing the returned cotangent tuple
+
+So although the builder-local CFG disappears after lowering, the final `IRCode` still encodes
+the forward-to-reverse contract explicitly through stack operations, ref operations, and capture
+loads.
+
+### MWE: dynamic value sharing in final `IRCode`
+
+If an active call produces a pullback object `%pb`, the final forward `IRCode` contains code
+equivalent to:
+
+```text
+%tuple = tuple(%pb)
+push!(comms_stack, %tuple)
+```
+
+and the final pullback `IRCode` contains the matching restore:
+
+```text
+%tuple = pop!(comms_stack)
+%pb = getfield(%tuple, 1)
+```
+
+That pair of writes and reads is how a value produced only during the forward run becomes
+available later in the pullback.
+
+### How the closures are built
+
+`generate_ir` produces two compiler `IRCode`s:
+
+- one for the forward closure
+- one for the pullback closure
+
+`build_derived_rrule` then packages those into closure objects. At a high level:
+
+1. `generate_ir` returns `DerivedRuleInfo`, containing `fwd_ir`, `rvs_ir`, and `shared_data`
+2. `build_derived_rrule` turns each `IRCode` plus `shared_data` into a `MistyClosure`
+3. those closures are placed into a `DerivedRule`
+4. when the derived rule is called, it returns the forward result plus a `Pullback` wrapper
+   around the reverse closure
+
+The end result is that users do not interact with raw `IRCode` directly. They call a derived
+rule, which runs the generated forward closure and receives a callable pullback object whose
+captures point at the same shared state prepared during derivation.
+
+### MWE: final wrapper structure
+
+Conceptually, the final derived rule looks like:
+
+```text
+DerivedRule(
+    fwds_oc = MistyClosure(fwd_ir, shared_data),
+    pb_oc_ref = Ref(MistyClosure(rvs_ir, shared_data)),
+    ...
+)
+```
+
+Calling that derived rule:
+
+1. runs `fwds_oc`
+2. returns the forward `CoDual`
+3. returns a `Pullback` object that knows how to call `pb_oc_ref[]`
+
+So the forward closure and pullback closure are separate pieces of generated code, but they are
+stitched together by the shared captures tuple and the `DerivedRule` / `Pullback` wrappers.
+
 ## SSA Nodes Not Covered
 
 Most common SSA-form node kinds are handled by `make_ad_stmts!`, but a few are explicitly out
@@ -645,6 +995,17 @@ machinery.
 Ordinary `PhiNode`s are supported and lowered through predecessor-sensitive reverse CFG logic.
 `PhiCNode`s and `UpsilonNode`s are not. So "control flow with standard SSA joins" is in scope,
 while "exception SSA machinery" is still out of scope.
+
+## Known Boundaries
+
+Beyond unsupported `PhiCNode` and `UpsilonNode` handling, a few broader boundaries are useful to
+keep in mind when reading or extending reverse mode:
+
+- many operations are only as good as the primitive or derived rules available for them
+- debug mode wraps rule calls and changes the generated code shape slightly for diagnostics
+- the transform depends on compiler IR conventions that can shift across Julia minor versions
+- reverse mode assumes ordinary SSA/control-flow lowering patterns, not the full exception-state
+  machinery generated for every possible language feature
 
 ## Further Reading
 
