@@ -213,15 +213,17 @@ end
     Tuple{typeof(unsafe_convert),Type{CuPtr{T}},CuArray{T}} where {T<:Complex{<:IEEEFloat}},
 )
 function frule!!(
+    ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,<:NTangent}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
+    return Dual(
+        unsafe_convert(CuPtr{T}, primal(x)),
+        NTangent(map(dx -> unsafe_convert(CuPtr{T}, dx), tangent(x).lanes)),
+    )
+end
+function frule!!(
     ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
-    dx = tangent(x)
-    dy = if dx isa NTangent
-        NTangent(ntuple(n -> unsafe_convert(CuPtr{T}, dx[n]), Val(length(dx))))
-    else
-        unsafe_convert(CuPtr{T}, dx)
-    end
-    return Dual(unsafe_convert(CuPtr{T}, primal(x)), dy)
+    return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
@@ -558,15 +560,17 @@ end
     MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
 )
 function frule!!(
+    ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray,<:NTangent}, dims::Dual{<:NTuple}
+)
+    return Dual(
+        reshape(primal(x), primal(dims)),
+        NTangent(map(dx -> reshape(dx, primal(dims)), tangent(x).lanes)),
+    )
+end
+function frule!!(
     ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
 )
-    dx = tangent(x)
-    dy = if dx isa NTangent
-        NTangent(ntuple(n -> reshape(dx[n], primal(dims)), Val(length(dx))))
-    else
-        reshape(dx, primal(dims))
-    end
-    return Dual(reshape(primal(x), primal(dims)), dy)
+    return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
 end
 function rrule!!(
     ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
@@ -1110,34 +1114,41 @@ end
 # For float x the tangent array is filled with tangent(x).
 @is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
 function frule!!(
+    ::Dual{typeof(fill!)},
+    a::Dual{<:CuMaybeComplexArray,<:NTangent},
+    x::Dual{<:Any,<:NTangent},
+)
+    fill!(primal(a), primal(x))
+    da = tangent(a)
+    tx = tangent(x)
+    @inbounds for lane in 1:length(da)
+        fill!(
+            da[lane],
+            if tx[lane] isa NoTangent
+                zero(eltype(da[lane]))
+            else
+                eltype(da[lane])(tx[lane])
+            end,
+        )
+    end
+    return a
+end
+function frule!!(::Dual{typeof(fill!)}, a::Dual{<:CuMaybeComplexArray,<:NTangent}, x::Dual)
+    fill!(primal(a), primal(x))
+    da = tangent(a)
+    tx = tangent(x)
+    @inbounds for lane in 1:length(da)
+        fill!(da[lane], tx isa NoTangent ? zero(eltype(da[lane])) : eltype(da[lane])(tx))
+    end
+    return a
+end
+function frule!!(
     ::Dual{typeof(fill!)}, a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
 )
     fill!(primal(a), primal(x))
     tx = tangent(x)
     da = tangent(a)
-    if da isa NTangent
-        if tx isa NTangent
-            @inbounds for lane in 1:length(da)
-                fill!(
-                    da[lane],
-                    if tx[lane] isa NoTangent
-                        zero(eltype(da[lane]))
-                    else
-                        eltype(da[lane])(tx[lane])
-                    end,
-                )
-            end
-        else
-            @inbounds for lane in 1:length(da)
-                fill!(
-                    da[lane],
-                    tx isa NoTangent ? zero(eltype(da[lane])) : eltype(da[lane])(tx),
-                )
-            end
-        end
-    else
-        fill!(da, tx isa NoTangent ? zero(eltype(da)) : eltype(da)(tx))
-    end
+    fill!(da, tx isa NoTangent ? zero(eltype(da)) : eltype(da)(tx))
     return a
 end
 function rrule!!(
@@ -1185,26 +1196,30 @@ _fields(x::CuMaybeComplexArray) = (parent=x,)
     DefaultCtx, Tuple{typeof(sum),<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}},
 )
 function frule!!(
+    ::Dual{typeof(sum)},
+    x::Dual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray},<:NTangent},
+)
+    return Dual(
+        sum(primal(x)), NTangent(map(dx -> sum(_fields(dx).parent), tangent(x).lanes))
+    )
+end
+function frule!!(
     ::Dual{typeof(sum)}, x::Dual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
 )
-    dx = tangent(x)
-    dy = if dx isa NTangent
-        NTangent(ntuple(n -> sum(_fields(dx[n]).parent), Val(length(dx))))
-    else
-        sum(_fields(dx).parent)
-    end
-    return Dual(sum(primal(x)), dy)
+    return Dual(sum(primal(x)), sum(_fields(tangent(x)).parent))
+end
+function frule!!(
+    ::Dual{typeof(sum)},
+    x::Dual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray},<:NTangent},
+)
+    return Dual(
+        sum(primal(x)), NTangent(map(dx -> conj(sum(_fields(dx).parent)), tangent(x).lanes))
+    )
 end
 function frule!!(
     ::Dual{typeof(sum)}, x::Dual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
 )
-    dx = tangent(x)
-    dy = if dx isa NTangent
-        NTangent(ntuple(n -> conj(sum(_fields(dx[n]).parent)), Val(length(dx))))
-    else
-        conj(sum(_fields(dx).parent))
-    end
-    return Dual(sum(primal(x)), dy)
+    return Dual(sum(primal(x)), conj(sum(_fields(tangent(x)).parent)))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, x::CoDual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
@@ -1791,9 +1806,12 @@ end
 # The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
 function frule!!(::Dual{typeof(cu)}, x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
-    dx = tangent(x)
-    dy = dx isa NTangent ? NTangent(map(cu, dx.lanes)) : cu(dx)
-    return Dual(cu(primal(x)), dy)
+    return Dual(cu(primal(x)), cu(tangent(x)))
+end
+function frule!!(
+    ::Dual{typeof(cu)}, x::Dual{<:AbstractArray{<:CuFloatOrComplex},<:NTangent}
+)
+    return Dual(cu(primal(x)), NTangent(map(cu, tangent(x).lanes)))
 end
 function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:AbstractArray{<:CuFloatOrComplex}})
     dx = tangent(x)
@@ -1813,9 +1831,12 @@ end
 function frule!!(
     ::Dual{Type{Array{T,N}}}, x::Dual{<:CuArray{T,N}}
 ) where {T<:CuFloatOrComplex,N}
-    dx = tangent(x)
-    dy = dx isa NTangent ? NTangent(map(Array, dx.lanes)) : Array(dx)
-    return Dual(Array(primal(x)), dy)
+    return Dual(Array(primal(x)), Array(tangent(x)))
+end
+function frule!!(
+    ::Dual{Type{Array{T,N}}}, x::Dual{<:CuArray{T,N},<:NTangent}
+) where {T<:CuFloatOrComplex,N}
+    return Dual(Array(primal(x)), NTangent(map(Array, tangent(x).lanes)))
 end
 function rrule!!(
     ::CoDual{Type{Array{T,N}}}, x::CoDual{<:CuArray{T,N}}
