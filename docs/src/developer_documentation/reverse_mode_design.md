@@ -4,8 +4,8 @@
 
 Last checked: 04/04/2026, Julia v1.10 / v1.11 / v1.12.
 
-This brief informal note was largely written by Guillaume Dalle while learning how Mooncake's internals operate for reverse-mode, in order to be able to add forwards-mode AD.
-It should help readers orient themselves when first trying to understand Mooncake's internals.
+This page gives a high-level map of how Mooncake's reverse-mode transform is structured.
+It is aimed at readers who want to understand the main ideas before reading the implementation.
 
 Rule building is done statically, based on types. Some methods accept values, e.g.
 ```julia
@@ -41,13 +41,13 @@ The IR considered is of type `Core.Compiler.IRCode`, which is different from the
 This format is obtained from `CodeInfo`, used to perform most optimizations in the Julia IR in the [evaluation pipeline](https://docs.julialang.org/en/v1/devdocs/eval/), then converted back to `CodeInfo`.
 
 The function [`normalise!`](@ref Mooncake.normalise!) is a custom pass to modify `IRCode` and make some expressions nicer to work with.
-The possible expressions one can encountered in lowered ASTs are documented [here](https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form).
+The possible expressions one can encounter in lowered ASTs are documented [here](https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form).
 
 Reverse-mode specific stuff: return type retrieval, `ADInfo`, the inline CFG builder in `reverse_mode.jl`, and `zero_like_rdata.jl`. Reverse mode now assembles through a builder-local CFG and lowers directly back to `IRCode`.
 
 ## High-Level Transform: `IRCode` to `IRCode`
 
-The reverse-mode pipeline is easiest to understand as a three-stage transform:
+The reverse-mode pipeline is easiest to understand as a four-step transform:
 
 1. Start from normalized primal `IRCode`.
 2. Convert that `IRCode` into Mooncake's builder-local CFG representation.
@@ -217,6 +217,9 @@ from one primal SSA statement into:
   SSA values
 
 These are only sketches, but they match the current implementation strategy closely.
+They use pseudocode-style helper names such as `rule_for_sin`, `increment_ref!`, and
+`switch_to_reverse_phi_edge(...)` to show the dataflow. They are not literal emitted APIs or
+exact compiler IR.
 
 ### MWE 1: Constant literal
 
@@ -340,6 +343,9 @@ values are coduals rather than raw primal values:
 ```julia
 3 ┄ %6 = φ (#1 => _3, #2 => %5)
 ```
+
+The argument changes from `_2` to `_3` because the generated forward closure has an extra
+leading shared-data argument, so the primal arguments are shifted by one position.
 
 The important work happens on the reverse side, not at the phi statement itself. Suppose the
 cotangent for `%6` is stored in `r%6`. When the pullback reaches the reverse counterpart of
@@ -640,46 +646,10 @@ Ordinary `PhiNode`s are supported and lowered through predecessor-sensitive reve
 `PhiCNode`s and `UpsilonNode`s are not. So "control flow with standard SSA joins" is in scope,
 while "exception SSA machinery" is still out of scope.
 
-Beyond the [`interpreter`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/) folder, check out [`tangents.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/tangents.jl) for forward mode.
+## Further Reading
 
-[`Tangent`](@ref Mooncake.Tangent) is the correct representation required for Forward mode AD. `FData` and `RData` are not representations needed directly.
+If you want the supporting background after this page:
 
-For testing, all the tests got via the `generate_test_functions` method (defined in [`test_resources.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/1894b2f23916091d5022134db0af61a75c1035ee/src/test_resources.jl#L655)) must pass.
-Recycle the functionality from reverse mode test utils.
-
-To manipulate `IRCode`, check out the fields:
-
-- `ir.argtypes` is the signature. Some are annotated with `Core.Const` to facilitate constant propagation for instance. Other annotations are `PartialStruct`, `Conditional`, `PartialTypeVar`. `Core.Compiler.widenconst` is used to extract types from these.
-- `ir.stmts` is a `Core.Compiler.InstructionStream`. This represents a sequence of instructions via 5 vectors of the same length:
-  - `stmts.stmt` is a vector of expressions (or other IR node types), see [AST docs](https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form)
-  - `stmts.type` is a vector of types for the left-hand side of the assignment
-  - three others
-- `ir.cfg` is the Control Flow Graph of type `Core.Compiler.CFG`
-- `ir.meta` is metadata, not important
-- `ir.new_nodes` is an optimization buffer, not important
-- `ir.sptypes` is for type parameters of the called function
-
-We must maintain coherence between the various components of `IRCode` (especially `ir.stmts` and `ir.cfg`).
-The current reverse-mode implementation handles this by assembling into a builder-local CFG first, then lowering the result back to coherent compiler IR in one step.
-In forward mode we shouldn't have to modify anything but `ir.stmts`.
-Do line by line transformation of the statements and then possibly refresh the CFG.
-
-Examples of how line-by-line transformations can be done, are defined in [`Mooncake.make_ad_stmts!`](@ref).
-The `IRCode` nodes are not explicitly documented in <https://docs.julialang.org/en/v1/devdocs/ast/#Lowered-form> or <https://docs.julialang.org/en/v1/devdocs/ssair/#Main-SSA-data-structure>. Might need completion of official docs, but Mooncake docs in the meantime.
-
-Reverse mode now assembles through the inline CFG builder in [`reverse_mode.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl) and lowers directly back to compiler IR.
-
-Inlining pass can prevent us from using high-level rules by inlining the function (e.g. unrolling a loop).
-The contexts in [`interpreter/contexts.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/src/interpreter/contexts.jl) are `MinimalCtx` (necessary for AD to work) and `DefaultCtx` (ensure that we hit all of the rules).
-Distinction between rules is not well maintained in Mooncake at the moment.
-The function `is_primitive` defines whether we should recurse into the function during AD and break it into parts, or look for a rule.
-If we define a rule we should set `is_primitive` to `true` for the corresponding function.
-
-In [`interpreter/abstract_interpretation.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/src/interpreter/abstract_interpretation.jl) we interact with the Julia compiler.
-The most important part is preventing the compiler from inlining.
-
-The `MooncakeInterpreter` subtypes `Core.Compiler.AbstractInterpreter` to interpret Julia code.
-There are also Cthulhu, Enzyme, JET interpreters.
-Tells you how things get run.
-
-For second order we will need to adapt IR lookup to misty closures.
+- [`ir_representation.md`](ir_representation.md) explains the compiler-facing `IRCode` representation.
+- [`forwards_mode_design.md`](forwards_mode_design.md) covers the forward-mode side.
+- [`src/interpreter/reverse_mode.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl) is the implementation described here.

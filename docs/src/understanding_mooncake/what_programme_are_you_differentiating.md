@@ -1,4 +1,4 @@
-# Towards AD in Julia: Composition of Rules (to-be-updated)
+# What Programme Are You Differentiating?
 
 Prerequisites: [Algorithmic Differentiation](@ref).
 
@@ -20,18 +20,17 @@ the following rule is a correct implementation of reverse-mode AD for it:
 ```julia
 function r(f, x, y)
     a, adj_g = r(g, x)
-    b, adj_h = r(h, a, x, y)
+    b, adj_h = r(h, a, y)
     function adj_f(db)
-        _, da, dx, dy = adj_h(db)
-        _, dx2 = adj_g(da)
-        dx = Mooncake.increment!!(dx, dx2)
+        _, da, dy = adj_h(db)
+        _, dx = adj_g(da)
         return NoRData(), dx, dy
     end
     return b, adj_f
 end
 ```
 Observe that the above rule essentially does the following:
-1. fowards-pass: replace calls to rules.
+1. forwards-pass: replace calls to rules.
 2. reverse-pass: run adjoints in reverse order, adding together rdata when a variable is used multiple times.
 
 This way of writing rules is the essence of the "A" in "AD".
@@ -56,7 +55,7 @@ We ask for patience, and promise that the modelling task will become more intere
 To start with, let us consider only `function`s which are pure (free of externally-visible side effects, such as the modification of their arguments of global variables), unary (single-argument), and don't contain any data themselves (e.g. no closures or callable `struct`s).
 For example, consider:
 #### `g`:
-`g(x::Vector{Float64}) = 2x` TODO: pick a non-linear example!!!!
+`g(x::Vector{Float64}) = sin.(x)`.
 
 #### `h`:
 `h(x::Matrix{Float64}) = sum(x)`.
@@ -79,7 +78,7 @@ There are many ways to implement this function.
 We propose to represent any `function` `f` in this class by a differentiable function ``f : \mathcal{X} \to \mathcal{Y}``.
 
 #### `g`:
-Let ``\mathcal{X} = \mathcal{Y} =: \mathbb{R}^D`` where ``D`` is `length(x)`, and ``f(x) := 2x``.
+Let ``\mathcal{X} = \mathcal{Y} =: \mathbb{R}^D`` where ``D`` is `length(x)`, and ``f(x) := \sin(x)`` applied elementwise.
 
 #### `h`:
 Let ``\mathcal{X} := \mathbb{R}^{P \times Q}``, and ``\mathcal{Y} := \mathbb{R}``, where ``P`` and ``Q`` are the number of rows and columns in `x`, and ``f(x) := \sum_{p,q} x_{p,q}``.
@@ -109,7 +108,7 @@ Given a rule for a `function` of interest, we simply run the rule, and can then 
 #### `g`:
 ```julia
 function rrule(::typeof(g), x::Vector{Float64})
-    g_adjoint(ȳ::Vector{Float64}) = 2ȳ
+    g_adjoint(ȳ::Vector{Float64}) = cos.(x) .* ȳ
     return g(x), g_adjoint
 end
 ```
@@ -169,6 +168,11 @@ As before, in order to produce a precise mathematical model for this Julia `func
 However, in order to do so, we will have to be a little more creative in how we choose these functions.
 
 ### Differentiable Mathematical Model
+
+Before writing the equations, it helps to keep one simple picture in mind: we model a Julia
+program as a sequence of calls that gradually extends the list of values currently in scope.
+Each call reads some of the existing values, computes a new one, and appends that new value to
+the running state. The tuple-based model below is just a precise way of writing down that idea.
 
 We model this `function` as a function ``f`` defined as follows:
 ```math

@@ -7,6 +7,13 @@ Please note that Julia's SSA-form IR changes slightly across minor versions, bec
 not a public language interface. The examples below are representative rather than
 version-stable.
 
+Before looking at the printed IR, keep three ideas in mind:
+
+1. Each SSA statement produces one named value such as `%1` or `%2`.
+2. Control flow is organized into basic blocks with branch or return terminators.
+3. The compiler stores the statements and the control-flow graph separately, and Mooncake has
+   to keep those two views coherent when transforming code.
+
 ## Julia's SSA-Form IR
 
 ### Straight-Line Code
