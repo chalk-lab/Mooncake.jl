@@ -1,3 +1,24 @@
+#
+# Reverse-mode source-to-source transform roadmap
+#
+# This file is in roughly the following order:
+# 1. Local reverse-mode IR types and ID utilities.
+# 2. Shared closure-capture management and global AD state.
+# 3. Statement translation from primal IR to forward/reverse fragments.
+# 4. Callable wrapper types used by derived rules at runtime.
+# 5. Rule derivation entry points and IR generation.
+# 6. Forward-pass assembly, CFGBlock-based lowering, and pullback assembly.
+# 7. Deferred rule wrappers for dynamic dispatch and recursive :invoke handling.
+#
+# The implementation starts with low-level types because later sections share them heavily,
+# but the main transform entry points are `build_rrule`, `build_derived_rrule`, and
+# `generate_ir`.
+#
+
+#
+# Reverse-mode local IR: IDs and CFG-local node types
+#
+
 const _id_count::Dict{Int,Int32} = Dict{Int,Int32}()
 
 struct ID
@@ -89,6 +110,10 @@ end
 _find_id_uses!(::Dict{ID,Bool}, ::QuoteNode) = nothing
 _find_id_uses!(d::Dict{ID,Bool}, x::ID) = d[x] = true
 _find_id_uses!(::Dict{ID,Bool}, x) = nothing
+
+#
+# Shared closure captures and reverse-mode global state
+#
 
 """
     SharedDataPairs()
@@ -390,6 +415,10 @@ end
     l = lazy_zero_rdata(primal(y))
     return y::CoDual, (pb!! isa NoPullback ? pb!! : RRuleWrapperPb(pb!!, l))
 end
+
+#
+# Statement translation bookkeeping
+#
 
 """
     ADStmtInfo
@@ -998,8 +1027,10 @@ __get_primal(x) = x
 const RuleMC{A,R} = MistyClosure{OpaqueClosure{A,R}}
 
 #
-# Runners for generated code. The main job of these functions is to handle the translation
-# between differing varargs conventions.
+# Runtime wrapper types for generated rules.
+#
+# These wrappers sit on the hot path once a rule has already been derived. Their main job is
+# to hide closure/capture details and translate between differing varargs conventions.
 #
 
 struct Pullback{Tprimal,Tpb_args,Tpb_ret,isva,nargs}
@@ -1094,7 +1125,165 @@ function __unflatten_codual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs
 end
 
 #
-# Rule derivation.
+# Deferred runtime rule wrappers for dynamic dispatch and recursive `:invoke`
+#
+# These wrappers live next to the other callable rule wrappers above because they are also
+# part of the runtime surface seen by generated reverse-mode code. Their constructors depend
+# on compilation helpers such as `build_rrule` and `rule_type`, which are defined later.
+#
+
+"""
+    DynamicDerivedRule(interp::MooncakeInterpreter, debug_mode::Bool)
+
+For internal use only.
+
+A callable data structure which, when invoked, calls an rrule specific to the dynamic types
+of its arguments. Stores rules in an internal cache to avoid re-deriving.
+
+This is used to implement dynamic dispatch.
+"""
+struct DynamicDerivedRule{V}
+    cache::V
+    debug_mode::Bool
+end
+
+DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug_mode)
+
+# Create new dynamic rule with empty cache and same debug mode
+_copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
+
+function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
+
+    # `Base._stable_typeof` is used here, rather than `typeof` or `Mooncake._typeof`. Its
+    # precise behaviour (equivalent to `typeof` for everything except `Type`s, for which it
+    # returns `Type{P}` rather than `typeof(P)`) is needed to ensure that this signature
+    # matches the types that `rule` sees when `rule(args...)` is called below. If you get
+    # this wrong, an assertion is violated, causing a hard-to-debug error (see issue 660).
+    sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
+
+    rule = get(dynamic_rule.cache, sig, nothing)
+    if rule === nothing
+        interp = get_interpreter(ReverseMode)
+        rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        dynamic_rule.cache[sig] = rule
+    end
+    return __call_rule(rule, args)
+end
+
+"""
+    LazyDerivedRule(interp, mi::Core.MethodInstance, debug_mode::Bool)
+
+For internal use only.
+
+A type-stable wrapper around a `DerivedRule`, which only instantiates the `DerivedRule`
+when it is first called. This is useful, as it means that if a rule does not get run, it
+does not have to be derived.
+
+If `debug_mode` is `true`, then the rule constructed will be a `DebugRRule`. This is useful
+when debugging, but should usually be switched off for production code as it (in general)
+incurs some runtime overhead.
+
+Note: the signature of the primal for which this is a rule is stored in the type. The only
+reason to keep this around is for debugging -- it is very helpful to have this type visible
+in the stack trace when something goes wrong, as it allows you to trivially determine which
+bit of your code is the culprit.
+
+# Extended Help
+
+There are two main reasons why deferring the construction of a `DerivedRule` until we need
+to use it is crucial.
+
+The first is to do with recursion. Consider the following function:
+```julia
+f(x) = x > 0 ? f(x - 1) : x
+```
+If we generate the `IRCode` for this function, we will see something like the following:
+```julia
+julia> Base.code_ircode_by_type(Tuple{typeof(f), Float64})[1][1]
+1 1 ─ %1  = Base.lt_float(0.0, _2)::Bool
+  │   %2  = Base.or_int(%1, false)::Bool
+  └──       goto #6 if not %2
+  2 ─ %4  = Base.sub_float(_2, 1.0)::Float64
+  │   %5  = Base.lt_float(0.0, %4)::Bool
+  │   %6  = Base.or_int(%5, false)::Bool
+  └──       goto #4 if not %6
+  3 ─ %8  = Base.sub_float(%4, 1.0)::Float64
+  │   %9  = invoke Main.f(%8::Float64)::Float64
+  └──       goto #5
+  4 ─       goto #5
+  5 ┄ %12 = φ (#3 => %9, #4 => %4)::Float64
+  └──       return %12
+  6 ─       return _2
+```
+Suppose that we decide to construct a `DerivedRule` immediately whenever we find an
+`:invoke` statement in a rule that we're currently building a `DerivedRule` for.
+In the above example, we produce an infinite recursion when we attempt to produce a
+`DerivedRule` for %9, because it has the same signature as the call which generates this IR.
+By instead adopting a policy of constructing a `LazyDerivedRule` whenever we encounter an
+`:invoke` statement, we avoid this problem.
+
+The second reason that delaying the construction of a `DerivedRule`, is essential is that it
+ensures that we don't derive rules for method instances which aren't run. Suppose that
+function B contains code for which we can't derive a rule -- perhaps it contains an
+unsupported language feature like a `PhiCNode` or an `UpsilonNode`. Suppose that function A
+contains an `:invoke` which refers to function `B`, but that this call is on a branch which
+deals with error handling, and doesn't get run run unless something goes wrong. By deferring
+the derivation of the rule for B, we only ever attempt to derive it if we land on this
+error handling branch. Conversely, if we attempted to derive the rule for B when we derive
+the rule for A, we would be unable to complete the derivation of the rule for A.
+"""
+mutable struct LazyDerivedRule{primal_sig,Trule}
+    debug_mode::Bool
+    mi::Core.MethodInstance
+    rule::Trule
+    function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
+        interp = get_interpreter(ReverseMode)
+        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi)
+    end
+    function LazyDerivedRule{Tprimal_sig,Trule}(
+        mi::Core.MethodInstance, debug_mode::Bool
+    ) where {Tprimal_sig,Trule}
+        return new{Tprimal_sig,Trule}(debug_mode, mi)
+    end
+end
+
+# Create new lazy rule with same method instance and debug mode
+_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
+
+# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
+# LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
+# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
+# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
+@static if VERSION < v"1.11-"
+    @inline function __call_rule(
+        rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
+    ) where {sig,Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
+        return rule(args...)::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
+    end
+    @inline function __call_rule(
+        rule::LazyDerivedRule{
+            sig,DebugRRule{DerivedRule{Tp,FA,CoDual{P,FD},RA,RR,isva,Val{pnargs}}}
+        },
+        args::A,
+    ) where {sig,Tp,FA,P,FD,RA,RR,isva,pnargs,A<:Tuple}
+        return rule(
+            args...
+        )::Tuple{CoDual{P,FD},DebugPullback{Pullback{Tp,RA,RR,isva,fieldcount(A)},P}}
+    end
+end
+
+@inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
+    return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
+end
+
+@noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
+    interp = get_interpreter(ReverseMode)
+    rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
+    return __call_rule(rule.rule, args)
+end
+
+#
+# Rule derivation entry points and compile-time helpers
 #
 
 _get_sig(sig::Type) = sig
@@ -1470,6 +1659,10 @@ Returns two a `Tuple{Vector{IDInstPair}, Vector{IDInstPair}`. The nth element of
 `Vector` corresponds to the instructions to be inserted into the forwards- and reverse
 passes resp. for the nth block in `ad_stmts_blocks`.
 """
+#
+# Forward-pass communication and CFG assembly
+#
+
 function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
     insts = map(ad_stmts_blocks) do (_, ad_stmts)
 
@@ -1609,7 +1802,10 @@ __lazy_zero_rdata_primal(T, x) = lazy_zero_rdata(T, primal(x))
 end
 
 #
-# Pullback CFG builder
+# CFGBlock working IR
+#
+# Reverse mode assembles new control flow in this local representation first, then lowers the
+# finished CFG back to compiler IR in one step.
 #
 
 """
@@ -1631,6 +1827,10 @@ function _remap_assigned_phi_values(f, values::Vector{Any})::Vector{Any}
     end
     return new_values
 end
+
+#
+# `IRCode` -> `CFGBlock` conversion
+#
 
 function _ssa_to_ids(d::SSAToIdDict, inst::NewInstruction)
     return NewInstruction(inst; stmt=_ssa_to_ids(d, inst.stmt))
@@ -1700,6 +1900,10 @@ function _cfg_phi_nodes(block::CFGBlock)
     n_phi_nodes = isnothing(n_phi_nodes) ? length(block.insts) : n_phi_nodes - 1
     return first.(block.insts[1:n_phi_nodes]), last.(block.insts[1:n_phi_nodes])
 end
+
+#
+# CFG analysis and canonicalization helpers
+#
 
 function _compute_cfg_successors(blocks::Vector{CFGBlock})::Dict{ID,Vector{ID}}
     succs = Dict{ID,Vector{ID}}()
@@ -1920,6 +2124,10 @@ end
 
 Lower reverse-mode-local CFG blocks directly to `IRCode`.
 """
+#
+# `CFGBlock` -> `IRCode` lowering
+#
+
 function lower_cfg_blocks_to_ir(
     ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
 )::IRCode
@@ -1983,6 +2191,10 @@ end
 
 Produce the IR associated to the `OpaqueClosure` which runs most of the pullback.
 """
+#
+# Pullback CFG assembly
+#
+
 function pullback_ir(
     ir::IRCode,
     primal_blocks,
@@ -2323,156 +2535,6 @@ profiling performance, and to know that this function was hit when debugging.
 Helper function emitted by `make_switch_stmts`.
 """
 __switch_case(id::Int32, predecessor_id::Int32) = !(id === predecessor_id)
-
-"""
-    DynamicDerivedRule(interp::MooncakeInterpreter, debug_mode::Bool)
-
-For internal use only.
-
-A callable data structure which, when invoked, calls an rrule specific to the dynamic types
-of its arguments. Stores rules in an internal cache to avoid re-deriving.
-
-This is used to implement dynamic dispatch.
-"""
-struct DynamicDerivedRule{V}
-    cache::V
-    debug_mode::Bool
-end
-
-DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug_mode)
-
-# Create new dynamic rule with empty cache and same debug mode
-_copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
-
-function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
-
-    # `Base._stable_typeof` is used here, rather than `typeof` or `Mooncake._typeof`. Its
-    # precise behaviour (equivalent to `typeof` for everything except `Type`s, for which it
-    # returns `Type{P}` rather than `typeof(P)`) is needed to ensure that this signature
-    # matches the types that `rule` sees when `rule(args...)` is called below. If you get
-    # this wrong, an assertion is violated, causing a hard-to-debug error (see issue 660).
-    sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
-
-    rule = get(dynamic_rule.cache, sig, nothing)
-    if rule === nothing
-        interp = get_interpreter(ReverseMode)
-        rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
-        dynamic_rule.cache[sig] = rule
-    end
-    return __call_rule(rule, args)
-end
-
-"""
-    LazyDerivedRule(interp, mi::Core.MethodInstance, debug_mode::Bool)
-
-For internal use only.
-
-A type-stable wrapper around a `DerivedRule`, which only instantiates the `DerivedRule`
-when it is first called. This is useful, as it means that if a rule does not get run, it
-does not have to be derived.
-
-If `debug_mode` is `true`, then the rule constructed will be a `DebugRRule`. This is useful
-when debugging, but should usually be switched off for production code as it (in general)
-incurs some runtime overhead.
-
-Note: the signature of the primal for which this is a rule is stored in the type. The only
-reason to keep this around is for debugging -- it is very helpful to have this type visible
-in the stack trace when something goes wrong, as it allows you to trivially determine which
-bit of your code is the culprit.
-
-# Extended Help
-
-There are two main reasons why deferring the construction of a `DerivedRule` until we need
-to use it is crucial.
-
-The first is to do with recursion. Consider the following function:
-```julia
-f(x) = x > 0 ? f(x - 1) : x
-```
-If we generate the `IRCode` for this function, we will see something like the following:
-```julia
-julia> Base.code_ircode_by_type(Tuple{typeof(f), Float64})[1][1]
-1 1 ─ %1  = Base.lt_float(0.0, _2)::Bool
-  │   %2  = Base.or_int(%1, false)::Bool
-  └──       goto #6 if not %2
-  2 ─ %4  = Base.sub_float(_2, 1.0)::Float64
-  │   %5  = Base.lt_float(0.0, %4)::Bool
-  │   %6  = Base.or_int(%5, false)::Bool
-  └──       goto #4 if not %6
-  3 ─ %8  = Base.sub_float(%4, 1.0)::Float64
-  │   %9  = invoke Main.f(%8::Float64)::Float64
-  └──       goto #5
-  4 ─       goto #5
-  5 ┄ %12 = φ (#3 => %9, #4 => %4)::Float64
-  └──       return %12
-  6 ─       return _2
-```
-Suppose that we decide to construct a `DerivedRule` immediately whenever we find an
-`:invoke` statement in a rule that we're currently building a `DerivedRule` for.
-In the above example, we produce an infinite recursion when we attempt to produce a
-`DerivedRule` for %9, because it has the same signature as the call which generates this IR.
-By instead adopting a policy of constructing a `LazyDerivedRule` whenever we encounter an
-`:invoke` statement, we avoid this problem.
-
-The second reason that delaying the construction of a `DerivedRule`, is essential is that it
-ensures that we don't derive rules for method instances which aren't run. Suppose that
-function B contains code for which we can't derive a rule -- perhaps it contains an
-unsupported language feature like a `PhiCNode` or an `UpsilonNode`. Suppose that function A
-contains an `:invoke` which refers to function `B`, but that this call is on a branch which
-deals with error handling, and doesn't get run run unless something goes wrong. By deferring
-the derivation of the rule for B, we only ever attempt to derive it if we land on this
-error handling branch. Conversely, if we attempted to derive the rule for B when we derive
-the rule for A, we would be unable to complete the derivation of the rule for A.
-"""
-mutable struct LazyDerivedRule{primal_sig,Trule}
-    debug_mode::Bool
-    mi::Core.MethodInstance
-    rule::Trule
-    function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
-        interp = get_interpreter(ReverseMode)
-        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi)
-    end
-    function LazyDerivedRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool
-    ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi)
-    end
-end
-
-# Create new lazy rule with same method instance and debug mode
-_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
-
-# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
-# LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
-# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
-    ) where {sig,Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
-        return rule(args...)::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
-    end
-    @inline function __call_rule(
-        rule::LazyDerivedRule{
-            sig,DebugRRule{DerivedRule{Tp,FA,CoDual{P,FD},RA,RR,isva,Val{pnargs}}}
-        },
-        args::A,
-    ) where {sig,Tp,FA,P,FD,RA,RR,isva,pnargs,A<:Tuple}
-        return rule(
-            args...
-        )::Tuple{CoDual{P,FD},DebugPullback{Pullback{Tp,RA,RR,isva,fieldcount(A)},P}}
-    end
-end
-
-@inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
-    return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
-end
-
-@noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
-    interp = get_interpreter(ReverseMode)
-    rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
-    return __call_rule(rule.rule, args)
-end
 
 """
     rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where {C}
