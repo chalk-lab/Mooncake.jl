@@ -789,8 +789,10 @@ function make_ad_stmts!(stmt::Core.UpsilonNode, ::ID, ::ADInfo)
     )
 end
 
-# There are quite a number of possible `Expr`s that can be encountered. Each case has its
-# own comment, explaining what is going on.
+# There are quite a number of possible `Expr`s that can be encountered. This `:call` /
+# `:invoke` path stays mostly linear on purpose: keeping rule selection, forward emission,
+# and reverse emission together makes the translated dataflow easier to inspect and avoids
+# introducing helper boundaries that can interfere with inlining in unstable cases.
 function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
     is_invoke = Meta.isexpr(stmt, :invoke)
     if Meta.isexpr(stmt, :call) || is_invoke
