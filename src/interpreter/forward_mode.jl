@@ -174,7 +174,11 @@ struct DualInfo
 end
 
 function generate_dual_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
+    interp::MooncakeInterpreter,
+    sig_or_mi;
+    debug_mode=false,
+    do_inline=true,
+    do_optimize=true,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -226,9 +230,10 @@ function generate_dual_ir(
     captures_tuple = (captures...,)
     dual_ir.argtypes[1] = _typeof(captures_tuple)
 
-    # Optimize dual IR
-    dual_ir_opt = optimise_ir!(dual_ir; do_inline)
-    return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
+    # Inspection tools need the pre-optimization dual IR, while the AD pipeline still
+    # wants the optimized form by default.
+    dual_ir = do_optimize ? optimise_ir!(dual_ir; do_inline) : dual_ir
+    return dual_ir, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
 end
 
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
