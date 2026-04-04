@@ -770,7 +770,7 @@ end
 
 function frule!!(
     ::Dual{typeof(lgetfield)},
-    x::Dual{<:Memory,<:Memory},
+    x::Dual{<:Memory,<:Union{Memory,NTangent}},
     ::Dual{Val{name}},
     ::Dual{Val{order}},
 ) where {name,order}
@@ -797,7 +797,7 @@ end
 
 function frule!!(
     ::Dual{typeof(lgetfield)},
-    x::Dual{<:MemoryRef,<:MemoryRef},
+    x::Dual{<:MemoryRef,<:Union{MemoryRef,NTangent}},
     ::Dual{Val{name}},
     ::Dual{Val{order}},
 ) where {name,order}
@@ -824,7 +824,7 @@ end
 
 function frule!!(
     ::Dual{typeof(lgetfield)},
-    x::Dual{<:Array,<:Array},
+    x::Dual{<:Array,<:Union{Array,NTangent}},
     ::Dual{Val{name}},
     ::Dual{Val{order}},
 ) where {name,order}
@@ -848,13 +848,15 @@ end
 const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 
 function frule!!(
-    f::Dual{typeof(lgetfield)}, x::Dual{<:_MemTypes,<:_MemTypes}, name::Dual{<:Val}
+    f::Dual{typeof(lgetfield)},
+    x::Dual{<:_MemTypes,<:Union{_MemTypes,NTangent}},
+    name::Dual{<:Val},
 )
     return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
 end
 function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{P,T}, name::Dual{Val{f}}
-) where {P<:_MemTypes,T<:_MemTypes,f}
+) where {P<:_MemTypes,T<:Union{P,NTangent},f}
     return frule!!(zero_dual(lgetfield), x, name, zero_dual(Val(:not_atomic)))
 end
 function rrule!!(
@@ -867,7 +869,7 @@ end
 
 function frule!!(
     ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
+    x::Dual{<:_MemTypes,<:Union{_MemTypes,NTangent}},
     name::Dual{<:Union{Int,Symbol}},
     order::Dual{Symbol},
 )
@@ -893,7 +895,7 @@ end
 
 function frule!!(
     ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
+    x::Dual{<:_MemTypes,<:Union{_MemTypes,NTangent}},
     name::Dual{<:Union{Int,Symbol}},
 )
     return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
@@ -908,8 +910,120 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(Base._growbeg!),Vector,Integer}
+function frule!!(
+    ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
+) where {T}
+    pd = primal(d)
+    Base._growbeg!(primal(a), pd)
+    IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
+        old_da = copy(da)
+        Base._growbeg!(da, pd)
+        isempty(old_da) && return da
+        z = zero_tangent(primal(a)[pd + 1], old_da[1])
+        da[1:pd] .= Ref(z)
+        da[(pd + 1):end] .= old_da
+        return da
+    end
+    return zero_dual(nothing)
+end
+
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(Base._growend!),Vector,Integer}
+function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+    pd = primal(d)
+    Base._growend!(primal(a), pd)
+    IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
+        old_da = copy(da)
+        old_length = length(old_da)
+        Base._growend!(da, pd)
+        isempty(old_da) && return da
+        z = zero_tangent(primal(a)[1], old_da[1])
+        da[1:old_length] .= old_da
+        da[(old_length + 1):end] .= Ref(z)
+        return da
+    end
+    return zero_dual(nothing)
+end
+
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(Base._growat!),Vector,Integer,Integer}
+function frule!!(
+    ::Dual{typeof(Base._growat!)}, a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
+)
+    pi = primal(i)
+    pd = primal(d)
+    Base._growat!(primal(a), pi, pd)
+    IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
+        old_da = copy(da)
+        Base._growat!(da, pi, pd)
+        isempty(old_da) && return da
+        z = zero_tangent(primal(a)[1], old_da[1])
+        prefix_length = pi - 1
+        suffix_start = pi + pd
+        if prefix_length > 0
+            da[1:prefix_length] .= old_da[1:prefix_length]
+        end
+        da[pi:(suffix_start - 1)] .= Ref(z)
+        da[suffix_start:end] .= old_da[pi:end]
+        return da
+    end
+    return zero_dual(nothing)
+end
+
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(sizehint!),Vector,Integer}
+# `sizehint!` returns the same array object after mutating its capacity, so the forward rule
+# must preserve Mooncake's aliasing invariant: if two references point at the same primal
+# object, they must also point at the same tangent object. That means this rule must return
+# the original `Dual` after resizing its tangent in place. Re-wrapping the same primal in a
+# fresh `Dual` would give one primal object two different tangent objects.
+function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
+    sizehint!(primal(x), primal(sz))
+    IntrinsicsWrappers._builtins_lane_map(tangent(x)) do dx
+        sizehint!(dx, primal(sz))
+        return dx
+    end
+    return x
+end
+
+@inline function frule!!(
+    ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:NTangent}, ::Dual{Val{name}}, x::Dual
+) where {name}
+    setfield!(primal(value), name, primal(x))
+    dv = tangent(value)
+    dx = (name === :size || name === 2) ? primal(x) : tangent(x)
+    if dx isa NTangent
+        ntuple(n -> setfield!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.lanes))))
+    else
+        ntuple(n -> setfield!(dv[n], name, dx), Val(fieldcount(typeof(dv.lanes))))
+    end
+    return x
+end
+@inline function lsetfield_frule(
+    value::Dual{<:Array,<:NTangent}, ::Dual{Val{name}}, x::Dual{<:Any,<:NTangent}
+) where {name}
+    setfield!(primal(value), name, primal(x))
+    dv = tangent(value)
+    dx = tangent(x)
+    ntuple(n -> setfield!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.lanes))))
+    return x
+end
+@inline function lsetfield_frule(
+    value::Dual{<:Array,<:NTangent}, ::Dual{Val{name}}, x::Dual{<:Any,NoTangent}
+) where {name}
+    setfield!(primal(value), name, primal(x))
+    dv = tangent(value)
+    dx = (name === :size || name === 2) ? primal(x) : NoTangent()
+    ntuple(n -> setfield!(dv[n], name, dx), Val(fieldcount(typeof(dv.lanes))))
+    return x
+end
 @inline function frule!!(
     ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Dual
+) where {name}
+    setfield!(primal(value), name, primal(x))
+    setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
+    return x
+end
+@inline function lsetfield_frule(
+    value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Dual
 ) where {name}
     setfield!(primal(value), name, primal(x))
     setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))

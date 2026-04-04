@@ -110,10 +110,13 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
 function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
     return Dual(
-        unsafe_pointer_to_objref(primal(x)),
-        _builtins_lane_map(unsafe_pointer_to_objref, tangent(x)),
+        unsafe_pointer_to_objref(primal(x)), _unsafe_pointer_to_objref_tangent(tangent(x))
     )
 end
+@inline _unsafe_pointer_to_objref_tangent(dx::NTangent) = NTangent(
+    map(unsafe_pointer_to_objref, dx.lanes)
+)
+@inline _unsafe_pointer_to_objref_tangent(dx) = unsafe_pointer_to_objref(dx)
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
     return y, NoPullback(f, x)
@@ -135,9 +138,15 @@ function frule!!(
     ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
 ) where {T}
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    _builtins_lane_map(
-        (ddest, dsrc) -> unsafe_copyto!(ddest, dsrc, primal(n)), tangent(dest), tangent(src)
-    )
+    if tangent(dest) isa NTangent
+        map(
+            (ddest, dsrc) -> unsafe_copyto!(ddest, dsrc, primal(n)),
+            tangent(dest).lanes,
+            tangent(src).lanes,
+        )
+    else
+        unsafe_copyto!(tangent(dest), tangent(src), primal(n))
+    end
     return dest
 end
 function rrule!!(

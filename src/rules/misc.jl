@@ -307,24 +307,22 @@ function lsetfield_frule(value::Dual{P,T}, ::Dual{Val{name}}, x::Dual) where {P,
     return x
 end
 function lsetfield_frule(
-    value::Dual{P,NoTangent}, ::Dual{Val{name}}, x::Dual
-) where {P,name}
-    setfield!(primal(value), name, primal(x))
-    return x
-end
-function lsetfield_frule(
-    value::Dual{P,<:NTangent}, ::Dual{Val{name}}, x::Dual
+    value::Dual{P,<:NTangent}, ::Dual{Val{name}}, x::Dual{<:Any,<:NTangent}
 ) where {P,name}
     setfield!(primal(value), name, primal(x))
     dv = tangent(value)
     dx = tangent(x)
-    if dx isa NTangent
-        ntuple(
-            n -> set_tangent_field!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.lanes)))
-        )
-    else
-        ntuple(n -> set_tangent_field!(dv[n], name, dx), Val(fieldcount(typeof(dv.lanes))))
-    end
+    ntuple(n -> set_tangent_field!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.lanes))))
+    return x
+end
+function lsetfield_frule(
+    value::Dual{P,<:NTangent}, ::Dual{Val{name}}, x::Dual{<:Any,NoTangent}
+) where {P,name}
+    setfield!(primal(value), name, primal(x))
+    dv = tangent(value)
+    ntuple(
+        n -> set_tangent_field!(dv[n], name, NoTangent()), Val(fieldcount(typeof(dv.lanes)))
+    )
     return x
 end
 

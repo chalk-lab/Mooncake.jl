@@ -134,12 +134,14 @@ end
     return dt
 end
 
+@inline function _iddict_setindex_tangent!(
+    dt::NTangent{L}, dv::NTangent, key
+) where {L<:Tuple}
+    ntuple(n -> setindex!(dt[n], dv[n], key), Val(fieldcount(L)))
+    return dt
+end
 @inline function _iddict_setindex_tangent!(dt::NTangent{L}, dv, key) where {L<:Tuple}
-    if dv isa NTangent
-        ntuple(n -> setindex!(dt[n], dv[n], key), Val(fieldcount(L)))
-    else
-        ntuple(n -> setindex!(dt[n], dv, key), Val(fieldcount(L)))
-    end
+    ntuple(n -> setindex!(dt[n], dv, key), Val(fieldcount(L)))
     return dt
 end
 @inline function _iddict_setindex_tangent!(dt, dv, key)
@@ -147,10 +149,12 @@ end
     return dt
 end
 
+@inline function _iddict_get_tangent(
+    dt::NTangent{L}, key, default::NTangent
+) where {L<:Tuple}
+    return NTangent(ntuple(n -> get(dt[n], key, default[n]), Val(fieldcount(L))))
+end
 @inline function _iddict_get_tangent(dt::NTangent{L}, key, default) where {L<:Tuple}
-    if default isa NTangent
-        return NTangent(ntuple(n -> get(dt[n], key, default[n]), Val(fieldcount(L))))
-    end
     return NTangent(ntuple(n -> get(dt[n], key, default), Val(fieldcount(L))))
 end
 @inline _iddict_get_tangent(dt, key, default) = get(dt, key, default)

@@ -192,12 +192,20 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
+@is_primitive DefaultCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
 function frule!!(
     ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
 ) where {T}
-    Base._growbeg!(primal(a), primal(d))
+    pd = primal(d)
+    Base._growbeg!(primal(a), pd)
     IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
-        Base._growbeg!(da, primal(d))
+        old_da = copy(da)
+        Base._growbeg!(da, pd)
+        if !isempty(old_da)
+            z = zero_tangent(primal(a)[pd + 1], old_da[1])
+            da[1:pd] .= Ref(z)
+            da[(pd + 1):end] .= old_da
+        end
         return da
     end
     return zero_dual(nothing)
@@ -219,10 +227,19 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
+@is_primitive DefaultCtx Tuple{typeof(Base._growend!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    Base._growend!(primal(a), primal(d))
+    pd = primal(d)
+    Base._growend!(primal(a), pd)
     IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
-        Base._growend!(da, primal(d))
+        old_da = copy(da)
+        old_length = length(old_da)
+        Base._growend!(da, pd)
+        if !isempty(old_da)
+            z = zero_tangent(primal(a)[1], old_da[1])
+            da[1:old_length] .= old_da
+            da[(old_length + 1):end] .= Ref(z)
+        end
         return da
     end
     return zero_dual(nothing)
@@ -244,12 +261,26 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
+@is_primitive DefaultCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
 function frule!!(
     ::Dual{typeof(Base._growat!)}, a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
 )
-    Base._growat!(primal(a), primal(i), primal(d))
+    pi = primal(i)
+    pd = primal(d)
+    Base._growat!(primal(a), pi, pd)
     IntrinsicsWrappers._builtins_lane_map(tangent(a)) do da
-        Base._growat!(da, primal(i), primal(d))
+        old_da = copy(da)
+        Base._growat!(da, pi, pd)
+        if !isempty(old_da)
+            z = zero_tangent(primal(a)[1], old_da[1])
+            prefix_length = pi - 1
+            suffix_start = pi + pd
+            if prefix_length > 0
+                da[1:prefix_length] .= old_da[1:prefix_length]
+            end
+            da[pi:(suffix_start - 1)] .= Ref(z)
+            da[suffix_start:end] .= old_da[pi:end]
+        end
         return da
     end
     return zero_dual(nothing)
@@ -277,6 +308,7 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
+@is_primitive DefaultCtx Tuple{typeof(sizehint!),Vector,Integer}
 function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
     sizehint!(primal(x), primal(sz))
     IntrinsicsWrappers._builtins_lane_map(tangent(x)) do dx

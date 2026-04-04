@@ -262,7 +262,7 @@ end
     arg_types = Tuple{sig.parameters[2:end]...}
     R = Core.Compiler.return_type(f, arg_types)
     return if Mooncake.tangent_type(R) != NoTangent &&
-              _nfwd_supported_primitive_output_type(R)
+        _nfwd_supported_primitive_output_type(R)
         :(true)
     else
         :(false)
@@ -931,25 +931,10 @@ end
     _nfwd_check_function_tangent(tangent(f))
     primals = map(primal, x)
     tangents = map(tangent, x)
-    public_lanes = Mooncake._fcache_derivative_ntangent_lane_count(tangents)
-    packed = _nfwd_primitive_packed_lane_count(tangents)
     y, dy = _nfwd_eval(
         primal(f), primals, tangents, _nfwd_primitive_chunk_size(Val(N), tangents)
     )
-    return if public_lanes isa Val{1}
-        Mooncake.dual_type(typeof(y))(y, _nfwd_unpack_output_lane(y, dy, Val(1)))
-    elseif !isnothing(public_lanes)
-        Dual(y, _nfwd_output_ntangent(y, dy, public_lanes))
-    elseif isnothing(packed)
-        # Keep the width-1 hot path on the concrete single-lane dual constructor:
-        # `dual_type(typeof(y))` means `Dual{P, NTangent_type(P)}`, i.e. still `NTangent`,
-        # but specifically the one-lane `NTangent{Tuple{...}}` form. Width > 1 must keep
-        # the generic `Dual(y, dy)` path because `dy` is then a true multi-lane object
-        # (tuple of lanes / packed chunk layout), not a width-1 `NTangent`.
-        N == 1 ? Mooncake.dual_type(typeof(y))(y, dy) : Dual(y, dy)
-    else
-        Dual(y, _nfwd_pack_output_tangent(y, dy, Val(packed)))
-    end
+    return _nfwd_output_dual(y, dy, tangents, Val(N), Val(false))
 end
 
 # The generic vararg path can allocate for small scalar primitive wrappers, so keep
@@ -966,23 +951,13 @@ end
 @inline function _nfwd_primitive_frule_call(::Val{N}, f::Dual, x1::Dual, x2::Dual) where {N}
     _nfwd_check_function_tangent(tangent(f))
     tangents = (tangent(x1), tangent(x2))
-    public_lanes = Mooncake._fcache_derivative_ntangent_lane_count(tangents)
-    packed = _nfwd_primitive_packed_lane_count(tangents)
     y, dy = _nfwd_eval(
         primal(f),
         (primal(x1), primal(x2)),
         tangents,
         _nfwd_primitive_chunk_size(Val(N), tangents),
     )
-    return if public_lanes isa Val{1}
-        Mooncake.dual_type(typeof(y))(y, _nfwd_unpack_output_lane(y, dy, Val(1)))
-    elseif !isnothing(public_lanes)
-        Dual(y, _nfwd_output_ntangent(y, dy, public_lanes))
-    elseif isnothing(packed)
-        N == 1 ? Mooncake.dual_type(typeof(y))(y, dy) : Dual(y, dy)
-    else
-        Dual(y, _nfwd_pack_output_tangent(y, dy, Val(packed)))
-    end
+    return _nfwd_output_dual(y, dy, tangents, Val(N), Val(false))
 end
 
 @inline function _nfwd_primitive_frule_call(::Val{1}, f::Dual, x1::Dual, x2::Dual, x3::Dual)
@@ -1001,26 +976,18 @@ end
 ) where {N}
     _nfwd_check_function_tangent(tangent(f))
     tangents = (tangent(x1), tangent(x2), tangent(x3))
-    public_lanes = Mooncake._fcache_derivative_ntangent_lane_count(tangents)
-    packed = _nfwd_primitive_packed_lane_count(tangents)
     y, dy = _nfwd_eval(
         primal(f),
         (primal(x1), primal(x2), primal(x3)),
         tangents,
         _nfwd_primitive_chunk_size(Val(N), tangents),
     )
-    return if public_lanes isa Val{1}
-        Mooncake.dual_type(typeof(y))(y, _nfwd_unpack_output_lane(y, dy, Val(1)))
-    elseif !isnothing(public_lanes)
-        Dual(y, _nfwd_output_ntangent(y, dy, public_lanes))
-    elseif isnothing(packed)
-        N == 1 ? Mooncake.dual_type(typeof(y))(y, dy) : Dual(y, dy)
-    else
-        Dual(y, _nfwd_pack_output_tangent(y, dy, Val(packed)))
-    end
+    return _nfwd_output_dual(y, dy, tangents, Val(N), Val(false))
 end
 
-@inline function _nfwd_rule_output_dual(y, dy, tangents, ::Val{N}) where {N}
+@inline function _nfwd_output_dual(
+    y, dy, tangents, ::Val{N}, ::Val{internal}
+) where {N,internal}
     public_lanes = Mooncake._fcache_derivative_ntangent_lane_count(tangents)
     packed = _nfwd_primitive_packed_lane_count(tangents)
     return if public_lanes isa Val{1}
@@ -1028,9 +995,19 @@ end
     elseif !isnothing(public_lanes)
         Dual(y, _nfwd_output_ntangent(y, dy, public_lanes))
     elseif isnothing(packed)
-        N == 1 ? Mooncake.dual_type(typeof(y))(y, dy) : _nfwd_internal_dual(y, dy)
+        # Keep the width-1 hot path on the concrete single-lane dual constructor:
+        # `dual_type(typeof(y))` means `Dual{P, NTangent_type(P)}`, i.e. still `NTangent`,
+        # but specifically the one-lane `NTangent{Tuple{...}}` form. Width > 1 must keep
+        # the generic `Dual(y, dy)` path because `dy` is then a true multi-lane object
+        # (tuple of lanes / packed chunk layout), not a width-1 `NTangent`.
+        if N == 1
+            Mooncake.dual_type(typeof(y))(y, dy)
+        else
+            (internal ? _nfwd_internal_dual(y, dy) : Dual(y, dy))
+        end
     else
-        _nfwd_internal_dual(y, _nfwd_pack_output_tangent(y, dy, Val(packed)))
+        packed_tangent = _nfwd_pack_output_tangent(y, dy, Val(packed))
+        internal ? _nfwd_internal_dual(y, packed_tangent) : Dual(y, packed_tangent)
     end
 end
 
@@ -1040,7 +1017,7 @@ function (rule::Rule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
     primals = map(primal, x)
     tangents = map(tangent, x)
     y, dy = _nfwd_eval(primal(f), primals, tangents, Val(N))
-    return _nfwd_rule_output_dual(y, dy, tangents, Val(N))
+    return _nfwd_output_dual(y, dy, tangents, Val(N), Val(true))
 end
 
 # Scalar-input specializations avoid the generic vararg/map path, which otherwise leaves
@@ -1050,7 +1027,7 @@ end
     _nfwd_check_function_tangent(tangent(f))
     tangents = (tangent(x),)
     y, dy = _nfwd_eval(primal(f), (primal(x),), tangents, Val(N))
-    return _nfwd_rule_output_dual(y, dy, tangents, Val(N))
+    return _nfwd_output_dual(y, dy, tangents, Val(N), Val(true))
 end
 
 @inline function (rule::Rule{sig,N})(
@@ -1060,7 +1037,7 @@ end
     _nfwd_check_function_tangent(tangent(f))
     tangents = (tangent(x1), tangent(x2))
     y, dy = _nfwd_eval(primal(f), (primal(x1), primal(x2)), tangents, Val(N))
-    return _nfwd_rule_output_dual(y, dy, tangents, Val(N))
+    return _nfwd_output_dual(y, dy, tangents, Val(N), Val(true))
 end
 
 @inline function (rule::Rule{sig,N})(
@@ -1070,7 +1047,7 @@ end
     _nfwd_check_function_tangent(tangent(f))
     tangents = (tangent(x1), tangent(x2), tangent(x3))
     y, dy = _nfwd_eval(primal(f), (primal(x1), primal(x2), primal(x3)), tangents, Val(N))
-    return _nfwd_rule_output_dual(y, dy, tangents, Val(N))
+    return _nfwd_output_dual(y, dy, tangents, Val(N), Val(true))
 end
 
 # Optimised single-array-input frule: reuses a pre-allocated lifted buffer when the tangent
@@ -1213,7 +1190,7 @@ end
     )
     y = primal(output)
     dy = tangent(output)
-    return y, NTangent(ntuple(lane -> _nfwd_unpack_output_lane(y, dy, Val(lane)), Val(N)))
+    return y, _nfwd_output_ntangent(y, dy, Val(N))
 end
 
 """
