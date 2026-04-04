@@ -314,7 +314,7 @@ function rule(f, W, X, Y)
     l, adjoint_dot = rule(dot, eps, eps)
     function adjoint_f(dout)
 
-        # Implement the adjoint of ret. Assume that we have a way to produce zero gradients.
+        # Seed the reverse pass with the output cotangent, and initialize zero gradients.
         dl = dout
         deps = zero_gradient(eps)
         dY_hat = zero_gradient(Y_hat)

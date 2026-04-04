@@ -20,21 +20,34 @@
 #
 
 const _id_count::Dict{Int,Int32} = Dict{Int,Int32}()
+# `seed_id!` resets per-thread counters for deterministic IR generation, so updates to the
+# shared thread-id map must be serialized when rules are derived concurrently.
+const _id_count_lock = ReentrantLock()
 
 struct ID
     id::Int32
     function ID()
-        current_thread_id = Threads.threadid()
-        id_count = get(_id_count, current_thread_id, Int32(0))
-        _id_count[current_thread_id] = id_count + Int32(1)
-        return new(id_count)
+        lock(_id_count_lock)
+        try
+            current_thread_id = Threads.threadid()
+            id_count = get(_id_count, current_thread_id, Int32(0))
+            _id_count[current_thread_id] = id_count + Int32(1)
+            return new(id_count)
+        finally
+            unlock(_id_count_lock)
+        end
     end
 end
 
 Base.copy(id::ID) = id
 
 function seed_id!()
-    return global _id_count[Threads.threadid()] = 0
+    lock(_id_count_lock)
+    try
+        return global _id_count[Threads.threadid()] = 0
+    finally
+        unlock(_id_count_lock)
+    end
 end
 
 struct IDPhiNode
@@ -203,6 +216,10 @@ const BlockStack = Stack{Int32}
 This data structure is used to hold "global" information associated to a particular call to
 `build_rrule`. It is used as a means of communication between `make_ad_stmts!` and the
 codegen which produces the forwards- and reverse-passes.
+
+At a high level, the most important fields are the shared captures, the block-stack state used
+to replay control flow, the reverse-data refs for arguments and SSA values, and the static
+primal type information used while translating statements.
 
 - `interp`: a `MooncakeInterpreter`.
 - `block_stack_id`: the ID associated to the block stack -- the stack which keeps track of
@@ -455,13 +472,19 @@ end
 
 __vec(line::ID, x::Any) = __vec(line, new_inst(x))
 __vec(line::ID, x::NewInstruction) = IDInstPair[(line, x)]
-__vec(line::ID, x::Vector{Tuple{ID,Any}}) = throw(error("boooo"))
+function __vec(::ID, x::Vector{Tuple{ID,Any}})
+    throw(
+        ArgumentError(
+            "Expected `Vector{IDInstPair}` but found a plain `Vector{Tuple{ID,Any}}`.",
+        ),
+    )
+end
 __vec(line::ID, x::Vector{IDInstPair}) = x
 
 """
     comms_channel(info::ADStmtInfo)
 
-Return the element of `fwds` whose `ID` is the communcation `ID`. Returns `Nothing` if
+Return the element of `fwds` whose `ID` is the communication `ID`. Returns `Nothing` if
 `comms_id` is `nothing`.
 """
 function comms_channel(info::ADStmtInfo)
@@ -772,6 +795,10 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
     is_invoke = Meta.isexpr(stmt, :invoke)
     if Meta.isexpr(stmt, :call) || is_invoke
 
+        #
+        # Step 1: classify the call site and choose the rule object.
+        #
+
         # Find the types of all arguments to this call / invoke.
         args = ((is_invoke ? stmt.args[2:end] : stmt.args)...,)
         arg_types = map(arg -> get_primal_type(info, arg), args)
@@ -823,8 +850,10 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         T_pb!! = pullback_type(_typeof(rule), arg_types)
 
         #
-        # Write forwards-pass. These statements are written out manually, as writing them
-        # out in a function would prevent inlining in some (all?) type-unstable situations.
+        # Step 2: write the forward fragment.
+        #
+        # These statements are written out manually because routing them through a helper can
+        # prevent inlining in type-unstable situations.
         #
 
         # Make arguments to rrule call. Things which are not already CoDual must be made so.
@@ -876,8 +905,10 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             ],
         )
 
-        # Make statement associated to reverse-pass. If the reverse-pass is provably a
-        # NoPullback, then don't bother doing anything at all.
+        #
+        # Step 3: write the reverse fragment.
+        #
+        # If the reverse pass is provably `NoPullback`, there is nothing to emit.
         rvs_pass = if T_pb!! <: NoPullback
             nothing
         else
@@ -1460,7 +1491,7 @@ function build_rrule_checks(
         throw(
             ArgumentError(
                 "World age associated to interp is behind current world age. Please " *
-                "a new interpreter for the current world age.",
+                "create a new interpreter for the current world age.",
             ),
         )
     end
@@ -1476,7 +1507,7 @@ function build_derived_rrule(
 ) where {C}
     @nospecialize sig_or_mi sig
 
-    # We don't have a hand-coded rule, so derived one.
+    # No hand-coded rule exists, so derive one from compiler IR.
     lock(MOONCAKE_INFERENCE_LOCK)
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
@@ -1485,7 +1516,7 @@ function build_derived_rrule(
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
         else
-            # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
+            # Derive the forward and reverse IR, then package them into `MistyClosure`s.
             dri = try
                 generate_ir(interp, sig_or_mi; debug_mode)
             catch err
@@ -1527,7 +1558,7 @@ end
 """
     generate_ir(
         interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
-    )
+)
 Used by `build_rrule`, and the various debugging tools: primal_ir, fwds_ir, adjoint_ir.
 """
 function generate_ir(
@@ -1541,7 +1572,7 @@ function generate_ir(
     # function runs.
     seed_id!()
 
-    # Grab code associated to the primal.
+    # Look up the inferred primal IR.
     ir, _ = lookup_ir(interp, sig_or_mi)
     @static if VERSION > v"1.12-"
         ir = set_valid_world!(ir, interp.world)
