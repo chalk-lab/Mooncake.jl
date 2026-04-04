@@ -1006,11 +1006,8 @@ end
         # but specifically the one-lane `NTangent{Tuple{...}}` form. Width > 1 must keep
         # the generic `Dual(y, dy)` path because `dy` is then a true multi-lane object
         # (tuple of lanes / packed chunk layout), not a width-1 `NTangent`.
-        if N == 1
-            Mooncake.dual_type(typeof(y))(y, dy)
-        else
-            (internal ? _nfwd_internal_dual(y, dy) : Dual(y, dy))
-        end
+        N == 1 && return Mooncake.dual_type(typeof(y))(y, dy)
+        internal ? _nfwd_internal_dual(y, dy) : Dual(y, dy)
     else
         packed_tangent = _nfwd_pack_output_tangent(y, dy, Val(packed))
         internal ? _nfwd_internal_dual(y, packed_tangent) : Dual(y, packed_tangent)
@@ -1175,13 +1172,12 @@ end
             "was built with chunk_size=$N.",
         ),
     )
-    pack_buffers = tuple_map(_nfwd_rule_pack_buffer, Base.tail(input_primals))
+    arg_primals = Base.tail(input_primals)
+    arg_tangents = Base.tail(input_tangents)
+    pack_buffers = tuple_map(_nfwd_rule_pack_buffer, arg_primals)
     packed_tangents = ntuple(
         i -> _nfwd_rule_pack_tangent(
-            Base.tail(input_primals)[i],
-            Base.tail(input_tangents)[i],
-            pack_buffers[i],
-            Val(N),
+            arg_primals[i], arg_tangents[i], pack_buffers[i], Val(N)
         ),
         Val(fieldcount(typeof(pack_buffers))),
     )
@@ -1192,7 +1188,7 @@ end
     # boundary accepted by `Dual(x, dx)`.
     output = rule(
         Dual(first(input_primals), first(input_tangents)),
-        tuple_map(_nfwd_internal_dual, Base.tail(input_primals), packed_tangents)...,
+        tuple_map(_nfwd_internal_dual, arg_primals, packed_tangents)...,
     )
     y = primal(output)
     dy = tangent(output)
