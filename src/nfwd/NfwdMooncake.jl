@@ -276,6 +276,12 @@ function Mooncake._fwd_primitive_rule(
     debug_mode=false,
     silence_debug_messages=true,
 ) where {N}
+    # Design choice:
+    # Primitive lowering to `NfwdRule` is driven by structural support checks on the primal
+    # signature and inferred output type, not by asking whether Julia happens to have a valid
+    # `f(::NDual...)` method. Mooncake only lowers primitive boundaries that it knows how to
+    # pack to NDual and unpack back to `NTangent`; arbitrary Julia code is still handled by
+    # IRfwd unless it reaches one of those supported primitive sites.
     _nfwd_supports_primitive_sig(sig) || return nothing
     _nfwd_supports_primitive_output_sig(sig) || return nothing
     return NfwdRule{sig,N}()

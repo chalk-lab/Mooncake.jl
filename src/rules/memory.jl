@@ -860,7 +860,7 @@ function frule!!(
 end
 function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{P,T}, name::Dual{Val{f}}
-) where {P<:_MemTypes,T<:Union{P,NTangent},f}
+) where {P<:_MemTypes,T<:Union{_MemTypes,NTangent},f}
     return frule!!(zero_dual(lgetfield), x, name, zero_dual(Val(:not_atomic)))
 end
 function rrule!!(
