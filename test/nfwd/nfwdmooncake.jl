@@ -172,7 +172,7 @@ end
     @testset "chunked ir derived frule" begin
         @testset "stays on chunked ir path for nested dispatch" begin
             x = 1.5
-            rule = Mooncake.NfwdMooncake.build_chunked_frule(
+            rule = Mooncake.NfwdMooncake.build_frule(
                 nfwd_nested_chunked_ir_target, x; chunk_size=2
             )
 
@@ -189,9 +189,7 @@ end
 
         @testset "preserves primal dispatch boundary" begin
             x = [1.0, 2.0, 3.0]
-            rule = Mooncake.NfwdMooncake.build_chunked_frule(
-                nfwd_dispatch_gap, x; chunk_size=2
-            )
+            rule = Mooncake.NfwdMooncake.build_frule(nfwd_dispatch_gap, x; chunk_size=2)
 
             y, dy = Mooncake.value_and_derivative!!(
                 rule,
@@ -205,9 +203,7 @@ end
 
         @testset "reuses tangent system through _new_" begin
             x = 3.0
-            rule = Mooncake.NfwdMooncake.build_chunked_frule(
-                nfwd_box64_roundtrip, x; chunk_size=2
-            )
+            rule = Mooncake.NfwdMooncake.build_frule(nfwd_box64_roundtrip, x; chunk_size=2)
 
             y, dy = Mooncake.value_and_derivative!!(
                 rule,
@@ -246,7 +242,7 @@ end
     @testset "public rule entrypoints" begin
         @testset "scalar rule construction" begin
             @testset "$case.name" for case in scalar_cases
-                rule = Mooncake.NfwdMooncake.build_frule(
+                rule = Mooncake.NfwdMooncake.build_nfwd_frule(
                     f, x, y; chunk_size=case.chunk_size
                 )
                 out = rule(Mooncake.zero_dual(f), case.dual_inputs...)
@@ -267,7 +263,7 @@ end
             end
 
             @testset "direct value_and_derivative!! on Rule" begin
-                rule = Mooncake.NfwdMooncake.build_frule(f, x, y; chunk_size=2)
+                rule = Mooncake.NfwdMooncake.build_nfwd_frule(f, x, y; chunk_size=2)
 
                 out_dual = Mooncake.value_and_derivative!!(
                     rule,
@@ -311,7 +307,7 @@ end
             @testset "single-input scalar NDual outputs still extract correctly" begin
                 x_single = 1.5
 
-                frule = Mooncake.NfwdMooncake.build_frule(exp, x_single; chunk_size=1)
+                frule = Mooncake.NfwdMooncake.build_nfwd_frule(exp, x_single; chunk_size=1)
                 out = Mooncake.value_and_derivative!!(
                     frule, (exp, Mooncake.NoTangent()), (x_single, 1.0)
                 )
@@ -325,7 +321,7 @@ end
 
             @testset "unsupported output diagnostics include supported shapes and values" begin
                 f_int(x) = x > 0 ? 1 : 2
-                rule = Mooncake.NfwdMooncake.build_frule(f_int, x; chunk_size=1)
+                rule = Mooncake.NfwdMooncake.build_nfwd_frule(f_int, x; chunk_size=1)
                 err = try
                     Mooncake.value_and_derivative!!(
                         rule, (f_int, Mooncake.NoTangent()), (x, 1.0)
@@ -344,8 +340,8 @@ end
             end
 
             @testset "automatic chunk_size selection" begin
-                # NfwdMooncake.build_frule / NfwdMooncake.build_rrule omitting chunk_size
-                auto_frule = Mooncake.NfwdMooncake.build_frule(f, x, y)
+                # NfwdMooncake.build_nfwd_frule / build_rrule omitting chunk_size
+                auto_frule = Mooncake.NfwdMooncake.build_nfwd_frule(f, x, y)
                 @test auto_frule isa Mooncake.NfwdMooncake.Rule  # compiles without chunk_size
                 auto_rrule = Mooncake.NfwdMooncake.build_rrule(f, x, y)
                 @test auto_rrule isa Mooncake.NfwdMooncake.RRule
@@ -390,7 +386,7 @@ end
                 @test pullback ==
                     (Mooncake.NoTangent(), [3.0 * cos(x_vec[1]), 4.0 * cos(x_vec[2])])
 
-                frule = Mooncake.NfwdMooncake.build_frule(g, x_vec; chunk_size=2)
+                frule = Mooncake.NfwdMooncake.build_nfwd_frule(g, x_vec; chunk_size=2)
                 out = frule(
                     Mooncake.zero_dual(g),
                     Mooncake.Dual(x_vec, Mooncake.NTangent(([1.0, 0.0], [0.0, 1.0]))),
@@ -404,7 +400,7 @@ end
                 zc = ComplexF64(1.2, -0.3)
                 dzc = ComplexF64(0.5, -0.25)
                 expected_dzc = real((2zc - sin(zc)) * dzc)
-                rule = Mooncake.NfwdMooncake.build_frule(fc, zc; chunk_size=1)
+                rule = Mooncake.NfwdMooncake.build_nfwd_frule(fc, zc; chunk_size=1)
                 out = rule(Mooncake.zero_dual(fc), Mooncake.Dual(zc, dzc))
                 @test Mooncake.primal(out) == fc(zc)
                 @test nfwd_public_tangent(out) ≈ expected_dzc
@@ -423,7 +419,7 @@ end
                 dz_vec = reshape(
                     ComplexF64[1.0 + 0.0im, 0.0 + 0.0im, 0.0 + 0.0im, 0.0 + 1.0im], 2, 2
                 )
-                frule_vec = Mooncake.NfwdMooncake.build_frule(gc, z_vec; chunk_size=2)
+                frule_vec = Mooncake.NfwdMooncake.build_nfwd_frule(gc, z_vec; chunk_size=2)
                 out_vec = frule_vec(
                     Mooncake.zero_dual(gc),
                     Mooncake.Dual(z_vec, Mooncake.NTangent((dz_vec[:, 1], dz_vec[:, 2]))),
@@ -447,7 +443,9 @@ end
                 y_vec = [3.0, 4.0]
                 dx = reshape([1.0, 0.0, 0.0, 0.0], 2, 2)
                 dy = reshape([0.0, 0.0, 1.0, 0.0], 2, 2)
-                frule = Mooncake.NfwdMooncake.build_frule(h, x_vec, y_vec; chunk_size=2)
+                frule = Mooncake.NfwdMooncake.build_nfwd_frule(
+                    h, x_vec, y_vec; chunk_size=2
+                )
                 out = frule(
                     Mooncake.zero_dual(h),
                     Mooncake.Dual(x_vec, Mooncake.NTangent((dx[:, 1], dx[:, 2]))),
@@ -461,7 +459,7 @@ end
                 dX = zeros(2, 2, 2)
                 dX[1, 1, 1] = 1.0
                 dX[2, 2, 2] = 1.0
-                frule_matrix = Mooncake.NfwdMooncake.build_frule(hm, X; chunk_size=2)
+                frule_matrix = Mooncake.NfwdMooncake.build_nfwd_frule(hm, X; chunk_size=2)
                 y_and_dy = frule_matrix(
                     Mooncake.zero_dual(hm),
                     Mooncake.Dual(X, Mooncake.NTangent((dX[:, :, 1], dX[:, :, 2]))),
@@ -477,7 +475,7 @@ end
         @testset "tuple outputs" begin
             @testset "sincos chunk_size=1 frule and rrule" begin
                 x_sc = 1.2
-                frule = Mooncake.NfwdMooncake.build_frule(sincos, x_sc; chunk_size=1)
+                frule = Mooncake.NfwdMooncake.build_nfwd_frule(sincos, x_sc; chunk_size=1)
                 out = frule(Mooncake.zero_dual(sincos), Mooncake.Dual(x_sc, 1.0))
                 @test Mooncake.primal(out) == sincos(x_sc)
                 s_t, c_t = nfwd_public_tangent(out)
@@ -496,7 +494,7 @@ end
 
             @testset "modf derivative: frac=1, int=0" begin
                 x_mf = 3.7
-                frule = Mooncake.NfwdMooncake.build_frule(modf, x_mf; chunk_size=1)
+                frule = Mooncake.NfwdMooncake.build_nfwd_frule(modf, x_mf; chunk_size=1)
                 out = frule(Mooncake.zero_dual(modf), Mooncake.Dual(x_mf, 1.0))
                 @test Mooncake.primal(out) == modf(x_mf)
                 frac_t, int_t = nfwd_public_tangent(out)
@@ -514,7 +512,7 @@ end
         @testset "stateful callables are rejected" begin
             a = 2.0
             f_stateful = x -> a * x
-            @test_throws ArgumentError Mooncake.NfwdMooncake.build_frule(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_nfwd_frule(
                 f_stateful, 5.0; chunk_size=1
             )
             @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
@@ -529,7 +527,7 @@ end
         end
 
         @testset "unsupported config is rejected" begin
-            @test_throws ArgumentError Mooncake.NfwdMooncake.build_frule(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_nfwd_frule(
                 f, x, y; chunk_size=1, debug_mode=true
             )
             @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
@@ -538,7 +536,7 @@ end
         end
 
         @testset "invalid chunk_size is rejected" begin
-            @test_throws ArgumentError Mooncake.NfwdMooncake.build_frule(
+            @test_throws ArgumentError Mooncake.NfwdMooncake.build_nfwd_frule(
                 f, x, y; chunk_size=0
             )
             @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
@@ -547,7 +545,7 @@ end
         end
 
         @testset "function tangent rejection" begin
-            rule = Mooncake.NfwdMooncake.build_frule(f, x, y; chunk_size=1)
+            rule = Mooncake.NfwdMooncake.build_nfwd_frule(f, x, y; chunk_size=1)
             @test_throws ArgumentError rule(
                 Mooncake.Dual(f, 1.0), Mooncake.Dual(x, dx), Mooncake.Dual(y, dy)
             )
@@ -561,7 +559,7 @@ end
         @testset "array tangent validation" begin
             g(x) = sin.(x)
             x_vec = [1.0, 2.0]
-            rule = Mooncake.NfwdMooncake.build_frule(g, x_vec; chunk_size=2)
+            rule = Mooncake.NfwdMooncake.build_nfwd_frule(g, x_vec; chunk_size=2)
             @test_throws ArgumentError rule(
                 Mooncake.zero_dual(g), Mooncake.Dual(x_vec, [1.0, 2.0, 3.0])
             )

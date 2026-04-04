@@ -52,7 +52,7 @@ julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
 ```
 
 For Mooncake-interface rule construction on concrete signatures, see
-`Mooncake.NfwdMooncake.build_frule` and `Mooncake.NfwdMooncake.build_rrule`.
+`Mooncake.NfwdMooncake.build_nfwd_frule` and `Mooncake.NfwdMooncake.build_rrule`.
 `Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; `NfwdMooncake`
 packages that machinery into Mooncake's `Dual` / `CoDual` rule interface.
 """

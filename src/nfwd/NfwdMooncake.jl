@@ -43,6 +43,12 @@ import ..Mooncake:
 #
 # ── High-level interfaces ──────────────────────────────────────────────────────────
 #   build_frule(f, x...; chunk_size)
+#     returns `IRfwdRule`
+#     consumed via `rule(f::Dual, x::Dual...)`
+#     obeys the standard `frule!!` interface
+#     also accepts `sig::Type{<:Tuple}` for signature-based construction
+#
+#   build_nfwd_frule(f, x...; chunk_size)
 #     returns `Rule`
 #     consumed via `rule(f::Dual, x::Dual...)`
 #     obeys the standard `frule!!` interface
@@ -109,7 +115,7 @@ import ..Mooncake:
 # primal values unchanged, and store the `N` derivative lanes only in the tangent.
 const IRfwdMode = Mooncake.IRfwdMode
 
-# `IRfwdRule` is the public rule object returned by `build_chunked_frule` for the
+# `IRfwdRule` is the public rule object returned by `build_frule` for the
 # chunked IR path.
 # It lives here, rather than in `forward_mode.jl`, because this file owns the explicit
 # boundary between chunked IR and the nfwd primitive path. The inner derived rule runs on
@@ -127,7 +133,20 @@ struct NfwdRule{sig,N} end
 @inline rule_chunk_size(::Type{<:IRfwdRule{sig,N}}) where {sig,N} = N
 @inline rule_chunk_size(::Type{<:NfwdRule{sig,N}}) where {sig,N} = N
 
-function build_chunked_frule(
+"""
+    build_frule(f, x...; chunk_size=nothing)
+    build_frule(sig::Type{<:Tuple}; chunk_size=nothing)
+
+Build a forward-mode rule for Mooncake's standard `frule!!` interface.
+
+This is the chunked IR frontend: derived code keeps ordinary primal Julia values and
+`NTangent` lanes, while nfwd lowering happens only at primitive boundaries that are
+structurally supported.
+
+Use `build_nfwd_frule` instead when you explicitly want a rule that evaluates `f` on
+NDual-lifted arguments.
+"""
+function build_frule(
     interp::Mooncake.MooncakeInterpreter,
     sig_or_mi;
     chunk_size=nothing,
@@ -148,14 +167,14 @@ function build_chunked_frule(
     return IRfwdRule{sig,resolved,typeof(inner)}(inner)
 end
 
-function build_chunked_frule(
+function build_frule(
     sig::Type{<:Tuple};
     chunk_size=nothing,
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
 )
-    return build_chunked_frule(
+    return build_frule(
         Mooncake.get_interpreter(Mooncake.ForwardMode),
         sig;
         chunk_size,
@@ -165,7 +184,7 @@ function build_chunked_frule(
     )
 end
 
-function build_chunked_frule(
+function build_frule(
     f,
     x...;
     chunk_size=nothing,
@@ -173,7 +192,7 @@ function build_chunked_frule(
     silence_debug_messages=true,
     skip_world_age_check=false,
 )
-    return build_chunked_frule(
+    return build_frule(
         typeof((f, x...));
         chunk_size,
         debug_mode,
@@ -187,7 +206,7 @@ end
 #
 # 1. Chunked IR path.
 #    Pathway:
-#      `build_chunked_frule`
+#      `build_frule`
 #      -> `Mooncake._build_raw_frule(...; tangent_mode=IRfwdMode)`
 #      -> derived IR executes on ordinary primal values, while primitive calls may select
 #         `NfwdRule` when their primal signature is nfwd-supported.
@@ -198,23 +217,22 @@ end
 #
 # 2. Nfwd path.
 #    Pathway:
-#      `NfwdMooncake.build_frule` / `NfwdMooncake.build_rrule`
-#      -> execute Julia code directly on NDual-lifted primals.
+#      `NfwdMooncake.build_nfwd_frule` / `NfwdMooncake.build_rrule`
+#      -> evaluate functions directly on NDual-lifted arguments.
 #    This path is explicit. It is still useful when callers intentionally want `nfwd`
-#    semantics and know their code is compatible with NDual replay.
+#    semantics and know their code is compatible with NDual-lifted arguments.
 #
 # The key correctness rule is that the chunked frontend never lowers derived user code to
-# NDual replay automatically. Even if the top-level call appears safe, dispatch can still
-# change at nested calls or for different chunk widths. Primitive boundaries are the one
-# explicit lowering point: there is no inner Julia call graph to replay, so for primitive
+# the direct nfwd path automatically. Even if the top-level call appears safe, dispatch can
+# still change at nested calls or for different chunk widths. Primitive boundaries are the
+# one explicit lowering point: there is no inner Julia call graph to evaluate on
+# NDual-lifted arguments, so for primitive
 # signatures whose primal argument types are nfwd-supported we default to the existing
 # nfwd rule and convert `NTangent <-> NDual` only there.
-Mooncake.build_chunked_frule(args...; kwargs...) = build_chunked_frule(args...; kwargs...)
-
 function Mooncake.build_frule(
     args...; debug_mode=false, silence_debug_messages=true, skip_world_age_check=false
 )
-    return build_chunked_frule(
+    return build_frule(
         map(x -> x isa Mooncake.Dual ? primal(x) : x, args)...;
         chunk_size=1,
         debug_mode,
@@ -867,13 +885,13 @@ end
 # first, then dive into the lower-level pipelines only as needed.
 
 """
-    build_frule(f, x...; chunk_size=nothing)
-    build_frule(sig::Type{<:Tuple}; chunk_size=nothing)
+    build_nfwd_frule(f, x...; chunk_size=nothing)
+    build_nfwd_frule(sig::Type{<:Tuple}; chunk_size=nothing)
 
-Build a forward-mode rule through `nfwd`.
+Build a forward-mode rule that evaluates `f` on NDual-lifted arguments.
 
 This path is independent from Mooncake's `frule!!` (aka ir-based forward) path and obeys
-the standard `frule!!` interface. It evaluates the primal function directly on
+the standard `frule!!` interface. It evaluates `f` directly on
 NDual-lifted scalar / dense-array inputs. Rule construction is signature-based, so `nfwd`
 only supports stateless callables here.
 
@@ -897,7 +915,7 @@ signatures containing arrays the preferred width is used directly.
 ```julia
 julia> using Mooncake
 
-julia> frule = Mooncake.NfwdMooncake.build_frule(
+julia> frule = Mooncake.NfwdMooncake.build_nfwd_frule(
            Tuple{typeof(sum), Vector{Float64}}; chunk_size=1
        );
 
@@ -907,7 +925,7 @@ julia> frule(Mooncake.Dual(sum, Mooncake.NoTangent()), Mooncake.Dual(x, ones(3))
 Mooncake.Dual(6.0, 3.0)
 ```
 """
-function build_frule(
+function build_nfwd_frule(
     sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
     resolved = _nfwd_resolve_rule_chunk_size(sig, chunk_size; debug_mode)
@@ -915,11 +933,17 @@ function build_frule(
     return Rule{sig,resolved,typeof(buf)}(buf)
 end
 
-function build_frule(
+function build_nfwd_frule(
     f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
-    return build_frule(typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages)
+    return build_nfwd_frule(
+        typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages
+    )
 end
+
+# `build_frule` keeps ordinary Julia dispatch visible to derived code and lowers to nfwd
+# only at primitive boundaries. `build_nfwd_frule` is the explicit nfwd rule path for
+# callers who intentionally want a rule that evaluates `f` on NDual-lifted arguments.
 
 # Primitive scalar wrappers in rules_via_nfwd.jl only need these nfwd execution helpers.
 # Calling these helpers avoids constructing a fresh Rule/RRule wrapper at every primitive
@@ -1200,6 +1224,9 @@ end
     build_rrule(sig::Type{<:Tuple}; chunk_size=nothing)
 
 Build a reverse-mode rule through `nfwd`.
+
+There is no separate `build_nfwd_rrule`: `build_rrule` already is the nfwd reverse-rule
+constructor in this module.
 
 The reverse rule is derived from chunked NDual forward passes and obeys the standard
 `rrule!!` interface. Rule construction is signature-based, so `nfwd` only supports

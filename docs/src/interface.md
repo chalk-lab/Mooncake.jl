@@ -75,7 +75,7 @@ val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 
 Passing `Config(chunk_size=2)` caps the forward chunk width used by this public cache path
 when it dispatches to its prepared chunked backend. That backend reuses the same chunked
-frontend exposed by `NfwdMooncake.build_chunked_frule`: derived code stays on the
+frontend exposed by `NfwdMooncake.build_frule`: derived code stays on the
 semantics-preserving chunked IR path, while primitive calls over nfwd-supported
 signatures may use NDual rules directly. Leaving `chunk_size=nothing` keeps Mooncake's
 default heuristic. `Config(enable_nfwd=false)` disables this prepared-cache chunked

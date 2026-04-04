@@ -1344,7 +1344,7 @@ end
 # - `config.debug_mode` must be false.
 # - `config.enable_nfwd` must be true. Despite the legacy config name, this now gates the
 #   prepared-cache chunked forward backend in general.
-# The prepared-cache backend stores width-specific `build_chunked_frule` rules. This keeps
+# The prepared-cache backend stores width-specific `build_frule` rules. This keeps
 # public chunked cache execution on the same chunked frontend as the direct rule API:
 # derived code stays on the semantics-preserving chunked IR path, while primitive calls
 # over nfwd-supported signatures may use NDual rules directly.
@@ -1368,7 +1368,7 @@ end
         isnothing(requested) ? 0 : Nfwd._nfwd_check_chunk_size(requested)
     end
     chunk_frules = ntuple(Val(_CHUNK_NFWD_MAX_LANES)) do n
-        NfwdMooncake.build_chunked_frule(sig; chunk_size=n, silence_debug_messages=true)
+        NfwdMooncake.build_frule(sig; chunk_size=n, silence_debug_messages=true)
     end
     # Small vectors are faster through an exact-width chunked frule than through the
     # generic chunked gradient assembly path, which otherwise seeds and accumulates lanes.

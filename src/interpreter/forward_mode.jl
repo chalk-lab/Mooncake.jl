@@ -36,7 +36,6 @@ function _fwd_uninit_dual end
 ) = nothing
 
 function build_frule end
-function build_chunked_frule end
 
 function _build_raw_frule(
     args...; debug_mode=false, silence_debug_messages=true, tangent_mode=IRfwdMode{1}()
