@@ -418,6 +418,19 @@ end
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefget),MemoryRef,Val,Val}
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefget)},
+    x::Dual{<:MemoryRef,<:NTangent},
+    _ordering::Dual{<:Val},
+    _boundscheck::Dual{<:Val},
+)
+    ordering = primal(_ordering)
+    bc = primal(_boundscheck)
+    y = memoryrefget(primal(x), _val(ordering), _val(bc))
+    tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
+    dy = _memory_lane_map(dx -> memoryrefget(dx, _val(ordering), _val(bc)), tangent(x))
+    return Dual(y, dy)
+end
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefget)},
     x::Dual{<:MemoryRef},
     _ordering::Dual{<:Val},
     _boundscheck::Dual{<:Val},
@@ -426,13 +439,7 @@ end
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), _val(ordering), _val(bc))
     tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
-    dx = tangent(x)
-    dy = if dx isa NTangent
-        NTangent(ntuple(n -> memoryrefget(dx[n], _val(ordering), _val(bc)), Val(length(dx))))
-    else
-        memoryrefget(dx, _val(ordering), _val(bc))
-    end
-    return Dual(y, dy)
+    return Dual(y, memoryrefget(tangent(x), _val(ordering), _val(bc)))
 end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
@@ -455,6 +462,19 @@ end
 
 @inline Base.@propagate_inbounds function frule!!(
     ::Dual{typeof(memoryrefget)},
+    x::Dual{<:MemoryRef,<:NTangent},
+    _ordering::Dual{Symbol},
+    _boundscheck::Dual{Bool},
+)
+    ordering = primal(_ordering)
+    boundscheck = primal(_boundscheck)
+    y = memoryrefget(primal(x), ordering, boundscheck)
+    tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
+    dy = _memory_lane_map(dx -> memoryrefget(dx, ordering, boundscheck), tangent(x))
+    return Dual(y, dy)
+end
+@inline Base.@propagate_inbounds function frule!!(
+    ::Dual{typeof(memoryrefget)},
     x::Dual{<:MemoryRef},
     _ordering::Dual{Symbol},
     _boundscheck::Dual{Bool},
@@ -463,13 +483,7 @@ end
     boundscheck = primal(_boundscheck)
     y = memoryrefget(primal(x), ordering, boundscheck)
     tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
-    dx = tangent(x)
-    dy = if dx isa NTangent
-        NTangent(ntuple(n -> memoryrefget(dx[n], ordering, boundscheck), Val(length(dx))))
-    else
-        memoryrefget(dx, ordering, boundscheck)
-    end
-    return Dual(y, dy)
+    return Dual(y, memoryrefget(tangent(x), ordering, boundscheck))
 end
 @inline Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(memoryrefget)},
@@ -978,16 +992,26 @@ function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Intege
 end
 
 @inline function frule!!(
+    ::Dual{typeof(lsetfield!)},
+    value::Dual{<:Array,<:NTangent},
+    ::Dual{Val{name}},
+    x::Dual{<:Any,<:NTangent},
+) where {name}
+    setfield!(primal(value), name, primal(x))
+    dv = tangent(value)
+    dx = tangent(x)
+    ntuple(Val(fieldcount(typeof(dv.lanes)))) do n
+        setfield!(dv[n], name, (name === :size || name === 2) ? primal(x) : dx[n])
+    end
+    return x
+end
+@inline function frule!!(
     ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:NTangent}, ::Dual{Val{name}}, x::Dual
 ) where {name}
     setfield!(primal(value), name, primal(x))
     dv = tangent(value)
     dx = (name === :size || name === 2) ? primal(x) : tangent(x)
-    if dx isa NTangent
-        ntuple(n -> setfield!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.lanes))))
-    else
-        ntuple(n -> setfield!(dv[n], name, dx), Val(fieldcount(typeof(dv.lanes))))
-    end
+    ntuple(n -> setfield!(dv[n], name, dx), Val(fieldcount(typeof(dv.lanes))))
     return x
 end
 @inline function lsetfield_frule(

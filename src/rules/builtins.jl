@@ -905,7 +905,7 @@ function frule!!(
 )
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
-    tv = NTangent(ntuple(n -> getindex(tangent(v)[n], ind), Val(length(tangent(v)))))
+    tv = NTangent(map(dv -> getindex(dv, ind), tangent(v).lanes))
     return Dual(pv, tv)
 end
 function frule!!(

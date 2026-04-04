@@ -309,11 +309,11 @@ function frule!!(
     x::Dual{<:SupportedArray{<:IEEEFloat,N},<:NTangent},
     b::Dual{<:SupportedArray{<:IEEEFloat,M},<:NTangent},
 ) where {N,M}
-    primal(x) .+= primal(b)
+    bias_act!(identity, primal(x), primal(b))
     dx = tangent(x)
     db = tangent(b)
     @inbounds for lane in 1:length(dx)
-        dx[lane] .+= db[lane]
+        bias_act!(identity, dx[lane], db[lane])
     end
     return x
 end
@@ -323,12 +323,24 @@ function frule!!(
     x::Dual{<:SupportedArray{<:IEEEFloat,N},<:NTangent},
     b::Dual{<:SupportedArray{<:IEEEFloat,M}},
 ) where {N,M}
-    primal(x) .+= primal(b)
+    bias_act!(identity, primal(x), primal(b))
     dx = tangent(x)
     db = tangent(b)
     @inbounds for lane in 1:length(dx)
-        dx[lane] .+= db
+        bias_act!(identity, dx[lane], db)
     end
+    return x
+end
+function frule!!(
+    ::Dual{typeof(bias_act!)},
+    ::Dual{typeof(identity)},
+    x::Dual{<:SupportedArray{<:IEEEFloat,N}},
+    b::Dual{<:SupportedArray{<:IEEEFloat,M},<:NTangent},
+) where {N,M}
+    bias_act!(identity, primal(x), primal(b))
+    dx = tangent(x)
+    db = tangent(b)
+    bias_act!(identity, dx, db[1])
     return x
 end
 function frule!!(
@@ -337,10 +349,10 @@ function frule!!(
     x::Dual{<:SupportedArray{<:IEEEFloat,N}},
     b::Dual{<:SupportedArray{<:IEEEFloat,M}},
 ) where {N,M}
-    primal(x) .+= primal(b)
+    bias_act!(identity, primal(x), primal(b))
     dx = tangent(x)
     db = tangent(b)
-    dx .+= db isa NTangent ? db[1] : db
+    bias_act!(identity, dx, db)
     return x
 end
 function rrule!!(
