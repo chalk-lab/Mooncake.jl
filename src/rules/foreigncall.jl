@@ -89,14 +89,15 @@ end
 function frule!!(::Dual{typeof(pointer_from_objref)}, x)
     y = pointer_from_objref(primal(x))
     Tptr = Ptr{tangent_type(Nothing)}
-    dx = tangent(x)
-    dy = if dx isa NTangent
-        NTangent(map(dxi -> bitcast(Tptr, pointer_from_objref(dxi)), dx.lanes))
-    else
-        bitcast(Tptr, pointer_from_objref(dx))
-    end
+    dy = _pointer_from_objref_tangent(Tptr, tangent(x))
     return Dual(y, dy)
 end
+@inline _pointer_from_objref_tangent(::Type{Tptr}, dx::NTangent) where {Tptr} = NTangent(
+    map(dxi -> bitcast(Tptr, pointer_from_objref(dxi)), dx.lanes)
+)
+@inline _pointer_from_objref_tangent(::Type{Tptr}, dx) where {Tptr} = bitcast(
+    Tptr, pointer_from_objref(dx)
+)
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
         pointer_from_objref(primal(x)),
@@ -135,18 +136,24 @@ end
 # necessary to work with `unsafe_copyto!` instead.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any} where {T}
 function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::Dual{Ptr{T},<:NTangent},
+    src::Dual{Ptr{T},<:NTangent},
+    n::Dual,
+) where {T}
+    unsafe_copyto!(primal(dest), primal(src), primal(n))
+    map(
+        (ddest, dsrc) -> unsafe_copyto!(ddest, dsrc, primal(n)),
+        tangent(dest).lanes,
+        tangent(src).lanes,
+    )
+    return dest
+end
+function frule!!(
     ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
 ) where {T}
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    if tangent(dest) isa NTangent
-        map(
-            (ddest, dsrc) -> unsafe_copyto!(ddest, dsrc, primal(n)),
-            tangent(dest).lanes,
-            tangent(src).lanes,
-        )
-    else
-        unsafe_copyto!(tangent(dest), tangent(src), primal(n))
-    end
+    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
 end
 function rrule!!(

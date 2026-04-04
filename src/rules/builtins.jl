@@ -298,17 +298,16 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
         Tx = Ptr{tangent_type(eltype(T))}
-        dx = tangent(x)
-        dv = if dx isa NTangent
-            NTangent(map(dxi -> bitcast(Tx, dxi), dx.lanes))
-        else
-            bitcast(Tx, dx)
-        end
+        dv = _bitcast_ptr_tangent(Tx, tangent(x))
     else
         dv = NoTangent()
     end
     return Dual(v, dv)
 end
+@inline _bitcast_ptr_tangent(::Type{Tx}, dx::NTangent) where {Tx} = NTangent(
+    map(dxi -> bitcast(Tx, dxi), dx.lanes)
+)
+@inline _bitcast_ptr_tangent(::Type{Tx}, dx) where {Tx} = bitcast(Tx, dx)
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
         msg =
@@ -443,12 +442,18 @@ end
 
 @intrinsic fma_float
 function frule!!(
-    ::Dual{typeof(fma_float)}, x::Dual{P,NoTangent}, y::Dual{P,NoTangent}, z::Dual{P,NoTangent}
+    ::Dual{typeof(fma_float)},
+    x::Dual{P,NoTangent},
+    y::Dual{P,NoTangent},
+    z::Dual{P,NoTangent},
 ) where {P<:IEEEFloat}
     return Dual(fma_float(primal(x), primal(y), primal(z)), NoTangent())
 end
 function frule!!(
-    ::Dual{typeof(fma_float)}, x::Dual{P,<:NTangent}, y::Dual{P,<:NTangent}, z::Dual{P,<:NTangent}
+    ::Dual{typeof(fma_float)},
+    x::Dual{P,<:NTangent},
+    y::Dual{P,<:NTangent},
+    z::Dual{P,<:NTangent},
 ) where {P<:IEEEFloat}
     a = fma_float(primal(x), primal(y), primal(z))
     dx = tangent(x).lanes
@@ -759,14 +764,10 @@ function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
 end
 
 @intrinsic sqrt_llvm_fast
-function frule!!(
-    ::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,NoTangent}
-) where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,NoTangent}) where {P<:IEEEFloat}
     return Dual(sqrt_llvm_fast(primal(x)), NoTangent())
 end
-function frule!!(
-    ::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,<:NTangent}
-) where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,<:NTangent}) where {P<:IEEEFloat}
     y = sqrt_llvm_fast(primal(x))
     dy = NTangent(map(dx -> nan_tangent_guard(dx, dx / (2 * y)), tangent(x).lanes))
     return Dual(y, dy)
@@ -900,15 +901,19 @@ end
 # Core._structtype
 
 function frule!!(
+    ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector,<:NTangent}, _ind::Dual{Int}
+)
+    ind = primal(_ind)
+    pv = Core._svec_ref(primal(v), ind)
+    tv = NTangent(ntuple(n -> getindex(tangent(v)[n], ind), Val(length(tangent(v)))))
+    return Dual(pv, tv)
+end
+function frule!!(
     ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector}, _ind::Dual{Int}
 )
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
-    tv = if tangent(v) isa NTangent
-        NTangent(ntuple(n -> getindex(tangent(v)[n], ind), Val(length(tangent(v)))))
-    else
-        getindex(tangent(v), ind)
-    end
+    tv = getindex(tangent(v), ind)
     return Dual(pv, tv)
 end
 function rrule!!(

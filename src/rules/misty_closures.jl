@@ -225,14 +225,15 @@ function misty_closure_new_rrule_exception()
 end
 
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
+function frule!!(f::Dual{<:MistyClosure,<:NTangent}, x::Dual...)
+    tf = tangent(f)
+    dual_captures = Dual(
+        primal(f).oc.captures, NTangent(map(t -> t.captures_tangent, tf.lanes))
+    )
+    return first(tf).dual_callable(dual_captures, x...)
+end
 function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
     tf = tangent(f)
-    if tf isa NTangent
-        dual_captures = Dual(
-            primal(f).oc.captures, NTangent(map(t -> t.captures_tangent, tf.lanes))
-        )
-        return first(tf).dual_callable(dual_captures, x...)
-    end
     dual_captures = Dual(primal(f).oc.captures, tf.captures_tangent)
     return tf.dual_callable(dual_captures, x...)
 end

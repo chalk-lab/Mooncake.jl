@@ -489,25 +489,15 @@ end
 
 # Core.memoryrefmodify!
 
-@inline function _memory_lane_map(f, x)
-    lane_count = Mooncake._fcache_derivative_ntangent_lane_count((x,))
-    isnothing(lane_count) && return f(x)
-    return NTangent(ntuple(lane -> f(Mooncake._ntangent_lane(x, Val(lane))), lane_count))
-end
+@inline _memory_lane_map(f, x::NTangent) = NTangent(map(f, x.lanes))
 
-@inline function _memory_lane_map(f, x, y)
-    lane_count = Mooncake._fcache_derivative_ntangent_lane_count((x, y))
-    isnothing(lane_count) && return f(x, y)
-    return NTangent(
-        ntuple(
-            lane -> f(
-                Mooncake._ntangent_lane(x, Val(lane)),
-                Mooncake._ntangent_lane(y, Val(lane)),
-            ),
-            lane_count,
-        ),
-    )
-end
+@inline _memory_lane_map(f, x) = f(x)
+
+@inline _memory_lane_map(f, x::NTangent, y::NTangent) = NTangent(map(f, x.lanes, y.lanes))
+
+@inline _memory_lane_map(f, x::NTangent, y) = NTangent(map(dx -> f(dx, y), x.lanes))
+
+@inline _memory_lane_map(f, x, y::NTangent) = NTangent(map(dy -> f(x, dy), y.lanes))
 
 @inline _memoryrefnew_tangent(dx::NoTangent, args...) = NoTangent()
 @inline function _memoryrefnew_tangent(dx, args...)
