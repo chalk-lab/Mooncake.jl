@@ -49,7 +49,7 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
         @test isempty(ins.notes)
 
         expected_stages = [
-            :raw, :normalized, :bbcode, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs
+            :raw, :normalized, :cfg_blocks, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs
         ]
         @test ins.stage_order == expected_stages
         for s in expected_stages
@@ -74,7 +74,7 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
         ins = inspect_fwd(test_fn, 1.0)
         @test ins.mode == :forward
 
-        expected_stages = [:raw, :normalized, :bbcode, :dual_ir, :optimized]
+        expected_stages = [:raw, :normalized, :cfg_blocks, :dual_ir, :optimized]
         @test ins.stage_order == expected_stages
         for s in expected_stages
             @test haskey(ins.stages, s)
@@ -244,8 +244,8 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
     @testset "render_ir" begin
         ins = inspect_ir(test_fn, 1.0)
         @test !isempty(render_ir(ins.stages[:raw].ir))
-        @test !isempty(render_ir(ins.stages[:bbcode].ir))
-        @test occursin("Block", render_ir(ins.stages[:bbcode].ir))
+        @test !isempty(render_ir(ins.stages[:cfg_blocks].ir))
+        @test occursin("Block", render_ir(ins.stages[:cfg_blocks].ir))
     end
 
     @testset "convenience functions" begin
@@ -269,21 +269,29 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
         fg = forward_stage_graph()
         @test fg == [
             :raw => :normalized,
-            :normalized => :bbcode,
-            :bbcode => :dual_ir,
+            :normalized => :cfg_blocks,
+            :cfg_blocks => :dual_ir,
             :dual_ir => :optimized,
         ]
 
         rg = reverse_stage_graph()
         @test (:raw => :normalized) in rg
-        @test (:bbcode => :fwd_ir) in rg
-        @test (:bbcode => :rvs_ir) in rg
+        @test (:cfg_blocks => :fwd_ir) in rg
+        @test (:cfg_blocks => :rvs_ir) in rg
         @test (:fwd_ir => :optimized_fwd) in rg
         @test (:rvs_ir => :optimized_rvs) in rg
 
-        @test forward_stage_order() == [:raw, :normalized, :bbcode, :dual_ir, :optimized]
+        @test forward_stage_order() == [:raw, :normalized, :cfg_blocks, :dual_ir, :optimized]
         @test reverse_stage_order() ==
-            [:raw, :normalized, :bbcode, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs]
+            [
+                :raw,
+                :normalized,
+                :cfg_blocks,
+                :fwd_ir,
+                :rvs_ir,
+                :optimized_fwd,
+                :optimized_rvs,
+            ]
     end
 
     @testset "StageMeta" begin
@@ -306,9 +314,9 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
         @test raw_meta.inst_count > 0
         @test raw_meta.edge_count >= 0
 
-        bb_meta = extract_meta(ins.stages[:bbcode].ir)
-        @test bb_meta.block_count > 0
-        @test bb_meta.inst_count > 0
+        cfg_meta = extract_meta(ins.stages[:cfg_blocks].ir)
+        @test cfg_meta.block_count > 0
+        @test cfg_meta.inst_count > 0
 
         fallback = extract_meta("not an IR")
         @test fallback.block_count == 0

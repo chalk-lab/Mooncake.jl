@@ -457,6 +457,18 @@ struct ADStmtInfo
     rvs::Vector{IDInstPair}
 end
 
+struct CallADPlan
+    args
+    rule_ref
+    T_pb!!
+    output_type
+end
+
+struct BlockCommsInsts
+    fwds_suffix::Vector{IDInstPair}
+    rvs_prefix::Vector{IDInstPair}
+end
+
 """
     ad_stmt_info(line::ID, comms_id::Union{ID, Nothing}, fwds, rvs)
 
@@ -468,6 +480,52 @@ function ad_stmt_info(line::ID, comms_id::Union{ID,Nothing}, fwds, rvs)
         throw(ArgumentError("comms_id not found in IDs of `fwds` instructions."))
     end
     return ADStmtInfo(line, comms_id, __vec(line, fwds), __vec(line, rvs))
+end
+
+function _plan_call_ad(stmt::Expr, line::ID, info::ADInfo, is_invoke::Bool)
+    args = ((is_invoke ? stmt.args[2:end] : stmt.args)...,)
+    arg_types = map(arg -> get_primal_type(info, arg), args)
+
+    sig = Tuple{arg_types...}
+    interp = info.interp
+    raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
+        build_primitive_rrule(sig)
+    elseif is_invoke
+        LazyDerivedRule(get_mi(stmt.args[1]), info.debug_mode)
+    else
+        DynamicDerivedRule(info.debug_mode)
+    end
+
+    output_type = get_primal_type(info, line)
+    is_no_pullback = pullback_type(_typeof(raw_rule), arg_types) <: NoPullback
+    strip_zero_rdata = can_produce_zero_rdata_from_type(output_type) || is_no_pullback
+    wrapped_rule = strip_zero_rdata ? raw_rule : RRuleZeroWrapper(raw_rule)
+    rule = info.debug_mode ? DebugRRule(wrapped_rule) : wrapped_rule
+
+    return CallADPlan(
+        args,
+        add_data_if_not_singleton!(info, rule),
+        pullback_type(_typeof(rule), arg_types),
+        output_type,
+    )
+end
+
+function _pullback_increment_stmts(
+    info::ADInfo, args, call_pullback_id::ID
+)::Vector{IDInstPair}
+    increments = IDInstPair[]
+    for (n, arg) in enumerate(args)
+        rev_data_id = get_rev_data_id(info, arg)
+        rev_data_id === nothing && continue
+
+        rdata_inc_id = ID()
+        push!(
+            increments,
+            (rdata_inc_id, new_inst(Expr(:call, getfield, call_pullback_id, n))),
+        )
+        append!(increments, increment_ref_stmts(rev_data_id, rdata_inc_id))
+    end
+    return increments
 end
 
 __vec(line::ID, x::Any) = __vec(line, new_inst(x))
@@ -815,41 +873,13 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         #
         # This might need to be generalised to more things than just `getfield`, but at the
         # time of writing this comment, it's unclear whether or not this is the case.
+        args = ((is_invoke ? stmt.args[2:end] : stmt.args)...,)
         if !is_used(info, line) && get_const_primal_value(args[1]) == getfield
             fwds = new_inst(Expr(:call, __fwds_pass_no_ad!, map(__inc, args)...))
             return ad_stmt_info(line, nothing, fwds, nothing)
         end
 
-        # Construct signature, and determine how the rrule is to be computed.
-        sig = Tuple{arg_types...}
-        interp = info.interp
-        raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
-            build_primitive_rrule(sig) # intrinsic / builtin / thing we provably have rule for
-        elseif is_invoke
-            mi = get_mi(stmt.args[1])
-            LazyDerivedRule(mi, info.debug_mode) # Static dispatch
-        else
-            DynamicDerivedRule(info.debug_mode)  # Dynamic dispatch
-        end
-
-        # Wrap the raw rule in a struct which ensures that any `ZeroRData`s are stripped
-        # away before the raw_rule is called. Only do this if we cannot prove that the
-        # output of `can_produce_zero_rdata_from_type(P)`, where `P` is the type of the
-        # value returned by this line.
-        is_no_pullback = pullback_type(_typeof(raw_rule), arg_types) <: NoPullback
-        tmp = can_produce_zero_rdata_from_type(get_primal_type(info, line))
-        zero_wrapped_rule = (tmp || is_no_pullback) ? raw_rule : RRuleZeroWrapper(raw_rule)
-
-        # If debug mode has been requested, use a debug rule.
-        rule = info.debug_mode ? DebugRRule(zero_wrapped_rule) : zero_wrapped_rule
-
-        # If the primitive rule is a singleton, then don't bother putting it into shared
-        # data because it's safe to put it directly into the code.
-        rule_ref = add_data_if_not_singleton!(info, rule)
-
-        # If the type of the pullback is a singleton type, then there is no need to store it
-        # in the shared data, it can be interpolated directly into the generated IR.
-        T_pb!! = pullback_type(_typeof(rule), arg_types)
+        plan = _plan_call_ad(stmt, line, info, is_invoke)
 
         #
         # Step 2: write the forward fragment.
@@ -860,7 +890,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Make arguments to rrule call. Things which are not already CoDual must be made so.
         codual_args = IDInstPair[]
-        codual_arg_ids = map(args) do arg
+        codual_arg_ids = map(plan.args) do arg
             is_active(arg) && return __inc(arg)
             id = ID()
             push!(codual_args, (id, new_inst(inc_or_const_stmt(arg, info))))
@@ -869,7 +899,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Make call to rule.
         rule_call_id = ID()
-        rule_call = Expr(:call, rule_ref, codual_arg_ids...)
+        rule_call = Expr(:call, plan.rule_ref, codual_arg_ids...)
 
         # Extract the output-codual from the returned tuple.
         raw_output_id = ID()
@@ -877,13 +907,13 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Extract the pullback from the returned tuple. Specialise on the case that the
         # pullback is provably a singleton type.
-        if Base.issingletontype(T_pb!!)
-            pb = T_pb!!.instance
+        if Base.issingletontype(plan.T_pb!!)
+            pb = plan.T_pb!!.instance
             pb_stmt = (ID(), new_inst(nothing))
             comms_id = nothing
         else
             pb = ID()
-            pb_stmt = (pb, new_inst(Expr(:call, getfield, rule_call_id, 2), T_pb!!))
+            pb_stmt = (pb, new_inst(Expr(:call, getfield, rule_call_id, 2), plan.T_pb!!))
             comms_id = pb
         end
 
@@ -893,7 +923,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # be optimised away in situations where the compiler is able to successfully infer
         # the type, so performance in performance-critical situations is unaffected.
         output_id = line
-        F = fcodual_type(get_primal_type(info, line))
+        F = fcodual_type(plan.output_type)
         output = Expr(:call, Core.typeassert, raw_output_id, F)
 
         # Create statements associated to forwards-pass.
@@ -911,7 +941,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # Step 3: write the reverse fragment.
         #
         # If the reverse pass is provably `NoPullback`, there is nothing to emit.
-        rvs_pass = if T_pb!! <: NoPullback
+        rvs_pass = if plan.T_pb!! <: NoPullback
             nothing
         else
             # Get the rdata which we pass into the pullback from its rdata ref.
@@ -923,42 +953,15 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             # Zero out the value stored in this rdata ref now that we have its current
             # value. The new value is rdata, so must be an instance of a bits type, so is
             # safe to interpolate straight into instruction.
-            zero_val = zero_like_rdata_from_type(get_primal_type(info, line))
+            zero_val = zero_like_rdata_from_type(plan.output_type)
             zero_rdata_expr = Expr(:call, setfield!, rdata_ref_id, QuoteNode(:x), zero_val)
             zero_rdata_ref = (ID(), new_inst(zero_rdata_expr))
 
             # Run the pullback. The result is a tuple comprising `length(args)` elements.
             call_pullback_id = ID()
             call_pullback = (call_pullback_id, new_inst(Expr(:call, pb, rdata_output_id)))
-
-            # For each element of the tuple returned by call_pullback, if the corresponding
-            # value in the primal IR is an Argument / SSA (if `get_rev_data_id` does not
-            # return nothing), increment the value in its rdata ref. This is equivalent to
-            # rdata_ref[] = increment!!(rdata_ref[], rdata_inc_resulting_from_pullback),
-            # but written out manually to ensure nothing fails to inline.
-            # If the corresponding value in the primal IR is not an Argument / SSA (e.g. it
-            # is a literal, a `QuoteNode`, or a `GlobalRef`), do nothing as we do not track
-            # gradients w.r.t. it.
-            tmp = map(enumerate(args)) do (n, arg)
-                rev_data_id = get_rev_data_id(info, arg)
-
-                # If arg is not an SSA / Argument, then no rdata ref to inc.
-                rev_data_id === nothing && return nothing
-
-                # Extract rdata from result of calling pullback.
-                rdata_inc_id = ID()
-                rdata_inc_expr = Expr(:call, getfield, call_pullback_id, n)
-                rdata_inc = (rdata_inc_id, new_inst(rdata_inc_expr))
-
-                # Construct statements to increment ref.
-                return vcat(rdata_inc, increment_ref_stmts(rev_data_id, rdata_inc_id))
-            end
-
-            # Concatenate all statements, and return them.
-            vcat(
-                IDInstPair[rdata_output, zero_rdata_ref, call_pullback],
-                reduce(vcat, filter(x -> !(x === nothing), tmp); init=IDInstPair[]),
-            )
+            pullback_increments = _pullback_increment_stmts(info, plan.args, call_pullback_id)
+            vcat(IDInstPair[rdata_output, zero_rdata_ref, call_pullback], pullback_increments)
         end
         return ad_stmt_info(line, comms_id, fwds, rvs_pass)
 
@@ -1592,9 +1595,7 @@ function generate_ir(
     arg_types = Dict{Argument,Any}(
         map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir.argtypes))
     )
-    primal_stmts = [inst for block in primal_blocks for inst in block.insts]
-    ssa_insts = Dict{ID,NewInstruction}(primal_stmts)
-    is_used_dict = characterise_used_ids(primal_stmts)
+    _, ssa_insts, is_used_dict = _primal_stmt_metadata(primal_blocks)
     Tlazy_rdata_ref = Tuple{map(lazy_zero_rdata_type ∘ CC.widenconst, ir.argtypes)...}
     zero_lazy_rdata_ref = Ref{Tlazy_rdata_ref}()
     info = ADInfo(
@@ -1617,18 +1618,18 @@ function generate_ir(
     end
 
     # Make shared data, and construct IR for the forwards-pass and pullback.
-    fwds_comms_insts, pb_comms_insts = create_comms_insts!(ad_stmts_blocks, info)
+    block_comms = create_comms_insts!(ad_stmts_blocks, info)
     shared_data = shared_data_tuple(info.shared_data_pairs)
 
     fwd_ir = forwards_pass_ir(
-        ir, primal_blocks, ad_stmts_blocks, fwds_comms_insts, info, _typeof(shared_data)
+        ir, primal_blocks, ad_stmts_blocks, block_comms, info, _typeof(shared_data)
     )
     rvs_ir = pullback_ir(
         ir,
         primal_blocks,
         Treturn,
         ad_stmts_blocks,
-        pb_comms_insts,
+        block_comms,
         info,
         _typeof(shared_data),
     )
@@ -1669,6 +1670,15 @@ end
 
 const ADStmts = Vector{Tuple{ID,Vector{ADStmtInfo}}}
 
+function _flatten_cfg_insts(blocks)::Vector{IDInstPair}
+    return [inst for block in blocks for inst in block.insts]
+end
+
+function _primal_stmt_metadata(blocks)
+    primal_stmts = _flatten_cfg_insts(blocks)
+    return primal_stmts, Dict{ID,NewInstruction}(primal_stmts), characterise_used_ids(primal_stmts)
+end
+
 """
     create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
 
@@ -1688,16 +1698,15 @@ For each basic block represented in `ADStmts`:
     shared data by the instructions generated by the previous point, and assigned them to
     the `comms_id`s.
 
-Returns two a `Tuple{Vector{IDInstPair}, Vector{IDInstPair}`. The nth element of each
-`Vector` corresponds to the instructions to be inserted into the forwards- and reverse
-passes resp. for the nth block in `ad_stmts_blocks`.
+Returns a `Vector{BlockCommsInsts}`. The nth element contains the forward-pass suffix and
+reverse-pass prefix associated to the nth block in `ad_stmts_blocks`.
 """
 #
 # Forward-pass communication and CFG assembly
 #
 
 function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
-    insts = map(ad_stmts_blocks) do (_, ad_stmts)
+    return map(ad_stmts_blocks) do (_, ad_stmts)
 
         # Get the communication channel for each stmt which has one.
         comms_channels = filter(!=(nothing), map(comms_channel, ad_stmts))
@@ -1729,9 +1738,8 @@ function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
             end...,
         ]
 
-        return fwds_insts, rvs_insts
+        return BlockCommsInsts(fwds_insts, rvs_insts)
     end
-    return map(first, insts), map(last, insts)
 end
 
 """
@@ -1749,7 +1757,7 @@ function forwards_pass_ir(
     ir::IRCode,
     primal_blocks,
     ad_stmts_blocks::ADStmts,
-    fwds_comms_insts,
+    block_comms,
     info::ADInfo,
     Tshared_data,
 )
@@ -1788,13 +1796,13 @@ function forwards_pass_ir(
     # 3. insert a statement which logs the ID of the current block (if necessary to know
     #   how to perform the reverse-pass),
     # 4. return the CFG block.
-    blocks = map(ad_stmts_blocks, fwds_comms_insts) do (block_id, ad_stmts), comms_insts
+    blocks = map(ad_stmts_blocks, block_comms) do (block_id, ad_stmts), comms
 
         # Extract the `fwds` fields from the stmts, and create the block for the fwds pass.
         insts = reduce(vcat, map(x -> x.fwds, ad_stmts))
 
-        # Insert communcation instructions. See `create_comms_insts!` for an explanation.
-        for stack_inst in comms_insts
+        # Insert communication instructions. See `create_comms_insts!` for an explanation.
+        for stack_inst in comms.fwds_suffix
             _insert_before_terminator!(insts, stack_inst)
         end
 
@@ -2152,6 +2160,63 @@ function _cfg_lines_to_blocks(insts::InstVector, cfg::CC.CFG)::InstVector
     return map((inst, stmt) -> NewInstruction(inst; stmt), insts, stmts)
 end
 
+#
+# CFG line/block numbering and compiler-IR reconstruction
+#
+
+function _cfg_instruction_stream(ir::IRCode, insts::InstVector)
+    @static if VERSION > v"1.12-"
+        lines = CC.copy(ir.debuginfo.codelocs)
+        n = length(insts)
+        if length(lines) > 3n
+            resize!(lines, 3n)
+        elseif length(lines) < 3n
+            for _ in (length(lines) + 1):3n
+                push!(lines, 0)
+            end
+        end
+        return CC.InstructionStream(
+            Any[x.stmt for x in insts],
+            Any[x.type for x in insts],
+            CC.CallInfo[x.info for x in insts],
+            lines,
+            UInt32[x.flag for x in insts],
+        )
+    else
+        return CC.InstructionStream(
+            Any[x.stmt for x in insts],
+            Any[x.type for x in insts],
+            CC.CallInfo[x.info for x in insts],
+            Int32[x.line for x in insts],
+            UInt32[x.flag for x in insts],
+        )
+    end
+end
+
+function _rebuild_ircode(ir::IRCode, arg_types, cfg::CC.CFG, insts::InstVector)::IRCode
+    inst_stream = _cfg_instruction_stream(ir, insts)
+    @static if VERSION > v"1.12-"
+        return IRCode(
+            inst_stream,
+            cfg,
+            CC.copy(ir.debuginfo),
+            Any[arg_types...],
+            CC.copy(ir.meta),
+            CC.copy(ir.sptypes),
+            ir.valid_worlds,
+        )
+    else
+        return IRCode(
+            inst_stream,
+            cfg,
+            CC.copy(ir.linetable),
+            Any[arg_types...],
+            CC.copy(ir.meta),
+            CC.copy(ir.sptypes),
+        )
+    end
+end
+
 """
     lower_cfg_blocks_to_ir(ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true)
 
@@ -2169,47 +2234,7 @@ function lower_cfg_blocks_to_ir(
     insts = _cfg_ids_to_line_numbers(blocks)
     cfg = _cfg_control_flow_graph(blocks)
     insts = _cfg_lines_to_blocks(insts, cfg)
-    @static if VERSION > v"1.12-"
-        lines = CC.copy(ir.debuginfo.codelocs)
-        n = length(insts)
-        if length(lines) > 3n
-            resize!(lines, 3n)
-        elseif length(lines) < 3n
-            for _ in (length(lines) + 1):3n
-                push!(lines, 0)
-            end
-        end
-        return IRCode(
-            CC.InstructionStream(
-                Any[x.stmt for x in insts],
-                Any[x.type for x in insts],
-                CC.CallInfo[x.info for x in insts],
-                lines,
-                UInt32[x.flag for x in insts],
-            ),
-            cfg,
-            CC.copy(ir.debuginfo),
-            Any[arg_types...],
-            CC.copy(ir.meta),
-            CC.copy(ir.sptypes),
-            ir.valid_worlds,
-        )
-    else
-        return IRCode(
-            CC.InstructionStream(
-                Any[x.stmt for x in insts],
-                Any[x.type for x in insts],
-                CC.CallInfo[x.info for x in insts],
-                Int32[x.line for x in insts],
-                UInt32[x.flag for x in insts],
-            ),
-            cfg,
-            CC.copy(ir.linetable),
-            Any[arg_types...],
-            CC.copy(ir.meta),
-            CC.copy(ir.sptypes),
-        )
-    end
+    return _rebuild_ircode(ir, arg_types, cfg, insts)
 end
 
 """
@@ -2233,7 +2258,7 @@ function pullback_ir(
     primal_blocks,
     Tret,
     ad_stmts_blocks::ADStmts,
-    pb_comms_insts,
+    block_comms,
     info::ADInfo,
     Tshared_data,
 )
@@ -2290,8 +2315,8 @@ function pullback_ir(
     ps = _compute_cfg_predecessors(primal_blocks)
     _, pred_is_unique_pred = _characterise_unique_predecessor_blocks(primal_blocks)
     main_blocks = map(
-        ad_stmts_blocks, enumerate(primal_blocks), pb_comms_insts
-    ) do (blk_id, ad_stmts), (n, blk), comms_insts
+        ad_stmts_blocks, enumerate(primal_blocks), block_comms
+    ) do (blk_id, ad_stmts), (n, blk), comms
 
         # Short-circuit if we know that this block cannot be reached on the reverse-pass.
         if is_unreachable_return_node(_cfg_terminator(blk))
@@ -2307,8 +2332,8 @@ function pullback_ir(
         additional_stmts, new_blocks = conclude_rvs_block(blk, pred_ids, tmp, info)
 
         # Combine all blocks and return. See `create_comms_insts!` for more info regarding
-        # `comms_insts`.
-        rvs_block = CFGBlock(blk_id, vcat(comms_insts, rvs_ad_stmts, additional_stmts))
+        # `comms`.
+        rvs_block = CFGBlock(blk_id, vcat(comms.rvs_prefix, rvs_ad_stmts, additional_stmts))
         return vcat(rvs_block, new_blocks)
     end
     main_blocks = reduce(vcat, main_blocks)
