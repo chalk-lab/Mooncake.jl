@@ -910,6 +910,9 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
+# These mutation rules are registered for `ForwardMode` only in this file. The >=1.11
+# regression in this branch is forward-side tangent corruption on the `Memory`-backed array
+# path, not a reverse-mode failure. Reverse rules can still be added here later if needed.
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(Base._growbeg!),Vector,Integer}
 function frule!!(
     ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
