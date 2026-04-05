@@ -1479,7 +1479,7 @@ end
     # with a true batched execution.
     input_primals = map(first, x_dx)
     input_tangents = map(last, x_dx)
-    function compute_lane_output(::Val{lane}) where {lane}
+    function compute_lane_output(lane::Int)
         lane_tangents = tuple_map(t -> _ntangent_lane(t, Val(lane)), input_tangents)
         return if friendly_tangents
             native_tangents = tuple_map(
