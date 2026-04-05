@@ -1413,8 +1413,8 @@ end
 #   repeatedly calls `_fcache_derivative_chunked!!`
 
 @inline function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::X
-) where {F,T<:IEEEFloat,X<:Union{T,Vector{T}}}
+    cache::ForwardCache, f::F, x::T
+) where {F,T<:IEEEFloat}
     input_primals = (f, x)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     nfwdcache = cache.nfwdcache
@@ -1422,10 +1422,11 @@ end
         result = value_and_gradient!!(nfwdcache, f, x)
         if !isnothing(result)
             y, native_gradients = result
-            if isnothing(cache.input_tangents)
-                return y, native_gradients
+            return if isnothing(cache.input_tangents)
+                y, native_gradients
+            else
+                y, _fcache_gradient_output(cache, input_primals, native_gradients)
             end
-            return y, _fcache_gradient_output(cache, input_primals, native_gradients)
         end
     end
     return _fcache_gradient_chunked!!(cache, input_primals)
@@ -1442,7 +1443,12 @@ end
     if nfwdcache isa NfwdMooncake.NfwdCache
         result = value_and_gradient!!(nfwdcache, f, x)
         if !isnothing(result)
-            return result
+            y, native_gradients = result
+            return if isnothing(cache.input_tangents)
+                y, native_gradients
+            else
+                y, _fcache_gradient_output(cache, input_primals, native_gradients)
+            end
         end
     end
     return _fcache_gradient_chunked!!(cache, input_primals)
