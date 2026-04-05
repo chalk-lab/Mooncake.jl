@@ -1631,27 +1631,8 @@ end
 #   repeatedly calls `_fcache_derivative_chunked!!`
 
 @inline function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::T
-) where {F,T<:IEEEFloat}
-    input_primals = (f, x)
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
-    nfwdcache = cache.nfwdcache
-    if nfwdcache isa NfwdMooncake.NfwdCache
-        result = value_and_gradient!!(nfwdcache, f, x)
-        if !isnothing(result)
-            y, native_gradients = result
-            if isnothing(cache.input_tangents)
-                return y, native_gradients
-            end
-            return y, _fcache_gradient_output(cache, input_primals, native_gradients)
-        end
-    end
-    return _fcache_gradient_chunked!!(cache, input_primals)
-end
-
-@inline function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::V
-) where {F,T<:IEEEFloat,V<:Vector{T}}
+    cache::ForwardCache, f::F, x::X
+) where {F,T<:IEEEFloat,X<:Union{T,Vector{T}}}
     input_primals = (f, x)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     nfwdcache = cache.nfwdcache
@@ -1745,28 +1726,26 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     input_external_tangents = tuple_map(last, fx)
     friendly_tangents = !isnothing(cache.input_tangents)
-    try_chunked(input_tangents) =
-        let N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
-            if isnothing(N_val)
-                nothing
-            else
-                _fcache_derivative_chunked!!(
-                cache,
-                N_val,
-                map(tuple, input_primals, input_tangents)...;
-                friendly_tangents,
-            )
-            end
-        end
-    chunked = try_chunked(input_external_tangents)
-    !isnothing(chunked) && return chunked
+    N_val = _fcache_derivative_ntangent_lane_count(input_external_tangents)
+    if !isnothing(N_val)
+        return _fcache_derivative_chunked!!(
+            cache,
+            N_val,
+            map(tuple, input_primals, input_external_tangents)...;
+            friendly_tangents,
+        )
+    end
     input_tangents = if friendly_tangents
         tuple_map(primal_to_tangent!!, cache.input_tangents, input_external_tangents)
     else
         input_external_tangents
     end
-    chunked = try_chunked(input_tangents)
-    !isnothing(chunked) && return chunked
+    N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
+    if !isnothing(N_val)
+        return _fcache_derivative_chunked!!(
+            cache, N_val, map(tuple, input_primals, input_tangents)...; friendly_tangents
+        )
+    end
     input_duals = tuple_map(_internal_forward_dual, input_primals, input_tangents)
     !friendly_tangents && error_if_incorrect_dual_types(input_duals...)
     output = __call_rule(cache.rule, input_duals)
