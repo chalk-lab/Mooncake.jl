@@ -91,6 +91,10 @@ import ..Mooncake:
 # High-level rule/cache objects first. The implementation details they rely on are defined
 # in later sections.
 
+@static if isdefined(Base, :ispublic)
+    eval(Expr(:public, :NfwdCache, :build_frule, :build_rrule))
+end
+
 # ── Experimental chunked IR path ──────────────────────────────────────────────────
 # This path does not generate `f(::Vector{NDual{...}})`-style overloads and it does not
 # introduce lifted primal structs. Instead it reuses Mooncake's IR-based forward transform
@@ -138,6 +142,189 @@ struct NfwdRule{sig,N} end
 
 @inline rule_chunk_size(::Type{<:IRfwdRule{sig,N}}) where {sig,N} = N
 @inline rule_chunk_size(::Type{<:NfwdRule{sig,N}}) where {sig,N} = N
+
+const CHUNK_CACHE_MAX_LANES = 8
+
+struct NfwdCache{R1,R2,R3,R4,R5,R6,R7,R8,GR,SG,SB,SW}
+    frule_1::R1
+    frule_2::R2
+    frule_3::R3
+    frule_4::R4
+    frule_5::R5
+    frule_6::R6
+    frule_7::R7
+    frule_8::R8
+    gradient_rrule::GR
+    small_vector_gradient_frule::SG
+    small_vector_gradient_buffer::SB
+    small_vector_gradient_workspace::SW
+end
+
+@inline Base.length(::NfwdCache) = CHUNK_CACHE_MAX_LANES
+
+@inline function chunk_cache_requested_chunk_size(requested_chunk_size)
+    return if isnothing(requested_chunk_size)
+        0
+    else
+        Nfwd._nfwd_check_chunk_size(requested_chunk_size)
+    end
+end
+
+@inline function fill_small_vector_gradient_buffer!(packed::NTangent)
+    N = length(packed)
+    @inbounds for lane in 1:N
+        T = eltype(packed[lane])
+        fill!(packed[lane], zero(T))
+        packed[lane][lane] = one(T)
+    end
+    return packed
+end
+
+@inline function small_vector_gradient_seed(x::Vector{T}) where {T}
+    packed = NTangent(ntuple(_ -> Vector{T}(undef, length(x)), Val(length(x))))
+    fill_small_vector_gradient_buffer!(packed)
+    return packed
+end
+
+@inline function Base.getindex(cache::NfwdCache, ::Val{N}) where {N}
+    N > length(cache) && return nothing
+    return getfield(
+        (
+            cache.frule_1,
+            cache.frule_2,
+            cache.frule_3,
+            cache.frule_4,
+            cache.frule_5,
+            cache.frule_6,
+            cache.frule_7,
+            cache.frule_8,
+        ),
+        N,
+    )
+end
+
+#
+# Mooncake interface extensions
+#
+# `NfwdMooncake` plugs into Mooncake through a small set of explicit interface overloads:
+# - `build_frule`
+# - `value_and_derivative!!` for `NfwdCache` and `Rule`
+# - `value_and_gradient!!` for `NfwdCache`
+# - `__value_and_gradient!!` for `RRule`
+# - `__verify_sig` / `verify_fwds_inputs` for `RRule`
+#
+# The rest of this file is internal nfwd implementation detail.
+
+@inline function Mooncake.value_and_derivative!!(
+    cache::NfwdCache, x_dx::Vararg{Tuple{Any,Any},M}
+) where {M}
+    N = nothing
+    for dx in map(last, x_dx)
+        dx isa NTangent || continue
+        current = length(dx)
+        if isnothing(N)
+            N = current
+        elseif N != current
+            throw(
+                ArgumentError(
+                    "All NTangent inputs must have the same number of lanes; found both $N and $current.",
+                ),
+            )
+        end
+    end
+    isnothing(N) && return nothing
+    rule = cache[Val(N)]
+    return isnothing(rule) ? nothing : value_and_derivative!!(rule, x_dx...)
+end
+
+@inline function NfwdCache(sig::Type{<:Tuple}, fx::Tuple, requested_chunk_size, config)
+    requested_chunk_size = chunk_cache_requested_chunk_size(requested_chunk_size)
+    params = Tuple(sig.parameters)
+    chunk_frules = ntuple(Val(CHUNK_CACHE_MAX_LANES)) do n
+        build_frule(sig; chunk_size=n, silence_debug_messages=true)
+    end
+    small_vector_gradient_frule =
+        if (
+            length(params) == 2 &&
+            params[2] <: Vector{<:IEEEFloat} &&
+            1 <= length(last(fx)) <= CHUNK_CACHE_MAX_LANES &&
+            length(last(fx)) <=
+            (requested_chunk_size == 0 ? CHUNK_CACHE_MAX_LANES : requested_chunk_size)
+        )
+            getfield(chunk_frules, length(last(fx)))
+        else
+            nothing
+        end
+    gradient_rrule =
+        if (
+            requested_chunk_size == 0 &&
+            first(fx) isa Function &&
+            Base.issingletontype(typeof(first(fx))) &&
+            length(params) == 2 &&
+            params[2] <: Array{<:IEEEFloat}
+        )
+            Mooncake.prepare_gradient_cache(fx...; config)
+        else
+            nothing
+        end
+    small_vector_gradient_buffer = if !isnothing(small_vector_gradient_frule)
+        small_vector_gradient_seed(last(fx))
+    else
+        nothing
+    end
+    small_vector_gradient_workspace = if !isnothing(small_vector_gradient_frule)
+        (NoTangent(), Vector{eltype(last(fx))}(undef, length(last(fx))))
+    else
+        nothing
+    end
+    return NfwdCache(
+        chunk_frules...,
+        gradient_rrule,
+        small_vector_gradient_frule,
+        small_vector_gradient_buffer,
+        small_vector_gradient_workspace,
+    )
+end
+
+@inline function Mooncake.value_and_gradient!!(
+    cache::NfwdCache, f::F, x::T
+) where {F,T<:IEEEFloat}
+    rule = cache.frule_1
+    isnothing(rule) && return nothing
+    y, dy = value_and_derivative!!(rule, (f, NoTangent()), (x, one(x)))
+    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    return y, (NoTangent(), Mooncake._unwrap_unit_ntangent(dy))
+end
+
+@inline function Mooncake.value_and_gradient!!(
+    cache::NfwdCache, f::F, x::V
+) where {F,T<:IEEEFloat,V<:Vector{T}}
+    !isnothing(cache.gradient_rrule) &&
+        return value_and_gradient!!(cache.gradient_rrule, f, x)
+    rule = cache.small_vector_gradient_frule
+    isnothing(rule) && return nothing
+    fill_small_vector_gradient_buffer!(cache.small_vector_gradient_buffer)
+    y, output_tangent = value_and_derivative!!(
+        rule, (f, NoTangent()), (x, cache.small_vector_gradient_buffer)
+    )
+    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    native_gradients = cache.small_vector_gradient_workspace
+    if output_tangent isa NTangent
+        @inbounds for i in 1:rule_chunk_size(typeof(rule))
+            native_gradients[2][i] = output_tangent[i]
+        end
+    else
+        native_gradients[2][1] = output_tangent
+    end
+    return y, native_gradients
+end
+
+@inline function Mooncake.value_and_gradient!!(
+    cache::NfwdCache, f::F, x::A
+) where {F,A<:Array{<:IEEEFloat}}
+    rrule = cache.gradient_rrule
+    return isnothing(rrule) ? nothing : value_and_gradient!!(rrule, f, x)
+end
 
 """
     build_frule(f, x...; chunk_size=nothing)
@@ -246,71 +433,6 @@ function Mooncake.build_frule(
         skip_world_age_check,
     )
 end
-@inline _nfwd_supported_primal_type(::Type{<:IEEEFloat}) = true
-@inline _nfwd_supported_primal_type(::Type{<:Complex{<:IEEEFloat}}) = true
-@inline _nfwd_supported_primal_type(::Type{<:Array{T}}) where {T} = Nfwd._nfwd_is_supported_scalar(
-    T
-)
-@inline function _irfwd_supported_primitive_arg_type(::Type{T}) where {T}
-    return _nfwd_supported_primal_type(T) || Mooncake.tangent_type(T) == NoTangent
-end
-@generated function _nfwd_supported_primal_type(::Type{T}) where {T<:Tuple}
-    checks = map(p -> _nfwd_supported_primal_type(p), T.parameters)
-    return all(checks) ? :(true) : :(false)
-end
-@inline _nfwd_supported_primal_type(::Type) = false
-
-function _nfwd_supports_primitive_sig(sig::Type{<:Tuple})
-    return all(_irfwd_supported_primitive_arg_type, Base.tail(Tuple(sig.parameters)))
-end
-
-@inline _nfwd_supported_primitive_output_type(::Type{<:IEEEFloat}) = true
-@inline _nfwd_supported_primitive_output_type(::Type{<:Complex{<:IEEEFloat}}) = true
-@inline _nfwd_supported_primitive_output_type(::Type{<:Array{T}}) where {T} = Nfwd._nfwd_is_supported_scalar(
-    T
-)
-@inline _nfwd_supported_primitive_output_type(::Type{Union{}}) = false
-@generated function _nfwd_supported_primitive_output_type(::Type{T}) where {T<:Tuple}
-    checks = map(
-        p ->
-            Mooncake.tangent_type(p) != NoTangent &&
-            _nfwd_supported_primitive_output_type(p),
-        T.parameters,
-    )
-    return all(checks) ? :(true) : :(false)
-end
-@inline _nfwd_supported_primitive_output_type(::Type) = false
-
-@generated function _nfwd_supports_primitive_output_sig(sig::Type{<:Tuple})
-    f = sig.parameters[1]
-    arg_types = Tuple{sig.parameters[2:end]...}
-    R = Core.Compiler.return_type(f, arg_types)
-    return if Mooncake.tangent_type(R) != NoTangent &&
-        _nfwd_supported_primitive_output_type(R)
-        :(true)
-    else
-        :(false)
-    end
-end
-
-function Mooncake._fwd_primitive_rule(
-    ::IRfwdMode{N},
-    interp,
-    sig::Type{<:Tuple};
-    debug_mode=false,
-    silence_debug_messages=true,
-) where {N}
-    # Design choice:
-    # Primitive lowering to `NfwdRule` is driven by structural support checks on the primal
-    # signature and inferred output type, not by asking whether Julia happens to have a valid
-    # `f(::NDual...)` method. Mooncake only lowers primitive boundaries that it knows how to
-    # pack to NDual and unpack back to `NTangent`; arbitrary Julia code is still handled by
-    # IRfwd unless it reaches one of those supported primitive sites.
-    _nfwd_supports_primitive_sig(sig) || return nothing
-    _nfwd_supports_primitive_output_sig(sig) || return nothing
-    return NfwdRule{sig,N}()
-end
-
 @inline _nfwd_packed_tangent_type(::Val{N}, ::Type{P}) where {N,P} = _nfwd_pack_tangent_storage_type(
     Val(N), Mooncake.tangent_type(P)
 )
@@ -357,26 +479,6 @@ function _nfwd_packed_dual_type(::Val{N}, ::Type{P}) where {N,P}
     }
     (P isa UnionAll || P == UnionAll) && return Dual
     return isconcretetype(P) ? Dual{P,_nfwd_packed_tangent_type(Val(N), P)} : Dual
-end
-
-function _irfwd_dual_type(::Val{N}, ::Type{P}) where {N,P}
-    P == Union{} && return Union{}
-    P == DataType && return Dual
-    P isa Union && return Union{_irfwd_dual_type(Val(N), P.a),_irfwd_dual_type(Val(N), P.b)}
-    (P isa UnionAll || P == UnionAll) && return Dual
-    return isconcretetype(P) ? Dual{P,Mooncake.NTangent_type(Val(N), P)} : Dual
-end
-
-function Mooncake._fwd_dual_type(::IRfwdMode{N}, ::Type{P}) where {N,P}
-    return _irfwd_dual_type(Val(N), P)
-end
-
-function Mooncake._fwd_zero_dual(::IRfwdMode{N}, x) where {N}
-    return Dual(x, Mooncake._chunked_zero_tangent(x, Val(N)))
-end
-
-function Mooncake._fwd_uninit_dual(::IRfwdMode{N}, x) where {N}
-    return Dual(x, Mooncake._chunked_uninit_tangent(x, Val(N)))
 end
 
 @inline _nfwd_pack_struct_lane_field(t::Mooncake.Tangent, i::Int) = getfield(t.fields, i)
@@ -808,7 +910,7 @@ end
     return Mooncake.__call_rule(rule, ())
 end
 
-@inline function value_and_derivative!!(
+@inline function Mooncake.value_and_derivative!!(
     rule::NfwdRule{sig,N}, fx::Vararg{Tuple{Any,Any},M}
 ) where {sig,N,M}
     packed_args = (
@@ -1367,7 +1469,7 @@ end
 
 Dispatch the scalar cached fast path for `nfwd` reverse mode.
 """
-function __value_and_gradient!!(
+function Mooncake.__value_and_gradient!!(
     rule::RRule{sig,N}, f::CoDual, x::CoDual{T}
 ) where {sig,N,T<:IEEEFloat}
     _nfwd_verify_sig(rule, (f, x))
@@ -1381,7 +1483,7 @@ Scalar-output dense-array fast path for `nfwd` reverse rules. Dispatches to a
 typed-workspace path for `Vector{T}` inputs (via the buf type parameter) and a generic
 workspace path for higher-dimensional arrays.
 """
-function __value_and_gradient!!(
+function Mooncake.__value_and_gradient!!(
     rule::RRule{sig,chunk_size}, f::CoDual, x::CoDual{A}
 ) where {sig,chunk_size,T<:IEEEFloat,N,A<:Array{T,N}}
     _nfwd_verify_sig(rule, (f, x))
@@ -1415,16 +1517,16 @@ end
 
 # RRule bakes sig into its type parameters and validates internally via
 # _nfwd_verify_sig on every call; no redundant check is needed here.
-__verify_sig(::RRule, ::Tuple) = nothing
+Mooncake.__verify_sig(::RRule, ::Tuple) = nothing
 
 """
     verify_fwds_inputs(rule::RRule, x)
 
 Emit the outer debug-mode warning before delegating to generic forward-input checks.
 """
-@noinline function verify_fwds_inputs(rule::RRule, @nospecialize(x::Tuple))
+@noinline function Mooncake.verify_fwds_inputs(rule::RRule, @nospecialize(x::Tuple))
     @warn NFWD_DEBUG_MODE_WARNING
-    return invoke(verify_fwds_inputs, Tuple{Any,Tuple}, rule, x)
+    return invoke(Mooncake.verify_fwds_inputs, Tuple{Any,Tuple}, rule, x)
 end
 
 #

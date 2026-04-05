@@ -1102,8 +1102,8 @@ end
                     debug_mode=false, friendly_tangents=false, enable_nfwd=false
                 ),
             )
-            @test !isnothing(getfield(cache_supported, :chunkcache))
-            @test isnothing(getfield(cache_supported_no_nfwd, :chunkcache))
+            @test !isnothing(getfield(cache_supported, :nfwdcache))
+            @test isnothing(getfield(cache_supported_no_nfwd, :nfwdcache))
 
             @testset "$(label)" for (label, f, args, counter, no_nfwd_count) in (
                 ("scalar", CountedChunkScalarCall(), (x, y), CHUNK_SCALAR_EVAL_COUNT, 2),
@@ -1247,8 +1247,8 @@ end
                     x_arr;
                     config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
                 )
-                @test !isnothing(cache.chunkcache)
-                @test !isnothing(cache.chunkcache.small_vector_gradient_frule)
+                @test !isnothing(cache.nfwdcache)
+                @test !isnothing(cache.nfwdcache.small_vector_gradient_frule)
                 expected = (
                     sum(x_arr),
                     (Mooncake.NoTangent(), fill(eltype(x_arr)(1), length(x_arr))),

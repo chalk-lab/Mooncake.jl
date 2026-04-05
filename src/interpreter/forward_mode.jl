@@ -35,6 +35,26 @@ function _fwd_uninit_dual end
     ::Any, interp, sig; debug_mode=false, silence_debug_messages=true
 ) = nothing
 
+function _irfwd_dual_type(::Val{N}, ::Type{P}) where {N,P}
+    P == Union{} && return Union{}
+    P == DataType && return Dual
+    P isa Union && return Union{_irfwd_dual_type(Val(N), P.a),_irfwd_dual_type(Val(N), P.b)}
+    (P isa UnionAll || P == UnionAll) && return Dual
+    return isconcretetype(P) ? Dual{P,NTangent_type(Val(N), P)} : Dual
+end
+
+function _fwd_dual_type(::IRfwdMode{N}, ::Type{P}) where {N,P}
+    return _irfwd_dual_type(Val(N), P)
+end
+
+function _fwd_zero_dual(::IRfwdMode{N}, x) where {N}
+    return Dual(x, _chunked_zero_tangent(x, Val(N)))
+end
+
+function _fwd_uninit_dual(::IRfwdMode{N}, x) where {N}
+    return Dual(x, _chunked_uninit_tangent(x, Val(N)))
+end
+
 function build_frule end
 
 function _build_raw_frule(
@@ -678,6 +698,81 @@ end
 
 function dual_ret_type(primal_ir::IRCode, tangent_mode=IRfwdMode{1}())
     return _fwd_dual_type(tangent_mode, compute_ir_rettype(primal_ir))
+end
+
+#
+# nfwd-backed primitive lowering for IRfwdMode
+#
+# `IRfwdMode` keeps derived code on ordinary primal values plus `NTangent` lanes, but some
+# primitive sites can be lowered to nfwd's NDual-backed rules when both the primitive
+# signature and inferred output type are structurally supported.
+#
+# MWE:
+#   f(x) = sin(x) + x
+#
+# When IR forward mode derives a rule for `f`, the outer `+` and the overall function body
+# still execute on ordinary primal values with `Dual{P,NTangent{...}}` tangents. This block
+# only decides whether a primitive site such as `sin(::Float64)` should use
+# `NfwdMooncake.NfwdRule{Tuple{typeof(sin),Float64},N}()` internally.
+#
+# So this is not "run `f` on NDual-lifted arguments". It is "keep the derived IR rule on
+# ordinary primals, but lower individual primitive calls to nfwd when their primal input
+# signature and inferred output type are known to be nfwd-supported".
+
+@inline _nfwd_supported_primal_type(::Type{<:IEEEFloat}) = true
+@inline _nfwd_supported_primal_type(::Type{<:Complex{<:IEEEFloat}}) = true
+@inline _nfwd_supported_primal_type(::Type{<:Array{T}}) where {T} = Nfwd._nfwd_is_supported_scalar(
+    T
+)
+@inline function _irfwd_supported_primitive_arg_type(::Type{T}) where {T}
+    return _nfwd_supported_primal_type(T) || tangent_type(T) == NoTangent
+end
+@generated function _nfwd_supported_primal_type(::Type{T}) where {T<:Tuple}
+    checks = map(p -> _nfwd_supported_primal_type(p), T.parameters)
+    return all(checks) ? :(true) : :(false)
+end
+@inline _nfwd_supported_primal_type(::Type) = false
+
+function _nfwd_supports_primitive_sig(sig::Type{<:Tuple})
+    return all(_irfwd_supported_primitive_arg_type, Base.tail(Tuple(sig.parameters)))
+end
+
+@inline _nfwd_supported_primitive_output_type(::Type{<:IEEEFloat}) = true
+@inline _nfwd_supported_primitive_output_type(::Type{<:Complex{<:IEEEFloat}}) = true
+@inline _nfwd_supported_primitive_output_type(::Type{<:Array{T}}) where {T} = Nfwd._nfwd_is_supported_scalar(
+    T
+)
+@inline _nfwd_supported_primitive_output_type(::Type{Union{}}) = false
+@generated function _nfwd_supported_primitive_output_type(::Type{T}) where {T<:Tuple}
+    checks = map(
+        p -> tangent_type(p) != NoTangent && _nfwd_supported_primitive_output_type(p),
+        T.parameters,
+    )
+    return all(checks) ? :(true) : :(false)
+end
+@inline _nfwd_supported_primitive_output_type(::Type) = false
+
+@generated function _nfwd_supports_primitive_output_sig(sig::Type{<:Tuple})
+    f = sig.parameters[1]
+    arg_types = Tuple{sig.parameters[2:end]...}
+    R = Core.Compiler.return_type(f, arg_types)
+    return if tangent_type(R) != NoTangent && _nfwd_supported_primitive_output_type(R)
+        :(true)
+    else
+        :(false)
+    end
+end
+
+function _fwd_primitive_rule(
+    ::IRfwdMode{N},
+    interp,
+    sig::Type{<:Tuple};
+    debug_mode=false,
+    silence_debug_messages=true,
+) where {N}
+    _nfwd_supports_primitive_sig(sig) || return nothing
+    _nfwd_supports_primitive_output_sig(sig) || return nothing
+    return NfwdMooncake.NfwdRule{sig,N}()
 end
 
 function frule_type(
