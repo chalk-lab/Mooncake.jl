@@ -869,8 +869,9 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
+struct ForwardCache{R,GR,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
     rule::R
+    gradient_rule::GR
     input_tangents::IT
     output_primal::OP
     friendly_gradients::FG
@@ -883,6 +884,7 @@ end
 
 @inline _dual_primal_type(::Type) = Any
 @inline _dual_primal_type(::Type{Dual{Y,T}}) where {Y,T} = Y
+@inline _fcache_gradient_input_dof(x) = _irfwd_gradient_input_dof(x)
 
 @inline function _forward_cache_output_summary(cache::ForwardCache)
     output_primal = getfield(cache, :output_primal)
@@ -1047,238 +1049,6 @@ end
         $checks
         return fx
     end
-end
-
-# fcache gradient bookkeeping
-@noinline function _fcache_gradient_throw_uninit_field_error(::Type{P}, n::Int) where {P}
-    throw(
-        ArgumentError(
-            "Forward-mode gradient seeding encountered an undefined field " *
-            "`$(fieldname(P, n))` in a value of type `$P`, but that field is marked " *
-            "always-initialised. This object is in a partially initialised state that " *
-            "Mooncake cannot seed automatically.",
-        ),
-    )
-end
-
-# Bug fix note: forward-cache gradient seeding must walk the whole input tuple with an
-# identity cache, otherwise aliased mutable subobjects are over-counted and cycles recurse
-# forever.
-@inline _fcache_gradient_input_dof(x) = _fcache_gradient_input_dof(x, IdDict{Any,Any}())
-# Mark mutable/shared nodes as seen before descending so aliasing contributes once and
-# cycles terminate locally instead of recursing forever.
-@inline _fcache_mark_seen!(seen::IdDict{Any,Any}, x) = (seen[x] = nothing)
-@inline _fcache_gradient_input_dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
-@inline _fcache_gradient_input_dof(x::IEEEFloat, _seen::IdDict{Any,Any}) = 1
-@inline _fcache_gradient_input_dof(x::Complex{<:IEEEFloat}, _seen::IdDict{Any,Any}) = 2
-@inline function _fcache_gradient_input_dof(
-    x::AbstractArray{<:IEEEFloat}, seen::IdDict{Any,Any}
-)
-    haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    if x isa _BuiltinArrays
-        total = 0
-        for i in eachindex(x)
-            isassigned(x, i) && (total += 1)
-        end
-        return total
-    end
-    return length(x)
-end
-@inline function _fcache_gradient_input_dof(
-    x::AbstractArray{Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
-)
-    haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    if x isa _BuiltinArrays
-        total = 0
-        for i in eachindex(x)
-            isassigned(x, i) && (total += 2)
-        end
-        return total
-    end
-    return 2 * length(x)
-end
-@inline function _fcache_gradient_input_dof(x::AbstractArray, seen::IdDict{Any,Any})
-    tangent_type(typeof(x)) == NoTangent && return 0
-    haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    total = 0
-    if x isa _BuiltinArrays
-        for i in eachindex(x)
-            isassigned(x, i) || continue
-            total += _fcache_gradient_input_dof(x[i], seen)
-        end
-    else
-        for xi in x
-            total += _fcache_gradient_input_dof(xi, seen)
-        end
-    end
-    return total
-end
-@inline function _fcache_gradient_input_dof(x::Tuple, seen::IdDict{Any,Any})
-    total = 0
-    for xi in x
-        total += _fcache_gradient_input_dof(xi, seen)
-    end
-    return total
-end
-@inline function _fcache_gradient_input_dof(x::NamedTuple, seen::IdDict{Any,Any})
-    total = 0
-    for xi in values(x)
-        total += _fcache_gradient_input_dof(xi, seen)
-    end
-    return total
-end
-@inline function _fcache_gradient_input_dof(x::P, seen::IdDict{Any,Any}) where {P}
-    tangent_type(P) == NoTangent && return 0
-    if x isa AbstractArray || Base.ismutabletype(P)
-        haskey(seen, x) && return 0
-        _fcache_mark_seen!(seen, x)
-    end
-    total = 0
-    inits = always_initialised(P)
-    for n in 1:fieldcount(P)
-        if isdefined(x, n)
-            total += _fcache_gradient_input_dof(getfield(x, n), seen)
-        elseif inits[n]
-            _fcache_gradient_throw_uninit_field_error(P, n)
-        end
-    end
-    return total
-end
-
-# fcache gradient seeding
-@inline _fcache_gradient_seed_tangent(x, slot::Int) = _fcache_gradient_seed_tangent(
-    x, slot, Ref(0), IdDict{Any,Any}()
-)
-@inline _fcache_gradient_seed_tangent(::NoTangent, _slot::Int, _cursor, _dict) = NoTangent()
-@inline function _fcache_gradient_seed_tangent(
-    ::NoTangent, _slot::Int, _cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
-)
-    return NoTangent()
-end
-@inline function _fcache_gradient_seed_tangent(
-    x::IEEEFloat, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
-)
-    cursor[] += 1
-    return cursor[] == slot ? one(x) : zero(x)
-end
-@inline function _fcache_gradient_seed_tangent(
-    x::Complex{T}, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
-) where {T<:IEEEFloat}
-    cursor[] += 1
-    real_part = cursor[] == slot ? one(T) : zero(T)
-    cursor[] += 1
-    imag_part = cursor[] == slot ? one(T) : zero(T)
-    return complex(real_part, imag_part)
-end
-
-function _fcache_gradient_seed_tangent(
-    x::AbstractArray{T}, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {T<:IEEEFloat}
-    existing = get(dict, x, nothing)
-    !isnothing(existing) && return existing
-    dx = zero_tangent(x)
-    dict[x] = dx
-    @inbounds for I in eachindex(x)
-        cursor[] += 1
-        dx[I] = cursor[] == slot ? one(T) : zero(T)
-    end
-    return dx
-end
-
-function _fcache_gradient_seed_tangent(
-    x::AbstractArray{Complex{T}},
-    slot::Int,
-    cursor::Base.RefValue{Int},
-    dict::IdDict{Any,Any},
-) where {T<:IEEEFloat}
-    existing = get(dict, x, nothing)
-    !isnothing(existing) && return existing
-    dx = zero_tangent(x)
-    dict[x] = dx
-    @inbounds for I in eachindex(x)
-        cursor[] += 1
-        real_part = cursor[] == slot ? one(T) : zero(T)
-        cursor[] += 1
-        imag_part = cursor[] == slot ? one(T) : zero(T)
-        dx[I] = complex(real_part, imag_part)
-    end
-    return dx
-end
-
-function _fcache_gradient_seed_tangent(
-    x::AbstractArray, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-)
-    tangent_type(typeof(x)) == NoTangent && return NoTangent()
-    existing = get(dict, x, nothing)
-    !isnothing(existing) && return existing
-    dx = zero_tangent(x)
-    dict[x] = dx
-    for I in eachindex(x)
-        dx[I] = _fcache_gradient_seed_tangent(x[I], slot, cursor, dict)
-    end
-    return dx
-end
-
-@inline function _fcache_gradient_seed_tangent(
-    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {P<:Tuple}
-    tangent_type(P) == NoTangent && return NoTangent()
-    fields = ntuple(
-        n -> _fcache_gradient_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P))
-    )
-    return build_tangent(P, fields...)
-end
-
-@inline function _fcache_gradient_seed_tangent(
-    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {P<:NamedTuple}
-    tangent_type(P) == NoTangent && return NoTangent()
-    fields = ntuple(
-        n -> _fcache_gradient_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P))
-    )
-    return build_tangent(P, fields...)
-end
-
-function _fcache_gradient_seed_tangent(
-    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {P}
-    tangent_type(P) == NoTangent && return NoTangent()
-    if x isa AbstractArray || Base.ismutabletype(P)
-        existing = get(dict, x, nothing)
-        !isnothing(existing) && return existing
-        tx = zero_tangent(x)
-        dict[x] = tx
-        if tx isa MutableTangent
-            inits = always_initialised(P)
-            for n in 1:fieldcount(P)
-                if isdefined(x, n)
-                    set_tangent_field!(
-                        tx,
-                        n,
-                        _fcache_gradient_seed_tangent(getfield(x, n), slot, cursor, dict),
-                    )
-                elseif inits[n]
-                    _fcache_gradient_throw_uninit_field_error(P, n)
-                end
-            end
-        end
-        return tx
-    end
-
-    inits = always_initialised(P)
-    fields = ntuple(Val(fieldcount(P))) do n
-        if isdefined(x, n)
-            return _fcache_gradient_seed_tangent(getfield(x, n), slot, cursor, dict)
-        elseif inits[n]
-            _fcache_gradient_throw_uninit_field_error(P, n)
-        else
-            return PossiblyUninitTangent{tangent_type(fieldtype(P, n))}()
-        end
-    end
-    return build_tangent(P, fields...)
 end
 
 # Shared `fcache` chunk machinery.
@@ -1468,7 +1238,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             PreparedCacheInputSpec(typeof(x), ())
         end
     end
-    gradient_chunk_size = let total_dof = _fcache_gradient_input_dof(fx)
+    gradient_chunk_size = let total_dof = _irfwd_gradient_input_dof(fx)
         if gradient_chunk_size_auto
             if nfwdcache isa NfwdMooncake.NfwdCache
                 min(total_dof, length(nfwdcache))
@@ -1479,12 +1249,23 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             min(total_dof, requested_chunk_size)
         end
     end
+    gradient_rule = if getfield(config, :enable_nfwd)
+        build_rrule(
+            IRfwdMode{max(gradient_chunk_size, 1)}(),
+            fx...;
+            config.debug_mode,
+            config.silence_debug_messages,
+        )
+    else
+        nothing
+    end
     output_primal = nothing
     if config.friendly_tangents
         input_tangents = tuple_map(zero_tangent, fx)
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
         return ForwardCache(
             rule,
+            gradient_rule,
             input_tangents,
             output_primal,
             _copy_output(fx),
@@ -1497,6 +1278,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     end
     return ForwardCache(
         rule,
+        gradient_rule,
         nothing,
         output_primal,
         nothing,
@@ -1514,13 +1296,8 @@ end
 """
     value_and_gradient!!(cache::ForwardCache, f, x...)
 
-Compute the value and gradient of a scalar-returning function using the generic
-`_fcache_derivative_chunked!!` path: seed standard-basis `NTangent`s,
-call the batched forward interface, then accumulate the lane contributions into gradient
-storage. Specialized backends behind `_fcache_derivative_chunked!!` may
-pack/unpack those `NTangent`s into a different representation (for example NDual lanes),
-but this generic path is expressed at the
-`NTangent` boundary.
+Compute the value and gradient of a scalar-returning function using the cached
+IRfwd-backed scalar gradient rule stored on the `ForwardCache`.
 
 This overload exists so callers can prepare a forward cache once, then use it either for
 directional derivatives via [`value_and_derivative!!`](@ref) or full gradients via chunked
@@ -1538,60 +1315,65 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
             zeroed
         end
     end
-    total_dof = _fcache_gradient_input_dof(input_primals)
-    y = nothing
-
-    if total_dof == 0
-        output = cache.rule(
-            tuple_map(_internal_forward_dual, input_primals, native_gradients)...
-        )
-        y = primal(output)
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    else
-        chunk_size = cache.gradient_chunk_size
-        for start_slot in 1:chunk_size:total_dof
-            chunk_width = min(chunk_size, total_dof - start_slot + 1)
-            lane_tangents = ntuple(
-                lane -> _fcache_gradient_seed_tangent(input_primals, start_slot + lane - 1),
-                chunk_width,
+    y, native_gradients = if isnothing(cache.gradient_rule)
+        total_dof = _irfwd_gradient_input_dof(input_primals)
+        y = nothing
+        if total_dof == 0
+            output = cache.rule(
+                tuple_map(_internal_forward_dual, input_primals, native_gradients)...
             )
-            input_tangents = ntuple(
-                i -> begin
-                    tangent_type(typeof(input_primals[i])) == NoTangent &&
-                        return NoTangent()
-                    return NTangent(ntuple(lane -> lane_tangents[lane][i], chunk_width))
-                end,
-                Val(fieldcount(typeof(input_primals))),
-            )
-            # `value_and_gradient!!` is a client of the batched forward interface: it seeds
-            # standard-basis chunk tangents, calls `_fcache_derivative_chunked!!`, and
-            # accumulates the resulting lane contributions into gradient storage.
-            y_chunk, chunk_dy = _fcache_derivative_chunked!!(
-                cache,
-                Val(chunk_width),
-                map(tuple, input_primals, input_tangents)...;
-                friendly_tangents=false,
-            )
-            if isnothing(y)
-                y = y_chunk
-                y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-            end
-            # A scalar output turns each derivative lane into one coefficient for the corresponding
-            # seeded basis direction, so accumulate `coeff * lane_tangent` into the full gradient.
-            for lane in 1:chunk_width
-                coeff = Float64(_unwrap_unit_ntangent(chunk_dy[lane]))
-                native_gradients = tuple_map(
-                    (g, dx) -> begin
-                        dx isa NoTangent && return g
-                        lane_tangent = _ntangent_lane(dx, Val(lane))
-                        lane_tangent isa NoTangent && return g
-                        return increment!!(g, _scale(coeff, lane_tangent))
-                    end,
-                    native_gradients,
-                    input_tangents,
+            y = primal(output)
+            y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        else
+            chunk_size = cache.gradient_chunk_size
+            for start_slot in 1:chunk_size:total_dof
+                chunk_width = min(chunk_size, total_dof - start_slot + 1)
+                lane_tangents = ntuple(
+                    lane -> _irfwd_gradient_seed_tangent(
+                        input_primals, start_slot + lane - 1
+                    ),
+                    chunk_width,
                 )
+                input_tangents = ntuple(
+                    i -> begin
+                        tangent_type(typeof(input_primals[i])) == NoTangent &&
+                            return NoTangent()
+                        return NTangent(
+                            ntuple(lane -> lane_tangents[lane][i], chunk_width)
+                        )
+                    end,
+                    Val(fieldcount(typeof(input_primals))),
+                )
+                y_chunk, chunk_dy = _fcache_derivative_chunked!!(
+                    cache,
+                    Val(chunk_width),
+                    map(tuple, input_primals, input_tangents)...;
+                    friendly_tangents=false,
+                )
+                if isnothing(y)
+                    y = y_chunk
+                    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+                end
+                for lane in 1:chunk_width
+                    coeff = Float64(_unwrap_unit_ntangent(chunk_dy[lane]))
+                    native_gradients = tuple_map(
+                        (g, dx) -> begin
+                            dx isa NoTangent && return g
+                            lane_tangent = _ntangent_lane(dx, Val(lane))
+                            lane_tangent isa NoTangent && return g
+                            return increment!!(g, _scale(coeff, lane_tangent))
+                        end,
+                        native_gradients,
+                        input_tangents,
+                    )
+                end
             end
         end
+        y::IEEEFloat, native_gradients
+    else
+        __value_and_gradient!!(
+            cache.gradient_rule, tuple_map(CoDual, input_primals, native_gradients)...
+        )
     end
 
     if isnothing(cache.input_tangents)

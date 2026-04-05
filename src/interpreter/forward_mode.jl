@@ -27,6 +27,9 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
 end
 
 struct IRfwdMode{N} end
+struct IRRRule{sig,N,R}
+    rule::R
+end
 
 function _fwd_dual_type end
 function _fwd_zero_dual end
@@ -773,6 +776,333 @@ function _fwd_primitive_rule(
     _nfwd_supports_primitive_sig(sig) || return nothing
     _nfwd_supports_primitive_output_sig(sig) || return nothing
     return NfwdMooncake.NfwdRule{sig,N}()
+end
+
+# IRfwd-backed scalar gradient rules.
+#
+# These rules keep primal execution on ordinary values plus `NTangent` lanes, seed
+# standard-basis chunk tangents internally, and accumulate scalar coefficients into full
+# gradients. This gives the public gradient interface a cached IRfwd rule backend rather
+# than assembling chunk execution in `interface.jl`.
+#
+# MWE:
+# `build_rrule(IRfwdMode{4}(), typeof((sum, randn(8))))` builds a cached scalar gradient
+# rule that evaluates `sum` on ordinary primal arrays, seeds four basis directions at a
+# time, and accumulates the resulting coefficients into the full input gradient.
+@noinline function _irfwd_gradient_throw_uninit_field_error(::Type{P}, n::Int) where {P}
+    throw(
+        ArgumentError(
+            "IRfwd scalar gradient seeding encountered an undefined field " *
+            "`$(fieldname(P, n))` in a value of type `$P`, but that field is marked " *
+            "always-initialised. This object is in a partially initialised state that " *
+            "Mooncake cannot seed automatically.",
+        ),
+    )
+end
+
+@inline _irfwd_gradient_input_dof(x) = _irfwd_gradient_input_dof(x, IdDict{Any,Any}())
+@inline _irfwd_mark_seen!(seen::IdDict{Any,Any}, x) = (seen[x] = nothing)
+@inline _irfwd_gradient_input_dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
+@inline _irfwd_gradient_input_dof(x::IEEEFloat, _seen::IdDict{Any,Any}) = 1
+@inline _irfwd_gradient_input_dof(x::Complex{<:IEEEFloat}, _seen::IdDict{Any,Any}) = 2
+@inline function _irfwd_gradient_input_dof(
+    x::AbstractArray{<:IEEEFloat}, seen::IdDict{Any,Any}
+)
+    haskey(seen, x) && return 0
+    _irfwd_mark_seen!(seen, x)
+    if x isa _BuiltinArrays
+        total = 0
+        for i in eachindex(x)
+            isassigned(x, i) && (total += 1)
+        end
+        return total
+    end
+    return length(x)
+end
+@inline function _irfwd_gradient_input_dof(
+    x::AbstractArray{Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
+)
+    haskey(seen, x) && return 0
+    _irfwd_mark_seen!(seen, x)
+    if x isa _BuiltinArrays
+        total = 0
+        for i in eachindex(x)
+            isassigned(x, i) && (total += 2)
+        end
+        return total
+    end
+    return 2 * length(x)
+end
+@inline function _irfwd_gradient_input_dof(x::AbstractArray, seen::IdDict{Any,Any})
+    tangent_type(typeof(x)) == NoTangent && return 0
+    haskey(seen, x) && return 0
+    _irfwd_mark_seen!(seen, x)
+    total = 0
+    if x isa _BuiltinArrays
+        for i in eachindex(x)
+            isassigned(x, i) || continue
+            total += _irfwd_gradient_input_dof(x[i], seen)
+        end
+    else
+        for xi in x
+            total += _irfwd_gradient_input_dof(xi, seen)
+        end
+    end
+    return total
+end
+@inline function _irfwd_gradient_input_dof(x::Tuple, seen::IdDict{Any,Any})
+    total = 0
+    for xi in x
+        total += _irfwd_gradient_input_dof(xi, seen)
+    end
+    return total
+end
+@inline function _irfwd_gradient_input_dof(x::NamedTuple, seen::IdDict{Any,Any})
+    total = 0
+    for xi in values(x)
+        total += _irfwd_gradient_input_dof(xi, seen)
+    end
+    return total
+end
+@inline function _irfwd_gradient_input_dof(x::P, seen::IdDict{Any,Any}) where {P}
+    tangent_type(P) == NoTangent && return 0
+    if x isa AbstractArray || Base.ismutabletype(P)
+        haskey(seen, x) && return 0
+        _irfwd_mark_seen!(seen, x)
+    end
+    total = 0
+    inits = always_initialised(P)
+    for n in 1:fieldcount(P)
+        if isdefined(x, n)
+            total += _irfwd_gradient_input_dof(getfield(x, n), seen)
+        elseif inits[n]
+            _irfwd_gradient_throw_uninit_field_error(P, n)
+        end
+    end
+    return total
+end
+
+@inline _irfwd_gradient_seed_tangent(x, slot::Int) = _irfwd_gradient_seed_tangent(
+    x, slot, Ref(0), IdDict{Any,Any}()
+)
+@inline _irfwd_gradient_seed_tangent(::NoTangent, _slot::Int, _cursor, _dict) = NoTangent()
+@inline function _irfwd_gradient_seed_tangent(
+    ::NoTangent, _slot::Int, _cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
+)
+    return NoTangent()
+end
+@inline function _irfwd_gradient_seed_tangent(
+    x::IEEEFloat, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
+)
+    cursor[] += 1
+    return cursor[] == slot ? one(x) : zero(x)
+end
+@inline function _irfwd_gradient_seed_tangent(
+    x::Complex{T}, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
+) where {T<:IEEEFloat}
+    cursor[] += 1
+    real_part = cursor[] == slot ? one(T) : zero(T)
+    cursor[] += 1
+    imag_part = cursor[] == slot ? one(T) : zero(T)
+    return complex(real_part, imag_part)
+end
+
+function _irfwd_gradient_seed_tangent(
+    x::AbstractArray{T}, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
+) where {T<:IEEEFloat}
+    existing = get(dict, x, nothing)
+    !isnothing(existing) && return existing
+    dx = zero_tangent(x)
+    dict[x] = dx
+    @inbounds for I in eachindex(x)
+        cursor[] += 1
+        dx[I] = cursor[] == slot ? one(T) : zero(T)
+    end
+    return dx
+end
+
+function _irfwd_gradient_seed_tangent(
+    x::AbstractArray{Complex{T}},
+    slot::Int,
+    cursor::Base.RefValue{Int},
+    dict::IdDict{Any,Any},
+) where {T<:IEEEFloat}
+    existing = get(dict, x, nothing)
+    !isnothing(existing) && return existing
+    dx = zero_tangent(x)
+    dict[x] = dx
+    @inbounds for I in eachindex(x)
+        cursor[] += 1
+        real_part = cursor[] == slot ? one(T) : zero(T)
+        cursor[] += 1
+        imag_part = cursor[] == slot ? one(T) : zero(T)
+        dx[I] = complex(real_part, imag_part)
+    end
+    return dx
+end
+
+function _irfwd_gradient_seed_tangent(
+    x::AbstractArray, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
+)
+    tangent_type(typeof(x)) == NoTangent && return NoTangent()
+    existing = get(dict, x, nothing)
+    !isnothing(existing) && return existing
+    dx = zero_tangent(x)
+    dict[x] = dx
+    for I in eachindex(x)
+        dx[I] = _irfwd_gradient_seed_tangent(x[I], slot, cursor, dict)
+    end
+    return dx
+end
+
+@inline function _irfwd_gradient_seed_tangent(
+    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
+) where {P<:Tuple}
+    tangent_type(P) == NoTangent && return NoTangent()
+    fields = ntuple(
+        n -> _irfwd_gradient_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P))
+    )
+    return build_tangent(P, fields...)
+end
+
+@inline function _irfwd_gradient_seed_tangent(
+    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
+) where {P<:NamedTuple}
+    tangent_type(P) == NoTangent && return NoTangent()
+    fields = ntuple(
+        n -> _irfwd_gradient_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P))
+    )
+    return build_tangent(P, fields...)
+end
+
+function _irfwd_gradient_seed_tangent(
+    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
+) where {P}
+    tangent_type(P) == NoTangent && return NoTangent()
+    if x isa AbstractArray || Base.ismutabletype(P)
+        existing = get(dict, x, nothing)
+        !isnothing(existing) && return existing
+        tx = zero_tangent(x)
+        dict[x] = tx
+        if tx isa MutableTangent
+            inits = always_initialised(P)
+            for n in 1:fieldcount(P)
+                if isdefined(x, n)
+                    set_tangent_field!(
+                        tx,
+                        n,
+                        _irfwd_gradient_seed_tangent(getfield(x, n), slot, cursor, dict),
+                    )
+                elseif inits[n]
+                    _irfwd_gradient_throw_uninit_field_error(P, n)
+                end
+            end
+        end
+        return tx
+    end
+
+    inits = always_initialised(P)
+    fields = ntuple(Val(fieldcount(P))) do n
+        if isdefined(x, n)
+            return _irfwd_gradient_seed_tangent(getfield(x, n), slot, cursor, dict)
+        elseif inits[n]
+            _irfwd_gradient_throw_uninit_field_error(P, n)
+        else
+            return PossiblyUninitTangent{tangent_type(fieldtype(P, n))}()
+        end
+    end
+    return build_tangent(P, fields...)
+end
+
+function _irfwd_value_and_gradient!!(
+    rule::IRRRule{sig,N}, fx::Vararg{CoDual,M}
+) where {sig,N,M}
+    input_primals = map(primal, fx)
+    typeof(input_primals) == sig || throw(
+        ArgumentError(
+            "signature of arguments, $(typeof(input_primals)), not equal to signature required by rule, $sig.",
+        ),
+    )
+    native_gradients = tuple_map(set_to_zero!!, map(tangent, fx))
+    total_dof = _irfwd_gradient_input_dof(input_primals)
+    zero_input_tangents = zero_tangent(input_primals)
+    y = nothing
+
+    if total_dof == 0
+        output = rule.rule(
+            tuple_map(_internal_forward_dual, input_primals, native_gradients)...
+        )
+        y = primal(output)
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        return y, native_gradients
+    end
+
+    for start_slot in 1:N:total_dof
+        chunk_width = min(N, total_dof - start_slot + 1)
+        lane_tangents = ntuple(
+            lane -> if lane <= chunk_width
+                _irfwd_gradient_seed_tangent(input_primals, start_slot + lane - 1)
+            else
+                zero_input_tangents
+            end,
+            Val(N),
+        )
+        input_tangents = ntuple(
+            i -> begin
+                tangent_type(typeof(input_primals[i])) == NoTangent && return NoTangent()
+                return NTangent(ntuple(lane -> lane_tangents[lane][i], Val(N)))
+            end,
+            Val(fieldcount(typeof(input_primals))),
+        )
+        y_chunk, chunk_dy = value_and_derivative!!(
+            rule.rule, map(tuple, input_primals, input_tangents)...
+        )
+        if isnothing(y)
+            y = y_chunk
+            y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        end
+        for lane in 1:chunk_width
+            coeff = Float64(_unwrap_unit_ntangent(chunk_dy[lane]))
+            native_gradients = tuple_map(
+                (g, dx) -> begin
+                    dx isa NoTangent && return g
+                    lane_tangent = _ntangent_lane(dx, Val(lane))
+                    lane_tangent isa NoTangent && return g
+                    return increment!!(g, _scale(coeff, lane_tangent))
+                end,
+                native_gradients,
+                input_tangents,
+            )
+        end
+    end
+
+    return y::IEEEFloat, native_gradients
+end
+
+function __value_and_gradient!!(rule::IRRRule{sig,N}, fx::Vararg{CoDual,M}) where {sig,N,M}
+    return _irfwd_value_and_gradient!!(rule, fx...)
+end
+
+function __value_and_pullback!!(
+    rule::IRRRule{sig,N}, ȳ::T, fx::Vararg{CoDual,M}; y_cache=nothing
+) where {sig,N,M,T<:IEEEFloat}
+    y, gradient = _irfwd_value_and_gradient!!(rule, fx...)
+    return y, tuple_map(g -> g isa NoTangent ? g : _scale(ȳ, g), gradient)
+end
+
+function build_rrule(
+    ::IRfwdMode{N}, sig::Type{<:Tuple}; debug_mode=false, silence_debug_messages=true
+) where {N}
+    built_rule = build_frule(IRfwdMode{N}(), sig; debug_mode, silence_debug_messages)
+    return IRRRule{sig,N,typeof(built_rule)}(built_rule)
+end
+
+function build_rrule(
+    ::IRfwdMode{N}, f, x...; debug_mode=false, silence_debug_messages=true
+) where {N}
+    return build_rrule(
+        IRfwdMode{N}(), typeof((f, x...)); debug_mode, silence_debug_messages
+    )
 end
 
 function frule_type(
