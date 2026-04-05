@@ -1604,6 +1604,17 @@ end
     return tangent
 end
 
+# NamedTuple primals use plain NamedTuple tangents, not Tangent wrappers with `.fields`.
+# Handle them before the generic NamedTuple-dest method for immutable-struct tangents.
+@unstable function tangent_to_friendly!!(
+    dest::NamedTuple{names},
+    primal::NamedTuple{names},
+    tangent::NamedTuple{names},
+    c::MaybeCache,
+) where {names}
+    return map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dest, primal, tangent)
+end
+
 # NamedTuple dest: recurse into immutable struct fields.
 # `tangent` must be a Tangent (immutable struct tangent) whose `.fields` NamedTuple is
 # integer-indexable and whose elements are PossiblyUninitTangent-or-plain tangents.
