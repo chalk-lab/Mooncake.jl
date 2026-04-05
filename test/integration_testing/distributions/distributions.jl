@@ -242,7 +242,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
     #   • MvLogitNormal with pre-built Symmetric/PDMat S arg: modes=(:forward, :reverse).
     #   • reshape, vec, LKJCholesky workaround: modes=(:forward, :reverse).
 
-    _NfwdMode(f, args, C) = Mooncake.NfwdMooncake.build_rrule(f, args...; chunk_size=C)
+    _NfwdMode(f, args, C) = Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{C}(), f, args...)
 
     param_logpdf_cases = Any[
 
@@ -1690,7 +1690,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         # ── Forward+Reverse only ───────────────────────────────────────────────────
         # NfwdMooncake not applicable for the following entries:
         #
-        #   MvLogitNormal m+Σ (array)  — S is a pre-built Symmetric{PDMat}; NfwdMooncake.build_rrule
+        #   MvLogitNormal m+Σ (array)  — S is a pre-built Symmetric{PDMat}; build_rrule(NfwdMode, ...)
         #                                does not seed structured-matrix args with NDual partials
         #   truncated Beta α+β         — ∂I_x/∂a and ∂I_x/∂b not implemented; can't differentiate
         #   left-truncated Beta α+β      through the truncation normalisation w.r.t. shape params
@@ -1698,7 +1698,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         #   LKJCholesky workaround     — regular-AD coverage only; NfwdMooncake covered by LKJCholesky L/η+L
 
         # S is a pre-built Symmetric{Float64,PDMat{Float64}} passed as an argument.
-        # NfwdMooncake.build_rrule does not seed structured-matrix args (Symmetric wrapping
+        # build_rrule(NfwdMode, ...) does not seed structured-matrix args (Symmetric wrapping
         # PDMat) with NDual partials.  The scalar-param "MvLogitNormal m+Σ+x" entry
         # above already covers NfwdMooncake differentiation through MvLogitNormal.
         (

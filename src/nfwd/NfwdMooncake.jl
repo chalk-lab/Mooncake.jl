@@ -3,6 +3,7 @@ module NfwdMooncake
 import ..Mooncake
 using Base: IEEEFloat
 using ..Nfwd
+export NDualMode, NfwdMode
 import ..Mooncake:
     @unstable,
     CoDual,
@@ -18,6 +19,7 @@ import ..Mooncake:
     primal,
     rdata,
     tangent,
+    tangent_type,
     throw_val_and_grad_ret_type_error,
     tuple_map,
     uninit_tangent,
@@ -42,19 +44,19 @@ import ..Mooncake:
 # - cached scalar/array fast paths
 #
 # ── High-level interfaces ──────────────────────────────────────────────────────────
-#   build_frule(f, x...; chunk_size)
+#   Mooncake.build_frule(IRfwdMode{N}(), f, x...)
 #     returns `IRfwdRule`
 #     consumed via `rule(f::Dual, x::Dual...)`
 #     obeys the standard `frule!!` interface
 #     also accepts `sig::Type{<:Tuple}` for signature-based construction
 #
-#   build_nfwd_frule(f, x...; chunk_size)
+#   Mooncake.build_frule(Nfwd.NDualMode{N}(), f, x...)
 #     returns `Rule`
 #     consumed via `rule(f::Dual, x::Dual...)`
 #     obeys the standard `frule!!` interface
 #     also accepts `sig::Type{<:Tuple}` for signature-based construction
 #
-#   build_rrule(f, x...; chunk_size)
+#   Mooncake.build_rrule(Nfwd.NfwdMode{N}(), f, x...)
 #     returns `RRule`
 #     consumed via `rule(f::CoDual, x::CoDual...)`
 #     obeys the standard `rrule!!` interface
@@ -83,7 +85,7 @@ import ..Mooncake:
 #   sig = Tuple{typeof(f),Vector{Float64}}
 #   Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode sig
 #   Mooncake.build_primitive_rrule(::Type{sig}) =
-#       Mooncake.NfwdMooncake.build_rrule(sig; chunk_size=4)
+#       Mooncake.build_rrule(Nfwd.NfwdMode{4}(), sig)
 #
 #
 # Core types
@@ -92,7 +94,7 @@ import ..Mooncake:
 # in later sections.
 
 @static if isdefined(Base, :ispublic)
-    eval(Expr(:public, :NfwdCache, :build_frule, :build_rrule))
+    eval(Expr(:public, :NfwdCache))
 end
 
 # ── Experimental chunked IR path ──────────────────────────────────────────────────
@@ -124,6 +126,17 @@ end
 # `IRfwdMode{N}` selects the chunked IR path: derive a forward rule from IR, keep
 # primal values unchanged, and store the `N` derivative lanes only in the tangent.
 const IRfwdMode = Mooncake.IRfwdMode
+const NDualMode = Nfwd.NDualMode
+const NfwdMode = Nfwd.NfwdMode
+
+@inline tangent_type(::NDualMode{N}, ::Type{T}) where {N,T<:IEEEFloat} = Nfwd.NDual{T,N}
+@inline tangent_type(::NDualMode{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat} = Complex{
+    Nfwd.NDual{T,N}
+}
+@inline tangent_type(::NfwdMode{N}, ::Type{T}) where {N,T<:IEEEFloat} = Nfwd.NDual{T,N}
+@inline tangent_type(::NfwdMode{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat} = Complex{
+    Nfwd.NDual{T,N}
+}
 
 # `IRfwdRule` is the public rule object returned by `build_frule` for the
 # chunked IR path.
@@ -241,7 +254,7 @@ end
     requested_chunk_size = chunk_cache_requested_chunk_size(requested_chunk_size)
     params = Tuple(sig.parameters)
     chunk_frules = ntuple(Val(CHUNK_CACHE_MAX_LANES)) do n
-        build_frule(sig; chunk_size=n, silence_debug_messages=true)
+        Mooncake.build_frule(IRfwdMode{n}(), sig; silence_debug_messages=true)
     end
     small_vector_gradient_frule =
         if (
@@ -326,20 +339,7 @@ end
     return isnothing(rrule) ? nothing : value_and_gradient!!(rrule, f, x)
 end
 
-"""
-    build_frule(f, x...; chunk_size=nothing)
-    build_frule(sig::Type{<:Tuple}; chunk_size=nothing)
-
-Build a forward-mode rule for Mooncake's standard `frule!!` interface.
-
-This is the chunked IR frontend: derived code keeps ordinary primal Julia values and
-`NTangent` lanes, while nfwd lowering happens only at primitive boundaries that are
-structurally supported.
-
-Use `build_nfwd_frule` instead when you explicitly want a rule that evaluates `f` on
-NDual-lifted arguments.
-"""
-function build_frule(
+function _build_irfwd_frule(
     interp::Mooncake.MooncakeInterpreter,
     sig_or_mi;
     chunk_size=nothing,
@@ -360,14 +360,14 @@ function build_frule(
     return IRfwdRule{sig,resolved,typeof(inner)}(inner)
 end
 
-function build_frule(
+function _build_irfwd_frule(
     sig::Type{<:Tuple};
     chunk_size=nothing,
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
 )
-    return build_frule(
+    return _build_irfwd_frule(
         Mooncake.get_interpreter(Mooncake.ForwardMode),
         sig;
         chunk_size,
@@ -377,7 +377,7 @@ function build_frule(
     )
 end
 
-function build_frule(
+function _build_irfwd_frule(
     f,
     x...;
     chunk_size=nothing,
@@ -385,7 +385,7 @@ function build_frule(
     silence_debug_messages=true,
     skip_world_age_check=false,
 )
-    return build_frule(
+    return _build_irfwd_frule(
         typeof((f, x...));
         chunk_size,
         debug_mode,
@@ -399,7 +399,7 @@ end
 #
 # 1. Chunked IR path.
 #    Pathway:
-#      `build_frule`
+#      `Mooncake.build_frule(IRfwdMode{N}(), ...)`
 #      -> `Mooncake._build_raw_frule(...; tangent_mode=IRfwdMode)`
 #      -> derived IR executes on ordinary primal values, while primitive calls may select
 #         `NfwdRule` when their primal signature is nfwd-supported.
@@ -410,7 +410,8 @@ end
 #
 # 2. Nfwd path.
 #    Pathway:
-#      `NfwdMooncake.build_nfwd_frule` / `NfwdMooncake.build_rrule`
+#      `Mooncake.build_frule(Mooncake.Nfwd.NDualMode{N}(), ...)` /
+#      `Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{N}(), ...)`
 #      -> evaluate functions directly on NDual-lifted arguments.
 #    This path is explicit. It is still useful when callers intentionally want `nfwd`
 #    semantics and know their code is compatible with NDual-lifted arguments.
@@ -423,11 +424,86 @@ end
 # signatures whose primal argument types are nfwd-supported we default to the existing
 # nfwd rule and convert `NTangent <-> NDual` only there.
 function Mooncake.build_frule(
+    ::IRfwdMode{N},
+    interp::Mooncake.MooncakeInterpreter,
+    sig_or_mi;
+    chunk_size=nothing,
+    debug_mode=false,
+    silence_debug_messages=true,
+    skip_world_age_check=false,
+) where {N}
+    isnothing(chunk_size) ||
+        chunk_size == N ||
+        throw(ArgumentError("chunk_size=$chunk_size does not match IRfwdMode{$N}()"))
+    return _build_irfwd_frule(
+        interp,
+        sig_or_mi;
+        chunk_size=N,
+        debug_mode,
+        silence_debug_messages,
+        skip_world_age_check,
+    )
+end
+
+function Mooncake.build_frule(
+    ::IRfwdMode{N},
+    sig::Type{<:Tuple};
+    chunk_size=nothing,
+    debug_mode=false,
+    silence_debug_messages=true,
+    skip_world_age_check=false,
+) where {N}
+    isnothing(chunk_size) ||
+        chunk_size == N ||
+        throw(ArgumentError("chunk_size=$chunk_size does not match IRfwdMode{$N}()"))
+    return _build_irfwd_frule(
+        sig; chunk_size=N, debug_mode, silence_debug_messages, skip_world_age_check
+    )
+end
+
+function Mooncake.build_frule(
+    ::IRfwdMode{N},
+    f,
+    x...;
+    chunk_size=nothing,
+    debug_mode=false,
+    silence_debug_messages=true,
+    skip_world_age_check=false,
+) where {N}
+    isnothing(chunk_size) ||
+        chunk_size == N ||
+        throw(ArgumentError("chunk_size=$chunk_size does not match IRfwdMode{$N}()"))
+    return _build_irfwd_frule(
+        f, x...; chunk_size=N, debug_mode, silence_debug_messages, skip_world_age_check
+    )
+end
+
+function Mooncake.build_frule(
+    ::Nfwd.NDualMode{N}, sig::Type{<:Tuple}; debug_mode=false, silence_debug_messages=true
+) where {N}
+    return build_nfwd_frule(sig; chunk_size=N, debug_mode, silence_debug_messages)
+end
+
+function Mooncake.build_frule(
+    ::Nfwd.NDualMode{N}, f, x...; debug_mode=false, silence_debug_messages=true
+) where {N}
+    return build_nfwd_frule(f, x...; chunk_size=N, debug_mode, silence_debug_messages)
+end
+
+function Mooncake.build_rrule(::Nfwd.NDualMode, args...; kwargs...)
+    throw(
+        ArgumentError(
+            "`build_rrule(NDualMode{N}(), ...)` is unsupported. Use `build_frule(NDualMode{N}(), ...)` for direct NDual-lifted forward rules, or `build_rrule(NfwdMode{N}(), ...)` for direct nfwd reverse rules.",
+        ),
+    )
+end
+
+function Mooncake.build_frule(
     args...; debug_mode=false, silence_debug_messages=true, skip_world_age_check=false
 )
-    return build_frule(
+    return Mooncake.build_frule(
+        IRfwdMode{1}(),
         map(x -> x isa Mooncake.Dual ? primal(x) : x, args)...;
-        chunk_size=1,
         debug_mode,
         silence_debug_messages,
         skip_world_age_check,
@@ -996,6 +1072,8 @@ end
     build_nfwd_frule(f, x...; chunk_size=nothing)
     build_nfwd_frule(sig::Type{<:Tuple}; chunk_size=nothing)
 
+Internal helper behind `Mooncake.build_frule(Nfwd.NDualMode{N}(), ...)`.
+
 Build a forward-mode rule that evaluates `f` on NDual-lifted arguments.
 
 This path is independent from Mooncake's `frule!!` (aka ir-based forward) path and obeys
@@ -1023,8 +1101,8 @@ signatures containing arrays the preferred width is used directly.
 ```julia
 julia> using Mooncake
 
-julia> frule = Mooncake.NfwdMooncake.build_nfwd_frule(
-           Tuple{typeof(sum), Vector{Float64}}; chunk_size=1
+julia> frule = Mooncake.build_frule(
+           Mooncake.Nfwd.NDualMode{1}(), Tuple{typeof(sum), Vector{Float64}}
        );
 
 julia> x = [1.0, 2.0, 3.0];
@@ -1327,63 +1405,7 @@ end
     return y, _nfwd_output_ntangent(y, dy, Val(N))
 end
 
-"""
-    build_rrule(f, x...; chunk_size=nothing)
-    build_rrule(sig::Type{<:Tuple}; chunk_size=nothing)
-
-Build a reverse-mode rule through `nfwd`.
-
-There is no separate `build_nfwd_rrule`: `build_rrule` already is the nfwd reverse-rule
-constructor in this module.
-
-The reverse rule is derived from chunked NDual forward passes and obeys the standard
-`rrule!!` interface. Rule construction is signature-based, so `nfwd` only supports
-stateless callables here.
-
-If `chunk_size` is omitted, nfwd automatically selects `min(DOF, hardware_preferred_width)`
-from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64
-registers). For scalar-only signatures the DOF is known exactly at type level; for
-signatures containing arrays the preferred width is used directly.
-
-!!! warning "Not thread-safe"
-    The returned `RRule` holds mutable workspace buffers (`buf`, `grad_buf`) that
-    are updated in-place on every call. Do not share a single rule across threads; build
-    one rule per thread, or use `Mooncake.prepare_derivative_cache` and create one cache
-    per thread.
-
-!!! note "debug_mode"
-    The `debug_mode` keyword is accepted for API consistency with Mooncake's other
-    rule/cache builders but always throws when `true`; nfwd-specific debug checks are
-    not yet implemented. Mooncake's outer debug wrapper still validates CoDual
-    inputs/outputs when the rule is invoked inside a debug-mode rrule.
-
-## Example
-
-```julia
-julia> using Mooncake
-
-julia> f(x) = sum(abs2, x)
-f (generic function with 1 method)
-
-julia> rrule = Mooncake.NfwdMooncake.build_rrule(
-           Tuple{typeof(f), Vector{Float64}}; chunk_size=1
-       );
-
-julia> x = [1.0, 2.0, 3.0];
-
-julia> y, pb!! = rrule(
-           Mooncake.CoDual(f, Mooncake.NoFData()),
-           Mooncake.CoDual(x, zeros(3)),
-       );
-
-julia> Mooncake.primal(y)
-14.0
-
-julia> pb!!(1.0)
-(Mooncake.NoRData(), [2.0, 4.0, 6.0])
-```
-"""
-function build_rrule(
+function _build_nfwd_rrule(
     sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
     resolved = _nfwd_resolve_rule_chunk_size(sig, chunk_size; debug_mode)
@@ -1393,10 +1415,42 @@ function build_rrule(
     return RRule{sig,resolved,typeof(buf),scalar_out,typeof(grad_buf)}(buf, grad_buf)
 end
 
-function build_rrule(
+function _build_nfwd_rrule(
     f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
 )
-    return build_rrule(typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages)
+    return _build_nfwd_rrule(
+        typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages
+    )
+end
+
+"""
+    Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{N}(), f, x...)
+    Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{N}(), sig::Type{<:Tuple})
+
+Build a reverse-mode rule through `nfwd`.
+
+The reverse rule is derived from chunked NDual forward passes and obeys the standard
+`rrule!!` interface. Rule construction is signature-based, so `nfwd` only supports
+stateless callables here.
+
+`NfwdMode{N}()` fixes the width at `N`.
+
+!!! warning "Not thread-safe"
+    The returned `RRule` holds mutable workspace buffers (`buf`, `grad_buf`) that
+    are updated in-place on every call. Do not share a single rule across threads; build
+    one rule per thread, or use `Mooncake.prepare_derivative_cache` and create one cache
+    per thread.
+"""
+function Mooncake.build_rrule(
+    ::Nfwd.NfwdMode{N}, sig::Type{<:Tuple}; debug_mode=false, silence_debug_messages=true
+) where {N}
+    return _build_nfwd_rrule(sig; chunk_size=N, debug_mode, silence_debug_messages)
+end
+
+function Mooncake.build_rrule(
+    ::Nfwd.NfwdMode{N}, f, x...; debug_mode=false, silence_debug_messages=true
+) where {N}
+    return _build_nfwd_rrule(f, x...; chunk_size=N, debug_mode, silence_debug_messages)
 end
 
 @inline function _nfwd_primitive_rrule_call(

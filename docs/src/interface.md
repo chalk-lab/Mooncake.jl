@@ -75,7 +75,7 @@ val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 
 Passing `Config(chunk_size=2)` caps the forward chunk width used by this public cache path
 when it dispatches to its prepared chunked backend. That backend reuses the same chunked
-frontend exposed by `NfwdMooncake.build_frule`: derived code stays on the
+frontend exposed by `build_frule(IRfwdMode{N}(), ...)`: derived code stays on the
 semantics-preserving chunked IR path, while primitive calls over nfwd-supported
 signatures may use NDual rules directly. Leaving `chunk_size=nothing` keeps Mooncake's
 default heuristic. `Config(enable_nfwd=false)` disables this prepared-cache chunked
@@ -87,14 +87,14 @@ When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` re
 higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as
 custom structs, to the scalar/array/tuple nfwd signatures used internally, and it also
 does the usual cache checks and tangent zeroing. That extra interface work adds some
-overhead relative to calling `NfwdMooncake.build_rrule(...)(...)` directly on a supported
+overhead relative to calling `build_rrule(NfwdMode{N}(), ...)(...)` directly on a supported
 nfwd signature over `IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those
 element types, and tuples thereof.
 
 As a rule of thumb, prefer Mooncake's ordinary `build_frule`, `build_rrule`,
 `prepare_derivative_cache`, and `prepare_gradient_cache` APIs for
-`value_and_derivative!!` / `value_and_gradient!!`. The direct `NfwdMooncake`
-constructors are narrower tools for signatures that are intentionally compatible with
+`value_and_derivative!!` / `value_and_gradient!!`. The direct mode-specific constructors
+are narrower tools for signatures that are intentionally compatible with
 nfwd's NDual-oriented execution, whereas the public Mooncake interfaces preserve the
 primal dispatch boundary more broadly for structured inputs and dispatch-sensitive code.
 

@@ -30,7 +30,7 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     chunked forward backend. When enabled, prepared caches may prebuild width-specific
     chunked IR rules and reuse them in public forward-mode APIs. When disabled, prepared
     caches always stay on the ordinary non-cached `frule!!` path. This flag does not
-    affect direct use of `NfwdMooncake.build_frule`, which always keeps the full
+    affect direct use of `build_frule(IRfwdMode{N}(), ...)`, which always keeps the full
     chunked IR path available.
 """
 @kwdef struct Config

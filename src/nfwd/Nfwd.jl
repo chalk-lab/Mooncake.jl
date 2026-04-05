@@ -52,7 +52,8 @@ julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
 ```
 
 For Mooncake-interface rule construction on concrete signatures, see
-`Mooncake.NfwdMooncake.build_nfwd_frule` and `Mooncake.NfwdMooncake.build_rrule`.
+`Mooncake.build_frule(Mooncake.Nfwd.NDualMode{N}(), ...)` and
+`Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{N}(), ...)`.
 `Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; `NfwdMooncake`
 packages that machinery into Mooncake's `Dual` / `CoDual` rule interface.
 """
@@ -62,7 +63,9 @@ using Base: IEEEFloat
 using LinearAlgebra
 
 export NDual,
+    NDualMode,
     NDualUnsupportedError,
+    NfwdMode,
     ndual_value,
     ndual_partial,
     ndual_partials,
@@ -89,6 +92,9 @@ export NDual,
     _nfwd_sig_dof,
     _nfwd_type_dof,
     _nfwd_validate
+
+struct NDualMode{N} end
+struct NfwdMode{N} end
 
 #
 # ── Role of `ntuple` ──────────────────────────────────────────────────────────────
@@ -190,7 +196,7 @@ To extend to a new scalar type S (non-IEEEFloat): define `_broadcast_elem_dof_ty
 and handle the wrapping / gradient extraction in `_leaf_effective_tangent`,
 `materialize_pb!!`, and `_gpu_fill_args_rdata` in `MooncakeCUDAExt.jl`.
 
-## Chunk-mode AD via NfwdMode{N}
+## Chunk-mode AD via NDualMode{N} / NfwdMode{N}
 
 ### Background: Mooncake forward mode is width-1
 
@@ -215,16 +221,19 @@ boundaries where each pass would otherwise incur a full launch overhead.
 `tangent_type(Float64) = NDual{Float64,N}` globally, infecting every `frule!!` in the
 call graph and breaking type coherence throughout.
 
-### NfwdMode{N}: NDual as the tangent type
+### NDualMode{N} / NfwdMode{N}: NDual as the tangent type
 
 The clean solution is a new AD context that overrides `tangent_type` for scalar leaves:
 
 ```julia
+struct NDualMode{N} end
 struct NfwdMode{N} end
 
 # NDual is the tangent type — value field=0 by convention, partials carry N directions
-tangent_type(::NfwdMode{N}, ::Type{T}) where {N, T<:IEEEFloat}          = NDual{T,N}
-tangent_type(::NfwdMode{N}, ::Type{Complex{T}}) where {N, T<:IEEEFloat} = Complex{NDual{T,N}}
+tangent_type(::NDualMode{N}, ::Type{T}) where {N, T<:IEEEFloat}          = NDual{T,N}
+tangent_type(::NDualMode{N}, ::Type{Complex{T}}) where {N, T<:IEEEFloat} = Complex{NDual{T,N}}
+tangent_type(::NfwdMode{N}, ::Type{T}) where {N, T<:IEEEFloat}           = NDual{T,N}
+tangent_type(::NfwdMode{N}, ::Type{Complex{T}}) where {N, T<:IEEEFloat}  = Complex{NDual{T,N}}
 
 zero_ntangent(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat} =
     NDual{T,N}(zero(T), ntuple(_ -> zero(T), Val(N)))
@@ -237,6 +246,11 @@ sites to assign IR argument types.  Threading the mode through those calls is th
 required modification — all statement rewriting (PhiNode, ReturnNode, GotoIfNot, …) is
 tangent-type-agnostic.  `is_primitive` dispatch is unchanged (it operates on primal
 signatures, not tangent types).
+
+Use `NDualMode{N}()` for the direct forward rule builder
+`Mooncake.build_frule(Mooncake.Nfwd.NDualMode{N}(), ...)`. `NfwdMode{N}()` remains the
+nfwd mode used by direct reverse-rule construction via
+`Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{N}(), ...)`.
 
 ### Scalar `frule!!`s and CPU compatibility
 
@@ -309,7 +323,7 @@ function full_jacobian(f!, out::CuArray{T}, x::CuArray{T}) where {T}
     ∂x  = CuArray([seed_ntangent(Val(N), T, i) for i in 1:N])
     ∂out = fill!(similar(out, NDual{T,N}), zero_ntangent(Val(N), T))
 
-    rule = build_frule(NfwdMode{N}(), typeof(f!), CuArray{T}, CuArray{T})
+    rule = build_frule(NDualMode{N}(), typeof(f!), CuArray{T}, CuArray{T})
     rule(Dual(f!, NoTangent()), Dual(out, ∂out), Dual(x, ∂x))
 
     # ∂out[i].partials == (∂out[i]/∂x[1], …, ∂out[i]/∂x[N]) — full m×N Jacobian
