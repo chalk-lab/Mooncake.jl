@@ -230,6 +230,7 @@ include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")
 include("developer_tools.jl")
+@unstable include("skill_utils.jl")
 
 # Public, not exported
 include("public.jl")
