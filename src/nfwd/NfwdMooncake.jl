@@ -60,6 +60,12 @@ import ..Mooncake:
 #     obeys the standard `rrule!!` interface
 #     also accepts `sig::Type{<:Tuple}` for signature-based construction
 #
+# Prefer Mooncake's ordinary `build_frule`, `build_rrule`, `prepare_derivative_cache`,
+# and `prepare_gradient_cache` interfaces when you want the public
+# `value_and_derivative!!` / `value_and_gradient!!` behaviour. The direct constructors in
+# this module are narrower tools for signatures already compatible with nfwd's supported
+# scalar / dense-array execution model.
+#
 # ── Constraints ────────────────────────────────────────────────────────────────────
 # - `chunk_size` is global across the whole call
 # - supported primals are IEEE float scalars, complex IEEE float scalars, dense arrays
@@ -1231,12 +1237,6 @@ constructor in this module.
 The reverse rule is derived from chunked NDual forward passes and obeys the standard
 `rrule!!` interface. Rule construction is signature-based, so `nfwd` only supports
 stateless callables here.
-
-Prefer Mooncake's ordinary `build_rrule` / `prepare_gradient_cache` /
-`prepare_derivative_cache` interfaces when you want the public `value_and_gradient!!` /
-`value_and_derivative!!` behaviour. Those paths keep derived code on the chunked IR
-frontend and preserve the primal dispatch boundary more broadly than this direct nfwd
-reverse-rule constructor.
 
 If `chunk_size` is omitted, nfwd automatically selects `min(DOF, hardware_preferred_width)`
 from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64

@@ -1810,8 +1810,15 @@ in `f` and `x`.
 function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
-    if any(x -> tangent(x) isa NTangent, fx)
-        y, dy = value_and_derivative!!(cache, map(extract, fx)...)
+    input_tangents = map(tangent, fx)
+    N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
+    if !isnothing(N_val)
+        y, dy = _fcache_derivative_chunked!!(
+            cache,
+            N_val,
+            map(tuple, input_primals, input_tangents)...;
+            friendly_tangents=false,
+        )
         return Dual(y, dy)
     end
     # TODO: check Dual coherence here like we do below?
