@@ -91,6 +91,13 @@ overhead relative to calling `NfwdMooncake.build_rrule(...)(...)` directly on a 
 nfwd signature over `IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those
 element types, and tuples thereof.
 
+As a rule of thumb, prefer Mooncake's ordinary `build_frule`, `build_rrule`,
+`prepare_derivative_cache`, and `prepare_gradient_cache` APIs for
+`value_and_derivative!!` / `value_and_gradient!!`. The direct `NfwdMooncake`
+constructors are narrower tools for signatures that are intentionally compatible with
+nfwd's NDual-oriented execution, whereas the public Mooncake interfaces preserve the
+primal dispatch boundary more broadly for structured inputs and dispatch-sensitive code.
+
 Separately, the Hessian path exposed by `prepare_hessian_cache` /
 `value_gradient_and_hessian!!` uses forward-over-reverse AD over a captured gradient
 closure. It does not currently use the public `NfwdMooncake` fast path, even though the

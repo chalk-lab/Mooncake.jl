@@ -1232,6 +1232,12 @@ The reverse rule is derived from chunked NDual forward passes and obeys the stan
 `rrule!!` interface. Rule construction is signature-based, so `nfwd` only supports
 stateless callables here.
 
+Prefer Mooncake's ordinary `build_rrule` / `prepare_gradient_cache` /
+`prepare_derivative_cache` interfaces when you want the public `value_and_gradient!!` /
+`value_and_derivative!!` behaviour. Those paths keep derived code on the chunked IR
+frontend and preserve the primal dispatch boundary more broadly than this direct nfwd
+reverse-rule constructor.
+
 If `chunk_size` is omitted, nfwd automatically selects `min(DOF, hardware_preferred_width)`
 from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64
 registers). For scalar-only signatures the DOF is known exactly at type level; for
