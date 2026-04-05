@@ -1631,6 +1631,7 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
         end
     end
     total_dof = _fcache_gradient_input_dof(input_primals)
+    y = nothing
 
     if total_dof == 0
         output = cache.rule(
@@ -1638,60 +1639,49 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
         )
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        if isnothing(cache.input_tangents)
-            return y, native_gradients
-        end
-        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
-        return y,
-        tangent_to_primal_internal!!(
-            friendly_gradients,
-            native_gradients,
-            isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-        )
-    end
-
-    chunk_size = cache.gradient_chunk_size
-    y = nothing
-    for start_slot in 1:chunk_size:total_dof
-        chunk_width = min(chunk_size, total_dof - start_slot + 1)
-        lane_tangents = ntuple(
-            lane -> _fcache_gradient_seed_tangent(input_primals, start_slot + lane - 1),
-            chunk_width,
-        )
-        input_tangents = ntuple(
-            i -> begin
-                tangent_type(typeof(input_primals[i])) == NoTangent && return NoTangent()
-                return NTangent(ntuple(lane -> lane_tangents[lane][i], chunk_width))
-            end,
-            Val(fieldcount(typeof(input_primals))),
-        )
-        # `value_and_gradient!!` is a client of the batched forward interface: it seeds
-        # standard-basis chunk tangents, calls `_fcache_derivative_chunked!!`, and
-        # accumulates the resulting lane contributions into gradient storage.
-        y_chunk, chunk_dy = _fcache_derivative_chunked!!(
-            cache,
-            Val(chunk_width),
-            map(tuple, input_primals, input_tangents)...;
-            friendly_tangents=false,
-        )
-        if isnothing(y)
-            y = y_chunk
-            y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        end
-        # A scalar output turns each derivative lane into one coefficient for the corresponding
-        # seeded basis direction, so accumulate `coeff * lane_tangent` into the full gradient.
-        for lane in 1:chunk_width
-            coeff = Float64(_unwrap_unit_ntangent(chunk_dy[lane]))
-            native_gradients = tuple_map(
-                (g, dx) -> begin
-                    dx isa NoTangent && return g
-                    lane_tangent = _ntangent_lane(dx, Val(lane))
-                    lane_tangent isa NoTangent && return g
-                    return increment!!(g, _scale(coeff, lane_tangent))
-                end,
-                native_gradients,
-                input_tangents,
+    else
+        chunk_size = cache.gradient_chunk_size
+        for start_slot in 1:chunk_size:total_dof
+            chunk_width = min(chunk_size, total_dof - start_slot + 1)
+            lane_tangents = ntuple(
+                lane -> _fcache_gradient_seed_tangent(input_primals, start_slot + lane - 1),
+                chunk_width,
             )
+            input_tangents = ntuple(
+                i -> begin
+                    tangent_type(typeof(input_primals[i])) == NoTangent && return NoTangent()
+                    return NTangent(ntuple(lane -> lane_tangents[lane][i], chunk_width))
+                end,
+                Val(fieldcount(typeof(input_primals))),
+            )
+            # `value_and_gradient!!` is a client of the batched forward interface: it seeds
+            # standard-basis chunk tangents, calls `_fcache_derivative_chunked!!`, and
+            # accumulates the resulting lane contributions into gradient storage.
+            y_chunk, chunk_dy = _fcache_derivative_chunked!!(
+                cache,
+                Val(chunk_width),
+                map(tuple, input_primals, input_tangents)...;
+                friendly_tangents=false,
+            )
+            if isnothing(y)
+                y = y_chunk
+                y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+            end
+            # A scalar output turns each derivative lane into one coefficient for the corresponding
+            # seeded basis direction, so accumulate `coeff * lane_tangent` into the full gradient.
+            for lane in 1:chunk_width
+                coeff = Float64(_unwrap_unit_ntangent(chunk_dy[lane]))
+                native_gradients = tuple_map(
+                    (g, dx) -> begin
+                        dx isa NoTangent && return g
+                        lane_tangent = _ntangent_lane(dx, Val(lane))
+                        lane_tangent isa NoTangent && return g
+                        return increment!!(g, _scale(coeff, lane_tangent))
+                    end,
+                    native_gradients,
+                    input_tangents,
+                )
+            end
         end
     end
 
