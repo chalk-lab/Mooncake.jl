@@ -223,6 +223,42 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         test_rule(StableRNG(123546), logpdf, d, x; perf_flag, is_primitive=false)
     end
 
+    @testset "build_primal forward candidates" begin
+        let
+            f = x -> logpdf(Normal(), x)
+            primal = Mooncake.build_primal(f, 0.1)
+            frule = Mooncake.build_frule(f, 0.1)
+            x = Mooncake.Dual(0.1, 1.0)
+            @test primal(x) == frule(Mooncake.zero_dual(f), x)
+        end
+
+        let
+            f = (μ, σ, x) -> logpdf(Normal(μ, σ), x)
+            primal = Mooncake.build_primal(f, 0.2, 1.1, -0.4)
+            frule = Mooncake.build_frule(f, 0.2, 1.1, -0.4)
+            μ = Mooncake.Dual(0.2, 1.0)
+            σ = Mooncake.Dual(1.1, -0.25)
+            x = Mooncake.Dual(-0.4, 0.5)
+            @test primal(μ, σ, x) == frule(Mooncake.zero_dual(f), μ, σ, x)
+        end
+
+        let
+            f = x -> logpdf(MvNormal(Diagonal([0.1, 0.2])), x)
+            primal = Mooncake.build_primal(f, [0.1, 0.15])
+            frule = Mooncake.build_frule(f, [0.1, 0.15])
+            x = Mooncake.Dual([0.1, 0.15], [1.0, -0.5])
+            @test primal(x) == frule(Mooncake.zero_dual(f), x)
+        end
+
+        let
+            f = x -> logpdf(product_distribution([Normal(), Uniform()]), x)
+            primal = Mooncake.build_primal(f, [-0.4, 0.3])
+            frule = Mooncake.build_frule(f, [-0.4, 0.3])
+            x = Mooncake.Dual([-0.4, 0.3], [1.0, -0.25])
+            @test primal(x) == frule(Mooncake.zero_dual(f), x)
+        end
+    end
+
     # ── param_logpdf_cases: unified ForwardMode / ReverseMode / NfwdMooncake tests ──────────────────
     # Tuple format: (name, f, args, chunk_size, modes, perf_flag)
     # Each entry differentiates a logpdf lambda w.r.t. scalar (or array) constructor parameters

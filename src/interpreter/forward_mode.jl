@@ -16,7 +16,14 @@
 # rules may be enough to handle concrete struct construction without explicit lifted
 # constructor methods. That could support a fully lifted forward path in either
 # `Dual{P,NTangent}` or NDual representation, and potentially share machinery with broader
-# transforms such as batched / vmap-style derived overloads.
+# transforms such as batched / vmap-style derived overloads. Candidate tangent layouts for
+# that path include:
+# - today's lane-outer `NTangent`, i.e. a tuple of ordinary tangents
+# - a packed `NTangent` with lane-inner scalar leaves closer to NDual
+# - overloading `NTangent_type` only for `Array{<:IEEEFloat}` /
+#   `Array{<:Complex{<:IEEEFloat}}` so array leaves use NDual-like packed storage
+# - overloading `NTangent_type` only for those arrays so tangents use one extra lane
+#   dimension instead
 
 # Check if a type contains Union{} (bottom type) anywhere in its structure.
 # This can happen with unreachable code or failed type inference.
@@ -85,7 +92,9 @@ function build_frule(
     primals = map(x -> x isa Dual ? primal(x) : x, args)
     sig = _typeof(primals)
     interp = get_interpreter(ForwardMode)
-    mode = Core.apply_type(Nfwd.NDualMode, something(chunk_size, 1))()
+    mode = Core.apply_type(
+        getfield(getfield(@__MODULE__, :Nfwd), :NDualMode), something(chunk_size, 1)
+    )()
     return build_frule(
         interp,
         sig;
@@ -109,7 +118,7 @@ end
         debug_mode=false,
         silence_debug_messages=true,
         skip_world_age_check=false,
-        tangent_mode=Nfwd.NDualMode{1}(),
+        tangent_mode=nothing,
     ) where {C}
 
 Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
@@ -119,8 +128,8 @@ Set `skip_world_age_check=true` when the interpreter's world age is intentionall
 than the current world (e.g., when building rules for MistyClosure which uses its own world).
 
 `tangent_mode` selects the forward tangent representation and primitive-lowering mode used
-to derive the rule. The default `Nfwd.NDualMode{1}()` builds the direct width-1 nfwd
-rule. Use `IRfwdMode{N}()` explicitly for the chunked IR path.
+to derive the rule. The default is the direct width-1 nfwd rule. Use `IRfwdMode{N}()`
+explicitly for the chunked IR path.
 """
 function build_frule(
     interp::MooncakeInterpreter{C},
@@ -128,9 +137,15 @@ function build_frule(
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
-    tangent_mode=Nfwd.NDualMode{1}(),
+    tangent_mode=nothing,
 ) where {C}
     @nospecialize sig_or_mi
+
+    tangent_mode === nothing && (
+        tangent_mode = Core.apply_type(
+            getfield(getfield(@__MODULE__, :Nfwd), :NDualMode), 1
+        )()
+    )
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
     # than the current world age.
@@ -149,7 +164,7 @@ function build_frule(
     end
 
     sig = _get_sig(sig_or_mi)
-    if tangent_mode isa Nfwd.NDualMode
+    if tangent_mode isa getfield(getfield(@__MODULE__, :Nfwd), :NDualMode)
         if is_primitive(C, ForwardMode, sig, interp.world)
             rule = build_primitive_frule(
                 tangent_mode, interp, sig; debug_mode, silence_debug_messages
@@ -849,12 +864,12 @@ end
 end
 
 function build_primitive_frule(
-    ::Union{IRfwdMode{N},Nfwd.NDualMode{N}},
-    interp,
-    sig::Type{<:Tuple};
-    debug_mode=false,
-    silence_debug_messages=true,
-) where {N}
+    tangent_mode, interp, sig::Type{<:Tuple}; debug_mode=false, silence_debug_messages=true
+)
+    tangent_mode isa IRfwdMode ||
+        tangent_mode isa getfield(getfield(@__MODULE__, :Nfwd), :NDualMode) ||
+        return nothing
+    N = typeof(tangent_mode).parameters[1]
     _nfwd_supports_primitive_sig(sig) || return nothing
     _nfwd_supports_primitive_output_sig(sig) || return nothing
     lifted_sig = Tuple{
