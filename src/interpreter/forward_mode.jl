@@ -1,3 +1,14 @@
+# TODO:
+# Consider an IR-lifted `frule_lifted!!` path that derives NDual-level overloads for
+# already-resolved primal methods, rather than relying only on operator overloading over
+# runtime NDual values. That could let nfwd preserve primal dispatch more faithfully for
+# concretely typed methods, provide a principled lifting story for concrete struct
+# construction via companion lifted representations (e.g. `Box64_lifted` alongside
+# `Box64`), and potentially share machinery with broader transforms such as batched /
+# vmap-style derived overloads. Alternatively, a lifted `frule!!` path could stay in
+# Mooncake's `NTangent` representation rather than NDual, if that gives a cleaner way to
+# preserve primal layout while still lifting execution.
+
 # Check if a type contains Union{} (bottom type) anywhere in its structure.
 # This can happen with unreachable code or failed type inference.
 @inline contains_bottom_type(T) = _contains_bottom_type(T, Base.IdSet{Any}())
@@ -776,8 +787,11 @@ end
 @inline _nfwd_supported_primal_type(::Type{<:Array{T}}) where {T} = Nfwd._nfwd_is_supported_scalar(
     T
 )
-@inline function _irfwd_supported_primitive_arg_type(::Type{T}) where {T}
-    return _nfwd_supported_primal_type(T) || tangent_type(T) == NoTangent
+@inline _nfwd_supported_primal_type(::TypeVar) = false
+@inline _nfwd_supported_primal_type(::Core.TypeofVararg) = false
+@inline function _irfwd_supported_primitive_arg_type(T::Type)
+    return _nfwd_supported_primal_type(T) ||
+           (!Base.has_free_typevars(T) && isconcretetype(T) && tangent_type(T) == NoTangent)
 end
 @generated function _nfwd_supported_primal_type(::Type{T}) where {T<:Tuple}
     checks = map(p -> _nfwd_supported_primal_type(p), T.parameters)
@@ -880,6 +894,10 @@ end
 
 # Create new dynamic rule with empty cache and same debug mode  
 _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.tangent_mode)
+
+@static if VERSION < v"1.11-"
+    @inline __call_rule(rule::DynamicFRule, args) = rule(args...)
+end
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.

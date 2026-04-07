@@ -1904,6 +1904,10 @@ DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug
 # Create new dynamic rule with empty cache and same debug mode
 _copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
 
+@static if VERSION < v"1.11-"
+    @inline __call_rule(rule::DynamicDerivedRule, args) = rule(args...)
+end
+
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 
     # `Base._stable_typeof` is used here, rather than `typeof` or `Mooncake._typeof`. Its

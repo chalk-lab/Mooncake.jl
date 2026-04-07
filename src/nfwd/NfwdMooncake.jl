@@ -187,6 +187,12 @@ struct IRfwdCache{R,D,GW,S<:Tuple}
     input_specs::S
 end
 
+@inline function IRfwdCache(
+    rule::R, dests::D, gradient_workspace::GW, input_specs::S
+) where {sig,R<:IRfwdRule{sig},D,GW,S<:Tuple}
+    return IRfwdCache{R,D,GW,S}(rule, dests, gradient_workspace, input_specs)
+end
+
 @inline function chunk_cache_requested_chunk_size(requested_chunk_size)
     return if isnothing(requested_chunk_size)
         0
@@ -225,6 +231,13 @@ end
 # - `__verify_sig` / `verify_fwds_inputs` for `RRule`
 #
 # The rest of this file is internal nfwd implementation detail.
+
+@static if VERSION < v"1.11-"
+    @inline Mooncake.__call_rule(rule::IRfwdRule, args) = rule(args...)
+    @inline Mooncake.__call_rule(rule::NfwdRule, args) = rule(args...)
+    @inline Mooncake.__call_rule(rule::Rule, args) = rule(args...)
+    @inline Mooncake.__call_rule(rule::RRule, args) = rule(args...)
+end
 
 @inline function NfwdCache(sig::Type{<:Tuple}, fx::Tuple, requested_chunk_size, config)
     requested_chunk_size = chunk_cache_requested_chunk_size(requested_chunk_size)
@@ -292,7 +305,11 @@ end
         end
     end
     native_gradients = tuple_map(zero_tangent, fx)
-    dests = config.friendly_tangents ? Mooncake._copy_output(fx) : nothing
+    dests = if config.friendly_tangents
+        tuple(map(Mooncake.friendly_tangent_cache, fx)...)
+    else
+        nothing
+    end
     gradient_workspace = Ref(native_gradients)
     return IRfwdCache{
         typeof(rule),typeof(dests),typeof(gradient_workspace),typeof(input_specs)
@@ -316,13 +333,12 @@ end
     if isnothing(cache.dests)
         return y, native_gradients
     end
-    dests = Mooncake._copy_to_output!!(cache.dests, input_primals)
     c = Mooncake._friendly_cache(input_primals)
     return (
         y,
         tuple_map(
             (d, p, t) -> Mooncake.tangent_to_friendly!!(d, p, t, c),
-            dests,
+            cache.dests,
             input_primals,
             native_gradients,
         ),
@@ -345,13 +361,12 @@ end
     if isnothing(cache.dests)
         return y, pullback
     end
-    dests = Mooncake._copy_to_output!!(cache.dests, input_primals)
     c = Mooncake._friendly_cache(input_primals)
     return (
         y,
         tuple_map(
             (d, p, t) -> Mooncake.tangent_to_friendly!!(d, p, t, c),
-            dests,
+            cache.dests,
             input_primals,
             pullback,
         ),

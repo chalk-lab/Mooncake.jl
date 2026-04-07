@@ -263,7 +263,7 @@ end
                 friendly_cache, sum, x
             )
             @test value_friendly == sum(x)
-            @test gradient_friendly == (sum, ones(length(x)))
+            @test gradient_friendly == (Mooncake.NoTangent(), ones(length(x)))
         end
     end
 

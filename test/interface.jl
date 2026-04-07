@@ -593,7 +593,7 @@ end
             )
             @test Mooncake.value_and_derivative!!(
                 cache_arr, (f_arr, Mooncake.zero_tangent(f_arr)), (x_arr, dx_arr_1)
-            ) == (sum(abs2, x_arr), 2 * dot(x_arr, dx_arr_1))
+            ) == (sum(abs2, x_arr), Mooncake.NTangent((2 * dot(x_arr, dx_arr_1),)))
         end
 
         @testset "Non-differentiable outputs" begin
