@@ -1,13 +1,22 @@
 # TODO:
-# Consider an IR-lifted `frule_lifted!!` path that derives NDual-level overloads for
-# already-resolved primal methods, rather than relying only on operator overloading over
-# runtime NDual values. That could let nfwd preserve primal dispatch more faithfully for
-# concretely typed methods, provide a principled lifting story for concrete struct
-# construction via companion lifted representations (e.g. `Box64_lifted` alongside
-# `Box64`), and potentially share machinery with broader transforms such as batched /
-# vmap-style derived overloads. Alternatively, a lifted `frule!!` path could stay in
-# Mooncake's `NTangent` representation rather than NDual, if that gives a cleaner way to
-# preserve primal layout while still lifting execution.
+# Consider an IR-lifted `frule!!` path driven by `build_primal`. The idea would be:
+# 1. resolve and normalise primal IR for `f`
+# 2. rebuild `f` as a primal/lifted executable rather than re-running Julia dispatch on AD
+#    wrapper types
+# 3. for each resolved callee `g`, recursively use `build_primal(g, ...)` so dispatch is
+#    preserved through the whole resolved call graph
+# 4. keep primitive / intrinsic / builtin leaves on explicit rule paths
+# 5. keep an explicit fallback only for genuinely unresolved dynamic calls
+#
+# The recursive caching / cycle-breaking part is already the same problem current forward
+# mode solves via `LazyFRule`, `DynamicFRule`, and `DerivedFRule`; the new work is the
+# lifted executable / representation choice, not inventing a separate recursion strategy.
+#
+# Because Mooncake's normalised IR lowers constructors to `__new__`, lifted `__new__`
+# rules may be enough to handle concrete struct construction without explicit lifted
+# constructor methods. That could support a fully lifted forward path in either
+# `Dual{P,NTangent}` or NDual representation, and potentially share machinery with broader
+# transforms such as batched / vmap-style derived overloads.
 
 # Check if a type contains Union{} (bottom type) anywhere in its structure.
 # This can happen with unreachable code or failed type inference.
@@ -42,7 +51,7 @@ struct IRfwdMode{N} end
 function _fwd_dual_type end
 function _fwd_zero_dual end
 function _fwd_uninit_dual end
-@inline _fwd_primitive_rule(
+@inline build_primitive_frule(
     ::Any, interp, sig; debug_mode=false, silence_debug_messages=true
 ) = nothing
 
@@ -73,25 +82,17 @@ function build_frule(
     silence_debug_messages=true,
     skip_world_age_check=false,
 )
-    isnothing(chunk_size) ||
-        chunk_size == 1 ||
-        throw(
-            ArgumentError(
-                "The default `build_frule(...)` entrypoint only supports `chunk_size == 1`. " *
-                "Use `build_frule(IRfwdMode{N}(), ...)` or `build_frule(NDualMode{N}(), ...)` " *
-                "for chunked forward rules.",
-            ),
-        )
     primals = map(x -> x isa Dual ? primal(x) : x, args)
     sig = _typeof(primals)
     interp = get_interpreter(ForwardMode)
+    mode = Core.apply_type(Nfwd.NDualMode, something(chunk_size, 1))()
     return build_frule(
         interp,
         sig;
         debug_mode,
         silence_debug_messages,
         skip_world_age_check,
-        tangent_mode=IRfwdMode{1}(),
+        tangent_mode=mode,
     )
 end
 
@@ -108,7 +109,7 @@ end
         debug_mode=false,
         silence_debug_messages=true,
         skip_world_age_check=false,
-        tangent_mode=IRfwdMode{1}(),
+        tangent_mode=Nfwd.NDualMode{1}(),
     ) where {C}
 
 Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
@@ -118,7 +119,8 @@ Set `skip_world_age_check=true` when the interpreter's world age is intentionall
 than the current world (e.g., when building rules for MistyClosure which uses its own world).
 
 `tangent_mode` selects the forward tangent representation and primitive-lowering mode used
-to derive the rule. The default `IRfwdMode{1}()` builds the ordinary width-1 forward rule.
+to derive the rule. The default `Nfwd.NDualMode{1}()` builds the direct width-1 nfwd
+rule. Use `IRfwdMode{N}()` explicitly for the chunked IR path.
 """
 function build_frule(
     interp::MooncakeInterpreter{C},
@@ -126,7 +128,7 @@ function build_frule(
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
-    tangent_mode=IRfwdMode{1}(),
+    tangent_mode=Nfwd.NDualMode{1}(),
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -146,10 +148,27 @@ function build_frule(
         @info "Compiling frule for $sig_or_mi in debug mode. Disable for best performance."
     end
 
-    # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
+    if tangent_mode isa Nfwd.NDualMode
+        if is_primitive(C, ForwardMode, sig, interp.world)
+            rule = build_primitive_frule(
+                tangent_mode, interp, sig; debug_mode, silence_debug_messages
+            )
+            isnothing(rule) && (rule = build_primitive_frule(sig))
+            return debug_mode ? DebugFRule(rule) : rule
+        end
+        rule = NfwdMooncake.build_nfwd_frule(
+            sig;
+            chunk_size=typeof(tangent_mode).parameters[1],
+            debug_mode=false,
+            silence_debug_messages,
+        )
+        return debug_mode ? DebugFRule(rule) : rule
+    end
+
+    # If we have a hand-coded rule, just use that.
     if is_primitive(C, ForwardMode, sig, interp.world)
-        rule = _fwd_primitive_rule(
+        rule = build_primitive_frule(
             tangent_mode, interp, sig; debug_mode, silence_debug_messages
         )
         isnothing(rule) && (rule = build_primitive_frule(sig))
@@ -610,7 +629,7 @@ function modify_fwd_ad_stmts!(
         end
 
         if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
-            rule = _fwd_primitive_rule(
+            rule = build_primitive_frule(
                 info.tangent_mode, interp, sig; debug_mode=info.debug_mode
             )
             isnothing(rule) && (rule = build_primitive_frule(sig))
@@ -829,8 +848,8 @@ end
     end
 end
 
-function _fwd_primitive_rule(
-    ::IRfwdMode{N},
+function build_primitive_frule(
+    ::Union{IRfwdMode{N},Nfwd.NDualMode{N}},
     interp,
     sig::Type{<:Tuple};
     debug_mode=false,
@@ -867,7 +886,7 @@ function frule_type(
         # Build the rule to obtain its concrete type. For non-singleton primitive rules
         # (e.g. NfwdMooncake.Rule) this allocates a throwaway instance; the cost is compile-
         # time only and does not affect hot-path performance.
-        rule = _fwd_primitive_rule(tangent_mode, interp, sig; debug_mode)
+        rule = build_primitive_frule(tangent_mode, interp, sig; debug_mode)
         isnothing(rule) && (rule = build_primitive_frule(sig))
         return debug_mode ? DebugFRule{typeof(rule)} : typeof(rule)
     end

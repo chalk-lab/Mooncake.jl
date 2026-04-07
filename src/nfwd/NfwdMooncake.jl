@@ -52,7 +52,7 @@ import ..Mooncake:
 #     also accepts `sig::Type{<:Tuple}` for signature-based construction
 #
 #   Mooncake.build_frule(Nfwd.NDualMode{N}(), f, x...)
-#     returns `Rule`
+#     returns `NDualRule`
 #     consumed via `rule(f::Dual, x::Dual...)`
 #     obeys the standard `frule!!` interface
 #     also accepts `sig::Type{<:Tuple}` for signature-based construction
@@ -97,6 +97,13 @@ import ..Mooncake:
 @static if isdefined(Base, :ispublic)
     eval(Expr(:public, :NfwdCache, :IRfwdCache))
 end
+
+# `NDualRule` is the top-level direct nfwd rule for running an entire callable with NDual
+# semantics. `NfwdRule` is only the per-primitive adapter used by `IRfwdRule`: it lowers
+# one primitive call from `NTangent` lanes to nfwd's packed NDual path and lifts the
+# result back, without changing dispatch for the surrounding function. It also only
+# supports the scalar-output gradient/pullback path.
+const NDualRule = Nfwd.Rule
 
 # ── Experimental chunked IR path ──────────────────────────────────────────────────
 # This path does not generate `f(::Vector{NDual{...}})`-style overloads and it does not
@@ -222,11 +229,11 @@ end
 #
 # `NfwdMooncake` plugs into Mooncake through a small set of explicit interface overloads:
 # - `build_frule`
-# - `value_and_derivative!!` for `Rule` and `NfwdRule`
+# - `value_and_derivative!!` for `NDualRule` and `NfwdRule`
 # - `value_and_gradient!!` / `value_and_pullback!!` for `IRfwdCache`
 # - `value_and_gradient!!` for `NfwdCache`
 # - `__value_and_pullback!!` / `__value_and_gradient!!` for `NfwdRule`
-# - `__value_and_pullback!!` / `__value_and_gradient!!` for `Rule`
+# - `__value_and_pullback!!` / `__value_and_gradient!!` for `NDualRule`
 # - `__value_and_gradient!!` for `RRule`
 # - `__verify_sig` / `verify_fwds_inputs` for `RRule`
 #
@@ -235,7 +242,7 @@ end
 @static if VERSION < v"1.11-"
     @inline Mooncake.__call_rule(rule::IRfwdRule, args) = rule(args...)
     @inline Mooncake.__call_rule(rule::NfwdRule, args) = rule(args...)
-    @inline Mooncake.__call_rule(rule::Rule, args) = rule(args...)
+    @inline Mooncake.__call_rule(rule::NDualRule, args) = rule(args...)
     @inline Mooncake.__call_rule(rule::RRule, args) = rule(args...)
 end
 
