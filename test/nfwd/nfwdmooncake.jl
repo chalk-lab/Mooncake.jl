@@ -227,6 +227,44 @@ end
             @test value_grad == sum(x)
             @test gradient == (Mooncake.NoTangent(), ones(length(x)))
         end
+
+        @testset "nfwdrule supports scalar pullback and gradient APIs" begin
+            x = 1.5
+            rule = Mooncake.NfwdMooncake.NfwdRule{Tuple{typeof(sin),Float64},2}()
+            value_grad, gradient = Mooncake.value_and_gradient!!(rule, sin, x)
+            @test value_grad == sin(x)
+            @test gradient == (Mooncake.NoTangent(), cos(x))
+
+            pair_rule = Mooncake.NfwdMooncake.NfwdRule{Tuple{typeof(sincos),Float64},2}()
+            value_pb, pullback = Mooncake.value_and_pullback!!(
+                pair_rule, (2.0, 3.0), sincos, x
+            )
+            @test value_pb == sincos(x)
+            @test pullback == (Mooncake.NoTangent(), 2 * cos(x) - 3 * sin(x))
+        end
+
+        @testset "supports cached scalar pullback and gradient APIs" begin
+            x = [1.0, 2.0, 3.0]
+            rule = Mooncake.build_frule(Mooncake.IRfwdMode{2}(), sum, x)
+            cache = Mooncake.NfwdMooncake.IRfwdCache(rule, sum, x)
+
+            value_pb, pullback = Mooncake.value_and_pullback!!(cache, 3.0, sum, x)
+            @test value_pb == sum(x)
+            @test pullback == (Mooncake.NoTangent(), fill(3.0, length(x)))
+
+            value_grad, gradient = Mooncake.value_and_gradient!!(cache, sum, x)
+            @test value_grad == sum(x)
+            @test gradient == (Mooncake.NoTangent(), ones(length(x)))
+
+            friendly_cache = Mooncake.NfwdMooncake.IRfwdCache(
+                rule, sum, x; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            value_friendly, gradient_friendly = Mooncake.value_and_gradient!!(
+                friendly_cache, sum, x
+            )
+            @test value_friendly == sum(x)
+            @test gradient_friendly == (sum, ones(length(x)))
+        end
     end
 
     f = (x, y) -> x * y + cos(x)

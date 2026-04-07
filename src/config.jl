@@ -3,6 +3,8 @@
         debug_mode::Bool=false,
         silence_debug_messages::Bool=false,
         friendly_tangents::Bool=false,
+        chunk_size::Union{Nothing,Int}=nothing,
+        enable_nfwd::Bool=true,
     )
 
 Configuration struct for use with `ADTypes.AutoMooncake`.
@@ -21,9 +23,17 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     The tangent is converted from/to the friendly representation at the interface level,
     so all Mooncake internal computations and rule implementations always use the
     [`tangent_type`](@ref) representation.
+- `chunk_size::Union{Nothing,Int}=nothing`: retained for backwards compatibility and used
+    by [`prepare_derivative_cache`](@ref) to select the cached IRfwd chunk width for
+    scalar pullback/gradient calls. Other public cache APIs currently ignore this field;
+    direct frule/rrule builders also accept chunk-size control directly.
+- `enable_nfwd::Bool=true`: retained for backwards compatibility. Public cache APIs
+    currently ignore this field.
 """
 @kwdef struct Config
     debug_mode::Bool = false
     silence_debug_messages::Bool = false
     friendly_tangents::Bool = false
+    chunk_size::Union{Nothing,Int} = nothing
+    enable_nfwd::Bool = true
 end

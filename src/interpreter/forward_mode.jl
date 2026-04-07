@@ -57,6 +57,35 @@ end
 
 function build_frule end
 
+function build_frule(
+    args...;
+    chunk_size=nothing,
+    debug_mode=false,
+    silence_debug_messages=true,
+    skip_world_age_check=false,
+)
+    isnothing(chunk_size) ||
+        chunk_size == 1 ||
+        throw(
+            ArgumentError(
+                "The default `build_frule(...)` entrypoint only supports `chunk_size == 1`. " *
+                "Use `build_frule(IRfwdMode{N}(), ...)` or `build_frule(NDualMode{N}(), ...)` " *
+                "for chunked forward rules.",
+            ),
+        )
+    primals = map(x -> x isa Dual ? primal(x) : x, args)
+    sig = _typeof(TestUtils.__get_primals(primals))
+    interp = get_interpreter(ForwardMode)
+    return _build_raw_frule(
+        interp,
+        sig;
+        debug_mode,
+        silence_debug_messages,
+        skip_world_age_check,
+        tangent_mode=IRfwdMode{1}(),
+    )
+end
+
 function _build_raw_frule(
     args...; debug_mode=false, silence_debug_messages=true, tangent_mode=IRfwdMode{1}()
 )

@@ -651,16 +651,14 @@ end
             ) == (f_named(named_x), dx * sin(y))
         end
 
-        @testset "unsupported cached forward gradient/pullback" begin
+        @testset "cached forward gradient/pullback" begin
             cache = Mooncake.prepare_derivative_cache(
                 f, x, y; config=Mooncake.Config(; kwargs...)
             )
-            @test_throws r"only support `value_and_derivative!!`" Mooncake.value_and_gradient!!(
-                cache, f, x, y
-            )
-            @test_throws r"only support `value_and_derivative!!`" Mooncake.value_and_pullback!!(
-                cache, 1.0, f, x, y
-            )
+            @test Mooncake.value_and_gradient!!(cache, f, x, y) ==
+                (z, (Mooncake.NoTangent(), y - sin(x), x))
+            @test Mooncake.value_and_pullback!!(cache, 1.0, f, x, y) ==
+                (z, (Mooncake.NoTangent(), y - sin(x), x))
         end
 
         @testset "forward cache mismatch errors" begin

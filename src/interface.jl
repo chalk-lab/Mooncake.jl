@@ -91,7 +91,8 @@ end
 
 *Note:* this is not part of the public Mooncake.jl interface, and may change without warning.
 
-Equivalent to `__value_and_pullback!!(rule, 1.0, f, x...)` -- assumes `f` returns a `Float64`.
+Equivalent to `__value_and_pullback!!(rule, 1.0, f, x...)` -- assumes `f` returns an
+`IEEEFloat`.
 
 ```jldoctest
 # Set up the problem.
@@ -179,8 +180,8 @@ end
 """
     value_and_gradient!!(rule, f, x...; friendly_tangents=false)
 
-Equivalent to `value_and_pullback!!(rule, 1.0, f, x...)`, and assumes `f` returns a
-`Union{Float16,Float32,Float64}`.
+Equivalent to `value_and_pullback!!(rule, 1.0, f, x...)`, and assumes `f` returns an
+`IEEEFloat`.
 
 *Note:* There are lots of subtle ways to mis-use [`value_and_pullback!!`](@ref), so we generally
 recommend using `Mooncake.value_and_gradient!!` (this function) where possible. The
@@ -269,7 +270,8 @@ end
 # Cache types in this file:
 # - `Cache`: reusable reverse-mode cache for repeated `value_and_pullback!!` and
 #   `value_and_gradient!!` calls.
-# - `ForwardCache`: reusable forward-mode cache for repeated `value_and_derivative!!` calls.
+# - `ForwardCache`: reusable forward-mode cache for repeated `value_and_derivative!!` calls,
+#   plus a cached IRfwd scalar path for `value_and_pullback!!` / `value_and_gradient!!`.
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
 # All seven parameters are load-bearing: they keep the prepared reverse cache concrete
@@ -865,9 +867,10 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-struct ForwardCache{R,IT<:Union{Nothing,Tuple},S<:Tuple}
+struct ForwardCache{R,IT<:Union{Nothing,Tuple},IC,S<:Tuple}
     rule::R
     input_tangents::IT
+    irfwd_cache::IC
     input_specs::S
 end
 
@@ -1006,13 +1009,13 @@ end
 end
 
 #
-# Scalar pullbacks from IRfwd frules
+# Scalar pullbacks from IR-derived forward rules
 #
-# These are the public scalar-output pullback / gradient entrypoints for `IRfwdRule`.
-# They stay on ordinary primals plus `NTangent` lanes, seed standard-basis chunk tangents
-# internally, and accumulate scalar coefficients into full gradients. This keeps the
-# public interface on top of IR-derived frules rather than wrapping them in a separate
-# reverse-rule object.
+# These are the public scalar-output pullback / gradient entrypoints for width-1 and
+# chunked IR-derived forward rules. They stay on ordinary primals plus `NTangent` lanes,
+# seed standard-basis chunk tangents internally, and accumulate scalar coefficients into
+# full gradients. This keeps the public interface on top of IR-derived frules rather than
+# wrapping them in a separate reverse-rule object.
 #
 # MWE:
 # `build_frule(IRfwdMode{4}(), typeof((sum, randn(8))))` builds a cached frule that
@@ -1102,6 +1105,27 @@ function _irfwd_value_and_gradient!!(rule, chunk_size::Int, fx::Vararg{CoDual,M}
     return y::IEEEFloat, native_gradients
 end
 
+@inline function __value_and_gradient!!(
+    rule::Union{DerivedFRule,DebugFRule,typeof(frule!!)}, fx::Vararg{CoDual,N}
+) where {N}
+    return _irfwd_value_and_gradient!!(rule, 1, fx...)
+end
+
+@inline function __value_and_pullback!!(
+    rule::Union{DerivedFRule,DebugFRule,typeof(frule!!)},
+    ȳ::T,
+    fx::Vararg{CoDual,N};
+    y_cache=nothing,
+) where {T<:IEEEFloat,N}
+    y, gradient = _irfwd_value_and_gradient!!(rule, 1, fx...)
+    value = if y_cache === nothing
+        _copy_output(y)
+    else
+        _copy_to_output!!(y_cache, y)
+    end
+    return value, tuple_map(g -> g isa NoTangent ? g : _scale(ȳ, g), gradient)
+end
+
 """
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
@@ -1111,16 +1135,33 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     Cache construction stays lazy and does not execute `f(x...)`.
 
 !!! note
-    `prepare_derivative_cache` only supports cached [`value_and_derivative!!`](@ref).
-    If you want scalar-output `value_and_pullback!!` or `value_and_gradient!!`, build a
-    direct frule with `build_frule(IRfwdMode{N}(), ...)` or `build_frule(NDualMode{N}(), ...)`
-    and call those interfaces on the rule itself.
+    `prepare_derivative_cache` returns a [`ForwardCache`](@ref) with two cached forward
+    paths: the ordinary width-1 `frule` used by [`value_and_derivative!!`](@ref), and an
+    embedded cached IRfwd scalar path used by cached [`value_and_pullback!!`](@ref) and
+    [`value_and_gradient!!`](@ref).
+
+!!! note
+    `config.chunk_size` is used when constructing the prepared IRfwd scalar cache.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
 ) where {N}
     fx = (f, x...)
-    rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
+    rule = build_frule(
+        fx...;
+        debug_mode=config.debug_mode,
+        silence_debug_messages=config.silence_debug_messages,
+    )
+    irfwd_chunk_size = NfwdMooncake._chunked_resolve_rule_chunk_size(
+        typeof(fx), config.chunk_size
+    )
+    irfwd_rule = build_frule(
+        NfwdMooncake.IRfwdMode{irfwd_chunk_size}(),
+        fx...;
+        debug_mode=config.debug_mode,
+        silence_debug_messages=config.silence_debug_messages,
+    )
+    irfwd_cache = NfwdMooncake.IRfwdCache(irfwd_rule, fx...; config)
     input_specs = map(fx) do x
         if x isa AbstractArray
             PreparedCacheInputSpec(typeof(x), size(x))
@@ -1129,31 +1170,20 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         end
     end
     if config.friendly_tangents
-        return ForwardCache(rule, tuple_map(zero_tangent, fx), input_specs)
+        return ForwardCache(rule, tuple_map(zero_tangent, fx), irfwd_cache, input_specs)
     end
-    return ForwardCache(rule, nothing, input_specs)
+    return ForwardCache(rule, nothing, irfwd_cache, input_specs)
 end
 
 function value_and_gradient!!(cache::ForwardCache, f::F, x::Vararg{Any,N}) where {F,N}
-    throw(
-        ArgumentError(
-            "`prepare_derivative_cache` caches only support `value_and_derivative!!`. " *
-            "For scalar-output `value_and_gradient!!`, pass a direct frule built with " *
-            "`build_frule(...)` instead.",
-        ),
-    )
+    return value_and_gradient!!(cache.irfwd_cache, f, x...)
 end
 
 function value_and_pullback!!(
     cache::ForwardCache, ȳ, f::F, x::Vararg{Any,N}; friendly_tangents=false
 ) where {F,N}
-    throw(
-        ArgumentError(
-            "`prepare_derivative_cache` caches only support `value_and_derivative!!`. " *
-            "For scalar-output `value_and_pullback!!`, pass a direct frule built with " *
-            "`build_frule(...)` instead.",
-        ),
-    )
+    # Friendly/native tangent selection is fixed when the cache is prepared.
+    return value_and_pullback!!(cache.irfwd_cache, ȳ, f, x...)
 end
 
 """
@@ -1168,7 +1198,8 @@ in `f` and `x`.
 #   calls the cached `frule` directly
 # - `value_and_derivative!!(cache, (f, df), (x, dx), ...)`: tuple interface
 # - prepared caches only support ordinary width-1 tangents
-# - for scalar-output `value_and_pullback!!` / `value_and_gradient!!`, use a direct frule
+# - scalar-output `value_and_pullback!!` / `value_and_gradient!!` dispatch to the stored
+#   IRfwd cache
 # - for batched directional derivatives, call a direct frule via `value_and_derivative!!(rule, ...)`
 function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
     input_primals = map(primal, fx)
@@ -1192,7 +1223,10 @@ Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to c
 Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
 
 !!! info
-    `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f` and `x` must be of the same size and shape as those used to construct the `cache`. This is to ensure that the gradient can be written to the memory allocated when the `cache` was built.
+    `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f`
+    and `x` must be of the same size and shape as those used to construct the `cache`.
+    This is to ensure that the derivative tangent can be written to the memory allocated
+    when the `cache` was built.
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
@@ -1612,7 +1646,7 @@ end
 
 # IT=Nothing specialisation: disambiguates against the Dual-vararg and Tuple-vararg
 # zero-arg overloads (Aqua detects the ambiguity without this more-specific method).
-function value_and_derivative!!(cache::ForwardCache{R,Nothing,S}) where {R,S<:Tuple}
+function value_and_derivative!!(cache::ForwardCache{R,Nothing,IC,S}) where {R,IC,S<:Tuple}
     _validate_prepared_cache_inputs(cache.input_specs, ())
     error("unreachable")
 end

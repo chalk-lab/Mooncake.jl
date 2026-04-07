@@ -69,9 +69,14 @@ Prepared forward caches accept ordinary width-1 tangents for
 `NTangent(...)`, use `build_frule(IRfwdMode{N}(), ...)` directly instead of
 `prepare_derivative_cache`.
 
-For scalar outputs, those direct chunked frules also support `value_and_pullback!!` and
-`value_and_gradient!!`, so the preferred replacement for the old chunked-cache derivative
-path is usually to build the frule you want and call the pullback/gradient interface on it.
+Prepared forward caches also carry a cached IRfwd scalar path, so
+[`value_and_pullback!!`](@ref) and [`value_and_gradient!!`](@ref) are available on the
+result of [`prepare_derivative_cache`](@ref) when that scalar IRfwd path applies. You can
+still call those interfaces directly on a chunked frule if you want to control the IRfwd
+rule or chunk width explicitly.
+
+`prepare_derivative_cache` also respects `config.chunk_size` for the cached IRfwd scalar
+path that backs cached `value_and_pullback!!` / `value_and_gradient!!`.
 
 When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
 higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as

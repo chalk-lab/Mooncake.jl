@@ -95,7 +95,7 @@ import ..Mooncake:
 # in later sections.
 
 @static if isdefined(Base, :ispublic)
-    eval(Expr(:public, :NfwdCache))
+    eval(Expr(:public, :NfwdCache, :IRfwdCache))
 end
 
 # ── Experimental chunked IR path ──────────────────────────────────────────────────
@@ -156,6 +156,7 @@ struct NfwdRule{sig,N} end
 
 @inline rule_chunk_size(::Type{<:IRfwdRule{sig,N}}) where {sig,N} = N
 @inline rule_chunk_size(::Type{<:NfwdRule{sig,N}}) where {sig,N} = N
+@inline Nfwd._nfwd_rule_sig(::NfwdRule{sig}) where {sig} = sig
 
 const CHUNK_CACHE_MAX_LANES = 8
 
@@ -175,6 +176,16 @@ struct NfwdCache{R1,R2,R3,R4,R5,R6,R7,R8,GR,SG,SB,SW}
 end
 
 @inline Base.length(::NfwdCache) = CHUNK_CACHE_MAX_LANES
+
+# Cached scalar-output wrapper for a single IR-derived chunked frule. Unlike `NfwdCache`,
+# this stores one fixed-width `IRfwdRule`, reusable native gradient storage, and optional
+# friendly-output destinations for interface conversion.
+struct IRfwdCache{R,D,GW,S<:Tuple}
+    rule::R
+    dests::D
+    gradient_workspace::GW
+    input_specs::S
+end
 
 @inline function chunk_cache_requested_chunk_size(requested_chunk_size)
     return if isnothing(requested_chunk_size)
@@ -205,8 +216,10 @@ end
 #
 # `NfwdMooncake` plugs into Mooncake through a small set of explicit interface overloads:
 # - `build_frule`
-# - `value_and_derivative!!` for `Rule`
+# - `value_and_derivative!!` for `Rule` and `NfwdRule`
+# - `value_and_gradient!!` / `value_and_pullback!!` for `IRfwdCache`
 # - `value_and_gradient!!` for `NfwdCache`
+# - `__value_and_pullback!!` / `__value_and_gradient!!` for `NfwdRule`
 # - `__value_and_pullback!!` / `__value_and_gradient!!` for `Rule`
 # - `__value_and_gradient!!` for `RRule`
 # - `__verify_sig` / `verify_fwds_inputs` for `RRule`
@@ -259,6 +272,83 @@ end
         small_vector_gradient_frule,
         small_vector_gradient_buffer,
         small_vector_gradient_workspace,
+    )
+end
+
+@unstable function IRfwdCache(
+    rule::IRfwdRule{sig}, f, x...; config=Mooncake.Config()
+) where {sig}
+    fx = (f, x...)
+    typeof(fx) == sig || throw(
+        ArgumentError(
+            "signature of arguments, $(typeof(fx)), not equal to signature required by rule, $sig.",
+        ),
+    )
+    input_specs = map(fx) do x
+        if x isa AbstractArray
+            Mooncake.PreparedCacheInputSpec(typeof(x), size(x))
+        else
+            Mooncake.PreparedCacheInputSpec(typeof(x), ())
+        end
+    end
+    native_gradients = tuple_map(zero_tangent, fx)
+    dests = config.friendly_tangents ? Mooncake._copy_output(fx) : nothing
+    gradient_workspace = Ref(native_gradients)
+    return IRfwdCache{
+        typeof(rule),typeof(dests),typeof(gradient_workspace),typeof(input_specs)
+    }(
+        rule, dests, gradient_workspace, input_specs
+    )
+end
+
+@inline function Mooncake.value_and_gradient!!(
+    cache::IRfwdCache, f::F, x::Vararg{Any,N}
+) where {F,N}
+    input_primals = (f, x...)
+    Mooncake._validate_prepared_cache_inputs(cache.input_specs, input_primals)
+    native_gradients = tuple_map(Mooncake.set_to_zero!!, cache.gradient_workspace[])
+    cache.gradient_workspace[] = native_gradients
+    y, native_gradients = Mooncake.__value_and_gradient!!(
+        cache.rule, tuple_map(CoDual, input_primals, native_gradients)...
+    )
+    if isnothing(cache.dests)
+        return y, native_gradients
+    end
+    friendly_output = Mooncake._copy_to_output!!(cache.dests, input_primals)
+    return (
+        y,
+        Mooncake.tangent_to_primal_internal!!(
+            friendly_output,
+            native_gradients,
+            isbitstype(typeof(friendly_output)) ? Mooncake.NoCache() : IdDict{Any,Any}(),
+        ),
+    )
+end
+
+@inline function Mooncake.value_and_pullback!!(
+    cache::IRfwdCache, ȳ::T, f::F, x::Vararg{Any,N}
+) where {T<:IEEEFloat,F,N}
+    input_primals = (f, x...)
+    Mooncake._validate_prepared_cache_inputs(cache.input_specs, input_primals)
+    native_gradients = tuple_map(Mooncake.set_to_zero!!, cache.gradient_workspace[])
+    cache.gradient_workspace[] = native_gradients
+    y, native_gradients = Mooncake.__value_and_gradient!!(
+        cache.rule, tuple_map(CoDual, input_primals, native_gradients)...
+    )
+    pullback = tuple_map(
+        g -> g isa NoTangent ? g : Mooncake._scale(ȳ, g), native_gradients
+    )
+    if isnothing(cache.dests)
+        return y, pullback
+    end
+    friendly_output = Mooncake._copy_to_output!!(cache.dests, input_primals)
+    return (
+        y,
+        Mooncake.tangent_to_primal_internal!!(
+            friendly_output,
+            pullback,
+            isbitstype(typeof(friendly_output)) ? Mooncake.NoCache() : IdDict{Any,Any}(),
+        ),
     )
 end
 
@@ -461,17 +551,6 @@ function Mooncake.build_rrule(::Nfwd.NDualMode, args...; kwargs...)
     )
 end
 
-function Mooncake.build_frule(
-    args...; debug_mode=false, silence_debug_messages=true, skip_world_age_check=false
-)
-    return Mooncake.build_frule(
-        IRfwdMode{1}(),
-        map(x -> x isa Mooncake.Dual ? primal(x) : x, args)...;
-        debug_mode,
-        silence_debug_messages,
-        skip_world_age_check,
-    )
-end
 @inline _nfwd_packed_tangent_type(::Val{N}, ::Type{P}) where {N,P} = _nfwd_pack_tangent_storage_type(
     Val(N), Mooncake.tangent_type(P)
 )
@@ -961,6 +1040,63 @@ end
     output = _nfwd_primitive_frule_call(Val(N), packed_args...)
     return primal(output),
     _nfwd_unpack_packed_public_tangent(primal(output), tangent(output), Val(N))
+end
+
+@inline function Mooncake.__value_and_gradient!!(
+    rule::NfwdRule{sig,N}, f::CoDual, x::Vararg{CoDual,M}
+) where {sig,N,M}
+    fx = (f, x...)
+    _nfwd_verify_sig(rule, fx)
+    _nfwd_check_function_tangent(tangent(f))
+    primals = map(primal, x)
+    tangents = map(arg -> fdata(tangent(arg)), x)
+    grads = _nfwd_gradient_refs(primals, tangents)
+    total_dof = _nfwd_input_dof(primals)
+    y = nothing
+    for start_slot in 1:N:total_dof
+        seeded_tangents = _nfwd_seed_tangents(primals, Val(N), start_slot)
+        y_chunk, dy = _nfwd_eval(primal(f), primals, seeded_tangents, Val(N))
+        if isnothing(y)
+            y = y_chunk
+            y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        end
+        lane_vals = _nfwd_contract_output(one(y), dy)
+        _nfwd_scatter_chunk!(grads, primals, lane_vals, start_slot)
+    end
+    if isnothing(y)
+        y, _ = _nfwd_eval(primal(f), primals, tangents, Val(N))
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    end
+    return y, (NoTangent(), tuple_map(_nfwd_unwrap_gradient, grads)...)
+end
+
+@inline function Mooncake.__value_and_pullback!!(
+    rule::NfwdRule{sig,N}, ȳ, f::CoDual, x::Vararg{CoDual,M}; y_cache=nothing
+) where {sig,N,M}
+    fx = (f, x...)
+    _nfwd_verify_sig(rule, fx)
+    _nfwd_check_function_tangent(tangent(f))
+    primals = map(primal, x)
+    tangents = map(arg -> fdata(tangent(arg)), x)
+    grads = _nfwd_gradient_refs(primals, tangents)
+    total_dof = _nfwd_input_dof(primals)
+    y = nothing
+    for start_slot in 1:N:total_dof
+        seeded_tangents = _nfwd_seed_tangents(primals, Val(N), start_slot)
+        y_chunk, dy = _nfwd_eval(primal(f), primals, seeded_tangents, Val(N))
+        isnothing(y) && (y = y_chunk)
+        lane_vals = _nfwd_contract_output(ȳ, dy)
+        _nfwd_scatter_chunk!(grads, primals, lane_vals, start_slot)
+    end
+    if isnothing(y)
+        y, _ = _nfwd_eval(primal(f), primals, tangents, Val(N))
+    end
+    value = if y_cache === nothing
+        Mooncake._copy_output(y)
+    else
+        Mooncake._copy_to_output!!(y_cache, y)
+    end
+    return value, (NoTangent(), tuple_map(_nfwd_unwrap_gradient, grads)...)
 end
 
 @inline function Mooncake.__value_and_gradient!!(
@@ -1602,7 +1738,7 @@ end
     return _nfwd_validate(sig, resolved; debug_mode)
 end
 
-@inline function _nfwd_verify_sig(rule::Union{Rule,RRule}, fx::Tuple)
+@inline function _nfwd_verify_sig(rule::Union{Rule,RRule,NfwdRule}, fx::Tuple)
     sig = _nfwd_rule_sig(rule)
     Tfx = Tuple{map(_typeof ∘ primal, fx)...}
     # Use <: (subtype) rather than == so that a rule built for an abstract signature
