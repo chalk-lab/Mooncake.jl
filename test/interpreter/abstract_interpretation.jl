@@ -124,4 +124,32 @@ end
             @test grad[2] == [2.0, 0.0, 1.0]
         end
     end
+
+    @testset "clear_mooncake_caches!" begin
+        # Populate the caches by running a gradient.
+        f = x -> sin(x[1]) + x[2]^2
+        x = [1.0, 2.0]
+        cache = Mooncake.prepare_gradient_cache(f, x)
+        Mooncake.value_and_gradient!!(cache, f, x)
+
+        fwd_interp_before = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode]
+        rev_interp_before = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode]
+
+        @test !isempty(fwd_interp_before.oc_cache) || !isempty(rev_interp_before.oc_cache)
+
+        Mooncake.clear_mooncake_caches!()
+
+        fwd_interp_after = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode]
+        rev_interp_after = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode]
+
+        # Fresh interpreters: oc_cache (OpaqueClosures) is cleared.
+        # code_cache is pre-populated by the MooncakeInterpreter constructor, which is expected.
+        @test isempty(fwd_interp_after.oc_cache)
+        @test isempty(rev_interp_after.oc_cache)
+
+        # After clearing, AD should still work correctly.
+        val, grad = Mooncake.value_and_gradient!!(cache, f, x)
+        @test val ≈ sin(x[1]) + x[2]^2
+        @test grad[2] ≈ [cos(x[1]), 2x[2]]
+    end
 end

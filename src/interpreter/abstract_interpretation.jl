@@ -348,3 +348,16 @@ function get_interpreter(mode::Type{<:Mode})
     end
     return GLOBAL_INTERPRETERS[mode]
 end
+
+"""
+    clear_mooncake_caches!()
+
+Clear all internal Mooncake caches, including cached OpaqueClosures and compiled code.
+Calling this function will cause Mooncake to re-derive any rules it has previously
+cached, and can be used to free memory in long-running sessions.
+"""
+function clear_mooncake_caches!()
+    GLOBAL_INTERPRETERS[ForwardMode] = MooncakeInterpreter(DefaultCtx, ForwardMode)
+    GLOBAL_INTERPRETERS[ReverseMode] = MooncakeInterpreter(DefaultCtx, ReverseMode)
+    return nothing
+end
