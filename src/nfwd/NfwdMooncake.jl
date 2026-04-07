@@ -1626,70 +1626,108 @@ end
 # These helpers seed input directions, contract output tangents with cotangents, and scatter
 # each chunk's contributions into gradient storage.
 
-@inline _nfwd_dof(x, seen::Nothing=nothing) = Mooncake._primal_input_dof(x, seen)
-
-@inline _nfwd_seed(x, chunk_size::Int, start_slot::Int) = Mooncake._primal_rebuild(
-    _nfwd_seed,
-    Mooncake._primal_rebuild_ops(
-        leaf=(x, state, _seen) -> if x isa IEEEFloat
-            state.cursor[] += 1
-            lane = state.cursor[] - state.start_slot + 1
-            if state.chunk_size == 1
-                lane == 1 ? one(x) : zero(x)
-            else
-                ntuple(k -> typeof(x)(k == lane), Val(state.chunk_size))
-            end
-        else
-            T = typeof(real(x))
-            offset = state.cursor[]
-            state.cursor[] += 2
-            if state.chunk_size == 1
-                if offset + 1 == state.start_slot
-                    complex(one(T), zero(T))
-                elseif offset + 2 == state.start_slot
-                    complex(zero(T), one(T))
-                else
-                    zero(Complex{T})
-                end
-            else
-                ntuple(k -> begin
-                    slot = state.start_slot + k - 1
-                    if offset + 1 == slot
-                        complex(one(T), zero(T))
-                    elseif offset + 2 == slot
-                        complex(zero(T), one(T))
-                    else
-                        zero(Complex{T})
-                    end
-                end, Val(state.chunk_size))
-            end
-        end,
-        nodiff=(_x, _state, _seen) -> NoTangent(),
-        # nfwd keeps the same structural walk as IRfwd, but swaps in packed array storage
-        # and raw tuple reconstruction for NDual-oriented execution.
-        make_array=(x, state, _seen) -> if state.chunk_size == 1
-            zero_tangent(x)
-        else
-            zeros(eltype(x), size(x)..., state.chunk_size)
-        end,
-        make_tuple_tangent=(_P, fields, _state, _seen) -> fields,
-        make_namedtuple_tangent=(P, fields, _state, _seen) -> P(fields),
-        store_array_leaf=(leaf, dx, I, xI, state, seen) -> begin
-            value = leaf(xI, state, seen)
-            if state.chunk_size == 1
-                dx[I] = value
-            else
-                @inbounds for lane in 1:state.chunk_size
-                    dx[I..., lane] = value[lane]
-                end
-            end
-            return nothing
-        end,
-    ),
-    x,
-    (; chunk_size, start_slot, cursor=Ref(0)),
-    nothing,
+@inline function _nfwd_seed_tangent(
+    x::IEEEFloat, chunk_size::Int, start_slot::Int, offset::Int
 )
+    global_slot = offset + 1
+    lane = global_slot - start_slot + 1
+    if chunk_size == 1
+        return lane == 1 ? one(x) : zero(x)
+    end
+    return ntuple(k -> typeof(x)(k == lane), Val(chunk_size))
+end
+
+function _nfwd_seed_tangent(
+    x::Complex{T}, chunk_size::Int, start_slot::Int, offset::Int
+) where {T<:IEEEFloat}
+    if chunk_size == 1
+        if offset + 1 == start_slot
+            return complex(one(T), zero(T))
+        elseif offset + 2 == start_slot
+            return complex(zero(T), one(T))
+        else
+            return zero(x)
+        end
+    end
+    return ntuple(k -> begin
+        slot = start_slot + k - 1
+        if offset + 1 == slot
+            complex(one(T), zero(T))
+        elseif offset + 2 == slot
+            complex(zero(T), one(T))
+        else
+            zero(x)
+        end
+    end, Val(chunk_size))
+end
+
+function _nfwd_seed_tangent(
+    x::AbstractArray{T}, chunk_size::Int, start_slot::Int, offset::Int
+) where {T<:IEEEFloat}
+    if chunk_size == 1
+        dx = zero_tangent(x)
+        global_slot = start_slot
+        if offset < global_slot <= offset + length(x)
+            dx[global_slot - offset] = one(T)
+        end
+        return dx
+    end
+    dx = zeros(T, size(x)..., chunk_size)
+    cart_inds = CartesianIndices(x)
+    for lane in 1:chunk_size
+        global_slot = start_slot + lane - 1
+        if offset < global_slot <= offset + length(x)
+            idx = Tuple(cart_inds[global_slot - offset])
+            dx[idx..., lane] = one(T)
+        end
+    end
+    return dx
+end
+
+function _nfwd_seed_tangent(
+    x::AbstractArray{Complex{T}}, chunk_size::Int, start_slot::Int, offset::Int
+) where {T<:IEEEFloat}
+    if chunk_size == 1
+        dx = zero_tangent(x)
+        global_slot = start_slot
+        if offset < global_slot <= offset + 2 * length(x)
+            local_slot = global_slot - offset
+            elem = cld(local_slot, 2)
+            dx[elem] = if isodd(local_slot)
+                complex(one(T), zero(T))
+            else
+                complex(zero(T), one(T))
+            end
+        end
+        return dx
+    end
+    dx = zeros(Complex{T}, size(x)..., chunk_size)
+    cart_inds = CartesianIndices(x)
+    for lane in 1:chunk_size
+        global_slot = start_slot + lane - 1
+        if offset < global_slot <= offset + 2 * length(x)
+            local_slot = global_slot - offset
+            elem = cld(local_slot, 2)
+            idx = Tuple(cart_inds[elem])
+            dx[idx..., lane] =
+                isodd(local_slot) ? complex(one(T), zero(T)) : complex(zero(T), one(T))
+        end
+    end
+    return dx
+end
+
+@inline _nfwd_seed_tangents(::Tuple{}, ::Val{N}, start_slot::Int, offset::Int=0) where {N} = ()
+@inline function _nfwd_seed_tangents(
+    primals::Tuple, ::Val{N}, start_slot::Int, offset::Int=0
+) where {N}
+    x = first(primals)
+    return (
+        _nfwd_seed_tangent(x, N, start_slot, offset),
+        _nfwd_seed_tangents(
+            Base.tail(primals), Val(N), start_slot, offset + _nfwd_input_dof(x)
+        )...,
+    )
+end
 
 @inline function _nfwd_add_slot!(
     g::Base.RefValue{T}, local_slot::Int, v
@@ -1729,7 +1767,7 @@ function _nfwd_scatter_chunk!(grads::Tuple, inputs::Tuple, dy::Tuple, start_slot
     for lane_val in dy
         offset = 0
         for (i, x) in enumerate(inputs)
-            dof = _nfwd_dof(x)
+            dof = _nfwd_input_dof(x)
             if offset < global_slot <= offset + dof
                 local_slot = global_slot - offset
                 _nfwd_add_slot!(grads[i], local_slot, lane_val)
@@ -1789,7 +1827,7 @@ end
     grads::Tuple, primals::Tuple, global_slot::Int, lane_val, offset::Int=0
 )
     x = first(primals)
-    dof = _nfwd_dof(x)
+    dof = _nfwd_input_dof(x)
     if offset < global_slot <= offset + dof
         local_slot = global_slot - offset
         return (
@@ -2005,9 +2043,9 @@ function _nfwd_scalar_gradient_rdata(
     ȳ = tangent(pb.y_fdata, y_rdata)
     x = pb.primals[1]
     g = zero_tangent(x, pb.tangents[1])
-    total_dof = _nfwd_dof(x)
+    total_dof = _nfwd_input_dof(x)
     for start_slot in 1:N:total_dof
-        tangents = (_nfwd_seed(x, N, start_slot),)
+        tangents = (_nfwd_seed_tangent(x, N, start_slot, 0),)
         _, dy = _nfwd_eval(pb.f, pb.primals, tangents, Val(N))
         lane_vals = _nfwd_contract_output(ȳ, dy)
         global_slot = start_slot
@@ -2034,9 +2072,9 @@ function (pb::Pullback{F,N,P,T,Y})(
     ȳ = tangent(pb.y_fdata, y_rdata)
     # Accumulate gradients in tuple form so multi-scalar pullbacks stay allocation-free.
     grads = _nfwd_zero_scalar_grads(pb.primals, pb.tangents)
-    total_dof = _nfwd_dof(pb.primals)
+    total_dof = _nfwd_input_dof(pb.primals)
     for start_slot in 1:N:total_dof
-        seeded_tangents = _nfwd_seed(pb.primals, N, start_slot)
+        seeded_tangents = _nfwd_seed_tangents(pb.primals, Val(N), start_slot)
         _, dy = _nfwd_eval(pb.f, pb.primals, seeded_tangents, Val(N))
         lane_vals = _nfwd_contract_output(ȳ, dy)
         grads = _nfwd_scatter_scalar_chunk(grads, pb.primals, lane_vals, start_slot)
@@ -2053,9 +2091,9 @@ into the cached gradient containers.
 function (pb::Pullback{F,N})(y_rdata) where {F,N}
     ȳ = tangent(pb.y_fdata, y_rdata)
     grads = _nfwd_gradient_refs(pb.primals, pb.tangents)
-    total_dof = _nfwd_dof(pb.primals)
+    total_dof = _nfwd_input_dof(pb.primals)
     for start_slot in 1:N:total_dof
-        seeded_tangents = _nfwd_seed(pb.primals, N, start_slot)
+        seeded_tangents = _nfwd_seed_tangents(pb.primals, Val(N), start_slot)
         _, dy = _nfwd_eval(pb.f, pb.primals, seeded_tangents, Val(N))
         lane_vals = _nfwd_contract_output(ȳ, dy)
         _nfwd_scatter_chunk!(grads, pb.primals, lane_vals, start_slot)
