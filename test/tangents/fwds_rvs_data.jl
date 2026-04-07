@@ -50,6 +50,26 @@ end
         )
     end
 
+    @testset "tangent_type(NoFData, Union{NoRData, RData{...}}) regression" begin
+        LoHiRData = Mooncake.RData{@NamedTuple{lo::Float64,hi::Float64}}
+        MaybeLoHiRData = Union{NoRData,LoHiRData}
+        @test tangent_type(NoFData, MaybeLoHiRData) ==
+            Union{NoTangent,Tangent{@NamedTuple{lo::Float64,hi::Float64}}}
+
+        @test tangent_type(NoFData, Mooncake.RData{@NamedTuple{lohi::MaybeLoHiRData}}) ==
+            Tangent{
+            @NamedTuple{
+                lohi::Union{NoTangent,Tangent{@NamedTuple{lo::Float64,hi::Float64}}}
+            }
+        }
+    end
+
+    @testset "tangent_type(Union{NoFData, ...}, NoRData) validation" begin
+        @test tangent_type(Union{NoFData,Vector{Float64}}, NoRData) ==
+            Union{NoTangent,Vector{Float64}}
+        @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
+    end
+
     @testset "zero_rdata_from_type checks" begin
         @test can_produce_zero_rdata_from_type(Vector) == true
         check_allocs(can_produce_zero_rdata_from_type, Vector)
