@@ -892,12 +892,15 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
 
-# Union types. NOTE: Only `Union{Nothing, Array{<:Any,N}, Base.IEEEFloat}` are supported.
+# Union types. NOTE: Only `Union{Nothing, Array{<:Any,N}, Base.IEEEFloat, RData{...}}`
+# are supported.
 @foldable function tangent_type(
     ::Type{NoFData}, ::Type{R}
-) where {R<:Union{NoRData,T} where {T<:Base.IEEEFloat}}
+) where {R<:Union{NoRData,Base.IEEEFloat,RData}}
+    # Only allow branches whose reconstructed tangent still carries no fdata.
+    _validate_rdata_union(R)
     # This should only ever be hit when R is a proper union, since Any
-    # does not meet the constraint on T, an R==NoRData already has a more
+    # does not meet the constraint above, and an R==NoRData already has a more
     # specific dispatch defined
     @assert R isa Union
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
@@ -905,18 +908,53 @@ end
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}
-    _validate_union(F)
+    # Only allow branches whose reconstructed tangent still carries no rdata.
+    _validate_fdata_union(F)
     # The only case where this dispatch can be hit where F is
-    # not a union would be if F==Any, but _validate_union causes
+    # not a union would be if F==Any, but _validate_fdata_union causes
     # that case to error
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
-function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
-    _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F
-    if rdata_type(tangent_type(_T)) != NoRData
+function _validate_fdata_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
+    if !(F isa Union)
         throw(
             InvalidFDataException("Something went wrong: called tangent_type($F, NoRData)")
+        )
+    end
+    for B in (F.a, F.b)
+        if B isa Union
+            _validate_fdata_union(B)
+        elseif B != NoFData
+            local T
+            try
+                T = tangent_type(B, NoRData)
+            catch err
+                err isa MethodError || rethrow()
+                throw(
+                    InvalidFDataException(
+                        "Something went wrong: called tangent_type($F, NoRData)"
+                    ),
+                )
+            end
+            if rdata_type(T) != NoRData
+                throw(
+                    InvalidFDataException(
+                        "Something went wrong: called tangent_type($F, NoRData)"
+                    ),
+                )
+            end
+        end
+    end
+    return nothing
+end
+function _validate_rdata_union(::Type{R}) where {R<:Union{NoRData,Base.IEEEFloat,RData}}
+    if R isa Union
+        _validate_rdata_union(R.a)
+        _validate_rdata_union(R.b)
+    elseif R != NoRData && fdata_type(tangent_type(NoFData, R)) != NoFData
+        throw(
+            InvalidRDataException("Something went wrong: called tangent_type(NoFData, $R)")
         )
     end
     return nothing
