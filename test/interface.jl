@@ -615,38 +615,19 @@ end
             @test z_and_dz_tup isa Tuple{Float64,Mooncake.NTangent}
             @test first(z_and_dz_tup) == z
             @test last(z_and_dz_tup) == Mooncake.NTangent((dz,))
-
-            z_and_dz_chunk_tup = Mooncake.value_and_derivative!!(
-                cache,
-                (f, Mooncake.zero_tangent(f)),
-                (x, Mooncake.NTangent((dx, 0.0))),
-                (y, Mooncake.NTangent((0.0, dy))),
-            )
-            @test z_and_dz_chunk_tup isa Tuple{Float64,Mooncake.NTangent}
-            @test first(z_and_dz_chunk_tup) == z
-            @test length(last(z_and_dz_chunk_tup)) == 2
-            @test last(z_and_dz_chunk_tup) ==
-                Mooncake.NTangent((dx * y + dx * (-sin(x)), x * dy))
         end
 
         @testset "Array inputs" begin
             f_arr = x -> sum(abs2, x)
             x_arr = [x, y]
             dx_arr_1 = [dx, 0.0]
-            dx_arr_2 = [0.0, dy]
 
             cache_arr = Mooncake.prepare_derivative_cache(
                 f_arr, x_arr; config=Mooncake.Config(; kwargs...)
             )
-            z_and_dz_arr_chunk = Mooncake.value_and_derivative!!(
-                cache_arr,
-                (f_arr, Mooncake.zero_tangent(f_arr)),
-                (x_arr, Mooncake.NTangent((dx_arr_1, dx_arr_2))),
-            )
-            @test z_and_dz_arr_chunk isa Tuple{Float64,Mooncake.NTangent}
-            @test first(z_and_dz_arr_chunk) == sum(abs2, x_arr)
-            @test length(last(z_and_dz_arr_chunk)) == 2
-            @test last(z_and_dz_arr_chunk) == Mooncake.NTangent((2 * x * dx, 2 * y * dy))
+            @test Mooncake.value_and_derivative!!(
+                cache_arr, (f_arr, Mooncake.zero_tangent(f_arr)), (x_arr, dx_arr_1)
+            ) == (sum(abs2, x_arr), 2 * dot(x_arr, dx_arr_1))
         end
 
         @testset "Non-differentiable outputs" begin
@@ -654,15 +635,9 @@ end
             cache_int = Mooncake.prepare_derivative_cache(
                 f_int, x; config=Mooncake.Config(; enable_nfwd=false, kwargs...)
             )
-            z_and_dz_int_chunk = Mooncake.value_and_derivative!!(
-                cache_int,
-                (f_int, Mooncake.zero_tangent(f_int)),
-                (x, Mooncake.NTangent((dx, dy))),
-            )
-            @test first(z_and_dz_int_chunk) == 1
-            @test last(z_and_dz_int_chunk) isa Mooncake.NTangent
-            @test last(z_and_dz_int_chunk) ==
-                Mooncake.NTangent((Mooncake.NoTangent(), Mooncake.NoTangent()))
+            @test Mooncake.value_and_derivative!!(
+                cache_int, (f_int, Mooncake.zero_tangent(f_int)), (x, dx)
+            ) == (f_int(x), Mooncake.NoTangent())
         end
 
         @testset "Structured types" begin
@@ -679,21 +654,6 @@ end
             @test dz_sp.x1 ≈ dz
             @test dz_sp.x2 == 0.0
 
-            z_and_dz_sp_chunk = Mooncake.value_and_derivative!!(
-                cache_sp_friendly,
-                (g, Mooncake.zero_tangent(g)),
-                (
-                    SimplePair(x, y),
-                    Mooncake.NTangent((SimplePair(dx, 0.0), SimplePair(0.0, dy))),
-                ),
-            )
-            @test z_and_dz_sp_chunk isa Tuple{SimplePair,Mooncake.NTangent}
-            @test first(z_and_dz_sp_chunk) == SimplePair(z, 2.0)
-            @test length(last(z_and_dz_sp_chunk)) == 2
-            @test last(z_and_dz_sp_chunk) == Mooncake.NTangent((
-                SimplePair(dx * y + dx * (-sin(x)), 0.0), SimplePair(x * dy, 0.0)
-            ))
-
             cache_sp_unfriendly = Mooncake.prepare_derivative_cache(
                 fx_sp...; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
             )
@@ -709,81 +669,30 @@ end
             f_tuple = t -> t[1]^2 + sin(t[2])
             tuple_x = (x, y)
             tuple_dx_1 = (dx, 0.0)
-            tuple_dx_2 = (0.0, dy)
             cache_tuple = Mooncake.prepare_derivative_cache(
                 f_tuple,
                 tuple_x;
                 config=Mooncake.Config(; friendly_tangents=true, kwargs...),
             )
-            z_and_dz_tuple = Mooncake.value_and_derivative!!(
+            @test Mooncake.value_and_derivative!!(
                 cache_tuple,
                 (f_tuple, Mooncake.zero_tangent(f_tuple)),
-                (tuple_x, Mooncake.NTangent((tuple_dx_1, tuple_dx_2))),
-            )
-            @test z_and_dz_tuple isa Tuple{Float64,Mooncake.NTangent}
-            @test first(z_and_dz_tuple) == x^2 + sin(y)
-            @test last(z_and_dz_tuple) == Mooncake.NTangent((2 * x * dx, cos(y) * dy))
+                (tuple_x, tuple_dx_1),
+            ) == (x^2 + sin(y), (2 * x * dx + cos(y) * 0.0))
 
             f_named = nt -> nt.a * sin(nt.b)
             named_x = (; a=x, b=y)
             named_dx_1 = (; a=dx, b=0.0)
-            named_dx_2 = (; a=0.0, b=dy)
             cache_named = Mooncake.prepare_derivative_cache(
                 f_named,
                 named_x;
                 config=Mooncake.Config(; friendly_tangents=true, kwargs...),
             )
-            z_and_dz_named = Mooncake.value_and_derivative!!(
+            @test Mooncake.value_and_derivative!!(
                 cache_named,
                 (f_named, Mooncake.zero_tangent(f_named)),
-                (named_x, Mooncake.NTangent((named_dx_1, named_dx_2))),
-            )
-            @test z_and_dz_named isa Tuple{Float64,Mooncake.NTangent}
-            @test first(z_and_dz_named) == x * sin(y)
-            @test last(z_and_dz_named) == Mooncake.NTangent((dx * sin(y), x * cos(y) * dy))
-        end
-
-        @testset "Chunk path fast path" begin
-            if get(kwargs, :debug_mode, false)
-                @test true
-            else
-                scalar_call(cache, f, x, y, dx, dy) = Mooncake.value_and_derivative!!(
-                    cache,
-                    (f, Mooncake.zero_tangent(f)),
-                    (x, Mooncake.NTangent((dx, 0.0))),
-                    (y, Mooncake.NTangent((0.0, dy))),
-                )
-                scalar_f = CountedChunkScalarCall()
-                scalar_cache = Mooncake.prepare_derivative_cache(
-                    scalar_f,
-                    x,
-                    y;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                CHUNK_SCALAR_EVAL_COUNT[] = 0
-                @test scalar_call(scalar_cache, scalar_f, x, y, dx, dy) ==
-                    (z, Mooncake.NTangent((dx * y + dx * (-sin(x)), x * dy)))
-                @test CHUNK_SCALAR_EVAL_COUNT[] == 1
-
-                array_f = CountedChunkArrayCall()
-                x_arr = [x, y]
-                dx_arr_1 = [dx, 0.0]
-                dx_arr_2 = [0.0, dy]
-                array_call(cache, f_arr, x_arr, dx_arr_1, dx_arr_2) = Mooncake.value_and_derivative!!(
-                    cache,
-                    (f_arr, Mooncake.zero_tangent(f_arr)),
-                    (x_arr, Mooncake.NTangent((dx_arr_1, dx_arr_2))),
-                )
-                array_cache = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    x_arr;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test array_call(array_cache, array_f, x_arr, dx_arr_1, dx_arr_2) ==
-                    (sum(abs2, x_arr), Mooncake.NTangent((2 * x * dx, 2 * y * dy)))
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 1
-            end
+                (named_x, named_dx_1),
+            ) == (f_named(named_x), dx * sin(y))
         end
 
         @testset "value_and_gradient!! via ForwardCache" begin
@@ -1263,10 +1172,10 @@ end
 
     @testset "value_and_hvp!!" begin
         TestUtils.test_hook(Val(:allow_unstable_hvp_interface_test)) do
-            @testset "fcache dof skips undefined builtin-array slots" begin
+            @testset "primal dof skips undefined builtin-array slots" begin
                 x = Vector{Any}(undef, 2)
                 x[1] = 1.0
-                @test Mooncake._fcache_gradient_input_dof(x) == 1
+                @test Mooncake._primal_input_dof(x, IdDict{Any,Any}()) == 1
             end
 
             @testset "multi-argument HVP validates direction arity" begin

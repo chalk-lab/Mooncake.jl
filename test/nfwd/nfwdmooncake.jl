@@ -214,6 +214,19 @@ end
             @test y == x
             @test dy == Mooncake.NTangent((1.0, 2.0))
         end
+
+        @testset "supports public scalar pullback and gradient APIs" begin
+            x = [1.0, 2.0, 3.0]
+            rule = Mooncake.build_frule(Mooncake.IRfwdMode{2}(), sum, x)
+
+            value_pb, pullback = Mooncake.value_and_pullback!!(rule, 3.0, sum, x)
+            @test value_pb == sum(x)
+            @test pullback == (Mooncake.NoTangent(), fill(3.0, length(x)))
+
+            value_grad, gradient = Mooncake.value_and_gradient!!(rule, sum, x)
+            @test value_grad == sum(x)
+            @test gradient == (Mooncake.NoTangent(), ones(length(x)))
+        end
     end
 
     f = (x, y) -> x * y + cos(x)
@@ -298,7 +311,7 @@ end
 
             @testset "single-input scalar rule with chunk_size>1" begin
                 x_single = 1.5
-                rule = Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{2}(), square, x_single)
+                rule = Mooncake.build_frule(Mooncake.Nfwd.NDualMode{2}(), square, x_single)
                 value, grad = Mooncake.value_and_gradient!!(rule, square, x_single)
                 @test value == square(x_single)
                 @test grad == (Mooncake.NoTangent(), 2 * x_single)
@@ -313,8 +326,7 @@ end
                 )
                 @test nfwd_public_result(out...) == (exp(x_single), exp(x_single))
 
-                rrule = Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{1}(), exp, x_single)
-                value, grad = Mooncake.value_and_gradient!!(rrule, exp, x_single)
+                value, grad = Mooncake.value_and_gradient!!(frule, exp, x_single)
                 @test value == exp(x_single)
                 @test grad == (Mooncake.NoTangent(), exp(x_single))
             end
@@ -344,7 +356,7 @@ end
                 @test auto_frule isa Mooncake.NfwdMooncake.Rule
                 auto_rrule = Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{2}(), f, x, y)
                 @test auto_rrule isa Mooncake.NfwdMooncake.RRule
-                value2, grad2 = Mooncake.value_and_gradient!!(auto_rrule, f, x, y)
+                value2, grad2 = Mooncake.value_and_gradient!!(auto_frule, f, x, y)
                 @test value2 == z
                 @test grad2 == (Mooncake.NoTangent(), y - sin(x), x)
             end
@@ -379,14 +391,15 @@ end
                 g(x) = sin.(x)
                 x_vec = [1.0, 2.0]
                 dx_vec = reshape([1.0, 0.0, 0.0, 1.0], 2, 2)
-                rrule = Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{2}(), g, x_vec)
-                value, pullback = Mooncake.value_and_pullback!!(rrule, [3.0, 4.0], g, x_vec)
+                frule_pb = Mooncake.build_frule(Mooncake.Nfwd.NDualMode{2}(), g, x_vec)
+                value, pullback = Mooncake.value_and_pullback!!(
+                    frule_pb, [3.0, 4.0], g, x_vec
+                )
                 @test value == sin.(x_vec)
                 @test pullback ==
                     (Mooncake.NoTangent(), [3.0 * cos(x_vec[1]), 4.0 * cos(x_vec[2])])
 
-                frule = Mooncake.build_frule(Mooncake.Nfwd.NDualMode{2}(), g, x_vec)
-                out = frule(
+                out = frule_pb(
                     Mooncake.zero_dual(g),
                     Mooncake.Dual(x_vec, Mooncake.NTangent(([1.0, 0.0], [0.0, 1.0]))),
                 )
@@ -409,7 +422,7 @@ end
                 @test Mooncake.primal(ȳ) == fc(zc)
                 @test pb!!(1.0) == (Mooncake.NoRData(), conj(2zc - sin(zc)))
 
-                value_scalar, grad_scalar = Mooncake.value_and_gradient!!(rrule, fc, zc)
+                value_scalar, grad_scalar = Mooncake.value_and_gradient!!(rule, fc, zc)
                 @test value_scalar == fc(zc)
                 @test grad_scalar == (Mooncake.NoTangent(), conj(2zc - sin(zc)))
 
@@ -428,7 +441,7 @@ end
 
                 hc(z) = z .* z
                 ȳ_vec = ComplexF64[2.0 - 1.0im, -0.5 + 0.25im]
-                rrule_vec = Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{2}(), hc, z_vec)
+                rrule_vec = Mooncake.build_frule(Mooncake.Nfwd.NDualMode{2}(), hc, z_vec)
                 value_vec, pullback_vec = Mooncake.value_and_pullback!!(
                     rrule_vec, ȳ_vec, hc, z_vec
                 )

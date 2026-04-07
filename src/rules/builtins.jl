@@ -1203,10 +1203,10 @@ function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
         return zero_dual(primal_output)
     end
     tangents = tuple_map(tangent, args)
-    ntangent_lanes = Mooncake._fcache_derivative_ntangent_lane_count(tangents)
+    ntangent_lanes = Mooncake._ntangent_lane_count(tangents)
     if isnothing(ntangent_lanes)
         return dual_type(typeof(primal_output))(primal_output, tangents)
-    elseif ntangent_lanes isa Val{1}
+    elseif ntangent_lanes == 1
         return dual_type(typeof(primal_output))(
             primal_output, ntuple(i -> Mooncake._ntangent_lane(tangents[i], Val(1)), Val(N))
         )
@@ -1214,7 +1214,7 @@ function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     tangent_output = NTangent(
         ntuple(
             lane -> ntuple(i -> Mooncake._ntangent_lane(tangents[i], Val(lane)), Val(N)),
-            ntangent_lanes,
+            Val(ntangent_lanes),
         ),
     )
     return Dual(primal_output, tangent_output)

@@ -1,8 +1,8 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
 @inline function _output_tangent_type(::Type{P}, tangents::Tuple) where {P}
-    ntangent_lanes = Mooncake._fcache_derivative_ntangent_lane_count(tangents)
-    !isnothing(ntangent_lanes) && return Mooncake.NTangent_type(ntangent_lanes, P)
+    ntangent_lanes = Mooncake._ntangent_lane_count(tangents)
+    !isnothing(ntangent_lanes) && return Mooncake.NTangent_type(Val(ntangent_lanes), P)
     packed_lanes = NfwdMooncake._nfwd_packed_lane_count_type(typeof(tangents))
     return if isnothing(packed_lanes)
         tangent_type(P)
@@ -34,9 +34,9 @@ end
 function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) where {P,N}
     y = _new_(P, tuple_map(primal, x)...)
     tangents = tuple_map(tangent, x)
-    dy = let ntangent_lanes = Mooncake._fcache_derivative_ntangent_lane_count(tangents)
+    dy = let ntangent_lanes = Mooncake._ntangent_lane_count(tangents)
         if !isnothing(ntangent_lanes)
-            if ntangent_lanes isa Val{1}
+            if ntangent_lanes == 1
                 build_output_tangent(
                     P,
                     tuple_map(primal, x),
@@ -44,7 +44,9 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) wh
                     tangent_type(P),
                 )
             else
-                _build_chunked_output_tangent(P, tuple_map(primal, x), tangents, ntangent_lanes)
+                _build_chunked_output_tangent(
+                    P, tuple_map(primal, x), tangents, Val(ntangent_lanes)
+                )
             end
         else
             T = _output_tangent_type(P, tangents)

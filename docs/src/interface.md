@@ -73,23 +73,31 @@ fcache = MC.prepare_derivative_cache(g, x_eval; config=MC.Config(chunk_size=2))
 val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 ```
 
-Passing `Config(chunk_size=2)` caps the forward chunk width used by this public cache path
-when it dispatches to its prepared chunked backend. That backend reuses the same chunked
-frontend exposed by `build_frule(IRfwdMode{N}(), ...)`: derived code stays on the
-semantics-preserving chunked IR path, while primitive calls over nfwd-supported
-signatures may use NDual rules directly. Leaving `chunk_size=nothing` keeps Mooncake's
-default heuristic. `Config(enable_nfwd=false)` disables this prepared-cache chunked
-backend entirely and forces the ordinary `frule!!` path for `prepare_derivative_cache`
-and APIs layered on top of it. `show(cache)` / `repr(cache)` report whether the prepared
-`ForwardCache` currently has the optional chunked backend available.
+Passing `Config(chunk_size=2)` caps the forward chunk width used by this public scalar-gradient
+path. Internally it reuses the same chunked frontend exposed by `build_frule(IRfwdMode{N}(), ...)`:
+derived code stays on the semantics-preserving chunked IR path, while primitive calls over
+nfwd-supported signatures may use NDual rules directly. Leaving `chunk_size=nothing` keeps
+Mooncake's default heuristic. `Config(enable_nfwd=false)` disables the optional nfwd
+NDual-lifted accelerators for this prepared-cache gradient path. `show(cache)` / `repr(cache)`
+report whether the prepared `ForwardCache` currently has that optional nfwd cache available.
+
+Prepared forward caches accept ordinary width-1 tangents for
+[`value_and_derivative!!`](@ref). If you want batched directional derivatives with
+`NTangent(...)`, use `build_frule(IRfwdMode{N}(), ...)` directly instead of
+`prepare_derivative_cache`.
+
+For scalar outputs, those direct chunked frules also support `value_and_pullback!!` and
+`value_and_gradient!!`, so the preferred replacement for the old chunked-cache derivative
+path is usually to build the frule you want and call the pullback/gradient interface on it.
 
 When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
 higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as
 custom structs, to the scalar/array/tuple nfwd signatures used internally, and it also
 does the usual cache checks and tangent zeroing. That extra interface work adds some
-overhead relative to calling `build_rrule(NfwdMode{N}(), ...)(...)` directly on a supported
-nfwd signature over `IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those
-element types, and tuples thereof.
+overhead relative to calling `value_and_pullback!!` / `value_and_gradient!!` directly on a
+frule built with `build_frule(NDualMode{N}(), ...)` for a supported nfwd signature over
+`IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those element types, and
+tuples thereof.
 
 As a rule of thumb, prefer Mooncake's ordinary `build_frule`, `build_rrule`,
 `prepare_derivative_cache`, and `prepare_gradient_cache` APIs for
@@ -100,7 +108,7 @@ primal dispatch boundary more broadly for structured inputs and dispatch-sensiti
 
 Separately, the Hessian path exposed by `prepare_hessian_cache` /
 `value_gradient_and_hessian!!` uses forward-over-reverse AD over a captured gradient
-closure. It does not currently use the public `NfwdMooncake` fast path, even though the
+closure. It does not currently use the public `NfwdMooncake` NDual-lifted path, even though the
 outer layer is forward mode.
 
 ## API Reference
