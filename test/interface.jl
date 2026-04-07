@@ -571,6 +571,16 @@ end
             @test z_and_dz_tup isa Tuple{Float64,Mooncake.NTangent}
             @test first(z_and_dz_tup) == z
             @test last(z_and_dz_tup) == Mooncake.NTangent((dz,))
+
+            z_and_dz_explicit_dual = Mooncake.value_and_derivative!!(
+                cache,
+                Mooncake.Dual(f, Mooncake.NoTangent()),
+                Mooncake.Dual{Float64,Float64}(x, dx),
+                Mooncake.Dual{Float64,Float64}(y, dy),
+            )
+            @test z_and_dz_explicit_dual isa Mooncake.Dual
+            @test Mooncake.primal(z_and_dz_explicit_dual) == z
+            @test Mooncake.tangent(z_and_dz_explicit_dual) == Mooncake.NTangent((dz,))
         end
 
         @testset "Array inputs" begin
@@ -659,6 +669,26 @@ end
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
             @test Mooncake.value_and_pullback!!(cache, 1.0, f, x, y) ==
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
+
+            friendly_scalar = sp -> sp.x1^2 + sin(sp.x2)
+            friendly_input = SimplePair(x, y)
+            friendly_cache = Mooncake.prepare_derivative_cache(
+                friendly_scalar,
+                friendly_input;
+                config=Mooncake.Config(; friendly_tangents=true, kwargs...),
+            )
+            @test Mooncake.value_and_gradient!!(
+                friendly_cache, friendly_scalar, friendly_input
+            ) == (
+                friendly_scalar(friendly_input),
+                (Mooncake.NoTangent(), (; x1=2 * x, x2=cos(y))),
+            )
+            @test Mooncake.value_and_pullback!!(
+                friendly_cache, 1.0, friendly_scalar, friendly_input
+            ) == (
+                friendly_scalar(friendly_input),
+                (Mooncake.NoTangent(), (; x1=2 * x, x2=cos(y))),
+            )
         end
 
         @testset "forward cache mismatch errors" begin

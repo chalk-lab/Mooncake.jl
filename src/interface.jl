@@ -271,7 +271,7 @@ end
 # - `Cache`: reusable reverse-mode cache for repeated `value_and_pullback!!` and
 #   `value_and_gradient!!` calls.
 # - `ForwardCache`: reusable forward-mode cache for repeated `value_and_derivative!!` calls,
-#   plus a cached IRfwd scalar path for `value_and_pullback!!` / `value_and_gradient!!`.
+#   plus a cached IRfwd scalar-output path for `value_and_pullback!!` / `value_and_gradient!!`.
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
 # All seven parameters are load-bearing: they keep the prepared reverse cache concrete
@@ -361,9 +361,13 @@ end
     __exclude_func_with_unsupported_output(fx)
 
 Required for the robust design of [`value_and_pullback!!`](@ref), [`prepare_pullback_cache`](@ref).
-Ensures that `y` or returned value of `fx::Tuple{Tf, Targs...}` contains no aliasing, circular references, `Ptr`s or non differentiable datatypes. 
-In the forward pass f(args...) output can only return a "Tree" like datastructure with leaf nodes as primitive types.  
-Refer https://github.com/chalk-lab/Mooncake.jl/issues/517#issuecomment-2715202789 and related issue for details.  
+Ensures that `y` or the returned value of `fx::Tuple{Tf, Targs...}` contains no
+aliasing, circular references, `Ptr`s, or non-differentiable datatypes.
+In the forward pass `f(args...)`, the output can only return a tree-like
+datastructure with primitive leaf nodes.
+Refer to
+https://github.com/chalk-lab/Mooncake.jl/issues/517#issuecomment-2715202789
+and the related issue for details.
 Internally calls [`__exclude_unsupported_output_internal!`](@ref).
 The design is modelled after `zero_tangent`.
 """
@@ -383,8 +387,11 @@ end
     __exclude_unsupported_output_internal(y::T, address_set::Set{UInt}) where {T}
 
 For checking if output`y` is a valid Mutable/immutable composite or a primitive type.
-Performs a recursive depth first search over the function output `y` with an `isbitstype()` check base case. The visited memory addresses are stored inside `address_set`.
-If the set already contains a newly visited address, it errors out indicating an Alias or Circular reference.
+Performs a recursive depth-first search over the function output `y`, with an
+`isbitstype()` check as the base case. The visited memory addresses are stored
+inside `address_set`.
+If the set already contains a newly visited address, it errors out indicating
+an alias or circular reference.
 Also errors out if `y` is or contains a Pointer.
 It is called internally by [`__exclude_unsupported_output(y)`](@ref).
 """
@@ -412,9 +419,12 @@ const _BuiltinArrays = @static VERSION >= v"1.11" ? Union{Array,Memory} : Array
 """
     _copy_to_output!!(dst::T, src::T)
 
-Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of `dst` and `src` must be the same.
-Required as Base.copy!() does not work for all supported primal types. For example, `Base.copy!` does not work for `Core.svec`.
-For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
+Copy the contents of `src` to `dst`, with zero or minimal new memory
+allocation. The type of `dst` and `src` must be the same.
+Required because `Base.copy!()` does not work for all supported primal types.
+For example, `Base.copy!` does not work for `Core.svec`.
+For types with custom copy semantics, overload this function (see
+`Core.SimpleVector` for an example).
 """
 _copy_to_output!!(dst::Number, src::Number) = src
 
@@ -513,8 +523,10 @@ end
     _copy_output(x::T)
 
 Returns a copy of `x`, of the same type `T`. Allocates new memory for the copy.
-Required as Base.copy() does not work for all supported primal types. For example, `Base.copy` does not work for `Core.svec`.
-For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
+Required because `Base.copy()` does not work for all supported primal types.
+For example, `Base.copy` does not work for `Core.svec`.
+For types with custom copy semantics, overload this function (see
+`Core.SimpleVector` for an example).
 """
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
 # cannot be deep-copied; return x as-is.
@@ -720,9 +732,12 @@ will return both to their original state as part of the process of computing the
     around over multiple calls to this function with the same `cache`, you should take a
     copy (using `copy` or `deepcopy`) of them before calling again.
 
-The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents should be reset to zero before differentiation.
+The keyword argument `args_to_zero` is a tuple of boolean values specifying
+which cotangents should be reset to zero before differentiation.
 It contains one boolean for each element of `(f, x...)`.
-It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
+It is used for performance optimizations if you can guarantee that the initial
+cotangent allocated in `cache` (created by `zero_tangent`) never needs to be
+zeroed out again.
 
 # Example Usage
 ```jldoctest
@@ -805,8 +820,9 @@ end
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 gradient of `f` w.r.t. each argument. The first element is the gradient w.r.t any
 differentiable fields of `f`, the second w.r.t the first element of `x`, etc.
-If the cache was prepared with `config.friendly_tangents=true`, the pullback uses the same types as
-those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
+If the cache was prepared with `config.friendly_tangents=true`, the pullback
+uses the same types as those of `f` and `x`. Otherwise, it uses the tangent
+types associated to `f` and `x`.
 
 Assumes that `f` returns a `Union{Float16, Float32, Float64}`.
 
@@ -826,9 +842,12 @@ will return both to their original state as part of the process of computing the
     around over multiple calls to this function with the same `cache`, you should take a
     copy (using `copy` or `deepcopy`) of them before calling again.
 
-The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents should be reset to zero before differentiation.
+The keyword argument `args_to_zero` is a tuple of boolean values specifying
+which cotangents should be reset to zero before differentiation.
 It contains one boolean for each element of `(f, x...)`.
-It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
+It is used for performance optimizations if you can guarantee that the initial
+cotangent allocated in `cache` (created by `zero_tangent`) never needs to be
+zeroed out again.
 
 # Example Usage
 ```jldoctest
@@ -1211,16 +1230,22 @@ function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {
     end && throw(
         ArgumentError("`value_and_derivative!!(cache, ...)` expects ordinary tangents.")
     )
-    # TODO: check Dual coherence here like we do below?
-    return __call_rule(cache.rule, fx)
+    return __call_rule(
+        cache.rule, tuple_map(_internal_forward_dual, input_primals, input_tangents)
+    )
 end
 
 """
     value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
 
-Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
+Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to
+compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in
+the direction of the tangent values contained in `df` and `dx`.
 
-Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
+Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate
+the case where internal Mooncake tangent types do not coincide with tangents
+provided by the user. In that case we translate between "friendly tangents"
+and internal tangents using cache storage.
 
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f`
@@ -1229,7 +1254,12 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
     when the `cache` was built.
 
 !!! warning
-    `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
+    `cache` owns any mutable state returned by this function, meaning that
+    mutable components of values returned by it will be mutated if you run this
+    function again with different arguments. Therefore, if you need to keep the
+    values returned by this function around over multiple calls to this
+    function with the same `cache`, you should take a copy (using `copy` or
+    `deepcopy`) of them before calling again.
 """
 @inline function value_and_derivative!!(
     cache::ForwardCache, fx::Vararg{Tuple{Any,Any},M}

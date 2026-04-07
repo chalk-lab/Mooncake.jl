@@ -45,7 +45,7 @@ function _dual_mc(p::MistyClosure)
     # Keep MistyClosure's cached callable on the raw derived-rule path. The public
     # `build_frule` entrypoint now returns the chunked forward wrapper, but
     # `dual_callable` is an internal helper used inside the MistyClosure primitive rule.
-    return Mooncake._build_raw_frule(
+    return Mooncake.build_frule(
         interp, p; skip_world_age_check=true, tangent_mode=Mooncake.IRfwdMode{1}()
     )
 end

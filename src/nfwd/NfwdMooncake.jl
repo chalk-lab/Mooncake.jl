@@ -301,6 +301,8 @@ end
     )
 end
 
+# Cache shell around the rule-level `__value_*!!` entrypoints: validates prepared inputs,
+# reuses native gradient storage, and performs optional friendly-output conversion.
 @inline function Mooncake.value_and_gradient!!(
     cache::IRfwdCache, f::F, x::Vararg{Any,N}
 ) where {F,N}
@@ -314,14 +316,14 @@ end
     if isnothing(cache.dests)
         return y, native_gradients
     end
-    friendly_output = Mooncake._copy_to_output!!(cache.dests, input_primals)
-    return (
-        y,
-        Mooncake.tangent_to_primal_internal!!(
-            friendly_output,
-            native_gradients,
-            isbitstype(typeof(friendly_output)) ? Mooncake.NoCache() : IdDict{Any,Any}(),
-        ),
+    dests = Mooncake._copy_to_output!!(cache.dests, input_primals)
+    c = Mooncake._friendly_cache(input_primals)
+    return y,
+    tuple_map(
+        (d, p, t) -> Mooncake.tangent_to_friendly!!(d, p, t, c),
+        dests,
+        input_primals,
+        native_gradients,
     )
 end
 
@@ -341,14 +343,14 @@ end
     if isnothing(cache.dests)
         return y, pullback
     end
-    friendly_output = Mooncake._copy_to_output!!(cache.dests, input_primals)
-    return (
-        y,
-        Mooncake.tangent_to_primal_internal!!(
-            friendly_output,
-            pullback,
-            isbitstype(typeof(friendly_output)) ? Mooncake.NoCache() : IdDict{Any,Any}(),
-        ),
+    dests = Mooncake._copy_to_output!!(cache.dests, input_primals)
+    c = Mooncake._friendly_cache(input_primals)
+    return y,
+    tuple_map(
+        (d, p, t) -> Mooncake.tangent_to_friendly!!(d, p, t, c),
+        dests,
+        input_primals,
+        pullback,
     )
 end
 
@@ -402,7 +404,7 @@ function _build_irfwd_frule(
 )
     sig = Mooncake._get_sig(sig_or_mi)
     resolved = _chunked_resolve_rule_chunk_size(sig, chunk_size)
-    inner = Mooncake._build_raw_frule(
+    inner = Mooncake.build_frule(
         interp,
         sig_or_mi;
         debug_mode,
@@ -453,7 +455,7 @@ end
 # 1. Chunked IR path.
 #    Pathway:
 #      `Mooncake.build_frule(IRfwdMode{N}(), ...)`
-#      -> `Mooncake._build_raw_frule(...; tangent_mode=IRfwdMode)`
+#      -> `Mooncake.build_frule(...; tangent_mode=IRfwdMode)`
 #      -> derived IR executes on ordinary primal values, while primitive calls may select
 #         `NfwdRule` when their primal signature is nfwd-supported.
 #    In this path, the primal values keep their original Julia types and the tangent stays

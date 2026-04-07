@@ -55,8 +55,6 @@ function _fwd_uninit_dual(::IRfwdMode{N}, x) where {N}
     return Dual(x, _chunked_uninit_tangent(x, Val(N)))
 end
 
-function build_frule end
-
 function build_frule(
     args...;
     chunk_size=nothing,
@@ -76,7 +74,7 @@ function build_frule(
     primals = map(x -> x isa Dual ? primal(x) : x, args)
     sig = _typeof(TestUtils.__get_primals(primals))
     interp = get_interpreter(ForwardMode)
-    return _build_raw_frule(
+    return build_frule(
         interp,
         sig;
         debug_mode,
@@ -84,14 +82,6 @@ function build_frule(
         skip_world_age_check,
         tangent_mode=IRfwdMode{1}(),
     )
-end
-
-function _build_raw_frule(
-    args...; debug_mode=false, silence_debug_messages=true, tangent_mode=IRfwdMode{1}()
-)
-    sig = _typeof(TestUtils.__get_primals(args))
-    interp = get_interpreter(ForwardMode)
-    return _build_raw_frule(interp, sig; debug_mode, silence_debug_messages, tangent_mode)
 end
 
 struct DualRuleInfo
@@ -115,7 +105,7 @@ Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
 than the current world (e.g., when building rules for MistyClosure which uses its own world).
 """
-function _build_raw_frule(
+function build_frule(
     interp::MooncakeInterpreter{C},
     sig_or_mi;
     debug_mode=false,
@@ -719,7 +709,7 @@ end
 
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode)
-    rule.rule = _build_raw_frule(
+    rule.rule = build_frule(
         interp, rule.mi; debug_mode=rule.debug_mode, tangent_mode=rule.tangent_mode
     )
     return __call_rule(rule.rule, args)
@@ -850,7 +840,7 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ForwardMode)
-        rule = _build_raw_frule(
+        rule = build_frule(
             interp,
             sig;
             debug_mode=dynamic_rule.debug_mode,
