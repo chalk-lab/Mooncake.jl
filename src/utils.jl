@@ -206,6 +206,284 @@ be used in its place in situations where this is important.
     return Expr(:block, exprs..., :(return true))
 end
 
+@noinline function _gradient_throw_uninit_field_error(::Type{P}, n::Int) where {P}
+    throw(
+        ArgumentError(
+            "Gradient basis traversal encountered an undefined field " *
+            "`$(fieldname(P, n))` in a value of type `$P`, but that field is marked " *
+            "always-initialised. This object is in a partially initialised state that " *
+            "Mooncake cannot traverse automatically.",
+        ),
+    )
+end
+
+#
+# Generic primal-value fold/rebuild kernels
+#
+# These helpers only walk assigned builtin-array entries, ordinary array values,
+# tuple/named-tuple values, and defined fields. Callers provide the leaf policy; the
+# traversal kernel owns the structural walk, alias handling, and immutable tangent rebuild.
+#
+# In particular, `_primal_rebuild` is designed around Mooncake's aliasing invariance:
+# if two references in the primal alias the same object, then the rebuilt tangents must
+# alias the same tangent object too. That is why the rebuild path accepts `seen` and
+# memoizes mutable/shared primals while rebuilding their tangent structure.
+#
+# MWE (fold):
+# `total = _fold_tuple_values(
+#     (acc, x, _seen) -> acc + x,
+#     0,
+#     (1, 2, 3),
+#     nothing,
+# )`
+# returns `6` because the helper walks the tuple values and threads the accumulator.
+#
+# MWE (rebuild):
+# `_primal_rebuild(recur, ops, (1.0, 2.0), Ref(0), nothing)` can rebuild a
+# tangent-shaped object by keeping the tuple walk in the kernel while `ops.leaf` decides
+# what to put at each scalar leaf. Use an `IdDict` in `seen` when rebuilt tangents need
+# to preserve primal aliasing.
+#
+@inline function _fold_builtin_array_assigned(f, init, x::AbstractArray, seen)
+    acc = init
+    for i in eachindex(x)
+        isassigned(x, i) || continue
+        acc = f(acc, x[i], seen)
+    end
+    return acc
+end
+
+@inline function _fold_array_values(f, init, x::AbstractArray, seen)
+    acc = init
+    for xi in x
+        acc = f(acc, xi, seen)
+    end
+    return acc
+end
+
+@inline function _fold_tuple_values(f, init, x::Tuple, seen)
+    acc = init
+    for xi in x
+        acc = f(acc, xi, seen)
+    end
+    return acc
+end
+
+@inline function _fold_namedtuple_values(f, init, x::NamedTuple, seen)
+    acc = init
+    for xi in values(x)
+        acc = f(acc, xi, seen)
+    end
+    return acc
+end
+
+@inline function _fold_fields(f, init, x::P, seen) where {P}
+    acc = init
+    inits = always_initialised(P)
+    for n in 1:fieldcount(P)
+        if isdefined(x, n)
+            acc = f(acc, getfield(x, n), seen)
+        elseif inits[n]
+            _gradient_throw_uninit_field_error(P, n)
+        end
+    end
+    return acc
+end
+
+@inline _make_array_tangent(x, _state, _seen) = zero_tangent(x)
+@inline _make_struct_tangent(x, _state, _seen) = zero_tangent(x)
+@inline _make_tuple_tangent(::Type, fields, _state, _seen) = fields
+@inline _make_namedtuple_tangent(::Type{P}, fields, _state, _seen) where {P<:NamedTuple} = P(
+    fields
+)
+@inline function _store_array_leaf!(leaf, dx, I, xI, state, seen)
+    dx[I] = leaf(xI, state, seen)
+    return nothing
+end
+@inline function _store_array_child!(recur, ops, dx, I, xI, state, seen)
+    dx[I] = _primal_rebuild(recur, ops, xI, state, seen)
+    return nothing
+end
+@inline function _store_struct_field!(recur, ops, tx, n::Int, x, state, seen)
+    set_tangent_field!(tx, n, _primal_rebuild(recur, ops, getfield(x, n), state, seen))
+    return nothing
+end
+
+# TODO: `zero_tangent` still has its own recursive structural walk. It should eventually
+# reuse `_primal_rebuild` with zero-valued leaf hooks so aliasing invariance and
+# partially-initialised-field handling live in one traversal kernel.
+#
+# TODO: `copy_to!!` and similar structural copy/update paths still duplicate shape walks.
+# They should eventually reuse `_primal_rebuild` or `_primal_fold` with copy-specific
+# hooks, while keeping backend-specific storage policies explicit.
+#
+# NOTE: `_primal_fold` is for pure structural reductions over the primal shape, like
+# `dof` counting. Queries that need tangent allocation or mutation should use
+# `_primal_rebuild` instead.
+#
+# NOTE: the shared traversal kernel does not imply one shared reconstruction policy.
+# IRfwd rebuilds Mooncake tangents, while nfwd can rebuild raw seeded tuples or packed
+# arrays. Share the walk; keep backend-specific container reconstruction configurable.
+@inline _primal_rebuild_ops(; leaf, nodiff, make_array=_make_array_tangent, make_tuple_tangent=_make_tuple_tangent, make_namedtuple_tangent=_make_namedtuple_tangent, store_array_leaf=(_store_array_leaf!), store_array_child=(_store_array_child!), make_struct_tangent=_make_struct_tangent, store_struct_field=(_store_struct_field!)) = (;
+    leaf,
+    nodiff,
+    make_array,
+    make_tuple_tangent,
+    make_namedtuple_tangent,
+    store_array_leaf,
+    store_array_child,
+    make_struct_tangent,
+    store_struct_field,
+)
+
+@inline _primal_fold(ops, init, ::CRC.NoTangent, seen) = ops.nodiff(init, NoTangent(), seen)
+@inline _primal_fold(ops, init, x::IEEEFloat, seen) = ops.leaf(init, x, seen)
+@inline _primal_fold(ops, init, x::Complex{<:IEEEFloat}, seen) = ops.leaf(init, x, seen)
+@inline function _primal_fold(ops, init, x::AbstractArray, seen)
+    tangent_type(typeof(x)) == NoTangent && return ops.nodiff(init, x, seen)
+    if seen isa IdDict{Any,Any}
+        haskey(seen, x) && return init
+        seen[x] = nothing
+    end
+    return ops.combine_array(
+        (acc, xi, seen) -> _primal_fold(ops, acc, xi, seen), init, x, seen
+    )
+end
+@inline function _primal_fold(ops, init, x::Tuple, seen)
+    return ops.combine_tuple(
+        (acc, xi, seen) -> _primal_fold(ops, acc, xi, seen), init, x, seen
+    )
+end
+@inline function _primal_fold(ops, init, x::NamedTuple, seen)
+    return ops.combine_namedtuple(
+        (acc, xi, seen) -> _primal_fold(ops, acc, xi, seen), init, x, seen
+    )
+end
+@inline function _primal_fold(ops, init, x::P, seen) where {P}
+    tangent_type(P) == NoTangent && return ops.nodiff(init, x, seen)
+    if Base.ismutabletype(P) && seen isa IdDict{Any,Any}
+        haskey(seen, x) && return init
+        seen[x] = nothing
+    end
+    return ops.combine_struct(
+        (acc, xi, seen) -> _primal_fold(ops, acc, xi, seen), init, x, seen
+    )
+end
+
+@inline function _primal_input_dof(x, seen)
+    # DOF is a pure reduction over the primal shape, so it uses the fold kernel rather than
+    # rebuilding tangents.
+    ops = (;
+        leaf=(total, x, _seen) -> total + (x isa Complex ? 2 : 1),
+        nodiff=(total, _x, _seen) -> total,
+        combine_array=(f, init, x, seen) -> if x isa _BuiltinArrays
+            _fold_builtin_array_assigned(f, init, x, seen)
+        else
+            _fold_array_values(f, init, x, seen)
+        end,
+        combine_tuple=_fold_tuple_values,
+        combine_namedtuple=_fold_namedtuple_values,
+        combine_struct=_fold_fields,
+    )
+    return _primal_fold(ops, 0, x, seen)
+end
+
+@inline _primal_rebuild(recur, ops, ::CRC.NoTangent, state, seen) = ops.nodiff(
+    NoTangent(), state, seen
+)
+@inline _primal_rebuild(recur, ops, x::IEEEFloat, state, seen) = ops.leaf(x, state, seen)
+@inline _primal_rebuild(recur, ops, x::Complex{<:IEEEFloat}, state, seen) = ops.leaf(
+    x, state, seen
+)
+
+@inline function _primal_rebuild(
+    recur, ops, x::AbstractArray{T}, state, seen
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    tangent_type(typeof(x)) == NoTangent && return ops.nodiff(x, state, seen)
+    if seen isa IdDict{Any,Any}
+        existing = get(seen, x, nothing)
+        !isnothing(existing) && return existing
+    end
+    # Scalar/complex leaf arrays are rebuilt elementwise through the leaf policy, letting
+    # each backend choose the concrete storage layout.
+    dx = ops.make_array(x, state, seen)
+    seen isa IdDict{Any,Any} && (seen[x] = dx)
+    @inbounds for I in eachindex(x)
+        ops.store_array_leaf(ops.leaf, dx, I, x[I], state, seen)
+    end
+    return dx
+end
+
+@inline function _primal_rebuild(recur, ops, x::AbstractArray, state, seen)
+    tangent_type(typeof(x)) == NoTangent && return ops.nodiff(x, state, seen)
+    if seen isa IdDict{Any,Any}
+        existing = get(seen, x, nothing)
+        !isnothing(existing) && return existing
+    end
+    # Non-leaf arrays recurse into their elements, while still memoizing shared mutable
+    # primals so rebuilt tangents preserve aliasing invariance.
+    dx = ops.make_array(x, state, seen)
+    seen isa IdDict{Any,Any} && (seen[x] = dx)
+    if x isa _BuiltinArrays
+        for I in eachindex(x)
+            isassigned(x, I) || continue
+            ops.store_array_child(recur, ops, dx, I, x[I], state, seen)
+        end
+    else
+        for I in eachindex(x)
+            ops.store_array_child(recur, ops, dx, I, x[I], state, seen)
+        end
+    end
+    return dx
+end
+
+@inline function _primal_rebuild(recur, ops, x::P, state, seen) where {P<:Tuple}
+    tangent_type(P) == NoTangent && return ops.nodiff(x, state, seen)
+    fields = ntuple(n -> _primal_rebuild(recur, ops, x[n], state, seen), Val(fieldcount(P)))
+    return ops.make_tuple_tangent(P, fields, state, seen)
+end
+
+@inline function _primal_rebuild(recur, ops, x::P, state, seen) where {P<:NamedTuple}
+    tangent_type(P) == NoTangent && return ops.nodiff(x, state, seen)
+    fields = ntuple(n -> _primal_rebuild(recur, ops, x[n], state, seen), Val(fieldcount(P)))
+    return ops.make_namedtuple_tangent(P, fields, state, seen)
+end
+
+@inline function _primal_rebuild(recur, ops, x::P, state, seen) where {P}
+    tangent_type(P) == NoTangent && return ops.nodiff(x, state, seen)
+    if Base.ismutabletype(P)
+        if seen isa IdDict{Any,Any}
+            existing = get(seen, x, nothing)
+            !isnothing(existing) && return existing
+        end
+        tx = ops.make_struct_tangent(x, state, seen)
+        seen isa IdDict{Any,Any} && (seen[x] = tx)
+        if tx isa MutableTangent
+            inits = always_initialised(P)
+            for n in 1:fieldcount(P)
+                if isdefined(x, n)
+                    ops.store_struct_field(recur, ops, tx, n, x, state, seen)
+                elseif inits[n]
+                    _gradient_throw_uninit_field_error(P, n)
+                end
+            end
+        end
+        return tx
+    end
+
+    inits = always_initialised(P)
+    fields = ntuple(Val(fieldcount(P))) do n
+        if isdefined(x, n)
+            _primal_rebuild(recur, ops, getfield(x, n), state, seen)
+        elseif inits[n]
+            _gradient_throw_uninit_field_error(P, n)
+        else
+            PossiblyUninitTangent{tangent_type(fieldtype(P, n))}()
+        end
+    end
+    return build_tangent(P, fields...)
+end
+
 """
     _map_if_assigned!(f, y::DenseArray, x::DenseArray{P}) where {P}
 

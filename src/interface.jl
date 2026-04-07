@@ -1406,37 +1406,13 @@ end
 #   `_is_ndual_unsupported_error`.
 #
 # Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)`:
-# - `x::IEEEFloat`: scalar width-1 path
-# - `x::Vector{<:IEEEFloat}`: small-vector path
-# - `x::Array{<:IEEEFloat}`: dense-array path
+# - `x::IEEEFloat` or `x::Array{<:IEEEFloat}`: try the cached nfwd fast path first
 # - otherwise: generic vararg path, which seeds standard-basis `NTangent` chunks and
 #   repeatedly calls `_fcache_derivative_chunked!!`
 
 @inline function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::T
-) where {F,T<:IEEEFloat}
-    input_primals = (f, x)
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
-    nfwdcache = cache.nfwdcache
-    if nfwdcache isa NfwdMooncake.NfwdCache
-        result = value_and_gradient!!(nfwdcache, f, x)
-        if !isnothing(result)
-            y, native_gradients = result
-            return if isnothing(cache.input_tangents)
-                y, native_gradients
-            else
-                y, _fcache_gradient_output(cache, input_primals, native_gradients)
-            end
-        end
-    end
-    return _fcache_gradient_chunked!!(cache, input_primals)
-end
-
-# Array `value_and_gradient!!` path: use the generic chunked gradient assembly unless the
-# chunk cache provides the narrow dense-array fast path.
-@inline function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::A
-) where {F,A<:Array{<:IEEEFloat}}
+    cache::ForwardCache, f::F, x::Union{IEEEFloat,Array{<:IEEEFloat}}
+) where {F}
     input_primals = (f, x)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     nfwdcache = cache.nfwdcache
