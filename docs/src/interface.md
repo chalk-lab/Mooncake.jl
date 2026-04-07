@@ -64,23 +64,6 @@ val, grad = MC.value_and_gradient!!(
 Aside: Any performance impact from using `friendly_tangents = true` should be very minor.
 If it is noticeable, something is likely wrong—please open an issue.
 
-If you want to use forward mode explicitly, the cache from `prepare_derivative_cache` can now
-also drive `value_and_gradient!!` for scalar outputs. Mooncake seeds standard-basis directions
-internally and evaluates them in chunks:
-
-```@example interface
-fcache = MC.prepare_derivative_cache(g, x_eval; config=MC.Config(chunk_size=2))
-val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
-```
-
-Passing `Config(chunk_size=2)` caps the forward chunk width used by this public scalar-gradient
-path. Internally it reuses the same chunked frontend exposed by `build_frule(IRfwdMode{N}(), ...)`:
-derived code stays on the semantics-preserving chunked IR path, while primitive calls over
-nfwd-supported signatures may use NDual rules directly. Leaving `chunk_size=nothing` keeps
-Mooncake's default heuristic. `Config(enable_nfwd=false)` disables the optional nfwd
-NDual-lifted accelerators for this prepared-cache gradient path. `show(cache)` / `repr(cache)`
-report whether the prepared `ForwardCache` currently has that optional nfwd cache available.
-
 Prepared forward caches accept ordinary width-1 tangents for
 [`value_and_derivative!!`](@ref). If you want batched directional derivatives with
 `NTangent(...)`, use `build_frule(IRfwdMode{N}(), ...)` directly instead of
@@ -117,7 +100,6 @@ outer layer is forward mode.
 Mooncake.Config
 Mooncake.value_and_derivative!!
 Mooncake.value_and_gradient!!(::Mooncake.Cache, f::F, x::Vararg{Any, N}) where {F, N}
-Mooncake.value_and_gradient!!(::Mooncake.ForwardCache, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.value_and_pullback!!(::Mooncake.Cache, ȳ, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.prepare_derivative_cache
 Mooncake.prepare_gradient_cache
