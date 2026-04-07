@@ -1604,20 +1604,10 @@ end
     return tangent
 end
 
-# NamedTuple primals use plain NamedTuple tangents, not Tangent wrappers with `.fields`.
-# Handle them before the generic NamedTuple-dest method for immutable-struct tangents.
-@unstable function tangent_to_friendly!!(
-    dest::NamedTuple{names},
-    primal::NamedTuple{names},
-    tangent::NamedTuple{names},
-    c::MaybeCache,
-) where {names}
-    return map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dest, primal, tangent)
-end
-
-# NamedTuple dest: recurse into immutable struct fields.
-# `tangent` must be a Tangent (immutable struct tangent) whose `.fields` NamedTuple is
-# integer-indexable and whose elements are PossiblyUninitTangent-or-plain tangents.
+# NamedTuple dest: recurse into fields.
+# When primal is a NamedTuple, tangents are plain NamedTuples — index directly.
+# When primal is an immutable struct, tangents are Tangent wrappers whose `.fields`
+# NamedTuple contains PossiblyUninitTangent-or-plain tangents.
 # Mutable structs use the AsMutableFields path above instead.
 # When `tangent isa NoTangent` the primal type has no differentiable fields according to
 # the runtime world (e.g. because an extension declared tangent_type(P) == NoTangent after
@@ -1642,19 +1632,27 @@ end
             end
         )
     end
-    field_exprs = map(1:n) do i
-        quote
-            if is_init(tangent.fields[$i])
-                tangent_to_friendly!!(
-                    dest[$i], getfield(primal, $i), val(tangent.fields[$i]), c
-                )
-            else
-                # PossiblyUninitTangent with isInit=false: field had zero contribution.
-                # If the primal field is defined, convert a canonical zero tangent so the
-                # return type is consistent with the initialised path.  If the primal field
-                # is also undefined, fall back to returning the cache entry as-is (the field
-                # cannot be meaningfully represented as a friendly value).
-                $(zero_field_exprs[i])
+    if P <: NamedTuple
+        # NamedTuple tangents are plain NamedTuples — index directly like Tuples.
+        field_exprs = map(1:n) do i
+            :(tangent_to_friendly!!(dest[$i], getfield(primal, $i), tangent[$i], c))
+        end
+    else
+        # Immutable struct tangents are Tangent wrappers with .fields.
+        field_exprs = map(1:n) do i
+            quote
+                if is_init(tangent.fields[$i])
+                    tangent_to_friendly!!(
+                        dest[$i], getfield(primal, $i), val(tangent.fields[$i]), c
+                    )
+                else
+                    # PossiblyUninitTangent with isInit=false: field had zero contribution.
+                    # If the primal field is defined, convert a canonical zero tangent so the
+                    # return type is consistent with the initialised path.  If the primal
+                    # field is also undefined, fall back to returning the cache entry as-is
+                    # (the field cannot be meaningfully represented as a friendly value).
+                    $(zero_field_exprs[i])
+                end
             end
         end
     end
