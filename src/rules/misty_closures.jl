@@ -42,9 +42,9 @@ function _dual_mc(p::MistyClosure)
         mc_world = UInt(p.oc.world)
     end
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
-    # Keep MistyClosure's cached callable on the raw derived-rule path. The public
-    # `build_frule` entrypoint now returns the chunked forward wrapper, but
-    # `dual_callable` is an internal helper used inside the MistyClosure primitive rule.
+    # Call the interpreter-targeted overload directly so the rule is derived in
+    # MistyClosure's original world. The public varargs `build_frule(p, ...)` entrypoint
+    # would construct a current-world interpreter instead.
     return Mooncake.build_frule(
         interp, p; skip_world_age_check=true, tangent_mode=Mooncake.IRfwdMode{1}()
     )

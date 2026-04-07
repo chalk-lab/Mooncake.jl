@@ -318,12 +318,14 @@ end
     end
     dests = Mooncake._copy_to_output!!(cache.dests, input_primals)
     c = Mooncake._friendly_cache(input_primals)
-    return y,
-    tuple_map(
-        (d, p, t) -> Mooncake.tangent_to_friendly!!(d, p, t, c),
-        dests,
-        input_primals,
-        native_gradients,
+    return (
+        y,
+        tuple_map(
+            (d, p, t) -> Mooncake.tangent_to_friendly!!(d, p, t, c),
+            dests,
+            input_primals,
+            native_gradients,
+        ),
     )
 end
 
@@ -345,12 +347,14 @@ end
     end
     dests = Mooncake._copy_to_output!!(cache.dests, input_primals)
     c = Mooncake._friendly_cache(input_primals)
-    return y,
-    tuple_map(
-        (d, p, t) -> Mooncake.tangent_to_friendly!!(d, p, t, c),
-        dests,
-        input_primals,
-        pullback,
+    return (
+        y,
+        tuple_map(
+            (d, p, t) -> Mooncake.tangent_to_friendly!!(d, p, t, c),
+            dests,
+            input_primals,
+            pullback,
+        ),
     )
 end
 
@@ -455,7 +459,7 @@ end
 # 1. Chunked IR path.
 #    Pathway:
 #      `Mooncake.build_frule(IRfwdMode{N}(), ...)`
-#      -> `Mooncake.build_frule(...; tangent_mode=IRfwdMode)`
+#      -> `Mooncake.build_frule(interp, ...; tangent_mode=IRfwdMode)`
 #      -> derived IR executes on ordinary primal values, while primitive calls may select
 #         `NfwdRule` when their primal signature is nfwd-supported.
 #    In this path, the primal values keep their original Julia types and the tangent stays

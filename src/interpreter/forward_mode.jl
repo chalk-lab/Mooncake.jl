@@ -72,7 +72,7 @@ function build_frule(
             ),
         )
     primals = map(x -> x isa Dual ? primal(x) : x, args)
-    sig = _typeof(TestUtils.__get_primals(primals))
+    sig = _typeof(primals)
     interp = get_interpreter(ForwardMode)
     return build_frule(
         interp,
@@ -97,6 +97,7 @@ end
         debug_mode=false,
         silence_debug_messages=true,
         skip_world_age_check=false,
+        tangent_mode=IRfwdMode{1}(),
     ) where {C}
 
 Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a rule if
@@ -104,6 +105,9 @@ Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a
 
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
 than the current world (e.g., when building rules for MistyClosure which uses its own world).
+
+`tangent_mode` selects the forward tangent representation and primitive-lowering mode used
+to derive the rule. The default `IRfwdMode{1}()` builds the ordinary width-1 forward rule.
 """
 function build_frule(
     interp::MooncakeInterpreter{C},
@@ -595,7 +599,10 @@ function modify_fwd_ad_stmts!(
         end
 
         if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
-            rule = build_primitive_frule(sig)
+            rule = _fwd_primitive_rule(
+                info.tangent_mode, interp, sig; debug_mode=info.debug_mode
+            )
+            isnothing(rule) && (rule = build_primitive_frule(sig))
             if safe_for_literal(rule)
                 replace_call!(dual_ir, ssa, Expr(:call, rule, dual_args...))
             else
@@ -692,6 +699,28 @@ end
 # Create new lazy rule with same method instance and debug mode
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.tangent_mode)
 
+@static if VERSION < v"1.11-"
+    @inline function __call_rule(
+        rule::LazyFRule{
+            sig,DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs},Tmode
+        },
+        args,
+    ) where {sig,P,A,R,isva,nargs,Tmode}
+        return rule(args...)::R
+    end
+
+    @inline function __call_rule(
+        rule::LazyFRule{
+            sig,
+            DebugFRule{DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}},
+            Tmode,
+        },
+        args,
+    ) where {sig,P,A,R,isva,nargs,Tmode}
+        return rule(args...)::R
+    end
+end
+
 @inline _canonicalise_fwd_arg(x) = x
 @inline function _canonicalise_fwd_arg(x::Dual{P,<:NTangent}) where {P}
     tangent_type(typeof(primal(x))) == NoTangent || return x
@@ -723,20 +752,24 @@ end
 # nfwd-backed primitive lowering for IRfwdMode
 #
 # `IRfwdMode` keeps derived code on ordinary primal values plus `NTangent` lanes, but some
-# primitive sites can be lowered to nfwd's NDual-backed rules when both the primitive
-# signature and inferred output type are structurally supported.
+# primitive call sites reached through rule dispatch can be lowered to nfwd's NDual-backed
+# rules when the primitive signature and inferred output type are structurally supported,
+# and the corresponding NDual-lifted primitive dispatch actually exists.
 #
 # MWE:
 #   f(x) = sin(x) + x
 #
 # When IR forward mode derives a rule for `f`, the outer `+` and the overall function body
 # still execute on ordinary primal values with `Dual{P,NTangent{...}}` tangents. This block
-# only decides whether a primitive site such as `sin(::Float64)` should use
+# only decides whether a primitive call reached through rule dispatch, such as
+# `sin(::Float64)`, should use
 # `NfwdMooncake.NfwdRule{Tuple{typeof(sin),Float64},N}()` internally.
 #
 # So this is not "run `f` on NDual-lifted arguments". It is "keep the derived IR rule on
-# ordinary primals, but lower individual primitive calls to nfwd when their primal input
-# signature and inferred output type are known to be nfwd-supported".
+# ordinary primals, but lower eligible primitive calls to nfwd only when their primal input
+# signature, inferred output type, and NDual-lifted dispatch are all known to be
+# nfwd-supported". Statically inlined primitive sites continue to emit the ordinary
+# primitive frule call directly.
 
 @inline _nfwd_supported_primal_type(::Type{<:IEEEFloat}) = true
 @inline _nfwd_supported_primal_type(::Type{<:Complex{<:IEEEFloat}}) = true
@@ -791,6 +824,21 @@ function _fwd_primitive_rule(
 ) where {N}
     _nfwd_supports_primitive_sig(sig) || return nothing
     _nfwd_supports_primitive_output_sig(sig) || return nothing
+    lifted_sig = Tuple{
+        sig.parameters[1],map(Base.tail(Tuple(sig.parameters))) do T
+            if tangent_type(T) == NoTangent
+                T
+            else
+                NfwdMooncake._nfwd_pack_tangent_storage_type(Val(N), T)
+            end
+        end...
+    }
+    min = Base.RefValue{UInt}(typemin(UInt))
+    max = Base.RefValue{UInt}(typemax(UInt))
+    ms = Base._methods_by_ftype(
+        lifted_sig, nothing, 1, interp.world, true, min, max, Ptr{Int32}(C_NULL)
+    )
+    (ms isa Vector && !isempty(ms)) || return nothing
     return NfwdMooncake.NfwdRule{sig,N}()
 end
 

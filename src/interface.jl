@@ -274,7 +274,7 @@ end
 #   plus a cached IRfwd scalar-output path for `value_and_pullback!!` / `value_and_gradient!!`.
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
-# All seven parameters are load-bearing: they keep the prepared reverse cache concrete
+# The `Cache` parameters are load-bearing: they keep the prepared reverse cache concrete
 # across the cached rule, reusable primal/tangent buffers, and cached input/output specs.
 struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     rule::Trule
@@ -716,14 +716,15 @@ an acceptable tangent for `y`. If the cache was prepared with `config.friendly_t
 this means that, for example, it must be true that `tangent_type(typeof(y)) == typeof(ȳ)`.
 If the cache was prepared with `config.friendly_tangents=true`, then `typeof(y) == typeof(ȳ)`.
 
-As with all functionality in Mooncake, if `f` modifes itself or `x`, `value_and_gradient!!`
-will return both to their original state as part of the process of computing the gradient.
+As with all functionality in Mooncake, if `f` modifies itself or `x`,
+`value_and_pullback!!` will return both to their original state as part of the
+process of computing the pullback.
 
 !!! info
     `cache` must be the output of [`prepare_pullback_cache`](@ref), and (fields of) `f` and
     `x` must be of the same size and shape as those used to construct the `cache`. This is
-    to ensure that the gradient can be written to the memory allocated when the `cache` was
-    built.
+    to ensure that the pullback can be written to the memory allocated when the `cache`
+    was built.
 
 !!! warning
     `cache` owns any mutable state returned by this function, meaning that mutable
@@ -820,13 +821,13 @@ end
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 gradient of `f` w.r.t. each argument. The first element is the gradient w.r.t any
 differentiable fields of `f`, the second w.r.t the first element of `x`, etc.
-If the cache was prepared with `config.friendly_tangents=true`, the pullback
+If the cache was prepared with `config.friendly_tangents=true`, the gradient
 uses the same types as those of `f` and `x`. Otherwise, it uses the tangent
 types associated to `f` and `x`.
 
-Assumes that `f` returns a `Union{Float16, Float32, Float64}`.
+Assumes that `f` returns an `IEEEFloat`.
 
-As with all functionality in Mooncake, if `f` modifes itself or `x`, `value_and_gradient!!`
+As with all functionality in Mooncake, if `f` modifies itself or `x`, `value_and_gradient!!`
 will return both to their original state as part of the process of computing the gradient.
 
 !!! info
@@ -1201,6 +1202,7 @@ end
 function value_and_pullback!!(
     cache::ForwardCache, ȳ, f::F, x::Vararg{Any,N}; friendly_tangents=false
 ) where {F,N}
+    _ = friendly_tangents
     # Friendly/native tangent selection is fixed when the cache is prepared.
     return value_and_pullback!!(cache.irfwd_cache, ȳ, f, x...)
 end
@@ -1212,14 +1214,6 @@ Returns a `Dual` containing the result of applying forward-mode AD to compute th
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
 """
-# Derivative dispatch summary for `value_and_derivative!!(cache, ...)`:
-# - `value_and_derivative!!(cache, duals...)`: native/internal tangent interface;
-#   calls the cached `frule` directly
-# - `value_and_derivative!!(cache, (f, df), (x, dx), ...)`: tuple interface
-# - prepared caches only support ordinary width-1 tangents
-# - scalar-output `value_and_pullback!!` / `value_and_gradient!!` dispatch to the stored
-#   IRfwd cache
-# - for batched directional derivatives, call a direct frule via `value_and_derivative!!(rule, ...)`
 function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
