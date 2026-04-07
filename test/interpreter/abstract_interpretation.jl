@@ -132,24 +132,29 @@ end
         cache = Mooncake.prepare_gradient_cache(f, x)
         Mooncake.value_and_gradient!!(cache, f, x)
 
-        fwd_interp_before = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode]
-        rev_interp_before = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode]
-
-        @test !isempty(fwd_interp_before.oc_cache) || !isempty(rev_interp_before.oc_cache)
+        # Verify caches are populated before clearing.
+        rev_interp = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode]
+        @test !isempty(rev_interp.oc_cache) || !isempty(rev_interp.code_cache.dict)
 
         Mooncake.clear_mooncake_caches!()
 
-        fwd_interp_after = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode]
-        rev_interp_after = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode]
+        # in-place clear: same interpreter objects, all caches now empty.
+        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].oc_cache)
+        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].code_cache.dict)
+        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].inf_cache)
+        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
+        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].code_cache.dict)
+        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].inf_cache)
 
-        # Fresh interpreters: oc_cache (OpaqueClosures) is cleared.
-        # code_cache is pre-populated by the MooncakeInterpreter constructor, which is expected.
-        @test isempty(fwd_interp_after.oc_cache)
-        @test isempty(rev_interp_after.oc_cache)
-
-        # After clearing, AD should still work correctly.
+        # After clearing, existing Cache objects still work (rule is inside the Cache).
         val, grad = Mooncake.value_and_gradient!!(cache, f, x)
         @test val ≈ sin(x[1]) + x[2]^2
         @test grad[2] ≈ [cos(x[1]), 2x[2]]
+
+        # Fresh prepare_gradient_cache re-derives correctly from scratch.
+        cache2 = Mooncake.prepare_gradient_cache(f, x)
+        val2, grad2 = Mooncake.value_and_gradient!!(cache2, f, x)
+        @test val2 ≈ val
+        @test grad2[2] ≈ grad[2]
     end
 end

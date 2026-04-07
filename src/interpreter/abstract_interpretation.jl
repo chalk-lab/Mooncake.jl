@@ -352,12 +352,22 @@ end
 """
     clear_mooncake_caches!()
 
-Clear all internal Mooncake caches, including cached OpaqueClosures and compiled code.
-Calling this function will cause Mooncake to re-derive any rules it has previously
-cached, and can be used to free memory in long-running sessions.
+Clear all Julia-level caches that Mooncake holds globally, including cached
+OpaqueClosures, compiled `CodeInstance`s, and type-inference results.
+
+After calling this function, Mooncake will re-derive rules from scratch on the
+next call, which allows the garbage collector to reclaim the memory previously
+held by those cache entries.
+
+!!! note
+    Only Julia-level (GC-managed) objects are freed. JIT-compiled native machine
+    code is held permanently by the Julia runtime and cannot be reclaimed.
 """
 function clear_mooncake_caches!()
-    GLOBAL_INTERPRETERS[ForwardMode] = MooncakeInterpreter(DefaultCtx, ForwardMode)
-    GLOBAL_INTERPRETERS[ReverseMode] = MooncakeInterpreter(DefaultCtx, ReverseMode)
+    for interp in values(GLOBAL_INTERPRETERS)
+        empty!(interp.oc_cache)
+        empty!(interp.code_cache.dict)
+        empty!(interp.inf_cache)
+    end
     return nothing
 end
