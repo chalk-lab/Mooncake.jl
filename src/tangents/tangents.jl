@@ -1604,10 +1604,11 @@ end
     return tangent
 end
 
-# NamedTuple dest: recurse into fields.
-# When primal is a NamedTuple, tangents are plain NamedTuples — index directly.
-# When primal is an immutable struct, tangents are Tangent wrappers whose `.fields`
-# NamedTuple contains PossiblyUninitTangent-or-plain tangents.
+# NamedTuple destination: recurse field-wise.
+# For NamedTuple primals, tangents are plain NamedTuples and are indexed directly.
+# For immutable struct primals, tangents are Tangent wrappers whose `.fields` entries are
+# plain tangents or `PossiblyUninitTangent` values. If `tangent isa NoTangent` at runtime, 
+# return zero-tangent friendly values per field instead of erroring.
 # Mutable structs use the AsMutableFields path above instead.
 # When `tangent isa NoTangent` the primal type has no differentiable fields according to
 # the runtime world (e.g. because an extension declared tangent_type(P) == NoTangent after
