@@ -125,6 +125,12 @@ struct StructNoRvs
     x::Vector{Float64}
 end
 
+# capture in ReturnNode regression test
+struct RegTestStruct
+    x::Vector{Float64}
+    RegTestStruct() = new()
+end
+
 struct FiveFields{A,B,C,D,E}
     a::A
     b::B
@@ -277,6 +283,21 @@ function goto_tester(x)
     @label aha
     return cos(x)
 end
+
+function try_catch_tester(x)
+    y = 0.0
+    try
+        if x > 0
+            error("")
+        end
+        y = x
+    catch
+        y = 2x
+    end
+    return y
+end
+
+return_node_capture_tester(x) = RegTestStruct()
 
 struct StableFoo
     x::Float64
@@ -722,6 +743,8 @@ function generate_test_functions()
         (false, :none, nothing, arg_in_pi_node, false),
         (false, :allocs, nothing, intrinsic_tester, 5.0),
         (false, :allocs, nothing, goto_tester, 5.0),
+        (false, :none, nothing, try_catch_tester, 5.0),
+        (false, :none, nothing, return_node_capture_tester, 1.0),
         (false, :allocs, nothing, new_tester, 5.0, :hello),
         (false, :allocs, nothing, new_tester_2, 4.0),
         (false, :none, nothing, new_tester_3, Ref{Any}(StructFoo)),

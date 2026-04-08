@@ -143,6 +143,14 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     end
 end
 
+@inline function frule!!(
+    fdual::Dual{typeof(lgetfield)},
+    x::Complex{Nfwd.NDual{T,N}},
+    name::Dual{Val{f}},
+) where {T<:IEEEFloat,N,f}
+    return _nfwd_primitive_frule_call(Val(N), fdual, x, name)
+end
+
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, ::Val{name}) where {name} = getfield(f, name)
@@ -249,6 +257,15 @@ end
     else
         return Dual(primal_field, _get_tangent_field(tangent(x), Val(f)))
     end
+end
+
+@inline function frule!!(
+    fdual::Dual{typeof(lgetfield)},
+    x::Complex{Nfwd.NDual{T,N}},
+    name::Dual{Val{f}},
+    order::Dual{Val{ord}},
+) where {T<:IEEEFloat,N,f,ord}
+    return _nfwd_primitive_frule_call(Val(N), fdual, x, name, order)
 end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}

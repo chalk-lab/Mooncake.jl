@@ -594,6 +594,15 @@ end
             @test Mooncake.value_and_derivative!!(
                 cache_arr, (f_arr, Mooncake.zero_tangent(f_arr)), (x_arr, dx_arr_1)
             ) == (sum(abs2, x_arr), Mooncake.NTangent((2 * dot(x_arr, dx_arr_1),)))
+
+            width2_rule = Mooncake.build_frule(
+                sum, x_arr; chunk_size=2, debug_mode=get(kwargs, :debug_mode, false)
+            )
+            @test Mooncake.value_and_derivative!!(
+                width2_rule,
+                (sum, Mooncake.NoTangent()),
+                (x_arr, Mooncake.NTangent((ones(2), fill(2.0, 2)))),
+            ) == (sum(x_arr), Mooncake.NTangent((2.0, 4.0)))
         end
 
         @testset "Non-differentiable outputs" begin

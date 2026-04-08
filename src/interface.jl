@@ -234,12 +234,12 @@ function __create_coduals(args)
 end
 
 """
-    value_and_derivative!!(rule, f::Dual, x::Dual...)
+    value_and_derivative!!(rule, f, x...)
     value_and_derivative!!(rule, (f, df), (x, dx), ...)
 
 Run a forward rule directly, without first constructing a `ForwardCache`.
 
-The `Dual` interface returns the rule output directly. The tuple interface returns
+The width-aware dual-type interface returns the rule output directly. The tuple interface returns
 `(y, dy)` using the rule's native tangent representation. Specialized rule types may
 add chunked `NTangent` support on top of this entrypoint.
 """
@@ -247,16 +247,19 @@ add chunked `NTangent` support on top of this entrypoint.
     throw(
         ArgumentError(
             "`value_and_derivative!!(rule, ...)` expects at least the function input, " *
-            "either as `f::Dual` or `(f, df)`.",
+            "either as a width-aware dual type or `(f, df)`.",
         ),
     )
 end
 
-@inline function value_and_derivative!!(rule::R, fx::Vararg{Dual,N}) where {R,N}
-    return __call_rule(
-        rule,
-        map(x -> Dual(primal(x), _canonical_forward_tangent(primal(x), tangent(x))), fx),
+@inline function value_and_derivative!!(rule::R, fx::Vararg{Any,N}) where {R,N}
+    all(verify_dual_type, fx) || throw(
+        ArgumentError(
+            "`value_and_derivative!!(rule, ...)` expects width-aware dual-type inputs " *
+            "or `(x, dx)` tuples.",
+        ),
     )
+    return __call_rule(rule, map(_canonicalize_width_aware_dual, fx))
 end
 
 @inline function value_and_derivative!!(rule::R, fx::Vararg{Tuple{Any,Any},N}) where {R,N}
@@ -271,7 +274,7 @@ end
 # - `Cache`: reusable reverse-mode cache for repeated `value_and_pullback!!` and
 #   `value_and_gradient!!` calls.
 # - `ForwardCache`: reusable forward-mode cache for repeated `value_and_derivative!!` calls,
-#   plus a cached IRfwd scalar-output path for `value_and_pullback!!` / `value_and_gradient!!`.
+#   plus a cached scalar-output path for `value_and_pullback!!` / `value_and_gradient!!`.
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
 # The `Cache` parameters are load-bearing: they keep the prepared reverse cache concrete
@@ -890,8 +893,96 @@ end
 struct ForwardCache{R,IT<:Union{Nothing,Tuple},IC,S<:Tuple}
     rule::R
     input_tangents::IT
-    irfwd_cache::IC
+    scalar_cache::IC
     input_specs::S
+end
+
+struct ScalarForwardCache{R,D,GW,S<:Tuple}
+    rule::R
+    dests::D
+    gradient_workspace::GW
+    input_specs::S
+end
+
+@inline function _resolve_scalar_forward_chunk_size(chunk_size)
+    isnothing(chunk_size) && return 1
+    chunk_size isa Int && chunk_size > 0 ||
+        throw(ArgumentError("chunk_size must be a positive Int or nothing."))
+    return chunk_size
+end
+
+@unstable function ScalarForwardCache(rule::R, f, x...; config=Config()) where {R}
+    fx = (f, x...)
+    input_specs = map(fx) do x
+        if x isa AbstractArray
+            PreparedCacheInputSpec(typeof(x), size(x))
+        else
+            PreparedCacheInputSpec(typeof(x), ())
+        end
+    end
+    native_gradients = tuple_map(zero_tangent, fx)
+    dests = if config.friendly_tangents
+        tuple(map(friendly_tangent_cache, fx)...)
+    else
+        nothing
+    end
+    gradient_workspace = Ref(native_gradients)
+    return ScalarForwardCache{
+        typeof(rule),typeof(dests),typeof(gradient_workspace),typeof(input_specs)
+    }(
+        rule, dests, gradient_workspace, input_specs
+    )
+end
+
+@inline function value_and_gradient!!(
+    cache::ScalarForwardCache, f::F, x::Vararg{Any,N}
+) where {F,N}
+    input_primals = (f, x...)
+    _validate_prepared_cache_inputs(cache.input_specs, input_primals)
+    native_gradients = tuple_map(set_to_zero!!, cache.gradient_workspace[])
+    cache.gradient_workspace[] = native_gradients
+    y, native_gradients = __value_and_gradient!!(
+        cache.rule, tuple_map(CoDual, input_primals, native_gradients)...
+    )
+    if isnothing(cache.dests)
+        return y, native_gradients
+    end
+    c = _friendly_cache(input_primals)
+    return (
+        y,
+        tuple_map(
+            (d, p, t) -> tangent_to_friendly!!(d, p, t, c),
+            cache.dests,
+            input_primals,
+            native_gradients,
+        ),
+    )
+end
+
+@inline function value_and_pullback!!(
+    cache::ScalarForwardCache, ȳ::T, f::F, x::Vararg{Any,N}
+) where {T<:IEEEFloat,F,N}
+    input_primals = (f, x...)
+    _validate_prepared_cache_inputs(cache.input_specs, input_primals)
+    native_gradients = tuple_map(set_to_zero!!, cache.gradient_workspace[])
+    cache.gradient_workspace[] = native_gradients
+    y, native_gradients = __value_and_gradient!!(
+        cache.rule, tuple_map(CoDual, input_primals, native_gradients)...
+    )
+    pullback = tuple_map(g -> g isa NoTangent ? g : _scale(ȳ, g), native_gradients)
+    if isnothing(cache.dests)
+        return y, pullback
+    end
+    c = _friendly_cache(input_primals)
+    return (
+        y,
+        tuple_map(
+            (d, p, t) -> tangent_to_friendly!!(d, p, t, c),
+            cache.dests,
+            input_primals,
+            pullback,
+        ),
+    )
 end
 
 @inline _dual_primal_type(::Type) = Any
@@ -1029,16 +1120,16 @@ end
 end
 
 #
-# Scalar pullbacks from IR-derived forward rules
+# Scalar pullbacks from cached forward rules
 #
 # These are the public scalar-output pullback / gradient entrypoints for width-1 and
-# chunked IR-derived forward rules. They stay on ordinary primals plus `NTangent` lanes,
+# chunked forward rules. They stay on ordinary primals plus `NTangent` lanes,
 # seed standard-basis chunk tangents internally, and accumulate scalar coefficients into
-# full gradients. This keeps the public interface on top of IR-derived frules rather than
+# full gradients. This keeps the public interface on top of forward rules rather than
 # wrapping them in a separate reverse-rule object.
 #
 # MWE:
-# `build_frule(IRfwdMode{4}(), typeof((sum, randn(8))))` builds a cached frule that
+# `build_frule(sum, randn(8); chunk_size=4)` builds a cached frule that
 # evaluates `sum` on ordinary primal arrays. `value_and_pullback!!` and
 # `value_and_gradient!!` then seed four basis directions at a time and accumulate the
 # resulting coefficients into the full input gradient.
@@ -1154,11 +1245,11 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
 !!! note
     `prepare_derivative_cache` returns a [`ForwardCache`](@ref) with two cached forward
     paths: the ordinary width-1 `frule` used by [`value_and_derivative!!`](@ref), and an
-    embedded cached IRfwd scalar path used by cached [`value_and_pullback!!`](@ref) and
+    embedded cached scalar forward path used by cached [`value_and_pullback!!`](@ref) and
     [`value_and_gradient!!`](@ref).
 
 !!! note
-    `config.chunk_size` is used when constructing the prepared IRfwd scalar cache.
+    `config.chunk_size` is used when constructing the prepared scalar forward cache.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
@@ -1169,16 +1260,14 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         debug_mode=config.debug_mode,
         silence_debug_messages=config.silence_debug_messages,
     )
-    irfwd_chunk_size = NfwdMooncake._chunked_resolve_rule_chunk_size(
-        typeof(fx), config.chunk_size
-    )
-    irfwd_rule = build_frule(
-        NfwdMooncake.IRfwdMode{irfwd_chunk_size}(),
+    scalar_chunk_size = _resolve_scalar_forward_chunk_size(config.chunk_size)
+    scalar_rule = build_frule(
         fx...;
+        chunk_size=scalar_chunk_size,
         debug_mode=config.debug_mode,
         silence_debug_messages=config.silence_debug_messages,
     )
-    irfwd_cache = NfwdMooncake.IRfwdCache(irfwd_rule, fx...; config)
+    scalar_cache = ScalarForwardCache(scalar_rule, fx...; config)
     input_specs = map(fx) do x
         if x isa AbstractArray
             PreparedCacheInputSpec(typeof(x), size(x))
@@ -1187,13 +1276,13 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         end
     end
     if config.friendly_tangents
-        return ForwardCache(rule, tuple_map(zero_tangent, fx), irfwd_cache, input_specs)
+        return ForwardCache(rule, tuple_map(zero_tangent, fx), scalar_cache, input_specs)
     end
-    return ForwardCache(rule, nothing, irfwd_cache, input_specs)
+    return ForwardCache(rule, nothing, scalar_cache, input_specs)
 end
 
 function value_and_gradient!!(cache::ForwardCache, f::F, x::Vararg{Any,N}) where {F,N}
-    return value_and_gradient!!(cache.irfwd_cache, f, x...)
+    return value_and_gradient!!(cache.scalar_cache, f, x...)
 end
 
 function value_and_pullback!!(
@@ -1201,7 +1290,7 @@ function value_and_pullback!!(
 ) where {F,N}
     _ = friendly_tangents
     # Friendly/native tangent selection is fixed when the cache is prepared.
-    return value_and_pullback!!(cache.irfwd_cache, ȳ, f, x...)
+    return value_and_pullback!!(cache.scalar_cache, ȳ, f, x...)
 end
 
 """
@@ -1502,9 +1591,9 @@ dimension over the reverse-mode gradient function.
 
 !!! note
     This path currently uses Mooncake's generic public forward cache over the captured
-    reverse-mode gradient closure. It does not currently dispatch to the public
-    `NfwdMooncake` NDual-lifted path used by some `prepare_derivative_cache` /
-    `value_and_gradient!!` calls.
+    reverse-mode gradient closure. It does not currently dispatch to the NDual-lifted
+    primitive path used by some `prepare_derivative_cache` / `value_and_gradient!!`
+    calls.
 
 ```jldoctest
 f(x) = sum(x .^ 2)

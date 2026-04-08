@@ -101,11 +101,16 @@ for f in (
     # for primitive rules.
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
-        function frule!!(fdual::Dual{typeof($f)}, x::Dual{P}) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x)
+        function frule!!(
+            fdual::Dual{typeof($f)}, x::Dual{P,NTangent{L}}
+        ) where {P<:IEEEFloat,N,L<:NTuple{N,Any}}
+            return Mooncake._nfwd_primitive_frule_call(Val(N), fdual, x)
+        end
+        function frule!!(fdual::Dual{typeof($f)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+            return Mooncake._nfwd_primitive_frule_call(Val(N), fdual, x)
         end
         function rrule!!(fcodual::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), fcodual, x)
+            return Mooncake._nfwd_primitive_rrule_call(Val(1), fcodual, x)
         end
     end
 end
@@ -113,11 +118,16 @@ end
 # ── tanpi ─────────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(tanpi),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(tanpi)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+function frule!!(
+    f::Dual{typeof(tanpi)}, x::Dual{P,NTangent{L}}
+) where {P<:IEEEFloat,N,L<:NTuple{N,Any}}
+    return Mooncake._nfwd_primitive_frule_call(Val(N), f, x)
+end
+function frule!!(f::Dual{typeof(tanpi)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+    return Mooncake._nfwd_primitive_frule_call(Val(N), f, x)
 end
 function rrule!!(f::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
+    return Mooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
 
 # ── nfwd-backed fixed-arity scalar rules ──────────────────────────────────────
@@ -125,14 +135,19 @@ for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
         function frule!!(
-            fdual::Dual{typeof($f)}, x1::Dual{P}, x2::Dual{P}
-        ) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2)
+            fdual::Dual{typeof($f)}, x1::Dual{P,NTangent{L}}, x2::Dual{P,NTangent{L}}
+        ) where {P<:IEEEFloat,N,L<:NTuple{N,Any}}
+            return Mooncake._nfwd_primitive_frule_call(Val(N), fdual, x1, x2)
+        end
+        function frule!!(
+            fdual::Dual{typeof($f)}, x1::Nfwd.NDual{P,N}, x2::Nfwd.NDual{P,N}
+        ) where {P<:IEEEFloat,N}
+            return Mooncake._nfwd_primitive_frule_call(Val(N), fdual, x1, x2)
         end
         function rrule!!(
             fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}
         ) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_rrule_call(Val(2), fcodual, x1, x2)
+            return Mooncake._nfwd_primitive_rrule_call(Val(2), fcodual, x1, x2)
         end
     end
 end
@@ -166,14 +181,25 @@ for f in (clamp,)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P,P} where {P<:IEEEFloat}
         function frule!!(
-            fdual::Dual{typeof($f)}, x1::Dual{P}, x2::Dual{P}, x3::Dual{P}
-        ) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2, x3)
+            fdual::Dual{typeof($f)},
+            x1::Dual{P,NTangent{L}},
+            x2::Dual{P,NTangent{L}},
+            x3::Dual{P,NTangent{L}},
+        ) where {P<:IEEEFloat,N,L<:NTuple{N,Any}}
+            return Mooncake._nfwd_primitive_frule_call(Val(N), fdual, x1, x2, x3)
+        end
+        function frule!!(
+            fdual::Dual{typeof($f)},
+            x1::Nfwd.NDual{P,N},
+            x2::Nfwd.NDual{P,N},
+            x3::Nfwd.NDual{P,N},
+        ) where {P<:IEEEFloat,N}
+            return Mooncake._nfwd_primitive_frule_call(Val(N), fdual, x1, x2, x3)
         end
         function rrule!!(
             fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}, x3::CoDual{P}
         ) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_rrule_call(Val(3), fcodual, x1, x2, x3)
+            return Mooncake._nfwd_primitive_rrule_call(Val(3), fcodual, x1, x2, x3)
         end
     end
 end
@@ -181,21 +207,31 @@ end
 # ── sincosd ───────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(sincosd),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(sincosd)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+function frule!!(
+    f::Dual{typeof(sincosd)}, x::Dual{P,NTangent{L}}
+) where {P<:IEEEFloat,N,L<:NTuple{N,Any}}
+    return Mooncake._nfwd_primitive_frule_call(Val(N), f, x)
+end
+function frule!!(f::Dual{typeof(sincosd)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+    return Mooncake._nfwd_primitive_frule_call(Val(N), f, x)
 end
 function rrule!!(f::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
+    return Mooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
 
 # ── sincospi ──────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(sincospi),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(sincospi)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+function frule!!(
+    f::Dual{typeof(sincospi)}, x::Dual{P,NTangent{L}}
+) where {P<:IEEEFloat,N,L<:NTuple{N,Any}}
+    return Mooncake._nfwd_primitive_frule_call(Val(N), f, x)
+end
+function frule!!(f::Dual{typeof(sincospi)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+    return Mooncake._nfwd_primitive_frule_call(Val(N), f, x)
 end
 function rrule!!(f::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
+    return Mooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
 
 # ── modf ──────────────────────────────────────────────────────────────────────
@@ -205,23 +241,28 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.FastMath.angle_fast),P} where {P<:IEEEFloat}
 
 @is_primitive MinimalCtx Tuple{typeof(modf),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(modf)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+function frule!!(
+    f::Dual{typeof(modf)}, x::Dual{P,NTangent{L}}
+) where {P<:IEEEFloat,N,L<:NTuple{N,Any}}
+    return Mooncake._nfwd_primitive_frule_call(Val(N), f, x)
+end
+function frule!!(f::Dual{typeof(modf)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+    return Mooncake._nfwd_primitive_frule_call(Val(N), f, x)
 end
 function rrule!!(f::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
+    return Mooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
 
 # ── hypot(x, xs...) ───────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(hypot),P,Vararg{P}} where {P<:IEEEFloat}
 function frule!!(
-    f::Dual{typeof(hypot)}, x::Dual{P}, xs::Vararg{Dual{P},M}
-) where {P<:IEEEFloat,M}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x, xs...)
+    f::Dual{typeof(hypot)}, x::Dual{P,NTangent{L}}, xs::Vararg{Dual{P,NTangent{L}},M}
+) where {P<:IEEEFloat,N,L<:NTuple{N,Any},M}
+    return Mooncake._nfwd_primitive_frule_call(Val(N), f, x, xs...)
 end
 function rrule!!(
     f::CoDual{typeof(hypot)}, x::CoDual{P}, xs::Vararg{CoDual{P},M}
 ) where {P<:IEEEFloat,M}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(M + 1), f, x, xs...)
+    return Mooncake._nfwd_primitive_rrule_call(Val(M + 1), f, x, xs...)
 end

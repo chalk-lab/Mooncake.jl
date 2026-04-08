@@ -51,11 +51,9 @@ julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
 (2.0, 4.0)
 ```
 
-For Mooncake-interface rule construction on concrete signatures, see
-`Mooncake.build_frule(Mooncake.Nfwd.NDualMode{N}(), ...)` and
-`Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{N}(), ...)`.
-`Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; `NfwdMooncake`
-packages that machinery into Mooncake's `Dual` / `CoDual` rule interface.
+For Mooncake-interface rule construction on concrete signatures, Mooncake now reuses
+this N-wide dual arithmetic through its ordinary width-aware dual-type and primitive-rule
+entrypoints.
 """
 module Nfwd
 
@@ -63,9 +61,7 @@ using Base: IEEEFloat
 using LinearAlgebra
 
 export NDual,
-    NDualMode,
     NDualUnsupportedError,
-    NfwdMode,
     ndual_value,
     ndual_partial,
     ndual_partials,
@@ -92,9 +88,6 @@ export NDual,
     _nfwd_sig_dof,
     _nfwd_type_dof,
     _nfwd_validate
-
-struct NDualMode{N} end
-struct NfwdMode{N} end
 
 #
 # ── Role of `ntuple` ──────────────────────────────────────────────────────────────
@@ -196,7 +189,7 @@ To extend to a new scalar type S (non-IEEEFloat): define `_broadcast_elem_dof_ty
 and handle the wrapping / gradient extraction in `_leaf_effective_tangent`,
 `materialize_pb!!`, and `_gpu_fill_args_rdata` in `MooncakeCUDAExt.jl`.
 
-## Chunk-mode AD via NDualMode{N} / NfwdMode{N}
+## Chunk-mode AD via width-aware dual types
 
 ### Background: Mooncake forward mode is width-1
 
@@ -221,25 +214,13 @@ boundaries where each pass would otherwise incur a full launch overhead.
 `tangent_type(Float64) = NDual{Float64,N}` globally, infecting every `frule!!` in the
 call graph and breaking type coherence throughout.
 
-### NDualMode{N} / NfwdMode{N}: NDual as the tangent type for supported scalar leaves
+### Width-aware dual types: NDual for supported scalar leaves
 
-The clean solution is a new AD context that overrides `tangent_type` for supported scalar
-leaves:
+The clean solution is a width-aware dual-type interface:
 
 ```julia
-struct NDualMode{N} end
-struct NfwdMode{N} end
-
-# NDual is the tangent type — value field=0 by convention, partials carry N directions
-tangent_type(::NDualMode{N}, ::Type{T}) where {N, T<:IEEEFloat}          = NDual{T,N}
-tangent_type(::NDualMode{N}, ::Type{Complex{T}}) where {N, T<:IEEEFloat} = Complex{NDual{T,N}}
-tangent_type(::NfwdMode{N}, ::Type{T}) where {N, T<:IEEEFloat}           = NDual{T,N}
-tangent_type(::NfwdMode{N}, ::Type{Complex{T}}) where {N, T<:IEEEFloat}  = Complex{NDual{T,N}}
-
-zero_ntangent(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat} =
-    NDual{T,N}(zero(T), ntuple(_ -> zero(T), Val(N)))
-seed_ntangent(::Val{N}, ::Type{T}, k::Int) where {N,T<:IEEEFloat} =
-    NDual{T,N}(zero(T), ntuple(i -> i == k ? one(T) : zero(T), Val(N)))
+dual_type(::Val{N}, ::Type{T}) where {N, T<:IEEEFloat} = NDual{T,N}
+dual_type(::Val{N}, ::Type{Complex{T}}) where {N, T<:IEEEFloat} = Complex{NDual{T,N}}
 ```
 
 **The transform change is surgical**: `generate_dual_ir` queries the width-aware
@@ -248,24 +229,21 @@ Threading the mode through those calls is the only required modification — all
 rewriting (PhiNode, ReturnNode, GotoIfNot, …) is tangent-type-agnostic.
 `is_primitive` dispatch is unchanged (it operates on primal signatures, not tangent types).
 
-Use `NDualMode{N}()` for the direct forward rule builder
-`Mooncake.build_frule(Mooncake.Nfwd.NDualMode{N}(), ...)`. Today the directly supported
-primal inputs on that path are `IEEEFloat` scalars, `Complex{<:IEEEFloat}` scalars, and
-dense `Array`s with those element types; supported direct outputs also allow tuples
-thereof. `NfwdMode{N}()` remains the nfwd mode used by direct reverse-rule construction
-via `Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{N}(), ...)`.
+Today the directly supported public inputs on that path are `IEEEFloat` scalars,
+`Complex{<:IEEEFloat}` scalars, and dense `Array`s with those element types; supported
+direct outputs also allow tuples thereof.
 
 That direct-support boundary is narrower than nfwd's internal packed tangent machinery:
 internal helpers can still pack tangents for arrays, tuples, named tuples, and tangent
 structs, but that does not by itself mean arbitrary primals are supported by direct
-`build_frule(NDualMode{N}(), ...)`.
+width-aware dual evaluation.
 
 ### Scalar `frule!!`s and CPU compatibility
 
 Rules written generically in the tangent require no changes:
 
 ```julia
-# Existing frule!! for sin — tangent(x)::NDual{T,N} in NfwdMode
+# Existing frule!! for sin — tangent(x)::NDual{T,N}
 frule!!(::Dual{typeof(sin)}, x::Dual{T}) where {T<:IEEEFloat} =
     Dual(sin(primal(x)), cos(primal(x)) * tangent(x))
 #                        ^^^^^^^^^^^^^^^^ T (scalar) * NDual{T,N} → NDual{T,N}  ✓
@@ -287,11 +265,11 @@ composed of scalar multiplication and addition propagate the N directions automa
    dedicated NDual methods that preserve the same zero-mask behavior instead of calling
    `nan_tangent_guard` directly.
 
-In practice `NfwdMode{N}` is designed for **GPU kernel boundaries** where each
-width-1 pass costs a full kernel launch.  For CPU scalar ops the overhead is negligible
+In practice this NDual path is designed for **GPU kernel boundaries** where each
+width-1 pass costs a full kernel launch. For CPU scalar ops the overhead is negligible
 and there is no motivation to use chunk mode.
 
-### `frule!!` template in NfwdMode
+### `frule!!` template with NDual tangents
 
 This pattern applies at any opaque boundary — most commonly a GPU kernel, but equally
 valid for any CPU operation that needs an explicit N-wide rule (e.g. to override a
@@ -299,7 +277,8 @@ hand-coded rule that uses `nan_tangent_guard`, or to differentiate through an ex
 library call).  The only difference between GPU and CPU versions is the array type
 (`CuArray` vs `Array`) and the absence of a kernel launch on CPU.
 
-In NfwdMode the tangent of a `CuArray{T}` arg is `CuArray{NDual{T,N}}`, so the
+With NDual-backed array tangents, the tangent of a `CuArray{T}` arg is
+`CuArray{NDual{T,N}}`, so the
 NDual kernel input is built by a trivial merge — no `flatten_to_ndual` needed:
 
 ```julia
@@ -331,7 +310,7 @@ function full_jacobian(f!, out::CuArray{T}, x::CuArray{T}) where {T}
     ∂x  = CuArray([seed_ntangent(Val(N), T, i) for i in 1:N])
     ∂out = fill!(similar(out, NDual{T,N}), zero_ntangent(Val(N), T))
 
-    rule = build_frule(NDualMode{N}(), typeof(f!), CuArray{T}, CuArray{T})
+    rule = build_frule(typeof(f!), CuArray{T}, CuArray{T}; chunk_size=N)
     rule(Dual(f!, NoTangent()), Dual(out, ∂out), Dual(x, ∂x))
 
     # ∂out[i].partials == (∂out[i]/∂x[1], …, ∂out[i]/∂x[N]) — full m×N Jacobian
@@ -340,17 +319,17 @@ function full_jacobian(f!, out::CuArray{T}, x::CuArray{T}) where {T}
 end
 ```
 
-Versus N separate width-1 passes, NfwdMode{N} needs **one** pass.  NDual is the
-natural tangent type because its arithmetic is already register-friendly and no
-conversion is needed at the kernel boundary.
+Versus N separate width-1 passes, an NDual width-`N` evaluation needs **one** pass.
+NDual is the natural tangent type because its arithmetic is already register-friendly and
+no conversion is needed at the kernel boundary.
 
 ### Open challenges
 
 - Non-float leaves (`Int`, `Bool`, …) carry zero partial and must bypass NDual wrapping.
 - Mixed-precision structs (`Float32` + `Float64` fields) require a promoted `T` or
   separate NDual blocks per precision group.
-- `NfwdMode{N}` requires N to be chosen before compilation; adaptive chunk sizing
-  (as in ForwardDiff) would need dynamic dispatch or recompilation.
+- NDual width `N` must be chosen before compilation; adaptive chunk sizing (as in
+  ForwardDiff) would need dynamic dispatch or recompilation.
 """
 struct NDual{T<:IEEEFloat,N} <: AbstractFloat
     value::T

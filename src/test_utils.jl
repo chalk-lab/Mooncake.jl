@@ -124,7 +124,11 @@ using Mooncake:
     can_produce_zero_rdata_from_type,
     increment_rdata!!,
     dual_type,
+    zero_dual,
+    uninit_dual,
     randn_dual,
+    verify_dual_type,
+    _ntangent_lane_count,
     fcodual_type,
     verify_fdata_type,
     verify_rdata_type,
@@ -361,6 +365,7 @@ throws an `AssertionError` if the same address is not mapped to in `tangent` eac
 """
 function populate_address_map_internal(m::AddressMap, primal::P, tangent::T) where {P,T}
     isprimitivetype(P) && return m
+    P <: Complex && return m
     T === NoTangent && return m
     T === NoFData && return m
     if ismutabletype(P)
@@ -476,6 +481,12 @@ function _diff(p::P, q::P) where {P}
     return increment!!(_scale(-1.0, t2), t1)
 end
 
+# Extend these for non-`NTangent` width-aware tangent layouts in chunked forward tests.
+@inline width_aware_tangent_lane_count(t) = something(_ntangent_lane_count(t), 1)
+@inline width_aware_tangent_lane(::NoTangent, ::Val) = NoTangent()
+@inline width_aware_tangent_lane(t::NTangent, ::Val{lane}) where {lane} = t[lane]
+@inline width_aware_tangent_lane(t, ::Val) = t
+
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_frule_correctness(
     rng::AbstractRNG, x_ẋ...; frule, unsafe_perturb::Bool, rtol=1e-3, atol=1e-3
@@ -484,30 +495,20 @@ function test_frule_correctness(
 
     x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
 
+    width = maximum(
+        map(
+            x_ẋ_component -> width_aware_tangent_lane_count(tangent(x_ẋ_component)), x_ẋ
+        );
+        init=1,
+    )
+
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
     ẋ = map(tangent, x_ẋ)
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
-    # Use finite differences to estimate Frechet derivative. Compute the estimate at a range
-    # of different step sizes. We'll just require that one of them ends up being close to
-    # what AD gives.
-    ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
-    fd_results = Vector{Any}(undef, length(ε_list))
-    for (n, ε) in enumerate(ε_list)
-        x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
-        y′_l = x′_l[1](x′_l[2:end]...)
-        x′_r = _add_to_primal(x, _scale(-ε, ẋ), unsafe_perturb)
-        y′_r = x′_r[1](x′_r[2:end]...)
-        fd_results[n] = (
-            ẏ=_scale(1 / 2ε, _diff(y′_l, y′_r)),
-            ẋ=map((_x′, _x_p) -> _scale(1 / 2ε, _diff(_x′, _x_p)), x′_l, x′_r),
-        )
-    end
-
-    # Use AD to compute Frechet derivative at ẋ.
-    x_ẋ_rule = map((x, ẋ) -> dual_type(_typeof(x))(_deepcopy(x), ẋ), x, ẋ)
+    x_ẋ_rule = map((x, ẋ) -> dual_type(Val(width), _typeof(x))(_deepcopy(x), ẋ), x, ẋ)
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
     )
@@ -536,27 +537,49 @@ function test_frule_correctness(
 
     # normalize the JVP's probe vectors to avoid random scaling of AD, FD errors.
     x̄_normdir, ȳ_normdir = normalize_tangent(x̄), normalize_tangent(ȳ)
+    # Chunked forward tests compare one lane at a time so finite differences only need an
+    # ordinary tangent, not a packed width-aware tangent representation.
+    for lane in 1:width
+        ẋ_lane = map(t -> width_aware_tangent_lane(t, Val(lane)), ẋ)
 
-    isapprox_results = map(fd_results) do result
-        ẏ_fd, ẋ_fd = result
-        return isapprox(
-            _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
-            _dot(ȳ_normdir, ẏ_ad) + _dot(x̄_normdir, ẋ_ad);
-            rtol=rtol,
-            atol=atol,
-        )
-    end
-    if !any(isapprox_results)
-        vals = map(fd_results) do result
-            ẏ_fd, ẋ_fd = result
-            (
-                _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
-                _dot(ȳ_normdir, ẏ_ad) + _dot(x̄_normdir, ẋ_ad),
+        # Use finite differences to estimate the Frechet derivative for this lane.
+        ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+        fd_results = Vector{Any}(undef, length(ε_list))
+        for (n, ε) in enumerate(ε_list)
+            x′_l = _add_to_primal(x, _scale(ε, ẋ_lane), unsafe_perturb)
+            y′_l = x′_l[1](x′_l[2:end]...)
+            x′_r = _add_to_primal(x, _scale(-ε, ẋ_lane), unsafe_perturb)
+            y′_r = x′_r[1](x′_r[2:end]...)
+            fd_results[n] = (
+                ẏ=_scale(1 / 2ε, _diff(y′_l, y′_r)),
+                ẋ=map((_x′, _x_p) -> _scale(1 / 2ε, _diff(_x′, _x_p)), x′_l, x′_r),
             )
         end
-        display(vals)
+
+        ẏ_ad_lane = width_aware_tangent_lane(ẏ_ad, Val(lane))
+        ẋ_ad_lane = map(t -> width_aware_tangent_lane(t, Val(lane)), ẋ_ad)
+
+        isapprox_results = map(fd_results) do result
+            ẏ_fd, ẋ_fd = result
+            return isapprox(
+                _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
+                _dot(ȳ_normdir, ẏ_ad_lane) + _dot(x̄_normdir, ẋ_ad_lane);
+                rtol=rtol,
+                atol=atol,
+            )
+        end
+        if !any(isapprox_results)
+            vals = map(fd_results) do result
+                ẏ_fd, ẋ_fd = result
+                (
+                    _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
+                    _dot(ȳ_normdir, ẏ_ad_lane) + _dot(x̄_normdir, ẋ_ad_lane),
+                )
+            end
+            display(vals)
+        end
+        @test any(isapprox_results)
     end
-    @test any(isapprox_results)
 end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
@@ -692,14 +715,27 @@ function test_frule_interface(x_ẋ...; frule)
     # Run the frule, check it has output a thing of the correct type, and extract results.
     # Throw a meaningful exception if the frule doesn't run at all.
     y_ẏ = try
-        frule(x_ẋ...)
+        value_and_derivative!!(frule, x_ẋ...)
     catch
         throw(ArgumentError("rule does not run, signature is $(_typeof(x_ẋ))."))
     end
 
-    # Check that returned fdata type is correct.
-    @test y_ẏ isa Dual
+    width = maximum(
+        map(
+            x_ẋ_component -> width_aware_tangent_lane_count(tangent(x_ẋ_component)), x_ẋ
+        );
+        init=1,
+    )
+
+    # Check that the direct width-aware dual-type route returns the correct dual type.
+    @test typeof(y_ẏ) == dual_type(Val(width), typeof(y))
     @test Mooncake.verify_dual_type(y_ẏ)
+
+    # The tuple interface should agree with the rule's native primal/tangent output.
+    x_dx = map(x_ẋ_component -> (primal(x_ẋ_component), tangent(x_ẋ_component)), x_ẋ)
+    y_tuple, dy_tuple = value_and_derivative!!(frule, x_dx...)
+    @test has_equal_data(y, y_tuple)
+    @test has_equal_data(tangent(y_ẏ), dy_tuple)
 end
 
 function test_rrule_interface(f_f̄, x_x̄...; rrule)
@@ -782,7 +818,9 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
     @test all(map((a, b) -> _typeof(a) == _typeof(rdata(b)), x̄_new, x̄))
 end
 
-__forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N} = frule(x_ẋ...)
+function __forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N}
+    value_and_derivative!!(frule, x_ẋ...)
+end
 
 @noinline function __forwards_and_backwards(rule::R, x_x̄::Vararg{Any,N}) where {R,N}
     out, pb!! = rule(x_x̄...)
@@ -842,20 +880,20 @@ function test_frule_performance(
 end
 
 function populate_address_map_internal(
-    m::AddressMap, primal, tangent::NTangent{Tuple{T}}
-) where {T}
+    m::AddressMap, primal, tangent::NTangent{L}
+) where {L<:Tuple}
+    # Alias-map checks only need one representative lane; all lanes share the
+    # same structural tangent shape.
     return populate_address_map_internal(m, primal, tangent[1])
 end
 function populate_address_map_internal(
-    m::AddressMap,
-    primal::Union{String,Symbol,Core.TypeName,Type},
-    tangent::NTangent{Tuple{T}},
-) where {T}
+    m::AddressMap, primal::Union{String,Symbol,Core.TypeName,Type}, tangent::NTangent{L}
+) where {L<:Tuple}
     return populate_address_map_internal(m, primal, tangent[1])
 end
 function populate_address_map_internal(
-    m::AddressMap, primal::P, tangent::NTangent{Tuple{T}}
-) where {P<:Union{Tuple,NamedTuple},T}
+    m::AddressMap, primal::P, tangent::NTangent{L}
+) where {P<:Union{Tuple,NamedTuple},L<:Tuple}
     return populate_address_map_internal(m, primal, tangent[1])
 end
 
@@ -921,6 +959,7 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         interface_only::Bool=false,
         is_primitive::Bool=true,
         perf_flag::Symbol=:none,
+        chunk_sizes=(1,),
         mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
         debug_mode::Bool=false,
         unsafe_perturb::Bool=false,
@@ -968,6 +1007,8 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     this to `:stability` (at present we cannot verify whether a derived rule is type stable
     for technical reasons). If you believe that a hand-written rule should be _both_
     allocation-free and type-stable, set this to `:stability_and_allocs`.
+- `chunk_sizes=(1,)`: forward-mode chunk sizes to test. Forward-mode checks are run once
+    for each requested width-aware dual type. Reverse-mode checks are unaffected.
 - `mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing`: the mode of AD to
     test. If `mode===nothing` (default), then both forward and reverse mode are tested.
 - `debug_mode::Bool=false`: whether or not the rule should be tested in debug mode.
@@ -988,6 +1029,7 @@ function test_rule(
     interface_only::Bool=false,
     is_primitive::Bool=true,
     perf_flag::Symbol=:none,
+    chunk_sizes=(1,),
     mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
     debug_mode::Bool=false,
     unsafe_perturb::Bool=false,
@@ -1000,19 +1042,26 @@ function test_rule(
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
+    primals = __get_primals(x)
+    chunk_sizes = chunk_sizes isa Integer ? (chunk_sizes,) : Tuple(chunk_sizes)
 
     # Construct the rule.
-    sig = _typeof(__get_primals(x))
+    sig = _typeof(primals)
     test_fwd = mode in [nothing, ForwardMode]
     test_rvs = mode in [nothing, ReverseMode]
     fwd_interp = (test_fwd && isnothing(frule)) ? get_interpreter(ForwardMode) : missing
     rvs_interp = (test_rvs && isnothing(rrule)) ? get_interpreter(ReverseMode) : missing
-    frule = if !isnothing(frule)
-        frule
+    frules = if !isnothing(frule)
+        length(chunk_sizes) == 1 || throw(
+            ArgumentError("explicit `frule` only supports a single `chunk_size`.")
+        )
+        (frule,)
     elseif test_fwd
-        build_frule(fwd_interp, sig; debug_mode)
+        map(chunk_sizes) do chunk_size
+            build_frule(primals...; chunk_size=chunk_size, debug_mode)
+        end
     else
-        missing
+        ()
     end
     rrule = if !isnothing(rrule)
         rrule
@@ -1030,8 +1079,19 @@ function test_rule(
         !ismissing(rvs_interp) &&
         @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
-    # Generate random tangents for anything that is not already a CoDual.
-    x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
+    x_ẋs = map(chunk_sizes) do chunk_size
+        map(
+            x -> if x isa CoDual
+                p = primal(x)
+                dual_type(Val(chunk_size), typeof(p))(
+                    p, _chunked_forward_tangent(p, tangent(x), Val(chunk_size))
+                )
+            else
+                randn_dual(Val(chunk_size), rng, x)
+            end,
+            x,
+        )
+    end
 
     x_x̄ = map(x -> if x isa CoDual
         x
@@ -1046,14 +1106,26 @@ function test_rule(
         @testset "$(typeof(x))" begin
             # Test that the interface is basically satisfied (checks types / memory addresses).
             @testset "Interface (1)" begin
-                test_fwd && test_frule_interface(x_ẋ...; frule)
+                if test_fwd
+                    for (chunk_size, frule, x_ẋ) in zip(chunk_sizes, frules, x_ẋs)
+                        @testset "Forward chunk_size=$chunk_size" begin
+                            test_frule_interface(x_ẋ...; frule)
+                        end
+                    end
+                end
                 test_rvs && test_rrule_interface(x_x̄...; rrule)
             end
 
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
                 if test_fwd && !interface_only
-                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
+                    for (chunk_size, frule, x_ẋ) in zip(chunk_sizes, frules, x_ẋs)
+                        @testset "Forward chunk_size=$chunk_size" begin
+                            test_frule_correctness(
+                                rng, x_ẋ...; frule, unsafe_perturb, atol, rtol
+                            )
+                        end
+                    end
                 end
                 if test_rvs && !interface_only
                     test_rrule_correctness(
@@ -1064,7 +1136,13 @@ function test_rule(
 
             # Test the performance of the rule.
             @testset "Performance" begin
-                test_fwd && test_frule_performance(perf_flag, frule, x_ẋ...)
+                if test_fwd
+                    for (chunk_size, frule, x_ẋ) in zip(chunk_sizes, frules, x_ẋs)
+                        @testset "Forward chunk_size=$chunk_size" begin
+                            test_frule_performance(perf_flag, frule, x_ẋ...)
+                        end
+                    end
+                end
                 test_rvs && test_rrule_performance(perf_flag, rrule, x_x̄...)
             end
 
@@ -1073,9 +1151,12 @@ function test_rule(
                 if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
-                        cache_key = (sig, debug_mode, :forward, Mooncake.IRfwdMode{1}())
-                        k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
-                        @test haskey(fwd_interp.oc_cache, k)
+                        # `build_frule` caches lifted primal rules by signature and tangent mode.
+                        for chunk_size in chunk_sizes
+                            cache_key = (sig, :primal, true, Val(chunk_size))
+                            k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
+                            @test haskey(fwd_interp.oc_cache, k)
+                        end
                     end
                 end
                 if test_rvs && !ismissing(rvs_interp)
@@ -1187,6 +1268,90 @@ function test_tangent_type(primal_type::Type, expected_tangent_type::Type)
     @test tangent_type(primal_type) == expected_tangent_type
     @test is_foldable(tangent_type, (Type{expected_tangent_type},))
     test_opt(tangent_type, Tuple{_typeof(primal_type)})
+    return nothing
+end
+
+"""
+    test_dual(rng::AbstractRNG, p, D; width=1, perf=true)
+
+Like `test_dual(rng, p; width, perf)`, but also checks that
+`dual_type(Val(width), typeof(p)) == D`.
+
+When `perf=true`, this also runs the usual inference / allocation checks and therefore
+expects the standard Mooncake test harness tooling (notably JET / AllocCheck) to be
+available.
+"""
+function test_dual(rng::AbstractRNG, p, D; width=1, perf=true)
+    @nospecialize rng p
+    primal_type = typeof(p)
+    @test dual_type(Val(width), primal_type) == D
+    @test is_foldable(dual_type, (Val{width}, Type{primal_type}))
+    perf && test_opt(dual_type, Tuple{Val{width},Type{primal_type}})
+    test_dual(rng, p; width, perf)
+    return nothing
+end
+
+"""
+    test_dual(rng::AbstractRNG, p; width=1, perf=true)
+
+Test the minimal width-aware dual-type construction / extraction protocol for `p`.
+
+This checks the current public forward-mode boundary:
+- `dual_type(::Val{N}, ::Type{P})`
+- construction via `dual_type(Val(N), P)(p, dp)`
+- `primal`
+- `tangent`
+- `zero_dual(::Val{N}, p)`
+- `uninit_dual(::Val{N}, p)`
+- `verify_dual_type`
+
+For `width=1`, the current public contract accepts either `tangent_type(P)` or
+`tangent_type(Val(1), P)` as the stored tangent type.
+
+When `perf=true`, this also runs the usual inference / allocation checks and therefore
+expects the standard Mooncake test harness tooling (notably JET / AllocCheck) to be
+available.
+"""
+function test_dual(rng::AbstractRNG, p; width=1, perf=true)
+    @nospecialize rng p
+    return test_hook(test_dual, rng, p; width, perf) do
+        _test_dual(rng, p; width, perf)
+    end
+end
+
+function _test_dual(rng::AbstractRNG, p; width=1, perf=true)
+    P = typeof(p)
+    D = dual_type(Val(width), P)
+    T = tangent_type(Val(width), P)
+    valid_tangent_types = width == 1 ? (tangent_type(P), T) : (T,)
+
+    @test D isa Type
+    @test T isa Type
+
+    d_rand = randn_dual(Val(width), rng, p)
+    @test d_rand isa D
+    @test primal(d_rand) === p || has_equal_data(primal(d_rand), p)
+    @test any(==(typeof(tangent(d_rand))), valid_tangent_types)
+    @test verify_dual_type(d_rand)
+
+    d_zero = zero_dual(Val(width), p)
+    @test d_zero isa D
+    @test primal(d_zero) === p || has_equal_data(primal(d_zero), p)
+    @test any(==(typeof(tangent(d_zero))), valid_tangent_types)
+    @test verify_dual_type(d_zero)
+
+    d_uninit = uninit_dual(Val(width), p)
+    @test d_uninit isa D
+    @test primal(d_uninit) === p || has_equal_data(primal(d_uninit), p)
+    @test any(==(typeof(tangent(d_uninit))), valid_tangent_types)
+    @test verify_dual_type(d_uninit)
+
+    if perf
+        @inferred randn_dual(Val(width), rng, p)
+        @inferred zero_dual(Val(width), p)
+        @inferred uninit_dual(Val(width), p)
+        @test count_allocs(dual_type, Val(width), P) == 0
+    end
     return nothing
 end
 

@@ -8,9 +8,9 @@ That the field type of `captures_tangent` is `Any` is unavoidable since the `cap
 field of an `OpaqueClosure` has field type `Any`.
 
 That the field type of `dual_callable` is `Any` is a limitation of the current
-implementation. The concrete type of `dual_callable` might be one of a couple of things,
-notably either `typeof(frule!!)` or `DerivedFRule`. It might be possible to figure out which
-it is, and use this information to improve the type stability of this function.
+implementation. The concrete type of `dual_callable` depends on the forward rule built for
+the underlying `MistyClosure`, so there is not currently a more precise stable field type
+to use here.
 """
 struct MistyClosureTangent
     captures_tangent::Any
@@ -46,7 +46,7 @@ function _dual_mc(p::MistyClosure)
     # MistyClosure's original world. The public varargs `build_frule(p, ...)` entrypoint
     # would construct a current-world interpreter instead.
     return Mooncake.build_frule(
-        interp, p; skip_world_age_check=true, tangent_mode=Mooncake.IRfwdMode{1}()
+        interp, p; skip_world_age_check=true, tangent_mode=Val(1)
     )
 end
 
@@ -99,29 +99,6 @@ end
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MistyClosureTangent}
     captures_tangent = _scale_internal(c, a, t.captures_tangent)
     return T(captures_tangent, t.dual_callable)
-end
-
-function NfwdMooncake._nfwd_pack_lanes(
-    c::MaybeCache, x::MistyClosure, lanes::NTuple{N,MistyClosureTangent}, ::Val{N}
-) where {N}
-    captures = NfwdMooncake._nfwd_pack_lanes(
-        c, x.oc.captures, ntuple(k -> lanes[k].captures_tangent, Val(N)), Val(N)
-    )
-    return MistyClosureTangent(captures, first(lanes).dual_callable)
-end
-@inline function NfwdMooncake._nfwd_pack_lanes(
-    ::MaybeCache, ::MistyClosure, ::Tuple{}, ::Val{0}
-)
-    return NoTangent()
-end
-
-function NfwdMooncake._nfwd_unpack_packed_lane(
-    c::MaybeCache, y::MistyClosure, dy::MistyClosureTangent, ::Val{k}
-) where {k}
-    captures = NfwdMooncake._nfwd_unpack_packed_lane(
-        c, y.oc.captures, dy.captures_tangent, Val(k)
-    )
-    return MistyClosureTangent(captures, dy.dual_callable)
 end
 
 import .TestUtils: populate_address_map_internal, AddressMap, has_equal_data_internal

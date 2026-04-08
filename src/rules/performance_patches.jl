@@ -16,6 +16,8 @@
 #   rules which cause robustness or correctness problems.
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
+# Keep these as the ordinary `Dual` array fast path for `sum` / `sum(abs2, x)`. The
+# broader nfwd-backed array path is intentionally left in `rules_via_nfwd.jl`.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P},NoTangent}) where {P<:IEEEFloat}
     return Dual(sum(primal(x)), NoTangent())

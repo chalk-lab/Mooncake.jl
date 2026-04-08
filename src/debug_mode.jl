@@ -25,7 +25,7 @@ _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
-@noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+@noinline function (rule::DebugFRule)(x::Vararg{Any,N}) where {N}
     verify_args(rule.rule, x)
     verify_dual_inputs(x)
     y = __call_rule(rule.rule, x)
@@ -36,7 +36,7 @@ end
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
     try
         for _x in x
-            _x isa Dual || error("Expected Dual, got $(typeof(_x))")
+            verify_dual_type(_x) || error("Expected width-aware dual type, got $(typeof(_x))")
             verify_dual_value(_x)
         end
     catch e
@@ -46,21 +46,21 @@ end
 
 @noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
     try
-        y isa Dual || error("frule!! must return a Dual, got $(typeof(y))")
+        verify_dual_type(y) || error("frule!! must return a width-aware dual type, got $(typeof(y))")
         verify_dual_value(y)
     catch e
         error("Error in outputs of rule with input types $(_typeof(x))")
     end
 end
 
-@noinline function verify_dual_value(d::Dual{P,T}) where {P,T}
+@noinline function verify_dual_value(d)
     # Fast path: public `Dual` values may use either the canonical width-1 tangent
     # or the canonical width-N `NTangent` wrapper used by chunked forward mode.
     if !verify_dual_type(d)
         throw(
             InvalidFDataException(
-                "Dual tangent type mismatch: primal $P requires tangent type " *
-                "$(tangent_type(P)) or $(tangent_type(Val(1), P)), but got $T",
+                "Dual tangent type mismatch: primal $(typeof(primal(d))) requires tangent type " *
+                "$(tangent_type(typeof(primal(d)))) or $(tangent_type(Val(1), typeof(primal(d)))), but got $(typeof(tangent(d)))",
             ),
         )
     end

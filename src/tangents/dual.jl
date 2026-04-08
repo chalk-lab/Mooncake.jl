@@ -214,21 +214,35 @@ Helper function. Returns the 2-tuple `x.x, x.dx`.
 """
 extract(x::Dual) = primal(x), tangent(x)
 
+function zero_dual(::Val{N}, x) where {N}
+    dual_type(Val(N), typeof(x))(x, _chunked_zero_tangent(x, Val(N)))
+end
 zero_dual(x) = dual_type(typeof(x))(x, zero_tangent(x))
+zero_dual(::Val, x::Type) = Dual(x, NoTangent())
 zero_dual(x::Type) = Dual(x, NoTangent())
+function uninit_dual(::Val{N}, x::P) where {N,P}
+    dual_type(Val(N), P)(x, _chunked_uninit_tangent(x, Val(N)))
+end
+function randn_dual(::Val{N}, rng::AbstractRNG, x) where {N}
+    dual_type(Val(N), typeof(x))(
+        x, _chunked_forward_tangent(x, randn_tangent(rng, x), Val(N))
+    )
+end
 randn_dual(rng::AbstractRNG, x) = dual_type(typeof(x))(x, randn_tangent(rng, x))
 
 """
     dual_type(::Val{N}, P::Type)
     dual_type(P::Type)
 
-Returns the forward-mode carrier type for primal type `P`.
+Returns the forward-mode width-aware dual type for primal type `P`.
 
 `dual_type(P)` is the width-1 default. `dual_type(Val(N), P)` returns the width-`N`
-carrier type used by chunked forward mode. The default implementation remains
+dual type used by chunked forward mode. The default implementation remains
 `Dual{P,tangent_type(Val(N), P)}`, but width-aware callers should dispatch through this
 interface rather than hard-coding `Dual{...,NTangent...}`. Overloads may return `Dual`,
-`NDual`, or another forward carrier type.
+`NDual`, or another width-aware dual type. Together with `primal`, `tangent`,
+`zero_dual(::Val{N}, x)`, and `uninit_dual(::Val{N}, x)`, this forms the minimal
+construction / extraction protocol for a custom width-aware dual type.
 """
 @unstable @foldable function dual_type(::Val{N}, ::Type{P}) where {N,P}
     P == Union{} && return Union{}
@@ -266,39 +280,68 @@ end
 _primal(x) = x
 _primal(x::Dual) = primal(x)
 
-@generated function _verify_ntangent_type(::Type{P}, ::Type{NT}) where {P,L,NT<:NTangent{L}}
-    T = tangent_type(P)
-    checks = map(==(T), L.parameters)
-    return all(checks) ? :(true) : :(false)
+@inline _dual_width(x) = something(_ntangent_lane_count(tangent(x)), 1)
+
+@inline function _canonicalize_width_aware_dual(x)
+    p = primal(x)
+    N = _dual_width(x)
+    return dual_type(Val(N), typeof(p))(p, _chunked_forward_tangent(p, tangent(x), Val(N)))
 end
 
 """
-    verify_dual_type(x::Dual)
+    verify_dual_type(x)
 
 Check that the type of `tangent(x)` matches a supported forward tangent type for the type
-of `primal(x)`.
+of `primal(x)`. This is auto-derived from `primal`, `tangent`, `dual_type`,
+`tangent_type`, and the current width-detection logic for `NTangent`-compatible tangent
+representations. Custom width-aware dual types only need to overload it when they
+intentionally diverge from that default shape.
 """
-function verify_dual_type(x::Dual)
-    P = typeof(primal(x))
-    T = typeof(tangent(x))
-    return T == tangent_type(P) ||
-           T == tangent_type(Val(1), P) ||
-           (T <: NTangent && _verify_ntangent_type(P, T))
+function verify_dual_type(x)
+    p = try
+        primal(x)
+    catch
+        return false
+    end
+    t = try
+        tangent(x)
+    catch
+        return false
+    end
+    P = typeof(p)
+    N = something(_ntangent_lane_count(t), 1)
+    expected_dual_type = dual_type(Val(N), P)
+    expected_tangent_type = tangent_type(Val(N), P)
+    return typeof(x) == expected_dual_type &&
+           (typeof(t) == expected_tangent_type || (N == 1 && typeof(t) == tangent_type(P)))
 end
 
-function error_if_incorrect_dual_types(duals::Vararg{Dual,N}) where {N}
+function error_if_incorrect_dual_types(duals::Vararg{Any,N}) where {N}
     correct_types = map(verify_dual_type, duals)
     if !all(correct_types)
-        primals = map(primal, duals)
-        tangents = map(tangent, duals)
+        primal_types = map(duals) do x
+            try
+                typeof(primal(x))
+            catch
+                typeof(x)
+            end
+        end
+        tangent_types = map(duals) do x
+            try
+                typeof(tangent(x))
+            catch
+                :unavailable
+            end
+        end
         throw(
             ArgumentError(
                 """
 Tangent types do not match primal types:
-  - primal types:           $(map(typeof, primals))
-  - provided tangent types: $(map(typeof, tangents))
-  - supported tangent types: `tangent_type(P)`, `tangent_type(Val(1), P)`, or `NTangent`
-    with lanes of type `tangent_type(P)`
+  - primal types:           $(primal_types)
+  - provided tangent types: $(tangent_types)
+  - supported dual/tangent pairs are derived from `dual_type(Val(N), P)` and
+    `tangent_type(Val(N), P)` for the inferred width `N`, with the width-1 fallback
+    `tangent_type(P)` still accepted
 """
             ),
         )
@@ -377,7 +420,7 @@ function Dual(x::P, dx::T) where {P,T<:CanonicalForwardTangent}
     # runtime primal `5::Int`, even though the source path came through `Any`. Preserving
     # `P == Any` here makes later PiNode refinement act on an abstractly-typed dual rather
     # than on the actual runtime primal, which is incorrect. See the matching PiNode note
-    # in `src/interpreter/forward_mode.jl` for the control-flow side of the same fix.
+    # in `src/interpreter/primal_mode.jl` for the control-flow side of the same fix.
     Px = isconcretetype(P) ? P : typeof(x)
     if _is_raw_chunked_tuple_tangent(x, dx) || _is_raw_chunked_array_tangent(x, dx)
         throw(

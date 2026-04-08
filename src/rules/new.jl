@@ -2,13 +2,7 @@
 
 @inline function _output_tangent_type(::Type{P}, tangents::Tuple) where {P}
     ntangent_lanes = Mooncake._ntangent_lane_count(tangents)
-    !isnothing(ntangent_lanes) && return Mooncake.tangent_type(Val(ntangent_lanes), P)
-    packed_lanes = NfwdMooncake._nfwd_packed_lane_count_type(typeof(tangents))
-    return if isnothing(packed_lanes)
-        tangent_type(P)
-    else
-        NfwdMooncake._nfwd_packed_tangent_type(Val(packed_lanes), P)
-    end
+    return isnothing(ntangent_lanes) ? tangent_type(P) : Mooncake.tangent_type(Val(ntangent_lanes), P)
 end
 
 @inline function _build_chunked_output_tangent(

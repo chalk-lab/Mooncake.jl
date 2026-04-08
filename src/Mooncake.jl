@@ -179,7 +179,7 @@ include("tools_for_rules.jl")
 include("interface.jl")
 include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd: NDual
-include(joinpath("nfwd", "NfwdMooncake.jl"))
+include(joinpath("nfwd", "primitive_wrappers.jl"))
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))
