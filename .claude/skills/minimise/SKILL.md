@@ -5,7 +5,6 @@ description: Prune a bug fix or new tests down to the smallest correct diff thro
 
 # Minimise
 
-You are helping the user prune their current changes to the smallest correct diff.
 The goal is to remove every line that is not strictly required for correctness,
 then verify the result still passes the relevant tests.
 
@@ -16,7 +15,7 @@ Repeat the following until no further reductions are possible:
 1. **Read the diff.** Run `git diff HEAD` (or `git diff --cached` if staged) and
    read every changed file in full.
 
-2. **Challenge each change.** For every added or modified line ask:
+2. **Challenge each change.** For every changed line ask:
    - Would removing this line cause a test to fail or a bug to reappear?
    - Is this a cleanup, rename, refactor, or comment that is not load-bearing?
    - For new tests: does an existing test already cover this behaviour?
