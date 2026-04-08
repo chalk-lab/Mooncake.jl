@@ -207,10 +207,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiab
         # F16 works fine even in 1.12
         (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
         (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
-
-        # Package loading internals.
-        (false, :stability_and_allocs, nothing, Base.PkgId, Base),
-        (false, :stability_and_allocs, nothing, Base.get_extension, Base.PkgId(Base), :SomeExt),
     )
     memory = Any[_x, _dx]
     return test_cases, memory
@@ -256,6 +252,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
 
     test_cases = vcat(
         Any[
+            # Package loading internals: Module can't be deepcopied, so test via closures
+            # that capture the module and take a differentiable Float64 arg instead.
+            (false, :none, nothing, (x) -> (Base.PkgId(Base); x), 1.0),
+            (
+                false,
+                :none,
+                nothing,
+                (x) -> (Base.get_extension(Base.PkgId(Base), :SomeExt); x),
+                1.0,
+            ),
+
             # Tests for Base.CoreLogging, @show macros and string related functions.
             (false, :none, nothing, (x) -> print(x), "Testing print"),
             (false, :none, nothing, (x) -> println(x), "Testing println"),
