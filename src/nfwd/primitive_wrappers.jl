@@ -72,12 +72,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:primitive_wrappers})
 end
 
 @inline function dual_type(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat}
-    return N == 1 ? Dual{T,tangent_type(T)} : Nfwd.NDual{T,N}
+    return N == 1 ? Dual{T,tangent_type(Val(1), T)} : Nfwd.NDual{T,N}
 end
 
 @inline function dual_type(::Val{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat}
     return if N == 1
-        Dual{Complex{T},tangent_type(Complex{T})}
+        Dual{Complex{T},tangent_type(Val(1), Complex{T})}
     else
         Complex{Nfwd.NDual{T,N}}
     end

@@ -128,29 +128,6 @@ end
 
 @inline _canonical_forward_tangent(x::Type, dx) = NoTangent()
 
-@inline function canonicalize_chunked_tangent(x::P, dx, ::Val{1}) where {P}
-    tangent_type(typeof(x)) == NoTangent && return NoTangent()
-    array_chunked = _array_chunked_forward_tangent(x, dx, Val(1))
-    !isnothing(array_chunked) && return _unwrap_unit_ntangent(array_chunked)
-    dx isa Tuple &&
-        _tuple_is_chunked_forward_tangent(P, typeof(dx)) &&
-        return if length(dx) == 1
-            first(dx)
-        else
-            throw(
-                ArgumentError("Chunked forward tangent expected 1 lane, got $(length(dx)).")
-            )
-        end
-    lane_count = _ntangent_lane_count(dx)
-    if isnothing(lane_count)
-        return dx isa NoTangent ? zero_tangent(x) : dx
-    end
-    tx = _canonical_forward_tangent(x, dx)
-    length(tx) == 1 ||
-        throw(ArgumentError("Chunked forward tangent expected 1 lane, got $(length(tx))."))
-    return _unwrap_unit_ntangent(tx)
-end
-
 @inline function canonicalize_chunked_tangent(x::P, dx, ::Val{N}) where {P,N}
     tangent_type(typeof(x)) == NoTangent && return NoTangent()
     array_chunked = _array_chunked_forward_tangent(x, dx, Val(N))
@@ -183,20 +160,17 @@ end
 
 @inline canonicalize_chunked_tangent(x::Type, dx, ::Val) = NoTangent()
 
-@inline zero_tangent(x, ::Val{1}) = zero_tangent(x)
 @inline function zero_tangent(x, ::Val{N}) where {N}
     zx = zero_tangent(x)
     zx isa NoTangent && return NoTangent()
     return NTangent(ntuple(_ -> zero_tangent(x), Val(N)))
 end
 
-@inline zero_tangent(x::Ptr, ::Val{1}) = zero_tangent(x, uninit_tangent(x))
 @inline function zero_tangent(x::Ptr, ::Val{N}) where {N}
     zx = zero_tangent(x, uninit_tangent(x))
     return NTangent(ntuple(_ -> zx, Val(N)))
 end
 
-@inline uninit_tangent(x, ::Val{1}) = uninit_tangent(x)
 @inline function uninit_tangent(x, ::Val{N}) where {N}
     tx = uninit_tangent(x)
     tx isa NoTangent && return NoTangent()
