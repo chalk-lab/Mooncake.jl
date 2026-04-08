@@ -350,24 +350,30 @@ function get_interpreter(mode::Type{<:Mode})
 end
 
 """
-    clear_mooncake_caches!()
+    clear_mooncake_caches!(; gc::Bool=false)
 
 Clear all Julia-level caches that Mooncake holds globally, including cached
 OpaqueClosures, compiled `CodeInstance`s, and type-inference results.
 
 After calling this function, Mooncake will re-derive rules from scratch on the
-next call, which allows the garbage collector to reclaim the memory previously
-held by those cache entries.
+next call. If `gc=true`, a full garbage collection is run immediately after
+clearing, so that the memory held by the now-unreferenced cache entries is
+reclaimed right away rather than at some future GC cycle.
+
+By default `gc=false` - the cache references are dropped but GC is left to
+run on its own schedule. Pass `gc=true` if you want to reclaim memory
+immediately (e.g. before a memory-intensive operation).
 
 !!! note
     Only Julia-level (GC-managed) objects are freed. JIT-compiled native machine
     code is held permanently by the Julia runtime and cannot be reclaimed.
 """
-function clear_mooncake_caches!()
+function clear_mooncake_caches!(; gc::Bool=false)
     for interp in values(GLOBAL_INTERPRETERS)
         empty!(interp.oc_cache)
         empty!(interp.code_cache.dict)
         empty!(interp.inf_cache)
     end
+    gc && GC.gc(true)
     return nothing
 end

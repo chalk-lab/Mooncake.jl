@@ -136,7 +136,8 @@ end
         rev_interp = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode]
         @test !isempty(rev_interp.oc_cache) || !isempty(rev_interp.code_cache.dict)
 
-        Mooncake.clear_mooncake_caches!()
+        # gc=false: caches cleared, no GC run.
+        Mooncake.clear_mooncake_caches!(; gc=false)
 
         # in-place clear: same interpreter objects, all caches now empty.
         @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].oc_cache)
@@ -145,6 +146,12 @@ end
         @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
         @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].code_cache.dict)
         @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].inf_cache)
+
+        # gc=true: same cache clearing behaviour, with immediate GC.
+        Mooncake.prepare_gradient_cache(f, x)  # re-populate
+        Mooncake.clear_mooncake_caches!(; gc=true)
+        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
+        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].code_cache.dict)
 
         # After clearing, existing Cache objects still work (rule is inside the Cache).
         val, grad = Mooncake.value_and_gradient!!(cache, f, x)
