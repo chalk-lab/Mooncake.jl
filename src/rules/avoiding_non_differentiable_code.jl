@@ -259,7 +259,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
                 false,
                 :none,
                 nothing,
-                (x) -> (Base.get_extension(Base.PkgId(Base), :SomeExt); x),
+                (x) -> (Base.get_extension(Base.PkgId(Base), :GenericTestExt); x),
                 1.0,
             ),
 
