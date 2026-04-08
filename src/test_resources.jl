@@ -184,6 +184,18 @@ struct P_adam_like
 end
 const P_adam_like_union = Union{Nothing,P_adam_like}
 
+# https://github.com/chalk-lab/Mooncake.jl/issues/1130
+struct LoHi
+    lo::Float64
+    hi::Float64
+end
+struct LoHiContainer
+    lohi::Union{Nothing,LoHi}
+end
+make_P_lohi_union() = LoHi(1.0, 2.0)::Union{Nothing,LoHi}
+make_P_lohi_container() = LoHiContainer(LoHi(1.0, 2.0))
+make_P_nothing_or_vector() = [1.0, 2.0]::Union{Nothing,Vector{Float64}}
+
 function build_big_isbits_struct()
     return FourFields(
         FiveFields(
