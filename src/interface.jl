@@ -1126,16 +1126,13 @@ function _irfwd_value_and_gradient!!(rule, chunk_size::Int, fx::Vararg{CoDual,M}
 end
 
 @inline function __value_and_gradient!!(
-    rule::Union{DerivedFRule,DebugFRule,typeof(frule!!)}, fx::Vararg{CoDual,N}
+    rule::Union{DebugFRule,typeof(frule!!)}, fx::Vararg{CoDual,N}
 ) where {N}
     return _irfwd_value_and_gradient!!(rule, 1, fx...)
 end
 
 @inline function __value_and_pullback!!(
-    rule::Union{DerivedFRule,DebugFRule,typeof(frule!!)},
-    ȳ::T,
-    fx::Vararg{CoDual,N};
-    y_cache=nothing,
+    rule::Union{DebugFRule,typeof(frule!!)}, ȳ::T, fx::Vararg{CoDual,N}; y_cache=nothing
 ) where {T<:IEEEFloat,N}
     y, gradient = _irfwd_value_and_gradient!!(rule, 1, fx...)
     value = if y_cache === nothing

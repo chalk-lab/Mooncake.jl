@@ -26,8 +26,8 @@ end
 # fall outside valid_worlds and cause an error.
 #
 # Using the original world age is safe because lookup_ir for MistyClosure returns mc.ir[]
-# directly, bypassing method table lookups. Nested non-primitive calls use LazyFRule or
-# DynamicFRule, which obtain a current-world interpreter via get_interpreter() at runtime.
+# directly, bypassing method table lookups. Nested non-primitive calls use LazyPrimal or
+# DynamicPrimal, which obtain a current-world interpreter via get_interpreter() at runtime.
 # We pass skip_world_age_check=true since build_frule's safety check would incorrectly
 # reject our intentionally-older interpreter.
 #

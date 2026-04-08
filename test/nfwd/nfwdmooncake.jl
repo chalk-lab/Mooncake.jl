@@ -267,6 +267,24 @@ end
         end
     end
 
+    @testset "width-aware NDual scalar inputs" begin
+        f(x) = sin(x) + x
+        x = Mooncake.dual_type(Val(2), Float64)(2.0, Mooncake.NTangent((1.0, -1.0)))
+        rule = Mooncake.build_frule(Mooncake.Nfwd.NDualMode{2}(), f, 2.0)
+        y = rule(Mooncake.zero_dual(f), x)
+        @test Mooncake.primal(y) == f(2.0)
+        @test Mooncake.tangent(y) == Mooncake.NTangent((cos(2.0) + 1, -(cos(2.0) + 1)))
+
+        g(z) = z^2
+        z = Mooncake.dual_type(Val(2), ComplexF64)(
+            1.0 + 2.0im, Mooncake.NTangent((1.0 + 0.0im, 0.0 + 1.0im))
+        )
+        grule = Mooncake.build_frule(Mooncake.Nfwd.NDualMode{2}(), g, 1.0 + 2.0im)
+        gz = grule(Mooncake.zero_dual(g), z)
+        @test Mooncake.primal(gz) == (1.0 + 2.0im)^2
+        @test Mooncake.tangent(gz) == Mooncake.NTangent((2.0 + 4.0im, -4.0 + 2.0im))
+    end
+
     f = (x, y) -> x * y + cos(x)
     x, y = 5.0, 4.0
     dx, dy = 3.0, 2.0
@@ -385,7 +403,7 @@ end
                 @test occursin("nfwd output unsupported.", msg)
                 @test occursin("Supported nfwd inputs:", msg)
                 @test occursin("Supported nfwd outputs:", msg)
-                @test occursin("1. Float64 (scalar)", msg)
+                @test occursin("IEEEFloat scalars", msg)
                 @test occursin("Int64 (not size-bearing)", msg)
             end
 
@@ -485,6 +503,14 @@ end
                 )
                 @test value_vec == hc(z_vec)
                 @test pullback_vec == (Mooncake.NoTangent(), 2 .* conj.(z_vec) .* ȳ_vec)
+
+                hm(z) = (z[1] += 1.0 + 2.0im; z)
+                z_mut = ComplexF64[1.0 + 0.0im, 2.0 + 0.0im]
+                dz_mut = ComplexF64[3.0 + 0.0im, 4.0 + 0.0im]
+                rule_mut = Mooncake.build_frule(Mooncake.Nfwd.NDualMode{1}(), hm, z_mut)
+                out_mut = rule_mut(Mooncake.zero_dual(hm), Mooncake.Dual(z_mut, dz_mut))
+                @test Mooncake.primal(out_mut) === z_mut
+                @test Mooncake.tangent(out_mut)[1] === dz_mut
             end
 
             @testset "multi-argument and matrix array inputs" begin
@@ -517,6 +543,14 @@ end
                 expected[1, 1, 1] = cos(X[1, 1])
                 expected[2, 2, 2] = cos(X[2, 2])
                 @test nfwd_public_tangent(y_and_dy) ≈ expected
+
+                hm_mut(x) = (x[1] += 2.0; x)
+                x_mut = [1.0, 2.0]
+                dx_mut = [3.0, 4.0]
+                rule_mut = Mooncake.build_frule(Mooncake.Nfwd.NDualMode{1}(), hm_mut, x_mut)
+                out_mut = rule_mut(Mooncake.zero_dual(hm_mut), Mooncake.Dual(x_mut, dx_mut))
+                @test Mooncake.primal(out_mut) === x_mut
+                @test Mooncake.tangent(out_mut)[1] === dx_mut
             end
         end
 

@@ -169,9 +169,8 @@ include(joinpath("interpreter", "patch_for_319.jl"))
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))
-include(joinpath("interpreter", "forward_mode.jl"))
-include(joinpath("interpreter", "reverse_mode.jl"))
 include(joinpath("interpreter", "primal_mode.jl"))
+include(joinpath("interpreter", "reverse_mode.jl"))
 end
 
 include("tools_for_rules.jl")

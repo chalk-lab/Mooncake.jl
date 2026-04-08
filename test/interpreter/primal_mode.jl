@@ -8,10 +8,28 @@
         @test Mooncake.primal(y) == f(2.0)
         @test Mooncake.tangent(y) == Mooncake.NTangent((cos(2.0) + 1,))
 
+        chunked_primal_f = Mooncake.build_primal(
+            f, 1.0; tangent_mode=Mooncake.IRfwdMode{2}()
+        )
+        y_chunked = chunked_primal_f(Mooncake.Dual(2.0, Mooncake.NTangent((1.0, -1.0))))
+        @test Mooncake.primal(y_chunked) == f(2.0)
+        @test Mooncake.tangent(y_chunked) ==
+            Mooncake.NTangent((cos(2.0) + 1, -(cos(2.0) + 1)))
+
         debug_primal_f = Mooncake.build_primal(f, 1.0; debug_mode=true)
         y_debug = debug_primal_f(Mooncake.Dual(2.0, 1.0))
         @test Mooncake.primal(y_debug) == f(2.0)
         @test Mooncake.tangent(y_debug) == Mooncake.NTangent((cos(2.0) + 1,))
+
+        y_rule, dy_rule = Mooncake.value_and_derivative!!(
+            primal_f, (f, Mooncake.NoTangent()), (2.0, 1.0)
+        )
+        @test y_rule == f(2.0)
+        @test dy_rule == Mooncake.NTangent((cos(2.0) + 1,))
+
+        y_grad, grad = Mooncake.value_and_gradient!!(primal_f, f, 2.0)
+        @test y_grad == f(2.0)
+        @test grad == (Mooncake.NoTangent(), cos(2.0) + 1)
     end
 
     @testset "varargs build_primal" begin

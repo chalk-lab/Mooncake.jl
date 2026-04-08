@@ -1665,14 +1665,17 @@ typed scratch buffer for in-place array lifting when a chunk-layout tangent is a
     construction, but a single instance must not be shared across concurrent calls.
     This is a general shared-mutable-state hazard, not something specific to `nfwd`.
 """
-struct Rule{sig,N,Tbuf<:Base.RefValue}
+struct Rule{sig,N,Tbuf<:Base.RefValue,Toutbuf<:Base.RefValue}
     buf::Tbuf
+    out_buf::Toutbuf
 end
 
 # Backward-compatible zero-arg constructor used by primitive rules in
 # rules_via_nfwd.jl.
 function Rule{sig,N}() where {sig,N}
-    Rule{sig,N,Base.RefValue{Any}}(Ref{Any}(nothing))
+    buf = Ref{Any}(nothing)
+    out_buf = Ref{Any}(nothing)
+    Rule{sig,N,typeof(buf),typeof(out_buf)}(buf, out_buf)
 end
 
 @inline rule_chunk_size(::Type{<:Rule{sig,N}}) where {sig,N} = N

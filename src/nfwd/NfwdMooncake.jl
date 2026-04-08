@@ -16,16 +16,23 @@ import ..Mooncake:
     __value_and_gradient!!,
     __verify_sig,
     _typeof,
+    _chunked_uninit_tangent,
+    _chunked_zero_tangent,
+    _fwd_dual_type,
+    _fwd_uninit_dual,
+    _fwd_zero_dual,
     fdata,
     primal,
     rdata,
     tangent,
+    dual_type,
     tangent_type,
     throw_val_and_grad_ret_type_error,
     tuple_map,
     uninit_tangent,
     value_and_derivative!!,
     value_and_gradient!!,
+    verify_dual_type,
     verify_fwds_inputs,
     zero_tangent
 
@@ -137,6 +144,75 @@ const IRfwdMode = Mooncake.IRfwdMode
 const NDualMode = Nfwd.NDualMode
 const NfwdMode = Nfwd.NfwdMode
 
+@inline function dual_type(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat}
+    return N == 1 ? Dual{T,Mooncake.tangent_type(Val(1), T)} : Nfwd.NDual{T,N}
+end
+
+@inline function dual_type(::Val{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat}
+    return if N == 1
+        Dual{Complex{T},Mooncake.tangent_type(Val(1), Complex{T})}
+    else
+        Complex{Nfwd.NDual{T,N}}
+    end
+end
+
+@inline primal(x::Nfwd.NDual) = Nfwd.ndual_value(x)
+@inline tangent(x::Nfwd.NDual{T,N}) where {T,N} = NTangent(
+    ntuple(i -> T(Nfwd.ndual_partial(x, i)), Val(N))
+)
+
+@inline primal(z::Complex{<:Nfwd.NDual{T,N}}) where {T,N} = Complex{T}(
+    T(Nfwd.ndual_value(real(z))), T(Nfwd.ndual_value(imag(z)))
+)
+@inline tangent(z::Complex{<:Nfwd.NDual{T,N}}) where {T,N} = NTangent(
+    ntuple(
+        i -> Complex{T}(
+            T(Nfwd.ndual_partial(real(z), i)), T(Nfwd.ndual_partial(imag(z), i))
+        ),
+        Val(N),
+    ),
+)
+
+function (::Type{Nfwd.NDual{T,N}})(
+    x::T, dx::NTangent{NTuple{N,T}}
+) where {T<:Union{Float16,Float32,Float64},N}
+    return invoke(Nfwd.NDual{T,N}, Tuple{T,NTuple{N,T}}, x, ntuple(i -> T(dx[i]), Val(N)))
+end
+
+function (::Type{Complex{Nfwd.NDual{T,N}}})(
+    z::Complex{T}, dz::NTangent{NTuple{N,Complex{T}}}
+) where {T<:Union{Float16,Float32,Float64},N}
+    re = Nfwd.NDual{T,N}(real(z), ntuple(i -> T(real(dz[i])), Val(N)))
+    im = Nfwd.NDual{T,N}(imag(z), ntuple(i -> T(imag(dz[i])), Val(N)))
+    return invoke(Complex{Nfwd.NDual{T,N}}, Tuple{Nfwd.NDual{T,N},Nfwd.NDual{T,N}}, re, im)
+end
+
+@inline verify_dual_type(x::Nfwd.NDual{T,N}) where {T,N} =
+    dual_type(Val(N), T) == typeof(x) &&
+    typeof(tangent(x)) == Mooncake.tangent_type(Val(N), T)
+@inline verify_dual_type(z::Complex{<:Nfwd.NDual{T,N}}) where {T,N} =
+    dual_type(Val(N), Complex{T}) == typeof(z) &&
+    typeof(tangent(z)) == Mooncake.tangent_type(Val(N), Complex{T})
+
+@inline function _fwd_dual_type(::IRfwdMode{N}, ::Type{T}) where {N,T<:IEEEFloat}
+    return Dual{T,Mooncake.tangent_type(Val(N), T)}
+end
+@inline function _fwd_dual_type(::IRfwdMode{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat}
+    return Dual{Complex{T},Mooncake.tangent_type(Val(N), Complex{T})}
+end
+@inline function _fwd_zero_dual(::IRfwdMode{N}, x::T) where {N,T<:IEEEFloat}
+    return Dual(x, _chunked_zero_tangent(x, Val(N)))
+end
+@inline function _fwd_zero_dual(::IRfwdMode{N}, z::Complex{T}) where {N,T<:IEEEFloat}
+    return Dual(z, _chunked_zero_tangent(z, Val(N)))
+end
+@inline function _fwd_uninit_dual(::IRfwdMode{N}, x::T) where {N,T<:IEEEFloat}
+    return Dual(x, _chunked_uninit_tangent(x, Val(N)))
+end
+@inline function _fwd_uninit_dual(::IRfwdMode{N}, z::Complex{T}) where {N,T<:IEEEFloat}
+    return Dual(z, _chunked_uninit_tangent(z, Val(N)))
+end
+
 @inline tangent_type(::NDualMode{N}, ::Type{T}) where {N,T<:IEEEFloat} = Nfwd.NDual{T,N}
 @inline tangent_type(::NDualMode{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat} = Complex{
     Nfwd.NDual{T,N}
@@ -146,12 +222,11 @@ const NfwdMode = Nfwd.NfwdMode
     Nfwd.NDual{T,N}
 }
 
-# `IRfwdRule` is the public rule object returned by `build_frule` for the
-# chunked IR path.
-# It lives here, rather than in `forward_mode.jl`, because this file owns the explicit
-# boundary between chunked IR and the nfwd primitive path. The inner derived rule runs on
-# ordinary `Dual{P,NTangent{...}}` values; this wrapper just keeps the public rule API in
-# the chunked-forward module.
+# `IRfwdRule` is the public rule object returned by `build_frule` for the chunked IR
+# path. It lives here because this file owns the explicit boundary between chunked IR and
+# the nfwd primitive path. The inner derived rule runs on ordinary
+# `Dual{P,NTangent{...}}` values; this wrapper just keeps the public rule API in the
+# chunked-forward module.
 struct IRfwdRule{sig,N,R}
     rule::R
 end
@@ -1046,6 +1121,12 @@ end
     return _nfwd_primitive_frule_call(Val(N), f, x...)
 end
 
+@inline function (rule::NfwdRule{sig,N})(f::Dual, x::Vararg{Any,M}) where {sig,N,M}
+    all(verify_dual_type, x) ||
+        throw(ArgumentError("NfwdRule expects width-aware dual-type inputs."))
+    return _nfwd_primitive_frule_call(Val(N), f, x...)
+end
+
 @inline function Mooncake.value_and_derivative!!(
     rule::Rule{sig,N}, fx::Vararg{Dual,M}
 ) where {sig,N,M}
@@ -1283,7 +1364,8 @@ function build_nfwd_frule(
 )
     resolved = _nfwd_resolve_rule_chunk_size(sig, chunk_size; debug_mode)
     buf = _nfwd_frule_buf_ref(sig, Val(resolved))
-    return Rule{sig,resolved,typeof(buf)}(buf)
+    out_buf = Ref{Any}(nothing)
+    return Rule{sig,resolved,typeof(buf),typeof(out_buf)}(buf, out_buf)
 end
 
 function build_nfwd_frule(
@@ -1311,6 +1393,18 @@ end
 @inline function _nfwd_primitive_frule_call(
     ::Val{N}, f::Dual, x::Vararg{Dual,M}
 ) where {M,N}
+    _nfwd_check_function_tangent(tangent(f))
+    primals = map(primal, x)
+    tangents = map(tangent, x)
+    y, dy = _nfwd_eval(
+        primal(f), primals, tangents, _nfwd_primitive_chunk_size(Val(N), tangents)
+    )
+    return _nfwd_output_dual(y, dy, tangents, Val(N), Val(false))
+end
+
+@inline function _nfwd_primitive_frule_call(::Val{N}, f::Dual, x::Vararg{Any,M}) where {M,N}
+    all(verify_dual_type, x) ||
+        throw(ArgumentError("nfwd primitive rules expect width-aware dual-type inputs."))
     _nfwd_check_function_tangent(tangent(f))
     primals = map(primal, x)
     tangents = map(tangent, x)
@@ -1397,7 +1491,18 @@ function (rule::Rule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
     _nfwd_check_function_tangent(tangent(f))
     primals = map(primal, x)
     tangents = map(tangent, x)
-    y, dy = _nfwd_eval(primal(f), primals, tangents, Val(N))
+    y, dy = _nfwd_eval(rule.out_buf, primal(f), primals, tangents, Val(N))
+    return _nfwd_output_dual(y, dy, tangents, Val(N), Val(true))
+end
+
+function (rule::Rule{sig,N})(f::Dual, x::Vararg{Any,M}) where {sig,N,M}
+    all(verify_dual_type, x) ||
+        throw(ArgumentError("NDualRule expects width-aware dual-type inputs."))
+    _nfwd_verify_sig(rule, (f, x...))
+    _nfwd_check_function_tangent(tangent(f))
+    primals = map(primal, x)
+    tangents = map(tangent, x)
+    y, dy = _nfwd_eval(rule.out_buf, primal(f), primals, tangents, Val(N))
     return _nfwd_output_dual(y, dy, tangents, Val(N), Val(true))
 end
 
@@ -1407,7 +1512,7 @@ end
     _nfwd_verify_sig(rule, (f, x))
     _nfwd_check_function_tangent(tangent(f))
     tangents = (tangent(x),)
-    y, dy = _nfwd_eval(primal(f), (primal(x),), tangents, Val(N))
+    y, dy = _nfwd_eval(rule.out_buf, primal(f), (primal(x),), tangents, Val(N))
     return _nfwd_output_dual(y, dy, tangents, Val(N), Val(true))
 end
 
@@ -1417,7 +1522,7 @@ end
     _nfwd_verify_sig(rule, (f, x1, x2))
     _nfwd_check_function_tangent(tangent(f))
     tangents = (tangent(x1), tangent(x2))
-    y, dy = _nfwd_eval(primal(f), (primal(x1), primal(x2)), tangents, Val(N))
+    y, dy = _nfwd_eval(rule.out_buf, primal(f), (primal(x1), primal(x2)), tangents, Val(N))
     return _nfwd_output_dual(y, dy, tangents, Val(N), Val(true))
 end
 
@@ -1427,14 +1532,17 @@ end
     _nfwd_verify_sig(rule, (f, x1, x2, x3))
     _nfwd_check_function_tangent(tangent(f))
     tangents = (tangent(x1), tangent(x2), tangent(x3))
-    y, dy = _nfwd_eval(primal(f), (primal(x1), primal(x2), primal(x3)), tangents, Val(N))
+    y, dy = _nfwd_eval(
+        rule.out_buf, primal(f), (primal(x1), primal(x2), primal(x3)), tangents, Val(N)
+    )
     return _nfwd_output_dual(y, dy, tangents, Val(N), Val(true))
 end
 
 # Optimised single-array-input frule: reuses a pre-allocated lifted buffer when the tangent
-# is in chunk layout (ndims(dx) == ndims(x) + 1). Falls through to the generic allocating
-# path for the plain layout and for malformed tangent dimensions, where `_nfwd_eval`
-# produces the user-facing validation error.
+# is either width-1 dense-array layout (ndims(dx) == ndims(x)) or chunk layout
+# (ndims(dx) == ndims(x) + 1). Falls through to the generic allocating path only for
+# malformed tangent dimensions, where `_nfwd_eval` produces the user-facing validation
+# error.
 function (rule::Rule{sig,N})(
     f::Dual, x::Dual{Array{T,Nd},Array{T,Nd1}}
 ) where {sig,N,T<:IEEEFloat,Nd,Nd1}
@@ -1442,11 +1550,53 @@ function (rule::Rule{sig,N})(
     _nfwd_check_function_tangent(tangent(f))
     px = _nfwd_check_primal(primal(x))
     dx = tangent(x)
-    if Nd1 == Nd + 1  # chunk layout — use in-place lift with pre-allocated buffer
+    if Nd1 == Nd || Nd1 == Nd + 1
         lifted = _nfwd_frule_lifted!(rule.buf, px, dx, Val(N))
-        y, dy = _nfwd_extract(primal(f)(lifted), Val(N))
+        y_raw = primal(f)(lifted)
+        _nfwd_writeback!(px, dx, lifted)
+        if y_raw === lifted
+            y, dy = px, dx
+        else
+            y, dy = _nfwd_extract!(rule.out_buf, y_raw, Val(N))
+        end
     else  # non-chunk layout — fall back to the allocating path
-        y, dy = _nfwd_eval(primal(f), (px,), (dx,), Val(N))
+        y, dy = _nfwd_eval(rule.out_buf, primal(f), (px,), (dx,), Val(N))
+    end
+    return Dual(y, dy)
+end
+
+function (rule::Rule{sig,1})(
+    f::Dual, x::Dual{Array{T,Nd},NTangent{Tuple{Array{T,Nd}}}}
+) where {sig,T<:IEEEFloat,Nd}
+    _nfwd_verify_sig(rule, (f, x))
+    _nfwd_check_function_tangent(tangent(f))
+    px = _nfwd_check_primal(primal(x))
+    dx = tangent(x)[1]
+    lifted = _nfwd_frule_lifted!(rule.buf, px, dx, Val(1))
+    y_raw = primal(f)(lifted)
+    _nfwd_writeback!(px, dx, lifted)
+    if y_raw === lifted
+        y, dy = px, dx
+    else
+        y, dy = _nfwd_extract!(rule.out_buf, y_raw, Val(1))
+    end
+    return Dual(y, dy)
+end
+
+function (rule::Rule{sig,1})(
+    f::Dual, x::Dual{Array{Complex{T},Nd},NTangent{Tuple{Array{Complex{T},Nd}}}}
+) where {sig,T<:IEEEFloat,Nd}
+    _nfwd_verify_sig(rule, (f, x))
+    _nfwd_check_function_tangent(tangent(f))
+    px = _nfwd_check_primal(primal(x))
+    dx = tangent(x)[1]
+    lifted = _nfwd_frule_lifted!(rule.buf, px, dx, Val(1))
+    y_raw = primal(f)(lifted)
+    _nfwd_writeback!(px, dx, lifted)
+    if y_raw === lifted
+        y, dy = px, dx
+    else
+        y, dy = _nfwd_extract!(rule.out_buf, y_raw, Val(1))
     end
     return Dual(y, dy)
 end
@@ -1716,8 +1866,8 @@ const NFWD_DEBUG_MODE_WARNING =
 
 Copy a `Rule` while resetting cached workspace state.
 """
-function _copy(x::Rule{sig,N,Tbuf}) where {sig,N,Tbuf}
-    return Rule{sig,N,Tbuf}(Tbuf(nothing))
+function _copy(x::Rule{sig,N,Tbuf,Toutbuf}) where {sig,N,Tbuf,Toutbuf}
+    return Rule{sig,N,Tbuf,Toutbuf}(Tbuf(nothing), Toutbuf(nothing))
 end
 
 """
@@ -2289,6 +2439,17 @@ function _nfwd_eval(f, primals::Tuple, tangents::Tuple, ::Val{N}) where {N}
     return _nfwd_extract(f(lifted...), primals, Val(N))
 end
 
+function _nfwd_eval(
+    out_buf::Base.RefValue, f, primals::Tuple, tangents::Tuple, ::Val{N}
+) where {N}
+    lifted = map(
+        (x, dx) -> dx isa NoTangent ? x : _nfwd_lift(_nfwd_check_primal(x), dx, Val(N)),
+        primals,
+        tangents,
+    )
+    return _nfwd_extract!(out_buf, f(lifted...), Val(N))
+end
+
 """
     _nfwd_eval(f, primals::Tuple{<:Number}, tangents, ::Val{N})
 
@@ -2299,6 +2460,13 @@ function _nfwd_eval(
 ) where {T<:Number,D,N}
     lifted = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
     return _nfwd_extract(f(lifted), primals, Val(N))
+end
+
+function _nfwd_eval(
+    out_buf::Base.RefValue, f, primals::Tuple{T}, tangents::Tuple{D}, ::Val{N}
+) where {T<:Number,D,N}
+    lifted = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
+    return _nfwd_extract!(out_buf, f(lifted), Val(N))
 end
 
 # Small scalar tuples can allocate when lifted through the generic `map` path above, so
@@ -2313,12 +2481,29 @@ function _nfwd_eval(
 end
 
 function _nfwd_eval(
+    out_buf::Base.RefValue, f, primals::Tuple{T1,T2}, tangents::Tuple{D1,D2}, ::Val{N}
+) where {T1<:Number,T2<:Number,D1,D2,N}
+    lifted1 = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
+    lifted2 = _nfwd_lift(_nfwd_check_primal(primals[2]), tangents[2], Val(N))
+    return _nfwd_extract!(out_buf, f(lifted1, lifted2), Val(N))
+end
+
+function _nfwd_eval(
     f, primals::Tuple{T1,T2,T3}, tangents::Tuple{D1,D2,D3}, ::Val{N}
 ) where {T1<:Number,T2<:Number,T3<:Number,D1,D2,D3,N}
     lifted1 = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
     lifted2 = _nfwd_lift(_nfwd_check_primal(primals[2]), tangents[2], Val(N))
     lifted3 = _nfwd_lift(_nfwd_check_primal(primals[3]), tangents[3], Val(N))
     return _nfwd_extract(f(lifted1, lifted2, lifted3), primals, Val(N))
+end
+
+function _nfwd_eval(
+    out_buf::Base.RefValue, f, primals::Tuple{T1,T2,T3}, tangents::Tuple{D1,D2,D3}, ::Val{N}
+) where {T1<:Number,T2<:Number,T3<:Number,D1,D2,D3,N}
+    lifted1 = _nfwd_lift(_nfwd_check_primal(primals[1]), tangents[1], Val(N))
+    lifted2 = _nfwd_lift(_nfwd_check_primal(primals[2]), tangents[2], Val(N))
+    lifted3 = _nfwd_lift(_nfwd_check_primal(primals[3]), tangents[3], Val(N))
+    return _nfwd_extract!(out_buf, f(lifted1, lifted2, lifted3), Val(N))
 end
 
 #
@@ -2718,6 +2903,15 @@ end
     T[], nothing, nothing
 )
 
+mutable struct NfwdArrayOutputWorkspace
+    primal::Base.RefValue{Any}
+    tangent::Base.RefValue{Any}
+end
+
+@inline NfwdArrayOutputWorkspace() = NfwdArrayOutputWorkspace(
+    Ref{Any}(nothing), Ref{Any}(nothing)
+)
+
 @inline function _nfwd_dense_array_workspace!(
     ws::NfwdDenseArrayWorkspace{T,N}, dims::NTuple{N,Int}
 ) where {T,N}
@@ -2883,6 +3077,110 @@ function _nfwd_lift!(
     return out
 end
 
+function _nfwd_lift!(
+    out::Array{Complex{NDual{T,C}}}, x::Array{Complex{T}}, dx::Array{Complex{T}}, ::Val{C}
+) where {T<:IEEEFloat,C}
+    @inbounds for I in CartesianIndices(x)
+        out[I] = Complex{NDual{T,C}}(x[I], NTangent(ntuple(_ -> dx[I], Val(C))))
+    end
+    return out
+end
+
+function _nfwd_extract!(
+    out_buf::Base.RefValue, y::AbstractArray{<:NDual{T,N}}, ::Val{N}
+) where {T,N}
+    ws = out_buf[]
+    if !(ws isa NfwdArrayOutputWorkspace)
+        ws = NfwdArrayOutputWorkspace()
+        out_buf[] = ws
+    end
+    primal = _nfwd_array_workspace!(ws.primal, Array{T,ndims(y)}, size(y))
+    tangent_dims = N == 1 ? size(y) : (size(y)..., N)
+    tangent_type = N == 1 ? Array{T,ndims(y)} : Array{T,ndims(y) + 1}
+    tangent = _nfwd_array_workspace!(ws.tangent, tangent_type, tangent_dims)
+    @inbounds for I in CartesianIndices(y)
+        primal[I] = Nfwd._nfwd_dual_value(y[I])
+        idx = Tuple(I)
+        if N == 1
+            tangent[I] = Nfwd._nfwd_dual_partial(y[I], 1)
+        else
+            for k in 1:N
+                tangent[idx..., k] = Nfwd._nfwd_dual_partial(y[I], k)
+            end
+        end
+    end
+    return primal, tangent
+end
+
+function _nfwd_extract!(
+    out_buf::Base.RefValue, y::AbstractArray{<:Complex{NDual{Treal,N}}}, ::Val{N}
+) where {Treal,N}
+    T = Complex{Treal}
+    ws = out_buf[]
+    if !(ws isa NfwdArrayOutputWorkspace)
+        ws = NfwdArrayOutputWorkspace()
+        out_buf[] = ws
+    end
+    primal = _nfwd_array_workspace!(ws.primal, Array{T,ndims(y)}, size(y))
+    tangent_dims = N == 1 ? size(y) : (size(y)..., N)
+    tangent_type = N == 1 ? Array{T,ndims(y)} : Array{T,ndims(y) + 1}
+    tangent = _nfwd_array_workspace!(ws.tangent, tangent_type, tangent_dims)
+    @inbounds for I in CartesianIndices(y)
+        primal[I] = Nfwd._nfwd_dual_value(y[I])
+        idx = Tuple(I)
+        if N == 1
+            tangent[I] = Nfwd._nfwd_dual_partial(y[I], 1)
+        else
+            for k in 1:N
+                tangent[idx..., k] = Nfwd._nfwd_dual_partial(y[I], k)
+            end
+        end
+    end
+    return primal, tangent
+end
+
+@inline function _nfwd_extract!(::Base.RefValue, y, ::Val{N}) where {N}
+    return _nfwd_extract(y, Val(N))
+end
+
+function _nfwd_writeback!(
+    x::Array{T,Nd}, dx::Array{T,Nd1}, lifted::Array{NDual{T,C},Nd}
+) where {T<:IEEEFloat,Nd,Nd1,C}
+    @inbounds for I in CartesianIndices(x)
+        d = lifted[I]
+        x[I] = Nfwd.ndual_value(d)
+        idx = Tuple(I)
+        if Nd1 == Nd
+            dx[I] = Nfwd.ndual_partial(d, 1)
+        else
+            for k in 1:C
+                dx[idx..., k] = Nfwd.ndual_partial(d, k)
+            end
+        end
+    end
+    return x, dx
+end
+
+function _nfwd_writeback!(
+    x::Array{Complex{T},Nd},
+    dx::Array{Complex{T},Nd1},
+    lifted::Array{Complex{NDual{T,C}},Nd},
+) where {T<:IEEEFloat,Nd,Nd1,C}
+    @inbounds for I in CartesianIndices(x)
+        d = lifted[I]
+        x[I] = Nfwd._nfwd_dual_value(d)
+        idx = Tuple(I)
+        if Nd1 == Nd
+            dx[I] = Nfwd._nfwd_dual_partial(d, 1)
+        else
+            for k in 1:C
+                dx[idx..., k] = Nfwd._nfwd_dual_partial(d, k)
+            end
+        end
+    end
+    return x, dx
+end
+
 #
 # Frule lifted-array buffer helpers (_nfwd_frule_buf_ref / _nfwd_frule_lifted!)
 #
@@ -2900,6 +3198,12 @@ function _nfwd_frule_buf_ref(
     return Ref{Union{Nothing,NfwdDenseArrayWorkspace{NDual{T,C},Nd}}}(nothing)
 end
 
+function _nfwd_frule_buf_ref(
+    ::Type{Tuple{F,Array{Complex{T},Nd}}}, ::Val{C}
+) where {F,T<:IEEEFloat,Nd,C}
+    return Ref{Union{Nothing,NfwdDenseArrayWorkspace{Complex{NDual{T,C}},Nd}}}(nothing)
+end
+
 # Typed-ref path for Array{T,Nd} inputs (covers all ranks, including Vector).
 function _nfwd_frule_lifted!(
     buf::Base.RefValue{Union{Nothing,NfwdDenseArrayWorkspace{NDual{T,C},Nd}}},
@@ -2911,11 +3215,28 @@ function _nfwd_frule_lifted!(
     return _nfwd_lift!(ws, x, dx, Val(C))
 end
 
+function _nfwd_frule_lifted!(
+    buf::Base.RefValue{Union{Nothing,NfwdDenseArrayWorkspace{Complex{NDual{T,C}},Nd}}},
+    x::Array{Complex{T},Nd},
+    dx::Array{Complex{T}},
+    ::Val{C},
+) where {T<:IEEEFloat,Nd,C}
+    ws = _nfwd_array_workspace!(buf, Array{Complex{NDual{T,C}},Nd}, size(x))
+    return _nfwd_lift!(ws, x, dx, Val(C))
+end
+
 # Generic path for Array{T,Nd} inputs (Ref{Any} buf).
 function _nfwd_frule_lifted!(
     buf::Base.RefValue, x::Array{T,Nd}, dx::Array{T}, ::Val{C}
 ) where {T<:IEEEFloat,Nd,C}
     ws = _nfwd_array_workspace!(buf, Array{NDual{T,C},Nd}, size(x))
+    return _nfwd_lift!(ws, x, dx, Val(C))
+end
+
+function _nfwd_frule_lifted!(
+    buf::Base.RefValue, x::Array{Complex{T},Nd}, dx::Array{Complex{T}}, ::Val{C}
+) where {T<:IEEEFloat,Nd,C}
+    ws = _nfwd_array_workspace!(buf, Array{Complex{NDual{T,C}},Nd}, size(x))
     return _nfwd_lift!(ws, x, dx, Val(C))
 end
 
