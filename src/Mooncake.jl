@@ -176,10 +176,10 @@ end
 include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
-include("interface.jl")
 include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd: NDual
 include(joinpath("nfwd", "primitive_wrappers.jl"))
+include("interface.jl")
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))

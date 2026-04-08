@@ -9,12 +9,8 @@ using PrecompileTools: @setup_workload, @compile_workload
 # Precompile the core AD machinery for the most common patterns so that the
 # time-to-first-gradient is reduced for users.  The workload exercises the full
 # `prepare_gradient_cache` → `value_and_gradient!!` and
-# `prepare_derivative_cache` → `value_and_derivative!!` pipelines (which internally call
-# `build_rrule`/`build_frule`, `generate_ir`, and all the IR-transformation infrastructure)
-# for both a simple scalar and a simple vector function.  Because the IR-manipulation
-# methods (`normalise!`, `BBCode`, `make_ad_stmts!`, …) work on `IRCode`/`BBCode` objects
-# whose *Julia type* is the same regardless of which function is being differentiated, one
-# call through the pipeline is enough to pre-warm the bulk of the compilation work.
+# `prepare_derivative_cache` → `value_and_derivative!!` pipelines for both a
+# simple scalar and a simple vector function.
 
 @setup_workload begin
     # A non-primitive scalar function: exercises the derived-rule code path end-to-end.
@@ -48,22 +44,22 @@ using PrecompileTools: @setup_workload, @compile_workload
 
         # Forward-mode: scalar Float64
         dcache = prepare_derivative_cache(_precompile_f, 1.0)
-        value_and_derivative!!(dcache, Dual(_precompile_f, NoTangent()), Dual(1.0, 1.0))
+        value_and_derivative!!(dcache, (_precompile_f, NoTangent()), (1.0, 1.0))
 
         # Forward-mode: vector Float64
         dcache2 = prepare_derivative_cache(_precompile_g, xs)
         value_and_derivative!!(
-            dcache2, Dual(_precompile_g, NoTangent()), Dual(xs, ones(3))
+            dcache2, (_precompile_g, NoTangent()), (xs, ones(3))
         )
 
         # Forward-mode: scalar ComplexF64
         dcache3 = prepare_derivative_cache(_precompile_h, z)
-        value_and_derivative!!(dcache3, Dual(_precompile_h, NoTangent()), Dual(z, one(z)))
+        value_and_derivative!!(dcache3, (_precompile_h, NoTangent()), (z, one(z)))
 
         # Forward-mode: scalar ComplexF32
         dcache4 = prepare_derivative_cache(_precompile_h32, z32)
         value_and_derivative!!(
-            dcache4, Dual(_precompile_h32, NoTangent()), Dual(z32, one(z32))
+            dcache4, (_precompile_h32, NoTangent()), (z32, one(z32))
         )
     end
 end

@@ -84,21 +84,17 @@ end
 end
 
 @inline primal(x::Nfwd.NDual) = Nfwd.ndual_value(x)
-@inline tangent(x::Nfwd.NDual{T,N}) where {T,N} = NTangent(
-    ntuple(i -> T(Nfwd.ndual_partial(x, i)), Val(N))
+@inline tangent(x::Nfwd.NDual{T,N}) where {T,N} = NTangent(Nfwd.ndual_partials(x))
+
+@inline primal(z::Complex{<:Nfwd.NDual}) = Nfwd._nfwd_dual_value(z)
+@inline tangent(z::Complex{<:Nfwd.NDual{T,N}}) where {T,N} = NTangent(
+    ntuple(i -> Nfwd._nfwd_dual_partial(z, i), Val(N))
 )
 
-@inline primal(z::Complex{<:Nfwd.NDual{T,N}}) where {T,N} = Complex{T}(
-    T(Nfwd.ndual_value(real(z))), T(Nfwd.ndual_value(imag(z)))
-)
-@inline tangent(z::Complex{<:Nfwd.NDual{T,N}}) where {T,N} = NTangent(
-    ntuple(
-        i -> Complex{T}(
-            T(Nfwd.ndual_partial(real(z), i)), T(Nfwd.ndual_partial(imag(z), i))
-        ),
-        Val(N),
-    ),
-)
+# NTangent → NDual / Complex{NDual} constructors.  These bridge the public tangent
+# representation (NTangent) with the internal NDual representation.  Used by `randn_dual`,
+# `_nfwd_extract_primitive_output` (tuple path), and any code that constructs a dual via
+# `dual_type(Val(N), T)(primal, ntangent)`.
 
 function (::Type{Nfwd.NDual{T,N}})(
     x::T, dx::NTangent{NTuple{N,T}}
@@ -120,74 +116,66 @@ end
     throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
 end
 
-@inline function _nfwd_scalar_partials(::Type{T}, dx::Real, ::Val{1}) where {T<:IEEEFloat}
-    return (T(dx),)
+# ── Scalar / complex lifting ────────────────────────────────────────────────────
+#
+# Convert (primal, tangent) pairs into NDual / Complex{NDual}.
+# Width-1 with a plain scalar/complex tangent (interface derivative path):
+
+@inline function _nfwd_lift_primitive_arg(x::T, dx::Real, ::Val{1}) where {T<:IEEEFloat}
+    return Nfwd.NDual{T,1}(x, (T(dx),))
 end
 
-@inline function _nfwd_scalar_partials(
-    ::Type{T}, dx::NTangent{<:Tuple{Any}}, ::Val{1}
+@inline function _nfwd_lift_primitive_arg(
+    x::Complex{T}, dx::Complex, ::Val{1}
 ) where {T<:IEEEFloat}
-    return (T(dx[1]),)
+    return Complex(
+        Nfwd.NDual{T,1}(real(x), (T(real(dx)),)), Nfwd.NDual{T,1}(imag(x), (T(imag(dx)),))
+    )
 end
 
-@inline function _nfwd_scalar_partials(
-    ::Type{T}, dx::NTangent{L}, ::Val{N}
-) where {T<:IEEEFloat,N,L<:NTuple{N,Any}}
-    return ntuple(i -> T(dx[i]), Val(N))
-end
-
-@inline function _nfwd_scalar_partials(
-    ::Type{T}, dx::Nfwd.NDual{S,N}, ::Val{N}
-) where {T<:IEEEFloat,S<:IEEEFloat,N}
-    return ntuple(i -> T(Nfwd.ndual_partial(dx, i)), Val(N))
-end
-
-@inline function _nfwd_complex_partials(
-    ::Type{T}, dx::Complex, ::Val{1}
-) where {T<:IEEEFloat}
-    return (T(real(dx)),), (T(imag(dx)),)
-end
-
-@inline function _nfwd_complex_partials(
-    ::Type{T}, dx::NTangent{<:Tuple{Any}}, ::Val{1}
-) where {T<:IEEEFloat}
-    return (T(real(dx[1])),), (T(imag(dx[1])),)
-end
-
-@inline function _nfwd_complex_partials(
-    ::Type{T}, dx::NTangent{L}, ::Val{N}
-) where {T<:IEEEFloat,N,L<:NTuple{N,Any}}
-    return ntuple(i -> T(real(dx[i])), Val(N)), ntuple(i -> T(imag(dx[i])), Val(N))
-end
-
-@inline function _nfwd_scalar_partials(
-    ::Type{T}, dx::NTuple{N,Any}, ::Val{N}
-) where {T<:IEEEFloat,N}
-    return ntuple(i -> T(dx[i]), Val(N))
-end
-
-@inline function _nfwd_complex_partials(
-    ::Type{T}, dx::NTuple{N,Any}, ::Val{N}
-) where {T<:IEEEFloat,N}
-    return ntuple(i -> T(real(dx[i])), Val(N)), ntuple(i -> T(imag(dx[i])), Val(N))
-end
-
-@inline function _nfwd_complex_partials(
-    ::Type{T}, dx::Complex{Nfwd.NDual{S,N}}, ::Val{N}
-) where {T<:IEEEFloat,S<:IEEEFloat,N}
-    return ntuple(i -> T(Nfwd.ndual_partial(real(dx), i)), Val(N)),
-    ntuple(i -> T(Nfwd.ndual_partial(imag(dx), i)), Val(N))
-end
+# Width-N with an indexable tangent (NTangent from frule path, NTuple from seeding):
 
 @inline function _nfwd_lift_primitive_arg(x::T, dx, ::Val{N}) where {T<:IEEEFloat,N}
-    return Nfwd.NDual{T,N}(x, _nfwd_scalar_partials(T, dx, Val(N)))
+    return Nfwd.NDual{T,N}(x, ntuple(i -> T(dx[i]), Val(N)))
 end
 
 @inline function _nfwd_lift_primitive_arg(
     x::Complex{T}, dx, ::Val{N}
 ) where {T<:IEEEFloat,N}
-    re, im = _nfwd_complex_partials(T, dx, Val(N))
-    return Complex(Nfwd.NDual{T,N}(real(x), re), Nfwd.NDual{T,N}(imag(x), im))
+    return Complex(
+        Nfwd.NDual{T,N}(real(x), ntuple(i -> T(real(dx[i])), Val(N))),
+        Nfwd.NDual{T,N}(imag(x), ntuple(i -> T(imag(dx[i])), Val(N))),
+    )
+end
+
+# ── Dense array lifting ──────────────────────────────────────────────────────
+
+# Pass-through: Array{NDual} is already lifted (used by seeded tangent path).
+@inline _nfwd_lift_primitive_arg(
+    ::Array{T}, dx::Array{Nfwd.NDual{T,N}}, ::Val{N}
+) where {T<:IEEEFloat,N} = dx
+@inline _nfwd_lift_primitive_arg(
+    ::Array{Complex{T}}, dx::Array{Complex{Nfwd.NDual{T,N}}}, ::Val{N}
+) where {T<:IEEEFloat,N} = dx
+
+# Width-1: plain Array{T} tangent (user-provided direction, frule path).
+@inline function _nfwd_lift_primitive_arg(
+    x::Array{T}, dx::Array{T}, ::Val{1}
+) where {T<:IEEEFloat}
+    return map((xi, dxi) -> Nfwd.NDual{T,1}(xi, (dxi,)), x, dx)
+end
+
+@inline function _nfwd_lift_primitive_arg(
+    x::Array{Complex{T}}, dx::Array{Complex{T}}, ::Val{1}
+) where {T<:IEEEFloat}
+    return map(
+        (xi, dxi) -> Complex(
+            Nfwd.NDual{T,1}(real(xi), (T(real(dxi)),)),
+            Nfwd.NDual{T,1}(imag(xi), (T(imag(dxi)),)),
+        ),
+        x,
+        dx,
+    )
 end
 
 @inline function _nfwd_lift_primitive_args(
@@ -214,31 +202,28 @@ end
     return tuple_map((yi, dyi) -> _nfwd_unpack_output_lane(yi, dyi, Val(k)), y, dy)
 end
 
+# Dense array unpack: width-1 tangent is the array itself; width-N tangent is NTuple of arrays.
+@inline _nfwd_unpack_output_lane(
+    ::Array{T}, dy::Array{T}, ::Val{1}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}} = dy
+@inline _nfwd_unpack_output_lane(::Array{T}, dy::NTuple{N,Array{T}}, ::Val{k}) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},N,k} = dy[k]
+
 @inline function _nfwd_extract_primitive_parts(
     y::Nfwd.NDual{T,N}, ::Val{N}
 ) where {T<:IEEEFloat,N}
-    p = T(Nfwd.ndual_value(y))
-    t = if N == 1
-        T(Nfwd.ndual_partial(y, 1))
-    else
-        ntuple(i -> T(Nfwd.ndual_partial(y, i)), Val(N))
-    end
+    p = Nfwd.ndual_value(y)
+    t = N == 1 ? Nfwd.ndual_partial(y, 1) : Nfwd.ndual_partials(y)
     return p, t
 end
 
 @inline function _nfwd_extract_primitive_parts(
     y::Complex{Nfwd.NDual{T,N}}, ::Val{N}
 ) where {T<:IEEEFloat,N}
-    p = Complex{T}(T(Nfwd.ndual_value(real(y))), T(Nfwd.ndual_value(imag(y))))
+    p = Nfwd._nfwd_dual_value(y)
     t = if N == 1
-        Complex{T}(T(Nfwd.ndual_partial(real(y), 1)), T(Nfwd.ndual_partial(imag(y), 1)))
+        Nfwd._nfwd_dual_partial(y, 1)
     else
-        ntuple(
-            i -> Complex{T}(
-                T(Nfwd.ndual_partial(real(y), i)), T(Nfwd.ndual_partial(imag(y), i))
-            ),
-            Val(N),
-        )
+        ntuple(i -> Nfwd._nfwd_dual_partial(y, i), Val(N))
     end
     return p, t
 end
@@ -246,6 +231,58 @@ end
 @inline function _nfwd_extract_primitive_parts(y::Tuple, ::Val{N}) where {N}
     parts = map(yi -> _nfwd_extract_primitive_parts(yi, Val(N)), y)
     return map(first, parts), map(last, parts)
+end
+
+# ── Dense array extraction ───────────────────────────────────────────────────
+
+function _nfwd_extract_primitive_parts(
+    y::Array{Nfwd.NDual{T,N}}, ::Val{N}
+) where {T<:IEEEFloat,N}
+    p = similar(y, T)
+    if N == 1
+        t = similar(y, T)
+        @inbounds for i in eachindex(y)
+            p[i] = Nfwd.ndual_value(y[i])
+            t[i] = Nfwd.ndual_partial(y[i], 1)
+        end
+    else
+        t = ntuple(Val(N)) do k
+            tk = similar(y, T)
+            @inbounds for i in eachindex(y)
+                tk[i] = Nfwd.ndual_partial(y[i], k)
+            end
+            tk
+        end
+        @inbounds for i in eachindex(y)
+            p[i] = Nfwd.ndual_value(y[i])
+        end
+    end
+    return p, t
+end
+
+function _nfwd_extract_primitive_parts(
+    y::Array{Complex{Nfwd.NDual{T,N}}}, ::Val{N}
+) where {T<:IEEEFloat,N}
+    CT = Complex{T}
+    p = similar(y, CT)
+    @inbounds for i in eachindex(y)
+        p[i] = Nfwd._nfwd_dual_value(y[i])
+    end
+    if N == 1
+        t = similar(y, CT)
+        @inbounds for i in eachindex(y)
+            t[i] = Nfwd._nfwd_dual_partial(y[i], 1)
+        end
+    else
+        t = ntuple(Val(N)) do k
+            tk = similar(y, CT)
+            @inbounds for i in eachindex(y)
+                tk[i] = Nfwd._nfwd_dual_partial(y[i], k)
+            end
+            tk
+        end
+    end
+    return p, t
 end
 
 @inline _nfwd_public_output_tangent(::Any, t, ::Val{1}) = t
@@ -257,6 +294,32 @@ end
     return NTangent(ntuple(lane -> _nfwd_unpack_output_lane(p, t, Val(lane)), Val(N)))
 end
 
+# Scalar / complex NDual: short-circuit the extract → wrap → unwrap round-trip.
+# N>1: the result is already an NDual / Complex{NDual}, return as-is.
+# N=1: convert to the width-1 Dual type expected by callers.
+@inline _nfwd_extract_primitive_output(
+    y::Nfwd.NDual{T,N}, ::Val{N}
+) where {T<:IEEEFloat,N} = y
+@inline function _nfwd_extract_primitive_output(
+    y::Nfwd.NDual{T,1}, ::Val{1}
+) where {T<:IEEEFloat}
+    return Dual{T,NTangent{Tuple{T}}}(
+        Nfwd.ndual_value(y), NTangent((Nfwd.ndual_partial(y, 1),))
+    )
+end
+@inline _nfwd_extract_primitive_output(
+    y::Complex{Nfwd.NDual{T,N}}, ::Val{N}
+) where {T<:IEEEFloat,N} = y
+@inline function _nfwd_extract_primitive_output(
+    y::Complex{Nfwd.NDual{T,1}}, ::Val{1}
+) where {T<:IEEEFloat}
+    CT = Complex{T}
+    v = Nfwd._nfwd_dual_value(y)
+    d = Nfwd._nfwd_dual_partial(y, 1)
+    return Dual{CT,NTangent{Tuple{CT}}}(v, NTangent((d,)))
+end
+
+# Tuple / other fallback: extract, wrap as public tangent, reconstruct Dual.
 @inline function _nfwd_extract_primitive_output(y, ::Val{N}) where {N}
     p, t = _nfwd_extract_primitive_parts(y, Val(N))
     public_tangent = _nfwd_public_output_tangent(p, t, Val(N))
@@ -329,6 +392,38 @@ end
     end
 end
 
+# ── Dense array seeding ──────────────────────────────────────────────────────
+
+# Returns Array{NDual{T,N}} directly — primal values embedded, partials seeded.
+@inline function _nfwd_seed_primitive_tangent(
+    x::Array{T}, chunk_size::Int, start_slot::Int, offset::Int
+) where {T<:IEEEFloat}
+    out = similar(x, Nfwd.NDual{T,chunk_size})
+    @inbounds for i in eachindex(x)
+        partials = _nfwd_seed_scalar_tangent(T, chunk_size, start_slot, offset + i - 1)
+        out[i] = Nfwd.NDual{T,chunk_size}(x[i], partials)
+    end
+    return out
+end
+
+@inline function _nfwd_seed_primitive_tangent(
+    x::Array{Complex{T}}, chunk_size::Int, start_slot::Int, offset::Int
+) where {T<:IEEEFloat}
+    out = similar(x, Complex{Nfwd.NDual{T,chunk_size}})
+    @inbounds for i in eachindex(x)
+        ct = _nfwd_seed_complex_tangent(T, chunk_size, start_slot, offset + 2 * (i - 1))
+        out[i] = Complex(
+            Nfwd.NDual{T,chunk_size}(
+                real(x[i]), ntuple(k -> T(real(ct[k])), Val(chunk_size))
+            ),
+            Nfwd.NDual{T,chunk_size}(
+                imag(x[i]), ntuple(k -> T(imag(ct[k])), Val(chunk_size))
+            ),
+        )
+    end
+    return out
+end
+
 @inline _nfwd_seed_primitive_tangent(x, chunk_size::Int, start_slot::Int, offset::Int) = NoTangent()
 
 @inline _nfwd_primitive_input_dof(x) =
@@ -361,6 +456,30 @@ end
     end
     return g
 end
+
+# ── Dense array gradient accumulation ────────────────────────────────────────
+
+@inline function _nfwd_accumulate_scalar_gradient(
+    g::Array{T}, slot::Int, v
+) where {T<:IEEEFloat}
+    @inbounds g[slot] += v
+    return g
+end
+
+@inline function _nfwd_accumulate_scalar_gradient(
+    g::Array{Complex{T}}, slot::Int, v
+) where {T<:IEEEFloat}
+    local_idx = (slot + 1) >> 1  # ceil(slot / 2)
+    if isodd(slot)
+        @inbounds g[local_idx] += complex(v, zero(T))
+    else
+        @inbounds g[local_idx] += complex(zero(T), v)
+    end
+    return g
+end
+
+# Base case: global_slot exceeds total DOF (chunk padding overshoot).
+@inline _nfwd_update_scalar_grad(grads::Tuple{}, ::Tuple{}, global_slot::Int, lane_val, offset::Int=0) = ()
 
 @inline function _nfwd_update_scalar_grad(
     grads::Tuple, primals::Tuple, global_slot::Int, lane_val, offset::Int=0

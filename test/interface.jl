@@ -131,18 +131,14 @@ end
             @test occursin("input_1: Float64 (scalar)", reverse_plain)
             @test occursin("output: Float64 (scalar)", reverse_plain)
 
-            forward_cache = Mooncake.prepare_derivative_cache(
-                sin, 1.0; config=Mooncake.Config(; debug_mode=false, friendly_tangents=true)
-            )
+            forward_cache = Mooncake.prepare_derivative_cache(sin, 1.0)
             forward_show = sprint(show, forward_cache)
-            @test occursin("Mooncake.ForwardCache(", forward_show)
+            @test occursin("Mooncake.NfwdCache(", forward_show)
             @test occursin("mode=:forward", forward_show)
-            @test occursin("friendly_tangents=true", forward_show)
 
             forward_plain = repr(MIME"text/plain"(), forward_cache)
-            @test occursin("Mooncake.ForwardCache", forward_plain)
+            @test occursin("Mooncake.NfwdCache", forward_plain)
             @test occursin("mode: forward", forward_plain)
-            @test occursin("friendly_tangents: true", forward_plain)
             @test occursin("input_1: Float64 (scalar)", forward_plain)
             @test occursin("output: Float64 (scalar)", forward_plain)
 
@@ -533,14 +529,8 @@ end
             @test ds_copy2._data == ds2._data
         end
     end
-    @testset "forwards mode ($kwargs)" for kwargs in [
-        (;),
-        (; debug_mode=true),
-        (; debug_mode=false),
-        (; debug_mode=true, silence_debug_messages=true),
-    ]
+    @testset "forwards mode" begin
         f = (x, y) -> x * y + cos(x)
-        g = (sp::SimplePair) -> SimplePair(f(sp.x1, sp.x2), 2.0)
 
         x, y = 5.0, 4.0
         dx, dy = 3.0, 2.0
@@ -549,14 +539,8 @@ end
         z = f(x, y)
         dz = dx * y + x * dy + dx * (-sin(x))
 
-        fx_sp = (g, SimplePair(x, y))
-        dfx_sp = (Mooncake.zero_tangent(g), SimplePair(dx, dy))
-        z_sp = g(SimplePair(x, y))
-
         @testset "Simple types" begin
-            cache = Mooncake.prepare_derivative_cache(
-                fx...; config=Mooncake.Config(; kwargs...)
-            )
+            cache = Mooncake.prepare_derivative_cache(fx...)
 
             # legacy Dual interface
             z_and_dz_dual = Mooncake.value_and_derivative!!(
@@ -588,16 +572,12 @@ end
             x_arr = [x, y]
             dx_arr_1 = [dx, 0.0]
 
-            cache_arr = Mooncake.prepare_derivative_cache(
-                f_arr, x_arr; config=Mooncake.Config(; kwargs...)
-            )
+            cache_arr = Mooncake.prepare_derivative_cache(f_arr, x_arr)
             @test Mooncake.value_and_derivative!!(
                 cache_arr, (f_arr, Mooncake.zero_tangent(f_arr)), (x_arr, dx_arr_1)
             ) == (sum(abs2, x_arr), Mooncake.NTangent((2 * dot(x_arr, dx_arr_1),)))
 
-            width2_rule = Mooncake.build_frule(
-                sum, x_arr; chunk_size=2, debug_mode=get(kwargs, :debug_mode, false)
-            )
+            width2_rule = Mooncake.build_frule(sum, x_arr; chunk_size=2)
             @test Mooncake.value_and_derivative!!(
                 width2_rule,
                 (sum, Mooncake.NoTangent()),
@@ -607,106 +587,25 @@ end
 
         @testset "Non-differentiable outputs" begin
             f_int = x -> x > 0 ? 1 : 2
-            cache_int = Mooncake.prepare_derivative_cache(
-                f_int, x; config=Mooncake.Config(; kwargs...)
-            )
+            cache_int = Mooncake.prepare_derivative_cache(f_int, x)
             @test Mooncake.value_and_derivative!!(
                 cache_int, (f_int, Mooncake.zero_tangent(f_int)), (x, dx)
             ) == (f_int(x), Mooncake.NoTangent())
         end
 
-        @testset "Structured types" begin
-            cache_sp_friendly = Mooncake.prepare_derivative_cache(
-                fx_sp...; config=Mooncake.Config(; friendly_tangents=true, kwargs...)
-            )
-            # friendly input doesn't error
-            z_and_dz_sp = Mooncake.value_and_derivative!!(
-                cache_sp_friendly, zip(fx_sp, dfx_sp)...
-            )
-            # primal output is friendly; tangent is a NamedTuple of per-field gradients.
-            @test first(z_and_dz_sp) == SimplePair(z, 2.0)
-            dz_sp = last(z_and_dz_sp)
-            @test dz_sp.x1 ≈ dz
-            @test dz_sp.x2 == 0.0
-
-            cache_sp_unfriendly = Mooncake.prepare_derivative_cache(
-                fx_sp...; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
-            )
-            @test_throws ArgumentError Mooncake.value_and_derivative!!(
-                cache_sp_unfriendly, zip(fx_sp, dfx_sp)...
-            )
-            @test_throws "Tangent types do not match primal types:" Mooncake.value_and_derivative!!(
-                cache_sp_unfriendly, zip(fx_sp, dfx_sp)...
-            )
-        end
-
-        @testset "Tuple-like inputs" begin
-            f_tuple = t -> t[1]^2 + sin(t[2])
-            tuple_x = (x, y)
-            tuple_dx_1 = (dx, 0.0)
-            cache_tuple = Mooncake.prepare_derivative_cache(
-                f_tuple,
-                tuple_x;
-                config=Mooncake.Config(; friendly_tangents=true, kwargs...),
-            )
-            @test Mooncake.value_and_derivative!!(
-                cache_tuple,
-                (f_tuple, Mooncake.zero_tangent(f_tuple)),
-                (tuple_x, tuple_dx_1),
-            ) == (x^2 + sin(y), (2 * x * dx + cos(y) * 0.0))
-
-            f_named = nt -> nt.a * sin(nt.b)
-            named_x = (; a=x, b=y)
-            named_dx_1 = (; a=dx, b=0.0)
-            cache_named = Mooncake.prepare_derivative_cache(
-                f_named,
-                named_x;
-                config=Mooncake.Config(; friendly_tangents=true, kwargs...),
-            )
-            @test Mooncake.value_and_derivative!!(
-                cache_named,
-                (f_named, Mooncake.zero_tangent(f_named)),
-                (named_x, named_dx_1),
-            ) == (f_named(named_x), dx * sin(y))
-        end
-
         @testset "cached forward gradient/pullback" begin
-            cache = Mooncake.prepare_derivative_cache(
-                f, x, y; config=Mooncake.Config(; kwargs...)
-            )
+            cache = Mooncake.prepare_derivative_cache(f, x, y)
             @test Mooncake.value_and_gradient!!(cache, f, x, y) ==
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
             @test Mooncake.value_and_pullback!!(cache, 1.0, f, x, y) ==
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
-
-            friendly_scalar = sp -> sp.x1^2 + sin(sp.x2)
-            friendly_input = SimplePair(x, y)
-            friendly_cache = Mooncake.prepare_derivative_cache(
-                friendly_scalar,
-                friendly_input;
-                config=Mooncake.Config(; friendly_tangents=true, kwargs...),
-            )
-            @test Mooncake.value_and_gradient!!(
-                friendly_cache, friendly_scalar, friendly_input
-            ) == (
-                friendly_scalar(friendly_input),
-                (Mooncake.NoTangent(), (; x1=2 * x, x2=cos(y))),
-            )
-            @test Mooncake.value_and_pullback!!(
-                friendly_cache, 1.0, friendly_scalar, friendly_input
-            ) == (
-                friendly_scalar(friendly_input),
-                (Mooncake.NoTangent(), (; x1=2 * x, x2=cos(y))),
-            )
         end
 
         @testset "forward cache mismatch errors" begin
             f_arr = x -> sum(abs2, x)
             x_arr = [x, y]
             dx_arr = [dx, 0.0]
-            cache = Mooncake.prepare_derivative_cache(
-                f_arr, x_arr; config=Mooncake.Config(; kwargs...)
-            )
+            cache = Mooncake.prepare_derivative_cache(f_arr, x_arr)
 
             @test_throws r"Cached autodiff call has a size mismatch for `x1`" Mooncake.value_and_derivative!!(
                 cache, (f_arr, Mooncake.NoTangent()), ([x, y, 3.0], [dx, 0.0, 0.0])
@@ -721,12 +620,23 @@ end
             )
         end
 
+        @testset "NfwdCache boundary rejection" begin
+            @test_throws ArgumentError Mooncake.prepare_derivative_cache(
+                sin, 1.0; config=Mooncake.Config(; debug_mode=true)
+            )
+            @test_throws ArgumentError Mooncake.prepare_derivative_cache(
+                sin, 1.0; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            f_sp = (sp::SimplePair) -> sp.x1^2 + sin(sp.x2)
+            @test_throws ArgumentError Mooncake.prepare_derivative_cache(
+                f_sp, SimplePair(1.0, 2.0)
+            )
+        end
+
         @testset "reverse cache mismatch errors" begin
             f_arr = x -> sum(abs2, x)
             x_arr = [x, y]
-            cache = Mooncake.prepare_gradient_cache(
-                f_arr, x_arr; config=Mooncake.Config(; kwargs...)
-            )
+            cache = Mooncake.prepare_gradient_cache(f_arr, x_arr)
 
             @test_throws r"Cached autodiff call has a size mismatch for `x1`" Mooncake.value_and_gradient!!(
                 cache, f_arr, [x, y, 3.0]
@@ -838,14 +748,11 @@ end
                 @test H1 ≈ H2
             end
 
-            @testset "debug_mode=true" begin
+            @testset "debug_mode=true is rejected by NfwdCache" begin
                 z = [1.2, 1.2]
-                cache = prepare_hessian_cache(
+                @test_throws ArgumentError prepare_hessian_cache(
                     rosen, z; config=Mooncake.Config(; debug_mode=true)
                 )
-                v, g, H = value_gradient_and_hessian!!(cache, rosen, z)
-                @test v ≈ rosen(z)
-                @test H ≈ rosen_H(z) rtol = 1e-10
             end
 
             @testset "n=0 edge case" begin

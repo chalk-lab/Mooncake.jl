@@ -237,7 +237,7 @@ end
     value_and_derivative!!(rule, f, x...)
     value_and_derivative!!(rule, (f, df), (x, dx), ...)
 
-Run a forward rule directly, without first constructing a `ForwardCache`.
+Run a forward rule directly, without first constructing a cache.
 
 The width-aware dual-type interface returns the rule output directly. The tuple interface returns
 `(y, dy)` using the rule's native tangent representation. Specialized rule types may
@@ -273,8 +273,10 @@ end
 # Cache types in this file:
 # - `Cache`: reusable reverse-mode cache for repeated `value_and_pullback!!` and
 #   `value_and_gradient!!` calls.
-# - `ForwardCache`: reusable forward-mode cache for repeated `value_and_derivative!!` calls,
-#   plus a cached scalar-output path for `value_and_pullback!!` / `value_and_gradient!!`.
+# - `NfwdCache`: temporary nfwd-backed forward-mode cache for prepared
+#   `value_and_derivative!!`, `value_and_gradient!!`, and `value_and_pullback!!` calls.
+# - `FoRCache`: internal forward cache backed by `build_primal`, used exclusively
+#   by HVP/Hessian to differentiate reverse-mode gradient closures.
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
 # The `Cache` parameters are load-bearing: they keep the prepared reverse cache concrete
@@ -890,140 +892,8 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-struct ForwardCache{R,IT<:Union{Nothing,Tuple},IC,S<:Tuple}
-    rule::R
-    input_tangents::IT
-    scalar_cache::IC
-    input_specs::S
-end
-
-struct ScalarForwardCache{R,D,GW,S<:Tuple}
-    rule::R
-    dests::D
-    gradient_workspace::GW
-    input_specs::S
-end
-
-@inline function _resolve_scalar_forward_chunk_size(chunk_size)
-    isnothing(chunk_size) && return 1
-    chunk_size isa Int && chunk_size > 0 ||
-        throw(ArgumentError("chunk_size must be a positive Int or nothing."))
-    return chunk_size
-end
-
-@unstable function ScalarForwardCache(rule::R, f, x...; config=Config()) where {R}
-    fx = (f, x...)
-    input_specs = map(fx) do x
-        if x isa AbstractArray
-            PreparedCacheInputSpec(typeof(x), size(x))
-        else
-            PreparedCacheInputSpec(typeof(x), ())
-        end
-    end
-    native_gradients = tuple_map(zero_tangent, fx)
-    dests = if config.friendly_tangents
-        tuple(map(friendly_tangent_cache, fx)...)
-    else
-        nothing
-    end
-    gradient_workspace = Ref(native_gradients)
-    return ScalarForwardCache{
-        typeof(rule),typeof(dests),typeof(gradient_workspace),typeof(input_specs)
-    }(
-        rule, dests, gradient_workspace, input_specs
-    )
-end
-
-@inline function value_and_gradient!!(
-    cache::ScalarForwardCache, f::F, x::Vararg{Any,N}
-) where {F,N}
-    input_primals = (f, x...)
-    _validate_prepared_cache_inputs(cache.input_specs, input_primals)
-    native_gradients = tuple_map(set_to_zero!!, cache.gradient_workspace[])
-    cache.gradient_workspace[] = native_gradients
-    y, native_gradients = __value_and_gradient!!(
-        cache.rule, tuple_map(CoDual, input_primals, native_gradients)...
-    )
-    if isnothing(cache.dests)
-        return y, native_gradients
-    end
-    c = _friendly_cache(input_primals)
-    return (
-        y,
-        tuple_map(
-            (d, p, t) -> tangent_to_friendly!!(d, p, t, c),
-            cache.dests,
-            input_primals,
-            native_gradients,
-        ),
-    )
-end
-
-@inline function value_and_pullback!!(
-    cache::ScalarForwardCache, ȳ::T, f::F, x::Vararg{Any,N}
-) where {T<:IEEEFloat,F,N}
-    input_primals = (f, x...)
-    _validate_prepared_cache_inputs(cache.input_specs, input_primals)
-    native_gradients = tuple_map(set_to_zero!!, cache.gradient_workspace[])
-    cache.gradient_workspace[] = native_gradients
-    y, native_gradients = __value_and_gradient!!(
-        cache.rule, tuple_map(CoDual, input_primals, native_gradients)...
-    )
-    pullback = tuple_map(g -> g isa NoTangent ? g : _scale(ȳ, g), native_gradients)
-    if isnothing(cache.dests)
-        return y, pullback
-    end
-    c = _friendly_cache(input_primals)
-    return (
-        y,
-        tuple_map(
-            (d, p, t) -> tangent_to_friendly!!(d, p, t, c),
-            cache.dests,
-            input_primals,
-            pullback,
-        ),
-    )
-end
-
 @inline _dual_primal_type(::Type) = Any
 @inline _dual_primal_type(::Type{Dual{Y,T}}) where {Y,T} = Y
-
-function Base.show(io::IO, cache::ForwardCache)
-    print(
-        io,
-        "Mooncake.ForwardCache(",
-        "mode=:forward, ",
-        "friendly_tangents=",
-        !isnothing(getfield(cache, :input_tangents)),
-        ", inputs=",
-        _cache_input_count(cache),
-        ")",
-    )
-end
-
-function Base.show(io::IO, ::MIME"text/plain", cache::ForwardCache)
-    output_summary = let
-        dual_arg_types = Tuple{
-            map(
-                spec -> dual_type(typeof(spec).parameters[1]),
-                getfield(cache, :input_specs),
-            )...,
-        }
-        output_type = Core.Compiler.return_type(getfield(cache, :rule), dual_arg_types)
-        _cache_type_summary(_dual_primal_type(output_type))
-    end
-    print(
-        io,
-        "Mooncake.ForwardCache\n",
-        "  mode: forward\n",
-        "  friendly_tangents: ",
-        !isnothing(getfield(cache, :input_tangents)),
-        "\n",
-        "  inputs: ",
-        _cache_input_count(cache),
-    )
-    _cache_print_io_summary(io, Base.tail(getfield(cache, :input_specs)), output_summary)
-end
 
 # Cache specs are compared again when a prepared cache is reused. The input type `T` is
 # encoded as a type parameter so that `_validate_prepared_cache_inputs` can read it at
@@ -1087,7 +957,7 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     throw(PreparedCacheSpecError(msg))
 end
 
-# Shared prepared-cache input validation for Cache, ForwardCache, and HVPCache entry points.
+# Shared prepared-cache input validation for Cache, NfwdCache, and HVPCache entry points.
 # The expected type T_i is extracted from the PreparedCacheInputSpec{T_i,S_i} type parameter
 # at @generated specialisation time, so the emitted `typeof(x_i) == T_i` comparison uses a
 # compile-time constant type — eliminating the runtime jl_types_equal call.
@@ -1234,156 +1104,269 @@ end
     return value, tuple_map(g -> g isa NoTangent ? g : _scale(ȳ, g), gradient)
 end
 
+# ── NfwdCache — temporary nfwd-backed forward-mode prepared cache ─────────────────
+#
+# Narrow support boundary (IEEEFloat, Complex{<:IEEEFloat}, dense Array of those,
+# tuples of supported types). No friendly tangents, no debug_mode.
+# Uses true nfwd NDual arithmetic dispatch — no build_frule / build_primal.
+
+"""
+    NfwdCache{GW, S}
+
+Temporary nfwd-backed prepared forward-mode cache.
+
+  - `GW`: gradient workspace (`Ref` of pre-allocated tangent tuple), or `Nothing`.
+  - `S`:  `Tuple` of [`PreparedCacheInputSpec`](@ref) for input validation.
+
+The cache does not store compiled rules. At call time it lifts primals to
+`NDual` arrays/scalars, calls `f` directly via Julia dispatch, and extracts
+primal/tangent from the NDual result.
+"""
+struct NfwdCache{GW,S<:Tuple}
+    chunk_size::Int
+    gradient_workspace::GW
+    input_specs::S
+end
+
+function Base.show(io::IO, cache::NfwdCache)
+    print(
+        io,
+        "Mooncake.NfwdCache(",
+        "mode=:forward, ",
+        "inputs=",
+        _cache_input_count(cache),
+        ")",
+    )
+end
+
+function Base.show(io::IO, ::MIME"text/plain", cache::NfwdCache)
+    print(
+        io,
+        "Mooncake.NfwdCache\n",
+        "  mode: forward\n",
+        "  inputs: ",
+        _cache_input_count(cache),
+        "\n",
+    )
+end
+
+# ── NfwdCache boundary validation ─────────────────────────────────────────
+
+# Validate that every *x* argument (not f) is within the narrow nfwd boundary.
+@inline function _nfwd_cache_validate_inputs(x::Tuple)
+    for xi in x
+        Nfwd._nfwd_is_supported_primal(xi) || throw(
+            ArgumentError(
+                "NfwdCache only supports IEEEFloat, Complex{<:IEEEFloat}, and dense " *
+                "Array{<:Union{IEEEFloat,Complex{<:IEEEFloat}}} inputs. Got $(typeof(xi)).",
+            ),
+        )
+    end
+    return nothing
+end
+
+# ── NfwdCache construction ──────────────────────────────────────────────
+
 """
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
-Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
+Returns an [`NfwdCache`](@ref) for use with [`value_and_derivative!!`](@ref),
+[`value_and_gradient!!`](@ref), and [`value_and_pullback!!`](@ref).
+
+No rules are compiled at cache-construction time. The cache validates inputs,
+pre-allocates gradient workspace, and stores a chunk size for the gradient path.
 
 !!! note
-    Cache construction stays lazy and does not execute `f(x...)`.
-
-!!! note
-    `prepare_derivative_cache` returns a [`ForwardCache`](@ref) with two cached forward
-    paths: the ordinary width-1 `frule` used by [`value_and_derivative!!`](@ref), and an
-    embedded cached scalar forward path used by cached [`value_and_pullback!!`](@ref) and
-    [`value_and_gradient!!`](@ref).
-
-!!! note
-    `config.chunk_size` is used when constructing the prepared scalar forward cache.
+    The temporary `NfwdCache` supports only the narrow nfwd boundary:
+    `IEEEFloat`, `Complex{<:IEEEFloat}`, and dense `Array`s of those element types.
+    `debug_mode=true` and `friendly_tangents=true` are not supported.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
 ) where {N}
+    config.debug_mode && throw(ArgumentError("NfwdCache does not support debug_mode=true."))
+    config.friendly_tangents &&
+        throw(ArgumentError("NfwdCache does not support friendly_tangents=true."))
+    _nfwd_cache_validate_inputs(x)
     fx = (f, x...)
-    rule = build_frule(
-        fx...;
-        debug_mode=config.debug_mode,
-        silence_debug_messages=config.silence_debug_messages,
-    )
-    scalar_chunk_size = _resolve_scalar_forward_chunk_size(config.chunk_size)
-    scalar_rule = build_frule(
-        fx...;
-        chunk_size=scalar_chunk_size,
-        debug_mode=config.debug_mode,
-        silence_debug_messages=config.silence_debug_messages,
-    )
-    scalar_cache = ScalarForwardCache(scalar_rule, fx...; config)
-    input_specs = map(fx) do x
-        if x isa AbstractArray
-            PreparedCacheInputSpec(typeof(x), size(x))
+    chunk_size = something(config.chunk_size, 1)
+    input_specs = map(fx) do xi
+        if xi isa AbstractArray
+            PreparedCacheInputSpec(typeof(xi), size(xi))
         else
-            PreparedCacheInputSpec(typeof(x), ())
+            PreparedCacheInputSpec(typeof(xi), ())
         end
     end
-    if config.friendly_tangents
-        return ForwardCache(rule, tuple_map(zero_tangent, fx), scalar_cache, input_specs)
-    end
-    return ForwardCache(rule, nothing, scalar_cache, input_specs)
+    native_gradients = tuple_map(zero_tangent, fx)
+    gradient_workspace = Ref(native_gradients)
+    return NfwdCache(chunk_size, gradient_workspace, input_specs)
 end
 
-function value_and_gradient!!(cache::ForwardCache, f::F, x::Vararg{Any,N}) where {F,N}
-    return value_and_gradient!!(cache.scalar_cache, f, x...)
-end
-
-function value_and_pullback!!(
-    cache::ForwardCache, ȳ, f::F, x::Vararg{Any,N}; friendly_tangents=false
-) where {F,N}
-    _ = friendly_tangents
-    # Friendly/native tangent selection is fixed when the cache is prepared.
-    return value_and_pullback!!(cache.scalar_cache, ȳ, f, x...)
-end
+# ── NfwdCache derivative dispatch ─────────────────────────────────────────
 
 """
-    value_and_derivative!!(cache::ForwardCache, f::Dual, x::Vararg{Dual,N})
-
-Returns a `Dual` containing the result of applying forward-mode AD to compute the (Frechet)
-derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
-in `f` and `x`.
-"""
-function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
-    input_primals = map(primal, fx)
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
-    input_tangents = map(tangent, fx)
-    any(input_tangents) do t
-        lanes = _ntangent_lane_count(t)
-        !isnothing(lanes) && lanes != 1
-    end && throw(
-        ArgumentError("`value_and_derivative!!(cache, ...)` expects ordinary tangents.")
-    )
-    return __call_rule(
-        cache.rule, tuple_map(_internal_forward_dual, input_primals, input_tangents)
-    )
-end
-
-"""
-    value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
+    value_and_derivative!!(cache::NfwdCache, (f, df), (x, dx), ...)
 
 Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to
-compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in
+compute the (Frechet) derivative of `f` at the primal values in `x` in
 the direction of the tangent values contained in `df` and `dx`.
 
-Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate
-the case where internal Mooncake tangent types do not coincide with tangents
-provided by the user. In that case we translate between "friendly tangents"
-and internal tangents using cache storage.
+Uses true nfwd NDual arithmetic: lifts primals+tangents to `NDual`, calls `f`
+directly, and extracts primal/tangent from the result.
 
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f`
     and `x` must be of the same size and shape as those used to construct the `cache`.
-    This is to ensure that the derivative tangent can be written to the memory allocated
-    when the `cache` was built.
-
-!!! warning
-    `cache` owns any mutable state returned by this function, meaning that
-    mutable components of values returned by it will be mutated if you run this
-    function again with different arguments. Therefore, if you need to keep the
-    values returned by this function around over multiple calls to this
-    function with the same `cache`, you should take a copy (using `copy` or
-    `deepcopy`) of them before calling again.
 """
 @inline function value_and_derivative!!(
-    cache::ForwardCache, fx::Vararg{Tuple{Any,Any},M}
+    cache::NfwdCache, fx::Vararg{Tuple{Any,Any},M}
 ) where {M}
     input_primals = tuple_map(first, fx)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
-    input_external_tangents = tuple_map(last, fx)
-    friendly_tangents = !isnothing(cache.input_tangents)
-    any(input_external_tangents) do t
-        lanes = _ntangent_lane_count(t)
-        !isnothing(lanes) && lanes != 1
-    end && throw(
-        ArgumentError("`value_and_derivative!!(cache, ...)` expects ordinary tangents.")
+    input_tangents = tuple_map(last, fx)
+    f_tangent = first(input_tangents)
+    f_tangent isa NoTangent || throw(
+        ArgumentError(
+            "NfwdCache expects NoTangent for the function tangent, got $(typeof(f_tangent)).",
+        ),
     )
-    input_tangents = if friendly_tangents
-        tuple_map(primal_to_tangent!!, cache.input_tangents, input_external_tangents)
-    else
-        input_external_tangents
-    end
-    any(input_tangents) do t
-        lanes = _ntangent_lane_count(t)
-        !isnothing(lanes) && lanes != 1
-    end && throw(
-        ArgumentError("`value_and_derivative!!(cache, ...)` expects ordinary tangents.")
-    )
-    input_duals = tuple_map(_internal_forward_dual, input_primals, input_tangents)
-    !friendly_tangents && error_if_incorrect_dual_types(input_duals...)
-    output = __call_rule(cache.rule, input_duals)
-    output_primal = primal(output)
-    return if friendly_tangents
-        output_friendly_tangent = tangent_to_friendly!!(
-            friendly_tangent_cache(output_primal),
-            output_primal,
-            tangent(output),
-            _friendly_cache((output_primal,)),
-        )
-        output_primal, output_friendly_tangent
-    else
-        output_primal, tangent(output)
-    end
+    x_primals = Base.tail(input_primals)
+    x_tangents = Base.tail(input_tangents)
+    lifted = _nfwd_lift_primitive_args(Val(1), x_primals, x_tangents)
+    y_ndual = first(input_primals)(lifted...)
+    p, t = _nfwd_extract_primitive_parts(y_ndual, Val(1))
+    return p, t
 end
 
+# ── NfwdCache gradient / pullback ─────────────────────────────────────────
+
+function value_and_gradient!!(cache::NfwdCache, f::F, x::Vararg{Any,N}) where {F,N}
+    input_primals = (f, x...)
+    _validate_prepared_cache_inputs(cache.input_specs, input_primals)
+    x_primals = x
+    chunk_size = cache.chunk_size
+    total_dof = Nfwd._nfwd_input_dof(x_primals)
+    grads = tuple_map(set_to_zero!!, cache.gradient_workspace[])
+    cache.gradient_workspace[] = grads
+    y = nothing
+    for start_slot in 1:chunk_size:total_dof
+        seeded = _nfwd_seed_primitive_tangents(x_primals, Val(chunk_size), start_slot)
+        lifted = _nfwd_lift_primitive_args(Val(chunk_size), x_primals, seeded)
+        y_ndual = f(lifted...)
+        y_p, dy = _nfwd_extract_primitive_parts(y_ndual, Val(chunk_size))
+        if isnothing(y)
+            y = y_p
+            y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        end
+        ȳ = one(typeof(y))
+        lane_vals = _nfwd_contract_output(ȳ, dy)
+        # Scatter into (f_grad, x_grads...) — f_grad is NoTangent, rest are x grads.
+        grads = (
+            first(grads),
+            _nfwd_scatter_scalar_chunk(
+                Base.tail(grads), x_primals, lane_vals, start_slot
+            )...,
+        )
+    end
+    cache.gradient_workspace[] = grads
+    return y::IEEEFloat, grads
+end
+
+@inline function value_and_pullback!!(
+    cache::NfwdCache, ȳ::T, f::F, x::Vararg{Any,N}
+) where {T<:IEEEFloat,F,N}
+    y, grads = value_and_gradient!!(cache, f, x...)
+    pullback = tuple_map(g -> g isa NoTangent ? g : _scale(ȳ, g), grads)
+    return y, pullback
+end
+
+# ── NfwdCache zero-arg disambiguation ───────────────────────────────────────
+
+# Zero-arg disambiguation (Aqua ambiguity detection).
+function value_and_derivative!!(cache::NfwdCache{GW,S}) where {GW,S<:Tuple{}}
+    _validate_prepared_cache_inputs(cache.input_specs, ())
+    error("unreachable")
+end
+
+# ── FoRCache ──────────────────────────────────────────────────────────── #
+
+"""
+    FoRCache{R, S}
+
+Internal forward-over-reverse derivative cache backed by `build_primal`.
+
+Used exclusively by [`prepare_hvp_cache`](@ref) / [`prepare_hessian_cache`](@ref) to
+differentiate the gradient closure `grad_f`.  Unlike [`NfwdCache`](@ref), which lifts
+primals to `NDual` and calls `f` directly via Julia dispatch, this cache compiles a
+lifted-primal forward rule that handles arbitrary closures (including reverse-mode cache
+closures) safely.
+
+  - `R`: the compiled forward rule returned by `build_primal`.
+  - `S`: `Tuple` of [`PreparedCacheInputSpec`](@ref) for input validation.
+"""
+struct FoRCache{R,S<:Tuple}
+    rule::R
+    input_specs::S
+end
+
+function Base.show(io::IO, cache::FoRCache)
+    print(io, "Mooncake.FoRCache(inputs=", _cache_input_count(cache), ")")
+end
+
+@inline _cache_input_count(cache::FoRCache) = length(cache.input_specs) - 1
+
+"""
+    _prepare_for_primal_derivative_cache(f, x...; config=Config())
+
+Build an internal [`FoRCache`](@ref) for differentiating `f` at `x...` using the
+lifted-primal forward compiler (`build_primal`).  This is not part of the public API;
+it exists to give HVP/Hessian a safe forward path over reverse-mode gradient closures.
+"""
+@unstable @inline function _prepare_for_primal_derivative_cache(
+    f, x::Vararg{Any,N}; config=Config()
+) where {N}
+    fx = (f, x...)
+    interp = get_interpreter(ForwardMode)
+    rule = build_primal(
+        interp,
+        typeof(fx);
+        call_target=f,
+        debug_mode=config.debug_mode,
+        skip_world_age_check=false,
+        tangent_mode=Val(1),
+    )
+    input_specs = map(fx) do xi
+        if xi isa AbstractArray
+            PreparedCacheInputSpec(typeof(xi), size(xi))
+        else
+            PreparedCacheInputSpec(typeof(xi), ())
+        end
+    end
+    return FoRCache(rule, input_specs)
+end
+
+@inline function value_and_derivative!!(
+    cache::FoRCache, fx::Vararg{Tuple{Any,Any},M}
+) where {M}
+    input_primals = tuple_map(first, fx)
+    _validate_prepared_cache_inputs(cache.input_specs, input_primals)
+    input_tangents = tuple_map(last, fx)
+    input_duals = tuple_map(_internal_forward_dual, input_primals, input_tangents)
+    all(verify_dual_type, input_duals) || throw(
+        ArgumentError(
+            "FoRCache: input duals failed type verification. " *
+            "All tangents must be width-1 compatible with their primals.",
+        ),
+    )
+    output = cache.rule(input_duals...)
+    return primal(output), tangent(output)
+end
+
+# ── HVPCache ───────────────────────────────────────────────────────────────── #
+
 # `fwd_cache` is the derivative cache for `grad_f`. The compiled inner rrule is cached
-# across `value_and_hvp!!` calls via a `LazyFoRRule` captured inside `fwd_cache`'s frule.
+# across `value_and_hvp!!` calls via the higher-order forward-over-reverse path captured
+# inside `fwd_cache`'s lifted-primal rule.
 """
     HVPCache
 
@@ -1494,7 +1477,7 @@ true
             (val_and_grad[1], Base.tail(val_and_grad[2]))
         end
     end
-    fwd_cache = prepare_derivative_cache(grad_f, x...; config)
+    fwd_cache = _prepare_for_primal_derivative_cache(grad_f, x...; config)
     return HVPCache(
         f, grad_f, zero_tangent(grad_f), fwd_cache, getfield(grad_cache, :output_spec)
     )
@@ -1752,16 +1735,4 @@ end
         end
     end
     return value, grads, H_blocks
-end
-
-# IT=Nothing specialisation: disambiguates against the Dual-vararg and Tuple-vararg
-# zero-arg overloads (Aqua detects the ambiguity without this more-specific method).
-function value_and_derivative!!(cache::ForwardCache{R,Nothing,IC,S}) where {R,IC,S<:Tuple}
-    _validate_prepared_cache_inputs(cache.input_specs, ())
-    error("unreachable")
-end
-
-function value_and_derivative!!(cache::ForwardCache)
-    _validate_prepared_cache_inputs(cache.input_specs, ())
-    error("unreachable")
 end
