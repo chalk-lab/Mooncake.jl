@@ -43,30 +43,20 @@ end
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_union_array(); test_opt_flag=false
         )
-
         # https://github.com/chalk-lab/Mooncake.jl/issues/631
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.P_adam_like_union; test_opt_flag=false
         )
-    end
-
-    @testset "tangent_type(NoFData, Union{NoRData, RData{...}}) regression" begin
-        LoHiRData = Mooncake.RData{@NamedTuple{lo::Float64,hi::Float64}}
-        MaybeLoHiRData = Union{NoRData,LoHiRData}
-        @test tangent_type(NoFData, MaybeLoHiRData) ==
-            Union{NoTangent,Tangent{@NamedTuple{lo::Float64,hi::Float64}}}
-
-        @test tangent_type(NoFData, Mooncake.RData{@NamedTuple{lohi::MaybeLoHiRData}}) ==
-            Tangent{
-            @NamedTuple{
-                lohi::Union{NoTangent,Tangent{@NamedTuple{lo::Float64,hi::Float64}}}
-            }
-        }
-    end
-
-    @testset "tangent_type(Union{NoFData, ...}, NoRData) validation" begin
-        @test tangent_type(Union{NoFData,Vector{Float64}}, NoRData) ==
-            Union{NoTangent,Vector{Float64}}
+        # https://github.com/chalk-lab/Mooncake.jl/issues/1130
+        TestUtils.test_tangent_splitting(
+            Xoshiro(123456), TestResources.make_P_lohi_union(); test_opt_flag=false
+        )
+        TestUtils.test_tangent_splitting(
+            Xoshiro(123456), TestResources.make_P_lohi_container(); test_opt_flag=false
+        )
+        TestUtils.test_tangent_splitting(
+            Xoshiro(123456), TestResources.make_P_nothing_or_vector(); test_opt_flag=false
+        )
         @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
     end
 
