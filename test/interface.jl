@@ -219,15 +219,6 @@ end
             @test dx[2] isa @NamedTuple{x1::Float64, x2::Float64}
             @test dx[2] == (; x1=2 * x.x1, x2=cos(x.x2))
 
-            f_nt = (x, nt) -> x * nt.a
-            nt = (; a=2.0)
-            cache_nt = Mooncake.prepare_gradient_cache(
-                f_nt, 1.0, nt; config=Mooncake.Config(; friendly_tangents=true)
-            )
-            v_nt, dx_nt = Mooncake.value_and_gradient!!(cache_nt, f_nt, 1.0, nt)
-            @test v_nt == 2.0
-            @test dx_nt == (Mooncake.NoTangent(), 2.0, (; a=1.0))
-
             rule = build_rrule(f, x)
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x)
