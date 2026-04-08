@@ -2,7 +2,11 @@
 
 @inline function _output_tangent_type(::Type{P}, tangents::Tuple) where {P}
     ntangent_lanes = Mooncake._ntangent_lane_count(tangents)
-    return isnothing(ntangent_lanes) ? tangent_type(P) : Mooncake.tangent_type(Val(ntangent_lanes), P)
+    return if isnothing(ntangent_lanes)
+        tangent_type(P)
+    else
+        Mooncake.tangent_type(Val(ntangent_lanes), P)
+    end
 end
 
 @inline function _build_chunked_output_tangent(
@@ -52,6 +56,34 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) wh
         end
     end
     return Mooncake.dual_type(typeof(y))(y, dy)
+end
+
+function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) where {P,N}
+    all(verify_dual_type, x) || error_if_incorrect_dual_types(x...)
+    y = _new_(P, tuple_map(primal, x)...)
+    tangents = tuple_map(tangent, x)
+    lane_count = Mooncake._ntangent_lane_count(tangents)
+    dy = if !isnothing(lane_count)
+        if lane_count == 1
+            build_output_tangent(
+                P,
+                tuple_map(primal, x),
+                ntuple(i -> Mooncake._ntangent_lane(tangents[i], Val(1)), Val(N)),
+                tangent_type(P),
+            )
+        else
+            _build_chunked_output_tangent(P, tuple_map(primal, x), tangents, Val(lane_count))
+        end
+    else
+        T = _output_tangent_type(P, tangents)
+        if T == NoTangent
+            NoTangent()
+        else
+            build_output_tangent(P, tuple_map(primal, x), tangents, T)
+        end
+    end
+    width = something(lane_count, 1)
+    return Mooncake.dual_type(Val(width), typeof(y))(y, dy)
 end
 
 function rrule!!(

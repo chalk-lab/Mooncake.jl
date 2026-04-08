@@ -939,7 +939,7 @@ end
 end
 
 __get_primal(x::CoDual) = primal(x)
-__get_primal(x) = x
+__get_primal(x) = verify_dual_type(x) ? primal(x) : x
 __get_rrule_arg(x::Dual{<:CoDual}) = primal(x)
 __get_rrule_arg(x) = x
 

@@ -1,43 +1,50 @@
 #
-# Design note for `build_primal`.
+# Roadmap note for `build_primal`.
 #
-# `build_primal` provides an IR-lifted forward path. It:
-# 1. resolves and normalises primal IR for `f`
-# 2. rebuilds `f` as a primal/lifted executable rather than re-running Julia dispatch on
-#    AD wrapper types
-# 3. recursively uses `build_primal(g, ...)` for resolved non-primitive callees so
-#    dispatch is preserved through the resolved call graph
-# 4. keeps primitive / intrinsic / builtin leaves on explicit rule paths
-# 5. keeps an explicit fallback only for genuinely unresolved dynamic calls
+# `build_primal` is the active IR-lifted forward path. The core plan is:
+# 1. resolve and normalise primal IR for `f`
+# 2. rebuild `f` as a primal/lifted executable rather than redispatching on AD wrappers
+# 3. recursively use `build_primal(g, ...)` for resolved non-primitive callees so dispatch
+#    is preserved through the resolved call graph
+# 4. keep primitive / intrinsic / builtin leaves on explicit primitive rule paths
+# 5. keep an explicit fallback only for genuinely unresolved dynamic calls
 #
-# The recursive caching / cycle-breaking part is still the same problem current forward
-# mode solves via `LazyPrimal`, `DynamicPrimal`, and `DerivedPrimal`; the remaining design
-# work is mainly the lifted execution / representation choice, not inventing a separate
-# recursion strategy.
+# The recursion / caching side of that problem is already the same one handled by
+# `LazyPrimal`, `DynamicPrimal`, and `DerivedPrimal`; the interesting design work is
+# representation choice and the lifted execution boundary.
 #
-# Because Mooncake's normalised IR lowers constructors to `__new__`, lifted `__new__`
-# rules may be enough to handle concrete struct construction without explicit lifted
-# constructor methods. That could support a fully lifted forward path whose width-aware
-# dual type is selected by `dual_type(::Val{N}, P)` and whose tangent storage is selected by
-# `tangent_type(::Val{N}, P)`. The default pairing is `Dual{P,tangent_type(Val(N), P)}`,
-# but other overloads may choose `NDual` or another width-aware dual type. For nfwd in
-# particular, direct public support is still narrower than the internal packed tangent
-# machinery: today its direct inputs are IEEE-float scalars, complex IEEE-float scalars,
-# and dense arrays with those element types, while direct outputs may also be tuples
-# thereof, even though the internal packing code can represent broader tangent trees.
-# That could potentially share machinery with broader transforms such as batched /
-# vmap-style derived overloads. Candidate width-aware tangent layouts for that path
-# include:
+# Routes we considered:
+# - keep the lifted path fully on Mooncake `Dual` plus width-aware tangent storage
+# - make the lifted path generic over `dual_type(::Val{N}, P)` so scalar / complex cases
+#   can choose `NDual` directly
+# - overload `tangent_type(::Val{N}, ...)` for packed layouts rather than changing dual type
+# - use cached internal `Array{NDual}` work buffers behind callable rule objects for array
+#   lowering, instead of trying to make array public dual types themselves be `Array{NDual}`
+# - previously, lower some primitive sites through separate nfwd bridge types; that route was
+#   removed in favour of Mooncake-owned primitive wrapper entrypoints
+#
+# Candidate width-aware tangent layouts we considered:
 # - today's lane-outer `NTangent`, i.e. a tuple of ordinary tangents
-# - a packed `NTangent` with lane-inner scalar leaves closer to NDual
+# - a packed `NTangent` with lane-inner scalar leaves closer to `NDual`
 # - overloading `tangent_type(::Val{N}, ...)` only for `Array{<:IEEEFloat}` /
 #   `Array{<:Complex{<:IEEEFloat}}` so array leaves use NDual-like packed storage
 # - overloading `tangent_type(::Val{N}, ...)` only for those arrays so tangents use one
 #   extra lane dimension instead
 #
-# A natural next step is to make forward mode generic over a width-aware dual-type
-# protocol, rather than assuming concrete `Dual{P,T}` everywhere. A minimal proposed
-# construction / extraction protocol would be:
+# Current choices:
+# - the active lifted IR path constructs and types values through
+#   `dual_type(::Val{N}, P)` / `tangent_type(::Val{N}, P)`, so width-aware scalar and
+#   complex paths can use `NDual` directly while structured values still default to
+#   ordinary Mooncake `Dual` unless users choose a different `dual_type` overload
+# - the public boundary is generic over width-aware dual types via `dual_type(::Val{N}, P)`
+# - direct nfwd integration now lives behind Mooncake-owned primitive wrappers and
+#   width-aware dual-type overloads, not a separate `NfwdMooncake` runtime include
+# - primitive wrappers may accept top-level `NDual` directly where that path is explicit,
+#   but the general lifted path does not proactively lower everything to `NDual`
+#
+# The remaining larger design direction is to make the lifted path itself generic over a
+# width-aware dual-type protocol, rather than assuming concrete `Dual{P,T}` internally. A
+# minimal construction / extraction protocol would be:
 # - `primal(x)`
 # - `tangent(x)`
 # - `dual_type(::Val{N}, ::Type{P})`
@@ -50,13 +57,15 @@
 # common case.
 #
 # That keeps width-aware dual-type choice type-driven and inference-friendly while
-# separating dual-type selection from tangent-storage selection. The type-stability
+# separating dual-type selection from tangent-storage selection. The key type-stability
 # constraint is that `dual_type(Val(N), P)` must remain foldable to a concrete dual type
 # for concrete `P`; runtime dual-type switching would immediately weaken inference through
 # the transformed IR.
 #
-# The remaining direct nfwd integration now hangs off Mooncake-owned width-aware dual-type
-# and primitive-wrapper entrypoints rather than a separate `NfwdMooncake` runtime include.
+# Still open:
+# - broader array/container lowering if we want cached internal `Array{NDual}` execution
+# - future reuse of this machinery for batched / vmap-style transforms
+# - keeping the shared generated forward corpus green as the lifted path evolves
 
 # Check if a type contains Union{} (bottom type) anywhere in its structure.
 # This can happen with unreachable code or failed type inference.
@@ -86,9 +95,6 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-function _fwd_dual_type end
-function _fwd_zero_dual end
-function _fwd_uninit_dual end
 function _nfwd_primitive_frule_call end
 function _nfwd_primitive_rrule_call end
 
@@ -96,19 +102,10 @@ function _nfwd_primitive_rrule_call end
     ::Any, interp, sig; debug_mode=false, silence_debug_messages=true
 ) = nothing
 
-function _fwd_dual_type(::Val{N}, ::Type{P}) where {N,P}
-    return Dual{P,tangent_type(Val(N), P)}
-end
-
 @inline function _lifted_dual_ir_type(tangent_mode, P)
     T = CC.widenconst(P)
-    return isconcretetype(T) ? _fwd_dual_type(tangent_mode, T) : Any
+    return isconcretetype(T) ? dual_type(tangent_mode, T) : Any
 end
-
-@inline _fwd_zero_dual(::Val{N}, x) where {N} = Dual(x, _chunked_zero_tangent(x, Val(N)))
-@inline _fwd_uninit_dual(::Val{N}, x) where {N} = Dual(
-    x, _chunked_uninit_tangent(x, Val(N))
-)
 
 function build_frule(
     args...;
@@ -235,7 +232,7 @@ function build_primal(
                 if isnothing(call_target)
                     nothing
                 else
-                    _fwd_zero_dual(cached.tangent_mode, call_target)
+                    zero_dual(cached.tangent_mode, call_target)
                 end,
                 cached.world,
                 cached.tangent_mode,
@@ -262,7 +259,7 @@ function build_primal(
             lifted_oc,
             sig_or_mi,
             call_target,
-            isnothing(call_target) ? nothing : _fwd_zero_dual(tangent_mode, call_target),
+            isnothing(call_target) ? nothing : zero_dual(tangent_mode, call_target),
             interp.world,
             tangent_mode,
         )
@@ -412,15 +409,15 @@ end
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
 
 """
-    const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
+    const_dual!(captures::Vector{Any}, stmt)
 
 Build a width-aware dual type from `stmt`, with zero / uninitialised tangent. If the
 resulting dual is a bits type, return it directly. Otherwise push it into `captures` and
 return its location.
 """
-function const_dual!(captures::Vector{Any}, stmt, tangent_mode=Val(1))::Union{Dual,Int}
+function const_dual!(captures::Vector{Any}, stmt, tangent_mode=Val(1))
     v = get_const_primal_value(stmt)
-    x = _fwd_uninit_dual(tangent_mode, v)
+    x = uninit_dual(tangent_mode, v)
     if safe_for_literal(v)
         return x
     else
@@ -457,7 +454,7 @@ function modify_fwd_ad_stmts!(
         end
     else
         new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, _fwd_zero_dual, info.tangent_mode, new_ssa))
+        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, info.tangent_mode, new_ssa))
     end
 
     return nothing
@@ -488,7 +485,7 @@ function modify_fwd_ad_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = _fwd_uninit_dual(
+        stmt.values[n] = uninit_dual(
             info.tangent_mode, get_const_primal_value(stmt.values[n])
         )
     end
@@ -526,9 +523,23 @@ function modify_fwd_ad_stmts!(
             new_inst(PiNode(primal_ssa, CC.widenconst(stmt.typ))),
             ATTACH_BEFORE,
         )
-        replace_call!(dual_ir, ssa, Expr(:call, Dual, refined_primal_ssa, tangent_ssa))
+        refined_type = CC.widenconst(stmt.typ)
+        if isconcretetype(refined_type)
+            replace_call!(
+                dual_ir,
+                ssa,
+                Expr(
+                    :call,
+                    dual_type(info.tangent_mode, refined_type),
+                    refined_primal_ssa,
+                    tangent_ssa,
+                ),
+            )
+        else
+            replace_call!(dual_ir, ssa, Expr(:call, Dual, refined_primal_ssa, tangent_ssa))
+        end
     else
-        v = _fwd_uninit_dual(info.tangent_mode, get_const_primal_value(stmt.val))
+        v = uninit_dual(info.tangent_mode, get_const_primal_value(stmt.val))
         replace_call!(
             dual_ir, ssa, PiNode(v, _lifted_dual_ir_type(info.tangent_mode, stmt.typ))
         )
@@ -541,9 +552,7 @@ function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if !(stmt.val isa Union{Argument,SSAValue})
-        stmt = UpsilonNode(
-            _fwd_uninit_dual(info.tangent_mode, get_const_primal_value(stmt.val))
-        )
+        stmt = UpsilonNode(uninit_dual(info.tangent_mode, get_const_primal_value(stmt.val)))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(
@@ -561,7 +570,7 @@ function modify_fwd_ad_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = _fwd_uninit_dual(
+        stmt.values[n] = uninit_dual(
             info.tangent_mode, get_const_primal_value(stmt.values[n])
         )
     end
@@ -610,14 +619,14 @@ function modify_fwd_ad_stmts!(
                 ATTACH_BEFORE,
             )
             replace_call!(
-                dual_ir, ssa, Expr(:call, _fwd_zero_dual, info.tangent_mode, primal_ssa)
+                dual_ir, ssa, Expr(:call, zero_dual, info.tangent_mode, primal_ssa)
             )
             return nothing
         end
 
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
-            return _fwd_uninit_dual(info.tangent_mode, get_const_primal_value(arg))
+            return uninit_dual(info.tangent_mode, get_const_primal_value(arg))
         end
 
         if is_primitive(context_type(info.interp), ForwardMode, sig, info.interp.world)
@@ -649,14 +658,14 @@ function modify_fwd_ad_stmts!(
     elseif isexpr(stmt, :boundscheck)
         inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         bc_ssa = CC.insert_node!(dual_ir, ssa, inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, _fwd_zero_dual, info.tangent_mode, bc_ssa))
+        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, info.tangent_mode, bc_ssa))
     elseif isexpr(stmt, :code_coverage_effect)
         replace_call!(dual_ir, ssa, nothing)
     elseif Meta.isexpr(stmt, :copyast)
         new_copyast_inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         new_copyast_ssa = CC.insert_node!(dual_ir, ssa, new_copyast_inst, ATTACH_BEFORE)
         replace_call!(
-            dual_ir, ssa, Expr(:call, _fwd_zero_dual, info.tangent_mode, new_copyast_ssa)
+            dual_ir, ssa, Expr(:call, zero_dual, info.tangent_mode, new_copyast_ssa)
         )
     elseif Meta.isexpr(stmt, :loopinfo)
     elseif isexpr(stmt, :throw_undef_if_not)
@@ -747,9 +756,9 @@ end
     if all(verify_dual_type, args)
         internal_args = map(args) do x
             p = Mooncake.primal(x)
-            _fwd_dual_type(primal.tangent_mode, typeof(p))(
+            dual_type(primal.tangent_mode, typeof(p))(
                 p,
-                _chunked_forward_tangent(
+                canonicalize_chunked_tangent(
                     p, tangent(x), Val(typeof(primal.tangent_mode).parameters[1])
                 ),
             )
@@ -773,9 +782,9 @@ end
 @inline function _convert_width_aware_dual_args(primal::DerivedPrimal, args)
     return map(args) do x
         p = Mooncake.primal(x)
-        _fwd_dual_type(primal.tangent_mode, typeof(p))(
+        dual_type(primal.tangent_mode, typeof(p))(
             p,
-            _chunked_forward_tangent(
+            canonicalize_chunked_tangent(
                 p, tangent(x), Val(typeof(primal.tangent_mode).parameters[1])
             ),
         )
@@ -788,11 +797,20 @@ end
     return length(sig.parameters) - 1
 end
 
-@inline function (
-    primal::DerivedPrimal{Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Tmode}
-)(
+@inline function ((
+    primal::DerivedPrimal{
+        Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Tmode
+    } where {
+        Tprimal_oc<:Any,
+        Tlifted_oc<:Any,
+        Tkey<:Any,
+        Tcall_target<:Any,
+        Tlifted_call_target<:Any,
+        Tmode,
+    }
+))(
     x::Dual, args::Vararg{Dual,N}
-) where {Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Tmode,N}
+) where {N}
     isnothing(primal.call_target) && throw(
         ArgumentError(
             "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
@@ -807,11 +825,20 @@ end
     )
 end
 
-@inline function (
-    primal::DerivedPrimal{Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Tmode}
-)(
+@inline function ((
+    primal::DerivedPrimal{
+        Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Tmode
+    } where {
+        Tprimal_oc<:Any,
+        Tlifted_oc<:Any,
+        Tkey<:Any,
+        Tcall_target<:Any,
+        Tlifted_call_target<:Any,
+        Tmode,
+    }
+))(
     ::Dual, x::Dual, args::Vararg{Dual,N}
-) where {Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Tmode,N}
+) where {N}
     isnothing(primal.call_target) && throw(
         ArgumentError(
             "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
@@ -952,7 +979,7 @@ end
 _copy(x::P) where {P<:DynamicPrimal} = P(Dict{Any,Any}(), x.world, x.tangent_mode)
 
 function dual_ret_type(primal_ir::IRCode, tangent_mode=Val(1))
-    return _fwd_dual_type(tangent_mode, compute_ir_rettype(primal_ir))
+    return dual_type(tangent_mode, compute_ir_rettype(primal_ir))
 end
 
 function generate_dual_ir(

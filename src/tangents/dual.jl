@@ -128,7 +128,30 @@ end
 
 @inline _canonical_forward_tangent(x::Type, dx) = NoTangent()
 
-@inline function _chunked_forward_tangent(x::P, dx, ::Val{N}) where {P,N}
+@inline function canonicalize_chunked_tangent(x::P, dx, ::Val{1}) where {P}
+    tangent_type(typeof(x)) == NoTangent && return NoTangent()
+    array_chunked = _array_chunked_forward_tangent(x, dx, Val(1))
+    !isnothing(array_chunked) && return _unwrap_unit_ntangent(array_chunked)
+    dx isa Tuple &&
+        _tuple_is_chunked_forward_tangent(P, typeof(dx)) &&
+        return if length(dx) == 1
+            first(dx)
+        else
+            throw(
+                ArgumentError("Chunked forward tangent expected 1 lane, got $(length(dx)).")
+            )
+        end
+    lane_count = _ntangent_lane_count(dx)
+    if isnothing(lane_count)
+        return dx isa NoTangent ? zero_tangent(x) : dx
+    end
+    tx = _canonical_forward_tangent(x, dx)
+    length(tx) == 1 ||
+        throw(ArgumentError("Chunked forward tangent expected 1 lane, got $(length(tx))."))
+    return _unwrap_unit_ntangent(tx)
+end
+
+@inline function canonicalize_chunked_tangent(x::P, dx, ::Val{N}) where {P,N}
     tangent_type(typeof(x)) == NoTangent && return NoTangent()
     array_chunked = _array_chunked_forward_tangent(x, dx, Val(N))
     !isnothing(array_chunked) && return array_chunked
@@ -158,20 +181,23 @@ end
     return tx
 end
 
-@inline _chunked_forward_tangent(x::Type, dx, ::Val) = NoTangent()
+@inline canonicalize_chunked_tangent(x::Type, dx, ::Val) = NoTangent()
 
-@inline function _chunked_zero_tangent(x, ::Val{N}) where {N}
+@inline zero_tangent(x, ::Val{1}) = zero_tangent(x)
+@inline function zero_tangent(x, ::Val{N}) where {N}
     zx = zero_tangent(x)
     zx isa NoTangent && return NoTangent()
     return NTangent(ntuple(_ -> zero_tangent(x), Val(N)))
 end
 
-@inline function _chunked_zero_tangent(x::Ptr, ::Val{N}) where {N}
+@inline zero_tangent(x::Ptr, ::Val{1}) = zero_tangent(x, uninit_tangent(x))
+@inline function zero_tangent(x::Ptr, ::Val{N}) where {N}
     zx = zero_tangent(x, uninit_tangent(x))
     return NTangent(ntuple(_ -> zx, Val(N)))
 end
 
-@inline function _chunked_uninit_tangent(x, ::Val{N}) where {N}
+@inline uninit_tangent(x, ::Val{1}) = uninit_tangent(x)
+@inline function uninit_tangent(x, ::Val{N}) where {N}
     tx = uninit_tangent(x)
     tx isa NoTangent && return NoTangent()
     return NTangent(ntuple(_ -> uninit_tangent(x), Val(N)))
@@ -215,18 +241,17 @@ Helper function. Returns the 2-tuple `x.x, x.dx`.
 extract(x::Dual) = primal(x), tangent(x)
 
 function zero_dual(::Val{N}, x) where {N}
-    dual_type(Val(N), typeof(x))(x, _chunked_zero_tangent(x, Val(N)))
+    dual_type(Val(N), typeof(x))(x, zero_tangent(x, Val(N)))
 end
 zero_dual(x) = dual_type(typeof(x))(x, zero_tangent(x))
 zero_dual(::Val, x::Type) = Dual(x, NoTangent())
 zero_dual(x::Type) = Dual(x, NoTangent())
 function uninit_dual(::Val{N}, x::P) where {N,P}
-    dual_type(Val(N), P)(x, _chunked_uninit_tangent(x, Val(N)))
+    dual_type(Val(N), P)(x, uninit_tangent(x, Val(N)))
 end
 function randn_dual(::Val{N}, rng::AbstractRNG, x) where {N}
-    dual_type(Val(N), typeof(x))(
-        x, _chunked_forward_tangent(x, randn_tangent(rng, x), Val(N))
-    )
+    tx = canonicalize_chunked_tangent(x, randn_tangent(rng, x), Val(N))
+    return dual_type(Val(N), typeof(x))(x, tx)
 end
 randn_dual(rng::AbstractRNG, x) = dual_type(typeof(x))(x, randn_tangent(rng, x))
 
@@ -285,7 +310,8 @@ _primal(x::Dual) = primal(x)
 @inline function _canonicalize_width_aware_dual(x)
     p = primal(x)
     N = _dual_width(x)
-    return dual_type(Val(N), typeof(p))(p, _chunked_forward_tangent(p, tangent(x), Val(N)))
+    tx = canonicalize_chunked_tangent(p, tangent(x), Val(N))
+    return dual_type(Val(N), typeof(p))(p, tx)
 end
 
 """
@@ -312,8 +338,10 @@ function verify_dual_type(x)
     N = something(_ntangent_lane_count(t), 1)
     expected_dual_type = dual_type(Val(N), P)
     expected_tangent_type = tangent_type(Val(N), P)
-    return typeof(x) == expected_dual_type &&
-           (typeof(t) == expected_tangent_type || (N == 1 && typeof(t) == tangent_type(P)))
+    tangent_matches =
+        typeof(t) == expected_tangent_type || (N == 1 && typeof(t) == tangent_type(P))
+    dual_matches = typeof(x) == expected_dual_type || (x isa Dual && tangent_matches)
+    return dual_matches && tangent_matches
 end
 
 function error_if_incorrect_dual_types(duals::Vararg{Any,N}) where {N}

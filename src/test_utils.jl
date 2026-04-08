@@ -1084,7 +1084,7 @@ function test_rule(
             x -> if x isa CoDual
                 p = primal(x)
                 dual_type(Val(chunk_size), typeof(p))(
-                    p, _chunked_forward_tangent(p, tangent(x), Val(chunk_size))
+                    p, canonicalize_chunked_tangent(p, tangent(x), Val(chunk_size))
                 )
             else
                 randn_dual(Val(chunk_size), rng, x)

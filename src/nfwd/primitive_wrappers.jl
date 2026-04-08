@@ -72,12 +72,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:primitive_wrappers})
 end
 
 @inline function dual_type(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat}
-    return N == 1 ? Dual{T,tangent_type(Val(1), T)} : Nfwd.NDual{T,N}
+    return N == 1 ? Dual{T,tangent_type(T)} : Nfwd.NDual{T,N}
 end
 
 @inline function dual_type(::Val{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat}
     return if N == 1
-        Dual{Complex{T},tangent_type(Val(1), Complex{T})}
+        Dual{Complex{T},tangent_type(Complex{T})}
     else
         Complex{Nfwd.NDual{T,N}}
     end
@@ -393,19 +393,28 @@ end
     return grads
 end
 
-@inline function _nfwd_primitive_frule_call(
-    ::Val{N}, f::Dual, x::Vararg{Dual,M}
-) where {M,N}
-    _nfwd_check_function_tangent(tangent(f))
-    primals = map(primal, x)
-    tangents = map(tangent, x)
-    lifted = _nfwd_lift_primitive_args(Val(N), primals, tangents)
-    return _nfwd_extract_primitive_output(primal(f)(lifted...), Val(N))
+@inline function _nfwd_primitive_width(x::Any, xs::Vararg{Any,M}) where {M}
+    N = _dual_width(x)
+    all(y -> _dual_width(y) == N, xs) || throw(
+        ArgumentError(
+            "nfwd primitive rules expect all width-aware dual-type inputs to have the same width.",
+        ),
+    )
+    return Val(N)
 end
 
 @inline function _nfwd_primitive_frule_call(::Val{N}, f::Dual, x::Vararg{Any,M}) where {M,N}
-    all(verify_dual_type, x) ||
-        throw(ArgumentError("nfwd primitive rules expect width-aware dual-type inputs."))
+    all(xi -> try
+        primal(xi)
+        tangent(xi)
+        true
+    catch
+        false
+    end, x) || throw(
+        ArgumentError(
+            "nfwd primitive rules expect forward inputs exposing `primal` and `tangent`.",
+        ),
+    )
     _nfwd_check_function_tangent(tangent(f))
     primals = map(primal, x)
     tangents = map(tangent, x)
