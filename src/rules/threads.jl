@@ -5,9 +5,8 @@ end
 @inline function _threading_foreigncall_rrule(f, name, args...)
     throw(
         ErrorException(
-            "Differentiating through threading is not safe in reverse mode and " *
-            "is not supported in general. Please use `threaded_map!`, or " *
-            "forward mode.",
+            "Differentiating through threading is not safe and is unsupported " *
+            "in reverse mode. Use forward mode instead.",
         ),
     )
 end
