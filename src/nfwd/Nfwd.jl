@@ -221,9 +221,10 @@ boundaries where each pass would otherwise incur a full launch overhead.
 `tangent_type(Float64) = NDual{Float64,N}` globally, infecting every `frule!!` in the
 call graph and breaking type coherence throughout.
 
-### NDualMode{N} / NfwdMode{N}: NDual as the tangent type
+### NDualMode{N} / NfwdMode{N}: NDual as the tangent type for supported scalar leaves
 
-The clean solution is a new AD context that overrides `tangent_type` for scalar leaves:
+The clean solution is a new AD context that overrides `tangent_type` for supported scalar
+leaves:
 
 ```julia
 struct NDualMode{N} end
@@ -241,16 +242,23 @@ seed_ntangent(::Val{N}, ::Type{T}, k::Int) where {N,T<:IEEEFloat} =
     NDual{T,N}(zero(T), ntuple(i -> i == k ? one(T) : zero(T), Val(N)))
 ```
 
-**The transform change is surgical**: `generate_dual_ir` calls `dual_type(P)` at 7
-sites to assign IR argument types.  Threading the mode through those calls is the only
-required modification — all statement rewriting (PhiNode, ReturnNode, GotoIfNot, …) is
-tangent-type-agnostic.  `is_primitive` dispatch is unchanged (it operates on primal
-signatures, not tangent types).
+**The transform change is surgical**: `generate_dual_ir` queries the width-aware
+`dual_type(Val(N), P)` interface at the handful of IR type-assignment sites.
+Threading the mode through those calls is the only required modification — all statement
+rewriting (PhiNode, ReturnNode, GotoIfNot, …) is tangent-type-agnostic.
+`is_primitive` dispatch is unchanged (it operates on primal signatures, not tangent types).
 
 Use `NDualMode{N}()` for the direct forward rule builder
-`Mooncake.build_frule(Mooncake.Nfwd.NDualMode{N}(), ...)`. `NfwdMode{N}()` remains the
-nfwd mode used by direct reverse-rule construction via
-`Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{N}(), ...)`.
+`Mooncake.build_frule(Mooncake.Nfwd.NDualMode{N}(), ...)`. Today the directly supported
+primal inputs on that path are `IEEEFloat` scalars, `Complex{<:IEEEFloat}` scalars, and
+dense `Array`s with those element types; supported direct outputs also allow tuples
+thereof. `NfwdMode{N}()` remains the nfwd mode used by direct reverse-rule construction
+via `Mooncake.build_rrule(Mooncake.Nfwd.NfwdMode{N}(), ...)`.
+
+That direct-support boundary is narrower than nfwd's internal packed tangent machinery:
+internal helpers can still pack tangents for arrays, tuples, named tuples, and tangent
+structs, but that does not by itself mean arbitrary primals are supported by direct
+`build_frule(NDualMode{N}(), ...)`.
 
 ### Scalar `frule!!`s and CPU compatibility
 

@@ -1,15 +1,18 @@
 """
-    NTangent_type(P::Type)
+    tangent_type(::Val{N}, P::Type)
 
-Width-1 public tangent representation used by `dual_type(P)`.
+Public chunked forward tangent representation used by the default `dual_type`
+implementation.
+
+This is the forward-mode width-aware overload of `tangent_type`. The ordinary
+`tangent_type(P)` query still returns the width-1 tangent type for `P`;
+`tangent_type(Val(N), P)` returns the width-`N` chunked representation. Overloads may
+return `NTangent`, NDual-style packed tangent storage, or another width-aware tangent
+representation.
 """
-@unstable function NTangent_type(::Val{N}, ::Type{P}) where {N,P}
+@unstable @foldable function tangent_type(::Val{N}, ::Type{P}) where {N,P}
     T = tangent_type(P)
     return T == NoTangent ? NoTangent : NTangent{NTuple{N,T}}
-end
-
-@unstable function NTangent_type(::Type{P}) where {P}
-    return NTangent_type(Val(1), P)
 end
 
 @inline function _merge_ntangent_lane_counts(a, b)
@@ -135,8 +138,10 @@ end
             NTangent(dx)
         else
             throw(
-            ArgumentError("Chunked forward tangent expected $N lanes, got $(length(dx)).")
-        )
+                ArgumentError(
+                    "Chunked forward tangent expected $N lanes, got $(length(dx))."
+                ),
+            )
         end
     lane_count = _ntangent_lane_count(dx)
     if isnothing(lane_count)
@@ -182,13 +187,14 @@ end
 """
     Dual(primal::P, tangent::T)
 
-Used to pair together a `primal` value and a `tangent` to it. In the context of foward mode
+Used to pair together a `primal` value and a `tangent` to it. In the context of forward mode
 AD (aka computing Frechet derivatives), `primal` governs the point at which the derivative
 is computed, and `tangent` the direction in which it is computed.
 
-The default `dual_type(P)` uses `NTangent_type(P)`, but explicit hand-written rules may
-still pass width-1 tangents to `Dual(x, dx)`, which canonicalises them to Mooncake's
-internal `NTangent` representation automatically.
+The default `dual_type(Val(N), P)` uses `tangent_type(Val(N), P)`, and `dual_type(P)` is
+the width-1 shorthand. Explicit hand-written rules may still pass width-1 tangents to
+`Dual(x, dx)`, which canonicalises them to Mooncake's internal `NTangent` representation
+automatically.
 """
 struct Dual{P,T}
     primal::P
@@ -212,10 +218,22 @@ zero_dual(x) = dual_type(typeof(x))(x, zero_tangent(x))
 zero_dual(x::Type) = Dual(x, NoTangent())
 randn_dual(rng::AbstractRNG, x) = dual_type(typeof(x))(x, randn_tangent(rng, x))
 
-@unstable function dual_type(::Type{P}) where {P}
+"""
+    dual_type(::Val{N}, P::Type)
+    dual_type(P::Type)
+
+Returns the forward-mode carrier type for primal type `P`.
+
+`dual_type(P)` is the width-1 default. `dual_type(Val(N), P)` returns the width-`N`
+carrier type used by chunked forward mode. The default implementation remains
+`Dual{P,tangent_type(Val(N), P)}`, but width-aware callers should dispatch through this
+interface rather than hard-coding `Dual{...,NTangent...}`. Overloads may return `Dual`,
+`NDual`, or another forward carrier type.
+"""
+@unstable @foldable function dual_type(::Val{N}, ::Type{P}) where {N,P}
     P == Union{} && return Union{}
     P == DataType && return Dual
-    P isa Union && return Union{dual_type(P.a),dual_type(P.b)}
+    P isa Union && return Union{dual_type(Val(N), P.a),dual_type(Val(N), P.b)}
     # Use `isa` not `<:`: generators like `NTuple{N,Int} where N` are instances of
     # UnionAll but not subtypes of it (`NTuple{N,Int} where N <: UnionAll` is false).
     # `P == UnionAll` handles the UnionAll metatype itself (`UnionAll isa UnionAll` is false).
@@ -230,14 +248,18 @@ randn_dual(rng::AbstractRNG, x) = dual_type(typeof(x))(x, randn_tangent(rng, x))
         if length(union_fields) == 1 &&
             all(p -> p isa Union || isconcretetype(p), field_types)
             P_split = split_union_tuple_type(field_types)
-            return Union{dual_type(P_split.a),dual_type(P_split.b)}
+            return Union{dual_type(Val(N), P_split.a),dual_type(Val(N), P_split.b)}
         end
     end
 
-    return isconcretetype(P) ? Dual{P,NTangent_type(P)} : Dual
+    return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
 end
 
-function dual_type(p::Type{Type{P}}) where {P}
+@unstable @foldable function dual_type(::Type{P}) where {P}
+    return dual_type(Val(1), P)
+end
+
+@unstable @foldable function dual_type(::Val, p::Type{Type{P}}) where {P}
     return @isdefined(P) ? Dual{Type{P},NoTangent} : Dual{_typeof(p),NoTangent}
 end
 
@@ -253,13 +275,14 @@ end
 """
     verify_dual_type(x::Dual)
 
-Check that the type of `tangent(x)` is the tangent type of the type of `primal(x)`.
+Check that the type of `tangent(x)` matches a supported forward tangent type for the type
+of `primal(x)`.
 """
 function verify_dual_type(x::Dual)
     P = typeof(primal(x))
     T = typeof(tangent(x))
     return T == tangent_type(P) ||
-           T == NTangent_type(P) ||
+           T == tangent_type(Val(1), P) ||
            (T <: NTangent && _verify_ntangent_type(P, T))
 end
 
@@ -274,8 +297,9 @@ function error_if_incorrect_dual_types(duals::Vararg{Dual,N}) where {N}
 Tangent types do not match primal types:
   - primal types:           $(map(typeof, primals))
   - provided tangent types: $(map(typeof, tangents))
-  - supported tangent types: $(map(P -> (tangent_type(P), NTangent_type(P)), map(typeof, primals)))
-""",
+  - supported tangent types: `tangent_type(P)`, `tangent_type(Val(1), P)`, or `NTangent`
+    with lanes of type `tangent_type(P)`
+"""
             ),
         )
     end

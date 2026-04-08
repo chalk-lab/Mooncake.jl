@@ -80,12 +80,12 @@ path that backs cached `value_and_pullback!!` / `value_and_gradient!!`.
 
 When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
 higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as
-custom structs, to the scalar/array/tuple nfwd signatures used internally, and it also
-does the usual cache checks and tangent zeroing. That extra interface work adds some
-overhead relative to calling `value_and_pullback!!` / `value_and_gradient!!` directly on a
-frule built with `build_frule(NDualMode{N}(), ...)` for a supported nfwd signature over
-`IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those element types, and
-tuples thereof.
+custom structs, to the narrower nfwd signatures used internally, and it also does the
+usual cache checks and tangent zeroing. That extra interface work adds some overhead
+relative to calling `value_and_pullback!!` / `value_and_gradient!!` directly on a frule
+built with `build_frule(NDualMode{N}(), ...)` for a supported nfwd signature whose direct
+inputs are `IEEEFloat` / `Complex{<:IEEEFloat}` scalars or dense arrays with those
+element types, and whose direct outputs may also be tuples thereof.
 
 As a rule of thumb, prefer Mooncake's ordinary `build_frule`, `build_rrule`,
 `prepare_derivative_cache`, and `prepare_gradient_cache` APIs for

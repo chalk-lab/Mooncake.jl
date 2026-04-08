@@ -14,16 +14,39 @@
 #
 # Because Mooncake's normalised IR lowers constructors to `__new__`, lifted `__new__`
 # rules may be enough to handle concrete struct construction without explicit lifted
-# constructor methods. That could support a fully lifted forward path in either
-# `Dual{P,NTangent}` or NDual representation, and potentially share machinery with broader
-# transforms such as batched / vmap-style derived overloads. Candidate tangent layouts for
-# that path include:
+# constructor methods. That could support a fully lifted forward path whose carrier is
+# selected by `dual_type(::Val{N}, P)` and whose tangent storage is selected by
+# `tangent_type(::Val{N}, P)`. The default pairing is `Dual{P,tangent_type(Val(N), P)}`,
+# but other overloads may choose `NDual` or another forward carrier. For nfwd in
+# particular, direct public support is still narrower than the internal packed tangent
+# machinery: today its direct inputs are IEEE-float scalars, complex IEEE-float scalars,
+# and dense arrays with those element types, while direct outputs may also be tuples
+# thereof, even though the internal packing code can represent broader tangent trees.
+# That could potentially share machinery with broader transforms such as batched /
+# vmap-style derived overloads. Candidate width-aware tangent layouts for that path
+# include:
 # - today's lane-outer `NTangent`, i.e. a tuple of ordinary tangents
 # - a packed `NTangent` with lane-inner scalar leaves closer to NDual
-# - overloading `NTangent_type` only for `Array{<:IEEEFloat}` /
+# - overloading `tangent_type(::Val{N}, ...)` only for `Array{<:IEEEFloat}` /
 #   `Array{<:Complex{<:IEEEFloat}}` so array leaves use NDual-like packed storage
-# - overloading `NTangent_type` only for those arrays so tangents use one extra lane
-#   dimension instead
+# - overloading `tangent_type(::Val{N}, ...)` only for those arrays so tangents use one
+#   extra lane dimension instead
+#
+# A natural next step is to make forward mode generic over a forward-carrier protocol,
+# rather than assuming concrete `Dual{P,T}` everywhere. A minimal proposed protocol would
+# be:
+# - `primal(x)`
+# - `tangent(x)`
+# - `dual_type(::Val{N}, ::Type{P})`
+# - construction via `dual_type(Val(N), P)(x, dx)`, which may yield `Dual`, `NDual`, or
+#   another carrier
+# - width-aware zero/uninit constructors, e.g. `zero_dual(::Val{N}, x)` and
+#   `uninit_dual(::Val{N}, x)`
+#
+# That keeps carrier choice type-driven and inference-friendly while separating carrier
+# selection from tangent-storage selection. The type-stability constraint is that
+# `dual_type(Val(N), P)` must remain foldable to a concrete carrier type for concrete `P`;
+# runtime carrier switching would immediately weaken inference through the transformed IR.
 
 # Check if a type contains Union{} (bottom type) anywhere in its structure.
 # This can happen with unreachable code or failed type inference.
@@ -62,16 +85,8 @@ function _fwd_uninit_dual end
     ::Any, interp, sig; debug_mode=false, silence_debug_messages=true
 ) = nothing
 
-function _irfwd_dual_type(::Val{N}, ::Type{P}) where {N,P}
-    P == Union{} && return Union{}
-    P == DataType && return Dual
-    P isa Union && return Union{_irfwd_dual_type(Val(N), P.a),_irfwd_dual_type(Val(N), P.b)}
-    (P isa UnionAll || P == UnionAll) && return Dual
-    return isconcretetype(P) ? Dual{P,NTangent_type(Val(N), P)} : Dual
-end
-
 function _fwd_dual_type(::IRfwdMode{N}, ::Type{P}) where {N,P}
-    return _irfwd_dual_type(Val(N), P)
+    return dual_type(Val(N), P)
 end
 
 function _fwd_zero_dual(::IRfwdMode{N}, x) where {N}

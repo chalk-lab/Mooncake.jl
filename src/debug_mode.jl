@@ -3,7 +3,7 @@
 
 Construct a callable equivalent to `rule` but with additional type checking for forward-mode
 AD. Checks:
-- Each `Dual` argument has tangent type matching `tangent_type(typeof(primal))`
+- Each `Dual` argument has a supported forward tangent type for its primal
 - The returned `Dual` has a correctly-typed tangent
 - Deep structural validation (array sizes, field types, etc.)
 
@@ -60,7 +60,7 @@ end
         throw(
             InvalidFDataException(
                 "Dual tangent type mismatch: primal $P requires tangent type " *
-                "$(tangent_type(P)) or $(NTangent_type(P)), but got $T",
+                "$(tangent_type(P)) or $(tangent_type(Val(1), P)), but got $T",
             ),
         )
     end

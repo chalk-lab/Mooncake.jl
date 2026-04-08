@@ -62,6 +62,17 @@
         @test TestUtils.check_allocs(dual_type, P) == D
     end
 
+    @test TestUtils.check_allocs(Mooncake.tangent_type, Val(2), Float64) ==
+        Mooncake.NTangent{Tuple{Float64,Float64}}
+    @test TestUtils.check_allocs(Mooncake.tangent_type, Val(2), Tuple{Float64}) ==
+        Mooncake.NTangent{Tuple{Tuple{Float64},Tuple{Float64}}}
+    @test TestUtils.check_allocs(Mooncake.dual_type, Val(2), Float64) ==
+        Dual{Float64,Mooncake.NTangent{Tuple{Float64,Float64}}}
+    @test TestUtils.check_allocs(Mooncake.dual_type, Val(2), Tuple{Float64}) ==
+        Dual{Tuple{Float64},Mooncake.NTangent{Tuple{Tuple{Float64},Tuple{Float64}}}}
+    @test TestUtils.check_allocs(Mooncake.dual_type, Val(3), Type{Float64}) ==
+        Dual{Type{Float64},NoTangent}
+
     @test_throws ArgumentError Mooncake._canonical_forward_tangent(
         (1.0, 2.0), (Mooncake.NTangent((1.0,)), Mooncake.NTangent((2.0, 3.0)))
     )

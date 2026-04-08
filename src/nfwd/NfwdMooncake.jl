@@ -71,8 +71,8 @@ import ..Mooncake:
 #
 # ── Constraints ────────────────────────────────────────────────────────────────────
 # - `chunk_size` is global across the whole call
-# - supported primals are IEEE float scalars, complex IEEE float scalars, dense arrays
-#   with those element types, and tuples thereof
+# - supported direct primals are IEEE float scalars, complex IEEE float scalars, and
+#   dense arrays with those element types; direct outputs also allow tuples thereof
 # - rule construction requires stateless callables (singleton callable types)
 # - `friendly_tangents=true`, `debug_mode=true`, and differentiation with respect to `f`
 #   are intentionally unsupported here
@@ -1379,7 +1379,8 @@ end
         Dual(y, _nfwd_output_ntangent(y, dy, Val(public_lanes)))
     elseif isnothing(packed)
         # Keep the width-1 hot path on the concrete single-lane dual constructor:
-        # `dual_type(typeof(y))` means `Dual{P, NTangent_type(P)}`, i.e. still `NTangent`,
+        # `dual_type(typeof(y))` means `Dual{P, tangent_type(Val(1), P)}`, i.e. still
+        # `NTangent`,
         # but specifically the one-lane `NTangent{Tuple{...}}` form. Width > 1 must keep
         # the generic `Dual(y, dy)` path because `dy` is then a true multi-lane object
         # (tuple of lanes / packed chunk layout), not a width-1 `NTangent`.
