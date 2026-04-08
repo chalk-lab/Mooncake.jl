@@ -73,6 +73,10 @@ import Base.CoreLogging as CoreLogging
     Int64,
 }
 
+# Package loading internals; also needed for extension code paths.
+@zero_derivative MinimalCtx Tuple{Type{Base.PkgId},Module}
+@zero_derivative MinimalCtx Tuple{typeof(Base.get_extension),Base.PkgId,Symbol}
+
 @static if VERSION ≥ v"1.12-"
     @zero_derivative MinimalCtx Tuple{typeof(Base.fixup_stdlib_path),String}
     @zero_derivative MinimalCtx Tuple{
@@ -203,6 +207,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiab
         # F16 works fine even in 1.12
         (true, :stability_and_allocs, nothing, Float16, π, RoundDown),
         (true, :stability_and_allocs, nothing, Float16, π, RoundUp),
+
+        # Package loading internals.
+        (false, :stability_and_allocs, nothing, Base.PkgId, Base),
+        (false, :stability_and_allocs, nothing, Base.get_extension, Base.PkgId(Base), :SomeExt),
     )
     memory = Any[_x, _dx]
     return test_cases, memory
