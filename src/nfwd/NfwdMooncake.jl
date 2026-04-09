@@ -787,20 +787,18 @@ end
 end
 
 function _nfwd_scatter_chunk!(grads::Tuple, inputs::Tuple, dy::Tuple, start_slot::Int)
-    global_slot = start_slot
-    for lane_val in dy
-        offset = 0
-        for (i, x) in enumerate(inputs)
-            dof = _nfwd_input_dof(x)
-            if offset < global_slot <= offset + dof
-                local_slot = global_slot - offset
-                _nfwd_add_slot!(grads[i], local_slot, lane_val)
-                break
+    function scatter_leaf!(x, (offset, remaining_grads))
+        g = first(remaining_grads)
+        dof = _nfwd_input_dof(x)
+        for k in 1:dof
+            lane = offset + k - start_slot + 1
+            if 1 <= lane <= length(dy)
+                _nfwd_add_slot!(g, k, dy[lane])
             end
-            offset += dof
         end
-        global_slot += 1
+        return nothing, (offset + dof, Base.tail(remaining_grads))
     end
+    _unfold_slots(scatter_leaf!, inputs, (0, grads))
     return nothing
 end
 
@@ -847,35 +845,22 @@ end
     )
 end
 
-@inline function _nfwd_update_scalar_grad(
-    grads::Tuple, primals::Tuple, global_slot::Int, lane_val, offset::Int=0
-)
-    x = first(primals)
-    dof = _nfwd_input_dof(x)
-    if offset < global_slot <= offset + dof
-        local_slot = global_slot - offset
-        return (
-            _nfwd_accumulate_scalar_gradient(first(grads), local_slot, lane_val),
-            Base.tail(grads)...,
-        )
-    end
-    return (
-        first(grads),
-        _nfwd_update_scalar_grad(
-            Base.tail(grads), Base.tail(primals), global_slot, lane_val, offset + dof
-        )...,
-    )
-end
-
 @inline function _nfwd_scatter_scalar_chunk(
     grads::Tuple, primals::Tuple, dy::Tuple, start_slot::Int
 )
-    global_slot = start_slot
-    for lane_val in dy
-        grads = _nfwd_update_scalar_grad(grads, primals, global_slot, lane_val)
-        global_slot += 1
+    function scatter_leaf(x, (offset, remaining_grads))
+        g = first(remaining_grads)
+        dof = _nfwd_input_dof(x)
+        for k in 1:dof
+            lane = offset + k - start_slot + 1
+            if 1 <= lane <= length(dy)
+                g = _nfwd_accumulate_scalar_gradient(g, k, dy[lane])
+            end
+        end
+        return g, (offset + dof, Base.tail(remaining_grads))
     end
-    return grads
+    new_grads, _ = _unfold_slots(scatter_leaf, primals, (0, grads))
+    return new_grads
 end
 
 # `slot` is the 1-based DOF index within the scalar/complex input: 1 for the real
@@ -1056,17 +1041,14 @@ function _nfwd_pullback(f, primals::Tuple, tangents::Tuple, y_fdata, ::Val{N}) w
     )
 end
 
-@inline _nfwd_seed_tangents(::Tuple{}, ::Val{N}, start_slot::Int, offset::Int=0) where {N} = ()
 @inline function _nfwd_seed_tangents(
     primals::Tuple, ::Val{N}, start_slot::Int, offset::Int=0
 ) where {N}
-    x = first(primals)
-    return (
-        _nfwd_seed_tangent(x, N, start_slot, offset),
-        _nfwd_seed_tangents(
-            Base.tail(primals), Val(N), start_slot, offset + _nfwd_input_dof(x)
-        )...,
-    )
+    function seed_leaf(x, off)
+        return _nfwd_seed_tangent(x, N, start_slot, off), off + _nfwd_input_dof(x)
+    end
+    tangents, _ = _unfold_slots(seed_leaf, primals, offset)
+    return tangents
 end
 """
     _nfwd_scalar_gradient_rdata(pb, y_rdata)
