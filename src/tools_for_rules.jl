@@ -45,7 +45,7 @@ versions of methods which can be successfully differentiated by Mooncake if the 
 cannot be.
 
 For example, suppose that you have a function
-```jldoctest overlay
+```jldoctest overlay; setup = :(using Mooncake)
 julia> foo(x::Float64) = bar(x)
 foo (generic function with 1 method)
 ```
@@ -67,7 +67,7 @@ answer that Mooncake.jl gives changes if you change the definition of a function
 Do not do this in practice -- this is just a simple way to demonostrate how to use overlays!
 
 First, consider a simple example:
-```jldoctest overlay-doctest
+```jldoctest overlay-doctest; setup = :(using Mooncake)
 julia> scale(x) = 2x
 scale (generic function with 1 method)
 
@@ -78,7 +78,7 @@ julia> Mooncake.value_and_gradient!!(rule, scale, 5.0)
 ```
 
 We can use `@mooncake_overlay` to change the definition which Mooncake.jl sees:
-```jldoctest overlay-doctest
+```jldoctest overlay-doctest; setup = :(using Mooncake)
 julia> Mooncake.@mooncake_overlay scale(x) = 3x
 
 julia> rule = Mooncake.build_rrule(Tuple{typeof(scale), Float64});
@@ -90,7 +90,7 @@ As can be seen from the output, the result of differentiating using Mooncake.jl 
 to reflect the overlay-ed definition of the method.
 
 Additionally, it is possible to use the usual multi-line syntax to declare an overlay:
-```jldoctest overlay-doctest
+```jldoctest overlay-doctest; setup = :(using Mooncake)
 julia> Mooncake.@mooncake_overlay function scale(x)
            return 4x
        end
@@ -126,7 +126,7 @@ NOTE: you should only make use of this function if you cannot make use of the
 
 You make use of this functionality by writing a method of `Mooncake.rrule!!`, and
 passing all of its arguments (including the function itself) to this function. For example:
-```jldoctest
+```jldoctest; setup = :(using Mooncake: NoRData)
 julia> import Mooncake: zero_adjoint, DefaultCtx, zero_fcodual, rrule!!, is_primitive, CoDual
 
 julia> foo(x::Vararg{Int}) = 5
@@ -162,7 +162,7 @@ NOTE: you should only make use of this function if you cannot make use of the
 
 You make use of this functionality by writing a method of `Mooncake.frule!!`, and
 passing all of its arguments (including the function itself) to this function. For example:
-```jldoctest
+```jldoctest; setup = :(using Mooncake: NoRData)
 julia> import Mooncake: zero_derivative, DefaultCtx, zero_dual, frule!!, Dual
 
 julia> foo(x::Vararg{Int}) = 5
@@ -193,7 +193,7 @@ Users of ChainRules.jl should be familiar with this functionality -- it is moral
 as `ChainRulesCore.@non_differentiable`.
 
 For example:
-```jldoctest
+```jldoctest; setup = :(using Mooncake: NoRData)
 julia> using Mooncake: @zero_derivative, DefaultCtx, zero_dual, zero_fcodual, frule!!, rrule!!, is_primitive, ForwardMode, ReverseMode
 
 julia> foo(x) = 5
@@ -215,7 +215,7 @@ julia> rrule!!(zero_fcodual(foo), zero_fcodual(3.0))[2](NoRData())
 ```
 
 `Vararg` signatures are also supported. For example
-```jldoctest
+```jldoctest; setup = :(using Mooncake: NoRData)
 julia> using Mooncake: @zero_derivative, DefaultCtx, zero_fcodual, rrule!!, is_primitive, ReverseMode
 
 julia> foo_varargs(x...) = 5
@@ -719,7 +719,7 @@ Convenience functionality to assist in using `ChainRuleCore.frule`s and
 
 ## A Basic Example
 
-```jldoctest
+```jldoctest; setup = :(using Random: Xoshiro)
 julia> using Mooncake: @from_chainrules, DefaultCtx, frule!!, rrule!!, Dual, zero_dual, zero_fcodual, TestUtils
 
 julia> import ChainRulesCore
@@ -747,7 +747,7 @@ julia> # Check that the rule works as intended. Put this in your test suite.
 
 ## An Example with Keyword Arguments and ReverseMode
 
-```jldoctest
+```jldoctest; setup = :(using Random: Xoshiro)
 julia> using Mooncake: @from_chainrules, DefaultCtx, rrule!!, zero_fcodual, TestUtils, ReverseMode
 
 julia> import ChainRulesCore

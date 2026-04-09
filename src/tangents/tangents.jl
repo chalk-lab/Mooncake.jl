@@ -211,7 +211,7 @@ Consider some more worked examples.
 #### Int
 
 `Int` is not a differentiable type, so its tangent type is [`NoTangent`](@ref):
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type)
 julia> tangent_type(Int)
 NoTangent
 ```
@@ -219,14 +219,14 @@ NoTangent
 #### Tuples
 
 The tangent type of a `Tuple` is defined recursively based on its field types. For example
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type)
 julia> tangent_type(Tuple{Float64, Vector{Float64}, Int})
 Tuple{Float64, Vector{Float64}, NoTangent}
 ```
 
 There is one edge case to be aware of: if all of the field of a `Tuple` are
 non-differentiable, then the tangent type is `NoTangent`. For example,
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type)
 julia> tangent_type(Tuple{Int, Int})
 NoTangent
 ```
@@ -246,7 +246,7 @@ how many of the fields might possibly not be defined. The tangent associated to 
 which might possibly not be defined is wrapped in a `PossiblyUninitTangent`.
 
 Furthermore, `struct`s can have fields whose static type is abstract. For example
-```jldoctest foo
+```jldoctest foo; setup = :(using Mooncake: tangent_type)
 julia> struct Foo
            x
        end
@@ -275,7 +275,7 @@ Consequently, we use a type called [`MutableTangent`](@ref) to represent their t
 It is a `mutable struct` with the same structure as `Tangent`.
 
 For example, if you ask for the `tangent_type` of
-```jldoctest bar
+```jldoctest bar; setup = :(using Mooncake: tangent_type)
 julia> mutable struct Bar
            x::Float64
        end
@@ -785,7 +785,7 @@ requiring caching to avoid infinite loops or incorrect results.
 
 `Ref` with abstract types can lead to circular references:
 
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type, zero_tangent)
 julia> # Ref{Any} is dangerous because Any can hold circular references
        struct Evil
            r::Ref{Any}
@@ -817,7 +817,7 @@ true
 When a primal contains aliased references, the tangent must preserve this aliasing for correctness.
 Without caching, operations would incorrectly process aliased tangents multiple times:
 
-```jldoctest
+```jldoctest; setup = :(using Mooncake: zero_tangent)
 julia> # Create a mutable primal with aliased references
        mutable struct Container
            data::Vector{Float64}

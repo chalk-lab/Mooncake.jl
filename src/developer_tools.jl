@@ -18,7 +18,7 @@ Unlike `fwd_ir` and `rvs_ir`, this function does not attempt to derive a reverse
 
 For example, if you wanted to get the IR associated to the call `map(sin, randn(10))`, you
 could do one of the following calls:
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 julia> using Mooncake: primal_ir, get_interpreter, ReverseMode
 
 julia> primal_ir(get_interpreter(ReverseMode), Tuple{typeof(map), typeof(sin), Vector{Float64}}) isa Core.Compiler.IRCode
@@ -54,7 +54,7 @@ practice.
 
 For example, if you wanted to get the IR associated to forwards-mode AD for the call
 `map(sin, randn(10))`, you could do either of the following:
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 julia> Mooncake.dual_ir(Tuple{typeof(map), typeof(sin), Vector{Float64}}) isa Core.Compiler.IRCode
 true
 julia> Mooncake.dual_ir(typeof((map, sin, randn(10)))) isa Core.Compiler.IRCode
@@ -97,7 +97,7 @@ in practice.
 
 For example, if you wanted to get the IR associated to the forwards pass for the call
 `map(sin, randn(10))`, you could do either of the following:
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 julia> Mooncake.fwd_ir(Tuple{typeof(map), typeof(sin), Vector{Float64}}) isa Core.Compiler.IRCode
 true
 julia> Mooncake.fwd_ir(typeof((map, sin, randn(10)))) isa Core.Compiler.IRCode
@@ -140,7 +140,7 @@ in practice.
 
 For example, if you wanted to get the IR associated to the reverse pass for the call
 `map(sin, randn(10))`, you could do either of the following:
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 julia> Mooncake.rvs_ir(Tuple{typeof(map), typeof(sin), Vector{Float64}}) isa Core.Compiler.IRCode
 true
 julia> Mooncake.rvs_ir(typeof((map, sin, randn(10)))) isa Core.Compiler.IRCode
