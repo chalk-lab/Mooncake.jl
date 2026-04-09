@@ -50,7 +50,7 @@ The overall target is: correct by construction where possible, aggressively test
 - If you change public APIs, developer tooling, or core internals, update docs under `docs/src/` when needed.
 - Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
 - Prefer clear, concise names for variables, types, and methods.
-- When fixing bugs or performance issues (allocations, type instability), prefer minimal inline fixes rather than introducing new helper functions.
+- When fixing bugs or performance issues (allocations, type instability), prefer minimal inline fixes over new helper functions; make multiple pruning passes before committing to arrive at the smallest correct diff. Use the `minimise` skill before committing.
 
 ## Consistency
 
@@ -61,7 +61,8 @@ The overall target is: correct by construction where possible, aggressively test
 ## Testing
 
 - Prefer constructing a minimal working example (MWE) first, then running the smallest focused test group that validates the fix, and only then broader test groups if needed.
-- For new differentiation rules, prefer testing them with `Mooncake.TestUtils.test_rule`.
+- Before adding a new test or test helper, check whether the behaviour is already covered; prefer extending an existing case over introducing a new one, make multiple pruning passes, and keep additions minimal.
+- Use the canonical test utilities: `Mooncake.TestUtils.test_rule` for new differentiation rules; `TestUtils.test_tangent_splitting` on a concrete value (add constructors to `src/test_resources.jl`) for tangent/fdata/rdata correctness rather than direct `@test tangent_type(...)` assertions; `TestUtils.test_data` for custom tangent type implementations.
 - Do not disable tests or weaken performance assertions just to get CI green; if that appears necessary, stop and ask for confirmation first.
 - Ensure supported primal types and their tangent types are exercised against the relevant rules for compatibility and composability.
 - Mooncake has a debug mode which is useful for testing malformed rules and diagnosing rule failures; see `docs/src/utilities/debug_mode.md`.

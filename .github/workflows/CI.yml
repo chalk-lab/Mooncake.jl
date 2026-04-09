@@ -71,13 +71,13 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
           include-all-prereleases: false
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         env:
           TEST_GROUP: ${{ matrix.test_group }}
       - uses: julia-actions/julia-processcoverage@v1
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -128,7 +128,7 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
           include-all-prereleases: false
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: |
           if [ ${{ matrix.test_group.test_type }} == 'ext' ]; then
@@ -140,7 +140,7 @@ jobs:
           LABEL: ${{ matrix.test_group.label }}
           TEST_TYPE: ${{ matrix.test_group.test_type }}
       - uses: julia-actions/julia-processcoverage@v1
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -161,7 +161,7 @@ jobs:
           version: '1.11'
           arch: x64
           include-all-prereleases: false
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: julia --project=bench --eval 'include("bench/run_benchmarks.jl"); main()'
         env:
@@ -180,7 +180,7 @@ jobs:
           version: '1.11'
           arch: x64
           include-all-prereleases: false
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: mkdir bench_results
       - run: julia --project=bench --eval 'include("bench/run_benchmarks.jl"); main()'
