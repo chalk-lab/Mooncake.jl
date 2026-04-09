@@ -6,9 +6,9 @@
 # 2. Shared closure-capture management and global AD state.
 # 3. Statement translation from primal IR to forward/reverse fragments.
 # 4. Callable wrapper types used by derived rules at runtime.
-# 5. Rule derivation entry points and IR generation.
-# 6. Forward-pass assembly, CFGBlock-based lowering, and pullback assembly.
-# 7. Deferred rule wrappers for dynamic dispatch and recursive :invoke handling.
+# 5. Deferred rule wrappers for dynamic dispatch and recursive :invoke handling.
+# 6. Rule derivation entry points and IR generation.
+# 7. Forward-pass assembly, CFGBlock-based lowering, and pullback assembly.
 #
 # The implementation starts with low-level types because later sections share them heavily,
 # but the main transform entry points are `build_rrule`, `build_derived_rrule`, and
@@ -520,8 +520,7 @@ function _pullback_increment_stmts(
 
         rdata_inc_id = ID()
         push!(
-            increments,
-            (rdata_inc_id, new_inst(Expr(:call, getfield, call_pullback_id, n))),
+            increments, (rdata_inc_id, new_inst(Expr(:call, getfield, call_pullback_id, n)))
         )
         append!(increments, increment_ref_stmts(rev_data_id, rdata_inc_id))
     end
@@ -533,7 +532,7 @@ __vec(line::ID, x::NewInstruction) = IDInstPair[(line, x)]
 function __vec(::ID, x::Vector{Tuple{ID,Any}})
     throw(
         ArgumentError(
-            "Expected `Vector{IDInstPair}` but found a plain `Vector{Tuple{ID,Any}}`.",
+            "Expected `Vector{IDInstPair}` but found a plain `Vector{Tuple{ID,Any}}`."
         ),
     )
 end
@@ -859,10 +858,6 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # Step 1: classify the call site and choose the rule object.
         #
 
-        # Find the types of all arguments to this call / invoke.
-        args = ((is_invoke ? stmt.args[2:end] : stmt.args)...,)
-        arg_types = map(arg -> get_primal_type(info, arg), args)
-
         # Special case: if the result of a call to getfield is un-used, then leave the
         # primal statement alone (just increment arguments as usual). This was causing
         # performance problems in a couple of situations where the field being requested is
@@ -960,8 +955,13 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             # Run the pullback. The result is a tuple comprising `length(args)` elements.
             call_pullback_id = ID()
             call_pullback = (call_pullback_id, new_inst(Expr(:call, pb, rdata_output_id)))
-            pullback_increments = _pullback_increment_stmts(info, plan.args, call_pullback_id)
-            vcat(IDInstPair[rdata_output, zero_rdata_ref, call_pullback], pullback_increments)
+            pullback_increments = _pullback_increment_stmts(
+                info, plan.args, call_pullback_id
+            )
+            vcat(
+                IDInstPair[rdata_output, zero_rdata_ref, call_pullback],
+                pullback_increments,
+            )
         end
         return ad_stmt_info(line, comms_id, fwds, rvs_pass)
 
@@ -1625,13 +1625,7 @@ function generate_ir(
         ir, primal_blocks, ad_stmts_blocks, block_comms, info, _typeof(shared_data)
     )
     rvs_ir = pullback_ir(
-        ir,
-        primal_blocks,
-        Treturn,
-        ad_stmts_blocks,
-        block_comms,
-        info,
-        _typeof(shared_data),
+        ir, primal_blocks, Treturn, ad_stmts_blocks, block_comms, info, _typeof(shared_data)
     )
     opt_fwd_ir = do_optimize ? optimise_ir!(fwd_ir; do_inline) : fwd_ir
     opt_rvs_ir = do_optimize ? optimise_ir!(rvs_ir; do_inline) : rvs_ir
@@ -1676,7 +1670,9 @@ end
 
 function _primal_stmt_metadata(blocks)
     primal_stmts = _flatten_cfg_insts(blocks)
-    return primal_stmts, Dict{ID,NewInstruction}(primal_stmts), characterise_used_ids(primal_stmts)
+    return primal_stmts,
+    Dict{ID,NewInstruction}(primal_stmts),
+    characterise_used_ids(primal_stmts)
 end
 
 """
