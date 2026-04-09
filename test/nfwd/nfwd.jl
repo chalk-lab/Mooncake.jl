@@ -948,32 +948,20 @@ end
     end
 
     @testset "fold accumulates correctly" begin
-        # Sum all slot values (real parts for complex)
-        function sum_slots(acc, leaf, slot, st)
-            if leaf isa Complex
-                val = slot == 1 ? real(leaf) : imag(leaf)
-            elseif leaf isa AbstractArray && eltype(leaf) <: Complex
-                elem = cld(slot, 2)
-                val = isodd(slot) ? real(leaf[elem]) : imag(leaf[elem])
-            elseif leaf isa AbstractArray
-                val = leaf[slot]
-            else
-                val = leaf
-            end
-            return (acc + val, st)
-        end
+        # Sum within-leaf slot indices to verify fold visits the expected indices.
+        sum_slot_idx(acc, _leaf, slot, st) = (acc + slot, st)
 
-        total, _ = _fold_slots(sum_slots, 0.0, 3.0, nothing)
-        @test total ≈ 3.0
-
-        total, _ = _fold_slots(sum_slots, 0.0, 1.0 + 2.0im, nothing)
-        @test total ≈ 3.0  # 1.0 + 2.0
-
-        total, _ = _fold_slots(sum_slots, 0.0, [1.0, 2.0, 3.0], nothing)
-        @test total ≈ 6.0
-
-        total, _ = _fold_slots(sum_slots, 0.0, (1.0, [2.0, 3.0]), nothing)
-        @test total ≈ 6.0
+        # real scalar: one slot at index 1
+        @test _fold_slots(sum_slot_idx, 0, 3.0, nothing) == (1, nothing)
+        # complex: slots 1 and 2
+        @test _fold_slots(sum_slot_idx, 0, 1.0 + 2.0im, nothing) == (3, nothing)
+        # real array of length 3: slots 1, 2, 3
+        @test _fold_slots(sum_slot_idx, 0, [1.0, 2.0, 3.0], nothing) == (6, nothing)
+        # complex array of length 2: slots 1, 2, 3, 4
+        @test _fold_slots(sum_slot_idx, 0, [1.0+0im, 2.0+3.0im], nothing) == (10, nothing)
+        # tuple: slot indices from each leaf are independent
+        total, _ = _fold_slots(sum_slot_idx, 0, (1.0, [2.0, 3.0]), nothing)
+        @test total == 1 + 1 + 2  # scalar(1) + array-slot1(1) + array-slot2(2)
     end
 
     @testset "Float32 support" begin

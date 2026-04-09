@@ -2011,20 +2011,15 @@ be threaded through `state` by the caller.
 arrays in `eachindex` order.  Within each leaf, the number of slots consumed equals
 `_nfwd_input_dof(leaf)`.
 """
-@inline function _unfold_slots(f::F, x::IEEEFloat, state) where {F}
-    return f(x, state)
-end
-
-@inline function _unfold_slots(f::F, x::Complex{<:IEEEFloat}, state) where {F}
-    return f(x, state)
-end
-
-@inline function _unfold_slots(f::F, x::AbstractArray{<:IEEEFloat}, state) where {F}
-    return f(x, state)
-end
-
 @inline function _unfold_slots(
-    f::F, x::AbstractArray{<:Complex{<:IEEEFloat}}, state
+    f::F,
+    x::Union{
+        IEEEFloat,
+        Complex{<:IEEEFloat},
+        AbstractArray{<:IEEEFloat},
+        AbstractArray{<:Complex{<:IEEEFloat}},
+    },
+    state,
 ) where {F}
     return f(x, state)
 end
