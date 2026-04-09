@@ -2039,19 +2039,4 @@ end
 @inline _nfwd_input_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
 @inline _nfwd_input_dof(x::Tuple) = sum(_nfwd_input_dof, x; init=0)
 
-# ── Helpers used by the CUDA extension (MooncakeCUDAExt) ─────────────────────────
-
-@inline function _nfwd_leaf_dof_type(T::Type)
-    dof = _nfwd_type_dof(T)
-    return isnothing(dof) ? 0 : dof
-end
-
-@inline _nfwd_leaf_dof_type(::Type{<:AbstractArray{T}}) where {T} = _nfwd_leaf_dof_type(T)
-@inline _nfwd_leaf_dof(x) = _nfwd_leaf_dof_type(typeof(x))
-
-@inline function _nfwd_slot_meta(x, offset::Int)
-    dof = _nfwd_leaf_dof(x)
-    return (; dof, slot1=offset + 1, slot2=offset + 2)
-end
-
 end
