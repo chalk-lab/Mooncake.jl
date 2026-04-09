@@ -259,7 +259,7 @@ end
             "or `(x, dx)` tuples.",
         ),
     )
-    return __call_rule(rule, map(_canonicalize_width_aware_dual, fx))
+    return __call_rule(rule, fx)
 end
 
 @inline function value_and_derivative!!(rule::R, fx::Vararg{Tuple{Any,Any},N}) where {R,N}

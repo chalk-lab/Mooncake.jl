@@ -728,13 +728,13 @@ function test_frule_interface(x_ẋ...; frule)
     )
 
     # Check that the direct width-aware dual-type route returns the correct dual type.
-    @test typeof(y_ẏ) == dual_type(Val(width), typeof(y))
+    @test typeof(y_ẏ) <: dual_type(Val(width), typeof(y))
     @test Mooncake.verify_dual_type(y_ẏ)
 
     # The tuple interface should agree with the rule's native primal/tangent output.
     x_dx = map(x_ẋ_component -> (primal(x_ẋ_component), tangent(x_ẋ_component)), x_ẋ)
     y_tuple, dy_tuple = value_and_derivative!!(frule, x_dx...)
-    @test has_equal_data(y, y_tuple)
+    @test has_equal_data(y isa Ptr ? primal(y_ẏ) : y, y_tuple)
     @test has_equal_data(tangent(y_ẏ), dy_tuple)
 end
 

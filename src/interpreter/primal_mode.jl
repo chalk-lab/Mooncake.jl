@@ -234,6 +234,8 @@ function build_primal(
                 else
                     zero_dual(cached.tangent_mode, call_target)
                 end,
+                cached.isva,
+                cached.nargs,
                 cached.world,
                 cached.tangent_mode,
             )
@@ -248,10 +250,18 @@ function build_primal(
             interp, sig_or_mi; do_inline, tangent_mode
         )
         lifted_oc = misty_closure(
-            dual_ret_type, lifted_ir, lifted_captures...; isva=info.isva, do_compile=true
+            dual_ret_type, lifted_ir, lifted_captures...; do_compile=true
         )
         derived = DerivedPrimal(
-            primal_oc, lifted_oc, sig_or_mi, nothing, nothing, interp.world, tangent_mode
+            primal_oc,
+            lifted_oc,
+            sig_or_mi,
+            nothing,
+            nothing,
+            info.isva,
+            info.nargs,
+            interp.world,
+            tangent_mode,
         )
         interp.oc_cache[oc_cache_key] = derived
         derived = DerivedPrimal(
@@ -260,6 +270,8 @@ function build_primal(
             sig_or_mi,
             call_target,
             isnothing(call_target) ? nothing : zero_dual(tangent_mode, call_target),
+            info.isva,
+            info.nargs,
             interp.world,
             tangent_mode,
         )
@@ -290,6 +302,35 @@ function build_primal(
     )
 end
 
+function primal_type(interp::MooncakeInterpreter{C}, sig_or_mi; tangent_mode) where {C}
+    primal_ir, info, captures = generate_primal_ir(interp, sig_or_mi)
+    lifted_ir, lifted_captures, dual_ret_type = generate_lifted_primal_ir(
+        interp, sig_or_mi; tangent_mode
+    )
+    Tprimal_oc = MistyClosure{
+        Core.OpaqueClosure{
+            compute_oc_signature(primal_ir, length(primal_ir.argtypes) - 1, info.isva),
+            info.ret_type,
+        },
+    }
+    Tlifted_oc = MistyClosure{
+        Core.OpaqueClosure{
+            compute_oc_signature(lifted_ir, length(lifted_ir.argtypes) - 1, false),
+            dual_ret_type,
+        },
+    }
+    return DerivedPrimal{
+        Tprimal_oc,
+        Tlifted_oc,
+        typeof(sig_or_mi),
+        Nothing,
+        Nothing,
+        info.isva,
+        info.nargs,
+        typeof(tangent_mode),
+    }
+end
+
 struct PrimalIRInfo
     isva::Bool
     nargs::Int
@@ -315,14 +356,51 @@ struct DualInfo
     tangent_mode
 end
 
-struct DerivedPrimal{Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Tmode}
+struct DerivedPrimal{
+    Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode
+}
     primal_oc::Tprimal_oc
     lifted_oc::Tlifted_oc
     key::Tkey
     call_target::Tcall_target
     lifted_call_target::Tlifted_call_target
+    isva::Bool
+    nargs::Int
     world::UInt
     tangent_mode::Tmode
+end
+
+function DerivedPrimal(
+    primal_oc,
+    lifted_oc,
+    key,
+    call_target,
+    lifted_call_target,
+    isva::Bool,
+    nargs::Int,
+    world::UInt,
+    tangent_mode,
+)
+    return DerivedPrimal{
+        typeof(primal_oc),
+        typeof(lifted_oc),
+        typeof(key),
+        typeof(call_target),
+        typeof(lifted_call_target),
+        isva,
+        nargs,
+        typeof(tangent_mode),
+    }(
+        primal_oc,
+        lifted_oc,
+        key,
+        call_target,
+        lifted_call_target,
+        isva,
+        nargs,
+        world,
+        tangent_mode,
+    )
 end
 
 const DerivedFRule = DerivedPrimal
@@ -359,15 +437,55 @@ _copy(x::P) where {P<:DebugPrimal} = P(_copy(x.primal))
     end
 end
 
-struct LazyPrimal{K,Tcache}
-    key::K
+mutable struct LazyPrimal{primal_sig,Tprimal,Tmode}
+    key::Core.MethodInstance
     world::UInt
-    primal_ref::Tcache
-    tangent_mode
+    tangent_mode::Tmode
+    primal::Tprimal
+    function LazyPrimal(key::Core.MethodInstance, world::UInt, tangent_mode=Val(1))
+        interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world)
+        Tprimal = _lazy_primal_type(interp, key, tangent_mode)
+        return new{key.specTypes,Tprimal,typeof(tangent_mode)}(key, world, tangent_mode)
+    end
+    function LazyPrimal{Tprimal_sig,Tprimal,Tmode}(
+        key::Core.MethodInstance, world::UInt, tangent_mode::Tmode
+    ) where {Tprimal_sig,Tprimal,Tmode}
+        return new{Tprimal_sig,Tprimal,Tmode}(key, world, tangent_mode)
+    end
 end
 
-function LazyPrimal(key, world::UInt, tangent_mode=Val(1))
-    LazyPrimal{typeof(key),Base.RefValue{Any}}(key, world, Ref{Any}(), tangent_mode)
+const LAZY_PRIMAL_TYPE_LOCK = ReentrantLock()
+const ACTIVE_LAZY_PRIMAL_TYPES = IdDict{Core.MethodInstance,Nothing}()
+
+function _lazy_primal_type(
+    interp::MooncakeInterpreter, key::Core.MethodInstance, tangent_mode
+)
+    recursive = lock(LAZY_PRIMAL_TYPE_LOCK) do
+        haskey(ACTIVE_LAZY_PRIMAL_TYPES, key) && return true
+        ACTIVE_LAZY_PRIMAL_TYPES[key] = nothing
+        return false
+    end
+    recursive && return Any
+    try
+        return primal_type(interp, key; tangent_mode)
+    catch
+        return Any
+    finally
+        lock(LAZY_PRIMAL_TYPE_LOCK) do
+            delete!(ACTIVE_LAZY_PRIMAL_TYPES, key)
+        end
+    end
+end
+
+function LazyPrimal(key::Type{<:Tuple}, world::UInt, tangent_mode=Val(1))
+    min = Base.RefValue{UInt}(typemin(UInt))
+    max = Base.RefValue{UInt}(typemax(UInt))
+    ms = Base._methods_by_ftype(
+        key, nothing, 1, world, true, min, max, Ptr{Int32}(C_NULL)
+    )::Vector
+    mm = first(ms)::Core.MethodMatch
+    mi = CC.specialize_method(mm.method, mm.spec_types, mm.sparams)
+    return LazyPrimal(mi, world, tangent_mode)
 end
 
 struct DynamicPrimal{V}
@@ -754,108 +872,222 @@ end
             ),
         )
     if all(verify_dual_type, args)
-        internal_args = map(args) do x
-            p = Mooncake.primal(x)
-            dual_type(primal.tangent_mode, typeof(p))(
-                p,
-                canonicalize_chunked_tangent(
-                    p, tangent(x), Val(typeof(primal.tangent_mode).parameters[1])
-                ),
-            )
+        internal_args = _convert_width_aware_dual_args(primal, args)
+        lifted_args = if isnothing(primal.call_target)
+            _prepare_lifted_runtime_args(primal, internal_args)
+        elseif length(args) >= 2 && Mooncake.primal(first(args)) isa Function
+            _prepare_lifted_runtime_args(primal, Base.tail(internal_args))
+        else
+            _prepare_lifted_runtime_args(primal, internal_args)
         end
         y = if isnothing(primal.call_target)
-            primal.lifted_oc(internal_args...)
-        elseif length(args) >= 2 && Mooncake.primal(first(args)) isa Function
-            primal.lifted_oc(primal.lifted_call_target, Base.tail(internal_args)...)
+            _call_lifted_oc(primal, lifted_args...)
         else
-            primal.lifted_oc(primal.lifted_call_target, internal_args...)
+            _call_lifted_oc(primal, primal.lifted_call_target, lifted_args...)
         end
         return _canonicalize_width_aware_dual(y)
     end
     return if isnothing(primal.call_target)
-        primal.primal_oc(args...)
+        _call_primal_oc(primal, args...)
     else
-        primal.primal_oc(primal.call_target, args...)
+        _call_primal_oc(primal, primal.call_target, args...)
     end
 end
 
+@inline function _convert_width_aware_dual_arg(primal::DerivedPrimal, x)
+    p = Mooncake.primal(x)
+    D = dual_type(primal.tangent_mode, typeof(p))
+    N = Val(typeof(primal.tangent_mode).parameters[1])
+    tx = canonicalize_chunked_tangent(p, tangent(x), N)
+    if typeof(x) === D && typeof(tangent(x)) === typeof(tx)
+        return x
+    end
+    return D(p, tx)
+end
+
 @inline function _convert_width_aware_dual_args(primal::DerivedPrimal, args)
-    return map(args) do x
-        p = Mooncake.primal(x)
-        dual_type(primal.tangent_mode, typeof(p))(
-            p,
-            canonicalize_chunked_tangent(
-                p, tangent(x), Val(typeof(primal.tangent_mode).parameters[1])
+    return tuple_map(Base.Fix1(_convert_width_aware_dual_arg, primal), args)
+end
+
+@inline function _stored_primal_runtime_nargs(
+    ::DerivedPrimal{
+        Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode
+    },
+) where {Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode}
+    return Nargs - 1
+end
+
+@generated function _prepare_lifted_runtime_args(
+    primal::DerivedPrimal{
+        Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode
+    },
+    args::NTuple{M,Any},
+) where {Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode,M}
+    Isva || return :(args)
+
+    group_start = Tcall_target === Nothing ? Nargs : Nargs - 1
+    prefix_args = [:(args[$n]) for n in 1:(group_start - 1)]
+    grouped_primal = Expr(:tuple, [:(Mooncake.primal(args[$n])) for n in group_start:M]...)
+    grouped_tangent = Expr(:tuple, [:(tangent(args[$n])) for n in group_start:M]...)
+    width = Tmode.parameters[1]
+    grouped_dual = quote
+        grouped_primal = $grouped_primal
+        grouped_tangent = $grouped_tangent
+        dual_type(primal.tangent_mode, typeof(grouped_primal))(
+            grouped_primal,
+            canonicalize_chunked_tangent(grouped_primal, grouped_tangent, Val($width)),
+        )
+    end
+    return Expr(:tuple, prefix_args..., grouped_dual)
+end
+
+@inline _call_primal_oc(primal::DerivedPrimal, args...) = primal.primal_oc.oc(args...)
+@inline _call_lifted_oc(primal::DerivedPrimal, args...) = primal.lifted_oc.oc(args...)
+
+@generated function _call_stored_dual_primal(
+    primal::DerivedPrimal{
+        Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode
+    },
+    x::Dual,
+    args::Vararg{Dual,N},
+) where {Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode,N}
+    converted_args = Expr(
+        :tuple,
+        :(_convert_width_aware_dual_arg(primal, x)),
+        [:(_convert_width_aware_dual_arg(primal, args[$n])) for n in 1:N]...,
+    )
+    direct_call = Expr(
+        :call,
+        :(primal.lifted_oc.oc),
+        :(primal.lifted_call_target),
+        :(_convert_width_aware_dual_arg(primal, x)),
+        [:(_convert_width_aware_dual_arg(primal, args[$n])) for n in 1:N]...,
+    )
+    N == 0 &&
+        Nargs == 1 &&
+        return quote
+            isnothing(primal.call_target) && throw(
+                ArgumentError(
+                    "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
+                ),
+            )
+            return _canonicalize_width_aware_dual(
+                _call_lifted_oc(primal, primal.lifted_call_target)
+            )
+        end
+    !Isva && return quote
+        isnothing(primal.call_target) && throw(
+            ArgumentError(
+                "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
+            ),
+        )
+        return _canonicalize_width_aware_dual($direct_call)
+    end
+    return quote
+        isnothing(primal.call_target) && throw(
+            ArgumentError(
+                "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
+            ),
+        )
+        if $N == 0 && _stored_primal_runtime_nargs(primal) == 0
+            return _canonicalize_width_aware_dual(
+                _call_lifted_oc(primal, primal.lifted_call_target)
+            )
+        end
+        internal_args = _prepare_lifted_runtime_args(primal, $converted_args)
+        return _canonicalize_width_aware_dual(
+            _call_lifted_oc(primal, primal.lifted_call_target, internal_args...)
+        )
+    end
+end
+
+@generated function _call_stored_dual_primal(
+    primal::DerivedPrimal{
+        Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode
+    },
+    f::Dual,
+    x::Dual,
+    args::Vararg{Dual,N},
+) where {Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode,N}
+    converted_tail = Expr(
+        :tuple,
+        :(_convert_width_aware_dual_arg(primal, x)),
+        [:(_convert_width_aware_dual_arg(primal, args[$n])) for n in 1:N]...,
+    )
+    direct_tail_call = Expr(
+        :call,
+        :(primal.lifted_oc.oc),
+        :(primal.lifted_call_target),
+        :(_convert_width_aware_dual_arg(primal, x)),
+        [:(_convert_width_aware_dual_arg(primal, args[$n])) for n in 1:N]...,
+    )
+    !Isva && return quote
+        isnothing(primal.call_target) && throw(
+            ArgumentError(
+                "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
+            ),
+        )
+        return _canonicalize_width_aware_dual($direct_tail_call)
+    end
+    return quote
+        isnothing(primal.call_target) && throw(
+            ArgumentError(
+                "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
+            ),
+        )
+        internal_args = _prepare_lifted_runtime_args(primal, $converted_tail)
+        return _canonicalize_width_aware_dual(
+            _call_lifted_oc(primal, primal.lifted_call_target, internal_args...)
+        )
+    end
+end
+
+@generated function _call_dynamic_dual_primal(
+    primal::DerivedPrimal{Tprimal_oc,Tlifted_oc,Tkey,Nothing,Nothing,Isva,Nargs,Tmode},
+    f::Dual,
+    x::Dual,
+    args::Vararg{Dual,N},
+) where {Tprimal_oc,Tlifted_oc,Tkey,Isva,Nargs,Tmode,N}
+    converted_args = Expr(
+        :tuple,
+        :(_convert_width_aware_dual_arg(primal, f)),
+        :(_convert_width_aware_dual_arg(primal, x)),
+        [:(_convert_width_aware_dual_arg(primal, args[$n])) for n in 1:N]...,
+    )
+    direct_call = Expr(
+        :call,
+        :(primal.lifted_oc.oc),
+        :(_convert_width_aware_dual_arg(primal, f)),
+        :(_convert_width_aware_dual_arg(primal, x)),
+        [:(_convert_width_aware_dual_arg(primal, args[$n])) for n in 1:N]...,
+    )
+    !Isva && return quote
+        return _canonicalize_width_aware_dual($direct_call)
+    end
+    return quote
+        _canonicalize_width_aware_dual(
+            _call_lifted_oc(
+                primal, _prepare_lifted_runtime_args(primal, $converted_args)...
             ),
         )
     end
 end
 
-@inline function _stored_primal_runtime_nargs(primal::DerivedPrimal)
-    sig = primal.key isa Core.MethodInstance ? primal.key.specTypes : primal.key
-    sig isa Type{<:Tuple} || return nothing
-    return length(sig.parameters) - 1
-end
-
-@inline function ((
-    primal::DerivedPrimal{
-        Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Tmode
-    } where {
-        Tprimal_oc<:Any,
-        Tlifted_oc<:Any,
-        Tkey<:Any,
-        Tcall_target<:Any,
-        Tlifted_call_target<:Any,
-        Tmode,
-    }
-))(
-    x::Dual, args::Vararg{Dual,N}
-) where {N}
+@inline function (primal::DerivedPrimal)(x::Dual, args::Vararg{Dual,N}) where {N}
     isnothing(primal.call_target) && throw(
         ArgumentError(
             "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
         ),
     )
-    if N == 0 && _stored_primal_runtime_nargs(primal) == 0
-        return _canonicalize_width_aware_dual(primal.lifted_oc(primal.lifted_call_target))
+    return _call_stored_dual_primal(primal, x, args...)
+end
+
+@inline function (primal::DerivedPrimal)(f::Dual, x::Dual, args::Vararg{Dual,N}) where {N}
+    return if isnothing(primal.call_target)
+        _call_dynamic_dual_primal(primal, f, x, args...)
+    else
+        _call_stored_dual_primal(primal, f, x, args...)
     end
-    internal_args = _convert_width_aware_dual_args(primal, (x, args...))
-    return _canonicalize_width_aware_dual(
-        primal.lifted_oc(primal.lifted_call_target, internal_args...)
-    )
-end
-
-@inline function ((
-    primal::DerivedPrimal{
-        Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Tmode
-    } where {
-        Tprimal_oc<:Any,
-        Tlifted_oc<:Any,
-        Tkey<:Any,
-        Tcall_target<:Any,
-        Tlifted_call_target<:Any,
-        Tmode,
-    }
-))(
-    ::Dual, x::Dual, args::Vararg{Dual,N}
-) where {N}
-    isnothing(primal.call_target) && throw(
-        ArgumentError(
-            "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
-        ),
-    )
-    internal_args = _convert_width_aware_dual_args(primal, (x, args...))
-    return _canonicalize_width_aware_dual(
-        primal.lifted_oc(primal.lifted_call_target, internal_args...)
-    )
-end
-
-@inline function (primal::DerivedPrimal{Tprimal_oc,Tlifted_oc,Tkey,Nothing,Nothing,Tmode})(
-    f::Dual, x::Dual, args::Vararg{Dual,N}
-) where {Tprimal_oc,Tlifted_oc,Tkey,Tmode,N}
-    return _canonicalize_width_aware_dual(
-        primal.lifted_oc(_convert_width_aware_dual_args(primal, (f, x, args...))...)
-    )
 end
 
 @static if VERSION < v"1.11-"
@@ -866,10 +1098,12 @@ end
             Tkey,
             Tcall_target,
             Tlifted_call_target,
+            Isva,
+            Nargs,
             Tmode,
         },
         args,
-    ) where {Tprimal_oc,A,R,Tkey,Tcall_target,Tlifted_call_target,Tmode}
+    ) where {Tprimal_oc,A,R,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode}
         return primal(args...)::R
     end
 
@@ -885,6 +1119,8 @@ function _copy(x::P) where {P<:DerivedPrimal}
         x.key,
         x.call_target,
         x.lifted_call_target,
+        x.isva,
+        x.nargs,
         x.world,
         x.tangent_mode,
     )
@@ -934,16 +1170,22 @@ end
 end
 
 @inline function (primal::LazyPrimal)(args::Vararg{Any,N}) where {N}
-    if !isassigned(primal.primal_ref)
-        interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=primal.world)
-        primal.primal_ref[] = build_primal(
-            interp, primal.key; skip_world_age_check=true, tangent_mode=primal.tangent_mode
-        )
+    return if isdefined(primal, :primal)
+        primal.primal(args...)
+    else
+        _build_primal!(primal, args)
     end
-    return primal.primal_ref[](args...)
 end
 
-_copy(x::P) where {P<:LazyPrimal} = P(x.key, x.world, Ref{Any}(), x.tangent_mode)
+@noinline function _build_primal!(primal::LazyPrimal{sig,Tprimal}, args) where {sig,Tprimal}
+    interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=primal.world)
+    primal.primal = build_primal(
+        interp, primal.key; skip_world_age_check=true, tangent_mode=primal.tangent_mode
+    )::Tprimal
+    return primal.primal(args...)
+end
+
+_copy(x::P) where {P<:LazyPrimal} = P(x.key, x.world, x.tangent_mode)
 
 @inline function (dynamic::DynamicPrimal)(f, args::Vararg{Any,N}) where {N}
     verify_dual_type(f) &&
