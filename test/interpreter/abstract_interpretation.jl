@@ -167,5 +167,10 @@ end
         Mooncake.prepare_derivative_cache(f, x; config=Mooncake.Config(empty_cache=true))
         @test length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].oc_cache) <
             n_before3
+
+        # run_gc=true: smoke test that clearing + immediate GC does not error.
+        @test_nowarn Mooncake.prepare_gradient_cache(
+            f, x; config=Mooncake.Config(empty_cache=true, run_gc=true)
+        )
     end
 end
