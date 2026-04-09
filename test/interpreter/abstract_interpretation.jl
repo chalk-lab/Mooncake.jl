@@ -136,7 +136,9 @@ end
         n_before = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
         @test n_before > 0
 
-        cache = Mooncake.prepare_gradient_cache(f, x; config=Mooncake.Config(empty_cache=true))
+        cache = Mooncake.prepare_gradient_cache(
+            f, x; config=Mooncake.Config(empty_cache=true)
+        )
         @test length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache) < n_before
 
         # AD still correct after clearing.
