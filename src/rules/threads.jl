@@ -2,7 +2,7 @@
     return zero_dual(_foreigncall_(name, tuple_map(primal, args)...))
 end
 
-@inline function _threading_foreigncall_rrule(f, name, args...)
+function _threading_foreigncall_rrule()
     throw(
         ErrorException(
             "Differentiating through threading is not safe and is unsupported " *
@@ -31,9 +31,7 @@ for name in [
         Val($(QuoteNode(name))), args...
     )
 
-    @eval rrule!!(f::CoDual{typeof(_foreigncall_)}, name::CoDual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_rrule(
-        f, primal(name), args...
-    )
+    @eval rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_rrule()
 end
 
 @is_primitive MinimalCtx ForwardMode Tuple{

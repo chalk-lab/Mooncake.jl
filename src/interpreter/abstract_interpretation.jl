@@ -20,6 +20,7 @@ struct MooncakeCache
 end
 
 MooncakeCache() = MooncakeCache(IdDict{Core.MethodInstance,Core.CodeInstance}())
+Base.empty!(c::MooncakeCache) = (empty!(c.dict); c)
 
 # The method table used by `Mooncake.@mooncake_overlay`.
 Base.Experimental.@MethodTable mooncake_method_table
@@ -350,7 +351,7 @@ function get_interpreter(mode::Type{<:Mode})
 end
 
 """
-    clear_mooncake_caches!()
+    empty_mooncake_caches!()
 
 This is an internal function and not part of the public API. Called by `prepare_pullback_cache`,
 `prepare_gradient_cache`, and `prepare_derivative_cache` when `Config(empty_cache=true)`
@@ -365,10 +366,10 @@ After clearing, Mooncake re-derives rules from scratch on the next use. Only Jul
 (GC-managed) objects are freed; JIT-compiled native machine code allocated by LLVM
 is held permanently by the Julia runtime.
 """
-function clear_mooncake_caches!()
+function empty_mooncake_caches!()
     for interp in values(GLOBAL_INTERPRETERS)
         empty!(interp.oc_cache)
-        empty!(interp.code_cache.dict)
+        empty!(interp.code_cache)
         empty!(interp.inf_cache)
     end
     return nothing
