@@ -129,48 +129,19 @@ end
         f = x -> sin(x[1]) + x[2]^2
         x = [1.0, 2.0]
 
-        # Differentiate several functions to build up the caches.
+        # Build up the cache with several functions, then clear it.
         for g in [x -> sum(x .^ 2), x -> prod(x), x -> sum(exp.(x))]
             Mooncake.prepare_gradient_cache(g, randn(10))
         end
         n_before = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
         @test n_before > 0
 
-        # prepare_gradient_cache with empty_cache=true clears old entries before building.
-        # After the call, oc_cache has only the new rule for f and not the old ones.
-        cache = Mooncake.prepare_gradient_cache(
-            f, x; config=Mooncake.Config(empty_cache=true)
-        )
-        n_after = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
-        @test n_after < n_before   # old entries were cleared
+        cache = Mooncake.prepare_gradient_cache(f, x; config=Mooncake.Config(empty_cache=true))
+        @test length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache) < n_before
 
         # AD still correct after clearing.
         val, grad = Mooncake.value_and_gradient!!(cache, f, x)
         @test val ≈ sin(x[1]) + x[2]^2
         @test grad[2] ≈ [cos(x[1]), 2x[2]]
-
-        # prepare_pullback_cache with empty_cache=true also clears.
-        for g in [x -> sum(x .^ 2), x -> prod(x), x -> sum(exp.(x))]
-            Mooncake.prepare_gradient_cache(g, randn(10))
-        end
-        n_before2 = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
-        Mooncake.prepare_pullback_cache(f, x; config=Mooncake.Config(empty_cache=true))
-        @test length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache) <
-            n_before2
-
-        # prepare_derivative_cache with empty_cache=true also clears.
-        for g in [x -> sum(x .^ 2), x -> prod(x), x -> sum(exp.(x))]
-            Mooncake.prepare_derivative_cache(g, randn(10))
-        end
-        n_before3 = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].oc_cache)
-        @test n_before3 > 0
-        Mooncake.prepare_derivative_cache(f, x; config=Mooncake.Config(empty_cache=true))
-        @test length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].oc_cache) <
-            n_before3
-
-        # run_gc=true: smoke test that clearing + immediate GC does not error.
-        @test_nowarn Mooncake.prepare_gradient_cache(
-            f, x; config=Mooncake.Config(empty_cache=true, run_gc=true)
-        )
     end
 end

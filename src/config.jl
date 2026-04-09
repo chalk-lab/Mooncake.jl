@@ -6,7 +6,6 @@
         chunk_size::Union{Nothing,Int}=nothing,
         enable_nfwd::Bool=true,
         empty_cache::Bool=false,
-        run_gc::Bool=false,
     )
 
 Configuration struct for use with `ADTypes.AutoMooncake`.
@@ -40,9 +39,6 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     useful in long-running sessions where many distinct functions have been differentiated.
     Note that only Julia-level (GC-managed) objects are freed; JIT-compiled native machine
     code is held permanently by the Julia runtime and cannot be reclaimed.
-- `run_gc::Bool=false`: if `true` and `empty_cache` is also `true`, a full garbage collection
-    is triggered immediately after clearing the caches, so that freed memory is reclaimed
-    right away rather than at some future GC cycle. Has no effect if `empty_cache` is `false`.
 """
 @kwdef struct Config
     debug_mode::Bool = false
@@ -51,5 +47,4 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     chunk_size::Union{Nothing,Int} = nothing
     enable_nfwd::Bool = true
     empty_cache::Bool = false
-    run_gc::Bool = false
 end

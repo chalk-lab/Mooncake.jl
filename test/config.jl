@@ -4,5 +4,4 @@
     @test isnothing(Mooncake.Config().chunk_size)
     @test Mooncake.Config().enable_nfwd
     @test !Mooncake.Config().empty_cache
-    @test !Mooncake.Config().run_gc
 end
