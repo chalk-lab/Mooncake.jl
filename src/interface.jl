@@ -1006,35 +1006,12 @@ end
 # `value_and_gradient!!` then seed four basis directions at a time and accumulate the
 # resulting coefficients into the full input gradient.
 
-@inline _irfwd_dof(x, seen::IdDict{Any,Any}=IdDict{Any,Any}()) = _primal_input_dof(x, seen)
-
-@inline _irfwd_seed(x, slot::Int) = _primal_rebuild(
-    _irfwd_seed,
-    _primal_rebuild_ops(
-        leaf=(x, cursor, _seen) -> if x isa IEEEFloat
-            cursor[] += 1
-            cursor[] == slot ? one(x) : zero(x)
-        else
-            T = typeof(real(x))
-            cursor[] += 1
-            real_part = cursor[] == slot ? one(T) : zero(T)
-            cursor[] += 1
-            imag_part = cursor[] == slot ? one(T) : zero(T)
-            complex(real_part, imag_part)
-        end,
-        nodiff=(_x, _cursor, _seen) -> NoTangent(),
-        make_tuple_tangent=(P, fields, _state, _seen) -> build_tangent(P, fields...),
-        make_namedtuple_tangent=(P, fields, _state, _seen) -> build_tangent(P, fields...),
-    ),
-    x,
-    Ref(0),
-    IdDict{Any,Any}(),
-)
-
 function _irfwd_value_and_gradient!!(rule, chunk_size::Int, fx::Vararg{CoDual,M}) where {M}
     input_primals = map(primal, fx)
     native_gradients = tuple_map(set_to_zero!!, map(tangent, fx))
-    total_dof = _irfwd_dof(input_primals)
+    total_dof = _fold_slots(
+        (acc, _, _) -> acc + 1, 0, input_primals, (seen=IdDict{Any,Any}(),)
+    )
     zero_input_tangents = zero_tangent(input_primals)
     y = nothing
 
@@ -1051,10 +1028,22 @@ function _irfwd_value_and_gradient!!(rule, chunk_size::Int, fx::Vararg{CoDual,M}
         chunk_width = min(chunk_size, total_dof - start_slot + 1)
         lane_tangents = ntuple(
             lane -> if lane <= chunk_width
-                _irfwd_seed(input_primals, start_slot + lane - 1)
+                _unfold_slots(
+                    (slot_primal, state) -> begin
+                        state.next_slot[] += 1
+                        return if state.next_slot[] == state.slot
+                            one(slot_primal)
+                        else
+                            zero(slot_primal)
+                        end
+                    end,
+                    input_primals,
+                    (slot=start_slot + lane - 1, next_slot=Ref(0), seen=IdDict{Any,Any}()),
+                )
             else
                 zero_input_tangents
-            end, Val(chunk_size)
+            end,
+            Val(chunk_size),
         )
         input_tangents = ntuple(
             i -> begin
@@ -1130,11 +1119,16 @@ struct NfwdCache{GW,S<:Tuple}
     input_specs::S
 end
 
+@inline _cache_input_count(cache::NfwdCache) = length(getfield(cache, :input_specs))
+
 function Base.show(io::IO, cache::NfwdCache)
     print(
         io,
         "Mooncake.NfwdCache(",
         "mode=:forward, ",
+        "chunk_size=",
+        cache.chunk_size,
+        ", ",
         "inputs=",
         _cache_input_count(cache),
         ")",
@@ -1146,6 +1140,9 @@ function Base.show(io::IO, ::MIME"text/plain", cache::NfwdCache)
         io,
         "Mooncake.NfwdCache\n",
         "  mode: forward\n",
+        "  chunk_size: ",
+        cache.chunk_size,
+        "\n",
         "  inputs: ",
         _cache_input_count(cache),
         "\n",
@@ -1157,7 +1154,11 @@ end
 # Validate that every *x* argument (not f) is within the narrow nfwd boundary.
 @inline function _nfwd_cache_validate_inputs(x::Tuple)
     for xi in x
-        Nfwd._nfwd_is_supported_primal(xi) || throw(
+        (
+            xi isa IEEEFloat ||
+            xi isa Complex{<:IEEEFloat} ||
+            xi isa Array{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+        ) || throw(
             ArgumentError(
                 "NfwdCache only supports IEEEFloat, Complex{<:IEEEFloat}, and dense " *
                 "Array{<:Union{IEEEFloat,Complex{<:IEEEFloat}}} inputs. Got $(typeof(xi)).",
@@ -1234,10 +1235,74 @@ directly, and extracts primal/tangent from the result.
     )
     x_primals = Base.tail(input_primals)
     x_tangents = Base.tail(input_tangents)
-    lifted = _nfwd_lift_primitive_args(Val(1), x_primals, x_tangents)
+    width = 1
+    for dx in x_tangents
+        dx isa NoTangent && continue
+        lane_count = something(_ntangent_lane_count(dx), 1)
+        if width != lane_count
+            throw(
+                ArgumentError(
+                    "NfwdCache expects all tangent inputs to have the same derivative width.",
+                ),
+            )
+        end
+        width = lane_count
+    end
+    width == cache.chunk_size || throw(
+        ArgumentError(
+            "NfwdCache was prepared with chunk_size=$(cache.chunk_size), but " *
+            "`value_and_derivative!!` was called with derivative width $width. " *
+            "Prepare a new cache with matching `chunk_size`, or call with tangents of width $(cache.chunk_size).",
+        ),
+    )
+    lifted = _nfwd_lift_primitive_args(Val(cache.chunk_size), x_primals, x_tangents)
     y_ndual = first(input_primals)(lifted...)
-    p, t = _nfwd_extract_primitive_parts(y_ndual, Val(1))
-    return p, t
+    p, t = _nfwd_extract_primitive_parts(y_ndual, Val(cache.chunk_size))
+    return p, canonicalize_chunked_tangent(p, t, Val(cache.chunk_size))
+end
+
+@inline function value_and_derivative!!(cache::NfwdCache, fx::Vararg{Any,N}) where {N}
+    all(verify_dual_type, fx) || throw(
+        ArgumentError(
+            "`value_and_derivative!!(cache::NfwdCache, ...)` expects width-aware dual-type " *
+            "inputs or `(x, dx)` tuples.",
+        ),
+    )
+    tangent(first(fx)) isa NoTangent || throw(
+        ArgumentError(
+            "NfwdCache expects NoTangent for the function tangent, got $(typeof(tangent(first(fx)))).",
+        ),
+    )
+    primals = tuple_map(primal, fx)
+    tangents = tuple_map(tangent, fx)
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), primals)
+    width = 1
+    for x in Base.tail(fx)
+        lane_count = _dual_width(x)
+        if width != lane_count
+            throw(
+                ArgumentError(
+                    "NfwdCache expects all dual inputs to have the same derivative width."
+                ),
+            )
+        end
+        width = lane_count
+    end
+    width == cache.chunk_size || throw(
+        ArgumentError(
+            "NfwdCache was prepared with chunk_size=$(cache.chunk_size), but " *
+            "`value_and_derivative!!` was called with dual inputs of width $width. " *
+            "Prepare a new cache with matching `chunk_size`, or call with dual inputs of width $(cache.chunk_size).",
+        ),
+    )
+    return _nfwd_extract_primitive_output(
+        first(primals)(
+            _nfwd_lift_primitive_args(
+                Val(cache.chunk_size), Base.tail(primals), Base.tail(tangents)
+            )...,
+        ),
+        Val(cache.chunk_size),
+    )
 end
 
 # ── NfwdCache gradient / pullback ─────────────────────────────────────────
@@ -1247,12 +1312,75 @@ function value_and_gradient!!(cache::NfwdCache, f::F, x::Vararg{Any,N}) where {F
     _validate_prepared_cache_inputs(cache.input_specs, input_primals)
     x_primals = x
     chunk_size = cache.chunk_size
-    total_dof = Nfwd._nfwd_input_dof(x_primals)
+    total_dof = sum(_nfwd_primitive_input_dof, x_primals)
     grads = tuple_map(set_to_zero!!, cache.gradient_workspace[])
     cache.gradient_workspace[] = grads
+    total_dof == 0 && throw(
+        ArgumentError(
+            "NfwdCache does not support `value_and_gradient!!` when the prepared inputs have zero differentiable degrees of freedom.",
+        ),
+    )
     y = nothing
+    slot_grads = nothing
     for start_slot in 1:chunk_size:total_dof
-        seeded = _nfwd_seed_primitive_tangents(x_primals, Val(chunk_size), start_slot)
+        seed_state = (start_slot=start_slot, next_slot=Ref(1))
+        seeded = let seed_state = seed_state
+            local seed_slots
+            seed_slots =
+                primal_x ->
+                    if primal_x isa IEEEFloat || primal_x isa Complex{<:IEEEFloat}
+                        _unfold_slots(
+                            (slot_primal, st) -> begin
+                                slot = st.next_slot[]
+                                st.next_slot[] = slot + 1
+                                return if chunk_size == 1
+                                    if slot == st.start_slot
+                                        one(slot_primal)
+                                    else
+                                        zero(slot_primal)
+                                    end
+                                else
+                                    ntuple(
+                                        k -> if slot == st.start_slot + k - 1
+                                            one(slot_primal)
+                                        else
+                                            zero(slot_primal)
+                                        end,
+                                        Val(chunk_size),
+                                    )
+                                end
+                            end,
+                            primal_x,
+                            seed_state,
+                        )
+                    elseif primal_x isa Array{<:IEEEFloat} ||
+                        primal_x isa Array{<:Complex{<:IEEEFloat}}
+                        _unfold_slots(
+                            (slot_primal, st) -> begin
+                                slot = st.next_slot[]
+                                st.next_slot[] = slot + 1
+                                Nfwd.NDual{typeof(slot_primal),chunk_size}(
+                                    slot_primal,
+                                    ntuple(
+                                        k -> if slot == st.start_slot + k - 1
+                                            one(slot_primal)
+                                        else
+                                            zero(slot_primal)
+                                        end,
+                                        Val(chunk_size),
+                                    ),
+                                )
+                            end,
+                            primal_x,
+                            seed_state,
+                        )
+                    elseif primal_x isa Tuple
+                        tuple_map(seed_slots, primal_x)
+                    else
+                        NoTangent()
+                    end
+            map(seed_slots, x_primals)
+        end
         lifted = _nfwd_lift_primitive_args(Val(chunk_size), x_primals, seeded)
         y_ndual = f(lifted...)
         y_p, dy = _nfwd_extract_primitive_parts(y_ndual, Val(chunk_size))
@@ -1262,13 +1390,39 @@ function value_and_gradient!!(cache::NfwdCache, f::F, x::Vararg{Any,N}) where {F
         end
         ȳ = one(typeof(y))
         lane_vals = _nfwd_contract_output(ȳ, dy)
-        # Scatter into (f_grad, x_grads...) — f_grad is NoTangent, rest are x grads.
-        grads = (
-            first(grads),
-            _nfwd_scatter_scalar_chunk(
-                Base.tail(grads), x_primals, lane_vals, start_slot
-            )...,
-        )
+        if isnothing(slot_grads)
+            slot_grads = zeros(typeof(first(lane_vals)), total_dof)
+        end
+        for (lane, lane_val) in enumerate(lane_vals)
+            slot = start_slot + lane - 1
+            slot > total_dof && break
+            @inbounds slot_grads[slot] += lane_val
+        end
+    end
+    grad_state = (vals=slot_grads, next_slot=Ref(1))
+    grads = let grad_state = grad_state
+        local rebuild_grad
+        rebuild_grad =
+            primal_x ->
+                if primal_x isa IEEEFloat ||
+                    primal_x isa Complex{<:IEEEFloat} ||
+                    primal_x isa Array{<:IEEEFloat} ||
+                    primal_x isa Array{<:Complex{<:IEEEFloat}}
+                    _unfold_slots(
+                        (_, st) -> begin
+                            y_slot = st.vals[st.next_slot[]]
+                            st.next_slot[] = st.next_slot[] + 1
+                            y_slot
+                        end,
+                        primal_x,
+                        grad_state,
+                    )
+                elseif primal_x isa Tuple
+                    tuple_map(rebuild_grad, primal_x)
+                else
+                    zero_tangent(primal_x)
+                end
+        (first(grads), map(rebuild_grad, x_primals)...)
     end
     cache.gradient_workspace[] = grads
     return y::IEEEFloat, grads
@@ -1276,10 +1430,130 @@ end
 
 @inline function value_and_pullback!!(
     cache::NfwdCache, ȳ::T, f::F, x::Vararg{Any,N}
-) where {T<:IEEEFloat,F,N}
-    y, grads = value_and_gradient!!(cache, f, x...)
-    pullback = tuple_map(g -> g isa NoTangent ? g : _scale(ȳ, g), grads)
-    return y, pullback
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},F,N}
+    input_primals = (f, x...)
+    _validate_prepared_cache_inputs(cache.input_specs, input_primals)
+    x_primals = x
+    chunk_size = cache.chunk_size
+    total_dof = sum(_nfwd_primitive_input_dof, x_primals)
+    grads = tuple_map(set_to_zero!!, cache.gradient_workspace[])
+    cache.gradient_workspace[] = grads
+    total_dof == 0 && throw(
+        ArgumentError(
+            "NfwdCache does not support `value_and_pullback!!` when the prepared inputs have zero differentiable degrees of freedom.",
+        ),
+    )
+    y = nothing
+    slot_grads = nothing
+    for start_slot in 1:chunk_size:total_dof
+        seed_state = (start_slot=start_slot, next_slot=Ref(1))
+        seeded = let seed_state = seed_state
+            local seed_slots
+            seed_slots =
+                primal_x ->
+                    if primal_x isa IEEEFloat || primal_x isa Complex{<:IEEEFloat}
+                        _unfold_slots(
+                            (slot_primal, st) -> begin
+                                slot = st.next_slot[]
+                                st.next_slot[] = slot + 1
+                                return if chunk_size == 1
+                                    if slot == st.start_slot
+                                        one(slot_primal)
+                                    else
+                                        zero(slot_primal)
+                                    end
+                                else
+                                    ntuple(
+                                        k -> if slot == st.start_slot + k - 1
+                                            one(slot_primal)
+                                        else
+                                            zero(slot_primal)
+                                        end,
+                                        Val(chunk_size),
+                                    )
+                                end
+                            end,
+                            primal_x,
+                            seed_state,
+                        )
+                    elseif primal_x isa Array{<:IEEEFloat} ||
+                        primal_x isa Array{<:Complex{<:IEEEFloat}}
+                        _unfold_slots(
+                            (slot_primal, st) -> begin
+                                slot = st.next_slot[]
+                                st.next_slot[] = slot + 1
+                                Nfwd.NDual{typeof(slot_primal),chunk_size}(
+                                    slot_primal,
+                                    ntuple(
+                                        k -> if slot == st.start_slot + k - 1
+                                            one(slot_primal)
+                                        else
+                                            zero(slot_primal)
+                                        end,
+                                        Val(chunk_size),
+                                    ),
+                                )
+                            end,
+                            primal_x,
+                            seed_state,
+                        )
+                    elseif primal_x isa Tuple
+                        tuple_map(seed_slots, primal_x)
+                    else
+                        NoTangent()
+                    end
+            map(seed_slots, x_primals)
+        end
+        lifted = _nfwd_lift_primitive_args(Val(chunk_size), x_primals, seeded)
+        y_ndual = f(lifted...)
+        y_p, dy = _nfwd_extract_primitive_parts(y_ndual, Val(chunk_size))
+        if isnothing(y)
+            y = y_p
+            (y isa IEEEFloat || y isa Complex{<:IEEEFloat}) || throw(
+                ValueAndPullbackReturnTypeError(
+                    "When calling value_and_pullback!! with NfwdCache, return value of primal " *
+                    "must be a subtype of IEEEFloat or Complex{<:IEEEFloat}. Instead, found " *
+                    "value of type $(typeof(y)).",
+                ),
+            )
+        end
+        lane_vals = _nfwd_contract_output(ȳ, dy)
+        if isnothing(slot_grads)
+            slot_grads = zeros(typeof(first(lane_vals)), total_dof)
+        end
+        for (lane, lane_val) in enumerate(lane_vals)
+            slot = start_slot + lane - 1
+            slot > total_dof && break
+            @inbounds slot_grads[slot] += lane_val
+        end
+    end
+    grad_state = (vals=slot_grads, next_slot=Ref(1))
+    grads = let grad_state = grad_state
+        local rebuild_grad
+        rebuild_grad =
+            primal_x ->
+                if primal_x isa IEEEFloat ||
+                    primal_x isa Complex{<:IEEEFloat} ||
+                    primal_x isa Array{<:IEEEFloat} ||
+                    primal_x isa Array{<:Complex{<:IEEEFloat}}
+                    _unfold_slots(
+                        (_, st) -> begin
+                            y_slot = st.vals[st.next_slot[]]
+                            st.next_slot[] = st.next_slot[] + 1
+                            y_slot
+                        end,
+                        primal_x,
+                        grad_state,
+                    )
+                elseif primal_x isa Tuple
+                    tuple_map(rebuild_grad, primal_x)
+                else
+                    zero_tangent(primal_x)
+                end
+        (first(grads), map(rebuild_grad, x_primals)...)
+    end
+    cache.gradient_workspace[] = grads
+    return y, grads
 end
 
 # ── NfwdCache zero-arg disambiguation ───────────────────────────────────────
@@ -1442,6 +1716,8 @@ for use with [`value_and_hvp!!`](@ref).
 The cache compiles an outer forward-mode rule over an inner reverse-mode gradient. The
 inner rule is compiled only once regardless of how many HVPs are subsequently evaluated.
 
+`debug_mode=true` is not supported for this prepared cache path.
+
 *Note:* `cache` is tied to the types and shapes of `x...`. Evaluating at a different point
 is fine, but changing the shapes requires a new cache.
 
@@ -1464,6 +1740,8 @@ true
     f::F, x::Vararg{Any,N}; config=Config()
 ) where {F,N}
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
+    config.debug_mode &&
+        throw(ArgumentError("prepare_hvp_cache does not support debug_mode=true."))
     # Pre-build the reverse-mode gradient cache so forward-over-reverse differentiates
     # only through gradient evaluation, not through repeated rule construction.
     grad_cache = prepare_gradient_cache(f, x...; config)
@@ -1579,6 +1857,9 @@ dimension over the reverse-mode gradient function.
     reverse-mode gradient closure. It does not currently dispatch to the NDual-lifted
     primitive path used by some `prepare_derivative_cache` / `value_and_gradient!!`
     calls.
+
+!!! note
+    `debug_mode=true` is not supported for this prepared cache path.
 
 ```jldoctest
 f(x) = sum(x .^ 2)

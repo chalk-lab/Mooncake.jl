@@ -9,67 +9,9 @@
 # `rrule!!` calls still need explicit pullback entrypoints.
 #
 
-function hand_written_rule_test_cases(rng_ctor, ::Val{:primitive_wrappers})
-    # Keep wrapper-specific coverage here so the test file can stay a thin
-    # `test_dual` / `test_rule` loop over source-owned cases.
-    test_cases = (
-        (
-            name="real scalar width-aware dual bridge",
-            kind=:dual,
-            primal=2.0,
-            dual_type=Nfwd.NDual{Float64,2},
-            width=2,
-        ),
-        (
-            name="complex scalar width-aware dual bridge",
-            kind=:dual,
-            primal=1.0 + 2.0im,
-            dual_type=Complex{Nfwd.NDual{Float64,2}},
-            width=2,
-        ),
-        (
-            name="exp primitive rule",
-            kind=:rule,
-            f=exp,
-            args=(1.5,),
-            chunk_sizes=(1, 2),
-            output_tangent=nothing,
-            is_primitive=true,
-        ),
-        (
-            name="sincos primitive rule",
-            kind=:rule,
-            f=sincos,
-            args=(1.5,),
-            chunk_sizes=(1, 2),
-            output_tangent=(2.0, 3.0),
-            is_primitive=true,
-        ),
-    )
-    return test_cases, Any[]
-end
+# ── Type bridge ───────────────────────────────────────────────────────────────
 
-function derived_rule_test_cases(rng_ctor, ::Val{:primitive_wrappers})
-    # These exercise the Mooncake-facing nfwd wrapper path, not pure `Nfwd`
-    # internals. Keep the pure `Nfwd` corpus in `test/nfwd/nfwd.jl`.
-    test_cases = (
-        (
-            name="array sum(abs2) derived rule",
-            f=x -> sum(abs2, x),
-            args=([1.0, 2.0, 3.0],),
-            chunk_sizes=(1,),
-            output_tangent=nothing,
-        ),
-        (
-            name="complex scalar derived rule",
-            f=z -> real(z * z + cos(z)),
-            args=(1.2 - 0.3im,),
-            chunk_sizes=(1, 2),
-            output_tangent=nothing,
-        ),
-    )
-    return test_cases, Any[]
-end
+@inline dual_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
 
 @inline function dual_type(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat}
     return N == 1 ? Dual{T,tangent_type(Val(1), T)} : Nfwd.NDual{T,N}
@@ -110,13 +52,7 @@ function (::Type{Complex{Nfwd.NDual{T,N}}})(
     return invoke(Complex{Nfwd.NDual{T,N}}, Tuple{Nfwd.NDual{T,N},Nfwd.NDual{T,N}}, re, im)
 end
 
-@inline function _nfwd_check_function_tangent(df)
-    df isa Union{NoTangent,NoFData} && return nothing
-    df isa NTangent && all(t -> t isa NoTangent, df) && return nothing
-    throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
-end
-
-# ── Scalar / complex lifting ────────────────────────────────────────────────────
+# ── Input lifting ─────────────────────────────────────────────────────────────
 #
 # Convert (primal, tangent) pairs into NDual / Complex{NDual}.
 # Width-1 with a plain scalar/complex tangent (interface derivative path):
@@ -166,6 +102,16 @@ end
 end
 
 @inline function _nfwd_lift_primitive_arg(
+    x::Array{T}, dx::NTangent{<:Tuple}, ::Val{N}
+) where {T<:IEEEFloat,N}
+    out = similar(x, Nfwd.NDual{T,N})
+    @inbounds for i in eachindex(x)
+        out[i] = Nfwd.NDual{T,N}(x[i], ntuple(k -> T(dx[k][i]), Val(N)))
+    end
+    return out
+end
+
+@inline function _nfwd_lift_primitive_arg(
     x::Array{Complex{T}}, dx::Array{Complex{T}}, ::Val{1}
 ) where {T<:IEEEFloat}
     return map(
@@ -176,6 +122,19 @@ end
         x,
         dx,
     )
+end
+
+@inline function _nfwd_lift_primitive_arg(
+    x::Array{Complex{T}}, dx::NTangent{<:Tuple}, ::Val{N}
+) where {T<:IEEEFloat,N}
+    out = similar(x, Complex{Nfwd.NDual{T,N}})
+    @inbounds for i in eachindex(x)
+        out[i] = Complex(
+            Nfwd.NDual{T,N}(real(x[i]), ntuple(k -> T(real(dx[k][i])), Val(N))),
+            Nfwd.NDual{T,N}(imag(x[i]), ntuple(k -> T(imag(dx[k][i])), Val(N))),
+        )
+    end
+    return out
 end
 
 @inline function _nfwd_lift_primitive_args(
@@ -191,6 +150,8 @@ end
         tangents,
     )
 end
+
+# ── Output extraction ────────────────────────────────────────────────────────
 
 @inline _nfwd_unpack_output_lane(::T, dy::T, ::Val{1}) where {T<:IEEEFloat} = dy
 @inline _nfwd_unpack_output_lane(
@@ -231,6 +192,11 @@ end
 @inline function _nfwd_extract_primitive_parts(y::Tuple, ::Val{N}) where {N}
     parts = map(yi -> _nfwd_extract_primitive_parts(yi, Val(N)), y)
     return map(first, parts), map(last, parts)
+end
+
+@inline function _nfwd_extract_primitive_parts(y, ::Val{N}) where {N}
+    tangent_type(typeof(y)) == NoTangent && return y, NoTangent()
+    throw(MethodError(_nfwd_extract_primitive_parts, (y, Val(N))))
 end
 
 # ── Dense array extraction ───────────────────────────────────────────────────
@@ -326,6 +292,8 @@ end
     return dual_type(Val(N), typeof(p))(p, public_tangent)
 end
 
+# ── Output contraction ────────────────────────────────────────────────────────
+
 @inline function _nfwd_contract_output(ȳ::T, dy::T) where {T<:IEEEFloat}
     return (ȳ * Nfwd._nfwd_zero_mask(ȳ, dy),)
 end
@@ -349,168 +317,24 @@ end
     return foldl((a, b) -> map(+, a, b), contributions)
 end
 
-@inline function _nfwd_seed_scalar_tangent(
-    ::Type{T}, chunk_size::Int, start_slot::Int, offset::Int
-) where {T<:IEEEFloat}
-    return ntuple(
-        k -> (offset + 1 == start_slot + k - 1 ? one(T) : zero(T)), Val(chunk_size)
-    )
+# ── Primitive-slot traversal ─────────────────────────────────────────────────
+
+@inline _nfwd_primitive_input_dof(x) = if Nfwd._nfwd_is_supported_primal(x)
+    _fold_slots((acc, _, _) -> acc + 1, 0, x, nothing)
+else
+    0
 end
 
-@inline function _nfwd_seed_complex_tangent(
-    ::Type{T}, chunk_size::Int, start_slot::Int, offset::Int
-) where {T<:IEEEFloat}
-    return ntuple(k -> begin
-        slot = start_slot + k - 1
-        if offset + 1 == slot
-            complex(one(T), zero(T))
-        elseif offset + 2 == slot
-            complex(zero(T), one(T))
-        else
-            zero(Complex{T})
-        end
-    end, Val(chunk_size))
+# ── Primitive entry points ────────────────────────────────────────────────────
+
+@inline function _nfwd_check_function_tangent(df)
+    df isa Union{NoTangent,NoFData} && return nothing
+    df isa NTangent && all(t -> t isa NoTangent, df) && return nothing
+    throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
 end
 
-@inline function _nfwd_seed_primitive_tangent(
-    x::T, chunk_size::Int, start_slot::Int, offset::Int
-) where {T<:IEEEFloat}
-    return if chunk_size == 1
-        first(_nfwd_seed_scalar_tangent(T, 1, start_slot, offset))
-    else
-        _nfwd_seed_scalar_tangent(T, chunk_size, start_slot, offset)
-    end
-end
-
-@inline function _nfwd_seed_primitive_tangent(
-    x::Complex{T}, chunk_size::Int, start_slot::Int, offset::Int
-) where {T<:IEEEFloat}
-    return if chunk_size == 1
-        first(_nfwd_seed_complex_tangent(T, 1, start_slot, offset))
-    else
-        _nfwd_seed_complex_tangent(T, chunk_size, start_slot, offset)
-    end
-end
-
-# ── Dense array seeding ──────────────────────────────────────────────────────
-
-# Returns Array{NDual{T,N}} directly — primal values embedded, partials seeded.
-@inline function _nfwd_seed_primitive_tangent(
-    x::Array{T}, chunk_size::Int, start_slot::Int, offset::Int
-) where {T<:IEEEFloat}
-    out = similar(x, Nfwd.NDual{T,chunk_size})
-    @inbounds for i in eachindex(x)
-        partials = _nfwd_seed_scalar_tangent(T, chunk_size, start_slot, offset + i - 1)
-        out[i] = Nfwd.NDual{T,chunk_size}(x[i], partials)
-    end
-    return out
-end
-
-@inline function _nfwd_seed_primitive_tangent(
-    x::Array{Complex{T}}, chunk_size::Int, start_slot::Int, offset::Int
-) where {T<:IEEEFloat}
-    out = similar(x, Complex{Nfwd.NDual{T,chunk_size}})
-    @inbounds for i in eachindex(x)
-        ct = _nfwd_seed_complex_tangent(T, chunk_size, start_slot, offset + 2 * (i - 1))
-        out[i] = Complex(
-            Nfwd.NDual{T,chunk_size}(
-                real(x[i]), ntuple(k -> T(real(ct[k])), Val(chunk_size))
-            ),
-            Nfwd.NDual{T,chunk_size}(
-                imag(x[i]), ntuple(k -> T(imag(ct[k])), Val(chunk_size))
-            ),
-        )
-    end
-    return out
-end
-
-@inline _nfwd_seed_primitive_tangent(x, chunk_size::Int, start_slot::Int, offset::Int) = NoTangent()
-
-@inline _nfwd_primitive_input_dof(x) =
-    Nfwd._nfwd_is_supported_primal(x) ? Nfwd._nfwd_input_dof(x) : 0
-@inline _nfwd_seed_primitive_tangents(::Tuple{}, ::Val{N}, start_slot::Int, offset::Int=0) where {N} = ()
-@inline function _nfwd_seed_primitive_tangents(
-    primals::Tuple, ::Val{N}, start_slot::Int, offset::Int=0
-) where {N}
-    x = first(primals)
-    dof = _nfwd_primitive_input_dof(x)
-    return (
-        _nfwd_seed_primitive_tangent(x, N, start_slot, offset),
-        _nfwd_seed_primitive_tangents(
-            Base.tail(primals), Val(N), start_slot, offset + dof
-        )...,
-    )
-end
-
-@inline function _nfwd_accumulate_scalar_gradient(g::T, slot::Int, v) where {T<:IEEEFloat}
-    return slot == 1 ? g + v : g
-end
-
-@inline function _nfwd_accumulate_scalar_gradient(
-    g::Complex{T}, slot::Int, v
-) where {T<:IEEEFloat}
-    if slot == 1
-        return g + complex(v, zero(T))
-    elseif slot == 2
-        return g + complex(zero(T), v)
-    end
-    return g
-end
-
-# ── Dense array gradient accumulation ────────────────────────────────────────
-
-@inline function _nfwd_accumulate_scalar_gradient(
-    g::Array{T}, slot::Int, v
-) where {T<:IEEEFloat}
-    @inbounds g[slot] += v
-    return g
-end
-
-@inline function _nfwd_accumulate_scalar_gradient(
-    g::Array{Complex{T}}, slot::Int, v
-) where {T<:IEEEFloat}
-    local_idx = (slot + 1) >> 1  # ceil(slot / 2)
-    if isodd(slot)
-        @inbounds g[local_idx] += complex(v, zero(T))
-    else
-        @inbounds g[local_idx] += complex(zero(T), v)
-    end
-    return g
-end
-
-# Base case: global_slot exceeds total DOF (chunk padding overshoot).
-@inline _nfwd_update_scalar_grad(grads::Tuple{}, ::Tuple{}, global_slot::Int, lane_val, offset::Int=0) = ()
-
-@inline function _nfwd_update_scalar_grad(
-    grads::Tuple, primals::Tuple, global_slot::Int, lane_val, offset::Int=0
-)
-    x = first(primals)
-    dof = _nfwd_primitive_input_dof(x)
-    if offset < global_slot <= offset + dof
-        local_slot = global_slot - offset
-        return (
-            _nfwd_accumulate_scalar_gradient(first(grads), local_slot, lane_val),
-            Base.tail(grads)...,
-        )
-    end
-    return (
-        first(grads),
-        _nfwd_update_scalar_grad(
-            Base.tail(grads), Base.tail(primals), global_slot, lane_val, offset + dof
-        )...,
-    )
-end
-
-@inline function _nfwd_scatter_scalar_chunk(
-    grads::Tuple, primals::Tuple, dy::Tuple, start_slot::Int
-)
-    global_slot = start_slot
-    for lane_val in dy
-        grads = _nfwd_update_scalar_grad(grads, primals, global_slot, lane_val)
-        global_slot += 1
-    end
-    return grads
-end
+@inline _nfwd_supports_public_forward_input(x) =
+    applicable(primal, x) && applicable(tangent, x)
 
 @inline function _nfwd_primitive_width(x::Any, xs::Vararg{Any,M}) where {M}
     N = _dual_width(x)
@@ -523,13 +347,7 @@ end
 end
 
 @inline function _nfwd_primitive_frule_call(::Val{N}, f::Dual, x::Vararg{Any,M}) where {M,N}
-    all(xi -> try
-        primal(xi)
-        tangent(xi)
-        true
-    catch
-        false
-    end, x) || throw(
+    all(_nfwd_supports_public_forward_input, x) || throw(
         ArgumentError(
             "nfwd primitive rules expect forward inputs exposing `primal` and `tangent`.",
         ),
@@ -552,16 +370,170 @@ end
     y = CoDual(y_primal, y_fdata)
     function primitive_pb!!(y_rdata)
         ȳ = tangent(y_fdata, y_rdata)
-        grads = map(zero_tangent, primals)
-        total_dof = Nfwd._nfwd_input_dof(primals)
+        total_dof = sum(_nfwd_primitive_input_dof, primals)
+        total_dof == 0 && return (NoRData(), map(rdata, map(zero_tangent, primals))...)
+        slot_grads = nothing
         for start_slot in 1:N:total_dof
-            seeded = _nfwd_seed_primitive_tangents(primals, Val(N), start_slot)
+            seed_state = (start_slot=start_slot, next_slot=Ref(1))
+            seeded = let seed_state = seed_state
+                local seed_slots
+                seed_slots =
+                    primal_x ->
+                        if primal_x isa IEEEFloat || primal_x isa Complex{<:IEEEFloat}
+                            _unfold_slots(
+                                (slot_primal, st) -> begin
+                                    slot = st.next_slot[]
+                                    st.next_slot[] = slot + 1
+                                    return if N == 1
+                                        if slot == st.start_slot
+                                            one(slot_primal)
+                                        else
+                                            zero(slot_primal)
+                                        end
+                                    else
+                                        ntuple(
+                                            k -> if slot == st.start_slot + k - 1
+                                                one(slot_primal)
+                                            else
+                                                zero(slot_primal)
+                                            end,
+                                            Val(N),
+                                        )
+                                    end
+                                end,
+                                primal_x,
+                                seed_state,
+                            )
+                        elseif primal_x isa Array{<:IEEEFloat} ||
+                            primal_x isa Array{<:Complex{<:IEEEFloat}}
+                            _unfold_slots(
+                                (slot_primal, st) -> begin
+                                    slot = st.next_slot[]
+                                    st.next_slot[] = slot + 1
+                                    Nfwd.NDual{typeof(slot_primal),N}(
+                                        slot_primal,
+                                        ntuple(
+                                            k -> if slot == st.start_slot + k - 1
+                                                one(slot_primal)
+                                            else
+                                                zero(slot_primal)
+                                            end,
+                                            Val(N),
+                                        ),
+                                    )
+                                end,
+                                primal_x,
+                                seed_state,
+                            )
+                        elseif primal_x isa Tuple
+                            tuple_map(seed_slots, primal_x)
+                        else
+                            NoTangent()
+                        end
+                map(seed_slots, primals)
+            end
             lifted = _nfwd_lift_primitive_args(Val(N), primals, seeded)
             _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted...), Val(N))
             lane_vals = _nfwd_contract_output(ȳ, dy)
-            grads = _nfwd_scatter_scalar_chunk(grads, primals, lane_vals, start_slot)
+            if isnothing(slot_grads)
+                slot_grads = zeros(typeof(first(lane_vals)), total_dof)
+            end
+            for (lane, lane_val) in enumerate(lane_vals)
+                slot = start_slot + lane - 1
+                slot > total_dof && break
+                @inbounds slot_grads[slot] += lane_val
+            end
+        end
+        grad_state = (vals=slot_grads, next_slot=Ref(1))
+        grads = let grad_state = grad_state
+            local rebuild_grad
+            rebuild_grad =
+                primal_x ->
+                    if primal_x isa IEEEFloat ||
+                        primal_x isa Complex{<:IEEEFloat} ||
+                        primal_x isa Array{<:IEEEFloat} ||
+                        primal_x isa Array{<:Complex{<:IEEEFloat}}
+                        _unfold_slots(
+                            (_, st) -> begin
+                                y_slot = st.vals[st.next_slot[]]
+                                st.next_slot[] = st.next_slot[] + 1
+                                y_slot
+                            end,
+                            primal_x,
+                            grad_state,
+                        )
+                    elseif primal_x isa Tuple
+                        tuple_map(rebuild_grad, primal_x)
+                    else
+                        zero_tangent(primal_x)
+                    end
+            map(rebuild_grad, primals)
         end
         return (NoRData(), map(rdata, grads)...)
     end
     return y, primitive_pb!!
+end
+
+# ── Test resources ────────────────────────────────────────────────────────────
+
+function hand_written_rule_test_cases(rng_ctor, ::Val{:primitive_wrappers})
+    # Keep wrapper-specific coverage here so the test file can stay a thin
+    # `test_dual` / `test_rule` loop over source-owned cases.
+    test_cases = (
+        (
+            name="real scalar width-aware dual bridge",
+            kind=:dual,
+            primal=2.0,
+            dual_type=Nfwd.NDual{Float64,2},
+            width=2,
+        ),
+        (
+            name="complex scalar width-aware dual bridge",
+            kind=:dual,
+            primal=1.0 + 2.0im,
+            dual_type=Complex{Nfwd.NDual{Float64,2}},
+            width=2,
+        ),
+        (
+            name="exp primitive rule",
+            kind=:rule,
+            f=exp,
+            args=(1.5,),
+            chunk_sizes=(1, 2),
+            output_tangent=nothing,
+            is_primitive=true,
+        ),
+        (
+            name="sincos primitive rule",
+            kind=:rule,
+            f=sincos,
+            args=(1.5,),
+            chunk_sizes=(1, 2),
+            output_tangent=(2.0, 3.0),
+            is_primitive=true,
+        ),
+    )
+    return test_cases, Any[]
+end
+
+function derived_rule_test_cases(rng_ctor, ::Val{:primitive_wrappers})
+    # These exercise the Mooncake-facing nfwd wrapper path, not pure `Nfwd`
+    # internals. Keep the pure `Nfwd` corpus in `test/nfwd/nfwd.jl`.
+    test_cases = (
+        (
+            name="array sum(abs2) derived rule",
+            f=x -> sum(abs2, x),
+            args=([1.0, 2.0, 3.0],),
+            chunk_sizes=(1,),
+            output_tangent=nothing,
+        ),
+        (
+            name="complex scalar derived rule",
+            f=z -> real(z * z + cos(z)),
+            args=(1.2 - 0.3im,),
+            chunk_sizes=(1, 2),
+            output_tangent=nothing,
+        ),
+    )
+    return test_cases, Any[]
 end

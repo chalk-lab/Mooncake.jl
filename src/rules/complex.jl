@@ -125,15 +125,24 @@ function frule!!(
     ::Dual{typeof(_new_)}, ::Dual{Type{Complex{P}}}, re::Dual{P,Tr}, im::Dual{P,Ti}
 ) where {P<:IEEEFloat,Tr,Ti}
     x = _new_(Complex{P}, primal(re), primal(im))
-    dx = complex(tangent(re), tangent(im))
-    return Dual(x, dx)
+    N = max(Mooncake._dual_width(re), Mooncake._dual_width(im))
+    dx = _complex_width_aware_tangent(tangent(re), tangent(im), Val(N))
+    return Mooncake.dual_type(Val(N), typeof(x))(x, dx)
+end
+function frule!!(
+    ::Dual{typeof(_new_)}, ::Dual{Type{Complex{P}}}, re::Dual, im::Dual
+) where {P<:IEEEFloat}
+    x = _new_(Complex{P}, P(primal(re)), P(primal(im)))
+    N = max(Mooncake._dual_width(re), Mooncake._dual_width(im))
+    dx = _complex_width_aware_tangent(tangent(re), tangent(im), Val(N))
+    return Mooncake.dual_type(Val(N), typeof(x))(x, dx)
 end
 function frule!!(
     ::Dual{typeof(_new_)}, ::Dual{Type{Complex{P}}}, re::Any, im::Any
 ) where {P<:IEEEFloat}
     all(verify_dual_type, (re, im)) || error_if_incorrect_dual_types(re, im)
     x = _new_(Complex{P}, primal(re), primal(im))
-    N = Mooncake._dual_width(re)
+    N = max(Mooncake._dual_width(re), Mooncake._dual_width(im))
     dx = _complex_width_aware_tangent(tangent(re), tangent(im), Val(N))
     return Mooncake.dual_type(Val(N), typeof(x))(x, dx)
 end

@@ -90,15 +90,12 @@ end
 
 @inline _tuple_is_chunked_forward_tangent(::Type{P}, ::Type{<:Tuple}) where {P} =
     !(tangent_type(P) <: Tuple)
-@inline _is_raw_chunked_tuple_tangent(x, dx) =
-    dx isa Tuple && _tuple_is_chunked_forward_tangent(typeof(x), typeof(dx))
 @inline function _array_chunk_lane_count(x::AbstractArray, dx::AbstractArray)
     ndims(dx) == ndims(x) + 1 || return nothing
     size(dx)[1:ndims(x)] == size(x) || return nothing
     return size(dx, ndims(dx))
 end
 @inline _array_chunk_lane_count(::Any, ::Any) = nothing
-@inline _is_raw_chunked_array_tangent(x, dx) = !isnothing(_array_chunk_lane_count(x, dx))
 @inline function _array_chunked_forward_tangent(
     x::AbstractArray, dx::AbstractArray, ::Val{N}
 ) where {N}
@@ -288,6 +285,11 @@ _primal(x::Dual) = primal(x)
     return dual_type(Val(N), typeof(p))(p, tx)
 end
 
+@inline function _width_aware_dual(x, p, dx)
+    N = _dual_width(x)
+    return dual_type(Val(N), typeof(p))(p, canonicalize_chunked_tangent(p, dx, Val(N)))
+end
+
 """
     verify_dual_type(x)
 
@@ -424,7 +426,8 @@ function Dual(x::P, dx::T) where {P,T<:CanonicalForwardTangent}
     # than on the actual runtime primal, which is incorrect. See the matching PiNode note
     # in `src/interpreter/primal_mode.jl` for the control-flow side of the same fix.
     Px = isconcretetype(P) ? P : typeof(x)
-    if _is_raw_chunked_tuple_tangent(x, dx) || _is_raw_chunked_array_tangent(x, dx)
+    if (dx isa Tuple && _tuple_is_chunked_forward_tangent(typeof(x), typeof(dx))) ||
+        !isnothing(_array_chunk_lane_count(x, dx))
         throw(
             ArgumentError(
                 "Chunked forward tangents must be passed explicitly as `NTangent(...)`. " *

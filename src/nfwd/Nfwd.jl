@@ -193,7 +193,7 @@ and handle the wrapping / gradient extraction in `_leaf_effective_tangent`,
 
 ### Background: Mooncake forward mode is width-1
 
-Mooncake's forward mode computes one JVP per pass. `DerivedFRule` is called **once**
+Mooncake's forward mode computes one JVP per pass. `DerivedPrimal` is called **once**
 with all arguments seeded simultaneously:
 
 ```julia

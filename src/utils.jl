@@ -206,6 +206,55 @@ be used in its place in situations where this is important.
     return Expr(:block, exprs..., :(return true))
 end
 
+#
+"""
+    _fold_slots(f, init, x, state)
+
+Left-fold over the scalar slots of `x` in Mooncake's canonical slot order.
+
+Each slot corresponds to one differentiable scalar degree of freedom. Real IEEE-float
+values contribute one floating-point slot. Complex IEEE-float values contribute two scalar
+slots, visited as real then imaginary. Tuples/named tuples are visited left to right, and
+arrays are visited in `eachindex` order.
+"""
+
+"""
+    _unfold_slots(f, x, state)
+
+Rebuild a result using `x` as a shape template while visiting scalar slots in the same
+canonical order as [`_fold_slots`](@ref).
+
+Each callback visit corresponds to one differentiable scalar degree of freedom. Real
+IEEE-float values contribute one floating-point slot. Complex IEEE-float values contribute
+two scalar slots, rebuilt from real then imaginary callback results.
+"""
+#
+
+@inline function _fold_slots(f::F, init, x::T, state) where {F,T<:IEEEFloat}
+    return f(init, x, state)
+end
+
+@inline function _fold_slots(f::F, init, x::Complex{T}, state) where {F,T<:IEEEFloat}
+    acc = f(init, real(x), state)
+    return f(acc, imag(x), state)
+end
+
+@inline function _fold_slots(f::F, init, x::Tuple, state) where {F}
+    acc = init
+    for xi in x
+        acc = _fold_slots(f, acc, xi, state)
+    end
+    return acc
+end
+
+@inline function _unfold_slots(f::F, x::T, state) where {F,T<:IEEEFloat}
+    return f(x, state)
+end
+
+@inline function _unfold_slots(f::F, x::Tuple, state) where {F}
+    return tuple_map(xi -> _unfold_slots(f, xi, state), x)
+end
+
 @noinline function _gradient_throw_uninit_field_error(::Type{P}, n::Int) where {P}
     throw(
         ArgumentError(
@@ -218,31 +267,11 @@ end
 end
 
 #
-# Generic primal-value fold/rebuild kernels
+# Structural walkers used by the generic slot-order kernels.
 #
 # These helpers only walk assigned builtin-array entries, ordinary array values,
-# tuple/named-tuple values, and defined fields. Callers provide the leaf policy; the
-# traversal kernel owns the structural walk, alias handling, and immutable tangent rebuild.
-#
-# In particular, `_primal_rebuild` is designed around Mooncake's aliasing invariance:
-# if two references in the primal alias the same object, then the rebuilt tangents must
-# alias the same tangent object too. That is why the rebuild path accepts `seen` and
-# memoizes mutable/shared primals while rebuilding their tangent structure.
-#
-# MWE (fold):
-# `total = _fold_tuple_values(
-#     (acc, x, _seen) -> acc + x,
-#     0,
-#     (1, 2, 3),
-#     nothing,
-# )`
-# returns `6` because the helper walks the tuple values and threads the accumulator.
-#
-# MWE (rebuild):
-# `_primal_rebuild(recur, ops, (1.0, 2.0), Ref(0), nothing)` can rebuild a
-# tangent-shaped object by keeping the tuple walk in the kernel while `ops.leaf` decides
-# what to put at each scalar leaf. Use an `IdDict` in `seen` when rebuilt tangents need
-# to preserve primal aliasing.
+# tuple/named-tuple values, and defined fields. `_fold_slots` / `_unfold_slots` keep the
+# public traversal protocol; these helpers keep the repeated structural loops small.
 #
 @inline function _fold_builtin_array_assigned(f, init, x::AbstractArray, seen)
     acc = init
@@ -290,179 +319,95 @@ end
     return acc
 end
 
-@inline _make_array_tangent(x, _state, _seen) = zero_tangent(x)
-@inline _make_struct_tangent(x, _state, _seen) = zero_tangent(x)
-@inline _make_tuple_tangent(::Type, fields, _state, _seen) = fields
-@inline _make_namedtuple_tangent(::Type{P}, fields, _state, _seen) where {P<:NamedTuple} = P(
-    fields
-)
-@inline function _store_array_leaf!(leaf, dx, I, xI, state, seen)
-    dx[I] = leaf(xI, state, seen)
-    return nothing
-end
-@inline function _store_array_child!(recur, ops, dx, I, xI, state, seen)
-    dx[I] = _primal_rebuild(recur, ops, xI, state, seen)
-    return nothing
-end
-@inline function _store_struct_field!(recur, ops, tx, n::Int, x, state, seen)
-    set_tangent_field!(tx, n, _primal_rebuild(recur, ops, getfield(x, n), state, seen))
-    return nothing
-end
+#
+# Generic slot-order traversal/rebuild kernels
+#
+# `_fold_slots` is the one reduction kernel over primal slot order. `_unfold_slots` is the
+# matching rebuild kernel. When a caller needs alias preservation for shared mutable
+# primals, it should pass a state object with a `seen::IdDict{Any,Any}` field.
+#
 
-# TODO: `zero_tangent` still has its own recursive structural walk. It should eventually
-# reuse `_primal_rebuild` with zero-valued leaf hooks so aliasing invariance and
-# partially-initialised-field handling live in one traversal kernel.
-#
-# TODO: `copy_to!!` and similar structural copy/update paths still duplicate shape walks.
-# They should eventually reuse `_primal_rebuild` or `_primal_fold` with copy-specific
-# hooks, while keeping backend-specific storage policies explicit.
-#
-# NOTE: `_primal_fold` is for pure structural reductions over the primal shape, like
-# `dof` counting. Queries that need tangent allocation or mutation should use
-# `_primal_rebuild` instead.
-#
-# NOTE: the shared traversal kernel does not imply one shared reconstruction policy.
-# IRfwd rebuilds Mooncake tangents, while nfwd can rebuild raw seeded tuples or packed
-# arrays. Share the walk; keep backend-specific container reconstruction configurable.
-@inline _primal_rebuild_ops(; leaf, nodiff, make_array=_make_array_tangent, make_tuple_tangent=_make_tuple_tangent, make_namedtuple_tangent=_make_namedtuple_tangent, store_array_leaf=(_store_array_leaf!), store_array_child=(_store_array_child!), make_struct_tangent=_make_struct_tangent, store_struct_field=(_store_struct_field!)) = (;
-    leaf,
-    nodiff,
-    make_array,
-    make_tuple_tangent,
-    make_namedtuple_tangent,
-    store_array_leaf,
-    store_array_child,
-    make_struct_tangent,
-    store_struct_field,
-)
+@inline _slot_seen(::Nothing) = nothing
+@inline _slot_seen(state) = hasproperty(state, :seen) ? getproperty(state, :seen) : nothing
 
-@inline _primal_fold(ops, init, ::CRC.NoTangent, seen) = ops.nodiff(init, NoTangent(), seen)
-@inline _primal_fold(ops, init, x::IEEEFloat, seen) = ops.leaf(init, x, seen)
-@inline _primal_fold(ops, init, x::Complex{<:IEEEFloat}, seen) = ops.leaf(init, x, seen)
-@inline function _primal_fold(ops, init, x::AbstractArray, seen)
-    tangent_type(typeof(x)) == NoTangent && return ops.nodiff(init, x, seen)
+@inline _unfold_complex_slots(re, im) = complex(re, im)
+@inline _unfold_complex_slots(re::Tuple, im::Tuple) = tuple_map(complex, re, im)
+
+@inline _fold_slots(f::F, init, ::CRC.NoTangent, state) where {F} = init
+
+@inline function _fold_slots(f::F, init, x::AbstractArray, state) where {F}
+    tangent_type(typeof(x)) == NoTangent && return init
+    seen = _slot_seen(state)
     if seen isa IdDict{Any,Any}
         haskey(seen, x) && return init
         seen[x] = nothing
     end
-    return ops.combine_array(
-        (acc, xi, seen) -> _primal_fold(ops, acc, xi, seen), init, x, seen
-    )
-end
-@inline function _primal_fold(ops, init, x::Tuple, seen)
-    return ops.combine_tuple(
-        (acc, xi, seen) -> _primal_fold(ops, acc, xi, seen), init, x, seen
-    )
-end
-@inline function _primal_fold(ops, init, x::NamedTuple, seen)
-    return ops.combine_namedtuple(
-        (acc, xi, seen) -> _primal_fold(ops, acc, xi, seen), init, x, seen
-    )
-end
-@inline function _primal_fold(ops, init, x::P, seen) where {P}
-    tangent_type(P) == NoTangent && return ops.nodiff(init, x, seen)
-    if Base.ismutabletype(P) && seen isa IdDict{Any,Any}
-        haskey(seen, x) && return init
-        seen[x] = nothing
-    end
-    return ops.combine_struct(
-        (acc, xi, seen) -> _primal_fold(ops, acc, xi, seen), init, x, seen
-    )
-end
-
-@inline function _primal_input_dof(x, seen)
-    # DOF is a pure reduction over the primal shape, so it uses the fold kernel rather than
-    # rebuilding tangents.
-    ops = (;
-        leaf=(total, x, _seen) -> total + (x isa Complex ? 2 : 1),
-        nodiff=(total, _x, _seen) -> total,
-        combine_array=(f, init, x, seen) -> if x isa _BuiltinArrays
-            _fold_builtin_array_assigned(f, init, x, seen)
-        else
-            _fold_array_values(f, init, x, seen)
-        end,
-        combine_tuple=_fold_tuple_values,
-        combine_namedtuple=_fold_namedtuple_values,
-        combine_struct=_fold_fields,
-    )
-    return _primal_fold(ops, 0, x, seen)
-end
-
-@inline _primal_rebuild(recur, ops, ::CRC.NoTangent, state, seen) = ops.nodiff(
-    NoTangent(), state, seen
-)
-@inline _primal_rebuild(recur, ops, x::IEEEFloat, state, seen) = ops.leaf(x, state, seen)
-@inline _primal_rebuild(recur, ops, x::Complex{<:IEEEFloat}, state, seen) = ops.leaf(
-    x, state, seen
-)
-
-@inline function _primal_rebuild(
-    recur, ops, x::AbstractArray{T}, state, seen
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    tangent_type(typeof(x)) == NoTangent && return ops.nodiff(x, state, seen)
-    if seen isa IdDict{Any,Any}
-        existing = get(seen, x, nothing)
-        !isnothing(existing) && return existing
-    end
-    # Scalar/complex leaf arrays are rebuilt elementwise through the leaf policy, letting
-    # each backend choose the concrete storage layout.
-    dx = ops.make_array(x, state, seen)
-    seen isa IdDict{Any,Any} && (seen[x] = dx)
-    @inbounds for I in eachindex(x)
-        ops.store_array_leaf(ops.leaf, dx, I, x[I], state, seen)
-    end
-    return dx
-end
-
-@inline function _primal_rebuild(recur, ops, x::AbstractArray, state, seen)
-    tangent_type(typeof(x)) == NoTangent && return ops.nodiff(x, state, seen)
-    if seen isa IdDict{Any,Any}
-        existing = get(seen, x, nothing)
-        !isnothing(existing) && return existing
-    end
-    # Non-leaf arrays recurse into their elements, while still memoizing shared mutable
-    # primals so rebuilt tangents preserve aliasing invariance.
-    dx = ops.make_array(x, state, seen)
-    seen isa IdDict{Any,Any} && (seen[x] = dx)
-    if x isa _BuiltinArrays
-        for I in eachindex(x)
-            isassigned(x, I) || continue
-            ops.store_array_child(recur, ops, dx, I, x[I], state, seen)
-        end
+    return if x isa _BuiltinArrays
+        _fold_builtin_array_assigned(
+            (acc, xi, _) -> _fold_slots(f, acc, xi, state), init, x, nothing
+        )
     else
-        for I in eachindex(x)
-            ops.store_array_child(recur, ops, dx, I, x[I], state, seen)
+        _fold_array_values((acc, xi, _) -> _fold_slots(f, acc, xi, state), init, x, nothing)
+    end
+end
+
+@inline function _fold_slots(f::F, init, x::NamedTuple, state) where {F}
+    return _fold_namedtuple_values(
+        (acc, xi, _) -> _fold_slots(f, acc, xi, state), init, x, nothing
+    )
+end
+
+@inline function _fold_slots(f::F, init, x::P, state) where {F,P}
+    tangent_type(P) == NoTangent && return init
+    if Base.ismutabletype(P)
+        seen = _slot_seen(state)
+        if seen isa IdDict{Any,Any}
+            haskey(seen, x) && return init
+            seen[x] = nothing
         end
     end
+    return _fold_fields((acc, xi, _) -> _fold_slots(f, acc, xi, state), init, x, nothing)
+end
+
+@inline _unfold_slots(f::F, ::CRC.NoTangent, state) where {F} = NoTangent()
+
+@inline function _unfold_slots(f::F, x::Complex{T}, state) where {F,T<:IEEEFloat}
+    re = _unfold_slots(f, real(x), state)
+    im = _unfold_slots(f, imag(x), state)
+    return _unfold_complex_slots(re, im)
+end
+
+@inline function _unfold_slots(f::F, x::AbstractArray, state) where {F}
+    tangent_type(typeof(x)) == NoTangent && return NoTangent()
+    seen = _slot_seen(state)
+    if seen isa IdDict{Any,Any}
+        existing = get(seen, x, nothing)
+        !isnothing(existing) && return existing
+    end
+    dx = map(xi -> _unfold_slots(f, xi, state), x)
+    seen isa IdDict{Any,Any} && (seen[x] = dx)
     return dx
 end
 
-@inline function _primal_rebuild(recur, ops, x::P, state, seen) where {P<:Tuple}
-    tangent_type(P) == NoTangent && return ops.nodiff(x, state, seen)
-    fields = ntuple(n -> _primal_rebuild(recur, ops, x[n], state, seen), Val(fieldcount(P)))
-    return ops.make_tuple_tangent(P, fields, state, seen)
+@inline function _unfold_slots(f::F, x::NamedTuple{names}, state) where {F,names}
+    return NamedTuple{names}(tuple_map(xi -> _unfold_slots(f, xi, state), Tuple(x)))
 end
 
-@inline function _primal_rebuild(recur, ops, x::P, state, seen) where {P<:NamedTuple}
-    tangent_type(P) == NoTangent && return ops.nodiff(x, state, seen)
-    fields = ntuple(n -> _primal_rebuild(recur, ops, x[n], state, seen), Val(fieldcount(P)))
-    return ops.make_namedtuple_tangent(P, fields, state, seen)
-end
-
-@inline function _primal_rebuild(recur, ops, x::P, state, seen) where {P}
-    tangent_type(P) == NoTangent && return ops.nodiff(x, state, seen)
+@inline function _unfold_slots(f::F, x::P, state) where {F,P}
+    tangent_type(P) == NoTangent && return NoTangent()
     if Base.ismutabletype(P)
+        seen = _slot_seen(state)
         if seen isa IdDict{Any,Any}
             existing = get(seen, x, nothing)
             !isnothing(existing) && return existing
         end
-        tx = ops.make_struct_tangent(x, state, seen)
+        tx = zero_tangent(x)
         seen isa IdDict{Any,Any} && (seen[x] = tx)
         if tx isa MutableTangent
             inits = always_initialised(P)
             for n in 1:fieldcount(P)
                 if isdefined(x, n)
-                    ops.store_struct_field(recur, ops, tx, n, x, state, seen)
+                    set_tangent_field!(tx, n, _unfold_slots(f, getfield(x, n), state))
                 elseif inits[n]
                     _gradient_throw_uninit_field_error(P, n)
                 end
@@ -474,7 +419,7 @@ end
     inits = always_initialised(P)
     fields = ntuple(Val(fieldcount(P))) do n
         if isdefined(x, n)
-            _primal_rebuild(recur, ops, getfield(x, n), state, seen)
+            _unfold_slots(f, getfield(x, n), state)
         elseif inits[n]
             _gradient_throw_uninit_field_error(P, n)
         else
@@ -891,7 +836,7 @@ _copy(x::Type) = x
 # args), so zero-allocation performance checks are skipped on Julia < 1.11 in test_utils.
 #
 # This generic fallback returns Any. Specialised overloads restore type stability:
-#   - DerivedFRule, DerivedRule (forward_mode.jl, reverse_mode.jl): type assertion via params
+#   - DerivedPrimal, DerivedRule (primal_mode.jl, reverse_mode.jl): type assertion via params
 #   - DebugFRule, DebugRRule (debug_mode.jl): direct call (no OC, no barrier needed)
 #   - typeof(rrule!!) (interface.jl): direct call (plain function, no OC)
 # Dynamic rules (DynamicFRule, DynamicDerivedRule) cannot be handled statically and remain

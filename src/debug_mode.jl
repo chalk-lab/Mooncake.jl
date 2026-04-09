@@ -36,7 +36,8 @@ end
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
     try
         for _x in x
-            verify_dual_type(_x) || error("Expected width-aware dual type, got $(typeof(_x))")
+            verify_dual_type(_x) ||
+                error("Expected width-aware dual type, got $(typeof(_x))")
             verify_dual_value(_x)
         end
     catch e
@@ -46,7 +47,8 @@ end
 
 @noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
     try
-        verify_dual_type(y) || error("frule!! must return a width-aware dual type, got $(typeof(y))")
+        verify_dual_type(y) ||
+            error("frule!! must return a width-aware dual type, got $(typeof(y))")
         verify_dual_value(y)
     catch e
         error("Error in outputs of rule with input types $(_typeof(x))")
@@ -173,15 +175,6 @@ for `DebugRRule` for details.
     y, pb = __call_rule(rule.rule, x)
     verify_fwds_output(x, y)
     return y, DebugPullback(pb, primal(y), map(primal, x))
-end
-
-@static if VERSION < v"1.11-"
-    # DebugFRule and DebugRRule do not contain OpaqueClosure directly; their __call__
-    # methods delegate to the inner rule which handles OC safety via its own
-    # __call_rule specialisation. Calling them directly is safe on Julia 1.10 and avoids
-    # a second unnecessary inferencebarrier.
-    @inline __call_rule(rule::DebugFRule, args) = rule(args...)
-    @inline __call_rule(rule::DebugRRule, args) = rule(args...)
 end
 
 # DerivedRule adds a method to this function.

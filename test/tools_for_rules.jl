@@ -42,7 +42,6 @@ nested_vararg_zero_tester(x::Vector{Float64}...) = 0
 } where {N}
 
 mixed_vararg_zero_tester(n::Int, x::Float64...) = 0
-@zero_derivative MinimalCtx Tuple{typeof(mixed_vararg_zero_tester),Int,Vararg{Float64}}
 @zero_derivative MinimalCtx Tuple{
     typeof(mixed_vararg_zero_tester),Int,Vararg{Float64,N}
 } where {N}

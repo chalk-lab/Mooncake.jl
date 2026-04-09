@@ -114,7 +114,11 @@ import ..Mooncake:
     NTangent,
     Mode,
     extract,
-    nan_tangent_guard
+    nan_tangent_guard,
+    _width_aware_dual,
+    _lane_map,
+    canonicalize_chunked_tangent,
+    dual_type
 
 using Core.Intrinsics: atomic_pointerref
 
@@ -175,10 +179,7 @@ end
 function frule!!(::Dual{typeof(abs_float)}, x)
     p = abs_float(primal(x))
     dx = sign(primal(x)) * tangent(x)
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, dx, Val(N))
-    )
+    return Mooncake._width_aware_dual(x, p, dx)
 end
 function rrule!!(::CoDual{typeof(abs_float)}, x)
     abs_float_pullback!!(dy) = NoRData(), sign(primal(x)) * dy
@@ -190,10 +191,7 @@ end
 function frule!!(::Dual{typeof(add_float)}, a, b)
     p = add_float(primal(a), primal(b))
     dx = tangent(a) + tangent(b)
-    N = Mooncake._dual_width(a)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, dx, Val(N))
-    )
+    return Mooncake._width_aware_dual(a, p, dx)
 end
 function rrule!!(::CoDual{typeof(add_float)}, a, b)
     add_float_pb!!(c̄) = NoRData(), c̄, c̄
@@ -205,10 +203,7 @@ end
 function frule!!(::Dual{typeof(add_float_fast)}, a, b)
     c = add_float_fast(primal(a), primal(b))
     dc = tangent(a) + tangent(b)
-    N = Mooncake._dual_width(a)
-    return Mooncake.dual_type(Val(N), typeof(c))(
-        c, Mooncake.canonicalize_chunked_tangent(c, dc, Val(N))
-    )
+    return Mooncake._width_aware_dual(a, c, dc)
 end
 function rrule!!(::CoDual{typeof(add_float_fast)}, a, b)
     add_float_fast_pb!!(c̄) = NoRData(), c̄, c̄
@@ -226,16 +221,6 @@ end
 @inactive_intrinsic and_int
 @inactive_intrinsic ashr_int
 
-@inline _builtins_lane_map(f, x::NTangent) = NTangent(map(f, x.lanes))
-@inline _builtins_lane_map(f, x) = f(x)
-@inline function _builtins_lane_map(f, x::NTangent, y::NTangent)
-    length(x) == length(y) || throw(ArgumentError("NTangent lane counts must agree."))
-    return NTangent(map(f, x.lanes, y.lanes))
-end
-@inline _builtins_lane_map(f, x::NTangent, y) = NTangent(map(dx -> f(dx, y), x.lanes))
-@inline _builtins_lane_map(f, x, y::NTangent) = NTangent(map(dy -> f(x, dy), y.lanes))
-@inline _builtins_lane_map(f, x, y) = f(x, y)
-
 # unsafe_wrap() gives an array view for the memory pointed by p.
 # Tangent propagation happens through memory aliasing rather than explicit
 # computation in the pullback. Downstream rules write directly into 
@@ -245,7 +230,7 @@ function frule!!(
     ::Dual{typeof(unsafe_wrap)}, ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
 ) where {T}
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
-    tangent_arr = _builtins_lane_map(dp -> unsafe_wrap(Array, dp, primal(dims)), tangent(p))
+    tangent_arr = _lane_map(dp -> unsafe_wrap(Array, dp, primal(dims)), tangent(p))
     return Dual(primal_arr, tangent_arr)
 end
 
@@ -272,9 +257,7 @@ end
 @intrinsic atomic_pointerset
 function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
     atomic_pointerset(primal(p), primal(x), primal(order))
-    _builtins_lane_map(
-        (dp, dx) -> atomic_pointerset(dp, dx, primal(order)), tangent(p), tangent(x)
-    )
+    _lane_map((dp, dx) -> atomic_pointerset(dp, dx, primal(order)), tangent(p), tangent(x))
     return p
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
@@ -402,10 +385,7 @@ end
 function frule!!(::Dual{typeof(copysign_float)}, x, y)
     z = copysign_float(primal(x), primal(y))
     dz = sign(primal(y)) * tangent(x)
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(z))(
-        z, Mooncake.canonicalize_chunked_tangent(z, dz, Val(N))
-    )
+    return Mooncake._width_aware_dual(x, z, dz)
 end
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
@@ -425,10 +405,7 @@ function frule!!(::Dual{typeof(div_float)}, a, b)
     da = tangent(a)
     db = tangent(b)
     dc = da / primal(b) - (primal(a) * db) / primal(b)^2
-    N = Mooncake._dual_width(a)
-    return Mooncake.dual_type(Val(N), typeof(c))(
-        c, Mooncake.canonicalize_chunked_tangent(c, dc, Val(N))
-    )
+    return Mooncake._width_aware_dual(a, c, dc)
 end
 function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
@@ -444,10 +421,7 @@ function frule!!(::Dual{typeof(div_float_fast)}, a, b)
     da = tangent(a)
     db = tangent(b)
     dc = da / primal(b) - (primal(a) * db) / primal(b)^2
-    N = Mooncake._dual_width(a)
-    return Mooncake.dual_type(Val(N), typeof(c))(
-        c, Mooncake.canonicalize_chunked_tangent(c, dc, Val(N))
-    )
+    return Mooncake._width_aware_dual(a, c, dc)
 end
 function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _a = primal(a)
@@ -467,36 +441,19 @@ end
 
 @intrinsic fma_float
 function frule!!(
-    ::Dual{typeof(fma_float)},
-    x::Dual{P,NoTangent},
-    y::Dual{P,NoTangent},
-    z::Dual{P,NoTangent},
-) where {P<:IEEEFloat}
-    p = fma_float(primal(x), primal(y), primal(z))
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, NoTangent(), Val(N))
-    )
-end
-function frule!!(
-    ::Dual{typeof(fma_float)},
-    x::Dual{P,<:NTangent},
-    y::Dual{P,<:NTangent},
-    z::Dual{P,<:NTangent},
+    ::Dual{typeof(fma_float)}, x::Dual{P}, y::Dual{P}, z::Dual{P}
 ) where {P<:IEEEFloat}
     a = fma_float(primal(x), primal(y), primal(z))
-    dx = tangent(x).lanes
-    dy = tangent(y).lanes
-    dz = tangent(z).lanes
+    N = max(Mooncake._dual_width(x), Mooncake._dual_width(y), Mooncake._dual_width(z))
+    dx = canonicalize_chunked_tangent(primal(x), tangent(x), Val(N)).lanes
+    dy = canonicalize_chunked_tangent(primal(y), tangent(y), Val(N)).lanes
+    dz = canonicalize_chunked_tangent(primal(z), tangent(z), Val(N)).lanes
     da = NTangent(
-        ntuple(Val(length(dx))) do n
+        ntuple(Val(N)) do n
             fma_float(dx[n], primal(y), fma_float(primal(x), dy[n], dz[n]))
         end,
     )
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(a))(
-        a, Mooncake.canonicalize_chunked_tangent(a, da, Val(N))
-    )
+    return dual_type(Val(N), typeof(a))(a, da)
 end
 function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
     _x = primal(x)
@@ -510,20 +467,14 @@ function frule!!(
     ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P,NoTangent}
 ) where {Pext<:IEEEFloat,P<:IEEEFloat}
     p = fpext(Pext, primal(x))
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, NoTangent(), Val(N))
-    )
+    return zero_dual(Val(Mooncake._dual_width(x)), p)
 end
 function frule!!(
     ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P,<:NTangent}
 ) where {Pext<:IEEEFloat,P<:IEEEFloat}
     p = fpext(Pext, primal(x))
     dx = NTangent(map(dx -> fpext(Pext, dx), tangent(x).lanes))
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, dx, Val(N))
-    )
+    return Mooncake._width_aware_dual(x, p, dx)
 end
 function rrule!!(
     ::CoDual{typeof(fpext)}, ::CoDual{Type{Pext}}, x::CoDual{P}
@@ -541,20 +492,14 @@ function frule!!(
     ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P,NoTangent}
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
     p = fptrunc(Ptrunc, primal(x))
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, NoTangent(), Val(N))
-    )
+    return zero_dual(Val(Mooncake._dual_width(x)), p)
 end
 function frule!!(
     ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P,<:NTangent}
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
     p = fptrunc(Ptrunc, primal(x))
     dx = NTangent(map(dx -> fptrunc(Ptrunc, dx), tangent(x).lanes))
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, dx, Val(N))
-    )
+    return Mooncake._width_aware_dual(x, p, dx)
 end
 function rrule!!(
     ::CoDual{typeof(fptrunc)}, ::CoDual{Type{Ptrunc}}, x::CoDual{P}
@@ -578,10 +523,7 @@ end
     function frule!!(::Dual{typeof(max_float)}, a::Dual, b::Dual)
         p = max_float(primal(a), primal(b))
         t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
-        N = Mooncake._dual_width(a)
-        return Mooncake.dual_type(Val(N), typeof(p))(
-            p, Mooncake.canonicalize_chunked_tangent(p, t, Val(N))
-        )
+        return Mooncake._width_aware_dual(a, p, t)
     end
     function rrule!!(
         ::CoDual{typeof(max_float)}, a::CoDual{P}, b::CoDual{P}
@@ -602,10 +544,7 @@ end
     function frule!!(::Dual{typeof(max_float_fast)}, a::Dual, b::Dual)
         p = max_float_fast(primal(a), primal(b))
         t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
-        N = Mooncake._dual_width(a)
-        return Mooncake.dual_type(Val(N), typeof(p))(
-            p, Mooncake.canonicalize_chunked_tangent(p, t, Val(N))
-        )
+        return Mooncake._width_aware_dual(a, p, t)
     end
     function rrule!!(
         ::CoDual{typeof(max_float_fast)}, a::CoDual{P}, b::CoDual{P}
@@ -626,10 +565,7 @@ end
     function frule!!(::Dual{typeof(min_float)}, a::Dual, b::Dual)
         p = min_float(primal(a), primal(b))
         t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
-        N = Mooncake._dual_width(a)
-        return Mooncake.dual_type(Val(N), typeof(p))(
-            p, Mooncake.canonicalize_chunked_tangent(p, t, Val(N))
-        )
+        return Mooncake._width_aware_dual(a, p, t)
     end
     function rrule!!(
         ::CoDual{typeof(min_float)}, a::CoDual{P}, b::CoDual{P}
@@ -650,10 +586,7 @@ end
     function frule!!(::Dual{typeof(min_float_fast)}, a::Dual, b::Dual)
         p = min_float_fast(primal(a), primal(b))
         t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
-        N = Mooncake._dual_width(a)
-        return Mooncake.dual_type(Val(N), typeof(p))(
-            p, Mooncake.canonicalize_chunked_tangent(p, t, Val(N))
-        )
+        return Mooncake._width_aware_dual(a, p, t)
     end
     function rrule!!(
         ::CoDual{typeof(min_float_fast)}, a::CoDual{P}, b::CoDual{P}
@@ -675,10 +608,7 @@ end
 function frule!!(::Dual{typeof(mul_float)}, a, b)
     p = mul_float(primal(a), primal(b))
     dp = primal(a) * tangent(b) + primal(b) * tangent(a)
-    N = Mooncake._dual_width(a)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, dp, Val(N))
-    )
+    return Mooncake._width_aware_dual(a, p, dp)
 end
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
     _a = primal(a)
@@ -691,10 +621,7 @@ end
 function frule!!(::Dual{typeof(mul_float_fast)}, a, b)
     c = mul_float_fast(primal(a), primal(b))
     dc = primal(a) * tangent(b) + tangent(a) * primal(b)
-    N = Mooncake._dual_width(a)
-    return Mooncake.dual_type(Val(N), typeof(c))(
-        c, Mooncake.canonicalize_chunked_tangent(c, dc, Val(N))
-    )
+    return Mooncake._width_aware_dual(a, c, dc)
 end
 function rrule!!(::CoDual{typeof(mul_float_fast)}, a, b)
     _a = primal(a)
@@ -712,10 +639,7 @@ function frule!!(::Dual{typeof(muladd_float)}, x, y, z)
     # NTangent-first IRfwd path, tangent values are lane wrappers rather than raw floats,
     # so the tangent update must use ordinary lane-wise arithmetic.
     da = tangent(x) * primal(y) + primal(x) * tangent(y) + tangent(z)
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(a))(
-        a, Mooncake.canonicalize_chunked_tangent(a, da, Val(N))
-    )
+    return Mooncake._width_aware_dual(x, a, da)
 end
 function rrule!!(::CoDual{typeof(muladd_float)}, x, y, z)
     _x = primal(x)
@@ -733,10 +657,7 @@ end
 function frule!!(::Dual{typeof(neg_float)}, x)
     p = neg_float(primal(x))
     dx = -tangent(x)
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, dx, Val(N))
-    )
+    return Mooncake._width_aware_dual(x, p, dx)
 end
 function rrule!!(::CoDual{typeof(neg_float)}, x)
     _x = primal(x)
@@ -748,10 +669,7 @@ end
 function frule!!(::Dual{typeof(neg_float_fast)}, x)
     p = neg_float_fast(primal(x))
     dx = -tangent(x)
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, dx, Val(N))
-    )
+    return Mooncake._width_aware_dual(x, p, dx)
 end
 function rrule!!(::CoDual{typeof(neg_float_fast)}, x)
     _x = primal(x)
@@ -766,7 +684,7 @@ end
 @intrinsic pointerref
 function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
-    da = _builtins_lane_map(dx -> pointerref(dx, primal(y), primal(z)), tangent(x))
+    da = _lane_map(dx -> pointerref(dx, primal(y), primal(z)), tangent(x))
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
@@ -789,7 +707,7 @@ end
 @intrinsic pointerset
 function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
-    _builtins_lane_map(
+    _lane_map(
         (dp, dx) -> pointerset(dp, dx, primal(idx), primal(z)), tangent(p), tangent(x)
     )
     return p
@@ -826,18 +744,12 @@ end
 @intrinsic sqrt_llvm
 function frule!!(::Dual{typeof(sqrt_llvm)}, x::Dual{P,NoTangent}) where {P<:IEEEFloat}
     p = sqrt_llvm(primal(x))
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, NoTangent(), Val(N))
-    )
+    return zero_dual(Val(Mooncake._dual_width(x)), p)
 end
 function frule!!(::Dual{typeof(sqrt_llvm)}, x::Dual{P,<:NTangent}) where {P<:IEEEFloat}
     y = sqrt_llvm(primal(x))
     dy = NTangent(map(dx -> nan_tangent_guard(dx, dx / (2 * y)), tangent(x).lanes))
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(y))(
-        y, Mooncake.canonicalize_chunked_tangent(y, dy, Val(N))
-    )
+    return Mooncake._width_aware_dual(x, y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm(primal(x))
@@ -851,18 +763,12 @@ end
 @intrinsic sqrt_llvm_fast
 function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,NoTangent}) where {P<:IEEEFloat}
     p = sqrt_llvm_fast(primal(x))
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(p))(
-        p, Mooncake.canonicalize_chunked_tangent(p, NoTangent(), Val(N))
-    )
+    return zero_dual(Val(Mooncake._dual_width(x)), p)
 end
 function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,<:NTangent}) where {P<:IEEEFloat}
     y = sqrt_llvm_fast(primal(x))
     dy = NTangent(map(dx -> nan_tangent_guard(dx, dx / (2 * y)), tangent(x).lanes))
-    N = Mooncake._dual_width(x)
-    return Mooncake.dual_type(Val(N), typeof(y))(
-        y, Mooncake.canonicalize_chunked_tangent(y, dy, Val(N))
-    )
+    return Mooncake._width_aware_dual(x, y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
@@ -879,10 +785,7 @@ end
 function frule!!(::Dual{typeof(sub_float)}, a, b)
     c = sub_float(primal(a), primal(b))
     dc = tangent(a) - tangent(b)
-    N = Mooncake._dual_width(a)
-    return Mooncake.dual_type(Val(N), typeof(c))(
-        c, Mooncake.canonicalize_chunked_tangent(c, dc, Val(N))
-    )
+    return Mooncake._width_aware_dual(a, c, dc)
 end
 function rrule!!(::CoDual{typeof(sub_float)}, a, b)
     _a = primal(a)
@@ -895,10 +798,7 @@ end
 function frule!!(::Dual{typeof(sub_float_fast)}, a, b)
     c = sub_float_fast(primal(a), primal(b))
     dc = tangent(a) - tangent(b)
-    N = Mooncake._dual_width(a)
-    return Mooncake.dual_type(Val(N), typeof(c))(
-        c, Mooncake.canonicalize_chunked_tangent(c, dc, Val(N))
-    )
+    return Mooncake._width_aware_dual(a, c, dc)
 end
 function rrule!!(::CoDual{typeof(sub_float_fast)}, a, b)
     _a = primal(a)

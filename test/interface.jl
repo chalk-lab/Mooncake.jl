@@ -39,6 +39,14 @@ mutable struct MaybeInitBox
     MaybeInitBox(x::Float64) = new(x)
 end
 
+const CHUNK_SCALAR_EVAL_COUNT = Ref(0)
+struct CountedChunkScalarCall end
+(::CountedChunkScalarCall)(x, y) = (CHUNK_SCALAR_EVAL_COUNT[] += 1; x * y + cos(x))
+
+const CHUNK_ARRAY_EVAL_COUNT = Ref(0)
+struct CountedChunkArrayCall end
+(::CountedChunkArrayCall)(x) = (CHUNK_ARRAY_EVAL_COUNT[] += 1; sum(abs2, x))
+
 @testset "interface" begin
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
         (1.0, (x, y) -> x * y + sin(x) * cos(y), 5.0, 4.0),
@@ -131,16 +139,19 @@ end
             @test occursin("input_1: Float64 (scalar)", reverse_plain)
             @test occursin("output: Float64 (scalar)", reverse_plain)
 
-            forward_cache = Mooncake.prepare_derivative_cache(sin, 1.0)
+            forward_cache = Mooncake.prepare_derivative_cache(
+                sin, 1.0; config=Mooncake.Config(; chunk_size=2)
+            )
             forward_show = sprint(show, forward_cache)
             @test occursin("Mooncake.NfwdCache(", forward_show)
             @test occursin("mode=:forward", forward_show)
+            @test occursin("chunk_size=2", forward_show)
 
             forward_plain = repr(MIME"text/plain"(), forward_cache)
             @test occursin("Mooncake.NfwdCache", forward_plain)
             @test occursin("mode: forward", forward_plain)
-            @test occursin("input_1: Float64 (scalar)", forward_plain)
-            @test occursin("output: Float64 (scalar)", forward_plain)
+            @test occursin("chunk_size: 2", forward_plain)
+            @test occursin("inputs: 2", forward_plain)
 
             hvp_cache = Mooncake.prepare_hvp_cache(sin, 1.0)
             hvp_show = sprint(show, hvp_cache)
@@ -571,6 +582,7 @@ end
             f_arr = x -> sum(abs2, x)
             x_arr = [x, y]
             dx_arr_1 = [dx, 0.0]
+            dx_arr_2 = [0.0, dy]
 
             cache_arr = Mooncake.prepare_derivative_cache(f_arr, x_arr)
             @test Mooncake.value_and_derivative!!(
@@ -583,6 +595,31 @@ end
                 (sum, Mooncake.NoTangent()),
                 (x_arr, Mooncake.NTangent((ones(2), fill(2.0, 2)))),
             ) == (sum(x_arr), Mooncake.NTangent((2.0, 4.0)))
+
+            counted_scalar = CountedChunkScalarCall()
+            counted_scalar_cache = Mooncake.prepare_derivative_cache(
+                counted_scalar, x, y; config=Mooncake.Config(; chunk_size=2)
+            )
+            CHUNK_SCALAR_EVAL_COUNT[] = 0
+            @test Mooncake.value_and_derivative!!(
+                counted_scalar_cache,
+                (counted_scalar, Mooncake.NoTangent()),
+                (x, Mooncake.NTangent((dx, 0.0))),
+                (y, Mooncake.NTangent((0.0, dy))),
+            ) == (z, Mooncake.NTangent((dx * y + dx * (-sin(x)), x * dy)))
+            @test CHUNK_SCALAR_EVAL_COUNT[] == 1
+
+            counted_array = CountedChunkArrayCall()
+            counted_array_cache = Mooncake.prepare_derivative_cache(
+                counted_array, x_arr; config=Mooncake.Config(; chunk_size=2)
+            )
+            CHUNK_ARRAY_EVAL_COUNT[] = 0
+            @test Mooncake.value_and_derivative!!(
+                counted_array_cache,
+                (counted_array, Mooncake.NoTangent()),
+                (x_arr, Mooncake.NTangent((dx_arr_1, dx_arr_2))),
+            ) == (sum(abs2, x_arr), Mooncake.NTangent((2 * x * dx, 2 * y * dy)))
+            @test CHUNK_ARRAY_EVAL_COUNT[] == 1
         end
 
         @testset "Non-differentiable outputs" begin
@@ -599,6 +636,49 @@ end
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
             @test Mooncake.value_and_pullback!!(cache, 1.0, f, x, y) ==
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
+        end
+
+        @testset "call-time derivative width must match cache chunk size" begin
+            counted_scalar = CountedChunkScalarCall()
+            cache = Mooncake.prepare_derivative_cache(
+                counted_scalar, x, y; config=Mooncake.Config(; chunk_size=2)
+            )
+            @test_throws r"prepared with chunk_size=2" Mooncake.value_and_derivative!!(
+                cache, (counted_scalar, Mooncake.NoTangent()), (x, dx), (y, dy)
+            )
+        end
+
+        @testset "zero-dof prepared gradients are rejected" begin
+            f0() = 3.0
+            cache0 = Mooncake.prepare_derivative_cache(f0)
+            @test_throws r"zero differentiable degrees of freedom" Mooncake.value_and_gradient!!(
+                cache0, f0
+            )
+            @test_throws r"zero differentiable degrees of freedom" Mooncake.value_and_pullback!!(
+                cache0, 2.0, f0
+            )
+
+            f_empty(x) = 7.0
+            x_empty = Float64[]
+            cache_empty = Mooncake.prepare_derivative_cache(f_empty, x_empty)
+            @test_throws r"zero differentiable degrees of freedom" Mooncake.value_and_gradient!!(
+                cache_empty, f_empty, x_empty
+            )
+            @test_throws r"zero differentiable degrees of freedom" Mooncake.value_and_pullback!!(
+                cache_empty, 2.0, f_empty, x_empty
+            )
+        end
+
+        @testset "complex scalar prepared pullback" begin
+            f_complex(z) = z^2
+            z_complex = 1.0 + 2.0im
+            cache_complex = Mooncake.prepare_derivative_cache(f_complex, z_complex)
+            @test Mooncake.value_and_pullback!!(
+                cache_complex, 1.0 + 0.0im, f_complex, z_complex
+            ) == (f_complex(z_complex), (Mooncake.NoTangent(), 2 * conj(z_complex)))
+            @test Mooncake.value_and_pullback!!(
+                cache_complex, 0.0 + 1.0im, f_complex, z_complex
+            ) == (f_complex(z_complex), (Mooncake.NoTangent(), 2im * conj(z_complex)))
         end
 
         @testset "forward cache mismatch errors" begin
@@ -631,6 +711,12 @@ end
             @test_throws ArgumentError Mooncake.prepare_derivative_cache(
                 f_sp, SimplePair(1.0, 2.0)
             )
+            @test_throws ArgumentError Mooncake.prepare_derivative_cache(
+                t -> t[1]^2 + sin(t[2]), (1.0, 2.0)
+            )
+            @test_throws ArgumentError Mooncake.prepare_derivative_cache(
+                nt -> nt.a * sin(nt.b), (; a=1.0, b=2.0)
+            )
         end
 
         @testset "reverse cache mismatch errors" begin
@@ -655,7 +741,9 @@ end
             @testset "primal dof skips undefined builtin-array slots" begin
                 x = Vector{Any}(undef, 2)
                 x[1] = 1.0
-                @test Mooncake._primal_input_dof(x, IdDict{Any,Any}()) == 1
+                @test Mooncake._fold_slots(
+                    (acc, _, _) -> acc + 1, 0, x, (seen=IdDict{Any,Any}(),)
+                ) == 1
             end
 
             @testset "multi-argument HVP validates direction arity" begin
@@ -748,7 +836,7 @@ end
                 @test H1 ≈ H2
             end
 
-            @testset "debug_mode=true is rejected by NfwdCache" begin
+            @testset "debug_mode=true is rejected" begin
                 z = [1.2, 1.2]
                 @test_throws ArgumentError prepare_hessian_cache(
                     rosen, z; config=Mooncake.Config(; debug_mode=true)

@@ -43,6 +43,111 @@
         @test Mooncake.stable_all(Tuple(fill(false, 1000))) == false
         @test Mooncake.stable_all(Tuple(fill(true, 1000))) == true
     end
+    @testset "_fold_slots and _unfold_slots" begin
+        @testset "real scalar order" begin
+            slots = Float64[]
+            total = Mooncake._fold_slots(
+                (acc, slot, seen) -> (push!(seen, slot); acc + slot), 0.0, 3.0, slots
+            )
+            @test total == 3.0
+            @test slots == [3.0]
+        end
+
+        @testset "complex scalar order" begin
+            slots = Float64[]
+            total = Mooncake._fold_slots(
+                (acc, slot, seen) -> (push!(seen, slot); acc + slot),
+                0.0,
+                2.0 + 3.0im,
+                slots,
+            )
+            @test total == 5.0
+            @test slots == [2.0, 3.0]
+        end
+
+        @testset "dense real array order" begin
+            slots = Float64[]
+            total = Mooncake._fold_slots(
+                (acc, slot, seen) -> (push!(seen, slot); acc + slot),
+                0.0,
+                [1.0, 2.0, 3.0],
+                slots,
+            )
+            @test total == 6.0
+            @test slots == [1.0, 2.0, 3.0]
+        end
+
+        @testset "dense complex array order" begin
+            slots = Float64[]
+            total = Mooncake._fold_slots(
+                (acc, slot, seen) -> (push!(seen, slot); acc + slot),
+                0.0,
+                ComplexF64[1.0 + 2.0im, 3.0 + 4.0im],
+                slots,
+            )
+            @test total == 10.0
+            @test slots == [1.0, 2.0, 3.0, 4.0]
+        end
+
+        @testset "tuple composition" begin
+            x = (1.0, 2.0 + 3.0im, [4.0, 5.0], ComplexF64[6.0 + 7.0im])
+            slots = Float64[]
+            total = Mooncake._fold_slots(
+                (acc, slot, seen) -> (push!(seen, slot); acc + slot), 0.0, x, slots
+            )
+            @test total == 28.0
+            @test slots == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+        end
+
+        @testset "fold/unfold agreement" begin
+            x = (1.0, 2.0 + 3.0im, [4.0, 5.0], ComplexF64[6.0 + 7.0im])
+            slots = Float64[]
+            Mooncake._fold_slots(
+                (acc, slot, seen) -> (push!(seen, slot); acc), nothing, x, slots
+            )
+            state = (vals=10.0 .+ collect(1:length(slots)), idx=Ref(1))
+            rebuilt = Mooncake._unfold_slots((_, st) -> begin
+                y = st.vals[st.idx[]]
+                st.idx[] += 1
+                return y
+            end, x, state)
+            rebuilt_slots = Float64[]
+            Mooncake._fold_slots(
+                (acc, slot, seen) -> (push!(seen, slot); acc),
+                nothing,
+                rebuilt,
+                rebuilt_slots,
+            )
+            @test rebuilt_slots == state.vals
+        end
+
+        @testset "generic structure traversal" begin
+            struct SlotStruct
+                a::Float64
+                b::Tuple{Float64,ComplexF64}
+                c::Int
+            end
+
+            x = SlotStruct(1.0, (2.0, 3.0 + 4.0im), 5)
+            slots = Float64[]
+            Mooncake._fold_slots(
+                (acc, slot, seen) -> (push!(seen, slot); acc),
+                nothing,
+                x,
+                (seen=IdDict{Any,Any}(),),
+            )
+            @test slots == [1.0, 2.0, 3.0, 4.0]
+
+            state = (vals=[10.0, 11.0, 12.0, 13.0], idx=Ref(1), seen=IdDict{Any,Any}())
+            rebuilt = Mooncake._unfold_slots((_, st) -> begin
+                y = st.vals[st.idx[]]
+                st.idx[] += 1
+                y
+            end, x, state)
+            @test rebuilt.fields ==
+                (a=10.0, b=(11.0, 12.0 + 13.0im), c=Mooncake.NoTangent())
+        end
+    end
     @testset "_map_if_assigned!" begin
         @testset "unary bits type" begin
             x = Vector{Float64}(undef, 10)

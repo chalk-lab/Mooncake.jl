@@ -26,11 +26,16 @@ Base.copy(x::NTangent) = NTangent(map(copy, x.lanes))
 Base.zero(x::NTangent) = NTangent(map(zero, x.lanes))
 Base.iszero(x::NTangent) = all(iszero, x.lanes)
 _copy(x::NTangent) = NTangent(map(_copy, x.lanes))
-Base.:(+)(x::NTangent{L}, y::NTangent{L}) where {L<:Tuple} = increment!!(_copy(x), y)
-function Base.:(+)(x::NTangent{L}, y::Integer) where {L<:Tuple}
-    NTangent(map(xi -> xi + y, x.lanes))
+@inline _lane_map(f, x::NTangent) = NTangent(map(f, x.lanes))
+@inline _lane_map(f, x) = f(x)
+@inline function _lane_map(f, x::NTangent, y::NTangent)
+    length(x) == length(y) || throw(ArgumentError("NTangent lane counts must agree."))
+    return NTangent(map(f, x.lanes, y.lanes))
 end
-Base.:(+)(x::Integer, y::NTangent{L}) where {L<:Tuple} = y + x
+@inline _lane_map(f, x::NTangent, y) = NTangent(map(dx -> f(dx, y), x.lanes))
+@inline _lane_map(f, x, y::NTangent) = NTangent(map(dy -> f(x, dy), y.lanes))
+@inline _lane_map(f, x, y) = f(x, y)
+Base.:(+)(x::NTangent{L}, y::NTangent{L}) where {L<:Tuple} = increment!!(_copy(x), y)
 Base.:(-)(x::NTangent) = _scale(-1.0, x)
 Base.:(-)(x::NTangent{L}, y::NTangent{L}) where {L<:Tuple} = increment!!(_copy(x), -y)
 Base.:(*)(a::Real, t::NTangent) = _scale(float(a), t)
@@ -38,9 +43,6 @@ Base.:(*)(t::NTangent, a::Real) = _scale(float(a), t)
 Base.:(*)(a::IEEEFloat, t::NTangent) = _scale(a, t)
 Base.:(*)(t::NTangent, a::IEEEFloat) = _scale(a, t)
 Base.:(/)(t::NTangent, a::Real) = _scale(inv(float(a)), t)
-function Base.complex(x::NTangent{L}, y::NTangent{L}) where {L<:Tuple}
-    NTangent(tuple_map(complex, x.lanes, y.lanes))
-end
 
 """
     PossiblyUninitTangent{T}
@@ -1628,26 +1630,16 @@ end
     return tangent_to_friendly!!(dest, primal, tangent[1], c)
 end
 @unstable function tangent_to_friendly!!(
-    dest::NamedTuple{names}, primal::P, tangent::NTangent{Tuple{T}}, c::MaybeCache
-) where {names,P,T}
-    return tangent_to_friendly!!(dest, primal, tangent[1], c)
-end
-@unstable function tangent_to_friendly!!(
-    dest::Tuple, primal::Tuple, tangent::NTangent{Tuple{T}}, c::MaybeCache
-) where {T}
-    return tangent_to_friendly!!(dest, primal, tangent[1], c)
-end
-@unstable function tangent_to_friendly!!(
-    dest::FriendlyTangentCache{AsRaw}, primal, tangent::NTangent{Tuple{T}}, c::MaybeCache
-) where {T}
-    return tangent_to_friendly!!(dest, primal, tangent[1], c)
-end
-@unstable function tangent_to_friendly!!(
     dest::FriendlyTangentCache{AsPrimal,B},
     primal,
     tangent::NTangent{Tuple{T}},
     c::MaybeCache,
 ) where {B,T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::FriendlyTangentCache{AsRaw}, primal, tangent::NTangent{Tuple{T}}, c::MaybeCache
+) where {T}
     return tangent_to_friendly!!(dest, primal, tangent[1], c)
 end
 @unstable function tangent_to_friendly!!(
@@ -1660,6 +1652,16 @@ end
     primal,
     tangent::NTangent{Tuple{T}},
     c::MaybeCache,
+) where {T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::NamedTuple{names}, primal::P, tangent::NTangent{Tuple{T}}, c::MaybeCache
+) where {names,P,T}
+    return tangent_to_friendly!!(dest, primal, tangent[1], c)
+end
+@unstable function tangent_to_friendly!!(
+    dest::Tuple, primal::Tuple, tangent::NTangent{Tuple{T}}, c::MaybeCache
 ) where {T}
     return tangent_to_friendly!!(dest, primal, tangent[1], c)
 end

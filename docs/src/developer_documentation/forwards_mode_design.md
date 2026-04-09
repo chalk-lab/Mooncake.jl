@@ -115,7 +115,7 @@ end
 
 This is the "automatic" / "algorithmic" bit of AD!
 This is the second way of producing concrete callable objects which satisfy the [Forwards-Rule Interface](@ref) discussed above.
-The object which we will ultimately construct is an instance `Mooncake.DerivedFRule`.
+The object which we will ultimately construct is an instance `Mooncake.DerivedPrimal`.
 
 #### Worked Example: Julia Function
 
@@ -188,7 +188,7 @@ This function accepts as arguments a context and a signature / `Base.MethodInsta
 1. Transform each statement according to a set of rules to produce a new `IRCode`.
 1. Apply standard Julia optimisations to this new `IRCode`.
 1. Put this code inside a `MistyClosure` in order to produce an executable object.
-1. Wrap this `MistyClosure` in a `DerivedFRule` to handle various bits of book-keeping around varargs.
+1. Wrap this `MistyClosure` in a `DerivedPrimal` to handle various bits of book-keeping around varargs.
 
 
 In order:
@@ -316,7 +316,7 @@ This can, in general, be straightforwardly achieved by putting it inside a `Core
 This works, but `Core.OpaqueClosure`s have the disadvantage that once you've constructed a `Core.OpaqueClosure` using an `IRCode`, it is not possible to get it back out.
 Consequently, we use `MistyClosure`s, in order to keep the `IRCode` readily accessible if we want to access it later.
 
-#### Put the MistyClosure in a DerivedFRule
+#### Put the MistyClosure in a DerivedPrimal
 
 See the implementation of `DerivedRule` (used in reverse-mode) for more context on this.
 _This_ is the "rule" that users get.

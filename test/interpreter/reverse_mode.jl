@@ -389,7 +389,7 @@ rule_type_nonreturning(e::Exception) = throw(e)
         @info "$n: $sig"
         mode = ReverseMode
         if f === TestResources.try_catch_tester
-            is_known_failure = try
+            try
                 TestUtils.test_rule(
                     Xoshiro(123456),
                     f,
@@ -399,15 +399,23 @@ rule_type_nonreturning(e::Exception) = throw(e)
                     is_primitive=false,
                     mode,
                 )
-                false
             catch e
-                e isa Mooncake.MooncakeRuleCompilationError &&
+                if e isa Mooncake.MooncakeRuleCompilationError &&
                     occursin("Encountered UpsilonNode", sprint(showerror, e))
+                    @test_broken false
+                else
+                    rethrow()
+                end
             end
-            @test_broken is_known_failure
         else
             TestUtils.test_rule(
-                Xoshiro(123456), f, x...; perf_flag, interface_only, is_primitive=false, mode
+                Xoshiro(123456),
+                f,
+                x...;
+                perf_flag,
+                interface_only,
+                is_primitive=false,
+                mode,
             )
         end
         # TestUtils.test_rule(

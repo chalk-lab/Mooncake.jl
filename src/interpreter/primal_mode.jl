@@ -1,71 +1,9 @@
-#
-# Roadmap note for `build_primal`.
-#
-# `build_primal` is the active IR-lifted forward path. The core plan is:
-# 1. resolve and normalise primal IR for `f`
-# 2. rebuild `f` as a primal/lifted executable rather than redispatching on AD wrappers
-# 3. recursively use `build_primal(g, ...)` for resolved non-primitive callees so dispatch
-#    is preserved through the resolved call graph
-# 4. keep primitive / intrinsic / builtin leaves on explicit primitive rule paths
-# 5. keep an explicit fallback only for genuinely unresolved dynamic calls
-#
-# The recursion / caching side of that problem is already the same one handled by
-# `LazyPrimal`, `DynamicPrimal`, and `DerivedPrimal`; the interesting design work is
-# representation choice and the lifted execution boundary.
-#
-# Routes we considered:
-# - keep the lifted path fully on Mooncake `Dual` plus width-aware tangent storage
-# - make the lifted path generic over `dual_type(::Val{N}, P)` so scalar / complex cases
-#   can choose `NDual` directly
-# - overload `tangent_type(::Val{N}, ...)` for packed layouts rather than changing dual type
-# - use cached internal `Array{NDual}` work buffers behind callable rule objects for array
-#   lowering, instead of trying to make array public dual types themselves be `Array{NDual}`
-# - previously, lower some primitive sites through separate nfwd bridge types; that route was
-#   removed in favour of Mooncake-owned primitive wrapper entrypoints
-#
-# Candidate width-aware tangent layouts we considered:
-# - today's lane-outer `NTangent`, i.e. a tuple of ordinary tangents
-# - a packed `NTangent` with lane-inner scalar leaves closer to `NDual`
-# - overloading `tangent_type(::Val{N}, ...)` only for `Array{<:IEEEFloat}` /
-#   `Array{<:Complex{<:IEEEFloat}}` so array leaves use NDual-like packed storage
-# - overloading `tangent_type(::Val{N}, ...)` only for those arrays so tangents use one
-#   extra lane dimension instead
-#
-# Current choices:
-# - the active lifted IR path constructs and types values through
-#   `dual_type(::Val{N}, P)` / `tangent_type(::Val{N}, P)`, so width-aware scalar and
-#   complex paths can use `NDual` directly while structured values still default to
-#   ordinary Mooncake `Dual` unless users choose a different `dual_type` overload
-# - the public boundary is generic over width-aware dual types via `dual_type(::Val{N}, P)`
-# - direct nfwd integration now lives behind Mooncake-owned primitive wrappers and
-#   width-aware dual-type overloads, not a separate `NfwdMooncake` runtime include
-# - primitive wrappers may accept top-level `NDual` directly where that path is explicit,
-#   but the general lifted path does not proactively lower everything to `NDual`
-#
-# The remaining larger design direction is to make the lifted path itself generic over a
-# width-aware dual-type protocol, rather than assuming concrete `Dual{P,T}` internally. A
-# minimal construction / extraction protocol would be:
-# - `primal(x)`
-# - `tangent(x)`
-# - `dual_type(::Val{N}, ::Type{P})`
-# - `zero_dual(::Val{N}, x)`
-# - `uninit_dual(::Val{N}, x)`
-# - construction via `dual_type(Val(N), P)(x, dx)`, which may yield `Dual`, `NDual`, or
-#   another width-aware dual type
-# Public top-level forward entrypoints currently validate inputs with
-# `verify_dual_type(x)`, but that check is auto-derived from the protocol above in the
-# common case.
-#
-# That keeps width-aware dual-type choice type-driven and inference-friendly while
-# separating dual-type selection from tangent-storage selection. The key type-stability
-# constraint is that `dual_type(Val(N), P)` must remain foldable to a concrete dual type
-# for concrete `P`; runtime dual-type switching would immediately weaken inference through
-# the transformed IR.
-#
-# Still open:
-# - broader array/container lowering if we want cached internal `Array{NDual}` execution
-# - future reuse of this machinery for batched / vmap-style transforms
-# - keeping the shared generated forward corpus green as the lifted path evolves
+# Design note:
+#   docs/src/developer_documentation/primal_mode_design.md
+# keeps the longer roadmap, alternatives considered, and current design boundaries for
+# `build_primal`.
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
 
 # Check if a type contains Union{} (bottom type) anywhere in its structure.
 # This can happen with unreachable code or failed type inference.
@@ -106,6 +44,31 @@ function _nfwd_primitive_rrule_call end
     T = CC.widenconst(P)
     return isconcretetype(T) ? dual_type(tangent_mode, T) : Any
 end
+
+@inline function _make_derived_primal(
+    primal_oc,
+    lifted_oc,
+    key,
+    call_target,
+    isva::Bool,
+    nargs::Int,
+    world::UInt,
+    tangent_mode,
+)
+    return DerivedPrimal(
+        primal_oc,
+        lifted_oc,
+        key,
+        call_target,
+        isnothing(call_target) ? nothing : zero_dual(tangent_mode, call_target),
+        isva,
+        nargs,
+        world,
+        tangent_mode,
+    )
+end
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 function build_frule(
     args...;
@@ -180,9 +143,15 @@ function build_frule(
         return debug_mode ? DebugFRule(rule) : rule
     end
 
-    return build_primal(
-        interp, sig_or_mi; call_target, debug_mode, skip_world_age_check=true, tangent_mode
+    rule = build_primal(
+        interp,
+        sig_or_mi;
+        call_target,
+        debug_mode=false,
+        skip_world_age_check=true,
+        tangent_mode,
     )
+    return debug_mode ? DebugFRule(rule) : rule
 end
 
 """
@@ -224,18 +193,13 @@ function build_primal(
         )
         if haskey(interp.oc_cache, oc_cache_key)
             cached = _copy(interp.oc_cache[oc_cache_key])
-            derived = DerivedPrimal(
+            derived = _make_derived_primal(
                 cached.primal_oc,
                 cached.lifted_oc,
                 cached.key,
                 call_target,
-                if isnothing(call_target)
-                    nothing
-                else
-                    zero_dual(cached.tangent_mode, call_target)
-                end,
-                cached.isva,
-                cached.nargs,
+                _primal_isva(cached),
+                _primal_nargs(cached),
                 cached.world,
                 cached.tangent_mode,
             )
@@ -264,12 +228,11 @@ function build_primal(
             tangent_mode,
         )
         interp.oc_cache[oc_cache_key] = derived
-        derived = DerivedPrimal(
+        derived = _make_derived_primal(
             primal_oc,
             lifted_oc,
             sig_or_mi,
             call_target,
-            isnothing(call_target) ? nothing : zero_dual(tangent_mode, call_target),
             info.isva,
             info.nargs,
             interp.world,
@@ -331,16 +294,12 @@ function primal_type(interp::MooncakeInterpreter{C}, sig_or_mi; tangent_mode) wh
     }
 end
 
+# ── IR info structs ───────────────────────────────────────────────────────────
+
 struct PrimalIRInfo
     isva::Bool
     nargs::Int
     ret_type::Type
-end
-
-struct DualRuleInfo
-    isva::Bool
-    nargs::Int
-    dual_ret_type::Type
 end
 
 struct PrimalInfo
@@ -364,8 +323,6 @@ struct DerivedPrimal{
     key::Tkey
     call_target::Tcall_target
     lifted_call_target::Tlifted_call_target
-    isva::Bool
-    nargs::Int
     world::UInt
     tangent_mode::Tmode
 end
@@ -391,19 +348,17 @@ function DerivedPrimal(
         nargs,
         typeof(tangent_mode),
     }(
-        primal_oc,
-        lifted_oc,
-        key,
-        call_target,
-        lifted_call_target,
-        isva,
-        nargs,
-        world,
-        tangent_mode,
+        primal_oc, lifted_oc, key, call_target, lifted_call_target, world, tangent_mode
     )
 end
 
-const DerivedFRule = DerivedPrimal
+# ── Debug wrapper ─────────────────────────────────────────────────────────────
+
+@inline _primal_isva(::DerivedPrimal{<:Any,<:Any,<:Any,<:Any,<:Any,Isva}) where {Isva} =
+    Isva
+@inline _primal_nargs(
+    ::DerivedPrimal{<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,Nargs}
+) where {Nargs} = Nargs
 
 """
     DebugPrimal(primal)
@@ -418,22 +373,28 @@ end
 _copy(x::P) where {P<:DebugPrimal} = P(_copy(x.primal))
 
 @inline function (primal::DebugPrimal)(x::Vararg{Any,N}) where {N}
-    any(verify_dual_type, x) &&
-        !all(verify_dual_type, x) &&
-        throw(
-            ArgumentError(
-                "DebugPrimal does not support mixing width-aware dual-type and primal inputs " *
-                "in one call.",
-            ),
-        )
-    return if all(verify_dual_type, x)
+    any(_is_width_aware_dual_input, x) &&
+        !all(_is_width_aware_dual_input, x) &&
+        throw(ArgumentError("Error in inputs to rule with input types $(_typeof(x))"))
+    return if all(_is_width_aware_dual_input, x)
         verify_args(primal.primal, x)
         verify_dual_inputs(x)
-        y = primal.primal(x...)
+        y = __call_rule(primal.primal, x)
         verify_dual_output(x, y)
         y
     else
         primal.primal(x...)
+    end
+end
+
+@inline _is_width_aware_dual_input(x::Dual) = true
+@inline function _is_width_aware_dual_input(x)
+    try
+        primal(x)
+        tangent(x)
+        return true
+    catch
+        return false
     end
 end
 
@@ -478,6 +439,8 @@ function _lazy_primal_type(
         end
     end
 end
+
+# ── IR generation ─────────────────────────────────────────────────────────────
 
 function LazyPrimal(key::Type{<:Tuple}, world::UInt, tangent_mode=Val(1))
     min = Base.RefValue{UInt}(typemin(UInt))
@@ -947,8 +910,12 @@ end
     return Expr(:tuple, prefix_args..., grouped_dual)
 end
 
-@inline _call_primal_oc(primal::DerivedPrimal, args...) = primal.primal_oc.oc(args...)
-@inline _call_lifted_oc(primal::DerivedPrimal, args...) = primal.lifted_oc.oc(args...)
+@inline _call_primal_oc(primal::DerivedPrimal, args...) = __call_opaque_closure(
+    primal.primal_oc, args
+)
+@inline _call_lifted_oc(primal::DerivedPrimal, args...) = __call_opaque_closure(
+    primal.lifted_oc, args
+)
 
 @generated function _call_stored_dual_primal(
     primal::DerivedPrimal{
@@ -1098,63 +1065,37 @@ end
     end
 end
 
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        primal::DerivedPrimal{
-            Tprimal_oc,
-            MistyClosure{OpaqueClosure{A,R}},
-            Tkey,
-            Tcall_target,
-            Tlifted_call_target,
-            Isva,
-            Nargs,
-            Tmode,
-        },
-        args,
-    ) where {Tprimal_oc,A,R,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode}
-        return primal(args...)::R
-    end
-
-    @inline __call_rule(primal::DebugPrimal, args) = primal(args...)
-    @inline __call_rule(primal::LazyPrimal, args) = primal(args...)
-    @inline __call_rule(primal::DynamicPrimal, args) = primal(args...)
-end
-
 function _copy(x::P) where {P<:DerivedPrimal}
-    return P(
+    return DerivedPrimal(
         replace_captures(x.primal_oc, _copy(x.primal_oc.oc.captures)),
         replace_captures(x.lifted_oc, _copy(x.lifted_oc.oc.captures)),
         x.key,
         x.call_target,
         x.lifted_call_target,
-        x.isva,
-        x.nargs,
+        _primal_isva(x),
+        _primal_nargs(x),
         x.world,
         x.tangent_mode,
     )
 end
 
-function verify_args(primal::DerivedPrimal, x)
+function _verify_primal_sig(primal::DerivedPrimal, x::Tuple)
     sig = primal.key isa Core.MethodInstance ? primal.key.specTypes : primal.key
     sig isa Type{<:Tuple} || return nothing
-    Tx = if isnothing(primal.call_target)
-        Tuple{map(_typeof ∘ Mooncake.primal, x)...}
-    else
-        Tuple{_typeof(primal.call_target),map(_typeof ∘ Mooncake.primal, x)...}
+    Tx = Tuple{map(_typeof ∘ Mooncake.primal, x)...}
+    if !isnothing(primal.call_target) && length(Tx.parameters) + 1 == length(sig.parameters)
+        Tx = Tuple{_typeof(primal.call_target),map(_typeof ∘ Mooncake.primal, x)...}
     end
     Tx <: sig && return nothing
     throw(ArgumentError("Arguments with sig $Tx do not subtype primal signature, $sig"))
 end
 
-function __verify_sig(primal::DerivedPrimal, fx::Tuple)
-    sig = primal.key isa Core.MethodInstance ? primal.key.specTypes : primal.key
-    sig isa Type{<:Tuple} || return nothing
-    Tx = Tuple{map(_typeof ∘ Mooncake.primal, fx)...}
-    Tx <: sig && return nothing
-    throw(ArgumentError("Arguments with sig $Tx do not subtype primal signature, $sig"))
-end
+verify_args(primal::DerivedPrimal, x) = _verify_primal_sig(primal, x)
+__verify_sig(primal::DerivedPrimal, fx::Tuple) = _verify_primal_sig(primal, fx)
 
 __verify_sig(primal::DebugPrimal, fx::Tuple) = __verify_sig(primal.primal, fx)
+
+# ── Interface bridges ─────────────────────────────────────────────────────────
 
 @inline function __value_and_gradient!!(
     rule::Union{DerivedPrimal,DebugPrimal,LazyPrimal,DynamicPrimal}, fx::Vararg{CoDual,N}
@@ -1177,6 +1118,8 @@ end
     return value, tuple_map(g -> g isa NoTangent ? g : _scale(ȳ, g), gradient)
 end
 
+# ── Lazy / dynamic wrappers ───────────────────────────────────────────────────
+
 @inline function (primal::LazyPrimal)(args::Vararg{Any,N}) where {N}
     return if isdefined(primal, :primal)
         primal.primal(args...)
@@ -1188,7 +1131,11 @@ end
 @noinline function _build_primal!(primal::LazyPrimal{sig,Tprimal}, args) where {sig,Tprimal}
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=primal.world)
     primal.primal = build_primal(
-        interp, primal.key; skip_world_age_check=true, tangent_mode=primal.tangent_mode
+        interp,
+        primal.key;
+        skip_world_age_check=true,
+        do_inline=VERSION >= v"1.11-",
+        tangent_mode=primal.tangent_mode,
     )::Tprimal
     return primal.primal(args...)
 end
@@ -1219,7 +1166,11 @@ _copy(x::P) where {P<:LazyPrimal} = P(x.key, x.world, x.tangent_mode)
     if rule === nothing
         interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=dynamic.world)
         rule = build_primal(
-            interp, sig; skip_world_age_check=true, tangent_mode=dynamic.tangent_mode
+            interp,
+            sig;
+            skip_world_age_check=true,
+            do_inline=VERSION >= v"1.11-",
+            tangent_mode=dynamic.tangent_mode,
         )
         dynamic.cache[sig] = rule
     end
@@ -1248,7 +1199,9 @@ function generate_dual_ir(
     end
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
     primal_ir = normalise!(primal_ir, spnames)
-    return lifted_ir, captures, DualRuleInfo(isva, length(primal_ir.argtypes), dual_ret)
+    return lifted_ir,
+    captures,
+    (isva=isva, nargs=length(primal_ir.argtypes), dual_ret_type=dual_ret)
 end
 
 function build_primitive_frule(
@@ -1306,6 +1259,8 @@ end
 function modify_lifted_primal_stmts!(stmt, lifted_ir, ssa, captures, info)
     modify_fwd_ad_stmts!(stmt, lifted_ir, ssa, captures, info)
 end
+
+# ── Test resources ────────────────────────────────────────────────────────────
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:primal_mode})
     # Keep a tiny always-green helper-driven set here; the broader interpreter

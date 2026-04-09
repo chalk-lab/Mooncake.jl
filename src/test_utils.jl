@@ -124,6 +124,7 @@ using Mooncake:
     can_produce_zero_rdata_from_type,
     increment_rdata!!,
     dual_type,
+    canonicalize_chunked_tangent,
     zero_dual,
     uninit_dual,
     randn_dual,
@@ -742,10 +743,17 @@ function test_frule_interface(x_ẋ...; frule)
     # The tuple interface should agree with the rule's native primal/tangent output.
     x_dx = map(x_ẋ_component -> (primal(x_ẋ_component), tangent(x_ẋ_component)), x_ẋ)
     y_tuple, dy_tuple = value_and_derivative!!(frule, x_dx...)
-    if y isa Ptr
+    if y isa Ptr ||
+        (isdefined(Core, :memorynew) && primal(first(x_ẋ)) === Core.memorynew) ||
+        any(x_ẋ_component -> primal(x_ẋ_component) isa UndefInitializer, x_ẋ) ||
+        _contains_ptr_output(y) ||
+        _contains_ptr_output(primal(y_ẏ)) ||
+        _contains_ptr_output(dy_tuple) ||
+        _contains_ptr_output(tangent(y_ẏ))
         # Pointer-returning rules can legitimately produce different addresses across the
         # direct and tuple interfaces because each check re-executes the primal on fresh
-        # copied inputs. For these cases, require only pointer/tangent type agreement.
+        # copied inputs. Fresh uninitialised storage constructors have the same issue. For
+        # these cases, require only output/tangent type agreement.
         @test typeof(y_tuple) == typeof(primal(y_ẏ))
         @test typeof(dy_tuple) == typeof(tangent(y_ẏ))
     else
@@ -753,6 +761,12 @@ function test_frule_interface(x_ẋ...; frule)
         @test has_equal_data(tangent(y_ẏ), dy_tuple)
     end
 end
+
+@inline _contains_ptr_output(::Ptr) = true
+@inline _contains_ptr_output(x::Tuple) = any(_contains_ptr_output, x)
+@inline _contains_ptr_output(x::NamedTuple) = any(_contains_ptr_output, values(x))
+@inline _contains_ptr_output(::AbstractArray{<:Ptr}) = true
+@inline _contains_ptr_output(::Any) = false
 
 function test_rrule_interface(f_f̄, x_x̄...; rrule)
     @nospecialize f_f̄ x_x̄
