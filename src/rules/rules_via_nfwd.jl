@@ -107,10 +107,9 @@ for f in (
     # for primitive rules.
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
-        function frule!!(fdual::Dual{typeof($f)}, x::Dual{P,T}) where {P<:IEEEFloat,T}
-            return _nfwd_public_primitive_frule_call(fdual, x)
-        end
-        function frule!!(fdual::Dual{typeof($f)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+        function frule!!(
+            fdual::Dual{typeof($f)}, x::Union{Dual{P},Nfwd.NDual{P}}
+        ) where {P<:IEEEFloat}
             return _nfwd_public_primitive_frule_call(fdual, x)
         end
         function rrule!!(fcodual::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
@@ -122,10 +121,9 @@ end
 # ── tanpi ─────────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(tanpi),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(tanpi)}, x::Dual{P,T}) where {P<:IEEEFloat,T}
-    return _nfwd_public_primitive_frule_call(f, x)
-end
-function frule!!(f::Dual{typeof(tanpi)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+function frule!!(
+    f::Dual{typeof(tanpi)}, x::Union{Dual{P},Nfwd.NDual{P}}
+) where {P<:IEEEFloat}
     return _nfwd_public_primitive_frule_call(f, x)
 end
 function rrule!!(f::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
@@ -137,13 +135,10 @@ for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
         function frule!!(
-            fdual::Dual{typeof($f)}, x1::Dual{P,T1}, x2::Dual{P,T2}
-        ) where {P<:IEEEFloat,T1,T2}
-            return _nfwd_public_primitive_frule_call(fdual, x1, x2)
-        end
-        function frule!!(
-            fdual::Dual{typeof($f)}, x1::Nfwd.NDual{P,N}, x2::Nfwd.NDual{P,N}
-        ) where {P<:IEEEFloat,N}
+            fdual::Dual{typeof($f)},
+            x1::Union{Dual{P},Nfwd.NDual{P}},
+            x2::Union{Dual{P},Nfwd.NDual{P}},
+        ) where {P<:IEEEFloat}
             return _nfwd_public_primitive_frule_call(fdual, x1, x2)
         end
         function rrule!!(
@@ -183,16 +178,11 @@ for f in (clamp,)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P,P} where {P<:IEEEFloat}
         function frule!!(
-            fdual::Dual{typeof($f)}, x1::Dual{P,T1}, x2::Dual{P,T2}, x3::Dual{P,T3}
-        ) where {P<:IEEEFloat,T1,T2,T3}
-            return _nfwd_public_primitive_frule_call(fdual, x1, x2, x3)
-        end
-        function frule!!(
             fdual::Dual{typeof($f)},
-            x1::Nfwd.NDual{P,N},
-            x2::Nfwd.NDual{P,N},
-            x3::Nfwd.NDual{P,N},
-        ) where {P<:IEEEFloat,N}
+            x1::Union{Dual{P},Nfwd.NDual{P}},
+            x2::Union{Dual{P},Nfwd.NDual{P}},
+            x3::Union{Dual{P},Nfwd.NDual{P}},
+        ) where {P<:IEEEFloat}
             return _nfwd_public_primitive_frule_call(fdual, x1, x2, x3)
         end
         function rrule!!(
@@ -206,10 +196,9 @@ end
 # ── sincosd ───────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(sincosd),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(sincosd)}, x::Dual{P,T}) where {P<:IEEEFloat,T}
-    return _nfwd_public_primitive_frule_call(f, x)
-end
-function frule!!(f::Dual{typeof(sincosd)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+function frule!!(
+    f::Dual{typeof(sincosd)}, x::Union{Dual{P},Nfwd.NDual{P}}
+) where {P<:IEEEFloat}
     return _nfwd_public_primitive_frule_call(f, x)
 end
 function rrule!!(f::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
@@ -219,10 +208,9 @@ end
 # ── sincospi ──────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(sincospi),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(sincospi)}, x::Dual{P,T}) where {P<:IEEEFloat,T}
-    return _nfwd_public_primitive_frule_call(f, x)
-end
-function frule!!(f::Dual{typeof(sincospi)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+function frule!!(
+    f::Dual{typeof(sincospi)}, x::Union{Dual{P},Nfwd.NDual{P}}
+) where {P<:IEEEFloat}
     return _nfwd_public_primitive_frule_call(f, x)
 end
 function rrule!!(f::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
@@ -236,10 +224,9 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.FastMath.angle_fast),P} where {P<:IEEEFloat}
 
 @is_primitive MinimalCtx Tuple{typeof(modf),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(modf)}, x::Dual{P,T}) where {P<:IEEEFloat,T}
-    return _nfwd_public_primitive_frule_call(f, x)
-end
-function frule!!(f::Dual{typeof(modf)}, x::Nfwd.NDual{P,N}) where {P<:IEEEFloat,N}
+function frule!!(
+    f::Dual{typeof(modf)}, x::Union{Dual{P},Nfwd.NDual{P}}
+) where {P<:IEEEFloat}
     return _nfwd_public_primitive_frule_call(f, x)
 end
 function rrule!!(f::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
@@ -250,13 +237,10 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(hypot),P,Vararg{P}} where {P<:IEEEFloat}
 function frule!!(
-    f::Dual{typeof(hypot)}, x::Dual{P,T}, xs::Vararg{Dual{P},M}
-) where {P<:IEEEFloat,T,M}
-    return _nfwd_public_primitive_frule_call(f, x, xs...)
-end
-function frule!!(
-    f::Dual{typeof(hypot)}, x::Nfwd.NDual{P,N}, xs::Vararg{Nfwd.NDual{P,N},M}
-) where {P<:IEEEFloat,N,M}
+    f::Dual{typeof(hypot)},
+    x::Union{Dual{P},Nfwd.NDual{P}},
+    xs::Vararg{Union{Dual{P},Nfwd.NDual{P}},M},
+) where {P<:IEEEFloat,M}
     return _nfwd_public_primitive_frule_call(f, x, xs...)
 end
 function rrule!!(
