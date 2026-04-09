@@ -1950,13 +1950,15 @@ end
 """
     _fold_slots(f, init, x, state) -> (acc, state)
 
-Left-fold over the scalar slots of `x` in canonical order.  Each slot visit calls
-`(acc, state) = f(acc, x_leaf, slot_index_within_leaf, state)` and returns the
-updated accumulator and state.  `slot_index_within_leaf` is 1 for a real scalar,
-1 or 2 for the real/imag parts of a complex scalar, and the linear index for array
-elements (with complex elements expanding to two sub-slots each).
+Left-fold over the scalar slots of `x` in canonical order.  Each slot corresponds
+to one differentiable scalar degree of freedom.  Real IEEE-float values contribute
+one floating-point slot.  Complex IEEE-float values contribute two scalar slots,
+visited as real then imaginary.  Tuples are visited left to right, and arrays are
+visited in `eachindex` order.
 
-The slot cursor should be threaded through `state` by the caller.
+Each slot visit calls `(acc, state) = f(acc, x_leaf, slot_index_within_leaf, state)`
+and returns the updated accumulator and state.  The slot cursor should be threaded
+through `state` by the caller.
 """
 @inline function _fold_slots(f::F, init, x::IEEEFloat, state) where {F}
     return f(init, x, 1, state)
@@ -1967,9 +1969,7 @@ end
     return f(acc, x, 2, state)          # imag part
 end
 
-@inline function _fold_slots(
-    f::F, init, x::AbstractArray{T}, state
-) where {F,T<:IEEEFloat}
+@inline function _fold_slots(f::F, init, x::AbstractArray{T}, state) where {F,T<:IEEEFloat}
     acc = init
     @inbounds for i in eachindex(x)
         acc, state = f(acc, x, i, state)
@@ -1997,18 +1997,19 @@ end
 """
     _unfold_slots(f, x, state) -> (rebuilt, state)
 
-Map-like structural rebuild over the primitive leaves of `x`.  Each leaf visit
-calls `(result, state) = f(x_leaf, state)` and returns the rebuilt value for that
-leaf position.  For tuples, the unfold recurses left to right and collects
-per-leaf results into a new tuple.
+Map-like structural rebuild over the primitive leaves of `x`.  Each slot
+corresponds to one differentiable scalar degree of freedom (same semantics as
+`_fold_slots`).  Each leaf visit calls `(result, state) = f(x_leaf, state)` and
+returns the rebuilt value for that leaf position.  For tuples, the unfold recurses
+left to right and collects per-leaf results into a new tuple.
 
 The returned value at each leaf position may have a different type from the input
 leaf (e.g. seeding produces NTuples from scalar inputs).  The slot cursor should
 be threaded through `state` by the caller.
 
-`_fold_slots` and `_unfold_slots` agree on traversal order: tuples
-left to right, arrays in `eachindex` order, and within each leaf the DOF count
-from `_nfwd_input_dof` determines how far the state cursor should advance.
+`_fold_slots` and `_unfold_slots` agree on traversal order: tuples left to right,
+arrays in `eachindex` order.  Within each leaf, the number of slots consumed equals
+`_nfwd_input_dof(leaf)`.
 """
 @inline function _unfold_slots(f::F, x::IEEEFloat, state) where {F}
     return f(x, state)
@@ -2018,9 +2019,7 @@ end
     return f(x, state)
 end
 
-@inline function _unfold_slots(
-    f::F, x::AbstractArray{<:IEEEFloat}, state
-) where {F}
+@inline function _unfold_slots(f::F, x::AbstractArray{<:IEEEFloat}, state) where {F}
     return f(x, state)
 end
 
@@ -2037,14 +2036,15 @@ end
     return (head, tail...), state
 end
 
-# ── DOF counting via fold ─────────────────────────────────────────────────────────
+# ── DOF counting ─────────────────────────────────────────────────────────────────
 
-@inline function _nfwd_input_dof(x)
-    acc, _ = _fold_slots((_acc, _leaf, _slot, st) -> (_acc + 1, st), 0, x, nothing)
-    return acc
-end
+@inline _nfwd_input_dof(x::IEEEFloat) = 1
+@inline _nfwd_input_dof(x::Complex{<:IEEEFloat}) = 2
+@inline _nfwd_input_dof(x::AbstractArray{<:IEEEFloat}) = length(x)
+@inline _nfwd_input_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
+@inline _nfwd_input_dof(x::Tuple) = sum(_nfwd_input_dof, x; init=0)
 
-# ── Legacy helpers (retained for NfwdMooncake compatibility) ──────────────────────
+# ── Helpers used by the CUDA extension (MooncakeCUDAExt) ─────────────────────────
 
 @inline function _nfwd_leaf_dof_type(T::Type)
     dof = _nfwd_type_dof(T)
