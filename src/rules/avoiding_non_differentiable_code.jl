@@ -73,6 +73,10 @@ import Base.CoreLogging as CoreLogging
     Int64,
 }
 
+# Package loading internals; also needed for extension code paths.
+@zero_derivative MinimalCtx Tuple{Type{Base.PkgId},Module}
+@zero_derivative MinimalCtx Tuple{typeof(Base.get_extension),Base.PkgId,Symbol}
+
 @static if VERSION ≥ v"1.12-"
     @zero_derivative MinimalCtx Tuple{typeof(Base.fixup_stdlib_path),String}
     @zero_derivative MinimalCtx Tuple{
@@ -248,6 +252,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
 
     test_cases = vcat(
         Any[
+            # Package loading internals: Module can't be deepcopied, so test via closures
+            # that capture the module and take a differentiable Float64 arg instead.
+            (false, :none, nothing, (x) -> (Base.PkgId(Base); x), 1.0),
+            (
+                false,
+                :none,
+                nothing,
+                (x) -> (Base.get_extension(Base.PkgId(Base), :GenericTestExt); x),
+                1.0,
+            ),
+
             # Tests for Base.CoreLogging, @show macros and string related functions.
             (false, :none, nothing, (x) -> print(x), "Testing print"),
             (false, :none, nothing, (x) -> println(x), "Testing println"),
