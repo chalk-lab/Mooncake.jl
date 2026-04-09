@@ -240,7 +240,6 @@ end
 
 @public Config, value_and_pullback!!, prepare_pullback_cache
 @public Dual
-@public clear_mooncake_caches!
 
 # Public, exported
 export prepare_gradient_cache, value_and_gradient!!     # reverse

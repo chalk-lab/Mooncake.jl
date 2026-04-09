@@ -639,6 +639,9 @@ The API guarantees that tangents are initialized at zero before the first autodi
 """
 @unstable function prepare_pullback_cache(fx...; config=Config())
 
+    # Clear global caches if requested.
+    config.empty_cache && clear_mooncake_caches!(; gc=config.run_gc)
+
     # Check that the output of `fx` is supported.
     __exclude_func_with_unsupported_output(fx)
 
@@ -772,6 +775,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     Calls `f(x...)` once during cache preparation.
 """
 @unstable function prepare_gradient_cache(fx...; config=Config())
+    config.empty_cache && clear_mooncake_caches!(; gc=config.run_gc)
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = map(zero_tangent, fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
@@ -1678,6 +1682,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
 ) where {N}
+    config.empty_cache && clear_mooncake_caches!(; gc=config.run_gc)
     fx = (f, x...)
     requested_chunk_size = getfield(config, :chunk_size)
     requested_chunk_size = if isnothing(requested_chunk_size)

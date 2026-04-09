@@ -352,21 +352,19 @@ end
 """
     clear_mooncake_caches!(; gc::Bool=false)
 
-Clear all Julia-level caches that Mooncake holds globally, including cached
-OpaqueClosures, compiled `CodeInstance`s, and type-inference results.
+This is an internal function and not part of the public API. Called by `prepare_pullback_cache`,
+`prepare_gradient_cache`, and `prepare_derivative_cache` when `Config(empty_cache=true)`
+is passed.
 
-After calling this function, Mooncake will re-derive rules from scratch on the
-next call. If `gc=true`, a full garbage collection is run immediately after
-clearing, so that the memory held by the now-unreferenced cache entries is
-reclaimed right away rather than at some future GC cycle.
+Empties all three per-interpreter caches for both `ForwardMode` and `ReverseMode`:
+- `oc_cache` : compiled `DerivedRule` / `OpaqueClosures`
+- `code_cache` : `CodeInstance` objects (Julia IR per `MethodInstance`)
+- `inf_cache` : `InferenceResult` objects from type inference
 
-By default `gc=false` - the cache references are dropped but GC is left to
-run on its own schedule. Pass `gc=true` if you want to reclaim memory
-immediately (e.g. before a memory-intensive operation).
-
-!!! note
-    Only Julia-level (GC-managed) objects are freed. JIT-compiled native machine
-    code is held permanently by the Julia runtime and cannot be reclaimed.
+After clearing, Mooncake re-derives rules from scratch on the next use. If `gc=true`,
+a full garbage collection is triggered immediately after clearing. Only Julia-level
+(GC-managed) objects are freed; JIT-compiled native machine code allocated by LLVM
+is held permanently by the Julia runtime.
 """
 function clear_mooncake_caches!(; gc::Bool=false)
     for interp in values(GLOBAL_INTERPRETERS)

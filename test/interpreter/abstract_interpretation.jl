@@ -125,43 +125,43 @@ end
         end
     end
 
-    @testset "clear_mooncake_caches!" begin
-        # Populate the caches by running a gradient.
+    @testset "Config(empty_cache=true)" begin
         f = x -> sin(x[1]) + x[2]^2
         x = [1.0, 2.0]
-        cache = Mooncake.prepare_gradient_cache(f, x)
-        Mooncake.value_and_gradient!!(cache, f, x)
 
-        # Verify caches are populated before clearing.
-        rev_interp = Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode]
-        @test !isempty(rev_interp.oc_cache) || !isempty(rev_interp.code_cache.dict)
+        # Differentiate several functions to build up the caches.
+        for g in [x -> sum(x .^ 2), x -> prod(x), x -> sum(exp.(x))]
+            Mooncake.prepare_gradient_cache(g, randn(10))
+        end
+        n_before = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
+        @test n_before > 0
 
-        # gc=false: caches cleared, no GC run.
-        Mooncake.clear_mooncake_caches!(; gc=false)
+        # prepare_gradient_cache with empty_cache=true clears old entries before building.
+        # After the call, oc_cache has only the new rule for f and not the old ones.
+        cache = Mooncake.prepare_gradient_cache(f, x; config=Mooncake.Config(empty_cache=true))
+        n_after = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
+        @test n_after < n_before   # old entries were cleared
 
-        # in-place clear: same interpreter objects, all caches now empty.
-        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].oc_cache)
-        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].code_cache.dict)
-        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].inf_cache)
-        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
-        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].code_cache.dict)
-        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].inf_cache)
-
-        # gc=true: same cache clearing behaviour, with immediate GC.
-        Mooncake.prepare_gradient_cache(f, x)  # re-populate
-        Mooncake.clear_mooncake_caches!(; gc=true)
-        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
-        @test isempty(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].code_cache.dict)
-
-        # After clearing, existing Cache objects still work (rule is inside the Cache).
+        # AD still correct after clearing.
         val, grad = Mooncake.value_and_gradient!!(cache, f, x)
         @test val ≈ sin(x[1]) + x[2]^2
         @test grad[2] ≈ [cos(x[1]), 2x[2]]
 
-        # Fresh prepare_gradient_cache re-derives correctly from scratch.
-        cache2 = Mooncake.prepare_gradient_cache(f, x)
-        val2, grad2 = Mooncake.value_and_gradient!!(cache2, f, x)
-        @test val2 ≈ val
-        @test grad2[2] ≈ grad[2]
+        # prepare_pullback_cache with empty_cache=true also clears.
+        for g in [x -> sum(x .^ 2), x -> prod(x), x -> sum(exp.(x))]
+            Mooncake.prepare_gradient_cache(g, randn(10))
+        end
+        n_before2 = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
+        Mooncake.prepare_pullback_cache(f, x; config=Mooncake.Config(empty_cache=true))
+        @test length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache) < n_before2
+
+        # prepare_derivative_cache with empty_cache=true also clears.
+        for g in [x -> sum(x .^ 2), x -> prod(x), x -> sum(exp.(x))]
+            Mooncake.prepare_derivative_cache(g, randn(10))
+        end
+        n_before3 = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].oc_cache)
+        @test n_before3 > 0
+        Mooncake.prepare_derivative_cache(f, x; config=Mooncake.Config(empty_cache=true))
+        @test length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ForwardMode].oc_cache) < n_before3
     end
 end
