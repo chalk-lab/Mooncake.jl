@@ -1929,7 +1929,7 @@ end
     offsets = Int[]
     for ET in args
         push!(offsets, N)
-        N += Nfwd._nfwd_leaf_dof_type(ET)
+        N += Nfwd._nfwd_type_dof(ET)
     end
     N == 0 && return :(f(args...))
     body = Expr[]
@@ -1959,13 +1959,22 @@ function _gpu_broadcast_dual(f::F, args...) where {F}
     ((args...) -> _gpu_apply_with_duals(f, args...)).(args...)
 end
 
-# Number of Dual slots contributed by a broadcast leaf arg.  Matches the slot
-# assignment in _gpu_apply_with_duals by dispatching on the broadcast element type
-# (scalar, CuArray, or Ref all handled via eltype).
-@inline _gpu_total_slots(flat_pargs) = sum(Nfwd._nfwd_leaf_dof, flat_pargs)
+# Map each broadcast leaf arg to a representative scalar element so that
+# _nfwd_input_dof counts per-broadcast-element DOFs.
+@inline _gpu_rep_element(x::CuFloatOrComplex) = x
+@inline _gpu_rep_element(x::AbstractArray{T}) where {T<:IEEEFloat} = zero(T)
+@inline _gpu_rep_element(x::AbstractArray{Complex{T}}) where {T<:IEEEFloat} = zero(
+    Complex{T}
+)
+@inline _gpu_rep_element(::Any) = ()
+
+@inline _gpu_total_slots(flat_pargs) = Nfwd._nfwd_input_dof(
+    map(_gpu_rep_element, flat_pargs)
+)
 
 @inline function _gpu_leaf_slot_meta(pa, offset)
-    return (; Nfwd._nfwd_slot_meta(pa, offset)..., is_scalar=pa isa CuFloatOrComplex)
+    dof = Nfwd._nfwd_input_dof(_gpu_rep_element(pa))
+    return (; dof, slot1=offset + 1, slot2=offset + 2, is_scalar=pa isa CuFloatOrComplex)
 end
 
 @inline function _gpu_extract_partial_slots(out, n_slots::Int)
