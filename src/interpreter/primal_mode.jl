@@ -460,6 +460,8 @@ const ACTIVE_LAZY_PRIMAL_TYPES = IdDict{Core.MethodInstance,Nothing}()
 function _lazy_primal_type(
     interp::MooncakeInterpreter, key::Core.MethodInstance, tangent_mode
 )
+    # Self-referential closures can ask for the same lifted type while it is still being
+    # inferred; return `Any` in that case rather than recursing through the same MI forever.
     recursive = lock(LAZY_PRIMAL_TYPE_LOCK) do
         haskey(ACTIVE_LAZY_PRIMAL_TYPES, key) && return true
         ACTIVE_LAZY_PRIMAL_TYPES[key] = nothing
@@ -899,6 +901,8 @@ end
     D = dual_type(primal.tangent_mode, typeof(p))
     N = Val(typeof(primal.tangent_mode).parameters[1])
     tx = canonicalize_chunked_tangent(p, tangent(x), N)
+    # Reuse already-canonical wrappers so in-place primal updates keep mutating the caller's
+    # dual/tangent storage instead of a freshly rebuilt wrapper.
     if typeof(x) === D && typeof(tangent(x)) === typeof(tx)
         return x
     end
@@ -925,6 +929,8 @@ end
 ) where {Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode,M}
     Isva || return :(args)
 
+    # Use the lowered arity here so splatted varargs get regrouped exactly once at the
+    # original call boundary.
     group_start = Tcall_target === Nothing ? Nargs : Nargs - 1
     prefix_args = [:(args[$n]) for n in 1:(group_start - 1)]
     grouped_primal = Expr(:tuple, [:(Mooncake.primal(args[$n])) for n in group_start:M]...)
@@ -981,6 +987,8 @@ end
                 "DerivedPrimal without a stored call target cannot be called on Dual arguments directly. Use LazyPrimal or DynamicPrimal with the primal callable as the first argument.",
             ),
         )
+        # Stored-call-target rules must forward only the explicit dual arguments here; dropping
+        # another argument breaks constructor and zero-arg dispatch.
         return _canonicalize_width_aware_dual($direct_call)
     end
     return quote

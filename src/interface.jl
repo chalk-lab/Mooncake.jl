@@ -259,6 +259,8 @@ end
             "or `(x, dx)` tuples.",
         ),
     )
+    # Callers may rely on the original dual wrappers being mutated in place, so avoid
+    # rebuilding canonical wrappers at the public entrypoint.
     return __call_rule(rule, fx)
 end
 
