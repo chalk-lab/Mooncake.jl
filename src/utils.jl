@@ -384,8 +384,53 @@ end
         existing = get(seen, x, nothing)
         !isnothing(existing) && return existing
     end
-    dx = map(xi -> _unfold_slots(f, xi, state), x)
+    if eltype(x) <: Union{IEEEFloat,Complex{<:IEEEFloat}}
+        first_I = nothing
+        first_y = nothing
+        if x isa _BuiltinArrays
+            for I in eachindex(x)
+                isassigned(x, I) || continue
+                first_I = I
+                first_y = _unfold_slots(f, x[I], state)
+                break
+            end
+        else
+            for I in eachindex(x)
+                first_I = I
+                first_y = _unfold_slots(f, x[I], state)
+                break
+            end
+        end
+        isnothing(first_I) && return zero_tangent(x)
+        dx = similar(x, typeof(first_y))
+        seen isa IdDict{Any,Any} && (seen[x] = dx)
+        @inbounds dx[first_I] = first_y
+        if x isa _BuiltinArrays
+            @inbounds for I in eachindex(x)
+                isassigned(x, I) || continue
+                I == first_I && continue
+                dx[I] = _unfold_slots(f, x[I], state)
+            end
+        else
+            @inbounds for I in eachindex(x)
+                I == first_I && continue
+                dx[I] = _unfold_slots(f, x[I], state)
+            end
+        end
+        return dx
+    end
+    dx = zero_tangent(x)
     seen isa IdDict{Any,Any} && (seen[x] = dx)
+    if x isa _BuiltinArrays
+        @inbounds for I in eachindex(x)
+            isassigned(x, I) || continue
+            dx[I] = _unfold_slots(f, x[I], state)
+        end
+    else
+        @inbounds for I in eachindex(x)
+            dx[I] = _unfold_slots(f, x[I], state)
+        end
+    end
     return dx
 end
 

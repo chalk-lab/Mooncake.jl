@@ -131,10 +131,7 @@
             x = SlotStruct(1.0, (2.0, 3.0 + 4.0im), 5)
             slots = Float64[]
             Mooncake._fold_slots(
-                (acc, slot, seen) -> (push!(seen, slot); acc),
-                nothing,
-                x,
-                (seen=IdDict{Any,Any}(),),
+                (acc, slot, seen) -> (push!(seen, slot); acc), nothing, x, slots
             )
             @test slots == [1.0, 2.0, 3.0, 4.0]
 
@@ -146,6 +143,19 @@
             end, x, state)
             @test rebuilt.fields ==
                 (a=10.0, b=(11.0, 12.0 + 13.0im), c=Mooncake.NoTangent())
+        end
+
+        @testset "shared mutable primals preserve aliasing" begin
+            shared = [1.0, 2.0]
+            x = (shared, shared)
+            state = (vals=[10.0, 11.0], idx=Ref(1), seen=IdDict{Any,Any}())
+            rebuilt = Mooncake._unfold_slots((_, st) -> begin
+                y = st.vals[st.idx[]]
+                st.idx[] += 1
+                y
+            end, x, state)
+            @test rebuilt[1] === rebuilt[2]
+            @test rebuilt[1] == [10.0, 11.0]
         end
     end
     @testset "_map_if_assigned!" begin

@@ -638,35 +638,39 @@ struct CountedChunkArrayCall end
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
         end
 
-        @testset "call-time derivative width must match cache chunk size" begin
+        @testset "call-time derivative width is inferred from the call" begin
             counted_scalar = CountedChunkScalarCall()
             cache = Mooncake.prepare_derivative_cache(
                 counted_scalar, x, y; config=Mooncake.Config(; chunk_size=2)
             )
-            @test_throws r"prepared with chunk_size=2" Mooncake.value_and_derivative!!(
+            @test Mooncake.value_and_derivative!!(
                 cache, (counted_scalar, Mooncake.NoTangent()), (x, dx), (y, dy)
-            )
+            ) == (z, Mooncake.NTangent((dz,)))
+
+            cache_width_1 = Mooncake.prepare_derivative_cache(counted_scalar, x, y)
+            @test Mooncake.value_and_derivative!!(
+                cache_width_1,
+                (counted_scalar, Mooncake.NoTangent()),
+                (x, Mooncake.NTangent((dx, -dx))),
+                (y, Mooncake.NTangent((dy, -dy))),
+            ) == (z, Mooncake.NTangent((dz, -dz)))
         end
 
-        @testset "zero-dof prepared gradients are rejected" begin
+        @testset "zero-dof prepared gradients return zero gradients" begin
             f0() = 3.0
             cache0 = Mooncake.prepare_derivative_cache(f0)
-            @test_throws r"zero differentiable degrees of freedom" Mooncake.value_and_gradient!!(
-                cache0, f0
-            )
-            @test_throws r"zero differentiable degrees of freedom" Mooncake.value_and_pullback!!(
-                cache0, 2.0, f0
-            )
+            @test Mooncake.value_and_gradient!!(cache0, f0) ==
+                (3.0, (Mooncake.NoTangent(),))
+            @test Mooncake.value_and_pullback!!(cache0, 2.0, f0) ==
+                (3.0, (Mooncake.NoTangent(),))
 
             f_empty(x) = 7.0
             x_empty = Float64[]
             cache_empty = Mooncake.prepare_derivative_cache(f_empty, x_empty)
-            @test_throws r"zero differentiable degrees of freedom" Mooncake.value_and_gradient!!(
-                cache_empty, f_empty, x_empty
-            )
-            @test_throws r"zero differentiable degrees of freedom" Mooncake.value_and_pullback!!(
-                cache_empty, 2.0, f_empty, x_empty
-            )
+            @test Mooncake.value_and_gradient!!(cache_empty, f_empty, x_empty) ==
+                (7.0, (Mooncake.NoTangent(), Float64[]))
+            @test Mooncake.value_and_pullback!!(cache_empty, 2.0, f_empty, x_empty) ==
+                (7.0, (Mooncake.NoTangent(), Float64[]))
         end
 
         @testset "complex scalar prepared pullback" begin

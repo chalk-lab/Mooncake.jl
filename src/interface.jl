@@ -1235,11 +1235,11 @@ directly, and extracts primal/tangent from the result.
     )
     x_primals = Base.tail(input_primals)
     x_tangents = Base.tail(input_tangents)
-    width = 1
+    width = 0
     for dx in x_tangents
         dx isa NoTangent && continue
         lane_count = something(_ntangent_lane_count(dx), 1)
-        if width != lane_count
+        if width != 0 && width != lane_count
             throw(
                 ArgumentError(
                     "NfwdCache expects all tangent inputs to have the same derivative width.",
@@ -1248,17 +1248,11 @@ directly, and extracts primal/tangent from the result.
         end
         width = lane_count
     end
-    width == cache.chunk_size || throw(
-        ArgumentError(
-            "NfwdCache was prepared with chunk_size=$(cache.chunk_size), but " *
-            "`value_and_derivative!!` was called with derivative width $width. " *
-            "Prepare a new cache with matching `chunk_size`, or call with tangents of width $(cache.chunk_size).",
-        ),
-    )
-    lifted = _nfwd_lift_primitive_args(Val(cache.chunk_size), x_primals, x_tangents)
+    width = width == 0 ? 1 : width
+    lifted = _nfwd_lift_primitive_args(Val(width), x_primals, x_tangents)
     y_ndual = first(input_primals)(lifted...)
-    p, t = _nfwd_extract_primitive_parts(y_ndual, Val(cache.chunk_size))
-    return p, canonicalize_chunked_tangent(p, t, Val(cache.chunk_size))
+    p, t = _nfwd_extract_primitive_parts(y_ndual, Val(width))
+    return p, canonicalize_chunked_tangent(p, t, Val(width))
 end
 
 @inline function value_and_derivative!!(cache::NfwdCache, fx::Vararg{Any,N}) where {N}
@@ -1276,10 +1270,10 @@ end
     primals = tuple_map(primal, fx)
     tangents = tuple_map(tangent, fx)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), primals)
-    width = 1
+    width = 0
     for x in Base.tail(fx)
         lane_count = _dual_width(x)
-        if width != lane_count
+        if width != 0 && width != lane_count
             throw(
                 ArgumentError(
                     "NfwdCache expects all dual inputs to have the same derivative width."
@@ -1288,20 +1282,14 @@ end
         end
         width = lane_count
     end
-    width == cache.chunk_size || throw(
-        ArgumentError(
-            "NfwdCache was prepared with chunk_size=$(cache.chunk_size), but " *
-            "`value_and_derivative!!` was called with dual inputs of width $width. " *
-            "Prepare a new cache with matching `chunk_size`, or call with dual inputs of width $(cache.chunk_size).",
-        ),
-    )
+    width = width == 0 ? 1 : width
     return _nfwd_extract_primitive_output(
         first(primals)(
             _nfwd_lift_primitive_args(
-                Val(cache.chunk_size), Base.tail(primals), Base.tail(tangents)
+                Val(width), Base.tail(primals), Base.tail(tangents)
             )...,
         ),
-        Val(cache.chunk_size),
+        Val(width),
     )
 end
 
@@ -1312,14 +1300,14 @@ function value_and_gradient!!(cache::NfwdCache, f::F, x::Vararg{Any,N}) where {F
     _validate_prepared_cache_inputs(cache.input_specs, input_primals)
     x_primals = x
     chunk_size = cache.chunk_size
-    total_dof = sum(_nfwd_primitive_input_dof, x_primals)
+    total_dof = sum(_nfwd_primitive_input_dof, x_primals; init=0)
     grads = tuple_map(set_to_zero!!, cache.gradient_workspace[])
     cache.gradient_workspace[] = grads
-    total_dof == 0 && throw(
-        ArgumentError(
-            "NfwdCache does not support `value_and_gradient!!` when the prepared inputs have zero differentiable degrees of freedom.",
-        ),
-    )
+    if total_dof == 0
+        y = f(x...)
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        return y, grads
+    end
     y = nothing
     slot_grads = nothing
     for start_slot in 1:chunk_size:total_dof
@@ -1435,14 +1423,20 @@ end
     _validate_prepared_cache_inputs(cache.input_specs, input_primals)
     x_primals = x
     chunk_size = cache.chunk_size
-    total_dof = sum(_nfwd_primitive_input_dof, x_primals)
+    total_dof = sum(_nfwd_primitive_input_dof, x_primals; init=0)
     grads = tuple_map(set_to_zero!!, cache.gradient_workspace[])
     cache.gradient_workspace[] = grads
-    total_dof == 0 && throw(
-        ArgumentError(
-            "NfwdCache does not support `value_and_pullback!!` when the prepared inputs have zero differentiable degrees of freedom.",
-        ),
-    )
+    if total_dof == 0
+        y = f(x...)
+        (y isa IEEEFloat || y isa Complex{<:IEEEFloat}) || throw(
+            ValueAndPullbackReturnTypeError(
+                "When calling value_and_pullback!! with NfwdCache, return value of primal " *
+                "must be a subtype of IEEEFloat or Complex{<:IEEEFloat}. Instead, found " *
+                "value of type $(typeof(y)).",
+            ),
+        )
+        return y, grads
+    end
     y = nothing
     slot_grads = nothing
     for start_slot in 1:chunk_size:total_dof
