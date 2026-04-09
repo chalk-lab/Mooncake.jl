@@ -798,7 +798,7 @@ function _nfwd_scatter_chunk!(grads::Tuple, inputs::Tuple, dy::Tuple, start_slot
         end
         return nothing, (offset + dof, Base.tail(remaining_grads))
     end
-    _unfold_slots(scatter_leaf!, inputs, (0, grads))
+    _nfwd_unfold_slots(scatter_leaf!, inputs, (0, grads))
     return nothing
 end
 
@@ -859,7 +859,7 @@ end
         end
         return g, (offset + dof, Base.tail(remaining_grads))
     end
-    new_grads, _ = _unfold_slots(scatter_leaf, primals, (0, grads))
+    new_grads, _ = _nfwd_unfold_slots(scatter_leaf, primals, (0, grads))
     return new_grads
 end
 
@@ -1047,7 +1047,7 @@ end
     function seed_leaf(x, off)
         return _nfwd_seed_tangent(x, N, start_slot, off), off + _nfwd_input_dof(x)
     end
-    tangents, _ = _unfold_slots(seed_leaf, primals, offset)
+    tangents, _ = _nfwd_unfold_slots(seed_leaf, primals, offset)
     return tangents
 end
 """
