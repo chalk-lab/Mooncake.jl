@@ -52,7 +52,7 @@ end
 
 should_run_benchmark(args...) = true
 
-@static if VERSION ≥ v"1.12-"
+@static if VERSION ≥ v"1.13-"
     should_run_benchmark(::Val{:enzyme}, args...) = false
 end
 
