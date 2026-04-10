@@ -175,6 +175,20 @@ end
         end
     end
 
+    @testset "zero_tangent (2-arg) for Ptr" begin
+        p = Ptr{Float64}()
+        f = Ptr{Float64}()
+        # Two-arg zero_tangent: tangent_type(Ptr{Float64}) == Ptr{Float64}, so returns f.
+        @test zero_tangent(p, f) === f
+
+        # Also works when fdata is NoFData (falls back to single-arg, but Ptr has fdata
+        # so this path isn't hit for Ptr; test a non-Ptr to confirm the NoFData branch).
+        @test zero_tangent(1, NoFData()) === zero_tangent(1)
+
+        # tangent(f::Ptr, ::NoRData) reconstructs the full Ptr tangent from its fdata.
+        @test tangent(f, NoRData()) === f
+    end
+
     @testset "Helpful error messages for misuse of fdata and rdata" begin
         @test_throws "Float64 is a type. Perhaps you meant" fdata(Float64)
         @test_throws "Float64 is a type. Perhaps you meant" rdata(Float64)

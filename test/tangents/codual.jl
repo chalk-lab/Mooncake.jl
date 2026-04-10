@@ -76,4 +76,14 @@
         @test Base.issingletontype(typeof(NoPullback(zero_fcodual(5.0))))
         @test NoPullback(zero_codual(5.0))(4.0) == (0.0,)
     end
+
+    @testset "zero_codual and zero_fcodual for Ptr" begin
+        # zero_tangent(::Ptr) throws, so zero_codual/zero_fcodual must not call it.
+        # They fall back to uninit_codual/uninit_fcodual (bitcast convention).
+        p = Ptr{Float64}()
+        @test zero_codual(p) == uninit_codual(p)
+        @test zero_fcodual(p) == uninit_fcodual(p)
+        @test primal(zero_codual(p)) === p
+        @test primal(zero_fcodual(p)) === p
+    end
 end
