@@ -964,9 +964,9 @@ function nvargs(pb::Pullback{sig}) where {sig}
     return Val{_isva(pb) ? _nargs(pb) - length(sig.parameters) + 1 : 0}
 end
 
-@inline (pb::Pullback)(dy) = __flatten_varargs(
-    _isva(pb), __call_rule(pb.pb_oc, (dy,)), nvargs(pb)()
-)
+@inline function (pb::Pullback{Tprimal,Tuple{Tdy},Tret,isva,nargs})(dy::Tdy) where {Tprimal,Tdy,Tret,isva,nargs}
+    return __flatten_varargs(_isva(pb), pb.pb_oc.oc(dy)::Tret, nvargs(pb)())
+end
 
 struct DerivedRule{Tprimal,Tfwd_args,Tfwd_ret,Tpb_args,Tpb_ret,isva,Tnargs<:Val}
     fwds_oc::RuleMC{Tfwd_args,Tfwd_ret}
@@ -999,7 +999,7 @@ end
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref[], _isva(fwds), N)
-    return fwds.fwds_oc(uf_args...)::CoDual, pb
+    return __call_opaque_closure(fwds.fwds_oc.oc, uf_args)::CoDual, pb
 end
 
 # On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by

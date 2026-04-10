@@ -372,7 +372,6 @@ end
 ) where {M,N}
     _nfwd_check_function_tangent(tangent(f))
     primals = map(primal, x)
-    Tpb = Tuple{NoRData,map(P -> rdata_type(tangent_type(P)), map(typeof, primals))...}
     y_primal = primal(f)(primals...)
     Nfwd._nfwd_is_supported_primal(y_primal) || Nfwd._nfwd_output_error(primals, y_primal)
     y_fdata = fdata(zero_tangent(y_primal))
@@ -380,7 +379,7 @@ end
     total_dof = sum(_nfwd_primitive_input_dof, primals; init=0)
     function primitive_pb!!(y_rdata)
         ȳ = tangent(y_fdata, y_rdata)
-        total_dof == 0 && return (NoRData(), map(rdata, map(zero_tangent, primals))...)::Tpb
+        total_dof == 0 && return (NoRData(), map(rdata, map(zero_tangent, primals))...)
         if M == 1
             x1 = primals[1]
             if x1 isa IEEEFloat
@@ -390,7 +389,9 @@ end
                     Val(N),
                 )
                 _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted), Val(N))
-                return (NoRData(), rdata(first(_nfwd_contract_output(ȳ, dy))))::Tpb
+                # Avoid capturing a return-type DataType in the closure; on Julia 1.11 that
+                # alone was enough to reintroduce a scalar pullback allocation.
+                return (NoRData(), rdata(first(_nfwd_contract_output(ȳ, dy))))
             elseif x1 isa Complex{<:IEEEFloat}
                 T = typeof(real(x1))
                 if N == 1
@@ -410,7 +411,7 @@ end
                                 first(_nfwd_contract_output(ȳ, dy_im)),
                             ),
                         ),
-                    )::Tpb
+                    )
                 else
                     lifted = _nfwd_lift_primitive_arg(
                         x1, ntuple(k -> if k == 1
@@ -435,7 +436,7 @@ end
                                 end,
                             ),
                         ),
-                    )::Tpb
+                    )
                 end
             end
         end
@@ -579,7 +580,7 @@ end
                     end
             map(rebuild_grad, primals)
         end
-        return (NoRData(), map(rdata, grads)...)::Tpb
+        return (NoRData(), map(rdata, grads)...)
     end
     return y, primitive_pb!!
 end

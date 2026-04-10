@@ -319,6 +319,11 @@ of `primal(x)`. This is auto-derived from `primal`, `tangent`, `dual_type`,
 representations. Custom width-aware dual types only need to overload it when they
 intentionally diverge from that default shape.
 """
+function verify_dual_type(x::Dual{P,T}) where {P,T}
+    N = something(_ntangent_basis_dir_count(x.tangent), 1)
+    expected_tangent_type = tangent_type(Val(N), P)
+    return T == expected_tangent_type || (N == 1 && T == tangent_type(P))
+end
 function verify_dual_type(x)
     p = try
         primal(x)

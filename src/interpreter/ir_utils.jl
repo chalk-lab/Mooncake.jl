@@ -180,15 +180,14 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     CC.verify_ir(ir)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
-    if isnothing(interp)
-        # 319 -- see patch_for_319.jl for context
-        # replace by a simple NativeInterpreter() once fixed in Julia
-        local_interp = infer_interp = BugPatchInterpreter()
-    else
-        local_interp = interp
-        # 319 -- even if interp was explicitly given, use a BugPatchInterpreter for inference
-        infer_interp = BugPatchInterpreter()
-    end
+    # 319 -- see patch_for_319.jl for context
+    # replace by a simple NativeInterpreter() once fixed in Julia
+    #
+    # Use BugPatchInterpreter for both inference and inlining. MooncakeInterpreter's
+    # custom code cache lacks inference results for standard Julia methods such as
+    # frule!!, causing ssa_inlining_pass! to skip inlining calls it could otherwise
+    # resolve, which forces boxing of isbits Dual arguments and spurious allocations.
+    local_interp = infer_interp = BugPatchInterpreter()
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, infer_interp, mi)
     if show_ir

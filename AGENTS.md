@@ -51,6 +51,7 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
 - Prefer clear, concise names for variables, types, and methods.
 - When fixing bugs or performance issues (allocations, type instability), prefer minimal inline fixes over new helper functions; make multiple pruning passes before committing to arrive at the smallest correct diff. Use the `minimise` skill before committing.
+- Understand why before fixing: a bug, unexpected allocation, or performance issue may require trying a few approaches to identify the root cause, but knowing why avoids churn and often points to a more targeted fix. Save a concise memo of the root cause for future reference.
 
 ## Consistency
 

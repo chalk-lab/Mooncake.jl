@@ -859,12 +859,17 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
 end
 
 function __forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N}
-    value_and_derivative!!(frule, x_ẋ...)
+    # Measure the rule body directly; the public value_and_derivative!! wrapper can add
+    # version-specific dispatch noise that is unrelated to the transformed IR itself.
+    output = Mooncake.__call_rule(frule, x_ẋ)
+    return primal(output), tangent(output)
 end
 
 @noinline function __forwards_and_backwards(rule::R, x_x̄::Vararg{Any,N}) where {R,N}
-    out, pb!! = rule(x_x̄...)
-    return pb!!(Mooncake.zero_rdata(primal(out)))
+    # Measure the rule and pullback through the internal rule-call boundary rather than
+    # direct callable-object dispatch, which can add wrapper-only allocations.
+    out, pb!! = Mooncake.__call_rule(rule, x_x̄)
+    return Mooncake.__call_rule(pb!!, (Mooncake.zero_rdata(primal(out)),))
 end
 
 function test_frule_performance(
