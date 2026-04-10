@@ -231,10 +231,10 @@ function build_primal(
             replace_self_capture =
                 c ->
                     if c isa LazyPrimal &&
-                       c.key isa Core.MethodInstance &&
-                       c.key.specTypes === sig_or_mi &&
-                       c.world == interp.world &&
-                       c.tangent_mode === tangent_mode
+                        c.key isa Core.MethodInstance &&
+                        c.key.specTypes === sig_or_mi &&
+                        c.world == interp.world &&
+                        c.tangent_mode === tangent_mode
                         derived
                     else
                         c
@@ -381,6 +381,19 @@ function DerivedPrimal(
     }(
         primal_oc, lifted_oc, key, call_target, lifted_call_target, world, tangent_mode
     )
+end
+
+# Replace the Tkey parameter of a concrete DerivedPrimal type with DataType.
+# primal_type computes Tkey = Core.MethodInstance (from the MethodInstance it receives),
+# but replace_self_capture produces a DerivedPrimal with Tkey = DataType (from
+# sig_or_mi::Type). The other 7 parameters match exactly, so substituting Tkey = DataType
+# makes the typeassert accept the replacement while keeping all parameters fully concrete
+# — which is essential for @generated __call_rule / _call_dynamic_dual_primal to
+# specialise and infer a precise return type (no boxing at the phi node).
+function _replace_tkey(
+    ::Type{DerivedPrimal{Tpo,Tlo,Tkey,Tct,Tlct,Isva,Nargs,Tmode}}
+) where {Tpo,Tlo,Tkey,Tct,Tlct,Isva,Nargs,Tmode}
+    return DerivedPrimal{Tpo,Tlo,DataType,Tct,Tlct,Isva,Nargs,Tmode}
 end
 
 # ── Debug wrapper ─────────────────────────────────────────────────────────────
@@ -780,8 +793,17 @@ function modify_fwd_ad_stmts!(
             get_rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             # Self-referencing functions replace LazyPrimal captures with DerivedPrimal
             # after the OC is compiled, so the assertion must accept both types.
-            assert_type =
-                rule isa LazyPrimal ? Union{typeof(rule),DerivedPrimal} : typeof(rule)
+            # Use _replace_tkey so the DerivedPrimal branch has all type parameters
+            # fully concrete (replacing Tkey=MethodInstance from primal_type with
+            # Tkey=DataType from replace_self_capture), enabling @generated
+            # __call_rule / _call_dynamic_dual_primal to specialise and avoid boxing.
+            assert_type = if rule isa LazyPrimal
+                P = fieldtype(typeof(rule), :primal)
+                wide_P = P === DerivedPrimal ? DerivedPrimal : _replace_tkey(P)
+                Union{typeof(rule),wide_P}
+            else
+                typeof(rule)
+            end
             assert_rule = Expr(:call, typeassert, get_rule_ssa, assert_type)
             rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(assert_rule), ATTACH_BEFORE)
             dual_args_ssa = CC.insert_node!(
@@ -877,8 +899,17 @@ function modify_primal_stmts!(
             )
             # Self-referencing functions replace LazyPrimal captures with DerivedPrimal
             # after the OC is compiled, so the assertion must accept both types.
-            assert_type =
-                rule isa LazyPrimal ? Union{typeof(rule),DerivedPrimal} : typeof(rule)
+            # Use _replace_tkey so the DerivedPrimal branch has all type parameters
+            # fully concrete (replacing Tkey=MethodInstance from primal_type with
+            # Tkey=DataType from replace_self_capture), enabling @generated
+            # __call_rule / _call_dynamic_dual_primal to specialise and avoid boxing.
+            assert_type = if rule isa LazyPrimal
+                P = fieldtype(typeof(rule), :primal)
+                wide_P = P === DerivedPrimal ? DerivedPrimal : _replace_tkey(P)
+                Union{typeof(rule),wide_P}
+            else
+                typeof(rule)
+            end
             assert_rule = Expr(:call, typeassert, get_rule_ssa, assert_type)
             rule_ssa = CC.insert_node!(primal_ir, ssa, new_inst(assert_rule), ATTACH_BEFORE)
             args = map(__inc, raw_args)

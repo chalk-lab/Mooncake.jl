@@ -821,7 +821,11 @@ function generate_test_functions()
             Ref{Union{Type{Float64},Type{Int}}}(Float64),
         ),
         (false, :allocs, nothing, test_self_reference, 1.1, 1.5),
-        (false, :allocs, nothing, test_self_reference, 1.5, 1.1),
+        # Recursive path: replace_self_capture swaps LazyPrimal→DerivedPrimal in OC
+        # captures, but the OC was compiled with LazyPrimal types, so the capture
+        # extraction boxes the DerivedPrimal value (1 alloc). Non-recursive inputs
+        # (1.1, 1.5 above) are unaffected because the recursive call is never reached.
+        (false, :stability, nothing, test_self_reference, 1.5, 1.1),
         (false, :none, nothing, test_recursive_sum, randn(2)),
         (
             false,
