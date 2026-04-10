@@ -1,11 +1,10 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.23"
+version = "0.5.26"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
-ChainRules = "082447d4-558c-5d27-93f4-14fc19e9eca2"
 ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
 DispatchDoctor = "8d63f2c5-f18a-4cf2-ba9d-b3f60fc568c8"
 ExprTools = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
@@ -19,6 +18,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 [weakdeps]
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
 BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
+ChainRules = "082447d4-558c-5d27-93f4-14fc19e9eca2"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
@@ -39,6 +39,7 @@ Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
 MooncakeAllocCheckExt = "AllocCheck"
 MooncakeBFloat16sExt = "BFloat16s"
 MooncakeCUDAExt = "CUDA"
+MooncakeChainRulesExt = "ChainRules"
 MooncakecuDNNExt = ["CUDA", "cuDNN"]
 MooncakeDistributionsExt = "Distributions"
 MooncakeDynamicExpressionsExt = "DynamicExpressions"
@@ -94,6 +95,7 @@ julia = "~1.10.8, 1.11.6, 1.12.1"
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+ChainRules = "082447d4-558c-5d27-93f4-14fc19e9eca2"
 DiffTests = "de460e47-3fe3-5279-bb4a-814414816d5d"
 DynamicExpressions = "a40a106e-89c9-4ca8-8020-a735e8728b6b"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
@@ -102,12 +104,13 @@ Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 StableRNGs = "860ef19b-820b-49d6-a774-d7a799459cd3"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
+LogExpFunctions = "2ab3a3ac-af41-5b50-aa03-7779005ae688"
 [targets]
 test = [
     "AllocCheck",
     "Aqua",
     "BenchmarkTools",
+    "ChainRules",
     "DiffTests",
     "JET",
     "Logging",
@@ -115,4 +118,5 @@ test = [
     "Revise",
     "StableRNGs",
     "Test",
+    "LogExpFunctions",
 ]

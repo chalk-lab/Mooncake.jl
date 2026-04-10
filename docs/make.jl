@@ -23,7 +23,8 @@ makedocs(;
     format=Documenter.HTML(;
         mathengine=Documenter.KaTeX(Dict(:macros => Dict("\\RR" => "\\mathbb{R}"))),
         size_threshold_ignore=[
-            joinpath("developer_documentation", "internal_docstrings.md")
+            joinpath("developer_documentation", "internal_docstrings.md"),
+            joinpath("developer_documentation", "advanced_debugging.md"),
         ],
     ),
     modules=[Mooncake],
@@ -50,10 +51,12 @@ makedocs(;
             joinpath("developer_documentation", "developer_tools.md"),
             joinpath("developer_documentation", "tangents.md"),
             joinpath("developer_documentation", "custom_tangent_type.md"),
+            joinpath("developer_documentation", "scalar_rules_via_ndual.md"),
             joinpath("developer_documentation", "ir_representation.md"),
             joinpath("developer_documentation", "forwards_mode_design.md"),
             joinpath("developer_documentation", "reverse_mode_design.md"),
             joinpath("developer_documentation", "misc_internals_notes.md"),
+            joinpath("developer_documentation", "advanced_debugging.md"),
             joinpath("developer_documentation", "internal_docstrings.md"),
         ],
         "known_limitations.md",

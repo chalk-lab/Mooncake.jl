@@ -1,8 +1,62 @@
+# 0.5.26
+
+- Add `Config(empty_cache=true)` to free internal caches before rebuilding rules.
+
+```julia
+config = Mooncake.Config(empty_cache=true)
+cache = Mooncake.prepare_gradient_cache(sin, 1.0; config)
+```
+
+# 0.5.25
+
+- Add `nfwd`: a new N-wide forward-mode implementation built around `NDual`, with `Nfwd` / `NfwdMooncake` internals and broad tests for scalar, array, and rule-building paths.
+- Expand Mooncake's forward-mode interface and caching around `nfwd`, including prepared derivative/gradient cache improvements and lower-allocation hot paths for repeated calls.
+- Route a broader scalar-math set through nfwd-backed direct primitive `frule!!` / `rrule!!` wrappers, reducing dependence on imported ChainRules rules for these cases.
+- Move the ChainRules-backed matrix `exp` rule into `MooncakeChainRulesExt`, making `ChainRules` a weak dependency rather than a core dependency.
+- Add precompile workloads, including complex scalar reverse/forward-mode paths for `ComplexF64` and `ComplexF32`.
+- Improve docs for `nfwd`, including usage examples, interface notes, and clarification of nfwd/public-interface overheads.
+
+The `friendly_tangents=true` path previously converted every internal tangent to a value of the primal type via `tangent_to_primal!!`. This relied on `_copy_output` to pre-allocate a buffer and `tangent_to_primal_internal!!` to fill it on every call. Both steps proved problematic:
+
+- `_copy_output` is best-effort and not guaranteed correct for all types — [#1084](https://github.com/chalk-lab/Mooncake.jl/issues/1084) shows a recent silent failure
+- The primal round-trip was wrong for types with shared storage (e.g. `Symmetric`, where one stored entry represents two logical positions), silently returning an incorrect gradient — [#937](https://github.com/chalk-lab/Mooncake.jl/issues/937)
+
+## Default behaviour change
+
+| Before                         | After                           |
+|--------------------------------|---------------------------------|
+| default: value of primal type  | default: raw Mooncake tangent   |
+| primal round-trip: always      | primal round-trip: explicit opt-in |
+| custom gradient: not possible  | custom gradient: explicit opt-in |
+
+The raw-tangent default (`friendly_tangents=false`) is safer: it never silently drops or corrupts information and avoids unnecessary allocation. Under the default, arrays of `IEEEFloat` (or complex) elements have plain array tangents; callables with no captured differentiable state return `NoTangent`; and structs or closures with differentiable fields return a `Mooncake.Tangent` (immutable) or `Mooncake.MutableTangent` (mutable) wrapping a named tuple of their field tangents.
+
+With `friendly_tangents=true`, structs (both immutable and mutable with the standard `MutableTangent` tangent type) and closures additionally unwrap to plain `NamedTuple`s. Mutable structs with custom tangent types return raw tangent unchanged. Types whose raw tangent reflects internal implementation layout rather than user-visible structure — `AbstractDict` (hash-table internals), `Symmetric`, `Hermitian`, `SymTridiagonal` — require explicit gradient reconstruction and are opt-in, each with their own tests.
+
+# 0.5.24
+
+Add `stop_gradient(x)` to block gradient propagation, analogous to `tf.stop_gradient` in TensorFlow and `jax.lax.stop_gradient` in JAX.
+```julia
+julia> using Mooncake
+
+julia> f(x) = x[1] * Mooncake.stop_gradient(x)[2]
+f (generic function with 1 method)
+
+julia> cache = Mooncake.prepare_gradient_cache(f, [3.0, 4.0]);
+
+julia> _, (_, g) = Mooncake.value_and_gradient!!(cache, f, [3.0, 4.0]);
+
+julia> g  # g[2] == 0.0: gradient through x[2] inside stop_gradient is blocked
+2-element Vector{Float64}:
+ 4.0
+ 0.0
+```
+
 # 0.5.23
 
 ## CUDA extension
 
-Differentiation support for standard Julia/CUDA operations, focusing on
+Differentiation support for standard Julia/CUDA operations, focusing on:
 
 **Linear algebra** — BLAS matrix–vector products, `dot`, `norm`, and reductions (`sum`, `prod`, `cumsum`, `cumprod`, `mapreduce`) are supported, including complex inputs. Vector indexing is also supported for CUDA arrays. Scalar indexing is not supported by design.
 
@@ -28,15 +82,7 @@ f = x -> mapreduce(abs2, +, x) / length(x)
 f = A -> real(sum(A * adjoint(A)))
 ```
 
-**Broadcasting** — CUDA.jl compiles a specialised GPU kernel for each broadcast expression 
-at runtime via `cufunction`. From Mooncake's perspective, this kernel appears as 
-a `foreigncall`—opaque LLVM or PTX code that cannot be traced. To differentiate
-through it, Mooncake exploits CUDA.jl's support for user-defined GPU-compatible
-types: `NDual` dual numbers are registered as valid GPU element types, so the same
-`cufunction` machinery re-compiles the kernel for dual-number inputs. Derivatives
-are carried alongside primal values in a single GPU pass — no separate AD kernel
-is required, and any broadcastable function is automatically differentiable. This
-is the same strategy as Zygote's `broadcast_forward`:
+**Broadcasting** — CUDA.jl compiles a specialised GPU kernel for each broadcast expression at runtime via `cufunction`. From Mooncake's perspective, this kernel appears as a `foreigncall` — opaque LLVM or PTX code that cannot be traced. To differentiate through it, Mooncake exploits CUDA.jl's support for user-defined GPU-compatible types: `NDual` dual numbers are registered as valid GPU element types, so the same `cufunction` machinery re-compiles the kernel for dual-number inputs. Derivatives are carried alongside primal values in a single GPU pass — no separate AD kernel is required, and any broadcastable function is automatically differentiable. This is the same strategy as Zygote's `broadcast_forward`:
 
 ```julia
 f = x -> sum(sin.(x) .* cos.(x))
@@ -45,8 +91,7 @@ cache = prepare_gradient_cache(f, x)
 _, (_, ∂x) = value_and_gradient!!(cache, f, x)  # ∂x::CuArray{Float32}
 ```
 
-**Mutation and reshape** — rules for `fill!`, `unsafe_copyto!`, `unsafe_convert`, `materialize!`, 
-`reshape`, `CuPtr` arithmetic, and CPU↔GPU transfers:
+**Mutation and reshape** — rules for `fill!`, `unsafe_copyto!`, `unsafe_convert`, `materialize!`, `reshape`, `CuPtr` arithmetic, and CPU↔GPU transfers:
 
 ```julia
 f = x -> sum(reshape(x, 4, 2))     # reshape on GPU
@@ -54,15 +99,9 @@ f = x -> sum(sin.(cu(x)))           # CPU → GPU (gradient flows back to CPU)
 f = x -> sum(Array(x).^2)           # GPU → CPU
 ```
 
-CI integration tests added for Flux and Lux models (CPU + GPU). Flux/Lux-specific rules 
-are outside Mooncake's scope — models run via the general CUDA extension rules.
+CI integration tests added for Flux and Lux models (CPU + GPU). Flux/Lux-specific rules are outside Mooncake's scope — models run via the general CUDA extension rules.
 
-**Known limitation — Flux/Lux GPU performance:** without explicit reverse-mode rules
-for neural network operators, Mooncake falls back to the NDual forward-mode broadcast
-described above, which is correct but scales as O(params) in memory and kernel
-launches. Large models are prohibitively slow on GPU until explicit `rrule!!`s are
-added for key operations (e.g. cuDNN `BatchNorm`, …). CPU differentiation is unaffected 
-by this performance limitation.
+**Known limitation — Flux/Lux GPU performance:** without explicit reverse-mode rules for neural network operators, Mooncake falls back to the NDual forward-mode broadcast described above, which is correct but scales as O(params) in memory and kernel launches. Large models are prohibitively slow on GPU until explicit `rrule!!`s are added for key operations (e.g. cuDNN `BatchNorm`). CPU differentiation is unaffected by this performance limitation.
 
 # 0.5.0
 
@@ -79,5 +118,5 @@ by this performance limitation.
 
 ## Internals
 - `get_interpreter` was previously a zero-arg function. Is now a unary function, called with a "mode" argument: `get_interpreter(ForwardMode)`, `get_interpreter(ReverseMode)`.
-- `@zero_derivative` should now be preferred to `@zero_adjoint`. `@zero_adjoint` will be removed in 0.5.
-- `@from_chainrules` should now be preferred to `@from_rrule`. `@from_rrule` will be removed in 0.5.
+- `@zero_derivative` should now be preferred to `@zero_adjoint`. `@zero_adjoint` was removed in 0.5.
+- `@from_chainrules` should now be preferred to `@from_rrule`. `@from_rrule` was removed in 0.5.

@@ -34,6 +34,85 @@
         end
     end
 
+    @testset "hypot singular-point consistency across arities" begin
+        for T in (Float16, Float32, Float64)
+            x = Dual(zero(T), one(T))
+            y = Dual(zero(T), one(T))
+            z = Dual(zero(T), one(T))
+
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x)) === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y)) === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z)) === zero(T)
+
+            _, pb1 = Mooncake.rrule!!(zero_fcodual(hypot), zero_fcodual(zero(T)))
+            _, dx1 = pb1(one(T))
+            @test dx1 === zero(T)
+
+            _, pb2 = Mooncake.rrule!!(
+                zero_fcodual(hypot), zero_fcodual(zero(T)), zero_fcodual(zero(T))
+            )
+            _, dx2, dy2 = pb2(one(T))
+            @test dx2 === zero(T)
+            @test dy2 === zero(T)
+
+            _, pb3 = Mooncake.rrule!!(
+                zero_fcodual(hypot),
+                zero_fcodual(zero(T)),
+                zero_fcodual(zero(T)),
+                zero_fcodual(zero(T)),
+            )
+            _, dx3, dy3, dz3 = pb3(one(T))
+            @test dx3 === zero(T)
+            @test dy3 === zero(T)
+            @test dz3 === zero(T)
+        end
+    end
+
+    @testset "nfwd-backed non-smooth scalar rules" begin
+        for T in (Float16, Float32, Float64)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(one(T), zero(T)))
+            ) === one(T)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(T(2), zero(T)))
+            ) === zero(T)
+            @test isinf(
+                tangent(
+                    Mooncake.frule!!(
+                        zero_dual(^), Dual(zero(T), one(T)), Dual(T(0.5), zero(T))
+                    ),
+                ),
+            )
+
+            @test isnan(
+                tangent(
+                    Mooncake.frule!!(
+                        zero_dual(mod), Dual(T(4), one(T)), Dual(T(2), zero(T))
+                    ),
+                ),
+            )
+            @test isnan(tangent(Mooncake.frule!!(zero_dual(mod2pi), Dual(T(2π), one(T)))))
+
+            @test tangent(
+                Mooncake.frule!!(
+                    zero_dual(max), Dual(one(T), one(T)), Dual(one(T), zero(T))
+                ),
+            ) === zero(T)
+            @test tangent(
+                Mooncake.frule!!(
+                    zero_dual(min), Dual(one(T), one(T)), Dual(one(T), zero(T))
+                ),
+            ) === one(T)
+
+            @test tangent(Mooncake.frule!!(zero_dual(Base.eps), Dual(one(T), one(T)))) ===
+                zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(nextfloat), Dual(one(T), one(T)))) ===
+                one(T)
+            @test tangent(Mooncake.frule!!(zero_dual(prevfloat), Dual(one(T), one(T)))) ===
+                one(T)
+        end
+    end
+
     # These are all examples of signatures which we do _not_ want to make primitives,
     # because they are very shallow wrappers around lower-level primitives for which we
     # already have rules.

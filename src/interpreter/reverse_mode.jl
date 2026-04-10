@@ -324,7 +324,7 @@ end
 (rule::RRuleWrapperPb)(dy) = rule.pb!!(increment!!(dy, instantiate(rule.l)))
 
 @inline function (rule::RRuleZeroWrapper{R})(f::F, args::Vararg{CoDual,N}) where {R,F,N}
-    y, pb!! = rule.rule(f, args...)
+    y, pb!! = __call_rule(rule.rule, (f, args...))
     l = lazy_zero_rdata(primal(y))
     return y::CoDual, (pb!! isa NoPullback ? pb!! : RRuleWrapperPb(pb!!, l))
 end
@@ -704,7 +704,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         sig = Tuple{arg_types...}
         interp = info.interp
         raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
-            rrule!! # intrinsic / builtin / thing we provably have rule for
+            build_primitive_rrule(sig) # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
             mi = get_mi(stmt.args[1])
             LazyDerivedRule(mi, info.debug_mode) # Static dispatch
@@ -723,8 +723,8 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # If debug mode has been requested, use a debug rule.
         rule = info.debug_mode ? DebugRRule(zero_wrapped_rule) : zero_wrapped_rule
 
-        # If the rule is `rrule!!` (i.e. `sig` is primitive), then don't bother putting
-        # the rule into shared data, because it's safe to put it directly into the code.
+        # If the primitive rule is a singleton, then don't bother putting it into shared
+        # data because it's safe to put it directly into the code.
         rule_ref = add_data_if_not_singleton!(info, rule)
 
         # If the type of the pullback is a singleton type, then there is no need to store it
@@ -922,7 +922,7 @@ function pullback_type(Trule, arg_types)
 end
 
 _pullback_type(::Core.TypeofBottom) = Any
-_pullback_type(T::DataType) = T.parameters[2]
+_pullback_type(T::DataType) = length(T.parameters) >= 2 ? T.parameters[2] : Any
 _pullback_type(T::Union) = Union{_pullback_type(T.a),_pullback_type(T.b)}
 
 # Used by the getfield special-case in call / invoke statments.
@@ -990,6 +990,19 @@ end
     return fwds.fwds_oc(uf_args...)::CoDual, pb
 end
 
+# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
+# asserting the return type. Both the CoDual and Pullback types are encoded in DerivedRule's
+# type parameters; the Pullback's nargs comes from the number of args at the call site.
+@static if VERSION < v"1.11-"
+    @inline function __call_rule(
+        rule::DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}, args::A
+    ) where {Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
+        return __call_rule_erased!(
+            Base.inferencebarrier(rule), args
+        )::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
+    end
+end
+
 """
     __flatten_varargs(isva::Bool, args, ::Val{nvargs}) where {nvargs}
 
@@ -1052,28 +1065,68 @@ struct MooncakeRuleCompilationError <: Exception
     interp::MooncakeInterpreter
     sig
     debug_mode::Bool
+    cause::Exception
 end
 
 function Base.showerror(io::IO, err::MooncakeRuleCompilationError)
+    msg_lines = (
+        "MooncakeRuleCompilationError: an error occurred while Mooncake was compiling a",
+        "rule to differentiate something. If the `caused by` error message below does",
+        "not make it clear to you how the problem can be fixed, please open an issue",
+        "at github.com/chalk-lab/Mooncake.jl describing your problem.",
+    )
+    cause_width = min(_boxed_message_width(io, "│ "), 78)
+    cause_lines = let lines = if hasfield(typeof(err.cause), :msg)
+            msg = getfield(err.cause, :msg)
+            if msg isa AbstractString
+                split(msg, '\n')
+            else
+                split(sprint(showerror, err.cause), '\n')
+            end
+        else
+            split(sprint(showerror, err.cause), '\n')
+        end
+        while !isempty(lines) && isempty(last(lines))
+            pop!(lines)
+        end
+        wrapped_lines = String[]
+        for line in lines
+            append!(wrapped_lines, _wrap_boxed_line(line, cause_width))
+        end
+        wrapped_lines
+    end
+    detail_lines = ("Caused by:", cause_lines..., "", msg_lines...)
+
     # Print the source location of the method being differentiated, if available.
     try
         m = lookup_method(err.sig)
         if m !== nothing
-            println(io, "Mooncake failed to differentiate the following method: $m")
+            mstr = sprint(show, m)
+            header, location = let parts = split(mstr, " @ "; limit=2)
+                length(parts) == 2 ? (parts[1], parts[2]) : (mstr, nothing)
+            end
+            _print_boxed_error(
+                io,
+                (
+                    "Mooncake failed to differentiate the following method:",
+                    header,
+                    "",
+                    detail_lines...,
+                );
+                footer=isnothing(location) ? nothing : "@ $location",
+            )
             println(io)  # blank line before the main error body
+        else
+            _print_boxed_error(io, detail_lines)
+            println(io)
         end
     catch e
         # If method lookup fails for any reason, skip gracefully.
         @debug "MooncakeRuleCompilationError: method lookup failed" exception = e
+        _print_boxed_error(io, detail_lines)
+        println(io)
     end
-    msg =
-        "MooncakeRuleCompilationError: an error occurred while Mooncake was compiling a " *
-        "rule to differentiate something. If the `caused by` error " *
-        "message below does not make it clear to you how the problem can be fixed, " *
-        "please open an issue at github.com/chalk-lab/Mooncake.jl describing your " *
-        "problem.\n" *
-        "To replicate this error run the following:\n"
-    println(io, msg)
+    println(io, "To replicate this error run the following:\n")
     println(
         io,
         "Mooncake.build_rrule(Mooncake.$(err.interp), $(err.sig); debug_mode=$(err.debug_mode))",
@@ -1182,7 +1235,21 @@ function build_derived_rrule(
             return _copy(interp.oc_cache[oc_cache_key])
         else
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
-            dri = generate_ir(interp, sig_or_mi; debug_mode)
+            dri = try
+                generate_ir(interp, sig_or_mi; debug_mode)
+            catch err
+                # Julia 1.10 can hit this IR-interpreter limitation during optimization on
+                # otherwise valid derived reverse rules. Retry without optimize_ir! so rule
+                # construction remains robust for those methods.
+                if err isa AssertionError && occursin(
+                    "irinterp is unable to handle heavy recursion",
+                    sprint(showerror, err),
+                )
+                    generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
+                else
+                    rethrow()
+                end
+            end
             fwd_oc = misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
             rvs_oc = misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)
 
@@ -1199,7 +1266,7 @@ function build_derived_rrule(
             rethrow(e)
         else
             sig = sig_or_mi isa Core.MethodInstance ? sig_or_mi.specTypes : sig_or_mi
-            throw(MooncakeRuleCompilationError(interp, sig, debug_mode))
+            throw(MooncakeRuleCompilationError(interp, sig, debug_mode, e))
         end
     finally
         unlock(MOONCAKE_INFERENCE_LOCK)
@@ -1842,7 +1909,7 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
         rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
         dynamic_rule.cache[sig] = rule
     end
-    return rule(args...)
+    return __call_rule(rule, args)
 end
 
 """
@@ -1925,14 +1992,36 @@ end
 # Create new lazy rule with same method instance and debug mode
 _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
 
+# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
+# LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
+# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
+# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
+@static if VERSION < v"1.11-"
+    @inline function __call_rule(
+        rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
+    ) where {sig,Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
+        return rule(args...)::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
+    end
+    @inline function __call_rule(
+        rule::LazyDerivedRule{
+            sig,DebugRRule{DerivedRule{Tp,FA,CoDual{P,FD},RA,RR,isva,Val{pnargs}}}
+        },
+        args::A,
+    ) where {sig,Tp,FA,P,FD,RA,RR,isva,pnargs,A<:Tuple}
+        return rule(
+            args...
+        )::Tuple{CoDual{P,FD},DebugPullback{Pullback{Tp,RA,RR,isva,fieldcount(A)},P}}
+    end
+end
+
 @inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
-    return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
+    return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
 end
 
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ReverseMode)
     rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
-    return rule.rule(args...)
+    return __call_rule(rule.rule, args)
 end
 
 """
@@ -1943,8 +2032,12 @@ important for performance in dynamic dispatch, and to ensure that recursion work
 properly.
 """
 function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where {C}
-    if is_primitive(C, ReverseMode, _get_sig(sig_or_mi), interp.world)
-        rule = build_primitive_rrule(_get_sig(sig_or_mi))
+    sig = _get_sig(sig_or_mi)
+    if is_primitive(C, ReverseMode, sig, interp.world)
+        # Build the rule to obtain its concrete type. For non-singleton primitive rules
+        # (e.g. NfwdMooncake.RRule) this allocates a throwaway instance; the cost is compile-
+        # time only and does not affect hot-path performance.
+        rule = build_primitive_rrule(sig)
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)
     end
 
@@ -1957,7 +2050,9 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     fwd_args_type = Tuple{map(fcodual_type, arg_types)...}
     fwd_return_type = forwards_ret_type(ir)
     Trdata_return = rdata_type(tangent_type(Treturn))
-    pb_args_type = Trdata_return === Union{} ? Union{} : Tuple{Trdata_return}
+    # For non-returning primals, Tuple{} means a zero-argument pullback; Union{} would
+    # instead mean there is no possible argument value.
+    pb_args_type = Trdata_return === Union{} ? Tuple{} : Tuple{Trdata_return}
     pb_return_type = pullback_ret_type(ir)
     nargs = Val{length(ir.argtypes)}
 

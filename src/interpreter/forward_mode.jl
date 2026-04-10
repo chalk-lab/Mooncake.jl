@@ -81,7 +81,8 @@ function build_frule(
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
-        return (debug_mode ? DebugFRule(frule!!) : frule!!)
+        rule = build_primitive_frule(sig)
+        return debug_mode ? DebugFRule(rule) : rule
     end
 
     # We don't have a hand-coded rule, so derive one.
@@ -119,6 +120,16 @@ end
     args::Vararg{Dual,N}
 ) where {P,sig,N,isva,nargs}
     return fwd.fwd_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
+end
+
+# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
+# asserting the return type, which is encoded in the MistyClosure type parameter.
+@static if VERSION < v"1.11-"
+    @inline function __call_rule(
+        rule::DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}, args
+    ) where {P,A,R,isva,nargs}
+        return __call_rule_erased!(Base.inferencebarrier(rule), args)::R
+    end
 end
 
 # Copy forward rule with recursively copied captures
@@ -163,7 +174,11 @@ struct DualInfo
 end
 
 function generate_dual_ir(
-    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
+    interp::MooncakeInterpreter,
+    sig_or_mi;
+    debug_mode=false,
+    do_inline=true,
+    do_optimize=true,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -215,9 +230,10 @@ function generate_dual_ir(
     captures_tuple = (captures...,)
     dual_ir.argtypes[1] = _typeof(captures_tuple)
 
-    # Optimize dual IR
-    dual_ir_opt = optimise_ir!(dual_ir; do_inline)
-    return dual_ir_opt, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
+    # Inspection tools need the pre-optimization dual IR, while the AD pipeline still
+    # wants the optimized form by default.
+    dual_ir = do_optimize ? optimise_ir!(dual_ir; do_inline) : dual_ir
+    return dual_ir, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
 end
 
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
@@ -408,7 +424,15 @@ function modify_fwd_ad_stmts!(
 
         interp = info.interp
         if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
-            replace_call!(dual_ir, ssa, Expr(:call, frule!!, dual_args...))
+            rule = build_primitive_frule(sig)
+            if safe_for_literal(rule)
+                replace_call!(dual_ir, ssa, Expr(:call, rule, dual_args...))
+            else
+                push!(captures, rule)
+                get_rule = Expr(:call, get_capture, Argument(1), length(captures))
+                rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
+                replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
+            end
         else
             dm = info.debug_mode
             push!(captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm))
@@ -478,14 +502,35 @@ end
 # Create new lazy rule with same method instance and debug mode
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode)
 
+# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
+# LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
+# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
+# LazyFRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
+@static if VERSION < v"1.11-"
+    @inline function __call_rule(
+        rule::LazyFRule{sig,DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}},
+        args,
+    ) where {sig,P,A,R,isva,nargs}
+        return rule(args...)::R
+    end
+    @inline function __call_rule(
+        rule::LazyFRule{
+            sig,DebugFRule{DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}}
+        },
+        args,
+    ) where {sig,P,A,R,isva,nargs}
+        return rule(args...)::R
+    end
+end
+
 @inline function (rule::LazyFRule)(args::Vararg{Any,N}) where {N}
-    return isdefined(rule, :rule) ? rule.rule(args...) : _build_rule!(rule, args)
+    return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
 end
 
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode)
     rule.rule = build_frule(interp, rule.mi; debug_mode=rule.debug_mode)
-    return rule.rule(args...)
+    return __call_rule(rule.rule, args)
 end
 
 function dual_ret_type(primal_ir::IRCode)
@@ -495,8 +540,13 @@ end
 function frule_type(
     interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
 ) where {C}
-    if is_primitive(C, ForwardMode, _get_sig(mi), interp.world)
-        return debug_mode ? DebugFRule{typeof(frule!!)} : typeof(frule!!)
+    sig = _get_sig(mi)
+    if is_primitive(C, ForwardMode, sig, interp.world)
+        # Build the rule to obtain its concrete type. For non-singleton primitive rules
+        # (e.g. NfwdMooncake.Rule) this allocates a throwaway instance; the cost is compile-
+        # time only and does not affect hot-path performance.
+        rule = build_primitive_frule(sig)
+        return debug_mode ? DebugFRule{typeof(rule)} : typeof(rule)
     end
     ir, _ = lookup_ir(interp, mi)
     nargs = length(ir.argtypes)
@@ -529,5 +579,5 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
         rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
         dynamic_rule.cache[sig] = rule
     end
-    return rule(args...)
+    return __call_rule(rule, args)
 end
