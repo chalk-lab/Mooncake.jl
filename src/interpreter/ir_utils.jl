@@ -187,6 +187,8 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     # custom code cache lacks inference results for standard Julia methods such as
     # frule!!, causing ssa_inlining_pass! to skip inlining calls it could otherwise
     # resolve, which forces boxing of isbits Dual arguments and spurious allocations.
+    # The proper fix is a dedicated PrimalMode interpreter (like ForwardMode /
+    # ReverseMode) that populates its own code cache with the right results.
     local_interp = infer_interp = BugPatchInterpreter()
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, infer_interp, mi)
