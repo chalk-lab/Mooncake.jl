@@ -7,6 +7,8 @@
 
 mutable struct TaskTangent end
 
+_copy(::TaskTangent) = TaskTangent()
+
 tangent_type(::Type{Task}) = TaskTangent
 
 function zero_tangent_internal(p::Task, dict::MaybeCache)

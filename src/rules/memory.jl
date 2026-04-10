@@ -315,6 +315,9 @@ end
 
 @foldable tangent_type(::Type{<:MemoryRef{P}}) where {P} = MemoryRef{tangent_type(P)}
 
+_copy(x::Memory) = copy(x)
+_copy(x::MemoryRef) = construct_ref(x, copy(x.mem))
+
 #=
 Given a new chunk of memory `m`, construct a `MemoryRef` which points to the same relative
 position in `x`, as `m` points to in its underlying `Memory` object. For example, in the
@@ -533,7 +536,7 @@ end
     boundscheck::Dual{Bool},
 )
     y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = _memoryrefnew_tangent(tangent(x), primal(ii), primal(boundscheck))
+    dy = _memoryrefnew_tangent(tangent(x), primal(ii), false)
     return Dual(y, dy)
 end
 @inline function rrule!!(
@@ -543,7 +546,7 @@ end
     boundscheck::CoDual{Bool},
 )
     y = memoryrefnew(x.x, ii.x, boundscheck.x)
-    dy = memoryrefnew(x.dx, ii.x, boundscheck.x)
+    dy = memoryrefnew(x.dx, ii.x, false)
     return CoDual(y, dy), NoPullback(f, x, ii, boundscheck)
 end
 

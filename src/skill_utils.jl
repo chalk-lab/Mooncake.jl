@@ -277,9 +277,7 @@ function inspect_ir(
     # Mode-specific stages
     if mode == :forward
         # `:dual_ir` should be the first AD transform output, not an already-optimized IR.
-        dual_ir, _, _ = generate_dual_ir(
-            interp, sig; debug_mode, do_inline=false, do_optimize=false
-        )
+        dual_ir, _, _ = generate_dual_ir(interp, sig; debug_mode, do_inline=false)
         stages[:dual_ir] = IRStage(
             :dual_ir, dual_ir, render_ir(dual_ir), extract_meta(dual_ir)
         )

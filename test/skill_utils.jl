@@ -102,9 +102,7 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
 
         ins_fwd = inspect_fwd(test_fn, 1.0; optimize=false)
         interp_fwd = get_interpreter(ForwardMode)
-        dual_ir, _, _ = Mooncake.generate_dual_ir(
-            interp_fwd, sig; do_inline=false, do_optimize=false
-        )
+        dual_ir, _, _ = Mooncake.generate_dual_ir(interp_fwd, sig; do_inline=false)
         @test :dual_ir in ins_fwd.stage_order
         @test !haskey(ins_fwd.stages, :optimized)
         @test render_ir(ins_fwd.stages[:raw].ir) ==

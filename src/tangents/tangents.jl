@@ -8,6 +8,8 @@ You might need to use this for `primitive type`s though.
 """
 struct NoTangent end
 
+_copy(::NoTangent) = NoTangent()
+
 """
     NTangent(lanes)
 
@@ -97,6 +99,14 @@ mutable struct MutableTangent{Tfields<:NamedTuple}
         fields::NamedTuple{names}
     ) where {names,Tfields<:NamedTuple{names}}
         return new{Tfields}(fields)
+    end
+end
+
+function _copy(x::MutableTangent{Tfields}) where {Tfields}
+    if isdefined(x, :fields)
+        MutableTangent{Tfields}(_copy(x.fields))
+    else
+        MutableTangent{Tfields}()
     end
 end
 

@@ -951,10 +951,10 @@ const RuleMC{A,R} = MistyClosure{OpaqueClosure{A,R}}
 #
 
 struct Pullback{Tprimal,Tpb_args,Tpb_ret,isva,nargs}
-    pb_oc::Base.RefValue{RuleMC{Tpb_args,Tpb_ret}}
+    pb_oc::RuleMC{Tpb_args,Tpb_ret}
 end
 
-function Pullback(sig, pb_oc::Ref{<:RuleMC{A,R}}, isva::Bool, nargs::Int) where {A,R}
+function Pullback(sig, pb_oc::RuleMC{A,R}, isva::Bool, nargs::Int) where {A,R}
     return Pullback{sig,A,R,isva,nargs}(pb_oc)
 end
 
@@ -964,7 +964,9 @@ function nvargs(pb::Pullback{sig}) where {sig}
     return Val{_isva(pb) ? _nargs(pb) - length(sig.parameters) + 1 : 0}
 end
 
-@inline (pb::Pullback)(dy) = __flatten_varargs(_isva(pb), pb.pb_oc[](dy), nvargs(pb)())
+@inline (pb::Pullback)(dy) = __flatten_varargs(
+    _isva(pb), __call_rule(pb.pb_oc, (dy,)), nvargs(pb)()
+)
 
 struct DerivedRule{Tprimal,Tfwd_args,Tfwd_ret,Tpb_args,Tpb_ret,isva,Tnargs<:Val}
     fwds_oc::RuleMC{Tfwd_args,Tfwd_ret}
@@ -996,7 +998,7 @@ end
 
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
-    pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
+    pb = Pullback(sig, fwds.pb_oc_ref[], _isva(fwds), N)
     return fwds.fwds_oc(uf_args...)::CoDual, pb
 end
 
@@ -2033,9 +2035,47 @@ end
 end
 
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
+    _ensure_rule_built!(rule)
+    return __call_rule(rule.rule, args)
+end
+
+# Separated so that the forward-mode AD can treat rule construction as a non-differentiable
+# side effect (see the frule!! below). build_rrule is a meta-level compiler function that
+# must not be decomposed by the forward-mode interpreter.
+@noinline function _ensure_rule_built!(rule::LazyDerivedRule)
     interp = get_interpreter(ReverseMode)
     rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
-    return __call_rule(rule.rule, args)
+    return nothing
+end
+
+@is_primitive MinimalCtx Tuple{typeof(_ensure_rule_built!),LazyDerivedRule}
+function frule!!(::Dual{typeof(_ensure_rule_built!)}, rule_dual::Dual{<:LazyDerivedRule})
+    _ensure_rule_built!(primal(rule_dual))
+    # The primal's :rule field is now initialised. Mirror this on the tangent side so
+    # that subsequent getfield accesses don't hit an uninitialised PossiblyUninitTangent.
+    built_rule = primal(rule_dual).rule
+    zt = zero_tangent(built_rule)
+    t = tangent(rule_dual)
+    _init_tangent_rule_field!(t, zt)
+    return zero_dual(nothing)
+end
+function rrule!!(
+    ::CoDual{typeof(_ensure_rule_built!)}, rule_codual::CoDual{<:LazyDerivedRule}
+)
+    _ensure_rule_built!(primal(rule_codual))
+    return zero_fcodual(nothing),
+    NoPullback(uninit_fcodual(_ensure_rule_built!), rule_codual)
+end
+
+function _init_tangent_rule_field!(t::NTangent, zt)
+    for n in 1:fieldcount(typeof(t.lanes))
+        set_tangent_field!(t[n], :rule, zt)
+    end
+    return nothing
+end
+function _init_tangent_rule_field!(t::MutableTangent, zt)
+    set_tangent_field!(t, :rule, zt)
+    return nothing
 end
 
 """

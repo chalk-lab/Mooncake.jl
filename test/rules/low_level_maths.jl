@@ -40,9 +40,9 @@
             y = Dual(zero(T), one(T))
             z = Dual(zero(T), one(T))
 
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x)) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y)) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z)) === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x))[1] === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y))[1] === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z))[1] === zero(T)
 
             _, pb1 = Mooncake.rrule!!(zero_fcodual(hypot), zero_fcodual(zero(T)))
             _, dx1 = pb1(one(T))
@@ -72,16 +72,16 @@
         for T in (Float16, Float32, Float64)
             @test tangent(
                 Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(one(T), zero(T)))
-            ) === one(T)
+            )[1] === one(T)
             @test tangent(
                 Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(T(2), zero(T)))
-            ) === zero(T)
+            )[1] === zero(T)
             @test isinf(
                 tangent(
                     Mooncake.frule!!(
                         zero_dual(^), Dual(zero(T), one(T)), Dual(T(0.5), zero(T))
                     ),
-                ),
+                )[1],
             )
 
             @test isnan(
@@ -89,26 +89,28 @@
                     Mooncake.frule!!(
                         zero_dual(mod), Dual(T(4), one(T)), Dual(T(2), zero(T))
                     ),
-                ),
+                )[1],
             )
-            @test isnan(tangent(Mooncake.frule!!(zero_dual(mod2pi), Dual(T(2π), one(T)))))
+            @test isnan(
+                tangent(Mooncake.frule!!(zero_dual(mod2pi), Dual(T(2π), one(T))))[1]
+            )
 
             @test tangent(
                 Mooncake.frule!!(
                     zero_dual(max), Dual(one(T), one(T)), Dual(one(T), zero(T))
                 ),
-            ) === zero(T)
+            )[1] === zero(T)
             @test tangent(
                 Mooncake.frule!!(
                     zero_dual(min), Dual(one(T), one(T)), Dual(one(T), zero(T))
                 ),
-            ) === one(T)
+            )[1] === one(T)
 
-            @test tangent(Mooncake.frule!!(zero_dual(Base.eps), Dual(one(T), one(T)))) ===
+            @test tangent(Mooncake.frule!!(zero_dual(Base.eps), Dual(one(T), one(T))))[1] ===
                 zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(nextfloat), Dual(one(T), one(T)))) ===
+            @test tangent(Mooncake.frule!!(zero_dual(nextfloat), Dual(one(T), one(T))))[1] ===
                 one(T)
-            @test tangent(Mooncake.frule!!(zero_dual(prevfloat), Dual(one(T), one(T)))) ===
+            @test tangent(Mooncake.frule!!(zero_dual(prevfloat), Dual(one(T), one(T))))[1] ===
                 one(T)
         end
     end

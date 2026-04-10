@@ -757,6 +757,10 @@ function modify_fwd_ad_stmts!(
         new_undef_inst = new_inst(Expr(:throw_undef_if_not, stmt.args[1], ssa))
         CC.insert_node!(dual_ir, ssa, new_undef_inst, ATTACH_AFTER)
     elseif isexpr(stmt, :enter) || isexpr(stmt, :leave) || isexpr(stmt, :pop_exception)
+    elseif isexpr(stmt, :the_exception)
+        inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
+        exc_ssa = CC.insert_node!(dual_ir, ssa, inst, ATTACH_BEFORE)
+        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, info.tangent_mode, exc_ssa))
     else
         msg = "Expressions of type `:$(stmt.head)` are not yet supported in forward mode"
         throw(ArgumentError(msg))

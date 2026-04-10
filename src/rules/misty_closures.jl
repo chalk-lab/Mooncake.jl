@@ -17,6 +17,10 @@ struct MistyClosureTangent
     dual_callable::Any
 end
 
+function _copy(x::MistyClosureTangent)
+    MistyClosureTangent(_copy(x.captures_tangent), x.dual_callable)
+end
+
 # Build a forward-mode rule for a MistyClosure using its original world age.
 #
 # We cannot use the current world age because the MistyClosure's IR (p.ir[]) has a
@@ -45,9 +49,7 @@ function _dual_mc(p::MistyClosure)
     # Call the interpreter-targeted overload directly so the rule is derived in
     # MistyClosure's original world. The public varargs `build_frule(p, ...)` entrypoint
     # would construct a current-world interpreter instead.
-    return Mooncake.build_frule(
-        interp, p; skip_world_age_check=true, tangent_mode=Val(1)
-    )
+    return Mooncake.build_frule(interp, p; skip_world_age_check=true, tangent_mode=Val(1))
 end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
@@ -215,6 +217,49 @@ function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
     return tf.dual_callable(dual_captures, x...)
 end
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
+    msg =
+        "Attempted to compute the adjoint associated to a `MistyClosure`. " *
+        "This is not currently supported. Please open an issue if you need " *
+        "this functionality."
+    throw(ArgumentError(msg))
+end
+
+# Unpack a Dual{Tuple{A1,...}} into a tuple of individual Dual{Ai,...} elements.
+@inline function _unpack_dual_tuple(d::Dual{<:NTuple{M,Any}}) where {M}
+    p = primal(d)
+    t = tangent(d)
+    return ntuple(Val(M)) do i
+        Dual(getfield(p, i), _get_tangent_field(t, Val(i)))
+    end
+end
+
+# Prevent the forward-mode interpreter from decomposing __call_opaque_closure(mc, ...)
+# into mc.oc field access, which fails because MistyClosureTangent fields don't match
+# MistyClosure's primal fields.
+@is_primitive MinimalCtx Tuple{typeof(__call_opaque_closure),<:MistyClosure,Any}
+function frule!!(
+    ::Dual{typeof(__call_opaque_closure)},
+    mc_dual::Dual{<:MistyClosure,<:NTangent},
+    args_dual::Dual,
+)
+    tf = tangent(mc_dual)
+    dual_captures = Dual(
+        primal(mc_dual).oc.captures, NTangent(map(t -> t.captures_tangent, tf.lanes))
+    )
+    arg_duals = _unpack_dual_tuple(args_dual)
+    return first(tf).dual_callable(dual_captures, arg_duals...)
+end
+function frule!!(
+    ::Dual{typeof(__call_opaque_closure)}, mc_dual::Dual{<:MistyClosure}, args_dual::Dual
+)
+    tf = tangent(mc_dual)
+    dual_captures = Dual(primal(mc_dual).oc.captures, tf.captures_tangent)
+    arg_duals = _unpack_dual_tuple(args_dual)
+    return tf.dual_callable(dual_captures, arg_duals...)
+end
+function rrule!!(
+    ::CoDual{typeof(__call_opaque_closure)}, ::CoDual{<:MistyClosure}, ::CoDual
+)
     msg =
         "Attempted to compute the adjoint associated to a `MistyClosure`. " *
         "This is not currently supported. Please open an issue if you need " *

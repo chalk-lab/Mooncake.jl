@@ -246,14 +246,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
 
         # ── Univariate ────────────────────────────────────────────────────────────
 
-        (
-            "Arcsine() 1",
-            x -> logpdf(Arcsine(), x),
-            (0.5,),
-            1,
-            (:forward, :reverse),
-            :none,
-        ),
+        ("Arcsine() 1", x -> logpdf(Arcsine(), x), (0.5,), 1, (:forward, :reverse), :none),
         (
             "Arcsine(a,b) 1",
             (a, b, x) -> logpdf(Arcsine(a, b), x),
@@ -342,14 +335,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (:forward, :reverse),
             :none,
         ),
-        (
-            "Cauchy() 1",
-            x -> logpdf(Cauchy(), x),
-            (-0.5,),
-            1,
-            (:forward, :reverse),
-            :none,
-        ),
+        ("Cauchy() 1", x -> logpdf(Cauchy(), x), (-0.5,), 1, (:forward, :reverse), :none),
         (
             "Cauchy(μ) 1",
             (μ, x) -> logpdf(Cauchy(μ), x),
@@ -366,30 +352,9 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (:forward, :reverse),
             :none,
         ),
-        (
-            "Chi 1",
-            (ν, x) -> logpdf(Chi(ν), x),
-            (2.5, 0.5),
-            2,
-            (:forward, :reverse),
-            :none,
-        ),
-        (
-            "Chi 2",
-            (ν, x) -> logpdf(Chi(ν), x),
-            (5.5, 1.1),
-            2,
-            (:forward, :reverse),
-            :none,
-        ),
-        (
-            "Chi 3",
-            (ν, x) -> logpdf(Chi(ν), x),
-            (0.1, 0.7),
-            2,
-            (:forward, :reverse),
-            :none,
-        ),
+        ("Chi 1", (ν, x) -> logpdf(Chi(ν), x), (2.5, 0.5), 2, (:forward, :reverse), :none),
+        ("Chi 2", (ν, x) -> logpdf(Chi(ν), x), (5.5, 1.1), 2, (:forward, :reverse), :none),
+        ("Chi 3", (ν, x) -> logpdf(Chi(ν), x), (0.1, 0.7), 2, (:forward, :reverse), :none),
         (
             "Chisq 1",
             (ν, x) -> logpdf(Chisq(ν), x),
@@ -465,30 +430,9 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
 
         # Erlang — x-only differentiation; integer shape k is non-differentiable.
         # Erlang(k, θ) requires k ∈ ℤ₊, so NDual cannot be passed as the shape argument.
-        (
-            "Erlang() 1",
-            x -> logpdf(Erlang(), x),
-            (0.5,),
-            1,
-            (:forward, :reverse),
-            :none,
-        ),
-        (
-            "Erlang() 2",
-            x -> logpdf(Erlang(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse),
-            :none,
-        ),
-        (
-            "Erlang() 3",
-            x -> logpdf(Erlang(), x),
-            (0.9,),
-            1,
-            (:forward, :reverse),
-            :none,
-        ),
+        ("Erlang() 1", x -> logpdf(Erlang(), x), (0.5,), 1, (:forward, :reverse), :none),
+        ("Erlang() 2", x -> logpdf(Erlang(), x), (0.1,), 1, (:forward, :reverse), :none),
+        ("Erlang() 3", x -> logpdf(Erlang(), x), (0.9,), 1, (:forward, :reverse), :none),
         (
             "Exponential() 1",
             x -> logpdf(Exponential(), x),
@@ -537,22 +481,8 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (:forward, :reverse),
             :none,
         ),
-        (
-            "Frechet() 1",
-            x -> logpdf(Frechet(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse),
-            :none,
-        ),
-        (
-            "Frechet() 2",
-            x -> logpdf(Frechet(), x),
-            (1.1,),
-            1,
-            (:forward, :reverse),
-            :none,
-        ),
+        ("Frechet() 1", x -> logpdf(Frechet(), x), (0.1,), 1, (:forward, :reverse), :none),
+        ("Frechet() 2", x -> logpdf(Frechet(), x), (1.1,), 1, (:forward, :reverse), :none),
         (
             "Frechet(α,θ) 1",
             (α, θ, x) -> logpdf(Frechet(α, θ), x),
@@ -929,14 +859,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (:forward, :reverse),
             :none,
         ),
-        (
-            "Normal() 1",
-            x -> logpdf(Normal(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse),
-            :none,
-        ),
+        ("Normal() 1", x -> logpdf(Normal(), x), (0.1,), 1, (:forward, :reverse), :none),
         (
             "Normal(μ,σ) 1",
             (μ, σ, x) -> logpdf(Normal(μ, σ), x),

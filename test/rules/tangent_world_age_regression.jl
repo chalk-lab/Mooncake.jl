@@ -76,6 +76,7 @@
             TestWrapper{TestRecursive{Float32}},
             (TestRecursive(1.0f0),),
             (TestRecursiveTangent{Float32}(0.0f0),),
+            T_wrapper,
         )
         @test result isa T_wrapper
     end

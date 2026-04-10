@@ -144,8 +144,16 @@ end
     if isnothing(lane_count)
         return if dx isa NoTangent
             NTangent(ntuple(_ -> zero_tangent(x), Val(N)))
+        elseif N == 1
+            # Single lane: no inter-lane aliasing, so skip _copy to preserve any
+            # internal aliasing the tangent relies on (e.g. shared Stack memory
+            # between fwds_oc and pb_oc in DerivedRule tangents).
+            NTangent((dx,))
         else
-            NTangent(ntuple(_ -> dx, Val(N)))
+            # _copy rather than a bare reference: dx may be a mutable tangent (e.g.
+            # Array, MutableTangent). Sharing the same object across N lanes would
+            # alias them — in-place accumulation on one lane would corrupt the others.
+            NTangent(ntuple(_ -> _copy(dx), Val(N)))
         end
     end
     tx = _canonical_forward_tangent(x, dx)

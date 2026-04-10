@@ -206,7 +206,6 @@ be used in its place in situations where this is important.
     return Expr(:block, exprs..., :(return true))
 end
 
-#
 """
     _fold_slots(f, init, x, state)
 
@@ -228,7 +227,6 @@ Each callback visit corresponds to one differentiable scalar degree of freedom. 
 IEEE-float values contribute one floating-point slot. Complex IEEE-float values contribute
 two scalar slots, rebuilt from real then imaginary callback results.
 """
-#
 
 @inline function _fold_slots(f::F, init, x::T, state) where {F,T<:IEEEFloat}
     return f(init, x, state)
@@ -862,6 +860,7 @@ _copy(x::Symbol) = x
 _copy(x::Tuple) = map(_copy, x)
 _copy(x::NamedTuple) = map(_copy, x)
 _copy(x::Ref{T}) where {T} = isassigned(x) ? Ref{T}(_copy(x[])) : Ref{T}()
+_copy(x::Ptr) = x
 _copy(x::Type) = x
 
 # TODO: remove the Julia < 1.11 branch (and the corresponding @static VERSION guards in
@@ -903,6 +902,14 @@ _copy(x::Type) = x
 @static if VERSION < v"1.11-"
     @noinline __call_rule_erased!(rule, args) = rule(args...)
     @inline __call_rule(rule, args) = __call_rule_erased!(Base.inferencebarrier(rule), args)
+    @inline function __call_rule(rule::OpaqueClosure{A,R}, args::A) where {A,R}
+        return __call_opaque_closure(rule, args)::R
+    end
+    @inline function __call_rule(
+        rule::MistyClosure{OpaqueClosure{A,R}}, args::A
+    ) where {A,R}
+        return __call_opaque_closure(rule, args)::R
+    end
 
     # TODO: if all internal OpaqueClosure / MistyClosure callsites are routed through
     # `__call_opaque_closure`, this helper may be able to subsume the OpaqueClosure-specific
@@ -915,11 +922,34 @@ _copy(x::Type) = x
             Base.inferencebarrier(oc), Base.inferencebarrier(args)
         )
     end
+    @inline function __call_opaque_closure(oc::OpaqueClosure{A,R}, args::A) where {A,R}
+        return __call_opaque_closure_erased!(
+            Base.inferencebarrier(oc), Base.inferencebarrier(args)
+        )::R
+    end
+    # @noinline: the forward-mode interpreter must see __call_opaque_closure(::MistyClosure,…)
+    # as a call site so that its @is_primitive frule fires. If inlined, getfield(mc, :oc)
+    # appears directly in the IR and _get_tangent_field on MistyClosureTangent fails.
+    @noinline function __call_opaque_closure(
+        mc::MistyClosure{OpaqueClosure{A,R}}, args::A
+    ) where {A,R}
+        return __call_opaque_closure(mc.oc, args)::R
+    end
 else
     @inline __call_rule(rule, args) = rule(args...)
+    # Route MistyClosure through __call_opaque_closure so the @is_primitive frule fires.
+    @inline __call_rule(rule::MistyClosure, args) = __call_opaque_closure(rule, args)
     @inline __call_opaque_closure(oc::OpaqueClosure, args) = Core._apply_iterate(
         iterate, oc, args
     )
+    @inline function __call_opaque_closure(oc::OpaqueClosure{A,R}, args::A) where {A,R}
+        return Core._apply_iterate(iterate, oc, args)::R
+    end
+    @noinline function __call_opaque_closure(
+        mc::MistyClosure{OpaqueClosure{A,R}}, args::A
+    ) where {A,R}
+        return __call_opaque_closure(mc.oc, args)::R
+    end
 end
 
-@inline __call_opaque_closure(mc::MistyClosure, args) = __call_opaque_closure(mc.oc, args)
+@noinline __call_opaque_closure(mc::MistyClosure, args) = __call_opaque_closure(mc.oc, args)

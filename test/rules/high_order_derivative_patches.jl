@@ -18,10 +18,11 @@ function _hessian_column(f, x::Vector{Float64}, i::Int)
         zero_dual(_compute_grad),
         zero_dual(rule),
         zero_dual(f),
-        Dual(x, x_tangent),
-        Dual(x_fdata, zeros(length(x))),
+        Mooncake._internal_forward_dual(x, x_tangent),
+        Mooncake._internal_forward_dual(x_fdata, zeros(length(x))),
     )
-    return primal(result), tangent(result)
+    t = tangent(result)
+    return primal(result), t isa Mooncake.NTangent ? t[1] : t
 end
 
 function _compute_hessian(f, x::Vector{Float64})
@@ -118,7 +119,9 @@ end
 end
 
 # Previous tests use build_f/rrule,
-# here we use the public interface directly.
+# here we use the interpreter-based forward cache (FoRCache) for forward-over-reverse.
+# NfwdCache replaces scalars with NDual which breaks reverse-mode internals;
+# the public HVP API (prepare_hvp_cache) is tested separately below.
 @testset "forward over reverse (public interface)" begin
     function compute_hessian(f, x::Vector{Float64}; debug_mode=false)
         config = Mooncake.Config(; debug_mode)
@@ -126,8 +129,11 @@ end
             rvscache = prepare_gradient_cache(f, y; config)
             value_and_gradient!!(rvscache, f, y)[2][2]
         end
-        fwdcache = prepare_derivative_cache(grad, x; config)
-        hvp(y) = tangent(value_and_derivative!!(fwdcache, zero_dual(grad), Dual(x, y)))
+        fwdcache = Mooncake._prepare_for_primal_derivative_cache(grad, x; config)
+        function hvp(y)
+            dt = value_and_derivative!!(fwdcache, (grad, zero_tangent(grad)), (x, y))[2]
+            return dt isa Mooncake.NTangent ? dt[1] : dt
+        end
         n = length(x)
         H = zeros(n, n)
         for i in 1:n

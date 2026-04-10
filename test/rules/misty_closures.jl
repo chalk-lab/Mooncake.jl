@@ -98,9 +98,10 @@ end
         zero_dual(low_level_gradient),
         zero_dual(rule),
         zero_dual(quadratic),
-        Mooncake.Dual(5.0, 1.0),
+        Mooncake._internal_forward_dual(5.0, 1.0),
     )
-    @test tangent(result) == 6 * 5.0
+    t = tangent(result)
+    @test (t isa Mooncake.NTangent ? t[1] : t) == 6 * 5.0
 
     # Test for world-age mismatch fix in _dual_mc (Julia 1.12+ only).
     # See: https://github.com/chalk-lab/Mooncake.jl/issues/916

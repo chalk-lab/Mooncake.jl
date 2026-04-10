@@ -196,6 +196,13 @@ end
 
 @inline function _nfwd_extract_primitive_parts(y, ::Val{N}) where {N}
     tangent_type(typeof(y)) == NoTangent && return y, NoTangent()
+    # Plain scalar returned from a function that strips dual info (e.g. eps, nextfloat).
+    if y isa IEEEFloat
+        return y, N == 1 ? zero(y) : ntuple(_ -> zero(y), Val(N))
+    elseif y isa Complex{<:IEEEFloat}
+        z = zero(y)
+        return y, N == 1 ? z : ntuple(_ -> z, Val(N))
+    end
     throw(MethodError(_nfwd_extract_primitive_parts, (y, Val(N))))
 end
 
@@ -260,9 +267,7 @@ end
     return NTangent(ntuple(lane -> _nfwd_unpack_output_lane(p, t, Val(lane)), Val(N)))
 end
 
-# Scalar / complex NDual: short-circuit the extract → wrap → unwrap round-trip.
-# N>1: the result is already an NDual / Complex{NDual}, return as-is.
-# N=1: convert to the width-1 Dual type expected by callers.
+# Short-circuit: avoid the extract → wrap → unwrap round-trip for the common scalar case.
 @inline _nfwd_extract_primitive_output(
     y::Nfwd.NDual{T,N}, ::Val{N}
 ) where {T<:IEEEFloat,N} = y
@@ -319,11 +324,12 @@ end
 
 # ── Primitive-slot traversal ─────────────────────────────────────────────────
 
-@inline _nfwd_primitive_input_dof(x) = if Nfwd._nfwd_is_supported_primal(x)
-    _fold_slots((acc, _, _) -> acc + 1, 0, x, nothing)
-else
-    0
-end
+@inline _nfwd_primitive_input_dof(x) =
+    if Nfwd._nfwd_is_supported_primal(x)
+        _fold_slots((acc, _, _) -> acc + 1, 0, x, nothing)
+    else
+        0
+    end
 
 # ── Primitive entry points ────────────────────────────────────────────────────
 
@@ -364,85 +370,188 @@ end
 ) where {M,N}
     _nfwd_check_function_tangent(tangent(f))
     primals = map(primal, x)
+    Tpb = Tuple{NoRData,map(P -> rdata_type(tangent_type(P)), map(typeof, primals))...}
     y_primal = primal(f)(primals...)
     Nfwd._nfwd_is_supported_primal(y_primal) || Nfwd._nfwd_output_error(primals, y_primal)
     y_fdata = fdata(zero_tangent(y_primal))
     y = CoDual(y_primal, y_fdata)
+    total_dof = sum(_nfwd_primitive_input_dof, primals; init=0)
     function primitive_pb!!(y_rdata)
         ȳ = tangent(y_fdata, y_rdata)
-        total_dof = sum(_nfwd_primitive_input_dof, primals)
-        total_dof == 0 && return (NoRData(), map(rdata, map(zero_tangent, primals))...)
-        slot_grads = nothing
-        for start_slot in 1:N:total_dof
-            seed_state = (start_slot=start_slot, next_slot=Ref(1))
-            seeded = let seed_state = seed_state
-                local seed_slots
-                seed_slots =
-                    primal_x ->
-                        if primal_x isa IEEEFloat || primal_x isa Complex{<:IEEEFloat}
-                            _unfold_slots(
-                                (slot_primal, st) -> begin
-                                    slot = st.next_slot[]
-                                    st.next_slot[] = slot + 1
-                                    return if N == 1
-                                        if slot == st.start_slot
-                                            one(slot_primal)
+        total_dof == 0 && return (NoRData(), map(rdata, map(zero_tangent, primals))...)::Tpb
+        if M == 1
+            x1 = primals[1]
+            if x1 isa IEEEFloat
+                lifted = _nfwd_lift_primitive_arg(
+                    x1,
+                    N == 1 ? one(x1) : ntuple(k -> k == 1 ? one(x1) : zero(x1), Val(N)),
+                    Val(N),
+                )
+                _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted), Val(N))
+                return (NoRData(), rdata(first(_nfwd_contract_output(ȳ, dy))))::Tpb
+            elseif x1 isa Complex{<:IEEEFloat}
+                T = typeof(real(x1))
+                if N == 1
+                    lifted_re = _nfwd_lift_primitive_arg(
+                        x1, complex(one(T), zero(T)), Val(1)
+                    )
+                    _, dy_re = _nfwd_extract_primitive_parts(primal(f)(lifted_re), Val(1))
+                    lifted_im = _nfwd_lift_primitive_arg(
+                        x1, complex(zero(T), one(T)), Val(1)
+                    )
+                    _, dy_im = _nfwd_extract_primitive_parts(primal(f)(lifted_im), Val(1))
+                    return (
+                        NoRData(),
+                        rdata(
+                            complex(
+                                first(_nfwd_contract_output(ȳ, dy_re)),
+                                first(_nfwd_contract_output(ȳ, dy_im)),
+                            ),
+                        ),
+                    )::Tpb
+                else
+                    lifted = _nfwd_lift_primitive_arg(
+                        x1,
+                        ntuple(
+                            k -> if k == 1
+                                complex(one(T), zero(T))
+                            elseif k == 2
+                                complex(zero(T), one(T))
+                            else
+                                zero(x1)
+                            end,
+                            Val(N),
+                        ),
+                        Val(N),
+                    )
+                    _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted), Val(N))
+                    lane_vals = _nfwd_contract_output(ȳ, dy)
+                    return (
+                        NoRData(),
+                        rdata(
+                            complex(
+                                lane_vals[1],
+                                N >= 2 ? lane_vals[2] : zero(typeof(lane_vals[1])),
+                            ),
+                        ),
+                    )::Tpb
+                end
+            end
+        end
+        seed_slots = let primals = primals
+            function seed_slots(start_slot)
+                seed_state = (start_slot=start_slot, next_slot=Ref(1))
+                let seed_state = seed_state
+                    local seed_one
+                    seed_one =
+                        primal_x ->
+                            if primal_x isa IEEEFloat || primal_x isa Complex{<:IEEEFloat}
+                                _unfold_slots(
+                                    (slot_primal, st) -> begin
+                                        slot = st.next_slot[]
+                                        st.next_slot[] = slot + 1
+                                        return if N == 1
+                                            if slot == st.start_slot
+                                                one(slot_primal)
+                                            else
+                                                zero(slot_primal)
+                                            end
                                         else
-                                            zero(slot_primal)
+                                            ntuple(
+                                                k -> if slot == st.start_slot + k - 1
+                                                        one(slot_primal)
+                                                    else
+                                                        zero(slot_primal)
+                                                    end,
+                                                Val(N),
+                                            )
                                         end
-                                    else
-                                        ntuple(
-                                            k -> if slot == st.start_slot + k - 1
-                                                one(slot_primal)
-                                            else
-                                                zero(slot_primal)
-                                            end,
-                                            Val(N),
+                                    end,
+                                    primal_x,
+                                    seed_state,
+                                )
+                            elseif primal_x isa Array{<:IEEEFloat} ||
+                                primal_x isa Array{<:Complex{<:IEEEFloat}}
+                                _unfold_slots(
+                                    (slot_primal, st) -> begin
+                                        slot = st.next_slot[]
+                                        st.next_slot[] = slot + 1
+                                        Nfwd.NDual{typeof(slot_primal),N}(
+                                            slot_primal,
+                                            ntuple(
+                                                k -> if slot == st.start_slot + k - 1
+                                                        one(slot_primal)
+                                                    else
+                                                        zero(slot_primal)
+                                                    end,
+                                                Val(N),
+                                            ),
                                         )
-                                    end
-                                end,
-                                primal_x,
-                                seed_state,
-                            )
-                        elseif primal_x isa Array{<:IEEEFloat} ||
-                            primal_x isa Array{<:Complex{<:IEEEFloat}}
-                            _unfold_slots(
-                                (slot_primal, st) -> begin
-                                    slot = st.next_slot[]
-                                    st.next_slot[] = slot + 1
-                                    Nfwd.NDual{typeof(slot_primal),N}(
-                                        slot_primal,
-                                        ntuple(
-                                            k -> if slot == st.start_slot + k - 1
-                                                one(slot_primal)
-                                            else
-                                                zero(slot_primal)
-                                            end,
-                                            Val(N),
-                                        ),
-                                    )
-                                end,
-                                primal_x,
-                                seed_state,
-                            )
-                        elseif primal_x isa Tuple
-                            tuple_map(seed_slots, primal_x)
-                        else
-                            NoTangent()
-                        end
-                map(seed_slots, primals)
+                                    end,
+                                    primal_x,
+                                    seed_state,
+                                )
+                            elseif primal_x isa Tuple
+                                tuple_map(seed_one, primal_x)
+                            else
+                                NoTangent()
+                            end
+                    map(seed_one, primals)
+                end
             end
-            lifted = _nfwd_lift_primitive_args(Val(N), primals, seeded)
-            _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted...), Val(N))
-            lane_vals = _nfwd_contract_output(ȳ, dy)
-            if isnothing(slot_grads)
-                slot_grads = zeros(typeof(first(lane_vals)), total_dof)
+        end
+        slot_grads = if total_dof == 1
+            slot_grad_1 = nothing
+            for start_slot in 1:N:total_dof
+                lifted = _nfwd_lift_primitive_args(Val(N), primals, seed_slots(start_slot))
+                _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted...), Val(N))
+                lane_vals = _nfwd_contract_output(ȳ, dy)
+                if isnothing(slot_grad_1)
+                    slot_grad_1 = zero(typeof(first(lane_vals)))
+                end
+                slot_grad_1 += first(lane_vals)
             end
-            for (lane, lane_val) in enumerate(lane_vals)
-                slot = start_slot + lane - 1
-                slot > total_dof && break
-                @inbounds slot_grads[slot] += lane_val
+            (slot_grad_1,)
+        elseif total_dof == 2
+            # Peel the first iteration to establish concrete element type,
+            # avoiding Union{Nothing,T} on v1.10.
+            _first_lifted = _nfwd_lift_primitive_args(Val(N), primals, seed_slots(1))
+            _, _first_dy = _nfwd_extract_primitive_parts(
+                primal(f)(_first_lifted...), Val(N)
+            )
+            _first_lanes = _nfwd_contract_output(ȳ, _first_dy)
+            Tlane = typeof(first(_first_lanes))
+            slot_grad_1 = zero(Tlane) + _first_lanes[1]
+            slot_grad_2 = zero(Tlane)
+            if length(_first_lanes) > 1
+                slot_grad_2 += _first_lanes[2]
             end
+            for start_slot in (1 + N):N:total_dof
+                lifted = _nfwd_lift_primitive_args(Val(N), primals, seed_slots(start_slot))
+                _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted...), Val(N))
+                lane_vals = _nfwd_contract_output(ȳ, dy)
+                slot_grad_1 += lane_vals[1]
+                if length(lane_vals) > 1
+                    slot_grad_2 += lane_vals[2]
+                end
+            end
+            (slot_grad_1, slot_grad_2)
+        else
+            slot_grads = nothing
+            for start_slot in 1:N:total_dof
+                lifted = _nfwd_lift_primitive_args(Val(N), primals, seed_slots(start_slot))
+                _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted...), Val(N))
+                lane_vals = _nfwd_contract_output(ȳ, dy)
+                if isnothing(slot_grads)
+                    slot_grads = zeros(typeof(first(lane_vals)), total_dof)
+                end
+                for (lane, lane_val) in enumerate(lane_vals)
+                    slot = start_slot + lane - 1
+                    slot > total_dof && break
+                    @inbounds slot_grads[slot] += lane_val
+                end
+            end
+            slot_grads
         end
         grad_state = (vals=slot_grads, next_slot=Ref(1))
         grads = let grad_state = grad_state
@@ -469,7 +578,7 @@ end
                     end
             map(rebuild_grad, primals)
         end
-        return (NoRData(), map(rdata, grads)...)
+        return (NoRData(), map(rdata, grads)...)::Tpb
     end
     return y, primitive_pb!!
 end

@@ -14,6 +14,8 @@ const TWP{P} = TwicePrecisionFloat{P}
 
 @foldable tangent_type(P::Type{<:TWP}) = P
 
+_copy(x::TWP) = x  # immutable struct, no aliasing risk
+
 zero_tangent_internal(::TWP{F}, ::MaybeCache) where {F} = TWP{F}(zero(F), zero(F))
 
 function randn_tangent_internal(rng::AbstractRNG, p::TWP{F}, ::MaybeCache) where {F}
@@ -67,7 +69,7 @@ function frule!!(
     ::Dual{typeof(_new_)}, ::Dual{Type{TWP{P}}}, hi::Dual{P}, lo::Dual{P}
 ) where {P<:IEEEFloat}
     x = _new_(TWP{P}, primal(hi), primal(lo))
-    dx = _new_(TWP{P}, tangent(hi), tangent(lo))
+    dx = _lane_map((dhi, dlo) -> _new_(TWP{P}, dhi, dlo), tangent(hi), tangent(lo))
     return Dual(x, dx)
 end
 function rrule!!(
@@ -82,7 +84,8 @@ function frule!!(
     ::Dual{typeof(twiceprecision)}, val::Dual{P}, nb::Dual{<:Integer}
 ) where {P<:IEEEFloat}
     x = twiceprecision(primal(val), primal(nb))
-    dx = twiceprecision(tangent(val), primal(nb))
+    _nb = primal(nb)
+    dx = _lane_map(t -> twiceprecision(t, _nb), tangent(val))
     return Dual(x, dx)
 end
 function rrule!!(
@@ -97,7 +100,8 @@ function frule!!(
     ::Dual{typeof(twiceprecision)}, val::Dual{P}, nb::Dual{<:Integer}
 ) where {P<:TWP}
     x = twiceprecision(primal(val), primal(nb))
-    dx = twiceprecision(tangent(val), primal(nb))
+    _nb = primal(nb)
+    dx = _lane_map(t -> twiceprecision(t, _nb), tangent(val))
     return Dual(x, dx)
 end
 function rrule!!(
@@ -109,7 +113,7 @@ end
 
 @is_primitive MinimalCtx Tuple{Type{<:IEEEFloat},TWP}
 function frule!!(::Dual{Type{P}}, x::Dual{S}) where {P<:IEEEFloat,S<:TWP}
-    return Dual(P(primal(x)), P(tangent(x)))
+    return Dual(P(primal(x)), _lane_map(P, tangent(x)))
 end
 function rrule!!(::CoDual{Type{P}}, x::CoDual{S}) where {P<:IEEEFloat,S<:TWP}
     float_from_twice_precision_pb(dy::P) = NoRData(), S(dy)
@@ -117,7 +121,9 @@ function rrule!!(::CoDual{Type{P}}, x::CoDual{S}) where {P<:IEEEFloat,S<:TWP}
 end
 
 @is_primitive MinimalCtx Tuple{typeof(-),TWP}
-frule!!(::Dual{typeof(-)}, x::Dual{P}) where {P<:TWP} = Dual(-primal(x), -tangent(x))
+function frule!!(::Dual{typeof(-)}, x::Dual{P}) where {P<:TWP}
+    Dual(-primal(x), _lane_map(-, tangent(x)))
+end
 function rrule!!(::CoDual{typeof(-)}, x::CoDual{P}) where {P<:TWP}
     negate_twice_precision_pb(dy::P) = NoRData(), -dy
     return zero_fcodual(-(x.x)), negate_twice_precision_pb
@@ -125,7 +131,7 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(+),TWP,IEEEFloat}
 function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
-    return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
+    return Dual(primal(x) + primal(y), _lane_map(+, tangent(x), tangent(y)))
 end
 function rrule!!(
     ::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{S}
@@ -136,7 +142,7 @@ end
 
 @is_primitive(MinimalCtx, Tuple{typeof(+),P,P} where {P<:TWP})
 function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{P}) where {P<:TWP}
-    return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
+    return Dual(primal(x) + primal(y), _lane_map(+, tangent(x), tangent(y)))
 end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{P}) where {P<:TWP}
     plus_pullback(dz::P) = NoRData(), dz, dz
@@ -154,8 +160,11 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(*),TWP,IEEEFloat}
 function frule!!(::Dual{typeof(*)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
-    z = primal(x) * primal(y)
-    dz = primal(x) * tangent(y) + tangent(x) * primal(y)
+    _x, _y = primal(x), primal(y)
+    z = _x * _y
+    dz = _lane_map(
+        +, _lane_map(Base.Fix1(*, _x), tangent(y)), _lane_map(Base.Fix2(*, _y), tangent(x))
+    )
     return Dual(z, dz)
 end
 function rrule!!(
@@ -168,7 +177,8 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(*),TWP,Integer}
 function frule!!(::Dual{typeof(*)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TWP}
-    return Dual(primal(x) * primal(y), tangent(x) * primal(y))
+    _y = primal(y)
+    return Dual(primal(x) * _y, _lane_map(Base.Fix2(*, _y), tangent(x)))
 end
 function rrule!!(::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
@@ -178,8 +188,9 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(/),TWP,IEEEFloat}
 function frule!!(::Dual{typeof(/)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
-    z = primal(x) / primal(y)
-    dz = tangent(x) / primal(y) - tangent(y) * primal(x) / primal(y)^2
+    _x, _y = primal(x), primal(y)
+    z = _x / _y
+    dz = _lane_map((dx, dy) -> dx / _y - dy * _x / _y^2, tangent(x), tangent(y))
     return Dual(z, dz)
 end
 function rrule!!(
@@ -192,7 +203,8 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(/),TWP,Integer}
 function frule!!(::Dual{typeof(/)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TWP}
-    return Dual(primal(x) / primal(y), tangent(x) / primal(y))
+    _y = primal(y)
+    return Dual(primal(x) / _y, _lane_map(Base.Fix2(/, _y), tangent(x)))
 end
 function rrule!!(::CoDual{typeof(/)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
@@ -222,7 +234,9 @@ function frule!!(
 ) where {T<:IEEEFloat}
     x = range_start_step_length(primal(a), primal(st), primal(len))
     Tx = tangent_type(typeof(x))
-    dx = Tx((ref=tangent(a), step=tangent(st), len=NoTangent(), offset=NoTangent()))
+    dx = _lane_map(tangent(a), tangent(st)) do da, dst
+        Tx((ref=da, step=dst, len=NoTangent(), offset=NoTangent()))
+    end
     return Dual(x, dx)
 end
 function rrule!!(
@@ -242,9 +256,12 @@ function frule!!(
     ::Dual{typeof(unsafe_getindex)}, r::Dual{P}, i::Dual{<:Integer}
 ) where {P<:TWPStepRangeLen}
     x = unsafe_getindex(primal(r), primal(i))
-    dref = _get_tangent_field(tangent(r), :ref)
-    dstep = _get_tangent_field(tangent(r), :step)
-    dx = eltype(P)(dref + dstep * (primal(i) - primal(r).offset))
+    dref = _get_tangent_field(tangent(r), Val(:ref))
+    dstep = _get_tangent_field(tangent(r), Val(:step))
+    _i_off = primal(i) - primal(r).offset
+    dx = _lane_map(dref, dstep) do dr, ds
+        eltype(P)(dr + ds * _i_off)
+    end
     return Dual(x, dx)
 end
 function rrule!!(
@@ -269,9 +286,12 @@ function frule!!(
 ) where {P<:TWPStepRangeLen}
     x = _getindex_hiprec(primal(r), primal(i))
     offset = primal(r).offset
-    dstep = _get_tangent_field(tangent(r), :step)
-    dref = _get_tangent_field(tangent(r), :ref)
-    dx = (primal(i) - offset) * dstep + dref
+    dstep = _get_tangent_field(tangent(r), Val(:step))
+    dref = _get_tangent_field(tangent(r), Val(:ref))
+    _i_off = primal(i) - offset
+    dx = _lane_map(dref, dstep) do dr, ds
+        _i_off * ds + dr
+    end
     return Dual(x, dx)
 end
 function rrule!!(
@@ -294,7 +314,9 @@ function frule!!(
 ) where {P<:IEEEFloat}
     x = (:)(primal(start), primal(step), primal(stop))
     T = tangent_type(typeof(x))
-    dx = T((ref=tangent(start), step=tangent(step), len=NoTangent(), offset=NoTangent()))
+    dx = _lane_map(tangent(start), tangent(step)) do ds, dt
+        T((ref=ds, step=dt, len=NoTangent(), offset=NoTangent()))
+    end
     return Dual(x, dx)
 end
 function rrule!!(
@@ -309,10 +331,13 @@ function frule!!(::Dual{typeof(sum)}, x::Dual{P}) where {P<:TWPStepRangeLen}
     y = sum(primal(x))
     l = primal(x).len
     offset = primal(x).offset
-    dref = _get_tangent_field(tangent(x), :ref)
-    dstep = _get_tangent_field(tangent(x), :step)
-    dy = dref * l + dstep * (0.5 * l * (l + 1) - l * offset)
-    return Dual(y, typeof(y)(dy))
+    dref = _get_tangent_field(tangent(x), Val(:ref))
+    dstep = _get_tangent_field(tangent(x), Val(:step))
+    _coeff = 0.5 * l * (l + 1) - l * offset
+    dy = _lane_map(dref, dstep) do dr, ds
+        typeof(y)(dr * l + ds * _coeff)
+    end
+    return Dual(y, dy)
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{P}) where {P<:TWPStepRangeLen}
     l = x.x.len
@@ -340,9 +365,10 @@ function frule!!(
     l = primal(length) - 1
     y = Base.range_start_stop_length(primal(start), primal(stop), primal(length))
     T = tangent_type(typeof(y))
-    dref = tangent(start)
-    dstep = (tangent(stop) - tangent(start)) / l
-    dy = T((ref=dref, step=dstep, len=NoTangent(), offset=NoTangent()))
+    dy = _lane_map(tangent(start), tangent(stop)) do dstart, dstop
+        dstep = (dstop - dstart) / l
+        T((ref=dstart, step=dstep, len=NoTangent(), offset=NoTangent()))
+    end
     return Dual(y, dy)
 end
 function rrule!!(
@@ -369,7 +395,7 @@ end
         ::Dual{typeof(Base._exp_allowing_twice64)}, x::Dual{TwicePrecision{Float64}}
     )
         y = Base._exp_allowing_twice64(primal(x))
-        return Dual(y, typeof(y)(y * tangent(x)))
+        return Dual(y, _lane_map(t -> typeof(y)(y * t), tangent(x)))
     end
     function rrule!!(
         ::CoDual{typeof(Base._exp_allowing_twice64)}, x::CoDual{TwicePrecision{Float64}}
@@ -382,7 +408,7 @@ end
     @is_primitive(MinimalCtx, Tuple{typeof(Base._log_twice64_unchecked),Float64})
     function frule!!(::Dual{typeof(Base._log_twice64_unchecked)}, x::Dual{Float64})
         y = Base._log_twice64_unchecked(primal(x))
-        return Dual(y, typeof(y)(tangent(x) / primal(x)))
+        return Dual(y, _lane_map(t -> typeof(y)(t / primal(x)), tangent(x)))
     end
     function rrule!!(::CoDual{typeof(Base._log_twice64_unchecked)}, x::CoDual{Float64})
         _x = x.x

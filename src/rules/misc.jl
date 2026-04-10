@@ -144,9 +144,7 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 end
 
 @inline function frule!!(
-    fdual::Dual{typeof(lgetfield)},
-    x::Complex{Nfwd.NDual{T,N}},
-    name::Dual{Val{f}},
+    fdual::Dual{typeof(lgetfield)}, x::Complex{Nfwd.NDual{T,N}}, name::Dual{Val{f}}
 ) where {T<:IEEEFloat,N,f}
     return _nfwd_primitive_frule_call(Val(N), fdual, x, name)
 end
@@ -379,7 +377,7 @@ end
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
     function frule!!(::Dual{typeof(copy)}, a::Dual{<:Dict})
-        return Dual(copy(primal(a)), _copy_dict_tangent(tangent(a)))
+        return Dual(copy(primal(a)), _lane_map(_copy_dict_tangent, tangent(a)))
     end
     function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Dict})
         dx = tangent(a)
