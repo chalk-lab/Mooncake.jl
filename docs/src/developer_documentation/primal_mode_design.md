@@ -26,12 +26,12 @@ representation choice and the lifted execution boundary.
 
 ## Candidate Chunked Tangent Layouts
 
-- today's lane-outer `NTangent`, i.e. a tuple of ordinary tangents
-- a packed `NTangent` with lane-inner scalar leaves closer to `NDual`
+- today's basis-dir-outer `NTangent`, i.e. a tuple of ordinary tangents
+- a packed `NTangent` with basis-dir-inner scalar leaves closer to `NDual`
 - overloading `tangent_type(::Val{N}, ...)` only for `Array{<:IEEEFloat}` /
   `Array{<:Complex{<:IEEEFloat}}` so array leaves use NDual-like packed storage
 - overloading `tangent_type(::Val{N}, ...)` only for those arrays so tangents use one extra
-  lane dimension instead
+  basis-dir dimension instead
 
 ## Current Choices
 
@@ -47,7 +47,7 @@ representation choice and the lifted execution boundary.
 
 ## Width-Aware Dual-Type Protocol
 
-The remaining larger design direction is to make the lifted path itself generic over a
+The remaining larger design point is to make the lifted path itself generic over a
 width-aware dual-type protocol, rather than assuming concrete `Dual{P,T}` internally. A
 minimal construction / extraction protocol would be:
 

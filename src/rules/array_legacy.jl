@@ -86,7 +86,7 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
     Base._deletebeg!(primal(a), primal(d))
-    _lane_map(tangent(a)) do da
+    _basis_dir_map(tangent(a)) do da
         Base._deletebeg!(da, primal(d))
         return da
     end
@@ -116,7 +116,7 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
 function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
     Base._deleteend!(primal(a), primal(d))
-    _lane_map(tangent(a)) do da
+    _basis_dir_map(tangent(a)) do da
         Base._deleteend!(da, primal(d))
         return da
     end
@@ -158,7 +158,7 @@ function frule!!(
     delta::Dual{<:Integer},
 )
     Base._deleteat!(primal(a), primal(i), primal(delta))
-    _lane_map(tangent(a)) do da
+    _basis_dir_map(tangent(a)) do da
         Base._deleteat!(da, primal(i), primal(delta))
         return da
     end
@@ -198,7 +198,7 @@ function frule!!(
 ) where {T}
     pd = primal(d)
     Base._growbeg!(primal(a), pd)
-    _lane_map(tangent(a)) do da
+    _basis_dir_map(tangent(a)) do da
         old_da = copy(da)
         Base._growbeg!(da, pd)
         if !isempty(old_da)
@@ -231,7 +231,7 @@ end
 function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
     pd = primal(d)
     Base._growend!(primal(a), pd)
-    _lane_map(tangent(a)) do da
+    _basis_dir_map(tangent(a)) do da
         old_da = copy(da)
         old_length = length(old_da)
         Base._growend!(da, pd)
@@ -268,7 +268,7 @@ function frule!!(
     pi = primal(i)
     pd = primal(d)
     Base._growat!(primal(a), pi, pd)
-    _lane_map(tangent(a)) do da
+    _basis_dir_map(tangent(a)) do da
         old_da = copy(da)
         Base._growat!(da, pi, pd)
         if !isempty(old_da)
@@ -311,7 +311,7 @@ end
 @is_primitive DefaultCtx Tuple{typeof(sizehint!),Vector,Integer}
 function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
     sizehint!(primal(x), primal(sz))
-    _lane_map(tangent(x)) do dx
+    _basis_dir_map(tangent(x)) do dx
         sizehint!(dx, primal(sz))
         return dx
     end
@@ -338,7 +338,7 @@ function frule!!(
     a::Dual{<:Array{T}},
 ) where {T}
     y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
-    dy = _lane_map(_jl_array_ptr_tangent, tangent(a))
+    dy = _basis_dir_map(_jl_array_ptr_tangent, tangent(a))
     return Dual(y, dy)
 end
 function rrule!!(
@@ -370,7 +370,7 @@ function frule!!(
 ) where {T}
     _n = primal(n)
     Base.unsafe_copyto!(primal(dest), primal(doffs), primal(src), primal(soffs), _n)
-    _lane_map(
+    _basis_dir_map(
         (ddest, dsrc) -> begin
             Base.unsafe_copyto!(ddest, primal(doffs), dsrc, primal(soffs), _n)
             ddest
@@ -435,7 +435,7 @@ Base.@propagate_inbounds function frule!!(
 ) where {N}
     _inds = tuple_map(primal, inds)
     y = arrayref(primal(inbounds), primal(x), _inds...)
-    dy = _lane_map(dx -> arrayref(primal(inbounds), dx, _inds...), tangent(x))
+    dy = _basis_dir_map(dx -> arrayref(primal(inbounds), dx, _inds...), tangent(x))
     return Dual(y, dy)
 end
 Base.@propagate_inbounds function rrule!!(
@@ -470,7 +470,7 @@ function frule!!(
 )
     _inds = tuple_map(primal, inds)
     Core.arrayset(primal(inbounds), primal(A), primal(v), _inds...)
-    _lane_map(tangent(A), tangent(v)) do dA, dv
+    _basis_dir_map(tangent(A), tangent(v)) do dA, dv
         Core.arrayset(primal(inbounds), dA, dv, _inds...)
         return dA
     end

@@ -171,13 +171,14 @@ function _get_tangent_field(
 end
 @inline function _get_tangent_field(f::NTangent, name)
     return NTangent(
-        ntuple(n -> _get_tangent_field(f[n], name), Val(fieldcount(typeof(f.lanes))))
+        ntuple(n -> _get_tangent_field(f[n], name), Val(fieldcount(typeof(f.basis_dirs))))
     )
 end
 @inline function _get_tangent_field(f::NTangent, name, inbounds)
     return NTangent(
         ntuple(
-            n -> _get_tangent_field(f[n], name, inbounds), Val(fieldcount(typeof(f.lanes)))
+            n -> _get_tangent_field(f[n], name, inbounds),
+            Val(fieldcount(typeof(f.basis_dirs))),
         ),
     )
 end
@@ -327,7 +328,9 @@ function lsetfield_frule(
     setfield!(primal(value), name, primal(x))
     dv = tangent(value)
     dx = tangent(x)
-    ntuple(n -> set_tangent_field!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.lanes))))
+    ntuple(
+        n -> set_tangent_field!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.basis_dirs)))
+    )
     return x
 end
 function lsetfield_frule(
@@ -336,7 +339,8 @@ function lsetfield_frule(
     setfield!(primal(value), name, primal(x))
     dv = tangent(value)
     ntuple(
-        n -> set_tangent_field!(dv[n], name, NoTangent()), Val(fieldcount(typeof(dv.lanes)))
+        n -> set_tangent_field!(dv[n], name, NoTangent()),
+        Val(fieldcount(typeof(dv.basis_dirs))),
     )
     return x
 end
@@ -377,7 +381,7 @@ end
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
     function frule!!(::Dual{typeof(copy)}, a::Dual{<:Dict})
-        return Dual(copy(primal(a)), _lane_map(_copy_dict_tangent, tangent(a)))
+        return Dual(copy(primal(a)), _basis_dir_map(_copy_dict_tangent, tangent(a)))
     end
     function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Dict})
         dx = tangent(a)

@@ -2068,7 +2068,7 @@ function rrule!!(
 end
 
 function _init_tangent_rule_field!(t::NTangent, zt)
-    for n in 1:fieldcount(typeof(t.lanes))
+    for n in 1:fieldcount(typeof(t.basis_dirs))
         set_tangent_field!(t[n], :rule, zt)
     end
     return nothing

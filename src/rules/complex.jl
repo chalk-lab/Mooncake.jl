@@ -106,15 +106,16 @@ end
 @is_primitive MinimalCtx Tuple{typeof(_new_),<:Complex{P},P,P} where {P<:IEEEFloat}
 @inline function _complex_width_aware_tangent(re_t, im_t, ::Val{1})
     return complex(
-        Mooncake._ntangent_lane(re_t, Val(1)), Mooncake._ntangent_lane(im_t, Val(1))
+        Mooncake._ntangent_basis_dir(re_t, Val(1)),
+        Mooncake._ntangent_basis_dir(im_t, Val(1)),
     )
 end
 @inline function _complex_width_aware_tangent(re_t, im_t, ::Val{N}) where {N}
     return NTangent(
         ntuple(
             i -> complex(
-                Mooncake._ntangent_lane(re_t, Val(i)),
-                Mooncake._ntangent_lane(im_t, Val(i)),
+                Mooncake._ntangent_basis_dir(re_t, Val(i)),
+                Mooncake._ntangent_basis_dir(im_t, Val(i)),
             ),
             Val(N),
         ),

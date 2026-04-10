@@ -374,7 +374,7 @@ function to_cr_tangent(t::NTangent)
     throw(
         ArgumentError(
             "The type $(typeof(t)) is not supported with @from_chainrules or @from_rrule. " *
-            "ChainRules `frule` / `rrule` wrappers currently accept only one forward lane " *
+            "ChainRules `frule` / `rrule` wrappers currently accept only one forward basis_dir " *
             "at a time, so chunked tangents must be lowered before calling `to_cr_tangent`.",
         ),
     )

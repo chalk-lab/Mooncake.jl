@@ -42,9 +42,9 @@ end
 Key details:
 
 - `x.value` is the primal scalar value.
-- `x.partials` is the `N`-lane tuple of tangent directions carried by `NDual`.
-- `_pt_scale(x.partials, s)` multiplies every tangent lane by the same local scalar derivative `s`.
-- The returned `NDual` therefore contains both the primal `cospi(x)` value and the propagated tangent lanes.
+- `x.partials` is the `N`-tuple of tangent basis_dirs carried by `NDual`.
+- `_pt_scale(x.partials, s)` multiplies every tangent basis_dir by the same local scalar derivative `s`.
+- The returned `NDual` therefore contains both the primal `cospi(x)` value and the propagated tangent basis_dirs.
 
 Once that exists, the Mooncake primitive wrapper can stay thin:
 
@@ -62,7 +62,7 @@ end
 The real registrations live in `src/rules/rules_via_nfwd.jl`.
 
 Here `Val(1)` means "run the shared `nfwd` path with chunk size 1".
-In other words, this primitive wrapper asks `nfwd` to propagate one tangent direction at a time through the `NDual` implementation of `cospi`.
+In other words, this primitive wrapper asks `nfwd` to propagate one tangent basis_dir at a time through the `NDual` implementation of `cospi`.
 
 More generally, `Val(N)` is how these helpers receive the chunk size as a compile-time constant.
 Use:
@@ -71,7 +71,7 @@ Use:
 - `Val(N)` with `N > 1` when you are deliberately calling the lower-level `nfwd` machinery in chunked mode.
 
 The key point is that `N` is not an arity marker here.
-It is the number of tangent lanes carried by the `NDual` evaluation.
+It is the number of tangent basis_dirs carried by the `NDual` evaluation.
 
 `NfwdMooncake._nfwd_primitive_rrule_call`/`NfwdMooncake._nfwd_primitive_frule_call` are internal helpers for primitive wrappers, not
 a general public rule interface. They expect a stateless callable tangent, i.e. `NoTangent` or `NoFData`.

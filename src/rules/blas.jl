@@ -43,7 +43,7 @@ convention.
 """
 function arrayify(x, dx::NTangent{Tuple{D}}) where {D}
     # IRfwd stores even width-1 internal tangents as NTangent((dx,)). BLAS/LAPACK rules
-    # still operate lane-by-lane, so unwrap the single lane locally instead of teaching
+    # still operate basis_dir-by-basis_dir, so unwrap the single basis_dir locally instead of teaching
     # every downstream helper about the width-1 wrapper.
     return arrayify(x, dx[1])
 end

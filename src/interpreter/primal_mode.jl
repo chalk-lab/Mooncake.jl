@@ -483,7 +483,7 @@ function generate_primal_ir(
     lifted_ir = CC.compact!(lifted_ir)
     captures_tuple = (captures...,)
     lifted_ir.argtypes[1] = _typeof(captures_tuple)
-    lifted_ir = optimise_ir!(lifted_ir; do_inline)
+    lifted_ir = optimise_ir!(lifted_ir; do_inline, interp)
     return (
         lifted_ir, PrimalIRInfo(isva, nargs, compute_ir_rettype(lifted_ir)), captures_tuple
     )
@@ -832,15 +832,16 @@ function modify_primal_stmts!(
 end
 
 @inline function (primal::DerivedPrimal)(args::Vararg{Any,N}) where {N}
-    any(verify_dual_type, args) &&
-        !all(verify_dual_type, args) &&
+    n_dual = count(verify_dual_type, args)
+    n_dual != 0 &&
+        n_dual != N &&
         throw(
             ArgumentError(
                 "DerivedPrimal does not support mixing width-aware dual-type and primal " *
                 "inputs in one call.",
             ),
         )
-    if all(verify_dual_type, args)
+    if n_dual == N
         internal_args = _convert_width_aware_dual_args(primal, args)
         lifted_args = if isnothing(primal.call_target)
             _prepare_lifted_runtime_args(primal, internal_args)
@@ -1251,8 +1252,7 @@ function generate_lifted_primal_ir(
     lifted_ir = CC.compact!(lifted_ir)
     CC.verify_ir(lifted_ir)
     captures_tuple = (captures...,)
-    lifted_ir.argtypes[1] = _typeof(captures_tuple)
-    lifted_ir = optimise_ir!(lifted_ir; do_inline)
+    lifted_ir = optimise_ir!(lifted_ir; do_inline, interp)
     lifted_ir.argtypes[1] = _typeof(captures_tuple)
     for (a, P) in enumerate(primal_ir.argtypes)
         lifted_ir.argtypes[a + 1] = _lifted_dual_ir_type(tangent_mode, P)

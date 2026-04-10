@@ -261,7 +261,7 @@ function frule!!(
     n::Dual{Int},
 ) where {P}
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    _lane_map(
+    _basis_dir_map(
         (ddest, dsrc) -> unsafe_copyto!(ddest, dsrc, primal(n)), tangent(dest), tangent(src)
     )
     return dest
@@ -429,7 +429,7 @@ end
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), _val(ordering), _val(bc))
     tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
-    dy = _lane_map(dx -> memoryrefget(dx, _val(ordering), _val(bc)), tangent(x))
+    dy = _basis_dir_map(dx -> memoryrefget(dx, _val(ordering), _val(bc)), tangent(x))
     return Dual(y, dy)
 end
 @inline function frule!!(
@@ -473,7 +473,7 @@ end
     boundscheck = primal(_boundscheck)
     y = memoryrefget(primal(x), ordering, boundscheck)
     tangent_type(typeof(y)) == NoTangent && return Dual(y, NoTangent())
-    dy = _lane_map(dx -> memoryrefget(dx, ordering, boundscheck), tangent(x))
+    dy = _basis_dir_map(dx -> memoryrefget(dx, ordering, boundscheck), tangent(x))
     return Dual(y, dy)
 end
 @inline Base.@propagate_inbounds function frule!!(
@@ -508,7 +508,7 @@ end
 
 @inline _memoryrefnew_tangent(dx::NoTangent, args...) = NoTangent()
 @inline function _memoryrefnew_tangent(dx, args...)
-    return _lane_map(dxi -> memoryrefnew(dxi, args...), dx)
+    return _basis_dir_map(dxi -> memoryrefnew(dxi, args...), dx)
 end
 
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
@@ -570,7 +570,7 @@ end
     ::Dual{Val{boundscheck}},
 ) where {P,ordering,boundscheck}
     memoryrefset!(primal(x), primal(value), ordering, boundscheck)
-    _lane_map(
+    _basis_dir_map(
         (dx, dvalue) -> memoryrefset!(dx, dvalue, ordering, boundscheck),
         tangent(x),
         tangent(value),
@@ -717,7 +717,7 @@ function frule!!(
     size::Dual{<:NTuple{N,Int}},
 ) where {P,N}
     y = _new_(Array{P,N}, primal(ref), primal(size))
-    dy = _lane_map(
+    dy = _basis_dir_map(
         dref -> _new_(Array{tangent_type(P),N}, dref, primal(size)), tangent(ref)
     )
     return Dual(y, dy)
@@ -776,7 +776,7 @@ function frule!!(
     dy = if wants_length
         NoTangent()
     else
-        _lane_map(dx -> bitcast(Ptr{NoTangent}, dx.ptr), tangent(x))
+        _basis_dir_map(dx -> bitcast(Ptr{NoTangent}, dx.ptr), tangent(x))
     end
     return Dual(y, dy)
 end
@@ -801,9 +801,9 @@ function frule!!(
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
     dy = if wants_offset
-        _lane_map(dx -> bitcast(Ptr{NoTangent}, dx.ptr_or_offset), tangent(x))
+        _basis_dir_map(dx -> bitcast(Ptr{NoTangent}, dx.ptr_or_offset), tangent(x))
     else
-        _lane_map(dx -> dx.mem, tangent(x))
+        _basis_dir_map(dx -> dx.mem, tangent(x))
     end
     return Dual(y, dy)
 end
@@ -827,7 +827,7 @@ function frule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_size = name === 2 || name === :size
-    dy = wants_size ? NoTangent() : _lane_map(dx -> dx.ref, tangent(x))
+    dy = wants_size ? NoTangent() : _basis_dir_map(dx -> dx.ref, tangent(x))
     return Dual(y, dy)
 end
 function rrule!!(
@@ -916,7 +916,7 @@ function frule!!(
 ) where {T}
     pd = primal(d)
     Base._growbeg!(primal(a), pd)
-    _lane_map(tangent(a)) do da
+    _basis_dir_map(tangent(a)) do da
         old_da = copy(da)
         Base._growbeg!(da, pd)
         isempty(old_da) && return da
@@ -932,7 +932,7 @@ end
 function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
     pd = primal(d)
     Base._growend!(primal(a), pd)
-    _lane_map(tangent(a)) do da
+    _basis_dir_map(tangent(a)) do da
         old_da = copy(da)
         old_length = length(old_da)
         Base._growend!(da, pd)
@@ -952,7 +952,7 @@ function frule!!(
     pi = primal(i)
     pd = primal(d)
     y = Base._growat!(primal(a), pi, pd)
-    _lane_map(tangent(a)) do da
+    _basis_dir_map(tangent(a)) do da
         old_da = copy(da)
         Base._growat!(da, pi, pd)
         isempty(old_da) && return da
@@ -977,7 +977,7 @@ end
 # fresh `Dual` would give one primal object two different tangent objects.
 function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
     sizehint!(primal(x), primal(sz))
-    _lane_map(tangent(x)) do dx
+    _basis_dir_map(tangent(x)) do dx
         sizehint!(dx, primal(sz))
         return dx
     end
@@ -993,7 +993,7 @@ end
     setfield!(primal(value), name, primal(x))
     dv = tangent(value)
     dx = tangent(x)
-    ntuple(Val(fieldcount(typeof(dv.lanes)))) do n
+    ntuple(Val(fieldcount(typeof(dv.basis_dirs)))) do n
         setfield!(dv[n], name, (name === :size || name === 2) ? primal(x) : dx[n])
     end
     return x
@@ -1004,7 +1004,7 @@ end
     setfield!(primal(value), name, primal(x))
     dv = tangent(value)
     dx = (name === :size || name === 2) ? primal(x) : tangent(x)
-    ntuple(n -> setfield!(dv[n], name, dx), Val(fieldcount(typeof(dv.lanes))))
+    ntuple(n -> setfield!(dv[n], name, dx), Val(fieldcount(typeof(dv.basis_dirs))))
     return x
 end
 @inline function lsetfield_frule(
@@ -1013,7 +1013,7 @@ end
     setfield!(primal(value), name, primal(x))
     dv = tangent(value)
     dx = tangent(x)
-    ntuple(n -> setfield!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.lanes))))
+    ntuple(n -> setfield!(dv[n], name, dx[n]), Val(fieldcount(typeof(dv.basis_dirs))))
     return x
 end
 @inline function lsetfield_frule(
@@ -1022,7 +1022,7 @@ end
     setfield!(primal(value), name, primal(x))
     dv = tangent(value)
     dx = (name === :size || name === 2) ? primal(x) : NoTangent()
-    ntuple(n -> setfield!(dv[n], name, dx), Val(fieldcount(typeof(dv.lanes))))
+    ntuple(n -> setfield!(dv[n], name, dx), Val(fieldcount(typeof(dv.basis_dirs))))
     return x
 end
 @inline function frule!!(

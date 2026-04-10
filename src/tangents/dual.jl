@@ -15,112 +15,124 @@ representation.
     return T == NoTangent ? NoTangent : NTangent{NTuple{N,T}}
 end
 
-@inline function _merge_ntangent_lane_counts(a, b)
+@inline function _merge_ntangent_basis_dir_counts(a, b)
     a === nothing && return b
     b === nothing && return a
-    a == b || throw(ArgumentError("All NTangent lanes must agree; found both $a and $b."))
+    a == b ||
+        throw(ArgumentError("All NTangent basis_dirs must agree; found both $a and $b."))
     return a
 end
 
-@inline _ntangent_lane_count(x) = _ntangent_lane_count(x, nothing)
+@inline _ntangent_basis_dir_count(x) = _ntangent_basis_dir_count(x, nothing)
 
-@inline _ntangent_lane_count(::NoTangent, ::Nothing) = nothing
-@inline _ntangent_lane_count(::NoTangent, _seen::IdDict{Any,Nothing}) = nothing
-@inline _ntangent_lane_count(x::NTangent, ::Nothing) = length(x)
-@inline _ntangent_lane_count(x::NTangent, _seen::IdDict{Any,Nothing}) = length(x)
-@inline _ntangent_lane_count(x::Tangent, seen::Union{Nothing,IdDict{Any,Nothing}}) = _ntangent_lane_count(
+@inline _ntangent_basis_dir_count(::NoTangent, ::Nothing) = nothing
+@inline _ntangent_basis_dir_count(::NoTangent, _seen::IdDict{Any,Nothing}) = nothing
+@inline _ntangent_basis_dir_count(x::NTangent, ::Nothing) = length(x)
+@inline _ntangent_basis_dir_count(x::NTangent, _seen::IdDict{Any,Nothing}) = length(x)
+@inline _ntangent_basis_dir_count(x::Tangent, seen::Union{Nothing,IdDict{Any,Nothing}}) = _ntangent_basis_dir_count(
     x.fields, seen
 )
-@inline function _ntangent_lane_count(
+@inline function _ntangent_basis_dir_count(
     x::MutableTangent, seen::Union{Nothing,IdDict{Any,Nothing}}
 )
     seen = isnothing(seen) ? IdDict{Any,Nothing}() : seen
     haskey(seen, x) && return nothing
     seen[x] = nothing
-    return _ntangent_lane_count(x.fields, seen)
+    return _ntangent_basis_dir_count(x.fields, seen)
 end
-@inline function _ntangent_lane_count(
+@inline function _ntangent_basis_dir_count(
     x::PossiblyUninitTangent, seen::Union{Nothing,IdDict{Any,Nothing}}
 )
-    return is_init(x) ? _ntangent_lane_count(val(x), seen) : nothing
+    return is_init(x) ? _ntangent_basis_dir_count(val(x), seen) : nothing
 end
-@generated function _ntangent_lane_count(
+@generated function _ntangent_basis_dir_count(
     x::Tuple{Vararg{Any,N}}, seen::Union{Nothing,IdDict{Any,Nothing}}
 ) where {N}
-    lane_count = :(nothing)
+    basis_dir_count = :(nothing)
     for i in 1:N
-        lane_count = :(_merge_ntangent_lane_counts(
-            $lane_count, _ntangent_lane_count(getfield(x, $i), seen)
+        basis_dir_count = :(_merge_ntangent_basis_dir_counts(
+            $basis_dir_count, _ntangent_basis_dir_count(getfield(x, $i), seen)
         ))
     end
-    return lane_count
+    return basis_dir_count
 end
-@generated function _ntangent_lane_count(
+@generated function _ntangent_basis_dir_count(
     x::NamedTuple{names,Tuple{Vararg{Any,N}}}, seen::Union{Nothing,IdDict{Any,Nothing}}
 ) where {names,N}
-    lane_count = :(nothing)
+    basis_dir_count = :(nothing)
     for i in 1:N
-        lane_count = :(_merge_ntangent_lane_counts(
-            $lane_count, _ntangent_lane_count(getfield(x, $i), seen)
+        basis_dir_count = :(_merge_ntangent_basis_dir_counts(
+            $basis_dir_count, _ntangent_basis_dir_count(getfield(x, $i), seen)
         ))
     end
-    return lane_count
+    return basis_dir_count
 end
-@inline _ntangent_lane_count(::Any, _seen) = nothing
+@inline _ntangent_basis_dir_count(::Any, _seen) = nothing
 
-@inline _ntangent_lane(::NoTangent, ::Val) = NoTangent()
-@inline _ntangent_lane(x::NTangent, ::Val{lane}) where {lane} = x[lane]
-@inline _ntangent_lane(x::Tangent, lane::Val) = Tangent(_ntangent_lane(x.fields, lane))
-@inline _ntangent_lane(x::MutableTangent, lane::Val) = MutableTangent(
-    _ntangent_lane(x.fields, lane)
+@inline _ntangent_basis_dir(::NoTangent, ::Val) = NoTangent()
+@inline _ntangent_basis_dir(x::NTangent, ::Val{basis_dir}) where {basis_dir} = x[basis_dir]
+@inline _ntangent_basis_dir(x::Tangent, basis_dir::Val) = Tangent(
+    _ntangent_basis_dir(x.fields, basis_dir)
 )
-@inline function _ntangent_lane(x::PossiblyUninitTangent, lane::Val)
-    return is_init(x) ? PossiblyUninitTangent(_ntangent_lane(val(x), lane)) : x
+@inline _ntangent_basis_dir(x::MutableTangent, basis_dir::Val) = MutableTangent(
+    _ntangent_basis_dir(x.fields, basis_dir)
+)
+@inline function _ntangent_basis_dir(x::PossiblyUninitTangent, basis_dir::Val)
+    return is_init(x) ? PossiblyUninitTangent(_ntangent_basis_dir(val(x), basis_dir)) : x
 end
-@generated function _ntangent_lane(x::Tuple{Vararg{Any,N}}, lane::Val) where {N}
-    return Expr(:tuple, [:(_ntangent_lane(getfield(x, $i), lane)) for i in 1:N]...)
+@generated function _ntangent_basis_dir(x::Tuple{Vararg{Any,N}}, basis_dir::Val) where {N}
+    return Expr(
+        :tuple, [:(_ntangent_basis_dir(getfield(x, $i), basis_dir)) for i in 1:N]...
+    )
 end
-@generated function _ntangent_lane(
-    x::NamedTuple{names,Tuple{Vararg{Any,N}}}, lane::Val
+@generated function _ntangent_basis_dir(
+    x::NamedTuple{names,Tuple{Vararg{Any,N}}}, basis_dir::Val
 ) where {names,N}
-    fields = Expr(:tuple, [:(_ntangent_lane(getfield(x, $i), lane)) for i in 1:N]...)
+    fields = Expr(
+        :tuple, [:(_ntangent_basis_dir(getfield(x, $i), basis_dir)) for i in 1:N]...
+    )
     return :(NamedTuple{names}($fields))
 end
-@inline _ntangent_lane(x, ::Val) = x
+@inline _ntangent_basis_dir(x, ::Val) = x
 
 @inline _tuple_is_chunked_forward_tangent(::Type{P}, ::Type{<:Tuple}) where {P} =
     !(tangent_type(P) <: Tuple)
-@inline function _array_chunk_lane_count(x::AbstractArray, dx::AbstractArray)
+@inline function _array_chunk_basis_dir_count(x::AbstractArray, dx::AbstractArray)
     ndims(dx) == ndims(x) + 1 || return nothing
     size(dx)[1:ndims(x)] == size(x) || return nothing
     return size(dx, ndims(dx))
 end
-@inline _array_chunk_lane_count(::Any, ::Any) = nothing
+@inline _array_chunk_basis_dir_count(::Any, ::Any) = nothing
 @inline function _array_chunked_forward_tangent(
     x::AbstractArray, dx::AbstractArray, ::Val{N}
 ) where {N}
-    lane_count = _array_chunk_lane_count(x, dx)
-    isnothing(lane_count) && return nothing
-    lane_count == N ||
-        throw(ArgumentError("Chunked forward tangent expected $N lanes, got $lane_count."))
-    return NTangent(ntuple(lane -> copy(selectdim(dx, ndims(dx), lane)), Val(N)))
+    basis_dir_count = _array_chunk_basis_dir_count(x, dx)
+    isnothing(basis_dir_count) && return nothing
+    basis_dir_count == N || throw(
+        ArgumentError(
+            "Chunked forward tangent expected $N basis_dirs, got $basis_dir_count."
+        ),
+    )
+    return NTangent(ntuple(basis_dir -> copy(selectdim(dx, ndims(dx), basis_dir)), Val(N)))
 end
 @inline _array_chunked_forward_tangent(::Any, ::Any, ::Val) = nothing
 
 @inline function _canonical_forward_tangent(x::P, dx) where {P}
     tangent_type(typeof(x)) == NoTangent && return NoTangent()
     dx isa NTangent && return dx
-    array_lane_count = _array_chunk_lane_count(x, dx)
-    !isnothing(array_lane_count) &&
-        return _array_chunked_forward_tangent(x, dx, Val(array_lane_count))
+    array_basis_dir_count = _array_chunk_basis_dir_count(x, dx)
+    !isnothing(array_basis_dir_count) &&
+        return _array_chunked_forward_tangent(x, dx, Val(array_basis_dir_count))
     dx isa Tuple && _tuple_is_chunked_forward_tangent(P, typeof(dx)) && return NTangent(dx)
-    lane_count = _ntangent_lane_count(dx)
-    if isnothing(lane_count)
-        lane = dx isa NoTangent ? zero_tangent(x) : dx
-        return NTangent((lane,))
+    basis_dir_count = _ntangent_basis_dir_count(dx)
+    if isnothing(basis_dir_count)
+        basis_dir = dx isa NoTangent ? zero_tangent(x) : dx
+        return NTangent((basis_dir,))
     end
-    lane_count == 1 && return NTangent((_ntangent_lane(dx, Val(1)),))
-    return NTangent(ntuple(lane -> _ntangent_lane(dx, Val(lane)), Val(lane_count)))
+    basis_dir_count == 1 && return NTangent((_ntangent_basis_dir(dx, Val(1)),))
+    return NTangent(
+        ntuple(basis_dir -> _ntangent_basis_dir(dx, Val(basis_dir)), Val(basis_dir_count))
+    )
 end
 
 @inline _canonical_forward_tangent(x::Type, dx) = NoTangent()
@@ -136,29 +148,29 @@ end
         else
             throw(
                 ArgumentError(
-                    "Chunked forward tangent expected $N lanes, got $(length(dx))."
+                    "Chunked forward tangent expected $N basis_dirs, got $(length(dx))."
                 ),
             )
         end
-    lane_count = _ntangent_lane_count(dx)
-    if isnothing(lane_count)
+    basis_dir_count = _ntangent_basis_dir_count(dx)
+    if isnothing(basis_dir_count)
         return if dx isa NoTangent
             NTangent(ntuple(_ -> zero_tangent(x), Val(N)))
         elseif N == 1
-            # Single lane: no inter-lane aliasing, so skip _copy to preserve any
+            # Single direction: no inter-basis_dir aliasing, so skip _copy to preserve any
             # internal aliasing the tangent relies on (e.g. shared Stack memory
             # between fwds_oc and pb_oc in DerivedRule tangents).
             NTangent((dx,))
         else
             # _copy rather than a bare reference: dx may be a mutable tangent (e.g.
-            # Array, MutableTangent). Sharing the same object across N lanes would
-            # alias them — in-place accumulation on one lane would corrupt the others.
+            # Array, MutableTangent). Sharing the same object across N basis_dirs would
+            # alias them — in-place accumulation on one basis_dir would corrupt the others.
             NTangent(ntuple(_ -> _copy(dx), Val(N)))
         end
     end
     tx = _canonical_forward_tangent(x, dx)
     length(tx) == N || throw(
-        ArgumentError("Chunked forward tangent expected $N lanes, got $(length(tx)).")
+        ArgumentError("Chunked forward tangent expected $N basis_dirs, got $(length(tx))."),
     )
     return tx
 end
@@ -194,7 +206,7 @@ end
 
 Used to pair together a `primal` value and a `tangent` to it. In the context of forward mode
 AD (aka computing Frechet derivatives), `primal` governs the point at which the derivative
-is computed, and `tangent` the direction in which it is computed.
+is computed, and `tangent` the basis_dir in which it is computed.
 
 The default `dual_type(Val(N), P)` uses `tangent_type(Val(N), P)`, and `dual_type(P)` is
 the width-1 shorthand. Explicit hand-written rules may still pass width-1 tangents to
@@ -284,7 +296,7 @@ end
 _primal(x) = x
 _primal(x::Dual) = primal(x)
 
-@inline _dual_width(x) = something(_ntangent_lane_count(tangent(x)), 1)
+@inline _dual_width(x) = something(_ntangent_basis_dir_count(tangent(x)), 1)
 
 @inline function _canonicalize_width_aware_dual(x)
     p = primal(x)
@@ -319,7 +331,7 @@ function verify_dual_type(x)
         return false
     end
     P = typeof(p)
-    N = something(_ntangent_lane_count(t), 1)
+    N = something(_ntangent_basis_dir_count(t), 1)
     expected_dual_type = dual_type(Val(N), P)
     expected_tangent_type = tangent_type(Val(N), P)
     tangent_matches =
@@ -435,11 +447,11 @@ function Dual(x::P, dx::T) where {P,T<:CanonicalForwardTangent}
     # in `src/interpreter/primal_mode.jl` for the control-flow side of the same fix.
     Px = isconcretetype(P) ? P : typeof(x)
     if (dx isa Tuple && _tuple_is_chunked_forward_tangent(typeof(x), typeof(dx))) ||
-        !isnothing(_array_chunk_lane_count(x, dx))
+        !isnothing(_array_chunk_basis_dir_count(x, dx))
         throw(
             ArgumentError(
                 "Chunked forward tangents must be passed explicitly as `NTangent(...)`. " *
-                "Do not pass raw tuple lanes or raw trailing-lane array layouts to `Dual(x, dx)`.",
+                "Do not pass raw tuple basis_dirs or raw trailing-basis-dir array layouts to `Dual(x, dx)`.",
             ),
         )
     end

@@ -995,7 +995,7 @@ end
 # Scalar pullbacks from cached forward rules
 #
 # These are the public scalar-output pullback / gradient entrypoints for width-1 and
-# chunked forward rules. They stay on ordinary primals plus `NTangent` lanes,
+# chunked forward rules. They stay on ordinary primals plus `NTangent` basis_dirs,
 # seed standard-basis chunk tangents internally, and accumulate scalar coefficients into
 # full gradients. This keeps the public interface on top of forward rules rather than
 # wrapping them in a separate reverse-rule object.
@@ -1003,7 +1003,7 @@ end
 # MWE:
 # `build_frule(sum, randn(8); chunk_size=4)` builds a cached frule that
 # evaluates `sum` on ordinary primal arrays. `value_and_pullback!!` and
-# `value_and_gradient!!` then seed four basis directions at a time and accumulate the
+# `value_and_gradient!!` then seed four basis_dirs at a time and accumulate the
 # resulting coefficients into the full input gradient.
 
 function _irfwd_value_and_gradient!!(rule, chunk_size::Int, fx::Vararg{CoDual,M}) where {M}
@@ -1026,8 +1026,8 @@ function _irfwd_value_and_gradient!!(rule, chunk_size::Int, fx::Vararg{CoDual,M}
 
     for start_slot in 1:chunk_size:total_dof
         chunk_width = min(chunk_size, total_dof - start_slot + 1)
-        lane_tangents = ntuple(
-            lane -> if lane <= chunk_width
+        basis_dir_tangents = ntuple(
+            basis_dir -> if basis_dir <= chunk_width
                 _unfold_slots(
                     (slot_primal, state) -> begin
                         state.next_slot[] += 1
@@ -1038,7 +1038,11 @@ function _irfwd_value_and_gradient!!(rule, chunk_size::Int, fx::Vararg{CoDual,M}
                         end
                     end,
                     input_primals,
-                    (slot=start_slot + lane - 1, next_slot=Ref(0), seen=IdDict{Any,Any}()),
+                    (
+                        slot=start_slot + basis_dir - 1,
+                        next_slot=Ref(0),
+                        seen=IdDict{Any,Any}(),
+                    ),
                 )
             else
                 zero_input_tangents
@@ -1048,7 +1052,9 @@ function _irfwd_value_and_gradient!!(rule, chunk_size::Int, fx::Vararg{CoDual,M}
         input_tangents = ntuple(
             i -> begin
                 tangent_type(typeof(input_primals[i])) == NoTangent && return NoTangent()
-                return NTangent(ntuple(lane -> lane_tangents[lane][i], Val(chunk_size)))
+                return NTangent(
+                    ntuple(basis_dir -> basis_dir_tangents[basis_dir][i], Val(chunk_size)),
+                )
             end,
             Val(fieldcount(typeof(input_primals))),
         )
@@ -1059,14 +1065,14 @@ function _irfwd_value_and_gradient!!(rule, chunk_size::Int, fx::Vararg{CoDual,M}
             y = y_chunk
             y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         end
-        for lane in 1:chunk_width
-            coeff = Float64(_unwrap_unit_ntangent(chunk_dy[lane]))
+        for basis_dir in 1:chunk_width
+            coeff = Float64(_unwrap_unit_ntangent(chunk_dy[basis_dir]))
             native_gradients = tuple_map(
                 (g, dx) -> begin
                     dx isa NoTangent && return g
-                    lane_tangent = _ntangent_lane(dx, Val(lane))
-                    lane_tangent isa NoTangent && return g
-                    return increment!!(g, _scale(coeff, lane_tangent))
+                    basis_dir_tangent = _ntangent_basis_dir(dx, Val(basis_dir))
+                    basis_dir_tangent isa NoTangent && return g
+                    return increment!!(g, _scale(coeff, basis_dir_tangent))
                 end,
                 native_gradients,
                 input_tangents,
@@ -1212,7 +1218,7 @@ end
 
 Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to
 compute the (Frechet) derivative of `f` at the primal values in `x` in
-the direction of the tangent values contained in `df` and `dx`.
+the basis_dirs carried by the tangent values contained in `df` and `dx`.
 
 Uses true nfwd NDual arithmetic: lifts primals+tangents to `NDual`, calls `f`
 directly, and extracts primal/tangent from the result.
@@ -1238,15 +1244,15 @@ directly, and extracts primal/tangent from the result.
     width = 0
     for dx in x_tangents
         dx isa NoTangent && continue
-        lane_count = something(_ntangent_lane_count(dx), 1)
-        if width != 0 && width != lane_count
+        basis_dir_count = something(_ntangent_basis_dir_count(dx), 1)
+        if width != 0 && width != basis_dir_count
             throw(
                 ArgumentError(
                     "NfwdCache expects all tangent inputs to have the same derivative width.",
                 ),
             )
         end
-        width = lane_count
+        width = basis_dir_count
     end
     width = width == 0 ? 1 : width
     lifted = _nfwd_lift_primitive_args(Val(width), x_primals, x_tangents)
@@ -1272,15 +1278,15 @@ end
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), primals)
     width = 0
     for x in Base.tail(fx)
-        lane_count = _dual_width(x)
-        if width != 0 && width != lane_count
+        basis_dir_count = _dual_width(x)
+        if width != 0 && width != basis_dir_count
             throw(
                 ArgumentError(
                     "NfwdCache expects all dual inputs to have the same derivative width."
                 ),
             )
         end
-        width = lane_count
+        width = basis_dir_count
     end
     width = width == 0 ? 1 : width
     return _nfwd_extract_primitive_output(
@@ -1377,14 +1383,14 @@ function value_and_gradient!!(cache::NfwdCache, f::F, x::Vararg{Any,N}) where {F
             y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         end
         ȳ = one(typeof(y))
-        lane_vals = _nfwd_contract_output(ȳ, dy)
+        basis_dir_vals = _nfwd_contract_output(ȳ, dy)
         if isnothing(slot_grads)
-            slot_grads = zeros(typeof(first(lane_vals)), total_dof)
+            slot_grads = zeros(typeof(first(basis_dir_vals)), total_dof)
         end
-        for (lane, lane_val) in enumerate(lane_vals)
-            slot = start_slot + lane - 1
+        for (basis_dir, basis_dir_val) in enumerate(basis_dir_vals)
+            slot = start_slot + basis_dir - 1
             slot > total_dof && break
-            @inbounds slot_grads[slot] += lane_val
+            @inbounds slot_grads[slot] += basis_dir_val
         end
     end
     grad_state = (vals=slot_grads, next_slot=Ref(1))
@@ -1511,14 +1517,14 @@ end
                 ),
             )
         end
-        lane_vals = _nfwd_contract_output(ȳ, dy)
+        basis_dir_vals = _nfwd_contract_output(ȳ, dy)
         if isnothing(slot_grads)
-            slot_grads = zeros(typeof(first(lane_vals)), total_dof)
+            slot_grads = zeros(typeof(first(basis_dir_vals)), total_dof)
         end
-        for (lane, lane_val) in enumerate(lane_vals)
-            slot = start_slot + lane - 1
+        for (basis_dir, basis_dir_val) in enumerate(basis_dir_vals)
+            slot = start_slot + basis_dir - 1
             slot > total_dof && break
-            @inbounds slot_grads[slot] += lane_val
+            @inbounds slot_grads[slot] += basis_dir_val
         end
     end
     grad_state = (vals=slot_grads, next_slot=Ref(1))
@@ -1685,13 +1691,13 @@ end
     if applicable(axes, primal) && applicable(axes, tangent)
         axes(primal) == axes(tangent) || throw(
             ArgumentError(
-                "Tangent direction for argument $arg_index must match the primal axes; got axes $(axes(tangent)) for tangent vs $(axes(primal)) for primal",
+                "Tangent basis_dir for argument $arg_index must match the primal axes; got axes $(axes(tangent)) for tangent vs $(axes(primal)) for primal",
             ),
         )
     elseif applicable(length, primal) && applicable(length, tangent)
         length(primal) == length(tangent) || throw(
             ArgumentError(
-                "Tangent direction for argument $arg_index must match the primal length; got length $(length(tangent)) for tangent vs $(length(primal)) for primal",
+                "Tangent basis_dir for argument $arg_index must match the primal length; got length $(length(tangent)) for tangent vs $(length(primal)) for primal",
             ),
         )
     end
@@ -1766,7 +1772,7 @@ Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `
 **Single argument:** `v` is the tangent direction; returns `(f(x), ∇f(x), H(x)v)`. For
 `f: Rⁿ → R` with `x::Vector{Float64}`, the gradient and HVP are `Vector{Float64}`.
 
-**Multiple arguments:** `v` must be a tuple of tangent directions (one per argument);
+**Multiple arguments:** `v` must be a tuple of tangent basis_dirs (one per argument);
 returns `(f(x...), (∇f_x1, ∇f_x2, ...), (h1, h2, ...))` where
 `hk = ∑_j (∂²f/∂xk∂xj) v[j]` is the joint Hessian-vector product for argument `xk`.
 
@@ -1820,7 +1826,7 @@ end
     input_primals = (cache.grad_f, all_x...)
     _validate_prepared_cache_inputs(getfield(cache.fwd_cache, :input_specs), input_primals)
     length(v) == length(all_x) ||
-        throw(ArgumentError("Expected one tangent direction per primal argument"))
+        throw(ArgumentError("Expected one tangent basis_dir per primal argument"))
     for i in eachindex(all_x)
         _assert_matching_tangent_shape(all_x[i], v[i], i)
     end
@@ -1986,7 +1992,7 @@ end
     ns = map(length, all_xs)
     # H_blocks[k][j] = ∂²f/∂xk∂xj, shape ns[k] × ns[j]
     H_blocks = ntuple(k -> ntuple(j -> zeros(T, ns[k], ns[j]), nargs), nargs)
-    # one mutable tangent-direction buffer per argument (reused across HVP calls)
+    # one mutable tangent-basis_dir buffer per argument (reused across HVP calls)
     v = map(ni -> zeros(T, ni), ns)
     # if all arguments are empty, skip the HVP loop and recover value/grads directly
     if all(==(0), ns)

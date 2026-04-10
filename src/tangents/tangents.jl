@@ -11,32 +11,38 @@ struct NoTangent end
 _copy(::NoTangent) = NoTangent()
 
 """
-    NTangent(lanes)
+    NTangent(basis_dirs)
 
 Explicit wrapper for chunked forward-mode tangents at the `Dual` boundary.
 
-Each element of `lanes` is one tangent lane.
+Each element of `basis_dirs` is one propagated forward-mode basis_dir.
+
+Mooncake terminology for chunked forward tangents is:
+
+- `slot`: one scalar degree of freedom in the primal
+- `basis_dir`: one propagated forward-mode derivative component
+- `width`: the number of basis_dirs carried together
 """
 struct NTangent{L<:Tuple}
-    lanes::L
+    basis_dirs::L
 end
 
-Base.length(x::NTangent) = length(x.lanes)
-Base.getindex(x::NTangent, i::Int) = x.lanes[i]
-Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
-Base.copy(x::NTangent) = NTangent(map(copy, x.lanes))
-Base.zero(x::NTangent) = NTangent(map(zero, x.lanes))
-Base.iszero(x::NTangent) = all(iszero, x.lanes)
-_copy(x::NTangent) = NTangent(map(_copy, x.lanes))
-@inline _lane_map(f, x::NTangent) = NTangent(map(f, x.lanes))
-@inline _lane_map(f, x) = f(x)
-@inline function _lane_map(f, x::NTangent, y::NTangent)
-    length(x) == length(y) || throw(ArgumentError("NTangent lane counts must agree."))
-    return NTangent(map(f, x.lanes, y.lanes))
+Base.length(x::NTangent) = length(x.basis_dirs)
+Base.getindex(x::NTangent, i::Int) = x.basis_dirs[i]
+Base.iterate(x::NTangent, st...) = iterate(x.basis_dirs, st...)
+Base.copy(x::NTangent) = NTangent(map(copy, x.basis_dirs))
+Base.zero(x::NTangent) = NTangent(map(zero, x.basis_dirs))
+Base.iszero(x::NTangent) = all(iszero, x.basis_dirs)
+_copy(x::NTangent) = NTangent(map(_copy, x.basis_dirs))
+@inline _basis_dir_map(f, x::NTangent) = NTangent(map(f, x.basis_dirs))
+@inline _basis_dir_map(f, x) = f(x)
+@inline function _basis_dir_map(f, x::NTangent, y::NTangent)
+    length(x) == length(y) || throw(ArgumentError("NTangent basis_dir counts must agree."))
+    return NTangent(map(f, x.basis_dirs, y.basis_dirs))
 end
-@inline _lane_map(f, x::NTangent, y) = NTangent(map(dx -> f(dx, y), x.lanes))
-@inline _lane_map(f, x, y::NTangent) = NTangent(map(dy -> f(x, dy), y.lanes))
-@inline _lane_map(f, x, y) = f(x, y)
+@inline _basis_dir_map(f, x::NTangent, y) = NTangent(map(dx -> f(dx, y), x.basis_dirs))
+@inline _basis_dir_map(f, x, y::NTangent) = NTangent(map(dy -> f(x, dy), y.basis_dirs))
+@inline _basis_dir_map(f, x, y) = f(x, y)
 Base.:(+)(x::NTangent{L}, y::NTangent{L}) where {L<:Tuple} = increment!!(_copy(x), y)
 Base.:(-)(x::NTangent) = _scale(-1.0, x)
 Base.:(-)(x::NTangent{L}, y::NTangent{L}) where {L<:Tuple} = increment!!(_copy(x), -y)
@@ -138,12 +144,12 @@ were actually fields of `t`. This is the moral equivalent of `getfield` for
 end
 @unstable @inline function get_tangent_field(t::NTangent, i::Int)
     return NTangent(
-        ntuple(n -> get_tangent_field(t[n], i), Val(fieldcount(typeof(t.lanes))))
+        ntuple(n -> get_tangent_field(t[n], i), Val(fieldcount(typeof(t.basis_dirs))))
     )
 end
 @unstable @inline function get_tangent_field(t::NTangent, s::Symbol)
     return NTangent(
-        ntuple(n -> get_tangent_field(t[n], s), Val(fieldcount(typeof(t.lanes))))
+        ntuple(n -> get_tangent_field(t[n], s), Val(fieldcount(typeof(t.basis_dirs))))
     )
 end
 @unstable @inline get_tangent_field(t, i::Int) = getfield(t, i)
@@ -178,12 +184,16 @@ end
 end
 @inline function set_tangent_field!(t::NTangent, i::Int, x::NTangent)
     return NTangent(
-        ntuple(n -> set_tangent_field!(t[n], i, x[n]), Val(fieldcount(typeof(t.lanes))))
+        ntuple(
+            n -> set_tangent_field!(t[n], i, x[n]), Val(fieldcount(typeof(t.basis_dirs)))
+        ),
     )
 end
 @inline function set_tangent_field!(t::NTangent, s::Symbol, x::NTangent)
     return NTangent(
-        ntuple(n -> set_tangent_field!(t[n], s, x[n]), Val(fieldcount(typeof(t.lanes))))
+        ntuple(
+            n -> set_tangent_field!(t[n], s, x[n]), Val(fieldcount(typeof(t.basis_dirs)))
+        ),
     )
 end
 
@@ -966,7 +976,7 @@ increment_internal!!(::IncCache, ::NoTangent, ::NoTangent) = NoTangent()
 increment_internal!!(::IncCache, x::T, y::T) where {T<:IEEEFloat} = x + y
 function increment_internal!!(c::IncCache, x::NTangent{L}, y::NTangent{L}) where {L<:Tuple}
     return NTangent(
-        tuple_map((xi, yi) -> increment_internal!!(c, xi, yi), x.lanes, y.lanes)
+        tuple_map((xi, yi) -> increment_internal!!(c, xi, yi), x.basis_dirs, y.basis_dirs)
     )
 end
 function increment_internal!!(::IncCache, x::Ptr{T}, y::Ptr{T}) where {T}
@@ -1027,7 +1037,7 @@ references are correctly handled. If `c` is a `NoCache`, assume no circular refe
 set_to_zero_internal!!(::SetToZeroCache, ::NoTangent) = NoTangent()
 set_to_zero_internal!!(::SetToZeroCache, x::Base.IEEEFloat) = zero(x)
 function set_to_zero_internal!!(c::SetToZeroCache, x::NTangent)
-    return NTangent(tuple_map(Base.Fix1(set_to_zero_internal!!, c), x.lanes))
+    return NTangent(tuple_map(Base.Fix1(set_to_zero_internal!!, c), x.basis_dirs))
 end
 function set_to_zero_internal!!(c::SetToZeroCache, x::Union{Tuple,NamedTuple})
     return tuple_map(Base.Fix1(set_to_zero_internal!!, c), x)
@@ -1064,7 +1074,7 @@ Implementation for [`_scale`](@ref). Use `c` to handle circular references and a
 _scale_internal(::MaybeCache, ::IEEEFloat, ::NoTangent) = NoTangent()
 _scale_internal(::MaybeCache, a::IEEEFloat, t::T) where {T<:IEEEFloat} = T(a * t)
 function _scale_internal(c::MaybeCache, a::IEEEFloat, t::NTangent)
-    return NTangent(map(ti -> _scale_internal(c, a, ti)::typeof(ti), t.lanes))
+    return NTangent(map(ti -> _scale_internal(c, a, ti)::typeof(ti), t.basis_dirs))
 end
 @unstable function _scale_internal(c::MaybeCache, a::IEEEFloat, t::Union{Tuple,NamedTuple})
     return map(ti -> _scale_internal(c, a, ti)::typeof(ti), t)
@@ -1110,7 +1120,8 @@ _dot_internal(::MaybeCache, ::NoTangent, ::NoTangent) = 0.0
 _dot_internal(::MaybeCache, t::T, s::T) where {T<:Union{IEEEFloat,Integer}} = Float64(t * s)
 function _dot_internal(c::MaybeCache, t::NTangent, s::NTangent)
     return sum(
-        map((ti, si) -> _dot_internal(c, ti, si)::Float64, t.lanes, s.lanes); init=0.0
+        map((ti, si) -> _dot_internal(c, ti, si)::Float64, t.basis_dirs, s.basis_dirs);
+        init=0.0,
     )::Float64
 end
 @inline function _dot_internal(
@@ -1678,7 +1689,7 @@ end
 @unstable function tangent_to_friendly!!(
     dest::FriendlyTangentCache{AsRaw}, primal, tangent::NTangent, c::MaybeCache
 )
-    return NTangent(map(t -> tangent_to_friendly!!(dest, primal, t, c), tangent.lanes))
+    return NTangent(map(t -> tangent_to_friendly!!(dest, primal, t, c), tangent.basis_dirs))
 end
 
 # AsCustomised (and any user-defined subtype of AsCustomised) — delegate to user hook.

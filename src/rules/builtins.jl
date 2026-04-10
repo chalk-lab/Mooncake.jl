@@ -116,7 +116,7 @@ import ..Mooncake:
     extract,
     nan_tangent_guard,
     _width_aware_dual,
-    _lane_map,
+    _basis_dir_map,
     canonicalize_chunked_tangent,
     dual_type
 
@@ -230,7 +230,7 @@ function frule!!(
     ::Dual{typeof(unsafe_wrap)}, ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
 ) where {T}
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
-    tangent_arr = _lane_map(dp -> unsafe_wrap(Array, dp, primal(dims)), tangent(p))
+    tangent_arr = _basis_dir_map(dp -> unsafe_wrap(Array, dp, primal(dims)), tangent(p))
     return Dual(primal_arr, tangent_arr)
 end
 
@@ -257,7 +257,9 @@ end
 @intrinsic atomic_pointerset
 function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
     atomic_pointerset(primal(p), primal(x), primal(order))
-    _lane_map((dp, dx) -> atomic_pointerset(dp, dx, primal(order)), tangent(p), tangent(x))
+    _basis_dir_map(
+        (dp, dx) -> atomic_pointerset(dp, dx, primal(order)), tangent(p), tangent(x)
+    )
     return p
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
@@ -297,16 +299,12 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
         Tx = Ptr{tangent_type(eltype(T))}
-        dv = _bitcast_ptr_tangent(Tx, tangent(x))
+        dv = _basis_dir_map(dxi -> bitcast(Tx, dxi), tangent(x))
     else
         dv = NoTangent()
     end
     return Dual(v, dv)
 end
-@inline _bitcast_ptr_tangent(::Type{Tx}, dx::NTangent) where {Tx} = NTangent(
-    map(dxi -> bitcast(Tx, dxi), dx.lanes)
-)
-@inline _bitcast_ptr_tangent(::Type{Tx}, dx) where {Tx} = bitcast(Tx, dx)
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
         msg =
@@ -445,9 +443,9 @@ function frule!!(
 ) where {P<:IEEEFloat}
     a = fma_float(primal(x), primal(y), primal(z))
     N = max(Mooncake._dual_width(x), Mooncake._dual_width(y), Mooncake._dual_width(z))
-    dx = canonicalize_chunked_tangent(primal(x), tangent(x), Val(N)).lanes
-    dy = canonicalize_chunked_tangent(primal(y), tangent(y), Val(N)).lanes
-    dz = canonicalize_chunked_tangent(primal(z), tangent(z), Val(N)).lanes
+    dx = canonicalize_chunked_tangent(primal(x), tangent(x), Val(N)).basis_dirs
+    dy = canonicalize_chunked_tangent(primal(y), tangent(y), Val(N)).basis_dirs
+    dz = canonicalize_chunked_tangent(primal(z), tangent(z), Val(N)).basis_dirs
     da = NTangent(
         ntuple(Val(N)) do n
             fma_float(dx[n], primal(y), fma_float(primal(x), dy[n], dz[n]))
@@ -473,7 +471,7 @@ function frule!!(
     ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P,<:NTangent}
 ) where {Pext<:IEEEFloat,P<:IEEEFloat}
     p = fpext(Pext, primal(x))
-    dx = NTangent(map(dx -> fpext(Pext, dx), tangent(x).lanes))
+    dx = _basis_dir_map(dxi -> fpext(Pext, dxi), tangent(x))
     return Mooncake._width_aware_dual(x, p, dx)
 end
 function rrule!!(
@@ -498,7 +496,7 @@ function frule!!(
     ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P,<:NTangent}
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
     p = fptrunc(Ptrunc, primal(x))
-    dx = NTangent(map(dx -> fptrunc(Ptrunc, dx), tangent(x).lanes))
+    dx = _basis_dir_map(dxi -> fptrunc(Ptrunc, dxi), tangent(x))
     return Mooncake._width_aware_dual(x, p, dx)
 end
 function rrule!!(
@@ -636,8 +634,8 @@ end
 function frule!!(::Dual{typeof(muladd_float)}, x, y, z)
     a = muladd_float(primal(x), primal(y), primal(z))
     # Bug fix note: only the primal path should use the float intrinsic directly. In the
-    # NTangent-first IRfwd path, tangent values are lane wrappers rather than raw floats,
-    # so the tangent update must use ordinary lane-wise arithmetic.
+    # NTangent-first IRfwd path, tangent values are basis_dir wrappers rather than raw floats,
+    # so the tangent update must use ordinary basis_dir-wise arithmetic.
     da = tangent(x) * primal(y) + primal(x) * tangent(y) + tangent(z)
     return Mooncake._width_aware_dual(x, a, da)
 end
@@ -684,7 +682,7 @@ end
 @intrinsic pointerref
 function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
-    da = _lane_map(dx -> pointerref(dx, primal(y), primal(z)), tangent(x))
+    da = _basis_dir_map(dx -> pointerref(dx, primal(y), primal(z)), tangent(x))
     return Dual(a, da)
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
@@ -707,7 +705,7 @@ end
 @intrinsic pointerset
 function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
-    _lane_map(
+    _basis_dir_map(
         (dp, dx) -> pointerset(dp, dx, primal(idx), primal(z)), tangent(p), tangent(x)
     )
     return p
@@ -748,7 +746,7 @@ function frule!!(::Dual{typeof(sqrt_llvm)}, x::Dual{P,NoTangent}) where {P<:IEEE
 end
 function frule!!(::Dual{typeof(sqrt_llvm)}, x::Dual{P,<:NTangent}) where {P<:IEEEFloat}
     y = sqrt_llvm(primal(x))
-    dy = NTangent(map(dx -> nan_tangent_guard(dx, dx / (2 * y)), tangent(x).lanes))
+    dy = _basis_dir_map(dxi -> nan_tangent_guard(dxi, dxi / (2 * y)), tangent(x))
     return Mooncake._width_aware_dual(x, y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
@@ -767,7 +765,7 @@ function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,NoTangent}) where {P<
 end
 function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::Dual{P,<:NTangent}) where {P<:IEEEFloat}
     y = sqrt_llvm_fast(primal(x))
-    dy = NTangent(map(dx -> nan_tangent_guard(dx, dx / (2 * y)), tangent(x).lanes))
+    dy = _basis_dir_map(dxi -> nan_tangent_guard(dxi, dxi / (2 * y)), tangent(x))
     return Mooncake._width_aware_dual(x, y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
@@ -853,12 +851,12 @@ end
 # A primitive used to avoid exposing `_apply_iterate_equivalent` to `Core._apply_iterate`.
 __vec_to_tuple(v::Vector) = Tuple(v)
 
-# Bug fix note: the outer `NTangent` already carries the chunk lanes. When a lane-local
+# Bug fix note: the outer `NTangent` already carries the chunk basis_dirs. When a basis_dir-local
 # vector contains width-1 `NTangent`s from earlier IRfwd plumbing, we must unwrap them
-# before forming the structured tuple tangent for that lane; otherwise we build nested
-# `NTangent`s where the lane should contain the plain `tangent_type(...)` data.
-@inline _lane_vec_to_tuple(v::Vector) = Tuple(map(_unwrap_unit_ntangent, v))
-__vec_to_tuple(v::NTangent) = NTangent(map(_lane_vec_to_tuple, v.lanes))
+# before forming the structured tuple tangent for that direction; otherwise we build nested
+# `NTangent`s where the basis_dir should contain the plain `tangent_type(...)` data.
+@inline _basis_dir_vec_to_tuple(v::Vector) = Tuple(map(_unwrap_unit_ntangent, v))
+__vec_to_tuple(v::NTangent) = _basis_dir_map(_basis_dir_vec_to_tuple, v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
 function frule!!(::Dual{typeof(__vec_to_tuple)}, v::Dual{<:Vector})
@@ -899,19 +897,11 @@ end
 # Core._structtype
 
 function frule!!(
-    ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector,<:NTangent}, _ind::Dual{Int}
-)
-    ind = primal(_ind)
-    pv = Core._svec_ref(primal(v), ind)
-    tv = NTangent(map(dv -> getindex(dv, ind), tangent(v).lanes))
-    return Dual(pv, tv)
-end
-function frule!!(
     ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector}, _ind::Dual{Int}
 )
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
-    tv = getindex(tangent(v), ind)
+    tv = _basis_dir_map(dv -> getindex(dv, ind), tangent(v))
     return Dual(pv, tv)
 end
 function rrule!!(
@@ -1201,18 +1191,21 @@ function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
         return zero_dual(primal_output)
     end
     tangents = tuple_map(tangent, args)
-    ntangent_lanes = Mooncake._ntangent_lane_count(tangents)
-    if isnothing(ntangent_lanes)
+    ntangent_basis_dirs = Mooncake._ntangent_basis_dir_count(tangents)
+    if isnothing(ntangent_basis_dirs)
         return dual_type(typeof(primal_output))(primal_output, tangents)
-    elseif ntangent_lanes == 1
+    elseif ntangent_basis_dirs == 1
         return dual_type(typeof(primal_output))(
-            primal_output, ntuple(i -> Mooncake._ntangent_lane(tangents[i], Val(1)), Val(N))
+            primal_output,
+            ntuple(i -> Mooncake._ntangent_basis_dir(tangents[i], Val(1)), Val(N)),
         )
     end
     tangent_output = NTangent(
         ntuple(
-            lane -> ntuple(i -> Mooncake._ntangent_lane(tangents[i], Val(lane)), Val(N)),
-            Val(ntangent_lanes),
+            basis_dir -> ntuple(
+                i -> Mooncake._ntangent_basis_dir(tangents[i], Val(basis_dir)), Val(N)
+            ),
+            Val(ntangent_basis_dirs),
         ),
     )
     return Dual(primal_output, tangent_output)

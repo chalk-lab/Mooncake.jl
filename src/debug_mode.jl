@@ -70,9 +70,9 @@ end
     # Slow path: deep structural validation.
     p, t = primal(d), tangent(d)
     if t isa NTangent
-        for lane_tangent in t
-            verify_fdata_value(p, fdata(lane_tangent))
-            verify_rdata_value(p, rdata(lane_tangent))
+        for basis_dir_tangent in t
+            verify_fdata_value(p, fdata(basis_dir_tangent))
+            verify_rdata_value(p, rdata(basis_dir_tangent))
         end
     else
         # We validate fdata and rdata separately so these helpers stay in sync with

@@ -206,9 +206,7 @@ end
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
 function frule!!(f::Dual{<:MistyClosure,<:NTangent}, x::Dual...)
     tf = tangent(f)
-    dual_captures = Dual(
-        primal(f).oc.captures, NTangent(map(t -> t.captures_tangent, tf.lanes))
-    )
+    dual_captures = Dual(primal(f).oc.captures, _basis_dir_map(t -> t.captures_tangent, tf))
     return first(tf).dual_callable(dual_captures, x...)
 end
 function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
@@ -244,7 +242,7 @@ function frule!!(
 )
     tf = tangent(mc_dual)
     dual_captures = Dual(
-        primal(mc_dual).oc.captures, NTangent(map(t -> t.captures_tangent, tf.lanes))
+        primal(mc_dual).oc.captures, _basis_dir_map(t -> t.captures_tangent, tf)
     )
     arg_duals = _unpack_dual_tuple(args_dual)
     return first(tf).dual_callable(dual_captures, arg_duals...)

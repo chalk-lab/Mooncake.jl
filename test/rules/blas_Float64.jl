@@ -9,7 +9,7 @@
         @test_throws "Encountered unexpected array type" Mooncake.arrayify(5, 4)
 
         # Width-1 chunked IRfwd keeps array tangents wrapped as NTangent((dx,)).
-        # BLAS/LAPACK helpers should unwrap that single lane locally and preserve aliasing.
+        # BLAS/LAPACK helpers should unwrap that single basis_dir locally and preserve aliasing.
         @testset "width-1 NTangent unwrap" begin
             x = reshape(collect(1.0:6.0), 2, 3)
             dx = ones(size(x))

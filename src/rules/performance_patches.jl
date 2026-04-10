@@ -23,7 +23,7 @@ function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P},NoTangent}) where {P<:I
     return Dual(sum(primal(x)), NoTangent())
 end
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P},<:NTangent}) where {P<:IEEEFloat}
-    dy = NTangent(map(sum, tangent(x).lanes))
+    dy = _basis_dir_map(sum, tangent(x))
     return Dual(sum(primal(x)), dy)
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
@@ -46,7 +46,7 @@ function frule!!(
     ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P},<:NTangent}
 ) where {P<:IEEEFloat}
     px = primal(x)
-    dy = NTangent(map(dxi -> 2 * dot(px, dxi), tangent(x).lanes))
+    dy = _basis_dir_map(dxi -> 2 * dot(px, dxi), tangent(x))
     return Dual(sum(abs2, px), dy)
 end
 function rrule!!(

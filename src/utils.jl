@@ -215,6 +215,11 @@ Each slot corresponds to one differentiable scalar degree of freedom. Real IEEE-
 values contribute one floating-point slot. Complex IEEE-float values contribute two scalar
 slots, visited as real then imaginary. Tuples/named tuples are visited left to right, and
 arrays are visited in `eachindex` order.
+
+Mooncake terminology:
+- `slot`: one scalar differentiable degree of freedom in the primal value
+- `basis_dir`: one propagated forward-mode derivative component
+- `width`: the number of basis_dirs carried together
 """
 
 """

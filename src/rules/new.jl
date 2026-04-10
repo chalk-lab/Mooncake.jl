@@ -1,11 +1,11 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
 @inline function _output_tangent_type(::Type{P}, tangents::Tuple) where {P}
-    ntangent_lanes = Mooncake._ntangent_lane_count(tangents)
-    return if isnothing(ntangent_lanes)
+    ntangent_basis_dirs = Mooncake._ntangent_basis_dir_count(tangents)
+    return if isnothing(ntangent_basis_dirs)
         tangent_type(P)
     else
-        Mooncake.tangent_type(Val(ntangent_lanes), P)
+        Mooncake.tangent_type(Val(ntangent_basis_dirs), P)
     end
 end
 
@@ -14,65 +14,37 @@ end
 ) where {P,N}
     T = tangent_type(P)
     T == NoTangent && return NoTangent()
-    lanes = ntuple(
-        lane -> build_output_tangent(
+    basis_dirs = ntuple(
+        basis_dir -> build_output_tangent(
             P,
             x,
             ntuple(
-                i -> Mooncake._ntangent_lane(tangents[i], Val(lane)),
+                i -> Mooncake._ntangent_basis_dir(tangents[i], Val(basis_dir)),
                 Val(length(tangents)),
             ),
             T,
         ),
         Val(N),
     )
-    return NTangent(lanes)
+    return NTangent(basis_dirs)
 end
 
 function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) where {P,N}
     y = _new_(P, tuple_map(primal, x)...)
     tangents = tuple_map(tangent, x)
-    dy = let ntangent_lanes = Mooncake._ntangent_lane_count(tangents)
-        if !isnothing(ntangent_lanes)
-            if ntangent_lanes == 1
-                build_output_tangent(
-                    P,
-                    tuple_map(primal, x),
-                    ntuple(i -> Mooncake._ntangent_lane(tangents[i], Val(1)), Val(N)),
-                    tangent_type(P),
-                )
-            else
-                _build_chunked_output_tangent(
-                    P, tuple_map(primal, x), tangents, Val(ntangent_lanes)
-                )
-            end
-        else
-            T = _output_tangent_type(P, tangents)
-            if T == NoTangent
-                NoTangent()
-            else
-                build_output_tangent(P, tuple_map(primal, x), tangents, T)
-            end
-        end
-    end
-    return Mooncake.dual_type(typeof(y))(y, dy)
-end
-
-function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) where {P,N}
-    all(verify_dual_type, x) || error_if_incorrect_dual_types(x...)
-    y = _new_(P, tuple_map(primal, x)...)
-    tangents = tuple_map(tangent, x)
-    lane_count = Mooncake._ntangent_lane_count(tangents)
-    dy = if !isnothing(lane_count)
-        if lane_count == 1
+    ntangent_basis_dirs = Mooncake._ntangent_basis_dir_count(tangents)
+    dy = if !isnothing(ntangent_basis_dirs)
+        if ntangent_basis_dirs == 1
             build_output_tangent(
                 P,
                 tuple_map(primal, x),
-                ntuple(i -> Mooncake._ntangent_lane(tangents[i], Val(1)), Val(N)),
+                ntuple(i -> Mooncake._ntangent_basis_dir(tangents[i], Val(1)), Val(N)),
                 tangent_type(P),
             )
         else
-            _build_chunked_output_tangent(P, tuple_map(primal, x), tangents, Val(lane_count))
+            _build_chunked_output_tangent(
+                P, tuple_map(primal, x), tangents, Val(ntangent_basis_dirs)
+            )
         end
     else
         T = _output_tangent_type(P, tangents)
@@ -82,7 +54,37 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
             build_output_tangent(P, tuple_map(primal, x), tangents, T)
         end
     end
-    width = something(lane_count, 1)
+    width = something(ntangent_basis_dirs, 1)
+    return Mooncake.dual_type(Val(width), typeof(y))(y, dy)
+end
+
+function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) where {P,N}
+    all(verify_dual_type, x) || error_if_incorrect_dual_types(x...)
+    y = _new_(P, tuple_map(primal, x)...)
+    tangents = tuple_map(tangent, x)
+    basis_dir_count = Mooncake._ntangent_basis_dir_count(tangents)
+    dy = if !isnothing(basis_dir_count)
+        if basis_dir_count == 1
+            build_output_tangent(
+                P,
+                tuple_map(primal, x),
+                ntuple(i -> Mooncake._ntangent_basis_dir(tangents[i], Val(1)), Val(N)),
+                tangent_type(P),
+            )
+        else
+            _build_chunked_output_tangent(
+                P, tuple_map(primal, x), tangents, Val(basis_dir_count)
+            )
+        end
+    else
+        T = _output_tangent_type(P, tangents)
+        if T == NoTangent
+            NoTangent()
+        else
+            build_output_tangent(P, tuple_map(primal, x), tangents, T)
+        end
+    end
+    width = something(basis_dir_count, 1)
     return Mooncake.dual_type(Val(width), typeof(y))(y, dy)
 end
 

@@ -94,7 +94,7 @@ end
     ::Array{Complex{T}}, dx::Array{Complex{Nfwd.NDual{T,N}}}, ::Val{N}
 ) where {T<:IEEEFloat,N} = dx
 
-# Width-1: plain Array{T} tangent (user-provided direction, frule path).
+# Width-1: plain Array{T} tangent (user-provided basis_dir, frule path).
 @inline function _nfwd_lift_primitive_arg(
     x::Array{T}, dx::Array{T}, ::Val{1}
 ) where {T<:IEEEFloat}
@@ -153,21 +153,21 @@ end
 
 # ── Output extraction ────────────────────────────────────────────────────────
 
-@inline _nfwd_unpack_output_lane(::T, dy::T, ::Val{1}) where {T<:IEEEFloat} = dy
-@inline _nfwd_unpack_output_lane(
+@inline _nfwd_unpack_output_basis_dir(::T, dy::T, ::Val{1}) where {T<:IEEEFloat} = dy
+@inline _nfwd_unpack_output_basis_dir(
     ::Complex{T}, dy::Complex{T}, ::Val{1}
 ) where {T<:IEEEFloat} = dy
-@inline _nfwd_unpack_output_lane(::T, dy::NTuple{N,T}, ::Val{k}) where {T<:IEEEFloat,N,k} = dy[k]
-@inline _nfwd_unpack_output_lane(::Complex{T}, dy::NTuple{N,Complex{T}}, ::Val{k}) where {T<:IEEEFloat,N,k} = dy[k]
-@inline function _nfwd_unpack_output_lane(y::Tuple, dy::Tuple, ::Val{k}) where {k}
-    return tuple_map((yi, dyi) -> _nfwd_unpack_output_lane(yi, dyi, Val(k)), y, dy)
+@inline _nfwd_unpack_output_basis_dir(::T, dy::NTuple{N,T}, ::Val{k}) where {T<:IEEEFloat,N,k} = dy[k]
+@inline _nfwd_unpack_output_basis_dir(::Complex{T}, dy::NTuple{N,Complex{T}}, ::Val{k}) where {T<:IEEEFloat,N,k} = dy[k]
+@inline function _nfwd_unpack_output_basis_dir(y::Tuple, dy::Tuple, ::Val{k}) where {k}
+    return tuple_map((yi, dyi) -> _nfwd_unpack_output_basis_dir(yi, dyi, Val(k)), y, dy)
 end
 
 # Dense array unpack: width-1 tangent is the array itself; width-N tangent is NTuple of arrays.
-@inline _nfwd_unpack_output_lane(
+@inline _nfwd_unpack_output_basis_dir(
     ::Array{T}, dy::Array{T}, ::Val{1}
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}} = dy
-@inline _nfwd_unpack_output_lane(::Array{T}, dy::NTuple{N,Array{T}}, ::Val{k}) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},N,k} = dy[k]
+@inline _nfwd_unpack_output_basis_dir(::Array{T}, dy::NTuple{N,Array{T}}, ::Val{k}) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},N,k} = dy[k]
 
 @inline function _nfwd_extract_primitive_parts(
     y::Nfwd.NDual{T,N}, ::Val{N}
@@ -264,7 +264,9 @@ end
     return t
 end
 @inline function _nfwd_public_output_tangent(p::Tuple, t::Tuple, ::Val{N}) where {N}
-    return NTangent(ntuple(lane -> _nfwd_unpack_output_lane(p, t, Val(lane)), Val(N)))
+    return NTangent(
+        ntuple(basis_dir -> _nfwd_unpack_output_basis_dir(p, t, Val(basis_dir)), Val(N))
+    )
 end
 
 # Short-circuit: avoid the extract → wrap → unwrap round-trip for the common scalar case.
@@ -411,27 +413,26 @@ end
                     )::Tpb
                 else
                     lifted = _nfwd_lift_primitive_arg(
-                        x1,
-                        ntuple(
-                            k -> if k == 1
-                                complex(one(T), zero(T))
-                            elseif k == 2
-                                complex(zero(T), one(T))
-                            else
-                                zero(x1)
-                            end,
-                            Val(N),
-                        ),
-                        Val(N),
+                        x1, ntuple(k -> if k == 1
+                            complex(one(T), zero(T))
+                        elseif k == 2
+                            complex(zero(T), one(T))
+                        else
+                            zero(x1)
+                        end, Val(N)), Val(N)
                     )
                     _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted), Val(N))
-                    lane_vals = _nfwd_contract_output(ȳ, dy)
+                    basis_dir_vals = _nfwd_contract_output(ȳ, dy)
                     return (
                         NoRData(),
                         rdata(
                             complex(
-                                lane_vals[1],
-                                N >= 2 ? lane_vals[2] : zero(typeof(lane_vals[1])),
+                                basis_dir_vals[1],
+                                if N >= 2
+                                    basis_dir_vals[2]
+                                else
+                                    zero(typeof(basis_dir_vals[1]))
+                                end,
                             ),
                         ),
                     )::Tpb
@@ -505,11 +506,11 @@ end
             for start_slot in 1:N:total_dof
                 lifted = _nfwd_lift_primitive_args(Val(N), primals, seed_slots(start_slot))
                 _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted...), Val(N))
-                lane_vals = _nfwd_contract_output(ȳ, dy)
+                basis_dir_vals = _nfwd_contract_output(ȳ, dy)
                 if isnothing(slot_grad_1)
-                    slot_grad_1 = zero(typeof(first(lane_vals)))
+                    slot_grad_1 = zero(typeof(first(basis_dir_vals)))
                 end
-                slot_grad_1 += first(lane_vals)
+                slot_grad_1 += first(basis_dir_vals)
             end
             (slot_grad_1,)
         elseif total_dof == 2
@@ -519,20 +520,20 @@ end
             _, _first_dy = _nfwd_extract_primitive_parts(
                 primal(f)(_first_lifted...), Val(N)
             )
-            _first_lanes = _nfwd_contract_output(ȳ, _first_dy)
-            Tlane = typeof(first(_first_lanes))
-            slot_grad_1 = zero(Tlane) + _first_lanes[1]
-            slot_grad_2 = zero(Tlane)
-            if length(_first_lanes) > 1
-                slot_grad_2 += _first_lanes[2]
+            _first_basis_dir_vals = _nfwd_contract_output(ȳ, _first_dy)
+            Tbasis_dir = typeof(first(_first_basis_dir_vals))
+            slot_grad_1 = zero(Tbasis_dir) + _first_basis_dir_vals[1]
+            slot_grad_2 = zero(Tbasis_dir)
+            if length(_first_basis_dir_vals) > 1
+                slot_grad_2 += _first_basis_dir_vals[2]
             end
             for start_slot in (1 + N):N:total_dof
                 lifted = _nfwd_lift_primitive_args(Val(N), primals, seed_slots(start_slot))
                 _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted...), Val(N))
-                lane_vals = _nfwd_contract_output(ȳ, dy)
-                slot_grad_1 += lane_vals[1]
-                if length(lane_vals) > 1
-                    slot_grad_2 += lane_vals[2]
+                basis_dir_vals = _nfwd_contract_output(ȳ, dy)
+                slot_grad_1 += basis_dir_vals[1]
+                if length(basis_dir_vals) > 1
+                    slot_grad_2 += basis_dir_vals[2]
                 end
             end
             (slot_grad_1, slot_grad_2)
@@ -541,14 +542,14 @@ end
             for start_slot in 1:N:total_dof
                 lifted = _nfwd_lift_primitive_args(Val(N), primals, seed_slots(start_slot))
                 _, dy = _nfwd_extract_primitive_parts(primal(f)(lifted...), Val(N))
-                lane_vals = _nfwd_contract_output(ȳ, dy)
+                basis_dir_vals = _nfwd_contract_output(ȳ, dy)
                 if isnothing(slot_grads)
-                    slot_grads = zeros(typeof(first(lane_vals)), total_dof)
+                    slot_grads = zeros(typeof(first(basis_dir_vals)), total_dof)
                 end
-                for (lane, lane_val) in enumerate(lane_vals)
-                    slot = start_slot + lane - 1
+                for (basis_dir, basis_dir_val) in enumerate(basis_dir_vals)
+                    slot = start_slot + basis_dir - 1
                     slot > total_dof && break
-                    @inbounds slot_grads[slot] += lane_val
+                    @inbounds slot_grads[slot] += basis_dir_val
                 end
             end
             slot_grads

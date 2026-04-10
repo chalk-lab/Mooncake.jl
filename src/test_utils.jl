@@ -129,7 +129,7 @@ using Mooncake:
     uninit_dual,
     randn_dual,
     verify_dual_type,
-    _ntangent_lane_count,
+    _ntangent_basis_dir_count,
     fcodual_type,
     verify_fdata_type,
     verify_rdata_type,
@@ -483,10 +483,10 @@ function _diff(p::P, q::P) where {P}
 end
 
 # Extend these for non-`NTangent` width-aware tangent layouts in chunked forward tests.
-@inline width_aware_tangent_lane_count(t) = something(_ntangent_lane_count(t), 1)
-@inline width_aware_tangent_lane(::NoTangent, ::Val) = NoTangent()
-@inline width_aware_tangent_lane(t::NTangent, ::Val{lane}) where {lane} = t[lane]
-@inline width_aware_tangent_lane(t, ::Val) = t
+@inline width_aware_tangent_basis_dir_count(t) = something(_ntangent_basis_dir_count(t), 1)
+@inline width_aware_tangent_basis_dir(::NoTangent, ::Val) = NoTangent()
+@inline width_aware_tangent_basis_dir(t::NTangent, ::Val{basis_dir}) where {basis_dir} = t[basis_dir]
+@inline width_aware_tangent_basis_dir(t, ::Val) = t
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_frule_correctness(
@@ -498,7 +498,8 @@ function test_frule_correctness(
 
     width = maximum(
         map(
-            x_ẋ_component -> width_aware_tangent_lane_count(tangent(x_ẋ_component)), x_ẋ
+            x_ẋ_component -> width_aware_tangent_basis_dir_count(tangent(x_ẋ_component)),
+            x_ẋ,
         );
         init=1,
     )
@@ -510,7 +511,7 @@ function test_frule_correctness(
     y_primal = x_primal[1](x_primal[2:end]...)
 
     # Mutating frules may update tangent storage in place, so keep the AD-run tangents
-    # separate from the finite-difference probe directions used below.
+    # separate from the finite-difference probe basis_dirs used below.
     x_ẋ_rule = map(
         (x, ẋ) -> dual_type(Val(width), _typeof(x))(_deepcopy(x), _deepcopy(ẋ)), x, ẋ
     )
@@ -542,18 +543,18 @@ function test_frule_correctness(
 
     # normalize the JVP's probe vectors to avoid random scaling of AD, FD errors.
     x̄_normdir, ȳ_normdir = normalize_tangent(x̄), normalize_tangent(ȳ)
-    # Chunked forward tests compare one lane at a time so finite differences only need an
+    # Chunked forward tests compare one basis_dir at a time so finite differences only need an
     # ordinary tangent, not a packed width-aware tangent representation.
-    for lane in 1:width
-        ẋ_lane = map(t -> width_aware_tangent_lane(t, Val(lane)), ẋ)
+    for basis_dir in 1:width
+        ẋ_basis_dir = map(t -> width_aware_tangent_basis_dir(t, Val(basis_dir)), ẋ)
 
-        # Use finite differences to estimate the Frechet derivative for this lane.
+        # Use finite differences to estimate the Frechet derivative for this basis_dir.
         ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
         fd_results = Vector{Any}(undef, length(ε_list))
         for (n, ε) in enumerate(ε_list)
-            x′_l = _add_to_primal(x, _scale(ε, ẋ_lane), unsafe_perturb)
+            x′_l = _add_to_primal(x, _scale(ε, ẋ_basis_dir), unsafe_perturb)
             y′_l = x′_l[1](x′_l[2:end]...)
-            x′_r = _add_to_primal(x, _scale(-ε, ẋ_lane), unsafe_perturb)
+            x′_r = _add_to_primal(x, _scale(-ε, ẋ_basis_dir), unsafe_perturb)
             y′_r = x′_r[1](x′_r[2:end]...)
             fd_results[n] = (
                 ẏ=_scale(1 / 2ε, _diff(y′_l, y′_r)),
@@ -561,14 +562,14 @@ function test_frule_correctness(
             )
         end
 
-        ẏ_ad_lane = width_aware_tangent_lane(ẏ_ad, Val(lane))
-        ẋ_ad_lane = map(t -> width_aware_tangent_lane(t, Val(lane)), ẋ_ad)
+        ẏ_ad_basis_dir = width_aware_tangent_basis_dir(ẏ_ad, Val(basis_dir))
+        ẋ_ad_basis_dir = map(t -> width_aware_tangent_basis_dir(t, Val(basis_dir)), ẋ_ad)
 
         isapprox_results = map(fd_results) do result
             ẏ_fd, ẋ_fd = result
             return isapprox(
                 _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
-                _dot(ȳ_normdir, ẏ_ad_lane) + _dot(x̄_normdir, ẋ_ad_lane);
+                _dot(ȳ_normdir, ẏ_ad_basis_dir) + _dot(x̄_normdir, ẋ_ad_basis_dir);
                 rtol=rtol,
                 atol=atol,
             )
@@ -578,7 +579,7 @@ function test_frule_correctness(
                 ẏ_fd, ẋ_fd = result
                 (
                     _dot(ȳ_normdir, ẏ_fd) + _dot(x̄_normdir, ẋ_fd),
-                    _dot(ȳ_normdir, ẏ_ad_lane) + _dot(x̄_normdir, ẋ_ad_lane),
+                    _dot(ȳ_normdir, ẏ_ad_basis_dir) + _dot(x̄_normdir, ẋ_ad_basis_dir),
                 )
             end
             display(vals)
@@ -729,7 +730,8 @@ function test_frule_interface(x_ẋ...; frule)
 
     width = maximum(
         map(
-            x_ẋ_component -> width_aware_tangent_lane_count(tangent(x_ẋ_component)), x_ẋ
+            x_ẋ_component -> width_aware_tangent_basis_dir_count(tangent(x_ẋ_component)),
+            x_ẋ,
         );
         init=1,
     )
@@ -920,7 +922,7 @@ end
 function populate_address_map_internal(
     m::AddressMap, primal, tangent::NTangent{L}
 ) where {L<:Tuple}
-    # Alias-map checks only need one representative lane; all lanes share the
+    # Alias-map checks only need one representative basis_dir; all basis_dirs share the
     # same structural tangent shape.
     return populate_address_map_internal(m, primal, tangent[1])
 end

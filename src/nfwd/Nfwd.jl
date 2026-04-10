@@ -18,7 +18,7 @@ julia> ndual_partial(d, 1)
 1.0
 ```
 
-Propagate multiple directions through ordinary scalar code in one pass:
+Propagate multiple basis_dirs through ordinary scalar code in one pass:
 
 ```julia
 julia> x = NDual{Float64,2}(2.0, (1.0, 0.0));  # seed dx
@@ -204,7 +204,7 @@ value_and_derivative!!(cache, (f, df), (x, dx), (y, dy))
 To recover the full Jacobian of `f : ℝⁿ → ℝᵐ`, the caller must invoke the rule **n
 times**, once per basis vector `eₖ`.  There is no built-in chunk loop.  This is why
 reverse mode is preferred for many-input scalar-output functions, and why NDual's GPU
-trick — packing N directions into one kernel launch — is only worthwhile at GPU kernel
+trick — packing N basis_dirs into one kernel launch — is only worthwhile at GPU kernel
 boundaries where each pass would otherwise incur a full launch overhead.
 
 ### Why standard `frule!!` cannot carry NDual tangents
@@ -249,8 +249,8 @@ frule!!(::Dual{typeof(sin)}, x::Dual{T}) where {T<:IEEEFloat} =
 #                        ^^^^^^^^^^^^^^^^ T (scalar) * NDual{T,N} → NDual{T,N}  ✓
 ```
 
-`cos(x) * NDual` scales the partials — already defined on NDual.  All chain rules
-composed of scalar multiplication and addition propagate the N directions automatically.
+`cos(x) * NDual` scales the partials — already defined on NDual. All chain rules
+composed of scalar multiplication and addition propagate the N basis_dirs automatically.
 
 **Two categories of CPU scalar rules:**
 
@@ -290,11 +290,11 @@ function frule!!(
     out, ∂out = primal(_out), tangent(_out)   # ∂out updated in-place
     x,   ∂x  = primal(_x),   tangent(_x)
 
-    # Merge primal values with tangent directions into NDual kernel input.
-    # ∂x[i].value == 0 (convention); ∂x[i].partials holds the N seed directions.
+    # Merge primal values with tangent basis_dirs into NDual kernel input.
+    # ∂x[i].value == 0 (convention); ∂x[i].partials holds the N seed basis_dirs.
     x_nd   = map((v, t) -> NDual{T,N}(v, t.partials), x, ∂x)
     out_nd = similar(out, NDual{T,N})
-    my_kernel!(out_nd, x_nd)   # one launch — all N directions at once
+    my_kernel!(out_nd, x_nd)   # one launch — all N basis_dirs at once
 
     out  .= ndual_value.(out_nd)
     ∂out .= map(d -> NDual{T,N}(zero(T), d.partials), out_nd)
@@ -389,11 +389,11 @@ end
 # `_nfwd_zero_mask` plays the same role as `nan_tangent_guard` for scalar NDual algebra:
 # when the local seed / upstream factor `a` is zero, replace `b` by zero(b) before the
 # multiply so `0 * Inf` and `0 * NaN` collapse to zero instead of poisoning the tangent.
-# nfwd uses this in forward mode through `_pt_guarded_scale`, which masks zero NDual lanes
+# nfwd uses this in forward mode through `_pt_guarded_scale`, which masks zero NDual basis_dirs
 # in singular formulas such as `log`, `sqrt`, `cbrt`, and `hypot`, and in reverse mode
 # through `_nfwd_real_dot`, which masks zero upstream cotangents before contracting them
 # against nfwd output tangents. This is the same strong-zero idea used in other AD systems,
-# including ForwardDiff, to keep inactive directions from turning into NaNs.
+# including ForwardDiff, to keep inactive basis_dirs from turning into NaNs.
 @inline _nfwd_zero_mask(a, b) = ifelse(iszero(a), zero(b), b)
 @inline function _pt_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
     return ntuple(i -> begin
@@ -493,10 +493,10 @@ end
     return NDual{T,N}(T(x, r), _pt_zero(Val(N), T))
 end
 
-@noinline function _throw_ndual_lane_mismatch(op::Symbol, n1::Int, n2::Int)
+@noinline function _throw_ndual_direction_mismatch(op::Symbol, n1::Int, n2::Int)
     throw(
         DimensionMismatch(
-            "NDual lane count mismatch in `$op`: left operand has $n1 lanes, right operand has $n2 lanes.",
+            "NDual basis_dir count mismatch in `$op`: left operand has $n1 basis_dirs, right operand has $n2 basis_dirs.",
         ),
     )
 end
@@ -504,7 +504,7 @@ end
 @inline function _promote_matching_nduals(
     op::Symbol, a::NDual{T1,N1}, b::NDual{T2,N2}
 ) where {T1,T2,N1,N2}
-    N1 == N2 || _throw_ndual_lane_mismatch(op, N1, N2)
+    N1 == N2 || _throw_ndual_direction_mismatch(op, N1, N2)
     return promote(a, b)
 end
 
@@ -1644,17 +1644,15 @@ typed scratch buffer for in-place array lifting when a chunk-layout tangent is a
     construction, but a single instance must not be shared across concurrent calls.
     This is a general shared-mutable-state hazard, not something specific to `nfwd`.
 """
-struct Rule{sig,N,Tbuf<:Base.RefValue,Toutbuf<:Base.RefValue}
+struct Rule{sig,N,Tbuf<:Base.RefValue}
     buf::Tbuf
-    out_buf::Toutbuf
 end
 
 # Backward-compatible zero-arg constructor used by primitive rules in
 # rules_via_nfwd.jl.
 function Rule{sig,N}() where {sig,N}
     buf = Ref{Any}(nothing)
-    out_buf = Ref{Any}(nothing)
-    Rule{sig,N,typeof(buf),typeof(out_buf)}(buf, out_buf)
+    Rule{sig,N,typeof(buf)}(buf)
 end
 
 @inline rule_chunk_size(::Type{<:Rule{sig,N}}) where {sig,N} = N
@@ -1726,7 +1724,7 @@ end
     return chunk_size
 end
 
-# Conservative SIMD-friendly default: 8 lanes covers one AVX-512 register (8×Float64)
+# Conservative SIMD-friendly default: 8 basis_dirs covers one AVX-512 register (8×Float64)
 # and two AVX2 registers. Chunk sizes beyond 8 add register pressure without
 # proportional throughput gains on most hardware.
 const _NFWD_PREFERRED_CHUNK_SIZE = 8

@@ -48,8 +48,8 @@ for f in [rand!, randn!, randexp!]
     )
         $f(primal(rng), primal(x))
         dx = tangent(x)
-        @inbounds for lane in 1:length(dx)
-            dx[lane] .= 0
+        @inbounds for basis_dir in 1:length(dx)
+            dx[basis_dir] .= 0
         end
         return x
     end
