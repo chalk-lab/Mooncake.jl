@@ -228,15 +228,21 @@ function build_primal(
             tangent_mode,
         )
         if sig_or_mi isa Type{<:Tuple}
-            replace_self_capture = c ->
-                c isa LazyPrimal &&
-                c.key isa Core.MethodInstance &&
-                c.key.specTypes === sig_or_mi &&
-                c.world == interp.world &&
-                c.tangent_mode === tangent_mode ? derived : c
+            replace_self_capture =
+                c ->
+                    if c isa LazyPrimal &&
+                       c.key isa Core.MethodInstance &&
+                       c.key.specTypes === sig_or_mi &&
+                       c.world == interp.world &&
+                       c.tangent_mode === tangent_mode
+                        derived
+                    else
+                        c
+                    end
             primal_captures = map(replace_self_capture, primal_oc.oc.captures)
             lifted_captures = map(replace_self_capture, lifted_oc.oc.captures)
-            if primal_captures !== primal_oc.oc.captures || lifted_captures !== lifted_oc.oc.captures
+            if primal_captures !== primal_oc.oc.captures ||
+                lifted_captures !== lifted_oc.oc.captures
                 primal_oc = replace_captures(primal_oc, primal_captures)
                 lifted_oc = replace_captures(lifted_oc, lifted_captures)
                 derived = DerivedPrimal(
@@ -508,7 +514,7 @@ function generate_primal_ir(
     lifted_ir = CC.compact!(lifted_ir)
     captures_tuple = (captures...,)
     lifted_ir.argtypes[1] = _typeof(captures_tuple)
-    lifted_ir = optimise_ir!(lifted_ir; do_inline, interp)
+    lifted_ir = optimise_ir!(lifted_ir; do_inline)
     return (
         lifted_ir, PrimalIRInfo(isva, nargs, compute_ir_rettype(lifted_ir)), captures_tuple
     )
@@ -755,14 +761,13 @@ function modify_fwd_ad_stmts!(
                     dual_ir, ssa, new_inst(assert_rule), ATTACH_BEFORE
                 )
                 dual_args_ssa = CC.insert_node!(
-                    dual_ir,
-                    ssa,
-                    new_inst(Expr(:call, tuple, dual_args...)),
-                    ATTACH_BEFORE,
+                    dual_ir, ssa, new_inst(Expr(:call, tuple, dual_args...)), ATTACH_BEFORE
                 )
                 # Route captured rule calls through __call_rule so recursive wrappers avoid
                 # the more allocation-prone direct callable-object path.
-                replace_call!(dual_ir, ssa, Expr(:call, __call_rule, rule_ssa, dual_args_ssa))
+                replace_call!(
+                    dual_ir, ssa, Expr(:call, __call_rule, rule_ssa, dual_args_ssa)
+                )
             end
         else
             rule = if isexpr(stmt, :invoke)
@@ -770,23 +775,17 @@ function modify_fwd_ad_stmts!(
             else
                 DynamicPrimal(info.interp.world, info.tangent_mode)
             end
-            push!(
-                captures,
-                rule,
-            )
+            push!(captures, rule)
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             get_rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             # Self-referencing functions replace LazyPrimal captures with DerivedPrimal
             # after the OC is compiled, so the assertion must accept both types.
-            assert_type = rule isa LazyPrimal ? Union{typeof(rule), DerivedPrimal} :
-                typeof(rule)
+            assert_type =
+                rule isa LazyPrimal ? Union{typeof(rule),DerivedPrimal} : typeof(rule)
             assert_rule = Expr(:call, typeassert, get_rule_ssa, assert_type)
             rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(assert_rule), ATTACH_BEFORE)
             dual_args_ssa = CC.insert_node!(
-                dual_ir,
-                ssa,
-                new_inst(Expr(:call, tuple, dual_args...)),
-                ATTACH_BEFORE,
+                dual_ir, ssa, new_inst(Expr(:call, tuple, dual_args...)), ATTACH_BEFORE
             )
             # Route captured rule calls through __call_rule so recursive wrappers avoid
             # the more allocation-prone direct callable-object path.
@@ -871,16 +870,15 @@ function modify_primal_stmts!(
             else
                 DynamicPrimal(interp.world, Val(1))
             end
-            push!(
-                captures,
-                rule,
-            )
+            push!(captures, rule)
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
-            get_rule_ssa = CC.insert_node!(primal_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
+            get_rule_ssa = CC.insert_node!(
+                primal_ir, ssa, new_inst(get_rule), ATTACH_BEFORE
+            )
             # Self-referencing functions replace LazyPrimal captures with DerivedPrimal
             # after the OC is compiled, so the assertion must accept both types.
-            assert_type = rule isa LazyPrimal ? Union{typeof(rule), DerivedPrimal} :
-                typeof(rule)
+            assert_type =
+                rule isa LazyPrimal ? Union{typeof(rule),DerivedPrimal} : typeof(rule)
             assert_rule = Expr(:call, typeassert, get_rule_ssa, assert_type)
             rule_ssa = CC.insert_node!(primal_ir, ssa, new_inst(assert_rule), ATTACH_BEFORE)
             args = map(__inc, raw_args)
@@ -1210,9 +1208,10 @@ end
     end
 end
 
-@inline function (
-    (primal::LazyPrimal{primal_sig,DerivedPrimal,Tmode} where {primal_sig,Tmode})
-)(f::Dual, x::Dual, args::Vararg{Dual,N}) where {N}
+@inline function ((
+    primal::LazyPrimal{primal_sig,DerivedPrimal,Tmode} where {primal_sig,Tmode}
+))
+    (f::Dual, x::Dual, args::Vararg{Dual,N}) where {N}
     return if isdefined(primal, :primal)
         (primal.primal::DerivedPrimal)(f, x, args...)
     else
@@ -1220,9 +1219,10 @@ end
     end
 end
 
-@inline function (
-    (primal::LazyPrimal{primal_sig,DerivedPrimal,Tmode} where {primal_sig,Tmode})
-)(x::Dual, args::Vararg{Dual,N}) where {N}
+@inline function ((
+    primal::LazyPrimal{primal_sig,DerivedPrimal,Tmode} where {primal_sig,Tmode}
+))
+    (x::Dual, args::Vararg{Dual,N}) where {N}
     return if isdefined(primal, :primal)
         (primal.primal::DerivedPrimal)(x, args...)
     else
@@ -1359,7 +1359,7 @@ function generate_lifted_primal_ir(
     lifted_ir = CC.compact!(lifted_ir)
     CC.verify_ir(lifted_ir)
     captures_tuple = (captures...,)
-    lifted_ir = optimise_ir!(lifted_ir; do_inline, interp)
+    lifted_ir = optimise_ir!(lifted_ir; do_inline)
     lifted_ir.argtypes[1] = _typeof(captures_tuple)
     for (a, P) in enumerate(primal_ir.argtypes)
         lifted_ir.argtypes[a + 1] = _lifted_dual_ir_type(tangent_mode, P)

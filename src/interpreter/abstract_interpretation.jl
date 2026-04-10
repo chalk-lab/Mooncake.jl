@@ -113,6 +113,22 @@ else
     get_inference_world(interp::CC.AbstractInterpreter) = CC.get_inference_world(interp)
 end
 
+# PrimalMode delegates code_cache, method_table, and cache_owner to the
+# BugPatchInterpreter stored in `meta`, giving the inliner access to Julia's native
+# code cache (so it can find method bodies for frule!! etc.) and native method table
+# (no overlays). See the note at the top of patch_for_319.jl for the bug patches.
+function CC.code_cache(interp::MooncakeInterpreter{<:Any,PrimalMode})
+    return CC.code_cache(interp.meta::BugPatchInterpreter)
+end
+function CC.method_table(interp::MooncakeInterpreter{<:Any,PrimalMode})
+    return CC.method_table(interp.meta::BugPatchInterpreter)
+end
+@static if VERSION >= v"1.11.0"
+    function CC.cache_owner(interp::MooncakeInterpreter{<:Any,PrimalMode})
+        return CC.cache_owner(interp.meta::BugPatchInterpreter)
+    end
+end
+
 struct NoInlineCallInfo <: CC.CallInfo
     info::CC.CallInfo # wrapped call
     tt::Any # signature
@@ -347,4 +363,16 @@ function get_interpreter(mode::Type{<:Mode})
         GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode)
     end
     return GLOBAL_INTERPRETERS[mode]
+end
+
+# PrimalMode is constructed lazily because BugPatchInterpreter (stored in meta) is
+# defined in patch_for_319.jl, which is included after abstract_interpretation.jl.
+function get_interpreter(::Type{PrimalMode})
+    if !haskey(GLOBAL_INTERPRETERS, PrimalMode) ||
+        GLOBAL_INTERPRETERS[PrimalMode].world != Base.get_world_counter()
+        GLOBAL_INTERPRETERS[PrimalMode] = MooncakeInterpreter(
+            DefaultCtx, PrimalMode; meta=BugPatchInterpreter()
+        )
+    end
+    return GLOBAL_INTERPRETERS[PrimalMode]
 end

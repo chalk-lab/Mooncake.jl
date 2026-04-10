@@ -261,9 +261,15 @@ end
         CC.ir_abstract_constant_propagation(interp::BugPatchInterpreter, irsv::CC.IRInterpretationState; externally_refined::Union{Nothing,BitSet}=nothing) = ir_abstract_constant_propagation(
             interp, irsv; externally_refined
         )
+        CC.ir_abstract_constant_propagation(interp::MooncakeInterpreter{<:Any,PrimalMode}, irsv::CC.IRInterpretationState; externally_refined::Union{Nothing,BitSet}=nothing) = ir_abstract_constant_propagation(
+            interp.meta::BugPatchInterpreter, irsv; externally_refined
+        )
     else
         CC._ir_abstract_constant_propagation(interp::BugPatchInterpreter, irsv::CC.IRInterpretationState; externally_refined::Union{Nothing,BitSet}=nothing) = ir_abstract_constant_propagation(
             interp, irsv; externally_refined
+        )
+        CC._ir_abstract_constant_propagation(interp::MooncakeInterpreter{<:Any,PrimalMode}, irsv::CC.IRInterpretationState; externally_refined::Union{Nothing,BitSet}=nothing) = ir_abstract_constant_propagation(
+            interp.meta::BugPatchInterpreter, irsv; externally_refined
         )
     end
 
@@ -399,6 +405,14 @@ end
         end
 
         return CC.refine_effects!(interp, sv)
+    end
+
+    function CC.ipo_dataflow_analysis!(
+        interp::MooncakeInterpreter{<:Any,PrimalMode},
+        ir::CC.IRCode,
+        result::CC.InferenceResult,
+    )
+        return CC.ipo_dataflow_analysis!(interp.meta::BugPatchInterpreter, ir, result)
     end
 
     # Calls populate_def_use_map! -- see above.

@@ -40,6 +40,16 @@ function is a primitive in reverse-mode AD.
 struct ReverseMode <: Mode end
 
 """
+    struct PrimalMode end
+
+Represents the optimisation pass for primal-mode (non-AD) IR. Used as the interpreter
+for `optimise_ir!`, where the key requirement is access to Julia's native code cache
+(so `ssa_inlining_pass!` can find method bodies) plus the Julia bug patches from
+`BugPatchInterpreter`.
+"""
+struct PrimalMode <: Mode end
+
+"""
     _is_primitive(context::Type, mode::Type{<:Mode}, sig::Type{<:Tuple})
 
 This function is an internal implementation detail. It is used only by
@@ -184,3 +194,11 @@ end
 
 _is_primitive(::Type{MinimalCtx}, args...) = false
 _is_primitive(::Type{DefaultCtx}, args...) = _is_primitive(MinimalCtx, args...)
+
+# PrimalMode never treats calls as AD primitives — it optimises primal (non-AD) IR.
+function is_primitive(::Type{MinimalCtx}, ::Type{PrimalMode}, ::Type{<:Tuple}, ::UInt)
+    return false
+end
+function is_primitive(::Type{DefaultCtx}, ::Type{PrimalMode}, ::Type{<:Tuple}, ::UInt)
+    return false
+end

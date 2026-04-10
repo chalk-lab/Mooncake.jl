@@ -171,7 +171,7 @@ end
 Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
 to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
 """
-function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
+function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     if show_ir
         println("Pre-optimization")
         display(ir)
@@ -180,16 +180,12 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     CC.verify_ir(ir)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
-    # 319 -- see patch_for_319.jl for context
-    # replace by a simple NativeInterpreter() once fixed in Julia
-    #
-    # Use BugPatchInterpreter for both inference and inlining. MooncakeInterpreter's
-    # custom code cache lacks inference results for standard Julia methods such as
-    # frule!!, causing ssa_inlining_pass! to skip inlining calls it could otherwise
-    # resolve, which forces boxing of isbits Dual arguments and spurious allocations.
-    # The proper fix is a dedicated PrimalMode interpreter (like ForwardMode /
-    # ReverseMode) that populates its own code cache with the right results.
-    local_interp = infer_interp = BugPatchInterpreter()
+    # Use PrimalMode MooncakeInterpreter, which stores a BugPatchInterpreter in `meta`
+    # for Julia bug patches and delegates code_cache/method_table to Julia's native caches
+    # so ssa_inlining_pass! can find method bodies for frule!! and other methods.
+    # This must NOT be replaced by a ForwardMode/ReverseMode interpreter, whose empty
+    # MooncakeCache prevents inlining and causes boxing allocations.
+    local_interp = infer_interp = get_interpreter(PrimalMode)
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, infer_interp, mi)
     if show_ir
