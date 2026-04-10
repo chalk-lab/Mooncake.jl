@@ -1604,9 +1604,10 @@ end
     return tangent
 end
 
-# NamedTuple dest: recurse into immutable struct fields.
-# `tangent` must be a Tangent (immutable struct tangent) whose `.fields` NamedTuple is
-# integer-indexable and whose elements are PossiblyUninitTangent-or-plain tangents.
+# NamedTuple destination: recurse field-wise.
+# For NamedTuple primals, tangents are plain NamedTuples and are indexed directly.
+# For immutable struct primals, tangents are Tangent wrappers whose `.fields` entries are
+# plain tangents or `PossiblyUninitTangent` values.
 # Mutable structs use the AsMutableFields path above instead.
 # When `tangent isa NoTangent` the primal type has no differentiable fields according to
 # the runtime world (e.g. because an extension declared tangent_type(P) == NoTangent after
@@ -1631,19 +1632,27 @@ end
             end
         )
     end
-    field_exprs = map(1:n) do i
-        quote
-            if is_init(tangent.fields[$i])
-                tangent_to_friendly!!(
-                    dest[$i], getfield(primal, $i), val(tangent.fields[$i]), c
-                )
-            else
-                # PossiblyUninitTangent with isInit=false: field had zero contribution.
-                # If the primal field is defined, convert a canonical zero tangent so the
-                # return type is consistent with the initialised path.  If the primal field
-                # is also undefined, fall back to returning the cache entry as-is (the field
-                # cannot be meaningfully represented as a friendly value).
-                $(zero_field_exprs[i])
+    if P <: NamedTuple
+        # NamedTuple tangents are plain NamedTuples — index directly like Tuples.
+        field_exprs = map(1:n) do i
+            :(tangent_to_friendly!!(dest[$i], getfield(primal, $i), tangent[$i], c))
+        end
+    else
+        # Immutable struct tangents are Tangent wrappers with .fields.
+        field_exprs = map(1:n) do i
+            quote
+                if is_init(tangent.fields[$i])
+                    tangent_to_friendly!!(
+                        dest[$i], getfield(primal, $i), val(tangent.fields[$i]), c
+                    )
+                else
+                    # PossiblyUninitTangent with isInit=false: field had zero contribution.
+                    # If the primal field is defined, convert a canonical zero tangent so the
+                    # return type is consistent with the initialised path.  If the primal
+                    # field is also undefined, fall back to returning the cache entry as-is
+                    # (the field cannot be meaningfully represented as a friendly value).
+                    $(zero_field_exprs[i])
+                end
             end
         end
     end

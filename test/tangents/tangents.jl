@@ -336,6 +336,21 @@ using DispatchDoctor: allow_unstable
         @test result[2] == [1.0 2.0; 0.0 1.0]
     end
 
+    @testset "friendly_tangent_cache NamedTuple recursion" begin
+        nt = (; m=LinearAlgebra.Symmetric([1.0 2.0; 3.0 4.0]), v=3.14)
+        d = Mooncake.friendly_tangent_cache(nt)
+        @test d isa NamedTuple{(:m, :v)}
+        @test d.m isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
+        @test d.v isa Mooncake.FriendlyTangentCache{Mooncake.AsRaw}
+
+        tx_m = Mooncake.build_tangent(typeof(nt.m), [0.5 1.0; 0.0 0.5], NoTangent())
+        tx_nt = (; m=tx_m, v=2.0)
+        result = Mooncake.tangent_to_friendly!!(nt, tx_nt)
+        @test result isa NamedTuple{(:m, :v)}
+        @test result.m == [0.5 1.0; 0.0 0.5]
+        @test result.v == 2.0
+    end
+
     @testset "friendly_tangent_cache mutable struct" begin
         # Mutable structs use AsMutableFields: cache is a sentinel at prepare time,
         # fields are unwrapped to a plain NamedTuple at tangent_to_friendly!! time.

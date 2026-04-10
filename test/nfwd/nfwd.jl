@@ -831,3 +831,145 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(Cp[2, 2], 3) ≈ 1.0   # ∂A₂₂
     end
 end
+
+# Slot traversal contract tests — verify _nfwd_fold_slots and _nfwd_unfold_slots
+# agree on canonical order and produce correct results for all supported types.
+@testset "slot traversal" begin
+    using Mooncake.Nfwd: _nfwd_fold_slots, _nfwd_unfold_slots, _nfwd_input_dof
+
+    count_slot(acc, _leaf, _slot, st) = (acc + 1, st)
+
+    # helper: collect global slot indices via fold
+    function fold_order(x)
+        collect_order(acc, _leaf, _slot, st) = (push!(acc, st), st + 1)
+        order, _ = _nfwd_fold_slots(collect_order, Int[], x, 1)
+        return order
+    end
+
+    # helper: collect global slot indices via unfold
+    function unfold_order(x)
+        function collect_leaf(leaf, (order, cursor))
+            dof = _nfwd_input_dof(leaf)
+            append!(order, cursor:(cursor + dof - 1))
+            return nothing, (order, cursor + dof)
+        end
+        _, (order, _) = _nfwd_unfold_slots(collect_leaf, x, (Int[], 1))
+        return order
+    end
+
+    @testset "real scalar" begin
+        @test _nfwd_fold_slots(count_slot, 0, 1.0, nothing) == (1, nothing)
+        @test _nfwd_input_dof(1.0) == 1
+        @test fold_order(1.0) == [1]
+        @test unfold_order(1.0) == [1]
+    end
+
+    @testset "complex scalar" begin
+        z = 1.0 + 2.0im
+        @test _nfwd_fold_slots(count_slot, 0, z, nothing) == (2, nothing)
+        @test _nfwd_input_dof(z) == 2
+        @test fold_order(z) == [1, 2]
+        @test unfold_order(z) == [1, 2]
+    end
+
+    @testset "dense real array" begin
+        a = [1.0, 2.0, 3.0]
+        @test _nfwd_fold_slots(count_slot, 0, a, nothing) == (3, nothing)
+        @test _nfwd_input_dof(a) == 3
+        @test fold_order(a) == [1, 2, 3]
+        @test unfold_order(a) == [1, 2, 3]
+    end
+
+    @testset "dense complex array" begin
+        a = [1.0+0im, 2.0+3.0im]
+        @test _nfwd_fold_slots(count_slot, 0, a, nothing) == (4, nothing)
+        @test _nfwd_input_dof(a) == 4
+        @test fold_order(a) == [1, 2, 3, 4]
+        @test unfold_order(a) == [1, 2, 3, 4]
+    end
+
+    @testset "tuple mixtures" begin
+        t = (1.0, [2.0, 3.0], 4.0 + 5.0im)
+        @test _nfwd_fold_slots(count_slot, 0, t, nothing) == (5, nothing)
+        @test _nfwd_input_dof(t) == 5
+        @test fold_order(t) == [1, 2, 3, 4, 5]
+        @test unfold_order(t) == [1, 2, 3, 4, 5]
+
+        # nested tuple
+        t2 = ((1.0, 2.0), [3.0 + 0im])
+        @test _nfwd_input_dof(t2) == 4
+        @test fold_order(t2) == [1, 2, 3, 4]
+        @test unfold_order(t2) == [1, 2, 3, 4]
+
+        # empty tuple
+        @test _nfwd_fold_slots(count_slot, 0, (), nothing) == (0, nothing)
+        @test _nfwd_input_dof(()) == 0
+        @test fold_order(()) == Int[]
+        @test unfold_order(()) == Int[]
+    end
+
+    @testset "fold and unfold order agree" begin
+        inputs = [
+            1.0,
+            1.0 + 2.0im,
+            [1.0, 2.0, 3.0],
+            [1.0+0im, 2.0+0im],
+            (1.0, [2.0, 3.0], 4.0+5.0im),
+            ((1.0, 2.0), [3.0+0im]),
+            (),
+        ]
+        for x in inputs
+            @test fold_order(x) == unfold_order(x)
+        end
+    end
+
+    @testset "unfold structural rebuild" begin
+        # unfold with identity preserves values
+        function id_leaf(x, st)
+            return x, st + _nfwd_input_dof(x)
+        end
+
+        val, st = _nfwd_unfold_slots(id_leaf, 3.14, 0)
+        @test val === 3.14
+
+        val, st = _nfwd_unfold_slots(id_leaf, 1.0+2.0im, 0)
+        @test val === 1.0+2.0im
+
+        a = [1.0, 2.0, 3.0]
+        val, st = _nfwd_unfold_slots(id_leaf, a, 0)
+        @test val == a
+
+        t = (1.0, [2.0, 3.0], 4.0+5.0im)
+        val, st = _nfwd_unfold_slots(id_leaf, t, 0)
+        @test val[1] === 1.0
+        @test val[2] == [2.0, 3.0]
+        @test val[3] === 4.0+5.0im
+        @test st == 5
+    end
+
+    @testset "fold accumulates correctly" begin
+        # Sum within-leaf slot indices to verify fold visits the expected indices.
+        sum_slot_idx(acc, _leaf, slot, st) = (acc + slot, st)
+
+        # real scalar: one slot at index 1
+        @test _nfwd_fold_slots(sum_slot_idx, 0, 3.0, nothing) == (1, nothing)
+        # complex: slots 1 and 2
+        @test _nfwd_fold_slots(sum_slot_idx, 0, 1.0 + 2.0im, nothing) == (3, nothing)
+        # real array of length 3: slots 1, 2, 3
+        @test _nfwd_fold_slots(sum_slot_idx, 0, [1.0, 2.0, 3.0], nothing) == (6, nothing)
+        # complex array of length 2: slots 1, 2, 3, 4
+        @test _nfwd_fold_slots(sum_slot_idx, 0, [1.0+0im, 2.0+3.0im], nothing) ==
+            (10, nothing)
+        # tuple: slot indices from each leaf are independent
+        total, _ = _nfwd_fold_slots(sum_slot_idx, 0, (1.0, [2.0, 3.0]), nothing)
+        @test total == 1 + 1 + 2  # scalar(1) + array-slot1(1) + array-slot2(2)
+    end
+
+    @testset "Float32 support" begin
+        @test _nfwd_input_dof(1.0f0) == 1
+        @test _nfwd_input_dof(Float32[1, 2, 3]) == 3
+        @test _nfwd_input_dof(1.0f0 + 2.0f0im) == 2
+        @test fold_order((1.0f0, Float32[2, 3])) == [1, 2, 3]
+        @test unfold_order((1.0f0, Float32[2, 3])) == [1, 2, 3]
+    end
+end

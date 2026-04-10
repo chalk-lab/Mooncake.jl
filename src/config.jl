@@ -5,6 +5,7 @@
         friendly_tangents::Bool=false,
         chunk_size::Union{Nothing,Int}=nothing,
         enable_nfwd::Bool=true,
+        empty_cache::Bool=false,
     )
 
 Configuration struct for use with `ADTypes.AutoMooncake`.
@@ -32,6 +33,12 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     `prepare_hvp_cache` and `prepare_hessian_cache`. When left enabled, cache
     construction stays passive, but `value_and_derivative!!` / `value_and_gradient!!`
     may still error at runtime if `nfwd` turns out not to support the function.
+- `empty_cache::Bool=false`: if `true`, all internal Mooncake caches (compiled OpaqueClosures,
+    CodeInstances, and type-inference results) are cleared before building the new rule. This
+    allows the garbage collector to reclaim memory held by previously compiled rules, and is
+    useful in long-running sessions where many distinct functions have been differentiated.
+    Note that only Julia-level (GC-managed) objects are freed; JIT-compiled native machine
+    code is held permanently by the Julia runtime and cannot be reclaimed.
 """
 @kwdef struct Config
     debug_mode::Bool = false
@@ -39,4 +46,5 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     friendly_tangents::Bool = false
     chunk_size::Union{Nothing,Int} = nothing
     enable_nfwd::Bool = true
+    empty_cache::Bool = false
 end

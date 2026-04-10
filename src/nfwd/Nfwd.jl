@@ -77,6 +77,7 @@ export NDual,
     _nfwd_check_chunk_size,
     _nfwd_check_primal,
     _nfwd_default_chunk_size,
+    _nfwd_fold_slots,
     _nfwd_infer_scalar_output,
     _nfwd_input_dof,
     _nfwd_input_error,
@@ -88,6 +89,7 @@ export NDual,
     _nfwd_sig_default_chunk_size,
     _nfwd_sig_dof,
     _nfwd_type_dof,
+    _nfwd_unfold_slots,
     _nfwd_validate
 
 #
@@ -1931,23 +1933,112 @@ end
 @inline _nfwd_rule_sig(::Rule{sig}) where {sig} = sig
 @inline _nfwd_rule_sig(::RRule{sig}) where {sig} = sig
 
+#
+# ── Canonical slot traversal ──────────────────────────────────────────────────────
+#
+# Every supported nfwd primal decomposes into a fixed number of scalar "slots" in
+# a canonical order:
+#   • IEEEFloat              → 1 slot  (the value itself)
+#   • Complex{<:IEEEFloat}   → 2 slots (real, imag)
+#   • AbstractArray{<:above} → one slot per scalar component, in eachindex order
+#   • Tuple of the above     → concatenation, left to right
+#
+# `_nfwd_fold_slots` and `_nfwd_unfold_slots` define this order exactly once.
+# All DOF counting, basis seeding, and gradient scatter must use these helpers so
+# that the slot order is guaranteed to agree everywhere.
+
+"""
+    _nfwd_fold_slots(f, init, x, state) -> (acc, state)
+
+Left-fold over the scalar slots of `x` in canonical order.  Each slot corresponds
+to one differentiable scalar degree of freedom.  Real IEEE-float values contribute
+one floating-point slot.  Complex IEEE-float values contribute two scalar slots,
+visited as real then imaginary.  Tuples are visited left to right, and arrays are
+visited in `eachindex` order.
+
+Each slot visit calls `(acc, state) = f(acc, x_leaf, slot_index_within_leaf, state)`
+and returns the updated accumulator and state.  The slot cursor should be threaded
+through `state` by the caller.
+"""
+@inline function _nfwd_fold_slots(f::F, init, x::IEEEFloat, state) where {F}
+    return f(init, x, 1, state)
+end
+
+@inline function _nfwd_fold_slots(f::F, init, x::Complex{<:IEEEFloat}, state) where {F}
+    acc, state = f(init, x, 1, state)  # real part
+    return f(acc, x, 2, state)          # imag part
+end
+
+@inline function _nfwd_fold_slots(
+    f::F, init, x::AbstractArray{T}, state
+) where {F,T<:IEEEFloat}
+    acc = init
+    @inbounds for i in eachindex(x)
+        acc, state = f(acc, x, i, state)
+    end
+    return acc, state
+end
+
+@inline function _nfwd_fold_slots(
+    f::F, init, x::AbstractArray{Complex{T}}, state
+) where {F,T<:IEEEFloat}
+    acc = init
+    @inbounds for i in eachindex(x)
+        acc, state = f(acc, x, 2i - 1, state)  # real part of element i
+        acc, state = f(acc, x, 2i, state)       # imag part of element i
+    end
+    return acc, state
+end
+
+@inline _nfwd_fold_slots(f::F, init, x::Tuple{}, state) where {F} = (init, state)
+@inline function _nfwd_fold_slots(f::F, init, x::Tuple, state) where {F}
+    acc, state = _nfwd_fold_slots(f, init, first(x), state)
+    return _nfwd_fold_slots(f, acc, Base.tail(x), state)
+end
+
+"""
+    _nfwd_unfold_slots(f, x, state) -> (rebuilt, state)
+
+Map-like structural rebuild over the primitive leaves of `x`.  Each slot
+corresponds to one differentiable scalar degree of freedom (same semantics as
+`_nfwd_fold_slots`).  Each leaf visit calls `(result, state) = f(x_leaf, state)` and
+returns the rebuilt value for that leaf position.  For tuples, the unfold recurses
+left to right and collects per-leaf results into a new tuple.
+
+The returned value at each leaf position may have a different type from the input
+leaf (e.g. seeding produces NTuples from scalar inputs).  The slot cursor should
+be threaded through `state` by the caller.
+
+`_nfwd_fold_slots` and `_nfwd_unfold_slots` agree on traversal order: tuples left to right,
+arrays in `eachindex` order.  Within each leaf, the number of slots consumed equals
+`_nfwd_input_dof(leaf)`.
+"""
+@inline function _nfwd_unfold_slots(
+    f::F,
+    x::Union{
+        IEEEFloat,
+        Complex{<:IEEEFloat},
+        AbstractArray{<:IEEEFloat},
+        AbstractArray{<:Complex{<:IEEEFloat}},
+    },
+    state,
+) where {F}
+    return f(x, state)
+end
+
+@inline _nfwd_unfold_slots(f::F, x::Tuple{}, state) where {F} = ((), state)
+@inline function _nfwd_unfold_slots(f::F, x::Tuple, state) where {F}
+    head, state = _nfwd_unfold_slots(f, first(x), state)
+    tail, state = _nfwd_unfold_slots(f, Base.tail(x), state)
+    return (head, tail...), state
+end
+
+# ── DOF counting ─────────────────────────────────────────────────────────────────
+
 @inline _nfwd_input_dof(x::IEEEFloat) = 1
 @inline _nfwd_input_dof(x::Complex{<:IEEEFloat}) = 2
 @inline _nfwd_input_dof(x::AbstractArray{<:IEEEFloat}) = length(x)
 @inline _nfwd_input_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
 @inline _nfwd_input_dof(x::Tuple) = sum(_nfwd_input_dof, x; init=0)
-
-@inline function _nfwd_leaf_dof_type(T::Type)
-    dof = _nfwd_type_dof(T)
-    return isnothing(dof) ? 0 : dof
-end
-
-@inline _nfwd_leaf_dof_type(::Type{<:AbstractArray{T}}) where {T} = _nfwd_leaf_dof_type(T)
-@inline _nfwd_leaf_dof(x) = _nfwd_leaf_dof_type(typeof(x))
-
-@inline function _nfwd_slot_meta(x, offset::Int)
-    dof = _nfwd_leaf_dof(x)
-    return (; dof, slot1=offset + 1, slot2=offset + 2)
-end
 
 end
