@@ -81,9 +81,9 @@
         # zero_tangent(::Ptr) throws, so zero_codual/zero_fcodual must not call it.
         # They fall back to uninit_codual/uninit_fcodual (bitcast convention).
         p = Ptr{Float64}()
-        @test zero_codual(p) == uninit_codual(p)
-        @test zero_fcodual(p) == uninit_fcodual(p)
-        @test primal(zero_codual(p)) === p
-        @test primal(zero_fcodual(p)) === p
+        @test Mooncake.zero_codual(p) == Mooncake.uninit_codual(p)
+        @test Mooncake.zero_fcodual(p) == Mooncake.uninit_fcodual(p)
+        @test Mooncake.primal(Mooncake.zero_codual(p)) === p
+        @test Mooncake.primal(Mooncake.zero_fcodual(p)) === p
     end
 end
