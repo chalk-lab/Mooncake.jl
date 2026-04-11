@@ -227,37 +227,10 @@ function build_primal(
             interp.world,
             tangent_mode,
         )
-        if sig_or_mi isa Type{<:Tuple}
-            replace_self_capture =
-                c ->
-                    if c isa LazyPrimal &&
-                        c.key isa Core.MethodInstance &&
-                        c.key.specTypes === sig_or_mi &&
-                        c.world == interp.world &&
-                        c.tangent_mode === tangent_mode
-                        derived
-                    else
-                        c
-                    end
-            primal_captures = map(replace_self_capture, primal_oc.oc.captures)
-            lifted_captures = map(replace_self_capture, lifted_oc.oc.captures)
-            if primal_captures !== primal_oc.oc.captures ||
-                lifted_captures !== lifted_oc.oc.captures
-                primal_oc = replace_captures(primal_oc, primal_captures)
-                lifted_oc = replace_captures(lifted_oc, lifted_captures)
-                derived = DerivedPrimal(
-                    primal_oc,
-                    lifted_oc,
-                    sig_or_mi,
-                    nothing,
-                    nothing,
-                    info.isva,
-                    info.nargs,
-                    interp.world,
-                    tangent_mode,
-                )
-            end
-        end
+        # Keep recursive self-captures as LazyPrimal. Replacing them with the freshly-built
+        # DerivedPrimal changes the capture object after the OpaqueClosure has already been
+        # compiled against a LazyPrimal environment type, which reintroduces the recursive
+        # one-allocation path on Julia 1.12.
         interp.oc_cache[oc_cache_key] = derived
         derived = _make_derived_primal(
             primal_oc,
