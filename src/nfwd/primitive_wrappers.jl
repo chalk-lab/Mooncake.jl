@@ -12,10 +12,13 @@
 # ── Type bridge ───────────────────────────────────────────────────────────────
 
 @inline dual_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
+@inline dual_type(::Val{0}, ::Type{T}) where {T<:IEEEFloat} = T
 
 @inline function dual_type(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat}
     return N == 1 ? Dual{T,tangent_type(Val(1), T)} : Nfwd.NDual{T,N}
 end
+
+@inline dual_type(::Val{0}, ::Type{Complex{T}}) where {T<:IEEEFloat} = Complex{T}
 
 @inline function dual_type(::Val{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat}
     return if N == 1
@@ -434,7 +437,7 @@ end
                                 else
                                     zero(typeof(basis_dir_vals[1]))
                                 end,
-                            ),
+                            )
                         ),
                     )
                 end

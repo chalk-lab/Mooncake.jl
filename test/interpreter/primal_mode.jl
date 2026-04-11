@@ -46,6 +46,9 @@ using Mooncake: TestResources
             y_grad, grad = Mooncake.value_and_gradient!!(primal_f, case.f, 2.0)
             @test y_grad == case.primal
             @test grad == case.gradient
+
+            primal_f0 = Mooncake.build_primal(case.f, case.primals...; tangent_mode=Val(0))
+            @test primal_f0(2.0) == case.primal
         end
     end
 
@@ -123,6 +126,22 @@ using Mooncake: TestResources
         y = primal_outer(Mooncake.Dual(2.0, 1.0))
         @test Mooncake.primal(y) == outer(2.0)
         @test Mooncake.tangent(y) == Mooncake.NTangent((2 * (cos(2.0) + 1),))
+    end
+
+    @testset "chunked pi-node width-aware duals" begin
+        f_any(x::Any) = x isa Tuple{Float64} ? first(x) : x
+        primal_f_any = Mooncake.build_primal(
+            Mooncake.get_interpreter(Mooncake.ForwardMode),
+            Tuple{typeof(f_any),Any};
+            call_target=f_any,
+            tangent_mode=Val(2),
+        )
+        x = Mooncake.dual_type(Val(2), Tuple{Float64})(
+            (2.0,), Mooncake.NTangent(((1.0,), (-1.0,)))
+        )
+        y = primal_f_any(x)
+        @test Mooncake.primal(y) == 2.0
+        @test Mooncake.tangent(y) == Mooncake.NTangent((1.0, -1.0))
     end
 
     @testset "derived forward-rule corpus" begin

@@ -71,6 +71,8 @@ using Random: Xoshiro
         Mooncake.NTangent{Tuple{Float64,Float64}}
     @test TestUtils.check_allocs(Mooncake.tangent_type, Val(2), Tuple{Float64}) ==
         Mooncake.NTangent{Tuple{Tuple{Float64},Tuple{Float64}}}
+    @test TestUtils.check_allocs(Mooncake.tangent_type, Val(0), Float64) == NoTangent
+    @test TestUtils.check_allocs(Mooncake.dual_type, Val(0), Float64) == Float64
     @test TestUtils.check_allocs(Mooncake.dual_type, Val(2), Float64) ==
         Mooncake.Nfwd.NDual{Float64,2}
     @test TestUtils.check_allocs(Mooncake.dual_type, Val(2), ComplexF64) ==
@@ -79,6 +81,8 @@ using Random: Xoshiro
         Dual{Tuple{Float64},Mooncake.NTangent{Tuple{Tuple{Float64},Tuple{Float64}}}}
     @test TestUtils.check_allocs(Mooncake.dual_type, Val(3), Type{Float64}) ==
         Dual{Type{Float64},NoTangent}
+    @test TestUtils.check_allocs(Mooncake.zero_dual, Val(0), 5.0) === 5.0
+    @test TestUtils.check_allocs(Mooncake.uninit_dual, Val(0), 5.0) === 5.0
 
     @testset "test_dual" begin
         for (p, D, width) in (

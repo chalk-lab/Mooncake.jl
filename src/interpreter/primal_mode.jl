@@ -35,10 +35,14 @@ end
 
 function _nfwd_primitive_frule_call end
 function _nfwd_primitive_rrule_call end
+@inline _primal_primitive_frule_call(f, args...) = f(args...)
 
 @inline build_primitive_frule(
     ::Any, interp, sig; debug_mode=false, silence_debug_messages=true
 ) = nothing
+@inline build_primitive_frule(
+    ::Val{0}, interp, sig::Type{<:Tuple}; debug_mode=false, silence_debug_messages=true
+) = _primal_primitive_frule_call
 
 @inline function _lifted_dual_ir_type(tangent_mode, P)
     T = CC.widenconst(P)
@@ -606,15 +610,12 @@ function modify_fwd_ad_stmts!(
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
         primal_ssa = CC.insert_node!(
-            dual_ir,
-            ssa,
-            new_inst(Expr(:call, getfield, v, QuoteNode(:primal))),
-            ATTACH_BEFORE,
+            dual_ir, ssa, new_inst(Expr(:call, _primal, v)), ATTACH_BEFORE
         )
         tangent_ssa = CC.insert_node!(
             dual_ir,
             ssa,
-            new_inst(Expr(:call, getfield, v, QuoteNode(:tangent))),
+            new_inst(Expr(:call, _tangent, info.tangent_mode, v)),
             ATTACH_BEFORE,
         )
         refined_primal_ssa = CC.insert_node!(
@@ -624,20 +625,17 @@ function modify_fwd_ad_stmts!(
             ATTACH_BEFORE,
         )
         refined_type = CC.widenconst(stmt.typ)
-        if isconcretetype(refined_type)
-            replace_call!(
-                dual_ir,
-                ssa,
-                Expr(
-                    :call,
-                    dual_type(info.tangent_mode, refined_type),
-                    refined_primal_ssa,
-                    tangent_ssa,
-                ),
-            )
-        else
-            replace_call!(dual_ir, ssa, Expr(:call, Dual, refined_primal_ssa, tangent_ssa))
-        end
+        replace_call!(
+            dual_ir,
+            ssa,
+            Expr(
+                :call,
+                _width_aware_value,
+                info.tangent_mode,
+                refined_primal_ssa,
+                tangent_ssa,
+            ),
+        )
     else
         v = uninit_dual(info.tangent_mode, get_const_primal_value(stmt.val))
         replace_call!(
@@ -964,6 +962,18 @@ end
     args::NTuple{M,Any},
 ) where {Tprimal_oc,Tlifted_oc,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode,M}
     Isva || return :(args)
+    width = Tmode.parameters[1]
+    width == 0 && return if Tcall_target === Nothing
+        group_start = Nargs
+        prefix_args = [:(args[$n]) for n in 1:(group_start - 1)]
+        grouped_primal = Expr(:tuple, [:(args[$n]) for n in group_start:M]...)
+        Expr(:tuple, prefix_args..., grouped_primal)
+    else
+        group_start = Nargs - 1
+        prefix_args = [:(args[$n]) for n in 1:(group_start - 1)]
+        grouped_primal = Expr(:tuple, [:(args[$n]) for n in group_start:M]...)
+        Expr(:tuple, prefix_args..., grouped_primal)
+    end
 
     # Use the lowered arity here so splatted varargs get regrouped exactly once at the
     # original call boundary.
@@ -971,7 +981,6 @@ end
     prefix_args = [:(args[$n]) for n in 1:(group_start - 1)]
     grouped_primal = Expr(:tuple, [:(Mooncake.primal(args[$n])) for n in group_start:M]...)
     grouped_tangent = Expr(:tuple, [:(tangent(args[$n])) for n in group_start:M]...)
-    width = Tmode.parameters[1]
     grouped_dual = quote
         grouped_primal = $grouped_primal
         grouped_tangent = $grouped_tangent
@@ -1138,15 +1147,50 @@ end
     end
 end
 
-@inline function __call_rule(
-    primal::DerivedPrimal{Tprimal_oc,Tlifted_oc,Tkey,Nothing,Nothing,Isva,Nargs,Tmode},
-    args::Tuple{Dual,Dual,Vararg{Dual}},
-) where {Tprimal_oc,Tlifted_oc,Tkey,Isva,Nargs,Tmode}
-    return _call_dynamic_dual_primal(primal, args...)
-end
-
-@inline function __call_rule(primal::DerivedPrimal, args::Tuple{Dual,Vararg{Dual}})
-    return _call_stored_dual_primal(primal, args...)
+# On Julia 1.10, type-erase the DerivedPrimal through the inference barrier to prevent
+# OC codegen crash (emit_specsig_oc_call null-pointer in LLVM).  See utils.jl for the
+# generic fallback and the DerivedFRule equivalent in forward_mode.jl.
+@static if VERSION < v"1.11-"
+    @inline function __call_rule(
+        primal::DerivedPrimal{
+            Tprimal_oc,
+            MistyClosure{OpaqueClosure{A,R}},
+            Tkey,
+            Nothing,
+            Nothing,
+            Isva,
+            Nargs,
+            Tmode,
+        },
+        args::Tuple{Dual,Dual,Vararg{Dual}},
+    ) where {Tprimal_oc,A,R,Tkey,Isva,Nargs,Tmode}
+        return __call_rule_erased!(Base.inferencebarrier(primal), args)::R
+    end
+    @inline function __call_rule(
+        primal::DerivedPrimal{
+            Tprimal_oc,
+            MistyClosure{OpaqueClosure{A,R}},
+            Tkey,
+            Tcall_target,
+            Tlifted_call_target,
+            Isva,
+            Nargs,
+            Tmode,
+        },
+        args::Tuple{Dual,Vararg{Dual}},
+    ) where {Tprimal_oc,A,R,Tkey,Tcall_target,Tlifted_call_target,Isva,Nargs,Tmode}
+        return __call_rule_erased!(Base.inferencebarrier(primal), args)::R
+    end
+else
+    @inline function __call_rule(
+        primal::DerivedPrimal{Tprimal_oc,Tlifted_oc,Tkey,Nothing,Nothing,Isva,Nargs,Tmode},
+        args::Tuple{Dual,Dual,Vararg{Dual}},
+    ) where {Tprimal_oc,Tlifted_oc,Tkey,Isva,Nargs,Tmode}
+        return _call_dynamic_dual_primal(primal, args...)
+    end
+    @inline function __call_rule(primal::DerivedPrimal, args::Tuple{Dual,Vararg{Dual}})
+        return _call_stored_dual_primal(primal, args...)
+    end
 end
 
 function _copy(x::P) where {P<:DerivedPrimal}

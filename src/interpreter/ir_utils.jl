@@ -196,8 +196,20 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     inline_state = CC.InliningState(local_interp)
     CC.verify_ir(ir)
     if do_inline
-        ir = CC.ssa_inlining_pass!(ir, inline_state, true)#=propagate_inbounds=#
-        ir = CC.compact!(ir)
+        @static if VERSION < v"1.11-"
+            # Julia 1.10's inliner may crash with a TypeError when a ConstantCase
+            # appears where InliningTodo is expected (e.g. certain varargs call sites).
+            # Retry without inlining so the OC still compiles correctly.
+            try
+                ir = CC.ssa_inlining_pass!(ir, inline_state, true)#=propagate_inbounds=#
+                ir = CC.compact!(ir)
+            catch e
+                e isa TypeError || rethrow()
+            end
+        else
+            ir = CC.ssa_inlining_pass!(ir, inline_state, true)#=propagate_inbounds=#
+            ir = CC.compact!(ir)
+        end
     end
     ir = __strip_coverage!(ir)
     ir = CC.sroa_pass!(ir, inline_state)

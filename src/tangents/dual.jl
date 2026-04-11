@@ -15,6 +15,8 @@ representation.
     return T == NoTangent ? NoTangent : NTangent{NTuple{N,T}}
 end
 
+@unstable @foldable tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
+
 @inline function _merge_ntangent_basis_dir_counts(a, b)
     a === nothing && return b
     b === nothing && return a
@@ -183,16 +185,22 @@ end
     return NTangent(ntuple(_ -> zero_tangent(x), Val(N)))
 end
 
+@inline zero_tangent(x, ::Val{0}) = NoTangent()
+
 @inline function zero_tangent(x::Ptr, ::Val{N}) where {N}
     zx = zero_tangent(x, uninit_tangent(x))
     return NTangent(ntuple(_ -> zx, Val(N)))
 end
+
+@inline zero_tangent(x::Ptr, ::Val{0}) = NoTangent()
 
 @inline function uninit_tangent(x, ::Val{N}) where {N}
     tx = uninit_tangent(x)
     tx isa NoTangent && return NoTangent()
     return NTangent(ntuple(_ -> uninit_tangent(x), Val(N)))
 end
+
+@inline uninit_tangent(x, ::Val{0}) = NoTangent()
 
 @inline _unwrap_unit_ntangent(dx::NTangent{Tuple{T}}) where {T} = dx[1]
 @inline _unwrap_unit_ntangent(dx) = dx
@@ -234,16 +242,22 @@ extract(x::Dual) = primal(x), tangent(x)
 function zero_dual(::Val{N}, x) where {N}
     dual_type(Val(N), typeof(x))(x, zero_tangent(x, Val(N)))
 end
+zero_dual(::Val{0}, x) = x
+zero_dual(::Val{0}, x::Type) = x
 zero_dual(x) = dual_type(typeof(x))(x, zero_tangent(x))
 zero_dual(::Val, x::Type) = Dual(x, NoTangent())
 zero_dual(x::Type) = Dual(x, NoTangent())
 function uninit_dual(::Val{N}, x::P) where {N,P}
     dual_type(Val(N), P)(x, uninit_tangent(x, Val(N)))
 end
+uninit_dual(::Val{0}, x) = x
+uninit_dual(::Val{0}, x::Type) = x
 function randn_dual(::Val{N}, rng::AbstractRNG, x) where {N}
     tx = canonicalize_chunked_tangent(x, randn_tangent(rng, x), Val(N))
     return dual_type(Val(N), typeof(x))(x, tx)
 end
+randn_dual(::Val{0}, rng::AbstractRNG, x) = x
+randn_dual(::Val{0}, rng::AbstractRNG, x::Type) = x
 randn_dual(rng::AbstractRNG, x) = dual_type(typeof(x))(x, randn_tangent(rng, x))
 
 """
@@ -285,6 +299,9 @@ construction / extraction protocol for a custom width-aware dual type.
     return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
 end
 
+@unstable @foldable dual_type(::Val{0}, ::Type{P}) where {P} = P
+@unstable @foldable dual_type(::Val{0}, ::Type{Type{P}}) where {P} = Type{P}
+
 @unstable @foldable function dual_type(::Type{P}) where {P}
     return dual_type(Val(1), P)
 end
@@ -295,6 +312,13 @@ end
 
 _primal(x) = x
 _primal(x::Dual) = primal(x)
+_tangent(::Val{0}, x) = NoTangent()
+_tangent(::Val{N}, x) where {N} = tangent(x)
+
+@inline _width_aware_value(::Val{0}, p, dx=NoTangent()) = p
+@inline function _width_aware_value(::Val{N}, p, dx) where {N}
+    return dual_type(Val(N), typeof(p))(p, canonicalize_chunked_tangent(p, dx, Val(N)))
+end
 
 @inline _dual_width(x) = something(_ntangent_basis_dir_count(tangent(x)), 1)
 
