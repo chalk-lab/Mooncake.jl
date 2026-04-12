@@ -543,6 +543,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             CoDual(ptr_b, ptr_db),
             4,
         ),
+        (false, :none, nothing, Base.get_world_counter), # jl_get_world_counter
+        (
+            false,
+            :none,
+            nothing,
+            Base._methods_by_ftype, # jl_matching_methods
+            Tuple{typeof(sin),Float64},
+            -1,
+            Base.get_world_counter(),
+        ),
     ]
     return test_cases, memory
 end
