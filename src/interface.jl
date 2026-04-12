@@ -236,7 +236,7 @@ end
     value_and_derivative!!(rule, f::Dual, x::Dual...)
     value_and_derivative!!(rule, (f, df), (x, dx), ...)
 
-Run a forward rule directly, without first constructing a `ForwardCache`.
+Run a forward rule directly, without first constructing a `NfwdCache`.
 
 The `Dual` interface returns the rule output directly. The tuple interface returns
 `(y, dy)` using the rule's native tangent representation. Specialized rule types may
@@ -269,7 +269,7 @@ end
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
 # Internal helper cache types in this file:
-# - `NfwdCache`: internal nfwd helper cache stored inside `ForwardCache` when the
+# - `NfwdCache`: internal nfwd helper cache stored inside `NfwdCache` when the
 #   prepared forward cache can use packed NDual execution.
 # All seven parameters are load-bearing: they keep the prepared reverse cache concrete
 # across the cached rule, reusable primal/tangent buffers, and cached input/output specs.
@@ -868,7 +868,6 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-
 # Cache specs are compared again when a prepared cache is reused. The input type `T` is
 # encoded as a type parameter so that `_validate_prepared_cache_inputs` can read it at
 # @generated specialisation time — eliminating the runtime `jl_types_equal` call that
@@ -918,20 +917,6 @@ Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
 
 const _CHUNK_NFWD_MAX_LANES = 8
 
-@inline function _fcache_small_vector_fill_identity!(packed::Matrix{T}) where {T}
-    fill!(packed, zero(T))
-    @inbounds for i in 1:size(packed, 1)
-        packed[i, i] = one(T)
-    end
-    return packed
-end
-
-@inline function _fcache_small_vector_identity_seed(x::Vector{T}) where {T}
-    packed = Matrix{T}(undef, length(x), length(x))
-    _fcache_small_vector_fill_identity!(packed)
-    return packed
-end
-
 struct PreparedCacheSpecError <: Exception
     msg::String
 end
@@ -962,7 +947,7 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     throw(PreparedCacheSpecError(msg))
 end
 
-# Shared prepared-cache input validation for Cache, ForwardCache, and HVPCache entry points.
+# Shared prepared-cache input validation for Cache, NfwdCache, and HVPCache entry points.
 # The expected type T_i is extracted from the PreparedCacheInputSpec{T_i,S_i} type parameter
 # at @generated specialisation time, so the emitted `typeof(x_i) == T_i` comparison uses a
 # compile-time constant type — eliminating the runtime jl_types_equal call.
@@ -994,16 +979,35 @@ end
     end
 end
 
+# ── Forward-mode NfwdCache ─────────────────────────────────────────────────────
 
-# Forward-mode cache architecture (nfwd-backed)
-#
-# NfwdCache: holds pre-built nfwd rules for chunk widths 1–8.
-# ForwardCache: public forward-mode cache returned by prepare_derivative_cache.
-# The generic lane loop (_fcache_derivative_chunked_loop!!) evaluates one width-1 lane at
-# a time through the cached rule; NfwdMooncake overrides _fcache_derivative_chunked!! with
-# a batched NDual pass for eligible signatures.
+"""
+    NfwdCache
 
-struct NfwdCache{R1,R2,R3,R4,R5,R6,R7,R8,PB,GR,SG,SB,SW}
+Forward-mode cache returned by [`prepare_derivative_cache`](@ref).
+
+Holds pre-built nfwd rules for chunk widths 1–8 plus gradient workspace and input specs.
+
+# Supported input types
+
+The callable `f` must be a **singleton type** (zero fields): named functions like `sin` or
+`MyModule.my_f` work; closures and callable structs with captured state do not.
+
+Each positional argument `x` must be one of:
+
+- `IEEEFloat` scalar (`Float16`, `Float32`, `Float64`)
+- `Complex{<:IEEEFloat}` scalar
+- `Array{T}` where `T` is one of the scalar types above
+- `Tuple` of any combination of the above (recursively)
+
+Everything else (structs, `NamedTuple`, `BitArray`, integer types, etc.) is rejected at
+cache-construction time with an `UnsupportedInputError`.
+
+The function output must also be one of the supported types above; an `UnsupportedOutputError`
+is thrown at evaluation time otherwise.
+"""
+struct NfwdCache{R1,R2,R3,R4,R5,R6,R7,R8,PB,GW,S<:Tuple}
+    friendly_tangents::Bool
     frule_1::R1
     frule_2::R2
     frule_3::R3
@@ -1013,87 +1017,59 @@ struct NfwdCache{R1,R2,R3,R4,R5,R6,R7,R8,PB,GR,SG,SB,SW}
     frule_7::R7
     frule_8::R8
     pack_buffers::PB
-    gradient_rrule::GR
-    small_vector_gradient_frule::SG
-    small_vector_gradient_buffer::SB
-    small_vector_gradient_workspace::SW
-end
-
-struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
-    rule::R
-    input_tangents::IT
-    output_primal::OP
-    friendly_gradients::FG
     gradient_workspace::GW
     gradient_chunk_size::Int
-    gradient_chunk_size_auto::Bool
-    chunkcache::CF
     input_specs::S
 end
 
 @inline _dual_primal_type(::Type) = Any
 @inline _dual_primal_type(::Type{Dual{Y,T}}) where {Y,T} = Y
 
-@inline function _forward_cache_output_summary(cache::ForwardCache)
-    output_primal = getfield(cache, :output_primal)
-    return if !isnothing(output_primal)
-        _cache_spec_summary(
-            if output_primal isa AbstractArray
-                PreparedCacheInputSpec(typeof(output_primal), size(output_primal))
-            else
-                PreparedCacheInputSpec(typeof(output_primal), ())
-            end,
-        )
-    else
-        dual_arg_types = Tuple{
-            map(
-                spec -> dual_type(typeof(spec).parameters[1]), getfield(cache, :input_specs)
-            )...,
-        }
-        output_type = Core.Compiler.return_type(getfield(cache, :rule), dual_arg_types)
-        _cache_type_summary(_dual_primal_type(output_type))
-    end
+@inline function _nfwd_cache_output_summary(cache::NfwdCache)
+    rule = getfield(cache, :frule_1)
+    dual_arg_types = Tuple{
+        map(spec -> dual_type(typeof(spec).parameters[1]), getfield(cache, :input_specs))...
+    }
+    output_type = Core.Compiler.return_type(rule, dual_arg_types)
+    return _cache_type_summary(_dual_primal_type(output_type))
 end
 
-function Base.show(io::IO, cache::ForwardCache)
-    chunk_size = getfield(cache, :gradient_chunk_size)
+function Base.show(io::IO, cache::NfwdCache)
     print(
         io,
-        "Mooncake.ForwardCache(",
+        "Mooncake.NfwdCache(",
         "mode=:forward, ",
-        "friendly_tangents=",
-        !isnothing(getfield(cache, :input_tangents)),
-        ", nfwd=",
-        !isnothing(getfield(cache, :chunkcache)),
-        ", chunk_size=",
-        getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size,
+        "chunk_size=",
+        getfield(cache, :gradient_chunk_size),
         ", inputs=",
         _cache_input_count(cache),
         ")",
     )
 end
 
-function Base.show(io::IO, ::MIME"text/plain", cache::ForwardCache)
-    chunk_size = getfield(cache, :gradient_chunk_size)
+function Base.show(io::IO, ::MIME"text/plain", cache::NfwdCache)
     print(
         io,
-        "Mooncake.ForwardCache\n",
+        "Mooncake.NfwdCache\n",
         "  mode: forward\n",
-        "  friendly_tangents: ",
-        !isnothing(getfield(cache, :input_tangents)),
-        "\n",
-        "  nfwd: ",
-        !isnothing(getfield(cache, :chunkcache)),
-        "\n",
         "  chunk_size: ",
-        getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size,
+        getfield(cache, :gradient_chunk_size),
         "\n",
         "  inputs: ",
         _cache_input_count(cache),
     )
     _cache_print_io_summary(
-        io, Base.tail(getfield(cache, :input_specs)), _forward_cache_output_summary(cache)
+        io, Base.tail(getfield(cache, :input_specs)), _nfwd_cache_output_summary(cache)
     )
+end
+
+# For nfwd types, tangent_type === primal_type, so the only "friendly" conversion needed
+# is swapping the function slot from NoTangent() to the function object itself.
+@inline function _nfwd_maybe_friendly(
+    cache::NfwdCache, input_primals::Tuple, native_grads::Tuple
+)
+    cache.friendly_tangents || return native_grads
+    return (input_primals[1], Base.tail(native_grads)...)
 end
 
 @generated function _fcache_gradient_lazy_workspace_ref(::Type{T}) where {T<:Tuple}
@@ -1102,67 +1078,25 @@ end
     return :(Ref{Union{Nothing,$workspace_type}}(nothing))
 end
 
-# fcache gradient bookkeeping
-@noinline function _fcache_gradient_throw_uninit_field_error(::Type{P}, n::Int) where {P}
-    throw(
-        ArgumentError(
-            "Forward-mode gradient seeding encountered an undefined field " *
-            "`$(fieldname(P, n))` in a value of type `$P`, but that field is marked " *
-            "always-initialised. This object is in a partially initialised state that " *
-            "Mooncake cannot seed automatically.",
-        ),
-    )
-end
+# ── fcache gradient bookkeeping ───────────────────────────────────────────────────
+#
+# Only nfwd-supported types: IEEEFloat, Complex{IEEEFloat}, Array of those, Tuple thereof.
 
 @inline _fcache_gradient_input_dof(x) = _fcache_gradient_input_dof(x, IdDict{Any,Any}())
-@inline _fcache_mark_seen!(seen::IdDict{Any,Any}, x) = (seen[x] = nothing)
 @inline _fcache_gradient_input_dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
 @inline _fcache_gradient_input_dof(x::IEEEFloat, _seen::IdDict{Any,Any}) = 1
 @inline _fcache_gradient_input_dof(x::Complex{<:IEEEFloat}, _seen::IdDict{Any,Any}) = 2
-@inline function _fcache_gradient_input_dof(
-    x::AbstractArray{<:IEEEFloat}, seen::IdDict{Any,Any}
-)
+@inline function _fcache_gradient_input_dof(x::Array{<:IEEEFloat}, seen::IdDict{Any,Any})
     haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    if x isa _BuiltinArrays
-        total = 0
-        for i in eachindex(x)
-            isassigned(x, i) && (total += 1)
-        end
-        return total
-    end
+    seen[x] = nothing
     return length(x)
 end
 @inline function _fcache_gradient_input_dof(
-    x::AbstractArray{Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
+    x::Array{<:Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
 )
     haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    if x isa _BuiltinArrays
-        total = 0
-        for i in eachindex(x)
-            isassigned(x, i) && (total += 2)
-        end
-        return total
-    end
+    seen[x] = nothing
     return 2 * length(x)
-end
-@inline function _fcache_gradient_input_dof(x::AbstractArray, seen::IdDict{Any,Any})
-    tangent_type(typeof(x)) == NoTangent && return 0
-    haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    total = 0
-    if x isa _BuiltinArrays
-        for i in eachindex(x)
-            isassigned(x, i) || continue
-            total += _fcache_gradient_input_dof(x[i], seen)
-        end
-    else
-        for xi in x
-            total += _fcache_gradient_input_dof(xi, seen)
-        end
-    end
-    return total
 end
 @inline function _fcache_gradient_input_dof(x::Tuple, seen::IdDict{Any,Any})
     total = 0
@@ -1171,32 +1105,16 @@ end
     end
     return total
 end
-@inline function _fcache_gradient_input_dof(x::NamedTuple, seen::IdDict{Any,Any})
-    total = 0
-    for xi in values(x)
-        total += _fcache_gradient_input_dof(xi, seen)
-    end
-    return total
-end
-@inline function _fcache_gradient_input_dof(x::P, seen::IdDict{Any,Any}) where {P}
-    tangent_type(P) == NoTangent && return 0
-    if x isa AbstractArray || Base.ismutabletype(P)
-        haskey(seen, x) && return 0
-        _fcache_mark_seen!(seen, x)
-    end
-    total = 0
-    inits = always_initialised(P)
-    for n in 1:fieldcount(P)
-        if isdefined(x, n)
-            total += _fcache_gradient_input_dof(getfield(x, n), seen)
-        elseif inits[n]
-            _fcache_gradient_throw_uninit_field_error(P, n)
-        end
-    end
-    return total
+# Catch-all for non-differentiable types (function slots, etc.)
+@inline function _fcache_gradient_input_dof(x, seen::IdDict{Any,Any})
+    tangent_type(typeof(x)) == NoTangent && return 0
+    error("Unsupported type for forward-mode gradient: $(typeof(x))")
 end
 
-# fcache gradient seeding
+# ── fcache gradient seeding ───────────────────────────────────────────────────────
+#
+# Only nfwd-supported types: IEEEFloat, Complex{IEEEFloat}, Array of those, Tuple thereof.
+
 @inline _fcache_gradient_seed_tangent(x, slot::Int) = _fcache_gradient_seed_tangent(
     x, slot, Ref(0), IdDict{Any,Any}()
 )
@@ -1223,7 +1141,7 @@ end
 end
 
 function _fcache_gradient_seed_tangent(
-    x::AbstractArray{T}, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
+    x::Array{T}, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
 ) where {T<:IEEEFloat}
     existing = get(dict, x, nothing)
     !isnothing(existing) && return existing
@@ -1237,10 +1155,7 @@ function _fcache_gradient_seed_tangent(
 end
 
 function _fcache_gradient_seed_tangent(
-    x::AbstractArray{Complex{T}},
-    slot::Int,
-    cursor::Base.RefValue{Int},
-    dict::IdDict{Any,Any},
+    x::Array{Complex{T}}, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
 ) where {T<:IEEEFloat}
     existing = get(dict, x, nothing)
     !isnothing(existing) && return existing
@@ -1256,20 +1171,6 @@ function _fcache_gradient_seed_tangent(
     return dx
 end
 
-function _fcache_gradient_seed_tangent(
-    x::AbstractArray, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-)
-    tangent_type(typeof(x)) == NoTangent && return NoTangent()
-    existing = get(dict, x, nothing)
-    !isnothing(existing) && return existing
-    dx = zero_tangent(x)
-    dict[x] = dx
-    for I in eachindex(x)
-        dx[I] = _fcache_gradient_seed_tangent(x[I], slot, cursor, dict)
-    end
-    return dx
-end
-
 @inline function _fcache_gradient_seed_tangent(
     x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
 ) where {P<:Tuple}
@@ -1279,58 +1180,16 @@ end
     )
     return build_tangent(P, fields...)
 end
-
+# Catch-all for non-differentiable types (function slots, etc.)
 @inline function _fcache_gradient_seed_tangent(
-    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {P<:NamedTuple}
-    tangent_type(P) == NoTangent && return NoTangent()
-    fields = ntuple(
-        n -> _fcache_gradient_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P))
-    )
-    return build_tangent(P, fields...)
+    x, _slot::Int, _cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
+)
+    tangent_type(typeof(x)) == NoTangent && return NoTangent()
+    error("Unsupported type for forward-mode gradient seeding: $(typeof(x))")
 end
 
-function _fcache_gradient_seed_tangent(
-    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {P}
-    tangent_type(P) == NoTangent && return NoTangent()
-    if x isa AbstractArray || Base.ismutabletype(P)
-        existing = get(dict, x, nothing)
-        !isnothing(existing) && return existing
-        tx = zero_tangent(x)
-        dict[x] = tx
-        if tx isa MutableTangent
-            inits = always_initialised(P)
-            for n in 1:fieldcount(P)
-                if isdefined(x, n)
-                    set_tangent_field!(
-                        tx,
-                        n,
-                        _fcache_gradient_seed_tangent(getfield(x, n), slot, cursor, dict),
-                    )
-                elseif inits[n]
-                    _fcache_gradient_throw_uninit_field_error(P, n)
-                end
-            end
-        end
-        return tx
-    end
-
-    inits = always_initialised(P)
-    fields = ntuple(Val(fieldcount(P))) do n
-        if isdefined(x, n)
-            return _fcache_gradient_seed_tangent(getfield(x, n), slot, cursor, dict)
-        elseif inits[n]
-            _fcache_gradient_throw_uninit_field_error(P, n)
-        else
-            return PossiblyUninitTangent{tangent_type(fieldtype(P, n))}()
-        end
-    end
-    return build_tangent(P, fields...)
-end
-
-# Shared `fcache` nfwd chunk machinery.
-# Attempts to build an `NfwdCache`; returns `nothing` if any eligibility check fails.
+# ── NfwdCache chunk building ──────────────────────────────────────────────────────
+# Builds nfwd rules at widths 1–8 and the gradient fast-path helpers.
 @inline function _fcache_build_nfwd_chunk_cache(fx::Tuple, config)
     config.debug_mode && return nothing
     getfield(config, :enable_nfwd) || return nothing
@@ -1371,49 +1230,8 @@ end
     frule_8 = NfwdMooncake.build_frule(
         sig; chunk_size=8, debug_mode=false, silence_debug_messages=true
     )
-    pack_buffers = tuple_map(Base.tail(fx)) do x
-        if x isa IEEEFloat || x isa Complex{<:IEEEFloat}
-            nothing
-        else
-            Ref{Union{Nothing,Array{eltype(x)}}}(nothing)
-        end
-    end
-    gradient_rrule = if length(params) == 2 && params[2] <: Array{<:IEEEFloat}
-        NfwdMooncake.build_rrule(
-            sig;
-            chunk_size=(requested_chunk_size == 0 ? nothing : requested_chunk_size),
-            debug_mode=false,
-            silence_debug_messages=true,
-        )
-    else
-        nothing
-    end
-    small_vector_gradient_frule =
-        if (
-            length(params) == 2 &&
-            params[2] <: Vector{<:IEEEFloat} &&
-            1 <= length(last(fx)) <= _CHUNK_NFWD_MAX_LANES &&
-            length(last(fx)) <=
-            (requested_chunk_size == 0 ? _CHUNK_NFWD_MAX_LANES : requested_chunk_size)
-        )
-            getfield(
-                (frule_1, frule_2, frule_3, frule_4, frule_5, frule_6, frule_7, frule_8),
-                length(last(fx)),
-            )
-        else
-            nothing
-        end
-    small_vector_gradient_buffer = if !isnothing(small_vector_gradient_frule)
-        _fcache_small_vector_identity_seed(last(fx))
-    else
-        nothing
-    end
-    small_vector_gradient_workspace = if !isnothing(small_vector_gradient_frule)
-        (NoTangent(), Vector{eltype(last(fx))}(undef, length(last(fx))))
-    else
-        nothing
-    end
-    return NfwdCache(
+    pack_buffers = tuple_map(_nfwd_pack_buffer_for, fx)
+    return (;
         frule_1,
         frule_2,
         frule_3,
@@ -1423,18 +1241,34 @@ end
         frule_7,
         frule_8,
         pack_buffers,
-        gradient_rrule,
-        small_vector_gradient_frule,
-        small_vector_gradient_buffer,
-        small_vector_gradient_workspace,
     )
 end
+
+@inline _nfwd_pack_buffer_for(::IEEEFloat) = nothing
+@inline _nfwd_pack_buffer_for(::Complex{<:IEEEFloat}) = nothing
+@inline function _nfwd_pack_buffer_for(x::Array)
+    Ref{Union{Nothing,Array{eltype(x)}}}(nothing)
+end
+@inline _nfwd_pack_buffer_for(x::Tuple) = tuple_map(_nfwd_pack_buffer_for, x)
+@inline _nfwd_pack_buffer_for(_) = nothing  # function slots, non-differentiable types
+
+# ── chunk pack tangent helpers ────────────────────────────────────────────────────
 
 @inline function _chunk_pack_tangent(::IEEEFloat, dx::NTangent, _buf, ::Val{N}) where {N}
     return ntuple(k -> dx[k], Val(N))
 end
 @inline function _chunk_pack_tangent(::IEEEFloat, dx, _buf, ::Val{N}) where {N}
     return ntuple(_ -> dx, Val(N))
+end
+
+# Fallback for non-differentiable types (e.g. function slots).
+@inline function _chunk_pack_tangent(
+    _, dx::NTangent{<:Tuple{Vararg{NoTangent}}}, _buf, ::Val{N}
+) where {N}
+    return NoTangent()
+end
+@inline function _chunk_pack_tangent(_, dx::NoTangent, _buf, ::Val{N}) where {N}
+    return NoTangent()
 end
 
 @inline function _chunk_pack_tangent(
@@ -1500,7 +1334,8 @@ end
     )
 end
 
-# fcache derivative helpers
+# ── NTangent lane count and chunked derivative dispatch ───────────────────────────
+
 @generated function _fcache_derivative_ntangent_lane_count(ts::T) where {T<:Tuple}
     lane_count = nothing
     for entry in T.parameters
@@ -1523,84 +1358,90 @@ end
     return isnothing(lane_count) ? :(nothing) : :(Val{$lane_count}())
 end
 
-# fcache derivative chunk execution
-@noinline function _fcache_derivative_chunked_loop!!(
-    cache::ForwardCache, ::Val{N}, x_dx::Vararg{Tuple,M}; friendly_tangents::Bool
-) where {N,M}
-    return _fcache_derivative_chunked_loop!!(cache, Val(N), Val(friendly_tangents), x_dx...)
+@inline function _nfwd_select_rule(cache::NfwdCache, ::Val{1})
+    return cache.frule_1
 end
-
-@noinline function _fcache_derivative_chunked_loop!!(
-    cache::ForwardCache, ::Val{N}, ::Val{friendly_tangents}, x_dx::Vararg{Tuple,M}
-) where {N,friendly_tangents,M}
-    input_primals = map(first, x_dx)
-    input_tangents = map(last, x_dx)
-    function compute_lane_output(::Val{lane}) where {lane}
-        lane_tangents = tuple_map(t -> t isa NTangent ? t[lane] : t, input_tangents)
-        return if friendly_tangents
-            native_tangents = tuple_map(
-                primal_to_tangent!!, cache.input_tangents, lane_tangents
-            )
-            cache.rule(tuple_map(Dual, input_primals, native_tangents)...)
-        else
-            lane_duals = tuple_map(Dual, input_primals, lane_tangents)
-            error_if_incorrect_dual_types(lane_duals...)
-            cache.rule(lane_duals...)
-        end
-    end
-
-    first_output = compute_lane_output(Val(1))
-    y = primal(first_output)
-    first_tangent = if friendly_tangents
-        tangent_to_primal_internal!!(
-            _copy_output(y),
-            tangent(first_output),
-            isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}(),
-        )
-    else
-        first_output_tangent = tangent(first_output)
-        if first_output_tangent isa NoTangent
-            first_output_tangent
-        else
-            _copy(first_output_tangent)
-        end
-    end
-
-    rest_tangents = ntuple(
-        n -> begin
-            lane_output = compute_lane_output(Val(n + 1))
-            return if friendly_tangents
-                tangent_to_primal_internal!!(
-                    _copy_output(y),
-                    tangent(lane_output),
-                    isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}(),
-                )
-            else
-                lane_output_tangent = tangent(lane_output)
-                if lane_output_tangent isa NoTangent
-                    lane_output_tangent
-                else
-                    _copy(lane_output_tangent)
-                end
-            end
-        end,
-        Val(N - 1),
-    )
-
-    return y, NTangent((first_tangent, rest_tangents...))
+@inline function _nfwd_select_rule(cache::NfwdCache, ::Val{2})
+    return cache.frule_2
+end
+@inline function _nfwd_select_rule(cache::NfwdCache, ::Val{3})
+    return cache.frule_3
+end
+@inline function _nfwd_select_rule(cache::NfwdCache, ::Val{4})
+    return cache.frule_4
+end
+@inline function _nfwd_select_rule(cache::NfwdCache, ::Val{5})
+    return cache.frule_5
+end
+@inline function _nfwd_select_rule(cache::NfwdCache, ::Val{6})
+    return cache.frule_6
+end
+@inline function _nfwd_select_rule(cache::NfwdCache, ::Val{7})
+    return cache.frule_7
+end
+@inline function _nfwd_select_rule(cache::NfwdCache, ::Val{8})
+    return cache.frule_8
 end
 
 @noinline function _fcache_derivative_chunked!!(
-    cache::ForwardCache, ::Val{N}, x_dx::Vararg{Tuple,M}; friendly_tangents::Bool=false
+    cache::NfwdCache, ::Val{N}, x_dx::Vararg{Tuple,M}
 ) where {N,M}
     N < 1 && throw(ArgumentError("NTangent inputs must contain at least one lane."))
-    return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
+    input_primals = map(first, x_dx)
+    input_tangents = map(last, x_dx)
+    if isnothing(cache.pack_buffers)
+        # Fallback: lane-by-lane using width-1 rule (debug mode)
+        return _fcache_derivative_lane_loop!!(
+            cache.frule_1, Val(N), input_primals, input_tangents
+        )
+    end
+    rule = _nfwd_select_rule(cache, Val(N))
+    packed_tangents = ntuple(Val(M)) do i
+        _chunk_pack_tangent(input_primals[i], input_tangents[i], cache.pack_buffers[i], Val(N))
+    end
+    output = rule(map(Dual, input_primals, packed_tangents)...)
+    y = primal(output)
+    dy = tangent(output)
+    if dy isa Tuple
+        output_tangent = NTangent(dy)
+    elseif dy isa NoTangent
+        output_tangent = NTangent(ntuple(_ -> NoTangent(), Val(N)))
+    else
+        output_tangent = NTangent(ntuple(_ -> dy, Val(N)))
+    end
+    return y, output_tangent
 end
+
+# Lane-by-lane fallback for when pack_buffers is unavailable (debug mode).
+@noinline function _fcache_derivative_lane_loop!!(
+    rule, ::Val{N}, input_primals::Tuple, input_tangents::Tuple
+) where {N}
+    function compute_lane(::Val{lane}) where {lane}
+        lane_tangents = tuple_map(t -> t isa NTangent ? t[lane] : t, input_tangents)
+        lane_duals = tuple_map(Dual, input_primals, lane_tangents)
+        return rule(lane_duals...)
+    end
+    first_output = compute_lane(Val(1))
+    y = primal(first_output)
+    first_tangent = let t = tangent(first_output)
+        t isa NoTangent ? t : _copy(t)
+    end
+    rest_tangents = ntuple(Val(N - 1)) do n
+        lane_output = compute_lane(Val(n + 1))
+        t = tangent(lane_output)
+        return t isa NoTangent ? t : _copy(t)
+    end
+    return y, NTangent((first_tangent, rest_tangents...))
+end
+
+# ── prepare_derivative_cache ──────────────────────────────────────────────────────
 
 """
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
+
+See [`NfwdCache`](@ref) for the full list of supported input and output types.
 
 !!! note
     Cache construction stays lazy and does not execute `f(x...)`, whether the prepared
@@ -1629,14 +1470,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     else
         Nfwd._nfwd_check_chunk_size(requested_chunk_size)
     end
-    gradient_chunk_size_auto = requested_chunk_size == 0
-    chunkcache = _fcache_build_nfwd_chunk_cache(fx, config)
-    rule = NfwdMooncake.build_frule(
-        typeof(fx); chunk_size=1, debug_mode=false, silence_debug_messages=true
-    )
-    if config.debug_mode
-        rule = DebugFRule(rule)
-    end
+    chunk_fields = _fcache_build_nfwd_chunk_cache(fx, config)
     input_specs = map(fx) do x
         if x isa AbstractArray
             PreparedCacheInputSpec(typeof(x), size(x))
@@ -1645,45 +1479,62 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         end
     end
     gradient_chunk_size = let total_dof = _fcache_gradient_input_dof(fx)
-        if gradient_chunk_size_auto
+        if requested_chunk_size == 0
             min(total_dof, _CHUNK_NFWD_MAX_LANES)
         else
             min(total_dof, requested_chunk_size)
         end
     end
-    output_primal = nothing
-    if config.friendly_tangents
-        input_tangents = tuple_map(zero_tangent, fx)
-        gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
-        return ForwardCache(
+    gradient_workspace = _fcache_gradient_lazy_workspace_ref(typeof(fx))
+    friendly = config.friendly_tangents
+    if isnothing(chunk_fields)
+        # nfwd not available (debug mode or enable_nfwd=false). Build width-1 rule only.
+        rule = NfwdMooncake.build_frule(
+            typeof(fx); chunk_size=1, debug_mode=false, silence_debug_messages=true
+        )
+        if config.debug_mode
+            rule = DebugFRule(rule)
+        end
+        return NfwdCache(
+            friendly,
             rule,
-            input_tangents,
-            output_primal,
-            _copy_output(fx),
+            nothing,
+            nothing,
+            nothing,
+            nothing,
+            nothing,
+            nothing,
+            nothing,
+            nothing,
             gradient_workspace,
             gradient_chunk_size,
-            gradient_chunk_size_auto,
-            chunkcache,
             input_specs,
         )
     end
-    return ForwardCache(
-        rule,
-        nothing,
-        output_primal,
-        nothing,
-        _fcache_gradient_lazy_workspace_ref(typeof(fx)),
+    frule_1 = chunk_fields.frule_1
+    if config.debug_mode
+        frule_1 = DebugFRule(frule_1)
+    end
+    return NfwdCache(
+        friendly,
+        frule_1,
+        chunk_fields.frule_2,
+        chunk_fields.frule_3,
+        chunk_fields.frule_4,
+        chunk_fields.frule_5,
+        chunk_fields.frule_6,
+        chunk_fields.frule_7,
+        chunk_fields.frule_8,
+        chunk_fields.pack_buffers,
+        gradient_workspace,
         gradient_chunk_size,
-        gradient_chunk_size_auto,
-        chunkcache,
         input_specs,
     )
 end
 
-#
-# `value_and_gradient!!` generic `_fcache_derivative_chunked!!` path
-#
-function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
+# ── value_and_gradient!! generic chunked path ─────────────────────────────────────
+
+function _fcache_gradient_chunked!!(cache::NfwdCache, input_primals::Tuple)
     native_gradients = let workspace = cache.gradient_workspace[]
         if isnothing(workspace)
             workspace = tuple_map(zero_tangent, input_primals)
@@ -1697,20 +1548,12 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
     end
     total_dof = _fcache_gradient_input_dof(input_primals)
 
+    rule = cache.frule_1
     if total_dof == 0
-        output = cache.rule(tuple_map(Dual, input_primals, native_gradients)...)
+        output = rule(tuple_map(Dual, input_primals, native_gradients)...)
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        if isnothing(cache.input_tangents)
-            return y, native_gradients
-        end
-        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
-        return y,
-        tangent_to_primal_internal!!(
-            friendly_gradients,
-            native_gradients,
-            isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-        )
+        return y, _nfwd_maybe_friendly(cache, input_primals, native_gradients)
     end
 
     chunk_size = cache.gradient_chunk_size
@@ -1723,10 +1566,7 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
         Val(fieldcount(typeof(input_primals))),
     )
     y, first_chunk_dy = _fcache_derivative_chunked!!(
-        cache,
-        Val(first_chunk_width),
-        map(tuple, input_primals, first_input_tangents)...;
-        friendly_tangents=false,
+        cache, Val(first_chunk_width), map(tuple, input_primals, first_input_tangents)...
     )
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     for lane in 1:first_chunk_width
@@ -1753,10 +1593,7 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
             Val(fieldcount(typeof(input_primals))),
         )
         _, chunk_dy = _fcache_derivative_chunked!!(
-            cache,
-            Val(chunk_width),
-            map(tuple, input_primals, input_tangents)...;
-            friendly_tangents=false,
+            cache, Val(chunk_width), map(tuple, input_primals, input_tangents)...
         )
         for lane in 1:chunk_width
             coeff = Float64(chunk_dy[lane])
@@ -1772,165 +1609,26 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
         end
     end
 
-    if isnothing(cache.input_tangents)
-        return y, native_gradients
-    end
-    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
-    return y,
-    tangent_to_primal_internal!!(
-        friendly_gradients,
-        native_gradients,
-        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-    )
-end
-
-#
-# `value_and_gradient!!` fast paths
-#
-
-# Scalar fast path
-@inline function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::T
-) where {F,T<:IEEEFloat}
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
-    fastpath = cache.chunkcache
-    rule = if isnothing(fastpath) || isnothing(fastpath.frule_1)
-        cache.rule
-    else
-        fastpath.frule_1
-    end
-    output = rule(Dual(f, NoTangent()), Dual(x, one(x)))
-    y = primal(output)
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    native_gradients = (NoTangent(), tangent(output))
-    if isnothing(cache.input_tangents)
-        return y, native_gradients
-    end
-    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
-    return y,
-    tangent_to_primal_internal!!(
-        friendly_gradients,
-        native_gradients,
-        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-    )
-end
-
-# Small-vector fast path
-@inline function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::V
-) where {F,T<:IEEEFloat,V<:Vector{T}}
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
-    fastpath = cache.chunkcache
-    if !isnothing(fastpath) && !isnothing(fastpath.small_vector_gradient_frule)
-        rule = fastpath.small_vector_gradient_frule
-        _fcache_small_vector_fill_identity!(fastpath.small_vector_gradient_buffer)
-        output = rule(Dual(f, NoTangent()), Dual(x, fastpath.small_vector_gradient_buffer))
-        y = primal(output)
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        output_tangent = tangent(output)
-        native_gradients = fastpath.small_vector_gradient_workspace
-        if output_tangent isa Tuple
-            @inbounds for i in 1:NfwdMooncake.rule_chunk_size(typeof(rule))
-                native_gradients[2][i] = output_tangent[i]
-            end
-        else
-            @inbounds for i in 1:NfwdMooncake.rule_chunk_size(typeof(rule))
-                native_gradients[2][i] = output_tangent
-            end
-        end
-        if isnothing(cache.input_tangents)
-            return y, native_gradients
-        end
-        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
-        return y,
-        tangent_to_primal_internal!!(
-            friendly_gradients,
-            native_gradients,
-            isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-        )
-    elseif !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
-        native_gradients = let workspace = cache.gradient_workspace[]
-            if isnothing(workspace)
-                workspace = (NoTangent(), zero_tangent(x))
-                cache.gradient_workspace[] = workspace
-                workspace
-            else
-                set_to_zero!!(workspace[2])
-                workspace
-            end
-        end
-        y, output = __value_and_gradient!!(
-            fastpath.gradient_rrule,
-            CoDual(f, native_gradients[1]),
-            CoDual(x, native_gradients[2]),
-        )
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        if isnothing(cache.input_tangents)
-            return y, output
-        end
-        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
-        return y,
-        tangent_to_primal_internal!!(
-            friendly_gradients,
-            output,
-            isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-        )
-    end
-    return _fcache_gradient_chunked!!(cache, (f, x))
-end
-
-# Array fast path
-@inline function value_and_gradient!!(
-    cache::ForwardCache, f::F, x::A
-) where {F,A<:Array{<:IEEEFloat}}
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
-    fastpath = cache.chunkcache
-    if !isnothing(fastpath) && !isnothing(fastpath.gradient_rrule)
-        native_gradients = let workspace = cache.gradient_workspace[]
-            if isnothing(workspace)
-                workspace = (NoTangent(), zero_tangent(x))
-                cache.gradient_workspace[] = workspace
-                workspace
-            else
-                set_to_zero!!(workspace[2])
-                workspace
-            end
-        end
-        y, output = __value_and_gradient!!(
-            fastpath.gradient_rrule,
-            CoDual(f, native_gradients[1]),
-            CoDual(x, native_gradients[2]),
-        )
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        if isnothing(cache.input_tangents)
-            return y, output
-        end
-        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
-        return y,
-        tangent_to_primal_internal!!(
-            friendly_gradients,
-            output,
-            isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-        )
-    end
-    return _fcache_gradient_chunked!!(cache, (f, x))
+    return y, _nfwd_maybe_friendly(cache, input_primals, native_gradients)
 end
 
 # Generic vararg
-function value_and_gradient!!(cache::ForwardCache, f::F, x::Vararg{Any,N}) where {F,N}
+function value_and_gradient!!(cache::NfwdCache, f::F, x::Vararg{Any,N}) where {F,N}
     input_primals = (f, x...)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     return _fcache_gradient_chunked!!(cache, input_primals)
 end
 
+# ── value_and_derivative!! methods for NfwdCache ──────────────────────────────────
+
 """
-    value_and_derivative!!(cache::ForwardCache, f::Dual, x::Vararg{Dual,N})
+    value_and_derivative!!(cache::NfwdCache, f::Dual, x::Vararg{Dual,N})
 
 Returns a `Dual` containing the result of applying forward-mode AD to compute the (Frechet)
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
 """
-function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
+function value_and_derivative!!(cache::NfwdCache, fx::Vararg{Dual,N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     if any(x -> tangent(x) isa NTangent, fx)
@@ -1941,140 +1639,348 @@ function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {
             ),
         )
     end
-    return __call_rule(cache.rule, fx)
+    return __call_rule(cache.frule_1, fx)
 end
 
 """
-    value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
+    value_and_derivative!!(cache::NfwdCache, (f, df), (x, dx), ...)
 
 Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the
 (Frechet) derivative of `primal(f)` at the primal values in `x` in the direction of the
 tangent values contained in `df` and `dx`.
 """
 @inline function value_and_derivative!!(
-    cache::ForwardCache{R,IT,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
-) where {R,IT<:Tuple,OP,FG,GW,CF,S,M}
-    input_primals = tuple_map(first, fx)
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
-    input_friendly_tangents = tuple_map(last, fx)
-    N_val = _fcache_derivative_ntangent_lane_count(input_friendly_tangents)
-    !isnothing(N_val) && return _fcache_derivative_chunked!!(
-        cache,
-        N_val,
-        map(tuple, input_primals, input_friendly_tangents)...;
-        friendly_tangents=true,
-    )
-
-    input_tangents = tuple_map(
-        primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
-    )
-    N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
-    !isnothing(N_val) && return _fcache_derivative_chunked!!(
-        cache,
-        N_val,
-        map(tuple, input_primals, input_tangents)...;
-        friendly_tangents=true,
-    )
-
-    output = __call_rule(cache.rule, tuple_map(Dual, input_primals, input_tangents))
-    output_primal = primal(output)
-    output_friendly_tangent = tangent_to_friendly!!(
-        friendly_tangent_cache(output_primal),
-        output_primal,
-        tangent(output),
-        _friendly_cache((output_primal,)),
-    )
-    return output_primal, output_friendly_tangent
-end
-
-@inline function value_and_derivative!!(
-    cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
-) where {R,OP,FG,GW,CF,S<:Tuple,M}
+    cache::NfwdCache, fx::Vararg{Tuple{Any,Any},M}
+) where {M}
     input_primals = tuple_map(first, fx)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
     input_tangents = tuple_map(last, fx)
     N_val = _fcache_derivative_ntangent_lane_count(input_tangents)
-    !isnothing(N_val) && return _fcache_derivative_chunked!!(
-        cache,
-        N_val,
-        map(tuple, input_primals, input_tangents)...;
-        friendly_tangents=false,
-    )
+    if !isnothing(N_val)
+        return _fcache_derivative_chunked!!(
+            cache, N_val, map(tuple, input_primals, input_tangents)...
+        )
+    end
 
     input_duals = tuple_map(Dual, input_primals, input_tangents)
     error_if_incorrect_dual_types(input_duals...)
-    output = __call_rule(cache.rule, input_duals)
+    output = __call_rule(cache.frule_1, input_duals)
     return primal(output), tangent(output)
 end
 
-# IT=Nothing specialisation: disambiguates against the Dual-vararg and Tuple-vararg
-# zero-arg overloads (Aqua detects the ambiguity without this more-specific method).
-function value_and_derivative!!(
-    cache::ForwardCache{R,Nothing,OP,FG,GW,CF,S}
-) where {R,OP,FG,GW,CF,S<:Tuple}
+function value_and_derivative!!(cache::NfwdCache)
     _validate_prepared_cache_inputs(cache.input_specs, ())
     error("unreachable")
 end
 
-function value_and_derivative!!(cache::ForwardCache)
-    _validate_prepared_cache_inputs(cache.input_specs, ())
-    error("unreachable")
+# ── HVP / Hessian — nfwd-over-reverse implementation ─────────────────────────────
+#
+# Strategy: compile a reverse-mode rule for NDual{T,1} inputs. A single forward+backward
+# pass with seed (value=0, partials=(1,)) yields both the gradient (in the .partials
+# field of the input fdata) and the HVP (in the .value field), from a single pass.
+#
+# NDual{T,1} acts as a dual number: value carries the primal, partials[1] carries the
+# tangent direction. The reverse AD differentiates through NDual arithmetic, so the
+# adjoint of the partials component of the output w.r.t. the value/partials components
+# of the inputs naturally produces gradient and HVP information.
+
+"""
+    HVPCache
+
+Cache for Hessian-vector products and Hessian evaluation using nfwd-over-reverse AD.
+Stores a reverse-mode rule compiled for `NDual{T,1}` inputs, plus pre-allocated buffers.
+"""
+struct HVPCache{R,S<:Tuple,FB<:Tuple,XB<:Tuple,SD}
+    ndual_rule::R           # DerivedRule compiled for NDual inputs
+    input_specs::S          # PreparedCacheInputSpec for (f, x...)
+    fdata_bufs::FB          # pre-allocated fdata buffers for NDual input tangents
+    x_ndual_bufs::XB        # pre-allocated NDual input arrays
+    seed::SD                # pre-allocated pullback seed rdata
 end
 
-#
-# HVP / Hessian stubs — to be re-implemented in a later step.
-#
+function Base.show(io::IO, cache::HVPCache)
+    print(
+        io,
+        "Mooncake.HVPCache(",
+        "mode=:forward_over_reverse, ",
+        "inputs=",
+        _cache_input_count(cache),
+        ")",
+    )
+end
+
+function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
+    n_inputs = _cache_input_count(cache)
+    print(
+        io, "Mooncake.HVPCache\n", "  mode: forward_over_reverse\n", "  inputs: ", n_inputs
+    )
+    input_specs = getfield(cache, :input_specs)
+    _cache_print_io_summary(io, Base.tail(input_specs), "IEEEFloat scalar")
+end
 
 """
     prepare_hvp_cache(f, x...; config=Mooncake.Config())
 
-Prepare a cache for Hessian-vector products.
+Prepare a cache for Hessian-vector products and Hessian evaluation.
 
-!!! warning
-    HVP support is pending re-implementation. This function currently throws an error.
+Uses nfwd-over-reverse AD: compiles a reverse-mode rule for `NDual{T,1}` inputs so that
+a single forward+backward pass produces both the gradient and the Hessian-vector product.
+
+Only `Vector{<:IEEEFloat}` inputs are supported.
 """
 function prepare_hvp_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
-    error(
-        "HVP cache is pending re-implementation. " *
-        "Use `value_and_gradient!!` for first-order gradients."
+    config.empty_cache && empty_mooncake_caches!()
+    N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
+    for (i, xi) in enumerate(x)
+        xi isa Vector{<:IEEEFloat} || throw(
+            ArgumentError(
+                "HVP/Hessian requires `Vector{<:IEEEFloat}` inputs; " *
+                "argument $i has type `$(typeof(xi))`.",
+            ),
+        )
+    end
+
+    # Build NDual versions of inputs and compile a reverse rule for NDual signature.
+    x_ndual_bufs = map(x) do xi
+        Nfwd.NDual{eltype(xi),1}.(xi, Ref(ntuple(_ -> zero(eltype(xi)), Val(1))))
+    end
+    ndual_rule = build_rrule(
+        f,
+        x_ndual_bufs...;
+        debug_mode=config.debug_mode,
+        silence_debug_messages=config.silence_debug_messages,
     )
+
+    # Pre-allocate fdata buffers for NDual input tangents.
+    fdata_bufs = map(x_ndual_bufs) do xb
+        fdata(zero_tangent(xb))
+    end
+
+    # Build the pullback seed: rdata for NDual output with (value=0, partials=(1,)).
+    T_elem = eltype(first(x))
+    y_ndual_sample = Nfwd.NDual{T_elem,1}(zero(T_elem), ntuple(_ -> zero(T_elem), Val(1)))
+    y_tangent_type = tangent_type(typeof(y_ndual_sample))
+    seed = _hvp_make_seed(y_tangent_type, T_elem)
+
+    specs = map((f, x...)) do xi
+        if xi isa AbstractArray
+            PreparedCacheInputSpec(typeof(xi), size(xi))
+        else
+            PreparedCacheInputSpec(typeof(xi), ())
+        end
+    end
+
+    return HVPCache(ndual_rule, specs, fdata_bufs, x_ndual_bufs, seed)
+end
+
+# Construct the pullback seed rdata: (value=0, partials=(1,)) for NDual{T,1}.
+function _hvp_make_seed(::Type{Tangent{NT}}, ::Type{T}) where {NT,T}
+    return RData{NT}((value=zero(T), partials=(one(T),)))
+end
+function _hvp_make_seed(::Type{NoTangent}, ::Type{T}) where {T}
+    return NoRData()
 end
 
 """
-    value_and_hvp!!(cache, f, v, x::Vararg{Any,N})
+    value_and_hvp!!(cache::HVPCache, f, directions, x...)
 
-Compute the value, gradient, and Hessian-vector product.
+Compute the value, gradient, and Hessian-vector product `H * v` where `H = ∇² f(x)`
+and `v = directions`.
 
-!!! warning
-    HVP support is pending re-implementation. This function currently throws an error.
+Returns `(value, gradient, hvp)` for single-argument functions, or
+`(value, (g1, g2, ...), (h1, h2, ...))` for multi-argument functions.
 """
-function value_and_hvp!!(cache, f, v, x::Vararg{Any,N}) where {N}
-    error("HVP is pending re-implementation.")
+function value_and_hvp!!(cache::HVPCache, f, v, x::Vararg{Any,N}) where {N}
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x...))
+    if v isa AbstractVector
+        N == 1 || throw(
+            ArgumentError(
+                "For multi-argument functions, `directions` must be a tuple of " *
+                "vectors (one per argument), got a single vector for $N arguments.",
+            ),
+        )
+        v = (v,)
+    end
+    length(v) == N || throw(
+        ArgumentError(
+            "Expected $N direction vector(s) (one per input argument), got $(length(v)).",
+        ),
+    )
+    for (i, (vi, xi)) in enumerate(zip(v, x))
+        length(vi) == length(xi) || throw(
+            ArgumentError(
+                "Direction vector $i has length $(length(vi)) but input $i " *
+                "has length $(length(xi)).",
+            ),
+        )
+    end
+
+    # Lift x to NDual{T,1} with tangent direction v, reusing pre-allocated buffers.
+    x_ndual_bufs = getfield(cache, :x_ndual_bufs)
+    fdata_bufs = getfield(cache, :fdata_bufs)
+    for k in 1:N
+        xk, vk, buf = x[k], v[k], x_ndual_bufs[k]
+        for i in eachindex(buf)
+            buf[i] = Nfwd.NDual(xk[i], (vk[i],))
+        end
+    end
+
+    # Zero the fdata buffers by copying fresh zero fdata into them.
+    for k in 1:N
+        fresh = fdata(zero_tangent(x_ndual_bufs[k]))
+        copyto!(fdata_bufs[k], fresh)
+    end
+
+    # Build CoDuals and run the NDual reverse rule.
+    f_codual = zero_fcodual(f)
+    x_coduals = map(CoDual, x_ndual_bufs, fdata_bufs)
+    out, pb = getfield(cache, :ndual_rule)(f_codual, x_coduals...)
+    y_ndual = primal(out)
+
+    # Run pullback with seed (value=0, partials=(1,)).
+    pb(getfield(cache, :seed))
+
+    # Extract gradient (from .partials) and HVP (from .value) of the fdata.
+    val = y_ndual.value
+    gradient_vectors = ntuple(Val(N)) do k
+        fb = fdata_bufs[k]
+        map(t -> t.fields.partials[1], fb)
+    end
+    hvp_vectors = ntuple(Val(N)) do k
+        fb = fdata_bufs[k]
+        map(t -> t.fields.value, fb)
+    end
+
+    return val,
+    _unwrap_single(Val(N), gradient_vectors),
+    _unwrap_single(Val(N), hvp_vectors)
 end
+
+@inline _unwrap_single(::Val{1}, t::Tuple) = t[1]
+@inline _unwrap_single(::Val, t::Tuple) = t
 
 """
     prepare_hessian_cache(f, x...; config=Mooncake.Config())
 
 Prepare a cache for Hessian evaluation.
 
-!!! warning
-    Hessian support is pending re-implementation. This function currently throws an error.
+Uses forward-over-reverse AD internally.
+
+Only `Vector{<:IEEEFloat}` inputs are supported.
 """
 function prepare_hessian_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
-    error(
-        "Hessian cache is pending re-implementation. " *
-        "Use `value_and_gradient!!` for first-order gradients."
-    )
+    return prepare_hvp_cache(f, x...; config)
 end
 
 """
-    value_gradient_and_hessian!!(cache, f, x::Vararg{Any,N})
+    value_gradient_and_hessian!!(cache, f, x...)
 
-Compute the value, gradient, and Hessian.
+Compute the value, gradient, and Hessian of `f` at `x`.
 
-!!! warning
-    Hessian support is pending re-implementation. This function currently throws an error.
+For single-argument `f(x::Vector)`, returns `(value, gradient, hessian_matrix)`.
+For multi-argument `f(x1, x2, ...)`, returns
+`(value, (g1, g2, ...), ((H11, H12, ...), (H21, H22, ...), ...))`.
+
+Only `Vector{<:IEEEFloat}` inputs are supported. All inputs must have the same element type.
 """
-function value_gradient_and_hessian!!(cache, f, x::Vararg{Any,N}) where {N}
-    error("Hessian is pending re-implementation.")
+function value_gradient_and_hessian!!(cache::HVPCache, f, x::Vararg{Any,N}) where {N}
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x...))
+
+    # Validate inputs
+    for (i, xi) in enumerate(x)
+        xi isa Vector{<:IEEEFloat} || throw(
+            ArgumentError(
+                "Hessian requires `Vector{<:IEEEFloat}` inputs; " *
+                "argument $i has type `$(typeof(xi))`.",
+            ),
+        )
+    end
+    T = eltype(first(x))
+    for (i, xi) in enumerate(x)
+        eltype(xi) === T || throw(
+            ArgumentError(
+                "All Hessian inputs must have the same element type; " *
+                "argument 1 has `$T` but argument $i has `$(eltype(xi))`.",
+            ),
+        )
+    end
+
+    sizes = map(length, x)
+    n = sum(sizes; init=0)
+
+    if n == 0
+        if N == 1
+            return zero(T), zeros(T, 0), zeros(T, 0, 0)
+        else
+            grad_zeros = ntuple(k -> zeros(T, sizes[k]), Val(N))
+            H_blocks = ntuple(Val(N)) do i
+                ntuple(Val(N)) do j
+                    zeros(T, sizes[i], sizes[j])
+                end
+            end
+            return zero(T), grad_zeros, H_blocks
+        end
+    end
+
+    # Build Hessian column by column using HVP with standard basis vectors.
+    # The first call also gives us the value and gradient.
+    if N == 1
+        H = Matrix{T}(undef, n, n)
+        local val, grad_vec
+        for j in 1:n
+            ej = zeros(T, n)
+            ej[j] = one(T)
+            v, g, hvp = value_and_hvp!!(cache, f, (ej,), x...)
+            H[:, j] .= hvp
+            if j == 1
+                val = v
+                grad_vec = copy(g)
+            end
+        end
+        return val, grad_vec, H
+    else
+        H_full = Matrix{T}(undef, n, n)
+        local val, grad_copies
+        for j in 1:n
+            ej_vecs = _hessian_basis_vectors(sizes, j, T)
+            v, grads, hvp = value_and_hvp!!(cache, f, ej_vecs, x...)
+            col_offset = 0
+            for k in 1:N
+                H_full[(col_offset + 1):(col_offset + sizes[k]), j] .= hvp[k]
+                col_offset += sizes[k]
+            end
+            if j == 1
+                val = v
+                grad_copies = map(copy, grads)
+            end
+        end
+
+        # Slice into blocks
+        H_blocks = ntuple(N) do i
+            row_start = sum(sizes[1:(i - 1)]; init=0) + 1
+            row_end = row_start + sizes[i] - 1
+            ntuple(N) do j2
+                col_start = sum(sizes[1:(j2 - 1)]; init=0) + 1
+                col_end = col_start + sizes[j2] - 1
+                H_full[row_start:row_end, col_start:col_end]
+            end
+        end
+        return val, grad_copies, H_blocks
+    end
+end
+
+function _hessian_basis_vectors(sizes::Tuple, j::Int, ::Type{T}) where {T}
+    N = length(sizes)
+    vecs = Vector{Vector{T}}(undef, N)
+    offset = 0
+    for k in 1:N
+        v = zeros(T, sizes[k])
+        local_j = j - offset
+        if 1 <= local_j <= sizes[k]
+            v[local_j] = one(T)
+        end
+        vecs[k] = v
+        offset += sizes[k]
+    end
+    return Tuple(vecs)
 end

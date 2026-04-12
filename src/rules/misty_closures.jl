@@ -17,32 +17,11 @@ struct MistyClosureTangent
     dual_callable::Any
 end
 
-# Build a forward-mode rule for a MistyClosure using its original world age.
-#
-# We cannot use the current world age because the MistyClosure's IR (p.ir[]) has a
-# valid_worlds range set at creation time. On Julia 1.12+, generate_dual_ir calls
-# set_valid_world!(ir, interp.world), which throws if the world is outside this range.
-# If methods were defined after the MistyClosure was created, the current world would
-# fall outside valid_worlds and cause an error.
-#
-# Using the original world age is safe because lookup_ir for MistyClosure returns mc.ir[]
-# directly, bypassing method table lookups. Nested non-primitive calls use LazyFRule or
-# DynamicFRule, which obtain a current-world interpreter via get_interpreter() at runtime.
-# We pass skip_world_age_check=true since build_frule's safety check would incorrectly
-# reject our intentionally-older interpreter.
-#
+# Build a forward-mode rule for a MistyClosure.
+# The IR-based forward compiler has been removed; this returns `nothing` as a placeholder.
+# The dual_callable field in MistyClosureTangent is retained for structural compatibility.
 function _dual_mc(p::MistyClosure)
-    @static if VERSION > v"1.12-"
-        # Use the IR's valid_worlds.max_world instead of oc.world to avoid world age mismatch.
-        # The oc.world can be slightly newer than valid_worlds.max_world if methods were
-        # defined between IR generation and OpaqueClosure creation. Using max_world ensures
-        # we're within the valid range while still having access to all methods the IR needs.
-        mc_world = UInt(p.ir[].valid_worlds.max_world)
-    else
-        mc_world = UInt(p.oc.world)
-    end
-    interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
-    return build_frule(interp, p; skip_world_age_check=true)
+    return nothing
 end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
@@ -198,8 +177,10 @@ end
 
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
 function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
-    dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
-    return tangent(f).dual_callable(dual_captures, x...)
+    error(
+        "Forward-mode differentiation of `MistyClosure` is not currently available. " *
+        "The IR-based forward compiler has been removed.",
+    )
 end
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =

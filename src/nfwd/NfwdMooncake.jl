@@ -12,7 +12,6 @@ import ..Mooncake:
     NoTangent,
     __value_and_gradient!!,
     __verify_sig,
-    _fcache_derivative_chunked!!,
     _typeof,
     fdata,
     primal,
@@ -92,7 +91,6 @@ function (pb::ArrayScalarPullback)(y_rdata)
     end
     return (NoRData(), NoRData())
 end
-
 
 @inline function _nfwd_primitive_rrule_call(
     ::Val{N}, f::CoDual, x::Vararg{CoDual,M}
@@ -715,6 +713,10 @@ function _nfwd_lift(x::A, dx::AbstractArray, ::Val{N}) where {ET,A<:AbstractArra
         end
     end
     return out
+end
+
+function _nfwd_lift(x::Tuple, dx::Tuple, ::Val{N}) where {N}
+    return map((xi, dxi) -> _nfwd_lift(xi, dxi, Val(N)), x, dx)
 end
 
 @inline function _nfwd_extract_scalar(d::NDual{T,N}, ::Val{N}) where {T,N}
@@ -1479,5 +1481,104 @@ end
     return y, ntuple(k -> _nfwd_scalar_lane(dy, Val(C), Val(k)), Val(C))
 end
 
+# ── NfwdCache gradient fast paths ─────────────────────────────────────────────────
+#
+# Specialised value_and_gradient!! methods for scalar, small-vector, and array inputs.
+# These bypass the generic chunked loop when the problem shape allows a more direct
+# evaluation strategy (single forward pass for scalars / small vectors, or a single
+# reverse pass for arrays).
+#
+# Currently unused — all NfwdCache gradient calls go through the generic chunked path
+# in interface.jl.  Kept here so they can be re-enabled for performance once the core
+# migration is stable.
+
+@inline function _fcache_small_vector_fill_identity!(packed::Matrix{T}) where {T}
+    fill!(packed, zero(T))
+    @inbounds for i in 1:size(packed, 1)
+        packed[i, i] = one(T)
+    end
+    return packed
 end
 
+@inline function _fcache_small_vector_identity_seed(x::Vector{T}) where {T}
+    packed = Matrix{T}(undef, length(x), length(x))
+    _fcache_small_vector_fill_identity!(packed)
+    return packed
+end
+
+# Shared reverse-mode gradient path used by vector and array fast paths.
+@inline function _fcache_rrule_gradient!!(cache::Mooncake.NfwdCache, f, x)
+    native_gradients = let workspace = cache.gradient_workspace[]
+        if isnothing(workspace)
+            workspace = (Mooncake.NoTangent(), Mooncake.zero_tangent(x))
+            cache.gradient_workspace[] = workspace
+            workspace
+        else
+            Mooncake.set_to_zero!!(workspace[2])
+            workspace
+        end
+    end
+    y, output = Mooncake.__value_and_gradient!!(
+        cache.gradient_rrule,
+        Mooncake.CoDual(f, native_gradients[1]),
+        Mooncake.CoDual(x, native_gradients[2]),
+    )
+    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    return y, Mooncake._nfwd_maybe_friendly(cache, (f, x), output)
+end
+
+# Scalar fast path — single forward pass with seed one(x).
+@inline function _fcache_gradient_scalar(cache::Mooncake.NfwdCache, f::F, x::T) where {F,T<:IEEEFloat}
+    Mooncake._validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    rule = cache.frule_1
+    output = rule(Mooncake.Dual(f, Mooncake.NoTangent()), Mooncake.Dual(x, one(x)))
+    y = Mooncake.primal(output)
+    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    native_gradients = (Mooncake.NoTangent(), Mooncake.tangent(output))
+    return y, Mooncake._nfwd_maybe_friendly(cache, (f, x), native_gradients)
+end
+
+# Small-vector fast path — single forward pass at width == length(x).
+@inline function _fcache_gradient_small_vector(
+    cache::Mooncake.NfwdCache, f::F, x::V
+) where {F,T<:IEEEFloat,V<:Vector{T}}
+    Mooncake._validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    if !isnothing(cache.small_vector_gradient_frule)
+        rule = cache.small_vector_gradient_frule
+        _fcache_small_vector_fill_identity!(cache.small_vector_gradient_buffer)
+        output = rule(
+            Mooncake.Dual(f, Mooncake.NoTangent()),
+            Mooncake.Dual(x, cache.small_vector_gradient_buffer),
+        )
+        y = Mooncake.primal(output)
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        output_tangent = Mooncake.tangent(output)
+        native_gradients = cache.small_vector_gradient_workspace
+        if output_tangent isa Tuple
+            @inbounds for i in 1:rule_chunk_size(typeof(rule))
+                native_gradients[2][i] = output_tangent[i]
+            end
+        else
+            @inbounds for i in 1:rule_chunk_size(typeof(rule))
+                native_gradients[2][i] = output_tangent
+            end
+        end
+        return y, Mooncake._nfwd_maybe_friendly(cache, (f, x), native_gradients)
+    elseif !isnothing(cache.gradient_rrule)
+        return _fcache_rrule_gradient!!(cache, f, x)
+    end
+    return Mooncake._fcache_gradient_chunked!!(cache, (f, x))
+end
+
+# Array fast path — single reverse pass.
+@inline function _fcache_gradient_array(
+    cache::Mooncake.NfwdCache, f::F, x::A
+) where {F,A<:Array{<:IEEEFloat}}
+    Mooncake._validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    if !isnothing(cache.gradient_rrule)
+        return _fcache_rrule_gradient!!(cache, f, x)
+    end
+    return Mooncake._fcache_gradient_chunked!!(cache, (f, x))
+end
+
+end

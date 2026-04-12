@@ -20,7 +20,6 @@ using ..Mooncake:
     is_vararg_and_sparam_names,
     normalise!,
     remove_unreachable_blocks!,
-    generate_dual_ir,
     generate_ir,
     optimise_ir!,
     seed_id!
@@ -276,19 +275,10 @@ function inspect_ir(
 
     # Mode-specific stages
     if mode == :forward
-        # `:dual_ir` should be the first AD transform output, not an already-optimized IR.
-        dual_ir, _, _ = generate_dual_ir(
-            interp, sig; debug_mode, do_inline=false, do_optimize=false
+        error(
+            "Forward-mode IR inspection is not available. " *
+            "The IR-based forward compiler has been removed. Use mode=:reverse.",
         )
-        stages[:dual_ir] = IRStage(
-            :dual_ir, dual_ir, render_ir(dual_ir), extract_meta(dual_ir)
-        )
-        if optimize
-            opt_ir = optimise_ir!(CC.copy(dual_ir); do_inline)
-            stages[:optimized] = IRStage(
-                :optimized, opt_ir, render_ir(opt_ir), extract_meta(opt_ir)
-            )
-        end
     else
         # Mirror the reverse-mode pipeline before the final optimisation pass so
         # `:fwd_ir`/`:rvs_ir` and `:optimized_*` represent distinct stages.

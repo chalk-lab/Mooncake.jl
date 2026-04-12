@@ -244,16 +244,6 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
-function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{MemoryRef{P}},
-    src::Dual{MemoryRef{P}},
-    n::Dual{Int},
-) where {P}
-    unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
-    return dest
-end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{MemoryRef{P}},
@@ -404,18 +394,6 @@ using Core: memoryref_isassigned, memoryrefget, memoryrefset!, memoryrefnew, mem
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefget),MemoryRef,Val,Val}
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefget)},
-    x::Dual{<:MemoryRef},
-    _ordering::Dual{<:Val},
-    _boundscheck::Dual{<:Val},
-)
-    ordering = primal(_ordering)
-    bc = primal(_boundscheck)
-    y = memoryrefget(primal(x), _val(ordering), _val(bc))
-    dy = memoryrefget(tangent(x), _val(ordering), _val(bc))
-    return Dual(y, dy)
-end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
     x::CoDual{<:MemoryRef},
@@ -465,32 +443,16 @@ end
 
 # Core.memoryrefmodify!
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
-    return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
-end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef}, ii::Dual{Int})
-    return Dual(memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii)))
-end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
 )
     return CoDual(memoryrefnew(x.x, ii.x), memoryrefnew(x.dx, ii.x)), NoPullback(f, x, ii)
 end
 
-@inline function frule!!(
-    ::Dual{typeof(memoryrefnew)},
-    x::Dual{<:MemoryRef},
-    ii::Dual{Int},
-    boundscheck::Dual{Bool},
-)
-    y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
-    return Dual(y, dy)
-end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
     x::CoDual{<:MemoryRef},
@@ -514,17 +476,6 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefset!),MemoryRef,Any,Val,Val}
 
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::Dual,
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {P,V,ordering,boundscheck}
-    memoryrefset!(primal(x), primal(value), ordering, boundscheck)
-    memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
-    return value
-end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefset!)},
     x::CoDual{<:MemoryRef{P},<:MemoryRef{V}},
@@ -577,21 +528,6 @@ function isbits_lmemoryrefset!_rule(x::CoDual, value::CoDual, ordering::Val, bc:
     return value, isbits_lmemoryrefset!_adjoint
 end
 
-@inline function frule!!(
-    ::Dual{typeof(memoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::Dual,
-    ordering::Dual{Symbol},
-    boundscheck::Dual{Bool},
-) where {P,V}
-    return frule!!(
-        zero_dual(lmemoryrefset!),
-        x,
-        value,
-        zero_dual(Val(primal(ordering))),
-        zero_dual(Val(primal(boundscheck))),
-    )
-end
 @inline function rrule!!(
     ::CoDual{typeof(memoryrefset!)},
     x::CoDual{<:MemoryRef{P},<:MemoryRef{V}},
@@ -618,13 +554,6 @@ end
 
 @static if VERSION >= v"1.12-"
     @is_primitive MinimalCtx Tuple{typeof(Core.memorynew),Type{<:Memory},Int}
-    function frule!!(
-        ::Dual{typeof(Core.memorynew)}, ::Dual{Type{Memory{P}}}, n::Dual{Int}
-    ) where {P}
-        x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
-        return Dual(x, dx)
-    end
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
     ) where {P}
@@ -635,10 +564,6 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{Type{<:Memory},UndefInitializer,Int}
-function frule!!(::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}) where {P}
-    x = Memory{P}(undef, primal(n))
-    return Dual(x, zero_tangent_internal(x, NoCache()))
-end
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
@@ -658,16 +583,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(_new_)},
-    ::Dual{Type{Array{P,N}}},
-    ref::Dual{MemoryRef{P}},
-    size::Dual{<:NTuple{N,Int}},
-) where {P,N}
-    y = _new_(Array{P,N}, primal(ref), primal(size))
-    dy = _new_(Array{tangent_type(P),N}, tangent(ref), primal(size))
-    return Dual(y, dy)
-end
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{Array{P,N}}},
@@ -679,17 +594,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_genericmemory_copy}},
-    ::Dual,
-    ::Dual{Tuple{Val{Any}}},
-    ::Dual{Val{0}},
-    ::Dual{Val{:ccall}},
-    x::Dual{<:Memory},
-)
-    return Dual(primal(copy(x)), tangent(copy(x)))
-end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_genericmemory_copy}},
@@ -711,17 +615,6 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:Memory,<:Memory},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    y = getfield(primal(x), name, order)
-    wants_length = name === 1 || name === :length
-    dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
-    return Dual(y, dy)
-end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Memory,<:Memory},
@@ -734,17 +627,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:MemoryRef,<:MemoryRef},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    y = getfield(primal(x), name, order)
-    wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
-    return Dual(y, dy)
-end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:MemoryRef,<:MemoryRef},
@@ -757,17 +639,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:Array,<:Array},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    y = getfield(primal(x), name, order)
-    wants_size = name === 2 || name === :size
-    dy = wants_size ? NoTangent() : tangent(x).ref
-    return Dual(y, dy)
-end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Array,<:Array},
@@ -782,11 +653,6 @@ end
 
 const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 
-function frule!!(
-    f::Dual{typeof(lgetfield)}, x::Dual{<:_MemTypes,<:_MemTypes}, name::Dual{<:Val}
-)
-    return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
-end
 function rrule!!(
     f::CoDual{typeof(lgetfield)}, x::CoDual{<:_MemTypes,<:_MemTypes}, name::CoDual{<:Val}
 )
@@ -795,16 +661,6 @@ function rrule!!(
     return y, ternary_lgetfield_adjoint
 end
 
-function frule!!(
-    ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
-    name::Dual{<:Union{Int,Symbol}},
-    order::Dual{Symbol},
-)
-    return frule!!(
-        zero_dual(lgetfield), x, zero_dual(Val(primal(name))), zero_dual(Val(primal(order)))
-    )
-end
 function rrule!!(
     ::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -821,13 +677,6 @@ function rrule!!(
     return y, getfield_adjoint
 end
 
-function frule!!(
-    ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
-    name::Dual{<:Union{Int,Symbol}},
-)
-    return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
-end
 function rrule!!(
     f::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -838,13 +687,6 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Dual
-) where {name}
-    setfield!(primal(value), name, primal(x))
-    setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
-    return x
-end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)},
     value::CoDual{<:Array,<:Array},
@@ -880,11 +722,6 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
 @is_primitive MinimalCtx Tuple{typeof(fill!),Memory{<:Union{UInt8,Int8}},Integer}
-function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
-) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
-    return Dual(fill!(primal(a), primal(x)), tangent(a))
-end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}
 ) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}

@@ -33,22 +33,3 @@ for name in [
 
     @eval rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_rrule()
 end
-
-@is_primitive MinimalCtx ForwardMode Tuple{
-    typeof(Base.Threads.threading_run),F,Bool
-} where {F}
-
-function frule!!(
-    ::Dual{typeof(Base.Threads.threading_run)}, fun::Dual{F}, static::Dual{Bool}
-) where {F}
-    worker_rule = build_frule(get_interpreter(ForwardMode), Tuple{F,Int})
-    worker_rules = [_copy(worker_rule) for _ in 1:Threads.threadpoolsize()]
-    Base.Threads.threading_run(primal(static)) do tid
-        # `threading_run` hands worker ids in the default pool's 1-based tid space.
-        1 <= tid <= length(worker_rules) ||
-            throw(ArgumentError("unexpected thread id $tid"))
-        worker_rules[tid](fun, zero_dual(tid))
-        nothing
-    end
-    return zero_dual(nothing)
-end

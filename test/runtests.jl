@@ -49,7 +49,6 @@ include("front_matter.jl")
             include(joinpath("interpreter", "bbcode.jl"))
             include(joinpath("interpreter", "ir_normalisation.jl"))
             include(joinpath("interpreter", "zero_like_rdata.jl"))
-            include(joinpath("interpreter", "forward_mode.jl"))
             include(joinpath("interpreter", "reverse_mode.jl"))
         end
         include("tools_for_rules.jl")
@@ -60,7 +59,6 @@ include("front_matter.jl")
         include("test_utils.jl")
     elseif test_group == "Nfwd"
         include(joinpath("nfwd", "nfwd.jl"))
-        include(joinpath("nfwd", "nfwdmooncake.jl"))
     elseif test_group == "rules/array_legacy"
         @static if VERSION < v"1.11.0-rc4"
             include(joinpath("rules", "array_legacy.jl"))
