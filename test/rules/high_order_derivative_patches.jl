@@ -155,6 +155,37 @@ end
     end
 end
 
+@testset "ccall workarounds in build path" begin
+    # Forward-over-reverse can descend into Mooncake's `lookup_method` /
+    # `is_vararg_and_sparam_names` via `LazyDerivedRule._build_rule!`. Their bodies
+    # call `Base.get_world_counter()` (→ `:jl_get_world_counter`) and
+    # `Base._methods_by_ftype` (→ `:jl_matching_methods`), neither of which had a
+    # forward rule until the patches in `high_order_derivative_patches.jl`.
+    # The MWE below differentiates a function that calls `Base.get_world_counter()`
+    # directly: without the rule, both `prepare_gradient_cache` (rrule) and
+    # `prepare_hvp_cache` (frule-of-rrule) raise `MissingForeigncallRuleError`.
+    function f_with_world_counter(x)
+        w = Base.get_world_counter()
+        # Use `w` to keep the call live; the conditional always evaluates to 0.
+        return sum(abs2, x) + (w > 0 ? 0.0 : 0.0)
+    end
+
+    @testset "rrule!! survives reverse build" begin
+        cache = prepare_gradient_cache(f_with_world_counter, [1.0, 2.0])
+        fval, grads = value_and_gradient!!(cache, f_with_world_counter, [1.0, 2.0])
+        @test fval ≈ 5.0
+        @test grads[2] ≈ [2.0, 4.0]
+    end
+
+    @testset "frule!! survives forward-over-reverse build" begin
+        cache = prepare_hvp_cache(f_with_world_counter, [1.0, 2.0])
+        fval, grad, hvp = value_and_hvp!!(cache, f_with_world_counter, [1.0, 0.0], [1.0, 2.0])
+        @test fval ≈ 5.0
+        @test grad ≈ [2.0, 4.0]
+        @test hvp ≈ [2.0, 0.0]
+    end
+end
+
 @testset "reverse over reverse fails" begin
     rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
     z = [1.2, 1.2]

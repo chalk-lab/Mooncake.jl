@@ -1,3 +1,7 @@
+# 0.5.27
+
+- Add forward- and reverse-mode rules for `:jl_get_world_counter` and `:jl_matching_methods` foreigncalls (`high_order_derivative_patches.jl`). These are needed when forward-over-reverse descends into Mooncake's own `lookup_method` / `is_vararg_and_sparam_names` via `LazyDerivedRule._build_rule!` (e.g. when an inner rule is built lazily inside the outer forward pass, as happens with neural-ODE Hessians through `SciMLSensitivity` + `OrdinaryDiffEq`). Without these rules, `prepare_hvp_cache` raises `MissingForeigncallRuleError`.
+
 # 0.5.26
 
 - Add `Config(empty_cache=true)` to free internal caches before rebuilding rules.

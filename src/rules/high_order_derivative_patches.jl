@@ -309,6 +309,34 @@ end
     end
 end
 
+# Forward-over-reverse can descend into Mooncake's own method-lookup utilities
+# (`lookup_method`, `is_vararg_and_sparam_names`) when an inner `LazyDerivedRule`
+# is built lazily inside the outer forward pass. Their bodies eventually call
+# `Base.get_world_counter()` and `Base._methods_by_ftype`, which lower to
+# `:jl_get_world_counter` and `:jl_matching_methods` foreigncalls. The plain
+# reverse path never sees them (rule construction happens once at
+# `prepare_*_cache` time, outside AD), so these rules are only needed for the
+# forward-over-reverse path. Both ccall results carry no differentiable
+# information, so an `uninit` tangent is the correct lifted result (and avoids
+# `zero_tangent` failures on pointer-bearing return types like `Method[]`).
+for name in (:jl_get_world_counter, :jl_matching_methods)
+    @eval function frule!!(
+        ::Dual{typeof(_foreigncall_)}, ::Dual{Val{$(QuoteNode(name))}}, args::Vararg{Dual,N}
+    ) where {N}
+        return uninit_dual(_foreigncall_(Val($(QuoteNode(name))), tuple_map(primal, args)...))
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(_foreigncall_)},
+        ::CoDual{Val{$(QuoteNode(name))}},
+        args::Vararg{CoDual,N},
+    ) where {N}
+        y = uninit_fcodual(
+            _foreigncall_(Val($(QuoteNode(name))), tuple_map(primal, args)...)
+        )
+        return y, NoPullback((NoRData(), NoRData(), tuple_map(_ -> NoRData(), args)...))
+    end
+end
+
 # This rule is potentially unnecessary if fixes are made elsewhere,
 # but currently fixes differentiating through zero_tangent_internal for Arrays.
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
