@@ -291,6 +291,23 @@ function rrule!!(
     return uninit_fcodual(_foreigncall_(Val(:jl_string_ptr), x...)), pb!!
 end
 
+for name in (:jl_get_world_counter, :jl_matching_methods)
+    @eval function frule!!(
+        f::Dual{typeof(_foreigncall_)},
+        n::Dual{Val{$(QuoteNode(name))}},
+        args::Vararg{Dual,N},
+    ) where {N}
+        return zero_derivative(f, n, args...)
+    end
+    @eval function rrule!!(
+        f::CoDual{typeof(_foreigncall_)},
+        n::CoDual{Val{$(QuoteNode(name))}},
+        args::Vararg{CoDual,N},
+    ) where {N}
+        return zero_adjoint(f, n, args...)
+    end
+end
+
 for (name, P) in
     ((Symbol("llvm.powi.f32.i32"), Float32), (Symbol("llvm.powi.f64.i32"), Float64))
     @eval function frule!!(
