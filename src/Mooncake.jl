@@ -63,19 +63,11 @@ function frule!! end
         cache, ::Val{N}, x_dx::Tuple...; friendly_tangents=false
     )
 
-Internal batched forward-mode interface used by chunked `value_and_derivative!!` and the
-forward-mode gradient cache. Conceptually:
-- `value_and_derivative!!` calls `_fcache_derivative_chunked!!` when the
-  user provides chunk tangents.
-- `value_and_gradient!!` seeds standard-basis chunk tangents internally, then repeatedly
-  calls `_fcache_derivative_chunked!!` and accumulates the lane
-  contributions into gradient buffers.
-
-The generic implementation evaluates one lane at a time via `frule!!` (aka ir-based
-forward) / derived forward rules. Specialized backends, such as `nfwd`, may override this
-to evaluate all lanes in one pass.
+Internal batched forward-mode interface for chunked forward mode. Specialized backends
+such as nfwd may override this to evaluate all lanes in one pass.
 """
 function _fcache_derivative_chunked!! end
+
 
 """
     build_primitive_frule(sig::Type{<:Tuple})
@@ -188,7 +180,6 @@ include(joinpath("interpreter", "patch_for_319.jl"))
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))
-include(joinpath("interpreter", "forward_mode.jl"))
 include(joinpath("interpreter", "reverse_mode.jl"))
 end
 
