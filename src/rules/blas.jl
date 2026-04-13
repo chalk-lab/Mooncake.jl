@@ -171,6 +171,51 @@ for (fname, jlfname, elty) in (
 )
     isreal = jlfname == :dot
 
+    @eval @inline function frule!!(
+        ::Dual{typeof(_foreigncall_)},
+        ::Dual{Val{$(blas_name(fname))}},
+        ::Dual, # return type
+        ::Dual, # argument types
+        ::Dual, # nreq
+        ::Dual, # calling convention
+        _n::Dual{BLAS.BlasInt},
+        _DX::Dual{Ptr{$elty}},
+        _incx::Dual{BLAS.BlasInt},
+        _DY::Dual{Ptr{$elty}},
+        _incy::Dual{BLAS.BlasInt},
+        # For complex numbers the result is stored in an extra pointer
+        $((isreal ? () : (:(_presult::Dual{Ptr{$elty}}),))...),
+        args::Vararg{Any,N},
+    ) where {N}
+        GC.@preserve args begin
+            # Load in values from pointers.
+            n, incx, incy = map(primal, (_n, _incx, _incy))
+            DX, _dDX = arrayify(_DX)
+            DY, _dDY = arrayify(_DY)
+
+            result = BLAS.$jlfname(n, DX, incx, DY, incy)
+            _dresult =
+                BLAS.$jlfname(n, _dDX, incx, DY, incy) +
+                BLAS.$jlfname(n, DX, incx, _dDY, incy)
+
+            # For complex numbers the result must be stored in the pointer
+            $(
+                if isreal
+                    quote
+                        Dual(result, _dresult)
+                    end
+                else
+                    quote
+                        presult, _dpresult = arrayify(_presult)
+                        Base.unsafe_store!(presult, result)
+                        Base.unsafe_store!(_dpresult, _dresult)
+
+                        Dual(nothing, NoTangent())
+                    end
+                end
+            )
+        end
+    end
     @eval @inline function rrule!!(
         ::CoDual{typeof(_foreigncall_)},
         ::CoDual{Val{$(blas_name(fname))}},
@@ -251,6 +296,20 @@ end
         typeof(BLAS.nrm2),Int,X,Int
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
 )
+function frule!!(
+    ::Dual{typeof(BLAS.nrm2)},
+    n::Dual{<:Integer},
+    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
+    incx::Dual{<:Integer},
+) where {T<:BlasFloat}
+    y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
+    X, dX = viewify(primal(n), X_dX, primal(incx))
+    dy = zero(y)
+    @inbounds for i in eachindex(X)
+        dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
+    end
+    return Dual(y, dy / 2y)
+end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
     n::CoDual{<:Integer},
@@ -272,6 +331,28 @@ end
         typeof(BLAS.scal!),Integer,P,X,Integer
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
+function frule!!(
+    ::Dual{typeof(BLAS.scal!)},
+    _n::Dual{<:Integer},
+    a_da::Dual{P},
+    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incx::Dual{<:Integer},
+) where {P<:BlasFloat}
+
+    # Extract params.
+    n = primal(_n)
+    incx = primal(_incx)
+    a, da = extract(a_da)
+    X, dX = arrayify(X_dX)
+
+    # Compute Frechet derivative.
+    BLAS.scal!(n, a, dX, incx)
+    BLAS.axpy!(n, da, X, incx, dX, incx)
+
+    # Perform primal computation.
+    BLAS.scal!(n, a, X, incx)
+    return X_dX
+end
 function rrule!!(
     ::CoDual{typeof(BLAS.scal!)},
     _n::CoDual{<:Integer},
@@ -318,6 +399,26 @@ end
         typeof(BLAS.gemv!),Char,P,AbstractVecOrMat{P},AbstractVector{P},P,AbstractVector{P}
     } where {P<:BlasFloat},
 )
+
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemv!)},
+    tA::Dual{Char},
+    alpha::Dual{P},
+    A_dA::Dual{<:AbstractVecOrMat{P}},
+    x_dx::Dual{<:AbstractVector{P}},
+    beta::Dual{P},
+    y_dy::Dual{<:AbstractVector{P}},
+) where {P<:BlasFloat}
+    A, dA = matrixify(A_dA)
+    x, dx = arrayify(x_dx)
+    y, dy = arrayify(y_dy)
+    α, dα = extract(alpha)
+    β, dβ = extract(beta)
+
+    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
+
+    return y_dy
+end
 
 @inline function _gemv!_frule_core!(
     tA::Char,
@@ -441,6 +542,40 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         } where {T<:$elty},
     )
 
+    @eval function frule!!(
+        ::Dual{typeof(BLAS.$fname)},
+        uplo::Dual{Char},
+        alpha::Dual{T},
+        A_dA::Dual{<:AbstractMatrix{T}},
+        x_dx::Dual{<:AbstractVector{T}},
+        beta::Dual{T},
+        y_dy::Dual{<:AbstractVector{T}},
+    ) where {T<:$elty}
+        # Extract primals.
+        ul = primal(uplo)
+        α, dα = extract(alpha)
+        β, dβ = extract(beta)
+        A, dA = arrayify(A_dA)
+        x, dx = arrayify(x_dx)
+        y, dy = arrayify(y_dy)
+
+        # Compute Frechet derivative.
+        BLAS.$fname(ul, dα, A, x, β, dy)
+        BLAS.$fname(ul, α, dA, x, one(T), dy)
+        BLAS.$fname(ul, α, A, dx, one(T), dy)
+        if !iszero(dβ)
+            @inbounds for n in eachindex(y)
+                tmp = dβ * y[n]
+                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+            end
+        end
+
+        # Run primal computation.
+        BLAS.$fname(ul, α, A, x, β, y)
+
+        return y_dy
+    end
+
     @eval function rrule!!(
         ::CoDual{typeof(BLAS.$fname)},
         uplo::CoDual{Char},
@@ -523,6 +658,36 @@ end
     } where {T<:BlasFloat},
 )
 
+function frule!!(
+    ::Dual{typeof(BLAS.trmv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::Dual{<:AbstractMatrix{T}},
+    x_dx::Dual{<:AbstractVector{T}},
+) where {T<:BlasFloat}
+    # Extract primals.
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A, dA = arrayify(A_dA)
+    x, dx = arrayify(x_dx)
+
+    # Frechet derivative computation.
+    BLAS.trmv!(uplo, trans, diag, A, dx)
+    tmp = copy(x)
+    BLAS.trmv!(uplo, trans, diag, dA, tmp)
+    dx .+= tmp
+    if diag === 'U'
+        dx .-= x
+    end
+
+    # Primal computation.
+    BLAS.trmv!(uplo, trans, diag, A, x)
+
+    return x_dx
+end
+
 function rrule!!(
     ::CoDual{typeof(BLAS.trmv!)},
     _uplo::CoDual{Char},
@@ -603,6 +768,33 @@ end
         typeof(BLAS.trsv!),Char,Char,Char,AbstractMatrix{T},AbstractVector{T}
     } where {T<:BlasFloat},
 )
+function frule!!(
+    ::Dual{typeof(BLAS.trsv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::Dual{<:AbstractMatrix{T}},
+    x_dx::Dual{<:AbstractVector{T}},
+) where {T<:BlasFloat}
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A, dA = arrayify(A_dA)
+    x, dx = arrayify(x_dx)
+
+    # Primal
+    BLAS.trsv!(uplo, trans, diag, A, x)
+
+    BLAS.trsv!(uplo, trans, diag, A, dx)
+    tmp = BLAS.trmv(uplo, trans, diag, dA, x)
+    if diag == 'U'
+        tmp .-= x
+    end
+    BLAS.trsv!(uplo, trans, diag, A, tmp)
+    dx .-= tmp
+
+    return x_dx
+end
 function rrule!!(
     ::CoDual{typeof(BLAS.trsv!)},
     _uplo::CoDual{Char},
@@ -679,6 +871,45 @@ end
 # Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
 function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
+end
+
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemm!)},
+    transA::Dual{Char},
+    transB::Dual{Char},
+    alpha::Dual{T},
+    A_dA::Dual{<:AbstractVecOrMat{T}},
+    B_dB::Dual{<:AbstractVecOrMat{T}},
+    beta::Dual{T},
+    C_dC::Dual{<:AbstractMatrix{T}},
+) where {T<:BlasFloat}
+    tA = primal(transA)
+    tB = primal(transB)
+    α, dα = extract(alpha)
+    β, dβ = extract(beta)
+    A, dA = matrixify(A_dA)
+    B, dB = matrixify(B_dB)
+    C, dC = arrayify(C_dC)
+
+    # Tangents (product rule)
+    # d(α*op(A)*op(B) + β*C) = dα*op(A)*op(B) + α*op(dA)*op(B) + α*op(A)*op(dB) + dβ*C + β*dC
+    BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
+    BLAS.gemm!(tA, tB, α, A, dB, one(T), dC) # α*op(A)*op(dB) + 1*dC
+
+    if !iszero(dα)
+        BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)  # dα*op(A)*op(B) + 1*dC
+    end
+
+    if !iszero(dβ)
+        @inbounds for n in eachindex(C)
+            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        end
+    end
+
+    # Primal
+    BLAS.gemm!(tA, tB, α, A, B, β, C)
+
+    return C_dC
 end
 
 @inline function rrule!!(
@@ -786,6 +1017,42 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             AbstractMatrix{T},
         } where {T<:$elty},
     )
+    @eval function frule!!(
+        ::Dual{typeof(BLAS.$fname)},
+        side::Dual{Char},
+        uplo::Dual{Char},
+        alpha::Dual{T},
+        A_dA::Dual{<:AbstractMatrix{T}},
+        B_dB::Dual{<:AbstractMatrix{T}},
+        beta::Dual{T},
+        C_dC::Dual{<:AbstractMatrix{T}},
+    ) where {T<:$elty}
+
+        # Extract primals.
+        s = primal(side)
+        ul = primal(uplo)
+        α, dα = extract(alpha)
+        β, dβ = extract(beta)
+        A, dA = arrayify(A_dA)
+        B, dB = arrayify(B_dB)
+        C, dC = arrayify(C_dC)
+
+        # Compute Frechet derivative.
+        BLAS.$fname(s, ul, α, A, dB, β, dC)
+        BLAS.$fname(s, ul, α, dA, B, one(T), dC)
+        if !iszero(dα)
+            BLAS.$fname(s, ul, dα, A, B, one(T), dC)
+        end
+        if !iszero(dβ)
+            @inbounds for n in eachindex(C)
+                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+            end
+        end
+
+        # Run primal computation.
+        BLAS.$fname(s, ul, α, A, B, β, C)
+        return C_dC
+    end
     @eval function rrule!!(
         ::CoDual{typeof(BLAS.$fname)},
         side::CoDual{Char},
@@ -879,6 +1146,39 @@ for (fname, elty, relty) in (
             AbstractMatrix{$elty},
         }
     )
+    @eval function frule!!(
+        ::Dual{typeof(BLAS.$fname)},
+        _uplo::Dual{Char},
+        _t::Dual{Char},
+        α_dα::Dual{$relty},
+        A_dA::Dual{<:AbstractVecOrMat{$elty}},
+        β_dβ::Dual{$relty},
+        C_dC::Dual{<:AbstractMatrix{$elty}},
+    )
+
+        # Extract values from pairs.
+        uplo = primal(_uplo)
+        t = primal(_t)
+        α, dα = extract(α_dα)
+        A, dA = matrixify(A_dA)
+        β, dβ = extract(β_dβ)
+        C, dC = arrayify(C_dC)
+
+        # Compute Frechet derivative.
+        BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
+        iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
+        if !iszero(dβ)
+            dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+        end
+        # BLAS will zero out the imaginary parts on the diagonal of C,
+        # do the same on the tangent
+        $(isherm ? :(real_diag!(dC)) : :())
+
+        # Run primal computation.
+        BLAS.$fname(uplo, t, α, A, β, C)
+
+        return C_dC
+    end
     @eval function rrule!!(
         ::CoDual{typeof(BLAS.$fname)},
         _uplo::CoDual{Char},
@@ -945,6 +1245,40 @@ end
         typeof(BLAS.trmm!),Char,Char,Char,Char,P,AbstractMatrix{P},AbstractMatrix{P}
     } where {P<:BlasFloat}
 )
+function frule!!(
+    ::Dual{typeof(BLAS.trmm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _ta::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::Dual{P},
+    A_dA::Dual{<:AbstractMatrix{P}},
+    B_dB::Dual{<:AbstractMatrix{P}},
+) where {P<:BlasFloat}
+
+    # Extract data.
+    side = primal(_side)
+    uplo = primal(_uplo)
+    ta = primal(_ta)
+    diag = primal(_diag)
+    α, dα = extract(α_dα)
+    A, dA = arrayify(A_dA)
+    B, dB = arrayify(B_dB)
+
+    # Compute Frechet derivative.
+    BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
+    dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
+    if diag == 'U'
+        dB .-= α .* B
+    end
+    if !iszero(dα)
+        dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
+    end
+
+    # Compute primal.
+    BLAS.trmm!(side, uplo, ta, diag, α, A, B)
+    return B_dB
+end
 function rrule!!(
     ::CoDual{typeof(BLAS.trmm!)},
     _side::CoDual{Char},
@@ -1016,6 +1350,45 @@ end
         typeof(BLAS.trsm!),Char,Char,Char,Char,P,AbstractMatrix{P},AbstractMatrix{P}
     } where {P<:BlasFloat},
 )
+
+function frule!!(
+    ::Dual{typeof(BLAS.trsm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _t::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::Dual{P},
+    A_dA::Dual{<:AbstractMatrix{P}},
+    B_dB::Dual{<:AbstractMatrix{P}},
+) where {P<:BlasFloat}
+
+    # Extract parameters.
+    side = primal(_side)
+    uplo = primal(_uplo)
+    trans = primal(_t)
+    diag = primal(_diag)
+    α, dα = extract(α_dα)
+    A, dA = arrayify(A_dA)
+    B, dB = arrayify(B_dB)
+
+    # Compute Frechet derivative.
+    BLAS.trsm!(side, uplo, trans, diag, α, A, dB)
+    tmp = copy(B)
+    trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp now contains inv(A) B.
+    dB .+= dα .* tmp
+
+    tmp2 = copy(tmp)
+    BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp) # tmp now contains α dA inv(A) B.
+    if diag == 'U'
+        tmp .-= α .* tmp2
+    end
+    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp is now α inv(A) dA inv(A) B.
+    dB .-= tmp
+
+    # Run primal computation.
+    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
+    return B_dB
+end
 
 function rrule!!(
     ::CoDual{typeof(BLAS.trsm!)},

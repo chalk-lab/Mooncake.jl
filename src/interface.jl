@@ -898,23 +898,6 @@ end
 
 @inline _cache_spec_summary(spec::PreparedCacheInputSpec{T}) where {T} = "$(T) ($(_cache_spec_size_summary(spec)))"
 
-"""
-    NTangent(lanes)
-
-Explicit wrapper for chunked forward-mode tangents at the interface boundary.
-
-Each element of `lanes` must itself be a valid width-1 tangent in the corresponding API
-mode. Mooncake repacks chunked results in another `NTangent`, and uses an NDual-backed
-single-pass fast path when the runtime values fit `nfwd`'s supported primal space.
-"""
-struct NTangent{L<:Tuple}
-    lanes::L
-end
-
-Base.length(x::NTangent) = length(x.lanes)
-Base.getindex(x::NTangent, i::Int) = x.lanes[i]
-Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
-
 const _CHUNK_NFWD_MAX_LANES = 8
 
 struct PreparedCacheSpecError <: Exception
@@ -1257,6 +1240,14 @@ end
 @inline function _chunk_pack_tangent(::IEEEFloat, dx::NTangent, _buf, ::Val{N}) where {N}
     return ntuple(k -> dx[k], Val(N))
 end
+@inline function _chunk_pack_tangent(
+    ::IEEEFloat, ::NTangent{<:Tuple{Vararg{NoTangent}}}, _buf, ::Val{N}
+) where {N}
+    return NoTangent()
+end
+@inline function _chunk_pack_tangent(::IEEEFloat, dx::NoTangent, _buf, ::Val{N}) where {N}
+    return NoTangent()
+end
 @inline function _chunk_pack_tangent(::IEEEFloat, dx, _buf, ::Val{N}) where {N}
     return ntuple(_ -> dx, Val(N))
 end
@@ -1275,6 +1266,16 @@ end
     ::Complex{<:IEEEFloat}, dx::NTangent, _buf, ::Val{N}
 ) where {N}
     return ntuple(k -> dx[k], Val(N))
+end
+@inline function _chunk_pack_tangent(
+    ::Complex{<:IEEEFloat}, ::NTangent{<:Tuple{Vararg{NoTangent}}}, _buf, ::Val{N}
+) where {N}
+    return NoTangent()
+end
+@inline function _chunk_pack_tangent(
+    ::Complex{<:IEEEFloat}, dx::NoTangent, _buf, ::Val{N}
+) where {N}
+    return NoTangent()
 end
 @inline function _chunk_pack_tangent(::Complex{<:IEEEFloat}, dx, _buf, ::Val{N}) where {N}
     return ntuple(_ -> dx, Val(N))
@@ -1296,6 +1297,12 @@ function _chunk_pack_tangent(
         end
     end
     return buf
+end
+function _chunk_pack_tangent(
+    ::Array{T,N}, ::NTangent{<:Tuple{Vararg{NoTangent}}},
+    ::Base.RefValue{Union{Nothing,Array{T}}}, ::Val{C}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},N,C}
+    return NoTangent()
 end
 
 function _chunk_pack_tangent(
@@ -1326,6 +1333,11 @@ end
         ),
         Val(fieldcount(typeof(x))),
     )
+end
+@inline function _chunk_pack_tangent(
+    ::Tuple, ::NTangent{<:Tuple{Vararg{NoTangent}}}, ::Tuple, ::Val{N}
+) where {N}
+    return NoTangent()
 end
 
 @inline function _chunk_pack_tangent(x::Tuple, dx::Tuple, bufs::Tuple, ::Val{N}) where {N}

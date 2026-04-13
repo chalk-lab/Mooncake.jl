@@ -33,3 +33,21 @@ for name in [
 
     @eval rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_rrule()
 end
+
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(Base.Threads.threading_run),F,Bool
+} where {F}
+
+function frule!!(
+    ::Dual{typeof(Base.Threads.threading_run)}, fun::Dual{F}, static::Dual{Bool}
+) where {F}
+    worker_rule = NfwdMooncake.build_frule(Tuple{F,Int})
+    worker_rules = [_copy(worker_rule) for _ in 1:Threads.threadpoolsize()]
+    Base.Threads.threading_run(primal(static)) do tid
+        1 <= tid <= length(worker_rules) ||
+            throw(ArgumentError("unexpected thread id $tid"))
+        worker_rules[tid](fun, zero_dual(tid))
+        nothing
+    end
+    return zero_dual(nothing)
+end

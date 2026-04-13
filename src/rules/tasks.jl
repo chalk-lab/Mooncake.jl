@@ -85,6 +85,9 @@ end
 const TaskDual = Dual{Task,TaskTangent}
 const TaskCoDual = CoDual{Task,TaskTangent}
 
+function frule!!(::Dual{typeof(lgetfield)}, x::TaskDual, ::Dual{Val{f}}) where {f}
+    return Dual(getfield(primal(x), f), _get_tangent_field(tangent(x), f))
+end
 function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) where {f}
     dx = x.dx
     function mutable_lgetfield_pb!!(dy)
@@ -95,10 +98,16 @@ function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) w
     return y, mutable_lgetfield_pb!!
 end
 
+function frule!!(::Dual{typeof(getfield)}, x::TaskDual, f::Dual)
+    return Dual(getfield(primal(x), primal(f)), _get_tangent_field(tangent(x), primal(f)))
+end
 function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
 
+function frule!!(::Dual{typeof(lsetfield!)}, task::TaskDual, name::Dual, val::Dual)
+    return lsetfield_frule(task, name, val)
+end
 function rrule!!(::CoDual{typeof(lsetfield!)}, task::TaskCoDual, name::CoDual, val::CoDual)
     return lsetfield_rrule(task, name, val)
 end

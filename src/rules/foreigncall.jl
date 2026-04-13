@@ -10,6 +10,9 @@ end
 # Fallback foreigncall rules. This is a sufficiently common special case, that it's worth
 # creating an informative error message, so that users have some chance of knowing why
 # they're not able to differentiate a piece of code.
+function frule!!(::Dual{typeof(_foreigncall_)}, args...)
+    return throw_missing_foreigncall_rule_error(:frule!!, args...)
+end
 function rrule!!(::CoDual{typeof(_foreigncall_)}, args...)
     return throw_missing_foreigncall_rule_error(:rrule!!, args...)
 end
@@ -83,6 +86,11 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
+function frule!!(::Dual{typeof(pointer_from_objref)}, x)
+    y = pointer_from_objref(primal(x))
+    dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
+    return Dual(y, dy)
+end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
         pointer_from_objref(primal(x)),
@@ -94,6 +102,9 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
+function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
+    return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
     return y, NoPullback(f, x)
@@ -111,6 +122,13 @@ end
 # Since we can't differentiate `memmove` (due to a lack of type information), it is
 # necessary to work with `unsafe_copyto!` instead.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any} where {T}
+function frule!!(
+    ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
+) where {T}
+    unsafe_copyto!(primal(dest), primal(src), primal(n))
+    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
@@ -143,6 +161,22 @@ function rrule!!(
     return dest, unsafe_copyto!_pb!!
 end
 
+function frule!!(
+    ::Dual{typeof(_foreigncall_)},
+    ::Dual{Val{:jl_reshape_array}},
+    ::Dual{Val{Array{P,M}}},
+    ::Dual{Tuple{Val{Any},Val{Any},Val{Any}}},
+    ::Dual, # nreq
+    ::Dual, # calling convention
+    x::Dual{Type{Array{P,M}}},
+    a::Dual{Array{P,N},Array{T,N}},
+    dims::Dual,
+) where {P,T,M,N}
+    d = primal(dims)
+    y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(a), d)
+    dy = ccall(:jl_reshape_array, Array{T,M}, (Any, Any, Any), Array{T,M}, tangent(a), d)
+    return Dual(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_reshape_array}},
@@ -162,6 +196,23 @@ function rrule!!(
     return y, NoPullback(ntuple(_ -> NoRData(), 9))
 end
 
+function frule!!(
+    ::Dual{typeof(_foreigncall_)},
+    ::Dual{Val{:jl_array_isassigned}},
+    ::Dual{RT}, # return type is Int32
+    arg_types::Dual{AT}, # arg types are (Any, UInt64)
+    ::Dual{nreq}, # nreq
+    ::Dual{calling_convention}, # calling convention
+    a::Dual{<:Array},
+    ii::Dual{UInt},
+    args...,
+) where {RT,AT,nreq,calling_convention}
+    GC.@preserve args begin
+        y = ccall(:jl_array_isassigned, Cint, (Any, UInt), primal(a), primal(ii))
+    end
+    return zero_dual(y)
+end
+
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_array_isassigned}},
@@ -179,6 +230,18 @@ function rrule!!(
     return zero_fcodual(y), NoPullback(ntuple(_ -> NoRData(), length(args) + 8))
 end
 
+function frule!!(
+    ::Dual{typeof(_foreigncall_)},
+    ::Dual{Val{:jl_type_unionall}},
+    ::Dual{Val{Any}}, # return type
+    ::Dual{Tuple{Val{Any},Val{Any}}}, # arg types
+    ::Dual{Val{0}}, # number of required args
+    ::Dual{Val{:ccall}},
+    a::Dual,
+    b::Dual,
+)
+    return zero_dual(ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b)))
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_type_unionall}},
@@ -214,6 +277,12 @@ end
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Type}
 @zero_derivative MinimalCtx Tuple{typeof(hash),Vararg}
 
+function frule!!(
+    ::Dual{typeof(_foreigncall_)}, ::Dual{Val{:jl_string_ptr}}, args::Vararg{Dual,N}
+) where {N}
+    return uninit_dual(_foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...))
+end
+
 function rrule!!(
     f::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{:jl_string_ptr}}, args::Vararg{CoDual,N}
 ) where {N}
@@ -224,6 +293,24 @@ end
 
 for (name, P) in
     ((Symbol("llvm.powi.f32.i32"), Float32), (Symbol("llvm.powi.f64.i32"), Float64))
+    @eval function frule!!(
+        ::Dual{typeof(_foreigncall_)},
+        ::Dual{Val{$(QuoteNode(name))}},
+        ::Dual{Val{$P}},
+        ::Dual{Tuple{Val{$P},Val{Int32}}},
+        ::Dual{Val{0}},
+        ::Dual{Val{:llvmcall}},
+        x::Dual{$P},
+        n::Dual{Int32},
+        ::Dual{Int32},
+        ::Dual{$P},
+    )
+        _x, dx = extract(x)
+        _n = primal(n)
+        y = Base.FastMath.pow_fast(_x, _n)
+        return Dual(y, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dx)
+    end
+
     @eval function rrule!!(
         ::CoDual{typeof(_foreigncall_)},
         ::CoDual{Val{$(QuoteNode(name))}},
@@ -299,6 +386,9 @@ for name in [
     @eval function _foreigncall_(
         ::Val{$name}, ::Val{RT}, AT::Tuple, ::Val{nreq}, ::Val{calling_convention}, x...
     ) where {RT,nreq,calling_convention}
+        return unexpected_foreigncall_error($name)
+    end
+    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
         return unexpected_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)

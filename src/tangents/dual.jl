@@ -1,3 +1,82 @@
+# ── NTangent: width-aware tangent container ───────────────────────────────────
+
+"""
+    NTangent(lanes::Tuple)
+
+Width-aware tangent container for forward-mode AD. Holds one tangent per basis
+direction (lane). Each element of `lanes` must be a valid width-1 tangent for the
+corresponding primal type.
+
+Width 1 is ordinary forward mode; width N > 1 is chunked forward mode. The canonical
+public forward tangent at any width is always an `NTangent`, never a bare tangent type.
+"""
+struct NTangent{L<:Tuple}
+    lanes::L
+end
+
+Base.length(x::NTangent) = length(x.lanes)
+Base.getindex(x::NTangent, i::Int) = x.lanes[i]
+Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
+
+# ── Width-aware tangent_type ──────────────────────────────────────────────────
+
+"""
+    tangent_type(::Val{N}, ::Type{P})
+
+Width-aware tangent type query. Returns the canonical tangent representation for
+primal type `P` at width `N`.
+
+- `Val(0)` → `NoTangent` (primal passthrough, no tangent needed)
+- `Val(N)` where `tangent_type(P) == NoTangent` → `NoTangent`
+- `Val(N)` otherwise → `NTangent{NTuple{N, tangent_type(P)}}`
+"""
+tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
+function tangent_type(::Val{N}, ::Type{P}) where {N,P}
+    T = tangent_type(P)
+    T === NoTangent && return NoTangent
+    return NTangent{NTuple{N,T}}
+end
+
+# ── Width-aware dual_type ─────────────────────────────────────────────────────
+
+"""
+    dual_type(::Val{N}, ::Type{P})
+
+Width-aware forward value type query.
+
+- `Val(0)` → `P` (primal passthrough)
+- `Val(N)`, concrete `P` → `Dual{P, tangent_type(Val(N), P)}`
+- abstract/union `P` → `Dual` (bare, for compiler flexibility)
+"""
+@unstable function dual_type(::Val{N}, ::Type{P}) where {N,P}
+    P == Union{} && return Union{}
+    P == DataType && return Dual
+    P isa Union && return Union{dual_type(Val(N), P.a), dual_type(Val(N), P.b)}
+    (P isa UnionAll || P == UnionAll) && return Dual
+
+    if P <: Tuple && !all(isconcretetype, (P.parameters...,))
+        field_types = (P.parameters...,)
+        union_fields = _findall(Base.Fix2(isa, Union), field_types)
+        if length(union_fields) == 1 &&
+            all(p -> p isa Union || isconcretetype(p), field_types)
+            P_split = split_union_tuple_type(field_types)
+            return Union{dual_type(Val(N), P_split.a), dual_type(Val(N), P_split.b)}
+        end
+    end
+
+    return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
+end
+
+dual_type(::Val{0}, ::Type{P}) where {P} = P
+
+dual_type(::Val{0}, ::Type{Type{P}}) where {P} = Type{P}
+
+function dual_type(::Val{N}, p::Type{Type{P}}) where {N,P}
+    return @isdefined(P) ? Dual{Type{P},NoTangent} : Dual{_typeof(p),NoTangent}
+end
+
+# ── Dual ──────────────────────────────────────────────────────────────────────
+
 """
     Dual(primal::P, tangent::T)
 
@@ -64,8 +143,19 @@ _primal(x::Dual) = primal(x)
     verify_dual_type(x::Dual)
 
 Check that the type of `tangent(x)` is the tangent type of the type of `primal(x)`.
+Accepts both legacy bare tangents and width-aware NTangent-wrapped tangents.
 """
-verify_dual_type(x::Dual) = tangent_type(typeof(primal(x))) == typeof(tangent(x))
+function verify_dual_type(x::Dual)
+    P = typeof(primal(x))
+    T = typeof(tangent(x))
+    T === NoTangent && return tangent_type(P) === NoTangent
+    if T <: NTangent
+        N = length(T.parameters[1].parameters)
+        return T === tangent_type(Val(N), P)
+    end
+    # Legacy width-1 path: bare tangent without NTangent wrapper
+    return tangent_type(P) == T
+end
 
 function error_if_incorrect_dual_types(duals::Vararg{Dual,N}) where {N}
     correct_types = map(verify_dual_type, duals)
