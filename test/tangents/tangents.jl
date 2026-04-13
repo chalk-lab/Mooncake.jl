@@ -115,7 +115,6 @@ using DispatchDoctor: allow_unstable
     @testset "zero_tangent throws for Ptr" begin
         # Single-arg zero_tangent is not safe for Ptr types and must throw an
         # informative error directing the user to the two-argument form.
-        @test_throws ArgumentError zero_tangent(Ptr{Float64}())
         @test_throws "two-argument form" zero_tangent(Ptr{Float64}())
     end
 

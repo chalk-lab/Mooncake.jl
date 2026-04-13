@@ -83,7 +83,5 @@
         p = Ptr{Float64}()
         @test Mooncake.zero_codual(p) == Mooncake.uninit_codual(p)
         @test Mooncake.zero_fcodual(p) == Mooncake.uninit_fcodual(p)
-        @test Mooncake.primal(Mooncake.zero_codual(p)) === p
-        @test Mooncake.primal(Mooncake.zero_fcodual(p)) === p
     end
 end

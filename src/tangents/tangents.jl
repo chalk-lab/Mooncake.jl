@@ -559,10 +559,8 @@ function zero_tangent_internal(x::NamedTuple, dict::MaybeCache)
     tangent_type(typeof(x)) == NoTangent && return NoTangent()
     return tuple_map(Base.Fix2(zero_tangent_internal, dict), x)
 end
-# Uses the same bitcast convention as uninit_tangent for Ptr. Called when traversing an
-# Array or struct that contains Ptr fields — we cannot allocate derivative storage for
-# individual Ptr elements, so we reinterpret the primal address as a tangent-typed Ptr.
-# See the comment on uninit_tangent(x::Ptr) for the full explanation.
+# Ptr fields in Arrays/structs: bitcast to Ptr{tangent_type(P)} as a type-correct
+# placeholder. Must not be dereferenced. See uninit_tangent(x::Ptr) for the full WHY.
 function zero_tangent_internal(x::Ptr{P}, ::MaybeCache) where {P}
     return bitcast(Ptr{tangent_type(P)}, x)
 end
@@ -641,21 +639,14 @@ Related to [`zero_tangent`](@ref), but a bit different. Check current implementa
 details -- this docstring is intentionally non-specific in order to avoid becoming outdated.
 """
 @inline uninit_tangent(x) = zero_tangent(x)
-# Ptr tangent convention: the tangent of a Ptr{P} is a Ptr{tangent_type(P)} - a pointer
-# to the derivative storage corresponding to what the primal pointer points to. Gradient
-# accumulation happens through the values in memory that the pointer reads/writes, not
-# through the pointer address itself (hence rdata_type(Ptr) = NoRData).
+# The tangent of Ptr{P} is a Ptr{tangent_type(P)} — a pointer to derivative storage for
+# whatever the primal pointer addresses. Gradients accumulate through dereferenced values,
+# not the address itself (hence rdata_type(Ptr) = NoRData).
 #
-# When we need a type-correct tangent Ptr but have no derivative storage to point to
-# (e.g. when initialising a tangent array before a rule runs), we use bitcast: reinterpret
-# the same address as a Ptr{tangent_type(P)}. This is the "uninit/bitcast convention" -
-# the resulting pointer must NOT be dereferenced as if it points to valid derivatives.
-# It is only safe as a structural placeholder until the actual rule fills it in.
-#
-# This is why single-arg zero_tangent(x::Ptr) throws: constructing a true zero tangent
-# would require allocating new derivative storage and returning a pointer to it, which has
-# unclear ownership and lifetime. The bitcast placeholder is all we can safely produce from
-# just the pointer address. Use zero_tangent(primal, fdata) (two-arg form) instead.
+# When no derivative storage exists yet (e.g. before a rule fills it in), we bitcast the
+# primal address to Ptr{tangent_type(P)}. The result must NOT be dereferenced — it is a
+# type-correct placeholder only. single-arg zero_tangent(x::Ptr) throws because allocating
+# fresh storage would have unclear ownership; use zero_tangent(primal, fdata) instead.
 @inline uninit_tangent(x::Ptr{P}) where {P} = bitcast(Ptr{tangent_type(P)}, x)
 
 """

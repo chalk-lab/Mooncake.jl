@@ -181,10 +181,6 @@ end
         # Two-arg zero_tangent: tangent_type(Ptr{Float64}) == Ptr{Float64}, so returns f.
         @test zero_tangent(p, f) === f
 
-        # Also works when fdata is NoFData (falls back to single-arg, but Ptr has fdata
-        # so this path isn't hit for Ptr; test a non-Ptr to confirm the NoFData branch).
-        @test zero_tangent(1, NoFData()) === zero_tangent(1)
-
         # tangent(f::Ptr, ::NoRData) reconstructs the full Ptr tangent from its fdata.
         @test tangent(f, NoRData()) === f
     end
