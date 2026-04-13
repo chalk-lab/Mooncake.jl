@@ -41,7 +41,8 @@ end
 function frule!!(
     ::Dual{typeof(Base.Threads.threading_run)}, fun::Dual{F}, static::Dual{Bool}
 ) where {F}
-    worker_rule = NfwdMooncake.build_frule(Tuple{F,Int})
+    interp = get_interpreter(ForwardMode)
+    worker_rule = build_frule(interp, Tuple{F,Int})
     worker_rules = [_copy(worker_rule) for _ in 1:Threads.threadpoolsize()]
     Base.Threads.threading_run(primal(static)) do tid
         1 <= tid <= length(worker_rules) ||

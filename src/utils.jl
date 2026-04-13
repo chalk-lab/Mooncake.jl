@@ -638,3 +638,158 @@ _copy(x::Type) = x
 else
     @inline __call_rule(rule, args) = rule(args...)
 end
+
+# ── Scalar slot traversal ────────────────────────────────────────────────────
+#
+# Left-fold and map-like rebuild over the scalar degrees of freedom of a value.
+# These generalise Nfwd._nfwd_fold_slots / _nfwd_unfold_slots to NamedTuples,
+# generic AbstractArrays, and arbitrary struct types.
+#
+# Aliasing: when `state` is an `IdDict{Any,Any}`, mutable containers (arrays,
+# mutable structs) are tracked — revisits are skipped (_fold_slots) or return
+# their cached rebuild (_unfold_slots).
+
+# ── _fold_slots ──────────────────────────────────────────────────────────────
+#
+#     _fold_slots(f, init, x, state) -> (acc, state)
+#
+# Callback signature: f(acc, x_container, slot_index, state) -> (acc, state).
+
+@inline function _fold_slots(f::F, init, x::IEEEFloat, state) where {F}
+    return f(init, x, 1, state)
+end
+
+@inline function _fold_slots(f::F, init, x::Complex{<:IEEEFloat}, state) where {F}
+    acc, state = f(init, x, 1, state)
+    return f(acc, x, 2, state)
+end
+
+@inline function _fold_slots(
+    f::F, init, x::AbstractArray{T}, state
+) where {F,T<:IEEEFloat}
+    if state isa IdDict{Any,Any}
+        haskey(state, x) && return (init, state)
+        state[x] = nothing
+    end
+    acc = init
+    @inbounds for i in eachindex(x)
+        acc, state = f(acc, x, i, state)
+    end
+    return acc, state
+end
+
+@inline function _fold_slots(
+    f::F, init, x::AbstractArray{Complex{T}}, state
+) where {F,T<:IEEEFloat}
+    if state isa IdDict{Any,Any}
+        haskey(state, x) && return (init, state)
+        state[x] = nothing
+    end
+    acc = init
+    @inbounds for i in eachindex(x)
+        acc, state = f(acc, x, 2i - 1, state)
+        acc, state = f(acc, x, 2i, state)
+    end
+    return acc, state
+end
+
+@inline _fold_slots(::F, init, ::Tuple{}, state) where {F} = (init, state)
+@inline function _fold_slots(f::F, init, x::Tuple, state) where {F}
+    acc, state = _fold_slots(f, init, first(x), state)
+    return _fold_slots(f, acc, Base.tail(x), state)
+end
+
+@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} =
+    _fold_slots(f, init, values(x), state)
+
+@inline function _fold_slots(f::F, init, x::AbstractArray, state) where {F}
+    tangent_type(typeof(x)) == NoTangent && return (init, state)
+    if state isa IdDict{Any,Any}
+        haskey(state, x) && return (init, state)
+        state[x] = nothing
+    end
+    acc = init
+    if x isa Array
+        for i in eachindex(x)
+            isassigned(x, i) || continue
+            acc, state = _fold_slots(f, acc, x[i], state)
+        end
+    else
+        for xi in x
+            acc, state = _fold_slots(f, acc, xi, state)
+        end
+    end
+    return (acc, state)
+end
+
+@inline function _fold_slots(f::F, init, x::P, state) where {F,P}
+    tangent_type(P) == NoTangent && return (init, state)
+    if Base.ismutabletype(P) && state isa IdDict{Any,Any}
+        haskey(state, x) && return (init, state)
+        state[x] = nothing
+    end
+    acc = init
+    inits = always_initialised(P)
+    for n in 1:fieldcount(P)
+        if isdefined(x, n)
+            acc, state = _fold_slots(f, acc, getfield(x, n), state)
+        elseif inits[n]
+            throw(
+                ArgumentError(
+                    "Encountered undefined field `$(fieldname(P, n))` in `$P` " *
+                    "that is marked always-initialised.",
+                ),
+            )
+        end
+    end
+    return (acc, state)
+end
+
+# ── _unfold_slots ────────────────────────────────────────────────────────────
+#
+#     _unfold_slots(f, x, state) -> (rebuilt, state)
+#
+# Callback signature: f(x_leaf, state) -> (result, state).
+
+@inline function _unfold_slots(
+    f::F, x::Union{IEEEFloat,Complex{<:IEEEFloat}}, state
+) where {F}
+    return f(x, state)
+end
+
+@inline function _unfold_slots(
+    f::F,
+    x::Union{AbstractArray{<:IEEEFloat},AbstractArray{<:Complex{<:IEEEFloat}}},
+    state,
+) where {F}
+    if state isa IdDict{Any,Any}
+        haskey(state, x) && return state[x], state
+    end
+    result, state = f(x, state)
+    if state isa IdDict{Any,Any}
+        state[x] = result
+    end
+    return result, state
+end
+
+@inline _unfold_slots(::F, ::Tuple{}, state) where {F} = ((), state)
+@inline function _unfold_slots(f::F, x::Tuple, state) where {F}
+    head, state = _unfold_slots(f, first(x), state)
+    tail, state = _unfold_slots(f, Base.tail(x), state)
+    return (head, tail...), state
+end
+
+@inline function _unfold_slots(f::F, x::NamedTuple{names}, state) where {F,names}
+    vals, state = _unfold_slots(f, values(x), state)
+    return NamedTuple{names}(vals), state
+end
+
+# ── _count_slots ──────────────────────────────────────────────────────────────
+
+@inline _count_slots(x::IEEEFloat) = 1
+@inline _count_slots(x::Complex{<:IEEEFloat}) = 2
+@inline _count_slots(x::AbstractArray{<:IEEEFloat}) = length(x)
+@inline _count_slots(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
+@inline _count_slots(x::Tuple) = sum(_count_slots, x; init=0)
+@inline _count_slots(x) =
+    first(_fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}()))

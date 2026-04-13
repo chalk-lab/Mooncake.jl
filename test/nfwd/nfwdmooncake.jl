@@ -290,17 +290,17 @@ end
             end
 
             @testset "_nfwd_sig_dof and _nfwd_sig_default_chunk_size" begin
-                # scalar-only sigs: DOF is known exactly at type level
+                # scalar-only sigs: slot count is known exactly at type level
                 @test Mooncake.Nfwd._nfwd_sig_dof(Tuple{typeof(nfwd_safe_log),Float64}) == 1
                 @test Mooncake.Nfwd._nfwd_sig_dof(Tuple{typeof(f),Float64,Float64}) == 2
                 @test Mooncake.Nfwd._nfwd_sig_dof(Tuple{typeof(f),ComplexF64,Float64}) == 3
 
-                # array input: DOF is unknown (nothing)
+                # array input: slot count is unknown (nothing)
                 @test isnothing(
                     Mooncake.Nfwd._nfwd_sig_dof(Tuple{typeof(f),Vector{Float64}})
                 )
 
-                # default chunk: min(DOF, preferred) for scalar; preferred for array
+                # default chunk: min(slots, preferred) for scalar; preferred for array
                 pref = Mooncake.Nfwd._NFWD_PREFERRED_CHUNK_SIZE
                 @test Mooncake.Nfwd._nfwd_sig_default_chunk_size(
                     Tuple{typeof(nfwd_safe_log),Float64}

@@ -4,7 +4,6 @@
         silence_debug_messages::Bool=false,
         friendly_tangents::Bool=false,
         chunk_size::Union{Nothing,Int}=nothing,
-        enable_nfwd::Bool=true,
         empty_cache::Bool=false,
     )
 
@@ -24,15 +23,7 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     The tangent is converted from/to the friendly representation at the interface level,
     so all Mooncake internal computations and rule implementations always use the
     [`tangent_type`](@ref) representation.
-- `chunk_size::Union{Nothing,Int}=nothing`: optional chunk width for the public
-    `prepare_derivative_cache` / `value_and_gradient!!` forward-mode path. `nothing` uses
-    Mooncake's default chunking heuristic. This does not affect reverse-mode caches.
-- `enable_nfwd::Bool=true`: whether prepared forward-mode caches may use the `nfwd`
-    NDual-backed fast path. Setting this to `false` forces the `frule!!` (aka ir-based
-    forward) path in `prepare_derivative_cache` and APIs layered on top of it, such as
-    `prepare_hvp_cache` and `prepare_hessian_cache`. When left enabled, cache
-    construction stays passive, but `value_and_derivative!!` / `value_and_gradient!!`
-    may still error at runtime if `nfwd` turns out not to support the function.
+- `chunk_size::Union{Nothing,Int}=nothing`: reserved for future use. Currently ignored.
 - `empty_cache::Bool=false`: if `true`, all internal Mooncake caches (compiled OpaqueClosures,
     CodeInstances, and type-inference results) are cleared before building the new rule. This
     allows the garbage collector to reclaim memory held by previously compiled rules, and is
@@ -40,11 +31,26 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     Note that only Julia-level (GC-managed) objects are freed; JIT-compiled native machine
     code is held permanently by the Julia runtime and cannot be reclaimed.
 """
-@kwdef struct Config
-    debug_mode::Bool = false
-    silence_debug_messages::Bool = false
-    friendly_tangents::Bool = false
-    chunk_size::Union{Nothing,Int} = nothing
-    enable_nfwd::Bool = true
-    empty_cache::Bool = false
+struct Config
+    debug_mode::Bool
+    silence_debug_messages::Bool
+    friendly_tangents::Bool
+    chunk_size::Union{Nothing,Int}
+    empty_cache::Bool
+end
+
+function Config(;
+    debug_mode::Bool=false,
+    silence_debug_messages::Bool=false,
+    friendly_tangents::Bool=false,
+    chunk_size::Union{Nothing,Int}=nothing,
+    enable_nfwd::Bool=true,
+    empty_cache::Bool=false,
+)
+    if !enable_nfwd
+        Base.depwarn(
+            "The `enable_nfwd` keyword argument is deprecated and has no effect.", :Config
+        )
+    end
+    return Config(debug_mode, silence_debug_messages, friendly_tangents, chunk_size, empty_cache)
 end
