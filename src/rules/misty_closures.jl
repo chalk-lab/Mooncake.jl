@@ -9,7 +9,7 @@ field of an `OpaqueClosure` has field type `Any`.
 
 That the field type of `dual_callable` is `Any` is a limitation of the current
 implementation. The concrete type of `dual_callable` might be one of a couple of things,
-notably either `typeof(frule!!)` or `DerivedFRule`. It might be possible to figure out which
+notably either `typeof(frule!!)` or `DerivedPrimal`. It might be possible to figure out which
 it is, and use this information to improve the type stability of this function.
 """
 struct MistyClosureTangent

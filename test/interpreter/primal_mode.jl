@@ -1,0 +1,44 @@
+function foo(x)
+    y = 0.0
+    try
+        if x > 0
+            error("")
+        end
+        y = x
+    catch
+        y = 2x
+    end
+    return y
+end
+
+@testset "primal_mode_forward_ad" begin
+    test_cases = collect(enumerate(TestResources.generate_test_functions()))
+    @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, _, fx...)) in test_cases
+        @info "$n: $(_typeof(fx))"
+        rng = Xoshiro(123546)
+        mode = ForwardMode
+        TestUtils.test_rule(
+            rng, fx...; perf_flag=pf, interface_only=int_only, is_primitive=false, mode
+        )
+    end
+
+    @testset "try-catch" begin
+        rng = StableRNG(123)
+        perf_flag = :none
+        interface_only = false
+        is_primitive = false
+        mode = ForwardMode
+        TestUtils.test_rule(rng, foo, 5.0; perf_flag, interface_only, is_primitive, mode)
+    end
+
+    @testset "capture in ReturnNode regression test" begin
+        struct RegTestStruct
+            x::Vector{Float64}
+            RegTestStruct() = new()
+        end
+        f(x) = RegTestStruct()
+        TestUtils.test_rule(
+            StableRNG(123), f, 1.0; perf_flag=:none, is_primitive=false, mode=ForwardMode
+        )
+    end
+end;

@@ -196,7 +196,7 @@ and handle the wrapping / gradient extraction in `_leaf_effective_tangent`,
 
 ### Background: Mooncake forward mode is width-1
 
-Mooncake's forward mode computes one JVP per pass. `DerivedFRule` is called **once**
+Mooncake's forward mode computes one JVP per pass. `DerivedPrimal` is called **once**
 with all arguments seeded simultaneously:
 
 ```julia
@@ -234,7 +234,7 @@ seed_ntangent(::Val{N}, ::Type{T}, k::Int) where {N,T<:IEEEFloat} =
     NDual{T,N}(zero(T), ntuple(i -> i == k ? one(T) : zero(T), Val(N)))
 ```
 
-**The transform change is surgical**: `generate_dual_ir` calls `dual_type(P)` at 7
+**The transform change is surgical**: `generate_lifted_ir` calls `dual_type(P)` at 7
 sites to assign IR argument types.  Threading the mode through those calls is the only
 required modification — all statement rewriting (PhiNode, ReturnNode, GotoIfNot, …) is
 tangent-type-agnostic.  `is_primitive` dispatch is unchanged (it operates on primal

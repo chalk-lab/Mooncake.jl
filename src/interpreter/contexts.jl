@@ -40,6 +40,14 @@ function is a primitive in reverse-mode AD.
 struct ReverseMode <: Mode end
 
 """
+    struct PrimalMode end
+
+Used by the primal-mode forward AD implementation. `is_primitive` always returns `false`
+for `PrimalMode` — primitive dispatch is handled via `ForwardMode` inside the lifted IR.
+"""
+struct PrimalMode <: Mode end
+
+"""
     _is_primitive(context::Type, mode::Type{<:Mode}, sig::Type{<:Tuple})
 
 This function is an internal implementation detail. It is used only by
@@ -184,3 +192,16 @@ end
 
 _is_primitive(::Type{MinimalCtx}, args...) = false
 _is_primitive(::Type{DefaultCtx}, args...) = _is_primitive(MinimalCtx, args...)
+
+# PrimalMode never dispatches to primitives at the interpreter level — the lifted IR
+# handles primitive dispatch internally via _prim_call with ForwardMode checks.
+function is_primitive(
+    ::Type{MinimalCtx}, ::Type{PrimalMode}, ::Type{<:Tuple}, ::UInt
+)
+    return false
+end
+function is_primitive(
+    ::Type{DefaultCtx}, ::Type{PrimalMode}, ::Type{<:Tuple}, ::UInt
+)
+    return false
+end

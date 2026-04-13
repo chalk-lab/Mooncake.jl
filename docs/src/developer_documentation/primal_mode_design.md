@@ -1,14 +1,14 @@
-# Forwards-Mode Design
+# Primal-Mode Design
 
-The purpose of this document is to explain how forwards-mode AD in Mooncake.jl is implemented.
-It should do so to a sufficient level of depth to enable the interested reader to read to the forwards-mode AD code in Mooncake.jl and understand what is going on.
+The purpose of this document is to explain how forwards-mode AD in Mooncake.jl is implemented via the primal-mode transform.
+It should do so to a sufficient level of depth to enable the interested reader to read the primal-mode AD code in Mooncake.jl and understand what is going on.
 
 This document
 1. specifies the semantics of a "rule" for forwards-mode AD,
 1. specifies how to implement rules by-hand for primitives,
 1. specifies how to derive rules from `IRCode` algorithmically in general,
 1. discusses batched forwards-mode,
-1. discusses some notable technical differences between our forwards-mode AD implementation details and reverse-mode AD implementation details, and
+1. discusses some notable technical differences between forwards-mode and reverse-mode implementation details, and
 1. concludes with a brief comparison with ForwardDiff.jl.
 
 ## Forwards-Rule Interface
@@ -115,7 +115,7 @@ end
 
 This is the "automatic" / "algorithmic" bit of AD!
 This is the second way of producing concrete callable objects which satisfy the [Forwards-Rule Interface](@ref) discussed above.
-The object which we will ultimately construct is an instance `Mooncake.DerivedFRule`.
+The object which we will ultimately construct is an instance of `Mooncake.DerivedPrimal`.
 
 #### Worked Example: Julia Function
 
@@ -157,7 +157,7 @@ julia> Base.code_ircode_by_type(Tuple{typeof(f), Float64})
    => Float64
 ```
 Recall that `_2` is the second argument, in this case a `Float64`, and `%1` and `%2` are `SSAValue`s.
-Roughly speaking, the forwards-mode IR for the (ficiticious) function `rule_for_f` should look something like:
+Roughly speaking, the forwards-mode IR for the (fictitious) function `rule_for_f` should look something like:
 ```julia
 julia> Base.code_ircode_by_type(Tuple{typeof(rule_for_f), Dual{typeof(f), NoTangent}, Dual{Float64, Float64}})
 1-element Vector{Any}:
@@ -188,7 +188,7 @@ This function accepts as arguments a context and a signature / `Base.MethodInsta
 1. Transform each statement according to a set of rules to produce a new `IRCode`.
 1. Apply standard Julia optimisations to this new `IRCode`.
 1. Put this code inside a `MistyClosure` in order to produce an executable object.
-1. Wrap this `MistyClosure` in a `DerivedFRule` to handle various bits of book-keeping around varargs.
+1. Wrap this `MistyClosure` in a `DerivedPrimal` to handle various bits of book-keeping around varargs.
 
 
 In order:
@@ -218,11 +218,10 @@ The purpose of translating `Expr(:call, ::IntrinsicFunction, ...)` is to do with
 
 #### Statement Transformation
 
-Each statment which can appear in the Julia IR is transformed by a method of `Mooncake.make_fwds_ad_stmts`.
-Consequently, this transformation phase simply corresponds to iterating through all of the expressions in the `IRCode`, applying `Mooncake.make_fwd_ad_stmts` to each to produce new `IRCode`.
-To understand how to modify `IRCode` and insert new instructions, see [Oxinabox's Gist](https://gist.github.com/oxinabox/cdcffc1392f91a2f6d80b2524726d802).
+Each statement which can appear in the Julia IR is transformed by the `modify_primal_stmts!` function.
+Consequently, this transformation phase corresponds to iterating through all of the expressions in the `IRCode`, applying `modify_primal_stmts!` to each to produce new `IRCode`.
 
-We provide here a high-level summary of the transformations for the most important Julia IR statements, and refer readers to the methods of `Mooncake.make_fwds_ad_stmts` for the definitive explanation of what transformation is applied, and the rationale for applying it.
+We provide here a high-level summary of the transformations for the most important Julia IR statements, and refer readers to the methods of `modify_primal_stmts!` for the definitive explanation of what transformation is applied, and the rationale for applying it.
 In particular there are quite a number more statements which can appear in Julia IR than those listed here and, for those we do list here, there are typically a few edge cases left out.
 
 **`Expr(:invoke, method_instance, f, x...)` and `Expr(:call, f, x...)`**
@@ -242,19 +241,19 @@ There are three cases to consider, in order of preference:
 
 Primitives:
 
-If `is_primitive` returns `true` when applied to the signature constructed from the static types of `f` and `x`, then we simply replace the expression with `Expr(:call, frule!!, f, x...)`, regardless whether we have an `:invoke` or `:call` expression.
+If `is_primitive` returns `true` when applied to the signature constructed from the static types of `f` and `x`, then we replace the expression with a call through `_prim_call(tangent_mode, f, x...)`, which dispatches to `frule!!` for `Val(N>0)` or the direct primal call for `Val(0)`.
 (Due to the [Standardisation](@ref standardisation) steps, it regularly happens that we see `:call` expressions in which we actually do know enough type information to do this, e.g. for `Mooncake._new_` `:call` expressions).
 
 Static Dispatch:
 
 In the case of `:invoke` nodes we know for sure at rule compilation time what `rule_for_f` must be.
 We derive a rule for the call by passing `method_instance` to `Mooncake.build_frule`.
-(In practice, we might do this lazily, but while retaining enough information to maintain type stability. See the `Mooncake.LazyDerivedRule` for how this is handled in reverse-mode).
+The rule is captured as a `LazyPrimal` which materialises the derived rule on first use while retaining enough type information for type stability.
 
 Dynamic Dispatch:
 
 If we have a `:call` expression and are not able to prove that `is_primitive` will return `true`, we must defer dispatch until runtime.
-We do this by replacing the `:call` expression with a call to a `DynamicFRule`, which simply constructs (or retrieves from a cache) the rule at runtime.
+We do this by replacing the `:call` expression with a call to a `DynamicPrimal`, which simply constructs (or retrieves from a cache) the rule at runtime.
 Reverse-mode utilises a similar strategy via `Mooncake.DynamicDerivedRule`.
 
 
@@ -274,11 +273,11 @@ These remain entirely unchanged.
 
 These require minor modification.
 Suppose that a `Core.GotoIfNot` of the form `Core.GotoIfNot(%5, 4)` is encountered in the primal.
-Since `%5` will be a `Dual` in the derived rule, we must pull out the `primal` field, and pass that to the conditional instead.
-Therefore, these statments get lowered to two lines in the derived rule.
+Since `%5` will be a `Dual` in the derived rule, we must extract the primal boolean via `_primal_of`, and pass that to the conditional instead.
+Therefore, these statements get lowered to two lines in the derived rule.
 For example, `Core.GotoIfNot(%5, 4)` would be translated to:
 ```julia
-%n = getfield(%5, :primal)
+%n = _primal_of(%5)
 Core.GotoIfNot(%n, 4)
 ```
 
@@ -300,7 +299,7 @@ They contain exactly the same basic block numbers, and apply the following trans
 
 So the above example would be translated into something like
 ```julia
-φ (#1 => %3, #2 => _3, #3 => $(CoDual(4, NoTangent())), #4 => #undef)
+φ (#1 => %3, #2 => _3, #3 => $(Dual(4, NoTangent())), #4 => #undef)
 ```
 
 #### Optimisation
@@ -316,7 +315,7 @@ This can, in general, be straightforwardly achieved by putting it inside a `Core
 This works, but `Core.OpaqueClosure`s have the disadvantage that once you've constructed a `Core.OpaqueClosure` using an `IRCode`, it is not possible to get it back out.
 Consequently, we use `MistyClosure`s, in order to keep the `IRCode` readily accessible if we want to access it later.
 
-#### Put the MistyClosure in a DerivedFRule
+#### Put the MistyClosure in a DerivedPrimal
 
 See the implementation of `DerivedRule` (used in reverse-mode) for more context on this.
 _This_ is the "rule" that users get.

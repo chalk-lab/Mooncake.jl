@@ -582,8 +582,8 @@ Currently, `_copy` has the following behaviours for specific types:
 - Forward/reverse data types (e.g. `FData`, `RData`, `LazyZeroRData`) → recursively copy wrapped data  
 - `RRuleZeroWrapper` → recursively copy the wrapped rule into a new instance
 - `DerivedRule` → construct new instances with copied captures and caches  
-- `LazyFRule`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode  
-- `DynamicFRule`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
+- `LazyPrimal`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode  
+- `DynamicPrimal`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
 """
 
 # Generic fallback to Base.copy
@@ -613,13 +613,13 @@ _copy(x::Type) = x
 # args), so zero-allocation performance checks are skipped on Julia < 1.11 in test_utils.
 #
 # This generic fallback returns Any. Specialised overloads restore type stability:
-#   - DerivedFRule, DerivedRule (forward_mode.jl, reverse_mode.jl): type assertion via params
+#   - DerivedPrimal, DerivedRule (primal_mode.jl, reverse_mode.jl): type assertion via params
 #   - DebugFRule, DebugRRule (debug_mode.jl): direct call (no OC, no barrier needed)
 #   - typeof(rrule!!) (interface.jl): direct call (plain function, no OC)
-# Dynamic rules (DynamicFRule, DynamicDerivedRule) cannot be handled statically and remain
+# Dynamic rules (DynamicPrimal, DynamicDerivedRule) cannot be handled statically and remain
 # unstable on Julia 1.10.
 #
-# Used by LazyFRule, DynamicFRule, LazyDerivedRule, DynamicDerivedRule, RRuleZeroWrapper,
+# Used by LazyPrimal, DynamicPrimal, LazyDerivedRule, DynamicDerivedRule, RRuleZeroWrapper,
 # DebugFRule, and DebugRRule.
 #
 # Approximate Mooncake-free MWE (Julia 1.10):

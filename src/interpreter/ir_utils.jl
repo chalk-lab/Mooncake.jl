@@ -166,12 +166,12 @@ function __strip_coverage!(ir::IRCode)
 end
 
 """
-    optimise_ir!(ir::IRCode, show_ir=false)
+    optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
 
 Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
 to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
 """
-function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
+function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     if show_ir
         println("Pre-optimization")
         display(ir)
@@ -180,15 +180,8 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     CC.verify_ir(ir)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
-    if isnothing(interp)
-        # 319 -- see patch_for_319.jl for context
-        # replace by a simple NativeInterpreter() once fixed in Julia
-        local_interp = infer_interp = BugPatchInterpreter()
-    else
-        local_interp = interp
-        # 319 -- even if interp was explicitly given, use a BugPatchInterpreter for inference
-        infer_interp = BugPatchInterpreter()
-    end
+    local_interp = get_interpreter(PrimalMode)
+    infer_interp = local_interp.meta
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, infer_interp, mi)
     if show_ir

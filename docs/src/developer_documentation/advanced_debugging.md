@@ -88,7 +88,7 @@ compiled code not picking up new method definitions.
 
 In Mooncake, this most commonly affects:
 
-- **`DerivedRule` / `DerivedFRule`**: compiled at a fixed world, can become
+- **`DerivedRule` / `DerivedPrimal`**: compiled at a fixed world, can become
   stale if methods they depend on are redefined.
 - **`LazyDerivedRule`**: compiles on first call (static dispatch via `:invoke`),
   obtaining a fresh interpreter at that point.
