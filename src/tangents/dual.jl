@@ -51,7 +51,7 @@ Width-aware forward value type query.
 @unstable function dual_type(::Val{N}, ::Type{P}) where {N,P}
     P == Union{} && return Union{}
     P == DataType && return Dual
-    P isa Union && return Union{dual_type(Val(N), P.a), dual_type(Val(N), P.b)}
+    P isa Union && return Union{dual_type(Val(N), P.a),dual_type(Val(N), P.b)}
     (P isa UnionAll || P == UnionAll) && return Dual
 
     if P <: Tuple && !all(isconcretetype, (P.parameters...,))
@@ -60,7 +60,7 @@ Width-aware forward value type query.
         if length(union_fields) == 1 &&
             all(p -> p isa Union || isconcretetype(p), field_types)
             P_split = split_union_tuple_type(field_types)
-            return Union{dual_type(Val(N), P_split.a), dual_type(Val(N), P_split.b)}
+            return Union{dual_type(Val(N), P_split.a),dual_type(Val(N), P_split.b)}
         end
     end
 

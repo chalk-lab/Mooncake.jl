@@ -121,7 +121,9 @@ end
 else
     CC.get_inference_world(interp::MooncakeInterpreter) = interp.world
     CC.cache_owner(::MooncakeInterpreter) = nothing
-    CC.cache_owner(interp::MooncakeInterpreter{<:Any,PrimalMode}) = CC.cache_owner(interp.meta)
+    CC.cache_owner(interp::MooncakeInterpreter{<:Any,PrimalMode}) = CC.cache_owner(
+        interp.meta
+    )
     get_inference_world(interp::CC.AbstractInterpreter) = CC.get_inference_world(interp)
 end
 
@@ -366,7 +368,7 @@ end
 # ensures get_interpreter(PrimalMode) rebuilds with _make_primal_mode_interp.
 function get_interpreter(::Type{PrimalMode})
     if !haskey(GLOBAL_INTERPRETERS, PrimalMode) ||
-       GLOBAL_INTERPRETERS[PrimalMode].world != Base.get_world_counter()
+        GLOBAL_INTERPRETERS[PrimalMode].world != Base.get_world_counter()
         GLOBAL_INTERPRETERS[PrimalMode] = _make_primal_mode_interp(DefaultCtx)
     end
     return GLOBAL_INTERPRETERS[PrimalMode]

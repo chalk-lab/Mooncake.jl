@@ -897,7 +897,6 @@ end
 
 @inline _cache_spec_summary(spec::InputSpec{T}) where {T} = "$(T) ($(_cache_spec_size_summary(spec)))"
 
-
 struct PreparedCacheError <: Exception
     msg::String
 end
@@ -991,12 +990,7 @@ end
 
 function Base.show(io::IO, cache::FCache)
     print(
-        io,
-        "Mooncake.FCache(",
-        "mode=:forward, ",
-        "inputs=",
-        _cache_input_count(cache),
-        ")",
+        io, "Mooncake.FCache(", "mode=:forward, ", "inputs=", _cache_input_count(cache), ")"
     )
 end
 
@@ -1009,9 +1003,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::FCache)
         _cache_input_count(cache),
     )
     _cache_print_io_summary(
-        io,
-        Base.tail(getfield(cache, :input_specs)),
-        _output_summary(cache),
+        io, Base.tail(getfield(cache, :input_specs)), _output_summary(cache)
     )
 end
 
@@ -1023,7 +1015,6 @@ end
     c = isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}()
     return tangent_to_primal_internal!!(friendly_gradients, native_grads, c)
 end
-
 
 # ── fcache gradient bookkeeping ───────────────────────────────────────────────────
 
@@ -1117,9 +1108,7 @@ end
     x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
 ) where {P<:Tuple}
     tangent_type(P) == NoTangent && return NoTangent()
-    fields = ntuple(
-        n -> _make_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P))
-    )
+    fields = ntuple(n -> _make_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P)))
     return build_tangent(P, fields...)
 end
 
@@ -1127,9 +1116,7 @@ end
     x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
 ) where {P<:NamedTuple}
     tangent_type(P) == NoTangent && return NoTangent()
-    fields = ntuple(
-        n -> _make_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P))
-    )
+    fields = ntuple(n -> _make_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P)))
     return build_tangent(P, fields...)
 end
 
@@ -1147,9 +1134,7 @@ function _make_seed_tangent(
             for n in 1:fieldcount(P)
                 if isdefined(x, n)
                     set_tangent_field!(
-                        tx,
-                        n,
-                        _make_seed_tangent(getfield(x, n), slot, cursor, dict),
+                        tx, n, _make_seed_tangent(getfield(x, n), slot, cursor, dict)
                     )
                 elseif inits[n]
                     _throw_uninit_field_error(P, n)
@@ -1267,9 +1252,7 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
             (g, dx) -> begin
                 dx isa NoTangent && return g
                 return increment!!(g, _scale(coeff, dx))
-            end,
-            native_gradients,
-            seed,
+            end, native_gradients, seed
         )
     end
 
@@ -1357,7 +1340,9 @@ Supports NTangent for multi-direction evaluation.
     if friendly
         dirs = ntuple(Val(length(nt))) do i
             tangent_to_primal_internal!!(
-                _copy_output(y), nt[i], isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}()
+                _copy_output(y),
+                nt[i],
+                isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}(),
             )
         end
         nt = NTangent(dirs)
@@ -1370,65 +1355,80 @@ function value_and_derivative!!(cache::FCache)
     error("unreachable")
 end
 
-
-# ── HVP / Hessian — nfwd-over-reverse implementation ─────────────────────────────
+# ── HVP / Hessian ────────────────────────────────────────────────────────────────
 #
-# Strategy: compile a reverse-mode rule for NDual{T,1} inputs. A single forward+backward
-# pass with seed (value=0, partials=(1,)) yields both the gradient (in the .partials
-# field of the input fdata) and the HVP (in the .value field), from a single pass.
+# Two nesting strategies, controlled by `config.second_order_mode`:
 #
-# NDual{T,1} acts as a dual number: value carries the primal, partials[1] carries the
-# tangent direction. The reverse AD differentiates through NDual arithmetic, so the
-# adjoint of the partials component of the output w.r.t. the value/partials components
-# of the inputs naturally produces gradient and HVP information.
+# :reverse_over_forward — reverse-mode rule compiled for NDual{T,1} inputs.
+#   A single forward+backward pass yields gradient (.partials fdata) and HVP (.value fdata).
+#
+# :forward_over_reverse — forward-mode derivative of a reverse-mode gradient closure.
 
 """
-    HVPCache
+    HVPCache{M}
 
-Cache for Hessian-vector products and Hessian evaluation using nfwd-over-reverse AD.
-Stores a reverse-mode rule compiled for `NDual{T,1}` inputs, plus pre-allocated buffers.
+Cache for Hessian-vector products and Hessian evaluation. `M` is the nesting mode:
+`:forward_over_reverse` or `:reverse_over_forward`, controlled by
+`config.second_order_mode` in [`prepare_hvp_cache`](@ref).
 """
-struct HVPCache{R,S<:Tuple,FB<:Tuple,XB<:Tuple,SD}
-    ndual_rule::R           # DerivedRule compiled for NDual inputs
-    input_specs::S          # InputSpec for (f, x...)
-    fdata_bufs::FB          # pre-allocated fdata buffers for NDual input tangents
-    x_ndual_bufs::XB        # pre-allocated NDual input arrays
-    seed::SD                # pre-allocated pullback seed rdata
+struct HVPCache{M,C,S<:Tuple}
+    core::C
+    input_specs::S
 end
 
-function Base.show(io::IO, cache::HVPCache)
+function Base.show(io::IO, cache::HVPCache{M}) where {M}
     print(
         io,
         "Mooncake.HVPCache(",
-        "mode=:forward_over_reverse, ",
+        "mode=:",
+        M,
+        ", ",
         "inputs=",
         _cache_input_count(cache),
         ")",
     )
 end
 
-function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
+function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache{M}) where {M}
     n_inputs = _cache_input_count(cache)
-    print(
-        io, "Mooncake.HVPCache\n", "  mode: forward_over_reverse\n", "  inputs: ", n_inputs
+    print(io, "Mooncake.HVPCache\n", "  mode: ", M, "\n", "  inputs: ", n_inputs)
+    _cache_print_io_summary(
+        io, Base.tail(getfield(cache, :input_specs)), _hvp_output_summary(cache)
     )
-    input_specs = getfield(cache, :input_specs)
-    _cache_print_io_summary(io, Base.tail(input_specs), "IEEEFloat scalar")
 end
+
+function _hvp_output_summary(cache::HVPCache)
+    spec = getfield(cache, :input_specs)[2]  # first x-input (index 2, after f)
+    T = eltype(typeof(spec).parameters[1])    # Vector{Float64} → Float64
+    return "$T (scalar)"
+end
+
+@inline _unwrap_single(::Val{1}, t::Tuple) = t[1]
+@inline _unwrap_single(::Val, t::Tuple) = t
+
+# ── prepare_hvp_cache ────────────────────────────────────────────────────────────
 
 """
     prepare_hvp_cache(f, x...; config=Mooncake.Config())
 
 Prepare a cache for Hessian-vector products and Hessian evaluation.
 
-Uses nfwd-over-reverse AD: compiles a reverse-mode rule for `NDual{T,1}` inputs so that
-a single forward+backward pass produces both the gradient and the Hessian-vector product.
+The nesting strategy is controlled by `config.second_order_mode`:
+- `:forward_over_reverse` (default): forward-mode derivative of a gradient closure.
+- `:reverse_over_forward`: reverse-mode rule over `NDual{T,1}` inputs.
 
 Only `Vector{<:IEEEFloat}` inputs are supported.
 """
 function prepare_hvp_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
     config.empty_cache && empty_mooncake_caches!()
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
+    mode = config.second_order_mode
+    return _prepare_hvp(Val(mode), f, x, config)
+end
+
+# ── :reverse_over_forward internals ──────────────────────────────────────────────
+
+function _prepare_hvp(::Val{:reverse_over_forward}, f, x::Tuple, config)
     for (i, xi) in enumerate(x)
         xi isa Vector{<:IEEEFloat} || throw(
             ArgumentError(
@@ -1437,8 +1437,6 @@ function prepare_hvp_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
             ),
         )
     end
-
-    # Build NDual versions of inputs and compile a reverse rule for NDual signature.
     x_ndual_bufs = map(x) do xi
         Nfwd.NDual{eltype(xi),1}.(xi, Ref(ntuple(_ -> zero(eltype(xi)), Val(1))))
     end
@@ -1448,48 +1446,169 @@ function prepare_hvp_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
         debug_mode=config.debug_mode,
         silence_debug_messages=config.silence_debug_messages,
     )
-
-    # Pre-allocate fdata buffers for NDual input tangents.
     fdata_bufs = map(x_ndual_bufs) do xb
         fdata(zero_tangent(xb))
     end
+    T_out = typeof(f(x...))
+    T_out <: IEEEFloat || throw(
+        ArgumentError("HVP/Hessian requires a scalar `IEEEFloat` output; got `$T_out`.")
+    )
+    seed = _hvp_make_seed(T_out)
+    specs = _hvp_input_specs(f, x)
+    core = (; ndual_rule, fdata_bufs, x_ndual_bufs, seed)
+    return HVPCache{:reverse_over_forward,typeof(core),typeof(specs)}(core, specs)
+end
 
-    # Build the pullback seed: rdata for NDual output with (value=0, partials=(1,)).
-    T_elem = eltype(first(x))
-    y_ndual_sample = Nfwd.NDual{T_elem,1}(zero(T_elem), ntuple(_ -> zero(T_elem), Val(1)))
-    y_tangent_type = tangent_type(typeof(y_ndual_sample))
-    seed = _hvp_make_seed(y_tangent_type, T_elem)
+function _hvp_make_seed(::Type{T}) where {T<:IEEEFloat}
+    NT = @NamedTuple{value::T, partials::Tuple{T}}
+    return RData{NT}((value=zero(T), partials=(one(T),)))
+end
 
-    specs = map((f, x...)) do xi
+function value_and_hvp!!(
+    cache::HVPCache{:reverse_over_forward}, f, v, x::Vararg{Any,N}
+) where {N}
+    _validate_prepared_cache(getfield(cache, :input_specs), (f, x...))
+    v = _normalise_directions(v, x)
+    core = getfield(cache, :core)
+    x_ndual_bufs = core.x_ndual_bufs
+    fdata_bufs = core.fdata_bufs
+    for k in 1:N
+        xk, vk, buf = x[k], v[k], x_ndual_bufs[k]
+        for i in eachindex(buf)
+            buf[i] = Nfwd.NDual(xk[i], (vk[i],))
+        end
+    end
+    for k in 1:N
+        fresh = fdata(zero_tangent(x_ndual_bufs[k]))
+        copyto!(fdata_bufs[k], fresh)
+    end
+    f_codual = zero_fcodual(f)
+    x_coduals = map(CoDual, x_ndual_bufs, fdata_bufs)
+    out, pb = core.ndual_rule(f_codual, x_coduals...)
+    y_ndual = primal(out)
+    pb(core.seed)
+    val = y_ndual.value
+    gradient_vectors = ntuple(Val(N)) do k
+        fb = fdata_bufs[k]
+        map(t -> t.fields.partials[1], fb)
+    end
+    hvp_vectors = ntuple(Val(N)) do k
+        fb = fdata_bufs[k]
+        map(t -> t.fields.value, fb)
+    end
+    return val,
+    _unwrap_single(Val(N), gradient_vectors),
+    _unwrap_single(Val(N), hvp_vectors)
+end
+
+# ── :forward_over_reverse internals ──────────────────────────────────────────────
+
+function _prepare_hvp(::Val{:forward_over_reverse}, f::F, x::Tuple, config) where {F}
+    for (i, xi) in enumerate(x)
+        xi isa Vector{<:IEEEFloat} || throw(
+            ArgumentError(
+                "HVP/Hessian requires `Vector{<:IEEEFloat}` inputs; " *
+                "argument $i has type `$(typeof(xi))`.",
+            ),
+        )
+    end
+    grad_cache = prepare_gradient_cache(f, x...; config)
+    N = length(x)
+    grad_f = _GradClosure{N,F,typeof(grad_cache)}(f, grad_cache)
+    fwd_cache = prepare_derivative_cache(grad_f, x...; config)
+    specs = _hvp_input_specs(f, x)
+    core = (; grad_cache, grad_f, grad_tangent=zero_tangent(grad_f), fwd_cache)
+    return HVPCache{:forward_over_reverse,typeof(core),typeof(specs)}(core, specs)
+end
+
+struct _GradClosure{N,F,GC}
+    f::F
+    grad_cache::GC
+end
+
+function (gc::_GradClosure{1})(y)
+    val_and_grad = value_and_gradient!!(gc.grad_cache, gc.f, y)
+    return (val_and_grad[1], val_and_grad[2][2])
+end
+
+function (gc::_GradClosure{N})(ys...) where {N}
+    val_and_grad = value_and_gradient!!(gc.grad_cache, gc.f, ys...)
+    return (val_and_grad[1], Base.tail(val_and_grad[2]))
+end
+
+@inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
+    if applicable(axes, primal) && applicable(axes, tangent)
+        axes(primal) == axes(tangent) || throw(
+            ArgumentError(
+                "Tangent direction for argument $arg_index must match the primal axes; " *
+                "got axes $(axes(tangent)) vs $(axes(primal))",
+            ),
+        )
+    elseif applicable(length, primal) && applicable(length, tangent)
+        length(primal) == length(tangent) || throw(
+            ArgumentError(
+                "Tangent direction for argument $arg_index must match the primal length; " *
+                "got $(length(tangent)) vs $(length(primal))",
+            ),
+        )
+    end
+    return nothing
+end
+
+function value_and_hvp!!(cache::HVPCache{:forward_over_reverse}, f, v, x1)
+    core = getfield(cache, :core)
+    _validate_prepared_cache(getfield(cache, :input_specs), (f, x1))
+    if v isa AbstractVector
+        _assert_matching_tangent_shape(x1, v, 1)
+    else
+        length(v) == 1 || throw(
+            ArgumentError("Expected 1 direction vector for single-argument function.")
+        )
+        _assert_matching_tangent_shape(x1, v[1], 1)
+        v = v[1]
+    end
+    grad_f = _GradClosure{1,typeof(f),typeof(core.grad_cache)}(f, core.grad_cache)
+    (f_val, grad), (_, hvp) = value_and_derivative!!(
+        core.fwd_cache, (grad_f, core.grad_tangent), (x1, v)
+    )
+    return f_val, grad, hvp
+end
+
+function value_and_hvp!!(
+    cache::HVPCache{:forward_over_reverse}, f, v::Tuple, x1, xrest::Vararg{Any,N}
+) where {N}
+    all_x = (x1, xrest...)
+    core = getfield(cache, :core)
+    _validate_prepared_cache(getfield(cache, :input_specs), (f, all_x...))
+    length(v) == length(all_x) || throw(
+        ArgumentError("Expected $(length(all_x)) direction vector(s), got $(length(v))."),
+    )
+    for i in eachindex(all_x)
+        _assert_matching_tangent_shape(all_x[i], v[i], i)
+    end
+    grad_f = _GradClosure{length(all_x),typeof(f),typeof(core.grad_cache)}(
+        f, core.grad_cache
+    )
+    (f_val, grads), (_, hvps) = value_and_derivative!!(
+        core.fwd_cache, (grad_f, core.grad_tangent), map(tuple, all_x, v)...
+    )
+    return f_val, grads, hvps
+end
+
+# ── Shared helpers ───────────────────────────────────────────────────────────────
+
+function _hvp_input_specs(f, x::Tuple)
+    return map((f, x...)) do xi
         if xi isa AbstractArray
             InputSpec(typeof(xi), size(xi))
         else
             InputSpec(typeof(xi), ())
         end
     end
-
-    return HVPCache(ndual_rule, specs, fdata_bufs, x_ndual_bufs, seed)
 end
 
-# Construct the pullback seed rdata: (value=0, partials=(1,)) for NDual{T,1}.
-function _hvp_make_seed(::Type{Tangent{NT}}, ::Type{T}) where {NT,T}
-    return RData{NT}((value=zero(T), partials=(one(T),)))
-end
-function _hvp_make_seed(::Type{NoTangent}, ::Type{T}) where {T}
-    return NoRData()
-end
-
-"""
-    value_and_hvp!!(cache::HVPCache, f, directions, x...)
-
-Compute the value, gradient, and Hessian-vector product `H * v` where `H = ∇² f(x)`
-and `v = directions`.
-
-Returns `(value, gradient, hvp)` for single-argument functions, or
-`(value, (g1, g2, ...), (h1, h2, ...))` for multi-argument functions.
-"""
-function value_and_hvp!!(cache::HVPCache, f, v, x::Vararg{Any,N}) where {N}
-    _validate_prepared_cache(getfield(cache, :input_specs), (f, x...))
+function _normalise_directions(v, x::Tuple)
+    N = length(x)
     if v isa AbstractVector
         N == 1 || throw(
             ArgumentError(
@@ -1512,61 +1631,25 @@ function value_and_hvp!!(cache::HVPCache, f, v, x::Vararg{Any,N}) where {N}
             ),
         )
     end
-
-    # Lift x to NDual{T,1} with tangent direction v, reusing pre-allocated buffers.
-    x_ndual_bufs = getfield(cache, :x_ndual_bufs)
-    fdata_bufs = getfield(cache, :fdata_bufs)
-    for k in 1:N
-        xk, vk, buf = x[k], v[k], x_ndual_bufs[k]
-        for i in eachindex(buf)
-            buf[i] = Nfwd.NDual(xk[i], (vk[i],))
-        end
-    end
-
-    # Zero the fdata buffers by copying fresh zero fdata into them.
-    for k in 1:N
-        fresh = fdata(zero_tangent(x_ndual_bufs[k]))
-        copyto!(fdata_bufs[k], fresh)
-    end
-
-    # Build CoDuals and run the NDual reverse rule.
-    f_codual = zero_fcodual(f)
-    x_coduals = map(CoDual, x_ndual_bufs, fdata_bufs)
-    out, pb = getfield(cache, :ndual_rule)(f_codual, x_coduals...)
-    y_ndual = primal(out)
-
-    # Run pullback with seed (value=0, partials=(1,)).
-    pb(getfield(cache, :seed))
-
-    # Extract gradient (from .partials) and HVP (from .value) of the fdata.
-    val = y_ndual.value
-    gradient_vectors = ntuple(Val(N)) do k
-        fb = fdata_bufs[k]
-        map(t -> t.fields.partials[1], fb)
-    end
-    hvp_vectors = ntuple(Val(N)) do k
-        fb = fdata_bufs[k]
-        map(t -> t.fields.value, fb)
-    end
-
-    return val,
-    _unwrap_single(Val(N), gradient_vectors),
-    _unwrap_single(Val(N), hvp_vectors)
+    return v
 end
-
-@inline _unwrap_single(::Val{1}, t::Tuple) = t[1]
-@inline _unwrap_single(::Val, t::Tuple) = t
 
 """
     prepare_hessian_cache(f, x...; config=Mooncake.Config())
 
-Prepare a cache for Hessian evaluation.
-
-Uses forward-over-reverse AD internally.
+Prepare a cache for Hessian evaluation. Delegates to [`prepare_hvp_cache`](@ref).
 
 Only `Vector{<:IEEEFloat}` inputs are supported.
 """
 function prepare_hessian_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
+    for (i, xi) in enumerate(x)
+        xi isa Vector{<:IEEEFloat} || throw(
+            ArgumentError(
+                "Hessian requires `Vector{<:IEEEFloat}` inputs; " *
+                "argument $i has type `$(typeof(xi))`.",
+            ),
+        )
+    end
     return prepare_hvp_cache(f, x...; config)
 end
 

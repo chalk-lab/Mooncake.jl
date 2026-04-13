@@ -195,13 +195,9 @@ _is_primitive(::Type{DefaultCtx}, args...) = _is_primitive(MinimalCtx, args...)
 
 # PrimalMode never dispatches to primitives at the interpreter level — the lifted IR
 # handles primitive dispatch internally via _prim_call with ForwardMode checks.
-function is_primitive(
-    ::Type{MinimalCtx}, ::Type{PrimalMode}, ::Type{<:Tuple}, ::UInt
-)
+function is_primitive(::Type{MinimalCtx}, ::Type{PrimalMode}, ::Type{<:Tuple}, ::UInt)
     return false
 end
-function is_primitive(
-    ::Type{DefaultCtx}, ::Type{PrimalMode}, ::Type{<:Tuple}, ::UInt
-)
+function is_primitive(::Type{DefaultCtx}, ::Type{PrimalMode}, ::Type{<:Tuple}, ::UInt)
     return false
 end

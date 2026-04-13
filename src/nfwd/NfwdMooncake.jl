@@ -6,16 +6,19 @@ using ..Nfwd
 import ..Mooncake:
     CoDual,
     Dual,
+    NTangent,
     NoFData,
     NoRData,
     NoTangent,
     _count_slots,
+    dual_type,
     fdata,
     primal,
     rdata,
     tangent,
     throw_val_and_grad_ret_type_error,
     tuple_map,
+    zero_dual,
     zero_tangent
 
 # ── nfwd: NDual-backed scalar primitive engine ─────────────────────────────────────
@@ -289,9 +292,7 @@ end
     slot == 1 ? g + v : g
 end
 
-@inline function _nfwd_accumulate_gradient(
-    g::Complex{T}, slot::Int, v
-) where {T<:IEEEFloat}
+@inline function _nfwd_accumulate_gradient(g::Complex{T}, slot::Int, v) where {T<:IEEEFloat}
     if slot == 1
         return g + complex(v, zero(T))
     elseif slot == 2
@@ -468,10 +469,7 @@ Extract `rdata` from each element of a pre-computed gradient tuple.
 """
 @inline _nfwd_rdata(::Tuple{}) = ()
 @inline function _nfwd_rdata(grads::Tuple)
-    return (
-        rdata(_nfwd_unwrap_gradient(first(grads))),
-        _nfwd_rdata(Base.tail(grads))...,
-    )
+    return (rdata(_nfwd_unwrap_gradient(first(grads))), _nfwd_rdata(Base.tail(grads))...)
 end
 
 """
@@ -786,7 +784,6 @@ function _nfwd_extract(y, primals::Tuple, ::Val{N}) where {N}
     return y, _nfwd_zero_output_tangent(y, Val(N))
 end
 
-
 # Primitive scalar frule/rrule helpers used by rules_via_nfwd.jl.
 @inline function _nfwd_primitive_frule_call(
     ::Val{N}, f::Dual, x::Vararg{Dual,M}
@@ -821,5 +818,46 @@ end
     )
     return Dual(y, dy)
 end
+
+# ── NDual as a first-class dual type ─────────────────────────────────────────
+
+# dual_type specialisations: IEEEFloat, Complex, and Array variants.
+dual_type(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat} = NDual{T,N}
+dual_type(::Val{N}, ::Type{Complex{T}}) where {N,T<:IEEEFloat} = Complex{NDual{T,N}}
+function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
+    return Array{NDual{T,N},D}
+end
+function dual_type(::Val{N}, ::Type{Array{Complex{T},D}}) where {N,T<:IEEEFloat,D}
+    return Array{Complex{NDual{T,N}},D}
+end
+
+# Val{0} ambiguity resolvers: dual_type(Val(0), P) = P for all P.
+dual_type(::Val{0}, ::Type{T}) where {T<:IEEEFloat} = T
+dual_type(::Val{0}, ::Type{Complex{T}}) where {T<:IEEEFloat} = Complex{T}
+dual_type(::Val{0}, ::Type{Array{T,D}}) where {T<:IEEEFloat,D} = Array{T,D}
+function dual_type(::Val{0}, ::Type{Array{Complex{T},D}}) where {T<:IEEEFloat,D}
+    Array{Complex{T},D}
+end
+
+# tangent_type(NDual) uses the default struct-based tangent_type. HVP runs
+# reverse mode on f(NDual(x,v)), so build_rrule needs tangent_type(NDual) to
+# construct CoDuals for NDual-typed arguments.
+
+# primal / tangent accessors
+primal(d::NDual) = d.value
+tangent(d::NDual{T,N}) where {T,N} = NTangent(d.partials)
+
+primal(z::Complex{<:NDual}) = complex(z.re.value, z.im.value)
+function tangent(z::Complex{NDual{T,N}}) where {T,N}
+    return NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N)))
+end
+
+# NDual constructor from NTangent
+function Nfwd.NDual(p::T, t::NTangent{NTuple{N,T}}) where {T<:IEEEFloat,N}
+    return NDual{T,N}(p, t.lanes)
+end
+
+# zero_dual for NDual
+zero_dual(x::NDual{T,N}) where {T,N} = NDual{T,N}(x.value, ntuple(_ -> zero(T), Val(N)))
 
 end

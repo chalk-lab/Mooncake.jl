@@ -68,7 +68,6 @@ such as nfwd may override this to evaluate all lanes in one pass.
 """
 function _fcache_derivative_chunked!! end
 
-
 """
     build_primitive_frule(sig::Type{<:Tuple})
 

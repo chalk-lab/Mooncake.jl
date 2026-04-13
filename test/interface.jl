@@ -1083,9 +1083,8 @@ end
                 )
                 @test NFWD_PREPARE_COUNTER[] == 0
 
-                @test Mooncake.value_and_gradient!!(
-                    cache, _ndual_prepare_side_effect, x
-                ) == (x^2 + one(x), (Mooncake.NoTangent(), 2 * x))
+                @test Mooncake.value_and_gradient!!(cache, _ndual_prepare_side_effect, x) ==
+                    (x^2 + one(x), (Mooncake.NoTangent(), 2 * x))
                 @test NFWD_PREPARE_COUNTER[] == 1
             end
         end

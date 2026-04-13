@@ -5,6 +5,7 @@
         friendly_tangents::Bool=false,
         chunk_size::Union{Nothing,Int}=nothing,
         empty_cache::Bool=false,
+        second_order_mode::Symbol=:forward_over_reverse,
     )
 
 Configuration struct for use with `ADTypes.AutoMooncake`.
@@ -30,6 +31,11 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     useful in long-running sessions where many distinct functions have been differentiated.
     Note that only Julia-level (GC-managed) objects are freed; JIT-compiled native machine
     code is held permanently by the Julia runtime and cannot be reclaimed.
+- `second_order_mode::Symbol=:forward_over_reverse`: controls the nesting strategy used by
+    [`prepare_hvp_cache`](@ref) and [`prepare_hessian_cache`](@ref).
+    `:forward_over_reverse` differentiates a gradient closure with forward-mode AD.
+    `:reverse_over_forward` compiles a reverse-mode rule over `NDual` inputs so that a
+    single forward+backward pass yields both the gradient and the Hessian-vector product.
 """
 struct Config
     debug_mode::Bool
@@ -37,6 +43,30 @@ struct Config
     friendly_tangents::Bool
     chunk_size::Union{Nothing,Int}
     empty_cache::Bool
+    second_order_mode::Symbol
+    function Config(
+        debug_mode,
+        silence_debug_messages,
+        friendly_tangents,
+        chunk_size,
+        empty_cache,
+        second_order_mode,
+    )
+        second_order_mode in (:forward_over_reverse, :reverse_over_forward) || throw(
+            ArgumentError(
+                "`second_order_mode` must be `:forward_over_reverse` or " *
+                "`:reverse_over_forward`, got `:$second_order_mode`.",
+            ),
+        )
+        return new(
+            debug_mode,
+            silence_debug_messages,
+            friendly_tangents,
+            chunk_size,
+            empty_cache,
+            second_order_mode,
+        )
+    end
 end
 
 function Config(;
@@ -46,11 +76,19 @@ function Config(;
     chunk_size::Union{Nothing,Int}=nothing,
     enable_nfwd::Bool=true,
     empty_cache::Bool=false,
+    second_order_mode::Symbol=:forward_over_reverse,
 )
     if !enable_nfwd
         Base.depwarn(
             "The `enable_nfwd` keyword argument is deprecated and has no effect.", :Config
         )
     end
-    return Config(debug_mode, silence_debug_messages, friendly_tangents, chunk_size, empty_cache)
+    return Config(
+        debug_mode,
+        silence_debug_messages,
+        friendly_tangents,
+        chunk_size,
+        empty_cache,
+        second_order_mode,
+    )
 end

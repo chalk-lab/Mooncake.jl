@@ -17,11 +17,17 @@ struct MistyClosureTangent
     dual_callable::Any
 end
 
-# Build a forward-mode rule for a MistyClosure.
-# The IR-based forward compiler has been removed; this returns `nothing` as a placeholder.
-# The dual_callable field in MistyClosureTangent is retained for structural compatibility.
+# Build a forward-mode rule for a MistyClosure using its original world age.
+# The primal-mode compiler's build_frule handles MistyClosure via lookup_ir,
+# which returns the stored IR directly, bypassing method table lookups.
 function _dual_mc(p::MistyClosure)
-    return nothing
+    @static if VERSION > v"1.12-"
+        mc_world = UInt(p.ir[].valid_worlds.max_world)
+    else
+        mc_world = UInt(p.oc.world)
+    end
+    interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
+    return build_frule(interp, p; skip_world_age_check=true)
 end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
@@ -177,10 +183,8 @@ end
 
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
 function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
-    error(
-        "Forward-mode differentiation of `MistyClosure` is not currently available. " *
-        "The IR-based forward compiler has been removed.",
-    )
+    dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
+    return tangent(f).dual_callable(dual_captures, x...)
 end
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =

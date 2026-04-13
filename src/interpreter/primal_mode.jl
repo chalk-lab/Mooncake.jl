@@ -138,7 +138,8 @@ than the current world (e.g., when building rules for MistyClosure which uses it
 """
 function build_frule(
     interp::MooncakeInterpreter{C},
-    sig_or_mi;
+    sig_or_mi,
+    width=nothing;
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
@@ -178,7 +179,9 @@ function build_frule(
             return interp.oc_cache[oc_cache_key]
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
-            lifted_ir, captures, info = generate_lifted_ir(interp, sig_or_mi; debug_mode)
+            lifted_ir, captures, info = generate_lifted_ir(
+                interp, sig_or_mi, width; debug_mode
+            )
             lifted_oc = misty_closure(
                 info.lifted_ret_type, lifted_ir, captures...; do_compile=true
             )
@@ -313,11 +316,17 @@ struct LiftedInfo
     interp::MooncakeInterpreter
     is_used::Vector{Bool}
     debug_mode::Bool
+    width  # Val{N} or nothing (nothing = legacy width-1 Dual path)
 end
+
+# Dispatch dual_type through width: nothing uses legacy dual_type(P), Val(N) uses dual_type(Val(N), P).
+_lift_type(::Nothing, P) = dual_type(P)
+_lift_type(w::Val, P) = dual_type(w, P)
 
 function generate_lifted_ir(
     interp::MooncakeInterpreter,
-    sig_or_mi;
+    sig_or_mi,
+    width=nothing;
     debug_mode=false,
     do_inline=true,
     do_optimize=true,
@@ -344,7 +353,7 @@ function generate_lifted_ir(
     # - add one for the captures in the first position, with placeholder type for now
     # - convert the rest to dual types
     for (a, P) in enumerate(primal_ir.argtypes)
-        lifted_ir.argtypes[a] = dual_type(CC.widenconst(P))
+        lifted_ir.argtypes[a] = _lift_type(width, CC.widenconst(P))
     end
     pushfirst!(lifted_ir.argtypes, Any)
 
@@ -352,7 +361,7 @@ function generate_lifted_ir(
     captures = Any[]
 
     is_used = characterised_used_ssas(stmt(primal_ir.stmts))
-    info = LiftedInfo(primal_ir, interp, is_used, debug_mode)
+    info = LiftedInfo(primal_ir, interp, is_used, debug_mode, width)
     for (n, inst) in enumerate(lifted_ir.stmts)
         ssa = SSAValue(n)
         modify_primal_stmts!(stmt(inst), lifted_ir, ssa, captures, info)
@@ -373,15 +382,15 @@ function generate_lifted_ir(
     lifted_ir = do_optimize ? optimise_ir!(lifted_ir; do_inline) : lifted_ir
     return lifted_ir,
     captures_tuple,
-    PrimalRuleInfo(isva, nargs, lifted_ret_type(primal_ir))
+    PrimalRuleInfo(isva, nargs, lifted_ret_type(primal_ir, width))
 end
 
-function lifted_ret_type(primal_ir::IRCode)
-    return dual_type(compute_ir_rettype(primal_ir))
+function lifted_ret_type(primal_ir::IRCode, width=nothing)
+    return _lift_type(width, compute_ir_rettype(primal_ir))
 end
 
 function primal_rule_type(
-    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
+    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance, width=nothing; debug_mode
 ) where {C}
     sig = _get_sig(mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
@@ -393,8 +402,8 @@ function primal_rule_type(
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
     sig = Tuple{arg_types...}
-    dual_args_type = Tuple{map(dual_type, arg_types)...}
-    closure_type = RuleMC{dual_args_type,lifted_ret_type(ir)}
+    dual_args_type = Tuple{map(Base.Fix1(_lift_type, width), arg_types)...}
+    closure_type = RuleMC{dual_args_type,lifted_ret_type(ir, width)}
     Tderived = DerivedPrimal{sig,closure_type,isva,nargs}
     return debug_mode ? DebugFRule{Tderived} : Tderived
 end
@@ -467,7 +476,7 @@ function modify_primal_stmts!(
 end
 
 function modify_primal_stmts!(
-    stmt::PhiNode, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::LiftedInfo
+    stmt::PhiNode, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::LiftedInfo
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
@@ -475,35 +484,55 @@ function modify_primal_stmts!(
         stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
     end
     set_stmt!(lifted_ir, ssa, inc_args(stmt))
-    set_ir!(lifted_ir, ssa, :type, dual_type(CC.widenconst(get_ir(lifted_ir, ssa, :type))))
+    set_ir!(
+        lifted_ir,
+        ssa,
+        :type,
+        _lift_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
+    )
     return nothing
 end
 
 function modify_primal_stmts!(
-    stmt::PiNode, lifted_ir::IRCode, ssa::SSAValue, ::Vector{Any}, ::LiftedInfo
+    stmt::PiNode, lifted_ir::IRCode, ssa::SSAValue, ::Vector{Any}, info::LiftedInfo
 )
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
     else
         v = uninit_dual(get_const_primal_value(stmt.val))
     end
-    replace_call!(lifted_ir, ssa, PiNode(v, dual_type(CC.widenconst(stmt.typ))))
+    replace_call!(
+        lifted_ir, ssa, PiNode(v, _lift_type(info.width, CC.widenconst(stmt.typ)))
+    )
     return nothing
 end
 
 function modify_primal_stmts!(
-    stmt::UpsilonNode, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::LiftedInfo
+    stmt::UpsilonNode,
+    lifted_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    info::LiftedInfo,
 )
     if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
     end
     set_stmt!(lifted_ir, ssa, inc_args(stmt))
-    set_ir!(lifted_ir, ssa, :type, dual_type(CC.widenconst(get_ir(lifted_ir, ssa, :type))))
+    set_ir!(
+        lifted_ir,
+        ssa,
+        :type,
+        _lift_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
+    )
     return nothing
 end
 
 function modify_primal_stmts!(
-    stmt::PhiCNode, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::LiftedInfo
+    stmt::PhiCNode,
+    lifted_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    info::LiftedInfo,
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
@@ -511,7 +540,12 @@ function modify_primal_stmts!(
         stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
     end
     set_stmt!(lifted_ir, ssa, inc_args(stmt))
-    set_ir!(lifted_ir, ssa, :type, dual_type(CC.widenconst(get_ir(lifted_ir, ssa, :type))))
+    set_ir!(
+        lifted_ir,
+        ssa,
+        :type,
+        _lift_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
+    )
     return nothing
 end
 

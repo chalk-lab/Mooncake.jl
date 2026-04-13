@@ -664,9 +664,7 @@ end
     return f(acc, x, 2, state)
 end
 
-@inline function _fold_slots(
-    f::F, init, x::AbstractArray{T}, state
-) where {F,T<:IEEEFloat}
+@inline function _fold_slots(f::F, init, x::AbstractArray{T}, state) where {F,T<:IEEEFloat}
     if state isa IdDict{Any,Any}
         haskey(state, x) && return (init, state)
         state[x] = nothing
@@ -699,8 +697,9 @@ end
     return _fold_slots(f, acc, Base.tail(x), state)
 end
 
-@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} =
-    _fold_slots(f, init, values(x), state)
+@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} = _fold_slots(
+    f, init, values(x), state
+)
 
 @inline function _fold_slots(f::F, init, x::AbstractArray, state) where {F}
     tangent_type(typeof(x)) == NoTangent && return (init, state)
@@ -758,9 +757,7 @@ end
 end
 
 @inline function _unfold_slots(
-    f::F,
-    x::Union{AbstractArray{<:IEEEFloat},AbstractArray{<:Complex{<:IEEEFloat}}},
-    state,
+    f::F, x::Union{AbstractArray{<:IEEEFloat},AbstractArray{<:Complex{<:IEEEFloat}}}, state
 ) where {F}
     if state isa IdDict{Any,Any}
         haskey(state, x) && return state[x], state
@@ -791,5 +788,6 @@ end
 @inline _count_slots(x::AbstractArray{<:IEEEFloat}) = length(x)
 @inline _count_slots(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
 @inline _count_slots(x::Tuple) = sum(_count_slots, x; init=0)
-@inline _count_slots(x) =
-    first(_fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}()))
+@inline _count_slots(x) = first(
+    _fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}())
+)
