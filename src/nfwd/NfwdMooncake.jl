@@ -2,6 +2,7 @@ module NfwdMooncake
 
 import ..Mooncake
 using Base: IEEEFloat
+using Random: AbstractRNG
 using ..Nfwd
 import ..Mooncake:
     CoDual,
@@ -14,10 +15,12 @@ import ..Mooncake:
     dual_type,
     fdata,
     primal,
+    randn_dual,
     rdata,
     tangent,
     throw_val_and_grad_ret_type_error,
     tuple_map,
+    uninit_dual,
     zero_dual,
     zero_tangent
 
@@ -885,7 +888,75 @@ function Nfwd.NDual(p::T, t::NTangent{NTuple{N,T}}) where {T<:IEEEFloat,N}
     return NDual{T,N}(p, t.lanes)
 end
 
-# zero_dual for NDual
+# ── Width helpers for NDual ───────────────────────────────────────────────────
+
 zero_dual(x::NDual{T,N}) where {T,N} = NDual{T,N}(x.value, ntuple(_ -> zero(T), Val(N)))
+
+function randn_dual(rng::AbstractRNG, x::NDual{T,N}) where {T,N}
+    return NDual{T,N}(x.value, ntuple(_ -> randn(rng, T), Val(N)))
+end
+
+function uninit_dual(x::NDual{T,N}) where {T,N}
+    return NDual{T,N}(x.value, ntuple(_ -> zero(T), Val(N)))
+end
+
+# Complex{NDual} helpers
+function zero_dual(z::Complex{NDual{T,N}}) where {T,N}
+    return complex(zero_dual(z.re), zero_dual(z.im))
+end
+
+function randn_dual(rng::AbstractRNG, z::Complex{NDual{T,N}}) where {T,N}
+    return complex(randn_dual(rng, z.re), randn_dual(rng, z.im))
+end
+
+function uninit_dual(z::Complex{NDual{T,N}}) where {T,N}
+    return complex(uninit_dual(z.re), uninit_dual(z.im))
+end
+
+# ── Array{NDual} accessors ───────────────────────────────────────────────────
+
+function primal(a::Array{NDual{T,N},D}) where {T,N,D}
+    return map(d -> d.value, a)
+end
+
+function tangent(a::Array{NDual{T,N},D}) where {T,N,D}
+    return map(d -> NTangent(d.partials), a)
+end
+
+function primal(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
+    return map(z -> complex(z.re.value, z.im.value), a)
+end
+
+function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
+    return map(z -> NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N))), a)
+end
+
+# ── Width-mismatch checking ──────────────────────────────────────────────────
+
+"""
+    ndual_width(x)
+
+Return the NDual width N for a dual-typed argument, or `nothing` for
+`Dual{P, NoTangent}` arguments (which are compatible with any width).
+Throws for unsupported types.
+"""
+ndual_width(::NDual{T,N}) where {T,N} = N
+ndual_width(::Complex{NDual{T,N}}) where {T,N} = N
+ndual_width(::Array{NDual{T,N}}) where {T,N} = N
+ndual_width(::Array{Complex{NDual{T,N}}}) where {T,N} = N
+ndual_width(::Dual{P,NoTangent}) where {P} = nothing  # compatible with any width
+
+function check_ndual_width_consistency(args...)
+    widths = filter(!isnothing, map(ndual_width, args))
+    isempty(widths) && return nothing
+    w = first(widths)
+    if !all(==(w), widths)
+        throw(ArgumentError(
+            "NDual width mismatch: got widths $(collect(widths)) across arguments. " *
+            "All NDual arguments in a single rule call must have the same width N."
+        ))
+    end
+    return w
+end
 
 end
