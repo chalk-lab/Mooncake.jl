@@ -1126,6 +1126,86 @@ end
                 )
             end
         end
+
+        @testset "HVP correctness $mode" for mode in
+                                             (:forward_over_reverse, :reverse_over_forward)
+            config = Mooncake.Config(; second_order_mode=mode)
+
+            @testset "quadratic" begin
+                f(x) = sum(x .^ 2)
+                x = [1.0, 2.0, 3.0]
+                cache = prepare_hvp_cache(f, x; config)
+                n = length(x)
+                for i in 1:n
+                    v_dir = zeros(n);
+                    v_dir[i] = 1.0
+                    val, grad, hvp = value_and_hvp!!(cache, f, v_dir, x)
+                    @test val ≈ 14.0
+                    @test grad ≈ [2.0, 4.0, 6.0]
+                    @test hvp ≈ 2.0 .* v_dir rtol = 1e-10
+                end
+            end
+
+            @testset "Rosenbrock" begin
+                rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
+                z = [1.2, 1.2]
+                cache = prepare_hvp_cache(rosen, z; config)
+                _, _, hvp1 = value_and_hvp!!(cache, rosen, [1.0, 0.0], z)
+                _, _, hvp2 = value_and_hvp!!(cache, rosen, [0.0, 1.0], z)
+                H = hcat(hvp1, hvp2)
+                @test H ≈ [1250.0 -480.0; -480.0 200.0] rtol = 1e-10
+            end
+
+            @testset "multi-arg" begin
+                f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
+                x = [1.0, 2.0]
+                y = [3.0, 4.0]
+                cache = prepare_hvp_cache(f, x, y; config)
+                _, (gx, gy), (hvp_x, hvp_y) = value_and_hvp!!(
+                    cache, f, ([1.0, 0.0], [0.0, 0.0]), x, y
+                )
+                @test gx ≈ 2x + [y[1], 0.0] rtol = 1e-10
+                @test gy ≈ 2y + [x[1], 0.0] rtol = 1e-10
+                @test hvp_x ≈ [2.0, 0.0] rtol = 1e-10
+                @test hvp_y ≈ [1.0, 0.0] rtol = 1e-10
+            end
+
+            @testset "namedtuple intermediates" begin
+                # Packs vector into NamedTuple, exercises NT tangent machinery
+                f(v) =
+                    let nt = (a=v[1], b=v[2]);
+                        0.5 * nt.a * nt.b^2
+                    end
+                v = [2.0, 3.0]
+                cache = prepare_hvp_cache(f, v; config)
+                _, _, hvp1 = value_and_hvp!!(cache, f, [1.0, 0.0], v)
+                _, _, hvp2 = value_and_hvp!!(cache, f, [0.0, 1.0], v)
+                # H = [0 v[2]; v[2] v[1]] = [0 3; 3 2]
+                @test hcat(hvp1, hvp2) ≈ [0.0 3.0; 3.0 2.0] rtol = 1e-10
+            end
+
+            @testset "nested tuple intermediates" begin
+                # Nested tuples with cross-terms between groups
+                f(v) =
+                    let t = ((v[1], v[2]), (v[3], v[4]))
+                        t[1][1] * t[2][1] + t[1][2]^2 * t[2][2]
+                    end
+                v = [1.0, 2.0, 3.0, 4.0]
+                cache = prepare_hvp_cache(f, v; config)
+                # H = [0 0 1 0; 0 2v4 0 2v2; 1 0 0 0; 0 2v2 0 0]
+                #   = [0 0 1 0; 0 8 0 4; 1 0 0 0; 0 4 0 0]
+                H_expected = [
+                    0.0 0.0 1.0 0.0;
+                    0.0 8.0 0.0 4.0;
+                    1.0 0.0 0.0 0.0;
+                    0.0 4.0 0.0 0.0
+                ]
+                H = hcat(
+                    [value_and_hvp!!(cache, f, Float64.(I(4)[:, i]), v)[3] for i in 1:4]...
+                )
+                @test H ≈ H_expected rtol = 1e-10
+            end
+        end
     end
 
     @testset "value_gradient_and_hessian!!" begin
@@ -1280,6 +1360,101 @@ end
                 @test Hxy == zeros(0, 0)
                 @test Hyx == zeros(0, 0)
                 @test Hyy == zeros(0, 0)
+            end
+
+            @testset "Hessian correctness $mode" for mode in (
+                :forward_over_reverse, :reverse_over_forward
+            )
+                cfg = Mooncake.Config(; second_order_mode=mode)
+
+                @testset "Rosenbrock" begin
+                    rosen_dual(z) = (1 - z[1])^2 + 100 * (z[2] - z[1]^2)^2
+                    z = [1.2, 1.2]
+                    cache = prepare_hessian_cache(rosen_dual, z; config=cfg)
+                    v, g, H = value_gradient_and_hessian!!(cache, rosen_dual, z)
+                    h11 = 2 - 400 * (z[2] - z[1]^2) + 800 * z[1]^2
+                    h12 = -400 * z[1]
+                    @test v ≈ rosen_dual(z)
+                    @test H ≈ [h11 h12; h12 200.0] rtol = 1e-10
+                end
+
+                @testset "quadratic" begin
+                    f(x) = sum(x .^ 2)
+                    x = [1.0, 2.0, 3.0]
+                    cache = prepare_hessian_cache(f, x; config=cfg)
+                    v, g, H = value_gradient_and_hessian!!(cache, f, x)
+                    @test v ≈ 14.0
+                    @test g ≈ [2.0, 4.0, 6.0]
+                    @test H ≈ 2 * I
+                end
+
+                @testset "multi-arg" begin
+                    f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
+                    x = [1.0, 2.0]
+                    y = [3.0, 4.0]
+                    cache = prepare_hessian_cache(f, x, y; config=cfg)
+                    val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
+                        cache, f, x, y
+                    )
+                    @test val ≈ f(x, y)
+                    @test Hxx ≈ 2 * I rtol = 1e-10
+                    @test Hyy ≈ 2 * I rtol = 1e-10
+                    @test Hxy ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
+                end
+
+                @testset "namedtuple intermediates" begin
+                    # NamedTuple construction as intermediate value
+                    f(v) =
+                        let nt = (mass=v[1], vel=v[2])
+                            0.5 * nt.mass * nt.vel^2
+                        end
+                    v = [2.0, 3.0]
+                    cache = prepare_hessian_cache(f, v; config=cfg)
+                    val, g, H = value_gradient_and_hessian!!(cache, f, v)
+                    @test val ≈ 9.0
+                    @test g ≈ [4.5, 6.0] rtol = 1e-10
+                    # H = [0 v2; v2 v1] = [0 3; 3 2]
+                    @test H ≈ [0.0 3.0; 3.0 2.0] rtol = 1e-10
+                end
+
+                @testset "nested tuple intermediates" begin
+                    # Nested tuple decomposition with cross-group coupling
+                    f(v) =
+                        let t = ((v[1], v[2]), (v[3], v[4]))
+                            t[1][1] * t[2][1] + t[1][2]^2 * t[2][2]
+                        end
+                    v = [1.0, 2.0, 3.0, 4.0]
+                    cache = prepare_hessian_cache(f, v; config=cfg)
+                    val, g, H = value_gradient_and_hessian!!(cache, f, v)
+                    @test val ≈ 19.0
+                    @test g ≈ [3.0, 16.0, 1.0, 4.0] rtol = 1e-10
+                    @test H ≈ [
+                        0.0 0.0 1.0 0.0;
+                        0.0 8.0 0.0 4.0;
+                        1.0 0.0 0.0 0.0;
+                        0.0 4.0 0.0 0.0
+                    ] rtol = 1e-10
+                end
+
+                @testset "tuple map/reduce" begin
+                    # Tuple splatting, map, and reduce as intermediates
+                    f(v) =
+                        let pairs = ((v[1], v[2]), (v[3], v[4]))
+                            sum(a * b for (a, b) in pairs)
+                        end
+                    v = [2.0, 3.0, 5.0, 7.0]
+                    cache = prepare_hessian_cache(f, v; config=cfg)
+                    val, g, H = value_gradient_and_hessian!!(cache, f, v)
+                    # f = v1*v2 + v3*v4
+                    @test val ≈ 41.0
+                    @test g ≈ [3.0, 2.0, 7.0, 5.0] rtol = 1e-10
+                    @test H ≈ [
+                        0.0 1.0 0.0 0.0;
+                        1.0 0.0 0.0 0.0;
+                        0.0 0.0 0.0 1.0;
+                        0.0 0.0 1.0 0.0
+                    ] rtol = 1e-10
+                end
             end
 
             @testset "reject non-vector inputs" begin

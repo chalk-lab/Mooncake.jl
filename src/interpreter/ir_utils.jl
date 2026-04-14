@@ -171,7 +171,7 @@ end
 Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
 to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
 """
-function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
+function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     if show_ir
         println("Pre-optimization")
         display(ir)
@@ -180,8 +180,13 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true)
     CC.verify_ir(ir)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
-    local_interp = get_interpreter(PrimalMode)
-    infer_interp = local_interp.meta
+    if isnothing(interp)
+        local_interp = get_interpreter(PrimalMode)
+        infer_interp = local_interp.meta
+    else
+        local_interp = interp
+        infer_interp = BugPatchInterpreter()
+    end
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, infer_interp, mi)
     if show_ir

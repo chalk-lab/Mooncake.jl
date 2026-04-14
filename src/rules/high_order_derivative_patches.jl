@@ -8,6 +8,164 @@
     typeof(build_derived_rrule),MooncakeInterpreter{C},Any,Any,Bool
 } where {C}
 
+# LazyFoRRule and DynamicFoRRule are the frule for `build_derived_rrule` in
+# forward-over-reverse mode.  build_primitive_frule selects between the two via
+# __build_primitive_frule (@generated):
+#   • Concrete Trule → LazyFoRRule{Trule,Tfwd,Trvs}: fully-typed single-slot cache.
+#   • Non-concrete Trule → DynamicFoRRule: Dict-keyed cache.
+mutable struct LazyFoRRule{Trule,Tfwd,Trvs}
+    rule::Trule
+    fwd_dual_callable::Tfwd
+    rvs_dual_callable::Trvs
+    LazyFoRRule{Trule,Tfwd,Trvs}() where {Trule,Tfwd,Trvs} = new()
+end
+
+mutable struct DynamicFoRRule
+    cache::Dict{Tuple{Any,Bool},Tuple{Any,Any,Any}}
+    DynamicFoRRule() = new(Dict{Tuple{Any,Bool},Tuple{Any,Any,Any}}())
+end
+
+@generated function __build_primitive_frule(
+    sig::Type{<:Tuple{typeof(build_derived_rrule),MooncakeInterpreter{C},SMI,S,Bool}}
+) where {C,SMI,S}
+    Trule = Core.Compiler.return_type(
+        build_derived_rrule, Tuple{MooncakeInterpreter{C},SMI,S,Bool}
+    )
+    if !isconcretetype(Trule)
+        return :(DynamicFoRRule())
+    end
+    inner = Trule <: DebugRRule ? fieldtype(Trule, :rule) : Trule
+    if !hasfield(inner, :fwds_oc) || !hasfield(inner, :pb_oc_ref)
+        return :(DynamicFoRRule())
+    end
+    fwds_oc_T = fieldtype(inner, :fwds_oc)
+    rvs_oc_T = fieldtype(fieldtype(inner, :pb_oc_ref), :x)
+    interp_fwd_T = MooncakeInterpreter{C,ForwardMode}
+    Tfwd = Core.Compiler.return_type(build_frule, Tuple{interp_fwd_T,fwds_oc_T})
+    Trvs = Core.Compiler.return_type(build_frule, Tuple{interp_fwd_T,rvs_oc_T})
+    if !isconcretetype(Tfwd) || !isconcretetype(Trvs)
+        return :(DynamicFoRRule())
+    end
+    return :(LazyFoRRule{$Trule,$Tfwd,$Trvs}())
+end
+
+function build_primitive_frule(
+    sig::Type{<:Tuple{typeof(build_derived_rrule),MooncakeInterpreter{C},SMI,S,Bool}}
+) where {C,SMI,S}
+    return __build_primitive_frule(sig)
+end
+
+# Cache-hit helper: reuse compiled (rule, fwd_dc, rvs_dc) with fresh Stacks.
+function _for_rule_cached_dual(rule, fwd_dc, rvs_dc, debug_mode::Bool)
+    new_rule = _copy(rule)
+    inner_rule = debug_mode ? new_rule.rule : new_rule
+    captures_tangent = zero_tangent((
+        inner_rule.fwds_oc.oc.captures, inner_rule.pb_oc_ref[].oc.captures
+    ))
+    inner_tangent = Tangent((;
+        fwds_oc=MistyClosureTangent(captures_tangent[1], _copy(fwd_dc)),
+        pb_oc_ref=MutableTangent((;
+            x=PossiblyUninitTangent(MistyClosureTangent(captures_tangent[2], _copy(rvs_dc)))
+        )),
+        nargs=NoTangent(),
+    ))
+    rule_tangent = debug_mode ? Tangent((; rule=inner_tangent)) : inner_tangent
+    return Dual(new_rule, rule_tangent)
+end
+
+# First-call compilation helper.
+function _compile_for_rule(
+    interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool
+) where {C}
+    @nospecialize sig_or_mi sig
+
+    dri = generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
+
+    raw_rule = let
+        optimized_fwd_ir = optimise_ir!(CC.copy(dri.fwd_ir))
+        optimized_rvs_ir = optimise_ir!(CC.copy(dri.rvs_ir))
+        fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
+        rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
+        nargs = num_args(dri.info)
+        sig_flat = flatten_va_sig(sig, dri.isva, nargs)
+        DerivedRule(sig_flat, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
+    end
+
+    fwd_dc, rvs_dc, raw_rule_tangent = let
+        interp_forward = MooncakeInterpreter(C, ForwardMode; world=interp.world)
+        optimized_fwd_ir = optimise_ir!(dri.fwd_ir; interp=interp_forward)
+        optimized_rvs_ir = optimise_ir!(dri.rvs_ir; interp=interp_forward)
+        fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
+        rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
+        captures_tangent = zero_tangent((fwd_oc.oc.captures, rvs_oc.oc.captures))
+        fwd_dc = build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode)
+        rvs_dc = build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode)
+        tangent = Tangent((;
+            fwds_oc=MistyClosureTangent(captures_tangent[1], fwd_dc),
+            pb_oc_ref=MutableTangent((;
+                x=PossiblyUninitTangent(MistyClosureTangent(captures_tangent[2], rvs_dc))
+            )),
+            nargs=NoTangent(),
+        ))
+        fwd_dc, rvs_dc, tangent
+    end
+
+    rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
+    rule_tangent = debug_mode ? Tangent((; rule=raw_rule_tangent)) : raw_rule_tangent
+    return rule, fwd_dc, rvs_dc, rule_tangent
+end
+
+function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
+    ::Dual{typeof(build_derived_rrule)},
+    _interp::Dual{<:MooncakeInterpreter{C}},
+    _sig_or_mi::Dual,
+    _sig::Dual,
+    _debug_mode::Dual{Bool},
+) where {Trule,Tfwd,Trvs,C}
+    @nospecialize _sig_or_mi _sig
+    debug_mode = primal(_debug_mode)
+    if isdefined(cache, :rule)
+        if debug_mode != (cache.rule isa DebugRRule)
+            error(
+                "LazyFoRRule cache hit with debug_mode=$debug_mode but cached rule is " *
+                "$(typeof(cache.rule)); debug_mode must be consistent across calls.",
+            )
+        end
+        return _for_rule_cached_dual(
+            cache.rule, cache.fwd_dual_callable, cache.rvs_dual_callable, debug_mode
+        )
+    end
+    rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
+        primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
+    )
+    cache.rule = rule
+    cache.fwd_dual_callable = fwd_dc
+    cache.rvs_dual_callable = rvs_dc
+    return Dual(rule, rule_tangent)
+end
+
+function (cache::DynamicFoRRule)(
+    ::Dual{typeof(build_derived_rrule)},
+    _interp::Dual{<:MooncakeInterpreter{C}},
+    _sig_or_mi::Dual,
+    _sig::Dual,
+    _debug_mode::Dual{Bool},
+) where {C}
+    @nospecialize _sig_or_mi _sig
+    debug_mode = primal(_debug_mode)
+    dict_key = (primal(_sig), debug_mode)
+    entry = get(cache.cache, dict_key, nothing)
+    if entry !== nothing
+        rule, fwd_dc, rvs_dc = entry
+        return _for_rule_cached_dual(rule, fwd_dc, rvs_dc, debug_mode)
+    end
+    rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
+        primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
+    )
+    cache.cache[dict_key] = (rule, fwd_dc, rvs_dc)
+    return Dual(rule, rule_tangent)
+end
+
 function rrule!!(
     ::CoDual{typeof(build_derived_rrule)},
     _interp::CoDual{<:MooncakeInterpreter},

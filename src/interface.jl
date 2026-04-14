@@ -1571,7 +1571,7 @@ function value_and_hvp!!(cache::HVPCache{:forward_over_reverse}, f, v, x1)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         core.fwd_cache, (grad_f, core.grad_tangent), (x1, v)
     )
-    return f_val, grad, hvp
+    return f_val, copy(grad), copy(hvp)
 end
 
 function value_and_hvp!!(
@@ -1592,7 +1592,7 @@ function value_and_hvp!!(
     (f_val, grads), (_, hvps) = value_and_derivative!!(
         core.fwd_cache, (grad_f, core.grad_tangent), map(tuple, all_x, v)...
     )
-    return f_val, grads, hvps
+    return f_val, map(copy, grads), map(copy, hvps)
 end
 
 # ── Shared helpers ───────────────────────────────────────────────────────────────
