@@ -50,6 +50,19 @@
     @zero_derivative MinimalCtx Tuple{typeof(Base.dataids),Memory}
 end
 
+# unalias: forward-mode primitive to avoid a segfault in broadcast with NDual
+# containers.  Compiling through unalias produces an OC that crashes
+# non-deterministically; root cause is not fully diagnosed.
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(Base.unalias),Any,Any}
+function frule!!(::Dual{typeof(Base.unalias)}, dest, src)
+    d = dest isa Dual ? primal(dest) : dest
+    s = src isa Dual ? primal(src) : src
+    if d isa AbstractArray && s isa AbstractArray && Base.mightalias(d, s)
+        return src isa Dual ? Dual(copy(primal(src)), copy(tangent(src))) : copy(src)
+    end
+    return src
+end
+
 """
     stop_gradient(x)
 
@@ -139,7 +152,7 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     if tangent_type(P) === NoTangent
         return uninit_dual(primal_field)
     else
-        Dual(primal_field, _get_tangent_field(tangent(x), f))
+        return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
     end
 end
 
@@ -153,6 +166,10 @@ end
 # another struct), field access also contributes no derivative.
 _get_tangent_field(::NoTangent, _) = NoTangent()
 _get_tangent_field(::NoTangent, _, _) = NoTangent()
+_get_tangent_field(f::NTangent, name) = NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
+function _get_tangent_field(f::NTangent, name, inbounds)
+    return NTangent(map(t -> _get_tangent_field(t, name, inbounds), f.lanes))
+end
 
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}

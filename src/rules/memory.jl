@@ -639,6 +639,11 @@ function frule!!(::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}
     x = Memory{P}(undef, primal(n))
     return Dual(x, zero_tangent_internal(x, NoCache()))
 end
+function frule!!(
+    ::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}
+) where {P<:Union{NDual,Complex{<:NDual}}}
+    return Memory{P}(undef, primal(n))
+end
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
@@ -912,6 +917,14 @@ const _HasNDual = Union{NDual,Complex{<:NDual}}
 )
     return memoryrefget(primal(ref), _val(primal(ordering)), _val(primal(boundscheck)))
 end
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefget)},
+    ref::MemoryRef{<:_HasNDual},
+    ordering::Dual{<:Val},
+    boundscheck::Dual{<:Val},
+)
+    return memoryrefget(ref, _val(primal(ordering)), _val(primal(boundscheck)))
+end
 
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
@@ -923,15 +936,33 @@ end
     memoryrefset!(primal(ref), value, ordering, boundscheck)
     return value
 end
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    ref::MemoryRef{<:_HasNDual},
+    value,
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {ordering,boundscheck}
+    memoryrefset!(ref, value, ordering, boundscheck)
+    return value
+end
 
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory{<:_HasNDual}})
     return Dual(memoryrefnew(primal(x)), NoTangent())
+end
+@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Memory{<:_HasNDual})
+    return memoryrefnew(x)
 end
 
 @inline function frule!!(
     ::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef{<:_HasNDual}}, ii::Dual{Int}
 )
     return Dual(memoryrefnew(primal(x), primal(ii)), NoTangent())
+end
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)}, x::MemoryRef{<:_HasNDual}, ii::Dual{Int}
+)
+    return memoryrefnew(x, primal(ii))
 end
 
 @inline function frule!!(
@@ -942,9 +973,18 @@ end
 )
     return Dual(memoryrefnew(primal(x), primal(ii), primal(boundscheck)), NoTangent())
 end
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)},
+    x::MemoryRef{<:_HasNDual},
+    ii::Dual{Int},
+    boundscheck::Dual{Bool},
+)
+    return memoryrefnew(x, primal(ii), primal(boundscheck))
+end
 
 frule!!(::Dual{typeof(copy)}, a::Dual{<:Array{<:_HasNDual}}) =
     Dual(copy(primal(a)), NoTangent())
+frule!!(::Dual{typeof(copy)}, a::Array{<:_HasNDual}) = copy(a)
 
 # lgetfield for bare NDual containers — tangent info lives in NDual elements, so all
 # field tangents are NoTangent.
@@ -963,6 +1003,16 @@ end
     f::Dual{typeof(lgetfield)}, x::_NDualMemTypes, name::Dual{<:Val}
 )
     return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
+end
+
+# getfield for bare NDual containers (compiler emits getfield, not lgetfield).
+@inline function frule!!(::Dual{typeof(getfield)}, x::_NDualMemTypes, name::Dual)
+    return getfield(x, primal(name))
+end
+@inline function frule!!(
+    ::Dual{typeof(getfield)}, x::_NDualMemTypes, name::Dual, order::Dual
+)
+    return getfield(x, primal(name), primal(order))
 end
 
 # Test cases

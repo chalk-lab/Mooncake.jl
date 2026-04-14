@@ -966,14 +966,15 @@ end
 
 Forward-mode cache returned by [`prepare_derivative_cache`](@ref).
 
-Holds a single width-1 forward rule built by the primal-mode compiler, plus gradient
-workspace and input specs.
+Holds a forward rule built by the primal-mode compiler, plus gradient
+workspace and input specs. `W` is `Nothing` for width-1 or `Val{N}` for width-N.
 """
-struct FCache{R,GW,S<:Tuple}
+struct FCache{R,GW,S<:Tuple,W}
     friendly_tangents::Bool
     rule::R
     buf::GW
     input_specs::S
+    width::W
 end
 
 @inline _dual_primal_type(::Type) = Any
@@ -1199,8 +1200,9 @@ Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref).
     fx = (f, x...)
     sig = typeof(fx)
     interp = get_interpreter(ForwardMode)
+    width = cs !== nothing ? Val(cs) : nothing
     rule = build_frule(
-        interp, sig; debug_mode=config.debug_mode, silence_debug_messages=true
+        interp, sig, width; debug_mode=config.debug_mode, silence_debug_messages=true
     )
     input_specs = map(fx) do x
         if x isa AbstractArray
@@ -1211,7 +1213,7 @@ Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref).
     end
     GW = Tuple{map(P -> tangent_type(P), sig.parameters)...}
     buf = Ref{Union{Nothing,GW}}(nothing)
-    return FCache(config.friendly_tangents, rule, buf, input_specs)
+    return FCache(config.friendly_tangents, rule, buf, input_specs, width)
 end
 
 # ── value_and_gradient!! (FCache) ───────────────────────────────────────────
@@ -1233,6 +1235,7 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     end
     total_slots = _count_slots(input_primals)
     rule = cache.rule
+    width = cache.width
 
     if total_slots == 0
         output = rule(tuple_map(Dual, input_primals, native_gradients)...)
@@ -1241,6 +1244,16 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
         return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
     end
 
+    if width === nothing
+        return _gradient_width1(rule, input_primals, native_gradients, total_slots, cache)
+    else
+        return _gradient_widthN(
+            rule, input_primals, native_gradients, total_slots, cache, width
+        )
+    end
+end
+
+function _gradient_width1(rule, input_primals, native_gradients, total_slots, cache)
     local y
     for slot in 1:total_slots
         seed = _make_seed_tangent(input_primals, slot)
@@ -1255,8 +1268,65 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
             end, native_gradients, seed
         )
     end
-
     return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
+end
+
+function _gradient_widthN(
+    rule, input_primals, native_gradients, total_slots, cache, ::Val{W}
+) where {W}
+    local y
+    slot = 1
+    while slot <= total_slots
+        chunk = min(W, total_slots - slot + 1)
+        ndual_inputs = _make_ndual_seed(input_primals, slot, Val(W))
+        output = rule(ndual_inputs...)
+        y = output isa NDual ? output.value : primal(output)
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        coeffs = output isa NDual ? output.partials : (Float64(tangent(output)),)
+        for d in 1:chunk
+            seeds_d = _make_seed_tangent(input_primals, slot + d - 1)
+            coeff = Float64(coeffs[d])
+            native_gradients = tuple_map(
+                (g, dx) -> begin
+                    dx isa NoTangent && return g
+                    return increment!!(g, _scale(coeff, dx))
+                end, native_gradients, seeds_d
+            )
+        end
+        slot += W
+    end
+    return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
+end
+
+function _make_ndual_seed(input_primals::Tuple, start_slot::Int, ::Val{W}) where {W}
+    seeds = ntuple(Val(W)) do d
+        _make_seed_tangent(input_primals, start_slot + d - 1)
+    end
+    return ntuple(Val(length(input_primals))) do i
+        _combine_to_ndual(input_primals[i], ntuple(d -> seeds[d][i], Val(W)))
+    end
+end
+
+@inline function _combine_to_ndual(x::T, partials::NTuple{W,T}) where {T<:IEEEFloat,W}
+    return NDual{T,W}(x, partials)
+end
+
+function _combine_to_ndual(
+    x::AbstractArray{T}, tangent_dirs::NTuple{W}
+) where {T<:IEEEFloat,W}
+    return map(eachindex(x)) do I
+        NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
+    end |> v -> reshape(v, size(x))
+end
+
+@inline _combine_to_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())
+@inline function _combine_to_ndual(
+    x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}
+) where {W}
+    return Dual(x, NoTangent())
+end
+@inline function _combine_to_ndual(x, tangent_dirs::NTuple{W}) where {W}
+    return Dual(x, NoTangent())
 end
 
 # ── value_and_derivative!! (FCache) ─────────────────────────────────────────

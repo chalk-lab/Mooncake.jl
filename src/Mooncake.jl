@@ -191,6 +191,41 @@ include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd: NDual
 include(joinpath("nfwd", "NfwdMooncake.jl"))
 
+# NDual dispatch helpers — used by frule!! overloads in rule files below.
+@inline _has_ndual() = false
+@inline _has_ndual(::NDual, rest...) = true
+@inline _has_ndual(::AbstractArray{<:NDual}, rest...) = true
+@inline _has_ndual(::AbstractArray{<:Complex{<:NDual}}, rest...) = true
+@inline _has_ndual(::Memory{<:NDual}, rest...) = true
+@inline _has_ndual(::Memory{<:Complex{<:NDual}}, rest...) = true
+@inline _has_ndual(::MemoryRef{<:NDual}, rest...) = true
+@inline _has_ndual(::MemoryRef{<:Complex{<:NDual}}, rest...) = true
+@inline _has_ndual(x::Tuple, rest...) = _has_ndual(x..., rest...)
+@inline _has_ndual(_, rest...) = _has_ndual(rest...)
+
+@inline _dual_or_ndual(val, tangent) = Dual(val, tangent)
+@inline _dual_or_ndual(val::IEEEFloat, t::NTangent) = NDual(val, t.lanes)
+@inline function _dual_or_ndual(
+    val::Array{T,D}, t::NTangent{<:NTuple{W}}
+) where {T<:IEEEFloat,D,W}
+    lanes = t.lanes
+    result = similar(val, NDual{T,W})
+    @inbounds for i in eachindex(val)
+        result[i] = NDual(val[i], ntuple(j -> lanes[j][i], Val(W)))
+    end
+    return result
+end
+@inline function _dual_or_ndual(
+    val::Memory{T}, t::NTangent{<:NTuple{W}}
+) where {T<:IEEEFloat,W}
+    lanes = t.lanes
+    result = Memory{NDual{T,W}}(undef, length(val))
+    @inbounds for i in eachindex(val)
+        result[i] = NDual(val[i], ntuple(j -> lanes[j][i], Val(W)))
+    end
+    return result
+end
+
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))
 include(joinpath("rules", "builtins.jl"))

@@ -184,6 +184,9 @@ end
 function frule!!(f::Dual{typeof(sincosd)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
 end
+function frule!!(::Dual{typeof(sincosd)}, x::NDual)
+    return sincosd(x)
+end
 function rrule!!(f::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
@@ -193,6 +196,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(sincospi),P} where {P<:IEEEFloat}
 function frule!!(f::Dual{typeof(sincospi)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
+function frule!!(::Dual{typeof(sincospi)}, x::NDual)
+    return sincospi(x)
 end
 function rrule!!(f::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
@@ -207,6 +213,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(modf),P} where {P<:IEEEFloat}
 function frule!!(f::Dual{typeof(modf)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
+function frule!!(::Dual{typeof(modf)}, x::NDual)
+    return modf(x)
 end
 function rrule!!(f::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)

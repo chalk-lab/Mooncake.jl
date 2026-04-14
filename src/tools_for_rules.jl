@@ -178,6 +178,15 @@ Dual{Int64, NoTangent}(5, NoTangent())
     return zero_dual(primal(f)(map(primal, x)...))
 end
 
+# Width-N overload: positional args may be bare NDual containers (per dual_type protocol)
+# rather than Dual-wrapped. Extract primals via _zd_primal.
+@inline function zero_derivative(f::Dual, x::Vararg{Any,N}) where {N}
+    return zero_dual(primal(f)(map(_zd_primal, x)...))
+end
+
+@inline _zd_primal(x::Dual) = primal(x)
+@inline _zd_primal(x) = x
+
 """
     zero_derivative(ctx, sig, [mode=Mode])
 
@@ -282,6 +291,16 @@ function _vararg_wrapped_type(vararg_esc_expr, wrapper)
     return :(Vararg{$wrapper{<:$T},$N})
 end
 
+# Produce an unwrapped Vararg type for frule!! args that may be bare NDual containers.
+function _vararg_any_type(vararg_esc_expr)
+    inner = vararg_esc_expr.args[1]
+    inner == :Vararg && return :(Vararg)
+    T = Expr(:escape, inner.args[2])
+    length(inner.args) == 2 && return :(Vararg{<:$T})
+    N = Expr(:escape, inner.args[3])
+    return :(Vararg{<:$T,$N})
+end
+
 function _zero_derivative_impl(ctx, sig, mode)
 
     # Parse the signature, and construct the rule definition. If it is a vararg definition,
@@ -302,10 +321,22 @@ function _zero_derivative_impl(ctx, sig, mode)
     end
 
     is_vararg = _is_vararg_expr(arg_type_symbols[end])
+
+    # Build frule!! where-params: one type parameter per positional arg so that
+    # Julia specialises instead of collapsing Union{Dual{<:Any},Any} to Any.
+    frule_where = where_params === nothing ? Any[] : copy(where_params)
+    function _dual_or_bare(t, idx)
+        sym = Symbol("_ZD_", idx)
+        push!(frule_where, :($sym <: $t))
+        return :(Union{Mooncake.Dual{<:$sym}, $sym})
+    end
+
     if is_vararg
         arg_types_deriv = vcat(
-            map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
-            _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.Dual)),
+            [:(Mooncake.Dual{<:$(arg_type_symbols[1])})],
+            [_dual_or_bare(t, i + 1) for (i, t) in
+             enumerate(arg_type_symbols[2:(end - 1)])],
+            [_vararg_any_type(arg_type_symbols[end])],
         )
         arg_types_adjoint = vcat(
             map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
@@ -316,11 +347,16 @@ function _zero_derivative_impl(ctx, sig, mode)
         body_deriv = Expr(:call, Mooncake.zero_derivative, tmp..., splat_symbol)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, tmp..., splat_symbol)
     else
-        arg_types_deriv = map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols)
+        arg_types_deriv = vcat(
+            [:(Mooncake.Dual{<:$(arg_type_symbols[1])})],
+            [_dual_or_bare(t, i + 1) for (i, t) in
+             enumerate(arg_type_symbols[2:end])],
+        )
         arg_types_adjoint = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols)
         body_deriv = Expr(:call, Mooncake.zero_derivative, arg_names...)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, arg_names...)
     end
+    frule_where_params = isempty(frule_where) ? nothing : frule_where
 
     # Construct is_primitive statement. If no mode is provided, then construct a statement
     # which does not escape the mode argument. This will work even if the names `Mooncake`
@@ -339,7 +375,7 @@ function _zero_derivative_impl(ctx, sig, mode)
     # define both the frule and rrule, and rely on the method of `is_primitive` defined
     # above to determine whether or not they do anything. This might inflate the method
     # table a bit for `frule!!` and `rrule!!` unnecessarily, but it will be robust.
-    frule_ex = construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
+    frule_ex = construct_frule_def(arg_names, arg_types_deriv, frule_where_params, body_deriv)
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
     return Expr(:block, is_primitive_ex, frule_ex, rrule_ex)

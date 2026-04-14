@@ -24,6 +24,7 @@ GLOBAL_INTERPRETERS[PrimalMode] = _make_primal_mode_interp(DefaultCtx)
 # the generic fallback; this adds the Dual case needed by __fwds_pass_no_ad!.
 # The NDual overload is in NfwdMooncake.jl (NDual is defined after this file loads).
 __get_primal(x::Dual) = primal(x)
+__get_primal(x::Tuple) = map(__get_primal, x)
 
 # Check if a type contains Union{} (bottom type) anywhere in its structure.
 # This can happen with unreachable code or failed type inference.
@@ -78,9 +79,16 @@ end
 
 # Width-aware uninit_dual dispatcher for IR-gen-time constants.
 _uninit_dual(::Nothing, v) = uninit_dual(v)
-_uninit_dual(w::Val, v::T) where {T<:IEEEFloat} = uninit_dual(dual_type(w, T)(v))
+_uninit_dual(w::Val, v::T) where {T<:IEEEFloat} = dual_type(w, T)(v)
 function _uninit_dual(w::Val, v::Complex{T}) where {T<:IEEEFloat}
-    return uninit_dual(Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v))))
+    return Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v)))
+end
+# Lift container type constants so that allocation frules create NDual containers.
+function _uninit_dual(w::Val, ::Type{Memory{T}}) where {T<:IEEEFloat}
+    return Dual(Memory{dual_type(w, T)}, NoTangent())
+end
+function _uninit_dual(w::Val, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat}
+    return Dual(Memory{Complex{dual_type(w, T)}}, NoTangent())
 end
 _uninit_dual(::Val, v) = uninit_dual(v)
 
