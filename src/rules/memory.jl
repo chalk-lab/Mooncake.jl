@@ -898,6 +898,73 @@ function rrule!!(
     return a, fill!_pullback!!
 end
 
+# NDual container frule!! overloads — containers of NDual elements carry tangent info
+# inside the elements; the container tangent is NoTangent. These dispatch on the NDual
+# element type to avoid calling memoryrefnew/memoryrefget on NoTangent.
+
+const _HasNDual = Union{NDual,Complex{<:NDual}}
+
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefget)},
+    ref::Dual{<:MemoryRef{<:_HasNDual}},
+    ordering::Dual{<:Val},
+    boundscheck::Dual{<:Val},
+)
+    return memoryrefget(primal(ref), _val(primal(ordering)), _val(primal(boundscheck)))
+end
+
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    ref::Dual{<:MemoryRef{<:_HasNDual},NoTangent},
+    value,
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {ordering,boundscheck}
+    memoryrefset!(primal(ref), value, ordering, boundscheck)
+    return value
+end
+
+@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory{<:_HasNDual}})
+    return Dual(memoryrefnew(primal(x)), NoTangent())
+end
+
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef{<:_HasNDual}}, ii::Dual{Int}
+)
+    return Dual(memoryrefnew(primal(x), primal(ii)), NoTangent())
+end
+
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)},
+    x::Dual{<:MemoryRef{<:_HasNDual}},
+    ii::Dual{Int},
+    boundscheck::Dual{Bool},
+)
+    return Dual(memoryrefnew(primal(x), primal(ii), primal(boundscheck)), NoTangent())
+end
+
+frule!!(::Dual{typeof(copy)}, a::Dual{<:Array{<:_HasNDual}}) =
+    Dual(copy(primal(a)), NoTangent())
+
+# lgetfield for bare NDual containers — tangent info lives in NDual elements, so all
+# field tangents are NoTangent.
+const _NDualMemTypes = Union{Memory{<:_HasNDual},MemoryRef{<:_HasNDual},Array{<:_HasNDual}}
+
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::_NDualMemTypes,
+    ::Dual{Val{name}},
+    ::Dual{Val{order}},
+) where {name,order}
+    return Dual(getfield(x, name, order), NoTangent())
+end
+
+@inline function frule!!(
+    f::Dual{typeof(lgetfield)}, x::_NDualMemTypes, name::Dual{<:Val}
+)
+    return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
+end
+
 # Test cases
 
 function _mems()

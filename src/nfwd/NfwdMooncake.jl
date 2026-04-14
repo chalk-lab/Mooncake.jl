@@ -984,4 +984,13 @@ function check_ndual_width_consistency(args...)
     return w
 end
 
+# _uninit_dual for Array at width N: return bare Array{NDual} (matches dual_type).
+function Mooncake._uninit_dual(::Val{N}, v::Array{T,D}) where {N,T<:IEEEFloat,D}
+    ndual_arr = Array{NDual{T,N},D}(undef, size(v)...)
+    @inbounds for i in eachindex(v)
+        ndual_arr[i] = NDual{T,N}(v[i], ntuple(_ -> zero(T), Val(N)))
+    end
+    return ndual_arr
+end
+
 end
