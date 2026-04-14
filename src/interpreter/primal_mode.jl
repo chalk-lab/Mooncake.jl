@@ -205,7 +205,9 @@ function build_frule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward, width))
+        oc_cache_key = ClosureCacheKey(
+            interp.world, (sig_or_mi, debug_mode, :forward, width)
+        )
         if haskey(interp.oc_cache, oc_cache_key)
             return interp.oc_cache[oc_cache_key]
         else
@@ -242,9 +244,7 @@ end
 @inline function (fwd::DerivedPrimal{P,sig,isva,nargs})(
     args::Vararg{Any,N}
 ) where {P,sig,N,isva,nargs}
-    return fwd.lifted_oc(
-        __unflatten_dual_varargs(isva, args, Val(nargs), fwd.width)...
-    )
+    return fwd.lifted_oc(__unflatten_dual_varargs(isva, args, Val(nargs), fwd.width)...)
 end
 
 # On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
@@ -269,9 +269,8 @@ _nargs(::DerivedPrimal{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
 function verify_args(r::DerivedPrimal{sig}, x) where {sig}
     Tx = Tuple{
         map(
-            _typeof ∘ primal,
-            __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r)), r.width),
-        )...
+            _typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r)), r.width)
+        )...,
     }
     Tx <: sig && return nothing
     throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
@@ -337,7 +336,9 @@ struct DynamicPrimal{V,W}
     width::W
 end
 
-DynamicPrimal(debug_mode::Bool, width=nothing) = DynamicPrimal(Dict{Any,Any}(), debug_mode, width)
+function DynamicPrimal(debug_mode::Bool, width=nothing)
+    DynamicPrimal(Dict{Any,Any}(), debug_mode, width)
+end
 
 # Create new dynamic rule with empty cache and same debug mode/width
 _copy(x::P) where {P<:DynamicPrimal} = P(Dict{Any,Any}(), x.debug_mode, x.width)
@@ -479,7 +480,11 @@ function modify_primal_stmts!(
 end
 
 function modify_primal_stmts!(
-    stmt::GlobalRef, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::LiftedInfo
+    stmt::GlobalRef,
+    lifted_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    info::LiftedInfo,
 )
     if isconst(stmt)
         d = const_dual!(captures, stmt, info.width)
@@ -498,7 +503,11 @@ function modify_primal_stmts!(
 end
 
 function modify_primal_stmts!(
-    stmt::ReturnNode, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::LiftedInfo
+    stmt::ReturnNode,
+    lifted_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    info::LiftedInfo,
 )
     # undefined `val` field means that stmt is unreachable.
     isdefined(stmt, :val) || return nothing
@@ -649,9 +658,11 @@ function modify_primal_stmts!(
             dm = info.debug_mode
             push!(
                 captures,
-                isexpr(stmt, :invoke) ?
-                    LazyPrimal(mi, dm, info.width) :
-                    DynamicPrimal(dm, info.width),
+                if isexpr(stmt, :invoke)
+                    LazyPrimal(mi, dm, info.width)
+                else
+                    DynamicPrimal(dm, info.width)
+                end,
             )
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(lifted_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)

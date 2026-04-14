@@ -884,8 +884,12 @@ end
 @static if VERSION >= v"1.11-"
     dual_type(::Val{0}, ::Type{MemoryRef{T}}) where {T<:IEEEFloat} = MemoryRef{T}
     dual_type(::Val{0}, ::Type{Memory{T}}) where {T<:IEEEFloat} = Memory{T}
-    dual_type(::Val{0}, ::Type{MemoryRef{Complex{T}}}) where {T<:IEEEFloat} = MemoryRef{Complex{T}}
-    dual_type(::Val{0}, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat} = Memory{Complex{T}}
+    dual_type(::Val{0}, ::Type{MemoryRef{Complex{T}}}) where {T<:IEEEFloat} = MemoryRef{
+        Complex{T}
+    }
+    dual_type(::Val{0}, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat} = Memory{
+        Complex{T}
+    }
 end
 
 # tangent_type(NDual) uses the default struct-based tangent_type. HVP runs
@@ -953,7 +957,9 @@ function primal(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
 end
 
 function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
-    return map(z -> NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N))), a)
+    return map(
+        z -> NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N))), a
+    )
 end
 
 # ── Width-mismatch checking ──────────────────────────────────────────────────
@@ -976,10 +982,12 @@ function check_ndual_width_consistency(args...)
     isempty(widths) && return nothing
     w = first(widths)
     if !all(==(w), widths)
-        throw(ArgumentError(
-            "NDual width mismatch: got widths $(collect(widths)) across arguments. " *
-            "All NDual arguments in a single rule call must have the same width N."
-        ))
+        throw(
+            ArgumentError(
+                "NDual width mismatch: got widths $(collect(widths)) across arguments. " *
+                "All NDual arguments in a single rule call must have the same width N.",
+            ),
+        )
     end
     return w
 end

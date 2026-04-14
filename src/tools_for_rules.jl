@@ -328,14 +328,16 @@ function _zero_derivative_impl(ctx, sig, mode)
     function _dual_or_bare(t, idx)
         sym = Symbol("_ZD_", idx)
         push!(frule_where, :($sym <: $t))
-        return :(Union{Mooncake.Dual{<:$sym}, $sym})
+        return :(Union{Mooncake.Dual{<:$sym},$sym})
     end
 
     if is_vararg
         arg_types_deriv = vcat(
             [:(Mooncake.Dual{<:$(arg_type_symbols[1])})],
-            [_dual_or_bare(t, i + 1) for (i, t) in
-             enumerate(arg_type_symbols[2:(end - 1)])],
+            [
+                _dual_or_bare(t, i + 1) for
+                (i, t) in enumerate(arg_type_symbols[2:(end - 1)])
+            ],
             [_vararg_any_type(arg_type_symbols[end])],
         )
         arg_types_adjoint = vcat(
@@ -349,8 +351,7 @@ function _zero_derivative_impl(ctx, sig, mode)
     else
         arg_types_deriv = vcat(
             [:(Mooncake.Dual{<:$(arg_type_symbols[1])})],
-            [_dual_or_bare(t, i + 1) for (i, t) in
-             enumerate(arg_type_symbols[2:end])],
+            [_dual_or_bare(t, i + 1) for (i, t) in enumerate(arg_type_symbols[2:end])],
         )
         arg_types_adjoint = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols)
         body_deriv = Expr(:call, Mooncake.zero_derivative, arg_names...)
@@ -375,7 +376,9 @@ function _zero_derivative_impl(ctx, sig, mode)
     # define both the frule and rrule, and rely on the method of `is_primitive` defined
     # above to determine whether or not they do anything. This might inflate the method
     # table a bit for `frule!!` and `rrule!!` unnecessarily, but it will be robust.
-    frule_ex = construct_frule_def(arg_names, arg_types_deriv, frule_where_params, body_deriv)
+    frule_ex = construct_frule_def(
+        arg_names, arg_types_deriv, frule_where_params, body_deriv
+    )
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
     return Expr(:block, is_primitive_ex, frule_ex, rrule_ex)

@@ -982,8 +982,9 @@ end
     return memoryrefnew(x, primal(ii), primal(boundscheck))
 end
 
-frule!!(::Dual{typeof(copy)}, a::Dual{<:Array{<:_HasNDual}}) =
+function frule!!(::Dual{typeof(copy)}, a::Dual{<:Array{<:_HasNDual}})
     Dual(copy(primal(a)), NoTangent())
+end
 frule!!(::Dual{typeof(copy)}, a::Array{<:_HasNDual}) = copy(a)
 
 # lgetfield for bare NDual containers — tangent info lives in NDual elements, so all
@@ -991,17 +992,12 @@ frule!!(::Dual{typeof(copy)}, a::Array{<:_HasNDual}) = copy(a)
 const _NDualMemTypes = Union{Memory{<:_HasNDual},MemoryRef{<:_HasNDual},Array{<:_HasNDual}}
 
 @inline function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::_NDualMemTypes,
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
+    ::Dual{typeof(lgetfield)}, x::_NDualMemTypes, ::Dual{Val{name}}, ::Dual{Val{order}}
 ) where {name,order}
     return Dual(getfield(x, name, order), NoTangent())
 end
 
-@inline function frule!!(
-    f::Dual{typeof(lgetfield)}, x::_NDualMemTypes, name::Dual{<:Val}
-)
+@inline function frule!!(f::Dual{typeof(lgetfield)}, x::_NDualMemTypes, name::Dual{<:Val})
     return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
 end
 

@@ -1290,7 +1290,9 @@ function _gradient_widthN(
                 (g, dx) -> begin
                     dx isa NoTangent && return g
                     return increment!!(g, _scale(coeff, dx))
-                end, native_gradients, seeds_d
+                end,
+                native_gradients,
+                seeds_d,
             )
         end
         slot += W
@@ -1314,9 +1316,9 @@ end
 function _combine_to_ndual(
     x::AbstractArray{T}, tangent_dirs::NTuple{W}
 ) where {T<:IEEEFloat,W}
-    return map(eachindex(x)) do I
+    return (v -> reshape(v, size(x)))(map(eachindex(x)) do I
         NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
-    end |> v -> reshape(v, size(x))
+    end)
 end
 
 @inline _combine_to_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())

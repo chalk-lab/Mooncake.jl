@@ -964,7 +964,9 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(applicable),Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(fieldtype),Vararg}
 
-const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent,NTangent}
+const StandardTangentType = Union{
+    Tuple,NamedTuple,Tangent,MutableTangent,NoTangent,NTangent
+}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
 function frule!!(
@@ -974,7 +976,9 @@ function frule!!(
     if tangent_type(P) == NoTangent
         return uninit_dual(getfield(primal(x), _name))
     else
-        return _dual_or_ndual(getfield(primal(x), _name), _get_tangent_field(tangent(x), _name))
+        return _dual_or_ndual(
+            getfield(primal(x), _name), _get_tangent_field(tangent(x), _name)
+        )
     end
 end
 function frule!!(

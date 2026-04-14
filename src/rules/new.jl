@@ -7,7 +7,7 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
     if P <: Array
         ref = _find_ndual_memref(primals...)
         if ref !== nothing
-            P_ndual = Array{eltype(ref), ndims(P)}
+            P_ndual = Array{eltype(ref),ndims(P)}
             return _new_(P_ndual, primals...)
         end
     end
@@ -33,7 +33,9 @@ end
 @inline _ndual_primal(x::NDual) = primal(x)
 @inline _ndual_primal(x::Complex{<:NDual}) = primal(x)
 @inline _ndual_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
-@inline _ndual_primal(x::AbstractArray{<:Complex{<:NDual}}) = map(z -> complex(z.re.value, z.im.value), x)
+@inline _ndual_primal(x::AbstractArray{<:Complex{<:NDual}}) = map(
+    z -> complex(z.re.value, z.im.value), x
+)
 @inline _ndual_primal(x::Tuple) = map(_ndual_primal, x)
 @inline _ndual_primal(x) = x
 
@@ -50,12 +52,16 @@ end
 @inline _tangent_dir(x::NDual, i) = x.partials[i]
 @inline _tangent_dir(x::Dual{<:Any,<:NTangent}, i) = tangent(x).lanes[i]
 @inline _tangent_dir(x::Dual, _) = tangent(x)
-@inline _tangent_dir(x::AbstractArray{NDual{T,N}}, i) where {T,N} = map(d -> d.partials[i], x)
-@inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} =
-    map(z -> complex(z.re.partials[i], z.im.partials[i]), x)
+@inline _tangent_dir(x::AbstractArray{NDual{T,N}}, i) where {T,N} = map(
+    d -> d.partials[i], x
+)
+@inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} = map(
+    z -> complex(z.re.partials[i], z.im.partials[i]), x
+)
 @inline _tangent_dir(x::Memory{NDual{T,N}}, i) where {T,N} = map(d -> d.partials[i], x)
-@inline _tangent_dir(x::Memory{Complex{NDual{T,N}}}, i) where {T,N} =
-    map(z -> complex(z.re.partials[i], z.im.partials[i]), x)
+@inline _tangent_dir(x::Memory{Complex{NDual{T,N}}}, i) where {T,N} = map(
+    z -> complex(z.re.partials[i], z.im.partials[i]), x
+)
 @inline _tangent_dir(x::Tuple, i) = map(xi -> _tangent_dir(xi, i), x)
 @inline _tangent_dir(x, _) = zero_tangent(x)
 

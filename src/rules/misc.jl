@@ -166,7 +166,9 @@ end
 # another struct), field access also contributes no derivative.
 _get_tangent_field(::NoTangent, _) = NoTangent()
 _get_tangent_field(::NoTangent, _, _) = NoTangent()
-_get_tangent_field(f::NTangent, name) = NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
+function _get_tangent_field(f::NTangent, name)
+    NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
+end
 function _get_tangent_field(f::NTangent, name, inbounds)
     return NTangent(map(t -> _get_tangent_field(t, name, inbounds), f.lanes))
 end
