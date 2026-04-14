@@ -878,6 +878,13 @@ end
 primal(d::NDual) = d.value
 tangent(d::NDual{T,N}) where {T,N} = NTangent(d.partials)
 
+# __get_primal for NDual — primal_mode.jl defines the Dual overload,
+# reverse_mode.jl defines CoDual and generic fallback.
+Mooncake.__get_primal(x::NDual) = primal(x)
+
+# _partial_i for NDual vararg transpose — primal_mode.jl defines the Dual overload.
+Mooncake._partial_i(x::NDual, i::Int) = x.partials[i]
+
 primal(z::Complex{<:NDual}) = complex(z.re.value, z.im.value)
 function tangent(z::Complex{NDual{T,N}}) where {T,N}
     return NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N)))

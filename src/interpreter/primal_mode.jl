@@ -20,8 +20,9 @@ GLOBAL_INTERPRETERS[PrimalMode] = _make_primal_mode_interp(DefaultCtx)
 @inline _primal_of(x::Bool) = x
 @inline _primal_of(x) = primal(x)
 
-# __get_primal for Dual values — reverse_mode.jl defines the CoDual overload and the
-# generic fallback; this adds the Dual case needed by __fwds_pass_no_ad!.
+# __get_primal for Dual values — reverse_mode.jl defines the CoDual overload and
+# the generic fallback; this adds the Dual case needed by __fwds_pass_no_ad!.
+# The NDual overload is in NfwdMooncake.jl (NDual is defined after this file loads).
 __get_primal(x::Dual) = primal(x)
 
 # Check if a type contains Union{} (bottom type) anywhere in its structure.
@@ -55,18 +56,18 @@ end
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
 
 """
-    const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
+    const_dual!(captures::Vector{Any}, stmt, width=nothing)
 
-Build a `Dual` from `stmt`, with zero / uninitialised tangent. If the resulting `Dual` is
-a bits type, then it is returned. If it is not, then the `Dual` is put into captures,
-and its location in `captures` returned.
+Build a `Dual` (or `NDual` when `width !== nothing`) from `stmt`, with zero / uninitialised
+tangent. If the resulting value is a bits type, then it is returned. If it is not, then it
+is put into captures, and its location in `captures` returned.
 
 Whether or not the value is a literal, or an index into the captures, can be determined from
 the return type.
 """
-function const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
+function const_dual!(captures::Vector{Any}, stmt, width=nothing)
     v = get_const_primal_value(stmt)
-    x = uninit_dual(v)
+    x = _uninit_dual(width, v)
     if safe_for_literal(v)
         return x
     else
@@ -75,25 +76,47 @@ function const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
     end
 end
 
+# Width-aware uninit_dual dispatcher for IR-gen-time constants.
+_uninit_dual(::Nothing, v) = uninit_dual(v)
+_uninit_dual(w::Val, v::T) where {T<:IEEEFloat} = uninit_dual(dual_type(w, T)(v))
+function _uninit_dual(w::Val, v::Complex{T}) where {T<:IEEEFloat}
+    return uninit_dual(Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v))))
+end
+_uninit_dual(::Val, v) = uninit_dual(v)
+
 const ATTACH_AFTER = true
 const ATTACH_BEFORE = false
 
 """
-    __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
+    __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}, width=nothing) where {nargs}
 
 If isva and nargs=2, then inputs `(Dual(5.0, 0.0), Dual(4.0, 0.0), Dual(3.0, 0.0))`
 are transformed into `(Dual(5.0, 0.0), Dual((5.0, 4.0), (0.0, 0.0)))`.
 """
-function __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
+function __unflatten_dual_varargs(
+    isva::Bool, args, ::Val{nargs}, width=nothing
+) where {nargs}
     isva || return args
-    group_primal = map(primal, args[nargs:end])
+    rest = args[nargs:end]
+    group_primal = map(primal, rest)
     if tangent_type(_typeof(group_primal)) == NoTangent
         grouped_args = zero_dual(group_primal)
     else
-        grouped_args = Dual(group_primal, map(tangent, args[nargs:end]))
+        grouped_args = _group_vararg_dual(width, group_primal, rest)
     end
     return (args[1:(nargs - 1)]..., grouped_args)
 end
+
+_group_vararg_dual(::Nothing, p, rest) = Dual(p, map(tangent, rest))
+
+function _group_vararg_dual(::Val{N}, group_primal, rest) where {N}
+    per_dir = ntuple(Val(N)) do i
+        map(x -> _partial_i(x, i), rest)
+    end
+    return Dual(group_primal, NTangent(per_dir))
+end
+
+_partial_i(x::Dual, ::Int) = tangent(x)
 
 get_forward_primal_type(ir::CC.IRCode, a::Argument) = ir.argtypes[a.n]
 get_forward_primal_type(ir::CC.IRCode, ssa::SSAValue) = get_ir(ir, ssa, :type)
@@ -174,7 +197,7 @@ function build_frule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward))
+        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward, width))
         if haskey(interp.oc_cache, oc_cache_key)
             return interp.oc_cache[oc_cache_key]
         else
@@ -186,7 +209,10 @@ function build_frule(
                 info.lifted_ret_type, lifted_ir, captures...; do_compile=true
             )
             sig = flatten_va_sig(sig, info.isva, info.nargs)
-            raw_rule = DerivedPrimal{sig,typeof(lifted_oc),info.isva,info.nargs}(lifted_oc)
+            _W = typeof(width)
+            raw_rule = DerivedPrimal{sig,typeof(lifted_oc),info.isva,info.nargs,_W}(
+                lifted_oc, width
+            )
             rule = debug_mode ? DebugFRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
             return rule
@@ -200,14 +226,17 @@ end
 
 # DerivedPrimal — compiled forward rule from lifted OC
 
-struct DerivedPrimal{primal_sig,Tlifted_oc,isva,nargs}
+struct DerivedPrimal{primal_sig,Tlifted_oc,isva,nargs,W}
     lifted_oc::Tlifted_oc
+    width::W
 end
 
 @inline function (fwd::DerivedPrimal{P,sig,isva,nargs})(
-    args::Vararg{Dual,N}
+    args::Vararg{Any,N}
 ) where {P,sig,N,isva,nargs}
-    return fwd.lifted_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
+    return fwd.lifted_oc(
+        __unflatten_dual_varargs(isva, args, Val(nargs), fwd.width)...
+    )
 end
 
 # On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
@@ -222,7 +251,7 @@ end
 
 # Copy forward rule with recursively copied captures
 function _copy(x::P) where {P<:DerivedPrimal}
-    return P(replace_captures(x.lifted_oc, _copy(x.lifted_oc.oc.captures)))
+    return P(replace_captures(x.lifted_oc, _copy(x.lifted_oc.oc.captures)), x.width)
 end
 
 _isva(::DerivedPrimal{P,T,isva,nargs}) where {P,T,isva,nargs} = isva
@@ -231,7 +260,10 @@ _nargs(::DerivedPrimal{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
 # Extends functionality defined in debug_mode.jl.
 function verify_args(r::DerivedPrimal{sig}, x) where {sig}
     Tx = Tuple{
-        map(_typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r))))...
+        map(
+            _typeof ∘ primal,
+            __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r)), r.width),
+        )...
     }
     Tx <: sig && return nothing
     throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
@@ -242,20 +274,23 @@ end
 mutable struct LazyPrimal{primal_sig,Trule}
     debug_mode::Bool
     mi::Core.MethodInstance
+    width  # Val{N} or nothing
     rule::Trule
-    function LazyPrimal(mi::Core.MethodInstance, debug_mode::Bool)
+    function LazyPrimal(mi::Core.MethodInstance, debug_mode::Bool, width=nothing)
         interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,primal_rule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,primal_rule_type(interp, mi, width;debug_mode)}(
+            debug_mode, mi, width
+        )
     end
     function LazyPrimal{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool
+        mi::Core.MethodInstance, debug_mode::Bool, width=nothing
     ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi)
+        return new{Tprimal_sig,Trule}(debug_mode, mi, width)
     end
 end
 
-# Create new lazy rule with same method instance and debug mode
-_copy(x::P) where {P<:LazyPrimal} = P(x.mi, x.debug_mode)
+# Create new lazy rule with same method instance, debug mode, and width
+_copy(x::P) where {P<:LazyPrimal} = P(x.mi, x.debug_mode, x.width)
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyPrimal, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
@@ -282,28 +317,31 @@ end
 
 @noinline function _build_rule!(rule::LazyPrimal{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode)
-    rule.rule = build_frule(interp, rule.mi; debug_mode=rule.debug_mode)
+    rule.rule = build_frule(interp, rule.mi, rule.width; debug_mode=rule.debug_mode)
     return __call_rule(rule.rule, args)
 end
 
 # DynamicPrimal — dict-cached rule for dynamic callsites
 
-struct DynamicPrimal{V}
+struct DynamicPrimal{V,W}
     cache::V
     debug_mode::Bool
+    width::W
 end
 
-DynamicPrimal(debug_mode::Bool) = DynamicPrimal(Dict{Any,Any}(), debug_mode)
+DynamicPrimal(debug_mode::Bool, width=nothing) = DynamicPrimal(Dict{Any,Any}(), debug_mode, width)
 
-# Create new dynamic rule with empty cache and same debug mode  
-_copy(x::P) where {P<:DynamicPrimal} = P(Dict{Any,Any}(), x.debug_mode)
+# Create new dynamic rule with empty cache and same debug mode/width
+_copy(x::P) where {P<:DynamicPrimal} = P(Dict{Any,Any}(), x.debug_mode, x.width)
 
-function (dynamic_rule::DynamicPrimal)(args::Vararg{Dual,N}) where {N}
+function (dynamic_rule::DynamicPrimal)(args::Vararg{Any,N}) where {N}
     sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ForwardMode)
-        rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        rule = build_frule(
+            interp, sig, dynamic_rule.width; debug_mode=dynamic_rule.debug_mode
+        )
         dynamic_rule.cache[sig] = rule
     end
     return __call_rule(rule, args)
@@ -404,7 +442,7 @@ function primal_rule_type(
     sig = Tuple{arg_types...}
     dual_args_type = Tuple{map(Base.Fix1(_lift_type, width), arg_types)...}
     closure_type = RuleMC{dual_args_type,lifted_ret_type(ir, width)}
-    Tderived = DerivedPrimal{sig,closure_type,isva,nargs}
+    Tderived = DerivedPrimal{sig,closure_type,isva,nargs,typeof(width)}
     return debug_mode ? DebugFRule{Tderived} : Tderived
 end
 
@@ -433,10 +471,10 @@ function modify_primal_stmts!(
 end
 
 function modify_primal_stmts!(
-    stmt::GlobalRef, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::LiftedInfo
+    stmt::GlobalRef, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::LiftedInfo
 )
     if isconst(stmt)
-        d = const_dual!(captures, stmt)
+        d = const_dual!(captures, stmt, info.width)
         if d isa Int
             Mooncake.replace_call!(lifted_ir, ssa, Expr(:call, get_capture, Argument(1), d))
         else
@@ -452,7 +490,7 @@ function modify_primal_stmts!(
 end
 
 function modify_primal_stmts!(
-    stmt::ReturnNode, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::LiftedInfo
+    stmt::ReturnNode, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::LiftedInfo
 )
     # undefined `val` field means that stmt is unreachable.
     isdefined(stmt, :val) || return nothing
@@ -464,7 +502,7 @@ function modify_primal_stmts!(
     end
 
     # stmt is a const, so we have to turn it into a dual.
-    d = const_dual!(captures, stmt.val)
+    d = const_dual!(captures, stmt.val, info.width)
     if d isa Int
         get_dual = Expr(:call, get_capture, Argument(1), d)
         get_dual_ssa = CC.insert_node!(lifted_ir, ssa, new_inst(get_dual), ATTACH_BEFORE)
@@ -481,7 +519,7 @@ function modify_primal_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
+        stmt.values[n] = _uninit_dual(info.width, get_const_primal_value(stmt.values[n]))
     end
     set_stmt!(lifted_ir, ssa, inc_args(stmt))
     set_ir!(
@@ -499,7 +537,7 @@ function modify_primal_stmts!(
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
     else
-        v = uninit_dual(get_const_primal_value(stmt.val))
+        v = _uninit_dual(info.width, get_const_primal_value(stmt.val))
     end
     replace_call!(
         lifted_ir, ssa, PiNode(v, _lift_type(info.width, CC.widenconst(stmt.typ)))
@@ -515,7 +553,7 @@ function modify_primal_stmts!(
     info::LiftedInfo,
 )
     if !(stmt.val isa Union{Argument,SSAValue})
-        stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
+        stmt = UpsilonNode(_uninit_dual(info.width, get_const_primal_value(stmt.val)))
     end
     set_stmt!(lifted_ir, ssa, inc_args(stmt))
     set_ir!(
@@ -537,7 +575,7 @@ function modify_primal_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
+        stmt.values[n] = _uninit_dual(info.width, get_const_primal_value(stmt.values[n]))
     end
     set_stmt!(lifted_ir, ssa, inc_args(stmt))
     set_ir!(
@@ -583,7 +621,7 @@ function modify_primal_stmts!(
         # Dual-ise arguments.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
-            return uninit_dual(get_const_primal_value(arg))
+            return _uninit_dual(info.width, get_const_primal_value(arg))
         end
 
         interp = info.interp
@@ -601,7 +639,12 @@ function modify_primal_stmts!(
             end
         else
             dm = info.debug_mode
-            push!(captures, isexpr(stmt, :invoke) ? LazyPrimal(mi, dm) : DynamicPrimal(dm))
+            push!(
+                captures,
+                isexpr(stmt, :invoke) ?
+                    LazyPrimal(mi, dm, info.width) :
+                    DynamicPrimal(dm, info.width),
+            )
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(lifted_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             replace_call!(lifted_ir, ssa, Expr(:call, rule_ssa, dual_args...))
