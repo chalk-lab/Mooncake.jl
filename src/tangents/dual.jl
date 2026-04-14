@@ -64,6 +64,11 @@ Width-aware forward value type query.
         end
     end
 
+    # Concrete Tuple: element-wise lifting — each field type is individually lifted.
+    if isconcretetype(P) && P <: Tuple
+        return Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
+    end
+
     return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
 end
 

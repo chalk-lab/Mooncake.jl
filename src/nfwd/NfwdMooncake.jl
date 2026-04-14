@@ -862,12 +862,30 @@ function dual_type(::Val{N}, ::Type{Array{Complex{T},D}}) where {N,T<:IEEEFloat,
     return Array{Complex{NDual{T,N}},D}
 end
 
+# MemoryRef / Memory overloads (1.11+): element-wise lifting to NDual containers.
+@static if VERSION >= v"1.11-"
+    dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T<:IEEEFloat} = MemoryRef{NDual{T,N}}
+    dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat} = Memory{NDual{T,N}}
+    function dual_type(::Val{N}, ::Type{MemoryRef{Complex{T}}}) where {N,T<:IEEEFloat}
+        return MemoryRef{Complex{NDual{T,N}}}
+    end
+    function dual_type(::Val{N}, ::Type{Memory{Complex{T}}}) where {N,T<:IEEEFloat}
+        return Memory{Complex{NDual{T,N}}}
+    end
+end
+
 # Val{0} ambiguity resolvers: dual_type(Val(0), P) = P for all P.
 dual_type(::Val{0}, ::Type{T}) where {T<:IEEEFloat} = T
 dual_type(::Val{0}, ::Type{Complex{T}}) where {T<:IEEEFloat} = Complex{T}
 dual_type(::Val{0}, ::Type{Array{T,D}}) where {T<:IEEEFloat,D} = Array{T,D}
 function dual_type(::Val{0}, ::Type{Array{Complex{T},D}}) where {T<:IEEEFloat,D}
     Array{Complex{T},D}
+end
+@static if VERSION >= v"1.11-"
+    dual_type(::Val{0}, ::Type{MemoryRef{T}}) where {T<:IEEEFloat} = MemoryRef{T}
+    dual_type(::Val{0}, ::Type{Memory{T}}) where {T<:IEEEFloat} = Memory{T}
+    dual_type(::Val{0}, ::Type{MemoryRef{Complex{T}}}) where {T<:IEEEFloat} = MemoryRef{Complex{T}}
+    dual_type(::Val{0}, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat} = Memory{Complex{T}}
 end
 
 # tangent_type(NDual) uses the default struct-based tangent_type. HVP runs
