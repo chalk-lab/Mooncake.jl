@@ -76,6 +76,34 @@ end
     return _nfwd_rrule_call(primal(f), x, Val(N))
 end
 
+function build_rrule(
+    sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
+)
+    N = _nfwd_validate(
+        sig,
+        isnothing(chunk_size) ? _nfwd_sig_default_chunk_size(sig) : chunk_size;
+        debug_mode,
+    )
+    buf = Ref{Any}(nothing)
+    grad_buf = Ref{Any}(nothing)
+    return RRule{sig,N,typeof(buf),_nfwd_infer_scalar_output(sig),typeof(grad_buf)}(
+        buf, grad_buf
+    )
+end
+
+function build_rrule(
+    f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
+)
+    return build_rrule(
+        Mooncake._typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages
+    )
+end
+
+function (rule::RRule{sig,N})(f::CoDual, x::Vararg{CoDual,M}) where {sig,N,M}
+    _nfwd_check_function_tangent(tangent(f))
+    return _nfwd_rrule_call(primal(f), x, Val(N))
+end
+
 @inline function _nfwd_check_function_tangent(df)
     df isa Union{NoTangent,NoFData} && return nothing
     throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
