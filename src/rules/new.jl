@@ -11,6 +11,11 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
             return _new_(P_ndual, primals...)
         end
     end
+    # Complex{NDual} is bare — construct directly from NDual fields.
+    if P <: Complex && _has_ndual(x...)
+        raw = map(x_i -> x_i isa Dual ? primal(x_i) : x_i, x)
+        return Complex(raw...)
+    end
     if _has_ndual(x...)
         primals_extracted = map(_ndual_primal, x)
         y = _new_(P, primals_extracted...)
@@ -41,6 +46,7 @@ end
 
 @inline _ndual_width(x::Tuple, rest...) = _ndual_width(x..., rest...)
 @inline _ndual_width(::NDual{T,W}, rest...) where {T,W} = Val(W)
+@inline _ndual_width(::Complex{NDual{T,W}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::AbstractArray{NDual{T,W}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::AbstractArray{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::Memory{NDual{T,W}}, rest...) where {T,W} = Val(W)
@@ -50,6 +56,7 @@ end
 @inline _ndual_width(_, rest...) = _ndual_width(rest...)
 
 @inline _tangent_dir(x::NDual, i) = x.partials[i]
+@inline _tangent_dir(x::Complex{<:NDual}, i) = complex(x.re.partials[i], x.im.partials[i])
 @inline _tangent_dir(x::Dual{<:Any,<:NTangent}, i) = tangent(x).lanes[i]
 @inline _tangent_dir(x::Dual, _) = tangent(x)
 @inline _tangent_dir(x::AbstractArray{NDual{T,N}}, i) where {T,N} = map(

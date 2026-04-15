@@ -194,6 +194,7 @@ include(joinpath("nfwd", "NfwdMooncake.jl"))
 # NDual dispatch helpers — used by frule!! overloads in rule files below.
 @inline _has_ndual() = false
 @inline _has_ndual(::NDual, rest...) = true
+@inline _has_ndual(::Complex{<:NDual}, rest...) = true
 @inline _has_ndual(::AbstractArray{<:NDual}, rest...) = true
 @inline _has_ndual(::AbstractArray{<:Complex{<:NDual}}, rest...) = true
 @inline _has_ndual(::Memory{<:NDual}, rest...) = true
@@ -205,6 +206,14 @@ include(joinpath("nfwd", "NfwdMooncake.jl"))
 
 @inline _dual_or_ndual(val, tangent) = Dual(val, tangent)
 @inline _dual_or_ndual(val::IEEEFloat, t::NTangent) = NDual(val, t.lanes)
+@inline function _dual_or_ndual(
+    val::Complex{T}, t::NTangent{<:NTuple{W}}
+) where {T<:IEEEFloat,W}
+    lanes = t.lanes
+    re = NDual(real(val), ntuple(j -> real(lanes[j]), Val(W)))
+    im = NDual(imag(val), ntuple(j -> imag(lanes[j]), Val(W)))
+    return Complex(re, im)
+end
 @inline function _dual_or_ndual(
     val::Array{T,D}, t::NTangent{<:NTuple{W}}
 ) where {T<:IEEEFloat,D,W}

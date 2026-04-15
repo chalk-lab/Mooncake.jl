@@ -1349,8 +1349,21 @@ end
 ) where {W}
     return Dual(x, NoTangent())
 end
-@inline function _combine_to_ndual(x, tangent_dirs::NTuple{W}) where {W}
+@inline function _combine_to_ndual(
+    x::Complex{T}, ::NTuple{W,NoTangent}
+) where {T<:IEEEFloat,W}
     return Dual(x, NoTangent())
+end
+@inline _combine_to_ndual(x::Complex{T}, ::Tuple{}) where {T<:IEEEFloat} = Dual(
+    x, NoTangent()
+)
+@inline function _combine_to_ndual(
+    x::AbstractArray{Complex{T}}, ::NTuple{W,NoTangent}
+) where {T<:IEEEFloat,W}
+    return Dual(x, NoTangent())
+end
+@inline function _combine_to_ndual(x, tangent_dirs::NTuple{W}) where {W}
+    return Dual(x, NTangent(tangent_dirs))
 end
 
 # ── value_and_derivative!! (FCache) ─────────────────────────────────────────
@@ -1363,14 +1376,40 @@ Forward-mode derivative via Dual inputs, returning a Dual output.
 function value_and_derivative!!(cache::FCache, fx::Vararg{Dual,N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
-    error_if_incorrect_dual_types(fx...)
-    return __call_rule(cache.rule, fx)
+    width = cache.width
+    if width === nothing
+        error_if_incorrect_dual_types(fx...)
+        return __call_rule(cache.rule, fx)
+    else
+        padded = map(fx) do d
+            t = tangent(d)
+            p = primal(d)
+            if t isa NoTangent
+                ntuple(_ -> NoTangent(), width)
+            else
+                ntuple(i -> i == 1 ? t : zero_tangent(p), width)
+            end
+        end
+        ndual_inputs = map(_combine_to_ndual, input_primals, padded)
+        output = cache.rule(ndual_inputs...)
+        return _ndual_output_to_width1(output)
+    end
 end
 
 @inline function _remaining_dirs(::Val{N}, _eval_dir) where {N}
     return ntuple(Val(N - 1)) do n
         t = tangent(_eval_dir(Val(n + 1)))
         return t isa NoTangent ? t : _copy(t)
+    end
+end
+
+@inline function _ndual_output_to_width1(output)
+    if output isa NDual
+        return Dual(output.value, output.partials[1])
+    elseif output isa Dual && tangent(output) isa NTangent
+        return Dual(primal(output), tangent(output).lanes[1])
+    else
+        return output
     end
 end
 
@@ -1398,7 +1437,7 @@ Supports NTangent for multi-direction evaluation.
     rule = cache.rule
 
     function _eval_dir(::Val{dir}) where {dir}
-        dir_tangents = tuple_map(t -> t isa NoTangent ? t : t[dir], input_tangents)
+        dir_tangents = tuple_map(t -> t isa NTangent ? t[dir] : t, input_tangents)
         canonical = if friendly
             tuple_map(input_primals, dir_tangents) do p, t
                 T = tangent_type(typeof(p))
@@ -1408,9 +1447,23 @@ Supports NTangent for multi-direction evaluation.
         else
             dir_tangents
         end
-        dir_duals = tuple_map(Dual, input_primals, canonical)
-        friendly || error_if_incorrect_dual_types(dir_duals...)
-        return rule(dir_duals...)
+        width = cache.width
+        if width === nothing
+            dir_duals = tuple_map(Dual, input_primals, canonical)
+            friendly || error_if_incorrect_dual_types(dir_duals...)
+            return rule(dir_duals...)
+        else
+            padded = tuple_map(input_primals, canonical) do p, t
+                if t isa NoTangent
+                    ntuple(_ -> NoTangent(), width)
+                else
+                    ntuple(d -> d == 1 ? t : zero_tangent(p), width)
+                end
+            end
+            ndual_inputs = tuple_map(_combine_to_ndual, input_primals, padded)
+            output = rule(ndual_inputs...)
+            return _ndual_output_to_width1(output)
+        end
     end
 
     first_output = _eval_dir(Val(1))
@@ -1579,9 +1632,14 @@ function value_and_hvp!!(
     f_codual = zero_fcodual(f)
     x_coduals = map(CoDual, x_ndual_bufs, fdata_bufs)
     out, pb = core.ndual_rule(f_codual, x_coduals...)
-    y_ndual = primal(out)
-    pb(core.seed)
-    val = y_ndual.value
+    y_out = primal(out)
+    if y_out isa Nfwd.NDual
+        pb(core.seed)
+        val = y_out.value
+    else
+        pb(one(typeof(y_out)))
+        val = y_out
+    end
     gradient_vectors = ntuple(Val(N)) do k
         fb = fdata_bufs[k]
         map(t -> t.fields.partials[1], fb)

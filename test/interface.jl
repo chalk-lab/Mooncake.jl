@@ -1013,6 +1013,28 @@ end
             )
         end
 
+        @testset "chunked complex scalar derivative" begin
+            f(z) = abs2(z)
+            z = 1.0 + 2.0im
+            cache = Mooncake.prepare_derivative_cache(
+                f, z; config=Mooncake.Config(; chunk_size=2)
+            )
+            v, (_, dz) = Mooncake.value_and_gradient!!(cache, f, z)
+            @test v ≈ f(z)
+            @test dz ≈ 2z
+        end
+
+        @testset "chunked complex array derivative" begin
+            f(z) = sum(abs2, z)
+            z = [1.0 + 2.0im, 3.0 + 4.0im]
+            cache = Mooncake.prepare_derivative_cache(
+                f, z; config=Mooncake.Config(; chunk_size=2)
+            )
+            v, (_, dz) = Mooncake.value_and_gradient!!(cache, f, z)
+            @test v ≈ f(z)
+            @test dz ≈ 2z
+        end
+
         @testset "prepare_derivative_cache nfwd opt-out" begin
             # enable_nfwd is deprecated and has no effect; verify it doesn't break.
             _nfwd_opt_out_f = (a, b) -> a * b + sin(a)
@@ -1232,23 +1254,23 @@ end
             end
 
             @testset "n=0 edge case" begin
-                f(x) = 0.0
+                f(x) = 42.0
                 x = Float64[]
                 cache = prepare_hessian_cache(f, x)
                 v, g, H = value_gradient_and_hessian!!(cache, f, x)
-                @test v == 0.0
+                @test v == 42.0
                 @test g == Float64[]
                 @test H == zeros(0, 0)
             end
 
             @testset "n=0 edge case with cache reuse" begin
-                f(x) = 0.0
+                f(x) = 42.0
                 x = Float64[]
                 cache = prepare_hessian_cache(f, x)
                 v1, g1, H1 = value_gradient_and_hessian!!(cache, f, x)
                 v2, g2, H2 = value_gradient_and_hessian!!(cache, f, x)
-                @test (v1, g1, H1) == (0.0, Float64[], zeros(0, 0))
-                @test (v2, g2, H2) == (0.0, Float64[], zeros(0, 0))
+                @test (v1, g1, H1) == (42.0, Float64[], zeros(0, 0))
+                @test (v2, g2, H2) == (42.0, Float64[], zeros(0, 0))
             end
 
             @testset "multi-arg: two vectors" begin
@@ -1305,14 +1327,14 @@ end
             end
 
             @testset "multi-arg: all args empty" begin
-                f(x, y) = 0.0
+                f(x, y) = 7.0
                 x = Float64[]
                 y = Float64[]
                 cache = prepare_hessian_cache(f, x, y)
                 val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
                     cache, f, x, y
                 )
-                @test val == 0.0
+                @test val == 7.0
                 @test gx == Float64[]
                 @test gy == Float64[]
                 @test Hxx == zeros(0, 0)
