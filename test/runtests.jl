@@ -11,7 +11,6 @@
        julia --project=temp/testenv -e 'using TestEnv; TestEnv.activate("Mooncake"); include("test/front_matter.jl")'
 
      Then include individual test files, e.g.: include("test/nfwd/nfwd.jl")
-     or include("test/nfwd/nfwdmooncake.jl")
 
   2. Batch — run a named test group end-to-end via Pkg.test:
        julia --project=. -e 'import Pkg; Pkg.test(; test_args=["Nfwd"])'
