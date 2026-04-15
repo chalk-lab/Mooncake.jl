@@ -208,6 +208,7 @@ end
             4.0;
             is_primitive=true,
             perf_flag=:stability_and_allocs,
+            mode=ReverseMode,
         )
         test_rule(
             sr(123),
@@ -216,12 +217,14 @@ end
             4.0;
             is_primitive=true,
             perf_flag=:stability_and_allocs,
+            mode=ReverseMode,
         )
         test_rule(
             sr(123),
             ToolsForRulesResources.counted_vararg_zero_tester;
             is_primitive=true,
             perf_flag=:stability_and_allocs,
+            mode=ReverseMode,
         )
         test_rule(
             sr(123),
@@ -230,6 +233,7 @@ end
             [4.0];
             is_primitive=true,
             perf_flag=:stability_and_allocs,
+            mode=ReverseMode,
         )
         test_rule(
             sr(123),
@@ -239,6 +243,7 @@ end
             4.0;
             is_primitive=true,
             perf_flag=:stability_and_allocs,
+            mode=ReverseMode,
         )
         test_rule(
             sr(123),
@@ -246,6 +251,7 @@ end
             3;
             is_primitive=true,
             perf_flag=:stability_and_allocs,
+            mode=ReverseMode,
         )
 
         @test_throws(

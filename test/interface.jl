@@ -1024,6 +1024,7 @@ end
             @test dz ≈ 2z
         end
 
+        @static if VERSION >= v"1.11-rc4"
         @testset "chunked complex array derivative" begin
             f(z) = sum(abs2, z)
             z = [1.0 + 2.0im, 3.0 + 4.0im]
@@ -1033,6 +1034,7 @@ end
             v, (_, dz) = Mooncake.value_and_gradient!!(cache, f, z)
             @test v ≈ f(z)
             @test dz ≈ 2z
+        end
         end
 
         @testset "prepare_derivative_cache nfwd opt-out" begin

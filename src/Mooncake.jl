@@ -197,10 +197,12 @@ include(joinpath("nfwd", "NfwdMooncake.jl"))
 @inline _has_ndual(::Complex{<:NDual}, rest...) = true
 @inline _has_ndual(::AbstractArray{<:NDual}, rest...) = true
 @inline _has_ndual(::AbstractArray{<:Complex{<:NDual}}, rest...) = true
-@inline _has_ndual(::Memory{<:NDual}, rest...) = true
-@inline _has_ndual(::Memory{<:Complex{<:NDual}}, rest...) = true
-@inline _has_ndual(::MemoryRef{<:NDual}, rest...) = true
-@inline _has_ndual(::MemoryRef{<:Complex{<:NDual}}, rest...) = true
+@static if VERSION >= v"1.11-rc4"
+    @inline _has_ndual(::Memory{<:NDual}, rest...) = true
+    @inline _has_ndual(::Memory{<:Complex{<:NDual}}, rest...) = true
+    @inline _has_ndual(::MemoryRef{<:NDual}, rest...) = true
+    @inline _has_ndual(::MemoryRef{<:Complex{<:NDual}}, rest...) = true
+end
 @inline _has_ndual(::Dual{<:Any,<:NTangent}, rest...) = true
 @inline _has_ndual(x::Dual, rest...) = _has_ndual(tangent(x), rest...)
 @inline _has_ndual(x::Tuple, rest...) = _has_ndual(x..., rest...)
@@ -226,16 +228,20 @@ end
     end
     return result
 end
-@inline function _dual_or_ndual(
-    val::Memory{T}, t::NTangent{<:NTuple{W}}
-) where {T<:IEEEFloat,W}
-    lanes = t.lanes
-    result = Memory{NDual{T,W}}(undef, length(val))
-    @inbounds for i in eachindex(val)
-        result[i] = NDual(val[i], ntuple(j -> lanes[j][i], Val(W)))
+@static if VERSION >= v"1.11-rc4"
+    @inline function _dual_or_ndual(
+        val::Memory{T}, t::NTangent{<:NTuple{W}}
+    ) where {T<:IEEEFloat,W}
+        lanes = t.lanes
+        result = Memory{NDual{T,W}}(undef, length(val))
+        @inbounds for i in eachindex(val)
+            result[i] = NDual(val[i], ntuple(j -> lanes[j][i], Val(W)))
+        end
+        return result
     end
-    return result
 end
+
+const _HasNDual = Union{NDual,Complex{<:NDual}}
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))

@@ -1348,6 +1348,7 @@ function _combine_to_ndual(
 end
 
 @inline _combine_to_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())
+@inline _combine_to_ndual(x::Tuple, ::Tuple{}) = Dual(x, NoTangent())
 @inline function _combine_to_ndual(
     x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}
 ) where {W}

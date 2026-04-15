@@ -907,7 +907,7 @@ end
 # inside the elements; the container tangent is NoTangent. These dispatch on the NDual
 # element type to avoid calling memoryrefnew/memoryrefget on NoTangent.
 
-const _HasNDual = Union{NDual,Complex{<:NDual}}
+# _HasNDual is defined in Mooncake.jl (before memory.jl is included)
 
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefget)},
