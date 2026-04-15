@@ -1313,12 +1313,34 @@ end
     return NDual{T,W}(x, partials)
 end
 
+@inline function _combine_to_ndual(
+    x::Complex{T}, partials::NTuple{W,Complex{T}}
+) where {T<:IEEEFloat,W}
+    re = NDual{T,W}(real(x), ntuple(d -> real(partials[d]), Val(W)))
+    im = NDual{T,W}(imag(x), ntuple(d -> imag(partials[d]), Val(W)))
+    return Complex(re, im)
+end
+
 function _combine_to_ndual(
     x::AbstractArray{T}, tangent_dirs::NTuple{W}
 ) where {T<:IEEEFloat,W}
-    return (v -> reshape(v, size(x)))(map(eachindex(x)) do I
-        NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
-    end)
+    return (v -> reshape(v, size(x)))(
+        map(eachindex(x)) do I
+            NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
+        end,
+    )
+end
+
+function _combine_to_ndual(
+    x::AbstractArray{Complex{T}}, tangent_dirs::NTuple{W}
+) where {T<:IEEEFloat,W}
+    return (v -> reshape(v, size(x)))(
+        map(eachindex(x)) do I
+            re = NDual{T,W}(real(x[I]), ntuple(d -> real(tangent_dirs[d][I]), Val(W)))
+            im = NDual{T,W}(imag(x[I]), ntuple(d -> imag(tangent_dirs[d][I]), Val(W)))
+            Complex(re, im)
+        end,
+    )
 end
 
 @inline _combine_to_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())
@@ -1762,8 +1784,9 @@ function value_gradient_and_hessian!!(cache::HVPCache, f, x::Vararg{Any,N}) wher
     n = sum(sizes; init=0)
 
     if n == 0
+        val = f(x...)
         if N == 1
-            return zero(T), zeros(T, 0), zeros(T, 0, 0)
+            return val, zeros(T, 0), zeros(T, 0, 0)
         else
             grad_zeros = ntuple(k -> zeros(T, sizes[k]), Val(N))
             H_blocks = ntuple(Val(N)) do i
@@ -1771,7 +1794,7 @@ function value_gradient_and_hessian!!(cache::HVPCache, f, x::Vararg{Any,N}) wher
                     zeros(T, sizes[i], sizes[j])
                 end
             end
-            return zero(T), grad_zeros, H_blocks
+            return val, grad_zeros, H_blocks
         end
     end
 
