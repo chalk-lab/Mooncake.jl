@@ -48,6 +48,14 @@ function _uninit_dual(w::Val, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat}
     return Dual(Memory{Complex{dual_type(w, T)}}, NoTangent())
 end
 
+@inline function zero_derivative(
+    f::Dual,
+    x1::Union{Memory{<:Dual},Memory{<:Complex{<:Dual}}},
+    x_rest::Vararg{<:Union{Memory{<:Dual},Memory{<:Complex{<:Dual}}}},
+)
+    return zero_dual(primal(f)(map(x -> x isa Dual ? primal(x) : x, (x1, x_rest...))...))
+end
+
 # Tangent Interface Implementation
 
 const Maybe{T} = Union{Nothing,T}

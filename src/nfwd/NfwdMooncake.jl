@@ -18,7 +18,6 @@ import ..Mooncake:
     randn_dual,
     rdata,
     tangent,
-    throw_val_and_grad_ret_type_error,
     tuple_map,
     uninit_dual,
     zero_dual,

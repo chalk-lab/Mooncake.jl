@@ -186,10 +186,10 @@ end
 include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
-include("interface.jl")
 include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd: NDual
 include(joinpath("nfwd", "NfwdMooncake.jl"))
+include("interface.jl")
 
 # NDual dispatch helpers — used by frule!! overloads in rule files below.
 @inline _has_ndual() = false

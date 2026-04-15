@@ -178,14 +178,13 @@ Dual{Int64, NoTangent}(5, NoTangent())
     return zero_dual(primal(f)(map(primal, x)...))
 end
 
-# Width-N overload: positional args may be bare NDual containers (per dual_type protocol)
-# rather than Dual-wrapped. Extract primals via _zd_primal.
-@inline function zero_derivative(f::Dual, x::Vararg{Any,N}) where {N}
-    return zero_dual(primal(f)(map(_zd_primal, x)...))
+@inline function zero_derivative(
+    f::Dual,
+    x1::Union{Array{<:Dual},Array{<:Complex{<:Dual}}},
+    x_rest::Vararg{<:Union{Array{<:Dual},Array{<:Complex{<:Dual}}}},
+)
+    return zero_dual(primal(f)(map(x -> x isa Dual ? primal(x) : x, (x1, x_rest...))...))
 end
-
-@inline _zd_primal(x::Dual) = primal(x)
-@inline _zd_primal(x) = x
 
 """
     zero_derivative(ctx, sig, [mode=Mode])
