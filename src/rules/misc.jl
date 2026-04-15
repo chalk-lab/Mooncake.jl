@@ -155,6 +155,12 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
         return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
     end
 end
+# Bare Tuple/NamedTuple with NDual elements — tangent info lives inside each element.
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)}, x::T, ::Dual{Val{f}}
+) where {T<:Union{Tuple,NamedTuple},f}
+    return getfield(x, f)
+end
 
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
@@ -227,6 +233,11 @@ end
     else
         return Dual(primal_field, _get_tangent_field(tangent(x), f))
     end
+end
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)}, x::T, ::Dual{Val{f}}, ::Dual{Val{order}}
+) where {T<:Union{Tuple,NamedTuple},f,order}
+    return getfield(x, f, order)
 end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}

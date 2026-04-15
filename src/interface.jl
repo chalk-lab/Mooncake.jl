@@ -1362,6 +1362,12 @@ end
 ) where {T<:IEEEFloat,W}
     return Dual(x, NoTangent())
 end
+@inline function _combine_to_ndual(x::Tuple, tangent_dirs::NTuple{W,<:Tuple}) where {W}
+    return ntuple(Val(length(x))) do i
+        element_partials = ntuple(d -> tangent_dirs[d][i], Val(W))
+        _combine_to_ndual(x[i], element_partials)
+    end
+end
 @inline function _combine_to_ndual(x, tangent_dirs::NTuple{W}) where {W}
     return Dual(x, NTangent(tangent_dirs))
 end
@@ -1565,6 +1571,12 @@ The nesting strategy is controlled by `config.second_order_mode`:
 - `:reverse_over_forward`: reverse-mode rule over `NDual{T,1}` inputs.
 
 Only `Vector{<:IEEEFloat}` inputs are supported.
+
+!!! note "Mutation semantics"
+    Preparation never calls `f(x...)` directly. Both modes discover the output type
+    by running a compiled AD rule and immediately unwinding it, so mutations are
+    restored and side effects are not leaked. Callers may rely on `x` being unmodified
+    after `prepare_hvp_cache` returns.
 """
 function prepare_hvp_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
     config.empty_cache && empty_mooncake_caches!()
@@ -1596,10 +1608,30 @@ function _prepare_hvp(::Val{:reverse_over_forward}, f, x::Tuple, config)
     fdata_bufs = map(x_ndual_bufs) do xb
         fdata(zero_tangent(xb))
     end
-    T_out = typeof(f(x...))
+
+    # Discover the output type by running the compiled rule, NOT f(x...) directly.
+    # This preserves mutation-restoration semantics (see docstring on prepare_hvp_cache).
+    f_codual = zero_fcodual(f)
+    x_coduals = map(CoDual, x_ndual_bufs, fdata_bufs)
+    out, pb = ndual_rule(f_codual, x_coduals...)
+    y_out = primal(out)
+    T_out = if y_out isa Nfwd.NDual
+        pb(_hvp_make_seed(typeof(y_out.value)))
+        typeof(y_out.value)
+    else
+        pb(zero(typeof(y_out)))
+        typeof(y_out)
+    end
     T_out <: IEEEFloat || throw(
         ArgumentError("HVP/Hessian requires a scalar `IEEEFloat` output; got `$T_out`.")
     )
+
+    # Re-zero fdata_bufs after the preparatory run.
+    for k in eachindex(fdata_bufs)
+        fresh = fdata(zero_tangent(x_ndual_bufs[k]))
+        copyto!(fdata_bufs[k], fresh)
+    end
+
     seed = _hvp_make_seed(T_out)
     specs = _hvp_input_specs(f, x)
     core = (; ndual_rule, fdata_bufs, x_ndual_bufs, seed)
