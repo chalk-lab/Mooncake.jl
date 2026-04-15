@@ -1282,13 +1282,12 @@ function _gradient_widthN(
     slot = 1
     while slot <= total_slots
         chunk = min(W, total_slots - slot + 1)
-        ndual_inputs = _make_ndual_seed(input_primals, slot, Val(W))
+        ndual_inputs, seeds = _make_ndual_seed(input_primals, slot, Val(W))
         output = rule(ndual_inputs...)
         y = output isa NDual ? output.value : primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         coeffs = output isa NDual ? output.partials : (Float64(tangent(output)),)
         for d in 1:chunk
-            seeds_d = _make_seed_tangent(input_primals, slot + d - 1)
             coeff = Float64(coeffs[d])
             native_gradients = tuple_map(
                 (g, dx) -> begin
@@ -1296,7 +1295,7 @@ function _gradient_widthN(
                     return increment!!(g, _scale(coeff, dx))
                 end,
                 native_gradients,
-                seeds_d,
+                seeds[d],
             )
         end
         slot += W
@@ -1308,9 +1307,10 @@ function _make_ndual_seed(input_primals::Tuple, start_slot::Int, ::Val{W}) where
     seeds = ntuple(Val(W)) do d
         _make_seed_tangent(input_primals, start_slot + d - 1)
     end
-    return ntuple(Val(length(input_primals))) do i
+    ndual_inputs = ntuple(Val(length(input_primals))) do i
         _combine_to_ndual(input_primals[i], ntuple(d -> seeds[d][i], Val(W)))
     end
+    return ndual_inputs, seeds
 end
 
 @inline function _combine_to_ndual(x::T, partials::NTuple{W,T}) where {T<:IEEEFloat,W}

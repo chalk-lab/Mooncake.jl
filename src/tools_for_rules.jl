@@ -291,14 +291,16 @@ function _vararg_wrapped_type(vararg_esc_expr, wrapper)
     return :(Vararg{$wrapper{<:$T},$N})
 end
 
-# Produce an unwrapped Vararg type for frule!! args that may be bare NDual containers.
+# Produce an unwrapped Vararg type for frule!! args that may be bare NDual containers
+# or Dual-wrapped values.
 function _vararg_any_type(vararg_esc_expr)
     inner = vararg_esc_expr.args[1]
     inner == :Vararg && return :(Vararg)
     T = Expr(:escape, inner.args[2])
-    length(inner.args) == 2 && return :(Vararg{<:$T})
+    U = :(Union{<:$T,Mooncake.Dual{<:$T}})
+    length(inner.args) == 2 && return :(Vararg{$U})
     N = Expr(:escape, inner.args[3])
-    return :(Vararg{<:$T,$N})
+    return :(Vararg{$U,$N})
 end
 
 function _zero_derivative_impl(ctx, sig, mode)

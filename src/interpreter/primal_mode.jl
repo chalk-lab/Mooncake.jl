@@ -84,14 +84,7 @@ function _uninit_dual(w::Val, v::Complex{T}) where {T<:IEEEFloat}
     return Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v)))
 end
 # Lift container type constants so that allocation frules create NDual containers.
-@static if VERSION >= v"1.11-rc4"
-    function _uninit_dual(w::Val, ::Type{Memory{T}}) where {T<:IEEEFloat}
-        return Dual(Memory{dual_type(w, T)}, NoTangent())
-    end
-    function _uninit_dual(w::Val, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat}
-        return Dual(Memory{Complex{dual_type(w, T)}}, NoTangent())
-    end
-end
+# Memory overloads are in memory.jl (only loaded on Julia 1.11+).
 _uninit_dual(::Val, v) = uninit_dual(v)
 
 const ATTACH_AFTER = true

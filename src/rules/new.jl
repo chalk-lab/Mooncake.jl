@@ -29,9 +29,6 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
     return Dual(y, build_output_tangent(P, primals, map(tangent, x)))
 end
 
-@static if VERSION >= v"1.11-rc4"
-    @inline _find_ndual_memref(x::MemoryRef{<:Union{NDual,Complex{<:NDual}}}, rest...) = x
-end
 @inline _find_ndual_memref(_, rest...) = _find_ndual_memref(rest...)
 @inline _find_ndual_memref() = nothing
 
@@ -51,12 +48,6 @@ end
 @inline _ndual_width(::Complex{NDual{T,W}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::AbstractArray{NDual{T,W}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::AbstractArray{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
-@static if VERSION >= v"1.11-rc4"
-    @inline _ndual_width(::Memory{NDual{T,W}}, rest...) where {T,W} = Val(W)
-    @inline _ndual_width(::Memory{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
-    @inline _ndual_width(::MemoryRef{NDual{T,W}}, rest...) where {T,W} = Val(W)
-    @inline _ndual_width(::MemoryRef{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
-end
 @inline _ndual_width(::Dual{<:Any,NTangent{L}}, rest...) where {L<:Tuple} = Val(fieldcount(L))
 @inline _ndual_width(x::Dual, rest...) = _ndual_width(tangent(x), rest...)
 @inline _ndual_width(_, rest...) = _ndual_width(rest...)
@@ -75,12 +66,6 @@ end
 @inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} = map(
     z -> complex(z.re.partials[i], z.im.partials[i]), x
 )
-@static if VERSION >= v"1.11-rc4"
-    @inline _tangent_dir(x::Memory{NDual{T,N}}, i) where {T,N} = map(d -> d.partials[i], x)
-    @inline _tangent_dir(x::Memory{Complex{NDual{T,N}}}, i) where {T,N} = map(
-        z -> complex(z.re.partials[i], z.im.partials[i]), x
-    )
-end
 @inline _tangent_dir(x::Tuple, i) = map(xi -> _tangent_dir(xi, i), x)
 @inline _tangent_dir(x, _) = zero_tangent(x)
 
