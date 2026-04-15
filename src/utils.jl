@@ -787,7 +787,6 @@ end
 @inline _count_slots(x::Complex{<:IEEEFloat}) = 2
 @inline _count_slots(x::AbstractArray{<:IEEEFloat}) = length(x)
 @inline _count_slots(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
-@inline _count_slots(x::Tuple) = sum(_count_slots, x; init=0)
 @inline _count_slots(x) = first(
     _fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}())
 )

@@ -1202,7 +1202,11 @@ Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref).
     interp = get_interpreter(ForwardMode)
     width = cs !== nothing ? Val(cs) : nothing
     rule = build_frule(
-        interp, sig, width; debug_mode=config.debug_mode, silence_debug_messages=true
+        interp,
+        sig,
+        width;
+        debug_mode=config.debug_mode,
+        silence_debug_messages=config.silence_debug_messages,
     )
     input_specs = map(fx) do x
         if x isa AbstractArray
