@@ -53,11 +53,17 @@ end
 @inline _ndual_width(::Memory{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::MemoryRef{NDual{T,W}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::MemoryRef{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
+@inline _ndual_width(::Dual{<:Any,NTangent{<:NTuple{W}}}, rest...) where {W} = Val(W)
+@inline _ndual_width(x::Dual, rest...) = _ndual_width(tangent(x), rest...)
 @inline _ndual_width(_, rest...) = _ndual_width(rest...)
+@inline _ndual_width() = error("_ndual_width called with no NDual arguments")
 
 @inline _tangent_dir(x::NDual, i) = x.partials[i]
 @inline _tangent_dir(x::Complex{<:NDual}, i) = complex(x.re.partials[i], x.im.partials[i])
 @inline _tangent_dir(x::Dual{<:Any,<:NTangent}, i) = tangent(x).lanes[i]
+@inline _tangent_dir(x::Dual{<:Any,<:Tuple}, i) = map(
+    t -> _tangent_dir_elem(t, i), tangent(x)
+)
 @inline _tangent_dir(x::Dual, _) = tangent(x)
 @inline _tangent_dir(x::AbstractArray{NDual{T,N}}, i) where {T,N} = map(
     d -> d.partials[i], x
@@ -71,6 +77,9 @@ end
 )
 @inline _tangent_dir(x::Tuple, i) = map(xi -> _tangent_dir(xi, i), x)
 @inline _tangent_dir(x, _) = zero_tangent(x)
+
+@inline _tangent_dir_elem(t::NTangent, i) = t.lanes[i]
+@inline _tangent_dir_elem(t, _) = t
 
 @inline function _ndual_new_result(::Type{P}, y, x::Tuple, primals::Tuple) where {P}
     W = _ndual_width(x...)

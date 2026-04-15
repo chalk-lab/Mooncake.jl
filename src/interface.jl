@@ -1328,23 +1328,23 @@ end
 function _combine_to_ndual(
     x::AbstractArray{T}, tangent_dirs::NTuple{W}
 ) where {T<:IEEEFloat,W}
-    return (v -> reshape(v, size(x)))(
-        map(eachindex(x)) do I
-            NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
-        end,
-    )
+    result = similar(x, NDual{T,W})
+    @inbounds for I in eachindex(x)
+        result[I] = NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
+    end
+    return result
 end
 
 function _combine_to_ndual(
     x::AbstractArray{Complex{T}}, tangent_dirs::NTuple{W}
 ) where {T<:IEEEFloat,W}
-    return (v -> reshape(v, size(x)))(
-        map(eachindex(x)) do I
-            re = NDual{T,W}(real(x[I]), ntuple(d -> real(tangent_dirs[d][I]), Val(W)))
-            im = NDual{T,W}(imag(x[I]), ntuple(d -> imag(tangent_dirs[d][I]), Val(W)))
-            Complex(re, im)
-        end,
-    )
+    result = similar(x, Complex{NDual{T,W}})
+    @inbounds for I in eachindex(x)
+        re = NDual{T,W}(real(x[I]), ntuple(d -> real(tangent_dirs[d][I]), Val(W)))
+        im = NDual{T,W}(imag(x[I]), ntuple(d -> imag(tangent_dirs[d][I]), Val(W)))
+        result[I] = Complex(re, im)
+    end
+    return result
 end
 
 @inline _combine_to_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())
@@ -1418,6 +1418,8 @@ end
         return Dual(output.value, output.partials[1])
     elseif output isa Dual && tangent(output) isa NTangent
         return Dual(primal(output), tangent(output).lanes[1])
+    elseif output isa Tuple
+        return map(_ndual_output_to_width1, output)
     else
         return output
     end
@@ -1603,12 +1605,27 @@ function _prepare_hvp(::Val{:reverse_over_forward}, f, x::Tuple, config)
     x_ndual_bufs = map(x) do xi
         Nfwd.NDual{eltype(xi),1}.(xi, Ref(ntuple(_ -> zero(eltype(xi)), Val(1))))
     end
-    ndual_rule = build_rrule(
-        f,
-        x_ndual_bufs...;
-        debug_mode=config.debug_mode,
-        silence_debug_messages=config.silence_debug_messages,
-    )
+    ndual_rule = try
+        build_rrule(
+            f,
+            x_ndual_bufs...;
+            debug_mode=config.debug_mode,
+            silence_debug_messages=config.silence_debug_messages,
+        )
+    catch e
+        if e isa MooncakeRuleCompilationError
+            throw(
+                ArgumentError(
+                    "`:reverse_over_forward` mode requires `f` to accept NDual-element " *
+                    "vectors, but no method matches the widened signature. Use " *
+                    "`:forward_over_reverse` (the default) or widen your function's " *
+                    "argument types (e.g. `f(x::AbstractVector)` instead of " *
+                    "`f(x::Vector{Float64})`).",
+                ),
+            )
+        end
+        rethrow()
+    end
     fdata_bufs = map(x_ndual_bufs) do xb
         fdata(zero_tangent(xb))
     end

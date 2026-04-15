@@ -92,3 +92,32 @@ function Config(;
         second_order_mode,
     )
 end
+
+# Backward-compatible 6-arg positional overload for the old field order:
+#   Config(debug_mode, silence_debug_messages, friendly_tangents, chunk_size,
+#          enable_nfwd::Bool, empty_cache::Bool)
+# The new inner constructor has `second_order_mode::Symbol` in the 6th slot, so this
+# overload catches the old (Bool, Bool) tail and maps it to the new layout.
+function Config(
+    debug_mode::Bool,
+    silence_debug_messages::Bool,
+    friendly_tangents::Bool,
+    chunk_size::Union{Nothing,Int},
+    enable_nfwd::Bool,
+    empty_cache::Bool,
+)
+    if !enable_nfwd
+        Base.depwarn(
+            "The `enable_nfwd` positional argument is deprecated and has no effect.",
+            :Config,
+        )
+    end
+    return Config(
+        debug_mode,
+        silence_debug_messages,
+        friendly_tangents,
+        chunk_size,
+        empty_cache,
+        :forward_over_reverse,
+    )
+end

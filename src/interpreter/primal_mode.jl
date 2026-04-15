@@ -1,5 +1,5 @@
 # Primal-mode forward AD: single lifted OC for both primal (Val(0)) and dual (Val(N))
-# execution. See ~/notes/mooncake/primal-mode.md for design rationale.
+# execution.
 
 # Construct a PrimalMode interpreter with BugPatchInterpreter in meta, giving the
 # inliner access to the native Julia code cache (where frule!! bodies live).

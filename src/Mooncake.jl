@@ -201,6 +201,8 @@ include(joinpath("nfwd", "NfwdMooncake.jl"))
 @inline _has_ndual(::Memory{<:Complex{<:NDual}}, rest...) = true
 @inline _has_ndual(::MemoryRef{<:NDual}, rest...) = true
 @inline _has_ndual(::MemoryRef{<:Complex{<:NDual}}, rest...) = true
+@inline _has_ndual(::Dual{<:Any,<:NTangent}, rest...) = true
+@inline _has_ndual(x::Dual, rest...) = _has_ndual(tangent(x), rest...)
 @inline _has_ndual(x::Tuple, rest...) = _has_ndual(x..., rest...)
 @inline _has_ndual(_, rest...) = _has_ndual(rest...)
 

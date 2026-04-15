@@ -84,6 +84,9 @@ context_type(::MooncakeInterpreter{C}) where {C} = C
 CC.InferenceParams(interp::MooncakeInterpreter) = interp.inf_params
 CC.OptimizationParams(interp::MooncakeInterpreter) = interp.opt_params
 CC.get_inference_cache(interp::MooncakeInterpreter) = interp.inf_cache
+# ForwardMode / ReverseMode use Mooncake's own code cache and overlay method table.
+# PrimalMode overrides below delegate to BugPatchInterpreter (native Julia code cache)
+# so that the inliner sees frule!! method bodies directly.
 function CC.code_cache(interp::MooncakeInterpreter)
     return CC.WorldView(interp.code_cache, CC.WorldRange(interp.world))
 end

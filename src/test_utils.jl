@@ -97,6 +97,7 @@ using Mooncake:
     frule!!,
     rrule!!,
     DebugFRule,
+    build_frule,
     build_rrule,
     tangent_type,
     zero_tangent,
@@ -156,7 +157,9 @@ using Mooncake:
     Mode,
     ForwardMode,
     ReverseMode,
+    DebugFRule,
     DebugRRule,
+    build_frule,
     build_rrule,
     get_interpreter
 
@@ -983,14 +986,14 @@ function test_rule(
 
     # Construct the rule.
     sig = _typeof(__get_primals(x))
-    # Forward-mode testing: only run if a pre-built frule was explicitly supplied.
-    # The IR-based forward compiler has been removed, so we cannot auto-build frules.
-    test_fwd = !isnothing(frule) && mode in [nothing, ForwardMode]
+    test_fwd = mode in [nothing, ForwardMode]
     test_rvs = mode in [nothing, ReverseMode]
-    fwd_interp = missing
+    fwd_interp = (test_fwd && isnothing(frule)) ? get_interpreter(ForwardMode) : missing
     rvs_interp = (test_rvs && isnothing(rrule)) ? get_interpreter(ReverseMode) : missing
     frule = if !isnothing(frule)
         frule
+    elseif test_fwd
+        build_frule(fwd_interp, sig; debug_mode)
     else
         missing
     end
@@ -1002,8 +1005,12 @@ function test_rule(
         missing
     end
 
-    # If something is primitive, then the rule should be `rrule!!`.
+    # If something is primitive, then the rule should be `frule!!` or `rrule!!`.
     # Skip when a pre-built rule was supplied — the caller owns it.
+    test_fwd &&
+        is_primitive &&
+        !ismissing(fwd_interp) &&
+        @test frule == (debug_mode ? DebugFRule(frule!!) : frule!!)
     test_rvs &&
         is_primitive &&
         !ismissing(rvs_interp) &&
@@ -1049,6 +1056,14 @@ function test_rule(
 
             # Verify that rules have been cached.
             @testset "Caching" begin
+                if test_fwd && !ismissing(fwd_interp)
+                    C_fwd = Mooncake.context_type(fwd_interp)
+                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
+                        cache_key = (sig, debug_mode, :forward, nothing)
+                        k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
+                        @test haskey(fwd_interp.oc_cache, k)
+                    end
+                end
                 if test_rvs && !ismissing(rvs_interp)
                     C_rvs = Mooncake.context_type(rvs_interp)
                     if !Mooncake.is_primitive(C_rvs, ReverseMode, sig, rvs_interp.world)

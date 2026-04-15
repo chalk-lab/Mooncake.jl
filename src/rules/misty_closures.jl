@@ -18,10 +18,25 @@ struct MistyClosureTangent
 end
 
 # Build a forward-mode rule for a MistyClosure using its original world age.
-# The primal-mode compiler's build_frule handles MistyClosure via lookup_ir,
-# which returns the stored IR directly, bypassing method table lookups.
+#
+# We cannot use the current world age because the MistyClosure's IR (p.ir[]) has a
+# valid_worlds range set at creation time. On Julia 1.12+, generate_dual_ir calls
+# set_valid_world!(ir, interp.world), which throws if the world is outside this range.
+# If methods were defined after the MistyClosure was created, the current world would
+# fall outside valid_worlds and cause an error.
+#
+# Using the original world age is safe because lookup_ir for MistyClosure returns mc.ir[]
+# directly, bypassing method table lookups. Nested non-primitive calls use LazyFRule or
+# DynamicFRule, which obtain a current-world interpreter via get_interpreter() at runtime.
+# We pass skip_world_age_check=true since build_frule's safety check would incorrectly
+# reject our intentionally-older interpreter.
+#
 function _dual_mc(p::MistyClosure)
     @static if VERSION > v"1.12-"
+        # Use the IR's valid_worlds.max_world instead of oc.world to avoid world age mismatch.
+        # The oc.world can be slightly newer than valid_worlds.max_world if methods were
+        # defined between IR generation and OpaqueClosure creation. Using max_world ensures
+        # we're within the valid range while still having access to all methods the IR needs.
         mc_world = UInt(p.ir[].valid_worlds.max_world)
     else
         mc_world = UInt(p.oc.world)

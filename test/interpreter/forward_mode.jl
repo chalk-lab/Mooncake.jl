@@ -1,16 +1,3 @@
-function foo(x)
-    y = 0.0
-    try
-        if x > 0
-            error("")
-        end
-        y = x
-    catch
-        y = 2x
-    end
-    return y
-end
-
 @testset "s2s_forward_mode_ad" begin
     test_cases = collect(enumerate(TestResources.generate_test_functions()))
     @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, _, fx...)) in test_cases
@@ -29,7 +16,15 @@ end
         interface_only = false
         is_primitive = false
         mode = ForwardMode
-        TestUtils.test_rule(rng, foo, 5.0; perf_flag, interface_only, is_primitive, mode)
+        TestUtils.test_rule(
+            rng,
+            TestResources.try_catch_foo,
+            5.0;
+            perf_flag,
+            interface_only,
+            is_primitive,
+            mode,
+        )
     end
 
     @testset "capture in ReturnNode regression test" begin

@@ -240,6 +240,19 @@ end
     return z
 end
 
+function try_catch_foo(x)
+    y = 0.0
+    try
+        if x > 0
+            error("")
+        end
+        y = x
+    catch
+        y = 2x
+    end
+    return y
+end
+
 # A function in which everything is non-differentiable and has no branching. Ideally, the
 # reverse-pass of this function would be a no-op, and there would be no use of the block
 # stack anywhere.

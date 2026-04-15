@@ -41,6 +41,7 @@ end
 function frule!!(
     ::Dual{typeof(Base.Threads.threading_run)}, fun::Dual{F}, static::Dual{Bool}
 ) where {F}
+    # NOTE: re-building the rule on each pass is not optimal; caching it is a future effort.
     interp = get_interpreter(ForwardMode)
     worker_rule = build_frule(interp, Tuple{F,Int})
     worker_rules = [_copy(worker_rule) for _ in 1:Threads.threadpoolsize()]
