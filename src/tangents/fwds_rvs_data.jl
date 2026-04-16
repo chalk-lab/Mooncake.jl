@@ -892,36 +892,46 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
 
-# Union types. NOTE: Only `Union{Nothing, Array{<:Any,N}, Base.IEEEFloat, RData{...}}`
-# are supported.
+# Union types.
+#
+# Arises when a primal field has a union type, e.g. `Union{Nothing, SomeStruct}`.
+# Each branch is differentiated independently; the tangent is then the union of those
+# branch tangents. Only unions whose branches produce no fdata (rdata-only tangents) or
+# no rdata (fdata-only tangents) are supported, since a mixed union would make it
+# impossible to determine at compile time which half of the tangent to use.
+#
+# Supported branch types: Nothing/NoTangent (NoRData/NoFData), IEEEFloat (rdata only),
+# Array (fdata only), and structs with RData (rdata only, added to fix issue #1130).
 @foldable function tangent_type(
     ::Type{NoFData}, ::Type{R}
 ) where {R<:Union{NoRData,Base.IEEEFloat,RData}}
-    # Only allow branches whose reconstructed tangent still carries no fdata.
+    # Guard: every non-NoRData branch must round-trip through fdata as NoFData.
+    # Catches unsupported unions before we recurse.
     _validate_rdata_union(R)
-    # This should only ever be hit when R is a proper union, since Any
-    # does not meet the constraint above, and an R==NoRData already has a more
-    # specific dispatch defined
+    # R==NoRData hits a more specific method above; Any is excluded by the constraint.
     @assert R isa Union
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}
-    # Only allow branches whose reconstructed tangent still carries no rdata.
+    # Guard: every non-NoFData branch must round-trip through rdata as NoRData.
     _validate_fdata_union(F)
-    # The only case where this dispatch can be hit where F is
-    # not a union would be if F==Any, but _validate_fdata_union causes
-    # that case to error
+    # F==Any is excluded by the guard above; F==NoFData hits a more specific method.
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
+# Validates that F is a proper union of NoFData with rdata-free types.
+# Called before recursing in the tangent_type(F, NoRData) union method.
 function _validate_fdata_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     if !(F isa Union)
         throw(
             InvalidFDataException("Something went wrong: called tangent_type($F, NoRData)")
         )
     end
+    # Each non-NoFData branch must itself have no rdata (i.e. it is fdata-only).
+    # tangent_type(B, NoRData) always dispatches - no MethodError is possible because
+    # the signature `where {F<:Union{NoFData,T} where T}` matches every type B.
     for B in (F.a, F.b)
         B == NoFData && continue
         if rdata_type(tangent_type(B, NoRData)) != NoRData
@@ -934,11 +944,14 @@ function _validate_fdata_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     end
     return nothing
 end
+# Validates that R is a proper union of NoRData with fdata-free types.
+# Called before recursing in the tangent_type(NoFData, R) union method.
 function _validate_rdata_union(::Type{R}) where {R<:Union{NoRData,Base.IEEEFloat,RData}}
     if R isa Union
         _validate_rdata_union(R.a)
         _validate_rdata_union(R.b)
     elseif R != NoRData && fdata_type(tangent_type(NoFData, R)) != NoFData
+        # Each non-NoRData branch must itself have no fdata (i.e. it is rdata-only).
         throw(
             InvalidRDataException("Something went wrong: called tangent_type(NoFData, $R)")
         )
