@@ -5,30 +5,33 @@ using LinearAlgebra, Random, Mooncake
 using Base: IEEEFloat, unsafe_convert
 using CUDA:
     CuArray,
-    CuRefValue,
     CuPtr,
     CuContext,
     CuStream,
-    CUmemPoolHandle_st,
-    CuArrayStyle,
-    CUdevice_attribute_enum,
     cu,
-    TaskLocalState,
-    task_local_state!,
-    active_state,
     CuDevice,
     attribute,
-    cuDeviceGetAttribute,
     DeviceMemory,
     UnifiedMemory,
     HostMemory,
     is_capturing,
-    capture_status,
+    capture_status
+using CUDA: CUDACore
+using CUDA.CUDACore:
+    CuRefValue,
+    CUmemPoolHandle_st,
+    CuArrayStyle,
+    CUdevice_attribute_enum,
+    TaskLocalState,
+    task_local_state!,
+    active_state,
+    cuDeviceGetAttribute,
     hasfieldcount
+
 using CUDA: CUBLAS
 using CUDA: CUSPARSE
 using CUDA: CUSOLVER
-using CUDA.GPUArrays: unsafe_free!
+using CUDA.CUDACore.GPUArrays: unsafe_free!
 using Base.Broadcast: Broadcasted
 import Mooncake:
     MinimalCtx,
