@@ -923,27 +923,13 @@ function _validate_fdata_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
         )
     end
     for B in (F.a, F.b)
-        if B isa Union
-            _validate_fdata_union(B)
-        elseif B != NoFData
-            local T
-            try
-                T = tangent_type(B, NoRData)
-            catch err
-                err isa MethodError || rethrow()
-                throw(
-                    InvalidFDataException(
-                        "Something went wrong: called tangent_type($F, NoRData)"
-                    ),
-                )
-            end
-            if rdata_type(T) != NoRData
-                throw(
-                    InvalidFDataException(
-                        "Something went wrong: called tangent_type($F, NoRData)"
-                    ),
-                )
-            end
+        B == NoFData && continue
+        if rdata_type(tangent_type(B, NoRData)) != NoRData
+            throw(
+                InvalidFDataException(
+                    "Something went wrong: called tangent_type($F, NoRData)"
+                ),
+            )
         end
     end
     return nothing

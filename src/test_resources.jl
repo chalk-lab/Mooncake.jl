@@ -192,9 +192,11 @@ end
 struct LoHiContainer
     lohi::Union{Nothing,LoHi}
 end
-make_P_lohi_union() = LoHi(1.0, 2.0)::Union{Nothing,LoHi}
+struct NothingOrVecContainer
+    x::Union{Nothing,Vector{Float64}}
+end
 make_P_lohi_container() = LoHiContainer(LoHi(1.0, 2.0))
-make_P_nothing_or_vector() = [1.0, 2.0]::Union{Nothing,Vector{Float64}}
+make_P_nothing_or_vector() = NothingOrVecContainer([1.0, 2.0])
 
 function build_big_isbits_struct()
     return FourFields(

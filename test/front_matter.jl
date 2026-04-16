@@ -56,6 +56,8 @@ using Mooncake:
     TestUtils,
     TestResources,
     CoDual,
+    uninit_codual,
+    uninit_fcodual,
     DefaultCtx,
     rrule!!,
     lgetfield,

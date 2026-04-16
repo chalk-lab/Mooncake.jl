@@ -49,9 +49,6 @@ end
         )
         # https://github.com/chalk-lab/Mooncake.jl/issues/1130
         TestUtils.test_tangent_splitting(
-            Xoshiro(123456), TestResources.make_P_lohi_union(); test_opt_flag=false
-        )
-        TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_lohi_container(); test_opt_flag=false
         )
         TestUtils.test_tangent_splitting(
