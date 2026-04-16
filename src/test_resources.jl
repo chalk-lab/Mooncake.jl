@@ -185,9 +185,9 @@ end
 const P_adam_like_union = Union{Nothing,P_adam_like}
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/1130
-# LoHiContainer exercises Union{Nothing, struct-with-only-Float64-fields}: both branches
-# have NoFData, but rdata is Union{NoRData, RData{...}}, which requires the fix in
-# tangent_type(NoFData, R) where R<:Union{NoRData,...,RData}.
+# LoHiContainer: Union{Nothing,LoHi} where LoHi has only Float64 fields — both branches
+# collapse to NoFData but rdata is Union{NoRData,RData{...}}, hitting the fix in
+# tangent_type(NoFData, R) where R<:Union{NoRData,Base.IEEEFloat,RData}.
 struct LoHi
     lo::Float64
     hi::Float64
@@ -195,10 +195,9 @@ end
 struct LoHiContainer
     lohi::Union{Nothing,LoHi}
 end
-# NothingOrVecContainer exercises Union{Nothing, Array}: rdata collapses to NoRData.
-# Note: a bare `[1.0,2.0]::Union{Nothing,Vector{Float64}}` would not work - Julia erases
-# the type annotation at runtime, so typeof returns Vector{Float64}, not the union.
-# A struct field declaration is the correct way to expose the union type to tangent_type.
+# NothingOrVecContainer: Union{Nothing,Array} — rdata collapses to NoRData.
+# Must be a struct field: Julia erases runtime type annotations, so a bare
+# `[1.0,2.0]::Union{Nothing,Vector{Float64}}` returns Vector{Float64}, not the union.
 struct NothingOrVecContainer
     x::Union{Nothing,Vector{Float64}}
 end
