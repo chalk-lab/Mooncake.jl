@@ -58,7 +58,7 @@ The need for all of this is explained in the docs, but for now it suffices to co
 
 `Int`s are non-differentiable types, so there is nothing to pass around on the forwards- or reverse-pass.
 Therefore
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> fdata_type(tangent_type(Int)), rdata_type(tangent_type(Int))
 (NoFData, NoRData)
 ```
@@ -67,7 +67,7 @@ julia> fdata_type(tangent_type(Int)), rdata_type(tangent_type(Int))
 
 The tangent type of `Float64` is `Float64`.
 `Float64`s are identified by their value / have no fixed address, so
-```jldoctest
+```jldoctest; setup = :(using Mooncake: fdata_type, rdata_type)
 julia> (fdata_type(Float64), rdata_type(Float64))
 (NoFData, Float64)
 ```
@@ -76,7 +76,7 @@ julia> (fdata_type(Float64), rdata_type(Float64))
 
 The tangent type of `Vector{Float64}` is `Vector{Float64}`.
 A `Vector{Float64}` is identified by its address, so
-```jldoctest
+```jldoctest; setup = :(using Mooncake: fdata_type, rdata_type)
 julia> (fdata_type(Vector{Float64}), rdata_type(Vector{Float64}))
 (Vector{Float64}, NoRData)
 ```
@@ -90,7 +90,7 @@ The tangent type for `Tuple{Float64, Vector{Float64}, Int}` is
 `Tuple{Float64, Vector{Float64}, NoTangent}`.
 `Tuple`s have no fixed memory address, so we interrogate each field on its own.
 We have already established the fdata and rdata types for each element, so we recurse to obtain:
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> T = tangent_type(Tuple{Float64, Vector{Float64}, Int})
 Tuple{Float64, Vector{Float64}, NoTangent}
 
@@ -107,7 +107,7 @@ In this example, `t` contains a mixture of data, some of which is identified by 
 
 Structs are handled in more-or-less the same way as `Tuple`s, albeit with the possibility of undefined fields needing to be explicitly handled.
 For example, a struct such as
-```jldoctest foo_fdata
+```jldoctest foo_fdata; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> struct Foo
            x::Float64
            y
@@ -115,7 +115,7 @@ julia> struct Foo
        end
 ```
 has tangent type
-```jldoctest foo_fdata
+```jldoctest foo_fdata; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> tangent_type(Foo)
 Tangent{@NamedTuple{x::Float64, y, z::NoTangent}}
 ```
@@ -131,7 +131,7 @@ Practically speaking, `FData` and `RData` both have the same structure as `Tange
 The fdata for a `mutable struct`s is its tangent, and it has no rdata.
 This is because `mutable struct`s have fixed memory addresses, and can therefore be incremented in-place.
 For example,
-```jldoctest bar_fdata
+```jldoctest bar_fdata; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> mutable struct Bar
            x::Float64
            y
@@ -139,7 +139,7 @@ julia> mutable struct Bar
        end
 ```
 has tangent type
-```jldoctest bar_fdata
+```jldoctest bar_fdata; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> tangent_type(Bar)
 MutableTangent{@NamedTuple{x::Float64, y, z::NoTangent}}
 ```
@@ -1016,6 +1016,7 @@ Reconstruct the tangent `t` for which `fdata(t) == f` and `rdata(t) == r`.
 tangent(::NoFData, ::NoRData) = NoTangent()
 tangent(::NoFData, r::IEEEFloat) = r
 tangent(f::Array, ::NoRData) = f
+tangent(f::Ptr, ::NoRData) = f
 
 # Tuples
 tangent(f::Tuple, r::Tuple) = tuple_map(tangent, f, r)
@@ -1078,12 +1079,17 @@ end
 """
     zero_tangent(primal, fdata)
 
-Equivalent to `tangent(fdata, rdata(zero_tangent(primal)))`.
+Equivalent to `tangent(fdata, zero_rdata(primal))`.
+
+Prefer this two-argument form over the single-argument `zero_tangent(primal)` whenever
+`primal` is or contains a `Ptr`, since single-argument `zero_tangent` is not safe for
+pointer types (it will throw). The two-argument form handles pointer-containing types
+correctly by using `zero_rdata`, whose result for a `Ptr` field is just `NoRData()`.
 """
 zero_tangent(p, ::NoFData) = zero_tangent(p)
 
 function zero_tangent(p::P, f::F) where {P,F}
-    return tangent_type(P) == F ? f : tangent(f, rdata(zero_tangent(p)))
+    return tangent_type(P) == F ? f : tangent(f, zero_rdata(p))
 end
 
 zero_tangent(p::Tuple, f::Union{Tuple,NamedTuple}) = tuple_map(zero_tangent, p, f)

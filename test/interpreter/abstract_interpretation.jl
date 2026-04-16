@@ -124,4 +124,26 @@ end
             @test grad[2] == [2.0, 0.0, 1.0]
         end
     end
+
+    @testset "Config(empty_cache=true)" begin
+        f = x -> sin(x[1]) + x[2]^2
+        x = [1.0, 2.0]
+
+        # Build up the cache with several functions, then clear it.
+        for g in [x -> sum(x .^ 2), x -> prod(x), x -> sum(exp.(x))]
+            Mooncake.prepare_gradient_cache(g, randn(10))
+        end
+        n_before = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
+        @test n_before > 0
+
+        cache = Mooncake.prepare_gradient_cache(
+            f, x; config=Mooncake.Config(empty_cache=true)
+        )
+        @test length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache) < n_before
+
+        # AD still correct after clearing.
+        val, grad = Mooncake.value_and_gradient!!(cache, f, x)
+        @test val ≈ sin(x[1]) + x[2]^2
+        @test grad[2] ≈ [cos(x[1]), 2x[2]]
+    end
 end

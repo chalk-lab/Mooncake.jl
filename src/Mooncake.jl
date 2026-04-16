@@ -224,6 +224,7 @@ else
     include(joinpath("rules", "array_legacy.jl"))
 end
 
+include(joinpath("rules", "threads.jl"))
 include(joinpath("rules", "performance_patches.jl"))
 include(joinpath("rules", "rules_via_nfwd.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))

@@ -93,7 +93,7 @@ end
 
 Equivalent to `__value_and_pullback!!(rule, 1.0, f, x...)` -- assumes `f` returns a `Float64`.
 
-```jldoctest
+```jldoctest; setup = :(using Mooncake; import Mooncake: build_rrule, zero_tangent)
 # Set up the problem.
 f(x, y) = sum(x .* y)
 x = [2.0, 2.0]
@@ -187,7 +187,7 @@ recommend using `Mooncake.value_and_gradient!!` (this function) where possible. 
 docstring for [`value_and_pullback!!`](@ref) is useful for understanding this function though.
 
 An example:
-```jldoctest
+```jldoctest; setup = :(using Mooncake; import Mooncake: build_rrule)
 f(x, y) = sum(x .* y)
 x = [2.0, 2.0]
 y = [1.0, 1.0]
@@ -639,6 +639,9 @@ The API guarantees that tangents are initialized at zero before the first autodi
 """
 @unstable function prepare_pullback_cache(fx...; config=Config())
 
+    # Clear global caches if requested.
+    config.empty_cache && empty_mooncake_caches!()
+
     # Check that the output of `fx` is supported.
     __exclude_func_with_unsupported_output(fx)
 
@@ -724,7 +727,7 @@ It contains one boolean for each element of `(f, x...)`.
 It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
 
 # Example Usage
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 f(x, y) = sum(x .* y)
 x = [2.0, 2.0]
 y = [1.0, 1.0]
@@ -772,6 +775,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     Calls `f(x...)` once during cache preparation.
 """
 @unstable function prepare_gradient_cache(fx...; config=Config())
+    config.empty_cache && empty_mooncake_caches!()
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = map(zero_tangent, fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
@@ -830,7 +834,7 @@ It contains one boolean for each element of `(f, x...)`.
 It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
 
 # Example Usage
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 f(x, y) = sum(x .* y)
 x = [2.0, 2.0]
 y = [1.0, 1.0]
@@ -1678,6 +1682,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
 ) where {N}
+    config.empty_cache && empty_mooncake_caches!()
     fx = (f, x...)
     requested_chunk_size = getfield(config, :chunk_size)
     requested_chunk_size = if isnothing(requested_chunk_size)
@@ -2216,7 +2221,7 @@ is fine, but changing the shapes requires a new cache.
 !!! note
     Calls `f(x...)` during cache preparation (via inner gradient and derivative caches).
 
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 f(x) = sum(x .* x)
 x = [1.0, 2.0]
 cache = Mooncake.prepare_hvp_cache(f, x)
@@ -2279,7 +2284,7 @@ returns `(f(x...), (∇f_x1, ∇f_x2, ...), (h1, h2, ...))` where
     `HVPCache` is not safe for concurrent reuse across threads. Use a separate cache per
     task/thread if calls may overlap in time.
 
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 f(x) = sum(x .* x)
 x = [1.0, 2.0]
 cache = Mooncake.prepare_hvp_cache(f, x)
@@ -2346,7 +2351,7 @@ dimension over the reverse-mode gradient function.
     `NfwdMooncake` fast path used by some `prepare_derivative_cache` /
     `value_and_gradient!!` calls.
 
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 f(x) = sum(x .^ 2)
 x = [1.0, 2.0, 3.0]
 cache = Mooncake.prepare_hessian_cache(f, x)
@@ -2422,7 +2427,7 @@ Uses forward-over-reverse AD: one forward-mode pass per total input dimension.
     task/thread if calls may overlap in time.
 
 # Example
-```jldoctest
+```jldoctest; setup = :(using Mooncake)
 f(x) = (1 - x[1])^2 + 100 * (x[2] - x[1]^2)^2
 x = [1.2, 1.2]
 cache = Mooncake.prepare_hessian_cache(f, x)

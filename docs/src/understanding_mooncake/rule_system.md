@@ -409,8 +409,13 @@ julia> codual_foo = CoDual(foo, NoFData());
 
 julia> codual_x = CoDual((5.0, [1.0, 2.0]), (NoFData(), [0.0, 0.0]));
 
-julia> out, pb!! = rrule!!(codual_foo, codual_x)
-(CoDual{Float64, NoFData}(8.0, NoFData()), var"#dfoo_adjoint#1"{Tuple{NoFData, Vector{Float64}}}((NoFData(), [0.0, 0.0])))
+julia> out, pb!! = rrule!!(codual_foo, codual_x);
+
+julia> out
+CoDual{Float64, NoFData}(8.0, NoFData())
+
+julia> pb!! isa Function
+true
 ```
 
 and the pullback with appropriate rdata:
@@ -499,10 +504,10 @@ function foo(x)
     return bar
 end
 bar = foo(randn(5))
-typeof(bar)
+fieldtypes(typeof(bar))
 
 # output
-var"#bar#1"{Vector{Float64}}
+(Vector{Float64},)
 ```
 Observe that the `Vector{Float64}` that we passed to `foo`, and closed over in `bar`, is present in the type.
 This alludes to the fact that closures are basically just callable `struct`s whose fields are the closed-over variables.

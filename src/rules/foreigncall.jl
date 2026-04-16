@@ -291,6 +291,23 @@ function rrule!!(
     return uninit_fcodual(_foreigncall_(Val(:jl_string_ptr), x...)), pb!!
 end
 
+for name in (:jl_get_world_counter, :jl_matching_methods)
+    @eval function frule!!(
+        f::Dual{typeof(_foreigncall_)},
+        n::Dual{Val{$(QuoteNode(name))}},
+        args::Vararg{Dual,N},
+    ) where {N}
+        return zero_derivative(f, n, args...)
+    end
+    @eval function rrule!!(
+        f::CoDual{typeof(_foreigncall_)},
+        n::CoDual{Val{$(QuoteNode(name))}},
+        args::Vararg{CoDual,N},
+    ) where {N}
+        return zero_adjoint(f, n, args...)
+    end
+end
+
 for (name, P) in
     ((Symbol("llvm.powi.f32.i32"), Float32), (Symbol("llvm.powi.f64.i32"), Float64))
     @eval function frule!!(
@@ -525,6 +542,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             CoDual(ptr_a, ptr_da),
             CoDual(ptr_b, ptr_db),
             4,
+        ),
+        (false, :none, nothing, Base.get_world_counter), # jl_get_world_counter
+        (
+            false,
+            :none,
+            nothing,
+            Base._methods_by_ftype, # jl_matching_methods
+            Tuple{typeof(sin),Float64},
+            -1,
+            Base.get_world_counter(),
         ),
     ]
     return test_cases, memory

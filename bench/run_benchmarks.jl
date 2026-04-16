@@ -52,7 +52,7 @@ end
 
 should_run_benchmark(args...) = true
 
-@static if VERSION ≥ v"1.12-"
+@static if VERSION ≥ v"1.13-"
     should_run_benchmark(::Val{:enzyme}, args...) = false
 end
 
@@ -269,19 +269,16 @@ function benchmark_rules!!(
                     _rand_similar(x) = x isa Real ? randn() : randn(size(x))
                     dup_args = map(x -> Duplicated(x, _rand_similar(x)), primals[2:end])
                     GC.gc(true)
-                    prim =
+                    prim, mode =
                         if primals[1] isa Base.Fix1 &&
                             primals[1].x isa DynamicPPL.LogDensityFunction
-                            Const(primals[1])
+                            Const(primals[1]),
+                            Enzyme.set_runtime_activity(ReverseWithPrimal)
                         else
-                            primals[1]
+                            primals[1], ReverseWithPrimal
                         end
                     suite["enzyme"] = @be(
-                        _,
-                        _,
-                        autodiff(ReverseWithPrimal, $prim, Active, $dup_args...),
-                        _,
-                        evals = 1,
+                        _, _, autodiff($mode, $prim, Active, $dup_args...), _, evals = 1,
                     )
                 end
             end
