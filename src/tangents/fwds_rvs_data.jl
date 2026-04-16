@@ -899,7 +899,6 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
     ::Type{NoFData}, ::Type{R}
 ) where {R<:Union{NoRData,Base.IEEEFloat,RData}}
     # R==NoRData hits a more specific method above; Any is excluded by the constraint.
-    _validate_rdata_union(R)
     @assert R isa Union
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
@@ -911,8 +910,9 @@ end
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
-# Rejects calls where any non-NoFData branch carries rdata. tangent_type(B, NoRData) never
-# throws MethodError here: `where {F<:Union{NoFData,T} where T}` matches every type B.
+# Rejects F==Any (not a union) and any branch whose tangent carries rdata.
+# tangent_type(B, NoRData) always dispatches (no MethodError) and throws
+# InvalidFDataException for any B that is not a valid fdata-only type.
 function _validate_fdata_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     if !(F isa Union)
         throw(
@@ -921,25 +921,7 @@ function _validate_fdata_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     end
     for B in (F.a, F.b)
         B == NoFData && continue
-        if rdata_type(tangent_type(B, NoRData)) != NoRData
-            throw(
-                InvalidFDataException(
-                    "Something went wrong: called tangent_type($F, NoRData)"
-                ),
-            )
-        end
-    end
-    return nothing
-end
-# Rejects calls where any non-NoRData branch carries fdata.
-function _validate_rdata_union(::Type{R}) where {R<:Union{NoRData,Base.IEEEFloat,RData}}
-    if R isa Union
-        _validate_rdata_union(R.a)
-        _validate_rdata_union(R.b)
-    elseif R != NoRData && fdata_type(tangent_type(NoFData, R)) != NoFData
-        throw(
-            InvalidRDataException("Something went wrong: called tangent_type(NoFData, $R)")
-        )
+        tangent_type(B, NoRData)  # throws InvalidFDataException if B carries rdata
     end
     return nothing
 end
