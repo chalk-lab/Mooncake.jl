@@ -517,6 +517,15 @@ zero_tangent(x)
 function zero_tangent(x::P) where {P}
     return zero_tangent_internal(x, isbitstype(P) ? NoCache() : IdDict())
 end
+function zero_tangent(x::Ptr)
+    throw(
+        ArgumentError(
+            "`zero_tangent` is not safe to call on `Ptr` types with a single argument. " *
+            "Use the two-argument form `zero_tangent(primal, fdata)` instead, where `fdata` " *
+            "is the fdata component of the `CoDual` for this value.",
+        ),
+    )
+end
 
 """
     zero_tangent_internal(x, d::MaybeCache)
@@ -550,8 +559,10 @@ function zero_tangent_internal(x::NamedTuple, dict::MaybeCache)
     tangent_type(typeof(x)) == NoTangent && return NoTangent()
     return tuple_map(Base.Fix2(zero_tangent_internal, dict), x)
 end
-function zero_tangent_internal(x::Ptr, ::MaybeCache)
-    return throw(ArgumentError("zero_tangent not available for pointers."))
+# Ptr fields in Arrays/structs: bitcast to Ptr{tangent_type(P)} as a type-correct
+# placeholder. Must not be dereferenced. See uninit_tangent(x::Ptr) for the full WHY.
+function zero_tangent_internal(x::Ptr{P}, ::MaybeCache) where {P}
+    return bitcast(Ptr{tangent_type(P)}, x)
 end
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
     return map!(
@@ -628,6 +639,14 @@ Related to [`zero_tangent`](@ref), but a bit different. Check current implementa
 details -- this docstring is intentionally non-specific in order to avoid becoming outdated.
 """
 @inline uninit_tangent(x) = zero_tangent(x)
+# The tangent of Ptr{P} is a Ptr{tangent_type(P)} — a pointer to derivative storage for
+# whatever the primal pointer addresses. Gradients accumulate through dereferenced values,
+# not the address itself (hence rdata_type(Ptr) = NoRData).
+#
+# When no derivative storage exists yet (e.g. before a rule fills it in), we bitcast the
+# primal address to Ptr{tangent_type(P)}. The result must NOT be dereferenced — it is a
+# type-correct placeholder only. single-arg zero_tangent(x::Ptr) throws because allocating
+# fresh storage would have unclear ownership; use zero_tangent(primal, fdata) instead.
 @inline uninit_tangent(x::Ptr{P}) where {P} = bitcast(Ptr{tangent_type(P)}, x)
 
 """

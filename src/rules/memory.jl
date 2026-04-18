@@ -1,10 +1,6 @@
-# This file was introduced as part of the transition from 1.10 to 1.11. Its purpose is to
-# ensure that Mooncake can handle the new implementation of `Array`s. This implementation
-# relies on the new `Memory` and `MemoryRef` types (aliases for specific parametrisations of
-# `GenericMemory` and `GenericMemoryRef`). Consequently, the code here will make little
-# sense unless you are familiar with these types, and how they relate to `Array`s.
-# Fortunately, Oscar Smith and Jameson Nash gave an excellent talk at JuliaCon 2024 on
-# exactly this topic, which you can find here: https://www.youtube.com/watch?v=L6BFQ1d8xNs .
+# Rules and tangent support for Julia's `Memory` / `MemoryRef`-backed `Array`
+# implementation. This file also carries the branch-specific NDual container overloads
+# needed for primal-mode forward execution on `Memory`-backed storage.
 
 #
 # Memory
@@ -49,10 +45,8 @@ function _uninit_dual(w::Val, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat}
 end
 
 @inline function zero_derivative(
-    f::Dual,
-    x1::Union{Memory{<:Dual},Memory{<:Complex{<:Dual}}},
-    x_rest::Vararg{<:Union{Memory{<:Dual},Memory{<:Complex{<:Dual}}}},
-)
+    f::Dual, x1::T, x_rest::Vararg{T}
+) where {T<:Union{Memory{<:Dual},Memory{<:Complex{<:Dual}}}}
     return zero_dual(primal(f)(map(x -> x isa Dual ? primal(x) : x, (x1, x_rest...))...))
 end
 
@@ -612,7 +606,7 @@ function isbits_lmemoryrefset!_rule(x::CoDual, value::CoDual, ordering::Val, bc:
         memoryrefget(x.dx, _val(ordering), _val(bc)),
     )
     memoryrefset!(x.x, value.x, _val(ordering), _val(bc))
-    memoryrefset!(x.dx, zero_tangent(value.x), _val(ordering), _val(bc))
+    memoryrefset!(x.dx, zero_tangent(value.x, value.dx), _val(ordering), _val(bc))
 
     function isbits_lmemoryrefset!_adjoint(dy)
         dvalue = increment!!(dy, rdata(memoryrefget(x.dx, _val(ordering), _val(bc))))
@@ -1028,7 +1022,7 @@ end
 end
 
 function frule!!(::Dual{typeof(copy)}, a::Dual{<:Array{<:_HasNDual}})
-    Dual(copy(primal(a)), NoTangent())
+    return copy(primal(a))
 end
 frule!!(::Dual{typeof(copy)}, a::Array{<:_HasNDual}) = copy(a)
 

@@ -982,9 +982,11 @@ end
 
 @inline function _output_summary(cache::FCache)
     rule = getfield(cache, :rule)
-    dual_arg_types = Tuple{
-        map(spec -> dual_type(typeof(spec).parameters[1]), getfield(cache, :input_specs))...
-    }
+    width = getfield(cache, :width)
+    dual_arg_types = Tuple{map(getfield(cache, :input_specs)) do spec
+        P = typeof(spec).parameters[1]
+        isnothing(width) ? dual_type(P) : dual_type(width, P)
+    end...}
     output_type = Core.Compiler.return_type(rule, dual_arg_types)
     return _cache_type_summary(_dual_primal_type(output_type))
 end
@@ -1298,7 +1300,7 @@ function _gradient_widthN(
                 seeds[d],
             )
         end
-        slot += W
+        slot += chunk
     end
     return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
 end
@@ -1430,24 +1432,39 @@ end
     value_and_derivative!!(cache::FCache, (f, df), (x, dx), ...)
 
 Forward-mode derivative via tuple inputs, returning `(y, dy)`.
-Supports NTangent for multi-direction evaluation.
+Plain tuple tangents represent a single direction. Multi-direction evaluation requires
+`NTangent` for every differentiable tuple tangent; mixed chunked/plain differentiable
+inputs are rejected.
 """
 @inline function value_and_derivative!!(
     cache::FCache, fx::Vararg{Tuple{Any,Any},M}
 ) where {M}
     input_primals = tuple_map(first, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
-    input_tangents = tuple_map(last, fx)
 
-    N_val = _tangent_width(input_tangents)
-    single_dir = isnothing(N_val)
-    if single_dir
-        N_val = Val{1}()
-        input_tangents = tuple_map(t -> NTangent((t,)), input_tangents)
+    raw_tangents = tuple_map(last, fx)
+    if any(t -> t isa NTangent, raw_tangents) && any(
+        t -> !(t isa NoTangent || t isa NTangent || t isa Tuple || t isa NamedTuple),
+        raw_tangents,
+    )
+        throw(
+            ArgumentError(
+                "Chunked tuple inputs must use NTangent consistently for all differentiable tangents.",
+            ),
+        )
+    end
+    width = _tangent_width(raw_tangents)
+    if isnothing(width)
+        N_val, input_tangents, single_dir = Val(1),
+        tuple_map(t -> NTangent((t,)), raw_tangents),
+        true
+    else
+        N_val, input_tangents, single_dir = width, raw_tangents, false
     end
 
     friendly = cache.friendly_tangents
     rule = cache.rule
+    cache_width = cache.width
 
     function _eval_dir(::Val{dir}) where {dir}
         dir_tangents = tuple_map(t -> t isa NTangent ? t[dir] : t, input_tangents)
@@ -1460,23 +1477,20 @@ Supports NTangent for multi-direction evaluation.
         else
             dir_tangents
         end
-        width = cache.width
-        if width === nothing
+        if cache_width === nothing
             dir_duals = tuple_map(Dual, input_primals, canonical)
             friendly || error_if_incorrect_dual_types(dir_duals...)
             return rule(dir_duals...)
-        else
-            padded = tuple_map(input_primals, canonical) do p, t
-                if t isa NoTangent
-                    ntuple(_ -> NoTangent(), width)
-                else
-                    ntuple(d -> d == 1 ? t : zero_tangent(p), width)
-                end
-            end
-            ndual_inputs = tuple_map(_combine_to_ndual, input_primals, padded)
-            output = rule(ndual_inputs...)
-            return _ndual_output_to_width1(output)
         end
+        rule_inputs = tuple_map(input_primals, canonical) do p, t
+            padded = if t isa NoTangent
+                ntuple(_ -> NoTangent(), cache_width)
+            else
+                ntuple(d -> d == 1 ? t : zero_tangent(p), cache_width)
+            end
+            _ndual_output_to_width1(_combine_to_ndual(p, padded))
+        end
+        return rule(rule_inputs...)
     end
 
     first_output = _eval_dir(Val(1))
@@ -1510,9 +1524,12 @@ Supports NTangent for multi-direction evaluation.
     return y, nt
 end
 
-function value_and_derivative!!(cache::FCache)
-    _validate_prepared_cache(cache.input_specs, ())
-    error("unreachable")
+function value_and_derivative!!(::FCache)
+    throw(
+        ArgumentError(
+            "`value_and_derivative!!` with a prepared forward cache requires at least the cached function argument.",
+        ),
+    )
 end
 
 # ── HVP / Hessian ────────────────────────────────────────────────────────────────

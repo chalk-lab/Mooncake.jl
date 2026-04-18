@@ -41,13 +41,14 @@ end
     dual_ir(sig::Type{<:Tuple}; kwargs...)
 
 !!! warning
-    The IR-based forward-mode compiler has been removed. This function currently throws
-    an error. Use `fwd_ir` or `rvs_ir` for reverse-mode IR inspection.
+    The old IR-based forward-mode compiler has been removed. `dual_ir` is no longer
+    available and always throws. `fwd_ir` and `rvs_ir` inspect the forward and reverse
+    passes of Mooncake's reverse-mode pipeline; they are not replacements for `dual_ir`.
 """
 function dual_ir(sig::Type{<:Tuple}; kwargs...)
     error(
-        "The IR-based forward-mode compiler has been removed. " *
-        "`dual_ir` is no longer available. Use `fwd_ir` or `rvs_ir` instead.",
+        "The old IR-based forward-mode compiler has been removed. " *
+        "`dual_ir` is no longer available. `fwd_ir` and `rvs_ir` inspect the reverse-mode pipeline and are not replacements for `dual_ir`.",
     )
 end
 

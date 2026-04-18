@@ -158,6 +158,13 @@ end
             @test occursin("input_1: Float64 (scalar)", forward_plain)
             @test occursin("output: Float64 (scalar)", forward_plain)
 
+            chunked_forward_cache = Mooncake.prepare_derivative_cache(
+                x -> sum(abs2, x), [1.0, 2.0]; config=Mooncake.Config(; chunk_size=2)
+            )
+            chunked_forward_plain = repr(MIME"text/plain"(), chunked_forward_cache)
+            @test occursin("Mooncake.FCache", chunked_forward_plain)
+            @test occursin("output: Float64 (scalar)", chunked_forward_plain)
+
             hvp_cache = Mooncake.prepare_hvp_cache(sum, [1.0])
             hvp_show = sprint(show, hvp_cache)
             @test occursin("Mooncake.HVPCache(", hvp_show)
@@ -691,6 +698,20 @@ end
             @test first(z_and_dz_tuple) == x^2 + sin(y)
             @test last(z_and_dz_tuple) == Mooncake.NTangent((2 * x * dx, cos(y) * dy))
 
+            mixed_f = (a, b) -> a[1]^2 + sin(b)
+            mixed_cache = Mooncake.prepare_derivative_cache(
+                mixed_f,
+                tuple_x,
+                x;
+                config=Mooncake.Config(; friendly_tangents=true, kwargs...),
+            )
+            @test_throws "Chunked tuple inputs must use NTangent consistently" Mooncake.value_and_derivative!!(
+                mixed_cache,
+                (mixed_f, Mooncake.zero_tangent(mixed_f)),
+                (tuple_x, Mooncake.NTangent((tuple_dx_1, tuple_dx_2))),
+                (x, dx),
+            )
+
             f_named = nt -> nt.a * sin(nt.b)
             named_x = (; a=x, b=y)
             named_dx_1 = (; a=dx, b=0.0)
@@ -905,6 +926,36 @@ end
                 ) == (z, (Mooncake.NoTangent(), y - sin(x), x))
                 @test CHUNK_SCALAR_EVAL_COUNT[] == 2
 
+                array_tail_grad = x -> sum(abs2, x) + first(x)
+                x_arr_tail = [x, y, z]
+                array_tail_cache_grad_fwd = Mooncake.prepare_derivative_cache(
+                    array_tail_grad,
+                    x_arr_tail;
+                    config=Mooncake.Config(;
+                        debug_mode=false, friendly_tangents=false, chunk_size=2
+                    ),
+                )
+                @test Mooncake.value_and_gradient!!(
+                    array_tail_cache_grad_fwd, array_tail_grad, x_arr_tail
+                ) == (
+                    array_tail_grad(x_arr_tail),
+                    (Mooncake.NoTangent(), [2 * x + 1, 2 * y, 2 * z]),
+                )
+
+                scalar_tail_grad = (a, b, c) -> a * b + sin(c)
+                scalar_tail_cache_grad_fwd = Mooncake.prepare_derivative_cache(
+                    scalar_tail_grad,
+                    x,
+                    y,
+                    z;
+                    config=Mooncake.Config(;
+                        debug_mode=false, friendly_tangents=false, chunk_size=2
+                    ),
+                )
+                @test Mooncake.value_and_gradient!!(
+                    scalar_tail_cache_grad_fwd, scalar_tail_grad, x, y, z
+                ) == (scalar_tail_grad(x, y, z), (Mooncake.NoTangent(), y, x, cos(z)))
+
                 array_f = CountedChunkArrayCall()
                 x_arr = [x, y]
                 array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
@@ -1013,6 +1064,13 @@ end
             )
         end
 
+        @testset "value_and_derivative!! zero-arg cache error" begin
+            cache = Mooncake.prepare_derivative_cache(sin, x)
+            @test_throws r"requires at least the cached function argument" Mooncake.value_and_derivative!!(
+                cache
+            )
+        end
+
         @testset "chunked complex scalar derivative" begin
             f(z) = abs2(z)
             z = 1.0 + 2.0im
@@ -1025,16 +1083,16 @@ end
         end
 
         @static if VERSION >= v"1.11-rc4"
-        @testset "chunked complex array derivative" begin
-            f(z) = sum(abs2, z)
-            z = [1.0 + 2.0im, 3.0 + 4.0im]
-            cache = Mooncake.prepare_derivative_cache(
-                f, z; config=Mooncake.Config(; chunk_size=2)
-            )
-            v, (_, dz) = Mooncake.value_and_gradient!!(cache, f, z)
-            @test v ≈ f(z)
-            @test dz ≈ 2z
-        end
+            @testset "chunked complex array derivative" begin
+                f(z) = sum(abs2, z)
+                z = [1.0 + 2.0im, 3.0 + 4.0im]
+                cache = Mooncake.prepare_derivative_cache(
+                    f, z; config=Mooncake.Config(; chunk_size=2)
+                )
+                v, (_, dz) = Mooncake.value_and_gradient!!(cache, f, z)
+                @test v ≈ f(z)
+                @test dz ≈ 2z
+            end
         end
 
         @testset "prepare_derivative_cache nfwd opt-out" begin

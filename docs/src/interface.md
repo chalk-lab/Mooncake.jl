@@ -73,11 +73,11 @@ fcache = MC.prepare_derivative_cache(g, x_eval; config=MC.Config(chunk_size=2))
 val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 ```
 
-Passing `Config(chunk_size=2)` caps the forward chunk width used by the `NfwdCache` path.
-Leaving `chunk_size=nothing` keeps Mooncake's default heuristic. Cache
-construction stays passive, but a later `value_and_gradient!!` or
-`value_and_derivative!!` call may still fail at runtime if `nfwd` turns out not to
-support the function. `show(cache)` / `repr(cache)` display cache configuration.
+Passing `Config(chunk_size=2)` builds a width-2 forward `FCache`, so public
+forward-cache APIs evaluate derivatives in chunks of two directions at a time.
+Leaving `chunk_size=nothing` keeps Mooncake's default width-1 path. Cache
+construction stays passive; `show(cache)` / `repr(cache)` display the prepared
+cache configuration.
 
 When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
 higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as

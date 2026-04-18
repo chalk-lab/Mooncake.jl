@@ -457,7 +457,7 @@ function isbits_arrayset_rrule(
 
     _A = primal(A)
     dA = tangent(A)
-    arrayset(false, dA, zero_tangent(primal(v)), lin_inds)
+    arrayset(false, dA, zero_tangent(primal(v), tangent(v)), lin_inds)
     ninds = Val(length(_inds))
     function isbits_arrayset_pullback!!(::NoRData)
         dv = rdata(arrayref(false, dA, lin_inds))

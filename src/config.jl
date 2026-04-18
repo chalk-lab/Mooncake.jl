@@ -24,7 +24,11 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     The tangent is converted from/to the friendly representation at the interface level,
     so all Mooncake internal computations and rule implementations always use the
     [`tangent_type`](@ref) representation.
-- `chunk_size::Union{Nothing,Int}=nothing`: reserved for future use. Currently ignored.
+- `chunk_size::Union{Nothing,Int}=nothing`: optional forward chunk width for the public
+    [`prepare_derivative_cache`](@ref) path and APIs layered on top of it. `nothing` uses
+    Mooncake's default width-1 path; an explicit integer compiles a width-`N` forward rule
+    and uses chunked evaluation in [`value_and_derivative!!`](@ref) /
+    [`value_and_gradient!!`](@ref). This does not affect reverse-mode caches.
 - `empty_cache::Bool=false`: if `true`, all internal Mooncake caches (compiled OpaqueClosures,
     CodeInstances, and type-inference results) are cleared before building the new rule. This
     allows the garbage collector to reclaim memory held by previously compiled rules, and is

@@ -30,6 +30,18 @@ For every new type, method, changed signature, or overload:
 
 For every new helper: does it genuinely aid readability or reduce duplication, or can it be inlined? Does it belong in `src/utils.jl` or is it rule-local?
 
+For every new or changed **comment**:
+
+- **WHY not WHAT?** Delete comments that restate what the code already says (variable names, types, control flow). Keep only non-obvious constraints, invariants, and design rationale.
+- **Accurate?** Does the comment still match the code? Stale or contradictory comments are worse than none.
+- **Brief?** Trim verbose multi-line blocks to the minimum that preserves the WHY. Cross-references (`see X for WHY`) are fine but the local comment should still give enough context to understand the constraint without chasing the reference.
+
+For every new or changed **docstring**:
+
+- **Correct?** Does it accurately describe current behaviour, including any overloads (e.g. `Ptr` special cases)?
+- **No leaking internals?** Docstrings are public-facing; do not refer users to internal comments or implementation details they cannot rely on.
+- **Concise?** One sentence for simple functions; a short paragraph for complex ones. Avoid restating the signature.
+
 ## Step 3: Tests
 
 For every new or changed test:
@@ -44,6 +56,8 @@ For every new or changed test:
 Findings grouped by file, labelled:
 
 - **Unnecessary** / **Incorrect** / **Unclear** / **Inconsistent** / **Non-minimal** / **Fragile**
+- **Comment: stale** / **Comment: explains WHAT** / **Comment: too verbose** / **Comment: missing WHY**
+- **Docstring: incorrect** / **Docstring: leaks internals** / **Docstring: too verbose**
 - **Test: redundant** / **Test: missing pattern** / **Test: weak gap**
 
 No issues in a section → write "No issues." Do not suggest additions beyond what the diff introduces.

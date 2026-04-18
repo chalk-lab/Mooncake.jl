@@ -979,6 +979,7 @@ Reconstruct the tangent `t` for which `fdata(t) == f` and `rdata(t) == r`.
 tangent(::NoFData, ::NoRData) = NoTangent()
 tangent(::NoFData, r::IEEEFloat) = r
 tangent(f::Array, ::NoRData) = f
+tangent(f::Ptr, ::NoRData) = f
 
 # Tuples
 tangent(f::Tuple, r::Tuple) = tuple_map(tangent, f, r)
@@ -1041,12 +1042,17 @@ end
 """
     zero_tangent(primal, fdata)
 
-Equivalent to `tangent(fdata, rdata(zero_tangent(primal)))`.
+Equivalent to `tangent(fdata, zero_rdata(primal))`.
+
+Prefer this two-argument form over the single-argument `zero_tangent(primal)` whenever
+`primal` is or contains a `Ptr`, since single-argument `zero_tangent` is not safe for
+pointer types (it will throw). The two-argument form handles pointer-containing types
+correctly by using `zero_rdata`, whose result for a `Ptr` field is just `NoRData()`.
 """
 zero_tangent(p, ::NoFData) = zero_tangent(p)
 
 function zero_tangent(p::P, f::F) where {P,F}
-    return tangent_type(P) == F ? f : tangent(f, rdata(zero_tangent(p)))
+    return tangent_type(P) == F ? f : tangent(f, zero_rdata(p))
 end
 
 zero_tangent(p::Tuple, f::Union{Tuple,NamedTuple}) = tuple_map(zero_tangent, p, f)

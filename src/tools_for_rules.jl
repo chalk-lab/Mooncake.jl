@@ -179,10 +179,8 @@ Dual{Int64, NoTangent}(5, NoTangent())
 end
 
 @inline function zero_derivative(
-    f::Dual,
-    x1::Union{Array{<:Dual},Array{<:Complex{<:Dual}}},
-    x_rest::Vararg{<:Union{Array{<:Dual},Array{<:Complex{<:Dual}}}},
-)
+    f::Dual, x1::T, x_rest::Vararg{T}
+) where {T<:Union{Array{<:Dual},Array{<:Complex{<:Dual}}}}
     return zero_dual(primal(f)(map(x -> x isa Dual ? primal(x) : x, (x1, x_rest...))...))
 end
 

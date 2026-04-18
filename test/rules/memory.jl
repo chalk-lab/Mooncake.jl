@@ -42,4 +42,11 @@ end
         @test primal(out2) == x2
         @test tangent(out2) == tangent(zero_dual(x2))
     end
+
+    @testset "copy with NDual arrays returns bare NDual container" begin
+        x = [Mooncake.NDual(1.0, (2.0, 3.0)), Mooncake.NDual(4.0, (5.0, 6.0))]
+        y = Mooncake.frule!!(Mooncake.zero_dual(copy), Mooncake.zero_dual(x))
+        @test y isa Vector{Mooncake.NDual{Float64,2}}
+        @test y == copy(x)
+    end
 end
