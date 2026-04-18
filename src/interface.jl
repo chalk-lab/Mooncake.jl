@@ -979,6 +979,7 @@ end
 
 @inline _dual_primal_type(::Type) = Any
 @inline _dual_primal_type(::Type{Dual{Y,T}}) where {Y,T} = Y
+@inline _dual_primal_type(::Type{NDual{T,W}}) where {T,W} = T
 
 @inline function _output_summary(cache::FCache)
     rule = getfield(cache, :rule)
@@ -1444,7 +1445,14 @@ inputs are rejected.
 
     raw_tangents = tuple_map(last, fx)
     if any(t -> t isa NTangent, raw_tangents) && any(
-        t -> !(t isa NoTangent || t isa NTangent || t isa Tuple || t isa NamedTuple),
+        t -> !(
+            t isa NoTangent ||
+            t isa NTangent ||
+            t isa Tuple ||
+            t isa NamedTuple ||
+            t isa Tangent ||
+            t isa MutableTangent
+        ),
         raw_tangents,
     )
         throw(
