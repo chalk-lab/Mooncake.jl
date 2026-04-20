@@ -3,6 +3,7 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, CUDA, JET, Mooncake, StableRNGs, Test
+using CUDA.CUBLAS
 using CUDA.CUDACore.GPUArrays: unsafe_free!
 using CUDA.CUDACore: hasfieldcount
 using Base: unsafe_convert
