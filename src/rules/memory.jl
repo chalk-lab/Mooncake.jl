@@ -566,7 +566,7 @@ function isbits_lmemoryrefset!_rule(x::CoDual, value::CoDual, ordering::Val, bc:
         memoryrefget(x.dx, _val(ordering), _val(bc)),
     )
     memoryrefset!(x.x, value.x, _val(ordering), _val(bc))
-    memoryrefset!(x.dx, zero_tangent(value.x), _val(ordering), _val(bc))
+    memoryrefset!(x.dx, zero_tangent(value.x, value.dx), _val(ordering), _val(bc))
 
     function isbits_lmemoryrefset!_adjoint(dy)
         dvalue = increment!!(dy, rdata(memoryrefget(x.dx, _val(ordering), _val(bc))))

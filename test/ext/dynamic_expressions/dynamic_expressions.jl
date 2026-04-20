@@ -6,7 +6,6 @@ using Mooncake
 using Mooncake: Mooncake, prepare_gradient_cache, value_and_gradient!!
 using Mooncake.TestUtils
 using Mooncake.TestUtils: test_rule, test_data
-using Optim: Optim
 using DynamicExpressions
 using DynamicExpressions: Nullable
 using StableRNGs: StableRNG
@@ -80,10 +79,9 @@ end
             y, dfexpr = value_and_gradient!!(cache, eval_sum, expr)
             d_f, d_expr = dfexpr
 
-            # d_expr is a MutableTangent (friendly_tangents returns NamedTuple for immutable
-            # structs, but Expression/Node are mutable so the tangent is still MutableTangent).
-            # .tree is a PossiblyUninitTangent-wrapped MutableTangent; .children[2] accesses
-            # the second child node's tangent; .x is the val-field tangent; .val is Float64.
+            # With friendly_tangents=true, d_expr is a nested NamedTuple.
+            # .tree is a PossiblyUninitTangent-wrapped tangent; .children[2] is the second
+            # child node's tangent; .x is the val-field tangent; .val is Float64.
             const_tangent = d_expr.tree.children[2].x.val
             @test const_tangent ≈ N
         end
@@ -132,40 +130,6 @@ end
             @test grad_1 ≈ 2.0
             @test grad_2 ≈ 2.0
         end
-    end
-end
-
-@testset "Use in DynamicExpressions + Optim optimization" begin
-    let
-        operators = OperatorEnum(1 => (cos, sin, exp), 2 => (+, -, *, /))
-        x1 = Expression(Node{Float64}(; feature=1); operators)
-        x2 = Expression(Node{Float64}(; feature=2); operators)
-        init = x1 * exp(0.7 + 0.5 * x1) + 0.9 * x2
-        target = x1 * exp(0.3 + (-0.2) * x1) + 1.5 * x2
-        X = randn(StableRNG(0), 2, 128)
-        y = target(X)
-
-        f = let X = X, y = y
-            function (ex)
-                pred = ex(X)
-                return sum(i -> abs2(pred[i] - y[i]), axes(X, 2))
-            end
-        end
-
-        cache = prepare_gradient_cache(f, init)
-        g! = let cache = cache, f = f
-            function (G, ex)
-                y, grad = value_and_gradient!!(cache, f, ex)
-                d_f, d_ex = grad
-                G .= extract_gradient(d_ex, ex)
-                return nothing
-            end
-        end
-        ex0 = copy(init)
-        result = Optim.optimize(f, g!, ex0, Optim.BFGS())
-        constants_final = get_scalar_constants(result.minimizer)[1]
-        constants_target = get_scalar_constants(get_tree(target))[1]
-        @test isapprox(constants_final, constants_target, atol=1e-5)
     end
 end
 

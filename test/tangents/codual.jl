@@ -76,4 +76,12 @@
         @test Base.issingletontype(typeof(NoPullback(zero_fcodual(5.0))))
         @test NoPullback(zero_codual(5.0))(4.0) == (0.0,)
     end
+
+    @testset "zero_codual and zero_fcodual for Ptr" begin
+        # zero_tangent(::Ptr) throws, so zero_codual/zero_fcodual must not call it.
+        # They fall back to uninit_codual/uninit_fcodual (bitcast convention).
+        p = Ptr{Float64}()
+        @test Mooncake.zero_codual(p) == Mooncake.uninit_codual(p)
+        @test Mooncake.zero_fcodual(p) == Mooncake.uninit_fcodual(p)
+    end
 end

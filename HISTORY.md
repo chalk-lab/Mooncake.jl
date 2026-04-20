@@ -1,3 +1,12 @@
+# 0.5.26
+
+- Add `Config(empty_cache=true)` to free internal caches before rebuilding rules.
+
+```julia
+config = Mooncake.Config(empty_cache=true)
+cache = Mooncake.prepare_gradient_cache(sin, 1.0; config)
+```
+
 # 0.5.25
 
 - Add `nfwd`: a new N-wide forward-mode implementation built around `NDual`, with `Nfwd` / `NfwdMooncake` internals and broad tests for scalar, array, and rule-building paths.
