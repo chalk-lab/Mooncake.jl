@@ -281,17 +281,11 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
         @test (:fwd_ir => :optimized_fwd) in rg
         @test (:rvs_ir => :optimized_rvs) in rg
 
-        @test forward_stage_order() == [:raw, :normalized, :cfg_blocks, :dual_ir, :optimized]
-        @test reverse_stage_order() ==
-            [
-                :raw,
-                :normalized,
-                :cfg_blocks,
-                :fwd_ir,
-                :rvs_ir,
-                :optimized_fwd,
-                :optimized_rvs,
-            ]
+        @test forward_stage_order() ==
+            [:raw, :normalized, :cfg_blocks, :dual_ir, :optimized]
+        @test reverse_stage_order() == [
+            :raw, :normalized, :cfg_blocks, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs
+        ]
     end
 
     @testset "StageMeta" begin

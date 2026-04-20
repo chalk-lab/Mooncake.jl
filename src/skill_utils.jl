@@ -79,7 +79,9 @@ function forward_stage_graph()
 end
 
 function reverse_stage_order()
-    return [:raw, :normalized, :cfg_blocks, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs]
+    return [
+        :raw, :normalized, :cfg_blocks, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs
+    ]
 end
 
 function reverse_stage_graph()
