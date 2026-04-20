@@ -85,7 +85,6 @@ Pkg = "1"
 Random = "1"
 Revise = "3.0 - 3.12"
 SLEEFPirates = "0.6.43"
-SparseArrays = "1"
 SpecialFunctions = "2"
 StableRNGs = "1"
 Static = "1.1.1"
@@ -106,7 +105,6 @@ Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 StableRNGs = "860ef19b-820b-49d6-a774-d7a799459cd3"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 LogExpFunctions = "2ab3a3ac-af41-5b50-aa03-7779005ae688"
-SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 [targets]
 test = [
     "AllocCheck",
@@ -118,7 +116,6 @@ test = [
     "Logging",
     "Pkg",
     "Revise",
-    "SparseArrays",
     "StableRNGs",
     "Test",
     "LogExpFunctions",

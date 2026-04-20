@@ -1,5 +1,4 @@
 using DispatchDoctor: allow_unstable
-using SparseArrays
 @testset "tangents" begin
     @testset "$(tangent_type(primal_type))" for (primal_type, expected_tangent_type) in Any[
 
@@ -386,8 +385,14 @@ using SparseArrays
         @test d_cache isa Mooncake.FriendlyTangentCache{Mooncake.AsPrimal}
     end
 
-    @testset "friendly_tangent_cache SparseMatrixCSC{Int} returns AsRaw" begin
-        A = SparseArrays.sparse([1, 2], [1, 2], [1, 2], 2, 2)
+    @testset "friendly_tangent_cache Vector{Int} returns AsRaw" begin
+        A = [1, 2]
+        @test Mooncake.friendly_tangent_cache(A) isa
+            Mooncake.FriendlyTangentCache{Mooncake.AsRaw}
+    end
+
+    @testset "friendly_tangent_cache Transpose{Int} returns AsRaw (#1149)" begin
+        A = transpose([1, 2])
         @test Mooncake.friendly_tangent_cache(A) isa
             Mooncake.FriendlyTangentCache{Mooncake.AsRaw}
     end
