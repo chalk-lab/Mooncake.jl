@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Reverse-Mode Design · Mooncake.jl</title><meta name="title" content="Reverse-Mode Design · Mooncake.jl"/><meta property="og:title" content="Reverse-Mode Design · Mooncake.jl"/><meta property="twitter:title" content="Reverse-Mode Design · Mooncake.jl"/><meta name="description" content="Documentation for Mooncake.jl."/><meta property="og:description" content="Documentation for Mooncake.jl."/><meta property="twitter:description" content="Documentation for Mooncake.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body>
+<!-- NAVBAR START -->
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro&display=swap');
+
+    /* Documenter.jl CSS Overrides */
+    html {
+        scroll-padding-top: calc(var(--navbar-height) + 1rem);
+    }
+    .docs-sidebar, #documenter {
+        margin-top: var(--navbar-height);
+    }
+    .docs-version-selector {
+        margin-bottom: 60px !important;
+    }
+    @media screen and (max-width: 1056px) {
+        .docs-version-selector {
+            margin-bottom: 60px !important;
+        }
+        .docs-sidebar {
+            margin-top: 0 !important;
+        }
+    }
+    /* End of Documenter.jl Tweaks */
+
+    /* Color and Font Variables */
+    :root {
+        --heading-color: #6c757d;
+        --item-color: rgb(165, 165, 165);
+        --primary-bg: white;
+        --hover-color: #8faad2;
+        --deprecated-bg: #ff4d4d;
+        --deprecated-text: white;
+        --icon-color: #6c757d;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e9ecef;
+        
+        /* Typography */
+        --font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        --nav-link-font-size: 1.0625rem;
+        --turing-title-font-size: 21.25px;
+        --icon-font-size: 1.25rem;
+        --dropdown-arrow-font-size: 0.6875rem;
+        --badge-font-size: 0.75rem;
+
+        /* Sizing and Spacing */
+        --navbar-height: 3.75rem;
+        --logo-height: 31px;
+        --logo-width: auto;
+        --logo-padding-top: 7px;
+        --logo-margin-left: 0.8rem;
+        --title-margin-left: 0.4px;
+        --title-nav-spacing: 1.1rem;
+        --nav-item-margin-left: 1.3rem;
+        --icon-margin-left: 1rem;
+        --dropdown-padding: 1.875rem;
+        --dropdown-item-width: 12.5rem;
+        --dropdown-subitem-width: 15.625rem;
+        --dropdown-subitem-padding: 0.125rem 0.625rem;
+    }
+
+    /* Dark Theme Variable Overrides */
+    html.theme--documenter-dark {
+        --heading-color: #e0e0e0;
+        --item-color: #bdbdbd;
+        --primary-bg: #1f2424;
+        --hover-color: #ffffff;
+        --icon-color: #e0e0e0;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #424242;
+    }
+
+    /* Catppuccin Theme Overrides */
+    html.theme--catppuccin-latte {
+        --heading-color: #4c4f69;
+        --primary-bg: #eff1f5;
+        --icon-color: #4c4f69;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e6e9ef;
+    }
+    html.theme--catppuccin-frappe {
+        --heading-color: #c6d0f5;
+        --primary-bg: #303446;
+        --icon-color: #c6d0f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #51576d;
+    }
+    html.theme--catppuccin-macchiato {
+        --heading-color: #cad3f5;
+        --primary-bg: #24273a;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #494d64;
+    }
+    html.theme--catppuccin-mocha {
+        --heading-color: #cad3f5;
+        --primary-bg: #1e1e2e;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #45475a;
+    }
+
+
+    /* Main Navigation Bar */
+    .ext-navigation {
+        font-family: var(--font-family);
+        position: fixed;
+        height: var(--navbar-height);
+        top: 0;
+        width: 100%;
+        background-color: var(--primary-bg);
+        z-index: 1000;
+        box-shadow: 0 2px 4px var(--shadow-color);
+        display: flex;
+        align-items: center;
+        padding: 0 1.0625rem;
+        transition: transform 0.3s, background-color 0.3s;
+    }
+
+    nav.ext-navigation .ext-navbar-logo {
+        margin-left: var(--logo-margin-left);
+        height: auto;
+        max-height: var(--logo-height);
+        width: auto;
+        padding-top: var(--logo-padding-top);
+    }
+    
+    /* Theme-aware logo text color */
+    .ext-navbar-logo .logo-text {
+        fill: var(--heading-color);
+    }
+    
+    .ext-navbar-title {
+        color: var(--heading-color) !important;
+        font-size: var(--turing-title-font-size) !important;
+        margin-left: var(--title-margin-left);
+        text-decoration: none;
+        transition: color 0.2s ease;
+    }
+    
+    .ext-navbar-title:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-nav-links {
+        display: flex;
+        align-items: center;
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+        flex-grow: 1;
+        margin-left: var(--title-nav-spacing);
+    }
+
+    .ext-nav-links li:first-child {
+        margin-left: 0 !important;
+    }
+
+    .ext-nav-links li {
+        margin-left: var(--nav-item-margin-left) !important;
+    }
+
+    .ext-nav-link {
+        color: var(--heading-color) !important;
+        text-decoration: none;
+        font-size: var(--nav-link-font-size) !important;
+        transition: color 0.2s ease;
+        cursor: pointer;
+    }
+
+    .ext-nav-link:hover,
+    .ext-navbar-item-single a:hover,
+    .ext-navbar-icons a:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-navbar-item-single a {
+        color: var(--heading-color) !important;
+    }
+    
+    .ext-navbar-icons {
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-navbar-icons a {
+        color: var(--icon-color) !important;
+        font-size: var(--icon-font-size) !important;
+        transition: color 0.2s ease;
+        margin-left: var(--icon-margin-left);
+    }
+
+    .ext-menu-toggle {
+        display: none;
+        font-size: 1.5rem;
+        color: var(--heading-color);
+        cursor: pointer;
+    }
+
+    .ext-dropdown {
+        display: none;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        padding: var(--dropdown-padding);
+        position: absolute;
+        top: var(--navbar-height);
+        width: 100%;
+        left: 0;
+        background-color: var(--primary-bg);
+        line-height: 1.875rem;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out, background-color 0.3s;
+        transform: translateY(-0.625rem);
+        box-shadow: 0 4px 6px var(--shadow-color);
+    }
+
+    #library-handler::after {
+        content: "▼";
+        font-size: var(--dropdown-arrow-font-size);
+        margin-left: 0.3125rem;
+        transition: transform 0.3s ease-in-out;
+    }
+
+    #library-handler.open::after {
+        content: "▲";
+    }
+
+    .ext-dropdown.show {
+        display: grid;
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .ext-dropdown ul {
+        width: var(--dropdown-item-width);
+        margin-bottom: 1.25rem;
+    }
+
+    .ext-dropdown ul li {
+        text-align: left;
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-dropdown ul a li {
+        color: var(--item-color);
+        width: var(--dropdown-subitem-width);
+        border-radius: 3px;
+        padding: var(--dropdown-subitem-padding);
+        transition: background-color 0.2s ease;
+    }
+
+    .ext-dropdown ul a li:hover {
+        background-color: var(--dropdown-hover-bg);
+    }
+
+    .ext-dropdown-item-heading {
+        color: var(--heading-color);
+        text-align: center;
+    }
+
+    .deprecated-badge {
+        background-color: var(--deprecated-bg);
+        color: var(--deprecated-text);
+        font-size: var(--badge-font-size);
+        padding: .1rem;
+        border-radius: 3px;
+        margin-left: 0.5rem;
+        line-height: 1;
+    }
+
+    @media (max-width: 966px) {
+        .ext-dropdown {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .ext-nav-links {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            background-color: var(--primary-bg);
+            position: absolute;
+            top: var(--navbar-height);
+            left: 0;
+            padding: 0.625rem 0;
+            height: auto;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px var(--shadow-color);
+            margin-left: 0;
+        }
+
+        .ext-nav-links.show {
+            display: flex;
+        }
+
+        .ext-nav-links li {
+            margin: 0.625rem 0 !important;
+            text-align: center;
+        }
+        
+        .ext-menu-toggle {
+            display: block;
+            margin-left: auto;
+        }
+
+        .ext-navigation.hide {
+            transform: translateY(calc(-1 * var(--navbar-height)));
+        }
+
+        .ext-dropdown {
+            position: static;
+            display: block;
+            opacity: 1;
+            transform: none;
+            box-shadow: none;
+            grid-template-columns: 1fr;
+            padding: 0.625rem;
+            text-align: center;
+        }
+
+        .ext-dropdown ul {
+            width: auto;
+            display: inline-block;
+            margin: 0 auto 0.3125rem;
+            text-align: left;
+        }
+    }
+</style>
+<nav class="ext-navigation">
+    <a title="TuringLang" href="https://turinglang.org/">
+        <svg width="4333" height="1145" viewBox="0 0 4333 1145" fill="none" xmlns="http://www.w3.org/2000/svg" class="ext-navbar-logo">
+            <path class="logo-text" d="M0.44603 193.181V66.9868H663.471V193.181H406.62V898H257.297V193.181H0.44603ZM1097.24 635.874V274.74H1244.13V898H1101.7V787.225H1095.21C1081.14 822.121 1058.01 850.66 1025.82 872.842C993.902 895.024 954.542 906.115 907.744 906.115C866.896 906.115 830.783 897.053 799.403 878.929C768.295 860.534 743.948 833.889 726.365 798.993C708.782 763.826 699.99 721.356 699.99 671.581V274.74H846.878V648.858C846.878 688.353 857.699 719.733 879.34 742.997C900.981 766.261 929.385 777.893 964.551 777.893C986.192 777.893 1007.16 772.618 1027.45 762.068C1047.73 751.518 1064.37 735.828 1077.35 714.999C1090.61 693.899 1097.24 667.524 1097.24 635.874ZM1395.17 898V274.74H1537.6V378.617H1544.09C1555.45 342.639 1574.93 314.911 1602.52 295.434C1630.38 275.687 1662.17 265.813 1697.88 265.813C1705.99 265.813 1715.05 266.219 1725.06 267.031C1735.34 267.572 1743.86 268.518 1750.63 269.871V404.992C1744.4 402.828 1734.53 400.934 1721 399.311C1707.75 397.417 1694.9 396.471 1682.46 396.471C1655.68 396.471 1631.6 402.287 1610.23 413.919C1589.13 425.28 1572.49 441.105 1560.32 461.393C1548.15 481.682 1542.06 505.081 1542.06 531.591V898H1395.17ZM1848.21 898V274.74H1995.1V898H1848.21ZM1922.06 186.283C1898.8 186.283 1878.78 178.573 1862.01 163.154C1845.24 147.464 1836.85 128.664 1836.85 106.752C1836.85 84.5701 1845.24 65.7695 1862.01 50.3503C1878.78 34.6606 1898.8 26.8158 1922.06 26.8158C1945.6 26.8158 1965.61 34.6606 1982.12 50.3503C1998.89 65.7695 2007.27 84.5701 2007.27 106.752C2007.27 128.664 1998.89 147.464 1982.12 163.154C1965.61 178.573 1945.6 186.283 1922.06 186.283ZM2293.04 532.809V898H2146.15V274.74H2286.54V380.646H2293.85C2308.18 345.75 2331.04 318.022 2362.42 297.463C2394.07 276.904 2433.16 266.625 2479.69 266.625C2522.7 266.625 2560.17 275.822 2592.09 294.217C2624.28 312.612 2649.17 339.257 2666.75 374.153C2684.6 409.049 2693.39 451.385 2693.12 501.159V898H2546.24V523.882C2546.24 482.223 2535.41 449.626 2513.77 426.092C2492.4 402.557 2462.78 390.79 2424.91 390.79C2399.21 390.79 2376.35 396.471 2356.34 407.832C2336.59 418.923 2321.03 435.019 2309.67 456.119C2298.58 477.218 2293.04 502.782 2293.04 532.809ZM3113.5 1144.71C3060.75 1144.71 3015.44 1137.54 2977.57 1123.2C2939.7 1109.13 2909.26 1090.2 2886.27 1066.39C2863.28 1042.59 2847.32 1016.21 2838.39 987.269L2970.67 955.213C2976.62 967.386 2985.28 979.424 2996.64 991.327C3008 1003.5 3023.28 1013.51 3042.49 1021.35C3061.97 1029.47 3086.45 1033.53 3115.93 1033.53C3157.59 1033.53 3192.08 1023.38 3219.4 1003.09C3246.73 983.076 3260.39 950.074 3260.39 904.087V786.008H3253.08C3245.51 801.157 3234.42 816.711 3219.81 832.671C3205.47 848.632 3186.4 862.022 3162.6 872.842C3139.06 883.663 3109.44 889.073 3073.73 889.073C3025.85 889.073 2982.44 877.847 2943.48 855.394C2904.8 832.671 2873.96 798.857 2850.97 753.952C2828.24 708.777 2816.88 652.24 2816.88 584.341C2816.88 515.902 2828.24 458.147 2850.97 411.078C2873.96 363.739 2904.93 327.896 2943.89 303.55C2982.84 278.933 3026.26 266.625 3074.14 266.625C3110.66 266.625 3140.69 272.847 3164.22 285.29C3188.03 297.463 3206.96 312.206 3221.03 329.519C3235.09 346.561 3245.78 362.657 3253.08 377.805H3261.2V274.74H3406.06V908.144C3406.06 961.435 3393.34 1005.53 3367.92 1040.42C3342.49 1075.32 3307.73 1101.43 3263.63 1118.74C3219.54 1136.05 3169.5 1144.71 3113.5 1144.71ZM3114.72 773.835C3145.83 773.835 3172.34 766.261 3194.25 751.112C3216.16 735.963 3232.79 714.187 3244.16 685.783C3255.52 657.379 3261.2 623.295 3261.2 583.53C3261.2 544.305 3255.52 509.95 3244.16 480.465C3233.07 450.979 3216.56 428.12 3194.65 411.89C3173.01 395.389 3146.37 387.138 3114.72 387.138C3081.98 387.138 3054.66 395.659 3032.75 412.701C3010.84 429.744 2994.34 453.143 2983.25 482.899C2972.16 512.385 2966.61 545.929 2966.61 583.53C2966.61 621.672 2972.16 655.08 2983.25 683.754C2994.61 712.158 3011.25 734.34 3033.16 750.3C3055.34 765.99 3082.53 773.835 3114.72 773.835ZM3647.08 906.927C3622.47 906.927 3601.37 898.271 3583.78 880.958C3566.2 863.645 3557.54 842.545 3557.82 817.658C3557.54 793.312 3566.2 772.482 3583.78 755.17C3601.37 737.857 3622.47 729.2 3647.08 729.2C3670.89 729.2 3691.58 737.857 3709.17 755.17C3727.02 772.482 3736.08 793.312 3736.35 817.658C3736.08 834.159 3731.75 849.173 3723.37 862.698C3715.25 876.224 3704.43 887.044 3690.91 895.16C3677.65 903.004 3663.04 906.927 3647.08 906.927ZM3888.01 274.74H4034.9V933.708C4034.9 978.613 4026.38 1015.67 4009.33 1044.89C3992.29 1074.1 3967.67 1095.88 3935.48 1110.22C3903.29 1124.55 3864.2 1131.72 3818.22 1131.72C3812.81 1131.72 3807.8 1131.59 3803.2 1131.32C3798.6 1131.32 3793.6 1131.18 3788.19 1130.91V1011.21C3792.25 1011.48 3795.9 1011.62 3799.15 1011.62C3802.39 1011.89 3805.77 1012.02 3809.29 1012.02C3837.42 1012.02 3857.58 1005.12 3869.75 991.327C3881.92 977.801 3888.01 957.918 3888.01 931.679V274.74ZM3961.05 186.283C3937.51 186.283 3917.36 178.573 3900.59 163.154C3884.09 147.464 3875.84 128.664 3875.84 106.752C3875.84 84.5701 3884.09 65.7695 3900.59 50.3503C3917.36 34.6606 3937.51 26.8158 3961.05 26.8158C3984.31 26.8158 4004.19 34.6606 4020.7 50.3503C4037.47 65.7695 4045.85 84.5701 4045.85 106.752C4045.85 128.664 4037.47 147.464 4020.7 163.154C4004.19 178.573 3984.31 186.283 3961.05 186.283ZM4332.83 66.9868V898H4185.94V66.9868H4332.83Z" fill="currentColor"/>
+            <path d="M4076 108.5C4076 168.424 4027.42 217 3967.5 217C3907.58 217 3859 168.424 3859 108.5C3859 48.5762 3907.58 0 3967.5 0C4027.42 0 4076 48.5762 4076 108.5Z" fill="#389725"/>
+            <path d="M3755 814.5C3755 874.424 3706.42 923 3646.5 923C3586.58 923 3538 874.424 3538 814.5C3538 754.576 3586.58 706 3646.5 706C3706.42 706 3755 754.576 3755 814.5Z" fill="#9457B1"/>
+            <path d="M2030 108.5C2030 168.424 1981.42 217 1921.5 217C1861.58 217 1813 168.424 1813 108.5C1813 48.5762 1861.58 0 1921.5 0C1981.42 0 2030 48.5762 2030 108.5Z" fill="#CA3B33"/>
+        </svg>
+    </a>
+    <!-- <a class="ext-navbar-title" href="https://turinglang.org/">Turing.jl</a> -->
+    
+    <ul class="ext-nav-links">
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/getting-started/">Get Started</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/tutorials/">Tutorials</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/faq/">FAQ</a></li>
+        <li>
+            <p class="ext-nav-link" id="library-handler">Libraries</p>
+            <div class="ext-dropdown" id="ext-dropdown-items">
+                <ul>
+                    <li class="ext-dropdown-item-heading">Modelling Languages</li>
+                    <a href="https://turinglang.org/DynamicPPL.jl/"><li>DynamicPPL</li></a>
+                    <a href="https://turinglang.org/JuliaBUGS.jl/"><li>JuliaBUGS</li></a>
+                    <a href="https://turinglang.org/TuringGLM.jl/"><li>TuringGLM</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">MCMC</li>
+                    <a href="https://turinglang.org/AdvancedHMC.jl/"><li>AdvancedHMC</li></a>
+                    <a href="https://turinglang.org/AbstractMCMC.jl/"><li>AbstractMCMC</li></a>
+                    <a href="https://github.com/theogf/ThermodynamicIntegration.jl"><li>ThermodynamicIntegration</li></a>
+                    <a href="https://turinglang.org/AdvancedPS.jl/"><li>AdvancedPS</li></a>
+                    <a href="https://turinglang.org/SliceSampling.jl/"><li>SliceSampling</li></a>
+                    <a href="https://turinglang.org/EllipticalSliceSampling.jl/"><li>EllipticalSliceSampling</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Diagnostics</li>
+                    <a href="https://turinglang.org/MCMCChains.jl/"><li>MCMCChains</li></a>
+                    <a href="https://turinglang.org/MCMCDiagnosticTools.jl/"><li>MCMCDiagnosticTools</li></a>
+                    <a href="https://chalk-lab.github.io/ParetoSmooth.jl/"><li>ParetoSmooth</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Gaussian Processes</li>
+                    <a href="https://juliagaussianprocesses.github.io/AbstractGPs.jl/"><li>AbstractGPs</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/KernelFunctions.jl/"><li>KernelFunctions</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/ApproximateGPs.jl/"><li>ApproximateGPs</li></a>
+                </ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Bijectors.jl/">Bijectors</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/TuringCallbacks.jl/">TuringCallbacks</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Deprecated/TuringBenchmarking/">TuringBenchmarking</a><span class="deprecated-badge">Deprecated</span></li></ul>
+            </div>
+        </li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/news/">News</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/team/">Team</a></li>
+    </ul>
+
+    <div class="ext-navbar-icons">
+        <a href="https://x.com/TuringLang" aria-label="Turing on X"><i class="fa-brands fa-x-twitter"></i></a>
+        <a href="https://discourse.julialang.org/c/domain/probprog/48" aria-label="Turing on Discourse"><i class="fa-brands fa-discourse"></i></a>
+        <a href="https://julialang.slack.com/archives/CCYDC34A0" aria-label="Turing on Slack"><i class="fa-brands fa-slack"></i></a>
+        <a href="https://github.com/TuringLang/" aria-label="Turing.jl on GitHub"><i class="fa-brands fa-github"></i></a>
+    </div>
+
+    <span class="ext-menu-toggle"><i class="fa-solid fa-bars"></i></span>
+</nav>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const menuToggle = document.querySelector(".ext-menu-toggle");
+        const navLinks = document.querySelector(".ext-nav-links");
+        const nav = document.querySelector(".ext-navigation");
+        const libraryHandler = document.getElementById("library-handler");
+        const dropdownContainer = document.getElementById("ext-dropdown-items");
+        let lastScrollY = window.scrollY;
+
+        function closeDropdown() {
+            if (dropdownContainer.classList.contains("show")) {
+                libraryHandler.classList.remove("open");
+                dropdownContainer.classList.remove("show");
+                setTimeout(() => {
+                    if (!dropdownContainer.classList.contains("show")) {
+                        dropdownContainer.style.display = "none";
+                    }
+                }, 300);
+            }
+        }
+
+        function openDropdown() {
+            dropdownContainer.style.display = "grid";
+            libraryHandler.classList.add("open");
+            setTimeout(() => {
+                dropdownContainer.classList.add("show");
+            }, 10);
+        }
+
+        function setAppropriateHeight() {
+            if (window.innerWidth <= 768) {
+                const viewportHeight = window.innerHeight;
+                const navHeight = nav.offsetHeight;
+                navLinks.style.maxHeight = `${viewportHeight - navHeight}px`;
+                navLinks.style.overflowY = "auto";
+            } else {
+                navLinks.style.maxHeight = "";
+                navLinks.style.overflowY = "";
+            }
+        }
+
+        menuToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            navLinks.classList.toggle("show");
+            if (navLinks.classList.contains("show")) {
+                setAppropriateHeight();
+                closeDropdown();
+                dropdownContainer.style.display = "none";
+            }
+        });
+
+        libraryHandler.addEventListener("click", (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            if (dropdownContainer.classList.contains("show")) {
+                closeDropdown();
+            } else {
+                openDropdown();
+            }
+            setAppropriateHeight();
+        });
+
+        // Close all menus if a click is registered outside the navigation bar.
+        document.addEventListener("click", (event) => {
+            if (!nav.contains(event.target)) {
+                navLinks.classList.remove("show");
+                closeDropdown();
+            }
+        });
+
+        // Hide navigation bar on scroll down in mobile view.
+        window.addEventListener("scroll", () => {
+            if (window.innerWidth <= 768) {
+                if (window.scrollY > lastScrollY && window.scrollY > nav.offsetHeight){
+                    nav.classList.add("hide");
+                } else {
+                    nav.classList.remove("hide");
+                }
+                lastScrollY = window.scrollY;
+            }
+        });
+
+        window.addEventListener("resize", setAppropriateHeight);
+    });
+</script>
+<!-- NAVBAR END -->
+
+
+<div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.svg" alt="Mooncake.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">Mooncake.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Mooncake.jl</a></li><li><a class="tocitem" href="../../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../../interface/">Interface</a></li><li><span class="tocitem">Understanding Mooncake.jl</span><ul><li><a class="tocitem" href="../../understanding_mooncake/introduction/">Introduction</a></li><li><a class="tocitem" href="../../understanding_mooncake/algorithmic_differentiation/">Algorithmic Differentiation</a></li><li><a class="tocitem" href="../../understanding_mooncake/rule_system/">Mooncake.jl&#39;s Rule System</a></li><li><a class="tocitem" href="../../understanding_mooncake/what_programme_are_you_differentiating/">What Programme Are You Differentiating?</a></li></ul></li><li><span class="tocitem">Utilities</span><ul><li><a class="tocitem" href="../../utilities/defining_rules/">Defining Rules</a></li><li><a class="tocitem" href="../../utilities/debug_mode/">Debug Mode</a></li><li><a class="tocitem" href="../../utilities/debugging_and_mwes/">Debugging and MWEs</a></li></ul></li><li><span class="tocitem">Developer Documentation</span><ul><li><a class="tocitem" href="../running_tests_locally/">Running Tests Locally</a></li><li><a class="tocitem" href="../developer_tools/">Developer Tools</a></li><li><a class="tocitem" href="../tangents/">Tangents</a></li><li><a class="tocitem" href="../custom_tangent_type/">Writing Custom Tangent Types</a></li><li><a class="tocitem" href="../scalar_rules_via_ndual/">Scalar And Low-Dimensional Rules Via <code>NDual</code></a></li><li><a class="tocitem" href="../ir_representation/">IR Representations and Code Transformations</a></li><li><a class="tocitem" href="../forwards_mode_design/">Forwards-Mode Design</a></li><li class="is-active"><a class="tocitem" href>Reverse-Mode Design</a><ul class="internal"><li><a class="tocitem" href="#High-Level-Transform:-IRCode-to-IRCode"><span>High-Level Transform: <code>IRCode</code> to <code>IRCode</code></span></a></li><li><a class="tocitem" href="#A-Worked-Mini-Example"><span>A Worked Mini-Example</span></a></li><li><a class="tocitem" href="#CFGBlock:-The-Reverse-Mode-Working-IR"><span><code>CFGBlock</code>: The Reverse-Mode Working IR</span></a></li><li><a class="tocitem" href="#Data-Structures-That-Matter-Most"><span>Data Structures That Matter Most</span></a></li><li><a class="tocitem" href="#Statement-Level-MWEs"><span>Statement-Level MWEs</span></a></li><li><a class="tocitem" href="#How-Control-Flow-Is-Handled"><span>How Control Flow Is Handled</span></a></li><li><a class="tocitem" href="#Entry-and-Exit-Blocks"><span>Entry and Exit Blocks</span></a></li><li><a class="tocitem" href="#Forward-to-Reverse-Communication"><span>Forward-to-Reverse Communication</span></a></li><li><a class="tocitem" href="#Concept-to-Helper-Map"><span>Concept-to-Helper Map</span></a></li><li><a class="tocitem" href="#Where-This-Lives-in-Code"><span>Where This Lives in Code</span></a></li><li><a class="tocitem" href="#Captures-and-Closure-Construction"><span>Captures and Closure Construction</span></a></li><li><a class="tocitem" href="#SSA-Nodes-Not-Covered"><span>SSA Nodes Not Covered</span></a></li><li><a class="tocitem" href="#Known-Boundaries"><span>Known Boundaries</span></a></li><li><a class="tocitem" href="#Further-Reading"><span>Further Reading</span></a></li></ul></li><li><a class="tocitem" href="../misc_internals_notes/">Misc. Internals Notes</a></li><li><a class="tocitem" href="../advanced_debugging/">Advanced Debugging</a></li><li><a class="tocitem" href="../internal_docstrings/">Internal Docstrings</a></li></ul></li><li><a class="tocitem" href="../../known_limitations/">Known Limitations</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Developer Documentation</a></li><li class="is-active"><a href>Reverse-Mode Design</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Reverse-Mode Design</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl/blob/main/docs/src/developer_documentation/reverse_mode_design.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Reverse-Mode-Design"><a class="docs-heading-anchor" href="#Reverse-Mode-Design">Reverse-Mode Design</a><a id="Reverse-Mode-Design-1"></a><a class="docs-heading-anchor-permalink" href="#Reverse-Mode-Design" title="Permalink"></a></h1><p>Last checked: 04/04/2026, Julia v1.10 / v1.11 / v1.12.</p><p>This page gives a high-level map of how Mooncake&#39;s reverse-mode transform is structured. It is aimed at readers who want to understand the main ideas before reading the implementation.</p><h2 id="High-Level-Transform:-IRCode-to-IRCode"><a class="docs-heading-anchor" href="#High-Level-Transform:-IRCode-to-IRCode">High-Level Transform: <code>IRCode</code> to <code>IRCode</code></a><a id="High-Level-Transform:-IRCode-to-IRCode-1"></a><a class="docs-heading-anchor-permalink" href="#High-Level-Transform:-IRCode-to-IRCode" title="Permalink"></a></h2><p>The reverse-mode pipeline is easiest to understand as a four-step transform:</p><ol><li>Start from normalized primal <code>IRCode</code>.</li><li>Convert that <code>IRCode</code> into Mooncake&#39;s builder-local CFG representation.</li><li>Assemble new forward and reverse CFGs.</li><li>Lower each assembled CFG back to compiler <code>IRCode</code>.</li></ol><p>So reverse mode is no longer &quot;edit compiler IR in place until it works&quot;. The compiler <code>IRCode</code> is the input and output format, but most of the reverse-mode assembly happens in the middle on <code>CFGBlock</code>s with Mooncake <code>ID</code>s.</p><h3 id="1.-Normalize-and-reinterpret-the-primal-IRCode"><a class="docs-heading-anchor" href="#1.-Normalize-and-reinterpret-the-primal-IRCode">1. Normalize and reinterpret the primal <code>IRCode</code></a><a id="1.-Normalize-and-reinterpret-the-primal-IRCode-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Normalize-and-reinterpret-the-primal-IRCode" title="Permalink"></a></h3><p><a href="../internal_docstrings/#Mooncake.generate_ir-Tuple{Mooncake.MooncakeInterpreter, Any}"><code>generate_ir</code></a> begins by looking up the inferred primal <code>IRCode</code>, running <a href="../internal_docstrings/#Mooncake.normalise!-Tuple{Compiler.IRCode, Vector{Symbol}}"><code>normalise!</code></a>, and converting the result into CFG blocks. At that point the source of truth is still the primal <code>IRCode</code>, but reverse mode stops working directly with compiler block numbers and SSA names.</p><p>The local CFG layer exists because reverse mode needs to introduce new control flow, not just rewrite statements. In particular, the pullback has to reconstruct which predecessor edge was taken through the primal CFG, including phi-sensitive cases.</p><h3 id="2.-Translate-each-primal-statement-into-AD-fragments"><a class="docs-heading-anchor" href="#2.-Translate-each-primal-statement-into-AD-fragments">2. Translate each primal statement into AD fragments</a><a id="2.-Translate-each-primal-statement-into-AD-fragments-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Translate-each-primal-statement-into-AD-fragments" title="Permalink"></a></h3><p>Each primal statement is translated by <a href="../internal_docstrings/#Mooncake.make_ad_stmts!"><code>make_ad_stmts!</code></a> into an <code>ADStmtInfo</code>. This is a small per-statement plan containing:</p><ul><li>forward-pass instructions</li><li>reverse-pass instructions</li><li>an optional communication value that must survive from the forward run to the pullback</li></ul><p><code>ADInfo</code> stores the global transform state used while assembling those fragments: argument and SSA type tables, reverse-data references, shared-data bookkeeping, block-stack information for control-flow reconstruction, and debug-mode configuration.</p><p>The important design point is that statement translation does not directly build the final pullback <code>IRCode</code>. It produces forward and reverse fragments first, and whole CFGs are assembled afterward.</p><h3 id="3.-Assemble-forward-and-reverse-CFGs"><a class="docs-heading-anchor" href="#3.-Assemble-forward-and-reverse-CFGs">3. Assemble forward and reverse CFGs</a><a id="3.-Assemble-forward-and-reverse-CFGs-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Assemble-forward-and-reverse-CFGs" title="Permalink"></a></h3><p><code>forwards_pass_ir</code> builds the forward closure CFG. This CFG:</p><ul><li>loads shared captured state</li><li>initializes lazy zero-rdata bookkeeping</li><li>emits the translated forward statements for each primal block</li><li>pushes communication values needed later by the pullback</li><li>records block-stack information when the reverse pass must recover dynamic control flow</li></ul><p><code>pullback_ir</code> then builds the pullback CFG separately. This CFG:</p><ul><li>loads shared data and reverse-data references</li><li>dispatches to the block that actually exited during the forward run</li><li>walks primal statements in reverse order</li><li>reconstructs predecessor-sensitive control flow</li><li>handles phi nodes by routing through edge-specific reverse blocks when needed</li><li>materializes the final cotangent tuple returned by the pullback closure</li></ul><p>This is why the pullback is more than &quot;run the statements backwards&quot;. It also has to replay the control-flow structure needed to send cotangents back along the correct incoming edges.</p><h3 id="4.-Lower-the-builder-CFG-back-to-compiler-IRCode"><a class="docs-heading-anchor" href="#4.-Lower-the-builder-CFG-back-to-compiler-IRCode">4. Lower the builder CFG back to compiler <code>IRCode</code></a><a id="4.-Lower-the-builder-CFG-back-to-compiler-IRCode-1"></a><a class="docs-heading-anchor-permalink" href="#4.-Lower-the-builder-CFG-back-to-compiler-IRCode" title="Permalink"></a></h3><p>Once the forward and reverse CFGs are assembled, <code>lower_cfg_blocks_to_ir</code> turns them back into coherent compiler <code>IRCode</code>. This step handles the mechanical reconstruction work in one place:</p><ul><li>canonicalizing the local CFG</li><li>pruning unreachable blocks</li><li>lowering switch-style control flow into compiler-compatible terminators</li><li>rebuilding SSA numbering and block numbering</li><li>constructing a fresh <code>Core.Compiler.IRCode</code></li></ul><p>After that, <a href="../internal_docstrings/#Mooncake.generate_ir-Tuple{Mooncake.MooncakeInterpreter, Any}"><code>generate_ir</code></a> can run the usual optimization pass on both results and wrap them into opaque closures for the final derived reverse rule.</p><p>In short, the reverse-mode transform is:</p><pre><code class="language-text hljs">primal IRCode
+  -&gt; normalized primal IRCode
+  -&gt; builder-local CFG
+  -&gt; forward CFG + pullback CFG
+  -&gt; forward IRCode + pullback IRCode</code></pre><p>That middle CFG stage is what keeps the reverse-mode implementation manageable: it isolates the hard control-flow surgery from the compiler&#39;s concrete <code>IRCode</code> datastructure, and only lowers back to compiler IR once the new program structure is complete.</p><h2 id="A-Worked-Mini-Example"><a class="docs-heading-anchor" href="#A-Worked-Mini-Example">A Worked Mini-Example</a><a id="A-Worked-Mini-Example-1"></a><a class="docs-heading-anchor-permalink" href="#A-Worked-Mini-Example" title="Permalink"></a></h2><p>Here is the smallest useful mental model for the whole reverse-mode pipeline. Consider a primal function with one active call followed by a return:</p><pre><code class="language-julia hljs">function f(x)
+    y = sin(x)
+    return y
+end</code></pre><p>Very roughly, the normalized primal <code>IRCode</code> looks like:</p><pre><code class="language-text hljs">bb1:
+    %1 = sin(_2)
+    return %1</code></pre><h3 id="Step-1:-statement-translation"><a class="docs-heading-anchor" href="#Step-1:-statement-translation">Step 1: statement translation</a><a id="Step-1:-statement-translation-1"></a><a class="docs-heading-anchor-permalink" href="#Step-1:-statement-translation" title="Permalink"></a></h3><p><code>make_ad_stmts!</code> translates the call and the return into forward and reverse fragments.</p><p>For the call, the important effect is:</p><pre><code class="language-text hljs">forward:
+    %rule_result = rule_for_sin(x_arg)
+    %pb = getfield(%rule_result, 2)
+    %1 = getfield(%rule_result, 1)
+
+reverse:
+    %d1 = rdata_ref_for_%1[]
+    rdata_ref_for_%1[] = zero(...)
+    %dx = %pb(%d1)
+    increment_ref!(rdata_ref_for_x, getfield(%dx, 1))</code></pre><p>For the return, the important effect is:</p><pre><code class="language-text hljs">forward:
+    return %1
+
+reverse:
+    increment_ref!(rdata_ref_for_%1, dy)</code></pre><h3 id="Step-2:-forward-CFG-assembly"><a class="docs-heading-anchor" href="#Step-2:-forward-CFG-assembly">Step 2: forward CFG assembly</a><a id="Step-2:-forward-CFG-assembly-1"></a><a class="docs-heading-anchor-permalink" href="#Step-2:-forward-CFG-assembly" title="Permalink"></a></h3><p><code>forwards_pass_ir</code> wraps those fragments in a forward CFG with an extra entry block.</p><p>Conceptually:</p><pre><code class="language-text hljs">fwd_entry:
+    load shared captures
+    initialize lazy zero-rdata state
+    goto fwd_bb1
+
+fwd_bb1:
+    %rule_result = ...
+    %pb = ...
+    %1 = ...
+    push!(comms_stack, tuple(%pb))
+    return %1</code></pre><p>The forward closure therefore does two things at once:</p><ol><li>computes the primal/codual result</li><li>stores the information that the pullback will need later</li></ol><h3 id="Step-3:-pullback-CFG-assembly"><a class="docs-heading-anchor" href="#Step-3:-pullback-CFG-assembly">Step 3: pullback CFG assembly</a><a id="Step-3:-pullback-CFG-assembly-1"></a><a class="docs-heading-anchor-permalink" href="#Step-3:-pullback-CFG-assembly" title="Permalink"></a></h3><p><code>pullback_ir</code> builds a separate pullback CFG:</p><pre><code class="language-text hljs">rvs_entry:
+    load shared captures
+    create reverse-data refs
+    goto rvs_bb1
+
+rvs_bb1:
+    %pb = getfield(pop!(comms_stack), 1)
+    increment_ref!(rdata_ref_for_%1, dy)
+    %d1 = rdata_ref_for_%1[]
+    rdata_ref_for_%1[] = zero(...)
+    %dx = %pb(%d1)
+    increment_ref!(rdata_ref_for_x, getfield(%dx, 1))
+    goto rvs_exit
+
+rvs_exit:
+    read argument rdata refs
+    instantiate any lazy zero-rdata placeholders
+    return argument cotangent tuple</code></pre><p>This is the essential pattern repeated across larger examples: the pullback is a separate CFG that consumes stored forward-pass data and sends cotangents backward through the primal dependency structure.</p><h3 id="Step-4:-lower-back-to-compiler-IR"><a class="docs-heading-anchor" href="#Step-4:-lower-back-to-compiler-IR">Step 4: lower back to compiler IR</a><a id="Step-4:-lower-back-to-compiler-IR-1"></a><a class="docs-heading-anchor-permalink" href="#Step-4:-lower-back-to-compiler-IR" title="Permalink"></a></h3><p>Finally, <code>lower_cfg_blocks_to_ir</code> converts both CFGs back to ordinary compiler <code>IRCode</code>.</p><p>So even in this tiny example the real flow is:</p><pre><code class="language-text hljs">primal IRCode
+  -&gt; translated statement fragments
+  -&gt; forward CFG / pullback CFG
+  -&gt; forward IRCode / pullback IRCode</code></pre><p>These examples use schematic names such as <code>x_arg</code> rather than exact lowered argument slots. In the real generated IR, argument indices can shift because the generated closures carry extra state in addition to the primal arguments.</p><h2 id="CFGBlock:-The-Reverse-Mode-Working-IR"><a class="docs-heading-anchor" href="#CFGBlock:-The-Reverse-Mode-Working-IR"><code>CFGBlock</code>: The Reverse-Mode Working IR</a><a id="CFGBlock:-The-Reverse-Mode-Working-IR-1"></a><a class="docs-heading-anchor-permalink" href="#CFGBlock:-The-Reverse-Mode-Working-IR" title="Permalink"></a></h2><p><code>CFGBlock</code> is Mooncake&#39;s reverse-mode-local basic-block representation. It is the format used while assembling the forward closure CFG and the pullback CFG inside <a href="https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl"><code>reverse_mode.jl</code></a>.</p><p>At a high level, a <code>CFGBlock</code> is just:</p><ul><li>a stable internal block <code>ID</code></li><li>a vector of <code>(ID, NewInstruction)</code> pairs for the statements in that block</li></ul><p>Those IDs are Mooncake-local IDs, not compiler SSA numbers or compiler block numbers. That is deliberate: reverse mode needs a representation that can survive block insertion, block splitting, and control-flow rewrites without constantly renumbering compiler SSA values.</p><h3 id="What-CFGBlock-is-used-for"><a class="docs-heading-anchor" href="#What-CFGBlock-is-used-for">What <code>CFGBlock</code> is used for</a><a id="What-CFGBlock-is-used-for-1"></a><a class="docs-heading-anchor-permalink" href="#What-CFGBlock-is-used-for" title="Permalink"></a></h3><p>The reverse transform uses <code>CFGBlock</code>s to do the hard structural work before lowering back to compiler IR. In particular, the builder-local CFG is where Mooncake:</p><ul><li>translates primal SSA statements into forward and reverse fragments</li><li>inserts extra entry and exit blocks</li><li>groups and restores communication values for the pullback</li><li>rewrites control flow into predecessor-sensitive reverse dispatch</li><li>creates edge-specific reverse blocks for phi handling</li><li>prunes unreachable blocks and canonicalizes the resulting CFG</li></ul><p>So <code>CFGBlock</code> is not an alternative public IR for Mooncake as a whole. It is a local assembly format used to construct reverse-mode programs safely before converting them back into <code>Core.Compiler.IRCode</code>.</p><h3 id="Why-IRCode-is-not-sufficient-as-the-working-format"><a class="docs-heading-anchor" href="#Why-IRCode-is-not-sufficient-as-the-working-format">Why <code>IRCode</code> is not sufficient as the working format</a><a id="Why-IRCode-is-not-sufficient-as-the-working-format-1"></a><a class="docs-heading-anchor-permalink" href="#Why-IRCode-is-not-sufficient-as-the-working-format" title="Permalink"></a></h3><p><code>IRCode</code> is sufficient as the source and target format. It is not a good format for the middle of reverse-mode assembly.</p><p>The core problem is that reverse mode does more than local statement replacement. It often has to:</p><ul><li>create fresh blocks</li><li>insert control-flow that did not exist in the primal</li><li>split one logical reverse step across several blocks</li><li>route cotangents along predecessor-specific edges</li><li>keep phi handling consistent with those edges</li><li>rebuild SSA numbering and CFG numbering coherently at the end</li></ul><p>Compiler <code>IRCode</code> stores statements and CFG structure in tightly related forms. If you edit it mid-assembly, you have to keep the instruction stream, block numbering, terminators, phi edges, and CFG metadata coherent at every intermediate step. That is possible for local edits, but it becomes brittle once reverse mode starts inserting whole blocks and rethreading control flow.</p><p><code>CFGBlock</code> avoids that problem by giving reverse mode a looser construction format:</p><ul><li>block identity is stable while the transform is running</li><li>instructions can be inserted without immediate SSA renumbering</li><li>predecessor and successor rewrites can happen before final lowering</li><li>phi-edge handling can be expressed directly in terms of predecessor block IDs</li></ul><p>Only once the new forward and reverse CFGs are structurally complete does Mooncake lower them back to <code>IRCode</code>, rebuild block/SSA numbering, and hand the result back to the compiler.</p><h3 id="The-right-way-to-think-about-it"><a class="docs-heading-anchor" href="#The-right-way-to-think-about-it">The right way to think about it</a><a id="The-right-way-to-think-about-it-1"></a><a class="docs-heading-anchor-permalink" href="#The-right-way-to-think-about-it" title="Permalink"></a></h3><p><code>IRCode</code> is the compiler-facing representation. <code>CFGBlock</code> is the reverse-mode assembly representation.</p><p>Mooncake still begins with normalized primal <code>IRCode</code> and ends with compiler <code>IRCode</code>, but it does the difficult control-flow surgery in <code>CFGBlock</code> form because that is the point where the transform needs flexibility more than compiler-format exactness.</p><h2 id="Data-Structures-That-Matter-Most"><a class="docs-heading-anchor" href="#Data-Structures-That-Matter-Most">Data Structures That Matter Most</a><a id="Data-Structures-That-Matter-Most-1"></a><a class="docs-heading-anchor-permalink" href="#Data-Structures-That-Matter-Most" title="Permalink"></a></h2><p>Two data structures carry most of the transform&#39;s state:</p><ul><li><code>ADInfo</code>: global state shared across the whole derivation</li><li><code>ADStmtInfo</code>: the per-statement translation result</li></ul><h3 id="ADInfo"><a class="docs-heading-anchor" href="#ADInfo"><code>ADInfo</code></a><a id="ADInfo-1"></a><a class="docs-heading-anchor-permalink" href="#ADInfo" title="Permalink"></a></h3><p>When reading the implementation, the most important <code>ADInfo</code> fields are:</p><ul><li><code>shared_data_pairs</code>: the values captured by both generated closures</li><li><code>block_stack_id</code> and <code>block_stack</code>: the control-flow replay channel</li><li><code>arg_rdata_ref_ids</code> and <code>ssa_rdata_ref_ids</code>: where reverse data is accumulated</li><li><code>ssa_insts</code> and <code>arg_types</code>: the primal type information used during translation</li><li><code>lazy_zero_rdata_ref_id</code>: the placeholder-zero mechanism used at pullback exit</li></ul><p>The remaining fields mostly support those jobs rather than introducing separate ideas.</p><h3 id="ADStmtInfo"><a class="docs-heading-anchor" href="#ADStmtInfo"><code>ADStmtInfo</code></a><a id="ADStmtInfo-1"></a><a class="docs-heading-anchor-permalink" href="#ADStmtInfo" title="Permalink"></a></h3><p><code>ADStmtInfo</code> is simpler. Its central fields are:</p><ul><li><code>fwds</code>: forward-pass instructions for the primal statement</li><li><code>rvs</code>: reverse-pass instructions for that statement</li><li><code>comms_id</code>: the optional value that must survive from forward execution to pullback execution</li></ul><p>If you understand those three fields, you understand the role of <code>ADStmtInfo</code>.</p><h2 id="Statement-Level-MWEs"><a class="docs-heading-anchor" href="#Statement-Level-MWEs">Statement-Level MWEs</a><a id="Statement-Level-MWEs-1"></a><a class="docs-heading-anchor-permalink" href="#Statement-Level-MWEs" title="Permalink"></a></h2><p>The reverse-mode transform is easiest to follow if you read <code>make_ad_stmts!</code> as a translator from one primal SSA statement into:</p><ul><li>the forward statements that execute the primal computation and save anything the pullback will need later</li><li>the reverse statements that consume cotangents and propagate them to arguments and earlier SSA values</li></ul><p>These are only sketches, but they match the current implementation strategy closely. They use pseudocode-style helper names such as <code>rule_for_sin</code>, <code>increment_ref!</code>, and <code>switch_to_reverse_phi_edge(...)</code> to show the dataflow. They are not literal emitted APIs or exact compiler IR.</p><h3 id="MWE-1:-Constant-literal"><a class="docs-heading-anchor" href="#MWE-1:-Constant-literal">MWE 1: Constant literal</a><a id="MWE-1:-Constant-literal-1"></a><a class="docs-heading-anchor-permalink" href="#MWE-1:-Constant-literal" title="Permalink"></a></h3><p>Primal statement:</p><pre><code class="language-julia hljs">%5 = 3.0</code></pre><p>Forward fragment:</p><pre><code class="language-julia hljs">%5 = uninit_fcodual(3.0)</code></pre><p>Reverse fragment:</p><pre><code class="language-julia hljs">nothing</code></pre><p>Constants produce a <code>CoDual</code> on the forward pass, but there is nothing to propagate on the reverse pass because Mooncake does not track cotangents for literals.</p><h3 id="MWE-2:-Active-branch-condition"><a class="docs-heading-anchor" href="#MWE-2:-Active-branch-condition">MWE 2: Active branch condition</a><a id="MWE-2:-Active-branch-condition-1"></a><a class="docs-heading-anchor-permalink" href="#MWE-2:-Active-branch-condition" title="Permalink"></a></h3><p>Primal statement:</p><pre><code class="language-julia hljs">goto #3 if not %2</code></pre><p>If <code>%2</code> is active, then <code>%2</code> is a <code>CoDual</code> in the forward IR, so the condition must branch on its primal:</p><p>Forward fragment:</p><pre><code class="language-julia hljs">%cond = primal(%2)
+goto #3 if not %cond</code></pre><p>Reverse fragment:</p><pre><code class="language-julia hljs">nothing</code></pre><p>The branch itself carries no cotangent information. Its effect on the reverse pass is indirect: the forward pass records enough control-flow information for the pullback to recover which edge was taken.</p><h3 id="MWE-3:-Active-call"><a class="docs-heading-anchor" href="#MWE-3:-Active-call">MWE 3: Active call</a><a id="MWE-3:-Active-call-1"></a><a class="docs-heading-anchor-permalink" href="#MWE-3:-Active-call" title="Permalink"></a></h3><p>Primal statement:</p><pre><code class="language-julia hljs">%7 = sin(%4)</code></pre><p>Very roughly, the forward fragment becomes:</p><pre><code class="language-julia hljs">%rule_result = rule_for_sin(%4)
+%pb = getfield(%rule_result, 2)
+%raw_y = getfield(%rule_result, 1)
+%7 = typeassert(%raw_y, CoDual{Float64, ...})</code></pre><p>and the reverse fragment becomes:</p><pre><code class="language-julia hljs">%dy = rdata_ref_for_%7[]
+rdata_ref_for_%7[] = zero_like_rdata_from_type(typeof(%7))
+%dx_tuple = %pb(%dy)
+increment_ref!(rdata_ref_for_%4, getfield(%dx_tuple, 1))</code></pre><p>The exact generated code is more explicit than this because Mooncake writes out the <code>getfield</code>, <code>setfield!</code>, and <code>increment!!</code> operations directly. That keeps the reverse-data references visible to the optimizer.</p><p>The important point is that the forward fragment computes both the output codual and a pullback object, and the reverse fragment later consumes the stored pullback plus the output cotangent.</p><h3 id="MWE-4:-Return-of-an-active-SSA-value"><a class="docs-heading-anchor" href="#MWE-4:-Return-of-an-active-SSA-value">MWE 4: Return of an active SSA value</a><a id="MWE-4:-Return-of-an-active-SSA-value-1"></a><a class="docs-heading-anchor-permalink" href="#MWE-4:-Return-of-an-active-SSA-value" title="Permalink"></a></h3><p>Primal statement:</p><pre><code class="language-julia hljs">return %9</code></pre><p>Forward fragment:</p><pre><code class="language-julia hljs">%checked = typeassert(%9, fwd_ret_type)
+return %checked</code></pre><p>Reverse fragment:</p><pre><code class="language-julia hljs">increment_ref!(rdata_ref_for_%9, dy)</code></pre><p>The forward closure returns the codual value. The pullback closure receives the cotangent of that return value and accumulates it into the reverse-data reference associated with <code>%9</code>.</p><h3 id="MWE-5:-Phi-nodes"><a class="docs-heading-anchor" href="#MWE-5:-Phi-nodes">MWE 5: Phi nodes</a><a id="MWE-5:-Phi-nodes-1"></a><a class="docs-heading-anchor-permalink" href="#MWE-5:-Phi-nodes" title="Permalink"></a></h3><p>Consider a primal block that starts with a phi node:</p><pre><code class="language-julia hljs">3 ┄ %6 = φ (#1 =&gt; arg_x, #2 =&gt; %5)</code></pre><p>On the forward pass, this is mostly structural. The phi node is rebuilt so that its incoming values are coduals rather than raw primal values:</p><pre><code class="language-julia hljs">3 ┄ %6 = φ (#1 =&gt; codual_arg_x, #2 =&gt; %5)</code></pre><p>Schematically, the incoming primal argument is replaced by the corresponding codual argument in the generated forward closure. In the real lowered IR, the exact argument slot can shift because the generated closure carries extra leading state.</p><p>The important work happens on the reverse side, not at the phi statement itself. Suppose the cotangent for <code>%6</code> is stored in <code>r%6</code>. When the pullback reaches the reverse counterpart of this block, it first extracts and zeros the cotangent for <code>%6</code>, then dispatches to an edge-specific reverse block:</p><pre><code class="language-julia hljs">%d6 = r%6[]
+r%6[] = zero_like_rdata_from_type(typeof(%6))
+switch_to_reverse_phi_edge(...)</code></pre><p>If the primal arrived from block <code>#1</code>, the reverse phi-edge block behaves roughly like:</p><pre><code class="language-julia hljs">increment_ref!(r_arg_x, %d6)
+goto reverse_block_for_#1</code></pre><p>If the primal arrived from block <code>#2</code>, it behaves roughly like:</p><pre><code class="language-julia hljs">increment_ref!(r%5, %d6)
+goto reverse_block_for_#2</code></pre><p>So the key point is that phi handling is split across two places:</p><ul><li>the forward pass rebuilds the phi with codual inputs</li><li>the reverse pass routes cotangents back through predecessor-specific phi-edge blocks</li></ul><p>This is why the pullback needs predecessor reconstruction, rather than just local statement reversal.</p><h2 id="How-Control-Flow-Is-Handled"><a class="docs-heading-anchor" href="#How-Control-Flow-Is-Handled">How Control Flow Is Handled</a><a id="How-Control-Flow-Is-Handled-1"></a><a class="docs-heading-anchor-permalink" href="#How-Control-Flow-Is-Handled" title="Permalink"></a></h2><p>Reverse mode cannot treat control flow as a local statement rewrite problem. The forward pass must preserve enough information for the pullback to know:</p><ul><li>which block actually executed next</li><li>which predecessor edge reached a join block</li><li>which reverse block should run after the current one finishes</li></ul><p>That is why reverse mode assembles whole CFGs and uses the block stack when the predecessor is not statically determined.</p><h3 id="MWE-1:-Straight-line-fallthrough"><a class="docs-heading-anchor" href="#MWE-1:-Straight-line-fallthrough">MWE 1: Straight-line fallthrough</a><a id="MWE-1:-Straight-line-fallthrough-1"></a><a class="docs-heading-anchor-permalink" href="#MWE-1:-Straight-line-fallthrough" title="Permalink"></a></h3><p>Suppose the primal CFG is just:</p><pre><code class="language-text hljs">bb1 -&gt; bb2 -&gt; return</code></pre><p>and <code>bb2</code> has only one predecessor, namely <code>bb1</code>.</p><p>In this case there is no ambiguity. The forward pass does not need to log any predecessor ID for <code>bb2</code>, and the reverse pass can jump directly from the reverse counterpart of <code>bb2</code> to the reverse counterpart of <code>bb1</code>.</p><p>Very roughly:</p><pre><code class="language-text hljs">forward:   fwd_bb1 ; fwd_bb2 ; return
+reverse:   rvs_bb2 ; goto rvs_bb1</code></pre><p>This is the cheap path: no block-stack push, no block-stack pop, no predecessor switch.</p><h3 id="MWE-2:-Simple-conditional-branch"><a class="docs-heading-anchor" href="#MWE-2:-Simple-conditional-branch">MWE 2: Simple conditional branch</a><a id="MWE-2:-Simple-conditional-branch-1"></a><a class="docs-heading-anchor-permalink" href="#MWE-2:-Simple-conditional-branch" title="Permalink"></a></h3><p>Suppose the primal CFG is:</p><pre><code class="language-text hljs">bb1:
+    if cond goto bb2 else bb3
+
+bb2:
+    ...
+    goto bb4
+
+bb3:
+    ...
+    goto bb4
+
+bb4:
+    return y</code></pre><p>On the forward pass, execution may reach <code>bb4</code> from either <code>bb2</code> or <code>bb3</code>. That predecessor is not statically known, so the forward pass records enough control-flow information to recover it later.</p><p>Conceptually the forward pass does something like:</p><pre><code class="language-text hljs">fwd_bb1:
+    branch on primal(cond)
+
+fwd_bb2:
+    push!(block_stack, bb2)
+    ...
+    goto fwd_bb4
+
+fwd_bb3:
+    push!(block_stack, bb3)
+    ...
+    goto fwd_bb4</code></pre><p>Then, once the pullback reaches the reverse counterpart of <code>bb4</code>, it uses <code>make_switch_stmts</code> to recover which predecessor actually led there:</p><pre><code class="language-text hljs">rvs_bb4:
+    prev = pop!(block_stack)
+    if prev == bb2
+        goto rvs_phi_or_pred_for_bb2
+    else
+        goto rvs_phi_or_pred_for_bb3</code></pre><p>So the pullback does not &quot;re-run the branch condition&quot;. It replays the realized control-flow path from the forward run.</p><h3 id="MWE-3:-Join-block-with-phi-node"><a class="docs-heading-anchor" href="#MWE-3:-Join-block-with-phi-node">MWE 3: Join block with phi node</a><a id="MWE-3:-Join-block-with-phi-node-1"></a><a class="docs-heading-anchor-permalink" href="#MWE-3:-Join-block-with-phi-node" title="Permalink"></a></h3><p>Now combine branching with a phi node:</p><pre><code class="language-julia hljs">bb2:
+    %5 = ...
+    goto bb4
+
+bb3:
+    goto bb4
+
+bb4:
+    %6 = φ (#2 =&gt; %5, #3 =&gt; arg_x)
+    return %6</code></pre><p>The forward pass computes <code>%6</code> in the usual SSA sense. The reverse pass has to do two things at the join:</p><ol><li>determine whether control came from <code>bb2</code> or <code>bb3</code></li><li>send the cotangent of <code>%6</code> back to <code>%5</code> or <code>arg_x</code> accordingly</li></ol><p>So the reverse CFG for <code>bb4</code> behaves roughly like:</p><pre><code class="language-text hljs">rvs_bb4:
+    d6 = r%6[]
+    r%6[] = zero(...)
+    prev = pop!(block_stack)
+    if prev == bb2
+        goto rvs_phi_edge_bb2
+    else
+        goto rvs_phi_edge_bb3
+
+rvs_phi_edge_bb2:
+    increment_ref!(r%5, d6)
+    goto rvs_bb2
+
+rvs_phi_edge_bb3:
+    increment_ref!(r_arg_x, d6)
+    goto rvs_bb3</code></pre><p>This is the precise place where control-flow replay and phi handling meet.</p><h3 id="MWE-4:-Unique-predecessor-optimization"><a class="docs-heading-anchor" href="#MWE-4:-Unique-predecessor-optimization">MWE 4: Unique-predecessor optimization</a><a id="MWE-4:-Unique-predecessor-optimization-1"></a><a class="docs-heading-anchor-permalink" href="#MWE-4:-Unique-predecessor-optimization" title="Permalink"></a></h3><p>Mooncake does not always push block IDs. If a block&#39;s predecessor is uniquely determined, the reverse pass can hard-code that predecessor instead of reading the block stack.</p><p>For example:</p><pre><code class="language-text hljs">bb1 -&gt; bb2
+bb2 -&gt; bb3
+bb3 -&gt; return</code></pre><p>If <code>bb3</code> can only ever be reached from <code>bb2</code>, then the reverse pass for <code>bb3</code> can go straight to <code>bb2</code>. No stack traffic is needed for that edge.</p><p>This optimization matters because dynamic control-flow logging is only needed where the forward execution path loses information that the pullback must recover later.</p><h2 id="Entry-and-Exit-Blocks"><a class="docs-heading-anchor" href="#Entry-and-Exit-Blocks">Entry and Exit Blocks</a><a id="Entry-and-Exit-Blocks-1"></a><a class="docs-heading-anchor-permalink" href="#Entry-and-Exit-Blocks" title="Permalink"></a></h2><p>Both generated closures contain extra structural blocks that do not correspond directly to a single primal block.</p><h3 id="Forward-entry-block"><a class="docs-heading-anchor" href="#Forward-entry-block">Forward entry block</a><a id="Forward-entry-block-1"></a><a class="docs-heading-anchor-permalink" href="#Forward-entry-block" title="Permalink"></a></h3><p>The forward entry block is responsible for:</p><ul><li>loading shared captured data</li><li>initializing lazy zero-rdata placeholders for arguments</li><li>optionally logging the synthetic entry block for later reverse dispatch</li></ul><h3 id="Pullback-entry-block"><a class="docs-heading-anchor" href="#Pullback-entry-block">Pullback entry block</a><a id="Pullback-entry-block-1"></a><a class="docs-heading-anchor-permalink" href="#Pullback-entry-block" title="Permalink"></a></h3><p>The pullback entry block is responsible for:</p><ul><li>loading the same shared captured data</li><li>creating reverse-data references for arguments and SSA values</li><li>dispatching to the reverse block associated with the primal block that actually returned</li></ul><h3 id="Pullback-exit-block"><a class="docs-heading-anchor" href="#Pullback-exit-block">Pullback exit block</a><a id="Pullback-exit-block-1"></a><a class="docs-heading-anchor-permalink" href="#Pullback-exit-block" title="Permalink"></a></h3><p>The pullback exit block is responsible for:</p><ul><li>reading argument reverse-data references</li><li>materializing true zeros from lazy zero-rdata placeholders where needed</li><li>packaging the final argument cotangent tuple</li><li>returning that tuple with the expected type</li></ul><p>These blocks are worth calling out explicitly because they explain why the generated forward and reverse CFGs do not look like simple block-for-block reversals of the primal CFG.</p><h2 id="Forward-to-Reverse-Communication"><a class="docs-heading-anchor" href="#Forward-to-Reverse-Communication">Forward-to-Reverse Communication</a><a id="Forward-to-Reverse-Communication-1"></a><a class="docs-heading-anchor-permalink" href="#Forward-to-Reverse-Communication" title="Permalink"></a></h2><p>Forward and reverse code do not communicate through a single channel. The current design uses three distinct mechanisms, each for a different kind of information.</p><h3 id="1.-Shared-captured-data"><a class="docs-heading-anchor" href="#1.-Shared-captured-data">1. Shared captured data</a><a id="1.-Shared-captured-data-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Shared-captured-data" title="Permalink"></a></h3><p>Some values are known statically when the derived rule is built and are needed by both the forward closure and the pullback closure. These go through <code>SharedDataPairs</code>.</p><p>Examples include:</p><ul><li>rule objects that are not singleton values</li><li>constant coduals that are not safe to interpolate directly into IR</li><li>the per-transform block stack object</li><li>the lazy-zero-rdata reference used to materialize correctly typed zeros at pullback exit</li></ul><p>Both generated closures receive the same captures tuple. At the start of each closure, <code>shared_data_stmts</code> extracts those captures back into local IDs.</p><p>This is the &quot;static shared state&quot; channel: build-time data, not per-execution data.</p><h3 id="2.-Per-block-communication-stacks"><a class="docs-heading-anchor" href="#2.-Per-block-communication-stacks">2. Per-block communication stacks</a><a id="2.-Per-block-communication-stacks-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Per-block-communication-stacks" title="Permalink"></a></h3><p>Some values are only known during the forward execution and must be handed to the pullback for the matching block. This is what the <code>comms_id</code> field of <code>ADStmtInfo</code> is for.</p><p>For a statement like an active call, the typical communicated value is the pullback object:</p><pre><code class="language-julia hljs">%rule_result = rule(...)
+%pb = getfield(%rule_result, 2)</code></pre><p><code>%pb</code> is marked as the statement&#39;s <code>comms_id</code>. Later, <code>create_comms_insts!</code> groups the <code>comms_id</code>s for a primal block, builds a tuple of them on the forward pass, and pushes that tuple onto a block-local stack:</p><pre><code class="language-julia hljs">%tuple = tuple(%pb1, %pb2, ...)
+push!(comms_stack, %tuple)</code></pre><p>At the start of the corresponding reverse block, the pullback pops that tuple and restores the saved values to the same IDs:</p><pre><code class="language-julia hljs">%tuple = pop!(comms_stack)
+%pb1 = getfield(%tuple, 1)
+%pb2 = getfield(%tuple, 2)</code></pre><p>This is the &quot;dynamic value&quot; channel: values produced during the forward execution and consumed later by the reverse execution.</p><h3 id="3.-The-block-stack-for-dynamic-control-flow"><a class="docs-heading-anchor" href="#3.-The-block-stack-for-dynamic-control-flow">3. The block stack for dynamic control flow</a><a id="3.-The-block-stack-for-dynamic-control-flow-1"></a><a class="docs-heading-anchor-permalink" href="#3.-The-block-stack-for-dynamic-control-flow" title="Permalink"></a></h3><p>The pullback has to know which predecessor edge the primal actually took. When that predecessor is not statically determined, the forward pass records block IDs on a dedicated <code>BlockStack</code>.</p><p>On the forward pass, selected blocks push their ID:</p><pre><code class="language-julia hljs">push!(block_stack, current_block_id)</code></pre><p>On the reverse pass, <code>make_switch_stmts</code> pops the predecessor ID and dispatches accordingly:</p><pre><code class="language-julia hljs">%prev = pop!(block_stack)
+switch(%prev == pred1 ? ..., %prev == pred2 ? ..., ...)</code></pre><p>This is what allows the pullback to send cotangents along the correct incoming edge and to handle phi nodes via predecessor-specific reverse blocks.</p><p>In short, the three communication mechanisms are:</p><ol><li>captures shared by both closures for static build-time data</li><li>per-block comms stacks for dynamic forward values such as pullback objects</li><li>the block stack for replaying dynamic control flow on the reverse pass</li></ol><h2 id="Concept-to-Helper-Map"><a class="docs-heading-anchor" href="#Concept-to-Helper-Map">Concept-to-Helper Map</a><a id="Concept-to-Helper-Map-1"></a><a class="docs-heading-anchor-permalink" href="#Concept-to-Helper-Map" title="Permalink"></a></h2><p>If you want to jump from the conceptual description in this page to the implementation, these are the main landmarks:</p><ul><li>statement translation: <code>make_ad_stmts!</code></li><li>shared captured data: <code>SharedDataPairs</code>, <code>shared_data_tuple</code>, <code>shared_data_stmts</code></li><li>per-block forward-to-reverse values: <code>create_comms_insts!</code></li><li>forward CFG assembly: <code>forwards_pass_ir</code></li><li>pullback CFG assembly: <code>pullback_ir</code></li><li>control-flow replay: <code>__push_blk_stack!</code>, <code>__pop_blk_stack!</code>, <code>make_switch_stmts</code></li><li>phi-edge reverse routing: <code>conclude_rvs_block</code>, <code>rvs_phi_block</code></li><li>local CFG representation: <code>CFGBlock</code></li><li>lowering back to compiler IR: <code>lower_cfg_blocks_to_ir</code></li></ul><h2 id="Where-This-Lives-in-Code"><a class="docs-heading-anchor" href="#Where-This-Lives-in-Code">Where This Lives in Code</a><a id="Where-This-Lives-in-Code-1"></a><a class="docs-heading-anchor-permalink" href="#Where-This-Lives-in-Code" title="Permalink"></a></h2><p>If you want to connect the conceptual story above to the implementation, the main entry points are:</p><pre><code class="language-julia hljs">build_rrule(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false)
+
+generate_ir(
+    interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
+)</code></pre><p>Here <code>sig_or_mi</code> is either a signature such as <code>Tuple{typeof(foo), Float64}</code> or a <code>Core.MethodInstance</code>.</p><p>If the signature has a custom rule (<a href="../internal_docstrings/#Mooncake.is_primitive-Union{Tuple{Tsig}, Tuple{Type{Mooncake.MinimalCtx}, Type{&lt;:Mooncake.Mode}, Type{Tsig}, UInt64}} where Tsig&lt;:Tuple"><code>Mooncake.is_primitive</code></a> returns <code>true</code>), Mooncake uses that rule. Otherwise it looks up the primal IR and differentiates it.</p><p><a href="../internal_docstrings/#Mooncake.lookup_ir-Tuple{Compiler.AbstractInterpreter, Type{&lt;:Tuple}}"><code>lookup_ir</code></a> calls <code>Core.Compiler.typeinf_ircode</code> on a method instance, which is a lower-level version of <code>Base.code_ircode</code>.</p><p>The transform works on <code>Core.Compiler.IRCode</code>, not the <code>CodeInfo</code> shown by <code>@code_typed</code>. <a href="../internal_docstrings/#Mooncake.normalise!-Tuple{Compiler.IRCode, Vector{Symbol}}"><code>normalise!</code></a> rewrites some <code>IRCode</code> expressions into forms that are easier for the AD transform to handle, after which reverse mode assembles through the local CFG builder in <a href="https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl"><code>reverse_mode.jl</code></a> and lowers back to <code>IRCode</code>.</p><h2 id="Captures-and-Closure-Construction"><a class="docs-heading-anchor" href="#Captures-and-Closure-Construction">Captures and Closure Construction</a><a id="Captures-and-Closure-Construction-1"></a><a class="docs-heading-anchor-permalink" href="#Captures-and-Closure-Construction" title="Permalink"></a></h2><p>The generated forward and reverse <code>IRCode</code>s do not communicate by calling each other directly. They communicate partly through ordinary runtime values and partly through a shared captures tuple that is embedded into the generated closures.</p><h3 id="What-gets-captured"><a class="docs-heading-anchor" href="#What-gets-captured">What gets captured</a><a id="What-gets-captured-1"></a><a class="docs-heading-anchor-permalink" href="#What-gets-captured" title="Permalink"></a></h3><p>The shared captures tuple contains the values recorded in <code>SharedDataPairs</code>, such as:</p><ul><li>static rule objects that are not safe or convenient to inline directly</li><li>stacks used for per-block communication</li><li>the block stack used for control-flow replay</li><li>the lazy-zero-rdata reference used to finish the pullback result</li></ul><p><code>generate_ir</code> builds this tuple with:</p><pre><code class="language-julia hljs">shared_data = shared_data_tuple(info.shared_data_pairs)</code></pre><p>and both generated closures are later constructed with that same tuple:</p><pre><code class="language-julia hljs">fwd_oc = misty_closure(dri.fwd_ret_type, dri.fwd_ir, dri.shared_data...)
+rvs_oc = misty_closure(dri.rvs_ret_type, dri.rvs_ir, dri.shared_data...)</code></pre><p>Both generated closures therefore receive access to the same logical captured data. At the start of each closure, <code>shared_data_stmts</code> lowers that tuple back into local IDs.</p><p>So the resulting <code>IRCode</code> does not contain the captured values directly as ordinary SSA definitions. Instead, it contains loads from the closure&#39;s captures field near the entry block.</p><h3 id="MWE:-one-captured-tuple-shared-by-both-closures"><a class="docs-heading-anchor" href="#MWE:-one-captured-tuple-shared-by-both-closures">MWE: one captured tuple shared by both closures</a><a id="MWE:-one-captured-tuple-shared-by-both-closures-1"></a><a class="docs-heading-anchor-permalink" href="#MWE:-one-captured-tuple-shared-by-both-closures" title="Permalink"></a></h3><p>Suppose <code>SharedDataPairs</code> conceptually contains:</p><pre><code class="language-text hljs">[(id_rule, some_rule), (id_blk, block_stack), (id_zero, lazy_zero_ref)]</code></pre><p>Then:</p><pre><code class="language-text hljs">shared_data_tuple(...) == (some_rule, block_stack, lazy_zero_ref)</code></pre><p>and the entry blocks in the lowered <code>IRCode</code>s begin by reconstructing those bindings:</p><pre><code class="language-text hljs">fwd_entry:
+    id_rule = getfield(_1, 1)
+    id_blk  = getfield(_1, 2)
+    id_zero = getfield(_1, 3)
+    ...
+
+rvs_entry:
+    id_rule = getfield(_1, 1)
+    id_blk  = getfield(_1, 2)
+    id_zero = getfield(_1, 3)
+    ...</code></pre><p>Here <code>_1</code> is the generated closure object. The <code>getfield</code> operations shown above are the loads that recover values from that closure&#39;s captured state. The important point is that the two generated closures do not each get separate logical bindings. They are built against the same captured state assembled during derivation.</p><h3 id="How-forward-to-reverse-sharing-appears-in-the-final-IR"><a class="docs-heading-anchor" href="#How-forward-to-reverse-sharing-appears-in-the-final-IR">How forward-to-reverse sharing appears in the final IR</a><a id="How-forward-to-reverse-sharing-appears-in-the-final-IR-1"></a><a class="docs-heading-anchor-permalink" href="#How-forward-to-reverse-sharing-appears-in-the-final-IR" title="Permalink"></a></h3><p>After lowering, the final forward <code>IRCode</code> still contains the machinery that writes dynamic data needed by the pullback:</p><ul><li>pushes onto comms stacks for values such as pullback objects</li><li>pushes onto the block stack when control-flow replay is needed</li><li>initialization of lazy zero-rdata placeholders</li></ul><p>The final pullback <code>IRCode</code> contains the matching reads:</p><ul><li>pops from comms stacks</li><li>pops from the block stack</li><li>loads from reverse-data references</li><li>loads from the lazy-zero-rdata capture when finishing the returned cotangent tuple</li></ul><p>So although the builder-local CFG disappears after lowering, the final <code>IRCode</code> still encodes the forward-to-reverse contract explicitly through stack operations, ref operations, and capture loads.</p><h3 id="MWE:-dynamic-value-sharing-in-final-IRCode"><a class="docs-heading-anchor" href="#MWE:-dynamic-value-sharing-in-final-IRCode">MWE: dynamic value sharing in final <code>IRCode</code></a><a id="MWE:-dynamic-value-sharing-in-final-IRCode-1"></a><a class="docs-heading-anchor-permalink" href="#MWE:-dynamic-value-sharing-in-final-IRCode" title="Permalink"></a></h3><p>If an active call produces a pullback object <code>%pb</code>, the final forward <code>IRCode</code> contains code equivalent to:</p><pre><code class="language-text hljs">%tuple = tuple(%pb)
+push!(comms_stack, %tuple)</code></pre><p>and the final pullback <code>IRCode</code> contains the matching restore:</p><pre><code class="language-text hljs">%tuple = pop!(comms_stack)
+%pb = getfield(%tuple, 1)</code></pre><p>That pair of writes and reads is how a value produced only during the forward run becomes available later in the pullback.</p><h3 id="How-the-closures-are-built"><a class="docs-heading-anchor" href="#How-the-closures-are-built">How the closures are built</a><a id="How-the-closures-are-built-1"></a><a class="docs-heading-anchor-permalink" href="#How-the-closures-are-built" title="Permalink"></a></h3><p><code>generate_ir</code> produces two compiler <code>IRCode</code>s:</p><ul><li>one for the forward closure</li><li>one for the pullback closure</li></ul><p><code>build_derived_rrule</code> then packages those into closure objects. At a high level:</p><ol><li><code>generate_ir</code> returns <code>DerivedRuleInfo</code>, containing <code>fwd_ir</code>, <code>rvs_ir</code>, and <code>shared_data</code></li><li><code>build_derived_rrule</code> turns each <code>IRCode</code> plus <code>shared_data</code> into a <code>MistyClosure</code></li><li>those closures are placed into a <code>DerivedRule</code></li><li>when the derived rule is called, it returns the forward result plus a <code>Pullback</code> wrapper around the reverse closure</li></ol><p>The end result is that users do not interact with raw <code>IRCode</code> directly. They call a derived rule, which runs the generated forward closure and receives a callable pullback object whose captures point at the same shared state prepared during derivation.</p><h3 id="MWE:-final-wrapper-structure"><a class="docs-heading-anchor" href="#MWE:-final-wrapper-structure">MWE: final wrapper structure</a><a id="MWE:-final-wrapper-structure-1"></a><a class="docs-heading-anchor-permalink" href="#MWE:-final-wrapper-structure" title="Permalink"></a></h3><p>Conceptually, the final derived rule looks like:</p><pre><code class="language-text hljs">DerivedRule(
+    fwds_oc = MistyClosure(fwd_ir, shared_data),
+    pb_oc_ref = Ref(MistyClosure(rvs_ir, shared_data)),
+    ...
+)</code></pre><p>Calling that derived rule:</p><ol><li>runs <code>fwds_oc</code></li><li>returns the forward <code>CoDual</code></li><li>returns a <code>Pullback</code> object that knows how to call <code>pb_oc_ref[]</code></li></ol><p>So the forward closure and pullback closure are separate pieces of generated code, but they are stitched together by the shared captures tuple and the <code>DerivedRule</code> / <code>Pullback</code> wrappers.</p><h2 id="SSA-Nodes-Not-Covered"><a class="docs-heading-anchor" href="#SSA-Nodes-Not-Covered">SSA Nodes Not Covered</a><a id="SSA-Nodes-Not-Covered-1"></a><a class="docs-heading-anchor-permalink" href="#SSA-Nodes-Not-Covered" title="Permalink"></a></h2><p>Most common SSA-form node kinds are handled by <code>make_ad_stmts!</code>, but a few are explicitly out of scope.</p><h3 id="PhiCNode"><a class="docs-heading-anchor" href="#PhiCNode"><code>PhiCNode</code></a><a id="PhiCNode-1"></a><a class="docs-heading-anchor-permalink" href="#PhiCNode" title="Permalink"></a></h3><p><code>PhiCNode</code>s are not currently supported. If reverse mode encounters one, it throws an <code>unhandled_feature</code> error immediately.</p><p>These nodes are associated with exception-flow joins rather than ordinary CFG joins, so they need more than the current phi-node machinery.</p><h3 id="UpsilonNode"><a class="docs-heading-anchor" href="#UpsilonNode"><code>UpsilonNode</code></a><a id="UpsilonNode-1"></a><a class="docs-heading-anchor-permalink" href="#UpsilonNode" title="Permalink"></a></h3><p><code>UpsilonNode</code>s are also not currently supported. Encountering one raises an <code>unhandled_feature</code> error with guidance to avoid the construct or write a manual rule.</p><p>In practice these nodes arise from some <code>try</code> / <code>catch</code> / <code>finally</code> lowering patterns. The current reverse-mode transform does not attempt to differentiate through that exception-state machinery.</p><h3 id="Practical-boundary"><a class="docs-heading-anchor" href="#Practical-boundary">Practical boundary</a><a id="Practical-boundary-1"></a><a class="docs-heading-anchor-permalink" href="#Practical-boundary" title="Permalink"></a></h3><p>Ordinary <code>PhiNode</code>s are supported and lowered through predecessor-sensitive reverse CFG logic. <code>PhiCNode</code>s and <code>UpsilonNode</code>s are not. So &quot;control flow with standard SSA joins&quot; is in scope, while &quot;exception SSA machinery&quot; is still out of scope.</p><h2 id="Known-Boundaries"><a class="docs-heading-anchor" href="#Known-Boundaries">Known Boundaries</a><a id="Known-Boundaries-1"></a><a class="docs-heading-anchor-permalink" href="#Known-Boundaries" title="Permalink"></a></h2><p>Beyond unsupported <code>PhiCNode</code> and <code>UpsilonNode</code> handling, a few broader boundaries are useful to keep in mind when reading or extending reverse mode:</p><ul><li>many operations are only as good as the primitive or derived rules available for them</li><li>debug mode wraps rule calls and changes the generated code shape slightly for diagnostics</li><li>the transform depends on compiler IR conventions that can shift across Julia minor versions</li><li>reverse mode assumes ordinary SSA/control-flow lowering patterns, not the full exception-state machinery generated for every possible language feature</li></ul><h2 id="Further-Reading"><a class="docs-heading-anchor" href="#Further-Reading">Further Reading</a><a id="Further-Reading-1"></a><a class="docs-heading-anchor-permalink" href="#Further-Reading" title="Permalink"></a></h2><p>If you want the supporting background after this page:</p><ul><li><a href="../ir_representation/"><code>ir_representation.md</code></a> explains the compiler-facing <code>IRCode</code> representation.</li><li><a href="../forwards_mode_design/"><code>forwards_mode_design.md</code></a> covers the forward-mode side.</li><li><a href="https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl"><code>src/interpreter/reverse_mode.jl</code></a> is the implementation described here.</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../forwards_mode_design/">« Forwards-Mode Design</a><a class="docs-footer-nextpage" href="../misc_internals_notes/">Misc. Internals Notes »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Monday 20 April 2026 18:20">Monday 20 April 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

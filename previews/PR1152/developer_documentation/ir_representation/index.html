@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>IR Representations and Code Transformations · Mooncake.jl</title><meta name="title" content="IR Representations and Code Transformations · Mooncake.jl"/><meta property="og:title" content="IR Representations and Code Transformations · Mooncake.jl"/><meta property="twitter:title" content="IR Representations and Code Transformations · Mooncake.jl"/><meta name="description" content="Documentation for Mooncake.jl."/><meta property="og:description" content="Documentation for Mooncake.jl."/><meta property="twitter:description" content="Documentation for Mooncake.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body>
+<!-- NAVBAR START -->
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro&display=swap');
+
+    /* Documenter.jl CSS Overrides */
+    html {
+        scroll-padding-top: calc(var(--navbar-height) + 1rem);
+    }
+    .docs-sidebar, #documenter {
+        margin-top: var(--navbar-height);
+    }
+    .docs-version-selector {
+        margin-bottom: 60px !important;
+    }
+    @media screen and (max-width: 1056px) {
+        .docs-version-selector {
+            margin-bottom: 60px !important;
+        }
+        .docs-sidebar {
+            margin-top: 0 !important;
+        }
+    }
+    /* End of Documenter.jl Tweaks */
+
+    /* Color and Font Variables */
+    :root {
+        --heading-color: #6c757d;
+        --item-color: rgb(165, 165, 165);
+        --primary-bg: white;
+        --hover-color: #8faad2;
+        --deprecated-bg: #ff4d4d;
+        --deprecated-text: white;
+        --icon-color: #6c757d;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e9ecef;
+        
+        /* Typography */
+        --font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        --nav-link-font-size: 1.0625rem;
+        --turing-title-font-size: 21.25px;
+        --icon-font-size: 1.25rem;
+        --dropdown-arrow-font-size: 0.6875rem;
+        --badge-font-size: 0.75rem;
+
+        /* Sizing and Spacing */
+        --navbar-height: 3.75rem;
+        --logo-height: 31px;
+        --logo-width: auto;
+        --logo-padding-top: 7px;
+        --logo-margin-left: 0.8rem;
+        --title-margin-left: 0.4px;
+        --title-nav-spacing: 1.1rem;
+        --nav-item-margin-left: 1.3rem;
+        --icon-margin-left: 1rem;
+        --dropdown-padding: 1.875rem;
+        --dropdown-item-width: 12.5rem;
+        --dropdown-subitem-width: 15.625rem;
+        --dropdown-subitem-padding: 0.125rem 0.625rem;
+    }
+
+    /* Dark Theme Variable Overrides */
+    html.theme--documenter-dark {
+        --heading-color: #e0e0e0;
+        --item-color: #bdbdbd;
+        --primary-bg: #1f2424;
+        --hover-color: #ffffff;
+        --icon-color: #e0e0e0;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #424242;
+    }
+
+    /* Catppuccin Theme Overrides */
+    html.theme--catppuccin-latte {
+        --heading-color: #4c4f69;
+        --primary-bg: #eff1f5;
+        --icon-color: #4c4f69;
+        --shadow-color: rgba(0, 0, 0, 0.1);
+        --dropdown-hover-bg: #e6e9ef;
+    }
+    html.theme--catppuccin-frappe {
+        --heading-color: #c6d0f5;
+        --primary-bg: #303446;
+        --icon-color: #c6d0f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #51576d;
+    }
+    html.theme--catppuccin-macchiato {
+        --heading-color: #cad3f5;
+        --primary-bg: #24273a;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #494d64;
+    }
+    html.theme--catppuccin-mocha {
+        --heading-color: #cad3f5;
+        --primary-bg: #1e1e2e;
+        --icon-color: #cad3f5;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+        --dropdown-hover-bg: #45475a;
+    }
+
+
+    /* Main Navigation Bar */
+    .ext-navigation {
+        font-family: var(--font-family);
+        position: fixed;
+        height: var(--navbar-height);
+        top: 0;
+        width: 100%;
+        background-color: var(--primary-bg);
+        z-index: 1000;
+        box-shadow: 0 2px 4px var(--shadow-color);
+        display: flex;
+        align-items: center;
+        padding: 0 1.0625rem;
+        transition: transform 0.3s, background-color 0.3s;
+    }
+
+    nav.ext-navigation .ext-navbar-logo {
+        margin-left: var(--logo-margin-left);
+        height: auto;
+        max-height: var(--logo-height);
+        width: auto;
+        padding-top: var(--logo-padding-top);
+    }
+    
+    /* Theme-aware logo text color */
+    .ext-navbar-logo .logo-text {
+        fill: var(--heading-color);
+    }
+    
+    .ext-navbar-title {
+        color: var(--heading-color) !important;
+        font-size: var(--turing-title-font-size) !important;
+        margin-left: var(--title-margin-left);
+        text-decoration: none;
+        transition: color 0.2s ease;
+    }
+    
+    .ext-navbar-title:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-nav-links {
+        display: flex;
+        align-items: center;
+        list-style-type: none;
+        margin: 0;
+        padding: 0;
+        flex-grow: 1;
+        margin-left: var(--title-nav-spacing);
+    }
+
+    .ext-nav-links li:first-child {
+        margin-left: 0 !important;
+    }
+
+    .ext-nav-links li {
+        margin-left: var(--nav-item-margin-left) !important;
+    }
+
+    .ext-nav-link {
+        color: var(--heading-color) !important;
+        text-decoration: none;
+        font-size: var(--nav-link-font-size) !important;
+        transition: color 0.2s ease;
+        cursor: pointer;
+    }
+
+    .ext-nav-link:hover,
+    .ext-navbar-item-single a:hover,
+    .ext-navbar-icons a:hover {
+        color: var(--hover-color) !important;
+    }
+
+    .ext-navbar-item-single a {
+        color: var(--heading-color) !important;
+    }
+    
+    .ext-navbar-icons {
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-navbar-icons a {
+        color: var(--icon-color) !important;
+        font-size: var(--icon-font-size) !important;
+        transition: color 0.2s ease;
+        margin-left: var(--icon-margin-left);
+    }
+
+    .ext-menu-toggle {
+        display: none;
+        font-size: 1.5rem;
+        color: var(--heading-color);
+        cursor: pointer;
+    }
+
+    .ext-dropdown {
+        display: none;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        padding: var(--dropdown-padding);
+        position: absolute;
+        top: var(--navbar-height);
+        width: 100%;
+        left: 0;
+        background-color: var(--primary-bg);
+        line-height: 1.875rem;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out, background-color 0.3s;
+        transform: translateY(-0.625rem);
+        box-shadow: 0 4px 6px var(--shadow-color);
+    }
+
+    #library-handler::after {
+        content: "▼";
+        font-size: var(--dropdown-arrow-font-size);
+        margin-left: 0.3125rem;
+        transition: transform 0.3s ease-in-out;
+    }
+
+    #library-handler.open::after {
+        content: "▲";
+    }
+
+    .ext-dropdown.show {
+        display: grid;
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .ext-dropdown ul {
+        width: var(--dropdown-item-width);
+        margin-bottom: 1.25rem;
+    }
+
+    .ext-dropdown ul li {
+        text-align: left;
+        display: flex;
+        align-items: center;
+    }
+
+    .ext-dropdown ul a li {
+        color: var(--item-color);
+        width: var(--dropdown-subitem-width);
+        border-radius: 3px;
+        padding: var(--dropdown-subitem-padding);
+        transition: background-color 0.2s ease;
+    }
+
+    .ext-dropdown ul a li:hover {
+        background-color: var(--dropdown-hover-bg);
+    }
+
+    .ext-dropdown-item-heading {
+        color: var(--heading-color);
+        text-align: center;
+    }
+
+    .deprecated-badge {
+        background-color: var(--deprecated-bg);
+        color: var(--deprecated-text);
+        font-size: var(--badge-font-size);
+        padding: .1rem;
+        border-radius: 3px;
+        margin-left: 0.5rem;
+        line-height: 1;
+    }
+
+    @media (max-width: 966px) {
+        .ext-dropdown {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .ext-nav-links {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            background-color: var(--primary-bg);
+            position: absolute;
+            top: var(--navbar-height);
+            left: 0;
+            padding: 0.625rem 0;
+            height: auto;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px var(--shadow-color);
+            margin-left: 0;
+        }
+
+        .ext-nav-links.show {
+            display: flex;
+        }
+
+        .ext-nav-links li {
+            margin: 0.625rem 0 !important;
+            text-align: center;
+        }
+        
+        .ext-menu-toggle {
+            display: block;
+            margin-left: auto;
+        }
+
+        .ext-navigation.hide {
+            transform: translateY(calc(-1 * var(--navbar-height)));
+        }
+
+        .ext-dropdown {
+            position: static;
+            display: block;
+            opacity: 1;
+            transform: none;
+            box-shadow: none;
+            grid-template-columns: 1fr;
+            padding: 0.625rem;
+            text-align: center;
+        }
+
+        .ext-dropdown ul {
+            width: auto;
+            display: inline-block;
+            margin: 0 auto 0.3125rem;
+            text-align: left;
+        }
+    }
+</style>
+<nav class="ext-navigation">
+    <a title="TuringLang" href="https://turinglang.org/">
+        <svg width="4333" height="1145" viewBox="0 0 4333 1145" fill="none" xmlns="http://www.w3.org/2000/svg" class="ext-navbar-logo">
+            <path class="logo-text" d="M0.44603 193.181V66.9868H663.471V193.181H406.62V898H257.297V193.181H0.44603ZM1097.24 635.874V274.74H1244.13V898H1101.7V787.225H1095.21C1081.14 822.121 1058.01 850.66 1025.82 872.842C993.902 895.024 954.542 906.115 907.744 906.115C866.896 906.115 830.783 897.053 799.403 878.929C768.295 860.534 743.948 833.889 726.365 798.993C708.782 763.826 699.99 721.356 699.99 671.581V274.74H846.878V648.858C846.878 688.353 857.699 719.733 879.34 742.997C900.981 766.261 929.385 777.893 964.551 777.893C986.192 777.893 1007.16 772.618 1027.45 762.068C1047.73 751.518 1064.37 735.828 1077.35 714.999C1090.61 693.899 1097.24 667.524 1097.24 635.874ZM1395.17 898V274.74H1537.6V378.617H1544.09C1555.45 342.639 1574.93 314.911 1602.52 295.434C1630.38 275.687 1662.17 265.813 1697.88 265.813C1705.99 265.813 1715.05 266.219 1725.06 267.031C1735.34 267.572 1743.86 268.518 1750.63 269.871V404.992C1744.4 402.828 1734.53 400.934 1721 399.311C1707.75 397.417 1694.9 396.471 1682.46 396.471C1655.68 396.471 1631.6 402.287 1610.23 413.919C1589.13 425.28 1572.49 441.105 1560.32 461.393C1548.15 481.682 1542.06 505.081 1542.06 531.591V898H1395.17ZM1848.21 898V274.74H1995.1V898H1848.21ZM1922.06 186.283C1898.8 186.283 1878.78 178.573 1862.01 163.154C1845.24 147.464 1836.85 128.664 1836.85 106.752C1836.85 84.5701 1845.24 65.7695 1862.01 50.3503C1878.78 34.6606 1898.8 26.8158 1922.06 26.8158C1945.6 26.8158 1965.61 34.6606 1982.12 50.3503C1998.89 65.7695 2007.27 84.5701 2007.27 106.752C2007.27 128.664 1998.89 147.464 1982.12 163.154C1965.61 178.573 1945.6 186.283 1922.06 186.283ZM2293.04 532.809V898H2146.15V274.74H2286.54V380.646H2293.85C2308.18 345.75 2331.04 318.022 2362.42 297.463C2394.07 276.904 2433.16 266.625 2479.69 266.625C2522.7 266.625 2560.17 275.822 2592.09 294.217C2624.28 312.612 2649.17 339.257 2666.75 374.153C2684.6 409.049 2693.39 451.385 2693.12 501.159V898H2546.24V523.882C2546.24 482.223 2535.41 449.626 2513.77 426.092C2492.4 402.557 2462.78 390.79 2424.91 390.79C2399.21 390.79 2376.35 396.471 2356.34 407.832C2336.59 418.923 2321.03 435.019 2309.67 456.119C2298.58 477.218 2293.04 502.782 2293.04 532.809ZM3113.5 1144.71C3060.75 1144.71 3015.44 1137.54 2977.57 1123.2C2939.7 1109.13 2909.26 1090.2 2886.27 1066.39C2863.28 1042.59 2847.32 1016.21 2838.39 987.269L2970.67 955.213C2976.62 967.386 2985.28 979.424 2996.64 991.327C3008 1003.5 3023.28 1013.51 3042.49 1021.35C3061.97 1029.47 3086.45 1033.53 3115.93 1033.53C3157.59 1033.53 3192.08 1023.38 3219.4 1003.09C3246.73 983.076 3260.39 950.074 3260.39 904.087V786.008H3253.08C3245.51 801.157 3234.42 816.711 3219.81 832.671C3205.47 848.632 3186.4 862.022 3162.6 872.842C3139.06 883.663 3109.44 889.073 3073.73 889.073C3025.85 889.073 2982.44 877.847 2943.48 855.394C2904.8 832.671 2873.96 798.857 2850.97 753.952C2828.24 708.777 2816.88 652.24 2816.88 584.341C2816.88 515.902 2828.24 458.147 2850.97 411.078C2873.96 363.739 2904.93 327.896 2943.89 303.55C2982.84 278.933 3026.26 266.625 3074.14 266.625C3110.66 266.625 3140.69 272.847 3164.22 285.29C3188.03 297.463 3206.96 312.206 3221.03 329.519C3235.09 346.561 3245.78 362.657 3253.08 377.805H3261.2V274.74H3406.06V908.144C3406.06 961.435 3393.34 1005.53 3367.92 1040.42C3342.49 1075.32 3307.73 1101.43 3263.63 1118.74C3219.54 1136.05 3169.5 1144.71 3113.5 1144.71ZM3114.72 773.835C3145.83 773.835 3172.34 766.261 3194.25 751.112C3216.16 735.963 3232.79 714.187 3244.16 685.783C3255.52 657.379 3261.2 623.295 3261.2 583.53C3261.2 544.305 3255.52 509.95 3244.16 480.465C3233.07 450.979 3216.56 428.12 3194.65 411.89C3173.01 395.389 3146.37 387.138 3114.72 387.138C3081.98 387.138 3054.66 395.659 3032.75 412.701C3010.84 429.744 2994.34 453.143 2983.25 482.899C2972.16 512.385 2966.61 545.929 2966.61 583.53C2966.61 621.672 2972.16 655.08 2983.25 683.754C2994.61 712.158 3011.25 734.34 3033.16 750.3C3055.34 765.99 3082.53 773.835 3114.72 773.835ZM3647.08 906.927C3622.47 906.927 3601.37 898.271 3583.78 880.958C3566.2 863.645 3557.54 842.545 3557.82 817.658C3557.54 793.312 3566.2 772.482 3583.78 755.17C3601.37 737.857 3622.47 729.2 3647.08 729.2C3670.89 729.2 3691.58 737.857 3709.17 755.17C3727.02 772.482 3736.08 793.312 3736.35 817.658C3736.08 834.159 3731.75 849.173 3723.37 862.698C3715.25 876.224 3704.43 887.044 3690.91 895.16C3677.65 903.004 3663.04 906.927 3647.08 906.927ZM3888.01 274.74H4034.9V933.708C4034.9 978.613 4026.38 1015.67 4009.33 1044.89C3992.29 1074.1 3967.67 1095.88 3935.48 1110.22C3903.29 1124.55 3864.2 1131.72 3818.22 1131.72C3812.81 1131.72 3807.8 1131.59 3803.2 1131.32C3798.6 1131.32 3793.6 1131.18 3788.19 1130.91V1011.21C3792.25 1011.48 3795.9 1011.62 3799.15 1011.62C3802.39 1011.89 3805.77 1012.02 3809.29 1012.02C3837.42 1012.02 3857.58 1005.12 3869.75 991.327C3881.92 977.801 3888.01 957.918 3888.01 931.679V274.74ZM3961.05 186.283C3937.51 186.283 3917.36 178.573 3900.59 163.154C3884.09 147.464 3875.84 128.664 3875.84 106.752C3875.84 84.5701 3884.09 65.7695 3900.59 50.3503C3917.36 34.6606 3937.51 26.8158 3961.05 26.8158C3984.31 26.8158 4004.19 34.6606 4020.7 50.3503C4037.47 65.7695 4045.85 84.5701 4045.85 106.752C4045.85 128.664 4037.47 147.464 4020.7 163.154C4004.19 178.573 3984.31 186.283 3961.05 186.283ZM4332.83 66.9868V898H4185.94V66.9868H4332.83Z" fill="currentColor"/>
+            <path d="M4076 108.5C4076 168.424 4027.42 217 3967.5 217C3907.58 217 3859 168.424 3859 108.5C3859 48.5762 3907.58 0 3967.5 0C4027.42 0 4076 48.5762 4076 108.5Z" fill="#389725"/>
+            <path d="M3755 814.5C3755 874.424 3706.42 923 3646.5 923C3586.58 923 3538 874.424 3538 814.5C3538 754.576 3586.58 706 3646.5 706C3706.42 706 3755 754.576 3755 814.5Z" fill="#9457B1"/>
+            <path d="M2030 108.5C2030 168.424 1981.42 217 1921.5 217C1861.58 217 1813 168.424 1813 108.5C1813 48.5762 1861.58 0 1921.5 0C1981.42 0 2030 48.5762 2030 108.5Z" fill="#CA3B33"/>
+        </svg>
+    </a>
+    <!-- <a class="ext-navbar-title" href="https://turinglang.org/">Turing.jl</a> -->
+    
+    <ul class="ext-nav-links">
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/getting-started/">Get Started</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/tutorials/">Tutorials</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/docs/faq/">FAQ</a></li>
+        <li>
+            <p class="ext-nav-link" id="library-handler">Libraries</p>
+            <div class="ext-dropdown" id="ext-dropdown-items">
+                <ul>
+                    <li class="ext-dropdown-item-heading">Modelling Languages</li>
+                    <a href="https://turinglang.org/DynamicPPL.jl/"><li>DynamicPPL</li></a>
+                    <a href="https://turinglang.org/JuliaBUGS.jl/"><li>JuliaBUGS</li></a>
+                    <a href="https://turinglang.org/TuringGLM.jl/"><li>TuringGLM</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">MCMC</li>
+                    <a href="https://turinglang.org/AdvancedHMC.jl/"><li>AdvancedHMC</li></a>
+                    <a href="https://turinglang.org/AbstractMCMC.jl/"><li>AbstractMCMC</li></a>
+                    <a href="https://github.com/theogf/ThermodynamicIntegration.jl"><li>ThermodynamicIntegration</li></a>
+                    <a href="https://turinglang.org/AdvancedPS.jl/"><li>AdvancedPS</li></a>
+                    <a href="https://turinglang.org/SliceSampling.jl/"><li>SliceSampling</li></a>
+                    <a href="https://turinglang.org/EllipticalSliceSampling.jl/"><li>EllipticalSliceSampling</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Diagnostics</li>
+                    <a href="https://turinglang.org/MCMCChains.jl/"><li>MCMCChains</li></a>
+                    <a href="https://turinglang.org/MCMCDiagnosticTools.jl/"><li>MCMCDiagnosticTools</li></a>
+                    <a href="https://chalk-lab.github.io/ParetoSmooth.jl/"><li>ParetoSmooth</li></a>
+                </ul>
+                <ul>
+                    <li class="ext-dropdown-item-heading">Gaussian Processes</li>
+                    <a href="https://juliagaussianprocesses.github.io/AbstractGPs.jl/"><li>AbstractGPs</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/KernelFunctions.jl/"><li>KernelFunctions</li></a>
+                    <a href="https://juliagaussianprocesses.github.io/ApproximateGPs.jl/"><li>ApproximateGPs</li></a>
+                </ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Bijectors.jl/">Bijectors</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/TuringCallbacks.jl/">TuringCallbacks</a></li></ul>
+                <ul><li class="ext-dropdown-item-heading ext-navbar-item-single"><a href="https://turinglang.org/Deprecated/TuringBenchmarking/">TuringBenchmarking</a><span class="deprecated-badge">Deprecated</span></li></ul>
+            </div>
+        </li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/news/">News</a></li>
+        <li><a class="ext-nav-link" href="https://turinglang.org/team/">Team</a></li>
+    </ul>
+
+    <div class="ext-navbar-icons">
+        <a href="https://x.com/TuringLang" aria-label="Turing on X"><i class="fa-brands fa-x-twitter"></i></a>
+        <a href="https://discourse.julialang.org/c/domain/probprog/48" aria-label="Turing on Discourse"><i class="fa-brands fa-discourse"></i></a>
+        <a href="https://julialang.slack.com/archives/CCYDC34A0" aria-label="Turing on Slack"><i class="fa-brands fa-slack"></i></a>
+        <a href="https://github.com/TuringLang/" aria-label="Turing.jl on GitHub"><i class="fa-brands fa-github"></i></a>
+    </div>
+
+    <span class="ext-menu-toggle"><i class="fa-solid fa-bars"></i></span>
+</nav>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const menuToggle = document.querySelector(".ext-menu-toggle");
+        const navLinks = document.querySelector(".ext-nav-links");
+        const nav = document.querySelector(".ext-navigation");
+        const libraryHandler = document.getElementById("library-handler");
+        const dropdownContainer = document.getElementById("ext-dropdown-items");
+        let lastScrollY = window.scrollY;
+
+        function closeDropdown() {
+            if (dropdownContainer.classList.contains("show")) {
+                libraryHandler.classList.remove("open");
+                dropdownContainer.classList.remove("show");
+                setTimeout(() => {
+                    if (!dropdownContainer.classList.contains("show")) {
+                        dropdownContainer.style.display = "none";
+                    }
+                }, 300);
+            }
+        }
+
+        function openDropdown() {
+            dropdownContainer.style.display = "grid";
+            libraryHandler.classList.add("open");
+            setTimeout(() => {
+                dropdownContainer.classList.add("show");
+            }, 10);
+        }
+
+        function setAppropriateHeight() {
+            if (window.innerWidth <= 768) {
+                const viewportHeight = window.innerHeight;
+                const navHeight = nav.offsetHeight;
+                navLinks.style.maxHeight = `${viewportHeight - navHeight}px`;
+                navLinks.style.overflowY = "auto";
+            } else {
+                navLinks.style.maxHeight = "";
+                navLinks.style.overflowY = "";
+            }
+        }
+
+        menuToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            navLinks.classList.toggle("show");
+            if (navLinks.classList.contains("show")) {
+                setAppropriateHeight();
+                closeDropdown();
+                dropdownContainer.style.display = "none";
+            }
+        });
+
+        libraryHandler.addEventListener("click", (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            if (dropdownContainer.classList.contains("show")) {
+                closeDropdown();
+            } else {
+                openDropdown();
+            }
+            setAppropriateHeight();
+        });
+
+        // Close all menus if a click is registered outside the navigation bar.
+        document.addEventListener("click", (event) => {
+            if (!nav.contains(event.target)) {
+                navLinks.classList.remove("show");
+                closeDropdown();
+            }
+        });
+
+        // Hide navigation bar on scroll down in mobile view.
+        window.addEventListener("scroll", () => {
+            if (window.innerWidth <= 768) {
+                if (window.scrollY > lastScrollY && window.scrollY > nav.offsetHeight){
+                    nav.classList.add("hide");
+                } else {
+                    nav.classList.remove("hide");
+                }
+                lastScrollY = window.scrollY;
+            }
+        });
+
+        window.addEventListener("resize", setAppropriateHeight);
+    });
+</script>
+<!-- NAVBAR END -->
+
+
+<div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.svg" alt="Mooncake.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">Mooncake.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Mooncake.jl</a></li><li><a class="tocitem" href="../../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../../interface/">Interface</a></li><li><span class="tocitem">Understanding Mooncake.jl</span><ul><li><a class="tocitem" href="../../understanding_mooncake/introduction/">Introduction</a></li><li><a class="tocitem" href="../../understanding_mooncake/algorithmic_differentiation/">Algorithmic Differentiation</a></li><li><a class="tocitem" href="../../understanding_mooncake/rule_system/">Mooncake.jl&#39;s Rule System</a></li><li><a class="tocitem" href="../../understanding_mooncake/what_programme_are_you_differentiating/">What Programme Are You Differentiating?</a></li></ul></li><li><span class="tocitem">Utilities</span><ul><li><a class="tocitem" href="../../utilities/defining_rules/">Defining Rules</a></li><li><a class="tocitem" href="../../utilities/debug_mode/">Debug Mode</a></li><li><a class="tocitem" href="../../utilities/debugging_and_mwes/">Debugging and MWEs</a></li></ul></li><li><span class="tocitem">Developer Documentation</span><ul><li><a class="tocitem" href="../running_tests_locally/">Running Tests Locally</a></li><li><a class="tocitem" href="../developer_tools/">Developer Tools</a></li><li><a class="tocitem" href="../tangents/">Tangents</a></li><li><a class="tocitem" href="../custom_tangent_type/">Writing Custom Tangent Types</a></li><li><a class="tocitem" href="../scalar_rules_via_ndual/">Scalar And Low-Dimensional Rules Via <code>NDual</code></a></li><li class="is-active"><a class="tocitem" href>IR Representations and Code Transformations</a><ul class="internal"><li><a class="tocitem" href="#Julia&#39;s-SSA-Form-IR"><span>Julia&#39;s SSA-Form IR</span></a></li><li><a class="tocitem" href="#Julia-Compiler&#39;s-IR-Datastructure"><span>Julia Compiler&#39;s IR Datastructure</span></a></li><li><a class="tocitem" href="#Code-Transformations"><span>Code Transformations</span></a></li><li><a class="tocitem" href="#Reverse-Mode-CFG-Assembly"><span>Reverse-Mode CFG Assembly</span></a></li><li><a class="tocitem" href="#Summary"><span>Summary</span></a></li></ul></li><li><a class="tocitem" href="../forwards_mode_design/">Forwards-Mode Design</a></li><li><a class="tocitem" href="../reverse_mode_design/">Reverse-Mode Design</a></li><li><a class="tocitem" href="../misc_internals_notes/">Misc. Internals Notes</a></li><li><a class="tocitem" href="../advanced_debugging/">Advanced Debugging</a></li><li><a class="tocitem" href="../internal_docstrings/">Internal Docstrings</a></li></ul></li><li><a class="tocitem" href="../../known_limitations/">Known Limitations</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Developer Documentation</a></li><li class="is-active"><a href>IR Representations and Code Transformations</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>IR Representations and Code Transformations</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl/blob/main/docs/src/developer_documentation/ir_representation.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="IR-Representations-and-Code-Transformations"><a class="docs-heading-anchor" href="#IR-Representations-and-Code-Transformations">IR Representations and Code Transformations</a><a id="IR-Representations-and-Code-Transformations-1"></a><a class="docs-heading-anchor-permalink" href="#IR-Representations-and-Code-Transformations" title="Permalink"></a></h1><p>Mooncake works by transforming Julia&#39;s SSA-form Intermediate Representation (IR), so a good working model of that IR is useful when touching the interpreter.</p><p>Please note that Julia&#39;s SSA-form IR changes slightly across minor versions, because it is not a public language interface. The examples below are representative rather than version-stable.</p><p>Before looking at the printed IR, keep three ideas in mind:</p><ol><li>Each SSA statement produces one named value such as <code>%1</code> or <code>%2</code>.</li><li>Control flow is organized into basic blocks with branch or return terminators.</li><li>The compiler stores the statements and the control-flow graph separately, and Mooncake has to keep those two views coherent when transforming code.</li></ol><h2 id="Julia&#39;s-SSA-Form-IR"><a class="docs-heading-anchor" href="#Julia&#39;s-SSA-Form-IR">Julia&#39;s SSA-Form IR</a><a id="Julia&#39;s-SSA-Form-IR-1"></a><a class="docs-heading-anchor-permalink" href="#Julia&#39;s-SSA-Form-IR" title="Permalink"></a></h2><h3 id="Straight-Line-Code"><a class="docs-heading-anchor" href="#Straight-Line-Code">Straight-Line Code</a><a id="Straight-Line-Code-1"></a><a class="docs-heading-anchor-permalink" href="#Straight-Line-Code" title="Permalink"></a></h3><p>You can find the IR associated to a given signature using <code>Base.code_ircode_by_type</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; function foo(x)
+           y = sin(x)
+           z = cos(y)
+           return z
+       end
+foo (generic function with 1 method)
+
+julia&gt; signature = Tuple{typeof(foo), Float64}
+Tuple{typeof(foo), Float64}
+
+julia&gt; Base.code_ircode_by_type(signature)[1][1]
+2 1 ─ %1 = invoke sin(_2::Float64)::Float64
+3 │   %2 = invoke cos(%1::Float64)::Float64
+4 └──      return %2</code></pre><p>The statements are associated to SSA names such as <code>%1</code> and <code>%2</code>. Each statement is associated to a single SSA value, and uses of arguments are written as <code>_n</code>, where <code>_1</code> is the function itself.</p><p>This IR is obtained after type inference and some optimisation passes, so each statement already carries type information. In the example above, <code>%1</code> and <code>%2</code> are both known to be <code>Float64</code>.</p><h3 id="Control-Flow"><a class="docs-heading-anchor" href="#Control-Flow">Control Flow</a><a id="Control-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Control-Flow" title="Permalink"></a></h3><p>Control flow is expressed via basic blocks and terminators:</p><pre><code class="language-julia-repl hljs">julia&gt; function bar(x)
+           if x &gt; 0
+               return x
+           else
+               return 5x
+           end
+       end
+bar (generic function with 1 method)
+
+julia&gt; Base.code_ircode_by_type(Tuple{typeof(bar), Float64})[1][1]
+2 1 ─ %1 = Base.lt_float(0.0, _2)::Bool
+  │   %2 = Base.or_int(%1, false)::Bool
+  └──      goto #3 if not %2
+3 2 ─      return _2
+5 3 ─ %5 = Base.mul_float(5.0, _2)::Float64
+  └──      return %5</code></pre><p>The corresponding control-flow graph is stored separately in the <code>cfg</code> field:</p><pre><code class="language-julia-repl hljs">julia&gt; Base.code_ircode_by_type(Tuple{typeof(bar), Float64})[1][1].cfg
+CFG with 3 blocks:
+  bb 1 (stmts 1:3) → bb 3, 2
+  bb 2 (stmt 4)
+  bb 3 (stmts 5:6)</code></pre><p>Each basic block is a straight-line region that ends either by falling through, branching, or returning.</p><h3 id="Simple-Loops-and-Phi-Nodes"><a class="docs-heading-anchor" href="#Simple-Loops-and-Phi-Nodes">Simple Loops and Phi Nodes</a><a id="Simple-Loops-and-Phi-Nodes-1"></a><a class="docs-heading-anchor-permalink" href="#Simple-Loops-and-Phi-Nodes" title="Permalink"></a></h3><p>Loops introduce phi nodes:</p><pre><code class="language-julia-repl hljs">julia&gt; function my_factorial(x::Int)
+           n = 0
+           s = 1
+           while n &lt; x
+               n += 1
+               s *= n
+           end
+           return s
+       end
+my_factorial (generic function with 1 method)
+
+julia&gt; ir = Base.code_ircode_by_type(Tuple{typeof(my_factorial), Int})[1][1]
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = Base.add_int(%3, 1)::Int64
+6 │   %7 = Base.mul_int(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>For example,</p><pre><code class="language-julia hljs">%2 = φ (#1 =&gt; 1, #3 =&gt; %7)</code></pre><p>means <code>%2</code> takes value <code>1</code> when control arrives from block <code>#1</code>, and the value of <code>%7</code> when control arrives from block <code>#3</code>.</p><h2 id="Julia-Compiler&#39;s-IR-Datastructure"><a class="docs-heading-anchor" href="#Julia-Compiler&#39;s-IR-Datastructure">Julia Compiler&#39;s IR Datastructure</a><a id="Julia-Compiler&#39;s-IR-Datastructure-1"></a><a class="docs-heading-anchor-permalink" href="#Julia-Compiler&#39;s-IR-Datastructure" title="Permalink"></a></h2><p>The compiler represents inferred IR as <code>Core.Compiler.IRCode</code>. The statements live in the <code>stmts</code> field, which is a <code>Core.Compiler.InstructionStream</code>. An <code>InstructionStream</code> is a bundle of parallel vectors: the statement itself, its inferred type, call info, line data, and flags.</p><p>For example:</p><pre><code class="language-julia-repl hljs">julia&gt; ir.stmts.stmt
+9-element Vector{Any}:
+ nothing
+ :(φ (%1 =&gt; 1, %3 =&gt; %7))
+ :(φ (%1 =&gt; 0, %3 =&gt; %6))
+ :(Base.slt_int(%3, _2))
+ :(goto %4 if not %4)
+ :(Base.add_int(%3, 1))
+ :(Base.mul_int(%2, %6))
+ :(goto %2)
+ :(return %2)
+
+julia&gt; ir.stmts.type
+9-element Vector{Any}:
+ Nothing
+ Int64
+ Int64
+ Bool
+ Any
+ Int64
+ Int64
+ Any
+ Any</code></pre><p>The control-flow graph is stored separately in <code>ir.cfg</code>, and the argument types are stored in <code>ir.argtypes</code>.</p><h2 id="Code-Transformations"><a class="docs-heading-anchor" href="#Code-Transformations">Code Transformations</a><a id="Code-Transformations-1"></a><a class="docs-heading-anchor-permalink" href="#Code-Transformations" title="Permalink"></a></h2><p>Mooncake uses two broad styles of transformation:</p><ol><li>Straight-line edits on <code>IRCode</code>, especially in forward mode.</li><li>Reverse-mode assembly through a builder-local CFG in <code>reverse_mode.jl</code>, followed by a final lowering step back to coherent <code>IRCode</code>.</li></ol><h3 id="Replacing-Instructions-in-IRCode"><a class="docs-heading-anchor" href="#Replacing-Instructions-in-IRCode">Replacing Instructions in <code>IRCode</code></a><a id="Replacing-Instructions-in-IRCode-1"></a><a class="docs-heading-anchor-permalink" href="#Replacing-Instructions-in-IRCode" title="Permalink"></a></h3><p>Replacing one statement with another is straightforward:</p><pre><code class="language-julia-repl hljs">julia&gt; using Core: SSAValue
+
+julia&gt; const CC = Core.Compiler;
+
+julia&gt; new_ir = Core.Compiler.copy(ir);
+
+julia&gt; old_stmt = new_ir.stmts.stmt[7]
+:(Base.mul_int(%2, %6))
+
+julia&gt; new_stmt = Expr(:call, Base.add_int, old_stmt.args[2:end]...)
+:((Core.Intrinsics.add_int)(%2, %6))
+
+julia&gt; CC.setindex!(CC.getindex(new_ir, SSAValue(7)), new_stmt, :stmt);
+
+julia&gt; new_ir
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = Base.add_int(%3, 1)::Int64
+6 │   %7 = (Core.Intrinsics.add_int)(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>This is the kind of local transformation that forward mode relies on heavily.</p><h3 id="Inserting-New-Instructions-in-IRCode"><a class="docs-heading-anchor" href="#Inserting-New-Instructions-in-IRCode">Inserting New Instructions in <code>IRCode</code></a><a id="Inserting-New-Instructions-in-IRCode-1"></a><a class="docs-heading-anchor-permalink" href="#Inserting-New-Instructions-in-IRCode" title="Permalink"></a></h3><p>Insertion requires a little more care because later SSA names may need to shift. <code>IRCode</code> handles this through <code>insert_node!</code> plus a later <code>compact!</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; ni = CC.NewInstruction(Expr(:call, Base.mul_int, SSAValue(3), 2), Int)
+Core.Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Core.Compiler.NoCallInfo(), nothing, nothing)
+
+julia&gt; new_ssa = CC.insert_node!(new_ir, SSAValue(6), ni)
+:(%10)
+
+julia&gt; stmt = CC.getindex(CC.getindex(new_ir, SSAValue(6)), :stmt)
+:(Base.add_int(%3, 1))
+
+julia&gt; stmt.args[2] = new_ssa;
+
+julia&gt; new_ir = CC.compact!(new_ir)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
+  │   %4 = Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %7 = Base.add_int(%6, 1)::Int64
+6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>This is the right tool when the transformation stays local to existing basic blocks.</p><h2 id="Reverse-Mode-CFG-Assembly"><a class="docs-heading-anchor" href="#Reverse-Mode-CFG-Assembly">Reverse-Mode CFG Assembly</a><a id="Reverse-Mode-CFG-Assembly-1"></a><a class="docs-heading-anchor-permalink" href="#Reverse-Mode-CFG-Assembly" title="Permalink"></a></h2><p>Reverse mode needs more than local SSA insertion. It frequently has to:</p><ol><li>create fresh blocks,</li><li>thread predecessor-sensitive phi handling,</li><li>insert reverse-only control flow, and</li><li>preserve a coherent CFG while doing so.</li></ol><p>Mooncake now handles that in <a href="https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl"><code>src/interpreter/reverse_mode.jl</code></a> using a builder-local <code>CFGBlock</code> representation. The reverse transform first translates the normalized primal <code>IRCode</code> into CFG blocks with stable internal <code>ID</code>s, assembles the forwards and pullback control flow in that representation, and finally lowers the result back to <code>IRCode</code>.</p><p>That split is deliberate:</p><ol><li><code>IRCode</code> remains the source of truth at the compiler boundary.</li><li>The builder provides a convenient place to manipulate reverse-mode control flow.</li><li>The final lowering step re-establishes standard compiler IR with a coherent CFG.</li></ol><p>This page is mainly about the representations themselves. For the full reverse-mode pipeline, including statement translation, control-flow replay, and forward-to-reverse communication, see <a href="../reverse_mode_design/"><code>reverse_mode_design.md</code></a>.</p><h2 id="Summary"><a class="docs-heading-anchor" href="#Summary">Summary</a><a id="Summary-1"></a><a class="docs-heading-anchor-permalink" href="#Summary" title="Permalink"></a></h2><p><code>IRCode</code> is the main compiler-facing representation throughout Mooncake. Forward mode mostly performs local statement rewrites on that representation. Reverse mode still starts from normalized <code>IRCode</code>, but assembles its extra control flow in a builder-local CFG before lowering back to <code>IRCode</code>.</p><p>If you are modifying interpreter internals, the most important invariants to preserve are:</p><ol><li>SSA uses must stay coherent after insertion and compaction.</li><li><code>ir.stmts</code> and <code>ir.cfg</code> must agree after lowering.</li><li>Phi-node edges and predecessor relationships must stay aligned when blocks are removed or reordered.</li></ol></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../scalar_rules_via_ndual/">« Scalar And Low-Dimensional Rules Via <code>NDual</code></a><a class="docs-footer-nextpage" href="../forwards_mode_design/">Forwards-Mode Design »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Monday 20 April 2026 18:20">Monday 20 April 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
