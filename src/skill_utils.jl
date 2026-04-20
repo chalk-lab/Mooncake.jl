@@ -226,7 +226,8 @@ Inspect IR transformations for a function call. Returns an `IRInspection` struct
 containing all stages and diffs.
 
 # Keyword Arguments
-- `mode::Symbol = :reverse`: `:forward` or `:reverse` mode
+- `mode::Symbol = :reverse`: inspection mode. `:reverse` is supported; `:forward`
+  currently throws because the IR-based forward compiler has been removed
 - `world::UInt = Base.get_world_counter()`: world age recorded in the result
   for diagnostics (used by `world_age_info`), but does not influence IR generation
 - `optimize::Bool = true`: whether to run the final `optimise_ir!` pass

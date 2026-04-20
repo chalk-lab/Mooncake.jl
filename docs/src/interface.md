@@ -98,7 +98,7 @@ the Hessian-vector product.
 Mooncake.Config
 Mooncake.value_and_derivative!!
 Mooncake.value_and_gradient!!(::Mooncake.Cache, f::F, x::Vararg{Any, N}) where {F, N}
-Mooncake.value_and_gradient!!(::Mooncake.NfwdCache, f::F, x::Vararg{Any, N}) where {F, N}
+Mooncake.value_and_gradient!!(::Mooncake.FCache, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.value_and_pullback!!(::Mooncake.Cache, ȳ, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.prepare_derivative_cache
 Mooncake.prepare_gradient_cache

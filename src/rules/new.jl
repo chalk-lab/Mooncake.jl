@@ -48,7 +48,9 @@ end
 @inline _ndual_width(::Complex{NDual{T,W}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::AbstractArray{NDual{T,W}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::AbstractArray{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
-@inline _ndual_width(::Dual{<:Any,NTangent{L}}, rest...) where {L<:Tuple} = Val(fieldcount(L))
+@inline _ndual_width(::Dual{<:Any,NTangent{L}}, rest...) where {L<:Tuple} = Val(
+    fieldcount(L)
+)
 @inline _ndual_width(x::Dual, rest...) = _ndual_width(tangent(x), rest...)
 @inline _ndual_width(_, rest...) = _ndual_width(rest...)
 @inline _ndual_width() = error("_ndual_width called with no NDual arguments")

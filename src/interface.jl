@@ -1690,6 +1690,19 @@ function _hvp_make_seed(::Type{T}) where {T<:IEEEFloat}
     return RData{NT}((value=zero(T), partials=(one(T),)))
 end
 
+"""
+    value_and_hvp!!(cache, f, v, x...)
+
+Compute the value, gradient, and Hessian-vector product of scalar-valued `f` at `x`
+along direction `v`.
+
+For single-argument `f(x::Vector)`, returns `(value, gradient, hvp)`.
+For multi-argument `f(x1, x2, ...)`, returns
+`(value, (g1, g2, ...), (Hv1, Hv2, ...))`.
+
+`v` must provide one direction vector per differentiable input, matching the shape
+of `x`. Only `Vector{<:IEEEFloat}` inputs are supported.
+"""
 function value_and_hvp!!(
     cache::HVPCache{:reverse_over_forward}, f, v, x::Vararg{Any,N}
 ) where {N}
