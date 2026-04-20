@@ -1,4 +1,3 @@
-using Mooncake: TestUtils
 using Mooncake:
     prepare_gradient_cache,
     prepare_hvp_cache,
@@ -6,8 +5,13 @@ using Mooncake:
     prepare_pullback_cache,
     value_and_gradient!!,
     value_and_hvp!!,
+    value_and_jacobian!!,
     value_gradient_and_hessian!!,
-    value_and_pullback!!
+    value_and_pullback!!,
+    CoDual,
+    TestUtils,
+    build_rrule,
+    tangent_type
 
 struct SimplePair
     x1::Float64
@@ -1170,6 +1174,141 @@ end
                     _ndual_width_sensitive_sum(x, y), (Mooncake.NoTangent(), one(x), one(y))
                 )
             end
+        end
+
+        @testset "value_and_jacobian!!" begin
+            f_jac = x -> [x[1]^2 + x[2], x[1] * x[2], sin(x[2])]
+            x_jac = [x, y]
+            expected_jac = [2x 1.0; y x; 0.0 cos(y)]
+
+            fwd_cache_jac = Mooncake.prepare_derivative_cache(
+                f_jac,
+                x_jac;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            val_jac_fwd, jac_fwd = Mooncake.value_and_jacobian!!(
+                fwd_cache_jac, f_jac, x_jac
+            )
+            @test val_jac_fwd == f_jac(x_jac)
+            @test jac_fwd ≈ expected_jac
+
+            rev_cache_jac = Mooncake.prepare_pullback_cache(
+                f_jac,
+                x_jac;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            val_jac_rev, jac_rev = Mooncake.value_and_jacobian!!(
+                rev_cache_jac, f_jac, x_jac
+            )
+            @test val_jac_rev == f_jac(x_jac)
+            @test jac_rev ≈ expected_jac
+
+            x_jac2 = [x + 1, y - 1]
+            expected_jac2 = [2x_jac2[1] 1.0; x_jac2[2] x_jac2[1]; 0.0 cos(x_jac2[2])]
+            @test Mooncake.value_and_jacobian!!(fwd_cache_jac, f_jac, x_jac2) ==
+                (f_jac(x_jac2), expected_jac2)
+            @test Mooncake.value_and_jacobian!!(rev_cache_jac, f_jac, x_jac2) ==
+                (f_jac(x_jac2), expected_jac2)
+
+            scalar_out_fwd_cache = Mooncake.prepare_derivative_cache(
+                sum,
+                x_jac;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            @test_throws ArgumentError Mooncake.value_and_jacobian!!(
+                scalar_out_fwd_cache, sum, x_jac
+            )
+            scalar_out_rev_cache = Mooncake.prepare_pullback_cache(
+                sum,
+                x_jac;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            @test_throws ArgumentError Mooncake.value_and_jacobian!!(
+                scalar_out_rev_cache, sum, x_jac
+            )
+
+            fwd_cache_jac_chunk1 = Mooncake.prepare_derivative_cache(
+                f_jac, x_jac; config=Mooncake.Config(; chunk_size=1)
+            )
+            @test Mooncake.value_and_jacobian!!(fwd_cache_jac_chunk1, f_jac, x_jac) ==
+                (f_jac(x_jac), expected_jac)
+
+            hvp_cache = Mooncake.prepare_hvp_cache(sin, 1.0)
+            @test_throws "value_and_jacobian!! only supports cache types Cache and ForwardCache" Mooncake.value_and_jacobian!!(
+                hvp_cache, sin, 1.0
+            )
+
+            f_mut_jac = x -> (x .*= 2; x .^ 2)
+            x_mut_jac = [1.5, -2.0]
+            rev_cache_mut_jac = Mooncake.prepare_pullback_cache(
+                f_mut_jac,
+                copy(x_mut_jac);
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            x_mut_jac_work = copy(x_mut_jac)
+            val_mut_jac, jac_mut_jac = Mooncake.value_and_jacobian!!(
+                rev_cache_mut_jac, f_mut_jac, x_mut_jac_work
+            )
+            @test x_mut_jac_work == x_mut_jac
+            @test val_mut_jac == 4 .* x_mut_jac .^ 2
+            @test jac_mut_jac ≈ [8 * x_mut_jac[1] 0.0; 0.0 8 * x_mut_jac[2]]
+
+            x_mut_jac_chunked = [1.0, 2.0, 3.0]
+            fwd_cache_mut_jac = Mooncake.prepare_derivative_cache(
+                f_mut_jac,
+                copy(x_mut_jac_chunked);
+                config=Mooncake.Config(;
+                    chunk_size=2, debug_mode=false, friendly_tangents=false
+                ),
+            )
+            x_mut_jac_chunked_work = copy(x_mut_jac_chunked)
+            val_mut_jac_chunked, jac_mut_jac_chunked = Mooncake.value_and_jacobian!!(
+                fwd_cache_mut_jac, f_mut_jac, x_mut_jac_chunked_work
+            )
+            @test x_mut_jac_chunked_work == x_mut_jac_chunked
+            @test val_mut_jac_chunked == 4 .* x_mut_jac_chunked .^ 2
+            @test jac_mut_jac_chunked ≈ Diagonal(8 .* x_mut_jac_chunked)
+
+            x_jac_parent = [x, y, 0.0]
+            x_jac_view = @view x_jac_parent[1:2]
+            f_view_jac = x -> [x[1]^2, x[1] + x[2]]
+            fwd_cache_view_jac = Mooncake.prepare_derivative_cache(
+                f_view_jac,
+                x_jac_view;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            @test_throws ArgumentError Mooncake.value_and_jacobian!!(
+                fwd_cache_view_jac, f_view_jac, x_jac_view
+            )
+
+            rev_cache_view_jac = Mooncake.prepare_pullback_cache(
+                f_view_jac,
+                x_jac_view;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            @test_throws ArgumentError Mooncake.value_and_jacobian!!(
+                rev_cache_view_jac, f_view_jac, x_jac_view
+            )
+
+            f_mismatched_jac = x -> Float32[x[1] + x[2], x[1] - x[2]]
+            x_mismatched_jac = [x, y]
+            fwd_cache_mismatched_jac = Mooncake.prepare_derivative_cache(
+                f_mismatched_jac,
+                x_mismatched_jac;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            @test_throws ArgumentError Mooncake.value_and_jacobian!!(
+                fwd_cache_mismatched_jac, f_mismatched_jac, x_mismatched_jac
+            )
+
+            rev_cache_mismatched_jac = Mooncake.prepare_pullback_cache(
+                f_mismatched_jac,
+                x_mismatched_jac;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            @test_throws ArgumentError Mooncake.value_and_jacobian!!(
+                rev_cache_mismatched_jac, f_mismatched_jac, x_mismatched_jac
+            )
         end
 
         @testset "prepare_derivative_cache does not execute nfwd-eligible functions" begin

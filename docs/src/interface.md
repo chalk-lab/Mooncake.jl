@@ -102,6 +102,7 @@ Mooncake.Config
 Mooncake.value_and_derivative!!
 Mooncake.value_and_gradient!!(::Mooncake.Cache, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.value_and_gradient!!(::Mooncake.ForwardCache, f::F, x::Vararg{Any, N}) where {F, N}
+Mooncake.value_and_jacobian!!
 Mooncake.value_and_pullback!!(::Mooncake.Cache, ȳ, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.prepare_derivative_cache
 Mooncake.prepare_gradient_cache

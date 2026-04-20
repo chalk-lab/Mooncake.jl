@@ -2396,6 +2396,177 @@ function _validate_hessian_arguments(x::Vararg{Any,N}) where {N}
     return T
 end
 
+function _validate_jacobian_argument(x)
+    x isa AbstractVector || throw(
+        ArgumentError(
+            "value_and_jacobian!! only supports AbstractVector inputs; got $(typeof(x))"
+        ),
+    )
+    T = eltype(x)
+    T <: IEEEFloat || throw(
+        ArgumentError(
+            "value_and_jacobian!! only supports AbstractVector inputs with IEEEFloat element types; got eltype $T",
+        ),
+    )
+    x isa DenseVector || throw(
+        ArgumentError(
+            "value_and_jacobian!! only supports dense vector inputs; got $(typeof(x))"
+        ),
+    )
+    return T
+end
+
+function _validate_jacobian_output(y, Tx)
+    y isa AbstractVector || throw(
+        ArgumentError(
+            "value_and_jacobian!! only supports AbstractVector outputs; got $(typeof(y))",
+        ),
+    )
+    Ty = eltype(y)
+    Ty <: IEEEFloat || throw(
+        ArgumentError(
+            "value_and_jacobian!! only supports AbstractVector outputs with IEEEFloat element types; got eltype $Ty",
+        ),
+    )
+    Ty == Tx || throw(
+        ArgumentError(
+            "value_and_jacobian!! requires input and output AbstractVector element types to match; got input eltype $Tx and output eltype $Ty",
+        ),
+    )
+    return Ty
+end
+
+"""
+    value_and_jacobian!!(cache::ForwardCache, f, x)
+    value_and_jacobian!!(cache::Cache, f, x)
+
+Using a pre-built cache, compute and return `(value, jacobian)` for a vector-valued
+function `f` of a single vector input.
+
+The current implementation supports a single dense vector input and an
+`AbstractVector` output, both with the same `IEEEFloat` element type. The returned
+Jacobian is a dense matrix whose columns correspond to input coordinates.
+
+!!! info
+    `cache` must be the output of [`prepare_derivative_cache`](@ref) or
+    [`prepare_pullback_cache`](@ref), and `f` and `x` must match the types and shapes used
+    to construct the cache.
+"""
+@unstable @inline function value_and_jacobian!!(
+    cache::ForwardCache, f::F, x::AbstractVector{<:IEEEFloat}
+) where {F}
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    Tx = _validate_jacobian_argument(x)
+    total_dof = length(x)
+    total_dof > 0 ||
+        throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
+    chunk_size = min(getfield(cache, :gradient_chunk_size), total_dof)
+    dz = zero_tangent(f)
+    # Without this pre-flight check, a mismatched output eltype surfaces as a
+    # MethodError inside the Nfwd engine rather than a clean ArgumentError.
+    let Y = Core.Compiler.return_type(f, Tuple{typeof(x)})
+        if Y <: AbstractVector
+            Ty = eltype(Y)
+            if Ty <: IEEEFloat && Ty != Tx
+                throw(
+                    ArgumentError(
+                        "value_and_jacobian!! requires input and output AbstractVector element types to match; got input eltype $Tx and output eltype $Ty",
+                    ),
+                )
+            end
+        end
+    end
+    y, chunk_dy = value_and_derivative!!(
+        cache,
+        (f, dz),
+        (x, NTangent(ntuple(lane -> _fcache_gradient_seed_tangent(x, lane), chunk_size))),
+    )
+    Ty = _validate_jacobian_output(y, Tx)
+    J = zeros(Ty, length(y), total_dof)
+    if chunk_dy isa NTangent
+        @inbounds for lane in 1:length(chunk_dy)
+            J[:, lane] .= chunk_dy[lane]
+        end
+    else
+        @inbounds J[:, 1] .= chunk_dy
+    end
+    for start_col in (chunk_size + 1):chunk_size:total_dof
+        _, chunk_dy = value_and_derivative!!(
+            cache,
+            (f, dz),
+            (
+                x,
+                NTangent(
+                    ntuple(
+                        lane -> let slot = start_col + lane - 1
+                            if slot <= total_dof
+                                _fcache_gradient_seed_tangent(x, slot)
+                            else
+                                zero_tangent(x)
+                            end
+                        end, chunk_size
+                    ),
+                ),
+            ),
+        )
+        if chunk_dy isa NTangent
+            @inbounds for lane in 1:length(chunk_dy)
+                col = start_col + lane - 1
+                col <= total_dof || break
+                J[:, col] .= chunk_dy[lane]
+            end
+        else
+            @inbounds J[:, start_col] .= chunk_dy
+        end
+    end
+    return y, J
+end
+
+@unstable @inline function value_and_jacobian!!(
+    cache::Cache, f::F, x::AbstractVector{<:IEEEFloat}
+) where {F}
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    Tx = _validate_jacobian_argument(x)
+    total_dof = length(x)
+    total_dof > 0 ||
+        throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
+    y_cache = getfield(cache, :y_cache)
+    Ty = _validate_jacobian_output(y_cache, Tx)
+    ȳ = zeros(Ty, length(y_cache))
+    J = zeros(Ty, length(ȳ), total_dof)
+    if isempty(ȳ)
+        y, _ = value_and_pullback!!(cache, ȳ, f, x)
+        return y, J
+    end
+
+    ȳ[1] = one(Ty)
+    y, pb = value_and_pullback!!(cache, ȳ, f, x)
+    @inbounds J[1, :] .= pb[2]
+    ȳ[1] = zero(Ty)
+
+    @inbounds for row in 2:length(ȳ)
+        ȳ[row] = one(Ty)
+        _, pb = value_and_pullback!!(cache, ȳ, f, x)
+        J[row, :] .= pb[2]
+        ȳ[row] = zero(Ty)
+    end
+
+    return y, J
+end
+
+@unstable function value_and_jacobian!!(cache::Union{Cache,ForwardCache}, f::F, x) where {F}
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    _validate_jacobian_argument(x)
+end
+
+@unstable function value_and_jacobian!!(cache, f::F, x) where {F}
+    throw(
+        ArgumentError(
+            "value_and_jacobian!! only supports cache types Cache and ForwardCache"
+        ),
+    )
+end
+
 """
     value_gradient_and_hessian!!(cache::HVPCache, f, x...)
 
