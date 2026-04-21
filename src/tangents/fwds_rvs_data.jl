@@ -902,6 +902,23 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
     @assert R isa Union
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
+# Tiebreaker: without this, method above (more specific on F) and method below (more
+# specific on R) are both ambiguous for tangent_type(NoFData, Union{NoRData,RData{...}}).
+# This method beats both: exact F and tighter R bound.
+@foldable function tangent_type(::Type{NoFData}, ::Type{R}) where {R<:Union{NoRData,RData}}
+    @assert R isa Union
+    Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
+end
+@foldable function tangent_type(
+    ::Type{F}, ::Type{R}
+) where {F<:Union{NoFData,FData},R<:Union{NoRData,RData}}
+    @assert F isa Union && R isa Union
+    Fa = F.a == NoFData ? F.a : F.b
+    Fb = F.a == NoFData ? F.b : F.a
+    Ra = R.a == NoRData ? R.a : R.b
+    Rb = R.a == NoRData ? R.b : R.a
+    Union{tangent_type(Fa, Ra),tangent_type(Fb, Rb)}
+end
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}

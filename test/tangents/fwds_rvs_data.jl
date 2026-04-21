@@ -54,6 +54,9 @@ end
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_nothing_or_vector(); test_opt_flag=false
         )
+        TestUtils.test_tangent_splitting(
+            Xoshiro(123456), TestResources.make_P_mixed_container(); test_opt_flag=false
+        )
         @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
     end
 

@@ -203,6 +203,17 @@ struct NothingOrVecContainer
 end
 make_P_lohi_container() = LoHiContainer(LoHi(1.0, 2.0))
 make_P_nothing_or_vector() = NothingOrVecContainer([1.0, 2.0])
+# MixedContainer: Union{Nothing,Mixed} where Mixed has both Float64 and Vector fields —
+# fdata is Union{NoFData,FData{...}} and rdata is Union{NoRData,RData{...}} simultaneously,
+# hitting tangent_type(F, R) where F<:Union{NoFData,FData}, R<:Union{NoRData,RData}.
+struct Mixed
+    x::Float64
+    v::Vector{Float64}
+end
+struct MixedContainer
+    val::Union{Nothing,Mixed}
+end
+make_P_mixed_container() = MixedContainer(Mixed(1.0, [2.0, 3.0]))
 
 function build_big_isbits_struct()
     return FourFields(
