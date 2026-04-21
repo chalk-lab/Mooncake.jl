@@ -905,23 +905,19 @@ end
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}
-    # F==Any is excluded by the guard below; F==NoFData hits a more specific method.
-    _validate_fdata_union(F)
+    _validate_union(F)
+    # The only case where this dispatch can be hit where F is
+    # not a union would be if F==Any, but _validate_union causes
+    # that case to error
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
-# Rejects F==Any (not a union) and any branch whose tangent carries rdata.
-# tangent_type(B, NoRData) always dispatches (no MethodError) and throws
-# InvalidFDataException for any B that is not a valid fdata-only type.
-function _validate_fdata_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
-    if !(F isa Union)
+function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
+    _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F
+    if rdata_type(tangent_type(_T)) != NoRData
         throw(
             InvalidFDataException("Something went wrong: called tangent_type($F, NoRData)")
         )
-    end
-    for B in (F.a, F.b)
-        B == NoFData && continue
-        tangent_type(B, NoRData)  # throws InvalidFDataException if B carries rdata
     end
     return nothing
 end
