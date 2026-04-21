@@ -892,9 +892,11 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
 
-# Union types. Only unions where every branch is rdata-only or fdata-only are supported;
-# a mixed union cannot be split at compile time. Supported branch types: Nothing/NoTangent,
-# IEEEFloat (rdata only), Array (fdata only), RData structs (rdata only, issue #1130).
+# Union types. Supported cases:
+# - F=NoFData, R is a union of rdata-only branches (IEEEFloat or RData structs)
+# - F=Union{NoFData,FData}, R=Union{NoRData,RData} - both sides are unions (issue #1130)
+# - F is a union of fdata-only branches, R=NoRData
+# Each case requires explicit dispatch methods plus tiebreakers to resolve ambiguities.
 @foldable function tangent_type(
     ::Type{NoFData}, ::Type{R}
 ) where {R<:Union{NoRData,Base.IEEEFloat,RData}}
@@ -919,13 +921,19 @@ end
     Rb = R.a == NoRData ? R.b : R.a
     Union{tangent_type(Fa, Ra),tangent_type(Fb, Rb)}
 end
+# Tiebreaker: Method 3 (more specific on F) vs method below (more specific on R=NoRData).
+# No _validate_union needed: F<:Union{NoFData,FData} guarantees the non-NoFData branch is
+# FData, which by definition carries no rdata.
+@foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Union{NoFData,FData}}
+    @assert F isa Union
+    Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
+end
+# Handles Union{NoFData, T} where T is not FData (e.g. Array). Cases where T<:FData are
+# caught by the tiebreaker above. _validate_union guards against T carrying rdata.
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}
     _validate_union(F)
-    # The only case where this dispatch can be hit where F is
-    # not a union would be if F==Any, but _validate_union causes
-    # that case to error
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
