@@ -134,11 +134,7 @@ end
 run_dynamicppl_problem(f::F, x::X) where {F,X} = f(x)
 
 function should_run_benchmark(
-    # TODO: re-enable when DI is removed from DynamicPPL hard deps. 
-    # ::Val{:zygote}, ::Base.Fix1{<:typeof(DynamicPPL.LogDensityProblems.logdensity)}, x...
-    ::Any,
-    ::Base.Fix1{<:typeof(DynamicPPL.LogDensityProblems.logdensity)},
-    x...,
+    ::Val{:zygote}, ::Base.Fix1{<:typeof(DynamicPPL.LogDensityProblems.logdensity)}, x...
 )
     return false
 end
@@ -173,7 +169,8 @@ function generate_inter_framework_tests()
             (_simple_mlp, randn(128, 256), randn(256, 128), randn(128, 70), randn(128, 70)),
         ),
         ("gp_lml", (_gp_lml, _generate_gp_inputs()...)),
-        ("turing_broadcast_benchmark", build_dynamicppl_problem()),
+        # TODO: re-enable when DI is removed from DynamicPPL hard deps. 
+        # ("turing_broadcast_benchmark", build_dynamicppl_problem()),
         ("large_single_block", (large_single_block, [0.9, 0.99])),
     ]
 end
