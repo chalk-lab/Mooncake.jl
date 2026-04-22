@@ -888,6 +888,15 @@ end
 Given the type of the fdata and rdata, `F` and `R` resp., for some primal type, compute its
 tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 """
+
+# All two-argument tangent_type methods below are marked @foldable
+# (Base.@assume_effects :foldable), meaning Julia evaluates them at compile time
+# whenever argument types are statically known. They never execute at runtime, so
+# Julia's coverage instrumentation never fires on them. The COV_EXCL_START/STOP
+# markers tell Codecov to exclude this block from coverage metrics rather than
+# counting all these lines as uncovered.
+
+# COV_EXCL_START
 @foldable tangent_type(::Type{NoFData}, ::Type{NoRData}) = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
@@ -937,6 +946,8 @@ end
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
+# COV_EXCL_STOP
+
 function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F
     # rdata_type throws for non-IEEEFloat primitive types; guard before calling it.
@@ -948,6 +959,7 @@ function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     return nothing
 end
 
+# COV_EXCL_START
 # Tuples
 @foldable @generated function tangent_type(::Type{F}, ::Type{R}) where {F<:Tuple,R<:Tuple}
     tt_exprs = map((f, r) -> :(tangent_type($f, $r)), fieldtypes(F), fieldtypes(R))
@@ -996,6 +1008,7 @@ end
 
 # Abstract types.
 @foldable tangent_type(::Type{Any}, ::Type{Any}) = Any
+# COV_EXCL_STOP
 
 """
     tangent(f, r)
