@@ -893,8 +893,8 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 # Julia to evaluate them at compile time. Their bodies never execute at runtime, so the
 # coverage instrumenter sees them as uninstrumented ("-") rather than hit or missed lines.
 # COV_EXCL_START/STOP excludes them from the Codecov patch-coverage calculation to avoid
-# a misleading drop. Correctness is still verified at runtime via Base.inferencebarrier
-# tests in test/tangents/fwds_rvs_data.jl.
+# a misleading drop. Correctness is verified by the direct tangent_type(F, R) tests in
+# test/tangents/fwds_rvs_data.jl.
 # COV_EXCL_START
 @foldable tangent_type(::Type{NoFData}, ::Type{NoRData}) = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
