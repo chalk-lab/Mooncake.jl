@@ -86,6 +86,44 @@ end
         )
     end
 
+    # Use Base.inferencebarrier to prevent constant-folding so @foldable method bodies
+    # execute at runtime and are visible to the coverage instrumenter.
+    @testset "runtime dispatch of @foldable tangent_type(F, R) methods" begin
+        ib = Base.inferencebarrier
+        # Basic leaf methods.
+        @test tangent_type(ib(NoFData), ib(NoRData)) == NoTangent
+        @test tangent_type(ib(NoFData), ib(Float64)) == Float64
+        @test tangent_type(ib(Vector{Float64}), ib(NoRData)) == Vector{Float64}
+
+        # Method 1: NoFData + Union{NoRData, IEEEFloat}.
+        @test tangent_type(ib(NoFData), ib(Union{NoRData,Float64})) ==
+            Union{NoTangent,Float64}
+
+        # Tiebreaker 1: NoFData + Union{NoRData, RData{...}}.
+        RType = Mooncake.RData{@NamedTuple{lo::Float64,hi::Float64}}
+        @test tangent_type(ib(NoFData), ib(Union{NoRData,RType})) ==
+            Union{NoTangent,Tangent{@NamedTuple{lo::Float64,hi::Float64}}}
+
+        # Method 3: both F and R are unions (Union{NoFData,FData} + Union{NoRData,RData}).
+        let P = Union{Nothing,TestResources.Mixed}
+            F = fdata_type(tangent_type(P))
+            R = rdata_type(tangent_type(P))
+            @test tangent_type(ib(F), ib(R)) == tangent_type(P)
+        end
+
+        # Tiebreaker 2: Union{NoFData,FData} + NoRData.
+        let P = Union{Nothing,TestResources.VecOnly}
+            F = fdata_type(tangent_type(P))
+            @test tangent_type(ib(F), ib(NoRData)) == tangent_type(P)
+        end
+
+        # General union method happy path: Union{NoFData,Array} + NoRData.
+        let P = Union{Nothing,Vector{Float64}}
+            F = fdata_type(tangent_type(P))
+            @test tangent_type(ib(F), ib(NoRData)) == tangent_type(P)
+        end
+    end
+
     @testset "zero_rdata_from_type checks" begin
         @test can_produce_zero_rdata_from_type(Vector) == true
         check_allocs(can_produce_zero_rdata_from_type, Vector)
