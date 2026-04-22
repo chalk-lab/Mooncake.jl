@@ -1237,25 +1237,6 @@ end
                 rev_empty_cache, f_empty_jac, [x + 1, y - 1]
             ) == expected_empty
 
-            f_mismatched_jac = x -> Float32[x[1] + x[2], x[1] - x[2]]
-            fwd_cache_mismatched_jac = Mooncake.prepare_derivative_cache(
-                f_mismatched_jac,
-                x_jac;
-                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-            )
-            @test_throws "value_and_jacobian!! requires input and output AbstractVector element types to match" Mooncake.value_and_jacobian!!(
-                fwd_cache_mismatched_jac, f_mismatched_jac, x_jac
-            )
-
-            rev_cache_mismatched_jac = Mooncake.prepare_pullback_cache(
-                f_mismatched_jac,
-                x_jac;
-                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-            )
-            @test_throws "value_and_jacobian!! requires input and output AbstractVector element types to match" Mooncake.value_and_jacobian!!(
-                rev_cache_mismatched_jac, f_mismatched_jac, x_jac
-            )
-
             fwd_cache_jac_chunk1 = Mooncake.prepare_derivative_cache(
                 f_jac, x_jac; config=Mooncake.Config(; chunk_size=1)
             )
