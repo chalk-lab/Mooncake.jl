@@ -319,7 +319,7 @@ _register_cuda_opaque_types!()
 # re-registering standard Julia primitive types (Bool, Int32, Float64, ...) that happen
 # to be visible in the CUDA namespace.
 function _register_cuda_enum_types!()
-    let _cuda_family = (cuBLAS, cuSPARSE, cuSOLVER, CUDA.CUDACore)
+    let _cuda_family = (cuBLAS, cuSPARSE, cuSOLVER)
         _cenum_seen = Set{DataType}()
         for _mod in _cuda_family
             for _nm in names(_mod; all=true)
