@@ -134,7 +134,9 @@ end
 run_dynamicppl_problem(f::F, x::X) where {F,X} = f(x)
 
 function should_run_benchmark(
-    ::Val{:zygote}, ::Base.Fix1{<:typeof(DynamicPPL.LogDensityProblems.logdensity)}, x...
+    # TODO: re-enable when DI is removed from DynamicPPL hard deps. 
+    # ::Val{:zygote}, ::Base.Fix1{<:typeof(DynamicPPL.LogDensityProblems.logdensity)}, x...
+    ::Any, ::Base.Fix1{<:typeof(DynamicPPL.LogDensityProblems.logdensity)}, x...
 )
     return false
 end
