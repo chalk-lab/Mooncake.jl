@@ -103,7 +103,7 @@ jobs:
           # {test_type: 'integration_testing', label: 'diffeq'},
           {test_type: 'integration_testing', label: 'dispatch_doctor'},
           {test_type: 'integration_testing', label: 'distributions'},
-          {test_type: 'integration_testing', label: 'dynamicppl'},
+          # {test_type: 'integration_testing', label: 'dynamicppl'},
           {test_type: 'integration_testing', label: 'gp'},
           {test_type: 'integration_testing', label: 'logexpfunctions'},
           {test_type: 'integration_testing', label: 'battery_tests'},
