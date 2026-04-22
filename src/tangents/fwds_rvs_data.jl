@@ -939,7 +939,8 @@ end
 end
 function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F
-    if rdata_type(tangent_type(_T)) != NoRData
+    # rdata_type throws for non-IEEEFloat primitive types; guard before calling it.
+    if isprimitivetype(_T) || rdata_type(_T) != NoRData
         throw(
             InvalidFDataException("Something went wrong: called tangent_type($F, NoRData)")
         )

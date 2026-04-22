@@ -195,14 +195,7 @@ end
 struct LoHiContainer
     lohi::Union{Nothing,LoHi}
 end
-# NothingOrVecContainer: Union{Nothing,Array} — rdata collapses to NoRData.
-# Must be a struct field: Julia erases runtime type annotations, so a bare
-# `[1.0,2.0]::Union{Nothing,Vector{Float64}}` returns Vector{Float64}, not the union.
-struct NothingOrVecContainer
-    x::Union{Nothing,Vector{Float64}}
-end
 make_P_lohi_container() = LoHiContainer(LoHi(1.0, 2.0))
-make_P_nothing_or_vector() = NothingOrVecContainer([1.0, 2.0])
 # MixedContainer: Union{Nothing,Mixed} where Mixed has both Float64 and Vector fields —
 # fdata is Union{NoFData,FData{...}} and rdata is Union{NoRData,RData{...}} simultaneously,
 # hitting tangent_type(F, R) where F<:Union{NoFData,FData}, R<:Union{NoRData,RData}.
@@ -214,6 +207,11 @@ struct MixedContainer
     val::Union{Nothing,Mixed}
 end
 make_P_mixed_container() = MixedContainer(Mixed(1.0, [2.0, 3.0]))
+# VecOnly: Union{Nothing,VecOnly} where VecOnly has only Vector fields — used to exercise
+# tangent_type(F, NoRData) where F<:Union{NoFData,FData}.
+struct VecOnly
+    v::Vector{Float64}
+end
 
 function build_big_isbits_struct()
     return FourFields(

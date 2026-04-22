@@ -48,15 +48,35 @@ end
             Xoshiro(123456), TestResources.P_adam_like_union; test_opt_flag=false
         )
         # https://github.com/chalk-lab/Mooncake.jl/issues/1130
+        # End-to-end tangent splitting for the original issue and the general mixed case.
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_lohi_container(); test_opt_flag=false
         )
         TestUtils.test_tangent_splitting(
-            Xoshiro(123456), TestResources.make_P_nothing_or_vector(); test_opt_flag=false
-        )
-        TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_mixed_container(); test_opt_flag=false
         )
+        # Direct tests for new tangent_type(F, R) methods.
+        # Method 1: NoFData + Union{NoRData, IEEEFloat}
+        @test tangent_type(NoFData, Union{NoRData,Float64}) == Union{NoTangent,Float64}
+        # Tiebreaker 1: NoFData + Union{NoRData, RData{...}}
+        @test tangent_type(
+            NoFData, Union{NoRData,Mooncake.RData{@NamedTuple{lo::Float64,hi::Float64}}}
+        ) == Union{NoTangent,Tangent{@NamedTuple{lo::Float64,hi::Float64}}}
+        # Method 3: both F and R are unions — round-trip via Union{Nothing, Mixed}
+        let P = Union{Nothing,TestResources.Mixed}
+            @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
+                tangent_type(P)
+        end
+        # Tiebreaker 2: Union{NoFData,FData} + NoRData — round-trip via Union{Nothing, VecOnly}
+        let P = Union{Nothing,TestResources.VecOnly}
+            @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
+                tangent_type(P)
+        end
+        # General union method: Union{NoFData, Array} + NoRData (success path).
+        let P = Union{Nothing,Vector{Float64}}
+            @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
+                tangent_type(P)
+        end
         @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
     end
 
