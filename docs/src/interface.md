@@ -95,6 +95,26 @@ Separately, the Hessian path exposed by `prepare_hessian_cache` /
 closure. It does not currently use the public `NfwdMooncake` fast path, even though the
 outer layer is forward mode.
 
+## Jacobian example
+
+For a vector-valued function of a single dense vector input, `value_and_jacobian!!`
+returns the primal output together with a dense Jacobian whose columns correspond to
+input coordinates.
+
+```jldoctest
+julia> using Mooncake
+
+julia> f(x) = [x[1]^2 + x[2], x[1] * x[2]]
+f (generic function with 1 method)
+
+julia> x = [2.0, 3.0];
+
+julia> cache = Mooncake.prepare_derivative_cache(f, x);
+
+julia> Mooncake.value_and_jacobian!!(cache, f, x)
+([7.0, 6.0], [4.0 1.0; 3.0 2.0])
+```
+
 ## API Reference
 
 ```@docs; canonical=true

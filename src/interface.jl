@@ -2416,23 +2416,31 @@ function _validate_jacobian_argument(x)
     return T
 end
 
-function _validate_jacobian_output(y, Tx)
-    y isa AbstractVector || throw(
+function _throw_jacobian_eltype_mismatch(Tx, Ty)
+    throw(
         ArgumentError(
-            "value_and_jacobian!! only supports AbstractVector outputs; got $(typeof(y))",
+            "value_and_jacobian!! requires input and output AbstractVector element types to match; got input eltype $Tx and output eltype $Ty",
         ),
     )
+end
+
+function _throw_jacobian_output_type_error(y)
+    throw(
+        ArgumentError(
+            "value_and_jacobian!! only supports AbstractVector outputs; got $(typeof(y))"
+        ),
+    )
+end
+
+function _validate_jacobian_output(y, Tx)
+    y isa AbstractVector || _throw_jacobian_output_type_error(y)
     Ty = eltype(y)
     Ty <: IEEEFloat || throw(
         ArgumentError(
             "value_and_jacobian!! only supports AbstractVector outputs with IEEEFloat element types; got eltype $Ty",
         ),
     )
-    Ty == Tx || throw(
-        ArgumentError(
-            "value_and_jacobian!! requires input and output AbstractVector element types to match; got input eltype $Tx and output eltype $Ty",
-        ),
-    )
+    Ty == Tx || _throw_jacobian_eltype_mismatch(Tx, Ty)
     return Ty
 end
 
@@ -2455,33 +2463,19 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
 @unstable @inline function value_and_jacobian!!(
     cache::ForwardCache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
+    _validate_jacobian_argument(x)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
-    Tx = _validate_jacobian_argument(x)
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
-    chunk_size = min(getfield(cache, :gradient_chunk_size), total_dof)
+    chunk_size = min(cache.gradient_chunk_size, total_dof)
     dz = zero_tangent(f)
-    # Without this pre-flight check, a mismatched output eltype surfaces as a
-    # MethodError inside the Nfwd engine rather than a clean ArgumentError.
-    let Y = Core.Compiler.return_type(f, Tuple{typeof(x)})
-        if Y <: AbstractVector
-            Ty = eltype(Y)
-            if Ty <: IEEEFloat && Ty != Tx
-                throw(
-                    ArgumentError(
-                        "value_and_jacobian!! requires input and output AbstractVector element types to match; got input eltype $Tx and output eltype $Ty",
-                    ),
-                )
-            end
-        end
-    end
     y, chunk_dy = value_and_derivative!!(
         cache,
         (f, dz),
         (x, NTangent(ntuple(lane -> _fcache_gradient_seed_tangent(x, lane), chunk_size))),
     )
-    Ty = _validate_jacobian_output(y, Tx)
+    Ty = _validate_jacobian_output(y, eltype(x))
     J = zeros(Ty, length(y), total_dof)
     if chunk_dy isa NTangent
         @inbounds for lane in 1:length(chunk_dy)
@@ -2525,13 +2519,13 @@ end
 @unstable @inline function value_and_jacobian!!(
     cache::Cache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
+    _validate_jacobian_argument(x)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
-    Tx = _validate_jacobian_argument(x)
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
-    y_cache = getfield(cache, :y_cache)
-    Ty = _validate_jacobian_output(y_cache, Tx)
+    y_cache = cache.y_cache
+    Ty = _validate_jacobian_output(y_cache, eltype(x))
     ȳ = zeros(Ty, length(y_cache))
     J = zeros(Ty, length(ȳ), total_dof)
     if isempty(ȳ)
@@ -2555,8 +2549,8 @@ end
 end
 
 @unstable function value_and_jacobian!!(cache::Union{Cache,ForwardCache}, f::F, x) where {F}
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
     _validate_jacobian_argument(x)
+    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
 end
 
 @unstable function value_and_jacobian!!(cache, f::F, x) where {F}
