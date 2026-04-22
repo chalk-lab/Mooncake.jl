@@ -77,7 +77,13 @@ end
             @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
                 tangent_type(P)
         end
+        # _validate_union: isprimitivetype path (Float64 is a primitive).
         @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
+        # _validate_union: rdata_type != NoRData path (Tangent has rdata; not FData so
+        # tiebreaker 2 does not intercept).
+        @test_throws InvalidFDataException tangent_type(
+            Union{NoFData,Tangent{@NamedTuple{x::Float64}}}, NoRData
+        )
     end
 
     @testset "zero_rdata_from_type checks" begin
