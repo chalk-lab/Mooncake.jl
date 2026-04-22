@@ -889,6 +889,13 @@ Given the type of the fdata and rdata, `F` and `R` resp., for some primal type, 
 tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 """
 
+# All methods below are marked @foldable (Base.@assume_effects :foldable), which tells
+# Julia to evaluate them at compile time. Their bodies never execute at runtime, so the
+# coverage instrumenter sees them as uninstrumented ("-") rather than hit or missed lines.
+# COV_EXCL_START/STOP excludes them from the Codecov patch-coverage calculation to avoid
+# a misleading drop. Correctness is still verified at runtime via Base.inferencebarrier
+# tests in test/tangents/fwds_rvs_data.jl.
+# COV_EXCL_START
 @foldable tangent_type(::Type{NoFData}, ::Type{NoRData}) = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
@@ -908,6 +915,9 @@ end
 # Tiebreaker: without this, method above (more specific on F) and method below (more
 # specific on R) are both ambiguous for tangent_type(NoFData, Union{NoRData,RData{...}}).
 # This method beats both: exact F and tighter R bound.
+# Note: Union{NoRData,RData{A},RData{B}} <: Union{NoRData,RData}, so N-branch unions
+# are handled correctly: Julia represents them as nested binary unions, and the recursive
+# splitting via R.a / R.b decompose them fully.
 @foldable function tangent_type(::Type{NoFData}, ::Type{R}) where {R<:Union{NoRData,RData}}
     @assert R isa Union
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
@@ -938,6 +948,7 @@ end
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
+# COV_EXCL_STOP
 
 function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F
@@ -950,6 +961,7 @@ function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     return nothing
 end
 
+# COV_EXCL_START  (same reason as above: all @foldable, never instrumented at runtime)
 # Tuples
 @foldable @generated function tangent_type(::Type{F}, ::Type{R}) where {F<:Tuple,R<:Tuple}
     tt_exprs = map((f, r) -> :(tangent_type($f, $r)), fieldtypes(F), fieldtypes(R))
@@ -980,13 +992,20 @@ end
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:MutableTangent} = F
 
 # structs
+# Note: Union{RData{A},RData{B}} <: RData in Julia's type system, so the R<:RData and
+# F<:FData methods also match unions of RData/FData subtypes. Guard with `isa Union` so
+# those cases recurse via binary splitting rather than calling fields_type on a Union type.
+# The F<:FData,R<:RData combined case is NOT guarded: pairing two independently-ordered
+# unions of FData and RData would be unreliable; that case should not arise in valid use.
 @foldable function tangent_type(::Type{F}, ::Type{R}) where {F<:FData,R<:RData}
     return Tangent{tangent_type(fields_type(F), fields_type(R))}
 end
 @foldable function tangent_type(::Type{NoFData}, ::Type{R}) where {R<:RData}
+    R isa Union && return Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
     return Tangent{tangent_type(NoFData, fields_type(R))}
 end
 @foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:FData}
+    F isa Union && return Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
     return Tangent{tangent_type(fields_type(F), NoRData)}
 end
 
@@ -998,6 +1017,7 @@ end
 
 # Abstract types.
 @foldable tangent_type(::Type{Any}, ::Type{Any}) = Any
+# COV_EXCL_STOP
 
 """
     tangent(f, r)
