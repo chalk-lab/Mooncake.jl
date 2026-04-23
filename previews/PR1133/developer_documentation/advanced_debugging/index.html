@@ -485,13 +485,13 @@
 ins = inspect_ir(demo_fn, 1.0)
 show_ir(ins)                              # all stages</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">============================================================
 IR Inspection: Tuple{typeof(Main.demo_fn), Float64}
-Mode: reverse, World: 40051
+Mode: reverse, World: 40064
 ============================================================
 
 ----------------------------------------
 Stage: raw
 Blocks: 1, Insts: 4, Edges: 0
-Valid worlds: 0x0000000000009c73:0x0000000000009c73
+Valid worlds: 0x0000000000009c80:0x0000000000009c80
 ----------------------------------------
 3 1 ─ %1 = dynamic invoke Main.sin(_2::Float64)::Float64
   │   %2 = dynamic invoke Main.cos(_2::Float64)::Float64
@@ -502,7 +502,7 @@ Valid worlds: 0x0000000000009c73:0x0000000000009c73
 ----------------------------------------
 Stage: normalized
 Blocks: 1, Insts: 4, Edges: 0
-Valid worlds: 0x0000000000009c73:0x0000000000009c73
+Valid worlds: 0x0000000000009c80:0x0000000000009c80
 ----------------------------------------
 3 1 ─ %1 = dynamic invoke Main.sin(_2::Float64)::Float64
   │   %2 = dynamic invoke Main.cos(_2::Float64)::Float64
@@ -524,7 +524,7 @@ Block 1 (id=Mooncake.BasicBlockCode.ID(4)):
 ----------------------------------------
 Stage: fwd_ir
 Blocks: 2, Insts: 23, Edges: 1
-Valid worlds: 0x0000000000009c73:0x0000000000009c73
+Valid worlds: 0x0000000000009c80:0x0000000000009c80
 ----------------------------------------
 3 1 ─         dynamic (Mooncake.get_shared_data_field)(_1, 1)::Any
   │   %2  =   dynamic (Mooncake.get_shared_data_field)(_1, 2)::Any
@@ -554,16 +554,16 @@ Valid worlds: 0x0000000000009c73:0x0000000000009c73
 ----------------------------------------
 Stage: rvs_ir
 Blocks: 5, Insts: 57, Edges: 4
-Valid worlds: 0x0000000000009c73:0x0000000000009c73
+Valid worlds: 0x0000000000009c80:0x0000000000009c80
 ----------------------------------------
 3 1 ─         dynamic (Mooncake.get_shared_data_field)(_1, 1)::Any
   │   %2  =   dynamic (Mooncake.get_shared_data_field)(_1, 2)::Any
   │   %3  =   dynamic (Mooncake.get_shared_data_field)(_1, 3)::Any
   │   %4  = %new(Base.RefValue{Mooncake.NoRData}, $(QuoteNode(Mooncake.NoRData())))::Any
   │   %5  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
-  │   %6  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
-  │   %7  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
   │         %new(Base.RefValue{Any}, $(QuoteNode(Mooncake.ZeroRData())))::Any
+  │   %7  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
+  │   %8  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
   │   %9  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
   └──       $(QuoteNode(Mooncake.BasicBlockCode.ID(4)))
   2 ─       goto #3
@@ -571,29 +571,29 @@ Valid worlds: 0x0000000000009c73:0x0000000000009c73
   │   %13 =   builtin (getfield)(%12, 1)::Any
   │   %14 =   builtin (getfield)(%12, 2)::Any
   │   %15 =   builtin (getfield)(%12, 3)::Any
-  │   %16 =   builtin (getfield)(%7, :x)::Any
+  │   %16 =   builtin (getfield)(%9, :x)::Any
   │   %17 =   dynamic (Mooncake.increment!!)(%16, _2)::Any
-  │           builtin (setfield!)(%7, :x, %17)::Any
-  │   %19 =   builtin (getfield)(%7, :x)::Any
-  │           builtin (setfield!)(%7, :x, 0.0)::Any
+  │           builtin (setfield!)(%9, :x, %17)::Any
+  │   %19 =   builtin (getfield)(%9, :x)::Any
+  │           builtin (setfield!)(%9, :x, 0.0)::Any
   │   %21 =   dynamic (%15)(%19)::Any
   │   %22 =   builtin (getfield)(%21, 2)::Any
-  │   %23 =   builtin (getfield)(%6, :x)::Any
+  │   %23 =   builtin (getfield)(%8, :x)::Any
   │   %24 =   dynamic (Mooncake.increment!!)(%23, %22)::Any
-  │           builtin (setfield!)(%6, :x, %24)::Any
+  │           builtin (setfield!)(%8, :x, %24)::Any
   │   %26 =   builtin (getfield)(%21, 3)::Any
-  │   %27 =   builtin (getfield)(%9, :x)::Any
+  │   %27 =   builtin (getfield)(%7, :x)::Any
   │   %28 =   dynamic (Mooncake.increment!!)(%27, %26)::Any
-  │           builtin (setfield!)(%9, :x, %28)::Any
-  │   %30 =   builtin (getfield)(%9, :x)::Any
-  │           builtin (setfield!)(%9, :x, 0.0)::Any
+  │           builtin (setfield!)(%7, :x, %28)::Any
+  │   %30 =   builtin (getfield)(%7, :x)::Any
+  │           builtin (setfield!)(%7, :x, 0.0)::Any
   │   %32 =   dynamic (%14)(%30)::Any
   │   %33 =   builtin (getfield)(%32, 2)::Any
   │   %34 =   builtin (getfield)(%5, :x)::Any
   │   %35 =   dynamic (Mooncake.increment!!)(%34, %33)::Any
   │           builtin (setfield!)(%5, :x, %35)::Any
-  │   %37 =   builtin (getfield)(%6, :x)::Any
-  │           builtin (setfield!)(%6, :x, 0.0)::Any
+  │   %37 =   builtin (getfield)(%8, :x)::Any
+  │           builtin (setfield!)(%8, :x, 0.0)::Any
   │   %39 =   dynamic (%13)(%37)::Any
   │   %40 =   builtin (getfield)(%39, 2)::Any
   │   %41 =   builtin (getfield)(%5, :x)::Any
@@ -618,7 +618,7 @@ Valid worlds: 0x0000000000009c73:0x0000000000009c73
 ----------------------------------------
 Stage: optimized_fwd
 Blocks: 12, Insts: 47, Edges: 13
-Valid worlds: 0x0000000000009c73:0x0000000000009c73
+Valid worlds: 0x0000000000009c80:0x0000000000009c80
 ----------------------------------------
 3 1 ── %1  =   builtin Mooncake.getfield(_1, 2)::Base.RefValue{Tuple{Mooncake.LazyZeroRData{typeof(Main.demo_fn), Nothing}, Mooncake.LazyZeroRData{Float64, Nothing}}}
   │    %2  =   builtin Mooncake.getfield(_1, 3)::Mooncake.Stack{Tuple{Mooncake.NfwdMooncake.Pullback{typeof(sin), 1, Tuple{Float64}, Tuple{Mooncake.NoFData}, Mooncake.NoFData}, Mooncake.NfwdMooncake.Pullback{typeof(cos), 1, Tuple{Float64}, Tuple{Mooncake.NoFData}, Mooncake.NoFData}, Mooncake.IntrinsicsWrappers.var&quot;#mul_float_pb!!#rrule!!##15&quot;{Float64, Float64}}}
@@ -672,7 +672,7 @@ Valid worlds: 0x0000000000009c73:0x0000000000009c73
 ----------------------------------------
 Stage: optimized_rvs
 Blocks: 23, Insts: 74, Edges: 23
-Valid worlds: 0x0000000000009c73:0x0000000000009c73
+Valid worlds: 0x0000000000009c80:0x0000000000009c80
 ----------------------------------------
 3 1 ── %1  =   builtin Mooncake.getfield(_1, 3)::Mooncake.Stack{Tuple{Mooncake.NfwdMooncake.Pullback{typeof(sin), 1, Tuple{Float64}, Tuple{Mooncake.NoFData}, Mooncake.NoFData}, Mooncake.NfwdMooncake.Pullback{typeof(cos), 1, Tuple{Float64}, Tuple{Mooncake.NoFData}, Mooncake.NoFData}, Mooncake.IntrinsicsWrappers.var&quot;#mul_float_pb!!#rrule!!##15&quot;{Float64, Float64}}}
   2 ──       goto #3
@@ -749,13 +749,13 @@ Valid worlds: 0x0000000000009c73:0x0000000000009c73
   │    %73 =   builtin (tuple)($(QuoteNode(Mooncake.NoRData())), %72)::Tuple{Mooncake.NoRData, Float64}
   └───       return %73</code></pre><pre><code class="language-julia hljs">show_stage(ins, :raw)                     # one stage</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">============================================================
 IR Inspection: Tuple{typeof(Main.demo_fn), Float64}
-Mode: reverse, World: 40051
+Mode: reverse, World: 40064
 ============================================================
 
 ----------------------------------------
 Stage: raw
 Blocks: 1, Insts: 4, Edges: 0
-Valid worlds: 0x0000000000009c73:0x0000000000009c73
+Valid worlds: 0x0000000000009c80:0x0000000000009c80
 ----------------------------------------
 3 1 ─ %1 = dynamic invoke Main.sin(_2::Float64)::Float64
   │   %2 = dynamic invoke Main.cos(_2::Float64)::Float64
@@ -773,24 +773,24 @@ ins = inspect_ir(demo_fn, 1.0; mode=:forward)
 show_world_info(ins)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">============================================================
 World Age Report
 ============================================================
-Inspection world: 40053
+Inspection world: 40066
 
 Stage worlds:
   bbcode: N/A
-  dual_ir: 40053
-  normalized: 40053
-  raw: 40053
-  optimized: 40053</code></pre><h3 id="Reverse-mode-stages"><a class="docs-heading-anchor" href="#Reverse-mode-stages">Reverse mode stages</a><a id="Reverse-mode-stages-1"></a><a class="docs-heading-anchor-permalink" href="#Reverse-mode-stages" title="Permalink"></a></h3><p><code>:raw</code> → <code>:normalized</code> → <code>:bbcode</code> → <code>:fwd_ir</code> / <code>:rvs_ir</code> → <code>:optimized_fwd</code> / <code>:optimized_rvs</code></p><h3 id="Forward-mode-stages"><a class="docs-heading-anchor" href="#Forward-mode-stages">Forward mode stages</a><a id="Forward-mode-stages-1"></a><a class="docs-heading-anchor-permalink" href="#Forward-mode-stages" title="Permalink"></a></h3><p><code>:raw</code> → <code>:normalized</code> → <code>:dual_ir</code> → <code>:optimized</code></p><div class="admonition is-info" id="Note-806e8fd7c5cd6eae"><header class="admonition-header">Note<a class="admonition-anchor" href="#Note-806e8fd7c5cd6eae" title="Permalink"></a></header><div class="admonition-body"><p>The inspection tool also shows a <code>:bbcode</code> stage for cross-mode comparison, but forward mode does not use BBCode internally.</p></div></div><div class="admonition is-info" id="Note-d3e37f299f663438"><header class="admonition-header">Note<a class="admonition-anchor" href="#Note-d3e37f299f663438" title="Permalink"></a></header><div class="admonition-body"><p>Primitive signatures such as <code>sin</code> do not generate AD IR stages here. Mooncake dispatches those calls straight to <code>build_primitive_frule</code> / <code>build_primitive_rrule</code>, so <code>inspect_ir</code> reports that path in <code>notes</code> instead of forcing derived IR generation.</p></div></div><p>When something looks wrong in generated code, diff consecutive stages to find which transformation introduced the issue.</p><h2 id="Allocations"><a class="docs-heading-anchor" href="#Allocations">Allocations</a><a id="Allocations-1"></a><a class="docs-heading-anchor-permalink" href="#Allocations" title="Permalink"></a></h2><p>Unexpected allocations are the most common performance issue. Diagnostic approach:</p><ol><li><strong><code>@code_typed optimize=true</code></strong> – check return types are concrete (no <code>Union</code> or <code>Any</code>).</li><li><strong><code>@code_llvm debuginfo=:none</code></strong> – search for <code>gc_pool_alloc</code>, <code>gc_alloc_obj</code>, <code>jl_box_*</code>, or <code>jl_apply_generic</code>.</li><li><strong><code>Base.specializations</code></strong> – verify whether the runtime MethodInstance matches the concrete types you expect (see warning below).</li></ol><div class="admonition is-warning" id="Warning-55c4bf753c94bb85"><header class="admonition-header">Warning<a class="admonition-anchor" href="#Warning-55c4bf753c94bb85" title="Permalink"></a></header><div class="admonition-body"><p><code>@code_typed f(args...)</code> creates a fresh, fully-concrete specialization on demand. If the issue is specialization widening, it will show optimized code while the runtime path uses a widened MethodInstance. Cross-check with <code>Base.specializations(method)</code>.</p></div></div><h2 id="World-age"><a class="docs-heading-anchor" href="#World-age">World age</a><a id="World-age-1"></a><a class="docs-heading-anchor-permalink" href="#World-age" title="Permalink"></a></h2><p>World age issues arise when compiled code references methods from a different world than expected. Symptoms include <code>MethodError</code> at runtime or stale compiled code not picking up new method definitions.</p><p>In Mooncake, this most commonly affects:</p><ul><li><strong><code>DerivedRule</code> / <code>DerivedFRule</code></strong>: compiled at a fixed world, can become stale if methods they depend on are redefined.</li><li><strong><code>LazyDerivedRule</code></strong>: compiles on first call (static dispatch via <code>:invoke</code>), obtaining a fresh interpreter at that point.</li><li><strong><code>DynamicDerivedRule</code></strong>: resolves per-call by runtime argument types (dynamic dispatch via <code>:call</code>), checking a cache and obtaining a fresh interpreter on miss.</li></ul><p>To debug, inspect the world age of generated code:</p><pre><code class="language-julia hljs">ins = inspect_ir(demo_fn, 1.0)
+  dual_ir: 40066
+  normalized: 40066
+  raw: 40066
+  optimized: 40066</code></pre><h3 id="Reverse-mode-stages"><a class="docs-heading-anchor" href="#Reverse-mode-stages">Reverse mode stages</a><a id="Reverse-mode-stages-1"></a><a class="docs-heading-anchor-permalink" href="#Reverse-mode-stages" title="Permalink"></a></h3><p><code>:raw</code> → <code>:normalized</code> → <code>:bbcode</code> → <code>:fwd_ir</code> / <code>:rvs_ir</code> → <code>:optimized_fwd</code> / <code>:optimized_rvs</code></p><h3 id="Forward-mode-stages"><a class="docs-heading-anchor" href="#Forward-mode-stages">Forward mode stages</a><a id="Forward-mode-stages-1"></a><a class="docs-heading-anchor-permalink" href="#Forward-mode-stages" title="Permalink"></a></h3><p><code>:raw</code> → <code>:normalized</code> → <code>:dual_ir</code> → <code>:optimized</code></p><div class="admonition is-info" id="Note-806e8fd7c5cd6eae"><header class="admonition-header">Note<a class="admonition-anchor" href="#Note-806e8fd7c5cd6eae" title="Permalink"></a></header><div class="admonition-body"><p>The inspection tool also shows a <code>:bbcode</code> stage for cross-mode comparison, but forward mode does not use BBCode internally.</p></div></div><div class="admonition is-info" id="Note-d3e37f299f663438"><header class="admonition-header">Note<a class="admonition-anchor" href="#Note-d3e37f299f663438" title="Permalink"></a></header><div class="admonition-body"><p>Primitive signatures such as <code>sin</code> do not generate AD IR stages here. Mooncake dispatches those calls straight to <code>build_primitive_frule</code> / <code>build_primitive_rrule</code>, so <code>inspect_ir</code> reports that path in <code>notes</code> instead of forcing derived IR generation.</p></div></div><p>When something looks wrong in generated code, diff consecutive stages to find which transformation introduced the issue.</p><h2 id="Allocations"><a class="docs-heading-anchor" href="#Allocations">Allocations</a><a id="Allocations-1"></a><a class="docs-heading-anchor-permalink" href="#Allocations" title="Permalink"></a></h2><p>Unexpected allocations are the most common performance issue. Diagnostic approach:</p><ol><li><strong><code>@code_typed optimize=true</code></strong> – check return types are concrete (no <code>Union</code> or <code>Any</code>).</li><li><strong><code>@code_llvm debuginfo=:none</code></strong> – search for <code>gc_pool_alloc</code>, <code>gc_alloc_obj</code>, <code>jl_box_*</code>, or <code>jl_apply_generic</code>.</li><li><strong><code>Base.specializations</code></strong> – verify whether the runtime MethodInstance matches the concrete types you expect (see warning below).</li></ol><div class="admonition is-warning" id="Warning-55c4bf753c94bb85"><header class="admonition-header">Warning<a class="admonition-anchor" href="#Warning-55c4bf753c94bb85" title="Permalink"></a></header><div class="admonition-body"><p><code>@code_typed f(args...)</code> creates a fresh, fully-concrete specialization on demand. If the issue is specialization widening, it will show optimized code while the runtime path uses a widened MethodInstance. Cross-check with <code>Base.specializations(method)</code>.</p></div></div><h2 id="World-age"><a class="docs-heading-anchor" href="#World-age">World age</a><a id="World-age-1"></a><a class="docs-heading-anchor-permalink" href="#World-age" title="Permalink"></a></h2><p>World age issues arise when compiled code references methods from a different world than expected. Symptoms include <code>MethodError</code> at runtime or stale compiled code not picking up new method definitions.</p><p>In Mooncake, this most commonly affects:</p><ul><li><strong><code>DerivedRule</code> / <code>DerivedFRule</code></strong>: compiled at a fixed world, can become stale if methods they depend on are redefined.</li><li><strong><code>LazyDerivedRule</code></strong>: compiles on first call (static dispatch via <code>:invoke</code>), obtaining a fresh interpreter at that point.</li><li><strong><code>DynamicDerivedRule</code></strong>: resolves per-call by runtime argument types (dynamic dispatch via <code>:call</code>), checking a cache and obtaining a fresh interpreter on miss.</li></ul><p>To debug, inspect the world age of generated code:</p><pre><code class="language-julia hljs">ins = inspect_ir(demo_fn, 1.0)
 show_world_info(ins)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">============================================================
 World Age Report
 ============================================================
-Inspection world: 40053
+Inspection world: 40066
 
 Stage worlds:
   bbcode: N/A
-  optimized_fwd: 40053
-  optimized_rvs: 40053
-  normalized: 40053
-  fwd_ir: 40053
-  raw: 40053
-  rvs_ir: 40053</code></pre><p>This reports the world at which each stage was compiled and flags mismatches.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../misc_internals_notes/">« Misc. Internals Notes</a><a class="docs-footer-nextpage" href="../internal_docstrings/">Internal Docstrings »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Wednesday 22 April 2026 23:08">Wednesday 22 April 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+  optimized_fwd: 40066
+  optimized_rvs: 40066
+  normalized: 40066
+  fwd_ir: 40066
+  raw: 40066
+  rvs_ir: 40066</code></pre><p>This reports the world at which each stage was compiled and flags mismatches.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../misc_internals_notes/">« Misc. Internals Notes</a><a class="docs-footer-nextpage" href="../internal_docstrings/">Internal Docstrings »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Thursday 23 April 2026 10:20">Thursday 23 April 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
