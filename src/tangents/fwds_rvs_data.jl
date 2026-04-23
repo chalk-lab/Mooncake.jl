@@ -888,33 +888,72 @@ end
 Given the type of the fdata and rdata, `F` and `R` resp., for some primal type, compute its
 tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 """
+
+# All methods below are marked @foldable (Base.@assume_effects :foldable), which tells
+# Julia to evaluate them at compile time. Their bodies never execute at runtime, so the
+# coverage instrumenter sees them as uninstrumented ("-") rather than hit or missed lines.
+# COV_EXCL_START/STOP excludes them from the Codecov patch-coverage calculation to avoid
+# a misleading drop. Correctness is verified by the direct tangent_type(F, R) tests in
+# test/tangents/fwds_rvs_data.jl.
+# COV_EXCL_START
 @foldable tangent_type(::Type{NoFData}, ::Type{NoRData}) = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
 
-# Union types. NOTE: Only `Union{Nothing, Array{<:Any,N}, Base.IEEEFloat}` are supported.
+# Union types. Supported cases:
+# - F=NoFData, R is a union of rdata-only branches (IEEEFloat or RData structs)
+# - F=Union{NoFData,FData}, R=Union{NoRData,RData} - both sides are unions (issue #1130)
+# - F is a union of fdata-only branches, R=NoRData
+# Each case requires explicit dispatch methods plus tiebreakers to resolve ambiguities.
 @foldable function tangent_type(
     ::Type{NoFData}, ::Type{R}
-) where {R<:Union{NoRData,T} where {T<:Base.IEEEFloat}}
-    # This should only ever be hit when R is a proper union, since Any
-    # does not meet the constraint on T, an R==NoRData already has a more
-    # specific dispatch defined
+) where {R<:Union{NoRData,Base.IEEEFloat,RData}}
+    # R==NoRData hits a more specific method above; Any is excluded by the constraint.
+    @assert R isa Union
+    Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
+end
+# Tiebreaker: without this, method above (more specific on F) and method below (more
+# specific on R) are both ambiguous for tangent_type(NoFData, Union{NoRData,RData{...}}).
+# This method beats both: exact F and tighter R bound.
+# Note: Union{NoRData,RData{A},RData{B}} <: Union{NoRData,RData}, so N-branch unions
+# are handled correctly: Julia represents them as nested binary unions, and the recursive
+# splitting via R.a / R.b decompose them fully.
+@foldable function tangent_type(::Type{NoFData}, ::Type{R}) where {R<:Union{NoRData,RData}}
     @assert R isa Union
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
 @foldable function tangent_type(
-    ::Type{F}, ::Type{NoRData}
-) where {F<:Union{NoFData,T} where {T}}
-    _validate_union(F)
-    # The only case where this dispatch can be hit where F is
-    # not a union would be if F==Any, but _validate_union causes
-    # that case to error
+    ::Type{F}, ::Type{R}
+) where {F<:Union{NoFData,FData},R<:Union{NoRData,RData}}
+    @assert F isa Union && R isa Union
+    Fa = F.a == NoFData ? F.a : F.b
+    Fb = F.a == NoFData ? F.b : F.a
+    Ra = R.a == NoRData ? R.a : R.b
+    Rb = R.a == NoRData ? R.b : R.a
+    Union{tangent_type(Fa, Ra),tangent_type(Fb, Rb)}
+end
+# Tiebreaker: Method 3 (more specific on F) vs method below (more specific on R=NoRData).
+# No _validate_union needed: F<:Union{NoFData,FData} guarantees the non-NoFData branch is
+# FData, which by definition carries no rdata.
+@foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Union{NoFData,FData}}
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
+# Handles Union{NoFData, T} where T is not FData (e.g. Array). Cases where T<:FData are
+# caught by the tiebreaker above. _validate_union guards against T carrying rdata.
+@foldable function tangent_type(
+    ::Type{F}, ::Type{NoRData}
+) where {F<:Union{NoFData,T} where {T}}
+    _validate_union(F)
+    @assert F isa Union
+    Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
+end
+# COV_EXCL_STOP
+
 function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F
-    if rdata_type(tangent_type(_T)) != NoRData
+    # rdata_type throws for non-IEEEFloat primitive types; guard before calling it.
+    if isprimitivetype(_T) || rdata_type(_T) != NoRData
         throw(
             InvalidFDataException("Something went wrong: called tangent_type($F, NoRData)")
         )
@@ -922,6 +961,7 @@ function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     return nothing
 end
 
+# COV_EXCL_START  (same reason as above: all @foldable, never instrumented at runtime)
 # Tuples
 @foldable @generated function tangent_type(::Type{F}, ::Type{R}) where {F<:Tuple,R<:Tuple}
     tt_exprs = map((f, r) -> :(tangent_type($f, $r)), fieldtypes(F), fieldtypes(R))
@@ -952,13 +992,20 @@ end
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:MutableTangent} = F
 
 # structs
+# Note: Union{RData{A},RData{B}} <: RData in Julia's type system, so the R<:RData and
+# F<:FData methods also match unions of RData/FData subtypes. Guard with `isa Union` so
+# those cases recurse via binary splitting rather than calling fields_type on a Union type.
+# The F<:FData,R<:RData combined case is NOT guarded: pairing two independently-ordered
+# unions of FData and RData would be unreliable; that case should not arise in valid use.
 @foldable function tangent_type(::Type{F}, ::Type{R}) where {F<:FData,R<:RData}
     return Tangent{tangent_type(fields_type(F), fields_type(R))}
 end
 @foldable function tangent_type(::Type{NoFData}, ::Type{R}) where {R<:RData}
+    R isa Union && return Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
     return Tangent{tangent_type(NoFData, fields_type(R))}
 end
 @foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:FData}
+    F isa Union && return Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
     return Tangent{tangent_type(fields_type(F), NoRData)}
 end
 
@@ -970,6 +1017,7 @@ end
 
 # Abstract types.
 @foldable tangent_type(::Type{Any}, ::Type{Any}) = Any
+# COV_EXCL_STOP
 
 """
     tangent(f, r)
