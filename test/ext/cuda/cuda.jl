@@ -3,8 +3,8 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, CUDA, JET, Mooncake, StableRNGs, Test
-using CUDA.GPUArrays: unsafe_free!
-using CUDA: hasfieldcount
+using CUDA.CUDACore.GPUArrays: unsafe_free!
+using CUDA.CUDACore: hasfieldcount
 using Base: unsafe_convert
 using Mooncake: lgetfield
 using Mooncake.TestUtils:
@@ -123,7 +123,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _reduce_plus_cx(x) = reduce(+, x)
         _reduce_mul(x) = reduce(*, x)
         _reduce_mul_cx(x) = reduce(*, x)
-        # norm / dot — CUBLAS routines with explicit rules.
+        # norm / dot — cuBLAS routines with explicit rules.
         # norm() always returns a real scalar regardless of element type, so _norm_cx has
         # the same body as _norm; the alias exists solely to label the complex-input testset.
         _norm(x) = norm(x)
@@ -163,7 +163,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _inplace_zero_dof_nested!(dest, x, c, b) =
             (dest.=x .+ c .* Float64.(b .> 0); sum(dest))
         # adjoint of a CuVector times a CuMatrix — dispatches through generic_matmatmul!
-        # because CUBLAS.gemm! only accepts CuMatrix inputs; now covered by the explicit rule.
+        # because cuBLAS.gemm! only accepts CuMatrix inputs; now covered by the explicit rule.
         _cu_slice_adj_mul(x, cy) = sum(cu(x[:, 1])' * cy)
         # copy(CuArray) → copyto! → unsafe_copyto! — exercises the unsafe_copyto! rule.
         _copy_sum(x) = sum(copy(x))
@@ -392,10 +392,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _reduce_mul, _rand_pos(rng, Float32, 16)),
             (false, :none, false, _reduce_mul_cx, _rand(rng, ComplexF64, 16)),
             (false, :none, false, _reduce_mul_cx, _rand(rng, ComplexF32, 16)),
-            # norm — CUBLAS rule (real and complex)
+            # norm — cuBLAS rule (real and complex)
             (false, :none, false, _norm, _rand(rng, 16)),
             (false, :none, false, _norm_cx, _rand(rng, ComplexF64, 16)),
-            # dot — CUBLAS rule (real vectors)
+            # dot — cuBLAS rule (real vectors)
             (false, :none, false, _dot, _rand(rng, 16), _rand(rng, 16)),
             # prod — explicit rule (real and complex)
             (false, :none, false, _prod, _rand_pos(rng, 16)),
@@ -472,7 +472,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 randn(rng, ComplexF64),
             ),
             # slicing CPU array then adjoint+matmul on GPU — goes through generic_matvecmul!
-            # (CUBLAS gemv path); forward mode now works because CUBLAS.handle is a primitive.
+            # (cuBLAS gemv path); forward mode now works because cuBLAS.handle is a primitive.
             (
                 false,
                 :none,
@@ -928,7 +928,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
             # Complex slice-adjoint-matvec: cu(x[:, 1])' * cy — cu() downcasts ComplexF64
             # to ComplexF32, producing a type mismatch with cy::CuMatrix{ComplexF64}.
-            # The generic_matvecmul! frule/rrule detects the mismatch before any CUBLAS call.
+            # The generic_matvecmul! frule/rrule detects the mismatch before any cuBLAS call.
             @testset "complex slice-adjoint-matvec type mismatch" begin
                 f = _cu_cx_slice_adj_mul
                 x = _host_rand(rng, ComplexF64, 3, 3)
