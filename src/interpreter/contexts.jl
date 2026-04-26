@@ -48,6 +48,18 @@ for `PrimalMode` — primitive dispatch is handled via `ForwardMode` inside the 
 struct PrimalMode <: Mode end
 
 """
+    VmapMode(batch_size::Int)
+
+Mode tag for the vmap IR lifting transform. Carries the batch size so that constant
+lifting (`fill(v, batch_size)`) is available throughout IR generation.
+Like `PrimalMode`, `is_primitive` always returns `false` — primitive dispatch is
+handled inside the vmap lifted IR via broadcast.
+"""
+struct VmapMode <: Mode
+    batch_size::Int
+end
+
+"""
     _is_primitive(context::Type, mode::Type{<:Mode}, sig::Type{<:Tuple})
 
 This function is an internal implementation detail. It is used only by

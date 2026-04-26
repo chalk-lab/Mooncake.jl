@@ -364,6 +364,7 @@ end
 # Dispatch dual_type through width: nothing uses legacy dual_type(P), Val(N) uses dual_type(Val(N), P).
 _lift_type(::Nothing, P) = dual_type(P)
 _lift_type(w::Val, P) = dual_type(w, P)
+_lift_type(::VmapMode, P) = batch_type(P)
 
 function generate_lifted_ir(
     interp::MooncakeInterpreter,
