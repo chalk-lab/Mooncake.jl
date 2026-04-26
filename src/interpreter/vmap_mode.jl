@@ -4,14 +4,14 @@
 # VmapMode / batch_type instead of ForwardMode / dual_type.
 #
 # Public API:
-#   vmap(f)          — transform f into a cached VmappedFn (main API, JAX-style)
-#   vmap_apply(f,xs) — one-shot: apply f to xs with no caching
-#   build_vmap(...)  — low-level: compile a DerivedVmap for a specific sig + mode
+#   vmap(f)          - transform f into a cached VmappedFn (main API, JAX-style)
+#   vmap_apply(f,xs) - one-shot: apply f to xs with no caching
+#   build_vmap(...)  - low-level: compile a DerivedVmap for a specific sig + mode
 #
 # Branch strategy: error on divergent branches (batch elements must all take the
 # same branch). Masking / dynamic splitting are documented future extensions.
 
-# Forward declaration — methods are added in src/rules/vmap_rules.jl.
+# Forward declaration - methods are added in src/rules/vmap_rules.jl.
 # Mirrors the frule!! / rrule!! pattern declared at the top of Mooncake.jl.
 function vmap_rule!! end
 
@@ -32,7 +32,7 @@ end
 end
 
 # NamedTuple construction: %new(NamedTuple{names,T}, f1, f2, …) in the lifted IR.
-# Uses actual field names from the type parameter — unlike _construct_tuple_batch.
+# Uses actual field names from the type parameter - unlike _construct_tuple_batch.
 @inline function _construct_namedtuple_batch(
     ::Type{P}, batched_fields...
 ) where {names, T<:Tuple, P<:NamedTuple{names,T}}
@@ -44,7 +44,7 @@ end
 # Extracts a single Bool from a batched condition, erroring if the batch diverges.
 @inline function _batch_primal_of(x::AbstractVector{Bool})
     allequal(x) || error(
-        "vmap: divergent branch — batch elements took different branches. " *
+        "vmap: divergent branch - batch elements took different branches. " *
         "Masking is not yet implemented."
     )
     return x[1]
@@ -81,8 +81,8 @@ _copy(x::P) where {P<:DerivedVmap} =
 # ── LazyVmap / DynamicVmap: call handlers ────────────────────────────────────
 #
 # For each function call site in the lifted IR, the function f arrives as:
-#   - A plain function object (from a GlobalRef in the primal IR) — NOT batched
-#   - Or a Vector{typeof(f)} (if f itself was a batched argument) — batched
+#   - A plain function object (from a GlobalRef in the primal IR) - NOT batched
+#   - Or a Vector{typeof(f)} (if f itself was a batched argument) - batched
 #
 # In either case, we extract the scalar function and broadcast it over the
 # remaining (possibly batched) arguments.  Non-batched scalars (Int, Bool, …)
@@ -192,7 +192,7 @@ struct VmapLiftedInfo
     mode::VmapMode
 end
 
-# ── Statement modification — vmap IR rewrite ──────────────────────────────────
+# ── Statement modification - vmap IR rewrite ──────────────────────────────────
 
 modify_vmap_stmts!(::Nothing, ::IRCode, ::SSAValue, ::Vector{Any}, ::VmapLiftedInfo) = nothing
 
@@ -376,11 +376,11 @@ end
 # The compile-time path instead:
 #  1. `_try_get_const_function`: extract f from the primal IR (GlobalRef / QuoteNode).
 #     If f is not a compile-time constant (e.g. a closure stored in a variable), return
-#     nothing — fall through to LazyVmap/DynamicVmap broadcast.
+#     nothing - fall through to LazyVmap/DynamicVmap broadcast.
 #  2. `_compile_time_vmap_rule`: compute the lifted argument types, run `hasmethod`
 #     (compile-time method table lookup), and if found return Base.Fix1(vmap_rule!!, f).
 #  3. The returned Fix1 is pushed into `captures` and referenced via `get_capture`.
-#     The emitted IR calls it with only the batch data arguments — f is baked in.
+#     The emitted IR calls it with only the batch data arguments - f is baked in.
 #
 # Result: zero runtime dispatch overhead; the compiler sees a fully specialized call.
 
@@ -393,9 +393,9 @@ function _try_get_const_function(arg)
 end
 
 # At IR-generation time, check whether vmap_rule!! has a method for (f, lifted_arg_types...).
-# If yes, return Base.Fix1(vmap_rule!!, f) — the function is fixed at compile time, so the
+# If yes, return Base.Fix1(vmap_rule!!, f) - the function is fixed at compile time, so the
 # emitted IR only carries the batch args and calls the rule with zero runtime overhead.
-# If no, return nothing — caller falls back to LazyVmap/DynamicVmap broadcast path.
+# If no, return nothing - caller falls back to LazyVmap/DynamicVmap broadcast path.
 function _compile_time_vmap_rule(f_maybe, raw_data_args, primal_ir, mode)
     f_maybe === nothing && return nothing
     f = something(f_maybe)
@@ -428,7 +428,7 @@ function modify_vmap_stmts!(
 
         if rule !== nothing
             # Primitive path: bake the rule (with function fixed) into captures.
-            # Emit a call with only the batch data args — no runtime function extraction.
+            # Emit a call with only the batch data args - no runtime function extraction.
             push!(captures, rule)
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(lifted_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
@@ -450,7 +450,7 @@ function modify_vmap_stmts!(
         # If struct_batchable(P): transform into _construct_struct_batch(P, batched_fields…)
         # which returns NamedTuple{fieldnames(P)}((batched_fields…)).
         # getfield on the resulting NamedTuple then returns each field's BatchContainer
-        # directly — zero-copy, O(1), with no special IR handling needed.
+        # directly - zero-copy, O(1), with no special IR handling needed.
         P_ref = stmt.args[1]
         P_val = if P_ref isa GlobalRef && isconst(P_ref)
             getglobal(P_ref.mod, P_ref.name)
@@ -460,7 +460,7 @@ function modify_vmap_stmts!(
             nothing
         end
         if P_val !== nothing && P_val <: Tuple
-            # Tuple: Core.tuple(a,b,…) — positional names :_1,:_2,… baked by _construct_tuple_batch.
+            # Tuple: Core.tuple(a,b,…) - positional names :_1,:_2,… baked by _construct_tuple_batch.
             field_args = map(__inc, stmt.args[2:end])
             replace_call!(lifted_ir, ssa, Expr(:call, _construct_tuple_batch, field_args...))
         elseif P_val !== nothing && P_val <: NamedTuple
@@ -559,7 +559,7 @@ A cached, callable wrapper produced by `vmap(f)`.
 
 The first call for a given `(element_type, batch_size)` pair compiles a `DerivedVmap`
 and stores it in an internal cache. All subsequent calls with the same combination reuse
-the compiled rule — zero recompilation overhead.
+the compiled rule - zero recompilation overhead.
 
 Construct via `vmap(f)`, not directly.
 """
@@ -588,15 +588,15 @@ end
 
 Transform `f` into a batched function that applies `f` independently to each element
 of a `Vector` input. The compiled IR is cached by `(element_type, batch_size)` and
-reused on every subsequent call — compile once, run many times.
+reused on every subsequent call - compile once, run many times.
 
 Branches within `f` must be uniform across the batch; divergent branches throw an error.
 
 # Example
 ```julia
 sq = vmap(x -> x^2)
-sq([1.0, 2.0, 3.0])   # [1.0, 4.0, 9.0]  — compiles on first call
-sq([4.0, 5.0, 6.0])   # [16.0, 25.0, 36.0] — reuses compiled rule
+sq([1.0, 2.0, 3.0])   # [1.0, 4.0, 9.0]  - compiles on first call
+sq([4.0, 5.0, 6.0])   # [16.0, 25.0, 36.0] - reuses compiled rule
 sq([1.0f0, 2.0f0])    # recompiles once for Float32, then caches
 ```
 """
@@ -681,7 +681,7 @@ end
 end
 
 # Struct SoA: transpose N structs into Tangent/MutableTangent of per-field BatchContainers.
-# Must be a regular function — struct_batchable is user-extensible via @struct_batch and
+# Must be a regular function - struct_batchable is user-extensible via @struct_batch and
 # can be added after Mooncake loads. @generated bodies run at the world of the @generated
 # definition and would never see user-registered structs.
 function _wrap_input(xs::AbstractVector{P}) where P

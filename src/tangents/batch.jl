@@ -1,7 +1,7 @@
 # ── BatchContainer: SoA container for batched values ──────────────────────────
 
 # Scalar primal types that get SoA BatchContainer treatment.
-# Covers all IEEE floats and their complex counterparts — both are BLAS-compatible.
+# Covers all IEEE floats and their complex counterparts - both are BLAS-compatible.
 const _VmapScalar = Union{IEEEFloat, Complex{<:IEEEFloat}}
 
 """
@@ -38,7 +38,7 @@ Base.size(bc::BatchContainer) = (size(bc.data, bc.index),)
 # Scalar batch: 1-D storage, direct index
 Base.getindex(bc::BatchContainer{T, <:AbstractVector}, i::Int) where {T} = bc.data[i]
 
-# Array-element batch: general N-D storage, batch is last dim — selectdim is zero-copy
+# Array-element batch: general N-D storage, batch is last dim - selectdim is zero-copy
 function Base.getindex(bc::BatchContainer{T, D}, i::Int) where {T, D<:AbstractArray}
     selectdim(bc.data, bc.index, i)
 end
@@ -53,7 +53,7 @@ end
 # because broadcast(f, bc) must iterate over batch elements (columns/slices), not over
 # individual scalars inside each element. If we returned bc.data, broadcast would
 # iterate over scalars within each batch element instead of over batch elements.
-# Keeping bc means AbstractVector{T} iteration via getindex/selectdim — correct
+# Keeping bc means AbstractVector{T} iteration via getindex/selectdim - correct
 # column-wise semantics.
 Base.Broadcast.broadcastable(bc::BatchContainer{T, <:AbstractVector}) where {T} = bc.data
 Base.Broadcast.broadcastable(bc::BatchContainer{T, <:AbstractArray})  where {T} = bc
@@ -236,7 +236,7 @@ end
 end
 
 # Struct SoA: replicate each field separately into its own batch.
-# Must be a regular function — struct_batchable is user-extensible; see _pack_batch note.
+# Must be a regular function - struct_batchable is user-extensible; see _pack_batch note.
 function _make_batch(v::P, N::Int) where P
     if struct_batchable(P)
         names   = fieldnames(P)
@@ -260,7 +260,7 @@ with the batch axis as the last dimension. BLAS and Julia's broadcast work on th
 raw backing array: gemm for rank-2, reshape trick for rank-3+, SIMD broadcast for all.
 Non-differentiable scalars are left unchanged (control flow stays cheap).
 
-`batch_type(T) == T` is used as the sentinel: "this type is not batched" — used in
+`batch_type(T) == T` is used as the sentinel: "this type is not batched" - used in
 `const_batch!` and `vmap` to decide whether to wrap a value or leave it as-is.
 """
 @unstable function batch_type(::Type{P}) where {P}
@@ -284,7 +284,7 @@ end
 #
 # Tuples can't use fieldnames() (it throws) so we generate positional names :_1,:_2,…
 # Integer-index access in the lifted IR (getfield(t, 1), getindex(t, 1)) resolves via
-# get_tangent_field(t, i::Int) = getfield(t.fields, i) — position-based, name-agnostic.
+# get_tangent_field(t, i::Int) = getfield(t.fields, i) - position-based, name-agnostic.
 # Core.tuple(a, b) construction in the lifted IR is intercepted by vmap_rule!! below.
 @unstable function batch_type(::Type{P}) where {P <: Tuple}
     !isconcretetype(P) && return Vector
@@ -297,9 +297,9 @@ end
 
 # ── NamedTuples: like Tuples but with real field names ────────────────────────
 #
-# fieldnames(NamedTuple{names,T}) returns names directly — no positional renaming needed.
+# fieldnames(NamedTuple{names,T}) returns names directly - no positional renaming needed.
 # Field access in the lifted IR via getfield(t, :x) routes to get_tangent_field on the
-# Tangent wrapper — already covered by the PossiblyMutableTangent getfield rules.
+# Tangent wrapper - already covered by the PossiblyMutableTangent getfield rules.
 # NamedTuple construction (%new or constructor call) is handled in vmap_mode.jl.
 @unstable function batch_type(::Type{P}) where {names, T<:Tuple, P<:NamedTuple{names,T}}
     !isconcretetype(P) && return Vector
@@ -358,7 +358,7 @@ batch_type(::Type{Module})                                                   = M
 #
 #   (x = BatchContainer{Float64,Vector{Float64}}, y = BatchContainer{Float64,Vector{Float64}})
 #
-# Field access in the lifted IR: getfield(nt, :x) returns the BatchContainer directly —
+# Field access in the lifted IR: getfield(nt, :x) returns the BatchContainer directly -
 # zero-copy, O(1). All existing BLAS/broadcast rules then apply to each field.
 #
 # Struct construction in the lifted IR: %new(P, bx, by) → _construct_struct_batch(P, bx, by)
@@ -366,7 +366,7 @@ batch_type(::Type{Module})                                                   = M
 #
 # Only immutable concrete structs are eligible. Mutable structs require setfield!,
 # which is incompatible with immutable NamedTuple storage.
-# Opt-in via @struct_batch — prevents accidentally SoA-ing function structs or
+# Opt-in via @struct_batch - prevents accidentally SoA-ing function structs or
 # non-mathematical types that happen to be immutable structs.
 
 """
@@ -383,7 +383,7 @@ struct_batchable(::Type) = false
 Register the concrete struct `P` for SoA (tree-of-arrays) batching under vmap.
 
 - Immutable `P`: batch stored as `Tangent{NT}` where `NT` is a NamedTuple of per-field
-  `BatchContainer`s. Immutable wrapper — no `setfield!` in lifted IR.
+  `BatchContainer`s. Immutable wrapper - no `setfield!` in lifted IR.
 - Mutable `P`: batch stored as `MutableTangent{NT}`. `setfield!` in the lifted IR routes
   to `set_tangent_field!`, replacing a field's `BatchContainer` pointer in-place.
 

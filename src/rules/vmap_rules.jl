@@ -3,18 +3,18 @@
 # Immutable struct batch → Tangent{NT}:    getfield dispatches here, returns BatchContainer.
 # Mutable struct batch  → MutableTangent{NT}: getfield + setfield! both dispatch here.
 #
-# get_tangent_field(t, :f) reads t.fields.f — O(1), zero-copy.
+# get_tangent_field(t, :f) reads t.fields.f - O(1), zero-copy.
 # set_tangent_field!(t, :f, v) rebuilds t.fields with the new BatchContainer and stores
 # it back into t.fields (MutableTangent is a mutable struct, so this is legal).
 #
 # setfield! in the primal IR (for mutable structs) becomes setfield! in the lifted IR
 # with t::MutableTangent and val::BatchContainer. The rule routes it to set_tangent_field!
-# which replaces the field's BatchContainer pointer — the data array inside remains alive.
+# which replaces the field's BatchContainer pointer - the data array inside remains alive.
 # Return value matches Julia's setfield! semantics: returns val.
 
 # ── Tuple construction and access ────────────────────────────────────────────
 #
-# In Julia IR, (a, b) lowers to Core.tuple(a, b) — a :call, not :new.
+# In Julia IR, (a, b) lowers to Core.tuple(a, b) - a :call, not :new.
 # The @generated form fixes the names tuple at compile time (N from type params).
 # getindex(t, i) for a tuple batch routes to get_tangent_field by integer index,
 # same as getfield. Both are registered so either IR form is covered.
@@ -28,7 +28,7 @@ end
 vmap_rule!!(::typeof(Base.getindex), t::Tangent, idx::Int) =
     get_tangent_field(t, idx)
 
-# NamedTuple field access via nt[:x] syntax — routes to get_tangent_field by name.
+# NamedTuple field access via nt[:x] syntax - routes to get_tangent_field by name.
 vmap_rule!!(::typeof(Base.getindex), t::Tangent, name::Symbol) =
     get_tangent_field(t, name)
 
@@ -63,11 +63,11 @@ vmap_rule!!(::typeof(Base.setfield!), t::MutableTangent, idx::Int, val) =
 # ── Batch rules for vmap ──────────────────────────────────────────────────────
 #
 # Dispatch: vmap_rule!!(f, batched_args...) → BatchContainer
-# Checked at IR-generation time via hasmethod — zero runtime overhead.
+# Checked at IR-generation time via hasmethod - zero runtime overhead.
 # Fallback (LazyVmap/DynamicVmap broadcast) used when no rule is registered.
 
 # ── Scalar binary ops ─────────────────────────────────────────────────────────
-# These operate on the raw Vector{T} backing store — SIMD-fused, no getindex.
+# These operate on the raw Vector{T} backing store - SIMD-fused, no getindex.
 
 for op in (:+, :-, :*, :/)
     @eval function vmap_rule!!(
@@ -87,7 +87,7 @@ function vmap_rule!!(::typeof(*), b::BatchContainer{T, Vector{T}}, α::T) where 
 end
 
 # ── Matrix × batch-of-vectors: BLAS gemm ──────────────────────────────────────
-# A (m×n) × data (n×N) → (m×N) — one gemm replaces N gemv calls.
+# A (m×n) × data (n×N) → (m×N) - one gemm replaces N gemv calls.
 # x.data is (n, N); A*x.data is a standard (m×n)×(n×N) matrix multiply, which is
 # exactly the same as [A*x.data[:,k] for k in 1:N] but done in one BLAS call.
 
@@ -109,7 +109,7 @@ end
 #   The full memory layout is:
 #     [col1_X1 | col2_X1 | … | colM_X1 | col1_X2 | … | colM_X{N_batch}]
 #
-# After reshape(data, L, M*N_batch) — zero-copy, same memory pointer:
+# After reshape(data, L, M*N_batch) - zero-copy, same memory pointer:
 #   columns 1..M          → all M columns of batch element 1
 #   columns M+1..2M       → all M columns of batch element 2
 #   …
@@ -147,7 +147,7 @@ end
 #
 # Correctness argument is identical to the K=2 case: Julia is column-major, batch
 # is last, so each "fiber" data[:,i₂,…,iₖ,k] is contiguous in memory regardless of K.
-# reshape treats the (K+1)-D array as a 2-D view without touching memory — one gemm
+# reshape treats the (K+1)-D array as a 2-D view without touching memory - one gemm
 # replaces N_batch*prod(inner_dims) separate matrix-vector calls.
 #
 # Semantics: A * x[i] contracts along the FIRST axis of each batch element, leaving
@@ -160,14 +160,14 @@ function vmap_rule!!(
 ) where {T<:LinearAlgebra.BlasFloat, K, K1}
     d = size(x.data)                                        # (d₁, d₂, …, dₖ, N_batch)
     dtail = Base.tail(d)                                    # (d₂, …, dₖ, N_batch)
-    result = A * reshape(x.data, d[1], prod(dtail))        # (m, d₂*…*dₖ*N_batch) — one gemm
+    result = A * reshape(x.data, d[1], prod(dtail))        # (m, d₂*…*dₖ*N_batch) - one gemm
     return BatchContainer{Array{T,K}, Array{T,K1}}(reshape(result, size(A, 1), dtail...), K1)
 end
 
 # ── Matrix × any AbstractArray-element batch with dense backing ───────────────
 # Covers sparse vectors, static arrays, etc. that _wrap_input/make_batch materialised
 # into a dense Array backing. The reshape trick is valid as long as the backing is a
-# dense Array with batch-last layout — which _make_batch/_wrap_input always produce.
+# dense Array with batch-last layout - which _make_batch/_wrap_input always produce.
 # Specific Vector/Matrix/Array{T,K} rules above are more specific and take precedence.
 function vmap_rule!!(
     ::typeof(*),
@@ -181,7 +181,7 @@ function vmap_rule!!(
 end
 
 # ── dot: batch of vector pairs → batch of scalars ─────────────────────────────
-# diag(AᵀB) = sum(A .* B, dims=1) — one fused pass over (n×N) matrices.
+# diag(AᵀB) = sum(A .* B, dims=1) - one fused pass over (n×N) matrices.
 # Both a.data and b.data are (n, N); element-wise product then column-sum gives
 # [dot(a.data[:,k], b.data[:,k]) for k in 1:N] without any loop.
 
@@ -224,7 +224,7 @@ end
 # ── General N-D array batch reductions (N ≥ 3) ───────────────────────────────
 # Specific Vector/Matrix methods above take precedence for N = 1, 2.
 # For N ≥ 3: data is (d₁, …, dₙ, batch); reduce over dims 1..N, keeping the batch axis.
-# ntuple(identity, N) = (1, 2, …, N) — produced at compile time from the type parameter N.
+# ntuple(identity, N) = (1, 2, …, N) - produced at compile time from the type parameter N.
 
 function vmap_rule!!(
     ::typeof(sum),
@@ -255,7 +255,7 @@ end
 # The constraint D<:AbstractArray{E} where E<:_VmapScalar ensures we only match
 # SoA BatchContainers whose backing store holds _VmapScalar scalars.
 # For any such container, f.(bc.data) applies f to every scalar in the backing
-# array — equivalent to applying f element-wise to each batch item separately,
+# array - equivalent to applying f element-wise to each batch item separately,
 # because the SoA layout is a flat view of those scalars (batch-last, contiguous).
 #
 # Dispatch priority: all specific rules above use concrete function types
@@ -264,9 +264,9 @@ end
 # catch-alls only fire when no specific rule was registered.
 #
 # Failure mode: if f is NOT element-wise (e.g., sort on a scalar), f.(bc.data)
-# will throw a MethodError at runtime — loud failure, not silent wrong answer.
+# will throw a MethodError at runtime - loud failure, not silent wrong answer.
 
-# Unary: sin, cos, exp, log, sqrt, abs, relu, tanh, … — one broadcast over backing array.
+# Unary: sin, cos, exp, log, sqrt, abs, relu, tanh, … - one broadcast over backing array.
 function vmap_rule!!(
     f::F,
     bc::BatchContainer{T, D},
@@ -274,7 +274,7 @@ function vmap_rule!!(
     return BatchContainer{T, D}(f.(bc.data), bc.index)
 end
 
-# Binary: +, -, *, / between two same-type array batches — one fused broadcast.
+# Binary: +, -, *, / between two same-type array batches - one fused broadcast.
 # Scalar-batch rules above (D=Vector{T}) are more specific and take precedence.
 function vmap_rule!!(
     f::F,
@@ -284,7 +284,7 @@ function vmap_rule!!(
     return BatchContainer{T, D}(f.(a.data, b.data), a.index)
 end
 
-# Scalar × batch (both orderings) for any rank — one broadcast, no loop.
+# Scalar × batch (both orderings) for any rank - one broadcast, no loop.
 # Scalar-batch rules above (D=Vector{T}) are more specific and take precedence.
 function vmap_rule!!(
     ::typeof(*), α::E, bc::BatchContainer{T, D}
