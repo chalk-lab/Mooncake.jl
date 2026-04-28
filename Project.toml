@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.26"
+version = "0.5.27"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -58,8 +58,8 @@ AllocCheck = "0.2"
 Aqua = "0.8.9"
 BFloat16s = "0.6"
 BenchmarkTools = "1"
-CUDA = "5"
-cuDNN = "1"
+CUDA = "6"
+cuDNN = "6"
 ChainRules = "1.71.0"
 ChainRulesCore = "1"
 DiffTests = "0.1"
