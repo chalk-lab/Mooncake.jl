@@ -1299,6 +1299,24 @@ function generate_ir(
     fwd_ret_type = forwards_ret_type(ir)
     rvs_ret_type = pullback_ret_type(ir)
 
+    # Check before normalise! to avoid a cryptic CC.verify_ir failure downstream.
+    for inst in stmt(ir.stmts)
+        is_enter = Meta.isexpr(inst, :enter)
+        @static if isdefined(Core, :EnterNode)
+            is_enter = is_enter || inst isa Core.EnterNode
+        end
+        if is_enter
+            unhandled_feature(
+                "try/catch/finally blocks are not supported by Mooncake.jl in reverse " *
+                "mode. The code being differentiated contains a try/catch or try/finally " *
+                "construct. Strategies for resolving this error include re-writing code " *
+                "to avoid try/catch blocks (e.g. by replacing them with explicit " *
+                "conditional checks), or providing a custom rrule!! for the relevant " *
+                "function. See the known limitations documentation for more context.",
+            )
+        end
+    end
+
     # Normalise the IR, and generated BBCode version of it.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
     ir = normalise!(ir, spnames)

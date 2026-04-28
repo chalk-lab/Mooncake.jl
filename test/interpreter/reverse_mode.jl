@@ -354,6 +354,10 @@ rule_type_nonreturning(e::Exception) = throw(e)
     end
     @testset "MooncakeRuleCompilationError" begin
         @test_throws(Mooncake.MooncakeRuleCompilationError, Mooncake.build_rrule(sin))
+        _trycatch_fn(x::Float64) = try; return log(x); catch; return 0.0; end
+        @test_throws(
+            Mooncake.MooncakeRuleCompilationError, Mooncake.build_rrule(_trycatch_fn, 1.0)
+        )
         # showerror should include the originating method's source location (issue #649)
         function _rrule_error_test_llvmcall(x::Int64)
             Base.llvmcall(
