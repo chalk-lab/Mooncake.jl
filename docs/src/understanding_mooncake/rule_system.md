@@ -331,7 +331,7 @@ _**CoDuals**_
 CoDuals are simply used to bundle together a primal and an associated fdata, depending upon context.
 Occassionally, they are used to pair together a primal and a tangent.
 
-_**Aliasing Invariant**_
+### Aliasing Invariant
 
 The AD transform upholds the _aliasing invariant_: `primal(a) === primal(b)` implies `fdata(a) === fdata(b)`.
 In-place mutations accumulate into fdata buffers; two `CoDual`s with the same primal but different fdata buffers would diverge under mutation, producing wrong gradients.
