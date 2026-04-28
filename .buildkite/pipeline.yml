@@ -10,7 +10,9 @@ steps:
           dirs:
             - src
             - ext
-    command: julia --code-coverage=user --eval='include("test/run_extra.jl")'
+    commands: |
+      unset LD_LIBRARY_PATH
+      julia --code-coverage=user --eval='include("test/run_extra.jl")'
     agents:
       queue: "juliagpu"
       cuda: "*"
@@ -36,7 +38,9 @@ steps:
           dirs:
             - src
             - ext
-    command: julia --code-coverage=user --eval='include("test/run_extra.jl")'
+    commands: |
+      unset LD_LIBRARY_PATH
+      julia --code-coverage=user --eval='include("test/run_extra.jl")'
     agents:
       queue: "juliagpu"
       cuda: "*"

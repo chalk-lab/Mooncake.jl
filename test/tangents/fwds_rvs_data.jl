@@ -43,11 +43,80 @@ end
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_union_array(); test_opt_flag=false
         )
-
         # https://github.com/chalk-lab/Mooncake.jl/issues/631
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.P_adam_like_union; test_opt_flag=false
         )
+        # https://github.com/chalk-lab/Mooncake.jl/issues/1130
+        # End-to-end tangent splitting for the original issue and the general mixed case.
+        TestUtils.test_tangent_splitting(
+            Xoshiro(123456), TestResources.make_P_lohi_container(); test_opt_flag=false
+        )
+        TestUtils.test_tangent_splitting(
+            Xoshiro(123456), TestResources.make_P_mixed_container(); test_opt_flag=false
+        )
+        # Direct tests for new tangent_type(F, R) methods.
+        # Method 1: NoFData + Union{NoRData, IEEEFloat}
+        @test tangent_type(NoFData, Union{NoRData,Float64}) == Union{NoTangent,Float64}
+        # Tiebreaker 1: NoFData + Union{NoRData, RData{...}}
+        @test tangent_type(
+            NoFData, Union{NoRData,Mooncake.RData{@NamedTuple{lo::Float64,hi::Float64}}}
+        ) == Union{NoTangent,Tangent{@NamedTuple{lo::Float64,hi::Float64}}}
+        # Method 3: both F and R are unions — round-trip via Union{Nothing, Mixed}
+        let P = Union{Nothing,TestResources.Mixed}
+            @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
+                tangent_type(P)
+        end
+        # Tiebreaker 2: Union{NoFData,FData} + NoRData — round-trip via Union{Nothing, VecOnly}
+        let P = Union{Nothing,TestResources.VecOnly}
+            @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
+                tangent_type(P)
+        end
+        # General union method: Union{NoFData, Array} + NoRData (success path).
+        let P = Union{Nothing,Vector{Float64}}
+            @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
+                tangent_type(P)
+        end
+        # _validate_union: isprimitivetype path (Float64 is a primitive).
+        @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
+        # _validate_union: rdata_type != NoRData path (Tangent has rdata; not FData so
+        # tiebreaker 2 does not intercept).
+        @test_throws InvalidFDataException tangent_type(
+            Union{NoFData,Tangent{@NamedTuple{x::Float64}}}, NoRData
+        )
+        # N-branch rdata unions: Union{NoRData,RData{A},RData{B}} <: Union{NoRData,RData},
+        # so the tiebreaker dispatches. The R<:RData leaf guards against calling fields_type
+        # on the resulting sub-union, decomposing it recursively via binary union splitting.
+        @test tangent_type(
+            NoFData,
+            Union{
+                NoRData,
+                Mooncake.RData{@NamedTuple{lo::Float64,hi::Float64}},
+                Mooncake.RData{@NamedTuple{x::Float64}},
+                Mooncake.RData{@NamedTuple{y::Float32}},
+            },
+        ) == Union{
+            NoTangent,
+            Tangent{@NamedTuple{lo::Float64,hi::Float64}},
+            Tangent{@NamedTuple{x::Float64}},
+            Tangent{@NamedTuple{y::Float32}},
+        }
+        # N-branch fdata unions: symmetric case — Union{NoFData,FData{A},FData{B}} <: FData,
+        # so the F<:FData leaf guards against calling fields_type on the sub-union.
+        @test tangent_type(
+            Union{
+                NoFData,
+                Mooncake.FData{@NamedTuple{v::Vector{Float64}}},
+                Mooncake.FData{@NamedTuple{w::Vector{Float32}}},
+                Mooncake.FData{@NamedTuple{u::Vector{Float64},v::Vector{Float32}}},
+            },
+            NoRData,
+        ) == Union{
+            NoTangent,
+            Tangent{@NamedTuple{v::Vector{Float64}}},
+            Tangent{@NamedTuple{w::Vector{Float32}}},
+            Tangent{@NamedTuple{u::Vector{Float64},v::Vector{Float32}}},
+        }
     end
 
     @testset "zero_rdata_from_type checks" begin

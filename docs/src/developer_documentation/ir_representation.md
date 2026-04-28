@@ -231,7 +231,7 @@ For example, consider
 julia> using Mooncake.BasicBlockCode: ID # to improve printing
 
 julia> bb_ir.blocks[3].insts[1]
-Compiler.NewInstruction(:(Base.add_int(ID(109), 1)), Int64, Compiler.NoCallInfo(), (0, 0, 0), 0x00002478)
+Compiler.NewInstruction(:(Base.add_int(ID(2), 1)), Int64, Compiler.NoCallInfo(), (0, 0, 0), 0x00002478)
 ```
 This is the first instruction of the third basic block.
 The first field is a call to `Base.add_int`, the second field is `Int64` (we promise that the other fields are just copies of the corresponding data from the `Core.Compiler.InstructionStream` in the original `IRCode` representation of this IR).
@@ -249,15 +249,15 @@ The final major difference between `IRCode` and `BBCode` is that all ssa values 
 ```jldoctest my_factorial
 julia> bb_ir.blocks[3].inst_ids
 3-element Vector{ID}:
- ID(112)
- ID(113)
- ID(114)
+ ID(5)
+ ID(6)
+ ID(7)
 ```
 There is exactly one `ID` per instruction, and it is an error to have the same `ID` associated to multiple instructions.
 Similarly, while the number associated to a basic block in `IRCode` is a function of the number of basic blocks which precede it, the `ID` of a basic block in `BBCode` is stored in its `id` field:
 ```jldoctest my_factorial
 julia> bb_ir.blocks[3].id
-ID(118)
+ID(11)
 ```
 As a result of this, all references to ssa values and basic block numbers in `IRCode` are replaced with `ID`s in `BBCode`.
 The purpose of this is to guarantee that the "name" of a basic block and an instruction does not change when you insert new basic blocks and new instructions.
@@ -319,10 +319,10 @@ The same transformation can be performed on `BBCode`:
 julia> bb_ir_copy = copy(bb_ir);
 
 julia> old_inst = bb_ir_copy.blocks[3].insts[2]
-Compiler.NewInstruction(:(Base.mul_int(ID(108), ID(112))), Int64, Compiler.NoCallInfo(), (3, 0, 0), 0x00002478)
+Compiler.NewInstruction(:(Base.mul_int(ID(1), ID(5))), Int64, Compiler.NoCallInfo(), (3, 0, 0), 0x00002478)
 
 julia> new_stmt = Expr(:call, Base.add_int, old_inst.stmt.args[2:end]...)
-:((Core.Intrinsics.add_int)(ID(108), ID(112)))
+:((Core.Intrinsics.add_int)(ID(1), ID(5)))
 
 julia> bb_ir_copy.blocks[3].insts[2] = CC.NewInstruction(old_inst; stmt=new_stmt);
 
