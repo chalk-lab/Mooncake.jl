@@ -890,6 +890,8 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 """
 
 @foldable tangent_type(::Type{NoFData}, ::Type{NoRData}) = NoTangent
+@foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:NoRData} = NoTangent
+@foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:NoFData} = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
 
