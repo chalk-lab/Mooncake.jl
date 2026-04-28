@@ -1965,54 +1965,26 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
     _validate_jacobian_argument(x)
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
-    chunk_size = min(cache.gradient_chunk_size, total_dof)
-    dz = zero_tangent(f)
-    y, chunk_dy = value_and_derivative!!(
-        cache,
-        (f, dz),
-        (x, NTangent(ntuple(lane -> _fcache_gradient_seed_tangent(x, lane), chunk_size))),
+    cache.width === nothing || throw(
+        ArgumentError(
+            "value_and_jacobian!! with FCache only supports chunk_size=nothing (width-1 mode)"
+        ),
     )
+    input_primals = (f, x)
+    seed1 = _make_seed_tangent(input_primals, 1)
+    output1 = cache.rule(tuple_map(Dual, input_primals, seed1)...)
+    y = primal(output1)
     Ty = _validate_jacobian_output(y, eltype(x))
     J = zeros(Ty, length(y), total_dof)
-    if chunk_dy isa NTangent
-        @inbounds for lane in 1:length(chunk_dy)
-            J[:, lane] .= chunk_dy[lane]
-        end
-    else
-        @inbounds J[:, 1] .= chunk_dy
-    end
-    for start_col in (chunk_size + 1):chunk_size:total_dof
-        _, chunk_dy = value_and_derivative!!(
-            cache,
-            (f, dz),
-            (
-                x,
-                NTangent(
-                    ntuple(
-                        lane -> let slot = start_col + lane - 1
-                            if slot <= total_dof
-                                _fcache_gradient_seed_tangent(x, slot)
-                            else
-                                zero_tangent(x)
-                            end
-                        end, chunk_size
-                    ),
-                ),
-            ),
-        )
-        if chunk_dy isa NTangent
-            @inbounds for lane in 1:length(chunk_dy)
-                col = start_col + lane - 1
-                col <= total_dof || break
-                J[:, col] .= chunk_dy[lane]
-            end
-        else
-            @inbounds J[:, start_col] .= chunk_dy
-        end
+    @inbounds J[:, 1] .= tangent(output1)
+    for slot in 2:total_dof
+        seed = _make_seed_tangent(input_primals, slot)
+        output = cache.rule(tuple_map(Dual, input_primals, seed)...)
+        @inbounds J[:, slot] .= tangent(output)
     end
     return y, J
 end
@@ -2021,7 +1993,7 @@ end
     cache::Cache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
     _validate_jacobian_argument(x)
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
@@ -2051,7 +2023,7 @@ end
 
 @unstable function value_and_jacobian!!(cache::Union{Cache,FCache}, f::F, x) where {F}
     _validate_jacobian_argument(x)
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
 end
 
 @unstable function value_and_jacobian!!(cache, f::F, x) where {F}

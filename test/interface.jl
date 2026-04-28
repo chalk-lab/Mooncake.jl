@@ -1117,46 +1117,6 @@ end
             @test nfwd_grad == (Mooncake.NoTangent(), y + cos(x), x)
         end
 
-        @testset "nfwd runtime NDual errors propagate raw" begin
-            let
-                _ndual_width_sensitive_sum(x, y) = x + y
-                function _ndual_width_sensitive_sum(
-                    x::Mooncake.Nfwd.NDual{T,N}, y
-                ) where {T,N}
-                    N == 1 && return x + y
-                    throw(Mooncake.Nfwd.NDualUnsupportedError(:test_width_sensitive_sum))
-                end
-
-                cache = Mooncake.prepare_derivative_cache(
-                    _ndual_width_sensitive_sum,
-                    x,
-                    y;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                err = try
-                    Mooncake.value_and_gradient!!(cache, _ndual_width_sensitive_sum, x, y)
-                    nothing
-                catch err
-                    err
-                end
-                @test err isa Mooncake.Nfwd.NDualUnsupportedError
-
-                cache_no_nfwd = Mooncake.prepare_derivative_cache(
-                    _ndual_width_sensitive_sum,
-                    x,
-                    y;
-                    config=Mooncake.Config(;
-                        debug_mode=false, friendly_tangents=false, enable_nfwd=false
-                    ),
-                )
-                @test Mooncake.value_and_gradient!!(
-                    cache_no_nfwd, _ndual_width_sensitive_sum, x, y
-                ) == (
-                    _ndual_width_sensitive_sum(x, y), (Mooncake.NoTangent(), one(x), one(y))
-                )
-            end
-        end
-
         @testset "value_and_jacobian!!" begin
             f_jac = x -> [x[1]^2 + x[2], x[1] * x[2], sin(x[2])]
             x_jac = [x, y]
@@ -1218,15 +1178,9 @@ end
                 rev_empty_cache, f_empty_jac, [x + 1, y - 1]
             ) == expected_empty
 
-            fwd_cache_jac_chunk1 = Mooncake.prepare_derivative_cache(
-                f_jac, x_jac; config=Mooncake.Config(; chunk_size=1)
-            )
-            @test Mooncake.value_and_jacobian!!(fwd_cache_jac_chunk1, f_jac, x_jac) ==
-                (f_jac(x_jac), expected_jac)
-
-            hvp_cache = Mooncake.prepare_hvp_cache(sin, 1.0)
+            hvp_cache = Mooncake.prepare_hvp_cache(sum, x_jac)
             @test_throws "value_and_jacobian!! only supports cache types Cache and FCache" Mooncake.value_and_jacobian!!(
-                hvp_cache, sin, 1.0
+                hvp_cache, sum, x_jac
             )
 
             f_mut_jac = x -> (x .*= 2; x .^ 2)
@@ -1243,22 +1197,6 @@ end
             @test x_mut_jac_work == x_mut_jac
             @test val_mut_jac == 4 .* x_mut_jac .^ 2
             @test jac_mut_jac ≈ [8 * x_mut_jac[1] 0.0; 0.0 8 * x_mut_jac[2]]
-
-            x_mut_jac_chunked = [1.0, 2.0, 3.0]
-            fwd_cache_mut_jac = Mooncake.prepare_derivative_cache(
-                f_mut_jac,
-                copy(x_mut_jac_chunked);
-                config=Mooncake.Config(;
-                    chunk_size=2, debug_mode=false, friendly_tangents=false
-                ),
-            )
-            x_mut_jac_chunked_work = copy(x_mut_jac_chunked)
-            val_mut_jac_chunked, jac_mut_jac_chunked = Mooncake.value_and_jacobian!!(
-                fwd_cache_mut_jac, f_mut_jac, x_mut_jac_chunked_work
-            )
-            @test x_mut_jac_chunked_work == x_mut_jac_chunked
-            @test val_mut_jac_chunked == 4 .* x_mut_jac_chunked .^ 2
-            @test jac_mut_jac_chunked ≈ Diagonal(8 .* x_mut_jac_chunked)
 
             x_jac_parent = [x, y, 0.0]
             x_jac_view = @view x_jac_parent[1:2]
