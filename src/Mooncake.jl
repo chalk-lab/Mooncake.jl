@@ -71,9 +71,9 @@ forward-mode gradient cache. Conceptually:
   calls `_fcache_derivative_chunked!!` and accumulates the lane
   contributions into gradient buffers.
 
-The generic implementation evaluates one lane at a time via ordinary `frule!!` / derived
-forward rules. Specialized backends, such as `nfwd`, may override this to evaluate all
-lanes in one pass.
+The generic implementation evaluates one lane at a time via `frule!!` (aka ir-based
+forward) / derived forward rules. Specialized backends, such as `nfwd`, may override this
+to evaluate all lanes in one pass.
 """
 function _fcache_derivative_chunked!! end
 
@@ -224,12 +224,14 @@ else
     include(joinpath("rules", "array_legacy.jl"))
 end
 
+include(joinpath("rules", "threads.jl"))
 include(joinpath("rules", "performance_patches.jl"))
 include(joinpath("rules", "rules_via_nfwd.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")
 include("developer_tools.jl")
+@unstable include("skill_utils.jl")
 
 # Public, not exported
 include("public.jl")
@@ -243,6 +245,7 @@ end
 # Public, exported
 export prepare_gradient_cache, value_and_gradient!!     # reverse
 export prepare_derivative_cache, value_and_derivative!! # forward
+export value_and_jacobian!!
 export prepare_hvp_cache, value_and_hvp!!
 export prepare_hessian_cache, value_gradient_and_hessian!!
 

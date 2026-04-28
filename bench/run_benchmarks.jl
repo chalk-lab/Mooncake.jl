@@ -52,7 +52,7 @@ end
 
 should_run_benchmark(args...) = true
 
-@static if VERSION ≥ v"1.12-"
+@static if VERSION ≥ v"1.13-"
     should_run_benchmark(::Val{:enzyme}, args...) = false
 end
 
@@ -169,7 +169,8 @@ function generate_inter_framework_tests()
             (_simple_mlp, randn(128, 256), randn(256, 128), randn(128, 70), randn(128, 70)),
         ),
         ("gp_lml", (_gp_lml, _generate_gp_inputs()...)),
-        ("turing_broadcast_benchmark", build_dynamicppl_problem()),
+        # TODO: re-enable when DI is removed from DynamicPPL hard deps. 
+        # ("turing_broadcast_benchmark", build_dynamicppl_problem()),
         ("large_single_block", (large_single_block, [0.9, 0.99])),
     ]
 end
@@ -269,19 +270,16 @@ function benchmark_rules!!(
                     _rand_similar(x) = x isa Real ? randn() : randn(size(x))
                     dup_args = map(x -> Duplicated(x, _rand_similar(x)), primals[2:end])
                     GC.gc(true)
-                    prim =
+                    prim, mode =
                         if primals[1] isa Base.Fix1 &&
                             primals[1].x isa DynamicPPL.LogDensityFunction
-                            Const(primals[1])
+                            Const(primals[1]),
+                            Enzyme.set_runtime_activity(ReverseWithPrimal)
                         else
-                            primals[1]
+                            primals[1], ReverseWithPrimal
                         end
                     suite["enzyme"] = @be(
-                        _,
-                        _,
-                        autodiff(ReverseWithPrimal, $prim, Active, $dup_args...),
-                        _,
-                        evals = 1,
+                        _, _, autodiff($mode, $prim, Active, $dup_args...), _, evals = 1,
                     )
                 end
             end

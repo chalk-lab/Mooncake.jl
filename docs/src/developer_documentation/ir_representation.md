@@ -24,8 +24,8 @@ julia> signature = Tuple{typeof(foo), Float64}
 Tuple{typeof(foo), Float64}
 
 julia> Base.code_ircode_by_type(signature)[1][1]
-2 1 ─ %1 = invoke sin(_2::Float64)::Float64
-3 │   %2 = invoke cos(%1::Float64)::Float64
+2 1 ─ %1 =    invoke sin(_2::Float64)::Float64
+3 │   %2 =    invoke cos(%1::Float64)::Float64
 4 └──      return %2
 ```
 
@@ -59,11 +59,11 @@ julia> function bar(x)
 bar (generic function with 1 method)
 
 julia> Base.code_ircode_by_type(Tuple{typeof(bar),Float64})[1][1]
-2 1 ─ %1 = Base.lt_float(0.0, _2)::Bool
-  │   %2 = Base.or_int(%1, false)::Bool
+2 1 ─ %1 = intrinsic Base.lt_float(0.0, _2)::Bool
+  │   %2 = intrinsic Base.or_int(%1, false)::Bool
   └──      goto #3 if not %2
 3 2 ─      return _2
-5 3 ─ %5 = Base.mul_float(5.0, _2)::Float64
+5 3 ─ %5 = intrinsic Base.mul_float(5.0, _2)::Float64
   └──      return %5
 ```
 In this example we see the statement `goto #3 if not %2`.
@@ -98,7 +98,7 @@ Additionally, note that `Base.lt_float` (used to check if one floating point num
 Rather, they are Julia intrinsics:
 ```jldoctest
 julia> Base.lt_float
-lt_float (intrinsic function #31)
+lt_float (intrinsic function #33)
 ```
 These intrinsics have special handling in the compiler.
 Either way, the overall point is to be aware that these kinds of low-level intrinsics exist, and appear regularly in Julia IR.
@@ -122,10 +122,10 @@ julia> ir = Base.code_ircode_by_type(Tuple{typeof(my_factorial), Int})[1][1]
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %7)::Int64
   │   %3 = φ (#1 => 0, #3 => %6)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = Base.add_int(%3, 1)::Int64
-6 │   %7 = Base.mul_int(%2, %6)::Int64
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic Base.mul_int(%2, %6)::Int64
 7 └──      goto #2
 8 4 ─      return %2
 ```
@@ -210,10 +210,10 @@ julia> Core.Compiler.IRCode(bb_ir)
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %7)::Int64
   │   %3 = φ (#1 => 0, #3 => %6)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = Base.add_int(%3, 1)::Int64
-6 │   %7 = Base.mul_int(%2, %6)::Int64
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic Base.mul_int(%2, %6)::Int64
 7 └──      goto #2
 8 4 ─      return %2
 ```
@@ -231,7 +231,7 @@ For example, consider
 julia> using Mooncake.BasicBlockCode: ID # to improve printing
 
 julia> bb_ir.blocks[3].insts[1]
-Core.Compiler.NewInstruction(:(Base.add_int(ID(97), 1)), Int64, Core.Compiler.NoCallInfo(), 9, 0x000012e0)
+Compiler.NewInstruction(:(Base.add_int(ID(2), 1)), Int64, Compiler.NoCallInfo(), (0, 0, 0), 0x00002478)
 ```
 This is the first instruction of the third basic block.
 The first field is a call to `Base.add_int`, the second field is `Int64` (we promise that the other fields are just copies of the corresponding data from the `Core.Compiler.InstructionStream` in the original `IRCode` representation of this IR).
@@ -249,15 +249,15 @@ The final major difference between `IRCode` and `BBCode` is that all ssa values 
 ```jldoctest my_factorial
 julia> bb_ir.blocks[3].inst_ids
 3-element Vector{ID}:
- ID(100)
- ID(101)
- ID(102)
+ ID(5)
+ ID(6)
+ ID(7)
 ```
 There is exactly one `ID` per instruction, and it is an error to have the same `ID` associated to multiple instructions.
 Similarly, while the number associated to a basic block in `IRCode` is a function of the number of basic blocks which precede it, the `ID` of a basic block in `BBCode` is stored in its `id` field:
 ```jldoctest my_factorial
 julia> bb_ir.blocks[3].id
-ID(106)
+ID(11)
 ```
 As a result of this, all references to ssa values and basic block numbers in `IRCode` are replaced with `ID`s in `BBCode`.
 The purpose of this is to guarantee that the "name" of a basic block and an instruction does not change when you insert new basic blocks and new instructions.
@@ -303,10 +303,10 @@ julia> new_ir
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %7)::Int64
   │   %3 = φ (#1 => 0, #3 => %6)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = Base.add_int(%3, 1)::Int64
-6 │   %7 = (Core.Intrinsics.add_int)(%2, %6)::Int64
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
 7 └──      goto #2
 8 4 ─      return %2
 ```
@@ -319,10 +319,10 @@ The same transformation can be performed on `BBCode`:
 julia> bb_ir_copy = copy(bb_ir);
 
 julia> old_inst = bb_ir_copy.blocks[3].insts[2]
-Core.Compiler.NewInstruction(:(Base.mul_int(ID(96), ID(100))), Int64, Core.Compiler.NoCallInfo(), 10, 0x000012e0)
+Compiler.NewInstruction(:(Base.mul_int(ID(1), ID(5))), Int64, Compiler.NoCallInfo(), (3, 0, 0), 0x00002478)
 
 julia> new_stmt = Expr(:call, Base.add_int, old_inst.stmt.args[2:end]...)
-:((Core.Intrinsics.add_int)(ID(96), ID(100)))
+:((Core.Intrinsics.add_int)(ID(1), ID(5)))
 
 julia> bb_ir_copy.blocks[3].insts[2] = CC.NewInstruction(old_inst; stmt=new_stmt);
 
@@ -330,10 +330,10 @@ julia> CC.IRCode(bb_ir_copy)
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %7)::Int64
   │   %3 = φ (#1 => 0, #3 => %6)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = Base.add_int(%3, 1)::Int64
-6 │   %7 = (Core.Intrinsics.add_int)(%2, %6)::Int64
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
 7 └──      goto #2
 8 4 ─      return %2
 ```
@@ -350,7 +350,7 @@ Consequently, we need to replace all existing uses of e.g. `%6` with uses of `%7
 Happily, `IRCode` has a mechanism to achieve just this.
 ```jldoctest my_factorial
 julia> ni = CC.NewInstruction(Expr(:call, Base.mul_int, SSAValue(3), 2), Int)
-Core.Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Core.Compiler.NoCallInfo(), nothing, nothing)
+Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Compiler.NoCallInfo(), nothing, nothing)
 
 julia> new_ssa = CC.insert_node!(new_ir, SSAValue(6), ni)
 :(%10)
@@ -359,11 +359,11 @@ julia> new_ir
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %7)::Int64
   │   %3 = φ (#1 => 0, #3 => %6)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─      (Core.Intrinsics.mul_int)(%3, 2)::Int64
-  │   %6 = Base.add_int(%3, 1)::Int64
-6 │   %7 = (Core.Intrinsics.add_int)(%2, %6)::Int64
+5 3 ─      intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
 7 └──      goto #2
 8 4 ─      return %2
 ```
@@ -387,11 +387,11 @@ julia> new_ir
   1 ─       nothing::Nothing
 4 2 ┄ %2  = φ (#1 => 1, #3 => %7)::Int64
   │   %3  = φ (#1 => 0, #3 => %6)::Int64
-  │   %4  = Base.slt_int(%3, _2)::Bool
+  │   %4  = intrinsic Base.slt_int(%3, _2)::Bool
   └──       goto #4 if not %4
-5 3 ─ %10 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
-  │   %6  = Base.add_int(%10, 1)::Int64
-6 │   %7  = (Core.Intrinsics.add_int)(%2, %6)::Int64
+5 3 ─ %10 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %6  = intrinsic Base.add_int(%10, 1)::Int64
+6 │   %7  = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
 7 └──       goto #2
 8 4 ─       return %2
 
@@ -399,11 +399,11 @@ julia> new_ir = CC.compact!(new_ir)
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %8)::Int64
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
-  │   %7 = Base.add_int(%6, 1)::Int64
-6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
+5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
 7 └──      goto #2
 8 4 ─      return %2
 ```
@@ -430,13 +430,13 @@ julia> CC.IRCode(bb_ir_copy)
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %8)::Int64
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-2 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
-5 │   %7 = Base.add_int(%6, 1)::Int64
-6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
-7 └──      goto #2
-8 4 ─      return %2
+5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+6 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+7 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+8 └──      goto #2
+  4 ─      return %2
 ```
 We see here that `IRCode` and `BBCode` involve similar levels of complexity to insert an instruction.
 
@@ -472,15 +472,15 @@ julia> CC.IRCode(bb_ir_copy)
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %8)::Int64
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #5 if not %4
-2 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
-5 │   %7 = Base.add_int(%6, 1)::Int64
-6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
-7 └──      goto #2
-2 4 ─      (println)(%2)::Any
+5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+6 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+7 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+8 └──      goto #2
+  4 ─        dynamic (println)(%2)::Any
   └──      goto #2
-8 5 ─      return %2
+  5 ─      return %2
 ```
 Observe that, in this case, rather than creating `new_bb` and then inserting instructions into it, we simply create the block _with_ the instructions.
 This programming style is often more convenient.
@@ -511,16 +511,16 @@ julia> new_ir = CC.IRCode(bb_ir_copy)
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %8)::Int64
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #5 if not %4
-2 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
-5 │   %7 = Base.add_int(%6, 1)::Int64
-6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
-2 │   %9 = (iseven)(%2)::Any
+5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+6 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+7 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+8 │   %9 =   dynamic (iseven)(%2)::Any
   └──      goto #2 if not %9
-  4 ─      (println)(%2)::Any
+  4 ─        dynamic (println)(%2)::Any
   └──      goto #2
-8 5 ─      return %2
+  5 ─      return %2
 ```
 Observe that in order to tie the conditional to the goto-if-not, we simply ensure that the `ID` associated to the instruction which computes the conditional appears in the `IDGotoIfNot` instruction.
 
@@ -534,7 +534,7 @@ opaque closure, we therefore first rewrite `argtypes[1]` to `Tuple{}`:
 julia> new_ir.argtypes[1] = Tuple{};
 
 julia> oc = Core.OpaqueClosure(new_ir; do_compile=true)
-(::Int64)::Int64->◌
+(::Int64)->◌::Int64
 
 julia> oc(1000)
 2

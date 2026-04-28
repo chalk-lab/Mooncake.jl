@@ -211,7 +211,7 @@ Consider some more worked examples.
 #### Int
 
 `Int` is not a differentiable type, so its tangent type is [`NoTangent`](@ref):
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type)
 julia> tangent_type(Int)
 NoTangent
 ```
@@ -219,14 +219,14 @@ NoTangent
 #### Tuples
 
 The tangent type of a `Tuple` is defined recursively based on its field types. For example
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type)
 julia> tangent_type(Tuple{Float64, Vector{Float64}, Int})
 Tuple{Float64, Vector{Float64}, NoTangent}
 ```
 
 There is one edge case to be aware of: if all of the field of a `Tuple` are
 non-differentiable, then the tangent type is `NoTangent`. For example,
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type)
 julia> tangent_type(Tuple{Int, Int})
 NoTangent
 ```
@@ -246,7 +246,7 @@ how many of the fields might possibly not be defined. The tangent associated to 
 which might possibly not be defined is wrapped in a `PossiblyUninitTangent`.
 
 Furthermore, `struct`s can have fields whose static type is abstract. For example
-```jldoctest foo
+```jldoctest foo; setup = :(using Mooncake: tangent_type)
 julia> struct Foo
            x
        end
@@ -275,7 +275,7 @@ Consequently, we use a type called [`MutableTangent`](@ref) to represent their t
 It is a `mutable struct` with the same structure as `Tangent`.
 
 For example, if you ask for the `tangent_type` of
-```jldoctest bar
+```jldoctest bar; setup = :(using Mooncake: tangent_type)
 julia> mutable struct Bar
            x::Float64
        end
@@ -517,6 +517,15 @@ zero_tangent(x)
 function zero_tangent(x::P) where {P}
     return zero_tangent_internal(x, isbitstype(P) ? NoCache() : IdDict())
 end
+function zero_tangent(x::Ptr)
+    throw(
+        ArgumentError(
+            "`zero_tangent` is not safe to call on `Ptr` types with a single argument. " *
+            "Use the two-argument form `zero_tangent(primal, fdata)` instead, where `fdata` " *
+            "is the fdata component of the `CoDual` for this value.",
+        ),
+    )
+end
 
 """
     zero_tangent_internal(x, d::MaybeCache)
@@ -550,8 +559,10 @@ function zero_tangent_internal(x::NamedTuple, dict::MaybeCache)
     tangent_type(typeof(x)) == NoTangent && return NoTangent()
     return tuple_map(Base.Fix2(zero_tangent_internal, dict), x)
 end
-function zero_tangent_internal(x::Ptr, ::MaybeCache)
-    return throw(ArgumentError("zero_tangent not available for pointers."))
+# Ptr fields in Arrays/structs: bitcast to Ptr{tangent_type(P)} as a type-correct
+# placeholder. Must not be dereferenced. See uninit_tangent(x::Ptr) for the full WHY.
+function zero_tangent_internal(x::Ptr{P}, ::MaybeCache) where {P}
+    return bitcast(Ptr{tangent_type(P)}, x)
 end
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
     return map!(
@@ -628,6 +639,14 @@ Related to [`zero_tangent`](@ref), but a bit different. Check current implementa
 details -- this docstring is intentionally non-specific in order to avoid becoming outdated.
 """
 @inline uninit_tangent(x) = zero_tangent(x)
+# The tangent of Ptr{P} is a Ptr{tangent_type(P)} — a pointer to derivative storage for
+# whatever the primal pointer addresses. Gradients accumulate through dereferenced values,
+# not the address itself (hence rdata_type(Ptr) = NoRData).
+#
+# When no derivative storage exists yet (e.g. before a rule fills it in), we bitcast the
+# primal address to Ptr{tangent_type(P)}. The result must NOT be dereferenced — it is a
+# type-correct placeholder only. single-arg zero_tangent(x::Ptr) throws because allocating
+# fresh storage would have unclear ownership; use zero_tangent(primal, fdata) instead.
 @inline uninit_tangent(x::Ptr{P}) where {P} = bitcast(Ptr{tangent_type(P)}, x)
 
 """
@@ -785,7 +804,7 @@ requiring caching to avoid infinite loops or incorrect results.
 
 `Ref` with abstract types can lead to circular references:
 
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type, zero_tangent)
 julia> # Ref{Any} is dangerous because Any can hold circular references
        struct Evil
            r::Ref{Any}
@@ -817,7 +836,7 @@ true
 When a primal contains aliased references, the tangent must preserve this aliasing for correctness.
 Without caching, operations would incorrectly process aliased tangents multiple times:
 
-```jldoctest
+```jldoctest; setup = :(using Mooncake: zero_tangent)
 julia> # Create a mutable primal with aliased references
        mutable struct Container
            data::Vector{Float64}
@@ -1604,9 +1623,10 @@ end
     return tangent
 end
 
-# NamedTuple dest: recurse into immutable struct fields.
-# `tangent` must be a Tangent (immutable struct tangent) whose `.fields` NamedTuple is
-# integer-indexable and whose elements are PossiblyUninitTangent-or-plain tangents.
+# NamedTuple destination: recurse field-wise.
+# For NamedTuple primals, tangents are plain NamedTuples and are indexed directly.
+# For immutable struct primals, tangents are Tangent wrappers whose `.fields` entries are
+# plain tangents or `PossiblyUninitTangent` values.
 # Mutable structs use the AsMutableFields path above instead.
 # When `tangent isa NoTangent` the primal type has no differentiable fields according to
 # the runtime world (e.g. because an extension declared tangent_type(P) == NoTangent after
@@ -1631,19 +1651,27 @@ end
             end
         )
     end
-    field_exprs = map(1:n) do i
-        quote
-            if is_init(tangent.fields[$i])
-                tangent_to_friendly!!(
-                    dest[$i], getfield(primal, $i), val(tangent.fields[$i]), c
-                )
-            else
-                # PossiblyUninitTangent with isInit=false: field had zero contribution.
-                # If the primal field is defined, convert a canonical zero tangent so the
-                # return type is consistent with the initialised path.  If the primal field
-                # is also undefined, fall back to returning the cache entry as-is (the field
-                # cannot be meaningfully represented as a friendly value).
-                $(zero_field_exprs[i])
+    if P <: NamedTuple
+        # NamedTuple tangents are plain NamedTuples — index directly like Tuples.
+        field_exprs = map(1:n) do i
+            :(tangent_to_friendly!!(dest[$i], getfield(primal, $i), tangent[$i], c))
+        end
+    else
+        # Immutable struct tangents are Tangent wrappers with .fields.
+        field_exprs = map(1:n) do i
+            quote
+                if is_init(tangent.fields[$i])
+                    tangent_to_friendly!!(
+                        dest[$i], getfield(primal, $i), val(tangent.fields[$i]), c
+                    )
+                else
+                    # PossiblyUninitTangent with isInit=false: field had zero contribution.
+                    # If the primal field is defined, convert a canonical zero tangent so the
+                    # return type is consistent with the initialised path.  If the primal
+                    # field is also undefined, fall back to returning the cache entry as-is
+                    # (the field cannot be meaningfully represented as a friendly value).
+                    $(zero_field_exprs[i])
+                end
             end
         end
     end

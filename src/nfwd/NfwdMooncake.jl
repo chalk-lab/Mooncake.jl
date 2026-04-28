@@ -32,8 +32,8 @@ import ..Mooncake:
 
 # ── nfwd: NDual-backed forward-mode engine ────────────────────────────────────────
 # `nfwd` evaluates code by lifting inputs into `NDual`s and running the primal
-# function directly on those lifted values. It does not reuse Mooncake's ordinary forward
-# interpreter, even when `chunk_size == 1`.
+# function directly on those lifted values. It does not reuse Mooncake's `frule!!`
+# (aka ir-based forward) path, even when `chunk_size == 1`.
 #
 # ── File layout ────────────────────────────────────────────────────────────────────
 # This file is organized as:
@@ -208,10 +208,10 @@ end
 
 Build a forward-mode rule through `nfwd`.
 
-This path is independent from Mooncake's ordinary forwards-mode interpreter and obeys the
-standard `frule!!` interface. It evaluates the primal function directly on NDual-lifted
-scalar / dense-array inputs. Rule construction is signature-based, so `nfwd` only
-supports stateless callables here.
+This path is independent from Mooncake's `frule!!` (aka ir-based forward) path and obeys
+the standard `frule!!` interface. It evaluates the primal function directly on
+NDual-lifted scalar / dense-array inputs. Rule construction is signature-based, so `nfwd`
+only supports stateless callables here.
 
 If `chunk_size` is omitted, nfwd automatically selects `min(DOF, hardware_preferred_width)`
 from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64
@@ -787,20 +787,18 @@ end
 end
 
 function _nfwd_scatter_chunk!(grads::Tuple, inputs::Tuple, dy::Tuple, start_slot::Int)
-    global_slot = start_slot
-    for lane_val in dy
-        offset = 0
-        for (i, x) in enumerate(inputs)
-            dof = _nfwd_input_dof(x)
-            if offset < global_slot <= offset + dof
-                local_slot = global_slot - offset
-                _nfwd_add_slot!(grads[i], local_slot, lane_val)
-                break
+    function scatter_leaf!(x, (offset, remaining_grads))
+        g = first(remaining_grads)
+        dof = _nfwd_input_dof(x)
+        for k in 1:dof
+            lane = offset + k - start_slot + 1
+            if 1 <= lane <= length(dy)
+                _nfwd_add_slot!(g, k, dy[lane])
             end
-            offset += dof
         end
-        global_slot += 1
+        return nothing, (offset + dof, Base.tail(remaining_grads))
     end
+    _nfwd_unfold_slots(scatter_leaf!, inputs, (0, grads))
     return nothing
 end
 
@@ -847,35 +845,22 @@ end
     )
 end
 
-@inline function _nfwd_update_scalar_grad(
-    grads::Tuple, primals::Tuple, global_slot::Int, lane_val, offset::Int=0
-)
-    x = first(primals)
-    dof = _nfwd_input_dof(x)
-    if offset < global_slot <= offset + dof
-        local_slot = global_slot - offset
-        return (
-            _nfwd_accumulate_scalar_gradient(first(grads), local_slot, lane_val),
-            Base.tail(grads)...,
-        )
-    end
-    return (
-        first(grads),
-        _nfwd_update_scalar_grad(
-            Base.tail(grads), Base.tail(primals), global_slot, lane_val, offset + dof
-        )...,
-    )
-end
-
 @inline function _nfwd_scatter_scalar_chunk(
     grads::Tuple, primals::Tuple, dy::Tuple, start_slot::Int
 )
-    global_slot = start_slot
-    for lane_val in dy
-        grads = _nfwd_update_scalar_grad(grads, primals, global_slot, lane_val)
-        global_slot += 1
+    function scatter_leaf(x, (offset, remaining_grads))
+        g = first(remaining_grads)
+        dof = _nfwd_input_dof(x)
+        for k in 1:dof
+            lane = offset + k - start_slot + 1
+            if 1 <= lane <= length(dy)
+                g = _nfwd_accumulate_scalar_gradient(g, k, dy[lane])
+            end
+        end
+        return g, (offset + dof, Base.tail(remaining_grads))
     end
-    return grads
+    new_grads, _ = _nfwd_unfold_slots(scatter_leaf, primals, (0, grads))
+    return new_grads
 end
 
 # `slot` is the 1-based DOF index within the scalar/complex input: 1 for the real
@@ -1056,17 +1041,14 @@ function _nfwd_pullback(f, primals::Tuple, tangents::Tuple, y_fdata, ::Val{N}) w
     )
 end
 
-@inline _nfwd_seed_tangents(::Tuple{}, ::Val{N}, start_slot::Int, offset::Int=0) where {N} = ()
 @inline function _nfwd_seed_tangents(
     primals::Tuple, ::Val{N}, start_slot::Int, offset::Int=0
 ) where {N}
-    x = first(primals)
-    return (
-        _nfwd_seed_tangent(x, N, start_slot, offset),
-        _nfwd_seed_tangents(
-            Base.tail(primals), Val(N), start_slot, offset + _nfwd_input_dof(x)
-        )...,
-    )
+    function seed_leaf(x, off)
+        return _nfwd_seed_tangent(x, N, start_slot, off), off + _nfwd_input_dof(x)
+    end
+    tangents, _ = _nfwd_unfold_slots(seed_leaf, primals, offset)
+    return tangents
 end
 """
     _nfwd_scalar_gradient_rdata(pb, y_rdata)
@@ -1497,19 +1479,19 @@ end
 # The rrule buf stores only the lifted Array{NDual{T,C}} — no seed array needed.
 # The grad_buf stores a pre-allocated gradient array matching the input shape.
 # Two ref types are used for each, matching the frule buf pattern:
-#   - Typed-ref (Vector{T} input): fully inferred, no runtime isa check.
-#   - Generic Ref{Any} (N-D array input): workspace type recovered at runtime.
+#   - Typed-ref (Array{T,Nd} input): fully inferred, no runtime isa check.
+#   - Generic Ref{Any} (non-array / unsupported input): workspace type recovered at runtime.
 
 _nfwd_buf_ref(sig, ::Val) = Ref{Any}(nothing)
 
-function _nfwd_buf_ref(::Type{Tuple{F,Vector{T}}}, ::Val{C}) where {F,T<:IEEEFloat,C}
-    return Ref{Union{Nothing,Vector{NDual{T,C}}}}(nothing)
+function _nfwd_buf_ref(::Type{Tuple{F,Array{T,Nd}}}, ::Val{C}) where {F,T<:IEEEFloat,Nd,C}
+    return Ref{Union{Nothing,Array{NDual{T,C},Nd}}}(nothing)
 end
 
 _nfwd_grad_buf_ref(sig) = Ref{Any}(nothing)
 
-function _nfwd_grad_buf_ref(::Type{Tuple{F,Vector{T}}}) where {F,T<:IEEEFloat}
-    return Ref{Union{Nothing,Vector{T}}}(nothing)
+function _nfwd_grad_buf_ref(::Type{Tuple{F,Array{T,Nd}}}) where {F,T<:IEEEFloat,Nd}
+    return Ref{Union{Nothing,Array{T,Nd}}}(nothing)
 end
 
 @inline function _nfwd_alloc_workspace(::Type{Vector{T}}, dims::Tuple{Int}) where {T}
@@ -1542,11 +1524,11 @@ end
     return ws::A
 end
 
-# Typed-ref path: fully inferred.
+# Typed-ref path: fully inferred (covers all array ranks, including Vector).
 @inline function _nfwd_rrule_lifted!(
-    buf::Base.RefValue{Union{Nothing,Vector{NDual{T,C}}}}, x::Vector{T}, ::Val{C}
-) where {T<:IEEEFloat,C}
-    return _nfwd_array_workspace!(buf, Vector{NDual{T,C}}, (length(x),))
+    buf::Base.RefValue{Union{Nothing,Array{NDual{T,C},N}}}, x::Array{T,N}, ::Val{C}
+) where {T<:IEEEFloat,N,C}
+    return _nfwd_array_workspace!(buf, Array{NDual{T,C},N}, size(x))
 end
 
 # Generic path: buf is Ref{Any}; workspace type recovered at runtime.
@@ -1556,11 +1538,11 @@ end
     return _nfwd_array_workspace!(buf, Array{NDual{T,C},N}, size(x))
 end
 
-# Typed-ref path: fully inferred.
+# Typed-ref path: fully inferred (covers all array ranks, including Vector).
 @inline function _nfwd_lazy_grad_buf!(
-    grad_buf::Base.RefValue{Union{Nothing,Vector{T}}}, x_primal::Vector{T}
-) where {T<:IEEEFloat}
-    return _nfwd_array_workspace!(grad_buf, Vector{T}, (length(x_primal),))
+    grad_buf::Base.RefValue{Union{Nothing,Array{T,N}}}, x_primal::Array{T,N}
+) where {T<:IEEEFloat,N}
+    return _nfwd_array_workspace!(grad_buf, Array{T,N}, size(x_primal))
 end
 
 # Generic path: grad_buf is Ref{Any}; gradient array type recovered at runtime.
@@ -1633,23 +1615,25 @@ end
 # The frule receives the seed tangent directly from the caller (as the tangent part of the
 # input Dual), so no seed buffer is needed — only a pre-allocated Array{NDual{T,C}} of the
 # same shape as the primal input.  Two buf types are used:
-#   - Typed-ref (Vector{T} input): fully inferred, no runtime isa check.
-#   - Generic Ref{Any} (higher-dimensional inputs): workspace type recovered at runtime.
+#   - Typed-ref (Array{T,Nd} input): fully inferred, no runtime isa check.
+#   - Generic Ref{Any} (non-array / unsupported input): workspace type recovered at runtime.
 
 _nfwd_frule_buf_ref(sig, ::Val) = Ref{Any}(nothing)
 
-function _nfwd_frule_buf_ref(::Type{Tuple{F,Vector{T}}}, ::Val{C}) where {F,T<:IEEEFloat,C}
-    return Ref{Union{Nothing,Vector{NDual{T,C}}}}(nothing)
+function _nfwd_frule_buf_ref(
+    ::Type{Tuple{F,Array{T,Nd}}}, ::Val{C}
+) where {F,T<:IEEEFloat,Nd,C}
+    return Ref{Union{Nothing,Array{NDual{T,C},Nd}}}(nothing)
 end
 
-# Typed-ref path for Vector{T} inputs.
+# Typed-ref path for Array{T,Nd} inputs (covers all ranks, including Vector).
 function _nfwd_frule_lifted!(
-    buf::Base.RefValue{Union{Nothing,Vector{NDual{T,C}}}},
-    x::Vector{T},
+    buf::Base.RefValue{Union{Nothing,Array{NDual{T,C},Nd}}},
+    x::Array{T,Nd},
     dx::Array{T},
     ::Val{C},
-) where {T<:IEEEFloat,C}
-    ws = _nfwd_array_workspace!(buf, Vector{NDual{T,C}}, (length(x),))
+) where {T<:IEEEFloat,Nd,C}
+    ws = _nfwd_array_workspace!(buf, Array{NDual{T,C},Nd}, size(x))
     return _nfwd_lift!(ws, x, dx, Val(C))
 end
 

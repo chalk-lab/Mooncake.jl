@@ -7,7 +7,7 @@ There are two ways to compute gradients with Mooncake.jl:
 
 We recommend the former to start with, especially if you want to experiment with other automatic differentiation packages.
 
-```@example tuto
+```julia
 import DifferentiationInterface as DI
 import Mooncake
 ```
@@ -17,7 +17,7 @@ import Mooncake
 DifferentiationInterface.jl (or DI for short) provides a common entry point for every automatic differentiation package in Julia.
 To specify that you want to use Mooncake.jl, just create the right "backend" object (with an optional [`Mooncake.Config`](@ref)):
 
-```@example tuto
+```julia
 backend = DI.AutoMooncake(; config=nothing)
 ```
 
@@ -32,7 +32,7 @@ such that the tangent of a `ComplexF64` is a `ComplexF64`,
 or the tangent of a `Symmetric` is a `Symmetric`,
 set `friendly_tangents=true` in the config:
 
-```@example tuto
+```julia
 backend = DI.AutoMooncake(; config=Mooncake.Config(; friendly_tangents=true))
 ```
 
@@ -40,26 +40,26 @@ backend = DI.AutoMooncake(; config=Mooncake.Config(; friendly_tangents=true))
 
 Suppose you want to differentiate the following function
 
-```@example tuto
+```julia
 f(x) = sum(abs2, x)
 ```
 
 on the following input
 
-```@example tuto
+```julia
 x = float.(1:3)
 ```
 
 The naive way is to simply call [`DI.gradient`](@extref DifferentiationInterface.gradient):
 
-```@example tuto
+```julia
 DI.gradient(f, backend, x)  # slow, do not do this
 ```
 
 This returns the correct gradient, but it is very slow because it includes the time taken by Mooncake.jl to compute a differentiation rule for `f` (see [Mooncake.jl's Rule System](@ref)).
 If you anticipate you will need more than one gradient, it is better to call [`DI.prepare_gradient`](@extref DifferentiationInterface.prepare_gradient) on a typical (e.g. random) input first:
 
-```@example tuto
+```julia
 typical_x = rand(3)
 prep = DI.prepare_gradient(f, backend, typical_x)
 ```
@@ -68,20 +68,20 @@ The typical input should have the same size and type as the actual inputs we wil
 As for the contents of the preparation result, they do not matter.
 What matters is that it captures everything you need for `DI.gradient` to be fast:
 
-```@example tuto
+```julia
 DI.gradient(f, prep, backend, x)  # fast
 ```
 
 For optimal speed, you can provide storage space for the gradient and call [`DI.gradient!`](@extref DifferentiationInterface.gradient!) instead:
 
-```@example tuto
+```julia
 grad = similar(x)
 DI.gradient!(f, grad, prep, backend, x)  # very fast
 ```
 
 If you also need the value of the function, check out [`DI.value_and_gradient`](@extref DifferentiationInterface.value_and_gradient) or [`DI.value_and_gradient!`](@extref DifferentiationInterface.value_and_gradient!):
 
-```@example tuto
+```julia
 DI.value_and_gradient(f, prep, backend, x)
 ```
 
@@ -91,14 +91,14 @@ What should you do if your function takes more than one input argument?
 Well, DI can still handle it, _assuming that you only want the derivative with respect to one of them_ (the first one, by convention).
 For instance, consider the function
 
-```@example tuto
+```julia
 g(x, a, b) = a * f(x) + b
 ```
 
 You can easily compute the gradient with respect to `x`, while keeping `a` and `b` fixed.
 To do that, just wrap these two arguments inside [`DI.Constant`](@extref DifferentiationInterface.Constant), like so:
 
-```@example tuto
+```julia
 typical_a, typical_b = 1.0, 1.0
 prep = DI.prepare_gradient(g, backend, typical_x, DI.Constant(typical_a), DI.Constant(typical_b))
 
@@ -113,7 +113,7 @@ If one of your additional arguments behaves like a scratch space in memory (inst
 Now what if you care about the derivatives with respect to every argument?
 You can always go back to the single-argument case by putting everything inside a tuple:
 
-```@example tuto
+```julia
 g_tup(xab) = xab[2] * f(xab[1]) + xab[3]
 prep = DI.prepare_gradient(g_tup, backend, (typical_x, typical_a, typical_b))
 DI.value_and_gradient(g_tup, prep, backend, (x, a, b))
@@ -126,13 +126,17 @@ You can also use the native API of Mooncake.jl, discussed below.
 Going through DI allows you to compute other kinds of derivatives, like (reverse-mode) Jacobian matrices.
 The syntax is very similar:
 
-```@example tuto
+```julia
 h(x) = cos.(x) .* sin.(reverse(x))
 prep = DI.prepare_jacobian(h, backend, x)
 DI.jacobian(h, prep, backend, x)
 ```
 
 ## Mooncake.jl API
+
+```@example mooncake_api
+import Mooncake
+```
 
 ### Mooncake.jl Functions
 
@@ -160,4 +164,30 @@ Mooncake.jl discusses Frechet derivatives and their adjoints, as described in de
 
 !!! info
     For a detailed mathematical treatment of these concepts, see [Algorithmic Differentiation](@ref), particularly the sections on [Derivatives](@ref).
+
+### Single Argument
+
+```@example mooncake_api
+f(x) = sum(abs2, x)
+x = float.(1:3)
+
+# Prepare the differentiation rule once (handles compilation)
+cache = Mooncake.prepare_gradient_cache(f, x)
+
+# Compute value and gradient (fast on repeated calls)
+val, (_, grad) = Mooncake.value_and_gradient!!(cache, f, x)
+(val, grad)
+```
+
+### Multiple Arguments
+
+To differentiate with respect to all arguments, pack them into a tuple:
+
+```@example mooncake_api
+g(xab) = xab[2] * f(xab[1]) + xab[3]
+a, b = 2.0, 3.0
+cache_g = Mooncake.prepare_gradient_cache(g, (x, a, b))
+val_g, (_, grad_g) = Mooncake.value_and_gradient!!(cache_g, g, (x, a, b))
+(val_g, grad_g)
+```
 

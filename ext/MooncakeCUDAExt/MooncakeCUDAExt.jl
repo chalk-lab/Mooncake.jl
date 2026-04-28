@@ -3,7 +3,7 @@ module MooncakeCUDAExt
 using LinearAlgebra, Random, Mooncake
 
 using Base: IEEEFloat, unsafe_convert
-using CUDA:
+using CUDA.CUDACore:
     CuArray,
     CuRefValue,
     CuPtr,
@@ -25,10 +25,10 @@ using CUDA:
     is_capturing,
     capture_status,
     hasfieldcount
-using CUDA: CUBLAS
-using CUDA: CUSPARSE
-using CUDA: CUSOLVER
-using CUDA.GPUArrays: unsafe_free!
+using CUDA: cuBLAS
+using CUDA: cuSPARSE
+using CUDA: cuSOLVER
+using CUDA.CUDACore.GPUArrays: unsafe_free!
 using Base.Broadcast: Broadcasted
 import Mooncake:
     MinimalCtx,
@@ -260,30 +260,30 @@ end
 # @cenum (primitive) types are handled by the programmatic loop further below.
 function _register_cuda_opaque_types!()
     for (_cuda_opaque_t, _is_ptr) in [
-        # Opaque C handle/descriptor Ptr types (CUBLAS)
+        # Opaque C handle/descriptor Ptr types (cuBLAS)
         (CUmemPoolHandle_st, true),
-        (CUBLAS.cublasContext, true),
-        (CUBLAS.cublasXtContext, true),
-        # Opaque C handle/descriptor Ptr types (CUSPARSE)
-        (CUSPARSE.cusparseContext, true),
-        (CUSPARSE.cusparseMatDescr, true),
-        (CUSPARSE.bsrsv2Info, true),
-        (CUSPARSE.bsrsm2Info, true),
-        (CUSPARSE.csric02Info, true),
-        (CUSPARSE.bsric02Info, true),
-        (CUSPARSE.csrilu02Info, true),
-        (CUSPARSE.bsrilu02Info, true),
-        (CUSPARSE.csru2csrInfo, true),
-        (CUSPARSE.cusparseColorInfo, true),
-        (CUSPARSE.pruneInfo, true),
-        (CUSPARSE.cusparseSpVecDescr, true),
-        (CUSPARSE.cusparseDnVecDescr, true),
-        (CUSPARSE.cusparseSpMatDescr, true),
-        (CUSPARSE.cusparseDnMatDescr, true),
-        (CUSPARSE.cusparseSpSVDescr, true),
-        (CUSPARSE.cusparseSpSMDescr, true),
-        (CUSPARSE.cusparseSpGEMMDescr, true),
-        (CUSPARSE.cusparseSpMMOpPlan, true),
+        (cuBLAS.cublasContext, true),
+        (cuBLAS.cublasXtContext, true),
+        # Opaque C handle/descriptor Ptr types (cuSPARSE)
+        (cuSPARSE.cusparseContext, true),
+        (cuSPARSE.cusparseMatDescr, true),
+        (cuSPARSE.bsrsv2Info, true),
+        (cuSPARSE.bsrsm2Info, true),
+        (cuSPARSE.csric02Info, true),
+        (cuSPARSE.bsric02Info, true),
+        (cuSPARSE.csrilu02Info, true),
+        (cuSPARSE.bsrilu02Info, true),
+        (cuSPARSE.csru2csrInfo, true),
+        (cuSPARSE.cusparseColorInfo, true),
+        (cuSPARSE.pruneInfo, true),
+        (cuSPARSE.cusparseSpVecDescr, true),
+        (cuSPARSE.cusparseDnVecDescr, true),
+        (cuSPARSE.cusparseSpMatDescr, true),
+        (cuSPARSE.cusparseDnMatDescr, true),
+        (cuSPARSE.cusparseSpSVDescr, true),
+        (cuSPARSE.cusparseSpSMDescr, true),
+        (cuSPARSE.cusparseSpGEMMDescr, true),
+        (cuSPARSE.cusparseSpMMOpPlan, true),
         # CuStream contains Ptr/Bool/CuContext fields; without NoTangent, Mooncake
         # generates a MutableTangent that propagates into task-local CUDA state.
         (CuStream, false),
@@ -291,12 +291,12 @@ function _register_cuda_opaque_types!()
         (TaskLocalState, false),
         # CuContext wraps an opaque Ptr{Cvoid} to the CUDA context.
         (CuContext, false),
-        # Opaque C handle/descriptor Ptr types (CUSOLVER)
-        (CUSOLVER.syevjInfo_t, true),
-        (CUSOLVER.gesvdjInfo_t, true),
-        (CUSOLVER.cusolverDnIRSParams_t, true),
-        (CUSOLVER.cusolverDnIRSInfos_t, true),
-        (CUSOLVER.cusolverDnParams_t, true),
+        # Opaque C handle/descriptor Ptr types (cuSOLVER)
+        (cuSOLVER.syevjInfo_t, true),
+        (cuSOLVER.gesvdjInfo_t, true),
+        (cuSOLVER.cusolverDnIRSParams_t, true),
+        (cuSOLVER.cusolverDnIRSInfos_t, true),
+        (cuSOLVER.cusolverDnParams_t, true),
     ]
         if _is_ptr
             @eval tangent_type(::Type{Ptr{$_cuda_opaque_t}}) = NoTangent
@@ -313,13 +313,13 @@ _register_cuda_opaque_types!()
 # CUDA @cenum types are primitive types (integer-backed C enums) — never differentiable.
 # Mooncake's generic tangent_type @generated function errors on primitive types with no
 # registered method, so we register all of them here programmatically.
-# Covers: CUBLAS, CUSPARSE, CUSOLVER.
+# Covers: cuBLAS, cuSPARSE, cuSOLVER.
 # cuDNN enums are handled in MooncakeCUDNNExt (loaded only when cuDNN is available).
 # Filter: parentmodule(T) must be one of the CUDA family modules, to avoid accidentally
 # re-registering standard Julia primitive types (Bool, Int32, Float64, ...) that happen
 # to be visible in the CUDA namespace.
 function _register_cuda_enum_types!()
-    let _cuda_family = (parentmodule(CUBLAS), CUBLAS, CUSPARSE, CUSOLVER)
+    let _cuda_family = (cuBLAS, cuSPARSE, cuSOLVER)
         _cenum_seen = Set{DataType}()
         for _mod in _cuda_family
             for _nm in names(_mod; all=true)
@@ -403,12 +403,12 @@ _register_cudataref_internal_types!()
 # active_state() wraps task_local_state!() and returns a NamedTuple{device,context,stream,
 # math_mode}.  Registering it separately covers call sites that bypass task_local_state!.
 @zero_derivative MinimalCtx Tuple{typeof(active_state)}
-# CUBLAS.version() queries the runtime library version via cublasGetProperty (a ccall).
+# cuBLAS.version() queries the runtime library version via cublasGetProperty (a ccall).
 # Returns a constant VersionNumber — not differentiable.
-@zero_derivative MinimalCtx Tuple{typeof(CUBLAS.version)}
-# Library handle() functions retrieve per-task C pointers to CUBLAS/CUSPARSE contexts.
-@zero_derivative MinimalCtx Tuple{typeof(CUBLAS.handle)}
-@zero_derivative MinimalCtx Tuple{typeof(CUSPARSE.handle)}
+@zero_derivative MinimalCtx Tuple{typeof(cuBLAS.version)}
+# Library handle() functions retrieve per-task C pointers to cuBLAS/cuSPARSE contexts.
+@zero_derivative MinimalCtx Tuple{typeof(cuBLAS.handle)}
+@zero_derivative MinimalCtx Tuple{typeof(cuSPARSE.handle)}
 # cuDeviceGetAttribute queries a static integer device property (e.g. warp size, max
 # threads per block).  Returns an Int — not differentiable.  Signature matches the
 # internal call: cuDeviceGetAttribute(Ref{Cint}(), attrib, dev) from CUDA.attribute.
@@ -1399,12 +1399,12 @@ for (_fn, _supports_kwargs) in ((:vcat, false), (:hcat, false), (:cat, true))
 end
 
 # Rules are written at the `generic_matmatmul!` / `generic_matvecmul!` level rather
-# than at the individual CUBLAS primitive level (gemm!, gemv!, gemmEx!, symm!, ...).
+# than at the individual cuBLAS primitive level (gemm!, gemv!, gemmEx!, symm!, ...).
 # This gives broad coverage of the LinearAlgebra.mul! dispatch chain with just two
 # rules, and is correct for all practical ML workloads (dense real/complex arrays).
 # The tradeoff: symmetric/Hermitian cases (tA='S'/'H', dispatching to symv!/hemv!
 # in the primal) use gemm!/gemv! in the backward, which is mathematically correct
-# only when the full matrix is populated. Direct CUBLAS calls that bypass
+# only when the full matrix is populated. Direct cuBLAS calls that bypass
 # LinearAlgebra.mul! are not covered; add lower-level rules if that becomes needed.
 
 # Guard helpers shared by the generic_matmatmul! and generic_matvecmul! rules.
@@ -1416,7 +1416,7 @@ end
             ArgumentError(
                 "Mooncake: generic_matmatmul! with the 'T' (plain transpose) flag is not " *
                 "supported for complex CuArrays — the backward requires element-wise " *
-                "conjugation, which cannot be expressed as a single CUBLAS GEMM. " *
+                "conjugation, which cannot be expressed as a single cuBLAS GEMM. " *
                 "Use adjoint ('C') instead of transpose ('T').",
             ),
         )
@@ -1452,15 +1452,15 @@ end
 #
 # `generic_matmatmul!(C, tA, tB, A, B)` computes C = op_A(A) * op_B(B) in-place,
 # where tA, tB ∈ {'N','T','C'} are BLAS transpose flags. It is the generic fallback
-# that LinearAlgebra dispatches to when CUBLAS has no specific method — for example,
-# `adjoint(CuVector) * CuMatrix` falls through here because CUBLAS.gemm! only accepts
+# that LinearAlgebra dispatches to when cuBLAS has no specific method — for example,
+# `adjoint(CuVector) * CuMatrix` falls through here because cuBLAS.gemm! only accepts
 # CuMatrix inputs.
 #
 # Strategy: reshape any CuVector to (n,1) CuMatrix via `matrixify` (zero-copy), then
-# delegate to CUBLAS.gemm! which is differentiable and avoids scalar GPU indexing.
+# delegate to cuBLAS.gemm! which is differentiable and avoids scalar GPU indexing.
 #
 # Backward formulas for C = op_A(A) * op_B(B) (real and complex; uses '^H' = Hermitian
-# conjugate, which CUBLAS flag 'C' handles; for real 'C' == 'T'):
+# conjugate, which cuBLAS flag 'C' handles; for real 'C' == 'T'):
 #   tA='N': dA += dC * op_B(B)^H    (flags: 'N', tB=='N' ? 'C' : 'N')
 #   tA≠'N': dA += op_B(B) * dC^H   (flags: tB, 'C')
 #   tB='N': dB += op_A(A)^H * dC   (flags: tA=='N' ? 'C' : 'N', 'N')
@@ -1468,7 +1468,7 @@ end
 #
 # Limitation: the 'T' (plain transpose) flag is only correct for real arrays.
 # For complex arrays, 'T' would require element-wise conjugation (conj(B)) in the
-# backward, which cannot be expressed as a single CUBLAS GEMM call. A runtime guard
+# backward, which cannot be expressed as a single cuBLAS GEMM call. A runtime guard
 # below rejects complex + 'T' rather than silently returning incorrect gradients.
 
 @is_primitive(
@@ -1500,10 +1500,10 @@ function frule!!(
     _1 = one(T)
     _0 = zero(T)
     # primal: C = op_A(A) * op_B(B)
-    CUBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
+    cuBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
     # tangent (product rule): dC = op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)
-    CUBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
-    CUBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
+    cuBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
+    cuBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
     return C
 end
 function rrule!!(
@@ -1524,17 +1524,17 @@ function rrule!!(
     _1 = one(T)
     _0 = zero(T)
     pC_copy = copy(pC)
-    CUBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
+    cuBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
     function generic_matmatmul!_pb!!(::NoRData)
         if tAv == 'N'
-            CUBLAS.gemm!('N', tBv == 'N' ? 'C' : 'N', _1, dC, pB, _1, dA) # dA += dC * op_B(B)^H
+            cuBLAS.gemm!('N', tBv == 'N' ? 'C' : 'N', _1, dC, pB, _1, dA) # dA += dC * op_B(B)^H
         else
-            CUBLAS.gemm!(tBv, 'C', _1, pB, dC, _1, dA)                     # dA += op_B(B) * dC^H
+            cuBLAS.gemm!(tBv, 'C', _1, pB, dC, _1, dA)                     # dA += op_B(B) * dC^H
         end
         if tBv == 'N'
-            CUBLAS.gemm!(tAv == 'N' ? 'C' : 'N', 'N', _1, pA, dC, _1, dB) # dB += op_A(A)^H * dC
+            cuBLAS.gemm!(tAv == 'N' ? 'C' : 'N', 'N', _1, pA, dC, _1, dB) # dB += op_A(A)^H * dC
         else
-            CUBLAS.gemm!('C', tAv, _1, dC, pA, _1, dB)                     # dB += dC^H * op_A(A)
+            cuBLAS.gemm!('C', tAv, _1, dC, pA, _1, dB)                     # dB += dC^H * op_A(A)
         end
         copyto!(pC, pC_copy)
         dC .= _0
@@ -1585,10 +1585,10 @@ function frule!!(
     _β = T(primal(beta))
     _1 = one(T)
     # primal: C := α*op_A(A)*op_B(B) + β*C
-    CUBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
+    cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
     # tangent: dC := α*(op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)) + β*dC
-    CUBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
-    CUBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
+    cuBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
+    cuBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
     return C
 end
 function rrule!!(
@@ -1612,21 +1612,21 @@ function rrule!!(
     _β = T(primal(beta))
     _1 = one(T)
     pC_copy = copy(pC)
-    CUBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
+    cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
     function generic_matmatmul!_7arg_pb!!(::NoRData)
         # Adjoint of C = α*op_A(A)*op_B(B) + β*C_old requires conj(α) and conj(β).
         # For real scalars conj is identity, so this is backward-compatible.
         _cα = conj(_α)
         _cβ = conj(_β)
         if tAv == 'N'
-            CUBLAS.gemm!('N', tBv == 'N' ? 'C' : 'N', _cα, dC, pB, _1, dA) # dA += conj(α)*dC*op_B(B)^H
+            cuBLAS.gemm!('N', tBv == 'N' ? 'C' : 'N', _cα, dC, pB, _1, dA) # dA += conj(α)*dC*op_B(B)^H
         else
-            CUBLAS.gemm!(tBv, 'C', _cα, pB, dC, _1, dA)                     # dA += conj(α)*op_B(B)*dC^H
+            cuBLAS.gemm!(tBv, 'C', _cα, pB, dC, _1, dA)                     # dA += conj(α)*op_B(B)*dC^H
         end
         if tBv == 'N'
-            CUBLAS.gemm!(tAv == 'N' ? 'C' : 'N', 'N', _cα, pA, dC, _1, dB) # dB += conj(α)*op_A(A)^H*dC
+            cuBLAS.gemm!(tAv == 'N' ? 'C' : 'N', 'N', _cα, pA, dC, _1, dB) # dB += conj(α)*op_A(A)^H*dC
         else
-            CUBLAS.gemm!('C', tAv, _cα, dC, pA, _1, dB)                     # dB += conj(α)*dC^H*op_A(A)
+            cuBLAS.gemm!('C', tAv, _cα, dC, pA, _1, dB)                     # dB += conj(α)*dC^H*op_A(A)
         end
         copyto!(pC, pC_copy)
         dC .*= _cβ  # gradient w.r.t. C_old: ΔC_old = conj(β) * ΔC_new
@@ -1641,13 +1641,13 @@ end
 #
 # `generic_matvecmul!(Y, tA, A, B, alpha, beta)` computes Y = alpha*op(A)*B + beta*Y
 # in-place, where tA ∈ {'N','T','C'} is the BLAS transpose flag.
-# CUDA.jl overrides this to call CUBLAS.gemv! directly (cublas/linalg.jl), bypassing
+# CUDA.jl overrides this to call cuBLAS.gemv! directly (cublas/linalg.jl), bypassing
 # `mul!`. Without this rule, Mooncake's forward-mode interpreter traces into CUDA's
-# task-local-storage machinery (CUBLAS.handle → task_local_state!) which contains
+# task-local-storage machinery (cuBLAS.handle → task_local_state!) which contains
 # `Unreachable` code paths when called with dual types → SIGILL.
 #
-# Strategy: for the primal and tangent pass use CUBLAS.gemv!; for the dA update
-# (an outer product) reshape both vectors to (n,1) matrices and use CUBLAS.gemm!.
+# Strategy: for the primal and tangent pass use cuBLAS.gemv!; for the dA update
+# (an outer product) reshape both vectors to (n,1) matrices and use cuBLAS.gemm!.
 #
 # Backward formulas for Y = alpha*op(A)*B + beta*Y_old (ȳ = cotangent of Y):
 #   tA='N': dA += alpha * ȳ * B^H  (outer product via gemm!('N','C'))
@@ -1690,10 +1690,10 @@ function frule!!(
     _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
     # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
-    CUBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
-    CUBLAS.gemv!(tAv, av, pA, dB, _1, dY) # dY += av*op(pA)*dB
+    cuBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
+    cuBLAS.gemv!(tAv, av, pA, dB, _1, dY) # dY += av*op(pA)*dB
     # primal: pY = av*op(pA)*pB + bv*pY
-    CUBLAS.gemv!(tAv, av, pA, pB, bv, pY)
+    cuBLAS.gemv!(tAv, av, pA, pB, bv, pY)
     return Y
 end
 function rrule!!(
@@ -1716,21 +1716,21 @@ function rrule!!(
     _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
     pY_copy = copy(pY)
-    CUBLAS.gemv!(tAv, av, pA, pB, bv, pY)
+    cuBLAS.gemv!(tAv, av, pA, pB, bv, pY)
     function generic_matvecmul!_pb!!(::NoRData)
         # dA update: outer product — reshape vectors to (n,1) matrices for gemm!
         dY_mat = reshape(dY, :, 1)
         pB_mat = reshape(pB, :, 1)
         if tAv == 'N'
-            CUBLAS.gemm!('N', 'C', av, dY_mat, pB_mat, _1, dA) # dA += av * ȳ * B^H
+            cuBLAS.gemm!('N', 'C', av, dY_mat, pB_mat, _1, dA) # dA += av * ȳ * B^H
         else
-            CUBLAS.gemm!('N', 'C', av, pB_mat, dY_mat, _1, dA) # dA += av * B * ȳ^H
+            cuBLAS.gemm!('N', 'C', av, pB_mat, dY_mat, _1, dA) # dA += av * B * ȳ^H
         end
         # dB update: gemv with Hermitian conjugate of op(A)
         if tAv == 'N'
-            CUBLAS.gemv!('C', av, pA, dY, _1, dB) # dB += av * A^H * ȳ
+            cuBLAS.gemv!('C', av, pA, dY, _1, dB) # dB += av * A^H * ȳ
         else
-            CUBLAS.gemv!('N', av, pA, dY, _1, dB) # dB += av * A   * ȳ  (op(A)^H = A)
+            cuBLAS.gemv!('N', av, pA, dY, _1, dB) # dB += av * A   * ȳ  (op(A)^H = A)
         end
         # Y tangent passes through scaled by beta
         dY .*= bv
@@ -1929,7 +1929,7 @@ end
     offsets = Int[]
     for ET in args
         push!(offsets, N)
-        N += Nfwd._nfwd_leaf_dof_type(ET)
+        N += Nfwd._nfwd_type_dof(ET)
     end
     N == 0 && return :(f(args...))
     body = Expr[]
@@ -1959,13 +1959,22 @@ function _gpu_broadcast_dual(f::F, args...) where {F}
     ((args...) -> _gpu_apply_with_duals(f, args...)).(args...)
 end
 
-# Number of Dual slots contributed by a broadcast leaf arg.  Matches the slot
-# assignment in _gpu_apply_with_duals by dispatching on the broadcast element type
-# (scalar, CuArray, or Ref all handled via eltype).
-@inline _gpu_total_slots(flat_pargs) = sum(Nfwd._nfwd_leaf_dof, flat_pargs)
+# Map each broadcast leaf arg to a representative scalar element so that
+# _nfwd_input_dof counts per-broadcast-element DOFs.
+@inline _gpu_rep_element(x::CuFloatOrComplex) = x
+@inline _gpu_rep_element(x::AbstractArray{T}) where {T<:IEEEFloat} = zero(T)
+@inline _gpu_rep_element(x::AbstractArray{Complex{T}}) where {T<:IEEEFloat} = zero(
+    Complex{T}
+)
+@inline _gpu_rep_element(::Any) = ()
+
+@inline _gpu_total_slots(flat_pargs) = Nfwd._nfwd_input_dof(
+    map(_gpu_rep_element, flat_pargs)
+)
 
 @inline function _gpu_leaf_slot_meta(pa, offset)
-    return (; Nfwd._nfwd_slot_meta(pa, offset)..., is_scalar=pa isa CuFloatOrComplex)
+    dof = Nfwd._nfwd_input_dof(_gpu_rep_element(pa))
+    return (; dof, slot1=offset + 1, slot2=offset + 2, is_scalar=pa isa CuFloatOrComplex)
 end
 
 @inline function _gpu_extract_partial_slots(out, n_slots::Int)

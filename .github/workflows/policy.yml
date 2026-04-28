@@ -1,0 +1,130 @@
+name: Issue Policy
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  triage:
+    if: ${{ !contains(fromJSON('["OWNER", "MEMBER"]'), github.event.issue.author_association) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.11'
+
+      - name: Install Copilot CLI
+        run: |
+          curl -fsSL https://gh.io/copilot-install | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Think
+        id: think
+        continue-on-error: true
+        env:
+          # Fine-grained PAT with "Copilot Requests" permission.
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_PAT }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+        run: |
+          # Write issue fields to files to avoid shell-quoting issues.
+          printf '%s' "$ISSUE_AUTHOR" > issue_author.txt
+          printf '%s' "$ISSUE_TITLE" > issue_title.txt
+          printf '%s' "$ISSUE_BODY" > issue_body.txt
+
+          RESPONSE=$(copilot --allow-all-tools -p '
+          You are the triage bot for Mooncake.jl, a Julia automatic differentiation package.
+          Classify the following GitHub issue and write a response per the policy below.
+
+          ISSUE
+          Read the author, title, and body from issue_author.txt, issue_title.txt,
+          and issue_body.txt in the working directory.
+
+          CONTRIBUTION POLICY
+          ACCEPTED: reproducible defect with a minimal reproducible example (MRE) — a
+            short self-contained Julia snippet that demonstrates the bug.
+          REJECTED: everything else, including feature requests, support/usage questions,
+            debugging requests without an MRE, rules for third-party packages, and
+            behaviour already covered by the known-limitations page.
+
+          KNOWN LIMITATIONS
+          1. ccall/foreigncall without a hand-written rule → informative error.
+          2. Unsupported builtins → sensible error.
+          3. Tasks/threading/distributed → unsupported with sensible error.
+          4. Mutation of global variables → silently produces zero / incorrect gradients.
+          5. Differentiable data as a type parameter → silent correctness issue.
+          6. KernelAbstractions.jl foreign-call CUDA kernels → non-goal.
+          7. SIMD code → reverse-mode AD can inhibit LLVM vectorisation.
+          8. Circular/self-referential types → tangent_type stack-overflow.
+          9. Pointer arguments → zero_tangent cannot allocate without a size context.
+
+          DOCS
+          Tutorial            : https://chalk-lab.github.io/Mooncake.jl/stable/tutorial/
+          Public API          : https://chalk-lab.github.io/Mooncake.jl/stable/interface/
+          Defining rules      : https://chalk-lab.github.io/Mooncake.jl/stable/utilities/defining_rules/
+          Custom tangent types: https://chalk-lab.github.io/Mooncake.jl/stable/developer_documentation/custom_tangent_type/
+          Debug mode          : https://chalk-lab.github.io/Mooncake.jl/stable/utilities/debug_mode/
+          Debugging & MWEs    : https://chalk-lab.github.io/Mooncake.jl/stable/utilities/debugging_and_mwes/
+          Known limitations   : https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/
+
+          THIRD-PARTY TRACKERS (only when the issue is directly about that package)
+          Lux/LuxLib/LuxCore      : https://github.com/LuxDL/Lux.jl/issues
+          Flux                    : https://github.com/FluxML/Flux.jl/issues
+          SciML                   : https://github.com/SciML/SciMLBase.jl/issues
+          OrdinaryDiffEq/DiffEq   : https://github.com/SciML/OrdinaryDiffEq.jl/issues
+          Turing/DynamicPPL       : https://github.com/TuringLang/Turing.jl/issues
+          Distributions           : https://github.com/JuliaStats/Distributions.jl/issues
+          ChainRules              : https://github.com/JuliaDiff/ChainRules.jl/issues
+          DifferentiationInterface: https://github.com/JuliaDiff/DifferentiationInterface.jl/issues
+          NNlib                   : https://github.com/FluxML/NNlib.jl/issues
+          CUDA.jl                 : https://github.com/JuliaGPU/CUDA.jl/issues
+          KernelAbstractions      : https://github.com/JuliaGPU/KernelAbstractions.jl/issues
+
+          INSTRUCTIONS
+          1. Decide: ACCEPTED or REJECTED.
+          2. Write a close_message (GitHub-flavoured Markdown) that:
+              - Addresses the author (whose login is in issue_author.txt) by name with @.
+             - Is concise — only include what is directly relevant.
+             - For support questions: answer directly if confident. Use the julia shell
+               tool to run any code snippets you suggest and verify they work; fix or
+               remove any that error.
+             - For known limitations: name the limitation and its workaround.
+             - For missing rules: link to the defining-rules docs; mention @from_rrule
+               if a ChainRules rule exists.
+             - For no MRE: explain what an MRE must contain; link debugging docs.
+             - For feature requests: acknowledge politely; suggest Julia Discourse.
+             - Add an upstream tracker link only if the issue is directly about that
+               package (one line: 'If the issue is in X, file it at Y.').
+             - Ends with: '*Closed automatically by triage bot — reopen if misclassified.*'
+          3. Output ONLY:
+             VERDICT: ACCEPTED|REJECTED
+             MESSAGE:
+             <close_message, or empty if ACCEPTED>
+          ")
+
+          VERDICT=$(echo "$RESPONSE" | grep '^VERDICT:' | head -1 | sed 's/^VERDICT: *//')
+          MESSAGE=$(echo "$RESPONSE" | sed -n '/^MESSAGE:/,$ { /^MESSAGE:/d; p }')
+
+          echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
+          _EOF=$(openssl rand -hex 16)
+          { echo "message<<${_EOF}"; printf '%s' "$MESSAGE"; echo; echo "${_EOF}"; } >> "$GITHUB_OUTPUT"
+
+      - name: Close out-of-scope issue
+        if: steps.think.outcome == 'success' && steps.think.outputs.verdict == 'REJECTED'
+        uses: actions/github-script@v7
+        env:
+          CLOSE_MESSAGE: ${{ steps.think.outputs.message }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const message = process.env.CLOSE_MESSAGE.trim() ||
+              `This issue is outside the Mooncake.jl contribution policy. Only reproducible ` +
+              `defects with an MRE are in scope. See [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/).\n\n` +
+              `*Closed automatically by triage bot — reopen if misclassified.*`;
+            await github.rest.issues.createComment({ owner, repo, issue_number, body: message });
+            await github.rest.issues.update({ owner, repo, issue_number, state: 'closed', state_reason: 'not_planned' });
