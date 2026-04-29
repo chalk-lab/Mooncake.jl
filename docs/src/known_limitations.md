@@ -9,6 +9,37 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
+## `try`/`catch`/`finally` Blocks
+
+Mooncake.jl does not support differentiating through `try`/`catch` or `try`/`finally` blocks
+in **reverse mode**. Attempting to do so will produce an `UnhandledLanguageFeatureException`
+with a message explaining the cause. Forward mode does support these constructs.
+
+**The fix** is to replace `try`/`catch` blocks with explicit conditional checks where possible.
+For example:
+
+```julia
+# Does not work with Mooncake
+function safe_log(x)
+    try
+        return log(x)
+    catch e
+        return -Inf
+    end
+end
+
+# Works with Mooncake
+function safe_log(x)
+    x <= 0 && return -Inf
+    return log(x)
+end
+```
+
+If the `try`/`catch` block cannot be avoided (e.g. it lives inside a third-party library), the
+alternative is to provide a custom `rrule!!` for the function that contains the `try`/`catch`
+block, so that Mooncake never needs to differentiate through the block itself.
+See [Defining Rules](@ref) for guidance on writing custom rules.
+
 ## Mutation of Global Variables
 
 ```@meta

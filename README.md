@@ -50,6 +50,4 @@ val, grad, H = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 # H    : ∇²f(x) (n×n matrix)
 ```
 
-You should expect that `MC.prepare_gradient_cache` and `MC.prepare_hessian_cache` take a little time to run, but that subsequent calls using the prepared caches are fast.
-
-For details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). You can also interact with `Mooncake.jl` via [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/), though it may lag behind new features and can break on non-breaking Mooncake releases, as it depends on Mooncake's internal details.
+You should expect that `MC.prepare_*_cache` take a little time to run, but that subsequent gradient and hessian calls using the prepared caches are fast. For details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). 
