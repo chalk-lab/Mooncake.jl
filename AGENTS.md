@@ -43,7 +43,7 @@ The overall target is: correct by construction where possible, aggressively test
 - Only forward-over-reverse nested AD is tested. Do not assume rules compose correctly under reverse-over-reverse or other higher-order combinations unless explicitly verified.
 - Prefer clear Julia error messages, especially around malformed rules, unsupported cases, and rule-construction failures.
 - Mooncake's AD transform should preserve core execution properties: if the primal has zero allocation, the pullback should also have zero allocation; otherwise, pullbacks should allocate only a small constant-factor times the primal allocation (`c *` primal allocation); and type-stable primals should yield type-stable pullbacks.
-- Preserve semantics under mutation and aliasing, not just pure-function cases.
+- Preserve the aliasing invariant (`primal(a) === primal(b)` implies `fdata(a) === fdata(b)`): aliased primals must share fdata. Custom rules that intentionally break this must not allow the shared primal to be mutated in-place while both `CoDual`s are live. See the "Aliasing Invariant" subsection of `docs/src/understanding_mooncake/rule_system.md`.
 - In reverse mode, Mooncake usually restores mutations on the pullback; stateful exceptions need explicit rules and focused tests.
 - Internal helper APIs may change freely, but exported and public behaviour should come with tests, documentation, and clear error messages.
 - Prepared caches are shape/type dependent; when cache construction changes, test reuse semantics and failure modes.
