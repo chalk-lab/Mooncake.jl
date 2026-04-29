@@ -1382,11 +1382,11 @@ caches instead.
 |---|---|
 | Immutable struct with fields and standard `Tangent` | `NamedTuple` of per-field caches *(composite)* |
 | `Tuple` | `Tuple` of per-element caches *(composite)* |
-| `AbstractArray` with non-float eltype | `Array` of per-element caches via `map` *(composite)* |
+| `AbstractArray` with non-float eltype whose `tangent_type` is not `NoTangent` | `Array` of per-element caches via `map` *(composite)* |
 | Mutable struct with fields and standard `MutableTangent` | `FriendlyTangentCache{AsMutableFields}` — per-field `NamedTuple` at runtime *(non-composite, internal mode)* |
 | `AbstractDict` | `FriendlyTangentCache{AsPrimal}` *(non-composite)* |
 | `LinearAlgebra.Symmetric` / `Hermitian` / `SymTridiagonal` | `FriendlyTangentCache{AsCustomised}` *(non-composite)* |
-| Everything else (Julia primitive types, float arrays, custom-tangent types, zero-field types) | `FriendlyTangentCache{AsRaw}` *(non-composite)* |
+| Everything else (Julia primitive types, float arrays, non-differentiable arrays, custom-tangent types, zero-field types) | `FriendlyTangentCache{AsRaw}` *(non-composite)* |
 
 Override to opt a type into a non-composite mode with a custom buffer:
 
@@ -1449,8 +1449,14 @@ Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
         end
         return :(NamedTuple{$names}(($(dest_exprs...),)))
     end
-    # Array whose elements are non-primitive structs: recurse element-wise.
-    if P <: AbstractArray && !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}})
+    # Skip non-differentiable eltypes: avoids pointless caches and map on sparse containers.
+    # Calling tangent_type in a generator body would normally risk world-age cycles, since
+    # generators cannot safely trigger runtime dispatch into other generated functions.
+    # This is safe here because tangent_type is @foldable (Base.@assume_effects :foldable),
+    # meaning Julia evaluates it at compile time, avoiding any runtime dispatch.
+    if P <: AbstractArray &&
+        !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}}) &&
+        tangent_type(eltype(P)) != NoTangent
         return :(map(friendly_tangent_cache, x))
     end
     # Mutable structs with fields: pre-build per-field caches at prepare time and store them
