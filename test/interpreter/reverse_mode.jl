@@ -356,9 +356,11 @@ rule_type_nonreturning(e::Exception) = throw(e)
         @test_throws(Mooncake.MooncakeRuleCompilationError, Mooncake.build_rrule(sin))
         _trycatch_fn(x::Float64) =
             try
-                ; return log(x);
+                ;
+                return log(x);
             catch
-                ; return 0.0;
+                ;
+                return 0.0;
             end
         @test_throws(
             Mooncake.MooncakeRuleCompilationError, Mooncake.build_rrule(_trycatch_fn, 1.0)
