@@ -1449,11 +1449,11 @@ Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
         end
         return :(NamedTuple{$names}(($(dest_exprs...),)))
     end
-    # Skip non-differentiable eltypes: avoids pointless caches and map on sparse containers.
-    # Calling tangent_type in a generator body would normally risk world-age cycles, since
-    # generators cannot safely trigger runtime dispatch into other generated functions.
-    # This is safe here because tangent_type is @foldable (Base.@assume_effects :foldable),
-    # meaning Julia evaluates it at compile time, avoiding any runtime dispatch.
+    # Skip non-differentiable eltypes: avoids pointless caches and map on sparse containers.                                                                                              
+    # Calling tangent_type in a generator body risks world-age cycles, but is safe here:
+    # every eltype for which tangent_type == NoTangent (integers, Bool, Symbol, …) has an                                                                                                 
+    # explicit non-generated method, and tangent_type for struct eltypes recurses only into
+    # field types, all of which eventually bottom out at such explicit methods. 
     if P <: AbstractArray &&
         !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}}) &&
         tangent_type(eltype(P)) != NoTangent
