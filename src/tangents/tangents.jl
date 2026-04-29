@@ -1382,7 +1382,7 @@ caches instead.
 |---|---|
 | Immutable struct with fields and standard `Tangent` | `NamedTuple` of per-field caches *(composite)* |
 | `Tuple` | `Tuple` of per-element caches *(composite)* |
-| `AbstractArray` with non-float, non-`NoTangent` eltype | `Array` of per-element caches via `map` *(composite)* |
+| `AbstractArray` with non-float eltype whose `tangent_type` is not `NoTangent` | `Array` of per-element caches via `map` *(composite)* |
 | Mutable struct with fields and standard `MutableTangent` | `FriendlyTangentCache{AsMutableFields}` — per-field `NamedTuple` at runtime *(non-composite, internal mode)* |
 | `AbstractDict` | `FriendlyTangentCache{AsPrimal}` *(non-composite)* |
 | `LinearAlgebra.Symmetric` / `Hermitian` / `SymTridiagonal` | `FriendlyTangentCache{AsCustomised}` *(non-composite)* |
@@ -1450,9 +1450,10 @@ Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
         return :(NamedTuple{$names}(($(dest_exprs...),)))
     end
     # Skip non-differentiable eltypes: avoids pointless caches and map on sparse containers.
-    # Calling tangent_type in a generator body risks world-age cycles, but is safe here:
-    # every eltype for which tangent_type == NoTangent (integers, Bool, Symbol, …) has an
-    # explicit non-generated method, so no generated dispatch occurs at generation time.
+    # Calling tangent_type in a generator body would normally risk world-age cycles, since
+    # generators cannot safely trigger runtime dispatch into other generated functions.
+    # This is safe here because tangent_type is @foldable (Base.@assume_effects :foldable),
+    # meaning Julia evaluates it at compile time, avoiding any runtime dispatch.
     if P <: AbstractArray &&
         !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}}) &&
         tangent_type(eltype(P)) != NoTangent
