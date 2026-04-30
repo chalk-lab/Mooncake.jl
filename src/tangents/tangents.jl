@@ -1449,8 +1449,8 @@ Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
         end
         return :(NamedTuple{$names}(($(dest_exprs...),)))
     end
-    # Skip non-differentiable eltypes: avoids pointless caches and map on sparse containers.                                                                                              
-    # Calling tangent_type in a generator body risks world-age cycles, but is safe here:
+    # Skip non-differentiable eltypes: avoids pointless caches and maps on sparse containers.                                                                                              
+    # Calling tangent_type in a generator body risks world-age cycles, but is probably sufficient here:
     # every eltype for which tangent_type == NoTangent (integers, Bool, Symbol, …) has an                                                                                                 
     # explicit non-generated method, and tangent_type for struct eltypes recurses only into
     # field types, all of which eventually bottom out at such explicit methods. 
