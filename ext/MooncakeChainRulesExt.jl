@@ -4,7 +4,17 @@ using ChainRules, LinearAlgebra, Mooncake
 using Base: IEEEFloat
 
 import Mooncake:
-    @is_primitive, CoDual, Dual, MinimalCtx, NoRData, frule!!, primal, rrule!!, tangent
+    @from_rrule,
+    @is_primitive,
+    CoDual,
+    DefaultCtx,
+    Dual,
+    MinimalCtx,
+    NoRData,
+    frule!!,
+    primal,
+    rrule!!,
+    tangent
 
 @is_primitive MinimalCtx Tuple{typeof(exp),Matrix{<:IEEEFloat}}
 
@@ -31,5 +41,7 @@ function rrule!!(::CoDual{typeof(exp)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloa
     Ybar = zero(Y)
     return CoDual(Y, Ybar), ExpPullback{P}(pb, Ybar, X.dx)
 end
+
+@from_rrule DefaultCtx Tuple{typeof(svd),AbstractMatrix{<:IEEEFloat}}
 
 end
