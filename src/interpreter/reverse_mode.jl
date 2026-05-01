@@ -457,11 +457,11 @@ struct ADStmtInfo
     rvs::Vector{IDInstPair}
 end
 
-struct CallADPlan
-    args
+struct RuleSelection
+    args::Tuple
     rule_ref
-    T_pb!!
-    output_type
+    T_pb!!::Type
+    output_type::Type
 end
 
 struct BlockCommsInsts
@@ -482,7 +482,7 @@ function ad_stmt_info(line::ID, comms_id::Union{ID,Nothing}, fwds, rvs)
     return ADStmtInfo(line, comms_id, __vec(line, fwds), __vec(line, rvs))
 end
 
-function _plan_call_ad(stmt::Expr, line::ID, info::ADInfo, is_invoke::Bool)
+function _select_rule(stmt::Expr, line::ID, info::ADInfo, is_invoke::Bool)
     args = ((is_invoke ? stmt.args[2:end] : stmt.args)...,)
     arg_types = map(arg -> get_primal_type(info, arg), args)
 
@@ -502,7 +502,7 @@ function _plan_call_ad(stmt::Expr, line::ID, info::ADInfo, is_invoke::Bool)
     wrapped_rule = strip_zero_rdata ? raw_rule : RRuleZeroWrapper(raw_rule)
     rule = info.debug_mode ? DebugRRule(wrapped_rule) : wrapped_rule
 
-    return CallADPlan(
+    return RuleSelection(
         args,
         add_data_if_not_singleton!(info, rule),
         pullback_type(_typeof(rule), arg_types),
@@ -874,7 +874,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             return ad_stmt_info(line, nothing, fwds, nothing)
         end
 
-        plan = _plan_call_ad(stmt, line, info, is_invoke)
+        selection = _select_rule(stmt, line, info, is_invoke)
 
         #
         # Step 2: write the forward fragment.
@@ -885,7 +885,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Make arguments to rrule call. Things which are not already CoDual must be made so.
         codual_args = IDInstPair[]
-        codual_arg_ids = map(plan.args) do arg
+        codual_arg_ids = map(selection.args) do arg
             is_active(arg) && return __inc(arg)
             id = ID()
             push!(codual_args, (id, new_inst(inc_or_const_stmt(arg, info))))
@@ -894,7 +894,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Make call to rule.
         rule_call_id = ID()
-        rule_call = Expr(:call, plan.rule_ref, codual_arg_ids...)
+        rule_call = Expr(:call, selection.rule_ref, codual_arg_ids...)
 
         # Extract the output-codual from the returned tuple.
         raw_output_id = ID()
@@ -902,13 +902,15 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Extract the pullback from the returned tuple. Specialise on the case that the
         # pullback is provably a singleton type.
-        if Base.issingletontype(plan.T_pb!!)
-            pb = plan.T_pb!!.instance
+        if Base.issingletontype(selection.T_pb!!)
+            pb = selection.T_pb!!.instance
             pb_stmt = (ID(), new_inst(nothing))
             comms_id = nothing
         else
             pb = ID()
-            pb_stmt = (pb, new_inst(Expr(:call, getfield, rule_call_id, 2), plan.T_pb!!))
+            pb_stmt = (
+                pb, new_inst(Expr(:call, getfield, rule_call_id, 2), selection.T_pb!!)
+            )
             comms_id = pb
         end
 
@@ -918,7 +920,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # be optimised away in situations where the compiler is able to successfully infer
         # the type, so performance in performance-critical situations is unaffected.
         output_id = line
-        F = fcodual_type(plan.output_type)
+        F = fcodual_type(selection.output_type)
         output = Expr(:call, Core.typeassert, raw_output_id, F)
 
         # Create statements associated to forwards-pass.
@@ -936,7 +938,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # Step 3: write the reverse fragment.
         #
         # If the reverse pass is provably `NoPullback`, there is nothing to emit.
-        rvs_pass = if plan.T_pb!! <: NoPullback
+        rvs_pass = if selection.T_pb!! <: NoPullback
             nothing
         else
             # Get the rdata which we pass into the pullback from its rdata ref.
@@ -948,7 +950,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             # Zero out the value stored in this rdata ref now that we have its current
             # value. The new value is rdata, so must be an instance of a bits type, so is
             # safe to interpolate straight into instruction.
-            zero_val = zero_like_rdata_from_type(plan.output_type)
+            zero_val = zero_like_rdata_from_type(selection.output_type)
             zero_rdata_expr = Expr(:call, setfield!, rdata_ref_id, QuoteNode(:x), zero_val)
             zero_rdata_ref = (ID(), new_inst(zero_rdata_expr))
 
@@ -956,7 +958,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             call_pullback_id = ID()
             call_pullback = (call_pullback_id, new_inst(Expr(:call, pb, rdata_output_id)))
             pullback_increments = _pullback_increment_stmts(
-                info, plan.args, call_pullback_id
+                info, selection.args, call_pullback_id
             )
             vcat(
                 IDInstPair[rdata_output, zero_rdata_ref, call_pullback],
