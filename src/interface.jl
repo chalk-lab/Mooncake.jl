@@ -1971,7 +1971,7 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
     cache.width === nothing || throw(
         ArgumentError(
-            "value_and_jacobian!! with FCache only supports chunk_size=nothing (width-1 mode)"
+            "value_and_jacobian!! with FCache only supports chunk_size=nothing (width-1 mode)",
         ),
     )
     input_primals = (f, x)
@@ -2027,11 +2027,7 @@ end
 end
 
 @unstable function value_and_jacobian!!(cache, f::F, x) where {F}
-    throw(
-        ArgumentError(
-            "value_and_jacobian!! only supports cache types Cache and FCache"
-        ),
-    )
+    throw(ArgumentError("value_and_jacobian!! only supports cache types Cache and FCache"))
 end
 
 """
