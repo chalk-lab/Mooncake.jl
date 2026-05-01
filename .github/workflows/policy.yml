@@ -114,7 +114,7 @@ jobs:
 
       - name: Close out-of-scope issue
         if: steps.think.outcome == 'success' && steps.think.outputs.verdict == 'REJECTED'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           CLOSE_MESSAGE: ${{ steps.think.outputs.message }}
         with:
