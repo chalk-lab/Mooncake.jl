@@ -787,13 +787,16 @@ end
             )
             @test Mooncake.value_and_gradient!!(cache_grad_fwd, f, x, y) ==
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
-            # Scalar gradient on FCache must stay allocation-free; the IR-lifted OC has
-            # no captures, the gradient workspace is reused, and Tuple/scalar
-            # `_make_seed_tangent` paths skip the IdDict aliasing tracking.
-            Mooncake.value_and_gradient!!(cache_grad_fwd, f, x, y)
-            @test TestUtils.count_allocs(
-                Mooncake.value_and_gradient!!, cache_grad_fwd, f, x, y
-            ) == 0
+            # Scalar gradient on FCache must stay allocation-free in non-debug mode;
+            # the IR-lifted OC has no captures, the gradient workspace is reused,
+            # and Tuple/scalar `_make_seed_tangent` paths skip the IdDict aliasing
+            # tracking. Skip under debug_mode (DebugFRule wraps with verification).
+            if !get(kwargs, :debug_mode, false)
+                Mooncake.value_and_gradient!!(cache_grad_fwd, f, x, y)
+                @test TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!, cache_grad_fwd, f, x, y
+                ) == 0
+            end
 
             f_scalar = x -> x^2 + sin(x)
             scalar_cache_grad_fwd = Mooncake.prepare_derivative_cache(
@@ -801,10 +804,12 @@ end
             )
             @test Mooncake.value_and_gradient!!(scalar_cache_grad_fwd, f_scalar, x) ==
                 (f_scalar(x), (Mooncake.NoTangent(), 2 * x + cos(x)))
-            Mooncake.value_and_gradient!!(scalar_cache_grad_fwd, f_scalar, x)
-            @test TestUtils.count_allocs(
-                Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
-            ) == 0
+            if !get(kwargs, :debug_mode, false)
+                Mooncake.value_and_gradient!!(scalar_cache_grad_fwd, f_scalar, x)
+                @test TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
+                ) == 0
+            end
 
             f_tuple = t -> t[1]^2 + sin(t[2])
             tuple_x = (x, y)
