@@ -971,13 +971,17 @@ end
 
 Forward-mode cache returned by [`prepare_derivative_cache`](@ref).
 
-Holds a forward rule built by the primal-mode compiler, plus gradient
-workspace and input specs. `W` is `Nothing` for width-1 or `Val{N}` for width-N.
+Holds a forward rule built by the primal-mode compiler, plus gradient and seed
+buffers and input specs. `W` is `Nothing` for width-1 or `Val{N}` for width-N.
+The `seed_buf` field lets `_gradient_width1`/`_gradient_widthN` reuse a single
+seed-tangent tuple across slot iterations instead of allocating fresh tangent
+arrays per direction.
 """
-struct FCache{R,GW,S<:Tuple,W}
+struct FCache{R,GW,SB,S<:Tuple,W}
     friendly_tangents::Bool
     rule::R
     buf::GW
+    seed_buf::SB
     input_specs::S
     width::W
 end
@@ -1164,6 +1168,81 @@ function _make_seed_tangent(
     return build_tangent(P, fields...)
 end
 
+# ── In-place seed-tangent updaters ────────────────────────────────────────────────
+#
+# `_seed_inplace!(buf, x, slot, cursor)` mutates `buf` (a tangent-shaped value
+# parallel to the primal `x`) so it represents the standard-basis seed for a
+# given global slot index, returning the updated buf. For mutable containers
+# (arrays) the buffer is updated in place and returned as-is. For immutable
+# scalars the buffer is rebuilt and returned. Tuple/NamedTuple values rebuild
+# the outer container around per-element results so the caller can drop the
+# whole tuple back into the seed-tangent slot.
+#
+# Used by `_gradient_width1` / `_gradient_widthN` to avoid re-allocating
+# tangent arrays for each direction.
+
+@inline _seed_inplace!(::NoTangent, _x, _slot::Int, _cursor::Base.RefValue{Int}) =
+    NoTangent()
+@inline function _seed_inplace!(
+    _buf::T, x::T, slot::Int, cursor::Base.RefValue{Int}
+) where {T<:IEEEFloat}
+    cursor[] += 1
+    return cursor[] == slot ? one(x) : zero(x)
+end
+@inline function _seed_inplace!(
+    _buf::Complex{T}, x::Complex{T}, slot::Int, cursor::Base.RefValue{Int}
+) where {T<:IEEEFloat}
+    cursor[] += 1
+    re = cursor[] == slot ? one(T) : zero(T)
+    cursor[] += 1
+    im = cursor[] == slot ? one(T) : zero(T)
+    return complex(re, im)
+end
+@inline function _seed_inplace!(
+    buf::AbstractArray{T},
+    x::AbstractArray{<:IEEEFloat},
+    slot::Int,
+    cursor::Base.RefValue{Int},
+) where {T<:IEEEFloat}
+    @inbounds for I in eachindex(x)
+        cursor[] += 1
+        buf[I] = cursor[] == slot ? one(T) : zero(T)
+    end
+    return buf
+end
+@inline function _seed_inplace!(
+    buf::AbstractArray{Complex{T}},
+    x::AbstractArray{Complex{<:IEEEFloat}},
+    slot::Int,
+    cursor::Base.RefValue{Int},
+) where {T<:IEEEFloat}
+    @inbounds for I in eachindex(x)
+        cursor[] += 1
+        re = cursor[] == slot ? one(T) : zero(T)
+        cursor[] += 1
+        im = cursor[] == slot ? one(T) : zero(T)
+        buf[I] = complex(re, im)
+    end
+    return buf
+end
+@inline function _seed_inplace!(buf::Tuple, x::Tuple, slot::Int, cursor::Base.RefValue{Int})
+    return ntuple(
+        i -> _seed_inplace!(buf[i], x[i], slot, cursor), Val(fieldcount(typeof(x)))
+    )
+end
+@inline function _seed_inplace!(
+    buf::NamedTuple{names}, x::NamedTuple{names}, slot::Int, cursor::Base.RefValue{Int}
+) where {names}
+    return NamedTuple{names}(_seed_inplace!(values(buf), values(x), slot, cursor))
+end
+# Generic fallback: structures we cannot reliably mutate in place fall back to
+# the allocating `_make_seed_tangent` path. Reconstruct the tangent fresh — the
+# slot semantics still match because `cursor` keeps walking through the global
+# scalar dofs.
+@inline function _seed_inplace!(_buf, x, slot::Int, cursor::Base.RefValue{Int})
+    return _make_seed_tangent(x, slot, cursor, IdDict{Any,Any}())
+end
+
 # ── _tangent_width ────────────────────────────────────────────────────────────────
 
 @generated function _tangent_width(ts::T) where {T<:Tuple}
@@ -1223,7 +1302,8 @@ Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref).
     end
     GW = Tuple{map(P -> tangent_type(P), sig.parameters)...}
     buf = Ref{Union{Nothing,GW}}(nothing)
-    return FCache(config.friendly_tangents, rule, buf, input_specs, width)
+    seed_buf = Ref{Union{Nothing,GW}}(nothing)
+    return FCache(config.friendly_tangents, rule, buf, seed_buf, input_specs, width)
 end
 
 # ── value_and_gradient!! (FCache) ───────────────────────────────────────────
@@ -1232,13 +1312,13 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     input_primals = (f, x...)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
 
-    native_gradients = let workspace = cache.buf[]
-        if isnothing(workspace)
-            workspace = tuple_map(zero_tangent, input_primals)
-            cache.buf[] = workspace
-            workspace
+    native_gradients = let buf = cache.buf[]
+        if isnothing(buf)
+            buf = tuple_map(zero_tangent, input_primals)
+            cache.buf[] = buf
+            buf
         else
-            zeroed = tuple_map(set_to_zero!!, workspace)
+            zeroed = tuple_map(set_to_zero!!, buf)
             cache.buf[] = zeroed
             zeroed
         end
@@ -1265,8 +1345,17 @@ end
 
 function _gradient_width1(rule, input_primals, native_gradients, total_slots, cache)
     local y
+    seed_buf = let buf = cache.seed_buf[]
+        if buf === nothing
+            buf = tuple_map(zero_tangent, input_primals)
+            cache.seed_buf[] = buf
+        end
+        buf
+    end
+    cursor = Ref(0)
     for slot in 1:total_slots
-        seed = _make_seed_tangent(input_primals, slot)
+        cursor[] = 0
+        seed = _seed_inplace!(seed_buf, input_primals, slot, cursor)
         output = rule(tuple_map(Dual, input_primals, seed)...)
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)

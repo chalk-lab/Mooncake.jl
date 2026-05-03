@@ -788,7 +788,7 @@ end
             @test Mooncake.value_and_gradient!!(cache_grad_fwd, f, x, y) ==
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
             # Scalar gradient on FCache must stay allocation-free in non-debug mode;
-            # the IR-lifted OC has no captures, the gradient workspace is reused,
+            # the IR-lifted OC has no captures, the gradient buf is reused,
             # and Tuple/scalar `_make_seed_tangent` paths skip the IdDict aliasing
             # tracking. Skip under debug_mode (DebugFRule wraps with verification).
             if !get(kwargs, :debug_mode, false)
