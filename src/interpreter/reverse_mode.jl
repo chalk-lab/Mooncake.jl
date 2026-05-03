@@ -1615,7 +1615,9 @@ function generate_ir(
     arg_types = Dict{Argument,Any}(
         map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir.argtypes))
     )
-    _, ssa_insts, is_used_dict = _primal_stmt_metadata(primal_blocks)
+    primal_stmts = IDInstPair[inst for block in primal_blocks for inst in block.insts]
+    ssa_insts = Dict{ID,NewInstruction}(primal_stmts)
+    is_used_dict = characterise_used_ids(primal_stmts)
     Tlazy_rdata_ref = Tuple{map(lazy_zero_rdata_type ∘ CC.widenconst, ir.argtypes)...}
     zero_lazy_rdata_ref = Ref{Tlazy_rdata_ref}()
     info = ADInfo(
@@ -1684,16 +1686,9 @@ end
 
 const ADStmts = Vector{Tuple{ID,Vector{ADStmtInfo}}}
 
-function _flatten_cfg_insts(blocks)::Vector{IDInstPair}
-    return [inst for block in blocks for inst in block.insts]
-end
-
-function _primal_stmt_metadata(blocks)
-    primal_stmts = _flatten_cfg_insts(blocks)
-    return primal_stmts,
-    Dict{ID,NewInstruction}(primal_stmts),
-    characterise_used_ids(primal_stmts)
-end
+#
+# Forward-pass communication and CFG assembly
+#
 
 """
     create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
@@ -1717,10 +1712,6 @@ For each basic block represented in `ADStmts`:
 Returns a `Vector{BlockCommsInsts}`. The nth element contains the forward-pass suffix and
 reverse-pass prefix associated to the nth block in `ad_stmts_blocks`.
 """
-#
-# Forward-pass communication and CFG assembly
-#
-
 function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
     return map(ad_stmts_blocks) do (_, ad_stmts)
 
@@ -1763,6 +1754,7 @@ end
         ir::IRCode,
         primal_blocks,
         ad_stmts_blocks::ADStmts,
+        block_comms,
         info::ADInfo,
         Tshared_data,
     )
@@ -1897,12 +1889,10 @@ function _ssa_to_ids(d::SSAToIdDict, x::ReturnNode)
 end
 _ssa_to_ids(d::SSAToIdDict, x::Expr) = Expr(x.head, map(a -> get(d, a, a), x.args)...)
 _ssa_to_ids(d::SSAToIdDict, x::PiNode) = PiNode(get(d, x.val, x.val), get(d, x.typ, x.typ))
-_ssa_to_ids(::SSAToIdDict, x::QuoteNode) = x
 _ssa_to_ids(::SSAToIdDict, x) = x
 function _ssa_to_ids(d::SSAToIdDict, x::PhiNode)
     return PhiNode(x.edges, _remap_assigned_phi_values(v -> get(d, v, v), x.values))
 end
-_ssa_to_ids(::SSAToIdDict, x::GotoNode) = x
 _ssa_to_ids(d::SSAToIdDict, x::GotoIfNot) = GotoIfNot(get(d, x.cond, x.cond), x.dest)
 
 function _ssas_to_ids(insts::InstVector)::Tuple{Vector{ID},InstVector}
@@ -2149,7 +2139,6 @@ function _cfg_to_ssas(d::Dict, x::ReturnNode)
 end
 _cfg_to_ssas(d::Dict, x::Expr) = Expr(x.head, map(a -> get(d, a, a), x.args)...)
 _cfg_to_ssas(d::Dict, x::PiNode) = PiNode(get(d, x.val, x.val), get(d, x.typ, x.typ))
-_cfg_to_ssas(d::Dict, x::QuoteNode) = x
 _cfg_to_ssas(d::Dict, x) = x
 function _cfg_to_ssas(d::Dict, x::IDPhiNode)
     return PhiNode(
@@ -2233,15 +2222,15 @@ function _rebuild_ircode(ir::IRCode, arg_types, cfg::CC.CFG, insts::InstVector):
     end
 end
 
+#
+# `CFGBlock` -> `IRCode` lowering
+#
+
 """
     lower_cfg_blocks_to_ir(ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true)
 
 Lower reverse-mode-local CFG blocks directly to `IRCode`.
 """
-#
-# `CFGBlock` -> `IRCode` lowering
-#
-
 function lower_cfg_blocks_to_ir(
     ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
 )::IRCode
@@ -2253,22 +2242,23 @@ function lower_cfg_blocks_to_ir(
     return _rebuild_ircode(ir, arg_types, cfg, insts)
 end
 
+#
+# Pullback CFG assembly
+#
+
 """
     pullback_ir(
         ir::IRCode,
         primal_blocks,
         Tret,
         ad_stmts_blocks::ADStmts,
+        block_comms,
         info::ADInfo,
         Tshared_data,
     )
 
 Produce the IR associated to the `OpaqueClosure` which runs most of the pullback.
 """
-#
-# Pullback CFG assembly
-#
-
 function pullback_ir(
     ir::IRCode,
     primal_blocks,
