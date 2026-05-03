@@ -905,7 +905,17 @@ end
 # NDual container frule!! overloads — containers of NDual elements carry tangent info
 # inside the elements; the container tangent is NoTangent. These dispatch on the NDual
 # element type to avoid calling memoryrefnew/memoryrefget on NoTangent.
-# _HasNDual is defined in Mooncake.jl (before memory.jl is included).
+# _HasNDual is defined in NfwdMooncake.jl and re-exported through Mooncake.
+#
+# Each operation has both a `Dual{<:Container{<:_HasNDual}}` form and a bare
+# `Container{<:_HasNDual}` form. They serve different callers:
+#  - The bare form is what the primal-mode lifted IR dispatches to: arguments flow
+#    as bare typed SSAValues whose static type already encodes NDual elements (see
+#    `_lift_type` in primal_mode.jl), so inliner picks this overload at compile time.
+#  - The `Dual{...}` form is the stable user-facing frule!! interface — present so
+#    that direct `frule!!(zero_dual(f), zero_dual(container))` calls outside the
+#    lifted IR (e.g. from custom rule chains or test harnesses) still resolve.
+# Aqua confirms no ambiguities between the pair (`Aqua.test_ambiguities([Mooncake])`).
 
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefget)},
