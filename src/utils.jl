@@ -89,11 +89,11 @@ function _wrap_boxed_line(line, width::Int)
 end
 
 function _print_boxed_error(io::IO, lines; footer=nothing)
-    _print_boxed_block(io, "", lines; footer)
+    return _print_boxed_block(io, "", lines; footer)
 end
 
 function _print_boxed_info(io::IO, lines; footer=nothing)
-    _print_boxed_message(io, "Info", lines; footer)
+    return _print_boxed_message(io, "Info", lines; footer)
 end
 
 """
@@ -468,7 +468,7 @@ function opaque_closure(
     end
     src = CC.ir_to_codeinf!(src, ir)
     src.rettype = ret_type
-    oc = Base.Experimental.generate_opaque_closure(
+    return oc = Base.Experimental.generate_opaque_closure(
         sig, Union{}, ret_type, src, nargs, isva, env...; do_compile
     )::Core.OpaqueClosure{sig,ret_type}
 end
@@ -501,9 +501,9 @@ end
         compute_oc_signature(ir, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
     else
         compute_ir_rettype(ir) = Base.Experimental.compute_ir_rettype(ir)
-        compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(
-            ir, nargs, isva
-        )
+        function compute_oc_signature(ir, nargs, isva)
+            return Base.Experimental.compute_oc_signature(ir, nargs, isva)
+        end
     end
 end
 
@@ -697,9 +697,8 @@ end
     return _fold_slots(f, acc, Base.tail(x), state)
 end
 
-@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} = _fold_slots(
-    f, init, values(x), state
-)
+@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} =
+    _fold_slots(f, init, values(x), state)
 
 @inline function _fold_slots(f::F, init, x::AbstractArray, state) where {F}
     tangent_type(typeof(x)) == NoTangent && return (init, state)
@@ -787,6 +786,10 @@ end
 @inline _count_slots(x::Complex{<:IEEEFloat}) = 2
 @inline _count_slots(x::AbstractArray{<:IEEEFloat}) = length(x)
 @inline _count_slots(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
-@inline _count_slots(x) = first(
-    _fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}())
-)
+# Tuples/NamedTuples are by definition acyclic, so recurse without an IdDict —
+# the generic fallback below allocates one per call.
+@inline _count_slots(::Tuple{}) = 0
+@inline _count_slots(x::Tuple) = _count_slots(first(x)) + _count_slots(Base.tail(x))
+@inline _count_slots(x::NamedTuple) = _count_slots(values(x))
+@inline _count_slots(x) =
+    first(_fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}()))
