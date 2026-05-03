@@ -899,8 +899,7 @@ InputSpec(::Type{T}, s::S) where {T,S} = InputSpec{T,S}(s)
     end
 end
 
-@inline _cache_spec_summary(spec::InputSpec{T}) where {T} =
-    "$(T) ($(_cache_spec_size_summary(spec)))"
+@inline _cache_spec_summary(spec::InputSpec{T}) where {T} = "$(T) ($(_cache_spec_size_summary(spec)))"
 
 struct PreparedCacheError <: Exception
     msg::String
@@ -1048,8 +1047,9 @@ end
 
 # ── fcache gradient seeding ───────────────────────────────────────────────────────
 
-@inline _make_seed_tangent(x, slot::Int) =
-    _make_seed_tangent(x, slot, Ref(0), IdDict{Any,Any}())
+@inline _make_seed_tangent(x, slot::Int) = _make_seed_tangent(
+    x, slot, Ref(0), IdDict{Any,Any}()
+)
 @inline function _make_seed_tangent(
     ::NoTangent, _slot::Int, _cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
 )
@@ -1172,29 +1172,82 @@ function _make_seed_tangent(
     return build_tangent(P, fields...)
 end
 
+# ── Aliasing-aware allocation and gradient accumulation ──────────────────────
+#
+# When the same mutable input is passed at multiple positions
+# (e.g. `value_and_gradient!!(cache, f, x, x)`), the gradient and seed buffers
+# at those positions must share storage, slots must be counted once, and
+# accumulation must increment each unique buffer once. The `seen` parameter
+# threaded through `_seed_inplace!` / `_accumulate_gradient` is `nothing` for
+# the all-bitstype-input fast path (preserves zero allocations) and an IdDict
+# when any input could share mutable storage.
+
+@generated function _inputs_can_alias(::Type{T}) where {T<:Tuple}
+    return any(!isbitstype, T.parameters)
+end
+
+@inline _new_seen(input_primals::Tuple) =
+    _inputs_can_alias(typeof(input_primals)) ? IdDict{Any,Nothing}() : nothing
+
+@inline function _alloc_aliased_tangents(input_primals::Tuple)
+    if _inputs_can_alias(typeof(input_primals))
+        return zero_tangent_internal(input_primals, IdDict())
+    end
+    return tuple_map(zero_tangent, input_primals)
+end
+
+@inline _count_input_slots(input_primals::Tuple) = _count_slots(
+    input_primals, _new_seen(input_primals)
+)
+
+@inline function _accumulate_gradient(native_gradients::Tuple, seed::Tuple, coeff, seen)
+    seen isa IdDict{Any,Nothing} && empty!(seen)
+    return tuple_map(
+        (g, dx) -> _accumulate_one_gradient!!(g, dx, coeff, seen), native_gradients, seed
+    )
+end
+
+@inline function _accumulate_one_gradient!!(g, dx, coeff, seen)
+    dx isa NoTangent && return g
+    if seen isa IdDict{Any,Nothing} && ismutabletype(typeof(g))
+        haskey(seen, g) && return g
+        seen[g] = nothing
+    end
+    return increment!!(g, _scale(coeff, dx))
+end
+
 # ── In-place seed-tangent updaters ────────────────────────────────────────────────
 #
-# `_seed_inplace!(buf, x, slot, cursor)` mutates `buf` (a tangent-shaped value
-# parallel to the primal `x`) so it represents the standard-basis seed for a
-# given global slot index, returning the updated buf. For mutable containers
-# (arrays) the buffer is updated in place and returned as-is. For immutable
-# scalars the buffer is rebuilt and returned. Tuple/NamedTuple values rebuild
-# the outer container around per-element results so the caller can drop the
-# whole tuple back into the seed-tangent slot.
+# `_seed_inplace!(buf, x, slot, cursor, seen)` mutates `buf` (a tangent-shaped
+# value parallel to the primal `x`) so it represents the standard-basis seed
+# for a given global slot index, returning the updated buf. For mutable
+# containers (arrays) the buffer is updated in place and returned as-is. For
+# immutable scalars the buffer is rebuilt and returned. Tuple/NamedTuple values
+# rebuild the outer container around per-element results so the caller can
+# drop the whole tuple back into the seed-tangent slot. The `seen` IdDict
+# tracks mutable buffers already visited so aliased inputs are seeded once and
+# `cursor` advances over each unique scalar dof exactly once.
 #
 # Used by `_gradient_width1` / `_gradient_widthN` to avoid re-allocating
 # tangent arrays for each direction.
 
-@inline _seed_inplace!(::NoTangent, _x, _slot::Int, _cursor::Base.RefValue{Int}) =
-    NoTangent()
+@inline _seed_inplace!(::NoTangent, _x, _slot::Int, _cursor::Base.RefValue{Int}, _seen::Union{Nothing,IdDict{Any,Nothing}}) = NoTangent()
 @inline function _seed_inplace!(
-    _buf::T, x::T, slot::Int, cursor::Base.RefValue{Int}
+    _buf::T,
+    x::T,
+    slot::Int,
+    cursor::Base.RefValue{Int},
+    _seen::Union{Nothing,IdDict{Any,Nothing}},
 ) where {T<:IEEEFloat}
     cursor[] += 1
     return cursor[] == slot ? one(x) : zero(x)
 end
 @inline function _seed_inplace!(
-    _buf::Complex{T}, x::Complex{T}, slot::Int, cursor::Base.RefValue{Int}
+    _buf::Complex{T},
+    x::Complex{T},
+    slot::Int,
+    cursor::Base.RefValue{Int},
+    _seen::Union{Nothing,IdDict{Any,Nothing}},
 ) where {T<:IEEEFloat}
     cursor[] += 1
     re = cursor[] == slot ? one(T) : zero(T)
@@ -1207,7 +1260,12 @@ end
     x::AbstractArray{<:IEEEFloat},
     slot::Int,
     cursor::Base.RefValue{Int},
+    seen::Union{Nothing,IdDict{Any,Nothing}},
 ) where {T<:IEEEFloat}
+    if seen isa IdDict{Any,Nothing}
+        haskey(seen, buf) && return buf
+        seen[buf] = nothing
+    end
     @inbounds for I in eachindex(x)
         cursor[] += 1
         buf[I] = cursor[] == slot ? one(T) : zero(T)
@@ -1219,7 +1277,12 @@ end
     x::AbstractArray{Complex{<:IEEEFloat}},
     slot::Int,
     cursor::Base.RefValue{Int},
+    seen::Union{Nothing,IdDict{Any,Nothing}},
 ) where {T<:IEEEFloat}
+    if seen isa IdDict{Any,Nothing}
+        haskey(seen, buf) && return buf
+        seen[buf] = nothing
+    end
     @inbounds for I in eachindex(x)
         cursor[] += 1
         re = cursor[] == slot ? one(T) : zero(T)
@@ -1229,27 +1292,45 @@ end
     end
     return buf
 end
-@inline function _seed_inplace!(buf::Tuple, x::Tuple, slot::Int, cursor::Base.RefValue{Int})
+@inline function _seed_inplace!(
+    buf::Tuple,
+    x::Tuple,
+    slot::Int,
+    cursor::Base.RefValue{Int},
+    seen::Union{Nothing,IdDict{Any,Nothing}},
+)
     return ntuple(
-        i -> _seed_inplace!(buf[i], x[i], slot, cursor), Val(fieldcount(typeof(x)))
+        i -> _seed_inplace!(buf[i], x[i], slot, cursor, seen), Val(fieldcount(typeof(x)))
     )
 end
 @inline function _seed_inplace!(
-    buf::NamedTuple{names}, x::NamedTuple{names}, slot::Int, cursor::Base.RefValue{Int}
+    buf::NamedTuple{names},
+    x::NamedTuple{names},
+    slot::Int,
+    cursor::Base.RefValue{Int},
+    seen::Union{Nothing,IdDict{Any,Nothing}},
 ) where {names}
-    return NamedTuple{names}(_seed_inplace!(values(buf), values(x), slot, cursor))
+    return NamedTuple{names}(_seed_inplace!(values(buf), values(x), slot, cursor, seen))
 end
-# Mutable struct buffer: walk fields and `set_tangent_field!` in place. Aliasing
-# is baked into the cached buffer at allocation time (`zero_tangent` respects
-# alias structure), so we don't need an IdDict per call.
+# Mutable struct buffer: walk fields and `set_tangent_field!` in place. The
+# `seen` IdDict skips revisits when the same buffer is reached via aliased
+# inputs (e.g. `value_and_gradient!!(cache, f, x, x)`).
 @inline function _seed_inplace!(
-    buf::MutableTangent, x::P, slot::Int, cursor::Base.RefValue{Int}
+    buf::MutableTangent,
+    x::P,
+    slot::Int,
+    cursor::Base.RefValue{Int},
+    seen::Union{Nothing,IdDict{Any,Nothing}},
 ) where {P}
+    if seen isa IdDict{Any,Nothing}
+        haskey(seen, buf) && return buf
+        seen[buf] = nothing
+    end
     inits = always_initialised(P)
     @inbounds for n in 1:fieldcount(P)
         if isdefined(x, n)
             field_buf = val(getfield(buf.fields, n))
-            new_field = _seed_inplace!(field_buf, getfield(x, n), slot, cursor)
+            new_field = _seed_inplace!(field_buf, getfield(x, n), slot, cursor, seen)
             set_tangent_field!(buf, n, new_field)
         elseif inits[n]
             _throw_uninit_field_error(P, n)
@@ -1261,13 +1342,17 @@ end
 # Immutable struct buffer: rebuild the outer `Tangent` wrapper, reusing inner
 # mutable buffers (arrays, MutableTangents) by reference.
 @inline function _seed_inplace!(
-    buf::Tangent, x::P, slot::Int, cursor::Base.RefValue{Int}
+    buf::Tangent,
+    x::P,
+    slot::Int,
+    cursor::Base.RefValue{Int},
+    seen::Union{Nothing,IdDict{Any,Nothing}},
 ) where {P}
     inits = always_initialised(P)
     fields = ntuple(Val(fieldcount(P))) do n
         if isdefined(x, n)
             field_buf = val(getfield(buf.fields, n))
-            return _seed_inplace!(field_buf, getfield(x, n), slot, cursor)
+            return _seed_inplace!(field_buf, getfield(x, n), slot, cursor, seen)
         elseif inits[n]
             return _throw_uninit_field_error(P, n)
         else
@@ -1280,7 +1365,13 @@ end
 # Final fallback for shapes we can't mutate in place — falls back to allocating
 # `_make_seed_tangent`. Slot semantics are preserved because `cursor` keeps
 # walking through the global scalar dofs across calls.
-@inline function _seed_inplace!(_buf, x, slot::Int, cursor::Base.RefValue{Int})
+@inline function _seed_inplace!(
+    _buf,
+    x,
+    slot::Int,
+    cursor::Base.RefValue{Int},
+    _seen::Union{Nothing,IdDict{Any,Nothing}},
+)
     return _make_seed_tangent(x, slot, cursor, IdDict{Any,Any}())
 end
 
@@ -1374,7 +1465,7 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
 
     native_gradients = let buf = cache.buf[]
         if isnothing(buf)
-            buf = tuple_map(zero_tangent, input_primals)
+            buf = _alloc_aliased_tangents(input_primals)
             cache.buf[] = buf
             buf
         else
@@ -1383,7 +1474,7 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
             zeroed
         end
     end
-    total_slots = _count_slots(input_primals)
+    total_slots = _count_input_slots(input_primals)
     rule = cache.rule
     width = cache.width
 
@@ -1407,25 +1498,23 @@ function _gradient_width1(rule, input_primals, native_gradients, total_slots, ca
     local y
     seed_buf = let buf = cache.seed_buf[]
         if buf === nothing
-            buf = tuple_map(zero_tangent, input_primals)
+            buf = _alloc_aliased_tangents(input_primals)
             cache.seed_buf[] = buf
         end
         buf
     end
     cursor = Ref(0)
+    seed_seen = _new_seen(input_primals)
+    accum_seen = _new_seen(native_gradients)
     for slot in 1:total_slots
         cursor[] = 0
-        seed = _seed_inplace!(seed_buf, input_primals, slot, cursor)
+        seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
+        seed = _seed_inplace!(seed_buf, input_primals, slot, cursor, seed_seen)
         output = rule(tuple_map(Dual, input_primals, seed)...)
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         coeff = Float64(tangent(output))
-        native_gradients = tuple_map(
-            (g, dx) -> begin
-                dx isa NoTangent && return g
-                return increment!!(g, _scale(coeff, dx))
-            end, native_gradients, seed
-        )
+        native_gradients = _accumulate_gradient(native_gradients, seed, coeff, accum_seen)
     end
     return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
 end
@@ -1438,7 +1527,7 @@ function _gradient_widthN(
     # `W` per-direction tangent buffers, lazily allocated and reused across chunks.
     seed_bufs = let cached = cache.seed_buf[]
         if cached === nothing
-            buf = ntuple(_ -> tuple_map(zero_tangent, input_primals), Val(W))
+            buf = ntuple(_ -> _alloc_aliased_tangents(input_primals), Val(W))
             cache.seed_buf[] = buf
             buf
         else
@@ -1460,11 +1549,14 @@ function _gradient_widthN(
         end
     end
     cursor = Ref(0)
+    seed_seen = _new_seen(input_primals)
+    accum_seen = _new_seen(native_gradients)
     while slot <= total_slots
         chunk = min(W, total_slots - slot + 1)
         seeds = ntuple(Val(W)) do d
             cursor[] = 0
-            _seed_inplace!(seed_bufs[d], input_primals, slot + d - 1, cursor)
+            seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
+            _seed_inplace!(seed_bufs[d], input_primals, slot + d - 1, cursor, seed_seen)
         end
         ndual_inputs = ntuple(Val(length(input_primals))) do i
             _combine_to_ndual_or_buffer(
@@ -1493,13 +1585,8 @@ function _gradient_widthN(
         end
         for d in 1:chunk
             coeff = Float64(coeffs[d])
-            native_gradients = tuple_map(
-                (g, dx) -> begin
-                    dx isa NoTangent && return g
-                    return increment!!(g, _scale(coeff, dx))
-                end,
-                native_gradients,
-                seeds[d],
+            native_gradients = _accumulate_gradient(
+                native_gradients, seeds[d], coeff, accum_seen
             )
         end
         slot += chunk
@@ -1511,16 +1598,18 @@ end
 # Inputs without array storage (scalars, Complex, structs) don't need a buffer
 # — `_combine_to_ndual` for those is allocation-free. Returns `Nothing` then.
 @inline _ndual_lift_type(::Val, ::Type) = Nothing
-@inline _ndual_lift_type(::Val{W}, ::Type{Array{T,D}}) where {W,T<:IEEEFloat,D} =
-    Array{NDual{T,W},D}
+@inline _ndual_lift_type(::Val{W}, ::Type{Array{T,D}}) where {W,T<:IEEEFloat,D} = Array{
+    NDual{T,W},D
+}
 @inline function _ndual_lift_type(
     ::Val{W}, ::Type{Array{Complex{T},D}}
 ) where {W,T<:IEEEFloat,D}
     return Array{Complex{NDual{T,W}},D}
 end
 @static if VERSION >= v"1.11-"
-    @inline _ndual_lift_type(::Val{W}, ::Type{Memory{T}}) where {W,T<:IEEEFloat} =
-        Memory{NDual{T,W}}
+    @inline _ndual_lift_type(::Val{W}, ::Type{Memory{T}}) where {W,T<:IEEEFloat} = Memory{
+        NDual{T,W}
+    }
     @inline function _ndual_lift_type(
         ::Val{W}, ::Type{Memory{Complex{T}}}
     ) where {W,T<:IEEEFloat}
@@ -1534,30 +1623,23 @@ end
 @inline function _alloc_lift_buf(::Val{W}, x::Array{T,D}) where {W,T<:IEEEFloat,D}
     return Array{NDual{T,W},D}(undef, size(x))
 end
-@inline function _alloc_lift_buf(
-    ::Val{W}, x::Array{Complex{T},D}
-) where {W,T<:IEEEFloat,D}
+@inline function _alloc_lift_buf(::Val{W}, x::Array{Complex{T},D}) where {W,T<:IEEEFloat,D}
     return Array{Complex{NDual{T,W}},D}(undef, size(x))
 end
 @static if VERSION >= v"1.11-"
     @inline function _alloc_lift_buf(::Val{W}, x::Memory{T}) where {W,T<:IEEEFloat}
         return Memory{NDual{T,W}}(undef, length(x))
     end
-    @inline function _alloc_lift_buf(
-        ::Val{W}, x::Memory{Complex{T}}
-    ) where {W,T<:IEEEFloat}
+    @inline function _alloc_lift_buf(::Val{W}, x::Memory{Complex{T}}) where {W,T<:IEEEFloat}
         return Memory{Complex{NDual{T,W}}}(undef, length(x))
     end
 end
 
 # Pick between in-place (when a pre-allocated buffer is available) and
 # allocating `_combine_to_ndual` based on the buffer slot.
-@inline _combine_to_ndual_or_buffer(::Nothing, x, partials) =
-    _combine_to_ndual(x, partials)
+@inline _combine_to_ndual_or_buffer(::Nothing, x, partials) = _combine_to_ndual(x, partials)
 @inline function _combine_to_ndual_or_buffer(
-    buf::AbstractArray{<:NDual},
-    x::AbstractArray{<:IEEEFloat},
-    partials::NTuple{W},
+    buf::AbstractArray{<:NDual}, x::AbstractArray{<:IEEEFloat}, partials::NTuple{W}
 ) where {W}
     return _combine_to_ndual!(buf, x, partials)
 end
@@ -1641,8 +1723,9 @@ end
 ) where {T<:IEEEFloat,W}
     return Dual(x, NoTangent())
 end
-@inline _combine_to_ndual(x::Complex{T}, ::Tuple{}) where {T<:IEEEFloat} =
-    Dual(x, NoTangent())
+@inline _combine_to_ndual(x::Complex{T}, ::Tuple{}) where {T<:IEEEFloat} = Dual(
+    x, NoTangent()
+)
 @inline function _combine_to_ndual(
     x::AbstractArray{Complex{T}}, ::NTuple{W,NoTangent}
 ) where {T<:IEEEFloat,W}
@@ -1774,9 +1857,11 @@ inputs are rejected.
             else
                 ntuple(d -> d == 1 ? t : zero_tangent(p), cache_width)
             end
-            _ndual_output_to_width1(_combine_to_ndual(p, padded))
+            _combine_to_ndual(p, padded)
         end
-        return rule(rule_inputs...)
+        # Rule is compiled at `cache_width`; convert its width-N output back to the
+        # caller's per-direction width-1 view.
+        return _ndual_output_to_width1(rule(rule_inputs...))
     end
 
     first_output = _eval_dir(Val(1))

@@ -184,6 +184,10 @@ end
     return zero_dual(primal(f)(map(x -> x isa Dual ? primal(x) : x, (x1, x_rest...))...))
 end
 
+# Bare NDual array overload lives in `src/nfwd/NfwdMooncake.jl` (which has
+# `Nfwd.NDual` in scope). The width-N FCache path passes `Array{NDual}` here
+# instead of `Array{Dual}`.
+
 """
     zero_derivative(ctx, sig, [mode=Mode])
 

@@ -48,6 +48,9 @@ Width-aware forward value type query.
 - `Val(N)`, concrete `P` → `Dual{P, tangent_type(Val(N), P)}`
 - abstract/union `P` → `Dual` (bare, for compiler flexibility)
 """
+# `@unstable`: return type depends on the type-domain shape of `P` (Union
+# splitting, Tuple field concreteness). Callers force-specialise via
+# `Val(N)` constants or accept a bare `Dual`.
 @unstable function dual_type(::Val{N}, ::Type{P}) where {N,P}
     P == Union{} && return Union{}
     P == DataType && return Dual

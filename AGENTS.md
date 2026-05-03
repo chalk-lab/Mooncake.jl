@@ -52,6 +52,7 @@ The overall target is: correct by construction where possible, aggressively test
 - Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
 - Prefer clear, concise names for variables, types, and methods.
 - When fixing bugs or performance issues (allocations, type instability), prefer minimal inline fixes over new helper functions; make multiple pruning passes before committing to arrive at the smallest correct diff. Use the `minimise` skill before committing.
+- Always run JuliaFormatter from the `test/integration_testing/format` environment (e.g. `julia --project=test/integration_testing/format -e 'using JuliaFormatter; JuliaFormatter.format(".")'`); it pins the version CI checks against, so any other env can introduce or miss diffs.
 
 ## Consistency
 

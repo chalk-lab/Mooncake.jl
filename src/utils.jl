@@ -697,8 +697,9 @@ end
     return _fold_slots(f, acc, Base.tail(x), state)
 end
 
-@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} =
-    _fold_slots(f, init, values(x), state)
+@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} = _fold_slots(
+    f, init, values(x), state
+)
 
 @inline function _fold_slots(f::F, init, x::AbstractArray, state) where {F}
     tangent_type(typeof(x)) == NoTangent && return (init, state)
@@ -782,28 +783,44 @@ end
 
 # ── _count_slots ──────────────────────────────────────────────────────────────
 
-@inline _count_slots(x::IEEEFloat) = 1
-@inline _count_slots(x::Complex{<:IEEEFloat}) = 2
-@inline _count_slots(x::AbstractArray{<:IEEEFloat}) = length(x)
-@inline _count_slots(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
-# Tuples/NamedTuples are by definition acyclic, so recurse without an IdDict —
-# the generic fallback below allocates one per call.
-@inline _count_slots(::Tuple{}) = 0
-@inline _count_slots(x::Tuple) = _count_slots(first(x)) + _count_slots(Base.tail(x))
-@inline _count_slots(x::NamedTuple) = _count_slots(values(x))
-# Strict fallback: a non-trivial `tangent_type` paired with zero recognised
-# scalar leaves is ambiguous — either all leaves are `NoTangent` (opt in via
-# `_count_slots(::T) = 0`) or they are unrecognised differentiable scalars (opt
-# in via `_uninit_dual(::Val{N}, ::T)`). The runtime can't tell them apart, so
-# we require an explicit shim to avoid silent width-1 fallthrough.
-@inline function _count_slots(x)
+# Public 1-arg form: `seen=nothing` skips the dict entirely, preserving the
+# zero-alloc fast path for non-aliasing inputs. Pass an `IdDict{Any,Nothing}`
+# when caller may have aliased mutable inputs so they're counted once.
+@inline _count_slots(x) = _count_slots(x, nothing)
+
+@inline _count_slots(x::IEEEFloat, _seen) = 1
+@inline _count_slots(x::Complex{<:IEEEFloat}, _seen) = 2
+@inline function _count_slots(x::AbstractArray{<:IEEEFloat}, seen)
+    seen isa IdDict{Any,Nothing} && (haskey(seen, x) ? (return 0) : (seen[x] = nothing))
+    return length(x)
+end
+@inline function _count_slots(x::AbstractArray{<:Complex{<:IEEEFloat}}, seen)
+    seen isa IdDict{Any,Nothing} && (haskey(seen, x) ? (return 0) : (seen[x] = nothing))
+    return 2 * length(x)
+end
+@inline _count_slots(::Tuple{}, _seen) = 0
+@inline _count_slots(x::Tuple, seen) =
+    _count_slots(first(x), seen) + _count_slots(Base.tail(x), seen)
+@inline _count_slots(x::NamedTuple, seen) = _count_slots(values(x), seen)
+# Strict fallback: a tangent_type that *could* carry a scalar derivative paired
+# with zero recognised scalar leaves is ambiguous — either all leaves are
+# `NoTangent` (opt in via `_count_slots(::T, _seen) = 0`) or they are unrecognised
+# differentiable scalars (opt in via `_uninit_dual(::Val{N}, ::T)`). The runtime
+# can't tell them apart, so we require an explicit shim. A tangent_type whose
+# tree of array element types bottoms out at `NoTangent` (e.g. `Vector{Int}` →
+# `Vector{NoTangent}`) genuinely has no differentiable content and is accepted.
+@inline function _count_slots(x, seen)
+    if seen isa IdDict{Any,Nothing} && ismutabletype(typeof(x))
+        haskey(seen, x) && return 0
+        seen[x] = nothing
+    end
     n = first(_fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}()))
-    if n == 0 && tangent_type(_typeof(x)) !== NoTangent
+    if n == 0 && _tangent_can_have_scalar(tangent_type(_typeof(x)))
         throw(
             ArgumentError(
                 "_count_slots: `$(_typeof(x))` has a non-trivial tangent_type but " *
                 "`_count_slots` recognised no scalar leaves. Add an explicit " *
-                "`_count_slots(::T) = 0` shim if the type has no differentiable " *
+                "`_count_slots(::T, _seen) = 0` shim if the type has no differentiable " *
                 "content (like `Base.RefValue{Int}`), or an `_uninit_dual(::Val{N}, ::T)` " *
                 "overload if it does. Silent width-1 fallthrough would produce wrong " *
                 "tangents.",
@@ -813,5 +830,11 @@ end
     return n
 end
 
+@inline function _tangent_can_have_scalar(::Type{T}) where {T}
+    T === NoTangent && return false
+    T <: AbstractArray && return _tangent_can_have_scalar(eltype(T))
+    return true
+end
+
 # Bool <: Integer in Julia, so this also covers `Base.RefValue{Bool}`.
-@inline _count_slots(::Base.RefValue{<:Integer}) = 0
+@inline _count_slots(::Base.RefValue{<:Integer}, _seen) = 0

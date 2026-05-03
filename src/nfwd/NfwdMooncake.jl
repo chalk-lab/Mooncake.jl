@@ -340,16 +340,17 @@ end
 end
 
 # Scalar (real or complex): chunk_size=1 → plain scalar zero; chunk_size=N → N-tuple of zeros.
-@inline _nfwd_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{1}) =
-    zero(y)
-@inline _nfwd_zero_output_tangent(
-    y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{N}
-) where {N} = ntuple(_ -> zero(y), Val(N))
+@inline _nfwd_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{1}) = zero(
+    y
+)
+@inline _nfwd_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{N}) where {N} = ntuple(
+    _ -> zero(y), Val(N)
+)
 
 # Array (real or complex elements): chunk_size=1 → same-shape zero array; chunk_size=N → N extra dirs.
-@inline _nfwd_zero_output_tangent(
-    y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{1}
-) = zero_tangent(y)
+@inline _nfwd_zero_output_tangent(y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{1}) = zero_tangent(
+    y
+)
 @inline function _nfwd_zero_output_tangent(
     y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{N}
 ) where {N}
@@ -934,8 +935,9 @@ end
 
 # Internal builder for one width-N container construction. `gen` produces one
 # scalar partial per call; called once per (element-index, lane-index) for arrays.
-@inline _ndual_zero(x::T, ::Val{N}, gen) where {T<:IEEEFloat,N} =
-    NDual{T,N}(x, _make_partials(gen, T, Val(N)))
+@inline _ndual_zero(x::T, ::Val{N}, gen) where {T<:IEEEFloat,N} = NDual{T,N}(
+    x, _make_partials(gen, T, Val(N))
+)
 @inline function _ndual_zero(z::Complex{T}, ::Val{N}, gen) where {T<:IEEEFloat,N}
     re = NDual{T,N}(real(z), _make_partials(gen, T, Val(N)))
     im = NDual{T,N}(imag(z), _make_partials(gen, T, Val(N)))
@@ -1016,59 +1018,79 @@ end
 # representation distinct from zero.
 
 @inline Mooncake.zero_dual(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
-@inline Mooncake.zero_dual(w::Val, z::Complex{<:IEEEFloat}) =
-    _ndual_zero(z, w, _ -> zero(typeof(real(z))))
-@inline Mooncake.zero_dual(w::Val, x::Array{<:IEEEFloat}) =
-    _ndual_array(x, w, _ -> zero(eltype(x)))
-@inline Mooncake.zero_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) =
-    _ndual_array(x, w, _ -> zero(real(eltype(x))))
+@inline Mooncake.zero_dual(w::Val, z::Complex{<:IEEEFloat}) = _ndual_zero(
+    z, w, _ -> zero(typeof(real(z)))
+)
+@inline Mooncake.zero_dual(w::Val, x::Array{<:IEEEFloat}) = _ndual_array(
+    x, w, _ -> zero(eltype(x))
+)
+@inline Mooncake.zero_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
+    x, w, _ -> zero(real(eltype(x)))
+)
 
 @inline Mooncake.uninit_dual(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
-@inline Mooncake.uninit_dual(w::Val, z::Complex{<:IEEEFloat}) =
-    _ndual_zero(z, w, _ -> zero(typeof(real(z))))
-@inline Mooncake.uninit_dual(w::Val, x::Array{<:IEEEFloat}) =
-    _ndual_array(x, w, _ -> zero(eltype(x)))
-@inline Mooncake.uninit_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) =
-    _ndual_array(x, w, _ -> zero(real(eltype(x))))
+@inline Mooncake.uninit_dual(w::Val, z::Complex{<:IEEEFloat}) = _ndual_zero(
+    z, w, _ -> zero(typeof(real(z)))
+)
+@inline Mooncake.uninit_dual(w::Val, x::Array{<:IEEEFloat}) = _ndual_array(
+    x, w, _ -> zero(eltype(x))
+)
+@inline Mooncake.uninit_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
+    x, w, _ -> zero(real(eltype(x)))
+)
 
-@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::IEEEFloat) =
-    _ndual_zero(x, w, _ -> randn(rng, typeof(x)))
-@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, z::Complex{<:IEEEFloat}) =
-    _ndual_zero(z, w, _ -> randn(rng, typeof(real(z))))
-@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Array{<:IEEEFloat}) =
-    _ndual_array(x, w, _ -> randn(rng, eltype(x)))
-@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Array{<:Complex{<:IEEEFloat}}) =
-    _ndual_array(x, w, _ -> randn(rng, real(eltype(x))))
+@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::IEEEFloat) = _ndual_zero(
+    x, w, _ -> randn(rng, typeof(x))
+)
+@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, z::Complex{<:IEEEFloat}) = _ndual_zero(
+    z, w, _ -> randn(rng, typeof(real(z)))
+)
+@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Array{<:IEEEFloat}) = _ndual_array(
+    x, w, _ -> randn(rng, eltype(x))
+)
+@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
+    x, w, _ -> randn(rng, real(eltype(x)))
+)
 
 @static if VERSION >= v"1.11-"
-    @inline Mooncake.zero_dual(w::Val, x::Memory{<:IEEEFloat}) =
-        _ndual_memory(x, w, _ -> zero(eltype(x)))
-    @inline Mooncake.zero_dual(w::Val, x::Memory{<:Complex{<:IEEEFloat}}) =
-        _ndual_memory(x, w, _ -> zero(real(eltype(x))))
-    @inline Mooncake.uninit_dual(w::Val, x::Memory{<:IEEEFloat}) =
-        _ndual_memory(x, w, _ -> zero(eltype(x)))
-    @inline Mooncake.uninit_dual(w::Val, x::Memory{<:Complex{<:IEEEFloat}}) =
-        _ndual_memory(x, w, _ -> zero(real(eltype(x))))
-    @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Memory{<:IEEEFloat}) =
-        _ndual_memory(x, w, _ -> randn(rng, eltype(x)))
-    @inline Mooncake.randn_dual(
-        w::Val, rng::AbstractRNG, x::Memory{<:Complex{<:IEEEFloat}}
-    ) = _ndual_memory(x, w, _ -> randn(rng, real(eltype(x))))
+    @inline Mooncake.zero_dual(w::Val, x::Memory{<:IEEEFloat}) = _ndual_memory(
+        x, w, _ -> zero(eltype(x))
+    )
+    @inline Mooncake.zero_dual(w::Val, x::Memory{<:Complex{<:IEEEFloat}}) = _ndual_memory(
+        x, w, _ -> zero(real(eltype(x)))
+    )
+    @inline Mooncake.uninit_dual(w::Val, x::Memory{<:IEEEFloat}) = _ndual_memory(
+        x, w, _ -> zero(eltype(x))
+    )
+    @inline Mooncake.uninit_dual(w::Val, x::Memory{<:Complex{<:IEEEFloat}}) = _ndual_memory(
+        x, w, _ -> zero(real(eltype(x)))
+    )
+    @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Memory{<:IEEEFloat}) = _ndual_memory(
+        x, w, _ -> randn(rng, eltype(x))
+    )
+    @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Memory{<:Complex{<:IEEEFloat}}) = _ndual_memory(
+        x, w, _ -> randn(rng, real(eltype(x)))
+    )
 
     # MemoryRef: lift the underlying Memory and rebuild the offset.
-    @inline Mooncake.zero_dual(w::Val, x::MemoryRef{<:IEEEFloat}) =
-        memoryref(Mooncake.zero_dual(w, x.mem), Core.memoryrefoffset(x))
-    @inline Mooncake.zero_dual(w::Val, x::MemoryRef{<:Complex{<:IEEEFloat}}) =
-        memoryref(Mooncake.zero_dual(w, x.mem), Core.memoryrefoffset(x))
-    @inline Mooncake.uninit_dual(w::Val, x::MemoryRef{<:IEEEFloat}) =
-        memoryref(Mooncake.uninit_dual(w, x.mem), Core.memoryrefoffset(x))
-    @inline Mooncake.uninit_dual(w::Val, x::MemoryRef{<:Complex{<:IEEEFloat}}) =
-        memoryref(Mooncake.uninit_dual(w, x.mem), Core.memoryrefoffset(x))
-    @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::MemoryRef{<:IEEEFloat}) =
-        memoryref(Mooncake.randn_dual(w, rng, x.mem), Core.memoryrefoffset(x))
-    @inline Mooncake.randn_dual(
-        w::Val, rng::AbstractRNG, x::MemoryRef{<:Complex{<:IEEEFloat}}
-    ) = memoryref(Mooncake.randn_dual(w, rng, x.mem), Core.memoryrefoffset(x))
+    @inline Mooncake.zero_dual(w::Val, x::MemoryRef{<:IEEEFloat}) = memoryref(
+        Mooncake.zero_dual(w, x.mem), Core.memoryrefoffset(x)
+    )
+    @inline Mooncake.zero_dual(w::Val, x::MemoryRef{<:Complex{<:IEEEFloat}}) = memoryref(
+        Mooncake.zero_dual(w, x.mem), Core.memoryrefoffset(x)
+    )
+    @inline Mooncake.uninit_dual(w::Val, x::MemoryRef{<:IEEEFloat}) = memoryref(
+        Mooncake.uninit_dual(w, x.mem), Core.memoryrefoffset(x)
+    )
+    @inline Mooncake.uninit_dual(w::Val, x::MemoryRef{<:Complex{<:IEEEFloat}}) = memoryref(
+        Mooncake.uninit_dual(w, x.mem), Core.memoryrefoffset(x)
+    )
+    @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::MemoryRef{<:IEEEFloat}) = memoryref(
+        Mooncake.randn_dual(w, rng, x.mem), Core.memoryrefoffset(x)
+    )
+    @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::MemoryRef{<:Complex{<:IEEEFloat}}) = memoryref(
+        Mooncake.randn_dual(w, rng, x.mem), Core.memoryrefoffset(x)
+    )
 end
 
 # Identity passes for values already in `dual_type(Val(N), P)` shape, used by
@@ -1222,8 +1244,9 @@ end
 @inline _ndual_width(::Complex{NDual{T,W}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::AbstractArray{NDual{T,W}}, rest...) where {T,W} = Val(W)
 @inline _ndual_width(::AbstractArray{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
-@inline _ndual_width(::Dual{<:Any,NTangent{L}}, rest...) where {L<:Tuple} =
-    Val(fieldcount(L))
+@inline _ndual_width(::Dual{<:Any,NTangent{L}}, rest...) where {L<:Tuple} = Val(
+    fieldcount(L)
+)
 @inline _ndual_width(x::Dual, rest...) = _ndual_width(tangent(x), rest...)
 @inline _ndual_width(_, rest...) = _ndual_width(rest...)
 @inline _ndual_width() = error("_ndual_width called with no NDual arguments")
@@ -1238,8 +1261,9 @@ end
 @inline _ndual_primal(x::NDual) = primal(x)
 @inline _ndual_primal(x::Complex{<:NDual}) = primal(x)
 @inline _ndual_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
-@inline _ndual_primal(x::AbstractArray{<:Complex{<:NDual}}) =
-    map(z -> complex(z.re.value, z.im.value), x)
+@inline _ndual_primal(x::AbstractArray{<:Complex{<:NDual}}) = map(
+    z -> complex(z.re.value, z.im.value), x
+)
 @inline _ndual_primal(x::Tuple) = map(_ndual_primal, x)
 @inline _ndual_primal(x) = x
 
@@ -1248,13 +1272,16 @@ end
 @inline _tangent_dir(x::NDual, i) = x.partials[i]
 @inline _tangent_dir(x::Complex{<:NDual}, i) = complex(x.re.partials[i], x.im.partials[i])
 @inline _tangent_dir(x::Dual{<:Any,<:NTangent}, i) = tangent(x).lanes[i]
-@inline _tangent_dir(x::Dual{<:Any,<:Tuple}, i) =
-    map(t -> _tangent_dir_elem(t, i), tangent(x))
+@inline _tangent_dir(x::Dual{<:Any,<:Tuple}, i) = map(
+    t -> _tangent_dir_elem(t, i), tangent(x)
+)
 @inline _tangent_dir(x::Dual, _) = tangent(x)
-@inline _tangent_dir(x::AbstractArray{NDual{T,N}}, i) where {T,N} =
-    map(d -> d.partials[i], x)
-@inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} =
-    map(z -> complex(z.re.partials[i], z.im.partials[i]), x)
+@inline _tangent_dir(x::AbstractArray{NDual{T,N}}, i) where {T,N} = map(
+    d -> d.partials[i], x
+)
+@inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} = map(
+    z -> complex(z.re.partials[i], z.im.partials[i]), x
+)
 @inline _tangent_dir(x::Tuple, i) = map(xi -> _tangent_dir(xi, i), x)
 @inline _tangent_dir(x, _) = zero_tangent(x)
 
@@ -1268,6 +1295,17 @@ end
 @inline _find_ndual_memref() = nothing
 @static if VERSION >= v"1.11-"
     @inline _find_ndual_memref(x::MemoryRef{<:Union{NDual,Complex{<:NDual}}}, rest...) = x
+end
+
+# Width-N counterpart to the `Array{<:Dual}` zero_derivative overload in
+# `tools_for_rules.jl`. NDual arrays carry tangents in their elements; the
+# `primal(::Array{NDual})` overload (above) extracts the underlying primal
+# array, and the result is wrapped at the input width via `_ndual_width`.
+@inline function Mooncake.zero_derivative(
+    f::Dual, x1::T, x_rest::Vararg{T}
+) where {T<:Union{Array{<:NDual},Array{<:Complex{<:NDual}}}}
+    w = _ndual_width(x1, x_rest...)
+    return Mooncake.zero_dual(w, primal(f)(map(primal, (x1, x_rest...))...))
 end
 
 end

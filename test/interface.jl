@@ -133,6 +133,32 @@ end
             Mooncake.prepare_gradient_cache(identity, (5.0, 4.0)),
         )
 
+        @testset "aliased mutable inputs share gradients" begin
+            f(a, b) = sum(a) + sum(b)
+            x = [1.0, 2.0]
+            cache = Mooncake.prepare_derivative_cache(f, x, x)
+            _, g = Mooncake.value_and_gradient!!(cache, f, x, x)
+            @test g[2] === g[3]
+            @test g[2] == [2.0, 2.0]
+
+            cache_chunked = Mooncake.prepare_derivative_cache(
+                f, x, x; config=Mooncake.Config(; chunk_size=2)
+            )
+            _, gc = Mooncake.value_and_gradient!!(cache_chunked, f, x, x)
+            @test gc[2] === gc[3]
+            @test gc[2] == [2.0, 2.0]
+        end
+
+        @testset "non-differentiable container inputs" begin
+            h(x, idx) = sum(@view x[idx])
+            x = [1.0, 2.0, 3.0]
+            idx = [1, 2]
+            cache = Mooncake.prepare_derivative_cache(h, x, idx)
+            y, g = Mooncake.value_and_gradient!!(cache, h, x, idx)
+            @test y == 3.0
+            @test g[2] == [1.0, 1.0, 0.0]
+        end
+
         @testset "cache display" begin
             reverse_cache = Mooncake.prepare_gradient_cache(
                 sin, 1.0; config=Mooncake.Config(; debug_mode=false, friendly_tangents=true)
@@ -186,7 +212,7 @@ end
 
             cache = Mooncake.prepare_gradient_cache(f, x)
             v, dx = Mooncake.value_and_gradient!!(cache, f, x)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
             @test dx[2].fields == (; x1=2 * x.x1, x2=cos(x.x2))
 
             cache = Mooncake.prepare_gradient_cache(
@@ -200,7 +226,7 @@ end
             rule = build_rrule(f, x)
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
             @test dx[2].fields == (; x1=2 * x.x1, x2=cos(x.x2))
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x; friendly_tangents=true)
@@ -457,6 +483,7 @@ end
 
         @testset "__exclude_unsupported_output , $(test_set)" for test_set in
                                                                   additional_test_set
+
             try
                 Mooncake.__exclude_unsupported_output(test_set[2])
             catch err
@@ -466,6 +493,7 @@ end
 
         @testset "_copy_output & _copy_to_output!!, $(test_set)" for test_set in
                                                                      additional_test_set
+
             original = test_set[2]
             try
                 if isnothing(Mooncake.__exclude_unsupported_output(original))
