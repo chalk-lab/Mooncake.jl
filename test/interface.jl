@@ -186,7 +186,7 @@ end
 
             cache = Mooncake.prepare_gradient_cache(f, x)
             v, dx = Mooncake.value_and_gradient!!(cache, f, x)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
             @test dx[2].fields == (; x1=2 * x.x1, x2=cos(x.x2))
 
             cache = Mooncake.prepare_gradient_cache(
@@ -200,7 +200,7 @@ end
             rule = build_rrule(f, x)
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
             @test dx[2].fields == (; x1=2 * x.x1, x2=cos(x.x2))
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x; friendly_tangents=true)
@@ -457,7 +457,6 @@ end
 
         @testset "__exclude_unsupported_output , $(test_set)" for test_set in
                                                                   additional_test_set
-
             try
                 Mooncake.__exclude_unsupported_output(test_set[2])
             catch err
@@ -467,7 +466,6 @@ end
 
         @testset "_copy_output & _copy_to_output!!, $(test_set)" for test_set in
                                                                      additional_test_set
-
             original = test_set[2]
             try
                 if isnothing(Mooncake.__exclude_unsupported_output(original))
@@ -739,12 +737,14 @@ end
             if get(kwargs, :debug_mode, false)
                 @test true
             else
-                scalar_call(cache, f, x, y, dx, dy) = Mooncake.value_and_derivative!!(
-                    cache,
-                    (f, Mooncake.zero_tangent(f)),
-                    (x, Mooncake.NTangent((dx, 0.0))),
-                    (y, Mooncake.NTangent((0.0, dy))),
-                )
+                function scalar_call(cache, f, x, y, dx, dy)
+                    return Mooncake.value_and_derivative!!(
+                        cache,
+                        (f, Mooncake.zero_tangent(f)),
+                        (x, Mooncake.NTangent((dx, 0.0))),
+                        (y, Mooncake.NTangent((0.0, dy))),
+                    )
+                end
                 scalar_f = CountedChunkScalarCall()
                 scalar_cache = Mooncake.prepare_derivative_cache(
                     scalar_f,
@@ -762,11 +762,13 @@ end
                 x_arr = [x, y]
                 dx_arr_1 = [dx, 0.0]
                 dx_arr_2 = [0.0, dy]
-                array_call(cache, f_arr, x_arr, dx_arr_1, dx_arr_2) = Mooncake.value_and_derivative!!(
-                    cache,
-                    (f_arr, Mooncake.zero_tangent(f_arr)),
-                    (x_arr, Mooncake.NTangent((dx_arr_1, dx_arr_2))),
-                )
+                function array_call(cache, f_arr, x_arr, dx_arr_1, dx_arr_2)
+                    return Mooncake.value_and_derivative!!(
+                        cache,
+                        (f_arr, Mooncake.zero_tangent(f_arr)),
+                        (x_arr, Mooncake.NTangent((dx_arr_1, dx_arr_2))),
+                    )
+                end
                 array_cache = Mooncake.prepare_derivative_cache(
                     array_f,
                     x_arr;
@@ -785,6 +787,13 @@ end
             )
             @test Mooncake.value_and_gradient!!(cache_grad_fwd, f, x, y) ==
                 (z, (Mooncake.NoTangent(), y - sin(x), x))
+            # Scalar gradient on FCache must stay allocation-free; the IR-lifted OC has
+            # no captures, the gradient workspace is reused, and Tuple/scalar
+            # `_make_seed_tangent` paths skip the IdDict aliasing tracking.
+            Mooncake.value_and_gradient!!(cache_grad_fwd, f, x, y)
+            @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, cache_grad_fwd, f, x, y
+            ) == 0
 
             f_scalar = x -> x^2 + sin(x)
             scalar_cache_grad_fwd = Mooncake.prepare_derivative_cache(
@@ -792,6 +801,10 @@ end
             )
             @test Mooncake.value_and_gradient!!(scalar_cache_grad_fwd, f_scalar, x) ==
                 (f_scalar(x), (Mooncake.NoTangent(), 2 * x + cos(x)))
+            Mooncake.value_and_gradient!!(scalar_cache_grad_fwd, f_scalar, x)
+            @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
+            ) == 0
 
             f_tuple = t -> t[1]^2 + sin(t[2])
             tuple_x = (x, y)
@@ -970,6 +983,11 @@ end
                 CHUNK_ARRAY_EVAL_COUNT[] = 0
                 @test Mooncake.value_and_gradient!!(array_cache_grad_fwd, array_f, x_arr) ==
                     (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
+                # FCache lanes the array gradient one direction at a time. Multi-lane
+                # fusion (running width-N once) is a follow-up; the array-input gradient
+                # path also still allocates per call (a fresh seed `IdDict` and the
+                # Memory{NDual} lift buffer in `_dual_or_ndual`). Tracked in pr1151.md
+                # follow-up #16 for the alloc reduction.
                 @test CHUNK_ARRAY_EVAL_COUNT[] == 2
                 array_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
                     array_f,
@@ -1196,7 +1214,7 @@ end
             )
             @test x_mut_jac_work == x_mut_jac
             @test val_mut_jac == 4 .* x_mut_jac .^ 2
-            @test jac_mut_jac ≈ [8 * x_mut_jac[1] 0.0; 0.0 8 * x_mut_jac[2]]
+            @test jac_mut_jac ≈ [8*x_mut_jac[1] 0.0; 0.0 8*x_mut_jac[2]]
 
             x_jac_parent = [x, y, 0.0]
             x_jac_view = @view x_jac_parent[1:2]
@@ -1279,7 +1297,7 @@ end
                 cache = prepare_hvp_cache(f, x; config)
                 n = length(x)
                 for i in 1:n
-                    v_dir = zeros(n);
+                    v_dir = zeros(n)
                     v_dir[i] = 1.0
                     val, grad, hvp = value_and_hvp!!(cache, f, v_dir, x)
                     @test val ≈ 14.0
@@ -1315,7 +1333,7 @@ end
             @testset "namedtuple intermediates" begin
                 # Packs vector into NamedTuple, exercises NT tangent machinery
                 f(v) =
-                    let nt = (a=v[1], b=v[2]);
+                    let nt = (a=v[1], b=v[2])
                         0.5 * nt.a * nt.b^2
                     end
                 v = [2.0, 3.0]
@@ -1337,9 +1355,9 @@ end
                 # H = [0 0 1 0; 0 2v4 0 2v2; 1 0 0 0; 0 2v2 0 0]
                 #   = [0 0 1 0; 0 8 0 4; 1 0 0 0; 0 4 0 0]
                 H_expected = [
-                    0.0 0.0 1.0 0.0;
-                    0.0 8.0 0.0 4.0;
-                    1.0 0.0 0.0 0.0;
+                    0.0 0.0 1.0 0.0
+                    0.0 8.0 0.0 4.0
+                    1.0 0.0 0.0 0.0
                     0.0 4.0 0.0 0.0
                 ]
                 H = hcat(
@@ -1358,7 +1376,11 @@ end
                 h12 = -400 * z[1]
                 return [h11 h12; h12 200.0]
             end
-            rosen_g(z) = [-2*(1 - z[1]) - 400*z[1]*(z[2] - z[1]^2), 200*(z[2] - z[1]^2)]
+            function rosen_g(z)
+                return [
+                    -2 * (1 - z[1]) - 400 * z[1] * (z[2] - z[1]^2), 200 * (z[2] - z[1]^2)
+                ]
+            end
 
             @testset "Rosenbrock Float64" begin
                 z = [1.2, 1.2]
@@ -1571,9 +1593,9 @@ end
                     @test val ≈ 19.0
                     @test g ≈ [3.0, 16.0, 1.0, 4.0] rtol = 1e-10
                     @test H ≈ [
-                        0.0 0.0 1.0 0.0;
-                        0.0 8.0 0.0 4.0;
-                        1.0 0.0 0.0 0.0;
+                        0.0 0.0 1.0 0.0
+                        0.0 8.0 0.0 4.0
+                        1.0 0.0 0.0 0.0
                         0.0 4.0 0.0 0.0
                     ] rtol = 1e-10
                 end
@@ -1591,9 +1613,9 @@ end
                     @test val ≈ 41.0
                     @test g ≈ [3.0, 2.0, 7.0, 5.0] rtol = 1e-10
                     @test H ≈ [
-                        0.0 1.0 0.0 0.0;
-                        1.0 0.0 0.0 0.0;
-                        0.0 0.0 0.0 1.0;
+                        0.0 1.0 0.0 0.0
+                        1.0 0.0 0.0 0.0
+                        0.0 0.0 0.0 1.0
                         0.0 0.0 1.0 0.0
                     ] rtol = 1e-10
                 end

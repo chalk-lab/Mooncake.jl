@@ -915,6 +915,13 @@ end
 #  - The `Dual{...}` form is the stable user-facing frule!! interface — present so
 #    that direct `frule!!(zero_dual(f), zero_dual(container))` calls outside the
 #    lifted IR (e.g. from custom rule chains or test harnesses) still resolve.
+#    TODO: this user-facing entry point is hard to drive at width N because
+#    `zero_dual` is currently width-1 only — `zero_dual(x::IEEEFloat)` returns a
+#    bare `Dual{Float64,Float64}`, not `dual_type(Val(N), Float64) = NDual{T,N}`.
+#    Making `zero_dual` width-aware (e.g. `zero_dual(::Val{N}, x)`) so its output
+#    matches `dual_type(Val(N), typeof(x))` would close this gap and let user
+#    code construct width-N seeds without reaching into NDual constructors.
+#    Tracked in pr1151.md.
 # Aqua confirms no ambiguities between the pair (`Aqua.test_ambiguities([Mooncake])`).
 
 @inline function frule!!(
