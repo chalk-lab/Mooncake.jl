@@ -83,9 +83,22 @@ _uninit_dual(w::Val, v::T) where {T<:IEEEFloat} = dual_type(w, T)(v)
 function _uninit_dual(w::Val, v::Complex{T}) where {T<:IEEEFloat}
     return Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v)))
 end
-# Lift container type constants so that allocation frules create NDual containers.
-# Memory overloads are in memory.jl (only loaded on Julia 1.11+).
-_uninit_dual(::Val, v) = uninit_dual(v)
+# Width-N fallback for IR constants. Concrete container type overloads live in
+# `nfwd/NfwdMooncake.jl` (Array, Memory). Reaching this fallback with a value
+# that has a non-trivial tangent_type would silently downgrade to width-1, so
+# fail loudly instead — the missing overload should be added in NfwdMooncake.jl.
+function _uninit_dual(::Val, v)
+    if tangent_type(_typeof(v)) !== NoTangent
+        throw(
+            ArgumentError(
+                "_uninit_dual: missing width-N overload for `$(_typeof(v))`. " *
+                "Add a method to `NfwdMooncake.jl` so that primal-mode forward AD " *
+                "can lift this container type into an NDual representation.",
+            ),
+        )
+    end
+    return uninit_dual(v)
+end
 
 const ATTACH_AFTER = true
 const ATTACH_BEFORE = false
@@ -280,7 +293,7 @@ mutable struct LazyPrimal{primal_sig,Trule}
     rule::Trule
     function LazyPrimal(mi::Core.MethodInstance, debug_mode::Bool, width=nothing)
         interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,primal_rule_type(interp, mi, width;debug_mode)}(
+        return new{mi.specTypes,primal_rule_type(interp, mi, width; debug_mode)}(
             debug_mode, mi, width
         )
     end
@@ -332,7 +345,7 @@ struct DynamicPrimal{V,W}
 end
 
 function DynamicPrimal(debug_mode::Bool, width=nothing)
-    DynamicPrimal(Dict{Any,Any}(), debug_mode, width)
+    return DynamicPrimal(Dict{Any,Any}(), debug_mode, width)
 end
 
 # Create new dynamic rule with empty cache and same debug mode/width
@@ -455,7 +468,7 @@ end
 modify_primal_stmts!(::Nothing, ::IRCode, ::SSAValue, ::Vector{Any}, ::LiftedInfo) = nothing
 
 function modify_primal_stmts!(::GotoNode, ::IRCode, ::SSAValue, ::Vector{Any}, ::LiftedInfo)
-    nothing
+    return nothing
 end
 
 function modify_primal_stmts!(
