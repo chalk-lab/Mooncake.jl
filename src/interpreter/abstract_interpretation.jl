@@ -390,15 +390,23 @@ Empties all three per-interpreter caches for `ForwardMode`, `ReverseMode`, and
 - `code_cache` : `CodeInstance` objects (Julia IR per `MethodInstance`)
 - `inf_cache` : `InferenceResult` objects from type inference
 
+Also runs every callback registered via `_EXTRA_CACHE_CLEANERS` (rule files
+push their own cache-clearing thunks there at load time).
+
 After clearing, Mooncake re-derives rules from scratch on the next use. Only Julia-level
 (GC-managed) objects are freed; JIT-compiled native machine code allocated by LLVM
 is held permanently by the Julia runtime.
 """
+const _EXTRA_CACHE_CLEANERS = Function[]
+
 function empty_mooncake_caches!()
     for interp in values(GLOBAL_INTERPRETERS)
         empty!(interp.oc_cache)
         empty!(interp.code_cache)
         empty!(interp.inf_cache)
+    end
+    for cleaner in _EXTRA_CACHE_CLEANERS
+        cleaner()
     end
     return nothing
 end

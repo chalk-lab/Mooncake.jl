@@ -46,6 +46,10 @@ end
 # threads at runtime).
 const _THREADING_RUN_RULES_LOCK = ReentrantLock()
 const _THREADING_RUN_RULES = Dict{Tuple{Any,Int,UInt},Vector{Any}}()
+push!(
+    _EXTRA_CACHE_CLEANERS,
+    () -> lock(() -> empty!(_THREADING_RUN_RULES), _THREADING_RUN_RULES_LOCK),
+)
 
 function _threading_run_worker_rules(::Type{F}, world::UInt) where {F}
     n = Threads.threadpoolsize()
