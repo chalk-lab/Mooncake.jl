@@ -973,15 +973,19 @@ Forward-mode cache returned by [`prepare_derivative_cache`](@ref).
 
 Holds a forward rule built by the primal-mode compiler, plus gradient and seed
 buffers and input specs. `W` is `Nothing` for width-1 or `Val{N}` for width-N.
+
 The `seed_buf` field lets `_gradient_width1`/`_gradient_widthN` reuse a single
-seed-tangent tuple across slot iterations instead of allocating fresh tangent
-arrays per direction.
+seed-tangent tuple across slot iterations. The `lift_buf` field caches the
+per-input `Container{NDual{T,W}}` lift target used by `_combine_to_ndual` in
+the width-N path so that chunk evaluation doesn't allocate a fresh
+`Array{NDual,...}` / `Memory{NDual,...}` lift container on every chunk.
 """
-struct FCache{R,GW,SB,S<:Tuple,W}
+struct FCache{R,GW,SB,LB,S<:Tuple,W}
     friendly_tangents::Bool
     rule::R
     buf::GW
     seed_buf::SB
+    lift_buf::LB
     input_specs::S
     width::W
 end
@@ -1235,10 +1239,47 @@ end
 ) where {names}
     return NamedTuple{names}(_seed_inplace!(values(buf), values(x), slot, cursor))
 end
-# Generic fallback: structures we cannot reliably mutate in place fall back to
-# the allocating `_make_seed_tangent` path. Reconstruct the tangent fresh — the
-# slot semantics still match because `cursor` keeps walking through the global
-# scalar dofs.
+# Mutable struct buffer: walk fields and `set_tangent_field!` in place. Aliasing
+# is baked into the cached buffer at allocation time (`zero_tangent` respects
+# alias structure), so we don't need an IdDict per call.
+@inline function _seed_inplace!(
+    buf::MutableTangent, x::P, slot::Int, cursor::Base.RefValue{Int}
+) where {P}
+    inits = always_initialised(P)
+    @inbounds for n in 1:fieldcount(P)
+        if isdefined(x, n)
+            field_buf = val(getfield(buf.fields, n))
+            new_field = _seed_inplace!(field_buf, getfield(x, n), slot, cursor)
+            set_tangent_field!(buf, n, new_field)
+        elseif inits[n]
+            _throw_uninit_field_error(P, n)
+        end
+    end
+    return buf
+end
+
+# Immutable struct buffer: rebuild the outer `Tangent` wrapper, reusing inner
+# mutable buffers (arrays, MutableTangents) by reference.
+@inline function _seed_inplace!(
+    buf::Tangent, x::P, slot::Int, cursor::Base.RefValue{Int}
+) where {P}
+    inits = always_initialised(P)
+    fields = ntuple(Val(fieldcount(P))) do n
+        if isdefined(x, n)
+            field_buf = val(getfield(buf.fields, n))
+            return _seed_inplace!(field_buf, getfield(x, n), slot, cursor)
+        elseif inits[n]
+            return _throw_uninit_field_error(P, n)
+        else
+            return PossiblyUninitTangent{tangent_type(fieldtype(P, n))}()
+        end
+    end
+    return build_tangent(P, fields...)
+end
+
+# Final fallback for shapes we can't mutate in place — falls back to allocating
+# `_make_seed_tangent`. Slot semantics are preserved because `cursor` keeps
+# walking through the global scalar dofs across calls.
 @inline function _seed_inplace!(_buf, x, slot::Int, cursor::Base.RefValue{Int})
     return _make_seed_tangent(x, slot, cursor, IdDict{Any,Any}())
 end
@@ -1302,8 +1343,27 @@ Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref).
     end
     GW = Tuple{map(P -> tangent_type(P), sig.parameters)...}
     buf = Ref{Union{Nothing,GW}}(nothing)
-    seed_buf = Ref{Union{Nothing,GW}}(nothing)
-    return FCache(config.friendly_tangents, rule, buf, seed_buf, input_specs, width)
+    # Concrete-typed Ref keeps seed-buf access type-stable; required to keep
+    # scalar `count_allocs(value_and_gradient!!, ...) == 0`.
+    seed_buf = if width === nothing
+        Ref{Union{Nothing,GW}}(nothing)
+    else
+        W = typeof(width).parameters[1]
+        Ref{Union{Nothing,NTuple{W,GW}}}(nothing)
+    end
+    # `lift_buf` holds per-input `Container{NDual{T,W}}` lift targets reused by
+    # `_gradient_widthN`. Tuple shape mirrors `input_primals`. Width-1 path
+    # doesn't use it, so leave as Nothing in that branch.
+    lift_buf = if width === nothing
+        Ref{Nothing}(nothing)
+    else
+        W = typeof(width).parameters[1]
+        LT = Tuple{map(P -> _ndual_lift_type(Val(W), P), sig.parameters)...}
+        Ref{Union{Nothing,LT}}(nothing)
+    end
+    return FCache(
+        config.friendly_tangents, rule, buf, seed_buf, lift_buf, input_specs, width
+    )
 end
 
 # ── value_and_gradient!! (FCache) ───────────────────────────────────────────
@@ -1375,9 +1435,42 @@ function _gradient_widthN(
 ) where {W}
     local y
     slot = 1
+    # `W` per-direction tangent buffers, lazily allocated and reused across chunks.
+    seed_bufs = let cached = cache.seed_buf[]
+        if cached === nothing
+            buf = ntuple(_ -> tuple_map(zero_tangent, input_primals), Val(W))
+            cache.seed_buf[] = buf
+            buf
+        else
+            cached
+        end
+    end
+    # Per-input NDual lift buffer; `Nothing` for scalar/struct inputs that
+    # `_combine_to_ndual` doesn't allocate for. Allocated lazily once per cache
+    # then mutated in place each chunk.
+    lift_bufs = let cached = cache.lift_buf[]
+        if cached === nothing
+            allocated = tuple_map(input_primals) do x
+                _alloc_lift_buf(Val(W), x)
+            end
+            cache.lift_buf[] = allocated
+            allocated
+        else
+            cached
+        end
+    end
+    cursor = Ref(0)
     while slot <= total_slots
         chunk = min(W, total_slots - slot + 1)
-        ndual_inputs, seeds = _make_ndual_seed(input_primals, slot, Val(W))
+        seeds = ntuple(Val(W)) do d
+            cursor[] = 0
+            _seed_inplace!(seed_bufs[d], input_primals, slot + d - 1, cursor)
+        end
+        ndual_inputs = ntuple(Val(length(input_primals))) do i
+            _combine_to_ndual_or_buffer(
+                lift_bufs[i], input_primals[i], ntuple(d -> seeds[d][i], Val(W))
+            )
+        end
         output = rule(ndual_inputs...)
         y = output isa NDual ? output.value : primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
@@ -1414,14 +1507,92 @@ function _gradient_widthN(
     return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
 end
 
-function _make_ndual_seed(input_primals::Tuple, start_slot::Int, ::Val{W}) where {W}
-    seeds = ntuple(Val(W)) do d
-        _make_seed_tangent(input_primals, start_slot + d - 1)
+# Per-input lift container type. Used to type the `lift_buf` slot on FCache.
+# Inputs without array storage (scalars, Complex, structs) don't need a buffer
+# — `_combine_to_ndual` for those is allocation-free. Returns `Nothing` then.
+@inline _ndual_lift_type(::Val, ::Type) = Nothing
+@inline _ndual_lift_type(::Val{W}, ::Type{Array{T,D}}) where {W,T<:IEEEFloat,D} =
+    Array{NDual{T,W},D}
+@inline function _ndual_lift_type(
+    ::Val{W}, ::Type{Array{Complex{T},D}}
+) where {W,T<:IEEEFloat,D}
+    return Array{Complex{NDual{T,W}},D}
+end
+@static if VERSION >= v"1.11-"
+    @inline _ndual_lift_type(::Val{W}, ::Type{Memory{T}}) where {W,T<:IEEEFloat} =
+        Memory{NDual{T,W}}
+    @inline function _ndual_lift_type(
+        ::Val{W}, ::Type{Memory{Complex{T}}}
+    ) where {W,T<:IEEEFloat}
+        return Memory{Complex{NDual{T,W}}}
     end
-    ndual_inputs = ntuple(Val(length(input_primals))) do i
-        _combine_to_ndual(input_primals[i], ntuple(d -> seeds[d][i], Val(W)))
+end
+
+# Allocate a per-input lift buffer matching `_ndual_lift_type`. `nothing` for
+# inputs that don't need one (scalars, structs).
+@inline _alloc_lift_buf(::Val, x) = nothing
+@inline function _alloc_lift_buf(::Val{W}, x::Array{T,D}) where {W,T<:IEEEFloat,D}
+    return Array{NDual{T,W},D}(undef, size(x))
+end
+@inline function _alloc_lift_buf(
+    ::Val{W}, x::Array{Complex{T},D}
+) where {W,T<:IEEEFloat,D}
+    return Array{Complex{NDual{T,W}},D}(undef, size(x))
+end
+@static if VERSION >= v"1.11-"
+    @inline function _alloc_lift_buf(::Val{W}, x::Memory{T}) where {W,T<:IEEEFloat}
+        return Memory{NDual{T,W}}(undef, length(x))
     end
-    return ndual_inputs, seeds
+    @inline function _alloc_lift_buf(
+        ::Val{W}, x::Memory{Complex{T}}
+    ) where {W,T<:IEEEFloat}
+        return Memory{Complex{NDual{T,W}}}(undef, length(x))
+    end
+end
+
+# Pick between in-place (when a pre-allocated buffer is available) and
+# allocating `_combine_to_ndual` based on the buffer slot.
+@inline _combine_to_ndual_or_buffer(::Nothing, x, partials) =
+    _combine_to_ndual(x, partials)
+@inline function _combine_to_ndual_or_buffer(
+    buf::AbstractArray{<:NDual},
+    x::AbstractArray{<:IEEEFloat},
+    partials::NTuple{W},
+) where {W}
+    return _combine_to_ndual!(buf, x, partials)
+end
+@inline function _combine_to_ndual_or_buffer(
+    buf::AbstractArray{<:Complex{<:NDual}},
+    x::AbstractArray{<:Complex{<:IEEEFloat}},
+    partials::NTuple{W},
+) where {W}
+    return _combine_to_ndual!(buf, x, partials)
+end
+
+# In-place lift used by the FCache lift-buf path. `tangent_dirs` is typed
+# tighter than `NTuple{W}` so the inner `ntuple` closure specialises (an
+# untyped tuple boxes per index).
+@inline function _combine_to_ndual!(
+    result::AbstractArray{NDual{T,W}},
+    x::AbstractArray{<:IEEEFloat},
+    tangent_dirs::NTuple{W,<:AbstractArray{<:IEEEFloat}},
+) where {T<:IEEEFloat,W}
+    @inbounds for I in eachindex(x)
+        result[I] = NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
+    end
+    return result
+end
+@inline function _combine_to_ndual!(
+    result::AbstractArray{Complex{NDual{T,W}}},
+    x::AbstractArray{<:Complex{<:IEEEFloat}},
+    tangent_dirs::NTuple{W,<:AbstractArray{<:Complex{<:IEEEFloat}}},
+) where {T<:IEEEFloat,W}
+    @inbounds for I in eachindex(x)
+        re = NDual{T,W}(real(x[I]), ntuple(d -> real(tangent_dirs[d][I]), Val(W)))
+        im = NDual{T,W}(imag(x[I]), ntuple(d -> imag(tangent_dirs[d][I]), Val(W)))
+        result[I] = Complex(re, im)
+    end
+    return result
 end
 
 @inline function _combine_to_ndual(x::T, partials::NTuple{W,T}) where {T<:IEEEFloat,W}
