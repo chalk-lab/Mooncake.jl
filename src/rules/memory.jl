@@ -907,27 +907,14 @@ end
 # element type to avoid calling memoryrefnew/memoryrefget on NoTangent.
 # _HasNDual is defined in NfwdMooncake.jl and re-exported through Mooncake.
 #
-# Each operation has both a `Dual{<:Container{<:_HasNDual}}` form and a bare
-# `Container{<:_HasNDual}` form. They serve different callers:
-#  - The `Dual{...}` form is what the primal-mode lifted IR dispatches to: the
-#    IR rewriter wraps bare typed SSAValues in `Dual{P,NoTangent}` before the
-#    rule call (see the `%new(Dual{...}, ssa, NoTangent())` statements in the
-#    lifted IR), so the rule signature inside the `frule!!` chain sees a
-#    Dual-wrapped argument.
-#  - The bare form is the user-facing surface for direct frule!! calls outside
-#    the lifted IR — `frule!!(zero_dual(f), zero_dual(Val(N), x))` after #17
-#    produces bare `Container{<:_HasNDual}` (since `dual_type(Val(N), Array{T,D})
-#    == Array{NDual{T,N},D}`), which dispatches to this overload.
-# Aqua confirms no ambiguities between the pair (`Aqua.test_ambiguities([Mooncake])`).
+# Single bare-container form per operation: rules along the lifted-IR chain
+# return their results in canonical `dual_type` form (bare `Container{NDual}`
+# for NDual-bearing results, `Dual{P,NoTangent}` for non-differentiable
+# results), so downstream calls receive bare `Container{<:_HasNDual}`
+# arguments and dispatch here. The user-facing call
+# `frule!!(zero_dual(f), zero_dual(Val(N), x))` produces the same bare shape
+# (`dual_type(Val(N), Array{T,D}) == Array{NDual{T,N},D}`).
 
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefget)},
-    ref::Dual{<:MemoryRef{<:_HasNDual}},
-    ordering::Dual{<:Val},
-    boundscheck::Dual{<:Val},
-)
-    return memoryrefget(primal(ref), _val(primal(ordering)), _val(primal(boundscheck)))
-end
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefget)},
     ref::MemoryRef{<:_HasNDual},
@@ -939,16 +926,6 @@ end
 
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
-    ref::Dual{<:MemoryRef{<:_HasNDual},NoTangent},
-    value,
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {ordering,boundscheck}
-    memoryrefset!(primal(ref), value, ordering, boundscheck)
-    return value
-end
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
     ref::MemoryRef{<:_HasNDual},
     value,
     ::Dual{Val{ordering}},
@@ -958,32 +935,16 @@ end
     return value
 end
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory{<:_HasNDual}})
-    return Dual(memoryrefnew(primal(x)), NoTangent())
-end
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Memory{<:_HasNDual})
     return memoryrefnew(x)
 end
 
-@inline function frule!!(
-    ::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef{<:_HasNDual}}, ii::Dual{Int}
-)
-    return Dual(memoryrefnew(primal(x), primal(ii)), NoTangent())
-end
 @inline function frule!!(
     ::Dual{typeof(memoryrefnew)}, x::MemoryRef{<:_HasNDual}, ii::Dual{Int}
 )
     return memoryrefnew(x, primal(ii))
 end
 
-@inline function frule!!(
-    ::Dual{typeof(memoryrefnew)},
-    x::Dual{<:MemoryRef{<:_HasNDual}},
-    ii::Dual{Int},
-    boundscheck::Dual{Bool},
-)
-    return Dual(memoryrefnew(primal(x), primal(ii), primal(boundscheck)), NoTangent())
-end
 @inline function frule!!(
     ::Dual{typeof(memoryrefnew)},
     x::MemoryRef{<:_HasNDual},
@@ -993,9 +954,6 @@ end
     return memoryrefnew(x, primal(ii), primal(boundscheck))
 end
 
-function frule!!(::Dual{typeof(copy)}, a::Dual{<:Array{<:_HasNDual}})
-    return copy(primal(a))
-end
 frule!!(::Dual{typeof(copy)}, a::Array{<:_HasNDual}) = copy(a)
 
 # lgetfield/getfield for bare NDual containers. Returns the canonical

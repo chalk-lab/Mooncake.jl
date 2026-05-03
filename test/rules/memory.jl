@@ -44,9 +44,15 @@ end
     end
 
     @testset "copy with NDual arrays returns bare NDual container" begin
-        x = [Mooncake.NDual(1.0, (2.0, 3.0)), Mooncake.NDual(4.0, (5.0, 6.0))]
-        y = Mooncake.frule!!(Mooncake.zero_dual(copy), Mooncake.zero_dual(x))
-        @test y isa Vector{Mooncake.NDual{Float64,2}}
-        @test y == copy(x)
+        # `zero_dual(Val(2), Vector{Float64})` is the canonical user-facing
+        # constructor — produces bare `Vector{NDual{Float64,2}}` matching
+        # `dual_type(Val(2), Vector{Float64})`. The bare-container `copy` rule
+        # then dispatches and returns the same bare shape.
+        x = [1.0, 4.0]
+        x_dual = Mooncake.zero_dual(Val(2), x)
+        @test x_dual isa Vector{<:Mooncake.NDual{Float64,2}}
+        y = Mooncake.frule!!(Mooncake.zero_dual(copy), x_dual)
+        @test y isa Vector{<:Mooncake.NDual{Float64,2}}
+        @test y == x_dual
     end
 end
