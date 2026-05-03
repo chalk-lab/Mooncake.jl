@@ -39,7 +39,7 @@ reverse sweep.
     The scalar specialization `Pullback{F,N,Tuple{T},Tuple{NoFData},Y}` with
     `T<:Number` must remain an `isbits` type for that path to stay allocation-free. The
     generic path (array or multi-input primals) is not isbits and allocates as usual.
-    Do not add heap-allocated fields without auditing both paths.
+    Do not add heap-allocated fields without checking both paths.
 """
 struct Pullback{F,N,P,T,Y}
     f::F
@@ -1069,6 +1069,27 @@ end
     @inline Mooncake.randn_dual(
         w::Val, rng::AbstractRNG, x::MemoryRef{<:Complex{<:IEEEFloat}}
     ) = memoryref(Mooncake.randn_dual(w, rng, x.mem), Core.memoryrefoffset(x))
+end
+
+# Identity passes for values already in `dual_type(Val(N), P)` shape, used by
+# rules that canonicalise their output via `zero_dual(Val(N), v)`. Both
+# `Val{0}` and `Val` (N≥1) overloads are needed: the `Val{0}` form
+# disambiguates against the `zero_dual(::Val{0}, x) = x` catch-all above.
+for valT in (:(Val{0}), :Val)
+    @eval begin
+        @inline Mooncake.zero_dual(::$valT, x::NDual) = x
+        @inline Mooncake.zero_dual(::$valT, x::Complex{<:NDual}) = x
+        @inline Mooncake.zero_dual(::$valT, x::AbstractArray{<:NDual}) = x
+        @inline Mooncake.zero_dual(::$valT, x::AbstractArray{<:Complex{<:NDual}}) = x
+    end
+    @static if VERSION >= v"1.11-"
+        @eval begin
+            @inline Mooncake.zero_dual(::$valT, x::Memory{<:NDual}) = x
+            @inline Mooncake.zero_dual(::$valT, x::Memory{<:Complex{<:NDual}}) = x
+            @inline Mooncake.zero_dual(::$valT, x::MemoryRef{<:NDual}) = x
+            @inline Mooncake.zero_dual(::$valT, x::MemoryRef{<:Complex{<:NDual}}) = x
+        end
+    end
 end
 
 zero_dual(x::NDual{T,N}) where {T,N} = NDual{T,N}(x.value, ntuple(_ -> zero(T), Val(N)))

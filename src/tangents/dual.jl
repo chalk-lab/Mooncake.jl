@@ -112,6 +112,24 @@ extract(x::Dual) = primal(x), tangent(x)
 zero_dual(x) = Dual(x, zero_tangent(x))
 randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 
+# Generic width-N fallback for non-differentiable primals (`tangent_type ===
+# NoTangent`); matches `dual_type(Val(N), P) == Dual{P,NoTangent}`. Specialised
+# IEEEFloat / Complex / array / Memory overloads live in `nfwd/NfwdMooncake.jl`.
+# Fails loudly if a non-trivial `tangent_type` reaches here without a width-N
+# overload — silently downgrading to width-1 would be wrong.
+@inline function zero_dual(w::Val, x)
+    if tangent_type(_typeof(x)) === NoTangent
+        return Dual(x, NoTangent())
+    end
+    throw(
+        ArgumentError(
+            "zero_dual(::Val, ::$(_typeof(x))): missing width-N overload for a " *
+            "type with non-trivial tangent_type. Add a method to NfwdMooncake.jl " *
+            "matching `dual_type(Val(N), $(_typeof(x)))`.",
+        ),
+    )
+end
+
 @unstable function dual_type(::Type{P}) where {P}
     P == Union{} && return Union{}
     P == DataType && return Dual

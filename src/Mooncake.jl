@@ -54,7 +54,13 @@ function _foreigncall_ end
 """
     frule!!(f::Dual, x::Dual...)
 
-Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`.
+Performs AD in forward mode, possibly modifying the inputs, and returns a value
+whose static type matches `dual_type(Val(N), typeof(primal_result))`. Use
+`zero_dual(width, result)` to construct the canonical shape from a primal.
+
+The contract matters: inconsistent rules (e.g. wrapping an NDual-bearing result
+in `Dual(..., NoTangent())`) force every downstream rule to grow a Dual-wrapped
+overload as the polarity flip propagates.
 """
 function frule!! end
 
