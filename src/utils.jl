@@ -791,5 +791,27 @@ end
 @inline _count_slots(::Tuple{}) = 0
 @inline _count_slots(x::Tuple) = _count_slots(first(x)) + _count_slots(Base.tail(x))
 @inline _count_slots(x::NamedTuple) = _count_slots(values(x))
-@inline _count_slots(x) =
-    first(_fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}()))
+# Strict fallback: a non-trivial `tangent_type` paired with zero recognised
+# scalar leaves is ambiguous — either all leaves are `NoTangent` (opt in via
+# `_count_slots(::T) = 0`) or they are unrecognised differentiable scalars (opt
+# in via `_uninit_dual(::Val{N}, ::T)`). The runtime can't tell them apart, so
+# we require an explicit shim to avoid silent width-1 fallthrough.
+@inline function _count_slots(x)
+    n = first(_fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}()))
+    if n == 0 && tangent_type(_typeof(x)) !== NoTangent
+        throw(
+            ArgumentError(
+                "_count_slots: `$(_typeof(x))` has a non-trivial tangent_type but " *
+                "`_count_slots` recognised no scalar leaves. Add an explicit " *
+                "`_count_slots(::T) = 0` shim if the type has no differentiable " *
+                "content (like `Base.RefValue{Int}`), or an `_uninit_dual(::Val{N}, ::T)` " *
+                "overload if it does. Silent width-1 fallthrough would produce wrong " *
+                "tangents.",
+            ),
+        )
+    end
+    return n
+end
+
+# Bool <: Integer in Julia, so this also covers `Base.RefValue{Bool}`.
+@inline _count_slots(::Base.RefValue{<:Integer}) = 0

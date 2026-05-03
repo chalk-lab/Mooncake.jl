@@ -90,13 +90,20 @@ end
 # in NfwdMooncake.jl. Containers whose tangent_type wraps only NoTangent
 # leaves (e.g. `Ref{Int}` → `MutableTangent{(x=NoTangent,)}`) are safe; their
 # `_count_slots` is 0.
+#
+# Note: `_count_slots` only recognises IEEEFloat / Complex / their arrays /
+# Tuple / NamedTuple as scalar leaves. Custom user `tangent_type`s with other
+# scalar leaves are caught by the strict `_count_slots` fallback (which errors
+# on count==0 with non-trivial tangent_type) — the user must add an explicit
+# `_uninit_dual(::Val{N}, ::T)` overload to opt their type into width-N AD.
 function _uninit_dual(::Val, v)
     if _count_slots(v) > 0
         throw(
             ArgumentError(
-                "_uninit_dual: missing width-N overload for `$(_typeof(v))`. " *
-                "Add a method to `NfwdMooncake.jl` so that primal-mode forward AD " *
-                "can lift this container type into an NDual representation.",
+                "_uninit_dual: missing width-N overload for `$(_typeof(v))` " *
+                "(found $(_count_slots(v)) differentiable scalar slot(s)). " *
+                "Add a method to `NfwdMooncake.jl` so that primal-mode forward " *
+                "AD can lift this container type into an NDual representation.",
             ),
         )
     end
