@@ -303,7 +303,7 @@ mutable struct LazyPrimal{primal_sig,Trule}
     rule::Trule
     function LazyPrimal(mi::Core.MethodInstance, debug_mode::Bool, width=nothing)
         interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,primal_rule_type(interp, mi, width; debug_mode)}(
+        return new{mi.specTypes,primal_rule_type(interp, mi, width;debug_mode)}(
             debug_mode, mi, width
         )
     end
