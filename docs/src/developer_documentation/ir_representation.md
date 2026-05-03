@@ -20,7 +20,7 @@ Before looking at the printed IR, keep three ideas in mind:
 
 You can find the IR associated to a given signature using `Base.code_ircode_by_type`:
 
-```julia-repl
+```jldoctest
 julia> function foo(x)
            y = sin(x)
            z = cos(y)
@@ -49,7 +49,7 @@ already carries type information. In the example above, `%1` and `%2` are both k
 
 Control flow is expressed via basic blocks and terminators:
 
-```julia-repl
+```jldoctest bar
 julia> function bar(x)
            if x > 0
                return x
@@ -70,7 +70,7 @@ julia> Base.code_ircode_by_type(Tuple{typeof(bar), Float64})[1][1]
 
 The corresponding control-flow graph is stored separately in the `cfg` field:
 
-```julia-repl
+```jldoctest bar
 julia> Base.code_ircode_by_type(Tuple{typeof(bar), Float64})[1][1].cfg
 CFG with 3 blocks:
   bb 1 (stmts 1:3) → bb 3, 2
@@ -85,7 +85,7 @@ or returning.
 
 Loops introduce phi nodes:
 
-```julia-repl
+```jldoctest my_factorial
 julia> function my_factorial(x::Int)
            n = 0
            s = 1
@@ -127,7 +127,7 @@ and flags.
 
 For example:
 
-```julia-repl
+```jldoctest my_factorial
 julia> ir.stmts.stmt
 9-element Vector{Any}:
  nothing
@@ -168,7 +168,7 @@ Mooncake uses two broad styles of transformation:
 
 Replacing one statement with another is straightforward:
 
-```julia-repl
+```jldoctest my_factorial
 julia> using Core: SSAValue
 
 julia> const CC = Core.Compiler;
@@ -202,7 +202,7 @@ This is the kind of local transformation that forward mode relies on heavily.
 Insertion requires a little more care because later SSA names may need to shift. `IRCode`
 handles this through `insert_node!` plus a later `compact!`:
 
-```julia-repl
+```jldoctest my_factorial
 julia> ni = CC.NewInstruction(Expr(:call, Base.mul_int, SSAValue(3), 2), Int)
 Core.Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Core.Compiler.NoCallInfo(), nothing, nothing)
 
