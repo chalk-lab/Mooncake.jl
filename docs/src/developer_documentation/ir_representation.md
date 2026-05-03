@@ -32,8 +32,8 @@ julia> signature = Tuple{typeof(foo), Float64}
 Tuple{typeof(foo), Float64}
 
 julia> Base.code_ircode_by_type(signature)[1][1]
-2 1 ─ %1 = invoke sin(_2::Float64)::Float64
-3 │   %2 = invoke cos(%1::Float64)::Float64
+2 1 ─ %1 =    invoke sin(_2::Float64)::Float64
+3 │   %2 =    invoke cos(%1::Float64)::Float64
 4 └──      return %2
 ```
 
@@ -60,11 +60,11 @@ julia> function bar(x)
 bar (generic function with 1 method)
 
 julia> Base.code_ircode_by_type(Tuple{typeof(bar), Float64})[1][1]
-2 1 ─ %1 = Base.lt_float(0.0, _2)::Bool
-  │   %2 = Base.or_int(%1, false)::Bool
+2 1 ─ %1 = intrinsic Base.lt_float(0.0, _2)::Bool
+  │   %2 = intrinsic Base.or_int(%1, false)::Bool
   └──      goto #3 if not %2
 3 2 ─      return _2
-5 3 ─ %5 = Base.mul_float(5.0, _2)::Float64
+5 3 ─ %5 = intrinsic Base.mul_float(5.0, _2)::Float64
   └──      return %5
 ```
 
@@ -101,10 +101,10 @@ julia> ir = Base.code_ircode_by_type(Tuple{typeof(my_factorial), Int})[1][1]
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %7)::Int64
   │   %3 = φ (#1 => 0, #3 => %6)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = Base.add_int(%3, 1)::Int64
-6 │   %7 = Base.mul_int(%2, %6)::Int64
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic Base.mul_int(%2, %6)::Int64
 7 └──      goto #2
 8 4 ─      return %2
 ```
@@ -187,10 +187,10 @@ julia> new_ir
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %7)::Int64
   │   %3 = φ (#1 => 0, #3 => %6)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = Base.add_int(%3, 1)::Int64
-6 │   %7 = (Core.Intrinsics.add_int)(%2, %6)::Int64
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
 7 └──      goto #2
 8 4 ─      return %2
 ```
@@ -204,7 +204,7 @@ handles this through `insert_node!` plus a later `compact!`:
 
 ```jldoctest my_factorial
 julia> ni = CC.NewInstruction(Expr(:call, Base.mul_int, SSAValue(3), 2), Int)
-Core.Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Core.Compiler.NoCallInfo(), nothing, nothing)
+Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Compiler.NoCallInfo(), nothing, nothing)
 
 julia> new_ssa = CC.insert_node!(new_ir, SSAValue(6), ni)
 :(%10)
@@ -218,11 +218,11 @@ julia> new_ir = CC.compact!(new_ir)
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 => 1, #3 => %8)::Int64
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
-  │   %7 = Base.add_int(%6, 1)::Int64
-6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
+5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
 7 └──      goto #2
 8 4 ─      return %2
 ```
