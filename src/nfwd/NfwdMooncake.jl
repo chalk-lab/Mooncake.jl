@@ -917,6 +917,160 @@ end
 
 # ── Width helpers for NDual ───────────────────────────────────────────────────
 
+# Width-aware `zero_dual(::Val{N}, x)`, `randn_dual(::Val{N}, rng, x)`,
+# `uninit_dual(::Val{N}, x)`: produce a value whose static type matches
+# `dual_type(Val(N), typeof(x))`. Partials are zero / random / zero
+# respectively (uninit currently uses zero, matching the width-1 fallback).
+# Lets external callers construct width-N seed inputs without reaching into
+# NDual constructors directly. `Val(0)` is the primal passthrough.
+
+# `_make_partials(gen, ::Type{T}, ::Val{N})` builds an N-tuple of `T` from the
+# generator function `gen`, which takes a "lane index" Int. The three entry
+# points pick the right `gen`:
+#   zero_dual → `_ -> zero(T)`
+#   uninit_dual → `_ -> zero(T)` (uninit semantics are zero on the bare path)
+#   randn_dual → `_ -> randn(rng, T)`
+@inline _make_partials(gen, ::Type{T}, ::Val{N}) where {T,N} = ntuple(gen, Val(N))
+
+# Internal builder for one width-N container construction. `gen` produces one
+# scalar partial per call; called once per (element-index, lane-index) for arrays.
+@inline _ndual_zero(x::T, ::Val{N}, gen) where {T<:IEEEFloat,N} =
+    NDual{T,N}(x, _make_partials(gen, T, Val(N)))
+@inline function _ndual_zero(z::Complex{T}, ::Val{N}, gen) where {T<:IEEEFloat,N}
+    re = NDual{T,N}(real(z), _make_partials(gen, T, Val(N)))
+    im = NDual{T,N}(imag(z), _make_partials(gen, T, Val(N)))
+    return Complex(re, im)
+end
+
+# Containers: lift each element via `_ndual_zero`. Memory/MemoryRef are
+# 1.11+ only; Array/Vector cover the legacy path.
+@inline function _ndual_array(x::Array{T,D}, w::Val, gen) where {T<:IEEEFloat,D}
+    out = Array{dual_type(w, T),D}(undef, size(x))
+    @inbounds for i in eachindex(x)
+        out[i] = _ndual_zero(x[i], w, gen)
+    end
+    return out
+end
+@inline function _ndual_array(x::Array{Complex{T},D}, w::Val, gen) where {T<:IEEEFloat,D}
+    out = Array{dual_type(w, Complex{T}),D}(undef, size(x))
+    @inbounds for i in eachindex(x)
+        out[i] = _ndual_zero(x[i], w, gen)
+    end
+    return out
+end
+@static if VERSION >= v"1.11-"
+    @inline function _ndual_memory(x::Memory{T}, w::Val, gen) where {T<:IEEEFloat}
+        out = Memory{dual_type(w, T)}(undef, length(x))
+        @inbounds for i in eachindex(x)
+            out[i] = _ndual_zero(x[i], w, gen)
+        end
+        return out
+    end
+    @inline function _ndual_memory(x::Memory{Complex{T}}, w::Val, gen) where {T<:IEEEFloat}
+        out = Memory{dual_type(w, Complex{T})}(undef, length(x))
+        @inbounds for i in eachindex(x)
+            out[i] = _ndual_zero(x[i], w, gen)
+        end
+        return out
+    end
+end
+
+# Val{0} primal passthrough: matches `dual_type(Val(0), P) == P`.
+for f in (:zero_dual, :uninit_dual)
+    @eval begin
+        @inline Mooncake.$f(::Val{0}, x) = x
+        @inline Mooncake.$f(::Val{0}, x::IEEEFloat) = x
+        @inline Mooncake.$f(::Val{0}, z::Complex{<:IEEEFloat}) = z
+        @inline Mooncake.$f(::Val{0}, x::Array{<:IEEEFloat}) = x
+        @inline Mooncake.$f(::Val{0}, x::Array{<:Complex{<:IEEEFloat}}) = x
+    end
+end
+@inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x) = x
+@inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x::IEEEFloat) = x
+@inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, z::Complex{<:IEEEFloat}) = z
+@inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x::Array{<:IEEEFloat}) = x
+@inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x::Array{<:Complex{<:IEEEFloat}}) = x
+@static if VERSION >= v"1.11-"
+    for f in (:zero_dual, :uninit_dual)
+        @eval begin
+            @inline Mooncake.$f(::Val{0}, x::Memory{<:IEEEFloat}) = x
+            @inline Mooncake.$f(::Val{0}, x::Memory{<:Complex{<:IEEEFloat}}) = x
+            @inline Mooncake.$f(::Val{0}, x::MemoryRef{<:IEEEFloat}) = x
+            @inline Mooncake.$f(::Val{0}, x::MemoryRef{<:Complex{<:IEEEFloat}}) = x
+        end
+    end
+    @inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x::Memory{<:IEEEFloat}) = x
+    @inline Mooncake.randn_dual(
+        ::Val{0}, ::AbstractRNG, x::Memory{<:Complex{<:IEEEFloat}}
+    ) = x
+    @inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x::MemoryRef{<:IEEEFloat}) = x
+    @inline Mooncake.randn_dual(
+        ::Val{0}, ::AbstractRNG, x::MemoryRef{<:Complex{<:IEEEFloat}}
+    ) = x
+end
+
+# Width-N entry points share the per-element builder; each picks its own `gen`.
+# `zero_dual` and `uninit_dual` both produce zero partials on the bare-NDual
+# path (matches the existing `zero_dual(x::NDual)` and `uninit_dual(x::NDual)`
+# semantics); they would diverge only if NDual partials gained an "uninit"
+# representation distinct from zero.
+
+@inline Mooncake.zero_dual(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
+@inline Mooncake.zero_dual(w::Val, z::Complex{<:IEEEFloat}) =
+    _ndual_zero(z, w, _ -> zero(typeof(real(z))))
+@inline Mooncake.zero_dual(w::Val, x::Array{<:IEEEFloat}) =
+    _ndual_array(x, w, _ -> zero(eltype(x)))
+@inline Mooncake.zero_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) =
+    _ndual_array(x, w, _ -> zero(real(eltype(x))))
+
+@inline Mooncake.uninit_dual(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
+@inline Mooncake.uninit_dual(w::Val, z::Complex{<:IEEEFloat}) =
+    _ndual_zero(z, w, _ -> zero(typeof(real(z))))
+@inline Mooncake.uninit_dual(w::Val, x::Array{<:IEEEFloat}) =
+    _ndual_array(x, w, _ -> zero(eltype(x)))
+@inline Mooncake.uninit_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) =
+    _ndual_array(x, w, _ -> zero(real(eltype(x))))
+
+@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::IEEEFloat) =
+    _ndual_zero(x, w, _ -> randn(rng, typeof(x)))
+@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, z::Complex{<:IEEEFloat}) =
+    _ndual_zero(z, w, _ -> randn(rng, typeof(real(z))))
+@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Array{<:IEEEFloat}) =
+    _ndual_array(x, w, _ -> randn(rng, eltype(x)))
+@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Array{<:Complex{<:IEEEFloat}}) =
+    _ndual_array(x, w, _ -> randn(rng, real(eltype(x))))
+
+@static if VERSION >= v"1.11-"
+    @inline Mooncake.zero_dual(w::Val, x::Memory{<:IEEEFloat}) =
+        _ndual_memory(x, w, _ -> zero(eltype(x)))
+    @inline Mooncake.zero_dual(w::Val, x::Memory{<:Complex{<:IEEEFloat}}) =
+        _ndual_memory(x, w, _ -> zero(real(eltype(x))))
+    @inline Mooncake.uninit_dual(w::Val, x::Memory{<:IEEEFloat}) =
+        _ndual_memory(x, w, _ -> zero(eltype(x)))
+    @inline Mooncake.uninit_dual(w::Val, x::Memory{<:Complex{<:IEEEFloat}}) =
+        _ndual_memory(x, w, _ -> zero(real(eltype(x))))
+    @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Memory{<:IEEEFloat}) =
+        _ndual_memory(x, w, _ -> randn(rng, eltype(x)))
+    @inline Mooncake.randn_dual(
+        w::Val, rng::AbstractRNG, x::Memory{<:Complex{<:IEEEFloat}}
+    ) = _ndual_memory(x, w, _ -> randn(rng, real(eltype(x))))
+
+    # MemoryRef: lift the underlying Memory and rebuild the offset.
+    @inline Mooncake.zero_dual(w::Val, x::MemoryRef{<:IEEEFloat}) =
+        memoryref(Mooncake.zero_dual(w, x.mem), Core.memoryrefoffset(x))
+    @inline Mooncake.zero_dual(w::Val, x::MemoryRef{<:Complex{<:IEEEFloat}}) =
+        memoryref(Mooncake.zero_dual(w, x.mem), Core.memoryrefoffset(x))
+    @inline Mooncake.uninit_dual(w::Val, x::MemoryRef{<:IEEEFloat}) =
+        memoryref(Mooncake.uninit_dual(w, x.mem), Core.memoryrefoffset(x))
+    @inline Mooncake.uninit_dual(w::Val, x::MemoryRef{<:Complex{<:IEEEFloat}}) =
+        memoryref(Mooncake.uninit_dual(w, x.mem), Core.memoryrefoffset(x))
+    @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::MemoryRef{<:IEEEFloat}) =
+        memoryref(Mooncake.randn_dual(w, rng, x.mem), Core.memoryrefoffset(x))
+    @inline Mooncake.randn_dual(
+        w::Val, rng::AbstractRNG, x::MemoryRef{<:Complex{<:IEEEFloat}}
+    ) = memoryref(Mooncake.randn_dual(w, rng, x.mem), Core.memoryrefoffset(x))
+end
+
 zero_dual(x::NDual{T,N}) where {T,N} = NDual{T,N}(x.value, ntuple(_ -> zero(T), Val(N)))
 
 function randn_dual(rng::AbstractRNG, x::NDual{T,N}) where {T,N}
