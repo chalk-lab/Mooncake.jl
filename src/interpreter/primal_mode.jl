@@ -85,10 +85,13 @@ function _uninit_dual(w::Val, v::Complex{T}) where {T<:IEEEFloat}
 end
 # Width-N fallback for IR constants. Concrete container type overloads live in
 # `nfwd/NfwdMooncake.jl` (Array, Memory). Reaching this fallback with a value
-# that has a non-trivial tangent_type would silently downgrade to width-1, so
-# fail loudly instead — the missing overload should be added in NfwdMooncake.jl.
+# that has *actual* differentiable scalar slots would silently downgrade to
+# width-1, so fail loudly in that case — the missing overload should be added
+# in NfwdMooncake.jl. Containers whose tangent_type wraps only NoTangent
+# leaves (e.g. `Ref{Int}` → `MutableTangent{(x=NoTangent,)}`) are safe; their
+# `_count_slots` is 0.
 function _uninit_dual(::Val, v)
-    if tangent_type(_typeof(v)) !== NoTangent
+    if _count_slots(v) > 0
         throw(
             ArgumentError(
                 "_uninit_dual: missing width-N overload for `$(_typeof(v))`. " *
