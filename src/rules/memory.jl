@@ -909,19 +909,15 @@ end
 #
 # Each operation has both a `Dual{<:Container{<:_HasNDual}}` form and a bare
 # `Container{<:_HasNDual}` form. They serve different callers:
-#  - The bare form is what the primal-mode lifted IR dispatches to: arguments flow
-#    as bare typed SSAValues whose static type already encodes NDual elements (see
-#    `_lift_type` in primal_mode.jl), so inliner picks this overload at compile time.
-#  - The `Dual{...}` form is the stable user-facing frule!! interface — present so
-#    that direct `frule!!(zero_dual(f), zero_dual(container))` calls outside the
-#    lifted IR (e.g. from custom rule chains or test harnesses) still resolve.
-#    TODO: this user-facing entry point is hard to drive at width N because
-#    `zero_dual` is currently width-1 only — `zero_dual(x::IEEEFloat)` returns a
-#    bare `Dual{Float64,Float64}`, not `dual_type(Val(N), Float64) = NDual{T,N}`.
-#    Making `zero_dual` width-aware (e.g. `zero_dual(::Val{N}, x)`) so its output
-#    matches `dual_type(Val(N), typeof(x))` would close this gap and let user
-#    code construct width-N seeds without reaching into NDual constructors.
-#    Tracked in pr1151.md.
+#  - The `Dual{...}` form is what the primal-mode lifted IR dispatches to: the
+#    IR rewriter wraps bare typed SSAValues in `Dual{P,NoTangent}` before the
+#    rule call (see the `%new(Dual{...}, ssa, NoTangent())` statements in the
+#    lifted IR), so the rule signature inside the `frule!!` chain sees a
+#    Dual-wrapped argument.
+#  - The bare form is the user-facing surface for direct frule!! calls outside
+#    the lifted IR — `frule!!(zero_dual(f), zero_dual(Val(N), x))` after #17
+#    produces bare `Container{<:_HasNDual}` (since `dual_type(Val(N), Array{T,D})
+#    == Array{NDual{T,N},D}`), which dispatches to this overload.
 # Aqua confirms no ambiguities between the pair (`Aqua.test_ambiguities([Mooncake])`).
 
 @inline function frule!!(
