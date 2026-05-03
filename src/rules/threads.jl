@@ -27,24 +27,44 @@ for name in [
     :jl_get_next_task,
     :jl_task_get_next,
 ]
-    @eval frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_frule(
-        Val($(QuoteNode(name))), args...
-    )
+    @eval frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$(QuoteNode(name))}}, args...) =
+        _threading_foreigncall_frule(Val($(QuoteNode(name))), args...)
 
-    @eval rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_rrule()
+    @eval rrule!!(
+        ::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...
+    ) = _threading_foreigncall_rrule()
 end
 
 @is_primitive MinimalCtx ForwardMode Tuple{
     typeof(Base.Threads.threading_run),F,Bool
 } where {F}
 
+# `build_frule` already memoises the worker rule per `(F, world)` via `interp.oc_cache`,
+# but each call still pays for `[_copy(worker_rule) for _ in 1:threadpoolsize()]` —
+# `_copy` recursively copies captures and runs once per thread. Cache the per-thread
+# array keyed by signature + threadpoolsize (the latter changes if the user reconfigures
+# threads at runtime).
+const _THREADING_RUN_RULES_LOCK = ReentrantLock()
+const _THREADING_RUN_RULES = Dict{Tuple{Any,Int,UInt},Vector{Any}}()
+
+function _threading_run_worker_rules(::Type{F}, world::UInt) where {F}
+    n = Threads.threadpoolsize()
+    key = (F, n, world)
+    lock(_THREADING_RUN_RULES_LOCK) do
+        cached = get(_THREADING_RUN_RULES, key, nothing)
+        cached === nothing || return cached
+        interp = get_interpreter(ForwardMode)
+        worker_rule = build_frule(interp, Tuple{F,Int})
+        rules = Any[_copy(worker_rule) for _ in 1:n]
+        _THREADING_RUN_RULES[key] = rules
+        return rules
+    end
+end
+
 function frule!!(
     ::Dual{typeof(Base.Threads.threading_run)}, fun::Dual{F}, static::Dual{Bool}
 ) where {F}
-    # NOTE: re-building the rule on each pass is not optimal; caching it is a future effort.
-    interp = get_interpreter(ForwardMode)
-    worker_rule = build_frule(interp, Tuple{F,Int})
-    worker_rules = [_copy(worker_rule) for _ in 1:Threads.threadpoolsize()]
+    worker_rules = _threading_run_worker_rules(F, get_interpreter(ForwardMode).world)
     Base.Threads.threading_run(primal(static)) do tid
         1 <= tid <= length(worker_rules) ||
             throw(ArgumentError("unexpected thread id $tid"))
