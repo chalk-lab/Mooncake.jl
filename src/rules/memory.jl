@@ -6,53 +6,12 @@
 # Memory
 #
 
-# NDual dispatch overloads for Memory / MemoryRef types.
-# These extend functions defined in Mooncake.jl, new.jl, and primal_mode.jl.
-
-@inline _has_ndual(::Memory{<:NDual}, rest...) = true
-@inline _has_ndual(::Memory{<:Complex{<:NDual}}, rest...) = true
-@inline _has_ndual(::MemoryRef{<:NDual}, rest...) = true
-@inline _has_ndual(::MemoryRef{<:Complex{<:NDual}}, rest...) = true
-
-@inline function _dual_or_ndual(
-    val::Memory{T}, t::NTangent{<:NTuple{W}}
-) where {T<:IEEEFloat,W}
-    lanes = t.lanes
-    result = Memory{NDual{T,W}}(undef, length(val))
-    @inbounds for i in eachindex(val)
-        result[i] = NDual(val[i], ntuple(j -> lanes[j][i], Val(W)))
-    end
-    return result
-end
-
-@inline _find_ndual_memref(x::MemoryRef{<:Union{NDual,Complex{<:NDual}}}, rest...) = x
-
-@inline _ndual_width(::Memory{NDual{T,W}}, rest...) where {T,W} = Val(W)
-@inline _ndual_width(::Memory{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
-@inline _ndual_width(::MemoryRef{NDual{T,W}}, rest...) where {T,W} = Val(W)
-@inline _ndual_width(::MemoryRef{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
-
-@inline _tangent_dir(x::Memory{NDual{T,N}}, i) where {T,N} = map(d -> d.partials[i], x)
-@inline _tangent_dir(x::Memory{Complex{NDual{T,N}}}, i) where {T,N} = map(
-    z -> complex(z.re.partials[i], z.im.partials[i]), x
-)
-
-function _uninit_dual(w::Val, ::Type{Memory{T}}) where {T<:IEEEFloat}
-    return Dual(Memory{dual_type(w, T)}, NoTangent())
-end
-function _uninit_dual(w::Val, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat}
-    return Dual(Memory{Complex{dual_type(w, T)}}, NoTangent())
-end
-
-@inline function zero_derivative(
-    f::Dual, x1::T, x_rest::Vararg{T}
-) where {T<:Union{Memory{<:Dual},Memory{<:Complex{<:Dual}}}}
-    return zero_dual(primal(f)(map(x -> x isa Dual ? primal(x) : x, (x1, x_rest...))...))
-end
+# NDual dispatch helpers for Memory / MemoryRef, the `_uninit_dual` Memory
+# container overloads, and the `zero_derivative` Memory-container method all
+# live in `nfwd/NfwdMooncake.jl` so that all NDual / Memory dual-dispatch
+# entry points sit in one file.
 
 # Tangent Interface Implementation
-
-const Maybe{T} = Union{Nothing,T}
 
 @foldable tangent_type(::Type{<:Memory{P}}) where {P} = Memory{tangent_type(P)}
 

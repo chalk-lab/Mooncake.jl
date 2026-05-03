@@ -29,50 +29,9 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
     return Dual(y, build_output_tangent(P, primals, map(tangent, x)))
 end
 
-@inline _find_ndual_memref(_, rest...) = _find_ndual_memref(rest...)
-@inline _find_ndual_memref() = nothing
-
-# Extract primal from any representation: Dual-wrapped, bare NDual, or plain value.
-@inline _ndual_primal(x::Dual) = primal(x)
-@inline _ndual_primal(x::NDual) = primal(x)
-@inline _ndual_primal(x::Complex{<:NDual}) = primal(x)
-@inline _ndual_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
-@inline _ndual_primal(x::AbstractArray{<:Complex{<:NDual}}) = map(
-    z -> complex(z.re.value, z.im.value), x
-)
-@inline _ndual_primal(x::Tuple) = map(_ndual_primal, x)
-@inline _ndual_primal(x) = x
-
-@inline _ndual_width(x::Tuple, rest...) = _ndual_width(x..., rest...)
-@inline _ndual_width(::NDual{T,W}, rest...) where {T,W} = Val(W)
-@inline _ndual_width(::Complex{NDual{T,W}}, rest...) where {T,W} = Val(W)
-@inline _ndual_width(::AbstractArray{NDual{T,W}}, rest...) where {T,W} = Val(W)
-@inline _ndual_width(::AbstractArray{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
-@inline _ndual_width(::Dual{<:Any,NTangent{L}}, rest...) where {L<:Tuple} = Val(
-    fieldcount(L)
-)
-@inline _ndual_width(x::Dual, rest...) = _ndual_width(tangent(x), rest...)
-@inline _ndual_width(_, rest...) = _ndual_width(rest...)
-@inline _ndual_width() = error("_ndual_width called with no NDual arguments")
-
-@inline _tangent_dir(x::NDual, i) = x.partials[i]
-@inline _tangent_dir(x::Complex{<:NDual}, i) = complex(x.re.partials[i], x.im.partials[i])
-@inline _tangent_dir(x::Dual{<:Any,<:NTangent}, i) = tangent(x).lanes[i]
-@inline _tangent_dir(x::Dual{<:Any,<:Tuple}, i) = map(
-    t -> _tangent_dir_elem(t, i), tangent(x)
-)
-@inline _tangent_dir(x::Dual, _) = tangent(x)
-@inline _tangent_dir(x::AbstractArray{NDual{T,N}}, i) where {T,N} = map(
-    d -> d.partials[i], x
-)
-@inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} = map(
-    z -> complex(z.re.partials[i], z.im.partials[i]), x
-)
-@inline _tangent_dir(x::Tuple, i) = map(xi -> _tangent_dir(xi, i), x)
-@inline _tangent_dir(x, _) = zero_tangent(x)
-
-@inline _tangent_dir_elem(t::NTangent, i) = t.lanes[i]
-@inline _tangent_dir_elem(t, _) = t
+# `_find_ndual_memref`, `_ndual_primal`, `_ndual_width`, `_tangent_dir`, and
+# `_tangent_dir_elem` are defined in `nfwd/NfwdMooncake.jl` so that all NDual
+# container dispatch lives in one file.
 
 @inline function _ndual_new_result(::Type{P}, y, x::Tuple, primals::Tuple) where {P}
     W = _ndual_width(x...)

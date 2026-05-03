@@ -319,7 +319,7 @@ end
 # Called from `_nfwd_rdata` with the loop's global_slot, which
 # equals the local slot because that path is specialised to a single input at offset 0.
 @inline function _nfwd_accumulate_gradient(g::T, slot::Int, v) where {T<:IEEEFloat}
-    slot == 1 ? g + v : g
+    return slot == 1 ? g + v : g
 end
 
 @inline function _nfwd_accumulate_gradient(g::Complex{T}, slot::Int, v) where {T<:IEEEFloat}
@@ -340,17 +340,16 @@ end
 end
 
 # Scalar (real or complex): chunk_size=1 → plain scalar zero; chunk_size=N → N-tuple of zeros.
-@inline _nfwd_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{1}) = zero(
-    y
-)
-@inline _nfwd_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{N}) where {N} = ntuple(
-    _ -> zero(y), Val(N)
-)
+@inline _nfwd_zero_output_tangent(y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{1}) =
+    zero(y)
+@inline _nfwd_zero_output_tangent(
+    y::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::Val{N}
+) where {N} = ntuple(_ -> zero(y), Val(N))
 
 # Array (real or complex elements): chunk_size=1 → same-shape zero array; chunk_size=N → N extra dirs.
-@inline _nfwd_zero_output_tangent(y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{1}) = zero_tangent(
-    y
-)
+@inline _nfwd_zero_output_tangent(
+    y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{1}
+) = zero_tangent(y)
 @inline function _nfwd_zero_output_tangent(
     y::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, ::Val{N}
 ) where {N}
@@ -420,7 +419,7 @@ function _nfwd_contract_output(ȳ::Tuple, dy::Tuple)
 end
 
 function _nfwd_contract_output(ȳ, dy)
-    _nfwd_output_error(dy)
+    return _nfwd_output_error(dy)
 end
 
 #
@@ -878,17 +877,17 @@ dual_type(::Val{0}, ::Type{T}) where {T<:IEEEFloat} = T
 dual_type(::Val{0}, ::Type{Complex{T}}) where {T<:IEEEFloat} = Complex{T}
 dual_type(::Val{0}, ::Type{Array{T,D}}) where {T<:IEEEFloat,D} = Array{T,D}
 function dual_type(::Val{0}, ::Type{Array{Complex{T},D}}) where {T<:IEEEFloat,D}
-    Array{Complex{T},D}
+    return Array{Complex{T},D}
 end
 @static if VERSION >= v"1.11-"
     dual_type(::Val{0}, ::Type{MemoryRef{T}}) where {T<:IEEEFloat} = MemoryRef{T}
     dual_type(::Val{0}, ::Type{Memory{T}}) where {T<:IEEEFloat} = Memory{T}
-    dual_type(::Val{0}, ::Type{MemoryRef{Complex{T}}}) where {T<:IEEEFloat} = MemoryRef{
-        Complex{T}
-    }
-    dual_type(::Val{0}, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat} = Memory{
-        Complex{T}
-    }
+    function dual_type(::Val{0}, ::Type{MemoryRef{Complex{T}}}) where {T<:IEEEFloat}
+        return MemoryRef{Complex{T}}
+    end
+    function dual_type(::Val{0}, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat}
+        return Memory{Complex{T}}
+    end
 end
 
 # tangent_type(NDual) uses the default struct-based tangent_type. HVP runs
@@ -961,36 +960,6 @@ function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     )
 end
 
-# ── Width-mismatch checking ──────────────────────────────────────────────────
-
-"""
-    ndual_width(x)
-
-Return the NDual width N for a dual-typed argument, or `nothing` for
-`Dual{P, NoTangent}` arguments (which are compatible with any width).
-Throws for unsupported types.
-"""
-ndual_width(::NDual{T,N}) where {T,N} = N
-ndual_width(::Complex{NDual{T,N}}) where {T,N} = N
-ndual_width(::Array{NDual{T,N}}) where {T,N} = N
-ndual_width(::Array{Complex{NDual{T,N}}}) where {T,N} = N
-ndual_width(::Dual{P,NoTangent}) where {P} = nothing  # compatible with any width
-
-function check_ndual_width_consistency(args...)
-    widths = filter(!isnothing, map(ndual_width, args))
-    isempty(widths) && return nothing
-    w = first(widths)
-    if !all(==(w), widths)
-        throw(
-            ArgumentError(
-                "NDual width mismatch: got widths $(collect(widths)) across arguments. " *
-                "All NDual arguments in a single rule call must have the same width N.",
-            ),
-        )
-    end
-    return w
-end
-
 # _uninit_dual for Array at width N: return bare Array{NDual} (matches dual_type).
 function Mooncake._uninit_dual(::Val{N}, v::Array{T,D}) where {N,T<:IEEEFloat,D}
     ndual_arr = Array{NDual{T,N},D}(undef, size(v)...)
@@ -998,6 +967,132 @@ function Mooncake._uninit_dual(::Val{N}, v::Array{T,D}) where {N,T<:IEEEFloat,D}
         ndual_arr[i] = NDual{T,N}(v[i], ntuple(_ -> zero(T), Val(N)))
     end
     return ndual_arr
+end
+
+# Memory container overloads (1.11+): mirror the Array{T} dual_type lift.
+@static if VERSION >= v"1.11-"
+    function Mooncake._uninit_dual(w::Val, ::Type{Memory{T}}) where {T<:IEEEFloat}
+        return Dual(Memory{dual_type(w, T)}, NoTangent())
+    end
+    function Mooncake._uninit_dual(w::Val, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat}
+        return Dual(Memory{Complex{dual_type(w, T)}}, NoTangent())
+    end
+
+    @inline function Mooncake.zero_derivative(
+        f::Dual, x1::T, x_rest::Vararg{T}
+    ) where {T<:Union{Memory{<:Dual},Memory{<:Complex{<:Dual}}}}
+        return zero_dual(
+            primal(f)(map(x -> x isa Dual ? primal(x) : x, (x1, x_rest...))...)
+        )
+    end
+end
+
+# ── NDual container dispatch helpers ──────────────────────────────────────────
+#
+# Centralised here (rather than scattered across rule files) so that adding a new
+# container type only requires touching a single file. A missing overload causes
+# the FCache forward path to silently fall back to width-1 — see
+# test/tangents/dual.jl "NDual dispatch helpers" for the regression guard.
+
+# `_has_ndual` — true if any argument carries NDual data.
+@inline _has_ndual() = false
+@inline _has_ndual(::NDual, rest...) = true
+@inline _has_ndual(::Complex{<:NDual}, rest...) = true
+@inline _has_ndual(::AbstractArray{<:NDual}, rest...) = true
+@inline _has_ndual(::AbstractArray{<:Complex{<:NDual}}, rest...) = true
+@inline _has_ndual(::Dual{<:Any,<:NTangent}, rest...) = true
+@inline _has_ndual(x::Dual, rest...) = _has_ndual(tangent(x), rest...)
+@inline _has_ndual(x::Tuple, rest...) = _has_ndual(x..., rest...)
+@inline _has_ndual(_, rest...) = _has_ndual(rest...)
+@static if VERSION >= v"1.11-"
+    @inline _has_ndual(::MemoryRef{<:NDual}, rest...) = true
+    @inline _has_ndual(::MemoryRef{<:Complex{<:NDual}}, rest...) = true
+end
+
+# `_HasNDual` is the Union alias used by rule signatures (e.g. memory.jl /
+# array_legacy.jl) to dispatch on bare NDual containers without rewrapping.
+const _HasNDual = Union{NDual,Complex{<:NDual}}
+
+# `_dual_or_ndual(val, tangent)` — combine a primal field with its tangent into the
+# canonical width-aware dual representation: Dual for non-IEEEFloat, NDual for
+# IEEEFloat-bearing primals when the tangent is an NTangent.
+@inline _dual_or_ndual(val, tangent) = Dual(val, tangent)
+@inline _dual_or_ndual(val::IEEEFloat, t::NTangent) = NDual(val, t.lanes)
+@inline function _dual_or_ndual(
+    val::Complex{T}, t::NTangent{<:NTuple{W}}
+) where {T<:IEEEFloat,W}
+    lanes = t.lanes
+    re = NDual(real(val), ntuple(j -> real(lanes[j]), Val(W)))
+    im = NDual(imag(val), ntuple(j -> imag(lanes[j]), Val(W)))
+    return Complex(re, im)
+end
+@static if VERSION >= v"1.11-"
+    @inline function _dual_or_ndual(
+        val::Memory{T}, t::NTangent{<:NTuple{W}}
+    ) where {T<:IEEEFloat,W}
+        lanes = t.lanes
+        result = Memory{NDual{T,W}}(undef, length(val))
+        @inbounds for i in eachindex(val)
+            result[i] = NDual(val[i], ntuple(j -> lanes[j][i], Val(W)))
+        end
+        return result
+    end
+end
+
+# `_ndual_width` — extract Val(W) from any NDual-bearing argument; used by `_new_`
+# to size NTangent output. Errors loudly when called with no NDual arguments so
+# missing overloads fail fast rather than producing wrong-width tangents.
+@inline _ndual_width(x::Tuple, rest...) = _ndual_width(x..., rest...)
+@inline _ndual_width(::NDual{T,W}, rest...) where {T,W} = Val(W)
+@inline _ndual_width(::Complex{NDual{T,W}}, rest...) where {T,W} = Val(W)
+@inline _ndual_width(::AbstractArray{NDual{T,W}}, rest...) where {T,W} = Val(W)
+@inline _ndual_width(::AbstractArray{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
+@inline _ndual_width(::Dual{<:Any,NTangent{L}}, rest...) where {L<:Tuple} =
+    Val(fieldcount(L))
+@inline _ndual_width(x::Dual, rest...) = _ndual_width(tangent(x), rest...)
+@inline _ndual_width(_, rest...) = _ndual_width(rest...)
+@inline _ndual_width() = error("_ndual_width called with no NDual arguments")
+@static if VERSION >= v"1.11-"
+    @inline _ndual_width(::MemoryRef{NDual{T,W}}, rest...) where {T,W} = Val(W)
+    @inline _ndual_width(::MemoryRef{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
+end
+
+# `_ndual_primal` — extract the primal value from any NDual-bearing representation.
+# Used by `_new_` to construct the primal struct without partials.
+@inline _ndual_primal(x::Dual) = primal(x)
+@inline _ndual_primal(x::NDual) = primal(x)
+@inline _ndual_primal(x::Complex{<:NDual}) = primal(x)
+@inline _ndual_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
+@inline _ndual_primal(x::AbstractArray{<:Complex{<:NDual}}) =
+    map(z -> complex(z.re.value, z.im.value), x)
+@inline _ndual_primal(x::Tuple) = map(_ndual_primal, x)
+@inline _ndual_primal(x) = x
+
+# `_tangent_dir(x, i)` — extract the i-th direction tangent from any NDual-bearing
+# representation. Used by `_new_` to assemble per-direction NTangent lanes.
+@inline _tangent_dir(x::NDual, i) = x.partials[i]
+@inline _tangent_dir(x::Complex{<:NDual}, i) = complex(x.re.partials[i], x.im.partials[i])
+@inline _tangent_dir(x::Dual{<:Any,<:NTangent}, i) = tangent(x).lanes[i]
+@inline _tangent_dir(x::Dual{<:Any,<:Tuple}, i) =
+    map(t -> _tangent_dir_elem(t, i), tangent(x))
+@inline _tangent_dir(x::Dual, _) = tangent(x)
+@inline _tangent_dir(x::AbstractArray{NDual{T,N}}, i) where {T,N} =
+    map(d -> d.partials[i], x)
+@inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} =
+    map(z -> complex(z.re.partials[i], z.im.partials[i]), x)
+@inline _tangent_dir(x::Tuple, i) = map(xi -> _tangent_dir(xi, i), x)
+@inline _tangent_dir(x, _) = zero_tangent(x)
+
+@inline _tangent_dir_elem(t::NTangent, i) = t.lanes[i]
+@inline _tangent_dir_elem(t, _) = t
+
+# `_find_ndual_memref` — locate the NDual-typed `MemoryRef` in an argument list,
+# used by the `Array` branch of `_new_` to determine the NDual element type for
+# the result container.
+@inline _find_ndual_memref(_, rest...) = _find_ndual_memref(rest...)
+@inline _find_ndual_memref() = nothing
+@static if VERSION >= v"1.11-"
+    @inline _find_ndual_memref(x::MemoryRef{<:Union{NDual,Complex{<:NDual}}}, rest...) = x
 end
 
 end

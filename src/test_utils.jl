@@ -97,7 +97,6 @@ using Mooncake:
     frule!!,
     rrule!!,
     DebugFRule,
-    build_frule,
     build_rrule,
     tangent_type,
     zero_tangent,
@@ -157,7 +156,6 @@ using Mooncake:
     Mode,
     ForwardMode,
     ReverseMode,
-    DebugFRule,
     DebugRRule,
     build_frule,
     build_rrule,
@@ -1088,7 +1086,6 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
-
         test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
     end
 end
@@ -1102,7 +1099,6 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
         interface_only, perf_flag, _, f, x...
     ) in test_cases
-
         test_rule(
             rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
         )
@@ -1230,12 +1226,12 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     __dot(t, s) = Mooncake._dot_internal(IdDict{Any,Any}(), t, s)
     __scale(a::Float64, t) = Mooncake._scale_internal(IdDict{Any,Any}(), a, t)
     _populate_address_map(p, t) = populate_address_map_internal(AddressMap(), p, t)
-    _tangent_to_primal!!(p, t) = Mooncake.tangent_to_primal_internal!!(
-        p, t, IdDict{Any,Any}()
-    )
-    _primal_to_tangent!!(t, p) = Mooncake.primal_to_tangent_internal!!(
-        t, p, IdDict{Any,Any}()
-    )
+    function _tangent_to_primal!!(p, t)
+        return Mooncake.tangent_to_primal_internal!!(p, t, IdDict{Any,Any}())
+    end
+    function _primal_to_tangent!!(t, p)
+        return Mooncake.primal_to_tangent_internal!!(t, p, IdDict{Any,Any}())
+    end
 
     # Check that tangent_type returns a `Type`.
     T = tangent_type(P)

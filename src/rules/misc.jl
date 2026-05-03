@@ -173,7 +173,7 @@ end
 _get_tangent_field(::NoTangent, _) = NoTangent()
 _get_tangent_field(::NoTangent, _, _) = NoTangent()
 function _get_tangent_field(f::NTangent, name)
-    NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
+    return NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
 end
 function _get_tangent_field(f::NTangent, name, inbounds)
     return NTangent(map(t -> _get_tangent_field(t, name, inbounds), f.lanes))
@@ -202,9 +202,8 @@ end
 @unstable @inline _get_fdata_field(_, t::Union{Tuple,NamedTuple}, f) = getfield(t, f)
 @unstable @inline _get_fdata_field(_, data::FData, f) = val(getfield(data.data, f))
 @unstable @inline _get_fdata_field(primal, ::NoFData, f) = uninit_fdata(getfield(primal, f))
-@unstable @inline _get_fdata_field(_, t::MutableTangent, f) = fdata(
-    val(getfield(t.fields, f))
-)
+@unstable @inline _get_fdata_field(_, t::MutableTangent, f) =
+    fdata(val(getfield(t.fields, f)))
 
 increment_field_rdata!(dx::MutableTangent, ::NoRData, ::Val) = dx
 increment_field_rdata!(dx::NoFData, ::NoRData, ::Val) = dx
@@ -231,7 +230,7 @@ end
     if tangent_type(P) === NoTangent
         return uninit_dual(primal_field)
     else
-        return Dual(primal_field, _get_tangent_field(tangent(x), f))
+        return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
     end
 end
 @inline function frule!!(

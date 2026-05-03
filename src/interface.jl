@@ -62,11 +62,15 @@ struct ValueAndPullbackReturnTypeError <: Exception
 end
 
 function Base.showerror(io::IO, err::ValueAndGradientReturnTypeError)
-    _print_boxed_error(io, split("ValueAndGradientReturnTypeError: $(err.msg)", '\n'))
+    return _print_boxed_error(
+        io, split("ValueAndGradientReturnTypeError: $(err.msg)", '\n')
+    )
 end
 
 function Base.showerror(io::IO, err::ValueAndPullbackReturnTypeError)
-    _print_boxed_error(io, split("ValueAndPullbackReturnTypeError: $(err.msg)", '\n'))
+    return _print_boxed_error(
+        io, split("ValueAndPullbackReturnTypeError: $(err.msg)", '\n')
+    )
 end
 
 function throw_forward_ret_type_error(y)
@@ -320,11 +324,11 @@ function _cache_print_io_summary(io::IO, input_specs::Tuple, output_summary)
     for (i, spec) in enumerate(input_specs)
         print(io, "\n  input_", i, ": ", _cache_spec_summary(spec))
     end
-    print(io, "\n  output: ", output_summary)
+    return print(io, "\n  output: ", output_summary)
 end
 
 function Base.show(io::IO, cache::Cache)
-    print(
+    return print(
         io,
         "Mooncake.Cache(",
         "mode=:reverse, ",
@@ -347,7 +351,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::Cache)
         "  inputs: ",
         _cache_input_count(cache),
     )
-    _cache_print_io_summary(
+    return _cache_print_io_summary(
         io, _cache_x_input_specs(cache), _cache_spec_summary(getfield(cache, :output_spec))
     )
 end
@@ -895,14 +899,15 @@ InputSpec(::Type{T}, s::S) where {T,S} = InputSpec{T,S}(s)
     end
 end
 
-@inline _cache_spec_summary(spec::InputSpec{T}) where {T} = "$(T) ($(_cache_spec_size_summary(spec)))"
+@inline _cache_spec_summary(spec::InputSpec{T}) where {T} =
+    "$(T) ($(_cache_spec_size_summary(spec)))"
 
 struct PreparedCacheError <: Exception
     msg::String
 end
 
 function Base.showerror(io::IO, err::PreparedCacheError)
-    _print_boxed_error(io, split("PreparedCacheError:\n$(err.msg)", '\n'))
+    return _print_boxed_error(io, split("PreparedCacheError:\n$(err.msg)", '\n'))
 end
 
 function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
@@ -993,7 +998,7 @@ end
 end
 
 function Base.show(io::IO, cache::FCache)
-    print(
+    return print(
         io, "Mooncake.FCache(", "mode=:forward, ", "inputs=", _cache_input_count(cache), ")"
     )
 end
@@ -1006,7 +1011,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::FCache)
         "  inputs: ",
         _cache_input_count(cache),
     )
-    _cache_print_io_summary(
+    return _cache_print_io_summary(
         io, Base.tail(getfield(cache, :input_specs)), _output_summary(cache)
     )
 end
@@ -1035,10 +1040,8 @@ end
 
 # ── fcache gradient seeding ───────────────────────────────────────────────────────
 
-@inline _make_seed_tangent(x, slot::Int) = _make_seed_tangent(
-    x, slot, Ref(0), IdDict{Any,Any}()
-)
-@inline _make_seed_tangent(::NoTangent, _slot::Int, _cursor, _dict) = NoTangent()
+@inline _make_seed_tangent(x, slot::Int) =
+    _make_seed_tangent(x, slot, Ref(0), IdDict{Any,Any}())
 @inline function _make_seed_tangent(
     ::NoTangent, _slot::Int, _cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
 )
@@ -1289,7 +1292,23 @@ function _gradient_widthN(
         output = rule(ndual_inputs...)
         y = output isa NDual ? output.value : primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        coeffs = output isa NDual ? output.partials : (Float64(tangent(output)),)
+        # Width-N IEEEFloat output must come back as NDual: dual_type(Val(N), ::IEEEFloat)
+        # is NDual{T,N}, so a non-NDual output here means a custom rule returned a
+        # width-1 Dual in a width-N pipeline. coeffs would then be a 1-tuple and the
+        # `coeffs[d]` loop below would BoundsError for chunk>1; raise explicitly instead.
+        coeffs = if output isa NDual
+            output.partials
+        elseif chunk == 1
+            (Float64(tangent(output)),)
+        else
+            throw(
+                ArgumentError(
+                    "value_and_gradient!! width-$W path expected an NDual output for " *
+                    "IEEEFloat primal but got `$(typeof(output))`. A custom frule for " *
+                    "this signature likely returned a width-1 Dual instead of width-$W.",
+                ),
+            )
+        end
         for d in 1:chunk
             coeff = Float64(coeffs[d])
             native_gradients = tuple_map(
@@ -1362,9 +1381,8 @@ end
 ) where {T<:IEEEFloat,W}
     return Dual(x, NoTangent())
 end
-@inline _combine_to_ndual(x::Complex{T}, ::Tuple{}) where {T<:IEEEFloat} = Dual(
-    x, NoTangent()
-)
+@inline _combine_to_ndual(x::Complex{T}, ::Tuple{}) where {T<:IEEEFloat} =
+    Dual(x, NoTangent())
 @inline function _combine_to_ndual(
     x::AbstractArray{Complex{T}}, ::NTuple{W,NoTangent}
 ) where {T<:IEEEFloat,W}
@@ -1562,7 +1580,7 @@ struct HVPCache{M,C,S<:Tuple}
 end
 
 function Base.show(io::IO, cache::HVPCache{M}) where {M}
-    print(
+    return print(
         io,
         "Mooncake.HVPCache(",
         "mode=:",
@@ -1577,7 +1595,7 @@ end
 function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache{M}) where {M}
     n_inputs = _cache_input_count(cache)
     print(io, "Mooncake.HVPCache\n", "  mode: ", M, "\n", "  inputs: ", n_inputs)
-    _cache_print_io_summary(
+    return _cache_print_io_summary(
         io, Base.tail(getfield(cache, :input_specs)), _hvp_output_summary(cache)
     )
 end
@@ -2023,7 +2041,7 @@ end
 
 @unstable function value_and_jacobian!!(cache::Union{Cache,FCache}, f::F, x) where {F}
     _validate_jacobian_argument(x)
-    _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
+    return _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
 end
 
 @unstable function value_and_jacobian!!(cache, f::F, x) where {F}
