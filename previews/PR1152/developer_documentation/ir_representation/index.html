@@ -492,8 +492,8 @@ julia&gt; signature = Tuple{typeof(foo), Float64}
 Tuple{typeof(foo), Float64}
 
 julia&gt; Base.code_ircode_by_type(signature)[1][1]
-2 1 ─ %1 = invoke sin(_2::Float64)::Float64
-3 │   %2 = invoke cos(%1::Float64)::Float64
+2 1 ─ %1 =    invoke sin(_2::Float64)::Float64
+3 │   %2 =    invoke cos(%1::Float64)::Float64
 4 └──      return %2</code></pre><p>The statements are associated to SSA names such as <code>%1</code> and <code>%2</code>. Each statement is associated to a single SSA value, and uses of arguments are written as <code>_n</code>, where <code>_1</code> is the function itself.</p><p>This IR is obtained after type inference and some optimisation passes, so each statement already carries type information. In the example above, <code>%1</code> and <code>%2</code> are both known to be <code>Float64</code>.</p><h3 id="Control-Flow"><a class="docs-heading-anchor" href="#Control-Flow">Control Flow</a><a id="Control-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Control-Flow" title="Permalink"></a></h3><p>Control flow is expressed via basic blocks and terminators:</p><pre><code class="language-julia-repl hljs">julia&gt; function bar(x)
            if x &gt; 0
                return x
@@ -504,11 +504,11 @@ julia&gt; Base.code_ircode_by_type(signature)[1][1]
 bar (generic function with 1 method)
 
 julia&gt; Base.code_ircode_by_type(Tuple{typeof(bar), Float64})[1][1]
-2 1 ─ %1 = Base.lt_float(0.0, _2)::Bool
-  │   %2 = Base.or_int(%1, false)::Bool
+2 1 ─ %1 = intrinsic Base.lt_float(0.0, _2)::Bool
+  │   %2 = intrinsic Base.or_int(%1, false)::Bool
   └──      goto #3 if not %2
 3 2 ─      return _2
-5 3 ─ %5 = Base.mul_float(5.0, _2)::Float64
+5 3 ─ %5 = intrinsic Base.mul_float(5.0, _2)::Float64
   └──      return %5</code></pre><p>The corresponding control-flow graph is stored separately in the <code>cfg</code> field:</p><pre><code class="language-julia-repl hljs">julia&gt; Base.code_ircode_by_type(Tuple{typeof(bar), Float64})[1][1].cfg
 CFG with 3 blocks:
   bb 1 (stmts 1:3) → bb 3, 2
@@ -528,10 +528,10 @@ julia&gt; ir = Base.code_ircode_by_type(Tuple{typeof(my_factorial), Int})[1][1]
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
   │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = Base.add_int(%3, 1)::Int64
-6 │   %7 = Base.mul_int(%2, %6)::Int64
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic Base.mul_int(%2, %6)::Int64
 7 └──      goto #2
 8 4 ─      return %2</code></pre><p>For example,</p><pre><code class="language-julia hljs">%2 = φ (#1 =&gt; 1, #3 =&gt; %7)</code></pre><p>means <code>%2</code> takes value <code>1</code> when control arrives from block <code>#1</code>, and the value of <code>%7</code> when control arrives from block <code>#3</code>.</p><h2 id="Julia-Compiler&#39;s-IR-Datastructure"><a class="docs-heading-anchor" href="#Julia-Compiler&#39;s-IR-Datastructure">Julia Compiler&#39;s IR Datastructure</a><a id="Julia-Compiler&#39;s-IR-Datastructure-1"></a><a class="docs-heading-anchor-permalink" href="#Julia-Compiler&#39;s-IR-Datastructure" title="Permalink"></a></h2><p>The compiler represents inferred IR as <code>Core.Compiler.IRCode</code>. The statements live in the <code>stmts</code> field, which is a <code>Core.Compiler.InstructionStream</code>. An <code>InstructionStream</code> is a bundle of parallel vectors: the statement itself, its inferred type, call info, line data, and flags.</p><p>For example:</p><pre><code class="language-julia-repl hljs">julia&gt; ir.stmts.stmt
 9-element Vector{Any}:
@@ -573,13 +573,13 @@ julia&gt; new_ir
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
   │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = Base.add_int(%3, 1)::Int64
-6 │   %7 = (Core.Intrinsics.add_int)(%2, %6)::Int64
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
 7 └──      goto #2
 8 4 ─      return %2</code></pre><p>This is the kind of local transformation that forward mode relies on heavily.</p><h3 id="Inserting-New-Instructions-in-IRCode"><a class="docs-heading-anchor" href="#Inserting-New-Instructions-in-IRCode">Inserting New Instructions in <code>IRCode</code></a><a id="Inserting-New-Instructions-in-IRCode-1"></a><a class="docs-heading-anchor-permalink" href="#Inserting-New-Instructions-in-IRCode" title="Permalink"></a></h3><p>Insertion requires a little more care because later SSA names may need to shift. <code>IRCode</code> handles this through <code>insert_node!</code> plus a later <code>compact!</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; ni = CC.NewInstruction(Expr(:call, Base.mul_int, SSAValue(3), 2), Int)
-Core.Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Core.Compiler.NoCallInfo(), nothing, nothing)
+Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Compiler.NoCallInfo(), nothing, nothing)
 
 julia&gt; new_ssa = CC.insert_node!(new_ir, SSAValue(6), ni)
 :(%10)
@@ -593,10 +593,10 @@ julia&gt; new_ir = CC.compact!(new_ir)
   1 ─      nothing::Nothing
 4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
   │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
-  │   %4 = Base.slt_int(%3, _2)::Bool
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = (Core.Intrinsics.mul_int)(%3, 2)::Int64
-  │   %7 = Base.add_int(%6, 1)::Int64
-6 │   %8 = (Core.Intrinsics.add_int)(%2, %7)::Int64
+5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
 7 └──      goto #2
-8 4 ─      return %2</code></pre><p>This is the right tool when the transformation stays local to existing basic blocks.</p><h2 id="Reverse-Mode-CFG-Assembly"><a class="docs-heading-anchor" href="#Reverse-Mode-CFG-Assembly">Reverse-Mode CFG Assembly</a><a id="Reverse-Mode-CFG-Assembly-1"></a><a class="docs-heading-anchor-permalink" href="#Reverse-Mode-CFG-Assembly" title="Permalink"></a></h2><p>Reverse mode needs more than local SSA insertion. It frequently has to:</p><ol><li>create fresh blocks,</li><li>thread predecessor-sensitive phi handling,</li><li>insert reverse-only control flow, and</li><li>preserve a coherent CFG while doing so.</li></ol><p>Mooncake now handles that in <a href="https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl"><code>src/interpreter/reverse_mode.jl</code></a> using a builder-local <code>CFGBlock</code> representation. The reverse transform first translates the normalized primal <code>IRCode</code> into CFG blocks with stable internal <code>ID</code>s, assembles the forwards and pullback control flow in that representation, and finally lowers the result back to <code>IRCode</code>.</p><p>That split is deliberate:</p><ol><li><code>IRCode</code> remains the source of truth at the compiler boundary.</li><li>The builder provides a convenient place to manipulate reverse-mode control flow.</li><li>The final lowering step re-establishes standard compiler IR with a coherent CFG.</li></ol><p>This page is mainly about the representations themselves. For the full reverse-mode pipeline, including statement translation, control-flow replay, and forward-to-reverse communication, see <a href="../reverse_mode_design/"><code>reverse_mode_design.md</code></a>.</p><h2 id="Summary"><a class="docs-heading-anchor" href="#Summary">Summary</a><a id="Summary-1"></a><a class="docs-heading-anchor-permalink" href="#Summary" title="Permalink"></a></h2><p><code>IRCode</code> is the main compiler-facing representation throughout Mooncake. Forward mode mostly performs local statement rewrites on that representation. Reverse mode still starts from normalized <code>IRCode</code>, but assembles its extra control flow in a builder-local CFG before lowering back to <code>IRCode</code>.</p><p>If you are modifying interpreter internals, the most important invariants to preserve are:</p><ol><li>SSA uses must stay coherent after insertion and compaction.</li><li><code>ir.stmts</code> and <code>ir.cfg</code> must agree after lowering.</li><li>Phi-node edges and predecessor relationships must stay aligned when blocks are removed or reordered.</li></ol></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../scalar_rules_via_ndual/">« Scalar And Low-Dimensional Rules Via <code>NDual</code></a><a class="docs-footer-nextpage" href="../forwards_mode_design/">Forwards-Mode Design »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Friday 1 May 2026 14:24">Friday 1 May 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+8 4 ─      return %2</code></pre><p>This is the right tool when the transformation stays local to existing basic blocks.</p><h2 id="Reverse-Mode-CFG-Assembly"><a class="docs-heading-anchor" href="#Reverse-Mode-CFG-Assembly">Reverse-Mode CFG Assembly</a><a id="Reverse-Mode-CFG-Assembly-1"></a><a class="docs-heading-anchor-permalink" href="#Reverse-Mode-CFG-Assembly" title="Permalink"></a></h2><p>Reverse mode needs more than local SSA insertion. It frequently has to:</p><ol><li>create fresh blocks,</li><li>thread predecessor-sensitive phi handling,</li><li>insert reverse-only control flow, and</li><li>preserve a coherent CFG while doing so.</li></ol><p>Mooncake now handles that in <a href="https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl"><code>src/interpreter/reverse_mode.jl</code></a> using a builder-local <code>CFGBlock</code> representation. The reverse transform first translates the normalized primal <code>IRCode</code> into CFG blocks with stable internal <code>ID</code>s, assembles the forwards and pullback control flow in that representation, and finally lowers the result back to <code>IRCode</code>.</p><p>That split is deliberate:</p><ol><li><code>IRCode</code> remains the source of truth at the compiler boundary.</li><li>The builder provides a convenient place to manipulate reverse-mode control flow.</li><li>The final lowering step re-establishes standard compiler IR with a coherent CFG.</li></ol><p>This page is mainly about the representations themselves. For the full reverse-mode pipeline, including statement translation, control-flow replay, and forward-to-reverse communication, see <a href="../reverse_mode_design/"><code>reverse_mode_design.md</code></a>.</p><h2 id="Summary"><a class="docs-heading-anchor" href="#Summary">Summary</a><a id="Summary-1"></a><a class="docs-heading-anchor-permalink" href="#Summary" title="Permalink"></a></h2><p><code>IRCode</code> is the main compiler-facing representation throughout Mooncake. Forward mode mostly performs local statement rewrites on that representation. Reverse mode still starts from normalized <code>IRCode</code>, but assembles its extra control flow in a builder-local CFG before lowering back to <code>IRCode</code>.</p><p>If you are modifying interpreter internals, the most important invariants to preserve are:</p><ol><li>SSA uses must stay coherent after insertion and compaction.</li><li><code>ir.stmts</code> and <code>ir.cfg</code> must agree after lowering.</li><li>Phi-node edges and predecessor relationships must stay aligned when blocks are removed or reordered.</li></ol></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../scalar_rules_via_ndual/">« Scalar And Low-Dimensional Rules Via <code>NDual</code></a><a class="docs-footer-nextpage" href="../forwards_mode_design/">Forwards-Mode Design »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Sunday 3 May 2026 13:25">Sunday 3 May 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
