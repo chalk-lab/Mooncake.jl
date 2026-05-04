@@ -1873,6 +1873,12 @@ inputs are rejected.
             friendly || error_if_incorrect_dual_types(dir_duals...)
             return rule(dir_duals...)
         end
+        # Same shape check as the legacy path: if the user passed unfriendly
+        # tangents with mismatched primal types, raise the canonical
+        # `ArgumentError` here rather than letting the rule body fail with a
+        # less informative `MethodError` / debug-mode tangent-shape complaint.
+        friendly ||
+            error_if_incorrect_dual_types(tuple_map(Dual, input_primals, canonical)...)
         rule_inputs = tuple_map(input_primals, canonical) do p, t
             padded = if t isa NoTangent
                 ntuple(_ -> NoTangent(), cache_width)
