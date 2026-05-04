@@ -1535,6 +1535,56 @@ end
                 @test H ≈ H_expected rtol = 1e-10
             end
         end
+
+        @testset "HVP RoF↔FoR cross-mode equivalence" begin
+            # Both modes should agree on `value_and_hvp!!(cache, f, v, x...)`. The
+            # parametric blocks above exercise each mode independently against
+            # analytical expectations; this catches a regression where one mode
+            # silently drifts (e.g., a polarity bug in the inner gradient closure
+            # or the prep-run seed) that the analytical assertions miss.
+            atol = 1e-10
+            @testset "single-arg quadratic" begin
+                f(x) = sum(x .^ 2) + x[1] * x[2]
+                x = [1.5, 2.5, 3.5]
+                v = [1.0, -1.0, 0.5]
+                rof = prepare_hvp_cache(
+                    f, x; config=Mooncake.Config(; second_order_mode=:reverse_over_forward)
+                )
+                _for = prepare_hvp_cache(
+                    f, x; config=Mooncake.Config(; second_order_mode=:forward_over_reverse)
+                )
+                _, g_rof, hvp_rof = value_and_hvp!!(rof, f, v, x)
+                _, g_for, hvp_for = value_and_hvp!!(_for, f, v, x)
+                @test g_for ≈ g_rof atol = atol
+                @test hvp_for ≈ hvp_rof atol = atol
+            end
+            @testset "multi-arg" begin
+                f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[2]
+                x = [1.0, 2.0]
+                y = [3.0, 4.0]
+                v = ([0.5, -0.5], [1.0, -1.0])
+                rof = prepare_hvp_cache(
+                    f,
+                    x,
+                    y;
+                    config=Mooncake.Config(; second_order_mode=:reverse_over_forward),
+                )
+                _for = prepare_hvp_cache(
+                    f,
+                    x,
+                    y;
+                    config=Mooncake.Config(; second_order_mode=:forward_over_reverse),
+                )
+                _, (gx_rof, gy_rof), (hvpx_rof, hvpy_rof) = value_and_hvp!!(rof, f, v, x, y)
+                _, (gx_for, gy_for), (hvpx_for, hvpy_for) = value_and_hvp!!(
+                    _for, f, v, x, y
+                )
+                @test gx_for ≈ gx_rof atol = atol
+                @test gy_for ≈ gy_rof atol = atol
+                @test hvpx_for ≈ hvpx_rof atol = atol
+                @test hvpy_for ≈ hvpy_rof atol = atol
+            end
+        end
     end
 
     @testset "value_gradient_and_hessian!!" begin
