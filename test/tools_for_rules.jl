@@ -288,6 +288,16 @@ end
             # only has the scalar-Dual path here, so this plain `Float64` must keep failing even if
             # the container overloads are edited later.
             @test_throws MethodError Mooncake.zero_derivative(Dual(sin, NoTangent()), 1.0)
+
+            # Regression: mixed (scalar Dual + Array{Dual}) varargs MethodError'd under
+            # the previous two-overload arrangement (Vararg{Dual,N} or homogeneous-array
+            # T, Vararg{T}). The unified Union-vararg overload covers all three patterns.
+            f3 = Dual((x, arr) -> 5, NoTangent())
+            xd3 = Dual(1.0, 0.0)
+            arrd3 = [Dual(1.0, 1.0), Dual(2.0, 2.0)]
+            mixed = Mooncake.zero_derivative(f3, xd3, arrd3)
+            @test primal(mixed) == 5
+            @test tangent(mixed) == NoTangent()
         end
     end
     @testset "chain_rules_macro" begin

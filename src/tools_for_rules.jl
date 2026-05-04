@@ -174,14 +174,18 @@ julia> frule!!(zero_dual(foo), zero_dual(3), zero_dual(2))
 Dual{Int64, NoTangent}(5, NoTangent())
 ```
 """
-@inline function zero_derivative(f::Dual, x::Vararg{Dual,N}) where {N}
-    return zero_dual(primal(f)(map(primal, x)...))
-end
+# Single mixed-vararg overload covers homogeneous-Dual, homogeneous-Array{Dual},
+# and any mix (e.g. `(scalar_Dual, Array{Dual})`). The earlier two-method
+# arrangement (`Vararg{Dual}` + homogeneous-array `T, Vararg{T}`) MethodError'd
+# on truly mixed calls. `_zd_primal` extracts the primal of a `Dual` and
+# returns arrays as-is, matching the original homogeneous-array semantics.
+@inline _zd_primal(x::Dual) = primal(x)
+@inline _zd_primal(x) = x
 
 @inline function zero_derivative(
-    f::Dual, x1::T, x_rest::Vararg{T}
-) where {T<:Union{Array{<:Dual},Array{<:Complex{<:Dual}}}}
-    return zero_dual(primal(f)(map(x -> x isa Dual ? primal(x) : x, (x1, x_rest...))...))
+    f::Dual, x::Vararg{Union{Dual,Array{<:Dual},Array{<:Complex{<:Dual}}},N}
+) where {N}
+    return zero_dual(primal(f)(map(_zd_primal, x)...))
 end
 
 # Bare NDual array overload lives in `src/nfwd/NfwdMooncake.jl` (which has
