@@ -133,43 +133,71 @@
     # here calls the NDual `frule!!` directly and compares against the
     # known-good `Dual{P}` reference at the same `(x, ẋ)` pair.
     @testset "NDual frule!! direct sweep" begin
-        function check_unary(f, x; check_finite=true)
-            ẋ = one(typeof(x))
-            d_dual = Mooncake.frule!!(Mooncake.zero_dual(f), Mooncake.Dual(x, ẋ))
-            d_ndual = Mooncake.frule!!(
-                Mooncake.zero_dual(f), Mooncake.NDual{typeof(x),1}(x, (ẋ,))
+        # Lift one `(value, tangent)` pair into width-1 NDual form for IEEEFloat
+        # / `Complex{<:IEEEFloat}`; everything else (e.g. `Type{Pext}` for fpext)
+        # falls through to plain `Dual` so the two paths share their non-NDual args.
+        @inline _to_ndual_arg(v::T, t) where {T<:Base.IEEEFloat} = Mooncake.NDual{T,1}(
+            v, (t,)
+        )
+        @inline function _to_ndual_arg(v::Complex{T}, t) where {T<:Base.IEEEFloat}
+            return Complex(
+                Mooncake.NDual{T,1}(real(v), (real(t),)),
+                Mooncake.NDual{T,1}(imag(v), (imag(t),)),
             )
-            @test d_ndual isa Mooncake.NDual{typeof(x),1}
-            @test d_ndual.value === Mooncake.primal(d_dual)
-            d_tangent = Mooncake.tangent(d_dual)
-            if check_finite && isfinite(d_tangent) && isfinite(d_ndual.partials[1])
-                @test d_ndual.partials[1] ≈ d_tangent
+        end
+        @inline _to_ndual_arg(v, t) = Mooncake.Dual(v, t)
+
+        # Compare a width-1 NDual frule output against the matching Dual frule
+        # output. Tuple-output rules (sincosd, sincospi, modf) return a `Tuple`
+        # of NDuals on the NDual side and a `Dual{Tuple, Tuple}` on the Dual
+        # side; unwrap the Dual and walk element-wise.
+        function _ndual_match_scalar(n::Mooncake.NDual, p, t; check_finite)
+            @test n.value === p
+            np = n.partials[1]
+            if check_finite && isfinite(t) && isfinite(np)
+                @test np ≈ t
             else
-                # NaN/Inf: just check both sides agree.
-                @test isequal(d_ndual.partials[1], d_tangent)
+                @test isequal(np, t)
             end
+            return nothing
+        end
+        function _ndual_dual_match(d_ndual::Tuple, d_dual; check_finite=true)
+            @test d_dual isa Mooncake.Dual
+            ps = Mooncake.primal(d_dual)
+            ts = Mooncake.tangent(d_dual)
+            @test length(d_ndual) == length(ps) == length(ts)
+            for (n, p, t) in zip(d_ndual, ps, ts)
+                _ndual_match_scalar(n, p, t; check_finite)
+            end
+            return nothing
+        end
+        function _ndual_dual_match(d_ndual::Mooncake.NDual, d_dual; check_finite=true)
+            return _ndual_match_scalar(
+                d_ndual, Mooncake.primal(d_dual), Mooncake.tangent(d_dual); check_finite
+            )
         end
 
-        function check_binary(f, x, y; ẋ=one(typeof(x)), ẏ=zero(typeof(y)))
-            d_dual = Mooncake.frule!!(
-                Mooncake.zero_dual(f), Mooncake.Dual(x, ẋ), Mooncake.Dual(y, ẏ)
-            )
-            d_ndual = Mooncake.frule!!(
-                Mooncake.zero_dual(f),
-                Mooncake.NDual{typeof(x),1}(x, (ẋ,)),
-                Mooncake.NDual{typeof(y),1}(y, (ẏ,)),
-            )
-            @test d_ndual isa Mooncake.NDual
-            @test d_ndual.value === Mooncake.primal(d_dual)
-            d_tangent = Mooncake.tangent(d_dual)
-            if isfinite(d_tangent) && isfinite(d_ndual.partials[1])
-                @test d_ndual.partials[1] ≈ d_tangent
-            else
-                @test isequal(d_ndual.partials[1], d_tangent)
-            end
+        # Build NDual-lifted args from `(value, tangent)` pairs, call
+        # `frule!!`, and compare against the matching Dual{P} call. This is
+        # the direct-dispatch counterpart to `TestUtils.test_rule` for
+        # primitives where both an `NDual{P,1}` and a `Dual{P}` overload exist.
+        function ndual_test_rule(f, vt_pairs::Tuple...; check_finite=true)
+            fdual = Mooncake.zero_dual(f)
+            duals = map(p -> Mooncake.Dual(p...), vt_pairs)
+            nduals = map(p -> _to_ndual_arg(p...), vt_pairs)
+            d_dual = Mooncake.frule!!(fdual, duals...)
+            d_ndual = Mooncake.frule!!(fdual, nduals...)
+            _ndual_dual_match(d_ndual, d_dual; check_finite)
+            return nothing
         end
 
-        @testset "unary: $f" for f in (
+        # Test cases: `(f, ((value, tangent), ...), check_finite)`.
+        # `check_finite=false` for inputs that hit a derivative singularity
+        # (asin/acos at ±1, asec/acsc at ±1, tan-family near π/2 etc.).
+        intr = Mooncake.IntrinsicsWrappers
+        cases = Any[]
+        # Smooth unary primitives evaluated at 0.7 (well inside R+).
+        for f in (
             exp,
             exp2,
             exp10,
@@ -198,139 +226,74 @@
             prevfloat,
             tanpi,
         )
-            check_unary(f, 0.7)
+            push!(cases, (f, ((0.7, 1.0),), true))
         end
-        @testset "unary at 1.0: $f" for f in
-                                        (sec, csc, cot, secd, cscd, cotd, csch, coth, atan)
-            check_unary(f, 1.0)
+        for f in (sec, csc, cot, secd, cscd, cotd, csch, coth, atan)
+            push!(cases, (f, ((1.0, 1.0),), true))
         end
-        @testset "unary on (-1, 1): $f" for f in (asin, acos, asech, atanh, asind, acosd)
-            check_unary(f, 0.5; check_finite=false)
+        for f in (asin, acos, asech, atanh, asind, acosd)
+            push!(cases, (f, ((0.5, 1.0),), false))
         end
-        @testset "unary on (1, ∞): $f" for f in (asec, acsc, acoth, asecd, acscd, acosh)
-            check_unary(f, 1.5; check_finite=false)
+        for f in (asec, acsc, acoth, asecd, acscd, acosh)
+            push!(cases, (f, ((1.5, 1.0),), false))
         end
-        @testset "tan-family at 0.5" for f in (tan, tand, acot, atand, acotd)
-            check_unary(f, 0.5; check_finite=false)
+        for f in (tan, tand, acot, atand, acotd)
+            push!(cases, (f, ((0.5, 1.0),), false))
         end
-        @testset "mod2pi / acsch / asinh: $f" for f in (mod2pi, acsch, asinh)
-            check_unary(f, 1.5)
+        for f in (mod2pi, acsch, asinh)
+            push!(cases, (f, ((1.5, 1.0),), true))
+        end
+        for f in (atan, log, ^, mod, max, min)
+            push!(cases, (f, ((1.5, 1.0), (2.5, 0.0)), true))
+        end
+        for f in (
+            intr.abs_float,
+            intr.neg_float,
+            intr.neg_float_fast,
+            intr.sqrt_llvm,
+            intr.sqrt_llvm_fast,
+        )
+            push!(cases, (f, ((1.5, 1.0),), true))
+        end
+        for f in (
+            intr.add_float,
+            intr.sub_float,
+            intr.mul_float,
+            intr.div_float,
+            intr.copysign_float,
+        )
+            push!(cases, (f, ((1.5, 1.0), (2.5, 0.0)), true))
+        end
+        for f in (intr.fma_float, intr.muladd_float)
+            push!(cases, (f, ((1.5, 1.0), (2.5, 0.0), (0.5, 0.0)), true))
+        end
+        for f in (sincosd, sincospi, modf)
+            push!(cases, (f, ((0.7, 1.0),), true))
+        end
+        # `Type{Pext}` first arg is NoTangent (non-NDual) — `_to_ndual_arg`
+        # falls back to `Dual` for that arg, so both paths share it.
+        push!(cases, (intr.fpext, ((Float64, NoTangent()), (1.5f0, 1.0f0)), true))
+        push!(cases, (intr.fptrunc, ((Float32, NoTangent()), (1.5, 1.0)), true))
+        for n in 1:3
+            push!(cases, (hypot, ntuple(i -> (Float64(i + 1), Float64(i)), n), true))
+        end
+        push!(cases, (clamp, ((1.5, 1.0), (0.0, 0.0), (2.0, 0.0)), true))
+
+        @testset "$f $(map(first, vt_pairs))" for (f, vt_pairs, check_finite) in cases
+            ndual_test_rule(f, vt_pairs...; check_finite)
         end
 
-        @testset "binary: $f" for f in (atan, log, ^, mod, max, min)
-            check_binary(f, 1.5, 2.5)
-        end
-
-        @testset "fpext / fptrunc convert" begin
-            x32 = 1.5f0
+        # Mixed NDual × Dual{<:IEEEFloat} — exercises the "scalar Dual on the
+        # right" branch in the `$op_sym` loop in `rules_via_nfwd.jl`. No Dual
+        # reference: result type alone confirms dispatch landed on the
+        # NDual-aware overload rather than falling through.
+        @testset "binary mixed $f" for f in (intr.add_float, intr.mul_float)
             d = Mooncake.frule!!(
-                Mooncake.zero_dual(Mooncake.IntrinsicsWrappers.fpext),
-                Mooncake.Dual(Float64, NoTangent()),
-                Mooncake.NDual{Float32,1}(x32, (1.0f0,)),
-            )
-            @test d isa Mooncake.NDual{Float64,1}
-            @test d.value === Float64(x32)
-            @test d.partials[1] === 1.0
-            x64 = 1.5
-            d2 = Mooncake.frule!!(
-                Mooncake.zero_dual(Mooncake.IntrinsicsWrappers.fptrunc),
-                Mooncake.Dual(Float32, NoTangent()),
-                Mooncake.NDual{Float64,1}(x64, (1.0,)),
-            )
-            @test d2 isa Mooncake.NDual{Float32,1}
-            @test d2.value === Float32(x64)
-            @test d2.partials[1] === 1.0f0
-        end
-
-        @testset "tuple-output: $f" for f in (sincosd, sincospi, modf)
-            x = 0.7
-            d_ndual = Mooncake.frule!!(
-                Mooncake.zero_dual(f), Mooncake.NDual{Float64,1}(x, (1.0,))
-            )
-            @test d_ndual isa Tuple
-            @test length(d_ndual) == 2
-        end
-
-        @testset "vararg hypot $n-arg" for n in 1:3
-            xs = ntuple(i -> Mooncake.NDual{Float64,1}(Float64(i + 1), (Float64(i),)), n)
-            d = Mooncake.frule!!(Mooncake.zero_dual(hypot), xs...)
-            @test d isa Mooncake.NDual{Float64,1}
-            @test d.value ≈ hypot(Float64.(2:(n + 1))...)
-        end
-
-        @testset "ternary clamp" begin
-            d = Mooncake.frule!!(
-                Mooncake.zero_dual(clamp),
+                Mooncake.zero_dual(f),
                 Mooncake.NDual{Float64,1}(1.5, (1.0,)),
-                Mooncake.NDual{Float64,1}(0.0, (0.0,)),
-                Mooncake.NDual{Float64,1}(2.0, (0.0,)),
+                Mooncake.Dual(2.5, 0.0),
             )
             @test d isa Mooncake.NDual{Float64,1}
-            @test d.value === 1.5
-            @test d.partials[1] === 1.0
-        end
-
-        @testset "intrinsic float scalar: $f" for f in (
-            Mooncake.IntrinsicsWrappers.abs_float,
-            Mooncake.IntrinsicsWrappers.neg_float,
-            Mooncake.IntrinsicsWrappers.neg_float_fast,
-            Mooncake.IntrinsicsWrappers.sqrt_llvm,
-            Mooncake.IntrinsicsWrappers.sqrt_llvm_fast,
-        )
-            x = 1.5
-            d_dual = Mooncake.frule!!(Mooncake.zero_dual(f), Mooncake.Dual(x, 1.0))
-            d_ndual = Mooncake.frule!!(
-                Mooncake.zero_dual(f), Mooncake.NDual{Float64,1}(x, (1.0,))
-            )
-            @test d_ndual.value ≈ Mooncake.primal(d_dual)
-            @test d_ndual.partials[1] ≈ Mooncake.tangent(d_dual)
-        end
-
-        @testset "binary intrinsic: $f" for f in (
-            Mooncake.IntrinsicsWrappers.add_float,
-            Mooncake.IntrinsicsWrappers.sub_float,
-            Mooncake.IntrinsicsWrappers.mul_float,
-            Mooncake.IntrinsicsWrappers.div_float,
-            Mooncake.IntrinsicsWrappers.copysign_float,
-        )
-            x, y = 1.5, 2.5
-            ẋ, ẏ = 1.0, 0.0
-            d_dual = Mooncake.frule!!(
-                Mooncake.zero_dual(f), Mooncake.Dual(x, ẋ), Mooncake.Dual(y, ẏ)
-            )
-            d_ndual = Mooncake.frule!!(
-                Mooncake.zero_dual(f),
-                Mooncake.NDual{Float64,1}(x, (ẋ,)),
-                Mooncake.NDual{Float64,1}(y, (ẏ,)),
-            )
-            @test d_ndual.value ≈ Mooncake.primal(d_dual)
-            @test d_ndual.partials[1] ≈ Mooncake.tangent(d_dual)
-        end
-
-        @testset "binary mixed NDual×Dual: $f" for f in (
-            Mooncake.IntrinsicsWrappers.add_float, Mooncake.IntrinsicsWrappers.mul_float
-        )
-            x, y = 1.5, 2.5
-            d = Mooncake.frule!!(
-                Mooncake.zero_dual(f),
-                Mooncake.NDual{Float64,1}(x, (1.0,)),
-                Mooncake.Dual(y, 0.0),
-            )
-            @test d isa Mooncake.NDual{Float64,1}
-        end
-
-        @testset "ternary intrinsic: $f" for f in (
-            Mooncake.IntrinsicsWrappers.fma_float, Mooncake.IntrinsicsWrappers.muladd_float
-        )
-            x, y, z = 1.5, 2.5, 0.5
-            d = Mooncake.frule!!(
-                Mooncake.zero_dual(f),
-                Mooncake.NDual{Float64,1}(x, (1.0,)),
-                Mooncake.NDual{Float64,1}(y, (0.0,)),
-                Mooncake.NDual{Float64,1}(z, (0.0,)),
-            )
-            @test d isa Mooncake.NDual{Float64,1}
-            @test d.value ≈ f(x, y, z)
         end
     end
 end
