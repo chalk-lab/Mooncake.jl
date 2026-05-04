@@ -58,9 +58,15 @@ include("front_matter.jl")
         include("developer_tools.jl")
         include("skill_utils.jl")
         include("test_utils.jl")
+        @testset "nfwd" begin
+            include(joinpath("nfwd", "nfwd.jl"))
+            include(joinpath("nfwd", "nfwdmooncake.jl"))
+            include(joinpath("nfwd", "ndual_frules.jl"))
+        end
     elseif test_group == "Nfwd"
         include(joinpath("nfwd", "nfwd.jl"))
         include(joinpath("nfwd", "nfwdmooncake.jl"))
+        include(joinpath("nfwd", "ndual_frules.jl"))
     elseif test_group == "rules/array_legacy"
         @static if VERSION < v"1.11.0-rc4"
             include(joinpath("rules", "array_legacy.jl"))
