@@ -1537,6 +1537,54 @@ function _gradient_width1(rule, input_primals, native_gradients, total_slots, ca
     return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
 end
 
+# Width-1 specialization: avoids `ntuple(Val(W)) do d ... end` closures whose
+# boxed captures defeat Julia's escape analysis on `cursor = Ref(0)`. This
+# preserves zero-alloc parity with the legacy `_gradient_width1` path.
+function _gradient_widthN(
+    rule, input_primals, native_gradients, total_slots, cache, ::Val{1}
+)
+    seed_bufs = let cached = cache.seed_buf[]
+        if cached === nothing
+            buf = (_alloc_aliased_tangents(input_primals),)
+            cache.seed_buf[] = buf
+            buf
+        else
+            cached
+        end
+    end
+    seed_buf = seed_bufs[1]
+    lift_buf = let cached = cache.lift_buf[]
+        if cached === nothing
+            allocated = tuple_map(p -> _alloc_lift_buf(Val(1), p), input_primals)
+            cache.lift_buf[] = allocated
+            allocated
+        else
+            cached
+        end
+    end
+    cursor = Ref(0)
+    seed_seen = _new_seen(input_primals)
+    accum_seen = _new_seen(native_gradients)
+    local y
+    for slot in 1:total_slots
+        cursor[] = 0
+        seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
+        seed = _seed_inplace!(seed_buf, input_primals, slot, cursor, seed_seen)
+        ndual_inputs = tuple_map(
+            (b, p, s) -> _combine_to_ndual_or_buffer(b, p, (s,)),
+            lift_buf,
+            input_primals,
+            seed,
+        )
+        output = rule(ndual_inputs...)
+        y = output isa NDual ? output.value : primal(output)
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        coeff = output isa NDual ? Float64(output.partials[1]) : Float64(tangent(output))
+        native_gradients = _accumulate_gradient(native_gradients, seed, coeff, accum_seen)
+    end
+    return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
+end
+
 function _gradient_widthN(
     rule, input_primals, native_gradients, total_slots, cache, ::Val{W}
 ) where {W}

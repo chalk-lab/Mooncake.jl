@@ -280,7 +280,8 @@ _nargs(::DerivedPrimal{P,T,isva,nargs,W}) where {P,T,isva,nargs,W} = nargs
 function verify_args(r::DerivedPrimal{sig}, x) where {sig}
     Tx = Tuple{
         map(
-            _typeof ∘ _primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r)), r.width)
+            _typeof ∘ _primal,
+            __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r)), r.width),
         )...,
     }
     Tx <: sig && return nothing
