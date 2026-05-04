@@ -256,10 +256,7 @@ end
 # NDual variant: MemoryRef{<:_HasNDual} carries tangents inside its elements
 # so a single `unsafe_copyto!` of the bare container suffices.
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::MemoryRef{P},
-    src::MemoryRef{P},
-    n::Dual{Int},
+    ::Dual{typeof(unsafe_copyto!)}, dest::MemoryRef{P}, src::MemoryRef{P}, n::Dual{Int}
 ) where {P<:_HasNDual}
     unsafe_copyto!(dest, src, primal(n))
     return dest

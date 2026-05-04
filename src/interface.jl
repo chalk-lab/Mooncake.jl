@@ -1577,7 +1577,7 @@ function _gradient_widthN(
             seed,
         )
         output = rule(ndual_inputs...)
-        y = output isa NDual ? output.value : primal(output)
+        y = output isa NDual ? output.value : _primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         coeff = output isa NDual ? Float64(output.partials[1]) : Float64(tangent(output))
         native_gradients = _accumulate_gradient(native_gradients, seed, coeff, accum_seen)
@@ -1662,7 +1662,7 @@ end
 end
 
 @inline function _gradient_unwrap_output(output, chunk, W)
-    y = output isa NDual ? output.value : primal(output)
+    y = output isa NDual ? output.value : _primal(output)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     # Width-N IEEEFloat output must come back as NDual; a non-NDual output means
     # a custom rule returned a width-1 Dual in a width-N pipeline.
