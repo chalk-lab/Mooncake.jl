@@ -2,7 +2,7 @@ module Mooncake
 
 const CC = Core.Compiler
 
-using ADTypes, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random
+using ADTypes, ExprTools, LinearAlgebra, MistyClosures, PrecompileTools, Random, Statistics
 
 # There are many clashing names, so we will always qualify uses of names from CRC.
 import ChainRulesCore as CRC
@@ -160,6 +160,7 @@ build_primitive_rrule(::Type{<:Tuple}) = rrule!!
 include("utils.jl")
 include(joinpath("tangents", "tangents.jl"))
 include(joinpath("tangents", "dual.jl"))
+include(joinpath("tangents", "batch.jl"))
 include(joinpath("tangents", "fwds_rvs_data.jl"))
 include(joinpath("tangents", "codual.jl"))
 include("debug_mode.jl")
@@ -177,6 +178,7 @@ include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))
 include(joinpath("interpreter", "reverse_mode.jl"))
 include(joinpath("interpreter", "primal_mode.jl"))
+include(joinpath("interpreter", "vmap_mode.jl"))
 end
 
 include("tools_for_rules.jl")
@@ -231,6 +233,7 @@ include(joinpath("rules", "threads.jl"))
 include(joinpath("rules", "performance_patches.jl"))
 include(joinpath("rules", "rules_via_nfwd.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
+include(joinpath("rules", "vmap_rules.jl"))
 
 include("config.jl")
 include("developer_tools.jl")
@@ -251,6 +254,8 @@ export prepare_derivative_cache, value_and_derivative!! # forward
 export value_and_jacobian!!
 export prepare_hvp_cache, value_and_hvp!!
 export prepare_hessian_cache, value_gradient_and_hessian!!
+export @struct_batch
+export vmap, vmap_apply, VmappedFn, build_vmap
 
 include("precompile.jl")
 
