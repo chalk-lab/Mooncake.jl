@@ -13,8 +13,7 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
     end
     # Complex{NDual} is bare — construct directly from NDual fields.
     if P <: Complex && _has_ndual(x...)
-        raw = map(x_i -> x_i isa Dual ? primal(x_i) : x_i, x)
-        return Complex(raw...)
+        return Complex(primals...)
     end
     if _has_ndual(x...)
         primals_extracted = map(_ndual_primal, x)

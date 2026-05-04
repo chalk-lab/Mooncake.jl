@@ -125,3 +125,17 @@ function Config(
         :forward_over_reverse,
     )
 end
+
+# Copy constructor: derive a new Config from an existing one with selected fields
+# overridden. Avoids hand-listing every field at call sites — new Config fields
+# propagate automatically.
+function Config(base::Config; kwargs...)
+    overrides = NamedTuple(kwargs)
+    fields = ntuple(
+        i -> begin
+            n = fieldname(Config, i)
+            haskey(overrides, n) ? overrides[n] : getfield(base, n)
+        end, fieldcount(Config)
+    )
+    return Config(fields...)
+end

@@ -176,7 +176,7 @@ function verify_dual_type(x::Dual)
     T = typeof(tangent(x))
     T === NoTangent && return tangent_type(P) === NoTangent
     if T <: NTangent
-        N = length(T.parameters[1].parameters)
+        N = fieldcount(T.parameters[1])
         return T === tangent_type(Val(N), P)
     end
     # Legacy width-1 path: bare tangent without NTangent wrapper

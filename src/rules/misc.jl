@@ -50,9 +50,10 @@
     @zero_derivative MinimalCtx Tuple{typeof(Base.dataids),Memory}
 end
 
-# unalias: forward-mode primitive to avoid a segfault in broadcast with NDual
-# containers.  Compiling through unalias produces an OC that crashes
-# non-deterministically; root cause is not fully diagnosed.
+# Workaround: compiling `Base.unalias` through the primal-mode forward AD produces
+# an OpaqueClosure that segfaults non-deterministically inside broadcast over NDual
+# containers. Root cause undiagnosed; making it a forward-mode primitive that runs
+# `mightalias` on primals sidesteps the broken codegen path.
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(Base.unalias),Any,Any}
 function frule!!(::Dual{typeof(Base.unalias)}, dest, src)
     d = dest isa Dual ? primal(dest) : dest

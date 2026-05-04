@@ -1011,11 +1011,9 @@ end
     ) = x
 end
 
-# Width-N entry points share the per-element builder; each picks its own `gen`.
-# `zero_dual` and `uninit_dual` both produce zero partials on the bare-NDual
-# path (matches the existing `zero_dual(x::NDual)` and `uninit_dual(x::NDual)`
-# semantics); they would diverge only if NDual partials gained an "uninit"
-# representation distinct from zero.
+# Width-N entry points share the per-element builder. `zero_dual` and `uninit_dual`
+# both pick a zero generator (matching the bare `zero_dual(x::NDual)` /
+# `uninit_dual(x::NDual)` semantics).
 
 @inline Mooncake.zero_dual(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
 @inline Mooncake.zero_dual(w::Val, z::Complex{<:IEEEFloat}) = _ndual_zero(

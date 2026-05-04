@@ -1126,6 +1126,86 @@ end
             )
         end
 
+        @testset "chunked tuple-returning function" begin
+            # Regression: chunked tuple output formerly crashed `primal(::Tuple)`.
+            ftuple(x) = (x[1], x[2])
+            x_ft = [1.0, 2.0]
+            cache = Mooncake.prepare_derivative_cache(
+                ftuple, x_ft; config=Mooncake.Config(; chunk_size=2)
+            )
+            y, dy = Mooncake.value_and_derivative!!(
+                cache, (ftuple, Mooncake.NoTangent()), (x_ft, [1.0, 0.0])
+            )
+            @test y == (1.0, 2.0)
+            @test dy == (1.0, 0.0)
+        end
+
+        @testset "chunked array-returning function" begin
+            # Regression: chunked array output formerly fell through as `Array{NDual}`.
+            farr(x) = x .+ 2.0
+            x_fa = [1.0, 2.0]
+            cache = Mooncake.prepare_derivative_cache(
+                farr, x_fa; config=Mooncake.Config(; chunk_size=2)
+            )
+            y, dy = Mooncake.value_and_derivative!!(
+                cache, (farr, Mooncake.NoTangent()), (x_fa, [1.0, 0.0])
+            )
+            @test y == [3.0, 4.0]
+            @test dy == [1.0, 0.0]
+        end
+
+        @testset "chunked integer-literal arithmetic" begin
+            # Regression: integer literals on a chunked path crashed
+            # `mul_float(::Float64, ::NTangent)` for lack of mixed (NDual, Dual) frules.
+            f_intlit(x) = sum(2 .* x)
+            x_il = [1.0, 2.0]
+            cache = Mooncake.prepare_derivative_cache(
+                f_intlit, x_il; config=Mooncake.Config(; chunk_size=2)
+            )
+            y, (_, g) = Mooncake.value_and_gradient!!(cache, f_intlit, x_il)
+            @test y == 6.0
+            @test g == [2.0, 2.0]
+
+            # Also cover add/sub/div mixed paths.
+            f_add(x) = sum(2 .+ x)
+            cache_add = Mooncake.prepare_derivative_cache(
+                f_add, x_il; config=Mooncake.Config(; chunk_size=2)
+            )
+            ya, (_, ga) = Mooncake.value_and_gradient!!(cache_add, f_add, x_il)
+            @test ya == 7.0
+            @test ga == [1.0, 1.0]
+
+            f_sub(x) = sum(x .- 2)
+            cache_sub = Mooncake.prepare_derivative_cache(
+                f_sub, x_il; config=Mooncake.Config(; chunk_size=2)
+            )
+            ys, (_, gs) = Mooncake.value_and_gradient!!(cache_sub, f_sub, x_il)
+            @test ys == -1.0
+            @test gs == [1.0, 1.0]
+
+            f_div(x) = sum(x ./ 2)
+            cache_div = Mooncake.prepare_derivative_cache(
+                f_div, x_il; config=Mooncake.Config(; chunk_size=2)
+            )
+            yd, (_, gd) = Mooncake.value_and_gradient!!(cache_div, f_div, x_il)
+            @test yd == 1.5
+            @test gd == [0.5, 0.5]
+        end
+
+        @testset "prepare_hvp_cache forward_over_reverse with chunk_size>1" begin
+            # Regression: chunk_size>1 propagated into the inner derivative cache
+            # and broke field reads on the gradient closure's NTangent inputs.
+            f_qr(x) = sum(x .^ 2)
+            x_qr = [1.0, 2.0, 3.0]
+            cache = Mooncake.prepare_hvp_cache(
+                f_qr, x_qr; config=Mooncake.Config(; chunk_size=2)
+            )
+            val, g, hvp = Mooncake.value_and_hvp!!(cache, f_qr, [1.0, 0.0, 0.0], x_qr)
+            @test val == 14.0
+            @test g == [2.0, 4.0, 6.0]
+            @test hvp == [2.0, 0.0, 0.0]
+        end
+
         @testset "chunked complex scalar derivative" begin
             f(z) = abs2(z)
             z = 1.0 + 2.0im

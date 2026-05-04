@@ -267,18 +267,60 @@ frule!!(::Dual{typeof(neg_float_fast)}, x::NDual) = -x
 frule!!(::Dual{typeof(sqrt_llvm)}, x::NDual) = sqrt(x)
 frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::NDual) = sqrt(x)
 
-frule!!(::Dual{typeof(add_float)}, a::NDual, b::NDual) = a + b
-frule!!(::Dual{typeof(add_float_fast)}, a::NDual, b::NDual) = a + b
-frule!!(::Dual{typeof(sub_float)}, a::NDual, b::NDual) = a - b
-frule!!(::Dual{typeof(sub_float_fast)}, a::NDual, b::NDual) = a - b
-frule!!(::Dual{typeof(mul_float)}, a::NDual, b::NDual) = a * b
-frule!!(::Dual{typeof(mul_float_fast)}, a::NDual, b::NDual) = a * b
-frule!!(::Dual{typeof(div_float)}, a::NDual, b::NDual) = a / b
-frule!!(::Dual{typeof(div_float_fast)}, a::NDual, b::NDual) = a / b
-frule!!(::Dual{typeof(copysign_float)}, x::NDual, y::NDual) = copysign(x, y)
+# Mixed `(NDual, Dual{<:IEEEFloat})` cases arise when an `@inactive_intrinsic`
+# (e.g. `sitofp(Float64, 2)`) emits a width-1 `Dual{Float64}` alongside an
+# `NDual` user input. Unwrapping the `Dual` to its primal is sound because the
+# inactive frule produces `Dual(_, zero_tangent(_))`, contributing nothing.
+for (op_sym, op_fn) in (
+    (:add_float, :+),
+    (:add_float_fast, :+),
+    (:sub_float, :-),
+    (:sub_float_fast, :-),
+    (:mul_float, :*),
+    (:mul_float_fast, :*),
+    (:div_float, :/),
+    (:div_float_fast, :/),
+    (:copysign_float, :copysign),
+)
+    @eval begin
+        @inline frule!!(::Dual{typeof($op_sym)}, a::NDual, b::NDual) = $op_fn(a, b)
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, a::NDual{T,N}, b::Dual{<:IEEEFloat}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(a, primal(b))
+        end
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, a::Dual{<:IEEEFloat}, b::NDual{T,N}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(primal(a), b)
+        end
+    end
+end
 
-frule!!(::Dual{typeof(fma_float)}, x::NDual, y::NDual, z::NDual) = fma(x, y, z)
-frule!!(::Dual{typeof(muladd_float)}, x::NDual, y::NDual, z::NDual) = muladd(x, y, z)
+# Ternary float intrinsics: NDual×NDual×NDual plus the (≥1 NDual, rest Dual)
+# mixes that Nfwd already supports natively.
+for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
+    @eval begin
+        @inline frule!!(::Dual{typeof($op_sym)}, x::NDual, y::NDual, z::NDual) = $op_fn(
+            x, y, z
+        )
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, x::NDual{T,N}, y::NDual{T,N}, z::Dual{<:IEEEFloat}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(x, y, primal(z))
+        end
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, x::NDual{T,N}, y::Dual{<:IEEEFloat}, z::NDual{T,N}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(x, primal(y), z)
+        end
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, x::Dual{<:IEEEFloat}, y::NDual{T,N}, z::NDual{T,N}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(primal(x), y, z)
+        end
+    end
+end
 
 function frule!!(
     ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::NDual{P,N}

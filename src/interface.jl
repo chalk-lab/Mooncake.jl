@@ -1174,13 +1174,10 @@ end
 
 # ── Aliasing-aware allocation and gradient accumulation ──────────────────────
 #
-# When the same mutable input is passed at multiple positions
-# (e.g. `value_and_gradient!!(cache, f, x, x)`), the gradient and seed buffers
-# at those positions must share storage, slots must be counted once, and
-# accumulation must increment each unique buffer once. The `seen` parameter
-# threaded through `_seed_inplace!` / `_accumulate_gradient` is `nothing` for
-# the all-bitstype-input fast path (preserves zero allocations) and an IdDict
-# when any input could share mutable storage.
+# When inputs can alias (a mutable buffer reaches multiple positions, e.g.
+# `value_and_gradient!!(cache, f, x, x)`), `seen` is an `IdDict` so each unique
+# buffer is seeded and accumulated once. Otherwise it stays `nothing`, keeping
+# the all-bitstype path zero-alloc.
 
 @generated function _inputs_can_alias(::Type{T}) where {T<:Tuple}
     return any(!isbitstype, T.parameters)
@@ -1231,7 +1228,15 @@ end
 # Used by `_gradient_width1` / `_gradient_widthN` to avoid re-allocating
 # tangent arrays for each direction.
 
-@inline _seed_inplace!(::NoTangent, _x, _slot::Int, _cursor::Base.RefValue{Int}, _seen::Union{Nothing,IdDict{Any,Nothing}}) = NoTangent()
+@inline function _seed_inplace!(
+    ::NoTangent,
+    _x,
+    _slot::Int,
+    _cursor::Base.RefValue{Int},
+    _seen::Union{Nothing,IdDict{Any,Nothing}},
+)
+    return NoTangent()
+end
 @inline function _seed_inplace!(
     _buf::T,
     x::T,
@@ -1594,44 +1599,28 @@ function _gradient_widthN(
     return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
 end
 
-# Per-input lift container type. Used to type the `lift_buf` slot on FCache.
-# Inputs without array storage (scalars, Complex, structs) don't need a buffer
-# — `_combine_to_ndual` for those is allocation-free. Returns `Nothing` then.
+# Per-input lift container type. Inputs without array storage (scalars, Complex,
+# structs) don't need a buffer — `_combine_to_ndual` for those is allocation-free.
+# For Array/Memory eltypes that the nfwd path supports, delegate to `dual_type`,
+# which already returns the correct `Array{NDual{T,W},D}` / `Memory{NDual{T,W}}` shape.
+const _LiftEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}
+
 @inline _ndual_lift_type(::Val, ::Type) = Nothing
-@inline _ndual_lift_type(::Val{W}, ::Type{Array{T,D}}) where {W,T<:IEEEFloat,D} = Array{
-    NDual{T,W},D
-}
-@inline function _ndual_lift_type(
-    ::Val{W}, ::Type{Array{Complex{T},D}}
-) where {W,T<:IEEEFloat,D}
-    return Array{Complex{NDual{T,W}},D}
-end
-@static if VERSION >= v"1.11-"
-    @inline _ndual_lift_type(::Val{W}, ::Type{Memory{T}}) where {W,T<:IEEEFloat} = Memory{
-        NDual{T,W}
-    }
-    @inline function _ndual_lift_type(
-        ::Val{W}, ::Type{Memory{Complex{T}}}
-    ) where {W,T<:IEEEFloat}
-        return Memory{Complex{NDual{T,W}}}
-    end
+@inline _ndual_lift_type(w::Val, ::Type{P}) where {P<:Array{<:_LiftEltype}} = dual_type(
+    w, P
+)
+
+@inline _alloc_lift_buf(::Val, x) = nothing
+@inline function _alloc_lift_buf(w::Val, x::Array{<:_LiftEltype})
+    return dual_type(w, typeof(x))(undef, size(x))
 end
 
-# Allocate a per-input lift buffer matching `_ndual_lift_type`. `nothing` for
-# inputs that don't need one (scalars, structs).
-@inline _alloc_lift_buf(::Val, x) = nothing
-@inline function _alloc_lift_buf(::Val{W}, x::Array{T,D}) where {W,T<:IEEEFloat,D}
-    return Array{NDual{T,W},D}(undef, size(x))
-end
-@inline function _alloc_lift_buf(::Val{W}, x::Array{Complex{T},D}) where {W,T<:IEEEFloat,D}
-    return Array{Complex{NDual{T,W}},D}(undef, size(x))
-end
 @static if VERSION >= v"1.11-"
-    @inline function _alloc_lift_buf(::Val{W}, x::Memory{T}) where {W,T<:IEEEFloat}
-        return Memory{NDual{T,W}}(undef, length(x))
-    end
-    @inline function _alloc_lift_buf(::Val{W}, x::Memory{Complex{T}}) where {W,T<:IEEEFloat}
-        return Memory{Complex{NDual{T,W}}}(undef, length(x))
+    @inline _ndual_lift_type(w::Val, ::Type{P}) where {P<:Memory{<:_LiftEltype}} = dual_type(
+        w, P
+    )
+    @inline function _alloc_lift_buf(w::Val, x::Memory{<:_LiftEltype})
+        return dual_type(w, typeof(x))(undef, length(x))
     end
 end
 
@@ -1779,15 +1768,8 @@ end
 end
 
 @inline function _ndual_output_to_width1(output)
-    if output isa NDual
-        return Dual(output.value, output.partials[1])
-    elseif output isa Dual && tangent(output) isa NTangent
-        return Dual(primal(output), tangent(output).lanes[1])
-    elseif output isa Tuple
-        return map(_ndual_output_to_width1, output)
-    else
-        return output
-    end
+    _has_ndual(output) || return output
+    return Dual(_ndual_primal(output), _tangent_dir(output, 1))
 end
 
 """
@@ -1805,17 +1787,11 @@ inputs are rejected.
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
 
     raw_tangents = tuple_map(last, fx)
-    if any(t -> t isa NTangent, raw_tangents) && any(
-        t -> !(
-            t isa NoTangent ||
-            t isa NTangent ||
-            t isa Tuple ||
-            t isa NamedTuple ||
-            t isa Tangent ||
-            t isa MutableTangent
-        ),
-        raw_tangents,
-    )
+    # If any input is chunked, the rest must be NoTangent or a structural container
+    # that recurses into NTangent leaves.
+    ChunkCompatible = Union{NoTangent,NTangent,Tuple,NamedTuple,Tangent,MutableTangent}
+    if any(t -> t isa NTangent, raw_tangents) &&
+        !all(t -> t isa ChunkCompatible, raw_tangents)
         throw(
             ArgumentError(
                 "Chunked tuple inputs must use NTangent consistently for all differentiable tangents.",
@@ -2122,7 +2098,13 @@ function _prepare_hvp(::Val{:forward_over_reverse}, f::F, x::Tuple, config) wher
     grad_cache = prepare_gradient_cache(f, x...; config)
     N = length(x)
     grad_f = _GradClosure{N,F,typeof(grad_cache)}(f, grad_cache)
-    fwd_cache = prepare_derivative_cache(grad_f, x...; config)
+    # The outer derivative cache must run width-1: it differentiates a single direction
+    # `v` per HVP call. Forwarding the user's `chunk_size` would compile the gradient
+    # closure for width-N NDual inputs and then fail when `value_and_gradient!!` reads
+    # cache fields through an `NTangent`-typed input.
+    fwd_cache = prepare_derivative_cache(
+        grad_f, x...; config=Config(config; chunk_size=nothing, empty_cache=false)
+    )
     specs = _hvp_input_specs(f, x)
     core = (; grad_cache, grad_f, grad_tangent=zero_tangent(grad_f), fwd_cache)
     return HVPCache{:forward_over_reverse,typeof(core),typeof(specs)}(core, specs)

@@ -83,19 +83,9 @@ _uninit_dual(w::Val, v::T) where {T<:IEEEFloat} = dual_type(w, T)(v)
 function _uninit_dual(w::Val, v::Complex{T}) where {T<:IEEEFloat}
     return Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v)))
 end
-# Width-N fallback for IR constants. Concrete container type overloads live in
-# `nfwd/NfwdMooncake.jl` (Array, Memory). Reaching this fallback with a value
-# that has *actual* differentiable scalar slots would silently downgrade to
-# width-1, so fail loudly in that case — the missing overload should be added
-# in NfwdMooncake.jl. Containers whose tangent_type wraps only NoTangent
-# leaves (e.g. `Ref{Int}` → `MutableTangent{(x=NoTangent,)}`) are safe; their
-# `_count_slots` is 0.
-#
-# Note: `_count_slots` only recognises IEEEFloat / Complex / their arrays /
-# Tuple / NamedTuple as scalar leaves. Custom user `tangent_type`s with other
-# scalar leaves are caught by the strict `_count_slots` fallback (which errors
-# on count==0 with non-trivial tangent_type) — the user must add an explicit
-# `_uninit_dual(::Val{N}, ::T)` overload to opt their type into width-N AD.
+# Strict width-N fallback: containers with `_count_slots > 0` must register an
+# explicit `_uninit_dual(::Val{N}, ::T)` overload in NfwdMooncake.jl — silently
+# downgrading to width-1 here would produce wrong tangents.
 function _uninit_dual(::Val, v)
     if _count_slots(v) > 0
         throw(

@@ -468,7 +468,7 @@ function opaque_closure(
     end
     src = CC.ir_to_codeinf!(src, ir)
     src.rettype = ret_type
-    return oc = Base.Experimental.generate_opaque_closure(
+    return Base.Experimental.generate_opaque_closure(
         sig, Union{}, ret_type, src, nargs, isva, env...; do_compile
     )::Core.OpaqueClosure{sig,ret_type}
 end
@@ -802,13 +802,6 @@ end
 @inline _count_slots(x::Tuple, seen) =
     _count_slots(first(x), seen) + _count_slots(Base.tail(x), seen)
 @inline _count_slots(x::NamedTuple, seen) = _count_slots(values(x), seen)
-# Strict fallback: a tangent_type that *could* carry a scalar derivative paired
-# with zero recognised scalar leaves is ambiguous — either all leaves are
-# `NoTangent` (opt in via `_count_slots(::T, _seen) = 0`) or they are unrecognised
-# differentiable scalars (opt in via `_uninit_dual(::Val{N}, ::T)`). The runtime
-# can't tell them apart, so we require an explicit shim. A tangent_type whose
-# tree of array element types bottoms out at `NoTangent` (e.g. `Vector{Int}` →
-# `Vector{NoTangent}`) genuinely has no differentiable content and is accepted.
 @inline function _count_slots(x, seen)
     if seen isa IdDict{Any,Nothing} && ismutabletype(typeof(x))
         haskey(seen, x) && return 0
