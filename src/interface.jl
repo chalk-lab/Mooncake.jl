@@ -1410,6 +1410,31 @@ end
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
 Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref).
+
+The `chunk_size` field of `config` controls the forward-mode width:
+- `nothing` (default): legacy width-1 path (`Dual{P,T}` lifting).
+- `1`: chunked NDual path with width 1 (`NDual{T,1}` for IEEEFloat scalars,
+  `Tuple` of Duals for concrete tuple primals, etc.).
+- `N > 1`: chunked NDual path with width N — each rule call computes N
+  derivative directions in one pass.
+
+The output of `value_and_derivative!!` matches the caller's tangent shape
+regardless of the prepared `chunk_size`; the value only affects the rule's
+compile-time width.
+
+# Reuse contract
+
+The cache is bound to the top-level argument types, sizes, and aliasing
+topology of the prep-time inputs. Re-prepare if any of the following change:
+
+- Argument types: a cache prepared with `Vector{Float64}` cannot be reused
+  with `Vector{Float32}`.
+- Array sizes: a cache prepared with `[1.0, 2.0]` cannot be reused with
+  `[1.0, 2.0, 3.0]`. Validation surfaces the mismatch as an error.
+- Aliasing topology: when two array inputs share storage at prep time
+  (`primal(a) === primal(b)`), the cache pre-allocates shared gradient
+  buffers. Calling later with non-aliased inputs of the same shape
+  silently observes the prep-time aliasing and produces wrong gradients.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
@@ -1582,9 +1607,17 @@ function _gradient_widthN(
         else
             throw(
                 ArgumentError(
-                    "value_and_gradient!! width-$W path expected an NDual output for " *
-                    "IEEEFloat primal but got `$(typeof(output))`. A custom frule for " *
-                    "this signature likely returned a width-1 Dual instead of width-$W.",
+                    "value_and_gradient!! width-$W path expected an NDual output " *
+                    "for IEEEFloat primal but got `$(typeof(output))`. Common causes:\n" *
+                    "  • A custom frule!! returned a width-1 `Dual` (or bare value) " *
+                    "instead of a width-$W `NDual`.\n" *
+                    "  • A scalar primitive (e.g. an intrinsic) lacks a width-N NDual " *
+                    "frule!! overload — only the legacy `Dual{P}` path is registered.\n" *
+                    "  • The function involves a non-IEEEFloat scalar branch where " *
+                    "`dual_type(Val(N), P)` falls through to the generic Dual+NTangent " *
+                    "shape.\n" *
+                    "Workaround: pass `Mooncake.Config(chunk_size=nothing)` to fall back " *
+                    "to the width-1 path while the missing overload is added.",
                 ),
             )
         end
@@ -2042,6 +2075,10 @@ For multi-argument `f(x1, x2, ...)`, returns
 
 `v` must provide one direction vector per differentiable input, matching the shape
 of `x`. Only `Vector{<:IEEEFloat}` inputs are supported.
+
+For the single-argument case, `v` may be either an `AbstractVector` or a 1-tuple
+containing one vector. For multi-argument cases, `v` must be a tuple of vectors
+of length `length(x)`.
 """
 function value_and_hvp!!(
     cache::HVPCache{:reverse_over_forward}, f, v, x::Vararg{Any,N}

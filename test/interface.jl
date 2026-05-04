@@ -1306,14 +1306,18 @@ end
         end
 
         @testset "prepare_derivative_cache nfwd opt-out" begin
-            # enable_nfwd is deprecated and has no effect; verify it doesn't break.
+            # enable_nfwd is deprecated and has no effect on the AD path; verify it
+            # warns at Config construction (matching the contract tested in
+            # `test/config.jl`) and that the cache still works downstream.
             _nfwd_opt_out_f = (a, b) -> a * b + sin(a)
             cache_no_nfwd = Mooncake.prepare_derivative_cache(
                 _nfwd_opt_out_f,
                 x,
                 y;
-                config=Mooncake.Config(;
-                    debug_mode=false, friendly_tangents=false, enable_nfwd=false
+                config=@test_deprecated(
+                    Mooncake.Config(;
+                        debug_mode=false, friendly_tangents=false, enable_nfwd=false
+                    )
                 ),
             )
             nfwd_val, nfwd_grad = Mooncake.value_and_gradient!!(

@@ -812,11 +812,11 @@ end
         throw(
             ArgumentError(
                 "_count_slots: `$(_typeof(x))` has a non-trivial tangent_type but " *
-                "`_count_slots` recognised no scalar leaves. Add an explicit " *
-                "`_count_slots(::T, _seen) = 0` shim if the type has no differentiable " *
-                "content (like `Base.RefValue{Int}`), or an `_uninit_dual(::Val{N}, ::T)` " *
-                "overload if it does. Silent width-1 fallthrough would produce wrong " *
-                "tangents.",
+                "`_count_slots` recognised no scalar leaves. Would-be silent width-1 " *
+                "fallthrough is now an error: add an `_uninit_dual(::Val{N}, ::T)` " *
+                "overload for `$(_typeof(x))` if it has differentiable scalar content, " *
+                "or a `_count_slots(::T, _seen) = 0` shim if it does not (e.g. " *
+                "`Base.RefValue{Int}`).",
             ),
         )
     end
