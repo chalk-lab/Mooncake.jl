@@ -1330,15 +1330,15 @@ end
     return Mooncake.zero_dual(w, primal(f)(map(primal, (x1, x_rest...))...))
 end
 
-# Catch-all `zero_derivative` for arg shapes the all-`Dual` Vararg overload in
-# `tools_for_rules.jl` misses: bare `NDual` / `Array{NDual}` / `Tuple`s of
-# lifted args (e.g. `Broadcast.eltypes((arr, scalar))`) and `Dual`/`NDual`
-# mixes. The helpers recurse through `Tuple` and `Dual` wrappers.
-@inline function Mooncake.zero_derivative(f::Dual, x1, x_rest::Vararg{Any,N}) where {N}
-    args = (x1, x_rest...)
-    result = primal(f)(map(_ndual_primal, args)...)
-    return if _has_ndual(args...)
-        Mooncake.zero_dual(_ndual_width(args...), result)
+# `zero_derivative(f::Dual, ::Tuple)` for chunked-path callers that pass a bare
+# tuple of lifted args (e.g. `Broadcast.eltypes((arr, scalar))`); concrete tuple
+# types lift element-wise so the tuple itself stays unwrapped. Narrow to
+# `::Tuple` to keep the `(Dual, ::Float64)` test in `tools_for_rules.jl`
+# throwing `MethodError`.
+@inline function Mooncake.zero_derivative(f::Dual, x::Tuple)
+    result = primal(f)(_ndual_primal(x))
+    return if _has_ndual(x)
+        Mooncake.zero_dual(_ndual_width(x), result)
     else
         Mooncake.zero_dual(result)
     end
