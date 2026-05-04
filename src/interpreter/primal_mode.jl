@@ -106,8 +106,18 @@ const ATTACH_BEFORE = false
 """
     __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}, width=nothing) where {nargs}
 
-If isva and nargs=2, then inputs `(Dual(5.0, 0.0), Dual(4.0, 0.0), Dual(3.0, 0.0))`
-are transformed into `(Dual(5.0, 0.0), Dual((5.0, 4.0), (0.0, 0.0)))`.
+Pack the trailing vararg-typed args into the slot shape that the OC was compiled for.
+
+For `width=nothing` (legacy), `dual_type` collapses concrete tuples to a single
+`Dual{Tuple,Tangent}`, so the trailing args are packed into one Dual-of-Tuple. For
+`width=Val(N)`, `dual_type` decomposes element-wise to a `Tuple` of `Dual` / `NDual`,
+so the trailing args pass through as a tuple.
+
+Example (`isva=true`, `nargs=2`):
+- `width=nothing`: `(Dual(5.0,0.0), Dual(4.0,0.0), Dual(3.0,0.0))` →
+   `(Dual(5.0,0.0), Dual((5.0,4.0), (0.0,0.0)))`.
+- `width=Val(N)`: `(Dual(5.0), NDual(4.0,...), NDual(3.0,...))` →
+   `(Dual(5.0), (NDual(4.0,...), NDual(3.0,...)))`.
 """
 function __unflatten_dual_varargs(
     isva::Bool, args, ::Val{nargs}, width=nothing
@@ -130,7 +140,7 @@ end
 # Chunked Val{N} path: `dual_type(Val(N), Tuple{...})` decomposes element-wise into a
 # Tuple-of-Duals, so the OC's vararg slot expects a Tuple of Duals — `rest` is already
 # in that shape. The trailing `args[nargs:end]` becomes the tuple slot via splatting.
-_group_vararg_dual(::Val{N}, rest) where {N} = rest
+_group_vararg_dual(::Val, rest) = rest
 
 get_forward_primal_type(ir::CC.IRCode, a::Argument) = ir.argtypes[a.n]
 get_forward_primal_type(ir::CC.IRCode, ssa::SSAValue) = get_ir(ir, ssa, :type)

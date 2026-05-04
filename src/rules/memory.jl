@@ -915,13 +915,8 @@ end
 # `frule!!(zero_dual(f), zero_dual(Val(N), x))` produces the same bare shape
 # (`dual_type(Val(N), Array{T,D}) == Array{NDual{T,N},D}`).
 #
-# rrule!! parity: NDual is forward-mode only. The reverse-mode rrule!!s for
-# these operations earlier in this file dispatch on `CoDual{Memory{T}}` /
-# `CoDual{Array{T}}` where T is the original primal element type — never
-# `Memory{<:_HasNDual}`. CoDual primals carry the unlifted type, so reverse
-# AD never produces a CoDual whose primal is `Memory{NDual{...}}`. Adding
-# error-stub `rrule!!`s here would broaden the rrule!! signature to a case
-# that cannot arise; they're omitted by design.
+# No rrule!! parity: NDual is forward-mode only, and CoDuals carry the unlifted
+# primal type, so reverse mode never dispatches on `Memory{<:_HasNDual}`.
 
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefget)},

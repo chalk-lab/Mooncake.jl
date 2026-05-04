@@ -152,10 +152,14 @@ may be required if it is not.
 end
 
 """
-    zero_derivative(f::Dual, x::Vararg{Dual,N}) where {N}
+    zero_derivative(f::Dual, x...)
 
 Utility functionality for constructing `frule!!`s for functions whose derivatives always
 return zero.
+
+Each `x` may be a `Dual`, an `Array{<:Dual}`, or an `Array{<:Complex{<:Dual}}`, and the
+arguments may be a heterogeneous mix of the three. (Bare-NDual / `Memory` container
+overloads live in `nfwd/NfwdMooncake.jl`.)
 
 NOTE: you should only make use of this function if you cannot make use of the
 [`@zero_derivative`](@ref) macro.
@@ -177,15 +181,12 @@ Dual{Int64, NoTangent}(5, NoTangent())
 # Single mixed-vararg overload covers homogeneous-Dual, homogeneous-Array{Dual},
 # and any mix (e.g. `(scalar_Dual, Array{Dual})`). The earlier two-method
 # arrangement (`Vararg{Dual}` + homogeneous-array `T, Vararg{T}`) MethodError'd
-# on truly mixed calls. `_zd_primal` extracts the primal of a `Dual` and
-# returns arrays as-is, matching the original homogeneous-array semantics.
-@inline _zd_primal(x::Dual) = primal(x)
-@inline _zd_primal(x) = x
-
+# on truly mixed calls. `_primal` (defined in src/tangents/dual.jl) extracts
+# the primal of a `Dual` and returns non-Duals as-is.
 @inline function zero_derivative(
     f::Dual, x::Vararg{Union{Dual,Array{<:Dual},Array{<:Complex{<:Dual}}},N}
 ) where {N}
-    return zero_dual(primal(f)(map(_zd_primal, x)...))
+    return zero_dual(primal(f)(map(_primal, x)...))
 end
 
 # Bare NDual array overload lives in `src/nfwd/NfwdMooncake.jl` (which has

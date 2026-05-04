@@ -1431,10 +1431,10 @@ topology of the prep-time inputs. Re-prepare if any of the following change:
   with `Vector{Float32}`.
 - Array sizes: a cache prepared with `[1.0, 2.0]` cannot be reused with
   `[1.0, 2.0, 3.0]`. Validation surfaces the mismatch as an error.
-- Aliasing topology: when two array inputs share storage at prep time
-  (`primal(a) === primal(b)`), the cache pre-allocates shared gradient
-  buffers. Calling later with non-aliased inputs of the same shape
-  silently observes the prep-time aliasing and produces wrong gradients.
+- Aliasing topology: aliasing relationships between array inputs at prep time
+  (`primal(a) === primal(b)`) are baked into the cache; calling later with
+  the same shapes but a different aliasing relationship produces wrong
+  gradients.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
@@ -1608,16 +1608,10 @@ function _gradient_widthN(
             throw(
                 ArgumentError(
                     "value_and_gradient!! width-$W path expected an NDual output " *
-                    "for IEEEFloat primal but got `$(typeof(output))`. Common causes:\n" *
-                    "  • A custom frule!! returned a width-1 `Dual` (or bare value) " *
-                    "instead of a width-$W `NDual`.\n" *
-                    "  • A scalar primitive (e.g. an intrinsic) lacks a width-N NDual " *
-                    "frule!! overload — only the legacy `Dual{P}` path is registered.\n" *
-                    "  • The function involves a non-IEEEFloat scalar branch where " *
-                    "`dual_type(Val(N), P)` falls through to the generic Dual+NTangent " *
-                    "shape.\n" *
-                    "Workaround: pass `Mooncake.Config(chunk_size=nothing)` to fall back " *
-                    "to the width-1 path while the missing overload is added.",
+                    "for IEEEFloat primal but got `$(typeof(output))` — typically a " *
+                    "custom frule!! returned a width-1 Dual or a scalar primitive " *
+                    "lacks a width-N NDual overload. " *
+                    "Use `Mooncake.Config(chunk_size=nothing)` as a workaround.",
                 ),
             )
         end
@@ -2034,7 +2028,8 @@ function _prepare_hvp(::Val{:reverse_over_forward}, f, x::Tuple, config)
     x_coduals = map(CoDual, x_ndual_bufs, fdata_bufs)
     out, pb = ndual_rule(f_codual, x_coduals...)
     y_out = primal(out)
-    T_out = y_out isa Nfwd.NDual ? typeof(y_out.value) : typeof(y_out)
+    is_ndual_out = y_out isa Nfwd.NDual
+    T_out = is_ndual_out ? typeof(y_out.value) : typeof(y_out)
     T_out <: IEEEFloat || throw(
         ArgumentError("HVP/Hessian requires a scalar `IEEEFloat` output; got `$T_out`.")
     )
@@ -2044,7 +2039,7 @@ function _prepare_hvp(::Val{:reverse_over_forward}, f, x::Tuple, config)
     # (RData carrying the `(value, partials)` named tuple), `zero_tangent` for
     # the rare non-NDual scalar fallback. fdata_bufs are zeroed unconditionally
     # below, so the prep call can't leak side effects.
-    pb(y_out isa Nfwd.NDual ? _hvp_make_seed(T_out) : zero_tangent(y_out))
+    pb(is_ndual_out ? _hvp_make_seed(T_out) : zero_tangent(y_out))
 
     # Re-zero fdata_bufs after the preparatory run.
     for k in eachindex(fdata_bufs)

@@ -1573,13 +1573,13 @@ end
                 rof = prepare_hvp_cache(
                     f, x; config=Mooncake.Config(; second_order_mode=:reverse_over_forward)
                 )
-                _for = prepare_hvp_cache(
+                fwr = prepare_hvp_cache(
                     f, x; config=Mooncake.Config(; second_order_mode=:forward_over_reverse)
                 )
                 _, g_rof, hvp_rof = value_and_hvp!!(rof, f, v, x)
-                _, g_for, hvp_for = value_and_hvp!!(_for, f, v, x)
-                @test g_for ≈ g_rof atol = atol
-                @test hvp_for ≈ hvp_rof atol = atol
+                _, g_fwr, hvp_fwr = value_and_hvp!!(fwr, f, v, x)
+                @test g_fwr ≈ g_rof atol = atol
+                @test hvp_fwr ≈ hvp_rof atol = atol
             end
             @testset "multi-arg" begin
                 f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[2]
@@ -1592,20 +1592,18 @@ end
                     y;
                     config=Mooncake.Config(; second_order_mode=:reverse_over_forward),
                 )
-                _for = prepare_hvp_cache(
+                fwr = prepare_hvp_cache(
                     f,
                     x,
                     y;
                     config=Mooncake.Config(; second_order_mode=:forward_over_reverse),
                 )
                 _, (gx_rof, gy_rof), (hvpx_rof, hvpy_rof) = value_and_hvp!!(rof, f, v, x, y)
-                _, (gx_for, gy_for), (hvpx_for, hvpy_for) = value_and_hvp!!(
-                    _for, f, v, x, y
-                )
-                @test gx_for ≈ gx_rof atol = atol
-                @test gy_for ≈ gy_rof atol = atol
-                @test hvpx_for ≈ hvpx_rof atol = atol
-                @test hvpy_for ≈ hvpy_rof atol = atol
+                _, (gx_fwr, gy_fwr), (hvpx_fwr, hvpy_fwr) = value_and_hvp!!(fwr, f, v, x, y)
+                @test gx_fwr ≈ gx_rof atol = atol
+                @test gy_fwr ≈ gy_rof atol = atol
+                @test hvpx_fwr ≈ hvpx_rof atol = atol
+                @test hvpy_fwr ≈ hvpy_rof atol = atol
             end
         end
     end
