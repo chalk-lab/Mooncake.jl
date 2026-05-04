@@ -1801,7 +1801,7 @@ end
 
 @inline function _ndual_output_to_width1(output)
     _has_ndual(output) || return output
-    return Dual(primal(output), _tangent_dir(output, 1))
+    return Dual(_primal(output), _tangent_dir(output, 1))
 end
 
 """
