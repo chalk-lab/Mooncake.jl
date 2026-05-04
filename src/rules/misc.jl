@@ -173,6 +173,13 @@ end
 # another struct), field access also contributes no derivative.
 _get_tangent_field(::NoTangent, _) = NoTangent()
 _get_tangent_field(::NoTangent, _, _) = NoTangent()
+# Container tangents that mirror the primal struct shape (e.g. `Vector{NoTangent}` is the
+# canonical tangent for `Vector{Int}`). Field access delegates to the underlying
+# container's `getfield` — `:ref`, `:length`, etc. all behave as on the primal.
+_get_tangent_field(f::AbstractArray, name::Union{Int,Symbol}) = getfield(f, name)
+function _get_tangent_field(f::AbstractArray, name::Union{Int,Symbol}, inbounds)
+    return getfield(f, name, inbounds)
+end
 function _get_tangent_field(f::NTangent, name)
     return NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
 end

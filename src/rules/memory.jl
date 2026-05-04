@@ -990,6 +990,35 @@ end
     return zero_dual(_ndual_width(x), getfield(x, primal(name), primal(order)))
 end
 
+# Concrete `Tuple` types lift element-wise (see AGENTS.md), so the lifted form
+# of a tuple-of-IEEEFloats is `Tuple{NDual, NDual, ...}`. `getfield(t, i)` then
+# returns an already-canonical `NDual` element.
+const _NDualTuple = Tuple{
+    Vararg{Union{_HasNDual,AbstractArray{<:_HasNDual},MemoryRef{<:_HasNDual}}}
+}
+
+@inline function frule!!(::Dual{typeof(getfield)}, x::_NDualTuple, name::Dual)
+    return getfield(x, primal(name))
+end
+@inline function frule!!(
+    ::Dual{typeof(getfield)}, x::_NDualTuple, name::Dual, order::Dual
+)
+    return getfield(x, primal(name), primal(order))
+end
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)}, x::_NDualTuple, ::Dual{Val{name}}
+) where {name}
+    return getfield(x, name)
+end
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::_NDualTuple,
+    ::Dual{Val{name}},
+    ::Dual{Val{order}},
+) where {name,order}
+    return getfield(x, name, order)
+end
+
 # Test cases
 
 function _mems()

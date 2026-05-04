@@ -11,12 +11,13 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
             return _new_(P_ndual, primals...)
         end
     end
-    # Complex{NDual} is bare — construct directly from NDual fields.
+    # Complex{NDual} is bare — construct directly from the lifted NDual fields,
+    # so the result carries the partial information (Complex{NDual{T,N}}).
     if P <: Complex && _has_ndual(x...)
-        return Complex(primals...)
+        return Complex(x...)
     end
     if _has_ndual(x...)
-        primals_extracted = map(_ndual_primal, x)
+        primals_extracted = map(primal, x)
         y = _new_(P, primals_extracted...)
         T = tangent_type(P)
         T == NoTangent && return Dual(y, NoTangent())
@@ -28,9 +29,9 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
     return Dual(y, build_output_tangent(P, primals, map(tangent, x)))
 end
 
-# `_find_ndual_memref`, `_ndual_primal`, `_ndual_width`, `_tangent_dir`, and
-# `_tangent_dir_elem` are defined in `nfwd/NfwdMooncake.jl` so that all NDual
-# container dispatch lives in one file.
+# `_find_ndual_memref`, `_ndual_width`, `_tangent_dir`, and `_tangent_dir_elem`
+# are defined in `nfwd/NfwdMooncake.jl` so that all NDual container dispatch
+# lives in one file. `primal` is extended for `DualOrNDual` shapes there too.
 
 @inline function _ndual_new_result(::Type{P}, y, x::Tuple, primals::Tuple) where {P}
     W = _ndual_width(x...)

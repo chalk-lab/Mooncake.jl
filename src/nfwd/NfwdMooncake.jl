@@ -1233,6 +1233,14 @@ const _HasNDual = Union{NDual,Complex{<:NDual}}
 # canonical width-aware dual representation: Dual for non-IEEEFloat, NDual for
 # IEEEFloat-bearing primals when the tangent is an NTangent.
 @inline _dual_or_ndual(val, tangent) = Dual(val, tangent)
+# An `NTangent` whose lanes are all `NoTangent` is semantically equivalent to a
+# bare `NoTangent` — collapse it so that `Dual{P, NoTangent}` stays canonical for
+# non-differentiable primals (functions, type values, etc.). Without this,
+# primitive rules compiled against `Dual{P, NoTangent}` fail typeasserts when
+# called from inside a width-N-lifted closure body.
+@inline _dual_or_ndual(val, ::NTangent{<:NTuple{W,NoTangent}}) where {W} = Dual(
+    val, NoTangent()
+)
 @inline _dual_or_ndual(val::IEEEFloat, t::NTangent) = NDual(val, t.lanes)
 @inline function _dual_or_ndual(
     val::Complex{T}, t::NTangent{<:NTuple{W}}
@@ -1241,6 +1249,28 @@ const _HasNDual = Union{NDual,Complex{<:NDual}}
     re = NDual(real(val), ntuple(j -> real(lanes[j]), Val(W)))
     im = NDual(imag(val), ntuple(j -> imag(lanes[j]), Val(W)))
     return Complex(re, im)
+end
+@inline function _dual_or_ndual(
+    val::Array{T}, t::NTangent{<:NTuple{W}}
+) where {T<:IEEEFloat,W}
+    lanes = t.lanes
+    result = similar(val, NDual{T,W})
+    @inbounds for i in eachindex(val)
+        result[i] = NDual(val[i], ntuple(j -> lanes[j][i], Val(W)))
+    end
+    return result
+end
+@inline function _dual_or_ndual(
+    val::Array{Complex{T}}, t::NTangent{<:NTuple{W}}
+) where {T<:IEEEFloat,W}
+    lanes = t.lanes
+    result = similar(val, Complex{NDual{T,W}})
+    @inbounds for i in eachindex(val)
+        re = NDual(real(val[i]), ntuple(j -> real(lanes[j][i]), Val(W)))
+        im = NDual(imag(val[i]), ntuple(j -> imag(lanes[j][i]), Val(W)))
+        result[i] = Complex(re, im)
+    end
+    return result
 end
 @static if VERSION >= v"1.11-"
     @inline function _dual_or_ndual(
@@ -1274,17 +1304,23 @@ end
     @inline _ndual_width(::MemoryRef{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
 end
 
-# `_ndual_primal` — extract the primal value from any NDual-bearing representation.
-# Used by `_new_` to construct the primal struct without partials.
-@inline _ndual_primal(x::Dual) = primal(x)
-@inline _ndual_primal(x::NDual) = primal(x)
-@inline _ndual_primal(x::Complex{<:NDual}) = primal(x)
-@inline _ndual_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
-@inline _ndual_primal(x::AbstractArray{<:Complex{<:NDual}}) = map(
+# Extend `primal` to every `DualOrNDual` shape so rule bodies can use one name
+# regardless of whether the input is a legacy `Dual` wrapper or a width-N `NDual`
+# / array of NDuals. The bare-scalar / `Complex{<:NDual}` / `Array{NDual,D}` /
+# `Array{Complex{NDual},D}` overloads exist earlier in this file (lines ~899,
+# ~906, ~1152, ~1160). Below we add `AbstractArray` (broader than `Array`),
+# `Tuple` recursion, and a passthrough fallback so mixed argument lists in
+# `_new_` / `@inactive_intrinsic` macro bodies work with `map(primal, args)`.
+@inline Mooncake.primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
+@inline Mooncake.primal(x::AbstractArray{<:Complex{<:NDual}}) = map(
     z -> complex(z.re.value, z.im.value), x
 )
-@inline _ndual_primal(x::Tuple) = map(_ndual_primal, x)
-@inline _ndual_primal(x) = x
+@inline Mooncake.primal(x::Tuple) = map(Mooncake.primal, x)
+# Generic fallback: a non-`DualOrNDual` value (Int, Symbol, Type, etc.) is its
+# own primal. Defining this here rather than at the `Dual` site keeps the
+# fallback adjacent to the other DualOrNDual extensions and makes the contract
+# explicit: `primal(x)` on any value used by AD returns the underlying primal.
+@inline Mooncake.primal(x) = x
 
 # `_tangent_dir(x, i)` — extract the i-th direction tangent from any NDual-bearing
 # representation. Used by `_new_` to assemble per-direction NTangent lanes.
@@ -1317,12 +1353,14 @@ end
 end
 
 # Width-N counterpart to the `Array{<:Dual}` zero_derivative overload in
-# `tools_for_rules.jl`. NDual arrays carry tangents in their elements; the
-# `primal(::Array{NDual})` overload (above) extracts the underlying primal
-# array, and the result is wrapped at the input width via `_ndual_width`.
+# `tools_for_rules.jl`. Bare NDual scalars / `Complex{NDual}` and arrays of these
+# carry tangents inside their values; the `primal` overloads above extract the
+# underlying primal, and the result is wrapped at the input width via
+# `_ndual_width`. Homogeneous in `T` to preserve dispatch with the existing
+# `Vararg{Dual}` overload in `tools_for_rules.jl`.
 @inline function Mooncake.zero_derivative(
     f::Dual, x1::T, x_rest::Vararg{T}
-) where {T<:Union{Array{<:NDual},Array{<:Complex{<:NDual}}}}
+) where {T<:Union{NDual,Complex{<:NDual},Array{<:NDual},Array{<:Complex{<:NDual}}}}
     w = _ndual_width(x1, x_rest...)
     return Mooncake.zero_dual(w, primal(f)(map(primal, (x1, x_rest...))...))
 end
@@ -1333,7 +1371,7 @@ end
 # errors loudly if `x` carries no NDual content, matching the
 # `tools_for_rules.jl:290` MethodError contract for non-lifted args.
 @inline function Mooncake.zero_derivative(f::Dual, x::Tuple)
-    return Mooncake.zero_dual(_ndual_width(x), primal(f)(_ndual_primal(x)))
+    return Mooncake.zero_dual(_ndual_width(x), primal(f)(primal(x)))
 end
 
 end

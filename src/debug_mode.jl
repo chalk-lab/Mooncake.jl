@@ -54,25 +54,46 @@ end
 end
 
 @noinline function verify_dual_value(d::Dual{P,T}) where {P,T}
-    # Fast path: type-level check using the Dual type parameters to enforce T == tangent_type(P)
+    # Fast path: type-level check. T must be either `tangent_type(P)` (legacy
+    # width-1 wrapper) or `NTangent{NTuple{N, tangent_type(P)}}` for some N
+    # (width-N lifted form, including the chunk_size=1 default).
     T_expected = tangent_type(P)
-    if T !== T_expected
+    if T !== T_expected && !(T <: NTangent && _ntangent_lane_type(T) === T_expected)
         throw(
             InvalidFDataException(
                 "Dual tangent type mismatch: primal $P requires tangent type " *
-                "$T_expected, but got $T",
+                "$T_expected (or `NTangent{NTuple{N, $T_expected}}` for width-N), " *
+                "but got $T",
             ),
         )
     end
 
-    # Slow path: deep structural validation
+    # Slow path: deep structural validation. For width-N, validate each lane's
+    # tangent against the primal independently.
     p, t = primal(d), tangent(d)
-    # We validate fdata and rdata separately so these helpers stay in sync with reverse-mode checks.
-    verify_fdata_value(p, fdata(t))
-    verify_rdata_value(p, rdata(t))
+    if t isa NTangent
+        for lane in t.lanes
+            verify_fdata_value(p, fdata(lane))
+            verify_rdata_value(p, rdata(lane))
+        end
+    else
+        verify_fdata_value(p, fdata(t))
+        verify_rdata_value(p, rdata(t))
+    end
 
     return nothing
 end
+
+# Extract the lane element type from `NTangent{NTuple{N,T}}`. For non-conforming
+# `NTangent` parameterisations (e.g. heterogeneous tuples) returns `Any`, which
+# the caller treats as "not the expected single-element layout".
+@inline function _ntangent_lane_type(::Type{NTangent{L}}) where {L<:Tuple}
+    elts = L.parameters
+    isempty(elts) && return Any
+    first_elt = elts[1]
+    all(==(first_elt), elts) ? first_elt : Any
+end
+@inline _ntangent_lane_type(::Type) = Any
 
 """
     DebugPullback(pb, y, x)

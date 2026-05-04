@@ -1717,6 +1717,15 @@ end
 
 @inline _combine_to_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())
 @inline _combine_to_ndual(x::Tuple, ::Tuple{}) = Dual(x, NoTangent())
+
+# Non-IEEEFloat aggregate primals (structs, NamedTuples, mutable types) lift
+# through `Dual{P, NTangent{...}}` per AGENTS.md, with each NTangent lane
+# carrying a per-direction `tangent_type(P)` payload (`MutableTangent`,
+# `Tangent`, etc.). The IEEEFloat-specialised methods above take precedence
+# for scalar/array/Complex primals.
+@inline function _combine_to_ndual(x, partials::NTuple{W,Any}) where {W}
+    return Dual(x, NTangent(partials))
+end
 @inline function _combine_to_ndual(
     x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}
 ) where {W}
@@ -1784,7 +1793,7 @@ end
 
 @inline function _ndual_output_to_width1(output)
     _has_ndual(output) || return output
-    return Dual(_ndual_primal(output), _tangent_dir(output, 1))
+    return Dual(primal(output), _tangent_dir(output, 1))
 end
 
 """
@@ -2335,22 +2344,93 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
-    cache.width === nothing || throw(
-        ArgumentError(
-            "value_and_jacobian!! with FCache only supports chunk_size=nothing (width-1 mode)",
-        ),
-    )
-    input_primals = (f, x)
+    width = cache.width
+    if width === nothing
+        return _jacobian_width1(cache.rule, (f, x), total_dof, eltype(x))
+    else
+        return _jacobian_widthN(cache, (f, x), total_dof, eltype(x), width)
+    end
+end
+
+function _jacobian_width1(rule, input_primals, total_dof, Tx)
     seed1 = _make_seed_tangent(input_primals, 1)
-    output1 = cache.rule(tuple_map(Dual, input_primals, seed1)...)
+    output1 = rule(tuple_map(Dual, input_primals, seed1)...)
     y = primal(output1)
-    Ty = _validate_jacobian_output(y, eltype(x))
+    Ty = _validate_jacobian_output(y, Tx)
     J = zeros(Ty, length(y), total_dof)
     @inbounds J[:, 1] .= tangent(output1)
     for slot in 2:total_dof
         seed = _make_seed_tangent(input_primals, slot)
-        output = cache.rule(tuple_map(Dual, input_primals, seed)...)
+        output = rule(tuple_map(Dual, input_primals, seed)...)
         @inbounds J[:, slot] .= tangent(output)
+    end
+    return y, J
+end
+
+function _jacobian_widthN(
+    cache::FCache, input_primals, total_dof, Tx, ::Val{W}
+) where {W}
+    rule = cache.rule
+    # Lift buffers and per-direction seed buffers are reused across calls; allocate
+    # lazily on first invocation, mirroring `_gradient_widthN`.
+    lift_bufs = let cached = cache.lift_buf[]
+        if cached === nothing
+            allocated = tuple_map(input_primals) do p
+                _alloc_lift_buf(Val(W), p)
+            end
+            cache.lift_buf[] = allocated
+            allocated
+        else
+            cached
+        end
+    end
+    seed_bufs = let cached = cache.seed_buf[]
+        if cached === nothing
+            buf = ntuple(_ -> _alloc_aliased_tangents(input_primals), Val(W))
+            cache.seed_buf[] = buf
+            buf
+        else
+            cached
+        end
+    end
+
+    local y, J, Ty
+    cursor = Ref(0)
+    seed_seen = _new_seen(input_primals)
+    slot = 1
+    first = true
+    while slot <= total_dof
+        chunk = min(W, total_dof - slot + 1)
+        seeds = ntuple(Val(W)) do d
+            cursor[] = 0
+            seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
+            # For directions beyond the live `chunk`, seed slot 1 (zeroed) so the
+            # buffer carries valid one-hot tangents only for the first `chunk`
+            # directions; trailing directions are inert and their partials are
+            # discarded below.
+            target_slot = d <= chunk ? slot + d - 1 : 1
+            _seed_inplace!(seed_bufs[d], input_primals, target_slot, cursor, seed_seen)
+        end
+        ndual_inputs = ntuple(Val(length(input_primals))) do i
+            _combine_to_ndual_or_buffer(
+                lift_bufs[i], input_primals[i], ntuple(d -> seeds[d][i], Val(W))
+            )
+        end
+        output = rule(ndual_inputs...)
+        if first
+            y = primal(output)
+            Ty = _validate_jacobian_output(y, Tx)
+            J = zeros(Ty, length(y), total_dof)
+            first = false
+        end
+        # Output is the canonical `dual_type(Val(W), Vector{Ty}) = Vector{NDual{Ty,W}}`.
+        for d in 1:chunk
+            col = slot + d - 1
+            @inbounds for i in eachindex(output)
+                J[i, col] = output[i].partials[d]
+            end
+        end
+        slot += chunk
     end
     return y, J
 end

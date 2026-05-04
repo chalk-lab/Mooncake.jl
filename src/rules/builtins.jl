@@ -113,7 +113,9 @@ import ..Mooncake:
     NoTangent,
     Mode,
     extract,
-    nan_tangent_guard
+    nan_tangent_guard,
+    NDual,
+    _ndual_width
 
 using Core.Intrinsics: atomic_pointerref
 
@@ -162,6 +164,17 @@ macro inactive_intrinsic(name)
             f_primal = primal(f)
             args_primal = map(primal, args)
             return zero_dual(f_primal(args_primal...))
+        end
+        # Mixed / all-NDual call sites: dispatched when at least one arg carries
+        # `NDual`. Width is read from the NDual-bearing args; the `Vararg{Dual,N}`
+        # method above is strictly more specific and still covers all-Dual calls.
+        function frule!!(
+            f::Dual{typeof($name)},
+            args::Vararg{Union{Dual,NDual,Complex{<:NDual}},N},
+        ) where {N}
+            f_primal = primal(f)
+            args_primal = map(primal, args)
+            return zero_dual(_ndual_width(args...), f_primal(args_primal...))
         end
     end
     return esc(expr)
@@ -919,6 +932,9 @@ function frule!!(::Dual{typeof(compilerbarrier)}, setting::Dual{Symbol}, v::Dual
         compilerbarrier(primal(setting), tangent(v)),
     )
 end
+function frule!!(::Dual{typeof(compilerbarrier)}, setting::Dual{Symbol}, v::NDual)
+    return compilerbarrier(primal(setting), v)
+end
 function rrule!!(::CoDual{typeof(compilerbarrier)}, setting::CoDual{Symbol}, val::CoDual)
     compilerbarrier_pb(dout) = NoRData(), NoRData(), dout
     return compilerbarrier(setting.x, val), compilerbarrier_pb
@@ -931,6 +947,32 @@ end
 function frule!!(::Dual{typeof(Core.ifelse)}, cond::Dual{Bool}, a::Dual, b::Dual)
     _cond = primal(cond)
     return Dual(ifelse(_cond, primal(a), primal(b)), ifelse(_cond, tangent(a), tangent(b)))
+end
+# `ifelse` with at least one NDual branch: branches must agree on width and type.
+# Routing through `Base.ifelse` keeps the canonical NDual return shape.
+function frule!!(
+    ::Dual{typeof(Core.ifelse)},
+    cond::Dual{Bool},
+    a::NDual{T,N},
+    b::NDual{T,N},
+) where {T<:IEEEFloat,N}
+    return ifelse(primal(cond), a, b)
+end
+function frule!!(
+    ::Dual{typeof(Core.ifelse)},
+    cond::Dual{Bool},
+    a::NDual{T,N},
+    b::Dual{<:IEEEFloat},
+) where {T<:IEEEFloat,N}
+    return ifelse(primal(cond), a, NDual{T,N}(T(primal(b))))
+end
+function frule!!(
+    ::Dual{typeof(Core.ifelse)},
+    cond::Dual{Bool},
+    a::Dual{<:IEEEFloat},
+    b::NDual{T,N},
+) where {T<:IEEEFloat,N}
+    return ifelse(primal(cond), NDual{T,N}(T(primal(a))), b)
 end
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     _cond = primal(cond)

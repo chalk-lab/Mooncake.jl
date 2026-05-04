@@ -342,8 +342,8 @@ end
 end
 
 # ── scalar_math ───────────────────────────────────────────────────────────────
-# Tuple-returning functions (sincosd, sincospi, modf) are skipped:
-# their output type is Tuple, not IEEEFloat.
+# Tuple-returning functions (sincosd, sincospi, modf) are skipped here and
+# defined manually above; FastMath.sincos has a manual NDual entry below.
 
 for f in (
     exp,
@@ -401,14 +401,32 @@ for f in (
     nextfloat,
     prevfloat,
     tanpi,
+    Base.FastMath.exp_fast,
+    Base.FastMath.exp2_fast,
+    Base.FastMath.exp10_fast,
+    Base.FastMath.atan_fast,
 )
     @eval function frule!!(::Dual{typeof($f)}, x::NDual{T,N}) where {T<:IEEEFloat,N}
         return $f(x)
     end
 end
 
+# `Base.eps(x::IEEEFloat)` is constant in `x`, so the NDual variant returns a
+# zero-derivative `NDual` carrying `eps(primal(x))`.
+function frule!!(::Dual{typeof(Base.eps)}, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    return zero_dual(Val(N), Base.eps(primal(x)))
+end
+
+# `Base.FastMath.sincos` returns a tuple; `Base.sincos` is overloaded for `NDual`,
+# so dispatching the fast variant to it yields the canonical tuple-of-NDual shape.
+function frule!!(
+    ::Dual{typeof(Base.FastMath.sincos)}, x::NDual{T,N}
+) where {T<:IEEEFloat,N}
+    return Base.FastMath.sincos(x)
+end
+
 # Binary functions
-for f in (atan, log, ^, mod, max, min)
+for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
     @eval function frule!!(
         ::Dual{typeof($f)}, x::NDual{T,N}, y::NDual{T,N}
     ) where {T<:IEEEFloat,N}
