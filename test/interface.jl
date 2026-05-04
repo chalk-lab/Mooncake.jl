@@ -1195,6 +1195,20 @@ end
             @test gd == [0.5, 0.5]
         end
 
+        @testset "chunked vararg primal" begin
+            # Regression: chunked `_group_vararg_dual` packed varargs into a
+            # Dual-of-Tuple, but `dual_type(Val(N), Tuple{...})` decomposes
+            # element-wise into a Tuple-of-Duals — the OC's vararg slot then
+            # rejected the packed shape with a TypeError.
+            f_va(args::Float64...) = sum(a^2 for a in args)
+            cache_va = Mooncake.prepare_derivative_cache(
+                f_va, 1.0, 2.0, 3.0; config=Mooncake.Config(; chunk_size=2)
+            )
+            yv, dv = Mooncake.value_and_gradient!!(cache_va, f_va, 1.0, 2.0, 3.0)
+            @test yv == 14.0
+            @test dv == (Mooncake.NoTangent(), 2.0, 4.0, 6.0)
+        end
+
         @testset "prepare_hvp_cache forward_over_reverse with chunk_size>1" begin
             # Regression: chunk_size>1 propagated into the inner derivative cache
             # and broke field reads on the gradient closure's NTangent inputs.

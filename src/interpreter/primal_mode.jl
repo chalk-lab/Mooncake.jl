@@ -114,25 +114,23 @@ function __unflatten_dual_varargs(
 ) where {nargs}
     isva || return args
     rest = args[nargs:end]
+    return (args[1:(nargs - 1)]..., _group_vararg_dual(width, rest))
+end
+
+# Legacy width-1 path: `dual_type(Tuple{...})` returns a single `Dual{Tuple,Tangent}`
+# (concrete-tuple fall-through in dual_type), so the OC's vararg slot expects a Dual-of-Tuple.
+function _group_vararg_dual(::Nothing, rest)
     group_primal = map(primal, rest)
     if tangent_type(_typeof(group_primal)) == NoTangent
-        grouped_args = zero_dual(group_primal)
-    else
-        grouped_args = _group_vararg_dual(width, group_primal, rest)
+        return zero_dual(group_primal)
     end
-    return (args[1:(nargs - 1)]..., grouped_args)
+    return Dual(group_primal, map(tangent, rest))
 end
 
-_group_vararg_dual(::Nothing, p, rest) = Dual(p, map(tangent, rest))
-
-function _group_vararg_dual(::Val{N}, group_primal, rest) where {N}
-    per_dir = ntuple(Val(N)) do i
-        map(x -> _partial_i(x, i), rest)
-    end
-    return Dual(group_primal, NTangent(per_dir))
-end
-
-_partial_i(x::Dual, ::Int) = tangent(x)
+# Chunked Val{N} path: `dual_type(Val(N), Tuple{...})` decomposes element-wise into a
+# Tuple-of-Duals, so the OC's vararg slot expects a Tuple of Duals — `rest` is already
+# in that shape. The trailing `args[nargs:end]` becomes the tuple slot via splatting.
+_group_vararg_dual(::Val{N}, rest) where {N} = rest
 
 get_forward_primal_type(ir::CC.IRCode, a::Argument) = ir.argtypes[a.n]
 get_forward_primal_type(ir::CC.IRCode, ssa::SSAValue) = get_ir(ir, ssa, :type)
