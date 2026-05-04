@@ -1409,32 +1409,20 @@ end
 """
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
-Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref).
-
-The `chunk_size` field of `config` controls the forward-mode width:
-- `nothing` (default): legacy width-1 path (`Dual{P,T}` lifting).
-- `1`: chunked NDual path with width 1 (`NDual{T,1}` for IEEEFloat scalars,
-  `Tuple` of Duals for concrete tuple primals, etc.).
-- `N > 1`: chunked NDual path with width N — each rule call computes N
-  derivative directions in one pass.
-
-The output of `value_and_derivative!!` matches the caller's tangent shape
-regardless of the prepared `chunk_size`; the value only affects the rule's
-compile-time width.
+Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref). See
+[`Mooncake.Config`](@ref) for the `chunk_size` semantics; note that
+`chunk_size=nothing` selects the legacy `Dual{P,T}` path, while
+`chunk_size=1` selects the chunked NDual path at width 1 — these are
+distinct internal paths even though both compute single-direction derivatives.
 
 # Reuse contract
 
-The cache is bound to the top-level argument types, sizes, and aliasing
-topology of the prep-time inputs. Re-prepare if any of the following change:
-
-- Argument types: a cache prepared with `Vector{Float64}` cannot be reused
-  with `Vector{Float32}`.
-- Array sizes: a cache prepared with `[1.0, 2.0]` cannot be reused with
-  `[1.0, 2.0, 3.0]`. Validation surfaces the mismatch as an error.
-- Aliasing topology: aliasing relationships between array inputs at prep time
-  (`primal(a) === primal(b)`) are baked into the cache; calling later with
-  the same shapes but a different aliasing relationship produces wrong
-  gradients.
+The cache is bound to the prep-time argument types, sizes, and aliasing
+topology. Type and size mismatches surface as errors on the next call;
+**aliasing mismatches do not** — aliasing relationships between array inputs
+(`primal(a) === primal(b)`) are baked into the cache at prep time, and reusing
+with a different aliasing relationship produces wrong gradients. Re-prepare
+when any of these change.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
