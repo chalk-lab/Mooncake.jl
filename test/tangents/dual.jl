@@ -14,14 +14,16 @@
         @test zero_dual([Complex(nd, nd)]) == [Complex(nd_zero, nd_zero)]
     end
     @static if VERSION >= v"1.11-rc4"
-        nd = Mooncake.NDual{Float64,2}(1.5, (3.0, 4.0))
-        nd_zero = Mooncake.NDual{Float64,2}(1.5, (0.0, 0.0))
-        m = fill!(Memory{Mooncake.NDual{Float64,2}}(undef, 2), nd)
-        mz = zero_dual(m)
-        @test mz isa Memory{Mooncake.NDual{Float64,2}} && all(==(nd_zero), mz)
-        mrz = zero_dual(Core.memoryrefnew(m))
-        @test mrz isa MemoryRef{Mooncake.NDual{Float64,2}}
-        @test Core.memoryrefget(mrz, :not_atomic, false) === nd_zero
+        let nd = Mooncake.NDual{Float64,2}(1.5, (3.0, 4.0)),
+            nd_zero = Mooncake.NDual{Float64,2}(1.5, (0.0, 0.0))
+
+            m = fill!(Memory{Mooncake.NDual{Float64,2}}(undef, 2), nd)
+            mz = zero_dual(m)
+            @test mz isa Memory{Mooncake.NDual{Float64,2}} && all(==(nd_zero), mz)
+            mrz = zero_dual(Core.memoryrefnew(m))
+            @test mrz isa MemoryRef{Mooncake.NDual{Float64,2}}
+            @test Core.memoryrefget(mrz, :not_atomic, false) === nd_zero
+        end
     end
 
     @test Mooncake._uninit_dual(Val(2), Array{Float64,1}) ===
