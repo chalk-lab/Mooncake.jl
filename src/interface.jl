@@ -2418,10 +2418,8 @@ function _jacobian_widthN(
         seeds = ntuple(Val(W)) do d
             cursor[] = 0
             seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
-            # For directions beyond the live `chunk`, seed slot 1 (zeroed) so the
-            # buffer carries valid one-hot tangents only for the first `chunk`
-            # directions; trailing directions are inert and their partials are
-            # discarded below.
+            # Trailing directions (d > chunk) reuse slot 1 as a placeholder; their
+            # partials are discarded after the rule call.
             target_slot = d <= chunk ? slot + d - 1 : 1
             _seed_inplace!(seed_bufs[d], input_primals, target_slot, cursor, seed_seen)
         end

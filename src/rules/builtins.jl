@@ -948,8 +948,10 @@ function frule!!(::Dual{typeof(Core.ifelse)}, cond::Dual{Bool}, a::Dual, b::Dual
     _cond = primal(cond)
     return Dual(ifelse(_cond, primal(a), primal(b)), ifelse(_cond, tangent(a), tangent(b)))
 end
-# `ifelse` with at least one NDual branch: branches must agree on width and type.
-# Routing through `Base.ifelse` keeps the canonical NDual return shape.
+# `ifelse` over NDual branches: both branches must agree on width and element
+# type, so this single overload is enough. Mixed NDual+Dual cases (one branch
+# carrying width-N partials, the other a width-1 wrapper) don't arise in
+# practice — the IR lifts both branches uniformly.
 function frule!!(
     ::Dual{typeof(Core.ifelse)},
     cond::Dual{Bool},
@@ -957,22 +959,6 @@ function frule!!(
     b::NDual{T,N},
 ) where {T<:IEEEFloat,N}
     return ifelse(primal(cond), a, b)
-end
-function frule!!(
-    ::Dual{typeof(Core.ifelse)},
-    cond::Dual{Bool},
-    a::NDual{T,N},
-    b::Dual{<:IEEEFloat},
-) where {T<:IEEEFloat,N}
-    return ifelse(primal(cond), a, NDual{T,N}(T(primal(b))))
-end
-function frule!!(
-    ::Dual{typeof(Core.ifelse)},
-    cond::Dual{Bool},
-    a::Dual{<:IEEEFloat},
-    b::NDual{T,N},
-) where {T<:IEEEFloat,N}
-    return ifelse(primal(cond), NDual{T,N}(T(primal(a))), b)
 end
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     _cond = primal(cond)

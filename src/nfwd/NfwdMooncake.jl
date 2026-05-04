@@ -1232,49 +1232,31 @@ const _HasNDual = Union{NDual,Complex{<:NDual}}
 # Forward-mode lifted value aliases.
 #
 # `Lifted` covers every single-position form a value can legally take after
-# forward-mode lifting: legacy `Dual` wrapper (any inner primal type), bare
-# width-N `NDual{T,N}` for IEEEFloat scalars, and `Complex` / `AbstractArray` /
-# `MemoryRef` containers carrying `NDual` elements.
-#
-# `LiftedTuple` matches a homogeneous tuple of `Lifted` values; concrete
-# `Tuple{...}` types lift element-wise (AGENTS.md). Julia's `Union` cannot
-# recurse through `Tuple` parametrics, so this is a separate alias.
-#
-# `DualOrNDual` is the single user-facing dispatch alias: any argument that
-# could legally appear at a value-carrying position in an `frule!!`,
-# regardless of whether the surrounding interpreter is on the legacy `Dual`
-# path or the width-N `NDual` path. Use it for rule signatures whose body is
-# uniform across both forms (typically primal-only frules); rules that need
-# to read `tangent(::Dual)` directly versus `x.partials[i]` from an NDual
-# still keep separate methods.
+# forward-mode lifting; `LiftedTuple` adds homogeneous tuples (concrete
+# `Tuple{...}` types lift element-wise — see AGENTS.md). `DualOrNDual` is the
+# user-facing dispatch alias for `frule!!` signatures whose body is uniform
+# across the legacy `Dual` and width-N `NDual` paths.
+const _LiftedBase = Union{
+    Dual,
+    NDual,
+    Complex{<:NDual},
+    AbstractArray{<:NDual},
+    AbstractArray{<:Complex{<:NDual}},
+}
 @static if VERSION >= v"1.11-"
     const Lifted = Union{
-        Dual,
-        NDual,
-        Complex{<:NDual},
-        AbstractArray{<:NDual},
-        AbstractArray{<:Complex{<:NDual}},
-        MemoryRef{<:NDual},
-        MemoryRef{<:Complex{<:NDual}},
+        _LiftedBase,MemoryRef{<:NDual},MemoryRef{<:Complex{<:NDual}}
     }
 else
-    const Lifted = Union{
-        Dual,
-        NDual,
-        Complex{<:NDual},
-        AbstractArray{<:NDual},
-        AbstractArray{<:Complex{<:NDual}},
-    }
+    const Lifted = _LiftedBase
 end
 
 const LiftedTuple = Tuple{Vararg{Lifted}}
 
 const DualOrNDual = Union{Lifted,LiftedTuple}
 
-# Extend the `_is_lifted_value` predicate (defined in debug_mode.jl with the
-# `Dual` and `Tuple` cases) to cover every `NDual`-bearing form, mirroring the
-# `Lifted` Union above. The predicate is used by `verify_dual_inputs` and
-# `verify_dual_output` in debug_mode to validate rule input/output shapes.
+# Width-N forms; mirrors `Lifted`. Base cases (`Dual`, `Tuple`) live with the
+# predicate definition in `debug_mode.jl`.
 @inline Mooncake._is_lifted_value(::NDual) = true
 @inline Mooncake._is_lifted_value(::Complex{<:NDual}) = true
 @inline Mooncake._is_lifted_value(::AbstractArray{<:NDual}) = true
@@ -1359,22 +1341,15 @@ end
     @inline _ndual_width(::MemoryRef{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
 end
 
-# Extend `primal` to every `DualOrNDual` shape so rule bodies can use one name
-# regardless of whether the input is a legacy `Dual` wrapper or a width-N `NDual`
-# / array of NDuals. The bare-scalar / `Complex{<:NDual}` / `Array{NDual,D}` /
-# `Array{Complex{NDual},D}` overloads exist earlier in this file (lines ~899,
-# ~906, ~1152, ~1160). Below we add `AbstractArray` (broader than `Array`),
-# `Tuple` recursion, and a passthrough fallback so mixed argument lists in
-# `_new_` / `@inactive_intrinsic` macro bodies work with `map(primal, args)`.
+# Extend `primal` to every `DualOrNDual` shape plus a generic passthrough so
+# rule bodies can `map(primal, args)` without per-arg type checks. Bare-scalar /
+# `Complex{<:NDual}` / `Array{NDual,D}` / `Array{Complex{NDual},D}` overloads
+# are defined earlier in this file (alongside the other `NDual` accessors).
 @inline Mooncake.primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
 @inline Mooncake.primal(x::AbstractArray{<:Complex{<:NDual}}) = map(
     z -> complex(z.re.value, z.im.value), x
 )
 @inline Mooncake.primal(x::Tuple) = map(Mooncake.primal, x)
-# Generic fallback: a non-`DualOrNDual` value (Int, Symbol, Type, etc.) is its
-# own primal. Defining this here rather than at the `Dual` site keeps the
-# fallback adjacent to the other DualOrNDual extensions and makes the contract
-# explicit: `primal(x)` on any value used by AD returns the underlying primal.
 @inline Mooncake.primal(x) = x
 
 # `_tangent_dir(x, i)` — extract the i-th direction tangent from any NDual-bearing
@@ -1421,26 +1396,14 @@ end
 end
 
 # Mixed-arg `zero_derivative` for argument lists that mix `Dual` (typically
-# `Dual{Type{T}}` from `@inactive_intrinsic` chains or non-differentiable
-# discriminator args) with `NDual`-bearing values. The all-Dual case is matched
-# by the more specific `Vararg{Dual}` method in `tools_for_rules.jl`; the
-# all-NDual case is matched by the homogeneous-`T` method above; this method
-# fills the remaining case where at least one arg is NDual-bearing and at
-# least one is a `Dual` wrapper.
+# `Dual{Type{T}}` from `@inactive_intrinsic` chains) with `NDual`-bearing
+# values; the homogeneous-`T` method above and the `Vararg{Dual}` method in
+# `tools_for_rules.jl` cover the non-mixed cases. We thread `_ndual_width`
+# through so a (rare) differentiable result returns the correct width-N shape.
 @inline function Mooncake.zero_derivative(
-    f::Dual,
-    x::Vararg{
-        Union{
-            Dual,
-            NDual,
-            Complex{<:NDual},
-            AbstractArray{<:NDual},
-            AbstractArray{<:Complex{<:NDual}},
-        },
-        N,
-    },
+    f::Dual, x::Vararg{Union{Dual,_HasNDual,AbstractArray{<:_HasNDual}},N}
 ) where {N}
-    return Mooncake.zero_dual(primal(f)(map(primal, x)...))
+    return Mooncake.zero_dual(_ndual_width(x...), primal(f)(map(primal, x)...))
 end
 
 # `zero_derivative(f::Dual, ::Tuple)` for chunked-path callers that pass a bare

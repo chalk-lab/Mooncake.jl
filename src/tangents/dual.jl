@@ -26,11 +26,9 @@ Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
 Width-aware tangent type query. Returns the canonical tangent representation for
 primal type `P` at width `N`.
 
-- `Val(0)` → `NoTangent` (primal passthrough, no tangent needed)
-- `Val(N)` where `tangent_type(P)` has no differentiable content → `tangent_type(P)`
-  itself (no `NTangent` wrap; per-lane copies would be redundant). This covers
-  `NoTangent` and structural placeholders like `Vector{NoTangent}` /
-  `MemoryRef{NoTangent}` that mirror a non-differentiable container's shape.
+- `Val(0)` → `NoTangent` (primal passthrough)
+- `Val(N)` where `tangent_type(P)` has no differentiable content (`NoTangent` or
+  a structural placeholder like `Vector{NoTangent}`) → `tangent_type(P)` itself
 - `Val(N)` otherwise → `NTangent{NTuple{N, tangent_type(P)}}`
 """
 tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
