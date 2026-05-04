@@ -1332,16 +1332,11 @@ end
 
 # `zero_derivative(f::Dual, ::Tuple)` for chunked-path callers that pass a bare
 # tuple of lifted args (e.g. `Broadcast.eltypes((arr, scalar))`); concrete tuple
-# types lift element-wise so the tuple itself stays unwrapped. Narrow to
-# `::Tuple` to keep the `(Dual, ::Float64)` test in `tools_for_rules.jl`
-# throwing `MethodError`.
+# types lift element-wise so the tuple itself stays unwrapped. `_ndual_width`
+# errors loudly if `x` carries no NDual content, matching the
+# `tools_for_rules.jl:290` MethodError contract for non-lifted args.
 @inline function Mooncake.zero_derivative(f::Dual, x::Tuple)
-    result = primal(f)(_ndual_primal(x))
-    return if _has_ndual(x)
-        Mooncake.zero_dual(_ndual_width(x), result)
-    else
-        Mooncake.zero_dual(result)
-    end
+    return Mooncake.zero_dual(_ndual_width(x), primal(f)(_ndual_primal(x)))
 end
 
 end
