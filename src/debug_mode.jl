@@ -21,11 +21,14 @@ end
 _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
 """
-    (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+    (rule::DebugFRule)(x::Vararg{Any,N}) where {N}
 
-Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
+Apply pre- and post-condition type checking. Accepts any forward-mode value
+(legacy `Dual` wrapper or width-N `NDual` / `Complex{<:NDual}` / array of
+these); the per-arg shape check happens inside `verify_dual_inputs`. See
+[`DebugFRule`](@ref).
 """
-@noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+@noinline function (rule::DebugFRule)(x::Vararg{Any,N}) where {N}
     verify_args(rule.rule, x)
     verify_dual_inputs(x)
     y = __call_rule(rule.rule, x)
