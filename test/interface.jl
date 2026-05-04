@@ -1022,6 +1022,9 @@ end
                 # Memory{NDual} lift buffer in `_dual_or_ndual`). Tracked in pr1151.md
                 # follow-up #16 for the alloc reduction.
                 @test CHUNK_ARRAY_EVAL_COUNT[] == 2
+                @test_broken TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!, array_cache_grad_fwd, array_f, x_arr
+                ) == 0
                 array_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
                     array_f,
                     x_arr;
@@ -1048,6 +1051,12 @@ end
                     sum(abs2, singleton_x_arr), (Mooncake.NoTangent(), 2 .* singleton_x_arr)
                 )
                 @test CHUNK_ARRAY_EVAL_COUNT[] == 1
+                @test_broken TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!,
+                    singleton_array_cache_grad_fwd,
+                    array_f,
+                    singleton_x_arr,
+                ) == 0
                 singleton_array_cache_grad_fwd_friendly = Mooncake.prepare_derivative_cache(
                     array_f,
                     singleton_x_arr;
@@ -1058,6 +1067,36 @@ end
                     singleton_array_cache_grad_fwd_friendly, array_f, singleton_x_arr
                 ) == (sum(abs2, singleton_x_arr), (array_f, 2 .* singleton_x_arr))
                 @test CHUNK_ARRAY_EVAL_COUNT[] == 1
+
+                # Regression: _validate_prepared_cache_inputs must not allocate.
+                # length-5 vector: small_vector_gradient_frule path (chunk_size=5),
+                # output_tangent is NTuple{5,Float64} (isa Tuple branch in extraction loop).
+                x5 = collect(1.0:5.0)
+                f5 = x -> sum(abs2, x)
+                cache_5 = Mooncake.prepare_derivative_cache(
+                    f5,
+                    x5;
+                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                )
+                @test Mooncake.value_and_gradient!!(cache_5, f5, x5) ==
+                    (sum(abs2, x5), (Mooncake.NoTangent(), 2 .* x5))
+                @test_broken TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!, cache_5, f5, x5
+                ) == 0
+
+                # length-10 vector: gradient_rrule path (slots > _CHUNK_NFWD_MAX_LANES = 8).
+                x10 = collect(1.0:10.0)
+                f10 = x -> sum(abs2, x)
+                cache_10 = Mooncake.prepare_derivative_cache(
+                    f10,
+                    x10;
+                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                )
+                @test Mooncake.value_and_gradient!!(cache_10, f10, x10) ==
+                    (sum(abs2, x10), (Mooncake.NoTangent(), 2 .* x10))
+                @test_broken TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!, cache_10, f10, x10
+                ) == 0
             end
         end
 
