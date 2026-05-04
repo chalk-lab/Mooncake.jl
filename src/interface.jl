@@ -1723,30 +1723,19 @@ end
 # carrying a per-direction `tangent_type(P)` payload (`MutableTangent`,
 # `Tangent`, etc.). The IEEEFloat-specialised methods above take precedence
 # for scalar/array/Complex primals.
-@inline function _combine_to_ndual(x, partials::NTuple{W,Any}) where {W}
+#
+# When the partials are structurally NoTangent (per-element-NoTangent containers
+# mirroring a non-differentiable primal shape — `Vector{NoTangent}`,
+# `Memory{NoTangent}`, `MemoryRef{NoTangent}`), all `W` lanes are byte-identical
+# and the legacy memory rules expect `Dual{<:_MemTypes, <:_MemTypes}` directly,
+# so we collapse to a single representative. This branches at compile time on
+# `_is_structurally_no_tangent(T)` (a `where`-bound type parameter), so the
+# `if` reduces to a single specialisation per concrete partial type.
+@inline function _combine_to_ndual(x, partials::NTuple{W,T}) where {W,T}
+    if _is_structurally_no_tangent(T)
+        return Dual(x, partials[1])
+    end
     return Dual(x, NTangent(partials))
-end
-# Structurally-NoTangent partials (per-element-NoTangent containers like
-# `Vector{NoTangent}` mirror a non-differentiable container's shape) collapse
-# the per-lane tuple to a single representative — all `W` lanes are
-# byte-identical, so wrapping them in `NTangent` is purely overhead and breaks
-# legacy memory rules that expect `Dual{<:_MemTypes, <:_MemTypes}` directly.
-@inline function _combine_to_ndual(
-    x, partials::NTuple{W,<:AbstractArray{NoTangent}}
-) where {W}
-    return Dual(x, partials[1])
-end
-@static if VERSION >= v"1.11-"
-    @inline function _combine_to_ndual(
-        x, partials::NTuple{W,<:Memory{NoTangent}}
-    ) where {W}
-        return Dual(x, partials[1])
-    end
-    @inline function _combine_to_ndual(
-        x, partials::NTuple{W,<:MemoryRef{NoTangent}}
-    ) where {W}
-        return Dual(x, partials[1])
-    end
 end
 @inline function _combine_to_ndual(
     x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}
@@ -1771,9 +1760,6 @@ end
         element_partials = ntuple(d -> tangent_dirs[d][i], Val(W))
         _combine_to_ndual(x[i], element_partials)
     end
-end
-@inline function _combine_to_ndual(x, tangent_dirs::NTuple{W}) where {W}
-    return Dual(x, NTangent(tangent_dirs))
 end
 
 # ── value_and_derivative!! (FCache) ─────────────────────────────────────────
