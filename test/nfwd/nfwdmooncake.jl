@@ -122,12 +122,16 @@
         end
     end
 
-    # Direct unit tests for the NDual frule!!s. Existing tests reach them only
-    # indirectly via chunked `prepare_derivative_cache(...; chunk_size=N)`, so
-    # a missing or broken NDual overload (e.g. for one of the ~50 functions in
-    # the `rules_via_nfwd.jl` unary loop) often surfaces as a confusing failure
-    # several layers up. Each case here calls the NDual `frule!!` and compares
-    # against the known-good `Dual{P}` reference at the same `(x, ẋ)` pair.
+    # Direct unit tests for the NDual frule!!s. `test_rule` cannot reach these
+    # overloads: it lifts inputs via the no-`Val` `dual_type(P)`, which returns
+    # `Dual{P, T}` for IEEEFloat scalars rather than `NDual{T, N}`, so frule
+    # dispatch always lands on the parallel Dual-wrapped overload. The NDual
+    # rules are reachable in production only through chunked
+    # `prepare_derivative_cache(...; chunk_size=N)`, where a missing or broken
+    # overload (e.g. for one of the ~50 functions in the `rules_via_nfwd.jl`
+    # unary loop) surfaces as a confusing failure several layers up. Each case
+    # here calls the NDual `frule!!` directly and compares against the
+    # known-good `Dual{P}` reference at the same `(x, ẋ)` pair.
     @testset "NDual frule!! direct sweep" begin
         function check_unary(f, x; check_finite=true)
             ẋ = one(typeof(x))
