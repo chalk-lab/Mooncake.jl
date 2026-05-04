@@ -742,6 +742,25 @@ end
                 (x, dx),
             )
 
+            # Positive case: same `mixed_f`, consistent NTangent across all chunked
+            # inputs. Asymmetric error-only coverage would let a refactor break the
+            # success path while preserving the error.
+            mixed_dx_scalar_1 = dx
+            mixed_dx_scalar_2 = 0.0
+            z_and_dz_mixed_chunk = Mooncake.value_and_derivative!!(
+                mixed_cache,
+                (mixed_f, Mooncake.zero_tangent(mixed_f)),
+                (tuple_x, Mooncake.NTangent((tuple_dx_1, tuple_dx_2))),
+                (x, Mooncake.NTangent((mixed_dx_scalar_1, mixed_dx_scalar_2))),
+            )
+            @test z_and_dz_mixed_chunk isa Tuple{Float64,Mooncake.NTangent}
+            @test first(z_and_dz_mixed_chunk) == tuple_x[1]^2 + sin(x)
+            # mixed_f(a, b) = a[1]^2 + sin(b)
+            # direction 1: bumps a[1] by dx, b by dx → 2*tuple_x[1]*dx + cos(x)*dx
+            # direction 2: bumps a[2] by dy, b by 0 → 0
+            @test last(z_and_dz_mixed_chunk) ==
+                Mooncake.NTangent((2 * tuple_x[1] * dx + cos(x) * dx, 0.0))
+
             f_named = nt -> nt.a * sin(nt.b)
             named_x = (; a=x, b=y)
             named_dx_1 = (; a=dx, b=0.0)
