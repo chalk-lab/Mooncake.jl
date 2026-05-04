@@ -122,20 +122,16 @@
         end
     end
 
-    # Direct unit tests for the NDual frule!!s. `test_rule` cannot reach these
-    # overloads: it lifts inputs via the no-`Val` `dual_type(P)`, which returns
-    # `Dual{P, T}` for IEEEFloat scalars rather than `NDual{T, N}`, so frule
-    # dispatch always lands on the parallel Dual-wrapped overload. The NDual
-    # rules are reachable in production only through chunked
-    # `prepare_derivative_cache(...; chunk_size=N)`, where a missing or broken
-    # overload (e.g. for one of the ~50 functions in the `rules_via_nfwd.jl`
-    # unary loop) surfaces as a confusing failure several layers up. Each case
-    # here calls the NDual `frule!!` directly and compares against the
-    # known-good `Dual{P}` reference at the same `(x, ẋ)` pair.
+    # `test_rule` lifts inputs via no-`Val` `dual_type(P)` → `Dual{P,T}`, never
+    # `NDual{T,N}`, so it cannot reach NDual frule!!s — those are dispatched
+    # only through chunked `prepare_derivative_cache(...; chunk_size=N)`.
+    # `ndual_test_rule` is the direct-dispatch counterpart: lift each
+    # `(value, tangent)` to NDual{T,1} (or Dual for non-NDual args like
+    # `Type{Pext}` in fpext), call `frule!!`, and compare against the parallel
+    # Dual{P} reference. Tuple-output frules (sincosd / sincospi / modf) need
+    # special unwrap because the NDual side returns `Tuple{NDual...}` while the
+    # Dual side returns `Dual{Tuple,Tuple}`.
     @testset "NDual frule!! direct sweep" begin
-        # Lift one `(value, tangent)` pair into width-1 NDual form for IEEEFloat
-        # / `Complex{<:IEEEFloat}`; everything else (e.g. `Type{Pext}` for fpext)
-        # falls through to plain `Dual` so the two paths share their non-NDual args.
         @inline _to_ndual_arg(v::T, t) where {T<:Base.IEEEFloat} = Mooncake.NDual{T,1}(
             v, (t,)
         )
@@ -147,11 +143,7 @@
         end
         @inline _to_ndual_arg(v, t) = Mooncake.Dual(v, t)
 
-        # Compare a width-1 NDual frule output against the matching Dual frule
-        # output. Tuple-output rules (sincosd, sincospi, modf) return a `Tuple`
-        # of NDuals on the NDual side and a `Dual{Tuple, Tuple}` on the Dual
-        # side; unwrap the Dual and walk element-wise.
-        function _ndual_match_scalar(n::Mooncake.NDual, p, t; check_finite)
+        function _match_scalar(n::Mooncake.NDual, p, t; check_finite)
             @test n.value === p
             np = n.partials[1]
             if check_finite && isfinite(t) && isfinite(np)
@@ -159,36 +151,24 @@
             else
                 @test isequal(np, t)
             end
-            return nothing
-        end
-        function _ndual_dual_match(d_ndual::Tuple, d_dual; check_finite=true)
-            @test d_dual isa Mooncake.Dual
-            ps = Mooncake.primal(d_dual)
-            ts = Mooncake.tangent(d_dual)
-            @test length(d_ndual) == length(ps) == length(ts)
-            for (n, p, t) in zip(d_ndual, ps, ts)
-                _ndual_match_scalar(n, p, t; check_finite)
-            end
-            return nothing
-        end
-        function _ndual_dual_match(d_ndual::Mooncake.NDual, d_dual; check_finite=true)
-            return _ndual_match_scalar(
-                d_ndual, Mooncake.primal(d_dual), Mooncake.tangent(d_dual); check_finite
-            )
         end
 
-        # Build NDual-lifted args from `(value, tangent)` pairs, call
-        # `frule!!`, and compare against the matching Dual{P} call. This is
-        # the direct-dispatch counterpart to `TestUtils.test_rule` for
-        # primitives where both an `NDual{P,1}` and a `Dual{P}` overload exist.
         function ndual_test_rule(f, vt_pairs::Tuple...; check_finite=true)
             fdual = Mooncake.zero_dual(f)
-            duals = map(p -> Mooncake.Dual(p...), vt_pairs)
-            nduals = map(p -> _to_ndual_arg(p...), vt_pairs)
-            d_dual = Mooncake.frule!!(fdual, duals...)
-            d_ndual = Mooncake.frule!!(fdual, nduals...)
-            _ndual_dual_match(d_ndual, d_dual; check_finite)
-            return nothing
+            d_dual = Mooncake.frule!!(fdual, map(p -> Mooncake.Dual(p...), vt_pairs)...)
+            d_ndual = Mooncake.frule!!(fdual, map(p -> _to_ndual_arg(p...), vt_pairs)...)
+            if d_ndual isa Tuple
+                ps = Mooncake.primal(d_dual)
+                ts = Mooncake.tangent(d_dual)
+                @test length(d_ndual) == length(ps) == length(ts)
+                for (n, p, t) in zip(d_ndual, ps, ts)
+                    _match_scalar(n, p, t; check_finite)
+                end
+            else
+                _match_scalar(
+                    d_ndual, Mooncake.primal(d_dual), Mooncake.tangent(d_dual); check_finite
+                )
+            end
         end
 
         # Test cases: `(f, ((value, tangent), ...), check_finite)`.
