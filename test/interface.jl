@@ -1128,16 +1128,19 @@ end
 
         @testset "chunked tuple-returning function" begin
             # Regression: chunked tuple output formerly crashed `primal(::Tuple)`.
+            # Avoid binding `y` here — `@testset` body shares scope with the
+            # parameterised parent for-loop, so `y, _ = ...` would clobber the
+            # outer `y = 4.0` and break later testsets in this group.
             ftuple(x) = (x[1], x[2])
             x_ft = [1.0, 2.0]
             cache = Mooncake.prepare_derivative_cache(
                 ftuple, x_ft; config=Mooncake.Config(; chunk_size=2)
             )
-            y, dy = Mooncake.value_and_derivative!!(
+            yt, dyt = Mooncake.value_and_derivative!!(
                 cache, (ftuple, Mooncake.NoTangent()), (x_ft, [1.0, 0.0])
             )
-            @test y == (1.0, 2.0)
-            @test dy == (1.0, 0.0)
+            @test yt == (1.0, 2.0)
+            @test dyt == (1.0, 0.0)
         end
 
         @testset "chunked array-returning function" begin
@@ -1147,11 +1150,11 @@ end
             cache = Mooncake.prepare_derivative_cache(
                 farr, x_fa; config=Mooncake.Config(; chunk_size=2)
             )
-            y, dy = Mooncake.value_and_derivative!!(
+            ya, dya = Mooncake.value_and_derivative!!(
                 cache, (farr, Mooncake.NoTangent()), (x_fa, [1.0, 0.0])
             )
-            @test y == [3.0, 4.0]
-            @test dy == [1.0, 0.0]
+            @test ya == [3.0, 4.0]
+            @test dya == [1.0, 0.0]
         end
 
         @testset "chunked integer-literal arithmetic" begin
@@ -1162,8 +1165,8 @@ end
             cache = Mooncake.prepare_derivative_cache(
                 f_intlit, x_il; config=Mooncake.Config(; chunk_size=2)
             )
-            y, (_, g) = Mooncake.value_and_gradient!!(cache, f_intlit, x_il)
-            @test y == 6.0
+            yi, (_, g) = Mooncake.value_and_gradient!!(cache, f_intlit, x_il)
+            @test yi == 6.0
             @test g == [2.0, 2.0]
 
             # Also cover add/sub/div mixed paths.

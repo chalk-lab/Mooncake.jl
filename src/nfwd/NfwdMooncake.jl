@@ -1112,6 +1112,21 @@ for valT in (:(Val{0}), :Val)
     end
 end
 
+# Bare-arg `zero_dual` for already-lifted NDual containers — zero each element
+# via scalar `zero_dual(::NDual)` (the catch-all would wrap in width-1 Dual).
+@inline Mooncake.zero_dual(x::AbstractArray{<:NDual}) = map(zero_dual, x)
+@inline Mooncake.zero_dual(x::AbstractArray{<:Complex{<:NDual}}) = map(zero_dual, x)
+@static if VERSION >= v"1.11-"
+    @inline Mooncake.zero_dual(x::Memory{<:NDual}) = map(zero_dual, x)
+    @inline Mooncake.zero_dual(x::Memory{<:Complex{<:NDual}}) = map(zero_dual, x)
+    @inline Mooncake.zero_dual(x::MemoryRef{<:NDual}) = memoryref(
+        zero_dual(x.mem), Core.memoryrefoffset(x)
+    )
+    @inline Mooncake.zero_dual(x::MemoryRef{<:Complex{<:NDual}}) = memoryref(
+        zero_dual(x.mem), Core.memoryrefoffset(x)
+    )
+end
+
 zero_dual(x::NDual{T,N}) where {T,N} = NDual{T,N}(x.value, ntuple(_ -> zero(T), Val(N)))
 
 function randn_dual(rng::AbstractRNG, x::NDual{T,N}) where {T,N}
@@ -1162,6 +1177,15 @@ function Mooncake._uninit_dual(::Val{N}, v::Array{T,D}) where {N,T<:IEEEFloat,D}
         ndual_arr[i] = NDual{T,N}(v[i], ntuple(_ -> zero(T), Val(N)))
     end
     return ndual_arr
+end
+
+# Lift `Array{T,D}` type literals (mirrors the Memory variant below): substitute
+# the inner element type so subsequent `Array{T,D}(undef, n)` calls carry the
+# lifted element type inside a `Dual{Type{...}, NoTangent}` envelope.
+function Mooncake._uninit_dual(
+    w::Val, ::Type{Array{T,D}}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},D}
+    return Dual(Array{dual_type(w, T),D}, NoTangent())
 end
 
 # Memory container overloads (1.11+): mirror the Array{T} dual_type lift.
@@ -1304,6 +1328,20 @@ end
 ) where {T<:Union{Array{<:NDual},Array{<:Complex{<:NDual}}}}
     w = _ndual_width(x1, x_rest...)
     return Mooncake.zero_dual(w, primal(f)(map(primal, (x1, x_rest...))...))
+end
+
+# Catch-all `zero_derivative` for arg shapes the all-`Dual` Vararg overload in
+# `tools_for_rules.jl` misses: bare `NDual` / `Array{NDual}` / `Tuple`s of
+# lifted args (e.g. `Broadcast.eltypes((arr, scalar))`) and `Dual`/`NDual`
+# mixes. The helpers recurse through `Tuple` and `Dual` wrappers.
+@inline function Mooncake.zero_derivative(f::Dual, x1, x_rest::Vararg{Any,N}) where {N}
+    args = (x1, x_rest...)
+    result = primal(f)(map(_ndual_primal, args)...)
+    return if _has_ndual(args...)
+        Mooncake.zero_dual(_ndual_width(args...), result)
+    else
+        Mooncake.zero_dual(result)
+    end
 end
 
 end
