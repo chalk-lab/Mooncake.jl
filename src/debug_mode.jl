@@ -36,8 +36,9 @@ end
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
     try
         for _x in x
-            _x isa Dual || error("Expected Dual, got $(typeof(_x))")
-            verify_dual_value(_x)
+            _is_lifted_value(_x) ||
+                error("Expected lifted forward value, got $(typeof(_x))")
+            _x isa Dual && verify_dual_value(_x)
         end
     catch e
         error("Error in inputs to rule with input types $(_typeof(x))")
@@ -46,12 +47,21 @@ end
 
 @noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
     try
-        y isa Dual || error("frule!! must return a Dual, got $(typeof(y))")
-        verify_dual_value(y)
+        _is_lifted_value(y) ||
+            error("frule!! must return a lifted forward value, got $(typeof(y))")
+        y isa Dual && verify_dual_value(y)
     catch e
         error("Error in outputs of rule with input types $(_typeof(x))")
     end
 end
+
+# Predicate for "value that may legally appear in a forward-mode AD pipeline,
+# on either the legacy `Dual` path or the width-N `NDual` path." Defined here
+# with the `Dual` and `Tuple` cases; `NfwdMooncake.jl` extends it for `NDual`
+# / `Complex{<:NDual}` / array / `MemoryRef` shapes once `NDual` is in scope.
+@inline _is_lifted_value(::Dual) = true
+@inline _is_lifted_value(t::Tuple) = all(_is_lifted_value, t)
+@inline _is_lifted_value(_) = false
 
 @noinline function verify_dual_value(d::Dual{P,T}) where {P,T}
     # Fast path: type-level check. T must be either `tangent_type(P)` (legacy

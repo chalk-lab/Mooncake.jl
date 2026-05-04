@@ -1271,6 +1271,19 @@ const LiftedTuple = Tuple{Vararg{Lifted}}
 
 const DualOrNDual = Union{Lifted,LiftedTuple}
 
+# Extend the `_is_lifted_value` predicate (defined in debug_mode.jl with the
+# `Dual` and `Tuple` cases) to cover every `NDual`-bearing form, mirroring the
+# `Lifted` Union above. The predicate is used by `verify_dual_inputs` and
+# `verify_dual_output` in debug_mode to validate rule input/output shapes.
+@inline Mooncake._is_lifted_value(::NDual) = true
+@inline Mooncake._is_lifted_value(::Complex{<:NDual}) = true
+@inline Mooncake._is_lifted_value(::AbstractArray{<:NDual}) = true
+@inline Mooncake._is_lifted_value(::AbstractArray{<:Complex{<:NDual}}) = true
+@static if VERSION >= v"1.11-"
+    @inline Mooncake._is_lifted_value(::MemoryRef{<:NDual}) = true
+    @inline Mooncake._is_lifted_value(::MemoryRef{<:Complex{<:NDual}}) = true
+end
+
 # `_dual_or_ndual(val, tangent)` — combine a primal field with its tangent into the
 # canonical width-aware dual representation: Dual for non-IEEEFloat, NDual for
 # IEEEFloat-bearing primals when the tangent is an NTangent.
