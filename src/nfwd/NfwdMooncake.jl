@@ -1255,16 +1255,10 @@ const LiftedTuple = Tuple{Vararg{Lifted}}
 
 const DualOrNDual = Union{Lifted,LiftedTuple}
 
-# Width-N forms; mirrors `Lifted`. Base cases (`Dual`, `Tuple`) live with the
-# predicate definition in `debug_mode.jl`.
-@inline Mooncake._is_lifted_value(::NDual) = true
-@inline Mooncake._is_lifted_value(::Complex{<:NDual}) = true
-@inline Mooncake._is_lifted_value(::AbstractArray{<:NDual}) = true
-@inline Mooncake._is_lifted_value(::AbstractArray{<:Complex{<:NDual}}) = true
-@static if VERSION >= v"1.11-"
-    @inline Mooncake._is_lifted_value(::MemoryRef{<:NDual}) = true
-    @inline Mooncake._is_lifted_value(::MemoryRef{<:Complex{<:NDual}}) = true
-end
+# Single overload covers every NDual-bearing form via the `Lifted` Union.
+# `Dual` (also in `Lifted`) and `Tuple` recursion stay in `debug_mode.jl`;
+# Julia picks the more-specific `::Dual` method when both match.
+@inline Mooncake._is_lifted_value(::Lifted) = true
 
 # `_dual_or_ndual(val, tangent)` — combine a primal field with its tangent into the
 # canonical width-aware dual representation: Dual for non-IEEEFloat, NDual for
@@ -1341,16 +1335,24 @@ end
     @inline _ndual_width(::MemoryRef{Complex{NDual{T,W}}}, rest...) where {T,W} = Val(W)
 end
 
-# Extend `primal` to every `DualOrNDual` shape plus a generic passthrough so
-# rule bodies can `map(primal, args)` without per-arg type checks. Bare-scalar /
-# `Complex{<:NDual}` / `Array{NDual,D}` / `Array{Complex{NDual},D}` overloads
-# are defined earlier in this file (alongside the other `NDual` accessors).
+# Extend `primal` to abstract NDual-array forms; bare-scalar / `Complex{<:NDual}` /
+# `Array{NDual,D}` / `Array{Complex{NDual},D}` overloads are defined earlier
+# in this file. The generic `_primal` helper in `src/tangents/dual.jl` covers
+# heterogeneous-arg call sites (mixed lifted + plain values).
 @inline Mooncake.primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
 @inline Mooncake.primal(x::AbstractArray{<:Complex{<:NDual}}) = map(
     z -> complex(z.re.value, z.im.value), x
 )
-@inline Mooncake.primal(x::Tuple) = map(Mooncake.primal, x)
-@inline Mooncake.primal(x) = x
+
+# `_primal` (defined in `src/tangents/dual.jl` with `Dual` and identity-passthrough
+# overloads) gets the matching NDual extensions here so `map(_primal, args)`
+# call sites in rule bodies handle every form uniformly without widening
+# `primal`'s strict contract.
+@inline Mooncake._primal(x::NDual) = primal(x)
+@inline Mooncake._primal(x::Complex{<:NDual}) = primal(x)
+@inline Mooncake._primal(x::AbstractArray{<:NDual}) = primal(x)
+@inline Mooncake._primal(x::AbstractArray{<:Complex{<:NDual}}) = primal(x)
+@inline Mooncake._primal(x::Tuple) = map(Mooncake._primal, x)
 
 # `_tangent_dir(x, i)` — extract the i-th direction tangent from any NDual-bearing
 # representation. Used by `_new_` to assemble per-direction NTangent lanes.
@@ -1403,7 +1405,7 @@ end
 @inline function Mooncake.zero_derivative(
     f::Dual, x::Vararg{Union{Dual,_HasNDual,AbstractArray{<:_HasNDual}},N}
 ) where {N}
-    return Mooncake.zero_dual(_ndual_width(x...), primal(f)(map(primal, x)...))
+    return Mooncake.zero_dual(_ndual_width(x...), primal(f)(map(Mooncake._primal, x)...))
 end
 
 # `zero_derivative(f::Dual, ::Tuple)` for chunked-path callers that pass a bare
@@ -1412,7 +1414,7 @@ end
 # errors loudly if `x` carries no NDual content, matching the
 # `tools_for_rules.jl:290` MethodError contract for non-lifted args.
 @inline function Mooncake.zero_derivative(f::Dual, x::Tuple)
-    return Mooncake.zero_dual(_ndual_width(x), primal(f)(primal(x)))
+    return Mooncake.zero_dual(_ndual_width(x), primal(f)(Mooncake._primal(x)))
 end
 
 end

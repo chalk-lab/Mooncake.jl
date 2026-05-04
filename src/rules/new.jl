@@ -17,7 +17,7 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
         return Complex(x...)
     end
     if _has_ndual(x...)
-        primals_extracted = map(primal, x)
+        primals_extracted = map(_primal, x)
         y = _new_(P, primals_extracted...)
         T = tangent_type(P)
         T == NoTangent && return Dual(y, NoTangent())

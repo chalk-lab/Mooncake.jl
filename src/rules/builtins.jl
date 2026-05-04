@@ -173,7 +173,7 @@ macro inactive_intrinsic(name)
             args::Vararg{Union{Dual,NDual,Complex{<:NDual}},N},
         ) where {N}
             f_primal = primal(f)
-            args_primal = map(primal, args)
+            args_primal = map(Mooncake._primal, args)
             return zero_dual(_ndual_width(args...), f_primal(args_primal...))
         end
     end

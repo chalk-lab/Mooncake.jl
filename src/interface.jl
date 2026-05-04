@@ -1859,10 +1859,6 @@ inputs are rejected.
             friendly || error_if_incorrect_dual_types(dir_duals...)
             return rule(dir_duals...)
         end
-        # Same shape check as the legacy path: if the user passed unfriendly
-        # tangents with mismatched primal types, raise the canonical
-        # `ArgumentError` here rather than letting the rule body fail with a
-        # less informative `MethodError` / debug-mode tangent-shape complaint.
         friendly ||
             error_if_incorrect_dual_types(tuple_map(Dual, input_primals, canonical)...)
         rule_inputs = tuple_map(input_primals, canonical) do p, t
@@ -2385,13 +2381,11 @@ function _jacobian_widthN(
     cache::FCache, input_primals, total_dof, Tx, ::Val{W}
 ) where {W}
     rule = cache.rule
-    # Lift buffers and per-direction seed buffers are reused across calls; allocate
-    # lazily on first invocation, mirroring `_gradient_widthN`.
+    # Lift / seed buffers are reused across calls (lazy on first invocation),
+    # mirroring `_gradient_widthN`.
     lift_bufs = let cached = cache.lift_buf[]
         if cached === nothing
-            allocated = tuple_map(input_primals) do p
-                _alloc_lift_buf(Val(W), p)
-            end
+            allocated = tuple_map(p -> _alloc_lift_buf(Val(W), p), input_primals)
             cache.lift_buf[] = allocated
             allocated
         else
@@ -2408,43 +2402,56 @@ function _jacobian_widthN(
         end
     end
 
-    local y, J, Ty
     cursor = Ref(0)
     seed_seen = _new_seen(input_primals)
-    slot = 1
-    first = true
+    # Run the first chunk to learn the output shape, then allocate J once and
+    # fill it in place from this and all remaining chunks.
+    output = _run_jacobian_chunk(
+        rule, lift_bufs, seed_bufs, input_primals, 1, min(W, total_dof), cursor, seed_seen
+    )
+    y = primal(output)
+    Ty = _validate_jacobian_output(y, Tx)
+    J = zeros(Ty, length(y), total_dof)
+    _write_jacobian_columns!(J, output, 1, min(W, total_dof))
+    slot = W + 1
     while slot <= total_dof
         chunk = min(W, total_dof - slot + 1)
-        seeds = ntuple(Val(W)) do d
-            cursor[] = 0
-            seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
-            # Trailing directions (d > chunk) reuse slot 1 as a placeholder; their
-            # partials are discarded after the rule call.
-            target_slot = d <= chunk ? slot + d - 1 : 1
-            _seed_inplace!(seed_bufs[d], input_primals, target_slot, cursor, seed_seen)
-        end
-        ndual_inputs = ntuple(Val(length(input_primals))) do i
-            _combine_to_ndual_or_buffer(
-                lift_bufs[i], input_primals[i], ntuple(d -> seeds[d][i], Val(W))
-            )
-        end
-        output = rule(ndual_inputs...)
-        if first
-            y = primal(output)
-            Ty = _validate_jacobian_output(y, Tx)
-            J = zeros(Ty, length(y), total_dof)
-            first = false
-        end
-        # Output is the canonical `dual_type(Val(W), Vector{Ty}) = Vector{NDual{Ty,W}}`.
-        for d in 1:chunk
-            col = slot + d - 1
-            @inbounds for i in eachindex(output)
-                J[i, col] = output[i].partials[d]
-            end
-        end
+        output = _run_jacobian_chunk(
+            rule, lift_bufs, seed_bufs, input_primals, slot, chunk, cursor, seed_seen
+        )
+        _write_jacobian_columns!(J, output, slot, chunk)
         slot += chunk
     end
     return y, J
+end
+
+@inline function _run_jacobian_chunk(
+    rule, lift_bufs, seed_bufs, input_primals, slot, chunk, cursor, seed_seen
+)
+    seeds = ntuple(Val(length(seed_bufs))) do d
+        cursor[] = 0
+        seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
+        # Lanes beyond `chunk` reuse `slot` (their partials are written but
+        # never read into J — see `_write_jacobian_columns!`).
+        target_slot = d <= chunk ? slot + d - 1 : slot
+        _seed_inplace!(seed_bufs[d], input_primals, target_slot, cursor, seed_seen)
+    end
+    ndual_inputs = ntuple(Val(length(input_primals))) do i
+        _combine_to_ndual_or_buffer(
+            lift_bufs[i], input_primals[i], ntuple(d -> seeds[d][i], Val(length(seed_bufs)))
+        )
+    end
+    return rule(ndual_inputs...)
+end
+
+@inline function _write_jacobian_columns!(J, output, slot, chunk)
+    for d in 1:chunk
+        col = slot + d - 1
+        @inbounds for i in eachindex(output)
+            J[i, col] = output[i].partials[d]
+        end
+    end
+    return nothing
 end
 
 @unstable @inline function value_and_jacobian!!(
