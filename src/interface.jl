@@ -1726,6 +1726,28 @@ end
 @inline function _combine_to_ndual(x, partials::NTuple{W,Any}) where {W}
     return Dual(x, NTangent(partials))
 end
+# Structurally-NoTangent partials (per-element-NoTangent containers like
+# `Vector{NoTangent}` mirror a non-differentiable container's shape) collapse
+# the per-lane tuple to a single representative — all `W` lanes are
+# byte-identical, so wrapping them in `NTangent` is purely overhead and breaks
+# legacy memory rules that expect `Dual{<:_MemTypes, <:_MemTypes}` directly.
+@inline function _combine_to_ndual(
+    x, partials::NTuple{W,<:AbstractArray{NoTangent}}
+) where {W}
+    return Dual(x, partials[1])
+end
+@static if VERSION >= v"1.11-"
+    @inline function _combine_to_ndual(
+        x, partials::NTuple{W,<:Memory{NoTangent}}
+    ) where {W}
+        return Dual(x, partials[1])
+    end
+    @inline function _combine_to_ndual(
+        x, partials::NTuple{W,<:MemoryRef{NoTangent}}
+    ) where {W}
+        return Dual(x, partials[1])
+    end
+end
 @inline function _combine_to_ndual(
     x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}
 ) where {W}

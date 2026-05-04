@@ -27,15 +27,35 @@ Width-aware tangent type query. Returns the canonical tangent representation for
 primal type `P` at width `N`.
 
 - `Val(0)` → `NoTangent` (primal passthrough, no tangent needed)
-- `Val(N)` where `tangent_type(P) == NoTangent` → `NoTangent`
+- `Val(N)` where `tangent_type(P)` has no differentiable content → `tangent_type(P)`
+  itself (no `NTangent` wrap; per-lane copies would be redundant). This covers
+  `NoTangent` and structural placeholders like `Vector{NoTangent}` /
+  `MemoryRef{NoTangent}` that mirror a non-differentiable container's shape.
 - `Val(N)` otherwise → `NTangent{NTuple{N, tangent_type(P)}}`
 """
 tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
 function tangent_type(::Val{N}, ::Type{P}) where {N,P}
     T = tangent_type(P)
-    T === NoTangent && return NoTangent
+    _is_structurally_no_tangent(T) && return T
     return NTangent{NTuple{N,T}}
 end
+
+# A tangent type that carries no differentiable content. For width-N lifting,
+# the per-lane copies would be byte-identical, so we skip the `NTangent` wrap
+# and reuse the legacy width-1 tangent shape directly. This keeps memory-layout
+# rules (memoryrefnew, lgetfield on Vector{Int}, etc.) dispatching the same way
+# under chunk_size=1 default as they did under the legacy width=nothing path.
+_is_structurally_no_tangent(::Type{NoTangent}) = true
+_is_structurally_no_tangent(::Type{T}) where {T<:AbstractArray} = eltype(T) === NoTangent
+@static if VERSION >= v"1.11-"
+    function _is_structurally_no_tangent(::Type{T}) where {T<:Memory}
+        return eltype(T) === NoTangent
+    end
+    function _is_structurally_no_tangent(::Type{T}) where {T<:MemoryRef}
+        return eltype(T) === NoTangent
+    end
+end
+_is_structurally_no_tangent(::Type) = false
 
 # ── Width-aware dual_type ─────────────────────────────────────────────────────
 
@@ -46,16 +66,21 @@ Width-aware forward value type query.
 
 - `Val(0)` → `P` (primal passthrough)
 - `Val(N)`, concrete `P` → `Dual{P, tangent_type(Val(N), P)}`
-- abstract/union `P` → `Dual` (bare, for compiler flexibility)
+- abstract/union `P` → `Any` (bare; under width-N the result may be `Dual`,
+  `NDual`, `Complex{<:NDual}`, or an array of these depending on `P` — they
+  share no useful supertype other than `Any`, so we widen the slot type to
+  let the OC accept any concrete lifted form). Under the legacy `width=nothing`
+  path see `dual_type(::Type)` below: it returns `Dual` because `NDual` did
+  not exist.
 """
 # `@unstable`: return type depends on the type-domain shape of `P` (Union
 # splitting, Tuple field concreteness). Callers force-specialise via
-# `Val(N)` constants or accept a bare `Dual`.
+# `Val(N)` constants or accept the broad `Any` for abstract inputs.
 @unstable function dual_type(::Val{N}, ::Type{P}) where {N,P}
     P == Union{} && return Union{}
-    P == DataType && return Dual
+    P == DataType && return Any
     P isa Union && return Union{dual_type(Val(N), P.a),dual_type(Val(N), P.b)}
-    (P isa UnionAll || P == UnionAll) && return Dual
+    (P isa UnionAll || P == UnionAll) && return Any
 
     if P <: Tuple && !all(isconcretetype, (P.parameters...,))
         field_types = (P.parameters...,)
@@ -72,7 +97,7 @@ Width-aware forward value type query.
         return Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
     end
 
-    return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
+    return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Any
 end
 
 dual_type(::Val{0}, ::Type{P}) where {P} = P
