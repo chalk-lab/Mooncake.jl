@@ -1,6 +1,31 @@
 # Regression tests for the NDual container dispatch helpers in
 # `src/nfwd/NfwdMooncake.jl`. These guard against the silent-fallthrough failure
 # mode where a missing container overload causes FCache to drop to width-1.
+#
+# Scope of this file:
+#   1. NDual container dispatch helpers (`_has_ndual`, `_ndual_width`,
+#      `_dual_or_ndual`) over each supported container shape.
+#   2. Width-aware seed constructors (`zero_dual`, `uninit_dual`, `randn_dual`)
+#      and their static return-type contract against `dual_type(Val(N), P)`.
+#   3. NDual frule!! direct sweep — `test_rule` lifts inputs via no-`Val`
+#      `dual_type(P)` (Dual-only), so the per-rule NDual overloads can only be
+#      reached through `prepare_derivative_cache(...; chunk_size=N)` end-to-end
+#      tests OR direct `frule!!` calls. The sweep here is the direct-dispatch
+#      counterpart, comparing against the parallel `Dual{P}` reference.
+#
+# What is NOT tested here (covered elsewhere):
+#   - End-to-end chunked AD over arrays, complex numbers, struct primals, and
+#     tuple/array outputs lives in `test/interface.jl` chunked sections.
+#   - Memory / MemoryRef / Array{NDual} rule integration (lmemoryrefget, copy,
+#     getfield, etc.) lives in `test/rules/memory.jl`.
+#   - The primal-mode interpreter sweep over `TestResources.generate_test_functions()`
+#     lives in `test/interpreter/primal_mode.jl`.
+#
+# Historical note: an earlier 813-line version of this file tested the
+# `Mooncake.NfwdMooncake.build_rrule(...; chunk_size=N)` extension API. That API
+# was retired when the IR-based forward compiler was replaced with the FCache
+# infrastructure (commits `9a81f81fe`, `c5dd59eb3`); the deleted tests covered
+# behaviour that no longer has an internal entry point.
 
 @testset "NfwdMooncake" begin
     @testset "NDual dispatch helpers" begin
