@@ -177,8 +177,9 @@ _get_tangent_field(::NoTangent, _, _) = NoTangent()
 # differentiable containers like `Vector{Int}`; field access (`:ref`, `:length`)
 # delegates to the underlying container's `getfield`.
 _get_tangent_field(f::AbstractArray{NoTangent}, name) = getfield(f, name)
-_get_tangent_field(f::AbstractArray{NoTangent}, name, inbounds) =
-    getfield(f, name, inbounds)
+function _get_tangent_field(f::AbstractArray{NoTangent}, name, inbounds)
+    return getfield(f, name, inbounds)
+end
 function _get_tangent_field(f::NTangent, name)
     return NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
 end

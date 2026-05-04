@@ -1237,16 +1237,10 @@ const _HasNDual = Union{NDual,Complex{<:NDual}}
 # user-facing dispatch alias for `frule!!` signatures whose body is uniform
 # across the legacy `Dual` and width-N `NDual` paths.
 const _LiftedBase = Union{
-    Dual,
-    NDual,
-    Complex{<:NDual},
-    AbstractArray{<:NDual},
-    AbstractArray{<:Complex{<:NDual}},
+    Dual,NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
 }
 @static if VERSION >= v"1.11-"
-    const Lifted = Union{
-        _LiftedBase,MemoryRef{<:NDual},MemoryRef{<:Complex{<:NDual}}
-    }
+    const Lifted = Union{_LiftedBase,MemoryRef{<:NDual},MemoryRef{<:Complex{<:NDual}}}
 else
     const Lifted = _LiftedBase
 end

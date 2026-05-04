@@ -419,9 +419,7 @@ end
 
 # `Base.FastMath.sincos` returns a tuple; `Base.sincos` is overloaded for `NDual`,
 # so dispatching the fast variant to it yields the canonical tuple-of-NDual shape.
-function frule!!(
-    ::Dual{typeof(Base.FastMath.sincos)}, x::NDual{T,N}
-) where {T<:IEEEFloat,N}
+function frule!!(::Dual{typeof(Base.FastMath.sincos)}, x::NDual{T,N}) where {T<:IEEEFloat,N}
     return Base.FastMath.sincos(x)
 end
 

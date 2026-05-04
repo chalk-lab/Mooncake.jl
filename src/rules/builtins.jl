@@ -169,8 +169,7 @@ macro inactive_intrinsic(name)
         # `NDual`. Width is read from the NDual-bearing args; the `Vararg{Dual,N}`
         # method above is strictly more specific and still covers all-Dual calls.
         function frule!!(
-            f::Dual{typeof($name)},
-            args::Vararg{Union{Dual,NDual,Complex{<:NDual}},N},
+            f::Dual{typeof($name)}, args::Vararg{Union{Dual,NDual,Complex{<:NDual}},N}
         ) where {N}
             f_primal = primal(f)
             args_primal = map(Mooncake._primal, args)
@@ -953,10 +952,7 @@ end
 # carrying width-N partials, the other a width-1 wrapper) don't arise in
 # practice — the IR lifts both branches uniformly.
 function frule!!(
-    ::Dual{typeof(Core.ifelse)},
-    cond::Dual{Bool},
-    a::NDual{T,N},
-    b::NDual{T,N},
+    ::Dual{typeof(Core.ifelse)}, cond::Dual{Bool}, a::NDual{T,N}, b::NDual{T,N}
 ) where {T<:IEEEFloat,N}
     return ifelse(primal(cond), a, b)
 end

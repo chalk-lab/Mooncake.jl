@@ -2377,9 +2377,7 @@ function _jacobian_width1(rule, input_primals, total_dof, Tx)
     return y, J
 end
 
-function _jacobian_widthN(
-    cache::FCache, input_primals, total_dof, Tx, ::Val{W}
-) where {W}
+function _jacobian_widthN(cache::FCache, input_primals, total_dof, Tx, ::Val{W}) where {W}
     rule = cache.rule
     # Lift / seed buffers are reused across calls (lazy on first invocation),
     # mirroring `_gradient_widthN`.
@@ -2438,7 +2436,9 @@ end
     end
     ndual_inputs = ntuple(Val(length(input_primals))) do i
         _combine_to_ndual_or_buffer(
-            lift_bufs[i], input_primals[i], ntuple(d -> seeds[d][i], Val(length(seed_bufs)))
+            lift_bufs[i],
+            input_primals[i],
+            ntuple(d -> seeds[d][i], Val(length(seed_bufs))),
         )
     end
     return rule(ndual_inputs...)
