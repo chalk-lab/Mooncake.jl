@@ -2001,16 +2001,17 @@ function _prepare_hvp(::Val{:reverse_over_forward}, f, x::Tuple, config)
     x_coduals = map(CoDual, x_ndual_bufs, fdata_bufs)
     out, pb = ndual_rule(f_codual, x_coduals...)
     y_out = primal(out)
-    T_out = if y_out isa Nfwd.NDual
-        pb(_hvp_make_seed(typeof(y_out.value)))
-        typeof(y_out.value)
-    else
-        pb(zero(typeof(y_out)))
-        typeof(y_out)
-    end
+    T_out = y_out isa Nfwd.NDual ? typeof(y_out.value) : typeof(y_out)
     T_out <: IEEEFloat || throw(
         ArgumentError("HVP/Hessian requires a scalar `IEEEFloat` output; got `$T_out`.")
     )
+
+    # Warm the pullback once so its caches and stacks are populated. The seed
+    # must match the output's lifted shape: `_hvp_make_seed` for NDual outputs
+    # (RData carrying the `(value, partials)` named tuple), `zero_tangent` for
+    # the rare non-NDual scalar fallback. fdata_bufs are zeroed unconditionally
+    # below, so the prep call can't leak side effects.
+    pb(y_out isa Nfwd.NDual ? _hvp_make_seed(T_out) : zero_tangent(y_out))
 
     # Re-zero fdata_bufs after the preparatory run.
     for k in eachindex(fdata_bufs)
