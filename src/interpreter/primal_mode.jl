@@ -247,9 +247,9 @@ struct DerivedPrimal{primal_sig,Tlifted_oc,isva,nargs,W}
     width::W
 end
 
-@inline function (fwd::DerivedPrimal{P,sig,isva,nargs})(
+@inline function (fwd::DerivedPrimal{P,sig,isva,nargs,W})(
     args::Vararg{Any,N}
-) where {P,sig,N,isva,nargs}
+) where {P,sig,N,isva,nargs,W}
     return fwd.lifted_oc(__unflatten_dual_varargs(isva, args, Val(nargs), fwd.width)...)
 end
 
@@ -257,8 +257,8 @@ end
 # asserting the return type, which is encoded in the MistyClosure type parameter.
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
-        rule::DerivedPrimal{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}, args
-    ) where {P,A,R,isva,nargs}
+        rule::DerivedPrimal{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs,W}, args
+    ) where {P,A,R,isva,nargs,W}
         return __call_rule_erased!(Base.inferencebarrier(rule), args)::R
     end
 end
@@ -268,8 +268,8 @@ function _copy(x::P) where {P<:DerivedPrimal}
     return P(replace_captures(x.lifted_oc, _copy(x.lifted_oc.oc.captures)), x.width)
 end
 
-_isva(::DerivedPrimal{P,T,isva,nargs}) where {P,T,isva,nargs} = isva
-_nargs(::DerivedPrimal{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
+_isva(::DerivedPrimal{P,T,isva,nargs,W}) where {P,T,isva,nargs,W} = isva
+_nargs(::DerivedPrimal{P,T,isva,nargs,W}) where {P,T,isva,nargs,W} = nargs
 
 # Extends functionality defined in debug_mode.jl.
 function verify_args(r::DerivedPrimal{sig}, x) where {sig}
@@ -309,17 +309,19 @@ _copy(x::P) where {P<:LazyPrimal} = P(x.mi, x.debug_mode, x.width)
 # LazyPrimal, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
-        rule::LazyPrimal{sig,DerivedPrimal{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}},
+        rule::LazyPrimal{
+            sig,DerivedPrimal{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs,W}
+        },
         args,
-    ) where {sig,P,A,R,isva,nargs}
+    ) where {sig,P,A,R,isva,nargs,W}
         return rule(args...)::R
     end
     @inline function __call_rule(
         rule::LazyPrimal{
-            sig,DebugFRule{DerivedPrimal{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}}
+            sig,DebugFRule{DerivedPrimal{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs,W}}
         },
         args,
-    ) where {sig,P,A,R,isva,nargs}
+    ) where {sig,P,A,R,isva,nargs,W}
         return rule(args...)::R
     end
 end
