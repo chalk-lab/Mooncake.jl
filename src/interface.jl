@@ -1540,8 +1540,6 @@ end
 function _gradient_widthN(
     rule, input_primals, native_gradients, total_slots, cache, ::Val{W}
 ) where {W}
-    local y
-    slot = 1
     # `W` per-direction tangent buffers, lazily allocated and reused across chunks.
     seed_bufs = let cached = cache.seed_buf[]
         if cached === nothing
@@ -1569,49 +1567,73 @@ function _gradient_widthN(
     cursor = Ref(0)
     seed_seen = _new_seen(input_primals)
     accum_seen = _new_seen(native_gradients)
+    # Run the first chunk explicitly so `y` is unambiguously assigned (avoids
+    # the `local y` Box for the conditional-assignment-in-loop pattern).
+    chunk1 = min(W, total_slots)
+    seeds1, output1 = _gradient_run_chunk(
+        rule, lift_bufs, seed_bufs, input_primals, 1, cursor, seed_seen, Val(W)
+    )
+    y, coeffs1 = _gradient_unwrap_output(output1, chunk1, W)
+    for d in 1:chunk1
+        native_gradients = _accumulate_gradient(
+            native_gradients, seeds1[d], Float64(coeffs1[d]), accum_seen
+        )
+    end
+    slot = W + 1
     while slot <= total_slots
         chunk = min(W, total_slots - slot + 1)
-        seeds = ntuple(Val(W)) do d
-            cursor[] = 0
-            seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
-            _seed_inplace!(seed_bufs[d], input_primals, slot + d - 1, cursor, seed_seen)
-        end
-        ndual_inputs = ntuple(Val(length(input_primals))) do i
-            _combine_to_ndual_or_buffer(
-                lift_bufs[i], input_primals[i], ntuple(d -> seeds[d][i], Val(W))
-            )
-        end
-        output = rule(ndual_inputs...)
-        y = output isa NDual ? output.value : primal(output)
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        # Width-N IEEEFloat output must come back as NDual: dual_type(Val(N), ::IEEEFloat)
-        # is NDual{T,N}, so a non-NDual output here means a custom rule returned a
-        # width-1 Dual in a width-N pipeline. coeffs would then be a 1-tuple and the
-        # `coeffs[d]` loop below would BoundsError for chunk>1; raise explicitly instead.
-        coeffs = if output isa NDual
-            output.partials
-        elseif chunk == 1
-            (Float64(tangent(output)),)
-        else
-            throw(
-                ArgumentError(
-                    "value_and_gradient!! width-$W path expected an NDual output " *
-                    "for IEEEFloat primal but got `$(typeof(output))` — typically a " *
-                    "custom frule!! returned a width-1 Dual or a scalar primitive " *
-                    "lacks a width-N NDual overload. " *
-                    "Use `Mooncake.Config(chunk_size=nothing)` as a workaround.",
-                ),
-            )
-        end
+        seeds, output = _gradient_run_chunk(
+            rule, lift_bufs, seed_bufs, input_primals, slot, cursor, seed_seen, Val(W)
+        )
+        _, coeffs = _gradient_unwrap_output(output, chunk, W)
         for d in 1:chunk
-            coeff = Float64(coeffs[d])
             native_gradients = _accumulate_gradient(
-                native_gradients, seeds[d], coeff, accum_seen
+                native_gradients, seeds[d], Float64(coeffs[d]), accum_seen
             )
         end
         slot += chunk
     end
     return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
+end
+
+# Re-seed buffers and run the rule for one chunk. Returns `(seeds, output)`.
+@inline function _gradient_run_chunk(
+    rule, lift_bufs, seed_bufs, input_primals, slot, cursor, seed_seen, ::Val{W}
+) where {W}
+    seeds = ntuple(Val(W)) do d
+        cursor[] = 0
+        seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
+        _seed_inplace!(seed_bufs[d], input_primals, slot + d - 1, cursor, seed_seen)
+    end
+    ndual_inputs = ntuple(Val(length(input_primals))) do i
+        _combine_to_ndual_or_buffer(
+            lift_bufs[i], input_primals[i], ntuple(d -> seeds[d][i], Val(W))
+        )
+    end
+    return seeds, rule(ndual_inputs...)
+end
+
+@inline function _gradient_unwrap_output(output, chunk, W)
+    y = output isa NDual ? output.value : primal(output)
+    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    # Width-N IEEEFloat output must come back as NDual; a non-NDual output means
+    # a custom rule returned a width-1 Dual in a width-N pipeline.
+    coeffs = if output isa NDual
+        output.partials
+    elseif chunk == 1
+        (Float64(tangent(output)),)
+    else
+        throw(
+            ArgumentError(
+                "value_and_gradient!! width-$W path expected an NDual output for " *
+                "IEEEFloat primal but got `$(typeof(output))` — typically a custom " *
+                "frule!! returned a width-1 Dual or a scalar primitive lacks a " *
+                "width-N NDual overload. Use `Mooncake.Config(chunk_size=nothing)` " *
+                "as a workaround.",
+            ),
+        )
+    end
+    return y, coeffs
 end
 
 # Per-input lift container type. Inputs without array storage (scalars, Complex,
@@ -1718,6 +1740,33 @@ end
 @inline _combine_to_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())
 @inline _combine_to_ndual(x::Tuple, ::Tuple{}) = Dual(x, NoTangent())
 
+# Disambiguate the IEEEFloat-array methods above against the generic
+# `Tuple{T,Vararg{T}}` method below: when the array primal is IEEEFloat-typed
+# AND the partials are homogeneous (the common shape — same direction-tangent
+# array for each lane), both signatures match. Inline the array path here.
+@inline function _combine_to_ndual(
+    x::AbstractArray{T}, tangent_dirs::Tuple{S,Vararg{S}}
+) where {T<:IEEEFloat,S}
+    W = length(tangent_dirs)
+    result = similar(x, NDual{T,W})
+    @inbounds for I in eachindex(x)
+        result[I] = NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
+    end
+    return result
+end
+@inline function _combine_to_ndual(
+    x::AbstractArray{Complex{T}}, tangent_dirs::Tuple{S,Vararg{S}}
+) where {T<:IEEEFloat,S}
+    W = length(tangent_dirs)
+    result = similar(x, Complex{NDual{T,W}})
+    @inbounds for I in eachindex(x)
+        re = NDual{T,W}(real(x[I]), ntuple(d -> real(tangent_dirs[d][I]), Val(W)))
+        im = NDual{T,W}(imag(x[I]), ntuple(d -> imag(tangent_dirs[d][I]), Val(W)))
+        result[I] = Complex(re, im)
+    end
+    return result
+end
+
 # Non-IEEEFloat aggregate primals (structs, NamedTuples, mutable types) lift
 # through `Dual{P, NTangent{...}}` per AGENTS.md, with each NTangent lane
 # carrying a per-direction `tangent_type(P)` payload (`MutableTangent`,
@@ -1731,12 +1780,15 @@ end
 # so we collapse to a single representative. This branches at compile time on
 # `_is_structurally_no_tangent(T)` (a `where`-bound type parameter), so the
 # `if` reduces to a single specialisation per concrete partial type.
-@inline function _combine_to_ndual(x, partials::NTuple{W,T}) where {W,T}
+@inline function _combine_to_ndual(x, partials::Tuple{T,Vararg{T}}) where {T}
     if _is_structurally_no_tangent(T)
         return Dual(x, partials[1])
     end
     return Dual(x, NTangent(partials))
 end
+# Empty partials tuple is handled by the `_combine_to_ndual(x, ::NTuple{W,NoTangent})`
+# overload above (`NTuple{0, NoTangent}` resolves to `Tuple{}`, so `W=0` lands on
+# the existing `Dual(x, NoTangent())` case).
 @inline function _combine_to_ndual(
     x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}
 ) where {W}
