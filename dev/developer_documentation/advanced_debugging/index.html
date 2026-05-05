@@ -562,25 +562,25 @@ Valid worlds: 0x0000000000009c80:0x0000000000009c80
   │   %4  = %new(Base.RefValue{Mooncake.NoRData}, $(QuoteNode(Mooncake.NoRData())))::Any
   │   %5  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
   │   %6  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
-  │   %7  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
-  │   %8  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
   │         %new(Base.RefValue{Any}, $(QuoteNode(Mooncake.ZeroRData())))::Any
+  │   %8  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
+  │   %9  = %new(Base.RefValue{Float64}, $(QuoteNode(0.0)))::Any
   └──       $(QuoteNode(Mooncake.BasicBlockCode.ID(4)))
   2 ─       goto #3
   3 ─ %12 =   dynamic (pop!)(%3)::Any
   │   %13 =   builtin (getfield)(%12, 1)::Any
   │   %14 =   builtin (getfield)(%12, 2)::Any
   │   %15 =   builtin (getfield)(%12, 3)::Any
-  │   %16 =   builtin (getfield)(%6, :x)::Any
+  │   %16 =   builtin (getfield)(%9, :x)::Any
   │   %17 =   dynamic (Mooncake.increment!!)(%16, _2)::Any
-  │           builtin (setfield!)(%6, :x, %17)::Any
-  │   %19 =   builtin (getfield)(%6, :x)::Any
-  │           builtin (setfield!)(%6, :x, 0.0)::Any
+  │           builtin (setfield!)(%9, :x, %17)::Any
+  │   %19 =   builtin (getfield)(%9, :x)::Any
+  │           builtin (setfield!)(%9, :x, 0.0)::Any
   │   %21 =   dynamic (%15)(%19)::Any
   │   %22 =   builtin (getfield)(%21, 2)::Any
-  │   %23 =   builtin (getfield)(%7, :x)::Any
+  │   %23 =   builtin (getfield)(%6, :x)::Any
   │   %24 =   dynamic (Mooncake.increment!!)(%23, %22)::Any
-  │           builtin (setfield!)(%7, :x, %24)::Any
+  │           builtin (setfield!)(%6, :x, %24)::Any
   │   %26 =   builtin (getfield)(%21, 3)::Any
   │   %27 =   builtin (getfield)(%8, :x)::Any
   │   %28 =   dynamic (Mooncake.increment!!)(%27, %26)::Any
@@ -592,8 +592,8 @@ Valid worlds: 0x0000000000009c80:0x0000000000009c80
   │   %34 =   builtin (getfield)(%5, :x)::Any
   │   %35 =   dynamic (Mooncake.increment!!)(%34, %33)::Any
   │           builtin (setfield!)(%5, :x, %35)::Any
-  │   %37 =   builtin (getfield)(%7, :x)::Any
-  │           builtin (setfield!)(%7, :x, 0.0)::Any
+  │   %37 =   builtin (getfield)(%6, :x)::Any
+  │           builtin (setfield!)(%6, :x, 0.0)::Any
   │   %39 =   dynamic (%13)(%37)::Any
   │   %40 =   builtin (getfield)(%39, 2)::Any
   │   %41 =   builtin (getfield)(%5, :x)::Any
@@ -793,4 +793,4 @@ Stage worlds:
   normalized: 40066
   fwd_ir: 40066
   raw: 40066
-  rvs_ir: 40066</code></pre><p>This reports the world at which each stage was compiled and flags mismatches.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../misc_internals_notes/">« Misc. Internals Notes</a><a class="docs-footer-nextpage" href="../internal_docstrings/">Internal Docstrings »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Thursday 30 April 2026 12:57">Thursday 30 April 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+  rvs_ir: 40066</code></pre><p>This reports the world at which each stage was compiled and flags mismatches.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../misc_internals_notes/">« Misc. Internals Notes</a><a class="docs-footer-nextpage" href="../internal_docstrings/">Internal Docstrings »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Tuesday 5 May 2026 18:28">Tuesday 5 May 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
