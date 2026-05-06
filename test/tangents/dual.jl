@@ -260,3 +260,89 @@ end
         @test primal(d) === z
     end
 end
+
+@testset "Lifted-aware frule!! direct dispatch" begin
+    # Phase 6: exercises the `Lifted`-typed `frule!!` overloads directly
+    # (bypassing the IR-emit). The integration tests cover these via
+    # `prepare_derivative_cache(...; chunk_size=N)`, but those go through the
+    # IR-emit's `_is_lifted_aware` trait check and the Phase-3 wrap/unwrap
+    # scaffolding for non-registered rules. Here we call the rule with `Lifted`
+    # args directly — Julia dispatch picks the specific `Lifted{typeof(op), N}`
+    # overload (for `tuple`, `_new_`) or the generic `frule!!(::Lifted{F, N},
+    # args::Vararg{Lifted, M})` adapter (for any other rule).
+    Lifted = Mooncake.Lifted
+    NDual = Mooncake.NDual
+    NTangent = Mooncake.NTangent
+    _unlift = Mooncake._unlift
+    zero_lifted = Mooncake.zero_lifted
+    frule!! = Mooncake.frule!!
+
+    @testset "tuple — specific Lifted overload, three-branch collapse" begin
+        # Two NDual{Float64, 2} args representing the standard basis at width 2.
+        ftuple = zero_lifted(Val(2), tuple)
+        a = Lifted{Float64,2}(NDual{Float64,2}(1.0, (1.0, 0.0)))
+        b = Lifted{Float64,2}(NDual{Float64,2}(2.0, (0.0, 1.0)))
+
+        result = frule!!(ftuple, a, b)
+
+        # Single outer Lifted{<:Tuple} whose V is the bare element-wise tuple of
+        # inner duals — invariant from the design.
+        @test typeof(result) ===
+            Lifted{Tuple{Float64,Float64},2,Tuple{NDual{Float64,2},NDual{Float64,2}}}
+        @test _unlift(result) ===
+            (NDual{Float64,2}(1.0, (1.0, 0.0)), NDual{Float64,2}(2.0, (0.0, 1.0)))
+        @test primal(result) === (1.0, 2.0)
+        @test tangent(result) === (NTangent((1.0, 0.0)), NTangent((0.0, 1.0)))
+    end
+
+    @testset "tuple — heterogeneous NDual / Dual{NoTangent} args" begin
+        # Mixed-shape inputs: one differentiable Float64, one non-differentiable Int.
+        # `dual_type(Val(2), Int) == Dual{Int, NoTangent}`, so the Int's V is bare Dual.
+        ftuple = zero_lifted(Val(2), tuple)
+        a = Lifted{Float64,2}(NDual{Float64,2}(1.5, (1.0, 0.0)))
+        b = Lifted{Int,2}(Dual(7, NoTangent()))
+
+        result = frule!!(ftuple, a, b)
+
+        # Inner V is `Tuple{NDual{...}, Dual{Int, NoTangent}}` — element-wise
+        # element types reflect each arg's V exactly.
+        @test typeof(result) ===
+            Lifted{Tuple{Float64,Int},2,Tuple{NDual{Float64,2},Dual{Int,NoTangent}}}
+        @test primal(result) === (1.5, 7)
+    end
+
+    @testset "_new_ — specific Lifted overload, struct branch" begin
+        # Build a chunked struct via `_new_`. Use the existing `OneField{Float64}`
+        # test resource so we don't need to define a struct here.
+        OneField = Mooncake.TestResources.OneField
+        f_new = zero_lifted(Val(2), Mooncake._new_)
+        # Type literal lifts to `Lifted{Type{OneField{Float64}}, 2, Dual{..., NoTangent}}`
+        ptype = Lifted{Type{OneField{Float64}},2}(Dual(OneField{Float64}, NoTangent()))
+        x = Lifted{Float64,2}(NDual{Float64,2}(3.0, (1.0, 0.0)))
+
+        result = frule!!(f_new, ptype, x)
+
+        # Result wraps a struct primal of type `OneField{Float64}` with a
+        # chunked NTangent of length 2 over the per-direction field tangents.
+        @test typeof(primal(result)) === OneField{Float64}
+        @test primal(result).a === 3.0
+        @test result isa Lifted{OneField{Float64},2}
+    end
+
+    @testset "Generic delegator — unregistered rule" begin
+        # `add_float` is not registered as Lifted-aware (no specific Lifted
+        # overload), so calling `frule!!` with `Lifted` args dispatches to the
+        # generic `frule!!(::Lifted{F, N}, args::Vararg{Lifted, M})` adapter
+        # in `primal_mode.jl`. The adapter unwraps, calls the bare frule, and
+        # re-wraps via `__get_primal` of the bare result.
+        addf = zero_lifted(Val(1), Mooncake.IntrinsicsWrappers.add_float)
+        a = Lifted{Float64,1}(NDual{Float64,1}(1.5, (1.0,)))
+        b = Lifted{Float64,1}(NDual{Float64,1}(2.5, (0.0,)))
+
+        result = frule!!(addf, a, b)
+
+        @test result isa Lifted{Float64,1,NDual{Float64,1}}
+        @test primal(result) === 4.0
+        @test tangent(result) === NTangent((1.0,))
+    end
+end
