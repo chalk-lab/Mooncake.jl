@@ -1,3 +1,133 @@
+#
+# Reverse-mode source-to-source transform roadmap
+#
+# This file is in roughly the following order:
+# 1. Local reverse-mode IR types and ID utilities.
+# 2. Shared closure-capture management and global AD state.
+# 3. Statement translation from primal IR to forward/reverse fragments.
+# 4. Callable wrapper types used by derived rules at runtime.
+# 5. Deferred rule wrappers for dynamic dispatch and recursive :invoke handling.
+# 6. Rule derivation entry points and IR generation.
+# 7. Forward-pass assembly, CFGBlock-based lowering, and pullback assembly.
+#
+# The implementation starts with low-level types because later sections share them heavily,
+# but the main transform entry points are `build_rrule`, `build_derived_rrule`, and
+# `generate_ir`.
+#
+
+#
+# Reverse-mode local IR: IDs and CFG-local node types
+#
+
+const _id_count::Dict{Int,Int32} = Dict{Int,Int32}()
+# `seed_id!` resets per-thread counters for deterministic IR generation, so updates to the
+# shared thread-id map must be serialized when rules are derived concurrently.
+const _id_count_lock = ReentrantLock()
+
+struct ID
+    id::Int32
+    function ID()
+        lock(_id_count_lock)
+        try
+            current_thread_id = Threads.threadid()
+            id_count = get(_id_count, current_thread_id, Int32(0))
+            _id_count[current_thread_id] = id_count + Int32(1)
+            return new(id_count)
+        finally
+            unlock(_id_count_lock)
+        end
+    end
+end
+
+Base.copy(id::ID) = id
+
+function seed_id!()
+    lock(_id_count_lock)
+    try
+        return global _id_count[Threads.threadid()] = 0
+    finally
+        unlock(_id_count_lock)
+    end
+end
+
+struct IDPhiNode
+    edges::Vector{ID}
+    values::Vector{Any}
+end
+
+Base.:(==)(x::IDPhiNode, y::IDPhiNode) = x.edges == y.edges && x.values == y.values
+Base.copy(node::IDPhiNode) = IDPhiNode(copy(node.edges), copy(node.values))
+
+struct IDGotoNode
+    label::ID
+end
+
+Base.copy(node::IDGotoNode) = IDGotoNode(copy(node.label))
+
+struct IDGotoIfNot
+    cond::Any
+    dest::ID
+end
+
+Base.copy(node::IDGotoIfNot) = IDGotoIfNot(copy(node.cond), copy(node.dest))
+
+struct Switch
+    conds::Vector{Any}
+    dests::Vector{ID}
+    fallthrough_dest::ID
+    function Switch(conds::Vector{Any}, dests::Vector{ID}, fallthrough_dest::ID)
+        @assert length(conds) == length(dests)
+        return new(conds, dests, fallthrough_dest)
+    end
+end
+
+const IDInstPair = Tuple{ID,NewInstruction}
+const InstVector = Vector{NewInstruction}
+const SSAToIdDict = Dict{SSAValue,ID}
+const BlockNumToIdDict = Dict{Integer,ID}
+
+function characterise_used_ids(stmts::Vector{IDInstPair})::Dict{ID,Bool}
+    is_used = Dict{ID,Bool}()
+    for (id, _) in stmts
+        @assert !haskey(is_used, id)
+        is_used[id] = false
+    end
+    for (_, inst) in stmts
+        _find_id_uses!(is_used, inst.stmt)
+    end
+    return is_used
+end
+
+function _find_id_uses!(d::Dict{ID,Bool}, x::Expr)
+    foreach(a -> _find_id_uses!(d, a), x.args)
+    return nothing
+end
+function _find_id_uses!(d::Dict{ID,Bool}, x::IDGotoIfNot)
+    return _find_id_uses!(d, x.cond)
+end
+_find_id_uses!(::Dict{ID,Bool}, ::IDGotoNode) = nothing
+function _find_id_uses!(d::Dict{ID,Bool}, x::PiNode)
+    return _find_id_uses!(d, x.val)
+end
+function _find_id_uses!(d::Dict{ID,Bool}, x::IDPhiNode)
+    for n in eachindex(x.values)
+        # Normalized compiler phi nodes can leave incoming values undefined on dead edges.
+        isassigned(x.values, n) || continue
+        _find_id_uses!(d, x.values[n])
+    end
+    return nothing
+end
+function _find_id_uses!(d::Dict{ID,Bool}, x::ReturnNode)
+    return isdefined(x, :val) ? _find_id_uses!(d, x.val) : nothing
+end
+_find_id_uses!(::Dict{ID,Bool}, ::QuoteNode) = nothing
+_find_id_uses!(d::Dict{ID,Bool}, x::ID) = d[x] = true
+_find_id_uses!(::Dict{ID,Bool}, x) = nothing
+
+#
+# Shared closure captures and reverse-mode global state
+#
+
 """
     SharedDataPairs()
 
@@ -87,6 +217,10 @@ This data structure is used to hold "global" information associated to a particu
 `build_rrule`. It is used as a means of communication between `make_ad_stmts!` and the
 codegen which produces the forwards- and reverse-passes.
 
+At a high level, the most important fields are the shared captures, the block-stack state used
+to replay control flow, the reverse-data refs for arguments and SSA values, and the static
+primal type information used while translating statements.
+
 - `interp`: a `MooncakeInterpreter`.
 - `block_stack_id`: the ID associated to the block stack -- the stack which keeps track of
     which blocks we visited during the forwards-pass, and which is used on the reverse-pass
@@ -137,7 +271,6 @@ struct ADInfo
     rvs_ret_type::Type
 end
 
-# The constructor that you should use for ADInfo if you don't have a BBCode lying around.
 # See the definition of the ADInfo struct for info on the arguments.
 function ADInfo(
     interp::MooncakeInterpreter,
@@ -164,35 +297,6 @@ function ADInfo(
         debug_mode,
         is_used_dict,
         add_data!(shared_data_pairs, zero_lazy_rdata_ref),
-        fwd_ret_type,
-        rvs_ret_type,
-    )
-end
-
-# The constructor you should use for ADInfo if you _do_ have a BBCode lying around. See the
-# ADInfo struct for information regarding `interp` and `debug_mode`.
-function ADInfo(
-    interp::MooncakeInterpreter,
-    ir::BBCode,
-    debug_mode::Bool,
-    fwd_ret_type::Type,
-    rvs_ret_type::Type,
-)
-    arg_types = Dict{Argument,Any}(
-        map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir.argtypes))
-    )
-    stmts = collect_stmts(ir)
-    ssa_insts = Dict{ID,NewInstruction}(stmts)
-    is_used_dict = characterise_used_ids(stmts)
-    Tlazy_rdata_ref = Tuple{map(lazy_zero_rdata_type ∘ CC.widenconst, ir.argtypes)...}
-    zero_lazy_rdata_ref = Ref{Tlazy_rdata_ref}()
-    return ADInfo(
-        interp,
-        arg_types,
-        ssa_insts,
-        is_used_dict,
-        debug_mode,
-        zero_lazy_rdata_ref,
         fwd_ret_type,
         rvs_ret_type,
     )
@@ -329,6 +433,10 @@ end
     return y::CoDual, (pb!! isa NoPullback ? pb!! : RRuleWrapperPb(pb!!, l))
 end
 
+#
+# Statement translation bookkeeping
+#
+
 """
     ADStmtInfo
 
@@ -349,6 +457,18 @@ struct ADStmtInfo
     rvs::Vector{IDInstPair}
 end
 
+struct RuleSelection
+    args::Tuple
+    rule_ref
+    T_pb!!::Type
+    output_type::Type
+end
+
+struct BlockCommsInsts
+    fwds_suffix::Vector{IDInstPair}
+    rvs_prefix::Vector{IDInstPair}
+end
+
 """
     ad_stmt_info(line::ID, comms_id::Union{ID, Nothing}, fwds, rvs)
 
@@ -362,15 +482,66 @@ function ad_stmt_info(line::ID, comms_id::Union{ID,Nothing}, fwds, rvs)
     return ADStmtInfo(line, comms_id, __vec(line, fwds), __vec(line, rvs))
 end
 
+function _select_rule(stmt::Expr, line::ID, info::ADInfo, is_invoke::Bool)
+    args = ((is_invoke ? stmt.args[2:end] : stmt.args)...,)
+    arg_types = map(arg -> get_primal_type(info, arg), args)
+
+    sig = Tuple{arg_types...}
+    interp = info.interp
+    raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
+        build_primitive_rrule(sig)
+    elseif is_invoke
+        LazyDerivedRule(get_mi(stmt.args[1]), info.debug_mode)
+    else
+        DynamicDerivedRule(info.debug_mode)
+    end
+
+    output_type = get_primal_type(info, line)
+    is_no_pullback = pullback_type(_typeof(raw_rule), arg_types) <: NoPullback
+    strip_zero_rdata = can_produce_zero_rdata_from_type(output_type) || is_no_pullback
+    wrapped_rule = strip_zero_rdata ? raw_rule : RRuleZeroWrapper(raw_rule)
+    rule = info.debug_mode ? DebugRRule(wrapped_rule) : wrapped_rule
+
+    return RuleSelection(
+        args,
+        add_data_if_not_singleton!(info, rule),
+        pullback_type(_typeof(rule), arg_types),
+        output_type,
+    )
+end
+
+function _pullback_increment_stmts(
+    info::ADInfo, args, call_pullback_id::ID
+)::Vector{IDInstPair}
+    increments = IDInstPair[]
+    for (n, arg) in enumerate(args)
+        rev_data_id = get_rev_data_id(info, arg)
+        rev_data_id === nothing && continue
+
+        rdata_inc_id = ID()
+        push!(
+            increments, (rdata_inc_id, new_inst(Expr(:call, getfield, call_pullback_id, n)))
+        )
+        append!(increments, increment_ref_stmts(rev_data_id, rdata_inc_id))
+    end
+    return increments
+end
+
 __vec(line::ID, x::Any) = __vec(line, new_inst(x))
 __vec(line::ID, x::NewInstruction) = IDInstPair[(line, x)]
-__vec(line::ID, x::Vector{Tuple{ID,Any}}) = throw(error("boooo"))
+function __vec(::ID, x::Vector{Tuple{ID,Any}})
+    throw(
+        ArgumentError(
+            "Expected `Vector{IDInstPair}` but found a plain `Vector{Tuple{ID,Any}}`."
+        ),
+    )
+end
 __vec(line::ID, x::Vector{IDInstPair}) = x
 
 """
     comms_channel(info::ADStmtInfo)
 
-Return the element of `fwds` whose `ID` is the communcation `ID`. Returns `Nothing` if
+Return the element of `fwds` whose `ID` is the communication `ID`. Returns `Nothing` if
 `comms_id` is `nothing`.
 """
 function comms_channel(info::ADStmtInfo)
@@ -675,15 +846,17 @@ function make_ad_stmts!(stmt::Core.UpsilonNode, ::ID, ::ADInfo)
     )
 end
 
-# There are quite a number of possible `Expr`s that can be encountered. Each case has its
-# own comment, explaining what is going on.
+# There are quite a number of possible `Expr`s that can be encountered. This `:call` /
+# `:invoke` path stays mostly linear on purpose: keeping rule selection, forward emission,
+# and reverse emission together makes the translated dataflow easier to inspect and avoids
+# introducing helper boundaries that can interfere with inlining in unstable cases.
 function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
     is_invoke = Meta.isexpr(stmt, :invoke)
     if Meta.isexpr(stmt, :call) || is_invoke
 
-        # Find the types of all arguments to this call / invoke.
-        args = ((is_invoke ? stmt.args[2:end] : stmt.args)...,)
-        arg_types = map(arg -> get_primal_type(info, arg), args)
+        #
+        # Step 1: classify the call site and choose the rule object.
+        #
 
         # Special case: if the result of a call to getfield is un-used, then leave the
         # primal statement alone (just increment arguments as usual). This was causing
@@ -695,50 +868,24 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         #
         # This might need to be generalised to more things than just `getfield`, but at the
         # time of writing this comment, it's unclear whether or not this is the case.
+        args = ((is_invoke ? stmt.args[2:end] : stmt.args)...,)
         if !is_used(info, line) && get_const_primal_value(args[1]) == getfield
             fwds = new_inst(Expr(:call, __fwds_pass_no_ad!, map(__inc, args)...))
             return ad_stmt_info(line, nothing, fwds, nothing)
         end
 
-        # Construct signature, and determine how the rrule is to be computed.
-        sig = Tuple{arg_types...}
-        interp = info.interp
-        raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
-            build_primitive_rrule(sig) # intrinsic / builtin / thing we provably have rule for
-        elseif is_invoke
-            mi = get_mi(stmt.args[1])
-            LazyDerivedRule(mi, info.debug_mode) # Static dispatch
-        else
-            DynamicDerivedRule(info.debug_mode)  # Dynamic dispatch
-        end
-
-        # Wrap the raw rule in a struct which ensures that any `ZeroRData`s are stripped
-        # away before the raw_rule is called. Only do this if we cannot prove that the
-        # output of `can_produce_zero_rdata_from_type(P)`, where `P` is the type of the
-        # value returned by this line.
-        is_no_pullback = pullback_type(_typeof(raw_rule), arg_types) <: NoPullback
-        tmp = can_produce_zero_rdata_from_type(get_primal_type(info, line))
-        zero_wrapped_rule = (tmp || is_no_pullback) ? raw_rule : RRuleZeroWrapper(raw_rule)
-
-        # If debug mode has been requested, use a debug rule.
-        rule = info.debug_mode ? DebugRRule(zero_wrapped_rule) : zero_wrapped_rule
-
-        # If the primitive rule is a singleton, then don't bother putting it into shared
-        # data because it's safe to put it directly into the code.
-        rule_ref = add_data_if_not_singleton!(info, rule)
-
-        # If the type of the pullback is a singleton type, then there is no need to store it
-        # in the shared data, it can be interpolated directly into the generated IR.
-        T_pb!! = pullback_type(_typeof(rule), arg_types)
+        selection = _select_rule(stmt, line, info, is_invoke)
 
         #
-        # Write forwards-pass. These statements are written out manually, as writing them
-        # out in a function would prevent inlining in some (all?) type-unstable situations.
+        # Step 2: write the forward fragment.
+        #
+        # These statements are written out manually because routing them through a helper can
+        # prevent inlining in type-unstable situations.
         #
 
         # Make arguments to rrule call. Things which are not already CoDual must be made so.
         codual_args = IDInstPair[]
-        codual_arg_ids = map(args) do arg
+        codual_arg_ids = map(selection.args) do arg
             is_active(arg) && return __inc(arg)
             id = ID()
             push!(codual_args, (id, new_inst(inc_or_const_stmt(arg, info))))
@@ -747,7 +894,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Make call to rule.
         rule_call_id = ID()
-        rule_call = Expr(:call, rule_ref, codual_arg_ids...)
+        rule_call = Expr(:call, selection.rule_ref, codual_arg_ids...)
 
         # Extract the output-codual from the returned tuple.
         raw_output_id = ID()
@@ -755,13 +902,15 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
 
         # Extract the pullback from the returned tuple. Specialise on the case that the
         # pullback is provably a singleton type.
-        if Base.issingletontype(T_pb!!)
-            pb = T_pb!!.instance
+        if Base.issingletontype(selection.T_pb!!)
+            pb = selection.T_pb!!.instance
             pb_stmt = (ID(), new_inst(nothing))
             comms_id = nothing
         else
             pb = ID()
-            pb_stmt = (pb, new_inst(Expr(:call, getfield, rule_call_id, 2), T_pb!!))
+            pb_stmt = (
+                pb, new_inst(Expr(:call, getfield, rule_call_id, 2), selection.T_pb!!)
+            )
             comms_id = pb
         end
 
@@ -771,7 +920,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # be optimised away in situations where the compiler is able to successfully infer
         # the type, so performance in performance-critical situations is unaffected.
         output_id = line
-        F = fcodual_type(get_primal_type(info, line))
+        F = fcodual_type(selection.output_type)
         output = Expr(:call, Core.typeassert, raw_output_id, F)
 
         # Create statements associated to forwards-pass.
@@ -785,9 +934,11 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             ],
         )
 
-        # Make statement associated to reverse-pass. If the reverse-pass is provably a
-        # NoPullback, then don't bother doing anything at all.
-        rvs_pass = if T_pb!! <: NoPullback
+        #
+        # Step 3: write the reverse fragment.
+        #
+        # If the reverse pass is provably `NoPullback`, there is nothing to emit.
+        rvs_pass = if selection.T_pb!! <: NoPullback
             nothing
         else
             # Get the rdata which we pass into the pullback from its rdata ref.
@@ -799,41 +950,19 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             # Zero out the value stored in this rdata ref now that we have its current
             # value. The new value is rdata, so must be an instance of a bits type, so is
             # safe to interpolate straight into instruction.
-            zero_val = zero_like_rdata_from_type(get_primal_type(info, line))
+            zero_val = zero_like_rdata_from_type(selection.output_type)
             zero_rdata_expr = Expr(:call, setfield!, rdata_ref_id, QuoteNode(:x), zero_val)
             zero_rdata_ref = (ID(), new_inst(zero_rdata_expr))
 
             # Run the pullback. The result is a tuple comprising `length(args)` elements.
             call_pullback_id = ID()
             call_pullback = (call_pullback_id, new_inst(Expr(:call, pb, rdata_output_id)))
-
-            # For each element of the tuple returned by call_pullback, if the corresponding
-            # value in the primal IR is an Argument / SSA (if `get_rev_data_id` does not
-            # return nothing), increment the value in its rdata ref. This is equivalent to
-            # rdata_ref[] = increment!!(rdata_ref[], rdata_inc_resulting_from_pullback),
-            # but written out manually to ensure nothing fails to inline.
-            # If the corresponding value in the primal IR is not an Argument / SSA (e.g. it
-            # is a literal, a `QuoteNode`, or a `GlobalRef`), do nothing as we do not track
-            # gradients w.r.t. it.
-            tmp = map(enumerate(args)) do (n, arg)
-                rev_data_id = get_rev_data_id(info, arg)
-
-                # If arg is not an SSA / Argument, then no rdata ref to inc.
-                rev_data_id === nothing && return nothing
-
-                # Extract rdata from result of calling pullback.
-                rdata_inc_id = ID()
-                rdata_inc_expr = Expr(:call, getfield, call_pullback_id, n)
-                rdata_inc = (rdata_inc_id, new_inst(rdata_inc_expr))
-
-                # Construct statements to increment ref.
-                return vcat(rdata_inc, increment_ref_stmts(rev_data_id, rdata_inc_id))
-            end
-
-            # Concatenate all statements, and return them.
+            pullback_increments = _pullback_increment_stmts(
+                info, selection.args, call_pullback_id
+            )
             vcat(
                 IDInstPair[rdata_output, zero_rdata_ref, call_pullback],
-                reduce(vcat, filter(x -> !(x === nothing), tmp); init=IDInstPair[]),
+                pullback_increments,
             )
         end
         return ad_stmt_info(line, comms_id, fwds, rvs_pass)
@@ -936,8 +1065,10 @@ __get_primal(x) = x
 const RuleMC{A,R} = MistyClosure{OpaqueClosure{A,R}}
 
 #
-# Runners for generated code. The main job of these functions is to handle the translation
-# between differing varargs conventions.
+# Runtime wrapper types for generated rules.
+#
+# These wrappers sit on the hot path once a rule has already been derived. Their main job is
+# to hide closure/capture details and translate between differing varargs conventions.
 #
 
 struct Pullback{Tprimal,Tpb_args,Tpb_ret,isva,nargs}
@@ -1032,7 +1163,165 @@ function __unflatten_codual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs
 end
 
 #
-# Rule derivation.
+# Deferred runtime rule wrappers for dynamic dispatch and recursive `:invoke`
+#
+# These wrappers live next to the other callable rule wrappers above because they are also
+# part of the runtime surface seen by generated reverse-mode code. Their constructors depend
+# on compilation helpers such as `build_rrule` and `rule_type`, which are defined later.
+#
+
+"""
+    DynamicDerivedRule(interp::MooncakeInterpreter, debug_mode::Bool)
+
+For internal use only.
+
+A callable data structure which, when invoked, calls an rrule specific to the dynamic types
+of its arguments. Stores rules in an internal cache to avoid re-deriving.
+
+This is used to implement dynamic dispatch.
+"""
+struct DynamicDerivedRule{V}
+    cache::V
+    debug_mode::Bool
+end
+
+DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug_mode)
+
+# Create new dynamic rule with empty cache and same debug mode
+_copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
+
+function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
+
+    # `Base._stable_typeof` is used here, rather than `typeof` or `Mooncake._typeof`. Its
+    # precise behaviour (equivalent to `typeof` for everything except `Type`s, for which it
+    # returns `Type{P}` rather than `typeof(P)`) is needed to ensure that this signature
+    # matches the types that `rule` sees when `rule(args...)` is called below. If you get
+    # this wrong, an assertion is violated, causing a hard-to-debug error (see issue 660).
+    sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
+
+    rule = get(dynamic_rule.cache, sig, nothing)
+    if rule === nothing
+        interp = get_interpreter(ReverseMode)
+        rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        dynamic_rule.cache[sig] = rule
+    end
+    return __call_rule(rule, args)
+end
+
+"""
+    LazyDerivedRule(interp, mi::Core.MethodInstance, debug_mode::Bool)
+
+For internal use only.
+
+A type-stable wrapper around a `DerivedRule`, which only instantiates the `DerivedRule`
+when it is first called. This is useful, as it means that if a rule does not get run, it
+does not have to be derived.
+
+If `debug_mode` is `true`, then the rule constructed will be a `DebugRRule`. This is useful
+when debugging, but should usually be switched off for production code as it (in general)
+incurs some runtime overhead.
+
+Note: the signature of the primal for which this is a rule is stored in the type. The only
+reason to keep this around is for debugging -- it is very helpful to have this type visible
+in the stack trace when something goes wrong, as it allows you to trivially determine which
+bit of your code is the culprit.
+
+# Extended Help
+
+There are two main reasons why deferring the construction of a `DerivedRule` until we need
+to use it is crucial.
+
+The first is to do with recursion. Consider the following function:
+```julia
+f(x) = x > 0 ? f(x - 1) : x
+```
+If we generate the `IRCode` for this function, we will see something like the following:
+```julia
+julia> Base.code_ircode_by_type(Tuple{typeof(f), Float64})[1][1]
+1 1 ─ %1  = Base.lt_float(0.0, _2)::Bool
+  │   %2  = Base.or_int(%1, false)::Bool
+  └──       goto #6 if not %2
+  2 ─ %4  = Base.sub_float(_2, 1.0)::Float64
+  │   %5  = Base.lt_float(0.0, %4)::Bool
+  │   %6  = Base.or_int(%5, false)::Bool
+  └──       goto #4 if not %6
+  3 ─ %8  = Base.sub_float(%4, 1.0)::Float64
+  │   %9  = invoke Main.f(%8::Float64)::Float64
+  └──       goto #5
+  4 ─       goto #5
+  5 ┄ %12 = φ (#3 => %9, #4 => %4)::Float64
+  └──       return %12
+  6 ─       return _2
+```
+Suppose that we decide to construct a `DerivedRule` immediately whenever we find an
+`:invoke` statement in a rule that we're currently building a `DerivedRule` for.
+In the above example, we produce an infinite recursion when we attempt to produce a
+`DerivedRule` for %9, because it has the same signature as the call which generates this IR.
+By instead adopting a policy of constructing a `LazyDerivedRule` whenever we encounter an
+`:invoke` statement, we avoid this problem.
+
+The second reason that delaying the construction of a `DerivedRule`, is essential is that it
+ensures that we don't derive rules for method instances which aren't run. Suppose that
+function B contains code for which we can't derive a rule -- perhaps it contains an
+unsupported language feature like a `PhiCNode` or an `UpsilonNode`. Suppose that function A
+contains an `:invoke` which refers to function `B`, but that this call is on a branch which
+deals with error handling, and doesn't get run run unless something goes wrong. By deferring
+the derivation of the rule for B, we only ever attempt to derive it if we land on this
+error handling branch. Conversely, if we attempted to derive the rule for B when we derive
+the rule for A, we would be unable to complete the derivation of the rule for A.
+"""
+mutable struct LazyDerivedRule{primal_sig,Trule}
+    debug_mode::Bool
+    mi::Core.MethodInstance
+    rule::Trule
+    function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
+        interp = get_interpreter(ReverseMode)
+        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi)
+    end
+    function LazyDerivedRule{Tprimal_sig,Trule}(
+        mi::Core.MethodInstance, debug_mode::Bool
+    ) where {Tprimal_sig,Trule}
+        return new{Tprimal_sig,Trule}(debug_mode, mi)
+    end
+end
+
+# Create new lazy rule with same method instance and debug mode
+_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
+
+# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
+# LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
+# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
+# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
+@static if VERSION < v"1.11-"
+    @inline function __call_rule(
+        rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
+    ) where {sig,Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
+        return rule(args...)::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
+    end
+    @inline function __call_rule(
+        rule::LazyDerivedRule{
+            sig,DebugRRule{DerivedRule{Tp,FA,CoDual{P,FD},RA,RR,isva,Val{pnargs}}}
+        },
+        args::A,
+    ) where {sig,Tp,FA,P,FD,RA,RR,isva,pnargs,A<:Tuple}
+        return rule(
+            args...
+        )::Tuple{CoDual{P,FD},DebugPullback{Pullback{Tp,RA,RR,isva,fieldcount(A)},P}}
+    end
+end
+
+@inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
+    return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
+end
+
+@noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
+    interp = get_interpreter(ReverseMode)
+    rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
+    return __call_rule(rule.rule, args)
+end
+
+#
+# Rule derivation entry points and compile-time helpers
 #
 
 _get_sig(sig::Type) = sig
@@ -1209,7 +1498,7 @@ function build_rrule_checks(
         throw(
             ArgumentError(
                 "World age associated to interp is behind current world age. Please " *
-                "a new interpreter for the current world age.",
+                "create a new interpreter for the current world age.",
             ),
         )
     end
@@ -1225,7 +1514,7 @@ function build_derived_rrule(
 ) where {C}
     @nospecialize sig_or_mi sig
 
-    # We don't have a hand-coded rule, so derived one.
+    # No hand-coded rule exists, so derive one from compiler IR.
     lock(MOONCAKE_INFERENCE_LOCK)
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
@@ -1234,7 +1523,7 @@ function build_derived_rrule(
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
         else
-            # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
+            # Derive the forward and reverse IR, then package them into `MistyClosure`s.
             dri = try
                 generate_ir(interp, sig_or_mi; debug_mode)
             catch err
@@ -1276,7 +1565,7 @@ end
 """
     generate_ir(
         interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
-    )
+)
 Used by `build_rrule`, and the various debugging tools: primal_ir, fwds_ir, adjoint_ir.
 """
 function generate_ir(
@@ -1290,7 +1579,7 @@ function generate_ir(
     # function runs.
     seed_id!()
 
-    # Grab code associated to the primal.
+    # Look up the inferred primal IR.
     ir, _ = lookup_ir(interp, sig_or_mi)
     @static if VERSION > v"1.12-"
         ir = set_valid_world!(ir, interp.world)
@@ -1317,34 +1606,51 @@ function generate_ir(
         end
     end
 
-    # Normalise the IR, and generated BBCode version of it.
+    # Reverse mode now starts from normalized IRCode and uses the local CFG builder directly.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
     ir = normalise!(ir, spnames)
-    primal_ir = remove_unreachable_blocks!(BBCode(ir))
+    primal_blocks = _remove_unreachable_cfg_blocks!(_ircode_to_cfg_blocks(ir))
 
     # Compute global info.
-    info = ADInfo(interp, primal_ir, debug_mode, fwd_ret_type, rvs_ret_type)
+    arg_types = Dict{Argument,Any}(
+        map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir.argtypes))
+    )
+    primal_stmts = IDInstPair[inst for block in primal_blocks for inst in block.insts]
+    ssa_insts = Dict{ID,NewInstruction}(primal_stmts)
+    is_used_dict = characterise_used_ids(primal_stmts)
+    Tlazy_rdata_ref = Tuple{map(lazy_zero_rdata_type ∘ CC.widenconst, ir.argtypes)...}
+    zero_lazy_rdata_ref = Ref{Tlazy_rdata_ref}()
+    info = ADInfo(
+        interp,
+        arg_types,
+        ssa_insts,
+        is_used_dict,
+        debug_mode,
+        zero_lazy_rdata_ref,
+        fwd_ret_type,
+        rvs_ret_type,
+    )
 
-    # For each block in the fwds and pullback BBCode, translate all statements. Running this
-    # will, in general, push items to `info.shared_data_pairs`.
-    ad_stmts_blocks = map(primal_ir.blocks) do primal_blk
-        ids = primal_blk.inst_ids
-        primal_stmts = map(x -> x.stmt, primal_blk.insts)
-        return (primal_blk.id, make_ad_stmts!.(primal_stmts, ids, Ref(info)))
+    # For each block in the primal CFG, translate all statements. Running this will, in
+    # general, push items to `info.shared_data_pairs`.
+    ad_stmts_blocks = map(primal_blocks) do primal_blk
+        ids = first.(primal_blk.insts)
+        stmts = map(x -> x[2].stmt, primal_blk.insts)
+        return (primal_blk.id, make_ad_stmts!.(stmts, ids, Ref(info)))
     end
 
-    # Make shared data, and construct BBCode for forwards-pass and pullback.
-    fwds_comms_insts, pb_comms_insts = create_comms_insts!(ad_stmts_blocks, info)
+    # Make shared data, and construct IR for the forwards-pass and pullback.
+    block_comms = create_comms_insts!(ad_stmts_blocks, info)
     shared_data = shared_data_tuple(info.shared_data_pairs)
 
     fwd_ir = forwards_pass_ir(
-        primal_ir, ad_stmts_blocks, fwds_comms_insts, info, _typeof(shared_data)
+        ir, primal_blocks, ad_stmts_blocks, block_comms, info, _typeof(shared_data)
     )
     rvs_ir = pullback_ir(
-        primal_ir, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
+        ir, primal_blocks, Treturn, ad_stmts_blocks, block_comms, info, _typeof(shared_data)
     )
-    opt_fwd_ir = do_optimize ? optimise_ir!(IRCode(fwd_ir); do_inline) : IRCode(fwd_ir)
-    opt_rvs_ir = do_optimize ? optimise_ir!(IRCode(rvs_ir); do_inline) : IRCode(rvs_ir)
+    opt_fwd_ir = do_optimize ? optimise_ir!(fwd_ir; do_inline) : fwd_ir
+    opt_rvs_ir = do_optimize ? optimise_ir!(rvs_ir; do_inline) : rvs_ir
     return DerivedRuleInfo(
         ir, opt_fwd_ir, fwd_ret_type, opt_rvs_ir, rvs_ret_type, shared_data, info, isva
     )
@@ -1380,6 +1686,10 @@ end
 
 const ADStmts = Vector{Tuple{ID,Vector{ADStmtInfo}}}
 
+#
+# Forward-pass communication and CFG assembly
+#
+
 """
     create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
 
@@ -1399,12 +1709,11 @@ For each basic block represented in `ADStmts`:
     shared data by the instructions generated by the previous point, and assigned them to
     the `comms_id`s.
 
-Returns two a `Tuple{Vector{IDInstPair}, Vector{IDInstPair}`. The nth element of each
-`Vector` corresponds to the instructions to be inserted into the forwards- and reverse
-passes resp. for the nth block in `ad_stmts_blocks`.
+Returns a `Vector{BlockCommsInsts}`. The nth element contains the forward-pass suffix and
+reverse-pass prefix associated to the nth block in `ad_stmts_blocks`.
 """
 function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
-    insts = map(ad_stmts_blocks) do (_, ad_stmts)
+    return map(ad_stmts_blocks) do (_, ad_stmts)
 
         # Get the communication channel for each stmt which has one.
         comms_channels = filter(!=(nothing), map(comms_channel, ad_stmts))
@@ -1436,20 +1745,33 @@ function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
             end...,
         ]
 
-        return fwds_insts, rvs_insts
+        return BlockCommsInsts(fwds_insts, rvs_insts)
     end
-    return map(first, insts), map(last, insts)
 end
 
 """
-    forwards_pass_ir(ir::BBCode, ad_stmts_blocks::ADStmts, info::ADInfo, Tshared_data)
+    forwards_pass_ir(
+        ir::IRCode,
+        primal_blocks,
+        ad_stmts_blocks::ADStmts,
+        block_comms,
+        info::ADInfo,
+        Tshared_data,
+    )
 
 Produce the IR associated to the `OpaqueClosure` which runs most of the forwards-pass.
 """
 function forwards_pass_ir(
-    ir::BBCode, ad_stmts_blocks::ADStmts, fwds_comms_insts, info::ADInfo, Tshared_data
+    ir::IRCode,
+    primal_blocks,
+    ad_stmts_blocks::ADStmts,
+    block_comms,
+    info::ADInfo,
+    Tshared_data,
 )
-    is_unique_pred, pred_is_unique_pred = characterise_unique_predecessor_blocks(ir.blocks)
+    is_unique_pred, pred_is_unique_pred = _characterise_unique_predecessor_blocks(
+        primal_blocks
+    )
 
     # Insert a block at the start which extracts all items from the captures field of the
     # `OpaqueClosure`, which contains all of the data shared between the forwards- and
@@ -1457,7 +1779,7 @@ function forwards_pass_ir(
     # Push the entry id onto the block stack if needed. Create `LazyZeroRData` for each
     # argument, and put it in the `Ref` for use on the reverse-pass.
     sds = shared_data_stmts(info.shared_data_pairs)
-    if pred_is_unique_pred[ir.blocks[1].id]
+    if pred_is_unique_pred[primal_blocks[1].id]
         push_block_stack_insts = IDInstPair[]
     else
         push_block_stack_stmt = Expr(
@@ -1473,7 +1795,7 @@ function forwards_pass_ir(
     )
     lazy_zero_rdata_insts = [(ID(), new_inst(lazy_zero_rdata_stmt))]
     entry_stmts = vcat(sds, lazy_zero_rdata_insts, push_block_stack_insts)
-    entry_block = BBlock(info.entry_id, entry_stmts)
+    entry_block = CFGBlock(info.entry_id, entry_stmts)
 
     # Construct augmented version of each basic block from the primal. For each block:
     # 1. pull the translated basic block statements from ad_stmts_blocks,
@@ -1481,15 +1803,15 @@ function forwards_pass_ir(
     #   the `comms_id` field of `ADStmtInfo`,
     # 3. insert a statement which logs the ID of the current block (if necessary to know
     #   how to perform the reverse-pass),
-    # 4. return the BBlock.
-    blocks = map(ad_stmts_blocks, fwds_comms_insts) do (block_id, ad_stmts), comms_insts
+    # 4. return the CFG block.
+    blocks = map(ad_stmts_blocks, block_comms) do (block_id, ad_stmts), comms
 
         # Extract the `fwds` fields from the stmts, and create the block for the fwds pass.
-        blk = BBlock(block_id, reduce(vcat, map(x -> x.fwds, ad_stmts)))
+        insts = reduce(vcat, map(x -> x.fwds, ad_stmts))
 
-        # Insert communcation instructions. See `create_comms_insts!` for an explanation.
-        for stack_inst in comms_insts
-            insert_before_terminator!(blk, stack_inst[1], stack_inst[2])
+        # Insert communication instructions. See `create_comms_insts!` for an explanation.
+        for stack_inst in comms.fwds_suffix
+            _insert_before_terminator!(insts, stack_inst)
         end
 
         # Log the ID of the current basic block. This is needed to know which basic block to
@@ -1498,30 +1820,17 @@ function forwards_pass_ir(
         # passed through this block as opposed to any other).
         if !is_unique_pred[block_id]
             ins_stmt = Expr(:call, __push_blk_stack!, info.block_stack_id, block_id.id)
-            insert_before_terminator!(blk, ID(), new_inst(ins_stmt))
+            _insert_before_terminator!(insts, (ID(), new_inst(ins_stmt)))
         end
 
-        return blk
+        return CFGBlock(block_id, insts)
     end
 
-    # Create and return the `BBCode` for the forwards-pass.
+    # Lower the forwards-pass CFG directly to `IRCode`.
     arg_types = vcat(Tshared_data, map(fcodual_type ∘ CC.widenconst, ir.argtypes))
-    new_ir = BBCode(ir, vcat(entry_block, blocks))
-    @static if VERSION > v"1.12-"
-        new_ir = BBCode(
-            new_ir.blocks,
-            arg_types,
-            new_ir.sptypes,
-            new_ir.debuginfo,
-            new_ir.meta,
-            new_ir.valid_worlds,
-        )
-    else
-        new_ir = BBCode(
-            new_ir.blocks, arg_types, new_ir.sptypes, new_ir.linetable, new_ir.meta
-        )
-    end
-    return remove_unreachable_blocks!(new_ir)
+    return lower_cfg_blocks_to_ir(
+        ir, arg_types, vcat([entry_block], blocks); sort_cfg=false
+    )
 end
 
 """
@@ -1541,16 +1850,428 @@ __lazy_zero_rdata_primal(T, x) = lazy_zero_rdata(T, primal(x))
     return :(r[] = tuple_map(__lazy_zero_rdata_primal, $(fieldtypes(T)), args))
 end
 
+#
+# CFGBlock working IR
+#
+# Reverse mode assembles new control flow in this local representation first, then lowers the
+# finished CFG back to compiler IR in one step.
+#
+
 """
-    pullback_ir(ir::BBCode, Tret, ad_stmts_blocks::ADStmts, info::ADInfo, Tshared_data)
+    CFGBlock(id::ID, insts::Vector{IDInstPair})
+
+Reverse-mode-local basic block representation used while assembling reverse-mode CFGs before
+lowering to compiler IR.
+"""
+struct CFGBlock
+    id::ID
+    insts::Vector{IDInstPair}
+end
+
+function _remap_assigned_phi_values(f, values::Vector{Any})::Vector{Any}
+    # Keep dead-edge phi slots undefined while remapping the assigned incoming values.
+    new_values = Vector{Any}(undef, length(values))
+    for n in eachindex(values)
+        isassigned(values, n) && (new_values[n] = f(values[n]))
+    end
+    return new_values
+end
+
+#
+# `IRCode` -> `CFGBlock` conversion
+#
+
+function _ssa_to_ids(d::SSAToIdDict, inst::NewInstruction)
+    return NewInstruction(inst; stmt=_ssa_to_ids(d, inst.stmt))
+end
+function _ssa_to_ids(d::SSAToIdDict, x::ReturnNode)
+    return isdefined(x, :val) ? ReturnNode(get(d, x.val, x.val)) : x
+end
+_ssa_to_ids(d::SSAToIdDict, x::Expr) = Expr(x.head, map(a -> get(d, a, a), x.args)...)
+_ssa_to_ids(d::SSAToIdDict, x::PiNode) = PiNode(get(d, x.val, x.val), get(d, x.typ, x.typ))
+_ssa_to_ids(::SSAToIdDict, x) = x
+function _ssa_to_ids(d::SSAToIdDict, x::PhiNode)
+    return PhiNode(x.edges, _remap_assigned_phi_values(v -> get(d, v, v), x.values))
+end
+_ssa_to_ids(d::SSAToIdDict, x::GotoIfNot) = GotoIfNot(get(d, x.cond, x.cond), x.dest)
+
+function _ssas_to_ids(insts::InstVector)::Tuple{Vector{ID},InstVector}
+    ids = map(_ -> ID(), insts)
+    val_id_map = SSAToIdDict(zip(SSAValue.(eachindex(insts)), ids))
+    return ids, map(Base.Fix1(_ssa_to_ids, val_id_map), insts)
+end
+
+function _block_num_to_ids(d::BlockNumToIdDict, x::NewInstruction)
+    return NewInstruction(x; stmt=_block_num_to_ids(d, x.stmt))
+end
+function _block_num_to_ids(d::BlockNumToIdDict, x::PhiNode)
+    return IDPhiNode(ID[d[e] for e in x.edges], x.values)
+end
+_block_num_to_ids(d::BlockNumToIdDict, x::GotoNode) = IDGotoNode(d[x.label])
+_block_num_to_ids(d::BlockNumToIdDict, x::GotoIfNot) = IDGotoIfNot(x.cond, d[x.dest])
+_block_num_to_ids(::BlockNumToIdDict, x) = x
+
+function _block_nums_to_ids(insts::InstVector, cfg::CC.CFG)::Tuple{Vector{ID},InstVector}
+    ids = map(_ -> ID(), cfg.blocks)
+    block_num_id_map = BlockNumToIdDict(zip(eachindex(cfg.blocks), ids))
+    return ids, map(Base.Fix1(_block_num_to_ids, block_num_id_map), insts)
+end
+
+function _ircode_to_cfg_blocks(ir::IRCode)::Vector{CFGBlock}
+    # Reuse the shared cross-version stmt accessor rather than branching on field names here.
+    stmts = map(
+        (stmt, type, info, line, flag) -> NewInstruction(stmt, type, info, line, flag),
+        stmt(ir.stmts),
+        ir.stmts.type,
+        ir.stmts.info,
+        ir.stmts.line,
+        ir.stmts.flag,
+    )
+    ssa_ids, stmts = _ssas_to_ids(stmts)
+    block_ids, stmts = _block_nums_to_ids(stmts, ir.cfg)
+    return map(zip(block_ids, ir.cfg.blocks)) do (block_id, bb)
+        CFGBlock(block_id, collect(zip(ssa_ids[bb.stmts], stmts[bb.stmts])))
+    end
+end
+
+_cfg_terminator(stmt) = stmt isa Union{Switch,IDGotoIfNot,IDGotoNode,ReturnNode}
+function _cfg_terminator(block::CFGBlock)
+    isempty(block.insts) && return nothing
+    stmt = last(block.insts)[2].stmt
+    return _cfg_terminator(stmt) ? stmt : nothing
+end
+
+function _cfg_phi_nodes(block::CFGBlock)
+    # Phi nodes are only valid at the start of a block, so stop at the first non-phi.
+    n_phi_nodes = findfirst(x -> !(x[2].stmt isa IDPhiNode), block.insts)
+    n_phi_nodes = isnothing(n_phi_nodes) ? length(block.insts) : n_phi_nodes - 1
+    return first.(block.insts[1:n_phi_nodes]), last.(block.insts[1:n_phi_nodes])
+end
+
+#
+# CFG analysis and canonicalization helpers
+#
+
+function _compute_cfg_successors(blocks::Vector{CFGBlock})::Dict{ID,Vector{ID}}
+    succs = Dict{ID,Vector{ID}}()
+    for (n, block) in enumerate(blocks)
+        is_final_block = n == length(blocks)
+        t = _cfg_terminator(block)
+        if t === nothing
+            succs[block.id] = is_final_block ? ID[] : ID[blocks[n + 1].id]
+        elseif t isa IDGotoNode
+            succs[block.id] = ID[t.label]
+        elseif t isa IDGotoIfNot
+            succs[block.id] = is_final_block ? ID[t.dest] : ID[t.dest, blocks[n + 1].id]
+        elseif t isa ReturnNode
+            succs[block.id] = ID[]
+        elseif t isa Switch
+            succs[block.id] = vcat(t.dests, t.fallthrough_dest)
+        else
+            error("Unhandled terminator $t")
+        end
+    end
+    return succs
+end
+
+function _compute_cfg_predecessors(blocks::Vector{CFGBlock})::Dict{ID,Vector{ID}}
+    successor_map = _compute_cfg_successors(blocks)
+    predecessor_map = Dict{ID,Vector{ID}}(block.id => ID[] for block in blocks)
+    for (k, succs) in successor_map
+        for succ in succs
+            push!(predecessor_map[succ], k)
+        end
+    end
+    return predecessor_map
+end
+
+function _cfg_distance_to_entry(blocks::Vector{CFGBlock})::Vector{Int}
+    id_to_int = Dict(zip(map(block -> block.id, blocks), eachindex(blocks)))
+    successors = _compute_cfg_successors(blocks)
+    distances = fill(typemax(Int), length(blocks))
+    distances[1] = 0
+    queue = [blocks[1].id]
+    head = 1
+    while head <= length(queue)
+        block_id = queue[head]
+        head += 1
+        dist = distances[id_to_int[block_id]]
+        for successor in successors[block_id]
+            successor_idx = id_to_int[successor]
+            if distances[successor_idx] == typemax(Int)
+                distances[successor_idx] = dist + 1
+                push!(queue, successor)
+            end
+        end
+    end
+    return distances
+end
+
+function _sort_cfg_blocks!(blocks::Vector{CFGBlock})::Vector{CFGBlock}
+    I = sortperm(_cfg_distance_to_entry(blocks))
+    blocks .= blocks[I]
+    return blocks
+end
+
+function _remove_unreachable_cfg_blocks!(blocks::Vector{CFGBlock})::Vector{CFGBlock}
+    is_reachable = _cfg_distance_to_entry(blocks) .< typemax(Int)
+    remaining_blocks = blocks[is_reachable]
+    removed_block_ids = map(idx -> blocks[idx].id, findall(!, is_reachable))
+    for block in remaining_blocks, (_, inst) in block.insts
+        stmt = inst.stmt
+        stmt isa IDPhiNode || continue
+        for n in reverse(1:length(stmt.edges))
+            if stmt.edges[n] in removed_block_ids
+                deleteat!(stmt.edges, n)
+                deleteat!(stmt.values, n)
+            end
+        end
+    end
+    return remaining_blocks
+end
+
+function _characterise_unique_predecessor_blocks(
+    blocks::Vector{CFGBlock}
+)::Tuple{Dict{ID,Bool},Dict{ID,Bool}}
+    block_ids = ID[block.id for block in blocks]
+    preds = _compute_cfg_predecessors(blocks)
+    succs = _compute_cfg_successors(blocks)
+
+    is_unique_pred = Dict{ID,Bool}()
+    for id in block_ids
+        ss = succs[id]
+        is_unique_pred[id] = !isempty(ss) && all(s -> length(preds[s]) == 1, ss)
+    end
+
+    reachable_return_blocks = filter(blocks) do block
+        is_reachable_return_node(_cfg_terminator(block))
+    end
+    if length(reachable_return_blocks) == 1
+        is_unique_pred[only(reachable_return_blocks).id] = true
+    end
+
+    pred_is_unique_pred = Dict{ID,Bool}()
+    for id in block_ids
+        pred_is_unique_pred[id] = length(preds[id]) == 1 && is_unique_pred[only(preds[id])]
+    end
+
+    entry_id = block_ids[1]
+    pred_is_unique_pred[entry_id] = isempty(preds[entry_id])
+    return is_unique_pred, pred_is_unique_pred
+end
+
+function _insert_before_terminator!(insts::Vector{IDInstPair}, inst::IDInstPair)
+    if !isempty(insts) && _cfg_terminator(last(insts)[2].stmt)
+        insert!(insts, length(insts), inst)
+    else
+        push!(insts, inst)
+    end
+    return insts
+end
+
+function _canonicalise_cfg_blocks(blocks::Vector{CFGBlock}; sort_cfg::Bool=true)
+    blocks = copy(blocks)
+    # Canonicalization is "sort first, then prune" so phi-edge cleanup sees final block order.
+    sort_cfg && _sort_cfg_blocks!(blocks)
+    return _remove_unreachable_cfg_blocks!(blocks)
+end
+
+function _cfg_lower_switch_statements(blocks::Vector{CFGBlock})::Vector{CFGBlock}
+    new_blocks = CFGBlock[]
+    for block in blocks
+        t = _cfg_terminator(block)
+        if t isa Switch
+            push!(new_blocks, CFGBlock(block.id, block.insts[1:(end - 1)]))
+            foreach(t.conds, t.dests) do cond, dest
+                push!(
+                    new_blocks,
+                    CFGBlock(ID(), [(ID(), new_inst(IDGotoIfNot(cond, dest), Any))]),
+                )
+            end
+            push!(
+                new_blocks,
+                CFGBlock(ID(), [(ID(), new_inst(IDGotoNode(t.fallthrough_dest), Any))]),
+            )
+        else
+            push!(new_blocks, block)
+        end
+    end
+    return new_blocks
+end
+
+function _cfg_remove_double_edges(blocks::Vector{CFGBlock})::Vector{CFGBlock}
+    return map(enumerate(blocks)) do (n, block)
+        t = _cfg_terminator(block)
+        if n < length(blocks) && t isa IDGotoIfNot && t.dest == blocks[n + 1].id
+            term_id, term_inst = last(block.insts)
+            new_insts = copy(block.insts)
+            new_insts[end] = (term_id, NewInstruction(term_inst; stmt=IDGotoNode(t.dest)))
+            return CFGBlock(block.id, new_insts)
+        else
+            return block
+        end
+    end
+end
+
+function _cfg_control_flow_graph(blocks::Vector{CFGBlock})::CC.CFG
+    preds_ids = _compute_cfg_predecessors(blocks)
+    succs_ids = _compute_cfg_successors(blocks)
+    block_ids = map(block -> block.id, blocks)
+    id_to_num = Dict{ID,Int}(zip(block_ids, eachindex(block_ids)))
+    preds = map(id -> sort(map(p -> id_to_num[p], preds_ids[id])), block_ids)
+    succs = map(id -> sort(map(s -> id_to_num[s], succs_ids[id])), block_ids)
+    @static if VERSION >= v"1.11"
+        push!(preds[1], 0)
+    end
+    index = vcat(0, cumsum(map(block -> length(block.insts), blocks))) .+ 1
+    basic_blocks = map(eachindex(blocks)) do n
+        stmt_range = CC.StmtRange(index[n], index[n + 1] - 1)
+        return CC.BasicBlock(stmt_range, preds[n], succs[n])
+    end
+    return CC.CFG(basic_blocks, index[2:(end - 1)])
+end
+
+function _cfg_to_ssas(d::Dict, inst::NewInstruction)
+    return NewInstruction(inst; stmt=_cfg_to_ssas(d, inst.stmt))
+end
+function _cfg_to_ssas(d::Dict, x::ReturnNode)
+    isdefined(x, :val) ? ReturnNode(get(d, x.val, x.val)) : x
+end
+_cfg_to_ssas(d::Dict, x::Expr) = Expr(x.head, map(a -> get(d, a, a), x.args)...)
+_cfg_to_ssas(d::Dict, x::PiNode) = PiNode(get(d, x.val, x.val), get(d, x.typ, x.typ))
+_cfg_to_ssas(d::Dict, x) = x
+function _cfg_to_ssas(d::Dict, x::IDPhiNode)
+    return PhiNode(
+        map(edge -> Int32(getindex(d, edge).id), x.edges),
+        _remap_assigned_phi_values(v -> get(d, v, v), x.values),
+    )
+end
+_cfg_to_ssas(d::Dict, x::IDGotoNode) = GotoNode(d[x.label].id)
+_cfg_to_ssas(d::Dict, x::IDGotoIfNot) = GotoIfNot(get(d, x.cond, x.cond), d[x.dest].id)
+
+function _cfg_ids_to_line_numbers(blocks::Vector{CFGBlock})::InstVector
+    block_ids = map(block -> block.id, blocks)
+    block_lengths = map(block -> length(block.insts), blocks)
+    block_start_ssas = SSAValue.(vcat(1, cumsum(block_lengths)[1:(end - 1)] .+ 1))
+    lines = [inst for block in blocks for inst in block.insts]
+    line_ids = first.(lines)
+    line_ssas = SSAValue.(eachindex(line_ids))
+    id_to_ssa_map = Dict(zip(vcat(block_ids, line_ids), vcat(block_start_ssas, line_ssas)))
+    return [_cfg_to_ssas(id_to_ssa_map, inst) for (_, inst) in lines]
+end
+
+function _cfg_lines_to_blocks(insts::InstVector, cfg::CC.CFG)::InstVector
+    stmts = __line_numbers_to_block_numbers!(Any[x.stmt for x in insts], cfg)
+    return map((inst, stmt) -> NewInstruction(inst; stmt), insts, stmts)
+end
+
+#
+# CFG line/block numbering and compiler-IR reconstruction
+#
+
+function _cfg_instruction_stream(ir::IRCode, insts::InstVector)
+    @static if VERSION > v"1.12-"
+        lines = CC.copy(ir.debuginfo.codelocs)
+        n = length(insts)
+        if length(lines) > 3n
+            resize!(lines, 3n)
+        elseif length(lines) < 3n
+            for _ in (length(lines) + 1):3n
+                push!(lines, 0)
+            end
+        end
+        return CC.InstructionStream(
+            Any[x.stmt for x in insts],
+            Any[x.type for x in insts],
+            CC.CallInfo[x.info for x in insts],
+            lines,
+            UInt32[x.flag for x in insts],
+        )
+    else
+        return CC.InstructionStream(
+            Any[x.stmt for x in insts],
+            Any[x.type for x in insts],
+            CC.CallInfo[x.info for x in insts],
+            Int32[x.line for x in insts],
+            UInt32[x.flag for x in insts],
+        )
+    end
+end
+
+function _rebuild_ircode(ir::IRCode, arg_types, cfg::CC.CFG, insts::InstVector)::IRCode
+    inst_stream = _cfg_instruction_stream(ir, insts)
+    @static if VERSION > v"1.12-"
+        return IRCode(
+            inst_stream,
+            cfg,
+            CC.copy(ir.debuginfo),
+            Any[arg_types...],
+            CC.copy(ir.meta),
+            CC.copy(ir.sptypes),
+            ir.valid_worlds,
+        )
+    else
+        return IRCode(
+            inst_stream,
+            cfg,
+            CC.copy(ir.linetable),
+            Any[arg_types...],
+            CC.copy(ir.meta),
+            CC.copy(ir.sptypes),
+        )
+    end
+end
+
+#
+# `CFGBlock` -> `IRCode` lowering
+#
+
+"""
+    lower_cfg_blocks_to_ir(ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg=true)
+
+Lower reverse-mode-local CFG blocks directly to `IRCode`.
+"""
+function lower_cfg_blocks_to_ir(
+    ir::IRCode, arg_types, blocks::Vector{CFGBlock}; sort_cfg::Bool=true
+)::IRCode
+    blocks = _canonicalise_cfg_blocks(blocks; sort_cfg)
+    blocks = _cfg_remove_double_edges(_cfg_lower_switch_statements(blocks))
+    insts = _cfg_ids_to_line_numbers(blocks)
+    cfg = _cfg_control_flow_graph(blocks)
+    insts = _cfg_lines_to_blocks(insts, cfg)
+    return _rebuild_ircode(ir, arg_types, cfg, insts)
+end
+
+#
+# Pullback CFG assembly
+#
+
+"""
+    pullback_ir(
+        ir::IRCode,
+        primal_blocks,
+        Tret,
+        ad_stmts_blocks::ADStmts,
+        block_comms,
+        info::ADInfo,
+        Tshared_data,
+    )
 
 Produce the IR associated to the `OpaqueClosure` which runs most of the pullback.
 """
 function pullback_ir(
-    ir::BBCode, Tret, ad_stmts_blocks::ADStmts, pb_comms_insts, info::ADInfo, Tshared_data
+    ir::IRCode,
+    primal_blocks,
+    Tret,
+    ad_stmts_blocks::ADStmts,
+    block_comms,
+    info::ADInfo,
+    Tshared_data,
 )
     # Compute the blocks which return in the primal.
-    primal_exit_blocks_inds = findall(is_reachable_return_node ∘ terminator, ir.blocks)
+    primal_exit_blocks_inds = findall(
+        is_reachable_return_node ∘ _cfg_terminator, primal_blocks
+    )
 
     #
     # Short-circuit for non-terminating primals -- applies to a tiny fraction of primals:
@@ -1560,14 +2281,8 @@ function pullback_ir(
     # terminates without throwing, meaning that if AD hits this function, it definitely
     # won't succeed on the forwards-pass. As such, the reverse-pass can just be a no-op.
     if isempty(primal_exit_blocks_inds)
-        blocks = [BBlock(ID(), [(ID(), new_inst(ReturnNode(nothing)))])]
-        @static if VERSION >= v"1.12-"
-            return BBCode(
-                blocks, Any[Any], ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds
-            )
-        else
-            return BBCode(blocks, Any[Any], ir.sptypes, ir.linetable, ir.meta)
-        end
+        blocks = [CFGBlock(ID(), [(ID(), new_inst(ReturnNode(nothing)))])]
+        return lower_cfg_blocks_to_ir(ir, Any[Any], blocks)
     end
 
     #
@@ -1585,9 +2300,9 @@ function pullback_ir(
     #   no need to pop the block stack.
     data_stmts = shared_data_stmts(info.shared_data_pairs)
     rev_data_ref_stmts = reverse_data_ref_stmts(info)
-    exit_blocks_ids = map(n -> ir.blocks[n].id, primal_exit_blocks_inds)
+    exit_blocks_ids = map(n -> primal_blocks[n].id, primal_exit_blocks_inds)
     switch_stmts = make_switch_stmts(exit_blocks_ids, length(exit_blocks_ids) == 1, info)
-    entry_block = BBlock(ID(), vcat(data_stmts, rev_data_ref_stmts, switch_stmts))
+    entry_block = CFGBlock(ID(), vcat(data_stmts, rev_data_ref_stmts, switch_stmts))
 
     # For each basic block in the primal:
     # 1. if the block is reachable on the reverse-pass, the bulk of its statements are the
@@ -1603,15 +2318,15 @@ function pullback_ir(
     #   characterise_unique_predecessor_blocks is used in forwards_pass_ir).
     # 4. if the block began with one or more PhiNodes, then handle their rdata.
     # 5. jump to the predecessor block.
-    ps = compute_all_predecessors(ir)
-    _, pred_is_unique_pred = characterise_unique_predecessor_blocks(ir.blocks)
+    ps = _compute_cfg_predecessors(primal_blocks)
+    _, pred_is_unique_pred = _characterise_unique_predecessor_blocks(primal_blocks)
     main_blocks = map(
-        ad_stmts_blocks, enumerate(ir.blocks), pb_comms_insts
-    ) do (blk_id, ad_stmts), (n, blk), comms_insts
+        ad_stmts_blocks, enumerate(primal_blocks), block_comms
+    ) do (blk_id, ad_stmts), (n, blk), comms
 
         # Short-circuit if we know that this block cannot be reached on the reverse-pass.
-        if is_unreachable_return_node(terminator(blk))
-            return BBlock(blk_id, [(ID(), new_inst(nothing))])
+        if is_unreachable_return_node(_cfg_terminator(blk))
+            return CFGBlock(blk_id, [(ID(), new_inst(nothing))])
         end
 
         # Extract reverse-stmts from ad_stmts.
@@ -1623,8 +2338,8 @@ function pullback_ir(
         additional_stmts, new_blocks = conclude_rvs_block(blk, pred_ids, tmp, info)
 
         # Combine all blocks and return. See `create_comms_insts!` for more info regarding
-        # `comms_insts`.
-        rvs_block = BBlock(blk_id, vcat(comms_insts, rvs_ad_stmts, additional_stmts))
+        # `comms`.
+        rvs_block = CFGBlock(blk_id, vcat(comms.rvs_prefix, rvs_ad_stmts, additional_stmts))
         return vcat(rvs_block, new_blocks)
     end
     main_blocks = reduce(vcat, main_blocks)
@@ -1679,7 +2394,7 @@ function pullback_ir(
 
     # Construct return node and assemble final basic block.
     ret = new_inst(ReturnNode(assert_id))
-    exit_block = BBlock(
+    exit_block = CFGBlock(
         info.entry_id,
         vcat(
             (lazy_zero_rdata_tuple_id, lazy_zero_rdata_tuple),
@@ -1688,36 +2403,29 @@ function pullback_ir(
         ),
     )
 
-    # Create and return `BBCode` for the pullback. Sort the blocks and remove any blocks
-    # which are unreachable, in the sense that they have no predecessors (except the entry
-    # block). This ought not to be necessary, but _appears_ to be necessary in order to
-    # avoid annoying the Julia compiler.
-    blks = vcat(entry_block, main_blocks, exit_block)
-    @static if VERSION >= v"1.12-"
-        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds)
-    else
-        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.linetable, ir.meta)
-    end
-    return remove_unreachable_blocks!(sort_blocks!(pb_ir))
+    # Lower the pullback CFG directly to `IRCode`.
+    return lower_cfg_blocks_to_ir(
+        ir, arg_types, vcat([entry_block], main_blocks, [exit_block])
+    )
 end
 
 """
     conclude_rvs_block(
-        blk::BBlock, pred_ids::Vector{ID}, pred_is_unique_pred::Bool, info::ADInfo
+        blk::CFGBlock, pred_ids::Vector{ID}, pred_is_unique_pred::Bool, info::ADInfo
     )
 
 Generates code which is inserted at the end of each counterpart block in the reverse-pass.
 Handles phi nodes, and choosing the correct next block to switch to.
 """
 function conclude_rvs_block(
-    blk::BBlock, pred_ids::Vector{ID}, pred_is_unique_pred::Bool, info::ADInfo
+    blk::CFGBlock, pred_ids::Vector{ID}, pred_is_unique_pred::Bool, info::ADInfo
 )
     # Get the PhiNodes and their IDs.
-    phi_ids, phis = phi_nodes(blk)
+    phi_ids, phis = _cfg_phi_nodes(blk)
 
     # If there are no PhiNodes in this block, switch directly to the predecessor.
     if length(phi_ids) == 0
-        return make_switch_stmts(pred_ids, pred_is_unique_pred, info), BBlock[]
+        return make_switch_stmts(pred_ids, pred_is_unique_pred, info), CFGBlock[]
     end
 
     # Create statements which extract + zero the rdata refs associated to them.
@@ -1729,7 +2437,7 @@ function conclude_rvs_block(
     end
     deref_stmts = reduce(vcat, tmp; init=IDInstPair[])
 
-    # For each predecessor, create a `BBlock` which processes its corresponding edge in
+    # For each predecessor, create a `CFGBlock` which processes its corresponding edge in
     # each of the `PhiNode`s.
     new_blocks = map(pred_ids) do pred_id
         values = Any[__get_value(pred_id, p.stmt) for p in phis]
@@ -1770,7 +2478,7 @@ end
 """
     rvs_phi_block(pred_id::ID, rdata_ids::Vector{ID}, values::Vector{Any}, info::ADInfo)
 
-Produces a `BBlock` which runs the reverse-pass for the edge associated to `pred_id` in a
+Produces a `CFGBlock` which runs the reverse-pass for the edge associated to `pred_id` in a
 collection of `IDPhiNode`s, and then goes to the block associated to `pred_id`.
 
 For example, suppose that we encounter the following collection of `PhiNode`s at the start
@@ -1816,7 +2524,7 @@ function rvs_phi_block(
     end
     inc_stmts = reduce(vcat, filter(x -> !(x === nothing), tmp); init=IDInstPair[])
     goto_stmt = (ID(), new_inst(IDGotoNode(pred_id)))
-    return BBlock(ID(), vcat(inc_stmts, goto_stmt))
+    return CFGBlock(ID(), vcat(inc_stmts, goto_stmt))
 end
 
 """
@@ -1891,156 +2599,6 @@ profiling performance, and to know that this function was hit when debugging.
 Helper function emitted by `make_switch_stmts`.
 """
 __switch_case(id::Int32, predecessor_id::Int32) = !(id === predecessor_id)
-
-"""
-    DynamicDerivedRule(interp::MooncakeInterpreter, debug_mode::Bool)
-
-For internal use only.
-
-A callable data structure which, when invoked, calls an rrule specific to the dynamic types
-of its arguments. Stores rules in an internal cache to avoid re-deriving.
-
-This is used to implement dynamic dispatch.
-"""
-struct DynamicDerivedRule{V}
-    cache::V
-    debug_mode::Bool
-end
-
-DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug_mode)
-
-# Create new dynamic rule with empty cache and same debug mode
-_copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
-
-function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
-
-    # `Base._stable_typeof` is used here, rather than `typeof` or `Mooncake._typeof`. Its
-    # precise behaviour (equivalent to `typeof` for everything except `Type`s, for which it
-    # returns `Type{P}` rather than `typeof(P)`) is needed to ensure that this signature
-    # matches the types that `rule` sees when `rule(args...)` is called below. If you get
-    # this wrong, an assertion is violated, causing a hard-to-debug error (see issue 660).
-    sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
-
-    rule = get(dynamic_rule.cache, sig, nothing)
-    if rule === nothing
-        interp = get_interpreter(ReverseMode)
-        rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
-        dynamic_rule.cache[sig] = rule
-    end
-    return __call_rule(rule, args)
-end
-
-"""
-    LazyDerivedRule(interp, mi::Core.MethodInstance, debug_mode::Bool)
-
-For internal use only.
-
-A type-stable wrapper around a `DerivedRule`, which only instantiates the `DerivedRule`
-when it is first called. This is useful, as it means that if a rule does not get run, it
-does not have to be derived.
-
-If `debug_mode` is `true`, then the rule constructed will be a `DebugRRule`. This is useful
-when debugging, but should usually be switched off for production code as it (in general)
-incurs some runtime overhead.
-
-Note: the signature of the primal for which this is a rule is stored in the type. The only
-reason to keep this around is for debugging -- it is very helpful to have this type visible
-in the stack trace when something goes wrong, as it allows you to trivially determine which
-bit of your code is the culprit.
-
-# Extended Help
-
-There are two main reasons why deferring the construction of a `DerivedRule` until we need
-to use it is crucial.
-
-The first is to do with recursion. Consider the following function:
-```julia
-f(x) = x > 0 ? f(x - 1) : x
-```
-If we generate the `IRCode` for this function, we will see something like the following:
-```julia
-julia> Base.code_ircode_by_type(Tuple{typeof(f), Float64})[1][1]
-1 1 ─ %1  = Base.lt_float(0.0, _2)::Bool
-  │   %2  = Base.or_int(%1, false)::Bool
-  └──       goto #6 if not %2
-  2 ─ %4  = Base.sub_float(_2, 1.0)::Float64
-  │   %5  = Base.lt_float(0.0, %4)::Bool
-  │   %6  = Base.or_int(%5, false)::Bool
-  └──       goto #4 if not %6
-  3 ─ %8  = Base.sub_float(%4, 1.0)::Float64
-  │   %9  = invoke Main.f(%8::Float64)::Float64
-  └──       goto #5
-  4 ─       goto #5
-  5 ┄ %12 = φ (#3 => %9, #4 => %4)::Float64
-  └──       return %12
-  6 ─       return _2
-```
-Suppose that we decide to construct a `DerivedRule` immediately whenever we find an
-`:invoke` statement in a rule that we're currently building a `DerivedRule` for.
-In the above example, we produce an infinite recursion when we attempt to produce a
-`DerivedRule` for %9, because it has the same signature as the call which generates this IR.
-By instead adopting a policy of constructing a `LazyDerivedRule` whenever we encounter an
-`:invoke` statement, we avoid this problem.
-
-The second reason that delaying the construction of a `DerivedRule`, is essential is that it
-ensures that we don't derive rules for method instances which aren't run. Suppose that
-function B contains code for which we can't derive a rule -- perhaps it contains an
-unsupported language feature like a `PhiCNode` or an `UpsilonNode`. Suppose that function A
-contains an `:invoke` which refers to function `B`, but that this call is on a branch which
-deals with error handling, and doesn't get run run unless something goes wrong. By deferring
-the derivation of the rule for B, we only ever attempt to derive it if we land on this
-error handling branch. Conversely, if we attempted to derive the rule for B when we derive
-the rule for A, we would be unable to complete the derivation of the rule for A.
-"""
-mutable struct LazyDerivedRule{primal_sig,Trule}
-    debug_mode::Bool
-    mi::Core.MethodInstance
-    rule::Trule
-    function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
-        interp = get_interpreter(ReverseMode)
-        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi)
-    end
-    function LazyDerivedRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool
-    ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi)
-    end
-end
-
-# Create new lazy rule with same method instance and debug mode
-_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
-
-# On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
-# LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
-# Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
-@static if VERSION < v"1.11-"
-    @inline function __call_rule(
-        rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
-    ) where {sig,Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
-        return rule(args...)::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
-    end
-    @inline function __call_rule(
-        rule::LazyDerivedRule{
-            sig,DebugRRule{DerivedRule{Tp,FA,CoDual{P,FD},RA,RR,isva,Val{pnargs}}}
-        },
-        args::A,
-    ) where {sig,Tp,FA,P,FD,RA,RR,isva,pnargs,A<:Tuple}
-        return rule(
-            args...
-        )::Tuple{CoDual{P,FD},DebugPullback{Pullback{Tp,RA,RR,isva,fieldcount(A)},P}}
-    end
-end
-
-@inline function (rule::LazyDerivedRule)(args::Vararg{Any,N}) where {N}
-    return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
-end
-
-@noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
-    interp = get_interpreter(ReverseMode)
-    rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
-    return __call_rule(rule.rule, args)
-end
 
 """
     rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where {C}

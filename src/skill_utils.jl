@@ -9,8 +9,7 @@ module SkillUtils
 using ..Mooncake:
     CC,
     IRCode,
-    BBCode,
-    BasicBlockCode,
+    CFGBlock,
     ForwardMode,
     ReverseMode,
     MooncakeInterpreter,
@@ -19,7 +18,9 @@ using ..Mooncake:
     lookup_ir,
     is_vararg_and_sparam_names,
     normalise!,
-    remove_unreachable_blocks!,
+    _ircode_to_cfg_blocks,
+    _remove_unreachable_cfg_blocks!,
+    _compute_cfg_successors,
     generate_dual_ir,
     generate_ir,
     optimise_ir!,
@@ -66,27 +67,29 @@ end
 
 # --- Stage Graphs ---
 
-forward_stage_order() = [:raw, :normalized, :bbcode, :dual_ir, :optimized]
+forward_stage_order() = [:raw, :normalized, :cfg_blocks, :dual_ir, :optimized]
 
 function forward_stage_graph()
     return [
         :raw => :normalized,
-        :normalized => :bbcode,
-        :bbcode => :dual_ir,
+        :normalized => :cfg_blocks,
+        :cfg_blocks => :dual_ir,
         :dual_ir => :optimized,
     ]
 end
 
 function reverse_stage_order()
-    return [:raw, :normalized, :bbcode, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs]
+    return [
+        :raw, :normalized, :cfg_blocks, :fwd_ir, :rvs_ir, :optimized_fwd, :optimized_rvs
+    ]
 end
 
 function reverse_stage_graph()
     return [
         :raw => :normalized,
-        :normalized => :bbcode,
-        :bbcode => :fwd_ir,
-        :bbcode => :rvs_ir,
+        :normalized => :cfg_blocks,
+        :cfg_blocks => :fwd_ir,
+        :cfg_blocks => :rvs_ir,
         :fwd_ir => :optimized_fwd,
         :rvs_ir => :optimized_rvs,
     ]
@@ -100,11 +103,11 @@ function render_ir(ir::IRCode)::String
     return String(take!(io))
 end
 
-function render_ir(bb::BBCode)::String
+function render_ir(blocks::Vector{CFGBlock})::String
     io = IOBuffer()
-    for (i, block) in enumerate(bb.blocks)
+    for (i, block) in enumerate(blocks)
         println(io, "Block $(i) (id=$(block.id)):")
-        for (id, inst) in zip(block.inst_ids, block.insts)
+        for (id, inst) in block.insts
             println(io, "  $id: $(inst.stmt) :: $(inst.type)")
         end
     end
@@ -134,11 +137,11 @@ function extract_meta(ir::IRCode)::StageMeta
     )
 end
 
-function extract_meta(bb::BBCode)::StageMeta
-    succs = BasicBlockCode.compute_all_successors(bb)
+function extract_meta(blocks::Vector{CFGBlock})::StageMeta
+    succs = _compute_cfg_successors(blocks)
     return StageMeta(;
-        block_count=length(bb.blocks),
-        inst_count=sum(length(b.inst_ids) for b in bb.blocks),
+        block_count=length(blocks),
+        inst_count=sum(length(block.insts) for block in blocks),
         edge_count=sum(length(v) for v in values(succs)),
     )
 end
@@ -183,8 +186,8 @@ function primal_stages(interp, sig)
     normalized_ir = CC.copy(raw_ir)
     normalise!(normalized_ir, spnames)
 
-    bbcode = remove_unreachable_blocks!(BBCode(normalized_ir))
-    return raw_ir, normalized_ir, bbcode
+    cfg_blocks = _remove_unreachable_cfg_blocks!(_ircode_to_cfg_blocks(normalized_ir))
+    return raw_ir, normalized_ir, cfg_blocks
 end
 
 function primitive_dispatch_note(mode::Symbol, sig::Type)::String
@@ -267,12 +270,14 @@ function inspect_ir(
     # Propagate generation failures so callers do not mistake partial inspection output
     # for a successful run.
     # Stage 1: Raw IR
-    raw_ir, normalized_ir, bbcode = primal_stages(interp, sig)
+    raw_ir, normalized_ir, cfg_blocks = primal_stages(interp, sig)
     stages[:raw] = IRStage(:raw, raw_ir, render_ir(raw_ir), extract_meta(raw_ir))
     stages[:normalized] = IRStage(
         :normalized, normalized_ir, render_ir(normalized_ir), extract_meta(normalized_ir)
     )
-    stages[:bbcode] = IRStage(:bbcode, bbcode, render_ir(bbcode), extract_meta(bbcode))
+    stages[:cfg_blocks] = IRStage(
+        :cfg_blocks, cfg_blocks, render_ir(cfg_blocks), extract_meta(cfg_blocks)
+    )
 
     # Mode-specific stages
     if mode == :forward

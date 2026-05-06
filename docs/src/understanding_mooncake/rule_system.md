@@ -368,7 +368,7 @@ end
 ```
 
 Consider the `function`
-```jldoctest foo-doctest
+```julia-repl
 julia> foo(x::Tuple{Float64, Vector{Float64}}) = x[1] + sum(x[2])
 foo (generic function with 1 method)
 ```
@@ -396,7 +396,7 @@ where ``\mathbf{1}`` is the vector of length ``N`` in which each element is equa
 Now that we know what the adjoint is, we'll write down the `rrule!!`, and then explain what is going on in terms of the adjoint.
 This hand-written implementation is to aid your understanding -- Mooncake.jl should be relied upon to generate this code automatically in practice.
 
-```jldoctest foo-doctest
+```julia-repl
 julia> function rrule!!(::CoDual{typeof(foo)}, x::CoDual{Tuple{Float64, Vector{Float64}}})
            dx_fdata = x.dx
            function dfoo_adjoint(dy::Float64)
@@ -412,7 +412,7 @@ julia> function rrule!!(::CoDual{typeof(foo)}, x::CoDual{Tuple{Float64, Vector{F
 ```
 where `dy` is the rdata for the output to `foo`.
 The `rrule!!` can be called with the appropriate `CoDual`s:
-```jldoctest foo-doctest
+```julia-repl
 julia> codual_foo = CoDual(foo, NoFData());
 
 julia> codual_x = CoDual((5.0, [1.0, 2.0]), (NoFData(), [0.0, 0.0]));
@@ -427,14 +427,14 @@ true
 ```
 
 and the pullback with appropriate rdata:
-```jldoctest foo-doctest
+```julia-repl
 julia> pb!!(1.0)
 (NoRData(), (1.0, NoRData()))
 ```
 
 which will update the fdata for the `Vector{Float64}` component in-place:
 
-```jldoctest foo-doctest
+```julia-repl
 julia> codual_x
 CoDual{Tuple{Float64, Vector{Float64}}, Tuple{NoFData, Vector{Float64}}}((5.0, [1.0, 2.0]), (NoFData(), [1.0, 1.0]))
 ```
@@ -503,7 +503,7 @@ This topic, in particular what goes wrong with permissive tangent type systems l
 
 First consider why closures are straightforward to support.
 Look at the type of the closure produced by `foo`:
-```jldoctest
+```julia-repl
 function foo(x)
     function bar(y)
         x .+= y
@@ -523,7 +523,7 @@ Since the function itself is an argument to its rule, everything enters the rule
 
 On the other hand, globals do not appear in the functions that they are a part of.
 For example,
-```jldoctest
+```julia-repl
 const a = randn(10)
 
 function g(x)

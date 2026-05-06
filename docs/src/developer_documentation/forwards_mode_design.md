@@ -334,7 +334,7 @@ Then, instead of propagating a "primal-tangent" pairs via `Dual`s, we propagate 
 The implementation of forwards-mode AD is quite dramatically simpler than that of reverse-mode AD.
 Some notable technical differences include:
 1. forwards-mode AD only makes use of the tangent system, whereas reverse-mode also makes use of the fdata / rdata system.
-1. forwards-mode AD comprises only line-by-line transformations of the `IRCode`. In particular, it does not require the insertion of additional basic blocks, nor the modification of the successors / predecessors of any given basic block. Consequently, there is no need to make use of the `BBCode` infrastructure built up for reverse-mode AD -- everything can be straightforwardly done at the `Compiler.IRCode` level.
+1. forwards-mode AD comprises only line-by-line transformations of the `IRCode`. In particular, it does not require the insertion of additional basic blocks, nor the modification of the successors / predecessors of any given basic block. Consequently, there is no need to make use of the builder-local CFG machinery used in reverse mode -- everything can be straightforwardly done at the `Compiler.IRCode` level.
 
 ## Comparison with ForwardDiff.jl
 

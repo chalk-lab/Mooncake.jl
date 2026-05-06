@@ -15,6 +15,20 @@ Get the statement from `x`. This field changed name in 1.11 from `inst` to `stmt
 """
 stmt(x::CC.Instruction) = CC.getindex(x, stmt_field_name())
 
+"""
+    new_inst(stmt, type=Any, flag=CC.IR_FLAG_REFINED)::NewInstruction
+
+Create a `NewInstruction` with fields:
+- `stmt` = `stmt`
+- `type` = `type`
+- `info` = `CC.NoCallInfo()`
+- `line` = `Int32(1)`
+- `flag` = `flag`
+"""
+function new_inst(@nospecialize(stmt), @nospecialize(type)=Any, flag=CC.IR_FLAG_REFINED)
+    return NewInstruction(stmt, type, CC.NoCallInfo(), Int32(1), flag)
+end
+
 set_stmt!(ir::IRCode, ssa::SSAValue, a) = set_ir!(ir, ssa, stmt_field_name(), a)
 
 get_ir(ir::IRCode, idx::SSAValue) = CC.getindex(ir, idx)
@@ -98,6 +112,33 @@ function __insts_to_instruction_stream(insts::Vector{Any})
         lineinfo,
         fill(CC.IR_FLAG_REFINED, n),
     )
+end
+
+"""
+    __line_numbers_to_block_numbers!(insts::Vector{Any}, cfg::CC.CFG)
+
+Convert any edges in `GotoNode`s, `GotoIfNot`s, `PhiNode`s, and `:enter` expressions that
+refer to line numbers into references to basic-block numbers.
+
+For context, `CodeInfo` uses line-number edges while `IRCode` uses block-number edges.
+"""
+function __line_numbers_to_block_numbers!(insts::Vector{Any}, cfg::CC.CFG)
+    for i in eachindex(insts)
+        stmt = insts[i]
+        if isa(stmt, GotoNode)
+            insts[i] = GotoNode(CC.block_for_inst(cfg, stmt.label))
+        elseif isa(stmt, GotoIfNot)
+            insts[i] = GotoIfNot(stmt.cond, CC.block_for_inst(cfg, stmt.dest))
+        elseif isa(stmt, PhiNode)
+            insts[i] = PhiNode(
+                Int32[CC.block_for_inst(cfg, Int(edge)) for edge in stmt.edges], stmt.values
+            )
+        elseif Meta.isexpr(stmt, :enter)
+            stmt.args[1] = CC.block_for_inst(cfg, stmt.args[1]::Int)
+            insts[i] = stmt
+        end
+    end
+    return insts
 end
 
 """
@@ -333,6 +374,8 @@ purely a function of whether or not its `val` field is defined or not.
 """
 is_unreachable_return_node(x::ReturnNode) = !isdefined(x, :val)
 is_unreachable_return_node(x) = false
+is_reachable_return_node(x::ReturnNode) = isdefined(x, :val)
+is_reachable_return_node(x) = false
 
 """
     UnhandledLanguageFeatureException(message::String)
