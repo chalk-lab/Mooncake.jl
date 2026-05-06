@@ -198,7 +198,6 @@ function shared_data_stmts(p::SharedDataPairs)::Vector{IDInstPair}
         return (p[1], new_inst(Expr(:call, get_shared_data_field, Argument(1), n)))
     end
 end
-# maybe manually inline this
 @inline get_shared_data_field(shared_data, n) = getfield(shared_data, n)
 
 """
@@ -386,7 +385,7 @@ initial rdata directly into the statement, which is safe because it is always a 
 """
 function reverse_data_ref_stmts(info::ADInfo)
     function make_ref_stmt(id::ID, P::Type)
-        ref_type = Base.RefValue{P<:Type ? NoRData : zero_like_rdata_type(P)}
+        ref_type = Base.RefValue{P <: Type ? NoRData : zero_like_rdata_type(P)}
         init_ref_val = P <: Type ? NoRData() : Mooncake.zero_like_rdata_from_type(P)
         return (id, new_inst(Expr(:new, ref_type, QuoteNode(init_ref_val))))
     end
@@ -1067,9 +1066,6 @@ const RuleMC{A,R} = MistyClosure{OpaqueClosure{A,R}}
 #
 # Runtime wrapper types for generated rules.
 #
-# These wrappers sit on the hot path once a rule has already been derived. Their main job is
-# to hide closure/capture details and translate between differing varargs conventions.
-#
 
 struct Pullback{Tprimal,Tpb_args,Tpb_ret,isva,nargs}
     pb_oc::Base.RefValue{RuleMC{Tpb_args,Tpb_ret}}
@@ -1164,10 +1160,6 @@ end
 
 #
 # Deferred runtime rule wrappers for dynamic dispatch and recursive `:invoke`
-#
-# These wrappers live next to the other callable rule wrappers above because they are also
-# part of the runtime surface seen by generated reverse-mode code. Their constructors depend
-# on compilation helpers such as `build_rrule` and `rule_type`, which are defined later.
 #
 
 """
@@ -1276,7 +1268,7 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
     rule::Trule
     function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
         interp = get_interpreter(ReverseMode)
-        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,rule_type(interp, mi; debug_mode)}(debug_mode, mi)
     end
     function LazyDerivedRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool
@@ -1564,9 +1556,10 @@ end
 
 """
     generate_ir(
-        interp::MooncakeInterpreter, sig_or_mi; debug_mode=false, do_inline=true
-)
-Used by `build_rrule`, and the various debugging tools: primal_ir, fwds_ir, adjoint_ir.
+        interp::MooncakeInterpreter, sig_or_mi;
+        debug_mode=false, do_inline=true, do_optimize=true,
+    )
+Used by `build_rrule`, and the various debugging tools: `primal_ir`, `fwd_ir`, `rvs_ir`.
 """
 function generate_ir(
     interp::MooncakeInterpreter,
@@ -1606,7 +1599,6 @@ function generate_ir(
         end
     end
 
-    # Reverse mode now starts from normalized IRCode and uses the local CFG builder directly.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
     ir = normalise!(ir, spnames)
     primal_blocks = _remove_unreachable_cfg_blocks!(_ircode_to_cfg_blocks(ir))
@@ -1853,9 +1845,6 @@ end
 #
 # CFGBlock working IR
 #
-# Reverse mode assembles new control flow in this local representation first, then lowers the
-# finished CFG back to compiler IR in one step.
-#
 
 """
     CFGBlock(id::ID, insts::Vector{IDInstPair})
@@ -1918,7 +1907,6 @@ function _block_nums_to_ids(insts::InstVector, cfg::CC.CFG)::Tuple{Vector{ID},In
 end
 
 function _ircode_to_cfg_blocks(ir::IRCode)::Vector{CFGBlock}
-    # Reuse the shared cross-version stmt accessor rather than branching on field names here.
     stmts = map(
         (stmt, type, info, line, flag) -> NewInstruction(stmt, type, info, line, flag),
         stmt(ir.stmts),
@@ -2016,7 +2004,7 @@ end
 function _remove_unreachable_cfg_blocks!(blocks::Vector{CFGBlock})::Vector{CFGBlock}
     is_reachable = _cfg_distance_to_entry(blocks) .< typemax(Int)
     remaining_blocks = blocks[is_reachable]
-    removed_block_ids = map(idx -> blocks[idx].id, findall(!, is_reachable))
+    removed_block_ids = Set{ID}(blocks[idx].id for idx in findall(!, is_reachable))
     for block in remaining_blocks, (_, inst) in block.insts
         stmt = inst.stmt
         stmt isa IDPhiNode || continue
@@ -2135,7 +2123,7 @@ function _cfg_to_ssas(d::Dict, inst::NewInstruction)
     return NewInstruction(inst; stmt=_cfg_to_ssas(d, inst.stmt))
 end
 function _cfg_to_ssas(d::Dict, x::ReturnNode)
-    isdefined(x, :val) ? ReturnNode(get(d, x.val, x.val)) : x
+    return isdefined(x, :val) ? ReturnNode(get(d, x.val, x.val)) : x
 end
 _cfg_to_ssas(d::Dict, x::Expr) = Expr(x.head, map(a -> get(d, a, a), x.args)...)
 _cfg_to_ssas(d::Dict, x::PiNode) = PiNode(get(d, x.val, x.val), get(d, x.typ, x.typ))
@@ -2176,7 +2164,7 @@ function _cfg_instruction_stream(ir::IRCode, insts::InstVector)
         if length(lines) > 3n
             resize!(lines, 3n)
         elseif length(lines) < 3n
-            for _ in (length(lines) + 1):3n
+            for _ in (length(lines) + 1):(3n)
                 push!(lines, 0)
             end
         end
@@ -2334,8 +2322,9 @@ function pullback_ir(
 
         # Conclude the block.
         pred_ids = vcat(ps[blk.id], n == 1 ? [info.entry_id] : ID[])
-        tmp = pred_is_unique_pred[blk_id]
-        additional_stmts, new_blocks = conclude_rvs_block(blk, pred_ids, tmp, info)
+        additional_stmts, new_blocks = conclude_rvs_block(
+            blk, pred_ids, pred_is_unique_pred[blk_id], info
+        )
 
         # Combine all blocks and return. See `create_comms_insts!` for more info regarding
         # `comms`.
