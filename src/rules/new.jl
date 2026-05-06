@@ -28,21 +28,54 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
     return Dual(y, build_output_tangent(P, primals, map(tangent, x)))
 end
 
-# Phase 4b — Lifted-aware `_new_`: thin delegator that recovers `P_out` from
-# the static `Type{P}` parameter. The generic Lifted-aware adapter in
-# primal_mode.jl can't be used here because it derives `P_out` via
-# `__get_primal(bare_result)`, but the bare frule returns container values
-# (e.g. `Array{NDual{T,N}, D}`) whose primal type can't be recovered from the
-# value alone — the return is intentionally bare-element-wise. Static `P` from
-# `Lifted{Type{P}, N}` is the source of truth.
+# Phase 4b (deep) — Self-contained Lifted-aware `_new_`. The body mirrors the
+# bare overload above with `bare_x = ntuple(_unlift, x)` at the top and
+# `Lifted{P, N}(...)` at the bottom of each branch — no recursive dispatch
+# back into the bare `frule!!`. Helpers (`_find_ndual_memref`, `_has_ndual`,
+# `_ndual_primal`, `_tangent_dir`) are reused, since the bare path still
+# needs them at width=nothing and they already operate on bare V values.
+# Static `P` from `Lifted{Type{P}, N}` is the source of truth for the result
+# wrap — the generic Lifted-aware adapter in primal_mode.jl can't be used
+# because the Array branch returns `Array{NDual{T,N}, D}` whose primal type
+# can't be recovered from the value alone.
 @inline function frule!!(
     f::Lifted{typeof(_new_),N}, p::Lifted{Type{P},N}, x::Vararg{Lifted,M}
 ) where {N,P,M}
-    bare_f = _unlift(f)
-    bare_p = _unlift(p)
     bare_x = ntuple(i -> _unlift(x[i]), Val(M))
-    bare_result = frule!!(bare_f, bare_p, bare_x...)
-    return Lifted{P,N}(bare_result)
+
+    # Array primal with an NDual MemoryRef arg: bare element-wise lifted Array.
+    if P <: Array
+        ref = _find_ndual_memref(bare_x...)
+        if ref !== nothing
+            P_ndual = Array{eltype(ref),ndims(P)}
+            return Lifted{P,N}(_new_(P_ndual, bare_x...))
+        end
+    end
+
+    # Complex primal with NDual fields: bare Complex{NDual}.
+    if P <: Complex && _has_ndual(bare_x...)
+        return Lifted{P,N}(Complex(bare_x...))
+    end
+
+    # Struct/tuple with NDual content: per-direction NTangent lanes.
+    if _has_ndual(bare_x...)
+        primals_extracted = map(_ndual_primal, bare_x)
+        y = _new_(P, primals_extracted...)
+        T = tangent_type(P)
+        T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
+        tangent_dirs = ntuple(Val(N)) do dir
+            dir_tangents = map(v -> _tangent_dir(v, dir), bare_x)
+            build_output_tangent(P, primals_extracted, dir_tangents)
+        end
+        return Lifted{P,N}(Dual(y, NTangent(tangent_dirs)))
+    end
+
+    # No NDual content (e.g. all-non-differentiable args): pure struct construction.
+    primals = map(__get_primal, bare_x)
+    y = _new_(P, primals...)
+    T = tangent_type(P)
+    T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
+    return Lifted{P,N}(Dual(y, build_output_tangent(P, primals, map(tangent, bare_x))))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(_new_),Vararg}}) = true
 
