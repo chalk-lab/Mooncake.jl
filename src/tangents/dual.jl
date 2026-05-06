@@ -203,3 +203,146 @@ end
 function Dual(x::Type{P}, dx::NoTangent) where {P}
     return Dual{@isdefined(P) ? Type{P} : typeof(x),NoTangent}(x, dx)
 end
+
+# ── Inner-type constructors (Layer-2 dual targets) ────────────────────────────
+# These let the `Lifted{P, N}(primal, tangent)` 2-arg constructor delegate to
+# `dual_type(Val(N), P)(primal, tangent)` without rule bodies needing to choose
+# the inner shape. Each inner type accepts the canonical tangent shapes a rule
+# body may produce: scalar broadcast, pre-computed lanes, or NTangent-wrapped.
+
+# 1-tuple convenience for the bare `Dual{P, T}` width-1 inner: lets per-lane rule
+# bodies use the same `ntuple(closure, Val(N))` pattern at any width — at width 1
+# the closure produces a 1-tuple `(t,)` which this method unwraps to scalar `t`.
+Dual{P,T}(value, t::NTuple{1,T}) where {P,T} = Dual{P,T}(value, t[1])
+
+# Chunked structured `Dual{P, NTangent{NTuple{N, T}}}`: pre-computed lanes wrap
+# in NTangent; scalar tangent broadcasts across N lanes.
+function (::Type{Dual{P,NTangent{NTuple{N,T}}}})(value::P, lanes::NTuple{N,T}) where {P,N,T}
+    return Dual(value, NTangent(lanes))
+end
+function (::Type{Dual{P,NTangent{NTuple{N,T}}}})(value::P, tangent::T) where {P,N,T}
+    return Dual(value, NTangent(ntuple(_ -> tangent, Val(N))))
+end
+
+# ── Lifted: Layer-3 wrapper struct ───────────────────────────────────────────
+
+"""
+    Lifted{P, N, V}
+
+Forward-mode slot wrapper. `P` is the primal type, `N` is the AD width
+(`1` ordinary, `N >= 2` chunked), and `V === dual_type(Val(N), P)` is the
+inner dual shape. Slot identity `(P, N)` is dispatch-visible at the wrapper
+level; the inner shape `V` is hidden.
+
+Mirrors `CoDual{Tx, Tdx}` for forward mode. The extra `N` parameter and the
+fact that `V` varies (NDual, Complex{<:NDual}, Array{<:NDual}, …) reflect
+forward mode supporting multiple inner shapes; `V` is fully determined by
+`(P, N)` via `dual_type`.
+
+`Lifted` exists for every `P` at `N >= 1`, including `Tuple` primals (which
+lift to a single outer `Lifted` whose `V` is a `Tuple` of bare inner duals —
+`Lifted` never nests inside another `Lifted`'s `V`). `Val(0)` slots are
+unwrapped (primal passthrough) and are not represented by `Lifted`.
+"""
+struct Lifted{P,N,V}
+    value::V
+end
+
+# 1-arg: wrap an already-built inner. V is inferred from typeof(value).
+@inline Lifted{P,N}(value) where {P,N} = Lifted{P,N,typeof(value)}(value)
+
+# 2-arg: build the inner via the inner type's own constructor methods. Mirrors
+# `CoDual(x, dx)` — pass `(primal, tangent)` and the wrapper takes care of the
+# rest. The dispatch on inner shape lives in the inner type's constructors.
+@inline function Lifted{P,N}(primal, tangent) where {P,N}
+    InnerT = dual_type(Val(N), P)
+    return Lifted{P,N,InnerT}(InnerT(primal, tangent))
+end
+
+# Tuple-primal special case: `dual_type(Val(N), P<:Tuple)` is a bare
+# element-wise `Tuple{...}` of inner duals, which has no user-defined 2-arg
+# constructor. Build the inner tuple here element-wise instead.
+@inline function Lifted{P,N}(primal::P, tangent::Tup) where {P<:Tuple,N,Tup<:Tuple}
+    InnerT = dual_type(Val(N), P)
+    inner = ntuple(i -> fieldtype(InnerT, i)(primal[i], tangent[i]), Val(fieldcount(P)))
+    return Lifted{P,N,InnerT}(inner)
+end
+
+# Accessors: delegate to the inner's own primal/tangent. For Tuple primals the
+# inner is a bare element-wise tuple, so map over it.
+primal(d::Lifted) = primal(d.value)
+tangent(d::Lifted) = tangent(d.value)
+primal(d::Lifted{<:Tuple}) = map(primal, d.value)
+tangent(d::Lifted{<:Tuple}) = map(tangent, d.value)
+
+"""
+    extract(d::Lifted)
+
+Return the 2-tuple `(primal(d), tangent(d))`.
+"""
+extract(d::Lifted) = (primal(d), tangent(d))
+
+# Wrap / unwrap mechanics: `_lift(Val(N), P, _unlift(d))` is a typed identity.
+# `Val(0)` is the primal passthrough — `lifted_type(Val(0), P) = P`, so the
+# value passes through without wrapping.
+_lift(::Val{0}, ::Type{P}, value) where {P} = value
+_lift(::Val{N}, ::Type{P}, inner) where {N,P} = Lifted{P,N}(inner)
+_unlift(d::Lifted) = d.value
+
+Base.copy(d::Lifted{P,N}) where {P,N} = Lifted{P,N}(copy(d.value))
+# Lifted can be safely shared without copying (same as Dual).
+_copy(d::L) where {L<:Lifted} = d
+
+# ── lifted_type: Layer-3 slot type query ─────────────────────────────────────
+
+"""
+    lifted_type(::Val{N}, ::Type{P})
+
+Width-aware Layer-3 slot type query. Returns the wrapped slot type for primal
+`P` at width `N`.
+
+- `Val(0)` → `P` (primal passthrough)
+- `Val(N)` → `Lifted{P, N, dual_type(Val(N), P)}`
+
+Companion to `tangent_type` (Layer 1) and `dual_type` (Layer 2). The single
+top-level slot-type query — used both by rule bodies (computing the type of
+a result slot) and by IR-emit at lift sites (computing the type of an OC
+slot). Symmetric with reverse mode's `codual_type`.
+"""
+lifted_type(::Val{0}, ::Type{P}) where {P} = P
+lifted_type(::Val{N}, ::Type{P}) where {N,P} = Lifted{P,N,dual_type(Val(N), P)}
+
+# ── Layer-3 seed factories: return wrapped Lifted slot ───────────────────────
+# One-line delegations to the Layer-2 factories. Both routes consult the same
+# `dual_type` table for the inner shape; Layer 3 just adds the outer wrap.
+# `Val(0)` is the primal passthrough — `lifted_type(Val(0), P) === P`.
+
+"""
+    zero_lifted(::Val{N}, x)
+
+Width-aware Layer-3 seed factory. Returns a `Lifted{typeof(x), N}` wrapping
+the canonical zero dual at width `N`, or the bare primal `x` at `Val(0)`.
+
+Companion to `zero_dual` (Layer 2). The result type matches
+`lifted_type(Val(N), typeof(x))`.
+"""
+@inline zero_lifted(::Val{0}, x) = x
+@inline zero_lifted(w::Val{N}, x) where {N} = Lifted{typeof(x),N}(zero_dual(w, x))
+
+"""
+    uninit_lifted(::Val{N}, x)
+
+Layer-3 seed factory for uninitialised slots. See [`zero_lifted`](@ref).
+"""
+@inline uninit_lifted(::Val{0}, x) = x
+@inline uninit_lifted(w::Val{N}, x) where {N} = Lifted{typeof(x),N}(uninit_dual(w, x))
+
+"""
+    randn_lifted(::Val{N}, rng, x)
+
+Layer-3 seed factory with random partials. See [`zero_lifted`](@ref).
+"""
+@inline randn_lifted(::Val{0}, ::AbstractRNG, x) = x
+@inline randn_lifted(w::Val{N}, rng::AbstractRNG, x) where {N} = Lifted{typeof(x),N}(
+    randn_dual(w, rng, x)
+)

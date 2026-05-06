@@ -7,6 +7,7 @@ using ..Nfwd
 import ..Mooncake:
     CoDual,
     Dual,
+    Lifted,
     NTangent,
     NoFData,
     NoRData,
@@ -916,6 +917,79 @@ function Nfwd.NDual(p::T, t::NTangent{NTuple{N,T}}) where {T<:IEEEFloat,N}
     return NDual{T,N}(p, t.lanes)
 end
 
+# ── Lifted inner-type constructors for NDual containers ──────────────────────
+# These let `Lifted{P, N}(primal, tangent)` delegate to the inner type's
+# constructor without rule bodies choosing the inner shape. Each method covers
+# one canonical (primal-shape, tangent-shape) pair the wrapper may hand it.
+
+# Bare NDual: scalar broadcast and NTangent extract (parametric forms).
+function NDual{T,N}(value::T, tangent::T) where {T<:IEEEFloat,N}
+    return NDual{T,N}(value, ntuple(_ -> tangent, Val(N)))
+end
+function NDual{T,N}(value::T, tangent::NTangent{NTuple{N,T}}) where {T<:IEEEFloat,N}
+    return NDual{T,N}(value, tangent.lanes)
+end
+
+# Complex{NDual}: element-wise from Complex primal + Complex tangent.
+function (::Type{Complex{NDual{T,N}}})(
+    primal::Complex{T}, tangent::Complex{T}
+) where {T<:IEEEFloat,N}
+    return Complex(
+        NDual{T,N}(real(primal), real(tangent)), NDual{T,N}(imag(primal), imag(tangent))
+    )
+end
+
+# Array{NDual}: element-wise from Array primal + Array tangent.
+function (::Type{Array{NDual{T,N},D}})(
+    primal::Array{T,D}, tangent::Array{T,D}
+) where {T<:IEEEFloat,N,D}
+    return map((p, t) -> NDual{T,N}(p, t), primal, tangent)
+end
+function (::Type{Array{Complex{NDual{T,N}},D}})(
+    primal::Array{Complex{T},D}, tangent::Array{Complex{T},D}
+) where {T<:IEEEFloat,N,D}
+    return map((p, t) -> Complex{NDual{T,N}}(p, t), primal, tangent)
+end
+
+# Memory / MemoryRef: element-wise (1.11+). MemoryRef constructors lift the
+# underlying Memory and re-establish the primal's offset; the (primal, tangent)
+# pair is assumed aligned (same length, same offset).
+@static if VERSION >= v"1.11-"
+    function (::Type{Memory{NDual{T,N}}})(
+        primal::Memory{T}, tangent::Memory{T}
+    ) where {T<:IEEEFloat,N}
+        out = Memory{NDual{T,N}}(undef, length(primal))
+        @inbounds for i in eachindex(primal)
+            out[i] = NDual{T,N}(primal[i], tangent[i])
+        end
+        return out
+    end
+    function (::Type{Memory{Complex{NDual{T,N}}}})(
+        primal::Memory{Complex{T}}, tangent::Memory{Complex{T}}
+    ) where {T<:IEEEFloat,N}
+        out = Memory{Complex{NDual{T,N}}}(undef, length(primal))
+        @inbounds for i in eachindex(primal)
+            out[i] = Complex{NDual{T,N}}(primal[i], tangent[i])
+        end
+        return out
+    end
+    function (::Type{MemoryRef{NDual{T,N}}})(
+        primal::MemoryRef{T}, tangent::MemoryRef{T}
+    ) where {T<:IEEEFloat,N}
+        return memoryref(
+            Memory{NDual{T,N}}(primal.mem, tangent.mem), Core.memoryrefoffset(primal)
+        )
+    end
+    function (::Type{MemoryRef{Complex{NDual{T,N}}}})(
+        primal::MemoryRef{Complex{T}}, tangent::MemoryRef{Complex{T}}
+    ) where {T<:IEEEFloat,N}
+        return memoryref(
+            Memory{Complex{NDual{T,N}}}(primal.mem, tangent.mem),
+            Core.memoryrefoffset(primal),
+        )
+    end
+end
+
 # ── Width helpers for NDual ───────────────────────────────────────────────────
 
 # Width-aware `zero_dual(::Val{N}, x)`, `randn_dual(::Val{N}, rng, x)`,
@@ -1170,31 +1244,39 @@ function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     )
 end
 
-# _uninit_dual for Array at width N: return bare Array{NDual} (matches dual_type).
+# _uninit_dual for Array at width N: returns `Lifted{Array{T,D}, N, Array{NDual{T,N},D}}`.
+# The outer Lifted wrap matches `lifted_type(Val(N), Array{T,D})`.
 function Mooncake._uninit_dual(::Val{N}, v::Array{T,D}) where {N,T<:IEEEFloat,D}
     ndual_arr = Array{NDual{T,N},D}(undef, size(v)...)
     @inbounds for i in eachindex(v)
         ndual_arr[i] = NDual{T,N}(v[i], ntuple(_ -> zero(T), Val(N)))
     end
-    return ndual_arr
+    return Lifted{Array{T,D},N}(ndual_arr)
 end
 
 # Lift `Array{T,D}` type literals (mirrors the Memory variant below): substitute
 # the inner element type so subsequent `Array{T,D}(undef, n)` calls carry the
-# lifted element type inside a `Dual{Type{...}, NoTangent}` envelope.
+# lifted element type inside a `Dual{Type{...}, NoTangent}` envelope. The wrapper
+# `Lifted{Type{Array{T,D}}, N}` records the original primal type literal; the
+# inner `V` carries the substituted form for downstream constructor lifting.
 function Mooncake._uninit_dual(
-    w::Val, ::Type{Array{T,D}}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},D}
-    return Dual(Array{dual_type(w, T),D}, NoTangent())
+    w::Val{N}, ::Type{Array{T,D}}
+) where {N,T<:Union{IEEEFloat,Complex{<:IEEEFloat}},D}
+    inner = Dual(Array{dual_type(w, T),D}, NoTangent())
+    return Lifted{Type{Array{T,D}},N}(inner)
 end
 
 # Memory container overloads (1.11+): mirror the Array{T} dual_type lift.
 @static if VERSION >= v"1.11-"
-    function Mooncake._uninit_dual(w::Val, ::Type{Memory{T}}) where {T<:IEEEFloat}
-        return Dual(Memory{dual_type(w, T)}, NoTangent())
+    function Mooncake._uninit_dual(w::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
+        inner = Dual(Memory{dual_type(w, T)}, NoTangent())
+        return Lifted{Type{Memory{T}},N}(inner)
     end
-    function Mooncake._uninit_dual(w::Val, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat}
-        return Dual(Memory{Complex{dual_type(w, T)}}, NoTangent())
+    function Mooncake._uninit_dual(
+        w::Val{N}, ::Type{Memory{Complex{T}}}
+    ) where {N,T<:IEEEFloat}
+        inner = Dual(Memory{Complex{dual_type(w, T)}}, NoTangent())
+        return Lifted{Type{Memory{Complex{T}}},N}(inner)
     end
 
     @inline function Mooncake.zero_derivative(

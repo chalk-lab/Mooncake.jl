@@ -26,10 +26,16 @@
         end
     end
 
+    # Phase-3 boundary: `_uninit_dual` at width Val(N) returns a `Lifted` whose
+    # inner V is the substituted Dual{Type{Array{NDual{...},D}}, NoTangent}.
     @test Mooncake._uninit_dual(Val(2), Array{Float64,1}) ===
+        Mooncake.Lifted{Type{Array{Float64,1}},2}(
         Dual(Array{Mooncake.NDual{Float64,2},1}, NoTangent())
+    )
     @test Mooncake._uninit_dual(Val(2), Array{ComplexF64,1}) ===
+        Mooncake.Lifted{Type{Array{ComplexF64,1}},2}(
         Dual(Array{Complex{Mooncake.NDual{Float64,2}},1}, NoTangent())
+    )
 
     @testset "$P" for (P, D) in Any[
         (Float64, Dual{Float64,Float64}),
@@ -73,5 +79,184 @@
         (Tuple{Vararg{Float64}}, Dual),
     ]
         @test TestUtils.check_allocs(dual_type, P) == D
+    end
+end
+
+@testset "Lifted" begin
+    Lifted = Mooncake.Lifted
+    NDual = Mooncake.NDual
+    NTangent = Mooncake.NTangent
+    lifted_type = Mooncake.lifted_type
+    _lift = Mooncake._lift
+    _unlift = Mooncake._unlift
+    extract = Mooncake.extract
+
+    @testset "lifted_type" begin
+        # Val(0) is primal passthrough.
+        @test lifted_type(Val(0), Float64) === Float64
+        @test lifted_type(Val(0), Vector{Float64}) === Vector{Float64}
+        @test lifted_type(Val(0), Tuple{Float64,Float64}) === Tuple{Float64,Float64}
+
+        # Val(N) wraps once at the top, with V === dual_type(Val(N), P).
+        @test lifted_type(Val(2), Float64) === Lifted{Float64,2,NDual{Float64,2}}
+        @test lifted_type(Val(2), ComplexF64) ===
+            Lifted{ComplexF64,2,Complex{NDual{Float64,2}}}
+        @test lifted_type(Val(2), Vector{Float64}) ===
+            Lifted{Vector{Float64},2,Vector{NDual{Float64,2}}}
+
+        # Tuple primal: ONE outer Lifted whose V is a bare element-wise Tuple.
+        # Lifted never nests inside another Lifted's V.
+        @test lifted_type(Val(2), Tuple{Float64,Float64}) ===
+            Lifted{Tuple{Float64,Float64},2,Tuple{NDual{Float64,2},NDual{Float64,2}}}
+    end
+
+    @testset "1-arg constructor (V inferred from inner)" begin
+        inner = NDual{Float64,2}(1.0, (1.0, 0.0))
+        d = Lifted{Float64,2}(inner)
+        @test typeof(d) === Lifted{Float64,2,NDual{Float64,2}}
+        @test _unlift(d) === inner
+    end
+
+    @testset "2-arg constructor: bare NDual (IEEEFloat)" begin
+        # Pre-computed lanes: NTuple of partials hits the default NDual constructor.
+        d_lanes = Lifted{Float64,2}(3.0, (1.0, 0.0))
+        @test typeof(d_lanes) === Lifted{Float64,2,NDual{Float64,2}}
+        @test _unlift(d_lanes) === NDual{Float64,2}(3.0, (1.0, 0.0))
+
+        # Scalar tangent broadcasts across N lanes.
+        d_scalar = Lifted{Float64,2}(3.0, 0.5)
+        @test _unlift(d_scalar) === NDual{Float64,2}(3.0, (0.5, 0.5))
+
+        # NTangent input extracts lanes.
+        d_ntan = Lifted{Float64,2}(3.0, NTangent((1.0, 2.0)))
+        @test _unlift(d_ntan) === NDual{Float64,2}(3.0, (1.0, 2.0))
+    end
+
+    @testset "2-arg constructor: Complex{<:NDual}" begin
+        # Element-wise from Complex primal + Complex tangent (scalar broadcast within each NDual).
+        d = Lifted{ComplexF64,2}(complex(1.0, 2.0), complex(3.0, 4.0))
+        @test typeof(d) === Lifted{ComplexF64,2,Complex{NDual{Float64,2}}}
+        re = NDual{Float64,2}(1.0, (3.0, 3.0))
+        im = NDual{Float64,2}(2.0, (4.0, 4.0))
+        @test _unlift(d) === Complex(re, im)
+    end
+
+    @testset "2-arg constructor: Array{<:NDual}" begin
+        pri = [1.0, 2.0]
+        tan = [10.0, 20.0]
+        d = Lifted{Vector{Float64},2}(pri, tan)
+        @test typeof(d) === Lifted{Vector{Float64},2,Vector{NDual{Float64,2}}}
+        @test _unlift(d) ==
+            [NDual{Float64,2}(1.0, (10.0, 10.0)), NDual{Float64,2}(2.0, (20.0, 20.0))]
+    end
+
+    @testset "2-arg constructor: Tuple primal (single outer Lifted)" begin
+        # Per-element scalar tangents: each broadcasts across N lanes within its own NDual.
+        d_scalar = Lifted{Tuple{Float64,Float64},2}((1.0, 2.0), (10.0, 20.0))
+        @test typeof(d_scalar) ===
+            Lifted{Tuple{Float64,Float64},2,Tuple{NDual{Float64,2},NDual{Float64,2}}}
+        @test _unlift(d_scalar) ===
+            (NDual{Float64,2}(1.0, (10.0, 10.0)), NDual{Float64,2}(2.0, (20.0, 20.0)))
+
+        # Per-element per-lane tangents (NTuple per element).
+        d_lanes = Lifted{Tuple{Float64,Float64},2}((1.0, 2.0), ((10.0, 11.0), (20.0, 21.0)))
+        @test _unlift(d_lanes) ===
+            (NDual{Float64,2}(1.0, (10.0, 11.0)), NDual{Float64,2}(2.0, (20.0, 21.0)))
+    end
+
+    @testset "Inner-type constructors (direct)" begin
+        # 1-tuple convenience for bare Dual{P, T}: lets per-lane rule bodies use
+        # uniform `ntuple(closure, Val(N))` at any width, including width 1.
+        @test Dual{Float64,Float64}(1.0, (2.0,)) === Dual(1.0, 2.0)
+
+        # Chunked structured Dual{P, NTangent{NTuple{N, T}}} constructors. Tested
+        # directly with synthetic types since the dual_type table routes IEEEFloat
+        # through NDual; the structured-chunked path is for non-IEEEFloat primals.
+        DualChunkedT = Dual{Float32,NTangent{NTuple{2,Float32}}}
+        @test DualChunkedT(1.0f0, (2.0f0, 3.0f0)) === Dual(1.0f0, NTangent((2.0f0, 3.0f0)))
+        @test DualChunkedT(1.0f0, 5.0f0) === Dual(1.0f0, NTangent((5.0f0, 5.0f0)))
+
+        # NDual NTangent constructor (parametric form, used by Lifted's 2-arg ctor).
+        @test NDual{Float64,2}(3.0, NTangent((1.0, 2.0))) ===
+            NDual{Float64,2}(3.0, (1.0, 2.0))
+    end
+
+    @testset "Memory / MemoryRef inner constructors" begin
+        @static if VERSION >= v"1.11-rc4"
+            pri = Memory{Float64}(undef, 2)
+            tan = Memory{Float64}(undef, 2)
+            pri[1] = 1.0
+            pri[2] = 2.0
+            tan[1] = 10.0
+            tan[2] = 20.0
+            m = Memory{NDual{Float64,2}}(pri, tan)
+            @test m isa Memory{NDual{Float64,2}}
+            @test m[1] === NDual{Float64,2}(1.0, (10.0, 10.0))
+            @test m[2] === NDual{Float64,2}(2.0, (20.0, 20.0))
+
+            mr_pri = Core.memoryrefnew(pri)
+            mr_tan = Core.memoryrefnew(tan)
+            mr = MemoryRef{NDual{Float64,2}}(mr_pri, mr_tan)
+            @test mr isa MemoryRef{NDual{Float64,2}}
+            @test Core.memoryrefget(mr, :not_atomic, false) ===
+                NDual{Float64,2}(1.0, (10.0, 10.0))
+        end
+    end
+
+    @testset "Accessors and round-trip" begin
+        # Scalar IEEEFloat: primal/tangent/extract delegate to the inner NDual.
+        d = Lifted{Float64,2}(3.0, (1.0, 0.0))
+        @test primal(d) === 3.0
+        @test tangent(d) === NTangent((1.0, 0.0))
+        @test extract(d) === (3.0, NTangent((1.0, 0.0)))
+
+        # Tuple primal: primal/tangent map over the inner element-wise tuple.
+        dt = Lifted{Tuple{Float64,Float64},2}((1.0, 2.0), (10.0, 20.0))
+        @test primal(dt) === (1.0, 2.0)
+        @test tangent(dt) === (NTangent((10.0, 10.0)), NTangent((20.0, 20.0)))
+
+        # _lift / _unlift typed identity. Val(0) is primal passthrough.
+        @test _lift(Val(2), Float64, _unlift(d)) === d
+        @test _lift(Val(0), Float64, 3.0) === 3.0
+    end
+end
+
+@testset "Lifted seed factories" begin
+    Lifted = Mooncake.Lifted
+    NDual = Mooncake.NDual
+    zero_lifted = Mooncake.zero_lifted
+    uninit_lifted = Mooncake.uninit_lifted
+    randn_lifted = Mooncake.randn_lifted
+
+    # Val(0) passthrough — no wrapping. Matches `lifted_type(Val(0), P) === P`.
+    @test zero_lifted(Val(0), 1.0) === 1.0
+    @test uninit_lifted(Val(0), 1.0) === 1.0
+    @test randn_lifted(Val(0), Random.MersenneTwister(0), 1.0) === 1.0
+
+    # Val(N) wraps the Layer-2 result. Both factories consult the same
+    # `dual_type` table, so the inner agrees by construction.
+    @test zero_lifted(Val(2), 1.0) === Lifted{Float64,2}(zero_dual(Val(2), 1.0))
+    @test uninit_lifted(Val(2), 1.0) ===
+        Lifted{Float64,2}(Mooncake.uninit_dual(Val(2), 1.0))
+
+    # `randn_lifted` partials are nondeterministic; check shape and primal.
+    let r = randn_lifted(Val(2), Random.MersenneTwister(0), 1.0)
+        @test typeof(r) === Lifted{Float64,2,NDual{Float64,2}}
+        @test primal(r) === 1.0
+    end
+
+    # Container primals route through the Layer-2 zero_dual overloads. Result
+    # type matches `lifted_type(Val(N), typeof(x))`.
+    let v = [1.0, 2.0]
+        d = zero_lifted(Val(2), v)
+        @test typeof(d) === Lifted{Vector{Float64},2,Vector{NDual{Float64,2}}}
+        @test primal(d) == v
+    end
+
+    # Complex primal.
+    let z = complex(1.0, 2.0)
+        d = zero_lifted(Val(2), z)
+        @test typeof(d) === Lifted{ComplexF64,2,Complex{NDual{Float64,2}}}
+        @test primal(d) === z
     end
 end

@@ -78,15 +78,26 @@ function const_dual!(captures::Vector{Any}, stmt, width=nothing)
 end
 
 # Width-aware uninit_dual dispatcher for IR-gen-time constants.
+#
+# At width=nothing (legacy), returns a bare `Dual{P, T}` matching `dual_type(P)`.
+# At width=Val(N), returns a `Lifted{P, N, V}` matching `lifted_type(Val(N), P)` —
+# IR-emit threads Lifted through OC slot boundaries (Phase 3). Rule call sites
+# unwrap via `_unlift` before invoking the still-bare rule body.
 _uninit_dual(::Nothing, v) = uninit_dual(v)
-_uninit_dual(w::Val, v::T) where {T<:IEEEFloat} = dual_type(w, T)(v)
-function _uninit_dual(w::Val, v::Complex{T}) where {T<:IEEEFloat}
-    return Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v)))
+# Val(0) is the primal passthrough — `lifted_type(Val(0), P) === P`, so
+# constants flow through as bare values.
+@inline _uninit_dual(::Val{0}, v) = v
+@inline function _uninit_dual(w::Val{N}, v::T) where {T<:IEEEFloat,N}
+    return Lifted{T,N}(dual_type(w, T)(v))
+end
+@inline function _uninit_dual(w::Val{N}, v::Complex{T}) where {T<:IEEEFloat,N}
+    inner = Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v)))
+    return Lifted{Complex{T},N}(inner)
 end
 # Strict width-N fallback: containers with `_count_slots > 0` must register an
 # explicit `_uninit_dual(::Val{N}, ::T)` overload in NfwdMooncake.jl — silently
 # downgrading to width-1 here would produce wrong tangents.
-function _uninit_dual(::Val, v)
+function _uninit_dual(w::Val{N}, v) where {N}
     if _count_slots(v) > 0
         throw(
             ArgumentError(
@@ -97,7 +108,27 @@ function _uninit_dual(::Val, v)
             ),
         )
     end
-    return uninit_dual(v)
+    return Lifted{_typeof(v),N}(uninit_dual(v))
+end
+
+# Extract the integer N from `Val{N}`. Used at IR-emit time to construct
+# `Lifted{P, N}` parametric types when wrapping rule results.
+@inline _val_n(::Val{N}) where {N} = N
+
+# A "lifted width" is one that uses the `Lifted{P, N, V}` boundary at the OC
+# (i.e. `Val{N}` for `N >= 1`). The legacy `nothing` and the primal-passthrough
+# `Val{0}` both keep the OC slot types bare.
+@inline _is_lifted_width(::Nothing) = false
+@inline _is_lifted_width(::Val{0}) = false
+@inline _is_lifted_width(::Val{N}) where {N} = true
+
+# Insert an SSA `_unlift(arg)` at the current position, returning the new SSA.
+# Only used when `info.width !== nothing`; for runtime references (`Argument` /
+# `SSAValue`) inside an OC whose slot type is `Lifted{P, N, V}`.
+@inline function _insert_unlift!(lifted_ir::IRCode, ssa::SSAValue, arg)
+    return CC.insert_node!(
+        lifted_ir, ssa, new_inst(Expr(:call, _unlift, arg)), ATTACH_BEFORE
+    )
 end
 
 const ATTACH_AFTER = true
@@ -249,10 +280,39 @@ struct DerivedPrimal{primal_sig,Tlifted_oc,isva,nargs,W}
     width::W
 end
 
-@inline function (fwd::DerivedPrimal{P,sig,isva,nargs})(
+@inline function (fwd::DerivedPrimal{primal_sig,sig,isva,nargs})(
     args::Vararg{Any,N}
-) where {P,sig,N,isva,nargs}
-    return fwd.lifted_oc(__unflatten_dual_varargs(isva, args, Val(nargs), fwd.width)...)
+) where {primal_sig,sig,N,isva,nargs}
+    width = fwd.width
+    flat_args = __unflatten_dual_varargs(isva, args, Val(nargs), width)
+    if _is_lifted_width(width)
+        # Phase 3 OC boundary: at width=Val(N>=1), the OC argtypes are
+        # `Lifted{P_i, N, V_i}` (per `_lift_type`). Wrap each bare slot value
+        # before invoking the OC, and unwrap the `Lifted` return so the
+        # caller still sees a bare slot value.
+        lifted_args = _wrap_oc_args(width, primal_sig, flat_args, isva, Val(nargs))
+        return _unlift(fwd.lifted_oc(lifted_args...))
+    else
+        return fwd.lifted_oc(flat_args...)
+    end
+end
+
+# Wrap each entry of `flat_args` in `Lifted{P_i, N}` using the primal types
+# from the rule's `primal_sig` (a `Tuple{P_1, P_2, ...}`). Vararg flattening
+# already happened in `__unflatten_dual_varargs`, so for `isva=true` the
+# trailing packed arg's primal type is recovered from the value itself
+# rather than from `primal_sig`.
+@inline function _wrap_oc_args(
+    w::Val{N}, ::Type{primal_sig}, flat_args::Tuple, isva::Bool, ::Val{nargs}
+) where {N,primal_sig,nargs}
+    return ntuple(Val(length(flat_args))) do i
+        if isva && i == nargs
+            P_i = _typeof(__get_primal(flat_args[i]))
+        else
+            P_i = fieldtype(primal_sig, i)
+        end
+        Lifted{P_i,N}(flat_args[i])
+    end
 end
 
 # On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
@@ -374,9 +434,11 @@ struct LiftedInfo
     width  # Val{N} or nothing (nothing = legacy width-1 Dual path)
 end
 
-# Dispatch dual_type through width: nothing uses legacy dual_type(P), Val(N) uses dual_type(Val(N), P).
+# Dispatch slot type through width: `nothing` uses legacy `dual_type(P)` (bare
+# `Dual{P, T}`); `Val(N)` uses `lifted_type(Val(N), P)` (wraps in `Lifted`).
+# This is the OC slot-type query used by IR-emit and FCache.
 _lift_type(::Nothing, P) = dual_type(P)
-_lift_type(w::Val, P) = dual_type(w, P)
+_lift_type(w::Val, P) = lifted_type(w, P)
 
 function generate_lifted_ir(
     interp::MooncakeInterpreter,
@@ -503,8 +565,12 @@ function modify_primal_stmts!(
         end
     else
         new_ssa = CC.insert_node!(lifted_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
-        zero_dual_call = Expr(:call, Mooncake.zero_dual, new_ssa)
-        Mooncake.replace_call!(lifted_ir, ssa, zero_dual_call)
+        zero_call = if _is_lifted_width(info.width)
+            Expr(:call, Mooncake.zero_lifted, info.width, new_ssa)
+        else
+            Expr(:call, Mooncake.zero_dual, new_ssa)
+        end
+        Mooncake.replace_call!(lifted_ir, ssa, zero_call)
     end
 
     return nothing
@@ -643,24 +709,48 @@ function modify_primal_stmts!(
             return nothing
         end
 
-        # Dual-ise arguments.
+        # Dual-ise arguments. At width=nothing these are bare `Dual{...}`; at
+        # width=Val(N) they are `Lifted{P, N, V}` — see `_uninit_dual` above.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
             return _uninit_dual(info.width, get_const_primal_value(arg))
+        end
+
+        # At width=Val(N) (N>=1), unwrap each Lifted slot value before passing
+        # to the (still-bare) rule body. This is Phase-3 scaffolding: rules are
+        # migrated to accept `Lifted` directly in Phase 4, and the unwrap goes
+        # away at that point. `Argument`/`SSAValue` references get a runtime
+        # `_unlift` SSA; constants (already-built `Lifted` values) are
+        # unwrapped at IR-emit time.
+        rule_args = if _is_lifted_width(info.width)
+            map(dual_args) do arg
+                arg isa Union{Argument,SSAValue} &&
+                    return _insert_unlift!(lifted_ir, ssa, arg)
+                return _unlift(arg)
+            end
+        else
+            dual_args
+        end
+
+        # Compute the primal return type of this call (from the original primal
+        # IR, before any lifting). At width=Val(N), the rule's bare result is
+        # wrapped via `Lifted{primal_retype, N}` so the OC sees a
+        # `lifted_type`-shaped slot.
+        primal_retype = let t = CC.widenconst(get_ir(info.primal_ir, ssa, :type))
+            contains_bottom_type(t) ? Any : t
         end
 
         interp = info.interp
         if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
             rule = build_primitive_frule(sig)
             if safe_for_literal(rule)
-                replace_call!(lifted_ir, ssa, Expr(:call, rule, dual_args...))
+                rule_callable = rule
             else
                 push!(captures, rule)
                 get_rule = Expr(:call, get_capture, Argument(1), length(captures))
-                rule_ssa = CC.insert_node!(
+                rule_callable = CC.insert_node!(
                     lifted_ir, ssa, new_inst(get_rule), ATTACH_BEFORE
                 )
-                replace_call!(lifted_ir, ssa, Expr(:call, rule_ssa, dual_args...))
             end
         else
             dm = info.debug_mode
@@ -673,20 +763,45 @@ function modify_primal_stmts!(
                 end,
             )
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
-            rule_ssa = CC.insert_node!(lifted_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
-            replace_call!(lifted_ir, ssa, Expr(:call, rule_ssa, dual_args...))
+            rule_callable = CC.insert_node!(
+                lifted_ir, ssa, new_inst(get_rule), ATTACH_BEFORE
+            )
+        end
+
+        # Emit the rule call. At a non-lifted width the call replaces the
+        # original SSA directly; at width=Val(N>=1) the call's bare result is
+        # wrapped in `Lifted{primal_retype, N}` and the wrap replaces the
+        # original SSA.
+        if _is_lifted_width(info.width)
+            rule_call_inst = new_inst(Expr(:call, rule_callable, rule_args...))
+            rule_result_ssa = CC.insert_node!(lifted_ir, ssa, rule_call_inst, ATTACH_BEFORE)
+            TLifted = Lifted{primal_retype,_val_n(info.width)}
+            replace_call!(lifted_ir, ssa, Expr(:call, TLifted, rule_result_ssa))
+        else
+            replace_call!(lifted_ir, ssa, Expr(:call, rule_callable, rule_args...))
         end
     elseif isexpr(stmt, :boundscheck)
-        # Keep the boundscheck, but put it in a Dual.
+        # Keep the boundscheck, but wrap it as a slot value (Dual at legacy
+        # width, Lifted at Val(N)).
         inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         bc_ssa = CC.insert_node!(lifted_ir, ssa, inst, ATTACH_BEFORE)
-        replace_call!(lifted_ir, ssa, Expr(:call, zero_dual, bc_ssa))
+        zero_call = if _is_lifted_width(info.width)
+            Expr(:call, zero_lifted, info.width, bc_ssa)
+        else
+            Expr(:call, zero_dual, bc_ssa)
+        end
+        replace_call!(lifted_ir, ssa, zero_call)
     elseif isexpr(stmt, :code_coverage_effect)
         replace_call!(lifted_ir, ssa, nothing)
     elseif Meta.isexpr(stmt, :copyast)
         new_copyast_inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         new_copyast_ssa = CC.insert_node!(lifted_ir, ssa, new_copyast_inst, ATTACH_BEFORE)
-        replace_call!(lifted_ir, ssa, Expr(:call, zero_dual, new_copyast_ssa))
+        zero_call = if _is_lifted_width(info.width)
+            Expr(:call, zero_lifted, info.width, new_copyast_ssa)
+        else
+            Expr(:call, zero_dual, new_copyast_ssa)
+        end
+        replace_call!(lifted_ir, ssa, zero_call)
     elseif Meta.isexpr(stmt, :loopinfo)
         # Leave this node alone.
     elseif isexpr(stmt, :throw_undef_if_not)
