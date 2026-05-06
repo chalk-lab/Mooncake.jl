@@ -1134,6 +1134,18 @@ function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     end
 end
 
+# Phase 4a — Lifted-aware `tuple`: single outer `Lifted{<:Tuple}` whose `V` is a
+# bare element-wise tuple of inner duals. Collapses the three branches of the
+# bare overload above (NDual element-wise, whole-Tuple Dual NoTangent,
+# whole-Tuple Dual Tuple-tangent) to one — slot identity from `Lifted{P_i, N}`
+# replaces the runtime `_has_ndual` branch.
+@inline function frule!!(::Lifted{typeof(tuple),N}, args::Vararg{Lifted,M}) where {N,M}
+    P_out = Tuple{ntuple(i -> _typeof(primal(args[i])), Val(M))...}
+    inner = ntuple(i -> _unlift(args[i]), Val(M))
+    return Lifted{P_out,N}(inner)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tuple),Vararg}}) = true
+
 function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     primal_output = tuple(map(primal, args)...)
     if tangent_type(_typeof(primal_output)) == NoTangent

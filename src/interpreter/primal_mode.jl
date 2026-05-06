@@ -122,6 +122,48 @@ end
 @inline _is_lifted_width(::Val{0}) = false
 @inline _is_lifted_width(::Val{N}) where {N} = true
 
+"""
+    _is_lifted_aware(sig::Type{<:Tuple})
+
+Trait function — returns `true` for primitive call signatures whose
+`frule!!` accepts `Lifted{P, N, V}` arguments directly (Phase 4 migration),
+`false` (default) for legacy primitives that still expect bare slot values.
+
+The IR-emit consults this at each primitive rule-call site: when `true`, it
+passes `Lifted` args straight through and trusts the rule to return a
+`Lifted`; when `false`, it inserts the Phase-3 unwrap/wrap scaffolding
+(unlift each arg, call the bare rule, wrap the bare return back into
+`Lifted{primal_retype, N}`).
+
+Each rule file migrated under Phase 4 registers its sigs by adding a
+specialised method that returns `true`. The default catch-all keeps every
+non-migrated rule on the legacy bare path, so partial migration is safe.
+"""
+@inline _is_lifted_aware(::Type) = false
+
+"""
+    frule!!(f::Lifted{F, N}, args::Vararg{Lifted, M})
+
+Generic Lifted-aware `frule!!` adapter — used by Phase 4 mechanical
+migrations whose rule body has no benefit from `Lifted` dispatch. Unwraps
+each `Lifted` arg via `_unlift`, calls the bare `frule!!`, and re-wraps
+the bare result in `Lifted{P_out, N}` where `P_out` is recovered from
+the bare result via `__get_primal`.
+
+This generic catch-all is invoked when a rule has registered itself in
+`_is_lifted_aware` but provides no specific `Lifted{typeof(op), N}`
+overload. Rules with meaningful `Lifted`-dispatch benefit (e.g. the
+`tuple` frule's three-branch collapse) override this by defining their
+own specific `Lifted`-typed `frule!!` method.
+"""
+@inline function frule!!(f::Lifted{F,N}, args::Vararg{Lifted,M}) where {F,N,M}
+    bare_f = _unlift(f)
+    bare_args = ntuple(i -> _unlift(args[i]), Val(M))
+    bare_result = frule!!(bare_f, bare_args...)
+    P_out = _typeof(__get_primal(bare_result))
+    return Lifted{P_out,N}(bare_result)
+end
+
 # Insert an SSA `_unlift(arg)` at the current position, returning the new SSA.
 # Only used when `info.width !== nothing`; for runtime references (`Argument` /
 # `SSAValue`) inside an OC whose slot type is `Lifted{P, N, V}`.
@@ -716,32 +758,17 @@ function modify_primal_stmts!(
             return _uninit_dual(info.width, get_const_primal_value(arg))
         end
 
-        # At width=Val(N) (N>=1), unwrap each Lifted slot value before passing
-        # to the (still-bare) rule body. This is Phase-3 scaffolding: rules are
-        # migrated to accept `Lifted` directly in Phase 4, and the unwrap goes
-        # away at that point. `Argument`/`SSAValue` references get a runtime
-        # `_unlift` SSA; constants (already-built `Lifted` values) are
-        # unwrapped at IR-emit time.
-        rule_args = if _is_lifted_width(info.width)
-            map(dual_args) do arg
-                arg isa Union{Argument,SSAValue} &&
-                    return _insert_unlift!(lifted_ir, ssa, arg)
-                return _unlift(arg)
-            end
-        else
-            dual_args
-        end
-
-        # Compute the primal return type of this call (from the original primal
-        # IR, before any lifting). At width=Val(N), the rule's bare result is
-        # wrapped via `Lifted{primal_retype, N}` so the OC sees a
-        # `lifted_type`-shaped slot.
-        primal_retype = let t = CC.widenconst(get_ir(info.primal_ir, ssa, :type))
-            contains_bottom_type(t) ? Any : t
-        end
-
+        # Resolve the rule callable and decide which dispatch path to use.
+        # `is_lifted_aware` is the Phase-4 trait: the primitive's `frule!!`
+        # accepts `Lifted` args and returns `Lifted` directly. When false, the
+        # IR-emit inserts the Phase-3 unwrap/wrap scaffolding around the call
+        # so the still-bare rule sees bare slot values.
         interp = info.interp
-        if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
+        is_prim = is_primitive(context_type(interp), ForwardMode, sig, interp.world)
+        is_lifted_aware = is_prim && _is_lifted_aware(sig)
+        needs_scaffold = _is_lifted_width(info.width) && !is_lifted_aware
+
+        if is_prim
             rule = build_primitive_frule(sig)
             if safe_for_literal(rule)
                 rule_callable = rule
@@ -768,11 +795,28 @@ function modify_primal_stmts!(
             )
         end
 
-        # Emit the rule call. At a non-lifted width the call replaces the
-        # original SSA directly; at width=Val(N>=1) the call's bare result is
-        # wrapped in `Lifted{primal_retype, N}` and the wrap replaces the
-        # original SSA.
-        if _is_lifted_width(info.width)
+        # Unwrap Lifted args only when the rule isn't Lifted-aware. Lifted-aware
+        # primitives receive `Lifted` slots directly. `Argument`/`SSAValue`
+        # references get a runtime `_unlift` SSA; constants (already-built
+        # `Lifted` values) are unwrapped at IR-emit time.
+        rule_args = if needs_scaffold
+            map(dual_args) do arg
+                arg isa Union{Argument,SSAValue} &&
+                    return _insert_unlift!(lifted_ir, ssa, arg)
+                return _unlift(arg)
+            end
+        else
+            dual_args
+        end
+
+        # Emit the rule call. Lifted-aware primitives and non-lifted widths
+        # replace the original SSA directly. Otherwise, wrap the bare rule
+        # result in `Lifted{primal_retype, N}` so the OC sees a
+        # `lifted_type`-shaped slot.
+        if needs_scaffold
+            primal_retype = let t = CC.widenconst(get_ir(info.primal_ir, ssa, :type))
+                contains_bottom_type(t) ? Any : t
+            end
             rule_call_inst = new_inst(Expr(:call, rule_callable, rule_args...))
             rule_result_ssa = CC.insert_node!(lifted_ir, ssa, rule_call_inst, ATTACH_BEFORE)
             TLifted = Lifted{primal_retype,_val_n(info.width)}
