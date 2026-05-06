@@ -266,6 +266,31 @@ end
 ) where {P,T<:StandardTangentType}
     return lsetfield_frule(value, name, x)
 end
+# Post-kill `width=Val(1)` overload: the IR-emit unwraps `Lifted` slot values
+# to bare V's, which for IEEEFloat fields is `NDual{T, 1}` (or `Vector{NDual}`
+# / `Complex{NDual}` for container fields). Wrap NDual content into a width-1
+# `Dual{P, T}` form so `lsetfield_frule` sees the legacy shape.
+@inline function frule!!(
+    ::Dual{typeof(lsetfield!)},
+    value::Dual{P,T},
+    name::Dual,
+    x::Union{
+        NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
+    },
+) where {P,T<:StandardTangentType}
+    return lsetfield_frule(value, name, _ndual_to_dual_lane1(x))
+end
+@inline _ndual_to_dual_lane1(x::NDual) = Dual(primal(x), x.partials[1])
+@inline _ndual_to_dual_lane1(x::Complex{<:NDual}) = Dual(
+    complex(x.re.value, x.im.value), complex(x.re.partials[1], x.im.partials[1])
+)
+@inline _ndual_to_dual_lane1(x::AbstractArray{<:NDual}) = Dual(
+    map(d -> d.value, x), map(d -> d.partials[1], x)
+)
+@inline _ndual_to_dual_lane1(x::AbstractArray{<:Complex{<:NDual}}) = Dual(
+    map(z -> complex(z.re.value, z.im.value), x),
+    map(z -> complex(z.re.partials[1], z.im.partials[1]), x),
+)
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual
 ) where {P,F<:StandardFDataType}

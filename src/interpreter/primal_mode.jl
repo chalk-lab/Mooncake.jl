@@ -57,16 +57,17 @@ end
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
 
 """
-    const_dual!(captures::Vector{Any}, stmt, width=nothing)
+    const_dual!(captures::Vector{Any}, stmt, width=Val(1))
 
-Build a `Dual` (or `NDual` when `width !== nothing`) from `stmt`, with zero / uninitialised
-tangent. If the resulting value is a bits type, then it is returned. If it is not, then it
-is put into captures, and its location in `captures` returned.
+Build a `Lifted{P, N, V}` (Phase 4 width-N path) from `stmt`, with zero /
+uninitialised tangent. If the resulting value is a bits type, then it is
+returned. If it is not, then it is put into captures, and its location in
+`captures` returned. `Val(0)` is the primal passthrough.
 
-Whether or not the value is a literal, or an index into the captures, can be determined from
-the return type.
+Whether or not the value is a literal, or an index into the captures, can
+be determined from the return type.
 """
-function const_dual!(captures::Vector{Any}, stmt, width=nothing)
+function const_dual!(captures::Vector{Any}, stmt, width::Val=Val(1))
     v = get_const_primal_value(stmt)
     x = _uninit_dual(width, v)
     if safe_for_literal(v)
@@ -79,13 +80,11 @@ end
 
 # Width-aware uninit_dual dispatcher for IR-gen-time constants.
 #
-# At width=nothing (legacy), returns a bare `Dual{P, T}` matching `dual_type(P)`.
-# At width=Val(N), returns a `Lifted{P, N, V}` matching `lifted_type(Val(N), P)` —
-# IR-emit threads Lifted through OC slot boundaries (Phase 3). Rule call sites
-# unwrap via `_unlift` before invoking the still-bare rule body.
-_uninit_dual(::Nothing, v) = uninit_dual(v)
-# Val(0) is the primal passthrough — `lifted_type(Val(0), P) === P`, so
-# constants flow through as bare values.
+# Returns a `Lifted{P, N, V}` matching `lifted_type(Val(N), P)` — IR-emit
+# threads Lifted through OC slot boundaries. Rule call sites unwrap via
+# `_unlift` before invoking the still-bare rule body. `Val(0)` is the
+# primal passthrough — `lifted_type(Val(0), P) === P`, so constants flow
+# through as bare values.
 @inline _uninit_dual(::Val{0}, v) = v
 @inline function _uninit_dual(w::Val{N}, v::T) where {T<:IEEEFloat,N}
     return Lifted{T,N}(dual_type(w, T)(v))
@@ -116,9 +115,8 @@ end
 @inline _val_n(::Val{N}) where {N} = N
 
 # A "lifted width" is one that uses the `Lifted{P, N, V}` boundary at the OC
-# (i.e. `Val{N}` for `N >= 1`). The legacy `nothing` and the primal-passthrough
-# `Val{0}` both keep the OC slot types bare.
-@inline _is_lifted_width(::Nothing) = false
+# (i.e. `Val{N}` for `N >= 1`). The primal-passthrough `Val{0}` keeps the OC
+# slot types bare.
 @inline _is_lifted_width(::Val{0}) = false
 @inline _is_lifted_width(::Val{N}) where {N} = true
 
@@ -161,8 +159,27 @@ own specific `Lifted`-typed `frule!!` method.
     bare_args = ntuple(i -> _unlift(args[i]), Val(M))
     bare_result = frule!!(bare_f, bare_args...)
     P_out = _typeof(__get_primal(bare_result))
-    return Lifted{P_out,N}(bare_result)
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+
+# Wrap a bare frule result back into `Lifted{P_out, N, V}`. The OC's slot
+# type is `lifted_type(Val(N), P_out)` which fixes V to `dual_type(Val(N),
+# P_out)`. The bare rule may return values whose actual V differs from the
+# canonical (e.g. `getfield` returns `Dual{Float64, Float64}` from
+# `_dual_or_ndual` even when the canonical V at width=Val(1) is
+# `NDual{Float64, 1}`). To canonicalise, route bare `Dual{P, T}` results
+# through the 2-arg `Lifted{P_out, N}(primal, tangent)` ctor — that calls
+# `dual_type(Val(N), P_out)(primal, tangent)`, producing the canonical V.
+# Other shapes (NDual, Complex{<:NDual}, Array{<:NDual}, Dual{P, NTangent}
+# at width N>=2, etc.) are already canonical and use the 1-arg form.
+@inline function _wrap_rule_result(::Type{P}, ::Val{N}, x::Dual) where {P,N}
+    # `Lifted{P, N}(primal, tangent)` 2-arg routes through `dual_type(Val(N),
+    # P)(primal, tangent)` to canonicalise V. For abstract P (Union, UnionAll,
+    # Any) `dual_type` returns an abstract type that's not callable, so fall
+    # back to the 1-arg form (V inferred from the bare result's type).
+    return isconcretetype(P) ? Lifted{P,N}(primal(x), tangent(x)) : Lifted{P,N}(x)
+end
+@inline _wrap_rule_result(::Type{P}, ::Val{N}, x) where {P,N} = Lifted{P,N}(x)
 
 # Insert an SSA `_unlift(arg)` at the current position, returning the new SSA.
 # Only used when `info.width !== nothing`; for runtime references (`Argument` /
@@ -177,13 +194,13 @@ const ATTACH_AFTER = true
 const ATTACH_BEFORE = false
 
 """
-    __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}, width=nothing) where {nargs}
+    __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}, width::Val=Val(1)) where {nargs}
 
-If isva and nargs=2, then inputs `(Dual(5.0, 0.0), Dual(4.0, 0.0), Dual(3.0, 0.0))`
-are transformed into `(Dual(5.0, 0.0), Dual((5.0, 4.0), (0.0, 0.0)))`.
+If isva and nargs=2, then inputs `(NDual(5.0, (0.0,)), NDual(4.0, (0.0,)),
+NDual(3.0, (0.0,)))` are grouped element-wise into the trailing varargs slot.
 """
 function __unflatten_dual_varargs(
-    isva::Bool, args, ::Val{nargs}, width=nothing
+    isva::Bool, args, ::Val{nargs}, width::Val=Val(1)
 ) where {nargs}
     isva || return args
     rest = args[nargs:end]
@@ -196,7 +213,12 @@ function __unflatten_dual_varargs(
     return (args[1:(nargs - 1)]..., grouped_args)
 end
 
-_group_vararg_dual(::Nothing, p, rest) = Dual(p, map(tangent, rest))
+function _group_vararg_dual(::Val{1}, group_primal, rest)
+    # Width 1: bare per-element tangent tuple (no `NTangent` wrap), so the
+    # resulting `Dual` matches the canonical `dual_type(Val(1), Tuple{...})`
+    # which uses bare T at N=1.
+    return Dual(group_primal, map(tangent, rest))
+end
 
 function _group_vararg_dual(::Val{N}, group_primal, rest) where {N}
     per_dir = ntuple(Val(N)) do i
@@ -251,7 +273,7 @@ than the current world (e.g., when building rules for MistyClosure which uses it
 function build_frule(
     interp::MooncakeInterpreter{C},
     sig_or_mi,
-    width=nothing;
+    width=Val(1);
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
@@ -328,13 +350,14 @@ end
     width = fwd.width
     flat_args = __unflatten_dual_varargs(isva, args, Val(nargs), width)
     if _is_lifted_width(width)
-        # Phase 3 OC boundary: at width=Val(N>=1), the OC argtypes are
+        # OC boundary: at width=Val(N>=1), the OC argtypes are
         # `Lifted{P_i, N, V_i}` (per `_lift_type`). Wrap each bare slot value
         # before invoking the OC, and unwrap the `Lifted` return so the
         # caller still sees a bare slot value.
         lifted_args = _wrap_oc_args(width, primal_sig, flat_args, isva, Val(nargs))
         return _unlift(fwd.lifted_oc(lifted_args...))
     else
+        # Val{0} primal-passthrough — OC argtypes are bare primal `P_i`.
         return fwd.lifted_oc(flat_args...)
     end
 end
@@ -353,8 +376,19 @@ end
         else
             P_i = fieldtype(primal_sig, i)
         end
-        Lifted{P_i,N}(flat_args[i])
+        _wrap_arg(w, P_i, flat_args[i])
     end
+end
+
+# Construct `Lifted{P_i, N, V}` for a single OC arg slot. For a bare canonical
+# inner (NDual / Complex{<:NDual} / Array{<:NDual} / Dual{P, NTangent}), the
+# 1-arg `Lifted{P, N}(value)` infers V from `typeof(value)` and produces the
+# OC's expected slot type. For a legacy `Dual{P, T}` (test_rule constructs
+# these via `dual_type(P)`), route through the 2-arg `Lifted{P, N}(primal,
+# tangent)` so `dual_type(Val(N), P)(primal, tangent)` builds the canonical V.
+@inline _wrap_arg(::Val{N}, ::Type{P}, x) where {N,P} = Lifted{P,N}(x)
+@inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{P}) where {N,P}
+    return Lifted{P,N}(primal(x), tangent(x))
 end
 
 # On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
@@ -393,14 +427,14 @@ mutable struct LazyPrimal{primal_sig,Trule}
     mi::Core.MethodInstance
     width  # Val{N} or nothing
     rule::Trule
-    function LazyPrimal(mi::Core.MethodInstance, debug_mode::Bool, width=nothing)
+    function LazyPrimal(mi::Core.MethodInstance, debug_mode::Bool, width::Val=Val(1))
         interp = get_interpreter(ForwardMode)
         return new{mi.specTypes,primal_rule_type(interp, mi, width;debug_mode)}(
             debug_mode, mi, width
         )
     end
     function LazyPrimal{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool, width=nothing
+        mi::Core.MethodInstance, debug_mode::Bool, width::Val=Val(1)
     ) where {Tprimal_sig,Trule}
         return new{Tprimal_sig,Trule}(debug_mode, mi, width)
     end
@@ -446,7 +480,7 @@ struct DynamicPrimal{V,W}
     width::W
 end
 
-function DynamicPrimal(debug_mode::Bool, width=nothing)
+function DynamicPrimal(debug_mode::Bool, width::Val=Val(1))
     return DynamicPrimal(Dict{Any,Any}(), debug_mode, width)
 end
 
@@ -476,16 +510,14 @@ struct LiftedInfo
     width  # Val{N} or nothing (nothing = legacy width-1 Dual path)
 end
 
-# Dispatch slot type through width: `nothing` uses legacy `dual_type(P)` (bare
-# `Dual{P, T}`); `Val(N)` uses `lifted_type(Val(N), P)` (wraps in `Lifted`).
-# This is the OC slot-type query used by IR-emit and FCache.
-_lift_type(::Nothing, P) = dual_type(P)
+# Dispatch slot type through width: `Val(N)` uses `lifted_type(Val(N), P)`
+# (wraps in `Lifted`). This is the OC slot-type query used by IR-emit and FCache.
 _lift_type(w::Val, P) = lifted_type(w, P)
 
 function generate_lifted_ir(
     interp::MooncakeInterpreter,
     sig_or_mi,
-    width=nothing;
+    width::Val=Val(1);
     debug_mode=false,
     do_inline=true,
     do_optimize=true,
@@ -544,12 +576,12 @@ function generate_lifted_ir(
     PrimalRuleInfo(isva, nargs, lifted_ret_type(primal_ir, width))
 end
 
-function lifted_ret_type(primal_ir::IRCode, width=nothing)
+function lifted_ret_type(primal_ir::IRCode, width::Val=Val(1))
     return _lift_type(width, compute_ir_rettype(primal_ir))
 end
 
 function primal_rule_type(
-    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance, width=nothing; debug_mode
+    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance, width::Val=Val(1); debug_mode
 ) where {C}
     sig = _get_sig(mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
@@ -672,9 +704,23 @@ function modify_primal_stmts!(
     else
         v = _uninit_dual(info.width, get_const_primal_value(stmt.val))
     end
-    replace_call!(
-        lifted_ir, ssa, PiNode(v, _lift_type(info.width, CC.widenconst(stmt.typ)))
-    )
+    # PiNode is an "assume" — Julia treats the value as the narrowed type at
+    # this code path. For the legacy bare-`Dual` path, narrowing `Dual`
+    # (UnionAll) → `Dual{P_narrow, T}` is sound by UnionAll subtyping. For the
+    # `Lifted{P, N, V}` boundary, however, `Lifted`'s `P` parameter is
+    # invariant: a runtime `Lifted{Any, 1, V}` value is **not** a subtype of
+    # the narrowed `Lifted{Int, 1, V'}`, so the assertion would be wrong and
+    # the OC's compiled code emits LLVM `unreachable` that gets executed at
+    # runtime ("Illegal instruction" in `pi_node_tester`). Drop the narrowing
+    # for lifted slots: use `Any` as the assertion. We lose the narrowing's
+    # optimization benefit at lifted widths, but correctness holds because
+    # the underlying `V` already encodes the runtime concrete type.
+    new_typ = if _is_lifted_width(info.width)
+        Any
+    else
+        _lift_type(info.width, CC.widenconst(stmt.typ))
+    end
+    replace_call!(lifted_ir, ssa, PiNode(v, new_typ))
     return nothing
 end
 
@@ -811,16 +857,22 @@ function modify_primal_stmts!(
 
         # Emit the rule call. Lifted-aware primitives and non-lifted widths
         # replace the original SSA directly. Otherwise, wrap the bare rule
-        # result in `Lifted{primal_retype, N}` so the OC sees a
-        # `lifted_type`-shaped slot.
+        # result via `_wrap_rule_result`, which canonicalises V to match
+        # `dual_type(Val(N), primal_retype)` (e.g. routes bare
+        # `Dual{Float64, Float64}` through the 2-arg ctor to produce
+        # `Lifted{Float64, N, NDual{Float64, N}}` instead of
+        # `Lifted{Float64, N, Dual{Float64, Float64}}`).
         if needs_scaffold
             primal_retype = let t = CC.widenconst(get_ir(info.primal_ir, ssa, :type))
                 contains_bottom_type(t) ? Any : t
             end
             rule_call_inst = new_inst(Expr(:call, rule_callable, rule_args...))
             rule_result_ssa = CC.insert_node!(lifted_ir, ssa, rule_call_inst, ATTACH_BEFORE)
-            TLifted = Lifted{primal_retype,_val_n(info.width)}
-            replace_call!(lifted_ir, ssa, Expr(:call, TLifted, rule_result_ssa))
+            replace_call!(
+                lifted_ir,
+                ssa,
+                Expr(:call, _wrap_rule_result, primal_retype, info.width, rule_result_ssa),
+            )
         else
             replace_call!(lifted_ir, ssa, Expr(:call, rule_callable, rule_args...))
         end

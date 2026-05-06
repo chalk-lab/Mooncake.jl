@@ -34,6 +34,12 @@ tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
 function tangent_type(::Val{N}, ::Type{P}) where {N,P}
     T = tangent_type(P)
     T === NoTangent && return NoTangent
+    # At width=1 keep the bare tangent type (no NTangent wrap). Chunked
+    # `NTangent{NTuple{N, T}}` is only meaningful at N>=2; using it at N=1
+    # would break the many existing rules whose signature constrains
+    # `Dual{P, T<:StandardTangentType}` (e.g. the structured-getfield rule),
+    # since `NTangent` is not `<:StandardTangentType`.
+    N == 1 && return T
     return NTangent{NTuple{N,T}}
 end
 
@@ -101,6 +107,11 @@ end
 
 primal(x::Dual) = x.primal
 tangent(x::Dual) = x.tangent
+
+# `primal` / `tangent` on a bare element-wise tuple of inner duals (the inner
+# `V` of a `Lifted{<:Tuple, N}`). Recursive map so nested Tuple-of-Dual works.
+primal(t::Tuple) = map(primal, t)
+tangent(t::Tuple) = map(tangent, t)
 Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangent(x)))
 # Dual can be safely shared without copying
 _copy(x::P) where {P<:Dual} = x
@@ -268,6 +279,33 @@ end
     return Lifted{P,N,InnerT}(inner)
 end
 
+# Tuple-primal with `NoTangent` (whole-tuple) tangent — common when a `Tuple`
+# slot holds non-differentiable elements (e.g. `Tuple{Int}`). Build the inner
+# tuple element-wise with `NoTangent` for each field.
+@inline function Lifted{P,N}(primal::P, ::NoTangent) where {P<:Tuple,N}
+    InnerT = dual_type(Val(N), P)
+    inner = ntuple(i -> fieldtype(InnerT, i)(primal[i], NoTangent()), Val(fieldcount(P)))
+    return Lifted{P,N,InnerT}(inner)
+end
+
+# Tuple-primal with `NTangent` tangent — width-N chunked vararg case where
+# `_group_vararg_dual` produces an `NTangent` lane structure. Extract per
+# element, per direction.
+@inline function Lifted{P,N}(primal::P, tangent::NTangent) where {P<:Tuple,N}
+    InnerT = dual_type(Val(N), P)
+    lanes = tangent.lanes
+    inner = ntuple(Val(fieldcount(P))) do i
+        Vi = fieldtype(InnerT, i)
+        if N == 1
+            Vi(primal[i], lanes[1][i])
+        else
+            partials = ntuple(d -> lanes[d][i], Val(N))
+            Vi(primal[i], partials)
+        end
+    end
+    return Lifted{P,N,InnerT}(inner)
+end
+
 # Accessors: delegate to the inner's own primal/tangent. For Tuple primals the
 # inner is a bare element-wise tuple, so map over it.
 primal(d::Lifted) = primal(d.value)
@@ -310,7 +348,19 @@ a result slot) and by IR-emit at lift sites (computing the type of an OC
 slot). Symmetric with reverse mode's `codual_type`.
 """
 lifted_type(::Val{0}, ::Type{P}) where {P} = P
-lifted_type(::Val{N}, ::Type{P}) where {N,P} = Lifted{P,N,dual_type(Val(N), P)}
+function lifted_type(::Val{N}, ::Type{P}) where {N,P}
+    V = dual_type(Val(N), P)
+    # When P is abstract (e.g. `Any`, `Real`), `dual_type` returns the abstract
+    # `Dual` UnionAll, which excludes concrete runtime V values like
+    # `NDual{T, N}` / `Complex{<:NDual}`. Using `Lifted{P, N}` UnionAll is
+    # semantically correct (subtype rules accept all concrete V's) but Julia's
+    # OpaqueClosure compilation chokes on UnionAll slot types — `pi_node_tester`
+    # crashes with "Unreachable reached" inside the OC. Returning the universal
+    # `Any` slot type for abstract-P cases sidesteps this: runtime values still
+    # carry full `Lifted{P, N, V}` shape, and downstream rule dispatch keys on
+    # the primal sig (`_is_lifted_aware`), not the slot type.
+    return isconcretetype(V) ? Lifted{P,N,V} : Any
+end
 
 # ── Layer-3 seed factories: return wrapped Lifted slot ───────────────────────
 # One-line delegations to the Layer-2 factories. Both routes consult the same

@@ -158,11 +158,30 @@ macro inactive_intrinsic(name)
         function rrule!!(f::CoDual{typeof($name)}, args::Vararg{Any,N}) where {N}
             return Mooncake.zero_adjoint(f, args...)
         end
+        # Bare overload — direct callers (test_rule, etc.) pass `Dual` args.
+        # TRANSITIONAL: kill-width-nothing migration. The IR-emit's
+        # unwrap-then-bare path may also pass non-Dual slot inners
+        # (`NDual{T, 1}`, `Complex{<:NDual}`, etc.) for unregistered rules.
+        # The Lifted-aware overload below is registered, so IR-emit at
+        # width=Val(N) bypasses the unwrap and goes through `Lifted`. The
+        # bare overload kept as `Vararg{Dual,N}` is reached only by direct
+        # callers that wrap inputs in `Dual` (test_rule, examples).
         function frule!!(f::Dual{typeof($name)}, args::Vararg{Dual,N}) where {N}
             f_primal = primal(f)
             args_primal = map(primal, args)
             return zero_dual(f_primal(args_primal...))
         end
+        # Lifted-aware overload — IR-emit at width=Val(N) passes `Lifted` args
+        # directly. Result wraps via `zero_lifted` since the intrinsic's output
+        # is non-differentiable (typical inactive: comparison returning Bool).
+        function frule!!(
+            f::Mooncake.Lifted{typeof($name),N}, args::Vararg{Mooncake.Lifted,M}
+        ) where {N,M}
+            f_primal = primal(f)
+            args_primal = map(primal, args)
+            return Mooncake.zero_lifted(Val(N), f_primal(args_primal...))
+        end
+        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($name),Vararg}}) = true
     end
     return esc(expr)
 end
@@ -981,6 +1000,18 @@ function frule!!(
         )
     end
 end
+# Post-kill: bare Tuple/NamedTuple of inner duals (the inner V of a
+# `Lifted{<:Tuple}` slot). Field access returns the i-th inner dual directly.
+@inline function frule!!(
+    ::Dual{typeof(getfield)}, x::T, name::Dual
+) where {T<:Union{Tuple,NamedTuple}}
+    return getfield(x, primal(name))
+end
+@inline function frule!!(
+    ::Dual{typeof(getfield)}, x::T, name::Dual, inbounds::Dual
+) where {T<:Union{Tuple,NamedTuple}}
+    return getfield(x, primal(name), primal(inbounds))
+end
 function frule!!(
     ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
 ) where {P}
@@ -1072,6 +1103,21 @@ is_homogeneous_and_immutable(::Any) = false
 # replacefield!
 
 function frule!!(::Dual{typeof(setfield!)}, value::Dual, name::Dual, x::Dual)
+    literal_name = zero_dual(Val(primal(name)))
+    return frule!!(zero_dual(lsetfield!), value, literal_name, x)
+end
+# Post-kill width=Val(1): NDual-shaped value-arg forwarding to lsetfield!.
+@inline function frule!!(
+    ::Dual{typeof(setfield!)},
+    value::Dual,
+    name::Dual,
+    x::Union{
+        Mooncake.Nfwd.NDual,
+        Complex{<:Mooncake.Nfwd.NDual},
+        AbstractArray{<:Mooncake.Nfwd.NDual},
+        AbstractArray{<:Complex{<:Mooncake.Nfwd.NDual}},
+    },
+)
     literal_name = zero_dual(Val(primal(name)))
     return frule!!(zero_dual(lsetfield!), value, literal_name, x)
 end

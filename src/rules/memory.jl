@@ -253,6 +253,18 @@ function frule!!(
     unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
 end
+# Post-kill width=Val(1): IR-emit's unwrap-then-bare path delivers
+# `MemoryRef{<:NDual}` directly (the inner `V` of a `Lifted{MemoryRef{T}, 1,
+# MemoryRef{<:NDual}}`). The copy operates element-wise on the NDual lanes.
+function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::MemoryRef{<:Union{Mooncake.Nfwd.NDual,Complex{<:Mooncake.Nfwd.NDual}}},
+    src::MemoryRef{<:Union{Mooncake.Nfwd.NDual,Complex{<:Mooncake.Nfwd.NDual}}},
+    n::Dual{Int},
+)
+    unsafe_copyto!(dest, src, primal(n))
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{MemoryRef{P}},

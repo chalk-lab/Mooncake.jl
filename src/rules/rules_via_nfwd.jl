@@ -104,6 +104,18 @@ for f in (
         function frule!!(fdual::Dual{typeof($f)}, x::Dual{P}) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x)
         end
+        # Bare NDual overloads for these functions live in the second loop
+        # below (line ~437). Lifted-aware overload — IR-emit at width=Val(N)
+        # passes `Lifted` args directly when the rule sig is registered.
+        @inline function frule!!(
+            ::Mooncake.Lifted{typeof($f),N}, x::Mooncake.Lifted
+        ) where {N}
+            inner = _unlift(x)
+            return Mooncake.Lifted{_typeof(primal(x)),N}($f(inner))
+        end
+        # Arity-specific registration so this unary loop doesn't overwrite the
+        # binary loop's registration for `atan` (which appears in both lists).
+        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($f),Any}}) = true
         function rrule!!(fcodual::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), fcodual, x)
         end
@@ -116,6 +128,11 @@ end
 function frule!!(f::Dual{typeof(tanpi)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
 end
+# Bare NDual overload for tanpi lives in the second loop below.
+@inline function frule!!(::Mooncake.Lifted{typeof(tanpi),N}, x::Mooncake.Lifted) where {N}
+    return Mooncake.Lifted{_typeof(primal(x)),N}(tanpi(_unlift(x)))
+end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tanpi),Any}}) = true
 function rrule!!(f::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
@@ -129,6 +146,14 @@ for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
         ) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2)
         end
+        # Bare NDual overload for these functions lives in the second binary
+        # loop below. Lifted-aware overload only.
+        @inline function frule!!(
+            ::Mooncake.Lifted{typeof($f),N}, a::Mooncake.Lifted, b::Mooncake.Lifted
+        ) where {N}
+            return Mooncake.Lifted{_typeof(primal(a)),N}($f(_unlift(a), _unlift(b)))
+        end
+        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($f),Any,Any}}) = true
         function rrule!!(
             fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}
         ) where {P<:IEEEFloat}

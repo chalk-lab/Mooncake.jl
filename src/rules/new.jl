@@ -44,11 +44,16 @@ end
     bare_x = ntuple(i -> _unlift(x[i]), Val(M))
 
     # Array primal with an NDual MemoryRef arg: bare element-wise lifted Array.
+    # `bare_x` may contain `Tuple`-of-`Dual` values (the inner V of a
+    # `Lifted{<:Tuple}` slot, e.g. dims args). Extract per-element primals
+    # from those before splatting into `_new_`; `MemoryRef` and other shapes
+    # pass through unchanged.
     if P <: Array
         ref = _find_ndual_memref(bare_x...)
         if ref !== nothing
             P_ndual = Array{eltype(ref),ndims(P)}
-            return Lifted{P,N}(_new_(P_ndual, bare_x...))
+            new_args = map(v -> v isa Tuple ? primal(v) : v, bare_x)
+            return Lifted{P,N}(_new_(P_ndual, new_args...))
         end
     end
 
@@ -57,12 +62,20 @@ end
         return Lifted{P,N}(Complex(bare_x...))
     end
 
-    # Struct/tuple with NDual content: per-direction NTangent lanes.
+    # Struct/tuple with NDual content: at width=1 produce a bare-tangent Dual
+    # (matches `dual_type(Val(1), P) = Dual{P, T}`); at width N>=2 wrap the
+    # per-direction tangents in `NTangent`.
     if _has_ndual(bare_x...)
         primals_extracted = map(_ndual_primal, bare_x)
         y = _new_(P, primals_extracted...)
         T = tangent_type(P)
         T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
+        if N == 1
+            dir_tangents = map(v -> _tangent_dir(v, 1), bare_x)
+            return Lifted{P,N}(
+                Dual(y, build_output_tangent(P, primals_extracted, dir_tangents))
+            )
+        end
         tangent_dirs = ntuple(Val(N)) do dir
             dir_tangents = map(v -> _tangent_dir(v, dir), bare_x)
             build_output_tangent(P, primals_extracted, dir_tangents)

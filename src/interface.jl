@@ -998,7 +998,7 @@ end
     width = getfield(cache, :width)
     dual_arg_types = Tuple{map(getfield(cache, :input_specs)) do spec
         P = typeof(spec).parameters[1]
-        isnothing(width) ? dual_type(P) : dual_type(width, P)
+        dual_type(width, P)
     end...}
     output_type = Core.Compiler.return_type(rule, dual_arg_types)
     return _cache_type_summary(_dual_primal_type(output_type))
@@ -1422,7 +1422,9 @@ Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref).
     fx = (f, x...)
     sig = typeof(fx)
     interp = get_interpreter(ForwardMode)
-    width = cs !== nothing ? Val(cs) : nothing
+    # `chunk_size=nothing` is treated as `Val(1)` — the legacy bare-`Dual` path
+    # has been removed. The OC's slot types are `Lifted{P, N, V}` for any N >= 1.
+    width = Val(cs === nothing ? 1 : cs)
     rule = build_frule(
         interp,
         sig,
@@ -1441,22 +1443,12 @@ Returns a [`FCache`](@ref) used with [`value_and_derivative!!`](@ref).
     buf = Ref{Union{Nothing,GW}}(nothing)
     # Concrete-typed Ref keeps seed-buf access type-stable; required to keep
     # scalar `count_allocs(value_and_gradient!!, ...) == 0`.
-    seed_buf = if width === nothing
-        Ref{Union{Nothing,GW}}(nothing)
-    else
-        W = typeof(width).parameters[1]
-        Ref{Union{Nothing,NTuple{W,GW}}}(nothing)
-    end
+    W = typeof(width).parameters[1]
+    seed_buf = Ref{Union{Nothing,NTuple{W,GW}}}(nothing)
     # `lift_buf` holds per-input `Container{NDual{T,W}}` lift targets reused by
-    # `_gradient_widthN`. Tuple shape mirrors `input_primals`. Width-1 path
-    # doesn't use it, so leave as Nothing in that branch.
-    lift_buf = if width === nothing
-        Ref{Nothing}(nothing)
-    else
-        W = typeof(width).parameters[1]
-        LT = Tuple{map(P -> _ndual_lift_type(Val(W), P), sig.parameters)...}
-        Ref{Union{Nothing,LT}}(nothing)
-    end
+    # `_gradient_widthN`. Tuple shape mirrors `input_primals`.
+    LT = Tuple{map(P -> _ndual_lift_type(Val(W), P), sig.parameters)...}
+    lift_buf = Ref{Union{Nothing,LT}}(nothing)
     return FCache(
         config.friendly_tangents, rule, buf, seed_buf, lift_buf, input_specs, width
     )
@@ -1490,38 +1482,9 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
         return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
     end
 
-    if width === nothing
-        return _gradient_width1(rule, input_primals, native_gradients, total_slots, cache)
-    else
-        return _gradient_widthN(
-            rule, input_primals, native_gradients, total_slots, cache, width
-        )
-    end
-end
-
-function _gradient_width1(rule, input_primals, native_gradients, total_slots, cache)
-    local y
-    seed_buf = let buf = cache.seed_buf[]
-        if buf === nothing
-            buf = _alloc_aliased_tangents(input_primals)
-            cache.seed_buf[] = buf
-        end
-        buf
-    end
-    cursor = Ref(0)
-    seed_seen = _new_seen(input_primals)
-    accum_seen = _new_seen(native_gradients)
-    for slot in 1:total_slots
-        cursor[] = 0
-        seed_seen isa IdDict{Any,Nothing} && empty!(seed_seen)
-        seed = _seed_inplace!(seed_buf, input_primals, slot, cursor, seed_seen)
-        output = rule(tuple_map(Dual, input_primals, seed)...)
-        y = primal(output)
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        coeff = Float64(tangent(output))
-        native_gradients = _accumulate_gradient(native_gradients, seed, coeff, accum_seen)
-    end
-    return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
+    return _gradient_widthN(
+        rule, input_primals, native_gradients, total_slots, cache, width
+    )
 end
 
 function _gradient_widthN(
@@ -1741,23 +1704,18 @@ function value_and_derivative!!(cache::FCache, fx::Vararg{Dual,N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     width = cache.width
-    if width === nothing
-        error_if_incorrect_dual_types(fx...)
-        return __call_rule(cache.rule, fx)
-    else
-        padded = map(fx) do d
-            t = tangent(d)
-            p = primal(d)
-            if t isa NoTangent
-                ntuple(_ -> NoTangent(), width)
-            else
-                ntuple(i -> i == 1 ? t : zero_tangent(p), width)
-            end
+    padded = map(fx) do d
+        t = tangent(d)
+        p = primal(d)
+        if t isa NoTangent
+            ntuple(_ -> NoTangent(), width)
+        else
+            ntuple(i -> i == 1 ? t : zero_tangent(p), width)
         end
-        ndual_inputs = map(_combine_to_ndual, input_primals, padded)
-        output = cache.rule(ndual_inputs...)
-        return _ndual_output_to_width1(output)
     end
+    ndual_inputs = map(_combine_to_ndual, input_primals, padded)
+    output = cache.rule(ndual_inputs...)
+    return _ndual_output_to_width1(output)
 end
 
 @inline function _remaining_dirs(::Val{N}, _eval_dir) where {N}
@@ -1821,11 +1779,6 @@ inputs are rejected.
             end
         else
             dir_tangents
-        end
-        if cache_width === nothing
-            dir_duals = tuple_map(Dual, input_primals, canonical)
-            friendly || error_if_incorrect_dual_types(dir_duals...)
-            return rule(dir_duals...)
         end
         rule_inputs = tuple_map(input_primals, canonical) do p, t
             padded = if t isa NoTangent
@@ -2314,25 +2267,38 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
-    cache.width === nothing || throw(
+    cache.width === Val(1) || throw(
         ArgumentError(
-            "value_and_jacobian!! with FCache only supports chunk_size=nothing (width-1 mode)",
+            "value_and_jacobian!! with FCache only supports chunk_size=1 (width-1 mode)"
         ),
     )
     input_primals = (f, x)
     seed1 = _make_seed_tangent(input_primals, 1)
-    output1 = cache.rule(tuple_map(Dual, input_primals, seed1)...)
-    y = primal(output1)
+    # cache.rule expects width-1 NDual inputs; the OC then wraps them in
+    # `Lifted{P, 1, NDual{T, 1}}` and unwraps the result for us.
+    ndual1 = map(_combine_to_ndual, input_primals, map(t -> (t,), seed1))
+    output1 = cache.rule(ndual1...)
+    y = output1 isa Mooncake.NDual ? output1.value : primal(output1)
     Ty = _validate_jacobian_output(y, eltype(x))
     J = zeros(Ty, length(y), total_dof)
-    @inbounds J[:, 1] .= tangent(output1)
+    @inbounds J[:, 1] .= _jacobian_col_tangent(output1)
     for slot in 2:total_dof
         seed = _make_seed_tangent(input_primals, slot)
-        output = cache.rule(tuple_map(Dual, input_primals, seed)...)
-        @inbounds J[:, slot] .= tangent(output)
+        ndual = map(_combine_to_ndual, input_primals, map(t -> (t,), seed))
+        output = cache.rule(ndual...)
+        @inbounds J[:, slot] .= _jacobian_col_tangent(output)
     end
     return y, J
 end
+
+# After `_ndual_output_to_width1`-style unwrap, jacobian columns come from
+# either an `NDual` (scalar IEEEFloat output) or an `Array{<:NDual}`
+# (Vector output). Extract the lane-1 partials in both cases.
+@inline _jacobian_col_tangent(o::Mooncake.NDual) = (o.partials[1],)
+@inline _jacobian_col_tangent(o::AbstractArray{<:Mooncake.NDual}) = map(
+    d -> d.partials[1], o
+)
+@inline _jacobian_col_tangent(o) = tangent(o)
 
 @unstable @inline function value_and_jacobian!!(
     cache::Cache, f::F, x::AbstractVector{<:IEEEFloat}

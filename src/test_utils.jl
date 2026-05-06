@@ -510,7 +510,7 @@ function test_frule_correctness(
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
     )
-    y_ẏ_rule = frule(x_ẋ_rule...)
+    y_ẏ_rule = Mooncake._ndual_output_to_width1(frule(x_ẋ_rule...))
     ẋ_ad = map(tangent, x_ẋ_rule)
     ẏ_ad = tangent(y_ẏ_rule)
 
@@ -691,7 +691,12 @@ function test_frule_interface(x_ẋ...; frule)
     # Run the frule, check it has output a thing of the correct type, and extract results.
     # Throw a meaningful exception if the frule doesn't run at all.
     y_ẏ = try
-        frule(x_ẋ...)
+        # `frule` is now compiled at width=Val(1) (legacy width=nothing path
+        # has been removed), so its result is an `NDual{T, 1}` shape rather
+        # than a bare `Dual{P, T}`. Normalise to the Dual-flavoured form
+        # test_rule expects via `_ndual_output_to_width1` — the same helper
+        # `value_and_derivative!!` uses at the same conversion point.
+        Mooncake._ndual_output_to_width1(frule(x_ẋ...))
     catch
         throw(ArgumentError("rule does not run, signature is $(_typeof(x_ẋ))."))
     end
@@ -1057,7 +1062,9 @@ function test_rule(
                 if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
-                        cache_key = (sig, debug_mode, :forward, nothing)
+                        # Post-kill: `build_frule` defaults to `Val(1)` rather
+                        # than `nothing`, so the cache key uses `Val(1)`.
+                        cache_key = (sig, debug_mode, :forward, Val(1))
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
                     end
