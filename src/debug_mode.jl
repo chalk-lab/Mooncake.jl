@@ -21,11 +21,14 @@ end
 _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
 """
-    (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+    (rule::DebugFRule)(x::Vararg{Any,N}) where {N}
 
-Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
+Apply pre- and post-condition type checking. Accepts any forward-mode value
+(legacy `Dual` wrapper or width-N `NDual` / `Complex{<:NDual}` / array of
+these); the per-arg shape check happens inside `verify_dual_inputs`. See
+[`DebugFRule`](@ref).
 """
-@noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+@noinline function (rule::DebugFRule)(x::Vararg{Any,N}) where {N}
     verify_args(rule.rule, x)
     verify_dual_inputs(x)
     y = __call_rule(rule.rule, x)
@@ -36,8 +39,9 @@ end
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
     try
         for _x in x
-            _x isa Dual || error("Expected Dual, got $(typeof(_x))")
-            verify_dual_value(_x)
+            _is_lifted_value(_x) ||
+                error("Expected lifted forward value, got $(typeof(_x))")
+            _x isa Dual && verify_dual_value(_x)
         end
     catch e
         error("Error in inputs to rule with input types $(_typeof(x))")
@@ -46,33 +50,63 @@ end
 
 @noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
     try
-        y isa Dual || error("frule!! must return a Dual, got $(typeof(y))")
-        verify_dual_value(y)
+        _is_lifted_value(y) ||
+            error("frule!! must return a lifted forward value, got $(typeof(y))")
+        y isa Dual && verify_dual_value(y)
     catch e
         error("Error in outputs of rule with input types $(_typeof(x))")
     end
 end
 
+# Predicate for "value that may legally appear in a forward-mode AD pipeline,
+# on either the legacy `Dual` path or the width-N `NDual` path." Defined here
+# with the `Dual` and `Tuple` cases; `NfwdMooncake.jl` extends it for `NDual`
+# / `Complex{<:NDual}` / array / `MemoryRef` shapes once `NDual` is in scope.
+@inline _is_lifted_value(::Dual) = true
+@inline _is_lifted_value(t::Tuple) = all(_is_lifted_value, t)
+@inline _is_lifted_value(_) = false
+
 @noinline function verify_dual_value(d::Dual{P,T}) where {P,T}
-    # Fast path: type-level check using the Dual type parameters to enforce T == tangent_type(P)
+    # Fast path: type-level check. T must be either `tangent_type(P)` (legacy
+    # width-1 wrapper) or `NTangent{NTuple{N, tangent_type(P)}}` for some N
+    # (width-N lifted form, including the chunk_size=1 default).
     T_expected = tangent_type(P)
-    if T !== T_expected
+    if T !== T_expected && !(T <: NTangent && _ntangent_lane_type(T) === T_expected)
         throw(
             InvalidFDataException(
                 "Dual tangent type mismatch: primal $P requires tangent type " *
-                "$T_expected, but got $T",
+                "$T_expected (or `NTangent{NTuple{N, $T_expected}}` for width-N), " *
+                "but got $T",
             ),
         )
     end
 
-    # Slow path: deep structural validation
+    # Slow path: deep structural validation. For width-N, validate each lane's
+    # tangent against the primal independently.
     p, t = primal(d), tangent(d)
-    # We validate fdata and rdata separately so these helpers stay in sync with reverse-mode checks.
-    verify_fdata_value(p, fdata(t))
-    verify_rdata_value(p, rdata(t))
+    if t isa NTangent
+        for lane in t.lanes
+            verify_fdata_value(p, fdata(lane))
+            verify_rdata_value(p, rdata(lane))
+        end
+    else
+        verify_fdata_value(p, fdata(t))
+        verify_rdata_value(p, rdata(t))
+    end
 
     return nothing
 end
+
+# Extract the lane element type from `NTangent{NTuple{N,T}}`. For non-conforming
+# `NTangent` parameterisations (e.g. heterogeneous tuples) returns `Any`, which
+# the caller treats as "not the expected single-element layout".
+@inline function _ntangent_lane_type(::Type{NTangent{L}}) where {L<:Tuple}
+    elts = L.parameters
+    isempty(elts) && return Any
+    first_elt = elts[1]
+    all(==(first_elt), elts) ? first_elt : Any
+end
+@inline _ntangent_lane_type(::Type) = Any
 
 """
     DebugPullback(pb, y, x)

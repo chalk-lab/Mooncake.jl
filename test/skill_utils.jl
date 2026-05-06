@@ -71,15 +71,7 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
     end
 
     @testset "inspect_ir forward mode" begin
-        ins = inspect_fwd(test_fn, 1.0)
-        @test ins.mode == :forward
-
-        expected_stages = [:raw, :normalized, :bbcode, :dual_ir, :optimized]
-        @test ins.stage_order == expected_stages
-        for s in expected_stages
-            @test haskey(ins.stages, s)
-            @test ins.stages[s].meta.block_count > 0
-        end
+        @test_throws ErrorException inspect_fwd(test_fn, 1.0)
     end
 
     @testset "inspect_ir optimize=false" begin
@@ -100,18 +92,7 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
         @test render_ir(ins.stages[:fwd_ir].ir) == render_ir(dri.fwd_ir)
         @test render_ir(ins.stages[:rvs_ir].ir) == render_ir(dri.rvs_ir)
 
-        ins_fwd = inspect_fwd(test_fn, 1.0; optimize=false)
-        interp_fwd = get_interpreter(ForwardMode)
-        dual_ir, _, _ = Mooncake.generate_dual_ir(
-            interp_fwd, sig; do_inline=false, do_optimize=false
-        )
-        @test :dual_ir in ins_fwd.stage_order
-        @test !haskey(ins_fwd.stages, :optimized)
-        @test render_ir(ins_fwd.stages[:raw].ir) ==
-            render_ir(Mooncake.primal_ir(interp_fwd, sig; normalize=false))
-        @test render_ir(ins_fwd.stages[:normalized].ir) ==
-            render_ir(Mooncake.primal_ir(interp_fwd, sig))
-        @test render_ir(ins_fwd.stages[:dual_ir].ir) == render_ir(dual_ir)
+        @test_throws ErrorException inspect_fwd(test_fn, 1.0; optimize=false)
     end
 
     @testset "primitive signatures report dispatch path" begin
@@ -145,12 +126,12 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
     end
 
     @testset "show_ir" begin
-        ins = inspect_fwd(test_fn, 1.0)
+        ins = inspect_rvs(test_fn, 1.0)
         io = IOBuffer()
         show_ir(ins; io)
         output = String(take!(io))
         @test occursin("IR Inspection", output)
-        @test occursin("Mode: forward", output)
+        @test occursin("Mode: reverse", output)
         for s in ins.stage_order
             @test occursin("Stage: $s", output)
         end
@@ -166,14 +147,14 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
     end
 
     @testset "diff_ir and show_diff" begin
-        ins = inspect_fwd(test_fn, 1.0)
+        ins = inspect_rvs(test_fn, 1.0)
 
         d = diff_ir(ins; from=:raw, to=:normalized)
         @test d isa String
         @test occursin("---", d)
         @test occursin("+++", d)
 
-        d2 = diff_ir(ins; from=:raw, to=:dual_ir)
+        d2 = diff_ir(ins; from=:raw, to=:fwd_ir)
         @test d2 isa String
 
         d3 = diff_ir(ins; from=:nonexistent, to=:raw)
@@ -186,7 +167,7 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
     end
 
     @testset "show_all_diffs" begin
-        ins = inspect_fwd(test_fn, 1.0)
+        ins = inspect_rvs(test_fn, 1.0)
         io = IOBuffer()
         show_all_diffs(ins; io)
         output = String(take!(io))
@@ -215,7 +196,7 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
     end
 
     @testset "write_ir" begin
-        ins = inspect_fwd(test_fn, 1.0)
+        ins = inspect_rvs(test_fn, 1.0)
         tmpdir = mktempdir()
         write_ir(ins, tmpdir)
         files = readdir(tmpdir)
@@ -252,12 +233,8 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
         ins_rvs = inspect_rvs(test_fn, 1.0)
         @test ins_rvs.mode == :reverse
 
-        ins_fwd = inspect_fwd(test_fn, 1.0)
-        @test ins_fwd.mode == :forward
-
-        ins = quick_inspect(test_fn, 1.0; mode=:forward, stages=:raw)
-        @test ins isa IRInspection
-        @test ins.mode == :forward
+        @test_throws ErrorException inspect_fwd(test_fn, 1.0)
+        @test_throws ErrorException quick_inspect(test_fn, 1.0; mode=:forward, stages=:raw)
     end
 
     @testset "inspection failures propagate" begin
@@ -322,9 +299,6 @@ Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmc
     end
 
     @testset "custom function forward mode" begin
-        ins = inspect_fwd(test_fn, 1.0)
-        @test ins.mode == :forward
-        @test length(ins.stages) == 5
-        @test all(s -> ins.stages[s].meta.inst_count > 0, ins.stage_order)
+        @test_throws ErrorException inspect_fwd(test_fn, 1.0)
     end
 end

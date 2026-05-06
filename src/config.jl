@@ -3,9 +3,9 @@
         debug_mode::Bool=false,
         silence_debug_messages::Bool=false,
         friendly_tangents::Bool=false,
-        chunk_size::Union{Nothing,Int}=nothing,
-        enable_nfwd::Bool=true,
+        chunk_size::Union{Nothing,Int}=1,
         empty_cache::Bool=false,
+        second_order_mode::Symbol=:forward_over_reverse,
     )
 
 Configuration struct for use with `ADTypes.AutoMooncake`.
@@ -24,27 +24,121 @@ Configuration struct for use with `ADTypes.AutoMooncake`.
     The tangent is converted from/to the friendly representation at the interface level,
     so all Mooncake internal computations and rule implementations always use the
     [`tangent_type`](@ref) representation.
-- `chunk_size::Union{Nothing,Int}=nothing`: optional chunk width for the public
-    `prepare_derivative_cache` / `value_and_gradient!!` forward-mode path. `nothing` uses
-    Mooncake's default chunking heuristic. This does not affect reverse-mode caches.
-- `enable_nfwd::Bool=true`: whether prepared forward-mode caches may use the `nfwd`
-    NDual-backed fast path. Setting this to `false` forces the `frule!!` (aka ir-based
-    forward) path in `prepare_derivative_cache` and APIs layered on top of it, such as
-    `prepare_hvp_cache` and `prepare_hessian_cache`. When left enabled, cache
-    construction stays passive, but `value_and_derivative!!` / `value_and_gradient!!`
-    may still error at runtime if `nfwd` turns out not to support the function.
+- `chunk_size::Union{Nothing,Int}=1`: forward chunk width for the public
+    [`prepare_derivative_cache`](@ref) path and APIs layered on top of it. The default `1`
+    compiles a width-1 forward rule that lifts IEEEFloat scalars and arrays through
+    `NDual{T,1}`. An explicit integer `N>1` compiles a width-`N` forward rule and uses
+    chunked evaluation in [`value_and_derivative!!`](@ref) / [`value_and_gradient!!`](@ref).
+    `nothing` selects the legacy width-1 path that lifts via plain `Dual{P,T}`; this is
+    retained for the inner cache used by [`prepare_hvp_cache`](@ref) with
+    `:forward_over_reverse`. This does not affect reverse-mode caches.
 - `empty_cache::Bool=false`: if `true`, all internal Mooncake caches (compiled OpaqueClosures,
     CodeInstances, and type-inference results) are cleared before building the new rule. This
     allows the garbage collector to reclaim memory held by previously compiled rules, and is
     useful in long-running sessions where many distinct functions have been differentiated.
     Note that only Julia-level (GC-managed) objects are freed; JIT-compiled native machine
     code is held permanently by the Julia runtime and cannot be reclaimed.
+- `second_order_mode::Symbol=:forward_over_reverse`: controls the nesting strategy used by
+    [`prepare_hvp_cache`](@ref) and [`prepare_hessian_cache`](@ref).
+    `:forward_over_reverse` differentiates a gradient closure with forward-mode AD.
+    `:reverse_over_forward` compiles a reverse-mode rule over `NDual` inputs so that a
+    single forward+backward pass yields both the gradient and the Hessian-vector product.
 """
-@kwdef struct Config
-    debug_mode::Bool = false
-    silence_debug_messages::Bool = false
-    friendly_tangents::Bool = false
-    chunk_size::Union{Nothing,Int} = nothing
-    enable_nfwd::Bool = true
-    empty_cache::Bool = false
+struct Config
+    debug_mode::Bool
+    silence_debug_messages::Bool
+    friendly_tangents::Bool
+    chunk_size::Union{Nothing,Int}
+    empty_cache::Bool
+    second_order_mode::Symbol
+    function Config(
+        debug_mode,
+        silence_debug_messages,
+        friendly_tangents,
+        chunk_size,
+        empty_cache,
+        second_order_mode,
+    )
+        second_order_mode in (:forward_over_reverse, :reverse_over_forward) || throw(
+            ArgumentError(
+                "`second_order_mode` must be `:forward_over_reverse` or " *
+                "`:reverse_over_forward`, got `:$second_order_mode`.",
+            ),
+        )
+        return new(
+            debug_mode,
+            silence_debug_messages,
+            friendly_tangents,
+            chunk_size,
+            empty_cache,
+            second_order_mode,
+        )
+    end
+end
+
+function Config(;
+    debug_mode::Bool=false,
+    silence_debug_messages::Bool=false,
+    friendly_tangents::Bool=false,
+    chunk_size::Union{Nothing,Int}=1,
+    enable_nfwd::Bool=true,
+    empty_cache::Bool=false,
+    second_order_mode::Symbol=:forward_over_reverse,
+)
+    if !enable_nfwd
+        Base.depwarn(
+            "The `enable_nfwd` keyword argument is deprecated and has no effect.", :Config
+        )
+    end
+    return Config(
+        debug_mode,
+        silence_debug_messages,
+        friendly_tangents,
+        chunk_size,
+        empty_cache,
+        second_order_mode,
+    )
+end
+
+# Backward-compatible 6-arg positional overload for the old field order:
+#   Config(debug_mode, silence_debug_messages, friendly_tangents, chunk_size,
+#          enable_nfwd::Bool, empty_cache::Bool)
+# The new inner constructor has `second_order_mode::Symbol` in the 6th slot, so this
+# overload catches the old (Bool, Bool) tail and maps it to the new layout.
+function Config(
+    debug_mode::Bool,
+    silence_debug_messages::Bool,
+    friendly_tangents::Bool,
+    chunk_size::Union{Nothing,Int},
+    enable_nfwd::Bool,
+    empty_cache::Bool,
+)
+    if !enable_nfwd
+        Base.depwarn(
+            "The `enable_nfwd` positional argument is deprecated and has no effect.",
+            :Config,
+        )
+    end
+    return Config(
+        debug_mode,
+        silence_debug_messages,
+        friendly_tangents,
+        chunk_size,
+        empty_cache,
+        :forward_over_reverse,
+    )
+end
+
+# Copy constructor: derive a new Config from an existing one with selected fields
+# overridden. Avoids hand-listing every field at call sites — new Config fields
+# propagate automatically.
+function Config(base::Config; kwargs...)
+    overrides = NamedTuple(kwargs)
+    fields = ntuple(
+        i -> begin
+            n = fieldname(Config, i)
+            haskey(overrides, n) ? overrides[n] : getfield(base, n)
+        end, fieldcount(Config)
+    )
+    return Config(fields...)
 end

@@ -89,11 +89,11 @@ function _wrap_boxed_line(line, width::Int)
 end
 
 function _print_boxed_error(io::IO, lines; footer=nothing)
-    _print_boxed_block(io, "", lines; footer)
+    return _print_boxed_block(io, "", lines; footer)
 end
 
 function _print_boxed_info(io::IO, lines; footer=nothing)
-    _print_boxed_message(io, "Info", lines; footer)
+    return _print_boxed_message(io, "Info", lines; footer)
 end
 
 """
@@ -468,7 +468,7 @@ function opaque_closure(
     end
     src = CC.ir_to_codeinf!(src, ir)
     src.rettype = ret_type
-    oc = Base.Experimental.generate_opaque_closure(
+    return Base.Experimental.generate_opaque_closure(
         sig, Union{}, ret_type, src, nargs, isva, env...; do_compile
     )::Core.OpaqueClosure{sig,ret_type}
 end
@@ -501,9 +501,9 @@ end
         compute_oc_signature(ir, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
     else
         compute_ir_rettype(ir) = Base.Experimental.compute_ir_rettype(ir)
-        compute_oc_signature(ir, nargs, isva) = Base.Experimental.compute_oc_signature(
-            ir, nargs, isva
-        )
+        function compute_oc_signature(ir, nargs, isva)
+            return Base.Experimental.compute_oc_signature(ir, nargs, isva)
+        end
     end
 end
 
@@ -582,8 +582,8 @@ Currently, `_copy` has the following behaviours for specific types:
 - Forward/reverse data types (e.g. `FData`, `RData`, `LazyZeroRData`) → recursively copy wrapped data  
 - `RRuleZeroWrapper` → recursively copy the wrapped rule into a new instance
 - `DerivedRule` → construct new instances with copied captures and caches  
-- `LazyFRule`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode  
-- `DynamicFRule`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
+- `LazyPrimal`, `LazyDerivedRule` → construct new lazy rules with the same method instance and debug mode  
+- `DynamicPrimal`, `DynamicDerivedRule` → construct new dynamic rules with an empty cache and the same debug mode  
 """
 
 # Generic fallback to Base.copy
@@ -613,13 +613,13 @@ _copy(x::Type) = x
 # args), so zero-allocation performance checks are skipped on Julia < 1.11 in test_utils.
 #
 # This generic fallback returns Any. Specialised overloads restore type stability:
-#   - DerivedFRule, DerivedRule (forward_mode.jl, reverse_mode.jl): type assertion via params
+#   - DerivedPrimal, DerivedRule (primal_mode.jl, reverse_mode.jl): type assertion via params
 #   - DebugFRule, DebugRRule (debug_mode.jl): direct call (no OC, no barrier needed)
 #   - typeof(rrule!!) (interface.jl): direct call (plain function, no OC)
-# Dynamic rules (DynamicFRule, DynamicDerivedRule) cannot be handled statically and remain
+# Dynamic rules (DynamicPrimal, DynamicDerivedRule) cannot be handled statically and remain
 # unstable on Julia 1.10.
 #
-# Used by LazyFRule, DynamicFRule, LazyDerivedRule, DynamicDerivedRule, RRuleZeroWrapper,
+# Used by LazyPrimal, DynamicPrimal, LazyDerivedRule, DynamicDerivedRule, RRuleZeroWrapper,
 # DebugFRule, and DebugRRule.
 #
 # Approximate Mooncake-free MWE (Julia 1.10):
@@ -638,3 +638,196 @@ _copy(x::Type) = x
 else
     @inline __call_rule(rule, args) = rule(args...)
 end
+
+# ── Scalar slot traversal ────────────────────────────────────────────────────
+#
+# Left-fold and map-like rebuild over the scalar degrees of freedom of a value.
+# These generalise Nfwd._nfwd_fold_slots / _nfwd_unfold_slots to NamedTuples,
+# generic AbstractArrays, and arbitrary struct types.
+#
+# Aliasing: when `state` is an `IdDict{Any,Any}`, mutable containers (arrays,
+# mutable structs) are tracked — revisits are skipped (_fold_slots) or return
+# their cached rebuild (_unfold_slots).
+
+# ── _fold_slots ──────────────────────────────────────────────────────────────
+#
+#     _fold_slots(f, init, x, state) -> (acc, state)
+#
+# Callback signature: f(acc, x_container, slot_index, state) -> (acc, state).
+
+@inline function _fold_slots(f::F, init, x::IEEEFloat, state) where {F}
+    return f(init, x, 1, state)
+end
+
+@inline function _fold_slots(f::F, init, x::Complex{<:IEEEFloat}, state) where {F}
+    acc, state = f(init, x, 1, state)
+    return f(acc, x, 2, state)
+end
+
+@inline function _fold_slots(f::F, init, x::AbstractArray{T}, state) where {F,T<:IEEEFloat}
+    if state isa IdDict{Any,Any}
+        haskey(state, x) && return (init, state)
+        state[x] = nothing
+    end
+    acc = init
+    @inbounds for i in eachindex(x)
+        acc, state = f(acc, x, i, state)
+    end
+    return acc, state
+end
+
+@inline function _fold_slots(
+    f::F, init, x::AbstractArray{Complex{T}}, state
+) where {F,T<:IEEEFloat}
+    if state isa IdDict{Any,Any}
+        haskey(state, x) && return (init, state)
+        state[x] = nothing
+    end
+    acc = init
+    @inbounds for i in eachindex(x)
+        acc, state = f(acc, x, 2i - 1, state)
+        acc, state = f(acc, x, 2i, state)
+    end
+    return acc, state
+end
+
+@inline _fold_slots(::F, init, ::Tuple{}, state) where {F} = (init, state)
+@inline function _fold_slots(f::F, init, x::Tuple, state) where {F}
+    acc, state = _fold_slots(f, init, first(x), state)
+    return _fold_slots(f, acc, Base.tail(x), state)
+end
+
+@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} = _fold_slots(
+    f, init, values(x), state
+)
+
+@inline function _fold_slots(f::F, init, x::AbstractArray, state) where {F}
+    tangent_type(typeof(x)) == NoTangent && return (init, state)
+    if state isa IdDict{Any,Any}
+        haskey(state, x) && return (init, state)
+        state[x] = nothing
+    end
+    acc = init
+    if x isa Array
+        for i in eachindex(x)
+            isassigned(x, i) || continue
+            acc, state = _fold_slots(f, acc, x[i], state)
+        end
+    else
+        for xi in x
+            acc, state = _fold_slots(f, acc, xi, state)
+        end
+    end
+    return (acc, state)
+end
+
+@inline function _fold_slots(f::F, init, x::P, state) where {F,P}
+    tangent_type(P) == NoTangent && return (init, state)
+    if Base.ismutabletype(P) && state isa IdDict{Any,Any}
+        haskey(state, x) && return (init, state)
+        state[x] = nothing
+    end
+    acc = init
+    inits = always_initialised(P)
+    for n in 1:fieldcount(P)
+        if isdefined(x, n)
+            acc, state = _fold_slots(f, acc, getfield(x, n), state)
+        elseif inits[n]
+            throw(
+                ArgumentError(
+                    "Encountered undefined field `$(fieldname(P, n))` in `$P` " *
+                    "that is marked always-initialised.",
+                ),
+            )
+        end
+    end
+    return (acc, state)
+end
+
+# ── _unfold_slots ────────────────────────────────────────────────────────────
+#
+#     _unfold_slots(f, x, state) -> (rebuilt, state)
+#
+# Callback signature: f(x_leaf, state) -> (result, state).
+
+@inline function _unfold_slots(
+    f::F, x::Union{IEEEFloat,Complex{<:IEEEFloat}}, state
+) where {F}
+    return f(x, state)
+end
+
+@inline function _unfold_slots(
+    f::F, x::Union{AbstractArray{<:IEEEFloat},AbstractArray{<:Complex{<:IEEEFloat}}}, state
+) where {F}
+    if state isa IdDict{Any,Any}
+        haskey(state, x) && return state[x], state
+    end
+    result, state = f(x, state)
+    if state isa IdDict{Any,Any}
+        state[x] = result
+    end
+    return result, state
+end
+
+@inline _unfold_slots(::F, ::Tuple{}, state) where {F} = ((), state)
+@inline function _unfold_slots(f::F, x::Tuple, state) where {F}
+    head, state = _unfold_slots(f, first(x), state)
+    tail, state = _unfold_slots(f, Base.tail(x), state)
+    return (head, tail...), state
+end
+
+@inline function _unfold_slots(f::F, x::NamedTuple{names}, state) where {F,names}
+    vals, state = _unfold_slots(f, values(x), state)
+    return NamedTuple{names}(vals), state
+end
+
+# ── _count_slots ──────────────────────────────────────────────────────────────
+
+# Public 1-arg form: `seen=nothing` skips the dict entirely, preserving the
+# zero-alloc fast path for non-aliasing inputs. Pass an `IdDict{Any,Nothing}`
+# when caller may have aliased mutable inputs so they're counted once.
+@inline _count_slots(x) = _count_slots(x, nothing)
+
+@inline _count_slots(x::IEEEFloat, _seen) = 1
+@inline _count_slots(x::Complex{<:IEEEFloat}, _seen) = 2
+@inline function _count_slots(x::AbstractArray{<:IEEEFloat}, seen)
+    seen isa IdDict{Any,Nothing} && (haskey(seen, x) ? (return 0) : (seen[x] = nothing))
+    return length(x)
+end
+@inline function _count_slots(x::AbstractArray{<:Complex{<:IEEEFloat}}, seen)
+    seen isa IdDict{Any,Nothing} && (haskey(seen, x) ? (return 0) : (seen[x] = nothing))
+    return 2 * length(x)
+end
+@inline _count_slots(::Tuple{}, _seen) = 0
+@inline _count_slots(x::Tuple, seen) =
+    _count_slots(first(x), seen) + _count_slots(Base.tail(x), seen)
+@inline _count_slots(x::NamedTuple, seen) = _count_slots(values(x), seen)
+@inline function _count_slots(x, seen)
+    if seen isa IdDict{Any,Nothing} && ismutabletype(typeof(x))
+        haskey(seen, x) && return 0
+        seen[x] = nothing
+    end
+    n = first(_fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}()))
+    if n == 0 && _tangent_can_have_scalar(tangent_type(_typeof(x)))
+        throw(
+            ArgumentError(
+                "_count_slots: `$(_typeof(x))` has a non-trivial tangent_type but " *
+                "`_count_slots` recognised no scalar leaves. Would-be silent width-1 " *
+                "fallthrough is now an error: add an `_uninit_dual(::Val{N}, ::T)` " *
+                "overload for `$(_typeof(x))` if it has differentiable scalar content, " *
+                "or a `_count_slots(::T, _seen) = 0` shim if it does not (e.g. " *
+                "`Base.RefValue{Int}`).",
+            ),
+        )
+    end
+    return n
+end
+
+@inline function _tangent_can_have_scalar(::Type{T}) where {T}
+    T === NoTangent && return false
+    T <: AbstractArray && return _tangent_can_have_scalar(eltype(T))
+    return true
+end
+
+# Bool <: Integer in Julia, so this also covers `Base.RefValue{Bool}`.
+@inline _count_slots(::Base.RefValue{<:Integer}, _seen) = 0

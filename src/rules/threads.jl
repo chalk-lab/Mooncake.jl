@@ -38,13 +38,37 @@ end
     typeof(Base.Threads.threading_run),F,Bool
 } where {F}
 
+# `build_frule` already memoises the worker rule per `(F, world)` via `interp.oc_cache`,
+# but each call still pays for `[_copy(worker_rule) for _ in 1:threadpoolsize()]` —
+# `_copy` recursively copies captures and runs once per thread. Cache the per-thread
+# array keyed by signature + threadpoolsize (the latter changes if the user reconfigures
+# threads at runtime).
+const _THREADING_RUN_RULES_LOCK = ReentrantLock()
+const _THREADING_RUN_RULES = Dict{Tuple{Any,Int,UInt},Vector{Any}}()
+push!(
+    _EXTRA_CACHE_CLEANERS,
+    () -> lock(() -> empty!(_THREADING_RUN_RULES), _THREADING_RUN_RULES_LOCK),
+)
+
+function _threading_run_worker_rules(::Type{F}, world::UInt) where {F}
+    n = Threads.threadpoolsize()
+    key = (F, n, world)
+    lock(_THREADING_RUN_RULES_LOCK) do
+        cached = get(_THREADING_RUN_RULES, key, nothing)
+        cached === nothing || return cached
+        interp = get_interpreter(ForwardMode)
+        worker_rule = build_frule(interp, Tuple{F,Int})
+        rules = Any[_copy(worker_rule) for _ in 1:n]
+        _THREADING_RUN_RULES[key] = rules
+        return rules
+    end
+end
+
 function frule!!(
     ::Dual{typeof(Base.Threads.threading_run)}, fun::Dual{F}, static::Dual{Bool}
 ) where {F}
-    worker_rule = build_frule(get_interpreter(ForwardMode), Tuple{F,Int})
-    worker_rules = [_copy(worker_rule) for _ in 1:Threads.threadpoolsize()]
+    worker_rules = _threading_run_worker_rules(F, get_interpreter(ForwardMode).world)
     Base.Threads.threading_run(primal(static)) do tid
-        # `threading_run` hands worker ids in the default pool's 1-based tid space.
         1 <= tid <= length(worker_rules) ||
             throw(ArgumentError("unexpected thread id $tid"))
         worker_rules[tid](fun, zero_dual(tid))

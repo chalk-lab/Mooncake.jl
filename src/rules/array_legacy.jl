@@ -373,6 +373,15 @@ Base.@propagate_inbounds function frule!!(
     dy = arrayref(primal(inbounds), tangent(x), _inds...)
     return Dual(y, dy)
 end
+# NDual (chunked forward) path: tangent info lives inside elements, not in a Dual wrapper.
+Base.@propagate_inbounds function frule!!(
+    ::Dual{typeof(Core.arrayref)},
+    inbounds::Dual{Bool},
+    x::Array{<:_HasNDual},
+    inds::Vararg{Dual{Int},N},
+) where {N}
+    return arrayref(primal(inbounds), x, tuple_map(primal, inds)...)
+end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
     checkbounds::CoDual{Bool},
@@ -406,6 +415,17 @@ function frule!!(
     _inds = tuple_map(primal, inds)
     Core.arrayset(primal(inbounds), primal(A), primal(v), _inds...)
     Core.arrayset(primal(inbounds), tangent(A), tangent(v), _inds...)
+    return A
+end
+# NDual (chunked forward) path: tangent info lives inside elements.
+function frule!!(
+    ::Dual{typeof(Core.arrayset)},
+    inbounds::Dual{Bool},
+    A::Array{<:_HasNDual},
+    v,
+    inds::Dual{Int}...,
+)
+    Core.arrayset(primal(inbounds), A, v, tuple_map(primal, inds)...)
     return A
 end
 function rrule!!(

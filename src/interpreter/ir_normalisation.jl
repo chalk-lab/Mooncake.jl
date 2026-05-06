@@ -487,7 +487,7 @@ function const_prop_gotoifnots!(ir::IRCode)
 end
 
 # On Julia 1.10, passing findfirst's Union{Int,Nothing} return directly to deleteat!
-# introduces a union-split that propagates through generate_dual_ir and causes spurious
+# introduces a union-split that propagates through generate_lifted_ir and causes spurious
 # allocation regressions. The !== nothing guard narrows to Int before the call.
 # Note: the 1.10 path silently does nothing when the item is absent; the 1.11 path throws
 # BoundsError. This is fine because remove_edge! is only ever called with edges that exist.

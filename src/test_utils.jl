@@ -1057,7 +1057,7 @@ function test_rule(
                 if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
-                        cache_key = (sig, debug_mode, :forward)
+                        cache_key = (sig, debug_mode, :forward, nothing)
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
                     end
@@ -1228,12 +1228,12 @@ function _test_tangent_interface(rng::AbstractRNG, p::P; interface_only=false) w
     __dot(t, s) = Mooncake._dot_internal(IdDict{Any,Any}(), t, s)
     __scale(a::Float64, t) = Mooncake._scale_internal(IdDict{Any,Any}(), a, t)
     _populate_address_map(p, t) = populate_address_map_internal(AddressMap(), p, t)
-    _tangent_to_primal!!(p, t) = Mooncake.tangent_to_primal_internal!!(
-        p, t, IdDict{Any,Any}()
-    )
-    _primal_to_tangent!!(t, p) = Mooncake.primal_to_tangent_internal!!(
-        t, p, IdDict{Any,Any}()
-    )
+    function _tangent_to_primal!!(p, t)
+        return Mooncake.tangent_to_primal_internal!!(p, t, IdDict{Any,Any}())
+    end
+    function _primal_to_tangent!!(t, p)
+        return Mooncake.primal_to_tangent_internal!!(t, p, IdDict{Any,Any}())
+    end
 
     # Check that tangent_type returns a `Type`.
     T = tangent_type(P)

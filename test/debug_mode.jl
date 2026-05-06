@@ -124,19 +124,16 @@
         end
 
         @testset "integration with test_rule" begin
-            # Test basic case - test_rule expects primal functions, not Duals
+            # Pass a pre-built debug-mode frule to ensure debug checks are exercised.
+            frule_sin = Mooncake.build_frule(sin, 1.0; debug_mode=true)
             Mooncake.TestUtils.test_rule(
-                sr(123456), sin, 1.0; mode=ForwardMode, debug_mode=true, perf_flag=:none
+                sr(123456), sin, 1.0; frule=frule_sin, mode=ForwardMode, perf_flag=:none
             )
 
-            # Test with array
+            x = randn(5)
+            frule_sum = Mooncake.build_frule(sum, x; debug_mode=true)
             Mooncake.TestUtils.test_rule(
-                sr(123456),
-                sum,
-                randn(5);
-                mode=ForwardMode,
-                debug_mode=true,
-                perf_flag=:none,
+                sr(123456), sum, x; frule=frule_sum, mode=ForwardMode, perf_flag=:none
             )
         end
     end

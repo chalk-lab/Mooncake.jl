@@ -166,10 +166,11 @@ function __strip_coverage!(ir::IRCode)
 end
 
 """
-    optimise_ir!(ir::IRCode, show_ir=false)
+    optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
 
 Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
 to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
+If `interp` is provided, it is used as the abstract interpreter for inlining.
 """
 function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     if show_ir

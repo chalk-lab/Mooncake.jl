@@ -9,7 +9,7 @@ field of an `OpaqueClosure` has field type `Any`.
 
 That the field type of `dual_callable` is `Any` is a limitation of the current
 implementation. The concrete type of `dual_callable` might be one of a couple of things,
-notably either `typeof(frule!!)` or `DerivedFRule`. It might be possible to figure out which
+notably either `typeof(frule!!)` or `DerivedPrimal`. It might be possible to figure out which
 it is, and use this information to improve the type stability of this function.
 """
 struct MistyClosureTangent
@@ -26,8 +26,8 @@ end
 # fall outside valid_worlds and cause an error.
 #
 # Using the original world age is safe because lookup_ir for MistyClosure returns mc.ir[]
-# directly, bypassing method table lookups. Nested non-primitive calls use LazyFRule or
-# DynamicFRule, which obtain a current-world interpreter via get_interpreter() at runtime.
+# directly, bypassing method table lookups. Nested non-primitive calls use LazyPrimal or
+# DynamicPrimal, which obtain a current-world interpreter via get_interpreter() at runtime.
 # We pass skip_world_age_check=true since build_frule's safety check would incorrectly
 # reject our intentionally-older interpreter.
 #
@@ -164,13 +164,13 @@ end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
 ) where {P<:MistyClosure,F<:MistyClosureFData,f}
-    misty_closure_getfield_rrule_exception()
+    return misty_closure_getfield_rrule_exception()
 end
 
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P<:MistyClosure,F<:MistyClosureFData,f,order}
-    misty_closure_getfield_rrule_exception()
+    return misty_closure_getfield_rrule_exception()
 end
 
 function misty_closure_getfield_rrule_exception()
@@ -184,7 +184,7 @@ function misty_closure_getfield_rrule_exception()
 end
 
 function rrule!!(::CoDual{typeof(_new_)}, p::CoDual{<:MistyClosure}, x::Vararg{CoDual})
-    misty_closure_getfield_rrule_exception()
+    return misty_closure_getfield_rrule_exception()
 end
 
 function misty_closure_new_rrule_exception()

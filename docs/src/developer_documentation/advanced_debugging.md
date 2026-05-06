@@ -35,9 +35,6 @@ show_diff(ins; from=:raw, to=:normalized) # diff between stages
 ```
 
 ```@example advanced_debugging
-# Forward mode
-ins = inspect_ir(demo_fn, 1.0; mode=:forward)
-
 # World age info (useful for debugging stale code)
 show_world_info(ins)
 ```
@@ -46,13 +43,10 @@ show_world_info(ins)
 
 `:raw` → `:normalized` → `:bbcode` → `:fwd_ir` / `:rvs_ir` → `:optimized_fwd` / `:optimized_rvs`
 
-### Forward mode stages
-
-`:raw` → `:normalized` → `:dual_ir` → `:optimized`
-
 !!! note
-    The inspection tool also shows a `:bbcode` stage for cross-mode comparison,
-    but forward mode does not use BBCode internally.
+    `inspect_ir` currently supports reverse-mode inspection only. The previous
+    forward-mode IR inspector was removed along with the IR-based forward
+    compiler path.
 
 !!! note
     Primitive signatures such as `sin` do not generate AD IR stages here. Mooncake
@@ -88,7 +82,7 @@ compiled code not picking up new method definitions.
 
 In Mooncake, this most commonly affects:
 
-- **`DerivedRule` / `DerivedFRule`**: compiled at a fixed world, can become
+- **`DerivedRule` / `DerivedPrimal`**: compiled at a fixed world, can become
   stale if methods they depend on are redefined.
 - **`LazyDerivedRule`**: compiles on first call (static dispatch via `:invoke`),
   obtaining a fresh interpreter at that point.
