@@ -22,7 +22,6 @@ jobs:
 
       - name: Think
         id: think
-        continue-on-error: true
         env:
           # Fine-grained PAT with "Copilot Requests" permission.
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_PAT }}
@@ -35,7 +34,7 @@ jobs:
           printf '%s' "$ISSUE_TITLE" > issue_title.txt
           printf '%s' "$ISSUE_BODY" > issue_body.txt
 
-          RESPONSE=$(copilot --allow-all-tools -p '
+          cat > copilot_prompt.txt <<'PROMPT'
           You are the triage bot for Mooncake.jl, a Julia automatic differentiation package.
           Classify the following GitHub issue and write a response per the policy below.
 
@@ -103,10 +102,18 @@ jobs:
              VERDICT: ACCEPTED|REJECTED
              MESSAGE:
              <close_message, or empty if ACCEPTED>
-          ")
+          PROMPT
 
-          VERDICT=$(echo "$RESPONSE" | grep '^VERDICT:' | head -1 | sed 's/^VERDICT: *//')
-          MESSAGE=$(echo "$RESPONSE" | sed -n '/^MESSAGE:/,$ { /^MESSAGE:/d; p }')
+          RESPONSE=$(copilot --allow-all-tools -p "$(cat copilot_prompt.txt)")
+
+          VERDICT=$(printf '%s\n' "$RESPONSE" | awk '/^VERDICT:/ { sub(/^VERDICT: */, ""); print; exit }')
+          MESSAGE=$(printf '%s\n' "$RESPONSE" | awk 'found { print } /^MESSAGE:/ { found = 1 }')
+
+          if [ "$VERDICT" != "ACCEPTED" ] && [ "$VERDICT" != "REJECTED" ]; then
+            echo "Copilot returned an invalid verdict: $VERDICT" >&2
+            printf '%s\n' "$RESPONSE" >&2
+            exit 1
+          fi
 
           echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
           _EOF=$(openssl rand -hex 16)
