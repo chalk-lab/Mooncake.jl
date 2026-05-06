@@ -28,6 +28,24 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
     return Dual(y, build_output_tangent(P, primals, map(tangent, x)))
 end
 
+# Phase 4b — Lifted-aware `_new_`: thin delegator that recovers `P_out` from
+# the static `Type{P}` parameter. The generic Lifted-aware adapter in
+# primal_mode.jl can't be used here because it derives `P_out` via
+# `__get_primal(bare_result)`, but the bare frule returns container values
+# (e.g. `Array{NDual{T,N}, D}`) whose primal type can't be recovered from the
+# value alone — the return is intentionally bare-element-wise. Static `P` from
+# `Lifted{Type{P}, N}` is the source of truth.
+@inline function frule!!(
+    f::Lifted{typeof(_new_),N}, p::Lifted{Type{P},N}, x::Vararg{Lifted,M}
+) where {N,P,M}
+    bare_f = _unlift(f)
+    bare_p = _unlift(p)
+    bare_x = ntuple(i -> _unlift(x[i]), Val(M))
+    bare_result = frule!!(bare_f, bare_p, bare_x...)
+    return Lifted{P,N}(bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(_new_),Vararg}}) = true
+
 # `_find_ndual_memref`, `_ndual_primal`, `_ndual_width`, `_tangent_dir`, and
 # `_tangent_dir_elem` are defined in `nfwd/NfwdMooncake.jl` so that all NDual
 # container dispatch lives in one file.
