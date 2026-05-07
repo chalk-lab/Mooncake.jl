@@ -133,6 +133,12 @@ stop_gradient(x) = x
 function frule!!(::Dual{typeof(stop_gradient)}, x::Dual)
     return zero_dual(primal(x))
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(stop_gradient),N}, x::Mooncake.Lifted
+) where {N}
+    return zero_lifted(Val(N), primal(x))
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(stop_gradient),Any}}) = true
 
 function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
     # Copy fdata so that in-place gradient accumulation into the output does not
