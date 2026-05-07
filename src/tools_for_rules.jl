@@ -407,6 +407,18 @@ function _zero_derivative_impl(ctx, sig, mode)
         end
     end
 
+    # Auto-register `_is_lifted_aware` for the same sig: `zero_derivative` has
+    # both bare-`Dual` and Lifted-aware overloads in `tools_for_rules.jl`, so
+    # the dispatch already works under the generic Lifted-aware adapter. Emit
+    # the trait so the IR-emit skips the unwrap/wrap scaffolding for these
+    # rules. The trait is mode-agnostic (frule path); harmless for ReverseMode-
+    # only rules since `_is_lifted_aware` only gates the forward IR-emit path.
+    is_lifted_aware_ex = quote
+        @inline function Mooncake._is_lifted_aware(::Type{<:$(esc(sig))})
+            return true
+        end
+    end
+
     # Figuring out which mode argument was actually provided is going to be very hard in
     # general, and rather error prone, because the mode might appear as a `Type`, one of
     # several `Symbol`s, or possibly something else not considered. As a result, we always
@@ -418,7 +430,7 @@ function _zero_derivative_impl(ctx, sig, mode)
     )
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
-    return Expr(:block, is_primitive_ex, frule_ex, rrule_ex)
+    return Expr(:block, is_primitive_ex, is_lifted_aware_ex, frule_ex, rrule_ex)
 end
 
 """
