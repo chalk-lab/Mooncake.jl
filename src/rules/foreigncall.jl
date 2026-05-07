@@ -161,6 +161,9 @@ function rrule!!(
     return dest, unsafe_copyto!_pb!!
 end
 
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_reshape_array},Vararg}}
+) = true
 function frule!!(
     ::Dual{typeof(_foreigncall_)},
     ::Dual{Val{:jl_reshape_array}},
@@ -220,6 +223,9 @@ function rrule!!(
     return y, NoPullback(ntuple(_ -> NoRData(), 9))
 end
 
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_array_isassigned},Vararg}}
+) = true
 function frule!!(
     ::Dual{typeof(_foreigncall_)},
     ::Dual{Val{:jl_array_isassigned}},
@@ -227,12 +233,13 @@ function frule!!(
     arg_types::Dual{AT}, # arg types are (Any, UInt64)
     ::Dual{nreq}, # nreq
     ::Dual{calling_convention}, # calling convention
-    a::Dual{<:Array},
+    a::Union{Dual{<:Array},Array{<:NDual},Array{<:Complex{<:NDual}}},
     ii::Dual{UInt},
     args...,
 ) where {RT,AT,nreq,calling_convention}
+    arr = a isa Dual ? primal(a) : a
     GC.@preserve args begin
-        y = ccall(:jl_array_isassigned, Cint, (Any, UInt), primal(a), primal(ii))
+        y = ccall(:jl_array_isassigned, Cint, (Any, UInt), arr, primal(ii))
     end
     return zero_dual(y)
 end
