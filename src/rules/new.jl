@@ -137,8 +137,22 @@ end
 # container dispatch lives in one file.
 
 @inline function _ndual_new_result(::Type{P}, y, x::Tuple, primals::Tuple) where {P}
-    W = _ndual_width(x...)
-    tangent_dirs = ntuple(W) do i
+    return _ndual_new_result(P, y, x, primals, _ndual_width(x...))
+end
+@inline function _ndual_new_result(
+    ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{1}
+) where {P}
+    # Width 1 produces a bare-tangent `Dual{P, T}` matching
+    # `dual_type(Val(1), P) = Dual{P, tangent_type(P)}`. Wrapping in
+    # `NTangent{Tuple{T}}` here is the chunked-N shape and would mismatch
+    # the OC slot.
+    dir_tangents = map(xi -> _tangent_dir(xi, 1), x)
+    return Dual(y, build_output_tangent(P, primals, dir_tangents))
+end
+@inline function _ndual_new_result(
+    ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{W}
+) where {P,W}
+    tangent_dirs = ntuple(Val(W)) do i
         dir_tangents = map(xi -> _tangent_dir(xi, i), x)
         build_output_tangent(P, primals, dir_tangents)
     end

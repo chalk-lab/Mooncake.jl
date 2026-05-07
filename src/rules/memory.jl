@@ -947,6 +947,23 @@ end
     return value
 end
 
+# Untyped `MemoryRef{Any}` slot receiving a bare value carrying NDual content
+# (scalar `NDual`, `Complex{<:NDual}`, or container `Array{<:NDual}`). Stores
+# the primal in the Any-typed primal memory and the wrapped value in the
+# tangent slot. Used when `Vector{Any}` is built via `setindex!` at lifted
+# width.
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    ref::Dual{<:MemoryRef{Any},<:MemoryRef{Any}},
+    value::Union{NDual,Complex{<:NDual},Array{<:NDual},Array{<:Complex{<:NDual}}},
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {ordering,boundscheck}
+    memoryrefset!(primal(ref), _ndual_primal(value), ordering, boundscheck)
+    memoryrefset!(tangent(ref), value, ordering, boundscheck)
+    return value
+end
+
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Memory{<:_HasNDual})
     return memoryrefnew(x)
 end

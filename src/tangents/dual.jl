@@ -289,6 +289,10 @@ end
 # Tuple-typed fields, recurse element-wise so a nested Tuple-of-Dual builds
 # without trying `Tuple{...}(::Tuple, ::Tuple)` (which has no ctor).
 @inline _inner_dual_for_field(::Type{V}, primal, tangent) where {V} = V(primal, tangent)
+# When the tangent is already the canonical V (e.g. test_rule passes a `Dual`
+# whose tangent slot carries an NDual or Array{NDual} directly), pass it
+# through — re-wrapping would invoke a non-existent 2-arg ctor.
+@inline _inner_dual_for_field(::Type{V}, primal, tangent::V) where {V} = tangent
 @inline function _inner_dual_for_field(
     ::Type{V}, primal::Tuple, tangent::Tuple
 ) where {V<:Tuple}

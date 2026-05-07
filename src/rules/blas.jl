@@ -873,6 +873,52 @@ function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
 end
 
+# Width-1 NDual counterpart: extract Float64 primal/tangent matrices, run
+# the bare-frule body, and write the tangent partial back into `C_dC`.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemm!)},
+    transA::Dual{Char},
+    transB::Dual{Char},
+    alpha::NDual{T,1},
+    A_dA::Matrix{NDual{T,1}},
+    B_dB::Matrix{NDual{T,1}},
+    beta::NDual{T,1},
+    C_dC::Matrix{NDual{T,1}},
+) where {T<:BlasFloat}
+    tA = primal(transA)
+    tB = primal(transB)
+    α = primal(alpha)
+    dα = alpha.partials[1]
+    β = primal(beta)
+    dβ = beta.partials[1]
+    A = map(primal, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    B = map(primal, B_dB)
+    dB = map(d -> d.partials[1], B_dB)
+    C = map(primal, C_dC)
+    dC = map(d -> d.partials[1], C_dC)
+
+    BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
+    BLAS.gemm!(tA, tB, α, A, dB, one(T), dC) # α*op(A)*op(dB) + 1*dC
+
+    if !iszero(dα)
+        BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)
+    end
+
+    if !iszero(dβ)
+        @inbounds for n in eachindex(C)
+            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        end
+    end
+
+    BLAS.gemm!(tA, tB, α, A, B, β, C)
+
+    @inbounds for n in eachindex(C_dC)
+        C_dC[n] = NDual{T,1}(C[n], (dC[n],))
+    end
+    return C_dC
+end
+
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
