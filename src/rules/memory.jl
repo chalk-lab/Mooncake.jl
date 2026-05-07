@@ -494,12 +494,7 @@ end
 
 # Core.memoryrefmodify!
 
-# memoryrefnew: trait-registering exposes a `BoundsError` in
-# `__get_primal(MemoryRef{<:NDual})` (NfwdMooncake.jl:938) for some cases —
-# `memoryref(__get_primal(x.mem), Core.memoryrefoffset(x))` allocates a fresh
-# `Memory{T}` via `map` and then asks for the same offset, which can fall
-# outside the new memory if the original ref pointed past the underlying
-# storage. Stays on scaffold path until that path is reworked.
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(memoryrefnew),Vararg}}) = true
 
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
     return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))

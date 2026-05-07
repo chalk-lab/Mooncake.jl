@@ -935,12 +935,25 @@ end
     Mooncake.__get_primal(x::Memory{<:Complex{<:NDual}}) = map(
         z -> complex(z.re.value, z.im.value), x
     )
-    Mooncake.__get_primal(x::MemoryRef{<:NDual{T}}) where {T} = memoryref(
-        Mooncake.__get_primal(x.mem), Core.memoryrefoffset(x)
-    )
-    Mooncake.__get_primal(x::MemoryRef{<:Complex{<:NDual}}) = memoryref(
-        Mooncake.__get_primal(x.mem), Core.memoryrefoffset(x)
-    )
+    function Mooncake.__get_primal(x::MemoryRef{<:NDual{T}}) where {T}
+        new_mem = Mooncake.__get_primal(x.mem)
+        # `Core.memoryrefoffset(x)` returns ≥1 even for refs into empty memories
+        # (the default offset is 1); calling `memoryref(empty_mem, 1)` then
+        # BoundsErrors. Use the no-offset form when the source memory is empty.
+        return if isempty(new_mem)
+            memoryref(new_mem)
+        else
+            memoryref(new_mem, Core.memoryrefoffset(x))
+        end
+    end
+    function Mooncake.__get_primal(x::MemoryRef{<:Complex{<:NDual}})
+        new_mem = Mooncake.__get_primal(x.mem)
+        return if isempty(new_mem)
+            memoryref(new_mem)
+        else
+            memoryref(new_mem, Core.memoryrefoffset(x))
+        end
+    end
 end
 
 # _partial_i for NDual vararg transpose — primal_mode.jl defines the Dual overload.
