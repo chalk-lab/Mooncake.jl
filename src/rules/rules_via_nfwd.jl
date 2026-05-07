@@ -339,6 +339,23 @@ frule!!(::Dual{typeof(neg_float_fast)}, x::NDual) = -x
 frule!!(::Dual{typeof(sqrt_llvm)}, x::NDual) = sqrt(x)
 frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::NDual) = sqrt(x)
 
+# Lifted-typed overloads for unary float intrinsics — same canonical-V
+# principle: `_unlift` produces an NDual on which the pointwise operator is
+# defined, then re-wrap as Lifted to skip the `_wrap_rule_result` allocation.
+for (op_sym, op_fn) in (
+    (:abs_float, :abs),
+    (:neg_float, :-),
+    (:neg_float_fast, :-),
+    (:sqrt_llvm, :sqrt),
+    (:sqrt_llvm_fast, :sqrt),
+)
+    @eval @inline function frule!!(
+        ::Mooncake.Lifted{typeof($op_sym),N}, x::Mooncake.Lifted
+    ) where {N}
+        return Mooncake.Lifted{_typeof(primal(x)),N}($op_fn(_unlift(x)))
+    end
+end
+
 # Mixed `(NDual, Dual{<:IEEEFloat})` cases arise when an `@inactive_intrinsic`
 # (e.g. `sitofp(Float64, 2)`) emits a width-1 `Dual{Float64}` alongside an
 # `NDual` user input. Unwrapping the `Dual` to its primal is sound because the
@@ -366,6 +383,14 @@ for (op_sym, op_fn) in (
         ) where {T<:IEEEFloat,N}
             return $op_fn(primal(a), b)
         end
+        # Lifted-typed overload — accepts canonical V from `_unlift`. Per
+        # AGENTS.md "no inner-V branching", the body just calls the operator
+        # which dispatches on the canonical V (NDual / Dual / mixed).
+        @inline function frule!!(
+            ::Mooncake.Lifted{typeof($op_sym),N}, a::Mooncake.Lifted, b::Mooncake.Lifted
+        ) where {N}
+            return Mooncake.Lifted{_typeof(primal(a)),N}($op_fn(_unlift(a), _unlift(b)))
+        end
     end
 end
 
@@ -390,6 +415,17 @@ for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
             ::Dual{typeof($op_sym)}, x::Dual{<:IEEEFloat}, y::NDual{T,N}, z::NDual{T,N}
         ) where {T<:IEEEFloat,N}
             return $op_fn(primal(x), y, z)
+        end
+        # Lifted-typed overload — canonical V via `_unlift`.
+        @inline function frule!!(
+            ::Mooncake.Lifted{typeof($op_sym),N},
+            x::Mooncake.Lifted,
+            y::Mooncake.Lifted,
+            z::Mooncake.Lifted,
+        ) where {N}
+            return Mooncake.Lifted{_typeof(primal(x)),N}(
+                $op_fn(_unlift(x), _unlift(y), _unlift(z))
+            )
         end
     end
 end
