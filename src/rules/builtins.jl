@@ -142,6 +142,11 @@ macro intrinsic(name)
             return true
         end
         translate(::Val{Intrinsics.$name}) = $name
+        # Lifted-aware: rule body's `frule!!(::Dual{typeof($name)}, args...)`
+        # accepts bare slot V (post-kill NDual at width=1), so the generic
+        # `frule!!(::Lifted{F,N}, args::Vararg{Lifted,M})` adapter handles
+        # unwrap+call+wrap at the IR-emit-skipped boundary.
+        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($name),Vararg}}) = true
     end
     return esc(expr)
 end

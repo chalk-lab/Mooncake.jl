@@ -21,6 +21,7 @@ function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
     return Dual(sum(primal(x)), sum(tangent(x)))
 end
 frule!!(::Dual{typeof(sum)}, x::Array{<:_HasNDual}) = sum(x)
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sum),<:Array{<:IEEEFloat}}}) = true
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
     function sum_pb!!(dz::P)
@@ -40,6 +41,9 @@ end
 function frule!!(::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Array{<:_HasNDual})
     return sum(abs2, x)
 end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(sum),typeof(abs2),<:Array{<:IEEEFloat}}}
+) = true
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
 ) where {P<:IEEEFloat}

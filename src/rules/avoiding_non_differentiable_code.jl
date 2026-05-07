@@ -5,6 +5,7 @@
 function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
     return Dual(primal(x) + primal(y), tangent(x) + primal(y))
 end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.:(+)),<:Ptr,<:Integer}}) = true
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
 end

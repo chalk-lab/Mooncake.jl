@@ -391,6 +391,37 @@ end
     end
 end
 
+# Lifted-aware trait registrations: each rule's body works against bare
+# `Dual{TWP, TWP}` slot values, and the generic Lifted-aware adapter
+# (`primal_mode.jl`) handles the wrap/unwrap. Registering the trait skips
+# the IR-emit scaffold and lets the adapter dispatch directly.
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(twiceprecision),Vararg}}) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:IEEEFloat},<:TwicePrecision}}) =
+    true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(-),<:TwicePrecision}}) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(+),<:TwicePrecision,Any}}) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(*),<:TwicePrecision,Any}}) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(/),<:TwicePrecision,Any}}) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base.range_start_step_length),Any,Any,Any}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(unsafe_getindex),<:TWPStepRangeLen,Any}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(_getindex_hiprec),<:TWPStepRangeLen,Any}}
+) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(:),Any,Any,Any}}) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sum),<:TWPStepRangeLen}}) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base.range_start_stop_length),Any,Any,Any}}
+) = true
+@static if VERSION < v"1.11"
+    @inline Mooncake._is_lifted_aware(
+        ::Type{<:Tuple{typeof(Base._log_twice64_unchecked),Any}}
+    ) = true
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
     test_cases = Any[
         (

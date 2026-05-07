@@ -497,6 +497,7 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
 frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(copy),<:Array}}) = true
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)

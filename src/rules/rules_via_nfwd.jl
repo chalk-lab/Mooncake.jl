@@ -175,6 +175,15 @@ function frule!!(
     y = Base.FastMath.pow_fast(_x, _n)
     return Dual(y, Nfwd._nfwd_pow_grad_x(_x, P(_n), float(y)) * dx)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Base.FastMath.pow_fast),N},
+    x::Mooncake.Lifted{P,N},
+    n::Mooncake.Lifted{I,N},
+) where {N,P<:IEEEFloat,I<:Integer}
+    return Mooncake.Lifted{P,N}(Base.FastMath.pow_fast(_unlift(x), _unlift(n)))
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.FastMath.pow_fast),Any,Any}}) =
+    true
 function rrule!!(
     ::CoDual{typeof(Base.FastMath.pow_fast)}, x::CoDual{P}, n::CoDual{I}
 ) where {P<:IEEEFloat,I<:Integer}
@@ -195,6 +204,17 @@ for f in (clamp,)
         ) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2, x3)
         end
+        @inline function frule!!(
+            ::Mooncake.Lifted{typeof($f),N},
+            x1::Mooncake.Lifted,
+            x2::Mooncake.Lifted,
+            x3::Mooncake.Lifted,
+        ) where {N}
+            return Mooncake.Lifted{_typeof(primal(x1)),N}(
+                $f(_unlift(x1), _unlift(x2), _unlift(x3))
+            )
+        end
+        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($f),Any,Any,Any}}) = true
         function rrule!!(
             fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}, x3::CoDual{P}
         ) where {P<:IEEEFloat}
@@ -212,6 +232,12 @@ end
 function frule!!(::Dual{typeof(sincosd)}, x::NDual)
     return sincosd(x)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(sincosd),N}, x::Mooncake.Lifted{P,N}
+) where {N,P<:IEEEFloat}
+    return Mooncake.Lifted{Tuple{P,P},N}(sincosd(_unlift(x)))
+end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sincosd),Any}}) = true
 function rrule!!(f::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
@@ -225,6 +251,12 @@ end
 function frule!!(::Dual{typeof(sincospi)}, x::NDual)
     return sincospi(x)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(sincospi),N}, x::Mooncake.Lifted{P,N}
+) where {N,P<:IEEEFloat}
+    return Mooncake.Lifted{Tuple{P,P},N}(sincospi(_unlift(x)))
+end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sincospi),Any}}) = true
 function rrule!!(f::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
@@ -242,6 +274,12 @@ end
 function frule!!(::Dual{typeof(modf)}, x::NDual)
     return modf(x)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(modf),N}, x::Mooncake.Lifted{P,N}
+) where {N,P<:IEEEFloat}
+    return Mooncake.Lifted{Tuple{P,P},N}(modf(_unlift(x)))
+end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(modf),Any}}) = true
 function rrule!!(f::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
@@ -254,6 +292,15 @@ function frule!!(
 ) where {P<:IEEEFloat,M}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x, xs...)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(hypot),N},
+    x::Mooncake.Lifted{P,N},
+    xs::Vararg{Mooncake.Lifted,M},
+) where {N,P<:IEEEFloat,M}
+    bare = ntuple(i -> i == 1 ? _unlift(x) : _unlift(xs[i - 1]), Val(M + 1))
+    return Mooncake.Lifted{P,N}(hypot(bare...))
+end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(hypot),Vararg}}) = true
 function rrule!!(
     f::CoDual{typeof(hypot)}, x::CoDual{P}, xs::Vararg{CoDual{P},M}
 ) where {P<:IEEEFloat,M}

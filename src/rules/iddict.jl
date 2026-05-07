@@ -229,6 +229,7 @@ for name in
 end
 
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:IdDict}}}) = true
 function frule!!(::Dual{Type{IdDict{K,V}}}) where {K,V}
     return Dual(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
 end
