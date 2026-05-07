@@ -3,6 +3,16 @@ non_primitive(x) = sin(x)
 
 Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(a_primitive),Float64}
 
+# Issue #1169: a `@mooncake_overlay` on a primitive must propagate to the
+# inferred return type at the call site, otherwise downstream dispatch
+# compiles against the un-overlaid type.
+struct OverlayA end
+struct OverlayB end
+overlay_switch() = OverlayA()
+Mooncake.@mooncake_overlay overlay_switch() = OverlayB()
+Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(overlay_switch)}
+overlay_caller() = overlay_switch()
+
 contains_primitive(x) = @inline a_primitive(x)
 contains_non_primitive(x) = @inline non_primitive(x)
 contains_primitive_behind_call(x) = @inline contains_primitive(x)
@@ -122,6 +132,12 @@ end
 
             @test val == 1.0
             @test grad[2] == [2.0, 0.0, 1.0]
+        end
+
+        @testset "1169 - overlay propagates to inferred return type" begin
+            interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
+            sig = Tuple{typeof(overlay_caller)}
+            @test Base.code_ircode_by_type(sig; interp)[1][2] == OverlayB
         end
     end
 

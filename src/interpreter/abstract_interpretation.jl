@@ -168,13 +168,28 @@ function Core.Compiler.abstract_call_gf_by_type(
             # primitives, and continue that search down the callee tree. That extra work is
             # unnecessary for a primitive with a hand-written rule.
             #
+            # Exception: `NativeInterpreter` is overlay-blind, so fall back to
+            # overlay-aware default dispatch when a `@mooncake_overlay` applies (issue #1169).
+            #
             # `noinline_callmeta` below then blocks inlining/const-folding so the primitive
             # call stays in the caller IR and Mooncake can dispatch its `rrule!!` at runtime.
             # See PR #1115 for more discussion.
-            native_interp = CC.NativeInterpreter(interp.world)
-            ret = CC.abstract_call_gf_by_type(
-                native_interp, f, arginfo, si, atype, sv, max_methods
-            )
+            ret = if any_matches_overlay(applicable)
+                @invoke CC.abstract_call_gf_by_type(
+                    interp::CC.AbstractInterpreter,
+                    f::Any,
+                    arginfo::CC.ArgInfo,
+                    si::CC.StmtInfo,
+                    atype::Any,
+                    sv::CC.AbsIntState,
+                    max_methods::Int,
+                )
+            else
+                native_interp = CC.NativeInterpreter(interp.world)
+                CC.abstract_call_gf_by_type(
+                    native_interp, f, arginfo, si, atype, sv, max_methods
+                )
+            end
             @static if VERSION < v"1.12-"
                 call = ret::CC.CallMeta
                 # Keep primitives in caller IR by blocking const-folding and inlining
@@ -210,6 +225,16 @@ function any_matches_primitive(applicable, C, M, world)
             sig = app.match.spec_types
         end
         if is_primitive(C, M, sig, world)
+            return true
+        end
+    end
+    false
+end
+
+function any_matches_overlay(applicable)
+    for app in applicable
+        method = VERSION < v"1.12-" ? app.method : app.match.method
+        if isdefined(method, :external_mt) && method.external_mt !== nothing
             return true
         end
     end
