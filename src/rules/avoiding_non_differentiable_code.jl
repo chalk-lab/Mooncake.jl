@@ -5,6 +5,15 @@
 function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
     return Dual(primal(x) + primal(y), tangent(x) + primal(y))
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Base.:(+)),N},
+    x::Mooncake.Lifted{P_x},
+    y::Mooncake.Lifted{<:Integer},
+) where {N,P_x<:Ptr}
+    inner_x = Mooncake._unlift(x)
+    py = primal(y)
+    return Mooncake.Lifted{P_x,N}(primal(inner_x) + py, tangent(inner_x) + py)
+end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.:(+)),<:Ptr,<:Integer}}) = true
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
