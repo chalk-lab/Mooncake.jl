@@ -76,3 +76,6 @@ function frule!!(
     end
     return zero_dual(nothing)
 end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base.Threads.threading_run),Any,Bool}}
+) = true
