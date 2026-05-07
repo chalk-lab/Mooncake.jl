@@ -309,10 +309,17 @@ end
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Type}
 @zero_derivative MinimalCtx Tuple{typeof(hash),Vararg}
 
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_string_ptr},Vararg}}
+) = true
 function frule!!(
-    ::Dual{typeof(_foreigncall_)}, ::Dual{Val{:jl_string_ptr}}, args::Vararg{Dual,N}
+    ::Dual{typeof(_foreigncall_)}, ::Dual{Val{:jl_string_ptr}}, args::Vararg{Any,N}
 ) where {N}
-    return uninit_dual(_foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...))
+    return uninit_dual(
+        _foreigncall_(
+            Val(:jl_string_ptr), tuple_map(x -> x isa Dual ? primal(x) : x, args)...
+        ),
+    )
 end
 
 function rrule!!(
@@ -324,10 +331,13 @@ function rrule!!(
 end
 
 for name in (:jl_get_world_counter, :jl_matching_methods)
+    @eval @inline Mooncake._is_lifted_aware(
+        ::Type{<:Tuple{typeof(_foreigncall_),Val{$(QuoteNode(name))},Vararg}}
+    ) = true
     @eval function frule!!(
         f::Dual{typeof(_foreigncall_)},
         n::Dual{Val{$(QuoteNode(name))}},
-        args::Vararg{Dual,N},
+        args::Vararg{Any,N},
     ) where {N}
         return zero_derivative(f, n, args...)
     end
