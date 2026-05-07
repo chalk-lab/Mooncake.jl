@@ -1,4 +1,35 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
+
+# ── Unified Dual / NDual array extract & writeback ──────────────────────────
+#
+# At lifted-IR width=1, an array argument arrives as one of two shapes,
+# depending on whether the primal type is a plain `Array` (lifts elementwise
+# to `Array{NDual{T,1}}`) or a struct wrapper like `ReshapedArray`,
+# `SubArray`, `ReinterpretArray` (lifts to `Dual{Wrapper{P,...}, ...}`).
+# `_arr_extract` returns a `(primal, tangent)` pair valid for both shapes:
+# arrayify-views for the Dual case (mutations propagate), `map`-allocated
+# copies for the NDual case (which need `_arr_writeback!` to push results
+# back into the input NDual array element-wise on completion).
+@inline _arr_extract(x::Dual{<:AbstractArray}) = arrayify(x)
+@inline function _arr_extract(x::AbstractArray{NDual{T,1}}) where {T}
+    return (map(d -> d.value, x), map(d -> d.partials[1], x))
+end
+
+@inline _arr_writeback!(::Dual, _, _) = nothing
+@inline function _arr_writeback!(x::AbstractArray{NDual{T,1}}, p, t) where {T}
+    @inbounds for i in eachindex(x)
+        x[i] = NDual{T,1}(p[i], (t[i],))
+    end
+    return nothing
+end
+
+# Slot-level Union that matches either a struct-wrapped Dual array or a
+# plain NDual-elementwise array, per the AGENTS.md "NDual shapes" rule.
+const _MatLikeWidth1{P} = Union{Dual{<:AbstractMatrix{P}},AbstractMatrix{NDual{P,1}}}
+const _VecOrMatLikeWidth1{P} = Union{
+    Dual{<:AbstractVecOrMat{P}},AbstractVecOrMat{NDual{P,1}}
+}
+
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 function frule!!(
     ::Dual{typeof(LAPACK.getrf!)}, A_dA::Dual{<:AbstractMatrix{P}}
@@ -110,12 +141,14 @@ function frule!!(
     _uplo::Dual{Char},
     _trans::Dual{Char},
     _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractVecOrMat{P}},
+    A_dA::_MatLikeWidth1{P},
+    B_dB::_VecOrMatLikeWidth1{P},
 ) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
     _trtrs!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, B, dB)
+    _arr_writeback!(A_dA, A, dA)
+    _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
 @inline function _trtrs!_frule_core!(
@@ -147,25 +180,6 @@ end
     # Run primal computation.
     LAPACK.trtrs!(uplo, trans, diag, A, B)
     return nothing
-end
-# Width-1 NDual overload — extract, run core, write back.
-function frule!!(
-    ::Dual{typeof(trtrs!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::AbstractMatrix{NDual{P,1}},
-    B_dB::AbstractVecOrMat{NDual{P,1}},
-) where {P<:BlasRealFloat}
-    A = map(d -> d.value, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    B = map(d -> d.value, B_dB)
-    dB = map(d -> d.partials[1], B_dB)
-    _trtrs!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, B, dB)
-    @inbounds for i in eachindex(B_dB)
-        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
-    end
-    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(trtrs!)},
@@ -214,13 +228,15 @@ end
 function frule!!(
     ::Dual{typeof(getrs!)},
     _trans::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{P}},
+    A_dA::_MatLikeWidth1{P},
     _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::Dual{<:AbstractVecOrMat{P}},
+    B_dB::_VecOrMatLikeWidth1{P},
 ) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
     _getrs!_frule_core!(primal(_trans), A, dA, primal(_ipiv), B, dB)
+    _arr_writeback!(A_dA, A, dA)
+    _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
 @inline function _getrs!_frule_core!(
@@ -250,24 +266,6 @@ end
     end
     LAPACK.getrs!(trans, A, ipiv, dB)
     return nothing
-end
-# Width-1 NDual overload — extract, run core, write back.
-function frule!!(
-    ::Dual{typeof(getrs!)},
-    _trans::Dual{Char},
-    A_dA::AbstractMatrix{NDual{P,1}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::AbstractVecOrMat{NDual{P,1}},
-) where {P<:BlasRealFloat}
-    A = map(d -> d.value, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    B = map(d -> d.value, B_dB)
-    dB = map(d -> d.partials[1], B_dB)
-    _getrs!_frule_core!(primal(_trans), A, dA, primal(_ipiv), B, dB)
-    @inbounds for i in eachindex(B_dB)
-        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
-    end
-    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(getrs!)},
@@ -354,12 +352,11 @@ end
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getri!),Vararg}}) = true
 function frule!!(
-    ::Dual{typeof(getri!)},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    _ipiv::Dual{<:AbstractVector{Int}},
+    ::Dual{typeof(getri!)}, A_dA::_MatLikeWidth1{P}, _ipiv::Dual{<:AbstractVector{Int}}
 ) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
+    A, dA = _arr_extract(A_dA)
     _getri!_frule_core!(A, dA, primal(_ipiv))
+    _arr_writeback!(A_dA, A, dA)
     return A_dA
 end
 @inline function _getri!_frule_core!(
@@ -381,20 +378,6 @@ end
     # Compute Frechet derivative.
     dA .= (-A * tmp2 * A)
     return nothing
-end
-# Width-1 NDual overload — extract, run core, write back.
-function frule!!(
-    ::Dual{typeof(getri!)},
-    A_dA::AbstractMatrix{NDual{P,1}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-) where {P<:BlasRealFloat}
-    A = map(d -> d.value, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    _getri!_frule_core!(A, dA, primal(_ipiv))
-    @inbounds for i in eachindex(A_dA)
-        A_dA[i] = NDual{P,1}(A[i], (dA[i],))
-    end
-    return A_dA
 end
 function rrule!!(
     ::CoDual{typeof(getri!)},
@@ -535,12 +518,14 @@ end
 function frule!!(
     ::Dual{typeof(potrs!)},
     _uplo::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractVecOrMat{P}},
+    A_dA::_MatLikeWidth1{P},
+    B_dB::_VecOrMatLikeWidth1{P},
 ) where {P<:BlasRealFloat}
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
     _potrs!_frule_core!(primal(_uplo), A, dA, B, dB)
+    _arr_writeback!(A_dA, A, dA)
+    _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
 @inline function _potrs!_frule_core!(
@@ -566,23 +551,6 @@ end
         LAPACK.potrs!(uplo, A, dB)
     end
     return nothing
-end
-# Width-1 NDual overload — extract, run core, write back.
-function frule!!(
-    ::Dual{typeof(potrs!)},
-    _uplo::Dual{Char},
-    A_dA::AbstractMatrix{NDual{P,1}},
-    B_dB::AbstractVecOrMat{NDual{P,1}},
-) where {P<:BlasRealFloat}
-    A = map(d -> d.value, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    B = map(d -> d.value, B_dB)
-    dB = map(d -> d.partials[1], B_dB)
-    _potrs!_frule_core!(primal(_uplo), A, dA, B, dB)
-    @inbounds for i in eachindex(B_dB)
-        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
-    end
-    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(potrs!)},
