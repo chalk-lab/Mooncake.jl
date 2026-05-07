@@ -104,6 +104,7 @@ end
         typeof(trtrs!),Char,Char,Char,AbstractMatrix{P},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat},
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(trtrs!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(trtrs!)},
     _uplo::Dual{Char},
@@ -112,14 +113,20 @@ function frule!!(
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
-
-    # Extract data.
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
-
+    _trtrs!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, B, dB)
+    return B_dB
+end
+@inline function _trtrs!_frule_core!(
+    uplo::Char,
+    trans::Char,
+    diag::Char,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    B::AbstractVecOrMat{P},
+    dB::AbstractVecOrMat{P},
+) where {P<:BlasRealFloat}
     # Compute Frechet derivative.
     LAPACK.trtrs!(uplo, trans, diag, A, dB)
     tmp = copy(B)
@@ -139,6 +146,25 @@ function frule!!(
 
     # Run primal computation.
     LAPACK.trtrs!(uplo, trans, diag, A, B)
+    return nothing
+end
+# Width-1 NDual overload — extract, run core, write back.
+function frule!!(
+    ::Dual{typeof(trtrs!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::AbstractMatrix{NDual{P,1}},
+    B_dB::AbstractVecOrMat{NDual{P,1}},
+) where {P<:BlasRealFloat}
+    A = map(d -> d.value, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    B = map(d -> d.value, B_dB)
+    dB = map(d -> d.partials[1], B_dB)
+    _trtrs!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, B, dB)
+    @inbounds for i in eachindex(B_dB)
+        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
+    end
     return B_dB
 end
 function rrule!!(
@@ -184,6 +210,7 @@ end
         typeof(getrs!),Char,AbstractMatrix{P},AbstractVector{Int},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat}
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getrs!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(getrs!)},
     _trans::Dual{Char},
@@ -191,13 +218,19 @@ function frule!!(
     _ipiv::Dual{<:AbstractVector{Int}},
     B_dB::Dual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
-
-    # Extract data.
-    trans = primal(_trans)
     A, dA = arrayify(A_dA)
-    ipiv = primal(_ipiv)
     B, dB = arrayify(B_dB)
-
+    _getrs!_frule_core!(primal(_trans), A, dA, primal(_ipiv), B, dB)
+    return B_dB
+end
+@inline function _getrs!_frule_core!(
+    trans::Char,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    ipiv::AbstractVector{Int},
+    B::AbstractVecOrMat{P},
+    dB::AbstractVecOrMat{P},
+) where {P<:BlasRealFloat}
     # Run primal computation.
     LAPACK.getrs!(trans, A, ipiv, B)
 
@@ -216,7 +249,24 @@ function frule!!(
         mul!(dB, tmp2', B, -one(P), one(P))
     end
     LAPACK.getrs!(trans, A, ipiv, dB)
-
+    return nothing
+end
+# Width-1 NDual overload — extract, run core, write back.
+function frule!!(
+    ::Dual{typeof(getrs!)},
+    _trans::Dual{Char},
+    A_dA::AbstractMatrix{NDual{P,1}},
+    _ipiv::Dual{<:AbstractVector{Int}},
+    B_dB::AbstractVecOrMat{NDual{P,1}},
+) where {P<:BlasRealFloat}
+    A = map(d -> d.value, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    B = map(d -> d.value, B_dB)
+    dB = map(d -> d.partials[1], B_dB)
+    _getrs!_frule_core!(primal(_trans), A, dA, primal(_ipiv), B, dB)
+    @inbounds for i in eachindex(B_dB)
+        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
+    end
     return B_dB
 end
 function rrule!!(
@@ -302,15 +352,19 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(getri!),AbstractMatrix{<:BlasRealFloat},AbstractVector{Int}},
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getri!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(getri!)},
     A_dA::Dual{<:AbstractMatrix{P}},
     _ipiv::Dual{<:AbstractVector{Int}},
 ) where {P<:BlasRealFloat}
-    # Extract args.
     A, dA = arrayify(A_dA)
-    ipiv = primal(_ipiv)
-
+    _getri!_frule_core!(A, dA, primal(_ipiv))
+    return A_dA
+end
+@inline function _getri!_frule_core!(
+    A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
+) where {P<:BlasRealFloat}
     # Compute part of Frechet derivative.
     L = UnitLowerTriangular(A)
     dL_plus_I = UnitLowerTriangular(dA)
@@ -326,7 +380,20 @@ function frule!!(
 
     # Compute Frechet derivative.
     dA .= (-A * tmp2 * A)
-
+    return nothing
+end
+# Width-1 NDual overload — extract, run core, write back.
+function frule!!(
+    ::Dual{typeof(getri!)},
+    A_dA::AbstractMatrix{NDual{P,1}},
+    _ipiv::Dual{<:AbstractVector{Int}},
+) where {P<:BlasRealFloat}
+    A = map(d -> d.value, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    _getri!_frule_core!(A, dA, primal(_ipiv))
+    @inbounds for i in eachindex(A_dA)
+        A_dA[i] = NDual{P,1}(A[i], (dA[i],))
+    end
     return A_dA
 end
 function rrule!!(
@@ -464,18 +531,25 @@ end
         typeof(potrs!),Char,AbstractMatrix{P},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat},
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(potrs!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(potrs!)},
     _uplo::Dual{Char},
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
-
-    # Extract args and take a copy of B.
-    uplo = primal(_uplo)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
-
+    _potrs!_frule_core!(primal(_uplo), A, dA, B, dB)
+    return B_dB
+end
+@inline function _potrs!_frule_core!(
+    uplo::Char,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    B::AbstractVecOrMat{P},
+    dB::AbstractVecOrMat{P},
+) where {P<:BlasRealFloat}
     # Run primal computation.
     LAPACK.potrs!(uplo, A, B)
 
@@ -491,7 +565,23 @@ function frule!!(
         mul!(dB, Symmetric(U'dU + dU'U), B, -one(P), one(P))
         LAPACK.potrs!(uplo, A, dB)
     end
-
+    return nothing
+end
+# Width-1 NDual overload — extract, run core, write back.
+function frule!!(
+    ::Dual{typeof(potrs!)},
+    _uplo::Dual{Char},
+    A_dA::AbstractMatrix{NDual{P,1}},
+    B_dB::AbstractVecOrMat{NDual{P,1}},
+) where {P<:BlasRealFloat}
+    A = map(d -> d.value, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    B = map(d -> d.value, B_dB)
+    dB = map(d -> d.partials[1], B_dB)
+    _potrs!_frule_core!(primal(_uplo), A, dA, B, dB)
+    @inbounds for i in eachindex(B_dB)
+        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
+    end
     return B_dB
 end
 function rrule!!(
