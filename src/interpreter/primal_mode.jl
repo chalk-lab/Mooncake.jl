@@ -93,10 +93,24 @@ end
     inner = Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v)))
     return Lifted{Complex{T},N}(inner)
 end
+# Concrete Tuple primal: lift element-wise, building the inner element-wise
+# `Tuple{...}` of inner duals. `Lifted{P, N}(inner)` infers V from the inner.
+@inline function _uninit_dual(w::Val{N}, v::Tuple) where {N}
+    P = _typeof(v)
+    if isconcretetype(P)
+        inner = ntuple(i -> _uninit_dual(w, v[i]).value, Val(fieldcount(P)))
+        return Lifted{P,N}(inner)
+    end
+    return _uninit_dual_fallback(w, v)
+end
+
 # Strict width-N fallback: containers with `_count_slots > 0` must register an
 # explicit `_uninit_dual(::Val{N}, ::T)` overload in NfwdMooncake.jl — silently
 # downgrading to width-1 here would produce wrong tangents.
 function _uninit_dual(w::Val{N}, v) where {N}
+    return _uninit_dual_fallback(w, v)
+end
+function _uninit_dual_fallback(w::Val{N}, v) where {N}
     if _count_slots(v) > 0
         throw(
             ArgumentError(
@@ -203,6 +217,11 @@ end
 end
 
 @inline _wrap_rule_result(::Type{P}, ::Val{N}, x) where {P,N} = Lifted{P,N}(x)
+
+# Probe a type for unbound `TypeVar`s (e.g. `Type{AbstractArray{a, 1}}` returned
+# by runtime `Core.apply_type` / `UnionAll`). Julia's static parameter binding
+# can't dispatch on these — IR-emit substitutes `Any` for the wrap site.
+_has_free_typevar(@nospecialize(t)) = ccall(:jl_has_free_typevars, Cint, (Any,), t) != 0
 
 # Canonicalise a runtime `Lifted` value to match a target P (and V) at the OC
 # return boundary. Lifted's `P` parameter is invariant, so a runtime
@@ -914,7 +933,15 @@ function modify_primal_stmts!(
         # `Lifted{Float64, N, Dual{Float64, Float64}}`).
         if needs_scaffold
             primal_retype = let t = CC.widenconst(get_ir(info.primal_ir, ssa, :type))
-                contains_bottom_type(t) ? Any : t
+                # Fallback to `Any` when `t` is `Bottom` or contains an
+                # unbound `TypeVar` (e.g. a `Type{AbstractArray{a, 1}}`
+                # constructed via `Core.apply_type` / `UnionAll`); Julia's
+                # static parameter binding chokes on TypeVars in dispatch.
+                if contains_bottom_type(t) || _has_free_typevar(t)
+                    Any
+                else
+                    t
+                end
             end
             rule_call_inst = new_inst(Expr(:call, rule_callable, rule_args...))
             rule_result_ssa = CC.insert_node!(lifted_ir, ssa, rule_call_inst, ATTACH_BEFORE)
