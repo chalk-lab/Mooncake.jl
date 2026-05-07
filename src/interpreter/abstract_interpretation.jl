@@ -116,32 +116,34 @@ end
 
 # A NativeInterpreter-like interpreter that uses Mooncake's OverlayMethodTable for method
 # lookup. Unlike MooncakeInterpreter it has no abstract_call_gf_by_type override, so it
-# infers method bodies using standard AbstractInterpreter behaviour — no primitive detection,
+# infers method bodies using standard AbstractInterpreter behaviour - no primitive detection,
 # no MooncakeInterpreter recursion. Used for primitive call sites so we get overlay-aware
 # return types and effects without MooncakeInterpreter ever touching the primitive body,
 # preserving the base-case guarantee from PR #1115.
-struct OverlayNativeInterpreter <: CC.AbstractInterpreter
+struct OverlayAwareNativeInterpreter <: CC.AbstractInterpreter
     native::CC.NativeInterpreter
     inf_cache::Vector{CC.InferenceResult}
 end
 
-OverlayNativeInterpreter(world::UInt) = OverlayNativeInterpreter(
-    CC.NativeInterpreter(world), CC.InferenceResult[]
-)
+function OverlayAwareNativeInterpreter(world::UInt)
+    OverlayAwareNativeInterpreter(CC.NativeInterpreter(world), CC.InferenceResult[])
+end
 
-CC.InferenceParams(i::OverlayNativeInterpreter) = CC.InferenceParams(i.native)
-CC.OptimizationParams(i::OverlayNativeInterpreter) = CC.OptimizationParams(i.native)
-CC.get_inference_cache(i::OverlayNativeInterpreter) = i.inf_cache
-CC.code_cache(i::OverlayNativeInterpreter) = CC.code_cache(i.native)
-function CC.method_table(i::OverlayNativeInterpreter)
+CC.InferenceParams(i::OverlayAwareNativeInterpreter) = CC.InferenceParams(i.native)
+CC.OptimizationParams(i::OverlayAwareNativeInterpreter) = CC.OptimizationParams(i.native)
+CC.get_inference_cache(i::OverlayAwareNativeInterpreter) = i.inf_cache
+CC.code_cache(i::OverlayAwareNativeInterpreter) = CC.code_cache(i.native)
+function CC.method_table(i::OverlayAwareNativeInterpreter)
     return CC.OverlayMethodTable(get_inference_world(i), mooncake_method_table)
 end
 
 @static if VERSION < v"1.11.0"
-    CC.get_world_counter(i::OverlayNativeInterpreter) = CC.get_world_counter(i.native)
+    CC.get_world_counter(i::OverlayAwareNativeInterpreter) = CC.get_world_counter(i.native)
 else
-    CC.get_inference_world(i::OverlayNativeInterpreter) = CC.get_inference_world(i.native)
-    CC.cache_owner(::OverlayNativeInterpreter) = nothing
+    CC.get_inference_world(i::OverlayAwareNativeInterpreter) = CC.get_inference_world(
+        i.native
+    )
+    CC.cache_owner(::OverlayAwareNativeInterpreter) = nothing
 end
 
 struct NoInlineCallInfo <: CC.CallInfo
@@ -192,17 +194,19 @@ function Core.Compiler.abstract_call_gf_by_type(
             # to inspect its body when differentiating. The only thing we need here is the
             # ordinary `CallMeta` for the call site (return type, effects, exct).
             #
-            # We use OverlayNativeInterpreter: it has Mooncake's OverlayMethodTable (so it
-            # finds @mooncake_overlay methods and infers their bodies, giving the correct
-            # return type and effects when an overlay changes the return type) but has no
-            # abstract_call_gf_by_type override (so it never recurses into primitive bodies
-            # with MooncakeInterpreter machinery). This preserves the base-case property
-            # from PR #1115 while being fully overlay-aware for both rt and effects.
+            # We therefore ask `OverlayAwareNativeInterpreter` for the `CallMeta`. This avoids recursing
+            # through the callee IR using Mooncake's primitive-search logic:
+            # `MooncakeInterpreter` would walk nested calls in that body, check them for
+            # primitives, and continue that search down the callee tree. That extra work is
+            # unnecessary for a primitive with a hand-written rule. 
+            # `OverlayAwareNativeInterpreter` also has access to the Mooncake method table, so it can find @mooncake_overlay methods and 
+            # infer their bodies, giving the correct return type and effects when an overlay changes the  return type. 
+            # (it has no abstract_call_gf_by_type override - so it never recurses into primitive bodies with MooncakeInterpreter machinery)
             #
             # `noinline_callmeta` below then blocks inlining/const-folding so the primitive
             # call stays in the caller IR and Mooncake can dispatch its `rrule!!` at runtime.
             # See PR #1115 for more discussion.
-            overlay_native_interp = OverlayNativeInterpreter(interp.world)
+            overlay_native_interp = OverlayAwareNativeInterpreter(interp.world)
             ret = CC.abstract_call_gf_by_type(
                 overlay_native_interp, f, arginfo, si, atype, sv, max_methods
             )

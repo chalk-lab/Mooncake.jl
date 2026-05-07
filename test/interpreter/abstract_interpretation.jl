@@ -13,17 +13,17 @@ struct _OverlayTypeB end
 _overlay_switch(::_OverlayTypeA) = _OverlayTypeA()
 Mooncake.@mooncake_overlay _overlay_switch(::_OverlayTypeA) = _OverlayTypeB()
 
-Mooncake.@is_primitive MinimalCtx ReverseMode Tuple{typeof(_overlay_switch), _OverlayTypeA}
-function Mooncake.rrule!!(
-    f::CoDual{typeof(_overlay_switch)}, x::CoDual{_OverlayTypeA}
-)
+Mooncake.@is_primitive MinimalCtx ReverseMode Tuple{typeof(_overlay_switch),_OverlayTypeA}
+function Mooncake.rrule!!(f::CoDual{typeof(_overlay_switch)}, x::CoDual{_OverlayTypeA})
     return zero_fcodual(_OverlayTypeB()), NoPullback(f, x)
 end
 
 _overlay_use(::_OverlayTypeA, x::Float64) = x
 _overlay_use(::_OverlayTypeB, x::Float64) = 2x
 
-Mooncake.@is_primitive MinimalCtx ReverseMode Tuple{typeof(_overlay_use), _OverlayTypeA, Float64}
+Mooncake.@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(_overlay_use),_OverlayTypeA,Float64
+}
 function Mooncake.rrule!!(
     f::CoDual{typeof(_overlay_use)}, ::CoDual{_OverlayTypeA}, x::CoDual{Float64}
 )
@@ -31,7 +31,9 @@ function Mooncake.rrule!!(
     return zero_fcodual(Mooncake.primal(x)), pb
 end
 
-Mooncake.@is_primitive MinimalCtx ReverseMode Tuple{typeof(_overlay_use), _OverlayTypeB, Float64}
+Mooncake.@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(_overlay_use),_OverlayTypeB,Float64
+}
 function Mooncake.rrule!!(
     f::CoDual{typeof(_overlay_use)}, ::CoDual{_OverlayTypeB}, x::CoDual{Float64}
 )
