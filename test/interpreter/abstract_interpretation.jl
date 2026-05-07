@@ -194,7 +194,8 @@ end
         # separate rrule!!s for each type (gradient 1x vs 2x). The correct gradient is
         # 2.0 iff Mooncake inferred the overlaid return type and dispatched to the TypeB
         # rrule!!. A wrong gradient of 1.0 indicates the overlay was ignored.
-        val, (_, grad) = Mooncake.value_and_gradient!!(_overlay_outer, 3.0)
+        cache = Mooncake.prepare_gradient_cache(_overlay_outer, 3.0)
+        val, (_, grad) = Mooncake.value_and_gradient!!(cache, _overlay_outer, 3.0)
         @test val == 6.0
         @test grad == 2.0
     end
