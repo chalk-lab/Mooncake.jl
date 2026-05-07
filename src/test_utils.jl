@@ -394,6 +394,13 @@ end
 
 __get_data_field(t::Union{Tangent,MutableTangent}, n) = getfield(t.fields, n)
 __get_data_field(t::Union{Mooncake.FData,Mooncake.RData}, n) = getfield(t.data, n)
+# NTangent represents a chunked (width-N) tangent. Field access projects
+# `n` across each lane, returning a same-width NTangent of the field's
+# tangent type (e.g. NTangent{Tuple{ComplexF64}} → NTangent{Tuple{Float64}}
+# for `n = :re`).
+function __get_data_field(t::Mooncake.NTangent, n)
+    Mooncake.NTangent(map(lane -> getfield(lane, n), t.lanes))
+end
 
 function populate_address_map_internal(
     m::AddressMap, p::P, t

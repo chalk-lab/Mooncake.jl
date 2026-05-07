@@ -81,6 +81,25 @@ end
 ) where {FieldName}
     return getfield(x, FieldName)
 end
+# Lifted-typed overload: when the IR-emit hands `Lifted` slots straight
+# through (Path B), accept them and return a `Lifted{P, N, V}` directly so
+# the IR-emit's `_wrap_rule_result` no-op path fires and avoids the
+# unwrap/re-wrap allocation.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{<:Complex{P},N},
+    ::Mooncake.Lifted{Val{FieldName}},
+) where {N,FieldName,P<:IEEEFloat}
+    inner = Mooncake._unlift(x)
+    if inner isa Complex{<:NDual}
+        return Mooncake.Lifted{P,N}(getfield(inner, FieldName))
+    else
+        # Dual{Complex{P}, Complex{P}} inner V form
+        y = getfield(primal(inner), FieldName)
+        dy = getfield(tangent(inner), FieldName)
+        return Mooncake.Lifted{P,N}(y, dy)
+    end
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     obj_cd::CoDual{<:CF,<:CF},
