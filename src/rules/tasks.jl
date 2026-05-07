@@ -88,6 +88,17 @@ const TaskCoDual = CoDual{Task,TaskTangent}
 function frule!!(::Dual{typeof(lgetfield)}, x::TaskDual, ::Dual{Val{f}}) where {f}
     return Dual(getfield(primal(x), f), _get_tangent_field(tangent(x), f))
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{Task,N},
+    ::Mooncake.Lifted{Val{f}},
+) where {N,f}
+    inner = Mooncake._unlift(x)
+    y = getfield(primal(inner), f)
+    dy = _get_tangent_field(tangent(inner), f)
+    return Mooncake.Lifted{_typeof(y),N}(y, dy)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Task,<:Val}}) = true
 function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) where {f}
     dx = x.dx
     function mutable_lgetfield_pb!!(dy)
@@ -101,6 +112,16 @@ end
 function frule!!(::Dual{typeof(getfield)}, x::TaskDual, f::Dual)
     return Dual(getfield(primal(x), primal(f)), _get_tangent_field(tangent(x), primal(f)))
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(getfield),N}, x::Mooncake.Lifted{Task,N}, f::Mooncake.Lifted
+) where {N}
+    inner = Mooncake._unlift(x)
+    fname = primal(Mooncake._unlift(f))
+    y = getfield(primal(inner), fname)
+    dy = _get_tangent_field(tangent(inner), fname)
+    return Mooncake.Lifted{_typeof(y),N}(y, dy)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Task,Any}}) = true
 function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
@@ -108,6 +129,19 @@ end
 function frule!!(::Dual{typeof(lsetfield!)}, task::TaskDual, name::Dual, val::Dual)
     return lsetfield_frule(task, name, val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lsetfield!),N},
+    task::Mooncake.Lifted{Task,N},
+    name::Mooncake.Lifted,
+    val::Mooncake.Lifted,
+) where {N}
+    inner_task = Mooncake._unlift(task)
+    inner_name = Mooncake._unlift(name)
+    inner_val = Mooncake._unlift(val)
+    result = lsetfield_frule(inner_task, inner_name, inner_val)
+    return Mooncake.Lifted{_typeof(primal(result)),N}(primal(result), tangent(result))
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),Task,Any,Any}}) = true
 function rrule!!(::CoDual{typeof(lsetfield!)}, task::TaskCoDual, name::CoDual, val::CoDual)
     return lsetfield_rrule(task, name, val)
 end
