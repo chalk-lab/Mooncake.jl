@@ -1,34 +1,7 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
-
-# ── Unified Dual / NDual array extract & writeback ──────────────────────────
-#
-# At lifted-IR width=1, an array argument arrives as one of two shapes,
-# depending on whether the primal type is a plain `Array` (lifts elementwise
-# to `Array{NDual{T,1}}`) or a struct wrapper like `ReshapedArray`,
-# `SubArray`, `ReinterpretArray` (lifts to `Dual{Wrapper{P,...}, ...}`).
-# `_arr_extract` returns a `(primal, tangent)` pair valid for both shapes:
-# arrayify-views for the Dual case (mutations propagate), `map`-allocated
-# copies for the NDual case (which need `_arr_writeback!` to push results
-# back into the input NDual array element-wise on completion).
-@inline _arr_extract(x::Dual{<:AbstractArray}) = arrayify(x)
-@inline function _arr_extract(x::AbstractArray{NDual{T,1}}) where {T}
-    return (map(d -> d.value, x), map(d -> d.partials[1], x))
-end
-
-@inline _arr_writeback!(::Dual, _, _) = nothing
-@inline function _arr_writeback!(x::AbstractArray{NDual{T,1}}, p, t) where {T}
-    @inbounds for i in eachindex(x)
-        x[i] = NDual{T,1}(p[i], (t[i],))
-    end
-    return nothing
-end
-
-# Slot-level Union that matches either a struct-wrapped Dual array or a
-# plain NDual-elementwise array, per the AGENTS.md "NDual shapes" rule.
-const _MatLikeWidth1{P} = Union{Dual{<:AbstractMatrix{P}},AbstractMatrix{NDual{P,1}}}
-const _VecOrMatLikeWidth1{P} = Union{
-    Dual{<:AbstractVecOrMat{P}},AbstractVecOrMat{NDual{P,1}}
-}
+# Helpers `_arr_extract`, `_arr_writeback!`, and the `_MatLikeWidth1` /
+# `_VecOrMatLikeWidth1` slot-shape Unions are defined alongside `arrayify` in
+# `src/rules/blas.jl`.
 
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 function frule!!(

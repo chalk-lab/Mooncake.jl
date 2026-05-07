@@ -148,6 +148,45 @@ function viewify(
     return view(x, xinds), view(dx, xinds)
 end
 
+# ── Unified Dual / NDual array extract & writeback ──────────────────────────
+#
+# At lifted-IR width=1, an array argument arrives as one of two shapes,
+# depending on whether the primal type is a plain `Array` (lifts elementwise
+# to `Array{NDual{T,1}}`) or a struct wrapper like `ReshapedArray`,
+# `SubArray`, `ReinterpretArray` (lifts to `Dual{Wrapper{P,...}, ...}`).
+# `_arr_extract` returns a `(primal, tangent)` pair valid for both shapes:
+# arrayify-views for the Dual case (mutations propagate), `map`-allocated
+# copies for the NDual case (which need `_arr_writeback!` to push results
+# back into the input NDual array element-wise on completion).
+@inline _arr_extract(x::Dual{<:AbstractArray}) = arrayify(x)
+@inline function _arr_extract(x::AbstractArray{NDual{T,1}}) where {T}
+    return (map(d -> d.value, x), map(d -> d.partials[1], x))
+end
+
+@inline _arr_writeback!(::Dual, _, _) = nothing
+@inline function _arr_writeback!(x::AbstractArray{NDual{T,1}}, p, t) where {T}
+    @inbounds for i in eachindex(x)
+        x[i] = NDual{T,1}(p[i], (t[i],))
+    end
+    return nothing
+end
+
+# Scalar counterpart: at width 1, an `IEEEFloat` slot may arrive as either
+# `NDual{T,1}` (the canonical IEEEFloat lifted form) or `Dual{T,T}` (when
+# constructed by the test framework or by zero_dual). Both unwrap to a
+# `(primal, tangent)` pair the same way.
+@inline _scalar_extract(x::Dual{<:Number}) = (primal(x), tangent(x))
+@inline _scalar_extract(x::NDual{T,1}) where {T} = (x.value, x.partials[1])
+
+# Slot-level Union that matches either a struct-wrapped Dual array or a
+# plain NDual-elementwise array, per the AGENTS.md "NDual shapes" rule.
+const _MatLikeWidth1{P} = Union{Dual{<:AbstractMatrix{P}},AbstractMatrix{NDual{P,1}}}
+const _VecOrMatLikeWidth1{P} = Union{
+    Dual{<:AbstractVecOrMat{P}},AbstractVecOrMat{NDual{P,1}}
+}
+const _ArrLikeWidth1{P} = Union{Dual{<:AbstractArray{P}},AbstractArray{NDual{P,1}}}
+const _ScalarLikeWidth1{T} = Union{Dual{T},NDual{T,1}}
+
 #
 # Utility
 #
@@ -355,19 +394,22 @@ end
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.scal!),Vararg}}) = true
+# Note: the bare body covers both `Dual{<:Array{P}}` (struct-wrapped via
+# `_arr_extract`) and `AbstractArray{NDual{P,1}}` (plain NDual, with
+# `_arr_writeback!` pushing results back). The legacy `Ptr{P}` argument shape
+# is not handled here — `BLAS.scal!(n, a, ::Ptr, incx)` calls go through the
+# `_foreigncall_` dot loop above.
 function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
-    a_da::Dual{P},
-    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
+    a_da::_ScalarLikeWidth1{P},
+    X_dX::_ArrLikeWidth1{P},
     _incx::Dual{<:Integer},
 ) where {P<:BlasFloat}
-
-    # Extract params.
     n = primal(_n)
     incx = primal(_incx)
-    a, da = extract(a_da)
-    X, dX = arrayify(X_dX)
+    a, da = _scalar_extract(a_da)
+    X, dX = _arr_extract(X_dX)
 
     # Compute Frechet derivative.
     BLAS.scal!(n, a, dX, incx)
@@ -375,29 +417,7 @@ function frule!!(
 
     # Perform primal computation.
     BLAS.scal!(n, a, X, incx)
-    return X_dX
-end
-# Width-1 NDual overload — extracts primal/tangent matrices, runs BLAS,
-# writes results back into the NDual array element-wise.
-function frule!!(
-    ::Dual{typeof(BLAS.scal!)},
-    _n::Dual{<:Integer},
-    a_da::NDual{P,1},
-    X_dX::AbstractArray{NDual{P,1}},
-    _incx::Dual{<:Integer},
-) where {P<:BlasFloat}
-    n = primal(_n)
-    incx = primal(_incx)
-    a = primal(a_da)
-    da = a_da.partials[1]
-    X = map(d -> d.value, X_dX)
-    dX = map(d -> d.partials[1], X_dX)
-    BLAS.scal!(n, a, dX, incx)
-    BLAS.axpy!(n, da, X, incx, dX, incx)
-    BLAS.scal!(n, a, X, incx)
-    @inbounds for i in eachindex(X_dX)
-        X_dX[i] = NDual{P,1}(X[i], (dX[i],))
-    end
+    _arr_writeback!(X_dX, X, dX)
     return X_dX
 end
 function rrule!!(
@@ -451,47 +471,21 @@ end
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
-    alpha::Dual{P},
-    A_dA::Dual{<:AbstractVecOrMat{P}},
-    x_dx::Dual{<:AbstractVector{P}},
-    beta::Dual{P},
-    y_dy::Dual{<:AbstractVector{P}},
+    alpha::_ScalarLikeWidth1{P},
+    A_dA::_VecOrMatLikeWidth1{P},
+    x_dx::_ArrLikeWidth1{P},
+    beta::_ScalarLikeWidth1{P},
+    y_dy::_ArrLikeWidth1{P},
 ) where {P<:BlasFloat}
-    A, dA = matrixify(A_dA)
-    x, dx = arrayify(x_dx)
-    y, dy = arrayify(y_dy)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
+    A, dA = _arr_extract(A_dA)
+    x, dx = _arr_extract(x_dx)
+    y, dy = _arr_extract(y_dy)
+    α, dα = _scalar_extract(alpha)
+    β, dβ = _scalar_extract(beta)
 
     _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
 
-    return y_dy
-end
-
-# Width-1 NDual overload — extract primal/tangent, run core, write back.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::NDual{P,1},
-    A_dA::AbstractMatrix{NDual{P,1}},
-    x_dx::AbstractVector{NDual{P,1}},
-    beta::NDual{P,1},
-    y_dy::AbstractVector{NDual{P,1}},
-) where {P<:BlasFloat}
-    α = primal(alpha)
-    dα = alpha.partials[1]
-    β = primal(beta)
-    dβ = beta.partials[1]
-    A = map(d -> d.value, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    x = map(d -> d.value, x_dx)
-    dx = map(d -> d.partials[1], x_dx)
-    y = map(d -> d.value, y_dy)
-    dy = map(d -> d.partials[1], y_dy)
-    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
-    @inbounds for i in eachindex(y_dy)
-        y_dy[i] = NDual{P,1}(y[i], (dy[i],))
-    end
+    _arr_writeback!(y_dy, y, dy)
     return y_dy
 end
 
@@ -739,17 +733,13 @@ function frule!!(
     _uplo::Dual{Char},
     _trans::Dual{Char},
     _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
+    A_dA::_MatLikeWidth1{T},
+    x_dx::_ArrLikeWidth1{T},
 ) where {T<:BlasFloat}
-    # Extract primals.
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-
-    _trmv!_frule_core!(uplo, trans, diag, A, dA, x, dx)
+    A, dA = _arr_extract(A_dA)
+    x, dx = _arr_extract(x_dx)
+    _trmv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
+    _arr_writeback!(x_dx, x, dx)
     return x_dx
 end
 @inline function _trmv!_frule_core!(
@@ -771,26 +761,6 @@ end
     BLAS.trmv!(uplo, trans, diag, A, x)
     return nothing
 end
-# Width-1 NDual overload — extract, run core, write back.
-function frule!!(
-    ::Dual{typeof(BLAS.trmv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::AbstractMatrix{NDual{T,1}},
-    x_dx::AbstractVector{NDual{T,1}},
-) where {T<:BlasFloat}
-    A = map(d -> d.value, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    x = map(d -> d.value, x_dx)
-    dx = map(d -> d.partials[1], x_dx)
-    _trmv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
-    @inbounds for i in eachindex(x_dx)
-        x_dx[i] = NDual{T,1}(x[i], (dx[i],))
-    end
-    return x_dx
-end
-
 function rrule!!(
     ::CoDual{typeof(BLAS.trmv!)},
     _uplo::CoDual{Char},
@@ -877,17 +847,13 @@ function frule!!(
     _uplo::Dual{Char},
     _trans::Dual{Char},
     _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
+    A_dA::_MatLikeWidth1{T},
+    x_dx::_ArrLikeWidth1{T},
 ) where {T<:BlasFloat}
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-
-    _trsv!_frule_core!(uplo, trans, diag, A, dA, x, dx)
-
+    A, dA = _arr_extract(A_dA)
+    x, dx = _arr_extract(x_dx)
+    _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
+    _arr_writeback!(x_dx, x, dx)
     return x_dx
 end
 @inline function _trsv!_frule_core!(
@@ -908,24 +874,6 @@ end
     BLAS.trsv!(uplo, trans, diag, A, tmp)
     dx .-= tmp
     return nothing
-end
-function frule!!(
-    ::Dual{typeof(BLAS.trsv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::AbstractMatrix{NDual{T,1}},
-    x_dx::AbstractVector{NDual{T,1}},
-) where {T<:BlasFloat}
-    A = map(d -> d.value, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    x = map(d -> d.value, x_dx)
-    dx = map(d -> d.partials[1], x_dx)
-    _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
-    @inbounds for i in eachindex(x_dx)
-        x_dx[i] = NDual{T,1}(x[i], (dx[i],))
-    end
-    return x_dx
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.trsv!)},
@@ -1006,69 +954,23 @@ function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
 end
 
-# Width-1 NDual counterpart: extract Float64 primal/tangent matrices, run
-# the bare-frule body, and write the tangent partial back into `C_dC`.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
     transB::Dual{Char},
-    alpha::NDual{T,1},
-    A_dA::Matrix{NDual{T,1}},
-    B_dB::Matrix{NDual{T,1}},
-    beta::NDual{T,1},
-    C_dC::Matrix{NDual{T,1}},
+    alpha::_ScalarLikeWidth1{T},
+    A_dA::_VecOrMatLikeWidth1{T},
+    B_dB::_VecOrMatLikeWidth1{T},
+    beta::_ScalarLikeWidth1{T},
+    C_dC::_MatLikeWidth1{T},
 ) where {T<:BlasFloat}
     tA = primal(transA)
     tB = primal(transB)
-    α = primal(alpha)
-    dα = alpha.partials[1]
-    β = primal(beta)
-    dβ = beta.partials[1]
-    A = map(primal, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    B = map(primal, B_dB)
-    dB = map(d -> d.partials[1], B_dB)
-    C = map(primal, C_dC)
-    dC = map(d -> d.partials[1], C_dC)
-
-    BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
-    BLAS.gemm!(tA, tB, α, A, dB, one(T), dC) # α*op(A)*op(dB) + 1*dC
-
-    if !iszero(dα)
-        BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)
-    end
-
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
-        end
-    end
-
-    BLAS.gemm!(tA, tB, α, A, B, β, C)
-
-    @inbounds for n in eachindex(C_dC)
-        C_dC[n] = NDual{T,1}(C[n], (dC[n],))
-    end
-    return C_dC
-end
-
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Dual{T},
-    A_dA::Dual{<:AbstractVecOrMat{T}},
-    B_dB::Dual{<:AbstractVecOrMat{T}},
-    beta::Dual{T},
-    C_dC::Dual{<:AbstractMatrix{T}},
-) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
-    A, dA = matrixify(A_dA)
-    B, dB = matrixify(B_dB)
-    C, dC = arrayify(C_dC)
+    α, dα = _scalar_extract(alpha)
+    β, dβ = _scalar_extract(beta)
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
+    C, dC = _arr_extract(C_dC)
 
     # Tangents (product rule)
     # d(α*op(A)*op(B) + β*C) = dα*op(A)*op(B) + α*op(dA)*op(B) + α*op(A)*op(dB) + dβ*C + β*dC
@@ -1088,6 +990,7 @@ end
     # Primal
     BLAS.gemm!(tA, tB, α, A, B, β, C)
 
+    _arr_writeback!(C_dC, C, dC)
     return C_dC
 end
 
@@ -1431,21 +1334,17 @@ function frule!!(
     _uplo::Dual{Char},
     _ta::Dual{Char},
     _diag::Dual{Char},
-    α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractMatrix{P}},
+    α_dα::_ScalarLikeWidth1{P},
+    A_dA::_MatLikeWidth1{P},
+    B_dB::_MatLikeWidth1{P},
 ) where {P<:BlasFloat}
-
-    # Extract data.
-    side = primal(_side)
-    uplo = primal(_uplo)
-    ta = primal(_ta)
-    diag = primal(_diag)
-    α, dα = extract(α_dα)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    _trmm!_frule_core!(side, uplo, ta, diag, α, dα, A, dA, B, dB)
+    α, dα = _scalar_extract(α_dα)
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
+    _trmm!_frule_core!(
+        primal(_side), primal(_uplo), primal(_ta), primal(_diag), α, dα, A, dA, B, dB
+    )
+    _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
 @inline function _trmm!_frule_core!(
@@ -1470,30 +1369,6 @@ end
     end
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
     return nothing
-end
-function frule!!(
-    ::Dual{typeof(BLAS.trmm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _ta::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::NDual{P,1},
-    A_dA::AbstractMatrix{NDual{P,1}},
-    B_dB::AbstractMatrix{NDual{P,1}},
-) where {P<:BlasFloat}
-    α = primal(α_dα)
-    dα = α_dα.partials[1]
-    A = map(d -> d.value, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    B = map(d -> d.value, B_dB)
-    dB = map(d -> d.partials[1], B_dB)
-    _trmm!_frule_core!(
-        primal(_side), primal(_uplo), primal(_ta), primal(_diag), α, dα, A, dA, B, dB
-    )
-    @inbounds for i in eachindex(B_dB)
-        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
-    end
-    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.trmm!)},
@@ -1574,21 +1449,17 @@ function frule!!(
     _uplo::Dual{Char},
     _t::Dual{Char},
     _diag::Dual{Char},
-    α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractMatrix{P}},
+    α_dα::_ScalarLikeWidth1{P},
+    A_dA::_MatLikeWidth1{P},
+    B_dB::_MatLikeWidth1{P},
 ) where {P<:BlasFloat}
-
-    # Extract parameters.
-    side = primal(_side)
-    uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
-    α, dα = extract(α_dα)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    _trsm!_frule_core!(side, uplo, trans, diag, α, dα, A, dA, B, dB)
+    α, dα = _scalar_extract(α_dα)
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
+    _trsm!_frule_core!(
+        primal(_side), primal(_uplo), primal(_t), primal(_diag), α, dα, A, dA, B, dB
+    )
+    _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
 @inline function _trsm!_frule_core!(
@@ -1617,31 +1488,6 @@ end
     BLAS.trsm!(side, uplo, trans, diag, α, A, B)
     return nothing
 end
-function frule!!(
-    ::Dual{typeof(BLAS.trsm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::NDual{P,1},
-    A_dA::AbstractMatrix{NDual{P,1}},
-    B_dB::AbstractMatrix{NDual{P,1}},
-) where {P<:BlasFloat}
-    α = primal(α_dα)
-    dα = α_dα.partials[1]
-    A = map(d -> d.value, A_dA)
-    dA = map(d -> d.partials[1], A_dA)
-    B = map(d -> d.value, B_dB)
-    dB = map(d -> d.partials[1], B_dB)
-    _trsm!_frule_core!(
-        primal(_side), primal(_uplo), primal(_t), primal(_diag), α, dα, A, dA, B, dB
-    )
-    @inbounds for i in eachindex(B_dB)
-        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
-    end
-    return B_dB
-end
-
 function rrule!!(
     ::CoDual{typeof(BLAS.trsm!)},
     _side::CoDual{Char},
