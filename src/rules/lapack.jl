@@ -4,11 +4,21 @@
 # `src/rules/blas.jl`.
 
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(LAPACK.getrf!),<:AbstractMatrix{<:BlasFloat}}}
+) = true
 function frule!!(
-    ::Dual{typeof(LAPACK.getrf!)}, A_dA::Dual{<:AbstractMatrix{P}}
+    ::Dual{typeof(LAPACK.getrf!)}, A_dA::_MatLikeWidth1{P}
 ) where {P<:BlasFloat}
-    _, ipiv, info = LAPACK.getrf!(primal(A_dA))
-    return _getrf_fwd(A_dA, ipiv, info)
+    A, dA = _arr_extract(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A)
+    _getrf_fwd_core!(A, dA, ipiv)
+    _arr_writeback!(A_dA, A, dA)
+    # Tuple-output: return canonical inner V form (a tuple of inner duals
+    # per AGENTS.md tuple-lifting). The first element preserves the input
+    # array's lifted shape (Dual{Wrapper} or Array{<:NDual}); ipiv and info
+    # are non-IEEEFloat so wrap as plain Duals with NoTangent.
+    return (A_dA, Dual(ipiv, NoTangent()), Dual(info, NoTangent()))
 end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
@@ -34,15 +44,28 @@ end
     MinimalCtx,
     Tuple{typeof(Core.kwcall),NamedTuple,typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}},
 )
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(Core.kwcall),
+            NamedTuple,
+            typeof(LAPACK.getrf!),
+            <:AbstractMatrix{<:BlasFloat},
+        },
+    },
+) = true
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     _kwargs::Dual{<:NamedTuple},
     ::Dual{typeof(getrf!)},
-    A_dA::Dual{<:AbstractMatrix{P}},
+    A_dA::_MatLikeWidth1{P},
 ) where {P<:BlasFloat}
     check = primal(_kwargs).check
-    _, ipiv, info = LAPACK.getrf!(primal(A_dA); check)
-    return _getrf_fwd(A_dA, ipiv, info)
+    A, dA = _arr_extract(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A; check)
+    _getrf_fwd_core!(A, dA, ipiv)
+    _arr_writeback!(A_dA, A, dA)
+    return (A_dA, Dual(ipiv, NoTangent()), Dual(info, NoTangent()))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -68,17 +91,17 @@ function rrule!!(
     return CoDual((_A.x, ipiv, code), (_A.dx, dipiv, NoFData())), getrf_pb!!
 end
 
-function _getrf_fwd(A_dA, ipiv, info)
-    A, dA = arrayify(A_dA)
-
-    # Compute Frechet derivative.
+@inline function _getrf_fwd_core!(
+    A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
+) where {P<:BlasFloat}
+    # Compute Frechet derivative on tangent dA in place after the primal
+    # `LAPACK.getrf!(A)` has overwritten A with its LU factorisation.
     L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
     F = rdiv!(ldiv!(L, dA[p, :]), U)
     dA .= L * tril(F, -1) + triu(F) * U
-
-    return Dual((A, ipiv, info), (tangent(A_dA), zero_tangent(ipiv), NoTangent()))
+    return nothing
 end
 
 function _getrf_pb!(A, dA, ipiv, A_copy)
@@ -389,17 +412,21 @@ function __sym!(X::Matrix)
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasRealFloat}})
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(potrf!),Char,<:AbstractMatrix{<:BlasRealFloat}}}
+) = true
 function frule!!(
-    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::Dual{<:AbstractMatrix{<:BlasRealFloat}}
-)
-    # Extract args and take a copy of A.
-    uplo = primal(_uplo)
-    A, dA = arrayify(A_dA)
-
-    # Run primal computation.
-    _, info = LAPACK.potrf!(uplo, A)
-
-    # Compute Frechet derivative.
+    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::_MatLikeWidth1{P}
+) where {P<:BlasRealFloat}
+    A, dA = _arr_extract(A_dA)
+    _, info = LAPACK.potrf!(primal(_uplo), A)
+    _potrf!_frule_core!(primal(_uplo), A, dA)
+    _arr_writeback!(A_dA, A, dA)
+    return (A_dA, Dual(info, NoTangent()))
+end
+@inline function _potrf!_frule_core!(
+    uplo::Char, A::AbstractMatrix{P}, dA::AbstractMatrix{P}
+) where {P<:BlasRealFloat}
     if uplo == 'L'
         L = LowerTriangular(A)
         tmp = LowerTriangular(ldiv!(L, Symmetric(dA, :L) / L'))
@@ -415,8 +442,7 @@ function frule!!(
         end
         _copytrito!(dA, rmul!(tmp, U), 'U')
     end
-
-    return Dual((A, info), (tangent(A_dA), NoTangent()))
+    return nothing
 end
 function rrule!!(
     ::CoDual{typeof(potrf!)}, _uplo::CoDual{Char}, _A::CoDual{<:AbstractMatrix{P}}
