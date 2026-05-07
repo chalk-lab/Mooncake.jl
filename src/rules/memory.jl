@@ -501,6 +501,14 @@ end
 
 # Core.memoryrefmodify!
 
+# memoryrefnew: trait registration would canonicalise its output to
+# `Lifted{MemoryRef{T}, N, MemoryRef{<:NDual}}` for IEEEFloat element
+# types — which is correct, but for `Memory{Any}` slots the runtime
+# primal type recovery picks up the concrete element type and breaks
+# downstream Dual-only signatures the same way `lmemoryrefget` does.
+# Stays on scaffold path until downstream test_resources signatures
+# broaden.
+
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
     return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
 end
