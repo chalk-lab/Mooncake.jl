@@ -55,11 +55,27 @@ end
 # containers. Root cause undiagnosed; making it a forward-mode primitive that runs
 # `mightalias` on primals sidesteps the broken codegen path.
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(Base.unalias),Any,Any}
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.unalias),Any,Any}}) = true
 function frule!!(::Dual{typeof(Base.unalias)}, dest, src)
     d = dest isa Dual ? primal(dest) : dest
     s = src isa Dual ? primal(src) : src
     if d isa AbstractArray && s isa AbstractArray && Base.mightalias(d, s)
         return src isa Dual ? Dual(copy(primal(src)), copy(tangent(src))) : copy(src)
+    end
+    return src
+end
+# Lifted-aware overload — avoids the bare body's runtime `isa Dual` checks
+# by handling the slot shape directly. The `d` / `s` extraction uses
+# `primal(::Lifted)` (no NDual broadcast through `mightalias`'s codegen
+# path that the bare-via-generic-adapter route triggers).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Base.unalias),N}, dest::Mooncake.Lifted, src::Mooncake.Lifted
+) where {N}
+    d = primal(dest)
+    s = primal(src)
+    if d isa AbstractArray && s isa AbstractArray && Base.mightalias(d, s)
+        # Aliased: return a fresh copy of `src`'s slot value.
+        return Mooncake.Lifted{typeof(d),N}(copy(_unlift(src)))
     end
     return src
 end
@@ -146,6 +162,8 @@ This approach is identical to the one taken by `Zygote.jl` to circumvent the sam
 lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any}}) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any,Any}}) = true
 @inline function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}
 ) where {P,T<:StandardTangentType,f}
@@ -261,6 +279,7 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lsetfield!),Any,Any,Any}
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),Any,Any,Any}}) = true
 @inline function frule!!(
     ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Dual
 ) where {P,T<:StandardTangentType}

@@ -44,7 +44,15 @@ end
     # may carry Tuple-of-Dual / Dual{Tuple} dims args; `__get_primal` extracts
     # them while leaving `MemoryRef` and other shapes untouched.
     if P <: Array
-        new_args = map(__get_primal, bare_x)
+        # `bare_x` may carry Tuple-of-Dual or Dual{Tuple} dims args from the
+        # legacy non-IEEEFloat Tuple wrap; extract those, but leave MemoryRef
+        # and other V shapes untouched (the NDual branch below needs the V
+        # MemoryRef directly to construct `Array{NDual{T,N}}` via `:new`).
+        new_args = map(bare_x) do v
+            v isa Tuple && return primal(v)
+            v isa Dual && return primal(v)
+            return v
+        end
         ref = _find_ndual_memref(bare_x...)
         if ref !== nothing
             P_ndual = Array{eltype(ref),ndims(P)}

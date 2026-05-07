@@ -993,6 +993,10 @@ const StandardTangentType = Union{
 }
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Any,Any}}) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Any,Any,Any}}) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(setfield!),Any,Any,Any}}) = true
+
 function frule!!(
     ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual
 ) where {P}

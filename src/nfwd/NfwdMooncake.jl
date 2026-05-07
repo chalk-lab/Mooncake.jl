@@ -919,9 +919,29 @@ end
 primal(d::NDual) = d.value
 tangent(d::NDual{T,N}) where {T,N} = NTangent(d.partials)
 
-# __get_primal for NDual — primal_mode.jl defines the Dual overload,
-# reverse_mode.jl defines CoDual and generic fallback.
+# __get_primal for NDual-bearing shapes — primal_mode.jl defines the
+# `Dual` overload, reverse_mode.jl defines `CoDual` and the generic
+# fallback. The bare frule result paths (especially through the generic
+# Lifted-aware adapter) need these so `_wrap_rule_result` recovers the
+# correct primal type for `Lifted{P_out, N, V}`.
 Mooncake.__get_primal(x::NDual) = primal(x)
+Mooncake.__get_primal(x::Complex{<:NDual}) = primal(x)
+Mooncake.__get_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
+function Mooncake.__get_primal(x::AbstractArray{<:Complex{<:NDual}})
+    map(z -> complex(z.re.value, z.im.value), x)
+end
+@static if VERSION >= v"1.11-"
+    Mooncake.__get_primal(x::Memory{<:NDual{T}}) where {T} = map(d -> d.value, x)
+    Mooncake.__get_primal(x::Memory{<:Complex{<:NDual}}) = map(
+        z -> complex(z.re.value, z.im.value), x
+    )
+    Mooncake.__get_primal(x::MemoryRef{<:NDual{T}}) where {T} = memoryref(
+        Mooncake.__get_primal(x.mem), Core.memoryrefoffset(x)
+    )
+    Mooncake.__get_primal(x::MemoryRef{<:Complex{<:NDual}}) = memoryref(
+        Mooncake.__get_primal(x.mem), Core.memoryrefoffset(x)
+    )
+end
 
 # _partial_i for NDual vararg transpose — primal_mode.jl defines the Dual overload.
 Mooncake._partial_i(x::NDual, i::Int) = x.partials[i]

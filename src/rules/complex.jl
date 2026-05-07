@@ -65,6 +65,9 @@ _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Complex{P},Val} where {P<:IEEEFloat}
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(lgetfield),<:Complex{<:IEEEFloat},<:Val}}
+) = true
 function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{<:CF,<:CF}, ::Dual{Val{FieldName}}
 ) where {FieldName}
