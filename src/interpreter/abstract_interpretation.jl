@@ -199,8 +199,8 @@ function Core.Compiler.abstract_call_gf_by_type(
             # `MooncakeInterpreter` would walk nested calls in that body, check them for
             # primitives, and continue that search down the callee tree. That extra work is
             # unnecessary for a primitive with a hand-written rule. 
-            # `OverlayAwareNativeInterpreter` also has access to the Mooncake method table, so it can find @mooncake_overlay methods and 
-            # infer their bodies, giving the correct return type and effects when an overlay changes the  return type. 
+            # `OverlayAwareNativeInterpreter` also has access to the Mooncake method table, so it can find @mooncake_overlay methods 
+            # and infer their bodies, giving the correct return type and effects when an overlay changes the return type. 
             # (it has no abstract_call_gf_by_type override - so it never recurses into primitive bodies with MooncakeInterpreter machinery)
             #
             # `noinline_callmeta` below then blocks inlining/const-folding so the primitive
