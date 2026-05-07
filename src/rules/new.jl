@@ -45,16 +45,38 @@ end
 
     # Array primal with an NDual MemoryRef arg: bare element-wise lifted Array.
     # `bare_x` may contain `Tuple`-of-`Dual` values (the inner V of a
-    # `Lifted{<:Tuple}` slot, e.g. dims args). Extract per-element primals
-    # from those before splatting into `_new_`; `MemoryRef` and other shapes
+    # `Lifted{<:Tuple}` slot, e.g. dims args) or bare `Dual{Tuple, NoTangent}`
+    # values from the legacy non-IEEEFloat Tuple wrap. Extract per-element
+    # primals so `_new_` sees bare Tuples; `MemoryRef` and other shapes
     # pass through unchanged.
     if P <: Array
         ref = _find_ndual_memref(bare_x...)
         if ref !== nothing
             P_ndual = Array{eltype(ref),ndims(P)}
-            new_args = map(v -> v isa Tuple ? primal(v) : v, bare_x)
+            new_args = map(bare_x) do v
+                v isa Tuple && return primal(v)
+                v isa Dual && return primal(v)
+                return v
+            end
             return Lifted{P,N}(_new_(P_ndual, new_args...))
         end
+        # No NDual content: build the Array from primal args and wrap as a
+        # `Dual{P, T}` where `T = tangent_type(P)`. This avoids the
+        # struct-output `build_output_tangent` path which expects a
+        # `NamedTuple`-shaped tangent constructor (Array tangents are not
+        # struct-shaped).
+        primals = map(__get_primal, bare_x)
+        # Some primals may still be `Tuple`-of-Dual or `Dual{Tuple, NoTangent}`
+        # — `__get_primal` extracts the bare value.
+        new_args = map(bare_x) do v
+            v isa Tuple && return primal(v)
+            v isa Dual && return primal(v)
+            return v
+        end
+        y = _new_(P, new_args...)
+        T = tangent_type(P)
+        T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
+        return Lifted{P,N}(Dual(y, zero_tangent(y)))
     end
 
     # Complex primal with NDual fields: bare Complex{NDual}.
@@ -62,7 +84,18 @@ end
         return Lifted{P,N}(Complex(bare_x...))
     end
 
-    # Struct/tuple with NDual content: at width=1 produce a bare-tangent Dual
+    # Tuple primal: canonical V is the element-wise tuple-of-inner-duals
+    # (`dual_type(Val(N), Tuple{...})` lifts each field). `bare_x` is already
+    # the element-wise inner tuple, so wrap it directly. Tuple primals do not
+    # use the `Dual{Tuple, NTangent}` shape.
+    if P <: Tuple
+        InnerT = dual_type(Val(N), P)
+        if InnerT isa DataType && InnerT <: Tuple
+            return Lifted{P,N,InnerT}(bare_x)
+        end
+    end
+
+    # Struct with NDual content: at width=1 produce a bare-tangent Dual
     # (matches `dual_type(Val(1), P) = Dual{P, T}`); at width N>=2 wrap the
     # per-direction tangents in `NTangent`.
     if _has_ndual(bare_x...)
@@ -88,7 +121,14 @@ end
     y = _new_(P, primals...)
     T = tangent_type(P)
     T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
-    return Lifted{P,N}(Dual(y, build_output_tangent(P, primals, map(tangent, bare_x))))
+    # Fold all-NoTangent `Tuple` field tangents to a single `NoTangent`, mirroring
+    # `tangent_type(Tuple{...})`'s all-NoTangent fold so `build_output_tangent`
+    # can place the result in a `NoTangent` struct field.
+    field_tangents = map(bare_x) do v
+        t = tangent(v)
+        t isa Tuple{Vararg{NoTangent}} ? NoTangent() : t
+    end
+    return Lifted{P,N}(Dual(y, build_output_tangent(P, primals, field_tangents)))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(_new_),Vararg}}) = true
 

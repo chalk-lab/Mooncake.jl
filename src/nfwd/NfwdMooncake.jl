@@ -874,6 +874,25 @@ end
     end
 end
 
+# Type-literal overloads: `_uninit_dual(Val(N), ::Type{Array{T,D}})` substitutes
+# the inner element type so downstream `Array{T,D}(undef, n)` calls allocate
+# NDual containers. The OC slot inferred from `lifted_type` must match that
+# substituted V — override `dual_type(Val(N), Type{Array{T,D}})` to mirror the
+# runtime substitution.
+function dual_type(
+    ::Val{N}, ::Type{Type{Array{T,D}}}
+) where {N,T<:Union{IEEEFloat,Complex{<:IEEEFloat}},D}
+    return Dual{Type{Array{dual_type(Val(N), T),D}},NoTangent}
+end
+@static if VERSION >= v"1.11-"
+    function dual_type(::Val{N}, ::Type{Type{Memory{T}}}) where {N,T<:IEEEFloat}
+        return Dual{Type{Memory{dual_type(Val(N), T)}},NoTangent}
+    end
+    function dual_type(::Val{N}, ::Type{Type{Memory{Complex{T}}}}) where {N,T<:IEEEFloat}
+        return Dual{Type{Memory{Complex{dual_type(Val(N), T)}}},NoTangent}
+    end
+end
+
 # Val{0} ambiguity resolvers: dual_type(Val(0), P) = P for all P.
 dual_type(::Val{0}, ::Type{T}) where {T<:IEEEFloat} = T
 dual_type(::Val{0}, ::Type{Complex{T}}) where {T<:IEEEFloat} = Complex{T}
@@ -944,6 +963,14 @@ function (::Type{Array{NDual{T,N},D}})(
     primal::Array{T,D}, tangent::Array{T,D}
 ) where {T<:IEEEFloat,N,D}
     return map((p, t) -> NDual{T,N}(p, t), primal, tangent)
+end
+# Width-N counterpart: tangent is `Array{NTangent{NTuple{N,T}}, D}`. Element
+# `Array{NDual{T,1}}(p, t)` from `t::Vector{NTangent{Tuple{T}}}` arises in
+# vararg-grouping paths that retain `NTangent` even at width=1.
+function (::Type{Array{NDual{T,N},D}})(
+    primal::Array{T,D}, tangent::Array{NTangent{NTuple{N,T}},D}
+) where {T<:IEEEFloat,N,D}
+    return map((p, t) -> NDual{T,N}(p, t.lanes), primal, tangent)
 end
 function (::Type{Array{Complex{NDual{T,N}},D}})(
     primal::Array{Complex{T},D}, tangent::Array{Complex{T},D}
@@ -1386,7 +1413,15 @@ end
 @inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} = map(
     z -> complex(z.re.partials[i], z.im.partials[i]), x
 )
-@inline _tangent_dir(x::Tuple, i) = map(xi -> _tangent_dir(xi, i), x)
+@inline function _tangent_dir(x::Tuple, i)
+    inner = map(xi -> _tangent_dir(xi, i), x)
+    # Mirror `tangent_type(P<:Tuple)`'s all-NoTangent fold: if every element's
+    # direction tangent is `NoTangent`, return a single `NoTangent` so that
+    # downstream `build_output_tangent` can place it in a `NoTangent` field
+    # without a `Tuple{NoTangent...}` → `NoTangent` convert error.
+    inner isa Tuple{Vararg{NoTangent}} && return NoTangent()
+    return inner
+end
 @inline _tangent_dir(x, _) = zero_tangent(x)
 
 @inline _tangent_dir_elem(t::NTangent, i) = t.lanes[i]

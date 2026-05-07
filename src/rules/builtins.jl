@@ -1187,6 +1187,21 @@ end
 # replaces the runtime `_has_ndual` branch.
 @inline function frule!!(::Lifted{typeof(tuple),N}, args::Vararg{Lifted,M}) where {N,M}
     P_out = Tuple{ntuple(i -> _typeof(primal(args[i])), Val(M))...}
+    InnerT = dual_type(Val(N), P_out)
+    if InnerT isa DataType && InnerT <: Tuple
+        # Canonicalise each element to the slot's expected V_i so the OC sees
+        # `Tuple{NDual, ...}` rather than `Tuple{Dual, ...}` for IEEEFloat fields.
+        inner = ntuple(Val(M)) do i
+            Vi = fieldtype(InnerT, i)
+            elem = _unlift(args[i])
+            if elem isa Dual && typeof(elem) !== Vi && isconcretetype(Vi)
+                Vi(primal(elem), tangent(elem))
+            else
+                elem
+            end
+        end
+        return Lifted{P_out,N,InnerT}(inner)
+    end
     inner = ntuple(i -> _unlift(args[i]), Val(M))
     return Lifted{P_out,N}(inner)
 end
@@ -1212,6 +1227,24 @@ function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
     typeassert_pullback(dy) = NoRData(), dy, NoRData()
     return CoDual(typeassert(primal(x), primal(type)), tangent(x)), typeassert_pullback
 end
+
+# Lifted-aware typeassert: narrow `P` to the asserted type so the produced
+# Lifted matches the OC's static return slot (`Lifted` `P` is invariant, so
+# `Lifted{Any}` doesn't subtype `Lifted{Float64}`). The runtime `V` is
+# preserved — it's already canonical for the asserted concrete type.
+@inline function frule!!(
+    ::Lifted{typeof(typeassert),N}, x::Lifted, ::Lifted{Type{T},N}
+) where {N,T}
+    p = primal(x)
+    typeassert(p, T)
+    inner = _unlift(x)
+    return Lifted{T,N,typeof(inner)}(inner)
+end
+@inline function frule!!(::Lifted{typeof(typeassert),N}, x::Lifted, type::Lifted) where {N}
+    typeassert(primal(x), primal(type))
+    return x
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(typeassert),Any,Any}}) = true
 
 @zero_derivative MinimalCtx Tuple{typeof(typeof),Any}
 

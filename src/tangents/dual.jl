@@ -272,11 +272,30 @@ end
 
 # Tuple-primal special case: `dual_type(Val(N), P<:Tuple)` is a bare
 # element-wise `Tuple{...}` of inner duals, which has no user-defined 2-arg
-# constructor. Build the inner tuple here element-wise instead.
+# constructor. Build the inner tuple here element-wise instead. Nested tuple
+# fields recurse via `_inner_dual_for_field` so that
+# `Tuple{NDual, Tuple{NDual, Vector{NDual}}, ...}` is built leaf-by-leaf.
 @inline function Lifted{P,N}(primal::P, tangent::Tup) where {P<:Tuple,N,Tup<:Tuple}
     InnerT = dual_type(Val(N), P)
-    inner = ntuple(i -> fieldtype(InnerT, i)(primal[i], tangent[i]), Val(fieldcount(P)))
+    inner = ntuple(
+        i -> _inner_dual_for_field(fieldtype(InnerT, i), primal[i], tangent[i]),
+        Val(fieldcount(P)),
+    )
     return Lifted{P,N,InnerT}(inner)
+end
+
+# Build a single field's inner dual value. For non-Tuple fields, defer to the
+# field type's own 2-arg constructor (NDual, Vector{NDual}, Dual, etc.). For
+# Tuple-typed fields, recurse element-wise so a nested Tuple-of-Dual builds
+# without trying `Tuple{...}(::Tuple, ::Tuple)` (which has no ctor).
+@inline _inner_dual_for_field(::Type{V}, primal, tangent) where {V} = V(primal, tangent)
+@inline function _inner_dual_for_field(
+    ::Type{V}, primal::Tuple, tangent::Tuple
+) where {V<:Tuple}
+    return ntuple(
+        i -> _inner_dual_for_field(fieldtype(V, i), primal[i], tangent[i]),
+        Val(fieldcount(V)),
+    )
 end
 
 # Tuple-primal with `NoTangent` (whole-tuple) tangent — common when a `Tuple`

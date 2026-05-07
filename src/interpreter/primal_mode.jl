@@ -179,7 +179,51 @@ end
     # back to the 1-arg form (V inferred from the bare result's type).
     return isconcretetype(P) ? Lifted{P,N}(primal(x), tangent(x)) : Lifted{P,N}(x)
 end
+
+# Tuple-primal result: bare frule may return a Tuple of bare `Dual{P_i, T_i}`
+# values (e.g. from `_dual_or_ndual` for IEEEFloat fields). Canonicalise each
+# element to the slot's expected V_i = `dual_type(Val(N), P_i)`.
+@inline function _wrap_rule_result(::Type{P}, w::Val{N}, x::Tuple) where {P<:Tuple,N}
+    if isconcretetype(P) && fieldcount(P) == length(x)
+        InnerT = dual_type(Val(N), P)
+        if InnerT isa DataType && InnerT <: Tuple
+            inner = ntuple(Val(fieldcount(P))) do i
+                Vi = fieldtype(InnerT, i)
+                elem = x[i]
+                if elem isa Dual && typeof(elem) !== Vi && isconcretetype(Vi)
+                    Vi(primal(elem), tangent(elem))
+                else
+                    elem
+                end
+            end
+            return Lifted{P,N,InnerT}(inner)
+        end
+    end
+    return Lifted{P,N}(x)
+end
+
 @inline _wrap_rule_result(::Type{P}, ::Val{N}, x) where {P,N} = Lifted{P,N}(x)
+
+# Canonicalise a runtime `Lifted` value to match a target P (and V) at the OC
+# return boundary. Lifted's `P` parameter is invariant, so a runtime
+# `Lifted{Any, N, V_legacy}` value is not a subtype of the OC's
+# `Lifted{P_target, N, V_canonical}` return slot. PhiNode merges and
+# abstract-slot rules (e.g. dynamic getfield through `RefValue{Any}`) can
+# leave widened P / legacy V in the runtime value; this helper re-wraps to
+# the inferred concrete P with the canonical V (e.g. `NDual{Float64, 1}`).
+@inline _canon_return(::Val{N}, ::Type{P_target}, x) where {N,P_target} = x
+@inline function _canon_return(
+    ::Val{N}, ::Type{P_target}, x::Lifted{P,N,V}
+) where {N,P_target,P,V}
+    P === P_target && return x
+    inner = _unlift(x)
+    if inner isa Dual && isconcretetype(P_target)
+        # Route through the 2-arg ctor to produce the canonical V matching
+        # `dual_type(Val(N), P_target)`.
+        return Lifted{P_target,N}(primal(inner), tangent(inner))
+    end
+    return Lifted{P_target,N,typeof(inner)}(inner)
+end
 
 # Insert an SSA `_unlift(arg)` at the current position, returning the new SSA.
 # Only used when `info.width !== nothing`; for runtime references (`Argument` /
@@ -662,7 +706,13 @@ function modify_primal_stmts!(
 
     # stmt is an Argument, then already a dual, and must just be incremented.
     if stmt.val isa Union{Argument,SSAValue}
-        Mooncake.replace_call!(lifted_ir, ssa, ReturnNode(__inc(stmt.val)))
+        ret_val = __inc(stmt.val)
+        if _is_lifted_width(info.width)
+            P_target = CC.widenconst(compute_ir_rettype(info.primal_ir))
+            canon_call = Expr(:call, _canon_return, info.width, P_target, ret_val)
+            ret_val = CC.insert_node!(lifted_ir, ssa, new_inst(canon_call), ATTACH_BEFORE)
+        end
+        Mooncake.replace_call!(lifted_ir, ssa, ReturnNode(ret_val))
         return nothing
     end
 
