@@ -133,6 +133,21 @@ function frule!!(
     dx = _new_(Complex{P}, tangent(re), tangent(im))
     return Dual(x, dx)
 end
+# Canonical V for Complex{P<:IEEEFloat} is Complex{NDual{P,N}}; build it directly
+# from the inner NDual{P,N} values of the real and imaginary slots.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(_new_),N},
+    ::Mooncake.Lifted{Type{Complex{P}}},
+    re::Mooncake.Lifted{P,N},
+    im::Mooncake.Lifted{P,N},
+) where {N,P<:IEEEFloat}
+    return Mooncake.Lifted{Complex{P},N}(
+        complex(Mooncake._unlift(re), Mooncake._unlift(im))
+    )
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(_new_),Type{<:Complex{<:IEEEFloat}},<:IEEEFloat,<:IEEEFloat}}
+) = true
 function rrule!!(
     ::CoDual{typeof(_new_)}, ::CoDual{Type{Complex{P}}}, re::CoDual{P}, im::CoDual{P}
 ) where {P<:IEEEFloat}
