@@ -3,6 +3,47 @@ non_primitive(x) = sin(x)
 
 Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(a_primitive),Float64}
 
+# Regression test: primitive with a @mooncake_overlay that changes the return type.
+# Before the fix, NativeInterpreter (overlay-blind) was used for type inference of
+# primitive calls, so downstream dispatch compiled against the non-overlaid type and
+# produced wrong gradients.
+struct _OverlayTypeA end
+struct _OverlayTypeB end
+
+_overlay_switch(::_OverlayTypeA) = _OverlayTypeA()
+Mooncake.@mooncake_overlay _overlay_switch(::_OverlayTypeA) = _OverlayTypeB()
+
+Mooncake.@is_primitive MinimalCtx ReverseMode Tuple{typeof(_overlay_switch), _OverlayTypeA}
+function Mooncake.rrule!!(
+    f::CoDual{typeof(_overlay_switch)}, x::CoDual{_OverlayTypeA}
+)
+    return zero_fcodual(_OverlayTypeB()), NoPullback(f, x)
+end
+
+_overlay_use(::_OverlayTypeA, x::Float64) = x
+_overlay_use(::_OverlayTypeB, x::Float64) = 2x
+
+Mooncake.@is_primitive MinimalCtx ReverseMode Tuple{typeof(_overlay_use), _OverlayTypeA, Float64}
+function Mooncake.rrule!!(
+    f::CoDual{typeof(_overlay_use)}, ::CoDual{_OverlayTypeA}, x::CoDual{Float64}
+)
+    pb(dy) = NoRData(), NoRData(), dy
+    return zero_fcodual(Mooncake.primal(x)), pb
+end
+
+Mooncake.@is_primitive MinimalCtx ReverseMode Tuple{typeof(_overlay_use), _OverlayTypeB, Float64}
+function Mooncake.rrule!!(
+    f::CoDual{typeof(_overlay_use)}, ::CoDual{_OverlayTypeB}, x::CoDual{Float64}
+)
+    pb(dy) = NoRData(), NoRData(), 2dy
+    return zero_fcodual(2.0 * Mooncake.primal(x)), pb
+end
+
+function _overlay_outer(x::Float64)
+    b = _overlay_switch(_OverlayTypeA())
+    return _overlay_use(b, x)
+end
+
 contains_primitive(x) = @inline a_primitive(x)
 contains_non_primitive(x) = @inline non_primitive(x)
 contains_primitive_behind_call(x) = @inline contains_primitive(x)
@@ -145,5 +186,17 @@ end
         val, grad = Mooncake.value_and_gradient!!(cache, f, x)
         @test val ≈ sin(x[1]) + x[2]^2
         @test grad[2] ≈ [cos(x[1]), 2x[2]]
+    end
+
+    @testset "overlay with type-changing return is inferred correctly" begin
+        # _overlay_switch has a @mooncake_overlay that returns _OverlayTypeB instead of
+        # _OverlayTypeA. _overlay_outer passes the result to _overlay_use, which has
+        # separate rrule!!s for each type (gradient 1x vs 2x). The correct gradient is
+        # 2.0 iff Mooncake inferred the overlaid return type and dispatched to the TypeB
+        # rrule!!. A wrong gradient of 1.0 indicates the overlay was ignored.
+        cache = Mooncake.prepare_gradient_cache(_overlay_outer, 3.0)
+        val, (_, grad) = Mooncake.value_and_gradient!!(cache, _overlay_outer, 3.0)
+        @test val == 6.0
+        @test grad == 2.0
     end
 end
