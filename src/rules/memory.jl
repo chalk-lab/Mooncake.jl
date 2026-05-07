@@ -549,6 +549,20 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefset!),MemoryRef,Any,Val,Val}
+# Trait register only for IEEEFloat / Complex MemoryRef slots — the bare
+# NDual variant exists at line ~970 and returns the input value
+# unchanged, so canonicalisation matches the NDual shape downstream.
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(lmemoryrefset!),
+            <:MemoryRef{<:Union{IEEEFloat,Complex{<:IEEEFloat}}},
+            Any,
+            <:Val,
+            <:Val,
+        },
+    },
+) = true
 
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
@@ -921,6 +935,18 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
 @is_primitive MinimalCtx Tuple{typeof(fill!),Memory{<:Union{UInt8,Int8}},Integer}
+# UInt8/Int8 arrays carry NoTangent (non-differentiable element types), so
+# their lifted slot V is `Dual{Array{UInt8}, NoTangent}` — the bare body's
+# `Dual{T}` signature already matches and there's no NDual lifting risk.
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(fill!),
+            <:Union{Array{<:Union{UInt8,Int8}},Memory{<:Union{UInt8,Int8}}},
+            <:Integer,
+        },
+    },
+) = true
 function frule!!(
     ::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
 ) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
