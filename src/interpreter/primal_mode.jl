@@ -199,28 +199,41 @@ end
 # `dual_type(Val(N), P_out)(primal, tangent)`, producing the canonical V.
 # Other shapes (NDual, Complex{<:NDual}, Array{<:NDual}, Dual{P, NTangent}
 # at width N>=2, etc.) are already canonical and use the 1-arg form.
+# Path B: when the IR-inferred `P` is abstract, recover the concrete primal
+# type from the runtime bare value via `__get_primal`. This keeps the outer
+# slot's `P` parameter concrete so downstream `DynamicPrimal` callers (whose
+# child OCs use `_stable_typeof ∘ primal` to pick concrete slot types) see
+# the same `Lifted{P_concrete, N, V}` shape and don't trip parametric
+# invariance at OC typeassert boundaries.
+@inline _resolve_concrete_P(::Type{P}, x) where {P} =
+    isconcretetype(P) ? P : _typeof(__get_primal(x))
+
 @inline function _wrap_rule_result(::Type{P}, ::Val{N}, x::Dual) where {P,N}
-    # `Lifted{P, N}(primal, tangent)` 2-arg routes through `dual_type(Val(N),
-    # P)(primal, tangent)` to canonicalise V. For abstract P (Union, UnionAll,
-    # Any) `dual_type` returns an abstract type that's not callable, so fall
-    # back to the 1-arg form (V inferred from the bare result's type).
-    return isconcretetype(P) ? Lifted{P,N}(primal(x), tangent(x)) : Lifted{P,N}(x)
+    P_out = _resolve_concrete_P(P, x)
+    return if isconcretetype(P_out)
+        Lifted{P_out,N}(primal(x), tangent(x))
+    else
+        Lifted{P_out,N}(x)
+    end
 end
 
-# Tuple-primal result: bare frule may return a Tuple of bare `Dual{P_i, T_i}`
-# values (e.g. from `_dual_or_ndual` for IEEEFloat fields). Canonicalise each
-# element to the slot's expected V_i = `dual_type(Val(N), P_i)`.
 @inline function _wrap_rule_result(::Type{P}, w::Val{N}, x::Tuple) where {P<:Tuple,N}
-    if isconcretetype(P) && fieldcount(P) == length(x)
-        InnerT = dual_type(Val(N), P)
+    P_out = _resolve_concrete_P(P, x)
+    if isconcretetype(P_out) && P_out <: Tuple && fieldcount(P_out) == length(x)
+        InnerT = dual_type(Val(N), P_out)
         if InnerT isa DataType && InnerT <: Tuple
-            return Lifted{P,N,InnerT}(_canonicalise_tuple_inner(InnerT, x))
+            return Lifted{P_out,N,InnerT}(_canonicalise_tuple_inner(InnerT, x))
         end
     end
-    return Lifted{P,N}(x)
+    return Lifted{P_out,N}(x)
 end
 
-@inline _wrap_rule_result(::Type{P}, ::Val{N}, x) where {P,N} = Lifted{P,N}(x)
+@inline function _wrap_rule_result(::Type{P}, ::Val{N}, x) where {P,N}
+    P_out = _resolve_concrete_P(P, x)
+    return Lifted{P_out,N}(x)
+end
+
+@inline _wrap_rule_result(::Type{P}, ::Val{N}, x::Lifted) where {P,N} = x
 
 # Build an inner element-wise tuple of inner duals from a tuple of bare
 # rule-emitted values. Each element is routed through `Vi(primal, tangent)`
@@ -892,15 +905,8 @@ function modify_primal_stmts!(
             return _uninit_dual(info.width, get_const_primal_value(arg))
         end
 
-        # Resolve the rule callable and decide which dispatch path to use.
-        # `is_lifted_aware` is the Phase-4 trait: the primitive's `frule!!`
-        # accepts `Lifted` args and returns `Lifted` directly. When false, the
-        # IR-emit inserts the Phase-3 unwrap/wrap scaffolding around the call
-        # so the still-bare rule sees bare slot values.
         interp = info.interp
         is_prim = is_primitive(context_type(interp), ForwardMode, sig, interp.world)
-        is_lifted_aware = is_prim && _is_lifted_aware(sig)
-        needs_scaffold = _is_lifted_width(info.width) && !is_lifted_aware
 
         if is_prim
             rule = build_primitive_frule(sig)
@@ -929,40 +935,15 @@ function modify_primal_stmts!(
             )
         end
 
-        # Unwrap Lifted args only when the rule isn't Lifted-aware. Lifted-aware
-        # primitives receive `Lifted` slots directly. `Argument`/`SSAValue`
-        # references get a runtime `_unlift` SSA; constants (already-built
-        # `Lifted` values) are unwrapped at IR-emit time.
-        rule_args = if needs_scaffold
-            map(dual_args) do arg
-                arg isa Union{Argument,SSAValue} &&
-                    return _insert_unlift!(lifted_ir, ssa, arg)
-                return _unlift(arg)
-            end
-        else
-            dual_args
-        end
-
-        # Emit the rule call. Lifted-aware primitives and non-lifted widths
-        # replace the original SSA directly. Otherwise, wrap the bare rule
-        # result via `_wrap_rule_result`, which canonicalises V to match
-        # `dual_type(Val(N), primal_retype)` (e.g. routes bare
-        # `Dual{Float64, Float64}` through the 2-arg ctor to produce
-        # `Lifted{Float64, N, NDual{Float64, N}}` instead of
-        # `Lifted{Float64, N, Dual{Float64, Float64}}`).
-        if needs_scaffold
+        if _is_lifted_width(info.width)
             primal_retype = let t = CC.widenconst(get_ir(info.primal_ir, ssa, :type))
-                # Fallback to `Any` when `t` is `Bottom` or contains an
-                # unbound `TypeVar` (e.g. a `Type{AbstractArray{a, 1}}`
-                # constructed via `Core.apply_type` / `UnionAll`); Julia's
-                # static parameter binding chokes on TypeVars in dispatch.
                 if contains_bottom_type(t) || Base.has_free_typevars(t)
                     Any
                 else
                     t
                 end
             end
-            rule_call_inst = new_inst(Expr(:call, rule_callable, rule_args...))
+            rule_call_inst = new_inst(Expr(:call, rule_callable, dual_args...))
             rule_result_ssa = CC.insert_node!(lifted_ir, ssa, rule_call_inst, ATTACH_BEFORE)
             replace_call!(
                 lifted_ir,
@@ -970,7 +951,7 @@ function modify_primal_stmts!(
                 Expr(:call, _wrap_rule_result, primal_retype, info.width, rule_result_ssa),
             )
         else
-            replace_call!(lifted_ir, ssa, Expr(:call, rule_callable, rule_args...))
+            replace_call!(lifted_ir, ssa, Expr(:call, rule_callable, dual_args...))
         end
     elseif isexpr(stmt, :boundscheck)
         # Keep the boundscheck, but wrap it as a slot value (Dual at legacy

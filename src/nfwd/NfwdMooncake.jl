@@ -1390,6 +1390,7 @@ end
 @inline _has_ndual(x::Dual, rest...) = _has_ndual(tangent(x), rest...)
 @inline _has_ndual(x::Tuple, rest...) = _has_ndual(x..., rest...)
 @inline _has_ndual(x::NamedTuple, rest...) = _has_ndual(values(x)..., rest...)
+@inline _has_ndual(x::Mooncake.Lifted, rest...) = _has_ndual(x.value, rest...)
 @inline _has_ndual(_, rest...) = _has_ndual(rest...)
 @static if VERSION >= v"1.11-"
     @inline _has_ndual(::MemoryRef{<:NDual}, rest...) = true
@@ -1458,6 +1459,7 @@ end
 @inline _ndual_primal(x::NamedTuple{names}) where {names} = NamedTuple{names}(
     map(_ndual_primal, values(x))
 )
+@inline _ndual_primal(x::Mooncake.Lifted) = _ndual_primal(x.value)
 @inline _ndual_primal(x) = x
 
 # `_tangent_dir(x, i)` — extract the i-th direction tangent from any NDual-bearing
@@ -1488,6 +1490,11 @@ end
     return inner isa NoTangent ? inner : NamedTuple{names}(inner)
 end
 @inline _tangent_dir(x, _) = zero_tangent(x)
+
+# Lifted slot-shape passthrough: extract the i-th direction tangent from the
+# Lifted's inner V. Mirrors how `tangent(::Lifted)` passes through to the
+# inner V's tangent.
+@inline _tangent_dir(x::Mooncake.Lifted, i) = _tangent_dir(x.value, i)
 
 @inline _tangent_dir_elem(t::NTangent, i) = t.lanes[i]
 @inline _tangent_dir_elem(t, _) = t
