@@ -296,6 +296,7 @@ end
         typeof(BLAS.nrm2),Int,X,Int
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.nrm2),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(BLAS.nrm2)},
     n::Dual{<:Integer},
@@ -353,6 +354,7 @@ end
         typeof(BLAS.scal!),Integer,P,X,Integer
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.scal!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
@@ -444,6 +446,7 @@ end
         typeof(BLAS.gemv!),Char,P,AbstractVecOrMat{P},AbstractVector{P},P,AbstractVector{P}
     } where {P<:BlasFloat},
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.gemv!),Vararg}}) = true
 
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
@@ -729,6 +732,7 @@ end
         typeof(BLAS.trmv!),Char,Char,Char,AbstractMatrix{T},AbstractVector{T}
     } where {T<:BlasFloat},
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trmv!),Vararg}}) = true
 
 function frule!!(
     ::Dual{typeof(BLAS.trmv!)},
@@ -867,6 +871,7 @@ end
         typeof(BLAS.trsv!),Char,Char,Char,AbstractMatrix{T},AbstractVector{T}
     } where {T<:BlasFloat},
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trsv!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(BLAS.trsv!)},
     _uplo::Dual{Char},
@@ -994,6 +999,7 @@ end
         AbstractVecOrMat{T},
     } where {T<:BlasFloat},
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.gemm!),Vararg}}) = true
 
 # Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
 function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
@@ -1418,6 +1424,7 @@ end
         typeof(BLAS.trmm!),Char,Char,Char,Char,P,AbstractMatrix{P},AbstractMatrix{P}
     } where {P<:BlasFloat}
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trmm!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(BLAS.trmm!)},
     _side::Dual{Char},
@@ -1559,6 +1566,7 @@ end
         typeof(BLAS.trsm!),Char,Char,Char,Char,P,AbstractMatrix{P},AbstractMatrix{P}
     } where {P<:BlasFloat},
 )
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trsm!),Vararg}}) = true
 
 function frule!!(
     ::Dual{typeof(BLAS.trsm!)},
