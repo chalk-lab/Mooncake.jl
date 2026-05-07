@@ -295,6 +295,30 @@ end
     )
         return zero_dual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
     end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(_foreigncall_),N},
+        ::Mooncake.Lifted{Val{:jl_genericmemory_owner}},
+        ::Mooncake.Lifted{Val{Any}},
+        ::Mooncake.Lifted{Tuple{Val{Any}}},
+        ::Mooncake.Lifted{Val{0}},
+        ::Mooncake.Lifted{Val{:ccall}},
+        a::Mooncake.Lifted{<:Memory},
+    ) where {N}
+        return zero_lifted(Val(N), ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
+    end
+    @inline Mooncake._is_lifted_aware(
+        ::Type{
+            <:Tuple{
+                typeof(_foreigncall_),
+                Val{:jl_genericmemory_owner},
+                Val{Any},
+                Tuple{Val{Any}},
+                Val{0},
+                Val{:ccall},
+                <:Memory,
+            },
+        },
+    ) = true
     function rrule!!(
         ::CoDual{typeof(_foreigncall_)},
         ::CoDual{Val{:jl_genericmemory_owner}},
