@@ -28,50 +28,27 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
     return Dual(y, build_output_tangent(P, primals, map(tangent, x)))
 end
 
-# Phase 4b (deep) — Self-contained Lifted-aware `_new_`. The body mirrors the
-# bare overload above with `bare_x = ntuple(_unlift, x)` at the top and
-# `Lifted{P, N}(...)` at the bottom of each branch — no recursive dispatch
-# back into the bare `frule!!`. Helpers (`_find_ndual_memref`, `_has_ndual`,
-# `_ndual_primal`, `_tangent_dir`) are reused, since the bare path still
-# needs them at width=nothing and they already operate on bare V values.
-# Static `P` from `Lifted{Type{P}, N}` is the source of truth for the result
-# wrap — the generic Lifted-aware adapter in primal_mode.jl can't be used
-# because the Array branch returns `Array{NDual{T,N}, D}` whose primal type
-# can't be recovered from the value alone.
+# Lifted-aware `_new_`. The static `P` from `Lifted{Type{P}, N}` is the
+# source of truth for the result wrap — the generic Lifted-aware adapter
+# can't be used because the Array branch returns `Array{NDual{T,N}, D}`
+# whose primal type isn't recoverable from the value alone.
 @inline function frule!!(
     f::Lifted{typeof(_new_),N}, p::Lifted{Type{P},N}, x::Vararg{Lifted,M}
 ) where {N,P,M}
     bare_x = ntuple(i -> _unlift(x[i]), Val(M))
 
-    # Array primal with an NDual MemoryRef arg: bare element-wise lifted Array.
-    # `bare_x` may contain `Tuple`-of-`Dual` values (the inner V of a
-    # `Lifted{<:Tuple}` slot, e.g. dims args) or bare `Dual{Tuple, NoTangent}`
-    # values from the legacy non-IEEEFloat Tuple wrap. Extract per-element
-    # primals so `_new_` sees bare Tuples; `MemoryRef` and other shapes
-    # pass through unchanged.
+    # Array primal: with an NDual MemoryRef arg, build the bare element-wise
+    # lifted Array; otherwise build the bare Array and wrap as `Dual{P, T}`
+    # (the struct-output `build_output_tangent` path expects a NamedTuple-
+    # shaped tangent constructor, which Array tangents don't have). `bare_x`
+    # may carry Tuple-of-Dual / Dual{Tuple} dims args; `__get_primal` extracts
+    # them while leaving `MemoryRef` and other shapes untouched.
     if P <: Array
+        new_args = map(__get_primal, bare_x)
         ref = _find_ndual_memref(bare_x...)
         if ref !== nothing
             P_ndual = Array{eltype(ref),ndims(P)}
-            new_args = map(bare_x) do v
-                v isa Tuple && return primal(v)
-                v isa Dual && return primal(v)
-                return v
-            end
             return Lifted{P,N}(_new_(P_ndual, new_args...))
-        end
-        # No NDual content: build the Array from primal args and wrap as a
-        # `Dual{P, T}` where `T = tangent_type(P)`. This avoids the
-        # struct-output `build_output_tangent` path which expects a
-        # `NamedTuple`-shaped tangent constructor (Array tangents are not
-        # struct-shaped).
-        primals = map(__get_primal, bare_x)
-        # Some primals may still be `Tuple`-of-Dual or `Dual{Tuple, NoTangent}`
-        # — `__get_primal` extracts the bare value.
-        new_args = map(bare_x) do v
-            v isa Tuple && return primal(v)
-            v isa Dual && return primal(v)
-            return v
         end
         y = _new_(P, new_args...)
         T = tangent_type(P)

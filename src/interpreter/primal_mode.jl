@@ -93,29 +93,33 @@ end
     inner = Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v)))
     return Lifted{Complex{T},N}(inner)
 end
-# Concrete Tuple primal: lift element-wise, building the inner element-wise
-# `Tuple{...}` of inner duals. `Lifted{P, N}(inner)` infers V from the inner.
+# Concrete Tuple/NamedTuple primal: lift element-wise. Recurse via
+# `_uninit_inner` to skip the per-element `Lifted` wrap-then-unwrap.
 @inline function _uninit_dual(w::Val{N}, v::Tuple) where {N}
-    P = _typeof(v)
-    if isconcretetype(P)
-        inner = ntuple(i -> _uninit_dual(w, v[i]).value, Val(fieldcount(P)))
-        return Lifted{P,N}(inner)
-    end
-    return _uninit_dual_fallback(w, v)
+    isconcretetype(_typeof(v)) || return _uninit_dual_fallback(w, v)
+    return Lifted{_typeof(v),N}(_uninit_inner(w, v))
 end
-# Concrete NamedTuple primal: parallel to Tuple, preserving names.
-@inline function _uninit_dual(w::Val{N}, v::NamedTuple{names}) where {N,names}
-    P = _typeof(v)
-    if isconcretetype(P)
-        inner_tup = ntuple(i -> _uninit_dual(w, values(v)[i]).value, Val(fieldcount(P)))
-        return Lifted{P,N}(NamedTuple{names}(inner_tup))
-    end
-    return _uninit_dual_fallback(w, v)
+@inline function _uninit_dual(w::Val{N}, v::NamedTuple) where {N}
+    isconcretetype(_typeof(v)) || return _uninit_dual_fallback(w, v)
+    return Lifted{_typeof(v),N}(_uninit_inner(w, v))
 end
 
+# `_uninit_inner` returns the bare inner V for the Tuple/NamedTuple recursion,
+# avoiding the `Lifted` wrapper that the recursive caller would only unwrap.
+@inline _uninit_inner(::Val{0}, v) = v
+@inline _uninit_inner(w::Val{N}, v::T) where {T<:IEEEFloat,N} = dual_type(w, T)(v)
+@inline function _uninit_inner(w::Val{N}, v::Complex{T}) where {T<:IEEEFloat,N}
+    return Complex(dual_type(w, T)(real(v)), dual_type(w, T)(imag(v)))
+end
+@inline _uninit_inner(w::Val, v::Tuple) = map(vi -> _uninit_inner(w, vi), v)
+@inline _uninit_inner(w::Val, v::NamedTuple{names}) where {names} = NamedTuple{names}(
+    map(vi -> _uninit_inner(w, vi), values(v))
+)
+@inline _uninit_inner(::Val{N}, v) where {N} = uninit_dual(v)
+
 # Strict width-N fallback: containers with `_count_slots > 0` must register an
-# explicit `_uninit_dual(::Val{N}, ::T)` overload in NfwdMooncake.jl — silently
-# downgrading to width-1 here would produce wrong tangents.
+# explicit `_uninit_dual(::Val{N}, ::T)` overload in `NfwdMooncake.jl` —
+# silently downgrading to width-1 here would produce wrong tangents.
 function _uninit_dual(w::Val{N}, v) where {N}
     return _uninit_dual_fallback(w, v)
 end
@@ -210,16 +214,7 @@ end
     if isconcretetype(P) && fieldcount(P) == length(x)
         InnerT = dual_type(Val(N), P)
         if InnerT isa DataType && InnerT <: Tuple
-            inner = ntuple(Val(fieldcount(P))) do i
-                Vi = fieldtype(InnerT, i)
-                elem = x[i]
-                if elem isa Dual && typeof(elem) !== Vi && isconcretetype(Vi)
-                    Vi(primal(elem), tangent(elem))
-                else
-                    elem
-                end
-            end
-            return Lifted{P,N,InnerT}(inner)
+            return Lifted{P,N,InnerT}(_canonicalise_tuple_inner(InnerT, x))
         end
     end
     return Lifted{P,N}(x)
@@ -227,27 +222,34 @@ end
 
 @inline _wrap_rule_result(::Type{P}, ::Val{N}, x) where {P,N} = Lifted{P,N}(x)
 
-# Probe a type for unbound `TypeVar`s (e.g. `Type{AbstractArray{a, 1}}` returned
-# by runtime `Core.apply_type` / `UnionAll`). Julia's static parameter binding
-# can't dispatch on these — IR-emit substitutes `Any` for the wrap site.
-_has_free_typevar(@nospecialize(t)) = ccall(:jl_has_free_typevars, Cint, (Any,), t) != 0
+# Build an inner element-wise tuple of inner duals from a tuple of bare
+# rule-emitted values. Each element is routed through `Vi(primal, tangent)`
+# when it's a non-canonical `Dual`, otherwise passes through. Shared by
+# `_wrap_rule_result(::Type{<:Tuple})` and the `tuple` Lifted-aware frule.
+@inline function _canonicalise_tuple_inner(::Type{InnerT}, x::Tuple) where {InnerT<:Tuple}
+    return ntuple(Val(fieldcount(InnerT))) do i
+        Vi = fieldtype(InnerT, i)
+        elem = x[i]
+        if elem isa Dual && typeof(elem) !== Vi && isconcretetype(Vi)
+            Vi(primal(elem), tangent(elem))
+        else
+            elem
+        end
+    end
+end
 
-# Canonicalise a runtime `Lifted` value to match a target P (and V) at the OC
-# return boundary. Lifted's `P` parameter is invariant, so a runtime
-# `Lifted{Any, N, V_legacy}` value is not a subtype of the OC's
-# `Lifted{P_target, N, V_canonical}` return slot. PhiNode merges and
-# abstract-slot rules (e.g. dynamic getfield through `RefValue{Any}`) can
-# leave widened P / legacy V in the runtime value; this helper re-wraps to
-# the inferred concrete P with the canonical V (e.g. `NDual{Float64, 1}`).
+# Canonicalise a runtime `Lifted` value to match a target P at the OC return
+# boundary. `Lifted`'s `P` parameter is invariant, so a runtime `Lifted{Any}`
+# is not a subtype of the OC's `Lifted{P_target}` return slot — PhiNode
+# merges and abstract-slot rules (dynamic getfield through `RefValue{Any}`)
+# can leave widened P / legacy V in the runtime value.
 @inline _canon_return(::Val{N}, ::Type{P_target}, x) where {N,P_target} = x
 @inline function _canon_return(
-    ::Val{N}, ::Type{P_target}, x::Lifted{P,N,V}
-) where {N,P_target,P,V}
+    ::Val{N}, ::Type{P_target}, x::Lifted{P,N}
+) where {N,P_target,P}
     P === P_target && return x
     inner = _unlift(x)
     if inner isa Dual && isconcretetype(P_target)
-        # Route through the 2-arg ctor to produce the canonical V matching
-        # `dual_type(Val(N), P_target)`.
         return Lifted{P_target,N}(primal(inner), tangent(inner))
     end
     return Lifted{P_target,N,typeof(inner)}(inner)
@@ -942,7 +944,7 @@ function modify_primal_stmts!(
                 # unbound `TypeVar` (e.g. a `Type{AbstractArray{a, 1}}`
                 # constructed via `Core.apply_type` / `UnionAll`); Julia's
                 # static parameter binding chokes on TypeVars in dispatch.
-                if contains_bottom_type(t) || _has_free_typevar(t)
+                if contains_bottom_type(t) || Base.has_free_typevars(t)
                     Any
                 else
                     t

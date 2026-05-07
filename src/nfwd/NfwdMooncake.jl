@@ -1417,19 +1417,17 @@ end
 @inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} = map(
     z -> complex(z.re.partials[i], z.im.partials[i]), x
 )
+# Mirror `tangent_type(P<:Tuple)`'s all-NoTangent fold: if every element's
+# direction tangent is `NoTangent`, return a single `NoTangent` so that
+# downstream `build_output_tangent` can place it in a `NoTangent` field
+# without a `Tuple{NoTangent...}` → `NoTangent` convert error.
 @inline function _tangent_dir(x::Tuple, i)
     inner = map(xi -> _tangent_dir(xi, i), x)
-    # Mirror `tangent_type(P<:Tuple)`'s all-NoTangent fold: if every element's
-    # direction tangent is `NoTangent`, return a single `NoTangent` so that
-    # downstream `build_output_tangent` can place it in a `NoTangent` field
-    # without a `Tuple{NoTangent...}` → `NoTangent` convert error.
-    inner isa Tuple{Vararg{NoTangent}} && return NoTangent()
-    return inner
+    return inner isa Tuple{Vararg{NoTangent}} ? NoTangent() : inner
 end
 @inline function _tangent_dir(x::NamedTuple{names}, i) where {names}
-    inner_tup = map(xi -> _tangent_dir(xi, i), values(x))
-    inner_tup isa Tuple{Vararg{NoTangent}} && return NoTangent()
-    return NamedTuple{names}(inner_tup)
+    inner = _tangent_dir(values(x), i)
+    return inner isa NoTangent ? inner : NamedTuple{names}(inner)
 end
 @inline _tangent_dir(x, _) = zero_tangent(x)
 

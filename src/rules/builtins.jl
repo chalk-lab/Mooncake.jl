@@ -1188,22 +1188,13 @@ end
 @inline function frule!!(::Lifted{typeof(tuple),N}, args::Vararg{Lifted,M}) where {N,M}
     P_out = Tuple{ntuple(i -> _typeof(primal(args[i])), Val(M))...}
     InnerT = dual_type(Val(N), P_out)
+    bare = ntuple(i -> _unlift(args[i]), Val(M))
     if InnerT isa DataType && InnerT <: Tuple
         # Canonicalise each element to the slot's expected V_i so the OC sees
         # `Tuple{NDual, ...}` rather than `Tuple{Dual, ...}` for IEEEFloat fields.
-        inner = ntuple(Val(M)) do i
-            Vi = fieldtype(InnerT, i)
-            elem = _unlift(args[i])
-            if elem isa Dual && typeof(elem) !== Vi && isconcretetype(Vi)
-                Vi(primal(elem), tangent(elem))
-            else
-                elem
-            end
-        end
-        return Lifted{P_out,N,InnerT}(inner)
+        return Lifted{P_out,N,InnerT}(_canonicalise_tuple_inner(InnerT, bare))
     end
-    inner = ntuple(i -> _unlift(args[i]), Val(M))
-    return Lifted{P_out,N}(inner)
+    return Lifted{P_out,N}(bare)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tuple),Vararg}}) = true
 
