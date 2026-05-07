@@ -310,6 +310,28 @@ function frule!!(
     end
     return Dual(y, dy / 2y)
 end
+# Width-1 NDual overload — extracts primal/tangent via element-wise map
+# (allocates) and reuses the bare body's dot-style accumulation.
+function frule!!(
+    ::Dual{typeof(BLAS.nrm2)},
+    n::Dual{<:Integer},
+    X_dX::AbstractArray{NDual{T,1}},
+    incx::Dual{<:Integer},
+) where {T<:BlasFloat}
+    _n = primal(n)
+    _incx = primal(incx)
+    X = map(d -> d.value, X_dX)
+    dX = map(d -> d.partials[1], X_dX)
+    y = BLAS.nrm2(_n, X, _incx)
+    Xinds = 1:_incx:(_incx * _n)
+    Xv = view(X, Xinds)
+    dXv = view(dX, Xinds)
+    dy = zero(y)
+    @inbounds for i in eachindex(Xv)
+        dy = dy + real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
+    end
+    return NDual{T,1}(y, (dy / 2y,))
+end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
     n::CoDual{<:Integer},
@@ -351,6 +373,29 @@ function frule!!(
 
     # Perform primal computation.
     BLAS.scal!(n, a, X, incx)
+    return X_dX
+end
+# Width-1 NDual overload — extracts primal/tangent matrices, runs BLAS,
+# writes results back into the NDual array element-wise.
+function frule!!(
+    ::Dual{typeof(BLAS.scal!)},
+    _n::Dual{<:Integer},
+    a_da::NDual{P,1},
+    X_dX::AbstractArray{NDual{P,1}},
+    _incx::Dual{<:Integer},
+) where {P<:BlasFloat}
+    n = primal(_n)
+    incx = primal(_incx)
+    a = primal(a_da)
+    da = a_da.partials[1]
+    X = map(d -> d.value, X_dX)
+    dX = map(d -> d.partials[1], X_dX)
+    BLAS.scal!(n, a, dX, incx)
+    BLAS.axpy!(n, da, X, incx, dX, incx)
+    BLAS.scal!(n, a, X, incx)
+    @inbounds for i in eachindex(X_dX)
+        X_dX[i] = NDual{P,1}(X[i], (dX[i],))
+    end
     return X_dX
 end
 function rrule!!(
@@ -417,6 +462,33 @@ end
 
     _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
 
+    return y_dy
+end
+
+# Width-1 NDual overload — extract primal/tangent, run core, write back.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemv!)},
+    tA::Dual{Char},
+    alpha::NDual{P,1},
+    A_dA::AbstractMatrix{NDual{P,1}},
+    x_dx::AbstractVector{NDual{P,1}},
+    beta::NDual{P,1},
+    y_dy::AbstractVector{NDual{P,1}},
+) where {P<:BlasFloat}
+    α = primal(alpha)
+    dα = alpha.partials[1]
+    β = primal(beta)
+    dβ = beta.partials[1]
+    A = map(d -> d.value, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    x = map(d -> d.value, x_dx)
+    dx = map(d -> d.partials[1], x_dx)
+    y = map(d -> d.value, y_dy)
+    dy = map(d -> d.partials[1], y_dy)
+    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
+    @inbounds for i in eachindex(y_dy)
+        y_dy[i] = NDual{P,1}(y[i], (dy[i],))
+    end
     return y_dy
 end
 
@@ -673,7 +745,18 @@ function frule!!(
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
-    # Frechet derivative computation.
+    _trmv!_frule_core!(uplo, trans, diag, A, dA, x, dx)
+    return x_dx
+end
+@inline function _trmv!_frule_core!(
+    uplo::Char,
+    trans::Char,
+    diag::Char,
+    A::AbstractMatrix{T},
+    dA::AbstractMatrix{T},
+    x::AbstractVector{T},
+    dx::AbstractVector{T},
+) where {T<:BlasFloat}
     BLAS.trmv!(uplo, trans, diag, A, dx)
     tmp = copy(x)
     BLAS.trmv!(uplo, trans, diag, dA, tmp)
@@ -681,10 +764,26 @@ function frule!!(
     if diag === 'U'
         dx .-= x
     end
-
-    # Primal computation.
     BLAS.trmv!(uplo, trans, diag, A, x)
-
+    return nothing
+end
+# Width-1 NDual overload — extract, run core, write back.
+function frule!!(
+    ::Dual{typeof(BLAS.trmv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::AbstractMatrix{NDual{T,1}},
+    x_dx::AbstractVector{NDual{T,1}},
+) where {T<:BlasFloat}
+    A = map(d -> d.value, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    x = map(d -> d.value, x_dx)
+    dx = map(d -> d.partials[1], x_dx)
+    _trmv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
+    @inbounds for i in eachindex(x_dx)
+        x_dx[i] = NDual{T,1}(x[i], (dx[i],))
+    end
     return x_dx
 end
 
@@ -782,9 +881,20 @@ function frule!!(
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
-    # Primal
-    BLAS.trsv!(uplo, trans, diag, A, x)
+    _trsv!_frule_core!(uplo, trans, diag, A, dA, x, dx)
 
+    return x_dx
+end
+@inline function _trsv!_frule_core!(
+    uplo::Char,
+    trans::Char,
+    diag::Char,
+    A::AbstractMatrix{T},
+    dA::AbstractMatrix{T},
+    x::AbstractVector{T},
+    dx::AbstractVector{T},
+) where {T<:BlasFloat}
+    BLAS.trsv!(uplo, trans, diag, A, x)
     BLAS.trsv!(uplo, trans, diag, A, dx)
     tmp = BLAS.trmv(uplo, trans, diag, dA, x)
     if diag == 'U'
@@ -792,7 +902,24 @@ function frule!!(
     end
     BLAS.trsv!(uplo, trans, diag, A, tmp)
     dx .-= tmp
-
+    return nothing
+end
+function frule!!(
+    ::Dual{typeof(BLAS.trsv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::AbstractMatrix{NDual{T,1}},
+    x_dx::AbstractVector{NDual{T,1}},
+) where {T<:BlasFloat}
+    A = map(d -> d.value, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    x = map(d -> d.value, x_dx)
+    dx = map(d -> d.partials[1], x_dx)
+    _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
+    @inbounds for i in eachindex(x_dx)
+        x_dx[i] = NDual{T,1}(x[i], (dx[i],))
+    end
     return x_dx
 end
 function rrule!!(
@@ -1311,7 +1438,21 @@ function frule!!(
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
-    # Compute Frechet derivative.
+    _trmm!_frule_core!(side, uplo, ta, diag, α, dα, A, dA, B, dB)
+    return B_dB
+end
+@inline function _trmm!_frule_core!(
+    side::Char,
+    uplo::Char,
+    ta::Char,
+    diag::Char,
+    α::P,
+    dα::P,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    B::AbstractMatrix{P},
+    dB::AbstractMatrix{P},
+) where {P<:BlasFloat}
     BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
     dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
     if diag == 'U'
@@ -1320,9 +1461,31 @@ function frule!!(
     if !iszero(dα)
         dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
     end
-
-    # Compute primal.
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
+    return nothing
+end
+function frule!!(
+    ::Dual{typeof(BLAS.trmm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _ta::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::NDual{P,1},
+    A_dA::AbstractMatrix{NDual{P,1}},
+    B_dB::AbstractMatrix{NDual{P,1}},
+) where {P<:BlasFloat}
+    α = primal(α_dα)
+    dα = α_dα.partials[1]
+    A = map(d -> d.value, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    B = map(d -> d.value, B_dB)
+    dB = map(d -> d.partials[1], B_dB)
+    _trmm!_frule_core!(
+        primal(_side), primal(_uplo), primal(_ta), primal(_diag), α, dα, A, dA, B, dB
+    )
+    @inbounds for i in eachindex(B_dB)
+        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
+    end
     return B_dB
 end
 function rrule!!(
@@ -1417,22 +1580,57 @@ function frule!!(
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
-    # Compute Frechet derivative.
+    _trsm!_frule_core!(side, uplo, trans, diag, α, dα, A, dA, B, dB)
+    return B_dB
+end
+@inline function _trsm!_frule_core!(
+    side::Char,
+    uplo::Char,
+    trans::Char,
+    diag::Char,
+    α::P,
+    dα::P,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    B::AbstractMatrix{P},
+    dB::AbstractMatrix{P},
+) where {P<:BlasFloat}
     BLAS.trsm!(side, uplo, trans, diag, α, A, dB)
     tmp = copy(B)
-    trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp now contains inv(A) B.
+    trsm!(side, uplo, trans, diag, one(P), A, tmp)
     dB .+= dα .* tmp
-
     tmp2 = copy(tmp)
-    BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp) # tmp now contains α dA inv(A) B.
+    BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp)
     if diag == 'U'
         tmp .-= α .* tmp2
     end
-    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp is now α inv(A) dA inv(A) B.
+    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
     dB .-= tmp
-
-    # Run primal computation.
     BLAS.trsm!(side, uplo, trans, diag, α, A, B)
+    return nothing
+end
+function frule!!(
+    ::Dual{typeof(BLAS.trsm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _t::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::NDual{P,1},
+    A_dA::AbstractMatrix{NDual{P,1}},
+    B_dB::AbstractMatrix{NDual{P,1}},
+) where {P<:BlasFloat}
+    α = primal(α_dα)
+    dα = α_dα.partials[1]
+    A = map(d -> d.value, A_dA)
+    dA = map(d -> d.partials[1], A_dA)
+    B = map(d -> d.value, B_dB)
+    dB = map(d -> d.partials[1], B_dB)
+    _trsm!_frule_core!(
+        primal(_side), primal(_uplo), primal(_t), primal(_diag), α, dα, A, dA, B, dB
+    )
+    @inbounds for i in eachindex(B_dB)
+        B_dB[i] = NDual{P,1}(B[i], (dB[i],))
+    end
     return B_dB
 end
 
