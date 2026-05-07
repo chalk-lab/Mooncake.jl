@@ -243,6 +243,21 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
+# Trait register only for IEEEFloat / Complex element types where the
+# bare body's NDual variant exists; for other element types (e.g.
+# `MemoryRef{Vector{Float64}}`) the scaffold path is needed because the
+# bare body's `Dual{MemoryRef{P}, MemoryRef{V}}` signature still relies
+# on the struct-shape destructuring of the slot.
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(unsafe_copyto!),
+            <:MemoryRef{<:Union{IEEEFloat,Complex{<:IEEEFloat}}},
+            <:MemoryRef{<:Union{IEEEFloat,Complex{<:IEEEFloat}}},
+            <:Int,
+        },
+    },
+) = true
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)},
     dest::Dual{MemoryRef{P}},
@@ -415,6 +430,16 @@ using Core: memoryref_isassigned, memoryrefget, memoryrefset!, memoryrefnew, mem
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefget),MemoryRef,Val,Val}
+# NOTE: `_is_lifted_aware` for lmemoryrefget would cause downstream
+# canonicalisation breaks. With scaffold path, IR-inferred primal_retype
+# stays abstract (Any) for `MemoryRef{Any}` indexes, preserving the bare
+# Dual return shape. With Lifted-aware adapter, runtime-recovered
+# primal_retype becomes the concrete element type (e.g. Float64), forcing
+# canonicalisation to NDual{Float64,1} via `_wrap_rule_result`'s 2-arg
+# ctor — which then breaks downstream Dual-only signatures
+# (e.g. `edge_case_tester(::Dual{Float64})` in test_resources.jl). Until
+# downstream signatures broaden to accept the canonical inner V, this
+# primitive must stay on the scaffold path.
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefget)},
     x::Dual{<:MemoryRef},
