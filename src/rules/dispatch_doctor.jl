@@ -8,11 +8,14 @@ import ..@zero_derivative
 import ..@is_primitive
 import ..DefaultCtx
 import .._foreigncall_
+import .._is_lifted_aware
 import ..CoDual
 import ..Dual
+import ..Lifted
 import ..NoTangent
 import ..NoPullback
 import ..zero_fcodual
+import ..zero_lifted
 
 import DispatchDoctor._RuntimeChecks: is_precompiling, checking_enabled
 import DispatchDoctor._Stabilization: _show_warning, _construct_pairs
@@ -59,6 +62,28 @@ function frule!!(
 )
     return Dual(ccall(:jl_generating_output, Cint, ()), NoTangent())
 end
+@inline function frule!!(
+    ::Lifted{typeof(_foreigncall_),N},
+    ::Lifted{Val{:jl_generating_output}},
+    ::Lifted{Val{Cint}},
+    ::Lifted{Tuple{}},
+    ::Lifted{Val{0}},
+    ::Lifted{Val{:ccall}},
+) where {N}
+    return zero_lifted(Val(N), ccall(:jl_generating_output, Cint, ()))
+end
+@inline _is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(_foreigncall_),
+            Val{:jl_generating_output},
+            Val{Cint},
+            Tuple{},
+            Val{0},
+            Val{:ccall},
+        },
+    },
+) = true
 function rrule!!(
     f::CoDual{typeof(_foreigncall_)},
     name::CoDual{Val{:jl_generating_output}},
