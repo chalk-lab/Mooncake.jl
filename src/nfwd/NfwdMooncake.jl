@@ -1147,6 +1147,17 @@ end
     x, w, _ -> zero(real(eltype(x)))
 )
 
+# Ptr — `tangent_type(Ptr{P}) = Ptr{tangent_type(P)}`, a single ptr, not a
+# width-N expansion. The single-arg `zero_tangent(::Ptr)` deliberately
+# errors (callers must use the 2-arg form with a known fdata pointer); but
+# at lifted-IR boundaries (e.g. `lgetfield(::Memory, :ptr)`) we only need
+# a `Dual{Ptr,Ptr{NoTangent}}` slot whose tangent isn't dereferenced.
+# Default to a null tangent pointer of the correct type.
+@inline function Mooncake.zero_dual(::Val, x::Ptr)
+    T = Mooncake.tangent_type(typeof(x))
+    return T === NoTangent ? Dual(x, NoTangent()) : Dual(x, T(0))
+end
+
 @inline Mooncake.uninit_dual(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
 @inline Mooncake.uninit_dual(w::Val, z::Complex{<:IEEEFloat}) = _ndual_zero(
     z, w, _ -> zero(typeof(real(z)))
@@ -1289,6 +1300,20 @@ function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     return map(
         z -> NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N))), a
     )
+end
+
+@static if VERSION >= v"1.11-"
+    # ── Memory / MemoryRef {NDual} accessors ────────────────────────────────
+    # Mirror `__get_primal` shapes: rule bodies that call `primal` / `tangent`
+    # on a bare NDual container (e.g. `zero_derivative`'s `map(primal, args)`)
+    # need these to avoid `MethodError`s when an unmigrated rule is invoked
+    # via the generic Lifted-aware adapter with NDual-bearing arguments.
+    primal(m::Memory{<:NDual{T}}) where {T} = map(d -> d.value, m)
+    primal(m::Memory{<:Complex{<:NDual}}) = map(z -> complex(z.re.value, z.im.value), m)
+    primal(x::MemoryRef{<:NDual}) = memoryref(primal(x.mem), Core.memoryrefoffset(x))
+    function primal(x::MemoryRef{<:Complex{<:NDual}})
+        return memoryref(primal(x.mem), Core.memoryrefoffset(x))
+    end
 end
 
 # _uninit_dual for Array at width N: returns `Lifted{Array{T,D}, N, Array{NDual{T,N},D}}`.
