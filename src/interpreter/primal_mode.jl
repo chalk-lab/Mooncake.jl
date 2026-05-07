@@ -103,6 +103,15 @@ end
     end
     return _uninit_dual_fallback(w, v)
 end
+# Concrete NamedTuple primal: parallel to Tuple, preserving names.
+@inline function _uninit_dual(w::Val{N}, v::NamedTuple{names}) where {N,names}
+    P = _typeof(v)
+    if isconcretetype(P)
+        inner_tup = ntuple(i -> _uninit_dual(w, values(v)[i]).value, Val(fieldcount(P)))
+        return Lifted{P,N}(NamedTuple{names}(inner_tup))
+    end
+    return _uninit_dual_fallback(w, v)
+end
 
 # Strict width-N fallback: containers with `_count_slots > 0` must register an
 # explicit `_uninit_dual(::Val{N}, ::T)` overload in NfwdMooncake.jl — silently
@@ -414,7 +423,7 @@ end
     flat_args = __unflatten_dual_varargs(isva, args, Val(nargs), width)
     if _is_lifted_width(width)
         # OC boundary: at width=Val(N>=1), the OC argtypes are
-        # `Lifted{P_i, N, V_i}` (per `_lift_type`). Wrap each bare slot value
+        # `Lifted{P_i, N, V_i}` (per `lifted_type`). Wrap each bare slot value
         # before invoking the OC, and unwrap the `Lifted` return so the
         # caller still sees a bare slot value.
         lifted_args = _wrap_oc_args(width, primal_sig, flat_args, isva, Val(nargs))
@@ -573,10 +582,6 @@ struct LiftedInfo
     width  # Val{N} or nothing (nothing = legacy width-1 Dual path)
 end
 
-# Dispatch slot type through width: `Val(N)` uses `lifted_type(Val(N), P)`
-# (wraps in `Lifted`). This is the OC slot-type query used by IR-emit and FCache.
-_lift_type(w::Val, P) = lifted_type(w, P)
-
 function generate_lifted_ir(
     interp::MooncakeInterpreter,
     sig_or_mi,
@@ -607,7 +612,7 @@ function generate_lifted_ir(
     # - add one for the captures in the first position, with placeholder type for now
     # - convert the rest to dual types
     for (a, P) in enumerate(primal_ir.argtypes)
-        lifted_ir.argtypes[a] = _lift_type(width, CC.widenconst(P))
+        lifted_ir.argtypes[a] = lifted_type(width, CC.widenconst(P))
     end
     pushfirst!(lifted_ir.argtypes, Any)
 
@@ -640,7 +645,7 @@ function generate_lifted_ir(
 end
 
 function lifted_ret_type(primal_ir::IRCode, width::Val=Val(1))
-    return _lift_type(width, compute_ir_rettype(primal_ir))
+    return lifted_type(width, compute_ir_rettype(primal_ir))
 end
 
 function primal_rule_type(
@@ -656,7 +661,7 @@ function primal_rule_type(
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
     sig = Tuple{arg_types...}
-    dual_args_type = Tuple{map(Base.Fix1(_lift_type, width), arg_types)...}
+    dual_args_type = Tuple{map(Base.Fix1(lifted_type, width), arg_types)...}
     closure_type = RuleMC{dual_args_type,lifted_ret_type(ir, width)}
     Tderived = DerivedPrimal{sig,closure_type,isva,nargs,typeof(width)}
     return debug_mode ? DebugFRule{Tderived} : Tderived
@@ -760,7 +765,7 @@ function modify_primal_stmts!(
         lifted_ir,
         ssa,
         :type,
-        _lift_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
+        lifted_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
     )
     return nothing
 end
@@ -787,7 +792,7 @@ function modify_primal_stmts!(
     new_typ = if _is_lifted_width(info.width)
         Any
     else
-        _lift_type(info.width, CC.widenconst(stmt.typ))
+        lifted_type(info.width, CC.widenconst(stmt.typ))
     end
     replace_call!(lifted_ir, ssa, PiNode(v, new_typ))
     return nothing
@@ -808,7 +813,7 @@ function modify_primal_stmts!(
         lifted_ir,
         ssa,
         :type,
-        _lift_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
+        lifted_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
     )
     return nothing
 end
@@ -830,7 +835,7 @@ function modify_primal_stmts!(
         lifted_ir,
         ssa,
         :type,
-        _lift_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
+        lifted_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
     )
     return nothing
 end

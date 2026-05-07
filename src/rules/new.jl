@@ -95,6 +95,17 @@ end
         end
     end
 
+    # NamedTuple primal: parallel to Tuple — canonical V is
+    # `NamedTuple{names, Tuple{V_i...}}` of bare inner duals. `bare_x` carries
+    # the element-wise per-field inner duals; wrap into the named tuple.
+    if P <: NamedTuple
+        InnerT = dual_type(Val(N), P)
+        if InnerT isa DataType && InnerT <: NamedTuple
+            names = fieldnames(P)
+            return Lifted{P,N,InnerT}(NamedTuple{names}(bare_x))
+        end
+    end
+
     # Struct with NDual content: at width=1 produce a bare-tangent Dual
     # (matches `dual_type(Val(1), P) = Dual{P, T}`); at width N>=2 wrap the
     # per-direction tangents in `NTangent`.

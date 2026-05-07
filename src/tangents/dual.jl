@@ -78,6 +78,15 @@ Width-aware forward value type query.
         return Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
     end
 
+    # Concrete NamedTuple: element-wise lifting symmetric to Tuple. The inner
+    # tuple of field types lifts via the Tuple branch; the outer NamedTuple
+    # preserves field names.
+    if isconcretetype(P) && P <: NamedTuple
+        names = fieldnames(P)
+        InnerTup = Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
+        return NamedTuple{names,InnerTup}
+    end
+
     return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
 end
 
@@ -301,6 +310,19 @@ end
         Val(fieldcount(V)),
     )
 end
+# NamedTuple-typed nested fields recurse element-wise like Tuple.
+@inline function _inner_dual_for_field(
+    ::Type{V}, primal::NamedTuple, tangent::NamedTuple
+) where {names,V<:NamedTuple{names}}
+    InnerTup = V.parameters[2]
+    inner_tup = ntuple(
+        i -> _inner_dual_for_field(
+            fieldtype(InnerTup, i), values(primal)[i], values(tangent)[i]
+        ),
+        Val(fieldcount(V)),
+    )
+    return NamedTuple{names}(inner_tup)
+end
 
 # Tuple-primal with `NoTangent` (whole-tuple) tangent — common when a `Tuple`
 # slot holds non-differentiable elements (e.g. `Tuple{Int}`). Build the inner
@@ -329,12 +351,38 @@ end
     return Lifted{P,N,InnerT}(inner)
 end
 
-# Accessors: delegate to the inner's own primal/tangent. For Tuple primals the
-# inner is a bare element-wise tuple, so map over it.
+# NamedTuple-primal: parallel to the Tuple ctor. Inner V is a
+# `NamedTuple{names, Tuple{V_i...}}` of bare inner duals; build element-wise.
+@inline function Lifted{P,N}(
+    primal::P, tangent::NamedTuple{names}
+) where {P<:NamedTuple{names},N} where {names}
+    InnerT = dual_type(Val(N), P)
+    InnerTup = fieldtype(InnerT, 1) === Nothing ? Tuple{} : InnerT.parameters[2]
+    inner_tup = ntuple(
+        i -> _inner_dual_for_field(fieldtype(InnerTup, i), primal[i], values(tangent)[i]),
+        Val(fieldcount(P)),
+    )
+    return Lifted{P,N,InnerT}(NamedTuple{names}(inner_tup))
+end
+@inline function Lifted{P,N}(
+    primal::P, ::NoTangent
+) where {P<:NamedTuple{names},N} where {names}
+    InnerT = dual_type(Val(N), P)
+    InnerTup = InnerT.parameters[2]
+    inner_tup = ntuple(
+        i -> fieldtype(InnerTup, i)(primal[i], NoTangent()), Val(fieldcount(P))
+    )
+    return Lifted{P,N,InnerT}(NamedTuple{names}(inner_tup))
+end
+
+# Accessors: delegate to the inner's own primal/tangent. For Tuple/NamedTuple
+# primals the inner is a bare element-wise (named) tuple, so map over it.
 primal(d::Lifted) = primal(d.value)
 tangent(d::Lifted) = tangent(d.value)
 primal(d::Lifted{<:Tuple}) = map(primal, d.value)
 tangent(d::Lifted{<:Tuple}) = map(tangent, d.value)
+primal(d::Lifted{<:NamedTuple}) = map(primal, d.value)
+tangent(d::Lifted{<:NamedTuple}) = map(tangent, d.value)
 
 """
     extract(d::Lifted)

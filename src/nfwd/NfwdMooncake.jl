@@ -1331,6 +1331,7 @@ end
 @inline _has_ndual(::Dual{<:Any,<:NTangent}, rest...) = true
 @inline _has_ndual(x::Dual, rest...) = _has_ndual(tangent(x), rest...)
 @inline _has_ndual(x::Tuple, rest...) = _has_ndual(x..., rest...)
+@inline _has_ndual(x::NamedTuple, rest...) = _has_ndual(values(x)..., rest...)
 @inline _has_ndual(_, rest...) = _has_ndual(rest...)
 @static if VERSION >= v"1.11-"
     @inline _has_ndual(::MemoryRef{<:NDual}, rest...) = true
@@ -1396,6 +1397,9 @@ end
     z -> complex(z.re.value, z.im.value), x
 )
 @inline _ndual_primal(x::Tuple) = map(_ndual_primal, x)
+@inline _ndual_primal(x::NamedTuple{names}) where {names} = NamedTuple{names}(
+    map(_ndual_primal, values(x))
+)
 @inline _ndual_primal(x) = x
 
 # `_tangent_dir(x, i)` — extract the i-th direction tangent from any NDual-bearing
@@ -1421,6 +1425,11 @@ end
     # without a `Tuple{NoTangent...}` → `NoTangent` convert error.
     inner isa Tuple{Vararg{NoTangent}} && return NoTangent()
     return inner
+end
+@inline function _tangent_dir(x::NamedTuple{names}, i) where {names}
+    inner_tup = map(xi -> _tangent_dir(xi, i), values(x))
+    inner_tup isa Tuple{Vararg{NoTangent}} && return NoTangent()
+    return NamedTuple{names}(inner_tup)
 end
 @inline _tangent_dir(x, _) = zero_tangent(x)
 
