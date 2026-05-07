@@ -91,6 +91,15 @@ function frule!!(::Dual{typeof(pointer_from_objref)}, x)
     dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
     return Dual(y, dy)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(pointer_from_objref),N}, x::Mooncake.Lifted
+) where {N}
+    inner = Mooncake._unlift(x)
+    y = pointer_from_objref(primal(inner))
+    dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(inner)))
+    return Mooncake.Lifted{Ptr{Nothing},N}(y, dy)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(pointer_from_objref),Any}}) = true
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
         pointer_from_objref(primal(x)),
@@ -105,6 +114,17 @@ end
 function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
     return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Base.unsafe_pointer_to_objref),N}, x::Mooncake.Lifted{<:Ptr}
+) where {N}
+    inner = Mooncake._unlift(x)
+    y = unsafe_pointer_to_objref(primal(inner))
+    dy = unsafe_pointer_to_objref(tangent(inner))
+    return Mooncake.Lifted{_typeof(y),N}(y, dy)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base.unsafe_pointer_to_objref),<:Ptr}}
+) = true
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
     return y, NoPullback(f, x)
@@ -129,6 +149,22 @@ function frule!!(
     unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    dest::Mooncake.Lifted{Ptr{T}},
+    src::Mooncake.Lifted{Ptr{T}},
+    n::Mooncake.Lifted,
+) where {N,T}
+    inner_dest = Mooncake._unlift(dest)
+    inner_src = Mooncake._unlift(src)
+    pn = primal(n)
+    unsafe_copyto!(primal(inner_dest), primal(inner_src), pn)
+    unsafe_copyto!(tangent(inner_dest), tangent(inner_src), pn)
+    return dest
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any}} where {T}
+) = true
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
