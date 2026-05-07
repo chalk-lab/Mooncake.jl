@@ -392,6 +392,10 @@ function build_frule(
             lifted_ir, captures, info = generate_lifted_ir(
                 interp, sig_or_mi, width; debug_mode
             )
+            # Soundness check on the post-inference IR. Uses `typeintersect`
+            # non-empty (not strict subtype) so legitimate widenings pass and
+            # only truly disjoint joins fire.
+            verify_phi_soundness(lifted_ir, sig_or_mi, width)
             lifted_oc = misty_closure(
                 info.lifted_ret_type, lifted_ir, captures...; do_compile=true
             )

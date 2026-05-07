@@ -402,3 +402,69 @@ function characterised_used_ssas(stmts::Vector{Any})::Vector{Bool}
     end
     return is_used
 end
+
+# ── PhiNode soundness verifier ───────────────────────────────────────────────
+
+"""
+    verify_phi_soundness(ir::IRCode, sig_or_mi, width)
+
+Local soundness check on the rewritten IR — runs before constructing the
+`OpaqueClosure`. Catches invalid type facts at PhiNode join points that
+would otherwise be trusted by the OC compiler and lowered to an
+`unreachable` trap.
+
+Each defined incoming value's type must *overlap* the phi's annotated
+type (`typeintersect` non-empty), not strictly subtype it. The looser
+condition catches `Lifted{A, ...}` flowing into a `Lifted{B, ...}`-
+annotated phi (with `A` / `B` distinct concrete primal types) — under
+`Lifted`'s invariant `P`, those types are disjoint and would trap. It
+allows legitimate widenings such as `Lifted{_A, 1} where _A` flowing
+into a more specific phi annotation.
+
+PiNode is intentionally not checked here: a narrowing PiNode whose
+asserted type doesn't intersect the source's static type is a benign
+unreachable path that the OC compiler handles without trapping.
+
+Throws an `ArgumentError` on the first violation.
+"""
+function verify_phi_soundness(ir::IRCode, sig_or_mi, width)
+    insts = stmt(ir.stmts)
+    for ssa_idx in eachindex(insts)
+        s = insts[ssa_idx]
+        s isa PhiNode || continue
+        phi_type = CC.widenconst(get_ir(ir, SSAValue(ssa_idx), :type))
+        for j in eachindex(s.values)
+            isassigned(s.values, j) || continue
+            src = s.values[j]
+            t = _verifier_value_type(ir, src)
+            t === nothing && continue
+            if typeintersect(t, phi_type) === Union{}
+                throw(
+                    ArgumentError(
+                        "IR verifier: PhiNode at SSA %$(ssa_idx) annotated " *
+                        "`$(phi_type)` but incoming value from block " *
+                        "$(s.edges[j]) has type `$(t)` which is disjoint " *
+                        "(typeintersect is Union{}). Likely an invariant-" *
+                        "wrapper join (e.g. `Lifted{A}` flowing into a " *
+                        "`Lifted{B}`-annotated phi). Generated for " *
+                        "$(sig_or_mi) at width $(width).",
+                    ),
+                )
+            end
+        end
+    end
+    return ir
+end
+
+# Local IR-level type helper. Returns `nothing` when the value form is not
+# statically classifiable; the verifier skips the check rather than firing.
+@inline _verifier_value_type(ir::IRCode, ssa::SSAValue) = CC.widenconst(
+    get_ir(ir, ssa, :type)
+)
+@inline _verifier_value_type(ir::IRCode, arg::Argument) = CC.widenconst(ir.argtypes[arg.n])
+@inline _verifier_value_type(::IRCode, q::QuoteNode) = _typeof(q.value)
+@inline function _verifier_value_type(::IRCode, g::GlobalRef)
+    isconst(g.mod, g.name) || return nothing
+    return _typeof(getglobal(g.mod, g.name))
+end
+@inline _verifier_value_type(::IRCode, x) = x isa Type ? Type{x} : _typeof(x)
