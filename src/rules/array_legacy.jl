@@ -537,6 +537,44 @@ function rrule!!(
     return a, fill!_pullback!!
 end
 
+# Lifted-aware trait registrations for the rules above. Each rule's body
+# accepts the unwrapped slot V and the generic `frule!!(::Lifted{F,N},
+# args::Vararg{Lifted,M})` adapter handles the wrap/unwrap.
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base._deletebeg!),<:Vector,<:Integer}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base._deleteend!),<:Vector,<:Integer}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base._deleteat!),<:Vector,<:Integer,<:Integer}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base._growbeg!),<:Vector,<:Integer}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base._growend!),<:Vector,<:Integer}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base._growat!),<:Vector,<:Integer,<:Integer}}
+) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sizehint!),<:Vector,<:Integer}}) =
+    true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(unsafe_copyto!),<:Array,Any,<:Array,Any,Any}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Core.arrayref),Bool,<:Array,Vararg{<:Integer}}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Core.arrayset),Bool,<:Array,Any,Vararg{<:Integer}}}
+) = true
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.arraysize),<:Array,Any}}) =
+    true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(fill!),<:Array{<:Union{UInt8,Int8}},<:Integer}}
+) = true
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
     _x = Ref(5.0)
     _dx = randn_tangent(Xoshiro(123456), _x)

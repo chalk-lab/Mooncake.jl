@@ -121,6 +121,7 @@ tangent(f::IdDict, ::NoRData) = f
 # standard built-in functionality on `IdDict`s.
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.rehash!),<:IdDict,Any}}) = true
 function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
     Base.rehash!(primal(d), primal(newsz))
     Base.rehash!(tangent(d), primal(newsz))
@@ -133,6 +134,8 @@ function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoD
 end
 
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(setindex!),<:IdDict,Any,Any}}) =
+    true
 function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
     setindex!(primal(d), primal(val), primal(key))
     setindex!(tangent(d), tangent(val), primal(key))
@@ -171,6 +174,7 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
 end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(get),<:IdDict,Any,Any}}) = true
 function frule!!(
     ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Dual
 ) where {K,V}
@@ -201,6 +205,7 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getindex),<:IdDict,Any}}) = true
 function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
     return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
 end

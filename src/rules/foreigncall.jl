@@ -259,6 +259,7 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.has_free_typevars),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(deepcopy),Any}}) = true
 frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     fdx = tangent(x)
