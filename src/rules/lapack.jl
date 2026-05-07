@@ -595,17 +595,18 @@ end
             typeof(LAPACK.lacpy!),AbstractMatrix{P},AbstractMatrix{P},Char
         } where {P<:BlasFloat},
     )
+    @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(LAPACK.lacpy!),Vararg}}) = true
     function frule!!(
         ::Dual{typeof(LAPACK.lacpy!)},
-        B_dB::Dual{<:AbstractMatrix{P}},
-        A_dA::Dual{<:AbstractMatrix{P}},
+        B_dB::_MatLikeWidth1{P},
+        A_dA::_MatLikeWidth1{P},
         _uplo::Dual{Char},
     ) where {P<:BlasFloat}
-        B, dB = arrayify(B_dB)
-        A, dA = arrayify(A_dA)
-
+        B, dB = _arr_extract(B_dB)
+        A, dA = _arr_extract(A_dA)
         LAPACK.lacpy!(B, A, primal(_uplo))
         LAPACK.lacpy!(dB, dA, primal(_uplo))
+        _arr_writeback!(B_dB, B, dB)
         return B_dB
     end
     function rrule!!(
