@@ -426,16 +426,16 @@ slot). Symmetric with reverse mode's `codual_type`.
 lifted_type(::Val{0}, ::Type{P}) where {P} = P
 function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     V = dual_type(Val(N), P)
-    # When P is abstract (e.g. `Any`, `Real`), `dual_type` returns the abstract
-    # `Dual` UnionAll, which excludes concrete runtime V values like
-    # `NDual{T, N}` / `Complex{<:NDual}`. Using `Lifted{P, N}` UnionAll is
-    # semantically correct (subtype rules accept all concrete V's) but Julia's
-    # OpaqueClosure compilation chokes on UnionAll slot types — `pi_node_tester`
-    # crashes with "Unreachable reached" inside the OC. Returning the universal
-    # `Any` slot type for abstract-P cases sidesteps this: runtime values still
-    # carry full `Lifted{P, N, V}` shape, and downstream rule dispatch keys on
-    # the primal sig (`_is_lifted_aware`), not the slot type.
-    return isconcretetype(V) ? Lifted{P,N,V} : Any
+    # Concrete `(P, V)`: produce the fully-parameterised slot type.
+    isconcretetype(V) && return Lifted{P,N,V}
+    # Abstract `P` (e.g. `Any`, `Real`): widen to the bare `Lifted` UnionAll —
+    # mirrors reverse mode's `fcodual_type(Any) = CoDual` UnionAll. Both `P`
+    # and `V` are universally quantified so concrete runtime values
+    # `Lifted{Q, N, V'}` for any `Q` and `V'` fit the slot without parametric-
+    # invariance coercion. We can't use `Lifted{P, N, V} where {P', V'}` for a
+    # fixed `N` because `N` would still need to be free for cross-width
+    # specialisation; the bare UnionAll is the simplest correct shape.
+    return Lifted
 end
 
 # ── Layer-3 seed factories: return wrapped Lifted slot ───────────────────────
