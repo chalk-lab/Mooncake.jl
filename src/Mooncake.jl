@@ -201,6 +201,12 @@ import .NfwdMooncake:
     _find_ndual_memref,
     _HasNDual
 
+# Test-resource forward-mode rules whose signatures reference `Nfwd.NDual`.
+# Loaded after `Nfwd.jl` because the rule body's `Union` signature mentions
+# `NDual` directly; the corresponding `@is_primitive` declaration sits in
+# `test_resources.jl` which loads before `Nfwd.jl`.
+@unstable include("test_resources_nfwd_rules.jl")
+
 include("interface.jl")
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))

@@ -613,9 +613,10 @@ end
 @noinline edge_case_tester(x::Int) = 10
 @noinline edge_case_tester(x::String) = "hi"
 @is_primitive MinimalCtx Tuple{typeof(edge_case_tester),Float64}
-function Mooncake.frule!!(::Dual{typeof(edge_case_tester)}, x::Dual{Float64})
-    return Dual(5 * primal(x), 5 * tangent(x))
-end
+# `frule!!` for `edge_case_tester` lives in `test_resources_nfwd_rules.jl`,
+# loaded after `Nfwd.jl` so the signature can reference `Mooncake.Nfwd.NDual`
+# directly (broadened to accept both `Dual{Float64}` and the canonical
+# `NDual{Float64, 1}` width-1 lifted form).
 function Mooncake.rrule!!(::CoDual{typeof(edge_case_tester)}, x::CoDual{Float64})
     edge_case_tester_pb!!(dy) = Mooncake.NoRData(), 5 * dy
     return Mooncake.zero_fcodual(5 * primal(x)), edge_case_tester_pb!!

@@ -430,16 +430,9 @@ using Core: memoryref_isassigned, memoryrefget, memoryrefset!, memoryrefnew, mem
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefget),MemoryRef,Val,Val}
-# NOTE: `_is_lifted_aware` for lmemoryrefget would cause downstream
-# canonicalisation breaks. With scaffold path, IR-inferred primal_retype
-# stays abstract (Any) for `MemoryRef{Any}` indexes, preserving the bare
-# Dual return shape. With Lifted-aware adapter, runtime-recovered
-# primal_retype becomes the concrete element type (e.g. Float64), forcing
-# canonicalisation to NDual{Float64,1} via `_wrap_rule_result`'s 2-arg
-# ctor — which then breaks downstream Dual-only signatures
-# (e.g. `edge_case_tester(::Dual{Float64})` in test_resources.jl). Until
-# downstream signatures broaden to accept the canonical inner V, this
-# primitive must stay on the scaffold path.
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(lmemoryrefget),<:MemoryRef,<:Val,<:Val}}
+) = true
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefget)},
     x::Dual{<:MemoryRef},
@@ -501,13 +494,12 @@ end
 
 # Core.memoryrefmodify!
 
-# memoryrefnew: trait registration would canonicalise its output to
-# `Lifted{MemoryRef{T}, N, MemoryRef{<:NDual}}` for IEEEFloat element
-# types — which is correct, but for `Memory{Any}` slots the runtime
-# primal type recovery picks up the concrete element type and breaks
-# downstream Dual-only signatures the same way `lmemoryrefget` does.
-# Stays on scaffold path until downstream test_resources signatures
-# broaden.
+# memoryrefnew: trait-registering exposes a `BoundsError` in
+# `__get_primal(MemoryRef{<:NDual})` (NfwdMooncake.jl:938) for some cases —
+# `memoryref(__get_primal(x.mem), Core.memoryrefoffset(x))` allocates a fresh
+# `Memory{T}` via `map` and then asks for the same offset, which can fall
+# outside the new memory if the original ref pointed past the underlying
+# storage. Stays on scaffold path until that path is reworked.
 
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
     return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
