@@ -710,6 +710,9 @@ w.r.t. the underlying data array `A`.
     MinimalCtx,
     Tuple{typeof(logdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(logdet),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
+) = true
 function frule!!(
     ::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
@@ -747,6 +750,9 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
 @is_primitive(
     MinimalCtx, Tuple{typeof(det),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(det),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
+) = true
 function frule!!(
     ::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
@@ -793,6 +799,9 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
     MinimalCtx,
     Tuple{typeof(logabsdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(logabsdet),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
+) = true
 function frule!!(
     ::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
