@@ -279,6 +279,11 @@ end
     return Lifted{P,N,InnerT}(InnerT(primal, tangent))
 end
 
+# 3-param 2-arg ctor: callers that obtained `T = lifted_type(Val(N), P)` (the
+# fully-parameterised slot type) and want to build it with `(primal, tangent)`.
+# Forwards to the 2-param 2-arg form.
+@inline Lifted{P,N,V}(primal, tangent) where {P,N,V} = Lifted{P,N}(primal, tangent)
+
 # Tuple-primal special case: `dual_type(Val(N), P<:Tuple)` is a bare
 # element-wise `Tuple{...}` of inner duals, which has no user-defined 2-arg
 # constructor. Build the inner tuple here element-wise instead. Nested tuple

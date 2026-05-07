@@ -124,6 +124,7 @@ using Mooncake:
     can_produce_zero_rdata_from_type,
     increment_rdata!!,
     dual_type,
+    lifted_type,
     randn_dual,
     fcodual_type,
     verify_fdata_type,
@@ -506,12 +507,12 @@ function test_frule_correctness(
     end
 
     # Use AD to compute Frechet derivative at ẋ.
-    x_ẋ_rule = map((x, ẋ) -> dual_type(_typeof(x))(_deepcopy(x), ẋ), x, ẋ)
+    x_ẋ_rule = map((x, ẋ) -> lifted_type(Val(1), _typeof(x))(_deepcopy(x), ẋ), x, ẋ)
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
     )
     y_ẏ_rule = Mooncake._ndual_output_to_width1(frule(x_ẋ_rule...))
-    ẋ_ad = map(tangent, x_ẋ_rule)
+    ẋ_ad = map(x -> Mooncake._tangent_dir(x.value, 1), x_ẋ_rule)
     ẏ_ad = tangent(y_ẏ_rule)
 
     # Verify that inputs / outputs are the same under `f` and its rrule.

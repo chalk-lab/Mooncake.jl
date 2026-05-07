@@ -464,6 +464,14 @@ end
 @inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{P}) where {N,P}
     return Lifted{P,N}(primal(x), tangent(x))
 end
+# Passthrough for callers that already hold the slot type (option (c) of the
+# boundary contract: caller built a `Lifted{P, N}` directly via `zero_lifted`
+# / `uninit_lifted` / a direct ctor, so no repack is needed). This is the path
+# that lets in-place mutation propagate from the rule body back to the
+# caller's storage — `Vector{NDual}` shares no storage with `Dual{Vector,
+# Vector}`, so the only way a `mul!`-style write reaches user-visible state
+# is if the user passed the slot directly.
+@inline _wrap_arg(::Val{N}, ::Type{P}, x::Lifted{P,N}) where {N,P} = x
 
 # On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
 # asserting the return type, which is encoded in the MistyClosure type parameter.
