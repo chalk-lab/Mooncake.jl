@@ -21,6 +21,14 @@ function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
     return Dual(sum(primal(x)), sum(tangent(x)))
 end
 frule!!(::Dual{typeof(sum)}, x::Array{<:_HasNDual}) = sum(x)
+# Lifted-typed: canonical V is `Array{NDual{P, N}}` for `Array{P<:IEEEFloat}`.
+# `sum(::Array{<:NDual})` returns a single NDual that already encodes the
+# tangent across the N directions.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(sum),N}, x::Mooncake.Lifted{<:Array{P},N}
+) where {N,P<:IEEEFloat}
+    return Mooncake.Lifted{P,N}(sum(Mooncake._unlift(x)))
+end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sum),<:Array{<:IEEEFloat}}}) = true
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
@@ -40,6 +48,13 @@ function frule!!(
 end
 function frule!!(::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Array{<:_HasNDual})
     return sum(abs2, x)
+end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(sum),N},
+    ::Mooncake.Lifted{typeof(abs2),N},
+    x::Mooncake.Lifted{<:Array{P},N},
+) where {N,P<:IEEEFloat}
+    return Mooncake.Lifted{P,N}(sum(abs2, Mooncake._unlift(x)))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(sum),typeof(abs2),<:Array{<:IEEEFloat}}}
@@ -81,6 +96,41 @@ function Mooncake.frule!!(
     end
     return out
 end
+@inline function Mooncake.frule!!(
+    ::Mooncake.Lifted{typeof(LinearAlgebra._kron!),N},
+    out::Mooncake.Lifted{<:AbstractMatrix{<:T},N},
+    x1::Mooncake.Lifted{<:AbstractVecOrMat{<:T},N},
+    x2::Mooncake.Lifted{<:AbstractVecOrMat{<:T},N},
+) where {N,T<:Base.IEEEFloat}
+    out_v = Mooncake._unlift(out)
+    x1_v = Mooncake._unlift(x1)
+    x2_v = Mooncake._unlift(x2)
+    pout, dout = _arr_extract(out_v)
+    px1, dx1 = _arr_extract(x1_v)
+    px2, dx2 = _arr_extract(x2_v)
+    LinearAlgebra._kron!(pout, px1, px2)
+    m = firstindex(dout)
+    for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
+        x1ij = px1[i, j]
+        dx1ij = dx1[i, j]
+        for k in axes(px2, 1)
+            dout[m] = (x1ij * dx2[k, l]) + (dx1ij * px2[k, l])
+            m += 1
+        end
+    end
+    _arr_writeback!(out_v, pout, dout)
+    return out
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(LinearAlgebra._kron!),
+            <:AbstractMatrix{<:IEEEFloat},
+            <:AbstractMatrix{<:IEEEFloat},
+            <:AbstractMatrix{<:IEEEFloat},
+        },
+    },
+) = true
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
     out::CoDual{<:AbstractMatrix{<:T}},
