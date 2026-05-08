@@ -1161,6 +1161,13 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
 frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
@@ -1190,6 +1197,15 @@ function frule!!(
     ::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
 ) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
     return Dual(fill!(primal(a), primal(x)), tangent(a))
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(fill!),N},
+    a::Mooncake.Lifted{T},
+    x::Mooncake.Lifted{<:Integer},
+) where {N,V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(x))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}
