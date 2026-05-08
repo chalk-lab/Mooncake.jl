@@ -905,6 +905,14 @@ function frule!!(::Dual{typeof(__vec_to_tuple)}, v::Dual{<:Vector})
         return Dual(x, __vec_to_tuple(tangent(v)))
     end
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector}
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(v))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(__vec_to_tuple),<:Vector}}) = true
 
 function rrule!!(::CoDual{typeof(__vec_to_tuple)}, v::CoDual{<:Vector})
     dv = tangent(v)
