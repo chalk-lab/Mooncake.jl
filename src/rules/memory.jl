@@ -889,6 +889,30 @@ function frule!!(
 )
     return Dual(primal(copy(x)), tangent(copy(x)))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(_foreigncall_),N},
+    a1::Mooncake.Lifted{Val{:jl_genericmemory_copy}},
+    a2::Mooncake.Lifted,
+    a3::Mooncake.Lifted{Tuple{Val{Any}}},
+    a4::Mooncake.Lifted{Val{0}},
+    a5::Mooncake.Lifted{Val{:ccall}},
+    x::Mooncake.Lifted{<:Memory},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(a1),
+        Mooncake._unlift(a2),
+        Mooncake._unlift(a3),
+        Mooncake._unlift(a4),
+        Mooncake._unlift(a5),
+        Mooncake._unlift(x),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_genericmemory_copy},Vararg}}
+) = true
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_genericmemory_copy}},
