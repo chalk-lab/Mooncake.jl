@@ -219,12 +219,8 @@ end
 
 function any_matches_primitive(applicable, C, M, world)
     for app in applicable
-        if VERSION < v"1.12-"
-            sig = app.spec_types
-        else
-            sig = app.match.spec_types
-        end
-        if is_primitive(C, M, sig, world)
+        match = VERSION < v"1.12-" ? app : app.match
+        if is_primitive(C, M, match.spec_types, world)
             return true
         end
     end
@@ -233,7 +229,8 @@ end
 
 function any_matches_overlay(applicable)
     for app in applicable
-        method = VERSION < v"1.12-" ? app.method : app.match.method
+        match = VERSION < v"1.12-" ? app : app.match
+        method = match.method
         if isdefined(method, :external_mt) && method.external_mt === mooncake_method_table
             return true
         end
