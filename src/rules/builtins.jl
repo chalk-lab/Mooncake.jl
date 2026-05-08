@@ -950,6 +950,18 @@ function frule!!(
     tv = getindex(tangent(v), ind)
     return Dual(pv, tv)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Core._svec_ref),N},
+    v::Mooncake.Lifted{Core.SimpleVector},
+    ind::Mooncake.Lifted{Int},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(v), Mooncake._unlift(ind))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Core._svec_ref),Core.SimpleVector,Int}}
+) = true
 function rrule!!(
     f::CoDual{typeof(Core._svec_ref)}, _v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
 )
@@ -982,6 +994,15 @@ function frule!!(f::Dual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     dual_output = collect(Any, map(tangent, args))
     return Dual(primal_output, dual_output)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(svec),N}, args::Vararg{Mooncake.Lifted,M}
+) where {N,M}
+    bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
+    bare_result = frule!!(Mooncake._unlift(f), bare_args...)
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(svec),Vararg}}) = true
 
 function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     primal_output = svec(map(primal, args)...)
