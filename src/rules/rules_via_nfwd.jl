@@ -101,12 +101,11 @@ for f in (
     # for primitive rules.
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
-        function frule!!(fdual::Dual{typeof($f)}, x::Dual{P}) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x)
-        end
-        # Bare NDual overloads for these functions live in the second loop
-        # below (line ~437). Lifted-aware overload — IR-emit at width=Val(N)
-        # passes `Lifted` args directly when the rule sig is registered.
+        # `Lifted`-typed forward rule. Inner V at width 1 is `NDual{P, 1}` for
+        # IEEEFloat, so `$f(_unlift(x))` dispatches through scalar-NDual
+        # operator overloads to compute the derivative. The bare `Dual`-typed
+        # body has been removed under task #31 — IR-emit and the test
+        # framework's `__forwards` both pass `Lifted` slots through.
         @inline function frule!!(
             ::Mooncake.Lifted{typeof($f),N}, x::Mooncake.Lifted
         ) where {N}

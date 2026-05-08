@@ -847,8 +847,14 @@ function test_frule_performance(
         # Test primal stability.
         test_opt(primal(f_ḟ), map(_typeof ∘ primal, x_ẋ))
 
-        # Test forwards-mode stability.
-        test_opt(rule, (_typeof(f_ḟ), map(_typeof, x_ẋ)...))
+        # Test forwards-mode stability. Match the runtime arg shape used in
+        # `__forwards`: each `Dual{P, T}` lifts to `Lifted{P, 1, V}` before the
+        # rule is invoked, so JET should infer through that lifted signature.
+        lifted_arg_types = (
+            Mooncake.lifted_type(Val(1), _typeof(primal(f_ḟ))),
+            map(d -> Mooncake.lifted_type(Val(1), _typeof(primal(d))), x_ẋ)...,
+        )
+        test_opt(rule, lifted_arg_types)
     end
 
     if performance_checks_flag in (:allocs, :stability_and_allocs)

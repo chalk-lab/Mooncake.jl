@@ -1211,7 +1211,10 @@ Base.isfinite(a::NDual) = isfinite(a.value)
 Base.signbit(a::NDual) = signbit(a.value)
 
 # ── Utility ───────────────────────────────────────────────────────────────────────
-Base.eps(d::NDual) = eps(d.value)
+# `eps` is non-differentiable; preserve the NDual shape with zero partials so
+# the Lifted-typed `frule!!` body in `rules_via_nfwd.jl` can route the result
+# through `Lifted{P, N}(NDual)` without losing the slot's canonical V.
+Base.eps(d::NDual{T,N}) where {T,N} = NDual{T,N}(eps(d.value), ntuple(_ -> zero(T), Val(N)))
 Base.eps(::Type{NDual{T,N}}) where {T,N} = eps(T)
 # Checks both the primal value and all partial slots.  In GPU kernels this evaluates
 # N partial values before short-circuiting; prefer `iszero(d.value)` inside hot kernel

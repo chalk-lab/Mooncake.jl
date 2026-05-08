@@ -1,4 +1,18 @@
 @testset "low_level_maths" begin
+    # Test helper: lift each bare `Dual` arg to its canonical `Lifted` slot,
+    # invoke the `Lifted`-typed `frule!!` body, and unwrap the result back to
+    # a width-1 `Dual` so existing `tangent` checks still apply. Mirrors the
+    # runtime path used by `__forwards` / `_wrap_oc_args` — these tests
+    # exercise the public lifted-API rules directly.
+    @inline _to_lifted(d::Mooncake.Dual{P}) where {P} = Mooncake.Lifted{P,1}(
+        primal(d), tangent(d)
+    )
+    @inline function _frule_lifted(f, args::Vararg{Mooncake.Dual,N}) where {N}
+        fl = Mooncake.zero_lifted(Val(1), f)
+        ls = ntuple(i -> _to_lifted(args[i]), Val(N))
+        return Mooncake._ndual_output_to_width1(Mooncake.frule!!(fl, ls...))
+    end
+
     TestUtils.run_rule_test_cases(StableRNG, Val(:low_level_maths))
     @testset "NaN handling in rrules" begin
         test_cases = vcat(
@@ -40,9 +54,9 @@
             y = Dual(zero(T), one(T))
             z = Dual(zero(T), one(T))
 
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x)) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y)) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z)) === zero(T)
+            @test tangent(_frule_lifted(hypot, x)) === zero(T)
+            @test tangent(_frule_lifted(hypot, x, y)) === zero(T)
+            @test tangent(_frule_lifted(hypot, x, y, z)) === zero(T)
 
             _, pb1 = Mooncake.rrule!!(zero_fcodual(hypot), zero_fcodual(zero(T)))
             _, dx1 = pb1(one(T))
@@ -71,45 +85,29 @@
     @testset "nfwd-backed non-smooth scalar rules" begin
         for T in (Float16, Float32, Float64)
             @test tangent(
-                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(one(T), zero(T)))
+                _frule_lifted(^, Dual(zero(T), one(T)), Dual(one(T), zero(T)))
             ) === one(T)
-            @test tangent(
-                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(T(2), zero(T)))
-            ) === zero(T)
+            @test tangent(_frule_lifted(^, Dual(zero(T), one(T)), Dual(T(2), zero(T)))) ===
+                zero(T)
             @test isinf(
-                tangent(
-                    Mooncake.frule!!(
-                        zero_dual(^), Dual(zero(T), one(T)), Dual(T(0.5), zero(T))
-                    ),
-                ),
+                tangent(_frule_lifted(^, Dual(zero(T), one(T)), Dual(T(0.5), zero(T))))
             )
 
             @test isnan(
-                tangent(
-                    Mooncake.frule!!(
-                        zero_dual(mod), Dual(T(4), one(T)), Dual(T(2), zero(T))
-                    ),
-                ),
+                tangent(_frule_lifted(mod, Dual(T(4), one(T)), Dual(T(2), zero(T))))
             )
-            @test isnan(tangent(Mooncake.frule!!(zero_dual(mod2pi), Dual(T(2π), one(T)))))
+            @test isnan(tangent(_frule_lifted(mod2pi, Dual(T(2π), one(T)))))
 
             @test tangent(
-                Mooncake.frule!!(
-                    zero_dual(max), Dual(one(T), one(T)), Dual(one(T), zero(T))
-                ),
+                _frule_lifted(max, Dual(one(T), one(T)), Dual(one(T), zero(T)))
             ) === zero(T)
             @test tangent(
-                Mooncake.frule!!(
-                    zero_dual(min), Dual(one(T), one(T)), Dual(one(T), zero(T))
-                ),
+                _frule_lifted(min, Dual(one(T), one(T)), Dual(one(T), zero(T)))
             ) === one(T)
 
-            @test tangent(Mooncake.frule!!(zero_dual(Base.eps), Dual(one(T), one(T)))) ===
-                zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(nextfloat), Dual(one(T), one(T)))) ===
-                one(T)
-            @test tangent(Mooncake.frule!!(zero_dual(prevfloat), Dual(one(T), one(T)))) ===
-                one(T)
+            @test tangent(_frule_lifted(Base.eps, Dual(one(T), one(T)))) === zero(T)
+            @test tangent(_frule_lifted(nextfloat, Dual(one(T), one(T)))) === one(T)
+            @test tangent(_frule_lifted(prevfloat, Dual(one(T), one(T)))) === one(T)
         end
     end
 
