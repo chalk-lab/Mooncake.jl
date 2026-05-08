@@ -562,6 +562,19 @@ Base.@propagate_inbounds function frule!!(
 ) where {N}
     return arrayref(primal(inbounds), x, tuple_map(primal, inds)...)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Core.arrayref),N},
+    inbounds::Mooncake.Lifted{Bool},
+    x::Mooncake.Lifted{<:Array},
+    inds::Vararg{Mooncake.Lifted{Int},M},
+) where {N,M}
+    bare_inds = ntuple(i -> Mooncake._unlift(inds[i]), Val(M))
+    bare_result = frule!!(
+        Mooncake._unlift(f), Mooncake._unlift(inbounds), Mooncake._unlift(x), bare_inds...
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
     checkbounds::CoDual{Bool},
@@ -607,6 +620,24 @@ function frule!!(
 )
     Core.arrayset(primal(inbounds), A, v, tuple_map(primal, inds)...)
     return A
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Core.arrayset),N},
+    inbounds::Mooncake.Lifted{Bool},
+    A::Mooncake.Lifted{<:Array},
+    v::Mooncake.Lifted,
+    inds::Vararg{Mooncake.Lifted{Int},M},
+) where {N,M}
+    bare_inds = ntuple(i -> Mooncake._unlift(inds[i]), Val(M))
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(inbounds),
+        Mooncake._unlift(A),
+        Mooncake._unlift(v),
+        bare_inds...,
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Core.arrayset)},
@@ -671,12 +702,25 @@ end
 function frule!!(::Dual{typeof(Core.arraysize)}, X, dim)
     return zero_dual(Core.arraysize(primal(X), primal(dim)))
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Core.arraysize),N}, X::Mooncake.Lifted, dim::Mooncake.Lifted
+) where {N}
+    return zero_lifted(Val(N), Core.arraysize(primal(X), primal(dim)))
+end
 function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
     return zero_fcodual(Core.arraysize(primal(X), primal(dim))), NoPullback(f, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
 frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+@inline frule!!(::Dual{typeof(copy)}, a::AbstractArray{<:NDual}) = copy(a)
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(copy),<:Array}}) = true
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
@@ -703,6 +747,15 @@ function frule!!(
 )
     fill!(primal(a), primal(x))
     return a
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(fill!),N},
+    a::Mooncake.Lifted{<:Array{<:Union{UInt8,Int8}}},
+    x::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(x))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}
