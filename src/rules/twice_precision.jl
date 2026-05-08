@@ -70,6 +70,29 @@ function frule!!(
     dx = _new_(TWP{P}, tangent(hi), tangent(lo))
     return Dual(x, dx)
 end
+# NDual variant of _new_(TWP) — IEEEFloat slots' V at width 1 is NDual.
+@inline function frule!!(
+    ::Dual{typeof(_new_)},
+    ::Dual{Type{TWP{P}}},
+    hi::Mooncake.Nfwd.NDual{P,1},
+    lo::Mooncake.Nfwd.NDual{P,1},
+) where {P<:IEEEFloat}
+    x = _new_(TWP{P}, hi.value, lo.value)
+    dx = _new_(TWP{P}, hi.partials[1], lo.partials[1])
+    return Dual(x, dx)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(_new_),N},
+    p::Mooncake.Lifted{Type{TWP{P}}},
+    hi::Mooncake.Lifted{P},
+    lo::Mooncake.Lifted{P},
+) where {N,P<:IEEEFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f), Mooncake._unlift(p), Mooncake._unlift(hi), Mooncake._unlift(lo)
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(_new_)}, ::CoDual{Type{TWP{P}}}, hi::CoDual{P}, lo::CoDual{P}
 ) where {P<:IEEEFloat}
