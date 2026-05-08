@@ -312,6 +312,39 @@ function frule!!(
     tangent(x) .+= tangent(b)
     return x
 end
+# Bare NDual-array variant — V at width 1 for SupportedArray{<:IEEEFloat} is
+# NDual-element array; mutate in place directly.
+function frule!!(
+    ::Dual{typeof(bias_act!)},
+    ::Dual{typeof(identity)},
+    x::AbstractArray{<:Mooncake.Nfwd.NDual{<:IEEEFloat,1}},
+    b::AbstractArray{<:Mooncake.Nfwd.NDual{<:IEEEFloat,1}},
+)
+    x .+= b
+    return x
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(bias_act!),N},
+    id::Mooncake.Lifted{typeof(identity)},
+    x::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,M}},
+    b::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,L}},
+) where {N,M,L}
+    bare_result = frule!!(
+        Mooncake._unlift(f), Mooncake._unlift(id), Mooncake._unlift(x), Mooncake._unlift(b)
+    )
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(bias_act!),
+            typeof(identity),
+            <:SupportedArray{<:IEEEFloat},
+            <:SupportedArray{<:IEEEFloat},
+        },
+    },
+) = true
 function rrule!!(
     ::CoDual{typeof(bias_act!)},
     ::CoDual{typeof(identity)},
