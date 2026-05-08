@@ -799,7 +799,26 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
     @test all(map((a, b) -> _typeof(a) == _typeof(rdata(b)), x̄_new, x̄))
 end
 
-__forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N} = frule(x_ẋ...)
+# Wrap a `Dual{P, T}` into the canonical `Lifted{P, 1, V}` slot. Type-stable
+# from the `Dual`'s `P` parameter. For IEEEFloat / Complex scalars the wrap is
+# allocation-free (the inner V is `NDual{P,1}` / `Complex{NDual{P,1}}`, both
+# isbits); for `Vector{T}` etc. the wrap allocates a fresh canonical-V container,
+# which is unavoidable since the lifted memory layout differs.
+@inline _to_lifted(d::Mooncake.Dual{P}) where {P} = Mooncake.Lifted{P,1}(
+    primal(d), tangent(d)
+)
+@inline _to_lifted(d::Mooncake.Lifted) = d  # passthrough for already-lifted inputs
+
+# `__forwards` invokes the rule on canonical `Lifted` slot inputs.
+# `DerivedPrimal` accepts `Lifted` directly via `_wrap_oc_args` (already-lifted
+# args passthrough); for primitives where `rule` is the bare `frule!!` function,
+# this dispatches to the `Lifted{typeof(f), 1}` body. Routing every call site
+# through `Lifted` keeps the test framework consistent with the runtime AD path
+# now that the legacy bare-Dual catch-all adapter has been removed.
+@inline function __forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N}
+    x_lifted = ntuple(i -> _to_lifted(x_ẋ[i]), Val(N))
+    return frule(x_lifted...)
+end
 
 @noinline function __forwards_and_backwards(rule::R, x_x̄::Vararg{Any,N}) where {R,N}
     out, pb!! = rule(x_x̄...)
