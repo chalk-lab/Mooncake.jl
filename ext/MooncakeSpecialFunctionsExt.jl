@@ -158,6 +158,19 @@ function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:Complex}
     )
 end
 
+# Helper: extract (primal, single-direction tangent) from a Lifted slot value.
+# Required for Lifted-typed bodies in this extension because the bare bodies
+# use `extract(_a::Dual)`, which doesn't match NDual / Complex{NDual} V shapes.
+@inline function _sf_extract(x::Mooncake.Lifted)
+    inner = Mooncake._unlift(x)
+    return _sf_extract_inner(inner)
+end
+@inline _sf_extract_inner(x::Dual) = (primal(x), tangent(x))
+@inline _sf_extract_inner(x::Mooncake.Nfwd.NDual{T,1}) where {T} = (x.value, x.partials[1])
+@inline function _sf_extract_inner(x::Complex{Mooncake.Nfwd.NDual{T,1}}) where {T}
+    return (complex(x.re.value, x.im.value), complex(x.re.partials[1], x.im.partials[1]))
+end
+
 # 3-arg `gamma_inc` (first-argument gradient is `NotImplemented`)
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
@@ -178,6 +191,26 @@ function frule!!(
     # dot_q = ∂p/∂a * da + (-∂p/∂x) * dx
     return Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(gamma_inc),N},
+    _a::Mooncake.Lifted,
+    _x::Mooncake.Lifted,
+    _IND::Mooncake.Lifted,
+) where {N}
+    a, da = _sf_extract(_a)
+    x, dx = _sf_extract(_x)
+    IND = primal(_IND)
+    y = gamma_inc(a, x, IND)
+    primal_eltype = eltype(y)
+    ∂a = Mooncake.notimplemented_tangent_guard(da)
+    z = exp((a - 1) * log(x) - x - loggamma(a))
+    bare = Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(gamma_inc),<:IEEEFloat,<:IEEEFloat,<:Integer}}
+) = true
 
 # 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`)
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -201,6 +234,29 @@ function frule!!(
     dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val) # ensure dy and primal y are same types.
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(gamma),N}, _a::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    a, da = _sf_extract(_a)
+    x, dx = _sf_extract(_x)
+    y = gamma(a, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂a = Mooncake.notimplemented_tangent_guard(da)
+    ∂x = -exp((a - 1) * log(x) - x)
+    dy_val = ∂a + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(gamma),
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+        },
+    },
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(loggamma),
@@ -225,6 +281,29 @@ function frule!!(
     dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(loggamma),N}, _a::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    a, da = _sf_extract(_a)
+    x, dx = _sf_extract(_x)
+    y = loggamma(a, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂a = Mooncake.notimplemented_tangent_guard(da)
+    ∂x = -exp((a - 1) * log(x) - x - loggamma(a, x))
+    dy_val = ∂a + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(loggamma),
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+        },
+    },
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(expint),
@@ -249,6 +328,29 @@ function frule!!(
     dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(expint),N}, _a::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    a, da = _sf_extract(_a)
+    x, dx = _sf_extract(_x)
+    y = expint(a, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂a = Mooncake.notimplemented_tangent_guard(da)
+    ∂x = -expint(a - 1, x)
+    dy_val = ∂a + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(expint),
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+        },
+    },
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(expintx),
@@ -273,6 +375,29 @@ function frule!!(
     dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(expintx),N}, _a::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    a, da = _sf_extract(_a)
+    x, dx = _sf_extract(_x)
+    y = expintx(a, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂a = Mooncake.notimplemented_tangent_guard(da)
+    ∂x = y - expintx(a - 1, x)
+    dy_val = ∂a + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(expintx),
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+        },
+    },
+) = true
 
 # 2-arg standard Bessel and Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -296,6 +421,23 @@ function frule!!(
     # All Bessel functions return complex values only for complex inputs.
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(besselj),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = besselj(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x = (besselj(v - 1, x) - besselj(v + 1, x)) / 2
+    dy_val = ∂v + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(besselj),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(bessely),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -317,6 +459,23 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(bessely),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = bessely(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x = (bessely(v - 1, x) - bessely(v + 1, x)) / 2
+    dy_val = ∂v + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(bessely),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besseli),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -338,6 +497,23 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(besseli),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = besseli(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x = (besseli(v - 1, x) + besseli(v + 1, x)) / 2
+    dy_val = ∂v + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(besseli),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselk),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -359,6 +535,23 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(besselk),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = besselk(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x = -(besselk(v - 1, x) + besselk(v + 1, x)) / 2
+    dy_val = ∂v + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(besselk),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh1),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -380,6 +573,23 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(hankelh1),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = hankelh1(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x = (hankelh1(v - 1, x) - hankelh1(v + 1, x)) / 2
+    dy_val = ∂v + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(hankelh1),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh2),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -401,6 +611,23 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(hankelh2),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = hankelh2(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x = (hankelh2(v - 1, x) - hankelh2(v + 1, x)) / 2
+    dy_val = ∂v + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(hankelh2),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 #
 # Non Holomorphic functions
@@ -430,6 +657,24 @@ function frule!!(
 
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(besselix),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = besselix(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x_1 = (besselix(v - 1, x) + besselix(v + 1, x)) / 2
+    ∂x_2 = -sign(real(x)) * y
+    dy_val = ∂v + ∂x_1 * dx + ∂x_2 * real(dx)
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(besselix),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselkx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -451,6 +696,23 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(besselkx),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = besselkx(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x = -(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y
+    dy_val = ∂v + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(besselkx),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besseljx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -474,6 +736,24 @@ function frule!!(
     dy_val = (∂v + ∂x_1 * dx + ∂x_2 * imag(dx))
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(besseljx),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = besseljx(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x_1 = (besseljx(v - 1, x) - besseljx(v + 1, x)) / 2
+    ∂x_2 = -sign(imag(x)) * y
+    dy_val = (∂v + ∂x_1 * dx + ∂x_2 * imag(dx))
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(besseljx),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselyx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -497,6 +777,24 @@ function frule!!(
     dy_val = ∂v + ∂x_1 * dx + ∂x_2 * imag(dx)
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(besselyx),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = besselyx(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x_1 = (besselyx(v - 1, x) - besselyx(v + 1, x)) / 2
+    ∂x_2 = -sign(imag(x)) * y
+    dy_val = ∂v + ∂x_1 * dx + ∂x_2 * imag(dx)
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(besselyx),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 # Scaled Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -519,6 +817,23 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(hankelh1x),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = hankelh1x(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x = (hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y
+    dy_val = ∂v + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(hankelh1x),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -540,6 +855,23 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(hankelh2x),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
+) where {N}
+    v, dv = _sf_extract(_v)
+    x, dx = _sf_extract(_x)
+    y = hankelh2x(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂v = Mooncake.notimplemented_tangent_guard(dv)
+    ∂x = (hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y
+    dy_val = ∂v + ∂x * dx
+    bare = real_or_complex_valued(y, primal_eltype, dy_val)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(hankelh2x),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
+) = true
 
 # ── NDual overloads for SpecialFunctions ──────────────────────────────────────
 #
