@@ -366,6 +366,15 @@ end
     function frule!!(::Dual{typeof(copy)}, a::Dual{<:Dict})
         return Dual(copy(primal(a)), _copy_dict_tangent(tangent(a)))
     end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Dict}
+    ) where {N}
+        inner = Mooncake._unlift(a)
+        return Mooncake.Lifted{_typeof(primal(inner)),N}(
+            copy(primal(inner)), _copy_dict_tangent(tangent(inner))
+        )
+    end
+    @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(copy),<:Dict}}) = true
     function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Dict})
         dx = tangent(a)
         t = dx.fields
