@@ -141,6 +141,14 @@ function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) wher
     setindex!(tangent(d), tangent(val), primal(key))
     return d
 end
+# NDual variant: at width 1 the IEEEFloat val slot lifts to NDual{P,1}.
+@inline function frule!!(
+    ::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val::Mooncake.Nfwd.NDual{P,1}, key
+) where {K,V<:IEEEFloat,P<:IEEEFloat}
+    setindex!(primal(d), val.value, primal(key))
+    setindex!(tangent(d), val.partials[1], primal(key))
+    return d
+end
 function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) where {K,V}
     k = primal(key)
     restore_state = in(k, keys(primal(d)))
@@ -180,6 +188,14 @@ function frule!!(
 ) where {K,V}
     x = get(primal(d), primal(key), primal(default))
     dx = get(tangent(d), primal(key), tangent(default))
+    return Dual(x, dx)
+end
+# NDual variant: width-1 IEEEFloat default slot.
+@inline function frule!!(
+    ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Mooncake.Nfwd.NDual{P,1}
+) where {K,V<:IEEEFloat,P<:IEEEFloat}
+    x = get(primal(d), primal(key), default.value)
+    dx = get(tangent(d), primal(key), default.partials[1])
     return Dual(x, dx)
 end
 function rrule!!(
