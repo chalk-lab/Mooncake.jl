@@ -709,6 +709,18 @@ function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     da = pointerref(tangent(x), primal(y), primal(z))
     return Dual(a, da)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(pointerref),N},
+    x::Mooncake.Lifted,
+    y::Mooncake.Lifted,
+    z::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(y), Mooncake._unlift(z)
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -731,6 +743,23 @@ function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     pointerset(tangent(p), tangent(x), primal(idx), primal(z))
     return p
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(pointerset),N},
+    p::Mooncake.Lifted,
+    x::Mooncake.Lifted,
+    idx::Mooncake.Lifted,
+    z::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(p),
+        Mooncake._unlift(x),
+        Mooncake._unlift(idx),
+        Mooncake._unlift(z),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
