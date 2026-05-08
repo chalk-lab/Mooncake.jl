@@ -1122,6 +1122,23 @@ end
     setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
     return x
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lsetfield!),N},
+    value::Mooncake.Lifted{<:Array},
+    name::Mooncake.Lifted{<:Val},
+    x::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(value),
+        Mooncake._unlift(name),
+        Mooncake._unlift(x),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),<:Array,<:Val,Any}}) =
+    true
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)},
     value::CoDual{<:Array,<:Array},
