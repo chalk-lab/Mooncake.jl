@@ -849,6 +849,24 @@ function frule!!(
     dy = _new_(Array{tangent_type(P),N}, tangent(ref), primal(size))
     return Dual(y, dy)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(_new_),N},
+    p::Mooncake.Lifted{Type{Array{P,M}}},
+    ref::Mooncake.Lifted{MemoryRef{P}},
+    size::Mooncake.Lifted{<:NTuple{M,Int}},
+) where {N,P,M}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(p),
+        Mooncake._unlift(ref),
+        Mooncake._unlift(size),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(_new_),Type{<:Array},<:MemoryRef,<:NTuple{<:Any,Int}}}
+) = true
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{Array{P,N}}},
