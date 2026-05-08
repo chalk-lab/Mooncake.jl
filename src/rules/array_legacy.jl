@@ -406,6 +406,30 @@ function frule!!(
     dy = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
     return Dual(y, dy)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(_foreigncall_),N},
+    a1::Mooncake.Lifted{Val{:jl_array_ptr}},
+    a2::Mooncake.Lifted{Val{Ptr{T}}},
+    a3::Mooncake.Lifted{Tuple{Val{Any}}},
+    a4::Mooncake.Lifted,
+    a5::Mooncake.Lifted,
+    a::Mooncake.Lifted{<:Array{T}},
+) where {N,T}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(a1),
+        Mooncake._unlift(a2),
+        Mooncake._unlift(a3),
+        Mooncake._unlift(a4),
+        Mooncake._unlift(a5),
+        Mooncake._unlift(a),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_array_ptr},Vararg}}
+) = true
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_array_ptr}},
@@ -437,6 +461,39 @@ function frule!!(
     Base.unsafe_copyto!(primal(dest), primal(doffs), primal(src), primal(soffs), _n)
     Base.unsafe_copyto!(tangent(dest), primal(doffs), tangent(src), primal(soffs), _n)
     return dest
+end
+# Bare NDual-array overload: V at width 1 for Array{<:IEEEFloat} is
+# Array{NDual{T,1}}; the NDual elements pack primal+tangent so a single
+# `unsafe_copyto!` mutates both at once.
+@inline function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::AbstractArray{<:NDual},
+    doffs::Dual,
+    src::AbstractArray{<:NDual},
+    soffs::Dual,
+    n::Dual,
+)
+    Base.unsafe_copyto!(dest, primal(doffs), src, primal(soffs), primal(n))
+    return dest
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    dest::Mooncake.Lifted{<:Array{T}},
+    doffs::Mooncake.Lifted,
+    src::Mooncake.Lifted{<:Array{T}},
+    soffs::Mooncake.Lifted,
+    n::Mooncake.Lifted,
+) where {N,T}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(dest),
+        Mooncake._unlift(doffs),
+        Mooncake._unlift(src),
+        Mooncake._unlift(soffs),
+        Mooncake._unlift(n),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
