@@ -108,6 +108,13 @@ function frule!!(
     dx = twiceprecision(tangent(val), primal(nb))
     return Dual(x, dx)
 end
+@inline function frule!!(
+    ::Dual{typeof(twiceprecision)}, val::Mooncake.Nfwd.NDual{P,1}, nb::Dual{<:Integer}
+) where {P<:IEEEFloat}
+    x = twiceprecision(val.value, primal(nb))
+    dx = twiceprecision(val.partials[1], primal(nb))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
 ) where {P<:IEEEFloat}
@@ -150,6 +157,11 @@ end
 function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
     return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
 end
+@inline function frule!!(
+    ::Dual{typeof(+)}, x::Dual{P}, y::Mooncake.Nfwd.NDual{S,1}
+) where {P<:TWP,S<:IEEEFloat}
+    return Dual(primal(x) + y.value, tangent(x) + y.partials[1])
+end
 function rrule!!(
     ::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{S}
 ) where {P<:TWP,S<:IEEEFloat}
@@ -181,6 +193,13 @@ function frule!!(::Dual{typeof(*)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEE
     dz = primal(x) * tangent(y) + tangent(x) * primal(y)
     return Dual(z, dz)
 end
+@inline function frule!!(
+    ::Dual{typeof(*)}, x::Dual{P}, y::Mooncake.Nfwd.NDual{S,1}
+) where {P<:TWP,S<:IEEEFloat}
+    z = primal(x) * y.value
+    dz = primal(x) * y.partials[1] + tangent(x) * y.value
+    return Dual(z, dz)
+end
 function rrule!!(
     ::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{S}
 ) where {P<:TWP,S<:IEEEFloat}
@@ -203,6 +222,15 @@ end
 function frule!!(::Dual{typeof(/)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
     z = primal(x) / primal(y)
     dz = tangent(x) / primal(y) - tangent(y) * primal(x) / primal(y)^2
+    return Dual(z, dz)
+end
+@inline function frule!!(
+    ::Dual{typeof(/)}, x::Dual{P}, y::Mooncake.Nfwd.NDual{S,1}
+) where {P<:TWP,S<:IEEEFloat}
+    pv = y.value
+    tv = y.partials[1]
+    z = primal(x) / pv
+    dz = tangent(x) / pv - tv * primal(x) / pv^2
     return Dual(z, dz)
 end
 function rrule!!(
@@ -246,6 +274,17 @@ function frule!!(
     x = range_start_step_length(primal(a), primal(st), primal(len))
     Tx = tangent_type(typeof(x))
     dx = Tx((ref=tangent(a), step=tangent(st), len=NoTangent(), offset=NoTangent()))
+    return Dual(x, dx)
+end
+@inline function frule!!(
+    ::Dual{typeof(range_start_step_length)},
+    a::Mooncake.Nfwd.NDual{T,1},
+    st::Mooncake.Nfwd.NDual{T,1},
+    len::Dual{<:Integer},
+) where {T<:IEEEFloat}
+    x = range_start_step_length(a.value, st.value, primal(len))
+    Tx = tangent_type(typeof(x))
+    dx = Tx((ref=a.partials[1], step=st.partials[1], len=NoTangent(), offset=NoTangent()))
     return Dual(x, dx)
 end
 function rrule!!(
@@ -320,6 +359,19 @@ function frule!!(
     dx = T((ref=tangent(start), step=tangent(step), len=NoTangent(), offset=NoTangent()))
     return Dual(x, dx)
 end
+@inline function frule!!(
+    ::Dual{typeof(:)},
+    start::Mooncake.Nfwd.NDual{P,1},
+    step::Mooncake.Nfwd.NDual{P,1},
+    stop::Mooncake.Nfwd.NDual{P,1},
+) where {P<:IEEEFloat}
+    x = (:)(start.value, step.value, stop.value)
+    T = tangent_type(typeof(x))
+    dx = T((
+        ref=start.partials[1], step=step.partials[1], len=NoTangent(), offset=NoTangent()
+    ))
+    return Dual(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(:)}, start::CoDual{P}, step::CoDual{P}, stop::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -368,6 +420,20 @@ function frule!!(
     dy = T((ref=dref, step=dstep, len=NoTangent(), offset=NoTangent()))
     return Dual(y, dy)
 end
+@inline function frule!!(
+    ::Dual{typeof(Base.range_start_stop_length)},
+    start::Mooncake.Nfwd.NDual{P,1},
+    stop::Mooncake.Nfwd.NDual{P,1},
+    length::Dual{<:Integer},
+) where {P<:IEEEFloat}
+    l = primal(length) - 1
+    y = Base.range_start_stop_length(start.value, stop.value, primal(length))
+    T = tangent_type(typeof(y))
+    dref = start.partials[1]
+    dstep = (stop.partials[1] - start.partials[1]) / l
+    dy = T((ref=dref, step=dstep, len=NoTangent(), offset=NoTangent()))
+    return Dual(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(Base.range_start_stop_length)},
     start::CoDual{P},
@@ -406,6 +472,12 @@ end
     function frule!!(::Dual{typeof(Base._log_twice64_unchecked)}, x::Dual{Float64})
         y = Base._log_twice64_unchecked(primal(x))
         return Dual(y, typeof(y)(tangent(x) / primal(x)))
+    end
+    @inline function frule!!(
+        ::Dual{typeof(Base._log_twice64_unchecked)}, x::Mooncake.Nfwd.NDual{Float64,1}
+    )
+        y = Base._log_twice64_unchecked(x.value)
+        return Dual(y, typeof(y)(x.partials[1] / x.value))
     end
     function rrule!!(::CoDual{typeof(Base._log_twice64_unchecked)}, x::CoDual{Float64})
         _x = x.x
