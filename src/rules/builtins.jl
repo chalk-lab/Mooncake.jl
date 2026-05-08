@@ -1177,6 +1177,13 @@ end
 ) where {T<:Union{Tuple,NamedTuple}}
     return getfield(x, primal(name), primal(inbounds))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(getfield),N}, x::Mooncake.Lifted, name::Mooncake.Lifted
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function frule!!(
     ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
 ) where {P}
@@ -1189,6 +1196,21 @@ function frule!!(
         dy = _get_tangent_field(tangent(x), _name, _inbounds)
         return _dual_or_ndual(y, dy)
     end
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted,
+    name::Mooncake.Lifted,
+    inbounds::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(name),
+        Mooncake._unlift(inbounds),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
