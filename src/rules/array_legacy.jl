@@ -89,6 +89,24 @@ function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:
     Base._deletebeg!(tangent(a), primal(d))
     return zero_dual(nothing)
 end
+# Bare NDual-vector overload: V at width 1 for Vector{<:IEEEFloat} is
+# Vector{NDual{T,1}}; the NDual elements pack primal+tangent so a single
+# `_deletebeg!` call mutates both at once.
+@inline function frule!!(
+    ::Dual{typeof(Base._deletebeg!)}, a::AbstractVector{<:NDual}, d::Dual{<:Integer}
+)
+    Base._deletebeg!(a, primal(d))
+    return zero_dual(nothing)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Base._deletebeg!),N},
+    a::Mooncake.Lifted{<:Vector},
+    d::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(d))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
