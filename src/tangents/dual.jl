@@ -315,6 +315,27 @@ end
         Val(fieldcount(V)),
     )
 end
+# NoTangent broadcast for Tuple/NamedTuple V — recurse element-wise with NoTangent
+# at each leaf. Required when a parent `Lifted{<:Tuple, N}(primal, ::NoTangent)`
+# constructor visits a nested Tuple field.
+@inline function _inner_dual_for_field(
+    ::Type{V}, primal::Tuple, ::NoTangent
+) where {V<:Tuple}
+    return ntuple(
+        i -> _inner_dual_for_field(fieldtype(V, i), primal[i], NoTangent()),
+        Val(fieldcount(V)),
+    )
+end
+@inline function _inner_dual_for_field(
+    ::Type{V}, primal::NamedTuple, ::NoTangent
+) where {names,V<:NamedTuple{names}}
+    InnerTup = V.parameters[2]
+    inner_tup = ntuple(
+        i -> _inner_dual_for_field(fieldtype(InnerTup, i), values(primal)[i], NoTangent()),
+        Val(fieldcount(V)),
+    )
+    return NamedTuple{names}(inner_tup)
+end
 # NamedTuple-typed nested fields recurse element-wise like Tuple.
 @inline function _inner_dual_for_field(
     ::Type{V}, primal::NamedTuple, tangent::NamedTuple
@@ -331,10 +352,16 @@ end
 
 # Tuple-primal with `NoTangent` (whole-tuple) tangent — common when a `Tuple`
 # slot holds non-differentiable elements (e.g. `Tuple{Int}`). Build the inner
-# tuple element-wise with `NoTangent` for each field.
+# tuple element-wise with `NoTangent` for each field. Use
+# `_inner_dual_for_field` so nested Tuple fields (e.g. `Tuple{Tuple{}, Int}`)
+# recurse properly instead of trying to call `Tuple{}(::Tuple, ::NoTangent)`
+# which has no method.
 @inline function Lifted{P,N}(primal::P, ::NoTangent) where {P<:Tuple,N}
     InnerT = dual_type(Val(N), P)
-    inner = ntuple(i -> fieldtype(InnerT, i)(primal[i], NoTangent()), Val(fieldcount(P)))
+    inner = ntuple(
+        i -> _inner_dual_for_field(fieldtype(InnerT, i), primal[i], NoTangent()),
+        Val(fieldcount(P)),
+    )
     return Lifted{P,N,InnerT}(inner)
 end
 

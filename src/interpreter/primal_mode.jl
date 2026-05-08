@@ -443,10 +443,12 @@ end
     if _is_lifted_width(width)
         # OC boundary: at width=Val(N>=1), the OC argtypes are
         # `Lifted{P_i, N, V_i}` (per `lifted_type`). Wrap each bare slot value
-        # before invoking the OC, and unwrap the `Lifted` return so the
-        # caller still sees a bare slot value.
+        # before invoking the OC. The OC returns `Lifted{P_out, N, V_out}` —
+        # downstream callers (IR-emit's intermediate SSA values, public
+        # `value_and_derivative!!` via `_ndual_output_to_width1`) handle the
+        # `Lifted` wrapper through their own Lifted-aware overloads.
         lifted_args = _wrap_oc_args(width, primal_sig, flat_args, isva, Val(nargs))
-        return _unlift(fwd.lifted_oc(lifted_args...))
+        return fwd.lifted_oc(lifted_args...)
     else
         # Val{0} primal-passthrough — OC argtypes are bare primal `P_i`.
         return fwd.lifted_oc(flat_args...)
@@ -935,24 +937,12 @@ function modify_primal_stmts!(
             )
         end
 
-        if _is_lifted_width(info.width)
-            primal_retype = let t = CC.widenconst(get_ir(info.primal_ir, ssa, :type))
-                if contains_bottom_type(t) || Base.has_free_typevars(t)
-                    Any
-                else
-                    t
-                end
-            end
-            rule_call_inst = new_inst(Expr(:call, rule_callable, dual_args...))
-            rule_result_ssa = CC.insert_node!(lifted_ir, ssa, rule_call_inst, ATTACH_BEFORE)
-            replace_call!(
-                lifted_ir,
-                ssa,
-                Expr(:call, _wrap_rule_result, primal_retype, info.width, rule_result_ssa),
-            )
-        else
-            replace_call!(lifted_ir, ssa, Expr(:call, rule_callable, dual_args...))
-        end
+        # Every primitive `frule!!` and DerivedPrimal/LazyPrimal/DynamicPrimal
+        # all return `Lifted` directly. The generic Lifted-aware adapter
+        # (which delegates to bare bodies) also internally wraps via
+        # `_wrap_rule_result` before returning. So no IR-emit-level wrap is
+        # needed; the SSA value flowing out is already canonical.
+        replace_call!(lifted_ir, ssa, Expr(:call, rule_callable, dual_args...))
     elseif isexpr(stmt, :boundscheck)
         # Keep the boundscheck, but wrap it as a slot value (Dual at legacy
         # width, Lifted at Val(N)).
