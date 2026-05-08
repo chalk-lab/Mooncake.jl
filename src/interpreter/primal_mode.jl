@@ -194,6 +194,30 @@ non-migrated rule on the legacy bare path, so partial migration is safe.
     end
 end
 
+# Bare frules for tuple-returning rules (e.g. `__vec_to_tuple`) often produce
+# `Dual{Tuple{P_i...}, Tuple{T_i...}}`. The canonical V for `Lifted{<:Tuple, N}`
+# is the element-wise `Tuple{V_i...}` (never `Dual{Tuple, Tuple}`). Build the
+# inner V element-wise from the per-field `(p_i, t_i)` pairs, dispatching each
+# through the inner type's own ctor (NDual / Vector{NDual} / Dual / etc.) via
+# `_inner_dual_for_field`. Uses the runtime primal type for per-field
+# canonicalisation so this works even when `P` carries `Type{Float64}` etc.
+@inline function _wrap_rule_result(
+    ::Type{P}, ::Val{N}, x::Dual{<:Tuple,<:Tuple}
+) where {P<:Tuple,N}
+    p_tup = primal(x)
+    t_tup = tangent(x)
+    P_out = _typeof(p_tup)
+    inner = ntuple(Val(length(p_tup))) do i
+        Vi = dual_type(Val(N), fieldtype(P_out, i))
+        if Vi isa DataType && isconcretetype(Vi)
+            return _inner_dual_for_field(Vi, p_tup[i], t_tup[i])
+        else
+            return Dual(p_tup[i], t_tup[i])
+        end
+    end
+    return Lifted{P_out,N}(inner)
+end
+
 @inline function _wrap_rule_result(::Type{P}, w::Val{N}, x::Tuple) where {P<:Tuple,N}
     P_out = _resolve_concrete_P(P, x)
     if isconcretetype(P_out) && P_out <: Tuple && fieldcount(P_out) == length(x)
@@ -459,6 +483,17 @@ end
 @inline _wrap_arg(::Val{N}, ::Type{P}, x) where {N,P} = Lifted{P,N}(x)
 @inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{P}) where {N,P}
     return Lifted{P,N}(primal(x), tangent(x))
+end
+# `__unflatten_dual_varargs` packs a Vararg slot as `Dual{Tuple{...}, Tuple{...}}`
+# (legacy bare path). For the lifted OC slot, route through the same element-wise
+# `_wrap_rule_result` path so the inner V is `Tuple{V_i...}` — the canonical
+# shape for `Lifted{<:Tuple, N}`. Without this, the V stays as `Dual{Tuple,
+# Tuple}` and `primal(::Lifted{<:Tuple})` (which uses `map(primal, d.value)`)
+# fails on the inner Dual.
+@inline function _wrap_arg(
+    w::Val{N}, ::Type{P}, x::Dual{<:Tuple,<:Tuple}
+) where {N,P<:Tuple}
+    return _wrap_rule_result(P, w, x)
 end
 # Passthrough for callers that already hold the slot type (option (c) of the
 # boundary contract: caller built a `Lifted{P, N}` directly via `zero_lifted`

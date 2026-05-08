@@ -195,6 +195,15 @@ end
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Mixed dispatch fallback: Tuple/NamedTuple primal arrives as a `Lifted` slot
+# while the function/index arrive as bare `Dual` (e.g. via the IR-emit constant
+# path that uses `zero_dual` rather than `zero_lifted`). Unlift the slot to
+# its bare inner V and delegate to the bare body.
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)}, x::Mooncake.Lifted{P}, ::Dual{Val{f}}
+) where {P<:Union{Tuple,NamedTuple},f}
+    return getfield(Mooncake._unlift(x), f)
+end
 
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
