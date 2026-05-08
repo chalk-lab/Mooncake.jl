@@ -1023,6 +1023,12 @@ end
     function frule!!(f::Dual{typeof(Core._svec_len)}, v)
         return zero_dual(Core._svec_len(primal(v)))
     end
+    @inline function frule!!(
+        f::Mooncake.Lifted{typeof(Core._svec_len),N}, v::Mooncake.Lifted
+    ) where {N}
+        return zero_lifted(Val(N), Core._svec_len(primal(v)))
+    end
+    @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core._svec_len),Any}}) = true
     function rrule!!(f::CoDual{typeof(Core._svec_len)}, v)
         return zero_fcodual(Core._svec_len(primal(v))), NoPullback(f, v)
     end
@@ -1032,6 +1038,13 @@ end
 function frule!!(::Dual{typeof(Core._typevar)}, args...)
     return zero_dual(Core._typevar(map(primal, args)...))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Core._typevar),N}, args::Vararg{Mooncake.Lifted,M}
+) where {N,M}
+    bare_args = ntuple(i -> primal(args[i]), Val(M))
+    return zero_lifted(Val(N), Core._typevar(bare_args...))
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core._typevar),Vararg}}) = true
 function rrule!!(f::CoDual{typeof(Core._typevar)}, args...)
     return zero_fcodual(Core._typevar(map(primal, args)...)), NoPullback(f, args...)
 end
@@ -1039,6 +1052,13 @@ end
 function frule!!(::Dual{typeof(Core.apply_type)}, args...)
     return zero_dual(Core.apply_type(map(primal, args)...))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Core.apply_type),N}, args::Vararg{Mooncake.Lifted,M}
+) where {N,M}
+    bare_args = ntuple(i -> primal(args[i]), Val(M))
+    return zero_lifted(Val(N), Core.apply_type(bare_args...))
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.apply_type),Vararg}}) = true
 function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     T = Core.apply_type(tuple_map(primal, args)...)
     return CoDual{_typeof(T),NoFData}(T, NoFData()), NoPullback(f, args...)
@@ -1050,6 +1070,19 @@ function frule!!(::Dual{typeof(compilerbarrier)}, setting::Dual{Symbol}, v::Dual
         compilerbarrier(primal(setting), tangent(v)),
     )
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(compilerbarrier),N},
+    setting::Mooncake.Lifted{Symbol},
+    v::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f), Mooncake._unlift(setting), Mooncake._unlift(v)
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(compilerbarrier),Symbol,Any}}) =
+    true
 function rrule!!(::CoDual{typeof(compilerbarrier)}, setting::CoDual{Symbol}, val::CoDual)
     compilerbarrier_pb(dout) = NoRData(), NoRData(), dout
     return compilerbarrier(setting.x, val), compilerbarrier_pb
@@ -1063,6 +1096,22 @@ function frule!!(::Dual{typeof(Core.ifelse)}, cond::Dual{Bool}, a::Dual, b::Dual
     _cond = primal(cond)
     return Dual(ifelse(_cond, primal(a), primal(b)), ifelse(_cond, tangent(a), tangent(b)))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Core.ifelse),N},
+    cond::Mooncake.Lifted{Bool},
+    a::Mooncake.Lifted,
+    b::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(cond),
+        Mooncake._unlift(a),
+        Mooncake._unlift(b),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.ifelse),Bool,Any,Any}}) = true
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     _cond = primal(cond)
     p_a = primal(a)
