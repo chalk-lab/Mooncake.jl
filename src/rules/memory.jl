@@ -464,6 +464,21 @@ end
     dy = memoryrefget(tangent(x), _val(ordering), _val(bc))
     return Dual(y, dy)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lmemoryrefget),N},
+    x::Mooncake.Lifted{<:MemoryRef},
+    _ordering::Mooncake.Lifted{<:Val},
+    _boundscheck::Mooncake.Lifted{<:Val},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(_ordering),
+        Mooncake._unlift(_boundscheck),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
     x::CoDual{<:MemoryRef},
