@@ -76,6 +76,20 @@ function frule!!(
     end
     return zero_dual(nothing)
 end
+# Lifted-typed overload: delegate to the bare body via `_unlift`. The
+# `worker_rules` are built via `build_frule(interp, Tuple{F, Int})` and
+# specialise on the original Dual call shape, so we re-wrap the bare result.
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Base.Threads.threading_run),N},
+    fun::Mooncake.Lifted{F},
+    static::Mooncake.Lifted{Bool},
+) where {N,F}
+    bare_result = frule!!(
+        Mooncake._unlift(f), Mooncake._unlift(fun), Mooncake._unlift(static)
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(Base.Threads.threading_run),Any,Bool}}
 ) = true
