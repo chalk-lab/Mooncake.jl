@@ -1050,19 +1050,14 @@ end
 
 const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 
-function frule!!(
-    f::Dual{typeof(lgetfield)}, x::Dual{<:_MemTypes,<:_MemTypes}, name::Dual{<:Val}
-)
-    return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
-end
+# 3-arg `lgetfield(::_MemTypes, ::Val)` defaults `order` to `:not_atomic` and
+# delegates to the 4-arg `Lifted` body below. Bare-Dual body deleted under #31.
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{<:_MemTypes},
     name::Mooncake.Lifted{<:Val},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name))
-    P_out = _typeof(__get_primal(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return frule!!(f, x, name, Mooncake.zero_lifted(Val(N), Val(:not_atomic)))
 end
 function rrule!!(
     f::CoDual{typeof(lgetfield)}, x::CoDual{<:_MemTypes,<:_MemTypes}, name::CoDual{<:Val}

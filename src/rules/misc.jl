@@ -56,18 +56,8 @@ end
 # `mightalias` on primals sidesteps the broken codegen path.
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(Base.unalias),Any,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.unalias),Any,Any}}) = true
-function frule!!(::Dual{typeof(Base.unalias)}, dest, src)
-    d = dest isa Dual ? primal(dest) : dest
-    s = src isa Dual ? primal(src) : src
-    if d isa AbstractArray && s isa AbstractArray && Base.mightalias(d, s)
-        return src isa Dual ? Dual(copy(primal(src)), copy(tangent(src))) : copy(src)
-    end
-    return src
-end
-# Lifted-aware overload — avoids the bare body's runtime `isa Dual` checks
-# by handling the slot shape directly. The `d` / `s` extraction uses
-# `primal(::Lifted)` (no NDual broadcast through `mightalias`'s codegen
-# path that the bare-via-generic-adapter route triggers).
+# Bare-Dual body deleted under task #31. The Lifted-typed body below handles
+# the slot shape directly.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.unalias),N}, dest::Mooncake.Lifted, src::Mooncake.Lifted
 ) where {N}
@@ -130,9 +120,6 @@ stop_gradient(x) = x
 
 @is_primitive MinimalCtx Tuple{typeof(stop_gradient),Any}
 
-function frule!!(::Dual{typeof(stop_gradient)}, x::Dual)
-    return zero_dual(primal(x))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(stop_gradient),N}, x::Mooncake.Lifted
 ) where {N}
@@ -170,9 +157,11 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any}}) = true
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any,Any}}) = true
-@inline function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}
-) where {P,T<:StandardTangentType,f}
+
+# `lgetfield` implementation kernels (no `Dual{typeof(lgetfield)}` arg). The
+# `Lifted`-typed body below dispatches the runtime inner V (`Dual{P, T}`,
+# `Tuple`, `NamedTuple`) into the matching kernel.
+@inline function _lgetfield_impl(x::Dual{P,T}, ::Val{f}) where {P,T<:StandardTangentType,f}
     primal_field = getfield(primal(x), f)
     if tangent_type(P) === NoTangent
         return uninit_dual(primal_field)
@@ -181,28 +170,25 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     end
 end
 # Bare Tuple/NamedTuple with NDual elements — tangent info lives inside each element.
+@inline _lgetfield_impl(x::T, ::Val{f}) where {T<:Union{Tuple,NamedTuple},f} = getfield(
+    x, f
+)
+
 @inline function frule!!(
-    ::Dual{typeof(lgetfield)}, x::T, ::Dual{Val{f}}
-) where {T<:Union{Tuple,NamedTuple},f}
-    return getfield(x, f)
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted,
-    name::Mooncake.Lifted{<:Val},
+    ::Mooncake.Lifted{typeof(lgetfield),N}, x::Mooncake.Lifted, name::Mooncake.Lifted{<:Val}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name))
+    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 # Mixed dispatch fallback: Tuple/NamedTuple primal arrives as a `Lifted` slot
 # while the function/index arrive as bare `Dual` (e.g. via the IR-emit constant
 # path that uses `zero_dual` rather than `zero_lifted`). Unlift the slot to
-# its bare inner V and delegate to the bare body.
+# its bare inner V and delegate to the implementation kernel.
 @inline function frule!!(
     ::Dual{typeof(lgetfield)}, x::Mooncake.Lifted{P}, ::Dual{Val{f}}
 ) where {P<:Union{Tuple,NamedTuple},f}
-    return getfield(Mooncake._unlift(x), f)
+    return _lgetfield_impl(Mooncake._unlift(x), Val(f))
 end
 
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
@@ -264,11 +250,9 @@ end
 # code duplication, but it wound up not being any cleaner than this copy + pasted version.
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
-@inline function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{P,<:StandardTangentType},
-    ::Dual{Val{f}},
-    ::Dual{Val{order}},
+# Implementation kernels for `lgetfield(x, Val(f), Val(order))`.
+@inline function _lgetfield_impl(
+    x::Dual{P,<:StandardTangentType}, ::Val{f}, ::Val{order}
 ) where {P,f,order}
     primal_field = getfield(primal(x), f, order)
     if tangent_type(P) === NoTangent
@@ -277,23 +261,17 @@ end
         return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
     end
 end
+@inline _lgetfield_impl(x::T, ::Val{f}, ::Val{order}) where {T<:Union{Tuple,NamedTuple},f,order} = getfield(
+    x, f, order
+)
+
 @inline function frule!!(
-    ::Dual{typeof(lgetfield)}, x::T, ::Dual{Val{f}}, ::Dual{Val{order}}
-) where {T<:Union{Tuple,NamedTuple},f,order}
-    return getfield(x, f, order)
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(lgetfield),N},
+    ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted,
     name::Mooncake.Lifted{<:Val},
     order::Mooncake.Lifted{<:Val},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(x),
-        Mooncake._unlift(name),
-        Mooncake._unlift(order),
-    )
+    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name), primal(order))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end

@@ -504,6 +504,20 @@ end
 # is if the user passed the slot directly.
 @inline _wrap_arg(::Val{N}, ::Type{P}, x::Lifted{P,N}) where {N,P} = x
 
+# Re-wrap: `x` is already a `Lifted{P_actual, N, V}` but the OC slot expects
+# `Lifted{P_target, N}` with `P_target ≠ P_actual` (e.g. an upstream rule's
+# inferred primal type uses `Type{Float64}` while the runtime value's primal
+# type is `DataType`). The inner `V` is still the canonical slot shape, so
+# unlift to `V` and re-wrap with `P_target` — never produce a nested
+# `Lifted{P_target, N, Lifted{P_actual, N, V}}`, which would violate the
+# AGENTS.md "Lifted never nests" invariant and break downstream `_unlift`
+# unwrappers (e.g. `_lgetfield_impl(::Tuple, ::Val)`).
+@inline _wrap_arg(::Val{N}, ::Type{P_target}, x::Lifted{P_actual,N}) where {N,P_target,P_actual} = Lifted{
+    P_target,N
+}(
+    _unlift(x)
+)
+
 # On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
 # asserting the return type, which is encoded in the MistyClosure type parameter.
 @static if VERSION < v"1.11-"
