@@ -653,6 +653,23 @@ end
     memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
     return value
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lmemoryrefset!),N},
+    x::Mooncake.Lifted{<:MemoryRef},
+    value::Mooncake.Lifted,
+    ord::Mooncake.Lifted{<:Val},
+    bc::Mooncake.Lifted{<:Val},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(value),
+        Mooncake._unlift(ord),
+        Mooncake._unlift(bc),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefset!)},
     x::CoDual{<:MemoryRef{P},<:MemoryRef{V}},
@@ -720,6 +737,26 @@ end
         zero_dual(Val(primal(boundscheck))),
     )
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(memoryrefset!),N},
+    x::Mooncake.Lifted{<:MemoryRef},
+    value::Mooncake.Lifted,
+    ordering::Mooncake.Lifted{Symbol},
+    boundscheck::Mooncake.Lifted{Bool},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(value),
+        Mooncake._unlift(ordering),
+        Mooncake._unlift(boundscheck),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(memoryrefset!),<:MemoryRef,Any,Symbol,Bool}}
+) = true
 @inline function rrule!!(
     ::CoDual{typeof(memoryrefset!)},
     x::CoDual{<:MemoryRef{P},<:MemoryRef{V}},
