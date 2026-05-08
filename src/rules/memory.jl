@@ -921,6 +921,21 @@ function frule!!(
     dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
     return Dual(y, dy)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{<:Memory},
+    name::Mooncake.Lifted{<:Val},
+    order::Mooncake.Lifted{<:Val},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(name),
+        Mooncake._unlift(order),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Memory,<:Memory},
@@ -944,6 +959,21 @@ function frule!!(
     dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
     return Dual(y, dy)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{<:MemoryRef},
+    name::Mooncake.Lifted{<:Val},
+    order::Mooncake.Lifted{<:Val},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(name),
+        Mooncake._unlift(order),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:MemoryRef,<:MemoryRef},
@@ -966,6 +996,21 @@ function frule!!(
     wants_size = name === 2 || name === :size
     dy = wants_size ? NoTangent() : tangent(x).ref
     return Dual(y, dy)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{<:Array},
+    name::Mooncake.Lifted{<:Val},
+    order::Mooncake.Lifted{<:Val},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(name),
+        Mooncake._unlift(order),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
