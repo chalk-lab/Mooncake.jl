@@ -186,6 +186,15 @@ end
 ) where {T<:Union{Tuple,NamedTuple},f}
     return getfield(x, f)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted,
+    name::Mooncake.Lifted{<:Val},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
@@ -264,6 +273,21 @@ end
 ) where {T<:Union{Tuple,NamedTuple},f,order}
     return getfield(x, f, order)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted,
+    name::Mooncake.Lifted{<:Val},
+    order::Mooncake.Lifted{<:Val},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(name),
+        Mooncake._unlift(order),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P,F<:StandardFDataType,f,order}
@@ -304,6 +328,21 @@ end
     },
 ) where {P,T<:StandardTangentType}
     return lsetfield_frule(value, name, _ndual_to_dual_lane1(x))
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lsetfield!),N},
+    value::Mooncake.Lifted,
+    name::Mooncake.Lifted,
+    x::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(value),
+        Mooncake._unlift(name),
+        Mooncake._unlift(x),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline _ndual_to_dual_lane1(x::NDual) = Dual(primal(x), x.partials[1])
 @inline _ndual_to_dual_lane1(x::Complex{<:NDual}) = Dual(
