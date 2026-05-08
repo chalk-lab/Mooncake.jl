@@ -17,13 +17,9 @@
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
-function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
-    return Dual(sum(primal(x)), sum(tangent(x)))
-end
-frule!!(::Dual{typeof(sum)}, x::Array{<:_HasNDual}) = sum(x)
-# Lifted-typed: canonical V is `Array{NDual{P, N}}` for `Array{P<:IEEEFloat}`.
-# `sum(::Array{<:NDual})` returns a single NDual that already encodes the
-# tangent across the N directions.
+# Bare-Dual `frule!!(::Dual{sum}, ::Dual{<:Array})` body deleted under task #31.
+# The Lifted-typed body below is the only entry point; `sum(::Array{<:NDual})`
+# returns a single NDual that already encodes the tangent across all directions.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N}, x::Mooncake.Lifted{<:Array{P},N}
 ) where {N,P<:IEEEFloat}
@@ -41,14 +37,9 @@ end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
-function frule!!(
-    ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
-) where {P<:IEEEFloat}
-    return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
-end
-function frule!!(::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Array{<:_HasNDual})
-    return sum(abs2, x)
-end
+# Bare-Dual `frule!!(::Dual{sum}, ::Dual{abs2}, ::Dual{<:Array})` body deleted
+# under task #31. `sum(abs2, ::Array{<:NDual})` carries the derivative through
+# `_unlift`.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N},
     ::Mooncake.Lifted{typeof(abs2),N},
