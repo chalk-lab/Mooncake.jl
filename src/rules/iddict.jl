@@ -122,19 +122,16 @@ tangent(f::IdDict, ::NoRData) = f
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.rehash!),<:IdDict,Any}}) = true
-function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
-    Base.rehash!(primal(d), primal(newsz))
-    Base.rehash!(tangent(d), primal(newsz))
-    return d
-end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Base.rehash!),N},
+    ::Mooncake.Lifted{typeof(Base.rehash!),N},
     d::Mooncake.Lifted{<:IdDict},
     newsz::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(d), Mooncake._unlift(newsz))
-    P_out = _typeof(__get_primal(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    inner_d = Mooncake._unlift(d)
+    inner_newsz = Mooncake._unlift(newsz)
+    Base.rehash!(primal(inner_d), primal(inner_newsz))
+    Base.rehash!(tangent(inner_d), primal(inner_newsz))
+    return d
 end
 function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoDual)
     Base.rehash!(primal(d), primal(newsz))
@@ -145,33 +142,28 @@ end
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(setindex!),<:IdDict,Any,Any}}) =
     true
-function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
+# Implementation kernels for `setindex!(::IdDict, val, key)`. The Lifted body
+# below dispatches on the runtime val V (`Dual` or `NDual` for IEEEFloat).
+@inline function _setindex_iddict!(d::Dual{IdDict{K,V}}, val::Dual, key) where {K,V}
     setindex!(primal(d), primal(val), primal(key))
     setindex!(tangent(d), tangent(val), primal(key))
-    return d
+    return nothing
 end
-# NDual variant: at width 1 the IEEEFloat val slot lifts to NDual{P,1}.
-@inline function frule!!(
-    ::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val::Mooncake.Nfwd.NDual{P,1}, key
+@inline function _setindex_iddict!(
+    d::Dual{IdDict{K,V}}, val::Mooncake.Nfwd.NDual{P,1}, key
 ) where {K,V<:IEEEFloat,P<:IEEEFloat}
     setindex!(primal(d), val.value, primal(key))
     setindex!(tangent(d), val.partials[1], primal(key))
-    return d
+    return nothing
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(setindex!),N},
+    ::Mooncake.Lifted{typeof(setindex!),N},
     d::Mooncake.Lifted{<:IdDict},
     val::Mooncake.Lifted,
     key::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(d),
-        Mooncake._unlift(val),
-        Mooncake._unlift(key),
-    )
-    P_out = _typeof(__get_primal(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    _setindex_iddict!(Mooncake._unlift(d), Mooncake._unlift(val), Mooncake._unlift(key))
+    return d
 end
 function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) where {K,V}
     k = primal(key)
@@ -207,32 +199,28 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(get),<:IdDict,Any,Any}}) = true
-function frule!!(
-    ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Dual
-) where {K,V}
+# Implementation kernels for `get(::IdDict, key, default)`. Lifted body
+# dispatches on the runtime default V.
+@inline function _get_iddict(d::Dual{IdDict{K,V}}, key::Dual, default::Dual) where {K,V}
     x = get(primal(d), primal(key), primal(default))
     dx = get(tangent(d), primal(key), tangent(default))
     return Dual(x, dx)
 end
-# NDual variant: width-1 IEEEFloat default slot.
-@inline function frule!!(
-    ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Mooncake.Nfwd.NDual{P,1}
+@inline function _get_iddict(
+    d::Dual{IdDict{K,V}}, key::Dual, default::Mooncake.Nfwd.NDual{P,1}
 ) where {K,V<:IEEEFloat,P<:IEEEFloat}
     x = get(primal(d), primal(key), default.value)
     dx = get(tangent(d), primal(key), default.partials[1])
     return Dual(x, dx)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(get),N},
+    ::Mooncake.Lifted{typeof(get),N},
     d::Mooncake.Lifted{<:IdDict},
     key::Mooncake.Lifted,
     default::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(d),
-        Mooncake._unlift(key),
-        Mooncake._unlift(default),
+    bare_result = _get_iddict(
+        Mooncake._unlift(d), Mooncake._unlift(key), Mooncake._unlift(default)
     )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -261,15 +249,17 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getindex),<:IdDict,Any}}) = true
-function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
-    return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
-end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(getindex),N},
+    ::Mooncake.Lifted{typeof(getindex),N},
     d::Mooncake.Lifted{<:IdDict},
     key::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(d), Mooncake._unlift(key))
+    inner_d = Mooncake._unlift(d)
+    inner_key = Mooncake._unlift(key)
+    bare_result = Dual(
+        getindex(primal(inner_d), primal(inner_key)),
+        getindex(tangent(inner_d), primal(inner_key)),
+    )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
