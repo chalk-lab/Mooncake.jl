@@ -134,6 +134,21 @@ function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:
     Base._deleteend!(tangent(a), primal(d))
     return zero_dual(nothing)
 end
+@inline function frule!!(
+    ::Dual{typeof(Base._deleteend!)}, a::AbstractVector{<:NDual}, d::Dual{<:Integer}
+)
+    Base._deleteend!(a, primal(d))
+    return zero_dual(nothing)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Base._deleteend!),N},
+    a::Mooncake.Lifted{<:Vector},
+    d::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(d))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
@@ -173,6 +188,30 @@ function frule!!(
     Base._deleteat!(tangent(a), primal(i), primal(delta))
     return zero_dual(nothing)
 end
+@inline function frule!!(
+    ::Dual{typeof(Base._deleteat!)},
+    a::AbstractVector{<:NDual},
+    i::Dual{<:Integer},
+    delta::Dual{<:Integer},
+)
+    Base._deleteat!(a, primal(i), primal(delta))
+    return zero_dual(nothing)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Base._deleteat!),N},
+    a::Mooncake.Lifted{<:Vector},
+    i::Mooncake.Lifted{<:Integer},
+    delta::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(a),
+        Mooncake._unlift(i),
+        Mooncake._unlift(delta),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(Base._deleteat!)},
     _a::CoDual{<:Vector},
@@ -208,6 +247,21 @@ function frule!!(
     Base._growbeg!(tangent(a), primal(d))
     return zero_dual(nothing)
 end
+@inline function frule!!(
+    ::Dual{typeof(Base._growbeg!)}, a::AbstractVector{<:NDual}, d::Dual{<:Integer}
+)
+    Base._growbeg!(a, primal(d))
+    return zero_dual(nothing)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Base._growbeg!),N},
+    a::Mooncake.Lifted{<:Vector},
+    d::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(d))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
 ) where {T}
@@ -229,6 +283,21 @@ function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:In
     Base._growend!(primal(a), primal(d))
     Base._growend!(tangent(a), primal(d))
     return zero_dual(nothing)
+end
+@inline function frule!!(
+    ::Dual{typeof(Base._growend!)}, a::AbstractVector{<:NDual}, d::Dual{<:Integer}
+)
+    Base._growend!(a, primal(d))
+    return zero_dual(nothing)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Base._growend!),N},
+    a::Mooncake.Lifted{<:Vector},
+    d::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(d))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -253,6 +322,27 @@ function frule!!(
     Base._growat!(primal(a), primal(i), primal(d))
     Base._growat!(tangent(a), primal(i), primal(d))
     return zero_dual(nothing)
+end
+@inline function frule!!(
+    ::Dual{typeof(Base._growat!)},
+    a::AbstractVector{<:NDual},
+    i::Dual{<:Integer},
+    d::Dual{<:Integer},
+)
+    Base._growat!(a, primal(i), primal(d))
+    return zero_dual(nothing)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Base._growat!),N},
+    a::Mooncake.Lifted{<:Vector},
+    i::Mooncake.Lifted{<:Integer},
+    d::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(d)
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base._growat!)},
@@ -281,6 +371,21 @@ function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Intege
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
     return x
+end
+@inline function frule!!(
+    ::Dual{typeof(sizehint!)}, x::AbstractVector{<:NDual}, sz::Dual{<:Integer}
+)
+    sizehint!(x, primal(sz))
+    return x
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(sizehint!),N},
+    x::Mooncake.Lifted{<:Vector},
+    sz::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(sz))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
     sizehint!(primal(x), primal(sz))
