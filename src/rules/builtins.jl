@@ -1293,6 +1293,21 @@ function frule!!(::Dual{typeof(setfield!)}, value::Dual, name::Dual, x::Dual)
     literal_name = zero_dual(Val(primal(name)))
     return frule!!(zero_dual(lsetfield!), value, literal_name, x)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(setfield!),N},
+    value::Mooncake.Lifted,
+    name::Mooncake.Lifted,
+    x::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(value),
+        Mooncake._unlift(name),
+        Mooncake._unlift(x),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 # Post-kill width=Val(1): NDual-shaped value-arg forwarding to lsetfield!.
 @inline function frule!!(
     ::Dual{typeof(setfield!)},
@@ -1316,6 +1331,12 @@ end
 # swapfield!
 
 frule!!(::Dual{typeof(throw)}, args::Dual...) = throw(map(primal, args)...)
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(throw),N}, args::Vararg{Mooncake.Lifted,M}
+) where {N,M}
+    throw(map(primal, args)...)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(throw),Vararg}}) = true
 function rrule!!(::CoDual{typeof(throw)}, args::CoDual...)
     throw(map(primal, args)...), _ -> (NoRData(), map(_ -> NoRData(), args)...)
 end
@@ -1325,6 +1346,14 @@ end
     frule!!(::Dual{typeof(Core.throw_methoderror)}, args::Dual...) = Core.throw_methoderror(
         map(primal, args)...
     )
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Core.throw_methoderror),N}, args::Vararg{Mooncake.Lifted,M}
+    ) where {N,M}
+        Core.throw_methoderror(map(primal, args)...)
+    end
+    @inline Mooncake._is_lifted_aware(
+        ::Type{<:Tuple{typeof(Core.throw_methoderror),Vararg}}
+    ) = true
     function rrule!!(::CoDual{typeof(Core.throw_methoderror)}, args::CoDual...)
         return (
             Core.throw_methoderror(map(primal, args)...),
@@ -1336,6 +1365,13 @@ end
 function frule!!(::Dual{typeof(Core.throw_inexacterror)}, args::Dual...)
     Core.throw_inexacterror(map(primal, args)...)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Core.throw_inexacterror),N}, args::Vararg{Mooncake.Lifted,M}
+) where {N,M}
+    Core.throw_inexacterror(map(primal, args)...)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.throw_inexacterror),Vararg}}) =
+    true
 function rrule!!(::CoDual{typeof(Core.throw_inexacterror)}, args::CoDual...)
     return (
         Core.throw_inexacterror(map(primal, args)...),
