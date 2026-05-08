@@ -290,6 +290,21 @@ function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
     atomic_pointerset(tangent(p), tangent(x), primal(order))
     return p
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(atomic_pointerset),N},
+    p::Mooncake.Lifted,
+    x::Mooncake.Lifted,
+    order::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(p),
+        Mooncake._unlift(x),
+        Mooncake._unlift(order),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
@@ -331,6 +346,13 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
         dv = NoTangent()
     end
     return Dual(v, dv)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(bitcast),N}, t::Mooncake.Lifted{Type{T}}, x::Mooncake.Lifted
+) where {N,T}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(t), Mooncake._unlift(x))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
@@ -391,6 +413,15 @@ end
 function frule!!(::Dual{typeof(__cglobal)}, args...)
     return Mooncake.uninit_dual(__cglobal(map(primal, args)...))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(__cglobal),N}, args::Vararg{Mooncake.Lifted,M}
+) where {N,M}
+    bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
+    bare_result = frule!!(Mooncake._unlift(f), bare_args...)
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(__cglobal),Vararg}}) = true
 function rrule!!(f::CoDual{typeof(__cglobal)}, args...)
     return Mooncake.uninit_fcodual(__cglobal(map(primal, args)...)), NoPullback(f, args...)
 end
