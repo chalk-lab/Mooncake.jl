@@ -279,6 +279,23 @@ function frule!!(
     end
     return zero_dual(y)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(_foreigncall_),N},
+    ::Mooncake.Lifted{Val{:jl_array_isassigned}},
+    ::Mooncake.Lifted{RT},
+    ::Mooncake.Lifted{AT},
+    ::Mooncake.Lifted{nreq},
+    ::Mooncake.Lifted{calling_convention},
+    a::Mooncake.Lifted{<:Array},
+    ii::Mooncake.Lifted{UInt},
+    args::Vararg{Mooncake.Lifted,M},
+) where {N,RT,AT,nreq,calling_convention,M}
+    arr = primal(a)
+    GC.@preserve args begin
+        y = ccall(:jl_array_isassigned, Cint, (Any, UInt), arr, primal(ii))
+    end
+    return zero_lifted(Val(N), y)
+end
 
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -309,6 +326,23 @@ function frule!!(
 )
     return zero_dual(ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b)))
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(_foreigncall_),N},
+    ::Mooncake.Lifted{Val{:jl_type_unionall}},
+    ::Mooncake.Lifted{Val{Any}},
+    ::Mooncake.Lifted{Tuple{Val{Any},Val{Any}}},
+    ::Mooncake.Lifted{Val{0}},
+    ::Mooncake.Lifted{Val{:ccall}},
+    a::Mooncake.Lifted,
+    b::Mooncake.Lifted,
+) where {N}
+    return zero_lifted(
+        Val(N), ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b))
+    )
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_type_unionall},Vararg}}
+) = true
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_type_unionall}},
@@ -328,6 +362,12 @@ end
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(deepcopy),Any}}) = true
 frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(deepcopy),N}, x::Mooncake.Lifted
+) where {N}
+    inner = Mooncake._unlift(x)
+    return Mooncake.Lifted{_typeof(primal(inner)),N}(deepcopy(inner))
+end
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     fdx = tangent(x)
     dx = zero_rdata(primal(x))
@@ -356,6 +396,15 @@ function frule!!(
             Val(:jl_string_ptr), tuple_map(x -> x isa Dual ? primal(x) : x, args)...
         ),
     )
+end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(_foreigncall_),N},
+    ::Mooncake.Lifted{Val{:jl_string_ptr}},
+    args::Vararg{Mooncake.Lifted,M},
+) where {N,M}
+    bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
+    primal_args = tuple_map(x -> x isa Dual ? primal(x) : x, bare_args)
+    return zero_lifted(Val(N), _foreigncall_(Val(:jl_string_ptr), primal_args...))
 end
 
 function rrule!!(
