@@ -372,6 +372,21 @@ function frule!!(
     end
     return NDual{T,1}(y, (dy / 2y,))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.nrm2),N},
+    n::Mooncake.Lifted{<:Integer},
+    X_dX::Mooncake.Lifted,
+    incx::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(n),
+        Mooncake._unlift(X_dX),
+        Mooncake._unlift(incx),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
     n::CoDual{<:Integer},
@@ -419,6 +434,23 @@ function frule!!(
     BLAS.scal!(n, a, X, incx)
     _arr_writeback!(X_dX, X, dX)
     return X_dX
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.scal!),N},
+    _n::Mooncake.Lifted{<:Integer},
+    a_da::Mooncake.Lifted{P},
+    X_dX::Mooncake.Lifted{<:AbstractArray{P}},
+    _incx::Mooncake.Lifted{<:Integer},
+) where {N,P<:BlasFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(_n),
+        Mooncake._unlift(a_da),
+        Mooncake._unlift(X_dX),
+        Mooncake._unlift(_incx),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.scal!)},
@@ -487,6 +519,27 @@ end
 
     _arr_writeback!(y_dy, y, dy)
     return y_dy
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.gemv!),N},
+    tA::Mooncake.Lifted{Char},
+    alpha::Mooncake.Lifted{P},
+    A_dA::Mooncake.Lifted{<:AbstractVecOrMat{P}},
+    x_dx::Mooncake.Lifted{<:AbstractArray{P}},
+    beta::Mooncake.Lifted{P},
+    y_dy::Mooncake.Lifted{<:AbstractArray{P}},
+) where {N,P<:BlasFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(tA),
+        Mooncake._unlift(alpha),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(x_dx),
+        Mooncake._unlift(beta),
+        Mooncake._unlift(y_dy),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 
 @inline function _gemv!_frule_core!(
@@ -742,6 +795,25 @@ function frule!!(
     _arr_writeback!(x_dx, x, dx)
     return x_dx
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.trmv!),N},
+    _uplo::Mooncake.Lifted{Char},
+    _trans::Mooncake.Lifted{Char},
+    _diag::Mooncake.Lifted{Char},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
+    x_dx::Mooncake.Lifted{<:AbstractVector{T}},
+) where {N,T<:BlasFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(_uplo),
+        Mooncake._unlift(_trans),
+        Mooncake._unlift(_diag),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(x_dx),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 @inline function _trmv!_frule_core!(
     uplo::Char,
     trans::Char,
@@ -855,6 +927,25 @@ function frule!!(
     _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
     _arr_writeback!(x_dx, x, dx)
     return x_dx
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.trsv!),N},
+    _uplo::Mooncake.Lifted{Char},
+    _trans::Mooncake.Lifted{Char},
+    _diag::Mooncake.Lifted{Char},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
+    x_dx::Mooncake.Lifted{<:AbstractVector{T}},
+) where {N,T<:BlasFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(_uplo),
+        Mooncake._unlift(_trans),
+        Mooncake._unlift(_diag),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(x_dx),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _trsv!_frule_core!(
     uplo::Char,
@@ -992,6 +1083,29 @@ end
 
     _arr_writeback!(C_dC, C, dC)
     return C_dC
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.gemm!),N},
+    transA::Mooncake.Lifted{Char},
+    transB::Mooncake.Lifted{Char},
+    alpha::Mooncake.Lifted{T},
+    A_dA::Mooncake.Lifted{<:AbstractVecOrMat{T}},
+    B_dB::Mooncake.Lifted{<:AbstractVecOrMat{T}},
+    beta::Mooncake.Lifted{T},
+    C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
+) where {N,T<:BlasFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(transA),
+        Mooncake._unlift(transB),
+        Mooncake._unlift(alpha),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(B_dB),
+        Mooncake._unlift(beta),
+        Mooncake._unlift(C_dC),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 
 @inline function rrule!!(
@@ -1347,6 +1461,29 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.trmm!),N},
+    _side::Mooncake.Lifted{Char},
+    _uplo::Mooncake.Lifted{Char},
+    _ta::Mooncake.Lifted{Char},
+    _diag::Mooncake.Lifted{Char},
+    α_dα::Mooncake.Lifted{P},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
+    B_dB::Mooncake.Lifted{<:AbstractMatrix{P}},
+) where {N,P<:BlasFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(_side),
+        Mooncake._unlift(_uplo),
+        Mooncake._unlift(_ta),
+        Mooncake._unlift(_diag),
+        Mooncake._unlift(α_dα),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(B_dB),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 @inline function _trmm!_frule_core!(
     side::Char,
     uplo::Char,
@@ -1461,6 +1598,29 @@ function frule!!(
     )
     _arr_writeback!(B_dB, B, dB)
     return B_dB
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.trsm!),N},
+    _side::Mooncake.Lifted{Char},
+    _uplo::Mooncake.Lifted{Char},
+    _t::Mooncake.Lifted{Char},
+    _diag::Mooncake.Lifted{Char},
+    α_dα::Mooncake.Lifted{P},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
+    B_dB::Mooncake.Lifted{<:AbstractMatrix{P}},
+) where {N,P<:BlasFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(_side),
+        Mooncake._unlift(_uplo),
+        Mooncake._unlift(_t),
+        Mooncake._unlift(_diag),
+        Mooncake._unlift(α_dα),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(B_dB),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _trsm!_frule_core!(
     side::Char,
