@@ -115,6 +115,15 @@ end
     dx = twiceprecision(val.partials[1], primal(nb))
     return Dual(x, dx)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(twiceprecision),N},
+    val::Mooncake.Lifted,
+    nb::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(val), Mooncake._unlift(nb))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
 ) where {P<:IEEEFloat}
@@ -141,6 +150,13 @@ end
 function frule!!(::Dual{Type{P}}, x::Dual{S}) where {P<:IEEEFloat,S<:TWP}
     return Dual(P(primal(x)), P(tangent(x)))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{Type{P},N}, x::Mooncake.Lifted{S}
+) where {N,P<:IEEEFloat,S<:TWP}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(::CoDual{Type{P}}, x::CoDual{S}) where {P<:IEEEFloat,S<:TWP}
     float_from_twice_precision_pb(dy::P) = NoRData(), S(dy)
     return zero_fcodual(P(x.x)), float_from_twice_precision_pb
@@ -148,6 +164,13 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(-),TWP}
 frule!!(::Dual{typeof(-)}, x::Dual{P}) where {P<:TWP} = Dual(-primal(x), -tangent(x))
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(-),N}, x::Mooncake.Lifted{P}
+) where {N,P<:TWP}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(::CoDual{typeof(-)}, x::CoDual{P}) where {P<:TWP}
     negate_twice_precision_pb(dy::P) = NoRData(), -dy
     return zero_fcodual(-(x.x)), negate_twice_precision_pb
@@ -161,6 +184,13 @@ end
     ::Dual{typeof(+)}, x::Dual{P}, y::Mooncake.Nfwd.NDual{S,1}
 ) where {P<:TWP,S<:IEEEFloat}
     return Dual(primal(x) + y.value, tangent(x) + y.partials[1])
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(+),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
+) where {N,P<:TWP}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(y))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{S}
@@ -200,6 +230,13 @@ end
     dz = primal(x) * y.partials[1] + tangent(x) * y.value
     return Dual(z, dz)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(*),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
+) where {N,P<:TWP}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(y))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{S}
 ) where {P<:TWP,S<:IEEEFloat}
@@ -232,6 +269,13 @@ end
     z = primal(x) / pv
     dz = tangent(x) / pv - tv * primal(x) / pv^2
     return Dual(z, dz)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(/),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
+) where {N,P<:TWP}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(y))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(/)}, x::CoDual{P}, y::CoDual{S}
@@ -287,6 +331,21 @@ end
     dx = Tx((ref=a.partials[1], step=st.partials[1], len=NoTangent(), offset=NoTangent()))
     return Dual(x, dx)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(range_start_step_length),N},
+    a::Mooncake.Lifted,
+    st::Mooncake.Lifted,
+    len::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(a),
+        Mooncake._unlift(st),
+        Mooncake._unlift(len),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(range_start_step_length)},
     a::CoDual{T},
@@ -308,6 +367,15 @@ function frule!!(
     dstep = _get_tangent_field(tangent(r), :step)
     dx = eltype(P)(dref + dstep * (primal(i) - primal(r).offset))
     return Dual(x, dx)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(unsafe_getindex),N},
+    r::Mooncake.Lifted{<:TWPStepRangeLen},
+    i::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(r), Mooncake._unlift(i))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_getindex)}, r::CoDual{P}, i::CoDual{<:Integer}
@@ -335,6 +403,15 @@ function frule!!(
     dref = _get_tangent_field(tangent(r), :ref)
     dx = (primal(i) - offset) * dstep + dref
     return Dual(x, dx)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(_getindex_hiprec),N},
+    r::Mooncake.Lifted{<:TWPStepRangeLen},
+    i::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(r), Mooncake._unlift(i))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(_getindex_hiprec)}, r::CoDual{P}, i::CoDual{<:Integer}
@@ -372,6 +449,21 @@ end
     ))
     return Dual(x, dx)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(:),N},
+    start::Mooncake.Lifted{P},
+    step::Mooncake.Lifted{P},
+    stop::Mooncake.Lifted{P},
+) where {N,P<:IEEEFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(start),
+        Mooncake._unlift(step),
+        Mooncake._unlift(stop),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(:)}, start::CoDual{P}, step::CoDual{P}, stop::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -388,6 +480,13 @@ function frule!!(::Dual{typeof(sum)}, x::Dual{P}) where {P<:TWPStepRangeLen}
     dstep = _get_tangent_field(tangent(x), :step)
     dy = dref * l + dstep * (0.5 * l * (l + 1) - l * offset)
     return Dual(y, typeof(y)(dy))
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(sum),N}, x::Mooncake.Lifted{<:TWPStepRangeLen}
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{P}) where {P<:TWPStepRangeLen}
     l = x.x.len
@@ -434,6 +533,21 @@ end
     dy = T((ref=dref, step=dstep, len=NoTangent(), offset=NoTangent()))
     return Dual(y, dy)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Base.range_start_stop_length),N},
+    start::Mooncake.Lifted,
+    stop::Mooncake.Lifted,
+    length::Mooncake.Lifted{<:Integer},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(start),
+        Mooncake._unlift(stop),
+        Mooncake._unlift(length),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(Base.range_start_stop_length)},
     start::CoDual{P},
@@ -460,6 +574,14 @@ end
         y = Base._exp_allowing_twice64(primal(x))
         return Dual(y, typeof(y)(y * tangent(x)))
     end
+    @inline function frule!!(
+        f::Mooncake.Lifted{typeof(Base._exp_allowing_twice64),N},
+        x::Mooncake.Lifted{TwicePrecision{Float64}},
+    ) where {N}
+        bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x))
+        P_out = _typeof(__get_primal(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
     function rrule!!(
         ::CoDual{typeof(Base._exp_allowing_twice64)}, x::CoDual{TwicePrecision{Float64}}
     )
@@ -478,6 +600,14 @@ end
     )
         y = Base._log_twice64_unchecked(x.value)
         return Dual(y, typeof(y)(x.partials[1] / x.value))
+    end
+    @inline function frule!!(
+        f::Mooncake.Lifted{typeof(Base._log_twice64_unchecked),N},
+        x::Mooncake.Lifted{Float64},
+    ) where {N}
+        bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x))
+        P_out = _typeof(__get_primal(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
     end
     function rrule!!(::CoDual{typeof(Base._log_twice64_unchecked)}, x::CoDual{Float64})
         _x = x.x
