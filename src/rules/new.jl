@@ -4,12 +4,23 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) whe
     primals = map(__get_primal, x)
     # For NDual containers (Array, etc.), the type P is the primal type but the fields
     # have NDual elements. Construct the NDual container type instead.
+    # Check `_find_ndual_memref(x...)` on the ORIGINAL args, not on `primals`:
+    # `__get_primal(::MemoryRef{<:NDual})` strips the NDual element type back to
+    # the primal type, which would prevent `_find_ndual_memref` from matching.
     if P <: Array
-        ref = _find_ndual_memref(primals...)
+        ref = _find_ndual_memref(x...)
         if ref !== nothing
             P_ndual = Array{eltype(ref),ndims(P)}
-            return _new_(P_ndual, primals...)
+            return _new_(P_ndual, ref, primals[2:end]...)
         end
+        # No NDual content: build the bare array and produce a `Dual{P, T}` with
+        # `zero_tangent(y)`. The struct-output `build_output_tangent` path expects
+        # a NamedTuple-shaped struct ctor, which Array does not have — calling it
+        # would fail on `Vector{T}(::@NamedTuple{ref, size})`.
+        y = _new_(P, primals...)
+        T = tangent_type(P)
+        T == NoTangent && return Dual(y, NoTangent())
+        return Dual(y, zero_tangent(y))
     end
     # Complex{NDual} is bare — construct directly from NDual fields.
     if P <: Complex && _has_ndual(x...)

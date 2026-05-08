@@ -432,7 +432,11 @@ end
     args::Vararg{Mooncake.Lifted,M},
 ) where {N,M}
     bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
-    primal_args = tuple_map(x -> x isa Dual ? primal(x) : x, bare_args)
+    # Use `__get_primal` (recurses into tuples) instead of a flat `isa Dual`
+    # check: the AT slot lifts to `Tuple{Dual{Val{Any}, NoTangent}, ...}`, and
+    # the @generated `_foreigncall_` body indexes `AT.parameters` for raw `Val`
+    # types — Dual-wrapped Vals trip `_get_arg_type`.
+    primal_args = tuple_map(Mooncake.__get_primal, bare_args)
     return zero_lifted(Val(N), _foreigncall_(Val(:jl_string_ptr), primal_args...))
 end
 
