@@ -273,6 +273,14 @@ function frule!!(::Dual{Type{FunctionWrapper{R,A}}}, obj::Dual{P}) where {R,A,P}
     t, _ = _function_wrapper_tangent(R, primal(obj), A, tangent(obj))
     return Dual(FunctionWrapper{R,A}(primal(obj)), t)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{Type{FunctionWrapper{R,A}},N}, obj::Mooncake.Lifted{P}
+) where {R,A,P,N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(obj))
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:FunctionWrapper},Any}}) = true
 
 @is_primitive MinimalCtx Tuple{<:FunctionWrapper,Vararg}
 function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
@@ -285,5 +293,14 @@ function frule!!(f::Dual{FunctionWrapper{R,A}}, x::Vararg{Dual}) where {R,A}
     _tangent = tangent(f)
     return _tangent.frule_wrapper(x...)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{FunctionWrapper{R,A},N}, x::Vararg{Mooncake.Lifted,M}
+) where {R,A,N,M}
+    bare_args = ntuple(i -> Mooncake._unlift(x[i]), Val(M))
+    bare_result = frule!!(Mooncake._unlift(f), bare_args...)
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{<:FunctionWrapper,Vararg}}) = true
 
 end
