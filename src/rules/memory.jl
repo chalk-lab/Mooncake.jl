@@ -809,6 +809,17 @@ function frule!!(
 ) where {P<:Union{NDual,Complex{<:NDual}}}
     return Memory{P}(undef, primal(n))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{Type{Memory{P}},N},
+    u::Mooncake.Lifted{UndefInitializer},
+    n::Mooncake.Lifted{Int},
+) where {P,N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(u), Mooncake._unlift(n))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:Memory},UndefInitializer,Int}}) =
+    true
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
