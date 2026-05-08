@@ -440,6 +440,24 @@ function frule!!(
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat,N}
     return convert(NDual{Ptrunc,N}, x)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(fpext),N}, ::Mooncake.Lifted{Type{Pext}}, x::Mooncake.Lifted{P}
+) where {N,Pext<:IEEEFloat,P<:IEEEFloat}
+    return Mooncake.Lifted{Pext,N}(convert(NDual{Pext,N}, _unlift(x)))
+end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(fptrunc),N},
+    ::Mooncake.Lifted{Type{Ptrunc}},
+    x::Mooncake.Lifted{P},
+) where {N,Ptrunc<:IEEEFloat,P<:IEEEFloat}
+    return Mooncake.Lifted{Ptrunc,N}(convert(NDual{Ptrunc,N}, _unlift(x)))
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(fpext),Type{<:IEEEFloat},<:IEEEFloat}}
+) = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(fptrunc),Type{<:IEEEFloat},<:IEEEFloat}}
+) = true
 
 @static if VERSION >= v"1.12.0-rc2"
     using .IntrinsicsWrappers: max_float, max_float_fast, min_float, min_float_fast
