@@ -127,6 +127,15 @@ function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
     Base.rehash!(tangent(d), primal(newsz))
     return d
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Base.rehash!),N},
+    d::Mooncake.Lifted{<:IdDict},
+    newsz::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(d), Mooncake._unlift(newsz))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoDual)
     Base.rehash!(primal(d), primal(newsz))
     Base.rehash!(tangent(d), primal(newsz))
@@ -148,6 +157,21 @@ end
     setindex!(primal(d), val.value, primal(key))
     setindex!(tangent(d), val.partials[1], primal(key))
     return d
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(setindex!),N},
+    d::Mooncake.Lifted{<:IdDict},
+    val::Mooncake.Lifted,
+    key::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(d),
+        Mooncake._unlift(val),
+        Mooncake._unlift(key),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) where {K,V}
     k = primal(key)
@@ -198,6 +222,21 @@ end
     dx = get(tangent(d), primal(key), default.partials[1])
     return Dual(x, dx)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(get),N},
+    d::Mooncake.Lifted{<:IdDict},
+    key::Mooncake.Lifted,
+    default::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(d),
+        Mooncake._unlift(key),
+        Mooncake._unlift(default),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{IdDict{K,V}}, key::CoDual, default::CoDual
 ) where {K,V}
@@ -224,6 +263,15 @@ end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getindex),<:IdDict,Any}}) = true
 function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
     return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(getindex),N},
+    d::Mooncake.Lifted{<:IdDict},
+    key::Mooncake.Lifted,
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(d), Mooncake._unlift(key))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{IdDict{K,V}}, key::CoDual
@@ -253,6 +301,11 @@ end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:IdDict}}}) = true
 function frule!!(::Dual{Type{IdDict{K,V}}}) where {K,V}
     return Dual(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
+end
+@inline function frule!!(f::Mooncake.Lifted{Type{IdDict{K,V}},N}) where {K,V,N}
+    bare_result = frule!!(Mooncake._unlift(f))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
