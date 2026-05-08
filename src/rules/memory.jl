@@ -280,6 +280,25 @@ function frule!!(
     unsafe_copyto!(dest, src, primal(n))
     return dest
 end
+# Lifted-typed overload: delegate to the bare body via `_unlift`. The bare
+# frule has overloads for both `Dual{MemoryRef{P}, MemoryRef{V}}` (struct
+# wrapper) and `MemoryRef{<:NDual}` / `MemoryRef{Complex{<:NDual}}` (canonical
+# V at width 1).
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    dest::Mooncake.Lifted{MemoryRef{P}},
+    src::Mooncake.Lifted{MemoryRef{P}},
+    n::Mooncake.Lifted{Int},
+) where {N,P}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(dest),
+        Mooncake._unlift(src),
+        Mooncake._unlift(n),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{MemoryRef{P}},
