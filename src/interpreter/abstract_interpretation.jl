@@ -234,7 +234,7 @@ end
 function any_matches_overlay(applicable)
     for app in applicable
         method = VERSION < v"1.12-" ? app.method : app.match.method
-        if isdefined(method, :external_mt) && method.external_mt !== nothing
+        if isdefined(method, :external_mt) && method.external_mt === mooncake_method_table
             return true
         end
     end
