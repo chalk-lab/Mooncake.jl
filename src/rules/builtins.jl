@@ -245,6 +245,24 @@ function frule!!(
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     return Dual(primal_arr, tangent_arr)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(unsafe_wrap),N},
+    arr_type::Mooncake.Lifted{<:Type{<:Array}},
+    p::Mooncake.Lifted{<:Ptr{T}},
+    dims::Mooncake.Lifted,
+) where {N,T}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(arr_type),
+        Mooncake._unlift(p),
+        Mooncake._unlift(dims),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(unsafe_wrap),<:Type{<:Array},<:Ptr,Any}}
+) = true
 
 function rrule!!(
     ::CoDual{typeof(unsafe_wrap)},
