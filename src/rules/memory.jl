@@ -551,12 +551,28 @@ end
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
     return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(memoryrefnew),N}, x::Mooncake.Lifted{<:Memory}
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef}, ii::Dual{Int})
     return Dual(memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii)))
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(memoryrefnew),N},
+    x::Mooncake.Lifted{<:MemoryRef},
+    ii::Mooncake.Lifted{Int},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(ii))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
@@ -573,6 +589,21 @@ end
     y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
     dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
     return Dual(y, dy)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(memoryrefnew),N},
+    x::Mooncake.Lifted{<:MemoryRef},
+    ii::Mooncake.Lifted{Int},
+    boundscheck::Mooncake.Lifted{Bool},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(ii),
+        Mooncake._unlift(boundscheck),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
