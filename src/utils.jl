@@ -808,7 +808,12 @@ end
         seen[x] = nothing
     end
     n = first(_fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}()))
-    if n == 0 && _tangent_can_have_scalar(tangent_type(_typeof(x)))
+    if n == 0 && _tangent_can_have_scalar(tangent_type(_typeof(x))) && !_has_undef_field(x)
+        # Zero slots and no undef field to explain it: the type has differentiable
+        # content but no overload teaches us how to find it. `_has_undef_field`
+        # short-circuits when an instance has uninit fields (e.g. a struct built
+        # with `new()` skipping a `Vector{Float64}` field) — those legitimately
+        # contribute zero scalars at this instance, so don't error.
         throw(
             ArgumentError(
                 "_count_slots: `$(_typeof(x))` has a non-trivial tangent_type but " *
@@ -822,6 +827,9 @@ end
     end
     return n
 end
+
+@inline _has_undef_field(x::P) where {P} =
+    isstructtype(P) && any(n -> !isdefined(x, n), 1:fieldcount(P))
 
 @inline function _tangent_can_have_scalar(::Type{T}) where {T}
     T === NoTangent && return false
