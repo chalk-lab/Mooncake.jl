@@ -201,6 +201,19 @@ function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
     dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
     return tangent(f).dual_callable(dual_captures, x...)
 end
+# Lifted-typed overload: delegate to the bare body via `_unlift`. The
+# `dual_callable` itself is signature-specialised on Dual args, so we re-wrap
+# the bare result via `_wrap_rule_result`.
+@inline function frule!!(
+    f::Mooncake.Lifted{P,N}, x::Vararg{Mooncake.Lifted,M}
+) where {P<:MistyClosure,N,M}
+    bare_f = Mooncake._unlift(f)
+    bare_x = ntuple(i -> Mooncake._unlift(x[i]), Val(M))
+    bare_result = frule!!(bare_f, bare_x...)
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{<:MistyClosure,Vararg}}) = true
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =
         "Attempted to compute the adjoint associated to a `MistyClosure`. " *
