@@ -156,6 +156,26 @@ function frule!!(
     dy = sum(_dx .* (exp.(_x .- y)); primal(kwargs)...)
     return Dual(y, dy)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(Core.kwcall),N},
+    kwargs::Mooncake.Lifted{<:NamedTuple},
+    g::Mooncake.Lifted{typeof(logsumexp)},
+    x::Mooncake.Lifted{<:AbstractArray{P}},
+) where {N,P<:IEEEFloat}
+    inner_x = Mooncake._unlift(x)
+    _x, _dx = Mooncake._arr_extract(inner_x)
+    kw = primal(kwargs)
+    y = logsumexp(_x; kw...)
+    dy = sum(_dx .* (exp.(_x .- y)); kw...)
+    return Mooncake.Lifted{typeof(y),N}(y, dy)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(Core.kwcall),NamedTuple,typeof(logsumexp),<:AbstractArray{<:IEEEFloat}
+        },
+    },
+) = true
 function frule!!(
     ::Dual{typeof(logsumexp)}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
@@ -168,6 +188,21 @@ function frule!!(
     end
     return Dual(y, dy)
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(logsumexp),N}, x::Mooncake.Lifted{<:AbstractArray{P}}
+) where {N,P<:IEEEFloat}
+    inner_x = Mooncake._unlift(x)
+    _x, _dx = Mooncake._arr_extract(inner_x)
+    y = logsumexp(_x)
+    dy = zero(P)
+    for i in eachindex(_dx)
+        @inbounds dy += _dx[i] * exp(_x[i] - y)
+    end
+    return Mooncake.Lifted{P,N}(y, dy)
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(logsumexp),<:AbstractArray{<:IEEEFloat}}}
+) = true
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kwargs::CoDual{<:NamedTuple{(:dims,),<:Tuple{Colon}}},
@@ -222,6 +257,27 @@ function frule!!(
     sum!(_dy, _dx .* exp.(_x .- y))
     return out
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(logsumexp!),N},
+    out::Mooncake.Lifted{<:AbstractArray{P}},
+    x::Mooncake.Lifted{<:AbstractArray{P}},
+) where {N,P<:IEEEFloat}
+    inner_out = Mooncake._unlift(out)
+    inner_x = Mooncake._unlift(x)
+    y, _dy = Mooncake._arr_extract(inner_out)
+    _x, _dx = Mooncake._arr_extract(inner_x)
+    logsumexp!(y, _x)
+    sum!(_dy, _dx .* exp.(_x .- y))
+    Mooncake._arr_writeback!(inner_out, y, _dy)
+    return out
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(logsumexp!),<:AbstractArray{<:IEEEFloat},<:AbstractArray{<:IEEEFloat}
+        },
+    },
+) = true
 function rrule!!(
     ::CoDual{typeof(logsumexp!)},
     out::CoDual{<:AbstractArray{P}},
