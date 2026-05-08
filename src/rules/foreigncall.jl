@@ -240,6 +240,35 @@ function frule!!(
         primal(dims),
     )
 end
+# Lifted-typed overload: delegate to the bare body via `_unlift`. The canonical
+# V for `Lifted{<:Array{P}, N}` is either `Dual{Array{P}, Array{T}}` (struct
+# wrappers / non-IEEEFloat element) or `Array{NDual{P,1}}` (IEEEFloat element
+# at width 1); the bare frule has overloads for both shapes.
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(_foreigncall_),N},
+    a1::Mooncake.Lifted{Val{:jl_reshape_array}},
+    a2::Mooncake.Lifted{Val{Array{P,M}}},
+    a3::Mooncake.Lifted{Tuple{Val{Any},Val{Any},Val{Any}}},
+    a4::Mooncake.Lifted,
+    a5::Mooncake.Lifted,
+    a6::Mooncake.Lifted{Type{Array{P,M}}},
+    a::Mooncake.Lifted{<:Array{P}},
+    dims::Mooncake.Lifted,
+) where {N,P,M}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(a1),
+        Mooncake._unlift(a2),
+        Mooncake._unlift(a3),
+        Mooncake._unlift(a4),
+        Mooncake._unlift(a5),
+        Mooncake._unlift(a6),
+        Mooncake._unlift(a),
+        Mooncake._unlift(dims),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_reshape_array}},
