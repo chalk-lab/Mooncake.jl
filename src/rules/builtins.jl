@@ -113,7 +113,10 @@ import ..Mooncake:
     NoTangent,
     Mode,
     extract,
-    nan_tangent_guard
+    nan_tangent_guard,
+    _typeof,
+    __get_primal,
+    _wrap_rule_result
 
 using Core.Intrinsics: atomic_pointerref
 

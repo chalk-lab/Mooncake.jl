@@ -704,7 +704,12 @@ function test_frule_interface(x_ẋ...; frule)
         # than a bare `Dual{P, T}`. Normalise to the Dual-flavoured form
         # test_rule expects via `_ndual_output_to_width1` — the same helper
         # `value_and_derivative!!` uses at the same conversion point.
-        Mooncake._ndual_output_to_width1(frule(x_ẋ...))
+        x_ẋ_lifted = map(
+            d ->
+                Mooncake.lifted_type(Val(1), _typeof(primal(d)))(primal(d), tangent(d)),
+            x_ẋ,
+        )
+        Mooncake._ndual_output_to_width1(frule(x_ẋ_lifted...))
     catch
         throw(ArgumentError("rule does not run, signature is $(_typeof(x_ẋ))."))
     end

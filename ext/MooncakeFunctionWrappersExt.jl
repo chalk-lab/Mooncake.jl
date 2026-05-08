@@ -2,6 +2,7 @@ module MooncakeFunctionWrappersExt
 
 using Random
 using FunctionWrappers: FunctionWrapper
+using Mooncake: Mooncake
 import Mooncake:
     TestUtils,
     _add_to_primal_internal,

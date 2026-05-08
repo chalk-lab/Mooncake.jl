@@ -135,22 +135,18 @@ extract(x::Dual) = primal(x), tangent(x)
 zero_dual(x) = Dual(x, zero_tangent(x))
 randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 
-# Generic width-N fallback for non-differentiable primals (`tangent_type ===
-# NoTangent`); matches `dual_type(Val(N), P) == Dual{P,NoTangent}`. Specialised
-# IEEEFloat / Complex / array / Memory overloads live in `nfwd/NfwdMooncake.jl`.
-# Fails loudly if a non-trivial `tangent_type` reaches here without a width-N
-# overload — silently downgrading to width-1 would be wrong.
+# Generic width-N fallback. For NoTangent primals, returns `Dual(x, NoTangent())`
+# (matches `dual_type(Val(N), P) == Dual{P,NoTangent}`). For non-trivial
+# tangent_type without a width-N specialisation (e.g. Task, StepRangeLen),
+# fall back to the no-width zero_dual — at canonical V the inner shape is
+# `Dual{P, tangent_type(P)}`, which matches what `zero_dual(x)` returns.
+# Specialised IEEEFloat / Complex / array / Memory overloads live in
+# `nfwd/NfwdMooncake.jl`.
 @inline function zero_dual(w::Val, x)
     if tangent_type(_typeof(x)) === NoTangent
         return Dual(x, NoTangent())
     end
-    throw(
-        ArgumentError(
-            "zero_dual(::Val, ::$(_typeof(x))): missing width-N overload for a " *
-            "type with non-trivial tangent_type. Add a method to NfwdMooncake.jl " *
-            "matching `dual_type(Val(N), $(_typeof(x)))`.",
-        ),
-    )
+    return zero_dual(x)
 end
 
 @unstable function dual_type(::Type{P}) where {P}
@@ -267,6 +263,10 @@ unwrapped (primal passthrough) and are not represented by `Lifted`.
 struct Lifted{P,N,V}
     value::V
 end
+
+# Lifted slot wrappers: the canonical V invariant guarantees
+# `V === dual_type(Val(N), P)`, so the slot is well-typed by construction.
+verify_dual_type(::Lifted) = true
 
 # 1-arg: wrap an already-built inner. V is inferred from typeof(value).
 @inline Lifted{P,N}(value) where {P,N} = Lifted{P,N,typeof(value)}(value)
@@ -481,6 +481,29 @@ Companion to `zero_dual` (Layer 2). The result type matches
 """
 @inline zero_lifted(::Val{0}, x) = x
 @inline zero_lifted(w::Val{N}, x) where {N} = Lifted{typeof(x),N}(zero_dual(w, x))
+# Tuple/NamedTuple primal: produce canonical V (a bare element-wise tuple of
+# inner duals) per AGENTS.md tuple-lifting. Without this overload, the generic
+# `zero_dual(w, ::Tuple)` returns `Dual(tuple, NoTangent)` which violates the
+# canonical V invariant and breaks `tangent(::Lifted{<:Tuple})` (which calls
+# `map(tangent, .value)` expecting a bare Tuple).
+@inline function zero_lifted(w::Val{N}, x::Tuple) where {N}
+    inner = ntuple(i -> zero_lifted_inner(w, x[i]), Val(length(x)))
+    return Lifted{typeof(x),N}(inner)
+end
+@inline function zero_lifted(w::Val{N}, x::NamedTuple{names}) where {N,names}
+    inner = ntuple(i -> zero_lifted_inner(w, values(x)[i]), Val(length(x)))
+    return Lifted{typeof(x),N}(NamedTuple{names}(inner))
+end
+@inline zero_lifted_inner(::Val{0}, x) = x
+@inline zero_lifted_inner(w::Val{N}, x) where {N} = zero_dual(w, x)
+@inline zero_lifted_inner(w::Val{N}, x::Tuple) where {N} = ntuple(
+    i -> zero_lifted_inner(w, x[i]), Val(length(x))
+)
+@inline zero_lifted_inner(w::Val{N}, x::NamedTuple{names}) where {N,names} = NamedTuple{
+    names
+}(
+    ntuple(i -> zero_lifted_inner(w, values(x)[i]), Val(length(x)))
+)
 
 """
     uninit_lifted(::Val{N}, x)

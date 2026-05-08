@@ -17,3 +17,14 @@ function Mooncake.frule!!(
         Mooncake.Nfwd.NDual{Float64,1}(5 * x.value, (5 * x.partials[1],))
     end
 end
+
+@inline function Mooncake.frule!!(
+    ::Mooncake.Lifted{typeof(Mooncake.TestResources.edge_case_tester),N},
+    x::Mooncake.Lifted{Float64,N},
+) where {N}
+    inner = Mooncake._unlift(x)
+    bare = Mooncake.frule!!(
+        Dual(Mooncake.TestResources.edge_case_tester, NoTangent()), inner
+    )
+    return Mooncake.Lifted{Float64,N}(bare)
+end

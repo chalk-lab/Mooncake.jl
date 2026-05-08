@@ -430,7 +430,34 @@ function _zero_derivative_impl(ctx, sig, mode)
     )
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
-    return Expr(:block, is_primitive_ex, is_lifted_aware_ex, frule_ex, rrule_ex)
+    # Lifted-typed frule body: required because IR-emit at width N>=1 calls
+    # `frule!!(::Lifted{F, N}, ::Vararg{Lifted, M})`. The existing
+    # `zero_derivative(::Lifted{F, N}, ::Vararg{Lifted, M})` overload (defined
+    # higher in this file) handles the Lifted dispatch by extracting primals
+    # and constructing a Lifted output via `zero_lifted`.
+    if is_vararg
+        lifted_arg_types = vcat(
+            [:(Mooncake.Lifted{<:$(arg_type_symbols[1]),N})],
+            [:(Mooncake.Lifted{<:$t}) for t in arg_type_symbols[2:(end - 1)]],
+            [:(Vararg{Mooncake.Lifted,_M})],
+        )
+        lifted_where = vcat(
+            where_params === nothing ? Any[] : copy(where_params), [:N, :_M]
+        )
+    else
+        lifted_arg_types = vcat(
+            [:(Mooncake.Lifted{<:$(arg_type_symbols[1]),N})],
+            [:(Mooncake.Lifted{<:$t}) for t in arg_type_symbols[2:end]],
+        )
+        lifted_where = vcat(where_params === nothing ? Any[] : copy(where_params), [:N])
+    end
+    lifted_frule_ex = construct_frule_def(
+        arg_names, lifted_arg_types, lifted_where, body_deriv
+    )
+
+    return Expr(
+        :block, is_primitive_ex, is_lifted_aware_ex, frule_ex, lifted_frule_ex, rrule_ex
+    )
 end
 
 """

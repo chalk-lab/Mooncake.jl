@@ -166,29 +166,6 @@ non-migrated rule on the legacy bare path, so partial migration is safe.
 """
 @inline _is_lifted_aware(::Type) = false
 
-"""
-    frule!!(f::Lifted{F, N}, args::Vararg{Lifted, M})
-
-Generic Lifted-aware `frule!!` adapter — used by Phase 4 mechanical
-migrations whose rule body has no benefit from `Lifted` dispatch. Unwraps
-each `Lifted` arg via `_unlift`, calls the bare `frule!!`, and re-wraps
-the bare result in `Lifted{P_out, N}` where `P_out` is recovered from
-the bare result via `__get_primal`.
-
-This generic catch-all is invoked when a rule has registered itself in
-`_is_lifted_aware` but provides no specific `Lifted{typeof(op), N}`
-overload. Rules with meaningful `Lifted`-dispatch benefit (e.g. the
-`tuple` frule's three-branch collapse) override this by defining their
-own specific `Lifted`-typed `frule!!` method.
-"""
-@inline function frule!!(f::Lifted{F,N}, args::Vararg{Lifted,M}) where {F,N,M}
-    bare_f = _unlift(f)
-    bare_args = ntuple(i -> _unlift(args[i]), Val(M))
-    bare_result = frule!!(bare_f, bare_args...)
-    P_out = _typeof(__get_primal(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-
 # Wrap a bare frule result back into `Lifted{P_out, N, V}`. The OC's slot
 # type is `lifted_type(Val(N), P_out)` which fixes V to `dual_type(Val(N),
 # P_out)`. The bare rule may return values whose actual V differs from the

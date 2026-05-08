@@ -3,6 +3,7 @@ module MooncakeLogExpFunctionsExt
 using LinearAlgebra: dot
 using LogExpFunctions
 using Base: IEEEFloat
+using Mooncake: Mooncake
 import Mooncake:
     DefaultCtx,
     @from_chainrules,

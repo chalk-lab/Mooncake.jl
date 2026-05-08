@@ -1730,6 +1730,13 @@ end
     return Dual(_ndual_primal(output), _tangent_dir(output, 1))
 end
 
+# Lifted-typed rule outputs: unwrap to the inner V and recurse. The result is
+# always a `Dual`, matching what test_rule and `value_and_derivative!!` expect.
+@inline function _ndual_output_to_width1(output::Lifted)
+    inner = _unlift(output)
+    return inner isa Dual ? inner : _ndual_output_to_width1(inner)
+end
+
 """
     value_and_derivative!!(cache::FCache, (f, df), (x, dx), ...)
 
