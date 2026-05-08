@@ -1031,6 +1031,15 @@ function frule!!(
 )
     return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
 end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{<:_MemTypes},
+    name::Mooncake.Lifted{<:Val},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     f::CoDual{typeof(lgetfield)}, x::CoDual{<:_MemTypes,<:_MemTypes}, name::CoDual{<:Val}
 )
@@ -1048,6 +1057,21 @@ function frule!!(
     return frule!!(
         zero_dual(lgetfield), x, zero_dual(Val(primal(name))), zero_dual(Val(primal(order)))
     )
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{<:_MemTypes},
+    name::Mooncake.Lifted{<:Union{Int,Symbol}},
+    order::Mooncake.Lifted{Symbol},
+) where {N}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(name),
+        Mooncake._unlift(order),
+    )
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(getfield)},
@@ -1071,6 +1095,15 @@ function frule!!(
     name::Dual{<:Union{Int,Symbol}},
 )
     return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{<:_MemTypes},
+    name::Mooncake.Lifted{<:Union{Int,Symbol}},
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name))
+    P_out = _typeof(__get_primal(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
     f::CoDual{typeof(getfield)},
