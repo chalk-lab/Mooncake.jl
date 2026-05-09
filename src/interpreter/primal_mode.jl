@@ -167,9 +167,22 @@ end
 # constructor call infers to `Union{}` — leaving an unsound `Union{}` →
 # `Union{}` PhiNode that the IR verifier rejects. Use this shim wherever a
 # rule body branches on `dual_type(Val(N), P)`'s concrete shape.
+#
+# `try`/`catch` around the expansion: extension types (e.g. CUDA's
+# `Adjoint{T, <:CuArray}`) have `tangent_type` lookups that recurse into
+# nested struct fields whose primitive-type leaves (`CuPtr{Nothing}`) are
+# served by ext-registered methods that may live behind a generated-
+# function world-age boundary at expansion time. When that happens the
+# generic primitive-type generator fires and raises a hard error from
+# the staged body. Falling back to a runtime `dual_type` call uses the
+# latest world and dispatches correctly.
 @inline @generated function _static_dual_type(::Val{N}, ::Type{P}) where {N,P}
-    DT = dual_type(Val(N), P)
-    return :($DT)
+    try
+        DT = dual_type(Val(N), P)
+        return :($DT)
+    catch
+        return :(dual_type(Val($N), $P))
+    end
 end
 
 # A "lifted width" is one that uses the `Lifted{P, N, V}` boundary at the OC
