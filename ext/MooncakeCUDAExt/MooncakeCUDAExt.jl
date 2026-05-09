@@ -202,6 +202,11 @@ end
 # form `Dual{Adjoint{T, CuArray{T}}, Tangent}`, so the recursive lift causes
 # `TypeError` at the `_new_` site. These specialisations short-circuit to the
 # legacy parallel form for any `Adjoint{T, <:CuArray}` / `Transpose{T, <:CuArray}`.
+#
+# Explicit `Union{}` short-circuits disambiguate with the generic
+# `dual_type(::Val{N}, ::Type{P})` Union{} branch in `src/tangents/dual.jl`
+# (Julia's ambiguity check considers `Union{}` a subtype of every type).
+Mooncake.dual_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
 function Mooncake.dual_type(
     ::Val{N}, ::Type{P}
 ) where {N,T<:CuFloatOrComplex,P<:Adjoint{T,<:CuMaybeComplexArray}}
