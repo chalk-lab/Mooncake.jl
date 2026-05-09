@@ -433,6 +433,12 @@ function verify_phi_soundness(ir::IRCode, sig_or_mi, width)
         s = insts[ssa_idx]
         s isa PhiNode || continue
         phi_type = CC.widenconst(get_ir(ir, SSAValue(ssa_idx), :type))
+        # `Union{}`-annotated phi: the phi's result type is statically
+        # `Union{}`, meaning every reaching definition is itself
+        # unreachable (each branch traps before assigning). The OC
+        # compiler lowers this to `unreachable` — the join is genuinely
+        # dead, so any incoming type satisfies soundness vacuously. Skip.
+        phi_type === Union{} && continue
         for j in eachindex(s.values)
             isassigned(s.values, j) || continue
             src = s.values[j]
