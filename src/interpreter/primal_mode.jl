@@ -242,15 +242,34 @@ end
     end
 end
 
-@inline function _wrap_rule_result(::Type{P}, w::Val{N}, x::Tuple) where {P<:Tuple,N}
-    P_out = _resolve_concrete_P(P, x)
-    if isconcretetype(P_out) && P_out <: Tuple && fieldcount(P_out) == length(x)
-        InnerT = dual_type(Val(N), P_out)
+# `@generated` so `dual_type(Val(N), P)` is computed at expansion time.
+# The runtime form left a dynamic invoke of `dual_type` in the generated IR
+# (it's `@unstable`), which prevented inference and caused per-call alloc
+# overhead from the trailing `(%12 isa DataType) → %21 → ...` dynamic chain.
+# When `P` is concrete and lifts to a Tuple V, expand directly to the
+# canonical-V wrap; otherwise fall back to the runtime path.
+@inline @generated function _wrap_rule_result(
+    ::Type{P}, ::Val{N}, x::Tuple
+) where {P<:Tuple,N}
+    if isconcretetype(P) && fieldcount(P) > 0
+        InnerT = dual_type(Val(N), P)
         if InnerT isa DataType && InnerT <: Tuple
-            return Lifted{P_out,N,InnerT}(_canonicalise_tuple_inner(InnerT, x))
+            return :(Lifted{$P,$N,$InnerT}(_canonicalise_tuple_inner($InnerT, x)))
         end
+        return :(Lifted{$P,$N}(x))
     end
-    return Lifted{P_out,N}(x)
+    # Non-concrete P: fall back to the runtime `_resolve_concrete_P` form so
+    # widened-P args (`Tuple{Vararg}`, abstract elements) still resolve.
+    return quote
+        P_out = _resolve_concrete_P(P, x)
+        if isconcretetype(P_out) && P_out <: Tuple && fieldcount(P_out) == length(x)
+            InnerT = dual_type(Val(N), P_out)
+            if InnerT isa DataType && InnerT <: Tuple
+                return Lifted{P_out,N,InnerT}(_canonicalise_tuple_inner(InnerT, x))
+            end
+        end
+        return Lifted{P_out,N}(x)
+    end
 end
 
 @inline function _wrap_rule_result(::Type{P}, ::Val{N}, x) where {P,N}

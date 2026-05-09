@@ -1289,16 +1289,29 @@ end
 # bare overload above (NDual element-wise, whole-Tuple Dual NoTangent,
 # whole-Tuple Dual Tuple-tangent) to one — slot identity from `Lifted{P_i, N}`
 # replaces the runtime `_has_ndual` branch.
-@inline function frule!!(::Lifted{typeof(tuple),N}, args::Vararg{Lifted,M}) where {N,M}
-    P_out = Tuple{ntuple(i -> _typeof(primal(args[i])), Val(M))...}
-    InnerT = dual_type(Val(N), P_out)
-    bare = ntuple(i -> _unlift(args[i]), Val(M))
-    if InnerT isa DataType && InnerT <: Tuple
-        # Canonicalise each element to the slot's expected V_i so the OC sees
-        # `Tuple{NDual, ...}` rather than `Tuple{Dual, ...}` for IEEEFloat fields.
-        return Lifted{P_out,N,InnerT}(_canonicalise_tuple_inner(InnerT, bare))
+# `@generated` so `dual_type(Val(N), P_out)` is computed at expansion time
+# (it's `@unstable` and a runtime call leaves a dynamic invoke + branch in
+# the IR, costing per-call allocation). When each `args[i]` has a concrete
+# `Lifted{P_i, N, V_i}` type, `P_out` and `InnerT` are statically known.
+@inline @generated function frule!!(
+    ::Lifted{typeof(tuple),N}, args::Vararg{Lifted,M}
+) where {N,M}
+    Ps = ntuple(M) do i
+        # `args[i]` is a `Lifted{P_i, N, V_i}`; the static parameter `P_i` is
+        # the user-visible primal type — what `_typeof(primal(::Lifted))`
+        # returns at runtime.
+        Ai = args[i]
+        Ai.parameters[1]
     end
-    return Lifted{P_out,N}(bare)
+    P_out = Tuple{Ps...}
+    InnerT = dual_type(Val(N), P_out)
+    bare_exprs = (:(_unlift(args[$i])) for i in 1:M)
+    if InnerT isa DataType && InnerT <: Tuple
+        return :(Lifted{$P_out,$N,$InnerT}(
+            _canonicalise_tuple_inner($InnerT, ($(bare_exprs...),))
+        ))
+    end
+    return :(Lifted{$P_out,$N}(($(bare_exprs...),)))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tuple),Vararg}}) = true
 
