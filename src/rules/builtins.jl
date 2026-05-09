@@ -195,9 +195,10 @@ macro inactive_intrinsic(name)
 end
 
 @intrinsic abs_float
-function frule!!(::Dual{typeof(abs_float)}, x)
-    return Dual(abs_float(primal(x)), sign(primal(x)) * tangent(x))
-end
+# Bare-Dual `abs_float` body deleted under task #31.
+# Lifted-aware overload in rules_via_nfwd.jl (the unary-intrinsic loop) covers
+# all AD paths; `_unlift` produces an `NDual` on which `abs(::NDual)` dispatches
+# directly without the bare-Dual indirection.
 function rrule!!(::CoDual{typeof(abs_float)}, x)
     abs_float_pullback!!(dy) = NoRData(), sign(primal(x)) * dy
     y = abs_float(primal(x))
@@ -205,9 +206,7 @@ function rrule!!(::CoDual{typeof(abs_float)}, x)
 end
 
 @intrinsic add_float
-function frule!!(::Dual{typeof(add_float)}, a, b)
-    return Dual(add_float(primal(a), primal(b)), add_float(tangent(a), tangent(b)))
-end
+# Bare-Dual `add_float` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(add_float)}, a, b)
     add_float_pb!!(c̄) = NoRData(), c̄, c̄
     c = add_float(primal(a), primal(b))
@@ -215,11 +214,7 @@ function rrule!!(::CoDual{typeof(add_float)}, a, b)
 end
 
 @intrinsic add_float_fast
-function frule!!(::Dual{typeof(add_float_fast)}, a, b)
-    c = add_float_fast(primal(a), primal(b))
-    dc = add_float_fast(tangent(a), tangent(b))
-    return Dual(c, dc)
-end
+# Bare-Dual `add_float_fast` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(add_float_fast)}, a, b)
     add_float_fast_pb!!(c̄) = NoRData(), c̄, c̄
     c = add_float_fast(primal(a), primal(b))
@@ -438,11 +433,7 @@ end
 @inactive_intrinsic checked_usub_int
 
 @intrinsic copysign_float
-function frule!!(::Dual{typeof(copysign_float)}, x, y)
-    z = copysign_float(primal(x), primal(y))
-    dz = sign(primal(y)) * tangent(x)
-    return Dual(z, dz)
-end
+# Bare-Dual `copysign_float` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
@@ -456,13 +447,7 @@ end
 @inactive_intrinsic cttz_int
 
 @intrinsic div_float
-function frule!!(::Dual{typeof(div_float)}, a, b)
-    c = div_float(primal(a), primal(b))
-    da = tangent(a)
-    db = tangent(b)
-    dc = div_float(da, primal(b)) - div_float(primal(a) * db, primal(b)^2)
-    return Dual(c, dc)
-end
+# Bare-Dual `div_float` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -472,13 +457,7 @@ function rrule!!(::CoDual{typeof(div_float)}, a, b)
 end
 
 @intrinsic div_float_fast
-function frule!!(::Dual{typeof(div_float_fast)}, a, b)
-    c = div_float_fast(primal(a), primal(b))
-    da = tangent(a)
-    db = tangent(b)
-    dc = div_float_fast(da, primal(b)) - div_float_fast(primal(a) * db, primal(b)^2)
-    return Dual(c, dc)
-end
+# Bare-Dual `div_float_fast` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -496,11 +475,7 @@ end
 @inactive_intrinsic floor_llvm
 
 @intrinsic fma_float
-function frule!!(::Dual{typeof(fma_float)}, x, y, z)
-    a = fma_float(primal(x), primal(y), primal(z))
-    da = fma_float(tangent(x), primal(y), fma_float(primal(x), tangent(y), tangent(z)))
-    return Dual(a, da)
-end
+# Bare-Dual `fma_float` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -509,11 +484,7 @@ function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
 end
 
 @intrinsic fpext
-function frule!!(
-    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P}
-) where {Pext<:IEEEFloat,P<:IEEEFloat}
-    return Dual(fpext(Pext, primal(x)), fpext(Pext, tangent(x)))
-end
+# Bare-Dual `fpext` body deleted under task #31. See `abs_float` note.
 function rrule!!(
     ::CoDual{typeof(fpext)}, ::CoDual{Type{Pext}}, x::CoDual{P}
 ) where {Pext<:IEEEFloat,P<:IEEEFloat}
@@ -526,11 +497,7 @@ end
 @inactive_intrinsic fptoui
 
 @intrinsic fptrunc
-function frule!!(
-    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P}
-) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
-    return Dual(fptrunc(Ptrunc, primal(x)), fptrunc(Ptrunc, tangent(x)))
-end
+# Bare-Dual `fptrunc` body deleted under task #31. See `abs_float` note.
 function rrule!!(
     ::CoDual{typeof(fptrunc)}, ::CoDual{Type{Ptrunc}}, x::CoDual{P}
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
@@ -550,11 +517,7 @@ end
 
 @static if VERSION >= v"1.12.0-rc2"
     @intrinsic max_float
-    function frule!!(::Dual{typeof(max_float)}, a::Dual, b::Dual)
-        p = max_float(primal(a), primal(b))
-        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
-    end
+    # Bare-Dual `max_float` body deleted under task #31. See `abs_float` note.
     function rrule!!(
         ::CoDual{typeof(max_float)}, a::CoDual{P}, b::CoDual{P}
     ) where {P<:Base.IEEEFloat}
@@ -571,11 +534,7 @@ end
     end
 
     @intrinsic max_float_fast
-    function frule!!(::Dual{typeof(max_float_fast)}, a::Dual, b::Dual)
-        p = max_float_fast(primal(a), primal(b))
-        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
-    end
+    # Bare-Dual `max_float_fast` body deleted under task #31. See `abs_float` note.
     function rrule!!(
         ::CoDual{typeof(max_float_fast)}, a::CoDual{P}, b::CoDual{P}
     ) where {P<:Base.IEEEFloat}
@@ -592,11 +551,7 @@ end
     end
 
     @intrinsic min_float
-    function frule!!(::Dual{typeof(min_float)}, a::Dual, b::Dual)
-        p = min_float(primal(a), primal(b))
-        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
-    end
+    # Bare-Dual `min_float` body deleted under task #31. See `abs_float` note.
     function rrule!!(
         ::CoDual{typeof(min_float)}, a::CoDual{P}, b::CoDual{P}
     ) where {P<:Base.IEEEFloat}
@@ -613,11 +568,7 @@ end
     end
 
     @intrinsic min_float_fast
-    function frule!!(::Dual{typeof(min_float_fast)}, a::Dual, b::Dual)
-        p = min_float_fast(primal(a), primal(b))
-        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
-    end
+    # Bare-Dual `min_float_fast` body deleted under task #31. See `abs_float` note.
     function rrule!!(
         ::CoDual{typeof(min_float_fast)}, a::CoDual{P}, b::CoDual{P}
     ) where {P<:Base.IEEEFloat}
@@ -635,11 +586,7 @@ end
 end
 
 @intrinsic mul_float
-function frule!!(::Dual{typeof(mul_float)}, a, b)
-    p = mul_float(primal(a), primal(b))
-    dp = add_float(mul_float(primal(a), tangent(b)), mul_float(primal(b), tangent(a)))
-    return Dual(p, dp)
-end
+# Bare-Dual `mul_float` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -648,11 +595,7 @@ function rrule!!(::CoDual{typeof(mul_float)}, a, b)
 end
 
 @intrinsic mul_float_fast
-function frule!!(::Dual{typeof(mul_float_fast)}, a, b)
-    c = mul_float_fast(primal(a), primal(b))
-    dc = mul_float_fast(primal(a), tangent(b)) + mul_float_fast(tangent(a), primal(b))
-    return Dual(c, dc)
-end
+# Bare-Dual `mul_float_fast` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(mul_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -663,12 +606,7 @@ end
 @inactive_intrinsic mul_int
 
 @intrinsic muladd_float
-function frule!!(::Dual{typeof(muladd_float)}, x, y, z)
-    a = muladd_float(primal(x), primal(y), primal(z))
-    dz = tangent(z)
-    da = muladd_float(tangent(x), primal(y), muladd_float(primal(x), tangent(y), dz))
-    return Dual(a, da)
-end
+# Bare-Dual `muladd_float` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(muladd_float)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -682,7 +620,7 @@ end
 @inactive_intrinsic ne_int
 
 @intrinsic neg_float
-frule!!(::Dual{typeof(neg_float)}, x) = Dual(neg_float(primal(x)), neg_float(tangent(x)))
+# Bare-Dual `neg_float` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(neg_float)}, x)
     _x = primal(x)
     neg_float_pullback!!(dy) = NoRData(), -dy
@@ -690,9 +628,7 @@ function rrule!!(::CoDual{typeof(neg_float)}, x)
 end
 
 @intrinsic neg_float_fast
-function frule!!(::Dual{typeof(neg_float_fast)}, x)
-    return Dual(neg_float_fast(primal(x)), neg_float_fast(tangent(x)))
-end
+# Bare-Dual `neg_float_fast` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(neg_float_fast)}, x)
     _x = primal(x)
     neg_float_fast_pullback!!(dy) = NoRData(), -dy
@@ -791,12 +727,7 @@ end
 @inactive_intrinsic slt_int
 
 @intrinsic sqrt_llvm
-function frule!!(::Dual{typeof(sqrt_llvm)}, x)
-    _x, dx = extract(x)
-    y = sqrt_llvm(_x)
-    dy = nan_tangent_guard(dx, dx / (2 * y))
-    return Dual(y, dy)
-end
+# Bare-Dual `sqrt_llvm` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm(primal(x))
     function llvm_sqrt_pullback!!(dy)
@@ -807,12 +738,7 @@ function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
 end
 
 @intrinsic sqrt_llvm_fast
-function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
-    _x, dx = extract(x)
-    y = sqrt_llvm_fast(_x)
-    dy = nan_tangent_guard(dx, dx / (2 * y))
-    return Dual(y, dy)
-end
+# Bare-Dual `sqrt_llvm_fast` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
     function llvm_sqrt_fast_pullback!!(dy)
@@ -825,11 +751,7 @@ end
 @inactive_intrinsic srem_int
 
 @intrinsic sub_float
-function frule!!(::Dual{typeof(sub_float)}, a, b)
-    c = sub_float(primal(a), primal(b))
-    dc = sub_float(tangent(a), tangent(b))
-    return Dual(c, dc)
-end
+# Bare-Dual `sub_float` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(sub_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -838,11 +760,7 @@ function rrule!!(::CoDual{typeof(sub_float)}, a, b)
 end
 
 @intrinsic sub_float_fast
-function frule!!(::Dual{typeof(sub_float_fast)}, a, b)
-    c = sub_float_fast(primal(a), primal(b))
-    dc = sub_float_fast(tangent(a), tangent(b))
-    return Dual(c, dc)
-end
+# Bare-Dual `sub_float_fast` body deleted under task #31. See `abs_float` note.
 function rrule!!(::CoDual{typeof(sub_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)

@@ -432,6 +432,18 @@ end
     frule!!(::Dual{typeof(max_float_fast)}, a::NDual, b::NDual) = max(a, b)
     frule!!(::Dual{typeof(min_float)}, a::NDual, b::NDual) = min(a, b)
     frule!!(::Dual{typeof(min_float_fast)}, a::NDual, b::NDual) = min(a, b)
+    for (op_sym, op_fn) in (
+        (:max_float, :max),
+        (:max_float_fast, :max),
+        (:min_float, :min),
+        (:min_float_fast, :min),
+    )
+        @eval @inline function frule!!(
+            ::Mooncake.Lifted{typeof($op_sym),N}, a::Mooncake.Lifted, b::Mooncake.Lifted
+        ) where {N}
+            return Mooncake.Lifted{_typeof(primal(a)),N}($op_fn(_unlift(a), _unlift(b)))
+        end
+    end
 end
 
 # ── scalar_math ───────────────────────────────────────────────────────────────
