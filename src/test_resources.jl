@@ -207,6 +207,19 @@ struct VecOnly
     v::Vector{Float64}
 end
 
+# Regression test for the recursive struct lift (`dual_type` recursion gap,
+# §13 of `notes/mooncake/dual-types.md`). Pre-fix, forward-mode AD reported
+# JVP = 0 for `mutate_struct_field_in_place(h, x)` because the in-place
+# mutation `h.v[1] += x` landed in a fresh `Vector{NDual}` rebuilt at the
+# `getfield` boundary rather than the parent slot's tangent storage. The
+# recursive lift makes the slot's inner V a `NamedTuple{(:v,), Tuple{Vector{NDual}}}`
+# so `getfield(slot.value, :v)` returns a reference to the shared
+# `Vector{NDual}` and mutation propagates.
+function mutate_struct_field_in_place(h::VecOnly, x::Float64)
+    h.v[1] += x
+    return sum(h.v)
+end
+
 function build_big_isbits_struct()
     return FourFields(
         FiveFields(
@@ -907,6 +920,19 @@ function generate_test_functions()
         ),
         (false, :allocs, nothing, sum, randn(32)),
         (false, :none, nothing, test_diagonal_to_matrix, Diagonal(randn(30))),
+        # Regression test for the `dual_type` recursion gap fix (notes
+        # `dual-types.md` §13). `mutate_struct_field_in_place(h, x)` mutates
+        # `h.v[1]` in place; pre-fix forward mode reported JVP = 0 (silent
+        # corruption from rebuilt-and-discarded NDual array); post-fix the
+        # NamedTuple inner V shares storage and mutation propagates → JVP = 1.
+        (
+            false,
+            :none,
+            nothing,
+            mutate_struct_field_in_place,
+            VecOnly([1.0, 2.0, 3.0]),
+            5.0,
+        ),
         (
             false,
             :allocs,
