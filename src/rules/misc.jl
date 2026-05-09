@@ -173,6 +173,25 @@ end
 @inline _lgetfield_impl(x::T, ::Val{f}) where {T<:Union{Tuple,NamedTuple},f} = getfield(
     x, f
 )
+# Bare `AbstractArray{<:NDual}` wrappers (Diagonal, Adjoint, SubArray, …) — the
+# structural lift in `nfwd/NfwdMooncake.jl` places `NDual`/`Array{NDual}` at
+# differentiable leaf fields (which are returned as-is, already canonical V).
+# Non-differentiable fields (e.g. `SubArray`'s `:indices`, `:offset1`,
+# `:stride1`) are bare values; lift them via `uninit_dual` so the slot V matches
+# `dual_type(Val(1), fieldtype)` — mirrors the `Dual{P, NoTangent}` field path
+# in the `Dual{P, T}` overload above.
+@inline function _lgetfield_impl(
+    x::AbstractArray{<:Union{NDual,Complex{<:NDual}}}, ::Val{f}
+) where {f}
+    field_val = getfield(x, f)
+    return if field_val isa Union{
+        NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
+    }
+        field_val
+    else
+        uninit_dual(field_val)
+    end
+end
 
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N}, x::Mooncake.Lifted, name::Mooncake.Lifted{<:Val}

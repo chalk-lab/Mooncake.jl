@@ -87,7 +87,54 @@ Width-aware forward value type query.
         return NamedTuple{names,InnerTup}
     end
 
+    # Wrapper-type guard (task #31 / Option 2): array-like wrappers that hold a
+    # differentiable inner array (e.g. `Diagonal{T, Vector{T}}`,
+    # `Adjoint{T, Matrix{T}}`, `SubArray{T, ...}`, `Symmetric{T, ...}`) need an
+    # explicit structural-lift `dual_type` overload. Without one, falling
+    # through to the generic `Dual{P, Tangent{...inner_array::Array{T}...}}`
+    # would silently produce wrong tangents whenever the lifted IR extracts
+    # the inner array via `getfield` — the extraction returns a
+    # `Dual{Array{T}, Array{T}}` whose layout doesn't match the canonical V
+    # `Array{NDual{T,N}}` that downstream rules dispatch on. Refuse to
+    # construct the silently-broken slot type and direct the user to add the
+    # missing overload.
+    if N >= 1 && _wrapper_needs_explicit_dual_type(P)
+        throw(
+            ArgumentError(
+                "dual_type(Val($N), $P): array-wrapper type without an explicit " *
+                "structural-lift overload. The generic `Dual{P, Tangent{...}}` " *
+                "fallback silently produces wrong tangents when the wrapper's " *
+                "underlying array is extracted via getfield in the lifted IR. " *
+                "Add a `dual_type(Val(N), $P)` overload that lifts the underlying " *
+                "array (e.g. `Diagonal{T, Vector{T}}` → " *
+                "`Diagonal{NDual{T,N}, Vector{NDual{T,N}}}`) plus the matching " *
+                "`_uninit_dual` / `__get_primal` / `_has_ndual` / `_ndual_primal` " *
+                "/ `_tangent_dir` / `primal` overloads (see `nfwd/NfwdMooncake.jl` " *
+                "for the `Array{T,D}` template).",
+            ),
+        )
+    end
+
     return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
+end
+
+# Returns `true` for `AbstractArray`-subtype wrappers that hold at least one
+# `AbstractArray{<:IEEEFloat}` field — the precise shape that the generic
+# `Dual{P, Tangent{...}}` fallback handles incorrectly under the lifted IR.
+# Used by `dual_type(Val(N), P)` above to fail loudly rather than constructing
+# a silently-wrong slot type.
+@inline function _wrapper_needs_explicit_dual_type(::Type{P}) where {P}
+    P <: AbstractArray || return false
+    isconcretetype(P) || return false
+    P <: Array && return false  # primitive Array has its own dual_type overload
+    @static if VERSION >= v"1.11-"
+        (P <: Memory || P <: MemoryRef) && return false
+    end
+    for F in fieldtypes(P)
+        F <: AbstractArray{<:IEEEFloat} && return true
+        F <: AbstractArray{<:Complex{<:IEEEFloat}} && return true
+    end
+    return false
 end
 
 dual_type(::Val{0}, ::Type{P}) where {P} = P

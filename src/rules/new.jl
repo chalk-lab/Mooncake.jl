@@ -80,6 +80,24 @@ end
         return Lifted{P,N}(Complex(bare_x...))
     end
 
+    # Array-wrapper primal (Diagonal, Adjoint, SubArray, …) with a structural-
+    # lift `dual_type(Val(N), P)` defined: build the lifted wrapper directly
+    # via `:new` on the lifted type. Extracts bare primals from non-NDual args
+    # (e.g. SubArray's `indices::Tuple{StepRange}`, `offset1::Int`) and leaves
+    # NDual arrays (`Vector{NDual{T,N}}` etc.) intact so tangent data stays in
+    # element form, mirroring the `P <: Array` branch above.
+    if P <: AbstractArray && _has_ndual(bare_x...)
+        DT = dual_type(Val(N), P)
+        if DT isa DataType && !(DT <: Dual) && DT <: AbstractArray
+            new_args = map(bare_x) do v
+                v isa Tuple && return primal(v)
+                v isa Dual && return primal(v)
+                return v
+            end
+            return Lifted{P,N,DT}(_new_(DT, new_args...))
+        end
+    end
+
     # Tuple primal: canonical V is the element-wise tuple-of-inner-duals
     # (`dual_type(Val(N), Tuple{...})` lifts each field). `bare_x` is already
     # the element-wise inner tuple, so wrap it directly. Tuple primals do not

@@ -2,6 +2,7 @@ module NfwdMooncake
 
 import ..Mooncake
 using Base: IEEEFloat
+using LinearAlgebra: LinearAlgebra
 using Random: AbstractRNG
 using ..Nfwd
 import ..Mooncake:
@@ -911,6 +912,60 @@ end
     end
 end
 
+# ── Wrapper-type structural lifts ────────────────────────────────────────────
+# Array-like wrappers (`Diagonal`, `Adjoint`, `SubArray`, …) hold an inner
+# `Array{T<:IEEEFloat}` field. The generic `dual_type` fallback would lift them
+# to `Dual{P, Tangent{...}}`, which silently breaks under the lifted IR: a
+# downstream `getfield(::W, :parent)` returns a bare `Array{T}` rather than the
+# canonical `Array{NDual{T,N}}` that downstream rules dispatch on. The
+# `_wrapper_needs_explicit_dual_type` guard in `tangents/dual.jl` refuses to
+# build such a slot.
+#
+# The structural lift maps `W{T, Inner{T}}` → `W{NDual{T,N}, Inner{NDual{T,N}}}`
+# at the type level, mirrors that on values via `_uninit_dual`, and provides
+# the matching `Lifted` constructor so `Lifted{W{T,...}, N}(primal, tangent)`
+# can build an inner `W{NDual,...}` directly. Field extraction through
+# `_lgetfield_impl(::AbstractArray{<:NDual}, ::Val{f}) = getfield(x, f)` (in
+# `rules/misc.jl`) then returns canonical V for any leaf field without per-
+# wrapper logic.
+
+# Diagonal{T, Vector{T}} — single :diag::Vector{T} field.
+function dual_type(
+    ::Val{N}, ::Type{LinearAlgebra.Diagonal{T,Vector{T}}}
+) where {N,T<:IEEEFloat}
+    return LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}
+end
+function dual_type(
+    ::Val{0}, ::Type{LinearAlgebra.Diagonal{T,Vector{T}}}
+) where {T<:IEEEFloat}
+    return LinearAlgebra.Diagonal{T,Vector{T}}
+end
+
+# Adjoint{T, Matrix{T}} — single :parent::Matrix{T} field.
+function dual_type(
+    ::Val{N}, ::Type{LinearAlgebra.Adjoint{T,Matrix{T}}}
+) where {N,T<:IEEEFloat}
+    return LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}
+end
+function dual_type(
+    ::Val{0}, ::Type{LinearAlgebra.Adjoint{T,Matrix{T}}}
+) where {T<:IEEEFloat}
+    return LinearAlgebra.Adjoint{T,Matrix{T}}
+end
+
+# SubArray{T, D, Array{T,Dp}, I, L} — :parent::Array{T,Dp} is the only
+# differentiable field; :indices, :offset1, :stride1 are NoTangent.
+function dual_type(
+    ::Val{N}, ::Type{SubArray{T,D,Array{T,Dp},I,L}}
+) where {N,T<:IEEEFloat,D,Dp,I,L}
+    return SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}
+end
+function dual_type(
+    ::Val{0}, ::Type{SubArray{T,D,Array{T,Dp},I,L}}
+) where {T<:IEEEFloat,D,Dp,I,L}
+    return SubArray{T,D,Array{T,Dp},I,L}
+end
+
 # tangent_type(NDual) uses the default struct-based tangent_type. HVP runs
 # reverse mode on f(NDual(x,v)), so build_rrule needs tangent_type(NDual) to
 # construct CoDuals for NDual-typed arguments.
@@ -1009,6 +1064,37 @@ function (::Type{Array{Complex{NDual{T,N}},D}})(
     primal::Array{Complex{T},D}, tangent::Array{Complex{T},D}
 ) where {T<:IEEEFloat,N,D}
     return map((p, t) -> Complex{NDual{T,N}}(p, t), primal, tangent)
+end
+
+# ── Wrapper-type Lifted constructors ─────────────────────────────────────────
+# These mirror the `Array{NDual{T,N},D}(primal, tangent)` form for the array-
+# wrapper structural lifts above. Each extracts the wrapper's inner array from
+# the primal, pairs it with the matching field of `tangent::Mooncake.Tangent`,
+# zips into NDual elements via the inner array's own constructor, and rebuilds
+# the wrapper structurally.
+
+function (::Type{LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}})(
+    primal::LinearAlgebra.Diagonal{T,Vector{T}}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N}
+    diag_t = Mooncake._get_tangent_field(tangent, :diag)
+    return LinearAlgebra.Diagonal(Vector{NDual{T,N}}(primal.diag, diag_t))
+end
+
+function (::Type{LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}})(
+    primal::LinearAlgebra.Adjoint{T,Matrix{T}}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N}
+    parent_t = Mooncake._get_tangent_field(tangent, :parent)
+    return LinearAlgebra.Adjoint(Matrix{NDual{T,N}}(parent(primal), parent_t))
+end
+
+function (::Type{SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}})(
+    primal::SubArray{T,D,Array{T,Dp},I,L}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    parent_t = Mooncake._get_tangent_field(tangent, :parent)
+    parent_lifted = Array{NDual{T,N},Dp}(parent(primal), parent_t)
+    return view(
+        parent_lifted, primal.indices...
+    )::SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}
 end
 
 # Memory / MemoryRef: element-wise (1.11+). MemoryRef constructors lift the
@@ -1315,6 +1401,74 @@ function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     )
 end
 
+# ── Wrapper-type accessors ───────────────────────────────────────────────────
+# `primal` rebuilds the primal wrapper around `primal` of the inner array.
+# `tangent` returns a `Tangent` whose differentiable field carries the inner
+# array's element-wise `NTangent` representation; non-differentiable fields
+# (e.g. `SubArray`'s `:indices`/`:offset1`/`:stride1`) get `NoTangent`.
+
+function primal(
+    d::LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    return LinearAlgebra.Diagonal(primal(d.diag))
+end
+function tangent(
+    d::LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    return Mooncake.Tangent((; diag=tangent(d.diag)))
+end
+
+function primal(
+    a::LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    return LinearAlgebra.Adjoint(primal(parent(a)))
+end
+function tangent(
+    a::LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    return Mooncake.Tangent((; parent=tangent(parent(a))))
+end
+
+function primal(
+    s::SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    return view(primal(parent(s)), s.indices...)
+end
+function tangent(
+    s::SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    return Mooncake.Tangent((;
+        parent=tangent(parent(s)),
+        indices=NoTangent(),
+        offset1=NoTangent(),
+        stride1=NoTangent(),
+    ))
+end
+
+# `_tangent_dir` for wrapper-NDual containers — return the per-direction
+# tangent in the wrapper's `tangent_type` shape (a `Tangent`), matching the
+# `randn_tangent(::W)` shape used by FD comparison in `test_frule_correctness`.
+@inline function _tangent_dir(
+    x::LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}, i
+) where {T<:IEEEFloat,N}
+    return Mooncake.Tangent((; diag=_tangent_dir(x.diag, i)))
+end
+@inline function _tangent_dir(
+    x::LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}, i
+) where {T<:IEEEFloat,N}
+    return Mooncake.Tangent((; parent=_tangent_dir(parent(x), i)))
+end
+@inline function _tangent_dir(
+    x::SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}, i
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    return Mooncake.Tangent((;
+        parent=_tangent_dir(parent(x), i),
+        indices=NoTangent(),
+        offset1=NoTangent(),
+        stride1=NoTangent(),
+    ))
+end
+
 @static if VERSION >= v"1.11-"
     # ── Memory / MemoryRef {NDual} accessors ────────────────────────────────
     # Mirror `__get_primal` shapes: rule bodies that call `primal` / `tangent`
@@ -1337,6 +1491,30 @@ function Mooncake._uninit_dual(::Val{N}, v::Array{T,D}) where {N,T<:IEEEFloat,D}
         ndual_arr[i] = NDual{T,N}(v[i], ntuple(_ -> zero(T), Val(N)))
     end
     return Lifted{Array{T,D},N}(ndual_arr)
+end
+
+# Wrapper-type `_uninit_dual`: mirror the structural lifts above by lifting the
+# inner array via the existing Array overload, then re-wrapping in the same
+# wrapper type. The outer `Lifted{W{T,...}, N}` matches `lifted_type(Val(N), W{T,...})`.
+function Mooncake._uninit_dual(
+    ::Val{N}, v::LinearAlgebra.Diagonal{T,Vector{T}}
+) where {N,T<:IEEEFloat}
+    ndual_diag = Mooncake._uninit_dual(Val(N), v.diag).value
+    return Lifted{LinearAlgebra.Diagonal{T,Vector{T}},N}(LinearAlgebra.Diagonal(ndual_diag))
+end
+
+function Mooncake._uninit_dual(
+    ::Val{N}, v::LinearAlgebra.Adjoint{T,Matrix{T}}
+) where {N,T<:IEEEFloat}
+    ndual_parent = Mooncake._uninit_dual(Val(N), parent(v)).value
+    return Lifted{LinearAlgebra.Adjoint{T,Matrix{T}},N}(LinearAlgebra.Adjoint(ndual_parent))
+end
+
+function Mooncake._uninit_dual(
+    ::Val{N}, v::SubArray{T,D,Array{T,Dp},I,L}
+) where {N,T<:IEEEFloat,D,Dp,I,L}
+    ndual_parent = Mooncake._uninit_dual(Val(N), parent(v)).value
+    return Lifted{SubArray{T,D,Array{T,Dp},I,L},N}(view(ndual_parent, v.indices...))
 end
 
 # Lift `Array{T,D}` type literals (mirrors the Memory variant below): substitute
