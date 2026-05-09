@@ -289,13 +289,10 @@ end
 
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:IdDict}}}) = true
-function frule!!(::Dual{Type{IdDict{K,V}}}) where {K,V}
-    return Dual(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
-end
-@inline function frule!!(f::Mooncake.Lifted{Type{IdDict{K,V}},N}) where {K,V,N}
-    bare_result = frule!!(Mooncake._unlift(f))
-    P_out = _typeof(__get_primal(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+# Bare-Dual `IdDict{K,V}()` body deleted under task #31. The Lifted body computes
+# the result independently — no kernel needed.
+@inline function frule!!(::Mooncake.Lifted{Type{IdDict{K,V}},N}) where {K,V,N}
+    return Mooncake.Lifted{IdDict{K,V},N}(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
 end
 function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)

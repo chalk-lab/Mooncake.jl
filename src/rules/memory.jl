@@ -810,11 +810,16 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{Type{<:Memory},UndefInitializer,Int}
-function frule!!(::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}) where {P}
+# `Memory{P}(undef, n)` implementation kernel (no `Dual{typeof(F)}` arg).
+# The `P<:NDual`/`P<:Complex{<:NDual}` overload returns the bare canonical
+# container (no `Dual` wrapping); the generic overload wraps in `Dual`.
+@inline function _memory_init_kernel(
+    ::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}
+) where {P}
     x = Memory{P}(undef, primal(n))
     return Dual(x, zero_tangent_internal(x, NoCache()))
 end
-function frule!!(
+@inline function _memory_init_kernel(
     ::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}
 ) where {P<:Union{NDual,Complex{<:NDual}}}
     return Memory{P}(undef, primal(n))
@@ -824,7 +829,9 @@ end
     u::Mooncake.Lifted{UndefInitializer},
     n::Mooncake.Lifted{Int},
 ) where {P,N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(u), Mooncake._unlift(n))
+    bare_result = _memory_init_kernel(
+        Mooncake._unlift(f), Mooncake._unlift(u), Mooncake._unlift(n)
+    )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end

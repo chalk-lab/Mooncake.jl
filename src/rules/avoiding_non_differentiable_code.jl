@@ -2,9 +2,8 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
-function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
-    return Dual(primal(x) + primal(y), tangent(x) + primal(y))
-end
+# Bare-Dual `+(::Ptr, ::Integer)` body deleted under task #31. The Lifted-typed
+# body below computes the result independently from the inner V.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.:(+)),N},
     x::Mooncake.Lifted{P_x},

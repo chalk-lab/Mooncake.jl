@@ -408,9 +408,8 @@ end
 
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
-    function frule!!(::Dual{typeof(copy)}, a::Dual{<:Dict})
-        return Dual(copy(primal(a)), _copy_dict_tangent(tangent(a)))
-    end
+    # Bare-Dual `copy(::Dict)` body deleted under task #31. The Lifted-typed body
+    # below computes the result independently from the inner V.
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Dict}
     ) where {N}
