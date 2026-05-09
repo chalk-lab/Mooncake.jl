@@ -83,7 +83,11 @@ end
 # Rules to handle / avoid foreigncall nodes
 #
 
-@zero_derivative MinimalCtx Tuple{typeof(Base.allocatedinline),Type}
+# Broader `Any` slot rather than `Type`: `Base.allocatedinline` only accepts
+# Type at runtime, but inference can widen the slot to `Any` (e.g.
+# `_all(allocatedinline, fieldtypes(P))` inside CUDACore's `valid_type`),
+# producing a `Lifted{Any, ...}` slot that doesn't match `Lifted{<:Type}`.
+@zero_derivative MinimalCtx Tuple{typeof(Base.allocatedinline),Any}
 
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
