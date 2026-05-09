@@ -122,13 +122,16 @@ end
 
     # Struct primal with recursive NamedTuple lift: `dual_type(Val(N), P)`
     # returns a `NamedTuple{fieldnames(P), Tuple{Vᵢ…}}` for any concrete
-    # struct with `tangent_type(P) <: Tangent`. The `_new_(P, args...)` call
-    # has each arg already in canonical V form (via `bare_x`), so wrap them
-    # element-wise into the lifted NamedTuple. This mirrors the existing
-    # NamedTuple-primal branch above; the only difference is the result wrap
-    # (a struct's `Lifted{P, N, NamedTuple{...}}` rather than a NamedTuple's
-    # own slot).
-    if !(P <: Array) && !(P <: Complex) && !(P <: AbstractArray)
+    # immutable struct with `tangent_type(P) <: Tangent`. The `_new_(P,
+    # args...)` call has each arg already in canonical V form (via
+    # `bare_x`), so wrap them element-wise into the lifted NamedTuple.
+    # Mirrors the existing NamedTuple-primal branch above; the only
+    # difference is the result wrap (`Lifted{P, N, NamedTuple{...}}` for
+    # the original struct type rather than a NamedTuple's own slot).
+    # Detect via `dual_type(Val(N), P) <: NamedTuple`; the per-wrapper
+    # `Diagonal{T,Vector{T}}` etc. specialisations return their own
+    # wrapper-shaped V and skip this branch.
+    if !(P <: Array) && !(P <: Complex)
         InnerT = dual_type(Val(N), P)
         if InnerT isa DataType && InnerT <: NamedTuple
             names = fieldnames(P)

@@ -912,22 +912,23 @@ end
     end
 end
 
-# ── Wrapper-type structural lifts ────────────────────────────────────────────
-# Array-like wrappers (`Diagonal`, `Adjoint`, `SubArray`, …) hold an inner
-# `Array{T<:IEEEFloat}` field. The generic `dual_type` fallback would lift them
-# to `Dual{P, Tangent{...}}`, which silently breaks under the lifted IR: a
-# downstream `getfield(::W, :parent)` returns a bare `Array{T}` rather than the
-# canonical `Array{NDual{T,N}}` that downstream rules dispatch on. The
-# `_wrapper_needs_explicit_dual_type` guard in `tangents/dual.jl` refuses to
-# build such a slot.
+# ── Wrapper-type structural lifts (specialisations) ──────────────────────────
+# `Diagonal`, `Adjoint`, `SubArray` are immutable `AbstractArray` wrappers
+# holding an inner `Array{T<:IEEEFloat}` field. The generic recursive lift
+# in `tangents/dual.jl` (§13 of `notes/mooncake/dual-types.md`) handles
+# arbitrary immutable structs via a `NamedTuple{names, Tuple{Vᵢ…}}` inner V.
+# The per-wrapper specialisations below provide a wrapper-shaped inner V
+# (e.g. `Diagonal{NDual{T,N}, Vector{NDual{T,N}}}`) that rules can pattern-
+# match for dispatch on the original wrapper type. Both forms close the
+# silent-corruption gap; the per-wrapper form is preferred where the
+# wrapper-shape inner V is structurally useful for rule bodies.
 #
-# The structural lift maps `W{T, Inner{T}}` → `W{NDual{T,N}, Inner{NDual{T,N}}}`
-# at the type level, mirrors that on values via `_uninit_dual`, and provides
-# the matching `Lifted` constructor so `Lifted{W{T,...}, N}(primal, tangent)`
-# can build an inner `W{NDual,...}` directly. Field extraction through
-# `_lgetfield_impl(::AbstractArray{<:NDual}, ::Val{f}) = getfield(x, f)` (in
-# `rules/misc.jl`) then returns canonical V for any leaf field without per-
-# wrapper logic.
+# Each specialisation maps `W{T, Inner{T}}` →
+# `W{NDual{T,N}, Inner{NDual{T,N}}}` at the type level, mirrors that on
+# values via `_uninit_dual`, and provides the matching `Lifted` constructor.
+# Field extraction through
+# `_lgetfield_impl(::AbstractArray{<:NDual}, ::Val{f}) = getfield(x, f)`
+# (in `rules/misc.jl`) returns canonical V for any leaf field.
 
 # Diagonal{T, Vector{T}} — single :diag::Vector{T} field.
 function dual_type(

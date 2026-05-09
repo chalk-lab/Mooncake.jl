@@ -87,20 +87,23 @@ Width-aware forward value type query.
         return NamedTuple{names,InnerTup}
     end
 
-    # Concrete IMMUTABLE struct with `tangent_type(P) <: Tangent`: recursive
-    # NamedTuple lift. Each field's `dual_type` is the canonical V for that
-    # field's primal type; the inner V mirrors the struct's field structure
-    # as a `NamedTuple{names, Tuple{Vᵢ…}}`. This generalises the per-wrapper
+    # Concrete IMMUTABLE struct with `tangent_type(P) <: Tangent` and all
+    # fields always initialised: recursive NamedTuple lift. Each field's
+    # `dual_type` is the canonical V for that field's primal type; the
+    # inner V mirrors the struct's field structure as a
+    # `NamedTuple{names, Tuple{Vᵢ…}}`. This generalises the per-wrapper
     # structural lift (Diagonal/Adjoint/SubArray) to arbitrary immutable
     # structs and closes the silent-corruption gap for in-place mutation
     # through struct fields. See `notes/mooncake/dual-types.md` §13.
     #
-    # Mutable structs (`MutableTangent` tangent_type) are excluded: their
-    # `lsetfield!` rules need a mutable inner V to support `s.field = x`,
-    # but `NamedTuple` is immutable. Mutable structs keep the existing
-    # parallel `Dual{P, MutableTangent}` form. (The corresponding mutation
-    # propagation gap for mutable-struct array fields remains, separate
-    # follow-up work.)
+    # Excluded:
+    # - Mutable structs (`MutableTangent` tangent_type): their `lsetfield!`
+    #   rules need a mutable inner V to support `s.field = x`, but
+    #   `NamedTuple` is immutable. Keep the existing parallel
+    #   `Dual{P, MutableTangent}` form.
+    # - Structs with potentially-undef fields (`PossiblyUninitTangent` in
+    #   their `tangent_field_types`): the lift would call
+    #   `getfield(primal, name)` on undef fields. Keep the legacy form.
     #
     # Specific per-wrapper `dual_type` overloads (e.g. `Diagonal{T,Vector{T}}`
     # in `nfwd/NfwdMooncake.jl`) are more specific and dispatch first, so
@@ -109,7 +112,8 @@ Width-aware forward value type query.
         isconcretetype(P) &&
         !ismutabletype(P) &&
         fieldcount(P) > 0 &&
-        tangent_type(P) <: Tangent
+        tangent_type(P) <: Tangent &&
+        all(always_initialised(P))
         names = fieldnames(P)
         InnerTup = Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
         return NamedTuple{names,InnerTup}
@@ -149,6 +153,11 @@ tangent(x::Dual) = x.tangent
 # `V` of a `Lifted{<:Tuple, N}`). Recursive map so nested Tuple-of-Dual works.
 primal(t::Tuple) = map(primal, t)
 tangent(t::Tuple) = map(tangent, t)
+# Bare NamedTuple inner V (struct-primal recursive lift, see §13 of
+# notes/mooncake/dual-types.md): per-field `primal` / `tangent`. Mirrors
+# the Tuple bare-V conventions above.
+primal(t::NamedTuple) = map(primal, t)
+tangent(t::NamedTuple) = map(tangent, t)
 Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangent(x)))
 # Dual can be safely shared without copying
 _copy(x::P) where {P<:Dual} = x
