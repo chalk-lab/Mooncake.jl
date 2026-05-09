@@ -156,6 +156,22 @@ end
 # `Lifted{P, N}` parametric types when wrapping rule results.
 @inline _val_n(::Val{N}) where {N} = N
 
+# `@generated` shim: forces `dual_type(Val(N), P)` to resolve at expansion
+# time and emits the result as a literal type. `dual_type` is `@unstable`
+# and its struct-lift / Tuple branches contain runtime predicates (e.g.
+# `_all(_is_lift_safe_field_type, fieldtypes(P), :)`) that the inliner
+# can't constant-fold. The fully-inlined IR ends up with abstract V types
+# (e.g. `@NamedTuple{x::Dual, y::Dual}`) flowing into the invariant
+# `Lifted{P, N, V}` constructor; the runtime value's V is concrete (e.g.
+# `@NamedTuple{x::NDual{Float64, 1}, y::Dual{Int, NoTangent}}`) and the
+# constructor call infers to `Union{}` — leaving an unsound `Union{}` →
+# `Union{}` PhiNode that the IR verifier rejects. Use this shim wherever a
+# rule body branches on `dual_type(Val(N), P)`'s concrete shape.
+@inline @generated function _static_dual_type(::Val{N}, ::Type{P}) where {N,P}
+    DT = dual_type(Val(N), P)
+    return :($DT)
+end
+
 # A "lifted width" is one that uses the `Lifted{P, N, V}` boundary at the OC
 # (i.e. `Val{N}` for `N >= 1`). The primal-passthrough `Val{0}` keeps the OC
 # slot types bare.

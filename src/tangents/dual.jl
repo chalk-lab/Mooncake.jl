@@ -165,7 +165,16 @@ end
 # be a bare `NamedTuple` and `primal` reconstruction wouldn't know to
 # `_new_(NestedStruct, …)` instead of returning the bare NamedTuple.
 @inline function _is_lift_safe_field_type(::Type{T}) where {T}
-    isconcretetype(T) || return true   # abstract — assume safe
+    # Abstract field types are UNSAFE: `dual_type(Val(N), Abstract)` returns
+    # bare `Dual` (abstract V), but the runtime value's V is concrete (e.g.
+    # `NDual{Float64, 1}`). `Lifted{P, N, V}` is invariant in V, so an
+    # abstract-V slot cannot accept a concrete-V value — the constructor
+    # call infers to `Union{}` and the IR verifier rejects the resulting
+    # phi join. Bail out to the legacy `Dual{P, T<:Tangent}` form for
+    # structs with type-erased fields. Note: a `Tuple` whose own type is
+    # `Tuple{Float64, Int}` *is* concrete (recursive Tuples with abstract
+    # parameters like `Tuple{Vararg{Float64}}` are not).
+    isconcretetype(T) || return false
     tangent_type(T) === NoTangent && return true
     T <: IEEEFloat && return true
     T <: Complex{<:IEEEFloat} && return true

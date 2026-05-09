@@ -91,7 +91,7 @@ end
     # NDual arrays (`Vector{NDual{T,N}}` etc.) intact so tangent data stays in
     # element form, mirroring the `P <: Array` branch above.
     if P <: AbstractArray && _has_ndual(bare_x...)
-        DT = dual_type(Val(N), P)
+        DT = _static_dual_type(Val(N), P)
         if DT isa DataType && !(DT <: Dual) && DT <: AbstractArray
             new_args = map(bare_x) do v
                 v isa Tuple && return primal(v)
@@ -107,7 +107,7 @@ end
     # the element-wise inner tuple, so wrap it directly. Tuple primals do not
     # use the `Dual{Tuple, NTangent}` shape.
     if P <: Tuple
-        InnerT = dual_type(Val(N), P)
+        InnerT = _static_dual_type(Val(N), P)
         if InnerT isa DataType && InnerT <: Tuple
             return Lifted{P,N,InnerT}(bare_x)
         end
@@ -117,7 +117,7 @@ end
     # `NamedTuple{names, Tuple{V_i...}}` of bare inner duals. `bare_x` carries
     # the element-wise per-field inner duals; wrap into the named tuple.
     if P <: NamedTuple
-        InnerT = dual_type(Val(N), P)
+        InnerT = _static_dual_type(Val(N), P)
         if InnerT isa DataType && InnerT <: NamedTuple
             names = fieldnames(P)
             return Lifted{P,N,InnerT}(NamedTuple{names}(bare_x))
@@ -136,7 +136,7 @@ end
     # `Diagonal{T,Vector{T}}` etc. specialisations return their own
     # wrapper-shaped V and skip this branch.
     if !(P <: Array) && !(P <: Complex)
-        InnerT = dual_type(Val(N), P)
+        InnerT = _static_dual_type(Val(N), P)
         if InnerT isa DataType && InnerT <: NamedTuple
             names = fieldnames(P)
             return Lifted{P,N,InnerT}(NamedTuple{names}(bare_x))
