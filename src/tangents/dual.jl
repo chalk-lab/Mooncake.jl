@@ -583,19 +583,25 @@ end
 # `_get_tangent_field_for_lift` unwraps `PossiblyUninitTangent` slots so
 # field tangents pass through unwrapped. Mutable structs keep the existing
 # parallel-Dual path (their `dual_type` does not return `<: NamedTuple`).
-@inline function Lifted{P,N}(primal::P, tangent::Tangent) where {P,N}
+@inline @generated function Lifted{P,N}(primal::P, tangent::Tangent) where {P,N}
     InnerT = dual_type(Val(N), P)
-    InnerT <: NamedTuple || return Lifted{P,N,InnerT}(InnerT(primal, tangent))
+    if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
+        # Non-struct lift: defer to the inner type's own 2-arg constructor.
+        return :(Lifted{$P,$N,$InnerT}($InnerT(primal, tangent)))
+    end
     names = fieldnames(P)
-    inner_tup = ntuple(
-        i -> _inner_dual_for_field(
-            fieldtype(InnerT, i),
-            getfield(primal, names[i]),
-            _get_tangent_field_for_lift(tangent, names[i]),
-        ),
-        Val(fieldcount(P)),
-    )
-    return Lifted{P,N,InnerT}(NamedTuple{names}(inner_tup))
+    InnerTup = InnerT.parameters[2]
+    n = fieldcount(P)
+    inner_exprs = map(1:n) do i
+        :(_inner_dual_for_field(
+            $(fieldtype(InnerTup, i)),
+            getfield(primal, $(QuoteNode(names[i]))),
+            _get_tangent_field_for_lift(tangent, $(QuoteNode(names[i]))),
+        ))
+    end
+    return quote
+        return Lifted{$P,$N,$InnerT}($(NamedTuple{names})(($(inner_exprs...),)))
+    end
 end
 
 # Helper: extract a field's tangent value from a `Tangent`, unwrapping
