@@ -413,16 +413,13 @@ function Mooncake._is_primitive(
 )
     return true
 end
-function frule!!(::Dual{typeof(__cglobal)}, args...)
-    return Mooncake.uninit_dual(__cglobal(map(primal, args)...))
-end
+# Bare-Dual `__cglobal` body deleted under task #31. The Lifted body computes
+# the result independently from the unlifted args' primals.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(__cglobal),N}, args::Vararg{Mooncake.Lifted,M}
+    ::Mooncake.Lifted{typeof(__cglobal),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
     bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
-    bare_result = frule!!(Mooncake._unlift(f), bare_args...)
-    P_out = _typeof(__get_primal(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake.zero_lifted(Val(N), __cglobal(map(primal, bare_args)...))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(__cglobal),Vararg}}) = true
 function rrule!!(f::CoDual{typeof(__cglobal)}, args...)
@@ -900,7 +897,8 @@ end
 __vec_to_tuple(v::Vector) = Tuple(v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
-function frule!!(::Dual{typeof(__vec_to_tuple)}, v::Dual{<:Vector})
+# `__vec_to_tuple` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline function _vec_to_tuple_kernel(v::Dual{<:Vector})
     x = __vec_to_tuple(primal(v))
     if tangent_type(_typeof(x)) == NoTangent
         return zero_dual(x)
@@ -909,9 +907,9 @@ function frule!!(::Dual{typeof(__vec_to_tuple)}, v::Dual{<:Vector})
     end
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector}
+    ::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(v))
+    bare_result = _vec_to_tuple_kernel(Mooncake._unlift(v))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -945,20 +943,19 @@ end
 # Core._setsuper!
 # Core._structtype
 
-function frule!!(
-    ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector}, _ind::Dual{Int}
-)
+# `Core._svec_ref` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline function _svec_ref_kernel(v::Dual{Core.SimpleVector}, _ind::Dual{Int})
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
     tv = getindex(tangent(v), ind)
     return Dual(pv, tv)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Core._svec_ref),N},
+    ::Mooncake.Lifted{typeof(Core._svec_ref),N},
     v::Mooncake.Lifted{Core.SimpleVector},
     ind::Mooncake.Lifted{Int},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(v), Mooncake._unlift(ind))
+    bare_result = _svec_ref_kernel(Mooncake._unlift(v), Mooncake._unlift(ind))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -991,17 +988,18 @@ function _svec_ref_rrule(f, _v, _ind, pv, tv)
     end
 end
 
-function frule!!(f::Dual{typeof(svec)}, args::Vararg{Any,N}) where {N}
+# `svec` implementation kernel — accepts unlifted V values directly.
+@inline function _svec_kernel(args::Vararg{Any,N}) where {N}
     primal_output = svec(map(primal, args)...)
     # Tangent type for `SimpleVector` is `Vector{Any}`
     dual_output = collect(Any, map(tangent, args))
     return Dual(primal_output, dual_output)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(svec),N}, args::Vararg{Mooncake.Lifted,M}
+    ::Mooncake.Lifted{typeof(svec),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
     bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
-    bare_result = frule!!(Mooncake._unlift(f), bare_args...)
+    bare_result = _svec_kernel(bare_args...)
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1023,11 +1021,10 @@ function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
 end
 
 @static if VERSION > v"1.12-"
-    function frule!!(f::Dual{typeof(Core._svec_len)}, v)
-        return zero_dual(Core._svec_len(primal(v)))
-    end
+    # Bare-Dual `Core._svec_len` body deleted under task #31. The Lifted body
+    # below computes the result independently.
     @inline function frule!!(
-        f::Mooncake.Lifted{typeof(Core._svec_len),N}, v::Mooncake.Lifted
+        ::Mooncake.Lifted{typeof(Core._svec_len),N}, v::Mooncake.Lifted
     ) where {N}
         return zero_lifted(Val(N), Core._svec_len(primal(v)))
     end
@@ -1038,11 +1035,9 @@ end
 end
 
 # Core._typebody!
-function frule!!(::Dual{typeof(Core._typevar)}, args...)
-    return zero_dual(Core._typevar(map(primal, args)...))
-end
+# Bare-Dual `Core._typevar` body deleted under task #31.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Core._typevar),N}, args::Vararg{Mooncake.Lifted,M}
+    ::Mooncake.Lifted{typeof(Core._typevar),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
     bare_args = ntuple(i -> primal(args[i]), Val(M))
     return zero_lifted(Val(N), Core._typevar(bare_args...))
@@ -1052,11 +1047,9 @@ function rrule!!(f::CoDual{typeof(Core._typevar)}, args...)
     return zero_fcodual(Core._typevar(map(primal, args)...)), NoPullback(f, args...)
 end
 
-function frule!!(::Dual{typeof(Core.apply_type)}, args...)
-    return zero_dual(Core.apply_type(map(primal, args)...))
-end
+# Bare-Dual `Core.apply_type` body deleted under task #31.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Core.apply_type),N}, args::Vararg{Mooncake.Lifted,M}
+    ::Mooncake.Lifted{typeof(Core.apply_type),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
     bare_args = ntuple(i -> primal(args[i]), Val(M))
     return zero_lifted(Val(N), Core.apply_type(bare_args...))
@@ -1067,20 +1060,22 @@ function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     return CoDual{_typeof(T),NoFData}(T, NoFData()), NoPullback(f, args...)
 end
 
-function frule!!(::Dual{typeof(compilerbarrier)}, setting::Dual{Symbol}, v::Dual)
+# `compilerbarrier` implementation kernels — dispatch on the inner V shape.
+@inline function _compilerbarrier_kernel(setting::Dual{Symbol}, v::Dual)
     return Dual(
         compilerbarrier(primal(setting), primal(v)),
         compilerbarrier(primal(setting), tangent(v)),
     )
 end
+@inline function _compilerbarrier_kernel(setting::Dual{Symbol}, v)
+    return compilerbarrier(primal(setting), v)
+end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(compilerbarrier),N},
+    ::Mooncake.Lifted{typeof(compilerbarrier),N},
     setting::Mooncake.Lifted{Symbol},
     v::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f), Mooncake._unlift(setting), Mooncake._unlift(v)
-    )
+    bare_result = _compilerbarrier_kernel(Mooncake._unlift(setting), Mooncake._unlift(v))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1095,22 +1090,18 @@ end
 # Core.finalizer
 # Core.get_binding_type
 
-function frule!!(::Dual{typeof(Core.ifelse)}, cond::Dual{Bool}, a::Dual, b::Dual)
-    _cond = primal(cond)
-    return Dual(ifelse(_cond, primal(a), primal(b)), ifelse(_cond, tangent(a), tangent(b)))
-end
+# Bare-Dual `Core.ifelse` body deleted under task #31. The Lifted-typed body
+# below selects between unlifted V values directly.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Core.ifelse),N},
+    ::Mooncake.Lifted{typeof(Core.ifelse),N},
     cond::Mooncake.Lifted{Bool},
     a::Mooncake.Lifted,
     b::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(cond),
-        Mooncake._unlift(a),
-        Mooncake._unlift(b),
-    )
+    _cond = primal(cond)
+    inner_a = Mooncake._unlift(a)
+    inner_b = Mooncake._unlift(b)
+    bare_result = ifelse(_cond, inner_a, inner_b)
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1333,7 +1324,8 @@ end
 
 # swapfield!
 
-frule!!(::Dual{typeof(throw)}, args::Dual...) = throw(map(primal, args)...)
+# Bare-Dual `throw` body deleted under task #31. The Lifted body throws
+# directly from primals — no bare delegation needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(throw),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
@@ -1346,9 +1338,7 @@ end
 
 # Only defined in v1.12+
 @static if isdefined(Core, :throw_methoderror)
-    frule!!(::Dual{typeof(Core.throw_methoderror)}, args::Dual...) = Core.throw_methoderror(
-        map(primal, args)...
-    )
+    # Bare-Dual `throw_methoderror` body deleted under task #31.
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Core.throw_methoderror),N}, args::Vararg{Mooncake.Lifted,M}
     ) where {N,M}
@@ -1365,9 +1355,7 @@ end
     end
 end
 
-function frule!!(::Dual{typeof(Core.throw_inexacterror)}, args::Dual...)
-    Core.throw_inexacterror(map(primal, args)...)
-end
+# Bare-Dual `throw_inexacterror` body deleted under task #31.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core.throw_inexacterror),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
@@ -1394,17 +1382,9 @@ end
 
 @inline tuple_pullback(dy::NoRData) = NoRData()
 
-function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
-    if _has_ndual(args...)
-        return tuple(args...)
-    end
-    primal_output = tuple(map(primal, args)...)
-    if tangent_type(_typeof(primal_output)) == NoTangent
-        return zero_dual(primal_output)
-    else
-        return Dual(primal_output, tuple(map(tangent, args)...))
-    end
-end
+# Bare-Dual `tuple` body deleted under task #31. The Lifted-typed body below
+# canonicalises the per-element inner V directly via `_canonicalise_tuple_inner`,
+# so no bare-body kernel is needed.
 
 # Phase 4a — Lifted-aware `tuple`: single outer `Lifted{<:Tuple}` whose `V` is a
 # bare element-wise tuple of inner duals. Collapses the three branches of the
@@ -1437,9 +1417,9 @@ function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     end
 end
 
-function frule!!(::Dual{typeof(typeassert)}, x::Dual, type::Dual)
-    return Dual(typeassert(primal(x), primal(type)), tangent(x))
-end
+# Bare-Dual `typeassert` body deleted under task #31. The two Lifted-typed
+# bodies below dispatch on whether the type-assert target is a concrete
+# `Type{T}` (slot narrows to `Lifted{T}`) or an arbitrary value (slot stays).
 function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
     typeassert_pullback(dy) = NoRData(), dy, NoRData()
     return CoDual(typeassert(primal(x), primal(type)), tangent(x)), typeassert_pullback
