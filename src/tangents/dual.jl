@@ -87,11 +87,11 @@ Width-aware forward value type query.
         return NamedTuple{names,InnerTup}
     end
 
-    # Concrete IMMUTABLE struct with `tangent_type(P) <: Tangent` and all
-    # fields always initialised: recursive NamedTuple lift. Each field's
-    # `dual_type` is the canonical V for that field's primal type; the
-    # inner V mirrors the struct's field structure as a
-    # `NamedTuple{names, Tuple{Vᵢ…}}`. This generalises the per-wrapper
+    # Concrete IMMUTABLE struct with `tangent_type(P) <: Tangent`, all fields
+    # always initialised, and only "lift-safe" field types: recursive
+    # NamedTuple lift. Each field's `dual_type` is the canonical V for that
+    # field's primal type; the inner V mirrors the struct's field structure
+    # as a `NamedTuple{names, Tuple{Vᵢ…}}`. This generalises the per-wrapper
     # structural lift (Diagonal/Adjoint/SubArray) to arbitrary immutable
     # structs and closes the silent-corruption gap for in-place mutation
     # through struct fields. See `notes/mooncake/dual-types.md` §13.
@@ -104,6 +104,11 @@ Width-aware forward value type query.
     # - Structs with potentially-undef fields (`PossiblyUninitTangent` in
     #   their `tangent_field_types`): the lift would call
     #   `getfield(primal, name)` on undef fields. Keep the legacy form.
+    # - Structs with nested-struct fields (e.g. `Broadcasted`'s `args` is a
+    #   `Tuple` containing an `Extruded` struct, which would itself recurse
+    #   through this lift, losing its struct identity inside the Tuple V).
+    #   `_is_lift_safe_field_type` walks Tuple/NamedTuple containers to
+    #   detect any non-flat struct lurking inside. Keep the legacy form.
     #
     # Specific per-wrapper `dual_type` overloads (e.g. `Diagonal{T,Vector{T}}`
     # in `nfwd/NfwdMooncake.jl`) are more specific and dispatch first, so
@@ -113,13 +118,70 @@ Width-aware forward value type query.
         !ismutabletype(P) &&
         fieldcount(P) > 0 &&
         tangent_type(P) <: Tangent &&
-        all(always_initialised(P))
+        all(always_initialised(P)) &&
+        all(_is_lift_safe_field_type, fieldtypes(P)) &&
+        _is_user_definable_type(P)
         names = fieldnames(P)
         InnerTup = Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
         return NamedTuple{names,InnerTup}
     end
 
     return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
+end
+
+# `_is_user_definable_type(P)` — heuristic gate for the recursive struct lift.
+# Returns `true` for types defined outside `Base` and `Core` (and their
+# submodules), `false` for built-in types like `Base.Broadcast.Extruded`.
+# Built-in types are constructed by the IR through `_new_(::Type{T}, …)`
+# call sites that expect the original struct identity to be preserved;
+# my recursive lift would replace them with a `NamedTuple` and break the
+# construction. User-defined types stay within the lifted form throughout.
+@inline function _is_user_definable_type(::Type{P}) where {P}
+    isconcretetype(P) || return false
+    m = parentmodule(P)
+    while true
+        (m === Base || m === Core) && return false
+        m === parentmodule(m) && return true
+        m = parentmodule(m)
+    end
+end
+
+# `_is_lift_safe_field_type(T)` — returns `true` if a struct field of type `T`
+# is safe to recursively lift through (the lift's primal/tangent reconstruction
+# can rebuild the original `T` from the lifted form). Returns `false` for
+# nested struct types whose lift would lose struct identity inside a containing
+# Tuple/NamedTuple V.
+#
+# Safe cases:
+# - non-differentiable types (`tangent_type === NoTangent`)
+# - canonical-V leaf types (`IEEEFloat`, `Complex{<:IEEEFloat}`,
+#   `AbstractArray{<:IEEEFloat}`, …) — handled by their own dual_type overloads
+# - `Tuple` / `NamedTuple` whose elements are themselves lift-safe (recursive)
+# - per-wrapper specialised types (`Diagonal`, `Adjoint`, `SubArray`) — their
+#   dual_type returns the wrapper-shaped V which preserves struct identity
+#
+# Unsafe: any other concrete struct with `tangent_type <: Tangent`. If we
+# lifted through such a field inside a Tuple/NamedTuple, the inner V would
+# be a bare `NamedTuple` and `primal` reconstruction wouldn't know to
+# `_new_(NestedStruct, …)` instead of returning the bare NamedTuple.
+@inline function _is_lift_safe_field_type(::Type{T}) where {T}
+    isconcretetype(T) || return true   # abstract — assume safe
+    tangent_type(T) === NoTangent && return true
+    T <: IEEEFloat && return true
+    T <: Complex{<:IEEEFloat} && return true
+    T <: AbstractArray && eltype(T) <: Union{IEEEFloat,Complex{<:IEEEFloat}} && return true
+    if T <: Tuple
+        return all(_is_lift_safe_field_type, T.parameters)
+    end
+    if T <: NamedTuple
+        return all(_is_lift_safe_field_type, fieldtypes(T))
+    end
+    # Per-wrapper specialised types (Diagonal/Adjoint/SubArray) — their
+    # `dual_type` returns the wrapper-shaped V which preserves struct identity.
+    T <: LinearAlgebra.Diagonal && return true
+    T <: LinearAlgebra.Adjoint && return true
+    T <: SubArray && return true
+    return false
 end
 
 dual_type(::Val{0}, ::Type{P}) where {P} = P
