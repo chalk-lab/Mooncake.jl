@@ -986,6 +986,17 @@ Mooncake.__get_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
 function Mooncake.__get_primal(x::AbstractArray{<:Complex{<:NDual}})
     map(z -> complex(z.re.value, z.im.value), x)
 end
+
+# `__primal_type` — type-level analog (no value materialization). Mirrors the
+# `__get_primal` overloads above so rule bodies that only need
+# `__primal_type(_typeof(bare_result))` for `_wrap_rule_result` can use
+# `__primal_type(_typeof(bare_result))` instead, skipping the deinterleave.
+@inline Mooncake.__primal_type(::Type{NDual{T,N}}) where {T,N} = T
+@inline Mooncake.__primal_type(::Type{Complex{NDual{T,N}}}) where {T,N} = Complex{T}
+@inline Mooncake.__primal_type(::Type{Array{NDual{T,N},D}}) where {T,N,D} = Array{T,D}
+@inline function Mooncake.__primal_type(::Type{Array{Complex{NDual{T,N}},D}}) where {T,N,D}
+    return Array{Complex{T},D}
+end
 @static if VERSION >= v"1.11-"
     Mooncake.__get_primal(x::Memory{<:NDual{T}}) where {T} = map(d -> d.value, x)
     Mooncake.__get_primal(x::Memory{<:Complex{<:NDual}}) = map(
@@ -1009,6 +1020,16 @@ end
         else
             memoryref(new_mem, Core.memoryrefoffset(x))
         end
+    end
+    @inline Mooncake.__primal_type(::Type{Memory{NDual{T,N}}}) where {T,N} = Memory{T}
+    @inline function Mooncake.__primal_type(::Type{Memory{Complex{NDual{T,N}}}}) where {T,N}
+        return Memory{Complex{T}}
+    end
+    @inline Mooncake.__primal_type(::Type{MemoryRef{NDual{T,N}}}) where {T,N} = MemoryRef{T}
+    @inline function Mooncake.__primal_type(
+        ::Type{MemoryRef{Complex{NDual{T,N}}}}
+    ) where {T,N}
+        return MemoryRef{Complex{T}}
     end
 end
 

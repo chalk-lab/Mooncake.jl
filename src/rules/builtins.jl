@@ -116,6 +116,7 @@ import ..Mooncake:
     nan_tangent_guard,
     _typeof,
     __get_primal,
+    __primal_type,
     _wrap_rule_result
 
 using Core.Intrinsics: atomic_pointerref
@@ -253,7 +254,7 @@ end
     bare_result = _unsafe_wrap_kernel(
         Mooncake._unlift(arr_type), Mooncake._unlift(p), Mooncake._unlift(dims)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
@@ -296,7 +297,7 @@ end
     bare_result = _atomic_pointerset_kernel(
         Mooncake._unlift(p), Mooncake._unlift(x), Mooncake._unlift(order)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
@@ -346,7 +347,7 @@ end
     ::Mooncake.Lifted{typeof(bitcast),N}, t::Mooncake.Lifted{Type{T}}, x::Mooncake.Lifted
 ) where {N,T}
     bare_result = _bitcast_kernel(Mooncake._unlift(t), Mooncake._unlift(x))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
@@ -652,7 +653,7 @@ end
     bare_result = _pointerref_kernel(
         Mooncake._unlift(x), Mooncake._unlift(y), Mooncake._unlift(z)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
@@ -689,7 +690,7 @@ end
     bare_result = _pointerset_kernel(
         Mooncake._unlift(p), Mooncake._unlift(x), Mooncake._unlift(idx), Mooncake._unlift(z)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
@@ -823,7 +824,7 @@ end
     ::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector}
 ) where {N}
     bare_result = _vec_to_tuple_kernel(Mooncake._unlift(v))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(__vec_to_tuple),<:Vector}}) = true
@@ -869,7 +870,7 @@ end
     ind::Mooncake.Lifted{Int},
 ) where {N}
     bare_result = _svec_ref_kernel(Mooncake._unlift(v), Mooncake._unlift(ind))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
@@ -913,7 +914,7 @@ end
 ) where {N,M}
     bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
     bare_result = _svec_kernel(bare_args...)
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(svec),Vararg}}) = true
@@ -989,7 +990,7 @@ end
     v::Mooncake.Lifted,
 ) where {N}
     bare_result = _compilerbarrier_kernel(Mooncake._unlift(setting), Mooncake._unlift(v))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(compilerbarrier),Symbol,Any}}) =
@@ -1015,7 +1016,7 @@ end
     inner_a = Mooncake._unlift(a)
     inner_b = Mooncake._unlift(b)
     bare_result = ifelse(_cond, inner_a, inner_b)
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.ifelse),Bool,Any,Any}}) = true
@@ -1088,7 +1089,7 @@ end
     f::Mooncake.Lifted{typeof(getfield),N}, x::Mooncake.Lifted, name::Mooncake.Lifted
 ) where {N}
     bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function frule!!(
@@ -1116,7 +1117,7 @@ end
         Mooncake._unlift(name),
         Mooncake._unlift(inbounds),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -1211,7 +1212,7 @@ end
     bare_result = _setfield!_kernel(
         Mooncake._unlift(value), Mooncake._unlift(name), Mooncake._unlift(x)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(setfield!)}, value::CoDual, name::CoDual, x::CoDual)

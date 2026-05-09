@@ -296,7 +296,7 @@ end
         Mooncake._unlift(src),
         Mooncake._unlift(n),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -476,7 +476,7 @@ end
         Mooncake._unlift(_ordering),
         Mooncake._unlift(_boundscheck),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function rrule!!(
@@ -522,7 +522,7 @@ end
         Mooncake._unlift(_ordering),
         Mooncake._unlift(_boundscheck),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
@@ -581,7 +581,7 @@ end
     ::Mooncake.Lifted{typeof(memoryrefnew),N}, x::Mooncake.Lifted{<:Memory}
 ) where {N}
     bare_result = _memoryrefnew_kernel(Mooncake._unlift(x))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
@@ -594,7 +594,7 @@ end
     ii::Mooncake.Lifted{Int},
 ) where {N}
     bare_result = _memoryrefnew_kernel(Mooncake._unlift(x), Mooncake._unlift(ii))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function rrule!!(
@@ -612,7 +612,7 @@ end
     bare_result = _memoryrefnew_kernel(
         Mooncake._unlift(x), Mooncake._unlift(ii), Mooncake._unlift(boundscheck)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function rrule!!(
@@ -677,7 +677,7 @@ end
         Mooncake._unlift(ord),
         Mooncake._unlift(bc),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function rrule!!(
@@ -761,7 +761,7 @@ end
         Mooncake._unlift(ordering),
         Mooncake._unlift(boundscheck),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
@@ -832,7 +832,7 @@ end
     bare_result = _memory_init_kernel(
         Mooncake._unlift(f), Mooncake._unlift(u), Mooncake._unlift(n)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:Memory},UndefInitializer,Int}}) =
@@ -878,7 +878,7 @@ end
         Mooncake._unlift(ref),
         Mooncake._unlift(size),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
@@ -924,7 +924,7 @@ end
         Mooncake._unlift(a5),
         Mooncake._unlift(x),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
@@ -974,7 +974,7 @@ end
         Mooncake._unlift(name),
         Mooncake._unlift(order),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -1012,7 +1012,7 @@ end
         Mooncake._unlift(name),
         Mooncake._unlift(order),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -1050,7 +1050,7 @@ end
         Mooncake._unlift(name),
         Mooncake._unlift(order),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -1106,7 +1106,7 @@ end
         Mooncake._unlift(name),
         Mooncake._unlift(order),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -1138,7 +1138,7 @@ end
     name::Mooncake.Lifted{<:Union{Int,Symbol}},
 ) where {N}
     bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -1170,7 +1170,7 @@ end
         Mooncake._unlift(name),
         Mooncake._unlift(x),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),<:Array,<:Val,Any}}) =
@@ -1203,7 +1203,7 @@ end
     ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
 ) where {N}
     bare_result = _copy_array_kernel(Mooncake._unlift(a))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
@@ -1242,7 +1242,7 @@ end
     x::Mooncake.Lifted{<:Integer},
 ) where {N,V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
     bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(x))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(

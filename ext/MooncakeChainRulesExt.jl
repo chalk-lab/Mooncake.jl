@@ -51,7 +51,7 @@ end
     ::Mooncake.Lifted{typeof(exp),N}, X_dX::Mooncake.Lifted{Matrix{P}}
 ) where {N,P<:IEEEFloat}
     bare_result = _exp_matrix_kernel(Mooncake._unlift(X_dX))
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(exp),<:Matrix{<:IEEEFloat}}}) = true

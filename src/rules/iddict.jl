@@ -222,7 +222,7 @@ end
     bare_result = _get_iddict(
         Mooncake._unlift(d), Mooncake._unlift(key), Mooncake._unlift(default)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -260,7 +260,7 @@ end
         getindex(primal(inner_d), primal(inner_key)),
         getindex(tangent(inner_d), primal(inner_key)),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(

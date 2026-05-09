@@ -210,7 +210,7 @@ end
     bare_f = Mooncake._unlift(f)
     bare_x = ntuple(i -> Mooncake._unlift(x[i]), Val(M))
     bare_result = _misty_closure_kernel(bare_f, bare_x...)
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{<:MistyClosure,Vararg}}) = true

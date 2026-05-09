@@ -197,7 +197,7 @@ end
     ::Mooncake.Lifted{typeof(lgetfield),N}, x::Mooncake.Lifted, name::Mooncake.Lifted{<:Val}
 ) where {N}
     bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 # Mixed dispatch fallback: Tuple/NamedTuple primal arrives as a `Lifted` slot
@@ -291,7 +291,7 @@ end
     order::Mooncake.Lifted{<:Val},
 ) where {N}
     bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name), primal(order))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function rrule!!(
@@ -347,7 +347,7 @@ end
         Mooncake._unlift(name),
         Mooncake._unlift(x),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline _ndual_to_dual_lane1(x::NDual) = Dual(primal(x), x.partials[1])

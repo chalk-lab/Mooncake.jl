@@ -198,7 +198,7 @@ non-migrated rule on the legacy bare path, so partial migration is safe.
 # the same `Lifted{P_concrete, N, V}` shape and don't trip parametric
 # invariance at OC typeassert boundaries.
 @inline _resolve_concrete_P(::Type{P}, x) where {P} =
-    isconcretetype(P) ? P : _typeof(__get_primal(x))
+    isconcretetype(P) ? P : __primal_type(_typeof(x))
 
 @inline function _wrap_rule_result(::Type{P}, ::Val{N}, x::Dual) where {P,N}
     P_out = _resolve_concrete_P(P, x)
@@ -522,7 +522,7 @@ end
             # named arg otherwise. Branch at runtime; both arms type-stably.
             quote
                 if isva && $i == nargs
-                    _wrap_arg(w, _typeof(__get_primal(flat_args[$i])), flat_args[$i])
+                    _wrap_arg(w, __primal_type(_typeof(flat_args[$i])), flat_args[$i])
                 else
                     _wrap_arg(
                         w,

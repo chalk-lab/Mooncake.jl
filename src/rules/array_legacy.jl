@@ -103,7 +103,7 @@ end
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _deletebeg_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -143,7 +143,7 @@ end
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _deleteend_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -197,7 +197,7 @@ end
     bare_result = _deleteat_kernel!(
         Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(delta)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -243,7 +243,7 @@ end
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _growbeg_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -278,7 +278,7 @@ end
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _growend_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -318,7 +318,7 @@ end
     bare_result = _growat_kernel!(
         Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(d)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -359,7 +359,7 @@ end
     sz::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _sizehint_kernel!(Mooncake._unlift(x), Mooncake._unlift(sz))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
@@ -399,7 +399,7 @@ end
         Mooncake._unlift(a5),
         Mooncake._unlift(a),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
@@ -467,7 +467,7 @@ end
         Mooncake._unlift(soffs),
         Mooncake._unlift(n),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -547,7 +547,7 @@ end
     bare_result = frule!!(
         Mooncake._unlift(f), Mooncake._unlift(inbounds), Mooncake._unlift(x), bare_inds...
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 Base.@propagate_inbounds function rrule!!(
@@ -611,7 +611,7 @@ end
         Mooncake._unlift(v),
         bare_inds...,
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -695,7 +695,7 @@ end
     ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
 ) where {N}
     bare_result = _copy_array_legacy_kernel(Mooncake._unlift(a))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(copy),<:Array}}) = true
@@ -731,7 +731,7 @@ end
     x::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(x))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(

@@ -265,7 +265,7 @@ end
         Mooncake._unlift(a),
         Mooncake._unlift(dims),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(

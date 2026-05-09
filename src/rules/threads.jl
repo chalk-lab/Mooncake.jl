@@ -84,7 +84,7 @@ end
     static::Mooncake.Lifted{Bool},
 ) where {N,F}
     bare_result = _threading_run_kernel(Mooncake._unlift(fun), Mooncake._unlift(static))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(

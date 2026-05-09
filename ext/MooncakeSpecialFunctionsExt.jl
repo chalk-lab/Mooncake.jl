@@ -205,7 +205,7 @@ end
     ∂a = Mooncake.notimplemented_tangent_guard(da)
     z = exp((a - 1) * log(x) - x - loggamma(a))
     bare = Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -245,7 +245,7 @@ end
     ∂x = -exp((a - 1) * log(x) - x)
     dy_val = ∂a + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -292,7 +292,7 @@ end
     ∂x = -exp((a - 1) * log(x) - x - loggamma(a, x))
     dy_val = ∂a + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -339,7 +339,7 @@ end
     ∂x = -expint(a - 1, x)
     dy_val = ∂a + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -386,7 +386,7 @@ end
     ∂x = y - expintx(a - 1, x)
     dy_val = ∂a + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -432,7 +432,7 @@ end
     ∂x = (besselj(v - 1, x) - besselj(v + 1, x)) / 2
     dy_val = ∂v + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -470,7 +470,7 @@ end
     ∂x = (bessely(v - 1, x) - bessely(v + 1, x)) / 2
     dy_val = ∂v + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -508,7 +508,7 @@ end
     ∂x = (besseli(v - 1, x) + besseli(v + 1, x)) / 2
     dy_val = ∂v + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -546,7 +546,7 @@ end
     ∂x = -(besselk(v - 1, x) + besselk(v + 1, x)) / 2
     dy_val = ∂v + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -584,7 +584,7 @@ end
     ∂x = (hankelh1(v - 1, x) - hankelh1(v + 1, x)) / 2
     dy_val = ∂v + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -622,7 +622,7 @@ end
     ∂x = (hankelh2(v - 1, x) - hankelh2(v + 1, x)) / 2
     dy_val = ∂v + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -669,7 +669,7 @@ end
     ∂x_2 = -sign(real(x)) * y
     dy_val = ∂v + ∂x_1 * dx + ∂x_2 * real(dx)
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -707,7 +707,7 @@ end
     ∂x = -(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y
     dy_val = ∂v + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -748,7 +748,7 @@ end
     ∂x_2 = -sign(imag(x)) * y
     dy_val = (∂v + ∂x_1 * dx + ∂x_2 * imag(dx))
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -789,7 +789,7 @@ end
     ∂x_2 = -sign(imag(x)) * y
     dy_val = ∂v + ∂x_1 * dx + ∂x_2 * imag(dx)
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -828,7 +828,7 @@ end
     ∂x = (hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y
     dy_val = ∂v + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(
@@ -866,7 +866,7 @@ end
     ∂x = (hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y
     dy_val = ∂v + ∂x * dx
     bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare)
 end
 @inline Mooncake._is_lifted_aware(

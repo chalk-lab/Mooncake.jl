@@ -933,6 +933,36 @@ end
 __get_primal(x::CoDual) = primal(x)
 __get_primal(x) = x
 
+# `__primal_type(::Type{V}) -> Type{P}` — type-level analog of
+# `_typeof(__get_primal(::V))`. Returns the user-visible primal type that
+# corresponds to a canonical-V slot type.
+#
+# The value-level `__get_primal` materializes deinterleaved primal containers
+# (e.g. `Memory{NDual{Float64,1}}` → `Memory{Float64}` via `map(d -> d.value,
+# x)`), allocating O(N) bytes just so the caller can read off a type. Many
+# rule bodies use the value-only for `__primal_type(_typeof(bare_result))` to
+# compute a `P_out` for `_wrap_rule_result`. `__primal_type` lets those
+# callers compute `P_out` directly from the canonical-V type without
+# materialization.
+#
+# Default: `V` is its own primal type (no canonical-V lifting). NDual /
+# Complex{NDual} / array-of-NDual / Memory / MemoryRef overloads live in
+# `nfwd/NfwdMooncake.jl` next to the value-level `__get_primal` overloads.
+@inline __primal_type(::Type{V}) where {V} = V
+# `Dual{P, T}` is the legacy parallel-storage wrapper; primal type is `P`.
+@inline __primal_type(::Type{Dual{P,T}}) where {P,T} = P
+# Bare canonical-V Tuple/NamedTuple — recurse element-wise.
+@inline @generated function __primal_type(::Type{T}) where {T<:Tuple}
+    elems = (:(__primal_type($(fieldtype(T, i)))) for i in 1:fieldcount(T))
+    return :(Tuple{$(elems...)})
+end
+@inline @generated function __primal_type(
+    ::Type{NamedTuple{names,T}}
+) where {names,T<:Tuple}
+    elems = (:(__primal_type($(fieldtype(T, i)))) for i in 1:fieldcount(T))
+    return :(NamedTuple{$names,Tuple{$(elems...)}})
+end
+
 const RuleMC{A,R} = MistyClosure{OpaqueClosure{A,R}}
 
 #

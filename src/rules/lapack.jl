@@ -24,7 +24,7 @@ end
     f::Mooncake.Lifted{typeof(LAPACK.getrf!),N}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
 ) where {N,P<:BlasFloat}
     bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(A_dA))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -86,7 +86,7 @@ end
         Mooncake._unlift(g),
         Mooncake._unlift(A_dA),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -185,7 +185,7 @@ end
         Mooncake._unlift(A_dA),
         Mooncake._unlift(B_dB),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _trtrs!_frule_core!(
@@ -290,7 +290,7 @@ end
         Mooncake._unlift(_ipiv),
         Mooncake._unlift(B_dB),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _getrs!_frule_core!(
@@ -421,7 +421,7 @@ end
     bare_result = frule!!(
         Mooncake._unlift(f), Mooncake._unlift(A_dA), Mooncake._unlift(_ipiv)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _getri!_frule_core!(
@@ -501,7 +501,7 @@ end
     bare_result = frule!!(
         Mooncake._unlift(f), Mooncake._unlift(_uplo), Mooncake._unlift(A_dA)
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _potrf!_frule_core!(
@@ -619,7 +619,7 @@ end
         Mooncake._unlift(A_dA),
         Mooncake._unlift(B_dB),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _potrs!_frule_core!(
@@ -716,7 +716,7 @@ end
             Mooncake._unlift(A_dA),
             Mooncake._unlift(_uplo),
         )
-        P_out = _typeof(__get_primal(bare_result))
+        P_out = __primal_type(_typeof(bare_result))
         return _wrap_rule_result(P_out, Val(N), bare_result)
     end
     function rrule!!(
@@ -894,7 +894,7 @@ end
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
 ) where {N,P<:BlasRealFloat}
     bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(_S))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -947,7 +947,7 @@ end
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
 ) where {N,P<:BlasRealFloat}
     bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(_S))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -1001,7 +1001,7 @@ end
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
 ) where {N,P<:BlasRealFloat}
     bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(_S))
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(

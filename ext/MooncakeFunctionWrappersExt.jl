@@ -281,7 +281,7 @@ end
     f::Mooncake.Lifted{Type{FunctionWrapper{R,A}},N}, obj::Mooncake.Lifted{P}
 ) where {R,A,P,N}
     bare_result = _function_wrapper_ctor_kernel(Mooncake._unlift(f), Mooncake._unlift(obj))
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:FunctionWrapper},Any}}) = true
@@ -302,7 +302,7 @@ end
 ) where {R,A,N,M}
     bare_args = ntuple(i -> Mooncake._unlift(x[i]), Val(M))
     bare_result = frule!!(Mooncake._unlift(f), bare_args...)
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
+    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{<:FunctionWrapper,Vararg}}) = true

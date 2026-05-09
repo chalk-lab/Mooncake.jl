@@ -384,7 +384,7 @@ end
         Mooncake._unlift(X_dX),
         Mooncake._unlift(incx),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -449,7 +449,7 @@ end
         Mooncake._unlift(X_dX),
         Mooncake._unlift(_incx),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(
@@ -538,7 +538,7 @@ end
         Mooncake._unlift(beta),
         Mooncake._unlift(y_dy),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 
@@ -811,7 +811,7 @@ end
         Mooncake._unlift(A_dA),
         Mooncake._unlift(x_dx),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _trmv!_frule_core!(
@@ -944,7 +944,7 @@ end
         Mooncake._unlift(A_dA),
         Mooncake._unlift(x_dx),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _trsv!_frule_core!(
@@ -1104,7 +1104,7 @@ end
         Mooncake._unlift(beta),
         Mooncake._unlift(C_dC),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 
@@ -1481,7 +1481,7 @@ end
         Mooncake._unlift(A_dA),
         Mooncake._unlift(B_dB),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _trmm!_frule_core!(
@@ -1619,7 +1619,7 @@ end
         Mooncake._unlift(A_dA),
         Mooncake._unlift(B_dB),
     )
-    P_out = _typeof(__get_primal(bare_result))
+    P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline function _trsm!_frule_core!(
