@@ -236,24 +236,22 @@ end
 # computation in the pullback. Downstream rules write directly into 
 # the tangent memory pointed to by tangent_arr.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_wrap),<:Type{<:Array},Ptr,Any}
-function frule!!(
-    ::Dual{typeof(unsafe_wrap)}, ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
+# `unsafe_wrap` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline function _unsafe_wrap_kernel(
+    ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
 ) where {T}
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     return Dual(primal_arr, tangent_arr)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(unsafe_wrap),N},
+    ::Mooncake.Lifted{typeof(unsafe_wrap),N},
     arr_type::Mooncake.Lifted{<:Type{<:Array}},
     p::Mooncake.Lifted{<:Ptr{T}},
     dims::Mooncake.Lifted,
 ) where {N,T}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(arr_type),
-        Mooncake._unlift(p),
-        Mooncake._unlift(dims),
+    bare_result = _unsafe_wrap_kernel(
+        Mooncake._unlift(arr_type), Mooncake._unlift(p), Mooncake._unlift(dims)
     )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -283,22 +281,20 @@ end
 # atomic_pointerreplace
 
 @intrinsic atomic_pointerset
-function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
+# `atomic_pointerset` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline function _atomic_pointerset_kernel(p, x, order)
     atomic_pointerset(primal(p), primal(x), primal(order))
     atomic_pointerset(tangent(p), tangent(x), primal(order))
     return p
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(atomic_pointerset),N},
+    ::Mooncake.Lifted{typeof(atomic_pointerset),N},
     p::Mooncake.Lifted,
     x::Mooncake.Lifted,
     order::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(p),
-        Mooncake._unlift(x),
-        Mooncake._unlift(order),
+    bare_result = _atomic_pointerset_kernel(
+        Mooncake._unlift(p), Mooncake._unlift(x), Mooncake._unlift(order)
     )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -326,7 +322,8 @@ end
 # atomic_pointerswap
 
 @intrinsic bitcast
-function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
+# `bitcast` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline function _bitcast_kernel(::Dual{Type{T}}, x) where {T}
     if T <: IEEEFloat
         msg =
             "It is not permissible to bitcast to a differentiable type during AD, as " *
@@ -346,9 +343,9 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
     return Dual(v, dv)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(bitcast),N}, t::Mooncake.Lifted{Type{T}}, x::Mooncake.Lifted
+    ::Mooncake.Lifted{typeof(bitcast),N}, t::Mooncake.Lifted{Type{T}}, x::Mooncake.Lifted
 ) where {N,T}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(t), Mooncake._unlift(x))
+    bare_result = _bitcast_kernel(Mooncake._unlift(t), Mooncake._unlift(x))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -640,19 +637,20 @@ end
 @inactive_intrinsic or_int
 
 @intrinsic pointerref
-function frule!!(::Dual{typeof(pointerref)}, x, y, z)
+# `pointerref` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline function _pointerref_kernel(x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
     da = pointerref(tangent(x), primal(y), primal(z))
     return Dual(a, da)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(pointerref),N},
+    ::Mooncake.Lifted{typeof(pointerref),N},
     x::Mooncake.Lifted,
     y::Mooncake.Lifted,
     z::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(y), Mooncake._unlift(z)
+    bare_result = _pointerref_kernel(
+        Mooncake._unlift(x), Mooncake._unlift(y), Mooncake._unlift(z)
     )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -675,24 +673,21 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
 end
 
 @intrinsic pointerset
-function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
+# `pointerset` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline function _pointerset_kernel(p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     pointerset(tangent(p), tangent(x), primal(idx), primal(z))
     return p
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(pointerset),N},
+    ::Mooncake.Lifted{typeof(pointerset),N},
     p::Mooncake.Lifted,
     x::Mooncake.Lifted,
     idx::Mooncake.Lifted,
     z::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(p),
-        Mooncake._unlift(x),
-        Mooncake._unlift(idx),
-        Mooncake._unlift(z),
+    bare_result = _pointerset_kernel(
+        Mooncake._unlift(p), Mooncake._unlift(x), Mooncake._unlift(idx), Mooncake._unlift(z)
     )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -1201,39 +1196,23 @@ is_homogeneous_and_immutable(::Any) = false
 
 # replacefield!
 
-function frule!!(::Dual{typeof(setfield!)}, value::Dual, name::Dual, x::Dual)
+# `setfield!` implementation kernel (no `Dual{typeof(F)}` arg).
+# Delegates to `lsetfield!` after lifting the field-name arg to a literal.
+@inline function _setfield!_kernel(value::Dual, name::Dual, x)
     literal_name = zero_dual(Val(primal(name)))
     return frule!!(zero_dual(lsetfield!), value, literal_name, x)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(setfield!),N},
+    ::Mooncake.Lifted{typeof(setfield!),N},
     value::Mooncake.Lifted,
     name::Mooncake.Lifted,
     x::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(value),
-        Mooncake._unlift(name),
-        Mooncake._unlift(x),
+    bare_result = _setfield!_kernel(
+        Mooncake._unlift(value), Mooncake._unlift(name), Mooncake._unlift(x)
     )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-# Post-kill width=Val(1): NDual-shaped value-arg forwarding to lsetfield!.
-@inline function frule!!(
-    ::Dual{typeof(setfield!)},
-    value::Dual,
-    name::Dual,
-    x::Union{
-        Mooncake.Nfwd.NDual,
-        Complex{<:Mooncake.Nfwd.NDual},
-        AbstractArray{<:Mooncake.Nfwd.NDual},
-        AbstractArray{<:Complex{<:Mooncake.Nfwd.NDual}},
-    },
-)
-    literal_name = zero_dual(Val(primal(name)))
-    return frule!!(zero_dual(lsetfield!), value, literal_name, x)
 end
 function rrule!!(::CoDual{typeof(setfield!)}, value::CoDual, name::CoDual, x::CoDual)
     literal_name = uninit_fcodual(Val(primal(name)))
