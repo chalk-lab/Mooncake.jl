@@ -216,21 +216,30 @@ end
 # through the inner type's own ctor (NDual / Vector{NDual} / Dual / etc.) via
 # `_inner_dual_for_field`. Uses the runtime primal type for per-field
 # canonicalisation so this works even when `P` carries `Type{Float64}` etc.
-@inline function _wrap_rule_result(
-    ::Type{P}, ::Val{N}, x::Dual{<:Tuple,<:Tuple}
-) where {P<:Tuple,N}
-    p_tup = primal(x)
-    t_tup = tangent(x)
-    P_out = _typeof(p_tup)
-    inner = ntuple(Val(length(p_tup))) do i
-        Vi = dual_type(Val(N), fieldtype(P_out, i))
+#
+# `@generated` for the same reason as `_wrap_oc_args`: a runtime `ntuple` with
+# a closure body indexing `p_tup[i]` / `t_tup[i]` leaves the inner result
+# Union-typed (the per-slot Vᵢ varies), forcing a heap allocation for the
+# returned Tuple. Unrolling at expansion time gives a fully-typed body.
+@inline @generated function _wrap_rule_result(
+    ::Type{P}, ::Val{N}, x::Dual{P_in,T_in}
+) where {P<:Tuple,N,P_in<:Tuple,T_in<:Tuple}
+    n = fieldcount(P_in)
+    inner_exprs = map(1:n) do i
+        Pi = fieldtype(P_in, i)
+        Vi = dual_type(Val(N), Pi)
         if Vi isa DataType && isconcretetype(Vi)
-            return _inner_dual_for_field(Vi, p_tup[i], t_tup[i])
+            :(_inner_dual_for_field($Vi, p_tup[$i], t_tup[$i]))
         else
-            return Dual(p_tup[i], t_tup[i])
+            :(Dual(p_tup[$i], t_tup[$i]))
         end
     end
-    return Lifted{P_out,N}(inner)
+    return quote
+        p_tup = primal(x)
+        t_tup = tangent(x)
+        inner = ($(inner_exprs...),)
+        return Lifted{$P_in,$N}(inner)
+    end
 end
 
 @inline function _wrap_rule_result(::Type{P}, w::Val{N}, x::Tuple) where {P<:Tuple,N}
@@ -306,17 +315,17 @@ function __unflatten_dual_varargs(
     isva::Bool, args, ::Val{nargs}, width::Val=Val(1)
 ) where {nargs}
     isva || return args
-    rest = args[nargs:end]
+    # Both head (`args[1:(nargs-1)]`) and tail (`args[nargs:end]`) tuple slices
+    # allocate via `UnitRange`-indexed Tuple `_getindex`. Use `@generated`
+    # head/tail extractors that unroll at expansion time so both slices are
+    # allocation-free.
+    rest = _drop_first(args, Val(nargs - 1))
     group_primal = map(primal, rest)
     if tangent_type(_typeof(group_primal)) == NoTangent
         grouped_args = zero_dual(group_primal)
     else
         grouped_args = _group_vararg_dual(width, group_primal, rest)
     end
-    # Avoid `args[1:(nargs-1)]` which allocates: a UnitRange-indexed tuple
-    # slice falls through to a generic `_getindex` branch, not the constant-
-    # folded ntuple path. `_take_first(args, Val(nargs - 1))` unrolls at
-    # expansion time so the head extraction is allocation-free.
     return (_take_first(args, Val(nargs - 1))..., grouped_args)
 end
 
@@ -325,6 +334,13 @@ end
 # argument indices must be known at expansion time.
 @inline @generated function _take_first(args::Tuple, ::Val{K}) where {K}
     return Expr(:tuple, (:(args[$i]) for i in 1:K)...)
+end
+
+# Unrolled tuple tail extraction: returns `Tuple(args[K+1], ..., args[end])`
+# without any runtime range indexing. Companion to `_take_first`.
+@inline @generated function _drop_first(args::Tuple, ::Val{K}) where {K}
+    n = fieldcount(args)
+    return Expr(:tuple, (:(args[$i]) for i in (K + 1):n)...)
 end
 
 function _group_vararg_dual(::Val{1}, group_primal, rest)
