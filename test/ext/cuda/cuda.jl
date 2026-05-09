@@ -591,11 +591,14 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         @testset "CuPtr{T} + Integer direct (Float32 and Cvoid)" begin
             # ── frule!! — differentiable T ────────────────────────────────────────────
             # Both primal and tangent pointers must advance by the same byte offset n.
+            # Inputs are wrapped in `Lifted{P, 1}` (the runtime AD path's slot
+            # boundary): `frule!!(::Dual{F}, ::Dual...)` no longer exists after the
+            # task #31 kernel-rename; the canonical entry is the Lifted-typed body.
             p32 = CuPtr{Float32}(UInt64(4096))
-            dp32 = Mooncake.Dual(p32, CuPtr{Float32}(UInt64(4096)))  # Mooncake.tangent = same base addr
-            dn = Mooncake.Dual(Int64(64), Mooncake.NoTangent())
+            dp32 = Mooncake.Lifted{CuPtr{Float32},1}(p32, CuPtr{Float32}(UInt64(4096)))
+            dn = Mooncake.Lifted{Int64,1}(Int64(64), Mooncake.NoTangent())
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(+, Mooncake.NoTangent()), dp32, dn
+                Mooncake.Lifted{typeof(+),1}(+, Mooncake.NoTangent()), dp32, dn
             )
             @test Mooncake.primal(result) == p32 + 64
             @test Mooncake.tangent(result) == CuPtr{Float32}(UInt64(4096)) + 64
@@ -603,9 +606,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # ── frule!! — non-differentiable T (Cvoid) ───────────────────────────────
             # Only primal advances; tangent must remain NoTangent (not crash or wrong type).
             pv = CuPtr{Cvoid}(UInt64(4096))
-            dpv = Mooncake.Dual(pv, Mooncake.NoTangent())
+            dpv = Mooncake.Lifted{CuPtr{Cvoid},1}(pv, Mooncake.NoTangent())
             result_v = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(+, Mooncake.NoTangent()), dpv, dn
+                Mooncake.Lifted{typeof(+),1}(+, Mooncake.NoTangent()), dpv, dn
             )
             @test Mooncake.primal(result_v) == pv + 64
             @test Mooncake.tangent(result_v) isa Mooncake.NoTangent
@@ -646,11 +649,13 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             arr = _rand(rng, Float32, 4)
             tarr = Mooncake.zero_tangent(arr)
 
-            # frule!!: output is Dual(nothing, NoTangent()).
+            # frule!!: output is Lifted{Nothing, 1}; primal/tangent extract OK.
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(Core.finalizer, Mooncake.NoTangent()),
-                Mooncake.Dual(fin, Mooncake.NoTangent()),
-                Mooncake.Dual(arr, tarr),
+                Mooncake.Lifted{typeof(Core.finalizer),1}(
+                    Core.finalizer, Mooncake.NoTangent()
+                ),
+                Mooncake.Lifted{typeof(fin),1}(fin, Mooncake.NoTangent()),
+                Mooncake.Lifted{typeof(arr),1}(arr, tarr),
             )
             @test Mooncake.primal(result) === nothing
             @test Mooncake.tangent(result) isa Mooncake.NoTangent
@@ -673,8 +678,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 expected = hasfieldcount(T)
 
                 result = _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(hasfieldcount, Mooncake.NoTangent()),
-                    Mooncake.Dual(T, Mooncake.NoTangent()),
+                    Mooncake.Lifted{typeof(hasfieldcount),1}(
+                        hasfieldcount, Mooncake.NoTangent()
+                    ),
+                    Mooncake.Lifted{Type{T},1}(T, Mooncake.NoTangent()),
                 )
                 @test Mooncake.primal(result) === expected
                 @test Mooncake.tangent(result) isa Mooncake.NoTangent
@@ -697,7 +704,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             tref = copy(ref)
 
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(copy, Mooncake.NoTangent()), Mooncake.Dual(ref, tref)
+                Mooncake.Lifted{typeof(copy),1}(copy, Mooncake.NoTangent()),
+                Mooncake.Lifted{typeof(ref),1}(ref, tref),
             )
             @test Mooncake.primal(result) isa typeof(ref)
             @test Mooncake.primal(result) !== ref    # must be a new handle, not the same object
@@ -723,7 +731,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             tarr = Mooncake.zero_tangent(arr)
 
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(unsafe_free!, Mooncake.NoTangent()), Mooncake.Dual(arr, tarr)
+                Mooncake.Lifted{typeof(unsafe_free!),1}(unsafe_free!, Mooncake.NoTangent()),
+                Mooncake.Lifted{typeof(arr),1}(arr, tarr),
             )
             @test Mooncake.primal(result) === nothing
             @test Mooncake.tangent(result) isa Mooncake.NoTangent
@@ -753,9 +762,13 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
             # frule!!: both primal and tangent pointers returned.
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(unsafe_convert, Mooncake.NoTangent()),
-                Mooncake.Dual(CuPtr{Float32}, Mooncake.NoTangent()),
-                Mooncake.Dual(arr, tarr),
+                Mooncake.Lifted{typeof(unsafe_convert),1}(
+                    unsafe_convert, Mooncake.NoTangent()
+                ),
+                Mooncake.Lifted{Type{CuPtr{Float32}},1}(
+                    CuPtr{Float32}, Mooncake.NoTangent()
+                ),
+                Mooncake.Lifted{typeof(arr),1}(arr, tarr),
             )
             @test Mooncake.primal(result) isa CuPtr{Float32}
             @test Mooncake.tangent(result) isa CuPtr{Float32}

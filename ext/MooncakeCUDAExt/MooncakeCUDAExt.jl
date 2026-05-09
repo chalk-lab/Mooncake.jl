@@ -584,9 +584,11 @@ end
     MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
 )
 # `reshape(::CuMaybeComplexArray, ::NTuple)` implementation kernel.
-@inline function _reshape_cuarray_kernel(
-    x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
-)
+# `dims` is untyped: `_unlift(::Lifted{<:NTuple, 1})` returns the canonical V
+# (a bare `Tuple{Dual{Int,NoTangent},...}`), not a `Dual{<:NTuple}`. The body
+# uses `primal(dims)` which has overloads for both shapes, so a plain Any
+# annotation lets either form dispatch through.
+@inline function _reshape_cuarray_kernel(x::Dual{<:CuMaybeComplexArray}, dims)
     return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
 end
 @inline function frule!!(
@@ -609,8 +611,11 @@ end
 # similar operations). The tangent reuses the DataRef from the input tangent so that
 # gradient accumulation propagates automatically.
 # `_new_(::Type{<:CuMaybeComplexArray}, data, maxsize, offset, dims)` ctor kernel.
+# `dims` may be a `Dual{<:NTuple}` (legacy) or a bare `Tuple{Dual,...}`
+# (canonical V from `_unlift(::Lifted{<:NTuple, 1})`); `primal(dims)` handles
+# both via the `primal(::Tuple)` overload, so leave it untyped.
 @inline function _cuarray_new_kernel(
-    ::Dual{Type{P}}, data::Dual, maxsize::Dual, offset::Dual, dims::Dual
+    ::Dual{Type{P}}, data::Dual, maxsize::Dual, offset::Dual, dims
 ) where {P<:CuMaybeComplexArray}
     y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
     dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
@@ -657,6 +662,10 @@ end
 @inline _cuarray_is_data_field(name) = name === 1 || name === :data
 @inline _cu_lgetfield_data_tangent(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoTangent()
+# When the CuArray's element type is non-differentiable (e.g. CuArray{Bool}),
+# `tangent_type(P)` collapses to `NoTangent` rather than the parallel `CuArray`.
+# All field tangents are then `NoTangent`.
+@inline _cu_lgetfield_data_tangent(::NoTangent, name) = NoTangent()
 @inline _cu_lgetfield_data_fdata(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoFData()
 
@@ -723,13 +732,17 @@ end
 #   :data (field 1) — the DataRef handle; tangent flows here
 #   :maxsize (field 2), :offset (field 3), :dims (field 4) — non-differentiable metadata
 # `lgetfield(::CuArray, ::Val{name}[, ::Val{order}])` implementation kernels.
+# Drop the `<:CuArray` constraint on the tangent slot so non-differentiable
+# CuArrays (e.g. `CuArray{Bool}`, whose `tangent_type` collapses to
+# `NoTangent`) flow through; `_cu_lgetfield_data_tangent` has a `::NoTangent`
+# overload that returns `NoTangent` for any field name.
 @inline function _lgetfield_cuarray_kernel(
-    x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}, ::Dual{Val{order}}
+    x::Dual{<:CuArray}, ::Dual{Val{name}}, ::Dual{Val{order}}
 ) where {name,order}
     return _cuarray_lgetfield_fwd(primal(x), tangent(x), name, order)
 end
 @inline function _lgetfield_cuarray_kernel(
-    x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
+    x::Dual{<:CuArray}, ::Dual{Val{name}}
 ) where {name}
     return _cuarray_lgetfield_fwd(primal(x), tangent(x), name)
 end
@@ -1337,11 +1350,23 @@ end
 # For float x the tangent array is filled with tangent(x).
 @is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
 # `fill!(::CuMaybeComplexArray, x)` implementation kernel.
+# `x` may be a `Dual{P, T}` (legacy parallel) or a bare canonical V — for an
+# IEEEFloat scalar primal that is `NDual{T, 1}`; for a Complex{IEEEFloat} that
+# is `Complex{NDual{T, 1}}`. `_fill_x_primal` / `_fill_x_tangent` extract the
+# scalar primal / scalar tangent from each of these shapes uniformly.
+@inline _fill_x_primal(x::Dual) = primal(x)
+@inline _fill_x_primal(x::Mooncake.Nfwd.NDual) = x.value
+@inline _fill_x_primal(x::Complex{<:Mooncake.Nfwd.NDual}) = Complex(x.re.value, x.im.value)
+@inline _fill_x_tangent(x::Dual) = tangent(x)
+@inline _fill_x_tangent(x::Mooncake.Nfwd.NDual{T,1}) where {T} = x.partials[1]
+@inline function _fill_x_tangent(x::Complex{Mooncake.Nfwd.NDual{T,1}}) where {T}
+    return Complex(x.re.partials[1], x.im.partials[1])
+end
 @inline function _fill_cuarray_kernel(
-    a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
+    a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x
 )
-    fill!(primal(a), primal(x))
-    tx = tangent(x)
+    fill!(primal(a), _fill_x_primal(x))
+    tx = _fill_x_tangent(x)
     fill!(tangent(a), tx isa NoTangent ? zero(eltype(tangent(a))) : eltype(tangent(a))(tx))
     return a
 end
@@ -1399,15 +1424,30 @@ _fields(x::CuMaybeComplexArray) = (parent=x,)
     DefaultCtx, Tuple{typeof(sum),<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}},
 )
 # `sum(::Transpose{<:CuArray})` and `sum(::Adjoint{<:CuArray})` kernels.
+# Two overloads each: legacy `Dual{Adjoint/Transpose, Tangent}` for direct
+# callers, and canonical V `NamedTuple{(:parent,), Tuple{Dual{CuArray}}}` for
+# the recursive struct lift (`dual_type(Val(1), Adjoint{...})` falls through
+# to the NamedTuple lift since CuArray-element wrappers don't have a
+# specialised dual_type).
 @inline function _sum_transpose_cuarray_kernel(
     x::Dual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
 )
     return Dual(sum(primal(x)), sum(_fields(tangent(x)).parent))
 end
+@inline function _sum_transpose_cuarray_kernel(x::NamedTuple{(:parent,)})
+    pp = primal(x.parent)
+    pt = tangent(x.parent)
+    return Dual(sum(transpose(pp)), sum(pt))
+end
 @inline function _sum_adjoint_cuarray_kernel(
     x::Dual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
 )
     return Dual(sum(primal(x)), conj(sum(_fields(tangent(x)).parent)))
+end
+@inline function _sum_adjoint_cuarray_kernel(x::NamedTuple{(:parent,)})
+    pp = primal(x.parent)
+    pt = tangent(x.parent)
+    return Dual(sum(adjoint(pp)), conj(sum(pt)))
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N},
@@ -1503,6 +1543,28 @@ function _gpu_sum_f_frule(f, x)
     return Dual(decoded.primal_out, dy)
 end
 
+# Canonical-V overload: when `x` is the recursive struct lift's
+# `NamedTuple{(:parent,), Tuple{Dual{CuArray, CuArray}}}` form (for
+# `Adjoint{T, CuArray{T}}` / `Transpose{T, CuArray{T}}`), extract the parent
+# CuArray's primal/tangent directly. Equivalent to the legacy path's
+# `parent(primal(x))` / `_fields(tangent(x)).parent` extraction but on the
+# new V shape.
+function _gpu_sum_f_frule(f, x::NamedTuple{(:parent,)})
+    _check_gpu_sum_f(f)
+    flat_px = primal(x.parent)
+    flat_dx = tangent(x.parent)
+    flat_pargs = (flat_px,)
+    flat_tangents = (flat_dx,)
+    out = _gpu_broadcast_dual(f, flat_px)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_pargs)
+    dy = if decoded.is_diff && !(flat_dx isa NoTangent)
+        _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, decoded.primal_out)
+    else
+        zero(decoded.primal_out)
+    end
+    return Dual(decoded.primal_out, dy)
+end
+
 function _gpu_sum_f_rrule(f, x)
     _check_gpu_sum_f(f)
     flat_px = parent(primal(x))
@@ -1536,7 +1598,13 @@ end
 # Performance: equivalent to NDual with 2-wide Duals — one kernel pass.
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuComplexArray})
 # `sum(f, ::CuComplexArray)` implementation kernel.
+# Two overloads: legacy parallel `Dual{CuGpuSumFArray, ...}` for direct callers
+# / parallel-storage CuArray slots, and canonical V `NamedTuple{(:parent,)}`
+# for the recursive struct lift on `Adjoint`/`Transpose{<:CuArray}`.
 @inline function _sum_f_cuarray_kernel(f::Dual, x::Dual{<:CuGpuSumFArray})
+    return _gpu_sum_f_frule(primal(f), x)
+end
+@inline function _sum_f_cuarray_kernel(f::Dual, x::NamedTuple{(:parent,)})
     return _gpu_sum_f_frule(primal(f), x)
 end
 @inline function frule!!(
@@ -2104,8 +2172,24 @@ end
 # The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
 # `cu(::AbstractArray)` implementation kernel.
+# CPU `Array{T<:IEEEFloat}` lifts element-wise to canonical V `Array{NDual{T,N}}`,
+# while the legacy parallel form is `Dual{Array{T}, Array{T}}`. Two overloads:
+# the canonical-V path deinterleaves into two CPU arrays (one per width slot),
+# transfers each via `cu`, and re-pairs them into a parallel `Dual{CuArray, CuArray}`
+# (the CuArray slot's V is parallel because CuArray's `tangent_type` is overridden
+# to itself). The legacy `Dual` overload is kept for direct callers.
 @inline function _cu_kernel(x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
     return Dual(cu(primal(x)), cu(tangent(x)))
+end
+@inline function _cu_kernel(x::AbstractArray{<:Mooncake.Nfwd.NDual{T,1}}) where {T}
+    p = map(d -> d.value, x)
+    t = map(d -> d.partials[1], x)
+    return Dual(cu(p), cu(t))
+end
+@inline function _cu_kernel(x::AbstractArray{Complex{Mooncake.Nfwd.NDual{T,1}}}) where {T}
+    p = map(z -> Complex(z.re.value, z.im.value), x)
+    t = map(z -> Complex(z.re.partials[1], z.im.partials[1]), x)
+    return Dual(cu(p), cu(t))
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(cu),N},
@@ -2131,9 +2215,15 @@ end
     MinimalCtx, Tuple{Type{Array{T,N}},CuArray{T,N}} where {T<:CuFloatOrComplex,N}
 )
 # `Array{T,N}(x::CuArray{T,N})` implementation kernel.
+# Type-slot inner V's primal is `Type{Array{NDual{T,M}, N}}` (per
+# `dual_type(::Val{M}, ::Type{Type{Array{T,N}}})`'s element-type substitution
+# in `nfwd/NfwdMooncake.jl`), while the CuArray slot's V keeps T = `Float64`
+# / `Float32` / `Complex{...}` (parallel-storage CuArray). Drop the shared-T
+# constraint between the two slots and constrain the array slot's tangent to
+# match its primal so the body's `Array(primal/tangent)` calls round-trip.
 @inline function _array_from_cuarray_kernel(
-    ::Dual{Type{Array{T,N}}}, x::Dual{<:CuArray{T,N}}
-) where {T<:CuFloatOrComplex,N}
+    ::Dual{<:Type{<:Array}}, x::Dual{X,X}
+) where {T<:CuFloatOrComplex,X<:CuArray{T}}
     return Dual(Array(primal(x)), Array(tangent(x)))
 end
 @inline function frule!!(
