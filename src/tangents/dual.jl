@@ -507,13 +507,18 @@ end
 # `_inner_dual_for_field` so nested Tuple fields (e.g. `Tuple{Tuple{}, Int}`)
 # recurse properly instead of trying to call `Tuple{}(::Tuple, ::NoTangent)`
 # which has no method.
-@inline function Lifted{P,N}(primal::P, ::NoTangent) where {P<:Tuple,N}
+@inline @generated function Lifted{P,N}(primal::P, ::NoTangent) where {P<:Tuple,N}
+    n = fieldcount(P)
     InnerT = dual_type(Val(N), P)
-    inner = ntuple(
-        i -> _inner_dual_for_field(fieldtype(InnerT, i), primal[i], NoTangent()),
-        Val(fieldcount(P)),
-    )
-    return Lifted{P,N,InnerT}(inner)
+    if !(InnerT isa DataType) || !(InnerT <: Tuple)
+        return :(invoke(Lifted{$P,$N}, Tuple{Vararg{Any}}, primal, NoTangent()))
+    end
+    inner_exprs = map(1:n) do i
+        :(_inner_dual_for_field($(fieldtype(InnerT, i)), primal[$i], NoTangent()))
+    end
+    return quote
+        return Lifted{$P,$N,$InnerT}(($(inner_exprs...),))
+    end
 end
 
 # Tuple-primal with `NTangent` tangent — width-N chunked vararg case where
@@ -536,26 +541,37 @@ end
 
 # NamedTuple-primal: parallel to the Tuple ctor. Inner V is a
 # `NamedTuple{names, Tuple{V_i...}}` of bare inner duals; build element-wise.
-@inline function Lifted{P,N}(
+@inline @generated function Lifted{P,N}(
     primal::P, tangent::NamedTuple{names}
 ) where {P<:NamedTuple{names},N} where {names}
     InnerT = dual_type(Val(N), P)
-    InnerTup = fieldtype(InnerT, 1) === Nothing ? Tuple{} : InnerT.parameters[2]
-    inner_tup = ntuple(
-        i -> _inner_dual_for_field(fieldtype(InnerTup, i), primal[i], values(tangent)[i]),
-        Val(fieldcount(P)),
-    )
-    return Lifted{P,N,InnerT}(NamedTuple{names}(inner_tup))
+    if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
+        return :(invoke(Lifted{$P,$N}, Tuple{Vararg{Any}}, primal, tangent))
+    end
+    InnerTup = InnerT.parameters[2]
+    n = fieldcount(P)
+    inner_exprs = map(1:n) do i
+        :(_inner_dual_for_field($(fieldtype(InnerTup, i)), primal[$i], values(tangent)[$i]))
+    end
+    return quote
+        return Lifted{$P,$N,$InnerT}($(NamedTuple{names})(($(inner_exprs...),)))
+    end
 end
-@inline function Lifted{P,N}(
+@inline @generated function Lifted{P,N}(
     primal::P, ::NoTangent
 ) where {P<:NamedTuple{names},N} where {names}
     InnerT = dual_type(Val(N), P)
+    if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
+        return :(invoke(Lifted{$P,$N}, Tuple{Vararg{Any}}, primal, NoTangent()))
+    end
     InnerTup = InnerT.parameters[2]
-    inner_tup = ntuple(
-        i -> fieldtype(InnerTup, i)(primal[i], NoTangent()), Val(fieldcount(P))
-    )
-    return Lifted{P,N,InnerT}(NamedTuple{names}(inner_tup))
+    n = fieldcount(P)
+    inner_exprs = map(1:n) do i
+        :($(fieldtype(InnerTup, i))(primal[$i], NoTangent()))
+    end
+    return quote
+        return Lifted{$P,$N,$InnerT}($(NamedTuple{names})(($(inner_exprs...),)))
+    end
 end
 
 # Struct-primal with `Tangent` tangent — recursive lift: the inner V is a
