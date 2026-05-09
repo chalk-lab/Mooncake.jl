@@ -972,8 +972,8 @@ end
 # construct CoDuals for NDual-typed arguments.
 
 # primal / tangent accessors
-primal(d::NDual) = d.value
-tangent(d::NDual{T,N}) where {T,N} = NTangent(d.partials)
+@inline primal(d::NDual) = d.value
+@inline tangent(d::NDual{T,N}) where {T,N} = NTangent(d.partials)
 
 # __get_primal for NDual-bearing shapes — primal_mode.jl defines the
 # `Dual` overload, reverse_mode.jl defines `CoDual` and the generic

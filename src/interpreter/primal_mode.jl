@@ -313,7 +313,18 @@ function __unflatten_dual_varargs(
     else
         grouped_args = _group_vararg_dual(width, group_primal, rest)
     end
-    return (args[1:(nargs - 1)]..., grouped_args)
+    # Avoid `args[1:(nargs-1)]` which allocates: a UnitRange-indexed tuple
+    # slice falls through to a generic `_getindex` branch, not the constant-
+    # folded ntuple path. `_take_first(args, Val(nargs - 1))` unrolls at
+    # expansion time so the head extraction is allocation-free.
+    return (_take_first(args, Val(nargs - 1))..., grouped_args)
+end
+
+# Unrolled tuple head extraction: returns `Tuple(args[1], ..., args[K])` with
+# no runtime indexing. The `@generated` form is required because the literal
+# argument indices must be known at expansion time.
+@inline @generated function _take_first(args::Tuple, ::Val{K}) where {K}
+    return Expr(:tuple, (:(args[$i]) for i in 1:K)...)
 end
 
 function _group_vararg_dual(::Val{1}, group_primal, rest)
@@ -495,12 +506,11 @@ end
             # named arg otherwise. Branch at runtime; both arms type-stably.
             quote
                 if isva && $i == nargs
-                    _wrap_arg(
-                        w, _typeof(__get_primal(flat_args[$i])), flat_args[$i]
-                    )
+                    _wrap_arg(w, _typeof(__get_primal(flat_args[$i])), flat_args[$i])
                 else
                     _wrap_arg(
-                        w, $(fieldtype(primal_sig, min(i, fieldcount(primal_sig)))),
+                        w,
+                        $(fieldtype(primal_sig, min(i, fieldcount(primal_sig)))),
                         flat_args[$i],
                     )
                 end
