@@ -366,6 +366,15 @@ end
 # Lifted slot wrappers: the canonical V invariant guarantees
 # `V === dual_type(Val(N), P)`, so the slot is well-typed by construction.
 verify_dual_type(::Lifted) = true
+# Bare canonical-V Tuple (e.g. `Tuple{Dual{Int,NoTangent}, Dual{Float64,...}}`)
+# from `_unlift(::Lifted{<:Tuple, 1})` — verify each element.
+verify_dual_type(t::Tuple) = all(verify_dual_type, t)
+verify_dual_type(t::NamedTuple) = all(verify_dual_type, values(t))
+# Bare canonical-V leaf-scalar shapes (`NDual`, `Complex{<:NDual}`,
+# `<:NTangent`) leak through helper-API boundaries but still represent valid
+# inner dual values. Their concrete overloads are added in `nfwd/NfwdMooncake.jl`
+# once `NDual` is defined; the fallback below accepts everything else as
+# user-typed primitive values flowing through outside the strict slot path.
 
 # 1-arg: wrap an already-built inner. V is inferred from typeof(value).
 @inline Lifted{P,N}(value) where {P,N} = Lifted{P,N,typeof(value)}(value)

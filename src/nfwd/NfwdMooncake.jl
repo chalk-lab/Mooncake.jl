@@ -1016,6 +1016,13 @@ end
 Mooncake._partial_i(x::NDual, i::Int) = x.partials[i]
 
 primal(z::Complex{<:NDual}) = complex(z.re.value, z.im.value)
+
+# `verify_dual_type` overloads for canonical-V leaf scalars. These complement
+# the bare-Tuple/NamedTuple/Lifted overloads in `tangents/dual.jl`. The
+# `NDual` and `Complex{<:NDual}` cases satisfy the "verify value is a valid
+# inner dual" contract trivially (both are isbits canonical V).
+Mooncake.verify_dual_type(::NDual) = true
+Mooncake.verify_dual_type(::Complex{<:NDual}) = true
 function tangent(z::Complex{NDual{T,N}}) where {T,N}
     return NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N)))
 end

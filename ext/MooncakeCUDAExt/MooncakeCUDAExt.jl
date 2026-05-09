@@ -194,6 +194,25 @@ end
     tangent_type(P)
 }
 
+# Wrapper-specialised `dual_type` for `Adjoint`/`Transpose{<:CuArray}`. Without
+# these, the recursive struct lift in `src/tangents/dual.jl` fires (since
+# Adjoint/Transpose are concrete immutable structs with `Tangent` tangent_type
+# and CuArray-typed fields are "lift-safe"), producing a `NamedTuple{(:parent,)}`
+# canonical V. Downstream `_new_(Adjoint, parent)` rules expect the parallel
+# form `Dual{Adjoint{T, CuArray{T}}, Tangent}`, so the recursive lift causes
+# `TypeError` at the `_new_` site. These specialisations short-circuit to the
+# legacy parallel form for any `Adjoint{T, <:CuArray}` / `Transpose{T, <:CuArray}`.
+function Mooncake.dual_type(
+    ::Val{N}, ::Type{P}
+) where {N,T<:CuFloatOrComplex,P<:Adjoint{T,<:CuMaybeComplexArray}}
+    return Mooncake.Dual{P,Mooncake.tangent_type(P)}
+end
+function Mooncake.dual_type(
+    ::Val{N}, ::Type{P}
+) where {N,T<:CuFloatOrComplex,P<:Transpose{T,<:CuMaybeComplexArray}}
+    return Mooncake.Dual{P,Mooncake.tangent_type(P)}
+end
+
 # CuPtr{T} wraps a device address (an integer).  The generic zero_tangent_internal for
 # immutable structs does not apply here — construct a null device pointer directly.
 function zero_tangent_internal(x::CuPtr{T}, ::MaybeCache) where {T}
@@ -1219,6 +1238,10 @@ end
     Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
 )
 # `unsafe_copyto!` (CPU→GPU) implementation kernel.
+# `src` may be a `Dual{Array, Array}` (legacy parallel) or a bare canonical V
+# `Vector{NDual{T,1}}` / `Vector{Complex{NDual{T,1}}}` (element-wise lift for
+# CPU `Array{T<:IEEEFloat}`). The bare-canonical-V overload deinterleaves into
+# CPU primal / tangent arrays before transfer.
 @inline function _unsafe_copyto_cpu_gpu_kernel(
     dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
     doffs::Dual{<:Integer,NoTangent},
@@ -1228,6 +1251,36 @@ end
 )
     pdest, ddest = arrayify(dest)
     psrc, dsrc = primal(src), tangent(src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    return dest
+end
+@inline function _unsafe_copyto_cpu_gpu_kernel(
+    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::Dual{<:Integer,NoTangent},
+    src::AbstractArray{<:Mooncake.Nfwd.NDual{T,1}},
+    soffs::Dual{<:Integer,NoTangent},
+    n::Dual{<:Integer,NoTangent},
+) where {T}
+    pdest, ddest = arrayify(dest)
+    psrc = map(d -> d.value, src)
+    dsrc = map(d -> d.partials[1], src)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
+    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    return dest
+end
+@inline function _unsafe_copyto_cpu_gpu_kernel(
+    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    doffs::Dual{<:Integer,NoTangent},
+    src::AbstractArray{Complex{Mooncake.Nfwd.NDual{T,1}}},
+    soffs::Dual{<:Integer,NoTangent},
+    n::Dual{<:Integer,NoTangent},
+) where {T}
+    pdest, ddest = arrayify(dest)
+    psrc = map(z -> Complex(z.re.value, z.im.value), src)
+    dsrc = map(z -> Complex(z.re.partials[1], z.im.partials[1]), src)
     doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
     unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
     unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
