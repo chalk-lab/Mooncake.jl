@@ -178,7 +178,16 @@ end
     tangent_type(T) === NoTangent && return true
     T <: IEEEFloat && return true
     T <: Complex{<:IEEEFloat} && return true
-    T <: AbstractArray && eltype(T) <: Union{IEEEFloat,Complex{<:IEEEFloat}} && return true
+    # Restrict to standard `Array` (not arbitrary `AbstractArray`): types like
+    # `CuArray`/`SparseMatrixCSC` lack a canonical-V `dual_type` overload and
+    # fall back to the parallel `Dual{Array, Array}` form. Including them in
+    # the recursive struct lift produces a `Tuple{Dual{Array, Array}}` inner V,
+    # which downstream rules don't expect — and the recursive descent into
+    # the array's struct fields can also hit primitive-leaf world-age errors
+    # (e.g. CuArray's `data::DataRef{Managed{DeviceMemory}}` chain bottoms
+    # out at `CuPtr{Nothing}`). Wrappers like `Diagonal{T, <:CuArray}` should
+    # use the parallel form unless the ext registers a dedicated lift.
+    T <: Array && eltype(T) <: Union{IEEEFloat,Complex{<:IEEEFloat}} && return true
     if T <: Tuple
         return all(_is_lift_safe_field_type, T.parameters)
     end
@@ -602,7 +611,15 @@ end
 # field tangents pass through unwrapped. Mutable structs keep the existing
 # parallel-Dual path (their `dual_type` does not return `<: NamedTuple`).
 @inline @generated function Lifted{P,N}(primal::P, tangent::Tangent) where {P,N}
-    InnerT = dual_type(Val(N), P)
+    # `try` to resolve InnerT at expansion time. The static path emits a
+    # tight ctor (recursive struct lift). On expansion failure (ext-typed
+    # primitive-leaf world-age error inside `tangent_type`), defer the
+    # whole construction to runtime.
+    InnerT = try
+        dual_type(Val(N), P)
+    catch
+        return :(_lifted_struct_runtime_fallback($P, Val($N), primal, tangent))
+    end
     if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
         # Non-struct lift: defer to the inner type's own 2-arg constructor.
         return :(Lifted{$P,$N,$InnerT}($InnerT(primal, tangent)))
@@ -627,6 +644,18 @@ end
 # in its bare form. Mirrors `_get_tangent_field` in `rules/misc.jl` but lives
 # here to avoid a load-order dependency.
 @inline _get_tangent_field_for_lift(t::Tangent, name) = val(getfield(t.fields, name))
+
+# Runtime fallback for `Lifted{P, N}(primal::P, tangent::Tangent)` when the
+# `@generated` expansion can't resolve `InnerT = dual_type(Val(N), P)` —
+# typically because the recursive `tangent_type` descent through `P`'s
+# fields hits a primitive-leaf world-age boundary (e.g. CuArray's nested
+# `CuPtr{Nothing}` chain). At runtime the call uses the latest world.
+@inline function _lifted_struct_runtime_fallback(
+    ::Type{P}, ::Val{N}, primal, tangent
+) where {P,N}
+    InnerT = dual_type(Val(N), P)
+    return Lifted{P,N,InnerT}(InnerT(primal, tangent))
+end
 
 # Accessors: delegate to the inner's own primal/tangent. For Tuple/NamedTuple
 # primals the inner is a bare element-wise (named) tuple, so map over it.
