@@ -10,7 +10,9 @@ end
 # Fallback foreigncall rules. This is a sufficiently common special case, that it's worth
 # creating an informative error message, so that users have some chance of knowing why
 # they're not able to differentiate a piece of code.
-function frule!!(::Dual{typeof(_foreigncall_)}, args...)
+function frule!!(
+    ::Mooncake.Lifted{typeof(_foreigncall_),N}, args::Vararg{Mooncake.Lifted,M}
+) where {N,M}
     return throw_missing_foreigncall_rule_error(:frule!!, args...)
 end
 function rrule!!(::CoDual{typeof(_foreigncall_)}, args...)
