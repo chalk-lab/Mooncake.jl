@@ -1630,6 +1630,13 @@ end
 @inline _ndual_primal(x::Dual) = primal(x)
 @inline _ndual_primal(x::NDual) = primal(x)
 @inline _ndual_primal(x::Complex{<:NDual}) = primal(x)
+# Wrapper-shape AbstractArrays: dispatch to the per-wrapper `primal` overload
+# (Diagonal, Adjoint, SubArray) which preserves the wrapper structure.
+# `map(d -> d.value, ::Adjoint)` would return a Matrix, breaking the shape
+# pairing with `_tangent_dir(::Adjoint{<:NDual})` which returns a Tangent.
+@inline _ndual_primal(d::LinearAlgebra.Diagonal{<:NDual}) = primal(d)
+@inline _ndual_primal(a::LinearAlgebra.Adjoint{<:NDual}) = primal(a)
+@inline _ndual_primal(s::SubArray{<:NDual}) = primal(s)
 @inline _ndual_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
 @inline _ndual_primal(x::AbstractArray{<:Complex{<:NDual}}) = map(
     z -> complex(z.re.value, z.im.value), x
