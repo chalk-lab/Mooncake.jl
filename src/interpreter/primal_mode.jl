@@ -476,17 +476,38 @@ end
 # already happened in `__unflatten_dual_varargs`, so for `isva=true` the
 # trailing packed arg's primal type is recovered from the value itself
 # rather than from `primal_sig`.
-@inline function _wrap_oc_args(
+#
+# `@generated` to produce a fully unrolled per-slot wrap. The naive
+# `ntuple(do i ...; flat_args[i] ...; end, Val(...))` form leaves the closure
+# body type-unstable: `flat_args[i]` returns a Union of the per-slot Lifted
+# types, which propagates to `_wrap_arg`'s return type and forces a heap
+# allocation for the resulting Tuple. The generated form selects each slot's
+# concrete type at expansion time, so `_wrap_arg` dispatches statically.
+@inline @generated function _wrap_oc_args(
     w::Val{N}, ::Type{primal_sig}, flat_args::Tuple, isva::Bool, ::Val{nargs}
 ) where {N,primal_sig,nargs}
-    return ntuple(Val(length(flat_args))) do i
-        if isva && i == nargs
-            P_i = _typeof(__get_primal(flat_args[i]))
+    n = fieldcount(flat_args)
+    exprs = map(1:n) do i
+        if i < nargs
+            :(_wrap_arg(w, $(fieldtype(primal_sig, i)), flat_args[$i]))
         else
-            P_i = fieldtype(primal_sig, i)
+            # i ≥ nargs: trailing slot is the vararg group when isva, the last
+            # named arg otherwise. Branch at runtime; both arms type-stably.
+            quote
+                if isva && $i == nargs
+                    _wrap_arg(
+                        w, _typeof(__get_primal(flat_args[$i])), flat_args[$i]
+                    )
+                else
+                    _wrap_arg(
+                        w, $(fieldtype(primal_sig, min(i, fieldcount(primal_sig)))),
+                        flat_args[$i],
+                    )
+                end
+            end
         end
-        _wrap_arg(w, P_i, flat_args[i])
     end
+    return Expr(:tuple, exprs...)
 end
 
 # Construct `Lifted{P_i, N, V}` for a single OC arg slot. For a bare canonical

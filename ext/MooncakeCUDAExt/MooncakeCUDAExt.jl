@@ -159,13 +159,14 @@ end
 # the primal copy increments the refcount; the tangent DataRef is also copied so that the
 # new CuArray's .data field holds a separate handle to the same tangent GPU memory.
 @is_primitive(MinimalCtx, Tuple{typeof(copy),<:CuDataRef})
-function frule!!(::Dual{typeof(copy)}, x::Dual{<:CuDataRef,<:CuDataRef})
+# `copy(::CuDataRef)` implementation kernel.
+@inline function _copy_cudataref_kernel(x::Dual{<:CuDataRef,<:CuDataRef})
     return Dual(copy(primal(x)), copy(tangent(x)))
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(copy),N}, x::Mooncake.Lifted{<:CuDataRef,N}
+    ::Mooncake.Lifted{typeof(copy),N}, x::Mooncake.Lifted{<:CuDataRef,N}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x))
+    bare_result = _copy_cudataref_kernel(Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -218,17 +219,18 @@ end
     MinimalCtx,
     Tuple{typeof(unsafe_convert),Type{CuPtr{T}},CuArray{T}} where {T<:Complex{<:IEEEFloat}},
 )
-function frule!!(
-    ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
+# `unsafe_convert(Type{CuPtr{T}}, x::CuArray{T})` implementation kernel.
+@inline function _unsafe_convert_cuptr_kernel(
+    ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
     return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(unsafe_convert),N},
+    ::Mooncake.Lifted{typeof(unsafe_convert),N},
     _a1::Mooncake.Lifted{Type{CuPtr{T}},N},
     x::Mooncake.Lifted{X,N},
 ) where {N,T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(_a1), Mooncake._unlift(x))
+    bare_result = _unsafe_convert_cuptr_kernel(Mooncake._unlift(_a1), Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -245,31 +247,28 @@ end
 # For non-differentiable T (e.g. CuPtr{Cvoid} used in memory management), the tangent
 # is NoTangent and the pointer arithmetic carries no gradient.
 @is_primitive(MinimalCtx, Tuple{typeof(+),CuPtr{T},Integer} where {T})
-function frule!!(
-    ::Dual{typeof(+)}, p::Dual{CuPtr{T},CuPtr{T}}, n::Dual{<:Integer,NoTangent}
+# `+(p::CuPtr, n::Integer)` implementation kernel (no `Dual{typeof(F)}` arg).
+# Two overloads dispatch on V's tangent shape — `CuPtr{T}` for differentiable T,
+# `NoTangent` otherwise.
+@inline function _cuptr_add_kernel(
+    p::Dual{CuPtr{T},CuPtr{T}}, n::Dual{<:Integer,NoTangent}
 ) where {T}
     return Dual(primal(p) + primal(n), tangent(p) + primal(n))
 end
-@inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(+),N},
-    p::Mooncake.Lifted{CuPtr{T},N},
-    n::Mooncake.Lifted{<:Integer,N},
-) where {N,T}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(p), Mooncake._unlift(n))
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
-end
-function frule!!(
-    ::Dual{typeof(+)}, p::Dual{CuPtr{T},NoTangent}, n::Dual{<:Integer,NoTangent}
+@inline function _cuptr_add_kernel(
+    p::Dual{CuPtr{T},NoTangent}, n::Dual{<:Integer,NoTangent}
 ) where {T}
     return Dual(primal(p) + primal(n), NoTangent())
 end
+# Single Lifted-typed body: dispatches to the kernel via the inner V's
+# tangent shape. The earlier duplicate Lifted-typed body (identical signature)
+# was a bug — Julia raised a method-overwrite error during precompilation.
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(+),N},
+    ::Mooncake.Lifted{typeof(+),N},
     p::Mooncake.Lifted{CuPtr{T},N},
     n::Mooncake.Lifted{<:Integer,N},
 ) where {N,T}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(p), Mooncake._unlift(n))
+    bare_result = _cuptr_add_kernel(Mooncake._unlift(p), Mooncake._unlift(n))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -584,19 +583,18 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
 )
-function frule!!(
-    ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
+# `reshape(::CuMaybeComplexArray, ::NTuple)` implementation kernel.
+@inline function _reshape_cuarray_kernel(
+    x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
 )
     return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(reshape),N},
+    ::Mooncake.Lifted{typeof(reshape),N},
     x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     dims::Mooncake.Lifted{<:NTuple,N},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0), Mooncake._unlift(x), Mooncake._unlift(dims)
-    )
+    bare_result = _reshape_cuarray_kernel(Mooncake._unlift(x), Mooncake._unlift(dims))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -610,28 +608,23 @@ end
 # `_new_` rules for the DataRef-based inner CuArray constructor (used by views and
 # similar operations). The tangent reuses the DataRef from the input tangent so that
 # gradient accumulation propagates automatically.
-function frule!!(
-    ::Dual{typeof(_new_)},
-    ::Dual{Type{P}},
-    data::Dual,
-    maxsize::Dual,
-    offset::Dual,
-    dims::Dual,
+# `_new_(::Type{<:CuMaybeComplexArray}, data, maxsize, offset, dims)` ctor kernel.
+@inline function _cuarray_new_kernel(
+    ::Dual{Type{P}}, data::Dual, maxsize::Dual, offset::Dual, dims::Dual
 ) where {P<:CuMaybeComplexArray}
     y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
     dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
     return Dual(y, dy)
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(_new_),N},
+    ::Mooncake.Lifted{typeof(_new_),N},
     _a1::Mooncake.Lifted{Type{P},N},
     data::Mooncake.Lifted,
     maxsize::Mooncake.Lifted,
     offset::Mooncake.Lifted,
     dims::Mooncake.Lifted,
 ) where {N,P<:CuMaybeComplexArray}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0),
+    bare_result = _cuarray_new_kernel(
         Mooncake._unlift(_a1),
         Mooncake._unlift(data),
         Mooncake._unlift(maxsize),
@@ -680,25 +673,25 @@ end
     _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_fdata(x_fdata, name)
 )
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:CuDataRef,<:CuDataRef},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
+# `lgetfield(::CuDataRef, ::Val{name}[, ::Val{order}])` implementation kernels.
+@inline function _lgetfield_cudataref_kernel(
+    x::Dual{<:CuDataRef,<:CuDataRef}, ::Dual{Val{name}}, ::Dual{Val{order}}
 ) where {name,order}
     return _cudataref_lgetfield_fwd(primal(x), name, order)
 end
+@inline function _lgetfield_cudataref_kernel(
+    x::Dual{<:CuDataRef,<:CuDataRef}, ::Dual{Val{name}}
+) where {name}
+    return _cudataref_lgetfield_fwd(primal(x), name)
+end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(lgetfield),N},
+    ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{<:CuDataRef,N},
     _a2::Mooncake.Lifted{Val{name},N},
     _a3::Mooncake.Lifted{Val{order},N},
 ) where {N,name,order}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0),
-        Mooncake._unlift(x),
-        Mooncake._unlift(_a2),
-        Mooncake._unlift(_a3),
+    bare_result = _lgetfield_cudataref_kernel(
+        Mooncake._unlift(x), Mooncake._unlift(_a2), Mooncake._unlift(_a3)
     )
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
@@ -711,17 +704,12 @@ function rrule!!(
 ) where {name,order}
     return _cudataref_lgetfield_rev(primal(x), name, order), _nopb(Val(4))
 end
-function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CuDataRef,<:CuDataRef}, ::Dual{Val{name}}
-) where {name}
-    return _cudataref_lgetfield_fwd(primal(x), name)
-end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(lgetfield),N},
+    ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{<:CuDataRef,N},
     _a2::Mooncake.Lifted{Val{name},N},
 ) where {N,name}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x), Mooncake._unlift(_a2))
+    bare_result = _lgetfield_cudataref_kernel(Mooncake._unlift(x), Mooncake._unlift(_a2))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -734,25 +722,25 @@ end
 # lgetfield rules for CuArray.  CuArray has 4 fields:
 #   :data (field 1) — the DataRef handle; tangent flows here
 #   :maxsize (field 2), :offset (field 3), :dims (field 4) — non-differentiable metadata
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:CuArray,<:CuArray},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
+# `lgetfield(::CuArray, ::Val{name}[, ::Val{order}])` implementation kernels.
+@inline function _lgetfield_cuarray_kernel(
+    x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}, ::Dual{Val{order}}
 ) where {name,order}
     return _cuarray_lgetfield_fwd(primal(x), tangent(x), name, order)
 end
+@inline function _lgetfield_cuarray_kernel(
+    x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
+) where {name}
+    return _cuarray_lgetfield_fwd(primal(x), tangent(x), name)
+end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(lgetfield),N},
+    ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{<:CuArray,N},
     _a2::Mooncake.Lifted{Val{name},N},
     _a3::Mooncake.Lifted{Val{order},N},
 ) where {N,name,order}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0),
-        Mooncake._unlift(x),
-        Mooncake._unlift(_a2),
-        Mooncake._unlift(_a3),
+    bare_result = _lgetfield_cuarray_kernel(
+        Mooncake._unlift(x), Mooncake._unlift(_a2), Mooncake._unlift(_a3)
     )
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
@@ -766,17 +754,12 @@ function rrule!!(
     return _cuarray_lgetfield_rev(primal(x), x.dx, name, order), _nopb(Val(4))
 end
 
-function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
-) where {name}
-    return _cuarray_lgetfield_fwd(primal(x), tangent(x), name)
-end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(lgetfield),N},
+    ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{<:CuArray,N},
     _a2::Mooncake.Lifted{Val{name},N},
 ) where {N,name}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x), Mooncake._unlift(_a2))
+    bare_result = _lgetfield_cuarray_kernel(Mooncake._unlift(x), Mooncake._unlift(_a2))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -794,37 +777,25 @@ const _SCALAR_IDX_MSG =
     "broadcasting. Add a new rule or open an issue at " *
     "https://github.com/chalk-lab/Mooncake.jl."
 @is_primitive(MinimalCtx, Tuple{typeof(getindex),CuArray,Integer})
-function frule!!(::Dual{typeof(getindex)}, x::Dual{<:CuArray}, i::Dual{<:Integer})
-    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
-end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(getindex),N},
+    ::Mooncake.Lifted{typeof(getindex),N},
     x::Mooncake.Lifted{<:CuArray,N},
     i::Mooncake.Lifted{<:Integer,N},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x), Mooncake._unlift(i))
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 function rrule!!(::CoDual{typeof(getindex)}, x::CoDual{<:CuArray}, i::CoDual{<:Integer})
     _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(setindex!),CuArray,Any,Integer})
-function frule!!(::Dual{typeof(setindex!)}, x::Dual{<:CuArray}, v::Dual, i::Dual{<:Integer})
-    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
-end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(setindex!),N},
+    ::Mooncake.Lifted{typeof(setindex!),N},
     x::Mooncake.Lifted{<:CuArray,N},
     v::Mooncake.Lifted,
     i::Mooncake.Lifted{<:Integer,N},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0), Mooncake._unlift(x), Mooncake._unlift(v), Mooncake._unlift(i)
-    )
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 function rrule!!(
     ::CoDual{typeof(setindex!)}, x::CoDual{<:CuArray}, v::CoDual, i::CoDual{<:Integer}
@@ -842,20 +813,21 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Integer}}
 )
-function frule!!(
-    ::Dual{typeof(getindex)},
-    x::Dual{<:CuMaybeComplexArray},
-    idx::Dual{<:AbstractVector{<:Integer}},
+# `getindex(::CuMaybeComplexArray, ::AbstractVector{Integer})` (gather) kernel.
+@inline function _getindex_cuarray_gather_kernel(
+    x::Dual{<:CuMaybeComplexArray}, idx::Dual{<:AbstractVector{<:Integer}}
 )
     px, dx = arrayify(x)
     return Dual(px[primal(idx)], dx[primal(idx)])
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(getindex),N},
+    ::Mooncake.Lifted{typeof(getindex),N},
     x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     idx::Mooncake.Lifted{<:AbstractVector{<:Integer},N},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x), Mooncake._unlift(idx))
+    bare_result = _getindex_cuarray_gather_kernel(
+        Mooncake._unlift(x), Mooncake._unlift(idx)
+    )
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -881,16 +853,17 @@ end
 # dot (real): d(dot(x,y)) = dot(dx,y) + dot(x,dy)
 #             pullback:     dx += dz*y,  dy += dz*x
 @is_primitive(MinimalCtx, Tuple{typeof(norm),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(norm)}, x::Dual{<:CuMaybeComplexArray})
+# `norm(::CuMaybeComplexArray)` implementation kernel.
+@inline function _norm_cuarray_kernel(x::Dual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
     y = norm(px)
     dy = iszero(y) ? zero(real(eltype(px))) : real(dot(px, dx)) / y
     return Dual(y, dy)
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(norm),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
+    ::Mooncake.Lifted{typeof(norm),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x))
+    bare_result = _norm_cuarray_kernel(Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -906,17 +879,18 @@ function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(dot),CuFloatArray,CuFloatArray})
-function frule!!(::Dual{typeof(dot)}, x::Dual{<:CuFloatArray}, y::Dual{<:CuFloatArray})
+# `dot(::CuFloatArray, ::CuFloatArray)` implementation kernel.
+@inline function _dot_cuarray_kernel(x::Dual{<:CuFloatArray}, y::Dual{<:CuFloatArray})
     px, dx = arrayify(x)
     py, dy = arrayify(y)
     return Dual(dot(px, py), dot(dx, py) + dot(px, dy))
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(dot),N},
+    ::Mooncake.Lifted{typeof(dot),N},
     x::Mooncake.Lifted{<:CuFloatArray,N},
     y::Mooncake.Lifted{<:CuFloatArray,N},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x), Mooncake._unlift(y))
+    bare_result = _dot_cuarray_kernel(Mooncake._unlift(x), Mooncake._unlift(y))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -938,9 +912,13 @@ end
 const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk-lab/Mooncake.jl."
 for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuArray})
-    @eval frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
-        "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
-    )
+    @eval @inline function frule!!(
+        ::Mooncake.Lifted{typeof($_fn),N}, x::Mooncake.Lifted{<:CuArray,N}; kwargs...
+    ) where {N}
+        return _throw_gpu_argument_error(
+            "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
+        )
+    end
     @eval rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
         "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
     )
@@ -954,16 +932,17 @@ end
 #
 # Note: undefined when any element of x is zero (gradient is skipped in that case).
 @is_primitive(MinimalCtx, Tuple{typeof(prod),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(prod)}, x::Dual{<:CuMaybeComplexArray})
+# `prod(::CuMaybeComplexArray)` implementation kernel.
+@inline function _prod_cuarray_kernel(x::Dual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
     y = prod(px)
     dy = iszero(y) ? zero(y) : y * sum(dx ./ px)
     return Dual(y, dy)
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(prod),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
+    ::Mooncake.Lifted{typeof(prod),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x))
+    bare_result = _prod_cuarray_kernel(Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -988,14 +967,15 @@ end
 #
 # Supports the optional `dims` keyword (passed through to CUDA's cumsum).
 @is_primitive(MinimalCtx, Tuple{typeof(cumsum),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(cumsum)}, x::Dual{<:CuMaybeComplexArray}; kw...)
+# `cumsum(::CuMaybeComplexArray)` implementation kernel.
+@inline function _cumsum_cuarray_kernel(x::Dual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
     return Dual(cumsum(px; kw...), cumsum(dx; kw...))
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(cumsum),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray}; kw...
+    ::Mooncake.Lifted{typeof(cumsum),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray}; kw...
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x); kw...)
+    bare_result = _cumsum_cuarray_kernel(Mooncake._unlift(x); kw...)
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1022,7 +1002,8 @@ end
 # so the Jacobian at that position is zero (the zero annihilates the product).
 # nan_tangent_guard is used to return zero instead of NaN/Inf from 0/0 or x/0.
 @is_primitive(MinimalCtx, Tuple{typeof(cumprod),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(cumprod)}, x::Dual{<:CuMaybeComplexArray}; kw...)
+# `cumprod(::CuMaybeComplexArray)` implementation kernel.
+@inline function _cumprod_cuarray_kernel(x::Dual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
     y = cumprod(px; kw...)
     inv_px = nan_tangent_guard.(px, inv.(px))
@@ -1030,9 +1011,9 @@ function frule!!(::Dual{typeof(cumprod)}, x::Dual{<:CuMaybeComplexArray}; kw...)
     return Dual(y, dy)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(cumprod),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray}; kw...
+    ::Mooncake.Lifted{typeof(cumprod),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray}; kw...
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x); kw...)
+    bare_result = _cumprod_cuarray_kernel(Mooncake._unlift(x); kw...)
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1059,20 +1040,21 @@ end
 # Rules for `accumulate(+, x)` — identical to cumsum but via the accumulate interface.
 # Other operators are not supported and throw an informative error (catch-all below).
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),typeof(+),CuMaybeComplexArray})
-function frule!!(
-    ::Dual{typeof(accumulate)}, ::Dual{typeof(+)}, x::Dual{<:CuMaybeComplexArray}; kw...
+# `accumulate(+, ::CuMaybeComplexArray)` implementation kernel.
+@inline function _accumulate_plus_cuarray_kernel(
+    ::Dual{typeof(+)}, x::Dual{<:CuMaybeComplexArray}; kw...
 )
     px, dx = arrayify(x)
     return Dual(accumulate(+, px; kw...), cumsum(dx; kw...))
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(accumulate),N},
+    ::Mooncake.Lifted{typeof(accumulate),N},
     op::Mooncake.Lifted{typeof(+)},
     x::Mooncake.Lifted{<:CuMaybeComplexArray};
     kw...,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f), Mooncake._unlift(op), Mooncake._unlift(x); kw...
+    bare_result = _accumulate_plus_cuarray_kernel(
+        Mooncake._unlift(op), Mooncake._unlift(x); kw...
     )
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
@@ -1094,23 +1076,16 @@ function rrule!!(
     return CoDual(y, dy_out), accumulate_plus_pb!!
 end
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),Any,CuArray})
-function frule!!(::Dual{typeof(accumulate)}, op::Dual, x::Dual{<:CuArray}; kwargs...)
-    _throw_gpu_argument_error(
-        "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
-        _UNIMPL_MSG,
-    )
-end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(accumulate),N},
+    ::Mooncake.Lifted{typeof(accumulate),N},
     op::Mooncake.Lifted,
     x::Mooncake.Lifted{<:CuArray};
     kwargs...,
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f), Mooncake._unlift(op), Mooncake._unlift(x); kwargs...
+    return _throw_gpu_argument_error(
+        "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
+        _UNIMPL_MSG,
     )
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(accumulate)}, op::CoDual, x::CoDual{<:CuArray}; kwargs...)
     _throw_gpu_argument_error(
@@ -1122,14 +1097,15 @@ end
 # Rule for `sum(x)` — widened from CuFloatArray to also cover complex CuArrays.
 # See also `src/rules/performance_patches`.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuMaybeComplexArray})
+# `sum(::CuMaybeComplexArray)` implementation kernel.
+@inline function _sum_cuarray_kernel(x::Dual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
     return Dual(sum(px), sum(dx))
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(sum),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
+    ::Mooncake.Lifted{typeof(sum),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x))
+    bare_result = _sum_cuarray_kernel(Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1160,8 +1136,8 @@ end
         Integer,
     },
 )
-function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
+# `unsafe_copyto!` (GPU→GPU) implementation kernel.
+@inline function _unsafe_copyto_gpu_gpu_kernel(
     dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
     doffs::Dual{<:Integer,NoTangent},
     src::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
@@ -1176,15 +1152,14 @@ function frule!!(
     return dest
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
     dest::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     doffs::Mooncake.Lifted{<:Integer,N},
     src::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     soffs::Mooncake.Lifted{<:Integer,N},
     n::Mooncake.Lifted{<:Integer,N},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0),
+    bare_result = _unsafe_copyto_gpu_gpu_kernel(
         Mooncake._unlift(dest),
         Mooncake._unlift(doffs),
         Mooncake._unlift(src),
@@ -1230,8 +1205,8 @@ end
     MinimalCtx,
     Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
 )
-function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
+# `unsafe_copyto!` (CPU→GPU) implementation kernel.
+@inline function _unsafe_copyto_cpu_gpu_kernel(
     dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
     doffs::Dual{<:Integer,NoTangent},
     src::Dual{<:Array,<:Array},
@@ -1246,15 +1221,14 @@ function frule!!(
     return dest
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
     dest::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     doffs::Mooncake.Lifted{<:Integer,N},
     src::Mooncake.Lifted{<:Array,N},
     soffs::Mooncake.Lifted{<:Integer,N},
     n::Mooncake.Lifted{<:Integer,N},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0),
+    bare_result = _unsafe_copyto_cpu_gpu_kernel(
         Mooncake._unlift(dest),
         Mooncake._unlift(doffs),
         Mooncake._unlift(src),
@@ -1296,16 +1270,17 @@ end
 # It is a pure side-effect with no mathematical output — gradient is zero.
 # Both the primal and its fdata (if any) are independent GPU allocations; free both.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_free!),CuArray}
-function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
+# `unsafe_free!(::CuArray)` implementation kernel.
+@inline function _unsafe_free_cuarray_kernel(x::Dual{<:CuArray})
     unsafe_free!(primal(x))
     dx = tangent(x)
     dx isa NoFData || unsafe_free!(dx)
     return Dual(nothing, NoTangent())
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(unsafe_free!),N}, x::Mooncake.Lifted{<:CuArray,N}
+    ::Mooncake.Lifted{typeof(unsafe_free!),N}, x::Mooncake.Lifted{<:CuArray,N}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x))
+    bare_result = _unsafe_free_cuarray_kernel(Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1320,14 +1295,15 @@ end
 # (no mathematical output) encountered inside CuArray constructors (e.g. view/derive).
 # The primal registration must happen; the gradient is zero.
 @is_primitive MinimalCtx Tuple{typeof(Core.finalizer),Any,Any}
-function frule!!(::Dual{typeof(Core.finalizer)}, f::Dual, x::Dual)
+# `Core.finalizer(f, x)` implementation kernel.
+@inline function _core_finalizer_kernel(f::Dual, x::Dual)
     Core.finalizer(primal(f), primal(x))
     return Dual(nothing, NoTangent())
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(Core.finalizer),N}, f::Mooncake.Lifted, x::Mooncake.Lifted
+    ::Mooncake.Lifted{typeof(Core.finalizer),N}, f::Mooncake.Lifted, x::Mooncake.Lifted
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(f), Mooncake._unlift(x))
+    bare_result = _core_finalizer_kernel(Mooncake._unlift(f), Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1341,15 +1317,10 @@ end
 # It contains a try/catch block which causes Mooncake's IR transformation to produce
 # invalid IR ("terminator not last in block"). Mark as primitive: returns Bool, no gradient.
 @is_primitive MinimalCtx Tuple{typeof(hasfieldcount),Type}
-function frule!!(::Dual{typeof(hasfieldcount)}, T::Dual{<:Type})
-    return Dual(hasfieldcount(primal(T)), NoTangent())
-end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(hasfieldcount),N}, T::Mooncake.Lifted{<:Type,N}
+    ::Mooncake.Lifted{typeof(hasfieldcount),N}, T::Mooncake.Lifted{<:Type,N}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(T))
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake.zero_lifted(Val(N), hasfieldcount(primal(T)))
 end
 function rrule!!(::CoDual{typeof(hasfieldcount)}, T::CoDual{<:Type})
     return CoDual(hasfieldcount(primal(T)), NoFData()), _nopb(Val(2))
@@ -1365,8 +1336,9 @@ end
 # For integer x the tangent is NoTangent, so the tangent array is zeroed.
 # For float x the tangent array is filled with tangent(x).
 @is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
-function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
+# `fill!(::CuMaybeComplexArray, x)` implementation kernel.
+@inline function _fill_cuarray_kernel(
+    a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
 )
     fill!(primal(a), primal(x))
     tx = tangent(x)
@@ -1374,11 +1346,11 @@ function frule!!(
     return a
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(fill!),N},
+    ::Mooncake.Lifted{typeof(fill!),N},
     a::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     x::Mooncake.Lifted,
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(a), Mooncake._unlift(x))
+    bare_result = _fill_cuarray_kernel(Mooncake._unlift(a), Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1426,29 +1398,30 @@ _fields(x::CuMaybeComplexArray) = (parent=x,)
 @is_primitive(
     DefaultCtx, Tuple{typeof(sum),<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}},
 )
-function frule!!(
-    ::Dual{typeof(sum)}, x::Dual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
+# `sum(::Transpose{<:CuArray})` and `sum(::Adjoint{<:CuArray})` kernels.
+@inline function _sum_transpose_cuarray_kernel(
+    x::Dual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
 )
     return Dual(sum(primal(x)), sum(_fields(tangent(x)).parent))
 end
-@inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(sum),N},
-    x::Mooncake.Lifted{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray},N},
-) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x))
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
-end
-function frule!!(
-    ::Dual{typeof(sum)}, x::Dual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
+@inline function _sum_adjoint_cuarray_kernel(
+    x::Dual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
 )
     return Dual(sum(primal(x)), conj(sum(_fields(tangent(x)).parent)))
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(sum),N},
+    ::Mooncake.Lifted{typeof(sum),N},
+    x::Mooncake.Lifted{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray},N},
+) where {N}
+    bare_result = _sum_transpose_cuarray_kernel(Mooncake._unlift(x))
+    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
+    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(sum),N},
     x::Mooncake.Lifted{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray},N},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x))
+    bare_result = _sum_adjoint_cuarray_kernel(Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1562,15 +1535,16 @@ end
 # Works for both f: ℂ→ℝ (e.g. abs2, real, imag) and f: ℂ→ℂ (e.g. sin, exp).
 # Performance: equivalent to NDual with 2-wide Duals — one kernel pass.
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuComplexArray})
-function frule!!(::Dual{typeof(sum)}, f::Dual, x::Dual{<:CuGpuSumFArray})
+# `sum(f, ::CuComplexArray)` implementation kernel.
+@inline function _sum_f_cuarray_kernel(f::Dual, x::Dual{<:CuGpuSumFArray})
     return _gpu_sum_f_frule(primal(f), x)
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(sum),N},
+    ::Mooncake.Lifted{typeof(sum),N},
     f::Mooncake.Lifted,
     x::Mooncake.Lifted{<:CuGpuSumFArray,N},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(f), Mooncake._unlift(x))
+    bare_result = _sum_f_cuarray_kernel(Mooncake._unlift(f), Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1596,13 +1570,15 @@ for _op in (:(+), :(Base.add_sum))
     @eval @is_primitive(
         MinimalCtx, Tuple{typeof(mapreduce),Any,typeof($_op),CuMaybeComplexArray}
     )
-    @eval function frule!!(
-        ::Dual{typeof(mapreduce)},
-        f::Dual,
-        ::Dual{typeof($_op)},
-        x::Dual{<:CuMaybeComplexArray},
-    )
-        return frule!!(Dual(sum, NoTangent()), f, x)
+    @eval @inline function frule!!(
+        ::Mooncake.Lifted{typeof(mapreduce),N},
+        f::Mooncake.Lifted,
+        ::Mooncake.Lifted{typeof($_op),N},
+        x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
+    ) where {N}
+        bare_result = _sum_f_cuarray_kernel(Mooncake._unlift(f), Mooncake._unlift(x))
+        P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
+        return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
     end
     @eval function rrule!!(
         ::CoDual{typeof(mapreduce)},
@@ -1627,12 +1603,17 @@ end
 # Unlike mapreduce, reduce is user-facing and Base does not route through the
 # add_sum / mul_prod aliases here, so only the literal + and * are needed.
 # The reduce pullback returns one extra NoRData for `op` compared to sum/prod.
-for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
+for (_op, _fn, _kernel) in
+    ((:(+), :sum, :_sum_cuarray_kernel), (:(Base.:*), :prod, :_prod_cuarray_kernel))
     @eval @is_primitive(MinimalCtx, Tuple{typeof(reduce),typeof($_op),CuMaybeComplexArray})
-    @eval function frule!!(
-        ::Dual{typeof(reduce)}, ::Dual{typeof($_op)}, x::Dual{<:CuMaybeComplexArray}
-    )
-        return frule!!(Dual($_fn, NoTangent()), x)
+    @eval @inline function frule!!(
+        ::Mooncake.Lifted{typeof(reduce),N},
+        ::Mooncake.Lifted{typeof($_op),N},
+        x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
+    ) where {N}
+        bare_result = $_kernel(Mooncake._unlift(x))
+        P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
+        return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
     end
     @eval function rrule!!(
         ::CoDual{typeof(reduce)}, ::CoDual{typeof($_op)}, x::CoDual{<:CuMaybeComplexArray}
@@ -1649,27 +1630,17 @@ end
 # Catch-all rules for unsupported operators — give a clear error rather than letting
 # Mooncake attempt to trace into an opaque CUDA reduction kernel.
 @is_primitive(MinimalCtx, Tuple{typeof(mapreduce),Any,Any,CuArray})
-function frule!!(::Dual{typeof(mapreduce)}, f::Dual, op::Dual, x::Dual{<:CuArray})
-    _throw_gpu_argument_error(
-        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
-        "got op=$(primal(op)). " *
-        _UNIMPL_MSG,
-    )
-end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(mapreduce),N},
+    ::Mooncake.Lifted{typeof(mapreduce),N},
     f::Mooncake.Lifted,
     op::Mooncake.Lifted,
     x::Mooncake.Lifted{<:CuArray,N},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0),
-        Mooncake._unlift(f),
-        Mooncake._unlift(op),
-        Mooncake._unlift(x),
+    return _throw_gpu_argument_error(
+        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
+        "got op=$(primal(op)). " *
+        _UNIMPL_MSG,
     )
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<:CuArray})
     _throw_gpu_argument_error(
@@ -1680,21 +1651,16 @@ function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(reduce),Any,CuArray})
-function frule!!(::Dual{typeof(reduce)}, op::Dual, x::Dual{<:CuArray})
-    _throw_gpu_argument_error(
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(reduce),N},
+    op::Mooncake.Lifted,
+    x::Mooncake.Lifted{<:CuArray,N},
+) where {N}
+    return _throw_gpu_argument_error(
         "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
         "got op=$(primal(op)). " *
         _UNIMPL_MSG,
     )
-end
-@inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(reduce),N},
-    op::Mooncake.Lifted,
-    x::Mooncake.Lifted{<:CuArray,N},
-) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(op), Mooncake._unlift(x))
-    P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(reduce)}, op::CoDual, x::CoDual{<:CuArray})
     _throw_gpu_argument_error(
@@ -1709,16 +1675,24 @@ end
 for (_fn, _supports_kwargs) in ((:vcat, false), (:hcat, false), (:cat, true))
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Vararg{Union{CuArray,Number}}})
     if _supports_kwargs
-        @eval frule!!(::Dual{typeof($_fn)}, args::Dual...; kwargs...) = _throw_gpu_argument_error(
-            "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
-        )
+        @eval @inline function frule!!(
+            ::Mooncake.Lifted{typeof($_fn),N}, args::Vararg{Mooncake.Lifted,M}; kwargs...
+        ) where {N,M}
+            return _throw_gpu_argument_error(
+                "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
+            )
+        end
         @eval rrule!!(::CoDual{typeof($_fn)}, args::CoDual...; kwargs...) = _throw_gpu_argument_error(
             "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
         )
     else
-        @eval frule!!(::Dual{typeof($_fn)}, args::Dual...) = _throw_gpu_argument_error(
-            "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
-        )
+        @eval @inline function frule!!(
+            ::Mooncake.Lifted{typeof($_fn),N}, args::Vararg{Mooncake.Lifted,M}
+        ) where {N,M}
+            return _throw_gpu_argument_error(
+                "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
+            )
+        end
         @eval rrule!!(::CoDual{typeof($_fn)}, args::CoDual...) = _throw_gpu_argument_error(
             "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
         )
@@ -1809,8 +1783,8 @@ end
         <:CuMaybeComplexArray,
     },
 )
-function frule!!(
-    ::Dual{typeof(LinearAlgebra.generic_matmatmul!)},
+# `LinearAlgebra.generic_matmatmul!` (5-arg) implementation kernel.
+@inline function _generic_matmatmul_5_kernel(
     C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
     tA::Dual{Char,NoTangent},
     tB::Dual{Char,NoTangent},
@@ -1834,15 +1808,14 @@ function frule!!(
     return C
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(LinearAlgebra.generic_matmatmul!),N},
+    ::Mooncake.Lifted{typeof(LinearAlgebra.generic_matmatmul!),N},
     C::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     tA::Mooncake.Lifted{Char,N},
     tB::Mooncake.Lifted{Char,N},
     A::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     B::Mooncake.Lifted{<:CuMaybeComplexArray,N},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0),
+    bare_result = _generic_matmatmul_5_kernel(
         Mooncake._unlift(C),
         Mooncake._unlift(tA),
         Mooncake._unlift(tB),
@@ -1910,8 +1883,8 @@ end
         Number,
     },
 )
-function frule!!(
-    ::Dual{typeof(LinearAlgebra.generic_matmatmul!)},
+# `LinearAlgebra.generic_matmatmul!` (7-arg) implementation kernel.
+@inline function _generic_matmatmul_7_kernel(
     C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
     tA::Dual{Char,NoTangent},
     tB::Dual{Char,NoTangent},
@@ -1938,7 +1911,7 @@ function frule!!(
     return C
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(LinearAlgebra.generic_matmatmul!),N},
+    ::Mooncake.Lifted{typeof(LinearAlgebra.generic_matmatmul!),N},
     C::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     tA::Mooncake.Lifted{Char,N},
     tB::Mooncake.Lifted{Char,N},
@@ -1947,8 +1920,7 @@ end
     alpha::Mooncake.Lifted{<:Number,N},
     beta::Mooncake.Lifted{<:Number,N},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0),
+    bare_result = _generic_matmatmul_7_kernel(
         Mooncake._unlift(C),
         Mooncake._unlift(tA),
         Mooncake._unlift(tB),
@@ -2039,8 +2011,8 @@ end
         Number,
     },
 )
-function frule!!(
-    ::Dual{typeof(LinearAlgebra.generic_matvecmul!)},
+# `LinearAlgebra.generic_matvecmul!` (6-arg) implementation kernel.
+@inline function _generic_matvecmul_kernel(
     Y::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
     tA::Dual{<:AbstractChar,NoTangent},
     A::Dual{<:CuMaybeComplexMat,<:CuMaybeComplexMat},
@@ -2066,7 +2038,7 @@ function frule!!(
     return Y
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(LinearAlgebra.generic_matvecmul!),N},
+    ::Mooncake.Lifted{typeof(LinearAlgebra.generic_matvecmul!),N},
     Y::Mooncake.Lifted{<:CuMaybeComplexVec,N},
     tA::Mooncake.Lifted{<:AbstractChar,N},
     A::Mooncake.Lifted{<:CuMaybeComplexMat,N},
@@ -2074,8 +2046,7 @@ end
     alpha::Mooncake.Lifted{<:Number,N},
     beta::Mooncake.Lifted{<:Number,N},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0),
+    bare_result = _generic_matvecmul_kernel(
         Mooncake._unlift(Y),
         Mooncake._unlift(tA),
         Mooncake._unlift(A),
@@ -2132,14 +2103,15 @@ end
 # The tangent of Array{T} is Array{T} (fdata, accumulated in-place).
 # The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
-function frule!!(::Dual{typeof(cu)}, x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
+# `cu(::AbstractArray)` implementation kernel.
+@inline function _cu_kernel(x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
     return Dual(cu(primal(x)), cu(tangent(x)))
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(cu),N},
+    ::Mooncake.Lifted{typeof(cu),N},
     x::Mooncake.Lifted{<:AbstractArray{<:CuFloatOrComplex},N},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x))
+    bare_result = _cu_kernel(Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -2158,17 +2130,18 @@ end
 @is_primitive(
     MinimalCtx, Tuple{Type{Array{T,N}},CuArray{T,N}} where {T<:CuFloatOrComplex,N}
 )
-function frule!!(
+# `Array{T,N}(x::CuArray{T,N})` implementation kernel.
+@inline function _array_from_cuarray_kernel(
     ::Dual{Type{Array{T,N}}}, x::Dual{<:CuArray{T,N}}
 ) where {T<:CuFloatOrComplex,N}
     return Dual(Array(primal(x)), Array(tangent(x)))
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{Type{Array{T,N}},N}, x::Mooncake.Lifted{<:CuArray{T,N},N}
-) where {N,T<:CuFloatOrComplex,N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(x))
+    _a0::Mooncake.Lifted{Type{Array{T,N}},M}, x::Mooncake.Lifted{<:CuArray{T,N},M}
+) where {T<:CuFloatOrComplex,N,M}
+    bare_result = _array_from_cuarray_kernel(Mooncake._unlift(_a0), Mooncake._unlift(x))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(P_out, Val(M), bare_result)
 end
 function rrule!!(
     ::CoDual{Type{Array{T,N}}}, x::CoDual{<:CuArray{T,N}}
@@ -2187,14 +2160,17 @@ end
 # frule:    d(Diagonal(v)) = Diagonal(dv)
 # pullback: dv += diag(dD)  (i.e. extract the diagonal from the output cotangent)
 @is_primitive(MinimalCtx, Tuple{Type{<:Diagonal},CuMaybeComplexArray})
-function frule!!(::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexArray})
+# `Diagonal(v::CuMaybeComplexArray)` ctor implementation kernel.
+@inline function _diagonal_cuarray_kernel(
+    ::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexArray}
+)
     # Diagonal is a non-mutable struct; its tangent type is Tangent{(; diag::CuArray)}.
     return Dual(Diagonal(primal(v)), Tangent((; diag=tangent(v))))
 end
 @inline function frule!!(
     _a0::Mooncake.Lifted{<:Type{<:Diagonal},N}, v::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(v))
+    bare_result = _diagonal_cuarray_kernel(Mooncake._unlift(_a0), Mooncake._unlift(v))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -2919,9 +2895,8 @@ function _check_mixed_gpu_eltype(flat_pargs)
     return nothing
 end
 
-function frule!!(
-    ::Dual{typeof(Base.Broadcast.materialize)}, bc::Dual{<:Broadcasted{<:CuArrayStyle}}
-)
+# `Base.Broadcast.materialize(bc::Broadcasted{<:CuArrayStyle})` kernel.
+@inline function _materialize_cuarray_kernel(bc::Dual{<:Broadcasted{<:CuArrayStyle}})
     bc_primal = primal(bc)
     _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, tangent(bc))
 
@@ -2939,10 +2914,10 @@ function frule!!(
     return Dual(decoded.primal_out, dy)
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(Base.Broadcast.materialize),N},
+    ::Mooncake.Lifted{typeof(Base.Broadcast.materialize),N},
     bc::Mooncake.Lifted{<:Broadcasted{<:CuArrayStyle},N},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(_a0), Mooncake._unlift(bc))
+    bare_result = _materialize_cuarray_kernel(Mooncake._unlift(bc))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -3008,10 +2983,9 @@ end
         typeof(Base.Broadcast.materialize!),P,<:Broadcasted{<:CuArrayStyle}
     } where {P<:CuMaybeComplexArray},
 )
-function frule!!(
-    ::Dual{typeof(Base.Broadcast.materialize!)},
-    dest::Dual{P,P},
-    bc::Dual{<:Broadcasted{<:CuArrayStyle}},
+# `Base.Broadcast.materialize!(dest, bc::Broadcasted{<:CuArrayStyle})` kernel.
+@inline function _materialize_inplace_cuarray_kernel(
+    dest::Dual{P,P}, bc::Dual{<:Broadcasted{<:CuArrayStyle}}
 ) where {P<:CuMaybeComplexArray}
     bc_primal = primal(bc)
     _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, tangent(bc))
@@ -3039,12 +3013,12 @@ function frule!!(
     return dest
 end
 @inline function frule!!(
-    _a0::Mooncake.Lifted{typeof(Base.Broadcast.materialize!),N},
+    ::Mooncake.Lifted{typeof(Base.Broadcast.materialize!),N},
     dest::Mooncake.Lifted{P,N},
     bc::Mooncake.Lifted{<:Broadcasted{<:CuArrayStyle},N},
 ) where {N,P<:CuMaybeComplexArray}
-    bare_result = frule!!(
-        Mooncake._unlift(_a0), Mooncake._unlift(dest), Mooncake._unlift(bc)
+    bare_result = _materialize_inplace_cuarray_kernel(
+        Mooncake._unlift(dest), Mooncake._unlift(bc)
     )
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
