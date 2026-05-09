@@ -406,13 +406,28 @@ end
 # constructor. Build the inner tuple here element-wise instead. Nested tuple
 # fields recurse via `_inner_dual_for_field` so that
 # `Tuple{NDual, Tuple{NDual, Vector{NDual}}, ...}` is built leaf-by-leaf.
-@inline function Lifted{P,N}(primal::P, tangent::Tup) where {P<:Tuple,N,Tup<:Tuple}
+#
+# `@generated` for the same reason as `_wrap_oc_args` / `_wrap_rule_result`:
+# a runtime `ntuple` with a closure body indexing `primal[i]` / `tangent[i]`
+# leaves the inner result Union-typed (each Vᵢ varies), forcing a heap alloc
+# for the resulting Tuple. Unrolling per-field gives static dispatch on each
+# `_inner_dual_for_field(Vᵢ, ...)` call.
+@inline @generated function Lifted{P,N}(
+    primal::P, tangent::Tup
+) where {P<:Tuple,N,Tup<:Tuple}
+    n = fieldcount(P)
     InnerT = dual_type(Val(N), P)
-    inner = ntuple(
-        i -> _inner_dual_for_field(fieldtype(InnerT, i), primal[i], tangent[i]),
-        Val(fieldcount(P)),
-    )
-    return Lifted{P,N,InnerT}(inner)
+    if !(InnerT isa DataType) || !(InnerT <: Tuple)
+        # Fall back to the runtime path when InnerT isn't a concrete Tuple of
+        # known inner V's (e.g. abstract P).
+        return :(invoke(Lifted{$P,$N}, Tuple{Vararg{Any}}, primal, tangent))
+    end
+    inner_exprs = map(1:n) do i
+        :(_inner_dual_for_field($(fieldtype(InnerT, i)), primal[$i], tangent[$i]))
+    end
+    return quote
+        return Lifted{$P,$N,$InnerT}(($(inner_exprs...),))
+    end
 end
 
 # Build a single field's inner dual value. For non-Tuple fields, defer to the
