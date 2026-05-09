@@ -253,15 +253,22 @@ end
 @inline @generated function _wrap_rule_result(
     ::Type{P}, ::Val{N}, x::Dual{P_in,T_in}
 ) where {P<:Tuple,N,P_in<:Tuple,T_in<:Tuple}
+    # Try to resolve per-field Vᵢ at expansion time (concrete inner V →
+    # tight `_inner_dual_for_field` ctor); on world-age failure (ext-
+    # typed primitive leaves), emit the generic `Dual(p, t)` form.
     n = fieldcount(P_in)
-    inner_exprs = map(1:n) do i
-        Pi = fieldtype(P_in, i)
-        Vi = dual_type(Val(N), Pi)
-        if Vi isa DataType && isconcretetype(Vi)
-            :(_inner_dual_for_field($Vi, p_tup[$i], t_tup[$i]))
-        else
-            :(Dual(p_tup[$i], t_tup[$i]))
+    inner_exprs = try
+        map(1:n) do i
+            Pi = fieldtype(P_in, i)
+            Vi = dual_type(Val(N), Pi)
+            if Vi isa DataType && isconcretetype(Vi)
+                :(_inner_dual_for_field($Vi, p_tup[$i], t_tup[$i]))
+            else
+                :(Dual(p_tup[$i], t_tup[$i]))
+            end
         end
+    catch
+        map(i -> :(Dual(p_tup[$i], t_tup[$i])), 1:n)
     end
     return quote
         p_tup = primal(x)
@@ -281,14 +288,20 @@ end
     ::Type{P}, ::Val{N}, x::Tuple
 ) where {P<:Tuple,N}
     if isconcretetype(P) && fieldcount(P) > 0
-        InnerT = dual_type(Val(N), P)
-        if InnerT isa DataType && InnerT <: Tuple
-            return :(Lifted{$P,$N,$InnerT}(_canonicalise_tuple_inner($InnerT, x)))
+        # Same pattern as `_static_dual_type`: `try` to resolve at
+        # expansion time; on failure (ext-typed primitive-leaf world-age
+        # error), fall back to the runtime form below.
+        try
+            InnerT = dual_type(Val(N), P)
+            if InnerT isa DataType && InnerT <: Tuple
+                return :(Lifted{$P,$N,$InnerT}(_canonicalise_tuple_inner($InnerT, x)))
+            end
+            return :(Lifted{$P,$N}(x))
+        catch
+            # fall through to runtime form below
         end
-        return :(Lifted{$P,$N}(x))
     end
-    # Non-concrete P: fall back to the runtime `_resolve_concrete_P` form so
-    # widened-P args (`Tuple{Vararg}`, abstract elements) still resolve.
+    # Non-concrete P or world-age fallback: runtime `_resolve_concrete_P`.
     return quote
         P_out = _resolve_concrete_P(P, x)
         if isconcretetype(P_out) && P_out <: Tuple && fieldcount(P_out) == length(x)

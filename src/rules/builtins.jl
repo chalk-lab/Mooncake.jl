@@ -1304,14 +1304,25 @@ end
         Ai.parameters[1]
     end
     P_out = Tuple{Ps...}
-    InnerT = dual_type(Val(N), P_out)
     bare_exprs = (:(_unlift(args[$i])) for i in 1:M)
-    if InnerT isa DataType && InnerT <: Tuple
-        return :(Lifted{$P_out,$N,$InnerT}(
-            _canonicalise_tuple_inner($InnerT, ($(bare_exprs...),))
-        ))
+    # `try` to resolve InnerT at expansion time. The static path emits a
+    # direct `Lifted{P, N, V}(...)` ctor — needed for the canonical-V
+    # invariant in the IR. The `catch` fallback runs `dual_type` at
+    # runtime instead: ext-typed tuples (e.g. `Tuple{CuArray}`) recurse
+    # through `tangent_type` lookups whose primitive-type leaves
+    # (`CuPtr{Nothing}`) live behind a generated-function world-age
+    # boundary — the staged body would otherwise hard-error there.
+    try
+        InnerT = dual_type(Val(N), P_out)
+        if InnerT isa DataType && InnerT <: Tuple
+            return :(Lifted{$P_out,$N,$InnerT}(
+                _canonicalise_tuple_inner($InnerT, ($(bare_exprs...),))
+            ))
+        end
+        return :(Lifted{$P_out,$N}(($(bare_exprs...),)))
+    catch
+        return :(_wrap_rule_result($P_out, Val($N), ($(bare_exprs...),)))
     end
-    return :(Lifted{$P_out,$N}(($(bare_exprs...),)))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tuple),Vararg}}) = true
 
