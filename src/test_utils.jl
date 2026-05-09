@@ -877,8 +877,17 @@ function test_frule_performance(
         # nested rule callsite inside the compiled OC, producing non-zero alloc counts
         # even for correct rules. Skip this check on Julia < 1.11.
         @static if VERSION >= v"1.11-"
-            __forwards(rule, f_ḟ, x_ẋ...)
-            @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
+            # Exclude the parallel-storage → canonical-V `_to_lifted` conversion from
+            # the alloc count: array-typed primals (`Vector{Float64}` etc.) lift to a
+            # different memory layout (`Vector{NDual{Float64,1}}`), which is an
+            # unavoidable allocation on the test framework's input boundary. The
+            # runtime AD path doesn't pay this cost — IR-emit constructs Lifted slots
+            # at function-entry once and threads them through. Pre-build the lifted
+            # inputs, then measure only the rule-call portion.
+            x_lifted = ntuple(i -> _to_lifted(x_ẋ[i]), Val(N))
+            f_lifted = _to_lifted(f_ḟ)
+            rule(f_lifted, x_lifted...)
+            @test count_allocs(rule, f_lifted, x_lifted...) == 0
         end
     end
 end
