@@ -86,11 +86,9 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
-function frule!!(::Dual{typeof(pointer_from_objref)}, x)
-    y = pointer_from_objref(primal(x))
-    dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
-    return Dual(y, dy)
-end
+# Bare-Dual `pointer_from_objref` body deleted under task #31. The Lifted-typed
+# body below computes the result independently from the inner V (no `frule!!`
+# delegation), so no kernel function is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(pointer_from_objref),N}, x::Mooncake.Lifted
 ) where {N}
@@ -111,9 +109,8 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
-function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
-    return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
-end
+# Bare-Dual `unsafe_pointer_to_objref` body deleted under task #31. The
+# Lifted-typed body below computes the result independently.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.unsafe_pointer_to_objref),N}, x::Mooncake.Lifted{<:Ptr}
 ) where {N}
@@ -390,7 +387,8 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(deepcopy),Any}}) = true
-frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
+# Bare-Dual `deepcopy` body deleted under task #31. The Lifted-typed body
+# below `deepcopy`s the inner V directly without delegating to a bare body.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(deepcopy),N}, x::Mooncake.Lifted
 ) where {N}

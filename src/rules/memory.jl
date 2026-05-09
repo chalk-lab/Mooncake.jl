@@ -548,13 +548,39 @@ end
 
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(memoryrefnew),Vararg}}) = true
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
-    return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
+# `memoryrefnew` implementation kernels (no `Dual{typeof(memoryrefnew)}` first
+# arg). Lifted-typed bodies below dispatch the runtime inner V into the
+# matching kernel: `Memory{<:_HasNDual}` / `MemoryRef{<:_HasNDual}` for the
+# canonical NDual path; `Dual{<:Memory}` / `Dual{<:MemoryRef}` for the legacy
+# Dual-wrapped path (non-IEEEFloat element types whose `dual_type` falls
+# through to `Dual{P, Tangent{...}}`).
+@inline _memoryrefnew_kernel(x::Dual{<:Memory}) = Dual(
+    memoryrefnew(primal(x)), memoryrefnew(tangent(x))
+)
+@inline _memoryrefnew_kernel(x::Memory{<:_HasNDual}) = memoryrefnew(x)
+@inline _memoryrefnew_kernel(x::Dual{<:MemoryRef}, ii::Dual{Int}) = Dual(
+    memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii))
+)
+@inline function _memoryrefnew_kernel(x::MemoryRef{<:_HasNDual}, ii::Dual{Int})
+    return memoryrefnew(x, primal(ii))
 end
+@inline function _memoryrefnew_kernel(
+    x::Dual{<:MemoryRef}, ii::Dual{Int}, boundscheck::Dual{Bool}
+)
+    y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
+    dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
+    return Dual(y, dy)
+end
+@inline function _memoryrefnew_kernel(
+    x::MemoryRef{<:_HasNDual}, ii::Dual{Int}, boundscheck::Dual{Bool}
+)
+    return memoryrefnew(x, primal(ii), primal(boundscheck))
+end
+
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(memoryrefnew),N}, x::Mooncake.Lifted{<:Memory}
+    ::Mooncake.Lifted{typeof(memoryrefnew),N}, x::Mooncake.Lifted{<:Memory}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x))
+    bare_result = _memoryrefnew_kernel(Mooncake._unlift(x))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -562,15 +588,12 @@ end
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef}, ii::Dual{Int})
-    return Dual(memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii)))
-end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(memoryrefnew),N},
+    ::Mooncake.Lifted{typeof(memoryrefnew),N},
     x::Mooncake.Lifted{<:MemoryRef},
     ii::Mooncake.Lifted{Int},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(ii))
+    bare_result = _memoryrefnew_kernel(Mooncake._unlift(x), Mooncake._unlift(ii))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -581,26 +604,13 @@ end
 end
 
 @inline function frule!!(
-    ::Dual{typeof(memoryrefnew)},
-    x::Dual{<:MemoryRef},
-    ii::Dual{Int},
-    boundscheck::Dual{Bool},
-)
-    y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
-    return Dual(y, dy)
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(memoryrefnew),N},
+    ::Mooncake.Lifted{typeof(memoryrefnew),N},
     x::Mooncake.Lifted{<:MemoryRef},
     ii::Mooncake.Lifted{Int},
     boundscheck::Mooncake.Lifted{Bool},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(x),
-        Mooncake._unlift(ii),
-        Mooncake._unlift(boundscheck),
+    bare_result = _memoryrefnew_kernel(
+        Mooncake._unlift(x), Mooncake._unlift(ii), Mooncake._unlift(boundscheck)
     )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -1179,11 +1189,13 @@ end
 # Misc. other rules which are required for correctness.
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+# Implementation kernels for `copy(::Array)` (no `Dual{typeof(copy)}` arg).
+@inline _copy_array_kernel(a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+@inline _copy_array_kernel(a::Array{<:_HasNDual}) = copy(a)
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
+    ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a))
+    bare_result = _copy_array_kernel(Mooncake._unlift(a))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1289,26 +1301,12 @@ end
     return value
 end
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Memory{<:_HasNDual})
-    return memoryrefnew(x)
-end
-
-@inline function frule!!(
-    ::Dual{typeof(memoryrefnew)}, x::MemoryRef{<:_HasNDual}, ii::Dual{Int}
-)
-    return memoryrefnew(x, primal(ii))
-end
-
-@inline function frule!!(
-    ::Dual{typeof(memoryrefnew)},
-    x::MemoryRef{<:_HasNDual},
-    ii::Dual{Int},
-    boundscheck::Dual{Bool},
-)
-    return memoryrefnew(x, primal(ii), primal(boundscheck))
-end
-
-frule!!(::Dual{typeof(copy)}, a::Array{<:_HasNDual}) = copy(a)
+# Bare-Dual `memoryrefnew` bodies (Dual{typeof(memoryrefnew)} first arg) for
+# both NDual and Dual second-arg variants have been migrated to
+# `_memoryrefnew_kernel` further up the file (under `# Core.memoryrefmodify!`)
+# so the Lifted-typed bodies dispatch on the runtime inner V without going
+# through `frule!!(::Dual{typeof(...)}, ...)`. The `copy(::Array{<:_HasNDual})`
+# body is migrated to `_copy_array_kernel` alongside the legacy `Dual` variant.
 
 # lgetfield/getfield for bare NDual containers. Returns the canonical
 # `dual_type(Val(N), typeof(result))` form via `zero_dual`:

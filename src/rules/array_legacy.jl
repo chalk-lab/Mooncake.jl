@@ -84,26 +84,25 @@ end
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
-function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+# Implementation kernels for `_deletebeg!`. Lifted body below dispatches the
+# inner V into either the legacy `Dual{<:Vector}` path or the canonical
+# `AbstractVector{<:NDual}` path (NDual elements pack primal+tangent so a
+# single `_deletebeg!` mutates both at once).
+@inline function _deletebeg_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
     Base._deletebeg!(primal(a), primal(d))
     Base._deletebeg!(tangent(a), primal(d))
     return zero_dual(nothing)
 end
-# Bare NDual-vector overload: V at width 1 for Vector{<:IEEEFloat} is
-# Vector{NDual{T,1}}; the NDual elements pack primal+tangent so a single
-# `_deletebeg!` call mutates both at once.
-@inline function frule!!(
-    ::Dual{typeof(Base._deletebeg!)}, a::AbstractVector{<:NDual}, d::Dual{<:Integer}
-)
+@inline function _deletebeg_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
     Base._deletebeg!(a, primal(d))
     return zero_dual(nothing)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Base._deletebeg!),N},
+    ::Mooncake.Lifted{typeof(Base._deletebeg!),N},
     a::Mooncake.Lifted{<:Vector},
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(d))
+    bare_result = _deletebeg_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -129,23 +128,21 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
-function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+@inline function _deleteend_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
     Base._deleteend!(primal(a), primal(d))
     Base._deleteend!(tangent(a), primal(d))
     return zero_dual(nothing)
 end
-@inline function frule!!(
-    ::Dual{typeof(Base._deleteend!)}, a::AbstractVector{<:NDual}, d::Dual{<:Integer}
-)
+@inline function _deleteend_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
     Base._deleteend!(a, primal(d))
     return zero_dual(nothing)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Base._deleteend!),N},
+    ::Mooncake.Lifted{typeof(Base._deleteend!),N},
     a::Mooncake.Lifted{<:Vector},
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(d))
+    bare_result = _deleteend_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -178,36 +175,27 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
-function frule!!(
-    ::Dual{typeof(Base._deleteat!)},
-    a::Dual{<:Vector},
-    i::Dual{<:Integer},
-    delta::Dual{<:Integer},
+@inline function _deleteat_kernel!(
+    a::Dual{<:Vector}, i::Dual{<:Integer}, delta::Dual{<:Integer}
 )
     Base._deleteat!(primal(a), primal(i), primal(delta))
     Base._deleteat!(tangent(a), primal(i), primal(delta))
     return zero_dual(nothing)
 end
-@inline function frule!!(
-    ::Dual{typeof(Base._deleteat!)},
-    a::AbstractVector{<:NDual},
-    i::Dual{<:Integer},
-    delta::Dual{<:Integer},
+@inline function _deleteat_kernel!(
+    a::AbstractVector{<:NDual}, i::Dual{<:Integer}, delta::Dual{<:Integer}
 )
     Base._deleteat!(a, primal(i), primal(delta))
     return zero_dual(nothing)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Base._deleteat!),N},
+    ::Mooncake.Lifted{typeof(Base._deleteat!),N},
     a::Mooncake.Lifted{<:Vector},
     i::Mooncake.Lifted{<:Integer},
     delta::Mooncake.Lifted{<:Integer},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(a),
-        Mooncake._unlift(i),
-        Mooncake._unlift(delta),
+    bare_result = _deleteat_kernel!(
+        Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(delta)
     )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -240,25 +228,21 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
-function frule!!(
-    ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
-) where {T}
+@inline function _growbeg_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
     Base._growbeg!(primal(a), primal(d))
     Base._growbeg!(tangent(a), primal(d))
     return zero_dual(nothing)
 end
-@inline function frule!!(
-    ::Dual{typeof(Base._growbeg!)}, a::AbstractVector{<:NDual}, d::Dual{<:Integer}
-)
+@inline function _growbeg_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
     Base._growbeg!(a, primal(d))
     return zero_dual(nothing)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Base._growbeg!),N},
+    ::Mooncake.Lifted{typeof(Base._growbeg!),N},
     a::Mooncake.Lifted{<:Vector},
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(d))
+    bare_result = _growbeg_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -279,23 +263,21 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
-function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
+@inline function _growend_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
     Base._growend!(primal(a), primal(d))
     Base._growend!(tangent(a), primal(d))
     return zero_dual(nothing)
 end
-@inline function frule!!(
-    ::Dual{typeof(Base._growend!)}, a::AbstractVector{<:NDual}, d::Dual{<:Integer}
-)
+@inline function _growend_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
     Base._growend!(a, primal(d))
     return zero_dual(nothing)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Base._growend!),N},
+    ::Mooncake.Lifted{typeof(Base._growend!),N},
     a::Mooncake.Lifted{<:Vector},
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(d))
+    bare_result = _growend_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -316,30 +298,25 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
-function frule!!(
-    ::Dual{typeof(Base._growat!)}, a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
-)
+@inline function _growat_kernel!(a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer})
     Base._growat!(primal(a), primal(i), primal(d))
     Base._growat!(tangent(a), primal(i), primal(d))
     return zero_dual(nothing)
 end
-@inline function frule!!(
-    ::Dual{typeof(Base._growat!)},
-    a::AbstractVector{<:NDual},
-    i::Dual{<:Integer},
-    d::Dual{<:Integer},
+@inline function _growat_kernel!(
+    a::AbstractVector{<:NDual}, i::Dual{<:Integer}, d::Dual{<:Integer}
 )
     Base._growat!(a, primal(i), primal(d))
     return zero_dual(nothing)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Base._growat!),N},
+    ::Mooncake.Lifted{typeof(Base._growat!),N},
     a::Mooncake.Lifted{<:Vector},
     i::Mooncake.Lifted{<:Integer},
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(d)
+    bare_result = _growat_kernel!(
+        Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(d)
     )
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -367,23 +344,21 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
-function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
+@inline function _sizehint_kernel!(x::Dual{<:Vector}, sz::Dual{<:Integer})
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
     return x
 end
-@inline function frule!!(
-    ::Dual{typeof(sizehint!)}, x::AbstractVector{<:NDual}, sz::Dual{<:Integer}
-)
+@inline function _sizehint_kernel!(x::AbstractVector{<:NDual}, sz::Dual{<:Integer})
     sizehint!(x, primal(sz))
     return x
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(sizehint!),N},
+    ::Mooncake.Lifted{typeof(sizehint!),N},
     x::Mooncake.Lifted{<:Vector},
     sz::Mooncake.Lifted{<:Integer},
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(sz))
+    bare_result = _sizehint_kernel!(Mooncake._unlift(x), Mooncake._unlift(sz))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -699,9 +674,9 @@ function isbits_arrayset_rrule(
     return A, isbits_arrayset_pullback!!
 end
 
-function frule!!(::Dual{typeof(Core.arraysize)}, X, dim)
-    return zero_dual(Core.arraysize(primal(X), primal(dim)))
-end
+# Bare-Dual `Core.arraysize` body deleted under task #31. The Lifted-typed
+# body below computes the result independently (no `_unlift` delegation), so
+# no kernel function is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core.arraysize),N}, X::Mooncake.Lifted, dim::Mooncake.Lifted
 ) where {N}
@@ -712,12 +687,14 @@ function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
-@inline frule!!(::Dual{typeof(copy)}, a::AbstractArray{<:NDual}) = copy(a)
+@inline _copy_array_legacy_kernel(a::Dual{<:Array}) = Dual(
+    copy(primal(a)), copy(tangent(a))
+)
+@inline _copy_array_legacy_kernel(a::AbstractArray{<:NDual}) = copy(a)
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
+    ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a))
+    bare_result = _copy_array_legacy_kernel(Mooncake._unlift(a))
     P_out = _typeof(__get_primal(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
