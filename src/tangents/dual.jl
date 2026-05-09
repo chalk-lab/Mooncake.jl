@@ -378,6 +378,24 @@ verify_dual_type(::Lifted) = true
     return Lifted{P,N,InnerT}(InnerT(primal, tangent))
 end
 
+# Type-slot specialisation: `dual_type(Val(N), Type{P_user})` may substitute the
+# inner type parameter (e.g. `Type{Memory{Float64}}` → V-primal
+# `Type{Memory{NDual{Float64,N}}}` per the override in `nfwd/NfwdMooncake.jl`)
+# so that the OC slot's inner V matches what IR-emit produces at runtime. The
+# user-facing path (test framework, direct callers) still passes the
+# unsubstituted `P_user`, which would fail the auto-generated
+# `Dual{Type{P_lifted}, NoTangent}` constructor. Detect the Type-slot shape and
+# substitute to `P_lifted` here so both paths converge. Safe when `P_lifted ==
+# P_user` (e.g. `Type{Float64}` lifts to itself); the substitution is a no-op.
+@inline function Lifted{P,N}(primal::Type, tangent::NoTangent) where {P<:Type,N}
+    InnerT = dual_type(Val(N), P)
+    if InnerT isa DataType && InnerT <: Dual && InnerT.parameters[1] <: Type
+        P_lifted = InnerT.parameters[1].parameters[1]
+        return Lifted{P,N,InnerT}(InnerT(P_lifted, NoTangent()))
+    end
+    return Lifted{P,N,InnerT}(InnerT(primal, tangent))
+end
+
 # 3-param 2-arg ctor: callers that obtained `T = lifted_type(Val(N), P)` (the
 # fully-parameterised slot type) and want to build it with `(primal, tangent)`.
 # Forwards to the 2-param 2-arg form.
