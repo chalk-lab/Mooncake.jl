@@ -30,16 +30,17 @@ function (pb::ExpPullback)(::NoRData)
     return NoRData(), NoRData()
 end
 
-function frule!!(::Dual{typeof(exp)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
+# `exp(::Matrix)` implementation kernel (no `Dual{typeof(F)}` arg).
+# Two overloads parallel the original bare-Dual signatures: the Dual-matrix
+# variant for the legacy parallel-storage path, and the NDual-matrix variant
+# for the canonical-V path at width 1.
+@inline function _exp_matrix_kernel(X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
     X = copy(primal(X_dX))
     dX = copy(tangent(X_dX))
     return Dual(ChainRules.frule((ChainRules.NoTangent(), dX), LinearAlgebra.exp!, X)...)
 end
-# Bare NDual-matrix variant — V at width 1 for Matrix{<:IEEEFloat} is
-# Matrix{NDual{P,1}}; extract primal/tangent via element-wise map and re-pack
-# the (y, dy) pair into Matrix{NDual} for canonical V output.
-function frule!!(
-    ::Dual{typeof(exp)}, X_dX::Matrix{Mooncake.Nfwd.NDual{P,1}}
+@inline function _exp_matrix_kernel(
+    X_dX::Matrix{Mooncake.Nfwd.NDual{P,1}}
 ) where {P<:IEEEFloat}
     X = map(d -> d.value, X_dX)
     dX = map(d -> d.partials[1], X_dX)
@@ -47,9 +48,9 @@ function frule!!(
     return map((y, dy) -> Mooncake.Nfwd.NDual{P,1}(y, (dy,)), Y, dY)
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(exp),N}, X_dX::Mooncake.Lifted{Matrix{P}}
+    ::Mooncake.Lifted{typeof(exp),N}, X_dX::Mooncake.Lifted{Matrix{P}}
 ) where {N,P<:IEEEFloat}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(X_dX))
+    bare_result = _exp_matrix_kernel(Mooncake._unlift(X_dX))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end

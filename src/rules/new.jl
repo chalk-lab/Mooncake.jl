@@ -1,8 +1,47 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
-# Bare-Dual `_new_` body deleted under task #31. The Lifted-aware body below
-# computes the result independently — `_new_` is internal and is never invoked
-# as a bare-Dual primitive from elsewhere in the codebase.
+# Bare-Dual `_new_` kernel — invoked by other rules (e.g. legacy
+# `getindex`/`_new_`-via-MemoryRef paths in the test framework) that build
+# composite results from canonical V components. Kept as a kernel rather than
+# deleted because direct callers exist outside the Lifted dispatch path.
+function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) where {P,N}
+    primals = map(__get_primal, x)
+    # For NDual containers (Array, etc.), the type P is the primal type but the fields
+    # have NDual elements. Construct the NDual container type instead.
+    # Check `_find_ndual_memref(x...)` on the ORIGINAL args, not on `primals`:
+    # `__get_primal(::MemoryRef{<:NDual})` strips the NDual element type back to
+    # the primal type, which would prevent `_find_ndual_memref` from matching.
+    if P <: Array
+        ref = _find_ndual_memref(x...)
+        if ref !== nothing
+            P_ndual = Array{eltype(ref),ndims(P)}
+            return _new_(P_ndual, ref, primals[2:end]...)
+        end
+        # No NDual content: build the bare array and produce a `Dual{P, T}` with
+        # `zero_tangent(y)`. The struct-output `build_output_tangent` path expects
+        # a NamedTuple-shaped struct ctor, which Array does not have — calling it
+        # would fail on `Vector{T}(::@NamedTuple{ref, size})`.
+        y = _new_(P, primals...)
+        T = tangent_type(P)
+        T == NoTangent && return Dual(y, NoTangent())
+        return Dual(y, zero_tangent(y))
+    end
+    # Complex{NDual} is bare — construct directly from NDual fields.
+    if P <: Complex && _has_ndual(x...)
+        return Complex(primals...)
+    end
+    if _has_ndual(x...)
+        primals_extracted = map(_ndual_primal, x)
+        y = _new_(P, primals_extracted...)
+        T = tangent_type(P)
+        T == NoTangent && return Dual(y, NoTangent())
+        return _ndual_new_result(P, y, x, primals_extracted)
+    end
+    y = _new_(P, primals...)
+    T = tangent_type(P)
+    T == NoTangent && return Dual(y, NoTangent())
+    return Dual(y, build_output_tangent(P, primals, map(tangent, x)))
+end
 
 # Lifted-aware `_new_`. The static `P` from `Lifted{Type{P}, N}` is the
 # source of truth for the result wrap — the generic Lifted-aware adapter
@@ -148,6 +187,29 @@ end
 # `_find_ndual_memref`, `_ndual_primal`, `_ndual_width`, `_tangent_dir`, and
 # `_tangent_dir_elem` are defined in `nfwd/NfwdMooncake.jl` so that all NDual
 # container dispatch lives in one file.
+
+@inline function _ndual_new_result(::Type{P}, y, x::Tuple, primals::Tuple) where {P}
+    return _ndual_new_result(P, y, x, primals, _ndual_width(x...))
+end
+@inline function _ndual_new_result(
+    ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{1}
+) where {P}
+    # Width 1 produces a bare-tangent `Dual{P, T}` matching
+    # `dual_type(Val(1), P) = Dual{P, tangent_type(P)}`. Wrapping in
+    # `NTangent{Tuple{T}}` here is the chunked-N shape and would mismatch
+    # the OC slot.
+    dir_tangents = map(xi -> _tangent_dir(xi, 1), x)
+    return Dual(y, build_output_tangent(P, primals, dir_tangents))
+end
+@inline function _ndual_new_result(
+    ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{W}
+) where {P,W}
+    tangent_dirs = ntuple(Val(W)) do i
+        dir_tangents = map(xi -> _tangent_dir(xi, i), x)
+        build_output_tangent(P, primals, dir_tangents)
+    end
+    return Dual(y, NTangent(tangent_dirs))
+end
 
 function rrule!!(
     f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}

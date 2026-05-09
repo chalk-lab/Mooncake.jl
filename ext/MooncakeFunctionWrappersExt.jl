@@ -270,14 +270,17 @@ function rrule!!(::CoDual{Type{FunctionWrapper{R,A}}}, obj::CoDual{P}) where {R,
     return CoDual(FunctionWrapper{R,A}(obj.x), t), function_wrapper_pb
 end
 
-function frule!!(::Dual{Type{FunctionWrapper{R,A}}}, obj::Dual{P}) where {R,A,P}
+# `FunctionWrapper{R,A}(obj)` ctor implementation kernel.
+@inline function _function_wrapper_ctor_kernel(
+    ::Dual{Type{FunctionWrapper{R,A}}}, obj::Dual{P}
+) where {R,A,P}
     t, _ = _function_wrapper_tangent(R, primal(obj), A, tangent(obj))
     return Dual(FunctionWrapper{R,A}(primal(obj)), t)
 end
 @inline function frule!!(
     f::Mooncake.Lifted{Type{FunctionWrapper{R,A}},N}, obj::Mooncake.Lifted{P}
 ) where {R,A,P,N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(obj))
+    bare_result = _function_wrapper_ctor_kernel(Mooncake._unlift(f), Mooncake._unlift(obj))
     P_out = Mooncake._typeof(Mooncake.__get_primal(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end
