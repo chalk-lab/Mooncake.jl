@@ -1674,6 +1674,25 @@ end
 # inner V's tangent.
 @inline _tangent_dir(x::Mooncake.Lifted, i) = _tangent_dir(x.value, i)
 
+# Immutable struct-primal slot with NamedTuple inner V (recursive lift,
+# see dual.jl): build the per-direction tangent via `build_output_tangent`
+# so the result matches `tangent_type(P)` (Tangent shape with
+# `PossiblyUninitTangent` wrapping where present). For NamedTuple primals
+# the bare NamedTuple result is canonical.
+@inline function _tangent_dir(d::Mooncake.Lifted{P,N,V}, i) where {P,N,V<:NamedTuple}
+    P <: NamedTuple && return _tangent_dir(d.value, i)
+    return _build_struct_tangent_dir(P, d.value, i)
+end
+@generated function _build_struct_tangent_dir(
+    ::Type{P}, value::V, i
+) where {P,V<:NamedTuple{names}} where {names}
+    primal_exprs = [:(_ndual_primal(value.$n)) for n in names]
+    tangent_exprs = [:(_tangent_dir(value.$n, i)) for n in names]
+    return :(Mooncake.build_output_tangent(
+        $P, ($(primal_exprs...),), ($(tangent_exprs...),)
+    ))
+end
+
 @inline _tangent_dir_elem(t::NTangent, i) = t.lanes[i]
 @inline _tangent_dir_elem(t, _) = t
 

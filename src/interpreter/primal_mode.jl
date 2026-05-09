@@ -121,6 +121,21 @@ end
 # explicit `_uninit_dual(::Val{N}, ::T)` overload in `NfwdMooncake.jl` —
 # silently downgrading to width-1 here would produce wrong tangents.
 function _uninit_dual(w::Val{N}, v) where {N}
+    P = _typeof(v)
+    # Immutable struct with recursive NamedTuple lift (see dual.jl §13.4):
+    # `dual_type(Val(N), P)` returns a `NamedTuple{names, Tuple{Vᵢ…}}`. Build
+    # the lifted slot via the 2-arg `Lifted{P, N}(primal, tangent)` ctor so
+    # the inner V matches `dual_type` rather than the legacy `Dual{P, T}`
+    # form that `_uninit_dual_fallback` would otherwise produce.
+    if isconcretetype(P) &&
+        !ismutabletype(P) &&
+        fieldcount(P) > 0 &&
+        tangent_type(P) <: Tangent
+        InnerT = dual_type(Val(N), P)
+        if InnerT isa DataType && InnerT <: NamedTuple
+            return Lifted{P,N}(v, zero_tangent(v))
+        end
+    end
     return _uninit_dual_fallback(w, v)
 end
 function _uninit_dual_fallback(w::Val{N}, v) where {N}

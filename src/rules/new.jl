@@ -120,9 +120,29 @@ end
         end
     end
 
-    # Struct with NDual content: at width=1 produce a bare-tangent Dual
-    # (matches `dual_type(Val(1), P) = Dual{P, T}`); at width N>=2 wrap the
-    # per-direction tangents in `NTangent`.
+    # Struct primal with recursive NamedTuple lift: `dual_type(Val(N), P)`
+    # returns a `NamedTuple{fieldnames(P), Tuple{Vᵢ…}}` for any concrete
+    # struct with `tangent_type(P) <: Tangent`. The `_new_(P, args...)` call
+    # has each arg already in canonical V form (via `bare_x`), so wrap them
+    # element-wise into the lifted NamedTuple. This mirrors the existing
+    # NamedTuple-primal branch above; the only difference is the result wrap
+    # (a struct's `Lifted{P, N, NamedTuple{...}}` rather than a NamedTuple's
+    # own slot).
+    if !(P <: Array) && !(P <: Complex) && !(P <: AbstractArray)
+        InnerT = dual_type(Val(N), P)
+        if InnerT isa DataType && InnerT <: NamedTuple
+            names = fieldnames(P)
+            return Lifted{P,N,InnerT}(NamedTuple{names}(bare_x))
+        end
+    end
+
+    # Struct with NDual content (legacy parallel-Dual path): at width=1
+    # produce a bare-tangent Dual (matches `dual_type(Val(1), P) = Dual{P, T}`);
+    # at width N>=2 wrap the per-direction tangents in `NTangent`. This
+    # branch is only reached for structs whose `dual_type` returns a `Dual`
+    # (e.g. types where `tangent_type(P)` is not `<: Tangent`, or which
+    # have an explicit per-type `dual_type` overload pointing at the
+    # parallel form).
     if _has_ndual(bare_x...)
         primals_extracted = map(_ndual_primal, bare_x)
         y = _new_(P, primals_extracted...)

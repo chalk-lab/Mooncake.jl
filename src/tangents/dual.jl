@@ -87,54 +87,35 @@ Width-aware forward value type query.
         return NamedTuple{names,InnerTup}
     end
 
-    # Wrapper-type guard (task #31 / Option 2): array-like wrappers that hold a
-    # differentiable inner array (e.g. `Diagonal{T, Vector{T}}`,
-    # `Adjoint{T, Matrix{T}}`, `SubArray{T, ...}`, `Symmetric{T, ...}`) need an
-    # explicit structural-lift `dual_type` overload. Without one, falling
-    # through to the generic `Dual{P, Tangent{...inner_array::Array{T}...}}`
-    # would silently produce wrong tangents whenever the lifted IR extracts
-    # the inner array via `getfield` — the extraction returns a
-    # `Dual{Array{T}, Array{T}}` whose layout doesn't match the canonical V
-    # `Array{NDual{T,N}}` that downstream rules dispatch on. Refuse to
-    # construct the silently-broken slot type and direct the user to add the
-    # missing overload.
-    if N >= 1 && _wrapper_needs_explicit_dual_type(P)
-        throw(
-            ArgumentError(
-                "dual_type(Val($N), $P): array-wrapper type without an explicit " *
-                "structural-lift overload. The generic `Dual{P, Tangent{...}}` " *
-                "fallback silently produces wrong tangents when the wrapper's " *
-                "underlying array is extracted via getfield in the lifted IR. " *
-                "Add a `dual_type(Val(N), $P)` overload that lifts the underlying " *
-                "array (e.g. `Diagonal{T, Vector{T}}` → " *
-                "`Diagonal{NDual{T,N}, Vector{NDual{T,N}}}`) plus the matching " *
-                "`_uninit_dual` / `__get_primal` / `_has_ndual` / `_ndual_primal` " *
-                "/ `_tangent_dir` / `primal` overloads (see `nfwd/NfwdMooncake.jl` " *
-                "for the `Array{T,D}` template).",
-            ),
-        )
+    # Concrete IMMUTABLE struct with `tangent_type(P) <: Tangent`: recursive
+    # NamedTuple lift. Each field's `dual_type` is the canonical V for that
+    # field's primal type; the inner V mirrors the struct's field structure
+    # as a `NamedTuple{names, Tuple{Vᵢ…}}`. This generalises the per-wrapper
+    # structural lift (Diagonal/Adjoint/SubArray) to arbitrary immutable
+    # structs and closes the silent-corruption gap for in-place mutation
+    # through struct fields. See `notes/mooncake/dual-types.md` §13.
+    #
+    # Mutable structs (`MutableTangent` tangent_type) are excluded: their
+    # `lsetfield!` rules need a mutable inner V to support `s.field = x`,
+    # but `NamedTuple` is immutable. Mutable structs keep the existing
+    # parallel `Dual{P, MutableTangent}` form. (The corresponding mutation
+    # propagation gap for mutable-struct array fields remains, separate
+    # follow-up work.)
+    #
+    # Specific per-wrapper `dual_type` overloads (e.g. `Diagonal{T,Vector{T}}`
+    # in `nfwd/NfwdMooncake.jl`) are more specific and dispatch first, so
+    # this branch only fires for immutable structs without an explicit lift.
+    if N >= 1 &&
+        isconcretetype(P) &&
+        !ismutabletype(P) &&
+        fieldcount(P) > 0 &&
+        tangent_type(P) <: Tangent
+        names = fieldnames(P)
+        InnerTup = Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
+        return NamedTuple{names,InnerTup}
     end
 
     return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
-end
-
-# Returns `true` for `AbstractArray`-subtype wrappers that hold at least one
-# `AbstractArray{<:IEEEFloat}` field — the precise shape that the generic
-# `Dual{P, Tangent{...}}` fallback handles incorrectly under the lifted IR.
-# Used by `dual_type(Val(N), P)` above to fail loudly rather than constructing
-# a silently-wrong slot type.
-@inline function _wrapper_needs_explicit_dual_type(::Type{P}) where {P}
-    P <: AbstractArray || return false
-    isconcretetype(P) || return false
-    P <: Array && return false  # primitive Array has its own dual_type overload
-    @static if VERSION >= v"1.11-"
-        (P <: Memory || P <: MemoryRef) && return false
-    end
-    for F in fieldtypes(P)
-        F <: AbstractArray{<:IEEEFloat} && return true
-        F <: AbstractArray{<:Complex{<:IEEEFloat}} && return true
-    end
-    return false
 end
 
 dual_type(::Val{0}, ::Type{P}) where {P} = P
@@ -396,6 +377,25 @@ end
     )
     return NamedTuple{names}(inner_tup)
 end
+# Nested-struct case: V is the recursive NamedTuple lift of an immutable
+# struct field whose tangent is `Tangent`. Recurse element-wise, extracting
+# per-field primals from the struct and per-field tangents from the
+# Tangent's fields NamedTuple (with `_get_tangent_field_for_lift` unwrapping
+# `PossiblyUninitTangent`).
+@inline function _inner_dual_for_field(
+    ::Type{V}, primal, tangent::Tangent
+) where {names,V<:NamedTuple{names}}
+    InnerTup = V.parameters[2]
+    inner_tup = ntuple(
+        i -> _inner_dual_for_field(
+            fieldtype(InnerTup, i),
+            getfield(primal, names[i]),
+            _get_tangent_field_for_lift(tangent, names[i]),
+        ),
+        Val(fieldcount(V)),
+    )
+    return NamedTuple{names}(inner_tup)
+end
 
 # Tuple-primal with `NoTangent` (whole-tuple) tangent — common when a `Tuple`
 # slot holds non-differentiable elements (e.g. `Tuple{Int}`). Build the inner
@@ -454,6 +454,36 @@ end
     return Lifted{P,N,InnerT}(NamedTuple{names}(inner_tup))
 end
 
+# Struct-primal with `Tangent` tangent — recursive lift: the inner V is a
+# `NamedTuple{fieldnames(S), Tuple{Vᵢ…}}` mirroring the struct's field
+# structure with each field already in canonical V form. Each field is built
+# via `_inner_dual_for_field`, which routes nested Tuple / NamedTuple /
+# struct fields to their respective recursive constructors and leaf
+# canonical-V types (`NDual`, `Vector{NDual}`, …) to their 2-arg ctors.
+# `_get_tangent_field_for_lift` unwraps `PossiblyUninitTangent` slots so
+# field tangents pass through unwrapped. Mutable structs keep the existing
+# parallel-Dual path (their `dual_type` does not return `<: NamedTuple`).
+@inline function Lifted{P,N}(primal::P, tangent::Tangent) where {P,N}
+    InnerT = dual_type(Val(N), P)
+    InnerT <: NamedTuple || return Lifted{P,N,InnerT}(InnerT(primal, tangent))
+    names = fieldnames(P)
+    inner_tup = ntuple(
+        i -> _inner_dual_for_field(
+            fieldtype(InnerT, i),
+            getfield(primal, names[i]),
+            _get_tangent_field_for_lift(tangent, names[i]),
+        ),
+        Val(fieldcount(P)),
+    )
+    return Lifted{P,N,InnerT}(NamedTuple{names}(inner_tup))
+end
+
+# Helper: extract a field's tangent value from a `Tangent`, unwrapping
+# `PossiblyUninitTangent` wrappers so the value passes to the leaf constructor
+# in its bare form. Mirrors `_get_tangent_field` in `rules/misc.jl` but lives
+# here to avoid a load-order dependency.
+@inline _get_tangent_field_for_lift(t::Tangent, name) = val(getfield(t.fields, name))
+
 # Accessors: delegate to the inner's own primal/tangent. For Tuple/NamedTuple
 # primals the inner is a bare element-wise (named) tuple, so map over it.
 primal(d::Lifted) = primal(d.value)
@@ -462,6 +492,25 @@ primal(d::Lifted{<:Tuple}) = map(primal, d.value)
 tangent(d::Lifted{<:Tuple}) = map(tangent, d.value)
 primal(d::Lifted{<:NamedTuple}) = map(primal, d.value)
 tangent(d::Lifted{<:NamedTuple}) = map(tangent, d.value)
+
+# Struct-primal accessors: the inner V is a `NamedTuple{fieldnames(P), Tuple{Vᵢ…}}`
+# (recursive lift), but `P` itself is a struct, not a NamedTuple. Reconstruct
+# the struct via `_new_` (Mooncake's bypass-constructor primitive) from the
+# per-field primals; build a `Tangent` / `MutableTangent` whose fields carry
+# the per-field tangent (NTangent-bearing for IEEEFloat-leaf fields, mirroring
+# the existing `tangent(::Array{<:NDual})` convention). This shape is used
+# for address-map tracking; `_tangent_dir(slot, i)` produces the bare-tangent
+# shape used by `_dot` for FD comparison.
+@generated function primal(d::Lifted{P,N,V}) where {P,N,V<:NamedTuple{names}} where {names}
+    P <: NamedTuple && return :(map(primal, d.value))   # earlier method handles this
+    field_exprs = [:(primal(d.value.$n)) for n in names]
+    return :(_new_($P, $(field_exprs...)))
+end
+@generated function tangent(d::Lifted{P,N,V}) where {P,N,V<:NamedTuple{names}} where {names}
+    P <: NamedTuple && return :(map(tangent, d.value))   # earlier method handles this
+    pairs = [Expr(:kw, n, :(tangent(d.value.$n))) for n in names]
+    return :(Tangent((; $(pairs...))))
+end
 
 """
     extract(d::Lifted)

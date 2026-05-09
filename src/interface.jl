@@ -1737,6 +1737,17 @@ end
     return inner isa Dual ? inner : _ndual_output_to_width1(inner)
 end
 
+# Struct-primal slot with NamedTuple inner V (recursive lift): build the result
+# Dual via `primal(slot)` / `_tangent_dir(slot, 1)`, which reconstruct the
+# original `P` and a matching `Tangent`/`MutableTangent`. Without this overload,
+# the generic Lifted path would unlift to the bare NamedTuple and produce a
+# `Dual{NamedTuple, NamedTuple}` whose primal type doesn't match the original
+# struct.
+@inline function _ndual_output_to_width1(output::Lifted{P,N,V}) where {P,N,V<:NamedTuple}
+    P <: NamedTuple && return _ndual_output_to_width1(_unlift(output))
+    return Dual(primal(output), _tangent_dir(output, 1))
+end
+
 """
     value_and_derivative!!(cache::FCache, (f, df), (x, dx), ...)
 

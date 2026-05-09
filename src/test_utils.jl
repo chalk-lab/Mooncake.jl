@@ -519,7 +519,7 @@ function test_frule_correctness(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
     )
     y_ẏ_rule = Mooncake._ndual_output_to_width1(frule(x_ẋ_rule...))
-    ẋ_ad = map(x -> Mooncake._tangent_dir(x.value, 1), x_ẋ_rule)
+    ẋ_ad = map(x -> Mooncake._tangent_dir(x, 1), x_ẋ_rule)
     ẏ_ad = tangent(y_ẏ_rule)
 
     # Verify that inputs / outputs are the same under `f` and its rrule.
