@@ -1033,8 +1033,13 @@ _dot(t::T, s::T) where {T} = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
 # produces `NoTangent` but the test framework constructs a per-field
 # `Tuple{NoTangent,...}` (or vice versa), allow the inner product without
 # requiring strict type equality.
-_dot(t::NoTangent, s) = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
-_dot(t, s::NoTangent) = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
+_dot(::NoTangent, ::NoTangent) = 0.0  # disambiguate the two below
+function _dot(t::NoTangent, s::Union{Tuple,NamedTuple})
+    _dot_internal(IdDict{Any,Any}(), t, s)::Float64
+end
+function _dot(t::Union{Tuple,NamedTuple}, s::NoTangent)
+    _dot_internal(IdDict{Any,Any}(), t, s)::Float64
+end
 
 """
     _dot_internal(c::MaybeCache, t::T, s::T) where {T}
