@@ -197,10 +197,9 @@ function misty_closure_new_rrule_exception()
 end
 
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
-# `MistyClosure` invocation kernel (no `Dual{typeof(F)}` arg). The
-# `dual_callable` is signature-specialised on Dual args so we keep the body
-# in a private kernel that the Lifted-typed overload delegates into.
-@inline function _misty_closure_kernel(f::Dual{<:MistyClosure}, x::Dual...)
+# `x` are canonical inner-V arguments: usually `Dual`, but scalar and container
+# slots may arrive as `NDual`, `Complex{NDual}`, arrays, tuples, or named tuples.
+@inline function _misty_closure_kernel(f::Dual{<:MistyClosure}, x...)
     dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
     return tangent(f).dual_callable(dual_captures, x...)
 end

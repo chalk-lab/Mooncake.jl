@@ -663,6 +663,29 @@ end
     memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
     return value
 end
+const _MemoryRefSetTupleValue = Tuple{
+    Vararg{
+        Union{
+            Dual,
+            NDual,
+            Complex{<:NDual},
+            AbstractArray{<:NDual},
+            AbstractArray{<:Complex{<:NDual}},
+        },
+    },
+}
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
+    value::_MemoryRefSetTupleValue,
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {P,V,ordering,boundscheck}
+    y = _tuple_duals_to_dual(value)
+    memoryrefset!(primal(x), primal(y), ordering, boundscheck)
+    memoryrefset!(tangent(x), tangent(y), ordering, boundscheck)
+    return y
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lmemoryrefset!),N},
     x::Mooncake.Lifted{<:MemoryRef},
@@ -800,6 +823,20 @@ end
         dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
         return Dual(x, dx)
     end
+    @inline function frule!!(
+        ::Lifted{typeof(Core.memorynew),N}, ::Lifted{Type{Memory{P}},N}, n::Lifted{Int,N}
+    ) where {P,N}
+        DT = _static_dual_type(Val(N), Memory{P})
+        if DT isa DataType && DT <: Memory
+            return Lifted{Memory{P},N,DT}(Core.memorynew(DT, primal(n)))
+        end
+        x = Core.memorynew(Memory{P}, primal(n))
+        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
+        return Lifted{Memory{P},N}(x, dx)
+    end
+    @inline Mooncake._is_lifted_aware(
+        ::Type{<:Tuple{typeof(Core.memorynew),Type{<:Memory},Int}}
+    ) = true
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
     ) where {P}

@@ -56,16 +56,15 @@ end
 # `mightalias` on primals sidesteps the broken codegen path.
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(Base.unalias),Any,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.unalias),Any,Any}}) = true
-# Bare-Dual body deleted under task #31. The Lifted-typed body below handles
-# the slot shape directly.
 @inline function frule!!(
-    ::Mooncake.Lifted{typeof(Base.unalias),N}, dest::Mooncake.Lifted, src::Mooncake.Lifted
-) where {N}
+    ::Mooncake.Lifted{typeof(Base.unalias),N},
+    dest::Mooncake.Lifted{<:Any,N},
+    src::Mooncake.Lifted{S,N},
+) where {S,N}
     d = primal(dest)
     s = primal(src)
     if d isa AbstractArray && s isa AbstractArray && Base.mightalias(d, s)
-        # Aliased: return a fresh copy of `src`'s slot value.
-        return Mooncake.Lifted{typeof(d),N}(copy(_unlift(src)))
+        return Mooncake.Lifted{S,N}(copy(_unlift(src)))
     end
     return src
 end
@@ -191,6 +190,12 @@ end
     else
         uninit_dual(field_val)
     end
+end
+@inline function _lgetfield_impl(
+    x::Union{Base.Broadcast.Extruded,Base.Broadcast.Broadcasted}, ::Val{f}
+) where {f}
+    field_val = getfield(x, f)
+    return _has_ndual(field_val) ? field_val : uninit_dual(field_val)
 end
 
 @inline function frule!!(
@@ -336,6 +341,11 @@ end
     return lsetfield_frule(value, name, _ndual_to_dual_lane1(x))
 end
 @inline function frule!!(
+    ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Tuple
+) where {P,T<:StandardTangentType}
+    return lsetfield_frule(value, name, _tuple_duals_to_dual(x))
+end
+@inline function frule!!(
     f::Mooncake.Lifted{typeof(lsetfield!),N},
     value::Mooncake.Lifted,
     name::Mooncake.Lifted,
@@ -361,6 +371,10 @@ end
     map(z -> complex(z.re.value, z.im.value), x),
     map(z -> complex(z.re.partials[1], z.im.partials[1]), x),
 )
+@inline function _tuple_duals_to_dual(x::Tuple)
+    ts = map(tangent, x)
+    return Dual(map(primal, x), ts isa Tuple{Vararg{NoTangent}} ? NoTangent() : ts)
+end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual
 ) where {P,F<:StandardFDataType}
@@ -408,8 +422,7 @@ end
 
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
-    # Bare-Dual `copy(::Dict)` body deleted under task #31. The Lifted-typed body
-    # below computes the result independently from the inner V.
+    # The Lifted-typed body computes the result independently from the inner V.
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Dict}
     ) where {N}

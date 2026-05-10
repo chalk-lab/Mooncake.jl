@@ -790,6 +790,13 @@ end # IntrinsicsWrappers
 
 @zero_derivative MinimalCtx Tuple{typeof(<:),Any,Any}
 @zero_derivative MinimalCtx Tuple{typeof(===),Any,Any}
+@inline function frule!!(
+    ::Lifted{typeof(===),N}, a::Lifted{<:Array,N}, b::Lifted{<:Array,N}
+) where {N}
+    return zero_lifted(
+        Val(N), a === b || _unlift(a) === _unlift(b) || primal(a) === primal(b)
+    )
+end
 
 # Core._abstracttype
 
@@ -1092,6 +1099,39 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+@inline @generated function frule!!(
+    f::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{P,N},
+    name::Mooncake.Lifted{<:Union{Int,Symbol},N},
+) where {P<:Union{Tuple,NamedTuple},N}
+    exprs = map(1:fieldcount(P)) do i
+        field = P <: Tuple ? i : fieldnames(P)[i]
+        P_field = fieldtype(P, i)
+        :(
+            primal(name) === $(QuoteNode(field)) && return _wrap_rule_result(
+                $P_field,
+                Val(N),
+                frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name)),
+            )
+        )
+    end
+    return quote
+        $(exprs...)
+        bare_result = frule!!(
+            Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name)
+        )
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{P,N},
+    name::Mooncake.Lifted{Val{field},N},
+) where {P<:Union{Tuple,NamedTuple},N,field}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(x), Mooncake._unlift(name))
+    return _wrap_rule_result(fieldtype(P, field), Val(N), bare_result)
+end
 function frule!!(
     ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
 ) where {P}
@@ -1119,6 +1159,54 @@ end
     )
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline @generated function frule!!(
+    f::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{P,N},
+    name::Mooncake.Lifted{<:Union{Int,Symbol},N},
+    inbounds::Mooncake.Lifted,
+) where {P<:Union{Tuple,NamedTuple},N}
+    exprs = map(1:fieldcount(P)) do i
+        field = P <: Tuple ? i : fieldnames(P)[i]
+        P_field = fieldtype(P, i)
+        :(
+            primal(name) === $(QuoteNode(field)) && return _wrap_rule_result(
+                $P_field,
+                Val(N),
+                frule!!(
+                    Mooncake._unlift(f),
+                    Mooncake._unlift(x),
+                    Mooncake._unlift(name),
+                    Mooncake._unlift(inbounds),
+                ),
+            )
+        )
+    end
+    return quote
+        $(exprs...)
+        bare_result = frule!!(
+            Mooncake._unlift(f),
+            Mooncake._unlift(x),
+            Mooncake._unlift(name),
+            Mooncake._unlift(inbounds),
+        )
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{P,N},
+    name::Mooncake.Lifted{Val{field},N},
+    inbounds::Mooncake.Lifted,
+) where {P<:Union{Tuple,NamedTuple},N,field}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(x),
+        Mooncake._unlift(name),
+        Mooncake._unlift(inbounds),
+    )
+    return _wrap_rule_result(fieldtype(P, field), Val(N), bare_result)
 end
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual

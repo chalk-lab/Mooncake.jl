@@ -375,7 +375,16 @@ NDual(3.0, (0.0,)))` are grouped element-wise into the trailing varargs slot.
 function __unflatten_dual_varargs(
     isva::Bool, args, ::Val{nargs}, width::Val=Val(1)
 ) where {nargs}
-    isva || return args
+    return __unflatten_dual_varargs(Val(isva), args, Val(nargs), width)
+end
+@inline function __unflatten_dual_varargs(
+    ::Val{false}, args, ::Val{nargs}, width::Val=Val(1)
+) where {nargs}
+    return args
+end
+@inline function __unflatten_dual_varargs(
+    ::Val{true}, args, ::Val{nargs}, width::Val=Val(1)
+) where {nargs}
     # Both head (`args[1:(nargs-1)]`) and tail (`args[nargs:end]`) tuple slices
     # allocate via `UnitRange`-indexed Tuple `_getindex`. Use `@generated`
     # head/tail extractors that unroll at expansion time so both slices are
@@ -539,11 +548,11 @@ struct DerivedPrimal{primal_sig,Tlifted_oc,isva,nargs,W}
     width::W
 end
 
-@inline function (fwd::DerivedPrimal{primal_sig,sig,isva,nargs})(
+@inline function (fwd::DerivedPrimal{primal_sig,sig,isva,nargs,W})(
     args::Vararg{Any,N}
-) where {primal_sig,sig,N,isva,nargs}
+) where {primal_sig,sig,N,isva,nargs,W}
     width = fwd.width
-    flat_args = __unflatten_dual_varargs(isva, args, Val(nargs), width)
+    flat_args = __unflatten_dual_varargs(Val(isva), args, Val(nargs), width)
     if _is_lifted_width(width)
         # OC boundary: at width=Val(N>=1), the OC argtypes are
         # `Lifted{P_i, N, V_i}` (per `lifted_type`). Wrap each bare slot value

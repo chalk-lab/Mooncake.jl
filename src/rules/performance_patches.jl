@@ -17,9 +17,8 @@
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
-# Bare-Dual `frule!!(::Dual{sum}, ::Dual{<:Array})` body deleted under task #31.
-# The Lifted-typed body below is the only entry point; `sum(::Array{<:NDual})`
-# returns a single NDual that already encodes the tangent across all directions.
+# `sum(::Array{<:NDual})` returns a single NDual that already encodes the
+# tangent across all directions.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N}, x::Mooncake.Lifted{<:Array{P},N}
 ) where {N,P<:IEEEFloat}
@@ -34,6 +33,26 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
     end
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
 end
+
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
+# The generic lifted path for dense Diagonal left-division
+# allocates in primal-mode forward tests; the NDual container path below delegates to
+# LinearAlgebra's concrete Matrix/Diagonal implementation.
+@is_primitive DefaultCtx ForwardMode Tuple{
+    typeof(ldiv!),Matrix{T},LinearAlgebra.Diagonal{T,Vector{T}},Matrix{T}
+} where {T<:IEEEFloat}
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(ldiv!),N},
+    out::Mooncake.Lifted{Matrix{T},N,Matrix{NDual{T,N}}},
+    d::Mooncake.Lifted{LinearAlgebra.Diagonal{T,Vector{T}},N},
+    b::Mooncake.Lifted{Matrix{T},N,Matrix{NDual{T,N}}},
+) where {N,T<:IEEEFloat}
+    ldiv!(Mooncake._unlift(out), Mooncake._unlift(d), Mooncake._unlift(b))
+    return out
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(ldiv!),Matrix{T},LinearAlgebra.Diagonal{T,Vector{T}},Matrix{T}}}
+) where {T<:IEEEFloat} = true
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
@@ -122,6 +141,26 @@ end
         },
     },
 ) = true
+
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/526
+# Dense Diagonal Kronecker products need a finite concrete forward-mode patch.
+# The primitive is deliberately restricted to Matrix/Vector-backed Diagonal inputs
+# and delegates to LinearAlgebra's NDual-capable implementation.
+@is_primitive DefaultCtx ForwardMode Tuple{
+    typeof(kron!),Matrix{T},LinearAlgebra.Diagonal{T,Vector{T}},Matrix{T}
+} where {T<:IEEEFloat}
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(kron!),N},
+    out::Mooncake.Lifted{Matrix{T},N,Matrix{NDual{T,N}}},
+    d::Mooncake.Lifted{LinearAlgebra.Diagonal{T,Vector{T}},N},
+    b::Mooncake.Lifted{Matrix{T},N,Matrix{NDual{T,N}}},
+) where {N,T<:IEEEFloat}
+    kron!(Mooncake._unlift(out), Mooncake._unlift(d), Mooncake._unlift(b))
+    return out
+end
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(kron!),Matrix{T},LinearAlgebra.Diagonal{T,Vector{T}},Matrix{T}}}
+) where {T<:IEEEFloat} = true
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
     out::CoDual{<:AbstractMatrix{<:T}},

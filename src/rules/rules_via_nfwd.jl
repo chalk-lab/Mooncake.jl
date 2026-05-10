@@ -101,11 +101,10 @@ for f in (
     # for primitive rules.
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
-        # `Lifted`-typed forward rule. Inner V at width 1 is `NDual{P, 1}` for
-        # IEEEFloat, so `$f(_unlift(x))` dispatches through scalar-NDual
-        # operator overloads to compute the derivative. The bare `Dual`-typed
-        # body has been removed under task #31 — IR-emit and the test
-        # framework's `__forwards` both pass `Lifted` slots through.
+        # Direct low-level rule callers still pass bare `Dual` slots.
+        @inline function frule!!(f::Dual{typeof($f)}, x::Dual{P}) where {P<:IEEEFloat}
+            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+        end
         @inline function frule!!(
             ::Mooncake.Lifted{typeof($f),N}, x::Mooncake.Lifted
         ) where {N}
@@ -121,9 +120,18 @@ for f in (
     end
 end
 
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Base.eps),N}, x::Mooncake.Lifted{P,N}
+) where {N,P<:IEEEFloat}
+    return Mooncake.zero_lifted(Val(N), eps(primal(x)))
+end
+
 # ── tanpi ─────────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(tanpi),P} where {P<:IEEEFloat}
+@inline function frule!!(f::Dual{typeof(tanpi)}, x::Dual{P}) where {P<:IEEEFloat}
+    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
 @inline function frule!!(::Mooncake.Lifted{typeof(tanpi),N}, x::Mooncake.Lifted) where {N}
     return Mooncake.Lifted{_typeof(primal(x)),N}(tanpi(_unlift(x)))
 end
@@ -136,8 +144,11 @@ end
 for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
-        # `Lifted`-typed forward rule. The bare-Dual body has been removed
-        # under task #31 — see the unary loop above for the rationale.
+        @inline function frule!!(
+            f::Dual{typeof($f)}, a::Dual{P}, b::Dual{P}
+        ) where {P<:IEEEFloat}
+            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, a, b)
+        end
         @inline function frule!!(
             ::Mooncake.Lifted{typeof($f),N}, a::Mooncake.Lifted, b::Mooncake.Lifted
         ) where {N}
@@ -157,9 +168,9 @@ end
 @is_primitive MinimalCtx Tuple{
     typeof(Base.FastMath.pow_fast),P,I
 } where {P<:IEEEFloat,I<:Integer}
-# Bare-Dual body deleted under task #31. The integer-power derivative is
-# carried by `Base.FastMath.pow_fast(::NDual{P}, ::Integer)`'s NDual operator
-# overload in `Nfwd.jl`, which handles the partials internally.
+# Lifted slots carry the integer-power derivative through
+# `Base.FastMath.pow_fast(::NDual{P}, ::Integer)`'s NDual operator overload in
+# `Nfwd.jl`, which handles the partials internally.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.FastMath.pow_fast),N},
     x::Mooncake.Lifted{P,N},
@@ -184,8 +195,11 @@ end
 for f in (clamp,)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P,P} where {P<:IEEEFloat}
-        # Bare-Dual body deleted under task #31; NDual operator overloads
-        # carry the derivative via `_unlift`.
+        @inline function frule!!(
+            f::Dual{typeof($f)}, x1::Dual{P}, x2::Dual{P}, x3::Dual{P}
+        ) where {P<:IEEEFloat}
+            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x1, x2, x3)
+        end
         @inline function frule!!(
             ::Mooncake.Lifted{typeof($f),N},
             x1::Mooncake.Lifted,
@@ -208,8 +222,10 @@ end
 # ── sincosd ───────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(sincosd),P} where {P<:IEEEFloat}
-# Bare-Dual body deleted under task #31; `sincosd(::NDual)` returns a
-# tuple-of-NDual element-wise.
+@inline function frule!!(f::Dual{typeof(sincosd)}, x::Dual{P}) where {P<:IEEEFloat}
+    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
+@inline frule!!(::Dual{typeof(sincosd)}, x::NDual) = sincosd(x)
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sincosd),N}, x::Mooncake.Lifted{P,N}
 ) where {N,P<:IEEEFloat}
@@ -223,8 +239,10 @@ end
 # ── sincospi ──────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(sincospi),P} where {P<:IEEEFloat}
-# Bare-Dual body deleted under task #31; `sincospi(::NDual)` returns a
-# tuple-of-NDual element-wise.
+@inline function frule!!(f::Dual{typeof(sincospi)}, x::Dual{P}) where {P<:IEEEFloat}
+    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
+@inline frule!!(::Dual{typeof(sincospi)}, x::NDual) = sincospi(x)
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sincospi),N}, x::Mooncake.Lifted{P,N}
 ) where {N,P<:IEEEFloat}
@@ -242,8 +260,10 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.FastMath.angle_fast),P} where {P<:IEEEFloat}
 
 @is_primitive MinimalCtx Tuple{typeof(modf),P} where {P<:IEEEFloat}
-# Bare-Dual body deleted under task #31; `modf(::NDual)` returns a
-# tuple-of-NDual element-wise.
+@inline function frule!!(f::Dual{typeof(modf)}, x::Dual{P}) where {P<:IEEEFloat}
+    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
+@inline frule!!(::Dual{typeof(modf)}, x::NDual) = modf(x)
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(modf),N}, x::Mooncake.Lifted{P,N}
 ) where {N,P<:IEEEFloat}
@@ -257,8 +277,11 @@ end
 # ── hypot(x, xs...) ───────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(hypot),P,Vararg{P}} where {P<:IEEEFloat}
-# Bare-Dual body deleted under task #31; `hypot(::NDual, ::NDual...)` carries
-# the derivative through scalar operator overloads.
+@inline function frule!!(
+    f::Dual{typeof(hypot)}, x::Dual{P}, xs::Vararg{Dual{P},M}
+) where {P<:IEEEFloat,M}
+    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x, xs...)
+end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(hypot),N},
     x::Mooncake.Lifted{P,N},
@@ -306,6 +329,11 @@ frule!!(::Dual{typeof(neg_float_fast)}, x::NDual) = -x
 frule!!(::Dual{typeof(sqrt_llvm)}, x::NDual) = sqrt(x)
 frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::NDual) = sqrt(x)
 
+@inline _lane1_ndual(x::Dual{P,<:IEEEFloat}) where {P<:IEEEFloat} = NDual{P,1}(
+    primal(x), (convert(P, tangent(x)),)
+)
+@inline _lane1_dual(x::NDual) = Dual(primal(x), x.partials[1])
+
 # Lifted-typed overloads for unary float intrinsics — same canonical-V
 # principle: `_unlift` produces an NDual on which the pointwise operator is
 # defined, then re-wrap as Lifted to skip the `_wrap_rule_result` allocation.
@@ -316,10 +344,17 @@ for (op_sym, op_fn) in (
     (:sqrt_llvm, :sqrt),
     (:sqrt_llvm_fast, :sqrt),
 )
-    @eval @inline function frule!!(
-        ::Mooncake.Lifted{typeof($op_sym),N}, x::Mooncake.Lifted
-    ) where {N}
-        return Mooncake.Lifted{_typeof(primal(x)),N}($op_fn(_unlift(x)))
+    @eval begin
+        @inline function frule!!(
+            f::Dual{typeof($op_sym)}, x::Dual{P,<:IEEEFloat}
+        ) where {P<:IEEEFloat}
+            return _lane1_dual(frule!!(f, _lane1_ndual(x)))
+        end
+        @inline function frule!!(
+            ::Mooncake.Lifted{typeof($op_sym),N}, x::Mooncake.Lifted
+        ) where {N}
+            return Mooncake.Lifted{_typeof(primal(x)),N}($op_fn(_unlift(x)))
+        end
     end
 end
 
@@ -340,6 +375,11 @@ for (op_sym, op_fn) in (
 )
     @eval begin
         @inline frule!!(::Dual{typeof($op_sym)}, a::NDual, b::NDual) = $op_fn(a, b)
+        @inline function frule!!(
+            f::Dual{typeof($op_sym)}, a::Dual{P,<:IEEEFloat}, b::Dual{P,<:IEEEFloat}
+        ) where {P<:IEEEFloat}
+            return _lane1_dual(frule!!(f, _lane1_ndual(a), _lane1_ndual(b)))
+        end
         @inline function frule!!(
             ::Dual{typeof($op_sym)}, a::NDual{T,N}, b::Dual{<:IEEEFloat}
         ) where {T<:IEEEFloat,N}
@@ -368,6 +408,16 @@ for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
         @inline frule!!(::Dual{typeof($op_sym)}, x::NDual, y::NDual, z::NDual) = $op_fn(
             x, y, z
         )
+        @inline function frule!!(
+            f::Dual{typeof($op_sym)},
+            x::Dual{P,<:IEEEFloat},
+            y::Dual{P,<:IEEEFloat},
+            z::Dual{P,<:IEEEFloat},
+        ) where {P<:IEEEFloat}
+            return _lane1_dual(
+                frule!!(f, _lane1_ndual(x), _lane1_ndual(y), _lane1_ndual(z))
+            )
+        end
         @inline function frule!!(
             ::Dual{typeof($op_sym)}, x::NDual{T,N}, y::NDual{T,N}, z::Dual{<:IEEEFloat}
         ) where {T<:IEEEFloat,N}
@@ -402,10 +452,25 @@ function frule!!(
 ) where {Pext<:IEEEFloat,P<:IEEEFloat,N}
     return convert(NDual{Pext,N}, x)
 end
+@inline function _convert_dual_primal_tangent(
+    ::Type{Pout}, x::Dual{<:IEEEFloat,<:IEEEFloat}
+) where {Pout<:IEEEFloat}
+    return Dual(convert(Pout, primal(x)), convert(Pout, tangent(x)))
+end
+function frule!!(
+    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P,<:IEEEFloat}
+) where {Pext<:IEEEFloat,P<:IEEEFloat}
+    return _convert_dual_primal_tangent(Pext, x)
+end
 function frule!!(
     ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::NDual{P,N}
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat,N}
     return convert(NDual{Ptrunc,N}, x)
+end
+function frule!!(
+    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P,<:IEEEFloat}
+) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
+    return _convert_dual_primal_tangent(Ptrunc, x)
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(fpext),N}, ::Mooncake.Lifted{Type{Pext}}, x::Mooncake.Lifted{P}

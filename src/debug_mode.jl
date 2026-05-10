@@ -21,16 +21,50 @@ end
 _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
 """
-    (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+    (rule::DebugFRule)(x...)
 
-Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
+Apply pre- and post-condition type checking to legacy `Dual` calls and canonical
+forward-mode inner values from `Lifted` calls. See [`DebugFRule`](@ref).
 """
 @noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
     verify_args(rule.rule, x)
     verify_dual_inputs(x)
     y = __call_rule(rule.rule, x)
-    verify_dual_output(x, y)
+    if y isa Dual
+        verify_dual_output(x, y)
+    else
+        verify_dual_output_fallback(x, y)
+    end
     return y
+end
+# This fallback is intentionally broad at the signature level because canonical
+# inner values include several families defined after this file is loaded
+# (`NDual`, arrays of `NDual`, etc.). The body immediately validates every input
+# with `verify_dual_type`, so unsupported shapes still fail locally in debug mode.
+@noinline function (rule::DebugFRule)(x::Vararg{Any,N}) where {N}
+    verify_args(rule.rule, x)
+    verify_dual_inputs_fallback(x)
+    y = __call_rule(rule.rule, x)
+    verify_dual_output_fallback(x, y)
+    return y
+end
+
+@noinline function verify_dual_inputs_fallback(@nospecialize(x::Tuple))
+    try
+        for _x in x
+            verify_dual_type(_x) || error("invalid forward-mode input $(typeof(_x))")
+        end
+    catch e
+        error("Error in inputs to rule with input types $(_typeof(x))")
+    end
+end
+
+@noinline function verify_dual_output_fallback(@nospecialize(x), @nospecialize(y))
+    try
+        verify_dual_type(y) || error("invalid forward-mode output $(typeof(y))")
+    catch e
+        error("Error in outputs of rule with input types $(_typeof(x))")
+    end
 end
 
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))

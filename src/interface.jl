@@ -992,6 +992,7 @@ end
 @inline _dual_primal_type(::Type) = Any
 @inline _dual_primal_type(::Type{Dual{Y,T}}) where {Y,T} = Y
 @inline _dual_primal_type(::Type{NDual{T,W}}) where {T,W} = T
+@inline _dual_primal_type(::Type{Lifted{P,N,V}}) where {P,N,V} = P
 
 @inline function _output_summary(cache::FCache)
     rule = getfield(cache, :rule)
@@ -1534,23 +1535,7 @@ function _gradient_widthN(
         output = rule(ndual_inputs...)
         y = output isa NDual ? output.value : primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        # Width-N IEEEFloat output must come back as NDual: dual_type(Val(N), ::IEEEFloat)
-        # is NDual{T,N}, so a non-NDual output here means a custom rule returned a
-        # width-1 Dual in a width-N pipeline. coeffs would then be a 1-tuple and the
-        # `coeffs[d]` loop below would BoundsError for chunk>1; raise explicitly instead.
-        coeffs = if output isa NDual
-            output.partials
-        elseif chunk == 1
-            (Float64(tangent(output)),)
-        else
-            throw(
-                ArgumentError(
-                    "value_and_gradient!! width-$W path expected an NDual output for " *
-                    "IEEEFloat primal but got `$(typeof(output))`. A custom frule for " *
-                    "this signature likely returned a width-1 Dual instead of width-$W.",
-                ),
-            )
-        end
+        coeffs = _gradient_coeffs(output, Val(W), chunk)
         for d in 1:chunk
             coeff = Float64(coeffs[d])
             native_gradients = _accumulate_gradient(
@@ -1560,6 +1545,26 @@ function _gradient_widthN(
         slot += chunk
     end
     return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
+end
+
+@inline _gradient_coeffs(output::NDual, ::Val{W}, _chunk) where {W} = output.partials
+@inline function _gradient_coeffs(
+    output::Lifted{<:IEEEFloat,N,<:NDual}, ::Val{W}, _chunk
+) where {N,W}
+    return _unlift(output).partials
+end
+@inline function _gradient_coeffs(output, ::Val{W}, chunk) where {W}
+    if _has_ndual(output)
+        return ntuple(d -> _tangent_dir(output, d), Val(W))
+    elseif chunk == 1
+        return (_tangent_dir(output, 1),)
+    else
+        throw(
+            ArgumentError(
+                "value_and_gradient!! width-$W path expected an NDual output for IEEEFloat primal but got `$(typeof(output))`. A custom frule for this signature likely returned a width-1 Dual instead of width-$W.",
+            ),
+        )
+    end
 end
 
 # Per-input lift container type. Inputs without array storage (scalars, Complex,
@@ -1590,6 +1595,21 @@ end
 # Pick between in-place (when a pre-allocated buffer is available) and
 # allocating `_combine_to_ndual` based on the buffer slot.
 @inline _combine_to_ndual_or_buffer(::Nothing, x, partials) = _combine_to_ndual(x, partials)
+# Scalar width-1 fast paths are deliberately duplicated from `_combine_to_ndual`;
+# the hot cached-gradient path relies on these concrete methods to stay
+# allocation-free.
+@inline _combine_to_ndual_or_buffer(::Nothing, x::T, partials::Tuple{T}) where {T<:IEEEFloat} = NDual{
+    T,1
+}(
+    x, partials
+)
+@inline function _combine_to_ndual_or_buffer(
+    ::Nothing, x::Complex{T}, partials::Tuple{Complex{T}}
+) where {T<:IEEEFloat}
+    return Complex(
+        NDual{T,1}(real(x), (real(partials[1]),)), NDual{T,1}(imag(x), (imag(partials[1]),))
+    )
+end
 @inline function _combine_to_ndual_or_buffer(
     buf::AbstractArray{<:NDual}, x::AbstractArray{<:IEEEFloat}, partials::NTuple{W}
 ) where {W}
@@ -1642,7 +1662,7 @@ end
 end
 
 function _combine_to_ndual(
-    x::AbstractArray{T}, tangent_dirs::NTuple{W}
+    x::AbstractArray{T}, tangent_dirs::NTuple{W,<:AbstractArray{T}}
 ) where {T<:IEEEFloat,W}
     result = similar(x, NDual{T,W})
     @inbounds for I in eachindex(x)
@@ -1652,7 +1672,7 @@ function _combine_to_ndual(
 end
 
 function _combine_to_ndual(
-    x::AbstractArray{Complex{T}}, tangent_dirs::NTuple{W}
+    x::AbstractArray{Complex{T}}, tangent_dirs::NTuple{W,<:AbstractArray{Complex{T}}}
 ) where {T<:IEEEFloat,W}
     result = similar(x, Complex{NDual{T,W}})
     @inbounds for I in eachindex(x)
@@ -1688,6 +1708,16 @@ end
         element_partials = ntuple(d -> tangent_dirs[d][i], Val(W))
         _combine_to_ndual(x[i], element_partials)
     end
+end
+@inline function _combine_to_ndual(
+    x, tangent_dirs::Tuple{<:Union{Tangent,MutableTangent,PossiblyUninitTangent}}
+)
+    return Dual(x, tangent_dirs[1])
+end
+@inline function _combine_to_ndual(
+    x::AbstractArray, tangent_dirs::Tuple{<:AbstractArray{NoTangent}}
+)
+    return Dual(x, tangent_dirs[1])
 end
 @inline function _combine_to_ndual(x, tangent_dirs::NTuple{W}) where {W}
     return Dual(x, NTangent(tangent_dirs))
@@ -1730,6 +1760,30 @@ end
     return Dual(_ndual_primal(output), _tangent_dir(output, 1))
 end
 
+# `_has_ndual` only detects canonical width-N scalar/container leaves. Width-1
+# output normalization also has to recurse through already-built `Dual` leaves,
+# so keep this local predicate deliberately broader.
+@inline _has_dual_or_ndual() = false
+@inline _has_dual_or_ndual(::Dual, rest...) = true
+@inline _has_dual_or_ndual(::NDual, rest...) = true
+@inline _has_dual_or_ndual(::Complex{<:NDual}, rest...) = true
+@inline _has_dual_or_ndual(::AbstractArray{<:NDual}, rest...) = true
+@inline _has_dual_or_ndual(::AbstractArray{<:Complex{<:NDual}}, rest...) = true
+@inline _has_dual_or_ndual(output::Tuple, rest...) = _has_dual_or_ndual(output..., rest...)
+@inline _has_dual_or_ndual(output::NamedTuple, rest...) = _has_dual_or_ndual(
+    values(output)..., rest...
+)
+@inline _has_dual_or_ndual(_, rest...) = _has_dual_or_ndual(rest...)
+
+@inline function _ndual_output_to_width1(output::Tuple)
+    _has_dual_or_ndual(output) || return output
+    return Dual(_ndual_primal(output), _tangent_dir(output, 1))
+end
+@inline function _ndual_output_to_width1(output::NamedTuple)
+    _has_dual_or_ndual(output) || return output
+    return Dual(_ndual_primal(output), _tangent_dir(output, 1))
+end
+
 # Lifted-typed rule outputs: unwrap to the inner V and recurse. The result is
 # always a `Dual`, matching what test_rule and `value_and_derivative!!` expect.
 @inline function _ndual_output_to_width1(output::Lifted)
@@ -1763,6 +1817,9 @@ inputs are rejected.
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
 
     raw_tangents = tuple_map(last, fx)
+    friendly = cache.friendly_tangents
+    friendly || _error_if_incorrect_primal_tangent_types(input_primals, raw_tangents)
+
     # If any input is chunked, the rest must be NoTangent or a structural container
     # that recurses into NTangent leaves.
     ChunkCompatible = Union{NoTangent,NTangent,Tuple,NamedTuple,Tangent,MutableTangent}
@@ -1783,7 +1840,6 @@ inputs are rejected.
         N_val, input_tangents, single_dir = width, raw_tangents, false
     end
 
-    friendly = cache.friendly_tangents
     rule = cache.rule
     cache_width = cache.width
 
@@ -1840,6 +1896,30 @@ inputs are rejected.
         nt = NTangent(dirs)
     end
     return y, nt
+end
+
+@inline function _verify_primal_tangent_type(p, t)
+    P = typeof(p)
+    T = typeof(t)
+    T === NoTangent && return tangent_type(P) === NoTangent
+    if T <: NTangent
+        lanes = t.lanes
+        N = length(lanes)
+        return T === tangent_type(Val(N), P) ||
+               (N == 1 && typeof(lanes[1]) === tangent_type(P))
+    end
+    return tangent_type(P) == T
+end
+
+function _error_if_incorrect_primal_tangent_types(primals::Tuple, tangents::Tuple)
+    correct_types = tuple_map(_verify_primal_tangent_type, primals, tangents)
+    all(correct_types) && return nothing
+    throw(ArgumentError("""
+    Tangent types do not match primal types:
+      - primal types:           $(map(typeof, primals))
+      - provided tangent types: $(map(typeof, tangents))
+      - required tangent types: $(map(tangent_type, map(typeof, primals)))
+    """))
 end
 
 function value_and_derivative!!(::FCache)
@@ -2295,7 +2375,13 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
     # cache.rule expects width-1 NDual inputs; the OC then wraps them in
     # `Lifted{P, 1, NDual{T, 1}}` and unwraps the result for us.
     ndual1 = map(_combine_to_ndual, input_primals, map(t -> (t,), seed1))
-    output1 = cache.rule(ndual1...)
+    output1 = try
+        cache.rule(ndual1...)
+    catch err
+        y_err = f(x)
+        _validate_jacobian_output(y_err, eltype(x))
+        rethrow(err)
+    end
     y = output1 isa Mooncake.NDual ? output1.value : primal(output1)
     Ty = _validate_jacobian_output(y, eltype(x))
     J = zeros(Ty, length(y), total_dof)
@@ -2316,6 +2402,7 @@ end
 @inline _jacobian_col_tangent(o::AbstractArray{<:Mooncake.NDual}) = map(
     d -> d.partials[1], o
 )
+@inline _jacobian_col_tangent(o::Lifted) = _tangent_dir(o, 1)
 @inline _jacobian_col_tangent(o) = tangent(o)
 
 @unstable @inline function value_and_jacobian!!(

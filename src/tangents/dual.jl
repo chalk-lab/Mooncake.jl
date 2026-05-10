@@ -551,8 +551,18 @@ end
 # Tuple-primal with `NTangent` tangent — width-N chunked vararg case where
 # `_group_vararg_dual` produces an `NTangent` lane structure. Extract per
 # element, per direction.
+@inline _all_notangent_lanes(t::NTangent) = all(_all_notangent_lane, t.lanes)
+@inline _all_notangent_lane(t::NoTangent) = true
+@inline _all_notangent_lane(t::Tuple) = all(_all_notangent_lane, t)
+@inline _all_notangent_lane(t::NamedTuple) = all(_all_notangent_lane, values(t))
+@inline _all_notangent_lane(_) = false
+
 @inline function Lifted{P,N}(primal::P, tangent::NTangent) where {P<:Tuple,N}
     InnerT = dual_type(Val(N), P)
+    if !(InnerT isa DataType) || !(InnerT <: Tuple)
+        _all_notangent_lanes(tangent) && return Lifted{P,N}(primal, NoTangent())
+        return Lifted{P,N,InnerT}(InnerT(primal, tangent))
+    end
     lanes = tangent.lanes
     inner = ntuple(Val(fieldcount(P))) do i
         Vi = fieldtype(InnerT, i)
@@ -560,7 +570,7 @@ end
             Vi(primal[i], lanes[1][i])
         else
             partials = ntuple(d -> lanes[d][i], Val(N))
-            Vi(primal[i], partials)
+            Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
         end
     end
     return Lifted{P,N,InnerT}(inner)
@@ -568,6 +578,26 @@ end
 
 # NamedTuple-primal: parallel to the Tuple ctor. Inner V is a
 # `NamedTuple{names, Tuple{V_i...}}` of bare inner duals; build element-wise.
+@inline function Lifted{P,N}(primal::P, tangent::NTangent) where {P<:NamedTuple,N}
+    InnerT = dual_type(Val(N), P)
+    if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
+        _all_notangent_lanes(tangent) && return Lifted{P,N}(primal, NoTangent())
+        return Lifted{P,N,InnerT}(InnerT(primal, tangent))
+    end
+    names = fieldnames(P)
+    InnerTup = InnerT.parameters[2]
+    lanes = tangent.lanes
+    inner = ntuple(Val(fieldcount(P))) do i
+        Vi = fieldtype(InnerTup, i)
+        if N == 1
+            Vi(primal[i], lanes[1][i])
+        else
+            partials = ntuple(d -> lanes[d][i], Val(N))
+            Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
+        end
+    end
+    return Lifted{P,N,InnerT}(NamedTuple{names}(inner))
+end
 @inline @generated function Lifted{P,N}(
     primal::P, tangent::NamedTuple{names}
 ) where {P<:NamedTuple{names},N} where {names}
@@ -663,8 +693,12 @@ primal(d::Lifted) = primal(d.value)
 tangent(d::Lifted) = tangent(d.value)
 primal(d::Lifted{<:Tuple}) = map(primal, d.value)
 tangent(d::Lifted{<:Tuple}) = map(tangent, d.value)
-primal(d::Lifted{<:NamedTuple}) = map(primal, d.value)
-tangent(d::Lifted{<:NamedTuple}) = map(tangent, d.value)
+function primal(d::Lifted{P,N,V}) where {names,P<:NamedTuple,N,V<:NamedTuple{names}}
+    return map(primal, d.value)
+end
+function tangent(d::Lifted{P,N,V}) where {names,P<:NamedTuple,N,V<:NamedTuple{names}}
+    return map(tangent, d.value)
+end
 
 # Struct-primal accessors: the inner V is a `NamedTuple{fieldnames(P), Tuple{Vᵢ…}}`
 # (recursive lift), but `P` itself is a struct, not a NamedTuple. Reconstruct

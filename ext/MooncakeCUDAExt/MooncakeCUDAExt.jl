@@ -688,7 +688,8 @@ end
     _cuarray_is_data_field(name) ? dx.data : NoTangent()
 # When the CuArray's element type is non-differentiable (e.g. CuArray{Bool}),
 # `tangent_type(P)` collapses to `NoTangent` rather than the parallel `CuArray`.
-# All field tangents are then `NoTangent`.
+# Most field tangents are `NoTangent`; the forward data field path below
+# constructs the canonical opaque zero tangent for the resulting DataRef.
 @inline _cu_lgetfield_data_tangent(::NoTangent, name) = NoTangent()
 @inline _cu_lgetfield_data_fdata(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoFData()
@@ -702,6 +703,17 @@ end
 @inline _cuarray_lgetfield_fwd(x_primal, x_tangent, name, order=nothing) = Dual(
     _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_tangent(x_tangent, name)
 )
+@inline function _cuarray_lgetfield_fwd(
+    x_primal, ::NoTangent, name, order::Union{Nothing,Symbol}=nothing
+)
+    y = _cu_lgetfield_primal(x_primal, name, order)
+    dy = if _cuarray_is_data_field(name)
+        zero_tangent_internal(y, Mooncake.NoCache())
+    else
+        NoTangent()
+    end
+    return Dual(y, dy)
+end
 @inline _cuarray_lgetfield_rev(x_primal, x_fdata, name, order=nothing) = CoDual(
     _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_fdata(x_fdata, name)
 )
@@ -1383,17 +1395,18 @@ function rrule!!(::CoDual{typeof(Core.finalizer)}, f::CoDual, x::CoDual)
     return CoDual(nothing, NoFData()), _nopb(Val(3))
 end
 
-# CUDA.hasfieldcount (imported as hasfieldcount) checks whether fieldcount(T) is valid for
-# type T.
+# CUDA.hasfieldcount (imported as hasfieldcount) checks whether fieldcount(T) is valid.
 # It contains a try/catch block which causes Mooncake's IR transformation to produce
 # invalid IR ("terminator not last in block"). Mark as primitive: returns Bool, no gradient.
-@is_primitive MinimalCtx Tuple{typeof(hasfieldcount),Type}
+# The signature is intentionally `Any`: widened type-literal slots can arrive as
+# `Lifted{Any}` even though `primal(T)` is the Type value CUDA wants.
+@is_primitive MinimalCtx Tuple{typeof(hasfieldcount),Any}
 @inline function frule!!(
-    ::Mooncake.Lifted{typeof(hasfieldcount),N}, T::Mooncake.Lifted{<:Type,N}
+    ::Mooncake.Lifted{typeof(hasfieldcount),N}, T::Mooncake.Lifted
 ) where {N}
     return Mooncake.zero_lifted(Val(N), hasfieldcount(primal(T)))
 end
-function rrule!!(::CoDual{typeof(hasfieldcount)}, T::CoDual{<:Type})
+function rrule!!(::CoDual{typeof(hasfieldcount)}, T::CoDual)
     return CoDual(hasfieldcount(primal(T)), NoFData()), _nopb(Val(2))
 end
 
@@ -3061,11 +3074,27 @@ end
     dy = _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts, out)
     return Dual(decoded.primal_out, dy)
 end
+@inline function _materialize_cuarray_kernel(
+    ::Val{N}, bc::Broadcasted{<:CuArrayStyle}
+) where {N}
+    bc_primal = Mooncake._ndual_primal(bc)
+    lane_results = ntuple(Val(N)) do i
+        _materialize_cuarray_kernel(Dual(bc_primal, Mooncake._tangent_dir(bc, i)))
+    end
+    y = primal(lane_results[1])
+    tangents = ntuple(i -> tangent(lane_results[i]), Val(N))
+    all(t -> t isa NoTangent, tangents) && return Mooncake.zero_lifted(Val(N), y)
+    return Mooncake.Lifted{typeof(y),N}(
+        y, N == 1 ? tangents[1] : Mooncake.NTangent(tangents)
+    )
+end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.Broadcast.materialize),N},
     bc::Mooncake.Lifted{<:Broadcasted{<:CuArrayStyle},N},
 ) where {N}
-    bare_result = _materialize_cuarray_kernel(Mooncake._unlift(bc))
+    bare_bc = Mooncake._unlift(bc)
+    bare_bc isa Broadcasted && return _materialize_cuarray_kernel(Val(N), bare_bc)
+    bare_result = _materialize_cuarray_kernel(bare_bc)
     P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
     return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
 end

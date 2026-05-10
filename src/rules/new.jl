@@ -143,6 +143,15 @@ end
         end
     end
 
+    # Base.Broadcast helper structs have wrapper-shaped canonical V around
+    # NDual array leaves.
+    if _is_base_broadcast_struct(P) && _has_ndual(bare_x...)
+        InnerT = _static_dual_type(Val(N), P)
+        if InnerT isa DataType && !(InnerT <: Dual)
+            return Lifted{P,N,InnerT}(_new_(InnerT, _lifted_new_field_args(P, bare_x)...))
+        end
+    end
+
     # Struct with NDual content (legacy parallel-Dual path): at width=1
     # produce a bare-tangent Dual (matches `dual_type(Val(1), P) = Dual{P, T}`);
     # at width N>=2 wrap the per-direction tangents in `NTangent`. This
@@ -151,38 +160,93 @@ end
     # have an explicit per-type `dual_type` overload pointing at the
     # parallel form).
     if _has_ndual(bare_x...)
-        primals_extracted = map(_ndual_primal, bare_x)
+        primals_extracted = _new_field_primals(P, bare_x)
         y = _new_(P, primals_extracted...)
         T = tangent_type(P)
         T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
         if N == 1
-            dir_tangents = map(v -> _tangent_dir(v, 1), bare_x)
+            dir_tangents = _new_field_tangents(P, bare_x, 1)
             return Lifted{P,N}(
                 Dual(y, build_output_tangent(P, primals_extracted, dir_tangents))
             )
         end
         tangent_dirs = ntuple(Val(N)) do dir
-            dir_tangents = map(v -> _tangent_dir(v, dir), bare_x)
+            dir_tangents = _new_field_tangents(P, bare_x, dir)
             build_output_tangent(P, primals_extracted, dir_tangents)
         end
         return Lifted{P,N}(Dual(y, NTangent(tangent_dirs)))
     end
 
     # No NDual content (e.g. all-non-differentiable args): pure struct construction.
-    primals = map(__get_primal, bare_x)
+    primals = map(_new_field_primal_width1, bare_x)
     y = _new_(P, primals...)
     T = tangent_type(P)
     T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
-    # Fold all-NoTangent `Tuple` field tangents to a single `NoTangent`, mirroring
-    # `tangent_type(Tuple{...})`'s all-NoTangent fold so `build_output_tangent`
-    # can place the result in a `NoTangent` struct field.
-    field_tangents = map(bare_x) do v
-        t = tangent(v)
-        t isa Tuple{Vararg{NoTangent}} ? NoTangent() : t
-    end
+    field_tangents = map(_new_field_tangent_width1, bare_x)
     return Lifted{P,N}(Dual(y, build_output_tangent(P, primals, field_tangents)))
 end
+
+@inline _new_field_primal_width1(v) = __get_primal(v)
+@inline _new_field_primal_width1(v::NamedTuple) = primal(v)
+
+@inline function _new_field_tangent_width1(v)
+    t = tangent(v)
+    return t isa Tuple{Vararg{NoTangent}} ? NoTangent() : t
+end
+@inline _new_field_tangent_width1(v::NamedTuple) = _tangent_dir(v, 1)
+
+@inline function frule!!(
+    f::Lifted{typeof(_new_),N}, p::Lifted{<:Type,N}, x::Vararg{Lifted,M}
+) where {N,M}
+    P = primal(p)
+    return frule!!(f, Lifted{Type{P},N}(P, NoTangent()), x...)
+end
+
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(_new_),Vararg}}) = true
+
+@inline _is_base_broadcast_struct(::Type{P}) where {P} =
+    P <: Union{Base.Broadcast.Extruded,Base.Broadcast.Broadcasted}
+
+@inline function _lifted_new_field_args(::Type{<:Base.Broadcast.Extruded}, bare_x::Tuple)
+    return map(_lifted_new_field_arg_deep, bare_x)
+end
+@inline function _lifted_new_field_args(::Type{<:Base.Broadcast.Broadcasted}, bare_x::Tuple)
+    style, f, args, axes = bare_x
+    return (
+        _lifted_new_field_arg_shallow(style),
+        _lifted_new_field_arg_shallow(f),
+        args,
+        _lifted_new_field_arg_deep(axes),
+    )
+end
+@inline _lifted_new_field_arg_shallow(v) = v
+@inline _lifted_new_field_arg_shallow(v::Dual) = primal(v)
+@inline _lifted_new_field_arg_deep(v) = v
+@inline _lifted_new_field_arg_deep(v::Dual) = primal(v)
+@inline _lifted_new_field_arg_deep(v::Tuple) = map(_lifted_new_field_arg_deep, v)
+@inline _lifted_new_field_arg_deep(v::NamedTuple{names}) where {names} = NamedTuple{names}(
+    map(_lifted_new_field_arg_deep, values(v))
+)
+
+@generated function _new_field_primals(::Type{P}, bare_x::Tx) where {P,Tx<:Tuple}
+    exprs = [:(_new_field_primal($(fieldtype(P, i)), bare_x[$i])) for i in 1:fieldcount(P)]
+    return :(($(exprs...),))
+end
+@inline _new_field_primal(::Type, x) = _ndual_primal(x)
+@inline _new_field_primal(::Type{P}, x::NamedTuple) where {P} = _new_(
+    P, _ndual_primal(x)...
+)
+
+@generated function _new_field_tangents(::Type{P}, bare_x::Tx, dir) where {P,Tx<:Tuple}
+    exprs = [
+        :(_new_field_tangent($(fieldtype(P, i)), bare_x[$i], dir)) for i in 1:fieldcount(P)
+    ]
+    return :(($(exprs...),))
+end
+@inline _new_field_tangent(::Type, x, dir) = _tangent_dir(x, dir)
+@inline function _new_field_tangent(::Type{P}, x::NamedTuple, dir) where {P}
+    return build_output_tangent(P, Tuple(_ndual_primal(x)), Tuple(_tangent_dir(x, dir)))
+end
 
 # `_find_ndual_memref`, `_ndual_primal`, `_ndual_width`, `_tangent_dir`, and
 # `_tangent_dir_elem` are defined in `nfwd/NfwdMooncake.jl` so that all NDual

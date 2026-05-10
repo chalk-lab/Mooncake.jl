@@ -417,6 +417,7 @@ end
 # Tuple outputs: contract each element independently and sum dir contributions.
 function _nfwd_contract_output(ȳ::Tuple, dy::Tuple)
     length(ȳ) == length(dy) || _nfwd_output_error(dy)
+    isempty(ȳ) && return ()
     contributions = map(_nfwd_contract_output, ȳ, dy)
     return foldl((a, b) -> map(+, a, b), contributions)
 end
@@ -967,6 +968,67 @@ function dual_type(
     return SubArray{T,D,Array{T,Dp},I,L}
 end
 
+@inline _type_has_ndual(::Type) = false
+@inline _type_has_ndual(::Type{<:NDual}) = true
+@inline _type_has_ndual(::Type{<:Complex{<:NDual}}) = true
+@inline _type_has_ndual(::Type{<:AbstractArray{<:NDual}}) = true
+@inline _type_has_ndual(::Type{<:AbstractArray{<:Complex{<:NDual}}}) = true
+function _type_has_ndual(::Type{T}) where {T<:Tuple}
+    for i in 1:fieldcount(T)
+        _type_has_ndual(fieldtype(T, i)) && return true
+    end
+    return false
+end
+@inline function _type_has_ndual(::Type{<:Base.Broadcast.Extruded{X}}) where {X}
+    return _type_has_ndual(X)
+end
+@inline function _type_has_ndual(
+    ::Type{<:Base.Broadcast.Broadcasted{Style,Axes,F,Args}}
+) where {Style,Axes,F,Args}
+    return _type_has_ndual(Args)
+end
+
+# Base.Broadcast helper structs used by `x .= f.(x)` need wrapper-shaped V
+# around lifted Array leaves.
+function dual_type(
+    ::Val{N}, ::Type{Base.Broadcast.Extruded{Array{T,Dims},K,D}}
+) where {N,T<:IEEEFloat,Dims,K,D}
+    return Base.Broadcast.Extruded{Array{NDual{T,N},Dims},K,D}
+end
+function dual_type(
+    ::Val{N}, ::Type{Base.Broadcast.Extruded{Array{Complex{T},Dims},K,D}}
+) where {N,T<:IEEEFloat,Dims,K,D}
+    return Base.Broadcast.Extruded{Array{Complex{NDual{T,N}},Dims},K,D}
+end
+function dual_type(
+    ::Val{0}, ::Type{Base.Broadcast.Extruded{Array{T,Dims},K,D}}
+) where {T<:IEEEFloat,Dims,K,D}
+    return Base.Broadcast.Extruded{Array{T,Dims},K,D}
+end
+function dual_type(
+    ::Val{0}, ::Type{Base.Broadcast.Extruded{Array{Complex{T},Dims},K,D}}
+) where {T<:IEEEFloat,Dims,K,D}
+    return Base.Broadcast.Extruded{Array{Complex{T},Dims},K,D}
+end
+function dual_type(
+    ::Val{N}, ::Type{Base.Broadcast.Broadcasted{Style,Axes,F,Args}}
+) where {N,Style,Axes,F,Args<:Tuple}
+    P = Base.Broadcast.Broadcasted{Style,Axes,F,Args}
+    ArgsV = dual_type(Val(N), Args)
+    return if ArgsV === Args
+        Dual{P,NoTangent}
+    elseif _type_has_ndual(ArgsV)
+        Base.Broadcast.Broadcasted{Style,Axes,F,ArgsV}
+    else
+        Dual{P,Mooncake.tangent_type(P)}
+    end
+end
+function dual_type(
+    ::Val{0}, ::Type{Base.Broadcast.Broadcasted{Style,Axes,F,Args}}
+) where {Style,Axes,F,Args<:Tuple}
+    return Base.Broadcast.Broadcasted{Style,Axes,F,Args}
+end
+
 # tangent_type(NDual) uses the default struct-based tangent_type. HVP runs
 # reverse mode on f(NDual(x,v)), so build_rrule needs tangent_type(NDual) to
 # construct CoDuals for NDual-typed arguments.
@@ -996,6 +1058,16 @@ end
 @inline Mooncake.__primal_type(::Type{Array{NDual{T,N},D}}) where {T,N,D} = Array{T,D}
 @inline function Mooncake.__primal_type(::Type{Array{Complex{NDual{T,N}},D}}) where {T,N,D}
     return Array{Complex{T},D}
+end
+@inline function Mooncake.__primal_type(
+    ::Type{Base.Broadcast.Extruded{X,K,D}}
+) where {X<:Array{<:Union{NDual,Complex{<:NDual}}},K,D}
+    return Base.Broadcast.Extruded{Mooncake.__primal_type(X),K,D}
+end
+@inline function Mooncake.__primal_type(
+    ::Type{Base.Broadcast.Broadcasted{Style,Axes,F,Args}}
+) where {Style,Axes,F,Args<:Tuple}
+    return Base.Broadcast.Broadcasted{Style,Axes,F,Mooncake.__primal_type(Args)}
 end
 @static if VERSION >= v"1.11-"
     Mooncake.__get_primal(x::Memory{<:NDual{T}}) where {T} = map(d -> d.value, x)
@@ -1044,6 +1116,8 @@ primal(z::Complex{<:NDual}) = complex(z.re.value, z.im.value)
 # inner dual" contract trivially (both are isbits canonical V).
 Mooncake.verify_dual_type(::NDual) = true
 Mooncake.verify_dual_type(::Complex{<:NDual}) = true
+Mooncake.verify_dual_type(::AbstractArray{<:NDual}) = true
+Mooncake.verify_dual_type(::AbstractArray{<:Complex{<:NDual}}) = true
 function tangent(z::Complex{NDual{T,N}}) where {T,N}
     return NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N)))
 end
@@ -1474,6 +1548,24 @@ function tangent(
     ))
 end
 
+function primal(x::Base.Broadcast.Extruded{<:Array{<:Union{NDual,Complex{<:NDual}}}})
+    return Base.Broadcast.Extruded(primal(x.x), x.keeps, x.defaults)
+end
+function tangent(x::Base.Broadcast.Extruded{<:Array{<:Union{NDual,Complex{<:NDual}}}})
+    return Mooncake.Tangent((; x=tangent(x.x), keeps=NoTangent(), defaults=NoTangent()))
+end
+function primal(x::Base.Broadcast.Broadcasted{Style,Axes,F}) where {Style,Axes,F}
+    _has_ndual(x.args) || return x
+    args = primal(x.args)
+    return Base.Broadcast.Broadcasted{Style}(x.f, args, x.axes)
+end
+function tangent(x::Base.Broadcast.Broadcasted)
+    _has_ndual(x.args) || return NoTangent()
+    return Mooncake.Tangent((;
+        style=NoTangent(), f=NoTangent(), args=tangent(x.args), axes=NoTangent()
+    ))
+end
+
 # `_tangent_dir` for wrapper-NDual containers — return the per-direction
 # tangent in the wrapper's `tangent_type` shape (a `Tangent`), matching the
 # `randn_tangent(::W)` shape used by FD comparison in `test_frule_correctness`.
@@ -1506,9 +1598,20 @@ end
     # via the generic Lifted-aware adapter with NDual-bearing arguments.
     primal(m::Memory{<:NDual{T}}) where {T} = map(d -> d.value, m)
     primal(m::Memory{<:Complex{<:NDual}}) = map(z -> complex(z.re.value, z.im.value), m)
+    tangent(m::Memory{NDual{T,N}}) where {T,N} = map(d -> NTangent(d.partials), m)
+    function tangent(m::Memory{Complex{NDual{T,N}}}) where {T,N}
+        return map(
+            z -> NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N))),
+            m,
+        )
+    end
     primal(x::MemoryRef{<:NDual}) = memoryref(primal(x.mem), Core.memoryrefoffset(x))
     function primal(x::MemoryRef{<:Complex{<:NDual}})
         return memoryref(primal(x.mem), Core.memoryrefoffset(x))
+    end
+    tangent(x::MemoryRef{<:NDual}) = memoryref(tangent(x.mem), Core.memoryrefoffset(x))
+    function tangent(x::MemoryRef{<:Complex{<:NDual}})
+        return memoryref(tangent(x.mem), Core.memoryrefoffset(x))
     end
 end
 
@@ -1598,6 +1701,8 @@ end
 @inline _has_ndual(x::Tuple, rest...) = _has_ndual(x..., rest...)
 @inline _has_ndual(x::NamedTuple, rest...) = _has_ndual(values(x)..., rest...)
 @inline _has_ndual(x::Mooncake.Lifted, rest...) = _has_ndual(x.value, rest...)
+@inline _has_ndual(x::Base.Broadcast.Extruded, rest...) = _has_ndual(x.x, rest...)
+@inline _has_ndual(x::Base.Broadcast.Broadcasted, rest...) = _has_ndual(x.args, rest...)
 @inline _has_ndual(_, rest...) = _has_ndual(rest...)
 @static if VERSION >= v"1.11-"
     @inline _has_ndual(::MemoryRef{<:NDual}, rest...) = true
@@ -1646,6 +1751,8 @@ end
     fieldcount(L)
 )
 @inline _ndual_width(x::Dual, rest...) = _ndual_width(tangent(x), rest...)
+@inline _ndual_width(x::Base.Broadcast.Extruded, rest...) = _ndual_width(x.x, rest...)
+@inline _ndual_width(x::Base.Broadcast.Broadcasted, rest...) = _ndual_width(x.args, rest...)
 @inline _ndual_width(_, rest...) = _ndual_width(rest...)
 @inline _ndual_width() = error("_ndual_width called with no NDual arguments")
 @static if VERSION >= v"1.11-"
@@ -1673,6 +1780,15 @@ end
 @inline _ndual_primal(x::NamedTuple{names}) where {names} = NamedTuple{names}(
     map(_ndual_primal, values(x))
 )
+@inline function _ndual_primal(x::Base.Broadcast.Extruded)
+    return Base.Broadcast.Extruded(_ndual_primal(x.x), x.keeps, x.defaults)
+end
+@inline function _ndual_primal(
+    x::Base.Broadcast.Broadcasted{Style,Axes,F}
+) where {Style,Axes,F}
+    args = _ndual_primal(x.args)
+    return Base.Broadcast.Broadcasted{Style}(x.f, args, x.axes)
+end
 @inline _ndual_primal(x::Mooncake.Lifted) = _ndual_primal(x.value)
 @inline _ndual_primal(x) = x
 
@@ -1702,6 +1818,16 @@ end
 @inline function _tangent_dir(x::NamedTuple{names}, i) where {names}
     inner = _tangent_dir(values(x), i)
     return inner isa NoTangent ? inner : NamedTuple{names}(inner)
+end
+@inline function _tangent_dir(x::Base.Broadcast.Extruded, i)
+    return Mooncake.Tangent((;
+        x=_tangent_dir(x.x, i), keeps=NoTangent(), defaults=NoTangent()
+    ))
+end
+@inline function _tangent_dir(x::Base.Broadcast.Broadcasted, i)
+    return Mooncake.Tangent((;
+        style=NoTangent(), f=NoTangent(), args=_tangent_dir(x.args, i), axes=NoTangent()
+    ))
 end
 @inline _tangent_dir(x, _) = zero_tangent(x)
 
