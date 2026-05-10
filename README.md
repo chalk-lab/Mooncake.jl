@@ -19,30 +19,24 @@ Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more
 > [!IMPORTANT]
 > `Mooncake.jl` welcomes focused contributions that improve correctness,
 > robustness, and predictability. To keep maintenance tractable, issues and pull
-> requests should concern reproducible defects: cases where Mooncake.jl gives an
-> incorrect result, fails unexpectedly, or behaves inconsistently with its
-> documented scope. Feature requests, redesign proposals, support requests, and
-> debugging requests without a minimal reproducible example are out of scope and
-> will be closed.
+> requests should concern reproducible defects: incorrect results, unexpected
+> failures, or behaviour inconsistent with the documented scope. Feature requests,
+> redesign proposals, support requests, and debugging requests without a minimal
+> reproducible example are out of scope and will be closed.
 >
-> This policy is not intended to discourage contributions. It follows a principle
-> widely articulated by long-lived technical projects such as R and TeX: a small
-> core team best serves users by prioritising correctness, stability, clear bug
-> reports, and tightly scoped fixes over open-ended expansion. It also reflects
-> hard lessons from prior Julia automatic differentiation systems, where broad
-> extension mechanisms and underspecified edge cases have made correctness,
-> maintenance, and debugging difficult. Mooncake.jl is intended to differentiate
-> through the vast majority of Julia Base and the standard libraries. Known
-> limitations are documented on the
+> Following principles from long-lived projects such as R and TeX, and informed
+> by prior Julia AD systems, Mooncake.jl prioritises correctness, stability, clear
+> bug reports, and tightly scoped fixes over open-ended expansion. It is intended
+> to differentiate through the vast majority of Julia Base and the standard
+> libraries. Known limitations are documented on the
 > [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
-> page. Requests for rules covering functionality outside Julia Base are considered
-> out of scope.
+> page. Requests for rules covering functionality outside Julia Base are out of
+> scope.
 >
-> Mooncake.jl is open-source software developed primarily by academic researchers
-> working within grant-funded institutions. Our capacity to triage issues and
-> review contributions is therefore limited. Organisations that depend on
-> Mooncake.jl in a commercial or industrial setting are encouraged to contribute
-> financially, through focused code contributions, or both.
+> Mooncake.jl is developed primarily by academic researchers with limited capacity
+> to triage issues and review contributions. Organisations that depend on
+> Mooncake.jl commercially are encouraged to contribute financially, through
+> focused code contributions, or both.
 
 ## Getting Started
 
