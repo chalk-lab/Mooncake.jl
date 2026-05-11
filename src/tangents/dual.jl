@@ -853,6 +853,10 @@ Companion to `zero_dual` (Layer 2). The result type matches
 """
 @inline zero_lifted(::Val{0}, x) = x
 @inline zero_lifted(w::Val{N}, x) where {N} = Lifted{typeof(x),N}(zero_dual(w, x))
+@inline function zero_lifted(w::Val{N}, x::Type{P}) where {N,P}
+    P_slot = @isdefined(P) ? Type{P} : typeof(x)
+    return Lifted{P_slot,N}(zero_dual(w, x))
+end
 # Tuple/NamedTuple primal: produce canonical V (a bare element-wise tuple of
 # inner duals) per AGENTS.md tuple-lifting. Without this overload, the generic
 # `zero_dual(w, ::Tuple)` returns `Dual(tuple, NoTangent)` which violates the
