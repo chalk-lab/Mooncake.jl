@@ -137,9 +137,14 @@ function _compile_for_rule(
     interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool
 ) where {C}
     @nospecialize sig_or_mi sig
+    # Match build_rrule's debug boundary policy: build the generated forward /
+    # reverse closures and their frules without embedded debug wrappers, then
+    # wrap only the public rule as DebugRRule(raw_rule). Otherwise lifted
+    # forward-over-reverse has to differentiate DebugPullback values as primals.
+    inner_debug_mode = false
 
     # Derive unoptimized forwards- and reverse-pass IR.
-    dri = generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
+    dri = generate_ir(interp, sig_or_mi; debug_mode=inner_debug_mode, do_optimize=false)
 
     # Optimize and build the primal DerivedRule.
     raw_rule = let
@@ -171,8 +176,18 @@ function _compile_for_rule(
         fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
         rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
         captures_tangent = zero_tangent((fwd_oc.oc.captures, rvs_oc.oc.captures))
-        fwd_dc = build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode)
-        rvs_dc = build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode)
+        fwd_dc = build_frule(
+            interp_forward,
+            fwd_oc;
+            skip_world_age_check=true,
+            debug_mode=inner_debug_mode,
+        )
+        rvs_dc = build_frule(
+            interp_forward,
+            rvs_oc;
+            skip_world_age_check=true,
+            debug_mode=inner_debug_mode,
+        )
         tangent = Tangent((;
             fwds_oc=MistyClosureTangent(captures_tangent[1], fwd_dc),
             pb_oc_ref=MutableTangent((;
@@ -291,8 +306,115 @@ function _for_rule_lifted(
         _unlift(_sig),
         _unlift(_debug_mode),
     )
-    return _wrap_rule_result(__primal_type(_typeof(y)), width, y)
+    y_lifted = Dual(primal(y), _canonicalize_comms_tangents(primal(y), tangent(y), width))
+    return _wrap_rule_result(__primal_type(_typeof(y_lifted)), width, y_lifted)
 end
+
+# Forward-over-reverse differentiates generated reverse rules whose forward and
+# pullback closures communicate through `Stack{Tuple{...}}` captures. Those
+# stacks are internal mutation state, so their lifted representation must be the
+# stack of canonical lifted entries, not a legacy `Dual{Stack, MutableTangent}`.
+dual_type(::Val{N}, ::Type{Stack{T}}) where {N,T<:Tuple} = Stack{dual_type(Val(N), T)}
+dual_type(::Val{0}, ::Type{Stack{T}}) where {T<:Tuple} = Stack{T}
+
+function Stack{V}(p::Stack{T}, t::MutableTangent) where {V,T<:Tuple}
+    stack = Stack{V}()
+    memory_tangent = getfield(t.fields, :memory)
+    for i in 1:p.position
+        push!(stack, _inner_dual_for_field(V, p.memory[i], memory_tangent[i]))
+    end
+    return stack
+end
+
+@inline __primal_type(::Type{Stack{V}}) where {V<:Tuple} = Stack{__primal_type(V)}
+
+function primal(s::Stack{V}) where {V<:Tuple}
+    p = Stack{__primal_type(V)}()
+    for i in 1:s.position
+        push!(p, _ndual_primal(s.memory[i]))
+    end
+    return p
+end
+
+function tangent(s::Stack{V}) where {V<:Tuple}
+    t = zero_tangent(primal(s))
+    memory_tangent = getfield(t.fields, :memory)
+    for i in 1:s.position
+        memory_tangent[i] = _tangent_dir(s.memory[i], 1)
+    end
+    return t
+end
+
+_canonicalize_comms_tangents(rule, rule_tangent, ::Val) = rule_tangent
+
+function _canonicalize_comms_tangents(rule::DerivedRule, rule_tangent::Tangent, width::Val)
+    cache = IdDict{Any,Any}()
+    fwd_tangent = getfield(rule_tangent.fields, :fwds_oc)
+    rvs_tangent = val(getfield(getfield(rule_tangent.fields, :pb_oc_ref).fields, :x))
+    fwd_captures_tangent = _canonicalize_comms_captures(
+        width, rule.fwds_oc.oc.captures, fwd_tangent.captures_tangent, cache
+    )
+    rvs_captures_tangent = _canonicalize_comms_captures(
+        width, rule.pb_oc_ref[].oc.captures, rvs_tangent.captures_tangent, cache
+    )
+    return Tangent((;
+        fwds_oc=MistyClosureTangent(fwd_captures_tangent, fwd_tangent.dual_callable),
+        pb_oc_ref=MutableTangent((;
+            x=PossiblyUninitTangent(
+                MistyClosureTangent(rvs_captures_tangent, rvs_tangent.dual_callable)
+            )
+        )),
+        nargs=getfield(rule_tangent.fields, :nargs),
+    ))
+end
+
+function _canonicalize_comms_captures(width::Val, captures::Tuple, captures_tangent, cache)
+    return ntuple(
+        i -> _canonicalize_comms_capture(width, captures[i], captures_tangent[i], cache),
+        Val(length(captures)),
+    )
+end
+
+_canonicalize_comms_capture(::Val, _, captures_tangent, _) = captures_tangent
+
+function _canonicalize_comms_capture(
+    width::Val, capture::Stack{T}, captures_tangent, cache
+) where {T<:Tuple}
+    return get!(cache, capture) do
+        Stack{dual_type(width, T)}()
+    end
+end
+
+@inline function Lifted{P,N}(rule::P, rule_tangent::Tangent) where {P<:DerivedRule,N}
+    return _lifted_struct_runtime_fallback(
+        P, Val(N), rule, _canonicalize_comms_tangents(rule, rule_tangent, Val(N))
+    )
+end
+
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(__push_comms_stack!),Stack{T},T
+} where {T<:Tuple}
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(__pop_comms_stack!),Stack{T}
+} where {T<:Tuple}
+
+@inline function frule!!(
+    ::Lifted{typeof(__push_comms_stack!),N},
+    stack::Lifted{Stack{T},N,Stack{V}},
+    value::Lifted{T,N,V},
+) where {N,T<:Tuple,V}
+    push!(_unlift(stack), _unlift(value))
+    return Lifted{Nothing,N}(nothing, NoTangent())
+end
+
+@inline function frule!!(
+    ::Lifted{typeof(__pop_comms_stack!),N}, stack::Lifted{Stack{T},N,Stack{V}}
+) where {N,T<:Tuple,V}
+    return Lifted{T,N}(pop!(_unlift(stack)))
+end
+
+@inline _is_lifted_aware(::Type{<:Tuple{typeof(__push_comms_stack!),<:Stack,Any}}) = true
+@inline _is_lifted_aware(::Type{<:Tuple{typeof(__pop_comms_stack!),<:Stack}}) = true
 
 function rrule!!(
     ::CoDual{typeof(build_derived_rrule)},

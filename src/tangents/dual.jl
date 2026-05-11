@@ -192,6 +192,13 @@ end
     tangent_type(T) === NoTangent && return true
     T <: IEEEFloat && return true
     T <: Complex{<:IEEEFloat} && return true
+    T <: CoDual && return true
+    @static if VERSION >= v"1.11-"
+        T <: MemoryRef{<:IEEEFloat} && return true
+        T <: MemoryRef{<:Complex{<:IEEEFloat}} && return true
+        T <: Memory{<:IEEEFloat} && return true
+        T <: Memory{<:Complex{<:IEEEFloat}} && return true
+    end
     # Restrict to standard `Array` (not arbitrary `AbstractArray`): types like
     # `CuArray`/`SparseMatrixCSC` lack a canonical-V `dual_type` overload and
     # fall back to the parallel `Dual{Array, Array}` form. Including them in
@@ -481,7 +488,7 @@ end
 # Tuple-typed fields, recurse element-wise so a nested Tuple-of-Dual builds
 # without trying `Tuple{...}(::Tuple, ::Tuple)` (which has no ctor).
 @inline function _inner_dual_for_field(::Type{V}, primal::P, tangent::T) where {V,P,T}
-    if V <: Dual && V.parameters[1] === P && !(T <: V.parameters[2])
+    if V isa DataType && V <: Dual && V.parameters[1] === P && !(T <: V.parameters[2])
         return Dual(primal, tangent)
     end
     return V(primal, tangent)

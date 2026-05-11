@@ -1265,9 +1265,15 @@ function build_derived_rrule(
         if haskey(interp.oc_cache, oc_cache_key)
             return _copy(interp.oc_cache[oc_cache_key])
         else
+            # Debug mode wraps only the public rule boundary:
+            # build a non-debug DerivedRule, then wrap it as DebugRRule(raw_rule).
+            # Embedding DebugRRule / DebugPullback inside generated rule IR makes
+            # forward-over-reverse differentiate debug wrappers as mathematical primals.
+            inner_debug_mode = false
+
             # Derive forwards- and reverse-pass IR, and shove in `MistyClosure`s.
             dri = try
-                generate_ir(interp, sig_or_mi; debug_mode)
+                generate_ir(interp, sig_or_mi; debug_mode=inner_debug_mode)
             catch err
                 # Julia 1.10 can hit this IR-interpreter limitation during optimization on
                 # otherwise valid derived reverse rules. Retry without optimize_ir! so rule
@@ -1276,7 +1282,12 @@ function build_derived_rrule(
                     "irinterp is unable to handle heavy recursion",
                     sprint(showerror, err),
                 )
-                    generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
+                    generate_ir(
+                        interp,
+                        sig_or_mi;
+                        debug_mode=inner_debug_mode,
+                        do_optimize=false,
+                    )
                 else
                     rethrow()
                 end
@@ -1455,13 +1466,13 @@ function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
         tuple_id = ID()
         fwds_insts = IDInstPair[
             (tuple_id, new_inst(Expr(:call, tuple, comms_ids...))),
-            (ID(), new_inst(Expr(:call, push!, comms_stack_id, tuple_id))),
+            (ID(), new_inst(Expr(:call, __push_comms_stack!, comms_stack_id, tuple_id))),
         ]
 
         # Create instructions for reverse-pass to pop comms stack and extract elements of
         # tuple into comms ids.
         rvs_insts = IDInstPair[
-            (tuple_id, new_inst(Expr(:call, pop!, comms_stack_id))),
+            (tuple_id, new_inst(Expr(:call, __pop_comms_stack!, comms_stack_id))),
             map(enumerate(comms_ids)) do (n, id)
                 (id, new_inst(Expr(:call, getfield, tuple_id, n)))
             end...,
@@ -1471,6 +1482,17 @@ function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
     end
     return map(first, insts), map(last, insts)
 end
+
+# Reverse communication stacks carry data from generated forward closures to
+# generated pullback closures. Keep those operations behind named call
+# boundaries so forward-over-reverse can preserve canonical lifted stack state
+# without changing general `Stack` / `push!` semantics.
+Base.@noinline __push_comms_stack!(stack::Stack{T}, value::T) where {T<:Tuple} = push!(
+    stack, value
+)
+Base.@noinline __pop_comms_stack!(stack::Stack{<:Tuple}) = pop!(stack)
+Base.@noinline __push_comms_stack!(stack::SingletonStack, value) = push!(stack, value)
+Base.@noinline __pop_comms_stack!(stack::SingletonStack) = pop!(stack)
 
 """
     forwards_pass_ir(ir::BBCode, ad_stmts_blocks::ADStmts, info::ADInfo, Tshared_data)

@@ -1494,8 +1494,12 @@ function primal(a::Array{NDual{T,N},D}) where {T,N,D}
     return map(d -> d.value, a)
 end
 
+function tangent(a::Array{NDual{T,1},D}) where {T,D}
+    return map(d -> d.partials[1], a)
+end
+
 function tangent(a::Array{NDual{T,N},D}) where {T,N,D}
-    return map(d -> NTangent(d.partials), a)
+    return NTangent(ntuple(i -> map(d -> d.partials[i], a), Val(N)))
 end
 @inline Mooncake._field_primal(a::Array{<:NDual}) = primal(a)
 @inline Mooncake._field_tangent(a::Array{<:NDual}) = tangent(a)
@@ -1504,9 +1508,13 @@ function primal(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     return map(z -> complex(z.re.value, z.im.value), a)
 end
 
+function tangent(a::Array{Complex{NDual{T,1}},D}) where {T,D}
+    return map(z -> complex(z.re.partials[1], z.im.partials[1]), a)
+end
+
 function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
-    return map(
-        z -> NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N))), a
+    return NTangent(
+        ntuple(i -> map(z -> complex(z.re.partials[i], z.im.partials[i]), a), Val(N))
     )
 end
 @inline Mooncake._field_primal(a::Array{<:Complex{<:NDual}}) = primal(a)
