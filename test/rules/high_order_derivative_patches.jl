@@ -1,3 +1,20 @@
+# Known forward-over-reverse storage issue:
+#
+# This helper intentionally exposes the low-level shape that the public HVP
+# path also relies on. Direct reverse mode is correct:
+#
+#     x_fdata = fdata(zero_tangent(x))
+#     _compute_grad(build_rrule(sum, x), sum, x, x_fdata) == [1.0]
+#     x_fdata == [1.0]
+#
+# Through `build_frule`, width-1 array slots are represented as
+# `Vector{NDual{T,1}}`. The reverse pullback captures and mutates a
+# reconstructed `Vector{T}` fdata object, while the later `copy(x_fdata)` reads
+# the original lifted `Vector{NDual}` slot. The mutation is therefore lost and
+# the lifted result contains zeros. A principled fix must preserve reverse
+# fdata storage identity in forward-over-reverse, or make pullback mutation
+# operate on the same canonical lifted slot that later reads observe. That is
+# a change to the nested-AD fdata design, not a local rule patch.
 function _compute_grad(rule, f, x::Vector{Float64}, x_fdata::Vector{Float64})
     fill!(x_fdata, 0.0)
     _, pb!! = rule(zero_fcodual(f), CoDual(x, x_fdata))

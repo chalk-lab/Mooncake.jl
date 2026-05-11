@@ -205,6 +205,14 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{P,N},
+    name::Mooncake.Lifted{Val{field},N},
+) where {P<:Union{Tuple,NamedTuple},N,field}
+    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name))
+    return _wrap_rule_result(fieldtype(P, field), Val(N), bare_result)
+end
 # Mixed dispatch fallback: Tuple/NamedTuple primal arrives as a `Lifted` slot
 # while the function/index arrive as bare `Dual` (e.g. via the IR-emit constant
 # path that uses `zero_dual` rather than `zero_lifted`). Unlift the slot to

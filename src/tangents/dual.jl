@@ -113,14 +113,7 @@ Width-aware forward value type query.
     # Specific per-wrapper `dual_type` overloads (e.g. `Diagonal{T,Vector{T}}`
     # in `nfwd/NfwdMooncake.jl`) are more specific and dispatch first, so
     # this branch only fires for immutable structs without an explicit lift.
-    if N >= 1 &&
-        isconcretetype(P) &&
-        !ismutabletype(P) &&
-        fieldcount(P) > 0 &&
-        tangent_type(P) <: Tangent &&
-        all(always_initialised(P)) &&
-        all(_is_lift_safe_field_type, fieldtypes(P)) &&
-        _is_user_definable_type(P)
+    if N >= 1 && _uses_structural_dual_type(P)
         names = fieldnames(P)
         InnerTup = Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
         return NamedTuple{names,InnerTup}
@@ -129,21 +122,42 @@ Width-aware forward value type query.
     return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
 end
 
+@inline function _uses_structural_dual_type(::Type{P}) where {P}
+    return isconcretetype(P) &&
+           !ismutabletype(P) &&
+           fieldcount(P) > 0 &&
+           _is_user_definable_type(P) &&
+           tangent_type(P) <: Tangent &&
+           _uses_structural_tangent_type(P) &&
+           all(always_initialised(P)) &&
+           all(_is_lift_safe_field_type, fieldtypes(P))
+end
+
 # `_is_user_definable_type(P)` — heuristic gate for the recursive struct lift.
 # Returns `true` for types defined outside `Base` and `Core` (and their
 # submodules), `false` for built-in types like `Base.Broadcast.Extruded`.
 # Built-in types are constructed by the IR through `_new_(::Type{T}, …)`
 # call sites that expect the original struct identity to be preserved;
-# my recursive lift would replace them with a `NamedTuple` and break the
+# recursive lifting would replace them with a `NamedTuple` and break the
 # construction. User-defined types stay within the lifted form throughout.
 @inline function _is_user_definable_type(::Type{P}) where {P}
     isconcretetype(P) || return false
     m = parentmodule(P)
     while true
-        (m === Base || m === Core) && return false
+        (m === Base || m === Core || m === LinearAlgebra) && return false
         m === parentmodule(m) && return true
         m = parentmodule(m)
     end
+end
+
+@inline function _uses_structural_tangent_type(::Type{P}) where {P}
+    # Generated callers use this predicate, so avoid reflection (`which` is
+    # forbidden there). Match the default struct tangent by shape instead.
+    names = fieldnames(P)
+    field_tangent_types = Tuple{
+        ntuple(i -> tangent_type(fieldtype(P, i)), Val(fieldcount(P)))...
+    }
+    return tangent_type(P) === Tangent{NamedTuple{names,field_tangent_types}}
 end
 
 # `_is_lift_safe_field_type(T)` — returns `true` if a struct field of type `T`
@@ -231,13 +245,17 @@ tangent(x::Dual) = x.tangent
 
 # `primal` / `tangent` on a bare element-wise tuple of inner duals (the inner
 # `V` of a `Lifted{<:Tuple, N}`). Recursive map so nested Tuple-of-Dual works.
-primal(t::Tuple) = map(primal, t)
-tangent(t::Tuple) = map(tangent, t)
+_field_primal(x) = x
+_field_primal(x::Dual) = primal(x)
+_field_tangent(x) = zero_tangent(x)
+_field_tangent(x::Dual) = tangent(x)
+primal(t::Tuple) = map(_field_primal, t)
+tangent(t::Tuple) = map(_field_tangent, t)
 # Bare NamedTuple inner V (struct-primal recursive lift, see §13 of
 # notes/mooncake/dual-types.md): per-field `primal` / `tangent`. Mirrors
 # the Tuple bare-V conventions above.
-primal(t::NamedTuple) = map(primal, t)
-tangent(t::NamedTuple) = map(tangent, t)
+primal(t::NamedTuple) = map(_field_primal, t)
+tangent(t::NamedTuple) = map(_field_tangent, t)
 Base.copy(x::Dual) = Dual(copy(primal(x)), copy(tangent(x)))
 # Dual can be safely shared without copying
 _copy(x::P) where {P<:Dual} = x
@@ -310,7 +328,8 @@ function verify_dual_type(x::Dual)
     T === NoTangent && return tangent_type(P) === NoTangent
     if T <: NTangent
         N = fieldcount(T.parameters[1])
-        return T === tangent_type(Val(N), P)
+        return T === tangent_type(Val(N), P) ||
+               (N == 1 && fieldtype(T.parameters[1], 1) === tangent_type(P))
     end
     # Legacy width-1 path: bare tangent without NTangent wrapper
     return tangent_type(P) == T
@@ -461,7 +480,12 @@ end
 # field type's own 2-arg constructor (NDual, Vector{NDual}, Dual, etc.). For
 # Tuple-typed fields, recurse element-wise so a nested Tuple-of-Dual builds
 # without trying `Tuple{...}(::Tuple, ::Tuple)` (which has no ctor).
-@inline _inner_dual_for_field(::Type{V}, primal, tangent) where {V} = V(primal, tangent)
+@inline function _inner_dual_for_field(::Type{V}, primal::P, tangent::T) where {V,P,T}
+    if V <: Dual && V.parameters[1] === P && !(T <: V.parameters[2])
+        return Dual(primal, tangent)
+    end
+    return V(primal, tangent)
+end
 # When the tangent is already the canonical V (e.g. test_rule passes a `Dual`
 # whose tangent slot carries an NDual or Array{NDual} directly), pass it
 # through — re-wrapping would invoke a non-existent 2-arg ctor.
@@ -684,15 +708,53 @@ end
     ::Type{P}, ::Val{N}, primal, tangent
 ) where {P,N}
     InnerT = dual_type(Val(N), P)
+    if InnerT isa DataType && InnerT <: NamedTuple
+        names = fieldnames(P)
+        InnerTup = InnerT.parameters[2]
+        fields = ntuple(Val(fieldcount(P))) do i
+            _inner_dual_for_field(
+                fieldtype(InnerTup, i),
+                getfield(primal, names[i]),
+                _get_tangent_field_for_lift(tangent, names[i]),
+            )
+        end
+        return Lifted{P,N,InnerT}(NamedTuple{names}(fields))
+    end
     return Lifted{P,N,InnerT}(InnerT(primal, tangent))
 end
 
-# Accessors: delegate to the inner's own primal/tangent. For Tuple/NamedTuple
-# primals the inner is a bare element-wise (named) tuple, so map over it.
+# Accessors: delegate to the inner's own primal/tangent. Tuple primals need
+# field-type-aware reconstruction: a field can have primal type `CoDual` while
+# its canonical inner V is a structural `NamedTuple`, so a plain `map(primal, ...)`
+# would erase the field's original type.
 primal(d::Lifted) = primal(d.value)
 tangent(d::Lifted) = tangent(d.value)
-primal(d::Lifted{<:Tuple}) = map(primal, d.value)
-tangent(d::Lifted{<:Tuple}) = map(tangent, d.value)
+@generated function primal(d::Lifted{P,N,V}) where {P<:Tuple,N,V<:Tuple}
+    isconcretetype(P) || return :(map(primal, d.value))
+    exprs = map(1:fieldcount(P)) do i
+        Pi = fieldtype(P, i)
+        Vi = fieldtype(V, i)
+        if (Pi <: Tuple && Vi <: Tuple) || (Vi <: NamedTuple && !(Pi <: NamedTuple))
+            :(primal(Lifted{$Pi,$N,$Vi}(d.value[$i])))
+        else
+            :(primal(d.value[$i]))
+        end
+    end
+    return :(($(exprs...),))
+end
+@generated function tangent(d::Lifted{P,N,V}) where {P<:Tuple,N,V<:Tuple}
+    isconcretetype(P) || return :(map(tangent, d.value))
+    exprs = map(1:fieldcount(P)) do i
+        Pi = fieldtype(P, i)
+        Vi = fieldtype(V, i)
+        if (Pi <: Tuple && Vi <: Tuple) || (Vi <: NamedTuple && !(Pi <: NamedTuple))
+            :(tangent(Lifted{$Pi,$N,$Vi}(d.value[$i])))
+        else
+            :(tangent(d.value[$i]))
+        end
+    end
+    return :(($(exprs...),))
+end
 function primal(d::Lifted{P,N,V}) where {names,P<:NamedTuple,N,V<:NamedTuple{names}}
     return map(primal, d.value)
 end

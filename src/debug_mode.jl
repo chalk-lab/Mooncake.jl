@@ -30,12 +30,11 @@ forward-mode inner values from `Lifted` calls. See [`DebugFRule`](@ref).
     verify_args(rule.rule, x)
     verify_dual_inputs(x)
     y = __call_rule(rule.rule, x)
-    if y isa Dual
-        verify_dual_output(x, y)
-    else
-        verify_dual_output_fallback(x, y)
-    end
-    return y
+    # Legacy Dual callers expect a legacy width-1 Dual result even when the
+    # wrapped rule runs through the canonical Lifted/NDual path internally.
+    y_width1 = y isa Dual ? y : _ndual_output_to_width1(y)
+    verify_dual_output(x, y_width1)
+    return y_width1
 end
 # This fallback is intentionally broad at the signature level because canonical
 # inner values include several families defined after this file is loaded
@@ -91,6 +90,14 @@ end
     # Fast path: type-level check using the Dual type parameters to enforce T == tangent_type(P)
     T_expected = tangent_type(P)
     if T !== T_expected
+        if T <: NTangent && verify_dual_type(d)
+            p = primal(d)
+            for lane in tangent(d).lanes
+                verify_fdata_value(p, fdata(lane))
+                verify_rdata_value(p, rdata(lane))
+            end
+            return nothing
+        end
         throw(
             InvalidFDataException(
                 "Dual tangent type mismatch: primal $P requires tangent type " *

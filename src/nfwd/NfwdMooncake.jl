@@ -1036,6 +1036,8 @@ end
 # primal / tangent accessors
 @inline primal(d::NDual) = d.value
 @inline tangent(d::NDual{T,N}) where {T,N} = NTangent(d.partials)
+@inline Mooncake._field_primal(d::NDual) = primal(d)
+@inline Mooncake._field_tangent(d::NDual) = tangent(d)
 
 # __get_primal for NDual-bearing shapes — primal_mode.jl defines the
 # `Dual` overload, reverse_mode.jl defines `CoDual` and the generic
@@ -1109,6 +1111,8 @@ end
 Mooncake._partial_i(x::NDual, i::Int) = x.partials[i]
 
 primal(z::Complex{<:NDual}) = complex(z.re.value, z.im.value)
+@inline Mooncake._field_primal(z::Complex{<:NDual}) = primal(z)
+@inline Mooncake._field_tangent(z::Complex{<:NDual}) = tangent(z)
 
 # `verify_dual_type` overloads for canonical-V leaf scalars. These complement
 # the bare-Tuple/NamedTuple/Lifted overloads in `tangents/dual.jl`. The
@@ -1493,6 +1497,8 @@ end
 function tangent(a::Array{NDual{T,N},D}) where {T,N,D}
     return map(d -> NTangent(d.partials), a)
 end
+@inline Mooncake._field_primal(a::Array{<:NDual}) = primal(a)
+@inline Mooncake._field_tangent(a::Array{<:NDual}) = tangent(a)
 
 function primal(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     return map(z -> complex(z.re.value, z.im.value), a)
@@ -1503,6 +1509,8 @@ function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
         z -> NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N))), a
     )
 end
+@inline Mooncake._field_primal(a::Array{<:Complex{<:NDual}}) = primal(a)
+@inline Mooncake._field_tangent(a::Array{<:Complex{<:NDual}}) = tangent(a)
 
 # ── Wrapper-type accessors ───────────────────────────────────────────────────
 # `primal` rebuilds the primal wrapper around `primal` of the inner array.
@@ -1790,6 +1798,10 @@ end
     return Base.Broadcast.Broadcasted{Style}(x.f, args, x.axes)
 end
 @inline _ndual_primal(x::Mooncake.Lifted) = _ndual_primal(x.value)
+@static if VERSION >= v"1.11-"
+    @inline _ndual_primal(x::MemoryRef{<:NDual}) = primal(x)
+    @inline _ndual_primal(x::MemoryRef{<:Complex{<:NDual}}) = primal(x)
+end
 @inline _ndual_primal(x) = x
 
 # `_tangent_dir(x, i)` — extract the i-th direction tangent from any NDual-bearing
@@ -1828,6 +1840,17 @@ end
     return Mooncake.Tangent((;
         style=NoTangent(), f=NoTangent(), args=_tangent_dir(x.args, i), axes=NoTangent()
     ))
+end
+@static if VERSION >= v"1.11-"
+    @inline function _tangent_dir(x::MemoryRef{NDual{T,N}}, i) where {T,N}
+        return memoryref(map(d -> d.partials[i], x.mem), Core.memoryrefoffset(x))
+    end
+    @inline function _tangent_dir(x::MemoryRef{Complex{NDual{T,N}}}, i) where {T,N}
+        return memoryref(
+            map(z -> complex(z.re.partials[i], z.im.partials[i]), x.mem),
+            Core.memoryrefoffset(x),
+        )
+    end
 end
 @inline _tangent_dir(x, _) = zero_tangent(x)
 

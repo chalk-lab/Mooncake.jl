@@ -1181,7 +1181,9 @@ end
 # the all-bitstype path zero-alloc.
 
 @generated function _inputs_can_alias(::Type{T}) where {T<:Tuple}
-    return any(!isbitstype, T.parameters)
+    params = T.parameters
+    params = length(params) > 0 && params[1] <: Function ? params[2:end] : params
+    return any(!isbitstype, params)
 end
 
 @inline _new_seen(input_primals::Tuple) =
@@ -1489,6 +1491,74 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
 end
 
 function _gradient_widthN(
+    rule, input_primals, native_gradients, total_slots, cache, ::Val{1}
+)
+    if _top_level_scalar_inputs(typeof(input_primals))
+        return _gradient_width1_scalar(
+            rule, input_primals, native_gradients, total_slots, cache
+        )
+    end
+    return _gradient_widthN_generic(
+        rule, input_primals, native_gradients, total_slots, cache, Val(1)
+    )
+end
+
+function _gradient_widthN(
+    rule, input_primals, native_gradients, total_slots, cache, ::Val{W}
+) where {W}
+    return _gradient_widthN_generic(
+        rule, input_primals, native_gradients, total_slots, cache, Val(W)
+    )
+end
+
+@generated function _top_level_scalar_inputs(::Type{T}) where {T<:Tuple}
+    params = T.parameters
+    return all(P -> P <: Function || P <: IEEEFloat || P <: Complex{<:IEEEFloat}, params)
+end
+
+function _gradient_width1_scalar(rule, input_primals, native_gradients, total_slots, cache)
+    local y
+    slot = 1
+    while slot <= total_slots
+        seed = _top_level_scalar_seed(input_primals, slot)
+        ndual_inputs = tuple_map(input_primals, seed) do p, t
+            _combine_to_ndual_or_buffer(nothing, p, (t,))
+        end
+        output = rule(ndual_inputs...)
+        y = output isa NDual ? output.value : primal(output)
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        coeff = _gradient_coeffs(output, Val(1), 1)[1]
+        native_gradients = tuple_map(native_gradients, seed) do g, dx
+            dx isa NoTangent ? g : increment!!(g, _scale(Float64(coeff), dx))
+        end
+        slot += 1
+    end
+    return y, _maybe_friendly_tangent(cache, input_primals, native_gradients)
+end
+
+@generated function _top_level_scalar_seed(x::T, slot::Int) where {T<:Tuple}
+    cursor = 0
+    fields = map(enumerate(T.parameters)) do (i, P)
+        if P <: IEEEFloat || P <: Complex{<:IEEEFloat}
+            cursor += P <: IEEEFloat ? 1 : 2
+            if P <: IEEEFloat
+                :(slot == $cursor ? one(x[$i]) : zero(x[$i]))
+            else
+                re_slot = cursor - 1
+                im_slot = cursor
+                :(complex(
+                    slot == $re_slot ? one(real(x[$i])) : zero(real(x[$i])),
+                    slot == $im_slot ? one(imag(x[$i])) : zero(imag(x[$i])),
+                ))
+            end
+        else
+            :(NoTangent())
+        end
+    end
+    return :(($(fields...),))
+end
+
+function _gradient_widthN_generic(
     rule, input_primals, native_gradients, total_slots, cache, ::Val{W}
 ) where {W}
     local y
@@ -2153,11 +2223,17 @@ function _prepare_hvp(::Val{:forward_over_reverse}, f::F, x::Tuple, config) wher
     # `v` per HVP call. Forwarding the user's `chunk_size` would compile the gradient
     # closure for width-N NDual inputs and then fail when `value_and_gradient!!` reads
     # cache fields through an `NTangent`-typed input.
-    fwd_cache = prepare_derivative_cache(
-        grad_f, x...; config=Config(config; chunk_size=nothing, empty_cache=false)
-    )
+    fwd_cache = if N == 1
+        prepare_derivative_cache(
+            grad_f, x...; config=Config(config; chunk_size=nothing, empty_cache=false)
+        )
+    else
+        prepare_derivative_cache(
+            grad_f, x; config=Config(config; chunk_size=nothing, empty_cache=false)
+        )
+    end
     specs = _hvp_input_specs(f, x)
-    core = (; grad_cache, grad_f, grad_tangent=zero_tangent(grad_f), fwd_cache)
+    core = (; grad_cache, grad_f, fwd_cache)
     return HVPCache{:forward_over_reverse,typeof(core),typeof(specs)}(core, specs)
 end
 
@@ -2166,14 +2242,28 @@ struct _GradClosure{N,F,GC}
     grad_cache::GC
 end
 
+tangent_type(::Type{<:_GradClosure}) = NoTangent
+
+function _grad_closure_value_and_gradient(gc::_GradClosure, ys...)
+    val_and_grad = value_and_gradient!!(gc.grad_cache, gc.f, ys...)
+    return val_and_grad[1], val_and_grad[2]
+end
+
 function (gc::_GradClosure{1})(y)
-    val_and_grad = value_and_gradient!!(gc.grad_cache, gc.f, y)
-    return (val_and_grad[1], val_and_grad[2][2])
+    val, grad = _grad_closure_value_and_gradient(gc, y)
+    return (val, grad[2])
 end
 
 function (gc::_GradClosure{N})(ys...) where {N}
-    val_and_grad = value_and_gradient!!(gc.grad_cache, gc.f, ys...)
-    return (val_and_grad[1], Base.tail(val_and_grad[2]))
+    val, grad = _grad_closure_value_and_gradient(gc, ys...)
+    return (val, Base.tail(grad))
+end
+function _grad_closure_value_and_tail_gradient(gc::_GradClosure, ys::Tuple)
+    val, grad = _grad_closure_value_and_gradient(gc, ys...)
+    return val, Base.tail(grad)
+end
+function (gc::_GradClosure{N})(ys::Tuple) where {N}
+    return _grad_closure_value_and_tail_gradient(gc, ys)
 end
 
 @inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
@@ -2209,7 +2299,7 @@ function value_and_hvp!!(cache::HVPCache{:forward_over_reverse}, f, v, x1)
     end
     grad_f = _GradClosure{1,typeof(f),typeof(core.grad_cache)}(f, core.grad_cache)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
-        core.fwd_cache, (grad_f, core.grad_tangent), (x1, v)
+        core.fwd_cache, (grad_f, zero_tangent(grad_f)), (x1, v)
     )
     return f_val, copy(grad), copy(hvp)
 end
@@ -2230,7 +2320,7 @@ function value_and_hvp!!(
         f, core.grad_cache
     )
     (f_val, grads), (_, hvps) = value_and_derivative!!(
-        core.fwd_cache, (grad_f, core.grad_tangent), map(tuple, all_x, v)...
+        core.fwd_cache, (grad_f, zero_tangent(grad_f)), (all_x, v)
     )
     return f_val, map(copy, grads), map(copy, hvps)
 end
@@ -2505,7 +2595,7 @@ function value_gradient_and_hessian!!(cache::HVPCache, f, x::Vararg{Any,N}) wher
         for j in 1:n
             ej = zeros(T, n)
             ej[j] = one(T)
-            v, g, hvp = value_and_hvp!!(cache, f, (ej,), x...)
+            v, g, hvp = value_and_hvp!!(cache, f, ej, x...)
             H[:, j] .= hvp
             if j == 1
                 val = v

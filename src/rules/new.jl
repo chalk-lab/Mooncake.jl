@@ -116,7 +116,7 @@ end
     # NamedTuple primal: parallel to Tuple — canonical V is
     # `NamedTuple{names, Tuple{V_i...}}` of bare inner duals. `bare_x` carries
     # the element-wise per-field inner duals; wrap into the named tuple.
-    if P <: NamedTuple
+    if P <: NamedTuple && fieldcount(P) > 0
         InnerT = _static_dual_type(Val(N), P)
         if InnerT isa DataType && InnerT <: NamedTuple
             names = fieldnames(P)
@@ -124,24 +124,8 @@ end
         end
     end
 
-    # Struct primal with recursive NamedTuple lift: `dual_type(Val(N), P)`
-    # returns a `NamedTuple{fieldnames(P), Tuple{Vᵢ…}}` for any concrete
-    # immutable struct with `tangent_type(P) <: Tangent`. The `_new_(P,
-    # args...)` call has each arg already in canonical V form (via
-    # `bare_x`), so wrap them element-wise into the lifted NamedTuple.
-    # Mirrors the existing NamedTuple-primal branch above; the only
-    # difference is the result wrap (`Lifted{P, N, NamedTuple{...}}` for
-    # the original struct type rather than a NamedTuple's own slot).
-    # Detect via `dual_type(Val(N), P) <: NamedTuple`; the per-wrapper
-    # `Diagonal{T,Vector{T}}` etc. specialisations return their own
-    # wrapper-shaped V and skip this branch.
-    if !(P <: Array) && !(P <: Complex)
-        InnerT = _static_dual_type(Val(N), P)
-        if InnerT isa DataType && InnerT <: NamedTuple
-            names = fieldnames(P)
-            return Lifted{P,N,InnerT}(NamedTuple{names}(bare_x))
-        end
-    end
+    struct_result = _lifted_new_struct_namedtuple(P, Val(N), bare_x)
+    struct_result === nothing || return struct_result
 
     # Base.Broadcast helper structs have wrapper-shaped canonical V around
     # NDual array leaves.
@@ -165,9 +149,13 @@ end
         T = tangent_type(P)
         T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
         if N == 1
-            dir_tangents = _new_field_tangents(P, bare_x, 1)
             return Lifted{P,N}(
-                Dual(y, build_output_tangent(P, primals_extracted, dir_tangents))
+                Dual(
+                    y,
+                    build_output_tangent(
+                        P, primals_extracted, _new_field_tangents(P, bare_x, 1)
+                    ),
+                ),
             )
         end
         tangent_dirs = ntuple(Val(N)) do dir
@@ -194,6 +182,22 @@ end
     return t isa Tuple{Vararg{NoTangent}} ? NoTangent() : t
 end
 @inline _new_field_tangent_width1(v::NamedTuple) = _tangent_dir(v, 1)
+
+@generated function _lifted_new_struct_namedtuple(
+    ::Type{P}, ::Val{N}, bare_x::Tx
+) where {P,N,Tx<:Tuple}
+    # `_new_` creates struct values in primal-mode IR, so its lifted result
+    # must use the same structural V chosen by `dual_type(Val(N), P)`.
+    if N >= 1 && _uses_structural_dual_type(P) && fieldcount(P) == fieldcount(Tx)
+        names = fieldnames(P)
+        InnerTup = Tuple{
+            map(i -> _static_dual_type_value(Val(N), fieldtype(P, i)), 1:fieldcount(P))...
+        }
+        InnerT = NamedTuple{names,InnerTup}
+        return :(Lifted{$P,$N,$InnerT}(NamedTuple{$names}(bare_x)))
+    end
+    return :(nothing)
+end
 
 @inline function frule!!(
     f::Lifted{typeof(_new_),N}, p::Lifted{<:Type,N}, x::Vararg{Lifted,M}
@@ -229,7 +233,7 @@ end
 )
 
 @generated function _new_field_primals(::Type{P}, bare_x::Tx) where {P,Tx<:Tuple}
-    exprs = [:(_new_field_primal($(fieldtype(P, i)), bare_x[$i])) for i in 1:fieldcount(P)]
+    exprs = [:(_new_field_primal($(fieldtype(P, i)), bare_x[$i])) for i in 1:fieldcount(Tx)]
     return :(($(exprs...),))
 end
 @inline _new_field_primal(::Type, x) = _ndual_primal(x)
@@ -239,7 +243,7 @@ end
 
 @generated function _new_field_tangents(::Type{P}, bare_x::Tx, dir) where {P,Tx<:Tuple}
     exprs = [
-        :(_new_field_tangent($(fieldtype(P, i)), bare_x[$i], dir)) for i in 1:fieldcount(P)
+        :(_new_field_tangent($(fieldtype(P, i)), bare_x[$i], dir)) for i in 1:fieldcount(Tx)
     ]
     return :(($(exprs...),))
 end
@@ -374,6 +378,26 @@ end
 Function which replaces instances of `:splatnew`.
 """
 _splat_new_(::Type{P}, x::Tuple) where {P} = _new_(P, x...)
+
+@is_primitive MinimalCtx Tuple{typeof(_splat_new_),Type,Tuple}
+
+@inline @generated function frule!!(
+    f::Lifted{typeof(_splat_new_),N}, p::Lifted{Type{P},N}, x::Lifted{Tx,N}
+) where {N,P,Tx<:Tuple}
+    args = [
+        :(Lifted{$(fieldtype(Tx, i)),$N}(
+            _canonical_splat_new_arg(Val($N), _unlift(x)[$i])
+        )) for i in 1:fieldcount(Tx)
+    ]
+    return :(frule!!(Lifted{typeof(_new_),$N}(_new_, tangent(f)), p, $(args...)))
+end
+
+@inline _canonical_splat_new_arg(::Val, x) = x
+@inline _canonical_splat_new_arg(::Val{N}, x::Dual{P,T}) where {N,P<:IEEEFloat,T<:IEEEFloat} = _combine_to_ndual(
+    primal(x), ntuple(_ -> tangent(x), Val(N))
+)
+
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(_splat_new_),Type,Tuple}}) = true
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
 

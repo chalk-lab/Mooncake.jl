@@ -951,6 +951,7 @@ __get_primal(x) = x
 @inline __primal_type(::Type{V}) where {V} = V
 # `Dual{P, T}` is the legacy parallel-storage wrapper; primal type is `P`.
 @inline __primal_type(::Type{Dual{P,T}}) where {P,T} = P
+@inline __primal_type(::Type{<:Lifted{P}}) where {P} = P
 # Bare canonical-V Tuple/NamedTuple — recurse element-wise.
 @inline @generated function __primal_type(::Type{T}) where {T<:Tuple}
     elems = (:(__primal_type($(fieldtype(T, i)))) for i in 1:fieldcount(T))

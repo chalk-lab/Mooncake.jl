@@ -178,11 +178,35 @@ end
 # latest world and dispatches correctly.
 @inline @generated function _static_dual_type(::Val{N}, ::Type{P}) where {N,P}
     try
-        DT = dual_type(Val(N), P)
+        DT = _static_dual_type_value(Val(N), P)
         return :($DT)
     catch
-        return :(dual_type(Val($N), $P))
+        return :(_static_dual_type_value(Val($N), $P))
     end
+end
+
+@inline _static_dual_type_value(w::Val, ::Type{P}) where {P} = dual_type(w, P)
+@inline _static_dual_type_value(::Val{N}, ::Type{T}) where {N,T<:IEEEFloat} = NDual{T,N}
+@inline function _static_dual_type_value(
+    ::Val{N}, ::Type{Complex{T}}
+) where {N,T<:IEEEFloat}
+    return Complex{NDual{T,N}}
+end
+@inline function _static_dual_type_value(
+    ::Val{N}, ::Type{Array{T,D}}
+) where {N,T<:IEEEFloat,D}
+    return Array{NDual{T,N},D}
+end
+@inline function _static_dual_type_value(
+    ::Val{N}, ::Type{Array{Complex{T},D}}
+) where {N,T<:IEEEFloat,D}
+    return Array{Complex{NDual{T,N}},D}
+end
+@inline @generated function _static_dual_type_value(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+    exprs = map(1:fieldcount(P)) do i
+        :(_static_dual_type_value(Val($N), $(fieldtype(P, i))))
+    end
+    return :(Tuple{$(exprs...)})
 end
 
 # A "lifted width" is one that uses the `Lifted{P, N, V}` boundary at the OC
@@ -253,22 +277,9 @@ end
 @inline @generated function _wrap_rule_result(
     ::Type{P}, ::Val{N}, x::Dual{P_in,T_in}
 ) where {P<:Tuple,N,P_in<:Tuple,T_in<:Tuple}
-    # Try to resolve per-field Vᵢ at expansion time (concrete inner V →
-    # tight `_inner_dual_for_field` ctor); on world-age failure (ext-
-    # typed primitive leaves), emit the generic `Dual(p, t)` form.
     n = fieldcount(P_in)
-    inner_exprs = try
-        map(1:n) do i
-            Pi = fieldtype(P_in, i)
-            Vi = dual_type(Val(N), Pi)
-            if Vi isa DataType && isconcretetype(Vi)
-                :(_inner_dual_for_field($Vi, p_tup[$i], t_tup[$i]))
-            else
-                :(Dual(p_tup[$i], t_tup[$i]))
-            end
-        end
-    catch
-        map(i -> :(Dual(p_tup[$i], t_tup[$i])), 1:n)
+    inner_exprs = map(1:n) do i
+        :(_inner_dual_for_runtime_field(Val($N), $(fieldtype(P_in, i)), p_tup[$i], t_tup[$i]))
     end
     return quote
         p_tup = primal(x)
@@ -278,40 +289,25 @@ end
     end
 end
 
-# `@generated` so `dual_type(Val(N), P)` is computed at expansion time.
-# The runtime form left a dynamic invoke of `dual_type` in the generated IR
-# (it's `@unstable`), which prevented inference and caused per-call alloc
-# overhead from the trailing `(%12 isa DataType) → %21 → ...` dynamic chain.
-# When `P` is concrete and lifts to a Tuple V, expand directly to the
-# canonical-V wrap; otherwise fall back to the runtime path.
-@inline @generated function _wrap_rule_result(
-    ::Type{P}, ::Val{N}, x::Tuple
-) where {P<:Tuple,N}
-    if isconcretetype(P) && fieldcount(P) > 0
-        # Same pattern as `_static_dual_type`: `try` to resolve at
-        # expansion time; on failure (ext-typed primitive-leaf world-age
-        # error), fall back to the runtime form below.
-        try
-            InnerT = dual_type(Val(N), P)
-            if InnerT isa DataType && InnerT <: Tuple
-                return :(Lifted{$P,$N,$InnerT}(_canonicalise_tuple_inner($InnerT, x)))
-            end
-            return :(Lifted{$P,$N}(x))
-        catch
-            # fall through to runtime form below
+@inline function _inner_dual_for_runtime_field(w::Val, ::Type{P}, primal, tangent) where {P}
+    Vi = dual_type(w, P)
+    if Vi isa DataType && isconcretetype(Vi)
+        return _inner_dual_for_field(Vi, primal, tangent)
+    end
+    return Dual(primal, tangent)
+end
+
+# When `P` is concrete and lifts to a Tuple V, canonicalise each returned field
+# before wrapping; otherwise fall back to the generic runtime path.
+@inline function _wrap_rule_result(::Type{P}, ::Val{N}, x::Tuple) where {P<:Tuple,N}
+    P_out = _resolve_concrete_P(P, x)
+    if isconcretetype(P_out) && P_out <: Tuple && fieldcount(P_out) == length(x)
+        InnerT = dual_type(Val(N), P_out)
+        if InnerT isa DataType && InnerT <: Tuple
+            return Lifted{P_out,N,InnerT}(_canonicalise_tuple_inner(InnerT, x))
         end
     end
-    # Non-concrete P or world-age fallback: runtime `_resolve_concrete_P`.
-    return quote
-        P_out = _resolve_concrete_P(P, x)
-        if isconcretetype(P_out) && P_out <: Tuple && fieldcount(P_out) == length(x)
-            InnerT = dual_type(Val(N), P_out)
-            if InnerT isa DataType && InnerT <: Tuple
-                return Lifted{P_out,N,InnerT}(_canonicalise_tuple_inner(InnerT, x))
-            end
-        end
-        return Lifted{P_out,N}(x)
-    end
+    return Lifted{P_out,N}(x)
 end
 
 @inline function _wrap_rule_result(::Type{P}, ::Val{N}, x) where {P,N}
@@ -325,16 +321,22 @@ end
 # rule-emitted values. Each element is routed through `Vi(primal, tangent)`
 # when it's a non-canonical `Dual`, otherwise passes through. Shared by
 # `_wrap_rule_result(::Type{<:Tuple})` and the `tuple` Lifted-aware frule.
-@inline function _canonicalise_tuple_inner(::Type{InnerT}, x::Tuple) where {InnerT<:Tuple}
-    return ntuple(Val(fieldcount(InnerT))) do i
+@inline @generated function _canonicalise_tuple_inner(
+    ::Type{InnerT}, x::Tx
+) where {InnerT<:Tuple,Tx<:Tuple}
+    n = fieldcount(InnerT)
+    exprs = map(1:n) do i
         Vi = fieldtype(InnerT, i)
-        elem = x[i]
-        if elem isa Dual && typeof(elem) !== Vi && isconcretetype(Vi)
-            Vi(primal(elem), tangent(elem))
-        else
-            elem
+        quote
+            elem = x[$i]
+            if elem isa Dual && typeof(elem) !== $Vi && isconcretetype($Vi)
+                $Vi(primal(elem), tangent(elem))
+            else
+                elem
+            end
         end
     end
+    return :(($(exprs...),))
 end
 
 # Canonicalise a runtime `Lifted` value to match a target P at the OC return
@@ -346,7 +348,9 @@ end
 @inline function _canon_return(
     ::Val{N}, ::Type{P_target}, x::Lifted{P,N}
 ) where {N,P_target,P}
-    P === P_target && return x
+    # An abstract target carries less information than the runtime slot; keep
+    # the concrete outer P so DynamicPrimal does not infer P from inner V.
+    (P === P_target || !isconcretetype(P_target)) && return x
     inner = _unlift(x)
     if inner isa Dual && isconcretetype(P_target)
         return Lifted{P_target,N}(primal(inner), tangent(inner))
@@ -413,10 +417,15 @@ end
     return Expr(:tuple, (:(args[$i]) for i in (K + 1):n)...)
 end
 
-function _group_vararg_dual(::Val{1}, group_primal, rest)
+function _group_vararg_dual(w::Val{1}, group_primal, rest)
     # Width 1: bare per-element tangent tuple (no `NTangent` wrap), so the
     # resulting `Dual` matches the canonical `dual_type(Val(1), Tuple{...})`
-    # which uses bare T at N=1.
+    # which uses bare T at N=1. If the inputs have already been lifted, preserve
+    # their canonical inner values directly instead of rebuilding from `tangent`.
+    if all(x -> x isa Lifted, rest)
+        inner = map(_unlift, rest)
+        return Lifted{typeof(group_primal),1,typeof(inner)}(inner)
+    end
     return Dual(group_primal, map(tangent, rest))
 end
 
@@ -560,7 +569,7 @@ end
         # downstream callers (IR-emit's intermediate SSA values, public
         # `value_and_derivative!!` via `_ndual_output_to_width1`) handle the
         # `Lifted` wrapper through their own Lifted-aware overloads.
-        lifted_args = _wrap_oc_args(width, primal_sig, flat_args, isva, Val(nargs))
+        lifted_args = _wrap_oc_args(width, primal_sig, flat_args, Val(isva), Val(nargs))
         return fwd.lifted_oc(lifted_args...)
     else
         # Val{0} primal-passthrough — OC argtypes are bare primal `P_i`.
@@ -581,26 +590,16 @@ end
 # allocation for the resulting Tuple. The generated form selects each slot's
 # concrete type at expansion time, so `_wrap_arg` dispatches statically.
 @inline @generated function _wrap_oc_args(
-    w::Val{N}, ::Type{primal_sig}, flat_args::Tuple, isva::Bool, ::Val{nargs}
-) where {N,primal_sig,nargs}
+    w::Val{N}, ::Type{primal_sig}, flat_args::Tuple, ::Val{isva}, ::Val{nargs}
+) where {N,primal_sig,isva,nargs}
     n = fieldcount(flat_args)
     exprs = map(1:n) do i
-        if i < nargs
-            :(_wrap_arg(w, $(fieldtype(primal_sig, i)), flat_args[$i]))
+        if isva && i == nargs
+            P = __primal_type(fieldtype(flat_args, i))
+            :(_wrap_arg(w, $P, flat_args[$i]))
         else
-            # i ≥ nargs: trailing slot is the vararg group when isva, the last
-            # named arg otherwise. Branch at runtime; both arms type-stably.
-            quote
-                if isva && $i == nargs
-                    _wrap_arg(w, __primal_type(_typeof(flat_args[$i])), flat_args[$i])
-                else
-                    _wrap_arg(
-                        w,
-                        $(fieldtype(primal_sig, min(i, fieldcount(primal_sig)))),
-                        flat_args[$i],
-                    )
-                end
-            end
+            P = fieldtype(primal_sig, min(i, fieldcount(primal_sig)))
+            :(_wrap_arg(w, $P, flat_args[$i]))
         end
     end
     return Expr(:tuple, exprs...)
@@ -613,6 +612,9 @@ end
 # these via `dual_type(P)`), route through the 2-arg `Lifted{P, N}(primal,
 # tangent)` so `dual_type(Val(N), P)(primal, tangent)` builds the canonical V.
 @inline _wrap_arg(::Val{N}, ::Type{P}, x) where {N,P} = Lifted{P,N}(x)
+@inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{P,T}) where {N,P<:Tuple,T<:Tuple}
+    return _wrap_rule_result(P, Val(N), x)
+end
 @inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{P}) where {N,P}
     return Lifted{P,N}(primal(x), tangent(x))
 end
@@ -634,6 +636,32 @@ end
 # caller's storage — `Vector{NDual}` shares no storage with `Dual{Vector,
 # Vector}`, so the only way a `mul!`-style write reaches user-visible state
 # is if the user passed the slot directly.
+@inline @generated function _wrap_arg(
+    ::Val{N}, ::Type{P}, x::Lifted{P,N,V}
+) where {N,P<:Tuple,V}
+    function has_legacy_dual_field(Q, W)
+        Q <: Tuple && W <: Tuple || return false
+        return any(1:fieldcount(Q)) do i
+            Pi = fieldtype(Q, i)
+            Vi = fieldtype(W, i)
+            if Pi <: Tuple && Vi <: Tuple
+                return has_legacy_dual_field(Pi, Vi)
+            end
+            return Pi <: Union{IEEEFloat,Complex{<:IEEEFloat},Array} && Vi <: Dual{Pi}
+        end
+    end
+    if V <: Tuple && !has_legacy_dual_field(P, V)
+        return :(x)
+    end
+    return quote
+        inner = _unlift(x)
+        InnerT = dual_type(Val($N), $P)
+        if InnerT isa DataType && InnerT <: Tuple
+            return Lifted{$P,$N,InnerT}(_canonicalise_tuple_inner(InnerT, inner))
+        end
+        return x
+    end
+end
 @inline _wrap_arg(::Val{N}, ::Type{P}, x::Lifted{P,N}) where {N,P} = x
 
 # Re-wrap: `x` is already a `Lifted{P_actual, N, V}` but the OC slot expects

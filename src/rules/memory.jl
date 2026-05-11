@@ -671,6 +671,7 @@ const _MemoryRefSetTupleValue = Tuple{
             Complex{<:NDual},
             AbstractArray{<:NDual},
             AbstractArray{<:Complex{<:NDual}},
+            NamedTuple,
         },
     },
 }
@@ -681,10 +682,86 @@ const _MemoryRefSetTupleValue = Tuple{
     ::Dual{Val{ordering}},
     ::Dual{Val{boundscheck}},
 ) where {P,V,ordering,boundscheck}
-    y = _tuple_duals_to_dual(value)
+    y = _memoryrefset_tuple_duals_to_dual(P, value)
     memoryrefset!(primal(x), primal(y), ordering, boundscheck)
     memoryrefset!(tangent(x), tangent(y), ordering, boundscheck)
     return y
+end
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
+    value::NamedTuple,
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {P,V,ordering,boundscheck}
+    y = Dual(_ndual_primal(value), _tangent_dir(value, 1))
+    memoryrefset!(primal(x), primal(y), ordering, boundscheck)
+    memoryrefset!(tangent(x), tangent(y), ordering, boundscheck)
+    return y
+end
+@generated function _memoryrefset_tuple_duals_to_dual(
+    ::Type{P}, x::Tx
+) where {P<:Tuple,Tx<:Tuple}
+    if fieldcount(P) != fieldcount(Tx)
+        return quote
+            throw(
+                ArgumentError(
+                    "memoryrefset! tuple value has $(fieldcount(Tx)) field(s), " *
+                    "but destination element type $P has $(fieldcount(P)) field(s)",
+                ),
+            )
+        end
+    end
+    primals = [
+        :(_memoryrefset_tuple_primal($(QuoteNode(fieldtype(P, i))), x[$i])) for
+        i in 1:fieldcount(P)
+    ]
+    tangents = [
+        :(_memoryrefset_tuple_tangent($(QuoteNode(fieldtype(P, i))), x[$i])) for
+        i in 1:fieldcount(P)
+    ]
+    return quote
+        ts = ($(tangents...),)
+        return Dual(($(primals...),), ts isa Tuple{Vararg{NoTangent}} ? NoTangent() : ts)
+    end
+end
+@inline _memoryrefset_tuple_primal(::Type, x) = primal(x)
+@inline function _memoryrefset_tuple_primal(::Type{P}, x::NamedTuple) where {P}
+    _memoryrefset_check_namedtuple_shape(P, x)
+    return _new_(P, _ndual_primal(x)...)
+end
+@inline _memoryrefset_tuple_tangent(::Type, x) = tangent(x)
+@inline function _memoryrefset_tuple_tangent(::Type{P}, x::NamedTuple) where {P}
+    _memoryrefset_check_namedtuple_shape(P, x)
+    return build_output_tangent(P, Tuple(_ndual_primal(x)), Tuple(_tangent_dir(x, 1)))
+end
+@inline function _memoryrefset_check_namedtuple_shape(::Type{P}, x::NamedTuple) where {P}
+    fieldcount(P) == length(x) || throw(
+        ArgumentError(
+            "memoryrefset! NamedTuple value has $(length(x)) field(s), " *
+            "but destination field type $P has $(fieldcount(P)) field(s)",
+        ),
+    )
+    keys(x) == fieldnames(P) || throw(
+        ArgumentError(
+            "memoryrefset! NamedTuple value has fields $(keys(x)), " *
+            "but destination field type $P has fields $(fieldnames(P))",
+        ),
+    )
+    return nothing
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lmemoryrefset!),N},
+    x::Mooncake.Lifted{<:MemoryRef},
+    value::Mooncake.Lifted{P,N,V},
+    ord::Mooncake.Lifted{Val{ordering}},
+    bc::Mooncake.Lifted{Val{boundscheck}},
+) where {P,N,V<:NamedTuple,ordering,boundscheck}
+    bare_x = Mooncake._unlift(x)
+    y = Dual(primal(value), _tangent_dir(value, 1))
+    memoryrefset!(primal(bare_x), primal(y), ordering, boundscheck)
+    memoryrefset!(tangent(bare_x), tangent(y), ordering, boundscheck)
+    return _wrap_rule_result(P, Val(N), y)
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lmemoryrefset!),N},
@@ -1194,6 +1271,16 @@ end
     setfield!(primal(value), name, primal(x))
     setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
     return x
+end
+@inline function frule!!(
+    ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Tuple
+) where {name}
+    y = _tuple_duals_to_dual(x)
+    setfield!(primal(value), name, primal(y))
+    # Array metadata fields such as `:size` are non-differentiable bookkeeping;
+    # the tangent array must mirror the primal metadata, not the tuple tangent.
+    setfield!(tangent(value), name, (name === :size || name === 2) ? primal(y) : tangent(y))
+    return y
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lsetfield!),N},

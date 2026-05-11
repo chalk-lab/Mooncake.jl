@@ -804,6 +804,9 @@ end
 # allocation-free (the inner V is `NDual{P,1}` / `Complex{NDual{P,1}}`, both
 # isbits); for `Vector{T}` etc. the wrap allocates a fresh canonical-V container,
 # which is unavoidable since the lifted memory layout differs.
+@inline _to_lifted(d::Mooncake.Dual{P,T}) where {P<:Tuple,T<:Tuple} = Mooncake._wrap_rule_result(
+    P, Val(1), d
+)
 @inline _to_lifted(d::Mooncake.Dual{P}) where {P} = Mooncake.Lifted{P,1}(
     primal(d), tangent(d)
 )

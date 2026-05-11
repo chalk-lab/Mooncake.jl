@@ -225,6 +225,15 @@ function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
     cache.rvs_dual_callable = rvs_dc
     return Dual(rule, rule_tangent)
 end
+function (cache::LazyFoRRule)(
+    f::Lifted{typeof(build_derived_rrule),N},
+    _interp::Lifted{<:MooncakeInterpreter},
+    _sig_or_mi::Lifted,
+    _sig::Lifted,
+    _debug_mode::Lifted{Bool},
+) where {N}
+    return _for_rule_lifted(cache, Val(N), f, _interp, _sig_or_mi, _sig, _debug_mode)
+end
 
 function (cache::DynamicFoRRule)(
     ::Dual{typeof(build_derived_rrule)},
@@ -257,6 +266,32 @@ function (cache::DynamicFoRRule)(
     )
     cache.cache[dict_key] = (rule, fwd_dc, rvs_dc)
     return Dual(rule, rule_tangent)
+end
+function (cache::DynamicFoRRule)(
+    f::Lifted{typeof(build_derived_rrule),N},
+    _interp::Lifted{<:MooncakeInterpreter},
+    _sig_or_mi::Lifted,
+    _sig::Lifted,
+    _debug_mode::Lifted{Bool},
+) where {N}
+    return _for_rule_lifted(cache, Val(N), f, _interp, _sig_or_mi, _sig, _debug_mode)
+end
+
+function _for_rule_lifted(
+    cache, width::Val{N}, f, _interp, _sig_or_mi, _sig, _debug_mode
+) where {N}
+    # Lifted callers already carry canonical inner values; delegate to the
+    # legacy Dual cache path so compilation and cache reuse stay centralized.
+    # This bridge can be removed once the cache methods accept Lifted slots
+    # directly, avoiding this unwrap/rewrap round trip.
+    y = cache(
+        _unlift(f),
+        _unlift(_interp),
+        _unlift(_sig_or_mi),
+        _unlift(_sig),
+        _unlift(_debug_mode),
+    )
+    return _wrap_rule_result(__primal_type(_typeof(y)), width, y)
 end
 
 function rrule!!(
