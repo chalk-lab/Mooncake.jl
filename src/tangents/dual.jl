@@ -250,6 +250,14 @@ end
 primal(x::Dual) = x.primal
 tangent(x::Dual) = x.tangent
 
+# `tangent(x, dir)` — per-lane tangent accessor. Delegates to the
+# specialised `_tangent_dir` fast paths (NDual, Complex{NDual}, NTangent,
+# Array{<:NDual}, etc.) defined in `nfwd/NfwdMooncake.jl`. The two-argument
+# overload must not materialise all lanes before selecting one — extracting
+# a single direction from a width-N container should remain O(container
+# size), not O(N × container size).
+@inline tangent(x, dir::Integer) = _tangent_dir(x, dir)
+
 # `primal` / `tangent` on a bare element-wise tuple of inner duals (the inner
 # `V` of a `Lifted{<:Tuple, N}`). Recursive map so nested Tuple-of-Dual works.
 _field_primal(x) = x
@@ -406,6 +414,36 @@ unwrapped (primal passthrough) and are not represented by `Lifted`.
 struct Lifted{P,N,V}
     value::V
 end
+
+"""
+    verify_lifted_type(x::Lifted{P, N, V})
+
+Check the canonical Lifted-slot invariant: `V === dual_type(Val(N), P)`, the
+stored `value::V` matches that type, and the inner dual value itself
+validates via `verify_dual_type`. Rejects nested `Lifted` inside `V`.
+
+Returns `true` if `x` is canonical, `false` otherwise. Companion to
+`verify_dual_type`, which validates only the inner dual value; this
+function additionally validates the outer slot wrapper.
+"""
+function verify_lifted_type(x::Lifted{P,N,V}) where {P,N,V}
+    # Reject nested `Lifted` — slot wrappers must not appear inside V.
+    _contains_lifted(V) && return false
+    # Canonical V for this (P, N) must match.
+    V === dual_type(Val(N), P) || return false
+    # Stored value must actually be of declared V.
+    x.value isa V || return false
+    # And the inner value must itself be a valid dual.
+    return verify_dual_type(x.value)
+end
+
+# Type-level walker: detect any `Lifted` nested in T (including inside Tuple /
+# NamedTuple V shapes). Fully type-domain, no runtime cost in the foldable
+# generic case.
+@inline _contains_lifted(::Type{<:Lifted}) = true
+@inline _contains_lifted(::Type{T}) where {T<:Tuple} = any(_contains_lifted, fieldtypes(T))
+@inline _contains_lifted(::Type{NamedTuple{names,T}}) where {names,T} = _contains_lifted(T)
+@inline _contains_lifted(::Type) = false
 
 # Lifted slot wrappers: the canonical V invariant guarantees
 # `V === dual_type(Val(N), P)`, so the slot is well-typed by construction.
@@ -844,14 +882,14 @@ function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     V = dual_type(Val(N), P)
     # Concrete `(P, V)`: produce the fully-parameterised slot type.
     isconcretetype(V) && return Lifted{P,N,V}
-    # Abstract `P` (e.g. `Any`, `Real`): widen to the bare `Lifted` UnionAll —
-    # mirrors reverse mode's `fcodual_type(Any) = CoDual` UnionAll. Both `P`
-    # and `V` are universally quantified so concrete runtime values
-    # `Lifted{Q, N, V'}` for any `Q` and `V'` fit the slot without parametric-
-    # invariance coercion. We can't use `Lifted{P, N, V} where {P', V'}` for a
-    # fixed `N` because `N` would still need to be free for cross-width
-    # specialisation; the bare UnionAll is the simplest correct shape.
-    return Lifted
+    # Abstract `P` (e.g. `Any`, `Real`): keep the width `N` bound and let `P`
+    # widen via the existing `Q<:P` constraint and `V` widen freely. Returning
+    # the bare `Lifted` UnionAll (the previous behaviour) was unsound — a
+    # width-2 abstract slot would accept a width-1 lifted runtime value, since
+    # `Lifted{Float64, 1, NDual{Float64, 1}} <: Lifted`. Preserving `N`
+    # rejects cross-width substitution while still accepting any concrete
+    # subtype of `P` at the bound width.
+    return Lifted{Q,N,V_inner} where {Q<:P,V_inner}
 end
 
 # ── Layer-3 seed factories: return wrapped Lifted slot ───────────────────────

@@ -108,6 +108,36 @@ end
         # Lifted never nests inside another Lifted's V.
         @test lifted_type(Val(2), Tuple{Float64,Float64}) ===
             Lifted{Tuple{Float64,Float64},2,Tuple{NDual{Float64,2},NDual{Float64,2}}}
+
+        # Abstract P preserves the width parameter — a width-N abstract slot
+        # must NOT accept a width-(N±k) concrete lifted value. The previous
+        # behaviour of returning bare `Lifted` allowed that and was unsound.
+        T2 = lifted_type(Val(2), Any)
+        @test Lifted{Float64,2,NDual{Float64,2}} <: T2
+        @test !(Lifted{Float64,1,NDual{Float64,1}} <: T2)
+
+        T1real = lifted_type(Val(1), Real)
+        @test Lifted{Float64,1,NDual{Float64,1}} <: T1real
+        @test !(Lifted{Float64,2,NDual{Float64,2}} <: T1real)
+    end
+
+    @testset "verify_lifted_type" begin
+        # Canonical: V === dual_type(Val(N), P).
+        ok = Lifted{Float64,2}(3.0, (1.0, 2.0))
+        @test Mooncake.verify_lifted_type(ok)
+
+        # Noncanonical: width-1 Dual inside a width-2 slot.
+        bad_width = Lifted{Float64,2,Dual{Float64,Float64}}(Dual(1.0, 0.0))
+        @test !Mooncake.verify_lifted_type(bad_width)
+
+        # Noncanonical: concrete V inside an abstract-P slot.
+        bad_abstract = Lifted{Real,1,NDual{Float64,1}}(NDual{Float64,1}(1.0, (1.0,)))
+        @test !Mooncake.verify_lifted_type(bad_abstract)
+
+        # Noncanonical: nested Lifted in V (forbidden by design).
+        inner_lifted = Lifted{Float64,1}(3.0, 1.0)
+        nested = Lifted{Float64,1,typeof(inner_lifted)}(inner_lifted)
+        @test !Mooncake.verify_lifted_type(nested)
     end
 
     @testset "1-arg constructor (V inferred from inner)" begin

@@ -51,7 +51,12 @@ end
 @noinline function verify_dual_inputs_fallback(@nospecialize(x::Tuple))
     try
         for _x in x
-            verify_dual_type(_x) || error("invalid forward-mode input $(typeof(_x))")
+            # `verify_lifted_type` is the strict slot-canonicality check for
+            # `Lifted{P, N, V}`; `verify_dual_type` is the loose inner-value
+            # check. A `Lifted` always passes the latter (the wrapper exists),
+            # so we need the former to catch non-canonical V.
+            ok = _x isa Lifted ? verify_lifted_type(_x) : verify_dual_type(_x)
+            ok || error("invalid forward-mode input $(typeof(_x))")
         end
     catch e
         error("Error in inputs to rule with input types $(_typeof(x))")
@@ -60,7 +65,8 @@ end
 
 @noinline function verify_dual_output_fallback(@nospecialize(x), @nospecialize(y))
     try
-        verify_dual_type(y) || error("invalid forward-mode output $(typeof(y))")
+        ok = y isa Lifted ? verify_lifted_type(y) : verify_dual_type(y)
+        ok || error("invalid forward-mode output $(typeof(y))")
     catch e
         error("Error in outputs of rule with input types $(_typeof(x))")
     end
