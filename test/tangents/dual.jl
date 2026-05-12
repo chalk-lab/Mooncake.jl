@@ -130,6 +130,12 @@ end
         bad_width = Lifted{Float64,2,Dual{Float64,Float64}}(Dual(1.0, 0.0))
         @test !Mooncake.verify_lifted_type(bad_width)
 
+        # Noncanonical: parallel array tangent inside a width-2 slot.
+        bad_arr = Lifted{Vector{Float64},2,Dual{Vector{Float64},Vector{Float64}}}(
+            Dual([1.0], [0.0])
+        )
+        @test !Mooncake.verify_lifted_type(bad_arr)
+
         # Noncanonical: concrete V inside an abstract-P slot.
         bad_abstract = Lifted{Real,1,NDual{Float64,1}}(NDual{Float64,1}(1.0, (1.0,)))
         @test !Mooncake.verify_lifted_type(bad_abstract)
@@ -138,6 +144,39 @@ end
         inner_lifted = Lifted{Float64,1}(3.0, 1.0)
         nested = Lifted{Float64,1,typeof(inner_lifted)}(inner_lifted)
         @test !Mooncake.verify_lifted_type(nested)
+    end
+
+    @testset "verify_dual_type accepts valid bare inner shapes" begin
+        # Bare canonical-V leaves leak through helper-API boundaries; they
+        # should validate as legitimate inner duals.
+        @test Mooncake.verify_dual_type(NDual{Float64,2}(1.0, (2.0, 3.0)))
+        @test Mooncake.verify_dual_type([NDual{Float64,1}(1.0, (2.0,))])
+        @test Mooncake.verify_dual_type(
+            Complex(NDual{Float64,1}(1.0, (1.0,)), NDual{Float64,1}(2.0, (0.0,)))
+        )
+        # Canonical Lifted always passes verify_dual_type (the strict check
+        # is verify_lifted_type).
+        @test Mooncake.verify_dual_type(Lifted{Float64,2}(3.0, (1.0, 2.0)))
+    end
+
+    @testset "tangent(x, dir) per-lane access" begin
+        # Single-direction extraction for NDual leaves.
+        x_ndual = NDual{Float64,3}(10.0, (1.0, 2.0, 3.0))
+        @test Mooncake.tangent(x_ndual, 1) === 1.0
+        @test Mooncake.tangent(x_ndual, 3) === 3.0
+        # Whole-tangent access still returns NTangent.
+        @test Mooncake.tangent(x_ndual) === NTangent((1.0, 2.0, 3.0))
+    end
+
+    @testset "explicit dual_type overrides win over generic structural lift" begin
+        # `dual_type(Val(N), Vector{Float64})` is registered with a canonical-
+        # V array shape in `nfwd/NfwdMooncake.jl`; the generic structural
+        # struct-lift must not fire on Array types and clobber that.
+        @test Mooncake.dual_type(Val(2), Vector{Float64}) === Vector{NDual{Float64,2}}
+        # Per-wrapper Diagonal lift in nfwd: must use the wrapper-shaped V.
+        @test Mooncake.dual_type(
+            Val(2), LinearAlgebra.Diagonal{Float64,Vector{Float64}}
+        ) === LinearAlgebra.Diagonal{NDual{Float64,2},Vector{NDual{Float64,2}}}
     end
 
     @testset "1-arg constructor (V inferred from inner)" begin
