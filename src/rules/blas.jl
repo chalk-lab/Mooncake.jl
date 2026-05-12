@@ -171,6 +171,13 @@ end
     return nothing
 end
 
+@inline _mat_extract(x::Dual{<:AbstractVecOrMat}) = matrixify(x)
+@inline function _mat_extract(x::AbstractVector{NDual{T,1}}) where {T}
+    p, t = _arr_extract(x)
+    return reshape(p, :, 1), reshape(t, :, 1)
+end
+@inline _mat_extract(x::AbstractMatrix{NDual{T,1}}) where {T} = _arr_extract(x)
+
 # Scalar counterpart: at width 1, an `IEEEFloat` slot may arrive as either
 # `NDual{T,1}` (the canonical IEEEFloat lifted form) or `Dual{T,T}` (when
 # constructed by the test framework or by zero_dual). Both unwrap to a
@@ -771,6 +778,73 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         end
         return y_dy, symv!_or_hemv!_adjoint
     end
+end
+
+function frule!!(
+    ::Dual{typeof(BLAS.symv!)},
+    uplo::Dual{Char},
+    alpha::_ScalarLikeWidth1{T},
+    A_dA::_MatLikeWidth1{T},
+    x_dx::_ArrLikeWidth1{T},
+    beta::_ScalarLikeWidth1{T},
+    y_dy::_ArrLikeWidth1{T},
+) where {T<:BlasRealFloat}
+    ul = primal(uplo)
+    α, dα = _scalar_extract(alpha)
+    β, dβ = _scalar_extract(beta)
+    A, dA = _arr_extract(A_dA)
+    x, dx = _arr_extract(x_dx)
+    y, dy = _arr_extract(y_dy)
+
+    BLAS.symv!(ul, dα, A, x, β, dy)
+    BLAS.symv!(ul, α, dA, x, one(T), dy)
+    BLAS.symv!(ul, α, A, dx, one(T), dy)
+    if !iszero(dβ)
+        @inbounds for n in eachindex(y)
+            tmp = dβ * y[n]
+            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+        end
+    end
+
+    BLAS.symv!(ul, α, A, x, β, y)
+    _arr_writeback!(y_dy, y, dy)
+    return y_dy
+end
+
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(BLAS.symv!),
+            Char,
+            T,
+            AbstractMatrix{T},
+            AbstractVector{T},
+            T,
+            AbstractVector{T},
+        },
+    },
+) where {T<:BlasRealFloat} = true
+
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.symv!),N},
+    uplo::Mooncake.Lifted{Char},
+    alpha::Mooncake.Lifted{T},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
+    x_dx::Mooncake.Lifted{<:AbstractVector{T}},
+    beta::Mooncake.Lifted{T},
+    y_dy::Mooncake.Lifted{<:AbstractVector{T}},
+) where {N,T<:BlasRealFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(uplo),
+        Mooncake._unlift(alpha),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(x_dx),
+        Mooncake._unlift(beta),
+        Mooncake._unlift(y_dy),
+    )
+    P_out = __primal_type(_typeof(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 
 @is_primitive(
@@ -1427,6 +1501,59 @@ for (fname, elty, relty) in (
 
         return C_dC, syrk!_or_herk!_adjoint
     end
+end
+
+function frule!!(
+    ::Dual{typeof(BLAS.syrk!)},
+    _uplo::Dual{Char},
+    _t::Dual{Char},
+    α_dα::_ScalarLikeWidth1{T},
+    A_dA::_VecOrMatLikeWidth1{T},
+    β_dβ::_ScalarLikeWidth1{T},
+    C_dC::_MatLikeWidth1{T},
+) where {T<:BlasRealFloat}
+    uplo = primal(_uplo)
+    t = primal(_t)
+    α, dα = _scalar_extract(α_dα)
+    A, dA = _mat_extract(A_dA)
+    β, dβ = _scalar_extract(β_dβ)
+    C, dC = _arr_extract(C_dC)
+
+    BLAS.syr2k!(uplo, t, α, A, dA, β, dC)
+    iszero(dα) || BLAS.syrk!(uplo, t, dα, A, one(T), dC)
+    if !iszero(dβ)
+        dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+    end
+
+    BLAS.syrk!(uplo, t, α, A, β, C)
+    _arr_writeback!(C_dC, C, dC)
+    return C_dC
+end
+
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(BLAS.syrk!),Char,Char,T,AbstractVecOrMat{T},T,AbstractMatrix{T}}}
+) where {T<:BlasRealFloat} = true
+
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.syrk!),N},
+    uplo::Mooncake.Lifted{Char},
+    t::Mooncake.Lifted{Char},
+    α_dα::Mooncake.Lifted{T},
+    A_dA::Mooncake.Lifted{<:AbstractVecOrMat{T}},
+    β_dβ::Mooncake.Lifted{T},
+    C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
+) where {N,T<:BlasRealFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(uplo),
+        Mooncake._unlift(t),
+        Mooncake._unlift(α_dα),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(β_dβ),
+        Mooncake._unlift(C_dC),
+    )
+    P_out = __primal_type(_typeof(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 
 function real_diag!(dA::AbstractMatrix{<:Complex{<:BlasFloat}})

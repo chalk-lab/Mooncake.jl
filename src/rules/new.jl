@@ -397,6 +397,28 @@ end
     primal(x), ntuple(_ -> tangent(x), Val(N))
 )
 
+@inline _splat_new_field_fdata(::NoFData, _) = NoFData()
+@inline _splat_new_field_fdata(fdata::Tuple, n) = fdata[n]
+@inline function _splat_new_tuple_rdata(::Type{Tx}, field_rdatas) where {Tx<:Tuple}
+    return rdata_type(tangent_type(Tx)) == NoRData ? NoRData() : field_rdatas
+end
+
+function rrule!!(
+    f::CoDual{typeof(_splat_new_)}, p::CoDual{Type{P}}, x::CoDual{Tx}
+) where {P,Tx<:Tuple}
+    x_primal = primal(x)
+    xs = ntuple(
+        n -> CoDual(x_primal[n], _splat_new_field_fdata(tangent(x), n)), Val(fieldcount(Tx))
+    )
+    y, new_pb!! = rrule!!(zero_fcodual(_new_), p, xs...)
+    function splat_new_pb!!(dy)
+        parts = new_pb!!(dy)
+        field_rdatas = Base.tail(Base.tail(parts))
+        return NoRData(), NoRData(), _splat_new_tuple_rdata(Tx, field_rdatas)
+    end
+    return y, splat_new_pb!!
+end
+
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(_splat_new_),Type,Tuple}}) = true
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
