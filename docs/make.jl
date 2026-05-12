@@ -49,6 +49,7 @@ makedocs(;
         "Developer Documentation" => [
             joinpath("developer_documentation", "running_tests_locally.md"),
             joinpath("developer_documentation", "developer_tools.md"),
+            joinpath("developer_documentation", "compiler_boundary.md"),
             joinpath("developer_documentation", "tangents.md"),
             joinpath("developer_documentation", "custom_tangent_type.md"),
             joinpath("developer_documentation", "scalar_rules_via_ndual.md"),

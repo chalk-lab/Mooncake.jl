@@ -222,7 +222,7 @@ containing all stages and diffs.
 - `mode::Symbol = :reverse`: `:forward` or `:reverse` mode
 - `world::UInt = Base.get_world_counter()`: world age recorded in the result
   for diagnostics (used by `world_age_info`), but does not influence IR generation
-- `optimize::Bool = true`: whether to run the final `optimise_ir!` pass
+- `optimize::Bool = true`: whether to run the final `Compiler.optimize_ir!` pass
   (intermediate stages are always generated without inlining for readability)
 - `do_inline::Bool = true`: whether to inline during the final optimization pass
   (only has an effect when `optimize=true`)

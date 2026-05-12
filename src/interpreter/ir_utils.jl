@@ -108,11 +108,15 @@ function __strip_coverage!(ir::IRCode)
     return Compiler.strip_coverage_effects!(ir)
 end
 
+# Legacy compiler-service shims. New Mooncake internals should call
+# `Mooncake.Compiler.*` directly; these names are retained for old debugging
+# snippets and downstream code that reached into Mooncake internals.
+
 """
     optimise_ir!(ir::IRCode, show_ir=false)
 
-Run a fairly standard optimisation pass on `ir`. If `show_ir` is `true`, displays the IR
-to `stdout` at various points in the pipeline -- this is sometimes useful for debugging.
+Compatibility shim for `Compiler.optimize_ir!`. If `show_ir` is `true`,
+the compiler service displays the IR to `stdout` at various points in the pipeline.
 """
 function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     return Compiler.optimize_ir!(ir; show_ir, do_inline, interp)
@@ -127,8 +131,9 @@ get_matches(x) = Compiler.method_matches(x)
         sig_or_mi::Union{Type{<:Tuple}, Core.MethodInstance},
     )::Tuple{IRCode, T}
 
-Get the unique IR associated to `sig_or_mi` under `interp`. Throws `ArgumentError`s if
-there is no code found, or if more than one `IRCode` instance returned.
+Compatibility shim for `Compiler.infer_ir`. Get the unique IR
+associated to `sig_or_mi` under `interp`. Throws `ArgumentError`s if there is no
+code found, or if more than one `IRCode` instance returned.
 
 Returns a tuple containing the `IRCode` and its return type.
 """
@@ -151,7 +156,7 @@ end
 """
     set_valid_world!(ir::IRCode, world::UInt)::IRCode
 
-Compatibility shim for [`Compiler.restrict_to_world`](@ref).
+Compatibility shim for `Compiler.restrict_to_world`.
 """
 function set_valid_world!(ir::IRCode, world::UInt)
     return Compiler.restrict_to_world(ir, world)

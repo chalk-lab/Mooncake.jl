@@ -64,4 +64,51 @@
     @test isempty(phi_node.values)
     @test isempty(Mooncake.Compiler.block_successors(branch_ir, 1))
     @test isempty(Mooncake.Compiler.block_predecessors(branch_ir, 2))
+
+    @testset "compiler boundary static gate" begin
+        repo_root = normpath(joinpath(@__DIR__, "..", ".."))
+        src_root = joinpath(repo_root, "src")
+        compiler_root = joinpath(src_root, "compiler")
+
+        function path_is_under(path::AbstractString, root::AbstractString)
+            rel = relpath(path, root)
+            return rel == "." || first(splitpath(rel)) != ".."
+        end
+
+        compiler_internal_names = (
+            "typeinf_ircode",
+            "IRInterpretationState",
+            "adce_pass!",
+            "jl_new_code_info_uninit",
+            "generate_opaque_closure",
+        )
+        named_exceptions = Dict(
+            "IRInterpretationState" => Set([
+                normpath(joinpath(src_root, "interpreter", "patch_for_319.jl")),
+            ]),
+        )
+
+        violations = String[]
+        for (dir, _, filenames) in walkdir(src_root)
+            for filename in filenames
+                endswith(filename, ".jl") || continue
+                path = normpath(joinpath(dir, filename))
+                path_is_under(path, compiler_root) && continue
+                for (line_number, line) in enumerate(eachline(path))
+                    for name in compiler_internal_names
+                        allowed_paths = get(named_exceptions, name, Set{String}())
+                        if occursin(name, line) && !(path in allowed_paths)
+                            push!(
+                                violations,
+                                "$(relpath(path, repo_root)):$line_number contains `$name`",
+                            )
+                        end
+                    end
+                end
+            end
+        end
+
+        isempty(violations) || @info "Compiler boundary violations" violations
+        @test isempty(violations)
+    end
 end

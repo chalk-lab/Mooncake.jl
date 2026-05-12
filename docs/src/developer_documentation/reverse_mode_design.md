@@ -35,7 +35,8 @@ generate_ir(
 )
 ```
 
-The function [`lookup_ir`](@ref Mooncake.lookup_ir) calls `Core.Compiler.typeinf_ircode` on a method instance, which is a lower-level version of `Base.code_ircode`.
+The compiler service `Mooncake.Compiler.infer_ir` obtains typed Julia IR for a signature, method instance, or `MistyClosure`.
+Its implementation owns the calls into lower-level compiler entry points such as `Core.Compiler.typeinf_ircode`, keeping version-specific inference details out of the AD transform.
 
 The IR considered is of type [`IRCode`](@ref Mooncake.CC.IRCode), which is different from the `CodeInfo` returned by `@code_typed`.
 This format is obtained from `CodeInfo`, used to perform most optimizations in the Julia IR in the [evaluation pipeline](https://docs.julialang.org/en/v1/devdocs/eval/), then converted back to `CodeInfo`.

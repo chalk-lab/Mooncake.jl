@@ -195,8 +195,8 @@ In order:
 
 #### Looking up the `Compiler.IRCode`.
 
-This is done using `Mooncake.lookup_ir`.
-This function has methods with will return the `IRCode` associated to:
+This is done using `Mooncake.Compiler.infer_ir`.
+This compiler service has methods which return the `IRCode` associated to:
 1. signatures (e.g. `Tuple{typeof(f), Float64}`)
 1. `Base.MethodInstances` (relevant for `:invoke` expressions -- see [Statement Transformation](@ref) below)
 1. `MistyClosures.MistyClosure` objects, which is essential when computing higher order derivatives and Hessians by applying Mooncake.jl to itself.
@@ -307,7 +307,7 @@ So the above example would be translated into something like
 
 The IR generated in the previous step will typically be uninferred, and suboptimal in a variety of ways.
 We fix this up by running inference and optimisation on the generated `IRCode`.
-This is implemented by [`Mooncake.optimise_ir!`](@ref).
+This is implemented by `Mooncake.Compiler.optimize_ir!`.
 
 #### Put IRCode in MistyClosure
 

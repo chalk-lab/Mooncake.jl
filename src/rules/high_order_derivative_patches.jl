@@ -279,7 +279,7 @@ end
 # For example, `dataids` is a reverse-mode primitive, but inlining it exposes
 # `jl_genericmemory_owner`. The proper fix is to prevent primitive inlining during
 # forward-over-reverse by forwarding `inlining_policy` through `BugPatchInterpreter` to
-# `MooncakeInterpreter` during `optimise_ir!`, but this causes allocation regressions.
+# `MooncakeInterpreter` during `Compiler.optimize_ir!`, but this causes allocation regressions.
 # See https://github.com/chalk-lab/Mooncake.jl/pull/878 for details.
 # TODO: can be removed once we improve the performance of differentiating through building
 # rules, such that the DI test will pass with no inner prep without this workaround.

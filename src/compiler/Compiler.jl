@@ -445,6 +445,11 @@ function run_adce!(ir::IRCode, inline_state)
     end
 end
 
+"""
+    optimize_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
+
+Run Mooncake's standard compiler pass pipeline over generated IR.
+"""
 function optimize_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     if show_ir
         println("Pre-optimization")
@@ -505,6 +510,12 @@ function infer_ir_for_match(
     end
 end
 
+"""
+    infer_ir(interp::AbstractInterpreter, target; optimize_until=nothing)
+
+Infer typed IR and its return type for a signature, method instance, or
+`MistyClosure` under `interp`.
+"""
 function infer_ir(interp::CC.AbstractInterpreter, tt::Type{<:Tuple}; optimize_until=nothing)
     matches = CC.findall(tt, CC.method_table(interp))
     asts = []

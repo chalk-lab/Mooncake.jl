@@ -427,12 +427,12 @@ things to happen, such as segfaults. You have been warned!
 This is needed in Mooncake.jl because make extensive use of our ability to know the return
 type of a couple of specific `OpaqueClosure`s without actually having constructed them --
 see `LazyDerivedRule`. Without the capability to specify the return type, we have to guess
-what type `compute_ir_rettype` will return for a given `IRCode` before we have constructed
-the `IRCode` and run type inference on it. This exposes us to details of type inference,
-which are not part of the public interface of the language, and can therefore vary from
-Julia version to Julia version (including patch versions). Moreover, even for a fixed Julia
-version it can be extremely hard to predict exactly what type inference will infer to be the
-return type of a function.
+what type `Compiler.inferred_return_type` will return for a given `IRCode` before we have
+constructed the `IRCode` and run type inference on it. This exposes us to details of type
+inference, which are not part of the public interface of the language, and can therefore
+vary from Julia version to Julia version (including patch versions). Moreover, even for a
+fixed Julia version it can be extremely hard to predict exactly what type inference will
+infer to be the return type of a function.
 
 Failing to correctly guess the return type can happen for a number of reasons, and the kinds
 of errors that tend to be generated when this fails tell you very little about the
@@ -474,6 +474,8 @@ function misty_closure(
 end
 
 @unstable begin
+    # Legacy names retained for old internal callers and stability-test hooks.
+    # New Mooncake internals should call the compiler services directly.
     compute_ir_rettype(ir) = Compiler.inferred_return_type(ir)
     compute_oc_signature(ir, nargs, isva) = Compiler.opaque_closure_signature(ir, nargs, isva)
 end

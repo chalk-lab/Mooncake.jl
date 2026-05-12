@@ -8,9 +8,9 @@
 # the bug underlying the above issue, this code can and should be removed, and the minimum
 # versions of Julia which Mooncake supports bumped.
 #
-# The only place in which this code seeps into Mooncake.jl code is in Mooncake.optimise_ir!,
-# located in src/interpreter/ir_utils.jl . In particular, we replace the `local_interp`
-# variable with the `AbstractInterpreter`.
+# The only place in which this code seeps into Mooncake.jl code is in
+# Compiler.optimize_ir!, located in src/compiler/Compiler.jl. In particular, we
+# replace the `local_interp` variable with the `AbstractInterpreter`.
 #
 # The work around:
 # We define a new `AbstractInterpreter` which wraps around the `Compiler.NativeInterpreter`.

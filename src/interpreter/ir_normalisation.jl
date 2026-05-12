@@ -468,7 +468,7 @@ end
 """
     remove_edge!(ir::IRCode, from::Int, to::Int)
 
-Compatibility shim for [`Compiler.remove_control_flow_edge!`](@ref).
+Compatibility shim for `Compiler.remove_control_flow_edge!`.
 """
 function remove_edge!(ir::IRCode, from::Int, to::Int)
     Compiler.remove_control_flow_edge!(ir, from, to)

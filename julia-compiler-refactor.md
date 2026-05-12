@@ -179,6 +179,24 @@ objects being transformed:
 The boundary should isolate volatile behavior and representation assumptions,
 not pretend Mooncake is independent of Julia IR.
 
+## Current Migration Notes
+
+New Mooncake internals should call `Mooncake.Compiler.*` directly. The old
+top-level helper names `lookup_ir`, `optimise_ir!`, `set_valid_world!`,
+`compute_ir_rettype`, and `compute_oc_signature` are compatibility shims only.
+They remain for old internal snippets and downstream code that reached into
+Mooncake internals, but they should not be used in new implementation code.
+
+The compiler-boundary static gate lives in `test/compiler/compiler.jl`. It keeps
+known compiler-internal names localized under `src/compiler/`, with a named
+exception for the issue-319 compatibility patch in
+`src/interpreter/patch_for_319.jl`.
+
+Because this boundary absorbs Julia compiler churn, changes in this area should
+be checked across supported Julia versions. The focused local target is the
+compiler tests plus the interpreter IR-generation tests on Julia 1.12, 1.11,
+and 1.10, followed by the `basic` test group on Julia 1.12.
+
 ## Migration rule
 
 Use a two-stage migration:
@@ -207,4 +225,3 @@ For each proposed wrapper, ask:
 The refactor is successful when most Julia-version churn can be absorbed inside
 `src/compiler/`, while the rest of Mooncake reads like AD logic over a small
 compiler-service API.
-

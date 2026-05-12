@@ -43,7 +43,7 @@ end
         oc = Mooncake.opaque_closure(Float64, ir)
         @test oc(5.0) == cos(sin(5.0))
     end
-    @testset "lookup_ir" begin
+    @testset "legacy lookup_ir shim" begin
         tt = Tuple{typeof(sin),Float64}
         @test isa(
             Mooncake.lookup_ir(CC.NativeInterpreter(), tt; optimize_until=nothing)[1],
