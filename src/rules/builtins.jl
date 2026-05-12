@@ -99,6 +99,7 @@ import ..Mooncake:
     increment!!,
     @is_primitive,
     MinimalCtx,
+    ForwardMode,
     _is_primitive,
     NoFData,
     zero_rdata,
@@ -111,6 +112,7 @@ import ..Mooncake:
     zero_fcodual,
     zero_dual,
     NoTangent,
+    NTangent,
     Mode,
     extract,
     nan_tangent_guard,
@@ -276,6 +278,21 @@ function rrule!!(
     return CoDual(primal_arr, tangent_arr), unsafe_wrap_pullback!!
 end
 
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(Base.unsafe_convert),Type{Ptr{T}},Vector{T}
+} where {T}
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(Base.unsafe_convert),Type{Ptr{T}},Vector{T}}}
+) where {T} = true
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Base.unsafe_convert),N},
+    ::Mooncake.Lifted{Type{Ptr{T}},N},
+    ::Mooncake.Lifted{<:Vector{T},N},
+) where {N,T}
+    # Raw pointers cannot carry owner/lane data for lifted array tangents.
+    throw(ArgumentError("unsupported lifted unsafe_convert from Vector to Ptr"))
+end
+
 # atomic_fence
 # atomic_pointermodify
 # atomic_pointerref
@@ -294,6 +311,14 @@ end
     x::Mooncake.Lifted,
     order::Mooncake.Lifted,
 ) where {N}
+    # Only inactive values can be copied through raw pointer storage as-is.
+    if tangent(Mooncake._unlift(x)) isa NTangent
+        throw(
+            ArgumentError(
+                "unsupported lifted atomic_pointerset: tangent value is not storable in the pointer element type",
+            ),
+        )
+    end
     bare_result = _atomic_pointerset_kernel(
         Mooncake._unlift(p), Mooncake._unlift(x), Mooncake._unlift(order)
     )
@@ -687,6 +712,14 @@ end
     idx::Mooncake.Lifted,
     z::Mooncake.Lifted,
 ) where {N}
+    # Only inactive values can be copied through raw pointer storage as-is.
+    if tangent(Mooncake._unlift(x)) isa NTangent
+        throw(
+            ArgumentError(
+                "unsupported lifted pointerset: tangent value is not storable in the pointer element type",
+            ),
+        )
+    end
     bare_result = _pointerset_kernel(
         Mooncake._unlift(p), Mooncake._unlift(x), Mooncake._unlift(idx), Mooncake._unlift(z)
     )

@@ -237,6 +237,21 @@ end
     return :(($(exprs...),))
 end
 @inline _new_field_primal(::Type, x) = _ndual_primal(x)
+# Tuple-like fields must be rebuilt against their declared field type.
+@generated function _new_field_primal(::Type{P}, x::Tx) where {P<:Tuple,Tx<:Tuple}
+    exprs = [:(_new_field_primal($(fieldtype(P, i)), x[$i])) for i in 1:fieldcount(Tx)]
+    return :(($(exprs...),))
+end
+@generated function _new_field_primal(
+    ::Type{P}, x::NamedTuple{names}
+) where {names,P<:NamedTuple{names}}
+    InnerTup = P.parameters[2]
+    exprs = [
+        :(_new_field_primal($(fieldtype(InnerTup, i)), values(x)[$i])) for
+        i in 1:fieldcount(InnerTup)
+    ]
+    return :(NamedTuple{$names}(($(exprs...),)))
+end
 @inline _new_field_primal(::Type{P}, x::NamedTuple) where {P} = _new_(
     P, _ndual_primal(x)...
 )
@@ -248,6 +263,23 @@ end
     return :(($(exprs...),))
 end
 @inline _new_field_tangent(::Type, x, dir) = _tangent_dir(x, dir)
+# Match the primal reconstruction so nested fields get canonical tangents.
+@generated function _new_field_tangent(::Type{P}, x::Tx, dir) where {P<:Tuple,Tx<:Tuple}
+    exprs = [
+        :(_new_field_tangent($(fieldtype(P, i)), x[$i], dir)) for i in 1:fieldcount(Tx)
+    ]
+    return :(($(exprs...),))
+end
+@generated function _new_field_tangent(
+    ::Type{P}, x::NamedTuple{names}, dir
+) where {names,P<:NamedTuple{names}}
+    InnerTup = P.parameters[2]
+    exprs = [
+        :(_new_field_tangent($(fieldtype(InnerTup, i)), values(x)[$i], dir)) for
+        i in 1:fieldcount(InnerTup)
+    ]
+    return :(NamedTuple{$names}(($(exprs...),)))
+end
 @inline function _new_field_tangent(::Type{P}, x::NamedTuple, dir) where {P}
     return build_output_tangent(P, Tuple(_ndual_primal(x)), Tuple(_tangent_dir(x, dir)))
 end

@@ -493,6 +493,13 @@ end
     end
     return V(primal, tangent)
 end
+@inline function _inner_dual_for_field(
+    ::Type{V}, primal::Base.Broadcast.Extruded, tangent::Tangent
+) where {V<:Base.Broadcast.Extruded}
+    inner_x = _inner_dual_for_field(fieldtype(V, 1), primal.x, val(tangent.fields.x))
+    # Broadcast metadata is non-differentiable; only `x` carries tangent data.
+    return V(inner_x, primal.keeps, primal.defaults)
+end
 # When the tangent is already the canonical V (e.g. test_rule passes a `Dual`
 # whose tangent slot carries an NDual or Array{NDual} directly), pass it
 # through — re-wrapping would invoke a non-existent 2-arg ctor.
@@ -698,6 +705,16 @@ end
     return quote
         return Lifted{$P,$N,$InnerT}($(NamedTuple{names})(($(inner_exprs...),)))
     end
+end
+
+@inline function Lifted{P,N}(
+    primal::P, tangent::Tangent
+) where {P<:Base.Broadcast.Extruded,N}
+    InnerT = dual_type(Val(N), P)
+    XInnerT = fieldtype(InnerT, 1)
+    inner_x = _inner_dual_for_field(XInnerT, getfield(primal, :x), val(tangent.fields.x))
+    # Broadcast metadata is non-differentiable; only `x` carries tangent data.
+    return Lifted{P,N,InnerT}(InnerT(inner_x, primal.keeps, primal.defaults))
 end
 
 # Helper: extract a field's tangent value from a `Tangent`, unwrapping

@@ -6,6 +6,26 @@ using LinearAlgebra, Mooncake, Random, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
 
 @testset "misc_abstract_array" begin
+    @testset "unsupported lifted raw pointer boundaries" begin
+        # Active raw pointers cannot preserve lifted array tangent metadata.
+        f_load = x -> unsafe_load(Base.unsafe_convert(Ptr{Float64}, x))
+        x_load = randn(5)
+        rule_load = Mooncake.build_frule(f_load, x_load)
+        @test_throws ArgumentError rule_load(
+            Mooncake.Lifted{typeof(f_load),1}(f_load, Mooncake.NoTangent()),
+            Mooncake.Lifted{Vector{Float64},1}(x_load, ones(5)),
+        )
+
+        f_set = (v, x) -> (Base.pointerset(pointer(x), v, 2, 1); x)
+        x_set = randn(5)
+        rule_set = Mooncake.build_frule(f_set, 3.0, x_set)
+        @test_throws ArgumentError rule_set(
+            Mooncake.Lifted{typeof(f_set),1}(f_set, Mooncake.NoTangent()),
+            Mooncake.Lifted{Float64,1}(3.0, 1.0),
+            Mooncake.Lifted{Vector{Float64},1}(x_set, ones(5)),
+        )
+    end
+
     @testset for (interface_only, f, x...) in vcat(
         [
             (false, getindex, randn(5), 4),
@@ -20,7 +40,8 @@ using Mooncake.TestUtils: test_rule
                 ),
                 5.0,
             ),
-            (false, (v, x) -> (Base.pointerset(pointer(x), v, 2, 1); x), 3.0, randn(5)),
+            (false, x -> x[1], randn(5)),
+            (false, (v, x) -> (x[2]=v; x), 3.0, randn(5)),
             (false, x -> (Base.pointerset(pointer(x), UInt8(3), 2, 1); x), rand(UInt8, 5)),
             (false, x -> Ref(x)[], 5.0),
             (
@@ -28,7 +49,6 @@ using Mooncake.TestUtils: test_rule
                 x -> unsafe_load(Base.bitcast(Ptr{Float64}, pointer_from_objref(Ref(x)))),
                 5.0,
             ),
-            (false, x -> unsafe_load(Base.unsafe_convert(Ptr{Float64}, x)), randn(5)),
             (false, view, randn(5, 4), 1, 1),
             (false, view, randn(5, 4), 2:3, 1),
             (false, view, randn(5, 4), 1, 2:3),

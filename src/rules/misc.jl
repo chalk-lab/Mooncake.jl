@@ -12,6 +12,7 @@
 @zero_derivative DefaultCtx Tuple{typeof(isbitstype),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(sizeof),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(promote_type),Vararg}
+@zero_derivative DefaultCtx Tuple{typeof(Base.promote_op),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Base.elsize),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Core.Compiler.sizeof_nothrow),Vararg}
 @zero_derivative DefaultCtx Tuple{typeof(Base.datatype_haspadding),Vararg}
