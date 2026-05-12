@@ -584,9 +584,12 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule)
     inputs_a, x̄_zero_a = make_inputs(x_x̄)
     inputs_b, x̄_zero_b = make_inputs(x_x̄)
 
-    # First forward pass: snapshot primal before pullback can modify it.
+    # First forward pass: snapshot primal before pullback can restore mutations.
+    # Only deepcopy when the output has an fdata component -- if tangent is NoFData,
+    # Mooncake does not track mutations on the primal and the pullback won’t modify it
+    # (and deepcopy may fail for types containing Modules, e.g. Core.TypeName).
     y_ȳ_a, pb_a!! = rrule(inputs_a...)
-    y_primal_a = _deepcopy(primal(y_ȳ_a))
+    y_primal_a = tangent(y_ȳ_a) isa NoFData ? primal(y_ȳ_a) : _deepcopy(primal(y_ȳ_a))
     # Set output cotangent via fdata (vectors communicate cotangents through fdata, not rdata).
     ŷ_delta = randn_tangent(rng, primal(y_ȳ_a))
     ȳ_a = increment!!(
@@ -596,7 +599,7 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule)
 
     # Second forward pass with the same rule.
     y_ȳ_b, pb_b!! = rrule(inputs_b...)
-    y_primal_b = _deepcopy(primal(y_ȳ_b))
+    y_primal_b = tangent(y_ȳ_b) isa NoFData ? primal(y_ȳ_b) : _deepcopy(primal(y_ȳ_b))
     # Same output cotangent as run A.
     ȳ_b = increment!!(
         set_to_zero!!(zero_tangent(primal(y_ȳ_b), tangent(y_ȳ_b))), _deepcopy(ŷ_delta)
