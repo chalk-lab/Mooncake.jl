@@ -1631,6 +1631,32 @@ end
     end
 end
 
+# Val(0) passthrough disambiguations: each width-N specialisation below needs
+# a matching `_uninit_dual(::Val{0}, ::SameShape) = v` overload so Aqua's
+# ambiguity check sees a strictly-more-specific resolution for Val(0).
+# Without these, `_uninit_dual(::Val{0}, ::Array{Float64,1})` etc. are
+# ambiguous between the generic `_uninit_dual(::Val{0}, v) = v` in
+# `primal_mode.jl` and these width-N specialised overloads.
+@inline Mooncake._uninit_dual(::Val{0}, v::Array{T,D}) where {T<:IEEEFloat,D} = v
+@inline Mooncake._uninit_dual(
+    ::Val{0}, v::LinearAlgebra.Diagonal{T,Vector{T}}
+) where {T<:IEEEFloat} = v
+@inline Mooncake._uninit_dual(
+    ::Val{0}, v::LinearAlgebra.Adjoint{T,Matrix{T}}
+) where {T<:IEEEFloat} = v
+@inline Mooncake._uninit_dual(
+    ::Val{0}, v::SubArray{T,D,Array{T,Dp},I,L}
+) where {T<:IEEEFloat,D,Dp,I,L} = v
+@inline Mooncake._uninit_dual(
+    ::Val{0}, T::Type{Array{S,D}}
+) where {S<:Union{IEEEFloat,Complex{<:IEEEFloat}},D} = T
+@static if VERSION >= v"1.11-"
+    @inline Mooncake._uninit_dual(::Val{0}, T::Type{Memory{S}}) where {S<:IEEEFloat} = T
+    @inline Mooncake._uninit_dual(
+        ::Val{0}, T::Type{Memory{Complex{S}}}
+    ) where {S<:IEEEFloat} = T
+end
+
 # _uninit_dual for Array at width N: returns `Lifted{Array{T,D}, N, Array{NDual{T,N},D}}`.
 # The outer Lifted wrap matches `lifted_type(Val(N), Array{T,D})`.
 function Mooncake._uninit_dual(::Val{N}, v::Array{T,D}) where {N,T<:IEEEFloat,D}

@@ -857,6 +857,14 @@ the canonical zero dual at width `N`, or the bare primal `x` at `Val(0)`.
 Companion to `zero_dual` (Layer 2). The result type matches
 `lifted_type(Val(N), typeof(x))`.
 """
+# Val(0) is the primal passthrough — bare `x` flows unchanged at every
+# primal shape. Explicit Tuple/NamedTuple/Type overloads disambiguate
+# against the matching width-N variants below (Aqua flagged these as
+# `zero_lifted(::Val{0}, ::Tuple)` etc.). Keep the generic `Val(0)` last
+# so it acts as the catch-all.
+@inline zero_lifted(::Val{0}, x::Tuple) = x
+@inline zero_lifted(::Val{0}, x::NamedTuple) = x
+@inline zero_lifted(::Val{0}, x::Type) = x
 @inline zero_lifted(::Val{0}, x) = x
 @inline zero_lifted(w::Val{N}, x) where {N} = Lifted{typeof(x),N}(zero_dual(w, x))
 @inline function zero_lifted(w::Val{N}, x::Type{P}) where {N,P}
@@ -876,6 +884,9 @@ end
     inner = ntuple(i -> zero_lifted_inner(w, values(x)[i]), Val(length(x)))
     return Lifted{typeof(x),N}(NamedTuple{names}(inner))
 end
+# Same disambiguation pattern for the recursive helper.
+@inline zero_lifted_inner(::Val{0}, x::Tuple) = x
+@inline zero_lifted_inner(::Val{0}, x::NamedTuple) = x
 @inline zero_lifted_inner(::Val{0}, x) = x
 @inline zero_lifted_inner(w::Val{N}, x) where {N} = zero_dual(w, x)
 @inline zero_lifted_inner(w::Val{N}, x::Tuple) where {N} = ntuple(

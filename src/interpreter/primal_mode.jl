@@ -85,6 +85,13 @@ end
 # `_unlift` before invoking the still-bare rule body. `Val(0)` is the
 # primal passthrough — `lifted_type(Val(0), P) === P`, so constants flow
 # through as bare values.
+# Val(0) passthrough specialisations for each concrete primal shape — Aqua
+# step 8: disambiguates `_uninit_dual(::Val{0}, ::T)` against the matching
+# `_uninit_dual(::Val{N}, ::T)` width-N variants. All return `v` unchanged.
+@inline _uninit_dual(::Val{0}, v::IEEEFloat) = v
+@inline _uninit_dual(::Val{0}, v::Complex{<:IEEEFloat}) = v
+@inline _uninit_dual(::Val{0}, v::Tuple) = v
+@inline _uninit_dual(::Val{0}, v::NamedTuple) = v
 @inline _uninit_dual(::Val{0}, v) = v
 @inline function _uninit_dual(w::Val{N}, v::T) where {T<:IEEEFloat,N}
     return Lifted{T,N}(dual_type(w, T)(v))
@@ -106,6 +113,11 @@ end
 
 # `_uninit_inner` returns the bare inner V for the Tuple/NamedTuple recursion,
 # avoiding the `Lifted` wrapper that the recursive caller would only unwrap.
+# Val(0) passthrough specialisations parallel `_uninit_dual`.
+@inline _uninit_inner(::Val{0}, v::IEEEFloat) = v
+@inline _uninit_inner(::Val{0}, v::Complex{<:IEEEFloat}) = v
+@inline _uninit_inner(::Val{0}, v::Tuple) = v
+@inline _uninit_inner(::Val{0}, v::NamedTuple) = v
 @inline _uninit_inner(::Val{0}, v) = v
 @inline _uninit_inner(w::Val{N}, v::T) where {T<:IEEEFloat,N} = dual_type(w, T)(v)
 @inline function _uninit_inner(w::Val{N}, v::Complex{T}) where {T<:IEEEFloat,N}
