@@ -707,7 +707,7 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
             build_primitive_rrule(sig) # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
-            mi = get_mi(stmt.args[1])
+            mi = Compiler.method_instance(stmt.args[1])
             LazyDerivedRule(mi, info.debug_mode) # Static dispatch
         else
             DynamicDerivedRule(info.debug_mode)  # Dynamic dispatch
@@ -1300,7 +1300,7 @@ function generate_ir(
     fwd_ret_type = forwards_ret_type(ir)
     rvs_ret_type = pullback_ret_type(ir)
 
-    # Check before normalise! to avoid a cryptic CC.verify_ir failure downstream.
+    # Check before normalise! to avoid a cryptic compiler verification failure downstream.
     for inst in Compiler.statements(ir)
         is_enter = Meta.isexpr(inst, :enter)
         @static if isdefined(Core, :EnterNode)

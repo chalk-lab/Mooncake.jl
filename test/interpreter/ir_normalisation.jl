@@ -31,9 +31,9 @@
                 ],
                 Any[Any, Vector{Float64}],
             )
-            @test ir.stmts.type[1] == Any
+            @test Mooncake.Compiler.statement_type(ir, 1) == Any
             ir = Mooncake.fix_up_invoke_inference!(ir)
-            @test ir.stmts.type[1] == Nothing
+            @test Mooncake.Compiler.statement_type(ir, 1) == Nothing
         end
     end
     @testset "new_to_call" begin
@@ -163,10 +163,10 @@
             Any[Any, Vector{Float64}],
         )
         Mooncake.remove_edge!(ir, 1, 2)
-        phi_node = stmt(ir.stmts)[3]
+        phi_node = Mooncake.Compiler.statements(ir)[3]
         @test isempty(phi_node.edges)
         @test isempty(phi_node.values)
-        @test isempty(ir.cfg.blocks[1].succs)
-        @test isempty(ir.cfg.blocks[2].preds)
+        @test isempty(Mooncake.Compiler.block_successors(ir, 1))
+        @test isempty(Mooncake.Compiler.block_predecessors(ir, 2))
     end
 end

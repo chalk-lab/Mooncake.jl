@@ -22,10 +22,11 @@ from which the `IRCode` is derived must be consulted. `Mooncake.is_vararg_and_sp
 provides a convenient way to do this.
 """
 function normalise!(ir::IRCode, spnames::Vector{Symbol})
-    sp_map = Dict{Symbol,CC.VarState}(zip(spnames, ir.sptypes))
+    sp_map = Compiler.static_parameter_map(ir, spnames)
     ir = interpolate_boundschecks!(ir)
     ir = fix_up_invoke_inference!(ir)
-    for (n, inst) in enumerate(stmt(ir.stmts))
+    statements = Compiler.statements(ir)
+    for (n, inst) in enumerate(statements)
         inst = foreigncall_to_call(inst, sp_map)
         inst = new_to_call(inst)
         inst = splatnew_to_call(inst)
@@ -36,13 +37,13 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
         inst = lift_getfield_and_others(inst)
         inst = lift_memoryrefget_and_memoryrefset_builtins(inst)
         inst = lift_gc_preservation(inst)
-        stmt(ir.stmts)[n] = inst
+        statements[n] = inst
     end
     ir = const_prop_gotoifnots!(ir)
 
     # Dynamic error checks. Removing these would be like removing things from the test
     # suite. i.e. do not remove unless you're quite sure that they're redundant.
-    CC.verify_ir(ir)
+    Compiler.verify(ir)
     verify_no_constant_gotoifnots(ir)
 
     return ir
@@ -58,7 +59,7 @@ improvements to the way that we handle constant propagation inside Mooncake, the
 functionality can be removed.
 """
 function interpolate_boundschecks!(ir::IRCode)
-    _interpolate_boundschecks!(stmt(ir.stmts))
+    _interpolate_boundschecks!(Compiler.statements(ir))
     return ir
 end
 
@@ -120,20 +121,16 @@ for `:invoke` statements whose return type is inferred to be `Any` in `ir`, and 
 to be the return type given by the code cache.
 """
 function fix_up_invoke_inference!(ir::IRCode)::IRCode
-    stmts = ir.stmts
-    for n in 1:length(stmts)
-        if Meta.isexpr(stmt(stmts)[n], :invoke) && CC.widenconst(stmts.type[n]) == Any
-            mi = get_mi(stmt(stmts)[n].args[1])
-            R = isdefined(mi, :cache) ? mi.cache.rettype : CC.return_type(mi.specTypes)
-            stmts.type[n] = R
+    statements = Compiler.statements(ir)
+    for n in 1:Compiler.statement_count(ir)
+        if Meta.isexpr(statements[n], :invoke) &&
+            Compiler.widen_const(Compiler.statement_type(ir, n)) == Any
+            R = Compiler.method_instance_return_type(statements[n].args[1])
+            Compiler.set_statement_type!(ir, n, R)
         end
     end
     return ir
 end
-function get_mi(ci::Core.CodeInstance)
-    @static isdefined(CC, :get_ci_mi) ? CC.get_ci_mi(ci) : ci.def
-end
-get_mi(mi::Core.MethodInstance) = mi
 
 """
     foreigncall_to_call(inst, sp_map::Dict{Symbol, CC.VarState})
@@ -142,9 +139,9 @@ If `inst` is a `:foreigncall` expression translate it into an equivalent `:call`
 If anything else, just return `inst`. See `Mooncake._foreigncall_` for details.
 
 `sp_map` maps the names of the static parameters to their values. This function is intended
-to be called in the context of an `IRCode`, in which case the values of `sp_map` are given
-by the `sptypes` field of said `IRCode`. The keys should generally be obtained from the
-`Method` from which the `IRCode` is derived. See `Mooncake.normalise!` for more details.
+to be called in the context of an `IRCode`; use `Compiler.static_parameter_map` to build it
+from compiler-owned IR metadata. The keys should generally be obtained from the `Method`
+from which the `IRCode` is derived. See `Mooncake.normalise!` for more details.
 
 The purpose of this transformation is to make it possible to differentiate `:foreigncall`
 expressions in the same way as a primitive `:call` expression, i.e. via an `rrule!!`.
@@ -251,25 +248,8 @@ function resolve_unbound_globalrefs(ir, @nospecialize ex)
     args = nothing
     for i in eachindex(ex.args)
         arg = ex.args[i]
-        # extracted from `Compiler.check_op` (called by `Compiler.verify_ir`)
         if isa(arg, GlobalRef) && arg.mod !== Core && arg.mod !== Base
-            (valid_worlds, alldef) = CC.scan_leaf_partitions(
-                nothing,
-                arg,
-                CC.WorldWithRange(CC.min_world(ir.valid_worlds), ir.valid_worlds),
-            ) do _, _, bpart
-                CC.is_defined_const_binding(CC.binding_kind(bpart))
-            end
-            if !alldef ||
-                CC.max_world(valid_worlds) < CC.max_world(ir.valid_worlds) ||
-                CC.min_world(valid_worlds) > CC.min_world(ir.valid_worlds)
-                # this is the potentially unsound bit, because we
-                # resolve a binding that was otherwise thought to be
-                # unbound during type inference.
-                if isdefined(arg.mod, arg.name)
-                    arg = getglobal(arg.mod, arg.name)
-                end
-            end
+            arg = Compiler.resolve_globalref_if_unbound_in_world_range(ir, arg)
             if args === nothing
                 args = ex.args[1:(i - 1)]
             end
@@ -469,77 +449,29 @@ and all occurences of `goto %n if not false` with `goto n`, and make the adjustm
 `ir` that this necessitates.
 """
 function const_prop_gotoifnots!(ir::IRCode)
-    stmts = stmt(ir.stmts)
+    stmts = Compiler.statements(ir)
     for (n, stmt) in enumerate(stmts)
         if stmt isa GotoIfNot
-            _current_blk = findfirst(i -> i > n, ir.cfg.index)
-            current_blk = _current_blk === nothing ? length(ir.cfg.blocks) : _current_blk
+            current_blk = Compiler.block_for_statement(ir, n)
             if stmt.cond === true
                 stmts[n] = nothing
-                remove_edge!(ir, current_blk, stmt.dest)
+                Compiler.remove_control_flow_edge!(ir, current_blk, stmt.dest)
             elseif stmt.cond === false
                 stmts[n] = GotoNode(stmt.dest)
-                remove_edge!(ir, current_blk, current_blk + 1)
+                Compiler.remove_control_flow_edge!(ir, current_blk, current_blk + 1)
             end
         end
     end
     return ir
 end
 
-# On Julia 1.10, passing findfirst's Union{Int,Nothing} return directly to deleteat!
-# introduces a union-split that propagates through generate_dual_ir and causes spurious
-# allocation regressions. The !== nothing guard narrows to Int before the call.
-# Note: the 1.10 path silently does nothing when the item is absent; the 1.11 path throws
-# BoundsError. This is fine because remove_edge! is only ever called with edges that exist.
-#
-# MWE (Julia 1.10):
-#   f(v) = deleteat!(v, findfirst(==(2), v))
-#   g(v) = (i = findfirst(==(2), v); i !== nothing && deleteat!(v, i))
-#   @code_warntype f([1,2,3])  # deleteat! receives Union{Int,Nothing} → union-split
-#   @code_warntype g([1,2,3])  # deleteat! receives Int → monomorphic
-@static if VERSION < v"1.11-"
-    function _deleteat!(v, item)
-        i = findfirst(==(item), v)
-        i !== nothing && deleteat!(v, i)
-        return v
-    end
-else
-    _deleteat!(v, item) = deleteat!(v, findfirst(==(item), v))
-end
-
 """
     remove_edge!(ir::IRCode, from::Int, to::Int)
 
-Removes an edge in `ir` from `from` to `to`. See implementation for what this entails.
-
-Note: this is slightly different from `Core.Compiler.kill_edge!`, in that it also updates
-`PhiNode`s in the `to` block. Moreover, the available methods of `remove_edge!` differ
-between 1.10 and 1.11, so we need something which is stable across both.
+Compatibility shim for [`Compiler.remove_control_flow_edge!`](@ref).
 """
 function remove_edge!(ir::IRCode, from::Int, to::Int)
-
-    # Remove the `to` block from the `from` block's successor list.
-    succs = ir.cfg.blocks[from].succs
-    _deleteat!(succs, to)
-
-    # Remove the `from` block from the `to` block's predecessor list.
-    to_blk = ir.cfg.blocks[to]
-    preds = to_blk.preds
-    _deleteat!(preds, from)
-
-    # Remove the `from` edge from any `PhiNode`s at the start of next blk.
-    stmts = stmt(ir.stmts)
-    for n in to_blk.stmts
-        stmt = stmts[n]
-        if stmt isa PhiNode
-            edge_index = findfirst(i::Int32 -> i == from, stmt.edges)
-            edge_index === nothing && continue
-            deleteat!(stmt.edges, edge_index)
-            deleteat!(stmt.values, edge_index)
-        else
-            break
-        end
-    end
+    Compiler.remove_control_flow_edge!(ir, from, to)
     return nothing
 end
 
@@ -557,11 +489,11 @@ construct a convincing set of test cases which, if passed at test-time, would in
 were done.
 """
 function verify_no_constant_gotoifnots(ir::IRCode)
-    for (n, stmt) in enumerate(stmt(ir.stmts))
+    for (n, stmt) in enumerate(Compiler.statements(ir))
         if stmt isa GotoIfNot
             if stmt.cond isa Bool
                 println("Constant GotoIfNot found at SSA $n in the following IRCode:")
-                dislay(ir)
+                display(ir)
                 println()
                 throw(error("Bad IR, see above."))
             end

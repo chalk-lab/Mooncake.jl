@@ -398,7 +398,7 @@ function modify_fwd_ad_stmts!(
             return contains_bottom_type(t) ? Any : t
         end
         sig = Tuple{sig_types...}
-        mi = isexpr(stmt, :invoke) ? get_mi(stmt.args[1]) : missing
+        mi = isexpr(stmt, :invoke) ? Compiler.method_instance(stmt.args[1]) : missing
         args = map(__inc, raw_args)
 
         # Special case: if the result of a call to getfield is un-used, then leave the

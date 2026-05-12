@@ -1,6 +1,6 @@
 module Compiler
 
-using Core: Argument, OpaqueClosure, SSAValue
+using Core: Argument, GlobalRef, OpaqueClosure, PhiNode, SSAValue
 using Core.Compiler: IRCode, NewInstruction
 using MistyClosures: MistyClosure
 
@@ -19,6 +19,11 @@ Return the compiler instruction stream for typed IR.
 statement_stream(ir::IRCode) = ir.stmts
 statement_count(ir::IRCode) = length(statement_stream(ir))
 control_flow_graph(ir::IRCode) = ir.cfg
+static_parameter_states(ir::IRCode) = ir.sptypes
+
+function static_parameter_map(ir::IRCode, spnames::Vector{Symbol})
+    return Dict{Symbol,CC.VarState}(zip(spnames, static_parameter_states(ir)))
+end
 
 """
     statements(ir::IRCode)
@@ -29,6 +34,8 @@ IR statements; the Julia-version-specific field name is private here.
 """
 statements(ir::IRCode) = statements(statement_stream(ir))
 statements(stream::CC.InstructionStream) = CC.getfield(stream, instruction_statement_field())
+statement_types(ir::IRCode) = statement_stream(ir).type
+statement_type(ir::IRCode, n::Integer) = statement_types(ir)[n]
 
 """
     statement(inst::CC.Instruction)
@@ -118,6 +125,11 @@ function set_statement!(ir::IRCode, ssa::SSAValue, @nospecialize(stmt))
     return CC.setindex!(instruction(ir, ssa), stmt, instruction_statement_field())
 end
 
+function set_statement_type!(ir::IRCode, n::Integer, @nospecialize(T))
+    statement_types(ir)[n] = T
+    return ir
+end
+
 function set_statement_type!(ir::IRCode, ssa::SSAValue, @nospecialize(T))
     return CC.setindex!(instruction(ir, ssa), T, :type)
 end
@@ -147,6 +159,61 @@ insert_after!(ir::IRCode, ssa::SSAValue, inst::NewInstruction) =
 compact!(ir::IRCode) = CC.compact!(ir)
 verify(ir::IRCode) = (CC.verify_ir(ir); ir)
 
+function widen_const(@nospecialize(T))
+    return CC.widenconst(T)
+end
+
+function block_for_statement(ir::IRCode, stmt_index::Integer)
+    cfg = control_flow_graph(ir)
+    next_block = findfirst(i -> i > stmt_index, cfg.index)
+    return next_block === nothing ? length(cfg.blocks) : next_block
+end
+
+block_successors(ir::IRCode, block::Integer) = control_flow_graph(ir).blocks[block].succs
+block_predecessors(ir::IRCode, block::Integer) = control_flow_graph(ir).blocks[block].preds
+
+# On Julia 1.10, passing findfirst's Union{Int,Nothing} return directly to deleteat!
+# introduces a union-split that propagates through generated AD IR and causes spurious
+# allocation regressions. The !== nothing guard narrows to Int before the call.
+@static if VERSION < v"1.11-"
+    function _delete_item!(v, item)
+        i = findfirst(==(item), v)
+        i !== nothing && deleteat!(v, i)
+        return v
+    end
+else
+    _delete_item!(v, item) = deleteat!(v, findfirst(==(item), v))
+end
+
+"""
+    remove_control_flow_edge!(ir::IRCode, from::Int, to::Int)
+
+Remove a CFG edge and the matching incoming values from leading PhiNodes in the
+destination block.
+"""
+function remove_control_flow_edge!(ir::IRCode, from::Int, to::Int)
+    cfg = control_flow_graph(ir)
+
+    _delete_item!(cfg.blocks[from].succs, to)
+
+    to_block = cfg.blocks[to]
+    _delete_item!(to_block.preds, from)
+
+    stmts = statements(ir)
+    for n in to_block.stmts
+        stmt = stmts[n]
+        if stmt isa PhiNode
+            edge_index = findfirst(i::Int32 -> i == from, stmt.edges)
+            edge_index === nothing && continue
+            deleteat!(stmt.edges, edge_index)
+            deleteat!(stmt.values, edge_index)
+        else
+            break
+        end
+    end
+    return ir
+end
+
 function verify_debug_info(ir::IRCode)
     @static if VERSION > v"1.12-"
         CC.verify_linetable(ir.debuginfo, length(ir.stmts), true)
@@ -154,6 +221,23 @@ function verify_debug_info(ir::IRCode)
         CC.verify_linetable(ir.linetable, true)
     end
     return ir
+end
+
+function method_instance(ci::Core.CodeInstance)
+    @static if isdefined(CC, :get_ci_mi)
+        return CC.get_ci_mi(ci)
+    else
+        return ci.def
+    end
+end
+method_instance(mi::Core.MethodInstance) = mi
+
+function method_instance_return_type(mi::Core.MethodInstance)
+    return isdefined(mi, :cache) ? mi.cache.rettype : CC.return_type(mi.specTypes)
+end
+
+function method_instance_return_type(ci_or_mi)
+    return method_instance_return_type(method_instance(ci_or_mi))
 end
 
 function top_level_method_instance(ir::IRCode, _module::Module)
@@ -342,9 +426,30 @@ opaque_closure_return_type(::Core.OpaqueClosure{A,B}) where {A,B} = B
             CC.WorldRange(world, world),
         )
     end
+
+    function resolve_globalref_if_unbound_in_world_range(ir::IRCode, ref::GlobalRef)
+        if ref.mod === Core || ref.mod === Base
+            return ref
+        end
+        (valid_worlds, alldef) = CC.scan_leaf_partitions(
+            nothing,
+            ref,
+            CC.WorldWithRange(CC.min_world(valid_world_range(ir)), valid_world_range(ir)),
+        ) do _, _, bpart
+            CC.is_defined_const_binding(CC.binding_kind(bpart))
+        end
+        if !alldef ||
+            CC.max_world(valid_worlds) < CC.max_world(valid_world_range(ir)) ||
+            CC.min_world(valid_worlds) > CC.min_world(valid_world_range(ir))
+            return isdefined(ref.mod, ref.name) ? getglobal(ref.mod, ref.name) : ref
+        end
+        return ref
+    end
 else
     valid_at_world(::IRCode, ::UInt) = true
     restrict_to_world(ir::IRCode, ::UInt) = ir
+
+    resolve_globalref_if_unbound_in_world_range(::IRCode, ref::GlobalRef) = ref
 end
 
 @static if VERSION > v"1.12-"
