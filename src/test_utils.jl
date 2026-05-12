@@ -1034,6 +1034,9 @@ function test_rule(
                 test_rvs && test_rrule_interface(x_x̄...; rrule)
             end
 
+            # Snapshot of RNG so "Reuse" testset uses identical probe tangents to "Correctness" testset.
+            rng_snapshot = deepcopy(rng)
+
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
                 if test_fwd && !interface_only
@@ -1049,11 +1052,19 @@ function test_rule(
             # Verify rules are not invalidated by a first differentiation call.
             @testset "Reuse" begin
                 if test_fwd && !interface_only
-                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
+                    test_frule_correctness(
+                        rng_snapshot, x_ẋ...; frule, unsafe_perturb, atol, rtol
+                    )
                 end
                 if test_rvs && !interface_only
                     test_rrule_correctness(
-                        rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
+                        rng_snapshot,
+                        x_x̄...;
+                        rrule,
+                        unsafe_perturb,
+                        output_tangent,
+                        atol,
+                        rtol,
                     )
                 end
             end
