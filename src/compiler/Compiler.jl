@@ -5,7 +5,13 @@ using Core.Compiler: IRCode, NewInstruction
 using MistyClosures: MistyClosure
 
 using ..BasicBlockCode: BBCode, __line_numbers_to_block_numbers!
-using ..Mooncake: BugPatchInterpreter, _typeof
+using ..Mooncake:
+    BugPatchInterpreter,
+    MooncakeCache,
+    MooncakeInterpreter,
+    NoInlineCallInfo,
+    is_primitive,
+    _typeof
 
 const CC = Core.Compiler
 
@@ -33,7 +39,9 @@ Return the statement vector for typed IR. This is a semantic operation over
 IR statements; the Julia-version-specific field name is private here.
 """
 statements(ir::IRCode) = statements(statement_stream(ir))
-statements(stream::CC.InstructionStream) = CC.getfield(stream, instruction_statement_field())
+function statements(stream::CC.InstructionStream)
+    CC.getfield(stream, instruction_statement_field())
+end
 statement_types(ir::IRCode) = statement_stream(ir).type
 statement_type(ir::IRCode, n::Integer) = statement_types(ir)[n]
 
@@ -109,7 +117,9 @@ end
 @static if VERSION > v"1.12-"
     function with_argument_types(ir::BBCode, argtypes::AbstractVector)
         argtypes = Any[argtypes...]
-        return BBCode(ir.blocks, argtypes, ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds)
+        return BBCode(
+            ir.blocks, argtypes, ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds
+        )
     end
 else
     function with_argument_types(ir::BBCode, argtypes::AbstractVector)
@@ -150,11 +160,13 @@ function replace_statement!(
     return ir
 end
 
-insert_before!(ir::IRCode, ssa::SSAValue, inst::NewInstruction) =
+function insert_before!(ir::IRCode, ssa::SSAValue, inst::NewInstruction)
     CC.insert_node!(ir, ssa, inst, false)
+end
 
-insert_after!(ir::IRCode, ssa::SSAValue, inst::NewInstruction) =
+function insert_after!(ir::IRCode, ssa::SSAValue, inst::NewInstruction)
     CC.insert_node!(ir, ssa, inst, true)
+end
 
 compact!(ir::IRCode) = CC.compact!(ir)
 verify(ir::IRCode) = (CC.verify_ir(ir); ir)
@@ -255,6 +267,135 @@ function inference_world(interp::CC.AbstractInterpreter)
     end
 end
 
+interpreter_world(interp::MooncakeInterpreter) = interp.world
+inference_parameters(interp::MooncakeInterpreter) = interp.inf_params
+optimization_parameters(interp::MooncakeInterpreter) = interp.opt_params
+inference_cache(interp::MooncakeInterpreter) = interp.inf_cache
+function code_cache_view(interp::MooncakeInterpreter)
+    CC.WorldView(interp.code_cache, CC.WorldRange(interpreter_world(interp)))
+end
+cache_owner(::MooncakeInterpreter) = nothing
+
+function overlay_method_table(interp::MooncakeInterpreter, table)
+    CC.OverlayMethodTable(interpreter_world(interp), table)
+end
+
+function code_cache_get(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance, default)
+    get(wvc.cache.dict, mi, default)
+end
+function code_cache_getindex(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance)
+    getindex(wvc.cache.dict, mi)
+end
+function code_cache_haskey(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance)
+    haskey(wvc.cache.dict, mi)
+end
+function code_cache_setindex!(
+    wvc::CC.WorldView{MooncakeCache}, ci::Core.CodeInstance, mi::Core.MethodInstance
+)
+    return setindex!(wvc.cache.dict, ci, mi)
+end
+
+function call_matches(
+    interp::MooncakeInterpreter,
+    argtypes::Vector{Any},
+    @nospecialize(atype),
+    max_methods::Int,
+)
+    @static if VERSION < v"1.12-"
+        lattice = CC.typeinf_lattice(interp)
+        return CC.find_matching_methods(
+            lattice,
+            argtypes,
+            atype,
+            CC.method_table(interp),
+            inference_parameters(interp).max_union_splitting,
+            max_methods,
+        )
+    else
+        return CC.find_method_matches(interp, argtypes, atype; max_methods)
+    end
+end
+
+@static if VERSION < v"1.12-"
+    method_match_signature(applicable_match) = applicable_match.spec_types
+else
+    method_match_signature(applicable_match) = applicable_match.match.spec_types
+end
+
+function any_primitive_match(applicable, ::Type{C}, ::Type{M}, world::UInt) where {C,M}
+    for app in applicable
+        if is_primitive(C, M, method_match_signature(app), world)
+            return true
+        end
+    end
+    return false
+end
+
+function has_primitive_match(matches, ::Type{C}, ::Type{M}, world::UInt) where {C,M}
+    matches isa CC.FailedMethodMatch && return false
+    return any_primitive_match(matches.applicable, C, M, world)
+end
+
+"""
+    widen_primitive_rettype(call, argtypes)
+
+Prevent compiler folding from erasing primitive calls whose return type inferred
+to `Const` only because of partially constant arguments.
+"""
+function widen_primitive_rettype(call::CC.CallMeta, argtypes::Vector{Any})
+    has_nonconst_runtime_arg = any(i -> !(argtypes[i] isa CC.Const), 2:length(argtypes))
+    rt = call.rt isa CC.Const && has_nonconst_runtime_arg ? CC.widenconst(call.rt) : call.rt
+
+    @static if VERSION >= v"1.11-"
+        return CC.CallMeta(rt, call.exct, call.effects, call.info)
+    else
+        return CC.CallMeta(rt, call.effects, call.info)
+    end
+end
+
+function block_inlining(call::CC.CallMeta, @nospecialize(atype))
+    info = NoInlineCallInfo(call.info, atype)
+    @static if VERSION >= v"1.11-"
+        return CC.CallMeta(call.rt, call.exct, call.effects, info)
+    else
+        return CC.CallMeta(call.rt, call.effects, info)
+    end
+end
+
+should_inline_call(::CC.CallInfo) = true
+should_inline_call(::NoInlineCallInfo) = false
+
+function noinline_primitive_callmeta(
+    call::CC.CallMeta, argtypes::Vector{Any}, @nospecialize(atype)
+)
+    return block_inlining(widen_primitive_rettype(call, argtypes), atype)
+end
+
+function primitive_call_override(
+    interp::MooncakeInterpreter{C,M},
+    @nospecialize(f),
+    arginfo::CC.ArgInfo,
+    si::CC.StmtInfo,
+    @nospecialize(atype),
+    sv::CC.AbsIntState,
+    max_methods::Int,
+) where {C,M}
+    argtypes = arginfo.argtypes
+    matches = call_matches(interp, argtypes, atype, max_methods)
+    has_primitive_match(matches, C, M, interpreter_world(interp)) || return nothing
+
+    native_interp = CC.NativeInterpreter(interpreter_world(interp))
+    ret = CC.abstract_call_gf_by_type(native_interp, f, arginfo, si, atype, sv, max_methods)
+
+    @static if VERSION < v"1.12-"
+        return noinline_primitive_callmeta(ret::CC.CallMeta, argtypes, atype)
+    else
+        return CC.Future{CC.CallMeta}(ret::CC.Future, interp, sv) do call, _interp, _sv
+            return noinline_primitive_callmeta(call, argtypes, atype)
+        end
+    end
+end
+
 function run_constant_propagation!(
     ir::IRCode, interp::CC.AbstractInterpreter, mi::Core.MethodInstance
 )
@@ -280,9 +421,11 @@ function run_constant_propagation!(
     return ir
 end
 
-infer_ir!(ir::IRCode) = run_constant_propagation!(
-    ir, CC.NativeInterpreter(), top_level_method_instance(ir, parentmodule(@__MODULE__))
-)
+function infer_ir!(ir::IRCode)
+    run_constant_propagation!(
+        ir, CC.NativeInterpreter(), top_level_method_instance(ir, parentmodule(@__MODULE__))
+    )
+end
 
 function strip_coverage_effects!(ir::IRCode)
     for n in eachindex(statements(ir))
@@ -354,15 +497,15 @@ function infer_ir_for_match(
 )
     @static if VERSION < v"1.11-"
         meth = Base.func_for_method_checked(match.method, target, match.sparams)
-        return CC.typeinf_ircode(interp, meth, match.spec_types, match.sparams, optimize_until)
+        return CC.typeinf_ircode(
+            interp, meth, match.spec_types, match.sparams, optimize_until
+        )
     else
         return Core.Compiler.typeinf_ircode(interp, match, optimize_until)
     end
 end
 
-function infer_ir(
-    interp::CC.AbstractInterpreter, tt::Type{<:Tuple}; optimize_until=nothing
-)
+function infer_ir(interp::CC.AbstractInterpreter, tt::Type{<:Tuple}; optimize_until=nothing)
     matches = CC.findall(tt, CC.method_table(interp))
     asts = []
     for match in method_matches(matches.matches)
@@ -454,11 +597,14 @@ end
 
 @static if VERSION > v"1.12-"
     inferred_return_type(ir::IRCode) = CC.compute_ir_rettype(ir)
-    opaque_closure_signature(ir::IRCode, nargs, isva) = CC.compute_oc_signature(ir, nargs, isva)
+    opaque_closure_signature(ir::IRCode, nargs, isva) = CC.compute_oc_signature(
+        ir, nargs, isva
+    )
 else
     inferred_return_type(ir::IRCode) = Base.Experimental.compute_ir_rettype(ir)
-    opaque_closure_signature(ir::IRCode, nargs, isva) =
-        Base.Experimental.compute_oc_signature(ir, nargs, isva)
+    opaque_closure_signature(ir::IRCode, nargs, isva) = Base.Experimental.compute_oc_signature(
+        ir, nargs, isva
+    )
 end
 
 function codeinfo_from_ir(ir::IRCode; nargs, slottypes, isva::Bool=false)

@@ -81,36 +81,36 @@ MooncakeInterpreter(M::Type{<:Mode}) = MooncakeInterpreter(DefaultCtx, M)
 
 context_type(::MooncakeInterpreter{C}) where {C} = C
 
-CC.InferenceParams(interp::MooncakeInterpreter) = interp.inf_params
-CC.OptimizationParams(interp::MooncakeInterpreter) = interp.opt_params
-CC.get_inference_cache(interp::MooncakeInterpreter) = interp.inf_cache
-function CC.code_cache(interp::MooncakeInterpreter)
-    return CC.WorldView(interp.code_cache, CC.WorldRange(interp.world))
+CC.InferenceParams(interp::MooncakeInterpreter) = Compiler.inference_parameters(interp)
+function CC.OptimizationParams(interp::MooncakeInterpreter)
+    Compiler.optimization_parameters(interp)
 end
+CC.get_inference_cache(interp::MooncakeInterpreter) = Compiler.inference_cache(interp)
+CC.code_cache(interp::MooncakeInterpreter) = Compiler.code_cache_view(interp)
 function CC.get(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance, default)
-    return get(wvc.cache.dict, mi, default)
+    return Compiler.code_cache_get(wvc, mi, default)
 end
 function CC.getindex(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance)
-    return getindex(wvc.cache.dict, mi)
+    return Compiler.code_cache_getindex(wvc, mi)
 end
 function CC.haskey(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance)
-    return haskey(wvc.cache.dict, mi)
+    return Compiler.code_cache_haskey(wvc, mi)
 end
 function CC.setindex!(
     wvc::CC.WorldView{MooncakeCache}, ci::Core.CodeInstance, mi::Core.MethodInstance
 )
-    return setindex!(wvc.cache.dict, ci, mi)
+    return Compiler.code_cache_setindex!(wvc, ci, mi)
 end
 function CC.method_table(interp::MooncakeInterpreter)
-    return CC.OverlayMethodTable(interp.world, mooncake_method_table)
+    return Compiler.overlay_method_table(interp, mooncake_method_table)
 end
 
 @static if VERSION < v"1.11.0"
-    CC.get_world_counter(interp::MooncakeInterpreter) = interp.world
+    CC.get_world_counter(interp::MooncakeInterpreter) = Compiler.interpreter_world(interp)
     get_inference_world(interp::CC.AbstractInterpreter) = CC.get_world_counter(interp)
 else
-    CC.get_inference_world(interp::MooncakeInterpreter) = interp.world
-    CC.cache_owner(::MooncakeInterpreter) = nothing
+    CC.get_inference_world(interp::MooncakeInterpreter) = Compiler.interpreter_world(interp)
+    CC.cache_owner(interp::MooncakeInterpreter) = Compiler.cache_owner(interp)
     get_inference_world(interp::CC.AbstractInterpreter) = CC.get_inference_world(interp)
 end
 
@@ -137,59 +137,10 @@ function Core.Compiler.abstract_call_gf_by_type(
     sv::CC.AbsIntState,
     max_methods::Int,
 ) where {C,M}
-    argtypes = arginfo.argtypes
-    # Look up applicable methods for this call site without recursing into their bodies.
-    # We need the method set to check for primitives before deciding how to proceed.
-    if VERSION < v"1.12-"
-        𝕃ᵢ = Core.Compiler.typeinf_lattice(interp)
-        matches = Core.Compiler.find_matching_methods(
-            𝕃ᵢ,
-            argtypes,
-            atype,
-            Core.Compiler.method_table(interp),
-            Core.Compiler.InferenceParams(interp).max_union_splitting,
-            max_methods,
-        )
-    else
-        matches = Core.Compiler.find_method_matches(interp, argtypes, atype; max_methods)
-    end
-    if !isa(matches, Core.Compiler.FailedMethodMatch)
-        (; valid_worlds, applicable) = matches
-        # For applicable method matches in IR, we need to check if any of them is a primitive.
-        any_prim = any_matches_primitive(applicable, C, M, interp.world)
-        if any_prim
-            # A primitive already has a hand-written `rrule!!`, so Mooncake does not need
-            # to inspect its body when differentiating. The only thing we need here is the
-            # ordinary `CallMeta` for the call site, especially the inferred return type.
-            #
-            # We therefore ask `NativeInterpreter` for the `CallMeta`. This avoids recursing
-            # through the callee IR using Mooncake's primitive-search logic:
-            # `MooncakeInterpreter` would walk nested calls in that body, check them for
-            # primitives, and continue that search down the callee tree. That extra work is
-            # unnecessary for a primitive with a hand-written rule.
-            #
-            # `noinline_callmeta` below then blocks inlining/const-folding so the primitive
-            # call stays in the caller IR and Mooncake can dispatch its `rrule!!` at runtime.
-            # See PR #1115 for more discussion.
-            native_interp = CC.NativeInterpreter(interp.world)
-            ret = CC.abstract_call_gf_by_type(
-                native_interp, f, arginfo, si, atype, sv, max_methods
-            )
-            @static if VERSION < v"1.12-"
-                call = ret::CC.CallMeta
-                # Keep primitives in caller IR by blocking const-folding and inlining
-                _call = widen_rettype_callmeta(call, argtypes)
-                return noinline_callmeta(_call, atype)
-            else
-                return CC.Future{CC.CallMeta}(
-                    ret::CC.Future, interp, sv
-                ) do call, interp, sv
-                    _call = widen_rettype_callmeta(call, argtypes)
-                    return noinline_callmeta(_call, atype)
-                end
-            end
-        end
-    end
+    override = Compiler.primitive_call_override(
+        interp, f, arginfo, si, atype, sv, max_methods
+    )
+    override !== nothing && return override
 
     return @invoke CC.abstract_call_gf_by_type(
         interp::CC.AbstractInterpreter,
@@ -202,72 +153,6 @@ function Core.Compiler.abstract_call_gf_by_type(
     )
 end
 
-function any_matches_primitive(applicable, C, M, world)
-    for app in applicable
-        if VERSION < v"1.12-"
-            sig = app.spec_types
-        else
-            sig = app.match.spec_types
-        end
-        if is_primitive(C, M, sig, world)
-            return true
-        end
-    end
-    false
-end
-
-"""
-    widen_rettype_callmeta(call, argtypes)
-
-Decide whether to widen a primitive call’s inferred return type from `CC.Const`
-to its underlying Julia type (e.g. `Const(3.0)` → `Float64`).
-
-`CC.Const(val)` represents an exact value in Julia’s extended type lattice
-(see `Core.Const` and `Compiler/src/typelattice.jl`). If a call is inferred
-as `Const`, later compiler passes may fold it away:
-
-  - The inliner rewrites it to a `ConstantCase`.
-  - `compact!` propagates the literal and removes the dead statement.
-
-For Mooncake primitives, the call must remain in the final IR so that the
-corresponding `rrule!!` executes during AD. Applying `CC.widenconst`
-removes the `Const` wrapper and prevents folding.
-
-Widening is performed only when:
-  - the inferred return type is `Const`, and
-  - at least one runtime argument (i.e. excluding the callee) is not `Const`.
-
-If all runtime arguments are `Const`, the call is a genuine compile-time
-constant (e.g. `sin(1.0)` with a literal argument), and folding is safe.
-
-Arguments:
-  - `call`: `CC.CallMeta` for the call site
-  - `argtypes`: inferred argument types (1 = callee, 2:end = runtime args)
-"""
-function widen_rettype_callmeta(call::CC.CallMeta, argtypes::Vector{Any})
-    # Check whether any runtime argument is not `Const`
-    has_nonconst_runtime_arg = any(i -> !(argtypes[i] isa CC.Const), 2:length(argtypes))
-
-    should_widen = call.rt isa CC.Const && has_nonconst_runtime_arg
-
-    rt = should_widen ? CC.widenconst(call.rt) : call.rt
-
-    @static if VERSION ≥ v"1.11-"
-        return CC.CallMeta(rt, call.exct, call.effects, call.info)
-    else
-        return CC.CallMeta(rt, call.effects, call.info)
-    end
-end
-
-function noinline_callmeta(call::CC.CallMeta, @nospecialize(atype))
-    info = NoInlineCallInfo(call.info, atype)
-    @static if VERSION ≥ v"1.11-"
-        return CC.CallMeta(call.rt, call.exct, call.effects, info)
-    else
-        return CC.CallMeta(call.rt, call.effects, info)
-    end
-end
-
 @static if VERSION < v"1.11-"
     function CC.inlining_policy(
         interp::MooncakeInterpreter{C},
@@ -277,9 +162,7 @@ end
         mi::Core.MethodInstance,
         argtypes::Vector{Any},
     ) where {C}
-
-        # Do not inline away primitives.
-        info isa NoInlineCallInfo && return nothing
+        Compiler.should_inline_call(info) || return nothing
 
         # If not a primitive, AD doesn't care about it. Use the usual inlining strategy.
         return @invoke CC.inlining_policy(
@@ -299,8 +182,7 @@ elseif VERSION < v"1.12-" # 1.11
         @nospecialize(info::CC.CallInfo),
         stmt_flag::UInt32,
     )
-        # Do not inline away primitives.
-        info isa NoInlineCallInfo && return nothing
+        Compiler.should_inline_call(info) || return nothing
 
         # If not a primitive, AD doesn't care about it. Use the usual inlining strategy.
         return @invoke CC.inlining_policy(
@@ -315,62 +197,11 @@ else # 1.12 and up.
         @nospecialize(info::CC.CallInfo),
         stmt_flag::UInt32,
     )
-        # Do not inline away primitives.
-        info isa NoInlineCallInfo && return false
+        Compiler.should_inline_call(info) || return false
 
         # If not a primitive, AD doesn't care about it. Use the usual inlining strategy.
         return @invoke CC.src_inlining_policy(
             interp::CC.AbstractInterpreter, src::Any, info::CC.CallInfo, stmt_flag::UInt32
         )
     end
-end
-
-"""
-    const GLOBAL_INTERPRETERS
-
-Cached interpreters. Should only be accessed via `get_interpreter`.
-"""
-const GLOBAL_INTERPRETERS = Dict(
-    ForwardMode => MooncakeInterpreter(DefaultCtx, ForwardMode),
-    ReverseMode => MooncakeInterpreter(DefaultCtx, ReverseMode),
-)
-
-"""
-    get_interpreter(mode::Type{<:Mode})
-
-Returns a `MooncakeInterpreter` appropriate for the current world age. Will use a cached
-interpreter if one already exists for the current world age, otherwise creates a new one.
-
-This should be prefered over constructing a `MooncakeInterpreter` directly.
-"""
-function get_interpreter(mode::Type{<:Mode})
-    if GLOBAL_INTERPRETERS[mode].world != Base.get_world_counter()
-        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode)
-    end
-    return GLOBAL_INTERPRETERS[mode]
-end
-
-"""
-    empty_mooncake_caches!()
-
-This is an internal function and not part of the public API. Called by `prepare_pullback_cache`,
-`prepare_gradient_cache`, and `prepare_derivative_cache` when `Config(empty_cache=true)`
-is passed.
-
-Empties all three per-interpreter caches for both `ForwardMode` and `ReverseMode`:
-- `oc_cache` : compiled `DerivedRule` / `OpaqueClosures`
-- `code_cache` : `CodeInstance` objects (Julia IR per `MethodInstance`)
-- `inf_cache` : `InferenceResult` objects from type inference
-
-After clearing, Mooncake re-derives rules from scratch on the next use. Only Julia-level
-(GC-managed) objects are freed; JIT-compiled native machine code allocated by LLVM
-is held permanently by the Julia runtime.
-"""
-function empty_mooncake_caches!()
-    for interp in values(GLOBAL_INTERPRETERS)
-        empty!(interp.oc_cache)
-        empty!(interp.code_cache)
-        empty!(interp.inf_cache)
-    end
-    return nothing
 end

@@ -186,6 +186,57 @@ include(joinpath("interpreter", "contexts.jl"))
 include(joinpath("interpreter", "abstract_interpretation.jl"))
 include(joinpath("interpreter", "patch_for_319.jl"))
 include(joinpath("compiler", "Compiler.jl"))
+
+"""
+    const GLOBAL_INTERPRETERS
+
+Cached interpreters. Should only be accessed via `get_interpreter`.
+"""
+const GLOBAL_INTERPRETERS = Dict(
+    ForwardMode => MooncakeInterpreter(DefaultCtx, ForwardMode),
+    ReverseMode => MooncakeInterpreter(DefaultCtx, ReverseMode),
+)
+
+"""
+    get_interpreter(mode::Type{<:Mode})
+
+Returns a `MooncakeInterpreter` appropriate for the current world age. Will use a cached
+interpreter if one already exists for the current world age, otherwise creates a new one.
+
+This should be prefered over constructing a `MooncakeInterpreter` directly.
+"""
+function get_interpreter(mode::Type{<:Mode})
+    if GLOBAL_INTERPRETERS[mode].world != Base.get_world_counter()
+        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode)
+    end
+    return GLOBAL_INTERPRETERS[mode]
+end
+
+"""
+    empty_mooncake_caches!()
+
+This is an internal function and not part of the public API. Called by `prepare_pullback_cache`,
+`prepare_gradient_cache`, and `prepare_derivative_cache` when `Config(empty_cache=true)`
+is passed.
+
+Empties all three per-interpreter caches for both `ForwardMode` and `ReverseMode`:
+- `oc_cache` : compiled `DerivedRule` / `OpaqueClosures`
+- `code_cache` : `CodeInstance` objects (Julia IR per `MethodInstance`)
+- `inf_cache` : `InferenceResult` objects from type inference
+
+After clearing, Mooncake re-derives rules from scratch on the next use. Only Julia-level
+(GC-managed) objects are freed; JIT-compiled native machine code allocated by LLVM
+is held permanently by the Julia runtime.
+"""
+function empty_mooncake_caches!()
+    for interp in values(GLOBAL_INTERPRETERS)
+        empty!(interp.oc_cache)
+        empty!(interp.code_cache)
+        empty!(interp.inf_cache)
+    end
+    return nothing
+end
+
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))

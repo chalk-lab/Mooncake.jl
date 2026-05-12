@@ -1,5 +1,26 @@
 @testset "Compiler services" begin
     interp = Mooncake.MooncakeInterpreter(ForwardMode)
+    reverse_interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
+
+    @test Mooncake.Compiler.interpreter_world(reverse_interp) == reverse_interp.world
+    @test Mooncake.Compiler.inference_parameters(reverse_interp) ===
+        reverse_interp.inf_params
+    @test Mooncake.Compiler.optimization_parameters(reverse_interp) ===
+        reverse_interp.opt_params
+    @test Mooncake.Compiler.inference_cache(reverse_interp) === reverse_interp.inf_cache
+    @test Mooncake.Compiler.code_cache_view(reverse_interp).cache ===
+        reverse_interp.code_cache
+    @test Mooncake.Compiler.overlay_method_table(
+        reverse_interp, Mooncake.mooncake_method_table
+    ) isa CC.OverlayMethodTable
+    @static if VERSION >= v"1.11.0"
+        @test Mooncake.Compiler.cache_owner(reverse_interp) === nothing
+    end
+
+    noinline_info = Mooncake.NoInlineCallInfo(CC.NoCallInfo(), Tuple{typeof(sin),Float64})
+    @test !Mooncake.Compiler.should_inline_call(noinline_info)
+    @test Mooncake.Compiler.should_inline_call(CC.NoCallInfo())
+
     ir, rt = Mooncake.Compiler.infer_ir(interp, Tuple{typeof(sin),Float64})
 
     @test ir isa CC.IRCode
@@ -14,7 +35,7 @@
     restricted_ir = Mooncake.Compiler.restrict_to_world(ir, interp.world)
     @test Mooncake.Compiler.valid_at_world(restricted_ir, interp.world)
 
-    ir = Mooncake.ircode(Any[ReturnNode(Argument(2))], Any[typeof(identity),Float64])
+    ir = Mooncake.ircode(Any[ReturnNode(Argument(2))], Any[typeof(identity), Float64])
     @test Mooncake.Compiler.statement_type(ir, 1) == Any
     Mooncake.Compiler.set_statement_type!(ir, 1, Nothing)
     @test Mooncake.Compiler.statement_type(ir, 1) == Nothing
@@ -23,7 +44,7 @@
         ReturnNode
 
     bb = Mooncake.BBCode(ir)
-    updated_bb = Mooncake.Compiler.with_argument_types(bb, Type[typeof(identity),Float64])
+    updated_bb = Mooncake.Compiler.with_argument_types(bb, Type[typeof(identity), Float64])
     @test Mooncake.Compiler.argument_types(updated_bb) == Any[typeof(identity), Float64]
 
     branch_ir = Mooncake.ircode(
