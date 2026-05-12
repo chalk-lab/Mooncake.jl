@@ -76,6 +76,18 @@ end
         y = _new_(P, new_args...)
         T = tangent_type(P)
         T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
+        # Audit step 6: produce canonical `Array{NDual{T, N}}` zero-tangent
+        # storage when the canonical V is an array variant. The previous
+        # `Lifted{P, N}(Dual(y, zero_tangent(y)))` form was noncanonical —
+        # the audit (`~/notes/mooncake/primal-mode-branch-audit.md` §"Array
+        # zero derivatives") calls for allocated/fillable `Array{NDual}`
+        # storage at this boundary, not a parallel `Dual{Array, Array}`.
+        # `zero_dual` is the canonical Layer-2 zero-element factory and
+        # round-trips through the inner V constructor.
+        DT = dual_type(Val(N), P)
+        if DT isa DataType && DT <: AbstractArray
+            return Lifted{P,N}(map(v -> zero_dual(Val(N), v), y))
+        end
         return Lifted{P,N}(Dual(y, zero_tangent(y)))
     end
 
