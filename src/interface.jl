@@ -1755,6 +1755,14 @@ end
 
 @inline _combine_to_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())
 @inline _combine_to_ndual(x::Tuple, ::Tuple{}) = Dual(x, NoTangent())
+# Empty-tangent disambiguators: the W=0 case satisfies both
+# `NTuple{W, <:AbstractArray{T}}` and `NTuple{W, NoTangent}` (Tuple{}
+# vacuously satisfies any element constraint). Pick the same NoTangent
+# behaviour as the other AbstractArray empty-tangent overloads below.
+@inline _combine_to_ndual(x::AbstractArray{<:IEEEFloat}, ::Tuple{}) = Dual(x, NoTangent())
+@inline _combine_to_ndual(x::AbstractArray{<:Complex{<:IEEEFloat}}, ::Tuple{}) = Dual(
+    x, NoTangent()
+)
 @inline function _combine_to_ndual(
     x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}
 ) where {W}
@@ -2251,6 +2259,14 @@ end
 
 function (gc::_GradClosure{1})(y)
     val, grad = _grad_closure_value_and_gradient(gc, y)
+    return (val, grad[2])
+end
+# Width-1 + single-Tuple-arg disambiguation: needed because `(::_GradClosure{1})(y)`
+# (catch-all single-arg) and `(::_GradClosure{N})(ys::Tuple)` (the tail-grad
+# helper below) both match `_GradClosure{1}(::Tuple)`. Forward to the single-arg
+# form — at width 1 the value-and-gradient API exposes the bare scalar grad.
+function (gc::_GradClosure{1})(ys::Tuple)
+    val, grad = _grad_closure_value_and_gradient(gc, ys...)
     return (val, grad[2])
 end
 

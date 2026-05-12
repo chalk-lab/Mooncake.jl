@@ -895,12 +895,19 @@ end
     end
 end
 
-# Val{0} ambiguity resolvers: dual_type(Val(0), P) = P for all P.
+# Val{0} ambiguity resolvers: dual_type(Val(0), P) = P for all P. Also
+# resolves the `Type{Type{...}}`-slot specialisations against the generic
+# `dual_type(::Val{0}, ::Type{Type{P}})` catch-all in `src/tangents/dual.jl`.
 dual_type(::Val{0}, ::Type{T}) where {T<:IEEEFloat} = T
 dual_type(::Val{0}, ::Type{Complex{T}}) where {T<:IEEEFloat} = Complex{T}
 dual_type(::Val{0}, ::Type{Array{T,D}}) where {T<:IEEEFloat,D} = Array{T,D}
 function dual_type(::Val{0}, ::Type{Array{Complex{T},D}}) where {T<:IEEEFloat,D}
     return Array{Complex{T},D}
+end
+function dual_type(
+    ::Val{0}, ::Type{Type{Array{T,D}}}
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},D}
+    return Type{Array{T,D}}
 end
 @static if VERSION >= v"1.11-"
     dual_type(::Val{0}, ::Type{MemoryRef{T}}) where {T<:IEEEFloat} = MemoryRef{T}
@@ -910,6 +917,12 @@ end
     end
     function dual_type(::Val{0}, ::Type{Memory{Complex{T}}}) where {T<:IEEEFloat}
         return Memory{Complex{T}}
+    end
+    function dual_type(::Val{0}, ::Type{Type{Memory{T}}}) where {T<:IEEEFloat}
+        return Type{Memory{T}}
+    end
+    function dual_type(::Val{0}, ::Type{Type{Memory{Complex{T}}}}) where {T<:IEEEFloat}
+        return Type{Memory{Complex{T}}}
     end
 end
 
