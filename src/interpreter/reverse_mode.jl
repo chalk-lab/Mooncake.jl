@@ -178,13 +178,14 @@ function ADInfo(
     fwd_ret_type::Type,
     rvs_ret_type::Type,
 )
+    ir_argtypes = Compiler.argument_types(ir)
     arg_types = Dict{Argument,Any}(
-        map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir.argtypes))
+        map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir_argtypes))
     )
     stmts = collect_stmts(ir)
     ssa_insts = Dict{ID,NewInstruction}(stmts)
     is_used_dict = characterise_used_ids(stmts)
-    Tlazy_rdata_ref = Tuple{map(lazy_zero_rdata_type ∘ CC.widenconst, ir.argtypes)...}
+    Tlazy_rdata_ref = Tuple{map(lazy_zero_rdata_type ∘ CC.widenconst, ir_argtypes)...}
     zero_lazy_rdata_ref = Ref{Tlazy_rdata_ref}()
     return ADInfo(
         interp,
@@ -1037,7 +1038,7 @@ end
 
 _get_sig(sig::Type) = sig
 _get_sig(mi::Core.MethodInstance) = mi.specTypes
-_get_sig(mc::MistyClosure) = Tuple{map(CC.widenconst, mc.ir[].argtypes)...}
+_get_sig(mc::MistyClosure) = Tuple{map(CC.widenconst, Compiler.argument_types(mc.ir[]))...}
 
 """
 Flatten the signature of a vararg method to group the
@@ -1054,11 +1055,13 @@ function flatten_va_sig(sig, isva, nargs)
 end
 
 function forwards_ret_type(primal_ir::IRCode)
-    return fcodual_type(compute_ir_rettype(primal_ir))
+    return fcodual_type(Compiler.inferred_return_type(primal_ir))
 end
 
 function pullback_ret_type(primal_ir::IRCode)
-    return Tuple{map(rdata_type ∘ tangent_type ∘ CC.widenconst, primal_ir.argtypes)...}
+    return Tuple{
+        map(rdata_type ∘ tangent_type ∘ CC.widenconst, Compiler.argument_types(primal_ir))...
+    }
 end
 
 struct MooncakeRuleCompilationError <: Exception
@@ -1291,16 +1294,14 @@ function generate_ir(
     seed_id!()
 
     # Grab code associated to the primal.
-    ir, _ = lookup_ir(interp, sig_or_mi)
-    @static if VERSION > v"1.12-"
-        ir = set_valid_world!(ir, interp.world)
-    end
-    Treturn = compute_ir_rettype(ir)
+    ir, _ = Compiler.infer_ir(interp, sig_or_mi)
+    ir = Compiler.restrict_to_world(ir, interp.world)
+    Treturn = Compiler.inferred_return_type(ir)
     fwd_ret_type = forwards_ret_type(ir)
     rvs_ret_type = pullback_ret_type(ir)
 
     # Check before normalise! to avoid a cryptic CC.verify_ir failure downstream.
-    for inst in stmt(ir.stmts)
+    for inst in Compiler.statements(ir)
         is_enter = Meta.isexpr(inst, :enter)
         @static if isdefined(Core, :EnterNode)
             is_enter = is_enter || inst isa Core.EnterNode
@@ -1343,8 +1344,8 @@ function generate_ir(
     rvs_ir = pullback_ir(
         primal_ir, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
     )
-    opt_fwd_ir = do_optimize ? optimise_ir!(IRCode(fwd_ir); do_inline) : IRCode(fwd_ir)
-    opt_rvs_ir = do_optimize ? optimise_ir!(IRCode(rvs_ir); do_inline) : IRCode(rvs_ir)
+    opt_fwd_ir = do_optimize ? Compiler.optimize_ir!(IRCode(fwd_ir); do_inline) : IRCode(fwd_ir)
+    opt_rvs_ir = do_optimize ? Compiler.optimize_ir!(IRCode(rvs_ir); do_inline) : IRCode(rvs_ir)
     return DerivedRuleInfo(
         ir, opt_fwd_ir, fwd_ret_type, opt_rvs_ir, rvs_ret_type, shared_data, info, isva
     )
@@ -1505,22 +1506,8 @@ function forwards_pass_ir(
     end
 
     # Create and return the `BBCode` for the forwards-pass.
-    arg_types = vcat(Tshared_data, map(fcodual_type ∘ CC.widenconst, ir.argtypes))
-    new_ir = BBCode(ir, vcat(entry_block, blocks))
-    @static if VERSION > v"1.12-"
-        new_ir = BBCode(
-            new_ir.blocks,
-            arg_types,
-            new_ir.sptypes,
-            new_ir.debuginfo,
-            new_ir.meta,
-            new_ir.valid_worlds,
-        )
-    else
-        new_ir = BBCode(
-            new_ir.blocks, arg_types, new_ir.sptypes, new_ir.linetable, new_ir.meta
-        )
-    end
+    arg_types = vcat(Tshared_data, map(fcodual_type ∘ CC.widenconst, Compiler.argument_types(ir)))
+    new_ir = Compiler.with_argument_types(BBCode(ir, vcat(entry_block, blocks)), arg_types)
     return remove_unreachable_blocks!(new_ir)
 end
 
@@ -1561,13 +1548,7 @@ function pullback_ir(
     # won't succeed on the forwards-pass. As such, the reverse-pass can just be a no-op.
     if isempty(primal_exit_blocks_inds)
         blocks = [BBlock(ID(), [(ID(), new_inst(ReturnNode(nothing)))])]
-        @static if VERSION >= v"1.12-"
-            return BBCode(
-                blocks, Any[Any], ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds
-            )
-        else
-            return BBCode(blocks, Any[Any], ir.sptypes, ir.linetable, ir.meta)
-        end
+        return Compiler.with_argument_types(BBCode(ir, blocks), Any[Any])
     end
 
     #
@@ -1693,11 +1674,7 @@ function pullback_ir(
     # block). This ought not to be necessary, but _appears_ to be necessary in order to
     # avoid annoying the Julia compiler.
     blks = vcat(entry_block, main_blocks, exit_block)
-    @static if VERSION >= v"1.12-"
-        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.debuginfo, ir.meta, ir.valid_worlds)
-    else
-        pb_ir = BBCode(blks, arg_types, ir.sptypes, ir.linetable, ir.meta)
-    end
+    pb_ir = Compiler.with_argument_types(BBCode(ir, blks), arg_types)
     return remove_unreachable_blocks!(sort_blocks!(pb_ir))
 end
 
@@ -2059,11 +2036,11 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)
     end
 
-    ir, _ = lookup_ir(interp, sig_or_mi)
-    Treturn = compute_ir_rettype(ir)
+    ir, _ = Compiler.infer_ir(interp, sig_or_mi)
+    Treturn = Compiler.inferred_return_type(ir)
     isva, _ = is_vararg_and_sparam_names(sig_or_mi)
 
-    arg_types = map(CC.widenconst, ir.argtypes)
+    arg_types = map(CC.widenconst, Compiler.argument_types(ir))
     sig = Tuple{arg_types...}
     fwd_args_type = Tuple{map(fcodual_type, arg_types)...}
     fwd_return_type = forwards_ret_type(ir)
@@ -2072,7 +2049,7 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     # instead mean there is no possible argument value.
     pb_args_type = Trdata_return === Union{} ? Tuple{} : Tuple{Trdata_return}
     pb_return_type = pullback_ret_type(ir)
-    nargs = Val{length(ir.argtypes)}
+    nargs = Val{Compiler.argument_count(ir)}
 
     Tderived_rule = DerivedRule{
         sig,fwd_args_type,fwd_return_type,pb_args_type,pb_return_type,isva,nargs

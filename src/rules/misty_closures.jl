@@ -33,11 +33,11 @@ end
 #
 function _dual_mc(p::MistyClosure)
     @static if VERSION > v"1.12-"
-        # Use the IR's valid_worlds.max_world instead of oc.world to avoid world age mismatch.
-        # The oc.world can be slightly newer than valid_worlds.max_world if methods were
-        # defined between IR generation and OpaqueClosure creation. Using max_world ensures
+        # Use the IR's maximum valid world instead of oc.world to avoid world age mismatch.
+        # The oc.world can be slightly newer than the IR's valid range if methods were
+        # defined between IR generation and OpaqueClosure creation. Using the range ceiling ensures
         # we're within the valid range while still having access to all methods the IR needs.
-        mc_world = UInt(p.ir[].valid_worlds.max_world)
+        mc_world = Compiler.max_valid_world(p.ir[])
     else
         mc_world = UInt(p.oc.world)
     end

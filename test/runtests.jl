@@ -42,6 +42,7 @@ include("front_matter.jl")
         include("debug_mode.jl")
         include("stack.jl")
         include(joinpath("rules", "threads.jl"))
+        include(joinpath("compiler", "compiler.jl"))
         @testset "interpreter" begin
             include(joinpath("interpreter", "contexts.jl"))
             include(joinpath("interpreter", "abstract_interpretation.jl"))

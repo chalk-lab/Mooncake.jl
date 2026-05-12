@@ -11,23 +11,18 @@ using ..Mooncake:
     IRCode,
     BBCode,
     BasicBlockCode,
+    Compiler,
     ForwardMode,
     ReverseMode,
     MooncakeInterpreter,
     get_interpreter,
     is_primitive,
-    lookup_ir,
     is_vararg_and_sparam_names,
     normalise!,
     remove_unreachable_blocks!,
     generate_dual_ir,
     generate_ir,
-    optimise_ir!,
     seed_id!
-
-@static if VERSION > v"1.12-"
-    using ..Mooncake: set_valid_world!
-end
 
 struct StageMeta
     block_count::Int
@@ -120,15 +115,14 @@ end
 # --- Metadata Extraction ---
 
 function extract_meta(ir::IRCode)::StageMeta
-    cfg = ir.cfg
+    cfg = Compiler.control_flow_graph(ir)
     valid_worlds = nothing
-    if hasproperty(ir, :valid_worlds)
-        vw = ir.valid_worlds
-        valid_worlds = UInt(CC.min_world(vw)):UInt(CC.max_world(vw))
+    @static if VERSION > v"1.12-"
+        valid_worlds = Compiler.valid_worlds_as_unit_range(ir)
     end
     return StageMeta(;
         block_count=length(cfg.blocks),
-        inst_count=length(ir.stmts),
+        inst_count=Compiler.statement_count(ir),
         edge_count=sum(length(b.succs) for b in cfg.blocks),
         valid_worlds=valid_worlds,
     )
@@ -172,12 +166,10 @@ end
 # --- Main Inspection ---
 
 function primal_stages(interp, sig)
-    raw_ir, _ = lookup_ir(interp, sig)
-    @static if VERSION > v"1.12-"
-        # Keep the early inspection stages on the same world-restricted IR path that the
-        # AD generators use, so cross-stage diffs reflect the real pipeline.
-        raw_ir = set_valid_world!(raw_ir, interp.world)
-    end
+    raw_ir, _ = Compiler.infer_ir(interp, sig)
+    # Keep the early inspection stages on the same world-restricted IR path that the
+    # AD generators use, so cross-stage diffs reflect the real pipeline.
+    raw_ir = Compiler.restrict_to_world(raw_ir, interp.world)
 
     _, spnames = is_vararg_and_sparam_names(sig)
     normalized_ir = CC.copy(raw_ir)
@@ -284,7 +276,7 @@ function inspect_ir(
             :dual_ir, dual_ir, render_ir(dual_ir), extract_meta(dual_ir)
         )
         if optimize
-            opt_ir = optimise_ir!(CC.copy(dual_ir); do_inline)
+            opt_ir = Compiler.optimize_ir!(CC.copy(dual_ir); do_inline)
             stages[:optimized] = IRStage(
                 :optimized, opt_ir, render_ir(opt_ir), extract_meta(opt_ir)
             )
@@ -300,8 +292,8 @@ function inspect_ir(
             :rvs_ir, dri.rvs_ir, render_ir(dri.rvs_ir), extract_meta(dri.rvs_ir)
         )
         if optimize
-            opt_fwd = optimise_ir!(CC.copy(dri.fwd_ir); do_inline)
-            opt_rvs = optimise_ir!(CC.copy(dri.rvs_ir); do_inline)
+            opt_fwd = Compiler.optimize_ir!(CC.copy(dri.fwd_ir); do_inline)
+            opt_rvs = Compiler.optimize_ir!(CC.copy(dri.rvs_ir); do_inline)
             stages[:optimized_fwd] = IRStage(
                 :optimized_fwd, opt_fwd, render_ir(opt_fwd), extract_meta(opt_fwd)
             )

@@ -185,6 +185,7 @@ using .BasicBlockCode
 include(joinpath("interpreter", "contexts.jl"))
 include(joinpath("interpreter", "abstract_interpretation.jl"))
 include(joinpath("interpreter", "patch_for_319.jl"))
+include(joinpath("compiler", "Compiler.jl"))
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))

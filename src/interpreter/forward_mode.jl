@@ -185,11 +185,9 @@ function generate_dual_ir(
     seed_id!()
 
     # Grab code associated to the primal.
-    primal_ir, _ = lookup_ir(interp, sig_or_mi)
-    @static if VERSION > v"1.12-"
-        primal_ir = set_valid_world!(primal_ir, interp.world)
-    end
-    nargs = length(primal_ir.argtypes)
+    primal_ir, _ = Compiler.infer_ir(interp, sig_or_mi)
+    primal_ir = Compiler.restrict_to_world(primal_ir, interp.world)
+    nargs = Compiler.argument_count(primal_ir)
 
     # Normalise the IR.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
@@ -201,10 +199,8 @@ function generate_dual_ir(
     # Modify dual argument types:
     # - add one for the captures in the first position, with placeholder type for now
     # - convert the rest to dual types
-    for (a, P) in enumerate(primal_ir.argtypes)
-        dual_ir.argtypes[a] = dual_type(CC.widenconst(P))
-    end
-    pushfirst!(dual_ir.argtypes, Any)
+    Compiler.map_argument_types!(P -> dual_type(CC.widenconst(P)), dual_ir)
+    Compiler.prepend_argument_type!(dual_ir, Any)
 
     # Data structure into which we can push any data which is to live in the captures field
     # of the OpaqueClosure used to implement this rule. The index at which a piece of data
@@ -213,26 +209,26 @@ function generate_dual_ir(
     # captures data structure, make use of `get_capture`.
     captures = Any[]
 
-    is_used = characterised_used_ssas(stmt(primal_ir.stmts))
+    is_used = characterised_used_ssas(Compiler.statements(primal_ir))
     info = DualInfo(primal_ir, interp, is_used, debug_mode)
-    for (n, inst) in enumerate(dual_ir.stmts)
+    for (n, inst) in enumerate(Compiler.statement_stream(dual_ir))
         ssa = SSAValue(n)
-        modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info)
+        modify_fwd_ad_stmts!(Compiler.statement(inst), dual_ir, ssa, captures, info)
     end
 
     # Process new nodes etc.
-    dual_ir = CC.compact!(dual_ir)
+    dual_ir = Compiler.compact!(dual_ir)
 
-    CC.verify_ir(dual_ir)
+    Compiler.verify(dual_ir)
 
     # Now that the captured values are known, replace the placeholder value given for the
     # first argument type with the actual type.
     captures_tuple = (captures...,)
-    dual_ir.argtypes[1] = _typeof(captures_tuple)
+    Compiler.set_argument_type!(dual_ir, 1, _typeof(captures_tuple))
 
     # Inspection tools need the pre-optimization dual IR, while the AD pipeline still
     # wants the optimized form by default.
-    dual_ir = do_optimize ? optimise_ir!(dual_ir; do_inline) : dual_ir
+    dual_ir = do_optimize ? Compiler.optimize_ir!(dual_ir; do_inline) : dual_ir
     return dual_ir, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
 end
 
@@ -261,9 +257,6 @@ end
 
 ## Modification of IR nodes
 
-const ATTACH_AFTER = true
-const ATTACH_BEFORE = false
-
 modify_fwd_ad_stmts!(::Nothing, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo) = nothing
 
 modify_fwd_ad_stmts!(::GotoNode, ::IRCode, ::SSAValue, ::Vector{Any}, ::DualInfo) = nothing
@@ -272,11 +265,11 @@ function modify_fwd_ad_stmts!(
     stmt::GotoIfNot, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     # replace GotoIfNot with the call to primal
-    Mooncake.replace_call!(dual_ir, ssa, Expr(:call, _primal, inc_args(stmt).cond))
+    Compiler.replace_statement!(dual_ir, ssa, Expr(:call, _primal, inc_args(stmt).cond))
 
     # reinsert the GotoIfNot right after the call to primal
     new_gotoifnot_inst = new_inst(Core.GotoIfNot(ssa, stmt.dest))
-    CC.insert_node!(dual_ir, ssa, new_gotoifnot_inst, ATTACH_AFTER)
+    Compiler.insert_after!(dual_ir, ssa, new_gotoifnot_inst)
     return nothing
 end
 
@@ -286,14 +279,16 @@ function modify_fwd_ad_stmts!(
     if isconst(stmt)
         d = const_dual!(captures, stmt)
         if d isa Int
-            Mooncake.replace_call!(dual_ir, ssa, Expr(:call, get_capture, Argument(1), d))
+            Compiler.replace_statement!(
+                dual_ir, ssa, Expr(:call, get_capture, Argument(1), d)
+            )
         else
-            Mooncake.replace_call!(dual_ir, ssa, Expr(:call, identity, d))
+            Compiler.replace_statement!(dual_ir, ssa, Expr(:call, identity, d))
         end
     else
-        new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
+        new_ssa = Compiler.insert_before!(dual_ir, ssa, new_inst(stmt))
         zero_dual_call = Expr(:call, Mooncake.zero_dual, new_ssa)
-        Mooncake.replace_call!(dual_ir, ssa, zero_dual_call)
+        Compiler.replace_statement!(dual_ir, ssa, zero_dual_call)
     end
 
     return nothing
@@ -307,7 +302,7 @@ function modify_fwd_ad_stmts!(
 
     # stmt is an Argument, then already a dual, and must just be incremented.
     if stmt.val isa Union{Argument,SSAValue}
-        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(__inc(stmt.val)))
+        Compiler.replace_statement!(dual_ir, ssa, ReturnNode(__inc(stmt.val)))
         return nothing
     end
 
@@ -315,10 +310,10 @@ function modify_fwd_ad_stmts!(
     d = const_dual!(captures, stmt.val)
     if d isa Int
         get_dual = Expr(:call, get_capture, Argument(1), d)
-        get_dual_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_dual), ATTACH_BEFORE)
-        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(get_dual_ssa))
+        get_dual_ssa = Compiler.insert_before!(dual_ir, ssa, new_inst(get_dual))
+        Compiler.replace_statement!(dual_ir, ssa, ReturnNode(get_dual_ssa))
     else
-        Mooncake.replace_call!(dual_ir, ssa, ReturnNode(d))
+        Compiler.replace_statement!(dual_ir, ssa, ReturnNode(d))
     end
     return nothing
 end
@@ -331,8 +326,10 @@ function modify_fwd_ad_stmts!(
         stmt.values[n] isa Union{Argument,SSAValue} && continue
         stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
     end
-    set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    Compiler.set_statement!(dual_ir, ssa, inc_args(stmt))
+    Compiler.set_statement_type!(
+        dual_ir, ssa, dual_type(CC.widenconst(Compiler.statement_type(dual_ir, ssa)))
+    )
     return nothing
 end
 
@@ -344,7 +341,7 @@ function modify_fwd_ad_stmts!(
     else
         v = uninit_dual(get_const_primal_value(stmt.val))
     end
-    replace_call!(dual_ir, ssa, PiNode(v, dual_type(CC.widenconst(stmt.typ))))
+    Compiler.replace_statement!(dual_ir, ssa, PiNode(v, dual_type(CC.widenconst(stmt.typ))))
     return nothing
 end
 
@@ -354,8 +351,10 @@ function modify_fwd_ad_stmts!(
     if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
     end
-    set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    Compiler.set_statement!(dual_ir, ssa, inc_args(stmt))
+    Compiler.set_statement_type!(
+        dual_ir, ssa, dual_type(CC.widenconst(Compiler.statement_type(dual_ir, ssa)))
+    )
     return nothing
 end
 
@@ -367,8 +366,10 @@ function modify_fwd_ad_stmts!(
         stmt.values[n] isa Union{Argument,SSAValue} && continue
         stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
     end
-    set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    Compiler.set_statement!(dual_ir, ssa, inc_args(stmt))
+    Compiler.set_statement_type!(
+        dual_ir, ssa, dual_type(CC.widenconst(Compiler.statement_type(dual_ir, ssa)))
+    )
     return nothing
 end
 
@@ -412,7 +413,7 @@ function modify_fwd_ad_stmts!(
         # time of writing this comment, it's unclear whether or not this is the case.
         if !info.is_used[ssa.id] && get_const_primal_value(args[1]) == getfield
             fwds = new_inst(Expr(:call, __fwds_pass_no_ad!, args...))
-            replace_call!(dual_ir, ssa, fwds)
+            Compiler.replace_statement!(dual_ir, ssa, fwds)
             return nothing
         end
 
@@ -426,39 +427,41 @@ function modify_fwd_ad_stmts!(
         if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
             rule = build_primitive_frule(sig)
             if safe_for_literal(rule)
-                replace_call!(dual_ir, ssa, Expr(:call, rule, dual_args...))
+                Compiler.replace_statement!(dual_ir, ssa, Expr(:call, rule, dual_args...))
             else
                 push!(captures, rule)
                 get_rule = Expr(:call, get_capture, Argument(1), length(captures))
-                rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
-                replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
+                rule_ssa = Compiler.insert_before!(dual_ir, ssa, new_inst(get_rule))
+                Compiler.replace_statement!(
+                    dual_ir, ssa, Expr(:call, rule_ssa, dual_args...)
+                )
             end
         else
             dm = info.debug_mode
             push!(captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm))
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
-            rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
-            replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
+            rule_ssa = Compiler.insert_before!(dual_ir, ssa, new_inst(get_rule))
+            Compiler.replace_statement!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
         end
     elseif isexpr(stmt, :boundscheck)
         # Keep the boundscheck, but put it in a Dual.
-        inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
-        bc_ssa = CC.insert_node!(dual_ir, ssa, inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, bc_ssa))
+        inst = CC.NewInstruction(Compiler.instruction(info.primal_ir, ssa))
+        bc_ssa = Compiler.insert_before!(dual_ir, ssa, inst)
+        Compiler.replace_statement!(dual_ir, ssa, Expr(:call, zero_dual, bc_ssa))
     elseif isexpr(stmt, :code_coverage_effect)
-        replace_call!(dual_ir, ssa, nothing)
+        Compiler.replace_statement!(dual_ir, ssa, nothing)
     elseif Meta.isexpr(stmt, :copyast)
-        new_copyast_inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
-        new_copyast_ssa = CC.insert_node!(dual_ir, ssa, new_copyast_inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, new_copyast_ssa))
+        new_copyast_inst = CC.NewInstruction(Compiler.instruction(info.primal_ir, ssa))
+        new_copyast_ssa = Compiler.insert_before!(dual_ir, ssa, new_copyast_inst)
+        Compiler.replace_statement!(dual_ir, ssa, Expr(:call, zero_dual, new_copyast_ssa))
     elseif Meta.isexpr(stmt, :loopinfo)
         # Leave this node alone.
     elseif isexpr(stmt, :throw_undef_if_not)
         # args[1] is a Symbol, args[2] is the condition which must be primalized
         primal_cond = Expr(:call, _primal, inc_args(stmt).args[2])
-        replace_call!(dual_ir, ssa, primal_cond)
+        Compiler.replace_statement!(dual_ir, ssa, primal_cond)
         new_undef_inst = new_inst(Expr(:throw_undef_if_not, stmt.args[1], ssa))
-        CC.insert_node!(dual_ir, ssa, new_undef_inst, ATTACH_AFTER)
+        Compiler.insert_after!(dual_ir, ssa, new_undef_inst)
     elseif isexpr(stmt, :enter)
         # Leave this node alone
     elseif isexpr(stmt, :leave)
@@ -472,8 +475,8 @@ function modify_fwd_ad_stmts!(
     return nothing
 end
 
-get_forward_primal_type(ir::CC.IRCode, a::Argument) = ir.argtypes[a.n]
-get_forward_primal_type(ir::CC.IRCode, ssa::SSAValue) = get_ir(ir, ssa, :type)
+get_forward_primal_type(ir::CC.IRCode, a::Argument) = Compiler.argument_type(ir, a.n)
+get_forward_primal_type(ir::CC.IRCode, ssa::SSAValue) = Compiler.statement_type(ir, ssa)
 get_forward_primal_type(::CC.IRCode, x::QuoteNode) = _typeof(x.value)
 get_forward_primal_type(::CC.IRCode, x) = _typeof(x)
 function get_forward_primal_type(::CC.IRCode, x::GlobalRef)
@@ -534,7 +537,7 @@ end
 end
 
 function dual_ret_type(primal_ir::IRCode)
-    return dual_type(compute_ir_rettype(primal_ir))
+    return dual_type(Compiler.inferred_return_type(primal_ir))
 end
 
 function frule_type(
@@ -548,10 +551,10 @@ function frule_type(
         rule = build_primitive_frule(sig)
         return debug_mode ? DebugFRule{typeof(rule)} : typeof(rule)
     end
-    ir, _ = lookup_ir(interp, mi)
-    nargs = length(ir.argtypes)
+    ir, _ = Compiler.infer_ir(interp, mi)
+    nargs = Compiler.argument_count(ir)
     isva, _ = is_vararg_and_sparam_names(mi)
-    arg_types = map(CC.widenconst, ir.argtypes)
+    arg_types = map(CC.widenconst, Compiler.argument_types(ir))
     sig = Tuple{arg_types...}
     dual_args_type = Tuple{map(dual_type, arg_types)...}
     closure_type = RuleMC{dual_args_type,dual_ret_type(ir)}

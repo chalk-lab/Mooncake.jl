@@ -143,8 +143,8 @@ function _compile_for_rule(
 
     # Optimize and build the primal DerivedRule.
     raw_rule = let
-        optimized_fwd_ir = optimise_ir!(CC.copy(dri.fwd_ir))
-        optimized_rvs_ir = optimise_ir!(CC.copy(dri.rvs_ir))
+        optimized_fwd_ir = Compiler.optimize_ir!(CC.copy(dri.fwd_ir))
+        optimized_rvs_ir = Compiler.optimize_ir!(CC.copy(dri.rvs_ir))
         fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
         rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
         nargs = num_args(dri.info)
@@ -166,8 +166,8 @@ function _compile_for_rule(
     # and a new independent tangent — do not reuse these objects directly.
     fwd_dc, rvs_dc, raw_rule_tangent = let
         interp_forward = MooncakeInterpreter(C, ForwardMode; world=interp.world)
-        optimized_fwd_ir = optimise_ir!(dri.fwd_ir; interp=interp_forward)
-        optimized_rvs_ir = optimise_ir!(dri.rvs_ir; interp=interp_forward)
+        optimized_fwd_ir = Compiler.optimize_ir!(dri.fwd_ir; interp=interp_forward)
+        optimized_rvs_ir = Compiler.optimize_ir!(dri.rvs_ir; interp=interp_forward)
         fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
         rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
         captures_tangent = zero_tangent((fwd_oc.oc.captures, rvs_oc.oc.captures))

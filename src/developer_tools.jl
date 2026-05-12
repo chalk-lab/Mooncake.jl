@@ -28,10 +28,8 @@ true
 ```
 """
 function primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple}; normalize=true)::IRCode
-    ir, _ = lookup_ir(interp, sig)
-    @static if VERSION > v"1.12-"
-        ir = set_valid_world!(ir, interp.world)
-    end
+    ir, _ = Compiler.infer_ir(interp, sig)
+    ir = Compiler.restrict_to_world(ir, interp.world)
     normalize || return ir
     _, spnames = is_vararg_and_sparam_names(sig)
     return normalise!(ir, spnames)
