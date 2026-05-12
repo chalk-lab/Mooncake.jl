@@ -174,12 +174,11 @@ julia> frule!!(zero_dual(foo), zero_dual(3), zero_dual(2))
 Dual{Int64, NoTangent}(5, NoTangent())
 ```
 """
-# TRANSITIONAL: kill-width-nothing migration — args broadened from
-# `Vararg{Dual,N}` to `Vararg{Any,N}` so non-Dual slot inners (`NDual`,
-# `Complex{<:NDual}`, etc.) flowing through the IR-emit's unwrap-then-bare
-# scaffolding match. Body is type-stable via `primal(x)` regardless of
-# slot shape. Narrow back to `Vararg{Dual,N}` once Phase 4 is complete and
-# the IR-emit no longer unwraps Lifted args before calling the rule.
+# `Vararg{Any,N}` kept (not narrowed to `Vararg{Dual,N}`) because some
+# legacy callers still hand bare primals to this entry point. `primal(x)`
+# is a no-op for non-Dual values so the body remains type-stable for both
+# shapes. The Lifted-aware shape goes through the
+# `zero_derivative(::Lifted{F,N}, ::Vararg{Lifted,M})` overload below.
 @inline function zero_derivative(f::Dual, x::Vararg{Any,N}) where {N}
     return zero_dual(primal(f)(map(primal, x)...))
 end
@@ -303,23 +302,14 @@ function _vararg_wrapped_type(vararg_esc_expr, wrapper)
     return :(Vararg{$wrapper{<:$T},$N})
 end
 
-# Produce an unwrapped Vararg type for frule!! args that may be bare NDual containers
-# or Dual-wrapped values.
+# Produce a Vararg type for frule!! args that may be bare or Dual-wrapped.
+# Audit step 8: narrowed from the wide kill-width-nothing transitional
+# Union — see `_dual_or_bare` for the rationale.
 function _vararg_any_type(vararg_esc_expr)
     inner = vararg_esc_expr.args[1]
     inner == :Vararg && return :(Vararg)
     T = Expr(:escape, inner.args[2])
-    # TRANSITIONAL: kill-width-nothing migration — see `_dual_or_bare` for the
-    # full rationale. Narrow `U` back to `Union{<:$T, Mooncake.Dual{<:$T}}`
-    # once Phase 4 is complete and the IR-emit's unwrap-then-bare scaffolding
-    # is gone.
-    U = :(Union{
-        <:$T,
-        Mooncake.Dual{<:$T},
-        Mooncake.Nfwd.NDual,
-        Complex{<:Mooncake.Nfwd.NDual},
-        Mooncake.Lifted{<:$T},
-    })
+    U = :(Union{<:$T,Mooncake.Dual{<:$T}})
     length(inner.args) == 2 && return :(Vararg{$U})
     N = Expr(:escape, inner.args[3])
     return :(Vararg{$U,$N})
@@ -352,20 +342,18 @@ function _zero_derivative_impl(ctx, sig, mode)
     function _dual_or_bare(t, idx)
         sym = Symbol("_ZD_", idx)
         push!(frule_where, :($sym <: $t))
-        # TRANSITIONAL: kill-width-nothing migration. With the legacy
-        # `width=nothing` bare-`Dual{T, T}` OC path removed, the IR-emit's
-        # unwrap-then-bare scaffolding now hands the rule body `NDual{T, 1}`
-        # (or `Complex{<:NDual}`, etc.) instead of `Dual{T, T}` — so the rule
-        # signature must also accept those shapes. Once all primitives are
-        # Lifted-aware (Phase 4 complete) and the IR-emit's unwrap path is
-        # removed, narrow this back to `Union{Mooncake.Dual{<:$sym}, $sym}`.
-        return :(Union{
-            Mooncake.Dual{<:$sym},
-            $sym,
-            Mooncake.Nfwd.NDual,
-            Complex{<:Mooncake.Nfwd.NDual},
-            Mooncake.Lifted{<:$sym},
-        })
+        # Audit step 8: narrowed to `Union{Dual{<:$sym}, $sym}`. The previous
+        # wide Union also accepted `NDual`, `Complex{<:NDual}`, and
+        # `Lifted{<:$sym}` — added during the kill-width-nothing transition
+        # so that the IR-emit's unwrap-then-bare scaffolding could call the
+        # rule with non-Dual inner shapes. Lifted-typed rule callers now use
+        # the separate `Lifted{<:$sym, N}` overload emitted alongside this
+        # one (see `_zero_derivative_impl` further down), so the bare-Dual
+        # entry point only needs the legacy `Dual{<:$sym}` and bare primal
+        # `$sym` shapes. Narrowing clears the Aqua ambiguity / unbound-
+        # typevar findings flagged in `~/notes/mooncake/primal-mode-branch-
+        # audit.md` §"Confirmed Current Mismatches".
+        return :(Union{Mooncake.Dual{<:$sym},$sym})
     end
 
     if is_vararg
