@@ -558,6 +558,47 @@ function test_frule_correctness(
     @test any(isapprox_results)
 end
 
+function test_frule_reuse(x_ẋ...; frule)
+    @nospecialize x_ẋ
+    x_ẋ_a = map(_deepcopy, x_ẋ)
+    x_ẋ_b = map(_deepcopy, x_ẋ)
+    y_ẏ_a = frule(x_ẋ_a...)
+    y_ẏ_b = frule(x_ẋ_b...)
+    @test has_equal_data(primal(y_ẏ_a), primal(y_ẏ_b))
+    @test has_equal_data(tangent(y_ẏ_a), tangent(y_ẏ_b))
+    @test all(map(has_equal_data, map(tangent, x_ẋ_a), map(tangent, x_ẋ_b)))
+end
+
+function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule)
+    @nospecialize rng x_x̄
+    function make_inputs(x_x̄)
+        x_x̄ = map(_deepcopy, x_x̄)
+        x = map(primal, x_x̄)
+        x̄_zero = map(zero_tangent, x)
+        x̄_fwds = map(Mooncake.fdata, x̄_zero)
+        x_x̄_rule = map(
+            (xi, fi) -> fcodual_type(_typeof(xi))(_deepcopy(xi), fi), x, x̄_fwds
+        )
+        return x_x̄_rule, x̄_zero
+    end
+    inputs_a, x̄_zero_a = make_inputs(x_x̄)
+    inputs_b, x̄_zero_b = make_inputs(x_x̄)
+
+    # First forward+backward pass.
+    y_ȳ_a, pb_a!! = rrule(inputs_a...)
+    ŷ = randn_tangent(rng, primal(y_ȳ_a))
+    x̄_rvs_a = pb_a!!(Mooncake.rdata(ŷ))
+
+    # Second forward+backward pass with the same rule.
+    y_ȳ_b, pb_b!! = rrule(inputs_b...)
+    x̄_rvs_b = pb_b!!(Mooncake.rdata(_deepcopy(ŷ)))
+    @test has_equal_data(primal(y_ȳ_a), primal(y_ȳ_b))
+    @test has_equal_data(x̄_rvs_a, x̄_rvs_b)
+    @test all(
+        map(has_equal_data, map(Mooncake.fdata, x̄_zero_a), map(Mooncake.fdata, x̄_zero_b))
+    )
+end
+
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_rrule_correctness(
     rng::AbstractRNG,
@@ -1034,9 +1075,6 @@ function test_rule(
                 test_rvs && test_rrule_interface(x_x̄...; rrule)
             end
 
-            # Snapshot of RNG so "Reuse" testset uses identical probe tangents to "Correctness" testset.
-            rng_snapshot = deepcopy(rng)
-
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
                 if test_fwd && !interface_only
@@ -1049,23 +1087,13 @@ function test_rule(
                 end
             end
 
-            # Verify rules are not invalidated by a first differentiation call.
+            # Verify rules give identical results on a second call.
             @testset "Reuse" begin
                 if test_fwd && !interface_only
-                    test_frule_correctness(
-                        rng_snapshot, x_ẋ...; frule, unsafe_perturb, atol, rtol
-                    )
+                    test_frule_reuse(x_ẋ...; frule)
                 end
                 if test_rvs && !interface_only
-                    test_rrule_correctness(
-                        rng_snapshot,
-                        x_x̄...;
-                        rrule,
-                        unsafe_perturb,
-                        output_tangent,
-                        atol,
-                        rtol,
-                    )
+                    test_rrule_reuse(rng, x_x̄...; rrule)
                 end
             end
 
