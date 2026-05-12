@@ -584,15 +584,22 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule)
     inputs_a, x̄_zero_a = make_inputs(x_x̄)
     inputs_b, x̄_zero_b = make_inputs(x_x̄)
 
-    # First forward+backward pass.
+    # First forward pass: snapshot primal before pullback can modify it.
     y_ȳ_a, pb_a!! = rrule(inputs_a...)
-    ŷ = randn_tangent(rng, primal(y_ȳ_a))
-    x̄_rvs_a = pb_a!!(Mooncake.rdata(ŷ))
+    y_primal_a = _deepcopy(primal(y_ȳ_a))
+    # Set output cotangent via fdata (vectors communicate cotangents through fdata, not rdata).
+    ŷ_delta = randn_tangent(rng, primal(y_ȳ_a))
+    ȳ_a = increment!!(set_to_zero!!(zero_tangent(primal(y_ȳ_a), tangent(y_ȳ_a))), ŷ_delta)
+    x̄_rvs_a = pb_a!!(Mooncake.rdata(ȳ_a))
 
-    # Second forward+backward pass with the same rule.
+    # Second forward pass with the same rule.
     y_ȳ_b, pb_b!! = rrule(inputs_b...)
-    x̄_rvs_b = pb_b!!(Mooncake.rdata(_deepcopy(ŷ)))
-    @test has_equal_data(primal(y_ȳ_a), primal(y_ȳ_b))
+    y_primal_b = _deepcopy(primal(y_ȳ_b))
+    # Same output cotangent as run A.
+    ȳ_b = increment!!(set_to_zero!!(zero_tangent(primal(y_ȳ_b), tangent(y_ȳ_b))), _deepcopy(ŷ_delta))
+    x̄_rvs_b = pb_b!!(Mooncake.rdata(ȳ_b))
+
+    @test has_equal_data(y_primal_a, y_primal_b)
     @test has_equal_data(x̄_rvs_a, x̄_rvs_b)
     @test all(
         map(has_equal_data, map(Mooncake.fdata, x̄_zero_a), map(Mooncake.fdata, x̄_zero_b))
