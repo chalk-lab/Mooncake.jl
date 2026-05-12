@@ -423,9 +423,15 @@ function _zero_derivative_impl(ctx, sig, mode)
     # `zero_derivative(::Lifted{F, N}, ::Vararg{Lifted, M})` overload (defined
     # higher in this file) handles the Lifted dispatch by extracting primals
     # and constructing a Lifted output via `zero_lifted`.
+    # First arg is the function-type singleton (`typeof(F)`); use exact-match
+    # (no `<:`) so the generated rule signature is identical to hand-written
+    # `frule!!(::Lifted{typeof(F), N}, ...)` forms. Without this, the
+    # generated `Lifted{<:typeof(F), N}` and hand-written `Lifted{typeof(F), N}`
+    # are considered equivalent-specificity by Julia's method dispatcher
+    # but Aqua flags them as ambiguous when their other args overlap.
     if is_vararg
         lifted_arg_types = vcat(
-            [:(Mooncake.Lifted{<:$(arg_type_symbols[1]),N})],
+            [:(Mooncake.Lifted{$(arg_type_symbols[1]),N})],
             [:(Mooncake.Lifted{<:$t}) for t in arg_type_symbols[2:(end - 1)]],
             [:(Vararg{Mooncake.Lifted,_M})],
         )
@@ -434,7 +440,7 @@ function _zero_derivative_impl(ctx, sig, mode)
         )
     else
         lifted_arg_types = vcat(
-            [:(Mooncake.Lifted{<:$(arg_type_symbols[1]),N})],
+            [:(Mooncake.Lifted{$(arg_type_symbols[1]),N})],
             [:(Mooncake.Lifted{<:$t}) for t in arg_type_symbols[2:end]],
         )
         lifted_where = vcat(where_params === nothing ? Any[] : copy(where_params), [:N])
