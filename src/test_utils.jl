@@ -1046,6 +1046,18 @@ function test_rule(
                 end
             end
 
+            # Verify rules are not invalidated by a first differentiation call.
+            @testset "Reuse" begin
+                if test_fwd && !interface_only
+                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
+                end
+                if test_rvs && !interface_only
+                    test_rrule_correctness(
+                        rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
+                    )
+                end
+            end
+
             # Test the performance of the rule.
             @testset "Performance" begin
                 test_fwd && test_frule_performance(perf_flag, frule, x_ẋ...)
