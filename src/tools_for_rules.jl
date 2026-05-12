@@ -728,6 +728,40 @@ function frule_wrapper(::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}) where
     return Dual(Ω, mooncake_tangent(Ω, dΩ))
 end
 
+@inline function _lifted_frule_wrapper_result(::Val{N}, Ω, tangents) where {N}
+    return if N == 1
+        Lifted{_typeof(Ω),N}(Ω, tangents[1])
+    else
+        Lifted{_typeof(Ω),N}(Ω, NTangent(tangents))
+    end
+end
+
+function frule_wrapper(fargs::Vararg{Lifted{<:Any,N},M}) where {N,M}
+    primals = map(primal, fargs)
+    results = ntuple(Val(N)) do n
+        tangents = map(x -> to_cr_tangent(_tangent_dir(x, n)), fargs)
+        Ω, dΩ = CRC.frule(tangents, primals...)
+        return Ω, mooncake_tangent(Ω, dΩ)
+    end
+    return _lifted_frule_wrapper_result(
+        Val(N), results[1][1], ntuple(n -> results[n][2], Val(N))
+    )
+end
+
+function frule_wrapper(
+    ::Lifted{typeof(Core.kwcall),N}, fargs::Vararg{Lifted{<:Any,N},M}
+) where {N,M}
+    primals = map(primal, fargs)
+    results = ntuple(Val(N)) do n
+        tangents = map(x -> to_cr_tangent(_tangent_dir(x, n)), fargs[2:end])
+        Ω, dΩ = Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
+        return Ω, mooncake_tangent(Ω, dΩ)
+    end
+    return _lifted_frule_wrapper_result(
+        Val(N), results[1][1], ntuple(n -> results[n][2], Val(N))
+    )
+end
+
 function construct_frule_wrapper_def(arg_names, arg_types, where_params)
     body = Expr(:call, frule_wrapper, arg_names...)
     return construct_frule_def(arg_names, arg_types, where_params, body)
@@ -953,6 +987,8 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     arg_type_syms, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
+    lifted_where_params = vcat(where_params === nothing ? Any[] : copy(where_params), [:N])
+    lifted_arg_types = map(t -> :(Mooncake.Lifted{<:$t,N}), arg_type_syms)
     codual_arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_syms)
 
     # Determine which rules to generate based on mode
@@ -961,6 +997,11 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
 
     frule_expr = if include_frule
         construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
+    else
+        nothing
+    end
+    lifted_frule_expr = if include_frule
+        construct_frule_wrapper_def(arg_names, lifted_arg_types, lifted_where_params)
     else
         nothing
     end
@@ -994,6 +1035,19 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         else
             nothing
         end
+        kwargs_lifted_frule_expr = if include_frule
+            construct_frule_wrapper_def(
+                vcat(:_kwcall, :kwargs, arg_names),
+                vcat(
+                    :(Mooncake.Lifted{typeof(Core.kwcall),N}),
+                    :(Mooncake.Lifted{<:NamedTuple,N}),
+                    lifted_arg_types,
+                ),
+                lifted_where_params,
+            )
+        else
+            nothing
+        end
         kwargs_rrule_expr = if include_rrule
             construct_rrule_wrapper_def(
                 vcat(:_kwcall, :kwargs, arg_names),
@@ -1010,6 +1064,7 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     else
         kw_is_primitive = nothing
         kwargs_frule_expr = nothing
+        kwargs_lifted_frule_expr = nothing
         kwargs_rrule_expr = nothing
     end
 
@@ -1021,14 +1076,38 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         end
     end
 
+    is_lifted_aware_expr = if include_frule
+        quote
+            @inline function Mooncake._is_lifted_aware(::Type{<:$(esc(sig))})
+                return true
+            end
+        end
+    else
+        nothing
+    end
+
+    kw_is_lifted_aware_expr = if has_kwargs && include_frule
+        quote
+            @inline function Mooncake._is_lifted_aware(::Type{<:$kw_sig})
+                return true
+            end
+        end
+    else
+        nothing
+    end
+
     exprs = filter(
         !isnothing,
         [
             is_primitive_expr,
+            is_lifted_aware_expr,
             frule_expr,
+            lifted_frule_expr,
             rrule_expr,
             kw_is_primitive,
+            kw_is_lifted_aware_expr,
             kwargs_frule_expr,
+            kwargs_lifted_frule_expr,
             kwargs_rrule_expr,
         ],
     )
