@@ -123,14 +123,28 @@ Width-aware forward value type query.
 end
 
 @inline function _uses_structural_dual_type(::Type{P}) where {P}
+    # Audit step 4: structural `dual_type` mirrors structural `tangent_type`.
+    # Previously this gate also required `all(_is_lift_safe_field_type,
+    # fieldtypes(P))` — a narrow allowlist that forced struct fields to be
+    # IEEEFloat / Complex{IEEEFloat} / NoTangent / Array{IEEEFloat} / a few
+    # specialised wrappers. Nested user-defined structs (`OuterAudit`
+    # containing `InnerAudit`) fell back to the parallel `Dual{P, Tangent}`
+    # form even when their tangent_type was already structurally recursive.
+    # Per `~/notes/mooncake/primal-mode-branch-audit.md`:
+    # "There should be no broad generic exclusion gate such as
+    # `_is_lift_safe_field_type`. Non-generic representations must be
+    # explicit `dual_type` overloads for chosen types."
+    # Field-type-specific exceptions live as `dual_type` overloads (e.g.
+    # CuArray-wrappers in MooncakeCUDAExt) and dispatch first by Julia's
+    # method specificity, so this generic branch only fires when the
+    # recursive descent is structurally correct.
     return isconcretetype(P) &&
            !ismutabletype(P) &&
            fieldcount(P) > 0 &&
            _is_user_definable_type(P) &&
            tangent_type(P) <: Tangent &&
            _uses_structural_tangent_type(P) &&
-           all(always_initialised(P)) &&
-           all(_is_lift_safe_field_type, fieldtypes(P))
+           all(always_initialised(P))
 end
 
 # `_is_user_definable_type(P)` — heuristic gate for the recursive struct lift.
@@ -158,69 +172,6 @@ end
         ntuple(i -> tangent_type(fieldtype(P, i)), Val(fieldcount(P)))...
     }
     return tangent_type(P) === Tangent{NamedTuple{names,field_tangent_types}}
-end
-
-# `_is_lift_safe_field_type(T)` — returns `true` if a struct field of type `T`
-# is safe to recursively lift through (the lift's primal/tangent reconstruction
-# can rebuild the original `T` from the lifted form). Returns `false` for
-# nested struct types whose lift would lose struct identity inside a containing
-# Tuple/NamedTuple V.
-#
-# Safe cases:
-# - non-differentiable types (`tangent_type === NoTangent`)
-# - canonical-V leaf types (`IEEEFloat`, `Complex{<:IEEEFloat}`,
-#   `AbstractArray{<:IEEEFloat}`, …) — handled by their own dual_type overloads
-# - `Tuple` / `NamedTuple` whose elements are themselves lift-safe (recursive)
-# - per-wrapper specialised types (`Diagonal`, `Adjoint`, `SubArray`) — their
-#   dual_type returns the wrapper-shaped V which preserves struct identity
-#
-# Unsafe: any other concrete struct with `tangent_type <: Tangent`. If we
-# lifted through such a field inside a Tuple/NamedTuple, the inner V would
-# be a bare `NamedTuple` and `primal` reconstruction wouldn't know to
-# `_new_(NestedStruct, …)` instead of returning the bare NamedTuple.
-@inline function _is_lift_safe_field_type(::Type{T}) where {T}
-    # Abstract field types are UNSAFE: `dual_type(Val(N), Abstract)` returns
-    # bare `Dual` (abstract V), but the runtime value's V is concrete (e.g.
-    # `NDual{Float64, 1}`). `Lifted{P, N, V}` is invariant in V, so an
-    # abstract-V slot cannot accept a concrete-V value — the constructor
-    # call infers to `Union{}` and the IR verifier rejects the resulting
-    # phi join. Bail out to the legacy `Dual{P, T<:Tangent}` form for
-    # structs with type-erased fields. Note: a `Tuple` whose own type is
-    # `Tuple{Float64, Int}` *is* concrete (recursive Tuples with abstract
-    # parameters like `Tuple{Vararg{Float64}}` are not).
-    isconcretetype(T) || return false
-    tangent_type(T) === NoTangent && return true
-    T <: IEEEFloat && return true
-    T <: Complex{<:IEEEFloat} && return true
-    T <: CoDual && return true
-    @static if VERSION >= v"1.11-"
-        T <: MemoryRef{<:IEEEFloat} && return true
-        T <: MemoryRef{<:Complex{<:IEEEFloat}} && return true
-        T <: Memory{<:IEEEFloat} && return true
-        T <: Memory{<:Complex{<:IEEEFloat}} && return true
-    end
-    # Restrict to standard `Array` (not arbitrary `AbstractArray`): types like
-    # `CuArray`/`SparseMatrixCSC` lack a canonical-V `dual_type` overload and
-    # fall back to the parallel `Dual{Array, Array}` form. Including them in
-    # the recursive struct lift produces a `Tuple{Dual{Array, Array}}` inner V,
-    # which downstream rules don't expect — and the recursive descent into
-    # the array's struct fields can also hit primitive-leaf world-age errors
-    # (e.g. CuArray's `data::DataRef{Managed{DeviceMemory}}` chain bottoms
-    # out at `CuPtr{Nothing}`). Wrappers like `Diagonal{T, <:CuArray}` should
-    # use the parallel form unless the ext registers a dedicated lift.
-    T <: Array && eltype(T) <: Union{IEEEFloat,Complex{<:IEEEFloat}} && return true
-    if T <: Tuple
-        return all(_is_lift_safe_field_type, T.parameters)
-    end
-    if T <: NamedTuple
-        return all(_is_lift_safe_field_type, fieldtypes(T))
-    end
-    # Per-wrapper specialised types (Diagonal/Adjoint/SubArray) — their
-    # `dual_type` returns the wrapper-shaped V which preserves struct identity.
-    T <: LinearAlgebra.Diagonal && return true
-    T <: LinearAlgebra.Adjoint && return true
-    T <: SubArray && return true
-    return false
 end
 
 dual_type(::Val{0}, ::Type{P}) where {P} = P

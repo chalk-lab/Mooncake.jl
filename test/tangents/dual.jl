@@ -168,6 +168,15 @@ end
         @test Mooncake.tangent(x_ndual) === NTangent((1.0, 2.0, 3.0))
     end
 
+    @testset "generic structural dual_type mirrors recursive tangent_type" begin
+        # Audit step 4. The recursive struct lift must fire for any user-
+        # defined struct whose tangent_type matches the default structural
+        # form — no broad `_is_lift_safe_field_type` allowlist on field types.
+        # Inner has the canonical structural lift.
+        @test Mooncake.dual_type(Val(2), Mooncake.TestResources.StableFoo) ===
+            NamedTuple{(:x, :y),Tuple{NDual{Float64,2},Dual{Symbol,NoTangent}}}
+    end
+
     @testset "explicit dual_type overrides win over generic structural lift" begin
         # `dual_type(Val(N), Vector{Float64})` is registered with a canonical-
         # V array shape in `nfwd/NfwdMooncake.jl`; the generic structural
