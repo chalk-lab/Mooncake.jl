@@ -654,8 +654,15 @@ end
     return gemv!_pb!!
 end
 
-# Note that the complex symv are not BLAS but auxiliary functions in LAPACK
-for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
+# Note that the complex symv are not BLAS but auxiliary functions in LAPACK.
+# `symv!` is primitive for `T<:BlasFloat`, but its bare-`Dual` `frule!!` only
+# needs to cover `BlasComplexFloat` because the width1-aware method below
+# handles `BlasRealFloat` (its `Union{Dual,NDual}` arg shapes subsume the
+# pure-`Dual` case there). `hemv!` is restricted to `BlasComplexFloat`.
+for (fname, prim_elty, frule_elty) in (
+    (:(symv!), BlasFloat, BlasComplexFloat),
+    (:(hemv!), BlasComplexFloat, BlasComplexFloat),
+)
     isherm = fname == :(hemv!)
 
     @eval @is_primitive(
@@ -668,7 +675,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             AbstractVector{T},
             T,
             AbstractVector{T},
-        } where {T<:$elty},
+        } where {T<:$prim_elty},
     )
 
     @eval function frule!!(
@@ -679,7 +686,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         x_dx::Dual{<:AbstractVector{T}},
         beta::Dual{T},
         y_dy::Dual{<:AbstractVector{T}},
-    ) where {T<:$elty}
+    ) where {T<:$frule_elty}
         # Extract primals.
         ul = primal(uplo)
         α, dα = extract(alpha)
@@ -713,7 +720,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         x_dx::CoDual{<:AbstractVector{T}},
         beta::CoDual{T},
         y_dy::CoDual{<:AbstractVector{T}},
-    ) where {T<:$elty}
+    ) where {T<:$prim_elty}
 
         # Extract primals.
         ul = primal(uplo)

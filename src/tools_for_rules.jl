@@ -730,10 +730,16 @@ end
     end
 end
 
-function frule_wrapper(fargs::Vararg{Lifted{<:Any,N},M}) where {N,M}
-    primals = map(primal, fargs)
+# Pull `f` out of the Vararg so `N` is bound (via the first arg's width)
+# and so the 0-arg case (which would otherwise overlap with the bare-`Dual`
+# Vararg method above) is unreachable.
+function frule_wrapper(
+    f::Lifted{<:Any,N}, fargs::Vararg{Lifted{<:Any,N},M}
+) where {N,M}
+    all_args = (f, fargs...)
+    primals = map(primal, all_args)
     results = ntuple(Val(N)) do n
-        tangents = map(x -> to_cr_tangent(_tangent_dir(x, n)), fargs)
+        tangents = map(x -> to_cr_tangent(_tangent_dir(x, n)), all_args)
         Ω, dΩ = CRC.frule(tangents, primals...)
         return Ω, mooncake_tangent(Ω, dΩ)
     end
