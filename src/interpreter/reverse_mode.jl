@@ -385,7 +385,7 @@ initial rdata directly into the statement, which is safe because it is always a 
 """
 function reverse_data_ref_stmts(info::ADInfo)
     function make_ref_stmt(id::ID, P::Type)
-        ref_type = Base.RefValue{P <: Type ? NoRData : zero_like_rdata_type(P)}
+        ref_type = Base.RefValue{P<:Type ? NoRData : zero_like_rdata_type(P)}
         init_ref_val = P <: Type ? NoRData() : Mooncake.zero_like_rdata_from_type(P)
         return (id, new_inst(Expr(:new, ref_type, QuoteNode(init_ref_val))))
     end
@@ -1268,7 +1268,7 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
     rule::Trule
     function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
         interp = get_interpreter(ReverseMode)
-        return new{mi.specTypes,rule_type(interp, mi; debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi)
     end
     function LazyDerivedRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool
