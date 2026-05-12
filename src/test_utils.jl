@@ -589,14 +589,18 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule)
     y_primal_a = _deepcopy(primal(y_ȳ_a))
     # Set output cotangent via fdata (vectors communicate cotangents through fdata, not rdata).
     ŷ_delta = randn_tangent(rng, primal(y_ȳ_a))
-    ȳ_a = increment!!(set_to_zero!!(zero_tangent(primal(y_ȳ_a), tangent(y_ȳ_a))), ŷ_delta)
+    ȳ_a = increment!!(
+        set_to_zero!!(zero_tangent(primal(y_ȳ_a), tangent(y_ȳ_a))), ŷ_delta
+    )
     x̄_rvs_a = pb_a!!(Mooncake.rdata(ȳ_a))
 
     # Second forward pass with the same rule.
     y_ȳ_b, pb_b!! = rrule(inputs_b...)
     y_primal_b = _deepcopy(primal(y_ȳ_b))
     # Same output cotangent as run A.
-    ȳ_b = increment!!(set_to_zero!!(zero_tangent(primal(y_ȳ_b), tangent(y_ȳ_b))), _deepcopy(ŷ_delta))
+    ȳ_b = increment!!(
+        set_to_zero!!(zero_tangent(primal(y_ȳ_b), tangent(y_ȳ_b))), _deepcopy(ŷ_delta)
+    )
     x̄_rvs_b = pb_b!!(Mooncake.rdata(ȳ_b))
 
     @test has_equal_data(y_primal_a, y_primal_b)
