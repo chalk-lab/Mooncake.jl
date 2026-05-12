@@ -76,16 +76,11 @@ end
 """
     infer_ir!(ir::IRCode) -> IRCode
 
-Runs type inference on `ir`, which mutates `ir`, and returns it.
-
-Note: the compiler will not infer the types of anything where the corrsponding element of
-`ir.stmts.flag` is not set to `Core.Compiler.IR_FLAG_REFINED`. Nor will it attempt to refine
-the type of the value returned by a `:invoke` expressions. Consequently, if you find that
-the types in your IR are not being refined, you may wish to check that neither of these
-things are happening.
+Legacy alias for [`Compiler.propagate_constants!`](@ref). New code should call
+the canonical name.
 """
 function infer_ir!(ir::IRCode)
-    return Compiler.infer_ir!(ir)
+    return Compiler.propagate_constants!(ir)
 end
 
 # Given some IR, generates a MethodInstance suitable for passing to infer_ir!, if you don't
@@ -149,8 +144,8 @@ function lookup_ir(
     return Compiler.infer_ir(interp, mi; optimize_until)
 end
 
-function lookup_ir(interp::CC.AbstractInterpreter, mc::MistyClosure; optimize_until=nothing)
-    return Compiler.infer_ir(interp, mc; optimize_until)
+function lookup_ir(::CC.AbstractInterpreter, mc::MistyClosure; optimize_until=nothing)
+    return Compiler.closure_ir(mc)
 end
 
 """

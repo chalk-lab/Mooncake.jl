@@ -2,6 +2,13 @@
     interp = Mooncake.MooncakeInterpreter(ForwardMode)
     reverse_interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
 
+    # TODO(boundary-cleanup): the trampolines exercised below
+    # (`interpreter_world`, `inference_parameters`, `optimization_parameters`,
+    # `inference_cache`, `code_cache_view`, `overlay_method_table`,
+    # `cache_owner`) are pure passthroughs over `MooncakeInterpreter` fields.
+    # When they're inlined into the `CC.*` overloads in
+    # `src/interpreter/abstract_interpretation.jl`, these assertions should be
+    # replaced with end-to-end inference probes.
     @test Mooncake.Compiler.interpreter_world(reverse_interp) == reverse_interp.world
     @test Mooncake.Compiler.inference_parameters(reverse_interp) ===
         reverse_interp.inf_params
@@ -75,17 +82,33 @@
             return rel == "." || first(splitpath(rel)) != ".."
         end
 
+        # Compiler-internal names that have either moved between Julia versions,
+        # that ccall directly into Julia's C runtime, or that touch unstable
+        # binding/inference internals. Their use must stay localised under
+        # `src/compiler/`; any other site needs a documented exception in
+        # `named_exceptions` below.
         compiler_internal_names = (
             "typeinf_ircode",
             "IRInterpretationState",
             "adce_pass!",
+            "ssa_inlining_pass!",
+            "sroa_pass!",
+            "scan_leaf_partitions",
+            "compute_ir_rettype",
+            "compute_oc_signature",
             "jl_new_code_info_uninit",
+            "jl_new_method_instance_uninit",
             "generate_opaque_closure",
         )
         named_exceptions = Dict(
             "IRInterpretationState" => Set([
                 normpath(joinpath(src_root, "interpreter", "patch_for_319.jl")),
             ]),
+            # `Mooncake.compute_ir_rettype` and `Mooncake.compute_oc_signature`
+            # are legacy public names retained as compatibility shims; their
+            # bodies delegate to the corresponding `Compiler.*` services.
+            "compute_ir_rettype" => Set([normpath(joinpath(src_root, "utils.jl"))]),
+            "compute_oc_signature" => Set([normpath(joinpath(src_root, "utils.jl"))]),
         )
 
         violations = String[]

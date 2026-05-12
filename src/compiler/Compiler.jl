@@ -78,21 +78,19 @@ end
 
 function instruction_stream_from_statements(insts::Vector{Any})
     n = length(insts)
+    stream = CC.InstructionStream(n)
+    copyto!(statements(stream), insts)
+    fill!(stream.type, Any)
+    fill!(stream.flag, CC.IR_FLAG_REFINED)
+    # 1.12+ uses a 3n line layout (line, scope, edge); leave scope/edge at 0.
     @static if VERSION > v"1.12-"
-        lineinfo = Int32[]
-        for _ in 1:n
-            push!(lineinfo, 1, 0, 0)
+        for i in 1:n
+            stream.line[3i - 2] = Int32(1)
         end
     else
-        lineinfo = ones(Int32, n)
+        fill!(stream.line, Int32(1))
     end
-    return CC.InstructionStream(
-        insts,
-        Any[Any for _ in 1:n],
-        CC.CallInfo[CC.NoCallInfo() for _ in 1:n],
-        lineinfo,
-        fill(CC.IR_FLAG_REFINED, n),
-    )
+    return stream
 end
 
 function ircode(
@@ -336,6 +334,16 @@ function has_primitive_match(matches, ::Type{C}, ::Type{M}, world::UInt) where {
     return any_primitive_match(matches.applicable, C, M, world)
 end
 
+# Build a `CallMeta` carrying `call`'s effects, overriding `rt` and `info`.
+# Absorbs the 1.11+ `exct` field addition.
+@static if VERSION >= v"1.11-"
+    _callmeta(call::CC.CallMeta, @nospecialize(rt), info::CC.CallInfo) =
+        CC.CallMeta(rt, call.exct, call.effects, info)
+else
+    _callmeta(call::CC.CallMeta, @nospecialize(rt), info::CC.CallInfo) =
+        CC.CallMeta(rt, call.effects, info)
+end
+
 """
     widen_primitive_rettype(call, argtypes)
 
@@ -345,21 +353,11 @@ to `Const` only because of partially constant arguments.
 function widen_primitive_rettype(call::CC.CallMeta, argtypes::Vector{Any})
     has_nonconst_runtime_arg = any(i -> !(argtypes[i] isa CC.Const), 2:length(argtypes))
     rt = call.rt isa CC.Const && has_nonconst_runtime_arg ? CC.widenconst(call.rt) : call.rt
-
-    @static if VERSION >= v"1.11-"
-        return CC.CallMeta(rt, call.exct, call.effects, call.info)
-    else
-        return CC.CallMeta(rt, call.effects, call.info)
-    end
+    return _callmeta(call, rt, call.info)
 end
 
 function block_inlining(call::CC.CallMeta, @nospecialize(atype))
-    info = NoInlineCallInfo(call.info, atype)
-    @static if VERSION >= v"1.11-"
-        return CC.CallMeta(call.rt, call.exct, call.effects, info)
-    else
-        return CC.CallMeta(call.rt, call.effects, info)
-    end
+    return _callmeta(call, call.rt, NoInlineCallInfo(call.info, atype))
 end
 
 should_inline_call(::CC.CallInfo) = true
@@ -384,6 +382,12 @@ function primitive_call_override(
     matches = call_matches(interp, argtypes, atype, max_methods)
     has_primitive_match(matches, C, M, interpreter_world(interp)) || return nothing
 
+    # Known: this routes through a fresh `NativeInterpreter` rather than `interp`
+    # so the recursive call doesn't loop back through `MooncakeInterpreter`'s
+    # `abstract_call_gf_by_type` overload (which would re-enter this function).
+    # The trade-off is that edges and cache writes happen against `native_interp`,
+    # not the active frame's interpreter. A correct fix needs a reentrancy flag or
+    # a manual matching/typeinf loop.
     native_interp = CC.NativeInterpreter(interpreter_world(interp))
     ret = CC.abstract_call_gf_by_type(native_interp, f, arginfo, si, atype, sv, max_methods)
 
@@ -421,7 +425,21 @@ function run_constant_propagation!(
     return ir
 end
 
-function infer_ir!(ir::IRCode)
+"""
+    propagate_constants!(ir::IRCode) -> IRCode
+
+Run IR-level abstract constant propagation on already-built `ir`, refining its
+statement types. Note: the compiler will not refine the type of any statement
+whose `IR_FLAG_REFINED` flag is not set, nor will it refine the return type of
+`:invoke` expressions. If types are not being refined, check that neither of
+these is the case.
+
+This is **not** the inference entry point; see `infer_ir(interp, target)` for
+that. The name reflects what this pass actually does — run constant propagation
+over the existing IR using a fresh `NativeInterpreter` and a synthetic
+top-level `MethodInstance`.
+"""
+function propagate_constants!(ir::IRCode)
     run_constant_propagation!(
         ir, CC.NativeInterpreter(), top_level_method_instance(ir, parentmodule(@__MODULE__))
     )
@@ -550,9 +568,13 @@ function infer_ir(
     return CC.typeinf_ircode(interp, mi.def, mi.specTypes, mi.sparam_vals, optimize_until)
 end
 
-function infer_ir(::CC.AbstractInterpreter, mc::MistyClosure; optimize_until=nothing)
-    return mc.ir[], opaque_closure_return_type(mc.oc)
-end
+"""
+    closure_ir(mc::MistyClosure)
+
+Return the IR cached on a `MistyClosure` and its `OpaqueClosure`'s declared return
+type. This is not inference; the IR was inferred at closure construction time.
+"""
+closure_ir(mc::MistyClosure) = (mc.ir[], opaque_closure_return_type(mc.oc))
 
 opaque_closure_return_type(::Core.OpaqueClosure{A,B}) where {A,B} = B
 

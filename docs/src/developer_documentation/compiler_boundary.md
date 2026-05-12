@@ -23,13 +23,24 @@ use them.
 
 ## Static Gate
 
-`test/compiler/compiler.jl` includes a grep-style boundary test. The following compiler
-internal names should only appear under `src/compiler/`:
+`test/compiler/compiler.jl` includes a grep-style boundary test. The criterion: compiler
+internal names that have either moved between Julia versions, that ccall directly into
+Julia's C runtime, or that touch unstable binding/inference internals. The following names
+should only appear under `src/compiler/`:
 
 - `typeinf_ircode`
 - `adce_pass!`
+- `ssa_inlining_pass!`
+- `sroa_pass!`
+- `scan_leaf_partitions`
+- `compute_ir_rettype`
+- `compute_oc_signature`
 - `jl_new_code_info_uninit`
+- `jl_new_method_instance_uninit`
 - `generate_opaque_closure`
+
+`compute_ir_rettype` and `compute_oc_signature` have a documented exception for the legacy
+compatibility shims at `src/utils.jl:479-480`.
 
 The issue-319 compatibility patch in `src/interpreter/patch_for_319.jl` is the named
 exception for `IRInterpretationState`. That file contains copied compiler bug-fix logic and
