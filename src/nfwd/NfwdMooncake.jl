@@ -1405,6 +1405,9 @@ end
     T = Mooncake.tangent_type(typeof(x))
     return T === NoTangent ? Dual(x, NoTangent()) : Dual(x, T(0))
 end
+# Disambiguate Val{0} + Ptr against the Val{0} primal-passthrough above.
+# Val{0} is the primal passthrough — return `x` unchanged.
+@inline Mooncake.zero_dual(::Val{0}, x::Ptr) = x
 
 @inline Mooncake.uninit_dual(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
 @inline Mooncake.uninit_dual(w::Val, z::Complex{<:IEEEFloat}) = _ndual_zero(
