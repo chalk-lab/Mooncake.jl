@@ -133,4 +133,19 @@
         @test !is_primitive(C, M, Tuple{typeof(/),T,T}, world)
         @test !is_primitive(C, M, Tuple{typeof(\),T,T}, world)
     end
+
+    @testset "near-boundary domain-restricted functions" begin
+        for T in [Float32, Float64]
+            test_rule(
+                StableRNG(123), log, T(0.005); is_primitive=true, max_norm_perturbation=1e-3
+            )
+            test_rule(
+                StableRNG(123),
+                sqrt,
+                T(0.005);
+                is_primitive=true,
+                max_norm_perturbation=1e-3,
+            )
+        end
+    end
 end
