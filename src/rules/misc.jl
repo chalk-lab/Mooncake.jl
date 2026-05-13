@@ -245,10 +245,17 @@ _get_tangent_field(::NoTangent, _, _) = NoTangent()
 # .ref) === MemoryRef{T}`).
 _get_tangent_field(t::AbstractArray, name) = getfield(t, name)
 _get_tangent_field(t::AbstractArray, name, inbounds) = getfield(t, name, inbounds)
-# MemoryRef tangent shape arises from `lgetfield(::Array, :ref)` paths; its
-# fields (`:ptr_or_offset`, `:mem`) follow the same primal-mirroring rule.
-_get_tangent_field(t::MemoryRef, name) = getfield(t, name)
-_get_tangent_field(t::MemoryRef, name, inbounds) = getfield(t, name, inbounds)
+# MemoryRef tangent shape arises from `lgetfield(::Array, :ref)` paths. The
+# `:mem` field returns the underlying `Memory` tangent (matching shape). The
+# `:ptr_or_offset` field is a `Ptr{Nothing}` in the primal — but its tangent
+# is `Ptr{NoTangent}` per the Mooncake convention (mirrors the bare-Dual
+# `lgetfield(::Dual{<:MemoryRef, <:MemoryRef}, :ptr_or_offset)` rule which
+# also `bitcast`s the value).
+@inline _get_tangent_field(t::MemoryRef, name::Symbol) =
+    name === :ptr_or_offset ? bitcast(Ptr{NoTangent}, t.ptr_or_offset) : getfield(t, name)
+@inline _get_tangent_field(t::MemoryRef, name::Symbol, inbounds) =
+    name === :ptr_or_offset ? bitcast(Ptr{NoTangent}, t.ptr_or_offset) :
+    getfield(t, name, inbounds)
 function _get_tangent_field(f::NTangent, name)
     return NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
 end

@@ -362,7 +362,12 @@ end
     _x = primal(x)
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
-        dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
+        # Audit step 5: unwrap singleton-NTangent before `bitcast` so the
+        # carve-out-lifted path (`tangent(x)::NTangent{Tuple{<:Ptr}}`) hits
+        # the same primitive-Ptr value as the bare carve-out path.
+        raw_t = tangent(x)
+        bare_t = raw_t isa NTangent ? raw_t.lanes[1] : raw_t
+        dv = bitcast(Ptr{tangent_type(eltype(T))}, bare_t)
     else
         dv = NoTangent()
     end
