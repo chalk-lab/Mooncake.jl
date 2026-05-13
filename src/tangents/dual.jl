@@ -124,10 +124,11 @@ Width-aware forward value type query.
     end
 
     # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
-    # `tangent_type(Val(1), P)` wraps in `NTangent{Tuple{T}}` but the IR-emit
-    # bare-`Dual{P,T}` construction paths (Memory-backed `lgetfield`, `Ptr`
-    # foreigncall slots, `_group_vararg_dual` width-1) still emit the bare
-    # form; the OC slot type must match those (audit step 5, remaining bulk).
+    # Remaining 25 OC slot mismatches come from IR-emit paths only —
+    # `Memory{Any}` `lgetfield` dispatching through bare `Dual` and `Ptr{...}`
+    # foreigncall slot construction. Fix those two sites, then the
+    # `tangent_type(Val(1), P)` and `dual_type(Val(1), P)` queries can finally
+    # agree (audit step 5, remaining bulk).
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end
@@ -786,8 +787,15 @@ end
 end
 @generated function tangent(d::Lifted{P,N,V}) where {P,N,V<:NamedTuple{names}} where {names}
     P <: NamedTuple && return :(map(tangent, d.value))   # earlier method handles this
-    pairs = [Expr(:kw, n, :(tangent(d.value.$n))) for n in names]
-    return :(Tangent((; $(pairs...))))
+    # Audit test #9: top-level `NTangent{NTuple{N, Tangent{...}}}` — for each
+    # lane build a `Tangent` from per-field bare tangents, then collect all
+    # N lanes into an outer `NTangent`. Mirrors the structural-array
+    # convention (`tangent(::Array{<:NDual})` returns top-level NTangent).
+    lane_exprs = map(1:N) do lane
+        pairs = [Expr(:kw, n, :(_tangent_dir(d.value.$n, $lane))) for n in names]
+        :(Tangent((; $(pairs...))))
+    end
+    return :(NTangent(($(lane_exprs...),)))
 end
 
 """

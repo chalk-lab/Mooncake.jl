@@ -356,6 +356,23 @@ end
         # _lift / _unlift typed identity. Val(0) is primal passthrough.
         @test _lift(Val(2), Float64, _unlift(d)) === d
         @test _lift(Val(0), Float64, 3.0) === 3.0
+
+        # Audit test #9 (struct case): `tangent(::Lifted{struct_P, N, V})`
+        # returns a top-level `NTangent{NTuple{N, Tangent{...}}}`, mirroring
+        # the structural-array convention. Construct via the 1-arg ctor
+        # since the 2-arg path on heterogeneous struct V isn't supported
+        # by NamedTuple's primal+tangent constructor.
+        inner_v = (
+            x = NDual{Float64,2}(1.0, (10.0, 11.0)),
+            y = Mooncake.Dual(:sym, NoTangent()),
+        )
+        dstruct = Lifted{Mooncake.TestResources.StableFoo,2}(inner_v)
+        ts = tangent(dstruct)
+        @test ts isa NTangent
+        @test length(ts.lanes) == 2
+        @test ts.lanes[1] isa Mooncake.Tangent
+        @test ts.lanes[1].fields.x === 10.0
+        @test ts.lanes[2].fields.x === 11.0
     end
 end
 
