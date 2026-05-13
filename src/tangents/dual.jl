@@ -30,6 +30,12 @@ primal type `P` at width `N`.
 - `Val(N)` where `tangent_type(P) == NoTangent` → `NoTangent`
 - `Val(N)` otherwise → `NTangent{NTuple{N, tangent_type(P)}}`
 """
+# `Union{}` is the bottom type and is `<:` every primal; specialise both the
+# tangent and dual queries so they win against the IEEEFloat / Complex / etc.
+# overloads (which would otherwise produce nonsensical
+# `NDual{Union{}, N}` etc.).
+tangent_type(::Val, ::Type{Union{}}) = Union{}
+dual_type(::Val, ::Type{Union{}}) = Union{}
 tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
 function tangent_type(::Val{N}, ::Type{P}) where {N,P}
     T = tangent_type(P)
@@ -253,30 +259,11 @@ randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
     return zero_dual(x)
 end
 
-@unstable function dual_type(::Type{P}) where {P}
-    P == Union{} && return Union{}
-    P == DataType && return Dual
-    P isa Union && return Union{dual_type(P.a),dual_type(P.b)}
-    # Use `isa` not `<:`: generators like `NTuple{N,Int} where N` are instances of
-    # UnionAll but not subtypes of it (`NTuple{N,Int} where N <: UnionAll` is false).
-    # `P == UnionAll` handles the UnionAll metatype itself (`UnionAll isa UnionAll` is false).
-    (P isa UnionAll || P == UnionAll) && return Dual # P is abstract, tangent type unknown.
-
-    # Union Splitting
-    if P <: Tuple && !all(isconcretetype, (P.parameters...,))
-        field_types = (P.parameters...,)
-        union_fields = _findall(Base.Fix2(isa, Union), field_types)
-
-        # If there is exactly one Union field, split it to help the compiler
-        if length(union_fields) == 1 &&
-            all(p -> p isa Union || isconcretetype(p), field_types)
-            P_split = split_union_tuple_type(field_types)
-            return Union{dual_type(P_split.a),dual_type(P_split.b)}
-        end
-    end
-
-    return isconcretetype(P) ? Dual{P,tangent_type(P)} : Dual
-end
+# Audit step 5: no-`Val` `dual_type(P)` delegates to `dual_type(Val(1), P)`
+# so the two queries agree by construction (the IEEEFloat / Complex / Array
+# specialised overloads return `NDual`-shaped forms; generic `P` still hits
+# the bare `Dual{P, tangent_type(P)}` carve-out in the width-aware path).
+@unstable dual_type(::Type{P}) where {P} = dual_type(Val(1), P)
 
 function dual_type(p::Type{Type{P}}) where {P}
     return @isdefined(P) ? Dual{Type{P},NoTangent} : Dual{_typeof(p),NoTangent}

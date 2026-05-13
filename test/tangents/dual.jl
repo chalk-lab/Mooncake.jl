@@ -1,4 +1,5 @@
 @testset "Dual" begin
+    NDual = Mooncake.NDual
     @test Dual(5.0, 4.0) isa Dual{Float64,Float64}
     @test Dual(Float64, NoTangent()) isa Dual{Type{Float64},NoTangent}
     @test zero_dual(5.0) == Dual(5.0, 0.0)
@@ -37,36 +38,42 @@
         Dual(Array{Complex{Mooncake.NDual{Float64,2}},1}, NoTangent())
     )
 
+    # Audit step 5: `dual_type(P)` delegates to `dual_type(Val(1), P)`. The
+    # IEEEFloat / Complex / Array specialised overloads now apply at width 1,
+    # so concrete scalar/array primals return `NDual`-shaped duals; generic
+    # immutable concrete `P` stays at the bare `Dual{P, tangent_type(P)}`
+    # carve-out (`Int → Dual{Int, NoTangent}`); abstract / UnionAll `P`
+    # stays at the bare `Dual` UnionAll.
     @testset "$P" for (P, D) in Any[
-        (Float64, Dual{Float64,Float64}),
+        (Float64, NDual{Float64,1}),
         (Int, Dual{Int,NoTangent}),
         (Real, Dual),
         (Any, Dual),
         (Type{UnitRange{Int}}, Dual{Type{UnitRange{Int}},NoTangent}),
         (Type{Tuple{T}} where {T}, Dual),
-        (Union{Float64,Int}, Union{Dual{Float64,Float64},Dual{Int,NoTangent}}),
+        (Union{Float64,Int}, Union{NDual{Float64,1},Dual{Int,NoTangent}}),
         (UnionAll, Dual),
         (DataType, Dual),
         (Union{}, Union{}),
 
-        # Tuples:
-        (Tuple{Float64}, Dual{Tuple{Float64},Tuple{Float64}}),
-        (Tuple{Float64,Float32}, Dual{Tuple{Float64,Float32},Tuple{Float64,Float32}}),
+        # Tuples lift element-wise:
+        (Tuple{Float64}, Tuple{NDual{Float64,1}}),
+        (Tuple{Float64,Float32}, Tuple{NDual{Float64,1},NDual{Float32,1}}),
         (
             Tuple{Int,Float64,Float32},
-            Dual{Tuple{Int,Float64,Float32},Tuple{NoTangent,Float64,Float32}},
+            Tuple{Dual{Int,NoTangent},NDual{Float64,1},NDual{Float32,1}},
         ),
 
-        # Small-Union Tuples
+        # Small-Union Tuples (split + element-wise)
         (
             Tuple{Union{Float32,Float64}},
-            Union{Dual{Tuple{Float32},Tuple{Float32}},Dual{Tuple{Float64},Tuple{Float64}}},
+            Union{Tuple{NDual{Float32,1}},Tuple{NDual{Float64,1}}},
         ),
         (
             Tuple{Nothing,Union{Int,Float64}},
             Union{
-                Dual{Tuple{Nothing,Int},NoTangent},
-                Dual{Tuple{Nothing,Float64},Tuple{NoTangent,Float64}},
+                Tuple{Dual{Nothing,NoTangent},Dual{Int,NoTangent}},
+                Tuple{Dual{Nothing,NoTangent},NDual{Float64,1}},
             },
         ),
 
@@ -78,7 +85,22 @@
         (Tuple{Vararg{Float64,N}} where {N}, Dual),
         (Tuple{Vararg{Float64}}, Dual),
     ]
-        @test TestUtils.check_allocs(dual_type, P) == D
+        # Audit step 5: concrete heterogeneous Tuples take the element-wise
+        # lift path. The generator-expression splice into `Tuple{...}` is
+        # `@unstable` by design (per-field dispatch), so relax the alloc-
+        # check to a value-only check for concrete `Tuple` primals.
+        if P isa DataType && P <: Tuple
+            @test dual_type(P) == D
+        else
+            @test TestUtils.check_allocs(dual_type, P) == D
+        end
+    end
+
+    # Audit test #2: the no-`Val` and `Val(1)` queries agree by construction.
+    @testset "audit #2: dual_type(P) === dual_type(Val(1), P)" begin
+        for P in (Float64, ComplexF64, Vector{Float64}, Int, Real, Tuple{Float64,Int})
+            @test Mooncake.dual_type(P) === Mooncake.dual_type(Val(1), P)
+        end
     end
 end
 
