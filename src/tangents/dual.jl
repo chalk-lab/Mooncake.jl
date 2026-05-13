@@ -124,13 +124,10 @@ Width-aware forward value type query.
     end
 
     # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
-    # 14 OC slot mismatches remain — each from a different rule-specific path
-    # exposed when the OC slot type widens to `Dual{P, NTangent{Tuple{T}}}`:
-    # `Matrix{NDual}(::Vector{NDual})` reshape ctor (mul! etc.); Union-of-
-    # types OC slot; `convert(NTangent{Tuple{NoTangent}}, NTangent{Tuple{
-    # MemoryRef{NoTangent}}})` (Memory-field shape divergence) etc. Each
-    # requires rule-specific reshape/canonicalisation (audit step 5,
-    # remaining bulk).
+    # Abstract concrete `P` (e.g. `Real`, `AbstractFloat`) returns `Dual`
+    # (UnionAll) — broad enough for legacy construction (it has constructors)
+    # but doesn't accept `NDual` shapes. Step 3 (audit) wants a broader
+    # width-aware abstract dual; deferred (see comment at bottom).
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end
