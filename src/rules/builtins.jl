@@ -898,10 +898,17 @@ end
 # Core._structtype
 
 # `Core._svec_ref` implementation kernel (no `Dual{typeof(F)}` arg).
+# Audit step 5: at width 1 with the carve-out lifted, `tangent(v)` for a
+# `Dual{Core.SimpleVector, NTangent{Tuple{Vector{Any}}}}` is the outer
+# NTangent; `getindex(::NTangent, i)` returns the i-th *lane*, not the
+# i-th element of the inner Vector{Any}. Unwrap the singleton NTangent
+# to the inner per-element tangent vector first.
+@inline _svec_ref_tan(t) = t
+@inline _svec_ref_tan(t::NTangent{Tuple{Vector{Any}}}) = t.lanes[1]
 @inline function _svec_ref_kernel(v::Dual{Core.SimpleVector}, _ind::Dual{Int})
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
-    tv = getindex(tangent(v), ind)
+    tv = getindex(_svec_ref_tan(tangent(v)), ind)
     return Dual(pv, tv)
 end
 @inline function frule!!(
