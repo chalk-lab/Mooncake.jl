@@ -584,7 +584,7 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule)
     inputs_a, x̄_zero_a = make_inputs(x_x̄)
     inputs_b, x̄_zero_b = make_inputs(x_x̄)
 
-    # First forward pass: snapshot primal before pullback can restore mutations.
+    # First forward pass: snapshot primal before pullback can modify it.
     # Only deepcopy when the output has an fdata component -- if tangent is NoFData,
     # Mooncake does not track mutations on the primal and the pullback won’t modify it
     # (and deepcopy may fail for types containing Modules, e.g. Core.TypeName).
@@ -1083,6 +1083,17 @@ function test_rule(
     redirector = print_results ? ((f, x) -> f()) : redirect_stdout
     ts = redirector(devnull) do
         @testset "$(typeof(x))" begin
+            # Verify rules give identical results on a second call,
+            # i.e. the rule does not corrupt its internal state across calls.
+            @testset "Reuse" begin
+                if test_fwd && !interface_only
+                    test_frule_reuse(x_ẋ...; frule)
+                end
+                if test_rvs && !interface_only
+                    test_rrule_reuse(rng, x_x̄...; rrule)
+                end
+            end
+
             # Test that the interface is basically satisfied (checks types / memory addresses).
             @testset "Interface (1)" begin
                 test_fwd && test_frule_interface(x_ẋ...; frule)
@@ -1098,16 +1109,6 @@ function test_rule(
                     test_rrule_correctness(
                         rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
                     )
-                end
-            end
-
-            # Verify rules give identical results on a second call.
-            @testset "Reuse" begin
-                if test_fwd && !interface_only
-                    test_frule_reuse(x_ẋ...; frule)
-                end
-                if test_rvs && !interface_only
-                    test_rrule_reuse(rng, x_x̄...; rrule)
                 end
             end
 

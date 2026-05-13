@@ -1,3 +1,30 @@
+# Test Mooncake primitives with deliberately broken rules to test test_frule_reuse
+# and test_rrule_reuse. Each broken rule corrupts a counter on the first call so
+# the second call returns a different primal output (for the same inputs)
+_fwd_counter = Ref(0)
+_rvs_counter = Ref(0)
+_broken_fwd_f(x::Float64) = x^2
+_broken_rvs_f(x::Float64) = x^2
+Mooncake.@is_primitive Mooncake.DefaultCtx Tuple{typeof(_broken_fwd_f),Float64}
+Mooncake.@is_primitive Mooncake.DefaultCtx Tuple{typeof(_broken_rvs_f),Float64}
+function Mooncake.frule!!(::Dual{typeof(_broken_fwd_f),NoTangent}, x::Dual{Float64,Float64})
+    xp = primal(x)
+    y = xp^2 + float(_fwd_counter[])
+    _fwd_counter[] += 1
+    return Dual(y, 2 * xp * tangent(x))
+end
+function Mooncake.rrule!!(
+    ::CoDual{typeof(_broken_rvs_f),NoFData}, x::CoDual{Float64,NoFData}
+)
+    xp = primal(x)
+    y = xp^2 + float(_rvs_counter[])
+    pb!! = function (ŷ::Float64)
+        _rvs_counter[] += 1
+        return NoRData(), 2 * xp * ŷ
+    end
+    return CoDual(y, NoFData()), pb!!
+end
+
 @testset "test_utils" begin
     @testset "has_equal_data" begin
         @test !has_equal_data(5.0, 4.0)
@@ -146,5 +173,31 @@
         @test TestUtils.count_allocs(isbitstype, Float64) == 0
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Float64}) == 0
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Vector{Float64}}) == 0
+    end
+    @testset "test_frule_reuse catches state-corrupting Mooncake rules" begin
+        _fwd_counter[] = 0
+        broken_frule = build_frule(
+            get_interpreter(ForwardMode), Tuple{typeof(_broken_fwd_f),Float64}
+        )
+        inner_ts = Test.DefaultTestSet("inner"; verbose=false)
+        Test.push_testset(inner_ts)
+        TestUtils.test_frule_reuse(
+            zero_dual(_broken_fwd_f), zero_dual(1.5); frule=broken_frule
+        )
+        Test.pop_testset()
+        @test any(r -> r isa Test.Fail, inner_ts.results)
+    end
+    @testset "test_rrule_reuse catches state-corrupting Mooncake rules" begin
+        _rvs_counter[] = 0
+        broken_rrule = build_rrule(
+            get_interpreter(ReverseMode), Tuple{typeof(_broken_rvs_f),Float64}
+        )
+        inner_ts = Test.DefaultTestSet("inner"; verbose=false)
+        Test.push_testset(inner_ts)
+        TestUtils.test_rrule_reuse(
+            StableRNG(1), zero_codual(_broken_rvs_f), zero_codual(1.5); rrule=broken_rrule
+        )
+        Test.pop_testset()
+        @test any(r -> r isa Test.Fail, inner_ts.results)
     end
 end
