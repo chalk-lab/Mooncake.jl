@@ -125,9 +125,9 @@ Width-aware forward value type query.
 
     # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
     # Abstract concrete `P` (e.g. `Real`, `AbstractFloat`) returns `Dual`
-    # (UnionAll) — broad enough for legacy construction (it has constructors)
-    # but doesn't accept `NDual` shapes. Step 3 (audit) wants a broader
-    # width-aware abstract dual; deferred (see comment at bottom).
+    # (UnionAll) — broad enough for legacy construction but doesn't accept
+    # `NDual` shapes. Step 3 (audit) wants a broader width-aware abstract
+    # dual; deferred to a future refactor (see audit completion note).
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end
