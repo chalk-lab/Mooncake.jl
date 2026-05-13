@@ -1,4 +1,4 @@
-# Test Mooncake primitives with deliberately broken rules to test test_frule_reuse
+# Test Mooncake primitives with broken rules to test test_frule_reuse
 # and test_rrule_reuse. Each broken rule corrupts a counter on the first call so
 # the second call returns a different primal output (for the same inputs)
 _fwd_counter = Ref(0)
