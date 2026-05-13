@@ -226,6 +226,19 @@ end
         @test typeof(d) === Lifted{Vector{Float64},2,Vector{NDual{Float64,2}}}
         @test _unlift(d) ==
             [NDual{Float64,2}(1.0, (10.0, 10.0)), NDual{Float64,2}(2.0, (20.0, 20.0))]
+
+        # Audit step 5 / test #7: top-level `NTangent{NTuple{N, Array}}` form,
+        # matching the canonical width-N return of `tangent(::Array{NDual,D})`.
+        d_nt1 = Lifted{Vector{Float64},1}([1.0], NTangent(([2.0],)))
+        @test typeof(d_nt1) === Lifted{Vector{Float64},1,Vector{NDual{Float64,1}}}
+        @test _unlift(d_nt1) == [NDual{Float64,1}(1.0, (2.0,))]
+        # Audit step 5 / test #8: outer tangent of width-1 array slot is the
+        # top-level `NTangent{Tuple{Vector{Float64}}}`, not bare Array.
+        @test tangent(d_nt1) isa NTangent{Tuple{Vector{Float64}}}
+        @test tangent(d_nt1).lanes[1] == [2.0]
+        # Width-N NTangent form round-trips: per-lane arrays zip into NDual elements.
+        d_nt2 = Lifted{Vector{Float64},2}([1.0], NTangent(([2.0], [3.0])))
+        @test _unlift(d_nt2) == [NDual{Float64,2}(1.0, (2.0, 3.0))]
     end
 
     @testset "2-arg constructor: Tuple primal (single outer Lifted)" begin

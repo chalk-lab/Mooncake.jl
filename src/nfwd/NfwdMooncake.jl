@@ -1180,10 +1180,33 @@ function (::Type{Array{NDual{T,N},D}})(
 ) where {T<:IEEEFloat,N,D}
     return map((p, t) -> NDual{T,N}(p, t.lanes), primal, tangent)
 end
+# Top-level `NTangent{NTuple{N, Array{T,D}}}`: zip the per-lane arrays into
+# the per-element NDual partials. Mirrors the canonical width-N return of
+# `tangent(::Array{NDual{T,N},D})` so the inner-V ctor accepts the same
+# shape that the matching accessor emits.
+function (::Type{Array{NDual{T,N},D}})(
+    primal::Array{T,D}, tangent::NTangent{NTuple{N,Array{T,D}}}
+) where {T<:IEEEFloat,N,D}
+    return map(eachindex(primal)) do i
+        NDual{T,N}(primal[i], ntuple(n -> tangent.lanes[n][i], Val(N)))
+    end
+end
 function (::Type{Array{Complex{NDual{T,N}},D}})(
     primal::Array{Complex{T},D}, tangent::Array{Complex{T},D}
 ) where {T<:IEEEFloat,N,D}
     return map((p, t) -> Complex{NDual{T,N}}(p, t), primal, tangent)
+end
+# Top-level `NTangent{NTuple{N, Array{Complex{T},D}}}` form, mirroring the
+# canonical width-N return of `tangent(::Array{Complex{NDual{T,N}},D})`.
+function (::Type{Array{Complex{NDual{T,N}},D}})(
+    primal::Array{Complex{T},D}, tangent::NTangent{NTuple{N,Array{Complex{T},D}}}
+) where {T<:IEEEFloat,N,D}
+    return map(eachindex(primal)) do i
+        z = primal[i]
+        re_lanes = ntuple(n -> real(tangent.lanes[n][i]), Val(N))
+        im_lanes = ntuple(n -> imag(tangent.lanes[n][i]), Val(N))
+        Complex(NDual{T,N}(real(z), re_lanes), NDual{T,N}(imag(z), im_lanes))
+    end
 end
 
 # ── Wrapper-type Lifted constructors ─────────────────────────────────────────

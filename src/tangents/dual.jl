@@ -34,11 +34,13 @@ tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
 function tangent_type(::Val{N}, ::Type{P}) where {N,P}
     T = tangent_type(P)
     T === NoTangent && return NoTangent
-    # At width=1 keep the bare tangent type (no NTangent wrap). Chunked
-    # `NTangent{NTuple{N, T}}` is only meaningful at N>=2; using it at N=1
-    # would break the many existing rules whose signature constrains
-    # `Dual{P, T<:StandardTangentType}` (e.g. the structured-getfield rule),
-    # since `NTangent` is not `<:StandardTangentType`.
+    # Width 1 still collapses to bare `T`: the audit's full step-5 migration
+    # would wrap to `NTangent{Tuple{T}}` here, but that produces a slot/value
+    # mismatch for generic `Dual{P,T}` runtime constructions (the OC slot
+    # would expect `Dual{P, NTangent{Tuple{T}}}` while every `zero_dual` /
+    # `Dual(p,t)` site still emits the bare form). Migrating those sites is
+    # the remaining bulk of audit step 5; this collapse stays as the
+    # transitional shim until the rule/transform side is updated.
     N == 1 && return T
     return NTangent{NTuple{N,T}}
 end
