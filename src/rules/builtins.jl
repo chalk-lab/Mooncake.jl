@@ -1477,15 +1477,38 @@ end
 
 # Lifted-aware typeassert: narrow `P` to the asserted type so the produced
 # Lifted matches the OC's static return slot (`Lifted` `P` is invariant, so
-# `Lifted{Any}` doesn't subtype `Lifted{Float64}`). The runtime `V` is
-# preserved — it's already canonical for the asserted concrete type.
+# `Lifted{Any}` doesn't subtype `Lifted{Float64}`).
+#
+# For concrete asserted `T`: the runtime `V` is preserved (already canonical
+# for the asserted concrete type).
+#
+# For abstract asserted `T` (audit step 3): convert `NDual`-shaped inner V
+# to the canonical parallel-`Dual` form so the slot's V matches
+# `dual_type(Val(N), abstract_T) === Dual` UnionAll. Without this,
+# `Lifted{Real, 1, NDual{Float64, 1}}` would be noncanonical per the audit.
+@inline _canonical_abstract_inner(::Val{1}, d::NDual{T,1}) where {T} =
+    Dual(d.value, d.partials[1])
+@inline _canonical_abstract_inner(::Val{N}, d::NDual{T,N}) where {T,N} =
+    Dual(d.value, NTangent(d.partials))
+@inline _canonical_abstract_inner(::Val, d::Dual) = d
+@inline _canonical_abstract_inner(::Val, d) = d  # fallback: array / complex / etc.
+
 @inline function frule!!(
     ::Lifted{typeof(typeassert),N}, x::Lifted, ::Lifted{Type{T},N}
 ) where {N,T}
     p = primal(x)
     typeassert(p, T)
     inner = _unlift(x)
-    return Lifted{T,N,typeof(inner)}(inner)
+    if isconcretetype(T)
+        return Lifted{T,N,typeof(inner)}(inner)
+    else
+        # V = `dual_type(Val(N), abstract_T) === Dual` UnionAll. Convert the
+        # NDual-shaped inner into the parallel `Dual{Q, T_q}` form so the
+        # `value::Dual` field of `Lifted{T, N, Dual}` accepts it.
+        canonical = _canonical_abstract_inner(Val(N), inner)
+        V = Mooncake.dual_type(Val(N), T)
+        return Lifted{T,N,V}(canonical)
+    end
 end
 @inline function frule!!(::Lifted{typeof(typeassert),N}, x::Lifted, type::Lifted) where {N}
     typeassert(primal(x), primal(type))

@@ -193,6 +193,30 @@ end
         @test !Mooncake.verify_lifted_type(nested)
     end
 
+    @testset "typeassert canonical V (audit test #14)" begin
+        # Audit step 3: `typeassert(::Real)` of a concrete `NDual`-backed
+        # value canonicalises to the abstract slot's canonical inner V
+        # (`dual_type(Val(1), Real) === Dual` UnionAll). The runtime value
+        # is converted from `NDual{Float64, 1}(p, (t,))` to the parallel
+        # `Dual{Float64, Float64}(p, t)` form, stored inside the wider
+        # `Lifted{Real, 1, Dual}` slot.
+        x = Lifted{Float64,1}(3.0, 1.5)
+        type_assert_f = Lifted{typeof(typeassert),1}(typeassert, NoTangent())
+        real_type_lifted = Lifted{Type{Real},1}(Real, NoTangent())
+        y = Mooncake.frule!!(type_assert_f, x, real_type_lifted)
+        # The output's P parameter is narrowed to the asserted abstract type.
+        @test y isa Lifted{Real,1}
+        # The output's V parameter is the canonical `dual_type(Val(1), Real)`
+        # — the `Dual` UnionAll — so any concrete `Dual{Q, T_q}` runtime
+        # value fits inside the `value::Dual` field.
+        @test typeof(y).parameters[3] === Mooncake.dual_type(Val(1), Real)
+        # And the runtime inner is a converted parallel-Dual, not the
+        # original NDual.
+        @test Mooncake._unlift(y) isa Dual
+        @test primal(Mooncake._unlift(y)) === 3.0
+        @test tangent(Mooncake._unlift(y)) === 1.5
+    end
+
     @testset "verify_dual_type accepts valid bare inner shapes" begin
         # Bare canonical-V leaves leak through helper-API boundaries; they
         # should validate as legitimate inner duals.
