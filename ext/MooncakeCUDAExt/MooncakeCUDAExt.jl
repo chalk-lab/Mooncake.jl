@@ -3084,9 +3084,11 @@ end
     y = primal(lane_results[1])
     tangents = ntuple(i -> tangent(lane_results[i]), Val(N))
     all(t -> t isa NoTangent, tangents) && return Mooncake.zero_lifted(Val(N), y)
-    return Mooncake.Lifted{typeof(y),N}(
-        y, N == 1 ? tangents[1] : Mooncake.NTangent(tangents)
-    )
+    # Audit step 5: uniform `NTangent(tangents)` at every positive width;
+    # the singleton-`NTangent` ctor on `Dual{P,T}` unwraps for the width-1
+    # bare carve-out, and the specialised IEEEFloat / Array / Memory inner
+    # ctors all accept top-level `NTangent`.
+    return Mooncake.Lifted{typeof(y),N}(y, Mooncake.NTangent(tangents))
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.Broadcast.materialize),N},
