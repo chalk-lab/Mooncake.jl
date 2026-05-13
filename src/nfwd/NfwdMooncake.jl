@@ -1655,20 +1655,42 @@ end
     # via the generic Lifted-aware adapter with NDual-bearing arguments.
     primal(m::Memory{<:NDual{T}}) where {T} = map(d -> d.value, m)
     primal(m::Memory{<:Complex{<:NDual}}) = map(z -> complex(z.re.value, z.im.value), m)
-    tangent(m::Memory{NDual{T,N}}) where {T,N} = map(d -> NTangent(d.partials), m)
+    # Audit Todo 4: top-level `NTangent{NTuple{N, Memory{T}}}` mirrors the
+    # `Array{NDual{T,N},D}` accessor's top-level shape and matches the
+    # canonical `tangent_type(Val(N), Memory{T}) === NTangent{NTuple{N,
+    # Memory{T}}}` query. Previous per-element `Memory{NTangent}` shape
+    # was inconsistent with the chunked Array representation.
+    function tangent(m::Memory{NDual{T,N}}) where {T,N}
+        return NTangent(ntuple(i -> map(d -> d.partials[i], m), Val(N)))
+    end
     function tangent(m::Memory{Complex{NDual{T,N}}}) where {T,N}
-        return map(
-            z -> NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N))),
-            m,
+        return NTangent(
+            ntuple(i -> map(z -> complex(z.re.partials[i], z.im.partials[i]), m), Val(N))
         )
     end
     primal(x::MemoryRef{<:NDual}) = memoryref(primal(x.mem), Core.memoryrefoffset(x))
     function primal(x::MemoryRef{<:Complex{<:NDual}})
         return memoryref(primal(x.mem), Core.memoryrefoffset(x))
     end
-    tangent(x::MemoryRef{<:NDual}) = memoryref(tangent(x.mem), Core.memoryrefoffset(x))
-    function tangent(x::MemoryRef{<:Complex{<:NDual}})
-        return memoryref(tangent(x.mem), Core.memoryrefoffset(x))
+    # Audit Todo 4: top-level `NTangent{NTuple{N, MemoryRef{T}}}` with one
+    # MemoryRef per lane (offset preserved on each lane), mirroring the
+    # Array/Memory pattern above.
+    function tangent(x::MemoryRef{NDual{T,N}}) where {T,N}
+        offset = Core.memoryrefoffset(x)
+        return NTangent(
+            ntuple(i -> memoryref(map(d -> d.partials[i], x.mem), offset), Val(N))
+        )
+    end
+    function tangent(x::MemoryRef{Complex{NDual{T,N}}}) where {T,N}
+        offset = Core.memoryrefoffset(x)
+        return NTangent(
+            ntuple(
+                i -> memoryref(
+                    map(z -> complex(z.re.partials[i], z.im.partials[i]), x.mem), offset
+                ),
+                Val(N),
+            ),
+        )
     end
 end
 

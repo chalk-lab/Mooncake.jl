@@ -376,6 +376,27 @@ end
         end
     end
 
+    @testset "Memory / MemoryRef NDual tangent is top-level NTangent (audit Todo 4)" begin
+        @static if VERSION >= v"1.11-rc4"
+            # Audit Todo 4: `tangent(::Memory{NDual{T,N}})` returns top-level
+            # `NTangent{NTuple{N, Memory{T}}}` (one Memory per lane), mirroring
+            # `tangent(::Array{NDual{T,N},D}) === NTangent{NTuple{N, Array{T,D}}}`.
+            m_pri = Memory{Float64}(undef, 2)
+            m_tan = Memory{Float64}(undef, 2)
+            m_pri[1], m_pri[2] = 1.0, 2.0
+            m_tan[1], m_tan[2] = 10.0, 20.0
+            m = Memory{NDual{Float64,2}}(m_pri, m_tan)
+            mt = Mooncake.tangent(m)
+            @test mt isa NTangent{NTuple{2,Memory{Float64}}}
+            @test mt.lanes[1][1] === 10.0 && mt.lanes[1][2] === 20.0
+            @test mt.lanes[2][1] === 10.0 && mt.lanes[2][2] === 20.0
+
+            mr = Core.memoryrefnew(m)
+            mrt = Mooncake.tangent(mr)
+            @test mrt isa NTangent{NTuple{2,MemoryRef{Float64}}}
+        end
+    end
+
     @testset "Accessors and round-trip" begin
         # Scalar IEEEFloat: primal/tangent/extract delegate to the inner NDual.
         d = Lifted{Float64,2}(3.0, (1.0, 0.0))
