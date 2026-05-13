@@ -429,19 +429,16 @@ end
     return Expr(:tuple, (:(args[$i]) for i in (K + 1):n)...)
 end
 
-function _group_vararg_dual(w::Val{1}, group_primal, rest)
-    # Width 1: bare per-element tangent tuple (no `NTangent` wrap), so the
-    # resulting `Dual` matches the canonical `dual_type(Val(1), Tuple{...})`
-    # which uses bare T at N=1. If the inputs have already been lifted, preserve
-    # their canonical inner values directly instead of rebuilding from `tangent`.
+# Audit step 5: unified vararg grouping at every positive width. Always
+# emit `NTangent(per_dir)` so the resulting `Dual{Tuple{...}, NTangent{...}}`
+# uses the canonical chunked shape regardless of width. Width-1 lifted
+# inputs are still routed directly through `_unlift` to preserve their
+# element-wise inner Vs.
+function _group_vararg_dual(::Val{N}, group_primal, rest) where {N}
     if all(x -> x isa Lifted, rest)
         inner = map(_unlift, rest)
-        return Lifted{typeof(group_primal),1,typeof(inner)}(inner)
+        return Lifted{typeof(group_primal),N,typeof(inner)}(inner)
     end
-    return Dual(group_primal, map(tangent, rest))
-end
-
-function _group_vararg_dual(::Val{N}, group_primal, rest) where {N}
     per_dir = ntuple(Val(N)) do i
         map(x -> _partial_i(x, i), rest)
     end
