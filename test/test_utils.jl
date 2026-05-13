@@ -147,4 +147,21 @@
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Float64}) == 0
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Vector{Float64}}) == 0
     end
+    @testset "max_norm_perturbation kwarg for testing rules" begin
+        rng = Xoshiro(1)
+        # log is undefined for x ≤ 0: without a bound, the ε=1e-2 step evaluates
+        # log(0.005 - 0.01) = log(-0.005) and throws a DomainError.
+        @test_throws DomainError log(0.005 - 1.0e-2)
+
+        # With a bound of 1e-3, all ε values keep x+ε*ẋ > 0 and the rule test passes.
+        ts = TestUtils.test_rule(
+            rng,
+            log,
+            0.005;
+            is_primitive=false,
+            print_results=false,
+            max_norm_perturbation=1.0e-3,
+        )
+        @test !ts.anynonpass
+    end
 end
