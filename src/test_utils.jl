@@ -597,10 +597,8 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule)
     )
     x̄_rvs_a = pb_a!!(Mooncake.rdata(ȳ_a))
 
-    # Second forward pass with the same rule.
     y_ȳ_b, pb_b!! = rrule(inputs_b...)
     y_primal_b = tangent(y_ȳ_b) isa NoFData ? primal(y_ȳ_b) : _deepcopy(primal(y_ȳ_b))
-    # Same output cotangent as run A.
     ȳ_b = increment!!(
         set_to_zero!!(zero_tangent(primal(y_ȳ_b), tangent(y_ȳ_b))), _deepcopy(ŷ_delta)
     )
