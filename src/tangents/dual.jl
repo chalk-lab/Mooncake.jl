@@ -123,15 +123,7 @@ Width-aware forward value type query.
         return NamedTuple{names,InnerTup}
     end
 
-    # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
-    # Down to 2 residuals when lifted: `Matrix{NDual}(::Vector{NDual})` from
-    # `_collect`-on-Matrix paths. The IR-emit infers `Lifted{Matrix{Float64},
-    # 1, Matrix{NDual}}` for the return slot, but the runtime bare_result is
-    # `Vector{NDual}` (from an inner lgetfield path inside `Base._collect`).
-    # Deep IR-emit/_collect-specific; outside audit scope. See
-    # `temp/primal-mode-audit-completion-status.md`.
-    isconcretetype(P) || return Dual
-    return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
+    return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
 end
 
 @inline function _uses_structural_dual_type(::Type{P}) where {P}
