@@ -552,14 +552,20 @@ end
 # arg). Lifted-typed bodies below dispatch the runtime inner V into the
 # matching kernel: `Memory{<:_HasNDual}` / `MemoryRef{<:_HasNDual}` for the
 # canonical NDual path; `Dual{<:Memory}` / `Dual{<:MemoryRef}` for the legacy
+@inline _memrefnew_tan(t) = t
+@inline _memrefnew_tan(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
+
 # Dual-wrapped path (non-IEEEFloat element types whose `dual_type` falls
-# through to `Dual{P, Tangent{...}}`).
+# through to `Dual{P, Tangent{...}}`). At width 1 with the audit step-5
+# `NTangent` wrap, the tangent slot is `NTangent{Tuple{Memory}}`; unwrap
+# to the bare `Memory` before calling `memoryrefnew`.
 @inline _memoryrefnew_kernel(x::Dual{<:Memory}) = Dual(
-    memoryrefnew(primal(x)), memoryrefnew(tangent(x))
+    memoryrefnew(primal(x)), memoryrefnew(_memrefnew_tan(tangent(x)))
 )
 @inline _memoryrefnew_kernel(x::Memory{<:_HasNDual}) = memoryrefnew(x)
 @inline _memoryrefnew_kernel(x::Dual{<:MemoryRef}, ii::Dual{Int}) = Dual(
-    memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii))
+    memoryrefnew(primal(x), primal(ii)),
+    memoryrefnew(_memrefnew_tan(tangent(x)), primal(ii)),
 )
 @inline function _memoryrefnew_kernel(x::MemoryRef{<:_HasNDual}, ii::Dual{Int})
     return memoryrefnew(x, primal(ii))
@@ -568,7 +574,7 @@ end
     x::Dual{<:MemoryRef}, ii::Dual{Int}, boundscheck::Dual{Bool}
 )
     y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
+    dy = memoryrefnew(_memrefnew_tan(tangent(x)), primal(ii), primal(boundscheck))
     return Dual(y, dy)
 end
 @inline function _memoryrefnew_kernel(
