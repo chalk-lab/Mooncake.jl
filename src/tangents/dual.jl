@@ -574,16 +574,11 @@ end
     lanes = tangent.lanes
     inner = ntuple(Val(fieldcount(P))) do i
         Vi = fieldtype(InnerT, i)
-        if N == 1
-            # Audit step 5: per-element safety — if the single lane is itself
-            # `NoTangent` (no derivatives), construct the inner V with
-            # `NoTangent()` instead of trying `NoTangent[i]`.
-            lane = lanes[1]
-            lane isa NoTangent ? Vi(primal[i], NoTangent()) : Vi(primal[i], lane[i])
-        else
-            partials = ntuple(d -> lanes[d][i], Val(N))
-            Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
-        end
+        # Audit Todo 7: unified width-1/N path. The per-element `partials` is
+        # always an `NTuple{N, Tᵢ}`; the inner V's constructor accepts it at
+        # any width. `NoTangent` lanes degrade per-element to `NoTangent()`.
+        partials = ntuple(d -> _lane_field(lanes[d], i), Val(N))
+        Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
     end
     return Lifted{P,N,InnerT}(inner)
 end
@@ -601,15 +596,19 @@ end
     lanes = tangent.lanes
     inner = ntuple(Val(fieldcount(P))) do i
         Vi = fieldtype(InnerTup, i)
-        if N == 1
-            Vi(primal[i], lanes[1][i])
-        else
-            partials = ntuple(d -> lanes[d][i], Val(N))
-            Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
-        end
+        # Audit Todo 7: unified width-1/N path; see the Tuple-primal ctor above.
+        partials = ntuple(d -> _lane_field(lanes[d], i), Val(N))
+        Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
     end
     return Lifted{P,N,InnerT}(NamedTuple{names}(inner))
 end
+
+# Per-lane element accessor used by the unified width-1/N inner-V constructors
+# above. A `NoTangent` lane has no per-element structure, so `lane[i]` would
+# error — return `NoTangent()` instead and let the per-element guard collapse
+# to `NoTangent()` when every direction is `NoTangent`.
+@inline _lane_field(lane::NoTangent, i::Integer) = NoTangent()
+@inline _lane_field(lane, i::Integer) = lane[i]
 @inline @generated function Lifted{P,N}(
     primal::P, tangent::NamedTuple{names}
 ) where {P<:NamedTuple{names},N} where {names}
