@@ -110,6 +110,20 @@
             @test_throws ErrorException bad_rule(Mooncake.Dual(5.0, 1.0))
         end
 
+        @testset "malformed Lifted output detected (audit test #13)" begin
+            # `Lifted{Float64, 2, Dual{Float64, Float64}}` is non-canonical:
+            # the slot says width 2 but the inner V is a width-1 `Dual`.
+            # `verify_lifted_type` should reject this, and the fallback path
+            # for non-`Dual` rule outputs (here a `Lifted`) must flag it.
+            bad_inner = Mooncake.Dual(1.0, 0.0)
+            bad_lifted = Mooncake.Lifted{Float64,2,typeof(bad_inner)}(bad_inner)
+            bad_rule_lifted = Mooncake.DebugFRule((x...,) -> bad_lifted)
+            ok_input = Mooncake.Lifted{Float64,2}(5.0, (1.0, 0.0))
+            @test_throws ErrorException bad_rule_lifted(
+                Mooncake.Lifted{typeof(identity),2}(identity, NoTangent()), ok_input
+            )
+        end
+
         @testset "error messages include type info" begin
             rule = Mooncake.build_frule(zero_dual(identity), [1.0]; debug_mode=true)
 
