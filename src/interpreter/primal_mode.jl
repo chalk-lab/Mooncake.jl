@@ -161,7 +161,14 @@ function _uninit_dual_fallback(w::Val{N}, v) where {N}
             ),
         )
     end
-    return Lifted{_typeof(v),N}(uninit_dual(v))
+    # Audit step 5: route through 2-arg `Lifted{P, N}(primal, tangent)` ctor
+    # when the bare `uninit_dual(v)` shape differs from the canonical inner
+    # V, so the inner V matches `dual_type(Val(N), P)` (NTangent-wrapped at
+    # width N>=2 / when carve-out is lifted).
+    ud = uninit_dual(v)
+    InnerT = dual_type(w, _typeof(v))
+    return typeof(ud) === InnerT ? Lifted{_typeof(v),N,InnerT}(ud) :
+           Lifted{_typeof(v),N}(primal(ud), tangent(ud))
 end
 
 # Extract the integer N from `Val{N}`. Used at IR-emit time to construct
