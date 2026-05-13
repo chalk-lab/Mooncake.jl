@@ -87,9 +87,28 @@ end
     NDual = Mooncake.NDual
     NTangent = Mooncake.NTangent
     lifted_type = Mooncake.lifted_type
+    tangent_type = Mooncake.tangent_type
+    dual_type = Mooncake.dual_type
     _lift = Mooncake._lift
     _unlift = Mooncake._unlift
     extract = Mooncake.extract
+
+    @testset "tangent_type wraps once at width 1" begin
+        # Audit test #1: width 1 wraps to a top-level `NTangent{Tuple{T}}` so
+        # the width-aware tangent type is parallel with width N>=2 chunked.
+        @test tangent_type(Val(1), Float64) === NTangent{Tuple{Float64}}
+        @test tangent_type(Val(1), Vector{Float64}) === NTangent{Tuple{Vector{Float64}}}
+        @test tangent_type(Val(2), Float64) === NTangent{Tuple{Float64,Float64}}
+        # `NoTangent`-leaf primals stay as `NoTangent` at any width.
+        @test tangent_type(Val(1), Int) === NoTangent
+        # `dual_type(Val(1), P)` for generic concrete `P` deliberately keeps
+        # the legacy bare-`T` parallel `Dual{P,T}` form. The OC slot type must
+        # match the runtime `Dual{P,T}` produced by `zero_dual` / `Dual(p,t)`
+        # call sites; flipping `dual_type` too would force a parallel
+        # migration of every generic-P construction site (audit step 5,
+        # remaining bulk).
+        @test dual_type(Val(1), Int) === Mooncake.Dual{Int,NoTangent}
+    end
 
     @testset "lifted_type" begin
         # Val(0) is primal passthrough.

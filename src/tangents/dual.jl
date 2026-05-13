@@ -34,14 +34,10 @@ tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
 function tangent_type(::Val{N}, ::Type{P}) where {N,P}
     T = tangent_type(P)
     T === NoTangent && return NoTangent
-    # Width 1 still collapses to bare `T`: the audit's full step-5 migration
-    # would wrap to `NTangent{Tuple{T}}` here, but that produces a slot/value
-    # mismatch for generic `Dual{P,T}` runtime constructions (the OC slot
-    # would expect `Dual{P, NTangent{Tuple{T}}}` while every `zero_dual` /
-    # `Dual(p,t)` site still emits the bare form). Migrating those sites is
-    # the remaining bulk of audit step 5; this collapse stays as the
-    # transitional shim until the rule/transform side is updated.
-    N == 1 && return T
+    # Width 1 wraps once (`NTangent{Tuple{T}}`); see also `dual_type(Val(1), P)`
+    # which deliberately stays at the legacy `Dual{P, tangent_type(P)}` form
+    # for generic `P` so the parallel-Dual OC slot type matches runtime values.
+    # These two queries are intentionally decoupled at width 1 (audit step 5).
     return NTangent{NTuple{N,T}}
 end
 
@@ -121,7 +117,11 @@ Width-aware forward value type query.
         return NamedTuple{names,InnerTup}
     end
 
-    return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
+    # Width 1: keep the legacy bare-`T` parallel form. `tangent_type(Val(1), P)`
+    # wraps in `NTangent{Tuple{T}}` but the generic-P parallel `Dual{P,T}` ctor
+    # sites still emit bare `T`, so the OC slot type must match (audit step 5).
+    isconcretetype(P) || return Dual
+    return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end
 
 @inline function _uses_structural_dual_type(::Type{P}) where {P}
