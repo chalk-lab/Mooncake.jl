@@ -124,6 +124,8 @@ Width-aware forward value type query.
     end
 
     # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
+    # Down to 2 residuals when lifted (`Matrix{NDual}(::Vector{NDual})` reshape
+    # in `Base._collect` paths) — see `temp/primal-mode-audit-completion-status.md`.
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end
