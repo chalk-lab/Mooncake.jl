@@ -334,6 +334,11 @@ end
 # bodies use the same `ntuple(closure, Val(N))` pattern at any width — at width 1
 # the closure produces a 1-tuple `(t,)` which this method unwraps to scalar `t`.
 Dual{P,T}(value, t::NTuple{1,T}) where {P,T} = Dual{P,T}(value, t[1])
+# NTangent-wrapped singleton unwraps to the bare tangent for the bare-T form.
+# Mirrors the 1-tuple convenience above and lets `_lifted_frule_wrapper_result`
+# / similar sites always pass `NTangent(tangents)` regardless of width while the
+# `dual_type(Val(1), generic_P)` carve-out continues to choose the bare form.
+Dual{P,T}(value, t::NTangent{Tuple{T}}) where {P,T} = Dual{P,T}(value, t.lanes[1])
 
 # Chunked structured `Dual{P, NTangent{NTuple{N, T}}}`: pre-computed lanes wrap
 # in NTangent; scalar tangent broadcasts across N lanes.

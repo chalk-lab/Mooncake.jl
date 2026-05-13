@@ -723,11 +723,13 @@ function frule_wrapper(::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}) where
 end
 
 @inline function _lifted_frule_wrapper_result(::Val{N}, Ω, tangents) where {N}
-    return if N == 1
-        Lifted{_typeof(Ω),N}(Ω, tangents[1])
-    else
-        Lifted{_typeof(Ω),N}(Ω, NTangent(tangents))
-    end
+    # Audit step 5: uniform `NTangent(tangents)` at every positive width.
+    # The width-1 path used to pass `tangents[1]` (bare) — the singleton-
+    # NTangent constructor on `Dual{P,T}` unwraps back to bare when the
+    # carve-out keeps `dual_type(Val(1), generic_P) === Dual{P,T}`, while
+    # the IEEEFloat / Array / Memory specialised inner ctors all accept
+    # `NTangent{NTuple{1, T}}` natively.
+    return Lifted{_typeof(Ω),N}(Ω, NTangent(tangents))
 end
 
 # Pull `f` out of the Vararg so `N` is bound (via the first arg's width)

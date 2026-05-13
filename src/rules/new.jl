@@ -88,7 +88,11 @@ end
         if DT isa DataType && DT <: AbstractArray
             return Lifted{P,N}(map(v -> zero_dual(Val(N), v), y))
         end
-        return Lifted{P,N}(Dual(y, zero_tangent(y)))
+        # Audit step 5: route through the 2-arg Lifted ctor so the inner V
+        # matches `dual_type(Val(N), P)` (NTangent-wrapped at width N>=2 via
+        # the parallel `Dual{P, NTangent{NTuple{N, T}}}` ctor's scalar
+        # broadcast; bare at width 1 under the carve-out).
+        return Lifted{P,N}(y, zero_tangent(y))
     end
 
     # Complex primal with NDual fields: bare Complex{NDual}.
@@ -160,21 +164,16 @@ end
         y = _new_(P, primals_extracted...)
         T = tangent_type(P)
         T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
-        if N == 1
-            return Lifted{P,N}(
-                Dual(
-                    y,
-                    build_output_tangent(
-                        P, primals_extracted, _new_field_tangents(P, bare_x, 1)
-                    ),
-                ),
-            )
-        end
+        # Audit step 5: uniform `NTangent(tangent_dirs)` at every positive
+        # width, routed through the 2-arg `Lifted{P,N}(primal, tangent)`
+        # ctor so the inner V matches `dual_type(Val(N), P)` (the
+        # singleton-NTangent `Dual{P,T}` ctor unwraps for the bare carve-
+        # out case at width 1).
         tangent_dirs = ntuple(Val(N)) do dir
             dir_tangents = _new_field_tangents(P, bare_x, dir)
             build_output_tangent(P, primals_extracted, dir_tangents)
         end
-        return Lifted{P,N}(Dual(y, NTangent(tangent_dirs)))
+        return Lifted{P,N}(y, NTangent(tangent_dirs))
     end
 
     # No NDual content (e.g. all-non-differentiable args): pure struct construction.
@@ -183,7 +182,8 @@ end
     T = tangent_type(P)
     T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
     field_tangents = map(_new_field_tangent_width1, bare_x)
-    return Lifted{P,N}(Dual(y, build_output_tangent(P, primals, field_tangents)))
+    # Same uniform routing: 2-arg Lifted ctor, scalar tangent broadcasts.
+    return Lifted{P,N}(y, build_output_tangent(P, primals, field_tangents))
 end
 
 @inline _new_field_primal_width1(v) = __get_primal(v)
