@@ -1625,9 +1625,9 @@ end
 end
 @inline function _gradient_coeffs(output, ::Val{W}, chunk) where {W}
     if _has_ndual(output)
-        return ntuple(d -> _tangent_dir(output, d), Val(W))
+        return ntuple(d -> tangent(output, d), Val(W))
     elseif chunk == 1
-        return (_tangent_dir(output, 1),)
+        return (tangent(output, 1),)
     else
         throw(
             ArgumentError(
@@ -1835,7 +1835,7 @@ end
 
 @inline function _ndual_output_to_width1(output)
     _has_ndual(output) || return output
-    return Dual(_ndual_primal(output), _tangent_dir(output, 1))
+    return Dual(_ndual_primal(output), tangent(output, 1))
 end
 
 # `_has_ndual` only detects canonical width-N scalar/container leaves. Width-1
@@ -1855,11 +1855,11 @@ end
 
 @inline function _ndual_output_to_width1(output::Tuple)
     _has_dual_or_ndual(output) || return output
-    return Dual(_ndual_primal(output), _tangent_dir(output, 1))
+    return Dual(_ndual_primal(output), tangent(output, 1))
 end
 @inline function _ndual_output_to_width1(output::NamedTuple)
     _has_dual_or_ndual(output) || return output
-    return Dual(_ndual_primal(output), _tangent_dir(output, 1))
+    return Dual(_ndual_primal(output), tangent(output, 1))
 end
 
 # Lifted-typed rule outputs: unwrap to the inner V and recurse. The result is
@@ -1870,14 +1870,14 @@ end
 end
 
 # Struct-primal slot with NamedTuple inner V (recursive lift): build the result
-# Dual via `primal(slot)` / `_tangent_dir(slot, 1)`, which reconstruct the
+# Dual via `primal(slot)` / `tangent(slot, 1)`, which reconstruct the
 # original `P` and a matching `Tangent`/`MutableTangent`. Without this overload,
 # the generic Lifted path would unlift to the bare NamedTuple and produce a
 # `Dual{NamedTuple, NamedTuple}` whose primal type doesn't match the original
 # struct.
 @inline function _ndual_output_to_width1(output::Lifted{P,N,V}) where {P,N,V<:NamedTuple}
     P <: NamedTuple && return _ndual_output_to_width1(_unlift(output))
-    return Dual(primal(output), _tangent_dir(output, 1))
+    return Dual(primal(output), tangent(output, 1))
 end
 
 """
@@ -2508,7 +2508,7 @@ end
 @inline _jacobian_col_tangent(o::AbstractArray{<:Mooncake.NDual}) = map(
     d -> d.partials[1], o
 )
-@inline _jacobian_col_tangent(o::Lifted) = _tangent_dir(o, 1)
+@inline _jacobian_col_tangent(o::Lifted) = tangent(o, 1)
 @inline _jacobian_col_tangent(o) = tangent(o)
 
 @unstable @inline function value_and_jacobian!!(

@@ -182,13 +182,16 @@ end
 primal(x::Dual) = x.primal
 tangent(x::Dual) = x.tangent
 
-# `tangent(x, dir)` — per-lane tangent accessor. Delegates to the
-# specialised `_tangent_dir` fast paths (NDual, Complex{NDual}, NTangent,
-# Array{<:NDual}, etc.) defined in `nfwd/NfwdMooncake.jl`. The two-argument
-# overload must not materialise all lanes before selecting one — extracting
-# a single direction from a width-N container should remain O(container
-# size), not O(N × container size).
-@inline tangent(x, dir::Integer) = _tangent_dir(x, dir)
+# `tangent(x, dir)` — per-lane tangent accessor. Per-type fast paths for
+# NDual, Complex{NDual}, Array{<:NDual}, NTangent, Memory, MemoryRef, etc.
+# live in `nfwd/NfwdMooncake.jl`. The two-argument overload must not
+# materialise all lanes before selecting one — extracting a single
+# direction from a width-N container should remain O(container size), not
+# O(N × container size). Audit Todo 5: per-type lane-extraction methods
+# live directly on `tangent(x, ::Integer)` rather than a private
+# `_tangent_dir` helper. The untyped fallback below returns
+# `zero_tangent(x)` for primals that aren't NDual-bearing.
+@inline tangent(x, _::Integer) = zero_tangent(x)
 
 # `primal` / `tangent` on a bare element-wise tuple of inner duals (the inner
 # `V` of a `Lifted{<:Tuple, N}`). Recursive map so nested Tuple-of-Dual works.
@@ -749,7 +752,7 @@ end
     # direction; collect N lanes into the outer NTangent.
     lane_exprs = map(1:N) do lane
         elem_exprs = map(1:fieldcount(P)) do i
-            :(_tangent_dir(d.value[$i], $lane))
+            :(tangent(d.value[$i], $lane))
         end
         :(($(elem_exprs...),))
     end
@@ -765,7 +768,7 @@ end
     # NamedTuple{names, ...}}}` — per lane, build a `NamedTuple` of per-field
     # bare tangents at that direction; collect N lanes into the outer NTangent.
     lane_exprs = map(1:N) do lane
-        pairs = [Expr(:kw, n, :(_tangent_dir(d.value.$n, $lane))) for n in names]
+        pairs = [Expr(:kw, n, :(tangent(d.value.$n, $lane))) for n in names]
         :((; $(pairs...)))
     end
     return :(NTangent(($(lane_exprs...),)))
@@ -777,7 +780,7 @@ end
 # per-field primals; build a `Tangent` / `MutableTangent` whose fields carry
 # the per-field tangent (NTangent-bearing for IEEEFloat-leaf fields, mirroring
 # the existing `tangent(::Array{<:NDual})` convention). This shape is used
-# for address-map tracking; `_tangent_dir(slot, i)` produces the bare-tangent
+# for address-map tracking; `tangent(slot, i)` produces the bare-tangent
 # shape used by `_dot` for FD comparison.
 @generated function primal(d::Lifted{P,N,V}) where {P,N,V<:NamedTuple{names}} where {names}
     P <: NamedTuple && return :(map(primal, d.value))   # earlier method handles this
@@ -791,7 +794,7 @@ end
     # N lanes into an outer `NTangent`. Mirrors the structural-array
     # convention (`tangent(::Array{<:NDual})` returns top-level NTangent).
     lane_exprs = map(1:N) do lane
-        pairs = [Expr(:kw, n, :(_tangent_dir(d.value.$n, $lane))) for n in names]
+        pairs = [Expr(:kw, n, :(tangent(d.value.$n, $lane))) for n in names]
         :(Tangent((; $(pairs...))))
     end
     return :(NTangent(($(lane_exprs...),)))

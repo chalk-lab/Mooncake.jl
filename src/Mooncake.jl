@@ -196,7 +196,6 @@ import .NfwdMooncake:
     _dual_or_ndual,
     _ndual_width,
     _ndual_primal,
-    _tangent_dir,
     _tangent_dir_elem,
     _find_ndual_memref,
     _HasNDual

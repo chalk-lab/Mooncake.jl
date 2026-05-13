@@ -192,7 +192,7 @@ end
     t = tangent(v)
     return t isa Tuple{Vararg{NoTangent}} ? NoTangent() : t
 end
-@inline _new_field_tangent_width1(v::NamedTuple) = _tangent_dir(v, 1)
+@inline _new_field_tangent_width1(v::NamedTuple) = tangent(v, 1)
 
 @generated function _lifted_new_struct_namedtuple(
     ::Type{P}, ::Val{N}, bare_x::Tx
@@ -287,7 +287,7 @@ end
     ]
     return :(($(exprs...),))
 end
-@inline _new_field_tangent(::Type, x, dir) = _tangent_dir(x, dir)
+@inline _new_field_tangent(::Type, x, dir) = tangent(x, dir)
 # Match the primal reconstruction so nested fields get canonical tangents.
 @generated function _new_field_tangent(::Type{P}, x::Tx, dir) where {P<:Tuple,Tx<:Tuple}
     exprs = [
@@ -306,12 +306,12 @@ end
     return :(NamedTuple{$names}(($(exprs...),)))
 end
 @inline function _new_field_tangent(::Type{P}, x::NamedTuple, dir) where {P}
-    return build_output_tangent(P, Tuple(_ndual_primal(x)), Tuple(_tangent_dir(x, dir)))
+    return build_output_tangent(P, Tuple(_ndual_primal(x)), Tuple(tangent(x, dir)))
 end
 
-# `_find_ndual_memref`, `_ndual_primal`, `_ndual_width`, `_tangent_dir`, and
-# `_tangent_dir_elem` are defined in `nfwd/NfwdMooncake.jl` so that all NDual
-# container dispatch lives in one file.
+# `_find_ndual_memref`, `_ndual_primal`, `_ndual_width`, `tangent(x, ::Integer)`,
+# and `_tangent_dir_elem` are defined in `nfwd/NfwdMooncake.jl` so that all
+# NDual container dispatch lives in one file.
 
 @inline function _ndual_new_result(::Type{P}, y, x::Tuple, primals::Tuple) where {P}
     return _ndual_new_result(P, y, x, primals, _ndual_width(x...))
@@ -323,14 +323,14 @@ end
     # `dual_type(Val(1), P) = Dual{P, tangent_type(P)}`. Wrapping in
     # `NTangent{Tuple{T}}` here is the chunked-N shape and would mismatch
     # the OC slot.
-    dir_tangents = map(xi -> _tangent_dir(xi, 1), x)
+    dir_tangents = map(xi -> tangent(xi, 1), x)
     return Dual(y, build_output_tangent(P, primals, dir_tangents))
 end
 @inline function _ndual_new_result(
     ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{W}
 ) where {P,W}
     tangent_dirs = ntuple(Val(W)) do i
-        dir_tangents = map(xi -> _tangent_dir(xi, i), x)
+        dir_tangents = map(xi -> tangent(xi, i), x)
         build_output_tangent(P, primals, dir_tangents)
     end
     return Dual(y, NTangent(tangent_dirs))

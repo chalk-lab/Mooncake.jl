@@ -520,11 +520,11 @@ function test_frule_correctness(
     # for array-bearing slots (audit step 5); address-map traversal wants
     # the bare per-direction tangent.
     inputs_address_map = populate_address_map(
-        map(primal, x_ẋ_rule), map(x -> Mooncake._tangent_dir(x, 1), x_ẋ_rule)
+        map(primal, x_ẋ_rule), map(x -> Mooncake.tangent(x, 1), x_ẋ_rule)
     )
     y_ẏ_rule = Mooncake._ndual_output_to_width1(frule(x_ẋ_rule...))
-    ẋ_ad = map(x -> Mooncake._tangent_dir(x, 1), x_ẋ_rule)
-    ẏ_ad = Mooncake._tangent_dir(y_ẏ_rule, 1)
+    ẋ_ad = map(x -> Mooncake.tangent(x, 1), x_ẋ_rule)
+    ẏ_ad = Mooncake.tangent(y_ẏ_rule, 1)
 
     # Verify that inputs / outputs are the same under `f` and its rrule.
     @test has_equal_data(x_primal, map(primal, x_ẋ_rule))
@@ -533,10 +533,7 @@ function test_frule_correctness(
     # Query both `x_ẋ` and `y`, because `x_ẋ` may have been mutated by `f`.
     outputs_address_map = populate_address_map(
         (map(primal, x_ẋ_rule)..., primal(y_ẏ_rule)),
-        (
-            map(x -> Mooncake._tangent_dir(x, 1), x_ẋ_rule)...,
-            Mooncake._tangent_dir(y_ẏ_rule, 1),
-        ),
+        (map(x -> Mooncake.tangent(x, 1), x_ẋ_rule)..., Mooncake.tangent(y_ẏ_rule, 1)),
     )
 
     # Check that all aliasing structure is correct.

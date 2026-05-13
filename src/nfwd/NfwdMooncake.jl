@@ -1623,24 +1623,24 @@ function tangent(x::Base.Broadcast.Broadcasted)
     ))
 end
 
-# `_tangent_dir` for wrapper-NDual containers — return the per-direction
+# `tangent(x, i)` for wrapper-NDual containers — return the per-direction
 # tangent in the wrapper's `tangent_type` shape (a `Tangent`), matching the
 # `randn_tangent(::W)` shape used by FD comparison in `test_frule_correctness`.
-@inline function _tangent_dir(
-    x::LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}, i
+@inline function Mooncake.tangent(
+    x::LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}, i::Integer
 ) where {T<:IEEEFloat,N}
-    return Mooncake.Tangent((; diag=_tangent_dir(x.diag, i)))
+    return Mooncake.Tangent((; diag=tangent(x.diag, i)))
 end
-@inline function _tangent_dir(
-    x::LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}, i
+@inline function Mooncake.tangent(
+    x::LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}, i::Integer
 ) where {T<:IEEEFloat,N}
-    return Mooncake.Tangent((; parent=_tangent_dir(parent(x), i)))
+    return Mooncake.Tangent((; parent=tangent(parent(x), i)))
 end
-@inline function _tangent_dir(
-    x::SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}, i
+@inline function Mooncake.tangent(
+    x::SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}, i::Integer
 ) where {T<:IEEEFloat,N,D,Dp,I,L}
     return Mooncake.Tangent((;
-        parent=_tangent_dir(parent(x), i),
+        parent=tangent(parent(x), i),
         indices=NoTangent(),
         offset1=NoTangent(),
         stride1=NoTangent(),
@@ -1873,7 +1873,7 @@ end
 # Wrapper-shape AbstractArrays: dispatch to the per-wrapper `primal` overload
 # (Diagonal, Adjoint, SubArray) which preserves the wrapper structure.
 # `map(d -> d.value, ::Adjoint)` would return a Matrix, breaking the shape
-# pairing with `_tangent_dir(::Adjoint{<:NDual})` which returns a Tangent.
+# pairing with `tangent(::Adjoint{<:NDual}, ::Integer)` which returns a Tangent.
 @inline _ndual_primal(d::LinearAlgebra.Diagonal{<:NDual}) = primal(d)
 @inline _ndual_primal(a::LinearAlgebra.Adjoint{<:NDual}) = primal(a)
 @inline _ndual_primal(s::SubArray{<:NDual}) = primal(s)
@@ -1901,75 +1901,80 @@ end
 end
 @inline _ndual_primal(x) = x
 
-# `_tangent_dir(x, i)` — extract the i-th direction tangent from any NDual-bearing
+# `tangent(x, i)` — extract the i-th direction tangent from any NDual-bearing
 # representation. Used by `_new_` to assemble per-direction NTangent lanes.
-@inline _tangent_dir(x::NDual, i) = x.partials[i]
-@inline _tangent_dir(x::Complex{<:NDual}, i) = complex(x.re.partials[i], x.im.partials[i])
-@inline _tangent_dir(x::Dual{<:Any,<:NTangent}, i) = tangent(x).lanes[i]
-@inline _tangent_dir(x::Dual{<:Any,<:Tuple}, i) = map(
+# Audit Todo 5: per-type lane-extraction methods now live directly on
+# `tangent(x, ::Integer)` rather than the private `_tangent_dir` helper.
+@inline Mooncake.tangent(x::NDual, i::Integer) = x.partials[i]
+@inline Mooncake.tangent(x::Complex{<:NDual}, i::Integer) = complex(
+    x.re.partials[i], x.im.partials[i]
+)
+@inline Mooncake.tangent(x::Dual{<:Any,<:NTangent}, i::Integer) = tangent(x).lanes[i]
+@inline Mooncake.tangent(x::Dual{<:Any,<:Tuple}, i::Integer) = map(
     t -> _tangent_dir_elem(t, i), tangent(x)
 )
-@inline _tangent_dir(x::Dual, _) = tangent(x)
-@inline _tangent_dir(x::AbstractArray{NDual{T,N}}, i) where {T,N} = map(
+@inline Mooncake.tangent(x::Dual, _::Integer) = tangent(x)
+@inline Mooncake.tangent(x::AbstractArray{NDual{T,N}}, i::Integer) where {T,N} = map(
     d -> d.partials[i], x
 )
-@inline _tangent_dir(x::AbstractArray{Complex{NDual{T,N}}}, i) where {T,N} = map(
+@inline Mooncake.tangent(x::AbstractArray{Complex{NDual{T,N}}}, i::Integer) where {T,N} = map(
     z -> complex(z.re.partials[i], z.im.partials[i]), x
 )
 # Mirror `tangent_type(P<:Tuple)`'s all-NoTangent fold: if every element's
 # direction tangent is `NoTangent`, return a single `NoTangent` so that
 # downstream `build_output_tangent` can place it in a `NoTangent` field
 # without a `Tuple{NoTangent...}` → `NoTangent` convert error.
-@inline function _tangent_dir(x::Tuple, i)
-    inner = map(xi -> _tangent_dir(xi, i), x)
+@inline function Mooncake.tangent(x::Tuple, i::Integer)
+    inner = map(xi -> tangent(xi, i), x)
     return inner isa Tuple{Vararg{NoTangent}} ? NoTangent() : inner
 end
-@inline function _tangent_dir(x::NamedTuple{names}, i) where {names}
-    inner = _tangent_dir(values(x), i)
+@inline function Mooncake.tangent(x::NamedTuple{names}, i::Integer) where {names}
+    inner = tangent(values(x), i)
     return inner isa NoTangent ? inner : NamedTuple{names}(inner)
 end
-@inline function _tangent_dir(x::Base.Broadcast.Extruded, i)
-    return Mooncake.Tangent((;
-        x=_tangent_dir(x.x, i), keeps=NoTangent(), defaults=NoTangent()
-    ))
+@inline function Mooncake.tangent(x::Base.Broadcast.Extruded, i::Integer)
+    return Mooncake.Tangent((; x=tangent(x.x, i), keeps=NoTangent(), defaults=NoTangent()))
 end
-@inline function _tangent_dir(x::Base.Broadcast.Broadcasted, i)
+@inline function Mooncake.tangent(x::Base.Broadcast.Broadcasted, i::Integer)
     return Mooncake.Tangent((;
-        style=NoTangent(), f=NoTangent(), args=_tangent_dir(x.args, i), axes=NoTangent()
+        style=NoTangent(), f=NoTangent(), args=tangent(x.args, i), axes=NoTangent()
     ))
 end
 @static if VERSION >= v"1.11-"
-    @inline function _tangent_dir(x::MemoryRef{NDual{T,N}}, i) where {T,N}
+    @inline function Mooncake.tangent(x::MemoryRef{NDual{T,N}}, i::Integer) where {T,N}
         return memoryref(map(d -> d.partials[i], x.mem), Core.memoryrefoffset(x))
     end
-    @inline function _tangent_dir(x::MemoryRef{Complex{NDual{T,N}}}, i) where {T,N}
+    @inline function Mooncake.tangent(
+        x::MemoryRef{Complex{NDual{T,N}}}, i::Integer
+    ) where {T,N}
         return memoryref(
             map(z -> complex(z.re.partials[i], z.im.partials[i]), x.mem),
             Core.memoryrefoffset(x),
         )
     end
 end
-@inline _tangent_dir(x, _) = zero_tangent(x)
 
 # Lifted slot-shape passthrough: extract the i-th direction tangent from the
 # Lifted's inner V. Mirrors how `tangent(::Lifted)` passes through to the
 # inner V's tangent.
-@inline _tangent_dir(x::Mooncake.Lifted, i) = _tangent_dir(x.value, i)
+@inline Mooncake.tangent(x::Mooncake.Lifted, i::Integer) = tangent(x.value, i)
 
 # Immutable struct-primal slot with NamedTuple inner V (recursive lift,
 # see dual.jl): build the per-direction tangent via `build_output_tangent`
 # so the result matches `tangent_type(P)` (Tangent shape with
 # `PossiblyUninitTangent` wrapping where present). For NamedTuple primals
 # the bare NamedTuple result is canonical.
-@inline function _tangent_dir(d::Mooncake.Lifted{P,N,V}, i) where {P,N,V<:NamedTuple}
-    P <: NamedTuple && return _tangent_dir(d.value, i)
+@inline function Mooncake.tangent(
+    d::Mooncake.Lifted{P,N,V}, i::Integer
+) where {P,N,V<:NamedTuple}
+    P <: NamedTuple && return tangent(d.value, i)
     return _build_struct_tangent_dir(P, d.value, i)
 end
 @generated function _build_struct_tangent_dir(
     ::Type{P}, value::V, i
 ) where {P,V<:NamedTuple{names}} where {names}
     primal_exprs = [:(_ndual_primal(value.$n)) for n in names]
-    tangent_exprs = [:(_tangent_dir(value.$n, i)) for n in names]
+    tangent_exprs = [:(tangent(value.$n, i)) for n in names]
     return :(Mooncake.build_output_tangent(
         $P, ($(primal_exprs...),), ($(tangent_exprs...),)
     ))

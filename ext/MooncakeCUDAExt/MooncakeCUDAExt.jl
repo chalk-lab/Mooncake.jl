@@ -3079,7 +3079,7 @@ end
 ) where {N}
     bc_primal = Mooncake._ndual_primal(bc)
     lane_results = ntuple(Val(N)) do i
-        _materialize_cuarray_kernel(Dual(bc_primal, Mooncake._tangent_dir(bc, i)))
+        _materialize_cuarray_kernel(Dual(bc_primal, Mooncake.tangent(bc, i)))
     end
     y = primal(lane_results[1])
     tangents = ntuple(i -> tangent(lane_results[i]), Val(N))

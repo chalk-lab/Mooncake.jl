@@ -727,7 +727,7 @@ end
     ::Dual{Val{ordering}},
     ::Dual{Val{boundscheck}},
 ) where {P,V,ordering,boundscheck}
-    y = Dual(_ndual_primal(value), _tangent_dir(value, 1))
+    y = Dual(_ndual_primal(value), tangent(value, 1))
     memoryrefset!(primal(x), primal(y), ordering, boundscheck)
     memoryrefset!(tangent(x), tangent(y), ordering, boundscheck)
     return y
@@ -766,7 +766,7 @@ end
 @inline _memoryrefset_tuple_tangent(::Type, x) = tangent(x)
 @inline function _memoryrefset_tuple_tangent(::Type{P}, x::NamedTuple) where {P}
     _memoryrefset_check_namedtuple_shape(P, x)
-    return build_output_tangent(P, Tuple(_ndual_primal(x)), Tuple(_tangent_dir(x, 1)))
+    return build_output_tangent(P, Tuple(_ndual_primal(x)), Tuple(tangent(x, 1)))
 end
 @inline function _memoryrefset_check_namedtuple_shape(::Type{P}, x::NamedTuple) where {P}
     fieldcount(P) == length(x) || throw(
@@ -791,7 +791,7 @@ end
     bc::Mooncake.Lifted{Val{boundscheck}},
 ) where {P,N,V<:NamedTuple,ordering,boundscheck}
     bare_x = Mooncake._unlift(x)
-    y = Dual(primal(value), _tangent_dir(value, 1))
+    y = Dual(primal(value), tangent(value, 1))
     memoryrefset!(primal(bare_x), primal(y), ordering, boundscheck)
     memoryrefset!(tangent(bare_x), tangent(y), ordering, boundscheck)
     return _wrap_rule_result(P, Val(N), y)

@@ -340,7 +340,7 @@ function tangent(s::Stack{V}) where {V<:Tuple}
     t = zero_tangent(primal(s))
     memory_tangent = getfield(t.fields, :memory)
     for i in 1:s.position
-        memory_tangent[i] = _tangent_dir(s.memory[i], 1)
+        memory_tangent[i] = tangent(s.memory[i], 1)
     end
     return t
 end

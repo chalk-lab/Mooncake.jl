@@ -739,7 +739,7 @@ function frule_wrapper(f::Lifted{<:Any,N}, fargs::Vararg{Lifted{<:Any,N},M}) whe
     all_args = (f, fargs...)
     primals = map(primal, all_args)
     results = ntuple(Val(N)) do n
-        tangents = map(x -> to_cr_tangent(_tangent_dir(x, n)), all_args)
+        tangents = map(x -> to_cr_tangent(tangent(x, n)), all_args)
         Ω, dΩ = CRC.frule(tangents, primals...)
         return Ω, mooncake_tangent(Ω, dΩ)
     end
@@ -753,7 +753,7 @@ function frule_wrapper(
 ) where {N,M}
     primals = map(primal, fargs)
     results = ntuple(Val(N)) do n
-        tangents = map(x -> to_cr_tangent(_tangent_dir(x, n)), fargs[2:end])
+        tangents = map(x -> to_cr_tangent(tangent(x, n)), fargs[2:end])
         Ω, dΩ = Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
         return Ω, mooncake_tangent(Ω, dΩ)
     end
