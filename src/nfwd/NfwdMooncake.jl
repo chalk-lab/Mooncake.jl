@@ -1507,10 +1507,11 @@ function primal(a::Array{NDual{T,N},D}) where {T,N,D}
     return map(d -> d.value, a)
 end
 
-function tangent(a::Array{NDual{T,1},D}) where {T,D}
-    return map(d -> d.partials[1], a)
-end
-
+# Audit step 5: width-1 returns a top-level `NTangent{Tuple{Array{T,D}}}`,
+# matching the chunked N>=2 shape. The previous bare-Array return broke
+# `verify_lifted_type` for `Lifted{Array{T,D},1}` slots because the slot's
+# canonical `V` is `Array{NDual{T,1},D}` and its outer tangent should be
+# top-level `NTangent{Tuple{Array{T,D}}}` at every positive width.
 function tangent(a::Array{NDual{T,N},D}) where {T,N,D}
     return NTangent(ntuple(i -> map(d -> d.partials[i], a), Val(N)))
 end
@@ -1521,10 +1522,8 @@ function primal(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     return map(z -> complex(z.re.value, z.im.value), a)
 end
 
-function tangent(a::Array{Complex{NDual{T,1}},D}) where {T,D}
-    return map(z -> complex(z.re.partials[1], z.im.partials[1]), a)
-end
-
+# Audit step 5 (Complex). Unified width-1 and width-N: top-level
+# `NTangent{NTuple{N, Array{Complex{T},D}}}` at every positive width.
 function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     return NTangent(
         ntuple(i -> map(z -> complex(z.re.partials[i], z.im.partials[i]), a), Val(N))

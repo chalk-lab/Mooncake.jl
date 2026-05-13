@@ -515,12 +515,16 @@ function test_frule_correctness(
 
     # Use AD to compute Frechet derivative at ẋ.
     x_ẋ_rule = map((x, ẋ) -> lifted_type(Val(1), _typeof(x))(_deepcopy(x), ẋ), x, ẋ)
+    # Width-1 lane is the single direction this test exercises. The whole-
+    # tangent accessor `tangent(::Lifted)` now returns top-level `NTangent`
+    # for array-bearing slots (audit step 5); address-map traversal wants
+    # the bare per-direction tangent.
     inputs_address_map = populate_address_map(
-        map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
+        map(primal, x_ẋ_rule), map(x -> Mooncake._tangent_dir(x, 1), x_ẋ_rule)
     )
     y_ẏ_rule = Mooncake._ndual_output_to_width1(frule(x_ẋ_rule...))
     ẋ_ad = map(x -> Mooncake._tangent_dir(x, 1), x_ẋ_rule)
-    ẏ_ad = tangent(y_ẏ_rule)
+    ẏ_ad = Mooncake._tangent_dir(y_ẏ_rule, 1)
 
     # Verify that inputs / outputs are the same under `f` and its rrule.
     @test has_equal_data(x_primal, map(primal, x_ẋ_rule))
@@ -529,7 +533,10 @@ function test_frule_correctness(
     # Query both `x_ẋ` and `y`, because `x_ẋ` may have been mutated by `f`.
     outputs_address_map = populate_address_map(
         (map(primal, x_ẋ_rule)..., primal(y_ẏ_rule)),
-        (map(tangent, x_ẋ_rule)..., tangent(y_ẏ_rule)),
+        (
+            map(x -> Mooncake._tangent_dir(x, 1), x_ẋ_rule)...,
+            Mooncake._tangent_dir(y_ẏ_rule, 1),
+        ),
     )
 
     # Check that all aliasing structure is correct.
