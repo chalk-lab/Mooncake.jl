@@ -491,7 +491,7 @@ function test_frule_correctness(
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
-    ẋ = map(normalize_tangent ∘ tangent, x_ẋ)
+    ẋ = map(x -> normalize_tangent(tangent(x)), x_ẋ)
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
