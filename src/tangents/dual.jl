@@ -754,22 +754,31 @@ tangent(d::Lifted) = tangent(d.value)
 end
 @generated function tangent(d::Lifted{P,N,V}) where {P<:Tuple,N,V<:Tuple}
     isconcretetype(P) || return :(map(tangent, d.value))
-    exprs = map(1:fieldcount(P)) do i
-        Pi = fieldtype(P, i)
-        Vi = fieldtype(V, i)
-        if (Pi <: Tuple && Vi <: Tuple) || (Vi <: NamedTuple && !(Pi <: NamedTuple))
-            :(tangent(Lifted{$Pi,$N,$Vi}(d.value[$i])))
-        else
-            :(tangent(d.value[$i]))
+    # Audit test #9 (Tuple case): top-level `NTangent{NTuple{N, Tuple{...}}}`.
+    # Per lane, build a bare Tuple of per-element bare tangents at that
+    # direction; collect N lanes into the outer NTangent.
+    lane_exprs = map(1:N) do lane
+        elem_exprs = map(1:fieldcount(P)) do i
+            :(_tangent_dir(d.value[$i], $lane))
         end
+        :(($(elem_exprs...),))
     end
-    return :(($(exprs...),))
+    return :(NTangent(($(lane_exprs...),)))
 end
 function primal(d::Lifted{P,N,V}) where {names,P<:NamedTuple,N,V<:NamedTuple{names}}
     return map(primal, d.value)
 end
-function tangent(d::Lifted{P,N,V}) where {names,P<:NamedTuple,N,V<:NamedTuple{names}}
-    return map(tangent, d.value)
+@generated function tangent(
+    d::Lifted{P,N,V}
+) where {names,P<:NamedTuple{names},N,V<:NamedTuple{names}}
+    # Audit test #9 (NamedTuple case): top-level `NTangent{NTuple{N,
+    # NamedTuple{names, ...}}}` — per lane, build a `NamedTuple` of per-field
+    # bare tangents at that direction; collect N lanes into the outer NTangent.
+    lane_exprs = map(1:N) do lane
+        pairs = [Expr(:kw, n, :(_tangent_dir(d.value.$n, $lane))) for n in names]
+        :((; $(pairs...)))
+    end
+    return :(NTangent(($(lane_exprs...),)))
 end
 
 # Struct-primal accessors: the inner V is a `NamedTuple{fieldnames(P), Tuple{Vᵢ…}}`

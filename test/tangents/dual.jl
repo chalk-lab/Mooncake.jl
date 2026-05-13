@@ -348,10 +348,11 @@ end
         @test tangent(d) === NTangent((1.0, 0.0))
         @test extract(d) === (3.0, NTangent((1.0, 0.0)))
 
-        # Tuple primal: primal/tangent map over the inner element-wise tuple.
+        # Tuple primal: primal maps element-wise; tangent returns top-level
+        # `NTangent{NTuple{N, Tuple{...}}}` per audit test #9.
         dt = Lifted{Tuple{Float64,Float64},2}((1.0, 2.0), (10.0, 20.0))
         @test primal(dt) === (1.0, 2.0)
-        @test tangent(dt) === (NTangent((10.0, 10.0)), NTangent((20.0, 20.0)))
+        @test tangent(dt) === NTangent(((10.0, 20.0), (10.0, 20.0)))
 
         # _lift / _unlift typed identity. Val(0) is primal passthrough.
         @test _lift(Val(2), Float64, _unlift(d)) === d
@@ -447,7 +448,7 @@ end
         @test _unlift(result) ===
             (NDual{Float64,2}(1.0, (1.0, 0.0)), NDual{Float64,2}(2.0, (0.0, 1.0)))
         @test primal(result) === (1.0, 2.0)
-        @test tangent(result) === (NTangent((1.0, 0.0)), NTangent((0.0, 1.0)))
+        @test tangent(result) === NTangent(((1.0, 0.0), (0.0, 1.0)))
     end
 
     @testset "tuple — heterogeneous NDual / Dual{NoTangent} args" begin
