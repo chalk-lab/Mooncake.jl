@@ -408,14 +408,28 @@ end
     if inner isa Dual && isconcretetype(P_target)
         return Lifted{P_target,N}(primal(inner), tangent(inner))
     end
-    # Audit step 5: refuse to rewrap when the inner V's shape doesn't match
-    # `dual_type(Val(N), P_target)`. Without this, a `Lifted{Vector{Float64},
-    # 1, Vector{NDual}}` from a rule body that should have produced a Matrix
-    # gets re-tagged as `Lifted{Matrix{Float64}, 1, Vector{NDual}}` — invalid
-    # because the parametric V is a Vector, not a Matrix.
+    # Audit Todo 8: fail loudly when the inner V's shape doesn't match
+    # `dual_type(Val(N), P_target)`. The previous behaviour (silently
+    # returning the original `Lifted` with mismatched P) hid genuine rule
+    # bugs — e.g. a `Lifted{Vector{Float64}, 1, Vector{NDual}}` from a rule
+    # body that should have produced a Matrix would have been re-tagged as
+    # `Lifted{Matrix{Float64}, 1, Vector{NDual}}` had we proceeded, and
+    # would have been left as a `Lifted{Vector{Float64}, ...}` slipped into
+    # a `Lifted{Matrix{Float64}, ...}` OC return slot had we returned `x`.
+    # An ArgumentError with the offending types makes the regression obvious.
     InnerT = dual_type(Val(N), P_target)
     if InnerT isa DataType && isconcretetype(InnerT) && !(typeof(inner) <: InnerT)
-        return x
+        throw(
+            ArgumentError(
+                "_canon_return: cannot retag `Lifted{$(P), $(N), $(typeof(inner))}` " *
+                "as `Lifted{$(P_target), $(N), ...}` — the inner V shape " *
+                "$(typeof(inner)) does not satisfy the canonical " *
+                "`dual_type(Val($N), $P_target) === $InnerT`. This indicates a rule " *
+                "produced a non-canonical Lifted value; check the rule that produced " *
+                "the source value and ensure its `Lifted{P_out, N}(...)` argument " *
+                "shape matches `dual_type(Val(N), P_out)`.",
+            ),
+        )
     end
     return Lifted{P_target,N,typeof(inner)}(inner)
 end

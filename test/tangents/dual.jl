@@ -211,6 +211,23 @@ end
         @test y isa Mooncake.lifted_type(Val(1), Real)
     end
 
+    @testset "_canon_return loud failure on shape mismatch (audit Todo 8)" begin
+        # Per the revised audit, `_canon_return` should refuse to silently
+        # retag a `Lifted` whose inner V shape disagrees with
+        # `dual_type(Val(N), P_target)` — that would have produced an invalid
+        # parametric V (e.g. `Lifted{Matrix{Float64}, 1, Vector{NDual}}`).
+        # The defensive ndims-reshape in `_wrap_dual_to_lifted` handles the
+        # legitimate "rule produced a flat collection" case before retagging.
+        # This test isolates the failure path.
+        vec_inner = NDual{Float64,1}[
+            NDual{Float64,1}(1.0, (0.0,)), NDual{Float64,1}(2.0, (0.0,))
+        ]
+        vec_lifted = Lifted{Vector{Float64},1,Vector{NDual{Float64,1}}}(vec_inner)
+        @test_throws ArgumentError Mooncake._canon_return(
+            Val(1), Matrix{Float64}, vec_lifted
+        )
+    end
+
     @testset "verify_dual_type accepts valid bare inner shapes" begin
         # Bare canonical-V leaves leak through helper-API boundaries; they
         # should validate as legitimate inner duals.
