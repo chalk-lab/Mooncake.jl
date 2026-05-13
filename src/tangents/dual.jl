@@ -124,10 +124,12 @@ Width-aware forward value type query.
     end
 
     # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
-    # Residual 21 OC slot mismatches when carve-out is lifted require deep
-    # coordination across `set_tangent_field!`, OC slot Union-of-types,
-    # tuple-primal NoTangent indexing, and several other IR-emit-internal
-    # paths (audit step 5, remaining bulk).
+    # 14 OC slot mismatches remain (down from 21 → 14 after `set_tangent_field!`
+    # NTangent overload). Residual blockers: `memoryrefnew` expecting bare
+    # `GenericMemory` but receiving `NTangent{Tuple{Memory}}`; `Matrix{NDual}`
+    # ctor from `Vector{NDual}` reshape; OC Union-of-types mismatch with
+    # `DataType` slot; and a few `convert` MethodErrors (audit step 5,
+    # remaining bulk).
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end

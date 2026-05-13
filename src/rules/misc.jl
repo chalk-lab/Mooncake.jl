@@ -249,6 +249,26 @@ function _get_tangent_field(f::NTangent, name, inbounds)
     return NTangent(map(t -> _get_tangent_field(t, name, inbounds), f.lanes))
 end
 
+# Audit step 5: NTangent wraps the inner tangent; propagate
+# `set_tangent_field!` into each lane. When the new value `x` is itself
+# NTangent-wrapped, apply per-lane; otherwise broadcast the same `x` across
+# all lanes. Lives here rather than in `tangents.jl` because `NTangent` is
+# defined later (in `tangents/dual.jl`).
+@inline function set_tangent_field!(t::NTangent, i::Union{Int,Symbol}, x)
+    for lane in t.lanes
+        set_tangent_field!(lane, i, x)
+    end
+    return x
+end
+@inline function set_tangent_field!(
+    t::NTangent{NTuple{N,T}}, i::Union{Int,Symbol}, x::NTangent{NTuple{N,Tx}}
+) where {N,T,Tx}
+    @inbounds for n in 1:N
+        set_tangent_field!(t.lanes[n], i, x.lanes[n])
+    end
+    return x
+end
+
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
 ) where {P,F<:StandardFDataType,f}
