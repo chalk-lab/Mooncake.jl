@@ -52,25 +52,16 @@ jobs:
           'rules/high_order_derivative_patches',
         ]
         version:
-          - 'lts'
-          - '1.12'
-          - 'pre'
+          - '1.13'
         arch:
           - x64
-        include:
-          - test_group: 'basic'
-            version: 'lts'
-            arch: x86
-          - test_group: 'rules/array_legacy'
-            version: 'lts'
-            arch: x64
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-          include-all-prereleases: false
+          include-all-prereleases: true
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
@@ -112,22 +103,16 @@ jobs:
           {test_type: 'integration_testing', label: 'temporalgps'},
         ]
         version:
-          - 'lts'
-          - '1.12'
-          - 'pre'
+          - '1.13'
         arch:
           - x64
-        include:
-          - test_group: { test_type: 'integration_testing', label: 'format' }
-            version: 'lts'
-            arch: x64
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-          include-all-prereleases: false
+          include-all-prereleases: true
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: |
