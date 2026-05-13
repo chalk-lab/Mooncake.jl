@@ -367,9 +367,22 @@ end
 @inline function _canon_return(
     ::Val{N}, ::Type{P_target}, x::Lifted{P,N}
 ) where {N,P_target,P}
-    # An abstract target carries less information than the runtime slot; keep
-    # the concrete outer P so DynamicPrimal does not infer P from inner V.
-    (P === P_target || !isconcretetype(P_target)) && return x
+    P === P_target && return x
+    if !isconcretetype(P_target)
+        # Audit step 5: when `P_target` is abstract (e.g. a small Union of
+        # singleton types) and the runtime `P` is too broad to match the
+        # `Q<:P_target` UnionAll slot type (`DataType` for `Union{Type{Float64},
+        # Type{Int}}`), narrow `P` to `typeof(primal(x))` so the return
+        # passes the OC slot's parametric constraint.
+        if !(P <: P_target)
+            Q = _typeof(primal(x))
+            if Q <: P_target
+                inner = _unlift(x)
+                return Lifted{Q,N,typeof(inner)}(inner)
+            end
+        end
+        return x
+    end
     inner = _unlift(x)
     if inner isa Dual && isconcretetype(P_target)
         return Lifted{P_target,N}(primal(inner), tangent(inner))
