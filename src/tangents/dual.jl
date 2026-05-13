@@ -123,10 +123,11 @@ Width-aware forward value type query.
         return NamedTuple{names,InnerTup}
     end
 
-    # Width 1: keep the legacy bare-`T` parallel form. `tangent_type(Val(1), P)`
-    # wraps in `NTangent{Tuple{T}}` but `test_frule_interface` / Ptr / Vector{Any}
-    # construction paths still emit bare `Dual{P,T}`; the OC slot type must match
-    # those (audit step 5, remaining bulk).
+    # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
+    # `tangent_type(Val(1), P)` wraps in `NTangent{Tuple{T}}` but the IR-emit
+    # bare-`Dual{P,T}` construction paths (Memory-backed `lgetfield`, `Ptr`
+    # foreigncall slots, `_group_vararg_dual` width-1) still emit the bare
+    # form; the OC slot type must match those (audit step 5, remaining bulk).
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end
