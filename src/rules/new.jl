@@ -152,23 +152,22 @@ end
         end
     end
 
-    # Struct with NDual content (legacy parallel-Dual path): at width=1
-    # produce a bare-tangent Dual (matches `dual_type(Val(1), P) = Dual{P, T}`);
-    # at width N>=2 wrap the per-direction tangents in `NTangent`. This
-    # branch is only reached for structs whose `dual_type` returns a `Dual`
-    # (e.g. types where `tangent_type(P)` is not `<: Tangent`, or which
-    # have an explicit per-type `dual_type` overload pointing at the
-    # parallel form).
+    # Struct with NDual content (parallel-Dual path): wrap per-direction
+    # tangents in `NTangent` at every positive width. `dual_type(Val(1), P)
+    # === Dual{P, NTangent{Tuple{T}}}` for generic concrete P (audit step 5
+    # carve-out lift, commit cbc5b236b) — so width 1 and width N>=2 share
+    # the same wrapper shape. This branch is only reached for structs whose
+    # `dual_type` returns a `Dual` (e.g. types where `tangent_type(P)` is not
+    # `<: Tangent`, or which have an explicit per-type `dual_type` overload
+    # pointing at the parallel form).
     if _has_ndual(bare_x...)
         primals_extracted = _new_field_primals(P, bare_x)
         y = _new_(P, primals_extracted...)
         T = tangent_type(P)
         T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
-        # Audit step 5: uniform `NTangent(tangent_dirs)` at every positive
-        # width, routed through the 2-arg `Lifted{P,N}(primal, tangent)`
-        # ctor so the inner V matches `dual_type(Val(N), P)` (the
-        # singleton-NTangent `Dual{P,T}` ctor unwraps for the bare carve-
-        # out case at width 1).
+        # Uniform `NTangent(tangent_dirs)` at every positive width, routed
+        # through the 2-arg `Lifted{P,N}(primal, tangent)` ctor so the inner
+        # V matches `dual_type(Val(N), P) === Dual{P, NTangent{NTuple{N, T}}}`.
         tangent_dirs = ntuple(Val(N)) do dir
             dir_tangents = _new_field_tangents(P, bare_x, dir)
             build_output_tangent(P, primals_extracted, dir_tangents)

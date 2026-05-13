@@ -294,10 +294,13 @@ end
 # bodies use the same `ntuple(closure, Val(N))` pattern at any width — at width 1
 # the closure produces a 1-tuple `(t,)` which this method unwraps to scalar `t`.
 Dual{P,T}(value, t::NTuple{1,T}) where {P,T} = Dual{P,T}(value, t[1])
-# NTangent-wrapped singleton unwraps to the bare tangent for the bare-T form.
-# Mirrors the 1-tuple convenience above and lets `_lifted_frule_wrapper_result`
-# / similar sites always pass `NTangent(tangents)` regardless of width while the
-# `dual_type(Val(1), generic_P)` carve-out continues to choose the bare form.
+# NTangent-wrapped singleton unwraps to the bare tangent for the bare-T form
+# (Audit Todo 6: explicit width-1 compatibility boundary). With the
+# `dual_type(Val(1), generic_P)` carve-out lifted (commit cbc5b236b), the
+# canonical width-1 inner is `Dual{P, NTangent{Tuple{T}}}`; this method is
+# kept for callers that explicitly request the legacy bare-T `Dual{P, T}`
+# shape (e.g. `_ndual_output_to_width1`'s public-boundary normalisation,
+# `from_chainrules` adapters, hand-written legacy rules).
 Dual{P,T}(value, t::NTangent{Tuple{T}}) where {P,T} = Dual{P,T}(value, t.lanes[1])
 
 # Chunked structured `Dual{P, NTangent{NTuple{N, T}}}`: pre-computed lanes wrap
