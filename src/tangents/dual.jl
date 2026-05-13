@@ -124,12 +124,9 @@ Width-aware forward value type query.
     end
 
     # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
-    # 23 OC slot mismatches remain (down from 25, after `zero_lifted` 2-arg
-    # routing fix); they come from IR-emit paths inside `DerivedPrimal`-
-    # compiled rule bodies where inner mutable / `Vector{Any}` / `Memory{Any}`
-    # values are lifted to bare `Dual{P, T}`, mismatching the canonical
-    # `Dual{P, NTangent{Tuple{T}}}` OC slot type at width 1 (audit step 5,
-    # remaining bulk).
+    # Residual OC slot mismatches when carve-out is lifted come from
+    # `DerivedPrimal`-compiled rule bodies where IR-emit-internal paths still
+    # construct bare `Dual{P, T}` (audit step 5, remaining bulk).
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end

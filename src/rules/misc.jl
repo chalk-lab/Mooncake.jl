@@ -308,6 +308,20 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Bare-Dual 4-arg lgetfield: paired with the 3-arg `frule!!(::Dual{lgetfield},
+# ::Lifted{P}, ::Dual{Val{f}})` form above. The IR-emit's mixed-dispatch
+# path (bare-Dual function + Lifted struct + bare-Dual Val constants) can
+# also produce a bare-Dual struct value at width 1 when the carve-out is
+# active. `_lgetfield_impl(::Dual{P, T<:StandardTangentType}, ::Val{f},
+# ::Val{order})` already handles both NTangent-wrapped and bare-T forms.
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)},
+    x::Dual{P,T},
+    ::Dual{Val{f}},
+    ::Dual{Val{order}},
+) where {P,T<:StandardTangentType,f,order}
+    return _lgetfield_impl(x, Val(f), Val(order))
+end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P,F<:StandardFDataType,f,order}
