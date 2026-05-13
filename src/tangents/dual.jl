@@ -124,11 +124,6 @@ Width-aware forward value type query.
     end
 
     # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
-    # Abstract concrete `P` returns `Dual` UnionAll — broad enough for legacy
-    # construction. Remaining carve-out residuals (12 errors when lifted) are
-    # rule-specific reshape/canonicalisation cases — `_get_tangent_field`
-    # for raw `Vector{Any}`/`Vector{NoTangent}` and `Matrix{NDual}(::Vector{NDual})`
-    # reshape from `mul!`/`_collect`. Not part of audit-prescribed work.
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end

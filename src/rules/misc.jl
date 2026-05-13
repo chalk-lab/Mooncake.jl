@@ -163,7 +163,10 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 # `Tuple`, `NamedTuple`) into the matching kernel.
 @inline function _lgetfield_impl(x::Dual{P,T}, ::Val{f}) where {P,T<:StandardTangentType,f}
     primal_field = getfield(primal(x), f)
-    if tangent_type(P) === NoTangent
+    # Audit step 5: short-circuit on either parent-NoTangent or field-NoTangent
+    # (see the 4-arg overload below for rationale).
+    if tangent_type(P) === NoTangent ||
+        tangent_type(_typeof(primal_field)) === NoTangent
         return uninit_dual(primal_field)
     else
         return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
@@ -234,6 +237,14 @@ end
 # another struct), field access also contributes no derivative.
 _get_tangent_field(::NoTangent, _) = NoTangent()
 _get_tangent_field(::NoTangent, _, _) = NoTangent()
+# Audit step 5: raw-array tangent shape (`Vector{Any}`, `Vector{NoTangent}` etc.)
+# arises when `_lgetfield_impl` recurses into the NTangent lanes of a non-NDual
+# array primal. The tangent has the same struct fields as the primal Array,
+# so `getfield(tangent, name)` produces the matching per-field tangent shape
+# directly (e.g. `tangent.ref::MemoryRef{T}` matches `tangent_type(::Array
+# .ref) === MemoryRef{T}`).
+_get_tangent_field(t::AbstractArray, name) = getfield(t, name)
+_get_tangent_field(t::AbstractArray, name, inbounds) = getfield(t, name, inbounds)
 function _get_tangent_field(f::NTangent, name)
     return NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
 end
@@ -308,7 +319,15 @@ end
     x::Dual{P,<:StandardTangentType}, ::Val{f}, ::Val{order}
 ) where {P,f,order}
     primal_field = getfield(primal(x), f, order)
-    if tangent_type(P) === NoTangent
+    # Audit step 5: short-circuit when *either* the parent `P` has no
+    # tangent, *or* the specific field is non-differentiable
+    # (`tangent_type(typeof(primal_field)) === NoTangent`). The narrower
+    # field check covers struct/array primals like `Vector{Any}.size` where
+    # the parent has a tangent shape but the specific field doesn't —
+    # avoids recursing into `_get_tangent_field` on a bulk-array tangent
+    # that doesn't structurally decompose.
+    if tangent_type(P) === NoTangent ||
+        tangent_type(_typeof(primal_field)) === NoTangent
         return uninit_dual(primal_field)
     else
         return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
