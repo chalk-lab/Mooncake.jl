@@ -265,7 +265,10 @@ function frule!!(
     n::Dual{Int},
 ) where {P}
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
+    # Audit step 5: unwrap singleton-NTangent on the tangent slot when the
+    # carve-out is lifted (`tangent(::Dual{MemoryRef{P}, NTangent{Tuple{
+    # MemoryRef{T}}}})` returns the outer NTangent).
+    unsafe_copyto!(_memrefget_tan(tangent(dest)), _memrefget_tan(tangent(src)), primal(n))
     return dest
 end
 # Post-kill width=Val(1): IR-emit's unwrap-then-bare path delivers

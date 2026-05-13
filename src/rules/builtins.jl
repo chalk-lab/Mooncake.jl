@@ -852,12 +852,18 @@ __vec_to_tuple(v::Vector) = Tuple(v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
 # `__vec_to_tuple` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline _vec_to_tuple_tan(t::Vector) = t
+@inline _vec_to_tuple_tan(t::NTangent{Tuple{V}}) where {V<:Vector} = t.lanes[1]
 @inline function _vec_to_tuple_kernel(v::Dual{<:Vector})
     x = __vec_to_tuple(primal(v))
     if tangent_type(_typeof(x)) == NoTangent
         return zero_dual(x)
     else
-        return Dual(x, __vec_to_tuple(tangent(v)))
+        # Audit step 5: at width 1 with carve-out lifted, `tangent(v)` for
+        # `Dual{Vector{T}, NTangent{Tuple{Vector{T'}}}}` is the outer
+        # NTangent; `__vec_to_tuple` wants a bare Vector. Unwrap the
+        # singleton-NTangent.
+        return Dual(x, __vec_to_tuple(_vec_to_tuple_tan(tangent(v))))
     end
 end
 @inline function frule!!(
