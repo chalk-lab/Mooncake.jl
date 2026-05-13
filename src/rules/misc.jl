@@ -234,6 +234,14 @@ end
 # another struct), field access also contributes no derivative.
 _get_tangent_field(::NoTangent, _) = NoTangent()
 _get_tangent_field(::NoTangent, _, _) = NoTangent()
+# Raw-array tangent shape: only the element-wise differentiable data has a
+# tangent. Structural fields (`:size`, `:ref`, etc.) carry no derivative;
+# `lgetfield(x, :size)` etc. produce `NoTangent` for the tangent component.
+# Mirrors the `NoTangent` case above so the IR-emit-emitted `lgetfield` on
+# `Vector{Any}` / similar non-NDual array primals doesn't trip an unbound
+# dispatch when the NTangent inner lane is a raw array.
+_get_tangent_field(::AbstractArray, _) = NoTangent()
+_get_tangent_field(::AbstractArray, _, _) = NoTangent()
 function _get_tangent_field(f::NTangent, name)
     return NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
 end
