@@ -275,10 +275,25 @@ non-migrated rule on the legacy bare path, so partial migration is safe.
 @inline function _wrap_rule_result(::Type{P}, ::Val{N}, x::Dual) where {P,N}
     P_out = _resolve_concrete_P(P, x)
     return if isconcretetype(P_out)
-        Lifted{P_out,N}(primal(x), tangent(x))
+        _wrap_dual_to_lifted(Val(N), P_out, primal(x), tangent(x))
     else
         Lifted{P_out,N}(x)
     end
+end
+# Audit step 5: when `primal` and `tangent` are both `AbstractArray` but
+# disagree on `ndims` (e.g. a `Base._collect` path producing a flat `Vector`
+# tangent for a `Matrix` primal), reshape the tangent to match the primal
+# before delegating to the 2-arg `Lifted{P, N}(primal, tangent)` ctor. The
+# canonical inner V (`Array{NDual{T, N}, D}`) requires both args to share
+# `D`; a defensive reshape resolves the carve-out-lifted `_collect`-on-
+# Matrix residual without changing semantics (the underlying derivative
+# data is unchanged — only the shape annotation matches the primal).
+@inline _wrap_dual_to_lifted(::Val{N}, ::Type{P_out}, p, t) where {N,P_out} =
+    Lifted{P_out,N}(p, t)
+@inline function _wrap_dual_to_lifted(
+    ::Val{N}, ::Type{P_out}, p::AbstractArray{Tp,Dp}, t::AbstractArray{Tt,Dt}
+) where {N,P_out,Tp,Dp,Tt,Dt}
+    return Dp === Dt ? Lifted{P_out,N}(p, t) : Lifted{P_out,N}(p, reshape(t, size(p)))
 end
 
 # Bare frules for tuple-returning rules (e.g. `__vec_to_tuple`) often produce
