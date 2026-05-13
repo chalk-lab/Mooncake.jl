@@ -1081,6 +1081,9 @@ function test_rule(
     redirector = print_results ? ((f, x) -> f()) : redirect_stdout
     ts = redirector(devnull) do
         @testset "$(typeof(x))" begin
+            rng_reuse = deepcopy(rng)
+            rng_correctness = deepcopy(rng)
+
             # Verify rules give identical results on a second call,
             # i.e. the rule does not corrupt its internal state across calls.
             @testset "Reuse" begin
@@ -1088,7 +1091,7 @@ function test_rule(
                     test_frule_reuse(x_ẋ...; frule)
                 end
                 if test_rvs && !interface_only
-                    test_rrule_reuse(rng, x_x̄...; rrule)
+                    test_rrule_reuse(rng_reuse, x_x̄...; rrule)
                 end
             end
 
@@ -1101,11 +1104,19 @@ function test_rule(
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
                 if test_fwd && !interface_only
-                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
+                    test_frule_correctness(
+                        rng_correctness, x_ẋ...; frule, unsafe_perturb, atol, rtol
+                    )
                 end
                 if test_rvs && !interface_only
                     test_rrule_correctness(
-                        rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
+                        rng_correctness,
+                        x_x̄...;
+                        rrule,
+                        unsafe_perturb,
+                        output_tangent,
+                        atol,
+                        rtol,
                     )
                 end
             end
