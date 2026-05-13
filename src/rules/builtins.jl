@@ -1494,40 +1494,24 @@ function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
     return CoDual(typeassert(primal(x), primal(type)), tangent(x)), typeassert_pullback
 end
 
-# Lifted-aware typeassert: narrow `P` to the asserted type so the produced
-# Lifted matches the OC's static return slot (`Lifted` `P` is invariant, so
-# `Lifted{Any}` doesn't subtype `Lifted{Float64}`).
+# Lifted-aware typeassert: assert the primal subtypes `T` and narrow the
+# runtime `Lifted`'s `P` parameter.
 #
-# For concrete asserted `T`: the runtime `V` is preserved (already canonical
-# for the asserted concrete type).
-#
-# For abstract asserted `T` (audit step 3): convert `NDual`-shaped inner V
-# to the canonical parallel-`Dual` form so the slot's V matches
-# `dual_type(Val(N), abstract_T) === Dual` UnionAll. Without this,
-# `Lifted{Real, 1, NDual{Float64, 1}}` would be noncanonical per the audit.
-@inline _canonical_abstract_inner(::Val{1}, d::NDual{T,1}) where {T} =
-    Dual(d.value, d.partials[1])
-@inline _canonical_abstract_inner(::Val{N}, d::NDual{T,N}) where {T,N} =
-    Dual(d.value, NTangent(d.partials))
-@inline _canonical_abstract_inner(::Val, d::Dual) = d
-@inline _canonical_abstract_inner(::Val, d) = d  # fallback: array / complex / etc.
-
+# Per the revised audit (`primal-mode-branch-audit.md` Todo 1), runtime
+# `Lifted` wrappers should stay concrete; abstract `T` is captured at the
+# OC slot annotation via `lifted_type(Val(N), T) === Lifted{Q, N, V} where
+# {Q<:T, V}`. For concrete `T`, narrow `P` to `T`; for abstract `T`, narrow
+# `P` to `typeof(primal(x))` (the actual concrete runtime type) so the
+# runtime wrapper remains the canonical `Lifted{typeof(primal), N,
+# dual_type(Val(N), typeof(primal))}` shape.
 @inline function frule!!(
     ::Lifted{typeof(typeassert),N}, x::Lifted, ::Lifted{Type{T},N}
 ) where {N,T}
     p = primal(x)
     typeassert(p, T)
     inner = _unlift(x)
-    if isconcretetype(T)
-        return Lifted{T,N,typeof(inner)}(inner)
-    else
-        # V = `dual_type(Val(N), abstract_T) === Dual` UnionAll. Convert the
-        # NDual-shaped inner into the parallel `Dual{Q, T_q}` form so the
-        # `value::Dual` field of `Lifted{T, N, Dual}` accepts it.
-        canonical = _canonical_abstract_inner(Val(N), inner)
-        V = Mooncake.dual_type(Val(N), T)
-        return Lifted{T,N,V}(canonical)
-    end
+    Q = isconcretetype(T) ? T : _typeof(p)
+    return Lifted{Q,N,typeof(inner)}(inner)
 end
 @inline function frule!!(::Lifted{typeof(typeassert),N}, x::Lifted, type::Lifted) where {N}
     typeassert(primal(x), primal(type))

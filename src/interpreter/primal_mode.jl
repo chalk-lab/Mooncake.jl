@@ -167,8 +167,11 @@ function _uninit_dual_fallback(w::Val{N}, v) where {N}
     # width N>=2 / when carve-out is lifted).
     ud = uninit_dual(v)
     InnerT = dual_type(w, _typeof(v))
-    return typeof(ud) === InnerT ? Lifted{_typeof(v),N,InnerT}(ud) :
-           Lifted{_typeof(v),N}(primal(ud), tangent(ud))
+    return if typeof(ud) === InnerT
+        Lifted{_typeof(v),N,InnerT}(ud)
+    else
+        Lifted{_typeof(v),N}(primal(ud), tangent(ud))
+    end
 end
 
 # Extract the integer N from `Val{N}`. Used at IR-emit time to construct
@@ -288,8 +291,11 @@ end
 # `D`; a defensive reshape resolves the carve-out-lifted `_collect`-on-
 # Matrix residual without changing semantics (the underlying derivative
 # data is unchanged — only the shape annotation matches the primal).
-@inline _wrap_dual_to_lifted(::Val{N}, ::Type{P_out}, p, t) where {N,P_out} =
-    Lifted{P_out,N}(p, t)
+@inline _wrap_dual_to_lifted(::Val{N}, ::Type{P_out}, p, t) where {N,P_out} = Lifted{
+    P_out,N
+}(
+    p, t
+)
 @inline function _wrap_dual_to_lifted(
     ::Val{N}, ::Type{P_out}, p::AbstractArray{Tp,Dp}, t::AbstractArray{Tt,Dt}
 ) where {N,P_out,Tp,Dp,Tt,Dt}

@@ -660,8 +660,7 @@ end
 # handles `BlasRealFloat` (its `Union{Dual,NDual}` arg shapes subsume the
 # pure-`Dual` case there). `hemv!` is restricted to `BlasComplexFloat`.
 for (fname, prim_elty, frule_elty) in (
-    (:(symv!), BlasFloat, BlasComplexFloat),
-    (:(hemv!), BlasComplexFloat, BlasComplexFloat),
+    (:(symv!), BlasFloat, BlasComplexFloat), (:(hemv!), BlasComplexFloat, BlasComplexFloat)
 )
     isherm = fname == :(hemv!)
 

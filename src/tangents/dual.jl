@@ -127,45 +127,22 @@ Width-aware forward value type query.
 end
 
 @inline function _uses_structural_dual_type(::Type{P}) where {P}
-    # Audit step 4: structural `dual_type` mirrors structural `tangent_type`.
-    # Previously this gate also required `all(_is_lift_safe_field_type,
-    # fieldtypes(P))` — a narrow allowlist that forced struct fields to be
-    # IEEEFloat / Complex{IEEEFloat} / NoTangent / Array{IEEEFloat} / a few
-    # specialised wrappers. Nested user-defined structs (`OuterAudit`
-    # containing `InnerAudit`) fell back to the parallel `Dual{P, Tangent}`
-    # form even when their tangent_type was already structurally recursive.
-    # Per `~/notes/mooncake/primal-mode-branch-audit.md`:
-    # "There should be no broad generic exclusion gate such as
-    # `_is_lift_safe_field_type`. Non-generic representations must be
-    # explicit `dual_type` overloads for chosen types."
-    # Field-type-specific exceptions live as `dual_type` overloads (e.g.
-    # CuArray-wrappers in MooncakeCUDAExt) and dispatch first by Julia's
-    # method specificity, so this generic branch only fires when the
-    # recursive descent is structurally correct.
+    # Audit Todo 3 (revised): structural `dual_type` mirrors structural
+    # `tangent_type`. There is no broad ownership/package gate — any type whose
+    # `tangent_type` is the default structural `Tangent{NamedTuple{names, ...}}`
+    # shape with all fields always initialised gets the recursive `NamedTuple`
+    # lift. Specific Base/Core/LinearAlgebra wrappers that need a different
+    # representation (e.g. `Diagonal`, `Adjoint`, `SubArray`, `Broadcasted`)
+    # register explicit `dual_type` overloads in `src/nfwd/NfwdMooncake.jl`
+    # (and per-extension files), which dispatch first by Julia's method
+    # specificity. Failing types should fail loudly (via missing overloads or
+    # explicit local failures), not via a silent ownership check.
     return isconcretetype(P) &&
            !ismutabletype(P) &&
            fieldcount(P) > 0 &&
-           _is_user_definable_type(P) &&
            tangent_type(P) <: Tangent &&
            _uses_structural_tangent_type(P) &&
            all(always_initialised(P))
-end
-
-# `_is_user_definable_type(P)` — heuristic gate for the recursive struct lift.
-# Returns `true` for types defined outside `Base` and `Core` (and their
-# submodules), `false` for built-in types like `Base.Broadcast.Extruded`.
-# Built-in types are constructed by the IR through `_new_(::Type{T}, …)`
-# call sites that expect the original struct identity to be preserved;
-# recursive lifting would replace them with a `NamedTuple` and break the
-# construction. User-defined types stay within the lifted form throughout.
-@inline function _is_user_definable_type(::Type{P}) where {P}
-    isconcretetype(P) || return false
-    m = parentmodule(P)
-    while true
-        (m === Base || m === Core || m === LinearAlgebra) && return false
-        m === parentmodule(m) && return true
-        m = parentmodule(m)
-    end
 end
 
 @inline function _uses_structural_tangent_type(::Type{P}) where {P}
@@ -405,7 +382,21 @@ verify_dual_type(t::NamedTuple) = all(verify_dual_type, values(t))
 # 2-arg: build the inner via the inner type's own constructor methods. Mirrors
 # `CoDual(x, dx)` — pass `(primal, tangent)` and the wrapper takes care of the
 # rest. The dispatch on inner shape lives in the inner type's constructors.
+#
+# Per the revised audit (`primal-mode-branch-audit.md` Todos 1 & 2): when `P`
+# is abstract, sharpen to `typeof(primal)` so the runtime wrapper remains
+# canonical (`V === dual_type(Val(N), Q)` for concrete `Q = typeof(primal)`).
+# Abstract slot compatibility is checked separately via `isa lifted_type(Val(N),
+# P_static)` — the concrete runtime wrapper is a subtype of the abstract
+# `Lifted{Q,N,V} where {Q<:P_static, V}` annotation. This eliminates the dead
+# `dual_type(Val(N), abstract_P) === Dual` (abstract) path, which previously
+# produced unconstructable abstract `V` slots.
 @inline function Lifted{P,N}(primal, tangent) where {P,N}
+    if !isconcretetype(P)
+        Q = _typeof(primal)
+        InnerT = dual_type(Val(N), Q)
+        return Lifted{Q,N,InnerT}(InnerT(primal, tangent))
+    end
     InnerT = dual_type(Val(N), P)
     return Lifted{P,N,InnerT}(InnerT(primal, tangent))
 end
@@ -885,8 +876,11 @@ Companion to `zero_dual` (Layer 2). The result type matches
 @inline function zero_lifted(w::Val{N}, x) where {N}
     zd = zero_dual(w, x)
     InnerT = dual_type(w, typeof(x))
-    return typeof(zd) === InnerT ? Lifted{typeof(x),N,InnerT}(zd) :
-           Lifted{typeof(x),N}(primal(zd), tangent(zd))
+    return if typeof(zd) === InnerT
+        Lifted{typeof(x),N,InnerT}(zd)
+    else
+        Lifted{typeof(x),N}(primal(zd), tangent(zd))
+    end
 end
 @inline function zero_lifted(w::Val{N}, x::Type{P}) where {N,P}
     P_slot = @isdefined(P) ? Type{P} : typeof(x)

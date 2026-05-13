@@ -1760,8 +1760,9 @@ end
 # vacuously satisfies any element constraint). Pick the same NoTangent
 # behaviour as the other AbstractArray empty-tangent overloads below.
 @inline _combine_to_ndual(x::AbstractArray{<:IEEEFloat}, ::Tuple{}) = Dual(x, NoTangent())
-@inline _combine_to_ndual(x::AbstractArray{Complex{T}}, ::Tuple{}) where {T<:IEEEFloat} =
-    Dual(x, NoTangent())
+@inline _combine_to_ndual(x::AbstractArray{Complex{T}}, ::Tuple{}) where {T<:IEEEFloat} = Dual(
+    x, NoTangent()
+)
 @inline function _combine_to_ndual(
     x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}
 ) where {W}

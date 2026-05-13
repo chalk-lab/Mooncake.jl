@@ -200,13 +200,27 @@ end
 ) where {P,N,Tx<:Tuple}
     # `_new_` creates struct values in primal-mode IR, so its lifted result
     # must use the same structural V chosen by `dual_type(Val(N), P)`.
-    if N >= 1 && _uses_structural_dual_type(P) && fieldcount(P) == fieldcount(Tx)
-        names = fieldnames(P)
-        InnerTup = Tuple{
-            map(i -> _static_dual_type_value(Val(N), fieldtype(P, i)), 1:fieldcount(P))...
-        }
-        InnerT = NamedTuple{names,InnerTup}
-        return :(Lifted{$P,$N,$InnerT}(NamedTuple{$names}(bare_x)))
+    # Audit Todo 3: gate on the *result* of `dual_type` (does it choose the
+    # structural NamedTuple lift?) rather than `_uses_structural_dual_type`
+    # alone. An explicit per-type overload (e.g. `Base.Broadcast.Extruded`)
+    # may return a non-NamedTuple shape even when the generic struct-lift
+    # gate predicate is true; honour the overload by skipping this branch.
+    if N >= 1 && fieldcount(P) == fieldcount(Tx) && _uses_structural_dual_type(P)
+        DT = try
+            _static_dual_type_value(Val(N), P)
+        catch
+            nothing
+        end
+        if DT isa DataType && DT <: NamedTuple
+            names = fieldnames(P)
+            InnerTup = Tuple{
+                map(
+                    i -> _static_dual_type_value(Val(N), fieldtype(P, i)), 1:fieldcount(P)
+                )...,
+            }
+            InnerT = NamedTuple{names,InnerTup}
+            return :(Lifted{$P,$N,$InnerT}(NamedTuple{$names}(bare_x)))
+        end
     end
     return :(nothing)
 end

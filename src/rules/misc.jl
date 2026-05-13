@@ -165,8 +165,7 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     primal_field = getfield(primal(x), f)
     # Audit step 5: short-circuit on either parent-NoTangent or field-NoTangent
     # (see the 4-arg overload below for rationale).
-    if tangent_type(P) === NoTangent ||
-        tangent_type(_typeof(primal_field)) === NoTangent
+    if tangent_type(P) === NoTangent || tangent_type(_typeof(primal_field)) === NoTangent
         return uninit_dual(primal_field)
     else
         return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
@@ -254,8 +253,11 @@ _get_tangent_field(t::AbstractArray, name, inbounds) = getfield(t, name, inbound
 @inline _get_tangent_field(t::MemoryRef, name::Symbol) =
     name === :ptr_or_offset ? bitcast(Ptr{NoTangent}, t.ptr_or_offset) : getfield(t, name)
 @inline _get_tangent_field(t::MemoryRef, name::Symbol, inbounds) =
-    name === :ptr_or_offset ? bitcast(Ptr{NoTangent}, t.ptr_or_offset) :
-    getfield(t, name, inbounds)
+    if name === :ptr_or_offset
+        bitcast(Ptr{NoTangent}, t.ptr_or_offset)
+    else
+        getfield(t, name, inbounds)
+    end
 function _get_tangent_field(f::NTangent, name)
     return NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
 end
@@ -337,8 +339,7 @@ end
     # the parent has a tangent shape but the specific field doesn't —
     # avoids recursing into `_get_tangent_field` on a bulk-array tangent
     # that doesn't structurally decompose.
-    if tangent_type(P) === NoTangent ||
-        tangent_type(_typeof(primal_field)) === NoTangent
+    if tangent_type(P) === NoTangent || tangent_type(_typeof(primal_field)) === NoTangent
         return uninit_dual(primal_field)
     else
         return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
@@ -365,10 +366,7 @@ end
 # active. `_lgetfield_impl(::Dual{P, T<:StandardTangentType}, ::Val{f},
 # ::Val{order})` already handles both NTangent-wrapped and bare-T forms.
 @inline function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{P,T},
-    ::Dual{Val{f}},
-    ::Dual{Val{order}},
+    ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}, ::Dual{Val{order}}
 ) where {P,T<:StandardTangentType,f,order}
     return _lgetfield_impl(x, Val(f), Val(order))
 end

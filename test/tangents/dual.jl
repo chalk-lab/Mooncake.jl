@@ -193,28 +193,22 @@ end
         @test !Mooncake.verify_lifted_type(nested)
     end
 
-    @testset "typeassert canonical V (audit test #14)" begin
-        # Audit step 3: `typeassert(::Real)` of a concrete `NDual`-backed
-        # value canonicalises to the abstract slot's canonical inner V
-        # (`dual_type(Val(1), Real) === Dual` UnionAll). The runtime value
-        # is converted from `NDual{Float64, 1}(p, (t,))` to the parallel
-        # `Dual{Float64, Float64}(p, t)` form, stored inside the wider
-        # `Lifted{Real, 1, Dual}` slot.
+    @testset "typeassert keeps runtime Lifted concrete (audit test #14)" begin
+        # Per the revised audit (`primal-mode-branch-audit.md` Todo 1):
+        # abstract `T` slot annotations should NOT produce exact-abstract
+        # runtime wrappers. `typeassert(::Real)` on an `NDual{Float64,1}`-
+        # backed `Lifted` returns a concrete `Lifted{Float64, 1, NDual{Float64,1}}`
+        # that fits the abstract `lifted_type(Val(N), Real)` slot annotation.
         x = Lifted{Float64,1}(3.0, 1.5)
         type_assert_f = Lifted{typeof(typeassert),1}(typeassert, NoTangent())
         real_type_lifted = Lifted{Type{Real},1}(Real, NoTangent())
         y = Mooncake.frule!!(type_assert_f, x, real_type_lifted)
-        # The output's P parameter is narrowed to the asserted abstract type.
-        @test y isa Lifted{Real,1}
-        # The output's V parameter is the canonical `dual_type(Val(1), Real)`
-        # — the `Dual` UnionAll — so any concrete `Dual{Q, T_q}` runtime
-        # value fits inside the `value::Dual` field.
-        @test typeof(y).parameters[3] === Mooncake.dual_type(Val(1), Real)
-        # And the runtime inner is a converted parallel-Dual, not the
-        # original NDual.
-        @test Mooncake._unlift(y) isa Dual
-        @test primal(Mooncake._unlift(y)) === 3.0
-        @test tangent(Mooncake._unlift(y)) === 1.5
+        # Runtime P is the concrete primal type, not the abstract `Real`.
+        @test y isa Lifted{Float64,1}
+        # The inner V is the canonical concrete shape, unchanged.
+        @test Mooncake._unlift(y) === Mooncake._unlift(x)
+        # Compatibility with the abstract slot annotation holds via `isa`.
+        @test y isa Mooncake.lifted_type(Val(1), Real)
     end
 
     @testset "verify_dual_type accepts valid bare inner shapes" begin
@@ -388,8 +382,7 @@ end
         # since the 2-arg path on heterogeneous struct V isn't supported
         # by NamedTuple's primal+tangent constructor.
         inner_v = (
-            x = NDual{Float64,2}(1.0, (10.0, 11.0)),
-            y = Mooncake.Dual(:sym, NoTangent()),
+            x=NDual{Float64,2}(1.0, (10.0, 11.0)), y=Mooncake.Dual(:sym, NoTangent())
         )
         dstruct = Lifted{Mooncake.TestResources.StableFoo,2}(inner_v)
         ts = tangent(dstruct)
