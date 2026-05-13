@@ -669,9 +669,12 @@ end
 
 @intrinsic pointerref
 # `pointerref` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline _pointerref_tan(t::Ptr) = t
+@inline _pointerref_tan(t::Mooncake.NTangent{Tuple{P}}) where {P<:Ptr} = t.lanes[1]
 @inline function _pointerref_kernel(x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
-    da = pointerref(tangent(x), primal(y), primal(z))
+    # Audit step 5: unwrap singleton-NTangent on the Ptr tangent (carve-out lifted).
+    da = pointerref(_pointerref_tan(tangent(x)), primal(y), primal(z))
     return Dual(a, da)
 end
 @inline function frule!!(
@@ -705,9 +708,14 @@ end
 
 @intrinsic pointerset
 # `pointerset` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline _pointerset_tan(t::Ptr) = t
+@inline _pointerset_tan(t::Mooncake.NTangent{Tuple{P}}) where {P<:Ptr} = t.lanes[1]
 @inline function _pointerset_kernel(p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
-    pointerset(tangent(p), tangent(x), primal(idx), primal(z))
+    # Audit step 5: unwrap singleton-NTangent on the Ptr tangent when the
+    # carve-out is lifted (`tangent(::Dual{Ptr{T}, NTangent{Tuple{Ptr{TT}}}})`
+    # returns the outer NTangent; pointerset needs bare Ptr).
+    pointerset(_pointerset_tan(tangent(p)), tangent(x), primal(idx), primal(z))
     return p
 end
 @inline function frule!!(
