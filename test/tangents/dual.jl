@@ -160,6 +160,12 @@ end
         T1real = lifted_type(Val(1), Real)
         @test Lifted{Float64,1,NDual{Float64,1}} <: T1real
         @test !(Lifted{Float64,2,NDual{Float64,2}} <: T1real)
+
+        # Audit test #4: `AbstractFloat` should accept width-2 concrete
+        # lifted values and reject width-1, mirroring the `Real` case.
+        T2af = lifted_type(Val(2), AbstractFloat)
+        @test Lifted{Float64,2,NDual{Float64,2}} <: T2af
+        @test !(Lifted{Float64,1,NDual{Float64,1}} <: T2af)
     end
 
     @testset "verify_lifted_type" begin
