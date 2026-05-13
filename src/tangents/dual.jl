@@ -879,7 +879,18 @@ Companion to `zero_dual` (Layer 2). The result type matches
 @inline zero_lifted(::Val{0}, x::NamedTuple) = x
 @inline zero_lifted(::Val{0}, x::Type) = x
 @inline zero_lifted(::Val{0}, x) = x
-@inline zero_lifted(w::Val{N}, x) where {N} = Lifted{typeof(x),N}(zero_dual(w, x))
+# Audit step 5: when `dual_type(Val(N), P)` matches `typeof(zero_dual(w, x))`
+# (the IEEEFloat / Ptr / NDual paths), the 1-arg `Lifted` ctor uses the
+# canonical inner V directly. Otherwise route through the 2-arg ctor so
+# the inner V is rebuilt from `(primal, tangent)` via `dual_type(Val(N),
+# P)(primal, tangent)`. Avoids the generic `zero_tangent` safety check
+# that rejects bare `Ptr` primals.
+@inline function zero_lifted(w::Val{N}, x) where {N}
+    zd = zero_dual(w, x)
+    InnerT = dual_type(w, typeof(x))
+    return typeof(zd) === InnerT ? Lifted{typeof(x),N,InnerT}(zd) :
+           Lifted{typeof(x),N}(primal(zd), tangent(zd))
+end
 @inline function zero_lifted(w::Val{N}, x::Type{P}) where {N,P}
     P_slot = @isdefined(P) ? Type{P} : typeof(x)
     return Lifted{P_slot,N}(zero_dual(w, x))
