@@ -1,36 +1,73 @@
-@is_primitive MinimalCtx Tuple{typeof(exp),Matrix{<:IEEEFloat}}
+# friendly_tangent_cache and tangent_to_friendly_internal!! for structured matrix types.
+#
+# Symmetric, Hermitian, and SymTridiagonal store only part of the matrix internally but
+# represent a full symmetric/Hermitian matrix. The user-facing gradient is a plain Matrix{T}.
+#
+# Because we do not track which elements were getindex'ed, we cannot assume the tangent
+# retains the original structure — it must be treated as a dense matrix. The original
+# Symmetric/Hermitian/SymTridiagonal structure is therefore lost in the friendly gradient.
+#
+# friendly_tangent_cache pre-allocates the Matrix{T} output buffer at prepare time.
+# tangent_to_friendly_internal!! copies the stored tangent fields directly into dest.
+# The stored triangle (for Symmetric/Hermitian) or diagonals (for SymTridiagonal) hold the
+# accumulated chain-rule gradient; all other entries are zero-initialised by Mooncake and
+# are left zero by fill! (SymTridiagonal) or implicit via copyto! (Symmetric/Hermitian).
+#
+# For Hermitian{T} where T is complex: the stored triangle of .data accumulates the
+# chain-rule gradient for both logical positions it represents (via Mooncake's usual
+# tangent accumulation), and the non-stored triangle is zero-initialised. copyto! copies
+# the full data matrix (including complex entries) to dest, which is a plain Matrix{T}.
 
-struct ExpPullback{P}
-    pb
-    Ȳ::Matrix{P}
-    X̄::Matrix{P}
+function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Symmetric{T}) where {T}
+    FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, size(x)...))
+end
+function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Hermitian{T}) where {T}
+    FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, size(x)...))
+end
+function Mooncake.friendly_tangent_cache(x::LinearAlgebra.SymTridiagonal{T}) where {T}
+    FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, length(x.dv), length(x.dv)))
 end
 
-function (pb::ExpPullback)(::NoRData)
-    _, X̄_inc = pb.pb(pb.Ȳ)
-    pb.X̄ .+= X̄_inc
-    return NoRData(), NoRData()
+@unstable function Mooncake.tangent_to_friendly_internal!!(
+    tangent_as_friendly::Matrix{T}, ::LinearAlgebra.Symmetric{T}, tangent
+) where {T}
+    return copyto!(tangent_as_friendly, val(tangent.fields.data))
 end
 
-function frule!!(::Dual{typeof(exp)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
-    X = copy(primal(X_dX))
-    dX = copy(tangent(X_dX))
-    return Dual(ChainRules.frule((ChainRules.NoTangent(), dX), LinearAlgebra.exp!, X)...)
+@unstable function Mooncake.tangent_to_friendly_internal!!(
+    tangent_as_friendly::Matrix{T}, ::LinearAlgebra.Hermitian{T}, tangent
+) where {T}
+    return copyto!(tangent_as_friendly, val(tangent.fields.data))
 end
-function rrule!!(::CoDual{typeof(exp)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloat}
-    Y, pb = ChainRules.rrule(exp, X.x)
-    Ȳ = zero(Y)
-    return CoDual(Y, Ȳ), ExpPullback{P}(pb, Ȳ, X.dx)
+
+@unstable function Mooncake.tangent_to_friendly_internal!!(
+    tangent_as_friendly::Matrix{T}, ::LinearAlgebra.SymTridiagonal{T}, tangent
+) where {T}
+    dv = val(tangent.fields.dv)
+    ev = val(tangent.fields.ev)
+    fill!(tangent_as_friendly, zero(T))
+    @inbounds for i in eachindex(dv)
+        tangent_as_friendly[i, i] = dv[i]
+    end
+    @inbounds for i in eachindex(ev)
+        tangent_as_friendly[i, i + 1] = ev[i]
+        tangent_as_friendly[i + 1, i] = ev[i]
+    end
+    return tangent_as_friendly
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
-    test_cases = vcat(
-        map_prod([3, 7], Ps) do (N, P)
-            return (false, :none, nothing, exp, randn(rng, P, N, N))
-        end,
-    )
+    test_cases = if Base.get_extension(Mooncake, :MooncakeChainRulesExt) === nothing
+        Any[]
+    else
+        vcat(
+            map_prod([3, 7], Ps) do (N, P)
+                return (false, :none, nothing, exp, randn(rng, P, N, N))
+            end,
+        )
+    end
     memory = Any[]
     return test_cases, memory
 end

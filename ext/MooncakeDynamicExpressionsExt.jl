@@ -84,7 +84,9 @@ function set_children!(t::TangentNode{Tv,D}, fdata::Tuple{Vararg{Any,deg}}) wher
 end
 
 function DE.extract_gradient(
-    gradient::Mooncake.Tangent{@NamedTuple{tree::TN,metadata::Mooncake.NoTangent}},
+    gradient::Mooncake.PossiblyMutableTangent{
+        @NamedTuple{tree::TN,metadata::Mooncake.NoTangent}
+    },
     tree::Expression{T},
 ) where {Tv,TN<:TangentNode{Tv},T}
     return DE.extract_gradient(gradient.fields.tree, DE.get_tree(tree))

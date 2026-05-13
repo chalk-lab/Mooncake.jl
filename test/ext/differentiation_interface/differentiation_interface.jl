@@ -6,12 +6,15 @@ using DifferentiationInterface, DifferentiationInterfaceTest
 using Mooncake: Mooncake
 using Test
 
-# Test first-order differentiation (reverse mode)
-test_differentiation(
-    [AutoMooncake(; config=nothing), AutoMooncake(; config=Mooncake.Config())];
-    excluded=SECOND_ORDER,
-    logging=true,
-)
+backends = [
+    AutoMooncake(),
+    AutoMooncakeForward(),
+    AutoMooncake(; config=Mooncake.Config(; friendly_tangents=true)),
+    AutoMooncakeForward(; config=Mooncake.Config(; friendly_tangents=true)),
+]
+
+# Test first-order differentiation
+test_differentiation(backends; excluded=SECOND_ORDER, logging=true)
 
 # Test for world-age fix when using closures (#916, #632)
 # The bug occurs when:

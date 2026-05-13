@@ -58,7 +58,7 @@ The need for all of this is explained in the docs, but for now it suffices to co
 
 `Int`s are non-differentiable types, so there is nothing to pass around on the forwards- or reverse-pass.
 Therefore
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> fdata_type(tangent_type(Int)), rdata_type(tangent_type(Int))
 (NoFData, NoRData)
 ```
@@ -67,7 +67,7 @@ julia> fdata_type(tangent_type(Int)), rdata_type(tangent_type(Int))
 
 The tangent type of `Float64` is `Float64`.
 `Float64`s are identified by their value / have no fixed address, so
-```jldoctest
+```jldoctest; setup = :(using Mooncake: fdata_type, rdata_type)
 julia> (fdata_type(Float64), rdata_type(Float64))
 (NoFData, Float64)
 ```
@@ -76,7 +76,7 @@ julia> (fdata_type(Float64), rdata_type(Float64))
 
 The tangent type of `Vector{Float64}` is `Vector{Float64}`.
 A `Vector{Float64}` is identified by its address, so
-```jldoctest
+```jldoctest; setup = :(using Mooncake: fdata_type, rdata_type)
 julia> (fdata_type(Vector{Float64}), rdata_type(Vector{Float64}))
 (Vector{Float64}, NoRData)
 ```
@@ -90,7 +90,7 @@ The tangent type for `Tuple{Float64, Vector{Float64}, Int}` is
 `Tuple{Float64, Vector{Float64}, NoTangent}`.
 `Tuple`s have no fixed memory address, so we interrogate each field on its own.
 We have already established the fdata and rdata types for each element, so we recurse to obtain:
-```jldoctest
+```jldoctest; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> T = tangent_type(Tuple{Float64, Vector{Float64}, Int})
 Tuple{Float64, Vector{Float64}, NoTangent}
 
@@ -107,7 +107,7 @@ In this example, `t` contains a mixture of data, some of which is identified by 
 
 Structs are handled in more-or-less the same way as `Tuple`s, albeit with the possibility of undefined fields needing to be explicitly handled.
 For example, a struct such as
-```jldoctest foo_fdata
+```jldoctest foo_fdata; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> struct Foo
            x::Float64
            y
@@ -115,7 +115,7 @@ julia> struct Foo
        end
 ```
 has tangent type
-```jldoctest foo_fdata
+```jldoctest foo_fdata; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> tangent_type(Foo)
 Tangent{@NamedTuple{x::Float64, y, z::NoTangent}}
 ```
@@ -131,7 +131,7 @@ Practically speaking, `FData` and `RData` both have the same structure as `Tange
 The fdata for a `mutable struct`s is its tangent, and it has no rdata.
 This is because `mutable struct`s have fixed memory addresses, and can therefore be incremented in-place.
 For example,
-```jldoctest bar_fdata
+```jldoctest bar_fdata; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> mutable struct Bar
            x::Float64
            y
@@ -139,7 +139,7 @@ julia> mutable struct Bar
        end
 ```
 has tangent type
-```jldoctest bar_fdata
+```jldoctest bar_fdata; setup = :(using Mooncake: tangent_type, fdata_type, rdata_type)
 julia> tangent_type(Bar)
 MutableTangent{@NamedTuple{x::Float64, y, z::NoTangent}}
 ```
@@ -288,6 +288,10 @@ Exception indicating that there is a problem with the fdata associated to a prim
 """
 struct InvalidFDataException <: Exception
     msg::String
+end
+
+function Base.showerror(io::IO, err::InvalidFDataException)
+    _print_boxed_error(io, split("InvalidFDataException: $(err.msg)", '\n'))
 end
 
 """
@@ -762,6 +766,10 @@ struct InvalidRDataException <: Exception
     msg::String
 end
 
+function Base.showerror(io::IO, err::InvalidRDataException)
+    _print_boxed_error(io, split("InvalidRDataException: $(err.msg)", '\n'))
+end
+
 """
     verify_rdata_type(P::Type, R::Type)::Nothing
 
@@ -880,33 +888,64 @@ end
 Given the type of the fdata and rdata, `F` and `R` resp., for some primal type, compute its
 tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 """
+
 @foldable tangent_type(::Type{NoFData}, ::Type{NoRData}) = NoTangent
+@foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:NoRData} = NoTangent
+@foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:NoFData} = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
 
-# Union types. NOTE: Only `Union{Nothing, Array{<:Any,N}, Base.IEEEFloat}` are supported.
+# Union types. Supported shapes:
+# - F=NoFData, R<:Union{NoRData, IEEEFloat or RData{...}}        (issue #1130)
+# - F<:Union{NoFData, FData}, R<:Union{NoRData, RData}            (both unions)
+# - F<:Union{NoFData, T} for fdata-only T (e.g. Array), R=NoRData
+# Each branch recurses by binary splitting on R.a/R.b or F.a/F.b, which handles
+# N-branch unions because Julia stores them as nested binary Unions.
 @foldable function tangent_type(
     ::Type{NoFData}, ::Type{R}
-) where {R<:Union{NoRData,T} where {T<:Base.IEEEFloat}}
-    # This should only ever be hit when R is a proper union, since Any
-    # does not meet the constraint on T, an R==NoRData already has a more
-    # specific dispatch defined
+) where {R<:Union{NoRData,Base.IEEEFloat}}
+    @assert R isa Union  # R==NoRData hits a more specific method above; Any is excluded.
+    Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
+end
+# Covers Union{NoRData, RData{...}} (issue #1130). More specific than the F-union method
+# below on R, so dispatch lands here when F=NoFData and R<:Union{NoRData, RData}.
+@foldable function tangent_type(::Type{NoFData}, ::Type{R}) where {R<:Union{NoRData,RData}}
     @assert R isa Union
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
+# Both F and R are unions. Arises for primals Union{Nothing, T} where T has both fdata
+# and rdata parts; pairing assumes that shape: NoFData ↔ NoRData (Nothing branch) and
+# FData ↔ RData (T branch).
+@foldable function tangent_type(
+    ::Type{F}, ::Type{R}
+) where {F<:Union{NoFData,FData},R<:Union{NoRData,RData}}
+    @assert F isa Union && R isa Union
+    Fa = F.a == NoFData ? F.a : F.b
+    Fb = F.a == NoFData ? F.b : F.a
+    Ra = R.a == NoRData ? R.a : R.b
+    Rb = R.a == NoRData ? R.b : R.a
+    Union{tangent_type(Fa, Ra),tangent_type(Fb, Rb)}
+end
+# More specific than the generic F<:Union{NoFData, T} method below on F. _validate_union
+# is unnecessary: FData carries no rdata by construction.
+@foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Union{NoFData,FData}}
+    @assert F isa Union
+    Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
+end
+# Generic Union{NoFData, T} for non-FData T (e.g. Array). _validate_union rejects T
+# values that would silently carry rdata.
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}
     _validate_union(F)
-    # The only case where this dispatch can be hit where F is
-    # not a union would be if F==Any, but _validate_union causes
-    # that case to error
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
+
 function _validate_union(::Type{F}) where {F<:Union{NoFData,T} where {T}}
     _T = F isa Union ? (F.a == NoFData ? F.b : F.a) : F
-    if rdata_type(tangent_type(_T)) != NoRData
+    # rdata_type throws for non-IEEEFloat primitive types; guard before calling it.
+    if isprimitivetype(_T) || rdata_type(_T) != NoRData
         throw(
             InvalidFDataException("Something went wrong: called tangent_type($F, NoRData)")
         )
@@ -944,13 +983,20 @@ end
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:MutableTangent} = F
 
 # structs
+# Note: Union{RData{A},RData{B}} <: RData in Julia's type system, so the R<:RData and
+# F<:FData methods also match unions of RData/FData subtypes. Guard with `isa Union` so
+# those cases recurse via binary splitting rather than calling fields_type on a Union type.
+# The F<:FData,R<:RData combined case is NOT guarded: pairing two independently-ordered
+# unions of FData and RData would be unreliable; that case should not arise in valid use.
 @foldable function tangent_type(::Type{F}, ::Type{R}) where {F<:FData,R<:RData}
     return Tangent{tangent_type(fields_type(F), fields_type(R))}
 end
 @foldable function tangent_type(::Type{NoFData}, ::Type{R}) where {R<:RData}
+    R isa Union && return Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
     return Tangent{tangent_type(NoFData, fields_type(R))}
 end
 @foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:FData}
+    F isa Union && return Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
     return Tangent{tangent_type(fields_type(F), NoRData)}
 end
 
@@ -971,6 +1017,7 @@ Reconstruct the tangent `t` for which `fdata(t) == f` and `rdata(t) == r`.
 tangent(::NoFData, ::NoRData) = NoTangent()
 tangent(::NoFData, r::IEEEFloat) = r
 tangent(f::Array, ::NoRData) = f
+tangent(f::Ptr, ::NoRData) = f
 
 # Tuples
 tangent(f::Tuple, r::Tuple) = tuple_map(tangent, f, r)
@@ -1033,12 +1080,17 @@ end
 """
     zero_tangent(primal, fdata)
 
-Equivalent to `tangent(fdata, rdata(zero_tangent(primal)))`.
+Equivalent to `tangent(fdata, zero_rdata(primal))`.
+
+Prefer this two-argument form over the single-argument `zero_tangent(primal)` whenever
+`primal` is or contains a `Ptr`, since single-argument `zero_tangent` is not safe for
+pointer types (it will throw). The two-argument form handles pointer-containing types
+correctly by using `zero_rdata`, whose result for a `Ptr` field is just `NoRData()`.
 """
 zero_tangent(p, ::NoFData) = zero_tangent(p)
 
 function zero_tangent(p::P, f::F) where {P,F}
-    return tangent_type(P) == F ? f : tangent(f, rdata(zero_tangent(p)))
+    return tangent_type(P) == F ? f : tangent(f, zero_rdata(p))
 end
 
 zero_tangent(p::Tuple, f::Union{Tuple,NamedTuple}) = tuple_map(zero_tangent, p, f)

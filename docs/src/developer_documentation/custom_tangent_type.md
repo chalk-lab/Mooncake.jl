@@ -34,7 +34,6 @@ A *recursive type* is a struct that contains itself (directly or indirectly) as 
 
 ```@setup custom_tangent_type
 using Mooncake: Mooncake
-using DifferentiationInterface
 using JET
 using AllocCheck
 using Test
@@ -183,7 +182,8 @@ With these, you can now differentiate simple functions:
 
 ```@example custom_tangent_type
 a = A(1.0)
-val, grad = DifferentiationInterface.value_and_gradient(f1, AutoMooncake(; config=nothing), a)
+cache = Mooncake.prepare_gradient_cache(f1, a)
+val, (_, grad) = Mooncake.value_and_gradient!!(cache, f1, a)
 ```
 
 Another example:
@@ -194,7 +194,8 @@ function prod_x(a::A{T}) where {T}
     return a.a === nothing ? a_val : a_val * prod_x(a.a)
 end
 sum_a = A(1.0, A(2.0, A(3.0)))
-val_f5, grad_f5 = DifferentiationInterface.value_and_gradient(prod_x, AutoMooncake(; config=nothing), sum_a)
+cache_prod_x = Mooncake.prepare_gradient_cache(prod_x, sum_a)
+val_f5, (_, grad_f5) = Mooncake.value_and_gradient!!(cache_prod_x, prod_x, sum_a)
 ```
 
 Depending on your use case, this may be sufficient.

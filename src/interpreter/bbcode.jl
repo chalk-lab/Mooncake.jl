@@ -1013,7 +1013,7 @@ A block is unreachable if either:
 2. all of its predecessors are themselves unreachable.
 
 For example, consider the following IR:
-```jldoctest remove_unreachable_blocks
+```jldoctest remove_unreachable_blocks; setup = :(using Mooncake)
 julia> ir = Mooncake.ircode(
            Any[Core.ReturnNode(nothing), Expr(:call, sin, 5), Core.ReturnNode(Core.SSAValue(2))],
            Any[Any, Any, Any],
@@ -1021,9 +1021,9 @@ julia> ir = Mooncake.ircode(
 ```
 There is no possible way to reach the second basic block (lines 2 and 3). Applying this
 function will therefore remove it, yielding the following:
-```jldoctest remove_unreachable_blocks
+```jldoctest remove_unreachable_blocks; setup = :(using Mooncake)
 julia> Mooncake.IRCode(Mooncake.remove_unreachable_blocks!(Mooncake.BBCode(ir)))
-1 1 ─     return nothing
+ 1 ─     return nothing
 ```
 
 In the blocks which have not been removed, there may be references to blocks which have been

@@ -43,11 +43,69 @@ end
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_union_array(); test_opt_flag=false
         )
-
         # https://github.com/chalk-lab/Mooncake.jl/issues/631
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.P_adam_like_union; test_opt_flag=false
         )
+        # https://github.com/chalk-lab/Mooncake.jl/issues/1130
+        TestUtils.test_tangent_splitting(
+            Xoshiro(123456), TestResources.make_P_lohi_container(); test_opt_flag=false
+        )
+        TestUtils.test_tangent_splitting(
+            Xoshiro(123456), TestResources.make_P_mixed_container(); test_opt_flag=false
+        )
+        # Direct dispatch checks for tangent_type(F, R) on union shapes.
+        # NoFData + Union{NoRData, IEEEFloat}
+        @test tangent_type(NoFData, Union{NoRData,Float64}) == Union{NoTangent,Float64}
+        # NoFData + Union{NoRData, RData{...}}  (issue #1130)
+        @test tangent_type(
+            NoFData, Union{NoRData,Mooncake.RData{@NamedTuple{lo::Float64,hi::Float64}}}
+        ) == Union{NoTangent,Tangent{@NamedTuple{lo::Float64,hi::Float64}}}
+        # Round-trip via Union{Nothing, T} for each remaining union shape.
+        for P in (
+            Union{Nothing,TestResources.Mixed},     # both F and R are unions
+            Union{Nothing,TestResources.VecOnly},   # F union, R = NoRData (FData branch)
+            Union{Nothing,Vector{Float64}},         # F union, R = NoRData (Array branch)
+        )
+            @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
+                tangent_type(P)
+        end
+        # _validate_union: primitive branch (Float64 is a primitive type).
+        @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
+        # _validate_union: non-FData with rdata_type != NoRData (Tangent carries rdata).
+        @test_throws InvalidFDataException tangent_type(
+            Union{NoFData,Tangent{@NamedTuple{x::Float64}}}, NoRData
+        )
+        # N-branch rdata union — Julia nests as binary unions, recursive splitting handles it.
+        @test tangent_type(
+            NoFData,
+            Union{
+                NoRData,
+                Mooncake.RData{@NamedTuple{lo::Float64,hi::Float64}},
+                Mooncake.RData{@NamedTuple{x::Float64}},
+                Mooncake.RData{@NamedTuple{y::Float32}},
+            },
+        ) == Union{
+            NoTangent,
+            Tangent{@NamedTuple{lo::Float64,hi::Float64}},
+            Tangent{@NamedTuple{x::Float64}},
+            Tangent{@NamedTuple{y::Float32}},
+        }
+        # N-branch fdata union — symmetric case for the F side.
+        @test tangent_type(
+            Union{
+                NoFData,
+                Mooncake.FData{@NamedTuple{v::Vector{Float64}}},
+                Mooncake.FData{@NamedTuple{w::Vector{Float32}}},
+                Mooncake.FData{@NamedTuple{u::Vector{Float64},v::Vector{Float32}}},
+            },
+            NoRData,
+        ) == Union{
+            NoTangent,
+            Tangent{@NamedTuple{v::Vector{Float64}}},
+            Tangent{@NamedTuple{w::Vector{Float32}}},
+            Tangent{@NamedTuple{u::Vector{Float64},v::Vector{Float32}}},
+        }
     end
 
     @testset "zero_rdata_from_type checks" begin
@@ -173,6 +231,16 @@ end
             @test verify_fdata_value(Ptr{Float64}(), Ptr{Float64}()) === nothing
             @test verify_rdata_value(Ptr{Float64}(), NoRData()) === nothing
         end
+    end
+
+    @testset "zero_tangent (2-arg) for Ptr" begin
+        p = Ptr{Float64}()
+        f = Ptr{Float64}()
+        # Two-arg zero_tangent: tangent_type(Ptr{Float64}) == Ptr{Float64}, so returns f.
+        @test zero_tangent(p, f) === f
+
+        # tangent(f::Ptr, ::NoRData) reconstructs the full Ptr tangent from its fdata.
+        @test tangent(f, NoRData()) === f
     end
 
     @testset "Helpful error messages for misuse of fdata and rdata" begin

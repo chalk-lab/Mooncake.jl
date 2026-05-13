@@ -3,6 +3,7 @@ Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using CUDA, cuDNN, JET, Mooncake, NNlib, StableRNGs, Test
+using Mooncake.Nfwd: NDual, ndual_partial, ndual_value
 using Mooncake.TestUtils: test_rule
 using NNlib: dropout
 using LuxLib
@@ -468,4 +469,22 @@ end
     @test all(isinf.(y)) && all(y .> 0)
     @test !any(isnan.(dx))
     @test dx ≈ Float32[1.0f0, 0.0f0]
+
+    y_nd = NNlib.logsumexp(
+        NDual{Float32,1}[
+            NDual{Float32,1}(Inf32, (1.0f0,)), NDual{Float32,1}(Inf32, (0.0f0,))
+        ],
+    )
+    @test isinf(ndual_value(y_nd)) && ndual_value(y_nd) > 0
+    @test !isnan(ndual_partial(y_nd, 1))
+    @test ndual_partial(y_nd, 1) ≈ 0.5f0
+
+    y_nd_neg = NNlib.logsumexp(
+        NDual{Float32,1}[
+            NDual{Float32,1}(-Inf32, (1.0f0,)), NDual{Float32,1}(-Inf32, (0.0f0,))
+        ],
+    )
+    @test isinf(ndual_value(y_nd_neg)) && ndual_value(y_nd_neg) < 0
+    @test !isnan(ndual_partial(y_nd_neg, 1))
+    @test ndual_partial(y_nd_neg, 1) ≈ 0.5f0
 end

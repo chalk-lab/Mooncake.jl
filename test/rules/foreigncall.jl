@@ -1,6 +1,20 @@
 @testset "foreigncall" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:foreigncall))
 
+    @testset "llvm powi via fastmath lowering" begin
+        fn(x) = @fastmath x^2
+        cache = prepare_gradient_cache(fn, 3.0)
+        val, grad = value_and_gradient!!(cache, fn, 3.0)
+        @test val == 9.0
+        @test grad[2] == 6.0
+
+        g(x) = Base.FastMath.pow_fast(x, Int32(3))
+        cache_g = prepare_gradient_cache(g, 2.0)
+        val_g, grad_g = value_and_gradient!!(cache_g, g, 2.0)
+        @test val_g == 8.0
+        @test grad_g[2] == 12.0
+    end
+
     @testset "foreigncalls that should never be hit: $name" for name in [
         :jl_alloc_array_1d,
         :jl_alloc_array_2d,

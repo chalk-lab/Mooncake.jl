@@ -29,8 +29,17 @@ extract(x::CoDual) = primal(x), tangent(x)
     zero_codual(x)
 
 Equivalent to `CoDual(x, zero_tangent(x))`.
+
+For `Ptr` types, constructing a true zero tangent would require allocating new derivative
+storage and returning a pointer to it, which has unclear ownership and lifetime. Instead,
+`zero_codual(x::Ptr{P})` falls back to `uninit_codual(x)`, which uses the bitcast
+convention: the tangent pointer is produced by reinterpreting the primal address as a
+`Ptr{tangent_type(P)}`. The result must not be dereferenced as valid derivative storage —
+it is a type-correct structural placeholder. See the comment on `uninit_tangent(x::Ptr)`
+in `tangents.jl` for the full explanation of the Ptr tangent convention.
 """
 zero_codual(x) = CoDual(x, zero_tangent(x))
+zero_codual(x::Ptr{P}) where {P} = uninit_codual(x)
 
 """
     uninit_codual(x)
@@ -93,8 +102,16 @@ to_fwds(x::CoDual{Type{P}}) where {P} = CoDual{Type{P},NoFData}(primal(x), NoFDa
     zero_fcodual(x)
 
 Equivalent to `CoDual(x, fdata(zero_tangent(x)))`.
+
+For `Ptr` types, falls back to `uninit_fcodual(x)` for the same reason `zero_codual`
+does: constructing a true zero tangent requires allocating derivative storage, which has
+unclear ownership. Since `fdata_type(Ptr{P}) == Ptr{tangent_type(P)}` (the full tangent
+is fdata for Ptr), the fdata is produced via bitcast - same address, reinterpreted as
+`Ptr{tangent_type(P)}`. Not safe to dereference as valid derivatives. See the comment
+on `uninit_tangent(x::Ptr)` in `tangents.jl` for the full explanation.
 """
 zero_fcodual(p) = to_fwds(zero_codual(p))
+zero_fcodual(p::Ptr{P}) where {P} = uninit_fcodual(p)
 
 """
     uninit_fcodual(x)

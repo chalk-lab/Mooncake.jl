@@ -486,6 +486,27 @@ function const_prop_gotoifnots!(ir::IRCode)
     return ir
 end
 
+# On Julia 1.10, passing findfirst's Union{Int,Nothing} return directly to deleteat!
+# introduces a union-split that propagates through generate_dual_ir and causes spurious
+# allocation regressions. The !== nothing guard narrows to Int before the call.
+# Note: the 1.10 path silently does nothing when the item is absent; the 1.11 path throws
+# BoundsError. This is fine because remove_edge! is only ever called with edges that exist.
+#
+# MWE (Julia 1.10):
+#   f(v) = deleteat!(v, findfirst(==(2), v))
+#   g(v) = (i = findfirst(==(2), v); i !== nothing && deleteat!(v, i))
+#   @code_warntype f([1,2,3])  # deleteat! receives Union{Int,Nothing} → union-split
+#   @code_warntype g([1,2,3])  # deleteat! receives Int → monomorphic
+@static if VERSION < v"1.11-"
+    function _deleteat!(v, item)
+        i = findfirst(==(item), v)
+        i !== nothing && deleteat!(v, i)
+        return v
+    end
+else
+    _deleteat!(v, item) = deleteat!(v, findfirst(==(item), v))
+end
+
 """
     remove_edge!(ir::IRCode, from::Int, to::Int)
 
@@ -499,12 +520,12 @@ function remove_edge!(ir::IRCode, from::Int, to::Int)
 
     # Remove the `to` block from the `from` block's successor list.
     succs = ir.cfg.blocks[from].succs
-    deleteat!(succs, findfirst(n -> n == to, succs))
+    _deleteat!(succs, to)
 
     # Remove the `from` block from the `to` block's predecessor list.
     to_blk = ir.cfg.blocks[to]
     preds = to_blk.preds
-    deleteat!(preds, findfirst(n -> n == from, preds))
+    _deleteat!(preds, from)
 
     # Remove the `from` edge from any `PhiNode`s at the start of next blk.
     stmts = stmt(ir.stmts)
