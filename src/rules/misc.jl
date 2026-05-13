@@ -245,6 +245,10 @@ _get_tangent_field(::NoTangent, _, _) = NoTangent()
 # .ref) === MemoryRef{T}`).
 _get_tangent_field(t::AbstractArray, name) = getfield(t, name)
 _get_tangent_field(t::AbstractArray, name, inbounds) = getfield(t, name, inbounds)
+# MemoryRef tangent shape arises from `lgetfield(::Array, :ref)` paths; its
+# fields (`:ptr_or_offset`, `:mem`) follow the same primal-mirroring rule.
+_get_tangent_field(t::MemoryRef, name) = getfield(t, name)
+_get_tangent_field(t::MemoryRef, name, inbounds) = getfield(t, name, inbounds)
 function _get_tangent_field(f::NTangent, name)
     return NTangent(map(t -> _get_tangent_field(t, name), f.lanes))
 end
@@ -422,6 +426,7 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+@inline _ndual_to_dual_lane1(x::Dual) = x
 @inline _ndual_to_dual_lane1(x::NDual) = Dual(primal(x), x.partials[1])
 @inline _ndual_to_dual_lane1(x::Complex{<:NDual}) = Dual(
     complex(x.re.value, x.im.value), complex(x.re.partials[1], x.im.partials[1])

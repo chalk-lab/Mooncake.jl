@@ -452,6 +452,8 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(lmemoryrefget),<:MemoryRef,<:Val,<:Val}}
 ) = true
+@inline _memrefget_tan(t) = t
+@inline _memrefget_tan(t::Mooncake.NTangent{Tuple{T}}) where {T<:MemoryRef} = t.lanes[1]
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefget)},
     x::Dual{<:MemoryRef},
@@ -461,7 +463,10 @@ end
     ordering = primal(_ordering)
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), _val(ordering), _val(bc))
-    dy = memoryrefget(tangent(x), _val(ordering), _val(bc))
+    # Audit step 5: at width 1 with the carve-out lifted, `tangent(x)` for a
+    # `Dual{MemoryRef{T}, NTangent{Tuple{MemoryRef{TT}}}}` is the outer NTangent;
+    # `memoryrefget(::NTangent, ...)` fails. Unwrap the singleton-NTangent.
+    dy = memoryrefget(_memrefget_tan(tangent(x)), _val(ordering), _val(bc))
     return Dual(y, dy)
 end
 @inline function frule!!(
@@ -667,6 +672,25 @@ end
 ) where {P,V,ordering,boundscheck}
     memoryrefset!(primal(x), primal(value), ordering, boundscheck)
     memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
+    return value
+end
+# Audit step 5: NTangent-wrapped MemoryRef tangent (carve-out lifted).
+# Unwrap the singleton NTangent so `memoryrefset!` sees a bare `MemoryRef`.
+# `value` can be a bare `Dual` (legacy path) or a width-1 `NDual` / `Complex{NDual}`
+# / `AbstractArray{<:NDual}` (canonical width-1 lifted forms emerging from
+# `Memory{<:IEEEFloat}` element lookups).
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    x::Dual{<:MemoryRef{P},Mooncake.NTangent{Tuple{TT}}},
+    value::Union{
+        Dual,NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
+    },
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {P,TT<:MemoryRef,ordering,boundscheck}
+    bare_value = _ndual_to_dual_lane1(value)
+    memoryrefset!(primal(x), primal(bare_value), ordering, boundscheck)
+    memoryrefset!(tangent(x).lanes[1], tangent(bare_value), ordering, boundscheck)
     return value
 end
 const _MemoryRefSetTupleValue = Tuple{
