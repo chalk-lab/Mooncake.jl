@@ -387,6 +387,15 @@ end
     if inner isa Dual && isconcretetype(P_target)
         return Lifted{P_target,N}(primal(inner), tangent(inner))
     end
+    # Audit step 5: refuse to rewrap when the inner V's shape doesn't match
+    # `dual_type(Val(N), P_target)`. Without this, a `Lifted{Vector{Float64},
+    # 1, Vector{NDual}}` from a rule body that should have produced a Matrix
+    # gets re-tagged as `Lifted{Matrix{Float64}, 1, Vector{NDual}}` — invalid
+    # because the parametric V is a Vector, not a Matrix.
+    InnerT = dual_type(Val(N), P_target)
+    if InnerT isa DataType && isconcretetype(InnerT) && !(typeof(inner) <: InnerT)
+        return x
+    end
     return Lifted{P_target,N,typeof(inner)}(inner)
 end
 
