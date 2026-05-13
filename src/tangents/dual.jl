@@ -118,8 +118,9 @@ Width-aware forward value type query.
     end
 
     # Width 1: keep the legacy bare-`T` parallel form. `tangent_type(Val(1), P)`
-    # wraps in `NTangent{Tuple{T}}` but the generic-P parallel `Dual{P,T}` ctor
-    # sites still emit bare `T`, so the OC slot type must match (audit step 5).
+    # wraps in `NTangent{Tuple{T}}` but `test_frule_interface` / Ptr / Vector{Any}
+    # construction paths still emit bare `Dual{P,T}`; the OC slot type must match
+    # those (audit step 5, remaining bulk).
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end
