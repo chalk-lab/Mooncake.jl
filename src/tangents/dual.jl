@@ -124,9 +124,10 @@ Width-aware forward value type query.
     end
 
     # Width 1: keep the legacy bare-`T` parallel form for generic concrete `P`.
-    # Residual OC slot mismatches when carve-out is lifted come from
-    # `DerivedPrimal`-compiled rule bodies where IR-emit-internal paths still
-    # construct bare `Dual{P, T}` (audit step 5, remaining bulk).
+    # Residual blockers (21 OC slot mismatches): the structural lift /
+    # `_lgetfield_impl` path for non-NTangent-aware tangent shapes
+    # (`_get_tangent_field(::Vector{Any}, ::Symbol)` etc.) needs widening to
+    # accept NTangent-wrapped forms (audit step 5, remaining bulk).
     isconcretetype(P) || return Dual
     return Dual{P,N == 1 ? tangent_type(P) : tangent_type(Val(N), P)}
 end
