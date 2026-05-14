@@ -606,5 +606,35 @@ end
         # NTangent-bearing result preserves both lanes — the canonical path.
         r_nt = Mooncake._wrap_rule_result(Float64, Val(2), Dual(4.0, NTangent((7.0, 9.0))))
         @test tangent(r_nt) === NTangent((7.0, 9.0))
+
+        # Additional known-good chunked paths via `rules_via_nfwd` (direct
+        # `NDual{T, N}` ops preserve all lanes). These pin that the unary
+        # / binary IEEEFloat intrinsics and the `tuple` specific overload
+        # remain width-N correct under future changes.
+        @testset "rules_via_nfwd binary add_float" begin
+            a = Lifted{Float64,2}(NDual{Float64,2}(2.0, (10.0, 20.0)))
+            b = Lifted{Float64,2}(NDual{Float64,2}(3.0, (5.0, 15.0)))
+            addf = zero_lifted(Val(2), Mooncake.IntrinsicsWrappers.add_float)
+            z = frule!!(addf, a, b)
+            @test primal(z) === 5.0
+            @test tangent(z) === NTangent((15.0, 35.0))
+        end
+
+        @testset "rules_via_nfwd unary abs_float with negative primal" begin
+            xn = Lifted{Float64,2}(NDual{Float64,2}(-3.0, (10.0, 20.0)))
+            absf = zero_lifted(Val(2), Mooncake.IntrinsicsWrappers.abs_float)
+            yn = frule!!(absf, xn)
+            @test primal(yn) === 3.0
+            @test tangent(yn) === NTangent((-10.0, -20.0))
+        end
+
+        @testset "tuple specific overload with unequal seeds" begin
+            a = Lifted{Float64,2}(NDual{Float64,2}(2.0, (10.0, 20.0)))
+            b = Lifted{Float64,2}(NDual{Float64,2}(3.0, (5.0, 15.0)))
+            ftuple = zero_lifted(Val(2), tuple)
+            result = frule!!(ftuple, a, b)
+            # Element-wise tuple-of-NDual preserves each NDual's lanes.
+            @test tangent(result) === NTangent(((10.0, 5.0), (20.0, 15.0)))
+        end
     end
 end
