@@ -487,6 +487,32 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Audit Todo 4: width-N lmemoryrefget for NTangent-wrapped MemoryRef dest.
+# Read all N lane MemoryRef tangents — the bare-Dual rule above only services
+# lane 1 via `_memrefget_tan` which unwraps singleton-NTangent.
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(lmemoryrefget),N},
+    x::Mooncake.Lifted{
+        <:MemoryRef,N,<:Dual{<:MemoryRef,<:Mooncake.NTangent{<:NTuple{N,<:MemoryRef}}}
+    },
+    _ordering::Mooncake.Lifted{<:Val},
+    _boundscheck::Mooncake.Lifted{<:Val},
+) where {N}
+    N == 1 && return @invoke frule!!(
+        f::Mooncake.Lifted{typeof(lmemoryrefget),N},
+        x::Mooncake.Lifted{<:MemoryRef},
+        _ordering::Mooncake.Lifted{<:Val},
+        _boundscheck::Mooncake.Lifted{<:Val},
+    )
+    bare_x = Mooncake._unlift(x)
+    ord = _val(primal(Mooncake._unlift(_ordering)))
+    bc = _val(primal(Mooncake._unlift(_boundscheck)))
+    y = memoryrefget(primal(bare_x), ord, bc)
+    tangents = ntuple(Val(N)) do n
+        memoryrefget(tangent(bare_x).lanes[n], ord, bc)
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(tangents))
+end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
     x::CoDual{<:MemoryRef},
