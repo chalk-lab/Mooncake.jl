@@ -166,6 +166,17 @@ end
 # arrayify-views for the Dual case (mutations propagate), `map`-allocated
 # copies for the NDual case (which need `_arr_writeback!` to push results
 # back into the input NDual array element-wise on completion).
+#
+# Audit Todo 4 (width-N): every BLAS rule in this file is **width-1-only**.
+# The `_arr_extract` / `_mat_extract` / `_scalar_extract` helpers all
+# dispatch on `NDual{T, 1}` (lane-1) shapes and `_arr_writeback!`
+# constructs `NDual{T, 1}` results. For N >= 2 the Lifted-aware adapter
+# unlifts to `Array{NDual{T, N}}` which doesn't match the `_*_extract`
+# methods, producing a deliberate `MethodError`. Migrating BLAS to
+# explicit width-N would require either calling BLAS N times per lane
+# (one operation per direction) or implementing chunked BLAS operations
+# on `NDual{T, N}` element types; both are non-trivial and out of this
+# audit's bulk-migration scope. Per audit Todo 4: documented width-1-only.
 @inline _arr_extract(x::Dual{<:AbstractArray}) = arrayify(x)
 @inline function _arr_extract(x::AbstractArray{NDual{T,1}}) where {T}
     return (map(d -> d.value, x), map(d -> d.partials[1], x))
