@@ -703,22 +703,34 @@ end
 # `Memory{<:IEEEFloat}` element lookups).
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},Mooncake.NTangent{Tuple{TT}}},
+    x::Dual{<:MemoryRef{P},Mooncake.NTangent{NTuple{N,TT}}},
     value::Union{
         Dual,NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
     },
     ::Dual{Val{ordering}},
     ::Dual{Val{boundscheck}},
-) where {P,TT<:MemoryRef,ordering,boundscheck}
-    bare_value = _ndual_to_dual_lane1(value)
-    memoryrefset!(primal(x), primal(bare_value), ordering, boundscheck)
-    # Carve-out lift: `tangent(bare_value)` may itself be NTangent-wrapped
-    # for `Dual{Memory{T}, NTangent{Tuple{Memory{T'}}}}` etc. Unwrap.
-    memoryrefset!(
-        tangent(x).lanes[1], _memref_tan_unwrap(tangent(bare_value)), ordering, boundscheck
-    )
+) where {P,N,TT<:MemoryRef,ordering,boundscheck}
+    # Audit Todo 4: write all N lane MemoryRef tangents (was: only lane 1).
+    p_val = _ndual_primal(value)
+    memoryrefset!(primal(x), p_val, ordering, boundscheck)
+    for n in 1:N
+        # `value` may be bare `NDual{T, N}` (per-lane tangent via `.partials[n]`)
+        # or a `Dual{P, NTangent{...}}` (per-lane via lane n of NTangent).
+        memoryrefset!(tangent(x).lanes[n], _lane_tangent(value, n), ordering, boundscheck)
+    end
     return value
 end
+# Per-lane tangent extractor for canonical width-1/N forms.
+@inline _lane_tangent(v::NDual, n::Integer) = v.partials[n]
+@inline _lane_tangent(v::Complex{<:NDual}, n::Integer) = complex(
+    v.re.partials[n], v.im.partials[n]
+)
+@inline _lane_tangent(v::AbstractArray{<:NDual}, n::Integer) = map(d -> d.partials[n], v)
+@inline _lane_tangent(v::AbstractArray{<:Complex{<:NDual}}, n::Integer) = map(
+    z -> complex(z.re.partials[n], z.im.partials[n]), v
+)
+@inline _lane_tangent(v::Dual{<:Any,<:Mooncake.NTangent}, n::Integer) = tangent(v).lanes[n]
+@inline _lane_tangent(v::Dual, ::Integer) = tangent(v)
 const _MemoryRefSetTupleValue = Tuple{
     Vararg{
         Union{
