@@ -152,10 +152,10 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(-),N}, x::Mooncake.Lifted{P}
 ) where {N,P<:TWP}
-    inner_x = Mooncake._unlift(x)
-    bare_result = Dual(-primal(inner_x), -_twp_tangent(inner_x))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    # Audit Todo 4: per-lane assembly.
+    p_out = -primal(Mooncake._unlift(x))
+    tangents = ntuple(n -> -Mooncake.tangent(x, n), Val(N))
+    return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
 function rrule!!(::CoDual{typeof(-)}, x::CoDual{P}) where {P<:TWP}
     negate_twice_precision_pb(dy::P) = NoRData(), -dy
@@ -188,13 +188,9 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(+),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted{P}
 ) where {N,P<:TWP}
-    inner_x = Mooncake._unlift(x)
-    inner_y = Mooncake._unlift(y)
-    bare_result = Dual(
-        primal(inner_x) + primal(inner_y), _twp_tangent(inner_x) + _twp_tangent(inner_y)
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    p_out = primal(Mooncake._unlift(x)) + primal(Mooncake._unlift(y))
+    tangents = ntuple(n -> Mooncake.tangent(x, n) + Mooncake.tangent(y, n), Val(N))
+    return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{P}) where {P<:TWP}
     plus_pullback(dz::P) = NoRData(), dz, dz
@@ -205,11 +201,9 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(+),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted{<:Integer}
 ) where {N,P<:TWP}
-    inner_x = Mooncake._unlift(x)
-    inner_y = Mooncake._unlift(y)
-    bare_result = Dual(primal(inner_x) + primal(inner_y), _twp_tangent(inner_x))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    p_out = primal(Mooncake._unlift(x)) + primal(Mooncake._unlift(y))
+    tangents = ntuple(n -> Mooncake.tangent(x, n), Val(N))
+    return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     plus_twice_precision_integer_pb(dz::P) = NoRData(), dz, NoRData()
@@ -220,13 +214,14 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(*),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
 ) where {N,P<:TWP}
-    inner_x = Mooncake._unlift(x)
-    yv, yt = _twp_val(Mooncake._unlift(y))
-    z = primal(inner_x) * yv
-    dz = primal(inner_x) * yt + _twp_tangent(inner_x) * yv
-    bare_result = Dual(z, dz)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    # Audit Todo 4: per-lane assembly. d(xy)/dx = y, d(xy)/dy = x.
+    px = primal(Mooncake._unlift(x))
+    py = primal(Mooncake._unlift(y))
+    z = px * py
+    tangents = ntuple(Val(N)) do n
+        px * Mooncake.tangent(y, n) + Mooncake.tangent(x, n) * py
+    end
+    return Mooncake.Lifted{_typeof(z),N}(z, Mooncake.NTangent(tangents))
 end
 function rrule!!(
     ::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{S}
@@ -240,11 +235,10 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(*),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted{<:Integer}
 ) where {N,P<:TWP}
-    inner_x = Mooncake._unlift(x)
     yp = primal(Mooncake._unlift(y))
-    bare_result = Dual(primal(inner_x) * yp, _twp_tangent(inner_x) * yp)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    z = primal(Mooncake._unlift(x)) * yp
+    tangents = ntuple(n -> Mooncake.tangent(x, n) * yp, Val(N))
+    return Mooncake.Lifted{_typeof(z),N}(z, Mooncake.NTangent(tangents))
 end
 function rrule!!(::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
@@ -256,13 +250,14 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(/),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
 ) where {N,P<:TWP}
-    inner_x = Mooncake._unlift(x)
-    yv, yt = _twp_val(Mooncake._unlift(y))
-    z = primal(inner_x) / yv
-    dz = _twp_tangent(inner_x) / yv - yt * primal(inner_x) / yv^2
-    bare_result = Dual(z, dz)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    # Audit Todo 4: per-lane assembly. d(x/y)/dx = 1/y, d(x/y)/dy = -x/y^2.
+    px = primal(Mooncake._unlift(x))
+    py = primal(Mooncake._unlift(y))
+    z = px / py
+    tangents = ntuple(Val(N)) do n
+        Mooncake.tangent(x, n) / py - Mooncake.tangent(y, n) * px / py^2
+    end
+    return Mooncake.Lifted{_typeof(z),N}(z, Mooncake.NTangent(tangents))
 end
 function rrule!!(
     ::CoDual{typeof(/)}, x::CoDual{P}, y::CoDual{S}
@@ -276,11 +271,10 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(/),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted{<:Integer}
 ) where {N,P<:TWP}
-    inner_x = Mooncake._unlift(x)
     yp = primal(Mooncake._unlift(y))
-    bare_result = Dual(primal(inner_x) / yp, _twp_tangent(inner_x) / yp)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    z = primal(Mooncake._unlift(x)) / yp
+    tangents = ntuple(n -> Mooncake.tangent(x, n) / yp, Val(N))
+    return Mooncake.Lifted{_typeof(z),N}(z, Mooncake.NTangent(tangents))
 end
 function rrule!!(::CoDual{typeof(/)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
