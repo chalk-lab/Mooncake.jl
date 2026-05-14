@@ -432,6 +432,15 @@ function populate_address_map_internal(m::AddressMap, p::Array, t::Array)
     )
     return m
 end
+# Carve-out lift: `tangent_type(Val(1), Array)` is `NTangent{Tuple{Array}}`.
+# Unwrap the singleton lane and delegate to the bare Array overload so the
+# general `populate_address_map_internal(::Array, ::NTangent)` does not fall
+# through to the generic mutable-primal branch (which asserts MutableTangent).
+function populate_address_map_internal(
+    m::AddressMap, p::Array, t::Mooncake.NTangent{<:Tuple{Array}}
+)
+    return populate_address_map_internal(m, p, t.lanes[1])
+end
 
 function populate_address_map_internal(m::AddressMap, p::Core.SimpleVector, t::Vector{Any})
     k = pointer_from_objref(p)
