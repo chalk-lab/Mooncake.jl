@@ -571,4 +571,40 @@ end
         @test primal(result) === 4.0
         @test tangent(result) === NTangent((1.0,))
     end
+
+    @testset "chunk-size-2 with unequal lane seeds (audit Todo 4)" begin
+        # Audit Todo 4 chunked correctness probe. The bare `frule!!(::Dual)`
+        # path computes ONE lane; if a Lifted-aware wrapper passes a bare
+        # Dual{P,T} result up through `_wrap_rule_result` at `Val(2)`, the
+        # broadcast inner-V ctor duplicates the scalar tangent across all
+        # lanes. With unequal lane seeds, this surfaces as a duplicate value.
+        #
+        # The Nfwd scalar primitives (e.g. `sin`) operate directly on
+        # `NDual{T, 2}` and preserve all lanes correctly. This test pins
+        # that correctness so a regression that drops the chunked path is
+        # caught immediately.
+        x = Lifted{Float64,2}(NDual{Float64,2}(2.0, (10.0, 20.0)))
+        sinf = zero_lifted(Val(2), sin)
+        y = frule!!(sinf, x)
+
+        # Expected: d(sin x)/dx evaluated at x=2 with both seed lanes,
+        # producing two distinct lane values that are NOT just duplicates.
+        ct = cos(2.0)
+        @test primal(y) === sin(2.0)
+        @test tangent(y) === NTangent((ct * 10.0, ct * 20.0))
+        @test tangent(y).lanes[1] !== tangent(y).lanes[2]
+
+        # `_wrap_rule_result` broadcasts a bare-T scalar tangent across all N
+        # lanes (audit-acknowledged limitation): only valid when both lanes
+        # are intentionally equal. With distinct lane seeds at the source
+        # this is a duplicate-lane bug, but for a SCALAR tangent passed
+        # explicitly (e.g. a rule that genuinely returns identical-lane
+        # results), the broadcast is the intended behaviour.
+        r_bare = Mooncake._wrap_rule_result(Float64, Val(2), Dual(4.0, 7.0))
+        @test tangent(r_bare) === NTangent((7.0, 7.0))
+
+        # NTangent-bearing result preserves both lanes — the canonical path.
+        r_nt = Mooncake._wrap_rule_result(Float64, Val(2), Dual(4.0, NTangent((7.0, 9.0))))
+        @test tangent(r_nt) === NTangent((7.0, 9.0))
+    end
 end
