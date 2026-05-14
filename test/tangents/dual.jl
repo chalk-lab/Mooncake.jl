@@ -285,6 +285,38 @@ end
         ) === LinearAlgebra.Diagonal{NDual{Float64,2},Vector{NDual{Float64,2}}}
     end
 
+    @testset "width-1 wrapper bare-Dual durable exceptions (audit Todo 2, rev. 3)" begin
+        # Each wrapper below uses a parallel `Dual{Wrapper, tangent_type(Wrapper)}`
+        # representation at width 1 because its rules dispatch through `arrayify`
+        # (`Union{Tangent, FData}`-typed), which does not accept `NTangent` or
+        # `NDual`-element wrapper containers. Width >= 2 stays at the chunked
+        # `Dual{Wrapper, NTangent{NTuple{N, T}}}` form. This testset pins the
+        # current behavior so the documented exception cannot regress silently.
+        function _pin_width1_bare_dual(W::Type)
+            T_W = Mooncake.tangent_type(W)
+            @test Mooncake.dual_type(Val(1), W) === Mooncake.Dual{W,T_W}
+            # Width 0 is the primal passthrough.
+            @test Mooncake.dual_type(Val(0), W) === W
+            # Width 2 must remain the canonical chunked Dual.
+            T_W_N2 = Mooncake.tangent_type(Val(2), W)
+            @test Mooncake.dual_type(Val(2), W) === Mooncake.Dual{W,T_W_N2}
+        end
+        _pin_width1_bare_dual(Base.ReshapedArray{Float64,1,Vector{Float64},Tuple{}})
+        _pin_width1_bare_dual(
+            Base.ReinterpretArray{Float64,1,Float64,Vector{Float64},false}
+        )
+        _pin_width1_bare_dual(LinearAlgebra.UpperTriangular{Float64,Matrix{Float64}})
+        _pin_width1_bare_dual(LinearAlgebra.LowerTriangular{Float64,Matrix{Float64}})
+        _pin_width1_bare_dual(LinearAlgebra.UnitUpperTriangular{Float64,Matrix{Float64}})
+        _pin_width1_bare_dual(LinearAlgebra.UnitLowerTriangular{Float64,Matrix{Float64}})
+        _pin_width1_bare_dual(LinearAlgebra.UpperHessenberg{Float64,Matrix{Float64}})
+        _pin_width1_bare_dual(LinearAlgebra.Symmetric{Float64,Matrix{Float64}})
+        _pin_width1_bare_dual(LinearAlgebra.Hermitian{Float64,Matrix{Float64}})
+        _pin_width1_bare_dual(LinearAlgebra.Transpose{Float64,Vector{Float64}})
+        # Vector-parented Adjoint: separate width-1 overload at NfwdMooncake.jl.
+        _pin_width1_bare_dual(LinearAlgebra.Adjoint{Float64,Vector{Float64}})
+    end
+
     @testset "1-arg constructor (V inferred from inner)" begin
         inner = NDual{Float64,2}(1.0, (1.0, 0.0))
         d = Lifted{Float64,2}(inner)

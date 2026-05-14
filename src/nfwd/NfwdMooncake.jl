@@ -982,16 +982,17 @@ function dual_type(
 end
 
 # Base/LinearAlgebra array wrappers without NDual-element representations.
-# Audit Todo 3 follow-up: removing the broad `_is_user_definable_type` gate
-# exposed these wrappers to the generic structural NamedTuple lift, which
-# breaks the bare-Dual BLAS rules in `src/rules/blas.jl` whose `arrayify`
-# overloads expect the legacy parallel `Dual{Wrapper, Tangent{...}}` form
-# (bare `Tangent`, not NTangent-wrapped — `arrayify`'s `TangentOrFData =
-# Union{Tangent, FData}` doesn't match NTangent at width 1, and the NDual-
-# element wrapper representation only exists for Diagonal/Adjoint/SubArray).
-# Each `dual_type(Val(1), Wrapper) === Dual{Wrapper, tangent_type(Wrapper)}`
-# (bare-T) so arrayify dispatches via `Dual{<:AbstractVecOrMat{P}}`; width-N
-# (N>=2) stays at the chunked NTangent-wrapped Dual.
+# These are durable bare-`Dual` width-1 exceptions, not temporary
+# workarounds: their rules dispatch through `arrayify` (whose
+# `TangentOrFData = Union{Tangent, FData}` does not accept `NTangent`),
+# and only `Diagonal`/`Adjoint{T,Matrix{T}}`/`SubArray` have NDual-element
+# wrapper representations. Audit Todo 2 (rev. 3): the test
+# `width-1 wrapper bare-Dual durable exceptions (audit Todo 2, rev. 3)`
+# in `test/tangents/dual.jl` pins the documented exception so this cannot
+# regress silently. Each `dual_type(Val(1), Wrapper) === Dual{Wrapper,
+# tangent_type(Wrapper)}` (bare-T) so arrayify dispatches via
+# `Dual{<:AbstractVecOrMat{P}}`; width-N (N>=2) stays at the chunked
+# NTangent-wrapped Dual.
 for Wrapper in (
     :(Base.ReshapedArray{T,D,P,MI} where {T<:IEEEFloat,D,P,MI}),
     :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
@@ -1025,6 +1026,7 @@ end
 # wrapper-shaped `dual_type(Val(N), Adjoint{T, Matrix{T}})` overload at
 # `NfwdMooncake.jl` only covers `Adjoint{T, Matrix{T}}`. Other parents (Vector,
 # SubArray) need the parallel-Dual form for the same `arrayify` reason.
+# Audit Todo 2 (rev. 3): durable exception pinned in `test/tangents/dual.jl`.
 function dual_type(
     ::Val{1}, ::Type{LinearAlgebra.Adjoint{T,P}}
 ) where {T<:IEEEFloat,P<:AbstractVector{T}}
