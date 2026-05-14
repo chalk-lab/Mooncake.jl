@@ -1249,6 +1249,106 @@ for fname in (:(symv!), :(hemv!))
     end
 end
 
+# Width-N NDual symv!/hemv! (audit Pattern G): per-lane Frechet then primal
+# once. The Frechet body matches the existing width-1 inline. Two separate
+# per-op helpers (`symv!`/`hemv!`) because BLAS dispatch by name differs.
+@inline function _symv_frechet_lane!(ul, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
+    BLAS.symv!(ul, dα, A, x, β, dy)
+    BLAS.symv!(ul, α, dA, x, one(P), dy)
+    BLAS.symv!(ul, α, A, dx, one(P), dy)
+    if !iszero(dβ)
+        @inbounds for n in eachindex(y)
+            tmp = dβ * y[n]
+            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+        end
+    end
+    return nothing
+end
+@inline function _hemv_frechet_lane!(ul, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
+    BLAS.hemv!(ul, dα, A, x, β, dy)
+    BLAS.hemv!(ul, α, dA, x, one(P), dy)
+    BLAS.hemv!(ul, α, A, dx, one(P), dy)
+    if !iszero(dβ)
+        @inbounds for n in eachindex(y)
+            tmp = dβ * y[n]
+            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+        end
+    end
+    return nothing
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.symv!)},
+    uplo::Dual{Char},
+    alpha::NDual{T,N},
+    A_dA::AbstractMatrix{NDual{T,N}},
+    x_dx::AbstractVector{NDual{T,N}},
+    beta::NDual{T,N},
+    y_dy::AbstractVector{NDual{T,N}},
+) where {T<:BlasRealFloat,N}
+    ul = primal(uplo)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    A, dAs = _arr_extract_n(A_dA)
+    x, dxs = _arr_extract_n(x_dx)
+    y, dys = _arr_extract_n(y_dy)
+    @inbounds for lane in 1:N
+        _symv_frechet_lane!(
+            ul, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
+        )
+    end
+    BLAS.symv!(ul, α, A, x, β, y)
+    _arr_writeback_n!(y_dy, y, dys)
+    return y_dy
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.symv!)},
+    uplo::Dual{Char},
+    alpha::Complex{NDual{R,N}},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    x_dx::AbstractVector{Complex{NDual{R,N}}},
+    beta::Complex{NDual{R,N}},
+    y_dy::AbstractVector{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    ul = primal(uplo)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    A, dAs = _arr_extract_n(A_dA)
+    x, dxs = _arr_extract_n(x_dx)
+    y, dys = _arr_extract_n(y_dy)
+    @inbounds for lane in 1:N
+        _symv_frechet_lane!(
+            ul, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
+        )
+    end
+    BLAS.symv!(ul, α, A, x, β, y)
+    _arr_writeback_n!(y_dy, y, dys)
+    return y_dy
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.hemv!)},
+    uplo::Dual{Char},
+    alpha::Complex{NDual{R,N}},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    x_dx::AbstractVector{Complex{NDual{R,N}}},
+    beta::Complex{NDual{R,N}},
+    y_dy::AbstractVector{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    ul = primal(uplo)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    A, dAs = _arr_extract_n(A_dA)
+    x, dxs = _arr_extract_n(x_dx)
+    y, dys = _arr_extract_n(y_dy)
+    @inbounds for lane in 1:N
+        _hemv_frechet_lane!(
+            ul, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
+        )
+    end
+    BLAS.hemv!(ul, α, A, x, β, y)
+    _arr_writeback_n!(y_dy, y, dys)
+    return y_dy
+end
+
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.symv!),N},
     uplo::Mooncake.Lifted{Char},
@@ -1306,6 +1406,58 @@ end
     x, dx = _arr_extract(x_dx)
     _trmv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
     _arr_writeback!(x_dx, x, dx)
+    return x_dx
+end
+# Width-N NDual trmv! (audit Pattern G): per-lane Frechet (which depends on
+# pre-primal x), then primal once.
+@inline function _trmv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
+    BLAS.trmv!(uplo, trans, diag, A, dx)
+    tmp = copy(x)
+    BLAS.trmv!(uplo, trans, diag, dA, tmp)
+    dx .+= tmp
+    if diag === 'U'
+        dx .-= x
+    end
+    return nothing
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trmv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::AbstractMatrix{NDual{T,N}},
+    x_dx::AbstractVector{NDual{T,N}},
+) where {T<:BlasRealFloat,N}
+    A, dAs = _arr_extract_n(A_dA)
+    x, dxs = _arr_extract_n(x_dx)
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    @inbounds for lane in 1:N
+        _trmv_frechet_lane!(uplo, trans, diag, A, dAs[lane], x, dxs[lane])
+    end
+    BLAS.trmv!(uplo, trans, diag, A, x)
+    _arr_writeback_n!(x_dx, x, dxs)
+    return x_dx
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trmv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    x_dx::AbstractVector{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    A, dAs = _arr_extract_n(A_dA)
+    x, dxs = _arr_extract_n(x_dx)
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    @inbounds for lane in 1:N
+        _trmv_frechet_lane!(uplo, trans, diag, A, dAs[lane], x, dxs[lane])
+    end
+    BLAS.trmv!(uplo, trans, diag, A, x)
+    _arr_writeback_n!(x_dx, x, dxs)
     return x_dx
 end
 @inline function frule!!(
@@ -1454,6 +1606,58 @@ end
     x, dx = _arr_extract(x_dx)
     _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
     _arr_writeback!(x_dx, x, dx)
+    return x_dx
+end
+# Width-N NDual trsv! (audit Pattern G): primal first (x ← A^{-1} x), then
+# per-lane Frechet (which uses the post-primal x).
+@inline function _trsv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
+    BLAS.trsv!(uplo, trans, diag, A, dx)
+    tmp = BLAS.trmv(uplo, trans, diag, dA, x)
+    if diag == 'U'
+        tmp .-= x
+    end
+    BLAS.trsv!(uplo, trans, diag, A, tmp)
+    dx .-= tmp
+    return nothing
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trsv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::AbstractMatrix{NDual{T,N}},
+    x_dx::AbstractVector{NDual{T,N}},
+) where {T<:BlasRealFloat,N}
+    A, dAs = _arr_extract_n(A_dA)
+    x, dxs = _arr_extract_n(x_dx)
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    BLAS.trsv!(uplo, trans, diag, A, x)
+    @inbounds for lane in 1:N
+        _trsv_frechet_lane!(uplo, trans, diag, A, dAs[lane], x, dxs[lane])
+    end
+    _arr_writeback_n!(x_dx, x, dxs)
+    return x_dx
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trsv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    x_dx::AbstractVector{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    A, dAs = _arr_extract_n(A_dA)
+    x, dxs = _arr_extract_n(x_dx)
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    BLAS.trsv!(uplo, trans, diag, A, x)
+    @inbounds for lane in 1:N
+        _trsv_frechet_lane!(uplo, trans, diag, A, dAs[lane], x, dxs[lane])
+    end
+    _arr_writeback_n!(x_dx, x, dxs)
     return x_dx
 end
 @inline function frule!!(
@@ -2166,6 +2370,66 @@ end
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
+# Width-N NDual trmm!: per-lane Frechet (pre-primal B) then primal once.
+@inline function _trmm_frechet_lane!(side, uplo, ta, diag, α::P, dα, A, dA, B, dB) where {P}
+    BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
+    dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
+    if diag == 'U'
+        dB .-= α .* B
+    end
+    if !iszero(dα)
+        dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
+    end
+    return nothing
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trmm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _ta::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::NDual{P,N},
+    A_dA::AbstractMatrix{NDual{P,N}},
+    B_dB::AbstractMatrix{NDual{P,N}},
+) where {P<:BlasRealFloat,N}
+    side = primal(_side)
+    uplo = primal(_uplo)
+    ta = primal(_ta)
+    diag = primal(_diag)
+    α, dαs = _scalar_extract_n(α_dα)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    @inbounds for lane in 1:N
+        _trmm_frechet_lane!(side, uplo, ta, diag, α, dαs[lane], A, dAs[lane], B, dBs[lane])
+    end
+    BLAS.trmm!(side, uplo, ta, diag, α, A, B)
+    _arr_writeback_n!(B_dB, B, dBs)
+    return B_dB
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trmm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _ta::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::Complex{NDual{R,N}},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    B_dB::AbstractMatrix{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    side = primal(_side)
+    uplo = primal(_uplo)
+    ta = primal(_ta)
+    diag = primal(_diag)
+    α, dαs = _scalar_extract_n(α_dα)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    @inbounds for lane in 1:N
+        _trmm_frechet_lane!(side, uplo, ta, diag, α, dαs[lane], A, dAs[lane], B, dBs[lane])
+    end
+    BLAS.trmm!(side, uplo, ta, diag, α, A, B)
+    _arr_writeback_n!(B_dB, B, dBs)
+    return B_dB
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.trmm!),N},
     _side::Mooncake.Lifted{Char},
@@ -2322,6 +2586,77 @@ end
         primal(_side), primal(_uplo), primal(_t), primal(_diag), α, dα, A, dA, B, dB
     )
     _arr_writeback!(B_dB, B, dB)
+    return B_dB
+end
+# Width-N NDual trsm!: per-lane Frechet (which uses pre-primal B for the dα
+# branch via `tmp = copy(B)`), then primal once. Reusing pre-primal B is
+# safe because each lane recopies B independently.
+@inline function _trsm_frechet_lane!(
+    side, uplo, trans, diag, α::P, dα, A, dA, B, dB
+) where {P}
+    BLAS.trsm!(side, uplo, trans, diag, α, A, dB)
+    tmp = copy(B)
+    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
+    dB .+= dα .* tmp
+    tmp2 = copy(tmp)
+    BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp)
+    if diag == 'U'
+        tmp .-= α .* tmp2
+    end
+    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
+    dB .-= tmp
+    return nothing
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trsm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _t::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::NDual{P,N},
+    A_dA::AbstractMatrix{NDual{P,N}},
+    B_dB::AbstractMatrix{NDual{P,N}},
+) where {P<:BlasRealFloat,N}
+    side = primal(_side)
+    uplo = primal(_uplo)
+    trans = primal(_t)
+    diag = primal(_diag)
+    α, dαs = _scalar_extract_n(α_dα)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    @inbounds for lane in 1:N
+        _trsm_frechet_lane!(
+            side, uplo, trans, diag, α, dαs[lane], A, dAs[lane], B, dBs[lane]
+        )
+    end
+    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
+    _arr_writeback_n!(B_dB, B, dBs)
+    return B_dB
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trsm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _t::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::Complex{NDual{R,N}},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    B_dB::AbstractMatrix{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    side = primal(_side)
+    uplo = primal(_uplo)
+    trans = primal(_t)
+    diag = primal(_diag)
+    α, dαs = _scalar_extract_n(α_dα)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    @inbounds for lane in 1:N
+        _trsm_frechet_lane!(
+            side, uplo, trans, diag, α, dαs[lane], A, dAs[lane], B, dBs[lane]
+        )
+    end
+    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
+    _arr_writeback_n!(B_dB, B, dBs)
     return B_dB
 end
 @inline function frule!!(
