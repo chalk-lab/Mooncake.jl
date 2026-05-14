@@ -229,6 +229,11 @@ end
 # `(primal, tangent)` pair the same way.
 @inline _scalar_extract(x::Dual{<:Number}) = (primal(x), tangent(x))
 @inline _scalar_extract(x::NDual{T,1}) where {T} = (x.value, x.partials[1])
+# Complex-scalar canonical width-1 form: `Complex{NDual{R, 1}}` with real
+# and imag NDuals.
+@inline _scalar_extract(x::Complex{NDual{R,1}}) where {R<:IEEEFloat} = (
+    Complex(x.re.value, x.im.value), Complex(x.re.partials[1], x.im.partials[1])
+)
 
 # Slot-level Union that matches either a struct-wrapped Dual array or a
 # plain NDual-elementwise array, per the AGENTS.md "NDual shapes" rule.
@@ -253,6 +258,7 @@ const _VecOrMatLikeWidth1Complex{R} = Union{
 const _ArrLikeWidth1Complex{R} = Union{
     Dual{<:AbstractArray{Complex{R}}},AbstractArray{Complex{NDual{R,1}}}
 }
+const _ScalarLikeWidth1Complex{R} = Union{Dual{Complex{R}},Complex{NDual{R,1}}}
 
 #
 # Utility
@@ -582,6 +588,27 @@ function frule!!(
     BLAS.axpy!(n, da, X, incx, dX, incx)
 
     # Perform primal computation.
+    BLAS.scal!(n, a, X, incx)
+    _arr_writeback!(X_dX, X, dX)
+    return X_dX
+end
+# Complex-element variant: matches canonical width-1 `Complex{NDual{R,1}}`
+# scalar / array forms.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.scal!)},
+    _n::Dual{<:Integer},
+    a_da::_ScalarLikeWidth1Complex{R},
+    X_dX::_ArrLikeWidth1Complex{R},
+    _incx::Dual{<:Integer},
+) where {R<:IEEEFloat}
+    n = primal(_n)
+    incx = primal(_incx)
+    a, da = _scalar_extract(a_da)
+    X, dX = _arr_extract(X_dX)
+
+    BLAS.scal!(n, a, dX, incx)
+    BLAS.axpy!(n, da, X, incx, dX, incx)
+
     BLAS.scal!(n, a, X, incx)
     _arr_writeback!(X_dX, X, dX)
     return X_dX
