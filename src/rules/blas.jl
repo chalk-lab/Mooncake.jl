@@ -49,6 +49,14 @@ function arrayify(
 ) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{Array{<:T},Ptr{<:T}}}
     (x, dx)
 end
+# Carve-out lift: `tangent(::Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}})` returns
+# the NTangent-wrapped Ptr tangent. Unwrap the singleton lane to match the
+# `(x::Ptr, dx::Ptr)` pair the rest of arrayify expects.
+function arrayify(
+    x::Ptr{T}, dx::Mooncake.NTangent{Tuple{Ptr{T}}}
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    return (x, dx.lanes[1])
+end
 function arrayify(
     x::Diagonal{P,<:AbstractVector{P}}, dx::TangentOrFData
 ) where {P<:BlasFloat}
@@ -335,31 +343,15 @@ for (fname, jlfname, elty) in (
         return CoDual(result, NoFData()), dot_pb!!
     end
 
-    # Audit Todo 3 (revision 2) follow-up: Lifted-aware delegating frule for
-    # the `cblas_*dot*` foreigncall variants. Without this, calls through the
-    # primal-mode IR (where args arrive as `Mooncake.Lifted{...}`) fall
-    # through to the foreigncall fallback `throw_missing_foreigncall_rule_error`.
-    @eval @inline function frule!!(
-        f::Mooncake.Lifted{typeof(_foreigncall_),N},
-        name::Mooncake.Lifted{Val{$(blas_name(fname))}},
-        rettype::Mooncake.Lifted,
-        argtypes::Mooncake.Lifted,
-        nreq::Mooncake.Lifted,
-        ccall_conv::Mooncake.Lifted,
-        args::Vararg{Mooncake.Lifted,M},
-    ) where {N,M}
-        bare_result = frule!!(
-            Mooncake._unlift(f),
-            Mooncake._unlift(name),
-            Mooncake._unlift(rettype),
-            Mooncake._unlift(argtypes),
-            Mooncake._unlift(nreq),
-            Mooncake._unlift(ccall_conv),
-            map(Mooncake._unlift, args)...,
-        )
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
-    end
+    # Audit Todo 3 (revision 2) follow-up: a Lifted-aware delegator for the
+    # `cblas_*dot*` foreigncall variants was attempted but produced a segfault
+    # inside libopenblas64_'s `sdot_k_COOPERLAKE` when called with the
+    # canonical width-1 NTangent-wrapped `Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}}`
+    # tangent pointer. Likely the tangent Ptr in the NTangent isn't a valid
+    # readable address. Restoring this requires re-engineering how the lifted
+    # IR materialises Ptr-tangents through the carve-out lift — out of scope
+    # here. With no delegator, the foreigncall fallback returns a controlled
+    # `MissingForeigncallRuleError` instead of crashing.
 end
 
 @is_primitive(
