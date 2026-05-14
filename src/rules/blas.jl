@@ -209,6 +209,54 @@ end
     return nothing
 end
 
+# Width-N extract / writeback: returns (p, ts::NTuple{N, AbstractArray})
+# where each `ts[n]` is the n-th lane tangent (separate array per lane).
+# Used by rules migrated to per-lane width-N assembly (Audit Pattern G).
+@inline function _arr_extract_n(x::AbstractArray{NDual{T,N}}) where {T,N}
+    p = map(d -> d.value, x)
+    ts = ntuple(n -> map(d -> d.partials[n], x), Val(N))
+    return (p, ts)
+end
+@inline function _arr_extract_n(
+    x::AbstractArray{Complex{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    p = map(c -> Complex(c.re.value, c.im.value), x)
+    ts = ntuple(Val(N)) do n
+        map(c -> Complex(c.re.partials[n], c.im.partials[n]), x)
+    end
+    return (p, ts)
+end
+
+@inline function _arr_writeback_n!(
+    x::AbstractArray{NDual{T,N}}, p, ts::NTuple{N,<:AbstractArray}
+) where {T,N}
+    @inbounds for i in eachindex(x)
+        partials = ntuple(n -> ts[n][i], Val(N))
+        x[i] = NDual{T,N}(p[i], partials)
+    end
+    return nothing
+end
+@inline function _arr_writeback_n!(
+    x::AbstractArray{Complex{NDual{T,N}}}, p, ts::NTuple{N,<:AbstractArray}
+) where {T<:IEEEFloat,N}
+    @inbounds for i in eachindex(x)
+        re_partials = ntuple(n -> real(ts[n][i]), Val(N))
+        im_partials = ntuple(n -> imag(ts[n][i]), Val(N))
+        x[i] = Complex(
+            NDual{T,N}(real(p[i]), re_partials), NDual{T,N}(imag(p[i]), im_partials)
+        )
+    end
+    return nothing
+end
+
+# Width-N scalar extract: returns (primal, NTuple{N, T_tangent}).
+@inline _scalar_extract_n(x::NDual{T,N}) where {T,N} = (x.value, x.partials)
+@inline function _scalar_extract_n(x::Complex{NDual{R,N}}) where {R<:IEEEFloat,N}
+    p = Complex(x.re.value, x.im.value)
+    ts = ntuple(n -> Complex(x.re.partials[n], x.im.partials[n]), Val(N))
+    return (p, ts)
+end
+
 @inline _mat_extract(x::Dual{<:AbstractVecOrMat}) = matrixify(x)
 @inline function _mat_extract(x::AbstractVector{NDual{T,1}}) where {T}
     p, t = _arr_extract(x)
@@ -620,6 +668,49 @@ end
 
     BLAS.scal!(n, a, X, incx)
     _arr_writeback!(X_dX, X, dX)
+    return X_dX
+end
+# Width-N NDual scal! (audit Pattern G): per-lane Frechet via N
+# `BLAS.scal!` + `BLAS.axpy!` calls on independent lane tangent arrays,
+# then a single `BLAS.scal!` for the primal and a width-N writeback. The
+# real path matches `NDual{T, N}`; the complex path mirrors with
+# `Complex{NDual{R, N}}`.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.scal!)},
+    _n::Dual{<:Integer},
+    a_da::NDual{P,N},
+    X_dX::AbstractArray{NDual{P,N}},
+    _incx::Dual{<:Integer},
+) where {P<:BlasRealFloat,N}
+    nn = primal(_n)
+    incx = primal(_incx)
+    a, das = _scalar_extract_n(a_da)
+    X, dXs = _arr_extract_n(X_dX)
+    @inbounds for lane in 1:N
+        BLAS.scal!(nn, a, dXs[lane], incx)
+        BLAS.axpy!(nn, das[lane], X, incx, dXs[lane], incx)
+    end
+    BLAS.scal!(nn, a, X, incx)
+    _arr_writeback_n!(X_dX, X, dXs)
+    return X_dX
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.scal!)},
+    _n::Dual{<:Integer},
+    a_da::Complex{NDual{R,N}},
+    X_dX::AbstractArray{Complex{NDual{R,N}}},
+    _incx::Dual{<:Integer},
+) where {R<:IEEEFloat,N}
+    nn = primal(_n)
+    incx = primal(_incx)
+    a, das = _scalar_extract_n(a_da)
+    X, dXs = _arr_extract_n(X_dX)
+    @inbounds for lane in 1:N
+        BLAS.scal!(nn, a, dXs[lane], incx)
+        BLAS.axpy!(nn, das[lane], X, incx, dXs[lane], incx)
+    end
+    BLAS.scal!(nn, a, X, incx)
+    _arr_writeback_n!(X_dX, X, dXs)
     return X_dX
 end
 @inline function frule!!(
