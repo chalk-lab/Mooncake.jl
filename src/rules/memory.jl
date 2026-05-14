@@ -895,6 +895,46 @@ end
         zero_dual(Val(primal(boundscheck))),
     )
 end
+# Audit follow-up (carve-out lift): canonical width-1 forms route through
+# this entrypoint with `x` having an `NTangent{Tuple{MemoryRef{V}}}` tangent
+# and `value` arriving as bare `NDual` / `Vector{NDual}` / `Dual{Int}` /
+# etc. Delegate to the matching `lmemoryrefset!` overloads which already
+# handle the canonical shapes.
+@inline function frule!!(
+    f::Dual{typeof(memoryrefset!)},
+    x::Dual{<:MemoryRef{P},<:Mooncake.NTangent{Tuple{TT}}},
+    value::Union{
+        Dual,
+        Mooncake.Nfwd.NDual,
+        Complex{<:Mooncake.Nfwd.NDual},
+        AbstractArray{<:Mooncake.Nfwd.NDual},
+        AbstractArray{<:Complex{<:Mooncake.Nfwd.NDual}},
+    },
+    ordering::Dual{Symbol},
+    boundscheck::Dual{Bool},
+) where {P,TT<:MemoryRef}
+    return frule!!(
+        zero_dual(lmemoryrefset!),
+        x,
+        value,
+        zero_dual(Val(primal(ordering))),
+        zero_dual(Val(primal(boundscheck))),
+    )
+end
+# Bare MemoryRef{<:NDual} variant: when the Lifted-aware adapter unlifts
+# the destination to the canonical bare `MemoryRef{NDual{T,1}}` (no Dual
+# wrapper), delegate to `memoryrefset!` directly — NDual elements carry
+# their own tangent.
+@inline function frule!!(
+    ::Dual{typeof(memoryrefset!)},
+    x::MemoryRef{<:Mooncake.Nfwd.NDual},
+    value::Mooncake.Nfwd.NDual,
+    ordering::Dual{Symbol},
+    boundscheck::Dual{Bool},
+)
+    memoryrefset!(x, value, primal(ordering), primal(boundscheck))
+    return value
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(memoryrefset!),N},
     x::Mooncake.Lifted{<:MemoryRef},
