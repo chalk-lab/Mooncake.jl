@@ -856,6 +856,13 @@ function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     V = dual_type(Val(N), P)
     # Concrete `(P, V)`: produce the fully-parameterised slot type.
     isconcretetype(V) && return Lifted{P,N,V}
+    # Audit follow-up: a `Tuple{Type{T1}, Type{T2}, ...}` primal lifts to a
+    # `Tuple{Dual{Type{T1}, NoTangent}, Dual{Type{T2}, NoTangent}, ...}` V.
+    # `isconcretetype` returns false for these (Type-of-Type fields), but
+    # the constructor path can still build a concrete Lifted directly — the
+    # alternative is an unrepresentable UnionAll-ctor call. Treat such Vs
+    # as "instantiable" and return the fully-parametrised slot.
+    V isa DataType && V <: Tuple && _is_instantiable_tuple_V(V) && return Lifted{P,N,V}
     # Abstract `P` (e.g. `Any`, `Real`): keep the width `N` bound and let `P`
     # widen via the existing `Q<:P` constraint and `V` widen freely. Returning
     # the bare `Lifted` UnionAll (the previous behaviour) was unsound — a
@@ -864,6 +871,24 @@ function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     # rejects cross-width substitution while still accepting any concrete
     # subtype of `P` at the bound width.
     return Lifted{Q,N,V_inner} where {Q<:P,V_inner}
+end
+# A Tuple V is "instantiable" if every field is either concrete or a
+# `Dual{Type{T}, NoTangent}` (which has a single inhabitant per T).
+@inline function _is_instantiable_tuple_V(::Type{V}) where {V<:Tuple}
+    for i in 1:fieldcount(V)
+        ft = fieldtype(V, i)
+        if isconcretetype(ft)
+            continue
+        elseif ft isa DataType &&
+            ft <: Dual &&
+            ft.parameters[1] isa DataType &&
+            ft.parameters[1] <: Type
+            continue
+        else
+            return false
+        end
+    end
+    return true
 end
 
 # ── Layer-3 seed factories: return wrapped Lifted slot ───────────────────────

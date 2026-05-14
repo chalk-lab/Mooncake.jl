@@ -883,6 +883,13 @@ __vec_to_tuple(v::Vector) = Tuple(v)
         return Dual(x, __vec_to_tuple(_vec_to_tuple_tan(tangent(v))))
     end
 end
+# Bare NDual-vector path: when the Lifted-aware adapter unlifts a
+# `Lifted{Vector{T<:IEEEFloat}, 1, Vector{NDual{T,1}}}`, the result is a
+# bare `Vector{NDual}` (the canonical width-1 inner V for IEEEFloat
+# vectors). Convert element-wise into a Tuple of NDuals.
+@inline function _vec_to_tuple_kernel(v::Vector{<:Mooncake.Nfwd.NDual})
+    return tuple(v...)
+end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector}
 ) where {N}
