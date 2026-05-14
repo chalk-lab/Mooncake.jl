@@ -416,6 +416,19 @@ end
 ) where {P,T<:StandardTangentType}
     return lsetfield_frule(value, name, _tuple_duals_to_dual(x))
 end
+# Audit follow-up: bare-NDual-container `value` arrives from carve-out-
+# lifted unlifts (e.g., `Lifted{Vector{T<:IEEEFloat}, 1, Vector{NDual{T,1}}}`
+# unlifts to bare `Vector{NDual}`). The Vector IS the lifted form — setting
+# its `:ref` or `:size` field on the bare canonical V just modifies the
+# lifted form in-place. No separate tangent update needed.
+@inline function frule!!(
+    ::Dual{typeof(lsetfield!)}, value::AbstractArray{<:Mooncake.Nfwd.NDual}, name::Dual, x
+)
+    return lsetfield!(value, primal(name), _ndual_arg_unwrap(x))
+end
+@inline _ndual_arg_unwrap(x::Dual) = primal(x)
+@inline _ndual_arg_unwrap(x::Tuple) = map(_ndual_arg_unwrap, x)
+@inline _ndual_arg_unwrap(x) = x
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lsetfield!),N},
     value::Mooncake.Lifted,
