@@ -64,7 +64,15 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 
 @is_primitive MinimalCtx Tuple{typeof(_new_),<:TWP,IEEEFloat,IEEEFloat}
 # Implementation kernels: dispatch on Dual/NDual inner V to extract value/tangent.
-@inline _twp_val(d::Dual{P}) where {P<:IEEEFloat} = primal(d), tangent(d)
+# Audit follow-up (carve-out lift, commit cbc5b236b): `tangent(d::Dual{P,
+# NTangent{Tuple{T}}})` returns the NTangent wrapper. These kernels and
+# downstream rule bodies need the bare lane value so arithmetic /
+# conversion / `twiceprecision(t, nb)` dispatches correctly. Unwrap
+# singleton NTangent at every `tangent(d)` boundary in this file.
+@inline _twp_tangent(d::Dual) = _twp_unwrap_lane(tangent(d))
+@inline _twp_unwrap_lane(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
+@inline _twp_unwrap_lane(t) = t
+@inline _twp_val(d::Dual{P}) where {P<:IEEEFloat} = primal(d), _twp_tangent(d)
 @inline _twp_val(d::Mooncake.Nfwd.NDual{P,1}) where {P<:IEEEFloat} = d.value, d.partials[1]
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_new_),N},
@@ -113,7 +121,8 @@ end
     inner_val = Mooncake._unlift(val)
     nb_p = primal(Mooncake._unlift(nb))
     bare_result = Dual(
-        twiceprecision(primal(inner_val), nb_p), twiceprecision(tangent(inner_val), nb_p)
+        twiceprecision(primal(inner_val), nb_p),
+        twiceprecision(_twp_tangent(inner_val), nb_p),
     )
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -130,7 +139,7 @@ end
     ::Mooncake.Lifted{Type{P},N}, x::Mooncake.Lifted{S}
 ) where {N,P<:IEEEFloat,S<:TWP}
     inner_x = Mooncake._unlift(x)
-    bare_result = Dual(P(primal(inner_x)), P(tangent(inner_x)))
+    bare_result = Dual(P(primal(inner_x)), P(_twp_tangent(inner_x)))
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -144,7 +153,7 @@ end
     ::Mooncake.Lifted{typeof(-),N}, x::Mooncake.Lifted{P}
 ) where {N,P<:TWP}
     inner_x = Mooncake._unlift(x)
-    bare_result = Dual(-primal(inner_x), -tangent(inner_x))
+    bare_result = Dual(-primal(inner_x), -_twp_tangent(inner_x))
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -159,7 +168,7 @@ end
 ) where {N,P<:TWP}
     inner_x = Mooncake._unlift(x)
     yv, yt = _twp_val(Mooncake._unlift(y))
-    bare_result = Dual(primal(inner_x) + yv, tangent(inner_x) + yt)
+    bare_result = Dual(primal(inner_x) + yv, _twp_tangent(inner_x) + yt)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -177,7 +186,7 @@ end
     inner_x = Mooncake._unlift(x)
     inner_y = Mooncake._unlift(y)
     bare_result = Dual(
-        primal(inner_x) + primal(inner_y), tangent(inner_x) + tangent(inner_y)
+        primal(inner_x) + primal(inner_y), _twp_tangent(inner_x) + _twp_tangent(inner_y)
     )
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -193,7 +202,7 @@ end
 ) where {N,P<:TWP}
     inner_x = Mooncake._unlift(x)
     inner_y = Mooncake._unlift(y)
-    bare_result = Dual(primal(inner_x) + primal(inner_y), tangent(inner_x))
+    bare_result = Dual(primal(inner_x) + primal(inner_y), _twp_tangent(inner_x))
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -209,7 +218,7 @@ end
     inner_x = Mooncake._unlift(x)
     yv, yt = _twp_val(Mooncake._unlift(y))
     z = primal(inner_x) * yv
-    dz = primal(inner_x) * yt + tangent(inner_x) * yv
+    dz = primal(inner_x) * yt + _twp_tangent(inner_x) * yv
     bare_result = Dual(z, dz)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -228,7 +237,7 @@ end
 ) where {N,P<:TWP}
     inner_x = Mooncake._unlift(x)
     yp = primal(Mooncake._unlift(y))
-    bare_result = Dual(primal(inner_x) * yp, tangent(inner_x) * yp)
+    bare_result = Dual(primal(inner_x) * yp, _twp_tangent(inner_x) * yp)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -245,7 +254,7 @@ end
     inner_x = Mooncake._unlift(x)
     yv, yt = _twp_val(Mooncake._unlift(y))
     z = primal(inner_x) / yv
-    dz = tangent(inner_x) / yv - yt * primal(inner_x) / yv^2
+    dz = _twp_tangent(inner_x) / yv - yt * primal(inner_x) / yv^2
     bare_result = Dual(z, dz)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -264,7 +273,7 @@ end
 ) where {N,P<:TWP}
     inner_x = Mooncake._unlift(x)
     yp = primal(Mooncake._unlift(y))
-    bare_result = Dual(primal(inner_x) / yp, tangent(inner_x) / yp)
+    bare_result = Dual(primal(inner_x) / yp, _twp_tangent(inner_x) / yp)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -328,8 +337,8 @@ const TWPStepRangeLen = StepRangeLen{<:Any,<:TWP,<:TWP}
     inner_r = Mooncake._unlift(r)
     inner_i = Mooncake._unlift(i)
     x = unsafe_getindex(primal(inner_r), primal(inner_i))
-    dref = _get_tangent_field(tangent(inner_r), :ref)
-    dstep = _get_tangent_field(tangent(inner_r), :step)
+    dref = _get_tangent_field(_twp_tangent(inner_r), :ref)
+    dstep = _get_tangent_field(_twp_tangent(inner_r), :step)
     dx = eltype(P)(dref + dstep * (primal(inner_i) - primal(inner_r).offset))
     bare_result = Dual(x, dx)
     P_out = __primal_type(_typeof(bare_result))
@@ -361,8 +370,8 @@ using Base: _getindex_hiprec
     inner_i = Mooncake._unlift(i)
     x = _getindex_hiprec(primal(inner_r), primal(inner_i))
     offset = primal(inner_r).offset
-    dstep = _get_tangent_field(tangent(inner_r), :step)
-    dref = _get_tangent_field(tangent(inner_r), :ref)
+    dstep = _get_tangent_field(_twp_tangent(inner_r), :step)
+    dref = _get_tangent_field(_twp_tangent(inner_r), :ref)
     dx = (primal(inner_i) - offset) * dstep + dref
     bare_result = Dual(x, dx)
     P_out = __primal_type(_typeof(bare_result))
@@ -414,8 +423,8 @@ end
     y = sum(primal(inner_x))
     l = primal(inner_x).len
     offset = primal(inner_x).offset
-    dref = _get_tangent_field(tangent(inner_x), :ref)
-    dstep = _get_tangent_field(tangent(inner_x), :step)
+    dref = _get_tangent_field(_twp_tangent(inner_x), :ref)
+    dstep = _get_tangent_field(_twp_tangent(inner_x), :step)
     dy = dref * l + dstep * (0.5 * l * (l + 1) - l * offset)
     bare_result = Dual(y, typeof(y)(dy))
     P_out = __primal_type(_typeof(bare_result))
@@ -481,7 +490,7 @@ end
     ) where {N}
         inner_x = Mooncake._unlift(x)
         y = Base._exp_allowing_twice64(primal(inner_x))
-        bare_result = Dual(y, typeof(y)(y * tangent(inner_x)))
+        bare_result = Dual(y, typeof(y)(y * _twp_tangent(inner_x)))
         P_out = __primal_type(_typeof(bare_result))
         return _wrap_rule_result(P_out, Val(N), bare_result)
     end
