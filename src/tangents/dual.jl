@@ -335,6 +335,14 @@ function Base.convert(::Type{Dual{P,NoTangent}}, x::P) where {P}
     return Dual{P,NoTangent}(x, NoTangent())
 end
 
+# NTangent{Tuple{T}} → NoTangent convert: some carve-out-lifted paths
+# wrap a NoTangent-leaf primal's tangent in NTangent (e.g. tangent of
+# Tuple's element that turned out to be Int64) before it reaches a
+# `Dual{P, NoTangent}` slot. The slot's NoTangent tangent type means
+# the lane content is meaningless for AD purposes — drop and return
+# NoTangent.
+Base.convert(::Type{NoTangent}, ::NTangent) = NoTangent()
+
 # ── Lifted: Layer-3 wrapper struct ───────────────────────────────────────────
 
 """
