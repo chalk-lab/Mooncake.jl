@@ -315,6 +315,16 @@ function (::Type{Dual{P,NTangent{NTuple{N,T}}}})(value::P, tangent::T) where {P,
     return Dual(value, NTangent(ntuple(_ -> tangent, Val(N))))
 end
 
+# Bare-T `Dual{P, T}` → canonical width-1 `Dual{P, NTangent{Tuple{T}}}` convert.
+# Friendly-tangent inputs (e.g. `Dual{Core.Box, MutableTangent}` from user-facing
+# `value_and_derivative!!` callers) flow into width-1 cache slots typed as
+# `Dual{P, NTangent{Tuple{T}}}`. Julia's auto-generated `convert` between
+# parametric `Dual{P, T1}` and `Dual{P, T2}` fails when T1 != T2; this explicit
+# convert wraps the bare tangent in a singleton NTangent.
+function Base.convert(::Type{Dual{P,NTangent{Tuple{T}}}}, x::Dual{P,T}) where {P,T}
+    return Dual(primal(x), NTangent((tangent(x),)))
+end
+
 # ── Lifted: Layer-3 wrapper struct ───────────────────────────────────────────
 
 """
