@@ -1072,6 +1072,21 @@ function frule!!(
     _arr_writeback!(x_dx, x, dx)
     return x_dx
 end
+# Complex-element variant.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trmv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::_MatLikeWidth1Complex{R},
+    x_dx::_ArrLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
+    A, dA = _arr_extract(A_dA)
+    x, dx = _arr_extract(x_dx)
+    _trmv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
+    _arr_writeback!(x_dx, x, dx)
+    return x_dx
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.trmv!),N},
     _uplo::Mooncake.Lifted{Char},
@@ -1199,6 +1214,21 @@ function frule!!(
     A_dA::_MatLikeWidth1{T},
     x_dx::_ArrLikeWidth1{T},
 ) where {T<:BlasFloat}
+    A, dA = _arr_extract(A_dA)
+    x, dx = _arr_extract(x_dx)
+    _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
+    _arr_writeback!(x_dx, x, dx)
+    return x_dx
+end
+# Complex-element variant.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trsv!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::_MatLikeWidth1Complex{R},
+    x_dx::_ArrLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
     A, dA = _arr_extract(A_dA)
     x, dx = _arr_extract(x_dx)
     _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
@@ -1829,6 +1859,26 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
+# Complex-element variant.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trmm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _ta::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::_ScalarLikeWidth1Complex{R},
+    A_dA::_MatLikeWidth1Complex{R},
+    B_dB::_MatLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
+    α, dα = _scalar_extract(α_dα)
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
+    _trmm!_frule_core!(
+        primal(_side), primal(_uplo), primal(_ta), primal(_diag), α, dα, A, dA, B, dB
+    )
+    _arr_writeback!(B_dB, B, dB)
+    return B_dB
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.trmm!),N},
     _side::Mooncake.Lifted{Char},
@@ -1958,6 +2008,26 @@ function frule!!(
     A_dA::_MatLikeWidth1{P},
     B_dB::_MatLikeWidth1{P},
 ) where {P<:BlasFloat}
+    α, dα = _scalar_extract(α_dα)
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
+    _trsm!_frule_core!(
+        primal(_side), primal(_uplo), primal(_t), primal(_diag), α, dα, A, dA, B, dB
+    )
+    _arr_writeback!(B_dB, B, dB)
+    return B_dB
+end
+# Complex-element variant.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.trsm!)},
+    _side::Dual{Char},
+    _uplo::Dual{Char},
+    _t::Dual{Char},
+    _diag::Dual{Char},
+    α_dα::_ScalarLikeWidth1Complex{R},
+    A_dA::_MatLikeWidth1Complex{R},
+    B_dB::_MatLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
     α, dα = _scalar_extract(α_dα)
     A, dA = _arr_extract(A_dA)
     B, dB = _arr_extract(B_dB)
