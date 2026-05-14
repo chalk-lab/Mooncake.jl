@@ -1470,6 +1470,111 @@ end
 @inline frule!!(::Dual{typeof(copy),NoTangent}, a::Array{<:_HasNDual}) = _copy_array_kernel(
     a
 )
+
+# Vector grow/shrink ops. On Julia <1.11 these live in `rules/array_legacy.jl`,
+# but that file is not loaded on 1.11+. The Memory-backed Vector semantics on
+# 1.11+ are compatible: `Base._growbeg!` / `_growend!` / `_growat!` mutate the
+# Vector in place, and `tangent_type(Vector{T}) = Vector{tangent_type(T)}`
+# remains a Vector, so the same in-place mutation works on the tangent.
+@static if VERSION >= v"1.11-rc4"
+    @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
+    @inline function _growbeg_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
+        Base._growbeg!(primal(a), primal(d))
+        Base._growbeg!(tangent(a), primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function _growbeg_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
+        Base._growbeg!(a, primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._growbeg!),N},
+        a::Mooncake.Lifted{<:Vector},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N}
+        bare_result = _growbeg_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+    function rrule!!(
+        ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
+    ) where {T}
+        d = primal(_delta)
+        a = primal(_a)
+        da = tangent(_a)
+        Base._growbeg!(a, d)
+        Base._growbeg!(da, d)
+        function _growbeg!_pb!!(::NoRData)
+            Base._deletebeg!(a, d)
+            Base._deletebeg!(da, d)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return zero_fcodual(nothing), _growbeg!_pb!!
+    end
+
+    @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
+    @inline function _growend_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
+        Base._growend!(primal(a), primal(d))
+        Base._growend!(tangent(a), primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function _growend_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
+        Base._growend!(a, primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._growend!),N},
+        a::Mooncake.Lifted{<:Vector},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N}
+        bare_result = _growend_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+    function rrule!!(
+        ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
+    )
+        d = primal(_delta)
+        a = primal(_a)
+        da = tangent(_a)
+        Base._growend!(a, d)
+        Base._growend!(da, d)
+        function _growend!_pb!!(::NoRData)
+            Base._deleteend!(a, d)
+            Base._deleteend!(da, d)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return zero_fcodual(nothing), _growend!_pb!!
+    end
+
+    @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
+    @inline function _sizehint_kernel!(a::Dual{<:Vector}, n::Dual{<:Integer})
+        sizehint!(primal(a), primal(n))
+        sizehint!(tangent(a), primal(n))
+        return a
+    end
+    @inline function _sizehint_kernel!(a::AbstractVector{<:NDual}, n::Dual{<:Integer})
+        sizehint!(a, primal(n))
+        return a
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(sizehint!),N},
+        a::Mooncake.Lifted{<:Vector},
+        n::Mooncake.Lifted{<:Integer},
+    ) where {N}
+        bare_result = _sizehint_kernel!(Mooncake._unlift(a), Mooncake._unlift(n))
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+    function rrule!!(
+        ::CoDual{typeof(sizehint!)}, _a::CoDual{<:Vector}, _n::CoDual{<:Integer}
+    )
+        n = primal(_n)
+        sizehint!(primal(_a), n)
+        sizehint!(tangent(_a), n)
+        return _a, NoPullback(NoRData(), NoRData(), NoRData())
+    end
+end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
