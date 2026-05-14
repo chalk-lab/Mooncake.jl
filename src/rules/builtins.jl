@@ -240,11 +240,15 @@ end
 # the tangent memory pointed to by tangent_arr.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_wrap),<:Type{<:Array},Ptr,Any}
 # `unsafe_wrap` implementation kernel (no `Dual{typeof(F)}` arg).
+@inline _unsafe_wrap_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
+@inline _unsafe_wrap_unwrap(t) = t
 @inline function _unsafe_wrap_kernel(
     ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
 ) where {T}
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
-    tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
+    # Carve-out lift: `tangent(p::Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}})`
+    # returns the NTangent wrapper. Unwrap to the bare Ptr.
+    tangent_arr = unsafe_wrap(Array, _unsafe_wrap_unwrap(tangent(p)), primal(dims))
     return Dual(primal_arr, tangent_arr)
 end
 @inline function frule!!(
