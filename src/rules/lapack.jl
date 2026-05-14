@@ -74,6 +74,31 @@ function frule!!(
     _arr_writeback!(A_dA, A, dA)
     return (A_dA, Dual(ipiv, NoTangent()), Dual(info, NoTangent()))
 end
+# Carve-out lift: the kwargs primal `@NamedTuple{check::Bool}` lifts to
+# the structural inner V form `@NamedTuple{check::Dual{Bool, NoTangent}}`
+# (bare NamedTuple, not `Dual{<:NamedTuple}`). The IR-emit hands that
+# bare form straight to `frule!!`, so we need a variant that accepts it.
+# Returns are wrapped in canonical width-1 forms — `ipiv::Vector{Int}` becomes
+# `Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}` to match
+# `dual_type(Val(1), Vector{Int})` so downstream `_canonicalise_tuple_inner`
+# does not need to bridge `NoTangent` → `NTangent`.
+@inline function frule!!(
+    f::Dual{typeof(Core.kwcall)},
+    kwargs::NamedTuple,
+    g::Dual{typeof(getrf!)},
+    A_dA::_MatLikeWidth1{P},
+) where {P<:BlasFloat}
+    check = primal(kwargs.check)
+    A, dA = _arr_extract(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A; check)
+    _getrf_fwd_core!(A, dA, ipiv)
+    _arr_writeback!(A_dA, A, dA)
+    return (
+        A_dA,
+        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
+        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
+    )
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(Core.kwcall),N},
     _kwargs::Mooncake.Lifted{<:NamedTuple},
