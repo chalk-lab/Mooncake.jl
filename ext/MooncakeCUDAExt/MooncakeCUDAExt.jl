@@ -12,6 +12,7 @@ using CUDA.CUDACore:
     CUmemPoolHandle_st,
     CuArrayStyle,
     CUdevice_attribute_enum,
+    cudaError_enum,
     cu,
     TaskLocalState,
     task_local_state!,
@@ -287,6 +288,7 @@ function _register_cuda_opaque_types!()
         # CuStream contains Ptr/Bool/CuContext fields; without NoTangent, Mooncake
         # generates a MutableTangent that propagates into task-local CUDA state.
         (CuStream, false),
+        (cudaError_enum, false),
         # TaskLocalState bundles device index, stream handles, and library contexts.
         (TaskLocalState, false),
         # CuContext wraps an opaque Ptr{Cvoid} to the CUDA context.
