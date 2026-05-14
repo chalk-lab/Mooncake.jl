@@ -199,9 +199,16 @@ end
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
 # `x` are canonical inner-V arguments: usually `Dual`, but scalar and container
 # slots may arrive as `NDual`, `Complex{NDual}`, arrays, tuples, or named tuples.
+# Audit follow-up (carve-out lift): `tangent(::Dual{MC, NTangent{Tuple{MistyClosureTangent}}})`
+# returns the NTangent wrapper, not the bare MistyClosureTangent. Unwrap the
+# singleton lane at this boundary so field access (`.captures_tangent`,
+# `.dual_callable`) dispatches on the bare MistyClosureTangent.
+@inline _mct_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
+@inline _mct_unwrap(t) = t
 @inline function _misty_closure_kernel(f::Dual{<:MistyClosure}, x...)
-    dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
-    return tangent(f).dual_callable(dual_captures, x...)
+    mct = _mct_unwrap(tangent(f))
+    dual_captures = Dual(primal(f).oc.captures, mct.captures_tangent)
+    return mct.dual_callable(dual_captures, x...)
 end
 @inline function frule!!(
     f::Mooncake.Lifted{P,N}, x::Vararg{Mooncake.Lifted,M}
