@@ -136,10 +136,17 @@ tangent(f::IdDict, ::NoRData) = f
 ) where {N}
     inner_d = Mooncake._unlift(d)
     inner_newsz = Mooncake._unlift(newsz)
-    Base.rehash!(primal(inner_d), primal(inner_newsz))
-    Base.rehash!(_iddict_tangent(inner_d), primal(inner_newsz))
+    sz = primal(inner_newsz)
+    Base.rehash!(primal(inner_d), sz)
+    # Audit Todo 4: rehash! all N lane IDdicts. Width-1 unwraps to single
+    # bare IdDict; width-N has NTangent{NTuple{N, IdDict}} — rehash each.
+    _rehash_iddict_tangent!(tangent(inner_d), sz)
     return d
 end
+@inline _rehash_iddict_tangent!(t::Mooncake.NTangent, sz) = foreach(
+    td -> Base.rehash!(td, sz), t.lanes
+)
+@inline _rehash_iddict_tangent!(t, sz) = Base.rehash!(t, sz)
 function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoDual)
     Base.rehash!(primal(d), primal(newsz))
     Base.rehash!(tangent(d), primal(newsz))
@@ -170,6 +177,31 @@ end
     key::Mooncake.Lifted,
 ) where {N}
     _setindex_iddict!(Mooncake._unlift(d), Mooncake._unlift(val), Mooncake._unlift(key))
+    return d
+end
+# Audit Todo 4: width-N setindex! for `Dual{<:IdDict, NTangent{...}}` slot.
+# Each lane has its own IDdict tangent — set the per-lane value from
+# `tangent(val, n)`.
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(setindex!),N},
+    d::Mooncake.Lifted{<:IdDict,N,<:Dual{<:IdDict,<:Mooncake.NTangent}},
+    val::Mooncake.Lifted,
+    key::Mooncake.Lifted,
+) where {N}
+    N == 1 && return @invoke frule!!(
+        f::Mooncake.Lifted{typeof(setindex!),N},
+        d::Mooncake.Lifted{<:IdDict},
+        val::Mooncake.Lifted,
+        key::Mooncake.Lifted,
+    )
+    bare_d = Mooncake._unlift(d)
+    bare_v = Mooncake._unlift(val)
+    bare_k = primal(Mooncake._unlift(key))
+    setindex!(primal(bare_d), primal(bare_v), bare_k)
+    # Per-lane tangent write.
+    for n in 1:N
+        setindex!(tangent(bare_d).lanes[n], Mooncake.tangent(val, n), bare_k)
+    end
     return d
 end
 function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) where {K,V}
