@@ -232,6 +232,36 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Audit Todo 4 (chunk-size-N correctness): width-2 IDdict has tangent
+# `NTangent{NTuple{N, IdDict{K, tangent_type(V)}}}` (one IDdict per lane).
+# The width-1 `_get_iddict` above only services lane 1. For N >= 2, loop
+# per-lane: for each lane `n`, look up `tangent(d, n)[key]` and use
+# `tangent(default, n)` as the fallback, then assemble all lanes into an
+# `NTangent` result. Mirrors the canonical `frule_wrapper` pattern.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(get),N},
+    d::Mooncake.Lifted{<:IdDict,N,<:Dual{<:IdDict,<:Mooncake.NTangent}},
+    key::Mooncake.Lifted,
+    default::Mooncake.Lifted,
+) where {N}
+    N == 1 && return @invoke frule!!(
+        Mooncake.zero_lifted(Val(N), get)::Mooncake.Lifted{typeof(get),N},
+        d::Mooncake.Lifted{<:IdDict},
+        key::Mooncake.Lifted,
+        default::Mooncake.Lifted,
+    )
+    bare_d = Mooncake._unlift(d)
+    bare_k = primal(Mooncake._unlift(key))
+    P_d = primal(bare_d)
+    has_key = in(bare_k, keys(P_d))
+    P_v = has_key ? P_d[bare_k] : primal(Mooncake._unlift(default))
+    # Per-lane tangent lookup.
+    lane_tangents = ntuple(Val(N)) do n
+        td = tangent(bare_d).lanes[n]
+        in(bare_k, keys(td)) ? td[bare_k] : Mooncake.tangent(default, n)
+    end
+    return Mooncake.Lifted{_typeof(P_v),N}(P_v, Mooncake.NTangent(lane_tangents))
+end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{IdDict{K,V}}, key::CoDual, default::CoDual
 ) where {K,V}
