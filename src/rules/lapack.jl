@@ -92,7 +92,11 @@ function frule!!(
     _, ipiv, info = LAPACK.getrf!(A; check)
     _getrf_fwd_core!(A, dA, ipiv)
     _arr_writeback!(A_dA, A, dA)
-    return (A_dA, Dual(ipiv, NoTangent()), Dual(info, NoTangent()))
+    return (
+        A_dA,
+        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
+        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
+    )
 end
 # Carve-out lift: the kwargs primal `@NamedTuple{check::Bool}` lifts to
 # the structural inner V form `@NamedTuple{check::Dual{Bool, NoTangent}}`
@@ -554,7 +558,7 @@ function frule!!(
     _, info = LAPACK.potrf!(primal(_uplo), A)
     _potrf!_frule_core!(primal(_uplo), A, dA)
     _arr_writeback!(A_dA, A, dA)
-    return (A_dA, Dual(info, NoTangent()))
+    return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(potrf!),N},
