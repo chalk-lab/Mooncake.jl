@@ -1027,6 +1027,43 @@ end
         },
     },
 ) where {T<:BlasRealFloat} = true
+# Complex-element variant for symv!/hemv! width-1 canonical form. Mirrors
+# the real BlasRealFloat width-1 path but uses Complex{NDual{R,1}} slot
+# shapes. The dispatched BLAS call is symv!/hemv! depending on call site
+# (Julia handles dispatch by element type at the runtime call).
+for fname in (:(symv!), :(hemv!))
+    @eval @inline function frule!!(
+        ::Dual{typeof(BLAS.$fname)},
+        uplo::Dual{Char},
+        alpha::_ScalarLikeWidth1Complex{R},
+        A_dA::_MatLikeWidth1Complex{R},
+        x_dx::_ArrLikeWidth1Complex{R},
+        beta::_ScalarLikeWidth1Complex{R},
+        y_dy::_ArrLikeWidth1Complex{R},
+    ) where {R<:IEEEFloat}
+        ul = primal(uplo)
+        α, dα = _scalar_extract(alpha)
+        β, dβ = _scalar_extract(beta)
+        A, dA = _arr_extract(A_dA)
+        x, dx = _arr_extract(x_dx)
+        y, dy = _arr_extract(y_dy)
+        C_T = Complex{R}
+
+        BLAS.$fname(ul, dα, A, x, β, dy)
+        BLAS.$fname(ul, α, dA, x, one(C_T), dy)
+        BLAS.$fname(ul, α, A, dx, one(C_T), dy)
+        if !iszero(dβ)
+            @inbounds for n in eachindex(y)
+                tmp = dβ * y[n]
+                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+            end
+        end
+
+        BLAS.$fname(ul, α, A, x, β, y)
+        _arr_writeback!(y_dy, y, dy)
+        return y_dy
+    end
+end
 
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.symv!),N},
