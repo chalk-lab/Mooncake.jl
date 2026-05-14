@@ -6,12 +6,46 @@ Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(a_primitive),Float64}
 # Issue #1169: a `@mooncake_overlay` on a primitive must propagate to the
 # inferred return type at the call site, otherwise downstream dispatch
 # compiles against the un-overlaid type.
+#
+# NOTE: this fixture combines `@mooncake_overlay` with `@is_primitive` on the
+# same signature purely to exercise the inference path. Combining them in user
+# code is not a supported pattern — at a primitive call site AD dispatches the
+# hand-written rule, so the overlay's only effect is to change inference's view
+# of the return type. Use one or the other.
 struct OverlayA end
 struct OverlayB end
 overlay_switch() = OverlayA()
 Mooncake.@mooncake_overlay overlay_switch() = OverlayB()
 Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(overlay_switch)}
 overlay_caller() = overlay_switch()
+
+# rrule returns the overlay-typed value, so an inference path that honours the
+# overlay routes the downstream call to `overlay_use(::OverlayB, ...)` (2x);
+# a path that ignores the overlay routes it to `overlay_use(::OverlayA, ...)` (1x).
+function Mooncake.rrule!!(f::CoDual{typeof(overlay_switch)})
+    return Mooncake.zero_fcodual(OverlayB()), Mooncake.NoPullback(f)
+end
+
+overlay_use(::OverlayA, x::Float64) = x
+overlay_use(::OverlayB, x::Float64) = 2x
+
+Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(overlay_use),OverlayA,Float64}
+function Mooncake.rrule!!(
+    f::CoDual{typeof(overlay_use)}, ::CoDual{OverlayA}, x::CoDual{Float64}
+)
+    overlay_use_a_pb(dy) = NoRData(), NoRData(), dy
+    return Mooncake.zero_fcodual(Mooncake.primal(x)), overlay_use_a_pb
+end
+
+Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(overlay_use),OverlayB,Float64}
+function Mooncake.rrule!!(
+    f::CoDual{typeof(overlay_use)}, ::CoDual{OverlayB}, x::CoDual{Float64}
+)
+    overlay_use_b_pb(dy) = NoRData(), NoRData(), 2dy
+    return Mooncake.zero_fcodual(2 * Mooncake.primal(x)), overlay_use_b_pb
+end
+
+overlay_outer(x::Float64) = overlay_use(overlay_switch(), x)
 
 contains_primitive(x) = @inline a_primitive(x)
 contains_non_primitive(x) = @inline non_primitive(x)
@@ -138,6 +172,13 @@ end
             interp = Mooncake.MooncakeInterpreter(DefaultCtx, ReverseMode)
             sig = Tuple{typeof(overlay_caller)}
             @test Base.code_ircode_by_type(sig; interp)[1][2] == OverlayB
+        end
+
+        @testset "1169 - overlay propagates through downstream dispatch" begin
+            cache = Mooncake.prepare_gradient_cache(overlay_outer, 1.0)
+            val, (_, grad) = Mooncake.value_and_gradient!!(cache, overlay_outer, 1.0)
+            @test val == 2.0
+            @test grad == 2.0
         end
     end
 

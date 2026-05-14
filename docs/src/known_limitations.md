@@ -201,3 +201,10 @@ Honestly, your best bet is just to avoid differentiating functions whose argumen
 ```@meta
 DocTestSetup = nothing
 ```
+
+## Composition of `@mooncake_overlay` and `@is_primitive`
+
+`@mooncake_overlay` substitutes the function body that Mooncake differentiates; `@is_primitive` marks a call site as a boundary where Mooncake stops differentiating the body and dispatches a hand-written rule instead. The two operate at different layers of the AD pipeline, and not every combination of them is supported. [Primitives and Overlays](@ref) covers the full picture; the practical summary is:
+
+- **Overlay on the same function and argument types as a primitive** is supported. The rule still runs at runtime, and the overlay only adjusts what Mooncake infers as the call's return type so it matches what the rule produces.
+- **Overlay on a function called from inside a primitive's body** is not supported. Mooncake does not look into a primitive's body for overlays, so the overlay has no effect there; if it would have changed the return type, Mooncake's inferred type and the rule's actual output disagree, which can produce silently wrong gradients.

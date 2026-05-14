@@ -55,6 +55,7 @@ makedocs(;
             joinpath("developer_documentation", "ir_representation.md"),
             joinpath("developer_documentation", "forwards_mode_design.md"),
             joinpath("developer_documentation", "reverse_mode_design.md"),
+            joinpath("developer_documentation", "primitives_and_overlays.md"),
             joinpath("developer_documentation", "misc_internals_notes.md"),
             joinpath("developer_documentation", "advanced_debugging.md"),
             joinpath("developer_documentation", "internal_docstrings.md"),

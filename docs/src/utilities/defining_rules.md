@@ -10,6 +10,8 @@ In this section, we detail some useful strategies which can help you avoid havin
 Mooncake.@mooncake_overlay
 ```
 
+See [Primitives and Overlays](@ref) for how overlays interact with primitives, including which compositions are supported and which are not.
+
 ## Functions with Zero Adjoint
 
 If the above strategy does not work, but you find yourself in the surprisingly common
