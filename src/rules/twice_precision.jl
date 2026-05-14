@@ -166,11 +166,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(+),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
 ) where {N,P<:TWP}
-    inner_x = Mooncake._unlift(x)
-    yv, yt = _twp_val(Mooncake._unlift(y))
-    bare_result = Dual(primal(inner_x) + yv, _twp_tangent(inner_x) + yt)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    # Audit Todo 4: per-lane assembly so each lane's tangent is computed
+    # independently (was: single-lane via `_twp_val` then broadcast at wrap,
+    # silently duplicating across N lanes for N >= 2).
+    px = primal(Mooncake._unlift(x))
+    py = primal(Mooncake._unlift(y))
+    p_out = px + py
+    tangents = ntuple(Val(N)) do n
+        Mooncake.tangent(x, n) + Mooncake.tangent(y, n)
+    end
+    return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
 function rrule!!(
     ::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{S}
