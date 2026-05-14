@@ -506,6 +506,8 @@ end
     return CoDual(y, dy), lmemoryrefget_adjoint
 end
 
+@inline _memref_tan_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
+@inline _memref_tan_unwrap(t) = t
 @inline Base.@propagate_inbounds function frule!!(
     ::Dual{typeof(memoryrefget)},
     x::Dual{<:MemoryRef},
@@ -515,7 +517,9 @@ end
     ordering = primal(_ordering)
     boundscheck = primal(_boundscheck)
     y = memoryrefget(primal(x), ordering, boundscheck)
-    dy = memoryrefget(tangent(x), ordering, boundscheck)
+    # Carve-out lift: `tangent(x::Dual{<:MemoryRef, NTangent{Tuple{<:MemoryRef}}})`
+    # returns the NTangent wrapper; unwrap to bare MemoryRef.
+    dy = memoryrefget(_memref_tan_unwrap(tangent(x)), ordering, boundscheck)
     return Dual(y, dy)
 end
 # Audit follow-up: canonical width-1 MemoryRef{NDual} arrives bare (not
@@ -708,7 +712,11 @@ end
 ) where {P,TT<:MemoryRef,ordering,boundscheck}
     bare_value = _ndual_to_dual_lane1(value)
     memoryrefset!(primal(x), primal(bare_value), ordering, boundscheck)
-    memoryrefset!(tangent(x).lanes[1], tangent(bare_value), ordering, boundscheck)
+    # Carve-out lift: `tangent(bare_value)` may itself be NTangent-wrapped
+    # for `Dual{Memory{T}, NTangent{Tuple{Memory{T'}}}}` etc. Unwrap.
+    memoryrefset!(
+        tangent(x).lanes[1], _memref_tan_unwrap(tangent(bare_value)), ordering, boundscheck
+    )
     return value
 end
 const _MemoryRefSetTupleValue = Tuple{
