@@ -404,6 +404,14 @@ for (fname, jlfname, elty) in (
     # IR materialises Ptr-tangents through the carve-out lift — out of scope
     # here. With no delegator, the foreigncall fallback returns a controlled
     # `MissingForeigncallRuleError` instead of crashing.
+    #
+    # Audit Todo 4 (rev. 3) follow-up: attempted to add
+    # `_is_lifted_aware = true` for this foreigncall sig so the IR-emit would
+    # route canonical inner V (bare `Dual{P,T}` Duals) directly to the
+    # existing bare-Dual frule. The MWE still hit `MissingForeigncallRuleError`,
+    # suggesting `_is_lifted_aware` doesn't affect the foreigncall dispatch
+    # path the way it does for normal frules. Reverted; further IR-emit-level
+    # work is needed.
 end
 
 @is_primitive(
