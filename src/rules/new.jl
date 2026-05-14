@@ -88,10 +88,10 @@ end
         if DT isa DataType && DT <: AbstractArray
             return Lifted{P,N}(map(v -> zero_dual(Val(N), v), y))
         end
-        # Audit step 5: route through the 2-arg Lifted ctor so the inner V
-        # matches `dual_type(Val(N), P)` (NTangent-wrapped at width N>=2 via
-        # the parallel `Dual{P, NTangent{NTuple{N, T}}}` ctor's scalar
-        # broadcast; bare at width 1 under the carve-out).
+        # Route through the 2-arg Lifted ctor so the inner V matches
+        # `dual_type(Val(N), P) === Dual{P, NTangent{NTuple{N, T}}}` (the
+        # parallel-Dual ctor's scalar tangent broadcasts across N lanes via
+        # its `Dual{P, NTangent{NTuple{N, T}}}(value, ::T)` overload).
         return Lifted{P,N}(y, zero_tangent(y))
     end
 
@@ -319,10 +319,13 @@ end
 @inline function _ndual_new_result(
     ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{1}
 ) where {P}
-    # Width 1 produces a bare-tangent `Dual{P, T}` matching
-    # `dual_type(Val(1), P) = Dual{P, tangent_type(P)}`. Wrapping in
-    # `NTangent{Tuple{T}}` here is the chunked-N shape and would mismatch
-    # the OC slot.
+    # Width 1 here returns a bare-tangent `Dual{P, tangent_type(P)}` for the
+    # bare-rule output boundary. The canonical width-1 inner V is now
+    # `Dual{P, NTangent{Tuple{T}}}` (carve-out lifted in commit cbc5b236b)
+    # for generic concrete `P`, but `_ndual_new_result` feeds into
+    # `_wrap_rule_result` which canonicalises shape at the slot boundary —
+    # so the bare-T form here is an explicit compatibility output that gets
+    # rewrapped downstream.
     dir_tangents = map(xi -> tangent(xi, 1), x)
     return Dual(y, build_output_tangent(P, primals, dir_tangents))
 end

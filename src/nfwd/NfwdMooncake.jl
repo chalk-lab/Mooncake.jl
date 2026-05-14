@@ -1199,6 +1199,18 @@ Mooncake.verify_dual_type(::NDual) = true
 Mooncake.verify_dual_type(::Complex{<:NDual}) = true
 Mooncake.verify_dual_type(::AbstractArray{<:NDual}) = true
 Mooncake.verify_dual_type(::AbstractArray{<:Complex{<:NDual}}) = true
+# Audit Todo 1 (revision 2): `MemoryRef{<:NDual}` and
+# `MemoryRef{<:Complex{<:NDual}}` are valid canonical-V inner-dual shapes
+# alongside their Memory/Array equivalents. Without these overloads,
+# `verify_dual_type` (and downstream `debug_mode` / `verify_lifted_type`)
+# falls through to the catch-all `Dual`-shape branch and errors with a
+# `MethodError` on the bare MemoryRef leaf. `Memory{<:NDual}` already
+# validates via the `AbstractArray{<:NDual}` overload above; `MemoryRef`
+# needs its own because it is NOT `<: AbstractArray`.
+@static if VERSION >= v"1.11-"
+    Mooncake.verify_dual_type(::MemoryRef{<:NDual}) = true
+    Mooncake.verify_dual_type(::MemoryRef{<:Complex{<:NDual}}) = true
+end
 function tangent(z::Complex{NDual{T,N}}) where {T,N}
     return NTangent(ntuple(i -> complex(z.re.partials[i], z.im.partials[i]), Val(N)))
 end

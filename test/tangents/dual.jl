@@ -123,12 +123,14 @@ end
         @test tangent_type(Val(2), Float64) === NTangent{Tuple{Float64,Float64}}
         # `NoTangent`-leaf primals stay as `NoTangent` at any width.
         @test tangent_type(Val(1), Int) === NoTangent
-        # `dual_type(Val(1), P)` for generic concrete `P` deliberately keeps
-        # the legacy bare-`T` parallel `Dual{P,T}` form. The OC slot type must
-        # match the runtime `Dual{P,T}` produced by `zero_dual` / `Dual(p,t)`
-        # call sites; flipping `dual_type` too would force a parallel
-        # migration of every generic-P construction site (audit step 5,
-        # remaining bulk).
+        # `Int` is a NoTangent-leaf case: `dual_type(Val(1), Int)` returns
+        # `Dual{Int, NoTangent}` (bare-NoTangent), not the NTangent-wrapped
+        # form. This is the canonical representation for non-differentiable
+        # primals at every width — `NTangent{Tuple{NoTangent}}` collapses to
+        # `NoTangent` per `tangent_type(Val(N), P)` when the leaf is NoTangent.
+        # The generic structural case for concrete `P` with a non-NoTangent
+        # tangent type uses `Dual{P, NTangent{Tuple{tangent_type(P)}}}`
+        # (carve-out lifted in commit cbc5b236b).
         @test dual_type(Val(1), Int) === Mooncake.Dual{Int,NoTangent}
     end
 
@@ -239,6 +241,19 @@ end
         # Canonical Lifted always passes verify_dual_type (the strict check
         # is verify_lifted_type).
         @test Mooncake.verify_dual_type(Lifted{Float64,2}(3.0, (1.0, 2.0)))
+        # Audit Todo 1 (revision 2): MemoryRef leaves alongside Memory leaves.
+        @static if VERSION >= v"1.11-rc4"
+            m = fill!(Memory{NDual{Float64,2}}(undef, 2), NDual{Float64,2}(1.0, (2.0, 3.0)))
+            @test Mooncake.verify_dual_type(m)
+            @test Mooncake.verify_dual_type(Core.memoryrefnew(m))
+            cm = fill!(
+                Memory{Complex{NDual{Float64,2}}}(undef, 1),
+                Complex(
+                    NDual{Float64,2}(1.0, (2.0, 3.0)), NDual{Float64,2}(0.0, (0.0, 0.0))
+                ),
+            )
+            @test Mooncake.verify_dual_type(Core.memoryrefnew(cm))
+        end
     end
 
     @testset "tangent(x, dir) per-lane access" begin

@@ -334,6 +334,32 @@ for (fname, jlfname, elty) in (
 
         return CoDual(result, NoFData()), dot_pb!!
     end
+
+    # Audit Todo 3 (revision 2) follow-up: Lifted-aware delegating frule for
+    # the `cblas_*dot*` foreigncall variants. Without this, calls through the
+    # primal-mode IR (where args arrive as `Mooncake.Lifted{...}`) fall
+    # through to the foreigncall fallback `throw_missing_foreigncall_rule_error`.
+    @eval @inline function frule!!(
+        f::Mooncake.Lifted{typeof(_foreigncall_),N},
+        name::Mooncake.Lifted{Val{$(blas_name(fname))}},
+        rettype::Mooncake.Lifted,
+        argtypes::Mooncake.Lifted,
+        nreq::Mooncake.Lifted,
+        ccall_conv::Mooncake.Lifted,
+        args::Vararg{Mooncake.Lifted,M},
+    ) where {N,M}
+        bare_result = frule!!(
+            Mooncake._unlift(f),
+            Mooncake._unlift(name),
+            Mooncake._unlift(rettype),
+            Mooncake._unlift(argtypes),
+            Mooncake._unlift(nreq),
+            Mooncake._unlift(ccall_conv),
+            map(Mooncake._unlift, args)...,
+        )
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
 end
 
 @is_primitive(
@@ -341,6 +367,10 @@ end
     Tuple{
         typeof(BLAS.nrm2),Int,X,Int
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
+)
+# 1-arg convenience form: `BLAS.nrm2(X) === BLAS.nrm2(length(X), X, 1)`.
+@is_primitive(
+    MinimalCtx, Tuple{typeof(BLAS.nrm2),X} where {T<:BlasFloat,X<:AbstractArray{T}},
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.nrm2),Vararg}}) = true
 function frule!!(
@@ -356,6 +386,18 @@ function frule!!(
         dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
     end
     return Dual(y, dy / 2y)
+end
+# 1-arg `BLAS.nrm2(X)` convenience form. Delegates to the 3-arg rule with
+# `n = length(X)` and `incx = 1`, matching Julia's BLAS shim.
+function frule!!(
+    f::Dual{typeof(BLAS.nrm2)}, X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}}
+) where {T<:BlasFloat}
+    return frule!!(f, Dual(length(primal(X_dX)), NoTangent()), X_dX, Dual(1, NoTangent()))
+end
+function frule!!(
+    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{NDual{T,1}}
+) where {T<:BlasFloat}
+    return frule!!(f, Dual(length(X_dX), NoTangent()), X_dX, Dual(1, NoTangent()))
 end
 # Width-1 NDual overload — extracts primal/tangent via element-wise map
 # (allocates) and reuses the bare body's dot-style accumulation.
@@ -394,6 +436,14 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Lifted-aware 1-arg convenience form.
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.nrm2),N}, X_dX::Mooncake.Lifted
+) where {N}
+    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(X_dX))
+    P_out = __primal_type(_typeof(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
     n::CoDual{<:Integer},
@@ -405,6 +455,21 @@ function rrule!!(
     function nrm2_pb!!(dy)
         dX .+= X .* (dy / y)
         return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(y, NoFData()), nrm2_pb!!
+end
+# 1-arg `BLAS.nrm2(X)` convenience form for reverse mode. Inline the
+# 3-arg core logic with `n = length(X)`, `incx = 1`; the pullback returns 2
+# values (function + arg) matching the 2-arg call signature.
+function rrule!!(
+    ::CoDual{typeof(BLAS.nrm2)}, X_dX::CoDual{<:AbstractArray{T} where {T<:BlasFloat}}
+)
+    n = length(primal(X_dX))
+    y = BLAS.nrm2(n, primal(X_dX), 1)
+    X, dX = viewify(n, X_dX, 1)
+    function nrm2_pb!!(dy)
+        dX .+= X .* (dy / y)
+        return NoRData(), NoRData()
     end
     return CoDual(y, NoFData()), nrm2_pb!!
 end
@@ -516,7 +581,12 @@ end
     beta::_ScalarLikeWidth1{P},
     y_dy::_ArrLikeWidth1{P},
 ) where {P<:BlasFloat}
-    A, dA = _arr_extract(A_dA)
+    # `A_dA` can be a Vector or Matrix (per `_VecOrMatLikeWidth1`). The core
+    # helper requires a Matrix, so route through `_mat_extract` which reshapes
+    # 1D inputs to `M×1` matrices. Test cases include Vector A (degenerate
+    # M×1 gemv); `_arr_extract` would preserve the 1D shape and trip the
+    # core's `AbstractMatrix{P}` constraint.
+    A, dA = _mat_extract(A_dA)
     x, dx = _arr_extract(x_dx)
     y, dy = _arr_extract(y_dy)
     α, dα = _scalar_extract(alpha)
