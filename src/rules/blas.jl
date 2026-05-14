@@ -703,6 +703,27 @@ end
     _arr_writeback!(y_dy, y, dy)
     return y_dy
 end
+# Complex-element variant: canonical width-1 `Complex{NDual{R, 1}}` shapes.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemv!)},
+    tA::Dual{Char},
+    alpha::_ScalarLikeWidth1Complex{R},
+    A_dA::_VecOrMatLikeWidth1Complex{R},
+    x_dx::_ArrLikeWidth1Complex{R},
+    beta::_ScalarLikeWidth1Complex{R},
+    y_dy::_ArrLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
+    A, dA = _mat_extract(A_dA)
+    x, dx = _arr_extract(x_dx)
+    y, dy = _arr_extract(y_dy)
+    α, dα = _scalar_extract(alpha)
+    β, dβ = _scalar_extract(beta)
+
+    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
+
+    _arr_writeback!(y_dy, y, dy)
+    return y_dy
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.gemv!),N},
     tA::Mooncake.Lifted{Char},
@@ -1335,6 +1356,44 @@ end
     end
 
     # Primal
+    BLAS.gemm!(tA, tB, α, A, B, β, C)
+
+    _arr_writeback!(C_dC, C, dC)
+    return C_dC
+end
+# Complex-element variant: canonical width-1 `Complex{NDual{R, 1}}` shapes.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemm!)},
+    transA::Dual{Char},
+    transB::Dual{Char},
+    alpha::_ScalarLikeWidth1Complex{R},
+    A_dA::_VecOrMatLikeWidth1Complex{R},
+    B_dB::_VecOrMatLikeWidth1Complex{R},
+    beta::_ScalarLikeWidth1Complex{R},
+    C_dC::_MatLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
+    tA = primal(transA)
+    tB = primal(transB)
+    α, dα = _scalar_extract(alpha)
+    β, dβ = _scalar_extract(beta)
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
+    C, dC = _arr_extract(C_dC)
+    C_T = Complex{R}
+
+    BLAS.gemm!(tA, tB, α, dA, B, β, dC)
+    BLAS.gemm!(tA, tB, α, A, dB, one(C_T), dC)
+
+    if !iszero(dα)
+        BLAS.gemm!(tA, tB, dα, A, B, one(C_T), dC)
+    end
+
+    if !iszero(dβ)
+        @inbounds for n in eachindex(C)
+            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        end
+    end
+
     BLAS.gemm!(tA, tB, α, A, B, β, C)
 
     _arr_writeback!(C_dC, C, dC)
