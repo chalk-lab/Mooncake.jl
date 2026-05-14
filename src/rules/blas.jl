@@ -451,6 +451,12 @@ function frule!!(
 ) where {T<:BlasFloat}
     return frule!!(f, Dual(length(X_dX), NoTangent()), X_dX, Dual(1, NoTangent()))
 end
+# Complex-element analogue: `AbstractArray{Complex{NDual{R,1}}}`.
+function frule!!(
+    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{Complex{NDual{R,1}}}
+) where {R<:IEEEFloat}
+    return frule!!(f, Dual(length(X_dX), NoTangent()), X_dX, Dual(1, NoTangent()))
+end
 # Width-1 NDual overload — extracts primal/tangent via element-wise map
 # (allocates) and reuses the bare body's dot-style accumulation.
 function frule!!(
@@ -472,6 +478,27 @@ function frule!!(
         dy = dy + real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
     end
     return NDual{T,1}(y, (dy / 2y,))
+end
+# Complex-element analogue: width-1 `AbstractArray{Complex{NDual{R,1}}}`.
+function frule!!(
+    ::Dual{typeof(BLAS.nrm2)},
+    n::Dual{<:Integer},
+    X_dX::AbstractArray{Complex{NDual{R,1}}},
+    incx::Dual{<:Integer},
+) where {R<:IEEEFloat}
+    _n = primal(n)
+    _incx = primal(incx)
+    X = map(c -> Complex(c.re.value, c.im.value), X_dX)
+    dX = map(c -> Complex(c.re.partials[1], c.im.partials[1]), X_dX)
+    y = BLAS.nrm2(_n, X, _incx)
+    Xinds = 1:_incx:(_incx * _n)
+    Xv = view(X, Xinds)
+    dXv = view(dX, Xinds)
+    dy = zero(y)
+    @inbounds for i in eachindex(Xv)
+        dy = dy + real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
+    end
+    return NDual{R,1}(y, (dy / 2y,))
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.nrm2),N},
