@@ -117,12 +117,17 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
 # Bare-Dual `unsafe_pointer_to_objref` body deleted under task #31. The
 # Lifted-typed body below computes the result independently.
+# Audit follow-up: `tangent(::Dual{Ptr, NTangent{Tuple{Ptr}}})` returns the
+# NTangent wrapper after the carve-out lift. Unwrap the singleton lane so
+# `unsafe_pointer_to_objref` receives the bare Ptr it expects.
+@inline _ptr_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
+@inline _ptr_unwrap(t) = t
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.unsafe_pointer_to_objref),N}, x::Mooncake.Lifted{<:Ptr}
 ) where {N}
     inner = Mooncake._unlift(x)
     y = unsafe_pointer_to_objref(primal(inner))
-    dy = unsafe_pointer_to_objref(tangent(inner))
+    dy = unsafe_pointer_to_objref(_ptr_unwrap(tangent(inner)))
     return Mooncake.Lifted{_typeof(y),N}(y, dy)
 end
 @inline Mooncake._is_lifted_aware(
@@ -162,7 +167,8 @@ end
     inner_src = Mooncake._unlift(src)
     pn = primal(n)
     unsafe_copyto!(primal(inner_dest), primal(inner_src), pn)
-    unsafe_copyto!(tangent(inner_dest), tangent(inner_src), pn)
+    # Carve-out lift: unwrap NTangent-wrapped Ptr tangent at this boundary.
+    unsafe_copyto!(_ptr_unwrap(tangent(inner_dest)), _ptr_unwrap(tangent(inner_src)), pn)
     return dest
 end
 @inline Mooncake._is_lifted_aware(
