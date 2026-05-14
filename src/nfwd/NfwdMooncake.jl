@@ -2115,4 +2115,10 @@ end
     return Mooncake.zero_dual(_ndual_width(x), primal(f)(_ndual_primal(x)))
 end
 
+# Audit follow-up: when the IR routes through `Dual{<:Integer, NoTangent}`
+# for a NoTangent integer arg of `^` (e.g. `x^n` where `n` is a runtime-
+# known integer captured into a Dual flow), unwrap to the bare Integer
+# and reuse the existing `^(::NDual, ::Integer)` rule in `Nfwd.jl`.
+@inline Base.:^(a::NDual, b::Dual{<:Integer,NoTangent}) = a ^ Mooncake.primal(b)
+
 end
