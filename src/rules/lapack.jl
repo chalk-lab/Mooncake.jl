@@ -40,6 +40,38 @@ end
         Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
     )
 end
+# Width-N NDual getrf!: primal once, per-lane Frechet via `_getrf_fwd_core!`
+# (which already operates on a single (A, dA, ipiv) triple post-primal).
+@inline function frule!!(
+    ::Dual{typeof(LAPACK.getrf!)}, A_dA::AbstractMatrix{NDual{P,N}}
+) where {P<:BlasRealFloat,N}
+    A, dAs = _arr_extract_n(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A)
+    @inbounds for lane in 1:N
+        _getrf_fwd_core!(A, dAs[lane], ipiv)
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    return (
+        A_dA,
+        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
+        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
+    )
+end
+@inline function frule!!(
+    ::Dual{typeof(LAPACK.getrf!)}, A_dA::AbstractMatrix{Complex{NDual{R,N}}}
+) where {R<:IEEEFloat,N}
+    A, dAs = _arr_extract_n(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A)
+    @inbounds for lane in 1:N
+        _getrf_fwd_core!(A, dAs[lane], ipiv)
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    return (
+        A_dA,
+        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
+        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
+    )
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(LAPACK.getrf!),N}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
 ) where {N,P<:BlasFloat}
@@ -560,6 +592,20 @@ function frule!!(
     _arr_writeback!(A_dA, A, dA)
     return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
 end
+# Width-N NDual potrf!: primal once, per-lane Frechet via `_potrf!_frule_core!`
+# (uses post-primal A).
+@inline function frule!!(
+    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::AbstractMatrix{NDual{P,N}}
+) where {P<:BlasRealFloat,N}
+    uplo = primal(_uplo)
+    A, dAs = _arr_extract_n(A_dA)
+    _, info = LAPACK.potrf!(uplo, A)
+    @inbounds for lane in 1:N
+        _potrf!_frule_core!(uplo, A, dAs[lane])
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(potrf!),N},
     _uplo::Mooncake.Lifted{Char},
@@ -783,6 +829,42 @@ end
         LAPACK.lacpy!(B, A, primal(_uplo))
         LAPACK.lacpy!(dB, dA, primal(_uplo))
         _arr_writeback!(B_dB, B, dB)
+        return B_dB
+    end
+    # Width-N NDual lacpy!: per-lane Frechet (lacpy each lane's dA → dB)
+    # then primal once. `lacpy!(B, A, uplo)` copies the triangular part of
+    # A into B; this is its own Frechet (linear in A → dB ← dA). So the
+    # rule is symmetric: do N tangent lacpy's + 1 primal lacpy.
+    @inline function frule!!(
+        ::Dual{typeof(LAPACK.lacpy!)},
+        B_dB::AbstractMatrix{NDual{P,N}},
+        A_dA::AbstractMatrix{NDual{P,N}},
+        _uplo::Dual{Char},
+    ) where {P<:BlasRealFloat,N}
+        uplo = primal(_uplo)
+        B, dBs = _arr_extract_n(B_dB)
+        A, dAs = _arr_extract_n(A_dA)
+        LAPACK.lacpy!(B, A, uplo)
+        @inbounds for lane in 1:N
+            LAPACK.lacpy!(dBs[lane], dAs[lane], uplo)
+        end
+        _arr_writeback_n!(B_dB, B, dBs)
+        return B_dB
+    end
+    @inline function frule!!(
+        ::Dual{typeof(LAPACK.lacpy!)},
+        B_dB::AbstractMatrix{Complex{NDual{R,N}}},
+        A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+        _uplo::Dual{Char},
+    ) where {R<:IEEEFloat,N}
+        uplo = primal(_uplo)
+        B, dBs = _arr_extract_n(B_dB)
+        A, dAs = _arr_extract_n(A_dA)
+        LAPACK.lacpy!(B, A, uplo)
+        @inbounds for lane in 1:N
+            LAPACK.lacpy!(dBs[lane], dAs[lane], uplo)
+        end
+        _arr_writeback_n!(B_dB, B, dBs)
         return B_dB
     end
     @inline function frule!!(
