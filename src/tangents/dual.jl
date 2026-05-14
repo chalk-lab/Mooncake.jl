@@ -476,9 +476,14 @@ end
 # Tuple-typed fields, recurse element-wise so a nested Tuple-of-Dual builds
 # without trying `Tuple{...}(::Tuple, ::Tuple)` (which has no ctor).
 @inline function _inner_dual_for_field(::Type{V}, primal::P, tangent::T) where {V,P,T}
-    if V isa DataType && V <: Dual && V.parameters[1] === P && !(T <: V.parameters[2])
-        return Dual(primal, tangent)
-    end
+    # Audit follow-up: the previous "escape hatch" returned a bare
+    # `Dual(primal, tangent)` (= `Dual{P, T}`) when V was a concrete Dual
+    # whose declared tangent type differed from `T`. That bypassed the
+    # NTangent wrap, producing element-wise bare-T Tuple-of-Duals that
+    # didn't match the canonical width-1 OC slot (`Dual{P, NTangent{Tuple{T}}}`)
+    # and surfaced as typeassert failures in high_order_derivative_patches /
+    # misty_closures. The canonical V's 2-arg ctor (see dual.jl §"Inner-type
+    # constructors") already adapts the tangent shape — route through it.
     return V(primal, tangent)
 end
 @inline function _inner_dual_for_field(
