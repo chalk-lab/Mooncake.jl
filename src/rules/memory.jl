@@ -518,6 +518,21 @@ end
     dy = memoryrefget(tangent(x), ordering, boundscheck)
     return Dual(y, dy)
 end
+# Audit follow-up: canonical width-1 MemoryRef{NDual} arrives bare (not
+# Dual-wrapped) when the Lifted-aware adapter unlifts. The bare-Dual rule
+# above expects `Dual{<:MemoryRef}` — add a parallel overload for the
+# NDual-element MemoryRef shape so `_unlift(::Lifted{<:MemoryRef, 1,
+# MemoryRef{<:NDual}})` dispatches correctly.
+@inline Base.@propagate_inbounds function frule!!(
+    ::Dual{typeof(memoryrefget)},
+    x::MemoryRef{<:Mooncake.Nfwd.NDual},
+    _ordering::Dual{Symbol},
+    _boundscheck::Dual{Bool},
+)
+    ordering = primal(_ordering)
+    boundscheck = primal(_boundscheck)
+    return memoryrefget(x, ordering, boundscheck)
+end
 @inline Base.@propagate_inbounds function frule!!(
     f::Mooncake.Lifted{typeof(memoryrefget),N},
     x::Mooncake.Lifted{<:MemoryRef},
