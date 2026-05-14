@@ -20,6 +20,12 @@ struct MooncakeCache
 end
 
 MooncakeCache() = MooncakeCache(IdDict{Core.MethodInstance,Core.CodeInstance}())
+
+# `MooncakeCache` is internal interpreter state. It must not be touched by the
+# differentiation transform (the structural NamedTuple lift would replace it
+# with `@NamedTuple{dict::...}` and break `_new_(MooncakeCache, ...)` inside
+# IR that touches the interpreter's code cache). Force NoTangent.
+@foldable tangent_type(::Type{MooncakeCache}) = NoTangent
 Base.empty!(c::MooncakeCache) = (empty!(c.dict); c)
 
 # The method table used by `Mooncake.@mooncake_overlay`.
@@ -65,6 +71,12 @@ struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
         return ip
     end
 end
+
+# Internal interpreter state — must not be differentiated. The structural
+# NamedTuple lift would replace the struct with a `@NamedTuple{...}` and
+# break `_new_` of these types inside lifted IR that handles
+# `build_derived_rrule` and similar high-order paths.
+@foldable tangent_type(::Type{<:MooncakeInterpreter}) = NoTangent
 
 # Don't print out the IRCode object, because this tends to pollute the REPL. Just make it
 # clear that this is a MistyClosure, which contains an OpaqueClosure.
