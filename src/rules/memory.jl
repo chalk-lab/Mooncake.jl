@@ -1464,6 +1464,12 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Bare-Dual entry for `copy(::Array{<:_HasNDual})` (canonical NDual-element
+# container input); preserves the bare NDual-element output polarity expected
+# by direct rule-invocation callers (e.g. `frule!!(zero_dual(copy), x_dual)`).
+@inline frule!!(::Dual{typeof(copy),NoTangent}, a::Array{<:_HasNDual}) = _copy_array_kernel(
+    a
+)
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
