@@ -767,6 +767,20 @@ end
         _arr_writeback!(B_dB, B, dB)
         return B_dB
     end
+    # Complex-element analogue: width-1 `Matrix{Complex{NDual{R,1}}}`.
+    @inline function frule!!(
+        ::Dual{typeof(LAPACK.lacpy!)},
+        B_dB::_MatLikeWidth1Complex{R},
+        A_dA::_MatLikeWidth1Complex{R},
+        _uplo::Dual{Char},
+    ) where {R<:IEEEFloat}
+        B, dB = _arr_extract(B_dB)
+        A, dA = _arr_extract(A_dA)
+        LAPACK.lacpy!(B, A, primal(_uplo))
+        LAPACK.lacpy!(dB, dA, primal(_uplo))
+        _arr_writeback!(B_dB, B, dB)
+        return B_dB
+    end
     @inline function frule!!(
         f::Mooncake.Lifted{typeof(LAPACK.lacpy!),N},
         B_dB::Mooncake.Lifted{<:AbstractMatrix{P}},
