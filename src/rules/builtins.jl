@@ -1361,6 +1361,23 @@ is_homogeneous_and_immutable(::Any) = false
     literal_name = zero_dual(Val(primal(name)))
     return frule!!(zero_dual(lsetfield!), value, literal_name, x)
 end
+# Audit follow-up: bare-NDual / bare-NDual-container value path. When the
+# Lifted-aware adapter unlifts a `Lifted{Vector{T<:IEEEFloat}, 1, ...}` slot,
+# `value` arrives as `Vector{NDual{T,1}}` (the canonical inner V), not a
+# Dual-wrapper. Bridge to `lsetfield!` with the bare value.
+@inline function _setfield!_kernel(
+    value::Union{
+        Mooncake.Nfwd.NDual,
+        Complex{<:Mooncake.Nfwd.NDual},
+        AbstractArray{<:Mooncake.Nfwd.NDual},
+        AbstractArray{<:Complex{<:Mooncake.Nfwd.NDual}},
+    },
+    name::Dual,
+    x,
+)
+    literal_name = zero_dual(Val(primal(name)))
+    return frule!!(zero_dual(lsetfield!), value, literal_name, x)
+end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(setfield!),N},
     value::Mooncake.Lifted,
