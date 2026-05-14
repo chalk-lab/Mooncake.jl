@@ -257,6 +257,26 @@ end
     return (p, ts)
 end
 
+# Width-N matrix extract: like `_mat_extract` but per-lane tangents. Reshape
+# Vector inputs to M×1 columns so BLAS Level 2/3 callers can rely on the
+# `AbstractMatrix` shape regardless of input rank.
+@inline function _mat_extract_n(x::AbstractVector{NDual{T,N}}) where {T,N}
+    p, ts = _arr_extract_n(x)
+    return (reshape(p, :, 1), map(t -> reshape(t, :, 1), ts))
+end
+@inline _mat_extract_n(x::AbstractMatrix{NDual{T,N}}) where {T,N} = _arr_extract_n(x)
+@inline function _mat_extract_n(
+    x::AbstractVector{Complex{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    p, ts = _arr_extract_n(x)
+    return (reshape(p, :, 1), map(t -> reshape(t, :, 1), ts))
+end
+@inline function _mat_extract_n(
+    x::AbstractMatrix{Complex{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    return _arr_extract_n(x)
+end
+
 @inline _mat_extract(x::Dual{<:AbstractVecOrMat}) = matrixify(x)
 @inline function _mat_extract(x::AbstractVector{NDual{T,1}}) where {T}
     p, t = _arr_extract(x)
@@ -822,6 +842,70 @@ end
     _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
 
     _arr_writeback!(y_dy, y, dy)
+    return y_dy
+end
+# Width-N NDual gemv! (audit Pattern G): per-lane Frechet computed N times
+# (each with independent lane tangents), then primal computed once. We
+# inline the per-lane Frechet to avoid `_gemv!_frule_core!`'s baked-in
+# primal computation (which would accumulate y N times if called per-lane).
+@inline function _gemv_frechet_lane!(tA, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
+    BLAS.gemv!(tA, dα, A, x, β, dy)
+    BLAS.gemv!(tA, α, dA, x, one(P), dy)
+    BLAS.gemv!(tA, α, A, dx, one(P), dy)
+    if !iszero(dβ)
+        @inbounds for n in eachindex(y)
+            tmp = dβ * y[n]
+            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+        end
+    end
+    return nothing
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemv!)},
+    tA::Dual{Char},
+    alpha::NDual{P,N},
+    A_dA::AbstractVecOrMat{NDual{P,N}},
+    x_dx::AbstractArray{NDual{P,N}},
+    beta::NDual{P,N},
+    y_dy::AbstractArray{NDual{P,N}},
+) where {P<:BlasRealFloat,N}
+    A, dAs = _mat_extract_n(A_dA)
+    x, dxs = _arr_extract_n(x_dx)
+    y, dys = _arr_extract_n(y_dy)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    ta = primal(tA)
+    @inbounds for lane in 1:N
+        _gemv_frechet_lane!(
+            ta, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
+        )
+    end
+    BLAS.gemv!(ta, α, A, x, β, y)
+    _arr_writeback_n!(y_dy, y, dys)
+    return y_dy
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemv!)},
+    tA::Dual{Char},
+    alpha::Complex{NDual{R,N}},
+    A_dA::AbstractVecOrMat{Complex{NDual{R,N}}},
+    x_dx::AbstractArray{Complex{NDual{R,N}}},
+    beta::Complex{NDual{R,N}},
+    y_dy::AbstractArray{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    A, dAs = _mat_extract_n(A_dA)
+    x, dxs = _arr_extract_n(x_dx)
+    y, dys = _arr_extract_n(y_dy)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    ta = primal(tA)
+    @inbounds for lane in 1:N
+        _gemv_frechet_lane!(
+            ta, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
+        )
+    end
+    BLAS.gemv!(ta, α, A, x, β, y)
+    _arr_writeback_n!(y_dy, y, dys)
     return y_dy
 end
 @inline function frule!!(
@@ -1564,6 +1648,72 @@ end
     BLAS.gemm!(tA, tB, α, A, B, β, C)
 
     _arr_writeback!(C_dC, C, dC)
+    return C_dC
+end
+# Width-N NDual gemm! (audit Pattern G): per-lane Frechet then primal once.
+@inline function _gemm_frechet_lane!(tA, tB, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
+    BLAS.gemm!(tA, tB, α, dA, B, β, dC)
+    BLAS.gemm!(tA, tB, α, A, dB, one(P), dC)
+    if !iszero(dα)
+        BLAS.gemm!(tA, tB, dα, A, B, one(P), dC)
+    end
+    if !iszero(dβ)
+        @inbounds for n in eachindex(C)
+            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        end
+    end
+    return nothing
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemm!)},
+    transA::Dual{Char},
+    transB::Dual{Char},
+    alpha::NDual{P,N},
+    A_dA::AbstractVecOrMat{NDual{P,N}},
+    B_dB::AbstractVecOrMat{NDual{P,N}},
+    beta::NDual{P,N},
+    C_dC::AbstractMatrix{NDual{P,N}},
+) where {P<:BlasRealFloat,N}
+    tA = primal(transA)
+    tB = primal(transB)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    C, dCs = _arr_extract_n(C_dC)
+    @inbounds for lane in 1:N
+        _gemm_frechet_lane!(
+            tA, tB, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
+        )
+    end
+    BLAS.gemm!(tA, tB, α, A, B, β, C)
+    _arr_writeback_n!(C_dC, C, dCs)
+    return C_dC
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.gemm!)},
+    transA::Dual{Char},
+    transB::Dual{Char},
+    alpha::Complex{NDual{R,N}},
+    A_dA::AbstractVecOrMat{Complex{NDual{R,N}}},
+    B_dB::AbstractVecOrMat{Complex{NDual{R,N}}},
+    beta::Complex{NDual{R,N}},
+    C_dC::AbstractMatrix{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    tA = primal(transA)
+    tB = primal(transB)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    C, dCs = _arr_extract_n(C_dC)
+    @inbounds for lane in 1:N
+        _gemm_frechet_lane!(
+            tA, tB, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
+        )
+    end
+    BLAS.gemm!(tA, tB, α, A, B, β, C)
+    _arr_writeback_n!(C_dC, C, dCs)
     return C_dC
 end
 @inline function frule!!(
