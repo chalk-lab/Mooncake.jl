@@ -181,11 +181,30 @@ end
 @inline function _arr_extract(x::AbstractArray{NDual{T,1}}) where {T}
     return (map(d -> d.value, x), map(d -> d.partials[1], x))
 end
+# Complex-element overload: each element is `Complex{NDual{R,1}}` with the
+# canonical width-1 representation putting real & imag parts in separate
+# NDuals. Primals/tangents are reconstructed elementwise as `Complex{R}`.
+@inline function _arr_extract(x::AbstractArray{Complex{NDual{T,1}}}) where {T<:IEEEFloat}
+    return (
+        map(c -> Complex(c.re.value, c.im.value), x),
+        map(c -> Complex(c.re.partials[1], c.im.partials[1]), x),
+    )
+end
 
 @inline _arr_writeback!(::Dual, _, _) = nothing
 @inline function _arr_writeback!(x::AbstractArray{NDual{T,1}}, p, t) where {T}
     @inbounds for i in eachindex(x)
         x[i] = NDual{T,1}(p[i], (t[i],))
+    end
+    return nothing
+end
+@inline function _arr_writeback!(
+    x::AbstractArray{Complex{NDual{T,1}}}, p, t
+) where {T<:IEEEFloat}
+    @inbounds for i in eachindex(x)
+        x[i] = Complex(
+            NDual{T,1}(real(p[i]), (real(t[i]),)), NDual{T,1}(imag(p[i]), (imag(t[i]),))
+        )
     end
     return nothing
 end
@@ -196,6 +215,13 @@ end
     return reshape(p, :, 1), reshape(t, :, 1)
 end
 @inline _mat_extract(x::AbstractMatrix{NDual{T,1}}) where {T} = _arr_extract(x)
+@inline function _mat_extract(x::AbstractVector{Complex{NDual{T,1}}}) where {T<:IEEEFloat}
+    p, t = _arr_extract(x)
+    return reshape(p, :, 1), reshape(t, :, 1)
+end
+@inline function _mat_extract(x::AbstractMatrix{Complex{NDual{T,1}}}) where {T<:IEEEFloat}
+    return _arr_extract(x)
+end
 
 # Scalar counterpart: at width 1, an `IEEEFloat` slot may arrive as either
 # `NDual{T,1}` (the canonical IEEEFloat lifted form) or `Dual{T,T}` (when
@@ -212,6 +238,21 @@ const _VecOrMatLikeWidth1{P} = Union{
 }
 const _ArrLikeWidth1{P} = Union{Dual{<:AbstractArray{P}},AbstractArray{NDual{P,1}}}
 const _ScalarLikeWidth1{T} = Union{Dual{T},NDual{T,1}}
+
+# Complex-element analogues: the canonical width-1 lift of
+# `Matrix{Complex{R}}` is `Matrix{Complex{NDual{R, 1}}}` (real and imag
+# parts each carried by an NDual), NOT `Matrix{NDual{Complex{R}, 1}}`.
+# Existing `_MatLikeWidth1{Complex{R}}` accepts only the Dual-wrapper form;
+# the NDual-element form needs these separate aliases.
+const _MatLikeWidth1Complex{R} = Union{
+    Dual{<:AbstractMatrix{Complex{R}}},AbstractMatrix{Complex{NDual{R,1}}}
+}
+const _VecOrMatLikeWidth1Complex{R} = Union{
+    Dual{<:AbstractVecOrMat{Complex{R}}},AbstractVecOrMat{Complex{NDual{R,1}}}
+}
+const _ArrLikeWidth1Complex{R} = Union{
+    Dual{<:AbstractArray{Complex{R}}},AbstractArray{Complex{NDual{R,1}}}
+}
 
 #
 # Utility

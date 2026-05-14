@@ -28,6 +28,19 @@ function frule!!(
     )
 end
 @inline function frule!!(
+    ::Dual{typeof(LAPACK.getrf!)}, A_dA::_MatLikeWidth1Complex{R}
+) where {R<:IEEEFloat}
+    A, dA = _arr_extract(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A)
+    _getrf_fwd_core!(A, dA, ipiv)
+    _arr_writeback!(A_dA, A, dA)
+    return (
+        A_dA,
+        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
+        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
+    )
+end
+@inline function frule!!(
     f::Mooncake.Lifted{typeof(LAPACK.getrf!),N}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
 ) where {N,P<:BlasFloat}
     bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(A_dA))
@@ -95,6 +108,24 @@ end
     g::Dual{typeof(getrf!)},
     A_dA::_MatLikeWidth1{P},
 ) where {P<:BlasFloat}
+    check = primal(kwargs.check)
+    A, dA = _arr_extract(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A; check)
+    _getrf_fwd_core!(A, dA, ipiv)
+    _arr_writeback!(A_dA, A, dA)
+    return (
+        A_dA,
+        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
+        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
+    )
+end
+# Complex-element analogue: width-1 canonical Matrix{Complex{NDual{R,1}}}.
+@inline function frule!!(
+    f::Dual{typeof(Core.kwcall)},
+    kwargs::NamedTuple,
+    g::Dual{typeof(getrf!)},
+    A_dA::_MatLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
     check = primal(kwargs.check)
     A, dA = _arr_extract(A_dA)
     _, ipiv, info = LAPACK.getrf!(A; check)
