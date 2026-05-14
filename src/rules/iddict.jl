@@ -122,6 +122,13 @@ tangent(f::IdDict, ::NoRData) = f
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.rehash!),<:IdDict,Any}}) = true
+# Audit follow-up (carve-out lift): `tangent(d::Dual{P, NTangent{Tuple{T}}})`
+# returns the NTangent wrapper rather than the bare T. For mutation-semantic
+# rules (rehash!, setindex!, getindex on IdDict), unwrap the singleton lane
+# so the underlying mutable IdDict is operated on rather than the wrapper.
+@inline _iddict_tangent(d::Dual{<:IdDict}) = _iddict_unwrap(tangent(d))
+@inline _iddict_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
+@inline _iddict_unwrap(t) = t
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.rehash!),N},
     d::Mooncake.Lifted{<:IdDict},
@@ -130,7 +137,7 @@ tangent(f::IdDict, ::NoRData) = f
     inner_d = Mooncake._unlift(d)
     inner_newsz = Mooncake._unlift(newsz)
     Base.rehash!(primal(inner_d), primal(inner_newsz))
-    Base.rehash!(tangent(inner_d), primal(inner_newsz))
+    Base.rehash!(_iddict_tangent(inner_d), primal(inner_newsz))
     return d
 end
 function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoDual)
@@ -146,14 +153,14 @@ end
 # below dispatches on the runtime val V (`Dual` or `NDual` for IEEEFloat).
 @inline function _setindex_iddict!(d::Dual{IdDict{K,V}}, val::Dual, key) where {K,V}
     setindex!(primal(d), primal(val), primal(key))
-    setindex!(tangent(d), tangent(val), primal(key))
+    setindex!(_iddict_tangent(d), _iddict_unwrap(tangent(val)), primal(key))
     return nothing
 end
 @inline function _setindex_iddict!(
     d::Dual{IdDict{K,V}}, val::Mooncake.Nfwd.NDual{P,1}, key
 ) where {K,V<:IEEEFloat,P<:IEEEFloat}
     setindex!(primal(d), val.value, primal(key))
-    setindex!(tangent(d), val.partials[1], primal(key))
+    setindex!(_iddict_tangent(d), val.partials[1], primal(key))
     return nothing
 end
 @inline function frule!!(
@@ -203,14 +210,14 @@ end
 # dispatches on the runtime default V.
 @inline function _get_iddict(d::Dual{IdDict{K,V}}, key::Dual, default::Dual) where {K,V}
     x = get(primal(d), primal(key), primal(default))
-    dx = get(tangent(d), primal(key), tangent(default))
+    dx = get(_iddict_tangent(d), primal(key), _iddict_unwrap(tangent(default)))
     return Dual(x, dx)
 end
 @inline function _get_iddict(
     d::Dual{IdDict{K,V}}, key::Dual, default::Mooncake.Nfwd.NDual{P,1}
 ) where {K,V<:IEEEFloat,P<:IEEEFloat}
     x = get(primal(d), primal(key), default.value)
-    dx = get(tangent(d), primal(key), default.partials[1])
+    dx = get(_iddict_tangent(d), primal(key), default.partials[1])
     return Dual(x, dx)
 end
 @inline function frule!!(
@@ -258,7 +265,7 @@ end
     inner_key = Mooncake._unlift(key)
     bare_result = Dual(
         getindex(primal(inner_d), primal(inner_key)),
-        getindex(tangent(inner_d), primal(inner_key)),
+        getindex(_iddict_tangent(inner_d), primal(inner_key)),
     )
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
