@@ -327,6 +327,14 @@ function Base.convert(::Type{Dual{P,NTangent{Tuple{T}}}}, x::Dual{P,T}) where {P
     return Dual(primal(x), NTangent((tangent(x),)))
 end
 
+# Audit follow-up: `lsetfield!` rule body produces an Int (e.g. updating a
+# `Vector`'s `:size` field with a bare new value). The slot type expects
+# `Dual{Int64, NoTangent}`; provide a convert so Julia's `setfield!` /
+# typed-Tuple slot writes succeed.
+function Base.convert(::Type{Dual{P,NoTangent}}, x::P) where {P}
+    return Dual{P,NoTangent}(x, NoTangent())
+end
+
 # ── Lifted: Layer-3 wrapper struct ───────────────────────────────────────────
 
 """
