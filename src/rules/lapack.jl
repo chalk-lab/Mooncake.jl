@@ -17,8 +17,15 @@ function frule!!(
     # Tuple-output: return canonical inner V form (a tuple of inner duals
     # per AGENTS.md tuple-lifting). The first element preserves the input
     # array's lifted shape (Dual{Wrapper} or Array{<:NDual}); ipiv and info
-    # are non-IEEEFloat so wrap as plain Duals with NoTangent.
-    return (A_dA, Dual(ipiv, NoTangent()), Dual(info, NoTangent()))
+    # are non-IEEEFloat so wrap as canonical width-1 forms
+    # (`Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}` and
+    # `Dual{Int, NoTangent}`) so downstream `_canonicalise_tuple_inner`
+    # does not need to bridge `NoTangent → NTangent` (Audit Todo 7).
+    return (
+        A_dA,
+        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
+        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
+    )
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(LAPACK.getrf!),N}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
