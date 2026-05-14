@@ -283,6 +283,18 @@ function _is_vararg_expr(ex)
            ex.args[1].args[1] == :Vararg
 end
 
+# Returns true if `ex` (already-escaped) is a `Type{...}` constructor
+# signature element (e.g. `Type{<:TwicePrecision}`, `Type{Foo{T}}`). Used by
+# `_zero_derivative_impl` to decide whether the generated Lifted-typed first
+# arg needs a `<:` bound to compensate for `Lifted`'s invariance in `P`.
+function _is_type_constructor_sig(ex)
+    return ex isa Expr &&
+           ex.head == :escape &&
+           ex.args[1] isa Expr &&
+           ex.args[1].head == :curly &&
+           ex.args[1].args[1] == :Type
+end
+
 # Given an escaped Vararg expression and a wrapper type symbol (e.g. :(Mooncake.Dual)),
 # produce the appropriate Vararg type for the rule signature:
 #   Vararg        -> Vararg{wrapper}
@@ -429,9 +441,20 @@ function _zero_derivative_impl(ctx, sig, mode)
     # generated `Lifted{<:typeof(F), N}` and hand-written `Lifted{typeof(F), N}`
     # are considered equivalent-specificity by Julia's method dispatcher
     # but Aqua flags them as ambiguous when their other args overlap.
+    # First-arg Lifted typing: function singletons (`typeof(F)`) keep
+    # exact-match `Lifted{typeof(F), N}` to avoid Aqua ambiguity with
+    # hand-written rules. Constructor signatures (`Type{<:Foo}`) must use
+    # `<:` because `Lifted` is invariant in its primal-type parameter, so
+    # concrete `Lifted{Type{Foo{T}}, N}` is NOT a subtype of
+    # `Lifted{Type{<:Foo}, N}` and would never dispatch otherwise.
+    first_lifted_arg = if _is_type_constructor_sig(arg_type_symbols[1])
+        :(Mooncake.Lifted{<:$(arg_type_symbols[1]),N})
+    else
+        :(Mooncake.Lifted{$(arg_type_symbols[1]),N})
+    end
     if is_vararg
         lifted_arg_types = vcat(
-            [:(Mooncake.Lifted{$(arg_type_symbols[1]),N})],
+            [first_lifted_arg],
             [:(Mooncake.Lifted{<:$t}) for t in arg_type_symbols[2:(end - 1)]],
             [:(Vararg{Mooncake.Lifted,_M})],
         )
@@ -440,8 +463,7 @@ function _zero_derivative_impl(ctx, sig, mode)
         )
     else
         lifted_arg_types = vcat(
-            [:(Mooncake.Lifted{$(arg_type_symbols[1]),N})],
-            [:(Mooncake.Lifted{<:$t}) for t in arg_type_symbols[2:end]],
+            [first_lifted_arg], [:(Mooncake.Lifted{<:$t}) for t in arg_type_symbols[2:end]]
         )
         lifted_where = vcat(where_params === nothing ? Any[] : copy(where_params), [:N])
     end
