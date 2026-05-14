@@ -444,6 +444,12 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Audit Todo 4: `_ndual_to_dual_lane1` is width-1-only by name. Used to bridge
+# canonical width-1 `NDual{T, 1}` / `Complex{<:NDual}` / `AbstractArray{<:NDual}`
+# values into the legacy `Dual{P, T}` form expected by `lsetfield_frule`. For
+# N >= 2 callers, a width-N path is needed (loop per-lane via `set_tangent_field!`
+# into each lane's mutable tangent) — the helper itself is intentionally
+# width-1 and is constrained by `partials[1]`/`x.re.partials[1]` access.
 @inline _ndual_to_dual_lane1(x::Dual) = x
 @inline _ndual_to_dual_lane1(x::NDual) = Dual(primal(x), x.partials[1])
 @inline _ndual_to_dual_lane1(x::Complex{<:NDual}) = Dual(

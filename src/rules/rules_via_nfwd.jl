@@ -329,6 +329,12 @@ frule!!(::Dual{typeof(neg_float_fast)}, x::NDual) = -x
 frule!!(::Dual{typeof(sqrt_llvm)}, x::NDual) = sqrt(x)
 frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::NDual) = sqrt(x)
 
+# Audit Todo 4: `_lane1_ndual` and `_lane1_dual` are width-1-only by name.
+# They bridge between the legacy bare `Dual{P, T}` shape and the canonical
+# width-1 `NDual{T, 1}` shape used by Nfwd. The bare-Dual `frule!!(::Dual{$op},
+# x::Dual{P, <:IEEEFloat})` overload below uses these to delegate into the
+# NDual path; chunk-N callers go through the Lifted-aware overload (which
+# uses `_unlift(x)::NDual{T, N}` directly and is width-N correct).
 @inline _lane1_ndual(x::Dual{P,<:IEEEFloat}) where {P<:IEEEFloat} = NDual{P,1}(
     primal(x), (convert(P, tangent(x)),)
 )
