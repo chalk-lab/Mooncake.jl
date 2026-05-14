@@ -981,6 +981,70 @@ function dual_type(
     return SubArray{T,D,Array{T,Dp},I,L}
 end
 
+# Base/LinearAlgebra array wrappers without NDual-element representations.
+# Audit Todo 3 follow-up: removing the broad `_is_user_definable_type` gate
+# exposed these wrappers to the generic structural NamedTuple lift, which
+# breaks the bare-Dual BLAS rules in `src/rules/blas.jl` whose `arrayify`
+# overloads expect the legacy parallel `Dual{Wrapper, Tangent{...}}` form
+# (bare `Tangent`, not NTangent-wrapped — `arrayify`'s `TangentOrFData =
+# Union{Tangent, FData}` doesn't match NTangent at width 1, and the NDual-
+# element wrapper representation only exists for Diagonal/Adjoint/SubArray).
+# Each `dual_type(Val(1), Wrapper) === Dual{Wrapper, tangent_type(Wrapper)}`
+# (bare-T) so arrayify dispatches via `Dual{<:AbstractVecOrMat{P}}`; width-N
+# (N>=2) stays at the chunked NTangent-wrapped Dual.
+for Wrapper in (
+    :(Base.ReshapedArray{T,D,P,MI} where {T<:IEEEFloat,D,P,MI}),
+    :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
+    :(LinearAlgebra.UpperTriangular{T,P} where {T<:IEEEFloat,P}),
+    :(LinearAlgebra.LowerTriangular{T,P} where {T<:IEEEFloat,P}),
+    :(LinearAlgebra.UnitUpperTriangular{T,P} where {T<:IEEEFloat,P}),
+    :(LinearAlgebra.UnitLowerTriangular{T,P} where {T<:IEEEFloat,P}),
+    :(LinearAlgebra.UpperHessenberg{T,P} where {T<:IEEEFloat,P}),
+    :(LinearAlgebra.Symmetric{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
+    :(LinearAlgebra.Hermitian{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
+    :(LinearAlgebra.Transpose{T,P} where {T<:IEEEFloat,P<:AbstractArray{T}}),
+)
+    @eval begin
+        function dual_type(
+            ::Val{1}, ::Type{$(Wrapper.args[1])}
+        ) where {$(Wrapper.args[2:end]...)}
+            return Dual{$(Wrapper.args[1]),Mooncake.tangent_type($(Wrapper.args[1]))}
+        end
+        function dual_type(
+            ::Val{N}, ::Type{$(Wrapper.args[1])}
+        ) where {N,$(Wrapper.args[2:end]...)}
+            return Dual{
+                $(Wrapper.args[1]),Mooncake.tangent_type(Val(N), $(Wrapper.args[1]))
+            }
+        end
+        dual_type(::Val{0}, ::Type{$(Wrapper.args[1])}) where {$(Wrapper.args[2:end]...)} =
+            $(Wrapper.args[1])
+    end
+end
+# Adjoint with a non-Matrix parent (e.g. Vector{Float64}): the existing
+# wrapper-shaped `dual_type(Val(N), Adjoint{T, Matrix{T}})` overload at
+# `NfwdMooncake.jl` only covers `Adjoint{T, Matrix{T}}`. Other parents (Vector,
+# SubArray) need the parallel-Dual form for the same `arrayify` reason.
+function dual_type(
+    ::Val{1}, ::Type{LinearAlgebra.Adjoint{T,P}}
+) where {T<:IEEEFloat,P<:AbstractVector{T}}
+    return Dual{
+        LinearAlgebra.Adjoint{T,P},Mooncake.tangent_type(LinearAlgebra.Adjoint{T,P})
+    }
+end
+function dual_type(
+    ::Val{N}, ::Type{LinearAlgebra.Adjoint{T,P}}
+) where {N,T<:IEEEFloat,P<:AbstractVector{T}}
+    return Dual{
+        LinearAlgebra.Adjoint{T,P},Mooncake.tangent_type(Val(N), LinearAlgebra.Adjoint{T,P})
+    }
+end
+function dual_type(
+    ::Val{0}, ::Type{LinearAlgebra.Adjoint{T,P}}
+) where {T<:IEEEFloat,P<:AbstractVector{T}}
+    return LinearAlgebra.Adjoint{T,P}
+end
+
 @inline _type_has_ndual(::Type) = false
 @inline _type_has_ndual(::Type{<:NDual}) = true
 @inline _type_has_ndual(::Type{<:Complex{<:NDual}}) = true
