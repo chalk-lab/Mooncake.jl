@@ -780,15 +780,10 @@ tangent(d::Lifted) = tangent(d.value)
 end
 @generated function tangent(d::Lifted{P,N,V}) where {P<:Tuple,N,V<:Tuple}
     isconcretetype(P) || return :(map(tangent, d.value))
-    # Audit test #9 (Tuple case): top-level `NTangent{NTuple{N, Tuple{...}}}`.
-    # Per lane, build a bare Tuple of per-element bare tangents at that
-    # direction; collect N lanes into the outer NTangent.
-    lane_exprs = map(1:N) do lane
-        elem_exprs = map(1:fieldcount(P)) do i
-            :(tangent(d.value[$i], $lane))
-        end
-        :(($(elem_exprs...),))
-    end
+    # Audit test #9 (Tuple case) / Todo 1 (rev. 3): delegate per-lane to
+    # `tangent(d, lane)`, which recurses with primal-type awareness and
+    # rebuilds inner `Tangent{...}` wrappers for struct elements.
+    lane_exprs = [:(tangent(d, $lane)) for lane in 1:N]
     return :(NTangent(($(lane_exprs...),)))
 end
 function primal(d::Lifted{P,N,V}) where {names,P<:NamedTuple,N,V<:NamedTuple{names}}
@@ -797,13 +792,10 @@ end
 @generated function tangent(
     d::Lifted{P,N,V}
 ) where {names,P<:NamedTuple{names},N,V<:NamedTuple{names}}
-    # Audit test #9 (NamedTuple case): top-level `NTangent{NTuple{N,
-    # NamedTuple{names, ...}}}` — per lane, build a `NamedTuple` of per-field
-    # bare tangents at that direction; collect N lanes into the outer NTangent.
-    lane_exprs = map(1:N) do lane
-        pairs = [Expr(:kw, n, :(tangent(d.value.$n, $lane))) for n in names]
-        :((; $(pairs...)))
-    end
+    # Audit test #9 (NamedTuple case) / Todo 1 (rev. 3): delegate per-lane
+    # so that NamedTuple-primal fields whose primal type is a struct
+    # rebuild `Tangent{...}` correctly.
+    lane_exprs = [:(tangent(d, $lane)) for lane in 1:N]
     return :(NTangent(($(lane_exprs...),)))
 end
 
@@ -817,19 +809,18 @@ end
 # shape used by `_dot` for FD comparison.
 @generated function primal(d::Lifted{P,N,V}) where {P,N,V<:NamedTuple{names}} where {names}
     P <: NamedTuple && return :(map(primal, d.value))   # earlier method handles this
-    field_exprs = [:(primal(d.value.$n)) for n in names]
-    return :(_new_($P, $(field_exprs...)))
+    # Todo 1 (rev. 3): nested struct fields need type-aware reconstruction,
+    # so delegate to `_new_field_primal` (defined in rules/new.jl) which
+    # recurses with primal field types and rebuilds inner structs.
+    return :(_new_field_primal($P, d.value))
 end
 @generated function tangent(d::Lifted{P,N,V}) where {P,N,V<:NamedTuple{names}} where {names}
     P <: NamedTuple && return :(map(tangent, d.value))   # earlier method handles this
-    # Audit test #9: top-level `NTangent{NTuple{N, Tangent{...}}}` — for each
-    # lane build a `Tangent` from per-field bare tangents, then collect all
-    # N lanes into an outer `NTangent`. Mirrors the structural-array
-    # convention (`tangent(::Array{<:NDual})` returns top-level NTangent).
-    lane_exprs = map(1:N) do lane
-        pairs = [Expr(:kw, n, :(tangent(d.value.$n, $lane))) for n in names]
-        :(Tangent((; $(pairs...))))
-    end
+    # Audit test #9 / Todo 1 (rev. 3): delegate per-lane to `tangent(d, lane)`,
+    # which routes through `_build_struct_tangent_dir` for struct primals so
+    # nested struct fields are rebuilt as `Tangent{...}` rather than leaking
+    # raw `NamedTuple{...}`.
+    lane_exprs = [:(tangent(d, $lane)) for lane in 1:N]
     return :(NTangent(($(lane_exprs...),)))
 end
 

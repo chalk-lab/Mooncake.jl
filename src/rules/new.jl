@@ -278,7 +278,7 @@ end
     return :(NamedTuple{$names}(($(exprs...),)))
 end
 @inline _new_field_primal(::Type{P}, x::NamedTuple) where {P} = _new_(
-    P, _ndual_primal(x)...
+    P, _new_field_primals(P, values(x))...
 )
 
 @generated function _new_field_tangents(::Type{P}, bare_x::Tx, dir) where {P,Tx<:Tuple}
@@ -306,7 +306,12 @@ end
     return :(NamedTuple{$names}(($(exprs...),)))
 end
 @inline function _new_field_tangent(::Type{P}, x::NamedTuple, dir) where {P}
-    return build_output_tangent(P, Tuple(_ndual_primal(x)), Tuple(tangent(x, dir)))
+    # Struct primal with NamedTuple inner V: recurse field-wise with primal
+    # type info via `_new_field_tangents` so nested struct fields are rebuilt
+    # as `Tangent{...}` rather than leaking raw `NamedTuple`.
+    return build_output_tangent(
+        P, Tuple(_ndual_primal(x)), _new_field_tangents(P, values(x), dir)
+    )
 end
 
 # `_find_ndual_memref`, `_ndual_primal`, `_ndual_width`, `tangent(x, ::Integer)`,

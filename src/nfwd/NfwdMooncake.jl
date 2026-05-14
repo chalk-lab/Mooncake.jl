@@ -2066,21 +2066,79 @@ end
 # see dual.jl): build the per-direction tangent via `build_output_tangent`
 # so the result matches `tangent_type(P)` (Tangent shape with
 # `PossiblyUninitTangent` wrapping where present). For NamedTuple primals
-# the bare NamedTuple result is canonical.
+# the bare NamedTuple result is canonical, but inner struct fields still
+# need `Tangent{...}` rebuild — handled by `_lane_named_tuple`.
 @inline function Mooncake.tangent(
     d::Mooncake.Lifted{P,N,V}, i::Integer
 ) where {P,N,V<:NamedTuple}
-    P <: NamedTuple && return tangent(d.value, i)
+    P <: NamedTuple && return _lane_named_tuple(P, d.value, i)
     return _build_struct_tangent_dir(P, d.value, i)
+end
+
+# Tuple-primal slot with Tuple inner V: recursively rebuild per-element
+# tangents, wrapping inner struct elements as `Tangent{...}`. Only fires
+# for concrete P (matching the no-`i` overload's `isconcretetype` guard);
+# the abstract case falls back through the generic `tangent(::Lifted, i)`.
+@inline function Mooncake.tangent(
+    d::Mooncake.Lifted{P,N,V}, i::Integer
+) where {P<:Tuple,N,V<:Tuple}
+    isconcretetype(P) || return tangent(d.value, i)
+    return _lane_tuple(P, d.value, i)
 end
 @generated function _build_struct_tangent_dir(
     ::Type{P}, value::V, i
 ) where {P,V<:NamedTuple{names}} where {names}
-    primal_exprs = [:(_ndual_primal(value.$n)) for n in names]
-    tangent_exprs = [:(tangent(value.$n, i)) for n in names]
+    primal_exprs = Expr[]
+    tangent_exprs = Expr[]
+    for n in names
+        F = fieldtype(P, n)
+        push!(primal_exprs, :(_ndual_primal(value.$n)))
+        push!(tangent_exprs, :(_lane_tangent_for_field($F, value.$n, i)))
+    end
     return :(Mooncake.build_output_tangent(
         $P, ($(primal_exprs...),), ($(tangent_exprs...),)
     ))
+end
+
+# Per-lane tangent for a struct/Tuple/NamedTuple field, given the primal
+# field type `F` and the inner-V slot value `v`. The recursive lift inside
+# `dual_type` collapses inner structs to `NamedTuple{...}` shapes, but the
+# per-lane tangent must rebuild `Tangent{...}` wrappers where the primal
+# field type is a struct. Without this, nested struct fields leak raw
+# `NamedTuple{...}` to `build_output_tangent`, which then fails to convert
+# to the expected `Tangent{...}` shape.
+@inline _lane_tangent_for_field(::Type{F}, v, i) where {F} = tangent(v, i)
+
+@inline function _lane_tangent_for_field(::Type{F}, v::NamedTuple, i) where {F}
+    # NamedTuple primal: bare NamedTuple result is canonical.
+    F <: NamedTuple && return _lane_named_tuple(F, v, i)
+    # Struct primal whose inner V is a recursive NamedTuple: rebuild Tangent.
+    return _build_struct_tangent_dir(F, v, i)
+end
+
+@inline function _lane_tangent_for_field(::Type{F}, v::Tuple, i) where {F<:Tuple}
+    return _lane_tuple(F, v, i)
+end
+
+@generated function _lane_tuple(::Type{F}, v::Tuple, i) where {F<:Tuple}
+    n = fieldcount(F)
+    elems = [:(_lane_tangent_for_field($(fieldtype(F, k)), v[$k], i)) for k in 1:n]
+    return quote
+        inner = ($(elems...),)
+        inner isa Tuple{Vararg{NoTangent}} ? NoTangent() : inner
+    end
+end
+
+@generated function _lane_named_tuple(::Type{F}, v::NamedTuple, i) where {F<:NamedTuple}
+    names = fieldnames(F)
+    elems = [
+        :(_lane_tangent_for_field($(fieldtype(F, names[k])), v[$k], i)) for
+        k in 1:length(names)
+    ]
+    return quote
+        inner = ($(elems...),)
+        inner isa Tuple{Vararg{NoTangent}} ? NoTangent() : NamedTuple{$names}(inner)
+    end
 end
 
 @inline _tangent_dir_elem(t::NTangent, i) = t.lanes[i]

@@ -637,4 +637,49 @@ end
             @test tangent(result) === NTangent(((10.0, 5.0), (20.0, 15.0)))
         end
     end
+
+    @testset "nested struct tangent shape (audit Todo 1, rev. 3)" begin
+        # `tangent(lo, i)` and `tangent(lo)` must rebuild nested `Tangent{...}`
+        # wrappers for struct fields, not leak raw `NamedTuple` from the
+        # recursive lift's inner V.
+        struct AuditTodo1Inner
+            x::Float64
+        end
+        struct AuditTodo1Outer
+            a::AuditTodo1Inner
+            b::Tuple{AuditTodo1Inner,Float64}
+        end
+
+        o = AuditTodo1Outer(AuditTodo1Inner(1.0), (AuditTodo1Inner(2.0), 3.0))
+        lo = Lifted{AuditTodo1Outer,2}(o, Mooncake.zero_tangent(o))
+
+        # Per-lane direction tangent: nested struct fields are `Tangent{...}`.
+        t1 = tangent(lo, 1)
+        @test t1 isa Mooncake.Tangent
+        @test t1.fields.a isa Mooncake.Tangent
+        @test t1.fields.b isa Tuple
+        @test t1.fields.b[1] isa Mooncake.Tangent
+
+        # Top-level `tangent(lo)` matches `tangent_type(Val(2), AuditTodo1Outer)`.
+        @test typeof(tangent(lo)) === Mooncake.tangent_type(Val(2), AuditTodo1Outer)
+
+        # `primal(lo)` reconstructs the struct rather than leaking the lifted
+        # inner V's NamedTuple.
+        @test primal(lo) === o
+
+        # NamedTuple primal containing a struct element: lane tangent rebuilds
+        # the inner `Tangent{...}` and the no-`i` path matches `tangent_type`.
+        nt = (a=AuditTodo1Inner(5.0), b=7.0)
+        ln = Lifted{typeof(nt),2}(nt, Mooncake.zero_tangent(nt))
+        @test tangent(ln, 1) isa NamedTuple
+        @test tangent(ln, 1).a isa Mooncake.Tangent
+        @test typeof(tangent(ln)) === Mooncake.tangent_type(Val(2), typeof(nt))
+
+        # Tuple primal containing a struct element: same property.
+        tp = (AuditTodo1Inner(11.0), 13.0)
+        lt = Lifted{typeof(tp),2}(tp, Mooncake.zero_tangent(tp))
+        @test tangent(lt, 1) isa Tuple
+        @test tangent(lt, 1)[1] isa Mooncake.Tangent
+        @test typeof(tangent(lt)) === Mooncake.tangent_type(Val(2), typeof(tp))
+    end
 end
