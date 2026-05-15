@@ -265,9 +265,9 @@ function frule!!(
     n::Dual{Int},
 ) where {P}
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    # Audit step 5: unwrap singleton-NTangent on the tangent slot when the
-    # carve-out is lifted (`tangent(::Dual{MemoryRef{P}, NTangent{Tuple{
-    # MemoryRef{T}}}})` returns the outer NTangent).
+    # Unwrap singleton-NTangent on the tangent slot —
+    # `tangent(::Dual{MemoryRef{P}, NTangent{Tuple{MemoryRef{T}}}})` returns
+    # the outer NTangent, not the inner MemoryRef.
     unsafe_copyto!(_memrefget_tan(tangent(dest)), _memrefget_tan(tangent(src)), primal(n))
     return dest
 end
@@ -466,9 +466,10 @@ end
     ordering = primal(_ordering)
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), _val(ordering), _val(bc))
-    # Audit step 5: at width 1 with the carve-out lifted, `tangent(x)` for a
-    # `Dual{MemoryRef{T}, NTangent{Tuple{MemoryRef{TT}}}}` is the outer NTangent;
-    # `memoryrefget(::NTangent, ...)` fails. Unwrap the singleton-NTangent.
+    # At width 1, `tangent(x)` for
+    # `Dual{MemoryRef{T}, NTangent{Tuple{MemoryRef{TT}}}}` is the outer
+    # NTangent; `memoryrefget(::NTangent, ...)` fails. Unwrap the
+    # singleton-NTangent.
     dy = memoryrefget(_memrefget_tan(tangent(x)), _val(ordering), _val(bc))
     return Dual(y, dy)
 end
@@ -487,9 +488,9 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
-# Audit Todo 4: width-N lmemoryrefget for NTangent-wrapped MemoryRef dest.
-# Read all N lane MemoryRef tangents — the bare-Dual rule above only services
-# lane 1 via `_memrefget_tan` which unwraps singleton-NTangent.
+# Width-N lmemoryrefget for NTangent-wrapped MemoryRef dest. Read all N
+# lane MemoryRef tangents — the bare-Dual rule above only services lane 1
+# via `_memrefget_tan` which unwraps singleton-NTangent.
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lmemoryrefget),N},
     x::Mooncake.Lifted{
@@ -548,11 +549,11 @@ end
     dy = memoryrefget(_memref_tan_unwrap(tangent(x)), ordering, boundscheck)
     return Dual(y, dy)
 end
-# Audit follow-up: canonical width-1 MemoryRef{NDual} arrives bare (not
-# Dual-wrapped) when the Lifted-aware adapter unlifts. The bare-Dual rule
-# above expects `Dual{<:MemoryRef}` — add a parallel overload for the
-# NDual-element MemoryRef shape so `_unlift(::Lifted{<:MemoryRef, 1,
-# MemoryRef{<:NDual}})` dispatches correctly.
+# Canonical width-1 MemoryRef{NDual} arrives bare (not Dual-wrapped) when
+# the Lifted-aware adapter unlifts. The bare-Dual rule above expects
+# `Dual{<:MemoryRef}` — this parallel overload handles the NDual-element
+# MemoryRef shape so `_unlift(::Lifted{<:MemoryRef, 1, MemoryRef{<:NDual}})`
+# dispatches correctly.
 @inline Base.@propagate_inbounds function frule!!(
     ::Dual{typeof(memoryrefget)},
     x::MemoryRef{<:Mooncake.Nfwd.NDual},
@@ -722,10 +723,10 @@ end
     memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
     return value
 end
-# Audit step 5: NTangent-wrapped MemoryRef tangent (carve-out lifted).
-# Unwrap the singleton NTangent so `memoryrefset!` sees a bare `MemoryRef`.
-# `value` can be a bare `Dual` (legacy path) or a width-1 `NDual` / `Complex{NDual}`
-# / `AbstractArray{<:NDual}` (canonical width-1 lifted forms emerging from
+# NTangent-wrapped MemoryRef tangent. Unwrap the singleton NTangent so
+# `memoryrefset!` sees a bare `MemoryRef`. `value` can be a bare `Dual`
+# (legacy path) or a width-1 `NDual` / `Complex{NDual}` /
+# `AbstractArray{<:NDual}` (canonical width-1 lifted forms emerging from
 # `Memory{<:IEEEFloat}` element lookups).
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
@@ -736,7 +737,8 @@ end
     ::Dual{Val{ordering}},
     ::Dual{Val{boundscheck}},
 ) where {P,ordering,boundscheck}
-    # Audit Todo 4: write all N lane MemoryRef tangents (was: only lane 1).
+    # Write all N lane MemoryRef tangents (the bare-Dual rule above only
+    # services lane 1).
     p_val = _ndual_primal(value)
     memoryrefset!(primal(x), p_val, ordering, boundscheck)
     lanes = tangent(x).lanes
@@ -942,11 +944,10 @@ end
         zero_dual(Val(primal(boundscheck))),
     )
 end
-# Audit follow-up (carve-out lift): canonical width-1 forms route through
-# this entrypoint with `x` having an `NTangent{Tuple{MemoryRef{V}}}` tangent
-# and `value` arriving as bare `NDual` / `Vector{NDual}` / `Dual{Int}` /
-# etc. Delegate to the matching `lmemoryrefset!` overloads which already
-# handle the canonical shapes.
+# Canonical width-1 forms route through this entrypoint with `x` having an
+# `NTangent{Tuple{MemoryRef{V}}}` tangent and `value` arriving as bare
+# `NDual` / `Vector{NDual}` / `Dual{Int}` / etc. Delegate to the matching
+# `lmemoryrefset!` overloads which already handle the canonical shapes.
 @inline function frule!!(
     f::Dual{typeof(memoryrefset!)},
     x::Dual{<:MemoryRef{P},<:Mooncake.NTangent{Tuple{TT}}},
