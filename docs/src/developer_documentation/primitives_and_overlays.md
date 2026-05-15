@@ -16,12 +16,14 @@ To differentiate a function, Mooncake runs a *compilation step*: it walks the fu
 - The body is not walked: Mooncake leaves the call statement in the transformed IR as-is.
 - At runtime, the registered [`Mooncake.rrule!!`](@ref) (or [`Mooncake.frule!!`](@ref)) is dispatched in place of the primal call.
 
-The rule, not the body, produces the value at this call site; its return type — typically `Tuple{CoDual{B,F}, Pullback}` — is what the surrounding AD code sees.
+The rule, not the body, produces the value at this call site; what the surrounding AD code sees is a `CoDual` whose primal type matches the primitive's return type. Examples on this page use reverse mode (`rrule!!`) for concreteness; the same machinery applies to forward mode (`frule!!`).
 
 !!! details "Mechanism"
-    Mooncake's `AbstractInterpreter` override of `abstract_call_gf_by_type` (in [`src/interpreter/abstract_interpretation.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/abstract_interpretation.jl)) checks each call site against the primitive table via `any_matches_primitive`. When a match is detected, the resulting `CallMeta` is wrapped in a `NoInlineCallInfo`, which Mooncake's `inlining_policy` / `src_inlining_policy` then refuses to inline. The primitive call therefore survives inlining, and the rule-dispatch code is emitted at that statement instead of inlined primal code.
+    Mooncake's `AbstractInterpreter` override of `abstract_call_gf_by_type` (in [`src/interpreter/abstract_interpretation.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/abstract_interpretation.jl)) checks each call site against the primitive table via `any_matches_primitive`. When a match is detected, the resulting `CallMeta` is wrapped in a `NoInlineCallInfo`, which Mooncake's inlining policy (`inlining_policy` pre-1.12, `src_inlining_policy` from 1.12) then refuses to inline. The primitive call therefore survives inlining, and the rule-dispatch code is emitted at that statement instead of inlined primal code.
 
 ## Overlays
+
+See [Simplifying Code via Overlays](@ref) in the Defining Rules guide for the `@mooncake_overlay` docstring and a user-facing introduction; this section covers the inference-level picture.
 
 `@mooncake_overlay` registers an additional method for a function in a private method table, `Mooncake.mooncake_method_table`. Only Mooncake's interpreter consults this table; plain Julia dispatch and `Core.Compiler.NativeInterpreter` do not.
 
@@ -47,17 +49,17 @@ The intended use is to substitute a body Mooncake can't differentiate (e.g. a fo
 
 ## Type inference
 
-Mooncake's IR transformation is driven by inferred type information. Three places matter, and they fire in this order:
+Mooncake's IR transformation is driven by inferred type information. Three places matter, broadly in this order:
 
 1. **Source-IR inference.** The function being differentiated is inferred via `MooncakeInterpreter`. This produces the IR that the AD transformation rewrites.
 2. **Per-call `CallMeta`.** At each call statement during the source-IR walk, Mooncake needs the return type, effects, and call info. Julia's `abstract_call_gf_by_type` (in `Compiler/src/abstractinterpretation.jl`) is the per-call-site inference entry point that produces this; Mooncake overrides it for `MooncakeInterpreter` to insert primitive/overlay handling before the recursive per-match step. See [Inference at primitive call sites](@ref) for the primitive case.
 3. **Rule-type inference.** Later, during AD IR construction, Mooncake calls `Core.Compiler.return_type` with the default interpreter — for example when emitting a `pullback_type` lookup — to learn the type the rule itself returns.
 
-The key asymmetry to internalise: **Mooncake's source-function inference is overlay-aware via `OverlayMethodTable`; `NativeInterpreter`, used at primitive boundaries, is not.**
+The key asymmetry to internalise: **Mooncake's source-function inference (1) is overlay-aware via `OverlayMethodTable`; `NativeInterpreter`, used at primitive boundaries during (2), is not.**
 
 ### Inference at primitive call sites
 
-At every call site in the source IR, Mooncake needs a return type — downstream code is typed against it. At a primitive call site, the surrounding code still wants the primal's return type; the rule is an *implementation* keyed to that type, not a *source* for it. So inference asks the primal what it returns; the rule isn't consulted at this stage.
+At every call site in the source IR, Mooncake needs a return type — downstream code is typed against it. At a primitive call site, the surrounding code still wants the primal's return type; the rule is an *implementation* keyed to that type, not a *source* for it. So inference asks the primal what it returns. The rule itself is not consulted at this stage.
 
 The natural choice — recursing into the body with `MooncakeInterpreter` — is expensive and unnecessary. It is expensive because `MooncakeInterpreter` re-fires its primitive/overlay check at every nested call site and uses its own inference cache separate from Julia's global one, so each function Mooncake differentiates triggers a fresh walk of its transitive call tree (see [PR #1115](https://github.com/chalk-lab/Mooncake.jl/pull/1115) for a SciML-shaped case where this explodes into a silent compile-time hang). It is unnecessary because the body isn't being rewritten into AD code, only inferred for its return type — any interpreter that produces a correct `CallMeta` is sufficient. Mooncake therefore delegates to `NativeInterpreter` at primitive boundaries, bounding the recursion at each one.
 
@@ -77,14 +79,14 @@ The rule replaces the primal at runtime. Inference at the call site asks `Native
 
 ### Direct overlay on a primitive signature
 
-When the overlay returns the same type as the original, `NativeInterpreter`'s overlay-blindness is harmless: inference and the rule agree on the type at the call site. When the overlay *changes* the return type, Mooncake detects this configuration and routes inference through the overlay-aware default path, so the inferred return type matches the overlay's, not the original's. At runtime, the registered `rrule!!` still fires; the overlay's only job is to align inference's view of the return type with what the rule actually returns. Most users should not need this pattern — prefer to express the change as either an overlay or a primitive, not both — but it is supported.
+This is not a recommended pattern — choose one of `@mooncake_overlay` or `@is_primitive` on a given signature, not both. Mooncake currently supports it as a special case ([#1170](https://github.com/chalk-lab/Mooncake.jl/pull/1170)): when both apply, the rule still fires at runtime, and Mooncake routes call-site inference through the overlay-aware default path so the inferred return type matches what the rule actually returns rather than what the original primal would have returned. When the overlay's return type happens to equal the original's, the routing change is harmless; when it differs, it is what keeps inference and the rule coherent.
 
 !!! details "Mechanism"
-    `any_matches_overlay` (in [`src/interpreter/abstract_interpretation.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/abstract_interpretation.jl)) walks the applicable methods and checks `method.external_mt === mooncake_method_table`. When that returns true, `abstract_call_gf_by_type` takes the `@invoke` branch — i.e. it defers to the default `abstract_call_gf_by_type` *with `MooncakeInterpreter` still as the interpreter*, so method lookup inside that call still goes through `OverlayMethodTable` and resolves to the overlay's body. The `NativeInterpreter` fast path is reserved for primitives whose applicable methods have no overlay.
+    `any_matches_overlay` (in [`src/interpreter/abstract_interpretation.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/abstract_interpretation.jl)) walks the applicable methods returned by `find_method_matches` and checks `method.external_mt === mooncake_method_table` on each. The check is per-method and signature-aware: an overlay registered for `f(::Float64)` is invisible at a call site that dispatches to a different method (e.g. `f(::Int)`). It also does not try to detect whether the overlay actually *changes* the return type — any applicable overlay triggers the same path, even when the overlay-aware and overlay-blind inference paths would agree. When the check returns true, `abstract_call_gf_by_type` takes the `@invoke` branch — i.e. it defers to the default `abstract_call_gf_by_type` *with `MooncakeInterpreter` still as the interpreter*, so method lookup inside that call still goes through `OverlayMethodTable` and resolves to the overlay's body. The `NativeInterpreter` fast path is reserved for primitives whose applicable methods have no overlay.
 
 ### Primitive called from inside an overlay's body — supported
 
-An overlay's body may itself call a registered primitive. This is the ordinary, supported flow: Mooncake walks the overlay body for AD, and any primitive call inside it is handled by the same machinery that handles primitive calls anywhere else (primitive detection, `NativeInterpreter` for the `CallMeta`, rule dispatch at runtime). No special arrangement is needed; this is in fact the most common reason to write an overlay — substituting an AD-unfriendly body with one that bottoms out on a hand-written rule.
+Unlike the previous section, the two macros sit on *different* functions here: an overlay replaces one function's body so that it bottoms out on a *separate* function carrying a hand-written rule. This is the ordinary, supported flow — Mooncake walks the overlay body for AD, and the primitive call inside it is handled by the same machinery as any other primitive call (primitive detection, `NativeInterpreter` for the `CallMeta`, rule dispatch at runtime). No special arrangement is needed; this is in fact the most common reason to write an overlay.
 
 ```julia
 my_primitive(x::Float64) = 2x
@@ -104,7 +106,12 @@ Differentiating any caller of `original_f` walks the overlay's body, hits `my_pr
 
 ### Overlay on a non-primitive called from inside a primitive's body — not supported
 
-Although the primitive's body is not *differentiated*, it is still *inferred* — `NativeInterpreter` walks it to produce the primitive's `CallMeta`. Because `NativeInterpreter` does not consult `mooncake_method_table`, any overlay on a nested call within the body is invisible to that walk. Inference of the primitive's return type therefore sees the original definitions of its nested calls, not the overlays.
+If a primitive's return type depends on an overlay applied to a function it calls internally, AD silently uses the un-overlaid return type. The failure surfaces in one of two shapes, depending on whether the affected return value is a singleton:
+
+- **Singleton return (the SciMLBase `Originator` shape in [#1169](https://github.com/chalk-lab/Mooncake.jl/issues/1169)).** Inference produces a `CC.Const(value)` from the *original* body, and Julia constant-folds the primitive call to that literal *before* AD construction sees it. No `rrule!!` call is emitted, no typeassert fires, and downstream code is compiled against the wrong singleton type — a silent wrong gradient.
+- **Non-singleton return.** No const-folding, but inferred return type and rule output still disagree: downstream dispatch is keyed to the inferred (un-overlaid) type while the rule returns the overlaid type. This is the case the runtime `Core.typeassert` Mooncake emits at primitive call sites (in [`src/interpreter/reverse_mode.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl)) normally catches at the rule-output boundary, surfacing as a `TypeError` rather than a silent wrong gradient. In the singleton case the typeassert is *not* a safety net — by the time it would have run, the primitive call has already been replaced by a literal, so no typeassert is emitted.
+
+The mechanism is the same in both shapes: although the primitive's body is not *differentiated*, it is still *inferred* — `NativeInterpreter` walks it to produce the primitive's `CallMeta`. Because `NativeInterpreter` does not consult `mooncake_method_table`, any overlay on a nested call within the body is invisible to that walk. Inference of the primitive's return type therefore sees the original definitions of its nested calls, not the overlays.
 
 Example:
 
@@ -118,9 +125,7 @@ Mooncake.@is_primitive Mooncake.DefaultCtx Tuple{typeof(primitive_wrapper), A}
 
 From any caller, inference at the `primitive_wrapper` call site reports the return type as `A`, even though the overlay would return `B` if honoured. The nested overlay is invisible only at this boundary — `MooncakeInterpreter` walking the body directly would resolve it. The break is concrete: Mooncake takes the `NativeInterpreter` fast path for the primitive's `CallMeta`, and `NativeInterpreter`'s method lookup uses the standard method table, so the overlay on `helper` registered in `mooncake_method_table` simply isn't seen.
 
-**The wrong-gradient mechanism.** The reported cases of [#1169](https://github.com/chalk-lab/Mooncake.jl/issues/1169) — including the SciMLBase `Originator` shape — involve primitives whose return types are singletons. For these, inference produces not just a type but a `CC.Const(value)`, and Julia constant-folds the call to the literal value of the *original* body before AD construction sees it. The result is a silent wrong gradient: not because the rule produced the wrong value, but because the rule was never called. The typeassert that Mooncake emits at primitive call sites (in [`src/interpreter/reverse_mode.jl`](https://github.com/chalk-lab/Mooncake.jl/blob/main/src/interpreter/reverse_mode.jl)) is not the safety net here — by the time it would have run, the call has already been replaced by a literal.
-
-!!! details "How the call gets folded away"
+!!! details "How a singleton call gets folded away"
     1. `NativeInterpreter` (overlay-blind) infers the primitive call as `Const(original_value)` — the singleton instance from the *original* body.
     2. [`widen_rettype_callmeta`](@ref Mooncake.widen_rettype_callmeta) exists to prevent `Const` from causing primitive calls to fold away, but it has a documented carve-out: if every runtime argument at the call site is also `Const`, folding is treated as safe (the `sin(1.0)`-with-a-literal case). A zero-runtime-argument primitive trivially satisfies this; many SciML-style overlays do too.
     3. Const propagation in subsequent compiler passes replaces the primitive call with the literal value — the *original*'s singleton, not the overlay's.
@@ -128,5 +133,3 @@ From any caller, inference at the `primitive_wrapper` call site reports the retu
     5. Downstream code is compiled against the inferred (wrong) singleton type and picks rules keyed to it. The runtime never has the opportunity to course-correct.
 
 This is by design: Mooncake treats primitives as sealed boundaries and does not walk into a primitive's body to discover what overlays might affect it. The fix in [#1170](https://github.com/chalk-lab/Mooncake.jl/pull/1170) extends overlay-awareness only to the *primitive's own signature* — the boundary inference is already looking at. For overlays reachable from inside a primitive's body, the rule and Mooncake's inferred type may diverge, and keeping them coherent is the rule author's responsibility.
-
-Workaround when you do encounter this shape: lift the overlay to the level the user actually calls. Either remove the primitive declaration on the wrapper and let AD differentiate it, or register the desired behaviour as a primitive on the outer function.
