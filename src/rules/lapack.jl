@@ -297,9 +297,18 @@ end
     dB::AbstractVecOrMat{P},
 ) where {P<:BlasRealFloat}
     # Compute Frechet derivative.
+    _trtrs_frechet_lane!(uplo, trans, diag, A, dA, B, dB)
+
+    # Run primal computation.
+    LAPACK.trtrs!(uplo, trans, diag, A, B)
+    return nothing
+end
+# Width-N split: Frechet uses pre-primal B (so callers must invoke this
+# BEFORE the primal `LAPACK.trtrs!(uplo, trans, diag, A, B)`).
+@inline function _trtrs_frechet_lane!(uplo::Char, trans::Char, diag::Char, A, dA, B, dB)
     LAPACK.trtrs!(uplo, trans, diag, A, dB)
     tmp = copy(B)
-    LAPACK.trtrs!(uplo, trans, diag, A, tmp) # tmp now contains inv(A) B.
+    LAPACK.trtrs!(uplo, trans, diag, A, tmp)
 
     tmp2 = copy(tmp)
     if diag == 'N'
@@ -310,12 +319,31 @@ end
         lmul!(trans == 'N' ? a : a', tmp)
         tmp .-= tmp2
     end
-    LAPACK.trtrs!(uplo, trans, diag, A, tmp) # tmp is now α inv(A) dA inv(A) B.
+    LAPACK.trtrs!(uplo, trans, diag, A, tmp)
     dB .-= tmp
-
-    # Run primal computation.
-    LAPACK.trtrs!(uplo, trans, diag, A, B)
     return nothing
+end
+# Width-N NDual trtrs!: per-lane Frechet (pre-primal B) then primal once.
+@inline function frule!!(
+    ::Dual{typeof(trtrs!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::AbstractMatrix{NDual{P,N}},
+    B_dB::AbstractVecOrMat{NDual{P,N}},
+) where {P<:BlasRealFloat,N}
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    @inbounds for lane in 1:N
+        _trtrs_frechet_lane!(uplo, trans, diag, A, dAs[lane], B, dBs[lane])
+    end
+    LAPACK.trtrs!(uplo, trans, diag, A, B)
+    _arr_writeback_n!(A_dA, A, dAs)
+    _arr_writeback_n!(B_dB, B, dBs)
+    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(trtrs!)},
@@ -402,8 +430,15 @@ end
 ) where {P<:BlasRealFloat}
     # Run primal computation.
     LAPACK.getrs!(trans, A, ipiv, B)
-
-    # Compute Frechet derivative.
+    # Per-lane Frechet uses post-primal B.
+    _getrs_frechet_lane!(trans, A, dA, ipiv, B, dB)
+    return nothing
+end
+# Width-N split: Frechet uses post-primal B (caller must run the primal
+# `LAPACK.getrs!(trans, A, ipiv, B)` BEFORE invoking this for each lane).
+@inline function _getrs_frechet_lane!(
+    trans::Char, A::AbstractMatrix{P}, dA, ipiv, B, dB
+) where {P<:BlasRealFloat}
     L = UnitLowerTriangular(A)
     dL_plus_I = UnitLowerTriangular(dA)
     U = UpperTriangular(A)
@@ -419,6 +454,27 @@ end
     end
     LAPACK.getrs!(trans, A, ipiv, dB)
     return nothing
+end
+# Width-N NDual getrs!: primal once (overwrites B with A^{-1} B), then
+# per-lane Frechet using post-primal B.
+@inline function frule!!(
+    ::Dual{typeof(getrs!)},
+    _trans::Dual{Char},
+    A_dA::AbstractMatrix{NDual{P,N}},
+    _ipiv::Dual{<:AbstractVector{Int}},
+    B_dB::AbstractVecOrMat{NDual{P,N}},
+) where {P<:BlasRealFloat,N}
+    trans = primal(_trans)
+    ipiv = primal(_ipiv)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    LAPACK.getrs!(trans, A, ipiv, B)
+    @inbounds for lane in 1:N
+        _getrs_frechet_lane!(trans, A, dAs[lane], ipiv, B, dBs[lane])
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    _arr_writeback_n!(B_dB, B, dBs)
+    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(getrs!)},
@@ -527,6 +583,17 @@ end
     A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
 ) where {P<:BlasRealFloat}
     # Compute part of Frechet derivative.
+    tmp2 = _getri_frechet_pre_primal(A, dA, ipiv)
+    # Perform primal computation.
+    LAPACK.getri!(A, ipiv)
+    # Compute Frechet derivative.
+    dA .= (-A * tmp2 * A)
+    return nothing
+end
+# Width-N split: compute `tmp2_lane` from pre-primal A and per-lane dA.
+@inline function _getri_frechet_pre_primal(
+    A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
+) where {P<:BlasRealFloat}
     L = UnitLowerTriangular(A)
     dL_plus_I = UnitLowerTriangular(dA)
     U = UpperTriangular(A)
@@ -534,14 +601,25 @@ end
     p = LinearAlgebra.ipiv2perm(ipiv, size(dA, 1))
     tmp = dL_plus_I * U
     tmp .-= U
-    tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
-
-    # Perform primal computation.
+    return mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
+end
+# Width-N NDual getri!: compute per-lane tmp2 from pre-primal A; primal once;
+# per-lane dA = -A_inv * tmp2 * A_inv. tmp2_lanes must persist across the
+# primal call which overwrites A → A_inv.
+@inline function frule!!(
+    ::Dual{typeof(getri!)},
+    A_dA::AbstractMatrix{NDual{P,N}},
+    _ipiv::Dual{<:AbstractVector{Int}},
+) where {P<:BlasRealFloat,N}
+    A, dAs = _arr_extract_n(A_dA)
+    ipiv = primal(_ipiv)
+    tmp2_lanes = ntuple(lane -> _getri_frechet_pre_primal(A, dAs[lane], ipiv), Val(N))
     LAPACK.getri!(A, ipiv)
-
-    # Compute Frechet derivative.
-    dA .= (-A * tmp2 * A)
-    return nothing
+    @inbounds for lane in 1:N
+        dAs[lane] .= (-A * tmp2_lanes[lane] * A)
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    return A_dA
 end
 function rrule!!(
     ::CoDual{typeof(getri!)},
@@ -744,8 +822,13 @@ end
 ) where {P<:BlasRealFloat}
     # Run primal computation.
     LAPACK.potrs!(uplo, A, B)
-
-    # Compute Frechet derivative.
+    _potrs_frechet_lane!(uplo, A, dA, B, dB)
+    return nothing
+end
+# Width-N split: Frechet uses post-primal B.
+@inline function _potrs_frechet_lane!(
+    uplo::Char, A::AbstractMatrix{P}, dA, B, dB
+) where {P<:BlasRealFloat}
     if uplo == 'L'
         L = LowerTriangular(A)
         dL = LowerTriangular(dA)
@@ -758,6 +841,24 @@ end
         LAPACK.potrs!(uplo, A, dB)
     end
     return nothing
+end
+# Width-N NDual potrs!: primal once (B ← A^{-1} B), then per-lane Frechet.
+@inline function frule!!(
+    ::Dual{typeof(potrs!)},
+    _uplo::Dual{Char},
+    A_dA::AbstractMatrix{NDual{P,N}},
+    B_dB::AbstractVecOrMat{NDual{P,N}},
+) where {P<:BlasRealFloat,N}
+    uplo = primal(_uplo)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    LAPACK.potrs!(uplo, A, B)
+    @inbounds for lane in 1:N
+        _potrs_frechet_lane!(uplo, A, dAs[lane], B, dBs[lane])
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    _arr_writeback_n!(B_dB, B, dBs)
+    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(potrs!)},
