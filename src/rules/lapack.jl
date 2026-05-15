@@ -447,6 +447,20 @@ end
         typeof(getrs!),Char,AbstractMatrix{P},AbstractVector{Int},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat}
 )
+# Complex getrs! is a primitive only in ForwardMode — the rrule remains
+# BlasRealFloat-only. The frule needs a per-trans op helper that selects
+# identity / transpose / adjoint, mirroring the `_trtrs_op` pattern.
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{
+        typeof(getrs!),
+        Char,
+        AbstractMatrix{<:BlasComplexFloat},
+        AbstractVector{Int},
+        AbstractVecOrMat{<:BlasComplexFloat},
+    },
+)
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getrs!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(getrs!)},
@@ -462,13 +476,49 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
+# Complex canonical width-1.
+@inline function frule!!(
+    ::Dual{typeof(getrs!)},
+    _trans::Dual{Char},
+    A_dA::_MatLikeWidth1Complex{R},
+    _ipiv::Dual{<:AbstractVector{Int}},
+    B_dB::_VecOrMatLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
+    _getrs!_frule_core!(primal(_trans), A, dA, primal(_ipiv), B, dB)
+    _arr_writeback!(A_dA, A, dA)
+    _arr_writeback!(B_dB, B, dB)
+    return B_dB
+end
+# Width-N Complex: primal once (B ← A_op^{-1} B), then per-lane Frechet
+# using post-primal B.
+@inline function frule!!(
+    ::Dual{typeof(getrs!)},
+    _trans::Dual{Char},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    _ipiv::Dual{<:AbstractVector{Int}},
+    B_dB::AbstractVecOrMat{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    trans = primal(_trans)
+    ipiv = primal(_ipiv)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    LAPACK.getrs!(trans, A, ipiv, B)
+    @inbounds for lane in 1:N
+        _getrs_frechet_lane!(trans, A, dAs[lane], ipiv, B, dBs[lane])
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    _arr_writeback_n!(B_dB, B, dBs)
+    return B_dB
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(getrs!),N},
     _trans::Mooncake.Lifted{Char},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
     _ipiv::Mooncake.Lifted{<:AbstractVector{Int}},
     B_dB::Mooncake.Lifted{<:AbstractVecOrMat{P}},
-) where {N,P<:BlasRealFloat}
+) where {N,P<:BlasFloat}
     bare_result = frule!!(
         Mooncake._unlift(f),
         Mooncake._unlift(_trans),
@@ -486,18 +536,22 @@ end
     ipiv::AbstractVector{Int},
     B::AbstractVecOrMat{P},
     dB::AbstractVecOrMat{P},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     # Run primal computation.
     LAPACK.getrs!(trans, A, ipiv, B)
     # Per-lane Frechet uses post-primal B.
     _getrs_frechet_lane!(trans, A, dA, ipiv, B, dB)
     return nothing
 end
+# Per-`trans` op selector: 'N' → identity, 'T' → transpose (no conjugate),
+# 'C' → adjoint (conjugate-transpose). Matches the `_trtrs_op` pattern; for
+# real matrices transpose and adjoint coincide.
+@inline _getrs_op(trans::Char, m) = trans == 'N' ? m : (trans == 'T' ? transpose(m) : m')
 # Width-N split: Frechet uses post-primal B (caller must run the primal
 # `LAPACK.getrs!(trans, A, ipiv, B)` BEFORE invoking this for each lane).
 @inline function _getrs_frechet_lane!(
     trans::Char, A::AbstractMatrix{P}, dA, ipiv, B, dB
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     L = UnitLowerTriangular(A)
     dL_plus_I = UnitLowerTriangular(dA)
     U = UpperTriangular(A)
@@ -506,11 +560,7 @@ end
     tmp = dL_plus_I * U
     tmp .-= U
     tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
-    if trans == 'N'
-        mul!(dB, tmp2, B, -one(P), one(P))
-    else
-        mul!(dB, tmp2', B, -one(P), one(P))
-    end
+    mul!(dB, _getrs_op(trans, tmp2), B, -one(P), one(P))
     LAPACK.getrs!(trans, A, ipiv, dB)
     return nothing
 end
@@ -934,6 +984,19 @@ end
         typeof(potrs!),Char,AbstractMatrix{P},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat},
 )
+# Complex potrs! is a primitive only in ForwardMode — the rrule remains
+# BlasRealFloat-only. The Frechet uses `Hermitian` projection (vs the
+# real path's `Symmetric`) because A is Hermitian positive definite.
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{
+        typeof(potrs!),
+        Char,
+        AbstractMatrix{<:BlasComplexFloat},
+        AbstractVecOrMat{<:BlasComplexFloat},
+    },
+)
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(potrs!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(potrs!)},
@@ -948,12 +1011,44 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
+# Complex canonical width-1.
+@inline function frule!!(
+    ::Dual{typeof(potrs!)},
+    _uplo::Dual{Char},
+    A_dA::_MatLikeWidth1Complex{R},
+    B_dB::_VecOrMatLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
+    _potrs!_frule_core_complex!(primal(_uplo), A, dA, B, dB)
+    _arr_writeback!(A_dA, A, dA)
+    _arr_writeback!(B_dB, B, dB)
+    return B_dB
+end
+# Width-N Complex: primal once (B ← A^{-1} B), then per-lane Frechet.
+@inline function frule!!(
+    ::Dual{typeof(potrs!)},
+    _uplo::Dual{Char},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    B_dB::AbstractVecOrMat{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    uplo = primal(_uplo)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    LAPACK.potrs!(uplo, A, B)
+    @inbounds for lane in 1:N
+        _potrs_frechet_lane_complex!(uplo, A, dAs[lane], B, dBs[lane])
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    _arr_writeback_n!(B_dB, B, dBs)
+    return B_dB
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(potrs!),N},
     _uplo::Mooncake.Lifted{Char},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
     B_dB::Mooncake.Lifted{<:AbstractVecOrMat{P}},
-) where {N,P<:BlasRealFloat}
+) where {N,P<:BlasFloat}
     bare_result = frule!!(
         Mooncake._unlift(f),
         Mooncake._unlift(_uplo),
@@ -988,6 +1083,37 @@ end
         U = UpperTriangular(A)
         dU = UpperTriangular(dA)
         mul!(dB, Symmetric(U'dU + dU'U), B, -one(P), one(P))
+        LAPACK.potrs!(uplo, A, dB)
+    end
+    return nothing
+end
+# Complex Hermitian potrs!: A = L * L' (Hermitian factorization) so the
+# differential of A is `dL*L' + L*dL'` projected as Hermitian (vs Symmetric
+# for the real path). All ops are linear; no conjugate of `dA` is needed
+# beyond the natural `'` adjoints already in the expression.
+@inline function _potrs!_frule_core_complex!(
+    uplo::Char,
+    A::AbstractMatrix{P},
+    dA::AbstractMatrix{P},
+    B::AbstractVecOrMat{P},
+    dB::AbstractVecOrMat{P},
+) where {P<:BlasComplexFloat}
+    LAPACK.potrs!(uplo, A, B)
+    _potrs_frechet_lane_complex!(uplo, A, dA, B, dB)
+    return nothing
+end
+@inline function _potrs_frechet_lane_complex!(
+    uplo::Char, A::AbstractMatrix{P}, dA, B, dB
+) where {P<:BlasComplexFloat}
+    if uplo == 'L'
+        L = LowerTriangular(A)
+        dL = LowerTriangular(dA)
+        mul!(dB, Hermitian(dL * L' + L * dL'), B, -one(P), one(P))
+        LAPACK.potrs!(uplo, A, dB)
+    else
+        U = UpperTriangular(A)
+        dU = UpperTriangular(dA)
+        mul!(dB, Hermitian(U'dU + dU'U), B, -one(P), one(P))
         LAPACK.potrs!(uplo, A, dB)
     end
     return nothing
