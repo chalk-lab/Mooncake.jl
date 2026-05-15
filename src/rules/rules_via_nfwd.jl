@@ -51,10 +51,60 @@
     )
 end
 
+@inline function frule!!(f::Dual{F}, a::Dual{P}, b::Dual{P}) where {F,P<:IEEEFloat}
+    Mooncake._is_lifted_aware(Tuple{F,P,P}) || throw(MethodError(frule!!, (f, a, b)))
+    return Mooncake._ndual_output_to_width1(
+        frule!!(
+            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
+            Mooncake.Lifted{P,1}(primal(a), tangent(a)),
+            Mooncake.Lifted{P,1}(primal(b), tangent(b)),
+        ),
+    )
+end
+
+@inline function frule!!(
+    f::Dual{F}, a::Dual{P}, b::Dual{P}, c::Dual{P}
+) where {F,P<:IEEEFloat}
+    Mooncake._is_lifted_aware(Tuple{F,P,P,P}) || throw(MethodError(frule!!, (f, a, b, c)))
+    return Mooncake._ndual_output_to_width1(
+        frule!!(
+            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
+            Mooncake.Lifted{P,1}(primal(a), tangent(a)),
+            Mooncake.Lifted{P,1}(primal(b), tangent(b)),
+            Mooncake.Lifted{P,1}(primal(c), tangent(c)),
+        ),
+    )
+end
+
 @inline function frule!!(f::Dual{F}, x::NDual{T,N}) where {F,T<:IEEEFloat,N}
     Mooncake._is_lifted_aware(Tuple{F,T}) || throw(MethodError(frule!!, (f, x)))
     return Mooncake._unlift(
         frule!!(Mooncake.Lifted{F,N}(primal(f), tangent(f)), Mooncake.Lifted{T,N}(x))
+    )
+end
+
+@inline function frule!!(f::Dual{F}, a::NDual{T,N}, b::NDual{T,N}) where {F,T<:IEEEFloat,N}
+    Mooncake._is_lifted_aware(Tuple{F,T,T}) || throw(MethodError(frule!!, (f, a, b)))
+    return Mooncake._unlift(
+        frule!!(
+            Mooncake.Lifted{F,N}(primal(f), tangent(f)),
+            Mooncake.Lifted{T,N}(a),
+            Mooncake.Lifted{T,N}(b),
+        ),
+    )
+end
+
+@inline function frule!!(
+    f::Dual{F}, a::NDual{T,N}, b::NDual{T,N}, c::NDual{T,N}
+) where {F,T<:IEEEFloat,N}
+    Mooncake._is_lifted_aware(Tuple{F,T,T,T}) || throw(MethodError(frule!!, (f, a, b, c)))
+    return Mooncake._unlift(
+        frule!!(
+            Mooncake.Lifted{F,N}(primal(f), tangent(f)),
+            Mooncake.Lifted{T,N}(a),
+            Mooncake.Lifted{T,N}(b),
+            Mooncake.Lifted{T,N}(c),
+        ),
     )
 end
 
@@ -126,12 +176,10 @@ for f in (
     # so avoiding per-invocation wrapper construction keeps them allocation-free. See the
     # file-level warning above for why hidden cached Rule/RRule state is also a bad fit
     # for primitive rules.
+    # One-for-one Lifted-typed rule per op; bare-Dual and bare-NDual entry
+    # points are routed through the centralised adapters at the top of the file.
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
-        # Direct low-level rule callers still pass bare `Dual` slots.
-        @inline function frule!!(f::Dual{typeof($f)}, x::Dual{P}) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
-        end
         @inline function frule!!(
             ::Mooncake.Lifted{typeof($f),N}, x::Mooncake.Lifted
         ) where {N}
@@ -168,14 +216,11 @@ function rrule!!(f::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
 end
 
 # ── nfwd-backed fixed-arity scalar rules ──────────────────────────────────────
+# One-for-one Lifted-typed rule per op; bare-Dual and bare-NDual entry points
+# are routed through the centralised binary adapters at the top of the file.
 for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
-        @inline function frule!!(
-            f::Dual{typeof($f)}, a::Dual{P}, b::Dual{P}
-        ) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, a, b)
-        end
         @inline function frule!!(
             ::Mooncake.Lifted{typeof($f),N}, a::Mooncake.Lifted, b::Mooncake.Lifted
         ) where {N}
@@ -219,14 +264,10 @@ function rrule!!(
     return zero_fcodual(y), pow_fast_pb!!
 end
 
+# Ternary: bare-Dual and bare-NDual go through the centralised adapters.
 for f in (clamp,)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P,P} where {P<:IEEEFloat}
-        @inline function frule!!(
-            f::Dual{typeof($f)}, x1::Dual{P}, x2::Dual{P}, x3::Dual{P}
-        ) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x1, x2, x3)
-        end
         @inline function frule!!(
             ::Mooncake.Lifted{typeof($f),N},
             x1::Mooncake.Lifted,
@@ -246,68 +287,57 @@ for f in (clamp,)
     end
 end
 
-# ── sincosd ───────────────────────────────────────────────────────────────────
+# ── sincosd / sincospi / modf ─────────────────────────────────────────────────
+# Tuple-output unary scalars. Bare-Dual and bare-NDual entry points are routed
+# through the centralised unary adapters; the Lifted-typed body is the single
+# source of truth.
 
-@is_primitive MinimalCtx Tuple{typeof(sincosd),P} where {P<:IEEEFloat}
-@inline function frule!!(f::Dual{typeof(sincosd)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+for (f, P_out) in
+    ((sincosd, :(Tuple{P,P})), (sincospi, :(Tuple{P,P})), (modf, :(Tuple{P,P})))
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
+        @inline function frule!!(
+            ::Mooncake.Lifted{typeof($f),N}, x::Mooncake.Lifted{P,N}
+        ) where {N,P<:IEEEFloat}
+            return Mooncake.Lifted{$P_out,N}($f(_unlift(x)))
+        end
+        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($f),Any}}) = true
+        function rrule!!(f::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
+            return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
+        end
+    end
 end
-@inline frule!!(::Dual{typeof(sincosd)}, x::NDual) = sincosd(x)
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(sincosd),N}, x::Mooncake.Lifted{P,N}
-) where {N,P<:IEEEFloat}
-    return Mooncake.Lifted{Tuple{P,P},N}(sincosd(_unlift(x)))
-end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sincosd),Any}}) = true
-function rrule!!(f::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
-end
-
-# ── sincospi ──────────────────────────────────────────────────────────────────
-
-@is_primitive MinimalCtx Tuple{typeof(sincospi),P} where {P<:IEEEFloat}
-@inline function frule!!(f::Dual{typeof(sincospi)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
-end
-@inline frule!!(::Dual{typeof(sincospi)}, x::NDual) = sincospi(x)
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(sincospi),N}, x::Mooncake.Lifted{P,N}
-) where {N,P<:IEEEFloat}
-    return Mooncake.Lifted{Tuple{P,P},N}(sincospi(_unlift(x)))
-end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sincospi),Any}}) = true
-function rrule!!(f::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
-end
-
-# ── modf ──────────────────────────────────────────────────────────────────────
-# modf(x) = (frac, int) where frac = x - trunc(x); d(frac)/dx = 1, d(int)/dx = 0.
 
 # angle_fast is constant on real inputs, so dispatch directly to the zero-derivative path.
 @zero_derivative MinimalCtx Tuple{typeof(Base.FastMath.angle_fast),P} where {P<:IEEEFloat}
 
-@is_primitive MinimalCtx Tuple{typeof(modf),P} where {P<:IEEEFloat}
-@inline function frule!!(f::Dual{typeof(modf)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
-end
-@inline frule!!(::Dual{typeof(modf)}, x::NDual) = modf(x)
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(modf),N}, x::Mooncake.Lifted{P,N}
-) where {N,P<:IEEEFloat}
-    return Mooncake.Lifted{Tuple{P,P},N}(modf(_unlift(x)))
-end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(modf),Any}}) = true
-function rrule!!(f::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
-end
-
 # ── hypot(x, xs...) ───────────────────────────────────────────────────────────
+# hypot is vararg, so it gets its own bare-Dual and bare-NDual adapters at this
+# signature (the generic unary/binary/ternary adapters above don't cover Vararg).
+# The Lifted-typed body remains the single source of truth.
 
 @is_primitive MinimalCtx Tuple{typeof(hypot),P,Vararg{P}} where {P<:IEEEFloat}
 @inline function frule!!(
     f::Dual{typeof(hypot)}, x::Dual{P}, xs::Vararg{Dual{P},M}
 ) where {P<:IEEEFloat,M}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x, xs...)
+    return Mooncake._ndual_output_to_width1(
+        frule!!(
+            Mooncake.Lifted{typeof(hypot),1}(primal(f), tangent(f)),
+            Mooncake.Lifted{P,1}(primal(x), tangent(x)),
+            ntuple(i -> Mooncake.Lifted{P,1}(primal(xs[i]), tangent(xs[i])), Val(M))...,
+        ),
+    )
+end
+@inline function frule!!(
+    f::Dual{typeof(hypot)}, x::NDual{T,N}, xs::Vararg{NDual{T,N},M}
+) where {T<:IEEEFloat,N,M}
+    return Mooncake._unlift(
+        frule!!(
+            Mooncake.Lifted{typeof(hypot),N}(primal(f), tangent(f)),
+            Mooncake.Lifted{T,N}(x),
+            ntuple(i -> Mooncake.Lifted{T,N}(xs[i]), Val(M))...,
+        ),
+    )
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(hypot),N},
@@ -545,89 +575,6 @@ end
 end
 
 # ── scalar_math ───────────────────────────────────────────────────────────────
-# Tuple-returning functions (sincosd, sincospi, modf) are skipped:
-# their output type is Tuple, not IEEEFloat.
-
-for f in (
-    exp,
-    exp2,
-    exp10,
-    expm1,
-    log,
-    log10,
-    log2,
-    log1p,
-    sqrt,
-    cbrt,
-    sin,
-    cos,
-    cospi,
-    tan,
-    sec,
-    csc,
-    cot,
-    sind,
-    cosd,
-    tand,
-    secd,
-    cscd,
-    cotd,
-    sinpi,
-    asin,
-    acos,
-    atan,
-    asec,
-    acsc,
-    acot,
-    asind,
-    acosd,
-    atand,
-    asecd,
-    acscd,
-    acotd,
-    sinh,
-    cosh,
-    tanh,
-    sech,
-    csch,
-    coth,
-    asinh,
-    acosh,
-    atanh,
-    asech,
-    acsch,
-    acoth,
-    sinc,
-    deg2rad,
-    rad2deg,
-    mod2pi,
-    nextfloat,
-    prevfloat,
-)
-    @eval function frule!!(::Dual{typeof($f)}, x::NDual{T,N}) where {T<:IEEEFloat,N}
-        return $f(x)
-    end
-end
-
-# Binary functions
-for f in (atan, log, ^, mod, max, min)
-    @eval function frule!!(
-        ::Dual{typeof($f)}, x::NDual{T,N}, y::NDual{T,N}
-    ) where {T<:IEEEFloat,N}
-        return $f(x, y)
-    end
-end
-
-# Ternary: clamp
-function frule!!(
-    ::Dual{typeof(clamp)}, x::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}
-) where {T<:IEEEFloat,N}
-    return clamp(x, lo, hi)
-end
-
-# Vararg: hypot
-function frule!!(
-    ::Dual{typeof(hypot)}, x::NDual{T,N}, xs::Vararg{NDual{T,N},M}
-) where {T<:IEEEFloat,N,M}
-    return hypot(x, xs...)
-end
+# Bare-NDual entry points for unary, binary, ternary, and vararg scalar_math ops
+# are routed through the centralised adapters defined at the top of this file,
+# so per-op bare-NDual rules are no longer needed.
