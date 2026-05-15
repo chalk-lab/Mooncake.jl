@@ -92,9 +92,9 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
-# Bare-Dual `pointer_from_objref` body deleted under task #31. The Lifted-typed
-# body below computes the result independently from the inner V (no `frule!!`
-# delegation), so no kernel function is needed.
+# `pointer_from_objref`: the Lifted-typed body below computes the result
+# independently from the inner V (no `frule!!` delegation), so no kernel
+# function or bare-Dual body is needed.
 # `tangent(::Dual{P, NTangent{Tuple{T}}})` returns the NTangent wrapper which
 # is itself immutable, so `pointer_from_objref(NTangent)` fails. Unwrap the
 # singleton lane to get the underlying (mutable) tangent object before
@@ -124,8 +124,8 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
-# Bare-Dual `unsafe_pointer_to_objref` body deleted under task #31. The
-# Lifted-typed body below computes the result independently.
+# `unsafe_pointer_to_objref`: the Lifted-typed body below computes the
+# result independently. No bare-Dual body is needed.
 # `tangent(::Dual{Ptr, NTangent{Tuple{Ptr}}})` returns the NTangent wrapper.
 # Reuse `_foreigncall_ntangent_unwrap` (defined above) so
 # `unsafe_pointer_to_objref` receives the bare Ptr it expects.
@@ -410,8 +410,8 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(deepcopy),Any}}) = true
-# Bare-Dual `deepcopy` body deleted under task #31. The Lifted-typed body
-# below `deepcopy`s the inner V directly without delegating to a bare body.
+# `deepcopy`: the Lifted-typed body below `deepcopy`s the inner V directly
+# without delegating to a bare-Dual body.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(deepcopy),N}, x::Mooncake.Lifted
 ) where {N}

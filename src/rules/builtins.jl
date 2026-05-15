@@ -149,9 +149,9 @@ macro intrinsic(name)
         end
         translate(::Val{Intrinsics.$name}) = $name
         # Lifted-aware: rule body's `frule!!(::Dual{typeof($name)}, args...)`
-        # accepts bare slot V (post-kill NDual at width=1), so the generic
-        # `frule!!(::Lifted{F,N}, args::Vararg{Lifted,M})` adapter handles
-        # unwrap+call+wrap at the IR-emit-skipped boundary.
+        # accepts the bare canonical-V slot value (NDual at width=1), so the
+        # generic `frule!!(::Lifted{F,N}, args::Vararg{Lifted,M})` adapter
+        # handles unwrap+call+wrap at the IR-emit-skipped boundary.
         Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($name),Vararg}}) = true
     end
     return esc(expr)
@@ -198,10 +198,9 @@ macro inactive_intrinsic(name)
 end
 
 @intrinsic abs_float
-# Bare-Dual `abs_float` body deleted under task #31.
-# Lifted-aware overload in rules_via_nfwd.jl (the unary-intrinsic loop) covers
-# all AD paths; `_unlift` produces an `NDual` on which `abs(::NDual)` dispatches
-# directly without the bare-Dual indirection.
+# `abs_float` frule lives in `rules_via_nfwd.jl` (the unary-intrinsic loop).
+# `_unlift` produces an `NDual` on which `abs(::NDual)` dispatches directly
+# without a bare-Dual indirection.
 function rrule!!(::CoDual{typeof(abs_float)}, x)
     abs_float_pullback!!(dy) = NoRData(), sign(primal(x)) * dy
     y = abs_float(primal(x))
@@ -209,7 +208,7 @@ function rrule!!(::CoDual{typeof(abs_float)}, x)
 end
 
 @intrinsic add_float
-# Bare-Dual `add_float` body deleted under task #31. See `abs_float` note.
+# `add_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(add_float)}, a, b)
     add_float_pb!!(c̄) = NoRData(), c̄, c̄
     c = add_float(primal(a), primal(b))
@@ -217,7 +216,7 @@ function rrule!!(::CoDual{typeof(add_float)}, a, b)
 end
 
 @intrinsic add_float_fast
-# Bare-Dual `add_float_fast` body deleted under task #31. See `abs_float` note.
+# `add_float_fast` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(add_float_fast)}, a, b)
     add_float_fast_pb!!(c̄) = NoRData(), c̄, c̄
     c = add_float_fast(primal(a), primal(b))
@@ -440,8 +439,8 @@ function Mooncake._is_primitive(
 )
     return true
 end
-# Bare-Dual `__cglobal` body deleted under task #31. The Lifted body computes
-# the result independently from the unlifted args' primals.
+# `__cglobal`: the Lifted body below computes the result independently from
+# the unlifted args' primals; no bare-Dual body is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(__cglobal),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
@@ -465,7 +464,7 @@ end
 @inactive_intrinsic checked_usub_int
 
 @intrinsic copysign_float
-# Bare-Dual `copysign_float` body deleted under task #31. See `abs_float` note.
+# `copysign_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
@@ -479,7 +478,7 @@ end
 @inactive_intrinsic cttz_int
 
 @intrinsic div_float
-# Bare-Dual `div_float` body deleted under task #31. See `abs_float` note.
+# `div_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -489,7 +488,7 @@ function rrule!!(::CoDual{typeof(div_float)}, a, b)
 end
 
 @intrinsic div_float_fast
-# Bare-Dual `div_float_fast` body deleted under task #31. See `abs_float` note.
+# `div_float_fast` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -507,7 +506,7 @@ end
 @inactive_intrinsic floor_llvm
 
 @intrinsic fma_float
-# Bare-Dual `fma_float` body deleted under task #31. See `abs_float` note.
+# `fma_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -516,7 +515,7 @@ function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
 end
 
 @intrinsic fpext
-# Bare-Dual `fpext` body deleted under task #31. See `abs_float` note.
+# `fpext` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(
     ::CoDual{typeof(fpext)}, ::CoDual{Type{Pext}}, x::CoDual{P}
 ) where {Pext<:IEEEFloat,P<:IEEEFloat}
@@ -529,7 +528,7 @@ end
 @inactive_intrinsic fptoui
 
 @intrinsic fptrunc
-# Bare-Dual `fptrunc` body deleted under task #31. See `abs_float` note.
+# `fptrunc` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(
     ::CoDual{typeof(fptrunc)}, ::CoDual{Type{Ptrunc}}, x::CoDual{P}
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
@@ -549,7 +548,7 @@ end
 
 @static if VERSION >= v"1.12.0-rc2"
     @intrinsic max_float
-    # Bare-Dual `max_float` body deleted under task #31. See `abs_float` note.
+    # `max_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
     function rrule!!(
         ::CoDual{typeof(max_float)}, a::CoDual{P}, b::CoDual{P}
     ) where {P<:Base.IEEEFloat}
@@ -566,7 +565,7 @@ end
     end
 
     @intrinsic max_float_fast
-    # Bare-Dual `max_float_fast` body deleted under task #31. See `abs_float` note.
+    # `max_float_fast` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
     function rrule!!(
         ::CoDual{typeof(max_float_fast)}, a::CoDual{P}, b::CoDual{P}
     ) where {P<:Base.IEEEFloat}
@@ -583,7 +582,7 @@ end
     end
 
     @intrinsic min_float
-    # Bare-Dual `min_float` body deleted under task #31. See `abs_float` note.
+    # `min_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
     function rrule!!(
         ::CoDual{typeof(min_float)}, a::CoDual{P}, b::CoDual{P}
     ) where {P<:Base.IEEEFloat}
@@ -600,7 +599,7 @@ end
     end
 
     @intrinsic min_float_fast
-    # Bare-Dual `min_float_fast` body deleted under task #31. See `abs_float` note.
+    # `min_float_fast` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
     function rrule!!(
         ::CoDual{typeof(min_float_fast)}, a::CoDual{P}, b::CoDual{P}
     ) where {P<:Base.IEEEFloat}
@@ -618,7 +617,7 @@ end
 end
 
 @intrinsic mul_float
-# Bare-Dual `mul_float` body deleted under task #31. See `abs_float` note.
+# `mul_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -627,7 +626,7 @@ function rrule!!(::CoDual{typeof(mul_float)}, a, b)
 end
 
 @intrinsic mul_float_fast
-# Bare-Dual `mul_float_fast` body deleted under task #31. See `abs_float` note.
+# `mul_float_fast` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(mul_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -638,7 +637,7 @@ end
 @inactive_intrinsic mul_int
 
 @intrinsic muladd_float
-# Bare-Dual `muladd_float` body deleted under task #31. See `abs_float` note.
+# `muladd_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(muladd_float)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -652,7 +651,7 @@ end
 @inactive_intrinsic ne_int
 
 @intrinsic neg_float
-# Bare-Dual `neg_float` body deleted under task #31. See `abs_float` note.
+# `neg_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(neg_float)}, x)
     _x = primal(x)
     neg_float_pullback!!(dy) = NoRData(), -dy
@@ -660,7 +659,7 @@ function rrule!!(::CoDual{typeof(neg_float)}, x)
 end
 
 @intrinsic neg_float_fast
-# Bare-Dual `neg_float_fast` body deleted under task #31. See `abs_float` note.
+# `neg_float_fast` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(neg_float_fast)}, x)
     _x = primal(x)
     neg_float_fast_pullback!!(dy) = NoRData(), -dy
@@ -773,7 +772,7 @@ end
 @inactive_intrinsic slt_int
 
 @intrinsic sqrt_llvm
-# Bare-Dual `sqrt_llvm` body deleted under task #31. See `abs_float` note.
+# `sqrt_llvm` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm(primal(x))
     function llvm_sqrt_pullback!!(dy)
@@ -784,7 +783,7 @@ function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
 end
 
 @intrinsic sqrt_llvm_fast
-# Bare-Dual `sqrt_llvm_fast` body deleted under task #31. See `abs_float` note.
+# `sqrt_llvm_fast` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
     function llvm_sqrt_fast_pullback!!(dy)
@@ -797,7 +796,7 @@ end
 @inactive_intrinsic srem_int
 
 @intrinsic sub_float
-# Bare-Dual `sub_float` body deleted under task #31. See `abs_float` note.
+# `sub_float` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(sub_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -806,7 +805,7 @@ function rrule!!(::CoDual{typeof(sub_float)}, a, b)
 end
 
 @intrinsic sub_float_fast
-# Bare-Dual `sub_float_fast` body deleted under task #31. See `abs_float` note.
+# `sub_float_fast` frule lives in `rules_via_nfwd.jl` (intrinsic loop).
 function rrule!!(::CoDual{typeof(sub_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -1012,8 +1011,8 @@ function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
 end
 
 @static if VERSION > v"1.12-"
-    # Bare-Dual `Core._svec_len` body deleted under task #31. The Lifted body
-    # below computes the result independently.
+    # `Core._svec_len`: the Lifted body below computes the result
+    # independently; no bare-Dual body is needed.
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Core._svec_len),N}, v::Mooncake.Lifted
     ) where {N}
@@ -1026,7 +1025,7 @@ end
 end
 
 # Core._typebody!
-# Bare-Dual `Core._typevar` body deleted under task #31.
+# `Core._typevar` frule: Lifted-typed body only.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core._typevar),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
@@ -1038,7 +1037,7 @@ function rrule!!(f::CoDual{typeof(Core._typevar)}, args...)
     return zero_fcodual(Core._typevar(map(primal, args)...)), NoPullback(f, args...)
 end
 
-# Bare-Dual `Core.apply_type` body deleted under task #31.
+# `Core.apply_type` frule: Lifted-typed body only.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core.apply_type),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
@@ -1081,8 +1080,8 @@ end
 # Core.finalizer
 # Core.get_binding_type
 
-# Bare-Dual `Core.ifelse` body deleted under task #31. The Lifted-typed body
-# below selects between unlifted V values directly.
+# `Core.ifelse` frule: the Lifted-typed body below selects between unlifted
+# V values directly; no bare-Dual indirection is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core.ifelse),N},
     cond::Mooncake.Lifted{Bool},
@@ -1378,8 +1377,8 @@ end
 
 # swapfield!
 
-# Bare-Dual `throw` body deleted under task #31. The Lifted body throws
-# directly from primals — no bare delegation needed.
+# `throw`: the Lifted body throws directly from primals — no bare-Dual
+# delegation needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(throw),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
@@ -1392,7 +1391,7 @@ end
 
 # Only defined in v1.12+
 @static if isdefined(Core, :throw_methoderror)
-    # Bare-Dual `throw_methoderror` body deleted under task #31.
+    # `throw_methoderror` frule: Lifted-typed body only.
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Core.throw_methoderror),N}, args::Vararg{Mooncake.Lifted,M}
     ) where {N,M}
@@ -1409,7 +1408,7 @@ end
     end
 end
 
-# Bare-Dual `throw_inexacterror` body deleted under task #31.
+# `throw_inexacterror` frule: Lifted-typed body only.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core.throw_inexacterror),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
@@ -1436,15 +1435,12 @@ end
 
 @inline tuple_pullback(dy::NoRData) = NoRData()
 
-# Bare-Dual `tuple` body deleted under task #31. The Lifted-typed body below
-# canonicalises the per-element inner V directly via `_canonicalise_tuple_inner`,
-# so no bare-body kernel is needed.
-
-# Phase 4a — Lifted-aware `tuple`: single outer `Lifted{<:Tuple}` whose `V` is a
-# bare element-wise tuple of inner duals. Collapses the three branches of the
-# bare overload above (NDual element-wise, whole-Tuple Dual NoTangent,
-# whole-Tuple Dual Tuple-tangent) to one — slot identity from `Lifted{P_i, N}`
-# replaces the runtime `_has_ndual` branch.
+# Lifted-aware `tuple`: single outer `Lifted{<:Tuple}` whose `V` is a bare
+# element-wise tuple of inner duals. The Lifted-typed body canonicalises
+# the per-element inner V directly via `_canonicalise_tuple_inner`, so no
+# bare-Dual `tuple` body is needed — slot identity from `Lifted{P_i, N}`
+# carries the dispatch information that an `_has_ndual` runtime branch
+# would otherwise need.
 # `@generated` so `dual_type(Val(N), P_out)` is computed at expansion time
 # (it's `@unstable` and a runtime call leaves a dynamic invoke + branch in
 # the IR, costing per-call allocation). When each `args[i]` has a concrete
@@ -1495,9 +1491,9 @@ function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     end
 end
 
-# Bare-Dual `typeassert` body deleted under task #31. The two Lifted-typed
-# bodies below dispatch on whether the type-assert target is a concrete
-# `Type{T}` (slot narrows to `Lifted{T}`) or an arbitrary value (slot stays).
+# `typeassert`: the two Lifted-typed bodies below dispatch on whether the
+# type-assert target is a concrete `Type{T}` (slot narrows to `Lifted{T}`)
+# or an arbitrary value (slot stays). No bare-Dual body needed.
 function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
     typeassert_pullback(dy) = NoRData(), dy, NoRData()
     return CoDual(typeassert(primal(x), primal(type)), tangent(x)), typeassert_pullback

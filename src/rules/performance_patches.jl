@@ -56,9 +56,8 @@ end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
-# Bare-Dual `frule!!(::Dual{sum}, ::Dual{abs2}, ::Dual{<:Array})` body deleted
-# under task #31. `sum(abs2, ::Array{<:NDual})` carries the derivative through
-# `_unlift`.
+# `sum(abs2, ::Array)`: the Lifted-typed body below carries the derivative
+# through `_unlift` directly; no bare-Dual body is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N},
     ::Mooncake.Lifted{typeof(abs2),N},
