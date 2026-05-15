@@ -684,8 +684,18 @@ end
 @inline _pointerref_tan(t::Mooncake.NTangent{Tuple{P}}) where {P<:Ptr} = t.lanes[1]
 @inline function _pointerref_kernel(x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
-    # Unwrap singleton-NTangent on the Ptr tangent.
-    da = pointerref(_pointerref_tan(tangent(x)), primal(y), primal(z))
+    raw_t = tangent(x)
+    # Multi-lane NTangent (width N≥2): per-lane pointerref. Each lane's
+    # Ptr tangent reads a different memory location, producing a
+    # different `da` per lane.
+    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        das = ntuple(
+            lane -> pointerref(raw_t.lanes[lane], primal(y), primal(z)),
+            Val(length(raw_t.lanes)),
+        )
+        return Dual(a, Mooncake.NTangent(das))
+    end
+    da = pointerref(_pointerref_tan(raw_t), primal(y), primal(z))
     return Dual(a, da)
 end
 @inline function frule!!(
@@ -723,10 +733,18 @@ end
 @inline _pointerset_tan(t::Mooncake.NTangent{Tuple{P}}) where {P<:Ptr} = t.lanes[1]
 @inline function _pointerset_kernel(p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
-    # Unwrap singleton-NTangent on the Ptr tangent —
-    # `tangent(::Dual{Ptr{T}, NTangent{Tuple{Ptr{TT}}}})` returns the outer
-    # NTangent; pointerset needs bare Ptr.
-    pointerset(_pointerset_tan(tangent(p)), tangent(x), primal(idx), primal(z))
+    raw_t = tangent(p)
+    # Multi-lane NTangent (width N≥2): per-lane pointerset. Each lane's
+    # Ptr tangent writes to a different memory location. The value
+    # tangent is shared (only inactive values reach this rule — guarded
+    # at the Lifted overload below).
+    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        for lane in 1:length(raw_t.lanes)
+            pointerset(raw_t.lanes[lane], tangent(x), primal(idx), primal(z))
+        end
+        return p
+    end
+    pointerset(_pointerset_tan(raw_t), tangent(x), primal(idx), primal(z))
     return p
 end
 @inline function frule!!(
