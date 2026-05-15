@@ -161,9 +161,9 @@ function _uninit_dual_fallback(w::Val{N}, v) where {N}
             ),
         )
     end
-    # Audit step 5: route through 2-arg `Lifted{P, N}(primal, tangent)` ctor
-    # when the bare `uninit_dual(v)` shape differs from the canonical inner
-    # V, so the inner V matches `dual_type(Val(N), P)` (NTangent-wrapped at
+    # Route through 2-arg `Lifted{P, N}(primal, tangent)` ctor when the
+    # bare `uninit_dual(v)` shape differs from the canonical inner V, so
+    # the inner V matches `dual_type(Val(N), P)` (NTangent-wrapped at
     # width N>=2 / when carve-out is lifted).
     ud = uninit_dual(v)
     InnerT = dual_type(w, _typeof(v))
@@ -283,14 +283,14 @@ non-migrated rule on the legacy bare path, so partial migration is safe.
         Lifted{P_out,N}(x)
     end
 end
-# Audit step 5: when `primal` and `tangent` are both `AbstractArray` but
-# disagree on `ndims` (e.g. a `Base._collect` path producing a flat `Vector`
-# tangent for a `Matrix` primal), reshape the tangent to match the primal
-# before delegating to the 2-arg `Lifted{P, N}(primal, tangent)` ctor. The
+# When `primal` and `tangent` are both `AbstractArray` but disagree on
+# `ndims` (e.g. a `Base._collect` path producing a flat `Vector` tangent
+# for a `Matrix` primal), reshape the tangent to match the primal before
+# delegating to the 2-arg `Lifted{P, N}(primal, tangent)` ctor. The
 # canonical inner V (`Array{NDual{T, N}, D}`) requires both args to share
-# `D`; a defensive reshape resolves the carve-out-lifted `_collect`-on-
-# Matrix residual without changing semantics (the underlying derivative
-# data is unchanged — only the shape annotation matches the primal).
+# `D`; a defensive reshape resolves the `_collect`-on-Matrix residual
+# without changing semantics (the underlying derivative data is unchanged
+# — only the shape annotation matches the primal).
 @inline _wrap_dual_to_lifted(::Val{N}, ::Type{P_out}, p, t) where {N,P_out} = Lifted{
     P_out,N
 }(
@@ -390,11 +390,12 @@ end
 ) where {N,P_target,P}
     P === P_target && return x
     if !isconcretetype(P_target)
-        # Audit step 5: when `P_target` is abstract (e.g. a small Union of
-        # singleton types) and the runtime `P` is too broad to match the
-        # `Q<:P_target` UnionAll slot type (`DataType` for `Union{Type{Float64},
-        # Type{Int}}`), narrow `P` to `typeof(primal(x))` so the return
-        # passes the OC slot's parametric constraint.
+        # When `P_target` is abstract (e.g. a small Union of singleton
+        # types) and the runtime `P` is too broad to match the
+        # `Q<:P_target` UnionAll slot type (`DataType` for
+        # `Union{Type{Float64}, Type{Int}}`), narrow `P` to
+        # `typeof(primal(x))` so the return passes the OC slot's
+        # parametric constraint.
         if !(P <: P_target)
             Q = _typeof(primal(x))
             if Q <: P_target
@@ -408,15 +409,14 @@ end
     if inner isa Dual && isconcretetype(P_target)
         return Lifted{P_target,N}(primal(inner), tangent(inner))
     end
-    # Audit Todo 8: fail loudly when the inner V's shape doesn't match
-    # `dual_type(Val(N), P_target)`. The previous behaviour (silently
-    # returning the original `Lifted` with mismatched P) hid genuine rule
-    # bugs — e.g. a `Lifted{Vector{Float64}, 1, Vector{NDual}}` from a rule
-    # body that should have produced a Matrix would have been re-tagged as
-    # `Lifted{Matrix{Float64}, 1, Vector{NDual}}` had we proceeded, and
-    # would have been left as a `Lifted{Vector{Float64}, ...}` slipped into
-    # a `Lifted{Matrix{Float64}, ...}` OC return slot had we returned `x`.
-    # An ArgumentError with the offending types makes the regression obvious.
+    # Fail loudly when the inner V's shape doesn't match
+    # `dual_type(Val(N), P_target)`. Silently returning the original
+    # `Lifted` with mismatched P would hide genuine rule bugs — e.g. a
+    # `Lifted{Vector{Float64}, 1, Vector{NDual}}` from a rule body that
+    # should have produced a Matrix could get re-tagged as
+    # `Lifted{Matrix{Float64}, 1, Vector{NDual}}` and slip into a
+    # `Lifted{Matrix{Float64}, ...}` OC return slot. An ArgumentError with
+    # the offending types makes the regression obvious.
     InnerT = dual_type(Val(N), P_target)
     if InnerT isa DataType && isconcretetype(InnerT) && !(typeof(inner) <: InnerT)
         throw(
@@ -493,8 +493,8 @@ end
     return Expr(:tuple, (:(args[$i]) for i in (K + 1):n)...)
 end
 
-# Audit step 5: unified vararg grouping at every positive width. Always
-# emit `NTangent(per_dir)` so the resulting `Dual{Tuple{...}, NTangent{...}}`
+# Unified vararg grouping at every positive width. Always emit
+# `NTangent(per_dir)` so the resulting `Dual{Tuple{...}, NTangent{...}}`
 # uses the canonical chunked shape regardless of width. Width-1 lifted
 # inputs are still routed directly through `_unlift` to preserve their
 # element-wise inner Vs.
