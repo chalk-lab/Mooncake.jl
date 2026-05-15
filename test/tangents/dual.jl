@@ -519,6 +519,25 @@ end
     end
 end
 
+@testset "test_dual / test_lifted over tangent_test_cases" begin
+    # Wires the Layer-2 / Layer-3 mirrored test utilities (`test_dual_types`,
+    # `test_dual`, `test_lifted_types`, `test_lifted`) over every primal in
+    # `tangent_test_cases()`, so canonicality failures (seed factories
+    # returning a non-`dual_type`-matching shape, slot widening on Type
+    # primals, etc.) become interface failures rather than scattered
+    # regressions. Mirrors the `test_tangent` interface sweep in
+    # `test/tangents/tangents.jl`.
+    rng = StableRNG(123_456)
+    for (_, p, _...) in Mooncake.tangent_test_cases()
+        @testset "$(typeof(p))" begin
+            TestUtils.test_dual_types(typeof(p))
+            TestUtils.test_dual(rng, p)
+            TestUtils.test_lifted_types(typeof(p))
+            TestUtils.test_lifted(rng, p)
+        end
+    end
+end
+
 @testset "Lifted-aware frule!! direct dispatch" begin
     # Phase 6: exercises the `Lifted`-typed `frule!!` overloads directly
     # (bypassing the IR-emit). The integration tests cover these via
