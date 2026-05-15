@@ -245,8 +245,8 @@ end
     ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
 ) where {T}
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
-    # Carve-out lift: `tangent(p::Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}})`
-    # returns the NTangent wrapper. Unwrap to the bare Ptr.
+    # `tangent(p::Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}})` returns the
+    # NTangent wrapper. Unwrap to the bare Ptr.
     tangent_arr = unsafe_wrap(Array, _unsafe_wrap_unwrap(tangent(p)), primal(dims))
     return Dual(primal_arr, tangent_arr)
 end
@@ -1149,8 +1149,8 @@ function frule!!(
         )
     end
 end
-# Post-kill: bare Tuple/NamedTuple of inner duals (the inner V of a
-# `Lifted{<:Tuple}` slot). Field access returns the i-th inner dual directly.
+# Bare Tuple/NamedTuple of inner duals (the inner V of a `Lifted{<:Tuple}`
+# slot). Field access returns the i-th inner dual directly.
 @inline function frule!!(
     ::Dual{typeof(getfield)}, x::T, name::Dual
 ) where {T<:Union{Tuple,NamedTuple}}

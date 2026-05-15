@@ -130,10 +130,10 @@ function frule!!(
         Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
     )
 end
-# Carve-out lift: the kwargs primal `@NamedTuple{check::Bool}` lifts to
-# the structural inner V form `@NamedTuple{check::Dual{Bool, NoTangent}}`
-# (bare NamedTuple, not `Dual{<:NamedTuple}`). The IR-emit hands that
-# bare form straight to `frule!!`, so we need a variant that accepts it.
+# The kwargs primal `@NamedTuple{check::Bool}` lifts to the structural inner
+# V form `@NamedTuple{check::Dual{Bool, NoTangent}}` (bare NamedTuple, not
+# `Dual{<:NamedTuple}`). The IR-emit hands that bare form straight to
+# `frule!!`, so we need a variant that accepts it.
 # Returns are wrapped in canonical width-1 forms — `ipiv::Vector{Int}` becomes
 # `Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}` to match
 # `dual_type(Val(1), Vector{Int})` so downstream `_canonicalise_tuple_inner`

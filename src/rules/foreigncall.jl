@@ -174,7 +174,7 @@ end
     inner_src = Mooncake._unlift(src)
     pn = primal(n)
     unsafe_copyto!(primal(inner_dest), primal(inner_src), pn)
-    # Carve-out lift: unwrap NTangent-wrapped Ptr tangent at this boundary.
+    # Unwrap NTangent-wrapped Ptr tangent at this boundary.
     unsafe_copyto!(
         _foreigncall_ntangent_unwrap(tangent(inner_dest)),
         _foreigncall_ntangent_unwrap(tangent(inner_src)),

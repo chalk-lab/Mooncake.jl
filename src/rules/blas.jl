@@ -49,8 +49,8 @@ function arrayify(
 ) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{Array{<:T},Ptr{<:T}}}
     (x, dx)
 end
-# Carve-out lift: `tangent(::Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}})` returns
-# the NTangent-wrapped Ptr tangent. Unwrap the singleton lane to match the
+# `tangent(::Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}})` returns the
+# NTangent-wrapped Ptr tangent. Unwrap the singleton lane to match the
 # `(x::Ptr, dx::Ptr)` pair the rest of arrayify expects.
 function arrayify(
     x::Ptr{T}, dx::Mooncake.NTangent{Tuple{Ptr{T}}}

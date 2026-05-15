@@ -441,10 +441,10 @@ function populate_address_map_internal(m::AddressMap, p::Array, t::Array)
     )
     return m
 end
-# Carve-out lift: `tangent_type(Val(1), Array)` is `NTangent{Tuple{Array}}`.
-# Unwrap the singleton lane and delegate to the bare Array overload so the
-# general `populate_address_map_internal(::Array, ::NTangent)` does not fall
-# through to the generic mutable-primal branch (which asserts MutableTangent).
+# `tangent_type(Val(1), Array)` is `NTangent{Tuple{Array}}`. Unwrap the
+# singleton lane and delegate to the bare Array overload so the general
+# `populate_address_map_internal(::Array, ::NTangent)` does not fall through
+# to the generic mutable-primal branch (which asserts MutableTangent).
 function populate_address_map_internal(
     m::AddressMap, p::Array, t::Mooncake.NTangent{<:Tuple{Array}}
 )
@@ -1134,8 +1134,8 @@ function test_rule(
                 if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
-                        # Post-kill: `build_frule` defaults to `Val(1)` rather
-                        # than `nothing`, so the cache key uses `Val(1)`.
+                        # `build_frule` defaults to `Val(1)` rather than
+                        # `nothing`, so the cache key uses `Val(1)`.
                         cache_key = (sig, debug_mode, :forward, Val(1))
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)

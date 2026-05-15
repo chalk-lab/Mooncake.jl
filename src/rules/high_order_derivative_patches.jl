@@ -406,9 +406,9 @@ end
         P, Val(N), rule, _canonicalize_comms_tangents(rule, rule_tangent, Val(N))
     )
 end
-# Carve-out lift: width-1 canonical `NTangent{Tuple{Tangent{...}}}` form
-# wraps the same Tangent shape. Unwrap and delegate so the
-# `_canonicalize_comms_tangents` path runs against the inner Tangent.
+# The width-1 canonical `NTangent{Tuple{Tangent{...}}}` form wraps the same
+# Tangent shape. Unwrap and delegate so the `_canonicalize_comms_tangents`
+# path runs against the inner Tangent.
 @inline function Lifted{P,1}(
     rule::P, rule_tangent::NTangent{Tuple{T}}
 ) where {P<:DerivedRule,T<:Tangent}

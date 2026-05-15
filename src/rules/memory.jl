@@ -271,7 +271,7 @@ function frule!!(
     unsafe_copyto!(_memrefget_tan(tangent(dest)), _memrefget_tan(tangent(src)), primal(n))
     return dest
 end
-# Post-kill width=Val(1): IR-emit's unwrap-then-bare path delivers
+# At width 1, the IR-emit's unwrap-then-bare path delivers
 # `MemoryRef{<:NDual}` directly (the inner `V` of a `Lifted{MemoryRef{T}, 1,
 # MemoryRef{<:NDual}}`). The copy operates element-wise on the NDual lanes.
 function frule!!(
@@ -544,8 +544,8 @@ end
     ordering = primal(_ordering)
     boundscheck = primal(_boundscheck)
     y = memoryrefget(primal(x), ordering, boundscheck)
-    # Carve-out lift: `tangent(x::Dual{<:MemoryRef, NTangent{Tuple{<:MemoryRef}}})`
-    # returns the NTangent wrapper; unwrap to bare MemoryRef.
+    # `tangent(x::Dual{<:MemoryRef, NTangent{Tuple{<:MemoryRef}}})` returns
+    # the NTangent wrapper; unwrap to bare MemoryRef.
     dy = memoryrefget(_memref_tan_unwrap(tangent(x)), ordering, boundscheck)
     return Dual(y, dy)
 end
