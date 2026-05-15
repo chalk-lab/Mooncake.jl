@@ -1022,4 +1022,32 @@ end
             end
         end
     end
+
+    @testset "lmemoryrefset! width-N struct-value (Finding 5)" begin
+        # Pre-fix: rule at memory.jl:881 (Lifted with `V<:NamedTuple` for the
+        # value arg) called `memoryrefset!(tangent(bare_x), tangent(y), ...)`
+        # but `tangent(bare_x)` is the outer NTangent wrapper, not a bare
+        # MemoryRef — errored with `expected GenericMemoryRef`. Fix: set the
+        # primal once and write each lane's tangent independently using
+        # `tangent(value, n)` (per-lane Tangent via `_build_struct_tangent_dir`).
+        @static if VERSION >= v"1.11-"
+            for N in (1, 2)
+                m = Memory{TestResources.LoHi}(undef, 4)
+                m[1] = TestResources.LoHi(10.0, 11.0)
+                mref = Core.memoryrefnew(Core.memoryrefnew(m), 1)
+                new_val = TestResources.LoHi(99.0, 88.0)
+
+                f = Mooncake.zero_lifted(Val(N), Mooncake.lmemoryrefset!)
+                x = Mooncake.zero_lifted(Val(N), mref)
+                v = Mooncake.zero_lifted(Val(N), new_val)
+                ord = Mooncake.zero_lifted(Val(N), Val(:not_atomic))
+                bc = Mooncake.zero_lifted(Val(N), Val(false))
+
+                r = Mooncake.frule!!(f, x, v, ord, bc)
+                @test r === v  # returns the original value Lifted
+                # In-place primal write verified.
+                @test m[1] == new_val
+            end
+        end
+    end
 end

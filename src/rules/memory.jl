@@ -917,10 +917,20 @@ end
     bc::Mooncake.Lifted{Val{boundscheck}},
 ) where {P,N,V<:NamedTuple,ordering,boundscheck}
     bare_x = Mooncake._unlift(x)
-    y = Dual(primal(value), tangent(value, 1))
-    memoryrefset!(primal(bare_x), primal(y), ordering, boundscheck)
-    memoryrefset!(tangent(bare_x), tangent(y), ordering, boundscheck)
-    return _wrap_rule_result(P, Val(N), y)
+    # Pre-fix: the body called `memoryrefset!(tangent(bare_x), ...)`, but
+    # `tangent(bare_x)` is the outer NTangent wrapper for struct-element
+    # MemoryRef (the canonical V is `Dual{MemoryRef{P}, NTangent{...}}`),
+    # so the call errored with `expected GenericMemoryRef`. The fix sets
+    # the primal once and writes each lane's tangent independently —
+    # paralleling the bare-Dual rule at line 793 for the NDual-element
+    # path, but using `tangent(value, n)` (the per-lane Tangent built via
+    # `_build_struct_tangent_dir`) for struct values.
+    memoryrefset!(primal(bare_x), primal(value), ordering, boundscheck)
+    lanes = tangent(bare_x).lanes
+    @inbounds for n in 1:N
+        memoryrefset!(lanes[n], tangent(value, n), ordering, boundscheck)
+    end
+    return value
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lmemoryrefset!),N},
