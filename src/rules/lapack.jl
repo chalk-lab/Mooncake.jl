@@ -696,8 +696,15 @@ function __sym!(X::Matrix)
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasRealFloat}})
+# Complex potrf! is a primitive only in ForwardMode — the rrule remains
+# BlasRealFloat-only. The frule's Cholesky differential math for Complex
+# uses `Hermitian(dA, uplo)` (vs `Symmetric` for real) but otherwise
+# follows the same `Φ(L^{-1} * H * L^{-*})` recipe.
+@is_primitive(
+    MinimalCtx, ForwardMode, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasComplexFloat}},
+)
 @inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(potrf!),Char,<:AbstractMatrix{<:BlasRealFloat}}}
+    ::Type{<:Tuple{typeof(potrf!),Char,<:AbstractMatrix{<:BlasFloat}}}
 ) = true
 function frule!!(
     ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::_MatLikeWidth1{P}
@@ -706,6 +713,29 @@ function frule!!(
     _, info = LAPACK.potrf!(primal(_uplo), A)
     _potrf!_frule_core!(primal(_uplo), A, dA)
     _arr_writeback!(A_dA, A, dA)
+    return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
+end
+# Complex Hermitian potrf! (ForwardMode-only) — uses `Hermitian` instead
+# of `Symmetric` for tangent projection.
+@inline function frule!!(
+    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::_MatLikeWidth1Complex{R}
+) where {R<:IEEEFloat}
+    A, dA = _arr_extract(A_dA)
+    _, info = LAPACK.potrf!(primal(_uplo), A)
+    _potrf!_frule_core_complex!(primal(_uplo), A, dA)
+    _arr_writeback!(A_dA, A, dA)
+    return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
+end
+@inline function frule!!(
+    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::AbstractMatrix{Complex{NDual{R,N}}}
+) where {R<:IEEEFloat,N}
+    uplo = primal(_uplo)
+    A, dAs = _arr_extract_n(A_dA)
+    _, info = LAPACK.potrf!(uplo, A)
+    @inbounds for lane in 1:N
+        _potrf!_frule_core_complex!(uplo, A, dAs[lane])
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
     return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
 end
 # Width-N NDual potrf!: primal once, per-lane Frechet via `_potrf!_frule_core!`
@@ -746,6 +776,29 @@ end
     else
         U = UpperTriangular(A)
         tmp = UpperTriangular(rdiv!(U' \ Symmetric(dA, :U), U))
+        @inbounds for n in 1:size(A, 1)
+            tmp[n, n] = tmp[n, n] / 2
+        end
+        _copytrito!(dA, rmul!(tmp, U), 'U')
+    end
+    return nothing
+end
+# Complex Hermitian Cholesky differential: same recipe as the real path
+# but using `Hermitian` (conjugate-symmetric projection) instead of
+# `Symmetric` and adjoint-divisions `L'` / `U'`.
+@inline function _potrf!_frule_core_complex!(
+    uplo::Char, A::AbstractMatrix{P}, dA::AbstractMatrix{P}
+) where {P<:BlasComplexFloat}
+    if uplo == 'L'
+        L = LowerTriangular(A)
+        tmp = LowerTriangular(ldiv!(L, Hermitian(dA, :L) / L'))
+        @inbounds for n in 1:size(A, 1)
+            tmp[n, n] = tmp[n, n] / 2
+        end
+        _copytrito!(dA, lmul!(L, tmp), 'L')
+    else
+        U = UpperTriangular(A)
+        tmp = UpperTriangular(rdiv!(U' \ Hermitian(dA, :U), U))
         @inbounds for n in 1:size(A, 1)
             tmp[n, n] = tmp[n, n] / 2
         end
