@@ -103,4 +103,52 @@ const P = Core.BFloat16
         @test dx_r === P(Inf)   # dz * _y * 0^(-0.5) = Inf
         @test dy_r === zero(P)  # inner guard: z=0 blocks z*log(0)*dz = NaN
     end
+
+    @testset "central adapter dispatch (unary + binary + width-N)" begin
+        # The BFloat16-unary and BFloat16-binary central adapters in
+        # `ext/MooncakeBFloat16sExt.jl` route bare-Dual `frule!!` calls to
+        # the Lifted-typed bodies. This testset pins the dispatch contract:
+        # direct bare-Dual calls produce bare-T `Dual{P, P}` results
+        # (matching the legacy width-1 shape), and width-N Lifted calls
+        # produce per-lane NTangent-wrapped results.
+
+        # Unary: sqrt at width-1 via bare-Dual.
+        r1 = Mooncake.frule!!(
+            Mooncake.Dual(sqrt, Mooncake.NoTangent()), Mooncake.Dual(P(4), P(1))
+        )
+        @test r1 isa Mooncake.Dual{P,P}
+        @test Mooncake.primal(r1) === P(2)
+        @test Mooncake.tangent(r1) === P(2)^-1 * P(0.5)  # d/dx sqrt(4) = 1/(2*2) = 0.25
+
+        # Unary: sqrt at width-2 via direct Lifted call.
+        x2 = Mooncake.Lifted{P,2}(P(4), Mooncake.NTangent((P(1), P(0.5))))
+        f2 = Mooncake.Lifted{typeof(sqrt),2}(sqrt, Mooncake.NoTangent())
+        r2 = Mooncake.frule!!(f2, x2)
+        @test r2 isa Mooncake.Lifted{P,2}
+        inner = Mooncake._unlift(r2)
+        @test Mooncake.primal(inner) === P(2)
+        # Lane-1 deriv = 0.25, lane-2 = 0.125 (= 0.5 * 0.25).
+        @test Mooncake.tangent(inner).lanes[1] ≈ P(0.25)
+        @test Mooncake.tangent(inner).lanes[2] ≈ P(0.125)
+
+        # Binary: max at width-1 via bare-Dual. `x` wins (x >= y), so
+        # tangent should come from x's tangent.
+        rmax = Mooncake.frule!!(
+            Mooncake.Dual(max, Mooncake.NoTangent()),
+            Mooncake.Dual(P(5), P(1)),
+            Mooncake.Dual(P(3), P(0)),
+        )
+        @test rmax isa Mooncake.Dual{P,P}
+        @test Mooncake.primal(rmax) === P(5)
+        @test Mooncake.tangent(rmax) === P(1)
+
+        # Conversion: Float32(BFloat16) via the unary adapter (function slot
+        # is `Type{Float32}`, which still satisfies the adapter's `F`).
+        rconv = Mooncake.frule!!(
+            Mooncake.Dual(Float32, Mooncake.NoTangent()), Mooncake.Dual(P(1.5), P(1))
+        )
+        @test rconv isa Mooncake.Dual{Float32,Float32}
+        @test Mooncake.primal(rconv) === 1.5f0
+        @test Mooncake.tangent(rconv) === 1.0f0
+    end
 end
