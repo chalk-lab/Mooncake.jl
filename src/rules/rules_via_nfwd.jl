@@ -380,26 +380,9 @@ using .IntrinsicsWrappers:
     fpext,
     fptrunc
 
-frule!!(::Dual{typeof(abs_float)}, x::NDual) = abs(x)
-frule!!(::Dual{typeof(neg_float)}, x::NDual) = -x
-frule!!(::Dual{typeof(neg_float_fast)}, x::NDual) = -x
-frule!!(::Dual{typeof(sqrt_llvm)}, x::NDual) = sqrt(x)
-frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::NDual) = sqrt(x)
-
-# Audit Todo 4: `_lane1_ndual` and `_lane1_dual` are width-1-only by name.
-# They bridge between the legacy bare `Dual{P, T}` shape and the canonical
-# width-1 `NDual{T, 1}` shape used by Nfwd. The bare-Dual `frule!!(::Dual{$op},
-# x::Dual{P, <:IEEEFloat})` overload below uses these to delegate into the
-# NDual path; chunk-N callers go through the Lifted-aware overload (which
-# uses `_unlift(x)::NDual{T, N}` directly and is width-N correct).
-@inline _lane1_ndual(x::Dual{P,<:IEEEFloat}) where {P<:IEEEFloat} = NDual{P,1}(
-    primal(x), (convert(P, tangent(x)),)
-)
-@inline _lane1_dual(x::NDual) = Dual(primal(x), x.partials[1])
-
-# Lifted-typed overloads for unary float intrinsics — same canonical-V
-# principle: `_unlift` produces an NDual on which the pointwise operator is
-# defined, then re-wrap as Lifted to skip the `_wrap_rule_result` allocation.
+# Unary float intrinsics: one-for-one Lifted-typed rules. Bare-Dual and
+# bare-NDual entry points are routed through the centralised unary adapters
+# at the top of the file.
 for (op_sym, op_fn) in (
     (:abs_float, :abs),
     (:neg_float, :-),
@@ -409,22 +392,23 @@ for (op_sym, op_fn) in (
 )
     @eval begin
         @inline function frule!!(
-            f::Dual{typeof($op_sym)}, x::Dual{P,<:IEEEFloat}
-        ) where {P<:IEEEFloat}
-            return _lane1_dual(frule!!(f, _lane1_ndual(x)))
-        end
-        @inline function frule!!(
             ::Mooncake.Lifted{typeof($op_sym),N}, x::Mooncake.Lifted
         ) where {N}
             return Mooncake.Lifted{_typeof(primal(x)),N}($op_fn(_unlift(x)))
         end
+        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($op_sym),<:IEEEFloat}}) = true
     end
 end
 
-# Mixed `(NDual, Dual{<:IEEEFloat})` cases arise when an `@inactive_intrinsic`
-# (e.g. `sitofp(Float64, 2)`) emits a width-1 `Dual{Float64}` alongside an
-# `NDual` user input. Unwrapping the `Dual` to its primal is sound because the
-# inactive frule produces `Dual(_, zero_tangent(_))`, contributing nothing.
+# Binary float intrinsics: one-for-one Lifted-typed rules. Same-shape bare-Dual
+# and bare-NDual entry points are routed through the centralised binary adapters
+# at the top of the file. Mixed `(NDual, Dual{<:IEEEFloat})` and
+# `(Dual{<:IEEEFloat}, NDual)` retains specific overloads because the adapters
+# require homogeneous arg shapes — these mixed cases arise when an
+# `@inactive_intrinsic` (e.g. `sitofp(Float64, 2)`) emits a width-1
+# `Dual{Float64}` alongside an `NDual` user input. Unwrapping the `Dual` to its
+# primal is sound because the inactive frule produces
+# `Dual(_, zero_tangent(_))`, contributing nothing.
 for (op_sym, op_fn) in (
     (:add_float, :+),
     (:add_float_fast, :+),
@@ -437,12 +421,6 @@ for (op_sym, op_fn) in (
     (:copysign_float, :copysign),
 )
     @eval begin
-        @inline frule!!(::Dual{typeof($op_sym)}, a::NDual, b::NDual) = $op_fn(a, b)
-        @inline function frule!!(
-            f::Dual{typeof($op_sym)}, a::Dual{P,<:IEEEFloat}, b::Dual{P,<:IEEEFloat}
-        ) where {P<:IEEEFloat}
-            return _lane1_dual(frule!!(f, _lane1_ndual(a), _lane1_ndual(b)))
-        end
         @inline function frule!!(
             ::Dual{typeof($op_sym)}, a::NDual{T,N}, b::Dual{<:IEEEFloat}
         ) where {T<:IEEEFloat,N}
@@ -461,26 +439,18 @@ for (op_sym, op_fn) in (
         ) where {N}
             return Mooncake.Lifted{_typeof(primal(a)),N}($op_fn(_unlift(a), _unlift(b)))
         end
+        Mooncake._is_lifted_aware(
+            ::Type{<:Tuple{typeof($op_sym),<:IEEEFloat,<:IEEEFloat}}
+        ) = true
     end
 end
 
-# Ternary float intrinsics: NDual×NDual×NDual plus the (≥1 NDual, rest Dual)
-# mixes that Nfwd already supports natively.
+# Ternary float intrinsics: one-for-one Lifted-typed rules. Same-shape entry
+# points route through the centralised ternary adapters. The (≥1 NDual, rest
+# Dual) mixes that arise from `@inactive_intrinsic` callers keep their specific
+# overloads.
 for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
     @eval begin
-        @inline frule!!(::Dual{typeof($op_sym)}, x::NDual, y::NDual, z::NDual) = $op_fn(
-            x, y, z
-        )
-        @inline function frule!!(
-            f::Dual{typeof($op_sym)},
-            x::Dual{P,<:IEEEFloat},
-            y::Dual{P,<:IEEEFloat},
-            z::Dual{P,<:IEEEFloat},
-        ) where {P<:IEEEFloat}
-            return _lane1_dual(
-                frule!!(f, _lane1_ndual(x), _lane1_ndual(y), _lane1_ndual(z))
-            )
-        end
         @inline function frule!!(
             ::Dual{typeof($op_sym)}, x::NDual{T,N}, y::NDual{T,N}, z::Dual{<:IEEEFloat}
         ) where {T<:IEEEFloat,N}
@@ -496,7 +466,6 @@ for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
         ) where {T<:IEEEFloat,N}
             return $op_fn(primal(x), y, z)
         end
-        # Lifted-typed overload — canonical V via `_unlift`.
         @inline function frule!!(
             ::Mooncake.Lifted{typeof($op_sym),N},
             x::Mooncake.Lifted,
@@ -507,6 +476,9 @@ for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
                 $op_fn(_unlift(x), _unlift(y), _unlift(z))
             )
         end
+        Mooncake._is_lifted_aware(
+            ::Type{<:Tuple{typeof($op_sym),<:IEEEFloat,<:IEEEFloat,<:IEEEFloat}}
+        ) = true
     end
 end
 
@@ -556,20 +528,21 @@ end
 
 @static if VERSION >= v"1.12.0-rc2"
     using .IntrinsicsWrappers: max_float, max_float_fast, min_float, min_float_fast
-    frule!!(::Dual{typeof(max_float)}, a::NDual, b::NDual) = max(a, b)
-    frule!!(::Dual{typeof(max_float_fast)}, a::NDual, b::NDual) = max(a, b)
-    frule!!(::Dual{typeof(min_float)}, a::NDual, b::NDual) = min(a, b)
-    frule!!(::Dual{typeof(min_float_fast)}, a::NDual, b::NDual) = min(a, b)
     for (op_sym, op_fn) in (
         (:max_float, :max),
         (:max_float_fast, :max),
         (:min_float, :min),
         (:min_float_fast, :min),
     )
-        @eval @inline function frule!!(
-            ::Mooncake.Lifted{typeof($op_sym),N}, a::Mooncake.Lifted, b::Mooncake.Lifted
-        ) where {N}
-            return Mooncake.Lifted{_typeof(primal(a)),N}($op_fn(_unlift(a), _unlift(b)))
+        @eval begin
+            @inline function frule!!(
+                ::Mooncake.Lifted{typeof($op_sym),N}, a::Mooncake.Lifted, b::Mooncake.Lifted
+            ) where {N}
+                return Mooncake.Lifted{_typeof(primal(a)),N}($op_fn(_unlift(a), _unlift(b)))
+            end
+            Mooncake._is_lifted_aware(
+                ::Type{<:Tuple{typeof($op_sym),<:IEEEFloat,<:IEEEFloat}}
+            ) = true
         end
     end
 end
