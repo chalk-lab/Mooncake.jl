@@ -569,8 +569,9 @@ function test_frule_reuse(x_ẋ...; frule)
     @test all(map(has_equal_data, map(tangent, x_ẋ_a), map(tangent, x_ẋ_b)))
 end
 
-function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule)
-    @nospecialize rng x_x̄
+function test_rrule_reuse(x_x̄...; rrule)
+    @nospecialize x_x̄
+    rng = Xoshiro(123)
     function make_inputs(x_x̄)
         x_x̄ = map(_deepcopy, x_x̄)
         x = map(primal, x_x̄)
@@ -1081,9 +1082,6 @@ function test_rule(
     redirector = print_results ? ((f, x) -> f()) : redirect_stdout
     ts = redirector(devnull) do
         @testset "$(typeof(x))" begin
-            rng_reuse = deepcopy(rng)
-            rng_correctness = deepcopy(rng)
-
             # Verify rules give identical results on a second call,
             # i.e. the rule does not corrupt its internal state across calls.
             @testset "Reuse" begin
@@ -1091,7 +1089,7 @@ function test_rule(
                     test_frule_reuse(x_ẋ...; frule)
                 end
                 if test_rvs && !interface_only
-                    test_rrule_reuse(rng_reuse, x_x̄...; rrule)
+                    test_rrule_reuse(x_x̄...; rrule)
                 end
             end
 
@@ -1104,19 +1102,11 @@ function test_rule(
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
                 if test_fwd && !interface_only
-                    test_frule_correctness(
-                        rng_correctness, x_ẋ...; frule, unsafe_perturb, atol, rtol
-                    )
+                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
                 end
                 if test_rvs && !interface_only
                     test_rrule_correctness(
-                        rng_correctness,
-                        x_x̄...;
-                        rrule,
-                        unsafe_perturb,
-                        output_tangent,
-                        atol,
-                        rtol,
+                        rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
                     )
                 end
             end

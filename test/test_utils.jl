@@ -195,7 +195,7 @@ end
         inner_ts = Test.DefaultTestSet("inner"; verbose=false)
         Test.push_testset(inner_ts)
         TestUtils.test_rrule_reuse(
-            StableRNG(1), zero_codual(_broken_rvs_f), zero_codual(1.5); rrule=broken_rrule
+            zero_codual(_broken_rvs_f), zero_codual(1.5); rrule=broken_rrule
         )
         Test.pop_testset()
         @test any(r -> r isa Test.Fail, inner_ts.results)
