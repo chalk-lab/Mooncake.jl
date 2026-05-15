@@ -538,6 +538,40 @@ end
     end
 end
 
+@testset "_ndual_output_to_width1 NTangent stripping" begin
+    # Regression guard for the central-adapter return contract. When a
+    # `Lifted{P, N, V}` has inner V `Dual{P, <:NTangent}` (the canonical
+    # width-1 form for primals without an NDual specialisation — e.g.
+    # `BFloat16`, generic concrete `P`), `_ndual_output_to_width1` must
+    # strip the NTangent down to the lane-1 tangent so the result has the
+    # documented legacy bare-T shape `Dual{P, T}`. Without this, the
+    # central-adapter pattern in `ext/MooncakeBFloat16sExt.jl` and
+    # `src/rules/rules_via_nfwd.jl` would surface NTangent-wrapped duals
+    # to direct `frule!!` callers (test_rule, debug paths,
+    # `value_and_derivative!!`).
+    @testset "bare-T strip from Dual{Float64, NTangent}" begin
+        # Build a width-1 Lifted with NTangent-wrapped inner V directly.
+        inner = Dual(3.14, NTangent((2.0,)))
+        slot = Lifted{Float64,1,typeof(inner)}(inner)
+        @test slot isa Lifted{Float64,1,Dual{Float64,NTangent{Tuple{Float64}}}}
+        out = Mooncake._ndual_output_to_width1(slot)
+        @test out isa Dual{Float64,Float64}
+        @test primal(out) === 3.14
+        @test tangent(out) === 2.0
+    end
+    @testset "NDual inner V already bare-T" begin
+        # When the inner V is NDual (IEEEFloat canonical), the existing
+        # `_ndual_output_to_width1(::NDual)` path strips to bare-T Dual.
+        # This is unaffected by the BFloat16s-driven fix; pin it.
+        nd = Mooncake.NDual{Float64,1}(1.5, (0.25,))
+        slot = Lifted{Float64,1,typeof(nd)}(nd)
+        out = Mooncake._ndual_output_to_width1(slot)
+        @test out isa Dual{Float64,Float64}
+        @test primal(out) === 1.5
+        @test tangent(out) === 0.25
+    end
+end
+
 @testset "Lifted-aware frule!! direct dispatch" begin
     # Phase 6: exercises the `Lifted`-typed `frule!!` overloads directly
     # (bypassing the IR-emit). The integration tests cover these via
