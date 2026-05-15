@@ -145,7 +145,18 @@ end
 ) where {N}
     inner = Mooncake._unlift(x)
     y = unsafe_pointer_to_objref(primal(inner))
-    dy = unsafe_pointer_to_objref(_foreigncall_ntangent_unwrap(tangent(inner)))
+    inner_tan = tangent(inner)
+    # At width N≥2, `inner_tan` is `NTangent{NTuple{N, Ptr}}` — the
+    # singleton-unwrap helper above only matches `NTangent{Tuple{T}}`, so
+    # the multi-lane NTangent would fall through to the no-op fallback and
+    # `unsafe_pointer_to_objref(::NTangent)` errors. Map per-lane.
+    if N >= 2 && inner_tan isa Mooncake.NTangent
+        dys = ntuple(Val(N)) do lane
+            unsafe_pointer_to_objref(inner_tan.lanes[lane])
+        end
+        return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
+    end
+    dy = unsafe_pointer_to_objref(_foreigncall_ntangent_unwrap(inner_tan))
     return Mooncake.Lifted{_typeof(y),N}(y, dy)
 end
 @inline Mooncake._is_lifted_aware(
