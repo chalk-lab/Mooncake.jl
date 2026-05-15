@@ -23,12 +23,6 @@ foo_throws(e) = throw(e)
         )
     end
 
-    @testset "is_homogeneous_and_immutable" begin
-        x = Tuple(randn(1000))
-        @test @inferred Mooncake.is_homogeneous_and_immutable(x)
-        @test TestUtils.count_allocs(Mooncake.is_homogeneous_and_immutable, x) == 0
-    end
-
     TestUtils.run_rule_test_cases(StableRNG, Val(:builtins))
 
     # Unhandled built-in throws an intelligible error.

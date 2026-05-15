@@ -1323,13 +1323,6 @@ function rrule!!(
     end
 end
 
-# TODO: remove once no remaining callers depend on the older homogeneous-immutable
-# getfield fast-path selection.
-@generated is_homogeneous_and_immutable(::P) where {P<:Tuple} = allequal(fieldtypes(P))
-
-@inline is_homogeneous_and_immutable(p::NamedTuple) = is_homogeneous_and_immutable(Tuple(p))
-is_homogeneous_and_immutable(::Any) = false
-
 # # Highly specialised rrule to handle tuples of DataTypes.
 # function rrule!!(::CoDual{typeof(getfield)}, value::CoDual{P}, name::CoDual) where {P<:NTuple{<:Any, DataType}}
 #     pb!! = NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
