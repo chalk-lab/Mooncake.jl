@@ -1051,6 +1051,22 @@ end
         end
     end
 
+    @testset "copy(Array{<:Struct}) width-N (Finding 5)" begin
+        # Pre-fix: `_copy_array_kernel(::Dual{<:Array})` at memory.jl:1554
+        # called `copy(tangent(a))` where `tangent(a)` is the NTangent wrapper
+        # for struct-element Array at any width — `copy(NTangent)` had no
+        # method. Fix: add a `_copy_array_kernel(::Dual{<:Array, <:NTangent})`
+        # overload that copies each lane's wrapped Array independently.
+        arr = [TestResources.LoHi(1.0, 2.0), TestResources.LoHi(3.0, 4.0)]
+        for N in (1, 2)
+            f = Mooncake.zero_lifted(Val(N), Base.copy)
+            al = Mooncake.zero_lifted(Val(N), arr)
+            r = Mooncake.frule!!(f, al)
+            @test Mooncake.primal(r) == arr
+            @test typeof(r).parameters[2] == N
+        end
+    end
+
     @testset "memoryrefset! width-N struct-value (Finding 5)" begin
         # Pre-fix: the Lifted delegator routed through bare-Dual dispatch
         # which constrained `value::Union{Dual, NDual, ...}` — the bare

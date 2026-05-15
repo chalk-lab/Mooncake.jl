@@ -1553,6 +1553,12 @@ end
 # Implementation kernels for `copy(::Array)` (no `Dual{typeof(copy)}` arg).
 @inline _copy_array_kernel(a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
 @inline _copy_array_kernel(a::Array{<:_HasNDual}) = copy(a)
+# NTangent-wrapped Array tangent (canonical V for struct-element Array at any
+# width and non-_HasNDual element types). Per-lane copy of the wrapped
+# tangent arrays preserves width-N semantics.
+@inline function _copy_array_kernel(a::Dual{<:Array,<:Mooncake.NTangent})
+    return Dual(copy(primal(a)), Mooncake.NTangent(map(copy, tangent(a).lanes)))
+end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
 ) where {N}
