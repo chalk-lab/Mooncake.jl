@@ -475,16 +475,6 @@ function _diff(p::P, q::P) where {P}
     return increment!!(_scale(-1.0, t2), t1)
 end
 
-function _check_ε_list(ε_list, max_norm_perturbation)
-    isempty(ε_list) && throw(
-        ArgumentError(
-            "max_norm_perturbation=$max_norm_perturbation filters out all finite-difference " *
-            "step sizes; the smallest available is 1e-8, below which floating-point rounding " *
-            "errors dominate the estimate.",
-        ),
-    )
-end
-
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_frule_correctness(
     rng::AbstractRNG,
@@ -508,11 +498,17 @@ function test_frule_correctness(
     # Use finite differences to estimate Frechet derivative. Compute the estimate at a range
     # of different step sizes. We'll just require that one of them ends up being close to
     # what AD gives.
+    !isnothing(max_norm_perturbation) &&
+        max_norm_perturbation < 1e-8 &&
+        throw(
+            ArgumentError(
+                "max_norm_perturbation=$max_norm_perturbation < 1e-8; the smallest available step size is 1e-8.",
+            ),
+        )
     ε_list = filter(
         ε -> isnothing(max_norm_perturbation) || ε <= max_norm_perturbation,
         [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8],
     )
-    _check_ε_list(ε_list, max_norm_perturbation)
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
@@ -607,11 +603,17 @@ function test_rrule_correctness(
 
     # Use finite differences to estimate vjps. Compute the estimate at a range of different
     # step sizes. We'll just require that one of them ends up being close to what AD gives.
+    !isnothing(max_norm_perturbation) &&
+        max_norm_perturbation < 1e-8 &&
+        throw(
+            ArgumentError(
+                "max_norm_perturbation=$max_norm_perturbation < 1e-8; the smallest available step size is 1e-8.",
+            ),
+        )
     ε_list = filter(
         ε -> isnothing(max_norm_perturbation) || ε <= max_norm_perturbation,
         [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8],
     )
-    _check_ε_list(ε_list, max_norm_perturbation)
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
