@@ -1323,18 +1323,6 @@ function rrule!!(
     end
 end
 
-# # Highly specialised rrule to handle tuples of DataTypes.
-# function rrule!!(::CoDual{typeof(getfield)}, value::CoDual{P}, name::CoDual) where {P<:NTuple{<:Any, DataType}}
-#     pb!! = NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
-#     y = CoDual{DataType, NoFData}(getfield(primal(value), primal(name)), NoFData())
-#     return y, pb!!
-# end
-# function rrule!!(::CoDual{typeof(getfield)}, value::CoDual{P}, name::CoDual, order::CoDual) where {P<:NTuple{<:Any, DataType}}
-#     pb!! = NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
-#     y = CoDual{DataType, NoFData}(getfield(primal(value), primal(name), primal(order)), NoFData())
-#     return y, pb!!
-# end
-
 @zero_derivative MinimalCtx Tuple{typeof(getglobal),Any,Any}
 
 # invoke
