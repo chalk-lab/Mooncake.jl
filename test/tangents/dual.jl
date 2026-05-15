@@ -27,8 +27,8 @@
         end
     end
 
-    # Phase-3 boundary: `_uninit_dual` at width Val(N) returns a `Lifted` whose
-    # inner V is the substituted Dual{Type{Array{NDual{...},D}}, NoTangent}.
+    # `_uninit_dual` at width Val(N) returns a `Lifted` whose inner V is the
+    # substituted `Dual{Type{Array{NDual{...},D}}, NoTangent}`.
     @test Mooncake._uninit_dual(Val(2), Array{Float64,1}) ===
         Mooncake.Lifted{Type{Array{Float64,1}},2}(
         Dual(Array{Mooncake.NDual{Float64,2},1}, NoTangent())
@@ -585,10 +585,10 @@ end
 end
 
 @testset "Lifted-aware frule!! direct dispatch" begin
-    # Phase 6: exercises the `Lifted`-typed `frule!!` overloads directly
-    # (bypassing the IR-emit). The integration tests cover these via
+    # Exercises the `Lifted`-typed `frule!!` overloads directly (bypassing the
+    # IR-emit). The integration tests cover these via
     # `prepare_derivative_cache(...; chunk_size=N)`, but those go through the
-    # IR-emit's `_is_lifted_aware` trait check and the Phase-3 wrap/unwrap
+    # IR-emit's `_is_lifted_aware` trait check and the wrap/unwrap
     # scaffolding for non-registered rules. Here we call the rule with `Lifted`
     # args directly — Julia dispatch picks the specific `Lifted{typeof(op), N}`
     # overload (for `tuple`, `_new_`) or the generic `frule!!(::Lifted{F, N},

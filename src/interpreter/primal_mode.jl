@@ -59,7 +59,7 @@ end
 """
     const_dual!(captures::Vector{Any}, stmt, width=Val(1))
 
-Build a `Lifted{P, N, V}` (Phase 4 width-N path) from `stmt`, with zero /
+Build a `Lifted{P, N, V}` (width-N path) from `stmt`, with zero /
 uninitialised tangent. If the resulting value is a bits type, then it is
 returned. If it is not, then it is put into captures, and its location in
 `captures` returned. `Val(0)` is the primal passthrough.
@@ -241,18 +241,20 @@ end
     _is_lifted_aware(sig::Type{<:Tuple})
 
 Trait function — returns `true` for primitive call signatures whose
-`frule!!` accepts `Lifted{P, N, V}` arguments directly (Phase 4 migration),
-`false` (default) for legacy primitives that still expect bare slot values.
+`frule!!` accepts `Lifted{P, N, V}` arguments directly, `false` (default)
+for primitives that still expect bare slot values and rely on the
+IR-emit's unwrap/wrap scaffolding.
 
-The IR-emit consults this at each primitive rule-call site: when `true`, it
-passes `Lifted` args straight through and trusts the rule to return a
-`Lifted`; when `false`, it inserts the Phase-3 unwrap/wrap scaffolding
-(unlift each arg, call the bare rule, wrap the bare return back into
+The IR-emit consults this at each primitive rule-call site: when `true`,
+it passes `Lifted` args straight through and trusts the rule to return a
+`Lifted`; when `false`, it inserts the unwrap/wrap scaffolding (unlift
+each arg, call the bare rule, wrap the bare return back into
 `Lifted{primal_retype, N}`).
 
-Each rule file migrated under Phase 4 registers its sigs by adding a
-specialised method that returns `true`. The default catch-all keeps every
-non-migrated rule on the legacy bare path, so partial migration is safe.
+Lifted-aware rules register their sigs by adding a specialised method
+that returns `true`. The default catch-all keeps every non-registered
+rule on the bare path, so a primitive whose `Lifted`-typed body is not
+yet written stays functional via unwrap-then-call.
 """
 @inline _is_lifted_aware(::Type) = false
 
