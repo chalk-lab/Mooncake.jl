@@ -559,20 +559,56 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(getri!),AbstractMatrix{<:BlasRealFloat},AbstractVector{Int}},
 )
+# Complex getri! is a primitive only in ForwardMode — the rrule remains
+# BlasRealFloat-only because its pullback math requires the real-typed
+# transpose semantics. The frule path below is correct for Complex via
+# purely-linear ops without conjugate.
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{typeof(getri!),AbstractMatrix{<:BlasComplexFloat},AbstractVector{Int}},
+)
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getri!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(getri!)}, A_dA::_MatLikeWidth1{P}, _ipiv::Dual{<:AbstractVector{Int}}
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     A, dA = _arr_extract(A_dA)
     _getri!_frule_core!(A, dA, primal(_ipiv))
     _arr_writeback!(A_dA, A, dA)
+    return A_dA
+end
+# Complex canonical width-1: matches `Matrix{Complex{NDual{R, 1}}}`.
+@inline function frule!!(
+    ::Dual{typeof(getri!)},
+    A_dA::_MatLikeWidth1Complex{R},
+    _ipiv::Dual{<:AbstractVector{Int}},
+) where {R<:IEEEFloat}
+    A, dA = _arr_extract(A_dA)
+    _getri!_frule_core!(A, dA, primal(_ipiv))
+    _arr_writeback!(A_dA, A, dA)
+    return A_dA
+end
+# Width-N Complex.
+@inline function frule!!(
+    ::Dual{typeof(getri!)},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    _ipiv::Dual{<:AbstractVector{Int}},
+) where {R<:IEEEFloat,N}
+    A, dAs = _arr_extract_n(A_dA)
+    ipiv = primal(_ipiv)
+    tmp2_lanes = ntuple(lane -> _getri_frechet_pre_primal(A, dAs[lane], ipiv), Val(N))
+    LAPACK.getri!(A, ipiv)
+    @inbounds for lane in 1:N
+        dAs[lane] .= (-A * tmp2_lanes[lane] * A)
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
     return A_dA
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(getri!),N},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
     _ipiv::Mooncake.Lifted{<:AbstractVector{Int}},
-) where {N,P<:BlasRealFloat}
+) where {N,P<:BlasFloat}
     bare_result = frule!!(
         Mooncake._unlift(f), Mooncake._unlift(A_dA), Mooncake._unlift(_ipiv)
     )
@@ -581,7 +617,7 @@ end
 end
 @inline function _getri!_frule_core!(
     A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     # Compute part of Frechet derivative.
     tmp2 = _getri_frechet_pre_primal(A, dA, ipiv)
     # Perform primal computation.
@@ -591,9 +627,11 @@ end
     return nothing
 end
 # Width-N split: compute `tmp2_lane` from pre-primal A and per-lane dA.
+# The math is purely linear (no transpose / adjoint), so the real-typed
+# core works element-wise for Complex matrices too.
 @inline function _getri_frechet_pre_primal(
     A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     L = UnitLowerTriangular(A)
     dL_plus_I = UnitLowerTriangular(dA)
     U = UpperTriangular(A)
