@@ -572,18 +572,20 @@ end
 function test_rrule_reuse(x_x̄...; rrule)
     @nospecialize x_x̄
     rng = Xoshiro(123)
-    function make_inputs(x_x̄)
-        x_x̄ = map(_deepcopy, x_x̄)
-        x = map(primal, x_x̄)
-        x̄_zero = map(zero_tangent, x)
-        x̄_fwds = map(Mooncake.fdata, x̄_zero)
-        x_x̄_rule = map(
-            (xi, fi) -> fcodual_type(_typeof(xi))(_deepcopy(xi), fi), x, x̄_fwds
-        )
-        return x_x̄_rule, x̄_zero
-    end
-    inputs_a, x̄_zero_a = make_inputs(x_x̄)
-    inputs_b, x̄_zero_b = make_inputs(x_x̄)
+    x_a = map(_deepcopy, map(primal, x_x̄))
+    x̄_zero_a = map(zero_tangent, x_a)
+    inputs_a = map(
+        (xi, fi) -> fcodual_type(_typeof(xi))(_deepcopy(xi), fi),
+        x_a,
+        map(Mooncake.fdata, x̄_zero_a),
+    )
+    x_b = map(_deepcopy, map(primal, x_x̄))
+    x̄_zero_b = map(zero_tangent, x_b)
+    inputs_b = map(
+        (xi, fi) -> fcodual_type(_typeof(xi))(_deepcopy(xi), fi),
+        x_b,
+        map(Mooncake.fdata, x̄_zero_b),
+    )
 
     # First forward pass: snapshot primal before pullback can modify it.
     # Only deepcopy when the output has an fdata component -- if tangent is NoFData,
