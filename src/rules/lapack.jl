@@ -252,6 +252,22 @@ end
         typeof(trtrs!),Char,Char,Char,AbstractMatrix{P},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat},
 )
+# Complex trtrs! is a primitive only in ForwardMode — the rrule remains
+# BlasRealFloat-only because its pullback math uses real-typed transpose
+# semantics. The frule path below is correct for Complex via the
+# `_trtrs_op` helper which handles trans = 'N' / 'T' / 'C' correctly.
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{
+        typeof(trtrs!),
+        Char,
+        Char,
+        Char,
+        AbstractMatrix{<:BlasComplexFloat},
+        AbstractVecOrMat{<:BlasComplexFloat},
+    },
+)
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(trtrs!),Vararg}}) = true
 function frule!!(
     ::Dual{typeof(trtrs!)},
@@ -268,6 +284,45 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
+# Complex canonical width-1: matches `Matrix{Complex{NDual{R, 1}}}` and
+# `Vector{Complex{NDual{R, 1}}}` / `Matrix{Complex{NDual{R, 1}}}` for B.
+@inline function frule!!(
+    ::Dual{typeof(trtrs!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::_MatLikeWidth1Complex{R},
+    B_dB::_VecOrMatLikeWidth1Complex{R},
+) where {R<:IEEEFloat}
+    A, dA = _arr_extract(A_dA)
+    B, dB = _arr_extract(B_dB)
+    _trtrs!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, B, dB)
+    _arr_writeback!(A_dA, A, dA)
+    _arr_writeback!(B_dB, B, dB)
+    return B_dB
+end
+# Width-N Complex: per-lane Frechet (pre-primal B) then primal once.
+@inline function frule!!(
+    ::Dual{typeof(trtrs!)},
+    _uplo::Dual{Char},
+    _trans::Dual{Char},
+    _diag::Dual{Char},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    B_dB::AbstractVecOrMat{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    @inbounds for lane in 1:N
+        _trtrs_frechet_lane!(uplo, trans, diag, A, dAs[lane], B, dBs[lane])
+    end
+    LAPACK.trtrs!(uplo, trans, diag, A, B)
+    _arr_writeback_n!(A_dA, A, dAs)
+    _arr_writeback_n!(B_dB, B, dBs)
+    return B_dB
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(trtrs!),N},
     _uplo::Mooncake.Lifted{Char},
@@ -275,7 +330,7 @@ end
     _diag::Mooncake.Lifted{Char},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
     B_dB::Mooncake.Lifted{<:AbstractVecOrMat{P}},
-) where {N,P<:BlasRealFloat}
+) where {N,P<:BlasFloat}
     bare_result = frule!!(
         Mooncake._unlift(f),
         Mooncake._unlift(_uplo),
@@ -295,7 +350,7 @@ end
     dA::AbstractMatrix{P},
     B::AbstractVecOrMat{P},
     dB::AbstractVecOrMat{P},
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     # Compute Frechet derivative.
     _trtrs_frechet_lane!(uplo, trans, diag, A, dA, B, dB)
 
@@ -305,6 +360,10 @@ end
 end
 # Width-N split: Frechet uses pre-primal B (so callers must invoke this
 # BEFORE the primal `LAPACK.trtrs!(uplo, trans, diag, A, B)`).
+# For Complex matrices, `trans='T'` and `trans='C'` differ; use
+# `_trtrs_op` to pick the correct transpose-without-conjugate ('T') vs
+# adjoint ('C') view. For real, transpose ≡ adjoint so the choice is academic.
+@inline _trtrs_op(trans::Char, a) = trans == 'N' ? a : (trans == 'T' ? transpose(a) : a')
 @inline function _trtrs_frechet_lane!(uplo::Char, trans::Char, diag::Char, A, dA, B, dB)
     LAPACK.trtrs!(uplo, trans, diag, A, dB)
     tmp = copy(B)
@@ -313,10 +372,10 @@ end
     tmp2 = copy(tmp)
     if diag == 'N'
         a = uplo == 'L' ? LowerTriangular(dA) : UpperTriangular(dA)
-        lmul!(trans == 'N' ? a : a', tmp)
+        lmul!(_trtrs_op(trans, a), tmp)
     else
         a = uplo == 'L' ? UnitLowerTriangular(dA) : UnitUpperTriangular(dA)
-        lmul!(trans == 'N' ? a : a', tmp)
+        lmul!(_trtrs_op(trans, a), tmp)
         tmp .-= tmp2
     end
     LAPACK.trtrs!(uplo, trans, diag, A, tmp)
