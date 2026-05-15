@@ -767,6 +767,16 @@ end
 # would erase the field's original type.
 primal(d::Lifted) = primal(d.value)
 tangent(d::Lifted) = tangent(d.value)
+# Type-singleton primal: a `Lifted{Type{P}, N, V}` slot stores the substituted
+# `Type{P_lifted}` inside `V` (e.g. `Type{Array{Float64,D}}` → V-primal
+# `Type{Array{NDual{Float64,N},D}}` per the `dual_type` override in
+# `nfwd/NfwdMooncake.jl`). The substitution is for OC-internal use so
+# `Array{...}(undef, n)` allocates `NDual` storage. Callers querying the
+# user-facing primal type — e.g. `@zero_derivative` rules invoking
+# `Base.allocatedinline(primal(p))` — should see the original `Type{P}`. Use the
+# slot's `P` parameter directly; the inner V substitution stays available via
+# `_unlift(slot)` for AD-internal callsites that need the lifted type.
+primal(::Lifted{Type{P},N,V}) where {P,N,V} = P
 @generated function primal(d::Lifted{P,N,V}) where {P<:Tuple,N,V<:Tuple}
     isconcretetype(P) || return :(map(primal, d.value))
     exprs = map(1:fieldcount(P)) do i
