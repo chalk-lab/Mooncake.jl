@@ -1051,6 +1051,39 @@ end
         end
     end
 
+    @testset "Memory{<:Struct}(undef, n) width-N lane independence (Finding 5)" begin
+        # Pre-fix: `Memory{LoHi}(undef, n)` at width N≥2 went through
+        # `_memory_init_kernel` (returns a single Dual with single Memory
+        # tangent) → `_wrap_rule_result` → `Lifted{Memory{LoHi}, N}(p, t)`
+        # → the Lifted ctor broadcast the single tangent Memory into N
+        # NTangent lanes, producing aliased lane references (`lanes[1]
+        # === lanes[2]`). Writing one lane corrupted all — a silent
+        # correctness bug.
+        # Fix: when the canonical inner V is `Dual{Memory{P}, NTangent}`
+        # at N≥2, allocate N independent tangent Memories explicitly.
+        @static if VERSION >= v"1.11-"
+            for N in (1, 2)
+                f = Mooncake.zero_lifted(Val(N), Memory{TestResources.LoHi})
+                u = Mooncake.zero_lifted(Val(N), undef)
+                nl = Mooncake.zero_lifted(Val(N), 5)
+                r = Mooncake.frule!!(f, u, nl)
+                if N == 2
+                    lanes = r.value.tangent.lanes
+                    @test lanes[1] !== lanes[2]
+                end
+            end
+            # Regression: IEEEFloat-element Memory still uses the canonical
+            # `Memory{NDual}` inner V (no Dual wrapping).
+            for N in (1, 2)
+                f = Mooncake.zero_lifted(Val(N), Memory{Float64})
+                u = Mooncake.zero_lifted(Val(N), undef)
+                nl = Mooncake.zero_lifted(Val(N), 5)
+                r = Mooncake.frule!!(f, u, nl)
+                @test typeof(r).parameters[3] <: Memory{<:Mooncake.Nfwd.NDual}
+            end
+        end
+    end
+
     @testset "memoryrefnew width-N struct-element (Finding 5)" begin
         # Pre-fix: `_memoryrefnew_kernel(::Dual{<:Memory})` and
         # `_memoryrefnew_kernel(::Dual{<:MemoryRef}, ::Dual{Int}[, ::Dual{Bool}])`

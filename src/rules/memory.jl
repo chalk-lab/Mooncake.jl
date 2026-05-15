@@ -1207,6 +1207,22 @@ end
         Mooncake._unlift(f), Mooncake._unlift(u), Mooncake._unlift(n)
     )
     P_out = __primal_type(_typeof(bare_result))
+    InnerT = Mooncake.dual_type(Val(N), P_out)
+    # For struct-element Memory at width N≥2, the canonical inner V is
+    # `Dual{Memory{P}, NTangent{NTuple{N, Memory{Tangent}}}}` — wrapping a
+    # SINGLE bare-Dual result via `_wrap_rule_result` would broadcast the
+    # one tangent Memory across all N lanes, producing aliased lanes
+    # (silent correctness bug: writing one lane corrupts all). Detect this
+    # shape and allocate N independent tangent Memories instead.
+    if N >= 2 &&
+        bare_result isa Dual &&
+        InnerT isa DataType &&
+        InnerT <: Dual &&
+        InnerT.parameters[2] <: Mooncake.NTangent
+        x = primal(bare_result)
+        tangents = ntuple(_ -> zero_tangent_internal(x, NoCache()), Val(N))
+        return Mooncake.Lifted{P_out,N,InnerT}(InnerT(x, Mooncake.NTangent(tangents)))
+    end
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:Memory},UndefInitializer,Int}}) =
