@@ -678,11 +678,30 @@ end
 @inline _memoryrefnew_kernel(x::Dual{<:Memory}) = Dual(
     memoryrefnew(primal(x)), memoryrefnew(_memrefnew_tan(tangent(x)))
 )
+# Width-N NTangent-wrapped Memory: per-lane memoryrefnew on each lane Memory.
+# `_memrefnew_tan` only unwraps singleton NTangent — at width N≥2 the wrapper
+# stays and `memoryrefnew(::NTangent)` errors. Build the result NTangent
+# explicitly from per-lane MemoryRefs.
+@inline function _memoryrefnew_kernel(x::Dual{<:Memory,<:Mooncake.NTangent})
+    return Dual(
+        memoryrefnew(primal(x)), Mooncake.NTangent(map(memoryrefnew, tangent(x).lanes))
+    )
+end
 @inline _memoryrefnew_kernel(x::Memory{<:_HasNDual}) = memoryrefnew(x)
 @inline _memoryrefnew_kernel(x::Dual{<:MemoryRef}, ii::Dual{Int}) = Dual(
     memoryrefnew(primal(x), primal(ii)),
     memoryrefnew(_memrefnew_tan(tangent(x)), primal(ii)),
 )
+# Width-N NTangent-wrapped MemoryRef + Int: per-lane memoryrefnew with index.
+@inline function _memoryrefnew_kernel(
+    x::Dual{<:MemoryRef,<:Mooncake.NTangent}, ii::Dual{Int}
+)
+    pi = primal(ii)
+    return Dual(
+        memoryrefnew(primal(x), pi),
+        Mooncake.NTangent(map(t -> memoryrefnew(t, pi), tangent(x).lanes)),
+    )
+end
 @inline function _memoryrefnew_kernel(x::MemoryRef{<:_HasNDual}, ii::Dual{Int})
     return memoryrefnew(x, primal(ii))
 end
@@ -692,6 +711,17 @@ end
     y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
     dy = memoryrefnew(_memrefnew_tan(tangent(x)), primal(ii), primal(boundscheck))
     return Dual(y, dy)
+end
+# Width-N NTangent-wrapped MemoryRef + Int + Bool: per-lane memoryrefnew.
+@inline function _memoryrefnew_kernel(
+    x::Dual{<:MemoryRef,<:Mooncake.NTangent}, ii::Dual{Int}, boundscheck::Dual{Bool}
+)
+    pi = primal(ii)
+    pb = primal(boundscheck)
+    return Dual(
+        memoryrefnew(primal(x), pi, pb),
+        Mooncake.NTangent(map(t -> memoryrefnew(t, pi, pb), tangent(x).lanes)),
+    )
 end
 @inline function _memoryrefnew_kernel(
     x::MemoryRef{<:_HasNDual}, ii::Dual{Int}, boundscheck::Dual{Bool}

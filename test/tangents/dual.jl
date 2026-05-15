@@ -1051,6 +1051,38 @@ end
         end
     end
 
+    @testset "memoryrefnew width-N struct-element (Finding 5)" begin
+        # Pre-fix: `_memoryrefnew_kernel(::Dual{<:Memory})` and
+        # `_memoryrefnew_kernel(::Dual{<:MemoryRef}, ::Dual{Int}[, ::Dual{Bool}])`
+        # called `memoryrefnew(_memrefnew_tan(tangent(x)), ...)` where
+        # `_memrefnew_tan` only unwraps singleton-NTangent. At width N≥2
+        # the multi-lane NTangent stayed wrapped and `memoryrefnew(::NTangent)`
+        # errored with `expected GenericMemory[Ref]`. Fix: add
+        # `Dual{..., <:NTangent}` overloads that map memoryrefnew over each
+        # lane and reassemble the NTangent.
+        @static if VERSION >= v"1.11-"
+            for N in (1, 2)
+                m = Memory{TestResources.LoHi}(undef, 3)
+                m[1] = TestResources.LoHi(1.0, 2.0)
+                m[2] = TestResources.LoHi(3.0, 4.0)
+                m[3] = TestResources.LoHi(5.0, 6.0)
+                mref = Core.memoryrefnew(m)
+
+                f = Mooncake.zero_lifted(Val(N), Core.memoryrefnew)
+                # 1-arg
+                ml = Mooncake.zero_lifted(Val(N), m)
+                @test (Mooncake.frule!!(f, ml); true)
+                # 2-arg with Int offset
+                mrl = Mooncake.zero_lifted(Val(N), mref)
+                il = Mooncake.zero_lifted(Val(N), 2)
+                @test (Mooncake.frule!!(f, mrl, il); true)
+                # 3-arg with boundscheck
+                bl = Mooncake.zero_lifted(Val(N), false)
+                @test (Mooncake.frule!!(f, mrl, il, bl); true)
+            end
+        end
+    end
+
     @testset "Vector grow/shrink/sizehint width-N struct-element (Finding 5)" begin
         # Pre-fix: `_growbeg_kernel!` / `_growend_kernel!` / `_sizehint_kernel!` /
         # `_deletebeg_kernel!` / `_deleteend_kernel!` / `_deleteat_kernel!` /
