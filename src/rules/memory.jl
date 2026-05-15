@@ -1167,8 +1167,22 @@ end
         if DT isa DataType && DT <: Memory
             return Lifted{Memory{P},N,DT}(Core.memorynew(DT, primal(n)))
         end
-        x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
+        # Struct-element (non-NDual) path: the canonical inner V is
+        # `Dual{Memory{P}, NTangent{NTuple{N, Memory{Tangent}}}}`. The
+        # naive 2-arg ctor would broadcast a single `dx` Memory into all
+        # N NTangent lanes (silent aliasing bug — writing one lane
+        # corrupts all). Allocate N independent tangent Memories.
+        pn = primal(n)
+        x = Core.memorynew(Memory{P}, pn)
+        InnerT = Mooncake.dual_type(Val(N), Memory{P})
+        if N >= 2 &&
+            InnerT isa DataType &&
+            InnerT <: Dual &&
+            InnerT.parameters[2] <: Mooncake.NTangent
+            tangents = ntuple(_ -> Core.memorynew(Memory{tangent_type(P)}, pn), Val(N))
+            return Lifted{Memory{P},N,InnerT}(InnerT(x, Mooncake.NTangent(tangents)))
+        end
+        dx = Core.memorynew(Memory{tangent_type(P)}, pn)
         return Lifted{Memory{P},N}(x, dx)
     end
     @inline Mooncake._is_lifted_aware(

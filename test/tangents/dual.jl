@@ -1051,6 +1051,35 @@ end
         end
     end
 
+    @testset "Core.memorynew(Memory{<:Struct}, n) width-N lane independence (Finding 5)" begin
+        # Same silent-correctness aliasing pattern as
+        # `Memory{LoHi}(undef, n)` (commit `4461a1fd5`), but reached via
+        # `Core.memorynew` on Julia 1.12+. The pre-fix else-branch at
+        # memory.jl:1170 called `Lifted{Memory{P}, N}(x, dx)` with a
+        # single `dx` Memory, broadcasting into all N NTangent lanes.
+        # Fix: when canonical V is `Dual{Memory{P}, NTangent}` at N≥2,
+        # allocate N independent tangent Memories via `Core.memorynew`.
+        @static if VERSION >= v"1.12-"
+            for N in (1, 2)
+                f = Mooncake.zero_lifted(Val(N), Core.memorynew)
+                ty = Mooncake.zero_lifted(Val(N), Memory{TestResources.LoHi})
+                nl = Mooncake.zero_lifted(Val(N), 5)
+                r = Mooncake.frule!!(f, ty, nl)
+                if N == 2
+                    lanes = r.value.tangent.lanes
+                    @test lanes[1] !== lanes[2]
+                end
+            end
+            for N in (1, 2)
+                f = Mooncake.zero_lifted(Val(N), Core.memorynew)
+                ty = Mooncake.zero_lifted(Val(N), Memory{Float64})
+                nl = Mooncake.zero_lifted(Val(N), 5)
+                r = Mooncake.frule!!(f, ty, nl)
+                @test typeof(r).parameters[3] <: Memory{<:Mooncake.Nfwd.NDual}
+            end
+        end
+    end
+
     @testset "_new_(Array{<:Struct}, ref, sz) width-N lane independence (Finding 5)" begin
         # Pre-fix: `_new_(Vector{LoHi}, ref, sz)` at width N≥2 went through
         # the bare-Dual rule which called `_new_(Array{Tangent, M},
