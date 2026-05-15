@@ -486,6 +486,128 @@ for (fname, jlfname, elty) in (
     # suggesting `_is_lifted_aware` doesn't affect the foreigncall dispatch
     # path the way it does for normal frules. Reverted; further IR-emit-level
     # work is needed.
+    #
+    # Audit closure: the rule-level workaround is to add a high-level
+    # `BLAS.dot` / `BLAS.dotc` / `BLAS.dotu` primitive (below) that intercepts
+    # user calls BEFORE the BLAS shim reaches the foreigncall, so the
+    # carve-out lift never tries to materialise Ptr-tangents. Reverse mode
+    # still uses the foreigncall rrule above for `Vector{T}` (non-NDual)
+    # inputs.
+end
+
+# Audit Todo 4 (rev. 3) rule-level workaround for `cblas_*dot*` Ptr-tangent
+# IR-emit gap: high-level `BLAS.dot` / `BLAS.dotc` / `BLAS.dotu` ForwardMode
+# primitives. These intercept user calls before the BLAS shim emits the
+# foreigncall, eliminating the need for the IR-emit to materialise
+# `Ptr{T}`-typed tangents for canonical width-1 NDual containers. ForwardMode
+# only — the existing foreigncall rrule above handles reverse-mode
+# `Vector{T}` inputs.
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{
+        typeof(BLAS.dot),
+        Integer,
+        Union{Ptr{T},AbstractArray{T}},
+        Integer,
+        Union{Ptr{T},AbstractArray{T}},
+        Integer,
+    } where {T<:BlasRealFloat},
+)
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.dot),Vararg}}) = true
+@inline function frule!!(
+    ::Dual{typeof(BLAS.dot)},
+    _n::Dual{<:Integer},
+    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
+    _incx::Dual{<:Integer},
+    Y_dY::Dual{<:Union{Ptr{T},AbstractArray{T}}},
+    _incy::Dual{<:Integer},
+) where {T<:BlasRealFloat}
+    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+    X, dX = arrayify(X_dX)
+    Y, dY = arrayify(Y_dY)
+    val = BLAS.dot(n, X, incx, Y, incy)
+    dval = BLAS.dot(n, dX, incx, Y, incy) + BLAS.dot(n, X, incx, dY, incy)
+    return Dual(val, dval)
+end
+# Width-N: NDual element containers.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.dot)},
+    _n::Dual{<:Integer},
+    X_dX::AbstractArray{NDual{T,N}},
+    _incx::Dual{<:Integer},
+    Y_dY::AbstractArray{NDual{T,N}},
+    _incy::Dual{<:Integer},
+) where {T<:BlasRealFloat,N}
+    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+    X, dXs = _arr_extract_n(X_dX)
+    Y, dYs = _arr_extract_n(Y_dY)
+    val = BLAS.dot(n, X, incx, Y, incy)
+    dvals = ntuple(
+        lane ->
+            BLAS.dot(n, dXs[lane], incx, Y, incy) + BLAS.dot(n, X, incx, dYs[lane], incy),
+        Val(N),
+    )
+    return NDual(val, dvals)
+end
+# `BLAS.dotc(n, X, incx, Y, incy) = conj(X) ⋅ Y` (Complex only).
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{
+        typeof(BLAS.dotc),
+        Integer,
+        Union{Ptr{T},AbstractArray{T}},
+        Integer,
+        Union{Ptr{T},AbstractArray{T}},
+        Integer,
+    } where {T<:BlasComplexFloat},
+)
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.dotc),Vararg}}) = true
+@inline function frule!!(
+    ::Dual{typeof(BLAS.dotc)},
+    _n::Dual{<:Integer},
+    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
+    _incx::Dual{<:Integer},
+    Y_dY::Dual{<:Union{Ptr{T},AbstractArray{T}}},
+    _incy::Dual{<:Integer},
+) where {T<:BlasComplexFloat}
+    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+    X, dX = arrayify(X_dX)
+    Y, dY = arrayify(Y_dY)
+    val = BLAS.dotc(n, X, incx, Y, incy)
+    # d/dt [conj(X+t dX) ⋅ (Y+t dY)] at t=0 = conj(dX) ⋅ Y + conj(X) ⋅ dY
+    dval = BLAS.dotc(n, dX, incx, Y, incy) + BLAS.dotc(n, X, incx, dY, incy)
+    return Dual(val, dval)
+end
+# `BLAS.dotu(n, X, incx, Y, incy) = X ⋅ Y` without conjugation (Complex only).
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{
+        typeof(BLAS.dotu),
+        Integer,
+        Union{Ptr{T},AbstractArray{T}},
+        Integer,
+        Union{Ptr{T},AbstractArray{T}},
+        Integer,
+    } where {T<:BlasComplexFloat},
+)
+@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.dotu),Vararg}}) = true
+@inline function frule!!(
+    ::Dual{typeof(BLAS.dotu)},
+    _n::Dual{<:Integer},
+    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
+    _incx::Dual{<:Integer},
+    Y_dY::Dual{<:Union{Ptr{T},AbstractArray{T}}},
+    _incy::Dual{<:Integer},
+) where {T<:BlasComplexFloat}
+    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+    X, dX = arrayify(X_dX)
+    Y, dY = arrayify(Y_dY)
+    val = BLAS.dotu(n, X, incx, Y, incy)
+    dval = BLAS.dotu(n, dX, incx, Y, incy) + BLAS.dotu(n, X, incx, dY, incy)
+    return Dual(val, dval)
 end
 
 @is_primitive(
