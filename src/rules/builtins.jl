@@ -963,7 +963,18 @@ end
 @inline function _svec_ref_kernel(v::Dual{Core.SimpleVector}, _ind::Dual{Int})
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
-    tv = getindex(_svec_ref_tan(tangent(v)), ind)
+    raw_t = tangent(v)
+    # Multi-lane NTangent (width N≥2): the singleton-only `_svec_ref_tan`
+    # fallback returns the NTangent unchanged, and `getindex(::NTangent,
+    # ind)` resolves to `Base.getindex(::NTangent, ::Int)` (defined in
+    # dual.jl) which returns LANE ind — not element ind of the underlying
+    # Vector{Any}. Silent correctness bug. Per-lane indexing recovers the
+    # intended per-lane element tangents.
+    if raw_t isa NTangent && length(raw_t.lanes) >= 2
+        tvs = ntuple(lane -> getindex(raw_t.lanes[lane], ind), Val(length(raw_t.lanes)))
+        return Dual(pv, NTangent(tvs))
+    end
+    tv = getindex(_svec_ref_tan(raw_t), ind)
     return Dual(pv, tv)
 end
 @inline function frule!!(
