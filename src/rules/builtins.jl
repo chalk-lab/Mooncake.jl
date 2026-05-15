@@ -365,10 +365,18 @@ end
     _x = primal(x)
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
-        # Unwrap singleton-NTangent before `bitcast` so the
-        # `tangent(x)::NTangent{Tuple{<:Ptr}}` path hits the same
-        # primitive-Ptr value as the bare path.
+        # Multi-lane NTangent (width N≥2): bitcast each lane's tangent Ptr
+        # independently. The original singleton-only unwrap discarded lanes
+        # 2..N (silent correctness bug — lanes 2..N would inherit lane 1's
+        # tangent via the `_wrap_rule_result` broadcast).
         raw_t = tangent(x)
+        if raw_t isa NTangent && length(raw_t.lanes) >= 2
+            dvs = ntuple(
+                lane -> bitcast(Ptr{tangent_type(eltype(T))}, raw_t.lanes[lane]),
+                Val(length(raw_t.lanes)),
+            )
+            return Dual(v, NTangent(dvs))
+        end
         bare_t = raw_t isa NTangent ? raw_t.lanes[1] : raw_t
         dv = bitcast(Ptr{tangent_type(eltype(T))}, bare_t)
     else
