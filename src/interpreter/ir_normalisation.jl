@@ -169,17 +169,34 @@ end
 __extract_foreigncall_name(x::Symbol) = Val(x)
 __extract_foreigncall_name(x::String) = Val(Symbol(x))
 function __extract_foreigncall_name(x::Expr)
-    # Make sure that we're getting the expression that we're expecting.
-    !Meta.isexpr(x, :call) && error("unexpected expr $x")
-    !isa(x.args[1], GlobalRef) && error("unexpected expr $x")
-    x.args[1].name != :tuple && error("unexpected expr $x")
-    length(x.args) != 3 && error("unexpected expr $x")
-
-    # Parse it into a name that can be passed as a type.
-    v = eval(x)
-    return Val((Symbol(v[1]), Symbol(v[2])))
+    # On Julia 1.13+, the foreigncall name is emitted as an `Expr(:tuple, ...)`.
+    # On older versions it is `Expr(:call, Core.tuple, ...)`. Either way, evaluating
+    # yields the tuple `(name,)` or `(name, lib)`.
+    if Meta.isexpr(x, :tuple) || (
+        Meta.isexpr(x, :call) &&
+        isa(x.args[1], GlobalRef) &&
+        x.args[1].name === :tuple
+    )
+        v = eval(x)
+        return __extract_foreigncall_name(v)
+    end
+    error("unexpected expr $x")
 end
-__extract_foreigncall_name(v::Tuple) = Val((Symbol(v[1]), Symbol(v[2])))
+__extract_foreigncall_name(v::Tuple{Any}) = Val(Symbol(v[1]))
+__extract_foreigncall_name(v::Tuple{Any,Any}) =
+    Val((Symbol(v[1]), _foreigncall_libsym(v[2])))
+
+# Stable Symbol identifier for a ccall library reference.
+# In Julia 1.13, libraries like `BLAS.libblastrampoline` are `LazyLibrary` objects
+# whose stringified form contains a mutable handle pointer; `Symbol(lib)` is therefore
+# not stable between precompilation and runtime (see #856). Resolve to the final path
+# component instead, which matches the form used in older versions.
+_foreigncall_libsym(x) = Symbol(x)
+@static if isdefined(Base.Libc.Libdl, :LazyLibrary)
+    function _foreigncall_libsym(lib::Base.Libc.Libdl.LazyLibrary)
+        return Symbol(last(lib.path.pieces))
+    end
+end
 __extract_foreigncall_name(x::QuoteNode) = __extract_foreigncall_name(x.value)
 function __extract_foreigncall_name(x::GlobalRef)
     return __extract_foreigncall_name(getglobal(x.mod, x.name))
