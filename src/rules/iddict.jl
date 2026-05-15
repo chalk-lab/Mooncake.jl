@@ -360,7 +360,25 @@ end
 # `IdDict{K,V}()`: the Lifted body below computes the result independently
 # — no kernel or bare-Dual body needed.
 @inline function frule!!(::Mooncake.Lifted{Type{IdDict{K,V}},N}) where {K,V,N}
-    return Mooncake.Lifted{IdDict{K,V},N}(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
+    # Per-lane independent tangent IdDicts. The naive
+    # `Lifted{IdDict, N}(IdDict_primal, single_tangent_IdDict)` would
+    # broadcast a single IdDict across all N NTangent lanes (silent
+    # aliasing — writes to one lane corrupt all). At N==1 the broadcast
+    # is a no-op (singleton); at N≥2 we allocate N independent tangent
+    # IdDicts explicitly.
+    primal_dict = IdDict{K,V}()
+    if N >= 2
+        InnerT = Mooncake.dual_type(Val(N), IdDict{K,V})
+        if InnerT isa DataType &&
+            InnerT <: Dual &&
+            InnerT.parameters[2] <: Mooncake.NTangent
+            tangents = ntuple(_ -> IdDict{K,tangent_type(V)}(), Val(N))
+            return Mooncake.Lifted{IdDict{K,V},N,InnerT}(
+                InnerT(primal_dict, Mooncake.NTangent(tangents))
+            )
+        end
+    end
+    return Mooncake.Lifted{IdDict{K,V},N}(primal_dict, IdDict{K,tangent_type(V)}())
 end
 function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
