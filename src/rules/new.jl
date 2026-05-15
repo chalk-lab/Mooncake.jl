@@ -151,12 +151,11 @@ end
 
     # Struct with NDual content (parallel-Dual path): wrap per-direction
     # tangents in `NTangent` at every positive width. `dual_type(Val(1), P)
-    # === Dual{P, NTangent{Tuple{T}}}` for generic concrete P (audit step 5
-    # carve-out lift, commit cbc5b236b) — so width 1 and width N>=2 share
-    # the same wrapper shape. This branch is only reached for structs whose
-    # `dual_type` returns a `Dual` (e.g. types where `tangent_type(P)` is not
-    # `<: Tangent`, or which have an explicit per-type `dual_type` overload
-    # pointing at the parallel form).
+    # === Dual{P, NTangent{Tuple{T}}}` for generic concrete P, so width 1
+    # and width N>=2 share the same wrapper shape. This branch is only
+    # reached for structs whose `dual_type` returns a `Dual` (e.g. types
+    # where `tangent_type(P)` is not `<: Tangent`, or which have an explicit
+    # per-type `dual_type` overload pointing at the parallel form).
     if _has_ndual(bare_x...)
         primals_extracted = _new_field_primals(P, bare_x)
         y = _new_(P, primals_extracted...)
@@ -322,12 +321,11 @@ end
     ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{1}
 ) where {P}
     # Width 1 here returns a bare-tangent `Dual{P, tangent_type(P)}` for the
-    # bare-rule output boundary. The canonical width-1 inner V is now
-    # `Dual{P, NTangent{Tuple{T}}}` (carve-out lifted in commit cbc5b236b)
-    # for generic concrete `P`, but `_ndual_new_result` feeds into
-    # `_wrap_rule_result` which canonicalises shape at the slot boundary —
-    # so the bare-T form here is an explicit compatibility output that gets
-    # rewrapped downstream.
+    # bare-rule output boundary. The canonical width-1 inner V is
+    # `Dual{P, NTangent{Tuple{T}}}` for generic concrete `P`, but
+    # `_ndual_new_result` feeds into `_wrap_rule_result` which canonicalises
+    # shape at the slot boundary — so the bare-T form here is an explicit
+    # compatibility output that gets rewrapped downstream.
     dir_tangents = map(xi -> tangent(xi, 1), x)
     return Dual(y, build_output_tangent(P, primals, dir_tangents))
 end

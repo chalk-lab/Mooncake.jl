@@ -40,11 +40,10 @@ tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
 function tangent_type(::Val{N}, ::Type{P}) where {N,P}
     T = tangent_type(P)
     T === NoTangent && return NoTangent
-    # Width 1 wraps once (`NTangent{Tuple{T}}`). With the carve-out lifted
-    # (commit cbc5b236b), `dual_type(Val(1), generic_P)` also returns the
-    # NTangent-wrapped form `Dual{P, NTangent{Tuple{T}}}` for generic
-    # concrete `P` — so `tangent_type` and `dual_type` agree on shape at
-    # every positive width.
+    # Width 1 wraps once (`NTangent{Tuple{T}}`). `dual_type(Val(1),
+    # generic_P)` also returns the NTangent-wrapped form `Dual{P,
+    # NTangent{Tuple{T}}}` for generic concrete `P`, so `tangent_type` and
+    # `dual_type` agree on shape at every positive width.
     return NTangent{NTuple{N,T}}
 end
 
@@ -289,8 +288,7 @@ end
 # No-`Val` `dual_type(P)` delegates to `dual_type(Val(1), P)` so the two
 # queries agree by construction. The IEEEFloat / Complex / Array specialised
 # overloads return `NDual`-shaped forms; generic concrete `P` returns
-# `Dual{P, NTangent{Tuple{tangent_type(P)}}}` (carve-out lifted in commit
-# cbc5b236b).
+# `Dual{P, NTangent{Tuple{tangent_type(P)}}}`.
 @unstable dual_type(::Type{P}) where {P} = dual_type(Val(1), P)
 
 function dual_type(p::Type{Type{P}}) where {P}
