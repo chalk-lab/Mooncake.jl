@@ -1698,18 +1698,20 @@ end
     end
 
     @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
+    # `Base._growat!` returns `Tuple{Int}` (new length) on Julia 1.12+;
+    # return the actual result so the rule output type matches the primal's.
     @inline function _growat_kernel!(
         a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
     )
-        Base._growat!(primal(a), primal(i), primal(d))
+        r = Base._growat!(primal(a), primal(i), primal(d))
         Base._growat!(tangent(a), primal(i), primal(d))
-        return zero_dual(nothing)
+        return zero_dual(r)
     end
     @inline function _growat_kernel!(
         a::AbstractVector{<:NDual}, i::Dual{<:Integer}, d::Dual{<:Integer}
     )
-        Base._growat!(a, primal(i), primal(d))
-        return zero_dual(nothing)
+        r = Base._growat!(a, primal(i), primal(d))
+        return zero_dual(r)
     end
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Base._growat!),N},
@@ -1731,14 +1733,14 @@ end
     )
         a, i, delta = map(primal, (_a, _i, _delta))
         da = tangent(_a)
-        Base._growat!(a, i, delta)
+        r = Base._growat!(a, i, delta)
         Base._growat!(da, i, delta)
         function _growat!_pb!!(::NoRData)
             deleteat!(a, i:(i + delta - 1))
             deleteat!(da, i:(i + delta - 1))
             return NoRData(), NoRData(), NoRData(), NoRData()
         end
-        return zero_fcodual(nothing), _growat!_pb!!
+        return zero_fcodual(r), _growat!_pb!!
     end
 end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
