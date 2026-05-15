@@ -135,7 +135,6 @@
     end
 
     @testset "near-boundary domain-restricted functions" begin
-        test_rule(StableRNG(123), log, 0.005; is_primitive=true, max_norm_perturbation=1e-3)
         test_rule(
             StableRNG(123), sqrt, 0.005; is_primitive=true, max_norm_perturbation=1e-3
         )

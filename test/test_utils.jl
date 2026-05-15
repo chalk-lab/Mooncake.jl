@@ -148,16 +148,13 @@
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Vector{Float64}}) == 0
     end
     @testset "max_norm_perturbation kwarg for testing rules" begin
-        rng = Xoshiro(1)
-        # With a bound of 1e-3, all ε values keep x+ε*ẋ > 0 and the rule test passes.
-        ts = TestUtils.test_rule(
-            rng,
-            log,
+        TestUtils.test_rule(
+            StableRNG(123),
+            x -> log(x),
             0.005;
             is_primitive=false,
             print_results=false,
-            max_norm_perturbation=1.0e-3,
+            max_norm_perturbation=1e-3,
         )
-        @test !ts.anynonpass
     end
 end

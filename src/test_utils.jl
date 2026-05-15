@@ -475,6 +475,16 @@ function _diff(p::P, q::P) where {P}
     return increment!!(_scale(-1.0, t2), t1)
 end
 
+function _check_ε_list(ε_list, max_norm_perturbation)
+    isempty(ε_list) && throw(
+        ArgumentError(
+            "max_norm_perturbation=$max_norm_perturbation filters out all finite-difference " *
+            "step sizes; the smallest available is 1e-8, below which floating-point rounding " *
+            "errors dominate the estimate.",
+        ),
+    )
+end
+
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_frule_correctness(
     rng::AbstractRNG,
@@ -491,7 +501,7 @@ function test_frule_correctness(
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
-    ẋ = map(x -> normalize_tangent(tangent(x)), x_ẋ)
+    ẋ = map(normalize_tangent ∘ tangent, x_ẋ)
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
@@ -502,6 +512,7 @@ function test_frule_correctness(
         ε -> isnothing(max_norm_perturbation) || ε <= max_norm_perturbation,
         [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8],
     )
+    _check_ε_list(ε_list, max_norm_perturbation)
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
@@ -600,6 +611,7 @@ function test_rrule_correctness(
         ε -> isnothing(max_norm_perturbation) || ε <= max_norm_perturbation,
         [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8],
     )
+    _check_ε_list(ε_list, max_norm_perturbation)
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
@@ -921,7 +933,10 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         print_results=true,
         output_tangent=nothing,
         atol=1e-3,
-        rtol=1e-3
+        rtol=1e-3,
+        frule=nothing,
+        rrule=nothing,
+        max_norm_perturbation::Union{Nothing,Float64}=nothing,
     )
 
 Run standardised tests on the `rule` for `x`.
