@@ -201,7 +201,8 @@ end
 
 # Width-N extract / writeback: returns (p, ts::NTuple{N, AbstractArray})
 # where each `ts[n]` is the n-th lane tangent (separate array per lane).
-# Used by rules migrated to per-lane width-N assembly (Audit Pattern G).
+# Used by rules that compute per-lane derivatives separately and then
+# reassemble lanes at the output.
 @inline function _arr_extract_n(x::AbstractArray{NDual{T,N}}) where {T,N}
     p = map(d -> d.value, x)
     ts = ntuple(n -> map(d -> d.partials[n], x), Val(N))
@@ -673,7 +674,7 @@ function frule!!(
     Xv = view(X, Xinds)
     # Per-lane tangent: nrm2 derivative w.r.t. each direction is
     # (X' * dX + dX' * X) / (2 * nrm). For each lane, extract that lane's
-    # partials and accumulate. Audit Pattern G: per-lane assembly.
+    # partials and accumulate.
     partials = ntuple(Val(N)) do lane
         dX = map(d -> d.partials[lane], X_dX)
         dXv = view(dX, Xinds)

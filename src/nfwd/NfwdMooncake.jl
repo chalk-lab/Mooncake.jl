@@ -1289,11 +1289,11 @@ function (::Type{Array{NDual{T,N},D}})(
     primal::Array{T,D}, tangent::NTangent{NTuple{N,Array{T,D}}}
 ) where {T<:IEEEFloat,N,D}
     # `map(primal, tangent.lanes...)` preserves the shape of `primal` (so
-    # `Matrix` stays a Matrix). The previous `map(eachindex(primal))` form
-    # returned a flat `Vector{NDual}` because `eachindex(::Matrix)` is a
-    # 1-D `LinearIndices`/`OneTo` iterator — surfaced as the
+    # `Matrix` stays a Matrix). A `map(eachindex(primal))` form would
+    # return a flat `Vector{NDual}` because `eachindex(::Matrix)` is a
+    # 1-D `LinearIndices`/`OneTo` iterator — that would surface as a
     # `Lifted{Matrix{Float64}, 1, Matrix{NDual}}(::Vector{NDual})` failure
-    # in `Base._collect`-on-Matrix paths under the carve-out-lifted state.
+    # in `Base._collect`-on-Matrix paths.
     return map(primal, tangent.lanes...) do p, ts::Vararg{T,N}
         NDual{T,N}(p, ts)
     end

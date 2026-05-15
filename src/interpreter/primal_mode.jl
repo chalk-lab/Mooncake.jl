@@ -163,8 +163,8 @@ function _uninit_dual_fallback(w::Val{N}, v) where {N}
     end
     # Route through 2-arg `Lifted{P, N}(primal, tangent)` ctor when the
     # bare `uninit_dual(v)` shape differs from the canonical inner V, so
-    # the inner V matches `dual_type(Val(N), P)` (NTangent-wrapped at
-    # width N>=2 / when carve-out is lifted).
+    # the inner V matches `dual_type(Val(N), P)` (e.g. NTangent-wrapped
+    # at width N>=2 for non-IEEEFloat primals).
     ud = uninit_dual(v)
     InnerT = dual_type(w, _typeof(v))
     return if typeof(ud) === InnerT

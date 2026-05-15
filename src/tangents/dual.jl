@@ -232,9 +232,9 @@ randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 # 3. `NoTangent` primals: `Dual(x, NoTangent())` matches the canonical
 #    `Dual{P, NoTangent}`.
 # 4. Otherwise consult `dual_type(Val(N), P)`:
-#    - `Dual{P, NTangent{...}}` (the typical positive-width canonical form
-#      for non-leaf primals, and the carve-out-lifted width-1 form for
-#      generic concrete `P`): wrap N independent `zero_tangent(x)` lanes.
+#    - `Dual{P, NTangent{...}}` (the canonical positive-width form for
+#      non-leaf primals, and also the canonical width-1 form for generic
+#      concrete `P`): wrap N independent `zero_tangent(x)` lanes.
 #    - `Dual{P, T}` (bare-T width-1 wrapper exceptions like `Diagonal`,
 #      `Adjoint{T,Matrix{T}}`, `SubArray`, the triangulars, etc.): return
 #      `Dual(x, zero_tangent(x))` (the legacy form).
@@ -448,9 +448,9 @@ function Base.convert(::Type{Dual{P,NoTangent}}, x::P) where {P}
     return Dual{P,NoTangent}(x, NoTangent())
 end
 
-# NTangent{Tuple{T}} → NoTangent convert: some carve-out-lifted paths
-# wrap a NoTangent-leaf primal's tangent in NTangent (e.g. tangent of
-# Tuple's element that turned out to be Int64) before it reaches a
+# NTangent{Tuple{T}} → NoTangent convert: some IR paths wrap a
+# NoTangent-leaf primal's tangent in NTangent (e.g. tangent of a Tuple
+# element that turned out to be Int64) before it reaches a
 # `Dual{P, NoTangent}` slot. The slot's NoTangent tangent type means
 # the lane content is meaningless for AD purposes — drop and return
 # NoTangent.
