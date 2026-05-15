@@ -1029,11 +1029,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
         ],
         @static(
             if VERSION ≥ v"1.13-"
+                _nonempty_mems = filter(m -> length(m) >= 1, mems)
                 vcat(
-                    [(false, :none, nothing, memoryrefnew, mem, 1) for mem in mems],
                     [
-                        (false, :none, nothing, memoryrefnew, mem, 1, bc) for mem in mems
-                        for bc in [false, true]
+                        (false, :none, nothing, memoryrefnew, mem, 1) for
+                        mem in _nonempty_mems
+                    ],
+                    [
+                        (false, :none, nothing, memoryrefnew, mem, 1, bc) for
+                        mem in _nonempty_mems for bc in [false, true]
                     ],
                 )
             else

@@ -34,7 +34,18 @@ end
 function frule!!(
     ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
 ) where {P<:IEEEFloat}
-    return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
+    # On Julia 1.13, every BLAS ccall through `LazyLibrary` allocates a tracked
+    # object, so calling `dot` here would break the zero-allocation assertion
+    # this rule exists to enforce. Compute the tangent inner product manually.
+    px = primal(x)
+    dx = tangent(x)
+    s = zero(P)
+    sd = zero(P)
+    @inbounds @simd for i in eachindex(px, dx)
+        s = muladd(px[i], px[i], s)
+        sd = muladd(px[i], dx[i], sd)
+    end
+    return Dual(s, 2 * sd)
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}

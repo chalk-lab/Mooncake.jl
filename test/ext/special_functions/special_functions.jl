@@ -31,6 +31,19 @@ function _sf_nonprimitive_perf_flag(name::Symbol, default::Symbol)
     return default
 end
 
+# On Julia 1.13, every ccall through `Base.Libc.Libdl.LazyLibrary` (which now backs the
+# OpenSpecFun / OpenLibm loaders) registers a tracked GC allocation per call. SpecialFunctions
+# primals (and the @from_chainrules rules that wrap them) therefore report `count_allocs >= 1`
+# even when no bytes are actually allocated. Demote :stability_and_allocs / :allocs to
+# stability-only on 1.13 so the type-stability assertions still run.
+function _demote_perf_flag(flag::Symbol)
+    if VERSION >= v"1.13-"
+        flag === :stability_and_allocs && return :stability
+        flag === :allocs && return :none
+    end
+    return flag
+end
+
 # Helper methods to enable mixed Float32/Float64 operations. 
 # Required for compatibility with Julia 1.12+.
 Union{Float32,Float64}(x) = Float64(x)
@@ -91,7 +104,7 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
         end...,
         (:stability_and_allocs, logfactorial, 3),
     )
-        test_rule(StableRNG(123456), f, x...; perf_flag)
+        test_rule(StableRNG(123456), f, x...; perf_flag=_demote_perf_flag(perf_flag))
     end
 
     @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
@@ -120,7 +133,13 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
         (:allocs, SpecialFunctions.loggamma1p, -0.3),
         (:none, SpecialFunctions.lambdaeta, 5.0),
     )
-        test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
+        test_rule(
+            StableRNG(123456),
+            f,
+            x...;
+            perf_flag=_demote_perf_flag(perf_flag),
+            is_primitive=false,
+        )
     end
 
     @testset "Primitive SpecialFunctions with `NotImplemented` gradients" begin
