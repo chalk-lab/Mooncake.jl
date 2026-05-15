@@ -31,6 +31,33 @@
 #     clamp(x, lo, hi) (scalar output, DOF=3)
 #
 
+# ── Centralised bare-Dual / bare-NDual → Lifted dispatch adapters ────────────
+#
+# For primitive rules that have a Lifted-typed `frule!!` body and are registered
+# via `_is_lifted_aware`, these unary adapters route bare-Dual and bare-NDual
+# calls through the Lifted path. Per-op `frule!!(::Dual{op}, ::Dual{P})` and
+# `frule!!(::Dual{op}, ::NDual{T,N})` duplicates that delegate to the same
+# Lifted body are then redundant and can be removed. Specific bare-shape rules
+# dispatch first when present; these adapters only fire when no specific rule
+# exists. See `temp/branch-audit-2026-05-15.md` Finding 1 migration playbook.
+
+@inline function frule!!(f::Dual{F}, x::Dual{P}) where {F,P<:IEEEFloat}
+    Mooncake._is_lifted_aware(Tuple{F,P}) || throw(MethodError(frule!!, (f, x)))
+    return Mooncake._ndual_output_to_width1(
+        frule!!(
+            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
+            Mooncake.Lifted{P,1}(primal(x), tangent(x)),
+        ),
+    )
+end
+
+@inline function frule!!(f::Dual{F}, x::NDual{T,N}) where {F,T<:IEEEFloat,N}
+    Mooncake._is_lifted_aware(Tuple{F,T}) || throw(MethodError(frule!!, (f, x)))
+    return Mooncake._unlift(
+        frule!!(Mooncake.Lifted{F,N}(primal(f), tangent(f)), Mooncake.Lifted{T,N}(x))
+    )
+end
+
 # ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
 for f in (
     exp,
@@ -127,11 +154,11 @@ end
 end
 
 # ── tanpi ─────────────────────────────────────────────────────────────────────
+# Migrated to one-for-one Lifted-typed rule. Bare-Dual and bare-NDual entry
+# points are routed through the centralised adapters above; the Lifted-typed
+# body is the single source of truth for the derivative.
 
 @is_primitive MinimalCtx Tuple{typeof(tanpi),P} where {P<:IEEEFloat}
-@inline function frule!!(f::Dual{typeof(tanpi)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
-end
 @inline function frule!!(::Mooncake.Lifted{typeof(tanpi),N}, x::Mooncake.Lifted) where {N}
     return Mooncake.Lifted{_typeof(primal(x)),N}(tanpi(_unlift(x)))
 end
@@ -576,7 +603,6 @@ for f in (
     mod2pi,
     nextfloat,
     prevfloat,
-    tanpi,
 )
     @eval function frule!!(::Dual{typeof($f)}, x::NDual{T,N}) where {T<:IEEEFloat,N}
         return $f(x)
