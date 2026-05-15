@@ -302,6 +302,37 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Width-N unsafe_copyto! for NTangent-wrapped MemoryRef (struct-element /
+# non-IEEEFloat-element case). The generic delegator above routes through
+# the bare-Dual body which uses `_memrefget_tan` (singleton-NTangent only),
+# so at width N≥2 the call `unsafe_copyto!(NTangent, NTangent, n)` errored
+# with `no method matching unsafe_copyto!(::NTangent, ::NTangent, ...)`.
+# At N==1 the singleton unwrap path handles it via the generic delegator.
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    dest::Mooncake.Lifted{
+        MemoryRef{P},N,<:Dual{MemoryRef{P},<:Mooncake.NTangent{<:NTuple{N,<:MemoryRef}}}
+    },
+    src::Mooncake.Lifted{
+        MemoryRef{P},N,<:Dual{MemoryRef{P},<:Mooncake.NTangent{<:NTuple{N,<:MemoryRef}}}
+    },
+    n::Mooncake.Lifted{Int},
+) where {N,P}
+    N == 1 && return @invoke frule!!(
+        f::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+        dest::Mooncake.Lifted{MemoryRef{P}},
+        src::Mooncake.Lifted{MemoryRef{P}},
+        n::Mooncake.Lifted{Int},
+    )
+    bare_dest = Mooncake._unlift(dest)
+    bare_src = Mooncake._unlift(src)
+    pn = primal(Mooncake._unlift(n))
+    unsafe_copyto!(primal(bare_dest), primal(bare_src), pn)
+    ntuple(Val(N)) do lane
+        unsafe_copyto!(tangent(bare_dest).lanes[lane], tangent(bare_src).lanes[lane], pn)
+    end
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{MemoryRef{P}},

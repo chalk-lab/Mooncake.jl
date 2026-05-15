@@ -990,4 +990,36 @@ end
             end
         end
     end
+
+    @testset "unsafe_copyto! width-N struct-element MemoryRef (Finding 5)" begin
+        # Pre-fix: at width N≥2 the generic Lifted delegator routed through
+        # the bare-Dual body which used `_memrefget_tan` (singleton-NTangent
+        # only); the call `unsafe_copyto!(NTangent, NTangent, n)` errored.
+        # Fix: width-N-specific overload doing per-lane copy.
+        @static if VERSION >= v"1.11-"
+            m_src = Memory{TestResources.LoHi}(undef, 4)
+            m_src[1] = TestResources.LoHi(1.0, 2.0)
+            m_src[2] = TestResources.LoHi(3.0, 4.0)
+            m_dst = Memory{TestResources.LoHi}(undef, 4)
+            m_dst[1] = TestResources.LoHi(0.0, 0.0)
+            m_dst[2] = TestResources.LoHi(0.0, 0.0)
+            src_ref = Core.memoryrefnew(m_src)
+            dst_ref = Core.memoryrefnew(m_dst)
+
+            for N in (1, 2)
+                f = Mooncake.zero_lifted(Val(N), Base.unsafe_copyto!)
+                d = Mooncake.zero_lifted(Val(N), dst_ref)
+                s = Mooncake.zero_lifted(Val(N), src_ref)
+                n = Mooncake.zero_lifted(Val(N), 2)
+                r = Mooncake.frule!!(f, d, s, n)
+                # Returns the dest Lifted; underlying primal copy executed.
+                @test r === d
+                @test m_dst[1] == TestResources.LoHi(1.0, 2.0)
+                @test m_dst[2] == TestResources.LoHi(3.0, 4.0)
+                # Reset dst for the next width.
+                m_dst[1] = TestResources.LoHi(0.0, 0.0)
+                m_dst[2] = TestResources.LoHi(0.0, 0.0)
+            end
+        end
+    end
 end
