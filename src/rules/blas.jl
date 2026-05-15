@@ -459,39 +459,29 @@ for (fname, jlfname, elty) in (
         return CoDual(result, NoFData()), dot_pb!!
     end
 
-    # Audit Todo 3 (revision 2) follow-up: a Lifted-aware delegator for the
-    # `cblas_*dot*` foreigncall variants was attempted but produced a segfault
-    # inside libopenblas64_'s `sdot_k_COOPERLAKE` when called with the
-    # canonical width-1 NTangent-wrapped `Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}}`
-    # tangent pointer. Likely the tangent Ptr in the NTangent isn't a valid
-    # readable address. Restoring this requires re-engineering how the lifted
-    # IR materialises Ptr-tangents through the carve-out lift — out of scope
-    # here. With no delegator, the foreigncall fallback returns a controlled
-    # `MissingForeigncallRuleError` instead of crashing.
+    # Do NOT add a Lifted-aware delegator for the `cblas_*dot*` foreigncall:
+    # past attempts segfaulted inside libopenblas64_'s `sdot_k_COOPERLAKE`
+    # when called with the canonical width-1 NTangent-wrapped
+    # `Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}}` tangent pointer (likely the
+    # tangent Ptr isn't a valid readable address). Flipping `_is_lifted_aware`
+    # on this foreigncall sig also doesn't help — the IR-emit's foreigncall
+    # dispatch path ignores the trait. With no delegator, the foreigncall
+    # fallback returns a controlled `MissingForeigncallRuleError` instead of
+    # crashing.
     #
-    # Audit Todo 4 (rev. 3) follow-up: attempted to add
-    # `_is_lifted_aware = true` for this foreigncall sig so the IR-emit would
-    # route canonical inner V (bare `Dual{P,T}` Duals) directly to the
-    # existing bare-Dual frule. The MWE still hit `MissingForeigncallRuleError`,
-    # suggesting `_is_lifted_aware` doesn't affect the foreigncall dispatch
-    # path the way it does for normal frules. Reverted; further IR-emit-level
-    # work is needed.
-    #
-    # Audit closure: the rule-level workaround is to add a high-level
-    # `BLAS.dot` / `BLAS.dotc` / `BLAS.dotu` primitive (below) that intercepts
-    # user calls BEFORE the BLAS shim reaches the foreigncall, so the
-    # carve-out lift never tries to materialise Ptr-tangents. Reverse mode
-    # still uses the foreigncall rrule above for `Vector{T}` (non-NDual)
-    # inputs.
+    # The rule-level workaround is the high-level `BLAS.dot` /
+    # `BLAS.dotc` / `BLAS.dotu` primitive (below) that intercepts user calls
+    # BEFORE the BLAS shim reaches the foreigncall. Reverse mode still uses
+    # the foreigncall rrule above for `Vector{T}` (non-NDual) inputs.
 end
 
-# Audit Todo 4 (rev. 3) rule-level workaround for `cblas_*dot*` Ptr-tangent
-# IR-emit gap: high-level `BLAS.dot` / `BLAS.dotc` / `BLAS.dotu` ForwardMode
-# primitives. These intercept user calls before the BLAS shim emits the
-# foreigncall, eliminating the need for the IR-emit to materialise
-# `Ptr{T}`-typed tangents for canonical width-1 NDual containers. ForwardMode
-# only — the existing foreigncall rrule above handles reverse-mode
-# `Vector{T}` inputs.
+# High-level `BLAS.dot` / `BLAS.dotc` / `BLAS.dotu` ForwardMode primitives.
+# These intercept user calls before the BLAS shim emits the foreigncall,
+# eliminating the need for the IR-emit to materialise `Ptr{T}`-typed tangents
+# for canonical width-1 NDual containers. ForwardMode only — the existing
+# foreigncall rrule above handles reverse-mode `Vector{T}` inputs. See the
+# comment in the cblas rrule above for why the foreigncall path can't be
+# Lifted-aware-registered.
 @is_primitive(
     MinimalCtx,
     ForwardMode,
