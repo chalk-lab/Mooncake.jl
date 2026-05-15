@@ -106,9 +106,20 @@ end
 ) where {N}
     inner = Mooncake._unlift(x)
     y = pointer_from_objref(primal(inner))
+    inner_tan = tangent(inner)
+    # At width N≥2, `inner_tan` is `NTangent{NTuple{N, T}}` — taking
+    # `pointer_from_objref(NTangent)` errors (NTangent is immutable). Map
+    # per-lane: each lane's tangent is a different mutable tangent object,
+    # producing a different pointer.
+    if N >= 2 && inner_tan isa Mooncake.NTangent
+        dys = ntuple(Val(N)) do lane
+            bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(inner_tan.lanes[lane]))
+        end
+        return Mooncake.Lifted{Ptr{Nothing},N}(y, Mooncake.NTangent(dys))
+    end
     dy = bitcast(
         Ptr{tangent_type(Nothing)},
-        pointer_from_objref(_foreigncall_ntangent_unwrap(tangent(inner))),
+        pointer_from_objref(_foreigncall_ntangent_unwrap(inner_tan)),
     )
     return Mooncake.Lifted{Ptr{Nothing},N}(y, dy)
 end

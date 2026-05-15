@@ -1051,6 +1051,32 @@ end
         end
     end
 
+    @testset "pointer_from_objref width-N (Finding 5)" begin
+        # Pre-fix: at width N≥2 the rule called
+        # `pointer_from_objref(_foreigncall_ntangent_unwrap(tangent(inner)))`
+        # where the singleton-NTangent-unwrap helper didn't match the
+        # multi-lane NTangent → fell through to the no-op fallback returning
+        # the NTangent unchanged → `pointer_from_objref(NTangent)` errored
+        # because NTangent is immutable.
+        # Fix: detect multi-lane NTangent and map pointer_from_objref over
+        # each lane's tangent independently, building per-lane Ptrs.
+        mutable struct _PMutable
+            x::Float64
+        end
+        for N in (1, 2)
+            m = _PMutable(1.0)
+            f = Mooncake.zero_lifted(Val(N), pointer_from_objref)
+            ml = Mooncake.zero_lifted(Val(N), m)
+            r = Mooncake.frule!!(f, ml)
+            if N == 2
+                # Per-lane Ptrs differ: each points to a different mutable
+                # tangent object.
+                lanes = r.value.tangent.lanes
+                @test lanes[1] !== lanes[2]
+            end
+        end
+    end
+
     @testset "copy(::NTangent) per-lane independent (Finding 5)" begin
         # Pre-fix: `copy(::NTangent)` had no method. Callers that
         # whole-copy a `Dual{P, NTangent}` (e.g. `Base.copy(::Memory{<:Struct})`
