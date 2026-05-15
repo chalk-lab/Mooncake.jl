@@ -986,13 +986,12 @@ end
 # workarounds: their rules dispatch through `arrayify` (whose
 # `TangentOrFData = Union{Tangent, FData}` does not accept `NTangent`),
 # and only `Diagonal`/`Adjoint{T,Matrix{T}}`/`SubArray` have NDual-element
-# wrapper representations. Audit Todo 2 (rev. 3): the test
-# `width-1 wrapper bare-Dual durable exceptions (audit Todo 2, rev. 3)`
-# in `test/tangents/dual.jl` pins the documented exception so this cannot
-# regress silently. Each `dual_type(Val(1), Wrapper) === Dual{Wrapper,
-# tangent_type(Wrapper)}` (bare-T) so arrayify dispatches via
-# `Dual{<:AbstractVecOrMat{P}}`; width-N (N>=2) stays at the chunked
-# NTangent-wrapped Dual.
+# wrapper representations. The test
+# `width-1 wrapper bare-Dual durable exceptions` in `test/tangents/dual.jl`
+# pins the documented exception so this cannot regress silently. Each
+# `dual_type(Val(1), Wrapper) === Dual{Wrapper, tangent_type(Wrapper)}`
+# (bare-T) so arrayify dispatches via `Dual{<:AbstractVecOrMat{P}}`;
+# width-N (N>=2) stays at the chunked NTangent-wrapped Dual.
 for Wrapper in (
     :(Base.ReshapedArray{T,D,P,MI} where {T<:IEEEFloat,D,P,MI}),
     :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
@@ -1026,7 +1025,7 @@ end
 # wrapper-shaped `dual_type(Val(N), Adjoint{T, Matrix{T}})` overload at
 # `NfwdMooncake.jl` only covers `Adjoint{T, Matrix{T}}`. Other parents (Vector,
 # SubArray) need the parallel-Dual form for the same `arrayify` reason.
-# Audit Todo 2 (rev. 3): durable exception pinned in `test/tangents/dual.jl`.
+# Durable exception pinned by tests in `test/tangents/dual.jl`.
 function dual_type(
     ::Val{1}, ::Type{LinearAlgebra.Adjoint{T,P}}
 ) where {T<:IEEEFloat,P<:AbstractVector{T}}
@@ -1225,14 +1224,14 @@ Mooncake.verify_dual_type(::NDual) = true
 Mooncake.verify_dual_type(::Complex{<:NDual}) = true
 Mooncake.verify_dual_type(::AbstractArray{<:NDual}) = true
 Mooncake.verify_dual_type(::AbstractArray{<:Complex{<:NDual}}) = true
-# Audit Todo 1 (revision 2): `MemoryRef{<:NDual}` and
-# `MemoryRef{<:Complex{<:NDual}}` are valid canonical-V inner-dual shapes
-# alongside their Memory/Array equivalents. Without these overloads,
-# `verify_dual_type` (and downstream `debug_mode` / `verify_lifted_type`)
-# falls through to the catch-all `Dual`-shape branch and errors with a
-# `MethodError` on the bare MemoryRef leaf. `Memory{<:NDual}` already
-# validates via the `AbstractArray{<:NDual}` overload above; `MemoryRef`
-# needs its own because it is NOT `<: AbstractArray`.
+# `MemoryRef{<:NDual}` and `MemoryRef{<:Complex{<:NDual}}` are valid
+# canonical-V inner-dual shapes alongside their Memory/Array equivalents.
+# Without these overloads, `verify_dual_type` (and downstream `debug_mode`
+# / `verify_lifted_type`) falls through to the catch-all `Dual`-shape
+# branch and errors with a `MethodError` on the bare MemoryRef leaf.
+# `Memory{<:NDual}` already validates via the `AbstractArray{<:NDual}`
+# overload above; `MemoryRef` needs its own because it is NOT
+# `<: AbstractArray`.
 @static if VERSION >= v"1.11-"
     Mooncake.verify_dual_type(::MemoryRef{<:NDual}) = true
     Mooncake.verify_dual_type(::MemoryRef{<:Complex{<:NDual}}) = true
@@ -1641,11 +1640,11 @@ function primal(a::Array{NDual{T,N},D}) where {T,N,D}
     return map(d -> d.value, a)
 end
 
-# Audit step 5: width-1 returns a top-level `NTangent{Tuple{Array{T,D}}}`,
-# matching the chunked N>=2 shape. The previous bare-Array return broke
-# `verify_lifted_type` for `Lifted{Array{T,D},1}` slots because the slot's
-# canonical `V` is `Array{NDual{T,1},D}` and its outer tangent should be
-# top-level `NTangent{Tuple{Array{T,D}}}` at every positive width.
+# Width-1 returns a top-level `NTangent{Tuple{Array{T,D}}}`, matching the
+# chunked N>=2 shape. A bare-Array return would break `verify_lifted_type`
+# for `Lifted{Array{T,D},1}` slots because the slot's canonical `V` is
+# `Array{NDual{T,1},D}` and its outer tangent should be top-level
+# `NTangent{Tuple{Array{T,D}}}` at every positive width.
 function tangent(a::Array{NDual{T,N},D}) where {T,N,D}
     return NTangent(ntuple(i -> map(d -> d.partials[i], a), Val(N)))
 end
@@ -1656,7 +1655,7 @@ function primal(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     return map(z -> complex(z.re.value, z.im.value), a)
 end
 
-# Audit step 5 (Complex). Unified width-1 and width-N: top-level
+# Complex unified width-1 and width-N: top-level
 # `NTangent{NTuple{N, Array{Complex{T},D}}}` at every positive width.
 function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
     return NTangent(
@@ -1760,11 +1759,11 @@ end
     # via the generic Lifted-aware adapter with NDual-bearing arguments.
     primal(m::Memory{<:NDual{T}}) where {T} = map(d -> d.value, m)
     primal(m::Memory{<:Complex{<:NDual}}) = map(z -> complex(z.re.value, z.im.value), m)
-    # Audit Todo 4: top-level `NTangent{NTuple{N, Memory{T}}}` mirrors the
+    # Top-level `NTangent{NTuple{N, Memory{T}}}` mirrors the
     # `Array{NDual{T,N},D}` accessor's top-level shape and matches the
     # canonical `tangent_type(Val(N), Memory{T}) === NTangent{NTuple{N,
-    # Memory{T}}}` query. Previous per-element `Memory{NTangent}` shape
-    # was inconsistent with the chunked Array representation.
+    # Memory{T}}}` query. A per-element `Memory{NTangent}` shape would be
+    # inconsistent with the chunked Array representation.
     function tangent(m::Memory{NDual{T,N}}) where {T,N}
         return NTangent(ntuple(i -> map(d -> d.partials[i], m), Val(N)))
     end
@@ -1777,9 +1776,9 @@ end
     function primal(x::MemoryRef{<:Complex{<:NDual}})
         return memoryref(primal(x.mem), Core.memoryrefoffset(x))
     end
-    # Audit Todo 4: top-level `NTangent{NTuple{N, MemoryRef{T}}}` with one
-    # MemoryRef per lane (offset preserved on each lane), mirroring the
-    # Array/Memory pattern above.
+    # Top-level `NTangent{NTuple{N, MemoryRef{T}}}` with one MemoryRef per
+    # lane (offset preserved on each lane), mirroring the Array/Memory
+    # pattern above.
     function tangent(x::MemoryRef{NDual{T,N}}) where {T,N}
         offset = Core.memoryrefoffset(x)
         return NTangent(
@@ -2008,8 +2007,8 @@ end
 
 # `tangent(x, i)` — extract the i-th direction tangent from any NDual-bearing
 # representation. Used by `_new_` to assemble per-direction NTangent lanes.
-# Audit Todo 5: per-type lane-extraction methods now live directly on
-# `tangent(x, ::Integer)` rather than the private `_tangent_dir` helper.
+# Per-type lane-extraction methods live directly on
+# `tangent(x, ::Integer)` rather than a private `_tangent_dir` helper.
 @inline Mooncake.tangent(x::NDual, i::Integer) = x.partials[i]
 @inline Mooncake.tangent(x::Complex{<:NDual}, i::Integer) = complex(
     x.re.partials[i], x.im.partials[i]
@@ -2175,10 +2174,10 @@ end
     return Mooncake.zero_dual(_ndual_width(x), primal(f)(_ndual_primal(x)))
 end
 
-# Audit follow-up: when the IR routes through `Dual{<:Integer, NoTangent}`
-# for a NoTangent integer arg of `^` (e.g. `x^n` where `n` is a runtime-
-# known integer captured into a Dual flow), unwrap to the bare Integer
-# and reuse the existing `^(::NDual, ::Integer)` rule in `Nfwd.jl`.
+# When the IR routes through `Dual{<:Integer, NoTangent}` for a NoTangent
+# integer arg of `^` (e.g. `x^n` where `n` is a runtime-known integer
+# captured into a Dual flow), unwrap to the bare Integer and reuse the
+# existing `^(::NDual, ::Integer)` rule in `Nfwd.jl`.
 @inline Base.:^(a::NDual, b::Dual{<:Integer,NoTangent}) = a ^ Mooncake.primal(b)
 
 end
