@@ -397,10 +397,12 @@ end
 ) where {P,T<:StandardTangentType}
     return lsetfield_frule(value, name, x)
 end
-# Post-kill `width=Val(1)` overload: the IR-emit unwraps `Lifted` slot values
-# to bare V's, which for IEEEFloat fields is `NDual{T, 1}` (or `Vector{NDual}`
-# / `Complex{NDual}` for container fields). Wrap NDual content into a width-1
-# `Dual{P, T}` form so `lsetfield_frule` sees the legacy shape.
+# IR-emit unwraps `Lifted` slot values to bare V's; for IEEEFloat fields
+# this is `NDual{T, N}` (or `Vector{NDual}` / `Complex{NDual}` for container
+# fields). Wrap into a width-N `Dual{P, NTangent{NTuple{N, ...}}}` form via
+# `_ndual_to_dual_widthN` so `set_tangent_field!` hits the per-lane
+# `NTangent{NTuple{N,T}}, name, NTangent{NTuple{N,Tx}}` overload (audit
+# Pattern G — not the width-1 broadcast overload that duplicates lane 1).
 @inline function frule!!(
     ::Dual{typeof(lsetfield!)},
     value::Dual{P,T},
@@ -409,7 +411,7 @@ end
         NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
     },
 ) where {P,T<:StandardTangentType}
-    return lsetfield_frule(value, name, _ndual_to_dual_lane1(x))
+    return lsetfield_frule(value, name, _ndual_to_dual_widthN(x))
 end
 @inline function frule!!(
     ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Tuple
@@ -444,12 +446,13 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
-# Audit Todo 4: `_ndual_to_dual_lane1` is width-1-only by name. Used to bridge
-# canonical width-1 `NDual{T, 1}` / `Complex{<:NDual}` / `AbstractArray{<:NDual}`
-# values into the legacy `Dual{P, T}` form expected by `lsetfield_frule`. For
-# N >= 2 callers, a width-N path is needed (loop per-lane via `set_tangent_field!`
-# into each lane's mutable tangent) — the helper itself is intentionally
-# width-1 and is constrained by `partials[1]`/`x.re.partials[1]` access.
+# `_ndual_to_dual_lane1` bridges canonical width-1 `NDual` / `Complex{NDual}` /
+# array containers into the legacy `Dual{P, T}` form expected by
+# `lsetfield_frule`. For width-N (N >= 2) callers, `_ndual_to_dual_widthN`
+# below produces an `NTangent`-wrapped tangent so the per-lane
+# `set_tangent_field!(::NTangent{NTuple{N, T}}, name, ::NTangent{NTuple{N, Tx}})`
+# overload fires (otherwise `set_tangent_field!` broadcasts lane-1 across
+# all N lanes — wrong with distinct seeds).
 @inline _ndual_to_dual_lane1(x::Dual) = x
 @inline _ndual_to_dual_lane1(x::NDual) = Dual(primal(x), x.partials[1])
 @inline _ndual_to_dual_lane1(x::Complex{<:NDual}) = Dual(
@@ -462,6 +465,31 @@ end
     map(z -> complex(z.re.value, z.im.value), x),
     map(z -> complex(z.re.partials[1], z.im.partials[1]), x),
 )
+# Width-N bridge: returns `Dual{P, NTangent{NTuple{N, T}}}` so
+# `set_tangent_field!` dispatches to the per-lane overload.
+@inline _ndual_to_dual_widthN(x::Dual) = x
+@inline function _ndual_to_dual_widthN(x::NDual{T,N}) where {T,N}
+    return Dual(primal(x), Mooncake.NTangent(x.partials))
+end
+@inline function _ndual_to_dual_widthN(x::Complex{NDual{T,N}}) where {T<:IEEEFloat,N}
+    p = Complex(x.re.value, x.im.value)
+    ts = ntuple(n -> Complex(x.re.partials[n], x.im.partials[n]), Val(N))
+    return Dual(p, Mooncake.NTangent(ts))
+end
+@inline function _ndual_to_dual_widthN(x::AbstractArray{NDual{T,N}}) where {T,N}
+    p = map(d -> d.value, x)
+    ts = ntuple(n -> map(d -> d.partials[n], x), Val(N))
+    return Dual(p, Mooncake.NTangent(ts))
+end
+@inline function _ndual_to_dual_widthN(
+    x::AbstractArray{Complex{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    p = map(c -> Complex(c.re.value, c.im.value), x)
+    ts = ntuple(Val(N)) do n
+        map(c -> Complex(c.re.partials[n], c.im.partials[n]), x)
+    end
+    return Dual(p, Mooncake.NTangent(ts))
+end
 @inline function _tuple_duals_to_dual(x::Tuple)
     ts = map(tangent, x)
     return Dual(map(primal, x), ts isa Tuple{Vararg{NoTangent}} ? NoTangent() : ts)
