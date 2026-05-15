@@ -848,6 +848,67 @@ end
 # here to avoid a load-order dependency.
 @inline _get_tangent_field_for_lift(t::Tangent, name) = val(getfield(t.fields, name))
 
+# Struct-primal NTangent ctor: parallel to the `tangent::Tangent` form at the
+# generated function above (line ~806), but combines per-lane tangents from an
+# `NTangent{NTuple{N, Tangent}}` into per-field width-N partials. Required for
+# rule bodies that return a Lifted with struct primal at width N≥2 (e.g.
+# `lmemoryrefget` on `MemoryRef{<:Struct}` — see Finding 5 of the audit). The
+# single-Tangent form at line ~806 broadcasts one tangent across all N lanes,
+# which suffices for constants/seeds but NOT for rule outputs where each lane
+# has independent tangent data.
+#
+# Specificity: `P<:Tuple` (line ~720) and `P<:NamedTuple` (line ~740) have
+# their own `NTangent` ctors that are strictly more specific, so this generic
+# variant only fires for "other" concrete struct primals.
+@inline @generated function Lifted{P,N}(primal::P, tangent::NTangent) where {P,N}
+    InnerT = try
+        dual_type(Val(N), P)
+    catch
+        return :(_lifted_struct_runtime_fallback_n($P, Val($N), primal, tangent))
+    end
+    if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
+        return :(Lifted{$P,$N,$InnerT}($InnerT(primal, tangent)))
+    end
+    names = fieldnames(P)
+    InnerTup = InnerT.parameters[2]
+    n = fieldcount(P)
+    inner_exprs = map(1:n) do i
+        fname = QuoteNode(names[i])
+        lane_exprs = map(
+            d -> :(_get_tangent_field_for_lift(tangent.lanes[$d], $fname)), 1:N
+        )
+        :(_inner_dual_for_field(
+            $(fieldtype(InnerTup, i)), getfield(primal, $fname), ($(lane_exprs...),)
+        ))
+    end
+    return quote
+        return Lifted{$P,$N,$InnerT}($(NamedTuple{names})(($(inner_exprs...),)))
+    end
+end
+
+# Runtime fallback companion: same shape as `_lifted_struct_runtime_fallback`
+# but combines per-lane tangents from NTangent.
+@inline function _lifted_struct_runtime_fallback_n(
+    ::Type{P}, ::Val{N}, primal, tangent
+) where {P,N}
+    InnerT = dual_type(Val(N), P)
+    if InnerT isa DataType && InnerT <: NamedTuple
+        names = fieldnames(P)
+        InnerTup = InnerT.parameters[2]
+        fields = ntuple(Val(fieldcount(P))) do i
+            _inner_dual_for_field(
+                fieldtype(InnerTup, i),
+                getfield(primal, names[i]),
+                ntuple(
+                    d -> _get_tangent_field_for_lift(tangent.lanes[d], names[i]), Val(N)
+                ),
+            )
+        end
+        return Lifted{P,N,InnerT}(NamedTuple{names}(fields))
+    end
+    return Lifted{P,N,InnerT}(InnerT(primal, tangent))
+end
+
 # Runtime fallback for `Lifted{P, N}(primal::P, tangent::Tangent)` when the
 # `@generated` expansion can't resolve `InnerT = dual_type(Val(N), P)` —
 # typically because the recursive `tangent_type` descent through `P`'s

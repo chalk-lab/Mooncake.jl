@@ -897,4 +897,44 @@ end
             @test [B_n2[i].partials[1] for i in 1:length(B_n2)] != [B_n2[i].partials[2] for i in 1:length(B_n2)]
         end
     end
+
+    @testset "Lifted{P,N}(struct, NTangent) ctor (Finding 5)" begin
+        # Pre-fix: `Lifted{StructP, N}(struct_primal, NTangent_of_Tangents)`
+        # at width N≥2 raised MethodError because the canonical inner V (the
+        # structural NamedTuple lift) had no constructor accepting
+        # `(struct, NTangent{NTuple{N, Tangent}})`. The `@generated` ctor
+        # parallel to the existing `tangent::Tangent` form unrolls per-lane
+        # field extraction so each field gets an N-tuple of partial values.
+        #
+        # Reproducer pattern: a `frule!!` that returns a Lifted with struct
+        # primal at width N≥2 (e.g. `lmemoryrefget` on `MemoryRef{<:Struct}` —
+        # see Finding 5 in `temp/branch-audit-2026-05-15.md`).
+
+        # Use LoHi: leaf-Float64 fields only (covers the canonical
+        # struct-primal × width-N path without nested-array recursion).
+        p = TestResources.LoHi(2.5, -1.5)
+        nt = Mooncake.NTangent((
+            Mooncake.Tangent((; lo=0.1, hi=0.2)), Mooncake.Tangent((; lo=0.3, hi=0.4))
+        ))
+
+        L = Mooncake.Lifted{TestResources.LoHi,2}(p, nt)
+        InnerV = typeof(L).parameters[3]
+        @test InnerV <: NamedTuple
+        @test fieldcount(InnerV) == 2
+        # Per-field NDual at width 2 with correctly-routed per-lane partials.
+        @test fieldtype(InnerV, :lo) === Mooncake.Nfwd.NDual{Float64,2}
+        @test fieldtype(InnerV, :hi) === Mooncake.Nfwd.NDual{Float64,2}
+        # `primal(::Lifted{P,N,V<:NamedTuple})` reconstructs the original
+        # struct; `tangent(...)` reconstructs the NTangent.
+        @test Mooncake.primal(L) === p
+        @test Mooncake.tangent(L).lanes[1].fields.lo == 0.1
+        @test Mooncake.tangent(L).lanes[1].fields.hi == 0.2
+        @test Mooncake.tangent(L).lanes[2].fields.lo == 0.3
+        @test Mooncake.tangent(L).lanes[2].fields.hi == 0.4
+        # The inner V's per-field NDuals carry the per-lane partials directly.
+        @test L.value.lo.value == 2.5
+        @test L.value.lo.partials == (0.1, 0.3)
+        @test L.value.hi.value == -1.5
+        @test L.value.hi.partials == (0.2, 0.4)
+    end
 end
