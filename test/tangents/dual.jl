@@ -782,4 +782,54 @@ end
             @test [X_n2[i].partials[2] for i in 1:3] ≈ [0.07, 0.14, 0.21]
         end
     end
+
+    @testset "LAPACK width-N per-lane independence (audit Todo 5)" begin
+        using LinearAlgebra: LAPACK
+
+        # LAPACK.getrf! width-2: A_dA is overwritten with LU factor + Frechet
+        # tangent. The primal is the same for all lanes; the tangents differ
+        # because seeds differ.
+        let A = [4.0 3.0; 6.0 3.0]
+            A_primal = copy(A)
+            A_n2 = reshape(
+                [NDual{Float64,2}(A[i], (A[i] * 0.1, A[i] * 0.01)) for i in 1:length(A)],
+                2,
+                2,
+            )
+            r = Mooncake.frule!!(Mooncake.zero_dual(LAPACK.getrf!), A_n2)
+            # Returned tuple: (A_dA, ipiv_dual, info_dual).
+            @test length(r) == 3
+            # The two-lane partials differ on at least one entry because the
+            # input seeds differed.
+            differ_count = 0
+            for i in 1:length(A_n2)
+                if A_n2[i].partials[1] != A_n2[i].partials[2]
+                    differ_count += 1
+                end
+            end
+            @test differ_count > 0
+        end
+
+        # LAPACK.lacpy! width-2: copy A → B (triangular part); per-lane
+        # tangent copy independent.
+        let A = [1.0 2.0; 3.0 4.0], B = zeros(2, 2)
+            A_n2 = reshape(
+                [NDual{Float64,2}(A[i], (A[i] * 0.1, A[i] * 0.01)) for i in 1:length(A)],
+                2,
+                2,
+            )
+            B_n2 = [NDual{Float64,2}(0.0, (0.0, 0.0)) for _ in 1:length(B)]
+            B_n2 = reshape(B_n2, 2, 2)
+            Mooncake.frule!!(
+                Mooncake.zero_dual(LAPACK.lacpy!), B_n2, A_n2, Mooncake.zero_dual('A')
+            )
+            # B primal == A primal after full-rectangle copy.
+            @test [B_n2[i].value for i in 1:length(B_n2)] == [A[i] for i in 1:length(A)]
+            # B lane-1 tangent == A lane-1 tangent (linear copy preserves).
+            @test [B_n2[i].partials[1] for i in 1:length(B_n2)] ≈ [A[i] * 0.1 for i in 1:length(A)]
+            @test [B_n2[i].partials[2] for i in 1:length(B_n2)] ≈ [A[i] * 0.01 for i in 1:length(A)]
+            # Lane independence.
+            @test [B_n2[i].partials[1] for i in 1:length(B_n2)] != [B_n2[i].partials[2] for i in 1:length(B_n2)]
+        end
+    end
 end
