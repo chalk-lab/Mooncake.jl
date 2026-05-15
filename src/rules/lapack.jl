@@ -20,7 +20,7 @@ function frule!!(
     # are non-IEEEFloat so wrap as canonical width-1 forms
     # (`Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}` and
     # `Dual{Int, NoTangent}`) so downstream `_canonicalise_tuple_inner`
-    # does not need to bridge `NoTangent → NTangent` (Audit Todo 7).
+    # does not need to bridge `NoTangent → NTangent`.
     return (
         A_dA,
         Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),

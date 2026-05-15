@@ -366,9 +366,9 @@ end
     _x = primal(x)
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
-        # Audit step 5: unwrap singleton-NTangent before `bitcast` so the
-        # carve-out-lifted path (`tangent(x)::NTangent{Tuple{<:Ptr}}`) hits
-        # the same primitive-Ptr value as the bare carve-out path.
+        # Unwrap singleton-NTangent before `bitcast` so the
+        # `tangent(x)::NTangent{Tuple{<:Ptr}}` path hits the same
+        # primitive-Ptr value as the bare path.
         raw_t = tangent(x)
         bare_t = raw_t isa NTangent ? raw_t.lanes[1] : raw_t
         dv = bitcast(Ptr{tangent_type(eltype(T))}, bare_t)
@@ -677,7 +677,7 @@ end
 @inline _pointerref_tan(t::Mooncake.NTangent{Tuple{P}}) where {P<:Ptr} = t.lanes[1]
 @inline function _pointerref_kernel(x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
-    # Audit step 5: unwrap singleton-NTangent on the Ptr tangent (carve-out lifted).
+    # Unwrap singleton-NTangent on the Ptr tangent.
     da = pointerref(_pointerref_tan(tangent(x)), primal(y), primal(z))
     return Dual(a, da)
 end
@@ -716,9 +716,9 @@ end
 @inline _pointerset_tan(t::Mooncake.NTangent{Tuple{P}}) where {P<:Ptr} = t.lanes[1]
 @inline function _pointerset_kernel(p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
-    # Audit step 5: unwrap singleton-NTangent on the Ptr tangent when the
-    # carve-out is lifted (`tangent(::Dual{Ptr{T}, NTangent{Tuple{Ptr{TT}}}})`
-    # returns the outer NTangent; pointerset needs bare Ptr).
+    # Unwrap singleton-NTangent on the Ptr tangent —
+    # `tangent(::Dual{Ptr{T}, NTangent{Tuple{Ptr{TT}}}})` returns the outer
+    # NTangent; pointerset needs bare Ptr.
     pointerset(_pointerset_tan(tangent(p)), tangent(x), primal(idx), primal(z))
     return p
 end
@@ -876,7 +876,7 @@ __vec_to_tuple(v::Vector) = Tuple(v)
     if tangent_type(_typeof(x)) == NoTangent
         return zero_dual(x)
     else
-        # Audit step 5: at width 1 with carve-out lifted, `tangent(v)` for
+        # At width 1, `tangent(v)` for
         # `Dual{Vector{T}, NTangent{Tuple{Vector{T'}}}}` is the outer
         # NTangent; `__vec_to_tuple` wants a bare Vector. Unwrap the
         # singleton-NTangent.
@@ -928,7 +928,7 @@ end
 # Core._structtype
 
 # `Core._svec_ref` implementation kernel (no `Dual{typeof(F)}` arg).
-# Audit step 5: at width 1 with the carve-out lifted, `tangent(v)` for a
+# At width 1, `tangent(v)` for a
 # `Dual{Core.SimpleVector, NTangent{Tuple{Vector{Any}}}}` is the outer
 # NTangent; `getindex(::NTangent, i)` returns the i-th *lane*, not the
 # i-th element of the inner Vector{Any}. Unwrap the singleton NTangent
@@ -1361,9 +1361,9 @@ is_homogeneous_and_immutable(::Any) = false
     literal_name = zero_dual(Val(primal(name)))
     return frule!!(zero_dual(lsetfield!), value, literal_name, x)
 end
-# Audit follow-up: bare-NDual / bare-NDual-container value path. When the
-# Lifted-aware adapter unlifts a `Lifted{Vector{T<:IEEEFloat}, 1, ...}` slot,
-# `value` arrives as `Vector{NDual{T,1}}` (the canonical inner V), not a
+# Bare-NDual / bare-NDual-container value path. When the Lifted-aware
+# adapter unlifts a `Lifted{Vector{T<:IEEEFloat}, 1, ...}` slot, `value`
+# arrives as `Vector{NDual{T,1}}` (the canonical inner V), not a
 # Dual-wrapper. Bridge to `lsetfield!` with the bare value.
 @inline function _setfield!_kernel(
     value::Union{
