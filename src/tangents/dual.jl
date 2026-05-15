@@ -222,17 +222,43 @@ zero_dual(x) = Dual(x, zero_tangent(x))
 randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 
 # Generic width-N fallback. For NoTangent primals, returns `Dual(x, NoTangent())`
-# (matches `dual_type(Val(N), P) == Dual{P,NoTangent}`). For non-trivial
-# tangent_type without a width-N specialisation (e.g. Task, StepRangeLen),
-# fall back to the no-width zero_dual — at canonical V the inner shape is
-# `Dual{P, tangent_type(P)}`, which matches what `zero_dual(x)` returns.
-# Specialised IEEEFloat / Complex / array / Memory overloads live in
-# `nfwd/NfwdMooncake.jl`.
-@inline function zero_dual(w::Val, x)
-    if tangent_type(_typeof(x)) === NoTangent
-        return Dual(x, NoTangent())
+# (matches `dual_type(Val(N), P) == Dual{P,NoTangent}`). For Tuple, NamedTuple,
+# and structural-immutable struct primals at N >= 1, recurse into the fields so
+# the result matches the canonical `dual_type(Val(N), P)` lift (bare Tuple,
+# bare NamedTuple, or `NamedTuple{fieldnames(P), Tuple{Vᵢ…}}` respectively).
+# Everything else falls back to the no-width form, valid where the canonical
+# inner shape is `Dual{P, tangent_type(P)}`. Specialised IEEEFloat / Complex /
+# array / Memory overloads live in `nfwd/NfwdMooncake.jl`.
+@inline function zero_dual(w::Val{N}, x) where {N}
+    P = _typeof(x)
+    tangent_type(P) === NoTangent && return Dual(x, NoTangent())
+    if N >= 1
+        isconcretetype(P) && P <: Tuple && return _structural_zero_dual_tuple(w, x)
+        isconcretetype(P) &&
+            P <: NamedTuple &&
+            return _structural_zero_dual_namedtuple(w, x)
+        _uses_structural_dual_type(P) &&
+            dual_type(w, P) <: NamedTuple &&
+            return _structural_zero_dual_struct(w, x)
     end
     return zero_dual(x)
+end
+
+@inline _structural_zero_dual_tuple(w::Val, x::Tuple) = ntuple(
+    i -> zero_dual(w, getfield(x, i)), Val(fieldcount(typeof(x)))
+)
+@inline function _structural_zero_dual_namedtuple(
+    w::Val, x::NamedTuple{names}
+) where {names}
+    return NamedTuple{names}(
+        ntuple(i -> zero_dual(w, getfield(x, i)), Val(fieldcount(typeof(x))))
+    )
+end
+@inline function _structural_zero_dual_struct(w::Val, x)
+    P = typeof(x)
+    return NamedTuple{fieldnames(P)}(
+        ntuple(i -> zero_dual(w, getfield(x, i)), Val(fieldcount(P)))
+    )
 end
 
 # No-`Val` `dual_type(P)` delegates to `dual_type(Val(1), P)` so the two
@@ -283,6 +309,51 @@ function error_if_incorrect_dual_types(duals::Vararg{Dual,N}) where {N}
 end
 
 @inline uninit_dual(x::P) where {P} = Dual(x, uninit_tangent(x))
+
+# Width-aware `uninit_dual` and `randn_dual` fallbacks, matching the structural
+# branches in `zero_dual(w::Val, x)` above. Specialised IEEEFloat / Complex /
+# array / Memory overloads live in `nfwd/NfwdMooncake.jl`.
+@inline function uninit_dual(w::Val{N}, x) where {N}
+    P = _typeof(x)
+    tangent_type(P) === NoTangent && return Dual(x, NoTangent())
+    if N >= 1
+        isconcretetype(P) &&
+            P <: Tuple &&
+            return ntuple(i -> uninit_dual(w, getfield(x, i)), Val(fieldcount(P)))
+        if isconcretetype(P) && P <: NamedTuple
+            return NamedTuple{fieldnames(P)}(
+                ntuple(i -> uninit_dual(w, getfield(x, i)), Val(fieldcount(P)))
+            )
+        end
+        if _uses_structural_dual_type(P) && dual_type(w, P) <: NamedTuple
+            return NamedTuple{fieldnames(P)}(
+                ntuple(i -> uninit_dual(w, getfield(x, i)), Val(fieldcount(P)))
+            )
+        end
+    end
+    return uninit_dual(x)
+end
+
+@inline function randn_dual(w::Val{N}, rng::AbstractRNG, x) where {N}
+    P = _typeof(x)
+    tangent_type(P) === NoTangent && return Dual(x, NoTangent())
+    if N >= 1
+        isconcretetype(P) &&
+            P <: Tuple &&
+            return ntuple(i -> randn_dual(w, rng, getfield(x, i)), Val(fieldcount(P)))
+        if isconcretetype(P) && P <: NamedTuple
+            return NamedTuple{fieldnames(P)}(
+                ntuple(i -> randn_dual(w, rng, getfield(x, i)), Val(fieldcount(P)))
+            )
+        end
+        if _uses_structural_dual_type(P) && dual_type(w, P) <: NamedTuple
+            return NamedTuple{fieldnames(P)}(
+                ntuple(i -> randn_dual(w, rng, getfield(x, i)), Val(fieldcount(P)))
+            )
+        end
+    end
+    return randn_dual(rng, x)
+end
 
 # Always sharpen the first thing if it's a type so static dispatch remains possible.
 function Dual(x::Type{P}, dx::NoTangent) where {P}
