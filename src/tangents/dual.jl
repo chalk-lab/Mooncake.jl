@@ -221,17 +221,32 @@ extract(x::Dual) = primal(x), tangent(x)
 zero_dual(x) = Dual(x, zero_tangent(x))
 randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 
-# Generic width-N fallback. For NoTangent primals, returns `Dual(x, NoTangent())`
-# (matches `dual_type(Val(N), P) == Dual{P,NoTangent}`). For Tuple, NamedTuple,
-# and structural-immutable struct primals at N >= 1, recurse into the fields so
-# the result matches the canonical `dual_type(Val(N), P)` lift (bare Tuple,
-# bare NamedTuple, or `NamedTuple{fieldnames(P), Tuple{Vᵢ…}}` respectively).
-# Everything else falls back to the no-width form, valid where the canonical
-# inner shape is `Dual{P, tangent_type(P)}`. Specialised IEEEFloat / Complex /
-# array / Memory overloads live in `nfwd/NfwdMooncake.jl`.
+# Generic width-N fallback. The result must match the canonical
+# `dual_type(Val(N), P)` shape for primal `P`. Branches, in order:
+#
+# 1. Concrete `Tuple` / `NamedTuple` primals: element-wise recursion. Also
+#    handles empty tuples and tuples whose fields all have `NoTangent`
+#    tangent — those still need the bare element-wise tuple form rather than
+#    a Dual{Tuple, NoTangent} wrap.
+# 2. Structural-immutable struct primals whose `dual_type` is the structural
+#    `NamedTuple` lift: build the lift via `_structural_zero_dual_struct`.
+# 3. `NoTangent` primals: `Dual(x, NoTangent())` matches the canonical
+#    `Dual{P, NoTangent}`.
+# 4. Otherwise consult `dual_type(Val(N), P)`:
+#    - `Dual{P, NTangent{...}}` (the typical positive-width canonical form
+#      for non-leaf primals, and the carve-out-lifted width-1 form for
+#      generic concrete `P`): wrap N independent `zero_tangent(x)` lanes.
+#    - `Dual{P, T}` (bare-T width-1 wrapper exceptions like `Diagonal`,
+#      `Adjoint{T,Matrix{T}}`, `SubArray`, the triangulars, etc.): return
+#      `Dual(x, zero_tangent(x))` (the legacy form).
+# 5. Anything not matching falls through to the no-width form (Val(0)
+#    callers without a specialised overload, etc.).
+#
+# Specialised IEEEFloat / Complex / array / Memory overloads in
+# `nfwd/NfwdMooncake.jl` dispatch first by Julia method specificity and so
+# don't reach this fallback.
 @inline function zero_dual(w::Val{N}, x) where {N}
     P = _typeof(x)
-    tangent_type(P) === NoTangent && return Dual(x, NoTangent())
     if N >= 1
         isconcretetype(P) && P <: Tuple && return _structural_zero_dual_tuple(w, x)
         isconcretetype(P) &&
@@ -240,7 +255,17 @@ randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
         _uses_structural_dual_type(P) &&
             dual_type(w, P) <: NamedTuple &&
             return _structural_zero_dual_struct(w, x)
+        tangent_type(P) === NoTangent && return Dual(x, NoTangent())
+        DT = dual_type(w, P)
+        if DT isa DataType && DT <: Dual
+            T = DT.parameters[2]
+            if T <: NTangent
+                return Dual(x, NTangent(ntuple(_ -> zero_tangent(x), Val(N))))
+            end
+            return Dual(x, zero_tangent(x))
+        end
     end
+    tangent_type(P) === NoTangent && return Dual(x, NoTangent())
     return zero_dual(x)
 end
 
@@ -315,7 +340,6 @@ end
 # array / Memory overloads live in `nfwd/NfwdMooncake.jl`.
 @inline function uninit_dual(w::Val{N}, x) where {N}
     P = _typeof(x)
-    tangent_type(P) === NoTangent && return Dual(x, NoTangent())
     if N >= 1
         isconcretetype(P) &&
             P <: Tuple &&
@@ -330,13 +354,22 @@ end
                 ntuple(i -> uninit_dual(w, getfield(x, i)), Val(fieldcount(P)))
             )
         end
+        tangent_type(P) === NoTangent && return Dual(x, NoTangent())
+        DT = dual_type(w, P)
+        if DT isa DataType && DT <: Dual
+            T = DT.parameters[2]
+            if T <: NTangent
+                return Dual(x, NTangent(ntuple(_ -> uninit_tangent(x), Val(N))))
+            end
+            return Dual(x, uninit_tangent(x))
+        end
     end
+    tangent_type(P) === NoTangent && return Dual(x, NoTangent())
     return uninit_dual(x)
 end
 
 @inline function randn_dual(w::Val{N}, rng::AbstractRNG, x) where {N}
     P = _typeof(x)
-    tangent_type(P) === NoTangent && return Dual(x, NoTangent())
     if N >= 1
         isconcretetype(P) &&
             P <: Tuple &&
@@ -351,7 +384,17 @@ end
                 ntuple(i -> randn_dual(w, rng, getfield(x, i)), Val(fieldcount(P)))
             )
         end
+        tangent_type(P) === NoTangent && return Dual(x, NoTangent())
+        DT = dual_type(w, P)
+        if DT isa DataType && DT <: Dual
+            T = DT.parameters[2]
+            if T <: NTangent
+                return Dual(x, NTangent(ntuple(_ -> randn_tangent(rng, x), Val(N))))
+            end
+            return Dual(x, randn_tangent(rng, x))
+        end
     end
+    tangent_type(P) === NoTangent && return Dual(x, NoTangent())
     return randn_dual(rng, x)
 end
 
@@ -1054,7 +1097,12 @@ end
 Layer-3 seed factory for uninitialised slots. See [`zero_lifted`](@ref).
 """
 @inline uninit_lifted(::Val{0}, x) = x
+@inline uninit_lifted(::Val{0}, x::Type) = x
 @inline uninit_lifted(w::Val{N}, x) where {N} = Lifted{typeof(x),N}(uninit_dual(w, x))
+@inline function uninit_lifted(w::Val{N}, x::Type{P}) where {N,P}
+    P_slot = @isdefined(P) ? Type{P} : typeof(x)
+    return Lifted{P_slot,N}(uninit_dual(w, x))
+end
 
 """
     randn_lifted(::Val{N}, rng, x)
@@ -1062,6 +1110,11 @@ Layer-3 seed factory for uninitialised slots. See [`zero_lifted`](@ref).
 Layer-3 seed factory with random partials. See [`zero_lifted`](@ref).
 """
 @inline randn_lifted(::Val{0}, ::AbstractRNG, x) = x
+@inline randn_lifted(::Val{0}, ::AbstractRNG, x::Type) = x
 @inline randn_lifted(w::Val{N}, rng::AbstractRNG, x) where {N} = Lifted{typeof(x),N}(
     randn_dual(w, rng, x)
 )
+@inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::Type{P}) where {N,P}
+    P_slot = @isdefined(P) ? Type{P} : typeof(x)
+    return Lifted{P_slot,N}(randn_dual(w, rng, x))
+end
