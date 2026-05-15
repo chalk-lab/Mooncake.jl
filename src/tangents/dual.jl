@@ -18,6 +18,12 @@ Base.length(x::NTangent) = length(x.lanes)
 Base.getindex(x::NTangent, i::Int) = x.lanes[i]
 Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
 
+# Per-lane copy so callers (rules that copy a `Dual{P, NTangent}` value
+# whole, like `Base.copy(::Memory{<:Struct})` via the
+# `:jl_genericmemory_copy` foreigncall path) get independent lane
+# tangents rather than aliased references to the original.
+Base.copy(t::NTangent) = NTangent(map(copy, t.lanes))
+
 # ── Width-aware tangent_type ──────────────────────────────────────────────────
 
 """

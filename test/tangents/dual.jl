@@ -1051,6 +1051,21 @@ end
         end
     end
 
+    @testset "copy(::NTangent) per-lane independent (Finding 5)" begin
+        # Pre-fix: `copy(::NTangent)` had no method. Callers that
+        # whole-copy a `Dual{P, NTangent}` (e.g. `Base.copy(::Memory{<:Struct})`
+        # via the `:jl_genericmemory_copy` foreigncall path) errored with
+        # MethodError. Fix: define `Base.copy(t::NTangent) = NTangent(map(copy,
+        # t.lanes))` — per-lane copy so callers get independent lane tangents.
+        t = Mooncake.NTangent(([1.0, 2.0], [3.0, 4.0]))
+        c = copy(t)
+        @test c isa Mooncake.NTangent
+        @test c.lanes[1] !== t.lanes[1]
+        @test c.lanes[2] !== t.lanes[2]
+        @test c.lanes[1] == t.lanes[1]
+        @test c.lanes[2] == t.lanes[2]
+    end
+
     @testset "Core.memorynew(Memory{<:Struct}, n) width-N lane independence (Finding 5)" begin
         # Same silent-correctness aliasing pattern as
         # `Memory{LoHi}(undef, n)` (commit `4461a1fd5`), but reached via
