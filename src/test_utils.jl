@@ -123,9 +123,18 @@ using Mooncake:
     instantiate,
     can_produce_zero_rdata_from_type,
     increment_rdata!!,
+    Dual,
+    Lifted,
     dual_type,
     lifted_type,
+    zero_dual,
+    uninit_dual,
     randn_dual,
+    zero_lifted,
+    uninit_lifted,
+    randn_lifted,
+    verify_dual_type,
+    verify_lifted_type,
     fcodual_type,
     verify_fdata_type,
     verify_rdata_type,
@@ -1209,6 +1218,121 @@ function test_tangent(rng::AbstractRNG, p; interface_only=false, perf=true)
     @nospecialize rng p
     test_tangent_interface(rng, p; interface_only)
     return perf && test_tangent_performance(rng, p)
+end
+
+"""
+    test_dual_types(P::Type; widths=(0, 1, 2, 4))
+
+Check the Layer-2 `dual_type(Val(N), P)` query for representative widths.
+
+- `Val(0)` is the primal passthrough: `dual_type(Val(0), P) === P`.
+- `Val(N)` for `N >= 1` should return a non-`Nothing` canonical inner-V type.
+
+See [`test_dual`](@ref) for value-level checks.
+"""
+function test_dual_types(P::Type; widths=(0, 1, 2, 4))
+    @test dual_type(Val(0), P) === P
+    for N in widths
+        N == 0 && continue
+        DT = dual_type(Val(N), P)
+        @test DT !== nothing
+    end
+    return nothing
+end
+
+"""
+    test_dual(rng::AbstractRNG, p; widths=(0, 1, 2, 4))
+
+Check the Layer-2 seed constructors and values for primal `p`. For each `N` in
+`widths`:
+
+- `Val(0)` is the primal passthrough: `zero_dual`, `uninit_dual`, and
+  `randn_dual` return `p` unchanged.
+- `Val(N)` for `N >= 1`: each seed factory must return a value whose static type
+  is exactly `dual_type(Val(N), typeof(p))`, and the result must pass
+  `verify_dual_type`.
+
+Calls [`test_dual_types`](@ref) on `typeof(p)` first, so type-level and
+value-level canonicality are checked together for every primal.
+"""
+function test_dual(rng::AbstractRNG, p; widths=(0, 1, 2, 4))
+    @nospecialize rng p
+    P = _typeof(p)
+    test_dual_types(P; widths)
+    for N in widths
+        if N == 0
+            @test zero_dual(Val(0), p) === p
+            @test uninit_dual(Val(0), p) === p
+            @test randn_dual(Val(0), rng, p) === p
+        else
+            DT = dual_type(Val(N), P)
+            for v in
+                (zero_dual(Val(N), p), uninit_dual(Val(N), p), randn_dual(Val(N), rng, p))
+                @test _typeof(v) === DT
+                @test verify_dual_type(v)
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    test_lifted_types(P::Type; widths=(0, 1, 2, 4))
+
+Check the Layer-3 `lifted_type(Val(N), P)` query for representative widths.
+
+- `Val(0)` is the primal passthrough: `lifted_type(Val(0), P) === P`.
+- `Val(N)` for `N >= 1` should return a non-`Nothing` slot type, typically a
+  concrete `Lifted{P, N, V}` for concrete `P`.
+
+See [`test_lifted`](@ref) for value-level checks.
+"""
+function test_lifted_types(P::Type; widths=(0, 1, 2, 4))
+    @test lifted_type(Val(0), P) === P
+    for N in widths
+        N == 0 && continue
+        LT = lifted_type(Val(N), P)
+        @test LT !== nothing
+    end
+    return nothing
+end
+
+"""
+    test_lifted(rng::AbstractRNG, p; widths=(0, 1, 2, 4))
+
+Check the Layer-3 seed constructors and values for primal `p`. For each `N` in
+`widths`:
+
+- `Val(0)` is the primal passthrough: `zero_lifted`, `uninit_lifted`, and
+  `randn_lifted` return `p` unchanged.
+- `Val(N)` for `N >= 1`: each seed factory must return a value satisfying
+  `isa lifted_type(Val(N), typeof(p))`. Concrete `Lifted{P,N,V}` wrappers must
+  pass `verify_lifted_type`.
+
+Calls [`test_lifted_types`](@ref) on `typeof(p)` first.
+"""
+function test_lifted(rng::AbstractRNG, p; widths=(0, 1, 2, 4))
+    @nospecialize rng p
+    P = _typeof(p)
+    test_lifted_types(P; widths)
+    for N in widths
+        if N == 0
+            @test zero_lifted(Val(0), p) === p
+            @test uninit_lifted(Val(0), p) === p
+            @test randn_lifted(Val(0), rng, p) === p
+        else
+            LT = lifted_type(Val(N), P)
+            for v in (
+                zero_lifted(Val(N), p),
+                uninit_lifted(Val(N), p),
+                randn_lifted(Val(N), rng, p),
+            )
+                @test v isa LT
+                v isa Lifted && @test verify_lifted_type(v)
+            end
+        end
+    end
+    return nothing
 end
 
 """
