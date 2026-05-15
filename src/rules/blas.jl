@@ -2155,6 +2155,114 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     end
 end
 
+# Width-N NDual symm!/hemm! (audit Pattern G): per-lane Frechet then primal
+# once. Mirrors the legacy `Dual{<:AbstractMatrix{T}}` rule body but
+# operates on bare NDual-element matrices and uses per-lane assembly.
+@inline function _symm_frechet_lane!(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
+    BLAS.symm!(s, ul, α, A, dB, β, dC)
+    BLAS.symm!(s, ul, α, dA, B, one(P), dC)
+    if !iszero(dα)
+        BLAS.symm!(s, ul, dα, A, B, one(P), dC)
+    end
+    if !iszero(dβ)
+        @inbounds for n in eachindex(C)
+            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        end
+    end
+    return nothing
+end
+@inline function _hemm_frechet_lane!(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
+    BLAS.hemm!(s, ul, α, A, dB, β, dC)
+    BLAS.hemm!(s, ul, α, dA, B, one(P), dC)
+    if !iszero(dα)
+        BLAS.hemm!(s, ul, dα, A, B, one(P), dC)
+    end
+    if !iszero(dβ)
+        @inbounds for n in eachindex(C)
+            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        end
+    end
+    return nothing
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.symm!)},
+    side::Dual{Char},
+    uplo::Dual{Char},
+    alpha::NDual{T,N},
+    A_dA::AbstractMatrix{NDual{T,N}},
+    B_dB::AbstractMatrix{NDual{T,N}},
+    beta::NDual{T,N},
+    C_dC::AbstractMatrix{NDual{T,N}},
+) where {T<:BlasRealFloat,N}
+    s = primal(side)
+    ul = primal(uplo)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    C, dCs = _arr_extract_n(C_dC)
+    @inbounds for lane in 1:N
+        _symm_frechet_lane!(
+            s, ul, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
+        )
+    end
+    BLAS.symm!(s, ul, α, A, B, β, C)
+    _arr_writeback_n!(C_dC, C, dCs)
+    return C_dC
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.symm!)},
+    side::Dual{Char},
+    uplo::Dual{Char},
+    alpha::Complex{NDual{R,N}},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    B_dB::AbstractMatrix{Complex{NDual{R,N}}},
+    beta::Complex{NDual{R,N}},
+    C_dC::AbstractMatrix{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    s = primal(side)
+    ul = primal(uplo)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    C, dCs = _arr_extract_n(C_dC)
+    @inbounds for lane in 1:N
+        _symm_frechet_lane!(
+            s, ul, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
+        )
+    end
+    BLAS.symm!(s, ul, α, A, B, β, C)
+    _arr_writeback_n!(C_dC, C, dCs)
+    return C_dC
+end
+@inline function frule!!(
+    ::Dual{typeof(BLAS.hemm!)},
+    side::Dual{Char},
+    uplo::Dual{Char},
+    alpha::Complex{NDual{R,N}},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    B_dB::AbstractMatrix{Complex{NDual{R,N}}},
+    beta::Complex{NDual{R,N}},
+    C_dC::AbstractMatrix{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    s = primal(side)
+    ul = primal(uplo)
+    α, dαs = _scalar_extract_n(alpha)
+    β, dβs = _scalar_extract_n(beta)
+    A, dAs = _arr_extract_n(A_dA)
+    B, dBs = _arr_extract_n(B_dB)
+    C, dCs = _arr_extract_n(C_dC)
+    @inbounds for lane in 1:N
+        _hemm_frechet_lane!(
+            s, ul, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
+        )
+    end
+    BLAS.hemm!(s, ul, α, A, B, β, C)
+    _arr_writeback_n!(C_dC, C, dCs)
+    return C_dC
+end
+
 for (fname, elty, relty) in (
     (:(syrk!), Float32, Float32),
     (:(syrk!), Float64, Float64),
