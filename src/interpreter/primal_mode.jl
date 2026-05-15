@@ -770,10 +770,16 @@ _isva(::DerivedPrimal{P,T,isva,nargs}) where {P,T,isva,nargs} = isva
 _nargs(::DerivedPrimal{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
 
 # Extends functionality defined in debug_mode.jl.
+# Use `__primal_type ∘ _typeof` rather than `_typeof ∘ primal` so that structurally
+# lifted args (e.g. `Lifted{DebugRRule{...}, 1, @NamedTuple{rule::...}}`) report
+# their user-facing primal type (`DebugRRule{...}`) rather than the inner V's
+# primal (the structurally lifted `@NamedTuple`). The latter never subtypes
+# `sig` because the rule sig is the user-facing tuple, not the lifted form.
 function verify_args(r::DerivedPrimal{sig}, x) where {sig}
     Tx = Tuple{
         map(
-            _typeof ∘ primal, __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r)), r.width)
+            __primal_type ∘ _typeof,
+            __unflatten_dual_varargs(_isva(r), x, Val(_nargs(r)), r.width),
         )...,
     }
     Tx <: sig && return nothing
