@@ -99,6 +99,49 @@ As you can see, the tangent is `0.0` rather than `6.0`.
 However, we view this as a pathological use of Julia's language features, and believe it is unlikely to cause trouble in practice.
 If you encounter a practical situation in which it is very important that this example work correctly, please open an issue.
 
+## Primitives and Overlays
+
+[`@mooncake_overlay`](@ref Mooncake.@mooncake_overlay) and [`@is_primitive`](@ref Mooncake.@is_primitive) both let you change what Mooncake sees when it differentiates a function, but they hook in at different layers and do not compose. `@mooncake_overlay` swaps in a replacement body Mooncake walks through; `@is_primitive` stops Mooncake walking and dispatches to a hand-written rule instead. Marking a signature as a primitive shadows any overlay reachable through it — the rule fires, the overlay does not, and Mooncake reads return types off the original code.
+
+This causes two failure modes:
+
+1. **An overlay that changes the return type breaks the rule's type signature.** Mooncake infers the original return type, so a rule that returns the overlaid value mismatches the expected `CoDual` type and throws a runtime `TypeError`. If the return type is a singleton the check can pass anyway, and the rule may silently produce an incorrect gradient.
+
+2. **An overlay inside a primitive's body never runs.** The rule replaces the body and runs the primal through ordinary Julia dispatch, which ignores overlays. An overlay written to patch unsupported code inside the primitive is silently inert — move it to a signature Mooncake still differentiates, or fold the workaround into the rule.
+
+The example below covers both cases and prints the return type Mooncake infers for each caller:
+
+```julia
+using Mooncake
+
+struct A end
+struct B end
+
+# (1) Overlay applied to the primitive itself.
+direct_primitive(::A) = A()
+Mooncake.@mooncake_overlay direct_primitive(::A) = B()
+Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{typeof(direct_primitive), A}
+
+# (2) Overlay applied to a callee inside an otherwise-untouched primitive.
+helper(::A) = A()
+Mooncake.@mooncake_overlay helper(::A) = B()
+indirect_primitive(x::A) = helper(x)
+Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{typeof(indirect_primitive), A}
+
+caller_direct(x::A)   = direct_primitive(x)
+caller_indirect(x::A) = indirect_primitive(x)
+
+interp = Mooncake.MooncakeInterpreter(Mooncake.DefaultCtx, Mooncake.ReverseMode)
+for sig in (Tuple{typeof(caller_direct), A}, Tuple{typeof(caller_indirect), A})
+    _, rt = Base.code_ircode_by_type(sig; interp)[1]
+    println(sig, " => ", rt)
+end
+# Tuple{typeof(caller_direct), A}   => A
+# Tuple{typeof(caller_indirect), A} => A
+```
+
+Both overlays would produce a `B`, but Mooncake infers `A` — and a rule shaped around `B` would mismatch the expected `CoDual{A}`. Apply only one of `@mooncake_overlay` or `@is_primitive` to a given signature, and make sure no overlay you rely on sits behind a primitive's rule.
+
 ## Differentiating CUDA Kernels
 
 Mooncake.jl supports differentiation of CUDA kernels in general, provided a suitable rule exists. However, it does not support kernels that surface as foreign calls, such as those generated via KernelAbstractions.jl (see [issue #648](https://github.com/chalk-lab/Mooncake.jl/issues/648) and [issue #835](https://github.com/chalk-lab/Mooncake.jl/issues/835)). Support for these foreign-call kernels is outside the scope of the project and is considered a non-goal.
