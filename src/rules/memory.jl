@@ -1567,12 +1567,15 @@ end
         return _wrap_rule_result(P_out, Val(N), bare_result)
     end
     function rrule!!(
-        ::CoDual{typeof(sizehint!)}, _a::CoDual{<:Vector}, _n::CoDual{<:Integer}
+        f::CoDual{typeof(sizehint!)}, _a::CoDual{<:Vector}, _n::CoDual{<:Integer}
     )
         n = primal(_n)
         sizehint!(primal(_a), n)
         sizehint!(tangent(_a), n)
-        return _a, NoPullback(NoRData(), NoRData(), NoRData())
+        # `NoPullback` constructor expects CoDual args (it extracts primals and
+        # builds lazy zero rdata); calling it with bare `NoRData()` triples
+        # raised `MethodError` because no such constructor exists.
+        return _a, NoPullback(f, _a, _n)
     end
 
     @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
