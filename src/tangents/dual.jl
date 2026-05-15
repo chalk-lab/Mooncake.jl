@@ -128,16 +128,16 @@ Width-aware forward value type query.
 end
 
 @inline function _uses_structural_dual_type(::Type{P}) where {P}
-    # Audit Todo 3 (revised): structural `dual_type` mirrors structural
-    # `tangent_type`. There is no broad ownership/package gate — any type whose
-    # `tangent_type` is the default structural `Tangent{NamedTuple{names, ...}}`
-    # shape with all fields always initialised gets the recursive `NamedTuple`
-    # lift. Specific Base/Core/LinearAlgebra wrappers that need a different
+    # Structural `dual_type` mirrors structural `tangent_type`. There is no
+    # broad ownership/package gate — any type whose `tangent_type` is the
+    # default structural `Tangent{NamedTuple{names, ...}}` shape with all
+    # fields always initialised gets the recursive `NamedTuple` lift.
+    # Specific Base/Core/LinearAlgebra wrappers that need a different
     # representation (e.g. `Diagonal`, `Adjoint`, `SubArray`, `Broadcasted`)
     # register explicit `dual_type` overloads in `src/nfwd/NfwdMooncake.jl`
     # (and per-extension files), which dispatch first by Julia's method
-    # specificity. Failing types should fail loudly (via missing overloads or
-    # explicit local failures), not via a silent ownership check.
+    # specificity. Failing types should fail loudly (via missing overloads
+    # or explicit local failures), not via a silent ownership check.
     return isconcretetype(P) &&
            !ismutabletype(P) &&
            fieldcount(P) > 0 &&
@@ -188,10 +188,10 @@ tangent(x::Dual) = x.tangent
 # live in `nfwd/NfwdMooncake.jl`. The two-argument overload must not
 # materialise all lanes before selecting one — extracting a single
 # direction from a width-N container should remain O(container size), not
-# O(N × container size). Audit Todo 5: per-type lane-extraction methods
-# live directly on `tangent(x, ::Integer)` rather than a private
-# `_tangent_dir` helper. The untyped fallback below returns
-# `zero_tangent(x)` for primals that aren't NDual-bearing.
+# O(N × container size). Per-type lane-extraction methods live directly on
+# `tangent(x, ::Integer)` rather than a private `_tangent_dir` helper. The
+# untyped fallback below returns `zero_tangent(x)` for primals that aren't
+# NDual-bearing.
 @inline tangent(x, _::Integer) = zero_tangent(x)
 
 # `primal` / `tangent` on a bare element-wise tuple of inner duals (the inner
@@ -370,12 +370,11 @@ end
 # bodies use the same `ntuple(closure, Val(N))` pattern at any width — at width 1
 # the closure produces a 1-tuple `(t,)` which this method unwraps to scalar `t`.
 Dual{P,T}(value, t::NTuple{1,T}) where {P,T} = Dual{P,T}(value, t[1])
-# NTangent-wrapped singleton unwraps to the bare tangent for the bare-T form
-# (Audit Todo 6: explicit width-1 compatibility boundary). With the
-# `dual_type(Val(1), generic_P)` carve-out lifted (commit cbc5b236b), the
-# canonical width-1 inner is `Dual{P, NTangent{Tuple{T}}}`; this method is
-# kept for callers that explicitly request the legacy bare-T `Dual{P, T}`
-# shape (e.g. `_ndual_output_to_width1`'s public-boundary normalisation,
+# NTangent-wrapped singleton unwraps to the bare tangent for the bare-T
+# form — an explicit width-1 compatibility boundary. The canonical width-1
+# inner is `Dual{P, NTangent{Tuple{T}}}`; this method is kept for callers
+# that explicitly request the legacy bare-T `Dual{P, T}` shape (e.g.
+# `_ndual_output_to_width1`'s public-boundary normalisation,
 # `from_chainrules` adapters, hand-written legacy rules).
 Dual{P,T}(value, t::NTangent{Tuple{T}}) where {P,T} = Dual{P,T}(value, t.lanes[1])
 
@@ -400,9 +399,9 @@ function Base.convert(::Type{Dual{P,NTangent{Tuple{T}}}}, x::Dual{P,T}) where {P
     return Dual(primal(x), NTangent((tangent(x),)))
 end
 
-# Audit follow-up: `lsetfield!` rule body produces an Int (e.g. updating a
-# `Vector`'s `:size` field with a bare new value). The slot type expects
-# `Dual{Int64, NoTangent}`; provide a convert so Julia's `setfield!` /
+# `lsetfield!` rule bodies can produce a bare new value (e.g. an Int when
+# updating a `Vector`'s `:size` field). The slot type expects
+# `Dual{Int64, NoTangent}`; this convert lets Julia's `setfield!` /
 # typed-Tuple slot writes succeed.
 function Base.convert(::Type{Dual{P,NoTangent}}, x::P) where {P}
     return Dual{P,NoTangent}(x, NoTangent())
@@ -565,14 +564,14 @@ end
 # Tuple-typed fields, recurse element-wise so a nested Tuple-of-Dual builds
 # without trying `Tuple{...}(::Tuple, ::Tuple)` (which has no ctor).
 @inline function _inner_dual_for_field(::Type{V}, primal::P, tangent::T) where {V,P,T}
-    # Audit follow-up: the previous "escape hatch" returned a bare
-    # `Dual(primal, tangent)` (= `Dual{P, T}`) when V was a concrete Dual
-    # whose declared tangent type differed from `T`. That bypassed the
-    # NTangent wrap, producing element-wise bare-T Tuple-of-Duals that
-    # didn't match the canonical width-1 OC slot (`Dual{P, NTangent{Tuple{T}}}`)
-    # and surfaced as typeassert failures in high_order_derivative_patches /
-    # misty_closures. The canonical V's 2-arg ctor (see dual.jl §"Inner-type
-    # constructors") already adapts the tangent shape — route through it.
+    # Do NOT add an "escape hatch" that returns a bare `Dual(primal, tangent)`
+    # (= `Dual{P, T}`) when V is a concrete Dual whose declared tangent type
+    # differs from `T`. Past attempts bypassed the NTangent wrap, producing
+    # element-wise bare-T Tuple-of-Duals that didn't match the canonical
+    # width-1 OC slot (`Dual{P, NTangent{Tuple{T}}}`) and surfaced as
+    # typeassert failures in high_order_derivative_patches /
+    # misty_closures. The canonical V's 2-arg ctor (see §"Inner-type
+    # constructors" above) already adapts the tangent shape — route through it.
     return V(primal, tangent)
 end
 @inline function _inner_dual_for_field(
@@ -686,9 +685,9 @@ end
     lanes = tangent.lanes
     inner = ntuple(Val(fieldcount(P))) do i
         Vi = fieldtype(InnerT, i)
-        # Audit Todo 7: unified width-1/N path. The per-element `partials` is
-        # always an `NTuple{N, Tᵢ}`; the inner V's constructor accepts it at
-        # any width. `NoTangent` lanes degrade per-element to `NoTangent()`.
+        # Unified width-1/N path. The per-element `partials` is always an
+        # `NTuple{N, Tᵢ}`; the inner V's constructor accepts it at any width.
+        # `NoTangent` lanes degrade per-element to `NoTangent()`.
         partials = ntuple(d -> _lane_field(lanes[d], i), Val(N))
         Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
     end
@@ -708,7 +707,7 @@ end
     lanes = tangent.lanes
     inner = ntuple(Val(fieldcount(P))) do i
         Vi = fieldtype(InnerTup, i)
-        # Audit Todo 7: unified width-1/N path; see the Tuple-primal ctor above.
+        # Unified width-1/N path; see the Tuple-primal ctor above.
         partials = ntuple(d -> _lane_field(lanes[d], i), Val(N))
         Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
     end
@@ -863,9 +862,9 @@ primal(::Lifted{Type{P},N,V}) where {P,N,V} = P
 end
 @generated function tangent(d::Lifted{P,N,V}) where {P<:Tuple,N,V<:Tuple}
     isconcretetype(P) || return :(map(tangent, d.value))
-    # Audit test #9 (Tuple case) / Todo 1 (rev. 3): delegate per-lane to
-    # `tangent(d, lane)`, which recurses with primal-type awareness and
-    # rebuilds inner `Tangent{...}` wrappers for struct elements.
+    # Delegate per-lane to `tangent(d, lane)`, which recurses with
+    # primal-type awareness and rebuilds inner `Tangent{...}` wrappers for
+    # struct elements.
     lane_exprs = [:(tangent(d, $lane)) for lane in 1:N]
     return :(NTangent(($(lane_exprs...),)))
 end
@@ -875,9 +874,8 @@ end
 @generated function tangent(
     d::Lifted{P,N,V}
 ) where {names,P<:NamedTuple{names},N,V<:NamedTuple{names}}
-    # Audit test #9 (NamedTuple case) / Todo 1 (rev. 3): delegate per-lane
-    # so that NamedTuple-primal fields whose primal type is a struct
-    # rebuild `Tangent{...}` correctly.
+    # Delegate per-lane so that NamedTuple-primal fields whose primal type
+    # is a struct rebuild `Tangent{...}` correctly.
     lane_exprs = [:(tangent(d, $lane)) for lane in 1:N]
     return :(NTangent(($(lane_exprs...),)))
 end
@@ -892,17 +890,17 @@ end
 # shape used by `_dot` for FD comparison.
 @generated function primal(d::Lifted{P,N,V}) where {P,N,V<:NamedTuple{names}} where {names}
     P <: NamedTuple && return :(map(primal, d.value))   # earlier method handles this
-    # Todo 1 (rev. 3): nested struct fields need type-aware reconstruction,
-    # so delegate to `_new_field_primal` (defined in rules/new.jl) which
-    # recurses with primal field types and rebuilds inner structs.
+    # Nested struct fields need type-aware reconstruction, so delegate to
+    # `_new_field_primal` (defined in rules/new.jl) which recurses with
+    # primal field types and rebuilds inner structs.
     return :(_new_field_primal($P, d.value))
 end
 @generated function tangent(d::Lifted{P,N,V}) where {P,N,V<:NamedTuple{names}} where {names}
     P <: NamedTuple && return :(map(tangent, d.value))   # earlier method handles this
-    # Audit test #9 / Todo 1 (rev. 3): delegate per-lane to `tangent(d, lane)`,
-    # which routes through `_build_struct_tangent_dir` for struct primals so
-    # nested struct fields are rebuilt as `Tangent{...}` rather than leaking
-    # raw `NamedTuple{...}`.
+    # Delegate per-lane to `tangent(d, lane)`, which routes through
+    # `_build_struct_tangent_dir` for struct primals so nested struct fields
+    # are rebuilt as `Tangent{...}` rather than leaking raw
+    # `NamedTuple{...}`.
     lane_exprs = [:(tangent(d, $lane)) for lane in 1:N]
     return :(NTangent(($(lane_exprs...),)))
 end
@@ -946,7 +944,7 @@ function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     V = dual_type(Val(N), P)
     # Concrete `(P, V)`: produce the fully-parameterised slot type.
     isconcretetype(V) && return Lifted{P,N,V}
-    # Audit follow-up: a `Tuple{Type{T1}, Type{T2}, ...}` primal lifts to a
+    # A `Tuple{Type{T1}, Type{T2}, ...}` primal lifts to a
     # `Tuple{Dual{Type{T1}, NoTangent}, Dual{Type{T2}, NoTangent}, ...}` V.
     # `isconcretetype` returns false for these (Type-of-Type fields), but
     # the constructor path can still build a concrete Lifted directly — the
@@ -1004,12 +1002,12 @@ Companion to `zero_dual` (Layer 2). The result type matches
 @inline zero_lifted(::Val{0}, x::NamedTuple) = x
 @inline zero_lifted(::Val{0}, x::Type) = x
 @inline zero_lifted(::Val{0}, x) = x
-# Audit step 5: when `dual_type(Val(N), P)` matches `typeof(zero_dual(w, x))`
-# (the IEEEFloat / Ptr / NDual paths), the 1-arg `Lifted` ctor uses the
+# When `dual_type(Val(N), P)` matches `typeof(zero_dual(w, x))` (the
+# IEEEFloat / Ptr / NDual paths), the 1-arg `Lifted` ctor uses the
 # canonical inner V directly. Otherwise route through the 2-arg ctor so
-# the inner V is rebuilt from `(primal, tangent)` via `dual_type(Val(N),
-# P)(primal, tangent)`. Avoids the generic `zero_tangent` safety check
-# that rejects bare `Ptr` primals.
+# the inner V is rebuilt from `(primal, tangent)` via
+# `dual_type(Val(N), P)(primal, tangent)`. Avoids the generic
+# `zero_tangent` safety check that rejects bare `Ptr` primals.
 @inline function zero_lifted(w::Val{N}, x) where {N}
     zd = zero_dual(w, x)
     InnerT = dual_type(w, typeof(x))
