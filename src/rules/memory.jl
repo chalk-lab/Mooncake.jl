@@ -1262,6 +1262,30 @@ end
     ref::Mooncake.Lifted{MemoryRef{P}},
     size::Mooncake.Lifted{<:NTuple{M,Int}},
 ) where {N,P,M}
+    InnerT_arr = Mooncake.dual_type(Val(N), Array{P,M})
+    # Struct-element (non-NDual) Array path: the bare-Dual body at 1249
+    # stuffs `tangent(ref)` (an NTangent at width N≥2) into the new
+    # Array's `.ref` field via `_new_`, producing a malformed Array;
+    # `_wrap_rule_result` then aliases that single malformed Array across
+    # all N NTangent lanes. Detect the canonical NTangent-wrapped Array V
+    # and build N independent per-lane tangent Arrays from per-lane
+    # MemoryRefs instead.
+    if N >= 2 &&
+        InnerT_arr isa DataType &&
+        InnerT_arr <: Dual &&
+        InnerT_arr.parameters[2] <: Mooncake.NTangent
+        primal_p = primal(Mooncake._unlift(p))
+        primal_ref = primal(Mooncake._unlift(ref))
+        primal_size = primal(Mooncake._unlift(size))
+        y = _new_(primal_p, primal_ref, primal_size)
+        ref_lanes = tangent(Mooncake._unlift(ref)).lanes
+        tangents = ntuple(Val(N)) do lane
+            _new_(Array{tangent_type(P),M}, ref_lanes[lane], primal_size)
+        end
+        return Mooncake.Lifted{Array{P,M},N,InnerT_arr}(
+            InnerT_arr(y, Mooncake.NTangent(tangents))
+        )
+    end
     bare_result = frule!!(
         Mooncake._unlift(f),
         Mooncake._unlift(p),

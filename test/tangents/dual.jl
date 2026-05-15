@@ -1051,6 +1051,54 @@ end
         end
     end
 
+    @testset "_new_(Array{<:Struct}, ref, sz) width-N lane independence (Finding 5)" begin
+        # Pre-fix: `_new_(Vector{LoHi}, ref, sz)` at width N≥2 went through
+        # the bare-Dual rule which called `_new_(Array{Tangent, M},
+        # tangent(ref), size)` where `tangent(ref)` is the NTangent
+        # wrapper. `_new_` stuffed the NTangent into the new Array's `.ref`
+        # field via `:new`, producing a malformed Array; `_wrap_rule_result`
+        # then aliased that single malformed Array into all N NTangent
+        # lanes — two bugs in one: lane aliasing AND corrupted Array
+        # internals.
+        # Fix: detect NTangent-wrapped Array V at N≥2 and build N
+        # independent per-lane tangent Arrays from per-lane MemoryRefs.
+        @static if VERSION >= v"1.11-"
+            for N in (1, 2)
+                m = Memory{TestResources.LoHi}(undef, 3)
+                m[1] = TestResources.LoHi(1.0, 2.0)
+                m[2] = TestResources.LoHi(3.0, 4.0)
+                m[3] = TestResources.LoHi(5.0, 6.0)
+                mref = Core.memoryrefnew(m)
+                f = Mooncake.zero_lifted(Val(N), Mooncake._new_)
+                ty = Mooncake.zero_lifted(Val(N), Vector{TestResources.LoHi})
+                refl = Mooncake.zero_lifted(Val(N), mref)
+                szl = Mooncake.zero_lifted(Val(N), (3,))
+                r = Mooncake.frule!!(f, ty, refl, szl)
+                if N == 2
+                    lanes = r.value.tangent.lanes
+                    @test lanes[1] !== lanes[2]
+                    @test lanes[1] isa Array
+                    @test lanes[2] isa Array
+                end
+            end
+            # Regression: IEEEFloat-element Array still uses bare
+            # `Array{NDual{Float64, N}}` V at any width (no Dual wrapping).
+            for N in (1, 2)
+                m = Memory{Float64}(undef, 3)
+                m[1] = 1.0
+                m[2] = 2.0
+                m[3] = 3.0
+                mref = Core.memoryrefnew(m)
+                f = Mooncake.zero_lifted(Val(N), Mooncake._new_)
+                ty = Mooncake.zero_lifted(Val(N), Vector{Float64})
+                refl = Mooncake.zero_lifted(Val(N), mref)
+                szl = Mooncake.zero_lifted(Val(N), (3,))
+                r = Mooncake.frule!!(f, ty, refl, szl)
+                @test typeof(r).parameters[3] <: Vector{<:Mooncake.Nfwd.NDual}
+            end
+        end
+    end
+
     @testset "Memory{<:Struct}(undef, n) width-N lane independence (Finding 5)" begin
         # Pre-fix: `Memory{LoHi}(undef, n)` at width N≥2 went through
         # `_memory_init_kernel` (returns a single Dual with single Memory
