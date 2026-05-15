@@ -109,35 +109,43 @@ This causes two failure modes:
 
 2. **An overlay inside a primitive's body never runs.** The rule replaces the body and runs the primal through ordinary Julia dispatch, which ignores overlays. An overlay written to patch unsupported code inside the primitive is silently inert — move it to a signature Mooncake still differentiates, or fold the workaround into the rule.
 
-The example below covers both cases and prints the return type Mooncake infers for each caller:
+The example below covers both cases. Case (1) overlays the primitive itself; case (2) overlays a helper called from the primitive's body. Each identity check asks whether Mooncake's inferred return type for the caller is `A` (the original) rather than `B` (what the overlay would produce):
 
-```julia
-using Mooncake
+```jldoctest overlay-primitive-doctest
+julia> struct A end
 
-struct A end
-struct B end
+julia> struct B end
 
-# (1) Overlay applied to the primitive itself.
-direct_primitive(::A) = A()
-Mooncake.@mooncake_overlay direct_primitive(::A) = B()
-Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{typeof(direct_primitive), A}
+julia> direct_primitive(::A) = A()
+direct_primitive (generic function with 1 method)
 
-# (2) Overlay applied to a callee inside an otherwise-untouched primitive.
-helper(::A) = A()
-Mooncake.@mooncake_overlay helper(::A) = B()
-indirect_primitive(x::A) = helper(x)
-Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{typeof(indirect_primitive), A}
+julia> Mooncake.@mooncake_overlay direct_primitive(::A) = B()
 
-caller_direct(x::A)   = direct_primitive(x)
-caller_indirect(x::A) = indirect_primitive(x)
+julia> Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{typeof(direct_primitive), A}
 
-interp = Mooncake.MooncakeInterpreter(Mooncake.DefaultCtx, Mooncake.ReverseMode)
-for sig in (Tuple{typeof(caller_direct), A}, Tuple{typeof(caller_indirect), A})
-    _, rt = Base.code_ircode_by_type(sig; interp)[1]
-    println(sig, " => ", rt)
-end
-# Tuple{typeof(caller_direct), A}   => A
-# Tuple{typeof(caller_indirect), A} => A
+julia> helper(::A) = A()
+helper (generic function with 1 method)
+
+julia> Mooncake.@mooncake_overlay helper(::A) = B()
+
+julia> indirect_primitive(x::A) = helper(x)
+indirect_primitive (generic function with 1 method)
+
+julia> Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{typeof(indirect_primitive), A}
+
+julia> caller_direct(x::A) = direct_primitive(x)
+caller_direct (generic function with 1 method)
+
+julia> caller_indirect(x::A) = indirect_primitive(x)
+caller_indirect (generic function with 1 method)
+
+julia> interp = Mooncake.MooncakeInterpreter(Mooncake.DefaultCtx, Mooncake.ReverseMode);
+
+julia> Base.code_ircode_by_type(Tuple{typeof(caller_direct), A}; interp)[1][2] === A
+true
+
+julia> Base.code_ircode_by_type(Tuple{typeof(caller_indirect), A}; interp)[1][2] === A
+true
 ```
 
 Both overlays would produce a `B`, but Mooncake infers `A` — and a rule shaped around `B` would mismatch the expected `CoDual{A}`. Apply only one of `@mooncake_overlay` or `@is_primitive` to a given signature, and make sure no overlay you rely on sits behind a primitive's rule.
