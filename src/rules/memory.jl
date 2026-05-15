@@ -579,6 +579,37 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Width-N memoryrefget for NTangent-wrapped MemoryRef dest (paralleling
+# `lmemoryrefget`'s width-N specific overload). Reads all N lane MemoryRef
+# tangents — the generic Lifted delegator above relies on the bare-Dual
+# rule's `_memref_tan_unwrap` singleton-NTangent helper which doesn't
+# handle N≥2. Without this overload, struct-element MemoryRef at width N≥2
+# raised `expected GenericMemoryRef, got NTangent`. At N==1 the generic
+# delegator handles the wrapper-unwrap path (singleton NTangent → bare
+# MemoryRef → struct-primal Tangent canonicalization).
+@inline Base.@propagate_inbounds function frule!!(
+    f::Mooncake.Lifted{typeof(memoryrefget),N},
+    x::Mooncake.Lifted{
+        <:MemoryRef,N,<:Dual{<:MemoryRef,<:Mooncake.NTangent{<:NTuple{N,<:MemoryRef}}}
+    },
+    _ordering::Mooncake.Lifted{Symbol},
+    _boundscheck::Mooncake.Lifted{Bool},
+) where {N}
+    N == 1 && return @invoke frule!!(
+        f::Mooncake.Lifted{typeof(memoryrefget),N},
+        x::Mooncake.Lifted{<:MemoryRef},
+        _ordering::Mooncake.Lifted{Symbol},
+        _boundscheck::Mooncake.Lifted{Bool},
+    )
+    bare_x = Mooncake._unlift(x)
+    ord = primal(Mooncake._unlift(_ordering))
+    bc = primal(Mooncake._unlift(_boundscheck))
+    y = memoryrefget(primal(bare_x), ord, bc)
+    tangents = ntuple(Val(N)) do n
+        memoryrefget(tangent(bare_x).lanes[n], ord, bc)
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(tangents))
+end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(memoryrefget),<:MemoryRef,Symbol,Bool}}
 ) = true

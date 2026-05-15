@@ -937,4 +937,57 @@ end
         @test L.value.hi.value == -1.5
         @test L.value.hi.partials == (0.2, 0.4)
     end
+
+    @testset "memoryrefget / lmemoryrefget width-N struct-element (Finding 5)" begin
+        # Pre-fix: `frule!!(::Lifted{typeof(memoryrefget), N}, ...)` and
+        # `frule!!(::Lifted{typeof(lmemoryrefget), N}, ...)` erred at
+        # width N≥2 for struct-element MemoryRef. The bare-Dual delegator
+        # path called `_memref_tan_unwrap` (singleton-NTangent only) on a
+        # multi-lane NTangent, returning the NTangent itself which
+        # memoryrefget rejected with `expected GenericMemoryRef`.
+        # Fix: width-N-specific overload doing per-lane processing.
+        @static if VERSION >= v"1.11-"
+            m = Memory{TestResources.LoHi}(undef, 4)
+            m[1] = TestResources.LoHi(10.0, 11.0)
+            m[2] = TestResources.LoHi(20.0, 21.0)
+            mref = Core.memoryrefnew(Core.memoryrefnew(m), 2)
+
+            for op in (Core.memoryrefget, Mooncake.lmemoryrefget)
+                # Width-1 still works (generic delegator path).
+                f1 = Mooncake.zero_lifted(Val(1), op)
+                x1 = Mooncake.zero_lifted(Val(1), mref)
+                # lmemoryrefget takes Val args; memoryrefget takes Symbol/Bool.
+                ord1 = if op === Mooncake.lmemoryrefget
+                    Mooncake.zero_lifted(Val(1), Val(:not_atomic))
+                else
+                    Mooncake.zero_lifted(Val(1), :not_atomic)
+                end
+                bc1 = if op === Mooncake.lmemoryrefget
+                    Mooncake.zero_lifted(Val(1), Val(false))
+                else
+                    Mooncake.zero_lifted(Val(1), false)
+                end
+                r1 = Mooncake.frule!!(f1, x1, ord1, bc1)
+                @test Mooncake.primal(r1) === TestResources.LoHi(20.0, 21.0)
+
+                # Width-2 was the broken case.
+                f2 = Mooncake.zero_lifted(Val(2), op)
+                x2 = Mooncake.zero_lifted(Val(2), mref)
+                ord2 = if op === Mooncake.lmemoryrefget
+                    Mooncake.zero_lifted(Val(2), Val(:not_atomic))
+                else
+                    Mooncake.zero_lifted(Val(2), :not_atomic)
+                end
+                bc2 = if op === Mooncake.lmemoryrefget
+                    Mooncake.zero_lifted(Val(2), Val(false))
+                else
+                    Mooncake.zero_lifted(Val(2), false)
+                end
+                r2 = Mooncake.frule!!(f2, x2, ord2, bc2)
+                @test Mooncake.primal(r2) === TestResources.LoHi(20.0, 21.0)
+                # The result is the structural NamedTuple lift at width 2.
+                @test typeof(r2).parameters[3] <: NamedTuple
+            end
+        end
+    end
 end
