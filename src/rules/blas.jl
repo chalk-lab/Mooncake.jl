@@ -944,20 +944,25 @@ end
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.gemv!),Vararg}}) = true
 
+# Width-1 path: container args narrowed to bare-`Dual{<:Abstract...}` to
+# disambiguate from the width-N rule at N=1 (NDual array inputs route to
+# width-N). Scalars keep the `_ScalarLikeWidth1` Union so mixed
+# (NDual scalar + Dual structural-wrapper container) inputs dispatch
+# here. `P<:BlasFloat` covers real and complex element types.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
     alpha::_ScalarLikeWidth1{P},
-    A_dA::_VecOrMatLikeWidth1{P},
-    x_dx::_ArrLikeWidth1{P},
+    A_dA::Dual{<:AbstractVecOrMat{P}},
+    x_dx::Dual{<:AbstractVector{P}},
     beta::_ScalarLikeWidth1{P},
-    y_dy::_ArrLikeWidth1{P},
+    y_dy::Dual{<:AbstractVector{P}},
 ) where {P<:BlasFloat}
-    # `A_dA` can be a Vector or Matrix (per `_VecOrMatLikeWidth1`). The core
-    # helper requires a Matrix, so route through `_mat_extract` which reshapes
-    # 1D inputs to `M×1` matrices. Test cases include Vector A (degenerate
-    # M×1 gemv); `_arr_extract` would preserve the 1D shape and trip the
-    # core's `AbstractMatrix{P}` constraint.
+    # `A_dA` can be a Vector or Matrix. The core helper requires a Matrix,
+    # so route through `_mat_extract` which reshapes 1D inputs to `M×1`
+    # matrices. Test cases include Vector A (degenerate M×1 gemv);
+    # `_arr_extract` would preserve the 1D shape and trip the core's
+    # `AbstractMatrix{P}` constraint.
     A, dA = _mat_extract(A_dA)
     x, dx = _arr_extract(x_dx)
     y, dy = _arr_extract(y_dy)
@@ -969,15 +974,16 @@ end
     _arr_writeback!(y_dy, y, dy)
     return y_dy
 end
-# Complex-element variant: canonical width-1 `Complex{NDual{R, 1}}` shapes.
+# Complex width-1 path: containers narrowed analogously; scalars keep the
+# Complex Union for mixed dispatch.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
     alpha::_ScalarLikeWidth1Complex{R},
-    A_dA::_VecOrMatLikeWidth1Complex{R},
-    x_dx::_ArrLikeWidth1Complex{R},
+    A_dA::Dual{<:AbstractVecOrMat{Complex{R}}},
+    x_dx::Dual{<:AbstractVector{Complex{R}}},
     beta::_ScalarLikeWidth1Complex{R},
-    y_dy::_ArrLikeWidth1Complex{R},
+    y_dy::Dual{<:AbstractVector{Complex{R}}},
 ) where {R<:IEEEFloat}
     A, dA = _mat_extract(A_dA)
     x, dx = _arr_extract(x_dx)
