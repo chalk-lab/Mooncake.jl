@@ -277,9 +277,9 @@ end
     return x
 end
 @inline function set_tangent_field!(
-    t::NTangent{NTuple{N,T}}, i::Union{Int,Symbol}, x::NTangent{NTuple{N,Tx}}
-) where {N,T,Tx}
-    @inbounds for n in 1:N
+    t::NTangent{Vt}, i::Union{Int,Symbol}, x::NTangent{Vx}
+) where {Vt<:Tuple,Vx<:Tuple}
+    @inbounds for n in eachindex(t.lanes)
         set_tangent_field!(t.lanes[n], i, x.lanes[n])
     end
     return x

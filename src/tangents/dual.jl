@@ -310,7 +310,9 @@ Dual{P,T}(value, t::NTangent{Tuple{T}}) where {P,T} = Dual{P,T}(value, t.lanes[1
 
 # Chunked structured `Dual{P, NTangent{NTuple{N, T}}}`: pre-computed lanes wrap
 # in NTangent; scalar tangent broadcasts across N lanes.
-function (::Type{Dual{P,NTangent{NTuple{N,T}}}})(value::P, lanes::NTuple{N,T}) where {P,N,T}
+# Inner-tuple shape is bound through `V` (rather than `NTuple{N,T}`) so the
+# zero-lane edge case does not leave `T` unbound (Aqua `test_unbound_args`).
+function (::Type{Dual{P,NTangent{V}}})(value::P, lanes::V) where {P,V<:Tuple}
     return Dual(value, NTangent(lanes))
 end
 function (::Type{Dual{P,NTangent{NTuple{N,T}}}})(value::P, tangent::T) where {P,N,T}

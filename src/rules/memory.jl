@@ -729,20 +729,21 @@ end
 # `Memory{<:IEEEFloat}` element lookups).
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},Mooncake.NTangent{NTuple{N,TT}}},
+    x::Dual{<:MemoryRef{P},<:Mooncake.NTangent{<:Tuple{Vararg{MemoryRef}}}},
     value::Union{
         Dual,NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
     },
     ::Dual{Val{ordering}},
     ::Dual{Val{boundscheck}},
-) where {P,N,TT<:MemoryRef,ordering,boundscheck}
+) where {P,ordering,boundscheck}
     # Audit Todo 4: write all N lane MemoryRef tangents (was: only lane 1).
     p_val = _ndual_primal(value)
     memoryrefset!(primal(x), p_val, ordering, boundscheck)
-    for n in 1:N
+    lanes = tangent(x).lanes
+    @inbounds for n in eachindex(lanes)
         # `value` may be bare `NDual{T, N}` (per-lane tangent via `.partials[n]`)
         # or a `Dual{P, NTangent{...}}` (per-lane via lane n of NTangent).
-        memoryrefset!(tangent(x).lanes[n], _lane_tangent(value, n), ordering, boundscheck)
+        memoryrefset!(lanes[n], _lane_tangent(value, n), ordering, boundscheck)
     end
     return value
 end
