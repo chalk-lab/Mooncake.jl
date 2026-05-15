@@ -570,6 +570,18 @@ end
         @test primal(out) === 1.5
         @test tangent(out) === 0.25
     end
+    @testset "end-to-end IEEEFloat central adapter dispatch" begin
+        # Direct test of the central-adapter flow that `test_rule` exercises
+        # for `rules_via_nfwd.jl` ops: bare-Dual `frule!!` call → Lifted
+        # body → `_ndual_output_to_width1` → bare-T `Dual{P, P}`. Uses
+        # `exp` (a scalar primitive in `rules_via_nfwd.jl`) at width-1.
+        fdual = Mooncake.zero_dual(exp)
+        d = Dual(0.7, 1.0)
+        result = Mooncake.frule!!(fdual, d)
+        @test result isa Dual{Float64,Float64}
+        @test primal(result) ≈ exp(0.7)
+        @test tangent(result) ≈ exp(0.7)  # d/dx exp(x) = exp(x)
+    end
 end
 
 @testset "Lifted-aware frule!! direct dispatch" begin
