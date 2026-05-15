@@ -64,11 +64,10 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 
 @is_primitive MinimalCtx Tuple{typeof(_new_),<:TWP,IEEEFloat,IEEEFloat}
 # Implementation kernels: dispatch on Dual/NDual inner V to extract value/tangent.
-# Audit follow-up (carve-out lift, commit cbc5b236b): `tangent(d::Dual{P,
-# NTangent{Tuple{T}}})` returns the NTangent wrapper. These kernels and
-# downstream rule bodies need the bare lane value so arithmetic /
-# conversion / `twiceprecision(t, nb)` dispatches correctly. Unwrap
-# singleton NTangent at every `tangent(d)` boundary in this file.
+# `tangent(d::Dual{P, NTangent{Tuple{T}}})` returns the NTangent wrapper.
+# These kernels and downstream rule bodies need the bare lane value so
+# arithmetic / conversion / `twiceprecision(t, nb)` dispatches correctly.
+# Unwrap singleton NTangent at every `tangent(d)` boundary in this file.
 @inline _twp_tangent(d::Dual) = _twp_unwrap_lane(tangent(d))
 @inline _twp_unwrap_lane(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
 @inline _twp_unwrap_lane(t) = t
@@ -152,7 +151,7 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(-),N}, x::Mooncake.Lifted{P}
 ) where {N,P<:TWP}
-    # Audit Todo 4: per-lane assembly.
+    # Per-lane assembly.
     p_out = -primal(Mooncake._unlift(x))
     tangents = ntuple(n -> -Mooncake.tangent(x, n), Val(N))
     return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
@@ -166,9 +165,9 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(+),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
 ) where {N,P<:TWP}
-    # Audit Todo 4: per-lane assembly so each lane's tangent is computed
-    # independently (was: single-lane via `_twp_val` then broadcast at wrap,
-    # silently duplicating across N lanes for N >= 2).
+    # Per-lane assembly so each lane's tangent is computed independently
+    # (was: single-lane via `_twp_val` then broadcast at wrap, silently
+    # duplicating across N lanes for N >= 2).
     px = primal(Mooncake._unlift(x))
     py = primal(Mooncake._unlift(y))
     p_out = px + py
@@ -214,7 +213,7 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(*),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
 ) where {N,P<:TWP}
-    # Audit Todo 4: per-lane assembly. d(xy)/dx = y, d(xy)/dy = x.
+    # Per-lane assembly. d(xy)/dx = y, d(xy)/dy = x.
     px = primal(Mooncake._unlift(x))
     py = primal(Mooncake._unlift(y))
     z = px * py
@@ -250,7 +249,7 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(/),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
 ) where {N,P<:TWP}
-    # Audit Todo 4: per-lane assembly. d(x/y)/dx = 1/y, d(x/y)/dy = -x/y^2.
+    # Per-lane assembly. d(x/y)/dx = 1/y, d(x/y)/dy = -x/y^2.
     px = primal(Mooncake._unlift(x))
     py = primal(Mooncake._unlift(y))
     z = px / py

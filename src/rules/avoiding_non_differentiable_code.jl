@@ -11,11 +11,11 @@
 ) where {N,P_x<:Ptr}
     inner_x = Mooncake._unlift(x)
     py = primal(y)
-    # Audit step 5: when the inner V is `Dual{Ptr{T}, NTangent{Tuple{Ptr{TT}}}}`
-    # (carve-out lifted), `tangent(inner_x)` returns the outer NTangent; the
-    # `+ py` arithmetic needs the bare `Ptr` value. Unwrap the singleton-
-    # NTangent. The 2-arg `Lifted{P_x, N}(primal, tangent)` ctor will rewrap
-    # via `dual_type(Val(N), P_x)(...)`.
+    # When the inner V is `Dual{Ptr{T}, NTangent{Tuple{Ptr{TT}}}}`,
+    # `tangent(inner_x)` returns the outer NTangent; the `+ py` arithmetic
+    # needs the bare `Ptr` value. Unwrap the singleton-NTangent. The 2-arg
+    # `Lifted{P_x, N}(primal, tangent)` ctor will rewrap via
+    # `dual_type(Val(N), P_x)(...)`.
     raw_t = tangent(inner_x)
     bare_t = raw_t isa Mooncake.NTangent ? raw_t.lanes[1] : raw_t
     return Mooncake.Lifted{P_x,N}(primal(inner_x) + py, bare_t + py)

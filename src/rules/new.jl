@@ -76,14 +76,11 @@ end
         y = _new_(P, new_args...)
         T = tangent_type(P)
         T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
-        # Audit step 6: produce canonical `Array{NDual{T, N}}` zero-tangent
-        # storage when the canonical V is an array variant. The previous
-        # `Lifted{P, N}(Dual(y, zero_tangent(y)))` form was noncanonical —
-        # the audit (`~/notes/mooncake/primal-mode-branch-audit.md` §"Array
-        # zero derivatives") calls for allocated/fillable `Array{NDual}`
-        # storage at this boundary, not a parallel `Dual{Array, Array}`.
-        # `zero_dual` is the canonical Layer-2 zero-element factory and
-        # round-trips through the inner V constructor.
+        # When the canonical V is an array variant, produce
+        # `Array{NDual{T, N}}` zero-tangent storage. A parallel
+        # `Dual{Array, Array}` form is noncanonical — `zero_dual` is the
+        # canonical Layer-2 zero-element factory and round-trips through the
+        # inner V constructor.
         DT = dual_type(Val(N), P)
         if DT isa DataType && DT <: AbstractArray
             return Lifted{P,N}(map(v -> zero_dual(Val(N), v), y))
@@ -198,12 +195,12 @@ end
     ::Type{P}, ::Val{N}, bare_x::Tx
 ) where {P,N,Tx<:Tuple}
     # `_new_` creates struct values in primal-mode IR, so its lifted result
-    # must use the same structural V chosen by `dual_type(Val(N), P)`.
-    # Audit Todo 3: gate on the *result* of `dual_type` (does it choose the
-    # structural NamedTuple lift?) rather than `_uses_structural_dual_type`
-    # alone. An explicit per-type overload (e.g. `Base.Broadcast.Extruded`)
-    # may return a non-NamedTuple shape even when the generic struct-lift
-    # gate predicate is true; honour the overload by skipping this branch.
+    # must use the same structural V chosen by `dual_type(Val(N), P)`. Gate
+    # on the *result* of `dual_type` (does it choose the structural NamedTuple
+    # lift?) rather than `_uses_structural_dual_type` alone. An explicit
+    # per-type overload (e.g. `Base.Broadcast.Extruded`) may return a
+    # non-NamedTuple shape even when the generic struct-lift gate predicate
+    # is true; honour the overload by skipping this branch.
     if N >= 1 && fieldcount(P) == fieldcount(Tx) && _uses_structural_dual_type(P)
         DT = try
             _static_dual_type_value(Val(N), P)

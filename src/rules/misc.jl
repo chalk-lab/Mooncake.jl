@@ -163,8 +163,8 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 # `Tuple`, `NamedTuple`) into the matching kernel.
 @inline function _lgetfield_impl(x::Dual{P,T}, ::Val{f}) where {P,T<:StandardTangentType,f}
     primal_field = getfield(primal(x), f)
-    # Audit step 5: short-circuit on either parent-NoTangent or field-NoTangent
-    # (see the 4-arg overload below for rationale).
+    # Short-circuit on either parent-NoTangent or field-NoTangent (see the
+    # 4-arg overload below for rationale).
     if tangent_type(P) === NoTangent || tangent_type(_typeof(primal_field)) === NoTangent
         return uninit_dual(primal_field)
     else
@@ -236,8 +236,8 @@ end
 # another struct), field access also contributes no derivative.
 _get_tangent_field(::NoTangent, _) = NoTangent()
 _get_tangent_field(::NoTangent, _, _) = NoTangent()
-# Audit step 5: raw-array tangent shape (`Vector{Any}`, `Vector{NoTangent}` etc.)
-# arises when `_lgetfield_impl` recurses into the NTangent lanes of a non-NDual
+# Raw-array tangent shape (`Vector{Any}`, `Vector{NoTangent}` etc.) arises
+# when `_lgetfield_impl` recurses into the NTangent lanes of a non-NDual
 # array primal. The tangent has the same struct fields as the primal Array,
 # so `getfield(tangent, name)` produces the matching per-field tangent shape
 # directly (e.g. `tangent.ref::MemoryRef{T}` matches `tangent_type(::Array
@@ -265,11 +265,11 @@ function _get_tangent_field(f::NTangent, name, inbounds)
     return NTangent(map(t -> _get_tangent_field(t, name, inbounds), f.lanes))
 end
 
-# Audit step 5: NTangent wraps the inner tangent; propagate
-# `set_tangent_field!` into each lane. When the new value `x` is itself
-# NTangent-wrapped, apply per-lane; otherwise broadcast the same `x` across
-# all lanes. Lives here rather than in `tangents.jl` because `NTangent` is
-# defined later (in `tangents/dual.jl`).
+# NTangent wraps the inner tangent; propagate `set_tangent_field!` into each
+# lane. When the new value `x` is itself NTangent-wrapped, apply per-lane;
+# otherwise broadcast the same `x` across all lanes. Lives here rather than
+# in `tangents.jl` because `NTangent` is defined later (in
+# `tangents/dual.jl`).
 @inline function set_tangent_field!(t::NTangent, i::Union{Int,Symbol}, x)
     for lane in t.lanes
         set_tangent_field!(lane, i, x)
@@ -332,13 +332,13 @@ end
     x::Dual{P,<:StandardTangentType}, ::Val{f}, ::Val{order}
 ) where {P,f,order}
     primal_field = getfield(primal(x), f, order)
-    # Audit step 5: short-circuit when *either* the parent `P` has no
-    # tangent, *or* the specific field is non-differentiable
+    # Short-circuit when *either* the parent `P` has no tangent, *or* the
+    # specific field is non-differentiable
     # (`tangent_type(typeof(primal_field)) === NoTangent`). The narrower
     # field check covers struct/array primals like `Vector{Any}.size` where
-    # the parent has a tangent shape but the specific field doesn't —
-    # avoids recursing into `_get_tangent_field` on a bulk-array tangent
-    # that doesn't structurally decompose.
+    # the parent has a tangent shape but the specific field doesn't — avoids
+    # recursing into `_get_tangent_field` on a bulk-array tangent that
+    # doesn't structurally decompose.
     if tangent_type(P) === NoTangent || tangent_type(_typeof(primal_field)) === NoTangent
         return uninit_dual(primal_field)
     else
@@ -418,8 +418,8 @@ end
 ) where {P,T<:StandardTangentType}
     return lsetfield_frule(value, name, _tuple_duals_to_dual(x))
 end
-# Audit follow-up: bare-NDual-container `value` arrives from carve-out-
-# lifted unlifts (e.g., `Lifted{Vector{T<:IEEEFloat}, 1, Vector{NDual{T,1}}}`
+# A bare-NDual-container `value` can arrive when the unlifted form is the
+# canonical V (e.g. `Lifted{Vector{T<:IEEEFloat}, 1, Vector{NDual{T,1}}}`
 # unlifts to bare `Vector{NDual}`). The Vector IS the lifted form — setting
 # its `:ref` or `:size` field on the bare canonical V just modifies the
 # lifted form in-place. No separate tangent update needed.

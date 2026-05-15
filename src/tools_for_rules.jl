@@ -315,8 +315,7 @@ function _vararg_wrapped_type(vararg_esc_expr, wrapper)
 end
 
 # Produce a Vararg type for frule!! args that may be bare or Dual-wrapped.
-# Audit step 8: narrowed from the wide kill-width-nothing transitional
-# Union — see `_dual_or_bare` for the rationale.
+# See `_dual_or_bare` for the rationale behind the narrowed Union.
 function _vararg_any_type(vararg_esc_expr)
     inner = vararg_esc_expr.args[1]
     inner == :Vararg && return :(Vararg)
@@ -354,17 +353,15 @@ function _zero_derivative_impl(ctx, sig, mode)
     function _dual_or_bare(t, idx)
         sym = Symbol("_ZD_", idx)
         push!(frule_where, :($sym <: $t))
-        # Audit step 8: narrowed to `Union{Dual{<:$sym}, $sym}`. The previous
-        # wide Union also accepted `NDual`, `Complex{<:NDual}`, and
-        # `Lifted{<:$sym}` — added during the kill-width-nothing transition
-        # so that the IR-emit's unwrap-then-bare scaffolding could call the
-        # rule with non-Dual inner shapes. Lifted-typed rule callers now use
-        # the separate `Lifted{<:$sym, N}` overload emitted alongside this
-        # one (see `_zero_derivative_impl` further down), so the bare-Dual
-        # entry point only needs the legacy `Dual{<:$sym}` and bare primal
-        # `$sym` shapes. Narrowing clears the Aqua ambiguity / unbound-
-        # typevar findings flagged in `~/notes/mooncake/primal-mode-branch-
-        # audit.md` §"Confirmed Current Mismatches".
+        # Narrowed to `Union{Dual{<:$sym}, $sym}`. A wider Union that also
+        # accepted `NDual`, `Complex{<:NDual}`, and `Lifted{<:$sym}` would
+        # let IR-emit's unwrap-then-bare scaffolding call the rule with
+        # non-Dual inner shapes — but Lifted-typed rule callers now use the
+        # separate `Lifted{<:$sym, N}` overload emitted alongside this one
+        # (see `_zero_derivative_impl` further down), so the bare-Dual entry
+        # point only needs the legacy `Dual{<:$sym}` and bare primal `$sym`
+        # shapes. Narrowing also clears Aqua ambiguity / unbound-typevar
+        # findings.
         return :(Union{Mooncake.Dual{<:$sym},$sym})
     end
 

@@ -122,10 +122,10 @@ tangent(f::IdDict, ::NoRData) = f
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.rehash!),<:IdDict,Any}}) = true
-# Audit follow-up (carve-out lift): `tangent(d::Dual{P, NTangent{Tuple{T}}})`
-# returns the NTangent wrapper rather than the bare T. For mutation-semantic
-# rules (rehash!, setindex!, getindex on IdDict), unwrap the singleton lane
-# so the underlying mutable IdDict is operated on rather than the wrapper.
+# `tangent(d::Dual{P, NTangent{Tuple{T}}})` returns the NTangent wrapper
+# rather than the bare T. For mutation-semantic rules (rehash!, setindex!,
+# getindex on IdDict), unwrap the singleton lane so the underlying mutable
+# IdDict is operated on rather than the wrapper.
 @inline _iddict_tangent(d::Dual{<:IdDict}) = _iddict_unwrap(tangent(d))
 @inline _iddict_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
 @inline _iddict_unwrap(t) = t
@@ -138,8 +138,8 @@ tangent(f::IdDict, ::NoRData) = f
     inner_newsz = Mooncake._unlift(newsz)
     sz = primal(inner_newsz)
     Base.rehash!(primal(inner_d), sz)
-    # Audit Todo 4: rehash! all N lane IDdicts. Width-1 unwraps to single
-    # bare IdDict; width-N has NTangent{NTuple{N, IdDict}} — rehash each.
+    # rehash! all N lane IDdicts. Width-1 unwraps to a single bare IdDict;
+    # width-N has NTangent{NTuple{N, IdDict}} — rehash each.
     _rehash_iddict_tangent!(tangent(inner_d), sz)
     return d
 end
@@ -179,9 +179,8 @@ end
     _setindex_iddict!(Mooncake._unlift(d), Mooncake._unlift(val), Mooncake._unlift(key))
     return d
 end
-# Audit Todo 4: width-N setindex! for `Dual{<:IdDict, NTangent{...}}` slot.
-# Each lane has its own IDdict tangent — set the per-lane value from
-# `tangent(val, n)`.
+# Width-N setindex! for `Dual{<:IdDict, NTangent{...}}` slot. Each lane has
+# its own IDdict tangent — set the per-lane value from `tangent(val, n)`.
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(setindex!),N},
     d::Mooncake.Lifted{<:IdDict,N,<:Dual{<:IdDict,<:Mooncake.NTangent}},
@@ -264,7 +263,7 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
-# Audit Todo 4 (chunk-size-N correctness): width-2 IDdict has tangent
+# Chunk-size-N correctness: width-N IDdict has tangent
 # `NTangent{NTuple{N, IdDict{K, tangent_type(V)}}}` (one IDdict per lane).
 # The width-1 `_get_iddict` above only services lane 1. For N >= 2, loop
 # per-lane: for each lane `n`, look up `tangent(d, n)[key]` and use
