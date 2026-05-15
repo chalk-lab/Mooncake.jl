@@ -1574,6 +1574,172 @@ end
         sizehint!(tangent(_a), n)
         return _a, NoPullback(NoRData(), NoRData(), NoRData())
     end
+
+    @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
+    @inline function _deletebeg_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
+        Base._deletebeg!(primal(a), primal(d))
+        Base._deletebeg!(tangent(a), primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function _deletebeg_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
+        Base._deletebeg!(a, primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._deletebeg!),N},
+        a::Mooncake.Lifted{<:Vector},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N}
+        bare_result = _deletebeg_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+    function rrule!!(
+        ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
+    )
+        delta = primal(_delta)
+        a = primal(_a)
+        da = tangent(_a)
+        a_beg = a[1:delta]
+        da_beg = da[1:delta]
+        Base._deletebeg!(a, delta)
+        Base._deletebeg!(da, delta)
+        function _deletebeg!_pb!!(::NoRData)
+            splice!(a, 1:0, a_beg)
+            splice!(da, 1:0, da_beg)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return zero_fcodual(nothing), _deletebeg!_pb!!
+    end
+
+    @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
+    @inline function _deleteend_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
+        Base._deleteend!(primal(a), primal(d))
+        Base._deleteend!(tangent(a), primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function _deleteend_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
+        Base._deleteend!(a, primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._deleteend!),N},
+        a::Mooncake.Lifted{<:Vector},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N}
+        bare_result = _deleteend_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+    function rrule!!(
+        ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
+    )
+        a = primal(_a)
+        da = tangent(_a)
+        delta = primal(_delta)
+        primal_tail = a[(end - delta + 1):end]
+        tangent_tail = da[(end - delta + 1):end]
+        Base._deleteend!(a, delta)
+        Base._deleteend!(da, delta)
+        function _deleteend!_pb!!(::NoRData)
+            Base._growend!(a, delta)
+            a[(end - delta + 1):end] .= primal_tail
+            Base._growend!(da, delta)
+            da[(end - delta + 1):end] .= tangent_tail
+            return NoRData(), NoRData(), NoRData()
+        end
+        return zero_fcodual(nothing), _deleteend!_pb!!
+    end
+
+    @is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
+    @inline function _deleteat_kernel!(
+        a::Dual{<:Vector}, i::Dual{<:Integer}, delta::Dual{<:Integer}
+    )
+        Base._deleteat!(primal(a), primal(i), primal(delta))
+        Base._deleteat!(tangent(a), primal(i), primal(delta))
+        return zero_dual(nothing)
+    end
+    @inline function _deleteat_kernel!(
+        a::AbstractVector{<:NDual}, i::Dual{<:Integer}, delta::Dual{<:Integer}
+    )
+        Base._deleteat!(a, primal(i), primal(delta))
+        return zero_dual(nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._deleteat!),N},
+        a::Mooncake.Lifted{<:Vector},
+        i::Mooncake.Lifted{<:Integer},
+        delta::Mooncake.Lifted{<:Integer},
+    ) where {N}
+        bare_result = _deleteat_kernel!(
+            Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(delta)
+        )
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+    function rrule!!(
+        ::CoDual{typeof(Base._deleteat!)},
+        _a::CoDual{<:Vector},
+        _i::CoDual{<:Integer},
+        _delta::CoDual{<:Integer},
+    )
+        a, i, delta = map(primal, (_a, _i, _delta))
+        da = tangent(_a)
+        primal_mem = a[i:(i + delta - 1)]
+        tangent_mem = da[i:(i + delta - 1)]
+        Base._deleteat!(a, i, delta)
+        Base._deleteat!(da, i, delta)
+        function _deleteat!_pb!!(::NoRData)
+            splice!(a, i:(i - 1), primal_mem)
+            splice!(da, i:(i - 1), tangent_mem)
+            return NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return zero_fcodual(nothing), _deleteat!_pb!!
+    end
+
+    @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
+    @inline function _growat_kernel!(
+        a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
+    )
+        Base._growat!(primal(a), primal(i), primal(d))
+        Base._growat!(tangent(a), primal(i), primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function _growat_kernel!(
+        a::AbstractVector{<:NDual}, i::Dual{<:Integer}, d::Dual{<:Integer}
+    )
+        Base._growat!(a, primal(i), primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._growat!),N},
+        a::Mooncake.Lifted{<:Vector},
+        i::Mooncake.Lifted{<:Integer},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N}
+        bare_result = _growat_kernel!(
+            Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(d)
+        )
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+    function rrule!!(
+        ::CoDual{typeof(Base._growat!)},
+        _a::CoDual{<:Vector},
+        _i::CoDual{<:Integer},
+        _delta::CoDual{<:Integer},
+    )
+        a, i, delta = map(primal, (_a, _i, _delta))
+        da = tangent(_a)
+        Base._growat!(a, i, delta)
+        Base._growat!(da, i, delta)
+        function _growat!_pb!!(::NoRData)
+            deleteat!(a, i:(i + delta - 1))
+            deleteat!(da, i:(i + delta - 1))
+            return NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return zero_fcodual(nothing), _growat!_pb!!
+    end
 end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
