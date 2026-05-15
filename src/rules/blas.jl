@@ -158,25 +158,15 @@ end
 
 # ── Unified Dual / NDual array extract & writeback ──────────────────────────
 #
-# At lifted-IR width=1, an array argument arrives as one of two shapes,
-# depending on whether the primal type is a plain `Array` (lifts elementwise
-# to `Array{NDual{T,1}}`) or a struct wrapper like `ReshapedArray`,
-# `SubArray`, `ReinterpretArray` (lifts to `Dual{Wrapper{P,...}, ...}`).
-# `_arr_extract` returns a `(primal, tangent)` pair valid for both shapes:
-# arrayify-views for the Dual case (mutations propagate), `map`-allocated
-# copies for the NDual case (which need `_arr_writeback!` to push results
-# back into the input NDual array element-wise on completion).
-#
-# Audit Todo 4 (width-N): every BLAS rule in this file is **width-1-only**.
-# The `_arr_extract` / `_mat_extract` / `_scalar_extract` helpers all
-# dispatch on `NDual{T, 1}` (lane-1) shapes and `_arr_writeback!`
-# constructs `NDual{T, 1}` results. For N >= 2 the Lifted-aware adapter
-# unlifts to `Array{NDual{T, N}}` which doesn't match the `_*_extract`
-# methods, producing a deliberate `MethodError`. Migrating BLAS to
-# explicit width-N would require either calling BLAS N times per lane
-# (one operation per direction) or implementing chunked BLAS operations
-# on `NDual{T, N}` element types; both are non-trivial and out of this
-# audit's bulk-migration scope. Per audit Todo 4: documented width-1-only.
+# Array arguments arrive as one of two shapes: a `Dual{Wrapper{P,...}, ...}`
+# for struct wrappers (`ReshapedArray`, `SubArray`, `ReinterpretArray`) or an
+# `Array{NDual{T,N}}` / `Array{Complex{NDual{T,N}}}` for plain `Array` primals
+# that lift elementwise. `_arr_extract` / `_mat_extract` / `_scalar_extract`
+# return a `(primal, tangent)` pair for the width-1 shapes (arrayify-views for
+# the Dual case so mutations propagate; `map`-allocated copies for the NDual
+# case, paired with `_arr_writeback!` to push results back element-wise).
+# The `_*_extract_n` / `_arr_writeback_n!` family below mirrors this for
+# width-N callers, returning per-lane tangent tuples.
 @inline _arr_extract(x::Dual{<:AbstractArray}) = arrayify(x)
 @inline function _arr_extract(x::AbstractArray{NDual{T,1}}) where {T}
     return (map(d -> d.value, x), map(d -> d.partials[1], x))
