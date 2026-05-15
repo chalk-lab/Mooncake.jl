@@ -1289,14 +1289,17 @@ for (fname, prim_elty, frule_elty) in (
     end
 end
 
+# Bare-`Dual` width-1 path (narrowed to exclude `NDual{T,1}` to disambiguate
+# from the width-N rule below at N=1). `NDual{T,1}` inputs route to the
+# width-N rule, which produces equivalent output.
 function frule!!(
     ::Dual{typeof(BLAS.symv!)},
     uplo::Dual{Char},
-    alpha::_ScalarLikeWidth1{T},
-    A_dA::_MatLikeWidth1{T},
-    x_dx::_ArrLikeWidth1{T},
-    beta::_ScalarLikeWidth1{T},
-    y_dy::_ArrLikeWidth1{T},
+    alpha::Dual{T},
+    A_dA::Dual{<:AbstractMatrix{T}},
+    x_dx::Dual{<:AbstractVector{T}},
+    beta::Dual{T},
+    y_dy::Dual{<:AbstractVector{T}},
 ) where {T<:BlasRealFloat}
     ul = primal(uplo)
     α, dα = _scalar_extract(alpha)
@@ -1338,14 +1341,17 @@ end
 # shapes. The dispatched BLAS call is symv!/hemv! depending on call site
 # (Julia handles dispatch by element type at the runtime call).
 for fname in (:(symv!), :(hemv!))
+    # Complex bare-`Dual` width-1 path (narrowed to exclude
+    # `Complex{NDual{R,1}}` to disambiguate from the width-N rule below at
+    # N=1). `Complex{NDual{R,1}}` inputs route to the width-N rule.
     @eval @inline function frule!!(
         ::Dual{typeof(BLAS.$fname)},
         uplo::Dual{Char},
-        alpha::_ScalarLikeWidth1Complex{R},
-        A_dA::_MatLikeWidth1Complex{R},
-        x_dx::_ArrLikeWidth1Complex{R},
-        beta::_ScalarLikeWidth1Complex{R},
-        y_dy::_ArrLikeWidth1Complex{R},
+        alpha::Dual{Complex{R}},
+        A_dA::Dual{<:AbstractMatrix{Complex{R}}},
+        x_dx::Dual{<:AbstractVector{Complex{R}}},
+        beta::Dual{Complex{R}},
+        y_dy::Dual{<:AbstractVector{Complex{R}}},
     ) where {R<:IEEEFloat}
         ul = primal(uplo)
         α, dα = _scalar_extract(alpha)
