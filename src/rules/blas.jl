@@ -610,6 +610,30 @@ end
     return Dual(val, dval)
 end
 
+# Lifted-aware delegators for `BLAS.dot` / `dotc` / `dotu`: `_unlift` and
+# delegate to the bare frules above, then `_wrap_rule_result`.
+for fname in (:dot, :dotc, :dotu)
+    @eval @inline function frule!!(
+        f::Mooncake.Lifted{typeof(BLAS.$fname),N},
+        _n::Mooncake.Lifted{<:Integer},
+        X_dX::Mooncake.Lifted{<:Union{Ptr,AbstractArray}},
+        _incx::Mooncake.Lifted{<:Integer},
+        Y_dY::Mooncake.Lifted{<:Union{Ptr,AbstractArray}},
+        _incy::Mooncake.Lifted{<:Integer},
+    ) where {N}
+        bare_result = frule!!(
+            Mooncake._unlift(f),
+            Mooncake._unlift(_n),
+            Mooncake._unlift(X_dX),
+            Mooncake._unlift(_incx),
+            Mooncake._unlift(Y_dY),
+            Mooncake._unlift(_incy),
+        )
+        P_out = __primal_type(_typeof(bare_result))
+        return _wrap_rule_result(P_out, Val(N), bare_result)
+    end
+end
+
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -1289,16 +1313,18 @@ for (fname, prim_elty, frule_elty) in (
     end
 end
 
-# Bare-`Dual` width-1 path (narrowed to exclude `NDual{T,1}` to disambiguate
-# from the width-N rule below at N=1). `NDual{T,1}` inputs route to the
-# width-N rule, which produces equivalent output.
+# Width-1 path with mixed-wrapper support: container args narrowed to
+# bare-`Dual{<:Abstract...}` to disambiguate from the width-N rule at N=1
+# (NDual array inputs route to width-N), while scalar args keep the Union
+# `Dual{T} | NDual{T,1}` so mixed-wrapper inputs (NDual scalar + Dual
+# structural-wrapper matrix) still dispatch here.
 function frule!!(
     ::Dual{typeof(BLAS.symv!)},
     uplo::Dual{Char},
-    alpha::Dual{T},
+    alpha::_ScalarLikeWidth1{T},
     A_dA::Dual{<:AbstractMatrix{T}},
     x_dx::Dual{<:AbstractVector{T}},
-    beta::Dual{T},
+    beta::_ScalarLikeWidth1{T},
     y_dy::Dual{<:AbstractVector{T}},
 ) where {T<:BlasRealFloat}
     ul = primal(uplo)
@@ -1341,16 +1367,17 @@ end
 # shapes. The dispatched BLAS call is symv!/hemv! depending on call site
 # (Julia handles dispatch by element type at the runtime call).
 for fname in (:(symv!), :(hemv!))
-    # Complex bare-`Dual` width-1 path (narrowed to exclude
-    # `Complex{NDual{R,1}}` to disambiguate from the width-N rule below at
-    # N=1). `Complex{NDual{R,1}}` inputs route to the width-N rule.
+    # Complex width-1 path with mixed-wrapper support (containers
+    # narrowed to bare-`Dual{<:Abstract...}` to disambiguate from
+    # width-N at N=1; scalars keep the Union to allow NDual-scalar +
+    # Dual-wrapper mixed inputs).
     @eval @inline function frule!!(
         ::Dual{typeof(BLAS.$fname)},
         uplo::Dual{Char},
-        alpha::Dual{Complex{R}},
+        alpha::_ScalarLikeWidth1Complex{R},
         A_dA::Dual{<:AbstractMatrix{Complex{R}}},
         x_dx::Dual{<:AbstractVector{Complex{R}}},
-        beta::Dual{Complex{R}},
+        beta::_ScalarLikeWidth1Complex{R},
         y_dy::Dual{<:AbstractVector{Complex{R}}},
     ) where {R<:IEEEFloat}
         ul = primal(uplo)
@@ -1507,29 +1534,17 @@ end
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trmv!),Vararg}}) = true
 
+# Width-1 path: container args narrowed to bare-`Dual{<:Abstract...}` to
+# disambiguate from the width-N rule at N=1 (NDual array inputs route to
+# width-N).
 function frule!!(
     ::Dual{typeof(BLAS.trmv!)},
     _uplo::Dual{Char},
     _trans::Dual{Char},
     _diag::Dual{Char},
-    A_dA::_MatLikeWidth1{T},
-    x_dx::_ArrLikeWidth1{T},
+    A_dA::Dual{<:AbstractMatrix{T}},
+    x_dx::Dual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
-    A, dA = _arr_extract(A_dA)
-    x, dx = _arr_extract(x_dx)
-    _trmv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
-    _arr_writeback!(x_dx, x, dx)
-    return x_dx
-end
-# Complex-element variant.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.trmv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::_MatLikeWidth1Complex{R},
-    x_dx::_ArrLikeWidth1Complex{R},
-) where {R<:IEEEFloat}
     A, dA = _arr_extract(A_dA)
     x, dx = _arr_extract(x_dx)
     _trmv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
@@ -1707,29 +1722,17 @@ end
     } where {T<:BlasFloat},
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trsv!),Vararg}}) = true
+# Width-1 path: container args narrowed to bare-`Dual{<:Abstract...}` to
+# disambiguate from the width-N rule at N=1 (NDual array inputs route to
+# width-N). `T<:BlasFloat` covers both real and complex element types.
 function frule!!(
     ::Dual{typeof(BLAS.trsv!)},
     _uplo::Dual{Char},
     _trans::Dual{Char},
     _diag::Dual{Char},
-    A_dA::_MatLikeWidth1{T},
-    x_dx::_ArrLikeWidth1{T},
+    A_dA::Dual{<:AbstractMatrix{T}},
+    x_dx::Dual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
-    A, dA = _arr_extract(A_dA)
-    x, dx = _arr_extract(x_dx)
-    _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
-    _arr_writeback!(x_dx, x, dx)
-    return x_dx
-end
-# Complex-element variant.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.trsv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::_MatLikeWidth1Complex{R},
-    x_dx::_ArrLikeWidth1Complex{R},
-) where {R<:IEEEFloat}
     A, dA = _arr_extract(A_dA)
     x, dx = _arr_extract(x_dx)
     _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
