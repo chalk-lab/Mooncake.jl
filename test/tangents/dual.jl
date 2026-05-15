@@ -1051,6 +1051,42 @@ end
         end
     end
 
+    @testset "Vector grow/shrink/sizehint width-N struct-element (Finding 5)" begin
+        # Pre-fix: `_growbeg_kernel!` / `_growend_kernel!` / `_sizehint_kernel!` /
+        # `_deletebeg_kernel!` / `_deleteend_kernel!` / `_deleteat_kernel!` /
+        # `_growat_kernel!` at memory.jl:1583+ all called
+        # `Base._growbeg!(tangent(a), ...)` etc. where `tangent(a)` is the
+        # NTangent wrapper for struct-element Vector — none of these ops have
+        # methods for NTangent. Fix: add `Dual{<:Vector, <:NTangent}` overloads
+        # that apply the op per-lane via `foreach(t -> op(t, ...),
+        # tangent(a).lanes)`.
+        @static if VERSION >= v"1.11-"
+            cases = [
+                (Base._growbeg!, (2,)),
+                (Base._growend!, (2,)),
+                (sizehint!, (10,)),
+                (Base._deletebeg!, (1,)),
+                (Base._deleteend!, (1,)),
+                (Base._deleteat!, (1, 1)),
+                (Base._growat!, (2, 1)),
+            ]
+            for (op, args_extra) in cases
+                for N in (1, 2)
+                    arr = [
+                        TestResources.LoHi(1.0, 2.0),
+                        TestResources.LoHi(3.0, 4.0),
+                        TestResources.LoHi(5.0, 6.0),
+                    ]
+                    f = Mooncake.zero_lifted(Val(N), op)
+                    al = Mooncake.zero_lifted(Val(N), arr)
+                    extras = Tuple(Mooncake.zero_lifted(Val(N), x) for x in args_extra)
+                    # Should not throw.
+                    @test (Mooncake.frule!!(f, al, extras...); true)
+                end
+            end
+        end
+    end
+
     @testset "copy(Array{<:Struct}) width-N (Finding 5)" begin
         # Pre-fix: `_copy_array_kernel(::Dual{<:Array})` at memory.jl:1554
         # called `copy(tangent(a))` where `tangent(a)` is the NTangent wrapper

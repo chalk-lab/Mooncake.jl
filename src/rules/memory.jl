@@ -1585,6 +1585,13 @@ end
         Base._growbeg!(tangent(a), primal(d))
         return zero_dual(nothing)
     end
+    @inline function _growbeg_kernel!(
+        a::Dual{<:Vector,<:Mooncake.NTangent}, d::Dual{<:Integer}
+    )
+        Base._growbeg!(primal(a), primal(d))
+        foreach(t -> Base._growbeg!(t, primal(d)), tangent(a).lanes)
+        return zero_dual(nothing)
+    end
     @inline function _growbeg_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
         Base._growbeg!(a, primal(d))
         return zero_dual(nothing)
@@ -1618,6 +1625,13 @@ end
     @inline function _growend_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
         Base._growend!(primal(a), primal(d))
         Base._growend!(tangent(a), primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function _growend_kernel!(
+        a::Dual{<:Vector,<:Mooncake.NTangent}, d::Dual{<:Integer}
+    )
+        Base._growend!(primal(a), primal(d))
+        foreach(t -> Base._growend!(t, primal(d)), tangent(a).lanes)
         return zero_dual(nothing)
     end
     @inline function _growend_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
@@ -1655,6 +1669,13 @@ end
         sizehint!(tangent(a), primal(n))
         return a
     end
+    @inline function _sizehint_kernel!(
+        a::Dual{<:Vector,<:Mooncake.NTangent}, n::Dual{<:Integer}
+    )
+        sizehint!(primal(a), primal(n))
+        foreach(t -> sizehint!(t, primal(n)), tangent(a).lanes)
+        return a
+    end
     @inline function _sizehint_kernel!(a::AbstractVector{<:NDual}, n::Dual{<:Integer})
         sizehint!(a, primal(n))
         return a
@@ -1684,6 +1705,13 @@ end
     @inline function _deletebeg_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
         Base._deletebeg!(primal(a), primal(d))
         Base._deletebeg!(tangent(a), primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function _deletebeg_kernel!(
+        a::Dual{<:Vector,<:Mooncake.NTangent}, d::Dual{<:Integer}
+    )
+        Base._deletebeg!(primal(a), primal(d))
+        foreach(t -> Base._deletebeg!(t, primal(d)), tangent(a).lanes)
         return zero_dual(nothing)
     end
     @inline function _deletebeg_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
@@ -1721,6 +1749,13 @@ end
     @inline function _deleteend_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
         Base._deleteend!(primal(a), primal(d))
         Base._deleteend!(tangent(a), primal(d))
+        return zero_dual(nothing)
+    end
+    @inline function _deleteend_kernel!(
+        a::Dual{<:Vector,<:Mooncake.NTangent}, d::Dual{<:Integer}
+    )
+        Base._deleteend!(primal(a), primal(d))
+        foreach(t -> Base._deleteend!(t, primal(d)), tangent(a).lanes)
         return zero_dual(nothing)
     end
     @inline function _deleteend_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
@@ -1762,6 +1797,13 @@ end
     )
         Base._deleteat!(primal(a), primal(i), primal(delta))
         Base._deleteat!(tangent(a), primal(i), primal(delta))
+        return zero_dual(nothing)
+    end
+    @inline function _deleteat_kernel!(
+        a::Dual{<:Vector,<:Mooncake.NTangent}, i::Dual{<:Integer}, delta::Dual{<:Integer}
+    )
+        Base._deleteat!(primal(a), primal(i), primal(delta))
+        foreach(t -> Base._deleteat!(t, primal(i), primal(delta)), tangent(a).lanes)
         return zero_dual(nothing)
     end
     @inline function _deleteat_kernel!(
@@ -1810,6 +1852,13 @@ end
     )
         r = Base._growat!(primal(a), primal(i), primal(d))
         Base._growat!(tangent(a), primal(i), primal(d))
+        return zero_dual(r)
+    end
+    @inline function _growat_kernel!(
+        a::Dual{<:Vector,<:Mooncake.NTangent}, i::Dual{<:Integer}, d::Dual{<:Integer}
+    )
+        r = Base._growat!(primal(a), primal(i), primal(d))
+        foreach(t -> Base._growat!(t, primal(i), primal(d)), tangent(a).lanes)
         return zero_dual(r)
     end
     @inline function _growat_kernel!(
