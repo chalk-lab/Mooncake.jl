@@ -581,10 +581,16 @@ function Mooncake.rrule!!(::CoDual{typeof(min)}, x::CoDual{P}, y::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(abs),P}
-function Mooncake.frule!!(::Dual{typeof(abs)}, x::Dual{P})
-    _x = primal(x)
-    return Dual(abs(_x), _x >= zero(P) ? tangent(x) : -tangent(x))
+@inline function Mooncake.frule!!(::Lifted{typeof(abs),N}, x::Lifted{P,N}) where {N}
+    inner = _unlift(x)
+    _x = primal(inner)
+    y = abs(_x)
+    sign = _x >= zero(P) ? one(P) : -one(P)
+    lanes = tangent(inner).lanes
+    new_lanes = ntuple(n -> lanes[n] * sign, Val(N))
+    return Lifted{typeof(y),N}(y, new_lanes)
 end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(abs),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(abs)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), _x >= zero(P) ? dy : -dy
@@ -592,27 +598,41 @@ function Mooncake.rrule!!(::CoDual{typeof(abs)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(Base.eps),P}
-function Mooncake.frule!!(::Dual{typeof(Base.eps)}, x::Dual{P})
-    return Dual(eps(primal(x)), zero(P))
+@inline function Mooncake.frule!!(::Lifted{typeof(Base.eps),N}, x::Lifted{P,N}) where {N}
+    inner = _unlift(x)
+    y = eps(primal(inner))
+    new_lanes = ntuple(_ -> zero(P), Val(N))
+    return Lifted{typeof(y),N}(y, new_lanes)
 end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.eps),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P})
     pb(::P) = NoRData(), zero(P)
     return zero_fcodual(eps(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(nextfloat),P}
-function Mooncake.frule!!(::Dual{typeof(nextfloat)}, x::Dual{P})
-    return Dual(nextfloat(primal(x)), tangent(x))
+@inline function Mooncake.frule!!(
+    ::Lifted{typeof(nextfloat),N}, x::Lifted{P,N}
+) where {N}
+    inner = _unlift(x)
+    y = nextfloat(primal(inner))
+    return Lifted{typeof(y),N}(y, tangent(inner).lanes)
 end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(nextfloat),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P})
     pb(dy::P) = NoRData(), dy
     return zero_fcodual(nextfloat(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(prevfloat),P}
-function Mooncake.frule!!(::Dual{typeof(prevfloat)}, x::Dual{P})
-    return Dual(prevfloat(primal(x)), tangent(x))
+@inline function Mooncake.frule!!(
+    ::Lifted{typeof(prevfloat),N}, x::Lifted{P,N}
+) where {N}
+    inner = _unlift(x)
+    y = prevfloat(primal(inner))
+    return Lifted{typeof(y),N}(y, tangent(inner).lanes)
 end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(prevfloat),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
     pb(dy::P) = NoRData(), dy
     return zero_fcodual(prevfloat(primal(x))), pb
