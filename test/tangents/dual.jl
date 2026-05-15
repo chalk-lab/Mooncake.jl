@@ -714,4 +714,72 @@ end
         @test tangent(lt, 1)[1] isa Mooncake.Tangent
         @test typeof(tangent(lt)) === Mooncake.tangent_type(Val(2), typeof(tp))
     end
+
+    @testset "BLAS width-N per-lane independence (audit Todo 5)" begin
+        # Pins that the BLAS width-N migrations (gemv!, gemm!, scal!, nrm2)
+        # produce independent per-lane tangents — the pre-migration width-1
+        # broadcast-via-`_wrap_rule_result` would yield identical lanes.
+        using LinearAlgebra: BLAS
+
+        # BLAS.nrm2 width-2 with distinct per-lane seeds.
+        let X = [1.0, 2.0, 3.0], seeds_1 = [0.1, 0.2, 0.3], seeds_2 = [0.01, 0.02, 0.03]
+            X_n2 = [NDual{Float64,2}(X[i], (seeds_1[i], seeds_2[i])) for i in 1:length(X)]
+            r = Mooncake.frule!!(
+                Mooncake.zero_dual(BLAS.nrm2),
+                Mooncake.zero_dual(3),
+                X_n2,
+                Mooncake.zero_dual(1),
+            )
+            @test r isa NDual{Float64,2}
+            # Lane 1 tangent ≠ Lane 2 tangent (distinct seeds → distinct derivatives).
+            @test r.partials[1] != r.partials[2]
+        end
+
+        # BLAS.gemv! width-2 with distinct per-lane seeds.
+        let A = [1.0 2.0; 3.0 4.0], x = [1.0, 2.0], y = [0.0, 0.0]
+            A_n2 = reshape(
+                [NDual{Float64,2}(A[i], (A[i] * 0.1, A[i] * 0.01)) for i in 1:length(A)],
+                2,
+                2,
+            )
+            x_n2 = [NDual{Float64,2}(x[i], (x[i] * 0.1, x[i] * 0.01)) for i in 1:length(x)]
+            y_n2 = [NDual{Float64,2}(0.0, (0.0, 0.0)) for _ in 1:length(y)]
+            α_n2 = NDual{Float64,2}(1.0, (0.0, 0.0))
+            β_n2 = NDual{Float64,2}(0.0, (0.0, 0.0))
+            Mooncake.frule!!(
+                Mooncake.zero_dual(BLAS.gemv!),
+                Mooncake.zero_dual('N'),
+                α_n2,
+                A_n2,
+                x_n2,
+                β_n2,
+                y_n2,
+            )
+            # Per-lane tangents differ because seeds differ.
+            @test y_n2[1].partials[1] != y_n2[1].partials[2]
+            @test y_n2[2].partials[1] != y_n2[2].partials[2]
+            # Primal is the same regardless of lanes.
+            @test y_n2[1].value == 5.0   # 1*1 + 2*2 = 5
+            @test y_n2[2].value == 11.0  # 3*1 + 4*2 = 11
+        end
+
+        # BLAS.scal! width-2: x ← a*x with per-lane Frechet `a*dx + da*x`.
+        let X = [1.0, 2.0, 3.0]
+            X_n2 = [NDual{Float64,2}(X[i], (0.1 * X[i], 0.01 * X[i])) for i in 1:length(X)]
+            a_n2 = NDual{Float64,2}(2.0, (0.5, 0.05))
+            Mooncake.frule!!(
+                Mooncake.zero_dual(BLAS.scal!),
+                Mooncake.zero_dual(3),
+                a_n2,
+                X_n2,
+                Mooncake.zero_dual(1),
+            )
+            # Primal X = a*X = 2 * [1, 2, 3] = [2, 4, 6].
+            @test [X_n2[i].value for i in 1:3] == [2.0, 4.0, 6.0]
+            # Lane 1: a*dX_1 + da_1*X = 2*[0.1, 0.2, 0.3] + 0.5*[1, 2, 3] = [0.7, 1.4, 2.1]
+            @test [X_n2[i].partials[1] for i in 1:3] ≈ [0.7, 1.4, 2.1]
+            # Lane 2: 2*[0.01, 0.02, 0.03] + 0.05*[1, 2, 3] = [0.07, 0.14, 0.21]
+            @test [X_n2[i].partials[2] for i in 1:3] ≈ [0.07, 0.14, 0.21]
+        end
+    end
 end
