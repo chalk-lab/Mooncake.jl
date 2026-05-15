@@ -29,11 +29,16 @@ import Mooncake:
     NoRData,
     CoDual,
     Dual,
+    Lifted,
+    NoTangent,
+    NTangent,
     primal,
     tangent,
     extract,
     zero_fcodual,
-    MinimalCtx
+    MinimalCtx,
+    _unlift,
+    _ndual_output_to_width1
 
 # Core.BFloat16 requires Julia >= 1.11.
 # BFloat16s.BFloat16 === Core.BFloat16 is not guaranteed on all platforms.
@@ -73,6 +78,24 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 @foldable can_produce_zero_rdata_from_type(::Type{P}) = true
 
 @inline nan_tangent_guard(dy::P, t::P) = iszero(dy) ? zero(P) : t
+
+# ── Centralised bare-Dual → Lifted dispatch adapter for BFloat16 ──────────────
+#
+# Parallel to the IEEEFloat unary adapter in `src/rules/rules_via_nfwd.jl`:
+# routes bare-Dual `frule!!` calls with a `Dual{Core.BFloat16}` arg through the
+# Lifted path for `_is_lifted_aware` primitives. Per-op Lifted-typed bodies
+# (below) are then the single source of truth. The IEEEFloat adapter does not
+# match `P=Core.BFloat16` (BFloat16 is not `<: IEEEFloat`), so this adapter is
+# extension-local.
+@inline function Mooncake.frule!!(f::Dual{F}, x::Dual{P}) where {F,P<:Core.BFloat16}
+    Mooncake._is_lifted_aware(Tuple{F,P}) || throw(MethodError(Mooncake.frule!!, (f, x)))
+    return _ndual_output_to_width1(
+        Mooncake.frule!!(
+            Lifted{F,1}(primal(f), tangent(f)),
+            Lifted{P,1}(primal(x), tangent(x)),
+        ),
+    )
+end
 
 # Conversions
 
@@ -115,11 +138,18 @@ end
 # Math rules
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(sqrt),P}
-function Mooncake.frule!!(::Dual{typeof(sqrt)}, x::Dual{P})
-    _x, dx = extract(x)
+@inline function Mooncake.frule!!(
+    ::Lifted{typeof(sqrt),N}, x::Lifted{P,N}
+) where {N}
+    inner = _unlift(x)
+    _x = primal(inner)
     y = sqrt(_x)
-    return Dual(y, nan_tangent_guard(dx, dx / (2 * y)))
+    inv_2y = inv(2 * y)
+    lanes = tangent(inner).lanes
+    new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * inv_2y), Val(N))
+    return Lifted{typeof(y),N}(y, new_lanes)
 end
+Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sqrt),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P})
     y = sqrt(primal(x))
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (2 * y))

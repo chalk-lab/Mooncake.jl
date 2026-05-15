@@ -1863,10 +1863,19 @@ end
 end
 
 # Lifted-typed rule outputs: unwrap to the inner V and recurse. The result is
-# always a `Dual`, matching what test_rule and `value_and_derivative!!` expect.
+# always a bare-T width-1 `Dual`, matching what test_rule and
+# `value_and_derivative!!` expect. When the inner V is already a
+# `Dual{P, <:NTangent}` (the canonical width-1 form for primals without an
+# NDual specialisation, e.g. BFloat16), strip the NTangent wrapper down to
+# the lane-1 tangent so callers always see the legacy bare-T shape.
 @inline function _ndual_output_to_width1(output::Lifted)
     inner = _unlift(output)
-    return inner isa Dual ? inner : _ndual_output_to_width1(inner)
+    if inner isa Dual
+        t = tangent(inner)
+        t isa NTangent && return Dual(primal(inner), t.lanes[1])
+        return inner
+    end
+    return _ndual_output_to_width1(inner)
 end
 
 # Struct-primal slot with NamedTuple inner V (recursive lift): build the result
