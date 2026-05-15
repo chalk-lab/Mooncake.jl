@@ -1072,6 +1072,28 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Struct-value memoryrefset!: the bare-Dual dispatch chain at lines 1023-1042
+# constrains `value::Union{Dual, NDual, ...}` (NDual-element path), so it
+# doesn't match the bare NamedTuple inner V of a struct-value Lifted.
+# Forward at the Lifted level to `lmemoryrefset!` (whose `V<:NamedTuple`
+# overload at line 881 handles the per-lane struct write).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(memoryrefset!),N},
+    x::Mooncake.Lifted{<:MemoryRef},
+    value::Mooncake.Lifted{P,N,V},
+    ordering::Mooncake.Lifted{Symbol},
+    boundscheck::Mooncake.Lifted{Bool},
+) where {N,P,V<:NamedTuple}
+    ord = primal(Mooncake._unlift(ordering))
+    bc = primal(Mooncake._unlift(boundscheck))
+    return frule!!(
+        Mooncake.zero_lifted(Val(N), Mooncake.lmemoryrefset!),
+        x,
+        value,
+        Mooncake.zero_lifted(Val(N), Val(ord)),
+        Mooncake.zero_lifted(Val(N), Val(bc)),
+    )
+end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(memoryrefset!),<:MemoryRef,Any,Symbol,Bool}}
 ) = true

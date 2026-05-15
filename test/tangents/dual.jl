@@ -1050,4 +1050,32 @@ end
             end
         end
     end
+
+    @testset "memoryrefset! width-N struct-value (Finding 5)" begin
+        # Pre-fix: the Lifted delegator routed through bare-Dual dispatch
+        # which constrained `value::Union{Dual, NDual, ...}` — the bare
+        # NamedTuple inner V of a struct-value Lifted didn't match any
+        # bare-Dual rule, so dispatch failed with MethodError at all widths.
+        # Fix: Lifted-typed overload that forwards to `lmemoryrefset!` at
+        # the Lifted level (whose `V<:NamedTuple` overload handles the
+        # per-lane struct write).
+        @static if VERSION >= v"1.11-"
+            for N in (1, 2)
+                m = Memory{TestResources.LoHi}(undef, 4)
+                m[1] = TestResources.LoHi(10.0, 11.0)
+                mref = Core.memoryrefnew(Core.memoryrefnew(m), 1)
+                new_val = TestResources.LoHi(99.0, 88.0)
+
+                f = Mooncake.zero_lifted(Val(N), Core.memoryrefset!)
+                x = Mooncake.zero_lifted(Val(N), mref)
+                v = Mooncake.zero_lifted(Val(N), new_val)
+                ord = Mooncake.zero_lifted(Val(N), :not_atomic)
+                bc = Mooncake.zero_lifted(Val(N), false)
+
+                r = Mooncake.frule!!(f, x, v, ord, bc)
+                @test r === v
+                @test m[1] == new_val
+            end
+        end
+    end
 end
