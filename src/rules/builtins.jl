@@ -245,9 +245,22 @@ end
     ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
 ) where {T}
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
+    raw_t = tangent(p)
+    # Multi-lane NTangent (width N≥2): per-lane unsafe_wrap on each
+    # lane's Ptr. Each lane's tangent Ptr typically points at a
+    # different memory region; the original singleton-only unwrap would
+    # fall through to the no-op fallback returning the NTangent
+    # unchanged, then `unsafe_wrap(Array, ::NTangent, dims)` errored.
+    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        tangent_arrs = ntuple(
+            lane -> unsafe_wrap(Array, raw_t.lanes[lane], primal(dims)),
+            Val(length(raw_t.lanes)),
+        )
+        return Dual(primal_arr, Mooncake.NTangent(tangent_arrs))
+    end
     # `tangent(p::Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}})` returns the
     # NTangent wrapper. Unwrap to the bare Ptr.
-    tangent_arr = unsafe_wrap(Array, _unsafe_wrap_unwrap(tangent(p)), primal(dims))
+    tangent_arr = unsafe_wrap(Array, _unsafe_wrap_unwrap(raw_t), primal(dims))
     return Dual(primal_arr, tangent_arr)
 end
 @inline function frule!!(
