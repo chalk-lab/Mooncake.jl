@@ -913,13 +913,26 @@ __vec_to_tuple(v::Vector) = Tuple(v)
     x = __vec_to_tuple(primal(v))
     if tangent_type(_typeof(x)) == NoTangent
         return zero_dual(x)
-    else
-        # At width 1, `tangent(v)` for
-        # `Dual{Vector{T}, NTangent{Tuple{Vector{T'}}}}` is the outer
-        # NTangent; `__vec_to_tuple` wants a bare Vector. Unwrap the
-        # singleton-NTangent.
-        return Dual(x, __vec_to_tuple(_vec_to_tuple_tan(tangent(v))))
     end
+    raw_t = tangent(v)
+    # Multi-lane NTangent: build per-position NTangent of per-lane
+    # element tangents. The downstream `_wrap_rule_result` for Tuple
+    # primal then routes through the now-fixed
+    # `_inner_dual_for_field(::NamedTuple_V, primal, ::NTangent)` overload
+    # for struct-element positions.
+    if raw_t isa NTangent && length(raw_t.lanes) >= 2
+        n_elements = length(primal(v))
+        N = length(raw_t.lanes)
+        tuple_tan = Tuple(
+            NTangent(ntuple(lane -> raw_t.lanes[lane][i], N)) for i in 1:n_elements
+        )
+        return Dual(x, tuple_tan)
+    end
+    # At width 1, `tangent(v)` for
+    # `Dual{Vector{T}, NTangent{Tuple{Vector{T'}}}}` is the outer
+    # NTangent; `__vec_to_tuple` wants a bare Vector. Unwrap the
+    # singleton-NTangent.
+    return Dual(x, __vec_to_tuple(_vec_to_tuple_tan(raw_t)))
 end
 # Bare NDual-vector path: when the Lifted-aware adapter unlifts a
 # `Lifted{Vector{T<:IEEEFloat}, 1, Vector{NDual{T,1}}}`, the result is a

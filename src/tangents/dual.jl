@@ -694,6 +694,32 @@ end
     return NamedTuple{names}(inner_tup)
 end
 
+# Width-N nested-struct case: V is the recursive NamedTuple lift; tangent
+# is an `NTangent` of per-lane Tangents. Recurse element-wise: for each
+# field, gather per-lane tangent values into an NTangent and recurse with
+# the (struct-primal-field, per-lane-NTangent) pair. Parallels the
+# `tangent::Tangent` overload above but for the multi-lane wrap.
+@inline function _inner_dual_for_field(
+    ::Type{V}, primal, tangent::NTangent
+) where {names,V<:NamedTuple{names}}
+    InnerTup = V.parameters[2]
+    N = length(tangent.lanes)
+    inner_tup = ntuple(
+        i -> _inner_dual_for_field(
+            fieldtype(InnerTup, i),
+            getfield(primal, names[i]),
+            NTangent(
+                ntuple(
+                    lane -> _get_tangent_field_for_lift(tangent.lanes[lane], names[i]),
+                    Val(N),
+                ),
+            ),
+        ),
+        Val(fieldcount(V)),
+    )
+    return NamedTuple{names}(inner_tup)
+end
+
 # Tuple-primal with `NoTangent` (whole-tuple) tangent — common when a `Tuple`
 # slot holds non-differentiable elements (e.g. `Tuple{Int}`). Build the inner
 # tuple element-wise with `NoTangent` for each field. Use
