@@ -47,9 +47,11 @@ end
 # `NTangent{NTuple{N, Vector{NoTangent}}}`). Build N-tuple NTangents to
 # match `dual_type(Val(N), Vector{Int})` and `dual_type(Val(N), Int)`.
 @inline function _ipiv_info_wrap(ipiv, info, ::Val{N}) where {N}
+    # `ipiv::Vector{Int}` canonical V at width N: NTangent of N Vector{NoTangent}.
+    # `info::Int` canonical V at any width: bare `Dual{Int, NoTangent}` (collapsed).
     return (
         Dual(ipiv, Mooncake.NTangent(ntuple(_ -> Mooncake.zero_tangent(ipiv), Val(N)))),
-        Dual(info, Mooncake.NTangent(ntuple(_ -> Mooncake.zero_tangent(info), Val(N)))),
+        Dual(info, Mooncake.NoTangent()),
     )
 end
 @inline function frule!!(
@@ -886,7 +888,10 @@ end
         _potrf!_frule_core_complex!(uplo, A, dAs[lane])
     end
     _arr_writeback_n!(A_dA, A, dAs)
-    return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
+    # Width-N info wrap: N-tuple NTangent matches `dual_type(Val(N), Int)`.
+    # Singleton-only was wrong at N≥2 (same bug class as getrf! pre-fix
+    # commit `d9e1ff324`).
+    return (A_dA, Dual(info, Mooncake.NoTangent()))
 end
 # Width-N NDual potrf!: primal once, per-lane Frechet via `_potrf!_frule_core!`
 # (uses post-primal A).
@@ -900,7 +905,7 @@ end
         _potrf!_frule_core!(uplo, A, dAs[lane])
     end
     _arr_writeback_n!(A_dA, A, dAs)
-    return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
+    return (A_dA, Dual(info, Mooncake.NoTangent()))
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(potrf!),N},
