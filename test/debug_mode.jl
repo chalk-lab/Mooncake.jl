@@ -110,7 +110,7 @@
             @test_throws ErrorException bad_rule(Mooncake.Dual(5.0, 1.0))
         end
 
-        @testset "malformed Lifted output detected (audit test #13)" begin
+        @testset "malformed Lifted output detected" begin
             # `Lifted{Float64, 2, Dual{Float64, Float64}}` is non-canonical:
             # the slot says width 2 but the inner V is a width-1 `Dual`.
             # `verify_lifted_type` should reject this, and the fallback path

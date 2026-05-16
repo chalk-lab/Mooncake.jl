@@ -195,9 +195,8 @@ end
         @test !Mooncake.verify_lifted_type(nested)
     end
 
-    @testset "typeassert keeps runtime Lifted concrete (audit test #14)" begin
-        # Per the revised audit (`primal-mode-branch-audit.md` Todo 1):
-        # abstract `T` slot annotations should NOT produce exact-abstract
+    @testset "typeassert keeps runtime Lifted concrete" begin
+        # Abstract `T` slot annotations should NOT produce exact-abstract
         # runtime wrappers. `typeassert(::Real)` on an `NDual{Float64,1}`-
         # backed `Lifted` returns a concrete `Lifted{Float64, 1, NDual{Float64,1}}`
         # that fits the abstract `lifted_type(Val(N), Real)` slot annotation.
@@ -241,7 +240,7 @@ end
         # Canonical Lifted always passes verify_dual_type (the strict check
         # is verify_lifted_type).
         @test Mooncake.verify_dual_type(Lifted{Float64,2}(3.0, (1.0, 2.0)))
-        # Audit Todo 1 (revision 2): MemoryRef leaves alongside Memory leaves.
+        # MemoryRef leaves alongside Memory leaves.
         @static if VERSION >= v"1.11-rc4"
             m = fill!(Memory{NDual{Float64,2}}(undef, 2), NDual{Float64,2}(1.0, (2.0, 3.0)))
             @test Mooncake.verify_dual_type(m)
@@ -423,9 +422,9 @@ end
         end
     end
 
-    @testset "Memory / MemoryRef NDual tangent is top-level NTangent (audit Todo 4)" begin
+    @testset "Memory / MemoryRef NDual tangent is top-level NTangent" begin
         @static if VERSION >= v"1.11-rc4"
-            # Audit Todo 4: `tangent(::Memory{NDual{T,N}})` returns top-level
+            # `tangent(::Memory{NDual{T,N}})` returns top-level
             # `NTangent{NTuple{N, Memory{T}}}` (one Memory per lane), mirroring
             # `tangent(::Array{NDual{T,N},D}) === NTangent{NTuple{N, Array{T,D}}}`.
             m_pri = Memory{Float64}(undef, 2)
@@ -452,7 +451,7 @@ end
         @test extract(d) === (3.0, NTangent((1.0, 0.0)))
 
         # Tuple primal: primal maps element-wise; tangent returns top-level
-        # `NTangent{NTuple{N, Tuple{...}}}` per audit test #9.
+        # `NTangent{NTuple{N, Tuple{...}}}`.
         dt = Lifted{Tuple{Float64,Float64},2}((1.0, 2.0), (10.0, 20.0))
         @test primal(dt) === (1.0, 2.0)
         @test tangent(dt) === NTangent(((10.0, 20.0), (10.0, 20.0)))
@@ -669,8 +668,8 @@ end
         @test tangent(result) === NTangent((1.0,))
     end
 
-    @testset "chunk-size-2 with unequal lane seeds (audit Todo 4)" begin
-        # Audit Todo 4 chunked correctness probe. The bare `frule!!(::Dual)`
+    @testset "chunk-size-2 with unequal lane seeds" begin
+        # Chunked correctness probe. The bare `frule!!(::Dual)`
         # path computes ONE lane; if a Lifted-aware wrapper passes a bare
         # Dual{P,T} result up through `_wrap_rule_result` at `Val(2)`, the
         # broadcast inner-V ctor duplicates the scalar tangent across all
@@ -898,7 +897,7 @@ end
         end
     end
 
-    @testset "Lifted{P,N}(struct, NTangent) ctor (Finding 5)" begin
+    @testset "Lifted{P,N}(struct, NTangent) ctor" begin
         # Pre-fix: `Lifted{StructP, N}(struct_primal, NTangent_of_Tangents)`
         # at width N≥2 raised MethodError because the canonical inner V (the
         # structural NamedTuple lift) had no constructor accepting
@@ -907,8 +906,7 @@ end
         # field extraction so each field gets an N-tuple of partial values.
         #
         # Reproducer pattern: a `frule!!` that returns a Lifted with struct
-        # primal at width N≥2 (e.g. `lmemoryrefget` on `MemoryRef{<:Struct}` —
-        # see Finding 5 in `temp/branch-audit-2026-05-15.md`).
+        # primal at width N≥2 (e.g. `lmemoryrefget` on `MemoryRef{<:Struct}`).
 
         # Use LoHi: leaf-Float64 fields only (covers the canonical
         # struct-primal × width-N path without nested-array recursion).
@@ -938,7 +936,7 @@ end
         @test L.value.hi.partials == (0.2, 0.4)
     end
 
-    @testset "memoryrefget / lmemoryrefget width-N struct-element (Finding 5)" begin
+    @testset "memoryrefget / lmemoryrefget width-N struct-element" begin
         # Pre-fix: `frule!!(::Lifted{typeof(memoryrefget), N}, ...)` and
         # `frule!!(::Lifted{typeof(lmemoryrefget), N}, ...)` erred at
         # width N≥2 for struct-element MemoryRef. The bare-Dual delegator
@@ -991,7 +989,7 @@ end
         end
     end
 
-    @testset "unsafe_copyto! width-N struct-element MemoryRef (Finding 5)" begin
+    @testset "unsafe_copyto! width-N struct-element MemoryRef" begin
         # Pre-fix: at width N≥2 the generic Lifted delegator routed through
         # the bare-Dual body which used `_memrefget_tan` (singleton-NTangent
         # only); the call `unsafe_copyto!(NTangent, NTangent, n)` errored.
@@ -1023,7 +1021,7 @@ end
         end
     end
 
-    @testset "lmemoryrefset! width-N struct-value (Finding 5)" begin
+    @testset "lmemoryrefset! width-N struct-value" begin
         # Pre-fix: rule at memory.jl:881 (Lifted with `V<:NamedTuple` for the
         # value arg) called `memoryrefset!(tangent(bare_x), tangent(y), ...)`
         # but `tangent(bare_x)` is the outer NTangent wrapper, not a bare
@@ -1051,7 +1049,7 @@ end
         end
     end
 
-    @testset "pointer_from_objref width-N (Finding 5)" begin
+    @testset "pointer_from_objref width-N" begin
         # Pre-fix: at width N≥2 the rule called
         # `pointer_from_objref(_foreigncall_ntangent_unwrap(tangent(inner)))`
         # where the singleton-NTangent-unwrap helper didn't match the
@@ -1077,7 +1075,7 @@ end
         end
     end
 
-    @testset "copy(::NTangent) per-lane independent (Finding 5)" begin
+    @testset "copy(::NTangent) per-lane independent" begin
         # Pre-fix: `copy(::NTangent)` had no method. Callers that
         # whole-copy a `Dual{P, NTangent}` (e.g. `Base.copy(::Memory{<:Struct})`
         # via the `:jl_genericmemory_copy` foreigncall path) errored with
@@ -1092,7 +1090,7 @@ end
         @test c.lanes[2] == t.lanes[2]
     end
 
-    @testset "Core.memorynew(Memory{<:Struct}, n) width-N lane independence (Finding 5)" begin
+    @testset "Core.memorynew(Memory{<:Struct}, n) width-N lane independence" begin
         # Same silent-correctness aliasing pattern as
         # `Memory{LoHi}(undef, n)` (commit `4461a1fd5`), but reached via
         # `Core.memorynew` on Julia 1.12+. The pre-fix else-branch at
@@ -1121,7 +1119,7 @@ end
         end
     end
 
-    @testset "_new_(Array{<:Struct}, ref, sz) width-N lane independence (Finding 5)" begin
+    @testset "_new_(Array{<:Struct}, ref, sz) width-N lane independence" begin
         # Pre-fix: `_new_(Vector{LoHi}, ref, sz)` at width N≥2 went through
         # the bare-Dual rule which called `_new_(Array{Tangent, M},
         # tangent(ref), size)` where `tangent(ref)` is the NTangent
@@ -1169,7 +1167,7 @@ end
         end
     end
 
-    @testset "Memory{<:Struct}(undef, n) width-N lane independence (Finding 5)" begin
+    @testset "Memory{<:Struct}(undef, n) width-N lane independence" begin
         # Pre-fix: `Memory{LoHi}(undef, n)` at width N≥2 went through
         # `_memory_init_kernel` (returns a single Dual with single Memory
         # tangent) → `_wrap_rule_result` → `Lifted{Memory{LoHi}, N}(p, t)`
@@ -1202,7 +1200,7 @@ end
         end
     end
 
-    @testset "memoryrefnew width-N struct-element (Finding 5)" begin
+    @testset "memoryrefnew width-N struct-element" begin
         # Pre-fix: `_memoryrefnew_kernel(::Dual{<:Memory})` and
         # `_memoryrefnew_kernel(::Dual{<:MemoryRef}, ::Dual{Int}[, ::Dual{Bool}])`
         # called `memoryrefnew(_memrefnew_tan(tangent(x)), ...)` where
@@ -1234,7 +1232,7 @@ end
         end
     end
 
-    @testset "Vector grow/shrink/sizehint width-N struct-element (Finding 5)" begin
+    @testset "Vector grow/shrink/sizehint width-N struct-element" begin
         # Pre-fix: `_growbeg_kernel!` / `_growend_kernel!` / `_sizehint_kernel!` /
         # `_deletebeg_kernel!` / `_deleteend_kernel!` / `_deleteat_kernel!` /
         # `_growat_kernel!` at memory.jl:1583+ all called
@@ -1270,7 +1268,7 @@ end
         end
     end
 
-    @testset "copy(Array{<:Struct}) width-N (Finding 5)" begin
+    @testset "copy(Array{<:Struct}) width-N" begin
         # Pre-fix: `_copy_array_kernel(::Dual{<:Array})` at memory.jl:1554
         # called `copy(tangent(a))` where `tangent(a)` is the NTangent wrapper
         # for struct-element Array at any width — `copy(NTangent)` had no
@@ -1286,7 +1284,7 @@ end
         end
     end
 
-    @testset "memoryrefset! width-N struct-value (Finding 5)" begin
+    @testset "memoryrefset! width-N struct-value" begin
         # Pre-fix: the Lifted delegator routed through bare-Dual dispatch
         # which constrained `value::Union{Dual, NDual, ...}` — the bare
         # NamedTuple inner V of a struct-value Lifted didn't match any
