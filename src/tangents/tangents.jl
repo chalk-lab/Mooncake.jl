@@ -2124,6 +2124,8 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
     # `Array{NDual}`).
     push!(rel_test_cases, TestResources.LoHi(1.5, -2.5))
     push!(rel_test_cases, [TestResources.LoHi(1.0, 2.0), TestResources.LoHi(3.0, 4.0)])
+    push!(rel_test_cases, (TestResources.LoHi(1.0, 2.0), TestResources.LoHi(3.0, 4.0)))
+    push!(rel_test_cases, (a=TestResources.LoHi(1.0, 2.0), b=TestResources.LoHi(3.0, 4.0)))
     if VERSION >= v"1.11"
         let m = Memory{TestResources.LoHi}(undef, 2)
             m[1] = TestResources.LoHi(1.0, 2.0)
