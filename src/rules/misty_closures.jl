@@ -206,7 +206,24 @@ end
 @inline _mct_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
 @inline _mct_unwrap(t) = t
 @inline function _misty_closure_kernel(f::Dual{<:MistyClosure}, x...)
-    mct = _mct_unwrap(tangent(f))
+    raw_t = tangent(f)
+    # Width N≥2: each lane has its own MistyClosureTangent; per-lane invocation
+    # of dual_callable, then assemble per-lane tangents into a top-level
+    # NTangent. Mirrors the per-lane assembly pattern used elsewhere for
+    # NTangent-wrapped scalar primal slots (e.g. pointer_from_objref,
+    # _pointerref_kernel, IdDict getindex).
+    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        N = length(raw_t.lanes)
+        per_lane = ntuple(Val(N)) do lane
+            mct_lane = raw_t.lanes[lane]
+            dc_lane = Dual(primal(f).oc.captures, mct_lane.captures_tangent)
+            mct_lane.dual_callable(dc_lane, x...)
+        end
+        primal_result = primal(per_lane[1])
+        tan_results = ntuple(lane -> tangent(per_lane[lane]), Val(N))
+        return Dual(primal_result, Mooncake.NTangent(tan_results))
+    end
+    mct = _mct_unwrap(raw_t)
     dual_captures = Dual(primal(f).oc.captures, mct.captures_tangent)
     return mct.dual_callable(dual_captures, x...)
 end
