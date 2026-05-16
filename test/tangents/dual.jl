@@ -1092,7 +1092,7 @@ end
 
     @testset "Core.memorynew(Memory{<:Struct}, n) width-N lane independence" begin
         # Same silent-correctness aliasing pattern as
-        # `Memory{LoHi}(undef, n)` (commit `4461a1fd5`), but reached via
+        # `Memory{LoHi}(undef, n)`, but reached via
         # `Core.memorynew` on Julia 1.12+. The pre-fix else-branch at
         # memory.jl:1170 called `Lifted{Memory{P}, N}(x, dx)` with a
         # single `dx` Memory, broadcasting into all N NTangent lanes.

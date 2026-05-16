@@ -2133,10 +2133,7 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         end
     end
     # TwicePrecision and StepRangeLen (TWP-backed range) exercise the
-    # parallel-Dual `Dual{P, NTangent{NTuple{N, P}}}` canonical V at width N
-    # (commit `4d0a72f4b` fixed the width-N gap for `twiceprecision` /
-    # `_new_(TWP)`; commit `3267e8b35` fixed `unsafe_getindex` /
-    # `_getindex_hiprec` for `TWPStepRangeLen`).
+    # parallel-Dual `Dual{P, NTangent{NTuple{N, P}}}` canonical V at width N.
     push!(rel_test_cases, Base.TwicePrecision{Float64}(1.0, 0.5))
     push!(rel_test_cases, range(1.0, 2.0; length=5))
     return vcat(

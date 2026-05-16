@@ -889,8 +889,6 @@ end
     end
     _arr_writeback_n!(A_dA, A, dAs)
     # Width-N info wrap: N-tuple NTangent matches `dual_type(Val(N), Int)`.
-    # Singleton-only was wrong at N≥2 (same bug class as getrf! pre-fix
-    # commit `d9e1ff324`).
     return (A_dA, Dual(info, Mooncake.NoTangent()))
 end
 # Width-N NDual potrf!: primal once, per-lane Frechet via `_potrf!_frule_core!`
