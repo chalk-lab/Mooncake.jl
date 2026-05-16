@@ -73,6 +73,11 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 @inline _twp_unwrap_lane(t) = t
 @inline _twp_val(d::Dual{P}) where {P<:IEEEFloat} = primal(d), _twp_tangent(d)
 @inline _twp_val(d::Mooncake.Nfwd.NDual{P,1}) where {P<:IEEEFloat} = d.value, d.partials[1]
+# Width-N NDual: return per-lane partials tuple. Callers above (the
+# `twiceprecision` and `_new_(TWP)` rule bodies) detect the tuple shape
+# and apply the op per-lane to build a canonical
+# `Dual{TWP{P}, NTangent{NTuple{N, TWP{P}}}}` result.
+@inline _twp_val(d::Mooncake.Nfwd.NDual{P,N}) where {P<:IEEEFloat,N} = d.value, d.partials
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_new_),N},
     ::Mooncake.Lifted{Type{TWP{P}}},
@@ -81,6 +86,15 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 ) where {N,P<:IEEEFloat}
     hv, ht = _twp_val(Mooncake._unlift(hi))
     lv, lt = _twp_val(Mooncake._unlift(lo))
+    # Width-N: `ht` / `lt` are `NTuple{N, P}` (per-lane partials), so
+    # `_new_(TWP{P}, ht, lt)` would error. Build per-lane TWP tangents
+    # and wrap in NTangent (matches canonical V `Dual{TWP{P},
+    # NTangent{NTuple{N, TWP{P}}}}`).
+    if ht isa NTuple{N,P} && lt isa NTuple{N,P} && N >= 2
+        primal_twp = _new_(TWP{P}, hv, lv)
+        tangent_twps = ntuple(lane -> _new_(TWP{P}, ht[lane], lt[lane]), Val(N))
+        return Mooncake.Lifted{TWP{P},N}(primal_twp, Mooncake.NTangent(tangent_twps))
+    end
     bare_result = Dual(_new_(TWP{P}, hv, lv), _new_(TWP{P}, ht, lt))
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
@@ -100,6 +114,15 @@ end
 ) where {N}
     vv, vt = _twp_val(Mooncake._unlift(val))
     nb_p = primal(Mooncake._unlift(nb))
+    # Width-N: `vt` is `NTuple{N, P}` (per-lane partials). Build per-lane
+    # `TWP{P}` tangents and wrap in NTangent.
+    if vt isa Tuple && N >= 2
+        primal_twp = twiceprecision(vv, nb_p)
+        tangent_twps = ntuple(lane -> twiceprecision(vt[lane], nb_p), Val(N))
+        return Mooncake.Lifted{typeof(primal_twp),N}(
+            primal_twp, Mooncake.NTangent(tangent_twps)
+        )
+    end
     bare_result = Dual(twiceprecision(vv, nb_p), twiceprecision(vt, nb_p))
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
