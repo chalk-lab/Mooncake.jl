@@ -177,6 +177,43 @@ end
         Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
     )
 end
+# Width-N kwcall variants: at chunked AD width N≥2, `_unlift(A_dA)` from
+# the Lifted overload below produces `Matrix{NDual{P, N}}` (canonical V).
+# `_MatLikeWidth1{P}` excludes that shape, so the width-1 kwcall rules
+# above don't match → MethodError. Mirror the no-kwarg width-N rules at
+# lines 45-58 (BlasRealFloat) and 60-73 (BlasComplexFloat).
+@inline function frule!!(
+    f::Dual{typeof(Core.kwcall)},
+    kwargs::NamedTuple,
+    g::Dual{typeof(getrf!)},
+    A_dA::AbstractMatrix{NDual{P,N}},
+) where {P<:BlasRealFloat,N}
+    check = primal(kwargs.check)
+    A, dAs = _arr_extract_n(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A; check)
+    @inbounds for lane in 1:N
+        _getrf_fwd_core!(A, dAs[lane], ipiv)
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
+    return (A_dA, ipiv_dual, info_dual)
+end
+@inline function frule!!(
+    f::Dual{typeof(Core.kwcall)},
+    kwargs::NamedTuple,
+    g::Dual{typeof(getrf!)},
+    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+) where {R<:IEEEFloat,N}
+    check = primal(kwargs.check)
+    A, dAs = _arr_extract_n(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A; check)
+    @inbounds for lane in 1:N
+        _getrf_fwd_core!(A, dAs[lane], ipiv)
+    end
+    _arr_writeback_n!(A_dA, A, dAs)
+    ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
+    return (A_dA, ipiv_dual, info_dual)
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(Core.kwcall),N},
     _kwargs::Mooncake.Lifted{<:NamedTuple},
