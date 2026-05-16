@@ -592,8 +592,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # ── frule!! — differentiable T ────────────────────────────────────────────
             # Both primal and tangent pointers must advance by the same byte offset n.
             # Inputs are wrapped in `Lifted{P, 1}` (the runtime AD path's slot
-            # boundary): `frule!!(::Dual{F}, ::Dual...)` no longer exists after the
-            # task #31 kernel-rename; the canonical entry is the Lifted-typed body.
+            # boundary): the canonical entry is the Lifted-typed `frule!!` body.
             p32 = CuPtr{Float32}(UInt64(4096))
             dp32 = Mooncake.Lifted{CuPtr{Float32},1}(p32, CuPtr{Float32}(UInt64(4096)))
             dn = Mooncake.Lifted{Int64,1}(Int64(64), Mooncake.NoTangent())
