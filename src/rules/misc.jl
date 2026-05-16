@@ -401,8 +401,8 @@ end
 # this is `NDual{T, N}` (or `Vector{NDual}` / `Complex{NDual}` for container
 # fields). Wrap into a width-N `Dual{P, NTangent{NTuple{N, ...}}}` form via
 # `_ndual_to_dual_widthN` so `set_tangent_field!` hits the per-lane
-# `NTangent{NTuple{N,T}}, name, NTangent{NTuple{N,Tx}}` overload (audit
-# Pattern G — not the width-1 broadcast overload that duplicates lane 1).
+# `NTangent{NTuple{N,T}}, name, NTangent{NTuple{N,Tx}}` overload — not
+# the width-1 broadcast overload that duplicates lane 1.
 @inline function frule!!(
     ::Dual{typeof(lsetfield!)},
     value::Dual{P,T},

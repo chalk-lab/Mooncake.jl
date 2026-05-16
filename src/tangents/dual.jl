@@ -536,8 +536,7 @@ verify_dual_type(t::NamedTuple) = all(verify_dual_type, values(t))
 # `CoDual(x, dx)` — pass `(primal, tangent)` and the wrapper takes care of the
 # rest. The dispatch on inner shape lives in the inner type's constructors.
 #
-# Per the revised audit (`primal-mode-branch-audit.md` Todos 1 & 2): when `P`
-# is abstract, sharpen to `typeof(primal)` so the runtime wrapper remains
+# When `P` is abstract, sharpen to `typeof(primal)` so the runtime wrapper remains
 # canonical (`V === dual_type(Val(N), Q)` for concrete `Q = typeof(primal)`).
 # Abstract slot compatibility is checked separately via `isa lifted_type(Val(N),
 # P_static)` — the concrete runtime wrapper is a subtype of the abstract

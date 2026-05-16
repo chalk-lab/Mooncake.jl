@@ -817,7 +817,7 @@ end
     _arr_writeback!(X_dX, X, dX)
     return X_dX
 end
-# Width-N NDual scal! (audit Pattern G): per-lane Frechet via N
+# Width-N NDual scal!: per-lane Frechet via N
 # `BLAS.scal!` + `BLAS.axpy!` calls on independent lane tangent arrays,
 # then a single `BLAS.scal!` for the primal and a width-N writeback. The
 # real path matches `NDual{T, N}`; the complex path mirrors with
@@ -977,7 +977,7 @@ end
     _arr_writeback!(y_dy, y, dy)
     return y_dy
 end
-# Width-N NDual gemv! (audit Pattern G): per-lane Frechet computed N times
+# Width-N NDual gemv!: per-lane Frechet computed N times
 # (each with independent lane tangents), then primal computed once. We
 # inline the per-lane Frechet to avoid `_gemv!_frule_core!`'s baked-in
 # primal computation (which would accumulate y N times if called per-lane).
@@ -1391,7 +1391,7 @@ for fname in (:(symv!), :(hemv!))
     end
 end
 
-# Width-N NDual symv!/hemv! (audit Pattern G): per-lane Frechet then primal
+# Width-N NDual symv!/hemv!: per-lane Frechet then primal
 # once. The Frechet body matches the existing width-1 inline. Two separate
 # per-op helpers (`symv!`/`hemv!`) because BLAS dispatch by name differs.
 @inline function _symv_frechet_lane!(ul, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
@@ -1538,7 +1538,7 @@ function frule!!(
     _arr_writeback!(x_dx, x, dx)
     return x_dx
 end
-# Width-N NDual trmv! (audit Pattern G): per-lane Frechet (which depends on
+# Width-N NDual trmv!: per-lane Frechet (which depends on
 # pre-primal x), then primal once.
 @inline function _trmv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
     BLAS.trmv!(uplo, trans, diag, A, dx)
@@ -1726,7 +1726,7 @@ function frule!!(
     _arr_writeback!(x_dx, x, dx)
     return x_dx
 end
-# Width-N NDual trsv! (audit Pattern G): primal first (x ← A^{-1} x), then
+# Width-N NDual trsv!: primal first (x ← A^{-1} x), then
 # per-lane Frechet (which uses the post-primal x).
 @inline function _trsv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
     BLAS.trsv!(uplo, trans, diag, A, dx)
@@ -1972,7 +1972,7 @@ end
     _arr_writeback!(C_dC, C, dC)
     return C_dC
 end
-# Width-N NDual gemm! (audit Pattern G): per-lane Frechet then primal once.
+# Width-N NDual gemm!: per-lane Frechet then primal once.
 @inline function _gemm_frechet_lane!(tA, tB, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
     BLAS.gemm!(tA, tB, α, dA, B, β, dC)
     BLAS.gemm!(tA, tB, α, A, dB, one(P), dC)
@@ -2273,7 +2273,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     end
 end
 
-# Width-N NDual symm!/hemm! (audit Pattern G): per-lane Frechet then primal
+# Width-N NDual symm!/hemm!: per-lane Frechet then primal
 # once. Mirrors the legacy `Dual{<:AbstractMatrix{T}}` rule body but
 # operates on bare NDual-element matrices and uses per-lane assembly.
 @inline function _symm_frechet_lane!(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
@@ -2491,7 +2491,7 @@ for (fname, elty, relty) in (
     end
 end
 
-# Width-N NDual `syrk!` / `herk!` (audit Pattern G). α and β are always real
+# Width-N NDual `syrk!` / `herk!`. α and β are always real
 # (BlasRealFloat); matrix elements are real for syrk-real-elty and complex
 # for syrk-complex-elty / herk-complex-elty. We handle each combination
 # separately so the runtime dispatch sees concrete element types.

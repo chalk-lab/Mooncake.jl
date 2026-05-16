@@ -672,9 +672,9 @@ end
 @inline _memrefnew_tan(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
 
 # Dual-wrapped path (non-IEEEFloat element types whose `dual_type` falls
-# through to `Dual{P, Tangent{...}}`). At width 1 with the audit step-5
-# `NTangent` wrap, the tangent slot is `NTangent{Tuple{Memory}}`; unwrap
-# to the bare `Memory` before calling `memoryrefnew`.
+# through to `Dual{P, NTangent{Tuple{Memory}}}` at width 1). The tangent
+# slot is `NTangent{Tuple{Memory}}`; unwrap to the bare `Memory` before
+# calling `memoryrefnew`.
 @inline _memoryrefnew_kernel(x::Dual{<:Memory}) = Dual(
     memoryrefnew(primal(x)), memoryrefnew(_memrefnew_tan(tangent(x)))
 )

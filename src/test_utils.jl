@@ -534,9 +534,9 @@ function test_frule_correctness(
     # Use AD to compute Frechet derivative at ẋ.
     x_ẋ_rule = map((x, ẋ) -> lifted_type(Val(1), _typeof(x))(_deepcopy(x), ẋ), x, ẋ)
     # Width-1 lane is the single direction this test exercises. The whole-
-    # tangent accessor `tangent(::Lifted)` now returns top-level `NTangent`
-    # for array-bearing slots (audit step 5); address-map traversal wants
-    # the bare per-direction tangent.
+    # tangent accessor `tangent(::Lifted)` returns top-level `NTangent`
+    # for array-bearing slots; address-map traversal wants the bare
+    # per-direction tangent.
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(x -> Mooncake.tangent(x, 1), x_ẋ_rule)
     )

@@ -1565,8 +1565,7 @@ end
 # Lifted-aware typeassert: assert the primal subtypes `T` and narrow the
 # runtime `Lifted`'s `P` parameter.
 #
-# Per the revised audit (`primal-mode-branch-audit.md` Todo 1), runtime
-# `Lifted` wrappers should stay concrete; abstract `T` is captured at the
+# Runtime `Lifted` wrappers should stay concrete; abstract `T` is captured at the
 # OC slot annotation via `lifted_type(Val(N), T) === Lifted{Q, N, V} where
 # {Q<:T, V}`. For concrete `T`, narrow `P` to `T`; for abstract `T`, narrow
 # `P` to `typeof(primal(x))` (the actual concrete runtime type) so the
