@@ -1467,21 +1467,29 @@ w.r.t. the underlying data array `A`.
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(logdet),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
 ) = true
-function frule!!(
-    ::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    S, d_data = arrayify(_S)
-    F = bunchkaufman(S)
-    Sinv = inv(F)
-    return Dual(logdet(F), dot(Sinv, d_data))
-end
+# Source-of-truth Lifted body: derivative logic lives here. The bare-Dual
+# entry below thin-wraps to lift its args and invoke this body, so callers
+# that hit the bare-Dual surface (e.g. direct `frule!!(::Dual, ::Dual)`
+# invocations from `test_rule`) and IR-emit Lifted-typed callsites both
+# go through the same code path.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(logdet),N},
+    ::Mooncake.Lifted{typeof(logdet),N},
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
 ) where {N,P<:BlasRealFloat}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(_S))
+    bare_S = Mooncake._unlift(_S)
+    S, d_data = arrayify(bare_S)
+    F = bunchkaufman(S)
+    Sinv = inv(F)
+    bare_result = Dual(logdet(F), dot(Sinv, d_data))
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+function frule!!(
+    f::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
+    lifted_f = Mooncake.Lifted{typeof(logdet),1}(primal(f), tangent(f))
+    lifted_S = Mooncake.Lifted{_typeof(primal(_S)),1}(primal(_S), tangent(_S))
+    return Mooncake._unlift(frule!!(lifted_f, lifted_S))
 end
 function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -1515,26 +1523,32 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(det),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
 ) = true
-function frule!!(
-    ::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    S, d_data = arrayify(_S)
+# Source-of-truth Lifted body; bare-Dual below wraps and delegates.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(det),N}, _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {N,P<:BlasRealFloat}
+    bare_S = Mooncake._unlift(_S)
+    S, d_data = arrayify(bare_S)
     F = bunchkaufman(S; check=false)
     d = det(F)
     # Zero tangent for singular S. Strictly correct only for rank ≤ n-2; at rank n-1
     # the true derivative is the adjugate (nonzero), but exact floating-point zeros are
     # measure-zero in practice.
-    iszero(d) && return Dual(d, zero(P))
-    Sinv = inv(F)
-    return Dual(d, d * dot(Sinv, d_data))
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(det),N},
-    _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
-) where {N,P<:BlasRealFloat}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(_S))
+    bare_result = if iszero(d)
+        Dual(d, zero(P))
+    else
+        Sinv = inv(F)
+        Dual(d, d * dot(Sinv, d_data))
+    end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+function frule!!(
+    f::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
+    lifted_f = Mooncake.Lifted{typeof(det),1}(primal(f), tangent(f))
+    lifted_S = Mooncake.Lifted{_typeof(primal(_S)),1}(primal(_S), tangent(_S))
+    return Mooncake._unlift(frule!!(lifted_f, lifted_S))
 end
 function rrule!!(
     ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -1572,23 +1586,30 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(logabsdet),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
 ) = true
-function frule!!(
-    ::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    S, d_data = arrayify(_S)
-    F = bunchkaufman(S; check=false)
-    ld, s = logabsdet(F)
-    iszero(s) && return Dual((ld, s), (zero(P), zero(P)))
-    Sinv = inv(F)
-    return Dual((ld, s), (dot(Sinv, d_data), zero(P)))
-end
+# Source-of-truth Lifted body; bare-Dual below wraps and delegates.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(logabsdet),N},
+    ::Mooncake.Lifted{typeof(logabsdet),N},
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
 ) where {N,P<:BlasRealFloat}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(_S))
+    bare_S = Mooncake._unlift(_S)
+    S, d_data = arrayify(bare_S)
+    F = bunchkaufman(S; check=false)
+    ld, s = logabsdet(F)
+    bare_result = if iszero(s)
+        Dual((ld, s), (zero(P), zero(P)))
+    else
+        Sinv = inv(F)
+        Dual((ld, s), (dot(Sinv, d_data), zero(P)))
+    end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+function frule!!(
+    f::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
+) where {P<:BlasRealFloat}
+    lifted_f = Mooncake.Lifted{typeof(logabsdet),1}(primal(f), tangent(f))
+    lifted_S = Mooncake.Lifted{_typeof(primal(_S)),1}(primal(_S), tangent(_S))
+    return Mooncake._unlift(frule!!(lifted_f, lifted_S))
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
