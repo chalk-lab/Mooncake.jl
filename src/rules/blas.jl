@@ -648,14 +648,14 @@ function frule!!(
     return frule!!(f, Dual(length(primal(X_dX)), NoTangent()), X_dX, Dual(1, NoTangent()))
 end
 function frule!!(
-    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{NDual{T,1}}
-) where {T<:BlasFloat}
+    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{NDual{T,N}}
+) where {T<:BlasFloat,N}
     return frule!!(f, Dual(length(X_dX), NoTangent()), X_dX, Dual(1, NoTangent()))
 end
-# Complex-element analogue: `AbstractArray{Complex{NDual{R,1}}}`.
+# Complex-element analogue: `AbstractArray{Complex{NDual{R,N}}}`.
 function frule!!(
-    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{Complex{NDual{R,1}}}
-) where {R<:IEEEFloat}
+    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{Complex{NDual{R,N}}}
+) where {R<:IEEEFloat,N}
     return frule!!(f, Dual(length(X_dX), NoTangent()), X_dX, Dual(1, NoTangent()))
 end
 # Width-1 NDual overload — extracts primal/tangent via element-wise map
