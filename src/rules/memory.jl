@@ -1522,21 +1522,6 @@ function frule!!(
         zero_dual(lgetfield), x, zero_dual(Val(primal(name))), zero_dual(Val(primal(order)))
     )
 end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(getfield),N},
-    x::Mooncake.Lifted{<:_MemTypes},
-    name::Mooncake.Lifted{<:Union{Int,Symbol}},
-    order::Mooncake.Lifted{Symbol},
-) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(x),
-        Mooncake._unlift(name),
-        Mooncake._unlift(order),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
 function rrule!!(
     ::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -1586,21 +1571,6 @@ end
     # the tangent array must mirror the primal metadata, not the tuple tangent.
     setfield!(tangent(value), name, (name === :size || name === 2) ? primal(y) : tangent(y))
     return y
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(lsetfield!),N},
-    value::Mooncake.Lifted{<:Array},
-    name::Mooncake.Lifted{<:Val},
-    x::Mooncake.Lifted,
-) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(value),
-        Mooncake._unlift(name),
-        Mooncake._unlift(x),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),<:Array,<:Val,Any}}) =
     true
