@@ -42,6 +42,16 @@ end
 end
 # Width-N NDual getrf!: primal once, per-lane Frechet via `_getrf_fwd_core!`
 # (which already operates on a single (A, dA, ipiv) triple post-primal).
+# Pre-fix used singleton-NTangent wrap for `ipiv` and `info` regardless of
+# N, producing the wrong canonical shape at N≥2 (expected
+# `NTangent{NTuple{N, Vector{NoTangent}}}`). Build N-tuple NTangents to
+# match `dual_type(Val(N), Vector{Int})` and `dual_type(Val(N), Int)`.
+@inline function _ipiv_info_wrap(ipiv, info, ::Val{N}) where {N}
+    return (
+        Dual(ipiv, Mooncake.NTangent(ntuple(_ -> Mooncake.zero_tangent(ipiv), Val(N)))),
+        Dual(info, Mooncake.NTangent(ntuple(_ -> Mooncake.zero_tangent(info), Val(N)))),
+    )
+end
 @inline function frule!!(
     ::Dual{typeof(LAPACK.getrf!)}, A_dA::AbstractMatrix{NDual{P,N}}
 ) where {P<:BlasRealFloat,N}
@@ -51,11 +61,8 @@ end
         _getrf_fwd_core!(A, dAs[lane], ipiv)
     end
     _arr_writeback_n!(A_dA, A, dAs)
-    return (
-        A_dA,
-        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
-        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
-    )
+    ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
+    return (A_dA, ipiv_dual, info_dual)
 end
 @inline function frule!!(
     ::Dual{typeof(LAPACK.getrf!)}, A_dA::AbstractMatrix{Complex{NDual{R,N}}}
@@ -66,11 +73,8 @@ end
         _getrf_fwd_core!(A, dAs[lane], ipiv)
     end
     _arr_writeback_n!(A_dA, A, dAs)
-    return (
-        A_dA,
-        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
-        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
-    )
+    ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
+    return (A_dA, ipiv_dual, info_dual)
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(LAPACK.getrf!),N}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
