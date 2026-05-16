@@ -358,6 +358,21 @@ const TWPStepRangeLen = StepRangeLen{<:Any,<:TWP,<:TWP}
     inner_r = Mooncake._unlift(r)
     inner_i = Mooncake._unlift(i)
     x = unsafe_getindex(primal(inner_r), primal(inner_i))
+    raw_t = tangent(inner_r)
+    # Multi-lane NTangent (width N≥2): compute per-lane derivative. The
+    # singleton path's NTangent arithmetic (`dstep * (i - offset)`) errors
+    # because `*(::NTangent, ::Int)` is undefined.
+    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        i_p = primal(inner_i)
+        offset = primal(inner_r).offset
+        dxs = ntuple(Val(length(raw_t.lanes))) do lane
+            lane_t = raw_t.lanes[lane]
+            dref_lane = _get_tangent_field(lane_t, :ref)
+            dstep_lane = _get_tangent_field(lane_t, :step)
+            eltype(P)(dref_lane + dstep_lane * (i_p - offset))
+        end
+        return Mooncake.Lifted{eltype(P),N}(x, Mooncake.NTangent(dxs))
+    end
     dref = _get_tangent_field(_twp_tangent(inner_r), :ref)
     dstep = _get_tangent_field(_twp_tangent(inner_r), :step)
     dx = eltype(P)(dref + dstep * (primal(inner_i) - primal(inner_r).offset))
@@ -391,6 +406,18 @@ using Base: _getindex_hiprec
     inner_i = Mooncake._unlift(i)
     x = _getindex_hiprec(primal(inner_r), primal(inner_i))
     offset = primal(inner_r).offset
+    raw_t = tangent(inner_r)
+    # Multi-lane NTangent: per-lane derivative.
+    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        i_p = primal(inner_i)
+        dxs = ntuple(Val(length(raw_t.lanes))) do lane
+            lane_t = raw_t.lanes[lane]
+            dref_lane = _get_tangent_field(lane_t, :ref)
+            dstep_lane = _get_tangent_field(lane_t, :step)
+            (i_p - offset) * dstep_lane + dref_lane
+        end
+        return Mooncake.Lifted{_typeof(x),N}(x, Mooncake.NTangent(dxs))
+    end
     dstep = _get_tangent_field(_twp_tangent(inner_r), :step)
     dref = _get_tangent_field(_twp_tangent(inner_r), :ref)
     dx = (primal(inner_i) - offset) * dstep + dref
