@@ -2115,6 +2115,22 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         TestResources.build_big_isbits_struct(),
     ]
     VERSION >= v"1.11" && push!(rel_test_cases, fill!(Memory{Float64}(undef, 3), 3.0))
+    # Struct-element containers: exercise the NTangent-wrapped V path that
+    # the Finding 5 hunt (temp/branch-audit-2026-05-15.md) closed bugs in.
+    # `LoHi` has only Float64 fields → its structural-lift inner V is a
+    # NamedTuple of NDuals; the container's tangent type is `Array{Tangent}`
+    # / `Memory{Tangent}`, exercising the parallel-Dual width-N wrap that
+    # the existing IEEEFloat fixtures bypass (those route through bare
+    # `Array{NDual}`).
+    push!(rel_test_cases, TestResources.LoHi(1.5, -2.5))
+    push!(rel_test_cases, [TestResources.LoHi(1.0, 2.0), TestResources.LoHi(3.0, 4.0)])
+    if VERSION >= v"1.11"
+        let m = Memory{TestResources.LoHi}(undef, 2)
+            m[1] = TestResources.LoHi(1.0, 2.0)
+            m[2] = TestResources.LoHi(3.0, 4.0)
+            push!(rel_test_cases, m)
+        end
+    end
     return vcat(
         map(x -> (false, x...), abs_test_cases),
         map(x -> (false, x), rel_test_cases),
