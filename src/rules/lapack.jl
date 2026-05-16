@@ -1472,6 +1472,14 @@ w.r.t. the underlying data array `A`.
 # that hit the bare-Dual surface (e.g. direct `frule!!(::Dual, ::Dual)`
 # invocations from `test_rule`) and IR-emit Lifted-typed callsites both
 # go through the same code path.
+#
+# Pattern applicability: this inversion works for rules with a single
+# closed-form bare-Dual entry on a single V shape (here: width-1
+# `arrayify`-extractable `Dual{<:Symmetric}`). Multi-bare-Dual rules
+# spanning width-1 wrapper-exception + width-N canonical NDual + Complex
+# variants (e.g. `getri!`, `potrf!`, `gemv!`, `gemm!`) require unifying
+# the inner V representation first — that's deeper architectural work,
+# not per-rule inversion.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(logdet),N},
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
