@@ -331,6 +331,30 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Width-N getindex on NTangent-wrapped IdDict (parallel to the `get` rule's
+# width-N overload). The generic delegator above calls `_iddict_tangent` →
+# `_iddict_unwrap` (singleton-only), then `getindex(::NTangent, key::Int)`
+# resolves to `Base.getindex(::NTangent, ::Int)` returning LANE `key` — not
+# the value at that key in any of the N per-lane IdDicts. Silent
+# correctness bug (returns the wrong shape entirely).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(getindex),N},
+    d::Mooncake.Lifted{<:IdDict,N,<:Dual{<:IdDict,<:Mooncake.NTangent}},
+    key::Mooncake.Lifted,
+) where {N}
+    N == 1 && return @invoke frule!!(
+        Mooncake.zero_lifted(Val(N), getindex)::Mooncake.Lifted{typeof(getindex),N},
+        d::Mooncake.Lifted{<:IdDict},
+        key::Mooncake.Lifted,
+    )
+    bare_d = Mooncake._unlift(d)
+    bare_k = primal(Mooncake._unlift(key))
+    P_v = getindex(primal(bare_d), bare_k)
+    lane_tangents = ntuple(Val(N)) do n
+        getindex(tangent(bare_d).lanes[n], bare_k)
+    end
+    return Mooncake.Lifted{_typeof(P_v),N}(P_v, Mooncake.NTangent(lane_tangents))
+end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{IdDict{K,V}}, key::CoDual
 ) where {K,V}
