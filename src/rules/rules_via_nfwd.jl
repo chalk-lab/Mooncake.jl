@@ -39,7 +39,7 @@
 # `frule!!(::Dual{op}, ::NDual{T,N})` duplicates that delegate to the same
 # Lifted body are then redundant and can be removed. Specific bare-shape rules
 # dispatch first when present; these adapters only fire when no specific rule
-# exists. See `temp/branch-audit-2026-05-15.md` Finding 1 migration playbook.
+# exists.
 
 @inline function frule!!(f::Dual{F}, x::Dual{P}) where {F,P<:IEEEFloat}
     Mooncake._is_lifted_aware(Tuple{F,P}) || throw(MethodError(frule!!, (f, x)))

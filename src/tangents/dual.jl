@@ -883,10 +883,10 @@ end
 # generated function above (line ~806), but combines per-lane tangents from an
 # `NTangent{NTuple{N, Tangent}}` into per-field width-N partials. Required for
 # rule bodies that return a Lifted with struct primal at width N≥2 (e.g.
-# `lmemoryrefget` on `MemoryRef{<:Struct}` — see Finding 5 of the audit). The
-# single-Tangent form at line ~806 broadcasts one tangent across all N lanes,
-# which suffices for constants/seeds but NOT for rule outputs where each lane
-# has independent tangent data.
+# `lmemoryrefget` on `MemoryRef{<:Struct}`). The single-Tangent form at
+# line ~806 broadcasts one tangent across all N lanes, which suffices for
+# constants/seeds but NOT for rule outputs where each lane has independent
+# tangent data.
 #
 # Specificity: `P<:Tuple` (line ~720) and `P<:NamedTuple` (line ~740) have
 # their own `NTangent` ctors that are strictly more specific, so this generic
