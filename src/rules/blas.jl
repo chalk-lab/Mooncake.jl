@@ -647,15 +647,12 @@ function frule!!(
 ) where {T<:BlasFloat}
     return frule!!(f, Dual(length(primal(X_dX)), NoTangent()), X_dX, Dual(1, NoTangent()))
 end
+# Consolidated 1-arg nrm2 convenience form: delegates to the 3-arg form
+# which already handles both Real (NDual{T,N}) and Complex (Complex{NDual{R,N}})
+# canonical V shapes via dispatch.
 function frule!!(
-    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{NDual{T,N}}
-) where {T<:BlasFloat,N}
-    return frule!!(f, Dual(length(X_dX), NoTangent()), X_dX, Dual(1, NoTangent()))
-end
-# Complex-element analogue: `AbstractArray{Complex{NDual{R,N}}}`.
-function frule!!(
-    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{Complex{NDual{R,N}}}
-) where {R<:IEEEFloat,N}
+    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{<:Union{NDual{T,N},Complex{NDual{T,N}}}}
+) where {T<:IEEEFloat,N}
     return frule!!(f, Dual(length(X_dX), NoTangent()), X_dX, Dual(1, NoTangent()))
 end
 # Width-1 NDual overload — extracts primal/tangent via element-wise map
@@ -1876,16 +1873,18 @@ function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
 end
 
+# Consolidated width-1 gemm!: covers Real and Complex via element-type
+# union signatures. `one(eltype(C))` works for both `Float64` and `Complex{Float64}`.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
     transB::Dual{Char},
-    alpha::_ScalarLikeWidth1{T},
-    A_dA::_VecOrMatLikeWidth1{T},
-    B_dB::_VecOrMatLikeWidth1{T},
-    beta::_ScalarLikeWidth1{T},
-    C_dC::_MatLikeWidth1{T},
-) where {T<:BlasFloat}
+    alpha::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    A_dA::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
+    B_dB::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
+    beta::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    C_dC::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+)
     tA = primal(transA)
     tB = primal(transB)
     α, dα = _scalar_extract(alpha)
@@ -1893,14 +1892,15 @@ end
     A, dA = _arr_extract(A_dA)
     B, dB = _arr_extract(B_dB)
     C, dC = _arr_extract(C_dC)
+    one_T = one(eltype(C))
 
     # Tangents (product rule)
     # d(α*op(A)*op(B) + β*C) = dα*op(A)*op(B) + α*op(dA)*op(B) + α*op(A)*op(dB) + dβ*C + β*dC
     BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
-    BLAS.gemm!(tA, tB, α, A, dB, one(T), dC) # α*op(A)*op(dB) + 1*dC
+    BLAS.gemm!(tA, tB, α, A, dB, one_T, dC)  # α*op(A)*op(dB) + 1*dC
 
     if !iszero(dα)
-        BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)  # dα*op(A)*op(B) + 1*dC
+        BLAS.gemm!(tA, tB, dα, A, B, one_T, dC)  # dα*op(A)*op(B) + 1*dC
     end
 
     if !iszero(dβ)
@@ -1910,44 +1910,6 @@ end
     end
 
     # Primal
-    BLAS.gemm!(tA, tB, α, A, B, β, C)
-
-    _arr_writeback!(C_dC, C, dC)
-    return C_dC
-end
-# Complex-element variant: canonical width-1 `Complex{NDual{R, 1}}` shapes.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::_ScalarLikeWidth1Complex{R},
-    A_dA::_VecOrMatLikeWidth1Complex{R},
-    B_dB::_VecOrMatLikeWidth1Complex{R},
-    beta::_ScalarLikeWidth1Complex{R},
-    C_dC::_MatLikeWidth1Complex{R},
-) where {R<:IEEEFloat}
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dα = _scalar_extract(alpha)
-    β, dβ = _scalar_extract(beta)
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    C, dC = _arr_extract(C_dC)
-    C_T = Complex{R}
-
-    BLAS.gemm!(tA, tB, α, dA, B, β, dC)
-    BLAS.gemm!(tA, tB, α, A, dB, one(C_T), dC)
-
-    if !iszero(dα)
-        BLAS.gemm!(tA, tB, dα, A, B, one(C_T), dC)
-    end
-
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
-        end
-    end
-
     BLAS.gemm!(tA, tB, α, A, B, β, C)
 
     _arr_writeback!(C_dC, C, dC)
