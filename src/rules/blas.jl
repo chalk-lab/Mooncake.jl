@@ -874,10 +874,9 @@ end
     _arr_writeback!(y_dy, y, dy)
     return y_dy
 end
-# Width-N NDual gemv!: per-lane Frechet computed N times
-# (each with independent lane tangents), then primal computed once. We
-# inline the per-lane Frechet to avoid `_gemv!_frule_core!`'s baked-in
-# primal computation (which would accumulate y N times if called per-lane).
+# Per-lane Frechet helper for gemv! width-N rules. Holds only the Frechet
+# step (no primal call); both width-1 (via `_gemv!_frule_core!`) and width-N
+# share this helper, with each caller running the primal separately.
 @inline function _gemv_frechet_lane!(tA, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
     BLAS.gemv!(tA, dα, A, x, β, dy)
     BLAS.gemv!(tA, α, dA, x, one(P), dy)
