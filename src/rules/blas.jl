@@ -1243,16 +1243,7 @@ end
     x, dx = _arr_extract(x_dx)
     y, dy = _arr_extract(y_dy)
 
-    BLAS.hemv!(ul, dα, A, x, β, dy)
-    BLAS.hemv!(ul, α, dA, x, one(eltype(y)), dy)
-    BLAS.hemv!(ul, α, A, dx, one(eltype(y)), dy)
-    if !iszero(dβ)
-        @inbounds for n in eachindex(y)
-            tmp = dβ * y[n]
-            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
-        end
-    end
-
+    _hemv_frechet_lane!(ul, α, dα, A, dA, x, dx, β, dβ, y, dy)
     BLAS.hemv!(ul, α, A, x, β, y)
     _arr_writeback!(y_dy, y, dy)
     return y_dy
