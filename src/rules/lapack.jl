@@ -137,30 +137,15 @@ end
 # `Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}` to match
 # `dual_type(Val(1), Vector{Int})` so downstream `_canonicalise_tuple_inner`
 # does not need to bridge `NoTangent` → `NTangent`.
+# Consolidated width-1 kwcall entry: covers Real and Complex via
+# `Union{_MatLikeWidth1, _MatLikeWidth1Complex}`. Body identical for
+# both V shapes; `_arr_extract` dispatches on input type.
 @inline function frule!!(
     f::Dual{typeof(Core.kwcall)},
     kwargs::NamedTuple,
     g::Dual{typeof(getrf!)},
-    A_dA::_MatLikeWidth1{P},
-) where {P<:BlasFloat}
-    check = primal(kwargs.check)
-    A, dA = _arr_extract(A_dA)
-    _, ipiv, info = LAPACK.getrf!(A; check)
-    _getrf_fwd_core!(A, dA, ipiv)
-    _arr_writeback!(A_dA, A, dA)
-    return (
-        A_dA,
-        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
-        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
-    )
-end
-# Complex-element analogue: width-1 canonical Matrix{Complex{NDual{R,1}}}.
-@inline function frule!!(
-    f::Dual{typeof(Core.kwcall)},
-    kwargs::NamedTuple,
-    g::Dual{typeof(getrf!)},
-    A_dA::_MatLikeWidth1Complex{R},
-) where {R<:IEEEFloat}
+    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+)
     check = primal(kwargs.check)
     A, dA = _arr_extract(A_dA)
     _, ipiv, info = LAPACK.getrf!(A; check)
@@ -305,31 +290,15 @@ end
     },
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(trtrs!),Vararg}}) = true
+# Consolidated width-1 entry: covers Real and Complex.
 function frule!!(
     ::Dual{typeof(trtrs!)},
     _uplo::Dual{Char},
     _trans::Dual{Char},
     _diag::Dual{Char},
-    A_dA::_MatLikeWidth1{P},
-    B_dB::_VecOrMatLikeWidth1{P},
-) where {P<:BlasRealFloat}
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _trtrs!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, B, dB)
-    _arr_writeback!(A_dA, A, dA)
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Complex canonical width-1: matches `Matrix{Complex{NDual{R, 1}}}` and
-# `Vector{Complex{NDual{R, 1}}}` / `Matrix{Complex{NDual{R, 1}}}` for B.
-@inline function frule!!(
-    ::Dual{typeof(trtrs!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::_MatLikeWidth1Complex{R},
-    B_dB::_VecOrMatLikeWidth1Complex{R},
-) where {R<:IEEEFloat}
+    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+    B_dB::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
+)
     A, dA = _arr_extract(A_dA)
     B, dB = _arr_extract(B_dB)
     _trtrs!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, B, dB)
@@ -498,28 +467,14 @@ end
     },
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getrs!),Vararg}}) = true
+# Consolidated width-1 entry: covers Real and Complex.
 function frule!!(
     ::Dual{typeof(getrs!)},
     _trans::Dual{Char},
-    A_dA::_MatLikeWidth1{P},
+    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
     _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::_VecOrMatLikeWidth1{P},
-) where {P<:BlasRealFloat}
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _getrs!_frule_core!(primal(_trans), A, dA, primal(_ipiv), B, dB)
-    _arr_writeback!(A_dA, A, dA)
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Complex canonical width-1.
-@inline function frule!!(
-    ::Dual{typeof(getrs!)},
-    _trans::Dual{Char},
-    A_dA::_MatLikeWidth1Complex{R},
-    _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::_VecOrMatLikeWidth1Complex{R},
-) where {R<:IEEEFloat}
+    B_dB::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
+)
     A, dA = _arr_extract(A_dA)
     B, dB = _arr_extract(B_dB)
     _getrs!_frule_core!(primal(_trans), A, dA, primal(_ipiv), B, dB)
