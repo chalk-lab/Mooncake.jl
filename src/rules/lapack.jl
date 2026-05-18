@@ -1175,6 +1175,9 @@ function _accum_sym_logdet!(
     ddata::StridedMatrix{P}, Sinv::StridedMatrix{P}, ȳ::P, uplo::Char
 ) where {P}
     n = size(ddata, 1)
+    # Each branch walks one triangle of `ddata`; off-diagonal entries pick
+    # up a factor of 2 (the symmetric counterpart contributes the same
+    # gradient), while diagonal entries pick up `ȳ * Sinv[j, j]` once.
     if uplo == 'U'
         @inbounds for j in 1:n
             for i in 1:(j - 1)
@@ -1184,10 +1187,10 @@ function _accum_sym_logdet!(
         end
     else
         @inbounds for j in 1:n
-            ddata[j, j] += ȳ * Sinv[j, j]
             for i in (j + 1):n
                 ddata[i, j] += 2 * ȳ * Sinv[i, j]
             end
+            ddata[j, j] += ȳ * Sinv[j, j]
         end
     end
     return nothing
