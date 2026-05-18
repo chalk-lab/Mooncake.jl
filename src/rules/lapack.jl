@@ -776,21 +776,22 @@ end
 @inline function _potrf!_frule_core!(
     uplo::Char, A::AbstractMatrix{P}, dA::AbstractMatrix{P}
 ) where {P<:BlasFloat}
-    if uplo == 'L'
+    tmp = if uplo == 'L'
         L = LowerTriangular(A)
-        tmp = LowerTriangular(ldiv!(L, _sym_herm_proj(dA, :L) / L'))
-        @inbounds for n in 1:size(A, 1)
-            tmp[n, n] = tmp[n, n] / 2
-        end
-        _copytrito!(dA, lmul!(L, tmp), 'L')
+        LowerTriangular(ldiv!(L, _sym_herm_proj(dA, :L) / L'))
     else
         U = UpperTriangular(A)
-        tmp = UpperTriangular(rdiv!(U' \ _sym_herm_proj(dA, :U), U))
-        @inbounds for n in 1:size(A, 1)
-            tmp[n, n] = tmp[n, n] / 2
-        end
-        _copytrito!(dA, rmul!(tmp, U), 'U')
+        UpperTriangular(rdiv!(U' \ _sym_herm_proj(dA, :U), U))
     end
+    @inbounds for n in 1:size(A, 1)
+        tmp[n, n] = tmp[n, n] / 2
+    end
+    result = if uplo == 'L'
+        lmul!(LowerTriangular(A), tmp)
+    else
+        rmul!(tmp, UpperTriangular(A))
+    end
+    _copytrito!(dA, result, uplo)
     return nothing
 end
 function rrule!!(
