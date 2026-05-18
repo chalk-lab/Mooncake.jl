@@ -657,24 +657,28 @@ function frule!!(
 end
 # Width-1 NDual overload — extracts primal/tangent via element-wise map
 # (allocates) and reuses the bare body's dot-style accumulation.
+# Consolidated width-N nrm2: covers Real (NDual{T,N}) and Complex
+# (Complex{NDual{R,N}}). Replaces the previous element-type-specific
+# extract lambdas with `_arr_extract_n`, which dispatches on input type
+# and returns `(primal, NTuple{N, lane_tangent})` uniformly.
+#
+# Per-lane tangent: nrm2 derivative w.r.t. each direction is
+# (X' * dX + dX' * X) / (2 * nrm). Each lane uses real() for both Real
+# and Complex (real() is identity on Float, takes Real-component on Complex).
 function frule!!(
     ::Dual{typeof(BLAS.nrm2)},
     n::Dual{<:Integer},
-    X_dX::AbstractArray{NDual{T,N}},
+    X_dX::AbstractArray{<:Union{NDual{T,N},Complex{NDual{T,N}}}},
     incx::Dual{<:Integer},
-) where {T<:BlasRealFloat,N}
+) where {T<:IEEEFloat,N}
     _n = primal(n)
     _incx = primal(incx)
-    X = map(d -> d.value, X_dX)
+    X, dXs = _arr_extract_n(X_dX)
     y = BLAS.nrm2(_n, X, _incx)
     Xinds = 1:_incx:(_incx * _n)
     Xv = view(X, Xinds)
-    # Per-lane tangent: nrm2 derivative w.r.t. each direction is
-    # (X' * dX + dX' * X) / (2 * nrm). For each lane, extract that lane's
-    # partials and accumulate.
     partials = ntuple(Val(N)) do lane
-        dX = map(d -> d.partials[lane], X_dX)
-        dXv = view(dX, Xinds)
+        dXv = view(dXs[lane], Xinds)
         dy = zero(y)
         @inbounds for i in eachindex(Xv)
             dy = dy + real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
@@ -682,30 +686,6 @@ function frule!!(
         dy / 2y
     end
     return NDual{T,N}(y, partials)
-end
-# Complex-element analogue: `AbstractArray{Complex{NDual{R, N}}}`.
-function frule!!(
-    ::Dual{typeof(BLAS.nrm2)},
-    n::Dual{<:Integer},
-    X_dX::AbstractArray{Complex{NDual{R,N}}},
-    incx::Dual{<:Integer},
-) where {R<:IEEEFloat,N}
-    _n = primal(n)
-    _incx = primal(incx)
-    X = map(c -> Complex(c.re.value, c.im.value), X_dX)
-    y = BLAS.nrm2(_n, X, _incx)
-    Xinds = 1:_incx:(_incx * _n)
-    Xv = view(X, Xinds)
-    partials = ntuple(Val(N)) do lane
-        dX = map(c -> Complex(c.re.partials[lane], c.im.partials[lane]), X_dX)
-        dXv = view(dX, Xinds)
-        dy = zero(y)
-        @inbounds for i in eachindex(Xv)
-            dy = dy + real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
-        end
-        dy / 2y
-    end
-    return NDual{R,N}(y, partials)
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.nrm2),N},
