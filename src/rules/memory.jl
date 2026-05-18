@@ -502,6 +502,44 @@ end
     return CoDual(y, dy), NoPullback(f, x, ii, boundscheck)
 end
 
+# `memoryrefnew(::Memory, ::Int[, ::Bool])` accepts a `Memory` directly on Julia 1.13+.
+@static if VERSION ≥ v"1.13-"
+    @inline function frule!!(
+        ::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory}, ii::Dual{Int}
+    )
+        return Dual(
+            memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii))
+        )
+    end
+    @inline function rrule!!(
+        f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory}, ii::CoDual{Int}
+    )
+        return CoDual(memoryrefnew(x.x, ii.x), memoryrefnew(x.dx, ii.x)),
+        NoPullback(f, x, ii)
+    end
+
+    @inline function frule!!(
+        ::Dual{typeof(memoryrefnew)},
+        x::Dual{<:Memory},
+        ii::Dual{Int},
+        boundscheck::Dual{Bool},
+    )
+        y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
+        dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
+        return Dual(y, dy)
+    end
+    @inline function rrule!!(
+        f::CoDual{typeof(memoryrefnew)},
+        x::CoDual{<:Memory},
+        ii::CoDual{Int},
+        boundscheck::CoDual{Bool},
+    )
+        y = memoryrefnew(x.x, ii.x, boundscheck.x)
+        dy = memoryrefnew(x.dx, ii.x, boundscheck.x)
+        return CoDual(y, dy), NoPullback(f, x, ii, boundscheck)
+    end
+end
+
 @zero_derivative MinimalCtx Tuple{typeof(memoryrefoffset),GenericMemoryRef}
 
 # Core.memoryrefreplace!
@@ -989,6 +1027,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             mem in filter(x -> length(x.mem) > Core.memoryrefoffset(x), mem_refs) for
             bc in [false, true]
         ],
+        @static(
+            if VERSION ≥ v"1.13-"
+                _nonempty_mems = filter(m -> length(m) >= 1, mems)
+                vcat(
+                    [
+                        (false, :none, nothing, memoryrefnew, mem, 1) for
+                        mem in _nonempty_mems
+                    ],
+                    [
+                        (false, :none, nothing, memoryrefnew, mem, 1, bc) for
+                        mem in _nonempty_mems for bc in [false, true]
+                    ],
+                )
+            else
+                []
+            end
+        ),
         [(false, :none, nothing, memoryrefoffset, mem_ref) for mem_ref in mem_refs],
         [
             (
