@@ -7,18 +7,14 @@
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(LAPACK.getrf!),<:AbstractMatrix{<:BlasFloat}}}
 ) = true
-# Consolidated width-1 entry: handles Real wrapper-exception, Real
-# canonical NDual, Complex wrapper-exception (all via `_MatLikeWidth1{P}`
-# at `P<:BlasFloat`), and Complex canonical NDual (`Matrix{Complex{NDual{R,1}}}`
-# via `_MatLikeWidth1Complex{R}`). Body is identical for all four V
-# shapes; `_arr_extract` dispatches on the input type.
+# Width-1 getrf!: covers Real and Complex via slot Union; `_arr_extract`
+# dispatches on input type.
 #
-# Tuple-output: return canonical inner V form (a tuple of inner duals
-# per AGENTS.md tuple-lifting). The first element preserves the input
-# array's lifted shape (Dual{Wrapper} or Array{<:NDual}); ipiv and info
-# are non-IEEEFloat so wrap as canonical width-1 forms
-# (`Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}` and
-# `Dual{Int, NoTangent}`) so downstream `_canonicalise_tuple_inner`
+# Tuple-output: return canonical inner V form (a tuple of inner duals per
+# AGENTS.md tuple-lifting). The first element preserves the input array's
+# lifted shape; `ipiv` and `info` are non-IEEEFloat so wrap as canonical
+# width-1 forms (`Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}`
+# and `Dual{Int, NoTangent}`) so downstream `_canonicalise_tuple_inner`
 # does not need to bridge `NoTangent → NTangent`.
 function frule!!(
     ::Dual{typeof(LAPACK.getrf!)}, A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex}
