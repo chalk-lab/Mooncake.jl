@@ -1242,7 +1242,9 @@ end
 
 # Per-lane Frechet helpers for symv!/hemv! width-N rules. Bodies are
 # byte-identical apart from `BLAS.$fname`; generated via @eval to share
-# the source. Each helper is called in a 1:N loop after the primal.
+# the source. Width-N rules call these in a 1:N loop, then run the
+# primal once (Frechet uses pre-primal y, so the helper precedes the
+# primal call).
 for (fname, base) in ((:symv!, :symv), (:hemv!, :hemv))
     helper = Symbol("_", base, "_frechet_lane!")
     @eval @inline function $helper(ul, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
