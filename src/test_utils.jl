@@ -569,41 +569,36 @@ function test_frule_reuse(x_ẋ...; frule)
     @test all(map(has_equal_data, map(tangent, x_ẋ_a), map(tangent, x_ẋ_b)))
 end
 
-function test_rrule_reuse(x_x̄...; rrule)
-    @nospecialize x_x̄
-    rng = Xoshiro(123)
-    x_a = map(_deepcopy, map(primal, x_x̄))
-    x̄_zero_a = map(zero_tangent, x_a)
+function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule)
+    @nospecialize rng x_x̄
+    x = map(primal, x_x̄)
+    x̄_zero_a = map(zero_tangent, x)
     inputs_a = map(
-        (xi, fi) -> fcodual_type(_typeof(xi))(_deepcopy(xi), fi),
-        x_a,
+        (x, x̄_f) -> fcodual_type(_typeof(x))(_deepcopy(x), x̄_f),
+        x,
         map(Mooncake.fdata, x̄_zero_a),
     )
-    x_b = map(_deepcopy, map(primal, x_x̄))
-    x̄_zero_b = map(zero_tangent, x_b)
+    x̄_zero_b = map(zero_tangent, x)
     inputs_b = map(
-        (xi, fi) -> fcodual_type(_typeof(xi))(_deepcopy(xi), fi),
-        x_b,
+        (x, x̄_f) -> fcodual_type(_typeof(x))(_deepcopy(x), x̄_f),
+        x,
         map(Mooncake.fdata, x̄_zero_b),
     )
 
-    # First forward pass: snapshot primal before pullback can modify it.
-    # Only deepcopy when the output has an fdata component -- if tangent is NoFData,
-    # Mooncake does not track mutations on the primal and the pullback won’t modify it
-    # (and deepcopy may fail for types containing Modules, e.g. Core.TypeName).
+    # Skip the deepcopy when tangent(y_ȳ) is NoFData: such primals (e.g. Float64, or
+    # Module-containing types like Core.TypeName) can't be mutated by the pullback
     y_ȳ_a, pb_a!! = rrule(inputs_a...)
     y_primal_a = tangent(y_ȳ_a) isa NoFData ? primal(y_ȳ_a) : _deepcopy(primal(y_ȳ_a))
-    # Set output cotangent via fdata (vectors communicate cotangents through fdata, not rdata).
-    ŷ_delta = randn_tangent(rng, primal(y_ȳ_a))
+    ȳ_delta = randn_tangent(rng, primal(y_ȳ_a))
     ȳ_a = increment!!(
-        set_to_zero!!(zero_tangent(primal(y_ȳ_a), tangent(y_ȳ_a))), ŷ_delta
+        set_to_zero!!(zero_tangent(primal(y_ȳ_a), tangent(y_ȳ_a))), _deepcopy(ȳ_delta)
     )
     x̄_rvs_a = pb_a!!(Mooncake.rdata(ȳ_a))
 
     y_ȳ_b, pb_b!! = rrule(inputs_b...)
     y_primal_b = tangent(y_ȳ_b) isa NoFData ? primal(y_ȳ_b) : _deepcopy(primal(y_ȳ_b))
     ȳ_b = increment!!(
-        set_to_zero!!(zero_tangent(primal(y_ȳ_b), tangent(y_ȳ_b))), _deepcopy(ŷ_delta)
+        set_to_zero!!(zero_tangent(primal(y_ȳ_b), tangent(y_ȳ_b))), _deepcopy(ȳ_delta)
     )
     x̄_rvs_b = pb_b!!(Mooncake.rdata(ȳ_b))
 
@@ -1091,7 +1086,7 @@ function test_rule(
                     test_frule_reuse(x_ẋ...; frule)
                 end
                 if test_rvs && !interface_only
-                    test_rrule_reuse(x_x̄...; rrule)
+                    test_rrule_reuse(rng, x_x̄...; rrule)
                 end
             end
 
