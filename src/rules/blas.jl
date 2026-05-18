@@ -765,13 +765,10 @@ function frule!!(
     _arr_writeback!(X_dX, X, dX)
     return X_dX
 end
-# Width-N NDual scal!: per-lane Frechet via N
-# `BLAS.scal!` + `BLAS.axpy!` calls on independent lane tangent arrays,
-# then a single `BLAS.scal!` for the primal and a width-N writeback. The
-# real path matches `NDual{T, N}`; the complex path mirrors with
-# `Complex{NDual{R, N}}`.
 # Consolidated width-N scal!: covers Real (NDual{P,N}) and Complex
-# (Complex{NDual{P,N}}). Bodies were byte-identical.
+# (Complex{NDual{P,N}}). Per-lane Frechet via N `BLAS.scal!` + `BLAS.axpy!`
+# calls on independent lane tangent arrays, then a single `BLAS.scal!` for
+# the primal and a width-N writeback.
 @inline function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
@@ -2066,9 +2063,9 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     end
 end
 
-# Width-N NDual symm!/hemm!: per-lane Frechet then primal
-# once. Mirrors the legacy `Dual{<:AbstractMatrix{T}}` rule body but
-# operates on bare NDual-element matrices and uses per-lane assembly.
+# Per-lane Frechet helpers for symm!/hemm! width-N rules. Operate on bare
+# NDual-element matrices; the consolidated width-N rules call these in a
+# 1:N loop, then run the primal once.
 @inline function _symm_frechet_lane!(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
     BLAS.symm!(s, ul, α, A, dB, β, dC)
     BLAS.symm!(s, ul, α, dA, B, one(P), dC)
