@@ -616,6 +616,16 @@ end
     MinimalCtx, Tuple{typeof(BLAS.nrm2),X} where {T<:BlasFloat,X<:AbstractArray{T}},
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.nrm2),Vararg}}) = true
+# Per-direction nrm2 derivative: d(||X||)/dX_i contracted with dX gives
+# (X' * dX + dX' * X) / (2 * ||X||). `real()` is identity for Float and
+# takes the Real component for Complex, so the same body works for both.
+@inline function _nrm2_grad(X, dX, y)
+    dy = zero(y)
+    @inbounds for i in eachindex(X)
+        dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
+    end
+    return dy / 2y
+end
 function frule!!(
     ::Dual{typeof(BLAS.nrm2)},
     n::Dual{<:Integer},
@@ -624,11 +634,7 @@ function frule!!(
 ) where {T<:BlasFloat}
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
     X, dX = viewify(primal(n), X_dX, primal(incx))
-    dy = zero(y)
-    @inbounds for i in eachindex(X)
-        dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
-    end
-    return Dual(y, dy / 2y)
+    return Dual(y, _nrm2_grad(X, dX, y))
 end
 # 1-arg `BLAS.nrm2(X)` convenience form. Delegates to the 3-arg rule with
 # `n = length(X)` and `incx = 1`, matching Julia's BLAS shim.
@@ -667,14 +673,7 @@ function frule!!(
     y = BLAS.nrm2(_n, X, _incx)
     Xinds = 1:_incx:(_incx * _n)
     Xv = view(X, Xinds)
-    partials = ntuple(Val(N)) do lane
-        dXv = view(dXs[lane], Xinds)
-        dy = zero(y)
-        @inbounds for i in eachindex(Xv)
-            dy = dy + real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
-        end
-        dy / 2y
-    end
+    partials = ntuple(lane -> _nrm2_grad(Xv, view(dXs[lane], Xinds), y), Val(N))
     return NDual{T,N}(y, partials)
 end
 @inline function frule!!(
