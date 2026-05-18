@@ -775,13 +775,15 @@ end
 # `_arr_writeback!` pushing results back). The legacy `Ptr{P}` argument shape
 # is not handled here — `BLAS.scal!(n, a, ::Ptr, incx)` calls go through the
 # `_foreigncall_` dot loop above.
+# Consolidated width-1 entry: covers Real (BlasFloat) and Complex
+# (canonical Complex{NDual{R,1}}). Body identical for both V shapes.
 function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
-    a_da::_ScalarLikeWidth1{P},
-    X_dX::_ArrLikeWidth1{P},
+    a_da::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    X_dX::Union{_ArrLikeWidth1,_ArrLikeWidth1Complex},
     _incx::Dual{<:Integer},
-) where {P<:BlasFloat}
+)
     n = primal(_n)
     incx = primal(_incx)
     a, da = _scalar_extract(a_da)
@@ -792,27 +794,6 @@ function frule!!(
     BLAS.axpy!(n, da, X, incx, dX, incx)
 
     # Perform primal computation.
-    BLAS.scal!(n, a, X, incx)
-    _arr_writeback!(X_dX, X, dX)
-    return X_dX
-end
-# Complex-element variant: matches canonical width-1 `Complex{NDual{R,1}}`
-# scalar / array forms.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.scal!)},
-    _n::Dual{<:Integer},
-    a_da::_ScalarLikeWidth1Complex{R},
-    X_dX::_ArrLikeWidth1Complex{R},
-    _incx::Dual{<:Integer},
-) where {R<:IEEEFloat}
-    n = primal(_n)
-    incx = primal(_incx)
-    a, da = _scalar_extract(a_da)
-    X, dX = _arr_extract(X_dX)
-
-    BLAS.scal!(n, a, dX, incx)
-    BLAS.axpy!(n, da, X, incx, dX, incx)
-
     BLAS.scal!(n, a, X, incx)
     _arr_writeback!(X_dX, X, dX)
     return X_dX
@@ -2702,40 +2683,19 @@ end
     end
     return nothing
 end
+# Consolidated width-N trmm!: covers Real (NDual{P,N}) and Complex
+# (Complex{NDual{R,N}}). Bodies were byte-identical; type-binding via
+# matched element-type unions on scalar/matrix args.
 @inline function frule!!(
     ::Dual{typeof(BLAS.trmm!)},
     _side::Dual{Char},
     _uplo::Dual{Char},
     _ta::Dual{Char},
     _diag::Dual{Char},
-    α_dα::NDual{P,N},
-    A_dA::AbstractMatrix{NDual{P,N}},
-    B_dB::AbstractMatrix{NDual{P,N}},
-) where {P<:BlasRealFloat,N}
-    side = primal(_side)
-    uplo = primal(_uplo)
-    ta = primal(_ta)
-    diag = primal(_diag)
-    α, dαs = _scalar_extract_n(α_dα)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    @inbounds for lane in 1:N
-        _trmm_frechet_lane!(side, uplo, ta, diag, α, dαs[lane], A, dAs[lane], B, dBs[lane])
-    end
-    BLAS.trmm!(side, uplo, ta, diag, α, A, B)
-    _arr_writeback_n!(B_dB, B, dBs)
-    return B_dB
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.trmm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _ta::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Complex{NDual{R,N}},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-    B_dB::AbstractMatrix{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
+    α_dα::Union{NDual{P,N},Complex{NDual{P,N}}},
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    B_dB::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+) where {P<:IEEEFloat,N}
     side = primal(_side)
     uplo = primal(_uplo)
     ta = primal(_ta)
