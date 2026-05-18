@@ -762,6 +762,8 @@ end
 @inline _sym_herm_proj(dA::AbstractMatrix{<:BlasComplexFloat}, uplo::Symbol) = Hermitian(
     dA, uplo
 )
+# Char overload: avoid `Symbol(uplo)` runtime allocation on hot-path callers.
+@inline _sym_herm_proj(dA, uplo::Char) = _sym_herm_proj(dA, uplo == 'L' ? :L : :U)
 # Unified Cholesky differential: real (Symmetric projection) and complex
 # Hermitian (conjugate-symmetric projection) paths share identical structure;
 # the projection helper selects per element type.
@@ -929,7 +931,7 @@ end
         dU = UpperTriangular(dA)
         U'dU + dU'U
     end
-    mul!(dB, _sym_herm_proj(M, Symbol(uplo)), B, -one(P), one(P))
+    mul!(dB, _sym_herm_proj(M, uplo), B, -one(P), one(P))
     LAPACK.potrs!(uplo, A, dB)
     return nothing
 end
