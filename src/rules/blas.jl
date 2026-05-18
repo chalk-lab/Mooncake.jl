@@ -851,10 +851,9 @@ end
 # width-N). Scalars keep the `_ScalarLikeWidth1` Union so mixed
 # (NDual scalar + Dual structural-wrapper container) inputs dispatch
 # here. `P<:BlasFloat` covers real and complex element types.
-# Consolidated width-1 gemv!: covers Real and Complex (the wrapper-exception
-# Dual-typed slots). `A_dA` can be a Vector or Matrix. The core helper
-# requires a Matrix, so route through `_mat_extract` which reshapes 1D
-# inputs to `M×1` matrices. `P<:BlasFloat` covers real and complex element types.
+# Width-1 gemv!: covers Real and Complex via slot Union. `A_dA` can be a
+# Vector or Matrix; `_mat_extract` reshapes 1D inputs to `M×1` matrices
+# for `_gemv!_frule_core!`, which requires a Matrix.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
@@ -1163,12 +1162,11 @@ for (fname, prim_elty, frule_elty) in (
     end
 end
 
-# Width-1 path with mixed-wrapper support: container args narrowed to
+# Width-1 symv! with mixed-wrapper support: container args narrowed to
 # bare-`Dual{<:Abstract...}` to disambiguate from the width-N rule at N=1
-# (NDual array inputs route to width-N), while scalar args use Union
-# `Dual{T} | NDual{T,1}` for mixed-wrapper inputs. Consolidated to cover
-# both Real and Complex element types — `BLAS.symv!` natively dispatches on
-# element type and `one(eltype(y))` selects the correct β scalar shape.
+# (NDual array inputs route to width-N); scalar args use the Union
+# `Dual{T} | NDual{T,1}` for mixed-wrapper inputs. Covers Real and Complex
+# via `BlasFloat`; delegates Frechet to `_symv_frechet_lane!`.
 function frule!!(
     ::Dual{typeof(BLAS.symv!)},
     uplo::Dual{Char},
