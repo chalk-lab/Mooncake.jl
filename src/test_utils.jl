@@ -483,7 +483,7 @@ function test_frule_correctness(
     unsafe_perturb::Bool,
     rtol=1e-3,
     atol=1e-3,
-    max_fd_step::Union{Nothing,Float64}=nothing,
+    max_fd_step::Union{Nothing,Real}=nothing,
 )
     @nospecialize rng x_ẋ
 
@@ -502,7 +502,10 @@ function test_frule_correctness(
     if max_fd_step !== nothing
         ε_list = filter(≤(max_fd_step), ε_list)
         length(ε_list) ≥ 2 || throw(
-            ArgumentError("max_fd_step=$max_fd_step is too small (leaves <2 FD steps)")
+            ArgumentError(
+                "max_fd_step=$max_fd_step leaves fewer than two FD steps; the fixed " *
+                "grid ends at 1e-7, so the smallest usable cap is 1e-6.",
+            ),
         )
     end
     fd_results = Vector{Any}(undef, length(ε_list))
@@ -579,7 +582,7 @@ function test_rrule_correctness(
     output_tangent=nothing,
     rtol=1e-3,
     atol=1e-3,
-    max_fd_step::Union{Nothing,Float64}=nothing,
+    max_fd_step::Union{Nothing,Real}=nothing,
 )
     @nospecialize rng x_x̄
 
@@ -603,7 +606,10 @@ function test_rrule_correctness(
     if max_fd_step !== nothing
         ε_list = filter(≤(max_fd_step), ε_list)
         length(ε_list) ≥ 2 || throw(
-            ArgumentError("max_fd_step=$max_fd_step is too small (leaves <2 FD steps)")
+            ArgumentError(
+                "max_fd_step=$max_fd_step leaves fewer than two FD steps; the fixed " *
+                "grid ends at 1e-7, so the smallest usable cap is 1e-6.",
+            ),
         )
     end
     fd_results = Vector{Any}(undef, length(ε_list))
@@ -930,7 +936,7 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         rtol=1e-3,
         frule=nothing,
         rrule=nothing,
-        max_fd_step::Union{Nothing,Float64}=nothing,
+        max_fd_step::Union{Nothing,Real}=nothing,
     )
 
 Run standardised tests on the `rule` for `x`.
@@ -988,12 +994,11 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     from the interpreter. Useful for testing a hand-written `frule!!` directly.
 - `rrule=nothing`: if provided, use this callable as the reverse rule instead of building one
     from the interpreter. Useful for testing a hand-written `rrule!!` directly.
-- `max_fd_step::Union{Nothing,Float64}=nothing`: if provided, only finite-difference
-    step sizes `ε ≤ max_fd_step` are used. Set this when the function is only
-    defined on a restricted domain (e.g. `log`, `sqrt`, `cholesky`) and large perturbations
-    would step outside it. The tangent direction `ẋ` is normalised to unit length before
-    finite differences are computed, so this bound directly controls the size of the step
-    in input space.
+- `max_fd_step::Union{Nothing,Real}=nothing`: cap on finite-difference step sizes; only
+    `ε ≤ max_fd_step` are used. Each argument's tangent is unit-normalised independently,
+    so each argument is perturbed by at most `max_fd_step` in L2 norm. Set this for
+    domain-restricted functions (`log`, `sqrt`, `cholesky`) to keep perturbations inside
+    the domain. The FD grid ends at `1e-7`; the smallest usable cap is `1e-6`.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -1010,7 +1015,7 @@ function test_rule(
     rtol=1e-3,
     frule=nothing,
     rrule=nothing,
-    max_fd_step::Union{Nothing,Float64}=nothing,
+    max_fd_step::Union{Nothing,Real}=nothing,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
