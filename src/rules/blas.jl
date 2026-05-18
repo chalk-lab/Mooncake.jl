@@ -1465,13 +1465,7 @@ end
     x::AbstractVector{T},
     dx::AbstractVector{T},
 ) where {T<:BlasFloat}
-    BLAS.trmv!(uplo, trans, diag, A, dx)
-    tmp = copy(x)
-    BLAS.trmv!(uplo, trans, diag, dA, tmp)
-    dx .+= tmp
-    if diag === 'U'
-        dx .-= x
-    end
+    _trmv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
     BLAS.trmv!(uplo, trans, diag, A, x)
     return nothing
 end
