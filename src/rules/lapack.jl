@@ -997,7 +997,9 @@ end
         } where {P<:BlasFloat},
     )
     @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(LAPACK.lacpy!),Vararg}}) = true
-    # Consolidated width-1 lacpy!: covers Real and Complex via element-type Union.
+    # Width-1 lacpy!: covers Real and Complex via slot Union. lacpy is its
+    # own Frechet (linear copy), so the tangent step is just a parallel
+    # `lacpy!(dB, dA, uplo)` alongside the primal.
     function frule!!(
         ::Dual{typeof(LAPACK.lacpy!)},
         B_dB::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
