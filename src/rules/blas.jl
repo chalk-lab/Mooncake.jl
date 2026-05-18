@@ -2259,17 +2259,10 @@ for (fname, elty, relty) in (
         β, dβ = extract(β_dβ)
         C, dC = arrayify(C_dC)
 
-        # Compute Frechet derivative.
-        BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
-        iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
-        if !iszero(dβ)
-            dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
-        end
-        # BLAS will zero out the imaginary parts on the diagonal of C,
-        # do the same on the tangent
-        $(isherm ? :(real_diag!(dC)) : :())
-
-        # Run primal computation.
+        # Compute Frechet derivative via the shared lane helper, then primal.
+        $(isherm ? :_herk_frechet_lane! : :_syrk_frechet_lane!)(
+            uplo, t, α, dα, A, dA, β, dβ, C, dC
+        )
         BLAS.$fname(uplo, t, α, A, β, C)
 
         return C_dC
