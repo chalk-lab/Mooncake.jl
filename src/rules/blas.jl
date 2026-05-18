@@ -1334,39 +1334,16 @@ end
     end
     return nothing
 end
+# Consolidated width-N symv!: covers Real and Complex.
 @inline function frule!!(
     ::Dual{typeof(BLAS.symv!)},
     uplo::Dual{Char},
-    alpha::NDual{T,N},
-    A_dA::AbstractMatrix{NDual{T,N}},
-    x_dx::AbstractVector{NDual{T,N}},
-    beta::NDual{T,N},
-    y_dy::AbstractVector{NDual{T,N}},
-) where {T<:BlasRealFloat,N}
-    ul = primal(uplo)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    A, dAs = _arr_extract_n(A_dA)
-    x, dxs = _arr_extract_n(x_dx)
-    y, dys = _arr_extract_n(y_dy)
-    @inbounds for lane in 1:N
-        _symv_frechet_lane!(
-            ul, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
-        )
-    end
-    BLAS.symv!(ul, α, A, x, β, y)
-    _arr_writeback_n!(y_dy, y, dys)
-    return y_dy
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.symv!)},
-    uplo::Dual{Char},
-    alpha::Complex{NDual{R,N}},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-    x_dx::AbstractVector{Complex{NDual{R,N}}},
-    beta::Complex{NDual{R,N}},
-    y_dy::AbstractVector{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
+    alpha::Union{NDual{P,N},Complex{NDual{P,N}}},
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    x_dx::AbstractVector{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    beta::Union{NDual{P,N},Complex{NDual{P,N}}},
+    y_dy::AbstractVector{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+) where {P<:IEEEFloat,N}
     ul = primal(uplo)
     α, dαs = _scalar_extract_n(alpha)
     β, dβs = _scalar_extract_n(beta)
