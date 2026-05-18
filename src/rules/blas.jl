@@ -2310,38 +2310,15 @@ end
     real_diag!(dC)
     return nothing
 end
-# syrk!: real-elty path (α/β/A/C all real).
+# syrk!: covers real-elty (α/β/A/C all real) and complex-elty (α/β real, A/C complex) paths.
 @inline function frule!!(
     ::Dual{typeof(BLAS.syrk!)},
     _uplo::Dual{Char},
     _t::Dual{Char},
     α_dα::NDual{R,N},
-    A_dA::AbstractVecOrMat{NDual{R,N}},
+    A_dA::AbstractVecOrMat{<:Union{NDual{R,N},Complex{NDual{R,N}}}},
     β_dβ::NDual{R,N},
-    C_dC::AbstractMatrix{NDual{R,N}},
-) where {R<:BlasRealFloat,N}
-    uplo = primal(_uplo)
-    t = primal(_t)
-    α, dαs = _scalar_extract_n(α_dα)
-    β, dβs = _scalar_extract_n(β_dβ)
-    A, dAs = _mat_extract_n(A_dA)
-    C, dCs = _arr_extract_n(C_dC)
-    @inbounds for lane in 1:N
-        _syrk_frechet_lane!(uplo, t, α, dαs[lane], A, dAs[lane], β, dβs[lane], C, dCs[lane])
-    end
-    BLAS.syrk!(uplo, t, α, A, β, C)
-    _arr_writeback_n!(C_dC, C, dCs)
-    return C_dC
-end
-# syrk!: complex-elty path (α/β real, A/C complex).
-@inline function frule!!(
-    ::Dual{typeof(BLAS.syrk!)},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    α_dα::NDual{R,N},
-    A_dA::AbstractVecOrMat{Complex{NDual{R,N}}},
-    β_dβ::NDual{R,N},
-    C_dC::AbstractMatrix{Complex{NDual{R,N}}},
+    C_dC::AbstractMatrix{<:Union{NDual{R,N},Complex{NDual{R,N}}}},
 ) where {R<:BlasRealFloat,N}
     uplo = primal(_uplo)
     t = primal(_t)
