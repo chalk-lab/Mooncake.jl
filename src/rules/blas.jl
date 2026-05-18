@@ -1982,31 +1982,24 @@ end
 # Per-lane Frechet helpers for symm!/hemm! width-N rules. Operate on bare
 # NDual-element matrices; the consolidated width-N rules call these in a
 # 1:N loop, then run the primal once.
-@inline function _symm_frechet_lane!(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
-    BLAS.symm!(s, ul, α, A, dB, β, dC)
-    BLAS.symm!(s, ul, α, dA, B, one(P), dC)
-    if !iszero(dα)
-        BLAS.symm!(s, ul, dα, A, B, one(P), dC)
-    end
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+# Per-lane Frechet helpers for symm!/hemm! width-N rules. Bodies are
+# byte-identical apart from `BLAS.$fname`; generated via @eval to share
+# the source, parallel to the symv!/hemv! lane helpers above.
+for (fname, base) in ((:symm!, :symm), (:hemm!, :hemm))
+    helper = Symbol("_", base, "_frechet_lane!")
+    @eval @inline function $helper(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
+        BLAS.$fname(s, ul, α, A, dB, β, dC)
+        BLAS.$fname(s, ul, α, dA, B, one(P), dC)
+        if !iszero(dα)
+            BLAS.$fname(s, ul, dα, A, B, one(P), dC)
         end
-    end
-    return nothing
-end
-@inline function _hemm_frechet_lane!(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
-    BLAS.hemm!(s, ul, α, A, dB, β, dC)
-    BLAS.hemm!(s, ul, α, dA, B, one(P), dC)
-    if !iszero(dα)
-        BLAS.hemm!(s, ul, dα, A, B, one(P), dC)
-    end
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        if !iszero(dβ)
+            @inbounds for n in eachindex(C)
+                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+            end
         end
+        return nothing
     end
-    return nothing
 end
 # Width-N symm!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
 # via element-type Union with shared P<:BlasRealFloat typevar; per-lane
