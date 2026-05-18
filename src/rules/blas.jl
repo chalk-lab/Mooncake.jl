@@ -800,32 +800,15 @@ end
 # then a single `BLAS.scal!` for the primal and a width-N writeback. The
 # real path matches `NDual{T, N}`; the complex path mirrors with
 # `Complex{NDual{R, N}}`.
+# Consolidated width-N scal!: covers Real (NDual{P,N}) and Complex
+# (Complex{NDual{P,N}}). Bodies were byte-identical.
 @inline function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
-    a_da::NDual{P,N},
-    X_dX::AbstractArray{NDual{P,N}},
+    a_da::Union{NDual{P,N},Complex{NDual{P,N}}},
+    X_dX::AbstractArray{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
     _incx::Dual{<:Integer},
-) where {P<:BlasRealFloat,N}
-    nn = primal(_n)
-    incx = primal(_incx)
-    a, das = _scalar_extract_n(a_da)
-    X, dXs = _arr_extract_n(X_dX)
-    @inbounds for lane in 1:N
-        BLAS.scal!(nn, a, dXs[lane], incx)
-        BLAS.axpy!(nn, das[lane], X, incx, dXs[lane], incx)
-    end
-    BLAS.scal!(nn, a, X, incx)
-    _arr_writeback_n!(X_dX, X, dXs)
-    return X_dX
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.scal!)},
-    _n::Dual{<:Integer},
-    a_da::Complex{NDual{R,N}},
-    X_dX::AbstractArray{Complex{NDual{R,N}}},
-    _incx::Dual{<:Integer},
-) where {R<:IEEEFloat,N}
+) where {P<:IEEEFloat,N}
     nn = primal(_n)
     incx = primal(_incx)
     a, das = _scalar_extract_n(a_da)
@@ -908,42 +891,19 @@ end
 # width-N). Scalars keep the `_ScalarLikeWidth1` Union so mixed
 # (NDual scalar + Dual structural-wrapper container) inputs dispatch
 # here. `P<:BlasFloat` covers real and complex element types.
+# Consolidated width-1 gemv!: covers Real and Complex (the wrapper-exception
+# Dual-typed slots). `A_dA` can be a Vector or Matrix. The core helper
+# requires a Matrix, so route through `_mat_extract` which reshapes 1D
+# inputs to `M×1` matrices. `P<:BlasFloat` covers real and complex element types.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
-    alpha::_ScalarLikeWidth1{P},
-    A_dA::Dual{<:AbstractVecOrMat{P}},
-    x_dx::Dual{<:AbstractVector{P}},
-    beta::_ScalarLikeWidth1{P},
-    y_dy::Dual{<:AbstractVector{P}},
-) where {P<:BlasFloat}
-    # `A_dA` can be a Vector or Matrix. The core helper requires a Matrix,
-    # so route through `_mat_extract` which reshapes 1D inputs to `M×1`
-    # matrices. Test cases include Vector A (degenerate M×1 gemv);
-    # `_arr_extract` would preserve the 1D shape and trip the core's
-    # `AbstractMatrix{P}` constraint.
-    A, dA = _mat_extract(A_dA)
-    x, dx = _arr_extract(x_dx)
-    y, dy = _arr_extract(y_dy)
-    α, dα = _scalar_extract(alpha)
-    β, dβ = _scalar_extract(beta)
-
-    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
-
-    _arr_writeback!(y_dy, y, dy)
-    return y_dy
-end
-# Complex width-1 path: containers narrowed analogously; scalars keep the
-# Complex Union for mixed dispatch.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::_ScalarLikeWidth1Complex{R},
-    A_dA::Dual{<:AbstractVecOrMat{Complex{R}}},
-    x_dx::Dual{<:AbstractVector{Complex{R}}},
-    beta::_ScalarLikeWidth1Complex{R},
-    y_dy::Dual{<:AbstractVector{Complex{R}}},
-) where {R<:IEEEFloat}
+    alpha::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    A_dA::Dual{<:AbstractVecOrMat{<:BlasFloat}},
+    x_dx::Dual{<:AbstractVector{<:BlasFloat}},
+    beta::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    y_dy::Dual{<:AbstractVector{<:BlasFloat}},
+)
     A, dA = _mat_extract(A_dA)
     x, dx = _arr_extract(x_dx)
     y, dy = _arr_extract(y_dy)
@@ -971,39 +931,17 @@ end
     end
     return nothing
 end
+# Consolidated width-N gemv!: covers Real (NDual{P,N}) and Complex
+# (Complex{NDual{P,N}}). Bodies were byte-identical.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
-    alpha::NDual{P,N},
-    A_dA::AbstractVecOrMat{NDual{P,N}},
-    x_dx::AbstractArray{NDual{P,N}},
-    beta::NDual{P,N},
-    y_dy::AbstractArray{NDual{P,N}},
-) where {P<:BlasRealFloat,N}
-    A, dAs = _mat_extract_n(A_dA)
-    x, dxs = _arr_extract_n(x_dx)
-    y, dys = _arr_extract_n(y_dy)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    ta = primal(tA)
-    @inbounds for lane in 1:N
-        _gemv_frechet_lane!(
-            ta, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
-        )
-    end
-    BLAS.gemv!(ta, α, A, x, β, y)
-    _arr_writeback_n!(y_dy, y, dys)
-    return y_dy
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::Complex{NDual{R,N}},
-    A_dA::AbstractVecOrMat{Complex{NDual{R,N}}},
-    x_dx::AbstractArray{Complex{NDual{R,N}}},
-    beta::Complex{NDual{R,N}},
-    y_dy::AbstractArray{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
+    alpha::Union{NDual{P,N},Complex{NDual{P,N}}},
+    A_dA::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    x_dx::AbstractArray{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    beta::Union{NDual{P,N},Complex{NDual{P,N}}},
+    y_dy::AbstractArray{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+) where {P<:IEEEFloat,N}
     A, dAs = _mat_extract_n(A_dA)
     x, dxs = _arr_extract_n(x_dx)
     y, dys = _arr_extract_n(y_dy)
