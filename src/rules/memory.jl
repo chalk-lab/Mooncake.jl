@@ -1971,19 +1971,25 @@ end
         },
     },
 ) = true
-function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
-) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
-    return Dual(fill!(primal(a), primal(x)), tangent(a))
-end
+# Source-of-truth Lifted body for `fill!(::Array{UInt8/Int8}, ::Integer)`
+# and the corresponding `Memory{UInt8/Int8}` variant; the bare-Dual entry
+# below thin-wraps to lift its args and invoke this body.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(fill!),N},
-    a::Mooncake.Lifted{T},
-    x::Mooncake.Lifted{<:Integer},
+    ::Mooncake.Lifted{typeof(fill!),N}, a::Mooncake.Lifted{T}, x::Mooncake.Lifted{<:Integer}
 ) where {N,V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(a), Mooncake._unlift(x))
+    bare_a = Mooncake._unlift(a)
+    bare_x = Mooncake._unlift(x)
+    bare_result = Dual(fill!(primal(bare_a), primal(bare_x)), tangent(bare_a))
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+function frule!!(
+    f::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
+) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
+    lifted_f = Mooncake.Lifted{typeof(fill!),1}(primal(f), tangent(f))
+    lifted_a = Mooncake.Lifted{_typeof(primal(a)),1}(primal(a), tangent(a))
+    lifted_x = Mooncake.Lifted{_typeof(primal(x)),1}(primal(x), tangent(x))
+    return Mooncake._unlift(frule!!(lifted_f, lifted_a, lifted_x))
 end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}
