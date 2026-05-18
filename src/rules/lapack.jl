@@ -922,21 +922,22 @@ end
     _potrs_frechet_lane!(uplo, A, dA, B, dB)
     return nothing
 end
-# Width-N split: Frechet uses post-primal B.
+# Width-N split: Frechet uses post-primal B. Picks the lower or upper
+# triangular factor by `uplo`; the projection helper handles real vs complex.
 @inline function _potrs_frechet_lane!(
     uplo::Char, A::AbstractMatrix{P}, dA, B, dB
 ) where {P<:BlasFloat}
-    if uplo == 'L'
+    M = if uplo == 'L'
         L = LowerTriangular(A)
         dL = LowerTriangular(dA)
-        mul!(dB, _sym_herm_proj(dL * L' + L * dL', :L), B, -one(P), one(P))
-        LAPACK.potrs!(uplo, A, dB)
+        dL * L' + L * dL'
     else
         U = UpperTriangular(A)
         dU = UpperTriangular(dA)
-        mul!(dB, _sym_herm_proj(U'dU + dU'U, :U), B, -one(P), one(P))
-        LAPACK.potrs!(uplo, A, dB)
+        U'dU + dU'U
     end
+    mul!(dB, _sym_herm_proj(M, Symbol(uplo)), B, -one(P), one(P))
+    LAPACK.potrs!(uplo, A, dB)
     return nothing
 end
 # Width-N potrs!: primal once (B ← A^{-1} B), then per-lane Frechet.
