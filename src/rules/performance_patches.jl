@@ -30,22 +30,20 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
+#
+# Known 1.13 caveat: this rule's `:stability_and_allocs` assertion fails on Julia 1.13
+# because `BLAS.dot` ccalls through `libblastrampoline`, which is now a `LazyLibrary`.
+# Each ccall registers one extra GC event (visible to `gc_alloc_count`, 0 bytes via
+# `@allocated`) from the lock acquisition inside `jl_lazy_load_and_lookup`. The cost
+# is structural to 1.13 and not specific to Mooncake; upstream is tracking a revert
+# for 1.13.x (https://github.com/JuliaLang/julia/pull/61735) with a proper fix planned
+# for 1.14 via TypedCallable / AbstractLibrary changes. Until then the alloc CI on
+# 1.13 is expected to fail here.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
 function frule!!(
     ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
 ) where {P<:IEEEFloat}
-    # On Julia 1.13, every BLAS ccall through `LazyLibrary` allocates a tracked
-    # object, so calling `dot` here would break the zero-allocation assertion
-    # this rule exists to enforce. Compute the tangent inner product manually.
-    px = primal(x)
-    dx = tangent(x)
-    s = zero(P)
-    sd = zero(P)
-    @inbounds @simd for i in eachindex(px, dx)
-        s = muladd(px[i], px[i], s)
-        sd = muladd(px[i], dx[i], sd)
-    end
-    return Dual(s, 2 * sd)
+    return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
