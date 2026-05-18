@@ -1323,37 +1323,41 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_genericmemory_copy}},
-    ::Dual,
-    ::Dual{Tuple{Val{Any}}},
-    ::Dual{Val{0}},
-    ::Dual{Val{:ccall}},
-    x::Dual{<:Memory},
-)
-    return Dual(primal(copy(x)), tangent(copy(x)))
-end
+# Source-of-truth Lifted body for the `jl_genericmemory_copy` foreigncall;
+# the bare-Dual entry below thin-wraps to lift its arg and invoke this body.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(_foreigncall_),N},
-    a1::Mooncake.Lifted{Val{:jl_genericmemory_copy}},
-    a2::Mooncake.Lifted,
-    a3::Mooncake.Lifted{Tuple{Val{Any}}},
-    a4::Mooncake.Lifted{Val{0}},
-    a5::Mooncake.Lifted{Val{:ccall}},
+    ::Mooncake.Lifted{typeof(_foreigncall_),N},
+    ::Mooncake.Lifted{Val{:jl_genericmemory_copy}},
+    ::Mooncake.Lifted,
+    ::Mooncake.Lifted{Tuple{Val{Any}}},
+    ::Mooncake.Lifted{Val{0}},
+    ::Mooncake.Lifted{Val{:ccall}},
     x::Mooncake.Lifted{<:Memory},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(a1),
-        Mooncake._unlift(a2),
-        Mooncake._unlift(a3),
-        Mooncake._unlift(a4),
-        Mooncake._unlift(a5),
-        Mooncake._unlift(x),
-    )
+    bare_x = Mooncake._unlift(x)
+    bare_result = Dual(primal(copy(bare_x)), tangent(copy(bare_x)))
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+function frule!!(
+    f::Dual{typeof(_foreigncall_)},
+    a1::Dual{Val{:jl_genericmemory_copy}},
+    a2::Dual,
+    a3::Dual{Tuple{Val{Any}}},
+    a4::Dual{Val{0}},
+    a5::Dual{Val{:ccall}},
+    x::Dual{<:Memory},
+)
+    lifted_f = Mooncake.Lifted{typeof(_foreigncall_),1}(primal(f), tangent(f))
+    lifted_a1 = Mooncake.Lifted{Val{:jl_genericmemory_copy},1}(primal(a1), tangent(a1))
+    lifted_a2 = Mooncake.Lifted{_typeof(primal(a2)),1}(primal(a2), tangent(a2))
+    lifted_a3 = Mooncake.Lifted{Tuple{Val{Any}},1}(primal(a3), tangent(a3))
+    lifted_a4 = Mooncake.Lifted{Val{0},1}(primal(a4), tangent(a4))
+    lifted_a5 = Mooncake.Lifted{Val{:ccall},1}(primal(a5), tangent(a5))
+    lifted_x = Mooncake.Lifted{_typeof(primal(x)),1}(primal(x), tangent(x))
+    return Mooncake._unlift(
+        frule!!(lifted_f, lifted_a1, lifted_a2, lifted_a3, lifted_a4, lifted_a5, lifted_x)
+    )
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_genericmemory_copy},Vararg}}
