@@ -2535,14 +2535,7 @@ end
     B::AbstractMatrix{P},
     dB::AbstractMatrix{P},
 ) where {P<:BlasFloat}
-    BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
-    dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
-    if diag == 'U'
-        dB .-= α .* B
-    end
-    if !iszero(dα)
-        dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
-    end
+    _trmm_frechet_lane!(side, uplo, ta, diag, α, dα, A, dA, B, dB)
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
     return nothing
 end
