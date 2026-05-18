@@ -599,13 +599,9 @@ end
     Tuple{typeof(getri!),AbstractMatrix{<:BlasComplexFloat},AbstractVector{Int}},
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getri!),Vararg}}) = true
-# Consolidated width-1 entry: handles Real wrapper-exception, Real
-# canonical NDual, Complex wrapper-exception (all via `_MatLikeWidth1{P}`
-# at `P<:BlasFloat`), and Complex canonical NDual (`Matrix{Complex{NDual{R,1}}}`
-# via `_MatLikeWidth1Complex{R}`). The body is identical for all four V
-# shapes — `_arr_extract` dispatches on the input type, `_getri!_frule_core!`
-# is type-stable for `BlasFloat`, and `_arr_writeback!` is a no-op for
-# `Dual` and writes back for `NDual` containers.
+# Width-1 getri!: covers Real and Complex via slot Union; `_arr_extract`
+# dispatches on input type, `_getri!_frule_core!` (Frechet pre-primal
+# tmp2, primal, post-primal `-A_inv * tmp2 * A_inv`) handles the math.
 @inline function frule!!(
     ::Dual{typeof(getri!)},
     A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
@@ -719,9 +715,9 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(potrf!),Char,<:AbstractMatrix{<:BlasFloat}}}
 ) = true
-# Consolidated width-1 potrf!: covers Real (Symmetric projection) and
-# Complex (Hermitian projection); projection picked per element type by
-# `_sym_herm_proj` inside the unified `_potrf!_frule_core!`.
+# Width-1 potrf!: covers Real and Complex via slot Union; delegates to
+# `_potrf!_frule_core!` (which picks Symmetric vs Hermitian projection
+# per element type via `_sym_herm_proj`).
 function frule!!(
     ::Dual{typeof(potrf!)},
     _uplo::Dual{Char},
@@ -733,9 +729,8 @@ function frule!!(
     _arr_writeback!(A_dA, A, dA)
     return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
 end
-# Consolidated width-N potrf!: primal once, per-lane Frechet via the
-# unified `_potrf!_frule_core!`. Covers Real (NDual{P,N}) and Complex
-# (Complex{NDual{P,N}}).
+# Width-N potrf!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; primal once, per-lane Frechet via `_potrf!_frule_core!`.
 @inline function frule!!(
     ::Dual{typeof(potrf!)},
     _uplo::Dual{Char},
@@ -878,9 +873,9 @@ end
     },
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(potrs!),Vararg}}) = true
-# Consolidated width-1 potrs!: covers Real (Symmetric projection) and
-# Complex (Hermitian projection); projection picked per element type by
-# `_sym_herm_proj` inside the unified `_potrs!_frule_core!`.
+# Width-1 potrs!: covers Real and Complex via slot Union; delegates to
+# `_potrs!_frule_core!` (primal first, then Frechet via lane helper using
+# `_sym_herm_proj` for the per-eltype projection).
 function frule!!(
     ::Dual{typeof(potrs!)},
     _uplo::Dual{Char},
