@@ -1087,12 +1087,13 @@ end
         } where {P<:BlasFloat},
     )
     @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(LAPACK.lacpy!),Vararg}}) = true
+    # Consolidated width-1 lacpy!: covers Real and Complex via element-type Union.
     function frule!!(
         ::Dual{typeof(LAPACK.lacpy!)},
-        B_dB::_MatLikeWidth1{P},
-        A_dA::_MatLikeWidth1{P},
+        B_dB::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+        A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
         _uplo::Dual{Char},
-    ) where {P<:BlasFloat}
+    )
         B, dB = _arr_extract(B_dB)
         A, dA = _arr_extract(A_dA)
         LAPACK.lacpy!(B, A, primal(_uplo))
@@ -1100,46 +1101,17 @@ end
         _arr_writeback!(B_dB, B, dB)
         return B_dB
     end
-    # Complex-element analogue: width-1 `Matrix{Complex{NDual{R,1}}}`.
+    # Width-N lacpy!: per-lane Frechet (lacpy each lane's dA → dB) then
+    # primal once. `lacpy!(B, A, uplo)` copies the triangular part of A
+    # into B; this is its own Frechet (linear in A → dB ← dA). So the
+    # rule is symmetric: do N tangent lacpy's + 1 primal lacpy. Covers
+    # Real (NDual{P,N}) and Complex (Complex{NDual{P,N}}).
     @inline function frule!!(
         ::Dual{typeof(LAPACK.lacpy!)},
-        B_dB::_MatLikeWidth1Complex{R},
-        A_dA::_MatLikeWidth1Complex{R},
-        _uplo::Dual{Char},
-    ) where {R<:IEEEFloat}
-        B, dB = _arr_extract(B_dB)
-        A, dA = _arr_extract(A_dA)
-        LAPACK.lacpy!(B, A, primal(_uplo))
-        LAPACK.lacpy!(dB, dA, primal(_uplo))
-        _arr_writeback!(B_dB, B, dB)
-        return B_dB
-    end
-    # Width-N NDual lacpy!: per-lane Frechet (lacpy each lane's dA → dB)
-    # then primal once. `lacpy!(B, A, uplo)` copies the triangular part of
-    # A into B; this is its own Frechet (linear in A → dB ← dA). So the
-    # rule is symmetric: do N tangent lacpy's + 1 primal lacpy.
-    @inline function frule!!(
-        ::Dual{typeof(LAPACK.lacpy!)},
-        B_dB::AbstractMatrix{NDual{P,N}},
-        A_dA::AbstractMatrix{NDual{P,N}},
+        B_dB::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+        A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
         _uplo::Dual{Char},
     ) where {P<:BlasRealFloat,N}
-        uplo = primal(_uplo)
-        B, dBs = _arr_extract_n(B_dB)
-        A, dAs = _arr_extract_n(A_dA)
-        LAPACK.lacpy!(B, A, uplo)
-        @inbounds for lane in 1:N
-            LAPACK.lacpy!(dBs[lane], dAs[lane], uplo)
-        end
-        _arr_writeback_n!(B_dB, B, dBs)
-        return B_dB
-    end
-    @inline function frule!!(
-        ::Dual{typeof(LAPACK.lacpy!)},
-        B_dB::AbstractMatrix{Complex{NDual{R,N}}},
-        A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-        _uplo::Dual{Char},
-    ) where {R<:IEEEFloat,N}
         uplo = primal(_uplo)
         B, dBs = _arr_extract_n(B_dB)
         A, dAs = _arr_extract_n(A_dA)
