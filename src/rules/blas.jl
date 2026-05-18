@@ -2078,42 +2078,19 @@ end
     end
     return nothing
 end
+# Consolidated width-N symm!: covers Real (NDual{P,N}) and Complex
+# (Complex{NDual{P,N}}). Bodies were byte-identical; collapsed via the
+# element-type Union pattern with shared P<:BlasRealFloat typevar.
 @inline function frule!!(
     ::Dual{typeof(BLAS.symm!)},
     side::Dual{Char},
     uplo::Dual{Char},
-    alpha::NDual{T,N},
-    A_dA::AbstractMatrix{NDual{T,N}},
-    B_dB::AbstractMatrix{NDual{T,N}},
-    beta::NDual{T,N},
-    C_dC::AbstractMatrix{NDual{T,N}},
-) where {T<:BlasRealFloat,N}
-    s = primal(side)
-    ul = primal(uplo)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    C, dCs = _arr_extract_n(C_dC)
-    @inbounds for lane in 1:N
-        _symm_frechet_lane!(
-            s, ul, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
-        )
-    end
-    BLAS.symm!(s, ul, α, A, B, β, C)
-    _arr_writeback_n!(C_dC, C, dCs)
-    return C_dC
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.symm!)},
-    side::Dual{Char},
-    uplo::Dual{Char},
-    alpha::Complex{NDual{R,N}},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-    B_dB::AbstractMatrix{Complex{NDual{R,N}}},
-    beta::Complex{NDual{R,N}},
-    C_dC::AbstractMatrix{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
+    alpha::Union{NDual{P,N},Complex{NDual{P,N}}},
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    B_dB::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    beta::Union{NDual{P,N},Complex{NDual{P,N}}},
+    C_dC::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+) where {P<:BlasRealFloat,N}
     s = primal(side)
     ul = primal(uplo)
     α, dαs = _scalar_extract_n(alpha)
