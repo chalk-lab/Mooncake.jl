@@ -268,7 +268,9 @@ function frule!!(
     # Unwrap singleton-NTangent on the tangent slot —
     # `tangent(::Dual{MemoryRef{P}, NTangent{Tuple{MemoryRef{T}}}})` returns
     # the outer NTangent, not the inner MemoryRef.
-    unsafe_copyto!(_memrefget_tan(tangent(dest)), _memrefget_tan(tangent(src)), primal(n))
+    unsafe_copyto!(
+        _memref_tan_unwrap(tangent(dest)), _memref_tan_unwrap(tangent(src)), primal(n)
+    )
     return dest
 end
 # At width 1, the IR-emit's unwrap-then-bare path delivers
@@ -304,7 +306,7 @@ end
 end
 # Width-N unsafe_copyto! for NTangent-wrapped MemoryRef (struct-element /
 # non-IEEEFloat-element case). The generic delegator above routes through
-# the bare-Dual body which uses `_memrefget_tan` (singleton-NTangent only),
+# the bare-Dual body which uses `_memref_tan_unwrap` (singleton-NTangent only),
 # so at width N≥2 the call `unsafe_copyto!(NTangent, NTangent, n)` errored
 # with `no method matching unsafe_copyto!(::NTangent, ::NTangent, ...)`.
 # At N==1 the singleton unwrap path handles it via the generic delegator.
@@ -486,8 +488,6 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(lmemoryrefget),<:MemoryRef,<:Val,<:Val}}
 ) = true
-@inline _memrefget_tan(t) = t
-@inline _memrefget_tan(t::Mooncake.NTangent{Tuple{T}}) where {T<:MemoryRef} = t.lanes[1]
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefget)},
     x::Dual{<:MemoryRef},
@@ -501,7 +501,7 @@ end
     # `Dual{MemoryRef{T}, NTangent{Tuple{MemoryRef{TT}}}}` is the outer
     # NTangent; `memoryrefget(::NTangent, ...)` fails. Unwrap the
     # singleton-NTangent.
-    dy = memoryrefget(_memrefget_tan(tangent(x)), _val(ordering), _val(bc))
+    dy = memoryrefget(_memref_tan_unwrap(tangent(x)), _val(ordering), _val(bc))
     return Dual(y, dy)
 end
 @inline function frule!!(
@@ -521,7 +521,7 @@ end
 end
 # Width-N lmemoryrefget for NTangent-wrapped MemoryRef dest. Read all N
 # lane MemoryRef tangents — the bare-Dual rule above only services lane 1
-# via `_memrefget_tan` which unwraps singleton-NTangent.
+# via `_memref_tan_unwrap` which unwraps singleton-NTangent.
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lmemoryrefget),N},
     x::Mooncake.Lifted{
