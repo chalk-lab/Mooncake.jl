@@ -1979,12 +1979,10 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     end
 end
 
-# Per-lane Frechet helpers for symm!/hemm! width-N rules. Operate on bare
-# NDual-element matrices; the consolidated width-N rules call these in a
-# 1:N loop, then run the primal once.
 # Per-lane Frechet helpers for symm!/hemm! width-N rules. Bodies are
 # byte-identical apart from `BLAS.$fname`; generated via @eval to share
-# the source, parallel to the symv!/hemv! lane helpers above.
+# the source, parallel to the symv!/hemv! lane helpers above. Width-N
+# rules call these in a 1:N loop, then run the primal once.
 for (fname, base) in ((:symm!, :symm), (:hemm!, :hemm))
     helper = Symbol("_", base, "_frechet_lane!")
     @eval @inline function $helper(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
