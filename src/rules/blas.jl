@@ -651,16 +651,8 @@ function frule!!(
 ) where {T<:IEEEFloat,N}
     return frule!!(f, Dual(length(X_dX), NoTangent()), X_dX, Dual(1, NoTangent()))
 end
-# Width-1 NDual overload — extracts primal/tangent via element-wise map
-# (allocates) and reuses the bare body's dot-style accumulation.
-# Consolidated width-N nrm2: covers Real (NDual{T,N}) and Complex
-# (Complex{NDual{R,N}}). Replaces the previous element-type-specific
-# extract lambdas with `_arr_extract_n`, which dispatches on input type
-# and returns `(primal, NTuple{N, lane_tangent})` uniformly.
-#
-# Per-lane tangent: nrm2 derivative w.r.t. each direction is
-# (X' * dX + dX' * X) / (2 * nrm). Each lane uses real() for both Real
-# and Complex (real() is identity on Float, takes Real-component on Complex).
+# Width-N nrm2: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; per-lane gradient via `_nrm2_grad`.
 function frule!!(
     ::Dual{typeof(BLAS.nrm2)},
     n::Dual{<:Integer},
@@ -736,13 +728,13 @@ end
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.scal!),Vararg}}) = true
-# Note: the bare body covers both `Dual{<:Array{P}}` (struct-wrapped via
+# Width-1 entry below covers both `Dual{<:Array{P}}` (struct-wrapped via
 # `_arr_extract`) and `AbstractArray{NDual{P,1}}` (plain NDual, with
-# `_arr_writeback!` pushing results back). The legacy `Ptr{P}` argument shape
+# `_arr_writeback!` pushing results back), and both Real and Complex element
+# types via the slot-Union signature. The legacy `Ptr{P}` argument shape
 # is not handled here — `BLAS.scal!(n, a, ::Ptr, incx)` calls go through the
 # `_foreigncall_` dot loop above.
-# Consolidated width-1 entry: covers Real (BlasFloat) and Complex
-# (canonical Complex{NDual{R,1}}). Body identical for both V shapes.
+#
 # Per-lane Frechet helper for scal! (shared by width-1 and width-N rules).
 # Operates on a single lane's tangent array. Callers handle the primal
 # `BLAS.scal!(n, a, X, incx)` separately.
