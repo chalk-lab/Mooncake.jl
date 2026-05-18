@@ -1198,18 +1198,19 @@ end
 
 # Width-1 path with mixed-wrapper support: container args narrowed to
 # bare-`Dual{<:Abstract...}` to disambiguate from the width-N rule at N=1
-# (NDual array inputs route to width-N), while scalar args keep the Union
-# `Dual{T} | NDual{T,1}` so mixed-wrapper inputs (NDual scalar + Dual
-# structural-wrapper matrix) still dispatch here.
+# (NDual array inputs route to width-N), while scalar args use Union
+# `Dual{T} | NDual{T,1}` for mixed-wrapper inputs. Consolidated to cover
+# both Real and Complex element types — `BLAS.symv!` natively dispatches on
+# element type and `one(eltype(y))` selects the correct β scalar shape.
 function frule!!(
     ::Dual{typeof(BLAS.symv!)},
     uplo::Dual{Char},
-    alpha::_ScalarLikeWidth1{T},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
-    beta::_ScalarLikeWidth1{T},
-    y_dy::Dual{<:AbstractVector{T}},
-) where {T<:BlasRealFloat}
+    alpha::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    A_dA::Dual{<:AbstractMatrix{<:BlasFloat}},
+    x_dx::Dual{<:AbstractVector{<:BlasFloat}},
+    beta::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    y_dy::Dual{<:AbstractVector{<:BlasFloat}},
+)
     ul = primal(uplo)
     α, dα = _scalar_extract(alpha)
     β, dβ = _scalar_extract(beta)
@@ -1218,8 +1219,8 @@ function frule!!(
     y, dy = _arr_extract(y_dy)
 
     BLAS.symv!(ul, dα, A, x, β, dy)
-    BLAS.symv!(ul, α, dA, x, one(T), dy)
-    BLAS.symv!(ul, α, A, dx, one(T), dy)
+    BLAS.symv!(ul, α, dA, x, one(eltype(y)), dy)
+    BLAS.symv!(ul, α, A, dx, one(eltype(y)), dy)
     if !iszero(dβ)
         @inbounds for n in eachindex(y)
             tmp = dβ * y[n]
@@ -1258,46 +1259,39 @@ end
         },
     },
 ) where {T<:BlasComplexFloat} = true
-# Complex-element variant for symv!/hemv! width-1 canonical form. Mirrors
-# the real BlasRealFloat width-1 path but uses Complex{NDual{R,1}} slot
-# shapes. The dispatched BLAS call is symv!/hemv! depending on call site
-# (Julia handles dispatch by element type at the runtime call).
-for fname in (:(symv!), :(hemv!))
-    # Complex width-1 path with mixed-wrapper support (containers
-    # narrowed to bare-`Dual{<:Abstract...}` to disambiguate from
-    # width-N at N=1; scalars keep the Union to allow NDual-scalar +
-    # Dual-wrapper mixed inputs).
-    @eval @inline function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        uplo::Dual{Char},
-        alpha::_ScalarLikeWidth1Complex{R},
-        A_dA::Dual{<:AbstractMatrix{Complex{R}}},
-        x_dx::Dual{<:AbstractVector{Complex{R}}},
-        beta::_ScalarLikeWidth1Complex{R},
-        y_dy::Dual{<:AbstractVector{Complex{R}}},
-    ) where {R<:IEEEFloat}
-        ul = primal(uplo)
-        α, dα = _scalar_extract(alpha)
-        β, dβ = _scalar_extract(beta)
-        A, dA = _arr_extract(A_dA)
-        x, dx = _arr_extract(x_dx)
-        y, dy = _arr_extract(y_dy)
-        C_T = Complex{R}
+# hemv! width-1 Complex canonical form. The Real and Complex symv! width-1
+# entries above are consolidated into a single BlasFloat-typed body; hemv!
+# is Complex-only so its width-1 entry stays separate.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.hemv!)},
+    uplo::Dual{Char},
+    alpha::_ScalarLikeWidth1Complex{R},
+    A_dA::Dual{<:AbstractMatrix{Complex{R}}},
+    x_dx::Dual{<:AbstractVector{Complex{R}}},
+    beta::_ScalarLikeWidth1Complex{R},
+    y_dy::Dual{<:AbstractVector{Complex{R}}},
+) where {R<:IEEEFloat}
+    ul = primal(uplo)
+    α, dα = _scalar_extract(alpha)
+    β, dβ = _scalar_extract(beta)
+    A, dA = _arr_extract(A_dA)
+    x, dx = _arr_extract(x_dx)
+    y, dy = _arr_extract(y_dy)
+    C_T = Complex{R}
 
-        BLAS.$fname(ul, dα, A, x, β, dy)
-        BLAS.$fname(ul, α, dA, x, one(C_T), dy)
-        BLAS.$fname(ul, α, A, dx, one(C_T), dy)
-        if !iszero(dβ)
-            @inbounds for n in eachindex(y)
-                tmp = dβ * y[n]
-                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
-            end
+    BLAS.hemv!(ul, dα, A, x, β, dy)
+    BLAS.hemv!(ul, α, dA, x, one(C_T), dy)
+    BLAS.hemv!(ul, α, A, dx, one(C_T), dy)
+    if !iszero(dβ)
+        @inbounds for n in eachindex(y)
+            tmp = dβ * y[n]
+            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
         end
-
-        BLAS.$fname(ul, α, A, x, β, y)
-        _arr_writeback!(y_dy, y, dy)
-        return y_dy
     end
+
+    BLAS.hemv!(ul, α, A, x, β, y)
+    _arr_writeback!(y_dy, y, dy)
+    return y_dy
 end
 
 # Width-N NDual symv!/hemv!: per-lane Frechet then primal
