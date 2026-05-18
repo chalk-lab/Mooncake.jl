@@ -721,20 +721,18 @@ end
     Tuple{typeof(getri!),AbstractMatrix{<:BlasComplexFloat},AbstractVector{Int}},
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getri!),Vararg}}) = true
-function frule!!(
-    ::Dual{typeof(getri!)}, A_dA::_MatLikeWidth1{P}, _ipiv::Dual{<:AbstractVector{Int}}
-) where {P<:BlasFloat}
-    A, dA = _arr_extract(A_dA)
-    _getri!_frule_core!(A, dA, primal(_ipiv))
-    _arr_writeback!(A_dA, A, dA)
-    return A_dA
-end
-# Complex canonical width-1: matches `Matrix{Complex{NDual{R, 1}}}`.
+# Consolidated width-1 entry: handles Real wrapper-exception, Real
+# canonical NDual, Complex wrapper-exception (all via `_MatLikeWidth1{P}`
+# at `P<:BlasFloat`), and Complex canonical NDual (`Matrix{Complex{NDual{R,1}}}`
+# via `_MatLikeWidth1Complex{R}`). The body is identical for all four V
+# shapes — `_arr_extract` dispatches on the input type, `_getri!_frule_core!`
+# is type-stable for `BlasFloat`, and `_arr_writeback!` is a no-op for
+# `Dual` and writes back for `NDual` containers.
 @inline function frule!!(
     ::Dual{typeof(getri!)},
-    A_dA::_MatLikeWidth1Complex{R},
+    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
     _ipiv::Dual{<:AbstractVector{Int}},
-) where {R<:IEEEFloat}
+)
     A, dA = _arr_extract(A_dA)
     _getri!_frule_core!(A, dA, primal(_ipiv))
     _arr_writeback!(A_dA, A, dA)
