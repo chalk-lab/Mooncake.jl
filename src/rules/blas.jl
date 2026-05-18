@@ -959,20 +959,7 @@ end
     y::AbstractVector{P},
     dy::AbstractVector{P},
 ) where {P<:BlasFloat}
-    # Derivative computation.
-    BLAS.gemv!(tA, dα, A, x, β, dy)
-    BLAS.gemv!(tA, α, dA, x, one(P), dy)
-    BLAS.gemv!(tA, α, A, dx, one(P), dy)
-
-    # Strong zero is essential here, in case `y` has undefined element values.
-    if !iszero(dβ)
-        @inbounds for n in eachindex(y)
-            tmp = dβ * y[n]
-            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
-        end
-    end
-
-    # Primal computation.
+    _gemv_frechet_lane!(tA, α, dα, A, dA, x, dx, β, dβ, y, dy)
     BLAS.gemv!(tA, α, A, x, β, y)
     return nothing
 end
