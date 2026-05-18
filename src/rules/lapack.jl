@@ -279,15 +279,16 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
-# Width-N Complex: per-lane Frechet (pre-primal B) then primal once.
+# Width-N trtrs!: per-lane Frechet (pre-primal B) then primal once.
+# Covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}}).
 @inline function frule!!(
     ::Dual{typeof(trtrs!)},
     _uplo::Dual{Char},
     _trans::Dual{Char},
     _diag::Dual{Char},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-    B_dB::AbstractVecOrMat{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    B_dB::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+) where {P<:BlasRealFloat,N}
     uplo = primal(_uplo)
     trans = primal(_trans)
     diag = primal(_diag)
@@ -359,28 +360,6 @@ end
     LAPACK.trtrs!(uplo, trans, diag, A, tmp)
     dB .-= tmp
     return nothing
-end
-# Width-N NDual trtrs!: per-lane Frechet (pre-primal B) then primal once.
-@inline function frule!!(
-    ::Dual{typeof(trtrs!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::AbstractMatrix{NDual{P,N}},
-    B_dB::AbstractVecOrMat{NDual{P,N}},
-) where {P<:BlasRealFloat,N}
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    @inbounds for lane in 1:N
-        _trtrs_frechet_lane!(uplo, trans, diag, A, dAs[lane], B, dBs[lane])
-    end
-    LAPACK.trtrs!(uplo, trans, diag, A, B)
-    _arr_writeback_n!(A_dA, A, dAs)
-    _arr_writeback_n!(B_dB, B, dBs)
-    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(trtrs!)},
