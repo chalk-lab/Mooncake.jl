@@ -48,20 +48,9 @@ end
     )
 end
 @inline function frule!!(
-    ::Dual{typeof(LAPACK.getrf!)}, A_dA::AbstractMatrix{NDual{P,N}}
+    ::Dual{typeof(LAPACK.getrf!)},
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
 ) where {P<:BlasRealFloat,N}
-    A, dAs = _arr_extract_n(A_dA)
-    _, ipiv, info = LAPACK.getrf!(A)
-    @inbounds for lane in 1:N
-        _getrf_fwd_core!(A, dAs[lane], ipiv)
-    end
-    _arr_writeback_n!(A_dA, A, dAs)
-    ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
-    return (A_dA, ipiv_dual, info_dual)
-end
-@inline function frule!!(
-    ::Dual{typeof(LAPACK.getrf!)}, A_dA::AbstractMatrix{Complex{NDual{R,N}}}
-) where {R<:IEEEFloat,N}
     A, dAs = _arr_extract_n(A_dA)
     _, ipiv, info = LAPACK.getrf!(A)
     @inbounds for lane in 1:N
