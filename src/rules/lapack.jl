@@ -617,12 +617,15 @@ end
     _arr_writeback!(A_dA, A, dA)
     return A_dA
 end
-# Width-N Complex.
+# Width-N getri!: per-lane tmp2 from pre-primal A; primal once; per-lane
+# dA = -A_inv * tmp2 * A_inv. Covers Real (NDual{P,N}) and Complex
+# (Complex{NDual{P,N}}). tmp2_lanes must persist across the primal call
+# which overwrites A → A_inv.
 @inline function frule!!(
     ::Dual{typeof(getri!)},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
     _ipiv::Dual{<:AbstractVector{Int}},
-) where {R<:IEEEFloat,N}
+) where {P<:BlasRealFloat,N}
     A, dAs = _arr_extract_n(A_dA)
     ipiv = primal(_ipiv)
     tmp2_lanes = ntuple(lane -> _getri_frechet_pre_primal(A, dAs[lane], ipiv), Val(N))
@@ -669,24 +672,6 @@ end
     tmp = dL_plus_I * U
     tmp .-= U
     return mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
-end
-# Width-N NDual getri!: compute per-lane tmp2 from pre-primal A; primal once;
-# per-lane dA = -A_inv * tmp2 * A_inv. tmp2_lanes must persist across the
-# primal call which overwrites A → A_inv.
-@inline function frule!!(
-    ::Dual{typeof(getri!)},
-    A_dA::AbstractMatrix{NDual{P,N}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-) where {P<:BlasRealFloat,N}
-    A, dAs = _arr_extract_n(A_dA)
-    ipiv = primal(_ipiv)
-    tmp2_lanes = ntuple(lane -> _getri_frechet_pre_primal(A, dAs[lane], ipiv), Val(N))
-    LAPACK.getri!(A, ipiv)
-    @inbounds for lane in 1:N
-        dAs[lane] .= (-A * tmp2_lanes[lane] * A)
-    end
-    _arr_writeback_n!(A_dA, A, dAs)
-    return A_dA
 end
 function rrule!!(
     ::CoDual{typeof(getri!)},
