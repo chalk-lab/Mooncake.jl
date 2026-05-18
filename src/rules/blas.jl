@@ -1280,32 +1280,23 @@ end
     return y_dy
 end
 
-# Width-N NDual symv!/hemv!: per-lane Frechet then primal
-# once. The Frechet body matches the existing width-1 inline. Two separate
-# per-op helpers (`symv!`/`hemv!`) because BLAS dispatch by name differs.
-@inline function _symv_frechet_lane!(ul, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
-    BLAS.symv!(ul, dα, A, x, β, dy)
-    BLAS.symv!(ul, α, dA, x, one(P), dy)
-    BLAS.symv!(ul, α, A, dx, one(P), dy)
-    if !iszero(dβ)
-        @inbounds for n in eachindex(y)
-            tmp = dβ * y[n]
-            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+# Per-lane Frechet helpers for symv!/hemv! width-N rules. Bodies are
+# byte-identical apart from `BLAS.$fname`; generated via @eval to share
+# the source. Each helper is called in a 1:N loop after the primal.
+for (fname, base) in ((:symv!, :symv), (:hemv!, :hemv))
+    helper = Symbol("_", base, "_frechet_lane!")
+    @eval @inline function $helper(ul, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
+        BLAS.$fname(ul, dα, A, x, β, dy)
+        BLAS.$fname(ul, α, dA, x, one(P), dy)
+        BLAS.$fname(ul, α, A, dx, one(P), dy)
+        if !iszero(dβ)
+            @inbounds for n in eachindex(y)
+                tmp = dβ * y[n]
+                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+            end
         end
+        return nothing
     end
-    return nothing
-end
-@inline function _hemv_frechet_lane!(ul, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
-    BLAS.hemv!(ul, dα, A, x, β, dy)
-    BLAS.hemv!(ul, α, dA, x, one(P), dy)
-    BLAS.hemv!(ul, α, A, dx, one(P), dy)
-    if !iszero(dβ)
-        @inbounds for n in eachindex(y)
-            tmp = dβ * y[n]
-            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
-        end
-    end
-    return nothing
 end
 # Consolidated width-N symv!: covers Real and Complex.
 @inline function frule!!(
