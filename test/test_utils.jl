@@ -147,14 +147,17 @@
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Float64}) == 0
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Vector{Float64}}) == 0
     end
-    @testset "max_norm_perturbation kwarg for testing rules" begin
+    @testset "max_fd_step kwarg for testing rules" begin
+        # log is a primitive in Mooncake, so we wrap it in a lambda to test the derived-rule
+        # path. The input 0.005 is close to the boundary of log's domain (x > 0), so we cap
+        # the FD step at 1e-3 to avoid perturbing into x ≤ 0.
         TestUtils.test_rule(
             StableRNG(123),
             x -> log(x),
             0.005;
             is_primitive=false,
             print_results=false,
-            max_norm_perturbation=1e-3,
+            max_fd_step=1e-3,
         )
     end
 end

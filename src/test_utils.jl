@@ -483,7 +483,7 @@ function test_frule_correctness(
     unsafe_perturb::Bool,
     rtol=1e-3,
     atol=1e-3,
-    max_norm_perturbation::Union{Nothing,Float64}=nothing,
+    max_fd_step::Union{Nothing,Float64}=nothing,
 )
     @nospecialize rng x_ẋ
 
@@ -498,17 +498,13 @@ function test_frule_correctness(
     # Use finite differences to estimate Frechet derivative. Compute the estimate at a range
     # of different step sizes. We'll just require that one of them ends up being close to
     # what AD gives.
-    !isnothing(max_norm_perturbation) &&
-        max_norm_perturbation < 1e-8 &&
-        throw(
-            ArgumentError(
-                "max_norm_perturbation=$max_norm_perturbation < 1e-8; the smallest available step size is 1e-8.",
-            ),
+    ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+    if max_fd_step !== nothing
+        ε_list = filter(≤(max_fd_step), ε_list)
+        length(ε_list) ≥ 2 || throw(
+            ArgumentError("max_fd_step=$max_fd_step is too small (leaves <2 FD steps)")
         )
-    ε_list = filter(
-        ε -> isnothing(max_norm_perturbation) || ε <= max_norm_perturbation,
-        [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8],
-    )
+    end
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
@@ -583,7 +579,7 @@ function test_rrule_correctness(
     output_tangent=nothing,
     rtol=1e-3,
     atol=1e-3,
-    max_norm_perturbation::Union{Nothing,Float64}=nothing,
+    max_fd_step::Union{Nothing,Float64}=nothing,
 )
     @nospecialize rng x_x̄
 
@@ -603,17 +599,13 @@ function test_rrule_correctness(
 
     # Use finite differences to estimate vjps. Compute the estimate at a range of different
     # step sizes. We'll just require that one of them ends up being close to what AD gives.
-    !isnothing(max_norm_perturbation) &&
-        max_norm_perturbation < 1e-8 &&
-        throw(
-            ArgumentError(
-                "max_norm_perturbation=$max_norm_perturbation < 1e-8; the smallest available step size is 1e-8.",
-            ),
+    ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+    if max_fd_step !== nothing
+        ε_list = filter(≤(max_fd_step), ε_list)
+        length(ε_list) ≥ 2 || throw(
+            ArgumentError("max_fd_step=$max_fd_step is too small (leaves <2 FD steps)")
         )
-    ε_list = filter(
-        ε -> isnothing(max_norm_perturbation) || ε <= max_norm_perturbation,
-        [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8],
-    )
+    end
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
@@ -938,7 +930,7 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         rtol=1e-3,
         frule=nothing,
         rrule=nothing,
-        max_norm_perturbation::Union{Nothing,Float64}=nothing,
+        max_fd_step::Union{Nothing,Float64}=nothing,
     )
 
 Run standardised tests on the `rule` for `x`.
@@ -992,8 +984,12 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     the correctness of reverse rules.
 - `atol=1e-3`: absolute tolerance for correctness check of the Frechet derivatives.
 - `rtol=1e-3`: relative tolerance for correctness check of the Frechet derivatives.
-- `max_norm_perturbation::Union{Nothing,Float64}=nothing`: if provided, only finite-difference
-    step sizes `ε ≤ max_norm_perturbation` are used. Set this when the function is only
+- `frule=nothing`: if provided, use this callable as the forward rule instead of building one
+    from the interpreter. Useful for testing a hand-written `frule!!` directly.
+- `rrule=nothing`: if provided, use this callable as the reverse rule instead of building one
+    from the interpreter. Useful for testing a hand-written `rrule!!` directly.
+- `max_fd_step::Union{Nothing,Float64}=nothing`: if provided, only finite-difference
+    step sizes `ε ≤ max_fd_step` are used. Set this when the function is only
     defined on a restricted domain (e.g. `log`, `sqrt`, `cholesky`) and large perturbations
     would step outside it. The tangent direction `ẋ` is normalised to unit length before
     finite differences are computed, so this bound directly controls the size of the step
@@ -1014,7 +1010,7 @@ function test_rule(
     rtol=1e-3,
     frule=nothing,
     rrule=nothing,
-    max_norm_perturbation::Union{Nothing,Float64}=nothing,
+    max_fd_step::Union{Nothing,Float64}=nothing,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -1075,13 +1071,7 @@ function test_rule(
             @testset "Correctness" begin
                 if test_fwd && !interface_only
                     test_frule_correctness(
-                        rng,
-                        x_ẋ...;
-                        frule,
-                        unsafe_perturb,
-                        atol,
-                        rtol,
-                        max_norm_perturbation,
+                        rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step
                     )
                 end
                 if test_rvs && !interface_only
@@ -1093,7 +1083,7 @@ function test_rule(
                         output_tangent,
                         atol,
                         rtol,
-                        max_norm_perturbation,
+                        max_fd_step,
                     )
                 end
             end
