@@ -899,8 +899,8 @@ end
     end
     return nothing
 end
-# Consolidated width-N gemv!: covers Real (NDual{P,N}) and Complex
-# (Complex{NDual{P,N}}). Bodies were byte-identical.
+# Width-N gemv!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; per-lane Frechet then primal once.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
@@ -1398,8 +1398,8 @@ end
     end
     return nothing
 end
-# Consolidated width-N trmv!: covers Real (NDual{T,N}) and Complex
-# (Complex{NDual{R,N}}). Bodies were byte-identical.
+# Width-N trmv!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; per-lane Frechet (pre-primal x) then primal once.
 @inline function frule!!(
     ::Dual{typeof(BLAS.trmv!)},
     _uplo::Dual{Char},
@@ -2017,9 +2017,9 @@ end
     end
     return nothing
 end
-# Consolidated width-N symm!: covers Real (NDual{P,N}) and Complex
-# (Complex{NDual{P,N}}). Bodies were byte-identical; collapsed via the
-# element-type Union pattern with shared P<:BlasRealFloat typevar.
+# Width-N symm!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union with shared P<:BlasRealFloat typevar; per-lane
+# Frechet then primal once.
 @inline function frule!!(
     ::Dual{typeof(BLAS.symm!)},
     side::Dual{Char},
@@ -2451,9 +2451,9 @@ end
     end
     return nothing
 end
-# Consolidated width-N trmm!: covers Real (NDual{P,N}) and Complex
-# (Complex{NDual{R,N}}). Bodies were byte-identical; type-binding via
-# matched element-type unions on scalar/matrix args.
+# Width-N trmm!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union on scalar/matrix args; per-lane Frechet (pre-primal
+# B) then primal once.
 @inline function frule!!(
     ::Dual{typeof(BLAS.trmm!)},
     _side::Dual{Char},
