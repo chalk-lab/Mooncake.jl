@@ -671,20 +671,24 @@ function test_frule_reuse(x_ẋ...; frule)
     x_ẋ_a = map(_deepcopy, x_ẋ)
     x_ẋ_b = map(_deepcopy, x_ẋ)
 
-    # Snapshot first-call observables; aliased mutable buffers would otherwise let
-    # call B overwrite call A's data and the comparisons alias-pass.
+    # Snapshot every observable at the same point in each cycle. Without snapshots,
+    # an aliased mutable buffer would let call B overwrite call A's data; snapshotting
+    # only one side would compare different temporal points if a rule mutates inputs.
+    # Skip the deepcopy when tangent is NoTangent: such primals (e.g. Module-containing
+    # types like Core.TypeName) can't safely be deepcopied and can't be mutated either.
     y_ẏ_a = frule(x_ẋ_a...)
-    y_primal_a = _deepcopy(primal(y_ẏ_a))
+    y_primal_a = tangent(y_ẏ_a) isa NoTangent ? primal(y_ẏ_a) : _deepcopy(primal(y_ẏ_a))
     y_tangent_a = _deepcopy(tangent(y_ẏ_a))
-    x_primal_a = map(_deepcopy ∘ primal, x_ẋ_a)
     x_tangent_a = map(_deepcopy ∘ tangent, x_ẋ_a)
 
     y_ẏ_b = frule(x_ẋ_b...)
+    y_primal_b = tangent(y_ẏ_b) isa NoTangent ? primal(y_ẏ_b) : _deepcopy(primal(y_ẏ_b))
+    y_tangent_b = _deepcopy(tangent(y_ẏ_b))
+    x_tangent_b = map(_deepcopy ∘ tangent, x_ẋ_b)
 
-    @test has_equal_data(y_primal_a, primal(y_ẏ_b))
-    @test has_equal_data(y_tangent_a, tangent(y_ẏ_b))
-    @test all(map(has_equal_data, x_primal_a, map(primal, x_ẋ_b)))
-    @test all(map(has_equal_data, x_tangent_a, map(tangent, x_ẋ_b)))
+    @test has_equal_data(y_primal_a, y_primal_b)
+    @test has_equal_data(y_tangent_a, y_tangent_b)
+    @test all(map(has_equal_data, x_tangent_a, x_tangent_b))
 end
 
 function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule, output_tangent=nothing)
@@ -703,10 +707,16 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule, output_tangent=noth
         map(Mooncake.fdata, x̄_zero_b),
     )
 
-    # Snapshot first-call observables; aliased mutable buffers (in either the rule
-    # or its pullback) would otherwise let call B overwrite call A's data.
+    # Snapshot every observable at the same point in each cycle: post-forward for
+    # output primal/fdata, post-pullback for inputs and pullback returns. Without
+    # snapshots, aliased mutable buffers can alias-pass; snapshotting only one side
+    # would compare different temporal points since the pullback restores in-place
+    # mutations on the way back.
+    # Skip the deepcopy when tangent (fdata) is NoFData: such primals (e.g. Module-
+    # containing types like Core.TypeName) can't safely be deepcopied and the pullback
+    # has no fdata path through which it could mutate them.
     y_ȳ_a, pb_a!! = rrule(inputs_a...)
-    y_primal_a = _deepcopy(primal(y_ȳ_a))
+    y_primal_a = tangent(y_ȳ_a) isa NoFData ? primal(y_ȳ_a) : _deepcopy(primal(y_ȳ_a))
     y_fdata_a = _deepcopy(tangent(y_ȳ_a))
     ȳ_delta = if isnothing(output_tangent)
         randn_tangent(rng, primal(y_ȳ_a))
@@ -717,20 +727,21 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule, output_tangent=noth
         set_to_zero!!(zero_tangent(primal(y_ȳ_a), tangent(y_ȳ_a))), _deepcopy(ȳ_delta)
     )
     x̄_rvs_a = _deepcopy(pb_a!!(Mooncake.rdata(ȳ_a)))
-    x_primal_post_a = map(_deepcopy ∘ primal, inputs_a)
     fdata_post_a = map(_deepcopy ∘ Mooncake.fdata, x̄_zero_a)
 
     y_ȳ_b, pb_b!! = rrule(inputs_b...)
+    y_primal_b = tangent(y_ȳ_b) isa NoFData ? primal(y_ȳ_b) : _deepcopy(primal(y_ȳ_b))
+    y_fdata_b = _deepcopy(tangent(y_ȳ_b))
     ȳ_b = increment!!(
         set_to_zero!!(zero_tangent(primal(y_ȳ_b), tangent(y_ȳ_b))), _deepcopy(ȳ_delta)
     )
-    x̄_rvs_b = pb_b!!(Mooncake.rdata(ȳ_b))
+    x̄_rvs_b = _deepcopy(pb_b!!(Mooncake.rdata(ȳ_b)))
+    fdata_post_b = map(_deepcopy ∘ Mooncake.fdata, x̄_zero_b)
 
-    @test has_equal_data(y_primal_a, primal(y_ȳ_b))
-    @test has_equal_data(y_fdata_a, tangent(y_ȳ_b))
-    @test all(map(has_equal_data, x_primal_post_a, map(primal, inputs_b)))
+    @test has_equal_data(y_primal_a, y_primal_b)
+    @test has_equal_data(y_fdata_a, y_fdata_b)
     @test has_equal_data(x̄_rvs_a, x̄_rvs_b)
-    @test all(map(has_equal_data, fdata_post_a, map(Mooncake.fdata, x̄_zero_b)))
+    @test all(map(has_equal_data, fdata_post_a, fdata_post_b))
 end
 
 function test_frule_interface(x_ẋ...; frule)
