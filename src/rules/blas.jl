@@ -744,6 +744,14 @@ end
 # `_foreigncall_` dot loop above.
 # Consolidated width-1 entry: covers Real (BlasFloat) and Complex
 # (canonical Complex{NDual{R,1}}). Body identical for both V shapes.
+# Per-lane Frechet helper for scal! (shared by width-1 and width-N rules).
+# Operates on a single lane's tangent array. Callers handle the primal
+# `BLAS.scal!(n, a, X, incx)` separately.
+@inline function _scal_frechet_lane!(n, a, da, X, dX, incx)
+    BLAS.scal!(n, a, dX, incx)
+    BLAS.axpy!(n, da, X, incx, dX, incx)
+    return nothing
+end
 function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
@@ -755,20 +763,15 @@ function frule!!(
     incx = primal(_incx)
     a, da = _scalar_extract(a_da)
     X, dX = _arr_extract(X_dX)
-
-    # Compute Frechet derivative.
-    BLAS.scal!(n, a, dX, incx)
-    BLAS.axpy!(n, da, X, incx, dX, incx)
-
-    # Perform primal computation.
+    _scal_frechet_lane!(n, a, da, X, dX, incx)
     BLAS.scal!(n, a, X, incx)
     _arr_writeback!(X_dX, X, dX)
     return X_dX
 end
 # Consolidated width-N scal!: covers Real (NDual{P,N}) and Complex
-# (Complex{NDual{P,N}}). Per-lane Frechet via N `BLAS.scal!` + `BLAS.axpy!`
-# calls on independent lane tangent arrays, then a single `BLAS.scal!` for
-# the primal and a width-N writeback.
+# (Complex{NDual{P,N}}). Per-lane Frechet via N `_scal_frechet_lane!`
+# calls on independent lane tangent arrays, then a single `BLAS.scal!`
+# for the primal and a width-N writeback.
 @inline function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
@@ -781,8 +784,7 @@ end
     a, das = _scalar_extract_n(a_da)
     X, dXs = _arr_extract_n(X_dX)
     @inbounds for lane in 1:N
-        BLAS.scal!(nn, a, dXs[lane], incx)
-        BLAS.axpy!(nn, das[lane], X, incx, dXs[lane], incx)
+        _scal_frechet_lane!(nn, a, das[lane], X, dXs[lane], incx)
     end
     BLAS.scal!(nn, a, X, incx)
     _arr_writeback_n!(X_dX, X, dXs)
