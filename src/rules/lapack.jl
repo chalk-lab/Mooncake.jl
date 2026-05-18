@@ -722,7 +722,7 @@ end
 ) = true
 # Consolidated width-1 potrf!: covers Real (Symmetric projection) and
 # Complex (Hermitian projection); projection picked per element type by
-# `_potrf_proj` inside the unified `_potrf!_frule_core!`.
+# `_sym_herm_proj` inside the unified `_potrf!_frule_core!`.
 function frule!!(
     ::Dual{typeof(potrf!)},
     _uplo::Dual{Char},
@@ -766,8 +766,10 @@ end
 # for complex. `Hermitian(real_matrix)` is numerically identical to
 # `Symmetric(real_matrix)`, so the real path could in principle use either;
 # `Symmetric` is preserved as the historical real-path choice.
-@inline _potrf_proj(dA::AbstractMatrix{<:BlasRealFloat}, uplo::Symbol) = Symmetric(dA, uplo)
-@inline _potrf_proj(dA::AbstractMatrix{<:BlasComplexFloat}, uplo::Symbol) = Hermitian(
+@inline _sym_herm_proj(dA::AbstractMatrix{<:BlasRealFloat}, uplo::Symbol) = Symmetric(
+    dA, uplo
+)
+@inline _sym_herm_proj(dA::AbstractMatrix{<:BlasComplexFloat}, uplo::Symbol) = Hermitian(
     dA, uplo
 )
 # Unified Cholesky differential: real (Symmetric projection) and complex
@@ -778,14 +780,14 @@ end
 ) where {P<:BlasFloat}
     if uplo == 'L'
         L = LowerTriangular(A)
-        tmp = LowerTriangular(ldiv!(L, _potrf_proj(dA, :L) / L'))
+        tmp = LowerTriangular(ldiv!(L, _sym_herm_proj(dA, :L) / L'))
         @inbounds for n in 1:size(A, 1)
             tmp[n, n] = tmp[n, n] / 2
         end
         _copytrito!(dA, lmul!(L, tmp), 'L')
     else
         U = UpperTriangular(A)
-        tmp = UpperTriangular(rdiv!(U' \ _potrf_proj(dA, :U), U))
+        tmp = UpperTriangular(rdiv!(U' \ _sym_herm_proj(dA, :U), U))
         @inbounds for n in 1:size(A, 1)
             tmp[n, n] = tmp[n, n] / 2
         end
@@ -876,49 +878,20 @@ end
     },
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(potrs!),Vararg}}) = true
+# Consolidated width-1 potrs!: covers Real (Symmetric projection) and
+# Complex (Hermitian projection); projection picked per element type by
+# `_sym_herm_proj` inside the unified `_potrs!_frule_core!`.
 function frule!!(
     ::Dual{typeof(potrs!)},
     _uplo::Dual{Char},
-    A_dA::_MatLikeWidth1{P},
-    B_dB::_VecOrMatLikeWidth1{P},
-) where {P<:BlasRealFloat}
+    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+    B_dB::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
+)
     A, dA = _arr_extract(A_dA)
     B, dB = _arr_extract(B_dB)
     _potrs!_frule_core!(primal(_uplo), A, dA, B, dB)
     _arr_writeback!(A_dA, A, dA)
     _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Complex canonical width-1.
-@inline function frule!!(
-    ::Dual{typeof(potrs!)},
-    _uplo::Dual{Char},
-    A_dA::_MatLikeWidth1Complex{R},
-    B_dB::_VecOrMatLikeWidth1Complex{R},
-) where {R<:IEEEFloat}
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _potrs!_frule_core_complex!(primal(_uplo), A, dA, B, dB)
-    _arr_writeback!(A_dA, A, dA)
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Width-N Complex: primal once (B ← A^{-1} B), then per-lane Frechet.
-@inline function frule!!(
-    ::Dual{typeof(potrs!)},
-    _uplo::Dual{Char},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-    B_dB::AbstractVecOrMat{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
-    uplo = primal(_uplo)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    LAPACK.potrs!(uplo, A, B)
-    @inbounds for lane in 1:N
-        _potrs_frechet_lane_complex!(uplo, A, dAs[lane], B, dBs[lane])
-    end
-    _arr_writeback_n!(A_dA, A, dAs)
-    _arr_writeback_n!(B_dB, B, dBs)
     return B_dB
 end
 @inline function frule!!(
@@ -936,14 +909,17 @@ end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Unified potrs! Frechet core: real (Symmetric projection) and complex
+# Hermitian (conjugate-symmetric projection) paths share identical structure;
+# `_sym_herm_proj` selects per element type. Reuses the projection helper
+# defined alongside `_potrf!_frule_core!` above.
 @inline function _potrs!_frule_core!(
     uplo::Char,
     A::AbstractMatrix{P},
     dA::AbstractMatrix{P},
     B::AbstractVecOrMat{P},
     dB::AbstractVecOrMat{P},
-) where {P<:BlasRealFloat}
-    # Run primal computation.
+) where {P<:BlasFloat}
     LAPACK.potrs!(uplo, A, B)
     _potrs_frechet_lane!(uplo, A, dA, B, dB)
     return nothing
@@ -951,57 +927,27 @@ end
 # Width-N split: Frechet uses post-primal B.
 @inline function _potrs_frechet_lane!(
     uplo::Char, A::AbstractMatrix{P}, dA, B, dB
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     if uplo == 'L'
         L = LowerTriangular(A)
         dL = LowerTriangular(dA)
-        mul!(dB, Symmetric(dL * L' + L * dL'), B, -one(P), one(P))
+        mul!(dB, _sym_herm_proj(dL * L' + L * dL', :L), B, -one(P), one(P))
         LAPACK.potrs!(uplo, A, dB)
     else
         U = UpperTriangular(A)
         dU = UpperTriangular(dA)
-        mul!(dB, Symmetric(U'dU + dU'U), B, -one(P), one(P))
+        mul!(dB, _sym_herm_proj(U'dU + dU'U, :U), B, -one(P), one(P))
         LAPACK.potrs!(uplo, A, dB)
     end
     return nothing
 end
-# Complex Hermitian potrs!: A = L * L' (Hermitian factorization) so the
-# differential of A is `dL*L' + L*dL'` projected as Hermitian (vs Symmetric
-# for the real path). All ops are linear; no conjugate of `dA` is needed
-# beyond the natural `'` adjoints already in the expression.
-@inline function _potrs!_frule_core_complex!(
-    uplo::Char,
-    A::AbstractMatrix{P},
-    dA::AbstractMatrix{P},
-    B::AbstractVecOrMat{P},
-    dB::AbstractVecOrMat{P},
-) where {P<:BlasComplexFloat}
-    LAPACK.potrs!(uplo, A, B)
-    _potrs_frechet_lane_complex!(uplo, A, dA, B, dB)
-    return nothing
-end
-@inline function _potrs_frechet_lane_complex!(
-    uplo::Char, A::AbstractMatrix{P}, dA, B, dB
-) where {P<:BlasComplexFloat}
-    if uplo == 'L'
-        L = LowerTriangular(A)
-        dL = LowerTriangular(dA)
-        mul!(dB, Hermitian(dL * L' + L * dL'), B, -one(P), one(P))
-        LAPACK.potrs!(uplo, A, dB)
-    else
-        U = UpperTriangular(A)
-        dU = UpperTriangular(dA)
-        mul!(dB, Hermitian(U'dU + dU'U), B, -one(P), one(P))
-        LAPACK.potrs!(uplo, A, dB)
-    end
-    return nothing
-end
-# Width-N NDual potrs!: primal once (B ← A^{-1} B), then per-lane Frechet.
+# Width-N potrs!: primal once (B ← A^{-1} B), then per-lane Frechet.
+# Covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}}).
 @inline function frule!!(
     ::Dual{typeof(potrs!)},
     _uplo::Dual{Char},
-    A_dA::AbstractMatrix{NDual{P,N}},
-    B_dB::AbstractVecOrMat{NDual{P,N}},
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    B_dB::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
 ) where {P<:BlasRealFloat,N}
     uplo = primal(_uplo)
     A, dAs = _arr_extract_n(A_dA)
