@@ -85,7 +85,9 @@ function arrayify(
     x::Symmetric{T,<:StridedMatrix{T}}, dx::TangentOrFData
 ) where {T<:Union{IEEEFloat,BlasFloat}}
     _, _dx = arrayify(x.data, _fields(dx).data)
-    return x, Symmetric(_dx, Symbol(x.uplo))
+    # `Symmetric(matrix, ::Symbol)` is the required ctor signature; pick
+    # via branch to avoid `Symbol(::Char)` allocation on the hot path.
+    return x, Symmetric(_dx, x.uplo == 'U' ? :U : :L)
 end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
