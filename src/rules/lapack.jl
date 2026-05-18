@@ -720,43 +720,27 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(potrf!),Char,<:AbstractMatrix{<:BlasFloat}}}
 ) = true
+# Consolidated width-1 potrf!: covers Real (Symmetric projection) and
+# Complex (Hermitian projection); projection picked per element type by
+# `_potrf_proj` inside the unified `_potrf!_frule_core!`.
 function frule!!(
-    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::_MatLikeWidth1{P}
-) where {P<:BlasRealFloat}
+    ::Dual{typeof(potrf!)},
+    _uplo::Dual{Char},
+    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+)
     A, dA = _arr_extract(A_dA)
     _, info = LAPACK.potrf!(primal(_uplo), A)
     _potrf!_frule_core!(primal(_uplo), A, dA)
     _arr_writeback!(A_dA, A, dA)
     return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
 end
-# Complex Hermitian potrf! (ForwardMode-only) — uses `Hermitian` instead
-# of `Symmetric` for tangent projection.
+# Consolidated width-N potrf!: primal once, per-lane Frechet via the
+# unified `_potrf!_frule_core!`. Covers Real (NDual{P,N}) and Complex
+# (Complex{NDual{P,N}}).
 @inline function frule!!(
-    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::_MatLikeWidth1Complex{R}
-) where {R<:IEEEFloat}
-    A, dA = _arr_extract(A_dA)
-    _, info = LAPACK.potrf!(primal(_uplo), A)
-    _potrf!_frule_core_complex!(primal(_uplo), A, dA)
-    _arr_writeback!(A_dA, A, dA)
-    return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
-end
-@inline function frule!!(
-    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::AbstractMatrix{Complex{NDual{R,N}}}
-) where {R<:IEEEFloat,N}
-    uplo = primal(_uplo)
-    A, dAs = _arr_extract_n(A_dA)
-    _, info = LAPACK.potrf!(uplo, A)
-    @inbounds for lane in 1:N
-        _potrf!_frule_core_complex!(uplo, A, dAs[lane])
-    end
-    _arr_writeback_n!(A_dA, A, dAs)
-    # Width-N info wrap: N-tuple NTangent matches `dual_type(Val(N), Int)`.
-    return (A_dA, Dual(info, Mooncake.NoTangent()))
-end
-# Width-N NDual potrf!: primal once, per-lane Frechet via `_potrf!_frule_core!`
-# (uses post-primal A).
-@inline function frule!!(
-    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::AbstractMatrix{NDual{P,N}}
+    ::Dual{typeof(potrf!)},
+    _uplo::Dual{Char},
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
 ) where {P<:BlasRealFloat,N}
     uplo = primal(_uplo)
     A, dAs = _arr_extract_n(A_dA)
@@ -771,49 +755,37 @@ end
     f::Mooncake.Lifted{typeof(potrf!),N},
     _uplo::Mooncake.Lifted{Char},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
-) where {N,P<:BlasRealFloat}
+) where {N,P<:BlasFloat}
     bare_result = frule!!(
         Mooncake._unlift(f), Mooncake._unlift(_uplo), Mooncake._unlift(A_dA)
     )
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Per-eltype projection: Symmetric for real, Hermitian (conjugate-symmetric)
+# for complex. `Hermitian(real_matrix)` is numerically identical to
+# `Symmetric(real_matrix)`, so the real path could in principle use either;
+# `Symmetric` is preserved as the historical real-path choice.
+@inline _potrf_proj(dA::AbstractMatrix{<:BlasRealFloat}, uplo::Symbol) = Symmetric(dA, uplo)
+@inline _potrf_proj(dA::AbstractMatrix{<:BlasComplexFloat}, uplo::Symbol) = Hermitian(
+    dA, uplo
+)
+# Unified Cholesky differential: real (Symmetric projection) and complex
+# Hermitian (conjugate-symmetric projection) paths share identical structure;
+# the projection helper selects per element type.
 @inline function _potrf!_frule_core!(
     uplo::Char, A::AbstractMatrix{P}, dA::AbstractMatrix{P}
-) where {P<:BlasRealFloat}
+) where {P<:BlasFloat}
     if uplo == 'L'
         L = LowerTriangular(A)
-        tmp = LowerTriangular(ldiv!(L, Symmetric(dA, :L) / L'))
+        tmp = LowerTriangular(ldiv!(L, _potrf_proj(dA, :L) / L'))
         @inbounds for n in 1:size(A, 1)
             tmp[n, n] = tmp[n, n] / 2
         end
         _copytrito!(dA, lmul!(L, tmp), 'L')
     else
         U = UpperTriangular(A)
-        tmp = UpperTriangular(rdiv!(U' \ Symmetric(dA, :U), U))
-        @inbounds for n in 1:size(A, 1)
-            tmp[n, n] = tmp[n, n] / 2
-        end
-        _copytrito!(dA, rmul!(tmp, U), 'U')
-    end
-    return nothing
-end
-# Complex Hermitian Cholesky differential: same recipe as the real path
-# but using `Hermitian` (conjugate-symmetric projection) instead of
-# `Symmetric` and adjoint-divisions `L'` / `U'`.
-@inline function _potrf!_frule_core_complex!(
-    uplo::Char, A::AbstractMatrix{P}, dA::AbstractMatrix{P}
-) where {P<:BlasComplexFloat}
-    if uplo == 'L'
-        L = LowerTriangular(A)
-        tmp = LowerTriangular(ldiv!(L, Hermitian(dA, :L) / L'))
-        @inbounds for n in 1:size(A, 1)
-            tmp[n, n] = tmp[n, n] / 2
-        end
-        _copytrito!(dA, lmul!(L, tmp), 'L')
-    else
-        U = UpperTriangular(A)
-        tmp = UpperTriangular(rdiv!(U' \ Hermitian(dA, :U), U))
+        tmp = UpperTriangular(rdiv!(U' \ _potrf_proj(dA, :U), U))
         @inbounds for n in 1:size(A, 1)
             tmp[n, n] = tmp[n, n] / 2
         end
