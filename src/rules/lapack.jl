@@ -460,10 +460,10 @@ end
 @inline function frule!!(
     ::Dual{typeof(getrs!)},
     _trans::Dual{Char},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
     _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::AbstractVecOrMat{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
+    B_dB::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+) where {P<:BlasRealFloat,N}
     trans = primal(_trans)
     ipiv = primal(_ipiv)
     A, dAs = _arr_extract_n(A_dA)
@@ -527,27 +527,6 @@ end
     mul!(dB, _getrs_op(trans, tmp2), B, -one(P), one(P))
     LAPACK.getrs!(trans, A, ipiv, dB)
     return nothing
-end
-# Width-N NDual getrs!: primal once (overwrites B with A^{-1} B), then
-# per-lane Frechet using post-primal B.
-@inline function frule!!(
-    ::Dual{typeof(getrs!)},
-    _trans::Dual{Char},
-    A_dA::AbstractMatrix{NDual{P,N}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::AbstractVecOrMat{NDual{P,N}},
-) where {P<:BlasRealFloat,N}
-    trans = primal(_trans)
-    ipiv = primal(_ipiv)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    LAPACK.getrs!(trans, A, ipiv, B)
-    @inbounds for lane in 1:N
-        _getrs_frechet_lane!(trans, A, dAs[lane], ipiv, B, dBs[lane])
-    end
-    _arr_writeback_n!(A_dA, A, dAs)
-    _arr_writeback_n!(B_dB, B, dBs)
-    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(getrs!)},
