@@ -2344,12 +2344,7 @@ function frule!!(
     β, dβ = _scalar_extract(β_dβ)
     C, dC = _arr_extract(C_dC)
 
-    BLAS.syr2k!(uplo, t, α, A, dA, β, dC)
-    iszero(dα) || BLAS.syrk!(uplo, t, dα, A, one(eltype(C)), dC)
-    if !iszero(dβ)
-        dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
-    end
-
+    _syrk_frechet_lane!(uplo, t, α, dα, A, dA, β, dβ, C, dC)
     BLAS.syrk!(uplo, t, α, A, β, C)
     _arr_writeback!(C_dC, C, dC)
     return C_dC
