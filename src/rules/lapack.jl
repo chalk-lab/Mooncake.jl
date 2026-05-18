@@ -249,7 +249,7 @@ end
 # Complex trtrs! is a primitive only in ForwardMode — the rrule remains
 # BlasRealFloat-only because its pullback math uses real-typed transpose
 # semantics. The frule path below is correct for Complex via the
-# `_trtrs_op` helper which handles trans = 'N' / 'T' / 'C' correctly.
+# `_trans_op` helper which handles trans = 'N' / 'T' / 'C' correctly.
 @is_primitive(
     MinimalCtx,
     ForwardMode,
@@ -337,12 +337,13 @@ end
     LAPACK.trtrs!(uplo, trans, diag, A, B)
     return nothing
 end
+# Per-`trans` op selector: 'N' → identity, 'T' → transpose (no conjugate),
+# 'C' → adjoint (conjugate-transpose). For Complex matrices `'T'` and `'C'`
+# differ; for real, transpose ≡ adjoint. Shared by `_trtrs_frechet_lane!`
+# (below) and `_getrs_frechet_lane!` (further down).
+@inline _trans_op(trans::Char, a) = trans == 'N' ? a : (trans == 'T' ? transpose(a) : a')
 # Width-N split: Frechet uses pre-primal B (so callers must invoke this
 # BEFORE the primal `LAPACK.trtrs!(uplo, trans, diag, A, B)`).
-# For Complex matrices, `trans='T'` and `trans='C'` differ; use
-# `_trtrs_op` to pick the correct transpose-without-conjugate ('T') vs
-# adjoint ('C') view. For real, transpose ≡ adjoint so the choice is academic.
-@inline _trtrs_op(trans::Char, a) = trans == 'N' ? a : (trans == 'T' ? transpose(a) : a')
 @inline function _trtrs_frechet_lane!(uplo::Char, trans::Char, diag::Char, A, dA, B, dB)
     LAPACK.trtrs!(uplo, trans, diag, A, dB)
     tmp = copy(B)
@@ -351,10 +352,10 @@ end
     tmp2 = copy(tmp)
     if diag == 'N'
         a = uplo == 'L' ? LowerTriangular(dA) : UpperTriangular(dA)
-        lmul!(_trtrs_op(trans, a), tmp)
+        lmul!(_trans_op(trans, a), tmp)
     else
         a = uplo == 'L' ? UnitLowerTriangular(dA) : UnitUpperTriangular(dA)
-        lmul!(_trtrs_op(trans, a), tmp)
+        lmul!(_trans_op(trans, a), tmp)
         tmp .-= tmp2
     end
     LAPACK.trtrs!(uplo, trans, diag, A, tmp)
@@ -406,7 +407,7 @@ end
 )
 # Complex getrs! is a primitive only in ForwardMode — the rrule remains
 # BlasRealFloat-only. The frule needs a per-trans op helper that selects
-# identity / transpose / adjoint, mirroring the `_trtrs_op` pattern.
+# identity / transpose / adjoint, mirroring the `_trans_op` pattern.
 @is_primitive(
     MinimalCtx,
     ForwardMode,
@@ -486,12 +487,9 @@ end
     _getrs_frechet_lane!(trans, A, dA, ipiv, B, dB)
     return nothing
 end
-# Per-`trans` op selector: 'N' → identity, 'T' → transpose (no conjugate),
-# 'C' → adjoint (conjugate-transpose). Matches the `_trtrs_op` pattern; for
-# real matrices transpose and adjoint coincide.
-@inline _getrs_op(trans::Char, m) = trans == 'N' ? m : (trans == 'T' ? transpose(m) : m')
 # Width-N split: Frechet uses post-primal B (caller must run the primal
 # `LAPACK.getrs!(trans, A, ipiv, B)` BEFORE invoking this for each lane).
+# Uses the shared `_trans_op` selector defined alongside trtrs! above.
 @inline function _getrs_frechet_lane!(
     trans::Char, A::AbstractMatrix{P}, dA, ipiv, B, dB
 ) where {P<:BlasFloat}
@@ -503,7 +501,7 @@ end
     tmp = dL_plus_I * U
     tmp .-= U
     tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
-    mul!(dB, _getrs_op(trans, tmp2), B, -one(P), one(P))
+    mul!(dB, _trans_op(trans, tmp2), B, -one(P), one(P))
     LAPACK.getrs!(trans, A, ipiv, dB)
     return nothing
 end
