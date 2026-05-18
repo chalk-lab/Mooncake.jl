@@ -1244,7 +1244,20 @@ end
             AbstractVector{T},
         },
     },
-) where {T<:BlasRealFloat} = true
+) where {T<:BlasFloat} = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(BLAS.hemv!),
+            Char,
+            T,
+            AbstractMatrix{T},
+            AbstractVector{T},
+            T,
+            AbstractVector{T},
+        },
+    },
+) where {T<:BlasComplexFloat} = true
 # Complex-element variant for symv!/hemv! width-1 canonical form. Mirrors
 # the real BlasRealFloat width-1 path but uses Complex{NDual{R,1}} slot
 # shapes. The dispatched BLAS call is symv!/hemv! depending on call site
@@ -1372,7 +1385,28 @@ end
     x_dx::Mooncake.Lifted{<:AbstractVector{T}},
     beta::Mooncake.Lifted{T},
     y_dy::Mooncake.Lifted{<:AbstractVector{T}},
-) where {N,T<:BlasRealFloat}
+) where {N,T<:BlasFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(uplo),
+        Mooncake._unlift(alpha),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(x_dx),
+        Mooncake._unlift(beta),
+        Mooncake._unlift(y_dy),
+    )
+    P_out = __primal_type(_typeof(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.hemv!),N},
+    uplo::Mooncake.Lifted{Char},
+    alpha::Mooncake.Lifted{T},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
+    x_dx::Mooncake.Lifted{<:AbstractVector{T}},
+    beta::Mooncake.Lifted{T},
+    y_dy::Mooncake.Lifted{<:AbstractVector{T}},
+) where {N,T<:BlasComplexFloat}
     bare_result = frule!!(
         Mooncake._unlift(f),
         Mooncake._unlift(uplo),
