@@ -759,10 +759,8 @@ function frule!!(
     _arr_writeback!(X_dX, X, dX)
     return X_dX
 end
-# Consolidated width-N scal!: covers Real (NDual{P,N}) and Complex
-# (Complex{NDual{P,N}}). Per-lane Frechet via N `_scal_frechet_lane!`
-# calls on independent lane tangent arrays, then a single `BLAS.scal!`
-# for the primal and a width-N writeback.
+# Width-N scal!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; per-lane `_scal_frechet_lane!` then primal once.
 @inline function frule!!(
     ::Dual{typeof(BLAS.scal!)},
     _n::Dual{<:Integer},
@@ -1258,7 +1256,8 @@ for (fname, base) in ((:symv!, :symv), (:hemv!, :hemv))
         return nothing
     end
 end
-# Consolidated width-N symv!: covers Real and Complex.
+# Width-N symv!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; per-lane `_symv_frechet_lane!` then primal once.
 @inline function frule!!(
     ::Dual{typeof(BLAS.symv!)},
     uplo::Dual{Char},
@@ -1724,8 +1723,8 @@ end
     end
     return nothing
 end
-# Consolidated width-N gemm!: covers Real and Complex via element-type
-# union with shared `P<:IEEEFloat` typevar.
+# Width-N gemm!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; per-lane `_gemm_frechet_lane!` then primal once.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
@@ -2408,7 +2407,8 @@ end
     } where {P<:BlasFloat}
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trmm!),Vararg}}) = true
-# Consolidated width-1 trmm!: covers Real and Complex.
+# Width-1 trmm!: covers Real and Complex via slot Union; delegates to
+# `_trmm!_frule_core!` (Frechet via `_trmm_frechet_lane!` then primal).
 function frule!!(
     ::Dual{typeof(BLAS.trmm!)},
     _side::Dual{Char},
@@ -2579,7 +2579,8 @@ end
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trsm!),Vararg}}) = true
 
-# Consolidated width-1 trsm!: covers Real and Complex.
+# Width-1 trsm!: covers Real and Complex via slot Union; delegates to
+# `_trsm!_frule_core!` (Frechet via `_trsm_frechet_lane!` then primal).
 function frule!!(
     ::Dual{typeof(BLAS.trsm!)},
     _side::Dual{Char},
@@ -2618,8 +2619,8 @@ end
     dB .-= tmp
     return nothing
 end
-# Consolidated width-N trsm!: covers Real and Complex via element-type
-# union with shared `P<:IEEEFloat` typevar.
+# Width-N trsm!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; per-lane `_trsm_frechet_lane!` then primal once.
 @inline function frule!!(
     ::Dual{typeof(BLAS.trsm!)},
     _side::Dual{Char},
