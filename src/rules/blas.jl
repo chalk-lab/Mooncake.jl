@@ -1968,19 +1968,10 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         B, dB = arrayify(B_dB)
         C, dC = arrayify(C_dC)
 
-        # Compute Frechet derivative.
-        BLAS.$fname(s, ul, α, A, dB, β, dC)
-        BLAS.$fname(s, ul, α, dA, B, one(T), dC)
-        if !iszero(dα)
-            BLAS.$fname(s, ul, dα, A, B, one(T), dC)
-        end
-        if !iszero(dβ)
-            @inbounds for n in eachindex(C)
-                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
-            end
-        end
-
-        # Run primal computation.
+        # Compute Frechet derivative via the shared lane helper, then primal.
+        $(isherm ? :_hemm_frechet_lane! : :_symm_frechet_lane!)(
+            s, ul, α, dα, A, dA, B, dB, β, dβ, C, dC
+        )
         BLAS.$fname(s, ul, α, A, B, β, C)
         return C_dC
     end
