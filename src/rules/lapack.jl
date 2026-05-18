@@ -1143,7 +1143,9 @@ function _add_to_primal_internal(
     c::MaybeCache, p::Symmetric{P,M}, t::Tangent, unsafe::Bool
 ) where {P,M}
     new_data = _add_to_primal_internal(c, p.data, _fields(t).data, unsafe)
-    return Symmetric(new_data, Symbol(p.uplo))
+    # Branch over `p.uplo::Char` to avoid `Symbol(::Char)` allocation; the
+    # `Symmetric` ctor requires a Symbol.
+    return Symmetric(new_data, p.uplo == 'U' ? :U : :L)
 end
 
 """
