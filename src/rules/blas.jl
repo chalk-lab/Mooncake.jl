@@ -2484,6 +2484,35 @@ end
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 
+# herk! Lifted delegator + trait. herk! takes Complex matrices but Real
+# scalars (`relty = real(T)`); the @eval-generated bare-Dual frule!! and
+# the width-N canonical-NDual entry (line ~2294) both already handle the
+# math. Without this Lifted entry, IR-emit's Lifted-typed callsites errored.
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(BLAS.herk!),Char,Char,R,AbstractVecOrMat{T},R,AbstractMatrix{T}}}
+) where {T<:BlasComplexFloat,R<:BlasRealFloat} = true
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.herk!),N},
+    uplo::Mooncake.Lifted{Char},
+    t::Mooncake.Lifted{Char},
+    α_dα::Mooncake.Lifted{R},
+    A_dA::Mooncake.Lifted{<:AbstractVecOrMat{T}},
+    β_dβ::Mooncake.Lifted{R},
+    C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
+) where {N,T<:BlasComplexFloat,R<:BlasRealFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(uplo),
+        Mooncake._unlift(t),
+        Mooncake._unlift(α_dα),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(β_dβ),
+        Mooncake._unlift(C_dC),
+    )
+    P_out = __primal_type(_typeof(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+
 function real_diag!(dA::AbstractMatrix{<:Complex{<:BlasFloat}})
     @inbounds for n in diagind(dA)
         dA[n] = real(dA[n])
