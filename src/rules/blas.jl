@@ -2134,6 +2134,85 @@ end
     return C_dC
 end
 
+# Lifted-typed delegators for symm!/hemm!: route through the bare-Dual
+# entries (canonical width-1 NDual via the width-N rule at N=1, or the
+# @eval-generated wrapper-exception entry for Dual{<:AbstractMatrix{T}}).
+# Trait registrations enable Lifted-aware IR emission.
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(BLAS.symm!),
+            Char,
+            Char,
+            T,
+            AbstractMatrix{T},
+            AbstractMatrix{T},
+            T,
+            AbstractMatrix{T},
+        },
+    },
+) where {T<:BlasFloat} = true
+@inline Mooncake._is_lifted_aware(
+    ::Type{
+        <:Tuple{
+            typeof(BLAS.hemm!),
+            Char,
+            Char,
+            T,
+            AbstractMatrix{T},
+            AbstractMatrix{T},
+            T,
+            AbstractMatrix{T},
+        },
+    },
+) where {T<:BlasComplexFloat} = true
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.symm!),N},
+    side::Mooncake.Lifted{Char},
+    uplo::Mooncake.Lifted{Char},
+    alpha::Mooncake.Lifted{T},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
+    B_dB::Mooncake.Lifted{<:AbstractMatrix{T}},
+    beta::Mooncake.Lifted{T},
+    C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
+) where {N,T<:BlasFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(side),
+        Mooncake._unlift(uplo),
+        Mooncake._unlift(alpha),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(B_dB),
+        Mooncake._unlift(beta),
+        Mooncake._unlift(C_dC),
+    )
+    P_out = __primal_type(_typeof(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+@inline function frule!!(
+    f::Mooncake.Lifted{typeof(BLAS.hemm!),N},
+    side::Mooncake.Lifted{Char},
+    uplo::Mooncake.Lifted{Char},
+    alpha::Mooncake.Lifted{T},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
+    B_dB::Mooncake.Lifted{<:AbstractMatrix{T}},
+    beta::Mooncake.Lifted{T},
+    C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
+) where {N,T<:BlasComplexFloat}
+    bare_result = frule!!(
+        Mooncake._unlift(f),
+        Mooncake._unlift(side),
+        Mooncake._unlift(uplo),
+        Mooncake._unlift(alpha),
+        Mooncake._unlift(A_dA),
+        Mooncake._unlift(B_dB),
+        Mooncake._unlift(beta),
+        Mooncake._unlift(C_dC),
+    )
+    P_out = __primal_type(_typeof(bare_result))
+    return _wrap_rule_result(P_out, Val(N), bare_result)
+end
+
 for (fname, elty, relty) in (
     (:(syrk!), Float32, Float32),
     (:(syrk!), Float64, Float64),
