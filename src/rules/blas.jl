@@ -544,23 +544,6 @@ end
         Integer,
     } where {T<:BlasComplexFloat},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.dotc),Vararg}}) = true
-@inline function frule!!(
-    ::Dual{typeof(BLAS.dotc)},
-    _n::Dual{<:Integer},
-    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    _incx::Dual{<:Integer},
-    Y_dY::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    _incy::Dual{<:Integer},
-) where {T<:BlasComplexFloat}
-    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
-    X, dX = arrayify(X_dX)
-    Y, dY = arrayify(Y_dY)
-    val = BLAS.dotc(n, X, incx, Y, incy)
-    # d/dt [conj(X+t dX) ⋅ (Y+t dY)] at t=0 = conj(dX) ⋅ Y + conj(X) ⋅ dY
-    dval = BLAS.dotc(n, dX, incx, Y, incy) + BLAS.dotc(n, X, incx, dY, incy)
-    return Dual(val, dval)
-end
 # `BLAS.dotu(n, X, incx, Y, incy) = X ⋅ Y` without conjugation (Complex only).
 @is_primitive(
     MinimalCtx,
@@ -574,21 +557,28 @@ end
         Integer,
     } where {T<:BlasComplexFloat},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.dotu),Vararg}}) = true
-@inline function frule!!(
-    ::Dual{typeof(BLAS.dotu)},
-    _n::Dual{<:Integer},
-    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    _incx::Dual{<:Integer},
-    Y_dY::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    _incy::Dual{<:Integer},
-) where {T<:BlasComplexFloat}
-    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
-    X, dX = arrayify(X_dX)
-    Y, dY = arrayify(Y_dY)
-    val = BLAS.dotu(n, X, incx, Y, incy)
-    dval = BLAS.dotu(n, dX, incx, Y, incy) + BLAS.dotu(n, X, incx, dY, incy)
-    return Dual(val, dval)
+# dotc and dotu width-1 bare-Dual frules share byte-identical body structure
+# (apart from the BLAS function name): the derivative of `f(X, Y)` w.r.t.
+# `(X, Y)` is `f(dX, Y) + f(X, dY)` for the same `f`. dotc carries the
+# conjugation through `f = BLAS.dotc`; dotu uses `f = BLAS.dotu`.
+for fname in (:dotc, :dotu)
+    @eval @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.$fname),Vararg}}) =
+        true
+    @eval @inline function frule!!(
+        ::Dual{typeof(BLAS.$fname)},
+        _n::Dual{<:Integer},
+        X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
+        _incx::Dual{<:Integer},
+        Y_dY::Dual{<:Union{Ptr{T},AbstractArray{T}}},
+        _incy::Dual{<:Integer},
+    ) where {T<:BlasComplexFloat}
+        n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+        X, dX = arrayify(X_dX)
+        Y, dY = arrayify(Y_dY)
+        val = BLAS.$fname(n, X, incx, Y, incy)
+        dval = BLAS.$fname(n, dX, incx, Y, incy) + BLAS.$fname(n, X, incx, dY, incy)
+        return Dual(val, dval)
+    end
 end
 
 # Lifted-aware delegators for `BLAS.dot` / `dotc` / `dotu`: `_unlift` and
