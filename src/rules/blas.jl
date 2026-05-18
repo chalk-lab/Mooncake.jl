@@ -2632,36 +2632,17 @@ end
     } where {P<:BlasFloat}
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trmm!),Vararg}}) = true
+# Consolidated width-1 trmm!: covers Real and Complex.
 function frule!!(
     ::Dual{typeof(BLAS.trmm!)},
     _side::Dual{Char},
     _uplo::Dual{Char},
     _ta::Dual{Char},
     _diag::Dual{Char},
-    α_dα::_ScalarLikeWidth1{P},
-    A_dA::_MatLikeWidth1{P},
-    B_dB::_MatLikeWidth1{P},
-) where {P<:BlasFloat}
-    α, dα = _scalar_extract(α_dα)
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _trmm!_frule_core!(
-        primal(_side), primal(_uplo), primal(_ta), primal(_diag), α, dα, A, dA, B, dB
-    )
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Complex-element variant.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.trmm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _ta::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::_ScalarLikeWidth1Complex{R},
-    A_dA::_MatLikeWidth1Complex{R},
-    B_dB::_MatLikeWidth1Complex{R},
-) where {R<:IEEEFloat}
+    α_dα::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+    B_dB::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+)
     α, dα = _scalar_extract(α_dα)
     A, dA = _arr_extract(A_dA)
     B, dB = _arr_extract(B_dB)
@@ -2829,36 +2810,17 @@ end
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trsm!),Vararg}}) = true
 
+# Consolidated width-1 trsm!: covers Real and Complex.
 function frule!!(
     ::Dual{typeof(BLAS.trsm!)},
     _side::Dual{Char},
     _uplo::Dual{Char},
     _t::Dual{Char},
     _diag::Dual{Char},
-    α_dα::_ScalarLikeWidth1{P},
-    A_dA::_MatLikeWidth1{P},
-    B_dB::_MatLikeWidth1{P},
-) where {P<:BlasFloat}
-    α, dα = _scalar_extract(α_dα)
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _trsm!_frule_core!(
-        primal(_side), primal(_uplo), primal(_t), primal(_diag), α, dα, A, dA, B, dB
-    )
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Complex-element variant.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.trsm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::_ScalarLikeWidth1Complex{R},
-    A_dA::_MatLikeWidth1Complex{R},
-    B_dB::_MatLikeWidth1Complex{R},
-) where {R<:IEEEFloat}
+    α_dα::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+    B_dB::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+)
     α, dα = _scalar_extract(α_dα)
     A, dA = _arr_extract(A_dA)
     B, dB = _arr_extract(B_dB)
