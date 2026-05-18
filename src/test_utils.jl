@@ -1086,7 +1086,7 @@ function test_rule(
                     test_frule_reuse(x_ẋ...; frule)
                 end
                 if test_rvs && !interface_only
-                    test_rrule_reuse(rng, x_x̄...; rrule)
+                    test_rrule_reuse(Xoshiro(123), x_x̄...; rrule)
                 end
             end
 
