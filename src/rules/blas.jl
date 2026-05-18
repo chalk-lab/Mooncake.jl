@@ -1729,24 +1729,9 @@ end
     A, dA = _arr_extract(A_dA)
     B, dB = _arr_extract(B_dB)
     C, dC = _arr_extract(C_dC)
-    one_T = one(eltype(C))
 
-    # Tangents (product rule)
-    # d(α*op(A)*op(B) + β*C) = dα*op(A)*op(B) + α*op(dA)*op(B) + α*op(A)*op(dB) + dβ*C + β*dC
-    BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
-    BLAS.gemm!(tA, tB, α, A, dB, one_T, dC)  # α*op(A)*op(dB) + 1*dC
-
-    if !iszero(dα)
-        BLAS.gemm!(tA, tB, dα, A, B, one_T, dC)  # dα*op(A)*op(B) + 1*dC
-    end
-
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
-        end
-    end
-
-    # Primal
+    # Tangents (product rule) via the shared lane helper, then primal.
+    _gemm_frechet_lane!(tA, tB, α, dα, A, dA, B, dB, β, dβ, C, dC)
     BLAS.gemm!(tA, tB, α, A, B, β, C)
 
     _arr_writeback!(C_dC, C, dC)
