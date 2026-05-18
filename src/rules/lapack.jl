@@ -490,14 +490,7 @@ end
 @inline function _getrs_frechet_lane!(
     trans::Char, A::AbstractMatrix{P}, dA, ipiv, B, dB
 ) where {P<:BlasFloat}
-    L = UnitLowerTriangular(A)
-    dL_plus_I = UnitLowerTriangular(dA)
-    U = UpperTriangular(A)
-    dU = UpperTriangular(dA)
-    p = LinearAlgebra.ipiv2perm(ipiv, size(dB, 1))
-    tmp = dL_plus_I * U
-    tmp .-= U
-    tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
+    tmp2 = _lu_diff_factor(A, dA, ipiv)
     mul!(dB, _trans_op(trans, tmp2), B, -one(P), one(P))
     LAPACK.getrs!(trans, A, ipiv, dB)
     return nothing
@@ -619,7 +612,7 @@ end
 ) where {P<:BlasRealFloat,N}
     A, dAs = _arr_extract_n(A_dA)
     ipiv = primal(_ipiv)
-    tmp2_lanes = ntuple(lane -> _getri_frechet_pre_primal(A, dAs[lane], ipiv), Val(N))
+    tmp2_lanes = ntuple(lane -> _lu_diff_factor(A, dAs[lane], ipiv), Val(N))
     LAPACK.getri!(A, ipiv)
     @inbounds for lane in 1:N
         dAs[lane] .= (-A * tmp2_lanes[lane] * A)
@@ -642,17 +635,20 @@ end
     A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
 ) where {P<:BlasFloat}
     # Compute part of Frechet derivative.
-    tmp2 = _getri_frechet_pre_primal(A, dA, ipiv)
+    tmp2 = _lu_diff_factor(A, dA, ipiv)
     # Perform primal computation.
     LAPACK.getri!(A, ipiv)
     # Compute Frechet derivative.
     dA .= (-A * tmp2 * A)
     return nothing
 end
-# Width-N split: compute `tmp2_lane` from pre-primal A and per-lane dA.
-# The math is purely linear (no transpose / adjoint), so the real-typed
-# core works element-wise for Complex matrices too.
-@inline function _getri_frechet_pre_primal(
+# LU-decomposition Frechet factor: given an LU-factorised `A` and its
+# tangent `dA` plus the row-pivot vector `ipiv`, returns the pivoted
+# product `inv(P) * (L * dU + dL * U)` used by both getri! (post-primal
+# `-A_inv * tmp2 * A_inv`) and getrs! (`mul!(dB, op(tmp2), B, ...)`).
+# Math is purely linear (no transpose / adjoint), so the BlasFloat core
+# works element-wise for Complex matrices too.
+@inline function _lu_diff_factor(
     A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
 ) where {P<:BlasFloat}
     L = UnitLowerTriangular(A)
