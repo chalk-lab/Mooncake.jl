@@ -2714,17 +2714,7 @@ end
     B::AbstractMatrix{P},
     dB::AbstractMatrix{P},
 ) where {P<:BlasFloat}
-    BLAS.trsm!(side, uplo, trans, diag, α, A, dB)
-    tmp = copy(B)
-    trsm!(side, uplo, trans, diag, one(P), A, tmp)
-    dB .+= dα .* tmp
-    tmp2 = copy(tmp)
-    BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp)
-    if diag == 'U'
-        tmp .-= α .* tmp2
-    end
-    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
-    dB .-= tmp
+    _trsm_frechet_lane!(side, uplo, trans, diag, α, dα, A, dA, B, dB)
     BLAS.trsm!(side, uplo, trans, diag, α, A, B)
     return nothing
 end
