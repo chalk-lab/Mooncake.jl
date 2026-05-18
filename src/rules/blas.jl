@@ -1967,42 +1967,18 @@ end
     end
     return nothing
 end
+# Consolidated width-N gemm!: covers Real and Complex via element-type
+# union with shared `P<:IEEEFloat` typevar.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
     transB::Dual{Char},
-    alpha::NDual{P,N},
-    A_dA::AbstractVecOrMat{NDual{P,N}},
-    B_dB::AbstractVecOrMat{NDual{P,N}},
-    beta::NDual{P,N},
-    C_dC::AbstractMatrix{NDual{P,N}},
-) where {P<:BlasRealFloat,N}
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    C, dCs = _arr_extract_n(C_dC)
-    @inbounds for lane in 1:N
-        _gemm_frechet_lane!(
-            tA, tB, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
-        )
-    end
-    BLAS.gemm!(tA, tB, α, A, B, β, C)
-    _arr_writeback_n!(C_dC, C, dCs)
-    return C_dC
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Complex{NDual{R,N}},
-    A_dA::AbstractVecOrMat{Complex{NDual{R,N}}},
-    B_dB::AbstractVecOrMat{Complex{NDual{R,N}}},
-    beta::Complex{NDual{R,N}},
-    C_dC::AbstractMatrix{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
+    alpha::Union{NDual{P,N},Complex{NDual{P,N}}},
+    A_dA::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    B_dB::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    beta::Union{NDual{P,N},Complex{NDual{P,N}}},
+    C_dC::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+) where {P<:IEEEFloat,N}
     tA = primal(transA)
     tB = primal(transB)
     α, dαs = _scalar_extract_n(alpha)
@@ -2849,42 +2825,18 @@ end
     dB .-= tmp
     return nothing
 end
+# Consolidated width-N trsm!: covers Real and Complex via element-type
+# union with shared `P<:IEEEFloat` typevar.
 @inline function frule!!(
     ::Dual{typeof(BLAS.trsm!)},
     _side::Dual{Char},
     _uplo::Dual{Char},
     _t::Dual{Char},
     _diag::Dual{Char},
-    α_dα::NDual{P,N},
-    A_dA::AbstractMatrix{NDual{P,N}},
-    B_dB::AbstractMatrix{NDual{P,N}},
-) where {P<:BlasRealFloat,N}
-    side = primal(_side)
-    uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
-    α, dαs = _scalar_extract_n(α_dα)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    @inbounds for lane in 1:N
-        _trsm_frechet_lane!(
-            side, uplo, trans, diag, α, dαs[lane], A, dAs[lane], B, dBs[lane]
-        )
-    end
-    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
-    _arr_writeback_n!(B_dB, B, dBs)
-    return B_dB
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.trsm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Complex{NDual{R,N}},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-    B_dB::AbstractMatrix{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
+    α_dα::Union{NDual{P,N},Complex{NDual{P,N}}},
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    B_dB::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+) where {P<:IEEEFloat,N}
     side = primal(_side)
     uplo = primal(_uplo)
     trans = primal(_t)
