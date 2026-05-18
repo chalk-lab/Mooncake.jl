@@ -1471,13 +1471,19 @@ w.r.t. the underlying data array `A`.
 # invocations from `test_rule`) and IR-emit Lifted-typed callsites both
 # go through the same code path.
 #
-# Pattern applicability: this inversion works for rules with a single
-# closed-form bare-Dual entry on a single V shape (here: width-1
-# `arrayify`-extractable `Dual{<:Symmetric}`). Multi-bare-Dual rules
-# spanning width-1 wrapper-exception + width-N canonical NDual + Complex
-# variants (e.g. `getri!`, `potrf!`, `gemv!`, `gemm!`) require unifying
-# the inner V representation first — that's deeper architectural work,
-# not per-rule inversion.
+# Pattern applicability (empirically delineated): this inversion works for
+# rules with (a) a single closed-form bare-Dual entry, (b) all args
+# Dual-typed (not Vararg or free non-Dual args), and (c) a thin pre-existing
+# Lifted delegator. Rules NOT amenable:
+# - Multi-bare-Dual rules with width-1 wrapper-exception + width-N canonical
+#   NDual + Complex variants (e.g. `getri!`, `potrf!`, `gemv!`, `gemm!`) —
+#   require unifying the inner V representation first.
+# - Rules with Vararg or non-Dual args (e.g. `_foreigncall_(:jl_string_ptr)`) —
+#   non-Dual args don't lift cleanly via 1-arg `Lifted{T,1}(a)` ctor.
+# - Rules where Lifted entries use shared impl helpers rather than delegating
+#   (e.g. misc.jl's `_lgetfield_impl`) — already in good architecture.
+# Successfully migrated under this pattern: logdet/det/logabsdet (this file),
+# _foreigncall_(:jl_genericmemory_copy), fill!(Array{UInt8/Int8}, Integer).
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(logdet),N},
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
