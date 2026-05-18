@@ -126,9 +126,8 @@ end
 # `Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}` to match
 # `dual_type(Val(1), Vector{Int})` so downstream `_canonicalise_tuple_inner`
 # does not need to bridge `NoTangent` → `NTangent`.
-# Consolidated width-1 kwcall entry: covers Real and Complex via
-# `Union{_MatLikeWidth1, _MatLikeWidth1Complex}`. Body identical for
-# both V shapes; `_arr_extract` dispatches on input type.
+# Width-1 kwcall entry: covers Real and Complex via slot Union;
+# `_arr_extract` dispatches on input type.
 @inline function frule!!(
     f::Dual{typeof(Core.kwcall)},
     kwargs::NamedTuple,
@@ -263,7 +262,8 @@ end
     },
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(trtrs!),Vararg}}) = true
-# Consolidated width-1 entry: covers Real and Complex.
+# Width-1 trtrs!: covers Real and Complex via slot Union; delegates to
+# `_trtrs!_frule_core!` (Frechet via `_trtrs_frechet_lane!` then primal).
 function frule!!(
     ::Dual{typeof(trtrs!)},
     _uplo::Dual{Char},
@@ -420,7 +420,8 @@ end
     },
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getrs!),Vararg}}) = true
-# Consolidated width-1 entry: covers Real and Complex.
+# Width-1 getrs!: covers Real and Complex via slot Union; delegates to
+# `_getrs!_frule_core!` (primal first, then Frechet via lane helper).
 function frule!!(
     ::Dual{typeof(getrs!)},
     _trans::Dual{Char},
