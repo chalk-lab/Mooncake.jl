@@ -96,8 +96,8 @@
         end
     end
 
-    # Audit test #2: the no-`Val` and `Val(1)` queries agree by construction.
-    @testset "audit #2: dual_type(P) === dual_type(Val(1), P)" begin
+    # The no-`Val` and `Val(1)` queries agree by construction.
+    @testset "dual_type(P) === dual_type(Val(1), P)" begin
         for P in (Float64, ComplexF64, Vector{Float64}, Int, Real, Tuple{Float64,Int})
             @test Mooncake.dual_type(P) === Mooncake.dual_type(Val(1), P)
         end
@@ -212,8 +212,8 @@ end
         @test y isa Mooncake.lifted_type(Val(1), Real)
     end
 
-    @testset "_canon_return loud failure on shape mismatch (audit Todo 8)" begin
-        # Per the revised audit, `_canon_return` should refuse to silently
+    @testset "_canon_return loud failure on shape mismatch" begin
+        # `_canon_return` should refuse to silently
         # retag a `Lifted` whose inner V shape disagrees with
         # `dual_type(Val(N), P_target)` — that would have produced an invalid
         # parametric V (e.g. `Lifted{Matrix{Float64}, 1, Vector{NDual}}`).
@@ -284,7 +284,7 @@ end
         ) === LinearAlgebra.Diagonal{NDual{Float64,2},Vector{NDual{Float64,2}}}
     end
 
-    @testset "width-1 wrapper bare-Dual durable exceptions (audit Todo 2, rev. 3)" begin
+    @testset "width-1 wrapper bare-Dual durable exceptions" begin
         # Each wrapper below uses a parallel `Dual{Wrapper, tangent_type(Wrapper)}`
         # representation at width 1 because its rules dispatch through `arrayify`
         # (`Union{Tangent, FData}`-typed), which does not accept `NTangent` or
@@ -691,7 +691,7 @@ end
         @test tangent(y).lanes[1] !== tangent(y).lanes[2]
 
         # `_wrap_rule_result` broadcasts a bare-T scalar tangent across all N
-        # lanes (audit-acknowledged limitation): only valid when both lanes
+        # lanes (documented limitation): only valid when both lanes
         # are intentionally equal. With distinct lane seeds at the source
         # this is a duplicate-lane bug, but for a SCALAR tangent passed
         # explicitly (e.g. a rule that genuinely returns identical-lane
@@ -734,7 +734,7 @@ end
         end
     end
 
-    @testset "nested struct tangent shape (audit Todo 1, rev. 3)" begin
+    @testset "nested struct tangent shape" begin
         # `tangent(lo, i)` and `tangent(lo)` must rebuild nested `Tangent{...}`
         # wrappers for struct fields, not leak raw `NamedTuple` from the
         # recursive lift's inner V.
@@ -779,8 +779,8 @@ end
         @test typeof(tangent(lt)) === Mooncake.tangent_type(Val(2), typeof(tp))
     end
 
-    @testset "BLAS width-N per-lane independence (audit Todo 5)" begin
-        # Pins that the BLAS width-N migrations (gemv!, gemm!, scal!, nrm2)
+    @testset "BLAS width-N per-lane independence" begin
+        # Pins that the BLAS width-N rules (gemv!, gemm!, scal!, nrm2)
         # produce independent per-lane tangents — the pre-migration width-1
         # broadcast-via-`_wrap_rule_result` would yield identical lanes.
         using LinearAlgebra: BLAS
@@ -847,7 +847,7 @@ end
         end
     end
 
-    @testset "LAPACK width-N per-lane independence (audit Todo 5)" begin
+    @testset "LAPACK width-N per-lane independence" begin
         using LinearAlgebra: LAPACK
 
         # LAPACK.getrf! width-2: A_dA is overwritten with LU factor + Frechet
