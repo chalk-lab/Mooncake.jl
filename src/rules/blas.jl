@@ -1378,8 +1378,9 @@ function frule!!(
     _arr_writeback!(x_dx, x, dx)
     return x_dx
 end
-# Width-N NDual trmv!: per-lane Frechet (which depends on
-# pre-primal x), then primal once.
+# Per-lane Frechet helper for trmv! (depends on pre-primal x). Shared by
+# width-1 (via `_trmv!_frule_core!`) and width-N; each caller runs the
+# primal separately after the Frechet.
 @inline function _trmv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
     BLAS.trmv!(uplo, trans, diag, A, dx)
     tmp = copy(x)
@@ -1542,8 +1543,9 @@ function frule!!(
     _arr_writeback!(x_dx, x, dx)
     return x_dx
 end
-# Width-N NDual trsv!: primal first (x ← A^{-1} x), then
-# per-lane Frechet (which uses the post-primal x).
+# Per-lane Frechet helper for trsv! (uses post-primal x). Shared by
+# width-1 (via `_trsv!_frule_core!`) and width-N; each caller runs the
+# primal `BLAS.trsv!(uplo, trans, diag, A, x)` BEFORE invoking this helper.
 @inline function _trsv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
     BLAS.trsv!(uplo, trans, diag, A, dx)
     tmp = BLAS.trmv(uplo, trans, diag, dA, x)
@@ -1712,7 +1714,8 @@ end
     _arr_writeback!(C_dC, C, dC)
     return C_dC
 end
-# Width-N NDual gemm!: per-lane Frechet then primal once.
+# Per-lane Frechet helper for gemm!. Shared by width-1 and width-N; each
+# caller runs the primal `BLAS.gemm!` separately after the Frechet.
 @inline function _gemm_frechet_lane!(tA, tB, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
     BLAS.gemm!(tA, tB, α, dA, B, β, dC)
     BLAS.gemm!(tA, tB, α, A, dB, one(P), dC)
@@ -2422,7 +2425,9 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
-# Width-N NDual trmm!: per-lane Frechet (pre-primal B) then primal once.
+# Per-lane Frechet helper for trmm! (depends on pre-primal B). Shared by
+# width-1 (via `_trmm!_frule_core!`) and width-N; each caller runs the
+# primal `BLAS.trmm!` separately after the Frechet.
 @inline function _trmm_frechet_lane!(side, uplo, ta, diag, α::P, dα, A, dA, B, dB) where {P}
     BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
     dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
@@ -2594,9 +2599,10 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
-# Width-N NDual trsm!: per-lane Frechet (which uses pre-primal B for the dα
-# branch via `tmp = copy(B)`), then primal once. Reusing pre-primal B is
-# safe because each lane recopies B independently.
+# Per-lane Frechet helper for trsm! (uses pre-primal B; each lane recopies
+# B independently for its own tangent work). Shared by width-1 (via
+# `_trsm!_frule_core!`) and width-N; each caller runs the primal
+# `BLAS.trsm!` separately after the Frechet.
 @inline function _trsm_frechet_lane!(
     side, uplo, trans, diag, α::P, dα, A, dA, B, dB
 ) where {P}
