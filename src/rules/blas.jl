@@ -1685,8 +1685,8 @@ function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
 end
 
-# Consolidated width-1 gemm!: covers Real and Complex via element-type
-# union signatures. `one(eltype(C))` works for both `Float64` and `Complex{Float64}`.
+# Width-1 gemm!: covers Real and Complex via slot Union; delegates Frechet
+# to `_gemm_frechet_lane!`, then runs the primal.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
@@ -2318,9 +2318,8 @@ end
     return C_dC
 end
 
-# Consolidated width-1 syrk!: covers Real and Complex. The underlying
-# `BLAS.syr2k!` and `BLAS.syrk!` calls natively dispatch on element type;
-# `one(eltype(C))` yields the correct β scalar shape for either.
+# Width-1 syrk!: covers Real and Complex via slot Union; delegates Frechet
+# to `_syrk_frechet_lane!`, then runs the primal.
 function frule!!(
     ::Dual{typeof(BLAS.syrk!)},
     _uplo::Dual{Char},
