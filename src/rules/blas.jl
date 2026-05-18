@@ -1423,34 +1423,16 @@ end
     end
     return nothing
 end
+# Consolidated width-N trmv!: covers Real (NDual{T,N}) and Complex
+# (Complex{NDual{R,N}}). Bodies were byte-identical.
 @inline function frule!!(
     ::Dual{typeof(BLAS.trmv!)},
     _uplo::Dual{Char},
     _trans::Dual{Char},
     _diag::Dual{Char},
-    A_dA::AbstractMatrix{NDual{T,N}},
-    x_dx::AbstractVector{NDual{T,N}},
-) where {T<:BlasRealFloat,N}
-    A, dAs = _arr_extract_n(A_dA)
-    x, dxs = _arr_extract_n(x_dx)
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    @inbounds for lane in 1:N
-        _trmv_frechet_lane!(uplo, trans, diag, A, dAs[lane], x, dxs[lane])
-    end
-    BLAS.trmv!(uplo, trans, diag, A, x)
-    _arr_writeback_n!(x_dx, x, dxs)
-    return x_dx
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.trmv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-    x_dx::AbstractVector{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
+    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+    x_dx::AbstractVector{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
+) where {P<:IEEEFloat,N}
     A, dAs = _arr_extract_n(A_dA)
     x, dxs = _arr_extract_n(x_dx)
     uplo = primal(_uplo)
