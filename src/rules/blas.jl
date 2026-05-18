@@ -2315,15 +2315,18 @@ end
     return C_dC
 end
 
+# Consolidated width-1 syrk!: covers Real and Complex. The underlying
+# `BLAS.syr2k!` and `BLAS.syrk!` calls natively dispatch on element type;
+# `one(eltype(C))` yields the correct β scalar shape for either.
 function frule!!(
     ::Dual{typeof(BLAS.syrk!)},
     _uplo::Dual{Char},
     _t::Dual{Char},
-    α_dα::_ScalarLikeWidth1{T},
-    A_dA::_VecOrMatLikeWidth1{T},
-    β_dβ::_ScalarLikeWidth1{T},
-    C_dC::_MatLikeWidth1{T},
-) where {T<:BlasRealFloat}
+    α_dα::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    A_dA::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
+    β_dβ::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
+    C_dC::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
+)
     uplo = primal(_uplo)
     t = primal(_t)
     α, dα = _scalar_extract(α_dα)
@@ -2332,7 +2335,7 @@ function frule!!(
     C, dC = _arr_extract(C_dC)
 
     BLAS.syr2k!(uplo, t, α, A, dA, β, dC)
-    iszero(dα) || BLAS.syrk!(uplo, t, dα, A, one(T), dC)
+    iszero(dα) || BLAS.syrk!(uplo, t, dα, A, one(eltype(C)), dC)
     if !iszero(dβ)
         dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
     end
@@ -2344,7 +2347,7 @@ end
 
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(BLAS.syrk!),Char,Char,T,AbstractVecOrMat{T},T,AbstractMatrix{T}}}
-) where {T<:BlasRealFloat} = true
+) where {T<:BlasFloat} = true
 
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.syrk!),N},
@@ -2354,7 +2357,7 @@ end
     A_dA::Mooncake.Lifted{<:AbstractVecOrMat{T}},
     β_dβ::Mooncake.Lifted{T},
     C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
-) where {N,T<:BlasRealFloat}
+) where {N,T<:BlasFloat}
     bare_result = frule!!(
         Mooncake._unlift(f),
         Mooncake._unlift(uplo),
