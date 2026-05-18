@@ -1267,11 +1267,10 @@ end
     A, dA = _arr_extract(A_dA)
     x, dx = _arr_extract(x_dx)
     y, dy = _arr_extract(y_dy)
-    C_T = Complex{R}
 
     BLAS.hemv!(ul, dα, A, x, β, dy)
-    BLAS.hemv!(ul, α, dA, x, one(C_T), dy)
-    BLAS.hemv!(ul, α, A, dx, one(C_T), dy)
+    BLAS.hemv!(ul, α, dA, x, one(eltype(y)), dy)
+    BLAS.hemv!(ul, α, A, dx, one(eltype(y)), dy)
     if !iszero(dβ)
         @inbounds for n in eachindex(y)
             tmp = dβ * y[n]
