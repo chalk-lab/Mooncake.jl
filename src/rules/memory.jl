@@ -490,64 +490,54 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(lmemoryrefget),<:MemoryRef,<:Val,<:Val}}
 ) = true
+# Source-of-truth Lifted body for `lmemoryrefget`. Handles both
+# width-1 (singleton-NTangent unwrap → single memoryrefget) and width N≥2
+# (per-lane NTangent → per-lane memoryrefget) uniformly via tangent
+# introspection. Replaces the prior architecture (bare-Dual width-1 +
+# generic Lifted delegator + width-N NTangent-specific scaffold).
 @inline function frule!!(
-    ::Dual{typeof(lmemoryrefget)},
-    x::Dual{<:MemoryRef},
-    _ordering::Dual{<:Val},
-    _boundscheck::Dual{<:Val},
-)
-    ordering = primal(_ordering)
-    bc = primal(_boundscheck)
-    y = memoryrefget(primal(x), _val(ordering), _val(bc))
-    # At width 1, `tangent(x)` for
-    # `Dual{MemoryRef{T}, NTangent{Tuple{MemoryRef{TT}}}}` is the outer
-    # NTangent; `memoryrefget(::NTangent, ...)` fails. Unwrap the
-    # singleton-NTangent.
-    dy = memoryrefget(
-        Mooncake._ntangent_unwrap_singleton(tangent(x)), _val(ordering), _val(bc)
-    )
-    return Dual(y, dy)
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(lmemoryrefget),N},
+    ::Mooncake.Lifted{typeof(lmemoryrefget),N},
     x::Mooncake.Lifted{<:MemoryRef},
     _ordering::Mooncake.Lifted{<:Val},
     _boundscheck::Mooncake.Lifted{<:Val},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(x),
-        Mooncake._unlift(_ordering),
-        Mooncake._unlift(_boundscheck),
-    )
+    inner_x = Mooncake._unlift(x)
+    ord = _val(primal(Mooncake._unlift(_ordering)))
+    bc = _val(primal(Mooncake._unlift(_boundscheck)))
+    y = memoryrefget(primal(inner_x), ord, bc)
+    raw_t = tangent(inner_x)
+    # Width N≥2 NTangent-wrapped MemoryRef: per-lane memoryrefget.
+    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        dys = ntuple(
+            lane -> memoryrefget(raw_t.lanes[lane], ord, bc), Val(length(raw_t.lanes))
+        )
+        return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
+    end
+    # Width-1: tangent is `NTangent{Tuple{MemoryRef}}` (canonical singleton)
+    # or already-bare MemoryRef; the helper handles both.
+    dy = memoryrefget(Mooncake._ntangent_unwrap_singleton(raw_t), ord, bc)
+    bare_result = Dual(y, dy)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
-# Width-N lmemoryrefget for NTangent-wrapped MemoryRef dest. Read all N
-# lane MemoryRef tangents — the bare-Dual rule above only services lane 1
-# via `Mooncake._ntangent_unwrap_singleton` which unwraps singleton-NTangent.
+# Bare-Dual delegator: supports direct invocation from
+# `frule!!(zero_dual(lmemoryrefget), x_dual, ...)` by lifting into
+# `Lifted{T,1}(p, t)` and calling the Lifted body above.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(lmemoryrefget),N},
-    x::Mooncake.Lifted{
-        <:MemoryRef,N,<:Dual{<:MemoryRef,<:Mooncake.NTangent{<:NTuple{N,<:MemoryRef}}}
-    },
-    _ordering::Mooncake.Lifted{<:Val},
-    _boundscheck::Mooncake.Lifted{<:Val},
-) where {N}
-    N == 1 && return @invoke frule!!(
-        f::Mooncake.Lifted{typeof(lmemoryrefget),N},
-        x::Mooncake.Lifted{<:MemoryRef},
-        _ordering::Mooncake.Lifted{<:Val},
-        _boundscheck::Mooncake.Lifted{<:Val},
+    f::Dual{typeof(lmemoryrefget)},
+    x::Dual{<:MemoryRef},
+    _ordering::Dual{<:Val},
+    _boundscheck::Dual{<:Val},
+)
+    lifted_f = Mooncake.Lifted{typeof(lmemoryrefget),1}(primal(f), tangent(f))
+    lifted_x = Mooncake.Lifted{_typeof(primal(x)),1}(primal(x), tangent(x))
+    lifted_o = Mooncake.Lifted{_typeof(primal(_ordering)),1}(
+        primal(_ordering), tangent(_ordering)
     )
-    bare_x = Mooncake._unlift(x)
-    ord = _val(primal(Mooncake._unlift(_ordering)))
-    bc = _val(primal(Mooncake._unlift(_boundscheck)))
-    y = memoryrefget(primal(bare_x), ord, bc)
-    tangents = ntuple(Val(N)) do n
-        memoryrefget(tangent(bare_x).lanes[n], ord, bc)
-    end
-    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(tangents))
+    lifted_b = Mooncake.Lifted{_typeof(primal(_boundscheck)),1}(
+        primal(_boundscheck), tangent(_boundscheck)
+    )
+    return Mooncake._unlift(frule!!(lifted_f, lifted_x, lifted_o, lifted_b))
 end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
