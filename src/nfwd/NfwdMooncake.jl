@@ -991,20 +991,6 @@ for W in (
     end
 end
 
-# Hermitian / Symmetric: like the triangular wrappers but with an extra
-# non-differentiable `uplo::Char` field. Constructor takes `(matrix, ::Symbol)`,
-# so we pick `:U`/`:L` from the primal's `uplo` char on the hot path.
-for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
-    @eval begin
-        function dual_type(::Val{N}, ::Type{$(W){T,P}}) where {N,T<:IEEEFloat,P<:Matrix{T}}
-            return $(W){NDual{T,N},Matrix{NDual{T,N}}}
-        end
-        function dual_type(::Val{0}, ::Type{$(W){T,P}}) where {T<:IEEEFloat,P<:Matrix{T}}
-            return $(W){T,P}
-        end
-    end
-end
-
 # SubArray{T, D, Array{T,Dp}, I, L} — :parent::Array{T,Dp} is the only
 # differentiable field; :indices, :offset1, :stride1 are NoTangent.
 function dual_type(
@@ -1054,6 +1040,8 @@ for Wrapper in (
     :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
     :(Base.ReshapedArray{T,D,P,MI} where {T<:IEEEFloat,D,P,MI}),
     :(Base.ReshapedArray{Complex{T},D,P,MI} where {T<:IEEEFloat,D,P,MI}),
+    :(LinearAlgebra.Symmetric{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
+    :(LinearAlgebra.Hermitian{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
 )
     @eval begin
         function dual_type(
@@ -1278,8 +1266,6 @@ for W in (
     :(LinearAlgebra.UnitUpperTriangular),
     :(LinearAlgebra.UnitLowerTriangular),
     :(LinearAlgebra.UpperHessenberg),
-    :(LinearAlgebra.Symmetric),
-    :(LinearAlgebra.Hermitian),
 )
     @eval @inline function Mooncake.__primal_type(
         ::Type{$(W){NDual{T,N},Matrix{NDual{T,N}}}}
@@ -1478,15 +1464,6 @@ for W in (
     ) where {T<:IEEEFloat,N}
         data_t = Mooncake._get_tangent_field(tangent, :data)
         return $(W)(Matrix{NDual{T,N}}(primal.data, data_t))
-    end
-end
-
-for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
-    @eval function (::Type{$(W){NDual{T,N},Matrix{NDual{T,N}}}})(
-        primal::$(W){T,<:Matrix{T}}, tangent::Mooncake.Tangent
-    ) where {T<:IEEEFloat,N}
-        data_t = Mooncake._get_tangent_field(tangent, :data)
-        return $(W)(Matrix{NDual{T,N}}(primal.data, data_t), primal.uplo == 'U' ? :U : :L)
     end
 end
 
@@ -1868,17 +1845,6 @@ for W in (
         end
         function tangent(x::$(W){NDual{T,N},<:Matrix{NDual{T,N}}}) where {T<:IEEEFloat,N}
             return Mooncake.Tangent((; data=tangent(x.data)))
-        end
-    end
-end
-
-for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
-    @eval begin
-        function primal(x::$(W){NDual{T,N},<:Matrix{NDual{T,N}}}) where {T<:IEEEFloat,N}
-            return $(W)(primal(x.data), x.uplo == 'U' ? :U : :L)
-        end
-        function tangent(x::$(W){NDual{T,N},<:Matrix{NDual{T,N}}}) where {T<:IEEEFloat,N}
-            return Mooncake.Tangent((; data=tangent(x.data), uplo=Mooncake.NoTangent()))
         end
     end
 end
@@ -2275,15 +2241,6 @@ for W in (
         x::$(W){NDual{T,N},<:AbstractMatrix{NDual{T,N}}}, i::Integer
     ) where {T<:IEEEFloat,N}
         return Mooncake.Tangent((; data=Mooncake.tangent(x.data, i)))
-    end
-end
-for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
-    @eval @inline function Mooncake.tangent(
-        x::$(W){NDual{T,N},<:AbstractMatrix{NDual{T,N}}}, i::Integer
-    ) where {T<:IEEEFloat,N}
-        return Mooncake.Tangent((;
-            data=Mooncake.tangent(x.data, i), uplo=Mooncake.NoTangent()
-        ))
     end
 end
 # Mirror `tangent_type(P<:Tuple)`'s all-NoTangent fold: if every element's

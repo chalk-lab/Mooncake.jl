@@ -304,17 +304,8 @@ end
         _pin_width1_bare_dual(
             Base.ReinterpretArray{Float64,1,Float64,Vector{Float64},false}
         )
-    end
-
-    @testset "Hermitian/Symmetric canonical NDual dual_type" begin
-        for W in (LinearAlgebra.Hermitian, LinearAlgebra.Symmetric)
-            P = W{Float64,Matrix{Float64}}
-            @test Mooncake.dual_type(Val(0), P) === P
-            @test Mooncake.dual_type(Val(1), P) ===
-                W{NDual{Float64,1},Matrix{NDual{Float64,1}}}
-            @test Mooncake.dual_type(Val(2), P) ===
-                W{NDual{Float64,2},Matrix{NDual{Float64,2}}}
-        end
+        _pin_width1_bare_dual(LinearAlgebra.Symmetric{Float64,Matrix{Float64}})
+        _pin_width1_bare_dual(LinearAlgebra.Hermitian{Float64,Matrix{Float64}})
     end
 
     @testset "Transpose canonical NDual dual_type" begin
