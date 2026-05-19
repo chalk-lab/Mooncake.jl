@@ -312,6 +312,16 @@ end
 # so at width N≥2 the call `unsafe_copyto!(NTangent, NTangent, n)` errored
 # with `no method matching unsafe_copyto!(::NTangent, ::NTangent, ...)`.
 # At N==1 the singleton unwrap path handles it via the generic delegator.
+#
+# NOTE: Unlike the read-only memoryrefget/lmemoryrefget rules (Pattern-A
+# migrated to a single source-of-truth Lifted body, commits 500af2899 and
+# 59d251db2), `unsafe_copyto!` cannot fold its bare-Dual + Lifted-delegator
+# + width-N-scaffold trio into one Lifted body. The standard "bare-Dual
+# delegator wraps into Lifted{T,1}(p, t)" trick canonicalizes the inner V
+# to `MemoryRef{NDual{T,1}}` (fresh memory laid out as NDual elements),
+# breaking the in-place mutation contract — the user's `dest` would not
+# observe the copy. The 3-entry structure here is therefore the correct
+# design for mutation-semantic rules; see temp/pattern_a_mutation_finding.md.
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(unsafe_copyto!),N},
     dest::Mooncake.Lifted{
