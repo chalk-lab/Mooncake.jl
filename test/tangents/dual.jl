@@ -991,7 +991,7 @@ end
 
     @testset "unsafe_copyto! width-N struct-element MemoryRef" begin
         # Pre-fix: at width N≥2 the generic Lifted delegator routed through
-        # the bare-Dual body which used `_memrefget_tan` (singleton-NTangent
+        # the bare-Dual body which used `_ntangent_unwrap_singleton` (singleton-NTangent
         # only); the call `unsafe_copyto!(NTangent, NTangent, n)` errored.
         # Fix: width-N-specific overload doing per-lane copy.
         @static if VERSION >= v"1.11-"
@@ -1203,8 +1203,8 @@ end
     @testset "memoryrefnew width-N struct-element" begin
         # Pre-fix: `_memoryrefnew_kernel(::Dual{<:Memory})` and
         # `_memoryrefnew_kernel(::Dual{<:MemoryRef}, ::Dual{Int}[, ::Dual{Bool}])`
-        # called `memoryrefnew(_memrefnew_tan(tangent(x)), ...)` where
-        # `_memrefnew_tan` only unwraps singleton-NTangent. At width N≥2
+        # called `memoryrefnew(_ntangent_unwrap_singleton(tangent(x)), ...)` where
+        # `_ntangent_unwrap_singleton` only unwraps singleton-NTangent. At width N≥2
         # the multi-lane NTangent stayed wrapped and `memoryrefnew(::NTangent)`
         # errored with `expected GenericMemory[Ref]`. Fix: add
         # `Dual{..., <:NTangent}` overloads that map memoryrefnew over each
