@@ -29,6 +29,11 @@ Base.copy(t::NTangent) = NTangent(map(copy, t.lanes))
 # canonical form), but the rule body operates on the bare `T`. This
 # helper extracts the single lane; for non-NTangent tangents (already
 # bare), it is the identity.
+#
+# Called as `Mooncake._ntangent_unwrap_singleton(t)` from rule files
+# (foreigncall, iddict, misty_closures, memory, builtins, twice_precision,
+# avoiding_non_differentiable_code) — see commit 6485936f7 for the
+# centralisation history.
 @inline _ntangent_unwrap_singleton(t::NTangent{Tuple{T}}) where {T} = t.lanes[1]
 @inline _ntangent_unwrap_singleton(t) = t
 
