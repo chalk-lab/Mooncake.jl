@@ -1053,6 +1053,7 @@ end
 for Wrapper in (
     :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
     :(Base.ReshapedArray{T,D,P,MI} where {T<:IEEEFloat,D,P,MI}),
+    :(Base.ReshapedArray{Complex{T},D,P,MI} where {T<:IEEEFloat,D,P,MI}),
 )
     @eval begin
         function dual_type(
