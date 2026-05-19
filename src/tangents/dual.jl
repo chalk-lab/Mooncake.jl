@@ -24,6 +24,14 @@ Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
 # tangents rather than aliased references to the original.
 Base.copy(t::NTangent) = NTangent(map(copy, t.lanes))
 
+# Singleton-NTangent unwrap: many bare-Dual rules sit on top of inputs
+# whose tangent has been canonicalised to `NTangent{Tuple{T}}` (width-1
+# canonical form), but the rule body operates on the bare `T`. This
+# helper extracts the single lane; for non-NTangent tangents (already
+# bare), it is the identity.
+@inline _ntangent_unwrap_singleton(t::NTangent{Tuple{T}}) where {T} = t.lanes[1]
+@inline _ntangent_unwrap_singleton(t) = t
+
 # ── Width-aware tangent_type ──────────────────────────────────────────────────
 
 """

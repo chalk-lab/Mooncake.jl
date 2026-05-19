@@ -99,8 +99,6 @@ end
 # is itself immutable, so `pointer_from_objref(NTangent)` fails. Unwrap the
 # singleton lane to get the underlying (mutable) tangent object before
 # taking its pointer.
-@inline _foreigncall_ntangent_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
-@inline _foreigncall_ntangent_unwrap(t) = t
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(pointer_from_objref),N}, x::Mooncake.Lifted
 ) where {N}
@@ -119,7 +117,7 @@ end
     end
     dy = bitcast(
         Ptr{tangent_type(Nothing)},
-        pointer_from_objref(_foreigncall_ntangent_unwrap(inner_tan)),
+        pointer_from_objref(Mooncake._ntangent_unwrap_singleton(inner_tan)),
     )
     return Mooncake.Lifted{Ptr{Nothing},N}(y, dy)
 end
@@ -138,7 +136,7 @@ end
 # `unsafe_pointer_to_objref`: the Lifted-typed body below computes the
 # result independently. No bare-Dual body is needed.
 # `tangent(::Dual{Ptr, NTangent{Tuple{Ptr}}})` returns the NTangent wrapper.
-# Reuse `_foreigncall_ntangent_unwrap` (defined above) so
+# Reuse `Mooncake._ntangent_unwrap_singleton` (defined above) so
 # `unsafe_pointer_to_objref` receives the bare Ptr it expects.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.unsafe_pointer_to_objref),N}, x::Mooncake.Lifted{<:Ptr}
@@ -156,7 +154,7 @@ end
         end
         return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
     end
-    dy = unsafe_pointer_to_objref(_foreigncall_ntangent_unwrap(inner_tan))
+    dy = unsafe_pointer_to_objref(Mooncake._ntangent_unwrap_singleton(inner_tan))
     return Mooncake.Lifted{_typeof(y),N}(y, dy)
 end
 @inline Mooncake._is_lifted_aware(
@@ -198,8 +196,8 @@ end
     unsafe_copyto!(primal(inner_dest), primal(inner_src), pn)
     # Unwrap NTangent-wrapped Ptr tangent at this boundary.
     unsafe_copyto!(
-        _foreigncall_ntangent_unwrap(tangent(inner_dest)),
-        _foreigncall_ntangent_unwrap(tangent(inner_src)),
+        Mooncake._ntangent_unwrap_singleton(tangent(inner_dest)),
+        Mooncake._ntangent_unwrap_singleton(tangent(inner_src)),
         pn,
     )
     return dest

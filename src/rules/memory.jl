@@ -269,7 +269,9 @@ function frule!!(
     # `tangent(::Dual{MemoryRef{P}, NTangent{Tuple{MemoryRef{T}}}})` returns
     # the outer NTangent, not the inner MemoryRef.
     unsafe_copyto!(
-        _memref_tan_unwrap(tangent(dest)), _memref_tan_unwrap(tangent(src)), primal(n)
+        Mooncake._ntangent_unwrap_singleton(tangent(dest)),
+        Mooncake._ntangent_unwrap_singleton(tangent(src)),
+        primal(n),
     )
     return dest
 end
@@ -306,7 +308,7 @@ end
 end
 # Width-N unsafe_copyto! for NTangent-wrapped MemoryRef (struct-element /
 # non-IEEEFloat-element case). The generic delegator above routes through
-# the bare-Dual body which uses `_memref_tan_unwrap` (singleton-NTangent only),
+# the bare-Dual body which uses `Mooncake._ntangent_unwrap_singleton` (singleton-NTangent only),
 # so at width N≥2 the call `unsafe_copyto!(NTangent, NTangent, n)` errored
 # with `no method matching unsafe_copyto!(::NTangent, ::NTangent, ...)`.
 # At N==1 the singleton unwrap path handles it via the generic delegator.
@@ -501,7 +503,9 @@ end
     # `Dual{MemoryRef{T}, NTangent{Tuple{MemoryRef{TT}}}}` is the outer
     # NTangent; `memoryrefget(::NTangent, ...)` fails. Unwrap the
     # singleton-NTangent.
-    dy = memoryrefget(_memref_tan_unwrap(tangent(x)), _val(ordering), _val(bc))
+    dy = memoryrefget(
+        Mooncake._ntangent_unwrap_singleton(tangent(x)), _val(ordering), _val(bc)
+    )
     return Dual(y, dy)
 end
 @inline function frule!!(
@@ -521,7 +525,7 @@ end
 end
 # Width-N lmemoryrefget for NTangent-wrapped MemoryRef dest. Read all N
 # lane MemoryRef tangents — the bare-Dual rule above only services lane 1
-# via `_memref_tan_unwrap` which unwraps singleton-NTangent.
+# via `Mooncake._ntangent_unwrap_singleton` which unwraps singleton-NTangent.
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lmemoryrefget),N},
     x::Mooncake.Lifted{
@@ -564,8 +568,6 @@ end
     return CoDual(y, dy), lmemoryrefget_adjoint
 end
 
-@inline _memref_tan_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
-@inline _memref_tan_unwrap(t) = t
 @inline Base.@propagate_inbounds function frule!!(
     ::Dual{typeof(memoryrefget)},
     x::Dual{<:MemoryRef},
@@ -577,7 +579,9 @@ end
     y = memoryrefget(primal(x), ordering, boundscheck)
     # `tangent(x::Dual{<:MemoryRef, NTangent{Tuple{<:MemoryRef}}})` returns
     # the NTangent wrapper; unwrap to bare MemoryRef.
-    dy = memoryrefget(_memref_tan_unwrap(tangent(x)), ordering, boundscheck)
+    dy = memoryrefget(
+        Mooncake._ntangent_unwrap_singleton(tangent(x)), ordering, boundscheck
+    )
     return Dual(y, dy)
 end
 # Canonical width-1 MemoryRef{NDual} arrives bare (not Dual-wrapped) when
@@ -613,7 +617,7 @@ end
 # Width-N memoryrefget for NTangent-wrapped MemoryRef dest (paralleling
 # `lmemoryrefget`'s width-N specific overload). Reads all N lane MemoryRef
 # tangents — the generic Lifted delegator above relies on the bare-Dual
-# rule's `_memref_tan_unwrap` singleton-NTangent helper which doesn't
+# rule's `Mooncake._ntangent_unwrap_singleton` singleton-NTangent helper which doesn't
 # handle N≥2. Without this overload, struct-element MemoryRef at width N≥2
 # raised `expected GenericMemoryRef, got NTangent`. At N==1 the generic
 # delegator handles the wrapper-unwrap path (singleton NTangent → bare
@@ -674,10 +678,10 @@ end
 # slot is `NTangent{Tuple{Memory}}`; unwrap to the bare `Memory` before
 # calling `memoryrefnew`.
 @inline _memoryrefnew_kernel(x::Dual{<:Memory}) = Dual(
-    memoryrefnew(primal(x)), memoryrefnew(_memref_tan_unwrap(tangent(x)))
+    memoryrefnew(primal(x)), memoryrefnew(Mooncake._ntangent_unwrap_singleton(tangent(x)))
 )
 # Width-N NTangent-wrapped Memory: per-lane memoryrefnew on each lane Memory.
-# `_memref_tan_unwrap` only unwraps singleton NTangent — at width N≥2 the wrapper
+# `Mooncake._ntangent_unwrap_singleton` only unwraps singleton NTangent — at width N≥2 the wrapper
 # stays and `memoryrefnew(::NTangent)` errors. Build the result NTangent
 # explicitly from per-lane MemoryRefs.
 @inline function _memoryrefnew_kernel(x::Dual{<:Memory,<:Mooncake.NTangent})
@@ -688,7 +692,7 @@ end
 @inline _memoryrefnew_kernel(x::Memory{<:_HasNDual}) = memoryrefnew(x)
 @inline _memoryrefnew_kernel(x::Dual{<:MemoryRef}, ii::Dual{Int}) = Dual(
     memoryrefnew(primal(x), primal(ii)),
-    memoryrefnew(_memref_tan_unwrap(tangent(x)), primal(ii)),
+    memoryrefnew(Mooncake._ntangent_unwrap_singleton(tangent(x)), primal(ii)),
 )
 # Width-N NTangent-wrapped MemoryRef + Int: per-lane memoryrefnew with index.
 @inline function _memoryrefnew_kernel(
@@ -707,7 +711,9 @@ end
     x::Dual{<:MemoryRef}, ii::Dual{Int}, boundscheck::Dual{Bool}
 )
     y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = memoryrefnew(_memref_tan_unwrap(tangent(x)), primal(ii), primal(boundscheck))
+    dy = memoryrefnew(
+        Mooncake._ntangent_unwrap_singleton(tangent(x)), primal(ii), primal(boundscheck)
+    )
     return Dual(y, dy)
 end
 # Width-N NTangent-wrapped MemoryRef + Int + Bool: per-lane memoryrefnew.

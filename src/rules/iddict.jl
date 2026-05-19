@@ -126,9 +126,7 @@ tangent(f::IdDict, ::NoRData) = f
 # rather than the bare T. For mutation-semantic rules (rehash!, setindex!,
 # getindex on IdDict), unwrap the singleton lane so the underlying mutable
 # IdDict is operated on rather than the wrapper.
-@inline _iddict_tangent(d::Dual{<:IdDict}) = _iddict_unwrap(tangent(d))
-@inline _iddict_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
-@inline _iddict_unwrap(t) = t
+@inline _iddict_tangent(d::Dual{<:IdDict}) = Mooncake._ntangent_unwrap_singleton(tangent(d))
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.rehash!),N},
     d::Mooncake.Lifted{<:IdDict},
@@ -160,7 +158,9 @@ end
 # below dispatches on the runtime val V (`Dual` or `NDual` for IEEEFloat).
 @inline function _setindex_iddict!(d::Dual{IdDict{K,V}}, val::Dual, key) where {K,V}
     setindex!(primal(d), primal(val), primal(key))
-    setindex!(_iddict_tangent(d), _iddict_unwrap(tangent(val)), primal(key))
+    setindex!(
+        _iddict_tangent(d), Mooncake._ntangent_unwrap_singleton(tangent(val)), primal(key)
+    )
     return nothing
 end
 @inline function _setindex_iddict!(
@@ -241,7 +241,11 @@ end
 # dispatches on the runtime default V.
 @inline function _get_iddict(d::Dual{IdDict{K,V}}, key::Dual, default::Dual) where {K,V}
     x = get(primal(d), primal(key), primal(default))
-    dx = get(_iddict_tangent(d), primal(key), _iddict_unwrap(tangent(default)))
+    dx = get(
+        _iddict_tangent(d),
+        primal(key),
+        Mooncake._ntangent_unwrap_singleton(tangent(default)),
+    )
     return Dual(x, dx)
 end
 @inline function _get_iddict(
@@ -333,7 +337,7 @@ end
 end
 # Width-N getindex on NTangent-wrapped IdDict (parallel to the `get` rule's
 # width-N overload). The generic delegator above calls `_iddict_tangent` →
-# `_iddict_unwrap` (singleton-only), then `getindex(::NTangent, key::Int)`
+# `Mooncake._ntangent_unwrap_singleton` (singleton-only), then `getindex(::NTangent, key::Int)`
 # resolves to `Base.getindex(::NTangent, ::Int)` returning LANE `key` — not
 # the value at that key in any of the N per-lane IdDicts. Silent
 # correctness bug (returns the wrong shape entirely).

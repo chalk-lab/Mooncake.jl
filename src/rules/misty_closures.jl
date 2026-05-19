@@ -203,8 +203,6 @@ end
 # NTangent wrapper, not the bare MistyClosureTangent. Unwrap the singleton
 # lane at this boundary so field access (`.captures_tangent`,
 # `.dual_callable`) dispatches on the bare MistyClosureTangent.
-@inline _mct_unwrap(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
-@inline _mct_unwrap(t) = t
 @inline function _misty_closure_kernel(f::Dual{<:MistyClosure}, x...)
     raw_t = tangent(f)
     # Width N≥2: each lane has its own MistyClosureTangent; per-lane invocation
@@ -223,7 +221,7 @@ end
         tan_results = ntuple(lane -> tangent(per_lane[lane]), Val(N))
         return Dual(primal_result, Mooncake.NTangent(tan_results))
     end
-    mct = _mct_unwrap(raw_t)
+    mct = Mooncake._ntangent_unwrap_singleton(raw_t)
     dual_captures = Dual(primal(f).oc.captures, mct.captures_tangent)
     return mct.dual_callable(dual_captures, x...)
 end

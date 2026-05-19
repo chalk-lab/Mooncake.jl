@@ -68,9 +68,7 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 # These kernels and downstream rule bodies need the bare lane value so
 # arithmetic / conversion / `twiceprecision(t, nb)` dispatches correctly.
 # Unwrap singleton NTangent at every `tangent(d)` boundary in this file.
-@inline _twp_tangent(d::Dual) = _twp_unwrap_lane(tangent(d))
-@inline _twp_unwrap_lane(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
-@inline _twp_unwrap_lane(t) = t
+@inline _twp_tangent(d::Dual) = Mooncake._ntangent_unwrap_singleton(tangent(d))
 @inline _twp_val(d::Dual{P}) where {P<:IEEEFloat} = primal(d), _twp_tangent(d)
 @inline _twp_val(d::Mooncake.Nfwd.NDual{P,1}) where {P<:IEEEFloat} = d.value, d.partials[1]
 # Width-N NDual: return per-lane partials tuple. Callers above (the
