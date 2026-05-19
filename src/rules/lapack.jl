@@ -287,8 +287,8 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
-# Width-N trtrs!: per-lane Frechet (pre-primal B) then primal once.
-# Covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}}).
+# Width-N trtrs!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; per-lane `_trtrs_frechet_lane!` then primal once.
 @inline function frule!!(
     ::Dual{typeof(trtrs!)},
     _uplo::Dual{Char},
