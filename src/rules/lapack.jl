@@ -140,11 +140,12 @@ end
         Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
     )
 end
-# Width-N kwcall variants: at chunked AD width N≥2, `_unlift(A_dA)` from
-# the Lifted overload below produces `Matrix{NDual{P, N}}` (canonical V).
-# `_MatLikeWidth1{P}` excludes that shape, so the width-1 kwcall rules
-# above don't match → MethodError. Mirror the no-kwarg width-N rules at
-# lines 45-58 (BlasRealFloat) and 60-73 (BlasComplexFloat).
+# Width-N kwcall getrf!(A; check): at chunked AD width N≥2, `_unlift(A_dA)`
+# from the Lifted overload below produces `Matrix{NDual{P, N}}` (canonical V)
+# or `Matrix{Complex{NDual{P, N}}}`. `_MatLikeWidth1{P}` excludes those
+# shapes, so the width-1 kwcall rule above doesn't match → MethodError.
+# Covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}}) via the
+# element-type Union, mirroring the no-kwarg width-N rule above.
 @inline function frule!!(
     f::Dual{typeof(Core.kwcall)},
     kwargs::NamedTuple,
