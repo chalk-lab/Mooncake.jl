@@ -304,10 +304,6 @@ end
         _pin_width1_bare_dual(
             Base.ReinterpretArray{Float64,1,Float64,Vector{Float64},false}
         )
-        _pin_width1_bare_dual(LinearAlgebra.LowerTriangular{Float64,Matrix{Float64}})
-        _pin_width1_bare_dual(LinearAlgebra.UnitUpperTriangular{Float64,Matrix{Float64}})
-        _pin_width1_bare_dual(LinearAlgebra.UnitLowerTriangular{Float64,Matrix{Float64}})
-        _pin_width1_bare_dual(LinearAlgebra.UpperHessenberg{Float64,Matrix{Float64}})
         _pin_width1_bare_dual(LinearAlgebra.Symmetric{Float64,Matrix{Float64}})
         _pin_width1_bare_dual(LinearAlgebra.Hermitian{Float64,Matrix{Float64}})
     end
@@ -334,13 +330,23 @@ end
             LinearAlgebra.Adjoint{NDual{Float64,2},Vector{NDual{Float64,2}}}
     end
 
-    @testset "UpperTriangular canonical NDual dual_type" begin
-        UT = LinearAlgebra.UpperTriangular{Float64,Matrix{Float64}}
-        @test Mooncake.dual_type(Val(0), UT) === UT
-        @test Mooncake.dual_type(Val(1), UT) ===
-            LinearAlgebra.UpperTriangular{NDual{Float64,1},Matrix{NDual{Float64,1}}}
-        @test Mooncake.dual_type(Val(2), UT) ===
-            LinearAlgebra.UpperTriangular{NDual{Float64,2},Matrix{NDual{Float64,2}}}
+    @testset "`.data::Matrix{T}` wrappers canonical NDual dual_type" begin
+        # All five wrappers share a single `data::Matrix{T}` field and
+        # migrate via the same @eval template in NfwdMooncake.jl.
+        for W in (
+            LinearAlgebra.UpperTriangular,
+            LinearAlgebra.LowerTriangular,
+            LinearAlgebra.UnitUpperTriangular,
+            LinearAlgebra.UnitLowerTriangular,
+            LinearAlgebra.UpperHessenberg,
+        )
+            P = W{Float64,Matrix{Float64}}
+            @test Mooncake.dual_type(Val(0), P) === P
+            @test Mooncake.dual_type(Val(1), P) ===
+                W{NDual{Float64,1},Matrix{NDual{Float64,1}}}
+            @test Mooncake.dual_type(Val(2), P) ===
+                W{NDual{Float64,2},Matrix{NDual{Float64,2}}}
+        end
     end
 
     @testset "1-arg constructor (V inferred from inner)" begin

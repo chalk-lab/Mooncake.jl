@@ -969,18 +969,26 @@ function dual_type(
     return LinearAlgebra.Adjoint{T,P}
 end
 
-# UpperTriangular{T, <:Matrix{T}} — single :data::Matrix{T} field. Canonical
-# NDual-element form mirrors the Adjoint/Transpose template (Project 1
-# wrapper-exception unification).
-function dual_type(
-    ::Val{N}, ::Type{LinearAlgebra.UpperTriangular{T,P}}
-) where {N,T<:IEEEFloat,P<:Matrix{T}}
-    return LinearAlgebra.UpperTriangular{NDual{T,N},Matrix{NDual{T,N}}}
-end
-function dual_type(
-    ::Val{0}, ::Type{LinearAlgebra.UpperTriangular{T,P}}
-) where {T<:IEEEFloat,P<:Matrix{T}}
-    return LinearAlgebra.UpperTriangular{T,P}
+# `data::Matrix{T}`-shaped LinearAlgebra wrappers: canonical NDual-element
+# form mirrors the Adjoint/Transpose template (Project 1 wrapper-exception
+# unification). All five wrappers below have an identical single
+# `data::Matrix{T}` layout, so the dual_type/constructor/accessor blocks
+# generate uniformly.
+for W in (
+    :(LinearAlgebra.UpperTriangular),
+    :(LinearAlgebra.LowerTriangular),
+    :(LinearAlgebra.UnitUpperTriangular),
+    :(LinearAlgebra.UnitLowerTriangular),
+    :(LinearAlgebra.UpperHessenberg),
+)
+    @eval begin
+        function dual_type(::Val{N}, ::Type{$(W){T,P}}) where {N,T<:IEEEFloat,P<:Matrix{T}}
+            return $(W){NDual{T,N},Matrix{NDual{T,N}}}
+        end
+        function dual_type(::Val{0}, ::Type{$(W){T,P}}) where {T<:IEEEFloat,P<:Matrix{T}}
+            return $(W){T,P}
+        end
+    end
 end
 
 # SubArray{T, D, Array{T,Dp}, I, L} — :parent::Array{T,Dp} is the only
@@ -1010,10 +1018,6 @@ end
 for Wrapper in (
     :(Base.ReshapedArray{T,D,P,MI} where {T<:IEEEFloat,D,P,MI}),
     :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
-    :(LinearAlgebra.LowerTriangular{T,P} where {T<:IEEEFloat,P}),
-    :(LinearAlgebra.UnitUpperTriangular{T,P} where {T<:IEEEFloat,P}),
-    :(LinearAlgebra.UnitLowerTriangular{T,P} where {T<:IEEEFloat,P}),
-    :(LinearAlgebra.UpperHessenberg{T,P} where {T<:IEEEFloat,P}),
     :(LinearAlgebra.Symmetric{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
     :(LinearAlgebra.Hermitian{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
 )
@@ -1376,11 +1380,19 @@ function (::Type{LinearAlgebra.Adjoint{NDual{T,N},Array{NDual{T,N},D}}})(
     return LinearAlgebra.Adjoint(Array{NDual{T,N},D}(parent(primal), parent_t))
 end
 
-function (::Type{LinearAlgebra.UpperTriangular{NDual{T,N},Matrix{NDual{T,N}}}})(
-    primal::LinearAlgebra.UpperTriangular{T,<:Matrix{T}}, tangent::Mooncake.Tangent
-) where {T<:IEEEFloat,N}
-    data_t = Mooncake._get_tangent_field(tangent, :data)
-    return LinearAlgebra.UpperTriangular(Matrix{NDual{T,N}}(primal.data, data_t))
+for W in (
+    :(LinearAlgebra.UpperTriangular),
+    :(LinearAlgebra.LowerTriangular),
+    :(LinearAlgebra.UnitUpperTriangular),
+    :(LinearAlgebra.UnitLowerTriangular),
+    :(LinearAlgebra.UpperHessenberg),
+)
+    @eval function (::Type{$(W){NDual{T,N},Matrix{NDual{T,N}}}})(
+        primal::$(W){T,<:Matrix{T}}, tangent::Mooncake.Tangent
+    ) where {T<:IEEEFloat,N}
+        data_t = Mooncake._get_tangent_field(tangent, :data)
+        return $(W)(Matrix{NDual{T,N}}(primal.data, data_t))
+    end
 end
 
 function (::Type{SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}})(
@@ -1739,15 +1751,21 @@ function tangent(
     return Mooncake.Tangent((; parent=tangent(parent(a))))
 end
 
-function primal(
-    x::LinearAlgebra.UpperTriangular{NDual{T,N},<:Matrix{NDual{T,N}}}
-) where {T<:IEEEFloat,N}
-    return LinearAlgebra.UpperTriangular(primal(x.data))
-end
-function tangent(
-    x::LinearAlgebra.UpperTriangular{NDual{T,N},<:Matrix{NDual{T,N}}}
-) where {T<:IEEEFloat,N}
-    return Mooncake.Tangent((; data=tangent(x.data)))
+for W in (
+    :(LinearAlgebra.UpperTriangular),
+    :(LinearAlgebra.LowerTriangular),
+    :(LinearAlgebra.UnitUpperTriangular),
+    :(LinearAlgebra.UnitLowerTriangular),
+    :(LinearAlgebra.UpperHessenberg),
+)
+    @eval begin
+        function primal(x::$(W){NDual{T,N},<:Matrix{NDual{T,N}}}) where {T<:IEEEFloat,N}
+            return $(W)(primal(x.data))
+        end
+        function tangent(x::$(W){NDual{T,N},<:Matrix{NDual{T,N}}}) where {T<:IEEEFloat,N}
+            return Mooncake.Tangent((; data=tangent(x.data)))
+        end
+    end
 end
 
 function primal(
@@ -2106,10 +2124,18 @@ end
 ) where {T<:IEEEFloat,N}
     return Mooncake.Tangent((; parent=Mooncake.tangent(parent(x), i)))
 end
-@inline function Mooncake.tangent(
-    x::LinearAlgebra.UpperTriangular{NDual{T,N},<:AbstractMatrix{NDual{T,N}}}, i::Integer
-) where {T<:IEEEFloat,N}
-    return Mooncake.Tangent((; data=Mooncake.tangent(x.data, i)))
+for W in (
+    :(LinearAlgebra.UpperTriangular),
+    :(LinearAlgebra.LowerTriangular),
+    :(LinearAlgebra.UnitUpperTriangular),
+    :(LinearAlgebra.UnitLowerTriangular),
+    :(LinearAlgebra.UpperHessenberg),
+)
+    @eval @inline function Mooncake.tangent(
+        x::$(W){NDual{T,N},<:AbstractMatrix{NDual{T,N}}}, i::Integer
+    ) where {T<:IEEEFloat,N}
+        return Mooncake.Tangent((; data=Mooncake.tangent(x.data, i)))
+    end
 end
 # Mirror `tangent_type(P<:Tuple)`'s all-NoTangent fold: if every element's
 # direction tangent is `NoTangent`, return a single `NoTangent` so that
