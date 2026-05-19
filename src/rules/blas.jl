@@ -95,14 +95,6 @@ function arrayify(
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, adjoint(_dx)
 end
-function arrayify(
-    x::Transpose{T,<:AbstractArray{T}}, dx::TangentOrFData
-) where {T<:Union{IEEEFloat,BlasFloat}}
-    _, _dx = arrayify(x.parent, _fields(dx).parent)
-    return x, transpose(_dx)
-end
-# NDual-element Transpose: not yet emitted by `dual_type`, but reachable
-# once the parallel-Dual exception for `Transpose` is unwound.
 function arrayify(x::Transpose{NDual{T,1},<:AbstractArray{NDual{T,1}}}) where {T<:IEEEFloat}
     p_parent, d_parent = _arr_extract(x.parent)
     return transpose(p_parent), transpose(d_parent)
