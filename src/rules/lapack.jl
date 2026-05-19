@@ -655,10 +655,14 @@ end
     A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
 ) where {P<:BlasFloat}
     L = UnitLowerTriangular(A)
+    # `UnitLowerTriangular(dA)` overrides the diagonal of `dA` with 1, so
+    # `dL_plus_I` algebraically represents `dL + I` (not `dL`).
     dL_plus_I = UnitLowerTriangular(dA)
     U = UpperTriangular(A)
     dU = UpperTriangular(dA)
     p = LinearAlgebra.ipiv2perm(ipiv, size(dA, 1))
+    # `(dL + I) * U - U == dL * U`, then `mul!` adds `L * dU` in place to
+    # reach `L * dU + dL * U`, finally row-permute by `inv(P)`.
     tmp = dL_plus_I * U
     tmp .-= U
     return mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
