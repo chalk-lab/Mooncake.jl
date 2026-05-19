@@ -1079,6 +1079,23 @@ end
     ::Val{0}, ::AbstractRNG, x::LinearAlgebra.Transpose{T,<:Array{T}}
 ) where {T<:IEEEFloat} = x
 
+# Bridge for `Lifted{P,1}(primal, tangent::Tangent)` (CoDual→Lifted in the
+# test framework): the generic generated ctor in `src/tangents/dual.jl` emits
+# `InnerT(primal, tangent)` which has no matching constructor for the new
+# `Transpose{NDual{T,1}, ...}` V. Build the NDual-element parent inline.
+@inline function Mooncake.Lifted{P,1}(
+    primal::P, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,P<:LinearAlgebra.Transpose{T,<:Array{T}}}
+    InnerT = Mooncake.dual_type(Val(1), P)
+    p_parent = primal.parent
+    t_parent = tangent.fields.parent
+    inner_parent = similar(p_parent, NDual{T,1})
+    @inbounds for i in eachindex(p_parent)
+        inner_parent[i] = NDual{T,1}(p_parent[i], (t_parent[i],))
+    end
+    return Mooncake.Lifted{P,1,InnerT}(transpose(inner_parent))
+end
+
 # StepRangeLen with TwicePrecision ref/step fields: structural NamedTuple
 # lift breaks the bare-Dual `_getindex_hiprec` / `unsafe_getindex` rule
 # bodies in `src/rules/twice_precision.jl` that expect a bare StepRangeLen
@@ -1727,6 +1744,17 @@ function tangent(
 end
 
 function primal(
+    t::LinearAlgebra.Transpose{NDual{T,N},<:Array{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    return transpose(primal(parent(t)))
+end
+function tangent(
+    t::LinearAlgebra.Transpose{NDual{T,N},<:Array{NDual{T,N}}}
+) where {T<:IEEEFloat,N}
+    return Mooncake.Tangent((; parent=tangent(parent(t))))
+end
+
+function primal(
     s::SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}
 ) where {T<:IEEEFloat,N,D,Dp,I,L}
     return view(primal(parent(s)), s.indices...)
@@ -2057,6 +2085,15 @@ end
 @inline Mooncake.tangent(x::AbstractArray{Complex{NDual{T,N}}}, i::Integer) where {T,N} = map(
     z -> complex(z.re.partials[i], z.im.partials[i]), x
 )
+# Wrap the lane-i parent tangent in a `Tangent{(parent=...)}` so it round-
+# trips against `randn_tangent(::Transpose)` in tests. Without this, the
+# bare-`map`-into-Transpose path above fires and yields a tangent shape
+# incompatible with the `_dot(::Tangent, ::Transpose)` comparison.
+@inline function Mooncake.tangent(
+    x::LinearAlgebra.Transpose{NDual{T,N},<:AbstractArray{NDual{T,N}}}, i::Integer
+) where {T<:IEEEFloat,N}
+    return Mooncake.Tangent((; parent=Mooncake.tangent(parent(x), i)))
+end
 # Mirror `tangent_type(P<:Tuple)`'s all-NoTangent fold: if every element's
 # direction tangent is `NoTangent`, return a single `NoTangent` so that
 # downstream `build_output_tangent` can place it in a `NoTangent` field
