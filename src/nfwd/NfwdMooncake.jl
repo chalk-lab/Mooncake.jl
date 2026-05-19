@@ -1005,6 +1005,19 @@ function dual_type(
     return LinearAlgebra.Hermitian{T,P}
 end
 
+# Base.ReshapedArray{T,D,<:Array{T},MI}: shape-shifted view. Only the
+# `.parent` field is differentiable; `.dims` and `.mi` are non-differentiable.
+function dual_type(
+    ::Val{N}, ::Type{Base.ReshapedArray{T,D,P,MI}}
+) where {N,T<:IEEEFloat,D,P<:Array{T},MI}
+    return Base.ReshapedArray{NDual{T,N},D,Array{NDual{T,N},ndims(P)},MI}
+end
+function dual_type(
+    ::Val{0}, ::Type{Base.ReshapedArray{T,D,P,MI}}
+) where {T<:IEEEFloat,D,P<:Array{T},MI}
+    return Base.ReshapedArray{T,D,P,MI}
+end
+
 # SubArray{T, D, Array{T,Dp}, I, L} — :parent::Array{T,Dp} is the only
 # differentiable field; :indices, :offset1, :stride1 are NoTangent.
 function dual_type(
@@ -1030,7 +1043,6 @@ end
 # (bare-T) so arrayify dispatches via `Dual{<:AbstractVecOrMat{P}}`;
 # width-N (N>=2) stays at the chunked NTangent-wrapped Dual.
 for Wrapper in (
-    :(Base.ReshapedArray{T,D,P,MI} where {T<:IEEEFloat,D,P,MI}),
     :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
     :(LinearAlgebra.Symmetric{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
 )
@@ -1414,6 +1426,16 @@ function (::Type{LinearAlgebra.Hermitian{NDual{T,N},Matrix{NDual{T,N}}}})(
     data_t = Mooncake._get_tangent_field(tangent, :data)
     return LinearAlgebra.Hermitian(
         Matrix{NDual{T,N}}(primal.data, data_t), primal.uplo == 'U' ? :U : :L
+    )
+end
+
+function (::Type{Base.ReshapedArray{NDual{T,N},D,Array{NDual{T,N},Dp},MI}})(
+    primal::Base.ReshapedArray{T,D,<:Array{T,Dp},MI}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N,D,Dp,MI}
+    parent_t = Mooncake._get_tangent_field(tangent, :parent)
+    parent_lifted = Array{NDual{T,N},Dp}(parent(primal), parent_t)
+    return Base.ReshapedArray{NDual{T,N},D,Array{NDual{T,N},Dp},MI}(
+        parent_lifted, primal.dims, primal.mi
     )
 end
 
@@ -1802,6 +1824,19 @@ function tangent(
 end
 
 function primal(
+    x::Base.ReshapedArray{NDual{T,N},D,<:Array{NDual{T,N},Dp},MI}
+) where {T<:IEEEFloat,N,D,Dp,MI}
+    return Base.ReshapedArray{T,D,Array{T,Dp},MI}(primal(parent(x)), x.dims, x.mi)
+end
+function tangent(
+    x::Base.ReshapedArray{NDual{T,N},D,<:Array{NDual{T,N},Dp},MI}
+) where {T<:IEEEFloat,N,D,Dp,MI}
+    return Mooncake.Tangent((;
+        parent=tangent(parent(x)), dims=Mooncake.NoTangent(), mi=Mooncake.NoTangent()
+    ))
+end
+
+function primal(
     t::LinearAlgebra.Transpose{NDual{T,N},<:Array{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return transpose(primal(parent(t)))
@@ -2174,6 +2209,15 @@ end
     x::LinearAlgebra.Hermitian{NDual{T,N},<:AbstractMatrix{NDual{T,N}}}, i::Integer
 ) where {T<:IEEEFloat,N}
     return Mooncake.Tangent((; data=Mooncake.tangent(x.data, i), uplo=Mooncake.NoTangent()))
+end
+@inline function Mooncake.tangent(
+    x::Base.ReshapedArray{NDual{T,N},D,<:Array{NDual{T,N},Dp},MI}, i::Integer
+) where {T<:IEEEFloat,N,D,Dp,MI}
+    return Mooncake.Tangent((;
+        parent=Mooncake.tangent(parent(x), i),
+        dims=Mooncake.NoTangent(),
+        mi=Mooncake.NoTangent(),
+    ))
 end
 # Mirror `tangent_type(P<:Tuple)`'s all-NoTangent fold: if every element's
 # direction tangent is `NoTangent`, return a single `NoTangent` so that
