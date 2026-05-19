@@ -1315,13 +1315,6 @@ w.r.t. the underlying data array `A`.
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
-function frule!!(
-    f::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    lifted_f = Mooncake.Lifted{typeof(logdet),1}(primal(f), tangent(f))
-    lifted_S = Mooncake.Lifted{_typeof(primal(_S)),1}(primal(_S), tangent(_S))
-    return Mooncake._unlift(frule!!(lifted_f, lifted_S))
-end
 function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
@@ -1373,13 +1366,6 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
     end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-function frule!!(
-    f::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    lifted_f = Mooncake.Lifted{typeof(det),1}(primal(f), tangent(f))
-    lifted_S = Mooncake.Lifted{_typeof(primal(_S)),1}(primal(_S), tangent(_S))
-    return Mooncake._unlift(frule!!(lifted_f, lifted_S))
 end
 function rrule!!(
     ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -1434,13 +1420,6 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
     end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-function frule!!(
-    f::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    lifted_f = Mooncake.Lifted{typeof(logabsdet),1}(primal(f), tangent(f))
-    lifted_S = Mooncake.Lifted{_typeof(primal(_S)),1}(primal(_S), tangent(_S))
-    return Mooncake._unlift(frule!!(lifted_f, lifted_S))
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}

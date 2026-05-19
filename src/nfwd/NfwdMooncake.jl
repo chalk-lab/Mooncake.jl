@@ -991,18 +991,18 @@ for W in (
     end
 end
 
-# Hermitian{T, <:Matrix{T}}: like the triangular wrappers but with an extra
+# Hermitian / Symmetric: like the triangular wrappers but with an extra
 # non-differentiable `uplo::Char` field. Constructor takes `(matrix, ::Symbol)`,
 # so we pick `:U`/`:L` from the primal's `uplo` char on the hot path.
-function dual_type(
-    ::Val{N}, ::Type{LinearAlgebra.Hermitian{T,P}}
-) where {N,T<:IEEEFloat,P<:Matrix{T}}
-    return LinearAlgebra.Hermitian{NDual{T,N},Matrix{NDual{T,N}}}
-end
-function dual_type(
-    ::Val{0}, ::Type{LinearAlgebra.Hermitian{T,P}}
-) where {T<:IEEEFloat,P<:Matrix{T}}
-    return LinearAlgebra.Hermitian{T,P}
+for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
+    @eval begin
+        function dual_type(::Val{N}, ::Type{$(W){T,P}}) where {N,T<:IEEEFloat,P<:Matrix{T}}
+            return $(W){NDual{T,N},Matrix{NDual{T,N}}}
+        end
+        function dual_type(::Val{0}, ::Type{$(W){T,P}}) where {T<:IEEEFloat,P<:Matrix{T}}
+            return $(W){T,P}
+        end
+    end
 end
 
 # Base.ReshapedArray{T,D,<:Array{T},MI}: shape-shifted view. Only the
@@ -1042,10 +1042,7 @@ end
 # `dual_type(Val(1), Wrapper) === Dual{Wrapper, tangent_type(Wrapper)}`
 # (bare-T) so arrayify dispatches via `Dual{<:AbstractVecOrMat{P}}`;
 # width-N (N>=2) stays at the chunked NTangent-wrapped Dual.
-for Wrapper in (
-    :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
-    :(LinearAlgebra.Symmetric{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
-)
+for Wrapper in (:(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),)
     @eval begin
         function dual_type(
             ::Val{1}, ::Type{$(Wrapper.args[1])}
@@ -1420,13 +1417,13 @@ for W in (
     end
 end
 
-function (::Type{LinearAlgebra.Hermitian{NDual{T,N},Matrix{NDual{T,N}}}})(
-    primal::LinearAlgebra.Hermitian{T,<:Matrix{T}}, tangent::Mooncake.Tangent
-) where {T<:IEEEFloat,N}
-    data_t = Mooncake._get_tangent_field(tangent, :data)
-    return LinearAlgebra.Hermitian(
-        Matrix{NDual{T,N}}(primal.data, data_t), primal.uplo == 'U' ? :U : :L
-    )
+for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
+    @eval function (::Type{$(W){NDual{T,N},Matrix{NDual{T,N}}}})(
+        primal::$(W){T,<:Matrix{T}}, tangent::Mooncake.Tangent
+    ) where {T<:IEEEFloat,N}
+        data_t = Mooncake._get_tangent_field(tangent, :data)
+        return $(W)(Matrix{NDual{T,N}}(primal.data, data_t), primal.uplo == 'U' ? :U : :L)
+    end
 end
 
 function (::Type{Base.ReshapedArray{NDual{T,N},D,Array{NDual{T,N},Dp},MI}})(
@@ -1812,15 +1809,15 @@ for W in (
     end
 end
 
-function primal(
-    x::LinearAlgebra.Hermitian{NDual{T,N},<:Matrix{NDual{T,N}}}
-) where {T<:IEEEFloat,N}
-    return LinearAlgebra.Hermitian(primal(x.data), x.uplo == 'U' ? :U : :L)
-end
-function tangent(
-    x::LinearAlgebra.Hermitian{NDual{T,N},<:Matrix{NDual{T,N}}}
-) where {T<:IEEEFloat,N}
-    return Mooncake.Tangent((; data=tangent(x.data), uplo=Mooncake.NoTangent()))
+for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
+    @eval begin
+        function primal(x::$(W){NDual{T,N},<:Matrix{NDual{T,N}}}) where {T<:IEEEFloat,N}
+            return $(W)(primal(x.data), x.uplo == 'U' ? :U : :L)
+        end
+        function tangent(x::$(W){NDual{T,N},<:Matrix{NDual{T,N}}}) where {T<:IEEEFloat,N}
+            return Mooncake.Tangent((; data=tangent(x.data), uplo=Mooncake.NoTangent()))
+        end
+    end
 end
 
 function primal(
@@ -2205,10 +2202,14 @@ for W in (
         return Mooncake.Tangent((; data=Mooncake.tangent(x.data, i)))
     end
 end
-@inline function Mooncake.tangent(
-    x::LinearAlgebra.Hermitian{NDual{T,N},<:AbstractMatrix{NDual{T,N}}}, i::Integer
-) where {T<:IEEEFloat,N}
-    return Mooncake.Tangent((; data=Mooncake.tangent(x.data, i), uplo=Mooncake.NoTangent()))
+for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
+    @eval @inline function Mooncake.tangent(
+        x::$(W){NDual{T,N},<:AbstractMatrix{NDual{T,N}}}, i::Integer
+    ) where {T<:IEEEFloat,N}
+        return Mooncake.Tangent((;
+            data=Mooncake.tangent(x.data, i), uplo=Mooncake.NoTangent()
+        ))
+    end
 end
 @inline function Mooncake.tangent(
     x::Base.ReshapedArray{NDual{T,N},D,<:Array{NDual{T,N},Dp},MI}, i::Integer
