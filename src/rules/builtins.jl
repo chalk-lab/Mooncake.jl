@@ -693,8 +693,6 @@ end
 
 @intrinsic pointerref
 # `pointerref` implementation kernel (no `Dual{typeof(F)}` arg).
-@inline _pointerref_tan(t::Ptr) = t
-@inline _pointerref_tan(t::Mooncake.NTangent{Tuple{P}}) where {P<:Ptr} = t.lanes[1]
 @inline function _pointerref_kernel(x, y, z)
     a = pointerref(primal(x), primal(y), primal(z))
     raw_t = tangent(x)
@@ -708,7 +706,7 @@ end
         )
         return Dual(a, Mooncake.NTangent(das))
     end
-    da = pointerref(_pointerref_tan(raw_t), primal(y), primal(z))
+    da = pointerref(Mooncake._ntangent_unwrap_singleton(raw_t), primal(y), primal(z))
     return Dual(a, da)
 end
 @inline function frule!!(
@@ -742,8 +740,6 @@ end
 
 @intrinsic pointerset
 # `pointerset` implementation kernel (no `Dual{typeof(F)}` arg).
-@inline _pointerset_tan(t::Ptr) = t
-@inline _pointerset_tan(t::Mooncake.NTangent{Tuple{P}}) where {P<:Ptr} = t.lanes[1]
 @inline function _pointerset_kernel(p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     raw_t = tangent(p)
@@ -757,7 +753,9 @@ end
         end
         return p
     end
-    pointerset(_pointerset_tan(raw_t), tangent(x), primal(idx), primal(z))
+    pointerset(
+        Mooncake._ntangent_unwrap_singleton(raw_t), tangent(x), primal(idx), primal(z)
+    )
     return p
 end
 @inline function frule!!(
