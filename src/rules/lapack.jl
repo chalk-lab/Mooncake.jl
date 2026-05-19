@@ -945,6 +945,15 @@ end
 # primal `LAPACK.potrs!(uplo, A, B)` BEFORE invoking this helper. Picks
 # the lower or upper triangular factor by `uplo`; the projection helper
 # handles real vs complex.
+#
+# Math: potrs! solves `A_orig * X = B` given the Cholesky factor (so the
+# `A` arg here is `L` or `U`, not the original matrix). The differential
+# of `A_orig = L L^H` (or `U^H U`) is `M = dL L^H + L dL^H` (resp.
+# `U^H dU + dU^H U`); after symmetric/Hermitian projection,
+#   dX = A_orig⁻¹ (dB - sym_proj(M) · X)
+# with X = post-primal B. The `mul!(dB, sym_proj(M), B, -1, 1)` step
+# computes `dB ← dB - sym_proj(M) · X`; the trailing `potrs!` applies
+# `A_orig⁻¹` to the result in place.
 @inline function _potrs_frechet_lane!(
     uplo::Char, A::AbstractMatrix{P}, dA, B, dB
 ) where {P<:BlasFloat}
