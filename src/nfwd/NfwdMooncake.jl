@@ -956,16 +956,17 @@ function dual_type(
     return LinearAlgebra.Diagonal{T,Vector{T}}
 end
 
-# Adjoint{T, Matrix{T}} — single :parent::Matrix{T} field.
+# Adjoint{T, <:Array{T}} — single :parent::Array{T} field. Covers both
+# Vector-parented and Matrix-parented Adjoint via `ndims(P)`.
 function dual_type(
-    ::Val{N}, ::Type{LinearAlgebra.Adjoint{T,Matrix{T}}}
-) where {N,T<:IEEEFloat}
-    return LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}
+    ::Val{N}, ::Type{LinearAlgebra.Adjoint{T,P}}
+) where {N,T<:IEEEFloat,P<:Array{T}}
+    return LinearAlgebra.Adjoint{NDual{T,N},Array{NDual{T,N},ndims(P)}}
 end
 function dual_type(
-    ::Val{0}, ::Type{LinearAlgebra.Adjoint{T,Matrix{T}}}
-) where {T<:IEEEFloat}
-    return LinearAlgebra.Adjoint{T,Matrix{T}}
+    ::Val{0}, ::Type{LinearAlgebra.Adjoint{T,P}}
+) where {T<:IEEEFloat,P<:Array{T}}
+    return LinearAlgebra.Adjoint{T,P}
 end
 
 # SubArray{T, D, Array{T,Dp}, I, L} — :parent::Array{T,Dp} is the only
@@ -985,7 +986,7 @@ end
 # These are durable bare-`Dual` width-1 exceptions, not temporary
 # workarounds: their rules dispatch through `arrayify` (whose
 # `TangentOrFData = Union{Tangent, FData}` does not accept `NTangent`),
-# and only `Diagonal`/`Adjoint{T,Matrix{T}}`/`SubArray`/`Transpose{T,<:Array{T}}`
+# and only `Diagonal`/`Adjoint{T,<:Array{T}}`/`SubArray`/`Transpose{T,<:Array{T}}`
 # have NDual-element wrapper representations. The test
 # `width-1 wrapper bare-Dual durable exceptions` in `test/tangents/dual.jl`
 # pins the documented exception so this cannot regress silently. Each
@@ -1020,31 +1021,6 @@ for Wrapper in (
             $(Wrapper.args[1])
     end
 end
-# Adjoint with a non-Matrix parent (e.g. Vector{Float64}): the existing
-# wrapper-shaped `dual_type(Val(N), Adjoint{T, Matrix{T}})` overload at
-# `NfwdMooncake.jl` only covers `Adjoint{T, Matrix{T}}`. Other parents (Vector,
-# SubArray) need the parallel-Dual form for the same `arrayify` reason.
-# Durable exception pinned by tests in `test/tangents/dual.jl`.
-function dual_type(
-    ::Val{1}, ::Type{LinearAlgebra.Adjoint{T,P}}
-) where {T<:IEEEFloat,P<:AbstractVector{T}}
-    return Dual{
-        LinearAlgebra.Adjoint{T,P},Mooncake.tangent_type(LinearAlgebra.Adjoint{T,P})
-    }
-end
-function dual_type(
-    ::Val{N}, ::Type{LinearAlgebra.Adjoint{T,P}}
-) where {N,T<:IEEEFloat,P<:AbstractVector{T}}
-    return Dual{
-        LinearAlgebra.Adjoint{T,P},Mooncake.tangent_type(Val(N), LinearAlgebra.Adjoint{T,P})
-    }
-end
-function dual_type(
-    ::Val{0}, ::Type{LinearAlgebra.Adjoint{T,P}}
-) where {T<:IEEEFloat,P<:AbstractVector{T}}
-    return LinearAlgebra.Adjoint{T,P}
-end
-
 # Transpose with `Array` parent: canonical NDual-element form consumed
 # by the 1-arg `arrayify` overload in `src/rules/blas.jl`. Non-Array
 # parents fall through to the structural `dual_type` paths.
@@ -1380,11 +1356,11 @@ function (::Type{LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}})(
     return LinearAlgebra.Diagonal(Vector{NDual{T,N}}(primal.diag, diag_t))
 end
 
-function (::Type{LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}})(
-    primal::LinearAlgebra.Adjoint{T,Matrix{T}}, tangent::Mooncake.Tangent
-) where {T<:IEEEFloat,N}
+function (::Type{LinearAlgebra.Adjoint{NDual{T,N},Array{NDual{T,N},D}}})(
+    primal::LinearAlgebra.Adjoint{T,<:Array{T,D}}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N,D}
     parent_t = Mooncake._get_tangent_field(tangent, :parent)
-    return LinearAlgebra.Adjoint(Matrix{NDual{T,N}}(parent(primal), parent_t))
+    return LinearAlgebra.Adjoint(Array{NDual{T,N},D}(parent(primal), parent_t))
 end
 
 function (::Type{SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}})(
@@ -1733,12 +1709,12 @@ function tangent(
 end
 
 function primal(
-    a::LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}
+    a::LinearAlgebra.Adjoint{NDual{T,N},<:Array{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return LinearAlgebra.Adjoint(primal(parent(a)))
 end
 function tangent(
-    a::LinearAlgebra.Adjoint{NDual{T,N},Matrix{NDual{T,N}}}
+    a::LinearAlgebra.Adjoint{NDual{T,N},<:Array{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return Mooncake.Tangent((; parent=tangent(parent(a))))
 end
@@ -2086,11 +2062,16 @@ end
     z -> complex(z.re.partials[i], z.im.partials[i]), x
 )
 # Wrap the lane-i parent tangent in a `Tangent{(parent=...)}` so it round-
-# trips against `randn_tangent(::Transpose)` in tests. Without this, the
-# bare-`map`-into-Transpose path above fires and yields a tangent shape
-# incompatible with the `_dot(::Tangent, ::Transpose)` comparison.
+# trips against `randn_tangent(::Transpose)`/`randn_tangent(::Adjoint)` in
+# tests. Without this, the bare-`map`-into-wrapper path above fires and
+# yields a tangent shape incompatible with the `_dot` comparison.
 @inline function Mooncake.tangent(
     x::LinearAlgebra.Transpose{NDual{T,N},<:AbstractArray{NDual{T,N}}}, i::Integer
+) where {T<:IEEEFloat,N}
+    return Mooncake.Tangent((; parent=Mooncake.tangent(parent(x), i)))
+end
+@inline function Mooncake.tangent(
+    x::LinearAlgebra.Adjoint{NDual{T,N},<:AbstractArray{NDual{T,N}}}, i::Integer
 ) where {T<:IEEEFloat,N}
     return Mooncake.Tangent((; parent=Mooncake.tangent(parent(x), i)))
 end

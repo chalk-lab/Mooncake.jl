@@ -311,8 +311,6 @@ end
         _pin_width1_bare_dual(LinearAlgebra.UpperHessenberg{Float64,Matrix{Float64}})
         _pin_width1_bare_dual(LinearAlgebra.Symmetric{Float64,Matrix{Float64}})
         _pin_width1_bare_dual(LinearAlgebra.Hermitian{Float64,Matrix{Float64}})
-        # Vector-parented Adjoint: separate width-1 overload at NfwdMooncake.jl.
-        _pin_width1_bare_dual(LinearAlgebra.Adjoint{Float64,Vector{Float64}})
     end
 
     @testset "Transpose canonical NDual dual_type" begin
@@ -324,6 +322,17 @@ end
             LinearAlgebra.Transpose{NDual{Float64,1},Vector{NDual{Float64,1}}}
         @test Mooncake.dual_type(Val(2), Tr) ===
             LinearAlgebra.Transpose{NDual{Float64,2},Vector{NDual{Float64,2}}}
+    end
+
+    @testset "Adjoint{T,Vector{T}} canonical NDual dual_type" begin
+        # Vector-parented Adjoint joins the canonical NDual form once the
+        # parallel-Dual exception is removed.
+        Adj = LinearAlgebra.Adjoint{Float64,Vector{Float64}}
+        @test Mooncake.dual_type(Val(0), Adj) === Adj
+        @test Mooncake.dual_type(Val(1), Adj) ===
+            LinearAlgebra.Adjoint{NDual{Float64,1},Vector{NDual{Float64,1}}}
+        @test Mooncake.dual_type(Val(2), Adj) ===
+            LinearAlgebra.Adjoint{NDual{Float64,2},Vector{NDual{Float64,2}}}
     end
 
     @testset "1-arg constructor (V inferred from inner)" begin
