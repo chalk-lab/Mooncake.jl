@@ -985,8 +985,8 @@ end
 # These are durable bare-`Dual` width-1 exceptions, not temporary
 # workarounds: their rules dispatch through `arrayify` (whose
 # `TangentOrFData = Union{Tangent, FData}` does not accept `NTangent`),
-# and only `Diagonal`/`Adjoint{T,Matrix{T}}`/`SubArray` have NDual-element
-# wrapper representations. The test
+# and only `Diagonal`/`Adjoint{T,Matrix{T}}`/`SubArray`/`Transpose{T,<:Array{T}}`
+# have NDual-element wrapper representations. The test
 # `width-1 wrapper bare-Dual durable exceptions` in `test/tangents/dual.jl`
 # pins the documented exception so this cannot regress silently. Each
 # `dual_type(Val(1), Wrapper) === Dual{Wrapper, tangent_type(Wrapper)}`
@@ -1002,7 +1002,6 @@ for Wrapper in (
     :(LinearAlgebra.UpperHessenberg{T,P} where {T<:IEEEFloat,P}),
     :(LinearAlgebra.Symmetric{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
     :(LinearAlgebra.Hermitian{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
-    :(LinearAlgebra.Transpose{T,P} where {T<:IEEEFloat,P<:AbstractArray{T}}),
 )
     @eval begin
         function dual_type(
@@ -1045,6 +1044,40 @@ function dual_type(
 ) where {T<:IEEEFloat,P<:AbstractVector{T}}
     return LinearAlgebra.Adjoint{T,P}
 end
+
+# Transpose with `Array` parent: canonical NDual-element form consumed
+# by the 1-arg `arrayify` overload in `src/rules/blas.jl`. Non-Array
+# parents fall through to the structural `dual_type` paths.
+function dual_type(
+    ::Val{N}, ::Type{LinearAlgebra.Transpose{T,P}}
+) where {N,T<:IEEEFloat,P<:Array{T}}
+    return LinearAlgebra.Transpose{NDual{T,N},Array{NDual{T,N},ndims(P)}}
+end
+function dual_type(
+    ::Val{0}, ::Type{LinearAlgebra.Transpose{T,P}}
+) where {T<:IEEEFloat,P<:Array{T}}
+    return LinearAlgebra.Transpose{T,P}
+end
+@inline Mooncake.zero_dual(w::Val, x::LinearAlgebra.Transpose{T,<:Array{T}}) where {T<:IEEEFloat} = transpose(
+    _ndual_array(x.parent, w, _ -> zero(T))
+)
+@inline Mooncake.uninit_dual(w::Val, x::LinearAlgebra.Transpose{T,<:Array{T}}) where {T<:IEEEFloat} = transpose(
+    _ndual_array(x.parent, w, _ -> zero(T))
+)
+@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::LinearAlgebra.Transpose{T,<:Array{T}}) where {T<:IEEEFloat} = transpose(
+    _ndual_array(x.parent, w, _ -> randn(rng, T))
+)
+# Val(0) passthroughs disambiguate against the generic `Val{0}` primal
+# passthrough below.
+@inline Mooncake.zero_dual(
+    ::Val{0}, x::LinearAlgebra.Transpose{T,<:Array{T}}
+) where {T<:IEEEFloat} = x
+@inline Mooncake.uninit_dual(
+    ::Val{0}, x::LinearAlgebra.Transpose{T,<:Array{T}}
+) where {T<:IEEEFloat} = x
+@inline Mooncake.randn_dual(
+    ::Val{0}, ::AbstractRNG, x::LinearAlgebra.Transpose{T,<:Array{T}}
+) where {T<:IEEEFloat} = x
 
 # StepRangeLen with TwicePrecision ref/step fields: structural NamedTuple
 # lift breaks the bare-Dual `_getindex_hiprec` / `unsafe_getindex` rule
