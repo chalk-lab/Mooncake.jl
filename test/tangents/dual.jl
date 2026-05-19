@@ -940,7 +940,7 @@ end
         # Pre-fix: `frule!!(::Lifted{typeof(memoryrefget), N}, ...)` and
         # `frule!!(::Lifted{typeof(lmemoryrefget), N}, ...)` erred at
         # width N≥2 for struct-element MemoryRef. The bare-Dual delegator
-        # path called `_memref_tan_unwrap` (singleton-NTangent only) on a
+        # path called `_ntangent_unwrap_singleton` (singleton-NTangent only) on a
         # multi-lane NTangent, returning the NTangent itself which
         # memoryrefget rejected with `expected GenericMemoryRef`.
         # Fix: width-N-specific overload doing per-lane processing.
@@ -1051,7 +1051,7 @@ end
 
     @testset "pointer_from_objref width-N" begin
         # Pre-fix: at width N≥2 the rule called
-        # `pointer_from_objref(_foreigncall_ntangent_unwrap(tangent(inner)))`
+        # `pointer_from_objref(_ntangent_unwrap_singleton(tangent(inner)))`
         # where the singleton-NTangent-unwrap helper didn't match the
         # multi-lane NTangent → fell through to the no-op fallback returning
         # the NTangent unchanged → `pointer_from_objref(NTangent)` errored
