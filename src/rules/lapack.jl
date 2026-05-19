@@ -353,6 +353,21 @@ end
 # Per-lane Frechet helper for trtrs! (uses pre-primal B). Shared by
 # width-1 (via `_trtrs!_frule_core!`) and width-N; each caller runs the
 # primal `LAPACK.trtrs!(uplo, trans, diag, A, B)` AFTER invoking this helper.
+#
+# Math: trtrs! solves `op(A) X = B` (triangular A, op ∈ {N,T,C}), with B
+# overwritten by X. Differential: `op(dA) X + op(A) dX = dB`, so
+#   dX = op(A)⁻¹ (dB − op(dA) X)
+# Body unrolls into:
+#   1. `dB ← op(A)⁻¹ dB`                          [trtrs! on dB]
+#   2. `tmp ← X` (= op(A)⁻¹ B)                    [trtrs! on a copy of B]
+#   3. `tmp ← op(dA) X`                           [strict-tri or
+#                                                    Unit-tri − X trick
+#                                                    handles diag='U']
+#   4. `tmp ← op(A)⁻¹ op(dA) X`                   [trtrs! on tmp]
+#   5. `dB ← dB − tmp = op(A)⁻¹ (dB − op(dA) X) = dX`
+# The `diag='U'` branch uses `UnitLowerTriangular(dA)` which overrides
+# the diagonal with 1, then subtracts the explicit X to leave only the
+# strict-triangular contribution.
 @inline function _trtrs_frechet_lane!(uplo::Char, trans::Char, diag::Char, A, dA, B, dB)
     LAPACK.trtrs!(uplo, trans, diag, A, dB)
     tmp = copy(B)
