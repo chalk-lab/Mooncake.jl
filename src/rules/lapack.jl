@@ -29,12 +29,11 @@ function frule!!(
         Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
     )
 end
-# Width-N NDual getrf!: primal once, per-lane Frechet via `_getrf_fwd_core!`
-# (which already operates on a single (A, dA, ipiv) triple post-primal).
-# Pre-fix used singleton-NTangent wrap for `ipiv` and `info` regardless of
-# N, producing the wrong canonical shape at N≥2 (expected
-# `NTangent{NTuple{N, Vector{NoTangent}}}`). Build N-tuple NTangents to
-# match `dual_type(Val(N), Vector{Int})` and `dual_type(Val(N), Int)`.
+# Wrap getrf!'s non-differentiable `ipiv::Vector{Int}` and `info::Int`
+# return values into canonical width-N inner-V form: an N-tuple
+# NTangent for `ipiv` (matching `dual_type(Val(N), Vector{Int})`) and
+# a bare `Dual{Int, NoTangent}` for `info` (collapsed at any width).
+# Called after the per-lane `_getrf_fwd_core!` step.
 @inline function _ipiv_info_wrap(ipiv, info, ::Val{N}) where {N}
     # `ipiv::Vector{Int}` canonical V at width N: NTangent of N Vector{NoTangent}.
     # `info::Int` canonical V at any width: bare `Dual{Int, NoTangent}` (collapsed).
@@ -338,8 +337,9 @@ end
 # differ; for real, transpose ≡ adjoint. Shared by `_trtrs_frechet_lane!`
 # (below) and `_getrs_frechet_lane!` (further down).
 @inline _trans_op(trans::Char, a) = trans == 'N' ? a : (trans == 'T' ? transpose(a) : a')
-# Width-N split: Frechet uses pre-primal B (so callers must invoke this
-# BEFORE the primal `LAPACK.trtrs!(uplo, trans, diag, A, B)`).
+# Per-lane Frechet helper for trtrs! (uses pre-primal B). Shared by
+# width-1 (via `_trtrs!_frule_core!`) and width-N; each caller runs the
+# primal `LAPACK.trtrs!(uplo, trans, diag, A, B)` AFTER invoking this helper.
 @inline function _trtrs_frechet_lane!(uplo::Char, trans::Char, diag::Char, A, dA, B, dB)
     LAPACK.trtrs!(uplo, trans, diag, A, dB)
     tmp = copy(B)
@@ -484,8 +484,9 @@ end
     _getrs_frechet_lane!(trans, A, dA, ipiv, B, dB)
     return nothing
 end
-# Width-N split: Frechet uses post-primal B (caller must run the primal
-# `LAPACK.getrs!(trans, A, ipiv, B)` BEFORE invoking this for each lane).
+# Per-lane Frechet helper for getrs! (uses post-primal B). Shared by
+# width-1 (via `_getrs!_frule_core!`) and width-N; each caller runs the
+# primal `LAPACK.getrs!(trans, A, ipiv, B)` BEFORE invoking this helper.
 # Uses the shared `_trans_op` selector defined alongside trtrs! above.
 @inline function _getrs_frechet_lane!(
     trans::Char, A::AbstractMatrix{P}, dA, ipiv, B, dB
@@ -913,8 +914,11 @@ end
     _potrs_frechet_lane!(uplo, A, dA, B, dB)
     return nothing
 end
-# Width-N split: Frechet uses post-primal B. Picks the lower or upper
-# triangular factor by `uplo`; the projection helper handles real vs complex.
+# Per-lane Frechet helper for potrs! (uses post-primal B). Shared by
+# width-1 (via `_potrs!_frule_core!`) and width-N; each caller runs the
+# primal `LAPACK.potrs!(uplo, A, B)` BEFORE invoking this helper. Picks
+# the lower or upper triangular factor by `uplo`; the projection helper
+# handles real vs complex.
 @inline function _potrs_frechet_lane!(
     uplo::Char, A::AbstractMatrix{P}, dA, B, dB
 ) where {P<:BlasFloat}
