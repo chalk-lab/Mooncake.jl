@@ -943,7 +943,13 @@ end
         # path called `_ntangent_unwrap_singleton` (singleton-NTangent only) on a
         # multi-lane NTangent, returning the NTangent itself which
         # memoryrefget rejected with `expected GenericMemoryRef`.
-        # Fix: width-N-specific overload doing per-lane processing.
+        # Fix (initial, via width-N-specific overload): added a per-lane
+        # processing entry alongside the bare-Dual + generic Lifted delegator.
+        # Fix (Pattern A, commits 500af2899 and 59d251db2): folded the
+        # three entries into one source-of-truth Lifted body that handles
+        # both width-1 (singleton-NTangent unwrap) and width N≥2 (per-lane)
+        # uniformly via tangent introspection, plus thin bare-Dual delegators
+        # for direct invocation.
         @static if VERSION >= v"1.11-"
             m = Memory{TestResources.LoHi}(undef, 4)
             m[1] = TestResources.LoHi(10.0, 11.0)
