@@ -1241,6 +1241,11 @@ end
     return SubArray{T,D,Array{T,Dp},I,L}
 end
 @inline function Mooncake.__primal_type(
+    ::Type{SubArray{Complex{NDual{T,N}},D,Array{Complex{NDual{T,N}},Dp},I,L}}
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    return SubArray{Complex{T},D,Array{Complex{T},Dp},I,L}
+end
+@inline function Mooncake.__primal_type(
     ::Type{LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}}
 ) where {T<:IEEEFloat,N}
     return LinearAlgebra.Diagonal{T,Vector{T}}
