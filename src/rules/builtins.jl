@@ -905,8 +905,6 @@ __vec_to_tuple(v::Vector) = Tuple(v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
 # `__vec_to_tuple` implementation kernel (no `Dual{typeof(F)}` arg).
-@inline _vec_to_tuple_tan(t::Vector) = t
-@inline _vec_to_tuple_tan(t::NTangent{Tuple{V}}) where {V<:Vector} = t.lanes[1]
 @inline function _vec_to_tuple_kernel(v::Dual{<:Vector})
     x = __vec_to_tuple(primal(v))
     if tangent_type(_typeof(x)) == NoTangent
@@ -930,7 +928,7 @@ __vec_to_tuple(v::Vector) = Tuple(v)
     # `Dual{Vector{T}, NTangent{Tuple{Vector{T'}}}}` is the outer
     # NTangent; `__vec_to_tuple` wants a bare Vector. Unwrap the
     # singleton-NTangent.
-    return Dual(x, __vec_to_tuple(_vec_to_tuple_tan(raw_t)))
+    return Dual(x, __vec_to_tuple(Mooncake._ntangent_unwrap_singleton(raw_t)))
 end
 # Bare NDual-vector path: when the Lifted-aware adapter unlifts a
 # `Lifted{Vector{T<:IEEEFloat}, 1, Vector{NDual{T,1}}}`, the result is a
@@ -982,13 +980,11 @@ end
 # NTangent; `getindex(::NTangent, i)` returns the i-th *lane*, not the
 # i-th element of the inner Vector{Any}. Unwrap the singleton NTangent
 # to the inner per-element tangent vector first.
-@inline _svec_ref_tan(t) = t
-@inline _svec_ref_tan(t::NTangent{Tuple{Vector{Any}}}) = t.lanes[1]
 @inline function _svec_ref_kernel(v::Dual{Core.SimpleVector}, _ind::Dual{Int})
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
     raw_t = tangent(v)
-    # Multi-lane NTangent (width N≥2): the singleton-only `_svec_ref_tan`
+    # Multi-lane NTangent (width N≥2): the singleton-only `Mooncake._ntangent_unwrap_singleton`
     # fallback returns the NTangent unchanged, and `getindex(::NTangent,
     # ind)` resolves to `Base.getindex(::NTangent, ::Int)` (defined in
     # dual.jl) which returns LANE ind — not element ind of the underlying
@@ -998,7 +994,7 @@ end
         tvs = ntuple(lane -> getindex(raw_t.lanes[lane], ind), Val(length(raw_t.lanes)))
         return Dual(pv, NTangent(tvs))
     end
-    tv = getindex(_svec_ref_tan(raw_t), ind)
+    tv = getindex(Mooncake._ntangent_unwrap_singleton(raw_t), ind)
     return Dual(pv, tv)
 end
 @inline function frule!!(
