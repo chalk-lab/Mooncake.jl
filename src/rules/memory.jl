@@ -258,93 +258,79 @@ end
         },
     },
 ) = true
-function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{MemoryRef{P}},
-    src::Dual{MemoryRef{P}},
-    n::Dual{Int},
-) where {P}
-    unsafe_copyto!(primal(dest), primal(src), primal(n))
-    # Unwrap singleton-NTangent on the tangent slot —
-    # `tangent(::Dual{MemoryRef{P}, NTangent{Tuple{MemoryRef{T}}}})` returns
-    # the outer NTangent, not the inner MemoryRef.
-    unsafe_copyto!(
-        Mooncake._ntangent_unwrap_singleton(tangent(dest)),
-        Mooncake._ntangent_unwrap_singleton(tangent(src)),
-        primal(n),
-    )
-    return dest
-end
-# At width 1, the IR-emit's unwrap-then-bare path delivers
-# `MemoryRef{<:NDual}` directly (the inner `V` of a `Lifted{MemoryRef{T}, 1,
-# MemoryRef{<:NDual}}`). The copy operates element-wise on the NDual lanes.
-function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::MemoryRef{<:Union{Mooncake.Nfwd.NDual,Complex{<:Mooncake.Nfwd.NDual}}},
-    src::MemoryRef{<:Union{Mooncake.Nfwd.NDual,Complex{<:Mooncake.Nfwd.NDual}}},
-    n::Dual{Int},
-)
-    unsafe_copyto!(dest, src, primal(n))
-    return dest
-end
-# Lifted-typed overload: delegate to the bare body via `_unlift`. The bare
-# frule has overloads for both `Dual{MemoryRef{P}, MemoryRef{V}}` (struct
-# wrapper) and `MemoryRef{<:NDual}` / `MemoryRef{Complex{<:NDual}}` (canonical
-# V at width 1).
+# Source-of-truth Lifted body for `unsafe_copyto!`. Handles all three
+# inner-V shapes (Dual-wrapped MemoryRef with singleton-NTangent tangent,
+# bare MemoryRef{<:NDual} / MemoryRef{<:Complex{<:NDual}}, and width N≥2
+# NTangent-wrapped MemoryRef) via tangent introspection. Mutation semantics
+# preserved by relying on the IR-emit's Lifted construction (which carries
+# the original MemoryRef through `_unlift`); bare-Dual delegators below
+# use the 3-param `Lifted{T,1,V}(v)` ctor to bypass canonicalisation so
+# their inner V aliases the user's MemoryRef rather than fresh memory.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
     dest::Mooncake.Lifted{MemoryRef{P}},
     src::Mooncake.Lifted{MemoryRef{P}},
     n::Mooncake.Lifted{Int},
 ) where {N,P}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(dest),
-        Mooncake._unlift(src),
-        Mooncake._unlift(n),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-# Width-N unsafe_copyto! for NTangent-wrapped MemoryRef (struct-element /
-# non-IEEEFloat-element case). The generic delegator above routes through
-# the bare-Dual body which uses `Mooncake._ntangent_unwrap_singleton` (singleton-NTangent only),
-# so at width N≥2 the call `unsafe_copyto!(NTangent, NTangent, n)` errored
-# with `no method matching unsafe_copyto!(::NTangent, ::NTangent, ...)`.
-# At N==1 the singleton unwrap path handles it via the generic delegator.
-#
-# NOTE: Unlike the read-only memoryrefget/lmemoryrefget rules (Pattern-A
-# migrated to a single source-of-truth Lifted body, commits 500af2899 and
-# 59d251db2), `unsafe_copyto!` cannot fold its bare-Dual + Lifted-delegator
-# + width-N-scaffold trio into one Lifted body. The standard "bare-Dual
-# delegator wraps into Lifted{T,1}(p, t)" trick canonicalizes the inner V
-# to `MemoryRef{NDual{T,1}}` (fresh memory laid out as NDual elements),
-# breaking the in-place mutation contract — the user's `dest` would not
-# observe the copy. The 3-entry structure here is therefore the correct
-# design for mutation-semantic rules; see temp/pattern_a_mutation_finding.md.
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(unsafe_copyto!),N},
-    dest::Mooncake.Lifted{
-        MemoryRef{P},N,<:Dual{MemoryRef{P},<:Mooncake.NTangent{<:NTuple{N,<:MemoryRef}}}
-    },
-    src::Mooncake.Lifted{
-        MemoryRef{P},N,<:Dual{MemoryRef{P},<:Mooncake.NTangent{<:NTuple{N,<:MemoryRef}}}
-    },
-    n::Mooncake.Lifted{Int},
-) where {N,P}
-    N == 1 && return @invoke frule!!(
-        f::Mooncake.Lifted{typeof(unsafe_copyto!),N},
-        dest::Mooncake.Lifted{MemoryRef{P}},
-        src::Mooncake.Lifted{MemoryRef{P}},
-        n::Mooncake.Lifted{Int},
-    )
-    bare_dest = Mooncake._unlift(dest)
-    bare_src = Mooncake._unlift(src)
+    inner_dest = Mooncake._unlift(dest)
+    inner_src = Mooncake._unlift(src)
     pn = primal(Mooncake._unlift(n))
-    unsafe_copyto!(primal(bare_dest), primal(bare_src), pn)
-    ntuple(Val(N)) do lane
-        unsafe_copyto!(tangent(bare_dest).lanes[lane], tangent(bare_src).lanes[lane], pn)
+    if inner_dest isa MemoryRef
+        # Canonical NDual / Complex{NDual}-element MemoryRef: copy operates
+        # element-wise on the NDual lanes, no separate tangent copy needed.
+        unsafe_copyto!(inner_dest, inner_src, pn)
+    else
+        # Dual-wrapped MemoryRef (wrapper-exception form).
+        unsafe_copyto!(primal(inner_dest), primal(inner_src), pn)
+        raw_t_dest = tangent(inner_dest)
+        raw_t_src = tangent(inner_src)
+        if raw_t_dest isa Mooncake.NTangent && length(raw_t_dest.lanes) >= 2
+            # Width N≥2: per-lane MemoryRef copy.
+            ntuple(
+                lane -> unsafe_copyto!(raw_t_dest.lanes[lane], raw_t_src.lanes[lane], pn),
+                Val(length(raw_t_dest.lanes)),
+            )
+        else
+            # Width-1 singleton-NTangent unwrap.
+            unsafe_copyto!(
+                Mooncake._ntangent_unwrap_singleton(raw_t_dest),
+                Mooncake._ntangent_unwrap_singleton(raw_t_src),
+                pn,
+            )
+        end
     end
+    return dest
+end
+# Bare-Dual delegator (Dual-wrapped MemoryRef): use `Lifted{T,1,V}(v)` to
+# bypass canonicalisation — the inner V must alias the user's MemoryRef for
+# the in-place copy to be visible. Plain `Lifted{T,1}(p, t)` would
+# canonicalise to `MemoryRef{NDual{T,1}}` (fresh memory), breaking semantics.
+function frule!!(
+    f::Dual{typeof(unsafe_copyto!)},
+    dest::Dual{MemoryRef{P}},
+    src::Dual{MemoryRef{P}},
+    n::Dual{Int},
+) where {P}
+    lifted_f = Mooncake.Lifted{typeof(unsafe_copyto!),1,_typeof(f)}(f)
+    lifted_dest = Mooncake.Lifted{MemoryRef{P},1,_typeof(dest)}(dest)
+    lifted_src = Mooncake.Lifted{MemoryRef{P},1,_typeof(src)}(src)
+    lifted_n = Mooncake.Lifted{Int,1,_typeof(n)}(n)
+    Mooncake._unlift(frule!!(lifted_f, lifted_dest, lifted_src, lifted_n))
+    return dest
+end
+# Bare-Dual delegator (canonical NDual / Complex{NDual} MemoryRef): the
+# IR-emit's unwrap-then-bare path delivers `MemoryRef{<:NDual}` directly.
+function frule!!(
+    f::Dual{typeof(unsafe_copyto!)},
+    dest::MemoryRef{<:Union{Mooncake.Nfwd.NDual,Complex{<:Mooncake.Nfwd.NDual}}},
+    src::MemoryRef{<:Union{Mooncake.Nfwd.NDual,Complex{<:Mooncake.Nfwd.NDual}}},
+    n::Dual{Int},
+)
+    lifted_f = Mooncake.Lifted{typeof(unsafe_copyto!),1,_typeof(f)}(f)
+    lifted_dest = Mooncake.Lifted{_typeof(dest),1,_typeof(dest)}(dest)
+    lifted_src = Mooncake.Lifted{_typeof(src),1,_typeof(src)}(src)
+    lifted_n = Mooncake.Lifted{Int,1,_typeof(n)}(n)
+    Mooncake._unlift(frule!!(lifted_f, lifted_dest, lifted_src, lifted_n))
     return dest
 end
 function rrule!!(
