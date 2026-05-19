@@ -432,8 +432,9 @@ function frule!!(
     _arr_writeback!(B_dB, B, dB)
     return B_dB
 end
-# Width-N Complex: primal once (B ← A_op^{-1} B), then per-lane Frechet
-# using post-primal B.
+# Width-N getrs!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
+# via element-type Union; primal once (B ← A_op^{-1} B), then per-lane
+# Frechet via `_getrs_frechet_lane!` (uses post-primal B).
 @inline function frule!!(
     ::Dual{typeof(getrs!)},
     _trans::Dual{Char},
