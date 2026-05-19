@@ -1017,6 +1017,17 @@ function dual_type(
 ) where {T<:IEEEFloat,D,Dp,I,L}
     return SubArray{T,D,Array{T,Dp},I,L}
 end
+# Complex-element variant.
+function dual_type(
+    ::Val{N}, ::Type{SubArray{Complex{T},D,Array{Complex{T},Dp},I,L}}
+) where {N,T<:IEEEFloat,D,Dp,I,L}
+    return SubArray{Complex{NDual{T,N}},D,Array{Complex{NDual{T,N}},Dp},I,L}
+end
+function dual_type(
+    ::Val{0}, ::Type{SubArray{Complex{T},D,Array{Complex{T},Dp},I,L}}
+) where {T<:IEEEFloat,D,Dp,I,L}
+    return SubArray{Complex{T},D,Array{Complex{T},Dp},I,L}
+end
 
 # Durable bare-`Dual` width-1 exceptions, not temporary workarounds.
 #
@@ -1487,6 +1498,15 @@ function (::Type{SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}})(
         parent_lifted, primal.indices...
     )::SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}
 end
+function (::Type{SubArray{Complex{NDual{T,N}},D,Array{Complex{NDual{T,N}},Dp},I,L}})(
+    primal::SubArray{Complex{T},D,Array{Complex{T},Dp},I,L}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    parent_t = Mooncake._get_tangent_field(tangent, :parent)
+    parent_lifted = Array{Complex{NDual{T,N}},Dp}(parent(primal), parent_t)
+    return view(
+        parent_lifted, primal.indices...
+    )::SubArray{Complex{NDual{T,N}},D,Array{Complex{NDual{T,N}},Dp},I,L}
+end
 
 # Memory / MemoryRef: element-wise (1.11+). MemoryRef constructors lift the
 # underlying Memory and re-establish the primal's offset; the (primal, tangent)
@@ -1888,6 +1908,21 @@ function tangent(
         stride1=NoTangent(),
     ))
 end
+function primal(
+    s::SubArray{Complex{NDual{T,N}},D,Array{Complex{NDual{T,N}},Dp},I,L}
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    return view(primal(parent(s)), s.indices...)
+end
+function tangent(
+    s::SubArray{Complex{NDual{T,N}},D,Array{Complex{NDual{T,N}},Dp},I,L}
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    return Mooncake.Tangent((;
+        parent=tangent(parent(s)),
+        indices=NoTangent(),
+        offset1=NoTangent(),
+        stride1=NoTangent(),
+    ))
+end
 
 function primal(x::Base.Broadcast.Extruded{<:Array{<:Union{NDual,Complex{<:NDual}}}})
     return Base.Broadcast.Extruded(primal(x.x), x.keeps, x.defaults)
@@ -1922,6 +1957,16 @@ end
 end
 @inline function Mooncake.tangent(
     x::SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}, i::Integer
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    return Mooncake.Tangent((;
+        parent=tangent(parent(x), i),
+        indices=NoTangent(),
+        offset1=NoTangent(),
+        stride1=NoTangent(),
+    ))
+end
+@inline function Mooncake.tangent(
+    x::SubArray{Complex{NDual{T,N}},D,Array{Complex{NDual{T,N}},Dp},I,L}, i::Integer
 ) where {T<:IEEEFloat,N,D,Dp,I,L}
     return Mooncake.Tangent((;
         parent=tangent(parent(x), i),
