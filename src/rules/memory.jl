@@ -1617,6 +1617,17 @@ end
 # 1.11+ are compatible: `Base._growbeg!` / `_growend!` / `_growat!` mutate the
 # Vector in place, and `tangent_type(Vector{T}) = Vector{tangent_type(T)}`
 # remains a Vector, so the same in-place mutation works on the tangent.
+#
+# Architectural note (Project 2): each `*_kernel!` helper accepts the bare
+# `Dual{<:Vector}` / `Dual{<:Vector,<:NTangent}` / `AbstractVector{<:NDual}`
+# input directly — NOT a round-tripped `Lifted{T,1}(primal, tangent)`. This
+# preserves the user's Vector alias so the in-place grow mutates the
+# caller's array. The single `Mooncake.Lifted{Base._growbeg!}` body
+# delegates to `_growbeg_kernel!(_unlift(a), _unlift(d))`, which is the
+# correct Pattern A form for mutation rules: bare-dispatch kernel + thin
+# Lifted wrapper, with no canonicalising `Lifted{T,1}(p, t)` in the
+# chain. The same shape is reused for `_growend!`, `_growat!`,
+# `_deletebeg!`, `_deleteend!`, `_deleteat!`, and `sizehint!` below.
 @static if VERSION >= v"1.11-rc4"
     @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
     @inline function _growbeg_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
