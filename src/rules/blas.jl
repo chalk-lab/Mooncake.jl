@@ -513,7 +513,8 @@ end
     dval = BLAS.dot(n, dX, incx, Y, incy) + BLAS.dot(n, X, incx, dY, incy)
     return Dual(val, dval)
 end
-# Width-N: NDual element containers.
+# Width-N BLAS.dot: covers Real (NDual{T,N}) via element-type Union;
+# returns NDual scalar packing the value and per-lane partial derivatives.
 @inline function frule!!(
     ::Dual{typeof(BLAS.dot)},
     _n::Dual{<:Integer},
@@ -851,14 +852,13 @@ end
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.gemv!),Vararg}}) = true
 
-# Width-1 path: container args narrowed to bare-`Dual{<:Abstract...}` to
-# disambiguate from the width-N rule at N=1 (NDual array inputs route to
-# width-N). Scalars keep the `_ScalarLikeWidth1` Union so mixed
-# (NDual scalar + Dual structural-wrapper container) inputs dispatch
-# here. `P<:BlasFloat` covers real and complex element types.
-# Width-1 gemv!: covers Real and Complex via slot Union. `A_dA` can be a
-# Vector or Matrix; `_mat_extract` reshapes 1D inputs to `M×1` matrices
-# for `_gemv!_frule_core!`, which requires a Matrix.
+# Width-1 gemv!: covers Real and Complex via slot Union. Container args
+# narrow to bare-`Dual{<:Abstract...}` to disambiguate from the width-N
+# rule at N=1 (NDual array inputs route to width-N); scalars use the
+# `_ScalarLikeWidth1` Union so mixed (NDual scalar + Dual structural-
+# wrapper container) inputs dispatch here. `A_dA` can be Vector or
+# Matrix; `_mat_extract` reshapes 1D inputs to `M×1` matrices for
+# `_gemv!_frule_core!`, which requires a Matrix.
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
