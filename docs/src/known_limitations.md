@@ -198,6 +198,30 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
+## Mutable Structs with Differentiable Array Fields (Forward Mode)
+
+Mooncake's forward mode currently has a known correctness gap for user-defined **mutable** structs whose fields include differentiable `Array{<:IEEEFloat}` values, when those array fields are mutated in place during the function being differentiated.
+
+```julia
+mutable struct WithVec
+    v::Vector{Float64}
+end
+
+function f(s::WithVec)
+    s.v[1] = s.v[2] * 2.0  # in-place mutation of struct field
+    return s.v[1]
+end
+```
+
+The structural-lift mechanism that fixes this for `LinearAlgebra.Diagonal` / `Adjoint` / `SubArray` (gated by `Mooncake._uses_structural_dual_type` in `src/tangents/dual.jl`) explicitly excludes mutable types, because mutable struct identity interacts with the inner-V representation in ways that need careful design. As a result, the slot V for a mutable struct is `Dual{Struct, MutableTangent{...}}`, and field access via `lgetfield` returns a parallel-Dual `Dual{Vector{T}, Vector{T}}` that is later re-canonicalised into a *fresh* `Vector{NDual}` — disconnected from the struct's original array storage.
+
+In practice the symptom is that AD-computed directional derivatives disagree with finite differences for input perturbations that touch the mutated cells; reverse mode is unaffected.
+
+**The workaround**, until a principled structural lift for mutable structs lands, is either:
+- use reverse mode for such functions, or
+- refactor the struct to be immutable (e.g. by returning a new struct from each "mutating" operation), or
+- write a per-struct rule (`@is_primitive` + `frule!!`) so the rule body sees the original struct without going through the `lgetfield` re-canonicalisation.
+
 ```@meta
 DocTestSetup = nothing
 ```
