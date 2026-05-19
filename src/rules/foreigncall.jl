@@ -136,7 +136,7 @@ end
 # `unsafe_pointer_to_objref`: the Lifted-typed body below computes the
 # result independently. No bare-Dual body is needed.
 # `tangent(::Dual{Ptr, NTangent{Tuple{Ptr}}})` returns the NTangent wrapper.
-# Reuse `Mooncake._ntangent_unwrap_singleton` (defined above) so
+# Reuse `Mooncake._ntangent_unwrap_singleton` (defined in tangents/dual.jl) so
 # `unsafe_pointer_to_objref` receives the bare Ptr it expects.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.unsafe_pointer_to_objref),N}, x::Mooncake.Lifted{<:Ptr}
