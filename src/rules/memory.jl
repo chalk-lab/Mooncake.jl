@@ -668,18 +668,16 @@ end
 # arg). Lifted-typed bodies below dispatch the runtime inner V into the
 # matching kernel: `Memory{<:_HasNDual}` / `MemoryRef{<:_HasNDual}` for the
 # canonical NDual path; `Dual{<:Memory}` / `Dual{<:MemoryRef}` for the legacy
-@inline _memrefnew_tan(t) = t
-@inline _memrefnew_tan(t::Mooncake.NTangent{Tuple{T}}) where {T} = t.lanes[1]
 
 # Dual-wrapped path (non-IEEEFloat element types whose `dual_type` falls
 # through to `Dual{P, NTangent{Tuple{Memory}}}` at width 1). The tangent
 # slot is `NTangent{Tuple{Memory}}`; unwrap to the bare `Memory` before
 # calling `memoryrefnew`.
 @inline _memoryrefnew_kernel(x::Dual{<:Memory}) = Dual(
-    memoryrefnew(primal(x)), memoryrefnew(_memrefnew_tan(tangent(x)))
+    memoryrefnew(primal(x)), memoryrefnew(_memref_tan_unwrap(tangent(x)))
 )
 # Width-N NTangent-wrapped Memory: per-lane memoryrefnew on each lane Memory.
-# `_memrefnew_tan` only unwraps singleton NTangent — at width N≥2 the wrapper
+# `_memref_tan_unwrap` only unwraps singleton NTangent — at width N≥2 the wrapper
 # stays and `memoryrefnew(::NTangent)` errors. Build the result NTangent
 # explicitly from per-lane MemoryRefs.
 @inline function _memoryrefnew_kernel(x::Dual{<:Memory,<:Mooncake.NTangent})
@@ -690,7 +688,7 @@ end
 @inline _memoryrefnew_kernel(x::Memory{<:_HasNDual}) = memoryrefnew(x)
 @inline _memoryrefnew_kernel(x::Dual{<:MemoryRef}, ii::Dual{Int}) = Dual(
     memoryrefnew(primal(x), primal(ii)),
-    memoryrefnew(_memrefnew_tan(tangent(x)), primal(ii)),
+    memoryrefnew(_memref_tan_unwrap(tangent(x)), primal(ii)),
 )
 # Width-N NTangent-wrapped MemoryRef + Int: per-lane memoryrefnew with index.
 @inline function _memoryrefnew_kernel(
@@ -709,7 +707,7 @@ end
     x::Dual{<:MemoryRef}, ii::Dual{Int}, boundscheck::Dual{Bool}
 )
     y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = memoryrefnew(_memrefnew_tan(tangent(x)), primal(ii), primal(boundscheck))
+    dy = memoryrefnew(_memref_tan_unwrap(tangent(x)), primal(ii), primal(boundscheck))
     return Dual(y, dy)
 end
 # Width-N NTangent-wrapped MemoryRef + Int + Bool: per-lane memoryrefnew.
