@@ -2241,10 +2241,13 @@ for (fname, elty, relty) in (
     end
 end
 
-# Width-N NDual `syrk!` / `herk!`. α and β are always real
+# Per-lane Frechet helpers for syrk! / herk!. α and β are always real
 # (BlasRealFloat); matrix elements are real for syrk-real-elty and complex
-# for syrk-complex-elty / herk-complex-elty. We handle each combination
-# separately so the runtime dispatch sees concrete element types.
+# for syrk-complex-elty / herk-complex-elty. Shared by width-1 (via the
+# @eval-generated wrapper-exception entries and the canonical width-1
+# entry) and width-N; each caller runs the primal separately. herk!
+# additionally calls `real_diag!(dC)` to mirror BLAS zeroing the
+# imaginary part of the diagonal.
 @inline function _syrk_frechet_lane!(uplo, t, α::P, dα, A, dA, β, dβ, C, dC) where {P}
     BLAS.syr2k!(uplo, t, P(α), A, dA, β, dC)
     iszero(dα) || BLAS.syrk!(uplo, t, dα, A, one(P), dC)
