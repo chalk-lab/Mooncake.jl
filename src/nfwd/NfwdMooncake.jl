@@ -1031,17 +1031,20 @@ function dual_type(
     return SubArray{T,D,Array{T,Dp},I,L}
 end
 
-# Base/LinearAlgebra array wrappers without NDual-element representations.
-# These are durable bare-`Dual` width-1 exceptions, not temporary
-# workarounds: their rules dispatch through `arrayify` (whose
-# `TangentOrFData = Union{Tangent, FData}` does not accept `NTangent`),
-# and only `Diagonal`/`Adjoint{T,<:Array{T}}`/`SubArray`/`Transpose{T,<:Array{T}}`
-# have NDual-element wrapper representations. The test
-# `width-1 wrapper bare-Dual durable exceptions` in `test/tangents/dual.jl`
-# pins the documented exception so this cannot regress silently. Each
-# `dual_type(Val(1), Wrapper) === Dual{Wrapper, tangent_type(Wrapper)}`
-# (bare-T) so arrayify dispatches via `Dual{<:AbstractVecOrMat{P}}`;
-# width-N (N>=2) stays at the chunked NTangent-wrapped Dual.
+# `ReinterpretArray` is a durable bare-`Dual` width-1 exception, not a
+# temporary workaround. The non-trivial use is `T !== S` (e.g.,
+# `reinterpret(Complex{Float64}, ::Vector{Float64})`); a canonical
+# NDual-element form would require reinterpreting `Vector{NDual{T,N}}`
+# as `Vector{Complex{T}}`, but NDual is strictly wider than `T` so the
+# byte-level cast does not align. The `T === S` case is degenerate
+# (Julia collapses it to the source array; no `ReinterpretArray`
+# instance is produced), so there is no canonical-form benefit to
+# attempting it either. The width-1 form here, paired with the
+# parallel-Dual `dual_type(Val(N), ReinterpretArray)` and the existing
+# `arrayify(::ReinterpretArray, ::TangentOrFData)` in `src/rules/blas.jl`,
+# is the architecturally-correct representation. Pinned by the
+# `width-1 wrapper bare-Dual durable exceptions` testset in
+# `test/tangents/dual.jl`.
 for Wrapper in (:(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),)
     @eval begin
         function dual_type(
