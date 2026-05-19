@@ -258,10 +258,10 @@ function frule!!(
     dy = ccall(:jl_reshape_array, Array{T,M}, (Any, Any, Any), Array{T,M}, tangent(a), d)
     return Dual(y, dy)
 end
-# Width-N NDual-array overload: reshape a `Array{<:NDual}` directly. NDual
-# packs primal + tangent in each element, so the standard `jl_reshape_array`
-# call produces an element-wise lifted output without separate primal/tangent
-# allocations.
+# Canonical width-1 NDual-array overload: reshape an `Array{NDual{P,1}}`
+# directly. NDual packs primal + tangent in each element, so the standard
+# `jl_reshape_array` call produces an element-wise lifted output without
+# separate primal/tangent allocations.
 function frule!!(
     ::Dual{typeof(_foreigncall_)},
     ::Dual{Val{:jl_reshape_array}},
