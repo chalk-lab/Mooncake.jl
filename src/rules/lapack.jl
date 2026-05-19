@@ -782,6 +782,14 @@ end
 # Unified Cholesky differential: real (Symmetric projection) and complex
 # Hermitian (conjugate-symmetric projection) paths share identical structure;
 # the projection helper selects per element type.
+#
+# Math (uplo='L' case): primal `A = L L^H`, differential `dA = dL L^H + L dL^H`.
+# Solve: let `M = L⁻¹ dL` (lower-tri). Then `L⁻¹ dA L⁻ᴴ = M + M^H`, whose
+# lower triangle is `tril(M, -1) + 2·diag(M)`. So:
+#   tmp = LowerTriangular(L⁻¹ · sym_proj(dA) · L⁻ᴴ)          [keeps lower tri]
+#   tmp[n,n] /= 2                                            [un-doubles diag]
+#   dL = L · tmp                                             [recover dL = L M]
+# uplo='U' is the transpose: `A = U^H U`, differential split via U on the right.
 @inline function _potrf!_frule_core!(
     uplo::Char, A::AbstractMatrix{P}, dA::AbstractMatrix{P}
 ) where {P<:BlasFloat}
