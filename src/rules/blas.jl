@@ -1546,6 +1546,16 @@ end
 # Per-lane Frechet helper for trsv! (uses post-primal x). Shared by
 # width-1 (via `_trsv!_frule_core!`) and width-N; each caller runs the
 # primal `BLAS.trsv!(uplo, trans, diag, A, x)` BEFORE invoking this helper.
+#
+# Math: trsv! solves `op(A) x = b` (triangular A, post-primal `x` is the
+# solution). Differential: `dx = op(A)⁻¹ (db − op(dA) x)`. Body:
+#   1. `dx ← op(A)⁻¹ dx` (= op(A)⁻¹ db)            [trsv! on dx]
+#   2. `tmp = op(dA) x`                            [trmv; for `diag='U'`,
+#                                                    trmv treats diag as 1
+#                                                    → subtract `x` to leave
+#                                                    only the strict tri]
+#   3. `tmp ← op(A)⁻¹ tmp`                         [trsv! on tmp]
+#   4. `dx ← dx − tmp = op(A)⁻¹ (db − op(dA) x)`
 @inline function _trsv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
     BLAS.trsv!(uplo, trans, diag, A, dx)
     tmp = BLAS.trmv(uplo, trans, diag, dA, x)
