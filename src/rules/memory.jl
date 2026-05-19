@@ -763,6 +763,22 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefset!),MemoryRef,Any,Val,Val}
+# Architectural note: `lmemoryrefset!` deliberately exposes a fan-out of
+# bare-`Dual` rule entries below (one per `value` shape: bare `Dual`,
+# canonical `NDual` / `Complex{NDual}` / array-of-NDual, `Tuple`,
+# `NamedTuple`) without a corresponding `Mooncake.Lifted{lmemoryrefset!}`
+# source-of-truth body. Each entry mutates the user's `MemoryRef`
+# in-place; the bare-`Dual` surface receives the original `MemoryRef`
+# directly, which is the required aliasing for the mutation to be
+# observable. A Pattern A inversion that routed everything through a
+# `Lifted{lmemoryrefset!}` body would either (a) require a 3-param
+# `Lifted{T,1,V}(v)` non-canonicalising ctor in every delegator (one
+# per value shape — same entry count) or (b) canonicalise the inner
+# `MemoryRef` to a fresh `MemoryRef{<:NDual}`, breaking in-place
+# semantics. So the multi-entry bare-Dual surface is the correct
+# architecture for this rule, not a scaffold. See
+# `temp/pattern_a_mutation_finding.md` for the full reasoning.
+#
 # Trait register only for IEEEFloat / Complex MemoryRef slots — the bare
 # NDual variant exists at line ~970 and returns the input value
 # unchanged, so canonicalisation matches the NDual shape downstream.
