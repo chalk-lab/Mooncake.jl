@@ -390,7 +390,7 @@ end
             )
             return Dual(v, NTangent(dvs))
         end
-        bare_t = raw_t isa NTangent ? raw_t.lanes[1] : raw_t
+        bare_t = Mooncake._ntangent_unwrap_singleton(raw_t)
         dv = bitcast(Ptr{tangent_type(eltype(T))}, bare_t)
     else
         dv = NoTangent()

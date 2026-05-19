@@ -26,7 +26,7 @@
     # needs the bare `Ptr` value. Unwrap the singleton-NTangent. The 2-arg
     # `Lifted{P_x, N}(primal, tangent)` ctor will rewrap via
     # `dual_type(Val(N), P_x)(...)`.
-    bare_t = raw_t isa Mooncake.NTangent ? raw_t.lanes[1] : raw_t
+    bare_t = Mooncake._ntangent_unwrap_singleton(raw_t)
     return Mooncake.Lifted{P_x,N}(primal(inner_x) + py, bare_t + py)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.:(+)),<:Ptr,<:Integer}}) = true
