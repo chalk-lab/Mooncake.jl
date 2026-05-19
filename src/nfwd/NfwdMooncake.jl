@@ -1231,6 +1231,53 @@ end
 @inline function Mooncake.__primal_type(::Type{Array{Complex{NDual{T,N}},D}}) where {T,N,D}
     return Array{Complex{T},D}
 end
+# Wrapper types with canonical NDual-element forms: peel NDual back to the
+# primal element. Without these, `_wrap_rule_result(P_out, Val(N), tuple)` in
+# `interpreter/primal_mode.jl` carries the canonical NDual form through as
+# the "primal" tuple element, then `dual_type(Val(N), P_out)` falls through
+# to the generic structural NamedTuple lift (because no dual_type overload
+# accepts a wrapper with NDual elements), producing a NamedTuple V that the
+# canonical-NDual bare_result can't convert into.
+@inline function Mooncake.__primal_type(
+    ::Type{SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}}
+) where {T<:IEEEFloat,N,D,Dp,I,L}
+    return SubArray{T,D,Array{T,Dp},I,L}
+end
+@inline function Mooncake.__primal_type(
+    ::Type{LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}}
+) where {T<:IEEEFloat,N}
+    return LinearAlgebra.Diagonal{T,Vector{T}}
+end
+@inline function Mooncake.__primal_type(
+    ::Type{LinearAlgebra.Adjoint{NDual{T,N},P}}
+) where {T<:IEEEFloat,N,P<:Array{NDual{T,N}}}
+    return LinearAlgebra.Adjoint{T,Array{T,ndims(P)}}
+end
+@inline function Mooncake.__primal_type(
+    ::Type{LinearAlgebra.Transpose{NDual{T,N},P}}
+) where {T<:IEEEFloat,N,P<:Array{NDual{T,N}}}
+    return LinearAlgebra.Transpose{T,Array{T,ndims(P)}}
+end
+for W in (
+    :(LinearAlgebra.UpperTriangular),
+    :(LinearAlgebra.LowerTriangular),
+    :(LinearAlgebra.UnitUpperTriangular),
+    :(LinearAlgebra.UnitLowerTriangular),
+    :(LinearAlgebra.UpperHessenberg),
+    :(LinearAlgebra.Symmetric),
+    :(LinearAlgebra.Hermitian),
+)
+    @eval @inline function Mooncake.__primal_type(
+        ::Type{$(W){NDual{T,N},Matrix{NDual{T,N}}}}
+    ) where {T<:IEEEFloat,N}
+        return $(W){T,Matrix{T}}
+    end
+end
+@inline function Mooncake.__primal_type(
+    ::Type{Base.ReshapedArray{NDual{T,N},D,Array{NDual{T,N},Dp},MI}}
+) where {T<:IEEEFloat,N,D,Dp,MI}
+    return Base.ReshapedArray{T,D,Array{T,Dp},MI}
+end
 @inline function Mooncake.__primal_type(
     ::Type{Base.Broadcast.Extruded{X,K,D}}
 ) where {X<:Array{<:Union{NDual,Complex{<:NDual}}},K,D}
