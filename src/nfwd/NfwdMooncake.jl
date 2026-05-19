@@ -1005,19 +1005,6 @@ for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
     end
 end
 
-# Base.ReshapedArray{T,D,<:Array{T},MI}: shape-shifted view. Only the
-# `.parent` field is differentiable; `.dims` and `.mi` are non-differentiable.
-function dual_type(
-    ::Val{N}, ::Type{Base.ReshapedArray{T,D,P,MI}}
-) where {N,T<:IEEEFloat,D,P<:Array{T},MI}
-    return Base.ReshapedArray{NDual{T,N},D,Array{NDual{T,N},ndims(P)},MI}
-end
-function dual_type(
-    ::Val{0}, ::Type{Base.ReshapedArray{T,D,P,MI}}
-) where {T<:IEEEFloat,D,P<:Array{T},MI}
-    return Base.ReshapedArray{T,D,P,MI}
-end
-
 # SubArray{T, D, Array{T,Dp}, I, L} — :parent::Array{T,Dp} is the only
 # differentiable field; :indices, :offset1, :stride1 are NoTangent.
 function dual_type(
@@ -1031,21 +1018,31 @@ function dual_type(
     return SubArray{T,D,Array{T,Dp},I,L}
 end
 
-# `ReinterpretArray` is a durable bare-`Dual` width-1 exception, not a
-# temporary workaround. The non-trivial use is `T !== S` (e.g.,
-# `reinterpret(Complex{Float64}, ::Vector{Float64})`); a canonical
-# NDual-element form would require reinterpreting `Vector{NDual{T,N}}`
-# as `Vector{Complex{T}}`, but NDual is strictly wider than `T` so the
-# byte-level cast does not align. The `T === S` case is degenerate
-# (Julia collapses it to the source array; no `ReinterpretArray`
-# instance is produced), so there is no canonical-form benefit to
-# attempting it either. The width-1 form here, paired with the
-# parallel-Dual `dual_type(Val(N), ReinterpretArray)` and the existing
-# `arrayify(::ReinterpretArray, ::TangentOrFData)` in `src/rules/blas.jl`,
-# is the architecturally-correct representation. Pinned by the
-# `width-1 wrapper bare-Dual durable exceptions` testset in
-# `test/tangents/dual.jl`.
-for Wrapper in (:(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),)
+# Durable bare-`Dual` width-1 exceptions, not temporary workarounds.
+#
+#   - `ReinterpretArray`: the non-trivial use is `T !== S` (e.g.,
+#     `reinterpret(Complex{Float64}, ::Vector{Float64})`). A canonical
+#     NDual-element form would require reinterpreting `Vector{NDual{T,N}}`
+#     as `Vector{Complex{T}}`, but NDual is strictly wider than `T` so the
+#     byte-level cast does not align. The `T === S` case collapses in Julia
+#     (no `ReinterpretArray` instance is produced). The width-1 form here,
+#     paired with the existing `arrayify(::ReinterpretArray, ::TangentOrFData)`
+#     in `src/rules/blas.jl`, is the architecturally-correct representation.
+#
+#   - `ReshapedArray`: a canonical NDual form for the `Array`-parent subset
+#     was attempted (Project 1) but reverted — the lapack test suite
+#     exercises `ReshapedArray{T,D,<:SubArray{T,...},MI}` extensively, and
+#     the canonical NDual form only covered `Array`-parent ReshapedArrays.
+#     Non-`Array`-parent cases fell through to the generic structural
+#     NamedTuple lift, producing inner Vs that no downstream rule accepts.
+#     The parallel-Dual form here handles all parents uniformly.
+#
+# Pinned by the `width-1 wrapper bare-Dual durable exceptions` testset
+# in `test/tangents/dual.jl`.
+for Wrapper in (
+    :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
+    :(Base.ReshapedArray{T,D,P,MI} where {T<:IEEEFloat,D,P,MI}),
+)
     @eval begin
         function dual_type(
             ::Val{1}, ::Type{$(Wrapper.args[1])}
@@ -1476,16 +1473,6 @@ for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
     end
 end
 
-function (::Type{Base.ReshapedArray{NDual{T,N},D,Array{NDual{T,N},Dp},MI}})(
-    primal::Base.ReshapedArray{T,D,<:Array{T,Dp},MI}, tangent::Mooncake.Tangent
-) where {T<:IEEEFloat,N,D,Dp,MI}
-    parent_t = Mooncake._get_tangent_field(tangent, :parent)
-    parent_lifted = Array{NDual{T,N},Dp}(parent(primal), parent_t)
-    return Base.ReshapedArray{NDual{T,N},D,Array{NDual{T,N},Dp},MI}(
-        parent_lifted, primal.dims, primal.mi
-    )
-end
-
 function (::Type{SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}})(
     primal::SubArray{T,D,Array{T,Dp},I,L}, tangent::Mooncake.Tangent
 ) where {T<:IEEEFloat,N,D,Dp,I,L}
@@ -1871,19 +1858,6 @@ for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
 end
 
 function primal(
-    x::Base.ReshapedArray{NDual{T,N},D,<:Array{NDual{T,N},Dp},MI}
-) where {T<:IEEEFloat,N,D,Dp,MI}
-    return Base.ReshapedArray{T,D,Array{T,Dp},MI}(primal(parent(x)), x.dims, x.mi)
-end
-function tangent(
-    x::Base.ReshapedArray{NDual{T,N},D,<:Array{NDual{T,N},Dp},MI}
-) where {T<:IEEEFloat,N,D,Dp,MI}
-    return Mooncake.Tangent((;
-        parent=tangent(parent(x)), dims=Mooncake.NoTangent(), mi=Mooncake.NoTangent()
-    ))
-end
-
-function primal(
     t::LinearAlgebra.Transpose{NDual{T,N},<:Array{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return transpose(primal(parent(t)))
@@ -2260,15 +2234,6 @@ for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
             data=Mooncake.tangent(x.data, i), uplo=Mooncake.NoTangent()
         ))
     end
-end
-@inline function Mooncake.tangent(
-    x::Base.ReshapedArray{NDual{T,N},D,<:Array{NDual{T,N},Dp},MI}, i::Integer
-) where {T<:IEEEFloat,N,D,Dp,MI}
-    return Mooncake.Tangent((;
-        parent=Mooncake.tangent(parent(x), i),
-        dims=Mooncake.NoTangent(),
-        mi=Mooncake.NoTangent(),
-    ))
 end
 # Mirror `tangent_type(P<:Tuple)`'s all-NoTangent fold: if every element's
 # direction tangent is `NoTangent`, return a single `NoTangent` so that

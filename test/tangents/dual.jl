@@ -300,6 +300,7 @@ end
             T_W_N2 = Mooncake.tangent_type(Val(2), W)
             @test Mooncake.dual_type(Val(2), W) === Mooncake.Dual{W,T_W_N2}
         end
+        _pin_width1_bare_dual(Base.ReshapedArray{Float64,1,Vector{Float64},Tuple{}})
         _pin_width1_bare_dual(
             Base.ReinterpretArray{Float64,1,Float64,Vector{Float64},false}
         )
@@ -314,15 +315,6 @@ end
             @test Mooncake.dual_type(Val(2), P) ===
                 W{NDual{Float64,2},Matrix{NDual{Float64,2}}}
         end
-    end
-
-    @testset "ReshapedArray canonical NDual dual_type" begin
-        R = Base.ReshapedArray{Float64,1,Vector{Float64},Tuple{}}
-        @test Mooncake.dual_type(Val(0), R) === R
-        @test Mooncake.dual_type(Val(1), R) ===
-            Base.ReshapedArray{NDual{Float64,1},1,Vector{NDual{Float64,1}},Tuple{}}
-        @test Mooncake.dual_type(Val(2), R) ===
-            Base.ReshapedArray{NDual{Float64,2},1,Vector{NDual{Float64,2}},Tuple{}}
     end
 
     @testset "Transpose canonical NDual dual_type" begin
