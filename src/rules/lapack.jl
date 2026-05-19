@@ -206,6 +206,13 @@ end
 ) where {P<:BlasFloat}
     # Compute Frechet derivative on tangent dA in place after the primal
     # `LAPACK.getrf!(A)` has overwritten A with its LU factorisation.
+    #
+    # Math: A = P⁻¹ L U and dA = P⁻¹ (dL U + L dU). Solve for dL, dU:
+    # F := L⁻¹ (P dA) U⁻¹ = L⁻¹ dL + dU U⁻¹, with L⁻¹dL strictly-lower
+    # (L unit-lower) and dU U⁻¹ upper-triangular, so F splits cleanly:
+    #   tril(F, -1) = L⁻¹ dL → dL = L * tril(F, -1)
+    #   triu(F)     = dU U⁻¹ → dU = triu(F) * U
+    # and dA ← dL U + L dU = the differential expressed in factor form.
     L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
