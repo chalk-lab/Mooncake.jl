@@ -232,7 +232,12 @@ function _getrf_pb!(A, dA, ipiv, A_copy)
     # Figure out the pivot matrix used.
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
 
-    # Compute pullback using Seth's method.
+    # Compute pullback using Seth's method (adjoint of the forward Frechet
+    # in `_getrf_fwd_core!`). Forward maps `dA → F = L⁻¹(P dA)U⁻¹ → (dL,dU)`
+    # via strict-lower/upper split. Adjoint:
+    #   F_bar = tril(L' dL_bar, -1) + triu(dU_bar U')          [split-adjoint]
+    #   dA_bar = P⁻¹ L⁻ᵀ F_bar U⁻ᵀ                              [solve-adjoint]
+    # Row-permute by `invperm(p)` applies `P⁻¹` to the final result.
     _dF = tril(L'dL, -1) + UpperTriangular(dU * U')
     dA .= (inv(L') * _dF * inv(U'))[invperm(p), :]
 
