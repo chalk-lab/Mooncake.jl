@@ -517,6 +517,15 @@ end
 # width-1 (via `_getrs!_frule_core!`) and width-N; each caller runs the
 # primal `LAPACK.getrs!(trans, A, ipiv, B)` BEFORE invoking this helper.
 # Uses the shared `_trans_op` selector defined alongside trtrs! above.
+#
+# Math: getrs! solves `op(A_orig) · X = B` given the LU factorisation
+# `A_orig = P⁻¹ L U` stored in `A` plus `ipiv`. Differential:
+#   dX = op(A_orig)⁻¹ (dB − op(dA_orig) · X)
+# where `op(dA_orig)` is reconstructed from the pivoted LU differential
+# factor `tmp2 = inv(P) · (L · dU + dL · U)` via `_lu_diff_factor`. The
+# `mul!(dB, op(tmp2), B, -1, 1)` accumulates `dB ← dB − op(dA_orig) · X`
+# (with X = post-primal B), and the trailing `getrs!` applies
+# `op(A_orig)⁻¹` to the result in place.
 @inline function _getrs_frechet_lane!(
     trans::Char, A::AbstractMatrix{P}, dA, ipiv, B, dB
 ) where {P<:BlasFloat}

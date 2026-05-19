@@ -740,6 +740,11 @@ end
 # Per-lane Frechet helper for scal! (shared by width-1 and width-N rules).
 # Operates on a single lane's tangent array. Callers handle the primal
 # `BLAS.scal!(n, a, X, incx)` separately.
+#
+# Math: scal! computes `X ← a · X`. Differential:
+#   dX ← a · dX + da · X
+# `BLAS.scal!(n, a, dX, incx)` does the first term in place; `BLAS.axpy!`
+# adds `da · X` to dX.
 @inline function _scal_frechet_lane!(n, a, da, X, dX, incx)
     BLAS.scal!(n, a, dX, incx)
     BLAS.axpy!(n, da, X, incx, dX, incx)
@@ -877,6 +882,13 @@ end
 # Per-lane Frechet helper for gemv! width-N rules. Holds only the Frechet
 # step (no primal call); both width-1 (via `_gemv!_frule_core!`) and width-N
 # share this helper, with each caller running the primal separately.
+#
+# Math: gemv! computes `y ← α · op(A) · x + β · y`. Product-rule differential:
+#   dy ← dα · op(A) · x + α · op(dA) · x + α · op(A) · dx + dβ · y + β · dy
+# Lines 1-3 of the body run those three matrix-vector terms via gemv! (the
+# first call also absorbs `β · dy`). The `dβ` branch adds `dβ · y` per
+# element with NaN handling (BLAS would propagate NaN through `0 * NaN`,
+# but the Frechet semantics treat such positions as already-NaN and skip).
 @inline function _gemv_frechet_lane!(tA, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
     BLAS.gemv!(tA, dα, A, x, β, dy)
     BLAS.gemv!(tA, α, dA, x, one(P), dy)
@@ -1244,6 +1256,12 @@ end
 # the source. Width-N rules call these in a 1:N loop, then run the
 # primal once (Frechet uses pre-primal y, so the helper precedes the
 # primal call).
+#
+# Math: symv!/hemv! computes `y ← α · A · x + β · y` (A symmetric for
+# symv!, Hermitian for hemv!). Product-rule differential:
+#   dy ← dα · A · x + α · dA · x + α · A · dx + dβ · y + β · dy
+# Same structure as `_gemv_frechet_lane!` but without `op(·)` selection
+# (symv!/hemv! always implicitly use the symmetric/Hermitian operator).
 for (fname, base) in ((:symv!, :symv), (:hemv!, :hemv))
     helper = Symbol("_", base, "_frechet_lane!")
     @eval @inline function $helper(ul, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
@@ -1381,6 +1399,14 @@ end
 # Per-lane Frechet helper for trmv! (depends on pre-primal x). Shared by
 # width-1 (via `_trmv!_frule_core!`) and width-N; each caller runs the
 # primal separately after the Frechet.
+#
+# Math: trmv! computes `x ← op(A) · x` (A triangular). Differential:
+#   dx ← op(A) · dx + op(dA) · x
+# `trmv!(A, dx)` does the first term; the second is `trmv!(dA, copy(x))`
+# (working on a copy of pre-primal x). For `diag='U'`, trmv! treats A's
+# diagonal as 1; the dA-trmv call therefore returns
+# `op(strict_tri(dA) + I) · x = op(strict_tri(dA)) · x + x`, so subtract
+# `x` to leave only the strict-triangular contribution.
 @inline function _trmv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
     BLAS.trmv!(uplo, trans, diag, A, dx)
     tmp = copy(x)
@@ -1726,6 +1752,14 @@ end
 end
 # Per-lane Frechet helper for gemm!. Shared by width-1 and width-N; each
 # caller runs the primal `BLAS.gemm!` separately after the Frechet.
+#
+# Math: gemm! computes `C ← α · op(A) · op(B) + β · C`. Product-rule
+# differential:
+#   dC ← dα · op(A) · op(B) + α · op(dA) · op(B) + α · op(A) · op(dB)
+#        + dβ · C + β · dC
+# The first gemm! absorbs `α · op(dA) · op(B) + β · dC`; the second adds
+# `α · op(A) · op(dB)`; the `iszero(dα)` branch adds the `dα` term if
+# needed; the `dβ` branch adds `dβ · C` per element with NaN handling.
 @inline function _gemm_frechet_lane!(tA, tB, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
     BLAS.gemm!(tA, tB, α, dA, B, β, dC)
     BLAS.gemm!(tA, tB, α, A, dB, one(P), dC)
@@ -1997,6 +2031,11 @@ end
 # byte-identical apart from `BLAS.$fname`; generated via @eval to share
 # the source, parallel to the symv!/hemv! lane helpers above. Width-N
 # rules call these in a 1:N loop, then run the primal once.
+#
+# Math: symm!/hemm! computes `C ← α · A · B + β · C` (A symmetric/
+# Hermitian, side='L' shown; side='R' swaps A and B's roles).
+# Product-rule differential mirrors gemm! but without an `op` selector:
+#   dC ← dα · A · B + α · dA · B + α · A · dB + dβ · C + β · dC
 for (fname, base) in ((:symm!, :symm), (:hemm!, :hemm))
     helper = Symbol("_", base, "_frechet_lane!")
     @eval @inline function $helper(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
@@ -2258,6 +2297,17 @@ end
 # entry) and width-N; each caller runs the primal separately. herk!
 # additionally calls `real_diag!(dC)` to mirror BLAS zeroing the
 # imaginary part of the diagonal.
+#
+# Math: syrk! computes `C ← α · op(A) · op(A)^T + β · C` (rank-k update,
+# symmetric output); herk! is the Hermitian variant `α · op(A) · op(A)^H`.
+# Product rule on `op(A) · op(A)^{T/H}`:
+#   d[op(A) · op(A)^{T/H}] = op(dA) · op(A)^{T/H} + op(A) · op(dA)^{T/H}
+# Symmetrically applied, so `BLAS.syr2k!`/`her2k!(uplo, t, α, A, dA, β, dC)`
+# does exactly `dC ← α · 2·sym(op(A) op(dA)^T) + β · dC` in one call —
+# encoding both terms of the product rule via the BLAS rank-2k routine.
+# The `dα` branch adds the `dα · A · A^{T/H}` term as a rank-k update;
+# the `dβ` branch adds `dβ · triu/tril(C)` (symmetric storage only fills
+# one triangle).
 @inline function _syrk_frechet_lane!(uplo, t, α::P, dα, A, dA, β, dβ, C, dC) where {P}
     BLAS.syr2k!(uplo, t, P(α), A, dA, β, dC)
     iszero(dα) || BLAS.syrk!(uplo, t, dα, A, one(P), dC)
@@ -2441,6 +2491,17 @@ end
 # Per-lane Frechet helper for trmm! (depends on pre-primal B). Shared by
 # width-1 (via `_trmm!_frule_core!`) and width-N; each caller runs the
 # primal `BLAS.trmm!` separately after the Frechet.
+#
+# Math: trmm! computes `B ← α · op(A) · B` (or `B · op(A)` for side='R',
+# A triangular). Product-rule differential:
+#   dB ← α · op(A) · dB + α · op(dA) · B + dα · op(A) · B
+# Body steps:
+#   1. `dB ← α · op(A) · dB`               [trmm! on dB]
+#   2. `dB += α · op(dA) · copy(B)`        [trmm! on copy(B), accumulate]
+#   3. For `diag='U'`: trmm! treated dA's diagonal as 1, so step 2 added
+#      `α · op(strict_tri(dA) + I) · B = α · op(strict_tri(dA)) · B + α · B`;
+#      subtract `α · B` to leave the strict-triangular contribution.
+#   4. If `dα ≠ 0`: add `dα · op(A) · B`   [trmm! on another copy(B)]
 @inline function _trmm_frechet_lane!(side, uplo, ta, diag, α::P, dα, A, dA, B, dB) where {P}
     BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
     dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
@@ -2616,6 +2677,21 @@ end
 # B independently for its own tangent work). Shared by width-1 (via
 # `_trsm!_frule_core!`) and width-N; each caller runs the primal
 # `BLAS.trsm!` separately after the Frechet.
+#
+# Math: trsm! solves `op(A) · X = α · B` (or B = α·X·op(A) for side='R',
+# A triangular). Differential of `X = α · op(A)⁻¹ · B`:
+#   dX = dα · op(A)⁻¹ · B + α · op(A)⁻¹ · dB − α · op(A)⁻¹ · op(dA) · op(A)⁻¹ · B
+#      = op(A)⁻¹ · (α · dB + dα · X - α · op(dA) · X)
+# where X = op(A)⁻¹ · B (the post-primal value; pre-primal B is α · op(A) · X).
+# Body steps (using pre-primal B = caller's B and post-primal X computed
+# locally as `op(A)⁻¹ · B`):
+#   1. `dB ← op(A)⁻¹ · α · dB`            [trsm! with α scalar]
+#   2. `tmp = op(A)⁻¹ · B`                [trsm! on copy(B) with α=1]
+#   3. `dB += dα · tmp`                   [adds `dα · X`]
+#   4. `tmp = op(dA) · X` (in-place trmm!; `diag='U'` trick: `α · tmp2`
+#      subtracted because trmm! treats diag as 1)
+#   5. `tmp ← op(A)⁻¹ · op(dA) · X`       [trsm! on tmp]
+#   6. `dB -= tmp`                        [final `−α · op(A)⁻¹ · op(dA) · X` term]
 @inline function _trsm_frechet_lane!(
     side, uplo, trans, diag, α::P, dα, A, dA, B, dB
 ) where {P}
