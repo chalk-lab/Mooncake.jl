@@ -31,6 +31,21 @@
                 @test _t == _t2
             end
         end
+
+        # `dual_type` still emits the wrapper-exception form, so the canonical
+        # NDual-element wrapper is constructed manually here.
+        @testset "canonical NDual Transpose" begin
+            v_ndual = [
+                Mooncake.NDual{Float64,1}(1.0, (10.0,)),
+                Mooncake.NDual{Float64,1}(2.0, (20.0,)),
+            ]
+            t_ndual = transpose(v_ndual)
+            p, d = Mooncake.arrayify(t_ndual)
+            @test p == transpose([1.0, 2.0])
+            @test d == transpose([10.0, 20.0])
+            @test p isa Transpose{Float64,Vector{Float64}}
+            @test d isa Transpose{Float64,Vector{Float64}}
+        end
     end
 
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))

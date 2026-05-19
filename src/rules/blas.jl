@@ -101,6 +101,12 @@ function arrayify(
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, transpose(_dx)
 end
+# NDual-element Transpose: not yet emitted by `dual_type`, but reachable
+# once the parallel-Dual exception for `Transpose` is unwound.
+function arrayify(x::Transpose{NDual{T,1},<:AbstractArray{NDual{T,1}}}) where {T<:IEEEFloat}
+    p_parent, d_parent = _arr_extract(x.parent)
+    return transpose(p_parent), transpose(d_parent)
+end
 
 @static if VERSION >= v"1.11-rc4"
     arrayify(x::A, dx::A) where {A<:Memory{<:BlasFloat}} = (x, dx)
