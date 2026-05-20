@@ -402,76 +402,66 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lsetfield!),Any,Any,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),Any,Any,Any}}) = true
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Dual
-) where {P,T<:StandardTangentType}
-    return lsetfield_frule(value, name, x)
-end
-# IR-emit unwraps `Lifted` slot values to bare V's; for IEEEFloat fields
-# this is `NDual{T, N}` (or `Vector{NDual}` / `Complex{NDual}` for container
-# fields). Wrap into a width-N `Dual{P, NTangent{NTuple{N, ...}}}` form via
-# `_ndual_to_dual_widthN` so `set_tangent_field!` hits the per-lane
-# `NTangent{NTuple{N,T}}, name, NTangent{NTuple{N,Tx}}` overload — not
-# the width-1 broadcast overload that duplicates lane 1.
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)},
-    value::Dual{P,T},
-    name::Dual,
-    x::Union{
-        NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
-    },
-) where {P,T<:StandardTangentType}
-    return lsetfield_frule(value, name, _ndual_to_dual_widthN(x))
-end
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Tuple
-) where {P,T<:StandardTangentType}
-    return lsetfield_frule(value, name, _tuple_duals_to_dual(x))
-end
-# A bare-NDual-container `value` can arrive when the unlifted form is the
-# canonical V (e.g. `Lifted{Vector{T<:IEEEFloat}, 1, Vector{NDual{T,1}}}`
-# unlifts to bare `Vector{NDual}`). The Vector IS the lifted form — setting
-# its `:ref` or `:size` field on the bare canonical V just modifies the
-# lifted form in-place. No separate tangent update needed.
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::AbstractArray{<:Mooncake.Nfwd.NDual}, name::Dual, x
-)
-    return lsetfield!(value, primal(name), _ndual_arg_unwrap(x))
-end
-# `SplitDual{V}` lsetfield!: replace the canonical NamedTuple's field with
-# the bare canonical-V form of `x`, mutating the SplitDual in place so
-# aliased Lifted slots share the update (preserving primal aliasing
-# semantics for mutable structs). Uses the `ntuple`-rebuild pattern from
-# `set_tangent_field!` so Julia's stack-allocation optimisation elides
-# the new NamedTuple (the equivalent `Base.setindex` form allocates ~96
-# bytes per call, defeating the `:stability_and_allocs` test pin).
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Mooncake.SplitDual{V}, name::Dual{Val{f}}, x
-) where {V<:NamedTuple,f}
-    nt = getfield(value, :canonical)
-    i = Base.fieldindex(V, f)
-    new_nt = V(ntuple(n -> n == i ? x : nt[n], fieldcount(V)))
-    setfield!(value, :canonical, new_nt)
-    return x
-end
 @inline _ndual_arg_unwrap(x::Dual) = primal(x)
 @inline _ndual_arg_unwrap(x::Tuple) = map(_ndual_arg_unwrap, x)
 @inline _ndual_arg_unwrap(x) = x
+# Direct Lifted bodies per inner V shape — replace the delegator that
+# unlifted everything and routed to bare-Dual frule!! variants. Each
+# body inlines the same `_unlift`+dispatch the bare-Dual frules did.
+# Wrapper-exception value V (Dual{P, T<:StandardTangentType}): inline
+# the bare-Dual variant's body (lsetfield_frule on the bridged x).
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(lsetfield!),N},
-    value::Mooncake.Lifted,
+    ::Mooncake.Lifted{typeof(lsetfield!),N},
+    value::Mooncake.Lifted{P,N,V},
     name::Mooncake.Lifted,
     x::Mooncake.Lifted,
-) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(value),
-        Mooncake._unlift(name),
-        Mooncake._unlift(x),
-    )
+) where {N,P,T<:StandardTangentType,V<:Dual{P,T}}
+    bare_value = Mooncake._unlift(value)
+    bare_name = Mooncake._unlift(name)
+    bare_x = _lsetfield_x_to_dual(Mooncake._unlift(x))
+    bare_result = lsetfield_frule(bare_value, bare_name, bare_x)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
+# Canonical-NDual value V (AbstractArray{<:NDual}): bare lsetfield! on
+# the array; NDual elements carry tangent so no separate tangent update.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lsetfield!),N},
+    value::Mooncake.Lifted{P,N,V},
+    name::Mooncake.Lifted,
+    x::Mooncake.Lifted,
+) where {N,P,V<:AbstractArray{<:Mooncake.Nfwd.NDual}}
+    bare_value = Mooncake._unlift(value)
+    bare_name = Mooncake._unlift(name)
+    bare_x = Mooncake._unlift(x)
+    result = lsetfield!(bare_value, primal(bare_name), _ndual_arg_unwrap(bare_x))
+    P_out = __primal_type(_typeof(result))
+    return _wrap_rule_result(P_out, Val(N), result)
+end
+# SplitDual value V: rebuild the canonical NamedTuple in place via the
+# ntuple-rebuild pattern (commit 1600a4b0b — preserves zero-alloc).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lsetfield!),N},
+    value::Mooncake.Lifted{P,N,V},
+    name::Mooncake.Lifted{<:Val{f}},
+    x::Mooncake.Lifted,
+) where {N,P,NT<:NamedTuple,V<:Mooncake.SplitDual{NT},f}
+    bare_value = Mooncake._unlift(value)
+    bare_x = Mooncake._unlift(x)
+    nt = getfield(bare_value, :canonical)
+    i = Base.fieldindex(NT, f)
+    new_nt = NT(ntuple(n -> n == i ? bare_x : nt[n], fieldcount(NT)))
+    setfield!(bare_value, :canonical, new_nt)
+    P_out = __primal_type(_typeof(bare_x))
+    return _wrap_rule_result(P_out, Val(N), bare_x)
+end
+# Bridge `x`'s bare inner V to the `Dual{P_x, T_x}` shape the
+# `Dual{P,T}` value path's `lsetfield_frule` expects.
+@inline _lsetfield_x_to_dual(x::Dual) = x
+@inline _lsetfield_x_to_dual(x::Union{NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}}) = _ndual_to_dual_widthN(
+    x
+)
+@inline _lsetfield_x_to_dual(x::Tuple) = _tuple_duals_to_dual(x)
 # `_ndual_to_dual_lane1` bridges canonical width-1 `NDual` / `Complex{NDual}` /
 # array containers into the legacy `Dual{P, T}` form expected by
 # `lsetfield_frule`. For width-N (N >= 2) callers, `_ndual_to_dual_widthN`
