@@ -1418,86 +1418,17 @@ function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
 end
 
-# Width-1 gemm!: covers Real and Complex via slot Union; delegates Frechet
-# to `_gemm_frechet_lane!`, then runs the primal.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    A_dA::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
-    B_dB::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
-    beta::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    C_dC::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-)
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dα = _scalar_extract(alpha)
-    β, dβ = _scalar_extract(beta)
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    C, dC = _arr_extract(C_dC)
-
-    # Tangents (product rule) via the shared lane helper, then primal.
-    _gemm_frechet_lane!(tA, tB, α, dα, A, dA, B, dB, β, dβ, C, dC)
-    BLAS.gemm!(tA, tB, α, A, B, β, C)
-
-    _arr_writeback!(C_dC, C, dC)
-    return C_dC
-end
-# Per-lane Frechet helper for gemm!. Shared by width-1 and width-N; each
-# caller runs the primal `BLAS.gemm!` separately after the Frechet.
+# Unified gemm! Lifted body.
 #
-# Math: gemm! computes `C ← α · op(A) · op(B) + β · C`. Product-rule
-# differential:
+# Math: gemm! computes `C ← α · op(A) · op(B) + β · C`. Product-rule per
+# lane:
 #   dC ← dα · op(A) · op(B) + α · op(dA) · op(B) + α · op(A) · op(dB)
 #        + dβ · C + β · dC
 # The first gemm! absorbs `α · op(dA) · op(B) + β · dC`; the second adds
-# `α · op(A) · op(dB)`; the `iszero(dα)` branch adds the `dα` term if
-# needed; the `dβ` branch adds `dβ · C` per element with NaN handling.
-@inline function _gemm_frechet_lane!(tA, tB, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
-    BLAS.gemm!(tA, tB, α, dA, B, β, dC)
-    BLAS.gemm!(tA, tB, α, A, dB, one(P), dC)
-    if !iszero(dα)
-        BLAS.gemm!(tA, tB, dα, A, B, one(P), dC)
-    end
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
-        end
-    end
-    return nothing
-end
-# Width-N gemm!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union; per-lane `_gemm_frechet_lane!` then primal once.
+# `α · op(A) · op(dB)`; the `dα` branch adds the `dα` term; the `dβ`
+# branch adds `dβ · C` element-wise with NaN handling.
 @inline function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Union{NDual{P,N},Complex{NDual{P,N}}},
-    A_dA::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    B_dB::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    beta::Union{NDual{P,N},Complex{NDual{P,N}}},
-    C_dC::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:IEEEFloat,N}
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    C, dCs = _arr_extract_n(C_dC)
-    @inbounds for lane in 1:N
-        _gemm_frechet_lane!(
-            tA, tB, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
-        )
-    end
-    BLAS.gemm!(tA, tB, α, A, B, β, C)
-    _arr_writeback_n!(C_dC, C, dCs)
-    return C_dC
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.gemm!),N},
+    ::Mooncake.Lifted{typeof(BLAS.gemm!),N},
     transA::Mooncake.Lifted{Char},
     transB::Mooncake.Lifted{Char},
     alpha::Mooncake.Lifted{T},
@@ -1506,20 +1437,36 @@ end
     beta::Mooncake.Lifted{T},
     C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
 ) where {N,T<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(transA),
-        Mooncake._unlift(transB),
-        Mooncake._unlift(alpha),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(B_dB),
-        Mooncake._unlift(beta),
-        Mooncake._unlift(C_dC),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    tA = primal(transA)
+    tB = primal(transB)
+    alpha_inner = Mooncake._unlift(alpha)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    B_dB_inner = Mooncake._unlift(B_dB)
+    beta_inner = Mooncake._unlift(beta)
+    C_dC_inner = Mooncake._unlift(C_dC)
+    α, dαs = _scalar_extract_n(alpha_inner)
+    A, dAs = _arr_extract_n(A_dA_inner)
+    B, dBs = _arr_extract_n(B_dB_inner)
+    β, dβs = _scalar_extract_n(beta_inner)
+    C, dCs = _arr_extract_n(C_dC_inner)
+    @inbounds for lane in 1:length(dCs)
+        BLAS.gemm!(tA, tB, α, dAs[lane], B, β, dCs[lane])
+        BLAS.gemm!(tA, tB, α, A, dBs[lane], one(T), dCs[lane])
+        if !iszero(dαs[lane])
+            BLAS.gemm!(tA, tB, dαs[lane], A, B, one(T), dCs[lane])
+        end
+        if !iszero(dβs[lane])
+            @inbounds for n in eachindex(C)
+                dCs[lane][n] = ifelse_nan(
+                    C[n], dCs[lane][n], dCs[lane][n] + dβs[lane] * C[n]
+                )
+            end
+        end
+    end
+    BLAS.gemm!(tA, tB, α, A, B, β, C)
+    _arr_writeback_n!(C_dC_inner, C, dCs)
+    return C_dC
 end
-
 @inline function rrule!!(
     ::CoDual{typeof(BLAS.gemm!)},
     transA::CoDual{Char},
