@@ -1105,33 +1105,6 @@ for (fname, prim_elty, frule_elty) in (
     end
 end
 
-# Width-1 symv! with mixed-wrapper support: container args narrowed to
-# bare-`Dual{<:Abstract...}` to disambiguate from the width-N rule at N=1
-# (NDual array inputs route to width-N); scalar args use the Union
-# `Dual{T} | NDual{T,1}` for mixed-wrapper inputs. Covers Real and Complex
-# via `BlasFloat`; delegates Frechet to `_symv_frechet_lane!`.
-function frule!!(
-    ::Dual{typeof(BLAS.symv!)},
-    uplo::Dual{Char},
-    alpha::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    A_dA::Dual{<:AbstractMatrix{<:BlasFloat}},
-    x_dx::Dual{<:AbstractVector{<:BlasFloat}},
-    beta::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    y_dy::Dual{<:AbstractVector{<:BlasFloat}},
-)
-    ul = primal(uplo)
-    α, dα = _scalar_extract(alpha)
-    β, dβ = _scalar_extract(beta)
-    A, dA = _arr_extract(A_dA)
-    x, dx = _arr_extract(x_dx)
-    y, dy = _arr_extract(y_dy)
-
-    _symv_frechet_lane!(ul, α, dα, A, dA, x, dx, β, dβ, y, dy)
-    BLAS.symv!(ul, α, A, x, β, y)
-    _arr_writeback!(y_dy, y, dy)
-    return y_dy
-end
-
 @inline Mooncake._is_lifted_aware(
     ::Type{
         <:Tuple{
@@ -1158,149 +1131,49 @@ end
         },
     },
 ) where {T<:BlasComplexFloat} = true
-# hemv! width-1 Complex canonical form. The Real and Complex symv! width-1
-# entries above are consolidated into a single BlasFloat-typed body; hemv!
-# is Complex-only so its width-1 entry stays separate.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.hemv!)},
-    uplo::Dual{Char},
-    alpha::_ScalarLikeWidth1Complex{R},
-    A_dA::Dual{<:AbstractMatrix{Complex{R}}},
-    x_dx::Dual{<:AbstractVector{Complex{R}}},
-    beta::_ScalarLikeWidth1Complex{R},
-    y_dy::Dual{<:AbstractVector{Complex{R}}},
-) where {R<:IEEEFloat}
-    ul = primal(uplo)
-    α, dα = _scalar_extract(alpha)
-    β, dβ = _scalar_extract(beta)
-    A, dA = _arr_extract(A_dA)
-    x, dx = _arr_extract(x_dx)
-    y, dy = _arr_extract(y_dy)
 
-    _hemv_frechet_lane!(ul, α, dα, A, dA, x, dx, β, dβ, y, dy)
-    BLAS.hemv!(ul, α, A, x, β, y)
-    _arr_writeback!(y_dy, y, dy)
-    return y_dy
-end
-
-# Per-lane Frechet helpers for symv!/hemv! width-N rules. Bodies are
-# byte-identical apart from `BLAS.$fname`; generated via @eval to share
-# the source. Width-N rules call these in a 1:N loop, then run the
-# primal once (Frechet uses pre-primal y, so the helper precedes the
-# primal call).
-#
-# Math: symv!/hemv! computes `y ← α · A · x + β · y` (A symmetric for
-# symv!, Hermitian for hemv!). Product-rule differential:
+# Unified symv!/hemv! Lifted bodies. Math: `y ← α · A · x + β · y`
+# (A symmetric for symv!, Hermitian for hemv!). Product-rule
+# differential per lane:
 #   dy ← dα · A · x + α · dA · x + α · A · dx + dβ · y + β · dy
-# Same structure as `_gemv_frechet_lane!` but without `op(·)` selection
-# (symv!/hemv! always implicitly use the symmetric/Hermitian operator).
-for (fname, base) in ((:symv!, :symv), (:hemv!, :hemv))
-    helper = Symbol("_", base, "_frechet_lane!")
-    @eval @inline function $helper(ul, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
-        BLAS.$fname(ul, dα, A, x, β, dy)
-        BLAS.$fname(ul, α, dA, x, one(P), dy)
-        BLAS.$fname(ul, α, A, dx, one(P), dy)
-        if !iszero(dβ)
-            @inbounds for n in eachindex(y)
-                tmp = dβ * y[n]
-                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+# The dβ · y term skips already-NaN positions in y so BLAS's `0 · NaN`
+# semantics don't corrupt the Frechet output.
+for (fname, T_constraint) in ((:symv!, :BlasFloat), (:hemv!, :BlasComplexFloat))
+    @eval @inline function frule!!(
+        ::Mooncake.Lifted{typeof(BLAS.$fname),N},
+        uplo::Mooncake.Lifted{Char},
+        alpha::Mooncake.Lifted{T},
+        A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
+        x_dx::Mooncake.Lifted{<:AbstractVector{T}},
+        beta::Mooncake.Lifted{T},
+        y_dy::Mooncake.Lifted{<:AbstractVector{T}},
+    ) where {N,T<:$T_constraint}
+        ul = primal(uplo)
+        alpha_inner = Mooncake._unlift(alpha)
+        A_dA_inner = Mooncake._unlift(A_dA)
+        x_dx_inner = Mooncake._unlift(x_dx)
+        beta_inner = Mooncake._unlift(beta)
+        y_dy_inner = Mooncake._unlift(y_dy)
+        α, dαs = _scalar_extract_n(alpha_inner)
+        A, dAs = _arr_extract_n(A_dA_inner)
+        x, dxs = _arr_extract_n(x_dx_inner)
+        β, dβs = _scalar_extract_n(beta_inner)
+        y, dys = _arr_extract_n(y_dy_inner)
+        @inbounds for lane in 1:length(dys)
+            BLAS.$fname(ul, dαs[lane], A, x, β, dys[lane])
+            BLAS.$fname(ul, α, dAs[lane], x, one(T), dys[lane])
+            BLAS.$fname(ul, α, A, dxs[lane], one(T), dys[lane])
+            if !iszero(dβs[lane])
+                @inbounds for n in eachindex(y)
+                    tmp = dβs[lane] * y[n]
+                    dys[lane][n] = ifelse(isnan(y[n]), dys[lane][n], tmp + dys[lane][n])
+                end
             end
         end
-        return nothing
+        BLAS.$fname(ul, α, A, x, β, y)
+        _arr_writeback_n!(y_dy_inner, y, dys)
+        return y_dy
     end
-end
-# Width-N symv!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union; per-lane `_symv_frechet_lane!` then primal once.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.symv!)},
-    uplo::Dual{Char},
-    alpha::Union{NDual{P,N},Complex{NDual{P,N}}},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    x_dx::AbstractVector{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    beta::Union{NDual{P,N},Complex{NDual{P,N}}},
-    y_dy::AbstractVector{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:IEEEFloat,N}
-    ul = primal(uplo)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    A, dAs = _arr_extract_n(A_dA)
-    x, dxs = _arr_extract_n(x_dx)
-    y, dys = _arr_extract_n(y_dy)
-    @inbounds for lane in 1:N
-        _symv_frechet_lane!(
-            ul, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
-        )
-    end
-    BLAS.symv!(ul, α, A, x, β, y)
-    _arr_writeback_n!(y_dy, y, dys)
-    return y_dy
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.hemv!)},
-    uplo::Dual{Char},
-    alpha::Complex{NDual{R,N}},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-    x_dx::AbstractVector{Complex{NDual{R,N}}},
-    beta::Complex{NDual{R,N}},
-    y_dy::AbstractVector{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
-    ul = primal(uplo)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    A, dAs = _arr_extract_n(A_dA)
-    x, dxs = _arr_extract_n(x_dx)
-    y, dys = _arr_extract_n(y_dy)
-    @inbounds for lane in 1:N
-        _hemv_frechet_lane!(
-            ul, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
-        )
-    end
-    BLAS.hemv!(ul, α, A, x, β, y)
-    _arr_writeback_n!(y_dy, y, dys)
-    return y_dy
-end
-
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.symv!),N},
-    uplo::Mooncake.Lifted{Char},
-    alpha::Mooncake.Lifted{T},
-    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
-    x_dx::Mooncake.Lifted{<:AbstractVector{T}},
-    beta::Mooncake.Lifted{T},
-    y_dy::Mooncake.Lifted{<:AbstractVector{T}},
-) where {N,T<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(uplo),
-        Mooncake._unlift(alpha),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(x_dx),
-        Mooncake._unlift(beta),
-        Mooncake._unlift(y_dy),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.hemv!),N},
-    uplo::Mooncake.Lifted{Char},
-    alpha::Mooncake.Lifted{T},
-    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
-    x_dx::Mooncake.Lifted{<:AbstractVector{T}},
-    beta::Mooncake.Lifted{T},
-    y_dy::Mooncake.Lifted{<:AbstractVector{T}},
-) where {N,T<:BlasComplexFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(uplo),
-        Mooncake._unlift(alpha),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(x_dx),
-        Mooncake._unlift(beta),
-        Mooncake._unlift(y_dy),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
 end
 
 @is_primitive(
