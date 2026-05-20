@@ -215,6 +215,15 @@ end
     ts = ntuple(n -> map(d -> d.partials[n], x), Val(N))
     return (p, ts)
 end
+# Wrapper-exception slot V (`Dual{<:AbstractArray, ...}`): treat as a
+# trivial 1-lane chunk so unified width-1 + width-N rule bodies can call
+# `_arr_extract_n` regardless of which slot shape arrived. `arrayify`
+# returns the (primal, tangent) view-pair as in `_arr_extract`; we wrap
+# the tangent in a 1-tuple to match the multi-lane shape.
+@inline function _arr_extract_n(x::Dual{<:AbstractArray})
+    p, t = arrayify(x)
+    return (p, (t,))
+end
 @inline function _arr_extract_n(
     x::AbstractArray{Complex{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
@@ -234,6 +243,11 @@ end
     end
     return nothing
 end
+# Wrapper-exception slot V (`Dual{<:AbstractArray, ...}`): `_arr_extract_n`
+# below returns a 1-tuple whose single element aliases the same buffer as
+# the wrapper's tangent (via `arrayify`), so the mutating ops already
+# wrote through and no per-lane writeback is needed.
+@inline _arr_writeback_n!(x::Dual, p, ts) = nothing
 @inline function _arr_writeback_n!(
     x::AbstractArray{Complex{NDual{T,N}}}, p, ts::NTuple{N,<:AbstractArray}
 ) where {T<:IEEEFloat,N}
