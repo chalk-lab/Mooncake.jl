@@ -302,38 +302,39 @@ end
         SupportedArray{<:IEEEFloat,M} where {M},
     },
 )
-function frule!!(
-    ::Dual{typeof(bias_act!)},
-    ::Dual{typeof(identity)},
-    x::Dual{<:SupportedArray{<:IEEEFloat,N}},
-    b::Dual{<:SupportedArray{<:IEEEFloat,M}},
-) where {N,M}
-    primal(x) .+= primal(b)
-    tangent(x) .+= tangent(b)
-    return x
-end
-# Bare NDual-array variant — V at width 1 for SupportedArray{<:IEEEFloat} is
-# NDual-element array; mutate in place directly.
-function frule!!(
-    ::Dual{typeof(bias_act!)},
-    ::Dual{typeof(identity)},
-    x::AbstractArray{<:Mooncake.Nfwd.NDual{<:IEEEFloat,1}},
-    b::AbstractArray{<:Mooncake.Nfwd.NDual{<:IEEEFloat,1}},
-)
-    x .+= b
-    return x
-end
+# Direct Lifted bodies per inner V shape. Wrapper-exception slot V
+# (`Dual{<:SupportedArray, <:SupportedArray}`): mutate the wrapper's
+# primal AND tangent in place.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(bias_act!),N},
-    id::Mooncake.Lifted{typeof(identity)},
-    x::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,M}},
-    b::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,L}},
-) where {N,M,L}
-    bare_result = frule!!(
-        Mooncake._unlift(f), Mooncake._unlift(id), Mooncake._unlift(x), Mooncake._unlift(b)
-    )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    ::Mooncake.Lifted{typeof(bias_act!),N},
+    ::Mooncake.Lifted{typeof(identity)},
+    x::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,M},N,V_x},
+    b::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,L},N,V_b},
+) where {N,M,L,V_x<:Dual,V_b<:Dual}
+    bare_x = Mooncake._unlift(x)
+    bare_b = Mooncake._unlift(b)
+    primal(bare_x) .+= primal(bare_b)
+    tangent(bare_x) .+= tangent(bare_b)
+    return x
+end
+# Canonical NDual-element slot V: NDual addition is element-wise so
+# `x .+= b` updates both primal and tangent simultaneously.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(bias_act!),N},
+    ::Mooncake.Lifted{typeof(identity)},
+    x::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,M},N,V_x},
+    b::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,L},N,V_b},
+) where {
+    N,
+    M,
+    L,
+    V_x<:AbstractArray{<:Mooncake.Nfwd.NDual{<:IEEEFloat,1}},
+    V_b<:AbstractArray{<:Mooncake.Nfwd.NDual{<:IEEEFloat,1}},
+}
+    bare_x = Mooncake._unlift(x)
+    bare_b = Mooncake._unlift(b)
+    bare_x .+= bare_b
+    return x
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{
