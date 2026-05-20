@@ -1742,32 +1742,6 @@ for (fname, elty, relty) in (
             AbstractMatrix{$elty},
         }
     )
-    @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        _uplo::Dual{Char},
-        _t::Dual{Char},
-        α_dα::Dual{$relty},
-        A_dA::Dual{<:AbstractVecOrMat{$elty}},
-        β_dβ::Dual{$relty},
-        C_dC::Dual{<:AbstractMatrix{$elty}},
-    )
-
-        # Extract values from pairs.
-        uplo = primal(_uplo)
-        t = primal(_t)
-        α, dα = extract(α_dα)
-        A, dA = matrixify(A_dA)
-        β, dβ = extract(β_dβ)
-        C, dC = arrayify(C_dC)
-
-        # Compute Frechet derivative via the shared lane helper, then primal.
-        $(isherm ? :_herk_frechet_lane! : :_syrk_frechet_lane!)(
-            uplo, t, α, dα, A, dA, β, dβ, C, dC
-        )
-        BLAS.$fname(uplo, t, α, A, β, C)
-
-        return C_dC
-    end
     @eval function rrule!!(
         ::CoDual{typeof(BLAS.$fname)},
         _uplo::CoDual{Char},
@@ -1822,148 +1796,24 @@ for (fname, elty, relty) in (
     end
 end
 
-# Per-lane Frechet helpers for syrk! / herk!. α and β are always real
-# (BlasRealFloat); matrix elements are real for syrk-real-elty and complex
-# for syrk-complex-elty / herk-complex-elty. Shared by width-1 (via the
-# @eval-generated wrapper-exception entries and the canonical width-1
-# entry) and width-N; each caller runs the primal separately. herk!
-# additionally calls `real_diag!(dC)` to mirror BLAS zeroing the
-# imaginary part of the diagonal.
+# Unified syrk!/herk! Lifted bodies.
 #
 # Math: syrk! computes `C ← α · op(A) · op(A)^T + β · C` (rank-k update,
 # symmetric output); herk! is the Hermitian variant `α · op(A) · op(A)^H`.
-# Product rule on `op(A) · op(A)^{T/H}`:
-#   d[op(A) · op(A)^{T/H}] = op(dA) · op(A)^{T/H} + op(A) · op(dA)^{T/H}
-# Symmetrically applied, so `BLAS.syr2k!`/`her2k!(uplo, t, α, A, dA, β, dC)`
-# does exactly `dC ← α · 2·sym(op(A) op(dA)^T) + β · dC` in one call —
-# encoding both terms of the product rule via the BLAS rank-2k routine.
-# The `dα` branch adds the `dα · A · A^{T/H}` term as a rank-k update;
-# the `dβ` branch adds `dβ · triu/tril(C)` (symmetric storage only fills
-# one triangle).
-@inline function _syrk_frechet_lane!(uplo, t, α::P, dα, A, dA, β, dβ, C, dC) where {P}
-    BLAS.syr2k!(uplo, t, P(α), A, dA, β, dC)
-    iszero(dα) || BLAS.syrk!(uplo, t, dα, A, one(P), dC)
-    if !iszero(dβ)
-        dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
-    end
-    return nothing
-end
-@inline function _herk_frechet_lane!(
-    uplo, t, α::R, dα, A::AbstractMatrix{Complex{R}}, dA, β::R, dβ, C, dC
-) where {R<:Real}
-    BLAS.her2k!(uplo, t, Complex{R}(α), A, dA, β, dC)
-    iszero(dα) || BLAS.herk!(uplo, t, dα, A, one(R), dC)
-    if !iszero(dβ)
-        dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
-    end
-    real_diag!(dC)
-    return nothing
-end
-# syrk!: covers real-elty (α/β/A/C all real) and complex-elty (α/β real, A/C complex) paths.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.syrk!)},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    α_dα::NDual{R,N},
-    A_dA::AbstractVecOrMat{<:Union{NDual{R,N},Complex{NDual{R,N}}}},
-    β_dβ::NDual{R,N},
-    C_dC::AbstractMatrix{<:Union{NDual{R,N},Complex{NDual{R,N}}}},
-) where {R<:BlasRealFloat,N}
-    uplo = primal(_uplo)
-    t = primal(_t)
-    α, dαs = _scalar_extract_n(α_dα)
-    β, dβs = _scalar_extract_n(β_dβ)
-    A, dAs = _mat_extract_n(A_dA)
-    C, dCs = _arr_extract_n(C_dC)
-    @inbounds for lane in 1:N
-        _syrk_frechet_lane!(uplo, t, α, dαs[lane], A, dAs[lane], β, dβs[lane], C, dCs[lane])
-    end
-    BLAS.syrk!(uplo, t, α, A, β, C)
-    _arr_writeback_n!(C_dC, C, dCs)
-    return C_dC
-end
-# herk!: complex matrix, real α/β.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.herk!)},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    α_dα::NDual{R,N},
-    A_dA::AbstractVecOrMat{Complex{NDual{R,N}}},
-    β_dβ::NDual{R,N},
-    C_dC::AbstractMatrix{Complex{NDual{R,N}}},
-) where {R<:BlasRealFloat,N}
-    uplo = primal(_uplo)
-    t = primal(_t)
-    α, dαs = _scalar_extract_n(α_dα)
-    β, dβs = _scalar_extract_n(β_dβ)
-    A, dAs = _mat_extract_n(A_dA)
-    C, dCs = _arr_extract_n(C_dC)
-    @inbounds for lane in 1:N
-        _herk_frechet_lane!(uplo, t, α, dαs[lane], A, dAs[lane], β, dβs[lane], C, dCs[lane])
-    end
-    BLAS.herk!(uplo, t, α, A, β, C)
-    real_diag!(C)
-    _arr_writeback_n!(C_dC, C, dCs)
-    return C_dC
-end
-# Mixed-mode width-1 herk!: canonical NDual scalar (α/β lift to NDual via the
-# IEEEFloat overload) paired with parallel-Dual matrices (Complex
-# ReshapedArray-of-SubArray and similar wrapper-exception shapes that flow as
-# `Dual{<:AbstractMatrix{Complex{T}}, <:TangentOrFData}`). Neither the
-# all-canonical entry above nor the @eval-generated all-parallel-Dual entry
-# matches this arrival; this entry bridges by extracting scalars via
-# `_scalar_extract` and matrices via `matrixify`/`arrayify`.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.herk!)},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    α_dα::NDual{R,1},
-    A_dA::Dual{<:AbstractVecOrMat{Complex{R}},<:TangentOrFData},
-    β_dβ::NDual{R,1},
-    C_dC::Dual{<:AbstractMatrix{Complex{R}},<:TangentOrFData},
-) where {R<:BlasRealFloat}
-    uplo = primal(_uplo)
-    t = primal(_t)
-    α, dα = _scalar_extract(α_dα)
-    β, dβ = _scalar_extract(β_dβ)
-    A, dA = matrixify(A_dA)
-    C, dC = arrayify(C_dC)
-    _herk_frechet_lane!(uplo, t, α, dα, A, dA, β, dβ, C, dC)
-    BLAS.herk!(uplo, t, α, A, β, C)
-    real_diag!(C)
-    return C_dC
-end
-
-# Width-1 syrk!: covers Real and Complex via slot Union; delegates Frechet
-# to `_syrk_frechet_lane!`, then runs the primal.
-function frule!!(
-    ::Dual{typeof(BLAS.syrk!)},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    α_dα::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    A_dA::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
-    β_dβ::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    C_dC::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-)
-    uplo = primal(_uplo)
-    t = primal(_t)
-    α, dα = _scalar_extract(α_dα)
-    A, dA = _mat_extract(A_dA)
-    β, dβ = _scalar_extract(β_dβ)
-    C, dC = _arr_extract(C_dC)
-
-    _syrk_frechet_lane!(uplo, t, α, dα, A, dA, β, dβ, C, dC)
-    BLAS.syrk!(uplo, t, α, A, β, C)
-    _arr_writeback!(C_dC, C, dC)
-    return C_dC
-end
-
+# Product rule encoded via BLAS rank-2k routine:
+#   dC ← α · 2·sym(op(A)·op(dA)^{T/H}) + β · dC      [syr2k!/her2k! one call]
+#       + dα · A · A^{T/H}                           [syrk!/herk! one call]
+#       + dβ · upper/lower(C)                        [element-wise]
+# herk! additionally calls `real_diag!(dC)` to zero the imaginary diag.
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(BLAS.syrk!),Char,Char,T,AbstractVecOrMat{T},T,AbstractMatrix{T}}}
 ) where {T<:BlasFloat} = true
-
+@inline Mooncake._is_lifted_aware(
+    ::Type{<:Tuple{typeof(BLAS.herk!),Char,Char,R,AbstractVecOrMat{T},R,AbstractMatrix{T}}}
+) where {T<:BlasComplexFloat,R<:BlasRealFloat} = true
+# syrk! (real or complex matrix; α/β share matrix element type).
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.syrk!),N},
+    ::Mooncake.Lifted{typeof(BLAS.syrk!),N},
     uplo::Mooncake.Lifted{Char},
     t::Mooncake.Lifted{Char},
     α_dα::Mooncake.Lifted{T},
@@ -1971,28 +1821,32 @@ end
     β_dβ::Mooncake.Lifted{T},
     C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
 ) where {N,T<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(uplo),
-        Mooncake._unlift(t),
-        Mooncake._unlift(α_dα),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(β_dβ),
-        Mooncake._unlift(C_dC),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    ul = primal(uplo)
+    tt = primal(t)
+    α_dα_inner = Mooncake._unlift(α_dα)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    β_dβ_inner = Mooncake._unlift(β_dβ)
+    C_dC_inner = Mooncake._unlift(C_dC)
+    α, dαs = _scalar_extract_n(α_dα_inner)
+    A, dAs = _mat_extract_n(A_dA_inner)
+    β, dβs = _scalar_extract_n(β_dβ_inner)
+    C, dCs = _arr_extract_n(C_dC_inner)
+    @inbounds for lane in 1:length(dCs)
+        BLAS.syr2k!(ul, tt, T(α), A, dAs[lane], β, dCs[lane])
+        if !iszero(dαs[lane])
+            BLAS.syrk!(ul, tt, dαs[lane], A, one(T), dCs[lane])
+        end
+        if !iszero(dβs[lane])
+            dCs[lane] .+= dβs[lane] .* (ul == 'U' ? triu(C) : tril(C))
+        end
+    end
+    BLAS.syrk!(ul, tt, α, A, β, C)
+    _arr_writeback_n!(C_dC_inner, C, dCs)
+    return C_dC
 end
-
-# herk! Lifted delegator + trait. herk! takes Complex matrices but Real
-# scalars (`relty = real(T)`); the @eval-generated bare-Dual frule!! and
-# the width-N canonical-NDual entry (line ~2294) both already handle the
-# math. Without this Lifted entry, IR-emit's Lifted-typed callsites errored.
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(BLAS.herk!),Char,Char,R,AbstractVecOrMat{T},R,AbstractMatrix{T}}}
-) where {T<:BlasComplexFloat,R<:BlasRealFloat} = true
+# herk! (complex matrix, real α/β).
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.herk!),N},
+    ::Mooncake.Lifted{typeof(BLAS.herk!),N},
     uplo::Mooncake.Lifted{Char},
     t::Mooncake.Lifted{Char},
     α_dα::Mooncake.Lifted{R},
@@ -2000,17 +1854,30 @@ end
     β_dβ::Mooncake.Lifted{R},
     C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
 ) where {N,T<:BlasComplexFloat,R<:BlasRealFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(uplo),
-        Mooncake._unlift(t),
-        Mooncake._unlift(α_dα),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(β_dβ),
-        Mooncake._unlift(C_dC),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    ul = primal(uplo)
+    tt = primal(t)
+    α_dα_inner = Mooncake._unlift(α_dα)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    β_dβ_inner = Mooncake._unlift(β_dβ)
+    C_dC_inner = Mooncake._unlift(C_dC)
+    α, dαs = _scalar_extract_n(α_dα_inner)
+    A, dAs = _mat_extract_n(A_dA_inner)
+    β, dβs = _scalar_extract_n(β_dβ_inner)
+    C, dCs = _arr_extract_n(C_dC_inner)
+    @inbounds for lane in 1:length(dCs)
+        BLAS.her2k!(ul, tt, T(α), A, dAs[lane], β, dCs[lane])
+        if !iszero(dαs[lane])
+            BLAS.herk!(ul, tt, dαs[lane], A, one(R), dCs[lane])
+        end
+        if !iszero(dβs[lane])
+            dCs[lane] .+= dβs[lane] .* (ul == 'U' ? triu(C) : tril(C))
+        end
+        real_diag!(dCs[lane])
+    end
+    BLAS.herk!(ul, tt, α, A, β, C)
+    real_diag!(C)
+    _arr_writeback_n!(C_dC_inner, C, dCs)
+    return C_dC
 end
 
 function real_diag!(dA::AbstractMatrix{<:Complex{<:BlasFloat}})
