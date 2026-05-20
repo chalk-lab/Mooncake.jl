@@ -1,14 +1,45 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
-function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) where {P,N}
-    y = _new_(P, tuple_map(primal, x)...)
-    T = tangent_type(P)
-    dy = if T == NoTangent
-        NoTangent()
-    else
-        build_output_tangent(P, tuple_map(primal, x), tuple_map(tangent, x))
+function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) where {P,N}
+    primals = map(__get_primal, x)
+    # For NDual containers (Array, etc.), the type P is the primal type but the fields
+    # have NDual elements. Construct the NDual container type instead.
+    if P <: Array
+        ref = _find_ndual_memref(primals...)
+        if ref !== nothing
+            P_ndual = Array{eltype(ref),ndims(P)}
+            return _new_(P_ndual, primals...)
+        end
     end
-    return Dual(y, dy)
+    # Complex{NDual} is bare — construct directly from the lifted NDual fields,
+    # so the result carries the partial information (Complex{NDual{T,N}}).
+    if P <: Complex && _has_ndual(x...)
+        return Complex(x...)
+    end
+    if _has_ndual(x...)
+        primals_extracted = map(_primal, x)
+        y = _new_(P, primals_extracted...)
+        T = tangent_type(P)
+        T == NoTangent && return Dual(y, NoTangent())
+        return _ndual_new_result(P, y, x, primals_extracted)
+    end
+    y = _new_(P, primals...)
+    T = tangent_type(P)
+    T == NoTangent && return Dual(y, NoTangent())
+    return Dual(y, build_output_tangent(P, primals, map(tangent, x)))
+end
+
+# `_find_ndual_memref`, `_ndual_width`, `_tangent_dir`, and `_tangent_dir_elem`
+# are defined in `nfwd/NfwdMooncake.jl` so that all NDual container dispatch
+# lives in one file. `primal` is extended for `DualOrNDual` shapes there too.
+
+@inline function _ndual_new_result(::Type{P}, y, x::Tuple, primals::Tuple) where {P}
+    W = _ndual_width(x...)
+    tangent_dirs = ntuple(W) do i
+        dir_tangents = map(xi -> _tangent_dir(xi, i), x)
+        build_output_tangent(P, primals, dir_tangents)
+    end
+    return Dual(y, NTangent(tangent_dirs))
 end
 
 function rrule!!(

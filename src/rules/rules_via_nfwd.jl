@@ -184,6 +184,9 @@ end
 function frule!!(f::Dual{typeof(sincosd)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
 end
+function frule!!(::Dual{typeof(sincosd)}, x::NDual)
+    return sincosd(x)
+end
 function rrule!!(f::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
@@ -193,6 +196,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(sincospi),P} where {P<:IEEEFloat}
 function frule!!(f::Dual{typeof(sincospi)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
+function frule!!(::Dual{typeof(sincospi)}, x::NDual)
+    return sincospi(x)
 end
 function rrule!!(f::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
@@ -207,6 +213,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(modf),P} where {P<:IEEEFloat}
 function frule!!(f::Dual{typeof(modf)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
+function frule!!(::Dual{typeof(modf)}, x::NDual)
+    return modf(x)
 end
 function rrule!!(f::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
@@ -224,4 +233,215 @@ function rrule!!(
     f::CoDual{typeof(hypot)}, x::CoDual{P}, xs::Vararg{CoDual{P},M}
 ) where {P<:IEEEFloat,M}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(M + 1), f, x, xs...)
+end
+
+# ── NDual frule!! methods ─────────────────────────────────────────────────────
+#
+# All NDual-dispatched frule!! rules live here, organised into sections
+# mirroring the files under src/rules/.
+
+# ── builtins (intrinsic wrappers) ─────────────────────────────────────────────
+using .IntrinsicsWrappers:
+    abs_float,
+    add_float,
+    add_float_fast,
+    sub_float,
+    sub_float_fast,
+    mul_float,
+    mul_float_fast,
+    div_float,
+    div_float_fast,
+    neg_float,
+    neg_float_fast,
+    sqrt_llvm,
+    sqrt_llvm_fast,
+    copysign_float,
+    fma_float,
+    muladd_float,
+    fpext,
+    fptrunc
+
+frule!!(::Dual{typeof(abs_float)}, x::NDual) = abs(x)
+frule!!(::Dual{typeof(neg_float)}, x::NDual) = -x
+frule!!(::Dual{typeof(neg_float_fast)}, x::NDual) = -x
+frule!!(::Dual{typeof(sqrt_llvm)}, x::NDual) = sqrt(x)
+frule!!(::Dual{typeof(sqrt_llvm_fast)}, x::NDual) = sqrt(x)
+
+# Mixed `(NDual, Dual{<:IEEEFloat})` cases arise when an `@inactive_intrinsic`
+# (e.g. `sitofp(Float64, 2)`) emits a width-1 `Dual{Float64}` alongside an
+# `NDual` user input. Unwrapping the `Dual` to its primal is sound because the
+# inactive frule produces `Dual(_, zero_tangent(_))`, contributing nothing.
+for (op_sym, op_fn) in (
+    (:add_float, :+),
+    (:add_float_fast, :+),
+    (:sub_float, :-),
+    (:sub_float_fast, :-),
+    (:mul_float, :*),
+    (:mul_float_fast, :*),
+    (:div_float, :/),
+    (:div_float_fast, :/),
+    (:copysign_float, :copysign),
+)
+    @eval begin
+        @inline frule!!(::Dual{typeof($op_sym)}, a::NDual, b::NDual) = $op_fn(a, b)
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, a::NDual{T,N}, b::Dual{<:IEEEFloat}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(a, primal(b))
+        end
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, a::Dual{<:IEEEFloat}, b::NDual{T,N}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(primal(a), b)
+        end
+    end
+end
+
+# Ternary float intrinsics: NDual×NDual×NDual plus the (≥1 NDual, rest Dual)
+# mixes that Nfwd already supports natively.
+for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
+    @eval begin
+        @inline frule!!(::Dual{typeof($op_sym)}, x::NDual, y::NDual, z::NDual) = $op_fn(
+            x, y, z
+        )
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, x::NDual{T,N}, y::NDual{T,N}, z::Dual{<:IEEEFloat}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(x, y, primal(z))
+        end
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, x::NDual{T,N}, y::Dual{<:IEEEFloat}, z::NDual{T,N}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(x, primal(y), z)
+        end
+        @inline function frule!!(
+            ::Dual{typeof($op_sym)}, x::Dual{<:IEEEFloat}, y::NDual{T,N}, z::NDual{T,N}
+        ) where {T<:IEEEFloat,N}
+            return $op_fn(primal(x), y, z)
+        end
+    end
+end
+
+function frule!!(
+    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::NDual{P,N}
+) where {Pext<:IEEEFloat,P<:IEEEFloat,N}
+    return convert(NDual{Pext,N}, x)
+end
+function frule!!(
+    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::NDual{P,N}
+) where {Ptrunc<:IEEEFloat,P<:IEEEFloat,N}
+    return convert(NDual{Ptrunc,N}, x)
+end
+
+@static if VERSION >= v"1.12.0-rc2"
+    using .IntrinsicsWrappers: max_float, max_float_fast, min_float, min_float_fast
+    frule!!(::Dual{typeof(max_float)}, a::NDual, b::NDual) = max(a, b)
+    frule!!(::Dual{typeof(max_float_fast)}, a::NDual, b::NDual) = max(a, b)
+    frule!!(::Dual{typeof(min_float)}, a::NDual, b::NDual) = min(a, b)
+    frule!!(::Dual{typeof(min_float_fast)}, a::NDual, b::NDual) = min(a, b)
+end
+
+# ── scalar_math ───────────────────────────────────────────────────────────────
+# Tuple-returning functions (sincosd, sincospi, modf) are skipped here and
+# defined manually above; FastMath.sincos has a manual NDual entry below.
+
+for f in (
+    exp,
+    exp2,
+    exp10,
+    expm1,
+    log,
+    log10,
+    log2,
+    log1p,
+    sqrt,
+    cbrt,
+    sin,
+    cos,
+    cospi,
+    tan,
+    sec,
+    csc,
+    cot,
+    sind,
+    cosd,
+    tand,
+    secd,
+    cscd,
+    cotd,
+    sinpi,
+    asin,
+    acos,
+    atan,
+    asec,
+    acsc,
+    acot,
+    asind,
+    acosd,
+    atand,
+    asecd,
+    acscd,
+    acotd,
+    sinh,
+    cosh,
+    tanh,
+    sech,
+    csch,
+    coth,
+    asinh,
+    acosh,
+    atanh,
+    asech,
+    acsch,
+    acoth,
+    sinc,
+    deg2rad,
+    rad2deg,
+    mod2pi,
+    nextfloat,
+    prevfloat,
+    tanpi,
+    Base.FastMath.exp_fast,
+    Base.FastMath.exp2_fast,
+    Base.FastMath.exp10_fast,
+    Base.FastMath.atan_fast,
+)
+    @eval function frule!!(::Dual{typeof($f)}, x::NDual{T,N}) where {T<:IEEEFloat,N}
+        return $f(x)
+    end
+end
+
+# `Base.eps(x::IEEEFloat)` is constant in `x`, so the NDual variant returns a
+# zero-derivative `NDual` carrying `eps(primal(x))`.
+function frule!!(::Dual{typeof(Base.eps)}, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    return zero_dual(Val(N), Base.eps(primal(x)))
+end
+
+# `Base.FastMath.sincos` returns a tuple; `Base.sincos` is overloaded for `NDual`,
+# so dispatching the fast variant to it yields the canonical tuple-of-NDual shape.
+function frule!!(::Dual{typeof(Base.FastMath.sincos)}, x::NDual{T,N}) where {T<:IEEEFloat,N}
+    return Base.FastMath.sincos(x)
+end
+
+# Binary functions
+for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
+    @eval function frule!!(
+        ::Dual{typeof($f)}, x::NDual{T,N}, y::NDual{T,N}
+    ) where {T<:IEEEFloat,N}
+        return $f(x, y)
+    end
+end
+
+# Ternary: clamp
+function frule!!(
+    ::Dual{typeof(clamp)}, x::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}
+) where {T<:IEEEFloat,N}
+    return clamp(x, lo, hi)
+end
+
+# Vararg: hypot
+function frule!!(
+    ::Dual{typeof(hypot)}, x::NDual{T,N}, xs::Vararg{NDual{T,N},M}
+) where {T<:IEEEFloat,N,M}
+    return hypot(x, xs...)
 end

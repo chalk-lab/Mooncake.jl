@@ -413,7 +413,7 @@ using Mooncake.Nfwd
         @test occursin("Supported nfwd outputs:", msg)
         @test occursin("1. Float64 (scalar)", msg)
         @test occursin("2. Vector{Float64} (size (2,))", msg)
-        @test occursin("Vector{Int64} (size (2,))", msg)
+        @test occursin("Vector{$Int} (size (2,))", msg)
     end
 
     @testset "unsupported input diagnostics" begin
@@ -426,7 +426,7 @@ using Mooncake.Nfwd
         @test err isa Nfwd.UnsupportedInputError
         @test occursin("nfwd input unsupported.", msg)
         @test occursin("Supported nfwd inputs:", msg)
-        @test occursin("Vector{Int64} (size (2,))", msg)
+        @test occursin("Vector{$Int} (size (2,))", msg)
     end
 
     @testset "Complex{NDual}" begin

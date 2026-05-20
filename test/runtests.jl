@@ -49,8 +49,8 @@ include("front_matter.jl")
             include(joinpath("interpreter", "bbcode.jl"))
             include(joinpath("interpreter", "ir_normalisation.jl"))
             include(joinpath("interpreter", "zero_like_rdata.jl"))
-            include(joinpath("interpreter", "forward_mode.jl"))
             include(joinpath("interpreter", "reverse_mode.jl"))
+            include(joinpath("interpreter", "primal_mode.jl"))
         end
         include("tools_for_rules.jl")
         include("interface.jl")
@@ -58,6 +58,10 @@ include("front_matter.jl")
         include("developer_tools.jl")
         include("skill_utils.jl")
         include("test_utils.jl")
+        @testset "nfwd" begin
+            include(joinpath("nfwd", "nfwd.jl"))
+            include(joinpath("nfwd", "nfwdmooncake.jl"))
+        end
     elseif test_group == "Nfwd"
         include(joinpath("nfwd", "nfwd.jl"))
         include(joinpath("nfwd", "nfwdmooncake.jl"))

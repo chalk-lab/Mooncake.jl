@@ -23,7 +23,8 @@ For every new type, method, changed signature, or overload:
 
 - **Necessary?** Does existing infrastructure (`@zero_derivative`, `@from_rrule`, broader signatures) already cover this? Could an overload be eliminated by broadening an existing one?
 - **Correct?** Tangent/cotangent types consistent with `tangent_type`? `@is_primitive` declared? For `rrule!!`: pullback restores mutations, aliasing handled. For `frule!!`: dual propagation correct, removable singularities handled.
-- **Clear and consistent?** Names and structure match the surrounding file and `src/rules/`. `NoTangent`/`ZeroTangent` used correctly.
+- **Clear and consistent?** Names and structure match the surrounding file and `src/rules/`. `NoTangent`/`ZeroTangent` used correctly. Names should be Julian; don't redundantly encode input types (scalar, vector, array, complex) that the signature already makes clear, but prefixes/suffixes for disambiguation or clarity are fine.
+- **Audit globals.** List every new global variable, method, and type. State the purpose of each. Evaluate whether each is truly needed or could be inlined, merged, or removed.
 - **Robust?** Edge cases (empty arrays, zero-size structs, complex types) handled or explicitly excluded. Fails loudly on unsupported inputs.
 - **Minimal?** No dead branches, unused arguments, or speculative generalisations.
 
