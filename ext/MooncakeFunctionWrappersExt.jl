@@ -270,19 +270,13 @@ function rrule!!(::CoDual{Type{FunctionWrapper{R,A}}}, obj::CoDual{P}) where {R,
     return CoDual(FunctionWrapper{R,A}(obj.x), t), function_wrapper_pb
 end
 
-# `FunctionWrapper{R,A}(obj)` ctor implementation kernel.
-@inline function _function_wrapper_ctor_kernel(
-    ::Dual{Type{FunctionWrapper{R,A}}}, obj::Dual{P}
-) where {R,A,P}
-    t, _ = _function_wrapper_tangent(R, primal(obj), A, tangent(obj))
-    return Dual(FunctionWrapper{R,A}(primal(obj)), t)
-end
 @inline function frule!!(
-    f::Mooncake.Lifted{Type{FunctionWrapper{R,A}},N}, obj::Mooncake.Lifted{P}
+    ::Mooncake.Lifted{Type{FunctionWrapper{R,A}},N}, obj::Mooncake.Lifted{P}
 ) where {R,A,P,N}
-    bare_result = _function_wrapper_ctor_kernel(Mooncake._unlift(f), Mooncake._unlift(obj))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    bare_obj = Mooncake._unlift(obj)
+    t, _ = _function_wrapper_tangent(R, primal(bare_obj), A, tangent(bare_obj))
+    fw = FunctionWrapper{R,A}(primal(bare_obj))
+    return Mooncake.Lifted{FunctionWrapper{R,A},N}(fw, t)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:FunctionWrapper},Any}}) = true
 
@@ -293,17 +287,16 @@ function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
     return y, function_wrapper_eval_pb
 end
 
-function frule!!(f::Dual{FunctionWrapper{R,A}}, x::Vararg{Dual}) where {R,A}
-    _tangent = tangent(f)
-    return _tangent.frule_wrapper(x...)
-end
 @inline function frule!!(
     f::Mooncake.Lifted{FunctionWrapper{R,A},N}, x::Vararg{Mooncake.Lifted,M}
 ) where {R,A,N,M}
+    bare_f = Mooncake._unlift(f)
     bare_args = ntuple(i -> Mooncake._unlift(x[i]), Val(M))
-    bare_result = frule!!(Mooncake._unlift(f), bare_args...)
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    # The user's frule_wrapper produces a Dual{R, T_R} (or similar inner V);
+    # canonicalise via _wrap_rule_result since the runtime shape isn't
+    # statically known per FunctionWrapper instance.
+    bare_result = tangent(bare_f).frule_wrapper(bare_args...)
+    return Mooncake._wrap_rule_result(R, Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{<:FunctionWrapper,Vararg}}) = true
 
