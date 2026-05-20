@@ -1572,33 +1572,6 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             AbstractMatrix{T},
         } where {T<:$elty},
     )
-    @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        side::Dual{Char},
-        uplo::Dual{Char},
-        alpha::Dual{T},
-        A_dA::Dual{<:AbstractMatrix{T}},
-        B_dB::Dual{<:AbstractMatrix{T}},
-        beta::Dual{T},
-        C_dC::Dual{<:AbstractMatrix{T}},
-    ) where {T<:$elty}
-
-        # Extract primals.
-        s = primal(side)
-        ul = primal(uplo)
-        α, dα = extract(alpha)
-        β, dβ = extract(beta)
-        A, dA = arrayify(A_dA)
-        B, dB = arrayify(B_dB)
-        C, dC = arrayify(C_dC)
-
-        # Compute Frechet derivative via the shared lane helper, then primal.
-        $(isherm ? :_hemm_frechet_lane! : :_symm_frechet_lane!)(
-            s, ul, α, dα, A, dA, B, dB, β, dβ, C, dC
-        )
-        BLAS.$fname(s, ul, α, A, B, β, C)
-        return C_dC
-    end
     @eval function rrule!!(
         ::CoDual{typeof(BLAS.$fname)},
         side::CoDual{Char},
@@ -1669,91 +1642,12 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     end
 end
 
-# Per-lane Frechet helpers for symm!/hemm! width-N rules. Bodies are
-# byte-identical apart from `BLAS.$fname`; generated via @eval to share
-# the source, parallel to the symv!/hemv! lane helpers above. Width-N
-# rules call these in a 1:N loop, then run the primal once.
+# Unified symm!/hemm! Lifted bodies.
 #
-# Math: symm!/hemm! computes `C ← α · A · B + β · C` (A symmetric/
-# Hermitian, side='L' shown; side='R' swaps A and B's roles).
-# Product-rule differential mirrors gemm! but without an `op` selector:
+# Math: symm!/hemm! computes `C ← α · A · B + β · C` (A symmetric for
+# symm!, Hermitian for hemm!; side='L' shown — 'R' swaps A and B's
+# roles). Product-rule differential per lane:
 #   dC ← dα · A · B + α · dA · B + α · A · dB + dβ · C + β · dC
-for (fname, base) in ((:symm!, :symm), (:hemm!, :hemm))
-    helper = Symbol("_", base, "_frechet_lane!")
-    @eval @inline function $helper(s, ul, α::P, dα, A, dA, B, dB, β, dβ, C, dC) where {P}
-        BLAS.$fname(s, ul, α, A, dB, β, dC)
-        BLAS.$fname(s, ul, α, dA, B, one(P), dC)
-        if !iszero(dα)
-            BLAS.$fname(s, ul, dα, A, B, one(P), dC)
-        end
-        if !iszero(dβ)
-            @inbounds for n in eachindex(C)
-                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
-            end
-        end
-        return nothing
-    end
-end
-# Width-N symm!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union with shared P<:BlasRealFloat typevar; per-lane
-# Frechet then primal once.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.symm!)},
-    side::Dual{Char},
-    uplo::Dual{Char},
-    alpha::Union{NDual{P,N},Complex{NDual{P,N}}},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    B_dB::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    beta::Union{NDual{P,N},Complex{NDual{P,N}}},
-    C_dC::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:BlasRealFloat,N}
-    s = primal(side)
-    ul = primal(uplo)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    C, dCs = _arr_extract_n(C_dC)
-    @inbounds for lane in 1:N
-        _symm_frechet_lane!(
-            s, ul, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
-        )
-    end
-    BLAS.symm!(s, ul, α, A, B, β, C)
-    _arr_writeback_n!(C_dC, C, dCs)
-    return C_dC
-end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.hemm!)},
-    side::Dual{Char},
-    uplo::Dual{Char},
-    alpha::Complex{NDual{R,N}},
-    A_dA::AbstractMatrix{Complex{NDual{R,N}}},
-    B_dB::AbstractMatrix{Complex{NDual{R,N}}},
-    beta::Complex{NDual{R,N}},
-    C_dC::AbstractMatrix{Complex{NDual{R,N}}},
-) where {R<:IEEEFloat,N}
-    s = primal(side)
-    ul = primal(uplo)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    C, dCs = _arr_extract_n(C_dC)
-    @inbounds for lane in 1:N
-        _hemm_frechet_lane!(
-            s, ul, α, dαs[lane], A, dAs[lane], B, dBs[lane], β, dβs[lane], C, dCs[lane]
-        )
-    end
-    BLAS.hemm!(s, ul, α, A, B, β, C)
-    _arr_writeback_n!(C_dC, C, dCs)
-    return C_dC
-end
-
-# Lifted-typed delegators for symm!/hemm!: route through the bare-Dual
-# entries (canonical width-1 NDual via the width-N rule at N=1, or the
-# @eval-generated wrapper-exception entry for Dual{<:AbstractMatrix{T}}).
-# Trait registrations enable Lifted-aware IR emission.
 @inline Mooncake._is_lifted_aware(
     ::Type{
         <:Tuple{
@@ -1782,51 +1676,47 @@ end
         },
     },
 ) where {T<:BlasComplexFloat} = true
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.symm!),N},
-    side::Mooncake.Lifted{Char},
-    uplo::Mooncake.Lifted{Char},
-    alpha::Mooncake.Lifted{T},
-    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
-    B_dB::Mooncake.Lifted{<:AbstractMatrix{T}},
-    beta::Mooncake.Lifted{T},
-    C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
-) where {N,T<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(side),
-        Mooncake._unlift(uplo),
-        Mooncake._unlift(alpha),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(B_dB),
-        Mooncake._unlift(beta),
-        Mooncake._unlift(C_dC),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.hemm!),N},
-    side::Mooncake.Lifted{Char},
-    uplo::Mooncake.Lifted{Char},
-    alpha::Mooncake.Lifted{T},
-    A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
-    B_dB::Mooncake.Lifted{<:AbstractMatrix{T}},
-    beta::Mooncake.Lifted{T},
-    C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
-) where {N,T<:BlasComplexFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(side),
-        Mooncake._unlift(uplo),
-        Mooncake._unlift(alpha),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(B_dB),
-        Mooncake._unlift(beta),
-        Mooncake._unlift(C_dC),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+for (fname, T_constraint) in ((:symm!, :BlasFloat), (:hemm!, :BlasComplexFloat))
+    @eval @inline function frule!!(
+        ::Mooncake.Lifted{typeof(BLAS.$fname),N},
+        side::Mooncake.Lifted{Char},
+        uplo::Mooncake.Lifted{Char},
+        alpha::Mooncake.Lifted{T},
+        A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
+        B_dB::Mooncake.Lifted{<:AbstractMatrix{T}},
+        beta::Mooncake.Lifted{T},
+        C_dC::Mooncake.Lifted{<:AbstractMatrix{T}},
+    ) where {N,T<:$T_constraint}
+        s = primal(side)
+        ul = primal(uplo)
+        alpha_inner = Mooncake._unlift(alpha)
+        A_dA_inner = Mooncake._unlift(A_dA)
+        B_dB_inner = Mooncake._unlift(B_dB)
+        beta_inner = Mooncake._unlift(beta)
+        C_dC_inner = Mooncake._unlift(C_dC)
+        α, dαs = _scalar_extract_n(alpha_inner)
+        A, dAs = _arr_extract_n(A_dA_inner)
+        B, dBs = _arr_extract_n(B_dB_inner)
+        β, dβs = _scalar_extract_n(beta_inner)
+        C, dCs = _arr_extract_n(C_dC_inner)
+        @inbounds for lane in 1:length(dCs)
+            BLAS.$fname(s, ul, α, A, dBs[lane], β, dCs[lane])
+            BLAS.$fname(s, ul, α, dAs[lane], B, one(T), dCs[lane])
+            if !iszero(dαs[lane])
+                BLAS.$fname(s, ul, dαs[lane], A, B, one(T), dCs[lane])
+            end
+            if !iszero(dβs[lane])
+                @inbounds for n in eachindex(C)
+                    dCs[lane][n] = ifelse_nan(
+                        C[n], dCs[lane][n], dCs[lane][n] + dβs[lane] * C[n]
+                    )
+                end
+            end
+        end
+        BLAS.$fname(s, ul, α, A, B, β, C)
+        _arr_writeback_n!(C_dC_inner, C, dCs)
+        return C_dC
+    end
 end
 
 for (fname, elty, relty) in (
