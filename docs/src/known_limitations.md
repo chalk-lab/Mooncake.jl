@@ -101,15 +101,23 @@ If you encounter a practical situation in which it is very important that this e
 
 ## Primitives and Overlays
 
-[`@mooncake_overlay`](@ref Mooncake.@mooncake_overlay) and [`@is_primitive`](@ref Mooncake.@is_primitive) both let you change what Mooncake sees when it differentiates a function, but they hook in at different layers and do not compose. `@mooncake_overlay` swaps in a replacement body Mooncake walks through; `@is_primitive` stops Mooncake walking and dispatches to a hand-written rule instead. Marking a signature as a primitive shadows any overlay reachable through it — the rule fires, the overlay does not, and Mooncake reads return types off the original code.
+[`@mooncake_overlay`](@ref Mooncake.@mooncake_overlay) and [`@is_primitive`](@ref Mooncake.@is_primitive) both let you change what Mooncake sees when it differentiates a function, but they hook in at different layers and do not compose.
+`@mooncake_overlay` swaps in a replacement body Mooncake walks through; `@is_primitive` stops Mooncake walking and dispatches to a hand-written rule instead.
+Marking a signature as a primitive shadows any overlay reachable through it — the rule fires, the overlay does not, and Mooncake infers return types from the original method, not from the overlay.
 
 This causes two failure modes:
 
-1. **An overlay that changes the return type breaks the rule's type signature.** Mooncake infers the original return type, so a rule that returns the overlaid value mismatches the expected `CoDual` type and throws a runtime `TypeError`. If the return type is a singleton the check can pass anyway, and the rule may silently produce an incorrect gradient.
+1. **An overlay that changes the return type breaks the rule's return-type contract.**
+   Mooncake infers the return type from the original method, so a manual rule that returns a value of the overlaid type produces a `CoDual` that disagrees with that inferred type, triggering a runtime `TypeError`.
+   When the original and overlaid methods return the same type, the runtime check is trivially satisfied and the bug surfaces only as an incorrect gradient.
 
-2. **An overlay inside a primitive's body never runs.** The rule replaces the body and runs the primal through ordinary Julia dispatch, which ignores overlays. An overlay written to patch unsupported code inside the primitive is silently inert — move it to a signature Mooncake still differentiates, or fold the workaround into the rule.
+2. **An overlay inside a primitive's body never runs.**
+   The rule replaces the body and runs the primal through ordinary Julia dispatch, which ignores overlays.
+   An overlay introduced to work around unsupported code reached from inside the primitive is silently inert — move it to a signature Mooncake still differentiates, or fold the workaround into the rule.
 
-The example below covers both cases. Case (1) overlays the primitive itself; case (2) overlays a helper called from the primitive's body. Each identity check asks whether Mooncake's inferred return type for the caller is `A` (the original) rather than `B` (what the overlay would produce):
+The example below covers both cases.
+Case (1) overlays the primitive itself; case (2) overlays a helper called from the primitive's body.
+Each identity check asks whether Mooncake's inferred return type for the caller is `A` (the original) rather than `B` (what the overlay would produce):
 
 ```jldoctest overlay-primitive-doctest
 julia> struct A end
@@ -148,7 +156,8 @@ julia> Base.code_ircode_by_type(Tuple{typeof(caller_indirect), A}; interp)[1][2]
 true
 ```
 
-Both overlays would produce a `B`, but Mooncake infers `A` — and a rule shaped around `B` would mismatch the expected `CoDual{A}`. Apply only one of `@mooncake_overlay` or `@is_primitive` to a given signature, and make sure no overlay you rely on sits behind a primitive's rule.
+Mooncake infers `A` for both callers, even though the overlays would produce a `B` — so any rule written against the overlay's return type fails the runtime check.
+Apply only one of `@mooncake_overlay` or `@is_primitive` to a given signature, and make sure no overlay you rely on sits behind a primitive's rule.
 
 ## Differentiating CUDA Kernels
 
