@@ -162,6 +162,16 @@ end
 # Trait-style dispatch + recursion so eligibility broadens beyond top-level
 # `Array{<:IEEEFloat}` to `Memory{<:IEEEFloat}` / `Memory{<:Complex{<:IEEEFloat}}`
 # (Julia 1.11+) and nested mutable structs containing such fields.
+#
+# Policy: SplitDual eligibility is intentionally closed over Base/Core
+# container shapes whose canonical NDual-element `dual_type` is built in.
+# Extensions that introduce their own `dual_type` overloads do not yet
+# trigger SplitDual via this predicate — they would need an extension-
+# visible trait. If/when an extension needs SplitDual eligibility for a
+# new container shape, prefer adding a trait method
+# (`_field_canonical_ndual_eligible(::Type{<:MyContainer{<:IEEEFloat}}) =
+# true`) rather than widening the recursion in the generator body, so
+# precompile expansion stays bounded.
 @inline _field_canonical_ndual_eligible(::Type{T}) where {T} = false
 @inline _field_canonical_ndual_eligible(::Type{<:DenseArray{<:IEEEFloat}}) = true
 @inline _field_canonical_ndual_eligible(::Type{<:DenseArray{<:Complex{<:IEEEFloat}}}) = true
@@ -183,9 +193,14 @@ end
         if isconcretetype(ft) && fieldcount(ft) > 0 && ft !== P
             try
                 _has_split_dual_field(ft) && return :(true)
-            catch
-                # Recursive generator expansion can fail mid-precompile;
-                # be defensive — treat as "not eligible" rather than throw.
+            catch e
+                # Recursive generator expansion can fail mid-precompile when
+                # `fieldtype` / `fieldcount` hit world-age boundaries on
+                # extension-loaded types. Treat as "not eligible" rather
+                # than throw so the outer `dual_type` falls back to the
+                # default Dual representation. Re-throw on `InterruptException`
+                # so Ctrl-C still works; otherwise swallow and continue.
+                e isa InterruptException && rethrow()
             end
         end
     end

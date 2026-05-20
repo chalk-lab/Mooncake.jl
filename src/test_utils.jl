@@ -1252,8 +1252,10 @@ Check the Layer-2 seed constructors and values for primal `p`. For each `N` in
   is exactly `dual_type(Val(N), typeof(p))`, and the result must pass
   `verify_dual_type`.
 
-Calls [`test_dual_types`](@ref) on `typeof(p)` first, so type-level and
-value-level canonicality are checked together for every primal.
+Calls [`test_dual_types`](@ref) on `Mooncake._typeof(p)` first, so type-level
+and value-level canonicality are checked together for every primal. Use
+`_typeof` (not `typeof`) so type-valued primals such as `Float64` are
+checked as `Type{Float64}` rather than `DataType`.
 """
 function test_dual(rng::AbstractRNG, p; widths=(0, 1, 2, 4))
     @nospecialize rng p
@@ -1309,7 +1311,9 @@ Check the Layer-3 seed constructors and values for primal `p`. For each `N` in
   `isa lifted_type(Val(N), typeof(p))`. Concrete `Lifted{P,N,V}` wrappers must
   pass `verify_lifted_type`.
 
-Calls [`test_lifted_types`](@ref) on `typeof(p)` first.
+Calls [`test_lifted_types`](@ref) on `Mooncake._typeof(p)` first. Use
+`_typeof` (not `typeof`) so type-valued primals such as `Float64` are
+checked as `Type{Float64}` rather than `DataType`.
 """
 function test_lifted(rng::AbstractRNG, p; widths=(0, 1, 2, 4))
     @nospecialize rng p
