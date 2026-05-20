@@ -333,6 +333,30 @@ end
         SplitDual($(NamedTuple{names})(($(field_exprs...),)))
     end
 end
+# NTangent-wrapped tangent variant — the generic `Lifted{P,N}(::P,
+# ::NTangent)` dispatch routes here when `dual_type(Val(N), P) <:
+# SplitDual`. Per-lane `MutableTangent`s combine field-wise into the
+# canonical V's `(primal, ::NTangent{NTuple{N, …}})` ctor (defined per
+# leaf type — `Array{NDual}`, `Memory{NDual}`, etc.).
+@generated function (::Type{SplitDual{NamedTuple{names,Vs}}})(
+    primal::P, tangent::NTangent{NTup}
+) where {names,Vs<:Tuple,P,NTup<:Tuple}
+    n = fieldcount(P)
+    N = fieldcount(NTup)
+    field_exprs = map(1:n) do i
+        Vi = fieldtype(Vs, i)
+        fname = names[i]
+        lane_exprs = map(
+            d -> :(val(getfield(tangent.lanes[$d].fields, $(QuoteNode(fname))))), 1:N
+        )
+        :(_inner_dual_for_field(
+            $Vi, getfield(primal, $(QuoteNode(fname))), NTangent(($(lane_exprs...),))
+        ))
+    end
+    return quote
+        SplitDual($(NamedTuple{names})(($(field_exprs...),)))
+    end
+end
 
 # Mooncake-protocol accessors for Lifted{P, N, SplitDual{V}} live below
 # the `Lifted` type definition (see "SplitDual Lifted accessors" block).

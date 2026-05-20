@@ -1594,6 +1594,21 @@ end
         end
         return out
     end
+    # Width-N counterpart: tangent is `NTangent{NTuple{N, Memory{T}}}`.
+    # Mirrors the Array variant at line 1459 so SplitDual-wrapped mutable
+    # struct fields whose canonical V is `Memory{NDual{T,N}}` (e.g.
+    # `Dict.vals`) accept the NTangent shape that the SplitDual NTangent
+    # ctor passes through.
+    function (::Type{Memory{NDual{T,N}}})(
+        primal::Memory{T}, tangent::Mooncake.NTangent{NTuple{N,Memory{T}}}
+    ) where {T<:IEEEFloat,N}
+        out = Memory{NDual{T,N}}(undef, length(primal))
+        lanes = tangent.lanes
+        @inbounds for i in eachindex(primal)
+            out[i] = NDual{T,N}(primal[i], ntuple(d -> lanes[d][i], Val(N)))
+        end
+        return out
+    end
     function (::Type{Memory{Complex{NDual{T,N}}}})(
         primal::Memory{Complex{T}}, tangent::Memory{Complex{T}}
     ) where {T<:IEEEFloat,N}

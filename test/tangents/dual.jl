@@ -597,6 +597,8 @@ end
 end
 
 @testset "_ndual_output_to_width1 NTangent stripping" begin
+    Lifted = Mooncake.Lifted
+    NTangent = Mooncake.NTangent
     # Regression guard for the central-adapter return contract. When a
     # `Lifted{P, N, V}` has inner V `Dual{P, <:NTangent}` (the canonical
     # width-1 form for primals without an NDual specialisation — e.g.
