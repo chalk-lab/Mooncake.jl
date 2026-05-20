@@ -441,12 +441,16 @@ end
 # `SplitDual{V}` lsetfield!: replace the canonical NamedTuple's field with
 # the bare canonical-V form of `x`, mutating the SplitDual in place so
 # aliased Lifted slots share the update (preserving primal aliasing
-# semantics for mutable structs).
+# semantics for mutable structs). Uses the `ntuple`-rebuild pattern from
+# `set_tangent_field!` so Julia's stack-allocation optimisation elides
+# the new NamedTuple (the equivalent `Base.setindex` form allocates ~96
+# bytes per call, defeating the `:stability_and_allocs` test pin).
 @inline function frule!!(
     ::Dual{typeof(lsetfield!)}, value::Mooncake.SplitDual{V}, name::Dual{Val{f}}, x
 ) where {V<:NamedTuple,f}
     nt = getfield(value, :canonical)
-    new_nt = Base.setindex(nt, x, f)
+    i = Base.fieldindex(V, f)
+    new_nt = V(ntuple(n -> n == i ? x : nt[n], fieldcount(V)))
     setfield!(value, :canonical, new_nt)
     return x
 end
