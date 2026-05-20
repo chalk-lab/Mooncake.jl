@@ -100,8 +100,8 @@ end
         zero_dual(quadratic),
         Mooncake.Dual(5.0, 1.0),
     )
-    # Audit step: `tangent(::Dual)` now returns `NTangent{Tuple{T}}` under
-    # the carve-out lift; compare the lane value directly via `tangent(_, 1)`.
+    # `tangent(::Dual)` returns the width-aware `NTangent{Tuple{T}}` form;
+    # use `tangent(_, 1)` to read lane 1 as a scalar for the comparison.
     @test tangent(result, 1) == 6 * 5.0
 
     # Test for world-age mismatch fix in _dual_mc (Julia 1.12+ only).

@@ -29,11 +29,6 @@ Base.copy(t::NTangent) = NTangent(map(copy, t.lanes))
 # canonical form), but the rule body operates on the bare `T`. This
 # helper extracts the single lane; for non-NTangent tangents (already
 # bare), it is the identity.
-#
-# Called as `Mooncake._ntangent_unwrap_singleton(t)` from rule files
-# (foreigncall, iddict, misty_closures, memory, builtins, twice_precision,
-# avoiding_non_differentiable_code) — see commit 6485936f7 for the
-# centralisation history.
 @inline _ntangent_unwrap_singleton(t::NTangent{Tuple{T}}) where {T} = t.lanes[1]
 @inline _ntangent_unwrap_singleton(t) = t
 
@@ -292,11 +287,12 @@ tangent(x::Dual) = x.tangent
 # MutableTangent}` form.
 #
 # `V` is constrained to `NamedTuple` so the field-by-field recursion is
-# structurally typed; mutable updates to Array-typed field values work
-# because Arrays are mutable, even though `NamedTuple` itself is
-# immutable. Whole-field replacement (`s.field = new_value`) requires
-# rebuilding the NamedTuple — uncommon in AD-traced code.
-struct SplitDual{V<:NamedTuple}
+# structurally typed. `SplitDual` itself is mutable so that
+# whole-field replacement (`s.field = new_value`) on the primal lifts
+# to `setfield!(d, :canonical, new_nt)` on the SplitDual, preserving
+# the primal's aliasing semantics: aliased references to the same
+# mutable struct continue to see in-place mutations.
+mutable struct SplitDual{V<:NamedTuple}
     canonical::V
 end
 
@@ -666,6 +662,10 @@ verify_dual_type(::Lifted) = true
 # from `_unlift(::Lifted{<:Tuple, 1})` — verify each element.
 verify_dual_type(t::Tuple) = all(verify_dual_type, t)
 verify_dual_type(t::NamedTuple) = all(verify_dual_type, values(t))
+# `SplitDual{V}` is a structural inner V for mutable struct lifts; its
+# canonical NamedTuple is field-wise coherent by construction, so
+# delegating to the NamedTuple overload validates each field's V.
+verify_dual_type(d::SplitDual) = verify_dual_type(d.canonical)
 # Bare canonical-V leaf-scalar shapes (`NDual`, `Complex{<:NDual}`,
 # `<:NTangent`) leak through helper-API boundaries but still represent valid
 # inner dual values. Their concrete overloads are added in `nfwd/NfwdMooncake.jl`

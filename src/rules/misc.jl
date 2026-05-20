@@ -352,6 +352,9 @@ end
         return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
     end
 end
+@inline _lgetfield_impl(x::Mooncake.SplitDual, ::Val{f}, ::Val{order}) where {f,order} = getfield(
+    x.canonical, f
+)
 @inline _lgetfield_impl(x::T, ::Val{f}, ::Val{order}) where {T<:Union{Tuple,NamedTuple},f,order} = getfield(
     x, f, order
 )
@@ -434,6 +437,18 @@ end
     ::Dual{typeof(lsetfield!)}, value::AbstractArray{<:Mooncake.Nfwd.NDual}, name::Dual, x
 )
     return lsetfield!(value, primal(name), _ndual_arg_unwrap(x))
+end
+# `SplitDual{V}` lsetfield!: replace the canonical NamedTuple's field with
+# the bare canonical-V form of `x`, mutating the SplitDual in place so
+# aliased Lifted slots share the update (preserving primal aliasing
+# semantics for mutable structs).
+@inline function frule!!(
+    ::Dual{typeof(lsetfield!)}, value::Mooncake.SplitDual{V}, name::Dual{Val{f}}, x
+) where {V<:NamedTuple,f}
+    nt = getfield(value, :canonical)
+    new_nt = Base.setindex(nt, x, f)
+    setfield!(value, :canonical, new_nt)
+    return x
 end
 @inline _ndual_arg_unwrap(x::Dual) = primal(x)
 @inline _ndual_arg_unwrap(x::Tuple) = map(_ndual_arg_unwrap, x)

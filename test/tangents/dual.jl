@@ -38,12 +38,12 @@
         Dual(Array{Complex{Mooncake.NDual{Float64,2}},1}, NoTangent())
     )
 
-    # Audit step 5: `dual_type(P)` delegates to `dual_type(Val(1), P)`. The
-    # IEEEFloat / Complex / Array specialised overloads now apply at width 1,
-    # so concrete scalar/array primals return `NDual`-shaped duals; generic
-    # immutable concrete `P` stays at the bare `Dual{P, tangent_type(P)}`
-    # carve-out (`Int → Dual{Int, NoTangent}`); abstract / UnionAll `P`
-    # stays at the bare `Dual` UnionAll.
+    # `dual_type(P)` delegates to `dual_type(Val(1), P)`. The IEEEFloat /
+    # Complex / Array specialised overloads apply at width 1, so concrete
+    # scalar/array primals return `NDual`-shaped duals; generic immutable
+    # concrete `P` stays at the bare `Dual{P, tangent_type(P)}` form
+    # (`Int → Dual{Int, NoTangent}`); abstract / UnionAll `P` stays at the
+    # bare `Dual` UnionAll.
     @testset "$P" for (P, D) in Any[
         (Float64, NDual{Float64,1}),
         (Int, Dual{Int,NoTangent}),
@@ -85,9 +85,9 @@
         (Tuple{Vararg{Float64,N}} where {N}, Dual),
         (Tuple{Vararg{Float64}}, Dual),
     ]
-        # Audit step 5: concrete heterogeneous Tuples take the element-wise
-        # lift path. The generator-expression splice into `Tuple{...}` is
-        # `@unstable` by design (per-field dispatch), so relax the alloc-
+        # Concrete heterogeneous Tuples take the element-wise lift path.
+        # The generator-expression splice into `Tuple{...}` is `@unstable`
+        # by design (per-field dispatch), so relax the alloc-
         # check to a value-only check for concrete `Tuple` primals.
         if P isa DataType && P <: Tuple
             @test dual_type(P) == D
@@ -129,8 +129,7 @@ end
         # primals at every width — `NTangent{Tuple{NoTangent}}` collapses to
         # `NoTangent` per `tangent_type(Val(N), P)` when the leaf is NoTangent.
         # The generic structural case for concrete `P` with a non-NoTangent
-        # tangent type uses `Dual{P, NTangent{Tuple{tangent_type(P)}}}`
-        # (carve-out lifted in commit cbc5b236b).
+        # tangent type uses `Dual{P, NTangent{Tuple{tangent_type(P)}}}`.
         @test dual_type(Val(1), Int) === Mooncake.Dual{Int,NoTangent}
     end
 
@@ -265,9 +264,9 @@ end
     end
 
     @testset "generic structural dual_type mirrors recursive tangent_type" begin
-        # Audit step 4. The recursive struct lift must fire for any user-
-        # defined struct whose tangent_type matches the default structural
-        # form — no broad `_is_lift_safe_field_type` allowlist on field types.
+        # The recursive struct lift must fire for any user-defined struct
+        # whose tangent_type matches the default structural form — no broad
+        # `_is_lift_safe_field_type` allowlist on field types.
         # Inner has the canonical structural lift.
         @test Mooncake.dual_type(Val(2), Mooncake.TestResources.StableFoo) ===
             NamedTuple{(:x, :y),Tuple{NDual{Float64,2},Dual{Symbol,NoTangent}}}
@@ -388,13 +387,13 @@ end
         @test _unlift(d) ==
             [NDual{Float64,2}(1.0, (10.0, 10.0)), NDual{Float64,2}(2.0, (20.0, 20.0))]
 
-        # Audit step 5 / test #7: top-level `NTangent{NTuple{N, Array}}` form,
-        # matching the canonical width-N return of `tangent(::Array{NDual,D})`.
+        # Top-level `NTangent{NTuple{N, Array}}` form, matching the
+        # canonical width-N return of `tangent(::Array{NDual,D})`.
         d_nt1 = Lifted{Vector{Float64},1}([1.0], NTangent(([2.0],)))
         @test typeof(d_nt1) === Lifted{Vector{Float64},1,Vector{NDual{Float64,1}}}
         @test _unlift(d_nt1) == [NDual{Float64,1}(1.0, (2.0,))]
-        # Audit step 5 / test #8: outer tangent of width-1 array slot is the
-        # top-level `NTangent{Tuple{Vector{Float64}}}`, not bare Array.
+        # Outer tangent of the width-1 array slot is the top-level
+        # `NTangent{Tuple{Vector{Float64}}}`, not the bare Array.
         @test tangent(d_nt1) isa NTangent{Tuple{Vector{Float64}}}
         @test tangent(d_nt1).lanes[1] == [2.0]
         # Width-N NTangent form round-trips: per-lane arrays zip into NDual elements.
@@ -561,10 +560,13 @@ end
     # `test/tangents/tangents.jl`.
     rng = StableRNG(123_456)
     for (_, p, _...) in Mooncake.tangent_test_cases()
-        @testset "$(typeof(p))" begin
-            TestUtils.test_dual_types(typeof(p))
+        # Use `Mooncake._typeof` for type-valued primals (`_typeof(Float64)
+        # == Type{Float64}`) so the standalone type-helpers exercise the
+        # same type as the value-form `test_dual`/`test_lifted` calls.
+        @testset "$(Mooncake._typeof(p))" begin
+            TestUtils.test_dual_types(Mooncake._typeof(p))
             TestUtils.test_dual(rng, p)
-            TestUtils.test_lifted_types(typeof(p))
+            TestUtils.test_lifted_types(Mooncake._typeof(p))
             TestUtils.test_lifted(rng, p)
         end
     end
