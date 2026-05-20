@@ -1527,6 +1527,39 @@ for W in (
         data_t = Mooncake._get_tangent_field(tangent, :data)
         return $(W)(Matrix{NDual{T,N}}(primal.data, data_t))
     end
+    # Seed factories route through the canonical V's (primal, tangent)
+    # ctor so `zero_dual`/`uninit_dual`/`randn_dual` produce the wrapper-
+    # shaped canonical NDual form that `dual_type(Val(N), $(W){T,P})`
+    # declares — without these, the generic fallback returns the legacy
+    # `Dual{$(W), Tangent{...}}` parallel-Dual form, breaking the
+    # `_typeof(zero_dual(...)) === dual_type(...)` invariant.
+    @eval @inline function Mooncake.zero_dual(
+        w::Val{N}, x::$(W){T,<:Matrix{T}}
+    ) where {N,T<:IEEEFloat}
+        V = Mooncake.dual_type(w, typeof(x))
+        return V(x, Mooncake.zero_tangent(x))::V
+    end
+    @eval @inline function Mooncake.uninit_dual(
+        w::Val{N}, x::$(W){T,<:Matrix{T}}
+    ) where {N,T<:IEEEFloat}
+        V = Mooncake.dual_type(w, typeof(x))
+        return V(x, Mooncake.uninit_tangent(x))::V
+    end
+    @eval @inline function Mooncake.randn_dual(
+        w::Val{N}, rng::AbstractRNG, x::$(W){T,<:Matrix{T}}
+    ) where {N,T<:IEEEFloat}
+        V = Mooncake.dual_type(w, typeof(x))
+        return V(x, Mooncake.randn_tangent(rng, x))::V
+    end
+    @eval @inline Mooncake.zero_dual(
+        ::Val{0}, x::$(W){T,<:Matrix{T}}
+    ) where {T<:IEEEFloat} = x
+    @eval @inline Mooncake.uninit_dual(
+        ::Val{0}, x::$(W){T,<:Matrix{T}}
+    ) where {T<:IEEEFloat} = x
+    @eval @inline Mooncake.randn_dual(
+        ::Val{0}, ::AbstractRNG, x::$(W){T,<:Matrix{T}}
+    ) where {T<:IEEEFloat} = x
 end
 
 function (::Type{SubArray{NDual{T,N},D,Array{NDual{T,N},Dp},I,L}})(
