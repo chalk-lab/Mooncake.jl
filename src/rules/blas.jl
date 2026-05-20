@@ -215,12 +215,13 @@ end
     ts = ntuple(n -> map(d -> d.partials[n], x), Val(N))
     return (p, ts)
 end
-# Wrapper-exception slot V (`Dual{<:AbstractArray, ...}`): treat as a
-# trivial 1-lane chunk so unified width-1 + width-N rule bodies can call
-# `_arr_extract_n` regardless of which slot shape arrived. `arrayify`
-# returns the (primal, tangent) view-pair as in `_arr_extract`; we wrap
-# the tangent in a 1-tuple to match the multi-lane shape.
-@inline function _arr_extract_n(x::Dual{<:AbstractArray})
+# Wrapper-exception slot V (`Dual{<:AbstractArray, ...}` or
+# `Dual{<:Ptr, ...}`): treat as a trivial 1-lane chunk so unified
+# width-1 + width-N rule bodies can call `_arr_extract_n` regardless
+# of which slot shape arrived. `arrayify` returns the (primal, tangent)
+# view-pair as in `_arr_extract`; we wrap the tangent in a 1-tuple to
+# match the multi-lane shape.
+@inline function _arr_extract_n(x::Dual{<:Union{AbstractArray,Ptr}})
     p, t = arrayify(x)
     return (p, (t,))
 end
@@ -528,43 +529,6 @@ end
         Integer,
     } where {T<:BlasRealFloat},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.dot),Vararg}}) = true
-@inline function frule!!(
-    ::Dual{typeof(BLAS.dot)},
-    _n::Dual{<:Integer},
-    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    _incx::Dual{<:Integer},
-    Y_dY::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    _incy::Dual{<:Integer},
-) where {T<:BlasRealFloat}
-    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
-    X, dX = arrayify(X_dX)
-    Y, dY = arrayify(Y_dY)
-    val = BLAS.dot(n, X, incx, Y, incy)
-    dval = BLAS.dot(n, dX, incx, Y, incy) + BLAS.dot(n, X, incx, dY, incy)
-    return Dual(val, dval)
-end
-# Width-N BLAS.dot: covers Real (NDual{T,N}) via element-type Union;
-# returns NDual scalar packing the value and per-lane partial derivatives.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.dot)},
-    _n::Dual{<:Integer},
-    X_dX::AbstractArray{NDual{T,N}},
-    _incx::Dual{<:Integer},
-    Y_dY::AbstractArray{NDual{T,N}},
-    _incy::Dual{<:Integer},
-) where {T<:BlasRealFloat,N}
-    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
-    X, dXs = _arr_extract_n(X_dX)
-    Y, dYs = _arr_extract_n(Y_dY)
-    val = BLAS.dot(n, X, incx, Y, incy)
-    dvals = ntuple(
-        lane ->
-            BLAS.dot(n, dXs[lane], incx, Y, incy) + BLAS.dot(n, X, incx, dYs[lane], incy),
-        Val(N),
-    )
-    return NDual(val, dvals)
-end
 # `BLAS.dotc(n, X, incx, Y, incy) = conj(X) ⋅ Y` (Complex only).
 @is_primitive(
     MinimalCtx,
@@ -591,71 +555,56 @@ end
         Integer,
     } where {T<:BlasComplexFloat},
 )
-# dotc and dotu width-1 bare-Dual frules share byte-identical body structure
-# (apart from the BLAS function name): the derivative of `f(X, Y)` w.r.t.
-# `(X, Y)` is `f(dX, Y) + f(X, dY)` for the same `f`. dotc carries the
-# conjugation through `f = BLAS.dotc`; dotu uses `f = BLAS.dotu`.
-for fname in (:dotc, :dotu)
+# Unified Lifted bodies for dot/dotc/dotu via @eval. All three share the
+# derivative `df(X,Y)/d(X,Y) · (dX,dY) = f(dX, Y) + f(X, dY)`; dotc carries
+# conjugation through `f = BLAS.dotc`. Result is an NDual{T,N} scalar
+# packing the value + per-lane partials.
+for fname in (:dot, :dotc, :dotu)
     @eval @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.$fname),Vararg}}) =
         true
     @eval @inline function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        _n::Dual{<:Integer},
-        X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-        _incx::Dual{<:Integer},
-        Y_dY::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-        _incy::Dual{<:Integer},
-    ) where {T<:BlasComplexFloat}
-        n, incx, incy = primal(_n), primal(_incx), primal(_incy)
-        X, dX = arrayify(X_dX)
-        Y, dY = arrayify(Y_dY)
-        val = BLAS.$fname(n, X, incx, Y, incy)
-        dval = BLAS.$fname(n, dX, incx, Y, incy) + BLAS.$fname(n, X, incx, dY, incy)
-        return Dual(val, dval)
-    end
-    # Canonical width-1 NDual variant: X/Y arrive as bare
-    # `Vector{Complex{NDual{T,1}}}` (the canonical lifted form for
-    # `Vector{Complex{T}}` primals). `_arr_extract` peels NDual back to a
-    # `(primal, tangent)` Vector pair so the same Frechet body runs.
-    @eval @inline function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        _n::Dual{<:Integer},
-        X_dX::AbstractArray{Complex{NDual{T,1}}},
-        _incx::Dual{<:Integer},
-        Y_dY::AbstractArray{Complex{NDual{T,1}}},
-        _incy::Dual{<:Integer},
-    ) where {T<:IEEEFloat}
-        n, incx, incy = primal(_n), primal(_incx), primal(_incy)
-        X, dX = _arr_extract(X_dX)
-        Y, dY = _arr_extract(Y_dY)
-        val = BLAS.$fname(n, X, incx, Y, incy)
-        dval = BLAS.$fname(n, dX, incx, Y, incy) + BLAS.$fname(n, X, incx, dY, incy)
-        return Dual(val, dval)
-    end
-end
-
-# Lifted-aware delegators for `BLAS.dot` / `dotc` / `dotu`: `_unlift` and
-# delegate to the bare frules above, then `_wrap_rule_result`.
-for fname in (:dot, :dotc, :dotu)
-    @eval @inline function frule!!(
-        f::Mooncake.Lifted{typeof(BLAS.$fname),N},
+        ::Mooncake.Lifted{typeof(BLAS.$fname),N},
         _n::Mooncake.Lifted{<:Integer},
         X_dX::Mooncake.Lifted{<:Union{Ptr,AbstractArray}},
         _incx::Mooncake.Lifted{<:Integer},
         Y_dY::Mooncake.Lifted{<:Union{Ptr,AbstractArray}},
         _incy::Mooncake.Lifted{<:Integer},
     ) where {N}
-        bare_result = frule!!(
-            Mooncake._unlift(f),
-            Mooncake._unlift(_n),
-            Mooncake._unlift(X_dX),
-            Mooncake._unlift(_incx),
-            Mooncake._unlift(Y_dY),
-            Mooncake._unlift(_incy),
+        n = primal(_n)
+        incx = primal(_incx)
+        incy = primal(_incy)
+        X_dX_inner = Mooncake._unlift(X_dX)
+        Y_dY_inner = Mooncake._unlift(Y_dY)
+        X, dXs = _arr_extract_n(X_dX_inner)
+        Y, dYs = _arr_extract_n(Y_dY_inner)
+        val = BLAS.$fname(n, X, incx, Y, incy)
+        dvals = ntuple(
+            lane ->
+                BLAS.$fname(n, dXs[lane], incx, Y, incy) +
+                BLAS.$fname(n, X, incx, dYs[lane], incy),
+            Val(N),
         )
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        return _dot_lift_result(val, dvals, Val(N))
     end
+end
+# Wrap the (val, per-lane partials) result of dot/dotc/dotu into a
+# canonical `Lifted{T_val, N, V}` where V is `NDual{T,N}` for Real val
+# and `Complex{NDual{R,N}}` for Complex val (real/imag split into two
+# NDuals to match `dual_type(Val(N), Complex{R})`).
+@inline function _dot_lift_result(
+    val::T, dvals::NTuple{N,T}, ::Val{N}
+) where {T<:BlasRealFloat,N}
+    return Mooncake.Lifted{T,N,NDual{T,N}}(NDual{T,N}(val, dvals))
+end
+@inline function _dot_lift_result(
+    val::Complex{R}, dvals::NTuple{N,Complex{R}}, ::Val{N}
+) where {R<:BlasRealFloat,N}
+    re_partials = ntuple(lane -> real(dvals[lane]), Val(N))
+    im_partials = ntuple(lane -> imag(dvals[lane]), Val(N))
+    inner = Complex{NDual{R,N}}(
+        NDual{R,N}(real(val), re_partials), NDual{R,N}(imag(val), im_partials)
+    )
+    return Mooncake.Lifted{Complex{R},N,typeof(inner)}(inner)
 end
 
 @is_primitive(
