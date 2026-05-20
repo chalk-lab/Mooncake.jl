@@ -466,59 +466,27 @@ end
     Tuple{typeof(getri!),AbstractMatrix{<:BlasComplexFloat},AbstractVector{Int}},
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getri!),Vararg}}) = true
-# Width-1 getri!: covers Real and Complex via slot Union; `_arr_extract`
-# dispatches on input type, `_getri!_frule_core!` (Frechet pre-primal
-# tmp2, primal, post-primal `-A_inv * tmp2 * A_inv`) handles the math.
+# Unified getri! Lifted body: per-lane pre-primal LU-differential factor
+# `tmp2 = _lu_diff_factor(A, dA, ipiv)` (computed BEFORE the primal
+# overwrites A→A_inv), then the primal `LAPACK.getri!(A, ipiv)`, then per-
+# lane `dA = -A_inv * tmp2 * A_inv`. Works at any width N≥1 via
+# `_arr_extract_n` returning a 1-tuple for wrapper-exception slot or
+# canonical NDual matrix at N=1.
 @inline function frule!!(
-    ::Dual{typeof(getri!)},
-    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-    _ipiv::Dual{<:AbstractVector{Int}},
-)
-    A, dA = _arr_extract(A_dA)
-    _getri!_frule_core!(A, dA, primal(_ipiv))
-    _arr_writeback!(A_dA, A, dA)
-    return A_dA
-end
-# Width-N getri!: per-lane tmp2 from pre-primal A; primal once; per-lane
-# dA = -A_inv * tmp2 * A_inv. Covers Real (NDual{P,N}) and Complex
-# (Complex{NDual{P,N}}). tmp2_lanes must persist across the primal call
-# which overwrites A → A_inv.
-@inline function frule!!(
-    ::Dual{typeof(getri!)},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-) where {P<:BlasRealFloat,N}
-    A, dAs = _arr_extract_n(A_dA)
+    ::Mooncake.Lifted{typeof(getri!),N},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
+    _ipiv::Mooncake.Lifted{<:AbstractVector{Int}},
+) where {N,P<:BlasFloat}
     ipiv = primal(_ipiv)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    A, dAs = _arr_extract_n(A_dA_inner)
     tmp2_lanes = ntuple(lane -> _lu_diff_factor(A, dAs[lane], ipiv), Val(N))
     LAPACK.getri!(A, ipiv)
     @inbounds for lane in 1:N
         dAs[lane] .= (-A * tmp2_lanes[lane] * A)
     end
-    _arr_writeback_n!(A_dA, A, dAs)
+    _arr_writeback_n!(A_dA_inner, A, dAs)
     return A_dA
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(getri!),N},
-    A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
-    _ipiv::Mooncake.Lifted{<:AbstractVector{Int}},
-) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f), Mooncake._unlift(A_dA), Mooncake._unlift(_ipiv)
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-@inline function _getri!_frule_core!(
-    A::AbstractMatrix{P}, dA::AbstractMatrix{P}, ipiv::AbstractVector{Int}
-) where {P<:BlasFloat}
-    # Compute part of Frechet derivative.
-    tmp2 = _lu_diff_factor(A, dA, ipiv)
-    # Perform primal computation.
-    LAPACK.getri!(A, ipiv)
-    # Compute Frechet derivative.
-    dA .= (-A * tmp2 * A)
-    return nothing
 end
 # LU-decomposition Frechet factor: given an LU-factorised `A` and its
 # tangent `dA` plus the row-pivot vector `ipiv`, returns the pivoted
