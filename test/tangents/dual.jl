@@ -332,13 +332,25 @@ end
 
     @testset "Adjoint{T,Vector{T}} canonical NDual dual_type" begin
         # Vector-parented Adjoint joins the canonical NDual form once the
-        # parallel-Dual exception is removed.
+        # parallel-Dual exception is removed. Parent recursion covers any
+        # `AbstractArray{T}` parent (Array, SubArray, …) via
+        # `dual_type(Val(N), P)`.
         Adj = LinearAlgebra.Adjoint{Float64,Vector{Float64}}
         @test Mooncake.dual_type(Val(0), Adj) === Adj
         @test Mooncake.dual_type(Val(1), Adj) ===
             LinearAlgebra.Adjoint{NDual{Float64,1},Vector{NDual{Float64,1}}}
         @test Mooncake.dual_type(Val(2), Adj) ===
             LinearAlgebra.Adjoint{NDual{Float64,2},Vector{NDual{Float64,2}}}
+        # SubArray-parent Adjoint recurses through SubArray's canonical V.
+        Sv = SubArray{Float64,1,Vector{Float64},Tuple{UnitRange{Int64}},true}
+        AdjSub = LinearAlgebra.Adjoint{Float64,Sv}
+        @test Mooncake.dual_type(Val(0), AdjSub) === AdjSub
+        @test Mooncake.dual_type(Val(1), AdjSub) === LinearAlgebra.Adjoint{
+            NDual{Float64,1},
+            SubArray{
+                NDual{Float64,1},1,Vector{NDual{Float64,1}},Tuple{UnitRange{Int64}},true
+            },
+        }
     end
 
     @testset "`.data::Matrix{T}` wrappers canonical NDual dual_type" begin

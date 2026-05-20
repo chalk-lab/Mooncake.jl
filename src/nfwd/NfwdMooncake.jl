@@ -956,18 +956,48 @@ function dual_type(
     return LinearAlgebra.Diagonal{T,Vector{T}}
 end
 
-# Adjoint{T, <:Array{T}} — single :parent::Array{T} field. Covers both
-# Vector-parented and Matrix-parented Adjoint via `ndims(P)`.
+# Adjoint{T, <:AbstractArray{T}} — single :parent field. Canonical NDual
+# V is `Adjoint{NDual{T,N}, dual_type(Val(N), P)}`; the parent's own
+# canonical V (Array, SubArray, …) is computed recursively, mirroring
+# the Transpose broadening. Seed factories route through the generic
+# `Adjoint{NDual{T,N}, V_parent}(primal, tangent::Tangent)` ctor below.
 function dual_type(
     ::Val{N}, ::Type{LinearAlgebra.Adjoint{T,P}}
-) where {N,T<:IEEEFloat,P<:Array{T}}
-    return LinearAlgebra.Adjoint{NDual{T,N},Array{NDual{T,N},ndims(P)}}
+) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
+    return LinearAlgebra.Adjoint{NDual{T,N},dual_type(Val(N), P)}
 end
 function dual_type(
     ::Val{0}, ::Type{LinearAlgebra.Adjoint{T,P}}
-) where {T<:IEEEFloat,P<:Array{T}}
+) where {T<:IEEEFloat,P<:AbstractArray{T}}
     return LinearAlgebra.Adjoint{T,P}
 end
+@inline function Mooncake.zero_dual(
+    w::Val{N}, x::LinearAlgebra.Adjoint{T,P}
+) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.zero_tangent(x))::V
+end
+@inline function Mooncake.uninit_dual(
+    w::Val{N}, x::LinearAlgebra.Adjoint{T,P}
+) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.uninit_tangent(x))::V
+end
+@inline function Mooncake.randn_dual(
+    w::Val{N}, rng::AbstractRNG, x::LinearAlgebra.Adjoint{T,P}
+) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.randn_tangent(rng, x))::V
+end
+@inline Mooncake.zero_dual(
+    ::Val{0}, x::LinearAlgebra.Adjoint{T,<:AbstractArray{T}}
+) where {T<:IEEEFloat} = x
+@inline Mooncake.uninit_dual(
+    ::Val{0}, x::LinearAlgebra.Adjoint{T,<:AbstractArray{T}}
+) where {T<:IEEEFloat} = x
+@inline Mooncake.randn_dual(
+    ::Val{0}, ::AbstractRNG, x::LinearAlgebra.Adjoint{T,<:AbstractArray{T}}
+) where {T<:IEEEFloat} = x
 
 # `data::Matrix{T}`-shaped LinearAlgebra wrappers: canonical NDual-element
 # form mirrors the Adjoint/Transpose template (Project 1 wrapper-exception
@@ -1271,8 +1301,8 @@ end
 end
 @inline function Mooncake.__primal_type(
     ::Type{LinearAlgebra.Adjoint{NDual{T,N},P}}
-) where {T<:IEEEFloat,N,P<:Array{NDual{T,N}}}
-    return LinearAlgebra.Adjoint{T,Array{T,ndims(P)}}
+) where {T<:IEEEFloat,N,P<:AbstractArray{NDual{T,N}}}
+    return LinearAlgebra.Adjoint{T,Mooncake.__primal_type(P)}
 end
 @inline function Mooncake.__primal_type(
     ::Type{LinearAlgebra.Transpose{NDual{T,N},P}}
@@ -1464,11 +1494,17 @@ function (::Type{LinearAlgebra.Diagonal{NDual{T,N},Vector{NDual{T,N}}}})(
     return LinearAlgebra.Diagonal(Vector{NDual{T,N}}(primal.diag, diag_t))
 end
 
-function (::Type{LinearAlgebra.Adjoint{NDual{T,N},Array{NDual{T,N},D}}})(
-    primal::LinearAlgebra.Adjoint{T,<:Array{T,D}}, tangent::Mooncake.Tangent
-) where {T<:IEEEFloat,N,D}
+# `Adjoint{NDual{T,N}, V_parent}(primal, tangent::Tangent)` ctor —
+# delegates the parent build to `V_parent`'s own (primal, tangent) ctor,
+# so this works uniformly across any AbstractArray-parent shape (Array,
+# SubArray, …) that itself has a canonical NDual lift. Mirrors the
+# Transpose ctor template.
+function (::Type{LinearAlgebra.Adjoint{NDual{T,N},V_parent}})(
+    primal::LinearAlgebra.Adjoint{T,P}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N,P<:AbstractArray{T},V_parent<:AbstractArray{NDual{T,N}}}
     parent_t = Mooncake._get_tangent_field(tangent, :parent)
-    return LinearAlgebra.Adjoint(Array{NDual{T,N},D}(parent(primal), parent_t))
+    parent_lifted = V_parent(parent(primal), parent_t)
+    return LinearAlgebra.Adjoint(parent_lifted)::LinearAlgebra.Adjoint{NDual{T,N},V_parent}
 end
 
 for W in (
@@ -1841,12 +1877,12 @@ function tangent(
 end
 
 function primal(
-    a::LinearAlgebra.Adjoint{NDual{T,N},<:Array{NDual{T,N}}}
+    a::LinearAlgebra.Adjoint{NDual{T,N},<:AbstractArray{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return LinearAlgebra.Adjoint(primal(parent(a)))
 end
 function tangent(
-    a::LinearAlgebra.Adjoint{NDual{T,N},<:Array{NDual{T,N}}}
+    a::LinearAlgebra.Adjoint{NDual{T,N},<:AbstractArray{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return Mooncake.Tangent((; parent=tangent(parent(a))))
 end
