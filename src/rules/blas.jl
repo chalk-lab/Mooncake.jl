@@ -628,70 +628,40 @@ end
     end
     return dy / 2y
 end
-function frule!!(
-    ::Dual{typeof(BLAS.nrm2)},
-    n::Dual{<:Integer},
-    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    incx::Dual{<:Integer},
-) where {T<:BlasFloat}
-    y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
-    X, dX = viewify(primal(n), X_dX, primal(incx))
-    return Dual(y, _nrm2_grad(X, dX, y))
-end
-# 1-arg `BLAS.nrm2(X)` convenience form. Delegates to the 3-arg rule with
-# `n = length(X)` and `incx = 1`, matching Julia's BLAS shim.
-function frule!!(
-    f::Dual{typeof(BLAS.nrm2)}, X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}}
-) where {T<:BlasFloat}
-    return frule!!(f, Dual(length(primal(X_dX)), NoTangent()), X_dX, Dual(1, NoTangent()))
-end
-# Consolidated 1-arg nrm2 convenience form: delegates to the 3-arg form
-# which already handles both Real (NDual{T,N}) and Complex (Complex{NDual{R,N}})
-# canonical V shapes via dispatch.
-function frule!!(
-    f::Dual{typeof(BLAS.nrm2)}, X_dX::AbstractArray{<:Union{NDual{T,N},Complex{NDual{T,N}}}}
-) where {T<:IEEEFloat,N}
-    return frule!!(f, Dual(length(X_dX), NoTangent()), X_dX, Dual(1, NoTangent()))
-end
-# Width-N nrm2: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union; per-lane gradient via `_nrm2_grad`.
-function frule!!(
-    ::Dual{typeof(BLAS.nrm2)},
-    n::Dual{<:Integer},
-    X_dX::AbstractArray{<:Union{NDual{T,N},Complex{NDual{T,N}}}},
-    incx::Dual{<:Integer},
-) where {T<:IEEEFloat,N}
-    _n = primal(n)
-    _incx = primal(incx)
-    X, dXs = _arr_extract_n(X_dX)
-    y = BLAS.nrm2(_n, X, _incx)
-    Xinds = 1:_incx:(_incx * _n)
+# Unified 3-arg nrm2 Lifted body. `_arr_extract_n` returns a 1-tuple for
+# wrapper-exception slot or N-tuple for canonical NDual; we index the
+# underlying stride-incx slice for the per-lane gradient.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(BLAS.nrm2),N},
+    _n::Mooncake.Lifted{<:Integer},
+    X_dX::Mooncake.Lifted,
+    _incx::Mooncake.Lifted{<:Integer},
+) where {N}
+    n = primal(_n)
+    incx = primal(_incx)
+    X_dX_inner = Mooncake._unlift(X_dX)
+    X, dXs = _arr_extract_n(X_dX_inner)
+    y = BLAS.nrm2(n, X, incx)
+    Xinds = 1:incx:(incx * n)
     Xv = view(X, Xinds)
     partials = ntuple(lane -> _nrm2_grad(Xv, view(dXs[lane], Xinds), y), Val(N))
-    return NDual{T,N}(y, partials)
+    T = typeof(y)
+    return Mooncake.Lifted{T,N,NDual{T,N}}(NDual{T,N}(y, partials))
 end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.nrm2),N},
-    n::Mooncake.Lifted{<:Integer},
-    X_dX::Mooncake.Lifted,
-    incx::Mooncake.Lifted{<:Integer},
-) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(n),
-        Mooncake._unlift(X_dX),
-        Mooncake._unlift(incx),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-# Lifted-aware 1-arg convenience form.
+# 1-arg `BLAS.nrm2(X)` convenience form. Calls the 3-arg form with
+# `n = length(X)` and `incx = 1`.
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.nrm2),N}, X_dX::Mooncake.Lifted
 ) where {N}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(X_dX))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    X_dX_inner = Mooncake._unlift(X_dX)
+    p = X_dX_inner isa Dual ? primal(X_dX_inner) : X_dX_inner
+    n = length(p)
+    return frule!!(
+        f,
+        Mooncake.Lifted{Int,N,Dual{Int,NoTangent}}(Dual(n, NoTangent())),
+        X_dX,
+        Mooncake.Lifted{Int,N,Dual{Int,NoTangent}}(Dual(1, NoTangent())),
+    )
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
