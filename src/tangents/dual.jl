@@ -222,6 +222,31 @@ end
 primal(x::Dual) = x.primal
 tangent(x::Dual) = x.tangent
 
+# `SplitDual{V}` — coherent inner V for mutable struct primals with canonical
+# NDual-element Array fields. Wraps a `NamedTuple` whose values are the
+# canonical V for each field (`dual_type(Val(N), field_type_i)`), so the
+# `dual_type` recursion invariant holds field-wise. Primal values live
+# inside the NDual elements' `.value` slots — no separate primal-half
+# storage, avoiding the duplication of the parallel-Dual `Dual{Struct,
+# MutableTangent}` form.
+#
+# `V` is constrained to `NamedTuple` so the field-by-field recursion is
+# structurally typed; mutable updates to Array-typed field values work
+# because Arrays are mutable, even though `NamedTuple` itself is
+# immutable. Whole-field replacement (`s.field = new_value`) requires
+# rebuilding the NamedTuple — uncommon in AD-traced code.
+struct SplitDual{V<:NamedTuple}
+    canonical::V
+end
+
+# Mooncake-protocol accessors. `primal` reconstructs the original primal
+# struct's field values from the NDual `.value` slots; `tangent` returns
+# the per-field tangent in a `Tangent`/`MutableTangent`-shaped wrapper
+# matching `tangent_type(P)`. Per-lane `tangent(_, i)` projects lane i.
+# Both are wired through `dual_type` once the per-struct construction
+# path is in place (next implementation step).
+@inline _unlift(d::SplitDual) = d.canonical
+
 # `tangent(x, dir)` — per-lane tangent accessor. Per-type fast paths for
 # NDual, Complex{NDual}, Array{<:NDual}, NTangent, Memory, MemoryRef, etc.
 # live in `nfwd/NfwdMooncake.jl`. The two-argument overload must not
