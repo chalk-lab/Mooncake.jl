@@ -633,44 +633,29 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(potrf!),Char,<:AbstractMatrix{<:BlasFloat}}}
 ) = true
-# Width-1 potrf!: covers Real and Complex via slot Union; delegates to
-# `_potrf!_frule_core!` (which picks Symmetric vs Hermitian projection
-# per element type via `_sym_herm_proj`).
-function frule!!(
-    ::Dual{typeof(potrf!)},
-    _uplo::Dual{Char},
-    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-)
-    A, dA = _arr_extract(A_dA)
-    _, info = LAPACK.potrf!(primal(_uplo), A)
-    _potrf!_frule_core!(primal(_uplo), A, dA)
-    _arr_writeback!(A_dA, A, dA)
-    return (A_dA, Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))))
-end
-# Width-N potrf!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union; primal once, per-lane Frechet via `_potrf!_frule_core!`.
+# Unified potrf! Lifted body: real (Symmetric projection) and complex
+# Hermitian projection share the same `_potrf!_frule_core!` math via
+# `_sym_herm_proj`. `_arr_extract_n` returns a 1-tuple at width 1 (wrapper-
+# exception or canonical NDual at N=1), so the per-lane loop runs once.
 @inline function frule!!(
-    ::Dual{typeof(potrf!)},
-    _uplo::Dual{Char},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:BlasRealFloat,N}
-    uplo = primal(_uplo)
-    A, dAs = _arr_extract_n(A_dA)
-    _, info = LAPACK.potrf!(uplo, A)
-    @inbounds for lane in 1:N
-        _potrf!_frule_core!(uplo, A, dAs[lane])
-    end
-    _arr_writeback_n!(A_dA, A, dAs)
-    return (A_dA, Dual(info, Mooncake.NoTangent()))
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(potrf!),N},
+    ::Mooncake.Lifted{typeof(potrf!),N},
     _uplo::Mooncake.Lifted{Char},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
 ) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f), Mooncake._unlift(_uplo), Mooncake._unlift(A_dA)
-    )
+    uplo = primal(_uplo)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    A, dAs = _arr_extract_n(A_dA_inner)
+    _, info = LAPACK.potrf!(uplo, A)
+    @inbounds for lane in 1:length(dAs)
+        _potrf!_frule_core!(uplo, A, dAs[lane])
+    end
+    _arr_writeback_n!(A_dA_inner, A, dAs)
+    info_dual = if N == 1
+        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),)))
+    else
+        Dual(info, Mooncake.NoTangent())
+    end
+    bare_result = (A_dA_inner, info_dual)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
