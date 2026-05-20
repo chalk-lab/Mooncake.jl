@@ -38,7 +38,10 @@ function _hessian_column(f, x::Vector{Float64}, i::Int)
         Dual(x, x_tangent),
         Dual(x_fdata, zeros(length(x))),
     )
-    return primal(result), tangent(result)
+    # Lane-1 access for width-1 results — `tangent(result)` returns an
+    # `NTangent{Tuple{...}}` when the rule produces chunk-mode output.
+    t = tangent(result)
+    return primal(result), t isa Mooncake.NTangent ? t.lanes[1] : t
 end
 
 function _compute_hessian(f, x::Vector{Float64})

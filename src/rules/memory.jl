@@ -866,6 +866,27 @@ const _MemoryRefSetTupleValue = Tuple{
     memoryrefset!(tangent(x), tangent(y), ordering, boundscheck)
     return y
 end
+# Comms-stack push of a pullback-closure tuple: destination MemoryRef has
+# `NTangent{Tuple{Vararg{MemoryRef}}}` tangent (per-lane separate tangent
+# MemoryRefs), value is a tuple of NamedTuples / Duals representing the
+# closure's lifted fields. Build a width-1 wholevalue Dual via
+# `_memoryrefset_tuple_duals_to_dual` and store the same tangent into each
+# lane (under width-1 dispatch into this rule, lanes has length 1).
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    x::Dual{<:MemoryRef{P},<:Mooncake.NTangent{<:Tuple{Vararg{MemoryRef}}}},
+    value::_MemoryRefSetTupleValue,
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {P,ordering,boundscheck}
+    y = _memoryrefset_tuple_duals_to_dual(P, value)
+    memoryrefset!(primal(x), primal(y), ordering, boundscheck)
+    lanes = tangent(x).lanes
+    @inbounds for n in eachindex(lanes)
+        memoryrefset!(lanes[n], tangent(y), ordering, boundscheck)
+    end
+    return value
+end
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
     x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
@@ -1519,6 +1540,25 @@ function frule!!(
         zero_dual(lgetfield), x, zero_dual(Val(primal(name))), zero_dual(Val(primal(order)))
     )
 end
+# Lifted-aware bridges for 4-arg `getfield(::_MemTypes, ::Union{Int,Symbol},
+# ::Symbol)`. Reachable from primal-mode IR over reverse-derived rules whose
+# closure bodies access `vec.size` / `vec.ref` / `mem.length` with runtime
+# `Symbol` names. Routes to Lifted-aware lgetfield via `zero_lifted` Val
+# slots — covers both wrapper-exception V (`Dual{<:_MemTypes,<:_MemTypes}`)
+# and canonical NDual-element V (`Container{<:_HasNDual}`).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{<:_MemTypes},
+    name::Mooncake.Lifted{<:Union{Int,Symbol}},
+    order::Mooncake.Lifted{Symbol},
+) where {N}
+    return frule!!(
+        Mooncake.zero_lifted(Val(N), lgetfield),
+        x,
+        Mooncake.zero_lifted(Val(N), Val(primal(name))),
+        Mooncake.zero_lifted(Val(N), Val(primal(order))),
+    )
+end
 function rrule!!(
     ::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -1541,6 +1581,19 @@ function frule!!(
     name::Dual{<:Union{Int,Symbol}},
 )
     return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
+end
+# Lifted-aware bridge for 3-arg `getfield(::_MemTypes, ::Union{Int,Symbol})`.
+# Same shape as the 4-arg variant above; routes via Lifted-aware lgetfield.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{<:_MemTypes},
+    name::Mooncake.Lifted{<:Union{Int,Symbol}},
+) where {N}
+    return frule!!(
+        Mooncake.zero_lifted(Val(N), lgetfield),
+        x,
+        Mooncake.zero_lifted(Val(N), Val(primal(name))),
+    )
 end
 function rrule!!(
     f::CoDual{typeof(getfield)},

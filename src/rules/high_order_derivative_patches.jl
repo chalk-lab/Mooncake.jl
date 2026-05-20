@@ -298,7 +298,11 @@ function _for_rule_lifted(
     # Lifted callers already carry canonical inner values; delegate to the
     # legacy Dual cache path so compilation and cache reuse stay centralized.
     # This bridge can be removed once the cache methods accept Lifted slots
-    # directly, avoiding this unwrap/rewrap round trip.
+    # directly, avoiding this unwrap/rewrap round trip. The cache returns a
+    # `Dual{DerivedRule, Tangent}` whose `MutableTangent` slots already alias
+    # the forward and pullback closures' captured `Stack` objects (built via
+    # joint `zero_tangent` in `_compile_for_rule`), so we pass that tangent
+    # through directly without canonicalisation.
     y = cache(
         _unlift(f),
         _unlift(_interp),
@@ -306,8 +310,7 @@ function _for_rule_lifted(
         _unlift(_sig),
         _unlift(_debug_mode),
     )
-    y_lifted = Dual(primal(y), _canonicalize_comms_tangents(primal(y), tangent(y), width))
-    return _wrap_rule_result(__primal_type(_typeof(y_lifted)), width, y_lifted)
+    return _wrap_rule_result(__primal_type(_typeof(y)), width, y)
 end
 
 # Forward-over-reverse stack handling: the reverse-mode IR-generator emits bare
