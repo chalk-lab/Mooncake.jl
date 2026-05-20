@@ -46,9 +46,9 @@ end
     end
     _arr_writeback_n!(A_dA_inner, A, dAs)
     ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
-    bare_result = (A_dA_inner, ipiv_dual, info_dual)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    inner = (A_dA_inner, ipiv_dual, info_dual)
+    P_out = Tuple{Mooncake.__primal_type(_typeof(A_dA_inner)),Vector{Int},Int}
+    return Mooncake.Lifted{P_out,N}(inner)
 end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
@@ -103,9 +103,9 @@ end
     end
     _arr_writeback_n!(A_dA_inner, A, dAs)
     ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
-    bare_result = (A_dA_inner, ipiv_dual, info_dual)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    inner = (A_dA_inner, ipiv_dual, info_dual)
+    P_out = Tuple{Mooncake.__primal_type(_typeof(A_dA_inner)),Vector{Int},Int}
+    return Mooncake.Lifted{P_out,N}(inner)
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -579,9 +579,9 @@ end
     else
         Dual(info, Mooncake.NoTangent())
     end
-    bare_result = (A_dA_inner, info_dual)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    inner = (A_dA_inner, info_dual)
+    P_out = Tuple{Mooncake.__primal_type(_typeof(A_dA_inner)),Int}
+    return Mooncake.Lifted{P_out,N}(inner)
 end
 # Per-eltype projection: Symmetric for real, Hermitian (conjugate-symmetric)
 # for complex. `Hermitian(real_matrix)` is numerically identical to
@@ -1029,9 +1029,7 @@ w.r.t. the underlying data array `A`.
     S, d_data = arrayify(bare_S)
     F = bunchkaufman(S)
     Sinv = inv(F)
-    bare_result = Dual(logdet(F), dot(Sinv, d_data))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake.Lifted{P,N}(logdet(F), dot(Sinv, d_data))
 end
 function frule!!(
     f::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -1083,14 +1081,13 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
     # Zero tangent for singular S. Strictly correct only for rank ≤ n-2; at rank n-1
     # the true derivative is the adjugate (nonzero), but exact floating-point zeros are
     # measure-zero in practice.
-    bare_result = if iszero(d)
-        Dual(d, zero(P))
+    tangent_value = if iszero(d)
+        zero(P)
     else
         Sinv = inv(F)
-        Dual(d, d * dot(Sinv, d_data))
+        d * dot(Sinv, d_data)
     end
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake.Lifted{P,N}(d, tangent_value)
 end
 function frule!!(
     f::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
