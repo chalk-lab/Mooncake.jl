@@ -587,6 +587,25 @@ for fname in (:dotc, :dotu)
         dval = BLAS.$fname(n, dX, incx, Y, incy) + BLAS.$fname(n, X, incx, dY, incy)
         return Dual(val, dval)
     end
+    # Canonical width-1 NDual variant: X/Y arrive as bare
+    # `Vector{Complex{NDual{T,1}}}` (the canonical lifted form for
+    # `Vector{Complex{T}}` primals). `_arr_extract` peels NDual back to a
+    # `(primal, tangent)` Vector pair so the same Frechet body runs.
+    @eval @inline function frule!!(
+        ::Dual{typeof(BLAS.$fname)},
+        _n::Dual{<:Integer},
+        X_dX::AbstractArray{Complex{NDual{T,1}}},
+        _incx::Dual{<:Integer},
+        Y_dY::AbstractArray{Complex{NDual{T,1}}},
+        _incy::Dual{<:Integer},
+    ) where {T<:IEEEFloat}
+        n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+        X, dX = _arr_extract(X_dX)
+        Y, dY = _arr_extract(Y_dY)
+        val = BLAS.$fname(n, X, incx, Y, incy)
+        dval = BLAS.$fname(n, dX, incx, Y, incy) + BLAS.$fname(n, X, incx, dY, incy)
+        return Dual(val, dval)
+    end
 end
 
 # Lifted-aware delegators for `BLAS.dot` / `dotc` / `dotu`: `_unlift` and
@@ -2377,6 +2396,33 @@ end
     BLAS.herk!(uplo, t, α, A, β, C)
     real_diag!(C)
     _arr_writeback_n!(C_dC, C, dCs)
+    return C_dC
+end
+# Mixed-mode width-1 herk!: canonical NDual scalar (α/β lift to NDual via the
+# IEEEFloat overload) paired with parallel-Dual matrices (Complex
+# ReshapedArray-of-SubArray and similar wrapper-exception shapes that flow as
+# `Dual{<:AbstractMatrix{Complex{T}}, <:TangentOrFData}`). Neither the
+# all-canonical entry above nor the @eval-generated all-parallel-Dual entry
+# matches this arrival; this entry bridges by extracting scalars via
+# `_scalar_extract` and matrices via `matrixify`/`arrayify`.
+@inline function frule!!(
+    ::Dual{typeof(BLAS.herk!)},
+    _uplo::Dual{Char},
+    _t::Dual{Char},
+    α_dα::NDual{R,1},
+    A_dA::Dual{<:AbstractVecOrMat{Complex{R}},<:TangentOrFData},
+    β_dβ::NDual{R,1},
+    C_dC::Dual{<:AbstractMatrix{Complex{R}},<:TangentOrFData},
+) where {R<:BlasRealFloat}
+    uplo = primal(_uplo)
+    t = primal(_t)
+    α, dα = _scalar_extract(α_dα)
+    β, dβ = _scalar_extract(β_dβ)
+    A, dA = matrixify(A_dA)
+    C, dC = arrayify(C_dC)
+    _herk_frechet_lane!(uplo, t, α, dα, A, dA, β, dβ, C, dC)
+    BLAS.herk!(uplo, t, α, A, β, C)
+    real_diag!(C)
     return C_dC
 end
 
