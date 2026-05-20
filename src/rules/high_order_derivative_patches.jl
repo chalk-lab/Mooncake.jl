@@ -310,135 +310,15 @@ function _for_rule_lifted(
     return _wrap_rule_result(__primal_type(_typeof(y_lifted)), width, y_lifted)
 end
 
-# Forward-over-reverse differentiates generated reverse rules whose forward and
-# pullback closures communicate through `Stack{Tuple{...}}` captures. Those
-# stacks are internal mutation state, so their lifted representation must be the
-# stack of canonical lifted entries, not a legacy `Dual{Stack, MutableTangent}`.
-dual_type(::Val{N}, ::Type{Stack{T}}) where {N,T<:Tuple} = Stack{dual_type(Val(N), T)}
-dual_type(::Val{0}, ::Type{Stack{T}}) where {T<:Tuple} = Stack{T}
-
-# Lifted-stack identity cache. The `Lifted{Stack{T}, N, Stack{V}}` slot must
-# share a single `Stack{V}` instance across all push/pop references for a
-# round-trip to balance; otherwise the forward pass pushes to one instance
-# and the pullback pops from a different (still-empty) one, throwing
-# `UndefRefError`. Mutable `t::MutableTangent` is stable across calls and
-# acts as the identity key. `WeakKeyDict` lets the canonical lifted stack
-# be GC'd once the owning tangent goes out of scope.
-const _LIFTED_STACK_CACHE = WeakKeyDict{MutableTangent,Any}()
-const _LIFTED_STACK_CACHE_LOCK = ReentrantLock()
-
-function Stack{V}(p::Stack{T}, t::MutableTangent) where {V,T<:Tuple}
-    return lock(_LIFTED_STACK_CACHE_LOCK) do
-        get!(_LIFTED_STACK_CACHE, t) do
-            stack = Stack{V}()
-            memory_tangent = getfield(t.fields, :memory)
-            for i in 1:p.position
-                push!(
-                    stack, _inner_dual_for_field(V, p.memory[i], memory_tangent[i])
-                )
-            end
-            stack
-        end::Stack{V}
-    end
-end
-
-@inline __primal_type(::Type{Stack{V}}) where {V<:Tuple} = Stack{__primal_type(V)}
-
-function primal(s::Stack{V}) where {V<:Tuple}
-    p = Stack{__primal_type(V)}()
-    for i in 1:s.position
-        push!(p, _ndual_primal(s.memory[i]))
-    end
-    return p
-end
-
-function tangent(s::Stack{V}) where {V<:Tuple}
-    t = zero_tangent(primal(s))
-    memory_tangent = getfield(t.fields, :memory)
-    for i in 1:s.position
-        memory_tangent[i] = tangent(s.memory[i], 1)
-    end
-    return t
-end
-
-_canonicalize_comms_tangents(rule, rule_tangent, ::Val) = rule_tangent
-
-function _canonicalize_comms_tangents(rule::DerivedRule, rule_tangent::Tangent, width::Val)
-    cache = IdDict{Any,Any}()
-    fwd_tangent = getfield(rule_tangent.fields, :fwds_oc)
-    rvs_tangent = val(getfield(getfield(rule_tangent.fields, :pb_oc_ref).fields, :x))
-    fwd_captures_tangent = _canonicalize_comms_captures(
-        width, rule.fwds_oc.oc.captures, fwd_tangent.captures_tangent, cache
-    )
-    rvs_captures_tangent = _canonicalize_comms_captures(
-        width, rule.pb_oc_ref[].oc.captures, rvs_tangent.captures_tangent, cache
-    )
-    return Tangent((;
-        fwds_oc=MistyClosureTangent(fwd_captures_tangent, fwd_tangent.dual_callable),
-        pb_oc_ref=MutableTangent((;
-            x=PossiblyUninitTangent(
-                MistyClosureTangent(rvs_captures_tangent, rvs_tangent.dual_callable)
-            )
-        )),
-        nargs=getfield(rule_tangent.fields, :nargs),
-    ))
-end
-
-function _canonicalize_comms_captures(width::Val, captures::Tuple, captures_tangent, cache)
-    return ntuple(
-        i -> _canonicalize_comms_capture(width, captures[i], captures_tangent[i], cache),
-        Val(length(captures)),
-    )
-end
-
-_canonicalize_comms_capture(::Val, _, captures_tangent, _) = captures_tangent
-
-function _canonicalize_comms_capture(
-    width::Val, capture::Stack{T}, captures_tangent, cache
-) where {T<:Tuple}
-    return get!(cache, capture) do
-        Stack{dual_type(width, T)}()
-    end
-end
-
-@inline function Lifted{P,N}(rule::P, rule_tangent::Tangent) where {P<:DerivedRule,N}
-    return _lifted_struct_runtime_fallback(
-        P, Val(N), rule, _canonicalize_comms_tangents(rule, rule_tangent, Val(N))
-    )
-end
-# The width-1 canonical `NTangent{Tuple{Tangent{...}}}` form wraps the same
-# Tangent shape. Unwrap and delegate so the `_canonicalize_comms_tangents`
-# path runs against the inner Tangent.
-@inline function Lifted{P,1}(
-    rule::P, rule_tangent::NTangent{Tuple{T}}
-) where {P<:DerivedRule,T<:Tangent}
-    return Lifted{P,1}(rule, rule_tangent.lanes[1])
-end
-
-@is_primitive MinimalCtx ForwardMode Tuple{
-    typeof(__push_comms_stack!),Stack{T},T
-} where {T<:Tuple}
-@is_primitive MinimalCtx ForwardMode Tuple{
-    typeof(__pop_comms_stack!),Stack{T}
-} where {T<:Tuple}
-
-@inline function frule!!(
-    ::Lifted{typeof(__push_comms_stack!),N},
-    stack::Lifted{Stack{T},N,Stack{V}},
-    value::Lifted{T,N,V},
-) where {N,T<:Tuple,V}
-    push!(_unlift(stack), _unlift(value))
-    return Lifted{Nothing,N}(nothing, NoTangent())
-end
-
-@inline function frule!!(
-    ::Lifted{typeof(__pop_comms_stack!),N}, stack::Lifted{Stack{T},N,Stack{V}}
-) where {N,T<:Tuple,V}
-    return Lifted{T,N}(pop!(_unlift(stack)))
-end
-
-@inline _is_lifted_aware(::Type{<:Tuple{typeof(__push_comms_stack!),<:Stack,Any}}) = true
-@inline _is_lifted_aware(::Type{<:Tuple{typeof(__pop_comms_stack!),<:Stack}}) = true
+# Forward-over-reverse stack handling: the reverse-mode IR-generator emits bare
+# `push!(::Stack, ::Tuple)` / `pop!(::Stack)` calls between the forward and
+# pullback closures. Aliasing is preserved by the joint
+# `zero_tangent((fwd_oc.captures, rvs_oc.captures))` call in
+# `_compile_for_rule` / `_for_rule_cached_dual` — the IdDict inside
+# `zero_tangent` produces shared `MutableTangent` slots for aliased primal
+# `Stack` objects, so both closures' `Dual{Stack, MutableTangent}` slots
+# point at the same tangent state. No special `dual_type`/lift on `Stack`
+# is needed, and no named comms-stack primitives.
 
 function rrule!!(
     ::CoDual{typeof(build_derived_rrule)},

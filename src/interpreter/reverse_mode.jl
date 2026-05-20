@@ -1463,16 +1463,20 @@ function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
         comms_stack_id = add_data_if_not_singleton!(info, stack)
 
         # Create instructions for forwards-pass to create tuple + push onto comms stack.
+        # Use bare `push!` / `pop!` (not a named wrapper): forward-over-reverse
+        # relies on the joint `zero_tangent((fwd_oc.captures, rvs_oc.captures))`
+        # in `_compile_for_rule` to alias the `MutableTangent` of the shared
+        # `Stack` across both closures, so standard mutation rules suffice.
         tuple_id = ID()
         fwds_insts = IDInstPair[
             (tuple_id, new_inst(Expr(:call, tuple, comms_ids...))),
-            (ID(), new_inst(Expr(:call, __push_comms_stack!, comms_stack_id, tuple_id))),
+            (ID(), new_inst(Expr(:call, push!, comms_stack_id, tuple_id))),
         ]
 
         # Create instructions for reverse-pass to pop comms stack and extract elements of
         # tuple into comms ids.
         rvs_insts = IDInstPair[
-            (tuple_id, new_inst(Expr(:call, __pop_comms_stack!, comms_stack_id))),
+            (tuple_id, new_inst(Expr(:call, pop!, comms_stack_id))),
             map(enumerate(comms_ids)) do (n, id)
                 (id, new_inst(Expr(:call, getfield, tuple_id, n)))
             end...,
@@ -1482,17 +1486,6 @@ function create_comms_insts!(ad_stmts_blocks::ADStmts, info::ADInfo)
     end
     return map(first, insts), map(last, insts)
 end
-
-# Reverse communication stacks carry data from generated forward closures to
-# generated pullback closures. Keep those operations behind named call
-# boundaries so forward-over-reverse can preserve canonical lifted stack state
-# without changing general `Stack` / `push!` semantics.
-Base.@noinline __push_comms_stack!(stack::Stack{T}, value::T) where {T<:Tuple} = push!(
-    stack, value
-)
-Base.@noinline __pop_comms_stack!(stack::Stack{<:Tuple}) = pop!(stack)
-Base.@noinline __push_comms_stack!(stack::SingletonStack, value) = push!(stack, value)
-Base.@noinline __pop_comms_stack!(stack::SingletonStack) = pop!(stack)
 
 """
     forwards_pass_ir(ir::BBCode, ad_stmts_blocks::ADStmts, info::ADInfo, Tshared_data)
