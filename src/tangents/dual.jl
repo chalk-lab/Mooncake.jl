@@ -142,7 +142,38 @@ Width-aware forward value type query.
         return _dual_type_structural_struct(Val(N), P)
     end
 
+    # Mutable struct with at least one Array-of-IEEEFloat field: use SplitDual
+    # so each field's V is the canonical NDual-element form and `dual_type`
+    # recurses coherently. Falls through to the parallel-Dual fallback below
+    # for mutable structs without canonical-V Array fields.
+    if N >= 1 && _split_dual_eligible(P)
+        return _dual_type_split_dual(Val(N), P)
+    end
+
     return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
+end
+
+@inline function _split_dual_eligible(::Type{P}) where {P}
+    return isconcretetype(P) &&
+           ismutabletype(P) &&
+           fieldcount(P) > 0 &&
+           tangent_type(P) <: MutableTangent &&
+           _has_split_dual_field(P)
+end
+@generated function _has_split_dual_field(::Type{P}) where {P}
+    for i in 1:fieldcount(P)
+        ft = fieldtype(P, i)
+        if ft <: Array{<:IEEEFloat} || ft <: Array{<:Complex{<:IEEEFloat}}
+            return :(true)
+        end
+    end
+    return :(false)
+end
+@generated function _dual_type_split_dual(::Val{N}, ::Type{P}) where {N,P}
+    names = fieldnames(P)
+    elems = Type[dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P)]
+    InnerTup = Tuple{elems...}
+    return :(SplitDual{NamedTuple{$names,$InnerTup}})
 end
 
 # Generated helpers — unroll `fieldtype(P, i)` iteration at expansion time
@@ -240,12 +271,35 @@ struct SplitDual{V<:NamedTuple}
 end
 
 # Mooncake-protocol accessors. `primal` reconstructs the original primal
-# struct's field values from the NDual `.value` slots; `tangent` returns
-# the per-field tangent in a `Tangent`/`MutableTangent`-shaped wrapper
-# matching `tangent_type(P)`. Per-lane `tangent(_, i)` projects lane i.
-# Both are wired through `dual_type` once the per-struct construction
-# path is in place (next implementation step).
+# struct's field values from each field's V (NDual `.value` slots for
+# canonical-NDual Array fields; `primal(field_V)` recursively for
+# non-Array fields). `tangent` builds the matching `MutableTangent` from
+# each field's tangent. Per-lane `tangent(_, i)` projects lane i.
 @inline _unlift(d::SplitDual) = d.canonical
+# 2-arg ctor: build the canonical NamedTuple from a (primal, MutableTangent)
+# pair, field by field. Each field's V is constructed via its own 2-arg
+# constructor (`Vector{NDual{T,1}}(primal_field, tangent_field)` etc.).
+# `@generated` so the field-wise calls unroll statically.
+@generated function (::Type{SplitDual{NamedTuple{names,Vs}}})(
+    primal::P, tangent::MutableTangent
+) where {names,Vs<:Tuple,P}
+    n = fieldcount(P)
+    field_exprs = map(1:n) do i
+        Vi = fieldtype(Vs, i)
+        fname = names[i]
+        :(_inner_dual_for_field(
+            $Vi,
+            getfield(primal, $(QuoteNode(fname))),
+            getfield(tangent.fields, $(QuoteNode(fname))),
+        ))
+    end
+    return quote
+        SplitDual($(NamedTuple{names})(($(field_exprs...),)))
+    end
+end
+
+# Mooncake-protocol accessors for Lifted{P, N, SplitDual{V}} live below
+# the `Lifted` type definition (see "SplitDual Lifted accessors" block).
 
 # `tangent(x, dir)` — per-lane tangent accessor. Per-type fast paths for
 # NDual, Complex{NDual}, Array{<:NDual}, NTangent, Memory, MemoryRef, etc.
@@ -1029,6 +1083,34 @@ end
 # would erase the field's original type.
 primal(d::Lifted) = primal(d.value)
 tangent(d::Lifted) = tangent(d.value)
+
+# SplitDual Lifted accessors: reconstruct the primal mutable struct from
+# canonical Vs' `.value`s; build the matching `MutableTangent` from each
+# field's `tangent(_, i)`. Reconstruction yields a fresh primal struct;
+# SplitDual deliberately does not carry the user's struct identity.
+@generated function primal(d::Lifted{P,N,V}) where {P,N,V<:SplitDual}
+    nt_type = V.parameters[1]
+    names = nt_type.parameters[1]
+    field_exprs = map(names) do f
+        :(_field_primal(getfield(d.value.canonical, $(QuoteNode(f)))))
+    end
+    return :(P($(field_exprs...)))
+end
+@generated function tangent(d::Lifted{P,N,V}) where {P,N,V<:SplitDual}
+    lane_exprs = [:(tangent(d, $lane)) for lane in 1:N]
+    return :(NTangent(($(lane_exprs...),)))
+end
+@generated function tangent(d::Lifted{P,N,V}, i::Integer) where {P,N,V<:SplitDual}
+    nt_type = V.parameters[1]
+    names = nt_type.parameters[1]
+    tt = tangent_type(P)
+    @assert tt <: MutableTangent
+    nt_inner_type = tt.parameters[1]
+    field_exprs = map(names) do f
+        :($(f) = tangent(getfield(d.value.canonical, $(QuoteNode(f))), i))
+    end
+    return :(MutableTangent{$nt_inner_type}((; $(field_exprs...))))
+end
 # Type-singleton primal: a `Lifted{Type{P}, N, V}` slot stores the substituted
 # `Type{P_lifted}` inside `V` (e.g. `Type{Array{Float64,D}}` → V-primal
 # `Type{Array{NDual{Float64,N},D}}` per the `dual_type` override in

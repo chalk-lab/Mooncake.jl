@@ -175,6 +175,13 @@ end
 @inline _lgetfield_impl(x::T, ::Val{f}) where {T<:Union{Tuple,NamedTuple},f} = getfield(
     x, f
 )
+# `SplitDual{V}` mutable-struct canonical lift: project the canonical V's
+# field directly. The field's value is the canonical V of the primal
+# field type (e.g., `Vector{NDual{T,1}}` for an Array field), so its
+# tangent info lives inside the NDual elements.
+@inline _lgetfield_impl(x::Mooncake.SplitDual, ::Val{f}) where {f} = getfield(
+    x.canonical, f
+)
 # Bare `AbstractArray{<:NDual}` wrappers (Diagonal, Adjoint, SubArray, …) — the
 # structural lift in `nfwd/NfwdMooncake.jl` places `NDual`/`Array{NDual}` at
 # differentiable leaf fields (which are returned as-is, already canonical V).
