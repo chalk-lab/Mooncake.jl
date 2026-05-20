@@ -1076,21 +1076,21 @@ end
     return value
 end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(memoryrefset!),N},
+    ::Mooncake.Lifted{typeof(memoryrefset!),N},
     x::Mooncake.Lifted{<:MemoryRef},
     value::Mooncake.Lifted,
     ordering::Mooncake.Lifted{Symbol},
     boundscheck::Mooncake.Lifted{Bool},
 ) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(x),
-        Mooncake._unlift(value),
-        Mooncake._unlift(ordering),
-        Mooncake._unlift(boundscheck),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    ord_val = primal(ordering)
+    bc_val = primal(boundscheck)
+    lsf = Dual(lmemoryrefset!, NoTangent())
+    lsf_lifted = Mooncake.Lifted{typeof(lmemoryrefset!),N,typeof(lsf)}(lsf)
+    ord_inner = Dual(Val(ord_val), NoTangent())
+    bc_inner = Dual(Val(bc_val), NoTangent())
+    ord_lifted = Mooncake.Lifted{Val{ord_val},N,typeof(ord_inner)}(ord_inner)
+    bc_lifted = Mooncake.Lifted{Val{bc_val},N,typeof(bc_inner)}(bc_inner)
+    return frule!!(lsf_lifted, x, value, ord_lifted, bc_lifted)
 end
 # Struct-value memoryrefset!: the bare-Dual dispatch chain at lines 1023-1042
 # constrains `value::Union{Dual, NDual, ...}` (NDual-element path), so it
