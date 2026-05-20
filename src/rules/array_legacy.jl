@@ -374,39 +374,19 @@ function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<
     return x, NoPullback(f, x, sz)
 end
 
-function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_array_ptr}},
-    ::Dual{Val{Ptr{T}}},
-    ::Dual{Tuple{Val{Any}}},
-    ::Dual, # nreq
-    ::Dual, # calling convention
-    a::Dual{<:Array{T},<:Array{V}},
-) where {T,V}
-    y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
-    dy = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
-    return Dual(y, dy)
-end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(_foreigncall_),N},
-    a1::Mooncake.Lifted{Val{:jl_array_ptr}},
-    a2::Mooncake.Lifted{Val{Ptr{T}}},
-    a3::Mooncake.Lifted{Tuple{Val{Any}}},
-    a4::Mooncake.Lifted,
-    a5::Mooncake.Lifted,
-    a::Mooncake.Lifted{<:Array{T}},
-) where {N,T}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(a1),
-        Mooncake._unlift(a2),
-        Mooncake._unlift(a3),
-        Mooncake._unlift(a4),
-        Mooncake._unlift(a5),
-        Mooncake._unlift(a),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    ::Mooncake.Lifted{typeof(_foreigncall_),N},
+    ::Mooncake.Lifted{Val{:jl_array_ptr}},
+    ::Mooncake.Lifted{Val{Ptr{T}}},
+    ::Mooncake.Lifted{Tuple{Val{Any}}},
+    ::Mooncake.Lifted, # nreq
+    ::Mooncake.Lifted, # calling convention
+    a::Mooncake.Lifted{<:Array{T},N,V_a},
+) where {N,T,V,V_a<:Dual{<:Array{T},<:Array{V}}}
+    bare_a = Mooncake._unlift(a)
+    y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(bare_a))
+    dy = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(bare_a))
+    return Mooncake.Lifted{Ptr{T},N}(y, dy)
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_array_ptr},Vararg}}
@@ -430,51 +410,39 @@ end
 @is_primitive MinimalCtx Tuple{
     typeof(unsafe_copyto!),Array{T},Any,Array{T},Any,Any
 } where {T}
-function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:Array{T}},
-    doffs::Dual,
-    src::Dual{<:Array{T}},
-    soffs::Dual,
-    n::Dual,
-) where {T}
-    _n = primal(n)
-    Base.unsafe_copyto!(primal(dest), primal(doffs), primal(src), primal(soffs), _n)
-    Base.unsafe_copyto!(tangent(dest), primal(doffs), tangent(src), primal(soffs), _n)
-    return dest
-end
-# Bare NDual-array overload: V at width 1 for Array{<:IEEEFloat} is
-# Array{NDual{T,1}}; the NDual elements pack primal+tangent so a single
-# `unsafe_copyto!` mutates both at once.
+# Wrapper-exception slot V (Dual{Array, Array}): copy primal and tangent
+# separately.
 @inline function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::AbstractArray{<:NDual},
-    doffs::Dual,
-    src::AbstractArray{<:NDual},
-    soffs::Dual,
-    n::Dual,
-)
-    Base.unsafe_copyto!(dest, primal(doffs), src, primal(soffs), primal(n))
-    return dest
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(unsafe_copyto!),N},
-    dest::Mooncake.Lifted{<:Array{T}},
+    ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    dest::Mooncake.Lifted{<:Array{T},N,V_d},
     doffs::Mooncake.Lifted,
-    src::Mooncake.Lifted{<:Array{T}},
+    src::Mooncake.Lifted{<:Array{T},N,V_s},
     soffs::Mooncake.Lifted,
     n::Mooncake.Lifted,
-) where {N,T}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(dest),
-        Mooncake._unlift(doffs),
-        Mooncake._unlift(src),
-        Mooncake._unlift(soffs),
-        Mooncake._unlift(n),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+) where {N,T,V_d<:Dual,V_s<:Dual}
+    bare_dest = Mooncake._unlift(dest)
+    bare_src = Mooncake._unlift(src)
+    _n = primal(n)
+    _doffs = primal(doffs)
+    _soffs = primal(soffs)
+    Base.unsafe_copyto!(primal(bare_dest), _doffs, primal(bare_src), _soffs, _n)
+    Base.unsafe_copyto!(tangent(bare_dest), _doffs, tangent(bare_src), _soffs, _n)
+    return dest
+end
+# Canonical NDual slots: NDual elements pack primal+tangent so a single
+# `unsafe_copyto!` mutates both at once.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    dest::Mooncake.Lifted{<:Array{T},N,V_d},
+    doffs::Mooncake.Lifted,
+    src::Mooncake.Lifted{<:Array{T},N,V_s},
+    soffs::Mooncake.Lifted,
+    n::Mooncake.Lifted,
+) where {N,T,V_d<:AbstractArray{<:NDual},V_s<:AbstractArray{<:NDual}}
+    bare_dest = Mooncake._unlift(dest)
+    bare_src = Mooncake._unlift(src)
+    Base.unsafe_copyto!(bare_dest, primal(doffs), bare_src, primal(soffs), primal(n))
+    return dest
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
@@ -523,38 +491,32 @@ function rrule!!(
     return dest, unsafe_copyto_pb!!
 end
 
-Base.@propagate_inbounds function frule!!(
-    ::Dual{typeof(Core.arrayref)},
-    inbounds::Dual{Bool},
-    x::Dual{<:Array},
-    inds::Vararg{Dual{Int},N},
-) where {N}
-    _inds = tuple_map(primal, inds)
-    y = arrayref(primal(inbounds), primal(x), _inds...)
-    dy = arrayref(primal(inbounds), tangent(x), _inds...)
-    return Dual(y, dy)
-end
-# NDual (chunked forward) path: tangent info lives inside elements, not in a Dual wrapper.
-Base.@propagate_inbounds function frule!!(
-    ::Dual{typeof(Core.arrayref)},
-    inbounds::Dual{Bool},
-    x::Array{<:_HasNDual},
-    inds::Vararg{Dual{Int},N},
-) where {N}
-    return arrayref(primal(inbounds), x, tuple_map(primal, inds)...)
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(Core.arrayref),N},
+# Wrapper-exception slot V (Dual{Array, Array}): separate primal+tangent
+# arrayref calls, wrap result via 2-arg Lifted ctor.
+Base.@propagate_inbounds @inline function frule!!(
+    ::Mooncake.Lifted{typeof(Core.arrayref),N},
     inbounds::Mooncake.Lifted{Bool},
-    x::Mooncake.Lifted{<:Array},
+    x::Mooncake.Lifted{<:Array{T},N,V_x},
     inds::Vararg{Mooncake.Lifted{Int},M},
-) where {N,M}
-    bare_inds = ntuple(i -> Mooncake._unlift(inds[i]), Val(M))
-    bare_result = frule!!(
-        Mooncake._unlift(f), Mooncake._unlift(inbounds), Mooncake._unlift(x), bare_inds...
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+) where {N,T,M,V_x<:Dual}
+    bare_x = Mooncake._unlift(x)
+    ib = primal(inbounds)
+    _inds = ntuple(i -> primal(inds[i]), Val(M))
+    y = arrayref(ib, primal(bare_x), _inds...)
+    dy = arrayref(ib, tangent(bare_x), _inds...)
+    return Mooncake.Lifted{T,N}(y, dy)
+end
+# Canonical NDual slot V: tangent info lives in elements; one arrayref
+# returns the lifted element directly.
+Base.@propagate_inbounds @inline function frule!!(
+    ::Mooncake.Lifted{typeof(Core.arrayref),N},
+    inbounds::Mooncake.Lifted{Bool},
+    x::Mooncake.Lifted{<:Array{T},N,V_x},
+    inds::Vararg{Mooncake.Lifted{Int},M},
+) where {N,T,M,V_x<:Array{<:_HasNDual}}
+    bare_x = Mooncake._unlift(x)
+    result = arrayref(primal(inbounds), bare_x, ntuple(i -> primal(inds[i]), Val(M))...)
+    return Mooncake.Lifted{T,N,typeof(result)}(result)
 end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
@@ -579,46 +541,34 @@ Base.@propagate_inbounds function rrule!!(
     return CoDual(_y, dy), arrayref_pullback!!
 end
 
-function frule!!(
-    ::Dual{typeof(Core.arrayset)},
-    inbounds::Dual{Bool},
-    A::Dual{<:Array},
-    v::Dual,
-    inds::Dual{Int}...,
-)
-    _inds = tuple_map(primal, inds)
-    Core.arrayset(primal(inbounds), primal(A), primal(v), _inds...)
-    Core.arrayset(primal(inbounds), tangent(A), tangent(v), _inds...)
-    return A
-end
-# NDual (chunked forward) path: tangent info lives inside elements.
-function frule!!(
-    ::Dual{typeof(Core.arrayset)},
-    inbounds::Dual{Bool},
-    A::Array{<:_HasNDual},
-    v,
-    inds::Dual{Int}...,
-)
-    Core.arrayset(primal(inbounds), A, v, tuple_map(primal, inds)...)
-    return A
-end
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(Core.arrayset),N},
+    ::Mooncake.Lifted{typeof(Core.arrayset),N},
     inbounds::Mooncake.Lifted{Bool},
-    A::Mooncake.Lifted{<:Array},
+    A::Mooncake.Lifted{<:Array{T},N,V_A},
     v::Mooncake.Lifted,
     inds::Vararg{Mooncake.Lifted{Int},M},
-) where {N,M}
-    bare_inds = ntuple(i -> Mooncake._unlift(inds[i]), Val(M))
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(inbounds),
-        Mooncake._unlift(A),
-        Mooncake._unlift(v),
-        bare_inds...,
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+) where {N,T,M,V_A<:Dual}
+    bare_A = Mooncake._unlift(A)
+    bare_v = Mooncake._unlift(v)
+    ib = primal(inbounds)
+    _inds = ntuple(i -> primal(inds[i]), Val(M))
+    Core.arrayset(ib, primal(bare_A), primal(bare_v), _inds...)
+    Core.arrayset(ib, tangent(bare_A), tangent(bare_v), _inds...)
+    return A
+end
+# Canonical NDual slot V: tangent info lives in elements; one arrayset
+# stores the lifted element directly.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Core.arrayset),N},
+    inbounds::Mooncake.Lifted{Bool},
+    A::Mooncake.Lifted{<:Array{T},N,V_A},
+    v::Mooncake.Lifted,
+    inds::Vararg{Mooncake.Lifted{Int},M},
+) where {N,T,M,V_A<:Array{<:_HasNDual}}
+    bare_A = Mooncake._unlift(A)
+    bare_v = Mooncake._unlift(v)
+    Core.arrayset(primal(inbounds), bare_A, bare_v, ntuple(i -> primal(inds[i]), Val(M))...)
+    return A
 end
 function rrule!!(
     ::CoDual{typeof(Core.arrayset)},
