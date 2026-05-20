@@ -310,12 +310,24 @@ end
     @testset "Transpose canonical NDual dual_type" begin
         # Pin Transpose's canonical NDual-element wrapper form so the
         # migration cannot silently regress back to `Dual{Transpose, Tangent}`.
+        # The parent recursion covers any `AbstractArray{T}` parent (Array,
+        # SubArray, …) via `dual_type(Val(N), P)` on the parent type.
         Tr = LinearAlgebra.Transpose{Float64,Vector{Float64}}
         @test Mooncake.dual_type(Val(0), Tr) === Tr
         @test Mooncake.dual_type(Val(1), Tr) ===
             LinearAlgebra.Transpose{NDual{Float64,1},Vector{NDual{Float64,1}}}
         @test Mooncake.dual_type(Val(2), Tr) ===
             LinearAlgebra.Transpose{NDual{Float64,2},Vector{NDual{Float64,2}}}
+        # SubArray-parent Transpose recurses through SubArray's canonical V.
+        Sv = SubArray{Float64,1,Vector{Float64},Tuple{UnitRange{Int64}},true}
+        TrSub = LinearAlgebra.Transpose{Float64,Sv}
+        @test Mooncake.dual_type(Val(0), TrSub) === TrSub
+        @test Mooncake.dual_type(Val(1), TrSub) === LinearAlgebra.Transpose{
+            NDual{Float64,1},
+            SubArray{
+                NDual{Float64,1},1,Vector{NDual{Float64,1}},Tuple{UnitRange{Int64}},true
+            },
+        }
     end
 
     @testset "Adjoint{T,Vector{T}} canonical NDual dual_type" begin

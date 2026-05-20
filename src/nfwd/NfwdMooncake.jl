@@ -1060,55 +1060,74 @@ for Wrapper in (
             $(Wrapper.args[1])
     end
 end
-# Transpose with `Array` parent: canonical NDual-element form consumed
-# by the 1-arg `arrayify` overload in `src/rules/blas.jl`. Non-Array
-# parents fall through to the structural `dual_type` paths.
+# Transpose with any `AbstractArray{T}` parent: canonical NDual-element
+# form `Transpose{NDual{T,N}, dual_type(Val(N), P)}`. The parent's own
+# canonical V (Array, SubArray, …) is computed recursively; the
+# `Transpose{NDual{T,N}, V_parent}(primal, tangent)` constructor below
+# delegates the parent build to `V_parent`'s own (primal, tangent)
+# constructor, so this seed/conversion path works for any parent type
+# that itself has a canonical NDual lift.
 function dual_type(
     ::Val{N}, ::Type{LinearAlgebra.Transpose{T,P}}
-) where {N,T<:IEEEFloat,P<:Array{T}}
-    return LinearAlgebra.Transpose{NDual{T,N},Array{NDual{T,N},ndims(P)}}
+) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
+    return LinearAlgebra.Transpose{NDual{T,N},dual_type(Val(N), P)}
 end
 function dual_type(
     ::Val{0}, ::Type{LinearAlgebra.Transpose{T,P}}
-) where {T<:IEEEFloat,P<:Array{T}}
+) where {T<:IEEEFloat,P<:AbstractArray{T}}
     return LinearAlgebra.Transpose{T,P}
 end
-@inline Mooncake.zero_dual(w::Val, x::LinearAlgebra.Transpose{T,<:Array{T}}) where {T<:IEEEFloat} = transpose(
-    _ndual_array(x.parent, w, _ -> zero(T))
-)
-@inline Mooncake.uninit_dual(w::Val, x::LinearAlgebra.Transpose{T,<:Array{T}}) where {T<:IEEEFloat} = transpose(
-    _ndual_array(x.parent, w, _ -> zero(T))
-)
-@inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::LinearAlgebra.Transpose{T,<:Array{T}}) where {T<:IEEEFloat} = transpose(
-    _ndual_array(x.parent, w, _ -> randn(rng, T))
-)
+@inline function Mooncake.zero_dual(
+    w::Val{N}, x::LinearAlgebra.Transpose{T,P}
+) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.zero_tangent(x))::V
+end
+@inline function Mooncake.uninit_dual(
+    w::Val{N}, x::LinearAlgebra.Transpose{T,P}
+) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.uninit_tangent(x))::V
+end
+@inline function Mooncake.randn_dual(
+    w::Val{N}, rng::AbstractRNG, x::LinearAlgebra.Transpose{T,P}
+) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.randn_tangent(rng, x))::V
+end
 # Val(0) passthroughs disambiguate against the generic `Val{0}` primal
 # passthrough below.
 @inline Mooncake.zero_dual(
-    ::Val{0}, x::LinearAlgebra.Transpose{T,<:Array{T}}
+    ::Val{0}, x::LinearAlgebra.Transpose{T,<:AbstractArray{T}}
 ) where {T<:IEEEFloat} = x
 @inline Mooncake.uninit_dual(
-    ::Val{0}, x::LinearAlgebra.Transpose{T,<:Array{T}}
+    ::Val{0}, x::LinearAlgebra.Transpose{T,<:AbstractArray{T}}
 ) where {T<:IEEEFloat} = x
 @inline Mooncake.randn_dual(
-    ::Val{0}, ::AbstractRNG, x::LinearAlgebra.Transpose{T,<:Array{T}}
+    ::Val{0}, ::AbstractRNG, x::LinearAlgebra.Transpose{T,<:AbstractArray{T}}
 ) where {T<:IEEEFloat} = x
 
+# `Transpose{NDual{T,N}, V_parent}(primal, tangent::Tangent)` ctor — the
+# Lifted bridge and seed factories route here. Delegates the parent lift
+# to `V_parent`'s own (primal, tangent) constructor (defined for `Array`,
+# `SubArray`, and other shapes that have a canonical NDual form), so
+# Transpose works uniformly over any AbstractArray parent.
+function (::Type{LinearAlgebra.Transpose{NDual{T,N},V_parent}})(
+    primal::LinearAlgebra.Transpose{T,P}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N,P<:AbstractArray{T},V_parent<:AbstractArray{NDual{T,N}}}
+    parent_t = Mooncake._get_tangent_field(tangent, :parent)
+    parent_lifted = V_parent(parent(primal), parent_t)
+    return transpose(parent_lifted)::LinearAlgebra.Transpose{NDual{T,N},V_parent}
+end
+
 # Bridge for `Lifted{P,1}(primal, tangent::Tangent)` (CoDual→Lifted in the
-# test framework): the generic generated ctor in `src/tangents/dual.jl` emits
-# `InnerT(primal, tangent)` which has no matching constructor for the new
-# `Transpose{NDual{T,1}, ...}` V. Build the NDual-element parent inline.
+# test framework): delegate to the canonical V ctor above so any
+# AbstractArray-parent Transpose flows through the same constructor.
 @inline function Mooncake.Lifted{P,1}(
     primal::P, tangent::Mooncake.Tangent
-) where {T<:IEEEFloat,P<:LinearAlgebra.Transpose{T,<:Array{T}}}
+) where {T<:IEEEFloat,P<:LinearAlgebra.Transpose{T,<:AbstractArray{T}}}
     InnerT = Mooncake.dual_type(Val(1), P)
-    p_parent = primal.parent
-    t_parent = tangent.fields.parent
-    inner_parent = similar(p_parent, NDual{T,1})
-    @inbounds for i in eachindex(p_parent)
-        inner_parent[i] = NDual{T,1}(p_parent[i], (t_parent[i],))
-    end
-    return Mooncake.Lifted{P,1,InnerT}(transpose(inner_parent))
+    return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
 end
 
 # StepRangeLen with TwicePrecision ref/step fields: structural NamedTuple
@@ -1257,8 +1276,8 @@ end
 end
 @inline function Mooncake.__primal_type(
     ::Type{LinearAlgebra.Transpose{NDual{T,N},P}}
-) where {T<:IEEEFloat,N,P<:Array{NDual{T,N}}}
-    return LinearAlgebra.Transpose{T,Array{T,ndims(P)}}
+) where {T<:IEEEFloat,N,P<:AbstractArray{NDual{T,N}}}
+    return LinearAlgebra.Transpose{T,Mooncake.__primal_type(P)}
 end
 for W in (
     :(LinearAlgebra.UpperTriangular),
@@ -1850,12 +1869,12 @@ for W in (
 end
 
 function primal(
-    t::LinearAlgebra.Transpose{NDual{T,N},<:Array{NDual{T,N}}}
+    t::LinearAlgebra.Transpose{NDual{T,N},<:AbstractArray{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return transpose(primal(parent(t)))
 end
 function tangent(
-    t::LinearAlgebra.Transpose{NDual{T,N},<:Array{NDual{T,N}}}
+    t::LinearAlgebra.Transpose{NDual{T,N},<:AbstractArray{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return Mooncake.Tangent((; parent=tangent(parent(t))))
 end
