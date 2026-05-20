@@ -807,57 +807,26 @@ end
         } where {P<:BlasFloat},
     )
     @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(LAPACK.lacpy!),Vararg}}) = true
-    # Width-1 lacpy!: covers Real and Complex via slot Union. lacpy is its
-    # own Frechet (linear copy), so the tangent step is just a parallel
-    # `lacpy!(dB, dA, uplo)` alongside the primal.
-    function frule!!(
-        ::Dual{typeof(LAPACK.lacpy!)},
-        B_dB::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-        A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-        _uplo::Dual{Char},
-    )
-        B, dB = _arr_extract(B_dB)
-        A, dA = _arr_extract(A_dA)
-        LAPACK.lacpy!(B, A, primal(_uplo))
-        LAPACK.lacpy!(dB, dA, primal(_uplo))
-        _arr_writeback!(B_dB, B, dB)
-        return B_dB
-    end
-    # Width-N lacpy!: per-lane Frechet (lacpy each lane's dA → dB) then
-    # primal once. `lacpy!(B, A, uplo)` copies the triangular part of A
-    # into B; this is its own Frechet (linear in A → dB ← dA). So the
-    # rule is symmetric: do N tangent lacpy's + 1 primal lacpy. Covers
-    # Real (NDual{P,N}) and Complex (Complex{NDual{P,N}}).
+    # Unified lacpy! Lifted body: lacpy is its own Frechet (linear copy),
+    # so per-lane tangent step is just `LAPACK.lacpy!(dB, dA, uplo)` + 1
+    # primal `LAPACK.lacpy!(B, A, uplo)`. Works at any N≥1.
     @inline function frule!!(
-        ::Dual{typeof(LAPACK.lacpy!)},
-        B_dB::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-        A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-        _uplo::Dual{Char},
-    ) where {P<:BlasRealFloat,N}
-        uplo = primal(_uplo)
-        B, dBs = _arr_extract_n(B_dB)
-        A, dAs = _arr_extract_n(A_dA)
-        LAPACK.lacpy!(B, A, uplo)
-        @inbounds for lane in 1:N
-            LAPACK.lacpy!(dBs[lane], dAs[lane], uplo)
-        end
-        _arr_writeback_n!(B_dB, B, dBs)
-        return B_dB
-    end
-    @inline function frule!!(
-        f::Mooncake.Lifted{typeof(LAPACK.lacpy!),N},
+        ::Mooncake.Lifted{typeof(LAPACK.lacpy!),N},
         B_dB::Mooncake.Lifted{<:AbstractMatrix{P}},
         A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
         _uplo::Mooncake.Lifted{Char},
     ) where {N,P<:BlasFloat}
-        bare_result = frule!!(
-            Mooncake._unlift(f),
-            Mooncake._unlift(B_dB),
-            Mooncake._unlift(A_dA),
-            Mooncake._unlift(_uplo),
-        )
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        uplo = primal(_uplo)
+        B_dB_inner = Mooncake._unlift(B_dB)
+        A_dA_inner = Mooncake._unlift(A_dA)
+        B, dBs = _arr_extract_n(B_dB_inner)
+        A, dAs = _arr_extract_n(A_dA_inner)
+        LAPACK.lacpy!(B, A, uplo)
+        @inbounds for lane in 1:N
+            LAPACK.lacpy!(dBs[lane], dAs[lane], uplo)
+        end
+        _arr_writeback_n!(B_dB_inner, B, dBs)
+        return B_dB
     end
     function rrule!!(
         ::CoDual{typeof(LAPACK.lacpy!)},
