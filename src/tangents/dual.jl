@@ -153,6 +153,7 @@ end
            ismutabletype(P) &&
            fieldcount(P) > 0 &&
            tangent_type(P) <: MutableTangent &&
+           all(always_initialised(P)) &&
            _has_split_dual_field(P)
 end
 # Predicate per field type — true if the field's primal canonicalises to an
