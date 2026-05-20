@@ -268,6 +268,10 @@ end
     ts = ntuple(n -> Complex(x.re.partials[n], x.im.partials[n]), Val(N))
     return (p, ts)
 end
+# Wrapper-exception slot V (`Dual{<:Number, …}`): treat as a trivial 1-lane
+# chunk so unified width-1 + width-N rule bodies can call
+# `_scalar_extract_n` regardless of which slot shape arrived.
+@inline _scalar_extract_n(x::Dual{<:Number}) = (primal(x), (tangent(x),))
 
 # Width-N matrix extract: like `_mat_extract` but per-lane tangents. Reshape
 # Vector inputs to M×1 columns so BLAS Level 2/3 callers can rely on the
@@ -769,78 +773,31 @@ end
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.scal!),Vararg}}) = true
-# Width-1 entry below covers both `Dual{<:Array{P}}` (struct-wrapped via
-# `_arr_extract`) and `AbstractArray{NDual{P,1}}` (plain NDual, with
-# `_arr_writeback!` pushing results back), and both Real and Complex element
-# types via the slot-Union signature. The legacy `Ptr{P}` argument shape
-# is not handled here — `BLAS.scal!(n, a, ::Ptr, incx)` calls go through the
-# `_foreigncall_` dot loop above.
-#
-# Per-lane Frechet helper for scal! (shared by width-1 and width-N rules).
-# Operates on a single lane's tangent array. Callers handle the primal
-# `BLAS.scal!(n, a, X, incx)` separately.
-#
-# Math: scal! computes `X ← a · X`. Differential:
-#   dX ← a · dX + da · X
-# `BLAS.scal!(n, a, dX, incx)` does the first term in place; `BLAS.axpy!`
-# adds `da · X` to dX.
-@inline function _scal_frechet_lane!(n, a, da, X, dX, incx)
-    BLAS.scal!(n, a, dX, incx)
-    BLAS.axpy!(n, da, X, incx, dX, incx)
-    return nothing
-end
-function frule!!(
-    ::Dual{typeof(BLAS.scal!)},
-    _n::Dual{<:Integer},
-    a_da::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    X_dX::Union{_ArrLikeWidth1,_ArrLikeWidth1Complex},
-    _incx::Dual{<:Integer},
-)
-    n = primal(_n)
-    incx = primal(_incx)
-    a, da = _scalar_extract(a_da)
-    X, dX = _arr_extract(X_dX)
-    _scal_frechet_lane!(n, a, da, X, dX, incx)
-    BLAS.scal!(n, a, X, incx)
-    _arr_writeback!(X_dX, X, dX)
-    return X_dX
-end
-# Width-N scal!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union; per-lane `_scal_frechet_lane!` then primal once.
+# Unified scal! Lifted body. Math: scal! computes `X ← a · X`,
+# differential `dX ← a · dX + da · X`, per lane. `_arr_extract_n` and
+# `_scalar_extract_n` handle wrapper-exception slots and canonical NDual
+# at any N≥1; the legacy `Ptr{P}` shape is not handled here (covered by
+# the `_foreigncall_` dot loop above).
 @inline function frule!!(
-    ::Dual{typeof(BLAS.scal!)},
-    _n::Dual{<:Integer},
-    a_da::Union{NDual{P,N},Complex{NDual{P,N}}},
-    X_dX::AbstractArray{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    _incx::Dual{<:Integer},
-) where {P<:IEEEFloat,N}
-    nn = primal(_n)
-    incx = primal(_incx)
-    a, das = _scalar_extract_n(a_da)
-    X, dXs = _arr_extract_n(X_dX)
-    @inbounds for lane in 1:N
-        _scal_frechet_lane!(nn, a, das[lane], X, dXs[lane], incx)
-    end
-    BLAS.scal!(nn, a, X, incx)
-    _arr_writeback_n!(X_dX, X, dXs)
-    return X_dX
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.scal!),N},
+    ::Mooncake.Lifted{typeof(BLAS.scal!),N},
     _n::Mooncake.Lifted{<:Integer},
     a_da::Mooncake.Lifted{P},
     X_dX::Mooncake.Lifted{<:AbstractArray{P}},
     _incx::Mooncake.Lifted{<:Integer},
 ) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(_n),
-        Mooncake._unlift(a_da),
-        Mooncake._unlift(X_dX),
-        Mooncake._unlift(_incx),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    nn = primal(_n)
+    incx = primal(_incx)
+    a_da_inner = Mooncake._unlift(a_da)
+    X_dX_inner = Mooncake._unlift(X_dX)
+    a, das = _scalar_extract_n(a_da_inner)
+    X, dXs = _arr_extract_n(X_dX_inner)
+    @inbounds for lane in 1:length(dXs)
+        BLAS.scal!(nn, a, dXs[lane], incx)
+        BLAS.axpy!(nn, das[lane], X, incx, dXs[lane], incx)
+    end
+    BLAS.scal!(nn, a, X, incx)
+    _arr_writeback_n!(X_dX_inner, X, dXs)
+    return X_dX
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.scal!)},
