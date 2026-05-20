@@ -292,6 +292,14 @@ end
 ) where {T<:IEEEFloat,N}
     return _arr_extract_n(x)
 end
+# Wrapper-exception slot V (`Dual{<:AbstractVecOrMat}`): treat as a
+# trivial 1-lane chunk so unified width-1 + width-N BLAS Level-2/3 rule
+# bodies can call `_mat_extract_n` uniformly. `matrixify` reshapes
+# 1D inputs to `M×1` and handles wrapper unwrapping.
+@inline function _mat_extract_n(x::Dual{<:AbstractVecOrMat})
+    p, t = matrixify(x)
+    return (p, (t,))
+end
 
 @inline _mat_extract(x::Dual{<:AbstractVecOrMat}) = matrixify(x)
 @inline function _mat_extract(x::AbstractVector{NDual{T,1}}) where {T}
@@ -847,83 +855,16 @@ end
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.gemv!),Vararg}}) = true
 
-# Width-1 gemv!: covers Real and Complex via slot Union. Container args
-# narrow to bare-`Dual{<:Abstract...}` to disambiguate from the width-N
-# rule at N=1 (NDual array inputs route to width-N); scalars use the
-# `_ScalarLikeWidth1` Union so mixed (NDual scalar + Dual structural-
-# wrapper container) inputs dispatch here. `A_dA` can be Vector or
-# Matrix; `_mat_extract` reshapes 1D inputs to `M×1` matrices for
-# `_gemv!_frule_core!`, which requires a Matrix.
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    A_dA::Dual{<:AbstractVecOrMat{<:BlasFloat}},
-    x_dx::Dual{<:AbstractVector{<:BlasFloat}},
-    beta::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    y_dy::Dual{<:AbstractVector{<:BlasFloat}},
-)
-    A, dA = _mat_extract(A_dA)
-    x, dx = _arr_extract(x_dx)
-    y, dy = _arr_extract(y_dy)
-    α, dα = _scalar_extract(alpha)
-    β, dβ = _scalar_extract(beta)
-
-    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
-
-    _arr_writeback!(y_dy, y, dy)
-    return y_dy
-end
-# Per-lane Frechet helper for gemv! width-N rules. Holds only the Frechet
-# step (no primal call); both width-1 (via `_gemv!_frule_core!`) and width-N
-# share this helper, with each caller running the primal separately.
+# Unified gemv! Lifted body.
 #
 # Math: gemv! computes `y ← α · op(A) · x + β · y`. Product-rule differential:
 #   dy ← dα · op(A) · x + α · op(dA) · x + α · op(A) · dx + dβ · y + β · dy
-# Lines 1-3 of the body run those three matrix-vector terms via gemv! (the
-# first call also absorbs `β · dy`). The `dβ` branch adds `dβ · y` per
-# element with NaN handling (BLAS would propagate NaN through `0 * NaN`,
-# but the Frechet semantics treat such positions as already-NaN and skip).
-@inline function _gemv_frechet_lane!(tA, α::P, dα, A, dA, x, dx, β, dβ, y, dy) where {P}
-    BLAS.gemv!(tA, dα, A, x, β, dy)
-    BLAS.gemv!(tA, α, dA, x, one(P), dy)
-    BLAS.gemv!(tA, α, A, dx, one(P), dy)
-    if !iszero(dβ)
-        @inbounds for n in eachindex(y)
-            tmp = dβ * y[n]
-            dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
-        end
-    end
-    return nothing
-end
-# Width-N gemv!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union; per-lane Frechet then primal once.
+# The three matrix-vector terms run via gemv! per lane (the first call
+# also absorbs `β · dy`). The `dβ` branch adds `dβ · y` per element with
+# NaN handling (BLAS would propagate NaN through `0 * NaN`, but the
+# Frechet semantics treat such positions as already-NaN and skip).
 @inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::Union{NDual{P,N},Complex{NDual{P,N}}},
-    A_dA::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    x_dx::AbstractArray{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    beta::Union{NDual{P,N},Complex{NDual{P,N}}},
-    y_dy::AbstractArray{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:IEEEFloat,N}
-    A, dAs = _mat_extract_n(A_dA)
-    x, dxs = _arr_extract_n(x_dx)
-    y, dys = _arr_extract_n(y_dy)
-    α, dαs = _scalar_extract_n(alpha)
-    β, dβs = _scalar_extract_n(beta)
-    ta = primal(tA)
-    @inbounds for lane in 1:N
-        _gemv_frechet_lane!(
-            ta, α, dαs[lane], A, dAs[lane], x, dxs[lane], β, dβs[lane], y, dys[lane]
-        )
-    end
-    BLAS.gemv!(ta, α, A, x, β, y)
-    _arr_writeback_n!(y_dy, y, dys)
-    return y_dy
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.gemv!),N},
+    ::Mooncake.Lifted{typeof(BLAS.gemv!),N},
     tA::Mooncake.Lifted{Char},
     alpha::Mooncake.Lifted{P},
     A_dA::Mooncake.Lifted{<:AbstractVecOrMat{P}},
@@ -931,35 +872,31 @@ end
     beta::Mooncake.Lifted{P},
     y_dy::Mooncake.Lifted{<:AbstractArray{P}},
 ) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(tA),
-        Mooncake._unlift(alpha),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(x_dx),
-        Mooncake._unlift(beta),
-        Mooncake._unlift(y_dy),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-
-@inline function _gemv!_frule_core!(
-    tA::Char,
-    α::P,
-    dα::P,
-    A::AbstractMatrix{P},
-    dA::AbstractMatrix{P},
-    x::AbstractVector{P},
-    dx::AbstractVector{P},
-    β::P,
-    dβ::P,
-    y::AbstractVector{P},
-    dy::AbstractVector{P},
-) where {P<:BlasFloat}
-    _gemv_frechet_lane!(tA, α, dα, A, dA, x, dx, β, dβ, y, dy)
-    BLAS.gemv!(tA, α, A, x, β, y)
-    return nothing
+    ta = primal(tA)
+    alpha_inner = Mooncake._unlift(alpha)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    x_dx_inner = Mooncake._unlift(x_dx)
+    beta_inner = Mooncake._unlift(beta)
+    y_dy_inner = Mooncake._unlift(y_dy)
+    α, dαs = _scalar_extract_n(alpha_inner)
+    A, dAs = _mat_extract_n(A_dA_inner)
+    x, dxs = _arr_extract_n(x_dx_inner)
+    β, dβs = _scalar_extract_n(beta_inner)
+    y, dys = _arr_extract_n(y_dy_inner)
+    @inbounds for lane in 1:length(dys)
+        BLAS.gemv!(ta, dαs[lane], A, x, β, dys[lane])
+        BLAS.gemv!(ta, α, dAs[lane], x, one(P), dys[lane])
+        BLAS.gemv!(ta, α, A, dxs[lane], one(P), dys[lane])
+        if !iszero(dβs[lane])
+            @inbounds for n in eachindex(y)
+                tmp = dβs[lane] * y[n]
+                dys[lane][n] = ifelse(isnan(y[n]), dys[lane][n], tmp + dys[lane][n])
+            end
+        end
+    end
+    BLAS.gemv!(ta, α, A, x, β, y)
+    _arr_writeback_n!(y_dy_inner, y, dys)
+    return y_dy
 end
 
 @inline function rrule!!(
