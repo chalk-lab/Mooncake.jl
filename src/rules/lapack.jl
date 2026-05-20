@@ -327,78 +327,34 @@ end
     },
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getrs!),Vararg}}) = true
-# Width-1 getrs!: covers Real and Complex via slot Union; delegates to
-# `_getrs!_frule_core!` (primal first, then Frechet via lane helper).
-function frule!!(
-    ::Dual{typeof(getrs!)},
-    _trans::Dual{Char},
-    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-    _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
-)
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _getrs!_frule_core!(primal(_trans), A, dA, primal(_ipiv), B, dB)
-    _arr_writeback!(A_dA, A, dA)
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Width-N getrs!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union; primal once (B ← A_op^{-1} B), then per-lane
-# Frechet via `_getrs_frechet_lane!` (uses post-primal B).
+# Unified getrs! Lifted body: primal LU-solve first, then per-lane Frechet
+# via `_getrs_frechet_lane!` (uses post-primal B). Works at any N≥1 via
+# `_arr_extract_n` returning a 1-tuple for wrapper-exception slot or
+# canonical NDual matrix at N=1.
 @inline function frule!!(
-    ::Dual{typeof(getrs!)},
-    _trans::Dual{Char},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:BlasRealFloat,N}
-    trans = primal(_trans)
-    ipiv = primal(_ipiv)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    LAPACK.getrs!(trans, A, ipiv, B)
-    @inbounds for lane in 1:N
-        _getrs_frechet_lane!(trans, A, dAs[lane], ipiv, B, dBs[lane])
-    end
-    _arr_writeback_n!(A_dA, A, dAs)
-    _arr_writeback_n!(B_dB, B, dBs)
-    return B_dB
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(getrs!),N},
+    ::Mooncake.Lifted{typeof(getrs!),N},
     _trans::Mooncake.Lifted{Char},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
     _ipiv::Mooncake.Lifted{<:AbstractVector{Int}},
     B_dB::Mooncake.Lifted{<:AbstractVecOrMat{P}},
 ) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(_trans),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(_ipiv),
-        Mooncake._unlift(B_dB),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-@inline function _getrs!_frule_core!(
-    trans::Char,
-    A::AbstractMatrix{P},
-    dA::AbstractMatrix{P},
-    ipiv::AbstractVector{Int},
-    B::AbstractVecOrMat{P},
-    dB::AbstractVecOrMat{P},
-) where {P<:BlasFloat}
-    # Run primal computation.
+    trans = primal(_trans)
+    ipiv = primal(_ipiv)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    B_dB_inner = Mooncake._unlift(B_dB)
+    A, dAs = _arr_extract_n(A_dA_inner)
+    B, dBs = _arr_extract_n(B_dB_inner)
     LAPACK.getrs!(trans, A, ipiv, B)
-    # Per-lane Frechet uses post-primal B.
-    _getrs_frechet_lane!(trans, A, dA, ipiv, B, dB)
-    return nothing
+    @inbounds for lane in 1:length(dAs)
+        _getrs_frechet_lane!(trans, A, dAs[lane], ipiv, B, dBs[lane])
+    end
+    _arr_writeback_n!(A_dA_inner, A, dAs)
+    _arr_writeback_n!(B_dB_inner, B, dBs)
+    return B_dB
 end
-# Per-lane Frechet helper for getrs! (uses post-primal B). Shared by
-# width-1 (via `_getrs!_frule_core!`) and width-N; each caller runs the
-# primal `LAPACK.getrs!(trans, A, ipiv, B)` BEFORE invoking this helper.
+# Per-lane Frechet helper for getrs! (uses post-primal B). The Lifted body
+# above loops this once per lane after running the primal
+# `LAPACK.getrs!(trans, A, ipiv, B)`.
 # Uses the shared `_trans_op` selector defined alongside trtrs! above.
 #
 # Math: getrs! solves `op(A_orig) · X = B` given the LU factorisation
