@@ -1427,29 +1427,10 @@ end
     } where {T<:BlasFloat},
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trsv!),Vararg}}) = true
-# Width-1 path: container args narrowed to bare-`Dual{<:Abstract...}` to
-# disambiguate from the width-N rule at N=1 (NDual array inputs route to
-# width-N). `T<:BlasFloat` covers both real and complex element types.
-function frule!!(
-    ::Dual{typeof(BLAS.trsv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
-    A, dA = _arr_extract(A_dA)
-    x, dx = _arr_extract(x_dx)
-    _trsv!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, x, dx)
-    _arr_writeback!(x_dx, x, dx)
-    return x_dx
-end
-# Per-lane Frechet helper for trsv! (uses post-primal x). Shared by
-# width-1 (via `_trsv!_frule_core!`) and width-N; each caller runs the
-# primal `BLAS.trsv!(uplo, trans, diag, A, x)` BEFORE invoking this helper.
+# Unified trsv! Lifted body.
 #
 # Math: trsv! solves `op(A) x = b` (triangular A, post-primal `x` is the
-# solution). Differential: `dx = op(A)⁻¹ (db − op(dA) x)`. Body:
+# solution). Differential: `dx = op(A)⁻¹ (db − op(dA) x)`. Per lane:
 #   1. `dx ← op(A)⁻¹ dx` (= op(A)⁻¹ db)            [trsv! on dx]
 #   2. `tmp = op(dA) x`                            [trmv; for `diag='U'`,
 #                                                    trmv treats diag as 1
@@ -1457,67 +1438,33 @@ end
 #                                                    only the strict tri]
 #   3. `tmp ← op(A)⁻¹ tmp`                         [trsv! on tmp]
 #   4. `dx ← dx − tmp = op(A)⁻¹ (db − op(dA) x)`
-@inline function _trsv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
-    BLAS.trsv!(uplo, trans, diag, A, dx)
-    tmp = BLAS.trmv(uplo, trans, diag, dA, x)
-    if diag == 'U'
-        tmp .-= x
-    end
-    BLAS.trsv!(uplo, trans, diag, A, tmp)
-    dx .-= tmp
-    return nothing
-end
 @inline function frule!!(
-    ::Dual{typeof(BLAS.trsv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    x_dx::AbstractVector{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:BlasRealFloat,N}
-    A, dAs = _arr_extract_n(A_dA)
-    x, dxs = _arr_extract_n(x_dx)
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    BLAS.trsv!(uplo, trans, diag, A, x)
-    @inbounds for lane in 1:N
-        _trsv_frechet_lane!(uplo, trans, diag, A, dAs[lane], x, dxs[lane])
-    end
-    _arr_writeback_n!(x_dx, x, dxs)
-    return x_dx
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.trsv!),N},
+    ::Mooncake.Lifted{typeof(BLAS.trsv!),N},
     _uplo::Mooncake.Lifted{Char},
     _trans::Mooncake.Lifted{Char},
     _diag::Mooncake.Lifted{Char},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{T}},
     x_dx::Mooncake.Lifted{<:AbstractVector{T}},
 ) where {N,T<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(_uplo),
-        Mooncake._unlift(_trans),
-        Mooncake._unlift(_diag),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(x_dx),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-@inline function _trsv!_frule_core!(
-    uplo::Char,
-    trans::Char,
-    diag::Char,
-    A::AbstractMatrix{T},
-    dA::AbstractMatrix{T},
-    x::AbstractVector{T},
-    dx::AbstractVector{T},
-) where {T<:BlasFloat}
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    x_dx_inner = Mooncake._unlift(x_dx)
+    A, dAs = _arr_extract_n(A_dA_inner)
+    x, dxs = _arr_extract_n(x_dx_inner)
     BLAS.trsv!(uplo, trans, diag, A, x)
-    _trsv_frechet_lane!(uplo, trans, diag, A, dA, x, dx)
-    return nothing
+    @inbounds for lane in 1:length(dxs)
+        BLAS.trsv!(uplo, trans, diag, A, dxs[lane])
+        tmp = BLAS.trmv(uplo, trans, diag, dAs[lane], x)
+        if diag == 'U'
+            tmp .-= x
+        end
+        BLAS.trsv!(uplo, trans, diag, A, tmp)
+        dxs[lane] .-= tmp
+    end
+    _arr_writeback_n!(x_dx_inner, x, dxs)
+    return x_dx
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.trsv!)},
