@@ -710,51 +710,27 @@ end
     },
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(potrs!),Vararg}}) = true
-# Width-1 potrs!: covers Real and Complex via slot Union; delegates to
-# `_potrs!_frule_core!` (primal first, then Frechet via lane helper using
-# `_sym_herm_proj` for the per-eltype projection).
-function frule!!(
-    ::Dual{typeof(potrs!)},
-    _uplo::Dual{Char},
-    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-    B_dB::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
-)
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _potrs!_frule_core!(primal(_uplo), A, dA, B, dB)
-    _arr_writeback!(A_dA, A, dA)
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
+# Unified potrs! Lifted body: primal Cholesky-solve first, then per-lane
+# Frechet via `_potrs_frechet_lane!` (uses post-primal B and the
+# `_sym_herm_proj` per-eltype projection). Works at any N≥1.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(potrs!),N},
+    ::Mooncake.Lifted{typeof(potrs!),N},
     _uplo::Mooncake.Lifted{Char},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
     B_dB::Mooncake.Lifted{<:AbstractVecOrMat{P}},
 ) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(_uplo),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(B_dB),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-# Unified potrs! Frechet core: real (Symmetric projection) and complex
-# Hermitian (conjugate-symmetric projection) paths share identical structure;
-# `_sym_herm_proj` selects per element type. Reuses the projection helper
-# defined alongside `_potrf!_frule_core!` above.
-@inline function _potrs!_frule_core!(
-    uplo::Char,
-    A::AbstractMatrix{P},
-    dA::AbstractMatrix{P},
-    B::AbstractVecOrMat{P},
-    dB::AbstractVecOrMat{P},
-) where {P<:BlasFloat}
+    uplo = primal(_uplo)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    B_dB_inner = Mooncake._unlift(B_dB)
+    A, dAs = _arr_extract_n(A_dA_inner)
+    B, dBs = _arr_extract_n(B_dB_inner)
     LAPACK.potrs!(uplo, A, B)
-    _potrs_frechet_lane!(uplo, A, dA, B, dB)
-    return nothing
+    @inbounds for lane in 1:N
+        _potrs_frechet_lane!(uplo, A, dAs[lane], B, dBs[lane])
+    end
+    _arr_writeback_n!(A_dA_inner, A, dAs)
+    _arr_writeback_n!(B_dB_inner, B, dBs)
+    return B_dB
 end
 # Per-lane Frechet helper for potrs! (uses post-primal B). Shared by
 # width-1 (via `_potrs!_frule_core!`) and width-N; each caller runs the
@@ -785,25 +761,6 @@ end
     mul!(dB, _sym_herm_proj(M, uplo), B, -one(P), one(P))
     LAPACK.potrs!(uplo, A, dB)
     return nothing
-end
-# Width-N potrs!: primal once (B ← A^{-1} B), then per-lane Frechet.
-# Covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}}).
-@inline function frule!!(
-    ::Dual{typeof(potrs!)},
-    _uplo::Dual{Char},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    B_dB::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:BlasRealFloat,N}
-    uplo = primal(_uplo)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    LAPACK.potrs!(uplo, A, B)
-    @inbounds for lane in 1:N
-        _potrs_frechet_lane!(uplo, A, dAs[lane], B, dBs[lane])
-    end
-    _arr_writeback_n!(A_dA, A, dAs)
-    _arr_writeback_n!(B_dB, B, dBs)
-    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(potrs!)},
