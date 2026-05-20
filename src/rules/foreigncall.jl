@@ -240,74 +240,51 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_reshape_array},Vararg}}
 ) = true
-function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_reshape_array}},
-    ::Dual{Val{Array{P,M}}},
-    ::Dual{Tuple{Val{Any},Val{Any},Val{Any}}},
-    ::Dual, # nreq
-    ::Dual, # calling convention
-    x::Dual{Type{Array{P,M}}},
-    a::Dual{Array{P,N},Array{T,N}},
-    dims::Dual,
-) where {P,T,M,N}
+# Direct Lifted bodies per inner V shape of `a`. Wrapper-exception V
+# (`Dual{Array{P,N_a}, Array{T,N_a}}`): reshape primal and tangent
+# separately via two ccalls.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(_foreigncall_),N},
+    ::Mooncake.Lifted{Val{:jl_reshape_array}},
+    ::Mooncake.Lifted{Val{Array{P,M}}},
+    ::Mooncake.Lifted{Tuple{Val{Any},Val{Any},Val{Any}}},
+    ::Mooncake.Lifted, # nreq
+    ::Mooncake.Lifted, # calling convention
+    ::Mooncake.Lifted{Type{Array{P,M}}},
+    a::Mooncake.Lifted{<:Array{P},N,V_a},
+    dims::Mooncake.Lifted,
+) where {N,P,M,N_a,T,V_a<:Dual{<:Array{P,N_a},<:Array{T,N_a}}}
     d = primal(dims)
-    y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(a), d)
-    dy = ccall(:jl_reshape_array, Array{T,M}, (Any, Any, Any), Array{T,M}, tangent(a), d)
-    return Dual(y, dy)
+    bare_a = Mooncake._unlift(a)
+    y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(bare_a), d)
+    dy = ccall(
+        :jl_reshape_array, Array{T,M}, (Any, Any, Any), Array{T,M}, tangent(bare_a), d
+    )
+    return Mooncake.Lifted{Array{P,M},N}(y, dy)
 end
-# Canonical width-1 NDual-array overload: reshape an `Array{NDual{P,1}}`
-# directly. NDual packs primal + tangent in each element, so the standard
-# `jl_reshape_array` call produces an element-wise lifted output without
-# separate primal/tangent allocations.
-function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_reshape_array}},
-    ::Dual{Val{Array{P,M}}},
-    ::Dual{Tuple{Val{Any},Val{Any},Val{Any}}},
-    ::Dual, # nreq
-    ::Dual, # calling convention
-    ::Dual{Type{Array{P,M}}},
-    a::Array{NDual{P,1},N},
-    dims::Dual,
-) where {P<:IEEEFloat,M,N}
-    return ccall(
+# Canonical width-1 NDual-array V: reshape Array{NDual{P,1}} directly —
+# NDual elements carry primal+tangent so one ccall suffices.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(_foreigncall_),N},
+    ::Mooncake.Lifted{Val{:jl_reshape_array}},
+    ::Mooncake.Lifted{Val{Array{P,M}}},
+    ::Mooncake.Lifted{Tuple{Val{Any},Val{Any},Val{Any}}},
+    ::Mooncake.Lifted, # nreq
+    ::Mooncake.Lifted, # calling convention
+    ::Mooncake.Lifted{Type{Array{P,M}}},
+    a::Mooncake.Lifted{<:Array{P},N,V_a},
+    dims::Mooncake.Lifted,
+) where {N,P<:IEEEFloat,M,N_a,V_a<:AbstractArray{NDual{P,1},N_a}}
+    bare_a = Mooncake._unlift(a)
+    result = ccall(
         :jl_reshape_array,
         Array{NDual{P,1},M},
         (Any, Any, Any),
         Array{NDual{P,1},M},
-        a,
+        bare_a,
         primal(dims),
     )
-end
-# Lifted-typed overload: delegate to the bare body via `_unlift`. The canonical
-# V for `Lifted{<:Array{P}, N}` is either `Dual{Array{P}, Array{T}}` (struct
-# wrappers / non-IEEEFloat element) or `Array{NDual{P,1}}` (IEEEFloat element
-# at width 1); the bare frule has overloads for both shapes.
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(_foreigncall_),N},
-    a1::Mooncake.Lifted{Val{:jl_reshape_array}},
-    a2::Mooncake.Lifted{Val{Array{P,M}}},
-    a3::Mooncake.Lifted{Tuple{Val{Any},Val{Any},Val{Any}}},
-    a4::Mooncake.Lifted,
-    a5::Mooncake.Lifted,
-    a6::Mooncake.Lifted{Type{Array{P,M}}},
-    a::Mooncake.Lifted{<:Array{P}},
-    dims::Mooncake.Lifted,
-) where {N,P,M}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(a1),
-        Mooncake._unlift(a2),
-        Mooncake._unlift(a3),
-        Mooncake._unlift(a4),
-        Mooncake._unlift(a5),
-        Mooncake._unlift(a6),
-        Mooncake._unlift(a),
-        Mooncake._unlift(dims),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake.Lifted{Array{P,M},N,typeof(result)}(result)
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
