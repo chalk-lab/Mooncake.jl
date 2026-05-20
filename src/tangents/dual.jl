@@ -160,20 +160,50 @@ end
            tangent_type(P) <: MutableTangent &&
            _has_split_dual_field(P)
 end
+# Predicate per field type — true if the field's primal canonicalises to an
+# NDual-element form anywhere (top-level Array/Memory of IEEEFloat /
+# Complex{IEEEFloat}, or recursively through a nested mutable struct).
+# Trait-style dispatch + recursion so eligibility broadens beyond top-level
+# `Array{<:IEEEFloat}` to `Memory{<:IEEEFloat}` / `Memory{<:Complex{<:IEEEFloat}}`
+# (Julia 1.11+) and nested mutable structs containing such fields.
+@inline _field_canonical_ndual_eligible(::Type{T}) where {T} = false
+@inline _field_canonical_ndual_eligible(::Type{<:DenseArray{<:IEEEFloat}}) = true
+@inline _field_canonical_ndual_eligible(::Type{<:DenseArray{<:Complex{<:IEEEFloat}}}) = true
+@static if VERSION >= v"1.11-"
+    @inline _field_canonical_ndual_eligible(::Type{<:Memory{<:IEEEFloat}}) = true
+    @inline _field_canonical_ndual_eligible(::Type{<:Memory{<:Complex{<:IEEEFloat}}}) = true
+end
 @generated function _has_split_dual_field(::Type{P}) where {P}
-    for i in 1:fieldcount(P)
+    n = fieldcount(P)
+    for i in 1:n
         ft = fieldtype(P, i)
-        if ft <: Array{<:IEEEFloat} || ft <: Array{<:Complex{<:IEEEFloat}}
+        # Direct Array/Memory of IEEEFloat element.
+        if _field_canonical_ndual_eligible(ft)
             return :(true)
+        end
+        # Nested mutable struct with its own canonical-NDual field.
+        if isconcretetype(ft) && ismutabletype(ft) && fieldcount(ft) > 0
+            try
+                _has_split_dual_field(ft) && return :(true)
+            catch
+                # Recursive generator expansion can fail mid-precompile;
+                # be defensive — treat as "not eligible" rather than throw.
+            end
         end
     end
     return :(false)
 end
+# `_dual_type_split_dual` defers the per-field `dual_type` calls to the
+# returned expression's runtime so any extension-defined `dual_type`
+# overloads loaded after this generator first expands are still honored
+# (per AGENTS.md world-age guidance).
 @generated function _dual_type_split_dual(::Val{N}, ::Type{P}) where {N,P}
     names = fieldnames(P)
-    elems = Type[dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P)]
-    InnerTup = Tuple{elems...}
-    return :(SplitDual{NamedTuple{$names,$InnerTup}})
+    n = fieldcount(P)
+    field_dual_type_exprs = [:(dual_type(Val($N), $(fieldtype(P, i)))) for i in 1:n]
+    return quote
+        SplitDual{NamedTuple{$names,Tuple{$(field_dual_type_exprs...)}}}
+    end
 end
 
 # Generated helpers — unroll `fieldtype(P, i)` iteration at expansion time
@@ -1091,25 +1121,59 @@ tangent(d::Lifted) = tangent(d.value)
 @generated function primal(d::Lifted{P,N,V}) where {P,N,V<:SplitDual}
     nt_type = V.parameters[1]
     names = nt_type.parameters[1]
-    field_exprs = map(names) do f
-        :(_field_primal(getfield(d.value.canonical, $(QuoteNode(f)))))
+    field_exprs = map(enumerate(names)) do (i, f)
+        :(_field_primal_for_type(
+            fieldtype(P, $i), getfield(d.value.canonical, $(QuoteNode(f)))
+        ))
     end
     return :(P($(field_exprs...)))
+end
+# Type-guided field-primal extraction. For non-SplitDual values, the
+# generic `_field_primal` (`x` itself for non-Dual, `primal(x)` for Dual)
+# applies. For nested SplitDual (mutable struct field of a mutable
+# struct), the target field type guides reconstruction.
+@inline _field_primal_for_type(::Type{T}, val) where {T} = _field_primal(val)
+@inline _field_primal_for_type(::Type{T}, val::SplitDual) where {T} = _construct_from_split_dual(
+    T, val
+)
+@generated function _construct_from_split_dual(
+    ::Type{T}, sd::SplitDual{V}
+) where {T,V<:NamedTuple}
+    names = V.parameters[1]
+    field_exprs = map(enumerate(names)) do (i, f)
+        :(_field_primal_for_type(fieldtype(T, $i), getfield(sd.canonical, $(QuoteNode(f)))))
+    end
+    return :(T($(field_exprs...)))
 end
 @generated function tangent(d::Lifted{P,N,V}) where {P,N,V<:SplitDual}
     lane_exprs = [:(tangent(d, $lane)) for lane in 1:N]
     return :(NTangent(($(lane_exprs...),)))
 end
 @generated function tangent(d::Lifted{P,N,V}, i::Integer) where {P,N,V<:SplitDual}
-    nt_type = V.parameters[1]
-    names = nt_type.parameters[1]
-    tt = tangent_type(P)
-    @assert tt <: MutableTangent
-    nt_inner_type = tt.parameters[1]
-    field_exprs = map(names) do f
-        :($(f) = tangent(getfield(d.value.canonical, $(QuoteNode(f))), i))
+    return :(_build_mutable_tangent(P, d.value, i))
+end
+# Type-guided field-tangent extraction. For non-SplitDual values, fall
+# back to the standard `tangent(_, i)` dispatch. For nested SplitDual
+# (mutable struct field of a mutable struct), build the matching inner
+# `MutableTangent` recursively.
+@inline _field_tangent_for_type(::Type{T}, val, i) where {T} = tangent(val, i)
+@inline _field_tangent_for_type(::Type{T}, val::SplitDual, i) where {T} = _build_mutable_tangent(
+    T, val, i
+)
+@generated function _build_mutable_tangent(
+    ::Type{T}, sd::SplitDual{V}, i
+) where {T,V<:NamedTuple}
+    names = V.parameters[1]
+    tt = tangent_type(T)
+    nt_inner = tt.parameters[1]
+    field_exprs = map(enumerate(names)) do (idx, f)
+        :(
+            $(f) = _field_tangent_for_type(
+                fieldtype(T, $idx), getfield(sd.canonical, $(QuoteNode(f))), i
+            )
+        )
     end
-    return :(MutableTangent{$nt_inner_type}((; $(field_exprs...))))
+    return :(MutableTangent{$nt_inner}((; $(field_exprs...))))
 end
 # Type-singleton primal: a `Lifted{Type{P}, N, V}` slot stores the substituted
 # `Type{P_lifted}` inside `V` (e.g. `Type{Array{Float64,D}}` → V-primal
