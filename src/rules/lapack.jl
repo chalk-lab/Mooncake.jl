@@ -200,89 +200,42 @@ end
     },
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(trtrs!),Vararg}}) = true
-# Width-1 trtrs!: covers Real and Complex via slot Union; delegates to
-# `_trtrs!_frule_core!` (Frechet via `_trtrs_frechet_lane!` then primal).
-function frule!!(
-    ::Dual{typeof(trtrs!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-    B_dB::Union{_VecOrMatLikeWidth1,_VecOrMatLikeWidth1Complex},
-)
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _trtrs!_frule_core!(primal(_uplo), primal(_trans), primal(_diag), A, dA, B, dB)
-    _arr_writeback!(A_dA, A, dA)
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Width-N trtrs!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union; per-lane `_trtrs_frechet_lane!` then primal once.
+# Unified trtrs! Lifted body: covers wrapper-exception (Dual-slot) and
+# canonical NDual matrices, width 1 and width N≥2, real and complex.
+# `_arr_extract_n` returns a 1-tuple for the wrapper-exception case so
+# the per-lane loop runs once; `_arr_writeback_n!` is a no-op for the
+# wrapper-exception arrayify view (mutations propagate through the view).
 @inline function frule!!(
-    ::Dual{typeof(trtrs!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    B_dB::AbstractVecOrMat{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:BlasRealFloat,N}
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    @inbounds for lane in 1:N
-        _trtrs_frechet_lane!(uplo, trans, diag, A, dAs[lane], B, dBs[lane])
-    end
-    LAPACK.trtrs!(uplo, trans, diag, A, B)
-    _arr_writeback_n!(A_dA, A, dAs)
-    _arr_writeback_n!(B_dB, B, dBs)
-    return B_dB
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(trtrs!),N},
+    ::Mooncake.Lifted{typeof(trtrs!),N},
     _uplo::Mooncake.Lifted{Char},
     _trans::Mooncake.Lifted{Char},
     _diag::Mooncake.Lifted{Char},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
     B_dB::Mooncake.Lifted{<:AbstractVecOrMat{P}},
 ) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(_uplo),
-        Mooncake._unlift(_trans),
-        Mooncake._unlift(_diag),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(B_dB),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-@inline function _trtrs!_frule_core!(
-    uplo::Char,
-    trans::Char,
-    diag::Char,
-    A::AbstractMatrix{P},
-    dA::AbstractMatrix{P},
-    B::AbstractVecOrMat{P},
-    dB::AbstractVecOrMat{P},
-) where {P<:BlasFloat}
-    # Compute Frechet derivative.
-    _trtrs_frechet_lane!(uplo, trans, diag, A, dA, B, dB)
-
-    # Run primal computation.
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    B_dB_inner = Mooncake._unlift(B_dB)
+    A, dAs = _arr_extract_n(A_dA_inner)
+    B, dBs = _arr_extract_n(B_dB_inner)
+    @inbounds for lane in 1:length(dAs)
+        _trtrs_frechet_lane!(uplo, trans, diag, A, dAs[lane], B, dBs[lane])
+    end
     LAPACK.trtrs!(uplo, trans, diag, A, B)
-    return nothing
+    _arr_writeback_n!(A_dA_inner, A, dAs)
+    _arr_writeback_n!(B_dB_inner, B, dBs)
+    return B_dB
 end
 # Per-`trans` op selector: 'N' → identity, 'T' → transpose (no conjugate),
 # 'C' → adjoint (conjugate-transpose). For Complex matrices `'T'` and `'C'`
 # differ; for real, transpose ≡ adjoint. Shared by `_trtrs_frechet_lane!`
 # (below) and `_getrs_frechet_lane!` (further down).
 @inline _trans_op(trans::Char, a) = trans == 'N' ? a : (trans == 'T' ? transpose(a) : a')
-# Per-lane Frechet helper for trtrs! (uses pre-primal B). Shared by
-# width-1 (via `_trtrs!_frule_core!`) and width-N; each caller runs the
-# primal `LAPACK.trtrs!(uplo, trans, diag, A, B)` AFTER invoking this helper.
+# Per-lane Frechet helper for trtrs! (uses pre-primal B). The Lifted body
+# loops this once per lane then runs the primal `LAPACK.trtrs!(uplo, trans,
+# diag, A, B)` after all lanes' Frechet steps are done.
 #
 # Math: trtrs! solves `op(A) X = B` (triangular A, op ∈ {N,T,C}), with B
 # overwritten by X. Differential: `op(dA) X + op(A) dX = dB`, so
