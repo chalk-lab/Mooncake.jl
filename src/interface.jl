@@ -2704,8 +2704,14 @@ end
     H_blocks = buf.H_blocks
     grads = buf.grads
     v = buf.vs
-    # Buffer sizes are fixed at cache build time; reject mismatched inputs before
-    # indexing `v[k]`/`H_blocks`, otherwise the sweep below raises a raw `BoundsError`.
+    # Buffer arity/sizes are fixed at cache build time; reject mismatched inputs
+    # before indexing `v[k]`/`H_blocks`, otherwise the sweep below raises a raw
+    # `BoundsError`.
+    nargs == length(v) || throw(
+        ArgumentError(
+            "cache was prepared for $(length(v)) arguments but called with $nargs; rebuild via `prepare_hessian_cache`",
+        ),
+    )
     for k in 1:nargs
         ns[k] == length(v[k]) || throw(
             ArgumentError(

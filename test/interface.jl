@@ -1631,6 +1631,14 @@ end
                 @test Hyx1 === Hyx2 && Hyy1 === Hyy2
             end
 
+            @testset "reject mismatched cache arity" begin
+                f(x, y) = sum(x .^ 2) + sum(y .^ 2)
+                cache = prepare_hessian_cache(f, [1.0], [2.0])
+                @test_throws r"cache was prepared for 2 arguments but called with 3" value_gradient_and_hessian!!(
+                    cache, f, [1.0], [2.0], [3.0]
+                )
+            end
+
             @testset "empty-cache reused at non-empty input" begin
                 f(x) = sum(x .^ 2)
                 cache = prepare_hessian_cache(f, Float64[])
