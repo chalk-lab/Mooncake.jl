@@ -97,17 +97,19 @@ Width-aware forward value type query.
     end
 
     # Concrete Tuple: element-wise lifting — each field type is individually lifted.
+    # Delegate to a `@generated` helper so the per-field `dual_type` calls unroll
+    # at expansion time and Julia can statically infer the result; the inline
+    # generator form `(... for i in 1:fieldcount(P))` iterates `fieldtype(P, i)`
+    # at runtime, leaving each `dual_type(Val(N), ::Type)` call as a runtime
+    # dispatch (JET runtime-dispatch failures in `rules/lapack`).
     if isconcretetype(P) && P <: Tuple
-        return Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
+        return _dual_type_tuple_inner(Val(N), P)
     end
 
-    # Concrete NamedTuple: element-wise lifting symmetric to Tuple. The inner
-    # tuple of field types lifts via the Tuple branch; the outer NamedTuple
-    # preserves field names.
+    # Concrete NamedTuple: element-wise lifting symmetric to Tuple. Same
+    # generated-helper unrolling as the Tuple branch for the same reason.
     if isconcretetype(P) && P <: NamedTuple
-        names = fieldnames(P)
-        InnerTup = Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
-        return NamedTuple{names,InnerTup}
+        return _dual_type_named_tuple_inner(Val(N), P)
     end
 
     # Concrete IMMUTABLE struct with `tangent_type(P) <: Tangent`, all fields
@@ -137,12 +139,31 @@ Width-aware forward value type query.
     # in `nfwd/NfwdMooncake.jl`) are more specific and dispatch first, so
     # this branch only fires for immutable structs without an explicit lift.
     if N >= 1 && _uses_structural_dual_type(P)
-        names = fieldnames(P)
-        InnerTup = Tuple{(dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P))...}
-        return NamedTuple{names,InnerTup}
+        return _dual_type_structural_struct(Val(N), P)
     end
 
     return isconcretetype(P) ? Dual{P,tangent_type(Val(N), P)} : Dual
+end
+
+# Generated helpers — unroll `fieldtype(P, i)` iteration at expansion time
+# so each per-field `dual_type` call is statically resolvable.
+@generated function _dual_type_tuple_inner(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+    elems = Type[dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P)]
+    return :(Tuple{$(elems...)})
+end
+@generated function _dual_type_named_tuple_inner(
+    ::Val{N}, ::Type{P}
+) where {N,P<:NamedTuple}
+    names = fieldnames(P)
+    elems = Type[dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P)]
+    InnerTup = Tuple{elems...}
+    return :(NamedTuple{$names,$InnerTup})
+end
+@generated function _dual_type_structural_struct(::Val{N}, ::Type{P}) where {N,P}
+    names = fieldnames(P)
+    elems = Type[dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P)]
+    InnerTup = Tuple{elems...}
+    return :(NamedTuple{$names,$InnerTup})
 end
 
 @inline function _uses_structural_dual_type(::Type{P}) where {P}
