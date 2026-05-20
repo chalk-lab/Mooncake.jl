@@ -2370,7 +2370,8 @@ end
     prepare_hessian_cache(f, x...; config=Mooncake.Config())
 
 Return a cache for computing `f(x...)`, gradients `∇f`, and the Hessian (or Hessian
-blocks) of `f` via [`value_gradient_and_hessian!!`](@ref). Returns an [`HVPCache`](@ref).
+blocks) of `f` via [`value_gradient_and_hessian!!`](@ref). Returns an [`HVPCache`](@ref),
+which is also accepted by [`value_and_hvp!!`](@ref).
 
 The `x...` inputs must be `AbstractVector`s of a single IEEE-float element type;
 validation is eager and raises `ArgumentError` here rather than at evaluation time.
@@ -2418,13 +2419,13 @@ end
 function _validate_hessian_argument(x, i::Int)
     x isa AbstractVector || throw(
         ArgumentError(
-            "value_gradient_and_hessian!! only supports AbstractVector inputs; argument $i has type $(typeof(x))",
+            "Hessian computation only supports AbstractVector inputs; argument $i has type $(typeof(x))",
         ),
     )
     T = eltype(x)
     T <: IEEEFloat || throw(
         ArgumentError(
-            "value_gradient_and_hessian!! only supports AbstractVector inputs with IEEEFloat element types; argument $i has eltype $T",
+            "Hessian computation only supports AbstractVector inputs with IEEEFloat element types; argument $i has eltype $T",
         ),
     )
     return T
@@ -2436,7 +2437,7 @@ function _validate_hessian_arguments(x::Vararg{Any,N}) where {N}
         Ti = _validate_hessian_argument(x[i], i)
         Ti == T || throw(
             ArgumentError(
-                "value_gradient_and_hessian!! requires all arguments to share the same IEEEFloat element type; argument 1 has eltype $T but argument $i has eltype $Ti",
+                "Hessian computation requires all arguments to share the same IEEEFloat element type; argument 1 has eltype $T but argument $i has eltype $Ti",
             ),
         )
     end
