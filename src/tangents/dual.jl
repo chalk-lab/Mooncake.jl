@@ -410,6 +410,9 @@ randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
             return _structural_zero_dual_struct(w, x)
         tangent_type(P) === NoTangent && return Dual(x, NoTangent())
         DT = dual_type(w, P)
+        if DT isa DataType && DT <: SplitDual
+            return DT(x, zero_tangent(x))
+        end
         if DT isa DataType && DT <: Dual
             T = DT.parameters[2]
             if T <: NTangent
@@ -508,6 +511,9 @@ end
         end
         tangent_type(P) === NoTangent && return Dual(x, NoTangent())
         DT = dual_type(w, P)
+        if DT isa DataType && DT <: SplitDual
+            return DT(x, uninit_tangent(x))
+        end
         if DT isa DataType && DT <: Dual
             T = DT.parameters[2]
             if T <: NTangent
@@ -538,6 +544,9 @@ end
         end
         tangent_type(P) === NoTangent && return Dual(x, NoTangent())
         DT = dual_type(w, P)
+        if DT isa DataType && DT <: SplitDual
+            return DT(x, randn_tangent(rng, x))
+        end
         if DT isa DataType && DT <: Dual
             T = DT.parameters[2]
             if T <: NTangent
