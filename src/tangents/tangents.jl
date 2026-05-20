@@ -2089,6 +2089,10 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         TestResources.StructNoFwds(5.0),
         TestResources.StructNoRvs([5.0]),
         TestResources.TypeStableMutableStruct{Float64}(5.0, 3.0),
+        # SplitDual-eligible: mutable struct with a `Vector{Float64}` field
+        # lifts to `SplitDual{NT}` per the recursive-coherence invariant,
+        # exercising the canonical structural mutable shape.
+        TestResources.TypeStableMutableStruct{Vector{Float64}}(5.0, [1.0, 2.0]),
         LowerTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UpperTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UnitLowerTriangular{Float64,Matrix{Float64}}(randn(2, 2)),

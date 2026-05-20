@@ -176,8 +176,10 @@ end
         if _field_canonical_ndual_eligible(ft)
             return :(true)
         end
-        # Nested mutable struct with its own canonical-NDual field.
-        if isconcretetype(ft) && ismutabletype(ft) && fieldcount(ft) > 0
+        # Nested struct (mutable or immutable) with its own canonical-NDual
+        # field; recurse so SplitDual covers structs whose differentiable
+        # leaves live inside immutable wrappers.
+        if isconcretetype(ft) && fieldcount(ft) > 0 && ft !== P
             try
                 _has_split_dual_field(ft) && return :(true)
             catch
@@ -201,25 +203,32 @@ end
     end
 end
 
-# Generated helpers — unroll `fieldtype(P, i)` iteration at expansion time
-# so each per-field `dual_type` call is statically resolvable.
+# Generated helpers — emit per-field `dual_type` calls in the returned
+# expression so they evaluate at runtime. Calling `dual_type` directly
+# from the generator body would freeze the field-wise types at the
+# first expansion's world age, which excludes any extension-loaded
+# `dual_type` overloads added later (per AGENTS.md world-age guidance).
 @generated function _dual_type_tuple_inner(::Val{N}, ::Type{P}) where {N,P<:Tuple}
-    elems = Type[dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P)]
-    return :(Tuple{$(elems...)})
+    field_dual_type_exprs = [
+        :(dual_type(Val($N), $(fieldtype(P, i)))) for i in 1:fieldcount(P)
+    ]
+    return :(Tuple{$(field_dual_type_exprs...)})
 end
 @generated function _dual_type_named_tuple_inner(
     ::Val{N}, ::Type{P}
 ) where {N,P<:NamedTuple}
     names = fieldnames(P)
-    elems = Type[dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P)]
-    InnerTup = Tuple{elems...}
-    return :(NamedTuple{$names,$InnerTup})
+    field_dual_type_exprs = [
+        :(dual_type(Val($N), $(fieldtype(P, i)))) for i in 1:fieldcount(P)
+    ]
+    return :(NamedTuple{$names,Tuple{$(field_dual_type_exprs...)}})
 end
 @generated function _dual_type_structural_struct(::Val{N}, ::Type{P}) where {N,P}
     names = fieldnames(P)
-    elems = Type[dual_type(Val(N), fieldtype(P, i)) for i in 1:fieldcount(P)]
-    InnerTup = Tuple{elems...}
-    return :(NamedTuple{$names,$InnerTup})
+    field_dual_type_exprs = [
+        :(dual_type(Val($N), $(fieldtype(P, i)))) for i in 1:fieldcount(P)
+    ]
+    return :(NamedTuple{$names,Tuple{$(field_dual_type_exprs...)}})
 end
 
 @inline function _uses_structural_dual_type(::Type{P}) where {P}
@@ -1128,11 +1137,13 @@ tangent(d::Lifted) = tangent(d.value)
     end
     return :(P($(field_exprs...)))
 end
-# Type-guided field-primal extraction. For non-SplitDual values, the
-# generic `_field_primal` (`x` itself for non-Dual, `primal(x)` for Dual)
-# applies. For nested SplitDual (mutable struct field of a mutable
-# struct), the target field type guides reconstruction.
-@inline _field_primal_for_type(::Type{T}, val) where {T} = _field_primal(val)
+# Type-guided field-primal extraction. Delegate to `_new_field_primal`
+# (defined in `rules/new.jl`) which handles the canonical structural
+# inner-V shapes — bare NDual / Complex{NDual} / Array{NDual} leaves,
+# Tuple/NamedTuple structural inner Vs, and nested immutable struct
+# fields. SplitDual fields (nested mutable struct primals) require
+# extra reconstruction below.
+@inline _field_primal_for_type(::Type{T}, val) where {T} = _new_field_primal(T, val)
 @inline _field_primal_for_type(::Type{T}, val::SplitDual) where {T} = _construct_from_split_dual(
     T, val
 )
@@ -1152,11 +1163,13 @@ end
 @generated function tangent(d::Lifted{P,N,V}, i::Integer) where {P,N,V<:SplitDual}
     return :(_build_mutable_tangent(P, d.value, i))
 end
-# Type-guided field-tangent extraction. For non-SplitDual values, fall
-# back to the standard `tangent(_, i)` dispatch. For nested SplitDual
-# (mutable struct field of a mutable struct), build the matching inner
-# `MutableTangent` recursively.
-@inline _field_tangent_for_type(::Type{T}, val, i) where {T} = tangent(val, i)
+# Type-guided field-tangent extraction. Delegate to `_new_field_tangent`
+# (defined in `rules/new.jl`) which produces the right tangent shape for
+# the canonical structural inner Vs — `NDual`/`Complex{NDual}`/`Array{NDual}`
+# leaves return their per-lane partials; immutable struct fields are
+# rebuilt as `Tangent{...}`. SplitDual fields (nested mutable struct
+# primals) recurse via `_build_mutable_tangent` below.
+@inline _field_tangent_for_type(::Type{T}, val, i) where {T} = _new_field_tangent(T, val, i)
 @inline _field_tangent_for_type(::Type{T}, val::SplitDual, i) where {T} = _build_mutable_tangent(
     T, val, i
 )
@@ -1393,7 +1406,15 @@ Layer-3 seed factory for uninitialised slots. See [`zero_lifted`](@ref).
 """
 @inline uninit_lifted(::Val{0}, x) = x
 @inline uninit_lifted(::Val{0}, x::Type) = x
-@inline uninit_lifted(w::Val{N}, x) where {N} = Lifted{typeof(x),N}(uninit_dual(w, x))
+@inline function uninit_lifted(w::Val{N}, x) where {N}
+    zd = uninit_dual(w, x)
+    InnerT = dual_type(w, typeof(x))
+    return if typeof(zd) === InnerT
+        Lifted{typeof(x),N,InnerT}(zd)
+    else
+        Lifted{typeof(x),N}(primal(zd), tangent(zd))
+    end
+end
 @inline function uninit_lifted(w::Val{N}, x::Type{P}) where {N,P}
     P_slot = @isdefined(P) ? Type{P} : typeof(x)
     return Lifted{P_slot,N}(uninit_dual(w, x))
@@ -1406,9 +1427,15 @@ Layer-3 seed factory with random partials. See [`zero_lifted`](@ref).
 """
 @inline randn_lifted(::Val{0}, ::AbstractRNG, x) = x
 @inline randn_lifted(::Val{0}, ::AbstractRNG, x::Type) = x
-@inline randn_lifted(w::Val{N}, rng::AbstractRNG, x) where {N} = Lifted{typeof(x),N}(
-    randn_dual(w, rng, x)
-)
+@inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x) where {N}
+    zd = randn_dual(w, rng, x)
+    InnerT = dual_type(w, typeof(x))
+    return if typeof(zd) === InnerT
+        Lifted{typeof(x),N,InnerT}(zd)
+    else
+        Lifted{typeof(x),N}(primal(zd), tangent(zd))
+    end
+end
 @inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::Type{P}) where {N,P}
     P_slot = @isdefined(P) ? Type{P} : typeof(x)
     return Lifted{P_slot,N}(randn_dual(w, rng, x))
