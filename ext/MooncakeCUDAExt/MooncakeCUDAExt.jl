@@ -692,6 +692,15 @@ end
 # Most field tangents are `NoTangent`; the forward data field path below
 # constructs the canonical opaque zero tangent for the resulting DataRef.
 @inline _cu_lgetfield_data_tangent(::NoTangent, name) = NoTangent()
+# Forward-mode lifted slot V is `NTangent{Tuple{CuArray}}` (width-1) /
+# `NTangent{NTuple{N, CuArray}}` (width-N). Unwrap the singleton lane and
+# delegate; for width-N callers, recursively apply per-lane.
+@inline _cu_lgetfield_data_tangent(dx::Mooncake.NTangent{Tuple{<:CuArray}}, name) = _cu_lgetfield_data_tangent(
+    dx.lanes[1], name
+)
+@inline _cu_lgetfield_data_tangent(dx::Mooncake.NTangent{<:NTuple{N,<:CuArray}}, name) where {N} = Mooncake.NTangent(
+    ntuple(i -> _cu_lgetfield_data_tangent(dx.lanes[i], name), Val(N))
+)
 @inline _cu_lgetfield_data_fdata(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoFData()
 
