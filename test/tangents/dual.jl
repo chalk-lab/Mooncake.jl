@@ -192,6 +192,19 @@ end
         inner_lifted = Lifted{Float64,1}(3.0, 1.0)
         nested = Lifted{Float64,1,typeof(inner_lifted)}(inner_lifted)
         @test !Mooncake.verify_lifted_type(nested)
+
+        # SplitDual canonical V — mutable struct with Array-of-IEEEFloat
+        # field. Width 1 and width 2 must both pass; mirrors the audit's
+        # Finding 1 expectation that `verify_lifted_type` accepts
+        # SplitDual-shaped slots.
+        sd_w1 = Mooncake.zero_lifted(
+            Val(1), TestResources.FullyInitMutableStruct(5.0, [1.0, 2.0])
+        )
+        sd_w2 = Mooncake.zero_lifted(
+            Val(2), TestResources.FullyInitMutableStruct(5.0, [1.0, 2.0])
+        )
+        @test Mooncake.verify_lifted_type(sd_w1)
+        @test Mooncake.verify_lifted_type(sd_w2)
     end
 
     @testset "typeassert keeps runtime Lifted concrete" begin
@@ -251,6 +264,44 @@ end
                 ),
             )
             @test Mooncake.verify_dual_type(Core.memoryrefnew(cm))
+        end
+    end
+
+    @testset "SplitDual recursive coherence" begin
+        # Mirrors the audit (temp/audit-2026-05-20.md) Finding 2 expectation:
+        # SplitDual eligibility recurses through accessible field types so
+        # mutable structs with nested immutable-struct, Memory, or Array
+        # fields all reach a canonical NDual-element form rather than
+        # falling back to `Dual{P, NTangent{Tuple{MutableTangent}}}`.
+
+        # Direct `Array{<:IEEEFloat}` field (baseline case).
+        mutable struct AuditMutDirect
+            v::Vector{Float64}
+            z::Float64
+        end
+        @test Mooncake.dual_type(Val(2), AuditMutDirect) <: Mooncake.SplitDual
+
+        # Nested immutable struct with Array field — the structural inner V
+        # must include `Vector{NDual{Float64,2}}` somewhere.
+        struct AuditHolder
+            v::Vector{Float64}
+        end
+        mutable struct AuditMutNested
+            h::AuditHolder
+        end
+        V_nested = Mooncake.dual_type(Val(2), AuditMutNested)
+        @test V_nested <: Mooncake.SplitDual
+        @test V_nested ===
+            Mooncake.SplitDual{@NamedTuple{h::@NamedTuple{v::Vector{NDual{Float64,2}}}}}
+
+        @static if VERSION >= v"1.11-"
+            # `Memory{Float64}` field — canonical inner V is `Memory{NDual{T,N}}`.
+            @eval mutable struct AuditMutMemory
+                m::Memory{Float64}
+            end
+            V_mem = @eval Mooncake.dual_type(Val(2), AuditMutMemory)
+            @test V_mem <: Mooncake.SplitDual
+            @test V_mem === Mooncake.SplitDual{@NamedTuple{m::Memory{NDual{Float64,2}}}}
         end
     end
 
