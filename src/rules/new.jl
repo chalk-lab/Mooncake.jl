@@ -387,6 +387,11 @@ end
                 F = tangent_field_types(P)[n]
                 if n <= $N
                     data = __get_data(P, x, t, n)
+                    # Coerce structural-lift NamedTuple into the expected
+                    # `Tangent{NamedTuple{...}}` wrapper. Reachable when
+                    # forward-over-reverse passes a structurally-lifted
+                    # CoDual / DerivedRule through `_memoryrefset_tuple_tangent`.
+                    data = _coerce_field_tangent(F, data)
                     F <: PossiblyUninitTangent ? F(data) : data
                 else
                     F()
@@ -396,6 +401,18 @@ end
         T_out = tangent_type(P)
         return T_out(NamedTuple{$names}(processed_tangent))
     end
+end
+
+# Recursively coerce a bare value into the expected tangent field type.
+# Identity for the matching type; wraps a `NamedTuple` into a `Tangent{...}`
+# (or `PossiblyUninitTangent{Tangent{...}}`) when the field type calls for
+# one. Other cases pass through.
+@inline _coerce_field_tangent(::Type, x) = x
+@inline _coerce_field_tangent(::Type{F}, x::NamedTuple) where {F<:Tangent} = F(x)
+@inline function _coerce_field_tangent(
+    ::Type{PossiblyUninitTangent{F}}, x::NamedTuple
+) where {F<:Tangent}
+    return F(x)
 end
 
 @inline function build_fdata(::Type{P}, x::Tuple, fdata::Tuple) where {P}

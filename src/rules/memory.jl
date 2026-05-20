@@ -928,7 +928,34 @@ end
 @inline _memoryrefset_tuple_primal(::Type, x) = primal(x)
 @inline function _memoryrefset_tuple_primal(::Type{P}, x::NamedTuple) where {P}
     _memoryrefset_check_namedtuple_shape(P, x)
-    return _new_(P, _ndual_primal(x)...)
+    # `_ndual_primal(x)` returns a NamedTuple of field primals, preserving
+    # structural-lift NamedTuples inside (e.g. for a `CoDual`-typed field,
+    # the primal is `NamedTuple{(x,dx), ...}`, not a `CoDual`). Recursively
+    # coerce each NamedTuple back to its destination struct via `_new_`.
+    field_primals = _ndual_primal(x)
+    coerced = ntuple(
+        i -> _coerce_named_tuple_to_struct(fieldtype(P, i), field_primals[i]),
+        Val(fieldcount(P)),
+    )
+    return _new_(P, coerced...)
+end
+# Recursively coerce a structural-lift `NamedTuple` value back to its
+# destination struct type. Identity for matching-type values; recurses
+# into each field to handle nested structural lifts.
+@inline _coerce_named_tuple_to_struct(::Type, x) = x
+@inline function _coerce_named_tuple_to_struct(
+    ::Type{F}, nt::NamedTuple{names}
+) where {F,names}
+    if !(F <: NamedTuple) &&
+        isconcretetype(F) &&
+        fieldcount(F) == length(names) &&
+        fieldnames(F) === names
+        inner = ntuple(
+            i -> _coerce_named_tuple_to_struct(fieldtype(F, i), nt[i]), Val(fieldcount(F))
+        )
+        return _new_(F, inner...)
+    end
+    return nt
 end
 @inline _memoryrefset_tuple_tangent(::Type, x) = tangent(x)
 @inline function _memoryrefset_tuple_tangent(::Type{P}, x::NamedTuple) where {P}
