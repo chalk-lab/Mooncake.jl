@@ -203,10 +203,11 @@ end
 # `TypeError` at the `_new_` site. These specialisations short-circuit to the
 # legacy parallel form for any `Adjoint{T, <:CuArray}` / `Transpose{T, <:CuArray}`.
 #
-# Explicit `Union{}` short-circuits disambiguate with the generic
-# `dual_type(::Val{N}, ::Type{P})` Union{} branch in `src/tangents/dual.jl`
-# (Julia's ambiguity check considers `Union{}` a subtype of every type).
-Mooncake.dual_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
+# Base Mooncake provides `dual_type(::Val{N}, ::Type{Union{}}) = Union{}`
+# (parametric Val) which suffices for ambiguity disambiguation against the
+# Adjoint/Transpose overloads below — `Union{}` is a subtype of every type
+# so `dual_type(Val(N), Union{})` matches both the base method and these
+# wrapper overloads; the base method wins via narrower P.
 function Mooncake.dual_type(
     ::Val{N}, ::Type{P}
 ) where {N,T<:CuFloatOrComplex,P<:Adjoint{T,<:CuMaybeComplexArray}}

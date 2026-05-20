@@ -53,8 +53,8 @@ primal type `P` at width `N`.
 # tangent and dual queries so they win against the IEEEFloat / Complex / etc.
 # overloads (which would otherwise produce nonsensical
 # `NDual{Union{}, N}` etc.).
-tangent_type(::Val, ::Type{Union{}}) = Union{}
-dual_type(::Val, ::Type{Union{}}) = Union{}
+tangent_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
+dual_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
 tangent_type(::Val{0}, ::Type{P}) where {P} = NoTangent
 function tangent_type(::Val{N}, ::Type{P}) where {N,P}
     T = tangent_type(P)
