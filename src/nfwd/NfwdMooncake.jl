@@ -961,6 +961,13 @@ end
 # canonical V (Array, SubArray, …) is computed recursively, mirroring
 # the Transpose broadening. Seed factories route through the generic
 # `Adjoint{NDual{T,N}, V_parent}(primal, tangent::Tangent)` ctor below.
+#
+# Note: the broadening from `<:Array{T}` to `<:AbstractArray{T}` keeps
+# parity with the Transpose template but is not strictly necessary — the
+# structural NamedTuple lift already produced a recursively coherent V
+# for non-Array parents. Tighten back to `<:Array{T}` if the wrapper-
+# shaped form turns out to cause issues; rule code that relies on
+# matching `Adjoint{<:NDual}` patterns is the only known beneficiary.
 function dual_type(
     ::Val{N}, ::Type{LinearAlgebra.Adjoint{T,P}}
 ) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
