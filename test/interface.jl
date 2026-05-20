@@ -1632,10 +1632,22 @@ end
             end
 
             @testset "reject mismatched cache arity" begin
-                f(x, y) = sum(x .^ 2) + sum(y .^ 2)
-                cache = prepare_hessian_cache(f, [1.0], [2.0])
+                f(x) = sum(abs2, x)
+                f(x, y) = sum(abs2, x) + sum(abs2, y)
+                # 2-arg cache, 3-arg call.
+                cache2 = prepare_hessian_cache(f, [1.0], [2.0])
                 @test_throws r"cache was prepared for 2 arguments but called with 3" value_gradient_and_hessian!!(
-                    cache, f, [1.0], [2.0], [3.0]
+                    cache2, f, [1.0], [2.0], [3.0]
+                )
+                # 2-arg cache, 1-arg call — single-arg dispatch must report arity, not
+                # the generic "not a hessian cache" error.
+                @test_throws r"cache was prepared for 2 arguments but called with 1" value_gradient_and_hessian!!(
+                    cache2, f, [1.0]
+                )
+                # 1-arg cache, 2-arg call — multi-arg dispatch, same expectation.
+                cache1 = prepare_hessian_cache(f, [1.0, 2.0])
+                @test_throws r"cache was prepared for 1 argument but called with 2" value_gradient_and_hessian!!(
+                    cache1, f, [1.0, 2.0], [3.0]
                 )
             end
 

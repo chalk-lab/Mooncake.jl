@@ -2160,7 +2160,7 @@ struct HVPCache{Tf,Tgrad_f,Tgrad_tangent,Tfwd_cache,TOS,THB}
 end
 
 function Base.show(io::IO, cache::HVPCache)
-    return print(
+    print(
         io,
         "Mooncake.HVPCache(",
         "mode=:forward_over_reverse, ",
@@ -2254,7 +2254,7 @@ true
         function (ys...)
             val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
             # Drop the gradient w.r.t. f itself (always index 1); return only x-arg gradients.
-            return (val_and_grad[1], Base.tail(val_and_grad[2]))
+            (val_and_grad[1], Base.tail(val_and_grad[2]))
         end
     end
     fwd_cache = prepare_derivative_cache(grad_f, x...; config)
@@ -2285,6 +2285,12 @@ end
 @noinline _throw_not_hessian_cache() = throw(
     ArgumentError(
         "`cache` was not built with `prepare_hessian_cache`; rebuild via `prepare_hessian_cache(f, x...)` to use `value_gradient_and_hessian!!`",
+    ),
+)
+
+@noinline _throw_hessian_arity_mismatch(cached::Int, got::Int) = throw(
+    ArgumentError(
+        "cache was prepared for $cached argument$(cached == 1 ? "" : "s") but called with $got; rebuild via `prepare_hessian_cache`",
     ),
 )
 
@@ -2656,7 +2662,10 @@ H
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
     buf = cache.hess_buffers
-    buf isa NamedTuple{(:H, :grad, :v)} || _throw_not_hessian_cache()
+    buf === nothing && _throw_not_hessian_cache()
+    if buf isa NamedTuple{(:H_blocks, :grads, :vs)}
+        _throw_hessian_arity_mismatch(length(buf.vs), 1)
+    end
     T = _validate_hessian_argument(x1, 1)
     H = buf.H
     g = buf.grad
@@ -2696,10 +2705,13 @@ end
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
     buf = cache.hess_buffers
-    buf isa NamedTuple{(:H_blocks, :grads, :vs)} || _throw_not_hessian_cache()
+    nargs = N + 1
+    buf === nothing && _throw_not_hessian_cache()
+    if buf isa NamedTuple{(:H, :grad, :v)}
+        _throw_hessian_arity_mismatch(1, nargs)
+    end
     all_xs = (x1, xrest...)
     T = _validate_hessian_arguments(all_xs...)
-    nargs = N + 1
     ns = tuple_map(length, all_xs)
     H_blocks = buf.H_blocks
     grads = buf.grads
@@ -2707,11 +2719,7 @@ end
     # Buffer arity/sizes are fixed at cache build time; reject mismatched inputs
     # before indexing `v[k]`/`H_blocks`, otherwise the sweep below raises a raw
     # `BoundsError`.
-    nargs == length(v) || throw(
-        ArgumentError(
-            "cache was prepared for $(length(v)) arguments but called with $nargs; rebuild via `prepare_hessian_cache`",
-        ),
-    )
+    nargs == length(v) || _throw_hessian_arity_mismatch(length(v), nargs)
     for k in 1:nargs
         ns[k] == length(v[k]) || throw(
             ArgumentError(
