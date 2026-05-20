@@ -1893,81 +1893,15 @@ end
     } where {P<:BlasFloat}
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trmm!),Vararg}}) = true
-# Width-1 trmm!: covers Real and Complex via slot Union; delegates to
-# `_trmm!_frule_core!` (Frechet via `_trmm_frechet_lane!` then primal).
-function frule!!(
-    ::Dual{typeof(BLAS.trmm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _ta::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-    B_dB::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-)
-    α, dα = _scalar_extract(α_dα)
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _trmm!_frule_core!(
-        primal(_side), primal(_uplo), primal(_ta), primal(_diag), α, dα, A, dA, B, dB
-    )
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Per-lane Frechet helper for trmm! (depends on pre-primal B). Shared by
-# width-1 (via `_trmm!_frule_core!`) and width-N; each caller runs the
-# primal `BLAS.trmm!` separately after the Frechet.
+# Unified trmm! Lifted body.
 #
 # Math: trmm! computes `B ← α · op(A) · B` (or `B · op(A)` for side='R',
-# A triangular). Product-rule differential:
+# A triangular). Per-lane Frechet:
 #   dB ← α · op(A) · dB + α · op(dA) · B + dα · op(A) · B
-# Body steps:
-#   1. `dB ← α · op(A) · dB`               [trmm! on dB]
-#   2. `dB += α · op(dA) · copy(B)`        [trmm! on copy(B), accumulate]
-#   3. For `diag='U'`: trmm! treated dA's diagonal as 1, so step 2 added
-#      `α · op(strict_tri(dA) + I) · B = α · op(strict_tri(dA)) · B + α · B`;
-#      subtract `α · B` to leave the strict-triangular contribution.
-#   4. If `dα ≠ 0`: add `dα · op(A) · B`   [trmm! on another copy(B)]
-@inline function _trmm_frechet_lane!(side, uplo, ta, diag, α::P, dα, A, dA, B, dB) where {P}
-    BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
-    dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
-    if diag == 'U'
-        dB .-= α .* B
-    end
-    if !iszero(dα)
-        dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
-    end
-    return nothing
-end
-# Width-N trmm!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union on scalar/matrix args; per-lane Frechet (pre-primal
-# B) then primal once.
+# For `diag='U'`: trmm! treats dA's diagonal as 1, so the dA-trmm step
+# adds `α · B` extra; subtract `α · B` to leave the strict-tri contribution.
 @inline function frule!!(
-    ::Dual{typeof(BLAS.trmm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _ta::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Union{NDual{P,N},Complex{NDual{P,N}}},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    B_dB::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:IEEEFloat,N}
-    side = primal(_side)
-    uplo = primal(_uplo)
-    ta = primal(_ta)
-    diag = primal(_diag)
-    α, dαs = _scalar_extract_n(α_dα)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    @inbounds for lane in 1:N
-        _trmm_frechet_lane!(side, uplo, ta, diag, α, dαs[lane], A, dAs[lane], B, dBs[lane])
-    end
-    BLAS.trmm!(side, uplo, ta, diag, α, A, B)
-    _arr_writeback_n!(B_dB, B, dBs)
-    return B_dB
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.trmm!),N},
+    ::Mooncake.Lifted{typeof(BLAS.trmm!),N},
     _side::Mooncake.Lifted{Char},
     _uplo::Mooncake.Lifted{Char},
     _ta::Mooncake.Lifted{Char},
@@ -1976,34 +1910,29 @@ end
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
     B_dB::Mooncake.Lifted{<:AbstractMatrix{P}},
 ) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(_side),
-        Mooncake._unlift(_uplo),
-        Mooncake._unlift(_ta),
-        Mooncake._unlift(_diag),
-        Mooncake._unlift(α_dα),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(B_dB),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-@inline function _trmm!_frule_core!(
-    side::Char,
-    uplo::Char,
-    ta::Char,
-    diag::Char,
-    α::P,
-    dα::P,
-    A::AbstractMatrix{P},
-    dA::AbstractMatrix{P},
-    B::AbstractMatrix{P},
-    dB::AbstractMatrix{P},
-) where {P<:BlasFloat}
-    _trmm_frechet_lane!(side, uplo, ta, diag, α, dα, A, dA, B, dB)
+    side = primal(_side)
+    uplo = primal(_uplo)
+    ta = primal(_ta)
+    diag = primal(_diag)
+    α_dα_inner = Mooncake._unlift(α_dα)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    B_dB_inner = Mooncake._unlift(B_dB)
+    α, dαs = _scalar_extract_n(α_dα_inner)
+    A, dAs = _arr_extract_n(A_dA_inner)
+    B, dBs = _arr_extract_n(B_dB_inner)
+    @inbounds for lane in 1:length(dBs)
+        BLAS.trmm!(side, uplo, ta, diag, α, A, dBs[lane])
+        dBs[lane] .+= BLAS.trmm!(side, uplo, ta, diag, α, dAs[lane], copy(B))
+        if diag == 'U'
+            dBs[lane] .-= α .* B
+        end
+        if !iszero(dαs[lane])
+            dBs[lane] .+= BLAS.trmm!(side, uplo, ta, diag, dαs[lane], A, copy(B))
+        end
+    end
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
-    return nothing
+    _arr_writeback_n!(B_dB_inner, B, dBs)
+    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.trmm!)},
@@ -2078,92 +2007,21 @@ end
 )
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trsm!),Vararg}}) = true
 
-# Width-1 trsm!: covers Real and Complex via slot Union; delegates to
-# `_trsm!_frule_core!` (Frechet via `_trsm_frechet_lane!` then primal).
-function frule!!(
-    ::Dual{typeof(BLAS.trsm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Union{_ScalarLikeWidth1,_ScalarLikeWidth1Complex},
-    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-    B_dB::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-)
-    α, dα = _scalar_extract(α_dα)
-    A, dA = _arr_extract(A_dA)
-    B, dB = _arr_extract(B_dB)
-    _trsm!_frule_core!(
-        primal(_side), primal(_uplo), primal(_t), primal(_diag), α, dα, A, dA, B, dB
-    )
-    _arr_writeback!(B_dB, B, dB)
-    return B_dB
-end
-# Per-lane Frechet helper for trsm! (uses pre-primal B; each lane recopies
-# B independently for its own tangent work). Shared by width-1 (via
-# `_trsm!_frule_core!`) and width-N; each caller runs the primal
-# `BLAS.trsm!` separately after the Frechet.
+# Unified trsm! Lifted body.
 #
-# Math: trsm! solves `op(A) · X = α · B` (or B = α·X·op(A) for side='R',
-# A triangular). Differential of `X = α · op(A)⁻¹ · B`:
-#   dX = dα · op(A)⁻¹ · B + α · op(A)⁻¹ · dB − α · op(A)⁻¹ · op(dA) · op(A)⁻¹ · B
-#      = op(A)⁻¹ · (α · dB + dα · X - α · op(dA) · X)
-# where X = op(A)⁻¹ · B (the post-primal value; pre-primal B is α · op(A) · X).
-# Body steps (using pre-primal B = caller's B and post-primal X computed
-# locally as `op(A)⁻¹ · B`):
-#   1. `dB ← op(A)⁻¹ · α · dB`            [trsm! with α scalar]
+# Math: trsm! solves `op(A) · X = α · B` (or `α·X·op(A) = B` for
+# side='R'; A triangular). Differential of `X = α · op(A)⁻¹ · B`:
+#   dX = dα · op(A)⁻¹ · B + α · op(A)⁻¹ · dB
+#        − α · op(A)⁻¹ · op(dA) · op(A)⁻¹ · B
+# Per lane:
+#   1. `dB ← op(A)⁻¹ · α · dB`            [trsm! with α]
 #   2. `tmp = op(A)⁻¹ · B`                [trsm! on copy(B) with α=1]
-#   3. `dB += dα · tmp`                   [adds `dα · X`]
-#   4. `tmp = op(dA) · X` (in-place trmm!; `diag='U'` trick: `α · tmp2`
-#      subtracted because trmm! treats diag as 1)
+#   3. `dB += dα · tmp`                   [dα · X]
+#   4. `tmp = op(dA) · X` (in-place trmm; diag='U' trick subtracts `α · tmp2`)
 #   5. `tmp ← op(A)⁻¹ · op(dA) · X`       [trsm! on tmp]
-#   6. `dB -= tmp`                        [final `−α · op(A)⁻¹ · op(dA) · X` term]
-@inline function _trsm_frechet_lane!(
-    side, uplo, trans, diag, α::P, dα, A, dA, B, dB
-) where {P}
-    BLAS.trsm!(side, uplo, trans, diag, α, A, dB)
-    tmp = copy(B)
-    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
-    dB .+= dα .* tmp
-    tmp2 = copy(tmp)
-    BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp)
-    if diag == 'U'
-        tmp .-= α .* tmp2
-    end
-    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
-    dB .-= tmp
-    return nothing
-end
-# Width-N trsm!: covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}})
-# via element-type Union; per-lane `_trsm_frechet_lane!` then primal once.
+#   6. `dB -= tmp`                        [−α · op(A)⁻¹ · op(dA) · X]
 @inline function frule!!(
-    ::Dual{typeof(BLAS.trsm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Union{NDual{P,N},Complex{NDual{P,N}}},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-    B_dB::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:IEEEFloat,N}
-    side = primal(_side)
-    uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
-    α, dαs = _scalar_extract_n(α_dα)
-    A, dAs = _arr_extract_n(A_dA)
-    B, dBs = _arr_extract_n(B_dB)
-    @inbounds for lane in 1:N
-        _trsm_frechet_lane!(
-            side, uplo, trans, diag, α, dαs[lane], A, dAs[lane], B, dBs[lane]
-        )
-    end
-    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
-    _arr_writeback_n!(B_dB, B, dBs)
-    return B_dB
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(BLAS.trsm!),N},
+    ::Mooncake.Lifted{typeof(BLAS.trsm!),N},
     _side::Mooncake.Lifted{Char},
     _uplo::Mooncake.Lifted{Char},
     _t::Mooncake.Lifted{Char},
@@ -2172,34 +2030,32 @@ end
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
     B_dB::Mooncake.Lifted{<:AbstractMatrix{P}},
 ) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(_side),
-        Mooncake._unlift(_uplo),
-        Mooncake._unlift(_t),
-        Mooncake._unlift(_diag),
-        Mooncake._unlift(α_dα),
-        Mooncake._unlift(A_dA),
-        Mooncake._unlift(B_dB),
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
-end
-@inline function _trsm!_frule_core!(
-    side::Char,
-    uplo::Char,
-    trans::Char,
-    diag::Char,
-    α::P,
-    dα::P,
-    A::AbstractMatrix{P},
-    dA::AbstractMatrix{P},
-    B::AbstractMatrix{P},
-    dB::AbstractMatrix{P},
-) where {P<:BlasFloat}
-    _trsm_frechet_lane!(side, uplo, trans, diag, α, dα, A, dA, B, dB)
+    side = primal(_side)
+    uplo = primal(_uplo)
+    trans = primal(_t)
+    diag = primal(_diag)
+    α_dα_inner = Mooncake._unlift(α_dα)
+    A_dA_inner = Mooncake._unlift(A_dA)
+    B_dB_inner = Mooncake._unlift(B_dB)
+    α, dαs = _scalar_extract_n(α_dα_inner)
+    A, dAs = _arr_extract_n(A_dA_inner)
+    B, dBs = _arr_extract_n(B_dB_inner)
+    @inbounds for lane in 1:length(dBs)
+        BLAS.trsm!(side, uplo, trans, diag, α, A, dBs[lane])
+        tmp = copy(B)
+        BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
+        dBs[lane] .+= dαs[lane] .* tmp
+        tmp2 = copy(tmp)
+        BLAS.trmm!(side, uplo, trans, diag, α, dAs[lane], tmp)
+        if diag == 'U'
+            tmp .-= α .* tmp2
+        end
+        BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
+        dBs[lane] .-= tmp
+    end
     BLAS.trsm!(side, uplo, trans, diag, α, A, B)
-    return nothing
+    _arr_writeback_n!(B_dB_inner, B, dBs)
+    return B_dB
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.trsm!)},
