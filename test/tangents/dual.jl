@@ -964,7 +964,8 @@ end
 
         # LAPACK.getrf! width-2: A_dA is overwritten with LU factor + Frechet
         # tangent. The primal is the same for all lanes; the tangents differ
-        # because seeds differ.
+        # because seeds differ. Drives the canonical Lifted entry point so
+        # the bare-Dual width-N frule isn't needed.
         let A = [4.0 3.0; 6.0 3.0]
             A_primal = copy(A)
             A_n2 = reshape(
@@ -972,9 +973,14 @@ end
                 2,
                 2,
             )
-            r = Mooncake.frule!!(Mooncake.zero_dual(LAPACK.getrf!), A_n2)
-            # Returned tuple: (A_dA, ipiv_dual, info_dual).
-            @test length(r) == 3
+            r = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(2), LAPACK.getrf!),
+                Mooncake.Lifted{Matrix{Float64},2,typeof(A_n2)}(A_n2),
+            )
+            # Lifted{Tuple{Matrix,Vector{Int},Int}, 2, V} — V is a 3-tuple of
+            # inner duals; unwrap to inspect.
+            r_inner = Mooncake._unlift(r)
+            @test length(r_inner) == 3
             # The two-lane partials differ on at least one entry because the
             # input seeds differed.
             differ_count = 0

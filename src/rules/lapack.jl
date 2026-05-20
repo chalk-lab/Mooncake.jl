@@ -16,19 +16,6 @@
 # width-1 forms (`Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}`
 # and `Dual{Int, NoTangent}`) so downstream `_canonicalise_tuple_inner`
 # does not need to bridge `NoTangent → NTangent`.
-function frule!!(
-    ::Dual{typeof(LAPACK.getrf!)}, A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex}
-)
-    A, dA = _arr_extract(A_dA)
-    _, ipiv, info = LAPACK.getrf!(A)
-    _getrf_fwd_core!(A, dA, ipiv)
-    _arr_writeback!(A_dA, A, dA)
-    return (
-        A_dA,
-        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
-        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
-    )
-end
 # Wrap getrf!'s non-differentiable `ipiv::Vector{Int}` and `info::Int`
 # return values into canonical width-N inner-V form: an N-tuple
 # NTangent for `ipiv` (matching `dual_type(Val(N), Vector{Int})`) and
@@ -42,23 +29,40 @@ end
         Dual(info, Mooncake.NoTangent()),
     )
 end
+# Direct width-1 Lifted body: handles either wrapper-exception slot V
+# (`Dual{<:AbstractMatrix{P}, …}`) or canonical width-1 NDual V
+# (`AbstractMatrix{NDual{P,1}}` / `AbstractMatrix{Complex{NDual{P,1}}}`)
+# via the `_MatLikeWidth1` Union.
 @inline function frule!!(
-    ::Dual{typeof(LAPACK.getrf!)},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:BlasRealFloat,N}
-    A, dAs = _arr_extract_n(A_dA)
+    ::Mooncake.Lifted{typeof(LAPACK.getrf!),1}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
+) where {P<:BlasFloat}
+    A_dA_inner = Mooncake._unlift(A_dA)
+    A, dA = _arr_extract(A_dA_inner)
+    _, ipiv, info = LAPACK.getrf!(A)
+    _getrf_fwd_core!(A, dA, ipiv)
+    _arr_writeback!(A_dA_inner, A, dA)
+    bare_result = (
+        A_dA_inner,
+        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
+        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
+    )
+    P_out = __primal_type(_typeof(bare_result))
+    return _wrap_rule_result(P_out, Val(1), bare_result)
+end
+# Direct width-N (N≥2) Lifted body: V is canonical
+# `AbstractMatrix{<:NDual{P,N}}` or `AbstractMatrix{Complex{<:NDual{P,N}}}`.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(LAPACK.getrf!),N}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
+) where {N,P<:BlasFloat}
+    A_dA_inner = Mooncake._unlift(A_dA)
+    A, dAs = _arr_extract_n(A_dA_inner)
     _, ipiv, info = LAPACK.getrf!(A)
     @inbounds for lane in 1:N
         _getrf_fwd_core!(A, dAs[lane], ipiv)
     end
-    _arr_writeback_n!(A_dA, A, dAs)
+    _arr_writeback_n!(A_dA_inner, A, dAs)
     ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
-    return (A_dA, ipiv_dual, info_dual)
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(LAPACK.getrf!),N}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
-) where {N,P<:BlasFloat}
-    bare_result = frule!!(Mooncake._unlift(f), Mooncake._unlift(A_dA))
+    bare_result = (A_dA_inner, ipiv_dual, info_dual)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -96,84 +100,46 @@ end
         },
     },
 ) = true
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    _kwargs::Dual{<:NamedTuple},
-    ::Dual{typeof(getrf!)},
-    A_dA::_MatLikeWidth1{P},
+# Width-1 kwcall Lifted body: `kwargs.check::Bool` lifts to a bare-NamedTuple
+# inner V (`@NamedTuple{check::Dual{Bool,NoTangent}}`), accessed via
+# `primal(kwargs).check` on the Lifted slot.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Core.kwcall),1},
+    kwargs::Mooncake.Lifted{<:NamedTuple},
+    ::Mooncake.Lifted{typeof(getrf!)},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
 ) where {P<:BlasFloat}
-    check = primal(_kwargs).check
-    A, dA = _arr_extract(A_dA)
+    check = primal(kwargs).check
+    A_dA_inner = Mooncake._unlift(A_dA)
+    A, dA = _arr_extract(A_dA_inner)
     _, ipiv, info = LAPACK.getrf!(A; check)
     _getrf_fwd_core!(A, dA, ipiv)
-    _arr_writeback!(A_dA, A, dA)
-    return (
-        A_dA,
+    _arr_writeback!(A_dA_inner, A, dA)
+    bare_result = (
+        A_dA_inner,
         Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
         Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
     )
+    P_out = __primal_type(_typeof(bare_result))
+    return _wrap_rule_result(P_out, Val(1), bare_result)
 end
-# The kwargs primal `@NamedTuple{check::Bool}` lifts to the structural inner
-# V form `@NamedTuple{check::Dual{Bool, NoTangent}}` (bare NamedTuple, not
-# `Dual{<:NamedTuple}`). The IR-emit hands that bare form straight to
-# `frule!!`, so we need a variant that accepts it.
-# Returns are wrapped in canonical width-1 forms — `ipiv::Vector{Int}` becomes
-# `Dual{Vector{Int}, NTangent{Tuple{Vector{NoTangent}}}}` to match
-# `dual_type(Val(1), Vector{Int})` so downstream `_canonicalise_tuple_inner`
-# does not need to bridge `NoTangent` → `NTangent`.
-# Width-1 kwcall entry: covers Real and Complex via slot Union;
-# `_arr_extract` dispatches on input type.
+# Width-N (N≥2) kwcall Lifted body: V is canonical NDual matrix.
 @inline function frule!!(
-    f::Dual{typeof(Core.kwcall)},
-    kwargs::NamedTuple,
-    g::Dual{typeof(getrf!)},
-    A_dA::Union{_MatLikeWidth1,_MatLikeWidth1Complex},
-)
-    check = primal(kwargs.check)
-    A, dA = _arr_extract(A_dA)
-    _, ipiv, info = LAPACK.getrf!(A; check)
-    _getrf_fwd_core!(A, dA, ipiv)
-    _arr_writeback!(A_dA, A, dA)
-    return (
-        A_dA,
-        Dual(ipiv, Mooncake.NTangent((Mooncake.zero_tangent(ipiv),))),
-        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),))),
-    )
-end
-# Width-N kwcall getrf!(A; check): at chunked AD width N≥2, `_unlift(A_dA)`
-# from the Lifted overload below produces `Matrix{NDual{P, N}}` (canonical V)
-# or `Matrix{Complex{NDual{P, N}}}`. `_MatLikeWidth1{P}` excludes those
-# shapes, so the width-1 kwcall rule above doesn't match → MethodError.
-# Covers Real (NDual{P,N}) and Complex (Complex{NDual{P,N}}) via the
-# element-type Union, mirroring the no-kwarg width-N rule above.
-@inline function frule!!(
-    f::Dual{typeof(Core.kwcall)},
-    kwargs::NamedTuple,
-    g::Dual{typeof(getrf!)},
-    A_dA::AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}},
-) where {P<:BlasRealFloat,N}
-    check = primal(kwargs.check)
-    A, dAs = _arr_extract_n(A_dA)
+    ::Mooncake.Lifted{typeof(Core.kwcall),N},
+    kwargs::Mooncake.Lifted{<:NamedTuple},
+    ::Mooncake.Lifted{typeof(getrf!)},
+    A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
+) where {N,P<:BlasFloat}
+    check = primal(kwargs).check
+    A_dA_inner = Mooncake._unlift(A_dA)
+    A, dAs = _arr_extract_n(A_dA_inner)
     _, ipiv, info = LAPACK.getrf!(A; check)
     @inbounds for lane in 1:N
         _getrf_fwd_core!(A, dAs[lane], ipiv)
     end
-    _arr_writeback_n!(A_dA, A, dAs)
+    _arr_writeback_n!(A_dA_inner, A, dAs)
     ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
-    return (A_dA, ipiv_dual, info_dual)
-end
-@inline function frule!!(
-    f::Mooncake.Lifted{typeof(Core.kwcall),N},
-    _kwargs::Mooncake.Lifted{<:NamedTuple},
-    g::Mooncake.Lifted{typeof(getrf!)},
-    A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
-) where {N,P<:BlasFloat}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(_kwargs),
-        Mooncake._unlift(g),
-        Mooncake._unlift(A_dA),
-    )
+    bare_result = (A_dA_inner, ipiv_dual, info_dual)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
