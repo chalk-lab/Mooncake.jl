@@ -13,6 +13,11 @@ using Core.Intrinsics: pointerref, pointerset
 
 using Mooncake
 
+# TODO: temporary — JET's analysis is unreliable on Julia 1.13 prerelease.
+# Remove once JET supports 1.13 (currently using sunxd3/JET.jl fork for resolution only).
+Mooncake.TestUtils.test_hook(::Any, ::typeof(Mooncake.TestUtils.test_opt), ::Any...) = nothing
+Mooncake.TestUtils.test_hook(::Any, ::typeof(Mooncake.TestUtils.report_opt), tt) = nothing
+
 using Mooncake:
     primal,
     tangent,

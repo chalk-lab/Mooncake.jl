@@ -1,5 +1,8 @@
 function blas_name(name::Symbol)
-    return (BLAS.USE_BLAS64 ? Symbol(name, "64_") : name, Symbol(BLAS.libblastrampoline))
+    return (
+        BLAS.USE_BLAS64 ? Symbol(name, "64_") : name,
+        _foreigncall_libsym(BLAS.libblastrampoline),
+    )
 end
 
 function _trans(flag, mat)

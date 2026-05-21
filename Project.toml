@@ -35,6 +35,9 @@ SLEEFPirates = "476501e8-09a2-5ece-8869-fb82de89a1fa"
 SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
 
+[sources]
+JET = {url = "https://github.com/sunxd3/JET.jl", rev = "67290628ffb9a36b65bc3f3a749cce019ece21d6"}
+
 [extensions]
 MooncakeAllocCheckExt = "AllocCheck"
 MooncakeBFloat16sExt = "BFloat16s"
@@ -83,7 +86,7 @@ NNlib = "0.9"
 PrecompileTools = "1"
 Pkg = "1"
 Random = "1"
-Revise = "3.0 - 3.12"
+Revise = "3"
 SLEEFPirates = "0.6.43"
 SpecialFunctions = "2"
 StableRNGs = "1"
