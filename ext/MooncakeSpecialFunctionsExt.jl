@@ -174,23 +174,6 @@ end
 # 3-arg `gamma_inc` (first-argument gradient is `NotImplemented`)
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
-function frule!!(
-    ::Dual{typeof(gamma_inc)}, _a::Dual{T}, _x::Dual{P}, _IND::Dual{I}
-) where {T<:IEEEFloat,P<:IEEEFloat,I<:Integer}
-    a, da = extract(_a)
-    x, dx = extract(_x)
-    IND = primal(_IND)
-
-    y = gamma_inc(a, x, IND) # primal is always Real for gamma_inc
-    primal_eltype = eltype(y) # to ensure final Dual Tangent is valid type
-
-    ∂a = Mooncake.notimplemented_tangent_guard(da)     # ∂p/∂a - NotImplemented
-    z = exp((a - 1) * log(x) - x - loggamma(a))    # ∂p/∂x
-
-    # dot_p = ∂p/∂a * da + ∂p/∂x * dx
-    # dot_q = ∂p/∂a * da + (-∂p/∂x) * dx
-    return Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(gamma_inc),N},
     _a::Mooncake.Lifted,

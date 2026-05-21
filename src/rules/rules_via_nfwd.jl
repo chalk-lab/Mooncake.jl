@@ -97,6 +97,24 @@ end
     )
 end
 
+# Ternary adapter for `(IEEEFloat, IEEEFloat, Integer)` signatures.
+# Disjoint from the all-IEEEFloat ternary above (the Integer constraint
+# rules out IEEEFloat). Used by `SpecialFunctions.gamma_inc` and any
+# similar mixed-Integer primitive.
+@inline function frule!!(
+    f::Dual{F}, a::Dual{P}, b::Dual{Q}, c::Dual{R}
+) where {F,P<:IEEEFloat,Q<:IEEEFloat,R<:Integer}
+    Mooncake._is_lifted_aware(Tuple{F,P,Q,R}) || throw(MethodError(frule!!, (f, a, b, c)))
+    return Mooncake._ndual_output_to_width1(
+        frule!!(
+            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
+            Mooncake.Lifted{P,1}(primal(a), tangent(a)),
+            Mooncake.Lifted{Q,1}(primal(b), tangent(b)),
+            Mooncake.Lifted{R,1}(primal(c), tangent(c)),
+        ),
+    )
+end
+
 @inline function frule!!(f::Dual{F}, x::NDual{T,N}) where {F,T<:IEEEFloat,N}
     Mooncake._is_lifted_aware(Tuple{F,T}) || throw(MethodError(frule!!, (f, x)))
     return Mooncake._unlift(
