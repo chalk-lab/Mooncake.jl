@@ -1646,6 +1646,16 @@ end
     setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
     return x
 end
+# Bare-Dual lsetfield! on canonical NDual Vector (V_x is the bare lifted
+# form, not Dual-wrapped). Mutates the Vector in place; for `:ref`, the
+# new MemoryRef arrives as the canonical-NDual lifted form. For metadata
+# (`:size`), x is the bare primal Tuple.
+@inline function frule!!(
+    ::Dual{typeof(lsetfield!)}, value::Array{<:_HasNDual}, ::Dual{Val{name}}, x
+) where {name}
+    setfield!(value, name, x)
+    return x
+end
 @inline function frule!!(
     ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Tuple
 ) where {name}
