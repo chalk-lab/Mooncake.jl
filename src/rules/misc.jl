@@ -208,18 +208,28 @@ end
     return _has_ndual(field_val) ? field_val : uninit_dual(field_val)
 end
 
+# Generic lgetfield Lifted body — Vararg-tail unifies arity 2 (name only)
+# and arity 3 (name + order). `_lgetfield_impl` has matching arity 2 and 3
+# kernels per inner V shape.
 @inline function frule!!(
-    ::Mooncake.Lifted{typeof(lgetfield),N}, x::Mooncake.Lifted, name::Mooncake.Lifted{<:Val}
-) where {N}
-    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name))
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted,
+    name::Mooncake.Lifted{<:Val},
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,M}
+    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name), map(primal, extras)...)
     return _wrap_rule_result(Val(N), bare_result)
 end
+# Field-type-specialised path for Tuple/NamedTuple primals: same Vararg-tail
+# unification, but propagate `fieldtype(P, field)` through `_wrap_rule_result`
+# so the Lifted slot's P narrows to the field's primal type.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{P,N},
     name::Mooncake.Lifted{Val{field},N},
-) where {P<:Union{Tuple,NamedTuple},N,field}
-    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name))
+    extras::Vararg{Mooncake.Lifted,M},
+) where {P<:Union{Tuple,NamedTuple},N,field,M}
+    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name), map(primal, extras)...)
     return _wrap_rule_result(fieldtype(P, field), Val(N), bare_result)
 end
 # Mixed dispatch fallback: Tuple/NamedTuple primal arrives as a `Lifted` slot
@@ -358,21 +368,12 @@ end
     x, f, order
 )
 
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted,
-    name::Mooncake.Lifted{<:Val},
-    order::Mooncake.Lifted{<:Val},
-) where {N}
-    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name), primal(order))
-    return _wrap_rule_result(Val(N), bare_result)
-end
-# Bare-Dual 4-arg lgetfield: paired with the 3-arg `frule!!(::Dual{lgetfield},
-# ::Lifted{P}, ::Dual{Val{f}})` form above. The IR-emit's mixed-dispatch
-# path (bare-Dual function + Lifted struct + bare-Dual Val constants) can
-# also produce a bare-Dual struct value at width 1 for wrapper-exception
-# primals. `_lgetfield_impl(::Dual{P, T<:StandardTangentType}, ::Val{f},
-# ::Val{order})` already handles both NTangent-wrapped and bare-T forms.
+# arity-3 lgetfield (with `Val(order)`) Lifted body is unified into the
+# Vararg-tail body above.
+#
+# Bare-Dual 4-arg lgetfield: mirrors the bare-Dual 3-arg form above for the
+# IR-emit mixed-dispatch path (bare-Dual function + Lifted struct + bare-Dual
+# Val constants).
 @inline function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}, ::Dual{Val{order}}
 ) where {P,T<:StandardTangentType,f,order}
