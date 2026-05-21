@@ -348,29 +348,17 @@ const TWPStepRangeLen = StepRangeLen{<:Any,<:TWP,<:TWP}
     r::Mooncake.Lifted{P},
     i::Mooncake.Lifted{<:Integer},
 ) where {N,P<:TWPStepRangeLen}
-    inner_r = Mooncake._unlift(r)
-    inner_i = Mooncake._unlift(i)
-    x = unsafe_getindex(primal(inner_r), primal(inner_i))
-    raw_t = tangent(inner_r)
-    # Multi-lane NTangent (width N≥2): compute per-lane derivative. The
-    # singleton path's NTangent arithmetic (`dstep * (i - offset)`) errors
-    # because `*(::NTangent, ::Int)` is undefined.
-    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
-        i_p = primal(inner_i)
-        offset = primal(inner_r).offset
-        dxs = ntuple(Val(length(raw_t.lanes))) do lane
-            lane_t = raw_t.lanes[lane]
-            dref_lane = _get_tangent_field(lane_t, :ref)
-            dstep_lane = _get_tangent_field(lane_t, :step)
-            eltype(P)(dref_lane + dstep_lane * (i_p - offset))
-        end
-        return Mooncake.Lifted{eltype(P),N}(x, Mooncake.NTangent(dxs))
+    nt = Mooncake._unlift(r)
+    i_p = primal(Mooncake._unlift(i))
+    r_p = Mooncake.primal(r)
+    offset = r_p.offset
+    x = unsafe_getindex(r_p, i_p)
+    dxs = ntuple(Val(N)) do lane
+        dref_lane = tangent(nt.ref, lane)
+        dstep_lane = tangent(nt.step, lane)
+        eltype(P)(dref_lane + dstep_lane * (i_p - offset))
     end
-    dref = _get_tangent_field(_twp_tangent(inner_r), :ref)
-    dstep = _get_tangent_field(_twp_tangent(inner_r), :step)
-    dx = eltype(P)(dref + dstep * (primal(inner_i) - primal(inner_r).offset))
-    bare_result = Dual(x, dx)
-    return _wrap_rule_result(Val(N), bare_result)
+    return Mooncake.Lifted{eltype(P),N}(x, Mooncake.NTangent(dxs))
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_getindex)}, r::CoDual{P}, i::CoDual{<:Integer}
@@ -394,27 +382,17 @@ using Base: _getindex_hiprec
     r::Mooncake.Lifted{<:TWPStepRangeLen},
     i::Mooncake.Lifted{<:Integer},
 ) where {N}
-    inner_r = Mooncake._unlift(r)
-    inner_i = Mooncake._unlift(i)
-    x = _getindex_hiprec(primal(inner_r), primal(inner_i))
-    offset = primal(inner_r).offset
-    raw_t = tangent(inner_r)
-    # Multi-lane NTangent: per-lane derivative.
-    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
-        i_p = primal(inner_i)
-        dxs = ntuple(Val(length(raw_t.lanes))) do lane
-            lane_t = raw_t.lanes[lane]
-            dref_lane = _get_tangent_field(lane_t, :ref)
-            dstep_lane = _get_tangent_field(lane_t, :step)
-            (i_p - offset) * dstep_lane + dref_lane
-        end
-        return Mooncake.Lifted{_typeof(x),N}(x, Mooncake.NTangent(dxs))
+    nt = Mooncake._unlift(r)
+    i_p = primal(Mooncake._unlift(i))
+    r_p = Mooncake.primal(r)
+    offset = r_p.offset
+    x = _getindex_hiprec(r_p, i_p)
+    dxs = ntuple(Val(N)) do lane
+        dref_lane = tangent(nt.ref, lane)
+        dstep_lane = tangent(nt.step, lane)
+        (i_p - offset) * dstep_lane + dref_lane
     end
-    dstep = _get_tangent_field(_twp_tangent(inner_r), :step)
-    dref = _get_tangent_field(_twp_tangent(inner_r), :ref)
-    dx = (primal(inner_i) - offset) * dstep + dref
-    bare_result = Dual(x, dx)
-    return _wrap_rule_result(Val(N), bare_result)
+    return Mooncake.Lifted{_typeof(x),N}(x, Mooncake.NTangent(dxs))
 end
 function rrule!!(
     ::CoDual{typeof(_getindex_hiprec)}, r::CoDual{P}, i::CoDual{<:Integer}
@@ -457,15 +435,17 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N}, x::Mooncake.Lifted{<:TWPStepRangeLen}
 ) where {N}
-    inner_x = Mooncake._unlift(x)
-    y = sum(primal(inner_x))
-    l = primal(inner_x).len
-    offset = primal(inner_x).offset
-    dref = _get_tangent_field(_twp_tangent(inner_x), :ref)
-    dstep = _get_tangent_field(_twp_tangent(inner_x), :step)
-    dy = dref * l + dstep * (0.5 * l * (l + 1) - l * offset)
-    bare_result = Dual(y, typeof(y)(dy))
-    return _wrap_rule_result(Val(N), bare_result)
+    nt = Mooncake._unlift(x)
+    x_p = Mooncake.primal(x)
+    y = sum(x_p)
+    l = x_p.len
+    offset = x_p.offset
+    dys = ntuple(Val(N)) do lane
+        dref_lane = tangent(nt.ref, lane)
+        dstep_lane = tangent(nt.step, lane)
+        typeof(y)(dref_lane * l + dstep_lane * (0.5 * l * (l + 1) - l * offset))
+    end
+    return Mooncake.Lifted{typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{P}) where {P<:TWPStepRangeLen}
     l = x.x.len

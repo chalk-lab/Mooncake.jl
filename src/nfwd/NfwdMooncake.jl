@@ -1375,29 +1375,13 @@ end
     return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
 end
 
-# StepRangeLen with TwicePrecision ref/step fields: structural NamedTuple
-# lift breaks the bare-Dual `_getindex_hiprec` / `unsafe_getindex` rule
-# bodies in `src/rules/twice_precision.jl` that expect a bare StepRangeLen
-# primal. Use the parallel-Dual form so `tangent(d::Dual{StepRangeLen,
-# Tangent{NamedTuple{ref,step,len,offset}}})` returns the legacy Tangent
-# whose fields are direct TwicePrecision / Int values.
-function dual_type(
-    ::Val{1}, ::Type{Base.StepRangeLen{T,Base.TwicePrecision{T},Base.TwicePrecision{T},S}}
-) where {T<:IEEEFloat,S}
-    P = Base.StepRangeLen{T,Base.TwicePrecision{T},Base.TwicePrecision{T},S}
-    return Dual{P,Mooncake.tangent_type(P)}
-end
-function dual_type(
-    ::Val{N}, ::Type{Base.StepRangeLen{T,Base.TwicePrecision{T},Base.TwicePrecision{T},S}}
-) where {N,T<:IEEEFloat,S}
-    P = Base.StepRangeLen{T,Base.TwicePrecision{T},Base.TwicePrecision{T},S}
-    return Dual{P,Mooncake.tangent_type(Val(N), P)}
-end
-function dual_type(
-    ::Val{0}, ::Type{Base.StepRangeLen{T,Base.TwicePrecision{T},Base.TwicePrecision{T},S}}
-) where {T<:IEEEFloat,S}
-    return Base.StepRangeLen{T,Base.TwicePrecision{T},Base.TwicePrecision{T},S}
-end
+# StepRangeLen with TwicePrecision ref/step fields previously had an explicit
+# `dual_type` wrapper-exception override here. As of Phase 3 of the
+# wrapper-exception-removal plan, SRL routes through the generic structural
+# lift in `src/tangents/dual.jl`, producing
+# `NamedTuple{(:ref,:step,:len,:offset), Tuple{Dual{TWP, NTangent{NTuple{N, TWP}}}, ...}}`.
+# Rule bodies in `src/rules/twice_precision.jl` extract `:ref` / `:step` via
+# `tangent(_unlift(r).ref, lane)` rather than the legacy Tangent path.
 
 @inline _type_has_ndual(::Type) = false
 @inline _type_has_ndual(::Type{<:NDual}) = true
