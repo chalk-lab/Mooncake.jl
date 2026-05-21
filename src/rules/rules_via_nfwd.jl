@@ -62,6 +62,27 @@ end
     )
 end
 
+# Binary adapter covering `Union{IEEEFloat, Complex{<:IEEEFloat}}` with
+# independent type parameters per arg. Used by SpecialFunctions rules
+# (e.g. `gamma`, `loggamma`, `besselj`, ...) whose registered signatures
+# mix IEEEFloat and Complex variants. The `P=Q<:IEEEFloat` case is
+# strictly covered by the more-specific adapter above; this method
+# fires only when at least one arg is Complex, or when P ≠ Q.
+@inline function frule!!(
+    f::Dual{F}, a::Dual{P}, b::Dual{Q}
+) where {
+    F,P<:Union{IEEEFloat,Complex{<:IEEEFloat}},Q<:Union{IEEEFloat,Complex{<:IEEEFloat}}
+}
+    Mooncake._is_lifted_aware(Tuple{F,P,Q}) || throw(MethodError(frule!!, (f, a, b)))
+    return Mooncake._ndual_output_to_width1(
+        frule!!(
+            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
+            Mooncake.Lifted{P,1}(primal(a), tangent(a)),
+            Mooncake.Lifted{Q,1}(primal(b), tangent(b)),
+        ),
+    )
+end
+
 @inline function frule!!(
     f::Dual{F}, a::Dual{P}, b::Dual{P}, c::Dual{P}
 ) where {F,P<:IEEEFloat}
