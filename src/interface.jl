@@ -2254,6 +2254,19 @@ function _prepare_hvp(::Val{:forward_over_reverse}, f::F, x::Tuple, config) wher
     return HVPCache{:forward_over_reverse,typeof(core),typeof(specs)}(core, specs)
 end
 
+# `_GradClosure` is the named type-stable boundary between the inner reverse-
+# mode gradient computation and the outer forward-mode derivative compiled
+# by `prepare_derivative_cache`. The struct exists because primal-mode
+# forward AD specialises on the closure's type — giving it a stable nominal
+# identity (a) makes `prepare_derivative_cache` produce a single reusable
+# compiled rule per `(F, GC)` rather than recompiling per anonymous-closure
+# instance, and (b) provides a dispatch hook for `@is_primitive ForwardMode`
+# registrations against `Tuple{<:_GradClosure{N}, ...}`. On `main` the same
+# role is played by an anonymous closure inside `prepare_hvp_cache` because
+# main's wrapper-exception lift form for `Vector{Float64}` aliases fdata
+# storage between the reverse pullback and the outer forward read; on this
+# branch's canonical-NDual lift the two storages disconnect, so the named
+# boundary is needed for any HVP-specific frule that bridges that gap.
 struct _GradClosure{N,F,GC}
     f::F
     grad_cache::GC
