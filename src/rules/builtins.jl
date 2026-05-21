@@ -238,40 +238,32 @@ end
 # computation in the pullback. Downstream rules write directly into 
 # the tangent memory pointed to by tangent_arr.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_wrap),<:Type{<:Array},Ptr,Any}
-# `unsafe_wrap` implementation kernel (no `Dual{typeof(F)}` arg).
-@inline function _unsafe_wrap_kernel(
-    ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
-) where {T}
-    primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
-    raw_t = tangent(p)
-    # Multi-lane NTangent (width N≥2): per-lane unsafe_wrap on each
-    # lane's Ptr. Each lane's tangent Ptr typically points at a
-    # different memory region; the original singleton-only unwrap would
-    # fall through to the no-op fallback returning the NTangent
-    # unchanged, then `unsafe_wrap(Array, ::NTangent, dims)` errored.
-    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
-        tangent_arrs = ntuple(
-            lane -> unsafe_wrap(Array, raw_t.lanes[lane], primal(dims)),
-            Val(length(raw_t.lanes)),
-        )
-        return Dual(primal_arr, Mooncake.NTangent(tangent_arrs))
-    end
-    # `tangent(p::Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}})` returns the
-    # NTangent wrapper. Unwrap to the bare Ptr.
-    tangent_arr = unsafe_wrap(
-        Array, Mooncake._ntangent_unwrap_singleton(raw_t), primal(dims)
-    )
-    return Dual(primal_arr, tangent_arr)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(unsafe_wrap),N},
     arr_type::Mooncake.Lifted{<:Type{<:Array}},
     p::Mooncake.Lifted{<:Ptr{T}},
     dims::Mooncake.Lifted,
 ) where {N,T}
-    bare_result = _unsafe_wrap_kernel(
-        Mooncake._unlift(arr_type), Mooncake._unlift(p), Mooncake._unlift(dims)
-    )
+    bare_p = Mooncake._unlift(p)
+    pdims = primal(Mooncake._unlift(dims))
+    primal_arr = unsafe_wrap(Array, primal(bare_p), pdims)
+    raw_t = tangent(bare_p)
+    # Multi-lane NTangent (width N≥2): per-lane unsafe_wrap on each lane's
+    # Ptr. Each lane's tangent Ptr typically points at a different memory
+    # region; the singleton-only unwrap would fall through and
+    # `unsafe_wrap(Array, ::NTangent, dims)` would error.
+    bare_result = if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        tangent_arrs = ntuple(
+            lane -> unsafe_wrap(Array, raw_t.lanes[lane], pdims),
+            Val(length(raw_t.lanes)),
+        )
+        Dual(primal_arr, Mooncake.NTangent(tangent_arrs))
+    else
+        # Width-1: `tangent(p::Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}})` returns
+        # the NTangent wrapper. Unwrap to the bare Ptr.
+        tangent_arr = unsafe_wrap(Array, Mooncake._ntangent_unwrap_singleton(raw_t), pdims)
+        Dual(primal_arr, tangent_arr)
+    end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -729,25 +721,6 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
 end
 
 @intrinsic pointerset
-# `pointerset` implementation kernel (no `Dual{typeof(F)}` arg).
-@inline function _pointerset_kernel(p, x, idx, z)
-    pointerset(primal(p), primal(x), primal(idx), primal(z))
-    raw_t = tangent(p)
-    # Multi-lane NTangent (width N≥2): per-lane pointerset. Each lane's
-    # Ptr tangent writes to a different memory location. The value
-    # tangent is shared (only inactive values reach this rule — guarded
-    # at the Lifted overload below).
-    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
-        for lane in 1:length(raw_t.lanes)
-            pointerset(raw_t.lanes[lane], tangent(x), primal(idx), primal(z))
-        end
-        return p
-    end
-    pointerset(
-        Mooncake._ntangent_unwrap_singleton(raw_t), tangent(x), primal(idx), primal(z)
-    )
-    return p
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(pointerset),N},
     p::Mooncake.Lifted,
@@ -755,19 +728,32 @@ end
     idx::Mooncake.Lifted,
     z::Mooncake.Lifted,
 ) where {N}
+    bare_p = Mooncake._unlift(p)
+    bare_x = Mooncake._unlift(x)
+    pidx = primal(Mooncake._unlift(idx))
+    pz = primal(Mooncake._unlift(z))
     # Only inactive values can be copied through raw pointer storage as-is.
-    if tangent(Mooncake._unlift(x)) isa NTangent
+    if tangent(bare_x) isa NTangent
         throw(
             ArgumentError(
                 "unsupported lifted pointerset: tangent value is not storable in the pointer element type",
             ),
         )
     end
-    bare_result = _pointerset_kernel(
-        Mooncake._unlift(p), Mooncake._unlift(x), Mooncake._unlift(idx), Mooncake._unlift(z)
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    pointerset(primal(bare_p), primal(bare_x), pidx, pz)
+    raw_t = tangent(bare_p)
+    # Multi-lane NTangent (width N≥2): per-lane pointerset. Each lane's Ptr
+    # tangent writes to a different memory location. The value tangent is
+    # shared (only inactive values reach this rule — guarded above).
+    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        for lane in 1:length(raw_t.lanes)
+            pointerset(raw_t.lanes[lane], tangent(bare_x), pidx, pz)
+        end
+    else
+        pointerset(Mooncake._ntangent_unwrap_singleton(raw_t), tangent(bare_x), pidx, pz)
+    end
+    P_out = __primal_type(_typeof(bare_p))
+    return _wrap_rule_result(P_out, Val(N), bare_p)
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
