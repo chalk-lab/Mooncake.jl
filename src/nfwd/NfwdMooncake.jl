@@ -2439,6 +2439,7 @@ end
 @inline _ndual_primal(d::LinearAlgebra.Diagonal{<:NDual}) = primal(d)
 @inline _ndual_primal(a::LinearAlgebra.Adjoint{<:NDual}) = primal(a)
 @inline _ndual_primal(s::SubArray{<:NDual}) = primal(s)
+@inline _ndual_primal(r::Base.ReshapedArray{<:NDual}) = primal(r)
 # Complex variants — same wrapper-preserving requirement: `map` over a SubArray
 # / Adjoint / Diagonal returns the underlying material type (e.g. Matrix), so
 # the subsequent `tangent(...)` call would see a wrapper-shape tangent paired
@@ -2447,6 +2448,7 @@ end
 @inline _ndual_primal(d::LinearAlgebra.Diagonal{<:Complex{<:NDual}}) = primal(d)
 @inline _ndual_primal(a::LinearAlgebra.Adjoint{<:Complex{<:NDual}}) = primal(a)
 @inline _ndual_primal(s::SubArray{<:Complex{<:NDual}}) = primal(s)
+@inline _ndual_primal(r::Base.ReshapedArray{<:Complex{<:NDual}}) = primal(r)
 @inline _ndual_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
 @inline _ndual_primal(x::AbstractArray{<:Complex{<:NDual}}) = map(
     z -> complex(z.re.value, z.im.value), x
