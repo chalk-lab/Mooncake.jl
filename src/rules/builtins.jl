@@ -950,35 +950,29 @@ end
 # Core._setsuper!
 # Core._structtype
 
-# `Core._svec_ref` implementation kernel (no `Dual{typeof(F)}` arg).
-# At width 1, `tangent(v)` for a
-# `Dual{Core.SimpleVector, NTangent{Tuple{Vector{Any}}}}` is the outer
-# NTangent; `getindex(::NTangent, i)` returns the i-th *lane*, not the
-# i-th element of the inner Vector{Any}. Unwrap the singleton NTangent
-# to the inner per-element tangent vector first.
-@inline function _svec_ref_kernel(v::Dual{Core.SimpleVector}, _ind::Dual{Int})
-    ind = primal(_ind)
-    pv = Core._svec_ref(primal(v), ind)
-    raw_t = tangent(v)
-    # Multi-lane NTangent (width N≥2): the singleton-only `Mooncake._ntangent_unwrap_singleton`
-    # fallback returns the NTangent unchanged, and `getindex(::NTangent,
-    # ind)` resolves to `Base.getindex(::NTangent, ::Int)` (defined in
-    # dual.jl) which returns LANE ind — not element ind of the underlying
-    # Vector{Any}. Silent correctness bug. Per-lane indexing recovers the
-    # intended per-lane element tangents.
-    if raw_t isa NTangent && length(raw_t.lanes) >= 2
-        tvs = ntuple(lane -> getindex(raw_t.lanes[lane], ind), Val(length(raw_t.lanes)))
-        return Dual(pv, NTangent(tvs))
-    end
-    tv = getindex(Mooncake._ntangent_unwrap_singleton(raw_t), ind)
-    return Dual(pv, tv)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core._svec_ref),N},
     v::Mooncake.Lifted{Core.SimpleVector},
     ind::Mooncake.Lifted{Int},
 ) where {N}
-    bare_result = _svec_ref_kernel(Mooncake._unlift(v), Mooncake._unlift(ind))
+    bare_v = Mooncake._unlift(v)
+    pind = primal(Mooncake._unlift(ind))
+    pv = Core._svec_ref(primal(bare_v), pind)
+    raw_t = tangent(bare_v)
+    # Multi-lane NTangent (width N≥2): `getindex(::NTangent, ind)` resolves
+    # to `Base.getindex(::NTangent, ::Int)` and returns LANE ind, not the
+    # ind-th element of the underlying Vector{Any}. Per-lane indexing
+    # recovers the intended per-lane element tangents.
+    bare_result = if raw_t isa NTangent && length(raw_t.lanes) >= 2
+        tvs = ntuple(lane -> getindex(raw_t.lanes[lane], pind), Val(length(raw_t.lanes)))
+        Dual(pv, NTangent(tvs))
+    else
+        # At width 1, `tangent(v)` for a
+        # `Dual{Core.SimpleVector, NTangent{Tuple{Vector{Any}}}}` is the
+        # outer NTangent; unwrap the singleton to the inner per-element
+        # tangent vector first.
+        Dual(pv, getindex(Mooncake._ntangent_unwrap_singleton(raw_t), pind))
+    end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
@@ -1011,18 +1005,14 @@ function _svec_ref_rrule(f, _v, _ind, pv, tv)
     end
 end
 
-# `svec` implementation kernel — accepts unlifted V values directly.
-@inline function _svec_kernel(args::Vararg{Any,N}) where {N}
-    primal_output = svec(map(primal, args)...)
-    # Tangent type for `SimpleVector` is `Vector{Any}`
-    dual_output = collect(Any, map(tangent, args))
-    return Dual(primal_output, dual_output)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(svec),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
     bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
-    bare_result = _svec_kernel(bare_args...)
+    primal_output = svec(map(primal, bare_args)...)
+    # Tangent type for `SimpleVector` is `Vector{Any}`
+    dual_output = collect(Any, map(tangent, bare_args))
+    bare_result = Dual(primal_output, dual_output)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
