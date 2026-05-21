@@ -1591,18 +1591,13 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Dual
-) where {name}
-    setfield!(primal(value), name, primal(x))
-    setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
-    return x
-end
-# Bare-Dual lsetfield! on canonical NDual Vector (V_x is the bare lifted
-# form, not Dual-wrapped). Mutates the Vector in place; for `:ref`, the
-# new MemoryRef arrives as the canonical-NDual lifted form. For metadata
-# `:size`, x may arrive as `Tuple{Dual{Int}, ...}` (structural-lift of the
-# primal `Tuple{Int, ...}`); strip each Dual to get the bare metadata.
+# The bare-Dual `frule!!(::Dual{typeof(lsetfield!)}, value::Dual{<:Array, <:Array}, …)`
+# variants were removed alongside the matching `lgetfield` branches (Phase 6 of
+# the wrapper-exception-removal plan). The bare-Array-tangent slot shape they
+# dispatched on is never produced by `dual_type` after Phases 1-3 — IEEEFloat
+# arrays canonicalise to `Array{NDual{T,N}}` and non-IEEEFloat arrays produce
+# `Dual{Array, NTangent{Tuple{Array{...}}}}` (NTangent-wrapped, not bare-Array).
+# The canonical-NDual Array variant retained below.
 @inline _strip_size_tuple(x::Tuple{Vararg{Dual}}) = map(primal, x)
 @inline _strip_size_tuple(x) = x
 @inline function frule!!(
@@ -1611,16 +1606,6 @@ end
     coerced = (name === :size || name === 2) ? _strip_size_tuple(x) : x
     setfield!(value, name, coerced)
     return x
-end
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Tuple
-) where {name}
-    y = _tuple_duals_to_dual(x)
-    setfield!(primal(value), name, primal(y))
-    # Array metadata fields such as `:size` are non-differentiable bookkeeping;
-    # the tangent array must mirror the primal metadata, not the tuple tangent.
-    setfield!(tangent(value), name, (name === :size || name === 2) ? primal(y) : tangent(y))
-    return y
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),<:Array,<:Val,Any}}) =
     true
