@@ -1147,8 +1147,7 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
         Sinv = inv(F)
         Dual((ld, s), (dot(Sinv, d_data), zero(P)))
     end
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function frule!!(
     f::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
