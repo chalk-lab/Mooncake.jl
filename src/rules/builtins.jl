@@ -1063,22 +1063,23 @@ function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     return CoDual{_typeof(T),NoFData}(T, NoFData()), NoPullback(f, args...)
 end
 
-# `compilerbarrier` implementation kernels — dispatch on the inner V shape.
-@inline function _compilerbarrier_kernel(setting::Dual{Symbol}, v::Dual)
-    return Dual(
-        compilerbarrier(primal(setting), primal(v)),
-        compilerbarrier(primal(setting), tangent(v)),
-    )
-end
-@inline function _compilerbarrier_kernel(setting::Dual{Symbol}, v)
-    return compilerbarrier(primal(setting), v)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(compilerbarrier),N},
     setting::Mooncake.Lifted{Symbol},
     v::Mooncake.Lifted,
 ) where {N}
-    bare_result = _compilerbarrier_kernel(Mooncake._unlift(setting), Mooncake._unlift(v))
+    p_setting = primal(setting)
+    inner_v = Mooncake._unlift(v)
+    # Inner V shape dispatch: `Dual` wraps `compilerbarrier(primal,tangent)`;
+    # bare canonical V (NDual / Vector{NDual} / etc.) passes through unchanged.
+    bare_result = if inner_v isa Dual
+        Dual(
+            compilerbarrier(p_setting, primal(inner_v)),
+            compilerbarrier(p_setting, tangent(inner_v)),
+        )
+    else
+        compilerbarrier(p_setting, inner_v)
+    end
     return _wrap_rule_result(Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(compilerbarrier),Symbol,Any}}) =
