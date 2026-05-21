@@ -352,8 +352,9 @@ end
 # atomic_pointerswap
 
 @intrinsic bitcast
-# `bitcast` implementation kernel (no `Dual{typeof(F)}` arg).
-@inline function _bitcast_kernel(::Dual{Type{T}}, x) where {T}
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(bitcast),N}, t::Mooncake.Lifted{Type{T}}, x::Mooncake.Lifted
+) where {N,T}
     if T <: IEEEFloat
         msg =
             "It is not permissible to bitcast to a differentiable type during AD, as " *
@@ -363,32 +364,29 @@ end
             "its implementation to avoid the bitcast."
         throw(ArgumentError(msg))
     end
-    _x = primal(x)
+    bare_x = Mooncake._unlift(x)
+    _x = primal(bare_x)
     v = bitcast(T, _x)
-    if T <: Ptr && _x isa Ptr
+    dv = if T <: Ptr && _x isa Ptr
+        raw_t = tangent(bare_x)
         # Multi-lane NTangent (width N≥2): bitcast each lane's tangent Ptr
-        # independently. The original singleton-only unwrap discarded lanes
-        # 2..N (silent correctness bug — lanes 2..N would inherit lane 1's
+        # independently. A singleton-only unwrap discarded lanes 2..N
+        # (silent correctness bug — lanes 2..N would inherit lane 1's
         # tangent via the `_wrap_rule_result` broadcast).
-        raw_t = tangent(x)
         if raw_t isa NTangent && length(raw_t.lanes) >= 2
-            dvs = ntuple(
-                lane -> bitcast(Ptr{tangent_type(eltype(T))}, raw_t.lanes[lane]),
-                Val(length(raw_t.lanes)),
+            NTangent(
+                ntuple(
+                    lane -> bitcast(Ptr{tangent_type(eltype(T))}, raw_t.lanes[lane]),
+                    Val(length(raw_t.lanes)),
+                ),
             )
-            return Dual(v, NTangent(dvs))
+        else
+            bitcast(Ptr{tangent_type(eltype(T))}, Mooncake._ntangent_unwrap_singleton(raw_t))
         end
-        bare_t = Mooncake._ntangent_unwrap_singleton(raw_t)
-        dv = bitcast(Ptr{tangent_type(eltype(T))}, bare_t)
     else
-        dv = NoTangent()
+        NoTangent()
     end
-    return Dual(v, dv)
-end
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(bitcast),N}, t::Mooncake.Lifted{Type{T}}, x::Mooncake.Lifted
-) where {N,T}
-    bare_result = _bitcast_kernel(Mooncake._unlift(t), Mooncake._unlift(x))
+    bare_result = Dual(v, dv)
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
