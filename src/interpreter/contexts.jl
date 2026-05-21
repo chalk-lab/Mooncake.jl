@@ -86,6 +86,12 @@ true
 julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(bar),Float64}, Base.get_world_counter())
 false
 ```
+
+!!! warning "Combining with `@mooncake_overlay`"
+    Marking a signature as a primitive does not pick up an overlaid body for type
+    inference, so a [`@mooncake_overlay`](@ref) that changes the return type can put
+    the rule and the inferred `CoDual` type out of sync.
+    See [Primitives and Overlays](@ref).
 """
 macro is_primitive(Tctx, sig)
     return _is_primitive_expression(Tctx, :(Mooncake.Mode), sig)
