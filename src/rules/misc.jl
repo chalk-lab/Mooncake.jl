@@ -438,8 +438,8 @@ end
     P_out = __primal_type(_typeof(result))
     return _wrap_rule_result(P_out, Val(N), result)
 end
-# SplitDual value V: rebuild the canonical NamedTuple in place via the
-# ntuple-rebuild pattern (commit 1600a4b0b — preserves zero-alloc).
+# SplitDual value V: rebuild the canonical NamedTuple in place via an
+# `ntuple` rebuild that preserves zero allocation.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lsetfield!),N},
     value::Mooncake.Lifted{P,N,V},

@@ -1007,10 +1007,9 @@ end
 ) where {T<:IEEEFloat} = x
 
 # `data::Matrix{T}`-shaped LinearAlgebra wrappers: canonical NDual-element
-# form mirrors the Adjoint/Transpose template (Project 1 wrapper-exception
-# unification). All five wrappers below have an identical single
-# `data::Matrix{T}` layout, so the dual_type/constructor/accessor blocks
-# generate uniformly.
+# form mirrors the Adjoint/Transpose template. All five wrappers below
+# have an identical single `data::Matrix{T}` layout, so the
+# dual_type/constructor/accessor blocks generate uniformly.
 for W in (
     :(LinearAlgebra.UpperTriangular),
     :(LinearAlgebra.LowerTriangular),
@@ -1063,13 +1062,13 @@ end
 #     paired with the existing `arrayify(::ReinterpretArray, ::TangentOrFData)`
 #     in `src/rules/blas.jl`, is the architecturally-correct representation.
 #
-#   - `ReshapedArray`: a canonical NDual form for the `Array`-parent subset
-#     was attempted (Project 1) but reverted — the lapack test suite
-#     exercises `ReshapedArray{T,D,<:SubArray{T,...},MI}` extensively, and
-#     the canonical NDual form only covered `Array`-parent ReshapedArrays.
-#     Non-`Array`-parent cases fell through to the generic structural
-#     NamedTuple lift, producing inner Vs that no downstream rule accepts.
-#     The parallel-Dual form here handles all parents uniformly.
+#   - `ReshapedArray`: keep the parallel-Dual form because the lapack
+#     test suite exercises `ReshapedArray{T,D,<:SubArray{T,...},MI}`
+#     extensively, where a canonical NDual-element form would only
+#     cover `Array`-parent ReshapedArrays. Non-`Array`-parent cases
+#     would fall through to the generic structural NamedTuple lift,
+#     producing inner Vs that no downstream rule accepts. The parallel-
+#     Dual form handles all parents uniformly.
 #
 # Pinned by the `width-1 wrapper bare-Dual durable exceptions` testset
 # in `test/tangents/dual.jl`.

@@ -1722,15 +1722,14 @@ end
 # Vector in place, and `tangent_type(Vector{T}) = Vector{tangent_type(T)}`
 # remains a Vector, so the same in-place mutation works on the tangent.
 #
-# Architectural note (Project 2): each `*_kernel!` helper accepts the bare
+# Architectural note: each `*_kernel!` helper accepts the bare
 # `Dual{<:Vector}` / `Dual{<:Vector,<:NTangent}` / `AbstractVector{<:NDual}`
 # input directly — NOT a round-tripped `Lifted{T,1}(primal, tangent)`. This
 # preserves the user's Vector alias so the in-place grow mutates the
 # caller's array. The single `Mooncake.Lifted{Base._growbeg!}` body
-# delegates to `_growbeg_kernel!(_unlift(a), _unlift(d))`, which is the
-# correct Pattern A form for mutation rules: bare-dispatch kernel + thin
-# Lifted wrapper, with no canonicalising `Lifted{T,1}(p, t)` in the
-# chain. The same shape is reused for `_growend!`, `_growat!`,
+# delegates to `_growbeg_kernel!(_unlift(a), _unlift(d))` — a bare-dispatch
+# kernel plus thin Lifted wrapper, with no canonicalising `Lifted{T,1}(p, t)`
+# in the chain. The same shape is reused for `_growend!`, `_growat!`,
 # `_deletebeg!`, `_deleteend!`, `_deleteat!`, and `sizehint!` below.
 #
 # Shape-dispatch helpers `_vec_primal` / `_apply_to_tangent_vec!` collapse
