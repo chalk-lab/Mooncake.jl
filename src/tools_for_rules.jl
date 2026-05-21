@@ -100,6 +100,12 @@ julia> rule = Mooncake.build_rrule(Tuple{typeof(scale), Float64});
 julia> Mooncake.value_and_gradient!!(rule, scale, 5.0)
 (20.0, (NoTangent(), 4.0))
 ```
+
+!!! warning "Combining with `@is_primitive`"
+    Applying an overlay to a signature that is also marked as a primitive via
+    [`@is_primitive`](@ref) is not generally supported: type inference uses the
+    original body, so the rule and the inferred `CoDual` type can disagree.
+    See [Primitives and Overlays](@ref).
 """
 macro mooncake_overlay(method_expr)
     def = splitdef(method_expr)

@@ -17,26 +17,23 @@ The goal of the `Mooncake.jl` project is to produce an AD package written entire
 Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more info.
 
 > [!IMPORTANT]
-> `Mooncake.jl` welcomes focused contributions that improve correctness,
-> robustness, and predictability. To keep maintenance tractable, issues and pull
-> requests should concern reproducible defects: incorrect results, unexpected
-> failures, or behaviour inconsistent with the documented scope. Feature requests,
-> redesign proposals, support requests, and debugging requests without a minimal
-> reproducible example are out of scope and will be closed.
+> `Mooncake.jl` is maintained primarily by academic researchers at grant-funded
+> institutions, with correspondingly limited capacity for triage and review. In the spirit of
+> long-lived projects such as R and TeX, we favour correctness, stability,
+> and tightly scoped fixes over open-ended expansion.
 >
-> Following principles from long-lived projects such as R and TeX, and informed
-> by prior Julia AD systems, Mooncake.jl prioritises correctness, stability, clear
-> bug reports, and tightly scoped fixes over open-ended expansion. It is intended
-> to differentiate through the vast majority of Julia Base and the standard
-> libraries. Known limitations are documented on the
+> Contributions are most welcome when they concern reproducible defects:
+> incorrect results, unexpected failures, or behaviour at odds with the
+> documented scope. Feature requests, redesign proposals, and debugging
+> queries lacking a minimal reproducible example sit outside what we can
+> reasonably support, as do requests for rules beyond Julia Base and the
+> standard libraries, or for behaviour noted on the
 > [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
-> page. Requests for rules covering functionality outside Julia Base are out of
-> scope.
+> page; such issues will generally be closed.
 >
-> Mooncake.jl is developed primarily by academic researchers with limited capacity
-> to triage issues and review contributions. Organisations that depend on
-> Mooncake.jl commercially are encouraged to contribute financially, through
-> focused code contributions, or both.
+> Organisations relying on Mooncake.jl commercially are warmly encouraged
+> to contribute, whether through focused code contributions, financial
+> support, or both.
 
 ## Getting Started
 
