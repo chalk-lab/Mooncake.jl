@@ -884,6 +884,19 @@ end
         Val(fieldcount(V)),
     )
 end
+# `Complex{<:Dual-like}` inner V with `NTangent{NTuple{N, Complex{T}}}` tangent
+# (the multi-lane NTangent shape produced by chunked forward-mode for a Complex
+# scalar primal). Build the inner Complex element-wise: per-lane real/imag
+# partials split into two inner duals via the inner V's own field type ctor.
+@inline function _inner_dual_for_field(
+    ::Type{V}, primal::Complex{T}, tangent::NTangent
+) where {V<:Complex,T<:IEEEFloat}
+    DualT = fieldtype(V, 1)  # the inner NDual / Dual element type
+    N = length(tangent.lanes)
+    re_partials = ntuple(lane -> real(tangent.lanes[lane]), N)
+    im_partials = ntuple(lane -> imag(tangent.lanes[lane]), N)
+    return Complex(DualT(real(primal), re_partials), DualT(imag(primal), im_partials))
+end
 # NoTangent broadcast for Tuple/NamedTuple V — recurse element-wise with NoTangent
 # at each leaf. Required when a parent `Lifted{<:Tuple, N}(primal, ::NoTangent)`
 # constructor visits a nested Tuple field.
@@ -1143,7 +1156,12 @@ end
         return :(_lifted_struct_runtime_fallback_n($P, Val($N), primal, tangent))
     end
     if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
-        return :(Lifted{$P,$N,$InnerT}($InnerT(primal, tangent)))
+        # For Complex / NDual / other non-struct inner Vs, route through
+        # `_inner_dual_for_field` so a missing direct `InnerT(primal, tangent)`
+        # ctor (e.g. `Complex{NDual{T,N}}(::Complex, ::NTangent)` at N≥2)
+        # is handled by a specialised method below rather than the default
+        # `Complex(::Real, ::Real)` path that triggers `InexactError`.
+        return :(Lifted{$P,$N,$InnerT}(_inner_dual_for_field($InnerT, primal, tangent)))
     end
     names = fieldnames(P)
     InnerTup = InnerT.parameters[2]
