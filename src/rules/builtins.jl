@@ -315,31 +315,27 @@ end
 # atomic_pointerreplace
 
 @intrinsic atomic_pointerset
-# `atomic_pointerset` implementation kernel (no `Dual{typeof(F)}` arg).
-@inline function _atomic_pointerset_kernel(p, x, order)
-    atomic_pointerset(primal(p), primal(x), primal(order))
-    atomic_pointerset(tangent(p), tangent(x), primal(order))
-    return p
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(atomic_pointerset),N},
     p::Mooncake.Lifted,
     x::Mooncake.Lifted,
     order::Mooncake.Lifted,
 ) where {N}
+    bare_p = Mooncake._unlift(p)
+    bare_x = Mooncake._unlift(x)
+    p_order = primal(Mooncake._unlift(order))
     # Only inactive values can be copied through raw pointer storage as-is.
-    if tangent(Mooncake._unlift(x)) isa NTangent
+    if tangent(bare_x) isa NTangent
         throw(
             ArgumentError(
                 "unsupported lifted atomic_pointerset: tangent value is not storable in the pointer element type",
             ),
         )
     end
-    bare_result = _atomic_pointerset_kernel(
-        Mooncake._unlift(p), Mooncake._unlift(x), Mooncake._unlift(order)
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    atomic_pointerset(primal(bare_p), primal(bare_x), p_order)
+    atomic_pointerset(tangent(bare_p), tangent(bare_x), p_order)
+    P_out = __primal_type(_typeof(bare_p))
+    return _wrap_rule_result(P_out, Val(N), bare_p)
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
@@ -692,32 +688,26 @@ end
 @inactive_intrinsic or_int
 
 @intrinsic pointerref
-# `pointerref` implementation kernel (no `Dual{typeof(F)}` arg).
-@inline function _pointerref_kernel(x, y, z)
-    a = pointerref(primal(x), primal(y), primal(z))
-    raw_t = tangent(x)
-    # Multi-lane NTangent (width N≥2): per-lane pointerref. Each lane's
-    # Ptr tangent reads a different memory location, producing a
-    # different `da` per lane.
-    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
-        das = ntuple(
-            lane -> pointerref(raw_t.lanes[lane], primal(y), primal(z)),
-            Val(length(raw_t.lanes)),
-        )
-        return Dual(a, Mooncake.NTangent(das))
-    end
-    da = pointerref(Mooncake._ntangent_unwrap_singleton(raw_t), primal(y), primal(z))
-    return Dual(a, da)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(pointerref),N},
     x::Mooncake.Lifted,
     y::Mooncake.Lifted,
     z::Mooncake.Lifted,
 ) where {N}
-    bare_result = _pointerref_kernel(
-        Mooncake._unlift(x), Mooncake._unlift(y), Mooncake._unlift(z)
-    )
+    bare_x = Mooncake._unlift(x)
+    py = primal(Mooncake._unlift(y))
+    pz = primal(Mooncake._unlift(z))
+    a = pointerref(primal(bare_x), py, pz)
+    raw_t = tangent(bare_x)
+    # Multi-lane NTangent (width N≥2): per-lane pointerref. Each lane's
+    # Ptr tangent reads a different memory location, producing a
+    # different `da` per lane.
+    bare_result = if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
+        das = ntuple(lane -> pointerref(raw_t.lanes[lane], py, pz), Val(length(raw_t.lanes)))
+        Dual(a, Mooncake.NTangent(das))
+    else
+        Dual(a, pointerref(Mooncake._ntangent_unwrap_singleton(raw_t), py, pz))
+    end
     P_out = __primal_type(_typeof(bare_result))
     return _wrap_rule_result(P_out, Val(N), bare_result)
 end
