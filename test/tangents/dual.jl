@@ -375,8 +375,17 @@ end
             @test Mooncake.dual_type(Val(2), P) ===
                 Base.ReshapedArray{NDual{Float64,2},1,Vector{NDual{Float64,2}},Tuple{}}
         end
-        _pin_width1_bare_dual(LinearAlgebra.Symmetric{Float64,Matrix{Float64}})
-        _pin_width1_bare_dual(LinearAlgebra.Hermitian{Float64,Matrix{Float64}})
+        # Symmetric / Hermitian migrated to canonical NDual form (Phase 1b
+        # of the wrapper-exception V removal — see
+        # temp/wrapper-exception-removal-plan.md).
+        for W in (LinearAlgebra.Symmetric, LinearAlgebra.Hermitian)
+            P = W{Float64,Matrix{Float64}}
+            @test Mooncake.dual_type(Val(0), P) === P
+            @test Mooncake.dual_type(Val(1), P) ===
+                W{NDual{Float64,1},Matrix{NDual{Float64,1}}}
+            @test Mooncake.dual_type(Val(2), P) ===
+                W{NDual{Float64,2},Matrix{NDual{Float64,2}}}
+        end
     end
 
     @testset "Transpose canonical NDual dual_type" begin

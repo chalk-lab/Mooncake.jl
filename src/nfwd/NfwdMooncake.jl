@@ -1085,6 +1085,31 @@ function dual_type(
     return Base.ReshapedArray{Complex{T},D,P,MI}
 end
 
+# Symmetric / Hermitian with any `StridedMatrix{T}` parent: canonical
+# NDual-element form `Wrapper{NDual{T,N}, V_parent}` where V_parent recurses
+# through the parent's own canonical V (Matrix, SubArray, ReshapedArray, …).
+# Same template as Transpose / ReshapedArray. Constructor takes
+# `(matrix, ::Symbol)`, so we pick `:U`/`:L` from the primal's `uplo` char.
+#
+# Previous attempts `c0acb7249` (Symmetric) and `77b156a82` (Hermitian) were
+# reverted (`d57e43748`) because they restricted to `P<:Matrix{T}` parents.
+# The parameterisation over `P<:StridedMatrix{T}`, combined with the
+# ReshapedArray canonical-NDual migration above, admits any parent type.
+for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
+    @eval begin
+        function dual_type(
+            ::Val{N}, ::Type{$(W){T,P}}
+        ) where {N,T<:IEEEFloat,P<:StridedMatrix{T}}
+            return $(W){NDual{T,N},dual_type(Val(N), P)}
+        end
+        function dual_type(
+            ::Val{0}, ::Type{$(W){T,P}}
+        ) where {T<:IEEEFloat,P<:StridedMatrix{T}}
+            return $(W){T,P}
+        end
+    end
+end
+
 # Durable bare-`Dual` width-1 exceptions.
 #
 #   - `ReinterpretArray`: the non-trivial use is `T !== S` (e.g.,
@@ -1097,11 +1122,7 @@ end
 #
 # Pinned by the `width-1 wrapper bare-Dual durable exceptions` testset
 # in `test/tangents/dual.jl`.
-for Wrapper in (
-    :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
-    :(LinearAlgebra.Symmetric{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
-    :(LinearAlgebra.Hermitian{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
-)
+for Wrapper in (:(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),)
     @eval begin
         function dual_type(
             ::Val{1}, ::Type{$(Wrapper.args[1])}
@@ -1177,6 +1198,54 @@ function (::Type{LinearAlgebra.Transpose{NDual{T,N},V_parent}})(
     parent_t = Mooncake._get_tangent_field(tangent, :parent)
     parent_lifted = V_parent(parent(primal), parent_t)
     return transpose(parent_lifted)::LinearAlgebra.Transpose{NDual{T,N},V_parent}
+end
+
+# Symmetric / Hermitian canonical V — ctor + Lifted bridge + seeds. Same
+# Transpose template; `:uplo::Symbol` is non-differentiable.
+for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
+    @eval begin
+        function (::Type{$(W){NDual{T,N},V_parent}})(
+            primal::$(W){T,P}, tangent::Mooncake.Tangent
+        ) where {T<:IEEEFloat,N,P<:StridedMatrix{T},V_parent<:AbstractMatrix{NDual{T,N}}}
+            data_t = Mooncake._get_tangent_field(tangent, :data)
+            data_lifted = V_parent(primal.data, data_t)
+            sym_kind = primal.uplo == 'U' ? :U : :L
+            return $(W)(data_lifted, sym_kind)::$(W){NDual{T,N},V_parent}
+        end
+        @inline function Mooncake.Lifted{P,1}(
+            primal::P, tangent::Mooncake.Tangent
+        ) where {T<:IEEEFloat,P<:$(W){T,<:StridedMatrix{T}}}
+            InnerT = Mooncake.dual_type(Val(1), P)
+            return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
+        end
+        @inline function Mooncake.zero_dual(
+            w::Val{N}, x::$(W){T,P}
+        ) where {N,T<:IEEEFloat,P<:StridedMatrix{T}}
+            V = Mooncake.dual_type(w, typeof(x))
+            return V(x, Mooncake.zero_tangent(x))::V
+        end
+        @inline function Mooncake.uninit_dual(
+            w::Val{N}, x::$(W){T,P}
+        ) where {N,T<:IEEEFloat,P<:StridedMatrix{T}}
+            V = Mooncake.dual_type(w, typeof(x))
+            return V(x, Mooncake.uninit_tangent(x))::V
+        end
+        @inline function Mooncake.randn_dual(
+            w::Val{N}, rng::AbstractRNG, x::$(W){T,P}
+        ) where {N,T<:IEEEFloat,P<:StridedMatrix{T}}
+            V = Mooncake.dual_type(w, typeof(x))
+            return V(x, Mooncake.randn_tangent(rng, x))::V
+        end
+        @inline Mooncake.zero_dual(
+            ::Val{0}, x::$(W){T,<:StridedMatrix{T}}
+        ) where {T<:IEEEFloat} = x
+        @inline Mooncake.uninit_dual(
+            ::Val{0}, x::$(W){T,<:StridedMatrix{T}}
+        ) where {T<:IEEEFloat} = x
+        @inline Mooncake.randn_dual(
+            ::Val{0}, ::AbstractRNG, x::$(W){T,<:StridedMatrix{T}}
+        ) where {T<:IEEEFloat} = x
+    end
 end
 
 # ReshapedArray canonical V ctor + seed factories — same template as Transpose.
@@ -1478,6 +1547,13 @@ end
     ::Type{Base.ReshapedArray{Complex{NDual{T,N}},D,V_parent,MI}}
 ) where {T<:IEEEFloat,N,D,V_parent<:AbstractArray{Complex{NDual{T,N}}},MI}
     return Base.ReshapedArray{Complex{T},D,Mooncake.__primal_type(V_parent),MI}
+end
+for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
+    @eval @inline function Mooncake.__primal_type(
+        ::Type{$(W){NDual{T,N},V_parent}}
+    ) where {T<:IEEEFloat,N,V_parent<:AbstractMatrix{NDual{T,N}}}
+        return $(W){T,Mooncake.__primal_type(V_parent)}
+    end
 end
 @inline function Mooncake.__primal_type(
     ::Type{Base.Broadcast.Extruded{X,K,D}}
@@ -2069,6 +2145,10 @@ end
 @inline Mooncake._field_tangent(a::Base.ReshapedArray{<:NDual}) = tangent(a)
 @inline Mooncake._field_primal(a::Base.ReshapedArray{<:Complex{<:NDual}}) = primal(a)
 @inline Mooncake._field_tangent(a::Base.ReshapedArray{<:Complex{<:NDual}}) = tangent(a)
+@inline Mooncake._field_primal(a::LinearAlgebra.Symmetric{<:NDual}) = primal(a)
+@inline Mooncake._field_tangent(a::LinearAlgebra.Symmetric{<:NDual}) = tangent(a)
+@inline Mooncake._field_primal(a::LinearAlgebra.Hermitian{<:NDual}) = primal(a)
+@inline Mooncake._field_tangent(a::LinearAlgebra.Hermitian{<:NDual}) = tangent(a)
 
 # ── Wrapper-type accessors ───────────────────────────────────────────────────
 # `primal` rebuilds the primal wrapper around `primal` of the inner array.
@@ -2124,6 +2204,28 @@ function tangent(
     t::LinearAlgebra.Transpose{NDual{T,N},<:AbstractArray{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return Mooncake.Tangent((; parent=tangent(parent(t))))
+end
+
+# Symmetric / Hermitian canonical V — primal/tangent + per-lane tangent.
+for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
+    @eval begin
+        function primal(
+            x::$(W){NDual{T,N},<:AbstractMatrix{NDual{T,N}}}
+        ) where {T<:IEEEFloat,N}
+            sym_kind = x.uplo == 'U' ? :U : :L
+            return $(W)(primal(x.data), sym_kind)
+        end
+        function tangent(
+            x::$(W){NDual{T,N},<:AbstractMatrix{NDual{T,N}}}
+        ) where {T<:IEEEFloat,N}
+            return Mooncake.Tangent((; data=tangent(x.data), uplo=NoTangent()))
+        end
+        @inline function Mooncake.tangent(
+            x::$(W){NDual{T,N},<:AbstractMatrix{NDual{T,N}}}, i::Integer
+        ) where {T<:IEEEFloat,N}
+            return Mooncake.Tangent((; data=Mooncake.tangent(x.data, i), uplo=NoTangent()))
+        end
+    end
 end
 
 function primal(
@@ -2440,6 +2542,8 @@ end
 @inline _ndual_primal(a::LinearAlgebra.Adjoint{<:NDual}) = primal(a)
 @inline _ndual_primal(s::SubArray{<:NDual}) = primal(s)
 @inline _ndual_primal(r::Base.ReshapedArray{<:NDual}) = primal(r)
+@inline _ndual_primal(s::LinearAlgebra.Symmetric{<:NDual}) = primal(s)
+@inline _ndual_primal(h::LinearAlgebra.Hermitian{<:NDual}) = primal(h)
 # Complex variants — same wrapper-preserving requirement: `map` over a SubArray
 # / Adjoint / Diagonal returns the underlying material type (e.g. Matrix), so
 # the subsequent `tangent(...)` call would see a wrapper-shape tangent paired
