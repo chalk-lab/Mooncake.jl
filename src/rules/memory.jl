@@ -274,7 +274,7 @@ end
 ) where {N,P}
     inner_dest = Mooncake._unlift(dest)
     inner_src = Mooncake._unlift(src)
-    pn = primal(Mooncake._unlift(n))
+    pn = primal(n)
     if inner_dest isa MemoryRef
         # Canonical NDual / Complex{NDual}-element MemoryRef: copy operates
         # element-wise on the NDual lanes, no separate tangent copy needed.
@@ -498,8 +498,8 @@ end
     _boundscheck::Mooncake.Lifted{<:Val},
 ) where {N}
     inner_x = Mooncake._unlift(x)
-    ord = _val(primal(Mooncake._unlift(_ordering)))
-    bc = _val(primal(Mooncake._unlift(_boundscheck)))
+    ord = _val(primal(_ordering))
+    bc = _val(primal(_boundscheck))
     y = memoryrefget(primal(inner_x), ord, bc)
     raw_t = tangent(inner_x)
     # Width N≥2 NTangent-wrapped MemoryRef: per-lane memoryrefget.
@@ -565,8 +565,8 @@ end
     _boundscheck::Mooncake.Lifted{Bool},
 ) where {N}
     inner_x = Mooncake._unlift(x)
-    ord = primal(Mooncake._unlift(_ordering))
-    bc = primal(Mooncake._unlift(_boundscheck))
+    ord = primal(_ordering)
+    bc = primal(_boundscheck)
     if inner_x isa MemoryRef
         # Canonical NDual-element MemoryRef: returns NDual scalar directly.
         bare_result = memoryrefget(inner_x, ord, bc)
@@ -1127,8 +1127,8 @@ end
     ordering::Mooncake.Lifted{Symbol},
     boundscheck::Mooncake.Lifted{Bool},
 ) where {N,P,V<:NamedTuple}
-    ord = primal(Mooncake._unlift(ordering))
-    bc = primal(Mooncake._unlift(boundscheck))
+    ord = primal(ordering)
+    bc = primal(boundscheck)
     return frule!!(
         Mooncake.zero_lifted(Val(N), Mooncake.lmemoryrefset!),
         x,
@@ -1301,9 +1301,9 @@ end
         InnerT_arr isa DataType &&
         InnerT_arr <: Dual &&
         InnerT_arr.parameters[2] <: Mooncake.NTangent
-        primal_p = primal(Mooncake._unlift(p))
-        primal_ref = primal(Mooncake._unlift(ref))
-        primal_size = primal(Mooncake._unlift(size))
+        primal_p = primal(p)
+        primal_ref = primal(ref)
+        primal_size = primal(size)
         y = _new_(primal_p, primal_ref, primal_size)
         ref_lanes = tangent(Mooncake._unlift(ref)).lanes
         tangents = ntuple(Val(N)) do lane
@@ -1750,7 +1750,7 @@ end
         d::Mooncake.Lifted{<:Integer},
     ) where {N}
         bare_a = Mooncake._unlift(a)
-        pd = primal(Mooncake._unlift(d))
+        pd = primal(d)
         Base._growbeg!(_vec_primal(bare_a), pd)
         _apply_to_tangent_vec!(Base._growbeg!, bare_a, pd)
         bare_result = zero_dual(nothing)
@@ -1779,7 +1779,7 @@ end
         d::Mooncake.Lifted{<:Integer},
     ) where {N}
         bare_a = Mooncake._unlift(a)
-        pd = primal(Mooncake._unlift(d))
+        pd = primal(d)
         Base._growend!(_vec_primal(bare_a), pd)
         _apply_to_tangent_vec!(Base._growend!, bare_a, pd)
         bare_result = zero_dual(nothing)
@@ -1808,7 +1808,7 @@ end
         n::Mooncake.Lifted{<:Integer},
     ) where {N}
         bare_a = Mooncake._unlift(a)
-        pn = primal(Mooncake._unlift(n))
+        pn = primal(n)
         sizehint!(_vec_primal(bare_a), pn)
         _apply_to_tangent_vec!(sizehint!, bare_a, pn)
         return _wrap_rule_result(Val(N), bare_a)
@@ -1832,7 +1832,7 @@ end
         d::Mooncake.Lifted{<:Integer},
     ) where {N}
         bare_a = Mooncake._unlift(a)
-        pd = primal(Mooncake._unlift(d))
+        pd = primal(d)
         Base._deletebeg!(_vec_primal(bare_a), pd)
         _apply_to_tangent_vec!(Base._deletebeg!, bare_a, pd)
         bare_result = zero_dual(nothing)
@@ -1863,7 +1863,7 @@ end
         d::Mooncake.Lifted{<:Integer},
     ) where {N}
         bare_a = Mooncake._unlift(a)
-        pd = primal(Mooncake._unlift(d))
+        pd = primal(d)
         Base._deleteend!(_vec_primal(bare_a), pd)
         _apply_to_tangent_vec!(Base._deleteend!, bare_a, pd)
         bare_result = zero_dual(nothing)

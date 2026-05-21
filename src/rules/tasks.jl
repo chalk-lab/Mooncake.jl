@@ -110,7 +110,7 @@ end
     ::Mooncake.Lifted{typeof(getfield),N}, x::Mooncake.Lifted{Task,N}, f::Mooncake.Lifted
 ) where {N}
     inner = Mooncake._unlift(x)
-    fname = primal(Mooncake._unlift(f))
+    fname = primal(f)
     y = getfield(primal(inner), fname)
     dy = _get_tangent_field(tangent(inner), fname)
     return Mooncake.Lifted{_typeof(y),N}(y, dy)

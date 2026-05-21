@@ -195,7 +195,7 @@ end
     )
     bare_d = Mooncake._unlift(d)
     bare_v = Mooncake._unlift(val)
-    bare_k = primal(Mooncake._unlift(key))
+    bare_k = primal(key)
     setindex!(primal(bare_d), primal(bare_v), bare_k)
     # Per-lane tangent write.
     for n in 1:N
@@ -285,10 +285,10 @@ end
         default::Mooncake.Lifted,
     )
     bare_d = Mooncake._unlift(d)
-    bare_k = primal(Mooncake._unlift(key))
+    bare_k = primal(key)
     P_d = primal(bare_d)
     has_key = in(bare_k, keys(P_d))
-    P_v = has_key ? P_d[bare_k] : primal(Mooncake._unlift(default))
+    P_v = has_key ? P_d[bare_k] : primal(default)
     # Per-lane tangent lookup.
     lane_tangents = ntuple(Val(N)) do n
         td = tangent(bare_d).lanes[n]
@@ -350,7 +350,7 @@ end
         key::Mooncake.Lifted,
     )
     bare_d = Mooncake._unlift(d)
-    bare_k = primal(Mooncake._unlift(key))
+    bare_k = primal(key)
     P_v = getindex(primal(bare_d), bare_k)
     lane_tangents = ntuple(Val(N)) do n
         getindex(tangent(bare_d).lanes[n], bare_k)

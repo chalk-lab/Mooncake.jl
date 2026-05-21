@@ -245,7 +245,7 @@ end
     dims::Mooncake.Lifted,
 ) where {N,T}
     bare_p = Mooncake._unlift(p)
-    pdims = primal(Mooncake._unlift(dims))
+    pdims = primal(dims)
     primal_arr = unsafe_wrap(Array, primal(bare_p), pdims)
     raw_t = tangent(bare_p)
     # Multi-lane NTangent (width N≥2): per-lane unsafe_wrap on each lane's
@@ -314,7 +314,7 @@ end
 ) where {N}
     bare_p = Mooncake._unlift(p)
     bare_x = Mooncake._unlift(x)
-    p_order = primal(Mooncake._unlift(order))
+    p_order = primal(order)
     # Only inactive values can be copied through raw pointer storage as-is.
     if tangent(bare_x) isa NTangent
         throw(
@@ -682,8 +682,8 @@ end
     z::Mooncake.Lifted,
 ) where {N}
     bare_x = Mooncake._unlift(x)
-    py = primal(Mooncake._unlift(y))
-    pz = primal(Mooncake._unlift(z))
+    py = primal(y)
+    pz = primal(z)
     a = pointerref(primal(bare_x), py, pz)
     raw_t = tangent(bare_x)
     # Multi-lane NTangent (width N≥2): per-lane pointerref. Each lane's
@@ -724,8 +724,8 @@ end
 ) where {N}
     bare_p = Mooncake._unlift(p)
     bare_x = Mooncake._unlift(x)
-    pidx = primal(Mooncake._unlift(idx))
-    pz = primal(Mooncake._unlift(z))
+    pidx = primal(idx)
+    pz = primal(z)
     # Only inactive values can be copied through raw pointer storage as-is.
     if tangent(bare_x) isa NTangent
         throw(
@@ -948,7 +948,7 @@ end
     ind::Mooncake.Lifted{Int},
 ) where {N}
     bare_v = Mooncake._unlift(v)
-    pind = primal(Mooncake._unlift(ind))
+    pind = primal(ind)
     pv = Core._svec_ref(primal(bare_v), pind)
     raw_t = tangent(bare_v)
     # Multi-lane NTangent (width N≥2): `getindex(::NTangent, ind)` resolves
@@ -1180,7 +1180,7 @@ end
     name::Mooncake.Lifted,
 ) where {N,P,T<:StandardTangentType,V_x<:Dual{P,T}}
     bare_x = Mooncake._unlift(x)
-    _name = primal(Mooncake._unlift(name))
+    _name = primal(name)
     bare_result = if tangent_type(P) == NoTangent
         uninit_dual(getfield(primal(bare_x), _name))
     else
@@ -1197,7 +1197,7 @@ end
     name::Mooncake.Lifted,
 ) where {N,P,V_x<:Mooncake.SplitDual}
     bare_x = Mooncake._unlift(x)
-    _name = primal(Mooncake._unlift(name))
+    _name = primal(name)
     field_val = getfield(bare_x.canonical, _name)
     return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
 end
@@ -1219,7 +1219,7 @@ end
     n = fieldcount(p_for_field_types)
     if n == 0
         return quote
-            field_val = getfield(Mooncake._unlift(x), primal(Mooncake._unlift(name)))
+            field_val = getfield(Mooncake._unlift(x), primal(name))
             return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
         end
     end
@@ -1238,7 +1238,7 @@ end
         $(exprs...)
         # Runtime field-name dispatch (non-constant field): fall back to
         # generic wrap (loses field-type specialisation).
-        field_val = getfield(Mooncake._unlift(x), primal(Mooncake._unlift(name)))
+        field_val = getfield(Mooncake._unlift(x), primal(name))
         return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
     end
 end
@@ -1271,8 +1271,8 @@ end
     inbounds::Mooncake.Lifted,
 ) where {N,P,T<:StandardTangentType,V_x<:Dual{P,T}}
     bare_x = Mooncake._unlift(x)
-    _name = primal(Mooncake._unlift(name))
-    _inbounds = primal(Mooncake._unlift(inbounds))
+    _name = primal(name)
+    _inbounds = primal(inbounds)
     bare_result = if tangent_type(P) == NoTangent
         uninit_dual(getfield(primal(bare_x), _name, _inbounds))
     else
@@ -1290,7 +1290,7 @@ end
     ::Mooncake.Lifted,
 ) where {N,P,V_x<:Mooncake.SplitDual}
     bare_x = Mooncake._unlift(x)
-    _name = primal(Mooncake._unlift(name))
+    _name = primal(name)
     field_val = getfield(bare_x.canonical, _name)
     return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
 end
@@ -1304,11 +1304,7 @@ end
     n = fieldcount(p_for_field_types)
     if n == 0
         return quote
-            field_val = getfield(
-                Mooncake._unlift(x),
-                primal(Mooncake._unlift(name)),
-                primal(Mooncake._unlift(inbounds)),
-            )
+            field_val = getfield(Mooncake._unlift(x), primal(name), primal(inbounds))
             return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
         end
     end
@@ -1318,22 +1314,14 @@ end
         P_field = P <: Tuple ? fieldtype(P, i) : fieldtype(P, field_names[i])
         :(
             primal(name) === $(QuoteNode(field)) && begin
-                field_val = getfield(
-                    Mooncake._unlift(x),
-                    $(QuoteNode(field)),
-                    primal(Mooncake._unlift(inbounds)),
-                )
+                field_val = getfield(Mooncake._unlift(x), $(QuoteNode(field)), primal(inbounds))
                 return _wrap_rule_result($P_field, Val(N), field_val)
             end
         )
     end
     return quote
         $(exprs...)
-        field_val = getfield(
-            Mooncake._unlift(x),
-            primal(Mooncake._unlift(name)),
-            primal(Mooncake._unlift(inbounds)),
-        )
+        field_val = getfield(Mooncake._unlift(x), primal(name), primal(inbounds))
         return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
     end
 end
@@ -1343,7 +1331,7 @@ end
     ::Mooncake.Lifted{Val{field},N},
     inbounds::Mooncake.Lifted,
 ) where {P<:Union{Tuple,NamedTuple},N,field}
-    field_val = getfield(Mooncake._unlift(x), field, primal(Mooncake._unlift(inbounds)))
+    field_val = getfield(Mooncake._unlift(x), field, primal(inbounds))
     return _wrap_rule_result(fieldtype(P, field), Val(N), field_val)
 end
 function rrule!!(
@@ -1416,7 +1404,7 @@ end
     name::Mooncake.Lifted,
     x::Mooncake.Lifted,
 ) where {N}
-    val_name = primal(Mooncake._unlift(name))
+    val_name = primal(name)
     literal_name = Mooncake.zero_lifted(Val(N), Val(val_name))
     return frule!!(Mooncake.zero_lifted(Val(N), lsetfield!), value, literal_name, x)
 end

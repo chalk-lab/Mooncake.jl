@@ -110,7 +110,7 @@ end
     nb::Mooncake.Lifted{<:Integer},
 ) where {N}
     vv, vt = _twp_val(Mooncake._unlift(val))
-    nb_p = primal(Mooncake._unlift(nb))
+    nb_p = primal(nb)
     # Width-N: `vt` is `NTuple{N, P}` (per-lane partials). Build per-lane
     # `TWP{P}` tangents and wrap in NTangent.
     if vt isa Tuple && N >= 2
@@ -137,7 +137,7 @@ end
     nb::Mooncake.Lifted{<:Integer},
 ) where {N,P<:TWP}
     inner_val = Mooncake._unlift(val)
-    nb_p = primal(Mooncake._unlift(nb))
+    nb_p = primal(nb)
     bare_result = Dual(
         twiceprecision(primal(inner_val), nb_p),
         twiceprecision(_twp_tangent(inner_val), nb_p),
@@ -169,7 +169,7 @@ end
     ::Mooncake.Lifted{typeof(-),N}, x::Mooncake.Lifted{P}
 ) where {N,P<:TWP}
     # Per-lane assembly.
-    p_out = -primal(Mooncake._unlift(x))
+    p_out = -primal(x)
     tangents = ntuple(n -> -Mooncake.tangent(x, n), Val(N))
     return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
@@ -185,8 +185,8 @@ end
     # Per-lane assembly so each lane's tangent is computed independently
     # (was: single-lane via `_twp_val` then broadcast at wrap, silently
     # duplicating across N lanes for N >= 2).
-    px = primal(Mooncake._unlift(x))
-    py = primal(Mooncake._unlift(y))
+    px = primal(x)
+    py = primal(y)
     p_out = px + py
     tangents = ntuple(Val(N)) do n
         Mooncake.tangent(x, n) + Mooncake.tangent(y, n)
@@ -204,7 +204,7 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(+),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted{P}
 ) where {N,P<:TWP}
-    p_out = primal(Mooncake._unlift(x)) + primal(Mooncake._unlift(y))
+    p_out = primal(x) + primal(y)
     tangents = ntuple(n -> Mooncake.tangent(x, n) + Mooncake.tangent(y, n), Val(N))
     return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
@@ -217,7 +217,7 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(+),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted{<:Integer}
 ) where {N,P<:TWP}
-    p_out = primal(Mooncake._unlift(x)) + primal(Mooncake._unlift(y))
+    p_out = primal(x) + primal(y)
     tangents = ntuple(n -> Mooncake.tangent(x, n), Val(N))
     return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
@@ -231,8 +231,8 @@ end
     ::Mooncake.Lifted{typeof(*),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
 ) where {N,P<:TWP}
     # Per-lane assembly. d(xy)/dx = y, d(xy)/dy = x.
-    px = primal(Mooncake._unlift(x))
-    py = primal(Mooncake._unlift(y))
+    px = primal(x)
+    py = primal(y)
     z = px * py
     tangents = ntuple(Val(N)) do n
         px * Mooncake.tangent(y, n) + Mooncake.tangent(x, n) * py
@@ -251,8 +251,8 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(*),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted{<:Integer}
 ) where {N,P<:TWP}
-    yp = primal(Mooncake._unlift(y))
-    z = primal(Mooncake._unlift(x)) * yp
+    yp = primal(y)
+    z = primal(x) * yp
     tangents = ntuple(n -> Mooncake.tangent(x, n) * yp, Val(N))
     return Mooncake.Lifted{_typeof(z),N}(z, Mooncake.NTangent(tangents))
 end
@@ -267,8 +267,8 @@ end
     ::Mooncake.Lifted{typeof(/),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted
 ) where {N,P<:TWP}
     # Per-lane assembly. d(x/y)/dx = 1/y, d(x/y)/dy = -x/y^2.
-    px = primal(Mooncake._unlift(x))
-    py = primal(Mooncake._unlift(y))
+    px = primal(x)
+    py = primal(y)
     z = px / py
     tangents = ntuple(Val(N)) do n
         Mooncake.tangent(x, n) / py - Mooncake.tangent(y, n) * px / py^2
@@ -287,8 +287,8 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(/),N}, x::Mooncake.Lifted{P}, y::Mooncake.Lifted{<:Integer}
 ) where {N,P<:TWP}
-    yp = primal(Mooncake._unlift(y))
-    z = primal(Mooncake._unlift(x)) / yp
+    yp = primal(y)
+    z = primal(x) / yp
     tangents = ntuple(n -> Mooncake.tangent(x, n) / yp, Val(N))
     return Mooncake.Lifted{_typeof(z),N}(z, Mooncake.NTangent(tangents))
 end
@@ -323,7 +323,7 @@ using Base: range_start_step_length
 ) where {N}
     av, at = _twp_val(Mooncake._unlift(a))
     sv, stt = _twp_val(Mooncake._unlift(st))
-    lp = primal(Mooncake._unlift(len))
+    lp = primal(len)
     x = range_start_step_length(av, sv, lp)
     Tx = tangent_type(typeof(x))
     dx = Tx((ref=at, step=stt, len=NoTangent(), offset=NoTangent()))
@@ -492,7 +492,7 @@ end
 ) where {N}
     sav, sat = _twp_val(Mooncake._unlift(start))
     spv, spt = _twp_val(Mooncake._unlift(stop))
-    lp = primal(Mooncake._unlift(length))
+    lp = primal(length)
     l = lp - 1
     y = Base.range_start_stop_length(sav, spv, lp)
     T = tangent_type(typeof(y))

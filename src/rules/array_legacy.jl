@@ -676,7 +676,7 @@ end
     x::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_a = Mooncake._unlift(a)
-    fill!(primal(bare_a), primal(Mooncake._unlift(x)))
+    fill!(primal(bare_a), primal(x))
     return a
 end
 function frule!!(
