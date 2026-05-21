@@ -2059,6 +2059,17 @@ end
 @inline Mooncake._field_primal(a::Array{<:Complex{<:NDual}}) = primal(a)
 @inline Mooncake._field_tangent(a::Array{<:Complex{<:NDual}}) = tangent(a)
 
+# ReshapedArray canonical NDual V — Phase 2 of the wrapper-exception removal.
+# Without these, `primal(::Lifted{<:Tuple})` walks Tuple elements via
+# `_field_primal` which falls through to the catch-all (returns x unchanged),
+# leaving the ReshapedArray element type as NDual instead of reconstructing
+# the primal. Shows up as a Matrix-vs-ReshapedArray primal-type mismatch in
+# lapack rules that wrap a ReshapedArray output in a Tuple.
+@inline Mooncake._field_primal(a::Base.ReshapedArray{<:NDual}) = primal(a)
+@inline Mooncake._field_tangent(a::Base.ReshapedArray{<:NDual}) = tangent(a)
+@inline Mooncake._field_primal(a::Base.ReshapedArray{<:Complex{<:NDual}}) = primal(a)
+@inline Mooncake._field_tangent(a::Base.ReshapedArray{<:Complex{<:NDual}}) = tangent(a)
+
 # ── Wrapper-type accessors ───────────────────────────────────────────────────
 # `primal` rebuilds the primal wrapper around `primal` of the inner array.
 # `tangent` returns a `Tangent` whose differentiable field carries the inner
