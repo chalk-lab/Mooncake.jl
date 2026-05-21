@@ -660,47 +660,28 @@ end
     )
 end
 @inline _memoryrefnew_kernel(x::Memory{<:_HasNDual}) = memoryrefnew(x)
-@inline _memoryrefnew_kernel(x::Dual{<:MemoryRef}, ii::Dual{Int}) = Dual(
-    memoryrefnew(primal(x), primal(ii)),
-    memoryrefnew(Mooncake._ntangent_unwrap_singleton(tangent(x)), primal(ii)),
-)
-# Width-N NTangent-wrapped MemoryRef + Int: per-lane memoryrefnew with index.
-@inline function _memoryrefnew_kernel(
-    x::Dual{<:MemoryRef,<:Mooncake.NTangent}, ii::Dual{Int}
-)
-    pi = primal(ii)
+# `memoryrefnew(memref, index, [boundscheck])` — arity 2 and 3 share the same
+# per-shape pattern, parameterised over the extra args via Vararg.
+@inline function _memoryrefnew_kernel(x::Dual{<:MemoryRef}, args::Vararg{Dual,M}) where {M}
+    p_args = map(primal, args)
     return Dual(
-        memoryrefnew(primal(x), pi),
-        Mooncake.NTangent(map(t -> memoryrefnew(t, pi), tangent(x).lanes)),
+        memoryrefnew(primal(x), p_args...),
+        memoryrefnew(Mooncake._ntangent_unwrap_singleton(tangent(x)), p_args...),
     )
 end
-@inline function _memoryrefnew_kernel(x::MemoryRef{<:_HasNDual}, ii::Dual{Int})
-    return memoryrefnew(x, primal(ii))
-end
 @inline function _memoryrefnew_kernel(
-    x::Dual{<:MemoryRef}, ii::Dual{Int}, boundscheck::Dual{Bool}
-)
-    y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = memoryrefnew(
-        Mooncake._ntangent_unwrap_singleton(tangent(x)), primal(ii), primal(boundscheck)
-    )
-    return Dual(y, dy)
-end
-# Width-N NTangent-wrapped MemoryRef + Int + Bool: per-lane memoryrefnew.
-@inline function _memoryrefnew_kernel(
-    x::Dual{<:MemoryRef,<:Mooncake.NTangent}, ii::Dual{Int}, boundscheck::Dual{Bool}
-)
-    pi = primal(ii)
-    pb = primal(boundscheck)
+    x::Dual{<:MemoryRef,<:Mooncake.NTangent}, args::Vararg{Dual,M}
+) where {M}
+    p_args = map(primal, args)
     return Dual(
-        memoryrefnew(primal(x), pi, pb),
-        Mooncake.NTangent(map(t -> memoryrefnew(t, pi, pb), tangent(x).lanes)),
+        memoryrefnew(primal(x), p_args...),
+        Mooncake.NTangent(map(t -> memoryrefnew(t, p_args...), tangent(x).lanes)),
     )
 end
 @inline function _memoryrefnew_kernel(
-    x::MemoryRef{<:_HasNDual}, ii::Dual{Int}, boundscheck::Dual{Bool}
-)
-    return memoryrefnew(x, primal(ii), primal(boundscheck))
+    x::MemoryRef{<:_HasNDual}, args::Vararg{Dual,M}
+) where {M}
+    return memoryrefnew(x, map(primal, args)...)
 end
 
 @inline function frule!!(
