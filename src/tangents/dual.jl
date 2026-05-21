@@ -97,17 +97,18 @@ Width-aware forward value type query.
         end
     end
 
-    # Dispatch-tuple: element-wise lifting — each field type is individually lifted.
-    # `Base.isdispatchtuple` is true for any Tuple whose field types Julia can
-    # fully resolve for dispatch (covers `Tuple{Float64, Int}` and also
-    # `Tuple{Type{Float64}, Type{Int}}` even though the latter is not
-    # `isconcretetype`). Delegate to a `@generated` helper so the per-field
-    # `dual_type` calls unroll at expansion time and Julia can statically infer
-    # the result; the inline generator form `(... for i in 1:fieldcount(P))`
-    # iterates `fieldtype(P, i)` at runtime, leaving each
-    # `dual_type(Val(N), ::Type)` call as a runtime dispatch (JET
-    # runtime-dispatch failures in `rules/lapack`).
-    if P <: Tuple && P !== Tuple && Base.isdispatchtuple(P)
+    # Statically-fielded Tuple: element-wise lifting — each field type is
+    # individually lifted. `Base.datatype_fieldcount(P)` returns a definite
+    # field count for any Tuple whose field types are statically resolvable
+    # (covers `Tuple{Float64, Int}`, `Tuple{Type{Float64}, Type{Int}}`, and
+    # `Tuple{Val{1}, DataType, Float64, Vector{Float64}}` — none of which
+    # are `Base.isdispatchtuple` but all have well-defined `fieldtype(P, i)`
+    # for the @generated `_dual_type_tuple_inner` to recurse on). Returns
+    # `nothing` for Vararg/abstract tuples (`Tuple{Vararg{Float64}}`,
+    # `Tuple`); those fall through to the abstract `Dual` fallback. The
+    # per-field `dual_type` calls unroll at @generated expansion time so
+    # Julia can statically infer the result.
+    if P <: Tuple && Base.datatype_fieldcount(P) !== nothing
         return _dual_type_tuple_inner(Val(N), P)
     end
 

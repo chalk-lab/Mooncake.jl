@@ -1450,40 +1450,21 @@ end
 
 # replacefield!
 
-# `setfield!` implementation kernel (no `Dual{typeof(F)}` arg).
-# Delegates to `lsetfield!` after lifting the field-name arg to a literal.
-@inline function _setfield!_kernel(value::Dual, name::Dual, x)
-    literal_name = zero_dual(Val(primal(name)))
-    return frule!!(zero_dual(lsetfield!), value, literal_name, x)
-end
-# Bare-NDual / bare-NDual-container value path. When the Lifted-aware
-# adapter unlifts a `Lifted{Vector{T<:IEEEFloat}, 1, ...}` slot, `value`
-# arrives as `Vector{NDual{T,1}}` (the canonical inner V), not a
-# Dual-wrapper. Bridge to `lsetfield!` with the bare value.
-@inline function _setfield!_kernel(
-    value::Union{
-        Mooncake.Nfwd.NDual,
-        Complex{<:Mooncake.Nfwd.NDual},
-        AbstractArray{<:Mooncake.Nfwd.NDual},
-        AbstractArray{<:Complex{<:Mooncake.Nfwd.NDual}},
-    },
-    name::Dual,
-    x,
-)
-    literal_name = zero_dual(Val(primal(name)))
-    return frule!!(zero_dual(lsetfield!), value, literal_name, x)
-end
+# `setfield!` Lifted body: lift the runtime field-name to a `Val(name)` Lifted
+# slot and delegate to the Lifted `lsetfield!` rule. The three Lifted
+# `lsetfield!` bodies (wrapper-exception / canonical-NDual array / SplitDual)
+# handle every inner-V shape — routing through them avoids re-implementing the
+# bridge logic and the kernel's bare-Dual hop, which had no method for the
+# mutable-struct value + bare-NDual `x` case.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(setfield!),N},
     value::Mooncake.Lifted,
     name::Mooncake.Lifted,
     x::Mooncake.Lifted,
 ) where {N}
-    bare_result = _setfield!_kernel(
-        Mooncake._unlift(value), Mooncake._unlift(name), Mooncake._unlift(x)
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    val_name = primal(Mooncake._unlift(name))
+    literal_name = Mooncake.zero_lifted(Val(N), Val(val_name))
+    return frule!!(Mooncake.zero_lifted(Val(N), lsetfield!), value, literal_name, x)
 end
 function rrule!!(::CoDual{typeof(setfield!)}, value::CoDual, name::CoDual, x::CoDual)
     literal_name = uninit_fcodual(Val(primal(name)))
