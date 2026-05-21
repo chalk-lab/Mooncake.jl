@@ -167,8 +167,7 @@ end
     ::Mooncake.Lifted{typeof(copy),N}, x::Mooncake.Lifted{<:CuDataRef,N}
 ) where {N}
     bare_result = _copy_cudataref_kernel(Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(copy)}, x::CoDual{<:CuDataRef,<:CuDataRef})
     return CoDual(copy(primal(x)), copy(tangent(x))), _nopb(Val(2))
@@ -256,8 +255,7 @@ end
     x::Mooncake.Lifted{X,N},
 ) where {N,T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
     bare_result = _unsafe_convert_cuptr_kernel(Mooncake._unlift(_a1), Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
@@ -294,8 +292,7 @@ end
     n::Mooncake.Lifted{<:Integer,N},
 ) where {N,T}
     bare_result = _cuptr_add_kernel(Mooncake._unlift(p), Mooncake._unlift(n))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(+)}, p::CoDual{CuPtr{T},CuPtr{T}}, n::CoDual{<:Integer,NoFData}
@@ -622,8 +619,7 @@ end
     dims::Mooncake.Lifted{<:NTuple,N},
 ) where {N}
     bare_result = _reshape_cuarray_kernel(Mooncake._unlift(x), Mooncake._unlift(dims))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
@@ -661,8 +657,7 @@ end
         Mooncake._unlift(offset),
         Mooncake._unlift(dims),
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(_new_)},
@@ -748,8 +743,7 @@ end
     bare_result = _lgetfield_cudataref_kernel(
         Mooncake._unlift(x), Mooncake._unlift(_a2), Mooncake._unlift(_a3)
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -765,8 +759,7 @@ end
     _a2::Mooncake.Lifted{Val{name},N},
 ) where {N,name}
     bare_result = _lgetfield_cudataref_kernel(Mooncake._unlift(x), Mooncake._unlift(_a2))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuDataRef,<:CuDataRef}, ::CoDual{Val{name}}
@@ -801,8 +794,7 @@ end
     bare_result = _lgetfield_cuarray_kernel(
         Mooncake._unlift(x), Mooncake._unlift(_a2), Mooncake._unlift(_a3)
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -819,8 +811,7 @@ end
     _a2::Mooncake.Lifted{Val{name},N},
 ) where {N,name}
     bare_result = _lgetfield_cuarray_kernel(Mooncake._unlift(x), Mooncake._unlift(_a2))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuArray,<:CuArray}, ::CoDual{Val{name}}
@@ -887,8 +878,7 @@ end
     bare_result = _getindex_cuarray_gather_kernel(
         Mooncake._unlift(x), Mooncake._unlift(idx)
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(getindex)},
@@ -923,8 +913,7 @@ end
     ::Mooncake.Lifted{typeof(norm),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
     bare_result = _norm_cuarray_kernel(Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
@@ -950,8 +939,7 @@ end
     y::Mooncake.Lifted{<:CuFloatArray,N},
 ) where {N}
     bare_result = _dot_cuarray_kernel(Mooncake._unlift(x), Mooncake._unlift(y))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(dot)}, x::CoDual{<:CuFloatArray}, y::CoDual{<:CuFloatArray}
@@ -1002,8 +990,7 @@ end
     ::Mooncake.Lifted{typeof(prod),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
     bare_result = _prod_cuarray_kernel(Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(prod)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
@@ -1035,8 +1022,7 @@ end
     ::Mooncake.Lifted{typeof(cumsum),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray}; kw...
 ) where {N}
     bare_result = _cumsum_cuarray_kernel(Mooncake._unlift(x); kw...)
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(cumsum)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -1073,8 +1059,7 @@ end
     ::Mooncake.Lifted{typeof(cumprod),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray}; kw...
 ) where {N}
     bare_result = _cumprod_cuarray_kernel(Mooncake._unlift(x); kw...)
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -1115,8 +1100,7 @@ end
     bare_result = _accumulate_plus_cuarray_kernel(
         Mooncake._unlift(op), Mooncake._unlift(x); kw...
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(accumulate)},
@@ -1165,8 +1149,7 @@ end
     ::Mooncake.Lifted{typeof(sum),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
     bare_result = _sum_cuarray_kernel(Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
     _, dx = arrayify(x)
@@ -1225,8 +1208,7 @@ end
         Mooncake._unlift(soffs),
         Mooncake._unlift(n),
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
@@ -1328,8 +1310,7 @@ end
         Mooncake._unlift(soffs),
         Mooncake._unlift(n),
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
@@ -1374,8 +1355,7 @@ end
     ::Mooncake.Lifted{typeof(unsafe_free!),N}, x::Mooncake.Lifted{<:CuArray,N}
 ) where {N}
     bare_result = _unsafe_free_cuarray_kernel(Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
     unsafe_free!(primal(x))
@@ -1397,8 +1377,7 @@ end
     ::Mooncake.Lifted{typeof(Core.finalizer),N}, f::Mooncake.Lifted, x::Mooncake.Lifted
 ) where {N}
     bare_result = _core_finalizer_kernel(Mooncake._unlift(f), Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(Core.finalizer)}, f::CoDual, x::CoDual)
     Core.finalizer(primal(f), primal(x))
@@ -1457,8 +1436,7 @@ end
     x::Mooncake.Lifted,
 ) where {N}
     bare_result = _fill_cuarray_kernel(Mooncake._unlift(a), Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(fill!)},
@@ -1535,16 +1513,14 @@ end
     x::Mooncake.Lifted{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray},N},
 ) where {N}
     bare_result = _sum_transpose_cuarray_kernel(Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N},
     x::Mooncake.Lifted{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray},N},
 ) where {N}
     bare_result = _sum_adjoint_cuarray_kernel(Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, x::CoDual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
@@ -1694,8 +1670,7 @@ end
     x::Mooncake.Lifted{<:CuGpuSumFArray,N},
 ) where {N}
     bare_result = _sum_f_cuarray_kernel(Mooncake._unlift(f), Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
     return _gpu_sum_f_rrule(primal(f), x)
@@ -1726,8 +1701,7 @@ for _op in (:(+), :(Base.add_sum))
         x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     ) where {N}
         bare_result = _sum_f_cuarray_kernel(Mooncake._unlift(f), Mooncake._unlift(x))
-        P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-        return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+        return Mooncake._wrap_rule_result(Val(N), bare_result)
     end
     @eval function rrule!!(
         ::CoDual{typeof(mapreduce)},
@@ -1761,8 +1735,7 @@ for (_op, _fn, _kernel) in
         x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     ) where {N}
         bare_result = $_kernel(Mooncake._unlift(x))
-        P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-        return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+        return Mooncake._wrap_rule_result(Val(N), bare_result)
     end
     @eval function rrule!!(
         ::CoDual{typeof(reduce)}, ::CoDual{typeof($_op)}, x::CoDual{<:CuMaybeComplexArray}
@@ -1971,8 +1944,7 @@ end
         Mooncake._unlift(A),
         Mooncake._unlift(B),
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(LinearAlgebra.generic_matmatmul!)},
@@ -2078,8 +2050,7 @@ end
         Mooncake._unlift(alpha),
         Mooncake._unlift(beta),
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(LinearAlgebra.generic_matmatmul!)},
@@ -2203,8 +2174,7 @@ end
         Mooncake._unlift(alpha),
         Mooncake._unlift(beta),
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(LinearAlgebra.generic_matvecmul!)},
@@ -2277,8 +2247,7 @@ end
     x::Mooncake.Lifted{<:AbstractArray{<:CuFloatOrComplex},N},
 ) where {N}
     bare_result = _cu_kernel(Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:AbstractArray{<:CuFloatOrComplex}})
     dx = tangent(x)
@@ -2342,8 +2311,7 @@ end
     _a0::Mooncake.Lifted{<:Type{<:Diagonal},N}, v::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
     bare_result = _diagonal_cuarray_kernel(Mooncake._unlift(_a0), Mooncake._unlift(v))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{<:Type{<:Diagonal}}, v::CoDual{<:CuMaybeComplexArray})
     pv, dv = arrayify(v)
@@ -3107,8 +3075,7 @@ end
     bare_bc = Mooncake._unlift(bc)
     bare_bc isa Broadcasted && return _materialize_cuarray_kernel(Val(N), bare_bc)
     bare_result = _materialize_cuarray_kernel(bare_bc)
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 
 function rrule!!(
@@ -3209,8 +3176,7 @@ end
     bare_result = _materialize_inplace_cuarray_kernel(
         Mooncake._unlift(dest), Mooncake._unlift(bc)
     )
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(N), bare_result)
+    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base.Broadcast.materialize!),NoFData},
