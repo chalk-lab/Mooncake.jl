@@ -458,27 +458,11 @@ end
     x
 )
 @inline _lsetfield_x_to_dual(x::Tuple) = _tuple_duals_to_dual(x)
-# `_ndual_to_dual_lane1` bridges canonical width-1 `NDual` / `Complex{NDual}` /
-# array containers into the legacy `Dual{P, T}` form expected by
-# `lsetfield_frule`. For width-N (N >= 2) callers, `_ndual_to_dual_widthN`
-# below produces an `NTangent`-wrapped tangent so the per-lane
+# `_ndual_to_dual_widthN` bridge: canonical NDual / Complex{NDual} / array
+# container → `Dual{P, NTangent{NTuple{N, T}}}` so the per-lane
 # `set_tangent_field!(::NTangent{NTuple{N, T}}, name, ::NTangent{NTuple{N, Tx}})`
 # overload fires (otherwise `set_tangent_field!` broadcasts lane-1 across
 # all N lanes — wrong with distinct seeds).
-@inline _ndual_to_dual_lane1(x::Dual) = x
-@inline _ndual_to_dual_lane1(x::NDual) = Dual(primal(x), x.partials[1])
-@inline _ndual_to_dual_lane1(x::Complex{<:NDual}) = Dual(
-    complex(x.re.value, x.im.value), complex(x.re.partials[1], x.im.partials[1])
-)
-@inline _ndual_to_dual_lane1(x::AbstractArray{<:NDual}) = Dual(
-    map(d -> d.value, x), map(d -> d.partials[1], x)
-)
-@inline _ndual_to_dual_lane1(x::AbstractArray{<:Complex{<:NDual}}) = Dual(
-    map(z -> complex(z.re.value, z.im.value), x),
-    map(z -> complex(z.re.partials[1], z.im.partials[1]), x),
-)
-# Width-N bridge: returns `Dual{P, NTangent{NTuple{N, T}}}` so
-# `set_tangent_field!` dispatches to the per-lane overload.
 @inline _ndual_to_dual_widthN(x::Dual) = x
 @inline function _ndual_to_dual_widthN(x::NDual{T,N}) where {T,N}
     return Dual(primal(x), Mooncake.NTangent(x.partials))
