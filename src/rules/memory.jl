@@ -1649,11 +1649,15 @@ end
 # Bare-Dual lsetfield! on canonical NDual Vector (V_x is the bare lifted
 # form, not Dual-wrapped). Mutates the Vector in place; for `:ref`, the
 # new MemoryRef arrives as the canonical-NDual lifted form. For metadata
-# (`:size`), x is the bare primal Tuple.
+# `:size`, x may arrive as `Tuple{Dual{Int}, ...}` (structural-lift of the
+# primal `Tuple{Int, ...}`); strip each Dual to get the bare metadata.
+@inline _strip_size_tuple(x::Tuple{Vararg{Dual}}) = map(primal, x)
+@inline _strip_size_tuple(x) = x
 @inline function frule!!(
     ::Dual{typeof(lsetfield!)}, value::Array{<:_HasNDual}, ::Dual{Val{name}}, x
 ) where {name}
-    setfield!(value, name, x)
+    coerced = (name === :size || name === 2) ? _strip_size_tuple(x) : x
+    setfield!(value, name, coerced)
     return x
 end
 @inline function frule!!(
