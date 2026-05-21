@@ -433,8 +433,7 @@ end
     bare_name = Mooncake._unlift(name)
     bare_x = Mooncake._unlift(x)
     result = lsetfield!(bare_value, primal(bare_name), _ndual_arg_unwrap(bare_x))
-    P_out = __primal_type(_typeof(result))
-    return _wrap_rule_result(P_out, Val(N), result)
+    return _wrap_rule_result(Val(N), result)
 end
 # SplitDual value V: rebuild the canonical NamedTuple in place via an
 # `ntuple` rebuild that preserves zero allocation.
